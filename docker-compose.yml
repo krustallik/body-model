@@ -1,0 +1,49 @@
+services:
+  app:
+    container_name: bodycast-app
+    build:
+      context: .
+      target: development
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-bodycast}:${POSTGRES_PASSWORD:-change_me}@db:5432/${POSTGRES_DB:-bodycast}
+      WATCHPACK_POLLING: "true"
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - bodycast_node_modules:/app/node_modules
+      - bodycast_next_cache:/app/.next
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["sh", "-c", "npm run prisma:generate && npm run prisma:migrate:deploy && npm run dev"]
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  db:
+    container_name: bodycast-db
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-bodycast}
+      POSTGRES_USER: ${POSTGRES_USER:-bodycast}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+    ports:
+      - "5432:5432"
+    volumes:
+      - bodycast_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  bodycast_postgres_data:
+  bodycast_node_modules:
+  bodycast_next_cache:

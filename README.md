@@ -1,36 +1,211 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# BodyCast
 
-## Getting Started
+BodyCast — персональний full-stack застосунок на Next.js, PostgreSQL і Prisma. Поточна версія містить health endpoint та idempotent Apple Health synchronization API. Математична модель прогнозування ще не реалізована.
 
-First, run the development server:
+## Local Development
+
+Вимоги: Docker Engine і Docker Compose v2. Для запуску поза Docker потрібен Node.js 24 LTS та npm.
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+cp .env.example .env
+docker compose up --build
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Development URL: <http://localhost:3000>
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Зміни TypeScript/React підхоплюються через bind mount. Контейнерні `node_modules` і `.next` зберігаються в окремих volumes.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+docker compose up
+docker compose down
+docker compose logs -f app
+```
 
-## Learn More
+## Testing
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm ci
+npm run prisma:generate
+npm run lint
+npm run typecheck
+npm run test:unit
+npm run test:coverage
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Integration tests потребують окремої PostgreSQL database зі застосованими migrations:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+npm run prisma:migrate:deploy
+npm run test:integration
+```
 
-## Deploy on Vercel
+У development Compose їх можна запустити так:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+docker compose exec app npm run test:integration
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+GitHub Actions використовує окремий PostgreSQL service container `bodycast_test`; production database у тестах не використовується. Coverage показує statements, branches, functions і lines. Global thresholds навмисно не встановлені на 100%.
+
+## Apple Health API
+
+```bash
+curl -X POST http://localhost:3000/api/v1/health/sync \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: YOUR_KEY" \
+  -d '{
+    "days": [{
+      "date": "2026-08-21",
+      "weightKg": 78.4,
+      "steps": 10500,
+      "activeEnergyKcal": 540,
+      "workouts": [{
+        "type": "strength_training",
+        "startAt": "2026-08-21T17:10:00+02:00",
+        "endAt": "2026-08-21T18:15:00+02:00",
+        "durationMinutes": 65,
+        "energyKcal": 340
+      }]
+    }]
+  }'
+```
+
+Повторна дата оновлює один daily record та transactionally замінює workouts. `activeEnergyKcal` і workout energy не додаються, щоб уникнути double counting.
+
+## Production Build
+
+Next.js використовує standalone output. Production container запускається від непривілейованого користувача `nextjs` і не містить повного development source tree.
+
+```bash
+npm run build
+docker build --target production -t bodycast-app:latest .
+docker compose --env-file .env.production.example -f docker-compose.prod.yml config
+```
+
+Prisma CLI ізольований в окремому `migrator` image і не додається до runtime app image.
+
+## Server Setup
+
+BodyCast використовує вже наявні на сервері Docker, Caddy, wildcard DNS і external network `gymbeam-internal`. Другий Caddy та порти `80/443` не створюються. App і PostgreSQL не публікують host ports.
+
+Одноразова підготовка:
+
+```bash
+sudo mkdir -p /srv/bodycast
+sudo chown -R DEPLOY_USER:DEPLOY_USER /srv/bodycast
+cd /srv
+git clone git@github.com:OWNER/BODYCAST.git bodycast
+cd /srv/bodycast
+cp .env.production.example .env
+chmod 600 .env
+```
+
+Заповніть `.env` реальними випадковими secrets. Password у `DATABASE_URL` має бути URL-encoded. Перевірте доступ сервера до repository:
+
+```bash
+git fetch origin main
+docker network inspect gymbeam-internal
+```
+
+Production resources мають окремі назви: `bodycast-app-prod`, `bodycast-db-prod`, `bodycast-postgres-prod`, `bodycast-backend-prod`.
+
+## GitHub Secrets
+
+Створіть GitHub Environment `production` і додайте:
+
+| Secret | Приклад/призначення |
+| --- | --- |
+| `SSH_HOST` | IP Ubuntu-сервера |
+| `SSH_USER` | deployment user |
+| `SSH_PRIVATE_KEY` | ключ GitHub Actions → server |
+| `SSH_PORT` | SSH port, зазвичай `22` |
+| `DEPLOY_PATH` | `/srv/bodycast` |
+| `APP_HOST` | `bodycast.mapa-svietidiel.sk` |
+| `CADDY_ROUTES_PATH` | `/srv/gymbeam/runtime/caddy-dynamic` |
+
+SSH key дозволяє Actions зайти на сервер. Для private repository окремо перевірте, що сервер має deploy key/read access до BodyCast repository.
+
+## First Deployment
+
+Після server setup можна запустити workflow вручну або виконати:
+
+```bash
+cd /srv/bodycast
+APP_HOST=bodycast.mapa-svietidiel.sk \
+CADDY_ROUTES_PATH=/srv/gymbeam/runtime/caddy-dynamic \
+bash scripts/deploy.sh
+```
+
+Deploy script:
+
+1. перевіряє production Compose;
+2. зберігає попередній app image для rollback;
+3. збирає runtime і migrator images;
+4. очікує healthy PostgreSQL;
+5. запускає `prisma migrate deploy`;
+6. оновлює тільки BodyCast app;
+7. перевіряє container health;
+8. atomically записує `bodycast.caddy`, validate/reload існуючого `gymbeam-caddy`;
+9. перевіряє HTTPS `/api/health`.
+
+Deployment workflow запускається лише для push у `main` після успішного CI job.
+
+## Database Migrations
+
+Production використовує тільки:
+
+```bash
+docker compose -f docker-compose.prod.yml --profile tools run --rm migrate
+```
+
+Ця команда виконує `prisma migrate deploy`. `prisma migrate dev` дозволений лише локально для створення нових migrations:
+
+```bash
+docker compose exec app npm run prisma:migrate -- --name describe_change
+```
+
+## Rollback
+
+Якщо новий app не стає healthy, `scripts/deploy.sh` автоматично повертає `bodycast-app:rollback` і recreates app container. PostgreSQL volume не видаляється.
+
+Database migrations автоматично назад не відкочуються. Production migrations мають бути backward-compatible; для destructive schema change потрібна окрема reviewed forward-fix migration.
+
+Ручний rollback image:
+
+```bash
+docker image tag bodycast-app:rollback bodycast-app:latest
+docker compose -f docker-compose.prod.yml up -d --no-deps --force-recreate app
+```
+
+## Logs
+
+```bash
+docker compose -f docker-compose.prod.yml ps
+docker compose -f docker-compose.prod.yml logs -f app
+docker compose -f docker-compose.prod.yml logs --tail=100 db
+docker logs --tail=100 gymbeam-caddy
+curl -fsS https://bodycast.mapa-svietidiel.sk/api/health
+```
+
+API keys і database passwords не логуються application code.
+
+## Backup
+
+Створити timestamped PostgreSQL backup на сервері:
+
+```bash
+mkdir -p /srv/bodycast/backups
+docker compose -f docker-compose.prod.yml exec -T db \
+  pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc \
+  > "/srv/bodycast/backups/bodycast-$(date +%Y%m%d-%H%M%S).dump"
+```
+
+Змінні shell можна завантажити без виводу secrets:
+
+```bash
+set -a
+source .env
+set +a
+```
+
+Регулярно копіюйте backups за межі цього сервера та періодично перевіряйте відновлення на окремій test database.

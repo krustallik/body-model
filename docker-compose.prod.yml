@@ -1,0 +1,81 @@
+name: bodycast-prod
+
+services:
+  app:
+    image: bodycast-app:latest
+    container_name: bodycast-app-prod
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      IOS_SHORTCUT_API_KEY: ${IOS_SHORTCUT_API_KEY:?IOS_SHORTCUT_API_KEY is required}
+      HOSTNAME: 0.0.0.0
+      PORT: 3000
+    expose:
+      - "3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - backend
+      - shared-proxy
+
+  db:
+    image: postgres:17-alpine
+    container_name: bodycast-db-prod
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - bodycast_postgres_prod:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - backend
+
+  migrate:
+    image: bodycast-migrator:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: migrator
+    profiles: ["tools"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - backend
+
+volumes:
+  bodycast_postgres_prod:
+    name: bodycast-postgres-prod
+
+networks:
+  backend:
+    name: bodycast-backend-prod
+    internal: true
+  shared-proxy:
+    external: true
+    name: gymbeam-internal

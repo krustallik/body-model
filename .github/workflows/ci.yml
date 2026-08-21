@@ -70,7 +70,9 @@ jobs:
         run: npm run build
 
       - name: Validate production Compose
-        run: docker compose --env-file .env.production.example -f docker-compose.prod.yml config --quiet
+        run: |
+          cp .env.production.example .env
+          docker compose --env-file .env.production.example -f docker-compose.prod.yml config --quiet
 
       - name: Build production Docker image
         run: docker build --target production --tag bodycast-app:ci .

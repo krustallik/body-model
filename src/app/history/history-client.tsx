@@ -3,7 +3,14 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { AppNav } from "@/components/app-nav";
 import type { DailyMetricDto, DailyMetricField } from "@/modules/days/day.types";
+import {
+  filterDaysByRange,
+  rangeStartDate,
+  sortDaysNewestFirst,
+  type HistoryRange,
+} from "@/modules/days/history-chart-data";
 import { formatDateTime, formatMetric } from "@/modules/days/metric-format";
+import { HistoryCharts } from "./history-charts";
 import styles from "./history.module.css";
 
 type FormValues = Record<DailyMetricField, string> & { date: string };
@@ -29,6 +36,12 @@ const metricFields: Array<{
 ];
 
 const tableFields = metricFields.filter(({ key }) => key !== "activeEnergyKcal");
+const rangeOptions: Array<{ value: HistoryRange; label: string }> = [
+  { value: 7, label: "7 days" },
+  { value: 30, label: "30 days" },
+  { value: 90, label: "90 days" },
+  { value: "all", label: "All" },
+];
 
 function localToday(): string {
   const now = new Date();
@@ -59,11 +72,24 @@ async function responseError(response: Response): Promise<string> {
   }
 }
 
-async function fetchDays(): Promise<DailyMetricDto[]> {
-  const response = await fetch("/api/v1/days", { cache: "no-store" });
-  if (!response.ok) throw new Error(await responseError(response));
-  const body = await response.json() as { days: DailyMetricDto[] };
-  return body.days;
+async function fetchDays(range: HistoryRange): Promise<DailyMetricDto[]> {
+  const today = localToday();
+  const collected: DailyMetricDto[] = [];
+  let offset = 0;
+
+  do {
+    const query = new URLSearchParams({ to: today, limit: "100", offset: String(offset) });
+    if (range !== "all") query.set("from", rangeStartDate(range, today));
+
+    const response = await fetch(`/api/v1/days?${query}`, { cache: "no-store" });
+    if (!response.ok) throw new Error(await responseError(response));
+    const body = await response.json() as { days: DailyMetricDto[] };
+    collected.push(...body.days);
+    offset += body.days.length;
+    if (range !== "all" || body.days.length < 100) break;
+  } while (true);
+
+  return sortDaysNewestFirst(filterDaysByRange(collected, range, today));
 }
 
 export function HistoryClient() {
@@ -71,22 +97,23 @@ export function HistoryClient() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState>(null);
+  const [range, setRange] = useState<HistoryRange>(30);
 
   const loadDays = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      setDays(await fetchDays());
+      setDays(await fetchDays(range));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Could not load history");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [range]);
 
   useEffect(() => {
     let active = true;
-    fetchDays()
+    fetchDays(range)
       .then((loadedDays) => {
         if (active) setDays(loadedDays);
       })
@@ -99,7 +126,14 @@ export function HistoryClient() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [range]);
+
+  function selectRange(nextRange: HistoryRange) {
+    if (nextRange === range) return;
+    setLoading(true);
+    setError(null);
+    setRange(nextRange);
+  }
 
   async function deleteDay(date: string) {
     if (!window.confirm(`Delete daily metrics for ${date}?`)) return;
@@ -131,10 +165,35 @@ export function HistoryClient() {
 
       {error && <div className={styles.errorBanner} role="alert">{error}</div>}
 
+      <section className={styles.rangeBar} aria-label="History date range">
+        <div>
+          <strong>Date range</strong>
+          <span>Charts and table stay in sync</span>
+        </div>
+        <div className={styles.rangeSwitch}>
+          {rangeOptions.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              aria-pressed={range === option.value}
+              onClick={() => selectRange(option.value)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {loading ? (
+        <div className={styles.chartsLoading}>Loading charts…</div>
+      ) : (
+        <HistoryCharts days={days} />
+      )}
+
       <section className={styles.panel} aria-busy={loading}>
         <div className={styles.panelHeader}>
           <div>
-            <h2>Last 30 days</h2>
+            <h2>{range === "all" ? "All records" : `Last ${range} days`}</h2>
             <p>{loading ? "Refreshing…" : `${days.length} ${days.length === 1 ? "record" : "records"}`}</p>
           </div>
           <button className={styles.secondaryButton} type="button" onClick={() => void loadDays()} disabled={loading}>

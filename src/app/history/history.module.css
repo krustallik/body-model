@@ -138,6 +138,37 @@
 .errorBanner { margin-bottom: 1rem; }
 .formError { margin: 1rem 0; }
 
+.rangeBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  padding: 0.85rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 0.85rem;
+}
+.rangeBar > div:first-child { display: grid; gap: 0.2rem; }
+.rangeBar strong { font-size: 0.85rem; }
+.rangeBar span { color: var(--muted); font-size: 0.72rem; }
+.rangeSwitch { display: inline-flex; gap: 0.25rem; padding: 0.25rem; background: var(--soft); border-radius: 0.65rem; }
+.rangeSwitch button { padding: 0.5rem 0.7rem; color: var(--muted); background: transparent; border: 0; border-radius: 0.48rem; font: inherit; font-size: 0.78rem; font-weight: 750; cursor: pointer; }
+.rangeSwitch button[aria-pressed="true"] { color: #fff; background: var(--accent); }
+
+.chartsSection { margin-bottom: 1rem; }
+.chartsTitle { display: flex; align-items: flex-end; justify-content: space-between; gap: 1rem; padding: 1.8rem 0 1rem; }
+.chartsTitle h2 { margin: 0; font-size: 1.8rem; letter-spacing: -0.04em; }
+.chartsTitle > p { margin: 0; color: var(--muted); font-size: 0.78rem; }
+.chartsGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.8rem; }
+.chartCard { min-width: 0; padding: 1.05rem; background: var(--surface); border: 1px solid var(--line); border-radius: 0.9rem; box-shadow: 0 0.8rem 2.5rem rgb(30 53 44 / 5%); }
+.chartCard:nth-child(3) { grid-column: 1 / -1; }
+.chartHeading h3 { margin: 0; font-size: 1rem; letter-spacing: -0.02em; }
+.chartHeading p { margin: 0.3rem 0 0; color: var(--muted); font-size: 0.72rem; }
+.chartCanvas { width: 100%; height: 17rem; margin-top: 0.7rem; }
+.chartEmpty, .chartsLoading { display: grid; min-height: 17rem; place-items: center; color: var(--muted); font-size: 0.84rem; }
+.chartsLoading { margin-bottom: 1rem; background: var(--surface); border: 1px solid var(--line); border-radius: 0.9rem; }
+
 .emptyState {
   display: grid;
   place-items: center;
@@ -193,6 +224,13 @@
   .navRow { align-items: flex-start; margin-bottom: 2.5rem; }
   .header { align-items: flex-start; flex-direction: column; }
   .header .primaryButton { width: 100%; }
+  .rangeBar, .chartsTitle { align-items: flex-start; flex-direction: column; }
+  .rangeSwitch { width: 100%; box-sizing: border-box; }
+  .rangeSwitch button { flex: 1; padding-inline: 0.3rem; }
+  .chartsTitle > p { line-height: 1.4; }
+  .chartsGrid { grid-template-columns: 1fr; }
+  .chartCard:nth-child(3) { grid-column: auto; }
+  .chartCanvas { height: 15rem; }
   .panel { overflow: visible; background: transparent; border: 0; box-shadow: none; }
   .panelHeader { padding: 0 0 1rem; border: 0; }
   .tableWrap { overflow: visible; }
@@ -239,4 +277,5 @@
   .tableWrap tbody tr:hover { background: #1b2721; }
   .errorBanner, .formError { color: #ffc4c4; background: #3a2020; border-color: #693535; }
   .primaryButton { color: #0d271d; }
+  .rangeSwitch button[aria-pressed="true"] { color: #0d271d; }
 }

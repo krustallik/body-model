@@ -23,6 +23,7 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "@prisma/client": "^6.19.0",
+    "recharts": "^3.10.1",
     "zod": "^4.1.0"
   },
   "devDependencies": {

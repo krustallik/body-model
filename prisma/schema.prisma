@@ -12,24 +12,35 @@ model HealthCheck {
   createdAt DateTime @default(now())
 }
 
+model Profile {
+  id             Int       @id @default(1)
+  sex            String    @db.VarChar(6)
+  dateOfBirth    DateTime  @db.Date
+  heightCm       Decimal   @db.Decimal(6, 2)
+  targetWeightKg Decimal?  @db.Decimal(6, 2)
+  targetDate     DateTime? @db.Date
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
 model DailyHealthData {
-  id               Int       @id @default(autoincrement())
-  date             String    @unique @db.VarChar(10)
-  weightKg         Float?
-  bodyFatPercent   Decimal?  @db.Decimal(10, 4)
-  caloriesKcal     Float?
-  proteinG         Float?
-  fatG             Float?
-  carbsG           Float?
-  steps            Int?
-  activeEnergyKcal Float?
-  averageWalkingSpeedKmh Decimal? @db.Decimal(10, 4)
-  walkingDistanceKm       Decimal? @db.Decimal(10, 4)
-  strengthTrainingMinutes Decimal? @db.Decimal(10, 4)
-  rawPayload       Json
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
-  workouts         Workout[]
+  id                      Int       @id @default(autoincrement())
+  date                    String    @unique @db.VarChar(10)
+  weightKg                Float?
+  bodyFatPercent          Decimal?  @db.Decimal(10, 4)
+  caloriesKcal            Float?
+  proteinG                Float?
+  fatG                    Float?
+  carbsG                  Float?
+  steps                   Int?
+  activeEnergyKcal        Float?
+  averageWalkingSpeedKmh  Decimal?  @db.Decimal(10, 4)
+  walkingDistanceKm       Decimal?  @db.Decimal(10, 4)
+  strengthTrainingMinutes Decimal?  @db.Decimal(10, 4)
+  rawPayload              Json
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+  workouts                Workout[]
 }
 
 model Workout {

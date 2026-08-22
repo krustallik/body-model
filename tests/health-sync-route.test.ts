@@ -121,7 +121,7 @@ describe("POST /api/v1/health/sync", () => {
     );
   });
 
-  it.each(["-5", "601", "abc", "65 min", "", [], {}])(
+  it.each(["-5", "601", "abc", "65 min", [], {}])(
     "rejects invalid strengthTrainingMinutes %j",
     async (strengthTrainingMinutes) => {
       const response = await POST(request({ days: [{ date: "2026-08-22", strengthTrainingMinutes }] }));
@@ -153,6 +153,17 @@ describe("POST /api/v1/health/sync", () => {
       Date: "2026-08-22",
       Strengthtrainingminutes: "21. 8. 2026, 13:01 21. 8. 2026, 14:16",
     }] }));
+    expect(response.status).toBe(200);
+    expect(syncHealthData.mock.calls[0]?.[0].days[0].strengthTrainingMinutes).toBe(0);
+  });
+
+  it("accepts an empty Shortcut workout value as no workout today", async () => {
+    syncHealthData.mockResolvedValue({ status: "ok", received: 1, created: 0, updated: 1, dates: [] });
+    const response = await POST(request({ Days: [{
+      Date: "2026-08-22",
+      Strengthtrainingminutes: "",
+    }] }));
+
     expect(response.status).toBe(200);
     expect(syncHealthData.mock.calls[0]?.[0].days[0].strengthTrainingMinutes).toBe(0);
   });

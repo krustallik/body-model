@@ -62,6 +62,10 @@ describe("parseShortcutStrengthTrainingMinutes", () => {
     ).toBe(0);
   });
 
+  it.each(["", " ", "\t\n"])("treats an empty workout value %j as no workout today", (input) => {
+    expect(parseShortcutStrengthTrainingMinutes(input, "2026-08-22")).toBe(0);
+  });
+
   it.each([
     "not a workout",
     "21. 8. 2026, 13:01",

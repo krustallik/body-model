@@ -66,6 +66,8 @@ function parseWorkoutDate(match: RegExpMatchArray): ParsedWorkoutDate | undefine
 }
 
 export function parseShortcutStrengthTrainingMinutes(value: unknown, dayDate: unknown): unknown {
+  if (typeof value === "string" && value.trim() === "") return 0;
+
   const numericValue = parseShortcutNumber(value);
   if (numericValue !== value || typeof value !== "string") return numericValue;
   if (typeof dayDate !== "string") return value;

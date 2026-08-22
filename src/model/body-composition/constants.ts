@@ -15,6 +15,14 @@ export const FORBES_COEFFICIENT_KG = 10.4;
 /** Intracellular water stored with each kg of glycogen in the Hall/NIDDK model. */
 export const GLYCOGEN_WATER_KG_PER_KG = 2.7;
 
+/** Hall/NIDDK simplified glycogen-model assumptions. */
+export const GLYCOGEN_MODEL = {
+  energyDensityMjPerKg: 17.6,
+  energyDensityKcalPerKg: 17_600 / KILOJOULES_PER_KILOCALORIE,
+  defaultInitialGlycogenKg: 0.5,
+  stepDurationDays: 1,
+} as const;
+
 /**
  * Hall's energy-partition constant C = 10.4 * rho_L / rho_F.
  * Its unit is kg and its value is approximately 2.001 kg.

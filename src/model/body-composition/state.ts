@@ -34,13 +34,21 @@ export function calculateGlycogenAssociatedWaterKg(glycogenKg: number): number {
   return waterKg;
 }
 
+export function calculateGlycogenAssociatedMassKg(glycogenKg: number): number {
+  assertFiniteNonnegative("glycogenKg", glycogenKg);
+  const associatedMassKg = glycogenKg + calculateGlycogenAssociatedWaterKg(glycogenKg);
+  if (!Number.isFinite(associatedMassKg)) {
+    throw new RangeError("glycogenKg is too large to reconstruct finite associated mass");
+  }
+  return associatedMassKg;
+}
+
 /** BW = F + L + G + 2.7G + ECF. No compartment dynamics are implemented here. */
 export function reconstructBodyWeightKg(state: BodyCompositionState): number {
   validateState(state);
   const bodyWeightKg = state.fatMassKg
     + state.leanTissueKg
-    + state.glycogenKg
-    + calculateGlycogenAssociatedWaterKg(state.glycogenKg)
+    + calculateGlycogenAssociatedMassKg(state.glycogenKg)
     + state.extracellularFluidKg;
   if (!Number.isFinite(bodyWeightKg)) {
     throw new RangeError("body-composition compartments exceed finite body mass");

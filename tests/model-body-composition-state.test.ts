@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  calculateGlycogenAssociatedMassKg,
   calculateGlycogenAssociatedWaterKg,
   reconstructBodyWeightKg,
 } from "@/model/body-composition/state";
@@ -8,6 +9,7 @@ import { initializeBodyComposition } from "@/model/body-composition/initializati
 describe("Hall body-composition mass state", () => {
   it("derives glycogen-associated water at 2.7 kg per kg", () => {
     expect(calculateGlycogenAssociatedWaterKg(0.5)).toBeCloseTo(1.35, 12);
+    expect(calculateGlycogenAssociatedMassKg(0.5)).toBeCloseTo(1.85, 12);
   });
 
   it("reconstructs BW = F + L + G + 2.7G + ECF", () => {
@@ -79,5 +81,6 @@ describe("Hall body-composition mass state", () => {
       extracellularFluidKg: 0,
     })).toThrow(RangeError);
     expect(() => calculateGlycogenAssociatedWaterKg(Number.MAX_VALUE)).toThrow(RangeError);
+    expect(() => calculateGlycogenAssociatedMassKg(Number.MAX_VALUE / 3)).toThrow(RangeError);
   });
 });

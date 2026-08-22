@@ -11,6 +11,7 @@ const DAY_NUMERIC_FIELDS = new Set([
   "activeEnergyKcal",
   "averageWalkingSpeedKmh",
   "walkingDistanceKm",
+  "strengthTrainingMinutes",
 ]);
 
 const WORKOUT_NUMERIC_FIELDS = new Set(["durationMinutes", "energyKcal"]);

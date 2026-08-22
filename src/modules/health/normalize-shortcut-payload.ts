@@ -13,6 +13,7 @@ const DAY_KEYS = canonicalKeyMap([
   "activeEnergyKcal",
   "averageWalkingSpeedKmh",
   "walkingDistanceKm",
+  "strengthTrainingMinutes",
   "workouts",
 ]);
 const WORKOUT_KEYS = canonicalKeyMap([

@@ -57,6 +57,7 @@ describe("normalizeShortcutNumericValues", () => {
       activeEnergyKcal: "400,5",
       averageWalkingSpeedKmh: "4,72",
       walkingDistanceKm: "7,35",
+      strengthTrainingMinutes: "65,5",
       workouts: [{ durationMinutes: "60,5", energyKcal: "300,25" }],
     }] })).toEqual({ days: [{
       date: "2026-08-22",
@@ -70,6 +71,7 @@ describe("normalizeShortcutNumericValues", () => {
       activeEnergyKcal: 400.5,
       averageWalkingSpeedKmh: 4.72,
       walkingDistanceKm: 7.35,
+      strengthTrainingMinutes: 65.5,
       workouts: [{ durationMinutes: 60.5, energyKcal: 300.25 }],
     }] });
   });

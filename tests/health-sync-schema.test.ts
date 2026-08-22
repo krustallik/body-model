@@ -32,9 +32,18 @@ describe("HealthSyncRequestSchema", () => {
         activeEnergyKcal: null,
         averageWalkingSpeedKmh: null,
         walkingDistanceKm: null,
+        strengthTrainingMinutes: null,
         workouts: [],
       }]).success,
     ).toBe(true);
+  });
+
+  it.each([0, 65, 65.5, 600])("accepts strengthTrainingMinutes value %s", (strengthTrainingMinutes) => {
+    expect(parse([{ ...validDay, strengthTrainingMinutes }]).success).toBe(true);
+  });
+
+  it.each([-0.01, 600.01])("rejects out-of-range strengthTrainingMinutes value %s", (strengthTrainingMinutes) => {
+    expect(parse([{ ...validDay, strengthTrainingMinutes }]).success).toBe(false);
   });
 
   it.each([

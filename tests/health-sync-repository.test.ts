@@ -55,6 +55,15 @@ describe("Prisma health synchronization repository", () => {
     }));
   });
 
+  it("maps strengthTrainingMinutes on create and update", async () => {
+    const { repository, transaction } = repositoryFixture(["2026-08-21"]);
+    await repository.syncBatch([{ date: "2026-08-21", strengthTrainingMinutes: 65.5 }]);
+    expect(transaction.dailyHealthData.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({ strengthTrainingMinutes: 65.5 }),
+      update: expect.objectContaining({ strengthTrainingMinutes: 65.5 }),
+    }));
+  });
+
   it("creates workouts with normalized instants", async () => {
     const { repository, transaction } = repositoryFixture();
     await repository.syncBatch([

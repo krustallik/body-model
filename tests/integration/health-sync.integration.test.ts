@@ -6,7 +6,7 @@ import type { HealthDayInput } from "@/modules/health/health.types";
 
 const prisma = new PrismaClient();
 const apiKey = process.env.IOS_SHORTCUT_API_KEY ?? "integration-test-secret";
-const testDates = ["2040-01-01", "2040-01-02", "2040-01-03", "2040-01-04", "2040-01-05", "2040-01-06", "2040-01-07"];
+const testDates = ["2040-01-01", "2040-01-02", "2040-01-03", "2040-01-04", "2040-01-05", "2040-01-06", "2040-01-07", "2040-01-08"];
 
 function syncRequest(days: unknown[]): Request {
   return new Request("http://localhost/api/v1/health/sync", {
@@ -150,6 +150,22 @@ describe("Apple Health sync with PostgreSQL", () => {
     expect(stored.averageWalkingSpeedKmh?.toString()).toBe("4.72");
     expect(stored.walkingDistanceKm?.toString()).toBe("7.35");
     expect(stored.rawPayload).toEqual(originalDay);
+  });
+
+  it("creates and updates precise strength training minutes without duplicating the daily row", async () => {
+    const date = testDates[7];
+    const firstDay = { Date: date, Strengthtrainingminutes: "60" };
+    const secondDay = { DATE: date, STRENGTHTRAININGMINUTES: "75,125" };
+    const first = await POST(rawSyncRequest({ Days: [firstDay] }));
+    const second = await POST(rawSyncRequest({ DAYS: [secondDay] }));
+
+    await expect(first.json()).resolves.toMatchObject({ created: 1, updated: 0 });
+    await expect(second.json()).resolves.toMatchObject({ created: 0, updated: 1 });
+
+    const records = await prisma.dailyHealthData.findMany({ where: { date } });
+    expect(records).toHaveLength(1);
+    expect(records[0]?.strengthTrainingMinutes?.toString()).toBe("75.125");
+    expect(records[0]?.rawPayload).toEqual(secondDay);
   });
 
   it("handles overlapping old/new batches", async () => {

@@ -102,6 +102,34 @@ describe("POST /api/v1/health/sync", () => {
     }] }, undefined, [originalDay]);
   });
 
+  it.each([
+    [65, 65],
+    ["65", 65],
+    ["65.5", 65.5],
+    ["65,5", 65.5],
+    [0, 0],
+    [null, null],
+  ])("accepts strengthTrainingMinutes %j as %s", async (input, expected) => {
+    syncHealthData.mockResolvedValue({ status: "ok", received: 1, created: 1, updated: 0, dates: [] });
+    const originalDay = { Date: "2026-08-22", Strengthtrainingminutes: input };
+    const response = await POST(request({ Days: [originalDay] }));
+    expect(response.status).toBe(200);
+    expect(syncHealthData).toHaveBeenCalledWith(
+      { days: [{ date: "2026-08-22", strengthTrainingMinutes: expected }] },
+      undefined,
+      [originalDay],
+    );
+  });
+
+  it.each(["-5", "601", "abc", "65 min", "", [], {}])(
+    "rejects invalid strengthTrainingMinutes %j",
+    async (strengthTrainingMinutes) => {
+      const response = await POST(request({ days: [{ date: "2026-08-22", strengthTrainingMinutes }] }));
+      expect(response.status).toBe(400);
+      expect(syncHealthData).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(["", " ", "abc", "27abc", "27%", "89 kg", "NaN", "Infinity"])(
     "rejects invalid numeric string %j",
     async (weightKg) => {

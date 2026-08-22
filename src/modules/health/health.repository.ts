@@ -43,6 +43,7 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
             activeEnergyKcal: day.activeEnergyKcal ?? null,
             averageWalkingSpeedKmh: day.averageWalkingSpeedKmh ?? null,
             walkingDistanceKm: day.walkingDistanceKm ?? null,
+            strengthTrainingMinutes: day.strengthTrainingMinutes ?? null,
             rawPayload: jsonValue(rawDay),
           },
           update: {
@@ -56,6 +57,7 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
             activeEnergyKcal: optionalUpdate(day.activeEnergyKcal),
             averageWalkingSpeedKmh: optionalUpdate(day.averageWalkingSpeedKmh),
             walkingDistanceKm: optionalUpdate(day.walkingDistanceKm),
+            strengthTrainingMinutes: optionalUpdate(day.strengthTrainingMinutes),
             rawPayload: jsonValue(rawDay),
           },
           select: { id: true },

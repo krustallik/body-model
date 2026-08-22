@@ -25,6 +25,7 @@ model DailyHealthData {
   activeEnergyKcal Float?
   averageWalkingSpeedKmh Decimal? @db.Decimal(10, 4)
   walkingDistanceKm       Decimal? @db.Decimal(10, 4)
+  strengthTrainingMinutes Decimal? @db.Decimal(10, 4)
   rawPayload       Json
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt

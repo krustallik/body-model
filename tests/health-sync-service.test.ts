@@ -96,13 +96,33 @@ describe("health synchronization service", () => {
 
   it("handles overlapping seven-day syncs without duplicates", async () => {
     const repository = new MemoryRepository();
-    const first = Array.from({ length: 7 }, (_, index) => ({ date: `2026-08-${10 + index}`, steps: 100 }));
-    const second = Array.from({ length: 7 }, (_, index) => ({ date: `2026-08-${13 + index}`, steps: 200 }));
+    const first = Array.from({ length: 7 }, (_, index) => ({
+      date: `2026-08-${10 + index}`,
+      steps: 100,
+      strengthTrainingMinutes: 60,
+    }));
+    const second = Array.from({ length: 7 }, (_, index) => ({
+      date: `2026-08-${13 + index}`,
+      steps: 200,
+      strengthTrainingMinutes: 75.5,
+    }));
     await syncHealthData({ days: first }, repository);
     const result = await syncHealthData({ days: second }, repository);
     expect(result).toMatchObject({ created: 3, updated: 4 });
     expect(repository.days.size).toBe(10);
     expect(repository.days.get("2026-08-13")?.steps).toBe(200);
+    expect(repository.days.get("2026-08-13")?.strengthTrainingMinutes).toBe(75.5);
+  });
+
+  it("creates, updates, clears and allows missing strengthTrainingMinutes", async () => {
+    const repository = new MemoryRepository();
+    await syncHealthData({ days: [{ date: "2026-08-21", strengthTrainingMinutes: 60 }] }, repository);
+    await syncHealthData({ days: [{ date: "2026-08-21", strengthTrainingMinutes: 75.5 }] }, repository);
+    expect(repository.days.get("2026-08-21")?.strengthTrainingMinutes).toBe(75.5);
+    await syncHealthData({ days: [{ date: "2026-08-21", strengthTrainingMinutes: null }] }, repository);
+    expect(repository.days.get("2026-08-21")?.strengthTrainingMinutes).toBeNull();
+    await syncHealthData({ days: [{ date: "2026-08-22" }] }, repository);
+    expect(repository.days.get("2026-08-22")).toEqual({ date: "2026-08-22" });
   });
 
   it("creates multiple workouts and replaces old workouts on retry", async () => {

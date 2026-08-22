@@ -53,6 +53,7 @@ export const HealthDaySchema = z
     activeEnergyKcal: nullableOptionalNumber(0, 10000),
     averageWalkingSpeedKmh: nullableOptionalNumber(0, 20),
     walkingDistanceKm: nullableOptionalNumber(0, 200),
+    strengthTrainingMinutes: nullableOptionalNumber(0, 600),
     workouts: z.array(WorkoutSchema).nullable().optional(),
   })
   .strict();

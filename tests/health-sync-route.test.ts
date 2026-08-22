@@ -40,6 +40,50 @@ describe("POST /api/v1/health/sync", () => {
     const response = await POST(request({ days: [{ date: "2026-08-21", steps: 10000 }] }));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual(result);
+    expect(syncHealthData).toHaveBeenCalledWith(
+      { days: [{ date: "2026-08-21", steps: 10000 }] },
+      undefined,
+      [{ date: "2026-08-21", steps: 10000 }],
+    );
+  });
+
+  it.each([
+    ["Apple casing", { Days: [{ Date: "2026-08-22", Weightkg: 89, Steps: 10000 }] }],
+    ["PascalCase", { Days: [{ Date: "2026-08-22", WeightKg: 89, ActiveEnergyKcal: 600 }] }],
+    ["uppercase", { DAYS: [{ DATE: "2026-08-22", WEIGHTKG: 89, STEPS: 10000 }] }],
+  ])("normalizes %s before validation", async (_name, body) => {
+    syncHealthData.mockResolvedValue({ status: "ok", received: 1, created: 1, updated: 0, dates: [] });
+    const response = await POST(request(body));
+    expect(response.status).toBe(200);
+    expect(syncHealthData.mock.calls[0]?.[0]).toMatchObject({ days: [{ date: "2026-08-22", weightKg: 89 }] });
+    expect(syncHealthData.mock.calls[0]?.[2]).toEqual(Object.values(body)[0]);
+  });
+
+  it("normalizes nested workouts", async () => {
+    syncHealthData.mockResolvedValue({ status: "ok", received: 1, created: 1, updated: 0, dates: [] });
+    const response = await POST(request({ Days: [{ Date: "2026-08-22", Workouts: [{ Type: "strength_training",
+      Startat: "2026-08-22T17:00:00+02:00", Endat: "2026-08-22T18:00:00+02:00",
+      Durationminutes: 60, Energykcal: 300 }] }] }));
+    expect(response.status).toBe(200);
+    expect(syncHealthData.mock.calls[0]?.[0].days[0].workouts[0]).toMatchObject({
+      type: "strength_training", durationMinutes: 60, energyKcal: 300,
+    });
+  });
+
+  it.each(["banana", "weigthKg"])("rejects unsupported key %s", async (key) => {
+    const response = await POST(request({ days: [{ date: "2026-08-22", [key]: 89 }] }));
+    expect(response.status).toBe(400);
+    expect(syncHealthData).not.toHaveBeenCalled();
+  });
+
+  it("returns a clear 400 response for key collisions", async () => {
+    const response = await POST(request({ days: [{ date: "2026-08-22", weightKg: 89, Weightkg: 90 }] }));
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "normalization_error",
+      details: [{ path: ["days", 0, "weightKg"], code: "key_collision" }],
+    });
+    expect(syncHealthData).not.toHaveBeenCalled();
   });
 
   it("returns safe validation details for invalid payload", async () => {

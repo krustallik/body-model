@@ -2,6 +2,10 @@ import { getEnv } from "@/lib/env";
 import { isValidApiKey } from "@/modules/health/auth";
 import { HealthSyncRequestSchema } from "@/modules/health/health.schema";
 import { syncHealthData } from "@/modules/health/health.service";
+import {
+  normalizeShortcutPayload,
+  ShortcutNormalizationError,
+} from "@/modules/health/normalize-shortcut-payload";
 
 export const dynamic = "force-dynamic";
 
@@ -27,7 +31,20 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  const parsed = HealthSyncRequestSchema.safeParse(body);
+  let normalized;
+  try {
+    normalized = normalizeShortcutPayload(body);
+  } catch (error) {
+    if (error instanceof ShortcutNormalizationError) {
+      return Response.json(
+        { error: "normalization_error", details: error.issues },
+        { status: 400 },
+      );
+    }
+    throw error;
+  }
+
+  const parsed = HealthSyncRequestSchema.safeParse(normalized.payload);
   if (!parsed.success) {
     return Response.json(
       {
@@ -39,7 +56,7 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   try {
-    return Response.json(await syncHealthData(parsed.data), { status: 200 });
+    return Response.json(await syncHealthData(parsed.data, undefined, normalized.originalDays), { status: 200 });
   } catch {
     return Response.json({ error: "internal_error" }, { status: 500 });
   }

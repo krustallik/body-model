@@ -3,10 +3,10 @@ import { prisma } from "@/lib/db/prisma";
 import type { HealthDayInput, SyncDateResult } from "./health.types";
 
 export interface HealthSyncRepository {
-  syncBatch(days: HealthDayInput[]): Promise<SyncDateResult[]>;
+  syncBatch(days: HealthDayInput[], rawDays?: unknown[]): Promise<SyncDateResult[]>;
 }
 
-function jsonValue(day: HealthDayInput): Prisma.InputJsonValue {
+function jsonValue(day: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(day)) as Prisma.InputJsonValue;
 }
 
@@ -17,7 +17,7 @@ function optionalUpdate<T>(value: T | null | undefined): T | null | undefined {
 export class PrismaHealthSyncRepository implements HealthSyncRepository {
   constructor(private readonly client: PrismaClient = prisma) {}
 
-  async syncBatch(days: HealthDayInput[]): Promise<SyncDateResult[]> {
+  async syncBatch(days: HealthDayInput[], rawDays: unknown[] = days): Promise<SyncDateResult[]> {
     // A single transaction makes the complete 1–7 day batch atomic, including workout replacement.
     return this.client.$transaction(async (transaction) => {
       const existing = await transaction.dailyHealthData.findMany({
@@ -27,7 +27,8 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
       const existingDates = new Set(existing.map(({ date }) => date));
       const results: SyncDateResult[] = [];
 
-      for (const day of days) {
+      for (const [index, day] of days.entries()) {
+        const rawDay = rawDays[index] ?? day;
         const daily = await transaction.dailyHealthData.upsert({
           where: { date: day.date },
           create: {
@@ -39,7 +40,7 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
             carbsG: day.carbsG ?? null,
             steps: day.steps ?? null,
             activeEnergyKcal: day.activeEnergyKcal ?? null,
-            rawPayload: jsonValue(day),
+            rawPayload: jsonValue(rawDay),
           },
           update: {
             weightKg: optionalUpdate(day.weightKg),
@@ -49,7 +50,7 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
             carbsG: optionalUpdate(day.carbsG),
             steps: optionalUpdate(day.steps),
             activeEnergyKcal: optionalUpdate(day.activeEnergyKcal),
-            rawPayload: jsonValue(day),
+            rawPayload: jsonValue(rawDay),
           },
           select: { id: true },
         });

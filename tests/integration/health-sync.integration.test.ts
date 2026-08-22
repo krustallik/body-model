@@ -6,13 +6,21 @@ import type { HealthDayInput } from "@/modules/health/health.types";
 
 const prisma = new PrismaClient();
 const apiKey = process.env.IOS_SHORTCUT_API_KEY ?? "integration-test-secret";
-const testDates = ["2040-01-01", "2040-01-02", "2040-01-03", "2040-01-04"];
+const testDates = ["2040-01-01", "2040-01-02", "2040-01-03", "2040-01-04", "2040-01-05"];
 
 function syncRequest(days: unknown[]): Request {
   return new Request("http://localhost/api/v1/health/sync", {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": apiKey },
     body: JSON.stringify({ days }),
+  });
+}
+
+function rawSyncRequest(body: unknown): Request {
+  return new Request("http://localhost/api/v1/health/sync", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": apiKey },
+    body: JSON.stringify(body),
   });
 }
 
@@ -84,13 +92,27 @@ describe("Apple Health sync with PostgreSQL", () => {
     expect(records[0]?.workouts.map(({ externalId }) => externalId)).toEqual(["replacement-workout"]);
   });
 
+  it("retries normalized Shortcut payloads idempotently and retains their original raw casing", async () => {
+    const originalDay = { Date: testDates[4], Weightkg: 89, Steps: 10000 };
+    const first = await POST(rawSyncRequest({ Days: [originalDay] }));
+    const retry = await POST(rawSyncRequest({ DAYS: [{ DATE: testDates[4], WEIGHTKG: 90, STEPS: 11000 }] }));
+
+    await expect(first.json()).resolves.toMatchObject({ created: 1, updated: 0 });
+    await expect(retry.json()).resolves.toMatchObject({ created: 0, updated: 1 });
+
+    const records = await prisma.dailyHealthData.findMany({ where: { date: testDates[4] } });
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ weightKg: 90, steps: 11000 });
+    expect(records[0]?.rawPayload).toEqual({ DATE: testDates[4], WEIGHTKG: 90, STEPS: 11000 });
+  });
+
   it("handles overlapping old/new batches", async () => {
     await POST(syncRequest([{ date: testDates[1], steps: 100 }, { date: testDates[2], steps: 100 }]));
     const response = await POST(
       syncRequest([{ date: testDates[2], steps: 200 }, { date: testDates[3], steps: 200 }]),
     );
     await expect(response.json()).resolves.toMatchObject({ created: 1, updated: 1 });
-    expect(await prisma.dailyHealthData.count({ where: { date: { in: testDates.slice(1) } } })).toBe(3);
+    expect(await prisma.dailyHealthData.count({ where: { date: { in: testDates.slice(1, 4) } } })).toBe(3);
     expect((await prisma.dailyHealthData.findUnique({ where: { date: testDates[2] } }))?.steps).toBe(200);
   });
 

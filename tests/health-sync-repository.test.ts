@@ -31,6 +31,16 @@ describe("Prisma health synchronization repository", () => {
     );
   });
 
+  it("stores the original iPhone casing as rawPayload", async () => {
+    const { repository, transaction } = repositoryFixture();
+    const normalized = { date: "2026-08-21", weightKg: 89 };
+    const original = { Date: "2026-08-21", Weightkg: 89 };
+    await repository.syncBatch([normalized], [original]);
+    expect(transaction.dailyHealthData.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ create: expect.objectContaining({ rawPayload: original }) }),
+    );
+  });
+
   it("creates workouts with normalized instants", async () => {
     const { repository, transaction } = repositoryFixture();
     await repository.syncBatch([

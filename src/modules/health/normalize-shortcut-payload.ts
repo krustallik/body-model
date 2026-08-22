@@ -4,12 +4,15 @@ const ROOT_KEYS = canonicalKeyMap(["days"]);
 const DAY_KEYS = canonicalKeyMap([
   "date",
   "weightKg",
+  "bodyFatPercent",
   "caloriesKcal",
   "proteinG",
   "fatG",
   "carbsG",
   "steps",
   "activeEnergyKcal",
+  "averageWalkingSpeedKmh",
+  "walkingDistanceKm",
   "workouts",
 ]);
 const WORKOUT_KEYS = canonicalKeyMap([

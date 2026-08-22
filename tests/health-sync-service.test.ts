@@ -55,6 +55,36 @@ describe("health synchronization service", () => {
     expect(repository.days.get("2026-08-21")?.weightKg).toBe(79);
   });
 
+  it("creates and updates body composition and walking metrics without duplicating the day", async () => {
+    const repository = new MemoryRepository();
+    await syncHealthData({ days: [{
+      date: "2026-08-21",
+      bodyFatPercent: 18.73,
+      averageWalkingSpeedKmh: 5.2,
+      walkingDistanceKm: 6.7,
+    }] }, repository);
+    const result = await syncHealthData({ days: [{
+      date: "2026-08-21",
+      bodyFatPercent: 18.6,
+      averageWalkingSpeedKmh: null,
+      walkingDistanceKm: 8.1,
+    }] }, repository);
+
+    expect(result).toMatchObject({ created: 0, updated: 1 });
+    expect(repository.days.size).toBe(1);
+    expect(repository.days.get("2026-08-21")).toMatchObject({
+      bodyFatPercent: 18.6,
+      averageWalkingSpeedKmh: null,
+      walkingDistanceKm: 8.1,
+    });
+  });
+
+  it("allows the new metrics to be missing", async () => {
+    const repository = new MemoryRepository();
+    await syncHealthData({ days: [{ date: "2026-08-21" }] }, repository);
+    expect(repository.days.get("2026-08-21")).toEqual({ date: "2026-08-21" });
+  });
+
   it("is idempotent when the same request is retried", async () => {
     const repository = new MemoryRepository();
     const payload = { days: [{ date: "2026-08-21", steps: 100 }] };

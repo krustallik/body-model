@@ -34,18 +34,34 @@ describe("normalizeShortcutPayload", () => {
   it("normalizes every canonical day and workout field case-insensitively", () => {
     const result = normalizeShortcutPayload({
       DAYS: [{
-        DATE: "2026-08-22", WEIGHTKG: 89, CALORIESKCAL: 2000, PROTEING: 150, FATG: 70,
+        DATE: "2026-08-22", WEIGHTKG: 89, BODYFATPERCENT: 18.7, CALORIESKCAL: 2000, PROTEING: 150, FATG: 70,
         CARBSG: 220, STEPS: 10000, ACTIVEENERGYKCAL: 600,
+        AVERAGEWALKINGSPEEDKMH: 5.2, WALKINGDISTANCEKM: 7.8,
         WORKOUTS: [{ EXTERNALID: "w-1", TYPE: "strength_training", STARTAT: "2026-08-22T17:00:00+02:00",
           ENDAT: "2026-08-22T18:00:00+02:00", DURATIONMINUTES: 60, ENERGYKCAL: 300 }],
       }],
     });
 
     expect(result.payload).toEqual({ days: [{
-      date: "2026-08-22", weightKg: 89, caloriesKcal: 2000, proteinG: 150, fatG: 70,
+      date: "2026-08-22", weightKg: 89, bodyFatPercent: 18.7, caloriesKcal: 2000, proteinG: 150, fatG: 70,
       carbsG: 220, steps: 10000, activeEnergyKcal: 600,
+      averageWalkingSpeedKmh: 5.2, walkingDistanceKm: 7.8,
       workouts: [{ externalId: "w-1", type: "strength_training", startAt: "2026-08-22T17:00:00+02:00",
         endAt: "2026-08-22T18:00:00+02:00", durationMinutes: 60, energyKcal: 300 }],
+    }] });
+  });
+
+  it("normalizes Apple Shortcuts casing for body composition and walking metrics", () => {
+    expect(normalizeShortcutPayload({ Days: [{
+      Date: "2026-08-22",
+      Bodyfatpercent: 18.7,
+      Averagewalkingspeedkmh: 5.2,
+      Walkingdistancekm: 7.8,
+    }] }).payload).toEqual({ days: [{
+      date: "2026-08-22",
+      bodyFatPercent: 18.7,
+      averageWalkingSpeedKmh: 5.2,
+      walkingDistanceKm: 7.8,
     }] });
   });
 

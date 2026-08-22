@@ -44,12 +44,15 @@ export const HealthDaySchema = z
   .object({
     date: z.string().refine(isCalendarDate, "date must be a real calendar date in YYYY-MM-DD format"),
     weightKg: nullableOptionalNumber(20, 400),
+    bodyFatPercent: nullableOptionalNumber(1, 70),
     caloriesKcal: nullableOptionalNumber(0, 20000),
     proteinG: nullableOptionalNumber(0, 2000),
     fatG: nullableOptionalNumber(0, 2000),
     carbsG: nullableOptionalNumber(0, 2000),
     steps: z.number().int().min(0).max(200000).nullable().optional(),
     activeEnergyKcal: nullableOptionalNumber(0, 10000),
+    averageWalkingSpeedKmh: nullableOptionalNumber(0, 20),
+    walkingDistanceKm: nullableOptionalNumber(0, 200),
     workouts: z.array(WorkoutSchema).nullable().optional(),
   })
   .strict();

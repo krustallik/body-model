@@ -41,6 +41,20 @@ describe("Prisma health synchronization repository", () => {
     );
   });
 
+  it("maps the new decimal metrics on create and update", async () => {
+    const { repository, transaction } = repositoryFixture(["2026-08-21"]);
+    await repository.syncBatch([{
+      date: "2026-08-21",
+      bodyFatPercent: 18.73,
+      averageWalkingSpeedKmh: null,
+      walkingDistanceKm: 8.1234,
+    }]);
+    expect(transaction.dailyHealthData.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({ bodyFatPercent: 18.73, averageWalkingSpeedKmh: null, walkingDistanceKm: 8.1234 }),
+      update: expect.objectContaining({ bodyFatPercent: 18.73, averageWalkingSpeedKmh: null, walkingDistanceKm: 8.1234 }),
+    }));
+  });
+
   it("creates workouts with normalized instants", async () => {
     const { repository, transaction } = repositoryFixture();
     await repository.syncBatch([

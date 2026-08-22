@@ -24,8 +24,40 @@ describe("HealthSyncRequestSchema", () => {
 
   it("accepts null optional values and an empty workout list", () => {
     expect(
-      parse([{ ...validDay, weightKg: null, steps: null, activeEnergyKcal: null, workouts: [] }]).success,
+      parse([{
+        ...validDay,
+        weightKg: null,
+        bodyFatPercent: null,
+        steps: null,
+        activeEnergyKcal: null,
+        averageWalkingSpeedKmh: null,
+        walkingDistanceKm: null,
+        workouts: [],
+      }]).success,
     ).toBe(true);
+  });
+
+  it.each([
+    ["bodyFatPercent", 18.73],
+    ["averageWalkingSpeedKmh", 5.2],
+    ["averageWalkingSpeedKmh", 0],
+    ["walkingDistanceKm", 7.8],
+    ["walkingDistanceKm", 0],
+  ])("accepts valid %s value %s without rounding", (field, value) => {
+    const result = parse([{ ...validDay, [field]: value }]);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.days[0]?.[field as keyof typeof result.data.days[0]]).toBe(value);
+  });
+
+  it.each([
+    ["bodyFatPercent", -0.01],
+    ["bodyFatPercent", 70.01],
+    ["averageWalkingSpeedKmh", -0.01],
+    ["averageWalkingSpeedKmh", 20.01],
+    ["walkingDistanceKm", -0.01],
+    ["walkingDistanceKm", 200.01],
+  ])("rejects out-of-range %s value %s", (field, value) => {
+    expect(parse([{ ...validDay, [field]: value }]).success).toBe(false);
   });
 
   it.each([

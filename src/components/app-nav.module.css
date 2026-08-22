@@ -1,0 +1,27 @@
+.nav {
+  display: inline-flex;
+  gap: 0.25rem;
+  padding: 0.3rem;
+  background: #edf3ef;
+  border: 1px solid #dfe6e2;
+  border-radius: 0.8rem;
+}
+
+.nav a {
+  padding: 0.55rem 0.85rem;
+  color: #63706b;
+  border-radius: 0.55rem;
+  font-size: 0.88rem;
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.nav a:hover { color: #17231f; }
+.nav .active { color: #fff; background: #176b4d; }
+
+@media (prefers-color-scheme: dark) {
+  .nav { background: #202c27; border-color: #33423b; }
+  .nav a { color: #9baaa3; }
+  .nav a:hover { color: #edf4f0; }
+  .nav .active { color: #0d271d; background: #62c99d; }
+}

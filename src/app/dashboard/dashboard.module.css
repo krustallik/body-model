@@ -1,0 +1,78 @@
+.page {
+  --ink: #17231f;
+  --muted: #63706b;
+  --line: #dfe6e2;
+  --surface: #fff;
+  --soft: #f3f7f4;
+  --accent: #176b4d;
+  max-width: 90rem;
+  margin: 0 auto;
+  padding: 1.5rem 2rem 4rem;
+  color: var(--ink);
+}
+
+.topbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.brand { display: grid; color: var(--ink); font-size: 1.05rem; font-weight: 850; line-height: 1; text-decoration: none; }
+.brand span { margin-top: 0.3rem; color: var(--muted); font-size: 0.62rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
+
+.hero {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 2rem;
+  padding: 4.25rem 0 2.25rem;
+}
+.hero h1 { max-width: 50rem; margin: 0; font-size: clamp(2.7rem, 6vw, 5.5rem); line-height: 0.95; letter-spacing: -0.055em; }
+.hero > div > p:last-child { max-width: 35rem; margin: 1.1rem 0 0; color: var(--muted); line-height: 1.5; }
+.eyebrow { margin: 0 0 0.7rem; color: var(--accent); font-size: 0.72rem; font-weight: 850; letter-spacing: 0.14em; text-transform: uppercase; }
+
+.todayBadge { display: inline-flex; align-items: center; gap: 0.6rem; flex: 0 0 auto; padding: 0.7rem 0.9rem; border: 1px solid var(--line); border-radius: 999px; font-size: 0.82rem; font-weight: 750; }
+.todayBadge span { width: 0.55rem; height: 0.55rem; border-radius: 50%; }
+.ready span { background: #1a9b68; box-shadow: 0 0 0 0.25rem rgb(26 155 104 / 13%); }
+.waiting span { background: #c58b35; box-shadow: 0 0 0 0.25rem rgb(197 139 53 / 13%); }
+
+.metricGrid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0.8rem; }
+.metricCard { min-height: 8.5rem; padding: 1.1rem; background: var(--surface); border: 1px solid var(--line); border-radius: 0.9rem; box-shadow: 0 0.8rem 2.5rem rgb(30 53 44 / 5%); }
+.metricCard p { min-height: 2.2rem; margin: 0; color: var(--muted); font-size: 0.76rem; font-weight: 750; line-height: 1.35; }
+.metricCard strong { display: block; margin-top: 0.75rem; font-size: clamp(1.65rem, 3vw, 2.35rem); letter-spacing: -0.045em; font-variant-numeric: tabular-nums; }
+.metricCard span { display: block; margin-top: 0.35rem; color: var(--muted); font-size: 0.7rem; }
+
+.lowerGrid { display: grid; grid-template-columns: minmax(17rem, 0.72fr) minmax(0, 1.75fr); gap: 1rem; margin-top: 1rem; }
+.syncCard, .historyCard { overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: 1rem; box-shadow: 0 0.8rem 2.5rem rgb(30 53 44 / 5%); }
+.syncCard { padding: 1.3rem; }
+.sectionHeading h2 { margin: 0; font-size: 1.35rem; letter-spacing: -0.035em; }
+.syncCard dl { margin: 1.25rem 0 0; }
+.syncCard dl div { display: grid; gap: 0.3rem; padding: 0.8rem 0; border-top: 1px solid var(--line); }
+.syncCard dt { color: var(--muted); font-size: 0.72rem; font-weight: 750; }
+.syncCard dd { margin: 0; font-size: 0.92rem; font-weight: 700; }
+.syncNote { margin: 1rem 0 0; color: var(--muted); font-size: 0.74rem; line-height: 1.45; }
+.historyCard .sectionHeading { padding: 1.3rem; }
+.tableWrap { overflow-x: auto; }
+.tableWrap table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.tableWrap th, .tableWrap td { padding: 0.78rem 0.7rem; text-align: right; white-space: nowrap; border-top: 1px solid var(--line); }
+.tableWrap th:first-child, .tableWrap td:first-child { padding-left: 1.3rem; text-align: left; }
+.tableWrap th:last-child, .tableWrap td:last-child { padding-right: 1.3rem; }
+.tableWrap th { color: var(--muted); background: var(--soft); font-size: 0.68rem; }
+.tableWrap td { font-size: 0.82rem; }
+.emptyHistory { display: grid; min-height: 12rem; place-items: center; color: var(--muted); border-top: 1px solid var(--line); }
+.errorBanner { margin-bottom: 1rem; padding: 0.85rem 1rem; color: #7c2828; background: #fff0f0; border: 1px solid #efcaca; border-radius: 0.75rem; }
+
+@media (max-width: 980px) {
+  .metricGrid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .lowerGrid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 620px) {
+  .page { padding: 1rem 1rem 2.5rem; }
+  .topbar { align-items: flex-start; }
+  .hero { align-items: flex-start; flex-direction: column; padding: 3rem 0 1.6rem; }
+  .todayBadge { align-self: stretch; justify-content: center; }
+  .metricGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .metricCard { min-height: 7.5rem; }
+  .tableWrap table { min-width: 38rem; }
+}
+
+@media (prefers-color-scheme: dark) {
+  .page { --ink: #edf4f0; --muted: #9baaa3; --line: #33423b; --surface: #17201c; --soft: #202c27; --accent: #62c99d; }
+  .errorBanner { color: #ffc4c4; background: #3a2020; border-color: #693535; }
+}

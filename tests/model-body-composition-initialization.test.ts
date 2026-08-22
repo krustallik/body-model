@@ -5,8 +5,8 @@ describe("initializeBodyComposition", () => {
   it("initializes the required 80 kg at 20 percent example", () => {
     expect(initializeBodyComposition({ weightKg: 80, estimatedBodyFatPercent: 20 })).toEqual({
       bodyWeightKg: 80,
-      fatMassKg: 16,
-      fatFreeMassKg: 64,
+      observedFatMassKg: 16,
+      observedFatFreeMassKg: 64,
       bodyFatPercentEstimate: 20,
     });
   });
@@ -16,18 +16,30 @@ describe("initializeBodyComposition", () => {
       weightKg: 81.4,
       estimatedBodyFatPercent: 18.7,
     });
-    expect(result.fatMassKg).toBeCloseTo(15.2218, 12);
-    expect(result.fatFreeMassKg).toBeCloseTo(66.1782, 12);
+    expect(result.observedFatMassKg).toBeCloseTo(15.2218, 12);
+    expect(result.observedFatFreeMassKg).toBeCloseTo(66.1782, 12);
   });
 
-  it("accepts zero percent as a mathematical boundary", () => {
-    expect(initializeBodyComposition({ weightKg: 80, estimatedBodyFatPercent: 0 }))
-      .toMatchObject({ fatMassKg: 0, fatFreeMassKg: 80 });
+  it("rejects zero percent because it creates zero fat mass", () => {
+    expect(() => initializeBodyComposition({ weightKg: 80, estimatedBodyFatPercent: 0 }))
+      .toThrow(RangeError);
   });
 
-  it("accepts 100 percent as a mathematical boundary", () => {
-    expect(initializeBodyComposition({ weightKg: 80, estimatedBodyFatPercent: 100 }))
-      .toMatchObject({ fatMassKg: 80, fatFreeMassKg: 0 });
+  it("rejects 100 percent because it creates zero fat-free mass", () => {
+    expect(() => initializeBodyComposition({ weightKg: 80, estimatedBodyFatPercent: 100 }))
+      .toThrow(RangeError);
+  });
+
+  it("accepts a representable value just above zero", () => {
+    const result = initializeBodyComposition({ weightKg: 80, estimatedBodyFatPercent: 0.000001 });
+    expect(result.observedFatMassKg).toBeGreaterThan(0);
+    expect(result.observedFatFreeMassKg).toBeGreaterThan(0);
+  });
+
+  it("accepts a representable value just below 100", () => {
+    const result = initializeBodyComposition({ weightKg: 80, estimatedBodyFatPercent: 99.999999 });
+    expect(result.observedFatMassKg).toBeGreaterThan(0);
+    expect(result.observedFatFreeMassKg).toBeGreaterThan(0);
   });
 
   it.each([0, -1, 1_000.01])("rejects unsupported weight %s", (weightKg) => {
@@ -55,4 +67,11 @@ describe("initializeBodyComposition", () => {
         .toThrow(TypeError);
     },
   );
+
+  it("rejects a positive value that underflows to zero fat mass", () => {
+    expect(() => initializeBodyComposition({
+      weightKg: 0.1,
+      estimatedBodyFatPercent: Number.MIN_VALUE,
+    })).toThrow(RangeError);
+  });
 });

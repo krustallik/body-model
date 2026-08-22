@@ -5,32 +5,36 @@ export type BodyCompositionInitializationInput = {
   estimatedBodyFatPercent: number;
 };
 
-export type InitialBodyComposition = {
+export type ObservedBodyComposition = {
   bodyWeightKg: number;
-  fatMassKg: number;
-  fatFreeMassKg: number;
+  observedFatMassKg: number;
+  observedFatFreeMassKg: number;
   bodyFatPercentEstimate: number;
 };
 
-/** Creates an initial modeled state from weight and an estimated BIA percentage. */
+/** Derives an observed two-compartment baseline; this is not a latent Hall state. */
 export function initializeBodyComposition(
   input: BodyCompositionInitializationInput,
-): InitialBodyComposition {
+): ObservedBodyComposition {
   assertWeight(input.weightKg);
 
   if (!Number.isFinite(input.estimatedBodyFatPercent)) {
     throw new TypeError("estimatedBodyFatPercent must be finite");
   }
-  if (input.estimatedBodyFatPercent < 0 || input.estimatedBodyFatPercent > 100) {
-    throw new RangeError("estimatedBodyFatPercent must be between 0 and 100");
+  if (input.estimatedBodyFatPercent <= 0 || input.estimatedBodyFatPercent >= 100) {
+    throw new RangeError("estimatedBodyFatPercent must be greater than 0 and less than 100");
   }
 
   const fatMassKg = input.weightKg * input.estimatedBodyFatPercent / 100;
+  const fatFreeMassKg = input.weightKg - fatMassKg;
+  if (fatMassKg <= 0 || fatFreeMassKg <= 0) {
+    throw new RangeError("estimatedBodyFatPercent cannot produce a nondegenerate model state");
+  }
 
   return {
     bodyWeightKg: input.weightKg,
-    fatMassKg,
-    fatFreeMassKg: input.weightKg - fatMassKg,
+    observedFatMassKg: fatMassKg,
+    observedFatFreeMassKg: fatFreeMassKg,
     bodyFatPercentEstimate: input.estimatedBodyFatPercent,
   };
 }

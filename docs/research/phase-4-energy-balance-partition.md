@@ -1,4 +1,4 @@
-# Phase 4 research: energy balance and fat/FFM partition
+# Phase 4 research: energy balance and fat/lean-tissue partition
 
 ## Decision
 
@@ -9,33 +9,36 @@ For a one-day imbalance, BodyCast uses the local Forbes relation as expressed in
 the Hall/NIDDK dynamic model:
 
 ```text
-dFFM / dFM = 10.4 kg / FM
+dL / dF = 10.4 kg / F
 rhoFM = 39.5 MJ/kg
-rhoFFM = 7.6 MJ/kg
-C = 10.4 kg * rhoFFM / rhoFM = 2.001012658... kg
+rhoL = 7.6 MJ/kg
+C = 10.4 kg * rhoL / rhoFM = 2.001012658... kg
 p = C / (C + FM)
 ```
 
-Here `p` is the fraction of the energy imbalance assigned to the fat-free-mass
-compartment. It is distinct from the fraction of mass change that is FFM,
+Here `p` is the fraction of partitionable energy assigned to Hall lean tissue.
+It is distinct from the fraction of mass change assigned to lean tissue,
 `10.4 / (10.4 + FM)`. The implementation then preserves energy exactly:
 
 ```text
-FFM energy = p * energy balance
-fat energy = energy balance - FFM energy
-delta FFM = FFM energy / rhoFFM
+lean-tissue energy = p * partitionable energy
+fat energy = partitionable energy - lean-tissue energy
+delta lean tissue = lean-tissue energy / rhoL
 delta fat = fat energy / rhoFM
 ```
 
-The same local differential is used for a small one-day deficit or surplus.
+Until glycogen is modeled, partitionable energy equals the daily energy balance.
+With explicit glycogen dynamics it must exclude glycogen storage energy first,
+as required by the Hall/NIDDK equation. The same local differential is used for
+a small one-day deficit or surplus.
 This does not imply that long-term weight loss and gain are physiologically
 symmetric. Diet composition, protein intake, resistance training, sex, age,
 and the size and duration of weight change can alter observed partitioning.
 
-Fat-free mass is a compartment containing body protein and associated water,
-glycogen and water, organs, bone, and other non-fat mass. It is not synonymous
-with skeletal muscle. This phase does not separately model glycogen or fluid
-shifts and therefore does not predict an immediate scale-weight change.
+Hall lean tissue is not synonymous with skeletal muscle or with BIA-derived
+fat-free mass. When glycogen and ECF are explicit, they are outside the lean-
+tissue state. This phase does not model their dynamics and therefore does not
+predict an immediate scale-weight change.
 
 `fatMassKg` must be known and greater than zero. No fallback body-composition
 estimator or clamp is used. The zero-fat limit is not accepted because it is
@@ -46,8 +49,8 @@ defined there.
 
 A fixed energy-per-kilogram rule assumes a constant composition of weight
 change. Forbes/Hall instead makes that composition depend on current fat mass
-and uses different effective densities for fat and FFM. A leaner body assigns a
-larger fraction of the energy imbalance to FFM, so energy per kilogram of total
+and uses different effective densities for fat and lean tissue. A leaner body
+assigns a larger fraction of the energy imbalance to lean tissue, so energy per kilogram of total
 mass change is not constant.
 
 ## Sources

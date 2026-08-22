@@ -73,19 +73,22 @@ Given a paired robust weight and the median BIA estimate:
 
 ```text
 fatFraction = estimatedBodyFatPercent / 100
-fatMassKg = weightKg * fatFraction
-fatFreeMassKg = weightKg - fatMassKg
+observedFatMassKg = weightKg * fatFraction
+observedFatFreeMassKg = weightKg - observedFatMassKg
 ```
 
-Exactly 0% and 100% are accepted as mathematical boundaries because the project
-has no separate physiological-warning channel. They are not plausible healthy
-observations. In particular, a 0 kg fat-mass state remains invalid for the
+Raw BIA aggregation accepts 0% and 100% as mathematical observation boundaries
+so storage/diagnostics can preserve device output without imposing an arbitrary
+clinical range. Latent-state initialization is intentionally stricter and
+requires `0 < estimatedBodyFatPercent < 100`: both observed fat mass and FFM must be
+strictly positive, and the resulting fat mass must be consumable by the
 downstream Forbes/Hall partition model.
 
-New daily BIA observations must **never directly overwrite** the latent fat-mass
-and FFM state. A later observation model may use them as noisy evidence for
-state updating or validation. That filtering/update mechanism is out of scope
-for this phase.
+New daily BIA observations must **never directly overwrite** latent fat mass or
+lean tissue. Observed FFM includes glycogen and fluid compartments and is not a
+latent Hall lean-tissue state. A later observation model may use BIA as noisy
+evidence for state updating or validation. That filtering/update mechanism is
+out of scope for this phase.
 
 ## Sources
 

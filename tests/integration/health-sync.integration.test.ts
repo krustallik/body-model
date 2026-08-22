@@ -168,14 +168,23 @@ describe("Apple Health sync with PostgreSQL", () => {
     expect(records[0]?.rawPayload).toEqual(secondDay);
   });
 
-  it("handles overlapping old/new batches", async () => {
-    await POST(syncRequest([{ date: testDates[1], steps: 100 }, { date: testDates[2], steps: 100 }]));
+  it("derives workout minutes from raw Shortcut dates and preserves the raw text", async () => {
+    const rawWorkout = "8. 1. 2040, 13:01 8. 1. 2040, 14:16";
+    const originalDay = { Date: testDates[7], Strengthtrainingminutes: rawWorkout };
+    const response = await POST(rawSyncRequest({ Days: [originalDay] }));
+    expect(response.status).toBe(200);
+
+    const stored = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: testDates[7] } });
+    expect(stored.strengthTrainingMinutes?.toString()).toBe("75");
+    expect(stored.rawPayload).toEqual(originalDay);
+  });
+
+  it("rejects the old multi-day sync payload", async () => {
     const response = await POST(
       syncRequest([{ date: testDates[2], steps: 200 }, { date: testDates[3], steps: 200 }]),
     );
-    await expect(response.json()).resolves.toMatchObject({ created: 1, updated: 1 });
-    expect(await prisma.dailyHealthData.count({ where: { date: { in: testDates.slice(1, 4) } } })).toBe(3);
-    expect((await prisma.dailyHealthData.findUnique({ where: { date: testDates[2] } }))?.steps).toBe(200);
+    expect(response.status).toBe(400);
+    expect(await prisma.dailyHealthData.count({ where: { date: { in: testDates.slice(2, 4) } } })).toBe(0);
   });
 
   it("does not create duplicate rows during concurrent retries", async () => {
@@ -190,15 +199,11 @@ describe("Apple Health sync with PostgreSQL", () => {
     expect([111, 222]).toContain((await prisma.dailyHealthData.findUnique({ where: { date } }))?.steps);
   });
 
-  it("rolls back an earlier day when a later database constraint fails", async () => {
+  it("rolls back today's record when a database constraint fails", async () => {
     const repository = new PrismaHealthSyncRepository(prisma);
-    const invalidBatch = [
-      { date: testDates[1], steps: 999 },
-      { date: "not-a-date" },
-    ] as HealthDayInput[];
-    await prisma.dailyHealthData.deleteMany({ where: { date: testDates[1] } });
+    const invalidDay = { date: "not-a-date" } as HealthDayInput;
 
-    await expect(repository.syncBatch(invalidBatch)).rejects.toThrow();
-    expect(await prisma.dailyHealthData.findUnique({ where: { date: testDates[1] } })).toBeNull();
+    await expect(repository.syncDay(invalidDay)).rejects.toThrow();
+    expect(await prisma.dailyHealthData.findUnique({ where: { date: "not-a-date" } })).toBeNull();
   });
 });

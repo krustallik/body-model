@@ -60,19 +60,6 @@ export const HealthDaySchema = z
 
 export const HealthSyncRequestSchema = z
   .object({
-    days: z.array(HealthDaySchema).min(1).max(7),
+    days: z.array(HealthDaySchema).length(1, "days must contain exactly today's data"),
   })
-  .strict()
-  .superRefine(({ days }, context) => {
-    const seen = new Set<string>();
-    days.forEach((day, index) => {
-      if (seen.has(day.date)) {
-        context.addIssue({
-          code: "custom",
-          path: ["days", index, "date"],
-          message: "date must be unique within the request",
-        });
-      }
-      seen.add(day.date);
-    });
-  });
+  .strict();

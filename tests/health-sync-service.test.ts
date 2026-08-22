@@ -8,25 +8,20 @@ class MemoryRepository implements HealthSyncRepository {
   readonly workouts = new Map<string, NonNullable<HealthDayInput["workouts"]>>();
   failOnDate?: string;
 
-  async syncBatch(days: HealthDayInput[]): Promise<SyncDateResult[]> {
+  async syncDay(day: HealthDayInput): Promise<SyncDateResult> {
     const nextDays = new Map(this.days);
     const nextWorkouts = new Map(this.workouts);
-    const results: SyncDateResult[] = [];
-
-    for (const day of days) {
-      if (day.date === this.failOnDate) throw new Error("simulated transaction failure");
-      const action = nextDays.has(day.date) ? "updated" : "created";
-      const previous = nextDays.get(day.date);
-      nextDays.set(day.date, { ...previous, ...day });
-      nextWorkouts.set(day.date, day.workouts ?? []);
-      results.push({ date: day.date, action });
-    }
+    if (day.date === this.failOnDate) throw new Error("simulated transaction failure");
+    const action = nextDays.has(day.date) ? "updated" : "created";
+    const previous = nextDays.get(day.date);
+    nextDays.set(day.date, { ...previous, ...day });
+    nextWorkouts.set(day.date, day.workouts ?? []);
 
     this.days.clear();
     nextDays.forEach((value, key) => this.days.set(key, value));
     this.workouts.clear();
     nextWorkouts.forEach((value, key) => this.workouts.set(key, value));
-    return results;
+    return { date: day.date, action };
   }
 }
 
@@ -94,26 +89,6 @@ describe("health synchronization service", () => {
     expect(repository.days.size).toBe(1);
   });
 
-  it("handles overlapping seven-day syncs without duplicates", async () => {
-    const repository = new MemoryRepository();
-    const first = Array.from({ length: 7 }, (_, index) => ({
-      date: `2026-08-${10 + index}`,
-      steps: 100,
-      strengthTrainingMinutes: 60,
-    }));
-    const second = Array.from({ length: 7 }, (_, index) => ({
-      date: `2026-08-${13 + index}`,
-      steps: 200,
-      strengthTrainingMinutes: 75.5,
-    }));
-    await syncHealthData({ days: first }, repository);
-    const result = await syncHealthData({ days: second }, repository);
-    expect(result).toMatchObject({ created: 3, updated: 4 });
-    expect(repository.days.size).toBe(10);
-    expect(repository.days.get("2026-08-13")?.steps).toBe(200);
-    expect(repository.days.get("2026-08-13")?.strengthTrainingMinutes).toBe(75.5);
-  });
-
   it("creates, updates, clears and allows missing strengthTrainingMinutes", async () => {
     const repository = new MemoryRepository();
     await syncHealthData({ days: [{ date: "2026-08-21", strengthTrainingMinutes: 60 }] }, repository);
@@ -140,11 +115,11 @@ describe("health synchronization service", () => {
     expect(repository.workouts.get("2026-08-21")?.[0]?.energyKcal).toBe(300);
   });
 
-  it("rolls back the complete batch on a later-day failure", async () => {
+  it("does not modify stored data when today's sync fails", async () => {
     const repository = new MemoryRepository();
     repository.failOnDate = "2026-08-22";
     await expect(
-      syncHealthData({ days: [{ date: "2026-08-21" }, { date: "2026-08-22" }] }, repository),
+      syncHealthData({ days: [{ date: "2026-08-22" }] }, repository),
     ).rejects.toThrow("simulated transaction failure");
     expect(repository.days.size).toBe(0);
   });

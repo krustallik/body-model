@@ -55,22 +55,19 @@ curl -X POST http://localhost:3000/api/v1/health/sync \
   -H "X-API-Key: YOUR_KEY" \
   -d '{
     "days": [{
-      "date": "2026-08-21",
-      "weightKg": 78.4,
-      "steps": 10500,
-      "activeEnergyKcal": 540,
-      "workouts": [{
-        "type": "strength_training",
-        "startAt": "2026-08-21T17:10:00+02:00",
-        "endAt": "2026-08-21T18:15:00+02:00",
-        "durationMinutes": 65,
-        "energyKcal": 340
-      }]
+      "Date": "2026-08-22",
+      "Weightkg": "89.15",
+      "Steps": "23",
+      "Strengthtrainingminutes": "22. 8. 2026, 13:01 22. 8. 2026, 14:16"
     }]
   }'
 ```
 
-Повторна дата оновлює один daily record та transactionally замінює workouts. `activeEnergyKcal` і workout energy не додаються, щоб уникнути double counting.
+`days` має містити рівно один запис — дані за сьогодні. Сервер сам обчислює
+`strengthTrainingMinutes` з часу початку та завершення останнього тренування. Якщо
+останнє тренування почалося не в дату цього денного запису, сервер зберігає `0`,
+тобто сьогодні тренування не було. Повторний запит за ту саму дату оновлює наявний
+daily record.
 
 ## Production Build
 

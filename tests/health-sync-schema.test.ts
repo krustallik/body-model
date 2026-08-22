@@ -17,11 +17,6 @@ describe("HealthSyncRequestSchema", () => {
     expect(parse([validDay]).success).toBe(true);
   });
 
-  it("accepts seven unique calendar days", () => {
-    const days = Array.from({ length: 7 }, (_, index) => ({ date: `2026-08-${15 + index}` }));
-    expect(parse(days).success).toBe(true);
-  });
-
   it("accepts null optional values and an empty workout list", () => {
     expect(
       parse([{
@@ -71,13 +66,9 @@ describe("HealthSyncRequestSchema", () => {
 
   it.each([
     ["empty days", []],
-    ["more than seven days", Array.from({ length: 8 }, (_, index) => ({ date: `2026-08-${10 + index}` }))],
+    ["more than one day", [validDay, { date: "2026-08-22" }]],
   ])("rejects %s", (_name, days) => {
     expect(parse(days).success).toBe(false);
-  });
-
-  it("rejects duplicate dates", () => {
-    expect(parse([validDay, validDay]).success).toBe(false);
   });
 
   it.each(["21-08-2026", "2026-8-21", "2026-08-21T00:00:00Z", "2026-99-99"])(

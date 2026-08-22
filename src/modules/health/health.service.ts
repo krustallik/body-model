@@ -6,14 +6,15 @@ export async function syncHealthData(
   repository: HealthSyncRepository = healthSyncRepository,
   rawDays?: unknown[],
 ): Promise<HealthSyncResult> {
-  const dates = await repository.syncBatch(request.days, rawDays);
-  const created = dates.filter(({ action }) => action === "created").length;
+  const day = request.days[0];
+  const date = await repository.syncDay(day, rawDays?.[0]);
+  const created = date.action === "created" ? 1 : 0;
 
   return {
     status: "ok",
-    received: request.days.length,
+    received: 1,
     created,
-    updated: dates.length - created,
-    dates,
+    updated: 1 - created,
+    dates: [date],
   };
 }

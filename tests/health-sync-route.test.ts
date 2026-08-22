@@ -130,6 +130,33 @@ describe("POST /api/v1/health/sync", () => {
     },
   );
 
+  it("calculates strength training minutes from the Shortcut workout dates", async () => {
+    const originalDay = {
+      Date: "2026-08-21",
+      Strengthtrainingminutes: "21. 8. 2026, 13:01 21. 8. 2026, 14:16",
+    };
+    syncHealthData.mockResolvedValue({ status: "ok", received: 1, created: 1, updated: 0, dates: [] });
+
+    const response = await POST(request({ Days: [originalDay] }));
+
+    expect(response.status).toBe(200);
+    expect(syncHealthData).toHaveBeenCalledWith(
+      { days: [{ date: "2026-08-21", strengthTrainingMinutes: 75 }] },
+      undefined,
+      [originalDay],
+    );
+  });
+
+  it("sets strength training to zero when the latest workout is not from the synced day", async () => {
+    syncHealthData.mockResolvedValue({ status: "ok", received: 1, created: 1, updated: 0, dates: [] });
+    const response = await POST(request({ Days: [{
+      Date: "2026-08-22",
+      Strengthtrainingminutes: "21. 8. 2026, 13:01 21. 8. 2026, 14:16",
+    }] }));
+    expect(response.status).toBe(200);
+    expect(syncHealthData.mock.calls[0]?.[0].days[0].strengthTrainingMinutes).toBe(0);
+  });
+
   it.each(["", " ", "abc", "27abc", "27%", "89 kg", "NaN", "Infinity"])(
     "rejects invalid numeric string %j",
     async (weightKg) => {
@@ -177,6 +204,15 @@ describe("POST /api/v1/health/sync", () => {
     const response = await POST(request({ days: [] }));
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ error: "validation_error" });
+  });
+
+  it("rejects the old multi-day sync payload", async () => {
+    const response = await POST(request({ days: [
+      { date: "2026-08-21" },
+      { date: "2026-08-22" },
+    ] }));
+    expect(response.status).toBe(400);
+    expect(syncHealthData).not.toHaveBeenCalled();
   });
 
   it("returns 400 for malformed JSON", async () => {

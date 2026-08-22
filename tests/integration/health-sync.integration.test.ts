@@ -6,7 +6,7 @@ import type { HealthDayInput } from "@/modules/health/health.types";
 
 const prisma = new PrismaClient();
 const apiKey = process.env.IOS_SHORTCUT_API_KEY ?? "integration-test-secret";
-const testDates = ["2040-01-01", "2040-01-02", "2040-01-03", "2040-01-04", "2040-01-05", "2040-01-06"];
+const testDates = ["2040-01-01", "2040-01-02", "2040-01-03", "2040-01-04", "2040-01-05", "2040-01-06", "2040-01-07"];
 
 function syncRequest(days: unknown[]): Request {
   return new Request("http://localhost/api/v1/health/sync", {
@@ -129,6 +129,27 @@ describe("Apple Health sync with PostgreSQL", () => {
     expect(records[0]?.bodyFatPercent?.toString()).toBe("18.6");
     expect(records[0]?.averageWalkingSpeedKmh).toBeNull();
     expect(records[0]?.walkingDistanceKm?.toString()).toBe("8.1234");
+  });
+
+  it("persists decimal-comma strings as precise numbers while retaining the original raw payload", async () => {
+    const originalDay = {
+      Date: testDates[6],
+      Weightkg: "89,4",
+      Bodyfatpercent: "27,4",
+      Steps: "10234",
+      Averagewalkingspeedkmh: "4,72",
+      Walkingdistancekm: "7,35",
+    };
+    const response = await POST(rawSyncRequest({ Days: [originalDay] }));
+    expect(response.status).toBe(200);
+
+    const stored = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: testDates[6] } });
+    expect(stored.weightKg).toBe(89.4);
+    expect(stored.bodyFatPercent?.toString()).toBe("27.4");
+    expect(stored.steps).toBe(10234);
+    expect(stored.averageWalkingSpeedKmh?.toString()).toBe("4.72");
+    expect(stored.walkingDistanceKm?.toString()).toBe("7.35");
+    expect(stored.rawPayload).toEqual(originalDay);
   });
 
   it("handles overlapping old/new batches", async () => {

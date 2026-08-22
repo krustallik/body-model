@@ -6,6 +6,7 @@ import {
   normalizeShortcutPayload,
   ShortcutNormalizationError,
 } from "@/modules/health/normalize-shortcut-payload";
+import { normalizeShortcutNumericValues } from "@/modules/health/normalize-shortcut-numeric-values";
 
 export const dynamic = "force-dynamic";
 
@@ -44,7 +45,8 @@ export async function POST(request: Request): Promise<Response> {
     throw error;
   }
 
-  const parsed = HealthSyncRequestSchema.safeParse(normalized.payload);
+  const numericNormalizedPayload = normalizeShortcutNumericValues(normalized.payload);
+  const parsed = HealthSyncRequestSchema.safeParse(numericNormalizedPayload);
   if (!parsed.success) {
     return Response.json(
       {

@@ -70,6 +70,65 @@ describe("POST /api/v1/health/sync", () => {
     });
   });
 
+  it("normalizes Apple-cased numeric strings before sending canonical numbers to the service", async () => {
+    const originalDay = {
+      Date: "2026-08-22",
+      Weightkg: "89,4",
+      Bodyfatpercent: "27,4",
+      Calorieskcal: "587,5",
+      Proteing: "59,7",
+      Fatg: "15,3",
+      Carbsg: "56,8",
+      Steps: "10234",
+      Averagewalkingspeedkmh: "4,72",
+      Walkingdistancekm: "7,35",
+    };
+    syncHealthData.mockResolvedValue({ status: "ok", received: 1, created: 1, updated: 0, dates: [] });
+
+    const response = await POST(request({ Days: [originalDay] }));
+
+    expect(response.status).toBe(200);
+    expect(syncHealthData).toHaveBeenCalledWith({ days: [{
+      date: "2026-08-22",
+      weightKg: 89.4,
+      bodyFatPercent: 27.4,
+      caloriesKcal: 587.5,
+      proteinG: 59.7,
+      fatG: 15.3,
+      carbsG: 56.8,
+      steps: 10234,
+      averageWalkingSpeedKmh: 4.72,
+      walkingDistanceKm: 7.35,
+    }] }, undefined, [originalDay]);
+  });
+
+  it.each(["", " ", "abc", "27abc", "27%", "89 kg", "NaN", "Infinity"])(
+    "rejects invalid numeric string %j",
+    async (weightKg) => {
+      const response = await POST(request({ days: [{ date: "2026-08-22", weightKg }] }));
+      expect(response.status).toBe(400);
+      expect(syncHealthData).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([[], {}, true])("rejects invalid numeric value %j", async (weightKg) => {
+    const response = await POST(request({ days: [{ date: "2026-08-22", weightKg }] }));
+    expect(response.status).toBe(400);
+    expect(syncHealthData).not.toHaveBeenCalled();
+  });
+
+  it.each(["10000.5", "10000,5"])("leaves fractional steps for integer validation: %s", async (steps) => {
+    const response = await POST(request({ days: [{ date: "2026-08-22", steps }] }));
+    expect(response.status).toBe(400);
+    expect(syncHealthData).not.toHaveBeenCalled();
+  });
+
+  it("parses numeric strings before applying existing range validation", async () => {
+    const response = await POST(request({ days: [{ date: "2026-08-22", weightKg: "999" }] }));
+    expect(response.status).toBe(400);
+    expect(syncHealthData).not.toHaveBeenCalled();
+  });
+
   it.each(["banana", "weigthKg"])("rejects unsupported key %s", async (key) => {
     const response = await POST(request({ days: [{ date: "2026-08-22", [key]: 89 }] }));
     expect(response.status).toBe(400);

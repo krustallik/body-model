@@ -9,6 +9,8 @@ export type AdaptiveThermogenesisState = {
 export type AdaptiveThermogenesisTransition = {
   previousAdaptiveThermogenesisKcalPerDay: number;
   adaptiveThermogenesisKcalPerDay: number;
+  /** Exact interval mean used as the additive expenditure during this step. */
+  meanAdaptiveThermogenesisKcalPerDay: number;
   deltaAdaptiveThermogenesisKcalPerDay: number;
   deltaEnergyIntakeKcalPerDay: number;
   targetAdaptiveThermogenesisKcalPerDay: number;
@@ -82,6 +84,13 @@ export function stepAdaptiveThermogenesis(
   const adaptiveThermogenesisKcalPerDay = targetAdaptiveThermogenesisKcalPerDay
     + (input.currentAdaptiveThermogenesisKcalPerDay
       - targetAdaptiveThermogenesisKcalPerDay) * decayFactor;
+  const meanAdaptiveThermogenesisKcalPerDay = elapsedDays === 0
+    ? input.currentAdaptiveThermogenesisKcalPerDay
+    : targetAdaptiveThermogenesisKcalPerDay
+      + (input.currentAdaptiveThermogenesisKcalPerDay
+        - targetAdaptiveThermogenesisKcalPerDay)
+        * timeConstantDays / elapsedDays
+        * -Math.expm1(-elapsedDays / timeConstantDays);
   const deltaAdaptiveThermogenesisKcalPerDay = adaptiveThermogenesisKcalPerDay
     - input.currentAdaptiveThermogenesisKcalPerDay;
   const results = [
@@ -89,6 +98,7 @@ export function stepAdaptiveThermogenesis(
     targetAdaptiveThermogenesisKcalPerDay,
     decayFactor,
     adaptiveThermogenesisKcalPerDay,
+    meanAdaptiveThermogenesisKcalPerDay,
     deltaAdaptiveThermogenesisKcalPerDay,
   ];
   if (results.some((value) => !Number.isFinite(value))) {
@@ -99,6 +109,7 @@ export function stepAdaptiveThermogenesis(
     previousAdaptiveThermogenesisKcalPerDay:
       input.currentAdaptiveThermogenesisKcalPerDay,
     adaptiveThermogenesisKcalPerDay,
+    meanAdaptiveThermogenesisKcalPerDay,
     deltaAdaptiveThermogenesisKcalPerDay,
     deltaEnergyIntakeKcalPerDay,
     targetAdaptiveThermogenesisKcalPerDay,

@@ -46,12 +46,16 @@ describe("adaptive thermogenesis state transition", () => {
     const result = step(0, 2_000)!;
     const expectedDecay = Math.exp(-1 / 14);
     const expectedAt = -70 + 70 * expectedDecay;
+    const expectedMeanAt = -70 + 70 * 14 * (1 - expectedDecay);
     expect(DEFAULT_ADAPTIVE_THERMOGENESIS_BETA).toBe(0.14);
     expect(DEFAULT_ADAPTIVE_THERMOGENESIS_TIME_CONSTANT_DAYS).toBe(14);
     expect(result.deltaEnergyIntakeKcalPerDay).toBe(-500);
     expect(result.targetAdaptiveThermogenesisKcalPerDay).toBe(-70);
     expect(result.decayFactor).toBeCloseTo(expectedDecay, 14);
     expect(result.adaptiveThermogenesisKcalPerDay).toBeCloseTo(expectedAt, 12);
+    expect(result.meanAdaptiveThermogenesisKcalPerDay).toBeCloseTo(expectedMeanAt, 12);
+    expect(result.meanAdaptiveThermogenesisKcalPerDay).toBeGreaterThan(expectedAt);
+    expect(result.meanAdaptiveThermogenesisKcalPerDay).toBeLessThan(0);
     expect(result.adaptiveThermogenesisKcalPerDay).toBeGreaterThan(-70);
     expect(result.adaptiveThermogenesisKcalPerDay).toBeLessThan(0);
   });
@@ -145,6 +149,7 @@ describe("adaptive thermogenesis state transition", () => {
       betaAdaptiveThermogenesis: 0.1,
       timeConstantDays: 7,
       elapsedDays: 0,
+      meanAdaptiveThermogenesisKcalPerDay: -10,
     });
   });
 

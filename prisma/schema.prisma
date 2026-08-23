@@ -24,23 +24,49 @@ model Profile {
 }
 
 model DailyHealthData {
-  id                      Int       @id @default(autoincrement())
-  date                    String    @unique @db.VarChar(10)
+  id                      Int                  @id @default(autoincrement())
+  date                    String               @unique @db.VarChar(10)
   weightKg                Float?
-  bodyFatPercent          Decimal?  @db.Decimal(10, 4)
+  bodyFatPercent          Decimal?             @db.Decimal(10, 4)
   caloriesKcal            Float?
   proteinG                Float?
   fatG                    Float?
   carbsG                  Float?
   steps                   Int?
   activeEnergyKcal        Float?
-  averageWalkingSpeedKmh  Decimal?  @db.Decimal(10, 4)
-  walkingDistanceKm       Decimal?  @db.Decimal(10, 4)
-  strengthTrainingMinutes Decimal?  @db.Decimal(10, 4)
+  averageWalkingSpeedKmh  Decimal?             @db.Decimal(10, 4)
+  walkingDistanceKm       Decimal?             @db.Decimal(10, 4)
+  strengthTrainingMinutes Decimal?             @db.Decimal(10, 4)
   rawPayload              Json
-  createdAt               DateTime  @default(now())
-  updatedAt               DateTime  @updatedAt
+  createdAt               DateTime             @default(now())
+  updatedAt               DateTime             @updatedAt
   workouts                Workout[]
+  syncSnapshots           HealthSyncSnapshot[]
+}
+
+model HealthSyncSnapshot {
+  id                      Int              @id @default(autoincrement())
+  dailyHealthDataId       Int?
+  date                    String           @db.VarChar(10)
+  receivedAt              DateTime         @default(now()) @db.Timestamptz(3)
+  syncedAt                DateTime?        @db.Timestamptz(3)
+  timezone                String           @db.VarChar(100)
+  weightKg                Float?
+  bodyFatPercent          Decimal?         @db.Decimal(10, 4)
+  caloriesKcal            Float?
+  proteinG                Float?
+  fatG                    Float?
+  carbsG                  Float?
+  steps                   Int?
+  activeEnergyKcal        Float?
+  averageWalkingSpeedKmh  Decimal?         @db.Decimal(10, 4)
+  walkingDistanceKm       Decimal?         @db.Decimal(10, 4)
+  strengthTrainingMinutes Decimal?         @db.Decimal(10, 4)
+  rawPayload              Json
+  dailyHealthData         DailyHealthData? @relation(fields: [dailyHealthDataId], references: [id], onDelete: SetNull)
+
+  @@index([date, receivedAt])
+  @@index([dailyHealthDataId])
 }
 
 model Workout {
@@ -57,4 +83,18 @@ model Workout {
   dailyHealthData   DailyHealthData @relation(fields: [dailyHealthDataId], references: [id], onDelete: Cascade)
 
   @@index([dailyHealthDataId])
+}
+
+model WorkInterval {
+  id        Int      @id @default(autoincrement())
+  date      String   @db.VarChar(10)
+  startAt   DateTime @db.Timestamptz(3)
+  endAt     DateTime @db.Timestamptz(3)
+  timezone  String   @db.VarChar(100)
+  category  String   @db.VarChar(50)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([date, startAt])
+  @@index([startAt, endAt])
 }

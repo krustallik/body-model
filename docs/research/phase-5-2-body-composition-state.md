@@ -11,12 +11,13 @@ compartments are:
   associated intracellular water;
 - `G`: glycogen;
 - glycogen-associated intracellular water, derived as `2.7 * G`;
-- `ECF`: extracellular fluid.
+- `ECF`: extracellular-fluid volume in liters; its mass contribution uses the
+  explicit water-density conversion `rhoWater = 1 kg/L`.
 
 The resulting mass identity is:
 
 ```text
-BW = F + L + G + 2.7G + ECF
+BW = F + L + G + 2.7G + rhoWater * ECF
 ```
 
 Accordingly, the NIDDK appendix initializes lean tissue as:
@@ -26,7 +27,8 @@ L_initial = BW_initial - F_initial - ECF_initial - G_initial - 2.7G_initial
 ```
 
 Glycogen-associated water is derived, not an independent unconstrained state.
-No glycogen or ECF dynamics are implemented in this phase.
+The later ECF implementation stores a baseline volume plus a signed deviation;
+their sum is the absolute ECF volume used in this identity.
 
 ## Observed FFM is not latent lean tissue
 

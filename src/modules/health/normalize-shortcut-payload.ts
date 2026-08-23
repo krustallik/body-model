@@ -1,6 +1,6 @@
 type JsonObject = Record<string, unknown>;
 
-const ROOT_KEYS = canonicalKeyMap(["days"]);
+const ROOT_KEYS = canonicalKeyMap(["days", "timezone", "syncedAt"]);
 const DAY_KEYS = canonicalKeyMap([
   "date",
   "weightKg",

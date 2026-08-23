@@ -1,14 +1,19 @@
 import { describe, expect, it } from "vitest";
 import type { HealthSyncRepository } from "@/modules/health/health.repository";
 import { syncHealthData } from "@/modules/health/health.service";
-import type { HealthDayInput, SyncDateResult } from "@/modules/health/health.types";
+import type { HealthDayInput, HealthSyncMetadata, SyncDateResult } from "@/modules/health/health.types";
 
 class MemoryRepository implements HealthSyncRepository {
   readonly days = new Map<string, HealthDayInput>();
   readonly workouts = new Map<string, NonNullable<HealthDayInput["workouts"]>>();
+  readonly snapshots: { day: HealthDayInput; rawDay: unknown; metadata: HealthSyncMetadata }[] = [];
   failOnDate?: string;
 
-  async syncDay(day: HealthDayInput): Promise<SyncDateResult> {
+  async syncDay(
+    day: HealthDayInput,
+    rawDay: unknown,
+    metadata: HealthSyncMetadata,
+  ): Promise<SyncDateResult> {
     const nextDays = new Map(this.days);
     const nextWorkouts = new Map(this.workouts);
     if (day.date === this.failOnDate) throw new Error("simulated transaction failure");
@@ -21,6 +26,7 @@ class MemoryRepository implements HealthSyncRepository {
     nextDays.forEach((value, key) => this.days.set(key, value));
     this.workouts.clear();
     nextWorkouts.forEach((value, key) => this.workouts.set(key, value));
+    this.snapshots.push({ day, rawDay, metadata });
     return { date: day.date, action };
   }
 }
@@ -87,6 +93,27 @@ describe("health synchronization service", () => {
     const second = await syncHealthData(payload, repository);
     expect(second).toMatchObject({ created: 0, updated: 1 });
     expect(repository.days.size).toBe(1);
+    expect(repository.snapshots).toHaveLength(2);
+  });
+
+  it("passes explicit sync metadata and preserves the raw snapshot", async () => {
+    const repository = new MemoryRepository();
+    const receivedAt = new Date("2026-08-23T08:00:00Z");
+    const rawDay = { Date: "2026-08-23", Steps: 0 };
+    await syncHealthData({
+      days: [{ date: "2026-08-23", steps: 0 }],
+      timezone: "Europe/Bratislava",
+      syncedAt: "2026-08-23T10:00:00+02:00",
+    }, repository, [rawDay], receivedAt);
+    expect(repository.snapshots[0]).toEqual({
+      day: { date: "2026-08-23", steps: 0 },
+      rawDay,
+      metadata: {
+        timezone: "Europe/Bratislava",
+        receivedAt,
+        syncedAt: "2026-08-23T10:00:00+02:00",
+      },
+    });
   });
 
   it("creates, updates, clears and allows missing strengthTrainingMinutes", async () => {

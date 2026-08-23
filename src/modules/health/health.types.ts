@@ -6,6 +6,12 @@ export type HealthDayInput = z.infer<typeof HealthDaySchema>;
 export type HealthSyncRequest = z.infer<typeof HealthSyncRequestSchema>;
 export type SyncAction = "created" | "updated";
 
+export type HealthSyncMetadata = {
+  timezone: string;
+  receivedAt: Date;
+  syncedAt: string | null;
+};
+
 export interface SyncDateResult {
   date: string;
   action: SyncAction;

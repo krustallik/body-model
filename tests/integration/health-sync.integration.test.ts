@@ -6,7 +6,7 @@ import type { HealthDayInput } from "@/modules/health/health.types";
 
 const prisma = new PrismaClient();
 const apiKey = process.env.IOS_SHORTCUT_API_KEY ?? "integration-test-secret";
-const testDates = ["2040-01-01", "2040-01-02", "2040-01-03", "2040-01-04", "2040-01-05", "2040-01-06", "2040-01-07", "2040-01-08"];
+const testDates = ["2040-01-01", "2040-01-02", "2040-01-03", "2040-01-04", "2040-01-05", "2040-01-06", "2040-01-07", "2040-01-08", "2040-01-09"];
 
 function syncRequest(days: unknown[]): Request {
   return new Request("http://localhost/api/v1/health/sync", {
@@ -25,6 +25,7 @@ function rawSyncRequest(body: unknown): Request {
 }
 
 async function cleanTestRows(): Promise<void> {
+  await prisma.healthSyncSnapshot.deleteMany({ where: { date: { in: testDates } } });
   await prisma.dailyHealthData.deleteMany({ where: { date: { in: testDates } } });
 }
 
@@ -90,6 +91,55 @@ describe("Apple Health sync with PostgreSQL", () => {
     expect(records).toHaveLength(1);
     expect(records[0]?.steps).toBe(13000);
     expect(records[0]?.workouts.map(({ externalId }) => externalId)).toEqual(["replacement-workout"]);
+  });
+
+  it("keeps one latest daily row but appends immutable snapshots for every successful sync", async () => {
+    const date = testDates[8];
+    const firstRaw = {
+      Date: date,
+      Steps: 0,
+      Walkingdistancekm: "",
+    };
+    const secondRaw = {
+      Date: date,
+      Steps: 500,
+      Walkingdistancekm: "0,25",
+    };
+    const first = await POST(rawSyncRequest({
+      Timezone: "Europe/Bratislava",
+      SyncedAt: "2040-01-09T08:05:00+01:00",
+      Days: [firstRaw],
+    }));
+    const second = await POST(rawSyncRequest({
+      Timezone: "Europe/Bratislava",
+      SyncedAt: "2040-01-09T12:10:00+01:00",
+      Days: [secondRaw],
+    }));
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+
+    const rows = await prisma.dailyHealthData.findMany({ where: { date } });
+    const snapshots = await prisma.healthSyncSnapshot.findMany({
+      where: { date }, orderBy: { id: "asc" },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ steps: 500 });
+    expect(rows[0]?.walkingDistanceKm?.toString()).toBe("0.25");
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots[0]).toMatchObject({
+      steps: 0,
+      walkingDistanceKm: null,
+      timezone: "Europe/Bratislava",
+      rawPayload: firstRaw,
+    });
+    expect(snapshots[0]?.syncedAt?.toISOString()).toBe("2040-01-09T07:05:00.000Z");
+    expect(snapshots[1]).toMatchObject({ steps: 500, rawPayload: secondRaw });
+    expect(snapshots[1]?.walkingDistanceKm?.toString()).toBe("0.25");
+
+    await prisma.dailyHealthData.delete({ where: { date } });
+    const retained = await prisma.healthSyncSnapshot.findMany({ where: { date } });
+    expect(retained).toHaveLength(2);
+    expect(retained.every(({ dailyHealthDataId }) => dailyHealthDataId === null)).toBe(true);
   });
 
   it("retries normalized Shortcut payloads idempotently and retains their original raw casing", async () => {
@@ -205,5 +255,6 @@ describe("Apple Health sync with PostgreSQL", () => {
 
     await expect(repository.syncDay(invalidDay)).rejects.toThrow();
     expect(await prisma.dailyHealthData.findUnique({ where: { date: "not-a-date" } })).toBeNull();
+    expect(await prisma.healthSyncSnapshot.count({ where: { date: "not-a-date" } })).toBe(0);
   });
 });

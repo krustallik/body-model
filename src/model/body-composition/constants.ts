@@ -23,6 +23,26 @@ export const GLYCOGEN_MODEL = {
   stepDurationDays: 1,
 } as const;
 
+/** Hall/NIDDK simplified extracellular-fluid model constants. */
+export const EXTRACELLULAR_FLUID_MODEL = {
+  sodiumConcentrationMgPerLiter: 3_220,
+  sodiumHomeostasisMgPerLiterPerDay: 3_000,
+  carbohydrateResponseMgPerDay: 4_000,
+  waterDensityKgPerLiter: 1,
+  stepDurationDays: 1,
+} as const;
+
+/** Tabibzadeh et al. 2022 externally validated healthy-adult ECFV equation. */
+export const EXTRACELLULAR_FLUID_ESTIMATE = {
+  weightKgCoefficient: 0.1393,
+  heightCmCoefficient: 0.0455,
+  ageYearsCoefficient: 0.0125,
+  sexInterceptLiters: {
+    male: -2.6631,
+    female: -3.3407,
+  },
+} as const;
+
 /**
  * Hall's energy-partition constant C = 10.4 * rho_L / rho_F.
  * Its unit is kg and its value is approximately 2.001 kg.

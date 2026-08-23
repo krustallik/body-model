@@ -5,6 +5,17 @@ import {
 } from "@/modules/health/normalize-shortcut-payload";
 
 describe("normalizeShortcutPayload", () => {
+  it("normalizes snapshot timezone metadata at the root", () => {
+    expect(normalizeShortcutPayload({
+      Timezone: "Europe/Bratislava",
+      SyncedAt: "2026-08-23T10:00:00+02:00",
+      Days: [{ Date: "2026-08-23" }],
+    }).payload).toEqual({
+      timezone: "Europe/Bratislava",
+      syncedAt: "2026-08-23T10:00:00+02:00",
+      days: [{ date: "2026-08-23" }],
+    });
+  });
   it.each(["date", "Date", "DATE"])("normalizes date variant %s", (key) => {
     expect(normalizeShortcutPayload({ days: [{ [key]: "2026-08-22" }] }).payload).toEqual({
       days: [{ date: "2026-08-22" }],

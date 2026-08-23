@@ -47,6 +47,36 @@ describe("POST /api/v1/health/sync", () => {
     );
   });
 
+  it("preserves explicit iPhone timezone and sync instant", async () => {
+    syncHealthData.mockResolvedValue({ status: "ok", received: 1, created: 1, updated: 0, dates: [] });
+    const response = await POST(request({
+      Timezone: "Europe/Bratislava",
+      SyncedAt: "2026-08-23T10:00:00+02:00",
+      Days: [{ Date: "2026-08-23", Steps: 0 }],
+    }));
+    expect(response.status).toBe(200);
+    expect(syncHealthData.mock.calls[0]?.[0]).toEqual({
+      timezone: "Europe/Bratislava",
+      syncedAt: "2026-08-23T10:00:00+02:00",
+      days: [{ date: "2026-08-23", steps: 0 }],
+    });
+  });
+
+  it.each(["Mars/Kosice", "", 2])("rejects invalid timezone %j", async (timezone) => {
+    const response = await POST(request({ timezone, days: [{ date: "2026-08-23" }] }));
+    expect(response.status).toBe(400);
+  });
+
+  it("rejects a sync timestamp outside the iPhone calendar day", async () => {
+    const response = await POST(request({
+      timezone: "Europe/Bratislava",
+      syncedAt: "2026-08-22T23:30:00Z",
+      days: [{ date: "2026-08-22" }],
+    }));
+    expect(response.status).toBe(400);
+    expect(syncHealthData).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["Apple casing", { Days: [{ Date: "2026-08-22", Weightkg: 89, Steps: 10000 }] }],
     ["PascalCase", { Days: [{ Date: "2026-08-22", WeightKg: 89, ActiveEnergyKcal: 600 }] }],

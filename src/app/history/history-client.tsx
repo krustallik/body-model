@@ -11,6 +11,7 @@ import {
 } from "@/modules/days/history-chart-data";
 import { formatDateTime, formatMetric } from "@/modules/days/metric-format";
 import { HistoryCharts } from "./history-charts";
+import { WorkActivityDialog } from "./work-activity-dialog";
 import styles from "./history.module.css";
 
 type FormValues = Record<DailyMetricField, string> & { date: string };
@@ -98,6 +99,7 @@ export function HistoryClient() {
   const [error, setError] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState>(null);
   const [range, setRange] = useState<HistoryRange>(30);
+  const [workDate, setWorkDate] = useState<string | null>(null);
 
   const loadDays = useCallback(async () => {
     setLoading(true);
@@ -227,6 +229,7 @@ export function HistoryClient() {
                     <td data-label="updatedAt" className={styles.updatedCell}>{formatDateTime(day.updatedAt)}</td>
                     <td data-label="actions">
                       <div className={styles.actions}>
+                        <button type="button" onClick={() => setWorkDate(day.date)}>Work</button>
                         <button type="button" onClick={() => setEditor({ mode: "edit", values: editForm(day) })}>Edit</button>
                         <button className={styles.deleteButton} type="button" onClick={() => void deleteDay(day.date)}>Delete</button>
                       </div>
@@ -249,6 +252,7 @@ export function HistoryClient() {
           }}
         />
       )}
+      {workDate && <WorkActivityDialog date={workDate} onClose={() => setWorkDate(null)} />}
     </main>
   );
 }
@@ -266,9 +270,6 @@ function DayDialog({ editor, onClose, onSaved }: {
   useEffect(() => {
     const dialog = dialogRef.current;
     if (dialog && !dialog.open) dialog.showModal();
-    return () => {
-      if (dialog?.open) dialog.close();
-    };
   }, []);
 
   function setValue(key: keyof FormValues, value: string) {

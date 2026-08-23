@@ -16,6 +16,9 @@ function repositoryFixture(existingDates: string[] = []) {
       deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
       createMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
+    healthSyncSnapshot: {
+      create: vi.fn().mockResolvedValue({ id: 1 }),
+    },
   };
   const client = {
     $transaction: vi.fn((callback: (tx: typeof transaction) => unknown) => callback(transaction)),
@@ -41,6 +44,28 @@ describe("Prisma health synchronization repository", () => {
     expect(transaction.dailyHealthData.upsert).toHaveBeenCalledWith(
       expect.objectContaining({ create: expect.objectContaining({ rawPayload: original }) }),
     );
+  });
+
+  it("appends an immutable cumulative snapshot with timezone metadata", async () => {
+    const { repository, transaction } = repositoryFixture();
+    const receivedAt = new Date("2026-08-23T08:00:00Z");
+    await repository.syncDay(
+      { date: "2026-08-23", steps: 0, walkingDistanceKm: null },
+      { Date: "2026-08-23", Steps: 0, Walkingdistancekm: "" },
+      { timezone: "Europe/Bratislava", receivedAt, syncedAt: "2026-08-23T10:00:00+02:00" },
+    );
+    expect(transaction.healthSyncSnapshot.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        dailyHealthDataId: 22,
+        date: "2026-08-23",
+        receivedAt,
+        syncedAt: new Date("2026-08-23T08:00:00Z"),
+        timezone: "Europe/Bratislava",
+        steps: 0,
+        walkingDistanceKm: null,
+        rawPayload: { Date: "2026-08-23", Steps: 0, Walkingdistancekm: "" },
+      }),
+    });
   });
 
   it("maps the new decimal metrics on create and update", async () => {

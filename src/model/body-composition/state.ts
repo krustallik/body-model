@@ -1,4 +1,7 @@
-import { GLYCOGEN_WATER_KG_PER_KG } from "./constants";
+import {
+  EXTRACELLULAR_FLUID_MODEL,
+  GLYCOGEN_WATER_KG_PER_KG,
+} from "./constants";
 
 /**
  * Mass compartments in the Hall/NIDDK formulation. Glycogen-associated water
@@ -8,7 +11,8 @@ export type BodyCompositionState = {
   fatMassKg: number;
   leanTissueKg: number;
   glycogenKg: number;
-  extracellularFluidKg: number;
+  baselineExtracellularFluidLiters: number;
+  extracellularFluidDeviationLiters: number;
 };
 
 function assertFiniteNonnegative(name: string, value: number): void {
@@ -20,9 +24,18 @@ function validateState(state: BodyCompositionState): void {
   assertFiniteNonnegative("fatMassKg", state.fatMassKg);
   assertFiniteNonnegative("leanTissueKg", state.leanTissueKg);
   assertFiniteNonnegative("glycogenKg", state.glycogenKg);
-  assertFiniteNonnegative("extracellularFluidKg", state.extracellularFluidKg);
+  assertFiniteNonnegative(
+    "baselineExtracellularFluidLiters",
+    state.baselineExtracellularFluidLiters,
+  );
+  if (!Number.isFinite(state.extracellularFluidDeviationLiters)) {
+    throw new TypeError("extracellularFluidDeviationLiters must be finite");
+  }
   if (state.fatMassKg === 0) throw new RangeError("fatMassKg must be positive");
   if (state.leanTissueKg === 0) throw new RangeError("leanTissueKg must be positive");
+  if (calculateExtracellularFluidLiters(state) <= 0) {
+    throw new RangeError("absolute extracellular fluid must be positive");
+  }
 }
 
 export function calculateGlycogenAssociatedWaterKg(glycogenKg: number): number {
@@ -43,13 +56,32 @@ export function calculateGlycogenAssociatedMassKg(glycogenKg: number): number {
   return associatedMassKg;
 }
 
-/** BW = F + L + G + 2.7G + ECF. No compartment dynamics are implemented here. */
+export function calculateExtracellularFluidLiters(
+  state: Pick<
+    BodyCompositionState,
+    "baselineExtracellularFluidLiters" | "extracellularFluidDeviationLiters"
+  >,
+): number {
+  const liters = state.baselineExtracellularFluidLiters
+    + state.extracellularFluidDeviationLiters;
+  if (!Number.isFinite(liters)) {
+    throw new RangeError("extracellular-fluid volume exceeds supported numeric precision");
+  }
+  return liters;
+}
+
+export function calculateExtracellularFluidMassKg(extracellularFluidLiters: number): number {
+  assertFiniteNonnegative("extracellularFluidLiters", extracellularFluidLiters);
+  return extracellularFluidLiters * EXTRACELLULAR_FLUID_MODEL.waterDensityKgPerLiter;
+}
+
+/** BW = F + L + G + 2.7G + rhoWater * ECF. */
 export function reconstructBodyWeightKg(state: BodyCompositionState): number {
   validateState(state);
   const bodyWeightKg = state.fatMassKg
     + state.leanTissueKg
     + calculateGlycogenAssociatedMassKg(state.glycogenKg)
-    + state.extracellularFluidKg;
+    + calculateExtracellularFluidMassKg(calculateExtracellularFluidLiters(state));
   if (!Number.isFinite(bodyWeightKg)) {
     throw new RangeError("body-composition compartments exceed finite body mass");
   }

@@ -1,9 +1,9 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
-import type { HealthDayInput, SyncDateResult } from "./health.types";
+import type { HealthDayInput, HealthSyncMetadata, SyncDateResult } from "./health.types";
 
 export interface HealthSyncRepository {
-  syncDay(day: HealthDayInput, rawDay?: unknown): Promise<SyncDateResult>;
+  syncDay(day: HealthDayInput, rawDay: unknown, metadata: HealthSyncMetadata): Promise<SyncDateResult>;
 }
 
 function jsonValue(day: unknown): Prisma.InputJsonValue {
@@ -17,8 +17,16 @@ function optionalUpdate<T>(value: T | null | undefined): T | null | undefined {
 export class PrismaHealthSyncRepository implements HealthSyncRepository {
   constructor(private readonly client: PrismaClient = prisma) {}
 
-  async syncDay(day: HealthDayInput, rawDay: unknown = day): Promise<SyncDateResult> {
-    // A transaction keeps today's daily record and its workout replacement atomic.
+  async syncDay(
+    day: HealthDayInput,
+    rawDay: unknown = day,
+    metadata: HealthSyncMetadata = {
+      timezone: "Europe/Bratislava",
+      receivedAt: new Date(),
+      syncedAt: null,
+    },
+  ): Promise<SyncDateResult> {
+    // Latest state, immutable snapshot, and workout replacement are one atomic sync.
     return this.client.$transaction(async (transaction) => {
       const existing = await transaction.dailyHealthData.findUnique({
         where: { date: day.date },
@@ -57,6 +65,28 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
           rawPayload: jsonValue(rawDay),
         },
         select: { id: true },
+      });
+
+      await transaction.healthSyncSnapshot.create({
+        data: {
+          dailyHealthDataId: daily.id,
+          date: day.date,
+          receivedAt: metadata.receivedAt,
+          syncedAt: metadata.syncedAt ? new Date(metadata.syncedAt) : null,
+          timezone: metadata.timezone,
+          weightKg: day.weightKg ?? null,
+          bodyFatPercent: day.bodyFatPercent ?? null,
+          caloriesKcal: day.caloriesKcal ?? null,
+          proteinG: day.proteinG ?? null,
+          fatG: day.fatG ?? null,
+          carbsG: day.carbsG ?? null,
+          steps: day.steps ?? null,
+          activeEnergyKcal: day.activeEnergyKcal ?? null,
+          averageWalkingSpeedKmh: day.averageWalkingSpeedKmh ?? null,
+          walkingDistanceKm: day.walkingDistanceKm ?? null,
+          strengthTrainingMinutes: day.strengthTrainingMinutes ?? null,
+          rawPayload: jsonValue(rawDay),
+        },
       });
 
       await transaction.workout.deleteMany({ where: { dailyHealthDataId: daily.id } });

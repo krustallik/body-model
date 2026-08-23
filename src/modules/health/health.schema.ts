@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  DEFAULT_TIME_ZONE,
+  instantToLocalDateTime,
+  isValidTimeZone,
+} from "@/model/time-zone";
 
 function isCalendarDate(value: string): boolean {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
@@ -61,5 +66,22 @@ export const HealthDaySchema = z
 export const HealthSyncRequestSchema = z
   .object({
     days: z.array(HealthDaySchema).length(1, "days must contain exactly today's data"),
+    timezone: z.string().min(1).max(100).refine(isValidTimeZone, "timezone must be a valid IANA zone")
+      .optional(),
+    syncedAt: z.string().datetime({ offset: true }).nullable().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((request, context) => {
+    if (!request.syncedAt) return;
+    const localDate = instantToLocalDateTime(
+      new Date(request.syncedAt),
+      request.timezone ?? DEFAULT_TIME_ZONE,
+    ).date;
+    if (localDate !== request.days[0]?.date) {
+      context.addIssue({
+        code: "custom",
+        path: ["syncedAt"],
+        message: "syncedAt must fall on the synced calendar day in the supplied timezone",
+      });
+    }
+  });

@@ -2,22 +2,30 @@ import { MODEL_INPUT_LIMITS } from "../constants";
 import {
   BODY_COMPARTMENT_ENERGY_DENSITY,
   FORBES_ENERGY_PARTITION_CONSTANT_KG,
+  TISSUE_REMODELING_ENERGY,
 } from "./constants";
 
 export type EnergyPartitionInput = {
-  /** Energy available to fat/lean tissue after any separately modeled glycogen storage. */
-  partitionableEnergyKcal: number;
+  /** Energy left after ordinary expenditure and separately modeled glycogen storage. */
+  availableEnergyKcal: number;
   fatMassKg: number;
 };
 
 export type EnergyPartitionResult = {
+  /** Energy entering the closed Fat/LeanTissue system before synthesis expenditure. */
+  inputEnergyKcal: number;
+  /** Energy chemically stored in Fat and LeanTissue after synthesis expenditure. */
   partitionableEnergyKcal: number;
-  /** Fraction of partitionable energy assigned to the Hall lean-tissue compartment. */
+  /** Fraction of stored tissue energy assigned to the Hall lean-tissue compartment. */
   pRatio: number;
-  fatEnergyKcal: number;
-  leanTissueEnergyKcal: number;
+  remodelingDenominator: number;
+  fatStorageEnergyKcal: number;
+  leanTissueStorageEnergyKcal: number;
   deltaFatMassKg: number;
   deltaLeanTissueKg: number;
+  fatRemodelingEnergyKcal: number;
+  leanTissueRemodelingEnergyKcal: number;
+  totalRemodelingEnergyKcal: number;
 };
 
 function assertFinite(name: string, value: number): void {
@@ -25,14 +33,15 @@ function assertFinite(name: string, value: number): void {
 }
 
 /**
- * Partitions a one-day energy imbalance with the local Forbes/Hall relation.
+ * Solves Hall's implicit tissue-energy system in closed form.
  *
- * p = C / (C + FM) is the energy fraction assigned to Hall lean tissue, not the
- * fraction of total mass change. In a future explicit-glycogen model, the input
- * must already exclude energy stored in glycogen.
+ * B = R / (1 + etaF(1-p)/rhoF + etaL*p/rhoL)
+ *
+ * Eta terms keep their algebraic sign: deposition adds expenditure while
+ * mobilization makes this remodeling term negative.
  */
 export function partitionEnergyBalance(input: EnergyPartitionInput): EnergyPartitionResult {
-  assertFinite("partitionableEnergyKcal", input.partitionableEnergyKcal);
+  assertFinite("availableEnergyKcal", input.availableEnergyKcal);
   assertFinite("fatMassKg", input.fatMassKg);
 
   if (input.fatMassKg <= 0
@@ -42,29 +51,53 @@ export function partitionEnergyBalance(input: EnergyPartitionInput): EnergyParti
 
   const pRatio = FORBES_ENERGY_PARTITION_CONSTANT_KG
     / (FORBES_ENERGY_PARTITION_CONSTANT_KG + input.fatMassKg);
+  const remodelingDenominator = 1
+    + TISSUE_REMODELING_ENERGY.fatMassKcalPerKg * (1 - pRatio)
+      / BODY_COMPARTMENT_ENERGY_DENSITY.fatMassKcalPerKg
+    + TISSUE_REMODELING_ENERGY.leanTissueKcalPerKg * pRatio
+      / BODY_COMPARTMENT_ENERGY_DENSITY.leanTissueKcalPerKg;
 
-  if (input.partitionableEnergyKcal === 0) {
+  if (input.availableEnergyKcal === 0) {
     return {
+      inputEnergyKcal: 0,
       partitionableEnergyKcal: 0,
       pRatio,
-      fatEnergyKcal: 0,
-      leanTissueEnergyKcal: 0,
+      remodelingDenominator,
+      fatStorageEnergyKcal: 0,
+      leanTissueStorageEnergyKcal: 0,
       deltaFatMassKg: 0,
       deltaLeanTissueKg: 0,
+      fatRemodelingEnergyKcal: 0,
+      leanTissueRemodelingEnergyKcal: 0,
+      totalRemodelingEnergyKcal: 0,
     };
   }
 
-  const leanTissueEnergyKcal = input.partitionableEnergyKcal * pRatio;
-  const fatEnergyKcal = input.partitionableEnergyKcal - leanTissueEnergyKcal;
+  const partitionableEnergyKcal = input.availableEnergyKcal / remodelingDenominator;
+  const leanTissueStorageEnergyKcal = partitionableEnergyKcal * pRatio;
+  const fatStorageEnergyKcal = partitionableEnergyKcal - leanTissueStorageEnergyKcal;
+  const deltaFatMassKg = fatStorageEnergyKcal
+    / BODY_COMPARTMENT_ENERGY_DENSITY.fatMassKcalPerKg;
+  const deltaLeanTissueKg = leanTissueStorageEnergyKcal
+    / BODY_COMPARTMENT_ENERGY_DENSITY.leanTissueKcalPerKg;
+  const fatRemodelingEnergyKcal = TISSUE_REMODELING_ENERGY.fatMassKcalPerKg
+    * deltaFatMassKg;
+  const leanTissueRemodelingEnergyKcal = TISSUE_REMODELING_ENERGY.leanTissueKcalPerKg
+    * deltaLeanTissueKg;
+  const totalRemodelingEnergyKcal = fatRemodelingEnergyKcal
+    + leanTissueRemodelingEnergyKcal;
 
   return {
-    partitionableEnergyKcal: input.partitionableEnergyKcal,
+    inputEnergyKcal: input.availableEnergyKcal,
+    partitionableEnergyKcal,
     pRatio,
-    fatEnergyKcal,
-    leanTissueEnergyKcal,
-    deltaFatMassKg:
-      fatEnergyKcal / BODY_COMPARTMENT_ENERGY_DENSITY.fatMassKcalPerKg,
-    deltaLeanTissueKg:
-      leanTissueEnergyKcal / BODY_COMPARTMENT_ENERGY_DENSITY.leanTissueKcalPerKg,
+    remodelingDenominator,
+    fatStorageEnergyKcal,
+    leanTissueStorageEnergyKcal,
+    deltaFatMassKg,
+    deltaLeanTissueKg,
+    fatRemodelingEnergyKcal,
+    leanTissueRemodelingEnergyKcal,
+    totalRemodelingEnergyKcal,
   };
 }

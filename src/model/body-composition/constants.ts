@@ -9,6 +9,14 @@ export const BODY_COMPARTMENT_ENERGY_DENSITY = {
   leanTissueKcalPerKg: 7_600 / KILOJOULES_PER_KILOCALORIE,
 } as const;
 
+/** Hall/NIDDK biochemical synthesis energy, separate from stored tissue energy rho. */
+export const TISSUE_REMODELING_ENERGY = {
+  fatMassKjPerKg: 750,
+  leanTissueKjPerKg: 960,
+  fatMassKcalPerKg: 750 / KILOJOULES_PER_KILOCALORIE,
+  leanTissueKcalPerKg: 960 / KILOJOULES_PER_KILOCALORIE,
+} as const;
+
 /** Coefficient in the local Forbes relation used for Hall lean-tissue partitioning. */
 export const FORBES_COEFFICIENT_KG = 10.4;
 

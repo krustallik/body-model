@@ -1,5 +1,9 @@
 # Phase 4 research: energy balance and fat/lean-tissue partition
 
+> Phase 10.1 supersedes the original eta-free implementation described below.
+> The Forbes partition remains, but tissue storage is now solved together with
+> Hall's separate synthesis/remodeling energy in a closed energy balance.
+
 ## Decision
 
 BodyCast defines daily energy balance as `intakeKcal - expenditureKcal`. Negative

@@ -2,80 +2,101 @@ import { describe, expect, it } from "vitest";
 import {
   BODY_COMPARTMENT_ENERGY_DENSITY,
   FORBES_ENERGY_PARTITION_CONSTANT_KG,
+  TISSUE_REMODELING_ENERGY,
 } from "@/model/body-composition/constants";
 import { partitionEnergyBalance } from "@/model/body-composition/partition";
 
-describe("partitionEnergyBalance", () => {
-  it("exposes literature-derived constants without a 7,700 kcal/kg shortcut", () => {
+describe("remodeling-aware tissue energy partition", () => {
+  it("exposes independently verified rho and exact eta conversions", () => {
     expect(BODY_COMPARTMENT_ENERGY_DENSITY.fatMassMjPerKg).toBe(39.5);
     expect(BODY_COMPARTMENT_ENERGY_DENSITY.leanTissueMjPerKg).toBe(7.6);
-    expect(BODY_COMPARTMENT_ENERGY_DENSITY.fatMassKcalPerKg)
-      .toBeCloseTo(9_440.726577437857, 10);
-    expect(BODY_COMPARTMENT_ENERGY_DENSITY.leanTissueKcalPerKg)
-      .toBeCloseTo(1_816.4435946462715, 10);
+    expect(TISSUE_REMODELING_ENERGY.fatMassKjPerKg).toBe(750);
+    expect(TISSUE_REMODELING_ENERGY.leanTissueKjPerKg).toBe(960);
+    expect(TISSUE_REMODELING_ENERGY.fatMassKcalPerKg)
+      .toBeCloseTo(179.25430210325048, 12);
+    expect(TISSUE_REMODELING_ENERGY.leanTissueKcalPerKg)
+      .toBeCloseTo(229.4455066921606, 12);
     expect(FORBES_ENERGY_PARTITION_CONSTANT_KG).toBeCloseTo(2.001012658227848, 14);
   });
 
-  it("matches a manually verified 500 kcal deficit golden case", () => {
-    const result = partitionEnergyBalance({ partitionableEnergyKcal: -500, fatMassKg: 20 });
+  it.each([500, -500])("matches the manually verified closed-form golden case for R=%s", (availableEnergyKcal) => {
+    const result = partitionEnergyBalance({ availableEnergyKcal, fatMassKg: 20 });
+    const sign = Math.sign(availableEnergyKcal);
 
     expect(result.pRatio).toBeCloseTo(0.09095093436435607, 14);
-    expect(result.fatEnergyKcal).toBeCloseTo(-454.524532817822, 10);
-    expect(result.leanTissueEnergyKcal).toBeCloseTo(-45.475467182178036, 10);
-    expect(result.deltaFatMassKg).toBeCloseTo(-0.048145079628095375, 12);
-    expect(result.deltaLeanTissueKg).toBeCloseTo(-0.025035441406609592, 12);
+    expect(result.remodelingDenominator).toBeCloseTo(1.0287489643744823, 14);
+    expect(result.partitionableEnergyKcal).toBeCloseTo(sign * 486.0272207457518, 10);
+    expect(result.fatStorageEnergyKcal).toBeCloseTo(sign * 441.8225908924145, 10);
+    expect(result.leanTissueStorageEnergyKcal).toBeCloseTo(sign * 44.204629853337266, 10);
+    expect(result.deltaFatMassKg).toBeCloseTo(sign * 0.046799638488452214, 12);
+    expect(result.deltaLeanTissueKg).toBeCloseTo(sign * 0.024335812013995147, 12);
+    expect(result.fatRemodelingEnergyKcal).toBeCloseTo(sign * 8.389036535931922, 12);
+    expect(result.leanTissueRemodelingEnergyKcal).toBeCloseTo(
+      sign * 5.5837427183162855,
+      12,
+    );
+    expect(result.totalRemodelingEnergyKcal).toBeCloseTo(
+      sign * 13.972779254248207,
+      12,
+    );
   });
 
-  it("uses the same local relation for a moderate surplus", () => {
-    const result = partitionEnergyBalance({ partitionableEnergyKcal: 500, fatMassKg: 20 });
-
-    expect(result.fatEnergyKcal).toBeCloseTo(454.524532817822, 10);
-    expect(result.leanTissueEnergyKcal).toBeCloseTo(45.475467182178036, 10);
-    expect(result.deltaFatMassKg).toBeCloseTo(0.048145079628095375, 12);
-    expect(result.deltaLeanTissueKg).toBeCloseTo(0.025035441406609592, 12);
+  it("documents the intentional difference from the old eta-free partition", () => {
+    const result = partitionEnergyBalance({ availableEnergyKcal: 500, fatMassKg: 20 });
+    const oldDeltaFatKg = 454.524532817822
+      / BODY_COMPARTMENT_ENERGY_DENSITY.fatMassKcalPerKg;
+    expect(result.partitionableEnergyKcal).toBeLessThan(500);
+    expect(result.deltaFatMassKg).toBeLessThan(oldDeltaFatKg);
+    expect(result.totalRemodelingEnergyKcal).toBeGreaterThan(0);
   });
 
   it("returns canonical zeros for zero balance, including negative zero", () => {
-    for (const partitionableEnergyKcal of [0, -0]) {
-      const result = partitionEnergyBalance({ partitionableEnergyKcal, fatMassKg: 20.25 });
+    for (const availableEnergyKcal of [0, -0]) {
+      const result = partitionEnergyBalance({ availableEnergyKcal, fatMassKg: 20.25 });
+      expect(result.inputEnergyKcal).toBe(0);
       expect(result.partitionableEnergyKcal).toBe(0);
-      expect(result.fatEnergyKcal).toBe(0);
-      expect(result.leanTissueEnergyKcal).toBe(0);
+      expect(result.fatStorageEnergyKcal).toBe(0);
+      expect(result.leanTissueStorageEnergyKcal).toBe(0);
       expect(result.deltaFatMassKg).toBe(0);
       expect(result.deltaLeanTissueKg).toBe(0);
+      expect(result.fatRemodelingEnergyKcal).toBe(0);
+      expect(result.leanTissueRemodelingEnergyKcal).toBe(0);
+      expect(result.totalRemodelingEnergyKcal).toBe(0);
     }
   });
 
-  it("accepts decimal fat mass", () => {
+  it("accepts decimal energy and fat mass", () => {
     const result = partitionEnergyBalance({
-      partitionableEnergyKcal: -321.75,
+      availableEnergyKcal: -321.75,
       fatMassKg: 18.375,
     });
     expect(result.pRatio).toBeGreaterThan(0);
     expect(result.pRatio).toBeLessThan(1);
-    expect(result.fatEnergyKcal + result.leanTissueEnergyKcal).toBeCloseTo(-321.75, 12);
+    expect(result.fatStorageEnergyKcal + result.leanTissueStorageEnergyKcal)
+      .toBeCloseTo(result.partitionableEnergyKcal, 12);
   });
 
-  it("assigns a larger energy fraction to fat at higher fat mass", () => {
-    const leaner = partitionEnergyBalance({ partitionableEnergyKcal: -500, fatMassKg: 10 });
-    const higherFat = partitionEnergyBalance({ partitionableEnergyKcal: -500, fatMassKg: 40 });
+  it("assigns a larger stored-energy fraction to fat at higher fat mass", () => {
+    const leaner = partitionEnergyBalance({ availableEnergyKcal: -500, fatMassKg: 0.1 });
+    const higherFat = partitionEnergyBalance({ availableEnergyKcal: -500, fatMassKg: 100 });
 
     expect(higherFat.pRatio).toBeLessThan(leaner.pRatio);
-    expect(Math.abs(higherFat.fatEnergyKcal)).toBeGreaterThan(Math.abs(leaner.fatEnergyKcal));
-    expect(Math.abs(higherFat.leanTissueEnergyKcal))
-      .toBeLessThan(Math.abs(leaner.leanTissueEnergyKcal));
+    expect(Math.abs(higherFat.fatStorageEnergyKcal))
+      .toBeGreaterThan(Math.abs(leaner.fatStorageEnergyKcal));
+    expect(Math.abs(higherFat.leanTissueStorageEnergyKcal))
+      .toBeLessThan(Math.abs(leaner.leanTissueStorageEnergyKcal));
   });
 
   it.each([0, -1, 1_000.01])("rejects unsupported fat mass %s", (fatMassKg) => {
-    expect(() => partitionEnergyBalance({ partitionableEnergyKcal: -500, fatMassKg }))
+    expect(() => partitionEnergyBalance({ availableEnergyKcal: -500, fatMassKg }))
       .toThrow(RangeError);
   });
 
   it.each([
-    { partitionableEnergyKcal: Number.NaN, fatMassKg: 20 },
-    { partitionableEnergyKcal: Number.POSITIVE_INFINITY, fatMassKg: 20 },
-    { partitionableEnergyKcal: -500, fatMassKg: Number.NaN },
-    { partitionableEnergyKcal: -500, fatMassKg: Number.NEGATIVE_INFINITY },
+    { availableEnergyKcal: Number.NaN, fatMassKg: 20 },
+    { availableEnergyKcal: Number.POSITIVE_INFINITY, fatMassKg: 20 },
+    { availableEnergyKcal: -500, fatMassKg: Number.NaN },
+    { availableEnergyKcal: -500, fatMassKg: Number.NEGATIVE_INFINITY },
   ])("rejects non-finite inputs", (input) => {
     expect(() => partitionEnergyBalance(input)).toThrow(TypeError);
   });

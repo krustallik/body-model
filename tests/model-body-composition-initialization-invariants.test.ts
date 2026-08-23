@@ -35,11 +35,11 @@ describe("body-composition initialization invariants", () => {
       for (const estimatedBodyFatPercent of percentages) {
         const initialized = initializeBodyComposition({ weightKg, estimatedBodyFatPercent });
         const partition = partitionEnergyBalance({
-          partitionableEnergyKcal: -500,
+          availableEnergyKcal: -500,
           fatMassKg: initialized.observedFatMassKg,
         });
 
-        expect(partition.partitionableEnergyKcal).toBe(-500);
+        expect(partition.inputEnergyKcal).toBe(-500);
         expect(Object.values(partition).every(Number.isFinite)).toBe(true);
       }
     }

@@ -9,6 +9,7 @@ export type GlycogenAwareEnergyInput = {
 export type GlycogenAwareEnergyResult = EnergyPartitionResult & {
   totalEnergyBalanceKcal: number;
   glycogenStorageEnergyKcal: number;
+  availableEnergyBeforeTissueKcal: number;
 };
 
 function assertFinite(name: string, value: number): void {
@@ -21,15 +22,16 @@ export function partitionEnergyBalanceAfterGlycogen(
 ): GlycogenAwareEnergyResult {
   assertFinite("totalEnergyBalanceKcal", input.totalEnergyBalanceKcal);
   assertFinite("glycogenStorageEnergyKcal", input.glycogenStorageEnergyKcal);
-  const partitionableEnergyKcal = input.totalEnergyBalanceKcal
+  const availableEnergyBeforeTissueKcal = input.totalEnergyBalanceKcal
     - input.glycogenStorageEnergyKcal;
   const partition = partitionEnergyBalance({
-    partitionableEnergyKcal,
+    availableEnergyKcal: availableEnergyBeforeTissueKcal,
     fatMassKg: input.fatMassKg,
   });
   return {
     totalEnergyBalanceKcal: input.totalEnergyBalanceKcal,
     glycogenStorageEnergyKcal: input.glycogenStorageEnergyKcal,
+    availableEnergyBeforeTissueKcal,
     ...partition,
   };
 }

@@ -57,8 +57,9 @@ describe("extracellular-fluid cross-module invariants", () => {
       baselineCarbIntakeG: 250,
       sodiumChangeMgPerDay: 1_000,
     })!;
-    expect(energy.glycogenStorageEnergyKcal + energy.fatEnergyKcal
-      + energy.leanTissueEnergyKcal).toBeCloseTo(energy.totalEnergyBalanceKcal, 10);
+    expect(energy.glycogenStorageEnergyKcal + energy.fatStorageEnergyKcal
+      + energy.leanTissueStorageEnergyKcal + energy.totalRemodelingEnergyKcal)
+      .toBeCloseTo(energy.totalEnergyBalanceKcal, 10);
     expect(ecf.deltaExtracellularFluidMassKg).not.toBe(0);
   });
 

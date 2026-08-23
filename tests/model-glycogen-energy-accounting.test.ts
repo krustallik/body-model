@@ -20,8 +20,9 @@ describe("glycogen-aware energy accounting", () => {
     });
     expect(
       result.glycogenStorageEnergyKcal
-      + result.fatEnergyKcal
-      + result.leanTissueEnergyKcal,
+      + result.fatStorageEnergyKcal
+      + result.leanTissueStorageEnergyKcal
+      + result.totalRemodelingEnergyKcal,
     ).toBeCloseTo(result.totalEnergyBalanceKcal, 10);
   });
 
@@ -31,7 +32,8 @@ describe("glycogen-aware energy accounting", () => {
       glycogenStorageEnergyKcal: 200,
       fatMassKg: 20,
     });
-    expect(result.partitionableEnergyKcal).toBe(400);
+    expect(result.availableEnergyBeforeTissueKcal).toBe(400);
+    expect(result.partitionableEnergyKcal).toBeLessThan(400);
   });
 
   it("adds released glycogen energy to the partitionable balance", () => {
@@ -40,7 +42,27 @@ describe("glycogen-aware energy accounting", () => {
       glycogenStorageEnergyKcal: -200,
       fatMassKg: 20,
     });
-    expect(result.partitionableEnergyKcal).toBe(-300);
+    expect(result.availableEnergyBeforeTissueKcal).toBe(-300);
+    expect(result.partitionableEnergyKcal).toBeGreaterThan(-300);
+  });
+
+  it.each([
+    { totalEnergyBalanceKcal: 600, glycogenStorageEnergyKcal: 100, expectedSign: 1 },
+    { totalEnergyBalanceKcal: -600, glycogenStorageEnergyKcal: -100, expectedSign: -1 },
+  ])("closes complete glycogen and tissue energy for $totalEnergyBalanceKcal kcal", (input) => {
+    const result = partitionEnergyBalanceAfterGlycogen({ ...input, fatMassKg: 20 });
+    expect(result.availableEnergyBeforeTissueKcal).toBe(input.expectedSign * 500);
+    expect(result.partitionableEnergyKcal).toBeCloseTo(
+      input.expectedSign * 486.0272207457518,
+      10,
+    );
+    expect(result.glycogenStorageEnergyKcal
+      + result.fatStorageEnergyKcal
+      + result.leanTissueStorageEnergyKcal
+      + result.totalRemodelingEnergyKcal).toBeCloseTo(
+      result.totalEnergyBalanceKcal,
+      10,
+    );
   });
 
   it.each([

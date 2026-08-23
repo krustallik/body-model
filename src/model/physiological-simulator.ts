@@ -76,6 +76,10 @@ export type PhysiologicalDailyInput = {
   occupationalActivity: {
     category: OccupationalCategory | null | undefined;
     durationHours: OptionalMeasurement;
+    intervals?: readonly {
+      category: OccupationalCategory | null | undefined;
+      durationHours: OptionalMeasurement;
+    }[];
   };
   sodiumChangeMgPerDay: OptionalMeasurement;
   measuredWeightKg: OptionalMeasurement;
@@ -180,11 +184,22 @@ function missingFields(
     require("averageWalkingSpeedKmh", input.averageWalkingSpeedKmh);
   }
   require("strengthTrainingMinutes", input.strengthTrainingMinutes);
-  require("occupationalActivity.durationHours", input.occupationalActivity.durationHours);
-  if (input.occupationalActivity.durationHours !== null
-      && input.occupationalActivity.durationHours !== undefined
-      && input.occupationalActivity.durationHours !== 0) {
-    require("occupationalActivity.category", input.occupationalActivity.category);
+  if (input.occupationalActivity.intervals !== undefined) {
+    for (const [index, interval] of input.occupationalActivity.intervals.entries()) {
+      require(`occupationalActivity.intervals.${index}.durationHours`, interval.durationHours);
+      if (interval.durationHours !== null
+          && interval.durationHours !== undefined
+          && interval.durationHours !== 0) {
+        require(`occupationalActivity.intervals.${index}.category`, interval.category);
+      }
+    }
+  } else {
+    require("occupationalActivity.durationHours", input.occupationalActivity.durationHours);
+    if (input.occupationalActivity.durationHours !== null
+        && input.occupationalActivity.durationHours !== undefined
+        && input.occupationalActivity.durationHours !== 0) {
+      require("occupationalActivity.category", input.occupationalActivity.category);
+    }
   }
   if (ecfPolicy === "full") {
     require("sodiumChangeMgPerDay", input.sodiumChangeMgPerDay);

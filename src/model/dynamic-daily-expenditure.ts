@@ -16,6 +16,11 @@ import { calculateTef, type TefInput } from "./tef";
 
 type OptionalMeasurement = number | null | undefined;
 
+export type OccupationalActivityIntervalInput = {
+  category: OccupationalCategory | null | undefined;
+  durationHours: OptionalMeasurement;
+};
+
 export type DynamicDailyExpenditureInput = {
   bodyComposition: BodyCompositionState;
   rmrParameters: DynamicRmrParameters;
@@ -30,6 +35,8 @@ export type DynamicDailyExpenditureInput = {
   occupational: {
     category: OccupationalCategory | null | undefined;
     durationHours: OptionalMeasurement;
+    /** Optional non-overlapping intervals; when supplied, the legacy pair is ignored. */
+    intervals?: readonly OccupationalActivityIntervalInput[];
   };
   adaptiveThermogenesisKcalPerDay: OptionalMeasurement;
   personalization?: ExpenditurePersonalization;
@@ -76,9 +83,34 @@ function normalizeOptionalFinite(
 function calculateOccupationalComponent(input: {
   category: OccupationalCategory | null | undefined;
   durationHours: OptionalMeasurement;
+  intervals?: readonly OccupationalActivityIntervalInput[];
   weightKg: number;
   rmrKcalPerDay: number;
 }): number | null {
+  if (input.intervals !== undefined) {
+    let totalDurationHours = 0;
+    let totalActivityKcal = 0;
+    for (const [index, interval] of input.intervals.entries()) {
+      const durationHours = normalizeOptionalFinite(
+        `occupational.intervals.${index}.durationHours`,
+        interval.durationHours,
+      );
+      if (durationHours === null) return null;
+      totalDurationHours += durationHours;
+      if (totalDurationHours > 24) {
+        throw new RangeError("total occupational durationHours must not exceed 24");
+      }
+      if (durationHours === 0) continue;
+      if (interval.category === null || interval.category === undefined) return null;
+      totalActivityKcal += calculateOccupationalActivity({
+        category: interval.category,
+        durationHours,
+        weightKg: input.weightKg,
+        rmrKcalPerDay: input.rmrKcalPerDay,
+      });
+    }
+    return totalActivityKcal;
+  }
   const durationHours = normalizeOptionalFinite("occupational.durationHours", input.durationHours);
   if (durationHours === null) return null;
   if (durationHours === 0) return 0;

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { calculateWalkingActivity } from "@/model/activity/walking";
+import { calculateOccupationalActivity } from "@/model/occupational-activity";
 import type { BodyCompositionState } from "@/model/body-composition/state";
 import {
   calculateDynamicDailyExpenditure,
@@ -54,6 +55,63 @@ describe("one-day dynamic expenditure composition", () => {
     expect(result.activityKcalPerDay).toBeCloseTo(1_175.425, 12);
     expect(result.adaptiveThermogenesisKcalPerDay).toBe(-40);
     expect(result.modelTdeeBeforePersonalizationKcalPerDay).toBeCloseTo(2_958.025, 12);
+  });
+
+  it("sums multiple occupational intervals using the same individualized MET primitive", () => {
+    const result = calculate({
+      occupational: {
+        category: null,
+        durationHours: 0,
+        intervals: [
+          { category: "standingLight", durationHours: 4 },
+          { category: "manualModerate", durationHours: 4 },
+        ],
+      },
+    });
+    const expected = calculateOccupationalActivity({
+      category: "standingLight", durationHours: 4,
+      weightKg: result.currentPredictedWeightKg, rmrKcalPerDay: result.dynamicRmrKcalPerDay,
+    }) + calculateOccupationalActivity({
+      category: "manualModerate", durationHours: 4,
+      weightKg: result.currentPredictedWeightKg, rmrKcalPerDay: result.dynamicRmrKcalPerDay,
+    });
+    expect(result.occupationalActivityKcalPerDay).toBeCloseTo(expected, 12);
+  });
+
+  it("preserves zero and missing semantics for occupational interval lists", () => {
+    expect(calculate({
+      occupational: { category: "manualModerate", durationHours: 8, intervals: [] },
+    }).occupationalActivityKcalPerDay).toBe(0);
+    expect(calculate({
+      occupational: {
+        category: null, durationHours: 0,
+        intervals: [{ category: null, durationHours: 0 }],
+      },
+    }).occupationalActivityKcalPerDay).toBe(0);
+    expect(calculate({
+      occupational: {
+        category: null, durationHours: 0,
+        intervals: [{ category: "manualLight", durationHours: null }],
+      },
+    }).occupationalActivityKcalPerDay).toBeNull();
+    expect(calculate({
+      occupational: {
+        category: null, durationHours: 0,
+        intervals: [{ category: null, durationHours: 1 }],
+      },
+    }).occupationalActivityKcalPerDay).toBeNull();
+  });
+
+  it("rejects interval lists whose total occupational duration exceeds one day", () => {
+    expect(() => calculate({
+      occupational: {
+        category: null, durationHours: 0,
+        intervals: [
+          { category: "standingLight", durationHours: 12.1 },
+          { category: "manualLight", durationHours: 12 },
+        ],
+      },
+    })).toThrow("must not exceed 24");
   });
 
   it("recalculates identical walking behavior from current weight exactly once", () => {

@@ -21,6 +21,7 @@ model Profile {
   targetDate     DateTime? @db.Date
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
+  modelEpisodes  ModelEpisode[]
 }
 
 model DailyHealthData {
@@ -97,4 +98,95 @@ model WorkInterval {
 
   @@index([date, startAt])
   @@index([startAt, endAt])
+}
+
+model ModelEpisode {
+  id                                      Int               @id @default(autoincrement())
+  profileId                               Int               @default(1)
+  startDate                               String            @db.VarChar(10)
+  timezone                                String            @db.VarChar(100)
+  modelVersion                            String            @db.VarChar(100)
+  active                                  Boolean           @default(true)
+  deactivatedAt                           DateTime?          @db.Timestamptz(3)
+  ecfPolicy                               String            @db.VarChar(40)
+  baselineEnergyIntakeKcalPerDay          Float
+  baselineCarbIntakeG                     Float
+  baselineWindowStartDate                 String            @db.VarChar(10)
+  baselineWindowEndDate                   String            @db.VarChar(10)
+  baselineNutritionDayCount               Int
+  baselineWeightObservationCount          Int
+  baselineWeightTrendKgPerWeek            Float
+  baselineWeightTrendPercentPerWeek       Float
+  baselineDerivationMethod                String            @db.VarChar(100)
+  baselineNutritionFallback               Json?
+  nutritionMaxBridgeDays                  Int               @default(2)
+  initialFatMassKg                        Float
+  initialLeanTissueKg                     Float
+  initialGlycogenKg                       Float
+  baselineExtracellularFluidLiters        Float
+  initialExtracellularFluidDeviationLiters Float
+  initialAdaptiveThermogenesisKcalPerDay  Float
+  initialFilteredWeightKg                 Float
+  initialWeightFilterVarianceKg2          Float
+  initialRmrKcalPerDay                    Float
+  dynamicRmrFatCoefficient                Float
+  dynamicRmrLeanCoefficient               Float
+  dynamicRmrCalibrationOffsetKcalPerDay   Float
+  adaptiveThermogenesisBeta               Float
+  adaptiveThermogenesisTimeConstantDays   Float
+  weightProcessNoiseVarianceKg2PerDay     Float
+  weightMeasurementNoiseVarianceKg2       Float
+  personalOffsetKcalPerDay                Float             @default(0)
+  activityCalibration                     Float             @default(1)
+  calibrationStatus                       String            @default("insufficient-history") @db.VarChar(40)
+  calibrationDiagnostics                  Json
+  latestModeledDate                       String?           @db.VarChar(10)
+  createdAt                               DateTime          @default(now()) @db.Timestamptz(3)
+  updatedAt                               DateTime          @updatedAt @db.Timestamptz(3)
+  profile                                 Profile           @relation(fields: [profileId], references: [id], onDelete: Restrict)
+  dailyStates                             DailyModelState[]
+
+  @@index([active])
+  @@index([startDate])
+  @@index([profileId])
+}
+
+model DailyModelState {
+  id                                      Int          @id @default(autoincrement())
+  episodeId                               Int
+  date                                    String       @db.VarChar(10)
+  status                                  String       @db.VarChar(20)
+  dataQuality                             String       @default("observed") @db.VarChar(20)
+  nutritionSource                         String       @default("observed") @db.VarChar(30)
+  nutritionImputationMethod               String?      @db.VarChar(50)
+  nutritionReferenceDayCount              Int          @default(0)
+  nutritionGapLength                      Int          @default(0)
+  nutritionImputationDiagnostics          Json         @default("{}")
+  sourceQuality                           Json
+  missingFields                           Json
+  modelVersion                            String       @db.VarChar(100)
+  startWeightKg                           Float?
+  endWeightKg                             Float?
+  fatMassKg                               Float?
+  leanTissueKg                            Float?
+  glycogenKg                              Float?
+  extracellularFluidDeviationLiters       Float?
+  dynamicRmrKcalPerDay                    Float?
+  tefKcalPerDay                           Float?
+  activityKcalPerDay                      Float?
+  adaptiveThermogenesisKcalPerDay         Float?
+  energyIntakeKcal                        Float?
+  energyExpenditureKcal                   Float?
+  energyBalanceKcal                       Float?
+  deltaFatKg                              Float?
+  deltaLeanTissueKg                       Float?
+  deltaGlycogenKg                         Float?
+  filteredWeightKg                        Float?
+  createdAt                               DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt                               DateTime     @updatedAt @db.Timestamptz(3)
+  episode                                 ModelEpisode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+
+  @@unique([episodeId, date])
+  @@index([episodeId, date])
+  @@index([date])
 }

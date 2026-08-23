@@ -10,7 +10,7 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       reporter: ["text", "json-summary", "html"],
-      include: ["src/model/**/*.ts", "src/modules/health/**/*.ts", "src/modules/days/**/*.ts", "src/modules/profile/**/*.ts", "src/modules/work-intervals/**/*.ts", "src/app/api/**/*.ts", "src/lib/env.ts"],
+      include: ["src/model/**/*.ts", "src/modules/health/**/*.ts", "src/modules/days/**/*.ts", "src/modules/profile/**/*.ts", "src/modules/work-intervals/**/*.ts", "src/modules/model-episodes/**/*.ts", "src/app/api/**/*.ts", "src/lib/env.ts"],
       exclude: ["src/modules/health/health.types.ts"],
       thresholds: {
         lines: 85,

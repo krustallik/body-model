@@ -76,6 +76,69 @@ function sequentialDays(count: number, input: PhysiologicalDailyInput) {
 }
 
 describe("deterministic physiological simulator", () => {
+  it("supports multiple occupational intervals without changing their equations", () => {
+    const result = requireComplete(simulateOneDay({
+      state: initialState,
+      parameters,
+      day: day("2026-01-01", {
+        occupationalActivity: {
+          category: null,
+          durationHours: 0,
+          intervals: [
+            { category: "standingLight", durationHours: 4 },
+            { category: "manualModerate", durationHours: 4 },
+          ],
+        },
+      }),
+      options: { ecfPolicy: "full" },
+    }));
+    expect(result.calculations.expenditure.occupationalActivityKcalPerDay)
+      .toBeGreaterThan(0);
+  });
+
+  it("reports missing fields within occupational interval lists", () => {
+    const missingDuration = simulateOneDay({
+      state: initialState,
+      parameters,
+      day: day("2026-01-01", {
+        occupationalActivity: {
+          category: null, durationHours: 0,
+          intervals: [{ category: "manualLight", durationHours: null }],
+        },
+      }),
+      options: { ecfPolicy: "full" },
+    });
+    expect(missingDuration).toMatchObject({
+      status: "incomplete",
+      missingFields: ["occupationalActivity.intervals.0.durationHours"],
+    });
+    const missingCategory = simulateOneDay({
+      state: initialState,
+      parameters,
+      day: day("2026-01-01", {
+        occupationalActivity: {
+          category: null, durationHours: 0,
+          intervals: [{ category: null, durationHours: 1 }],
+        },
+      }),
+      options: { ecfPolicy: "full" },
+    });
+    expect(missingCategory).toMatchObject({
+      status: "incomplete",
+      missingFields: ["occupationalActivity.intervals.0.category"],
+    });
+    expect(simulateOneDay({
+      state: initialState,
+      parameters,
+      day: day("2026-01-01", {
+        occupationalActivity: {
+          category: null, durationHours: 0,
+          intervals: [{ category: null, durationHours: 0 }],
+        },
+      }),
+      options: { ecfPolicy: "full" },
+    }).status).toBe("complete");
+  });
   it("uses start-of-day tissue for today's RMR and end tissue for tomorrow", () => {
     const results = simulateDays({
       initialState,

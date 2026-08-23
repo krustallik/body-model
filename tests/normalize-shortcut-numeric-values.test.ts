@@ -19,9 +19,11 @@ describe("parseShortcutNumber", () => {
     expect(parseShortcutNumber(input)).toBe(expected);
   });
 
+  it.each(["", " ", "\t\n"])("normalizes an empty metric %j to null", (input) => {
+    expect(parseShortcutNumber(input)).toBeNull();
+  });
+
   it.each([
-    "",
-    " ",
     "abc",
     "27abc",
     "abc27",
@@ -123,5 +125,27 @@ describe("normalizeShortcutNumericValues", () => {
         strengthTrainingMinutes: "21. 8. 2026, 13:01 21. 8. 2026, 14:16",
       }],
     })).toEqual({ days: [{ date: "2026-08-21", strengthTrainingMinutes: 75 }] });
+  });
+
+  it("normalizes empty day and workout metrics without treating them as zero", () => {
+    expect(normalizeShortcutNumericValues({
+      days: [{
+        date: "2026-08-23",
+        weightKg: "",
+        averageWalkingSpeedKmh: " ",
+        walkingDistanceKm: "\t",
+        strengthTrainingMinutes: "",
+        workouts: [{ durationMinutes: "", energyKcal: " " }],
+      }],
+    })).toEqual({
+      days: [{
+        date: "2026-08-23",
+        weightKg: null,
+        averageWalkingSpeedKmh: null,
+        walkingDistanceKm: null,
+        strengthTrainingMinutes: 0,
+        workouts: [{ durationMinutes: null, energyKcal: null }],
+      }],
+    });
   });
 });

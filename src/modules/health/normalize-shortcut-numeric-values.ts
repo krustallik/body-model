@@ -26,6 +26,7 @@ export function parseShortcutNumber(value: unknown): unknown {
   if (typeof value !== "string") return value;
 
   const trimmed = value.trim();
+  if (trimmed === "") return null;
   if (!SHORTCUT_NUMBER_PATTERN.test(trimmed)) return value;
 
   const parsed = Number(trimmed.replace(",", "."));

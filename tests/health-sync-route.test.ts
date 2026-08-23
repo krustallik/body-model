@@ -168,7 +168,15 @@ describe("POST /api/v1/health/sync", () => {
     expect(syncHealthData.mock.calls[0]?.[0].days[0].strengthTrainingMinutes).toBe(0);
   });
 
-  it.each(["", " ", "abc", "27abc", "27%", "89 kg", "NaN", "Infinity"])(
+  it.each(["", " ", "\t\n"])("accepts an empty numeric metric %j as null", async (averageWalkingSpeedKmh) => {
+    syncHealthData.mockResolvedValue({ status: "ok", received: 1, created: 1, updated: 0, dates: [] });
+    const response = await POST(request({ days: [{ date: "2026-08-23", averageWalkingSpeedKmh }] }));
+
+    expect(response.status).toBe(200);
+    expect(syncHealthData.mock.calls[0]?.[0].days[0].averageWalkingSpeedKmh).toBeNull();
+  });
+
+  it.each(["abc", "27abc", "27%", "89 kg", "NaN", "Infinity"])(
     "rejects invalid numeric string %j",
     async (weightKg) => {
       const response = await POST(request({ days: [{ date: "2026-08-22", weightKg }] }));

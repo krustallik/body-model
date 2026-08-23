@@ -174,6 +174,30 @@ describe("one-day dynamic expenditure composition", () => {
     expect(Object.values(result).every((value) => value === null || Number.isFinite(value))).toBe(true);
   });
 
+  it("applies one global Activity calibration and additive offset exactly once", () => {
+    const result = calculate({
+      personalization: {
+        personalOffsetKcalPerDay: 120,
+        activityCalibration: 0.8,
+      },
+    });
+    expect(result.activityKcalPerDay).toBeCloseTo(1_175.425, 12);
+    expect(result.calibratedActivityKcalPerDay).toBeCloseTo(940.34, 12);
+    expect(result.modelTdeeBeforePersonalizationKcalPerDay).toBeCloseTo(2_958.025, 12);
+    expect(result.personalizedTdeeKcalPerDay).toBeCloseTo(2_842.94, 12);
+    expect(result.personalOffsetKcalPerDay).toBe(120);
+    expect(result.activityCalibration).toBe(0.8);
+  });
+
+  it("keeps personalized expenditure unavailable when the raw total is unavailable", () => {
+    const result = calculate({
+      strength: { durationMinutes: null },
+      personalization: { personalOffsetKcalPerDay: 100, activityCalibration: 1.1 },
+    });
+    expect(result.calibratedActivityKcalPerDay).toBeNull();
+    expect(result.personalizedTdeeKcalPerDay).toBeNull();
+  });
+
   it.each([
     { adaptiveThermogenesisKcalPerDay: Number.NaN },
     { adaptiveThermogenesisKcalPerDay: Number.POSITIVE_INFINITY },
@@ -181,6 +205,9 @@ describe("one-day dynamic expenditure composition", () => {
     { occupational: { category: "manualLight" as const, durationHours: -1 } },
     { occupational: { category: "manualLight" as const, durationHours: 25 } },
     { occupational: { category: "invalid" as "manualLight", durationHours: 1 } },
+    { personalization: { personalOffsetKcalPerDay: Number.NaN, activityCalibration: 1 } },
+    { personalization: { personalOffsetKcalPerDay: 0, activityCalibration: Number.NaN } },
+    { personalization: { personalOffsetKcalPerDay: 0, activityCalibration: -0.1 } },
   ])("rejects invalid daily input", (override) => {
     expect(() => calculate(override)).toThrow();
   });
@@ -195,5 +222,14 @@ describe("one-day dynamic expenditure composition", () => {
     expect(() => calculate({
       macros: { proteinG: 1e308, carbsG: 1e308, fatG: 1e308 },
     })).toThrow(/positive and finite/);
+  });
+
+  it("rejects nonpositive or nonfinite personalized expenditure", () => {
+    expect(() => calculate({
+      personalization: { personalOffsetKcalPerDay: -10_000, activityCalibration: 1 },
+    })).toThrow(/personalized model expenditure/);
+    expect(() => calculate({
+      personalization: { personalOffsetKcalPerDay: 0, activityCalibration: 1e308 },
+    })).toThrow(/calibrated Activity/);
   });
 });

@@ -32,6 +32,19 @@ export type DynamicDailyExpenditureInput = {
     durationHours: OptionalMeasurement;
   };
   adaptiveThermogenesisKcalPerDay: OptionalMeasurement;
+  personalization?: ExpenditurePersonalization;
+};
+
+export type ExpenditurePersonalization = {
+  /** Effective residual expenditure correction; not a direct metabolic measurement. */
+  personalOffsetKcalPerDay: number;
+  /** Applied once to total modeled net Activity. */
+  activityCalibration: number;
+};
+
+export const DEFAULT_EXPENDITURE_PERSONALIZATION: Readonly<ExpenditurePersonalization> = {
+  personalOffsetKcalPerDay: 0,
+  activityCalibration: 1,
 };
 
 export type DynamicDailyExpenditureResult = {
@@ -41,9 +54,14 @@ export type DynamicDailyExpenditureResult = {
   outsideWorkWalkingActivityKcalPerDay: number | null;
   strengthActivityKcalPerDay: number | null;
   occupationalActivityKcalPerDay: number | null;
+  /** Uncalibrated sum of walking, strength, and occupational net Activity. */
   activityKcalPerDay: number | null;
+  calibratedActivityKcalPerDay: number | null;
   adaptiveThermogenesisKcalPerDay: number | null;
   modelTdeeBeforePersonalizationKcalPerDay: number | null;
+  personalOffsetKcalPerDay: number;
+  activityCalibration: number;
+  personalizedTdeeKcalPerDay: number | null;
 };
 
 function normalizeOptionalFinite(
@@ -80,6 +98,16 @@ function calculateOccupationalComponent(input: {
 export function calculateDynamicDailyExpenditure(
   input: DynamicDailyExpenditureInput,
 ): DynamicDailyExpenditureResult {
+  const personalization = input.personalization ?? DEFAULT_EXPENDITURE_PERSONALIZATION;
+  if (!Number.isFinite(personalization.personalOffsetKcalPerDay)) {
+    throw new TypeError("personalOffsetKcalPerDay must be finite");
+  }
+  if (!Number.isFinite(personalization.activityCalibration)) {
+    throw new TypeError("activityCalibration must be finite");
+  }
+  if (personalization.activityCalibration < 0) {
+    throw new RangeError("activityCalibration must be nonnegative");
+  }
   const currentPredictedWeightKg = reconstructBodyWeightKg(input.bodyComposition);
   const dynamicRmrKcalPerDay = calculateDynamicRmr({
     fatMassKg: input.bodyComposition.fatMassKg,
@@ -116,6 +144,13 @@ export function calculateDynamicDailyExpenditure(
   const activityKcalPerDay = activityComponents.some((value) => value === null)
     ? null
     : activityComponents.reduce<number>((total, value) => total + (value as number), 0);
+  const calibratedActivityKcalPerDay = activityKcalPerDay === null
+    ? null
+    : activityKcalPerDay * personalization.activityCalibration;
+  if (calibratedActivityKcalPerDay !== null
+      && !Number.isFinite(calibratedActivityKcalPerDay)) {
+    throw new RangeError("calibrated Activity exceeds finite numeric precision");
+  }
 
   const requiredComponents = [
     tefKcalPerDay,
@@ -135,6 +170,25 @@ export function calculateDynamicDailyExpenditure(
         || modelTdeeBeforePersonalizationKcalPerDay <= 0)) {
     throw new RangeError("model expenditure must be positive and finite");
   }
+  const personalizedRequiredComponents = [
+    tefKcalPerDay,
+    calibratedActivityKcalPerDay,
+    adaptiveThermogenesisKcalPerDay,
+  ];
+  const personalizedTdeeKcalPerDay = personalizedRequiredComponents.some(
+    (value) => value === null,
+  )
+    ? null
+    : dynamicRmrKcalPerDay
+      + (tefKcalPerDay as number)
+      + (calibratedActivityKcalPerDay as number)
+      + (adaptiveThermogenesisKcalPerDay as number)
+      + personalization.personalOffsetKcalPerDay;
+  if (personalizedTdeeKcalPerDay !== null
+      && (!Number.isFinite(personalizedTdeeKcalPerDay)
+        || personalizedTdeeKcalPerDay <= 0)) {
+    throw new RangeError("personalized model expenditure must be positive and finite");
+  }
 
   return {
     currentPredictedWeightKg,
@@ -144,7 +198,11 @@ export function calculateDynamicDailyExpenditure(
     strengthActivityKcalPerDay,
     occupationalActivityKcalPerDay,
     activityKcalPerDay,
+    calibratedActivityKcalPerDay,
     adaptiveThermogenesisKcalPerDay,
     modelTdeeBeforePersonalizationKcalPerDay,
+    personalOffsetKcalPerDay: personalization.personalOffsetKcalPerDay,
+    activityCalibration: personalization.activityCalibration,
+    personalizedTdeeKcalPerDay,
   };
 }

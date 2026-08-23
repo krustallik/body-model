@@ -386,6 +386,31 @@ describe("deterministic physiological simulator", () => {
       .toBe(missing.endState.extracellularFluidDeviationLiters);
   });
 
+  it("applies personalization before tissue closure and preserves energy", () => {
+    const result = requireComplete(simulateOneDay({
+      state: initialState,
+      parameters,
+      day: day("2026-08-02"),
+      options: { ecfPolicy: "hold-ecf" },
+      personalization: { personalOffsetKcalPerDay: 120, activityCalibration: 0.8 },
+    }));
+    const expenditure = result.calculations.expenditure;
+    expect(expenditure.calibratedActivityKcalPerDay)
+      .toBeCloseTo(expenditure.activityKcalPerDay! * 0.8, 12);
+    expect(result.calculations.energyBalanceKcal).toBeCloseTo(
+      2_500 - expenditure.personalizedTdeeKcalPerDay!,
+      12,
+    );
+    const tissue = result.calculations.tissueEnergy;
+    expect(tissue.glycogenStorageEnergyKcal
+      + tissue.fatStorageEnergyKcal
+      + tissue.leanTissueStorageEnergyKcal
+      + tissue.totalRemodelingEnergyKcal).toBeCloseTo(
+      result.calculations.energyBalanceKcal,
+      9,
+    );
+  });
+
   it("does not mutate state, parameters, inputs, or prior returned states", () => {
     const stateBefore = structuredClone(initialState);
     const parametersBefore = structuredClone(parameters);

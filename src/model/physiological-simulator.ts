@@ -22,6 +22,7 @@ import {
 } from "./body-composition/state";
 import {
   calculateDynamicDailyExpenditure,
+  type ExpenditurePersonalization,
   type DynamicDailyExpenditureResult,
 } from "./dynamic-daily-expenditure";
 import type { DynamicRmrParameters } from "./dynamic-rmr";
@@ -216,6 +217,7 @@ export function simulateOneDay(input: {
   parameters: PhysiologicalSimulatorParameters;
   day: PhysiologicalDailyInput;
   options: PhysiologicalSimulatorOptions;
+  personalization?: ExpenditurePersonalization;
 }): CompleteSimulationDay | IncompleteSimulationDay {
   validateCalendarDate(input.day.date);
   validateEcfPolicy(input.options.ecfPolicy);
@@ -258,6 +260,7 @@ export function simulateOneDay(input: {
     occupational: input.day.occupationalActivity,
     adaptiveThermogenesisKcalPerDay:
       adaptiveThermogenesisTransition.meanAdaptiveThermogenesisKcalPerDay,
+    personalization: input.personalization,
   });
   const glycogenTransition = stepGlycogenOneDay({
     currentGlycogenKg: startState.glycogenKg,
@@ -265,7 +268,7 @@ export function simulateOneDay(input: {
     parameters: input.parameters.glycogenParameters,
   })!;
   const energyBalanceKcal = input.day.caloriesKcal!
-    - expenditure.modelTdeeBeforePersonalizationKcalPerDay!;
+    - expenditure.personalizedTdeeKcalPerDay!;
   const tissueEnergy = partitionEnergyBalanceAfterGlycogen({
     totalEnergyBalanceKcal: energyBalanceKcal,
     glycogenStorageEnergyKcal: glycogenTransition.glycogenStorageEnergyKcal,
@@ -336,6 +339,7 @@ export function simulateDays(input: {
   parameters: PhysiologicalSimulatorParameters;
   days: readonly PhysiologicalDailyInput[];
   options: PhysiologicalSimulatorOptions;
+  personalization?: ExpenditurePersonalization;
 }): SimulationDayResult[] {
   let previousEpochDay: number | null = null;
   for (let index = 0; index < input.days.length; index += 1) {
@@ -369,6 +373,7 @@ export function simulateDays(input: {
       parameters: input.parameters,
       day,
       options: input.options,
+      personalization: input.personalization,
     });
     results.push(result);
     if (result.status === "incomplete") {

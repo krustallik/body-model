@@ -79,6 +79,9 @@ export type PhysiologicalDailyInput = {
     intervals?: readonly {
       category: OccupationalCategory | null | undefined;
       durationHours: OptionalMeasurement;
+      breakDurationHours?: OptionalMeasurement;
+      workWalkingDistanceKm?: OptionalMeasurement;
+      averageWalkingSpeedKmh?: OptionalMeasurement;
     }[];
   };
   sodiumChangeMgPerDay: OptionalMeasurement;

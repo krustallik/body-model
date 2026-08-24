@@ -17,7 +17,7 @@ describe("model episode initialization", () => {
       profileId: 1,
       startDate: "2026-08-22",
       timezone: "Europe/Bratislava",
-      modelVersion: "bodycast-physiology-v1",
+      modelVersion: "bodycast-physiology-v3",
       ecfPolicy: "hold-ecf",
       bodyFatObservationCount: 7,
       nutritionMaxBridgeDays: 2,

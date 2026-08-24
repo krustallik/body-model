@@ -15,6 +15,7 @@ import { WorkIntervalOverlapError } from "@/modules/work-intervals/work-interval
 
 const valid = {
   date: "2026-08-23", startTime: "08:00", endTime: "16:00", category: "standingLight",
+  breakMinutes: 30,
 };
 const dto = { id: 1, ...valid, timezone: "Europe/Bratislava" };
 const jsonRequest = (url: string, body: unknown) => new Request(url, {

@@ -123,6 +123,22 @@ export function buildSimulationDays(input: {
       workIntervalCount: dailyIntervals.length,
       workWalkingDistanceKm: walking.workWalkingDistanceKm,
       outsideWorkWalkingDistanceKm: walking.outsideWorkWalkingDistanceKm,
+      workWalkingReconstruction: walking.intervals.map((interval) => ({
+        intervalId: interval.intervalId,
+        distanceKm: interval.estimatedWalkingDistanceKm.value,
+        reason: interval.estimatedWalkingDistanceKm.reason ?? null,
+        startMethod: "method" in interval.estimatedWalkingDistanceKm.start
+          ? interval.estimatedWalkingDistanceKm.start.method
+          : null,
+        endMethod: "method" in interval.estimatedWalkingDistanceKm.end
+          ? interval.estimatedWalkingDistanceKm.end.method
+          : null,
+      })),
+      workBreaks: dailyIntervals.map((interval) => ({
+        intervalId: interval.id,
+        breakMinutes: interval.breakMinutes,
+        source: interval.breakMinutes === null ? "legacy-unreported" : "user-entered",
+      })),
       nutrition: { ...bridgedNutrition.provenance,
         referenceDates: [...bridgedNutrition.provenance.referenceDates],
         observedFields: [...bridgedNutrition.provenance.observedFields],
@@ -137,6 +153,11 @@ export function buildSimulationDays(input: {
         ? interval.category as OccupationalCategory
         : null,
       durationHours: (interval.endAt.getTime() - interval.startAt.getTime()) / 3_600_000,
+      breakDurationHours: interval.breakMinutes === null ? null : interval.breakMinutes / 60,
+      workWalkingDistanceKm: walking.intervals.find(({ intervalId }) => (
+        intervalId === interval.id
+      ))?.estimatedWalkingDistanceKm.value ?? null,
+      averageWalkingSpeedKmh: day.averageWalkingSpeedKmh,
     }));
 
     return {

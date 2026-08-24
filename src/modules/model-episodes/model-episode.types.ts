@@ -41,6 +41,7 @@ export type ModelWorkIntervalSource = {
   endAt: Date;
   timezone: string;
   category: string;
+  breakMinutes: number | null;
 };
 
 export type HistoricalModelSources = {
@@ -158,6 +159,18 @@ export type ModelDaySourceQuality = {
   workIntervalCount: number;
   workWalkingDistanceKm: number | null;
   outsideWorkWalkingDistanceKm: number | null;
+  workWalkingReconstruction?: Array<{
+    intervalId: number;
+    distanceKm: number | null;
+    reason: "insufficient-data" | "gap-too-large" | "counter-decreased" | null;
+    startMethod: "exact" | "interpolated" | "nearest" | null;
+    endMethod: "exact" | "interpolated" | "nearest" | null;
+  }>;
+  workBreaks?: Array<{
+    intervalId: number;
+    breakMinutes: number | null;
+    source: "user-entered" | "legacy-unreported";
+  }>;
   nutrition: NutritionProvenance;
 };
 

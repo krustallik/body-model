@@ -78,6 +78,59 @@ describe("one-day dynamic expenditure composition", () => {
     expect(result.occupationalActivityKcalPerDay).toBeCloseTo(expected, 12);
   });
 
+  it("uses reconstructed work walking once and residual MET only for remaining time", () => {
+    const result = calculate({
+      outsideWorkWalking: { distanceKm: 2.6, averageSpeedKmh: 5 },
+      strength: { durationMinutes: 0 },
+      occupational: {
+        category: null,
+        durationHours: 0,
+        intervals: [{
+          category: "manualLight",
+          durationHours: 8,
+          workWalkingDistanceKm: 2.5,
+          averageWalkingSpeedKmh: 5,
+        }],
+      },
+    });
+    const weight = result.currentPredictedWeightKg;
+    const restingPerHour = result.dynamicRmrKcalPerDay / 24;
+    const expectedWorkWalking = 3.8 * weight * 0.5 - restingPerHour * 0.5;
+    const expectedResidual = 2.3 * weight * 7.5 - restingPerHour * 7.5;
+    expect(result.occupationalActivityKcalPerDay)
+      .toBeCloseTo(expectedWorkWalking + expectedResidual, 12);
+    expect(result.outsideWorkWalkingActivityKcalPerDay).toBeCloseTo(
+      3.8 * weight * 0.52 - restingPerHour * 0.52,
+      12,
+    );
+  });
+
+  it("excludes an explicit break from the occupational component only", () => {
+    const result = calculate({
+      outsideWorkWalking: { distanceKm: 0, averageSpeedKmh: null },
+      strength: { durationMinutes: 0 },
+      occupational: {
+        category: null,
+        durationHours: 0,
+        intervals: [{
+          category: "manualLight",
+          durationHours: 8,
+          breakDurationHours: 0.5,
+          workWalkingDistanceKm: 2.5,
+          averageWalkingSpeedKmh: 5,
+        }],
+      },
+    });
+    const weight = result.currentPredictedWeightKg;
+    const rest = result.dynamicRmrKcalPerDay / 24;
+    const expectedWalking = 3.8 * weight * 0.5 - rest * 0.5;
+    const expectedResidual = 2.3 * weight * 7 - rest * 7;
+    expect(result.occupationalActivityKcalPerDay)
+      .toBeCloseTo(expectedWalking + expectedResidual, 12);
+    expect(result.dynamicRmrKcalPerDay).toBe(1_600);
+    expect(result.tefKcalPerDay).toBeCloseTo(222.6, 12);
+  });
+
   it("preserves zero and missing semantics for occupational interval lists", () => {
     expect(calculate({
       occupational: { category: "manualModerate", durationHours: 8, intervals: [] },

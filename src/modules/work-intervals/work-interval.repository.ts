@@ -3,8 +3,9 @@ import { prisma } from "@/lib/db/prisma";
 import { instantToLocalDateTime, localDateTimeToInstant } from "@/model/time-zone";
 import { WorkIntervalOverlapError } from "./work-interval.errors";
 import {
-  CreateWorkIntervalSchema,
+  PersistedWorkIntervalSchema,
   type CreateWorkIntervalInput,
+  type PersistedWorkIntervalInput,
   type UpdateWorkIntervalInput,
 } from "./work-interval.schema";
 
@@ -15,6 +16,7 @@ const workIntervalSelect = {
   endAt: true,
   timezone: true,
   category: true,
+  breakMinutes: true,
   createdAt: true,
   updatedAt: true,
 } satisfies Prisma.WorkIntervalSelect;
@@ -30,6 +32,8 @@ export type WorkIntervalDto = {
   endAt: string;
   timezone: string;
   category: string;
+  breakMinutes: number | null;
+  breakSource: "user-entered" | "legacy-unreported";
   createdAt: string;
   updatedAt: string;
 };
@@ -44,18 +48,21 @@ function toDto(record: WorkIntervalRecord): WorkIntervalDto {
     endAt: record.endAt.toISOString(),
     timezone: record.timezone,
     category: record.category,
+    breakMinutes: record.breakMinutes,
+    breakSource: record.breakMinutes === null ? "legacy-unreported" : "user-entered",
     createdAt: record.createdAt.toISOString(),
     updatedAt: record.updatedAt.toISOString(),
   };
 }
 
-function resolved(input: CreateWorkIntervalInput) {
+function resolved(input: CreateWorkIntervalInput | PersistedWorkIntervalInput) {
   return {
     date: input.date,
     startAt: localDateTimeToInstant(input.date, input.startTime, input.timezone),
     endAt: localDateTimeToInstant(input.date, input.endTime, input.timezone),
     timezone: input.timezone,
     category: input.category,
+    breakMinutes: input.breakMinutes,
   };
 }
 
@@ -115,12 +122,13 @@ export class WorkIntervalRepository {
         });
         if (!current) return null;
         const currentDto = toDto(current);
-        const merged = CreateWorkIntervalSchema.parse({
+        const merged = PersistedWorkIntervalSchema.parse({
           date: patch.date ?? currentDto.date,
           startTime: patch.startTime ?? currentDto.startTime,
           endTime: patch.endTime ?? currentDto.endTime,
           timezone: patch.timezone ?? currentDto.timezone,
           category: patch.category ?? currentDto.category,
+          breakMinutes: patch.breakMinutes ?? currentDto.breakMinutes,
         });
         const data = resolved(merged);
         await assertNoOverlap(transaction, data.startAt, data.endAt, id);

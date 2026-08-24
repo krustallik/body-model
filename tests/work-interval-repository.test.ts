@@ -10,6 +10,7 @@ const record = {
   endAt: new Date("2026-08-23T14:00:00Z"),
   timezone: "Europe/Bratislava",
   category: "standingLight",
+  breakMinutes: 30,
   createdAt: new Date("2026-08-22T12:00:00Z"),
   updatedAt: new Date("2026-08-22T12:00:00Z"),
 };
@@ -19,6 +20,7 @@ const input = {
   endTime: "16:00",
   timezone: "Europe/Bratislava",
   category: "standingLight" as const,
+  breakMinutes: 30,
 };
 
 function fixture(options: { overlap?: boolean; existing?: boolean } = {}) {
@@ -48,6 +50,8 @@ describe("work interval repository", () => {
       startTime: "08:00",
       endTime: "16:00",
       startAt: "2026-08-23T06:00:00.000Z",
+      breakMinutes: 30,
+      breakSource: "user-entered",
     })]);
     expect(client.workInterval.findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: { date: "2026-08-23" },
@@ -65,6 +69,9 @@ describe("work interval repository", () => {
         startAt: { lt: new Date("2026-08-23T14:00:00Z") },
         endAt: { gt: new Date("2026-08-23T06:00:00Z") },
       }),
+    }));
+    expect(transaction.workInterval.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ breakMinutes: 30 }),
     }));
   });
 

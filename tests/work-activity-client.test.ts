@@ -27,7 +27,10 @@ describe("work activity UI API client", () => {
   it("creates and edits intervals with the correct methods", async () => {
     const fetch = vi.fn().mockResolvedValue(response({}, 201));
     vi.stubGlobal("fetch", fetch);
-    const values = { startTime: "08:00", endTime: "16:00", category: "standingLight" as const };
+    const values = {
+      startTime: "08:00", endTime: "16:00", category: "standingLight" as const,
+      breakMinutes: 30,
+    };
     await saveWorkInterval("2026-08-23", values);
     expect(fetch).toHaveBeenNthCalledWith(1, "/api/v1/work-intervals", expect.objectContaining({
       method: "POST",
@@ -54,7 +57,24 @@ describe("work activity UI API client", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(body, 400)));
     await expect(saveWorkInterval("2026-08-23", {
       startTime: "08:00", endTime: "16:00", category: "standingLight",
+      breakMinutes: 30,
     })).rejects.toThrow(expected);
+  });
+
+  it("preserves a legacy unreported break on edit and requires it for create", async () => {
+    const fetch = vi.fn().mockResolvedValue(response({}));
+    vi.stubGlobal("fetch", fetch);
+    const legacy = {
+      startTime: "08:00", endTime: "16:00", category: "standingLight" as const,
+      breakMinutes: null,
+    };
+    await saveWorkInterval("2026-08-23", legacy, 7);
+    expect(fetch).toHaveBeenCalledWith("/api/v1/work-intervals/7", expect.objectContaining({
+      body: JSON.stringify({
+        startTime: "08:00", endTime: "16:00", category: "standingLight",
+      }),
+    }));
+    await expect(saveWorkInterval("2026-08-23", legacy)).rejects.toThrow("Enter a break duration");
   });
 
   it("uses status fallback for non-JSON errors and handles each load failure", async () => {

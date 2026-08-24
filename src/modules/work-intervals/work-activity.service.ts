@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { calculateAge } from "@/model/age";
 import { calculateRmr } from "@/model/rmr";
 import {
-  calculateOccupationalActivity,
+  calculateHybridOccupationalActivity,
   calculateOverlapAwareActivity,
   type OccupationalCategory,
 } from "@/model/occupational-activity";
@@ -47,7 +47,7 @@ export async function estimateWorkActivityForDay(
     client.workInterval.findMany({
       where: { date: input.date },
       orderBy: [{ startAt: "asc" }, { id: "asc" }],
-      select: { id: true, startAt: true, endAt: true, category: true },
+      select: { id: true, startAt: true, endAt: true, category: true, breakMinutes: true },
     }),
   ]);
 
@@ -68,16 +68,30 @@ export async function estimateWorkActivityForDay(
   });
   const occupationalIntervals = intervals.map((interval) => {
     const durationHours = (interval.endAt.getTime() - interval.startAt.getTime()) / 3_600_000;
+    const workWalkingDistanceKm = walking.intervals.find(({ intervalId }) => (
+      intervalId === interval.id
+    ))?.estimatedWalkingDistanceKm.value ?? null;
+    const estimate = calculateHybridOccupationalActivity({
+      category: interval.category as OccupationalCategory,
+      durationHours,
+      breakDurationHours: interval.breakMinutes === null ? null : interval.breakMinutes / 60,
+      workWalkingDistanceKm,
+      walkingSpeedKmh: decimalToNumber(day?.averageWalkingSpeedKmh ?? null),
+      weightKg: input.weightKg,
+      rmrKcalPerDay: input.rmrKcalPerDay,
+    });
     return {
       id: interval.id,
-      durationHours,
-      category: interval.category as OccupationalCategory,
-      activityKcal: calculateOccupationalActivity({
-        category: interval.category as OccupationalCategory,
-        durationHours,
-        weightKg: input.weightKg,
-        rmrKcalPerDay: input.rmrKcalPerDay,
-      }),
+      ...estimate,
+      clockDurationMinutes: estimate.durationHours * 60,
+      breakMinutes: interval.breakMinutes,
+      activeWorkMinutes: estimate.activeWorkDurationHours * 60,
+      walkingMinutes: estimate.walkingDurationHours === null
+        ? null
+        : estimate.walkingDurationHours * 60,
+      residualWorkMinutes: estimate.residualDurationHours === null
+        ? null
+        : estimate.residualDurationHours * 60,
     };
   });
   const occupationalActivityKcal = occupationalIntervals.reduce(

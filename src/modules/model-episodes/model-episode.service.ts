@@ -12,6 +12,7 @@ import type { ModelHistoryQuery } from "./model-episode.schema";
 import { ModelEpisodeRepository } from "./model-episode.repository";
 import { addCalendarDays, latestCompletedLocalDate } from "./model-calendar";
 import { buildSimulationDays } from "./simulation-input-builder";
+import { CURRENT_MODEL_VERSION } from "./model-version";
 
 const TRANSACTION_OPTIONS = {
   isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
@@ -89,13 +90,16 @@ export async function recalculateModelEpisode(
         baselineNutritionFallback: episode.baselineNutritionFallback,
         nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
       });
-    const calculation = calculateEpisodeHistory({ episode, days: builtDays });
-    await repository.persistCalculation(episode.id, calculation);
+    const recalculatedEpisode = episode.modelVersion === CURRENT_MODEL_VERSION
+      ? episode
+      : { ...episode, modelVersion: CURRENT_MODEL_VERSION };
+    const calculation = calculateEpisodeHistory({ episode: recalculatedEpisode, days: builtDays });
+    await repository.persistCalculation(episode.id, calculation, CURRENT_MODEL_VERSION);
     const status = await repository.status(episode.id);
     return {
       status: "ok" as const,
       episodeId: episode.id,
-      modelVersion: episode.modelVersion,
+      modelVersion: CURRENT_MODEL_VERSION,
       calibrationStatus: calculation.calibration.status,
       personalOffsetKcalPerDay:
         calculation.calibration.parameters.personalOffsetKcalPerDay,

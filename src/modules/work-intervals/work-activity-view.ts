@@ -69,10 +69,22 @@ export function formatDuration(minutes: number): string {
 }
 
 export function dailyActivityView(diagnostics: WorkActivityDiagnosticsDto) {
+  const workWalkingComponents = diagnostics.occupationalIntervals
+    ?.map(({ walkingActivityKcal }) => walkingActivityKcal) ?? null;
+  const residualComponents = diagnostics.occupationalIntervals
+    ?.map(({ residualActivityKcal }) => residualActivityKcal) ?? null;
   return {
     workWalkingDistanceKm: diagnostics.walking.workWalkingDistanceKm,
     outsideWorkWalkingDistanceKm: diagnostics.walking.outsideWorkWalkingDistanceKm,
     occupationalActivityKcal: diagnostics.activity?.occupationalActivityKcal ?? null,
+    workWalkingActivityKcal: workWalkingComponents === null
+      || workWalkingComponents.some((value) => value === null)
+      ? null
+      : workWalkingComponents.reduce<number>((sum, value) => sum + value!, 0),
+    residualWorkActivityKcal: residualComponents === null
+      || residualComponents.some((value) => value === null)
+      ? null
+      : residualComponents.reduce<number>((sum, value) => sum + value!, 0),
     outsideWorkWalkingActivityKcal: diagnostics.activity?.outsideWorkWalkingActivityKcal ?? null,
     strengthActivityKcal: diagnostics.activity?.strengthActivityKcal ?? null,
     totalActivityKcal: diagnostics.activity?.totalActivityKcal ?? null,

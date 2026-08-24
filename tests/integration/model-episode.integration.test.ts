@@ -59,6 +59,7 @@ async function seedSources(): Promise<void> {
       endAt: new Date("2041-03-25T15:00:00.000Z"),
       timezone: "Europe/Bratislava",
       category: "manualModerate",
+      breakMinutes: 30,
     },
   });
   await prisma.healthSyncSnapshot.createMany({
@@ -151,7 +152,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(episode).toMatchObject({
       active: true,
       timezone: "Europe/Bratislava",
-      modelVersion: "bodycast-physiology-v1",
+      modelVersion: "bodycast-physiology-v3",
       ecfPolicy: "hold-ecf",
       baselineEnergyIntakeKcalPerDay: 2_450,
       baselineCarbIntakeG: 240,
@@ -178,7 +179,8 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       where: { episodeId }, orderBy: { date: "asc" },
       select: {
         date: true, status: true, sourceQuality: true, endWeightKg: true,
-        energyExpenditureKcal: true,
+        energyExpenditureKcal: true, activityKcalPerDay: true,
+        startWeightKg: true, dynamicRmrKcalPerDay: true, modelVersion: true,
       },
     });
     const second = await recalculateModelEpisode({ episodeId, now });
@@ -186,7 +188,8 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       where: { episodeId }, orderBy: { date: "asc" },
       select: {
         date: true, status: true, sourceQuality: true, endWeightKg: true,
-        energyExpenditureKcal: true,
+        energyExpenditureKcal: true, activityKcalPerDay: true,
+        startWeightKg: true, dynamicRmrKcalPerDay: true, modelVersion: true,
       },
     });
     expect(second).toEqual(first);
@@ -200,6 +203,60 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     };
     expect(workQuality.workWalkingDistanceKm).toBeCloseTo(2.5, 12);
     expect(workQuality.outsideWorkWalkingDistanceKm).toBeCloseTo(2.6, 12);
+    expect(await prisma.healthSyncSnapshot.count({ where: { date: workDate } })).toBe(2);
+    expect(await prisma.workInterval.count({ where: { date: workDate } })).toBe(1);
+    const workState = secondRows.find(({ date }) => date === workDate)!;
+    const weight = workState.startWeightKg!;
+    const restingPerHour = workState.dynamicRmrKcalPerDay! / 24;
+    const workWalkingHours = 2.5 / 5;
+    const outsideWalkingHours = 2.6 / 5;
+    const expectedWorkWalking = 3.8 * weight * workWalkingHours
+      - restingPerHour * workWalkingHours;
+    const expectedResidual = 4.5 * weight * (7.5 - workWalkingHours)
+      - restingPerHour * (7.5 - workWalkingHours);
+    const expectedOutsideWalking = 3.8 * weight * outsideWalkingHours
+      - restingPerHour * outsideWalkingHours;
+    expect(workState.activityKcalPerDay).toBeCloseTo(
+      expectedWorkWalking + expectedResidual + expectedOutsideWalking,
+      10,
+    );
+    expect(workState.modelVersion).toBe("bodycast-physiology-v3");
+  });
+
+  it("rebuilds the later trajectory after an occupational category edit", async () => {
+    await recalculateModelEpisode({ episodeId, now });
+    const beforeWork = await prisma.dailyModelState.findUniqueOrThrow({
+      where: { episodeId_date: { episodeId, date: workDate } },
+    });
+    const beforeFinal = await prisma.dailyModelState.findUniqueOrThrow({
+      where: { episodeId_date: { episodeId, date: finalDate } },
+    });
+    await prisma.workInterval.updateMany({
+      where: { date: workDate }, data: { category: "standingLight" },
+    });
+    await recalculateModelEpisode({ episodeId, now });
+    const afterWork = await prisma.dailyModelState.findUniqueOrThrow({
+      where: { episodeId_date: { episodeId, date: workDate } },
+    });
+    const afterFinal = await prisma.dailyModelState.findUniqueOrThrow({
+      where: { episodeId_date: { episodeId, date: finalDate } },
+    });
+    expect(afterWork.activityKcalPerDay).toBeLessThan(beforeWork.activityKcalPerDay!);
+    expect(afterFinal.endWeightKg).not.toBe(beforeFinal.endWeightKg);
+    expect(await prisma.dailyModelState.count({ where: { episodeId } })).toBe(11);
+  });
+
+  it("atomically upgrades an existing episode and all rebuilt rows to v3", async () => {
+    await prisma.modelEpisode.update({
+      where: { id: episodeId }, data: { modelVersion: "bodycast-physiology-v1" },
+    });
+    await recalculateModelEpisode({ episodeId, now });
+    expect((await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } })).modelVersion)
+      .toBe("bodycast-physiology-v3");
+    const versions = await prisma.dailyModelState.findMany({
+      where: { episodeId }, distinct: ["modelVersion"], select: { modelVersion: true },
+    });
+    expect(versions).toEqual([{ modelVersion: "bodycast-physiology-v3" }]);
   });
 
   it("recomputes all later states after a historical source edit", async () => {

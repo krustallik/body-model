@@ -36,7 +36,7 @@ describe("historical simulation input builder", () => {
       ],
       workIntervals: [{
         id: 1, date, startAt: instant("08:00"), endAt: instant("16:00"),
-        timezone: "Europe/Bratislava", category: "manualModerate",
+        timezone: "Europe/Bratislava", category: "manualModerate", breakMinutes: 30,
       }],
     });
     const before = structuredClone(input);
@@ -49,6 +49,11 @@ describe("historical simulation input builder", () => {
     expect(result[0].input.outsideWorkWalkingDistanceKm).toBeCloseTo(2.6, 12);
     expect(result[0].input.occupationalActivity.intervals).toEqual([{
       category: "manualModerate", durationHours: 8,
+      breakDurationHours: 0.5,
+      workWalkingDistanceKm: 2.5, averageWalkingSpeedKmh: 5,
+    }]);
+    expect(result[0].sourceQuality.workBreaks).toEqual([{
+      intervalId: 1, breakMinutes: 30, source: "user-entered",
     }]);
     expect(input).toEqual(before);
   });
@@ -70,17 +75,45 @@ describe("historical simulation input builder", () => {
         ],
         workIntervals: [
           { id: 2, date, startAt: instant("13:00"), endAt: instant("17:00"),
-            timezone: "Europe/Bratislava", category: "manualModerate" },
+            timezone: "Europe/Bratislava", category: "manualModerate", breakMinutes: null },
           { id: 1, date, startAt: instant("08:00"), endAt: instant("12:00"),
-            timezone: "Europe/Bratislava", category: "standingLight" },
+            timezone: "Europe/Bratislava", category: "standingLight", breakMinutes: 0 },
         ],
       }),
     });
     expect(result[0].input.outsideWorkWalkingDistanceKm).toBeCloseTo(2.1, 12);
     expect(result[0].input.occupationalActivity.intervals).toEqual([
-      { category: "standingLight", durationHours: 4 },
-      { category: "manualModerate", durationHours: 4 },
+      { category: "standingLight", durationHours: 4,
+        breakDurationHours: 0,
+        workWalkingDistanceKm: 1.5, averageWalkingSpeedKmh: 5 },
+      { category: "manualModerate", durationHours: 4,
+        breakDurationHours: null,
+        workWalkingDistanceKm: 1.5, averageWalkingSpeedKmh: 5 },
     ]);
+  });
+
+  it.each([
+    [5.1, 0],
+    [0.1, 5],
+  ])("preserves the work/outside partition for %s km at work", (workKm, outsideKm) => {
+    const result = buildSimulationDays({
+      from: date,
+      to: date,
+      sources: sources({
+        snapshots: [
+          { id: 1, date, receivedAt: instant("08:00"), syncedAt: null,
+            steps: 0, walkingDistanceKm: 0 },
+          { id: 2, date, receivedAt: instant("16:00"), syncedAt: null,
+            steps: 10_000, walkingDistanceKm: workKm },
+        ],
+        workIntervals: [{ id: 1, date, startAt: instant("08:00"), endAt: instant("16:00"),
+          timezone: "Europe/Bratislava", category: "manualLight", breakMinutes: null }],
+      }),
+    });
+    expect(result[0].sourceQuality.workWalkingDistanceKm).toBeCloseTo(workKm, 12);
+    expect(result[0].input.outsideWorkWalkingDistanceKm).toBeCloseTo(outsideKm, 12);
+    expect(result[0].input.occupationalActivity.intervals?.[0].workWalkingDistanceKm)
+      .toBeCloseTo(workKm, 12);
   });
 
   it("marks work reconstruction unavailable when a boundary gap is too large", () => {
@@ -91,11 +124,38 @@ describe("historical simulation input builder", () => {
         snapshots: [{ id: 1, date, receivedAt: instant("09:00"), syncedAt: null,
           steps: 1_000, walkingDistanceKm: 1 }],
         workIntervals: [{ id: 1, date, startAt: instant("08:00"), endAt: instant("16:00"),
-          timezone: "Europe/Bratislava", category: "manualLight" }],
+          timezone: "Europe/Bratislava", category: "manualLight", breakMinutes: null }],
       }),
     });
     expect(result[0].sourceQuality.status).toBe("work-reconstruction-unavailable");
+    expect(result[0].sourceQuality.workWalkingReconstruction).toEqual([{
+      intervalId: 1, distanceKm: null, reason: "gap-too-large",
+      startMethod: null, endMethod: null,
+    }]);
     expect(result[0].input.outsideWorkWalkingDistanceKm).toBeNull();
+  });
+
+  it("propagates a decreasing work-distance counter without clamping", () => {
+    const result = buildSimulationDays({
+      from: date,
+      to: date,
+      sources: sources({
+        snapshots: [
+          { id: 1, date, receivedAt: instant("08:00"), syncedAt: null,
+            steps: 2_000, walkingDistanceKm: 2 },
+          { id: 2, date, receivedAt: instant("16:00"), syncedAt: null,
+            steps: 1_000, walkingDistanceKm: 1 },
+        ],
+        workIntervals: [{ id: 1, date, startAt: instant("08:00"), endAt: instant("16:00"),
+          timezone: "Europe/Bratislava", category: "manualLight", breakMinutes: null }],
+      }),
+    });
+    expect(result[0].sourceQuality.status).toBe("work-reconstruction-unavailable");
+    expect(result[0].sourceQuality.workWalkingReconstruction?.[0]).toMatchObject({
+      distanceKm: null, reason: "counter-decreased",
+    });
+    expect(result[0].input.occupationalActivity.intervals?.[0].workWalkingDistanceKm)
+      .toBeNull();
   });
 
   it("preserves explicit strength zero and missing measured weight", () => {
@@ -146,7 +206,7 @@ describe("historical simulation input builder", () => {
             walkingDistanceKm: 0 },
         ],
         workIntervals: [{ id: 1, date, startAt: instant("08:00"), endAt: instant("09:00"),
-          timezone: "Europe/Bratislava", category: "unknown" }],
+          timezone: "Europe/Bratislava", category: "unknown", breakMinutes: null }],
       }),
     });
     expect(result[0].sourceQuality.status).toBe("work-reconstruction-unavailable");

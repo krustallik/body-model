@@ -217,6 +217,7 @@ export class ModelEpisodeRepository {
           endAt: true,
           timezone: true,
           category: true,
+          breakMinutes: true,
         },
       }),
     ]);
@@ -315,6 +316,7 @@ export class ModelEpisodeRepository {
   async persistCalculation(
     episodeId: number,
     calculation: EpisodeCalculation,
+    modelVersion?: string,
   ): Promise<void> {
     const dates = calculation.dailyStates.map(({ date }) => date);
     await this.client.dailyModelState.deleteMany({
@@ -372,6 +374,7 @@ export class ModelEpisodeRepository {
     await this.client.modelEpisode.update({
       where: { id: episodeId },
       data: {
+        ...(modelVersion === undefined ? {} : { modelVersion }),
         personalOffsetKcalPerDay:
           calculation.calibration.parameters.personalOffsetKcalPerDay,
         activityCalibration:

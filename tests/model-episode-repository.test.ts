@@ -116,7 +116,7 @@ describe("model episode repository mapping", () => {
     }]);
     db.workInterval.findMany.mockResolvedValue([{
       id: 1, date: "2026-08-22", startAt: new Date(), endAt: new Date(),
-      timezone: "Europe/Bratislava", category: "manualLight",
+      timezone: "Europe/Bratislava", category: "manualLight", breakMinutes: null,
     }]);
     const result = await new ModelEpisodeRepository(client)
       .loadSources("2026-08-01", "2026-08-22");
@@ -143,7 +143,7 @@ describe("model episode repository mapping", () => {
     });
     expect(db.modelEpisode.create.mock.calls[0]?.[0].data).toMatchObject({
       startDate: "2026-08-22",
-      modelVersion: "bodycast-physiology-v1",
+      modelVersion: "bodycast-physiology-v3",
       baselineDerivationMethod: "median-with-theil-sen-weight-stability",
       calibrationStatus: "insufficient-history",
     });

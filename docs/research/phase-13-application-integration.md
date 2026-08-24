@@ -182,10 +182,12 @@ nutrition history, API keys, or complete latent state structures.
 
 ## Versioning and operational limitations
 
-The centralized version is `bodycast-physiology-v1`. Ordinary source-data
-recalculation keeps it unchanged. A future incompatible scientific state or
-equation change must introduce a new version and explicit migration or episode
-reinitialization policy.
+At completion of Phase 13 the centralized version was
+`bodycast-physiology-v1`. Phase 13.1A subsequently introduced the explicit
+`bodycast-physiology-v2` occupational decomposition and atomic full-episode
+upgrade policy; see `occupational-activity-energy-model.md`. Ordinary
+source-data recalculation within one equation version does not otherwise change
+the version.
 
 Limitations:
 

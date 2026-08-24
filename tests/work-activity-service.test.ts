@@ -39,6 +39,7 @@ function clientFixture(options: { missingDay?: boolean; useReceivedAt?: boolean 
         startAt: new Date("2026-08-23T08:00:00Z"),
         endAt: new Date("2026-08-23T16:00:00Z"),
         category: "standingLight",
+        breakMinutes: 30,
       }]),
     },
   } as unknown as PrismaClient;
@@ -54,7 +55,16 @@ describe("daily work activity orchestration", () => {
     expect(result.walking.outsideWorkWalkingDistanceKm).toBeCloseTo(2.6, 12);
     expect(result.occupationalIntervals[0]).toMatchObject({
       id: 1, durationHours: 8, category: "standingLight",
+      method: "hybrid-walking-residual", workWalkingDistanceKm: 2.5,
+      walkingSpeedKmh: 5.2, fallbackReason: null,
+      clockDurationMinutes: 480, breakMinutes: 30, breakSource: "user-entered",
+      activeWorkMinutes: 450,
     });
+    expect(result.occupationalIntervals[0].activityKcal).toBeCloseTo(
+      result.occupationalIntervals[0].walkingActivityKcal!
+      + result.occupationalIntervals[0].residualActivityKcal!,
+      12,
+    );
     expect(result.activity).not.toBeNull();
     expect(result.activity!.totalActivityKcal).toBeCloseTo(
       result.activity!.occupationalActivityKcal
@@ -62,6 +72,28 @@ describe("daily work activity orchestration", () => {
       + result.activity!.strengthActivityKcal,
       12,
     );
+  });
+
+  it("exposes legacy break provenance without silently applying the UI default", async () => {
+    const client = clientFixture() as unknown as {
+      workInterval: { findMany: ReturnType<typeof vi.fn> };
+    };
+    client.workInterval.findMany.mockResolvedValue([{
+      id: 1,
+      startAt: new Date("2026-08-23T08:00:00Z"),
+      endAt: new Date("2026-08-23T16:00:00Z"),
+      category: "standingLight",
+      breakMinutes: null,
+    }]);
+    const result = await estimateWorkActivityForDay({
+      date: "2026-08-23", weightKg: 80, rmrKcalPerDay: 1_800,
+    }, client as unknown as PrismaClient);
+    expect(result.occupationalIntervals[0]).toMatchObject({
+      breakMinutes: null,
+      breakDurationHours: null,
+      breakSource: "legacy-unreported",
+      activeWorkMinutes: 480,
+    });
   });
 
   it("falls back to server receivedAt when the iPhone sent no explicit sync time", async () => {
@@ -77,6 +109,45 @@ describe("daily work activity orchestration", () => {
     }, clientFixture({ missingDay: true }));
     expect(result.walking.outsideWorkWalkingDistanceKm).toBeNull();
     expect(result.activity).toBeNull();
+  });
+
+  it("labels a category-only fallback when boundary reconstruction is unavailable", async () => {
+    const client = clientFixture() as unknown as {
+      healthSyncSnapshot: { findMany: ReturnType<typeof vi.fn> };
+    };
+    client.healthSyncSnapshot.findMany.mockResolvedValue([]);
+    const result = await estimateWorkActivityForDay({
+      date: "2026-08-23", weightKg: 80, rmrKcalPerDay: 1_800,
+    }, client as unknown as PrismaClient);
+    expect(result.occupationalIntervals[0]).toMatchObject({
+      method: "category-only-fallback",
+      fallbackReason: "work-walking-unavailable",
+      workWalkingDistanceKm: null,
+    });
+    expect(result.walking.outsideWorkWalkingDistanceKm).toBeNull();
+    expect(result.activity).toBeNull();
+  });
+
+  it("keeps explicit zero work walking distinct from unavailable", async () => {
+    const client = clientFixture() as unknown as {
+      healthSyncSnapshot: { findMany: ReturnType<typeof vi.fn> };
+    };
+    client.healthSyncSnapshot.findMany.mockResolvedValue([
+      { receivedAt: new Date("2026-08-23T08:05:00Z"), syncedAt: null,
+        steps: 1_200, walkingDistanceKm: new Prisma.Decimal("0.8") },
+      { receivedAt: new Date("2026-08-23T16:05:00Z"), syncedAt: null,
+        steps: 4_700, walkingDistanceKm: new Prisma.Decimal("0.8") },
+      { receivedAt: new Date("2026-08-23T22:00:00Z"), syncedAt: null,
+        steps: 7_200, walkingDistanceKm: new Prisma.Decimal("5.1") },
+    ]);
+    const result = await estimateWorkActivityForDay({
+      date: "2026-08-23", weightKg: 80, rmrKcalPerDay: 1_800,
+    }, client as unknown as PrismaClient);
+    expect(result.walking.workWalkingDistanceKm).toBe(0);
+    expect(result.occupationalIntervals[0]).toMatchObject({
+      method: "hybrid-walking-residual", workWalkingDistanceKm: 0,
+      walkingDurationHours: 0, walkingActivityKcal: 0,
+    });
   });
 
   it("derives RMR from profile and daily weight for the UI endpoint", async () => {

@@ -25,7 +25,8 @@ type Editor = { id?: number; values: WorkIntervalFormValues } | null;
 const emptyValues: WorkIntervalFormValues = {
   startTime: "08:00",
   endTime: "16:00",
-  category: "standingLightModerate",
+  category: "manualLight",
+  breakMinutes: 30,
 };
 
 const number = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
@@ -113,7 +114,7 @@ export function WorkActivityDialog({ date, onClose }: { date: string; onClose: (
         {error && <div className={styles.formError} role="alert">{error}</div>}
 
         <div className={styles.workToolbar}>
-          <p>Times shown in Europe/Bratislava.</p>
+          <p>Times shown in Europe/Bratislava. Enter total break time; 30 min is only a new-entry convenience default.</p>
           <button className={styles.primaryButton} type="button" onClick={() => setEditor({ values: emptyValues })}>
             Add work interval
           </button>
@@ -130,14 +131,34 @@ export function WorkActivityDialog({ date, onClose }: { date: string; onClose: (
                 <span>End</span>
                 <input type="time" required value={editor.values.endTime} onChange={(event) => setEditor({ ...editor, values: { ...editor.values, endTime: event.target.value } })} />
               </label>
+              <label className={styles.field}>
+                <span>Break (minutes)</span>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min="0"
+                  step="1"
+                  required={editor.id === undefined}
+                  placeholder={editor.id === undefined ? "30" : "Not reported (legacy)"}
+                  value={editor.values.breakMinutes ?? ""}
+                  onChange={(event) => setEditor({
+                    ...editor,
+                    values: {
+                      ...editor.values,
+                      breakMinutes: event.target.value === "" ? null : Number(event.target.value),
+                    },
+                  })}
+                />
+                <small>Use 0 if there was no break. Break time adds no work activity; resting metabolism is still counted.</small>
+              </label>
               <label className={`${styles.field} ${styles.categoryField}`}>
-                <span>Occupational category</span>
+                <span>Work between detected walking and break</span>
                 <select value={editor.values.category} onChange={(event) => setEditor({ ...editor, values: { ...editor.values, category: event.target.value as OccupationalCategory } })}>
                   {Object.entries(OCCUPATIONAL_CATEGORIES).map(([key, category]) => (
-                    <option key={key} value={key}>{category.label} · {category.met} MET</option>
+                    <option key={key} value={key}>{category.label}</option>
                   ))}
                 </select>
-                <small>{OCCUPATIONAL_CATEGORIES[editor.values.category].description}</small>
+                <small>Walking is automatic from synced distance. {OCCUPATIONAL_CATEGORIES[editor.values.category].description}</small>
               </label>
             </div>
             <div className={styles.dialogActions}>
@@ -161,6 +182,9 @@ export function WorkActivityDialog({ date, onClose }: { date: string; onClose: (
               const walking = diagnostics?.walking.intervals.find(({ intervalId }) => intervalId === interval.id);
               const occupation = diagnostics?.occupationalIntervals.find(({ id }) => id === interval.id);
               const quality = walking ? reconstructionQuality(walking) : null;
+              const remainingWorkMinutes = occupation?.method === "category-only-fallback"
+                ? occupation.activeWorkMinutes
+                : occupation?.residualWorkMinutes ?? null;
               return (
                 <article className={styles.workCard} key={interval.id}>
                   <div className={styles.workCardHeading}>
@@ -173,6 +197,7 @@ export function WorkActivityDialog({ date, onClose }: { date: string; onClose: (
                         startTime: interval.startTime,
                         endTime: interval.endTime,
                         category: interval.category as OccupationalCategory,
+                        breakMinutes: interval.breakMinutes,
                       } })}>Edit</button>
                       <button className={styles.deleteButton} type="button" disabled={deletingId === interval.id} onClick={() => void remove(interval)}>
                         {deletingId === interval.id ? "Deleting…" : "Delete"}
@@ -181,13 +206,25 @@ export function WorkActivityDialog({ date, onClose }: { date: string; onClose: (
                   </div>
                   <div className={styles.categorySummary}>
                     <strong>{category?.label ?? interval.category}</strong>
-                    <span>{category?.met ?? "—"} MET</span>
+                    <span>Residual work</span>
                     {category && <p>{category.description}</p>}
+                    {occupation?.method === "hybrid-walking-residual" && (
+                      <p>Walking and residual work are mutually exclusive; the entered break is excluded from both.</p>
+                    )}
+                    {occupation?.method === "category-only-fallback" && (
+                      <p>Category-only fallback: {occupation.fallbackReason?.replaceAll("-", " ")}.</p>
+                    )}
+                  </div>
+                  <div className={styles.shiftFlow} aria-label="Shift time breakdown">
+                    <div><span>Clock shift</span><strong>{formatDuration(durationMinutes(interval.startAt, interval.endAt))}</strong></div>
+                    <div><span>Break</span><strong>{interval.breakMinutes === null ? "Not reported (legacy)" : formatDuration(interval.breakMinutes)}</strong></div>
+                    <div><span>Detected walking</span><strong>{occupation?.walkingMinutes === null || occupation === undefined ? "Unavailable" : formatDuration(occupation.walkingMinutes)}</strong></div>
+                    <div><span>{occupation?.method === "category-only-fallback" ? "Category fallback" : "Remaining"} {category?.label ?? "work"}</span><strong>{remainingWorkMinutes === null ? "Unavailable" : formatDuration(remainingWorkMinutes)}</strong></div>
                   </div>
                   <div className={styles.estimateGrid}>
                     <div><span>Estimated steps</span><strong>{walking?.estimatedSteps.value === null || walking === undefined ? "—" : `~${number.format(walking.estimatedSteps.value)}`}</strong></div>
                     <div><span>Estimated walking</span><strong>{walking?.estimatedWalkingDistanceKm.value === null || walking === undefined ? "—" : `~${decimal.format(walking.estimatedWalkingDistanceKm.value)} km`}</strong></div>
-                    <div><span>Occupational activity</span><strong>{occupation ? `~${number.format(occupation.activityKcal)} kcal` : "—"}</strong></div>
+                    <div><span>Total work activity</span><strong>{occupation ? `~${number.format(occupation.activityKcal)} kcal` : "—"}</strong></div>
                   </div>
                   {quality && (
                     <div className={`${styles.quality} ${styles[quality.tone]}`}>
@@ -217,11 +254,13 @@ function WorkSummary({ activity }: { activity: WorkActivityResponseDto | null })
   const summary = dailyActivityView(diagnostics);
   return (
     <section className={styles.activitySummary}>
-      <div><h3>Daily activity breakdown</h3><span>Estimated; work walking is not counted twice.</span></div>
+      <div><h3>Daily activity breakdown</h3><span>Estimated; walking during work appears only inside Work.</span></div>
       <dl>
         <div><dt>Walking during work</dt><dd>{summary.workWalkingDistanceKm === null ? "—" : `~${decimal.format(summary.workWalkingDistanceKm)} km`}</dd></div>
         <div><dt>Walking outside work</dt><dd>{summary.outsideWorkWalkingDistanceKm === null ? "—" : `~${decimal.format(summary.outsideWorkWalkingDistanceKm)} km`}</dd></div>
-        <div><dt>Work</dt><dd>{summary.occupationalActivityKcal === null ? "—" : `~${number.format(summary.occupationalActivityKcal)} kcal`}</dd></div>
+        <div><dt>Work walking activity</dt><dd>{summary.workWalkingActivityKcal === null ? "—" : `~${number.format(summary.workWalkingActivityKcal)} kcal`}</dd></div>
+        <div><dt>Non-walking work</dt><dd>{summary.residualWorkActivityKcal === null ? "—" : `~${number.format(summary.residualWorkActivityKcal)} kcal`}</dd></div>
+        <div><dt>Work total</dt><dd>{summary.occupationalActivityKcal === null ? "—" : `~${number.format(summary.occupationalActivityKcal)} kcal`}</dd></div>
         <div><dt>Walking outside work</dt><dd>{summary.outsideWorkWalkingActivityKcal === null ? "—" : `~${number.format(summary.outsideWorkWalkingActivityKcal)} kcal`}</dd></div>
         <div><dt>Strength</dt><dd>{summary.strengthActivityKcal === null ? "—" : `~${number.format(summary.strengthActivityKcal)} kcal`}</dd></div>
         <div className={styles.activityTotal}><dt>Estimated activity</dt><dd>{summary.totalActivityKcal === null ? "—" : `~${number.format(summary.totalActivityKcal)} kcal`}</dd></div>

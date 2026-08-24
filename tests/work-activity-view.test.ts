@@ -69,6 +69,8 @@ describe("work activity UI view model", () => {
       workWalkingDistanceKm: 2.5,
       outsideWorkWalkingDistanceKm: 2.6,
       occupationalActivityKcal: 620,
+      workWalkingActivityKcal: null,
+      residualWorkActivityKcal: null,
       outsideWorkWalkingActivityKcal: 210,
       strengthActivityKcal: 180,
       totalActivityKcal: 1_010,

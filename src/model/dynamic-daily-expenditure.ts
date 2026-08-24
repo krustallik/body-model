@@ -9,7 +9,7 @@ import {
   type DynamicRmrParameters,
 } from "./dynamic-rmr";
 import {
-  calculateOccupationalActivity,
+  calculateHybridOccupationalActivity,
   type OccupationalCategory,
 } from "./occupational-activity";
 import { calculateTef, type TefInput } from "./tef";
@@ -19,6 +19,12 @@ type OptionalMeasurement = number | null | undefined;
 export type OccupationalActivityIntervalInput = {
   category: OccupationalCategory | null | undefined;
   durationHours: OptionalMeasurement;
+  /** Explicit break; null/undefined preserves legacy unreported behavior. */
+  breakDurationHours?: OptionalMeasurement;
+  /** Reconstructed interval distance; null/undefined selects a labelled category fallback. */
+  workWalkingDistanceKm?: OptionalMeasurement;
+  /** Daily-average walking speed used only as a walking-duration proxy. */
+  averageWalkingSpeedKmh?: OptionalMeasurement;
 };
 
 export type DynamicDailyExpenditureInput = {
@@ -102,12 +108,15 @@ function calculateOccupationalComponent(input: {
       }
       if (durationHours === 0) continue;
       if (interval.category === null || interval.category === undefined) return null;
-      totalActivityKcal += calculateOccupationalActivity({
+      totalActivityKcal += calculateHybridOccupationalActivity({
         category: interval.category,
         durationHours,
+        breakDurationHours: interval.breakDurationHours,
+        workWalkingDistanceKm: interval.workWalkingDistanceKm,
+        walkingSpeedKmh: interval.averageWalkingSpeedKmh,
         weightKg: input.weightKg,
         rmrKcalPerDay: input.rmrKcalPerDay,
-      });
+      }).activityKcal;
     }
     return totalActivityKcal;
   }
@@ -115,12 +124,14 @@ function calculateOccupationalComponent(input: {
   if (durationHours === null) return null;
   if (durationHours === 0) return 0;
   if (input.category === null || input.category === undefined) return null;
-  return calculateOccupationalActivity({
+  return calculateHybridOccupationalActivity({
     category: input.category,
     durationHours,
+    workWalkingDistanceKm: null,
+    walkingSpeedKmh: null,
     weightKg: input.weightKg,
     rmrKcalPerDay: input.rmrKcalPerDay,
-  });
+  }).activityKcal;
 }
 
 /**

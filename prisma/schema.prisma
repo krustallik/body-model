@@ -87,14 +87,15 @@ model Workout {
 }
 
 model WorkInterval {
-  id        Int      @id @default(autoincrement())
-  date      String   @db.VarChar(10)
-  startAt   DateTime @db.Timestamptz(3)
-  endAt     DateTime @db.Timestamptz(3)
-  timezone  String   @db.VarChar(100)
-  category  String   @db.VarChar(50)
-  createdAt DateTime @default(now()) @db.Timestamptz(3)
-  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  id           Int      @id @default(autoincrement())
+  date         String   @db.VarChar(10)
+  startAt      DateTime @db.Timestamptz(3)
+  endAt        DateTime @db.Timestamptz(3)
+  timezone     String   @db.VarChar(100)
+  category     String   @db.VarChar(50)
+  breakMinutes Int?
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(3)
 
   @@index([date, startAt])
   @@index([startAt, endAt])

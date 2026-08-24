@@ -6,6 +6,7 @@ export type WorkIntervalFormValues = {
   startTime: string;
   endTime: string;
   category: OccupationalCategory;
+  breakMinutes: number | null;
 };
 
 async function apiError(response: Response): Promise<string> {
@@ -19,6 +20,7 @@ async function apiError(response: Response): Promise<string> {
     const message = body.details?.[0]?.message;
     if (message?.includes("does not exist")) return "This local time does not exist because of daylight saving time.";
     if (message?.includes("occurs twice")) return "This local time is ambiguous because clocks change on this day.";
+    if (message?.includes("breakMinutes")) return "Break must be zero or more whole minutes and shorter than the interval.";
     return message ?? body.error ?? fallback;
   } catch {
     return fallback;
@@ -48,12 +50,22 @@ export async function saveWorkInterval(
   values: WorkIntervalFormValues,
   id?: number,
 ): Promise<void> {
+  if (id === undefined && values.breakMinutes === null) {
+    throw new Error("Enter a break duration for a new work interval (0 is allowed).");
+  }
+  const updateValues = values.breakMinutes === null
+    ? {
+        startTime: values.startTime,
+        endTime: values.endTime,
+        category: values.category,
+      }
+    : values;
   const response = await fetch(
     id === undefined ? "/api/v1/work-intervals" : `/api/v1/work-intervals/${id}`,
     {
       method: id === undefined ? "POST" : "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(id === undefined ? { date, ...values } : values),
+      body: JSON.stringify(id === undefined ? { date, ...values } : updateValues),
     },
   );
   if (!response.ok) throw new Error(await apiError(response));

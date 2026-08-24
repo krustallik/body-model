@@ -75,17 +75,11 @@ export async function recalculateModelEpisode(
     const sources = episode.startDate <= latestCompletedDate
       ? await repository.loadSources(episode.startDate, latestCompletedDate)
       : { days: [], snapshots: [], workIntervals: [] };
-    const sourceDates = [
-      ...sources.days.map(({ date }) => date),
-      ...sources.snapshots.map(({ date }) => date),
-      ...sources.workIntervals.map(({ date }) => date),
-    ];
-    const finalSourceDate = sourceDates.sort().at(-1) ?? null;
-    const builtDays = finalSourceDate === null
+    const builtDays = episode.startDate > latestCompletedDate
       ? []
       : buildSimulationDays({
         from: episode.startDate,
-        to: finalSourceDate,
+        to: latestCompletedDate,
         sources,
         baselineNutritionFallback: episode.baselineNutritionFallback,
         nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
@@ -117,6 +111,10 @@ export async function recalculateModelEpisode(
       unbridgeableNutritionDays:
         calculation.dailyStates.filter(({ nutrition }) => nutrition.source === "missing").length,
       latestModeledDate: calculation.latestModeledDate,
+      resolvedUntil: calculation.latestModeledDate,
+      continuityStatus: calculation.continuityStatus,
+      recoveryRequired: calculation.unknownIntervals.length > 0,
+      unknownIntervals: calculation.unknownIntervals,
       current: status,
     };
   }, TRANSACTION_OPTIONS);

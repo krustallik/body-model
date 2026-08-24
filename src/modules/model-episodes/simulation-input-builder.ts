@@ -76,6 +76,7 @@ export function buildSimulationDays(input: {
 
   return dates.map((date, index) => {
     const day = dayFor(date);
+    const sourceDay = days.get(date);
     const bridgedNutrition = nutrition[index];
     const dailyIntervals = [...(workIntervals.get(date) ?? [])]
       .sort((left, right) => left.startAt.getTime() - right.startAt.getTime());
@@ -116,13 +117,25 @@ export function buildSimulationDays(input: {
     if (day.strengthTrainingMinutes === null) {
       activityIssues.push("strengthTrainingMinutes");
     }
+    if (!sourceDay && dailyIntervals.length === 0) {
+      activityIssues.push("occupationalActivity.durationHours");
+    }
     const issues = [...new Set([...nutritionIssues, ...activityIssues, ...workIssues])];
+    const sourceObservationFields = sourceDay
+      ? [
+          "weightKg", "bodyFatPercent", "caloriesKcal", "proteinG", "fatG", "carbsG",
+          "averageWalkingSpeedKmh", "walkingDistanceKm", "strengthTrainingMinutes",
+        ].filter((field) => sourceDay[field as keyof ModelHealthDaySource] !== null)
+      : [];
+    if (cumulativeSnapshots.length > 0) sourceObservationFields.push("healthSyncSnapshots");
+    if (dailyIntervals.length > 0) sourceObservationFields.push("workIntervals");
     const sourceQuality: ModelDaySourceQuality = {
       status: qualityStatus({ nutritionIssues, activityIssues, workIssues }),
       issues,
       workIntervalCount: dailyIntervals.length,
       workWalkingDistanceKm: walking.workWalkingDistanceKm,
       outsideWorkWalkingDistanceKm: walking.outsideWorkWalkingDistanceKm,
+      sourceObservationFields,
       workWalkingReconstruction: walking.intervals.map((interval) => ({
         intervalId: interval.intervalId,
         distanceKm: interval.estimatedWalkingDistanceKm.value,
@@ -172,8 +185,8 @@ export function buildSimulationDays(input: {
         strengthTrainingMinutes: day.strengthTrainingMinutes,
         occupationalActivity: {
           category: null,
-          durationHours: 0,
-          intervals: occupationalIntervals,
+          durationHours: sourceDay || dailyIntervals.length > 0 ? 0 : null,
+          intervals: sourceDay || dailyIntervals.length > 0 ? occupationalIntervals : undefined,
         },
         sodiumChangeMgPerDay: null,
         measuredWeightKg: day.weightKg,

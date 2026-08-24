@@ -105,6 +105,29 @@ describe("model episode application service", () => {
     expect(result.latestModeledDate).toBeNull();
   });
 
+  it("upgrades v3 input semantics before calculation and persists only v4 rows", async () => {
+    const episode = {
+      ...persistedEpisodeFixture("2026-08-20"),
+      modelVersion: "bodycast-physiology-v3",
+    };
+    repository.getById.mockResolvedValue(episode);
+    repository.loadSources.mockResolvedValue({
+      days: [sourceDay("2026-08-20")], snapshots: [], workIntervals: [],
+    });
+    repository.status.mockResolvedValue({ episodeId: episode.id });
+    await recalculateModelEpisode({
+      episodeId: episode.id,
+      now: new Date("2026-08-21T10:00:00.000Z"),
+    }, client);
+    expect(repository.persistCalculation).toHaveBeenCalledWith(
+      episode.id,
+      expect.objectContaining({
+        dailyStates: [expect.objectContaining({ modelVersion: "bodycast-physiology-v4" })],
+      }),
+      "bodycast-physiology-v4",
+    );
+  });
+
   it("distinguishes no active episode from an unknown explicit episode", async () => {
     repository.getActive.mockResolvedValue(null);
     await expect(recalculateModelEpisode({}, client))

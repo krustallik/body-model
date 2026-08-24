@@ -70,6 +70,7 @@ function builtHistory(input: {
       workIntervalCount: 1,
       workWalkingDistanceKm: 2,
       outsideWorkWalkingDistanceKm: day.outsideWorkWalkingDistanceKm ?? null,
+      sourceObservationFields: ["dailyHealthData"],
       nutrition: observedNutritionProvenance(),
     },
   }));
@@ -126,11 +127,11 @@ describe("two-pass episode calculation", () => {
     expect(result.dailyStates.at(-1)).toMatchObject({
       status: "complete",
       date: addCalendarDays(episode.startDate, 179),
-      modelVersion: "bodycast-physiology-v3",
+      modelVersion: "bodycast-physiology-v4",
     });
   });
 
-  it("persists explicit incomplete and blocked states", () => {
+  it("freezes the deterministic prefix and records an unknown interval", () => {
     const episode = persistedEpisodeFixture("2026-01-01");
     const days = builtHistory({
       episode, count: 3, varied: false,
@@ -143,12 +144,40 @@ describe("two-pass episode calculation", () => {
       issues: ["caloriesKcal"],
     };
     const result = calculateEpisodeHistory({ episode, days });
-    expect(result.calibration.status).toBe("invalid-history");
+    expect(result.calibration.status).toBe("insufficient-history");
     expect(result.dailyStates.map(({ status }) => status))
-      .toEqual(["complete", "incomplete", "blocked"]);
-    expect(result.dailyStates[1].missingFields).toContain("caloriesKcal");
-    expect(result.dailyStates[2].missingFields[0]).toContain(days[1].input.date);
+      .toEqual(["complete"]);
+    expect(result.unknownIntervals).toEqual([expect.objectContaining({
+      startDate: days[1].input.date,
+      lastUnknownDate: days[1].input.date,
+      endDate: days[1].input.date,
+      anchorDate: days[0].input.date,
+      firstPostGapObservationDate: days[2].input.date,
+      postGapObservedDayCount: 1,
+      recoveryRequired: true,
+    })]);
+    expect(result.unknownIntervals[0].missingTransitionFields).toContain("caloriesKcal");
     expect(result.latestModeledDate).toBe(days[0].input.date);
+  });
+
+  it("excludes retained post-gap observations from calibration history", () => {
+    const episode = persistedEpisodeFixture("2026-01-01");
+    const days = builtHistory({
+      episode, count: 45, varied: true,
+      personalOffsetKcalPerDay: 100, activityCalibration: 0.9,
+    });
+    for (const index of [20, 21, 22]) {
+      days[index].input.caloriesKcal = null;
+      days[index].input.proteinG = null;
+      days[index].input.fatG = null;
+      days[index].input.carbsG = null;
+    }
+    const result = calculateEpisodeHistory({ episode, days });
+    expect(result.dailyStates).toHaveLength(20);
+    expect(result.calibration.diagnostics.historyDays).toBe(20);
+    expect(result.calibration.diagnostics.observationCount).toBe(20);
+    expect(result.unknownIntervals[0].postGapObservedDayCount).toBe(22);
+    expect(result.unknownIntervals[0].postGapObservationDates.at(-1)).toBe("2026-02-14");
   });
 
   it("recomputes later state when an earlier historical source value changes", () => {

@@ -1,6 +1,11 @@
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { initializeNewModelEpisode, recalculateModelEpisode } from "@/modules/model-episodes/model-episode.service";
+import {
+  getModelHistory,
+  getModelStatus,
+  initializeNewModelEpisode,
+  recalculateModelEpisode,
+} from "@/modules/model-episodes/model-episode.service";
 import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
 
 const prisma = new PrismaClient();
@@ -152,7 +157,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(episode).toMatchObject({
       active: true,
       timezone: "Europe/Bratislava",
-      modelVersion: "bodycast-physiology-v3",
+      modelVersion: "bodycast-physiology-v4",
       ecfPolicy: "hold-ecf",
       baselineEnergyIntakeKcalPerDay: 2_450,
       baselineCarbIntakeG: 240,
@@ -220,7 +225,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       expectedWorkWalking + expectedResidual + expectedOutsideWalking,
       10,
     );
-    expect(workState.modelVersion).toBe("bodycast-physiology-v3");
+    expect(workState.modelVersion).toBe("bodycast-physiology-v4");
   });
 
   it("rebuilds the later trajectory after an occupational category edit", async () => {
@@ -246,17 +251,17 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(await prisma.dailyModelState.count({ where: { episodeId } })).toBe(11);
   });
 
-  it("atomically upgrades an existing episode and all rebuilt rows to v3", async () => {
+  it("atomically upgrades an existing episode and all rebuilt rows to v4", async () => {
     await prisma.modelEpisode.update({
       where: { id: episodeId }, data: { modelVersion: "bodycast-physiology-v1" },
     });
     await recalculateModelEpisode({ episodeId, now });
     expect((await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } })).modelVersion)
-      .toBe("bodycast-physiology-v3");
+      .toBe("bodycast-physiology-v4");
     const versions = await prisma.dailyModelState.findMany({
       where: { episodeId }, distinct: ["modelVersion"], select: { modelVersion: true },
     });
-    expect(versions).toEqual([{ modelVersion: "bodycast-physiology-v3" }]);
+    expect(versions).toEqual([{ modelVersion: "bodycast-physiology-v4" }]);
   });
 
   it("recomputes all later states after a historical source edit", async () => {
@@ -332,6 +337,175 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     const repeated = await recalculateModelEpisode({ episodeId, now });
     expect(repeated).toEqual(observedRun);
     expect(await prisma.dailyModelState.count({ where: { episodeId } })).toBe(11);
+  });
+
+  it("persists a long unknown interval, exposes later observations, and heals on backfill", async () => {
+    const gapDates = [
+      "2041-03-23", "2041-03-24", "2041-03-25", "2041-03-26",
+      "2041-03-27", "2041-03-28", "2041-03-29",
+    ];
+    const frozenBefore = await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } });
+    await prisma.healthSyncSnapshot.deleteMany({ where: { date: { in: gapDates } } });
+    await prisma.workInterval.deleteMany({ where: { date: { in: gapDates } } });
+    await prisma.dailyHealthData.deleteMany({ where: { date: { in: gapDates } } });
+
+    const unresolved = await recalculateModelEpisode({ episodeId, now });
+    expect(unresolved).toMatchObject({
+      episodeId,
+      daysPersisted: 3,
+      resolvedUntil: "2041-03-22",
+      continuityStatus: "awaiting-recovery",
+      recoveryRequired: true,
+    });
+    expect(await prisma.dailyModelState.findMany({
+      where: { episodeId }, orderBy: { date: "asc" }, select: { date: true },
+    })).toEqual([
+      { date: "2041-03-20" }, { date: "2041-03-21" }, { date: "2041-03-22" },
+    ]);
+    const intervals = await prisma.modelUnknownInterval.findMany({ where: { episodeId } });
+    expect(intervals).toHaveLength(1);
+    expect(intervals[0]).toMatchObject({
+      startDate: "2041-03-23",
+      lastUnknownDate: "2041-03-29",
+      endDate: "2041-03-29",
+      anchorDate: "2041-03-22",
+      firstPostGapObservationDate: "2041-03-30",
+      postGapObservedDayCount: 1,
+      recoveryRequired: true,
+    });
+    const frozenAfter = await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } });
+    expect(frozenAfter).toMatchObject({
+      id: frozenBefore.id,
+      active: true,
+      baselineEnergyIntakeKcalPerDay: frozenBefore.baselineEnergyIntakeKcalPerDay,
+      baselineCarbIntakeG: frozenBefore.baselineCarbIntakeG,
+      baselineNutritionFallback: frozenBefore.baselineNutritionFallback,
+      initialFatMassKg: frozenBefore.initialFatMassKg,
+      initialLeanTissueKg: frozenBefore.initialLeanTissueKg,
+      initialGlycogenKg: frozenBefore.initialGlycogenKg,
+      personalOffsetKcalPerDay: frozenBefore.personalOffsetKcalPerDay,
+      activityCalibration: frozenBefore.activityCalibration,
+    });
+    expect(await getModelStatus(episodeId)).toMatchObject({
+      continuityStatus: "awaiting-recovery",
+      lastResolvedDate: "2041-03-22",
+      unknownIntervalCount: 1,
+      unresolvedDayCount: 7,
+      postGapObservedDayCount: 1,
+    });
+    const laterHistory = await getModelHistory({
+      episodeId, from: finalDate, to: finalDate, limit: 90, offset: 0,
+    });
+    expect(laterHistory.days).toEqual([]);
+    expect(laterHistory.unknownIntervals).toHaveLength(1);
+    expect(laterHistory.observationsAwaitingRecovery.map(({ date }) => date)).toEqual([finalDate]);
+    expect(await recalculateModelEpisode({ episodeId, now })).toEqual(unresolved);
+    expect(await prisma.modelUnknownInterval.count({ where: { episodeId } })).toBe(1);
+
+    await Promise.all(gapDates.map((date) => prisma.dailyHealthData.create({
+      data: {
+        date, weightKg: 80, bodyFatPercent: null, caloriesKcal: 2_450,
+        proteinG: 150, fatG: 75, carbsG: 240, steps: 8_000,
+        averageWalkingSpeedKmh: 5, walkingDistanceKm: 5,
+        strengthTrainingMinutes: 0, rawPayload: { source: "phase-13.2-backfill" },
+      },
+    })));
+    const healed = await recalculateModelEpisode({ episodeId, now });
+    expect(healed).toMatchObject({
+      daysPersisted: 11,
+      resolvedUntil: finalDate,
+      continuityStatus: "resolved",
+      recoveryRequired: false,
+      unknownIntervals: [],
+    });
+    expect(await prisma.modelUnknownInterval.count({ where: { episodeId } })).toBe(0);
+    expect(await prisma.dailyModelState.count({ where: { episodeId } })).toBe(11);
+  });
+
+  it("persists an open trailing interval without including the unfinished local day", async () => {
+    const gapDates = [
+      "2041-03-24", "2041-03-25", "2041-03-26", "2041-03-27",
+      "2041-03-28", "2041-03-29", "2041-03-30",
+    ];
+    await prisma.healthSyncSnapshot.deleteMany({ where: { date: { in: gapDates } } });
+    await prisma.workInterval.deleteMany({ where: { date: { in: gapDates } } });
+    await prisma.dailyHealthData.deleteMany({ where: { date: { in: gapDates } } });
+
+    const recalculated = await recalculateModelEpisode({ episodeId, now });
+    expect(recalculated).toMatchObject({
+      episodeId,
+      daysPersisted: 4,
+      resolvedUntil: "2041-03-23",
+      continuityStatus: "awaiting-recovery",
+      recoveryRequired: true,
+    });
+    const interval = await prisma.modelUnknownInterval.findFirstOrThrow({ where: { episodeId } });
+    expect(interval).toMatchObject({
+      startDate: "2041-03-24",
+      lastUnknownDate: finalDate,
+      endDate: null,
+      anchorDate: "2041-03-23",
+      firstPostGapObservationDate: null,
+      postGapObservedDayCount: 0,
+    });
+    expect(interval.lastUnknownDate).not.toBe("2041-03-31");
+    expect(await prisma.dailyModelState.findMany({
+      where: { episodeId }, orderBy: { date: "asc" }, select: { date: true },
+    })).toEqual([
+      { date: "2041-03-20" }, { date: "2041-03-21" },
+      { date: "2041-03-22" }, { date: "2041-03-23" },
+    ]);
+  });
+
+  it("synchronizes multiple gaps through partial backfill and complete healing", async () => {
+    const firstGap = ["2041-03-23", "2041-03-24", "2041-03-25"];
+    const secondGap = ["2041-03-27", "2041-03-28", "2041-03-29"];
+    await prisma.dailyHealthData.updateMany({
+      where: { date: { in: [...firstGap, ...secondGap] } },
+      data: { caloriesKcal: null, proteinG: null, fatG: null, carbsG: null },
+    });
+
+    await recalculateModelEpisode({ episodeId, now });
+    expect(await prisma.modelUnknownInterval.findMany({
+      where: { episodeId }, orderBy: { startDate: "asc" },
+      select: { startDate: true, lastUnknownDate: true, anchorDate: true },
+    })).toEqual([
+      { startDate: "2041-03-23", lastUnknownDate: "2041-03-25", anchorDate: "2041-03-22" },
+      { startDate: "2041-03-27", lastUnknownDate: "2041-03-29", anchorDate: "2041-03-22" },
+    ]);
+    expect(await prisma.dailyModelState.count({ where: { episodeId } })).toBe(3);
+
+    await prisma.dailyHealthData.update({
+      where: { date: "2041-03-24" },
+      data: { caloriesKcal: 2_450, proteinG: 150, fatG: 75, carbsG: 240 },
+    });
+    const partiallyHealed = await recalculateModelEpisode({ episodeId, now });
+    expect(partiallyHealed).toMatchObject({
+      daysPersisted: 7,
+      resolvedUntil: "2041-03-26",
+      continuityStatus: "awaiting-recovery",
+    });
+    expect(await prisma.modelUnknownInterval.findMany({
+      where: { episodeId }, select: { startDate: true, anchorDate: true },
+    })).toEqual([{ startDate: "2041-03-27", anchorDate: "2041-03-26" }]);
+    expect(await prisma.dailyModelState.count({ where: { episodeId } })).toBe(7);
+
+    await prisma.dailyHealthData.update({
+      where: { date: "2041-03-28" },
+      data: { caloriesKcal: 2_450, proteinG: 150, fatG: 75, carbsG: 240 },
+    });
+    const healed = await recalculateModelEpisode({ episodeId, now });
+    expect(healed).toMatchObject({
+      daysPersisted: 11,
+      resolvedUntil: finalDate,
+      continuityStatus: "resolved",
+      recoveryRequired: false,
+    });
+    expect(await prisma.modelUnknownInterval.count({ where: { episodeId } })).toBe(0);
+    expect(await prisma.dailyModelState.count({ where: { episodeId } })).toBe(11);
+    expect(await prisma.dailyModelState.groupBy({
+      by: ["date"], where: { episodeId }, having: { date: { _count: { gt: 1 } } },
+    })).toEqual([]);
   });
 
   it("rolls back partial rows and episode metadata when persistence fails", async () => {

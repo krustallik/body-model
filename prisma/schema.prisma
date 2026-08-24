@@ -146,10 +146,32 @@ model ModelEpisode {
   updatedAt                               DateTime          @updatedAt @db.Timestamptz(3)
   profile                                 Profile           @relation(fields: [profileId], references: [id], onDelete: Restrict)
   dailyStates                             DailyModelState[]
+  unknownIntervals                        ModelUnknownInterval[]
 
   @@index([active])
   @@index([startDate])
   @@index([profileId])
+}
+
+model ModelUnknownInterval {
+  id                            Int          @id @default(autoincrement())
+  episodeId                     Int
+  startDate                     String       @db.VarChar(10)
+  lastUnknownDate               String       @db.VarChar(10)
+  endDate                       String?      @db.VarChar(10)
+  anchorDate                    String?      @db.VarChar(10)
+  firstPostGapObservationDate   String?      @db.VarChar(10)
+  postGapObservedDayCount       Int          @default(0)
+  postGapObservationDates       Json         @default("[]")
+  missingTransitionFields       Json
+  recoveryRequired              Boolean      @default(true)
+  createdAt                     DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt                     DateTime     @updatedAt @db.Timestamptz(3)
+  episode                       ModelEpisode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+
+  @@unique([episodeId, startDate])
+  @@index([episodeId, startDate])
+  @@index([episodeId, endDate])
 }
 
 model DailyModelState {

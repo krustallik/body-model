@@ -9,6 +9,7 @@ import type {
   DailyModelStateWrite,
   PersistedEpisode,
 } from "./model-episode.types";
+import { analyzeStateContinuity } from "./unknown-intervals";
 
 export type EpisodeCalculation = {
   calibration: PersonalizationCalibrationResult;
@@ -22,6 +23,8 @@ export type EpisodeCalculation = {
   };
   dailyStates: DailyModelStateWrite[];
   latestModeledDate: string | null;
+  unknownIntervals: import("./model-episode.types").UnknownIntervalWrite[];
+  continuityStatus: "resolved" | "awaiting-recovery";
 };
 
 function calibrationHistory(days: readonly BuiltSimulationDay[]): CalibrationDay[] {
@@ -50,13 +53,14 @@ export function calculateEpisodeHistory(input: {
   episode: PersistedEpisode;
   days: readonly BuiltSimulationDay[];
 }): EpisodeCalculation {
-  const firstDependentIndex = input.days.findIndex(({ sourceQuality }) => (
+  const continuity = analyzeStateContinuity(input.days, input.episode.ecfPolicy);
+  const firstDependentIndex = continuity.resolvedDays.findIndex(({ sourceQuality }) => (
     sourceQuality.nutrition.source !== "observed"
     || sourceQuality.nutrition.dependency !== "observed"
   ));
   const calibrationEligibleDays = firstDependentIndex === -1
-    ? input.days
-    : input.days.slice(0, firstDependentIndex);
+    ? continuity.resolvedDays
+    : continuity.resolvedDays.slice(0, firstDependentIndex);
   const calibration = calibratePersonalization({
     initialState: input.episode.initialState,
     simulatorParameters: input.episode.simulatorParameters,
@@ -66,79 +70,29 @@ export function calculateEpisodeHistory(input: {
   const results = simulateDays({
     initialState: input.episode.initialState,
     parameters: input.episode.simulatorParameters,
-    days: input.days.map(({ input: day }) => day),
+    days: continuity.resolvedDays.map(({ input: day }) => day),
     options: { ecfPolicy: input.episode.ecfPolicy },
     personalization: calibration.parameters,
   });
   const dailyStates = results.map((result, index): DailyModelStateWrite => {
-    const sourceQuality = { ...input.days[index].sourceQuality,
-      issues: [...input.days[index].sourceQuality.issues],
+    const sourceQuality = { ...continuity.resolvedDays[index].sourceQuality,
+      issues: [...continuity.resolvedDays[index].sourceQuality.issues],
+      sourceObservationFields: [
+        ...continuity.resolvedDays[index].sourceQuality.sourceObservationFields,
+      ],
       nutrition: {
-        ...input.days[index].sourceQuality.nutrition,
-        referenceDates: [...input.days[index].sourceQuality.nutrition.referenceDates],
-        observedFields: [...input.days[index].sourceQuality.nutrition.observedFields],
-        imputedFields: [...input.days[index].sourceQuality.nutrition.imputedFields],
-        referenceMacroMadG: input.days[index].sourceQuality.nutrition.referenceMacroMadG
-          ? { ...input.days[index].sourceQuality.nutrition.referenceMacroMadG }
+        ...continuity.resolvedDays[index].sourceQuality.nutrition,
+        referenceDates: [...continuity.resolvedDays[index].sourceQuality.nutrition.referenceDates],
+        observedFields: [...continuity.resolvedDays[index].sourceQuality.nutrition.observedFields],
+        imputedFields: [...continuity.resolvedDays[index].sourceQuality.nutrition.imputedFields],
+        referenceMacroMadG: continuity.resolvedDays[index].sourceQuality.nutrition.referenceMacroMadG
+          ? { ...continuity.resolvedDays[index].sourceQuality.nutrition.referenceMacroMadG }
           : null,
       },
     };
     const nutrition = sourceQuality.nutrition;
-    if (result.status === "incomplete") {
-      return {
-        date: result.date,
-        status: result.status,
-        dataQuality: "incomplete",
-        nutrition,
-        sourceQuality,
-        missingFields: [...result.missingFields],
-        modelVersion: input.episode.modelVersion,
-        startWeightKg: null,
-        endWeightKg: null,
-        fatMassKg: null,
-        leanTissueKg: null,
-        glycogenKg: null,
-        extracellularFluidDeviationLiters: null,
-        dynamicRmrKcalPerDay: null,
-        tefKcalPerDay: null,
-        activityKcalPerDay: null,
-        adaptiveThermogenesisKcalPerDay: null,
-        energyIntakeKcal: input.days[index].input.caloriesKcal ?? null,
-        energyExpenditureKcal: null,
-        energyBalanceKcal: null,
-        deltaFatKg: null,
-        deltaLeanTissueKg: null,
-        deltaGlycogenKg: null,
-        filteredWeightKg: null,
-      };
-    }
-    if (result.status === "blocked") {
-      return {
-        date: result.date,
-        status: result.status,
-        dataQuality: "blocked",
-        nutrition,
-        sourceQuality,
-        missingFields: [`blockedByDate:${result.blockedByDate}`],
-        modelVersion: input.episode.modelVersion,
-        startWeightKg: null,
-        endWeightKg: null,
-        fatMassKg: null,
-        leanTissueKg: null,
-        glycogenKg: null,
-        extracellularFluidDeviationLiters: null,
-        dynamicRmrKcalPerDay: null,
-        tefKcalPerDay: null,
-        activityKcalPerDay: null,
-        adaptiveThermogenesisKcalPerDay: null,
-        energyIntakeKcal: input.days[index].input.caloriesKcal ?? null,
-        energyExpenditureKcal: null,
-        energyBalanceKcal: null,
-        deltaFatKg: null,
-        deltaLeanTissueKg: null,
-        deltaGlycogenKg: null,
-        filteredWeightKg: null,
-      };
+    if (result.status !== "complete") {
+      throw new Error(`resolved-prefix invariant violated on ${result.date}`);
     }
     return {
       date: result.date,
@@ -161,7 +115,7 @@ export function calculateEpisodeHistory(input: {
       activityKcalPerDay: result.calculations.expenditure.calibratedActivityKcalPerDay,
       adaptiveThermogenesisKcalPerDay:
         result.endState.adaptiveThermogenesisKcalPerDay,
-      energyIntakeKcal: input.days[index].input.caloriesKcal ?? null,
+      energyIntakeKcal: continuity.resolvedDays[index].input.caloriesKcal ?? null,
       energyExpenditureKcal:
         result.calculations.expenditure.personalizedTdeeKcalPerDay,
       energyBalanceKcal: result.calculations.energyBalanceKcal,
@@ -193,5 +147,9 @@ export function calculateEpisodeHistory(input: {
     },
     dailyStates,
     latestModeledDate: dailyStates.findLast(({ status }) => status === "complete")?.date ?? null,
+    unknownIntervals: continuity.unknownIntervals,
+    continuityStatus: continuity.unknownIntervals.length === 0
+      ? "resolved"
+      : "awaiting-recovery",
   };
 }

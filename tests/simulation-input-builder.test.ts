@@ -26,6 +26,36 @@ describe("historical simulation input builder", () => {
     expect(result[0].sourceQuality).toMatchObject({ status: "complete", workIntervalCount: 0 });
   });
 
+  it("distinguishes an absent day from an explicitly tracked no-work day", () => {
+    const result = buildSimulationDays({
+      from: date,
+      to: addCalendarDays(date, 1),
+      sources: sources(),
+    });
+    expect(result[0].input.occupationalActivity).toMatchObject({
+      durationHours: 0,
+      intervals: [],
+    });
+    expect(result[1].input.occupationalActivity).toEqual({
+      category: null,
+      durationHours: null,
+      intervals: undefined,
+    });
+    expect(result[1].sourceQuality.issues).toContain("occupationalActivity.durationHours");
+  });
+
+  it("marks walking speed unavailable when observed walking distance is positive", () => {
+    const result = buildSimulationDays({
+      from: date,
+      to: date,
+      sources: sources({ days: [sourceDay(date, {
+        walkingDistanceKm: 5,
+        averageWalkingSpeedKmh: null,
+      })] }),
+    });
+    expect(result[0].sourceQuality.issues).toContain("averageWalkingSpeedKmh");
+  });
+
   it("subtracts reconstructed work walking from full daily walking", () => {
     const input = sources({
       snapshots: [

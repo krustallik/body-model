@@ -17,6 +17,9 @@ const db = {
   dailyModelState: {
     deleteMany: vi.fn(), upsert: vi.fn(), count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(),
   },
+  modelUnknownInterval: {
+    deleteMany: vi.fn(), upsert: vi.fn(), findMany: vi.fn(),
+  },
 };
 
 const client = db as unknown as PrismaClient;
@@ -68,12 +71,36 @@ function record() {
   };
 }
 
+function unknownIntervalRecord(input: {
+  id: number;
+  startDate: string;
+  lastUnknownDate: string;
+  endDate: string | null;
+  postGapObservationDates?: unknown;
+}) {
+  const dates = Array.isArray(input.postGapObservationDates)
+    ? input.postGapObservationDates.filter((date): date is string => typeof date === "string")
+    : [];
+  return {
+    ...input,
+    anchorDate: "2026-08-22",
+    firstPostGapObservationDate: dates[0] ?? null,
+    postGapObservedDayCount: dates.length,
+    postGapObservationDates: input.postGapObservationDates ?? [],
+    missingTransitionFields: ["caloriesKcal", 42],
+    recoveryRequired: true,
+  };
+}
+
 describe("model episode repository mapping", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     db.modelEpisode.updateMany.mockResolvedValue({ count: 1 });
     db.dailyModelState.deleteMany.mockResolvedValue({ count: 0 });
     db.dailyModelState.upsert.mockResolvedValue({});
+    db.modelUnknownInterval.deleteMany.mockResolvedValue({ count: 0 });
+    db.modelUnknownInterval.upsert.mockResolvedValue({});
+    db.modelUnknownInterval.findMany.mockResolvedValue([]);
     db.modelEpisode.update.mockResolvedValue({});
   });
 
@@ -143,7 +170,7 @@ describe("model episode repository mapping", () => {
     });
     expect(db.modelEpisode.create.mock.calls[0]?.[0].data).toMatchObject({
       startDate: "2026-08-22",
-      modelVersion: "bodycast-physiology-v3",
+      modelVersion: "bodycast-physiology-v4",
       baselineDerivationMethod: "median-with-theil-sen-weight-stability",
       calibrationStatus: "insufficient-history",
     });
@@ -167,6 +194,8 @@ describe("model episode repository mapping", () => {
         firstImputedNutritionDate: null,
       },
       latestModeledDate: "2026-08-22",
+      unknownIntervals: [],
+      continuityStatus: "resolved",
       dailyStates: [{
         date: "2026-08-22",
         status: "complete",
@@ -175,6 +204,7 @@ describe("model episode repository mapping", () => {
         sourceQuality: {
           status: "complete", issues: [], workIntervalCount: 0,
           workWalkingDistanceKm: 0, outsideWorkWalkingDistanceKm: 5,
+          sourceObservationFields: ["dailyHealthData"],
           nutrition: observedNutritionProvenance(),
         },
         missingFields: [],
@@ -204,6 +234,9 @@ describe("model episode repository mapping", () => {
       where: { episodeId: 3, date: { notIn: ["2026-08-22"] } },
     });
     expect(db.dailyModelState.upsert).toHaveBeenCalledOnce();
+    expect(db.modelUnknownInterval.deleteMany).toHaveBeenCalledWith({
+      where: { episodeId: 3 },
+    });
     expect(db.modelEpisode.update.mock.calls[0]?.[0].data).toMatchObject({
       calibrationStatus: "defaults-retained",
       latestModeledDate: "2026-08-22",
@@ -211,6 +244,138 @@ describe("model episode repository mapping", () => {
 
     await repository.persistCalculation(3, { ...calculation, dailyStates: [] });
     expect(db.dailyModelState.deleteMany).toHaveBeenLastCalledWith({ where: { episodeId: 3 } });
+  });
+
+  it("synchronizes unknown intervals and upgrades persisted semantics atomically", async () => {
+    const calculation: EpisodeCalculation = {
+      calibration: {
+        status: "insufficient-history",
+        parameters: { personalOffsetKcalPerDay: 10, activityCalibration: 0.95 },
+        loss: null,
+        diagnostics: { observationCount: 3 } as never,
+      },
+      calibrationNutritionDiagnostics: {
+        observedNutritionDays: 3, imputedNutritionDays: 0, missingNutritionDays: 7,
+        calibrationEligibleObservedDays: 3, calibrationExcludedDependentDays: 0,
+        firstImputedNutritionDate: null,
+      },
+      dailyStates: [],
+      latestModeledDate: "2026-08-22",
+      continuityStatus: "awaiting-recovery",
+      unknownIntervals: [{
+        startDate: "2026-08-23", lastUnknownDate: "2026-08-29", endDate: null,
+        anchorDate: "2026-08-22", firstPostGapObservationDate: null,
+        postGapObservedDayCount: 0, postGapObservationDates: [],
+        missingTransitionFields: ["caloriesKcal", "outsideWorkWalkingDistanceKm"],
+        recoveryRequired: true,
+      }],
+    };
+    await new ModelEpisodeRepository(client).persistCalculation(
+      3,
+      calculation,
+      "bodycast-physiology-v4",
+    );
+    expect(db.modelUnknownInterval.deleteMany).toHaveBeenCalledWith({
+      where: { episodeId: 3, startDate: { notIn: ["2026-08-23"] } },
+    });
+    expect(db.modelUnknownInterval.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { episodeId_startDate: { episodeId: 3, startDate: "2026-08-23" } },
+      create: expect.objectContaining({
+        episodeId: 3,
+        startDate: "2026-08-23",
+        lastUnknownDate: "2026-08-29",
+        recoveryRequired: true,
+      }),
+    }));
+    expect(db.modelEpisode.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ modelVersion: "bodycast-physiology-v4" }),
+    }));
+  });
+
+  it("maps consistent open, closed, and multiple-interval status metadata", async () => {
+    db.modelEpisode.findUnique.mockResolvedValue(record());
+    db.dailyModelState.count.mockResolvedValueOnce(3).mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(3).mockResolvedValueOnce(0).mockResolvedValueOnce(0);
+    db.dailyModelState.findFirst.mockResolvedValue(null);
+    db.modelUnknownInterval.findMany.mockResolvedValue([
+      unknownIntervalRecord({
+        id: 1, startDate: "2026-08-23", lastUnknownDate: "2026-08-29",
+        endDate: "2026-08-29", postGapObservationDates: ["2026-08-30", "2026-08-31"],
+      }),
+      unknownIntervalRecord({
+        id: 2, startDate: "2026-09-05", lastUnknownDate: "2026-09-07", endDate: null,
+      }),
+    ]);
+    const status = await new ModelEpisodeRepository(client).status(3);
+    expect(status).toMatchObject({
+      continuityStatus: "awaiting-recovery",
+      lastResolvedDate: "2026-08-22",
+      recoveryRequired: true,
+      unknownIntervalCount: 2,
+      unresolvedDayCount: 10,
+      postGapObservedDayCount: 2,
+      currentPredictedWeightKg: null,
+    });
+    expect(status?.unknownIntervals).toEqual([
+      expect.objectContaining({
+        id: 1, durationDays: 7, open: false,
+        postGapObservationDates: ["2026-08-30", "2026-08-31"],
+        missingTransitionFields: ["caloriesKcal"],
+      }),
+      expect.objectContaining({ id: 2, durationDays: 3, open: true }),
+    ]);
+  });
+
+  it("filters history gaps by unknown dates or retained observation dates", async () => {
+    db.modelEpisode.findFirst.mockResolvedValue(record());
+    db.dailyModelState.findMany.mockResolvedValue([]);
+    db.modelUnknownInterval.findMany.mockResolvedValue([
+      unknownIntervalRecord({
+        id: 1, startDate: "2026-08-23", lastUnknownDate: "2026-08-29",
+        endDate: "2026-08-29", postGapObservationDates: ["2026-08-30", "2026-08-31"],
+      }),
+      unknownIntervalRecord({
+        id: 2, startDate: "2026-09-05", lastUnknownDate: "2026-09-07", endDate: null,
+        postGapObservationDates: { malformed: true },
+      }),
+    ]);
+    const history = await new ModelEpisodeRepository(client).history({
+      from: "2026-08-31", to: "2026-08-31", limit: 90, offset: 0,
+    });
+    expect(history).toMatchObject({
+      unknownIntervals: [expect.objectContaining({ id: 1 })],
+      observationsAwaitingRecovery: [{
+        date: "2026-08-31", source: "recorded-after-unresolved-transition",
+      }],
+    });
+  });
+
+  it("returns resolved states, a seven-day gap, and five observations as distinct history", async () => {
+    db.modelEpisode.findUnique.mockResolvedValue(record());
+    db.dailyModelState.findMany.mockResolvedValue([0, 1, 2].map((index) => ({
+      date: `2026-08-0${index + 1}`,
+      updatedAt: new Date(`2026-08-0${index + 1}T12:00:00.000Z`),
+    })));
+    db.modelUnknownInterval.findMany.mockResolvedValue([
+      unknownIntervalRecord({
+        id: 1,
+        startDate: "2026-08-04",
+        lastUnknownDate: "2026-08-10",
+        endDate: "2026-08-10",
+        postGapObservationDates: [
+          "2026-08-11", "2026-08-12", "2026-08-13", "2026-08-14", "2026-08-15",
+        ],
+      }),
+    ]);
+    const history = await new ModelEpisodeRepository(client).history({
+      episodeId: 3, from: "2026-08-01", to: "2026-08-15", limit: 90, offset: 0,
+    });
+    expect(history?.days).toHaveLength(3);
+    expect(history?.unknownIntervals).toEqual([
+      expect.objectContaining({ startDate: "2026-08-04", durationDays: 7 }),
+    ]);
+    expect(history?.observationsAwaitingRecovery).toHaveLength(5);
+    expect(history?.days).not.toHaveLength(15);
   });
 
   it("builds concise status and chronological history DTOs", async () => {
@@ -256,6 +421,8 @@ describe("model episode repository mapping", () => {
     expect(history).toMatchObject({
       episodeId: 3,
       days: [{ date: "2026-08-22", updatedAt: "2026-08-23T00:00:00.000Z" }],
+      unknownIntervals: [],
+      observationsAwaitingRecovery: [],
     });
     db.modelEpisode.findUnique.mockResolvedValue(null);
     await expect(repository.status(999)).resolves.toBeNull();

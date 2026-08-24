@@ -168,7 +168,8 @@ function validateEcfPolicy(policy: EcfSimulationPolicy): void {
   }
 }
 
-function missingFields(
+/** Exact inputs required to evaluate one deterministic physiological transition. */
+export function missingPhysiologicalTransitionFields(
   input: PhysiologicalDailyInput,
   ecfPolicy: EcfSimulationPolicy,
 ): string[] {
@@ -241,7 +242,7 @@ export function simulateOneDay(input: {
   validateEcfPolicy(input.options.ecfPolicy);
   const startState = cloneState(input.state);
   reconstructBodyWeightKg(startState);
-  const missing = missingFields(input.day, input.options.ecfPolicy);
+  const missing = missingPhysiologicalTransitionFields(input.day, input.options.ecfPolicy);
   if (missing.length > 0) {
     return {
       status: "incomplete",

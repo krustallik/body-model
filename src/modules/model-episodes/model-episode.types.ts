@@ -159,6 +159,7 @@ export type ModelDaySourceQuality = {
   workIntervalCount: number;
   workWalkingDistanceKm: number | null;
   outsideWorkWalkingDistanceKm: number | null;
+  sourceObservationFields: string[];
   workWalkingReconstruction?: Array<{
     intervalId: number;
     distanceKm: number | null;
@@ -177,6 +178,24 @@ export type ModelDaySourceQuality = {
 export type BuiltSimulationDay = {
   input: import("@/model/physiological-simulator").PhysiologicalDailyInput;
   sourceQuality: ModelDaySourceQuality;
+};
+
+export type UnknownIntervalWrite = {
+  startDate: string;
+  lastUnknownDate: string;
+  endDate: string | null;
+  anchorDate: string | null;
+  firstPostGapObservationDate: string | null;
+  postGapObservedDayCount: number;
+  postGapObservationDates: string[];
+  missingTransitionFields: string[];
+  recoveryRequired: true;
+};
+
+export type UnknownIntervalDto = UnknownIntervalWrite & {
+  id: number;
+  durationDays: number;
+  open: boolean;
 };
 
 export type DailyModelStateWrite = {
@@ -225,4 +244,11 @@ export type ModelStatusDto = {
   currentLeanTissueKg: number | null;
   currentDynamicRmrKcalPerDay: number | null;
   currentModeledTdeeKcalPerDay: number | null;
+  continuityStatus: "resolved" | "awaiting-recovery";
+  lastResolvedDate: string | null;
+  recoveryRequired: boolean;
+  unknownIntervalCount: number;
+  unresolvedDayCount: number;
+  postGapObservedDayCount: number;
+  unknownIntervals: UnknownIntervalDto[];
 };

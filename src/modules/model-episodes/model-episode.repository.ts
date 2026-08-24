@@ -10,7 +10,9 @@ import type {
   NutritionVector,
   PersistedEpisode,
   PreparedEpisodeInitialization,
+  UnknownIntervalDto,
 } from "./model-episode.types";
+import { unknownIntervalDurationDays } from "./unknown-intervals";
 
 export type ModelDatabaseClient = PrismaClient | Prisma.TransactionClient;
 
@@ -58,6 +60,23 @@ const episodeSelect = {
 } satisfies Prisma.ModelEpisodeSelect;
 
 type EpisodeRecord = Prisma.ModelEpisodeGetPayload<{ select: typeof episodeSelect }>;
+
+const unknownIntervalSelect = {
+  id: true,
+  startDate: true,
+  lastUnknownDate: true,
+  endDate: true,
+  anchorDate: true,
+  firstPostGapObservationDate: true,
+  postGapObservedDayCount: true,
+  postGapObservationDates: true,
+  missingTransitionFields: true,
+  recoveryRequired: true,
+} satisfies Prisma.ModelUnknownIntervalSelect;
+
+type UnknownIntervalRecord = Prisma.ModelUnknownIntervalGetPayload<{
+  select: typeof unknownIntervalSelect;
+}>;
 
 function jsonValue(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
@@ -143,6 +162,27 @@ function toEpisode(record: EpisodeRecord): PersistedEpisode {
 
 function decimal(value: Prisma.Decimal | null): number | null {
   return value?.toNumber() ?? null;
+}
+
+function stringArray(value: Prisma.JsonValue): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function toUnknownInterval(record: UnknownIntervalRecord): UnknownIntervalDto {
+  return {
+    id: record.id,
+    startDate: record.startDate,
+    lastUnknownDate: record.lastUnknownDate,
+    endDate: record.endDate,
+    anchorDate: record.anchorDate,
+    firstPostGapObservationDate: record.firstPostGapObservationDate,
+    postGapObservedDayCount: record.postGapObservedDayCount,
+    postGapObservationDates: stringArray(record.postGapObservationDates),
+    missingTransitionFields: stringArray(record.missingTransitionFields),
+    recoveryRequired: record.recoveryRequired as true,
+    durationDays: unknownIntervalDurationDays(record),
+    open: record.endDate === null,
+  };
 }
 
 export class ModelEpisodeRepository {
@@ -325,6 +365,30 @@ export class ModelEpisodeRepository {
         ...(dates.length > 0 ? { date: { notIn: dates } } : {}),
       },
     });
+    const intervalStarts = calculation.unknownIntervals.map(({ startDate }) => startDate);
+    await this.client.modelUnknownInterval.deleteMany({
+      where: {
+        episodeId,
+        ...(intervalStarts.length > 0 ? { startDate: { notIn: intervalStarts } } : {}),
+      },
+    });
+    for (const interval of calculation.unknownIntervals) {
+      const data = {
+        lastUnknownDate: interval.lastUnknownDate,
+        endDate: interval.endDate,
+        anchorDate: interval.anchorDate,
+        firstPostGapObservationDate: interval.firstPostGapObservationDate,
+        postGapObservedDayCount: interval.postGapObservedDayCount,
+        postGapObservationDates: jsonValue(interval.postGapObservationDates),
+        missingTransitionFields: jsonValue(interval.missingTransitionFields),
+        recoveryRequired: interval.recoveryRequired,
+      };
+      await this.client.modelUnknownInterval.upsert({
+        where: { episodeId_startDate: { episodeId, startDate: interval.startDate } },
+        create: { episodeId, startDate: interval.startDate, ...data },
+        update: data,
+      });
+    }
     for (const state of calculation.dailyStates) {
       const data = {
         status: state.status,
@@ -399,6 +463,7 @@ export class ModelEpisodeRepository {
       imputedNutritionDays,
       unbridgeableNutritionDays,
       latest,
+      unknownIntervals,
     ] = await Promise.all([
       this.client.dailyModelState.count({ where: { episodeId: episode.id, status: "complete" } }),
       this.client.dailyModelState.count({ where: { episodeId: episode.id, status: { not: "complete" } } }),
@@ -423,7 +488,13 @@ export class ModelEpisodeRepository {
           energyExpenditureKcal: true,
         },
       }),
+      this.client.modelUnknownInterval.findMany({
+        where: { episodeId: episode.id },
+        orderBy: [{ startDate: "asc" }, { id: "asc" }],
+        select: unknownIntervalSelect,
+      }),
     ]);
+    const intervalDtos = unknownIntervals.map(toUnknownInterval);
     return {
       episodeId: episode.id,
       episodeStartDate: episode.startDate,
@@ -443,15 +514,34 @@ export class ModelEpisodeRepository {
       currentLeanTissueKg: latest?.leanTissueKg ?? null,
       currentDynamicRmrKcalPerDay: latest?.dynamicRmrKcalPerDay ?? null,
       currentModeledTdeeKcalPerDay: latest?.energyExpenditureKcal ?? null,
+      continuityStatus: intervalDtos.length === 0 ? "resolved" : "awaiting-recovery",
+      lastResolvedDate: episode.latestModeledDate,
+      recoveryRequired: intervalDtos.length > 0,
+      unknownIntervalCount: intervalDtos.length,
+      unresolvedDayCount: intervalDtos.reduce((sum, interval) => sum + interval.durationDays, 0),
+      postGapObservedDayCount: intervalDtos.reduce(
+        (sum, interval) => sum + interval.postGapObservedDayCount,
+        0,
+      ),
+      unknownIntervals: intervalDtos,
     };
   }
 
-  async history(query: ModelHistoryQuery): Promise<{ episodeId: number; days: unknown[] } | null> {
+  async history(query: ModelHistoryQuery): Promise<{
+    episodeId: number;
+    days: unknown[];
+    unknownIntervals: UnknownIntervalDto[];
+    observationsAwaitingRecovery: Array<{
+      date: string;
+      source: "recorded-after-unresolved-transition";
+    }>;
+  } | null> {
     const episode = query.episodeId === undefined
       ? await this.getActive()
       : await this.getById(query.episodeId);
     if (!episode) return null;
-    const rows = await this.client.dailyModelState.findMany({
+    const [rows, intervals] = await Promise.all([
+      this.client.dailyModelState.findMany({
       where: {
         episodeId: episode.id,
         date: {
@@ -493,10 +583,33 @@ export class ModelEpisodeRepository {
         filteredWeightKg: true,
         updatedAt: true,
       },
+      }),
+      this.client.modelUnknownInterval.findMany({
+        where: { episodeId: episode.id },
+        orderBy: [{ startDate: "asc" }, { id: "asc" }],
+        select: unknownIntervalSelect,
+      }),
+    ]);
+    const intervalDtos = intervals.map(toUnknownInterval).filter((interval) => {
+      const unknownOverlap = interval.startDate <= (query.to ?? "9999-12-31")
+        && interval.lastUnknownDate >= (query.from ?? "0000-01-01");
+      const observationOverlap = interval.postGapObservationDates.some(
+        (date) => (!query.from || date >= query.from) && (!query.to || date <= query.to),
+      );
+      return unknownOverlap || observationOverlap;
     });
+    const observationDates = [...new Set(intervalDtos.flatMap(
+      ({ postGapObservationDates }) => postGapObservationDates,
+    ))].filter((date) => (!query.from || date >= query.from) && (!query.to || date <= query.to))
+      .sort();
     return {
       episodeId: episode.id,
       days: rows.map((row) => ({ ...row, updatedAt: row.updatedAt.toISOString() })),
+      unknownIntervals: intervalDtos,
+      observationsAwaitingRecovery: observationDates.map((date) => ({
+        date,
+        source: "recorded-after-unresolved-transition" as const,
+      })),
     };
   }
 }

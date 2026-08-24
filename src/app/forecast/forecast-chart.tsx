@@ -5,6 +5,7 @@ import {
   CartesianGrid,
   ComposedChart,
   Line,
+  ReferenceDot,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -67,11 +68,12 @@ function Tick({ x, y, payload, locale }: { x?: number; y?: number; payload?: { v
   return <text x={x} y={(y ?? 0) + 14} textAnchor="middle" fill="currentColor" fontSize="11">{payload ? formatDate(payload.value, undefined, locale) : ""}</text>;
 }
 
-export function ForecastChart({ result, metric, history, locale }: {
+export function ForecastChart({ result, metric, history, locale, target }: {
   result: ForecastResult;
   metric: ForecastMetric;
   history: HistoricalDay[];
   locale: Locale;
+  target?: { date: string; weightKg: number };
 }) {
   const uk = locale === "uk";
   const historical = history
@@ -81,7 +83,7 @@ export function ForecastChart({ result, metric, history, locale }: {
   const firstForecastDate = result.dates[0]?.date;
 
   return (
-    <div style={{ width: "100%", height: 360 }} role="img" aria-label={uk ? "Історична лінія моделі, медіанний прогноз, імовірний і ширший можливий діапазони" : "Historical model line followed by median forecast, likely range, and wider possible range"}>
+    <div style={{ width: "100%", height: 360 }} role="img" aria-label={uk ? `Історична лінія моделі, медіанний прогноз, імовірний і ширший можливий діапазони${target ? ", а також введена ціль" : ""}` : `Historical model line followed by median forecast, likely range, and wider possible range${target ? ", plus the submitted target" : ""}`}>
       <ResponsiveContainer>
         <ComposedChart data={rows} margin={{ top: 18, right: 14, bottom: 6, left: 0 }}>
           <CartesianGrid vertical={false} stroke="var(--chart-grid)" />
@@ -93,6 +95,9 @@ export function ForecastChart({ result, metric, history, locale }: {
           <Line type="monotone" dataKey="historical" name={uk ? "Змодельована історія" : "Modeled history"} stroke="var(--history-line)" strokeWidth={2} dot={false} connectNulls={false} />
           <Line type="monotone" dataKey="median" name={uk ? "Очікувана оцінка" : "Expected estimate"} stroke="var(--forecast-line)" strokeWidth={3} dot={false} connectNulls={false} />
           {firstForecastDate && <ReferenceLine x={firstForecastDate} stroke="var(--boundary)" strokeDasharray="4 4" label={{ value: uk ? "Прогноз" : "Forecast", position: "insideTopRight", fill: "var(--muted)", fontSize: 11 }} />}
+          {target && <ReferenceLine y={target.weightKg} stroke="var(--target, #b35b36)" strokeDasharray="6 4" />}
+          {target && <ReferenceLine x={target.date} stroke="var(--target, #b35b36)" strokeDasharray="6 4" />}
+          {target && <ReferenceDot x={target.date} y={target.weightKg} r={5} fill="var(--surface)" stroke="var(--target, #b35b36)" strokeWidth={3} label={{ value: uk ? "Ціль" : "Target", position: "top", fill: "var(--target, #b35b36)", fontSize: 11 }} />}
         </ComposedChart>
       </ResponsiveContainer>
     </div>

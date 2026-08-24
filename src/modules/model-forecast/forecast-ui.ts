@@ -65,7 +65,7 @@ export function localCalendarDate(now = new Date()): string {
 
 export function buildForecastRequest(
   mode: ScenarioMode,
-  horizonDays: ForecastHorizon,
+  horizonDays: number,
   plan: PlanValues,
   today = localCalendarDate(),
 ): ForecastModelRequest {

@@ -12,6 +12,8 @@ import {
   recoverModelEpisode,
 } from "@/modules/model-recovery/model-recovery.service";
 import { forecastModelEpisode } from "@/modules/model-forecast/model-forecast.service";
+import { serializeGoalPlanningResult } from "@/modules/model-goal-planning/goal-planning";
+import type { GoalPlanningRequest } from "@/modules/model-goal-planning/goal-planning.schema";
 import { solveModelEpisodeTarget } from "@/modules/model-target-solver/model-target-solver.service";
 
 const prisma = new PrismaClient();
@@ -46,6 +48,16 @@ function targetRequest(targetValueKg: number, goalDate: string, requestNow: Date
     scenarioTemplate: fixedForecastScenario, seed: 1601,
     solverConfig: { searchPathCount: 8, finalPathCount: 32, coarseGridPoints: 3, maxEvaluations: 10 },
     now: requestNow,
+  };
+}
+
+function goalPlanningRequest(targetValueKg: number, goalDate: string): GoalPlanningRequest {
+  return {
+    episodeId,
+    goal: { metric: "weightKg", targetValueKg, goalDate },
+    constraints: { minCaloriesKcal: 1_800, maxCaloriesKcal: 3_000 },
+    scenarioTemplate: fixedForecastScenario,
+    seed: 1601,
   };
 }
 
@@ -238,14 +250,21 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
 
   it("solves a target read-only against PostgreSQL application state", async () => {
     const before = {
+      profile: await prisma.profile.findUnique({ where: { id: 1 } }),
       episode: await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } }),
       states: await prisma.dailyModelState.findMany({ where: { episodeId }, orderBy: { date: "asc" } }),
       recoveries: await prisma.modelRecoveryRun.findMany({ where: { episodeId }, orderBy: { id: "asc" } }),
-      healthCount: await prisma.dailyHealthData.count(),
+      health: await prisma.dailyHealthData.findMany({ orderBy: { date: "asc" } }),
       work: await prisma.workInterval.findMany({ where: { date: workDate }, orderBy: { id: "asc" } }),
     };
     const result = await solveModelEpisodeTarget(targetRequest(80, "2041-04-29", now), prisma);
+    const publicResult = serializeGoalPlanningResult(
+      goalPlanningRequest(80, "2041-04-29"), result,
+    );
     expect(result.status).toMatch(/solved|numerically-limited|not-bracketed/);
+    expect(publicResult.status).toBe(result.status);
+    expect(publicResult.forecast?.dates.at(-1)?.date).toBe("2041-04-29");
+    expect(JSON.stringify(publicResult)).not.toMatch(/searchDiagnostics|evaluations|samples/);
     expect("searchDiagnostics" in result && result.searchDiagnostics.commonRandomNumbers).toBe(true);
     if ("terminal" in result && result.terminal) {
       expect(result.terminal.attainment.sampleCount).toBe(32);
@@ -265,10 +284,19 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     ), prisma);
     expect(boundary.status).toBe("solved-at-boundary");
     expect("control" in boundary && boundary.control.constraintBoundary).toBe("min");
+    expect(serializeGoalPlanningResult(goalPlanningRequest(
+      minimumForecast.dates.at(-1)!.physiologicalBodyWeightKg.median, "2041-04-29",
+    ), boundary)).toMatchObject({
+      status: "solved-at-boundary",
+      control: { constraintBoundary: "min" },
+      terminal: { date: "2041-04-29" },
+      warnings: ["caller-boundary"],
+    });
     expect(await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } })).toEqual(before.episode);
     expect(await prisma.dailyModelState.findMany({ where: { episodeId }, orderBy: { date: "asc" } })).toEqual(before.states);
     expect(await prisma.modelRecoveryRun.findMany({ where: { episodeId }, orderBy: { id: "asc" } })).toEqual(before.recoveries);
-    expect(await prisma.dailyHealthData.count()).toBe(before.healthCount);
+    expect(await prisma.profile.findUnique({ where: { id: 1 } })).toEqual(before.profile);
+    expect(await prisma.dailyHealthData.findMany({ orderBy: { date: "asc" } })).toEqual(before.health);
     expect(await prisma.workInterval.findMany({ where: { date: workDate }, orderBy: { id: "asc" } })).toEqual(before.work);
   });
 
@@ -324,6 +352,9 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       await prisma.modelRecoveryRun.update({ where: { id: stored.id }, data: { status: "recovered" } });
       const recoveredSolve = await solveModelEpisodeTarget(targetRequest(80, "2041-05-06", extendedNow), prisma);
       expect("quality" in recoveredSolve && recoveredSolve.quality.initialStateQuality).toBe("recovered");
+      expect(serializeGoalPlanningResult(
+        goalPlanningRequest(80, "2041-05-06"), recoveredSolve,
+      ).warnings).toContain("recovered-initial-state");
       await prisma.modelRecoveryRun.update({
         where: { id: stored.id }, data: { status: "degraded" },
       });
@@ -338,6 +369,9 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       expect("diagnostics" in forecast && forecast.diagnostics.startingParticleCount).toBe(64);
       const degradedSolve = await solveModelEpisodeTarget(targetRequest(80, "2041-05-06", extendedNow), prisma);
       expect("quality" in degradedSolve && degradedSolve.quality.initialStateQuality).toBe("degraded");
+      expect(serializeGoalPlanningResult(
+        goalPlanningRequest(80, "2041-05-06"), degradedSolve,
+      ).warnings).toContain("degraded-initial-state");
       await prisma.modelRecoveryRun.update({
         where: { id: stored.id }, data: { status: "degenerate" },
       });
@@ -347,8 +381,19 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       }, prisma)).toMatchObject({
         status: "initial-state-unreliable", initialStateQuality: "degenerate",
       });
-      expect(await solveModelEpisodeTarget(targetRequest(80, "2041-05-06", extendedNow), prisma)).toMatchObject({
+      const degenerateSolve = await solveModelEpisodeTarget(
+        targetRequest(80, "2041-05-06", extendedNow), prisma,
+      );
+      expect(degenerateSolve).toMatchObject({
         status: "initial-state-unreliable", initialStateQuality: "degenerate",
+      });
+      expect(serializeGoalPlanningResult(
+        goalPlanningRequest(80, "2041-05-06"), degenerateSolve,
+      )).toMatchObject({
+        status: "initial-state-unreliable",
+        terminal: null,
+        forecast: null,
+        warnings: ["initial-state-unreliable"],
       });
       await prisma.modelRecoveryRun.update({
         where: { id: stored.id }, data: { status: originalRecoveryStatus },
@@ -394,8 +439,19 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       }, prisma)).toMatchObject({
         status: "initial-state-unavailable", initialStateQuality: "awaiting",
       });
-      expect(await solveModelEpisodeTarget(targetRequest(80, "2041-05-06", extendedNow), prisma)).toMatchObject({
+      const awaitingSolve = await solveModelEpisodeTarget(
+        targetRequest(80, "2041-05-06", extendedNow), prisma,
+      );
+      expect(awaitingSolve).toMatchObject({
         status: "initial-state-unavailable", initialStateQuality: "awaiting",
+      });
+      expect(serializeGoalPlanningResult(
+        goalPlanningRequest(80, "2041-05-06"), awaitingSolve,
+      )).toMatchObject({
+        status: "initial-state-unavailable",
+        terminal: null,
+        forecast: null,
+        warnings: ["initial-state-unavailable"],
       });
       const afterBreakEdit = await getModelRecoveryStatus(episodeId, prisma, extendedNow);
       expect(afterBreakEdit.recovery).toMatchObject({ id: stored.id, stale: true });

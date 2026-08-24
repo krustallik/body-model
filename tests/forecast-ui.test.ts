@@ -126,6 +126,8 @@ describe("forecast application helpers", () => {
     expect(missingDonors).toMatchObject({ canForecast: false, level: "low" });
     expect(missingDonors.factors.join(" ")).toMatch(/requires at least 14/);
 
-    expect(forecastReadiness({ status: null, mode: "fixed", locale: "uk" }).title).toBe("Прогноз поки недоступний");
+    const unavailable = forecastReadiness({ status: null, mode: "fixed", locale: "uk" });
+    expect(unavailable).toMatchObject({ score: null, title: "Прогноз поки недоступний" });
+    expect(unavailable.factors.join(" ")).toMatch(/21 повним днем харчування/);
   });
 });

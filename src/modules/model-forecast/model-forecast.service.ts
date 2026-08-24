@@ -22,7 +22,7 @@ import {
 } from "@/modules/model-recovery/recovery-fingerprint";
 import type { RecoveryParticle, RecoveryQuality } from "@/modules/model-recovery/recovery.types";
 import { forecastScenarioFingerprint, forecastSourceFingerprint } from "./forecast-fingerprint";
-import { runForecast } from "./forecast-engine";
+import { runForecastWithInternalArtifacts, type ForecastInternalArtifacts } from "./forecast-engine";
 import type { ForecastModelRequest } from "./model-forecast.schema";
 import {
   DEFAULT_FORECAST_CONFIG,
@@ -186,10 +186,12 @@ function blocked(input: {
   };
 }
 
-export async function forecastModelEpisode(
+export type ForecastModelEpisodeInternalResult = ForecastInternalArtifacts | ForecastBlockedResult;
+
+export async function forecastModelEpisodeWithInternalArtifacts(
   request: ForecastModelRequest & { now?: Date },
   client: PrismaClient = prisma,
-): Promise<ForecastResult | ForecastBlockedResult> {
+): Promise<ForecastModelEpisodeInternalResult> {
   const episodes = new ModelEpisodeRepository(client);
   const recoveryRepository = new ModelRecoveryRepository(client);
   const episode = request.episodeId === undefined
@@ -298,7 +300,7 @@ export async function forecastModelEpisode(
     personalization,
     parameters: episode.simulatorParameters,
   });
-  return runForecast({
+  return runForecastWithInternalArtifacts({
     seed: request.seed,
     startDate,
     horizonDays: request.horizonDays,
@@ -316,4 +318,12 @@ export async function forecastModelEpisode(
     variabilityEvidence: evidence,
     config,
   });
+}
+
+export async function forecastModelEpisode(
+  request: ForecastModelRequest & { now?: Date },
+  client: PrismaClient = prisma,
+): Promise<ForecastResult | ForecastBlockedResult> {
+  const result = await forecastModelEpisodeWithInternalArtifacts(request, client);
+  return "result" in result ? result.result : result;
 }

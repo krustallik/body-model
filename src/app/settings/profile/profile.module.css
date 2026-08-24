@@ -5,13 +5,16 @@
   --surface: #fff;
   --soft: #f3f7f4;
   --accent: #176b4d;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
   max-width: 90rem;
   margin: 0 auto;
   padding: 1.5rem 2rem 4rem;
   color: var(--ink);
 }
 
-.topbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.topbar { display: flex; align-items: center; justify-content: space-between; min-width: 0; gap: 1rem; }
 .brand { display: grid; color: var(--ink); font-size: 1.05rem; font-weight: 850; line-height: 1; text-decoration: none; }
 .brand span { margin-top: 0.3rem; color: var(--muted); font-size: 0.62rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
 
@@ -20,16 +23,17 @@
 .hero > p:last-child { max-width: 38rem; margin: 1.1rem 0 0; color: var(--muted); line-height: 1.5; }
 .eyebrow { margin: 0 0 0.7rem; color: var(--accent); font-size: 0.72rem; font-weight: 850; letter-spacing: 0.14em; text-transform: uppercase; }
 
-.card { max-width: 58rem; overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: 1rem; box-shadow: 0 0.8rem 2.5rem rgb(30 53 44 / 5%); }
+.card { box-sizing: border-box; width: 100%; max-width: 58rem; overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: 1rem; box-shadow: 0 0.8rem 2.5rem rgb(30 53 44 / 5%); }
 .cardHeading { display: flex; align-items: flex-end; justify-content: space-between; gap: 1rem; padding: 1.4rem 1.5rem; border-bottom: 1px solid var(--line); }
 .cardHeading h2 { margin: 0; font-size: 1.45rem; letter-spacing: -0.035em; }
 .cardHeading > p { margin: 0; color: var(--muted); font-size: 0.72rem; }
 .card form { padding: 1.5rem; }
 .loading { padding: 3rem 1.5rem; color: var(--muted); }
 .formGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.25rem; }
+.formGrid > *, .field, .unitInput { min-width: 0; }
 .field { display: grid; align-content: start; gap: 0.45rem; }
 .field > span { font-size: 0.76rem; font-weight: 800; }
-.field input, .field select { width: 100%; min-height: 2.85rem; padding: 0.7rem 0.8rem; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 0.65rem; font: inherit; }
+.field input, .field select { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; min-height: 2.85rem; padding: 0.7rem 0.8rem; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 0.65rem; font: inherit; }
 .field input:focus, .field select:focus { border-color: var(--accent); outline: 3px solid color-mix(in srgb, var(--accent) 15%, transparent); }
 .field input[aria-invalid="true"], .field select[aria-invalid="true"] { border-color: #b54d4d; }
 .field small { color: #9f3838; font-size: 0.7rem; line-height: 1.35; }
@@ -44,13 +48,19 @@
 .error { color: #9f3838; }
 
 @media (max-width: 620px) {
-  .page { padding: 1rem 1rem 2.5rem; }
-  .topbar { align-items: flex-start; }
+  .page { overflow-x: clip; padding: 1rem 1rem 2.5rem; }
+  .topbar { align-items: stretch; flex-direction: column; }
   .hero { padding: 3rem 0 1.6rem; }
   .cardHeading { align-items: flex-start; flex-direction: column; }
   .formGrid { grid-template-columns: 1fr; }
   .actions { align-items: flex-start; flex-direction: column; }
   .actions button { width: 100%; }
+}
+
+@media (max-width: 390px) {
+  .page { padding-inline: 0.75rem; }
+  .card form, .cardHeading { padding-inline: 1rem; }
+  .hero h1 { font-size: clamp(2.4rem, 15vw, 3.4rem); }
 }
 
 @media (prefers-color-scheme: dark) {

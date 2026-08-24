@@ -17,6 +17,8 @@
     "validate:recovery-support": "tsx scripts/validate-recovery-support.ts",
     "validate:recovery-calibration": "tsx scripts/validate-recovery-calibration.ts",
     "benchmark:forecast": "tsx scripts/benchmark-model-forecast.ts",
+    "benchmark:target-solver": "tsx scripts/benchmark-target-solver.ts",
+    "validate:target-solver": "tsx scripts/validate-target-solver-phase16b.ts",
     "validate:forecast-calibration": "tsx scripts/validate-forecast-calibration.ts",
     "validate:forecast-stress": "tsx scripts/validate-forecast-stress.ts",
     "qa:forecast-fixture": "tsx scripts/qa/forecast-fixture.ts",

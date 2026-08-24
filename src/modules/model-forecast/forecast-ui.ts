@@ -208,7 +208,7 @@ export function planAssumptions(mode: Exclude<ScenarioMode, "recent-behavior">, 
 }
 
 export type ForecastReadiness = {
-  score: number;
+  score: number | null;
   level: "high" | "medium" | "low" | "unavailable";
   canForecast: boolean;
   title: string;
@@ -228,10 +228,18 @@ export function forecastReadiness(input: {
   const uk = input.locale === "uk";
   const status = input.status;
   if (!status) return {
-    score: 0, level: "unavailable", canForecast: false,
+    score: null, level: "unavailable", canForecast: false,
     title: uk ? "Прогноз поки недоступний" : "Forecast is not available yet",
-    detail: uk ? "Спочатку створіть профіль та активну модель на основі історичних даних." : "Create a profile and an active model from historical data first.",
-    factors: [uk ? "Немає активного модельного епізоду." : "There is no active model episode."],
+    detail: uk ? "Оцінка якості ще не розрахована, бо активну модель не створено." : "Quality has not been scored because there is no active model yet.",
+    factors: uk ? [
+      "Для першої моделі потрібен стабільний 28-денний проміжок із щонайменше 21 повним днем харчування.",
+      "Потрібно щонайменше 14 вимірювань ваги, розподілених мінімум на 21 календарний день.",
+      "Потрібне хоча б одне спільне вимірювання ваги й відсотка жиру за останні 14 днів.",
+    ] : [
+      "The first model needs a stable 28-day window with at least 21 complete nutrition days.",
+      "At least 14 weight observations spanning at least 21 calendar days are required.",
+      "At least one paired weight and body-fat observation from the latest 14 days is required.",
+    ],
   };
 
   const modeledRatio = Math.min(status.daysModeled / 42, 1);

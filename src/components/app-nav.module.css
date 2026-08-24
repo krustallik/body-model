@@ -1,5 +1,7 @@
 .nav {
   display: inline-flex;
+  box-sizing: border-box;
+  min-width: 0;
   max-width: 100%;
   gap: 0.25rem;
   padding: 0.3rem;
@@ -9,8 +11,8 @@
 }
 
 @media (max-width: 620px) {
-  .nav { overflow-x: auto; }
-  .nav a { padding-inline: 0.7rem; white-space: nowrap; }
+  .nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; overflow: hidden; }
+  .nav a { min-width: 0; padding-inline: 0.7rem; text-align: center; white-space: nowrap; }
 }
 
 .nav a {

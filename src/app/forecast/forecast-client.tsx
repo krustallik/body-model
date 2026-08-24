@@ -211,7 +211,7 @@ export function ForecastClient() {
       </section>
 
       <section className={`${styles.readinessCard} ${styles[readiness.level]}`} aria-label={uk ? "Оцінка якості прогнозу" : "Forecast quality assessment"}>
-        <div className={styles.readinessScore}><strong>{readiness.score}</strong><span>/ 100</span></div>
+        <div className={styles.readinessScore}><strong>{readiness.score ?? "—"}</strong><span>/ 100</span></div>
         <div><p className={styles.eyebrow}>{readiness.canForecast ? (uk ? "Прогноз доступний" : "Forecast available") : (uk ? "Чому прогноз недоступний" : "Why forecasting is unavailable")}</p><h2>{readiness.title}</h2><p>{readiness.detail}</p><ul>{readiness.factors.map((factor) => <li key={factor}>{factor}</li>)}</ul></div>
       </section>
 

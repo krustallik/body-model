@@ -1,4 +1,5 @@
 import { GLYCOGEN_WATER_KG_PER_KG } from "@/model/body-composition/constants";
+import { reconstructBodyWeightKg } from "@/model/body-composition/state";
 import { simulateOneDay, type PhysiologicalDailyInput } from "@/model/physiological-simulator";
 import { addCalendarDays, calendarDayIndex } from "@/modules/model-episodes/model-calendar";
 import { SeededRandom, weightedQuantile } from "@/modules/model-recovery/recovery-math";
@@ -290,7 +291,14 @@ function invalidReason(error: unknown): string {
   return "unknown-forecast-path-error";
 }
 
-export function runForecast(input: RunForecastInput): ForecastResult {
+export type ForecastInternalArtifacts = {
+  result: ForecastResult;
+  initialPhysiologicalBodyWeightKg: number;
+  terminalPhysiologicalBodyWeightSamplesKg: readonly number[];
+};
+
+/** Internal simulation artifacts for consumers that need the empirical paths. */
+export function runForecastWithInternalArtifacts(input: RunForecastInput): ForecastInternalArtifacts {
   if (!Number.isInteger(input.horizonDays) || input.horizonDays <= 0) {
     throw new RangeError("forecast horizonDays must be a positive integer");
   }
@@ -301,6 +309,7 @@ export function runForecast(input: RunForecastInput): ForecastResult {
     ? Array.from({ length: config.pathCount }, () => 0)
     : stratifiedResampleIndices(particles.map(({ weight }) => weight), config.pathCount, random);
   const validPaths: PathDay[][] = [];
+  const validStartingIndices: number[] = [];
   const invalidPathReasons: Record<string, number> = {};
   for (const startingIndex of startingIndices) {
     let state = particles[startingIndex].state;
@@ -346,6 +355,7 @@ export function runForecast(input: RunForecastInput): ForecastResult {
         state = result.endState;
       }
       validPaths.push(path);
+      validStartingIndices.push(startingIndex);
     } catch (error) {
       const reason = invalidReason(error);
       invalidPathReasons[reason] = (invalidPathReasons[reason] ?? 0) + 1;
@@ -360,7 +370,7 @@ export function runForecast(input: RunForecastInput): ForecastResult {
   const uniqueStartingStateCount = new Set(startingIndices).size;
   const longHorizonLimited = input.horizonDays > config.longHorizonThresholdDays
     && config.pathCount < config.longHorizonRecommendedPathCount;
-  return {
+  const result: ForecastResult = {
     status: degraded || validFraction < config.minimumValidPathFraction ? "degraded" : "ok",
     forecastVersion: FORECAST_ALGORITHM_VERSION,
     modelVersion: input.modelVersion,
@@ -415,4 +425,16 @@ export function runForecast(input: RunForecastInput): ForecastResult {
       },
     },
   };
+  const initialPhysiologicalBodyWeightKg = empiricalPredictiveSummary(
+    validStartingIndices.map((index) => reconstructBodyWeightKg(particles[index].state)),
+  ).median;
+  return {
+    result,
+    initialPhysiologicalBodyWeightKg,
+    terminalPhysiologicalBodyWeightSamplesKg: validPaths.map((path) => path.at(-1)!.physiologicalBodyWeightKg),
+  };
+}
+
+export function runForecast(input: RunForecastInput): ForecastResult {
+  return runForecastWithInternalArtifacts(input).result;
 }

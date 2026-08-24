@@ -4,6 +4,7 @@ import { CalendarDateSchema, parseNullableNumericInput } from "@/modules/days/da
 const todayDate = () => new Date().toISOString().slice(0, 10);
 
 export const SexSchema = z.enum(["male", "female"]);
+export const LocaleSchema = z.enum(["uk", "en"]);
 
 const requiredNumeric = (schema: z.ZodNumber) =>
   z.preprocess(parseNullableNumericInput, schema);
@@ -17,6 +18,7 @@ const optionalDate = z.preprocess(
 );
 
 export const ProfileInputSchema = z.object({
+  locale: LocaleSchema.default("uk"),
   sex: SexSchema,
   dateOfBirth: CalendarDateSchema.refine(
     (value) => value <= todayDate(),

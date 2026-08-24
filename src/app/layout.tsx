@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { I18nProvider } from "@/i18n/i18n-provider";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -10,7 +11,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
   return (
     <html lang="uk">
-      <body>{children}</body>
+      <body><I18nProvider>{children}</I18nProvider></body>
     </html>
   );
 }

@@ -3,14 +3,16 @@
 import { FormEvent, useEffect, useState } from "react";
 import Link from "next/link";
 import { AppNav } from "@/components/app-nav";
+import { useI18n, type Locale } from "@/i18n/i18n-provider";
 import type { ProfileDto } from "@/modules/profile/profile.types";
 import styles from "./profile.module.css";
 
-type ProfileField = "sex" | "dateOfBirth" | "heightCm" | "targetWeightKg" | "targetDate";
+type ProfileField = "locale" | "sex" | "dateOfBirth" | "heightCm" | "targetWeightKg" | "targetDate";
 type FormValues = Record<ProfileField, string>;
 type FieldErrors = Partial<Record<ProfileField, string>>;
 
 const emptyForm: FormValues = {
+  locale: "uk",
   sex: "",
   dateOfBirth: "",
   heightCm: "",
@@ -20,6 +22,7 @@ const emptyForm: FormValues = {
 
 function formFromProfile(profile: ProfileDto): FormValues {
   return {
+    locale: profile.locale,
     sex: profile.sex,
     dateOfBirth: profile.dateOfBirth,
     heightCm: String(profile.heightCm),
@@ -28,8 +31,8 @@ function formFromProfile(profile: ProfileDto): FormValues {
   };
 }
 
-async function readError(response: Response): Promise<{ message: string; fields: FieldErrors }> {
-  const fallback = `Request failed (${response.status})`;
+async function readError(response: Response, uk = false): Promise<{ message: string; fields: FieldErrors }> {
+  const fallback = uk ? `Помилка запиту (${response.status})` : `Request failed (${response.status})`;
   try {
     const body = await response.json() as {
       error?: string;
@@ -39,16 +42,18 @@ async function readError(response: Response): Promise<{ message: string; fields:
     for (const detail of body.details ?? []) {
       const field = detail.path?.[0];
       if (typeof field === "string" && field in emptyForm && detail.message) {
-        fields[field as ProfileField] = detail.message;
+        fields[field as ProfileField] = uk ? "Перевірте значення цього поля." : detail.message;
       }
     }
-    return { message: body.details?.[0]?.message ?? body.error ?? fallback, fields };
+    return { message: uk && body.details?.length ? "Перевірте дані профілю." : body.details?.[0]?.message ?? body.error ?? fallback, fields };
   } catch {
     return { message: fallback, fields: {} };
   }
 }
 
 export function ProfileClient() {
+  const { locale, setLocale } = useI18n();
+  const uk = locale === "uk";
   const [values, setValues] = useState<FormValues>(emptyForm);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -60,7 +65,7 @@ export function ProfileClient() {
     let active = true;
     fetch("/api/v1/profile", { cache: "no-store" })
       .then(async (response) => {
-        if (!response.ok) throw new Error((await readError(response)).message);
+        if (!response.ok) throw new Error((await readError(response, document.documentElement.lang === "uk")).message);
         return response.json() as Promise<{ profile: ProfileDto | null }>;
       })
       .then((body) => {
@@ -79,6 +84,7 @@ export function ProfileClient() {
 
   function updateField(field: ProfileField, value: string) {
     setValues((current) => ({ ...current, [field]: value }));
+    if (field === "locale") setLocale(value as Locale);
     setFieldErrors((current) => ({ ...current, [field]: undefined }));
     setError(null);
     setSaved(false);
@@ -98,7 +104,7 @@ export function ProfileClient() {
         body: JSON.stringify(values),
       });
       if (!response.ok) {
-        const issue = await readError(response);
+        const issue = await readError(response, uk);
         setFieldErrors(issue.fields);
         throw new Error(issue.message);
       }
@@ -106,7 +112,7 @@ export function ProfileClient() {
       setValues(formFromProfile(body.profile));
       setSaved(true);
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Unable to save profile");
+      setError(saveError instanceof Error ? saveError.message : uk ? "Не вдалося зберегти профіль" : "Unable to save profile");
     } finally {
       setSaving(false);
     }
@@ -117,47 +123,54 @@ export function ProfileClient() {
       <header className={styles.topbar}>
         <Link className={styles.brand} href="/dashboard">
           BodyCast
-          <span>Health workspace</span>
+          <span>{uk ? "Простір здоров’я" : "Health workspace"}</span>
         </Link>
         <AppNav active="profile" />
       </header>
 
       <section className={styles.hero}>
-        <p className={styles.eyebrow}>Settings</p>
-        <h1>Your profile.</h1>
-        <p>Keep the basic personal inputs and optional weight goal that future BodyCast models will use.</p>
+        <p className={styles.eyebrow}>{uk ? "Налаштування" : "Settings"}</p>
+        <h1>{uk ? "Ваш профіль." : "Your profile."}</h1>
+        <p>{uk ? "Збережіть основні персональні дані, мову інтерфейсу та необов’язкову ціль ваги для моделей BodyCast." : "Keep the basic personal inputs, interface language, and optional weight goal that BodyCast models will use."}</p>
       </section>
 
       <section className={styles.card} aria-labelledby="profile-form-title">
         <div className={styles.cardHeading}>
           <div>
-            <p className={styles.eyebrow}>Personal inputs</p>
-            <h2 id="profile-form-title">Profile &amp; goal</h2>
+            <p className={styles.eyebrow}>{uk ? "Персональні дані" : "Personal inputs"}</p>
+            <h2 id="profile-form-title">{uk ? "Профіль і ціль" : "Profile & goal"}</h2>
           </div>
-          <p>Required fields are marked with *</p>
+          <p>{uk ? "Обов’язкові поля позначені *" : "Required fields are marked with *"}</p>
         </div>
 
         {loading ? (
-          <div className={styles.loading}>Loading profile…</div>
+          <div className={styles.loading}>{uk ? "Завантаження профілю…" : "Loading profile…"}</div>
         ) : (
           <form onSubmit={handleSubmit} noValidate>
             <div className={styles.formGrid}>
               <label className={styles.field}>
-                <span>Sex *</span>
+                <span>{uk ? "Мова інтерфейсу *" : "Interface language *"}</span>
+                <select value={values.locale} onChange={(event) => updateField("locale", event.target.value)}>
+                  <option value="uk">Українська</option>
+                  <option value="en">English</option>
+                </select>
+              </label>
+              <label className={styles.field}>
+                <span>{uk ? "Стать *" : "Sex *"}</span>
                 <select
                   value={values.sex}
                   onChange={(event) => updateField("sex", event.target.value)}
                   aria-invalid={Boolean(fieldErrors.sex)}
                 >
-                  <option value="">Select</option>
-                  <option value="male">Male</option>
-                  <option value="female">Female</option>
+                  <option value="">{uk ? "Оберіть" : "Select"}</option>
+                  <option value="male">{uk ? "Чоловіча" : "Male"}</option>
+                  <option value="female">{uk ? "Жіноча" : "Female"}</option>
                 </select>
                 {fieldErrors.sex && <small role="alert">{fieldErrors.sex}</small>}
               </label>
 
               <label className={styles.field}>
-                <span>Date of birth *</span>
+                <span>{uk ? "Дата народження *" : "Date of birth *"}</span>
                 <input
                   type="date"
                   value={values.dateOfBirth}
@@ -168,7 +181,7 @@ export function ProfileClient() {
               </label>
 
               <label className={styles.field}>
-                <span>Height *</span>
+                <span>{uk ? "Зріст *" : "Height *"}</span>
                 <div className={styles.unitInput}>
                   <input
                     type="text"
@@ -184,7 +197,7 @@ export function ProfileClient() {
               </label>
 
               <label className={styles.field}>
-                <span>Target weight</span>
+                <span>{uk ? "Цільова вага" : "Target weight"}</span>
                 <div className={styles.unitInput}>
                   <input
                     type="text"
@@ -200,7 +213,7 @@ export function ProfileClient() {
               </label>
 
               <label className={styles.field}>
-                <span>Target date</span>
+                <span>{uk ? "Цільова дата" : "Target date"}</span>
                 <input
                   type="date"
                   value={values.targetDate}
@@ -212,8 +225,8 @@ export function ProfileClient() {
             </div>
 
             <div className={styles.actions}>
-              <button type="submit" disabled={saving}>{saving ? "Saving…" : "Save"}</button>
-              {saved && <p className={styles.success} role="status">Profile saved.</p>}
+              <button type="submit" disabled={saving}>{saving ? (uk ? "Збереження…" : "Saving…") : (uk ? "Зберегти" : "Save")}</button>
+              {saved && <p className={styles.success} role="status">{uk ? "Профіль збережено." : "Profile saved."}</p>}
               {error && <p className={styles.error} role="alert">{error}</p>}
             </div>
           </form>

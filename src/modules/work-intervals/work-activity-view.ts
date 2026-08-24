@@ -1,4 +1,5 @@
 import type { WorkActivityDiagnosticsDto } from "./work-activity.service";
+import type { Locale } from "@/i18n/i18n-provider";
 
 type IntervalEstimate = WorkActivityDiagnosticsDto["walking"]["intervals"][number];
 type MetricEstimate = IntervalEstimate["estimatedWalkingDistanceKm"];
@@ -14,13 +15,14 @@ function availableGap(boundary: MetricEstimate["start"]): number | null {
   return "gapMinutes" in boundary ? boundary.gapMinutes : null;
 }
 
-export function reconstructionQuality(interval: IntervalEstimate): QualityDisplay {
+export function reconstructionQuality(interval: IntervalEstimate, locale: Locale = "en"): QualityDisplay {
+  const uk = locale === "uk";
   const metrics = [interval.estimatedWalkingDistanceKm, interval.estimatedSteps];
   const reason = metrics.find((metric) => metric.value === null)?.reason;
   if (reason === "counter-decreased") {
     return {
       tone: "warning",
-      label: "Health cumulative value changed unexpectedly; interval estimate unavailable.",
+      label: uk ? "Накопичувальне значення Health неочікувано змінилося; оцінка проміжку недоступна." : "Health cumulative value changed unexpectedly; interval estimate unavailable.",
       startGapMinutes: null,
       endGapMinutes: null,
     };
@@ -28,7 +30,7 @@ export function reconstructionQuality(interval: IntervalEstimate): QualityDispla
   if (reason === "gap-too-large") {
     return {
       tone: "warning",
-      label: "Not enough nearby sync data to estimate work walking.",
+      label: uk ? "Недостатньо близьких синхронізацій для оцінки ходьби на роботі." : "Not enough nearby sync data to estimate work walking.",
       startGapMinutes: null,
       endGapMinutes: null,
     };
@@ -36,7 +38,7 @@ export function reconstructionQuality(interval: IntervalEstimate): QualityDispla
   if (reason === "insufficient-data") {
     return {
       tone: "warning",
-      label: "Insufficient sync history.",
+      label: uk ? "Недостатня історія синхронізації." : "Insufficient sync history.",
       startGapMinutes: null,
       endGapMinutes: null,
     };
@@ -45,10 +47,10 @@ export function reconstructionQuality(interval: IntervalEstimate): QualityDispla
   const methods = distance.value === null ? [] : [distance.start, distance.end]
     .flatMap((boundary) => "method" in boundary ? [boundary.method] : []);
   const label = methods.includes("nearest")
-    ? "Estimated from nearest sync."
+    ? (uk ? "Оцінено за найближчою синхронізацією." : "Estimated from nearest sync.")
     : methods.includes("interpolated")
-      ? "Estimated between nearby syncs."
-      : "Excellent snapshot coverage.";
+      ? (uk ? "Оцінено між сусідніми синхронізаціями." : "Estimated between nearby syncs.")
+      : (uk ? "Відмінне покриття знімками." : "Excellent snapshot coverage.");
   return {
     tone: methods.includes("exact") && methods.every((method) => method === "exact") ? "good" : "info",
     label,
@@ -61,11 +63,12 @@ export function durationMinutes(startAt: string, endAt: string): number {
   return (Date.parse(endAt) - Date.parse(startAt)) / 60_000;
 }
 
-export function formatDuration(minutes: number): string {
+export function formatDuration(minutes: number, locale: Locale = "en"): string {
   const hours = Math.floor(minutes / 60);
   const remainder = Math.round(minutes % 60);
-  return [hours > 0 ? `${hours}h` : "", remainder > 0 ? `${remainder}m` : ""]
-    .filter(Boolean).join(" ") || "0m";
+  const uk = locale === "uk";
+  return [hours > 0 ? `${hours}${uk ? " год" : "h"}` : "", remainder > 0 ? `${remainder}${uk ? " хв" : "m"}` : ""]
+    .filter(Boolean).join(" ") || (uk ? "0 хв" : "0m");
 }
 
 export function dailyActivityView(diagnostics: WorkActivityDiagnosticsDto) {

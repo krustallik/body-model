@@ -26,7 +26,12 @@ describe("ProfileInputSchema", () => {
       targetWeightKg: "",
       targetDate: "",
     });
-    expect(result).toMatchObject({ heightCm: 180, targetWeightKg: null, targetDate: null });
+    expect(result).toMatchObject({ locale: "uk", heightCm: 180, targetWeightKg: null, targetDate: null });
+  });
+
+  it("accepts Ukrainian and English interface locales", () => {
+    expect(ProfileInputSchema.parse({ ...validProfile, locale: "en" }).locale).toBe("en");
+    expect(ProfileInputSchema.safeParse({ ...validProfile, locale: "de" }).success).toBe(false);
   });
 
   it("keeps explicit zero numeric before rejecting it as out of range", () => {

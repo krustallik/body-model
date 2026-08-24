@@ -12,6 +12,7 @@ import {
 } from "recharts";
 import type { DailyMetricDto, DailyMetricField } from "@/modules/days/day.types";
 import { hasChartData, sortDaysChronologically } from "@/modules/days/history-chart-data";
+import { useI18n, type Locale } from "@/i18n/i18n-provider";
 import styles from "./history.module.css";
 
 type Series = {
@@ -30,13 +31,13 @@ const tooltipStyle = {
   fontSize: "12px",
 };
 
-function shortDate(value: string): string {
-  return new Intl.DateTimeFormat("uk-UA", { day: "2-digit", month: "short", timeZone: "UTC" })
+function shortDate(value: string, locale: Locale): string {
+  return new Intl.DateTimeFormat(locale === "uk" ? "uk-UA" : "en-US", { day: "2-digit", month: "short", timeZone: "UTC" })
     .format(new Date(`${value}T00:00:00Z`));
 }
 
-function longDate(value: string): string {
-  return new Intl.DateTimeFormat("uk-UA", { dateStyle: "medium", timeZone: "UTC" })
+function longDate(value: string, locale: Locale): string {
+  return new Intl.DateTimeFormat(locale === "uk" ? "uk-UA" : "en-US", { dateStyle: "medium", timeZone: "UTC" })
     .format(new Date(`${value}T00:00:00Z`));
 }
 
@@ -46,18 +47,20 @@ function HistoryLineChart({
   days,
   series,
   dualAxis = false,
+  locale,
 }: {
   title: string;
   description: string;
   days: DailyMetricDto[];
   series: Series[];
   dualAxis?: boolean;
+  locale: Locale;
 }) {
   if (!hasChartData(days, series.map(({ key }) => key))) {
     return (
       <article className={styles.chartCard}>
         <ChartHeading title={title} description={description} />
-        <div className={styles.chartEmpty}>No data for this period</div>
+        <div className={styles.chartEmpty}>{locale === "uk" ? "За цей період даних немає" : "No data for this period"}</div>
       </article>
     );
   }
@@ -71,7 +74,7 @@ function HistoryLineChart({
             <CartesianGrid stroke="var(--line)" strokeDasharray="4 5" vertical={false} />
             <XAxis
               dataKey="date"
-              tickFormatter={shortDate}
+              tickFormatter={(value) => shortDate(value, locale)}
               tick={{ fill: "var(--muted)", fontSize: 11 }}
               tickLine={false}
               axisLine={{ stroke: "var(--line)" }}
@@ -98,7 +101,7 @@ function HistoryLineChart({
             )}
             <Tooltip
               contentStyle={tooltipStyle}
-              labelFormatter={(label) => longDate(String(label))}
+              labelFormatter={(label) => longDate(String(label), locale)}
               formatter={(value, name) => {
                 const item = series.find(({ label }) => label === name);
                 return [`${value} ${item?.unit ?? ""}`.trim(), String(name)];
@@ -137,54 +140,61 @@ function ChartHeading({ title, description }: { title: string; description: stri
 }
 
 export function HistoryCharts({ days }: { days: DailyMetricDto[] }) {
+  const { locale } = useI18n();
+  const uk = locale === "uk";
   const chronologicalDays = sortDaysChronologically(days);
 
   return (
     <section className={styles.chartsSection} aria-labelledby="charts-heading">
       <div className={styles.chartsTitle}>
         <div>
-          <p className={styles.eyebrow}>Actual data only</p>
-          <h2 id="charts-heading">Charts</h2>
+          <p className={styles.eyebrow}>{uk ? "Лише фактичні дані" : "Actual data only"}</p>
+          <h2 id="charts-heading">{uk ? "Графіки" : "Charts"}</h2>
         </div>
-        <p>Missing values stay empty; explicit zero remains visible.</p>
+        <p>{uk ? "Відсутні значення залишаються порожніми; явний нуль залишається видимим." : "Missing values stay empty; explicit zero remains visible."}</p>
       </div>
       <div className={styles.chartsGrid}>
         <HistoryLineChart
-          title="Weight"
-          description="Body weight · kg"
+          title={uk ? "Вага" : "Weight"}
+          description={uk ? "Маса тіла · кг" : "Body weight · kg"}
           days={chronologicalDays}
-          series={[{ key: "weightKg", label: "Weight", unit: "kg", color: "#176b4d" }]}
+          locale={locale}
+          series={[{ key: "weightKg", label: uk ? "Вага" : "Weight", unit: "kg", color: "#176b4d" }]}
         />
         <HistoryLineChart
-          title="Calories"
-          description="Daily intake · kcal"
+          title={uk ? "Калорії" : "Calories"}
+          description={uk ? "Добове споживання · ккал" : "Daily intake · kcal"}
           days={chronologicalDays}
-          series={[{ key: "caloriesKcal", label: "Calories", unit: "kcal", color: "#d77a2a" }]}
+          locale={locale}
+          series={[{ key: "caloriesKcal", label: uk ? "Калорії" : "Calories", unit: "kcal", color: "#d77a2a" }]}
         />
         <HistoryLineChart
-          title="Macros"
-          description="Protein, fat and carbs · g"
+          title={uk ? "Макронутрієнти" : "Macros"}
+          description={uk ? "Білки, жири та вуглеводи · г" : "Protein, fat and carbs · g"}
           days={chronologicalDays}
+          locale={locale}
           series={[
-            { key: "proteinG", label: "Protein", unit: "g", color: "#2878bd" },
-            { key: "fatG", label: "Fat", unit: "g", color: "#b45f9b" },
-            { key: "carbsG", label: "Carbs", unit: "g", color: "#d49a1f" },
+            { key: "proteinG", label: uk ? "Білки" : "Protein", unit: "g", color: "#2878bd" },
+            { key: "fatG", label: uk ? "Жири" : "Fat", unit: "g", color: "#b45f9b" },
+            { key: "carbsG", label: uk ? "Вуглеводи" : "Carbs", unit: "g", color: "#d49a1f" },
           ]}
         />
         <HistoryLineChart
-          title="Steps"
-          description="Daily step count"
+          title={uk ? "Кроки" : "Steps"}
+          description={uk ? "Кількість кроків за день" : "Daily step count"}
           days={chronologicalDays}
-          series={[{ key: "steps", label: "Steps", unit: "steps", color: "#5b69c9" }]}
+          locale={locale}
+          series={[{ key: "steps", label: uk ? "Кроки" : "Steps", unit: uk ? "кроків" : "steps", color: "#5b69c9" }]}
         />
         <HistoryLineChart
-          title="Movement & strength"
-          description="Walking distance and strength training"
+          title={uk ? "Рух і силові" : "Movement & strength"}
+          description={uk ? "Дистанція ходьби та силові тренування" : "Walking distance and strength training"}
           days={chronologicalDays}
           dualAxis
+          locale={locale}
           series={[
-            { key: "walkingDistanceKm", label: "Walking", unit: "km", color: "#168ca3", yAxisId: "left" },
-            { key: "strengthTrainingMinutes", label: "Strength", unit: "min", color: "#bf5b45", yAxisId: "right" },
+            { key: "walkingDistanceKm", label: uk ? "Ходьба" : "Walking", unit: "km", color: "#168ca3", yAxisId: "left" },
+            { key: "strengthTrainingMinutes", label: uk ? "Силове" : "Strength", unit: "min", color: "#bf5b45", yAxisId: "right" },
           ]}
         />
       </div>

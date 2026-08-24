@@ -1,17 +1,22 @@
 import { describe, expect, it } from "vitest";
 import {
   addCalendarDays,
+  beginForecastRequest,
   blockedPresentation,
   buildForecastRequest,
   chartRows,
   DEFAULT_PLAN,
   formatDate,
   formatValue,
+  forecastReadiness,
   localCalendarDate,
+  isCurrentForecastRequest,
+  planAssumptions,
   qualityPresentation,
   summarizeEndpoint,
 } from "@/modules/model-forecast/forecast-ui";
 import type { ForecastResult } from "@/modules/model-forecast/forecast.types";
+import type { ModelStatusDto } from "@/modules/model-episodes/model-episode.types";
 
 function result(overrides: Partial<ForecastResult> = {}): ForecastResult {
   const summary = { mean: 80, p05: 78, p25: 79, median: 80, p75: 81, p95: 82 };
@@ -22,6 +27,19 @@ function result(overrides: Partial<ForecastResult> = {}): ForecastResult {
     dates: [{ date: "2026-03-30", physiologicalBodyWeightKg: summary, fatMassKg: summary, leanTissueKg: summary, glycogenKg: summary, glycogenWaterKg: summary, glycogenAssociatedMassKg: summary, extracellularFluidDeviationLiters: summary, adaptiveThermogenesisKcalPerDay: summary, dynamicRmrKcalPerDay: summary, tdeeKcalPerDay: summary, energyIntakeKcal: summary, netActivityKcalPerDay: summary }],
     diagnostics: { seed: 1, generatedPathCount: 512, validPathCount: 512, invalidPathCount: 0, invalidPathReasons: {}, startingParticleCount: 1, startingParticleResampling: "none-single-state", uncertaintySources: { initialState: false, futureBehavior: false, measurement: false, modelParameters: false }, ecfPolicy: "hold-ecf", ecfLimitation: null, latentPhysiologicalWeightOnly: true, current: true, numericalQuality: { classification: "standard", pathCount: 512, recommendedMinimumPathCount: 512, pathCountAdequateForHorizon: true, uniqueStartingStateCount: 1, availableStartingStateCount: 1, outerQuantileRankStandardErrorProbability: .01, note: "ok" } },
     ...overrides,
+  };
+}
+
+function modelStatus(overrides: Partial<ModelStatusDto> = {}): ModelStatusDto {
+  return {
+    episodeId: 1, episodeStartDate: "2026-07-01", latestModeledDate: "2026-08-24", modelVersion: "test",
+    calibrationStatus: "fully-calibrated", personalOffsetKcalPerDay: 0, activityCalibration: 1,
+    daysModeled: 55, incompleteDays: 0, observedNutritionDays: 50, imputedNutritionDays: 5,
+    unbridgeableNutritionDays: 0, currentPredictedWeightKg: 80, currentFilteredWeightKg: 80,
+    currentFatMassKg: 16, currentLeanTissueKg: 45, currentDynamicRmrKcalPerDay: 1700,
+    currentModeledTdeeKcalPerDay: 2400, continuityStatus: "resolved", lastResolvedDate: "2026-08-24",
+    recoveryRequired: false, unknownIntervalCount: 0, unresolvedDayCount: 0, postGapObservedDayCount: 0,
+    unknownIntervals: [], ...overrides,
   };
 }
 
@@ -64,6 +82,23 @@ describe("forecast application helpers", () => {
     expect(Object.values(request.scenario.schedule.strengthByWeekday ?? {})).toEqual([45, 45, 45, 45, 45, 45, 45]);
   });
 
+  it("keeps only the newest request eligible to update the UI", () => {
+    const tracker = { current: 0 };
+    const slowRequest = beginForecastRequest(tracker);
+    const newerRequest = beginForecastRequest(tracker);
+    expect(isCurrentForecastRequest(tracker, slowRequest)).toBe(false);
+    expect(isCurrentForecastRequest(tracker, newerRequest)).toBe(true);
+  });
+
+  it("describes submitted plans including explicit zero activity", () => {
+    expect(planAssumptions("fixed", { ...DEFAULT_PLAN, strengthDaysPerWeek: 0, plannedWork: false })).toEqual(expect.arrayContaining([
+      "The entered daily plan is followed exactly.",
+      "No strength training is scheduled.",
+      "No planned occupational work is included.",
+    ]));
+    expect(planAssumptions("target-centered", { ...DEFAULT_PLAN, plannedWork: true })[0]).toMatch(/typical targets/);
+  });
+
   it("exposes both nested interval bands without turning them into guarantees", () => {
     const forecast = result();
     expect(summarizeEndpoint(forecast, "physiologicalBodyWeightKg")?.median).toBe(80);
@@ -72,6 +107,7 @@ describe("forecast application helpers", () => {
 
   it("prioritizes recovery, degraded evidence, and long-horizon numerical warnings", () => {
     expect(qualityPresentation(result()).title).toBe("Forecast ready");
+    expect(qualityPresentation(result(), "insufficient-history").title).toBe("Forecast uses limited personalization");
     expect(qualityPresentation(result({ initialStateQuality: "recovered" })).title).toBe("Current state reconstructed");
     expect(qualityPresentation(result({ status: "degraded" })).title).toBe("Forecast has limited evidence");
     const long = result();
@@ -79,5 +115,17 @@ describe("forecast application helpers", () => {
     expect(qualityPresentation(long).title).toBe("Long-range precision is limited");
     expect(blockedPresentation({ status: "initial-state-unavailable", forecastVersion: "bodycast-forecast-v1", modelVersion: "test", recoveryVersion: null, initialStateQuality: "awaiting", reason: "The recovery ensemble no longer matches current history and must be rerun before forecasting." }).title).toBe("Model update needed");
     expect(blockedPresentation({ status: "initial-state-unreliable", forecastVersion: "bodycast-forecast-v1", modelVersion: "test", recoveryVersion: null, initialStateQuality: "degenerate", reason: "Too concentrated" }).title).toBe("Current state is too uncertain");
+  });
+
+  it("explains forecast readiness from actual history and donor counts in both languages", () => {
+    const high = forecastReadiness({ status: modelStatus(), mode: "recent-behavior", donorDayCount: 20, successfulForecast: true, locale: "uk" });
+    expect(high).toMatchObject({ canForecast: true, level: "high" });
+    expect(high.factors.join(" ")).toMatch(/55 змодельованих днів/);
+
+    const missingDonors = forecastReadiness({ status: modelStatus(), mode: "recent-behavior", donorDayCount: 8, scenarioEvidenceMissing: true });
+    expect(missingDonors).toMatchObject({ canForecast: false, level: "low" });
+    expect(missingDonors.factors.join(" ")).toMatch(/requires at least 14/);
+
+    expect(forecastReadiness({ status: null, mode: "fixed", locale: "uk" }).title).toBe("Прогноз поки недоступний");
   });
 });

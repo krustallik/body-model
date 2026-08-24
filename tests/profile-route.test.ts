@@ -12,6 +12,7 @@ import { GET, PUT } from "@/app/api/v1/profile/route";
 const url = "http://localhost/api/v1/profile";
 const profile = {
   id: 1,
+  locale: "uk",
   sex: "male",
   dateOfBirth: "1990-05-12",
   heightCm: 180,
@@ -55,6 +56,7 @@ describe("/api/v1/profile", () => {
 
     expect(response.status).toBe(200);
     expect(profileRepository.upsert).toHaveBeenCalledWith({
+      locale: "uk",
       sex: "male",
       dateOfBirth: "1990-05-12",
       heightCm: 180,
@@ -66,6 +68,7 @@ describe("/api/v1/profile", () => {
   it("fully updates a profile and clears omitted goal values", async () => {
     profileRepository.upsert.mockResolvedValue({ ...profile, targetWeightKg: null, targetDate: null });
     const response = await PUT(request({
+      locale: "en",
       sex: "female",
       dateOfBirth: "1991-01-01",
       heightCm: "171.5",
@@ -75,6 +78,7 @@ describe("/api/v1/profile", () => {
 
     expect(response.status).toBe(200);
     expect(profileRepository.upsert).toHaveBeenCalledWith({
+      locale: "en",
       sex: "female",
       dateOfBirth: "1991-01-01",
       heightCm: 171.5,

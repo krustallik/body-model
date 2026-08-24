@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { AppNav } from "@/components/app-nav";
+import { useI18n } from "@/i18n/i18n-provider";
 import type { DailyMetricDto, DailyMetricField } from "@/modules/days/day.types";
 import {
   filterDaysByRange,
@@ -44,6 +45,16 @@ const rangeOptions: Array<{ value: HistoryRange; label: string }> = [
   { value: "all", label: "All" },
 ];
 
+function localizedMetricLabel(key: DailyMetricField, uk: boolean): string {
+  if (!uk) return metricFields.find((field) => field.key === key)?.label ?? key;
+  return ({
+    weightKg: "Вага (кг)", bodyFatPercent: "Жирова маса (%)", caloriesKcal: "Калорії (ккал)",
+    proteinG: "Білки (г)", fatG: "Жири (г)", carbsG: "Вуглеводи (г)", steps: "Кроки",
+    activeEnergyKcal: "Активна енергія (ккал)", averageWalkingSpeedKmh: "Швидкість ходьби (км/год)",
+    walkingDistanceKm: "Дистанція ходьби (км)", strengthTrainingMinutes: "Силове тренування (хв)",
+  } satisfies Record<DailyMetricField, string>)[key];
+}
+
 function localToday(): string {
   const now = new Date();
   return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
@@ -63,17 +74,20 @@ function editForm(day: DailyMetricDto): FormValues {
   ]) as FormValues;
 }
 
-async function responseError(response: Response): Promise<string> {
-  const fallback = `Request failed (${response.status})`;
+async function responseError(response: Response, uk = false): Promise<string> {
+  const fallback = uk ? `Помилка запиту (${response.status})` : `Request failed (${response.status})`;
   try {
     const body = await response.json() as { error?: string; details?: Array<{ message?: string }> };
-    return body.details?.[0]?.message ?? body.error ?? fallback;
+    const code = body.error;
+    if (uk && code === "date_conflict") return "Запис за цю дату вже існує.";
+    if (uk && code === "internal_error") return "Внутрішня помилка. Спробуйте ще раз.";
+    return body.details?.[0]?.message ?? code ?? fallback;
   } catch {
     return fallback;
   }
 }
 
-async function fetchDays(range: HistoryRange): Promise<DailyMetricDto[]> {
+async function fetchDays(range: HistoryRange, uk = false): Promise<DailyMetricDto[]> {
   const today = localToday();
   const collected: DailyMetricDto[] = [];
   let offset = 0;
@@ -83,7 +97,7 @@ async function fetchDays(range: HistoryRange): Promise<DailyMetricDto[]> {
     if (range !== "all") query.set("from", rangeStartDate(range, today));
 
     const response = await fetch(`/api/v1/days?${query}`, { cache: "no-store" });
-    if (!response.ok) throw new Error(await responseError(response));
+    if (!response.ok) throw new Error(await responseError(response, uk));
     const body = await response.json() as { days: DailyMetricDto[] };
     collected.push(...body.days);
     offset += body.days.length;
@@ -94,6 +108,8 @@ async function fetchDays(range: HistoryRange): Promise<DailyMetricDto[]> {
 }
 
 export function HistoryClient() {
+  const { locale, intlLocale } = useI18n();
+  const uk = locale === "uk";
   const [days, setDays] = useState<DailyMetricDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -105,22 +121,22 @@ export function HistoryClient() {
     setLoading(true);
     setError(null);
     try {
-      setDays(await fetchDays(range));
+      setDays(await fetchDays(range, uk));
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Could not load history");
+      setError(loadError instanceof Error ? loadError.message : uk ? "Не вдалося завантажити історію" : "Could not load history");
     } finally {
       setLoading(false);
     }
-  }, [range]);
+  }, [range, uk]);
 
   useEffect(() => {
     let active = true;
-    fetchDays(range)
+    fetchDays(range, uk)
       .then((loadedDays) => {
         if (active) setDays(loadedDays);
       })
       .catch((loadError: unknown) => {
-        if (active) setError(loadError instanceof Error ? loadError.message : "Could not load history");
+        if (active) setError(loadError instanceof Error ? loadError.message : uk ? "Не вдалося завантажити історію" : "Could not load history");
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -128,7 +144,7 @@ export function HistoryClient() {
     return () => {
       active = false;
     };
-  }, [range]);
+  }, [range, uk]);
 
   function selectRange(nextRange: HistoryRange) {
     if (nextRange === range) return;
@@ -138,11 +154,11 @@ export function HistoryClient() {
   }
 
   async function deleteDay(date: string) {
-    if (!window.confirm(`Delete daily metrics for ${date}?`)) return;
+    if (!window.confirm(uk ? `Видалити денні показники за ${date}?` : `Delete daily metrics for ${date}?`)) return;
     setError(null);
     const response = await fetch(`/api/v1/days/${encodeURIComponent(date)}`, { method: "DELETE" });
     if (!response.ok) {
-      setError(await responseError(response));
+      setError(await responseError(response, uk));
       return;
     }
     await loadDays();
@@ -156,21 +172,21 @@ export function HistoryClient() {
       </div>
       <header className={styles.header}>
         <div>
-          <p className={styles.eyebrow}>BodyCast · Daily metrics</p>
-          <h1>Health history</h1>
-          <p className={styles.intro}>Review Apple Health records and make careful manual corrections.</p>
+          <p className={styles.eyebrow}>{uk ? "BodyCast · Денні показники" : "BodyCast · Daily metrics"}</p>
+          <h1>{uk ? "Історія здоров’я" : "Health history"}</h1>
+          <p className={styles.intro}>{uk ? "Переглядайте записи Apple Health і обережно вносьте ручні виправлення." : "Review Apple Health records and make careful manual corrections."}</p>
         </div>
         <button className={styles.primaryButton} type="button" onClick={() => setEditor({ mode: "create", values: emptyForm() })}>
-          Add day
+          {uk ? "Додати день" : "Add day"}
         </button>
       </header>
 
       {error && <div className={styles.errorBanner} role="alert">{error}</div>}
 
-      <section className={styles.rangeBar} aria-label="History date range">
+      <section className={styles.rangeBar} aria-label={uk ? "Діапазон дат історії" : "History date range"}>
         <div>
-          <strong>Date range</strong>
-          <span>Charts and table stay in sync</span>
+          <strong>{uk ? "Діапазон дат" : "Date range"}</strong>
+          <span>{uk ? "Графіки й таблиця синхронізовані" : "Charts and table stay in sync"}</span>
         </div>
         <div className={styles.rangeSwitch}>
           {rangeOptions.map((option) => (
@@ -180,14 +196,14 @@ export function HistoryClient() {
               aria-pressed={range === option.value}
               onClick={() => selectRange(option.value)}
             >
-              {option.label}
+              {uk ? (option.value === "all" ? "Усі" : `${option.value} днів`) : option.label}
             </button>
           ))}
         </div>
       </section>
 
       {loading ? (
-        <div className={styles.chartsLoading}>Loading charts…</div>
+        <div className={styles.chartsLoading}>{uk ? "Завантаження графіків…" : "Loading charts…"}</div>
       ) : (
         <HistoryCharts days={days} />
       )}
@@ -195,28 +211,28 @@ export function HistoryClient() {
       <section className={styles.panel} aria-busy={loading}>
         <div className={styles.panelHeader}>
           <div>
-            <h2>{range === "all" ? "All records" : `Last ${range} days`}</h2>
-            <p>{loading ? "Refreshing…" : `${days.length} ${days.length === 1 ? "record" : "records"}`}</p>
+            <h2>{range === "all" ? (uk ? "Усі записи" : "All records") : (uk ? `Останні ${range} днів` : `Last ${range} days`)}</h2>
+            <p>{loading ? (uk ? "Оновлення…" : "Refreshing…") : (uk ? `${days.length} записів` : `${days.length} ${days.length === 1 ? "record" : "records"}`)}</p>
           </div>
           <button className={styles.secondaryButton} type="button" onClick={() => void loadDays()} disabled={loading}>
-            Refresh
+            {uk ? "Оновити" : "Refresh"}
           </button>
         </div>
 
         {!loading && days.length === 0 ? (
           <div className={styles.emptyState}>
-            <strong>No daily metrics yet</strong>
-            <span>Add a day manually or wait for the next iPhone sync.</span>
+            <strong>{uk ? "Денних показників ще немає" : "No daily metrics yet"}</strong>
+            <span>{uk ? "Додайте день вручну або дочекайтеся наступної синхронізації iPhone." : "Add a day manually or wait for the next iPhone sync."}</span>
           </div>
         ) : (
           <div className={styles.tableWrap}>
             <table>
               <thead>
                 <tr>
-                  <th>date</th>
-                  {tableFields.map(({ key, shortLabel }) => <th key={key}>{shortLabel}</th>)}
-                  <th>updatedAt</th>
-                  <th>actions</th>
+                  <th>{uk ? "дата" : "date"}</th>
+                  {tableFields.map(({ key, shortLabel }) => <th key={key}>{uk ? localizedMetricLabel(key, true) : shortLabel}</th>)}
+                  <th>{uk ? "оновлено" : "updatedAt"}</th>
+                  <th>{uk ? "дії" : "actions"}</th>
                 </tr>
               </thead>
               <tbody>
@@ -224,14 +240,14 @@ export function HistoryClient() {
                   <tr key={day.date}>
                     <td data-label="date"><strong>{day.date}</strong></td>
                     {tableFields.map(({ key, shortLabel }) => (
-                      <td key={key} data-label={shortLabel}>{formatMetric(day[key])}</td>
+                      <td key={key} data-label={uk ? localizedMetricLabel(key, true) : shortLabel}>{formatMetric(day[key], intlLocale)}</td>
                     ))}
-                    <td data-label="updatedAt" className={styles.updatedCell}>{formatDateTime(day.updatedAt)}</td>
+                    <td data-label={uk ? "оновлено" : "updatedAt"} className={styles.updatedCell}>{formatDateTime(day.updatedAt, intlLocale)}</td>
                     <td data-label="actions">
                       <div className={styles.actions}>
-                        <button type="button" onClick={() => setWorkDate(day.date)}>Work</button>
-                        <button type="button" onClick={() => setEditor({ mode: "edit", values: editForm(day) })}>Edit</button>
-                        <button className={styles.deleteButton} type="button" onClick={() => void deleteDay(day.date)}>Delete</button>
+                        <button type="button" onClick={() => setWorkDate(day.date)}>{uk ? "Робота" : "Work"}</button>
+                        <button type="button" onClick={() => setEditor({ mode: "edit", values: editForm(day) })}>{uk ? "Редагувати" : "Edit"}</button>
+                        <button className={styles.deleteButton} type="button" onClick={() => void deleteDay(day.date)}>{uk ? "Видалити" : "Delete"}</button>
                       </div>
                     </td>
                   </tr>
@@ -262,6 +278,8 @@ function DayDialog({ editor, onClose, onSaved }: {
   onClose: () => void;
   onSaved: () => Promise<void>;
 }) {
+  const { locale } = useI18n();
+  const uk = locale === "uk";
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [values, setValues] = useState(editor.values);
   const [saving, setSaving] = useState(false);
@@ -293,7 +311,7 @@ function DayDialog({ editor, onClose, onSaved }: {
     );
 
     if (!response.ok) {
-      setFormError(await responseError(response));
+      setFormError(await responseError(response, uk));
       setSaving(false);
       return;
     }
@@ -306,37 +324,37 @@ function DayDialog({ editor, onClose, onSaved }: {
       <form onSubmit={(event) => void submit(event)}>
         <div className={styles.dialogHeader}>
           <div>
-            <p className={styles.eyebrow}>{editor.mode === "create" ? "New record" : "Manual correction"}</p>
-            <h2>{editor.mode === "create" ? "Add a day" : `Edit ${values.date}`}</h2>
+            <p className={styles.eyebrow}>{editor.mode === "create" ? (uk ? "Новий запис" : "New record") : (uk ? "Ручне виправлення" : "Manual correction")}</p>
+            <h2>{editor.mode === "create" ? (uk ? "Додати день" : "Add a day") : (uk ? `Редагувати ${values.date}` : `Edit ${values.date}`)}</h2>
           </div>
-          <button className={styles.closeButton} type="button" aria-label="Close" onClick={onClose}>×</button>
+          <button className={styles.closeButton} type="button" aria-label={uk ? "Закрити" : "Close"} onClick={onClose}>×</button>
         </div>
 
         {formError && <div className={styles.formError} role="alert">{formError}</div>}
 
         <div className={styles.formGrid}>
           <label className={styles.field}>
-            <span>Date</span>
+            <span>{uk ? "Дата" : "Date"}</span>
             <input type="date" value={values.date} disabled={editor.mode === "edit"} required onChange={(event) => setValue("date", event.target.value)} />
           </label>
-          {metricFields.map(({ key, label, placeholder }) => (
+          {metricFields.map(({ key, placeholder }) => (
             <label className={styles.field} key={key}>
-              <span>{label}</span>
+              <span>{localizedMetricLabel(key, uk)}</span>
               <input
                 type="text"
                 inputMode={key === "steps" ? "numeric" : "decimal"}
                 value={values[key]}
-                placeholder={placeholder ?? "Optional"}
+                placeholder={placeholder ?? (uk ? "Необов’язково" : "Optional")}
                 onChange={(event) => setValue(key, event.target.value)}
               />
             </label>
           ))}
         </div>
 
-        <p className={styles.formHint}>Empty fields are saved as unavailable, not as zero.</p>
+        <p className={styles.formHint}>{uk ? "Порожні поля зберігаються як недоступні дані, а не як нуль." : "Empty fields are saved as unavailable, not as zero."}</p>
         <div className={styles.dialogActions}>
-          <button className={styles.secondaryButton} type="button" onClick={onClose} disabled={saving}>Cancel</button>
-          <button className={styles.primaryButton} type="submit" disabled={saving}>{saving ? "Saving…" : "Save day"}</button>
+          <button className={styles.secondaryButton} type="button" onClick={onClose} disabled={saving}>{uk ? "Скасувати" : "Cancel"}</button>
+          <button className={styles.primaryButton} type="submit" disabled={saving}>{saving ? (uk ? "Збереження…" : "Saving…") : (uk ? "Зберегти день" : "Save day")}</button>
         </div>
       </form>
     </dialog>

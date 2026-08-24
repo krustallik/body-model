@@ -3,6 +3,7 @@ import { recalculateModelEpisode } from "@/modules/model-episodes/model-episode.
 import { ModelEpisodeNotFoundError, NoActiveModelEpisodeError } from "@/modules/model-episodes/model-episode.errors";
 import { ModelRecoveryEvidenceError } from "@/modules/model-recovery/model-recovery.errors";
 import { recoverModelEpisode } from "@/modules/model-recovery/model-recovery.service";
+import { forecastQaNow } from "../qa-now";
 
 export const dynamic = "force-dynamic";
 
@@ -11,8 +12,9 @@ export async function POST(request: Request): Promise<Response> {
   if (body instanceof Response) return body;
   const action = (body as { action?: unknown }).action;
   try {
-    if (action === "recover") return Response.json(await recoverModelEpisode({ seed: 20_260_824 }));
-    if (action === "recalculate") return Response.json(await recalculateModelEpisode({}));
+    const now = forecastQaNow();
+    if (action === "recover") return Response.json(await recoverModelEpisode({ seed: 20_260_824, ...(now ? { now } : {}) }));
+    if (action === "recalculate") return Response.json(await recalculateModelEpisode(now ? { now } : {}));
     return Response.json({ error: "invalid_action" }, { status: 400 });
   } catch (error) {
     if (error instanceof NoActiveModelEpisodeError) return Response.json({ error: "no_active_episode" }, { status: 404 });

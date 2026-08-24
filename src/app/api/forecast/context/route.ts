@@ -2,6 +2,7 @@ import { NoActiveModelEpisodeError } from "@/modules/model-episodes/model-episod
 import { getModelHistory, getModelStatus } from "@/modules/model-episodes/model-episode.service";
 import type { DailyModelStateWrite } from "@/modules/model-episodes/model-episode.types";
 import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
+import { calculateGlycogenAssociatedMassKg } from "@/model/body-composition/state";
 
 export const dynamic = "force-dynamic";
 
@@ -21,7 +22,7 @@ export async function GET(): Promise<Response> {
         modeledWeightKg: day.endWeightKg,
         fatMassKg: day.fatMassKg,
         leanTissueKg: day.leanTissueKg,
-        glycogenKg: day.glycogenKg,
+        glycogenAssociatedMassKg: day.glycogenKg === null ? null : calculateGlycogenAssociatedMassKg(day.glycogenKg),
         dataQuality: day.dataQuality,
       })),
       unknownIntervals: history.unknownIntervals,

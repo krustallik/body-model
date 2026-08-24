@@ -3,6 +3,7 @@ import { ModelEpisodeNotFoundError, NoActiveModelEpisodeError } from "@/modules/
 import { ForecastScenarioEvidenceError } from "@/modules/model-forecast/model-forecast.errors";
 import { ForecastModelRequestSchema } from "@/modules/model-forecast/model-forecast.schema";
 import { forecastModelEpisode } from "@/modules/model-forecast/model-forecast.service";
+import { forecastQaNow } from "./qa-now";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +13,8 @@ export async function POST(request: Request): Promise<Response> {
   const parsed = ForecastModelRequestSchema.safeParse(body);
   if (!parsed.success) return validationResponse(parsed.error);
   try {
-    return Response.json(await forecastModelEpisode(parsed.data));
+    const now = forecastQaNow();
+    return Response.json(await forecastModelEpisode({ ...parsed.data, ...(now ? { now } : {}) }));
   } catch (error) {
     if (error instanceof NoActiveModelEpisodeError) return Response.json({ error: "no_active_episode" }, { status: 404 });
     if (error instanceof ModelEpisodeNotFoundError) return Response.json({ error: "episode_not_found" }, { status: 404 });

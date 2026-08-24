@@ -7,6 +7,7 @@ const SINGLETON_PROFILE_ID = 1;
 
 const profileSelect = {
   id: true,
+  locale: true,
   sex: true,
   dateOfBirth: true,
   heightCm: true,
@@ -25,6 +26,7 @@ function calendarDate(value: Date): string {
 function toDto(record: ProfileRecord): ProfileDto {
   return {
     id: record.id,
+    locale: record.locale as ProfileDto["locale"],
     sex: record.sex as ProfileDto["sex"],
     dateOfBirth: calendarDate(record.dateOfBirth),
     heightCm: record.heightCm.toNumber(),
@@ -52,6 +54,7 @@ export class ProfileRepository {
 
   async upsert(input: ProfileInput): Promise<ProfileDto> {
     const data = {
+      locale: input.locale,
       sex: input.sex,
       dateOfBirth: asDatabaseDate(input.dateOfBirth),
       heightCm: input.heightCm,

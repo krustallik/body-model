@@ -19,6 +19,7 @@
     "benchmark:forecast": "tsx scripts/benchmark-model-forecast.ts",
     "validate:forecast-calibration": "tsx scripts/validate-forecast-calibration.ts",
     "validate:forecast-stress": "tsx scripts/validate-forecast-stress.ts",
+    "qa:forecast-fixture": "tsx scripts/qa/forecast-fixture.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",

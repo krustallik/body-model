@@ -23,7 +23,7 @@ describe("forecast context route", () => {
     const response = await GET();
     expect(response.status).toBe(200);
     expect(modelServices.getModelHistory).toHaveBeenCalledWith({ from: "2026-06-26", to: "2026-08-24", limit: 60, offset: 0 });
-    expect(await response.json()).toMatchObject({ history: [{ date: "2026-08-24", modeledWeightKg: 80, dataQuality: "observed" }] });
+    expect(await response.json()).toMatchObject({ history: [{ date: "2026-08-24", modeledWeightKg: 80, glycogenAssociatedMassKg: 1.85, dataQuality: "observed" }] });
   });
 
   it("maps a missing active model and unexpected failures", async () => {

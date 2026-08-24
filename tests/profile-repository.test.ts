@@ -7,6 +7,7 @@ const createdAt = new Date("2026-08-22T10:00:00Z");
 function record(overrides: Record<string, unknown> = {}) {
   return {
     id: 1,
+    locale: "uk",
     sex: "male",
     dateOfBirth: new Date("1990-05-12T00:00:00Z"),
     heightCm: new Prisma.Decimal("180"),
@@ -53,6 +54,7 @@ describe("ProfileRepository", () => {
   it("creates and serializes a profile", async () => {
     const { repository, profile } = fixture(null);
     const result = await repository.upsert({
+      locale: "uk",
       sex: "female",
       dateOfBirth: "1992-01-10",
       heightCm: 168.5,
@@ -62,14 +64,15 @@ describe("ProfileRepository", () => {
 
     expect(profile.upsert).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: 1 },
-      create: expect.objectContaining({ id: 1, sex: "female", targetWeightKg: null, targetDate: null }),
+      create: expect.objectContaining({ id: 1, locale: "uk", sex: "female", targetWeightKg: null, targetDate: null }),
     }));
-    expect(result).toMatchObject({ id: 1, sex: "female", heightCm: 168.5, targetWeightKg: null });
+    expect(result).toMatchObject({ id: 1, locale: "uk", sex: "female", heightCm: 168.5, targetWeightKg: null });
   });
 
   it("updates and persists the same singleton without creating duplicates", async () => {
     const { repository, profile } = fixture();
     await repository.upsert({
+      locale: "en",
       sex: "female",
       dateOfBirth: "1991-02-03",
       heightCm: 172,
@@ -80,6 +83,6 @@ describe("ProfileRepository", () => {
 
     expect(profile.upsert).toHaveBeenCalledTimes(1);
     expect(profile.upsert.mock.calls[0]?.[0].where).toEqual({ id: 1 });
-    expect(persisted).toMatchObject({ id: 1, sex: "female", heightCm: 172, targetWeightKg: 70.5 });
+    expect(persisted).toMatchObject({ id: 1, locale: "en", sex: "female", heightCm: 172, targetWeightKg: 70.5 });
   });
 });

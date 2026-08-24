@@ -9,6 +9,7 @@ const repository = vi.hoisted(() => ({
   deactivateActive: vi.fn(),
   createPrepared: vi.fn(),
   persistCalculation: vi.fn(),
+  markRecoveryRunsStale: vi.fn(),
   status: vi.fn(),
   history: vi.fn(),
 }));
@@ -46,6 +47,7 @@ describe("model episode application service", () => {
     repository.deactivateActive.mockResolvedValue(undefined);
     repository.createPrepared.mockImplementation(async (prepared) => ({ id: 7, ...prepared }));
     repository.persistCalculation.mockResolvedValue(undefined);
+    repository.markRecoveryRunsStale.mockResolvedValue(undefined);
   });
 
   it("initializes yesterday in Bratislava and atomically deactivates the old episode", async () => {

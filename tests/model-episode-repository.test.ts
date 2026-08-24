@@ -20,6 +20,7 @@ const db = {
   modelUnknownInterval: {
     deleteMany: vi.fn(), upsert: vi.fn(), findMany: vi.fn(),
   },
+  modelRecoveryRun: { updateMany: vi.fn() },
 };
 
 const client = db as unknown as PrismaClient;
@@ -102,6 +103,7 @@ describe("model episode repository mapping", () => {
     db.modelUnknownInterval.upsert.mockResolvedValue({});
     db.modelUnknownInterval.findMany.mockResolvedValue([]);
     db.modelEpisode.update.mockResolvedValue({});
+    db.modelRecoveryRun.updateMany.mockResolvedValue({ count: 0 });
   });
 
   it("maps profile, active episode, explicit episode, and absence", async () => {

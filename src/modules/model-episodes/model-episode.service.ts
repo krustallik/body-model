@@ -89,6 +89,9 @@ export async function recalculateModelEpisode(
       : { ...episode, modelVersion: CURRENT_MODEL_VERSION };
     const calculation = calculateEpisodeHistory({ episode: recalculatedEpisode, days: builtDays });
     await repository.persistCalculation(episode.id, calculation, CURRENT_MODEL_VERSION);
+    // Recalculation follows all source mutations; stale conservatively until an
+    // identical source/config/seed recovery resets the fingerprinted upsert.
+    await repository.markRecoveryRunsStale(episode.id);
     const status = await repository.status(episode.id);
     return {
       status: "ok" as const,

@@ -453,6 +453,13 @@ export class ModelEpisodeRepository {
     });
   }
 
+  async markRecoveryRunsStale(episodeId: number, at = new Date()): Promise<void> {
+    await this.client.modelRecoveryRun.updateMany({
+      where: { episodeId, staleAt: null },
+      data: { staleAt: at },
+    });
+  }
+
   async status(id?: number): Promise<ModelStatusDto | null> {
     const episode = id === undefined ? await this.getActive() : await this.getById(id);
     if (!episode) return null;

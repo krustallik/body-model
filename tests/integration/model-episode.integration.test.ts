@@ -7,6 +7,11 @@ import {
   recalculateModelEpisode,
 } from "@/modules/model-episodes/model-episode.service";
 import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
+import {
+  getModelRecoveryStatus,
+  recoverModelEpisode,
+} from "@/modules/model-recovery/model-recovery.service";
+import { forecastModelEpisode } from "@/modules/model-forecast/model-forecast.service";
 
 const prisma = new PrismaClient();
 const episodeStart = "2041-03-20";
@@ -17,6 +22,19 @@ const workDate = "2041-03-25";
 let originalProfile: Awaited<ReturnType<typeof prisma.profile.findUnique>>;
 let originalActiveIds: number[] = [];
 let episodeId = 0;
+
+const fixedForecastScenario = {
+  mode: "fixed" as const,
+  schedule: {
+    defaultDay: {
+      nutrition: { caloriesKcal: 2_200, proteinG: 170, fatG: 70, carbsG: 230 },
+      outsideWorkWalkingDistanceKm: 5,
+      averageWalkingSpeedKmh: 5,
+      strengthTrainingMinutes: 0,
+      occupation: [],
+    },
+  },
+};
 
 async function removeTestData(): Promise<void> {
   await prisma.modelEpisode.deleteMany({
@@ -176,6 +194,172 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     await expect(prisma.modelEpisode.update({
       where: { id: episodeId }, data: { active: true, deactivatedAt: null },
     })).rejects.toThrow();
+  });
+
+  it("forecasts a resolved episode reproducibly without mutating model history", async () => {
+    const beforeEpisode = await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } });
+    const beforeStates = await prisma.dailyModelState.findMany({
+      where: { episodeId }, orderBy: { date: "asc" },
+    });
+    const first = await forecastModelEpisode({
+      episodeId, horizonDays: 30, seed: 88, scenario: fixedForecastScenario,
+      config: { pathCount: 32 }, now,
+    }, prisma);
+    const second = await forecastModelEpisode({
+      episodeId, horizonDays: 30, seed: 88, scenario: fixedForecastScenario,
+      config: { pathCount: 32 }, now,
+    }, prisma);
+    expect(first).toEqual(second);
+    expect(first).toMatchObject({
+      status: "ok", initialStateQuality: "deterministic",
+      forecastVersion: "bodycast-forecast-v1", modelVersion: "bodycast-physiology-v4",
+    });
+    expect("dates" in first && first.dates).toHaveLength(30);
+    expect(await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } }))
+      .toEqual(beforeEpisode);
+    expect(await prisma.dailyModelState.findMany({
+      where: { episodeId }, orderBy: { date: "asc" },
+    })).toEqual(beforeStates);
+    expect(await prisma.modelRecoveryRun.count({ where: { episodeId } })).toBe(0);
+  });
+
+  it("persists a reproducible weighted recovery ensemble and invalidates it after a source edit", async () => {
+    const extendedDates = [
+      "2041-03-31", "2041-04-01", "2041-04-02", "2041-04-03",
+      "2041-04-04", "2041-04-05", "2041-04-06",
+    ];
+    const extendedNow = new Date("2041-04-07T10:00:00.000Z");
+    try {
+      await prisma.dailyHealthData.createMany({
+        data: extendedDates.map((date, index) => ({
+          date, weightKg: 80 + index * 0.03, bodyFatPercent: null,
+          caloriesKcal: 2_450, proteinG: 150, fatG: 75, carbsG: 240,
+          steps: 8_000, averageWalkingSpeedKmh: 5, walkingDistanceKm: 5,
+          strengthTrainingMinutes: 0, rawPayload: { source: "phase-14a-canonical" },
+        })),
+      });
+      await prisma.dailyHealthData.deleteMany({
+        where: { date: { gte: "2041-03-23", lte: "2041-03-29" } },
+      });
+      await recalculateModelEpisode({ episodeId, now: extendedNow });
+      expect(await prisma.dailyModelState.findMany({
+        where: { episodeId }, orderBy: { date: "asc" }, select: { date: true },
+      })).toEqual([{ date: "2041-03-20" }, { date: "2041-03-21" }, { date: "2041-03-22" }]);
+
+      const recovered = await recoverModelEpisode({
+        episodeId, seed: 1234, config: { particleCount: 64 }, now: extendedNow,
+      });
+      expect(recovered).toMatchObject({
+        status: "ok",
+        deterministicModelVersion: "bodycast-physiology-v4",
+        recovery: {
+          seed: 1234,
+          observationCount: 8,
+          generatedParticleCount: 64,
+          validParticleCount: 64,
+          stale: false,
+        },
+      });
+      const stored = await prisma.modelRecoveryRun.findFirstOrThrow({
+        where: { episodeId, staleAt: null },
+      });
+      expect(Array.isArray(stored.ensemble)).toBe(true);
+      expect(stored.algorithmVersion).toBe("bodycast-recovery-v3");
+      expect(await prisma.dailyModelState.count({ where: { episodeId } })).toBe(3);
+
+      const beforeForecastEpisode = await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } });
+      const beforeForecastStates = await prisma.dailyModelState.findMany({
+        where: { episodeId }, orderBy: { date: "asc" },
+      });
+      const originalRecoveryStatus = stored.status;
+      await prisma.modelRecoveryRun.update({
+        where: { id: stored.id }, data: { status: "degraded" },
+      });
+      const forecast = await forecastModelEpisode({
+        episodeId, horizonDays: 30, seed: 321, scenario: fixedForecastScenario,
+        config: { pathCount: 64 }, now: extendedNow,
+      }, prisma);
+      expect(forecast).toMatchObject({
+        status: "degraded", initialStateQuality: "degraded",
+        recoveryVersion: "bodycast-recovery-v3",
+      });
+      expect("diagnostics" in forecast && forecast.diagnostics.startingParticleCount).toBe(64);
+      await prisma.modelRecoveryRun.update({
+        where: { id: stored.id }, data: { status: "degenerate" },
+      });
+      expect(await forecastModelEpisode({
+        episodeId, horizonDays: 7, seed: 321, scenario: fixedForecastScenario,
+        config: { pathCount: 16 }, now: extendedNow,
+      }, prisma)).toMatchObject({
+        status: "initial-state-unreliable", initialStateQuality: "degenerate",
+      });
+      await prisma.modelRecoveryRun.update({
+        where: { id: stored.id }, data: { status: originalRecoveryStatus },
+      });
+      expect(await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } }))
+        .toEqual(beforeForecastEpisode);
+      expect(await prisma.dailyModelState.findMany({
+        where: { episodeId }, orderBy: { date: "asc" },
+      })).toEqual(beforeForecastStates);
+      expect((await prisma.modelRecoveryRun.findUniqueOrThrow({ where: { id: stored.id } })).ensemble)
+        .toEqual(stored.ensemble);
+
+      const repeated = await recoverModelEpisode({
+        episodeId, seed: 1234, config: { particleCount: 64 }, now: extendedNow,
+      });
+      expect(repeated.status === "ok" && repeated.recovery.id).toBe(stored.id);
+      expect(await prisma.modelRecoveryRun.count({ where: { episodeId } })).toBe(1);
+
+      await prisma.$executeRawUnsafe(`
+        CREATE OR REPLACE FUNCTION "model_recovery_test_failure"() RETURNS trigger AS $$
+        BEGIN RAISE EXCEPTION 'forced recovery persistence failure'; END;
+        $$ LANGUAGE plpgsql
+      `);
+      await prisma.$executeRawUnsafe(`
+        CREATE TRIGGER "model_recovery_test_failure"
+        BEFORE INSERT ON "ModelRecoveryRun"
+        FOR EACH ROW EXECUTE FUNCTION "model_recovery_test_failure"()
+      `);
+      await expect(recoverModelEpisode({
+        episodeId, seed: 999, config: { particleCount: 64 }, now: extendedNow,
+      })).rejects.toThrow();
+      expect(await prisma.modelRecoveryRun.findUniqueOrThrow({ where: { id: stored.id } }))
+        .toMatchObject({ staleAt: null });
+      await prisma.$executeRawUnsafe('DROP TRIGGER "model_recovery_test_failure" ON "ModelRecoveryRun"');
+      await prisma.$executeRawUnsafe('DROP FUNCTION "model_recovery_test_failure"()');
+
+      await prisma.workInterval.updateMany({
+        where: { date: workDate }, data: { breakMinutes: 45 },
+      });
+      expect(await forecastModelEpisode({
+        episodeId, horizonDays: 7, seed: 321, scenario: fixedForecastScenario,
+        config: { pathCount: 16 }, now: extendedNow,
+      }, prisma)).toMatchObject({
+        status: "initial-state-unavailable", initialStateQuality: "awaiting",
+      });
+      const afterBreakEdit = await getModelRecoveryStatus(episodeId, prisma, extendedNow);
+      expect(afterBreakEdit.recovery).toMatchObject({ id: stored.id, stale: true });
+
+      const refreshed = await recoverModelEpisode({
+        episodeId, seed: 1234, config: { particleCount: 64 }, now: extendedNow,
+      });
+      expect(refreshed.status).toBe("ok");
+      if (refreshed.status !== "ok") throw new Error("Expected refreshed recovery.");
+      expect(refreshed.recovery.id).not.toBe(stored.id);
+      expect(refreshed.recovery.stale).toBe(false);
+
+      await prisma.dailyHealthData.update({
+        where: { date: "2041-04-06" }, data: { caloriesKcal: 2_700 },
+      });
+      const afterNutritionEdit = await getModelRecoveryStatus(episodeId, prisma, extendedNow);
+      expect(afterNutritionEdit.recovery).toMatchObject({
+        id: refreshed.recovery.id, stale: true,
+      });
+    } finally {
+      await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS "model_recovery_test_failure" ON "ModelRecoveryRun"');
+      await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS "model_recovery_test_failure"()');
+      await prisma.dailyHealthData.deleteMany({ where: { date: { in: extendedDates } } });
+    }
   });
 
   it("persists deterministic, idempotent history and overlap-aware walking", async () => {

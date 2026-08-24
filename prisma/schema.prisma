@@ -147,10 +147,42 @@ model ModelEpisode {
   profile                                 Profile           @relation(fields: [profileId], references: [id], onDelete: Restrict)
   dailyStates                             DailyModelState[]
   unknownIntervals                        ModelUnknownInterval[]
+  recoveryRuns                            ModelRecoveryRun[]
 
   @@index([active])
   @@index([startDate])
   @@index([profileId])
+}
+
+model ModelRecoveryRun {
+  id                              Int          @id @default(autoincrement())
+  episodeId                       Int
+  algorithmVersion                String       @db.VarChar(100)
+  seed                            Int
+  config                          Json
+  configFingerprint               String       @db.VarChar(64)
+  sourceFingerprint               String       @db.VarChar(64)
+  status                          String       @db.VarChar(40)
+  firstUnknownDate                String       @db.VarChar(10)
+  latestRecoveredDate             String       @db.VarChar(10)
+  observationCount                Int
+  generatedParticleCount          Int
+  validParticleCount              Int
+  invalidParticleCount            Int
+  effectiveSampleSize             Float
+  normalizedEffectiveSampleSize   Float
+  maximumWeight                   Float
+  diagnostics                     Json
+  posteriorSummary                Json
+  ensemble                        Json
+  staleAt                         DateTime?     @db.Timestamptz(3)
+  createdAt                       DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt                       DateTime      @updatedAt @db.Timestamptz(3)
+  episode                         ModelEpisode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+
+  @@unique([episodeId, algorithmVersion, seed, configFingerprint, sourceFingerprint])
+  @@index([episodeId, staleAt, updatedAt])
+  @@index([episodeId, status])
 }
 
 model ModelUnknownInterval {

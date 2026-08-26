@@ -53,6 +53,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const uk = locale === "uk";
     const section = pathname.startsWith("/forecast") ? (uk ? "Прогноз" : "Forecast")
+      : pathname.startsWith("/diagnostics") ? (uk ? "Стан моделі" : "Model status")
       : pathname.startsWith("/history") ? (uk ? "Історія" : "History")
         : pathname.startsWith("/settings/profile") ? (uk ? "Профіль" : "Profile")
           : (uk ? "Огляд" : "Dashboard");

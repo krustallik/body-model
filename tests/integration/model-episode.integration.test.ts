@@ -15,6 +15,7 @@ import { forecastModelEpisode } from "@/modules/model-forecast/model-forecast.se
 import { serializeGoalPlanningResult } from "@/modules/model-goal-planning/goal-planning";
 import type { GoalPlanningRequest } from "@/modules/model-goal-planning/goal-planning.schema";
 import { solveModelEpisodeTarget } from "@/modules/model-target-solver/model-target-solver.service";
+import { getModelDiagnostics } from "@/modules/model-diagnostics/model-diagnostics.service";
 
 const prisma = new PrismaClient();
 const episodeStart = "2041-03-20";
@@ -219,6 +220,29 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     await expect(prisma.modelEpisode.update({
       where: { id: episodeId }, data: { active: true, deactivatedAt: null },
     })).rejects.toThrow();
+  });
+
+  it("reads compact diagnostics from PostgreSQL without mutating model records", async () => {
+    const before = {
+      episode: await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } }),
+      stateCount: await prisma.dailyModelState.count({ where: { episodeId } }),
+      recoveryCount: await prisma.modelRecoveryRun.count({ where: { episodeId } }),
+    };
+    const diagnostics = await getModelDiagnostics(prisma);
+    const after = {
+      episode: await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } }),
+      stateCount: await prisma.dailyModelState.count({ where: { episodeId } }),
+      recoveryCount: await prisma.modelRecoveryRun.count({ where: { episodeId } }),
+    };
+    expect(diagnostics.episode.id).toBe(episodeId);
+    expect(diagnostics.dataContinuity).toMatchObject({
+      recentWindowDays: 28,
+      noWorkIntervalSemantics: "zero-occupational-work-not-missing",
+    });
+    expect(diagnostics.currentState.status).toBe("unavailable");
+    expect(diagnostics.forecastReadiness).toMatchObject({ allowed: false, reasons: ["current-state-unavailable"] });
+    expect(JSON.stringify(diagnostics)).not.toMatch(/ensemble|posteriorSummary|observationDates|topParticleOrigins/);
+    expect(after).toEqual(before);
   });
 
   it("forecasts a resolved episode reproducibly without mutating model history", async () => {

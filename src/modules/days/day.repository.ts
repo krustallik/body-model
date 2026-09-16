@@ -38,6 +38,19 @@ const dailyMetricSelect = {
 
 type DailyMetricRecord = Prisma.DailyHealthDataGetPayload<{ select: typeof dailyMetricSelect }>;
 
+function workoutCreateData(workouts: NonNullable<CreateDailyMetricInput["workouts"]>) {
+  return workouts.map((workout) => {
+    const startAt = new Date(workout.startAt);
+    return {
+      type: workout.type,
+      startAt,
+      endAt: new Date(startAt.getTime() + workout.durationMinutes * 60_000),
+      durationMinutes: workout.durationMinutes,
+      activeEnergyKcal: workout.activeEnergyKcal ?? null,
+    };
+  });
+}
+
 function decimalToNumber(value: Prisma.Decimal | null): number | null {
   return value === null ? null : value.toNumber();
 }
@@ -103,9 +116,15 @@ export class DailyMetricRepository {
 
   async create(input: CreateDailyMetricInput): Promise<DailyMetricDto> {
     try {
+      const { workouts, ...metrics } = input;
       const record = await this.client.dailyHealthData.create({
         data: {
-          ...normalizeDailyMeasurements(input),
+          ...normalizeDailyMeasurements(metrics),
+          ...(workouts !== undefined ? {
+            workouts: { create: workoutCreateData(workouts) },
+            strengthTrainingMinutes: null,
+            activeEnergyKcal: null,
+          } : {}),
           rawPayload: { source: "manual" },
         },
         select: dailyMetricSelect,
@@ -119,9 +138,17 @@ export class DailyMetricRepository {
 
   async update(date: string, input: UpdateDailyMetricInput): Promise<DailyMetricDto | null> {
     try {
+      const { workouts, ...metrics } = input;
       const record = await this.client.dailyHealthData.update({
         where: { date },
-        data: normalizeDailyMeasurements(input),
+        data: {
+          ...normalizeDailyMeasurements(metrics),
+          ...(workouts !== undefined ? {
+            workouts: { deleteMany: {}, create: workoutCreateData(workouts) },
+            strengthTrainingMinutes: null,
+            activeEnergyKcal: null,
+          } : {}),
+        },
         select: dailyMetricSelect,
       });
       return toDto(record);

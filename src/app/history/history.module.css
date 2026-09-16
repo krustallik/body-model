@@ -289,6 +289,15 @@
 .field input:disabled { color: var(--muted); background: var(--soft); }
 .formHint { margin: 1rem 0 0; color: var(--muted); font-size: 0.82rem; }
 .dialogActions { justify-content: flex-end; margin-top: 1.4rem; }
+.workoutEditor, .legacyWorkoutSection { display: grid; gap: 1rem; margin-top: 1.4rem; padding-top: 1.2rem; border-top: 1px solid var(--line); }
+.workoutEditorHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.workoutEditorHeader strong, .legacyWorkoutSection strong { font-size: 1rem; }
+.workoutEditorHeader p, .legacyWorkoutSection p { max-width: 36rem; margin: 0.25rem 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.4; }
+.legacyWorkoutSection .formGrid { margin-top: 0; }
+.workoutRows { display: grid; gap: 0.75rem; }
+.workoutRow { display: grid; grid-template-columns: 1.3fr 1.35fr .8fr 1fr auto; align-items: end; gap: 0.65rem; padding: 0.85rem; background: var(--soft); border: 1px solid var(--line); border-radius: 0.8rem; }
+.deleteWorkoutButton { min-height: 2.65rem; padding: 0.55rem 0.7rem; color: #a13d3d; background: transparent; border: 1px solid #e6c5c5; border-radius: 0.6rem; font: inherit; font-size: 0.8rem; font-weight: 700; cursor: pointer; }
+.deleteWorkoutButton:hover { background: #fff0f0; }
 
 .workDialog { width: min(58rem, calc(100% - 2rem)); }
 .workDialogBody { padding: 1.5rem; }
@@ -376,6 +385,10 @@
   .tableWrap td:last-child { padding-bottom: 0.85rem; border-bottom: 0; }
   .actions { justify-content: flex-end; }
   .formGrid { grid-template-columns: 1fr; }
+  .workoutEditorHeader { align-items: stretch; flex-direction: column; }
+  .workoutEditorHeader .secondaryButton { width: 100%; }
+  .workoutRow { grid-template-columns: 1fr; }
+  .deleteWorkoutButton { width: 100%; }
   .workDialog { width: calc(100% - 1rem); max-height: calc(100dvh - 1rem); }
   .workDialogBody { padding: 1rem; }
   .workToolbar { align-items: stretch; flex-direction: column; }

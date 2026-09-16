@@ -93,6 +93,34 @@ describe("DailyMetricRepository", () => {
     expect(dailyHealthData.update.mock.calls[0]?.[0].data).not.toHaveProperty("rawPayload");
   });
 
+  it("replaces explicit workouts while clearing legacy daily workout aggregates", async () => {
+    const { repository, dailyHealthData } = fixture();
+    await repository.update(record.date, {
+      workouts: [{
+        type: "Strength training",
+        startAt: "2026-08-22T10:00:00.000Z",
+        durationMinutes: 45,
+        activeEnergyKcal: 280,
+      }],
+    });
+    expect(dailyHealthData.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        strengthTrainingMinutes: null,
+        activeEnergyKcal: null,
+        workouts: {
+          deleteMany: {},
+          create: [expect.objectContaining({
+            type: "Strength training",
+            durationMinutes: 45,
+            activeEnergyKcal: 280,
+            startAt: new Date("2026-08-22T10:00:00.000Z"),
+            endAt: new Date("2026-08-22T10:45:00.000Z"),
+          })],
+        },
+      }),
+    }));
+  });
+
   it("returns null for a missing update and false for a missing delete", async () => {
     const { repository, dailyHealthData } = fixture();
     dailyHealthData.update.mockRejectedValue({ code: "P2025" });

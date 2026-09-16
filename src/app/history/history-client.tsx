@@ -17,7 +17,13 @@ import { WorkoutDetailsDialog } from "./workout-details-dialog";
 import styles from "./history.module.css";
 
 type FormValues = Record<DailyMetricField, string> & { date: string };
-type EditorState = { mode: "create" | "edit"; values: FormValues } | null;
+type WorkoutForm = { type: string; startAt: string; durationMinutes: string; activeEnergyKcal: string };
+type EditorState = {
+  mode: "create" | "edit";
+  values: FormValues;
+  workouts: WorkoutForm[];
+  legacyWorkoutFields: boolean;
+} | null;
 
 const metricFields: Array<{
   key: DailyMetricField;
@@ -39,6 +45,9 @@ const metricFields: Array<{
 ];
 
 const tableFields = metricFields.filter(({ key }) => key !== "activeEnergyKcal");
+const formMetricFields = metricFields.filter(({ key }) => (
+  key !== "activeEnergyKcal" && key !== "strengthTrainingMinutes"
+));
 const compactTableKeys = new Set<DailyMetricField>([
   "averageWalkingSpeedKmh",
   "walkingDistanceKm",
@@ -93,6 +102,25 @@ function editForm(day: DailyMetricDto): FormValues {
     ["date", day.date],
     ...metricFields.map(({ key }) => [key, day[key] === null ? "" : String(day[key])]),
   ]) as FormValues;
+}
+
+function toLocalDateTime(iso: string): string {
+  const value = new Date(iso);
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}T${pad(value.getHours())}:${pad(value.getMinutes())}`;
+}
+
+function workoutForm(day: DailyMetricDto): WorkoutForm[] {
+  return day.workouts.map((workout) => ({
+    type: workout.type,
+    startAt: toLocalDateTime(workout.startAt),
+    durationMinutes: String(workout.durationMinutes ?? Math.max(1, Math.round((new Date(workout.endAt).getTime() - new Date(workout.startAt).getTime()) / 60_000))),
+    activeEnergyKcal: workout.activeEnergyKcal === null ? "" : String(workout.activeEnergyKcal),
+  }));
+}
+
+function newWorkout(date: string): WorkoutForm {
+  return { type: "", startAt: `${date}T12:00`, durationMinutes: "", activeEnergyKcal: "" };
 }
 
 async function responseError(response: Response, uk = false): Promise<string> {
@@ -198,7 +226,10 @@ export function HistoryClient() {
           <h1>{uk ? "Історія здоров’я" : "Health history"}</h1>
           <p className={styles.intro}>{uk ? "Переглядайте записи Apple Health і обережно вносьте ручні виправлення." : "Review Apple Health records and make careful manual corrections."}</p>
         </div>
-        <button className={styles.primaryButton} type="button" onClick={() => setEditor({ mode: "create", values: emptyForm() })}>
+        <button className={styles.primaryButton} type="button" onClick={() => {
+          const values = emptyForm();
+          setEditor({ mode: "create", values, workouts: [], legacyWorkoutFields: false });
+        }}>
           {uk ? "Додати день" : "Add day"}
         </button>
       </header>
@@ -302,7 +333,12 @@ export function HistoryClient() {
                     <td data-label="actions">
                       <div className={styles.actions}>
                         <button type="button" onClick={() => setWorkDate(day.date)}>{uk ? "Робота" : "Work"}</button>
-                        <button type="button" onClick={() => setEditor({ mode: "edit", values: editForm(day) })}>{uk ? "Редагувати" : "Edit"}</button>
+                        <button type="button" onClick={() => setEditor({
+                          mode: "edit",
+                          values: editForm(day),
+                          workouts: workoutForm(day),
+                          legacyWorkoutFields: day.workoutSource !== "workouts",
+                        })}>{uk ? "Редагувати" : "Edit"}</button>
                         <button className={styles.deleteButton} type="button" onClick={() => void deleteDay(day.date)}>{uk ? "Видалити" : "Delete"}</button>
                       </div>
                     </td>
@@ -339,6 +375,8 @@ function DayDialog({ editor, onClose, onSaved }: {
   const uk = locale === "uk";
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [values, setValues] = useState(editor.values);
+  const [workouts, setWorkouts] = useState(editor.workouts);
+  const [legacyWorkoutFields, setLegacyWorkoutFields] = useState(editor.legacyWorkoutFields);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -351,19 +389,39 @@ function DayDialog({ editor, onClose, onSaved }: {
     setValues((current) => ({ ...current, [key]: value }));
   }
 
+  function setWorkout(index: number, key: keyof WorkoutForm, value: string) {
+    setWorkouts((current) => current.map((workout, workoutIndex) => (
+      workoutIndex === index ? { ...workout, [key]: value } : workout
+    )));
+  }
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSaving(true);
     setFormError(null);
 
-    const metrics = Object.fromEntries(metricFields.map(({ key }) => [key, values[key].trim() || null]));
+    const metrics = Object.fromEntries([
+      ...formMetricFields.map(({ key }) => [key, values[key].trim() || null]),
+      ...(legacyWorkoutFields ? [
+        ["strengthTrainingMinutes", values.strengthTrainingMinutes.trim() || null],
+        ["activeEnergyKcal", values.activeEnergyKcal.trim() || null],
+      ] : []),
+    ]);
+    const workoutPayload = legacyWorkoutFields ? {} : {
+      workouts: workouts.map((workout) => ({
+        type: workout.type.trim(),
+        startAt: new Date(workout.startAt).toISOString(),
+        durationMinutes: workout.durationMinutes.trim(),
+        activeEnergyKcal: workout.activeEnergyKcal.trim() || null,
+      })),
+    };
     const isCreate = editor.mode === "create";
     const response = await fetch(
       isCreate ? "/api/v1/days" : `/api/v1/days/${encodeURIComponent(values.date)}`,
       {
         method: isCreate ? "POST" : "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(isCreate ? { date: values.date, ...metrics } : metrics),
+        body: JSON.stringify(isCreate ? { date: values.date, ...metrics, ...workoutPayload } : { ...metrics, ...workoutPayload }),
       },
     );
 
@@ -394,7 +452,7 @@ function DayDialog({ editor, onClose, onSaved }: {
             <span>{uk ? "Дата" : "Date"}</span>
             <input type="date" value={values.date} disabled={editor.mode === "edit"} required onChange={(event) => setValue("date", event.target.value)} />
           </label>
-          {metricFields.map(({ key, placeholder }) => (
+          {formMetricFields.map(({ key, placeholder }) => (
             <label className={styles.field} key={key}>
               <span>{localizedMetricLabel(key, uk)}</span>
               <input
@@ -407,6 +465,55 @@ function DayDialog({ editor, onClose, onSaved }: {
             </label>
           ))}
         </div>
+
+        {legacyWorkoutFields ? (
+          <section className={styles.legacyWorkoutSection}>
+            <div>
+              <strong>{uk ? "Легасі-запис тренування" : "Legacy workout record"}</strong>
+              <p>{uk ? "Цей старий запис містить лише денну суму. Можна виправити її або перетворити на окреме тренування." : "This older record only has a daily total. You can correct it or convert it into one workout."}</p>
+            </div>
+            <div className={styles.formGrid}>
+              {(["strengthTrainingMinutes", "activeEnergyKcal"] as const).map((key) => (
+                <label className={styles.field} key={key}>
+                  <span>{localizedMetricLabel(key, uk)}</span>
+                  <input type="text" inputMode="decimal" value={values[key]} placeholder={uk ? "Необов’язково" : "Optional"} onChange={(event) => setValue(key, event.target.value)} />
+                </label>
+              ))}
+            </div>
+            <button className={styles.secondaryButton} type="button" onClick={() => {
+              setWorkouts([{
+                type: uk ? "Силове тренування" : "Strength training",
+                startAt: `${values.date}T12:00`,
+                durationMinutes: values.strengthTrainingMinutes,
+                activeEnergyKcal: values.activeEnergyKcal,
+              }]);
+              setLegacyWorkoutFields(false);
+            }}>{uk ? "Перетворити на окреме тренування" : "Convert to an individual workout"}</button>
+          </section>
+        ) : (
+          <section className={styles.workoutEditor}>
+            <div className={styles.workoutEditorHeader}>
+              <div>
+                <strong>{uk ? "Тренування" : "Workouts"}</strong>
+                <p>{uk ? "Кожне тренування має свою тривалість і активну енергію." : "Each workout has its own duration and active energy."}</p>
+              </div>
+              <button className={styles.secondaryButton} type="button" onClick={() => setWorkouts((current) => [...current, newWorkout(values.date)])}>{uk ? "Додати тренування" : "Add workout"}</button>
+            </div>
+            {workouts.length === 0 ? <p className={styles.workoutEmpty}>{uk ? "Тренувань за цей день немає." : "There are no workouts for this day."}</p> : (
+              <div className={styles.workoutRows}>
+                {workouts.map((workout, index) => (
+                  <div className={styles.workoutRow} key={`${index}-${workout.startAt}`}>
+                    <label className={styles.field}><span>{uk ? "Тип" : "Type"}</span><input type="text" required value={workout.type} placeholder={uk ? "Напр. силове" : "E.g. strength training"} onChange={(event) => setWorkout(index, "type", event.target.value)} /></label>
+                    <label className={styles.field}><span>{uk ? "Початок" : "Start"}</span><input type="datetime-local" required value={workout.startAt} onChange={(event) => setWorkout(index, "startAt", event.target.value)} /></label>
+                    <label className={styles.field}><span>{uk ? "Тривалість (хв)" : "Duration (min)"}</span><input type="text" required inputMode="decimal" value={workout.durationMinutes} onChange={(event) => setWorkout(index, "durationMinutes", event.target.value)} /></label>
+                    <label className={styles.field}><span>{uk ? "Активна енергія (ккал)" : "Active energy (kcal)"}</span><input type="text" inputMode="decimal" value={workout.activeEnergyKcal} placeholder={uk ? "Необов’язково" : "Optional"} onChange={(event) => setWorkout(index, "activeEnergyKcal", event.target.value)} /></label>
+                    <button className={styles.deleteWorkoutButton} type="button" onClick={() => setWorkouts((current) => current.filter((_, workoutIndex) => workoutIndex !== index))}>{uk ? "Прибрати" : "Remove"}</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
 
         <p className={styles.formHint}>{uk ? "Порожнє поле або 0 означає, що запису немає. У таблиці показується —." : "An empty field or 0 means no record. The table displays —."}</p>
         <div className={styles.dialogActions}>

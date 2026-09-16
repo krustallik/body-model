@@ -41,6 +41,24 @@ describe("daily metric input parsing", () => {
     expect(UpdateDailyMetricSchema.safeParse({}).success).toBe(false);
   });
 
+  it("accepts separately editable workouts with their own active energy", () => {
+    expect(UpdateDailyMetricSchema.parse({
+      workouts: [{
+        type: "Traditional Strength Training",
+        startAt: "2026-08-23T10:00:00.000Z",
+        durationMinutes: "45",
+        activeEnergyKcal: "320,5",
+      }],
+    })).toEqual({
+      workouts: [{
+        type: "Traditional Strength Training",
+        startAt: "2026-08-23T10:00:00.000Z",
+        durationMinutes: 45,
+        activeEnergyKcal: 320.5,
+      }],
+    });
+  });
+
   it("validates metric bounds and integer steps", () => {
     expect(UpdateDailyMetricSchema.safeParse({ bodyFatPercent: 101 }).success).toBe(false);
     expect(UpdateDailyMetricSchema.safeParse({ weightKg: -1 }).success).toBe(false);

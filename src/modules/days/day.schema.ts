@@ -57,11 +57,22 @@ export const DailyMetricFieldsSchema = z.object({
   strengthTrainingMinutes: nullableMetric("strengthTrainingMinutes", z.number().min(0)),
 });
 
-export const CreateDailyMetricSchema = DailyMetricFieldsSchema.extend({
+const WorkoutEditSchema = z.object({
+  type: z.string().trim().min(1).max(160),
+  startAt: z.string().datetime({ offset: true }),
+  durationMinutes: z.preprocess(parseNullableNumericInput, z.number().positive().max(1_440)),
+  activeEnergyKcal: nullableMetric("workoutActiveEnergyKcal", z.number().min(0)),
+}).strict();
+
+const WorkoutEditableFieldsSchema = z.object({
+  workouts: z.array(WorkoutEditSchema).max(30).optional(),
+});
+
+export const CreateDailyMetricSchema = DailyMetricFieldsSchema.merge(WorkoutEditableFieldsSchema).extend({
   date: CalendarDateSchema,
 }).strict();
 
-export const UpdateDailyMetricSchema = DailyMetricFieldsSchema.strict().refine(
+export const UpdateDailyMetricSchema = DailyMetricFieldsSchema.merge(WorkoutEditableFieldsSchema).strict().refine(
   (value) => Object.keys(value).length > 0,
   "at least one metric is required",
 );

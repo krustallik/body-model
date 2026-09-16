@@ -27,6 +27,6 @@ describe("ForecastClient", () => {
   it("shows a visible recalculate control on the initial forecast surface", () => {
     const html = renderToStaticMarkup(<ForecastClient />);
     expect(html).toContain("Recalculate model");
-    expect(html).toContain("Takes health-table rows and saves calculated days");
+    expect(html).toContain("Takes health-table rows, saves calculated days, and automatically estimates state after a data gap when needed.");
   });
 });

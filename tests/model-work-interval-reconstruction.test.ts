@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_SNAPSHOT_INSIDE_MAX_GAP_MINUTES,
   DEFAULT_SNAPSHOT_MAX_GAP_MINUTES,
+  DEFAULT_SNAPSHOT_OUTSIDE_MAX_GAP_MINUTES,
   estimateCumulativeMetricAtTime,
   estimateDailyWorkWalking,
   estimateWorkIntervalWalking,
@@ -38,8 +40,10 @@ describe("cumulative snapshot boundary estimation", () => {
     })).toMatchObject({ value: 1_200, gapMinutes: 5, method: "nearest" });
   });
 
-  it("uses the inclusive 60-minute default boundary gap", () => {
+  it("uses the inclusive 60-minute default boundary gap for symmetric calls", () => {
     expect(DEFAULT_SNAPSHOT_MAX_GAP_MINUTES).toBe(60);
+    expect(DEFAULT_SNAPSHOT_OUTSIDE_MAX_GAP_MINUTES).toBe(60);
+    expect(DEFAULT_SNAPSHOT_INSIDE_MAX_GAP_MINUTES).toBe(5);
     expect(estimateCumulativeMetricAtTime({
       snapshots: [snapshot("09:00", 1_200, 0.8)],
       targetTime: at("08:00"), metric: "steps",
@@ -48,6 +52,51 @@ describe("cumulative snapshot boundary estimation", () => {
       snapshots: [snapshot("09:01", 1_200, 0.8)],
       targetTime: at("08:00"), metric: "steps",
     })).toMatchObject({ value: null, reason: "gap-too-large" });
+  });
+
+  it("accepts start-boundary snapshots from 60 minutes before through 5 minutes inside", () => {
+    expect(estimateCumulativeMetricAtTime({
+      snapshots: [snapshot("05:00", 900, 0.6)],
+      targetTime: at("06:00"), metric: "steps", boundarySide: "start",
+    })).toMatchObject({ value: 900, gapMinutes: 60, method: "nearest" });
+    expect(estimateCumulativeMetricAtTime({
+      snapshots: [snapshot("06:05", 1_050, 0.7)],
+      targetTime: at("06:00"), metric: "steps", boundarySide: "start",
+    })).toMatchObject({ value: 1_050, gapMinutes: 5, method: "nearest" });
+    expect(estimateCumulativeMetricAtTime({
+      snapshots: [snapshot("04:59", 800, 0.5)],
+      targetTime: at("06:00"), metric: "steps", boundarySide: "start",
+    })).toMatchObject({ value: null, reason: "gap-too-large" });
+    expect(estimateCumulativeMetricAtTime({
+      snapshots: [snapshot("06:06", 1_100, 0.75)],
+      targetTime: at("06:00"), metric: "steps", boundarySide: "start",
+    })).toMatchObject({ value: null, reason: "gap-too-large" });
+  });
+
+  it("accepts end-boundary snapshots from 5 minutes inside through 60 minutes after", () => {
+    expect(estimateCumulativeMetricAtTime({
+      snapshots: [snapshot("13:55", 4_000, 2.8)],
+      targetTime: at("14:00"), metric: "steps", boundarySide: "end",
+    })).toMatchObject({ value: 4_000, gapMinutes: 5, method: "nearest" });
+    expect(estimateCumulativeMetricAtTime({
+      snapshots: [snapshot("15:00", 4_800, 3.2)],
+      targetTime: at("14:00"), metric: "steps", boundarySide: "end",
+    })).toMatchObject({ value: 4_800, gapMinutes: 60, method: "nearest" });
+    expect(estimateCumulativeMetricAtTime({
+      snapshots: [snapshot("13:54", 3_900, 2.7)],
+      targetTime: at("14:00"), metric: "steps", boundarySide: "end",
+    })).toMatchObject({ value: null, reason: "gap-too-large" });
+    expect(estimateCumulativeMetricAtTime({
+      snapshots: [snapshot("15:01", 4_900, 3.3)],
+      targetTime: at("14:00"), metric: "steps", boundarySide: "end",
+    })).toMatchObject({ value: null, reason: "gap-too-large" });
+  });
+
+  it("treats an exact work-start sync as valid", () => {
+    expect(estimateCumulativeMetricAtTime({
+      snapshots: [snapshot("06:00", 1_000, 0.7)],
+      targetTime: at("06:00"), metric: "steps", boundarySide: "start",
+    })).toMatchObject({ value: 1_000, gapMinutes: 0, method: "exact" });
   });
 
   it("reports missing data and excessive gaps", () => {
@@ -113,6 +162,38 @@ describe("work interval walking reconstruction", () => {
     expect(result.estimatedWalkingDistanceKm.value).toBeCloseTo(2.5, 12);
     expect(result.estimatedSteps.start).toMatchObject({ method: "nearest", gapMinutes: 5 });
     expect(result.estimatedSteps.end).toMatchObject({ method: "nearest", gapMinutes: 5 });
+  });
+
+  it("reconstructs a 06:00–14:00 shift from outside and inside sync windows", () => {
+    const result = estimateWorkIntervalWalking({
+      snapshots: [snapshot("05:30", 800, 0.5), snapshot("14:20", 3_300, 2.3)],
+      startTime: at("06:00"),
+      endTime: at("14:00"),
+    });
+    expect(result.estimatedSteps.value).toBe(2_500);
+    expect(result.estimatedWalkingDistanceKm.value).toBeCloseTo(1.8, 12);
+    expect(result.estimatedSteps.start).toMatchObject({ method: "nearest", gapMinutes: 30 });
+    expect(result.estimatedSteps.end).toMatchObject({ method: "nearest", gapMinutes: 20 });
+  });
+
+  it("uses the five-minute inside edges for a 06:00–14:00 shift", () => {
+    const result = estimateWorkIntervalWalking({
+      snapshots: [snapshot("06:05", 1_000, 0.7), snapshot("13:55", 2_500, 1.8)],
+      startTime: at("06:00"),
+      endTime: at("14:00"),
+    });
+    expect(result.estimatedSteps.value).toBe(1_500);
+    expect(result.estimatedSteps.start).toMatchObject({ method: "nearest", gapMinutes: 5 });
+    expect(result.estimatedSteps.end).toMatchObject({ method: "nearest", gapMinutes: 5 });
+  });
+
+  it("rejects a late start sync that is more than five minutes into the shift", () => {
+    const result = estimateWorkIntervalWalking({
+      snapshots: [snapshot("06:06", 1_000, 0.7), snapshot("14:00", 2_000, 1.4)],
+      startTime: at("06:00"),
+      endTime: at("14:00"),
+    });
+    expect(result.estimatedSteps).toMatchObject({ value: null, reason: "gap-too-large" });
   });
 
   it("returns zero for unchanged valid counters", () => {

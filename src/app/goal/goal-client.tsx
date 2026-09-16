@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { AppNav } from "@/components/app-nav";
+import { HelpTip } from "@/components/help-tip";
 import { useI18n, type Locale } from "@/i18n/i18n-provider";
 import { ForecastChart } from "@/app/forecast/forecast-chart";
 import { beginForecastRequest, formatDate, formatValue, isCurrentForecastRequest, type PlanValues } from "@/modules/model-forecast/forecast-ui";
@@ -40,18 +41,18 @@ function FieldError({ id, message }: { id: string; message?: string }) {
   return message ? <small id={id} className={styles.fieldError}>{message}</small> : null;
 }
 
-function TextNumberField({ id, label, value, onChange, error, unit, min, max, step = "any", optional = false }: {
+function TextNumberField({ id, label, value, onChange, error, unit, min, max, step = "any", optional = false, help }: {
   id: string; label: string; value: string; onChange: (value: string) => void; error?: string; unit?: string;
-  min?: number; max?: number; step?: number | "any"; optional?: boolean;
+  min?: number; max?: number; step?: number | "any"; optional?: boolean; help?: string;
 }) {
   const errorId = `${id}-error`;
-  return <label className={styles.field} htmlFor={id}><span>{label}{unit ? ` (${unit})` : ""}{optional ? " · optional" : ""}</span><input id={id} name={id} type="number" inputMode="decimal" value={value} min={min} max={max} step={step} required={!optional} aria-invalid={Boolean(error)} aria-describedby={error ? errorId : undefined} onChange={(event) => onChange(event.currentTarget.value)} /><FieldError id={errorId} message={error} /></label>;
+  return <label className={styles.field} htmlFor={id}><span>{label}{unit ? ` (${unit})` : ""}{optional ? " · optional" : ""}{help && <HelpTip>{help}</HelpTip>}</span><input id={id} name={id} type="number" inputMode="decimal" value={value} min={min} max={max} step={step} required={!optional} aria-invalid={Boolean(error)} aria-describedby={error ? errorId : undefined} onChange={(event) => onChange(event.currentTarget.value)} /><FieldError id={errorId} message={error} /></label>;
 }
 
-function PlanNumberField({ id, label, value, onChange, unit, min = 0, max, step = 1 }: {
-  id: string; label: string; value: number; onChange: (value: number) => void; unit?: string; min?: number; max?: number; step?: number;
+function PlanNumberField({ id, label, value, onChange, unit, min = 0, max, step = 1, help }: {
+  id: string; label: string; value: number; onChange: (value: number) => void; unit?: string; min?: number; max?: number; step?: number; help?: string;
 }) {
-  return <label className={styles.field} htmlFor={id}><span>{label}{unit ? ` (${unit})` : ""}</span><input id={id} type="number" inputMode="decimal" value={Number.isNaN(value) ? "" : value} min={min} max={max} step={step} required onChange={(event) => onChange(event.currentTarget.valueAsNumber)} /></label>;
+  return <label className={styles.field} htmlFor={id}><span>{label}{unit ? ` (${unit})` : ""}{help && <HelpTip>{help}</HelpTip>}</span><input id={id} type="number" inputMode="decimal" value={Number.isNaN(value) ? "" : value} min={min} max={max} step={step} required onChange={(event) => onChange(event.currentTarget.valueAsNumber)} /></label>;
 }
 
 function percent(value: number, locale: Locale) {
@@ -135,13 +136,13 @@ export function GoalClient() {
     {!loadingContext && initialized && !canPlan && <section className={styles.errorCard} role="status"><strong>{uk ? "Немає змодельованого стану" : "No modeled state yet"}</strong><p>{uk ? "Активна модель є, але останній змодельований день ще недоступний. Додайте історію й розрахуйте модель, перш ніж будувати ціль." : "There is an active model, but the latest modeled day is not available yet. Add history and calculate the model before planning a goal."}</p><p><Link href="/forecast">{uk ? "Перейти до прогнозу / запуску моделі" : "Go to forecast / start model"}</Link> · <Link href="/history">{uk ? "Історія" : "History"}</Link></p></section>}
     {!loadingContext && initialized && canPlan && latestModeledDate && <form className={styles.planner} onSubmit={(event) => void submit(event)} noValidate>
       <section className={styles.formSection}><div className={styles.sectionHeading}><div><span>01</span><h2>{uk ? "Ціль і дата" : "Target and date"}</h2></div><p>{uk ? `Останній змодельований день: ${formatDate(latestModeledDate, { year: "numeric" }, locale)}` : `Latest modeled day: ${formatDate(latestModeledDate, { year: "numeric" }, locale)}`}</p></div><div className={styles.formGrid}>
-        <TextNumberField id="targetWeightKg" label={uk ? "Цільова вага" : "Target weight"} unit={uk ? "кг" : "kg"} value={form.targetWeightKg} min={0.1} max={1000} step={0.1} error={formErrors.targetWeightKg} onChange={(value) => updateForm("targetWeightKg", value)} />
-        <label className={styles.field} htmlFor="goalDate"><span>{uk ? "Дата цілі" : "Goal date"}</span><input id="goalDate" name="goalDate" type="date" value={form.goalDate} required aria-invalid={Boolean(formErrors.goalDate)} aria-describedby={formErrors.goalDate ? "goalDate-error" : undefined} onChange={(event) => updateForm("goalDate", event.currentTarget.value)} /><FieldError id="goalDate-error" message={formErrors.goalDate} /></label>
+        <TextNumberField id="targetWeightKg" label={uk ? "Цільова вага" : "Target weight"} unit={uk ? "кг" : "kg"} help={uk ? "Введіть вагу, до якої хочете наблизитися. Це ціль сценарію, а не медична рекомендація." : "Enter the weight you want to approach. This is a scenario target, not medical advice."} value={form.targetWeightKg} min={0.1} max={1000} step={0.1} error={formErrors.targetWeightKg} onChange={(value) => updateForm("targetWeightKg", value)} />
+        <label className={styles.field} htmlFor="goalDate"><span>{uk ? "Дата цілі" : "Goal date"}<HelpTip>{uk ? "Оберіть майбутню дату. Чим вона далі, тим ширша невизначеність і тим менш буквально слід читати результат." : "Choose a future date. Farther dates carry wider uncertainty and should be read less literally."}</HelpTip></span><input id="goalDate" name="goalDate" type="date" value={form.goalDate} required aria-invalid={Boolean(formErrors.goalDate)} aria-describedby={formErrors.goalDate ? "goalDate-error" : undefined} onChange={(event) => updateForm("goalDate", event.currentTarget.value)} /><FieldError id="goalDate-error" message={formErrors.goalDate} /></label>
       </div></section>
 
       <section className={styles.formSection}><div className={styles.sectionHeading}><div><span>02</span><h2>{uk ? "Межі планування" : "Planning bounds"}</h2></div><p>{uk ? "Початкові значення — редаговані інженерні зручності, не медичні межі." : "Initial values are editable engineering conveniences, not medical limits."}</p></div><div className={styles.formGrid}>
-        <TextNumberField id="minCaloriesKcal" label={uk ? "Мінімум енергії" : "Minimum energy"} unit={uk ? "ккал" : "kcal"} value={form.minCaloriesKcal} min={0.1} error={formErrors.minCaloriesKcal} onChange={(value) => updateForm("minCaloriesKcal", value)} />
-        <TextNumberField id="maxCaloriesKcal" label={uk ? "Максимум енергії" : "Maximum energy"} unit={uk ? "ккал" : "kcal"} value={form.maxCaloriesKcal} min={0.1} error={formErrors.maxCaloriesKcal} onChange={(value) => updateForm("maxCaloriesKcal", value)} />
+        <TextNumberField id="minCaloriesKcal" label={uk ? "Мінімум енергії" : "Minimum energy"} unit={uk ? "ккал" : "kcal"} help={uk ? "Нижня межа пошуку: планувальник не запропонує менше. Задайте власну безпечну межу; сервіс не визначає медичний мінімум." : "Lower search bound: the planner will not suggest less. Set your own safe bound; the app does not determine a medical minimum."} value={form.minCaloriesKcal} min={0.1} error={formErrors.minCaloriesKcal} onChange={(value) => updateForm("minCaloriesKcal", value)} />
+        <TextNumberField id="maxCaloriesKcal" label={uk ? "Максимум енергії" : "Maximum energy"} unit={uk ? "ккал" : "kcal"} help={uk ? "Верхня межа пошуку. Якщо ціль недосяжна всередині цих меж, результат покаже найближчий край, а не вигадане значення." : "Upper search bound. If the target is unreachable within the bounds, the result shows the nearest edge instead of inventing a value."} value={form.maxCaloriesKcal} min={0.1} error={formErrors.maxCaloriesKcal} onChange={(value) => updateForm("maxCaloriesKcal", value)} />
       </div><details className={styles.optional}><summary>{uk ? "Додаткові межі макронутрієнтів" : "Optional macronutrient bounds"}</summary><p>{uk ? "Порожнє поле означає «межу не задано». Явний нуль залишається нулем." : "Blank means no bound was supplied. An explicit zero remains zero."}</p><div className={styles.formGrid}>
         {(["Protein", "Fat", "Carbs"] as const).flatMap((macro) => {
           const prefix = macro === "Carbs" ? "Carbs" : macro;
@@ -153,14 +154,14 @@ export function GoalClient() {
       </div></details></section>
 
       <section className={styles.formSection}><div className={styles.sectionHeading}><div><span>03</span><h2>{uk ? "Шаблон харчування" : "Nutrition template"}</h2></div><p>{uk ? "Макроси масштабуються пропорційно; солвер не перебалансовує їх мовчки." : "Macros scale proportionally; the solver never silently rebalances them."}</p></div><div className={styles.formGrid}>
-        <PlanNumberField id="templateCalories" label={uk ? "Енергія шаблону" : "Template energy"} unit={uk ? "ккал" : "kcal"} value={form.plan.caloriesKcal} max={20000} onChange={(value) => updatePlan("caloriesKcal", value)} />
+        <PlanNumberField id="templateCalories" label={uk ? "Енергія шаблону" : "Template energy"} unit={uk ? "ккал" : "kcal"} help={uk ? "Зразок одного дня харчування. Візьміть типовий повний день з Історії; білки, жири й вуглеводи нижче мають відповідати цим калоріям." : "A sample day of eating. Use a typical complete day from History; protein, fat, and carbs below should match these calories."} value={form.plan.caloriesKcal} max={20000} onChange={(value) => updatePlan("caloriesKcal", value)} />
         <PlanNumberField id="templateProtein" label={uk ? "Білки" : "Protein"} unit={uk ? "г" : "g"} value={form.plan.proteinG} max={1000} onChange={(value) => updatePlan("proteinG", value)} />
         <PlanNumberField id="templateFat" label={uk ? "Жири" : "Fat"} unit={uk ? "г" : "g"} value={form.plan.fatG} max={1000} onChange={(value) => updatePlan("fatG", value)} />
         <PlanNumberField id="templateCarbs" label={uk ? "Вуглеводи" : "Carbohydrate"} unit={uk ? "г" : "g"} value={form.plan.carbsG} max={2000} onChange={(value) => updatePlan("carbsG", value)} />
       </div></section>
 
       <section className={styles.formSection}><div className={styles.sectionHeading}><div><span>04</span><h2>{uk ? "Майбутня активність" : "Future activity"}</h2></div><p>{uk ? "Активність фіксується вашим сценарієм і не оптимізується разом із калоріями." : "Activity is fixed by your scenario and is not optimized together with calories."}</p></div><div className={styles.modeGrid}><button type="button" aria-pressed={form.mode === "target-centered"} onClick={() => updateForm("mode", "target-centered")}><strong>{uk ? "Гнучкий сценарій" : "Flexible scenario"}</strong><span>{uk ? "Майбутня поведінка варіюється навколо плану." : "Future behavior varies around the plan."}</span></button><button type="button" aria-pressed={form.mode === "fixed"} onClick={() => updateForm("mode", "fixed")}><strong>{uk ? "Точний сценарій" : "Exact scenario"}</strong><span>{uk ? "План повторюється без варіації дотримання." : "The plan repeats without adherence variation."}</span></button></div><div className={styles.formGrid}>
-        <PlanNumberField id="walkingDistance" label={uk ? "Ходьба поза роботою" : "Walking outside work"} unit={uk ? "км/день" : "km/day"} value={form.plan.outsideWorkWalkingDistanceKm} max={100} step={0.1} onChange={(value) => updatePlan("outsideWorkWalkingDistanceKm", value)} />
+        <PlanNumberField id="walkingDistance" label={uk ? "Ходьба поза роботою" : "Walking outside work"} unit={uk ? "км/день" : "km/day"} help={uk ? "Середня відстань за день без ходьби всередині робочої зміни. Орієнтир можна взяти з Apple Health або таблиці Історія." : "Average daily distance excluding walking during a work shift. Use Apple Health or the History table as a guide."} value={form.plan.outsideWorkWalkingDistanceKm} max={100} step={0.1} onChange={(value) => updatePlan("outsideWorkWalkingDistanceKm", value)} />
         <PlanNumberField id="walkingSpeed" label={uk ? "Швидкість ходьби" : "Walking speed"} unit={uk ? "км/год" : "km/h"} value={form.plan.averageWalkingSpeedKmh} min={0.1} max={15} step={0.1} onChange={(value) => updatePlan("averageWalkingSpeedKmh", value)} />
         <PlanNumberField id="strengthDays" label={uk ? "Силові дні" : "Strength days"} unit={uk ? "на тиждень" : "per week"} value={form.plan.strengthDaysPerWeek} max={7} onChange={(value) => updatePlan("strengthDaysPerWeek", value)} />
         <PlanNumberField id="strengthMinutes" label={uk ? "Тривалість заняття" : "Session duration"} unit={uk ? "хв" : "min"} value={form.plan.strengthTrainingMinutes} max={600} onChange={(value) => updatePlan("strengthTrainingMinutes", value)} />

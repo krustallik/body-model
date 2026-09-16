@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { AppNav } from "@/components/app-nav";
+import { HelpTip } from "@/components/help-tip";
 import { useI18n, type Locale } from "@/i18n/i18n-provider";
 import type { ModelStatusDto, UnknownIntervalDto } from "@/modules/model-episodes/model-episode.types";
 import type { ForecastBlockedResult, ForecastResult } from "@/modules/model-forecast/forecast.types";
@@ -76,10 +77,10 @@ async function forecastError(response: Response, locale: Locale): Promise<{
   } catch { return { message: fallback, code: null }; }
 }
 
-function NumberField({ label, value, onChange, min = 0, max, step = 1, unit }: {
-  label: string; value: number; onChange: (value: number) => void; min?: number; max?: number; step?: number; unit?: string;
+function NumberField({ label, value, onChange, min = 0, max, step = 1, unit, help }: {
+  label: string; value: number; onChange: (value: number) => void; min?: number; max?: number; step?: number; unit?: string; help?: string;
 }) {
-  return <label className={styles.field}><span>{label}{unit ? ` (${unit})` : ""}</span><input type="number" value={value} min={min} max={max} step={step} required onChange={(event) => onChange(event.currentTarget.valueAsNumber)} /></label>;
+  return <label className={styles.field}><span>{label}{unit ? ` (${unit})` : ""}{help && <HelpTip>{help}</HelpTip>}</span><input type="number" value={value} min={min} max={max} step={step} required onChange={(event) => onChange(event.currentTarget.valueAsNumber)} /></label>;
 }
 
 export function ForecastClient() {
@@ -255,18 +256,18 @@ export function ForecastClient() {
       </header>
 
       <section className={styles.controlPanel} aria-label={uk ? "Налаштування прогнозу" : "Forecast controls"}>
-        <div className={styles.controlGroup}><div><strong>{uk ? "На скільки днів уперед" : "How far ahead"}</strong><span>{uk ? "Чим довше — тим ширший діапазон «можливо»." : "The farther out, the wider the “maybe” range."}</span></div><div className={styles.segmented}>{FORECAST_HORIZONS.map((days) => <button type="button" key={days} aria-pressed={horizon === days} onClick={() => selectHorizon(days)}>{days < 365 ? `${days}${uk ? "д" : "d"}` : (uk ? "1р" : "1y")}</button>)}</div></div>
-        <div className={styles.controlGroup}><div><strong>{uk ? "Який режим далі" : "What happens next"}</strong><span>{scenarios.find((item) => item.mode === mode)?.hint}</span></div><div className={styles.scenarioGrid}>{scenarios.map((scenario) => <button type="button" key={scenario.mode} aria-pressed={mode === scenario.mode} onClick={() => selectMode(scenario.mode)}><strong>{scenario.label}</strong><span>{scenario.mode === "fixed" ? (uk ? "Без відхилень від плану" : "No drift from the plan") : scenario.mode === "recent-behavior" ? (uk ? "На основі ваших даних" : "Based on your data") : (uk ? "З невеликими реальними відхиленнями" : "With small real-life drift")}</span></button>)}</div></div>
+        <div className={styles.controlGroup}><div><strong>{uk ? "На скільки днів уперед" : "How far ahead"}<HelpTip>{uk ? "30–90 днів зручні для практичних сценаріїв. На 180–365 днів невизначеність накопичується, тому кінцева цифра показує напрям, а не обіцянку." : "30–90 days works well for practical scenarios. At 180–365 days uncertainty accumulates, so the endpoint shows direction, not a promise."}</HelpTip></strong><span>{uk ? "Чим довше — тим ширший діапазон «можливо»." : "The farther out, the wider the “maybe” range."}</span></div><div className={styles.segmented}>{FORECAST_HORIZONS.map((days) => <button type="button" key={days} aria-pressed={horizon === days} onClick={() => selectHorizon(days)}>{days < 365 ? `${days}${uk ? "д" : "d"}` : (uk ? "1р" : "1y")}</button>)}</div></div>
+        <div className={styles.controlGroup}><div><strong>{uk ? "Який режим далі" : "What happens next"}<HelpTip>{uk ? "«Як останнім часом» бере типові дні з Історії. «Точний план» повторює введені числа. «План з відхиленнями» додає реалістичну мінливість навколо плану." : "Recent behavior uses typical History days. Exact plan repeats your entries. Plan with drift adds realistic variation around them."}</HelpTip></strong><span>{scenarios.find((item) => item.mode === mode)?.hint}</span></div><div className={styles.scenarioGrid}>{scenarios.map((scenario) => <button type="button" key={scenario.mode} aria-pressed={mode === scenario.mode} onClick={() => selectMode(scenario.mode)}><strong>{scenario.label}</strong><span>{scenario.mode === "fixed" ? (uk ? "Без відхилень від плану" : "No drift from the plan") : scenario.mode === "recent-behavior" ? (uk ? "На основі ваших даних" : "Based on your data") : (uk ? "З невеликими реальними відхиленнями" : "With small real-life drift")}</span></button>)}</div></div>
 
         {mode !== "recent-behavior" && <form className={styles.planForm} onSubmit={(event: FormEvent) => { event.preventDefault(); void runForecast(); }}>
           <fieldset><legend>{uk ? "Щоденне харчування" : "Daily nutrition"}</legend><div className={styles.formGrid}>
-            <NumberField label={uk ? "Енергія" : "Energy"} unit={uk ? "ккал" : "kcal"} value={plan.caloriesKcal} max={20000} onChange={(value) => updatePlan("caloriesKcal", value)} />
+            <NumberField label={uk ? "Енергія" : "Energy"} unit={uk ? "ккал" : "kcal"} help={uk ? "Заплановані середні калорії на один день. Візьміть значення з вашого харчового трекера; макроси нижче мають належати цьому самому дню." : "Planned average calories per day. Use your food tracker; the macros below should describe that same day."} value={plan.caloriesKcal} max={20000} onChange={(value) => updatePlan("caloriesKcal", value)} />
             <NumberField label={uk ? "Білки" : "Protein"} unit={uk ? "г" : "g"} value={plan.proteinG} max={1000} onChange={(value) => updatePlan("proteinG", value)} />
             <NumberField label={uk ? "Жири" : "Fat"} unit={uk ? "г" : "g"} value={plan.fatG} max={1000} onChange={(value) => updatePlan("fatG", value)} />
             <NumberField label={uk ? "Вуглеводи" : "Carbs"} unit={uk ? "г" : "g"} value={plan.carbsG} max={2000} onChange={(value) => updatePlan("carbsG", value)} />
           </div></fieldset>
           <fieldset><legend>{uk ? "Рух і тренування" : "Movement & training"}</legend><div className={styles.formGrid}>
-            <NumberField label={uk ? "Ходьба поза роботою" : "Walking outside work"} unit={uk ? "км" : "km"} value={plan.outsideWorkWalkingDistanceKm} max={100} step={0.1} onChange={(value) => updatePlan("outsideWorkWalkingDistanceKm", value)} />
+            <NumberField label={uk ? "Ходьба поза роботою" : "Walking outside work"} unit={uk ? "км" : "km"} help={uk ? "Середня відстань за день без ходьби під час робочої зміни. Подивіться типовий день в Apple Health або Історії." : "Average daily distance excluding walking during a work shift. Check a typical day in Apple Health or History."} value={plan.outsideWorkWalkingDistanceKm} max={100} step={0.1} onChange={(value) => updatePlan("outsideWorkWalkingDistanceKm", value)} />
             <NumberField label={uk ? "Швидкість ходьби" : "Walking speed"} unit={uk ? "км/год" : "km/h"} value={plan.averageWalkingSpeedKmh} min={0.1} max={15} step={0.1} onChange={(value) => updatePlan("averageWalkingSpeedKmh", value)} />
             <NumberField label={uk ? "Силові дні" : "Strength days"} unit={uk ? "на тиждень" : "per week"} value={plan.strengthDaysPerWeek} max={7} onChange={(value) => updatePlan("strengthDaysPerWeek", value)} />
             <NumberField label={uk ? "Силове заняття" : "Strength session"} unit={uk ? "хв" : "min"} value={plan.strengthTrainingMinutes} max={600} onChange={(value) => updatePlan("strengthTrainingMinutes", value)} />
@@ -282,7 +283,7 @@ export function ForecastClient() {
           </fieldset>
         </form>}
         <div className={styles.runRow}>
-          <button className={styles.runButton} type="button" aria-busy={busy} disabled={busy} onClick={() => void runForecast()}>{loading ? (uk ? "Запустити оновлений прогноз" : "Run updated forecast") : (uk ? "Побудувати прогноз" : "Run forecast")}</button>
+          <button className={styles.runButton} type="button" aria-busy={busy} disabled={busy} onClick={() => void runForecast()}>{loading ? (uk ? "Запустити оновлений прогноз" : "Run updated forecast") : (uk ? "Побудувати прогноз" : "Run forecast")}</button><HelpTip>{uk ? "Оберіть період і режим, заповніть поля плану за потреби, а потім натисніть кнопку. Після зміни налаштувань графік треба запустити знову." : "Choose a horizon and mode, fill plan fields if needed, then press the button. Run it again after changing settings."}</HelpTip>
           {showRecalculate && <button className={needsRecalculation ? styles.recalculateButtonPrimary : styles.recalculateButton} type="button" aria-busy={actionLoading === "recalculate"} disabled={busy} onClick={() => void runAction("recalculate")}>{actionLoading === "recalculate" ? recalculateCopy.loadingAction : recalculateCopy.action}</button>}
         </div>
         {showRecalculate && <p className={styles.recalculateHint}>{recalculateCopy.hint}</p>}
@@ -316,7 +317,7 @@ export function ForecastClient() {
         {quality && <section className={`${styles.qualityBanner} ${styles[quality.tone]}`}><div><strong>{quality.title}</strong><span>{quality.detail}</span></div><span>{result.scenarioProvenance.donorEvidence.donorDayCount} {uk ? "днів з даними" : "days with data"}</span></section>}
         <section className={styles.summaryGrid}>
           <article><span>{uk ? `Очікувана метрика «${metricLabel.toLowerCase()}» на ${formatDate(result.dates.at(-1)!.date, undefined, locale)}` : `Expected ${metricLabel.toLowerCase()} on ${formatDate(result.dates.at(-1)!.date, undefined, locale)}`}</span><strong>{formatValue(endpoint.median, "kg", locale)}</strong><small>{uk ? "Медіанна оцінка" : "Median estimate"}</small></article>
-          <article><span>{uk ? "Імовірний діапазон" : "Likely range"}</span><strong>{formatValue(endpoint.p25, "kg", locale)}–{formatValue(endpoint.p75, "kg", locale)}</strong><small>{uk ? "Середня половина варіантів" : "Middle half of the options"}</small></article>
+          <article><span>{uk ? "Імовірний діапазон" : "Likely range"}<HelpTip>{uk ? "Межі 25–75%: половина змодельованих траєкторій опинилася всередині. Це не гарантія і не весь можливий діапазон." : "The 25th–75th percentile range: half of modeled paths landed inside. It is not a guarantee or the full possible range."}</HelpTip></span><strong>{formatValue(endpoint.p25, "kg", locale)}–{formatValue(endpoint.p75, "kg", locale)}</strong><small>{uk ? "Середня половина варіантів" : "Middle half of the options"}</small></article>
           <article><span>{uk ? "Ширший можливий діапазон" : "Wider possible range"}</span><strong>{formatValue(endpoint.p05, "kg", locale)}–{formatValue(endpoint.p95, "kg", locale)}</strong><small>{uk ? "Більшість варіантів (близько 9 з 10)" : "Most options (about 9 in 10)"}</small></article>
           <article><span>{uk ? "Очікувана зміна ваги" : "Expected weight change"}</span><strong>{metric === "physiologicalBodyWeightKg" && startWeight !== null ? `${endpoint.median - startWeight >= 0 ? "+" : ""}${new Intl.NumberFormat(uk ? "uk-UA" : "en-US", { maximumFractionDigits: 1 }).format(endpoint.median - startWeight)} kg` : "—"}</strong><small>{metric === "physiologicalBodyWeightKg" ? (uk ? "Від поточної оцінки моделі" : "From the current model estimate") : (uk ? "Показується в режимі ваги" : "Shown for weight view")}</small></article>
         </section>

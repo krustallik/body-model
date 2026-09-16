@@ -3,7 +3,13 @@ import { resolveWorkoutFeedObserved } from "@/modules/health/workout-feed-covera
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { instantToLocalDateTime } from "@/model/time-zone";
-import type { HealthDayInput, HealthSyncMetadata, SyncDateResult, WorkoutInput } from "./health.types";
+import type {
+  HealthDayInput,
+  HealthRetentionPruneResult,
+  HealthSyncMetadata,
+  SyncDateResult,
+  WorkoutInput,
+} from "./health.types";
 
 /** Persist only workouts whose startAt falls on the synced calendar day. */
 export function filterWorkoutsForSyncedDay(
@@ -20,6 +26,7 @@ export function filterWorkoutsForSyncedDay(
 
 export interface HealthSyncRepository {
   syncDay(day: HealthDayInput, rawDay: unknown, metadata: HealthSyncMetadata): Promise<SyncDateResult>;
+  pruneOlderThan(cutoffDate: string): Promise<HealthRetentionPruneResult>;
 }
 
 function jsonValue(day: unknown): Prisma.InputJsonValue {
@@ -133,6 +140,23 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
 
       return { date: day.date, action: existing ? "updated" : "created" };
     });
+  }
+
+  /**
+   * Delete daily health rows (and cascaded workouts) plus sync snapshots older
+   * than the retention cutoff calendar date.
+   */
+  async pruneOlderThan(cutoffDate: string): Promise<HealthRetentionPruneResult> {
+    const [snapshots, days] = await this.client.$transaction([
+      this.client.healthSyncSnapshot.deleteMany({ where: { date: { lt: cutoffDate } } }),
+      this.client.dailyHealthData.deleteMany({ where: { date: { lt: cutoffDate } } }),
+    ]);
+
+    return {
+      cutoffDate,
+      deletedDays: days.count,
+      deletedSnapshots: snapshots.count,
+    };
   }
 }
 

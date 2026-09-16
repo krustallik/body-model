@@ -17,10 +17,19 @@ export interface SyncDateResult {
   action: SyncAction;
 }
 
+export interface HealthRetentionPruneResult {
+  cutoffDate: string;
+  deletedDays: number;
+  deletedSnapshots: number;
+}
+
 export interface HealthSyncResult {
   status: "ok";
   received: number;
   created: number;
   updated: number;
   dates: SyncDateResult[];
+  retentionCutoffDate: string;
+  prunedDays: number;
+  prunedSnapshots: number;
 }

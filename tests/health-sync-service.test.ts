@@ -7,7 +7,9 @@ class MemoryRepository implements HealthSyncRepository {
   readonly days = new Map<string, HealthDayInput>();
   readonly workouts = new Map<string, NonNullable<HealthDayInput["workouts"]>>();
   readonly snapshots: { day: HealthDayInput; rawDay: unknown; metadata: HealthSyncMetadata }[] = [];
+  readonly prunedCutoffs: string[] = [];
   failOnDate?: string;
+  pruneFail = false;
 
   async syncDay(
     day: HealthDayInput,
@@ -28,6 +30,20 @@ class MemoryRepository implements HealthSyncRepository {
     nextWorkouts.forEach((value, key) => this.workouts.set(key, value));
     this.snapshots.push({ day, rawDay, metadata });
     return { date: day.date, action };
+  }
+
+  async pruneOlderThan(cutoffDate: string) {
+    this.prunedCutoffs.push(cutoffDate);
+    if (this.pruneFail) throw new Error("simulated prune failure");
+    let deletedDays = 0;
+    for (const date of [...this.days.keys()]) {
+      if (date < cutoffDate) {
+        this.days.delete(date);
+        this.workouts.delete(date);
+        deletedDays += 1;
+      }
+    }
+    return { cutoffDate, deletedDays, deletedSnapshots: deletedDays };
   }
 }
 
@@ -149,5 +165,26 @@ describe("health synchronization service", () => {
       syncHealthData({ days: [{ date: "2026-08-22" }] }, repository),
     ).rejects.toThrow("simulated transaction failure");
     expect(repository.days.size).toBe(0);
+  });
+
+  it("prunes health rows older than 30 days after a successful sync", async () => {
+    const repository = new MemoryRepository();
+    await syncHealthData({ days: [{ date: "2026-07-20" }] }, repository);
+    await syncHealthData({ days: [{ date: "2026-08-21" }] }, repository);
+    expect(repository.prunedCutoffs).toEqual(["2026-06-20", "2026-07-22"]);
+    expect(repository.days.has("2026-07-20")).toBe(false);
+    expect(repository.days.has("2026-08-21")).toBe(true);
+  });
+
+  it("still returns ok when retention prune fails", async () => {
+    const repository = new MemoryRepository();
+    repository.pruneFail = true;
+    await expect(syncHealthData({ days: [{ date: "2026-08-21" }] }, repository)).resolves.toMatchObject({
+      status: "ok",
+      prunedDays: 0,
+      prunedSnapshots: 0,
+      retentionCutoffDate: "2026-07-22",
+    });
+    expect(repository.days.has("2026-08-21")).toBe(true);
   });
 });

@@ -217,4 +217,26 @@ describe("Prisma health synchronization repository", () => {
     const repository = new PrismaHealthSyncRepository(client);
     await expect(repository.syncDay({ date: "2026-08-21" })).rejects.toThrow("rollback");
   });
+
+  it("prunes daily rows and snapshots older than the cutoff", async () => {
+    const healthSyncSnapshot = { deleteMany: vi.fn().mockResolvedValue({ count: 4 }) };
+    const dailyHealthData = { deleteMany: vi.fn().mockResolvedValue({ count: 2 }) };
+    const client = {
+      healthSyncSnapshot,
+      dailyHealthData,
+      $transaction: vi.fn((ops: Promise<unknown>[]) => Promise.all(ops)),
+    } as unknown as PrismaClient;
+    const repository = new PrismaHealthSyncRepository(client);
+    await expect(repository.pruneOlderThan("2026-08-17")).resolves.toEqual({
+      cutoffDate: "2026-08-17",
+      deletedDays: 2,
+      deletedSnapshots: 4,
+    });
+    expect(healthSyncSnapshot.deleteMany).toHaveBeenCalledWith({
+      where: { date: { lt: "2026-08-17" } },
+    });
+    expect(dailyHealthData.deleteMany).toHaveBeenCalledWith({
+      where: { date: { lt: "2026-08-17" } },
+    });
+  });
 });

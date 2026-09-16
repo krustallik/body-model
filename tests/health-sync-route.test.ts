@@ -35,6 +35,9 @@ describe("POST /api/v1/health/sync", () => {
       created: 1,
       updated: 0,
       dates: [{ date: "2026-08-21", action: "created" }],
+      retentionCutoffDate: "2026-07-22",
+      prunedDays: 0,
+      prunedSnapshots: 0,
     };
     syncHealthData.mockResolvedValue(result);
     const response = await POST(request({ days: [{ date: "2026-08-21", steps: 10000 }] }));
@@ -45,6 +48,52 @@ describe("POST /api/v1/health/sync", () => {
       undefined,
       [{ date: "2026-08-21", steps: 10000 }],
     );
+  });
+
+  it("logs received and successful sync requests including training fields", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    syncHealthData.mockResolvedValue({
+      status: "ok",
+      received: 1,
+      created: 1,
+      updated: 0,
+      dates: [{ date: "2026-09-16", action: "created" }],
+      retentionCutoffDate: "2026-08-17",
+      prunedDays: 2,
+      prunedSnapshots: 3,
+    });
+
+    const response = await POST(request({
+      Days: [{
+        Date: "2026-09-16",
+        Trainingtype: "Stair Climbing\\NTraditional Strength Training",
+        Trainingactivekcal: "154\\N562",
+        Strengthtrainingminutes:
+          "16. 9. 2026, 12:40\\N16. 9. 2026, 10:44\\N16. 9. 2026, 12:52\\N16. 9. 2026, 11:46",
+      }],
+    }));
+
+    expect(response.status).toBe(200);
+    const events = info.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        event: "health_sync_received",
+        hasTrainingType: true,
+        hasTrainingActiveKcal: true,
+        hasStrengthTrainingMinutes: true,
+        trainingTypeLineCount: 2,
+        trainingActiveKcalLineCount: 2,
+        strengthTrainingMinutesLineCount: 4,
+      }),
+      expect.objectContaining({
+        event: "health_sync_success",
+        derivedWorkoutCount: 2,
+        prunedDays: 2,
+        prunedSnapshots: 3,
+        retentionCutoffDate: "2026-08-17",
+      }),
+    ]));
+    info.mockRestore();
   });
 
   it("preserves explicit iPhone timezone and sync instant", async () => {

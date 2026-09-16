@@ -20,6 +20,9 @@ export type GoalFormValues = {
 
 export type GoalFormErrors = Partial<Record<Exclude<keyof GoalFormValues, "plan" | "mode"> | "plan", string>>;
 
+const AVERAGE_STEP_LENGTH_KM = 0.00075;
+const DEFAULT_PLANNING_WALKING_SPEED_KMH = 5;
+
 export function defaultGoalForm(latestModeledDate?: string | null, currentWeightKg?: number | null): GoalFormValues {
   return {
     targetWeightKg: currentWeightKg === null || currentWeightKg === undefined
@@ -105,10 +108,22 @@ export function buildGoalPlanningRequest(values: GoalFormValues, latestModeledDa
   if (!Object.values(values.plan).every((value) => typeof value === "boolean" || typeof value === "string" || Number.isFinite(value))) {
     errors.plan = "Planning assumptions must contain finite values";
   }
+  if (values.plan.averageStepsPerDay < 0 || values.plan.averageStepsPerDay > 100_000
+      || values.plan.strengthDaysPerWeek < 0 || values.plan.strengthDaysPerWeek > 7
+      || values.plan.otherTrainingDaysPerWeek < 0 || values.plan.otherTrainingDaysPerWeek > 7
+      || values.plan.workDaysPerWeek < 1 || values.plan.workDaysPerWeek > 7) {
+    errors.plan = "Activity assumptions are outside the supported range";
+  }
   if (Object.keys(errors).length > 0 || targetValueKg === null || minCaloriesKcal === null || maxCaloriesKcal === null) {
     return { request: null, errors };
   }
-  const scenario = buildForecastRequest(values.mode, horizonDays, values.plan, latestModeledDate).scenario;
+  const scenario = buildForecastRequest(values.mode, horizonDays, {
+    ...values.plan,
+    outsideWorkWalkingDistanceKm: values.plan.averageStepsPerDay * AVERAGE_STEP_LENGTH_KM,
+    averageWalkingSpeedKmh: DEFAULT_PLANNING_WALKING_SPEED_KMH,
+    workWalkingDistanceKm: 0,
+    workWalkingSpeedKmh: DEFAULT_PLANNING_WALKING_SPEED_KMH,
+  }, latestModeledDate).scenario;
   if (scenario.mode === "recent-behavior") throw new Error("goal planning requires an explicit scenario");
   return {
     request: {

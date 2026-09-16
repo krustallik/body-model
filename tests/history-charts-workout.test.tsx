@@ -45,7 +45,7 @@ function day(date: string, overrides: Partial<DailyMetricDto> = {}): DailyMetric
 }
 
 describe("HistoryCharts workout series", () => {
-  it("renames the chart and connects workout nulls without zero-filling", () => {
+  it("connects every series across missing observations without zero-filling", () => {
     const html = renderToStaticMarkup(
       <HistoryCharts
         days={[
@@ -60,7 +60,7 @@ describe("HistoryCharts workout series", () => {
     expect(html).toContain('data-name="Тренування"');
     expect(html).toContain('data-connect-nulls="true"');
     expect(html).toContain('data-line="walkingDistanceKm"');
-    expect(html).toContain('data-connect-nulls="false"');
+    expect(html).not.toContain('data-connect-nulls="false"');
     expect(html).not.toContain("Рух і силові");
     expect(html).not.toContain("Силове");
   });

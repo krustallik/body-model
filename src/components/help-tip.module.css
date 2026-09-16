@@ -6,7 +6,7 @@
 .bubble { display: none; position: absolute; left: 50%; top: calc(100% + .55rem); width: min(19rem, calc(100vw - 3rem)); padding: .75rem .85rem; border: 1px solid var(--line, #c8d5df); border-radius: .75rem; background: var(--surface, #fff); color: var(--ink, #263845); box-shadow: 0 10px 30px rgba(25, 46, 61, .18); font: 500 .86rem/1.45 system-ui, sans-serif; text-align: left; transform: translateX(-50%); z-index: 2; }
 .bubble::before { content: ""; position: absolute; left: 50%; bottom: 100%; border: .4rem solid transparent; border-bottom-color: var(--line, #c8d5df); transform: translateX(-50%); }
 @media (hover: hover) and (pointer: fine) {
-  .tip:hover .bubble, .tip:focus-within .bubble { display: block; }
+  .tip:hover .bubble, .tip summary:focus-visible + .bubble { display: block; }
 }
 
 @media (hover: none), (pointer: coarse) {

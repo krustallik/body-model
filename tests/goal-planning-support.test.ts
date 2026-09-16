@@ -84,6 +84,33 @@ describe("goal planning application support", () => {
     expect(built.request?.scenarioTemplate.schedule.strengthByWeekday).toEqual({ "0": 0, "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0 });
   });
 
+  it("maps simple activity inputs to one step average and separate weekly training schedules", () => {
+    const values = defaultGoalForm("2026-10-19", 82);
+    values.plan.averageStepsPerDay = 10_000;
+    values.plan.strengthDaysPerWeek = 3;
+    values.plan.strengthTrainingMinutes = 45;
+    values.plan.otherTrainingDaysPerWeek = 2;
+    values.plan.otherTrainingMinutes = 30;
+    values.plan.plannedWork = true;
+    values.plan.workDaysPerWeek = 2;
+    const built = buildGoalPlanningRequest(values, "2026-10-19");
+    expect(built.errors).toEqual({});
+    expect(built.request?.scenarioTemplate.schedule.defaultDay).toMatchObject({
+      outsideWorkWalkingDistanceKm: 7.5,
+      averageWalkingSpeedKmh: 5,
+    });
+    expect(built.request?.scenarioTemplate.schedule.strengthByWeekday).toMatchObject({
+      "1": 75,
+      "3": 75,
+      "5": 45,
+    });
+    const scheduledWorkWeekdays = Object.entries(
+      built.request?.scenarioTemplate.schedule.byDate ?? {},
+    ).filter(([, day]) => (day.occupation?.length ?? 0) > 0)
+      .map(([date]) => new Date(`${date}T12:00:00Z`).getUTCDay());
+    expect(new Set(scheduledWorkWeekdays)).toEqual(new Set([1, 3]));
+  });
+
   it("rejects missing/non-finite values, invalid bounds, and non-future dates", () => {
     const missing = defaultGoalForm("2026-10-19", null);
     missing.maxCaloriesKcal = "Infinity";

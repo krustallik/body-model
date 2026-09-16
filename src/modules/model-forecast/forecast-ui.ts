@@ -35,9 +35,13 @@ export type PlanValues = {
   carbsG: number;
   outsideWorkWalkingDistanceKm: number;
   averageWalkingSpeedKmh: number;
+  averageStepsPerDay: number;
   strengthDaysPerWeek: number;
   strengthTrainingMinutes: number;
+  otherTrainingDaysPerWeek: number;
+  otherTrainingMinutes: number;
   plannedWork: boolean;
+  workDaysPerWeek: number;
   workCategory: "standingLight" | "manualLight" | "standingLightModerate" | "manualModerate";
   shiftHours: number;
   breakHours: number;
@@ -52,9 +56,13 @@ export const DEFAULT_PLAN: PlanValues = {
   carbsG: 240,
   outsideWorkWalkingDistanceKm: 4,
   averageWalkingSpeedKmh: 5,
+  averageStepsPerDay: 8_000,
   strengthDaysPerWeek: 3,
   strengthTrainingMinutes: 45,
+  otherTrainingDaysPerWeek: 0,
+  otherTrainingMinutes: 45,
   plannedWork: false,
+  workDaysPerWeek: 5,
   workCategory: "standingLight",
   shiftHours: 8,
   breakHours: 0.5,
@@ -115,21 +123,25 @@ export function buildForecastRequest(
   const selectedTrainingDays = new Set(TRAINING_WEEKDAYS.slice(0, Math.round(plan.strengthDaysPerWeek)));
   type FixedSchedule = Extract<ForecastModelRequest["scenario"], { mode: "fixed" }>["schedule"];
   const byDate: NonNullable<FixedSchedule["byDate"]> = {};
+  const selectedWorkDays = new Set(TRAINING_WEEKDAYS.slice(0, Math.round(plan.workDaysPerWeek)));
   if (plan.plannedWork) {
     for (let index = 1; index <= horizonDays; index += 1) {
       const date = addCalendarDays(today, index);
       const weekday = calendarWeekday(date);
-      if (weekday >= 1 && weekday <= 5) byDate[date] = { occupation };
+      if (selectedWorkDays.has(weekday)) byDate[date] = { occupation };
     }
   }
+  const selectedOtherTrainingDays = new Set(
+    TRAINING_WEEKDAYS.slice(0, Math.round(plan.otherTrainingDaysPerWeek)),
+  );
   const strengthByWeekday: NonNullable<FixedSchedule["strengthByWeekday"]> = {
-    "0": selectedTrainingDays.has(0) ? plan.strengthTrainingMinutes : 0,
-    "1": selectedTrainingDays.has(1) ? plan.strengthTrainingMinutes : 0,
-    "2": selectedTrainingDays.has(2) ? plan.strengthTrainingMinutes : 0,
-    "3": selectedTrainingDays.has(3) ? plan.strengthTrainingMinutes : 0,
-    "4": selectedTrainingDays.has(4) ? plan.strengthTrainingMinutes : 0,
-    "5": selectedTrainingDays.has(5) ? plan.strengthTrainingMinutes : 0,
-    "6": selectedTrainingDays.has(6) ? plan.strengthTrainingMinutes : 0,
+    "0": (selectedTrainingDays.has(0) ? plan.strengthTrainingMinutes : 0) + (selectedOtherTrainingDays.has(0) ? plan.otherTrainingMinutes : 0),
+    "1": (selectedTrainingDays.has(1) ? plan.strengthTrainingMinutes : 0) + (selectedOtherTrainingDays.has(1) ? plan.otherTrainingMinutes : 0),
+    "2": (selectedTrainingDays.has(2) ? plan.strengthTrainingMinutes : 0) + (selectedOtherTrainingDays.has(2) ? plan.otherTrainingMinutes : 0),
+    "3": (selectedTrainingDays.has(3) ? plan.strengthTrainingMinutes : 0) + (selectedOtherTrainingDays.has(3) ? plan.otherTrainingMinutes : 0),
+    "4": (selectedTrainingDays.has(4) ? plan.strengthTrainingMinutes : 0) + (selectedOtherTrainingDays.has(4) ? plan.otherTrainingMinutes : 0),
+    "5": (selectedTrainingDays.has(5) ? plan.strengthTrainingMinutes : 0) + (selectedOtherTrainingDays.has(5) ? plan.otherTrainingMinutes : 0),
+    "6": (selectedTrainingDays.has(6) ? plan.strengthTrainingMinutes : 0) + (selectedOtherTrainingDays.has(6) ? plan.otherTrainingMinutes : 0),
   };
   const schedule: FixedSchedule = { defaultDay, byDate, strengthByWeekday };
   return {
@@ -221,8 +233,11 @@ export function planAssumptions(mode: Exclude<ScenarioMode, "recent-behavior">, 
     plan.strengthDaysPerWeek === 0 || plan.strengthTrainingMinutes === 0
       ? (uk ? "Силові тренування не заплановані." : "No strength training is scheduled.")
       : (uk ? `${precision(plan.strengthDaysPerWeek)} силових тренувань на тиждень по ${precision(plan.strengthTrainingMinutes)} хв.` : `${precision(plan.strengthDaysPerWeek)} strength sessions per week, ${precision(plan.strengthTrainingMinutes)} minutes each.`),
+    plan.otherTrainingDaysPerWeek === 0 || plan.otherTrainingMinutes === 0
+      ? (uk ? "Інші тренування не заплановані." : "No other training is scheduled.")
+      : (uk ? `${precision(plan.otherTrainingDaysPerWeek)} інших тренувань на тиждень по ${precision(plan.otherTrainingMinutes)} хв.` : `${precision(plan.otherTrainingDaysPerWeek)} other sessions per week, ${precision(plan.otherTrainingMinutes)} minutes each.`),
     plan.plannedWork
-      ? (uk ? `Робота з понеділка по п’ятницю: ${precision(plan.shiftHours)} год, з них ${precision(plan.breakHours)} год перерв і ${precision(plan.workWalkingDistanceKm)} км ходьби.` : `Monday–Friday work: ${precision(plan.shiftHours)} hours with ${precision(plan.breakHours)} hours of breaks and ${precision(plan.workWalkingDistanceKm)} km walking.`)
+      ? (uk ? `Робота ${precision(plan.workDaysPerWeek)} днів на тиждень: ${precision(plan.shiftHours)} год, з них ${precision(plan.breakHours)} год перерв.` : `Work ${precision(plan.workDaysPerWeek)} days per week: ${precision(plan.shiftHours)} hours with ${precision(plan.breakHours)} hours of breaks.`)
       : (uk ? "Заплановану робочу активність не включено." : "No planned occupational work is included."),
   ];
 }

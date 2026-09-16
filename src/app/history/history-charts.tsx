@@ -25,8 +25,6 @@ type Series = {
   unit: string;
   color: string;
   yAxisId?: string;
-  /** Connect across missing days without inventing observations (Recharts connectNulls). */
-  connectNulls?: boolean;
 };
 
 const tooltipStyle = {
@@ -114,7 +112,7 @@ function HistoryLineChart({
               }}
             />
             {series.length > 1 && <Legend wrapperStyle={{ fontSize: "11px", paddingTop: "8px" }} />}
-            {series.map(({ key, label, color, yAxisId, connectNulls = false }) => (
+            {series.map(({ key, label, color, yAxisId }) => (
               <Line
                 key={key}
                 type="monotone"
@@ -123,7 +121,7 @@ function HistoryLineChart({
                 yAxisId={dualAxis ? yAxisId ?? "left" : undefined}
                 stroke={color}
                 strokeWidth={2.4}
-                connectNulls={connectNulls}
+                connectNulls
                 dot={{ r: 2.5, fill: color, strokeWidth: 0 }}
                 activeDot={{ r: 4 }}
                 isAnimationActive={false}
@@ -206,7 +204,6 @@ export function HistoryCharts({ days }: { days: DailyMetricDto[] }) {
               unit: "min",
               color: "#bf5b45",
               yAxisId: "right",
-              connectNulls: true,
             },
           ]}
         />

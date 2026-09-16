@@ -22,18 +22,61 @@ import { buildSimulationDays } from "./simulation-input-builder";
 
 const MINIMUM_AUTOMATIC_RESTART_DAYS = 3;
 
-function latestModelableRunStart(
+type ModelableRun = { startDate: string; endDate: string };
+
+function modelableRuns(
   days: ReturnType<typeof buildSimulationDays>,
   ecfPolicy: Parameters<typeof missingPhysiologicalTransitionFields>[1],
-): string | null {
-  let startIndex = days.length;
-  for (let index = days.length - 1; index >= 0; index -= 1) {
-    if (missingPhysiologicalTransitionFields(days[index].input, ecfPolicy).length > 0) break;
-    startIndex = index;
+): ModelableRun[] {
+  const runs: ModelableRun[] = [];
+  for (let index = 0; index < days.length;) {
+    if (missingPhysiologicalTransitionFields(days[index].input, ecfPolicy).length > 0) {
+      index += 1;
+      continue;
+    }
+    const startIndex = index;
+    while (index < days.length
+        && missingPhysiologicalTransitionFields(days[index].input, ecfPolicy).length === 0) {
+      index += 1;
+    }
+    if (index - startIndex >= MINIMUM_AUTOMATIC_RESTART_DAYS) {
+      runs.push({
+        startDate: days[startIndex].input.date,
+        endDate: days[index - 1].input.date,
+      });
+    }
   }
-  return startIndex > 0 && days.length - startIndex >= MINIMUM_AUTOMATIC_RESTART_DAYS
-    ? days[startIndex].input.date
-    : null;
+  return runs;
+}
+
+function preferredModelableRunStart(
+  days: ReturnType<typeof buildSimulationDays>,
+  ecfPolicy: Parameters<typeof missingPhysiologicalTransitionFields>[1],
+  episodeStartDate: string,
+  sources: HistoricalModelSources,
+): string | null {
+  const starts = modelableRuns(days, ecfPolicy).flatMap((run) => {
+    const anchored = inputSourcesInRange(sources, run).find((day) => (
+      day.weightKg !== null && day.bodyFatPercent !== null
+    ));
+    if (!anchored) return [];
+    const remainingDays = days.filter(({ input }) => (
+      input.date >= anchored.date && input.date <= run.endDate
+    )).length;
+    return remainingDays >= MINIMUM_AUTOMATIC_RESTART_DAYS ? [anchored.date] : [];
+  });
+  // Never discard a usable historical block merely because the active episode
+  // was initialized recently. Gaps remain explicit and are handled by recovery.
+  return starts.find((date) => date < episodeStartDate) ?? starts.at(-1) ?? null;
+}
+
+function inputSourcesInRange(
+  sources: HistoricalModelSources,
+  run: ModelableRun,
+) {
+  return sources.days
+    .filter(({ date }) => date >= run.startDate && date <= run.endDate)
+    .sort((left, right) => left.date.localeCompare(right.date));
 }
 
 function prepareRestartFromFrozenEpisode(input: {
@@ -101,6 +144,44 @@ function prepareRestartFromFrozenEpisode(input: {
       sourceEpisodeId: input.episode.id,
     },
   };
+}
+
+function prepareHistoricalEpisode(input: {
+  profile: Parameters<typeof prepareEpisodeInitialization>[0]["profile"];
+  sources: HistoricalModelSources;
+  startDate: string;
+  timezone: string;
+}): PreparedEpisodeInitialization {
+  try {
+    return prepareEpisodeInitialization({
+      profile: input.profile,
+      days: input.sources.days,
+      sources: input.sources,
+      startDate: input.startDate,
+      timezone: input.timezone,
+    });
+  } catch (error) {
+    if (!(error instanceof EpisodeInitializationError)
+        || error.reason !== "insufficient-baseline-data") throw error;
+    // Retention can leave the first usable day without a preceding 28-day
+    // baseline. A one-day bootstrap is explicit and auditable; later history
+    // still calibrates normally instead of being silently thrown away.
+    return prepareEpisodeInitialization({
+      profile: input.profile,
+      days: input.sources.days,
+      sources: input.sources,
+      startDate: input.startDate,
+      timezone: input.timezone,
+      baselineConfig: {
+        windowDays: 1,
+        lookbackDays: 1,
+        minimumCompleteNutritionDays: 1,
+        minimumWeightObservations: 1,
+        minimumWeightSpanDays: 1,
+        maximumAbsoluteWeightTrendPercentPerWeek: 0.25,
+      },
+    });
+  }
 }
 
 const TRANSACTION_OPTIONS = {
@@ -183,14 +264,18 @@ export async function recalculateModelEpisode(
         nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
         modelVersion: CURRENT_MODEL_VERSION,
       });
-      const restartDate = latestModelableRunStart(candidateDays, episode.ecfPolicy);
+      const restartDate = preferredModelableRunStart(
+        candidateDays,
+        episode.ecfPolicy,
+        episode.startDate,
+        sources,
+      );
       if (restartDate !== null && restartDate !== episode.startDate) {
         const profile = await repository.getProfile();
         let prepared: PreparedEpisodeInitialization;
         try {
-          prepared = prepareEpisodeInitialization({
+          prepared = prepareHistoricalEpisode({
             profile,
-            days: sources.days,
             sources,
             startDate: restartDate,
             timezone: episode.timezone,

@@ -94,13 +94,17 @@ describe("model episode application service", () => {
     });
   });
 
-  it("restarts the active episode at three complete days after a gap", async () => {
+  it("expands a recent episode back to the earliest retained modelable run", async () => {
     const episode = {
       ...persistedEpisodeFixture("2026-09-01"),
       modelVersion: "bodycast-physiology-v5",
     };
     const historical = [
-      ...stableSourceDays({ count: 15, endDate: "2026-08-31" }),
+      ...stableSourceDays({
+        count: 14,
+        endDate: "2026-08-31",
+        override: () => ({ bodyFatPercent: 20 }),
+      }),
       sourceDay("2026-09-01", {
         caloriesKcal: null, proteinG: null, fatG: null, carbsG: null,
       }),
@@ -116,47 +120,70 @@ describe("model episode application service", () => {
       sourceDay("2026-09-15", {
         weightKg: 91.1, strengthTrainingMinutes: null, workoutFeedObserved: true,
       }),
-      sourceDay("2026-09-16", {
-        weightKg: 89.8, strengthTrainingMinutes: 76, workoutFeedObserved: true,
-      }),
     ];
     repository.getActive.mockResolvedValue(episode);
     repository.loadSources.mockResolvedValue({
       days: [...historical, ...recent], snapshots: [], workIntervals: [], workouts: [],
     });
     repository.createPrepared.mockResolvedValue({
-      ...persistedEpisodeFixture("2026-09-14"),
+      ...persistedEpisodeFixture("2026-08-18"),
       id: 8,
     });
-    repository.status.mockResolvedValue({ episodeId: 8, daysModeled: 3 });
+    repository.status.mockResolvedValue({ episodeId: 8, daysModeled: 16 });
 
     const result = await recalculateModelEpisode({
-      now: new Date("2026-09-17T10:00:00.000Z"),
+      now: new Date("2026-09-16T18:00:00.000Z"),
     }, client);
 
     expect(repository.deactivateActive).toHaveBeenCalledWith(
-      new Date("2026-09-17T10:00:00.000Z"),
+      new Date("2026-09-16T18:00:00.000Z"),
     );
     expect(repository.createPrepared).toHaveBeenCalledWith(
       expect.objectContaining({
-        startDate: "2026-09-14",
-        initializationDiagnostics: expect.objectContaining({
-          reason: "post-gap-restart-reused-frozen-episode",
-        }),
+        startDate: "2026-08-18",
       }),
     );
     expect(repository.persistCalculation).toHaveBeenCalledWith(
       8,
       expect.objectContaining({
         dailyStates: expect.arrayContaining([
-          expect.objectContaining({ date: "2026-09-14" }),
-          expect.objectContaining({ date: "2026-09-15" }),
-          expect.objectContaining({ date: "2026-09-16" }),
+          expect.objectContaining({ date: "2026-08-18" }),
+          expect.objectContaining({ date: "2026-08-31" }),
         ]),
       }),
       "bodycast-physiology-v6",
     );
-    expect(result).toMatchObject({ episodeId: 8, daysPersisted: 3, completeDays: 3 });
+    expect(result).toMatchObject({ episodeId: 8, daysPersisted: 16, completeDays: 16 });
+  });
+
+  it("restarts at a three-day post-gap run when no older usable run exists", async () => {
+    const episode = persistedEpisodeFixture("2026-09-01");
+    const recent = ["2026-09-14", "2026-09-15", "2026-09-16"].map((date) => (
+      sourceDay(date, { workoutFeedObserved: true })
+    ));
+    repository.getActive.mockResolvedValue(episode);
+    repository.loadSources.mockResolvedValue({
+      days: [
+        sourceDay("2026-09-01", {
+          caloriesKcal: null, proteinG: null, fatG: null, carbsG: null,
+        }),
+        ...recent,
+      ],
+      snapshots: [], workIntervals: [], workouts: [],
+    });
+    repository.createPrepared.mockResolvedValue({
+      ...persistedEpisodeFixture("2026-09-14"), id: 9,
+    });
+    repository.status.mockResolvedValue({ episodeId: 9, daysModeled: 3 });
+
+    const result = await recalculateModelEpisode({
+      now: new Date("2026-09-17T10:00:00.000Z"),
+    }, client);
+
+    expect(repository.createPrepared).toHaveBeenCalledWith(expect.objectContaining({
+      startDate: "2026-09-14",
+    }));
+    expect(result).toMatchObject({ episodeId: 9, daysPersisted: 3, completeDays: 3 });
   });
 
   it("handles an episode with no completed source days deterministically", async () => {

@@ -38,6 +38,20 @@ describe("resolveWorkoutFeedObserved", () => {
     })).toBe(true);
   });
 
+  it("accepts Shortcut Strengthtrainingminutes timestamp lines as the training feed", () => {
+    expect(resolveWorkoutFeedObserved({
+      Date: "2026-09-16",
+      Trainingtype: "Stair Climbing\nTraditional Strength Training",
+      Trainingactivekcal: "154\n562",
+      Strengthtrainingminutes: [
+        "16. 9. 2026, 12:40",
+        "16. 9. 2026, 10:44",
+        "16. 9. 2026, 12:52",
+        "16. 9. 2026, 11:46",
+      ].join("\n"),
+    })).toBe(true);
+  });
+
   it("marks catastrophically mismatched training fields as unavailable", () => {
     expect(resolveWorkoutFeedObserved({
       date: "2026-09-16",

@@ -167,6 +167,72 @@ describe("health sync training workout pipeline", () => {
     expect(result.data.days[0]?.workouts ?? []).toEqual([]);
   });
 
+  it("accepts production Shortcut timestamps in Strengthtrainingminutes with Trainingtype feed", () => {
+    // BodyCast Sync puts latest-N start/end lines into Strengthtrainingminutes
+    // (legacy key), not trainingTimestamps — regression from e422bc8 expansion.
+    const result = parseShortcutSync({
+      days: [{
+        Fatg: 62,
+        Carbsg: 253,
+        Averagewalkingspeedkmh: "5",
+        Calorieskcal: 2411,
+        Trainingtype: [
+          STAIR_CLIMBING_TYPE,
+          STAIR_CLIMBING_TYPE,
+          TRADITIONAL_STRENGTH_TRAINING_TYPE,
+        ].join("\n"),
+        Proteing: 203,
+        Walkingdistancekm: "0.5814353488389005",
+        Bodyfatpercent: "27.6",
+        Date: "2026-09-16",
+        Trainingactivekcal: "154\n18\n562",
+        Strengthtrainingminutes: [
+          "16. 9. 2026, 12:40",
+          "16. 9. 2026, 12:34",
+          "16. 9. 2026, 10:44",
+          "16. 9. 2026, 12:52",
+          "16. 9. 2026, 12:36",
+          "16. 9. 2026, 11:46",
+        ].join("\n"),
+        Weightkg: "89.80000305175781",
+        Steps: 4449,
+      }],
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) {
+      expect(result.error.issues).toEqual([]);
+      return;
+    }
+
+    const day = result.data.days[0];
+    expect(day?.date).toBe("2026-09-16");
+    expect(day).not.toHaveProperty("strengthTrainingMinutes");
+    const workouts = day?.workouts ?? [];
+    expect(workouts).toHaveLength(3);
+    expect(workouts.map((workout) => workout.type)).toEqual([
+      STAIR_CLIMBING_TYPE,
+      STAIR_CLIMBING_TYPE,
+      TRADITIONAL_STRENGTH_TRAINING_TYPE,
+    ]);
+    expect(workouts.map((workout) => workout.activeEnergyKcal)).toEqual([154, 18, 562]);
+    expect(workouts.map((workout) => workout.durationMinutes)).toEqual([12, 2, 62]);
+  });
+
+  it("keeps legacy two-date strengthTrainingMinutes when training feed keys are absent", () => {
+    const result = parseShortcutSync({
+      Days: [{
+        Date: "2026-09-16",
+        Strengthtrainingminutes: "16. 9. 2026, 12:40 16. 9. 2026, 13:55",
+      }],
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.days[0]?.strengthTrainingMinutes).toBe(75);
+    expect(result.data.days[0]?.workouts ?? []).toEqual([]);
+  });
+
   it("validates a structured workouts array with activeEnergyKcal", () => {
     const result = parseShortcutSync({
       timezone: TIMEZONE,

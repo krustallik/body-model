@@ -39,6 +39,7 @@ function parseIsoOrShortcutInstant(raw: string): Date | null {
   const iso = Date.parse(raw);
   if (Number.isFinite(iso)) return new Date(iso);
 
+  SHORTCUT_WORKOUT_DATE_PATTERN.lastIndex = 0;
   const matches = [...raw.matchAll(SHORTCUT_WORKOUT_DATE_PATTERN)];
   if (matches.length !== 1) return null;
   const match = matches[0];
@@ -179,6 +180,44 @@ export function expandTrainingWorkoutFields(input: {
   return { workouts, diagnostics };
 }
 
+/**
+ * Production Shortcut stores latest-N start/end lines in `strengthTrainingMinutes`
+ * (legacy key) alongside `trainingType` / `trainingActiveKcal`, not in
+ * `trainingTimestamps`. Detect that blob so expansion can consume it.
+ */
+export function looksLikeTrainingTimestampBlob(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  if (trimmed === "") return false;
+  // Plain numeric minutes must keep the legacy numeric-minutes path.
+  if (/^-?\d+(?:[.,]\d+)?$/.test(trimmed)) return false;
+  SHORTCUT_WORKOUT_DATE_PATTERN.lastIndex = 0;
+  const hasShortcutDates = SHORTCUT_WORKOUT_DATE_PATTERN.test(trimmed);
+  SHORTCUT_WORKOUT_DATE_PATTERN.lastIndex = 0;
+  if (hasShortcutDates) return true;
+  return /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(trimmed);
+}
+
+/** Prefer explicit trainingTimestamps; else Shortcut's strengthTrainingMinutes lines. */
+export function resolveTrainingTimestamps(day: JsonObject): {
+  trainingTimestamps: unknown;
+  consumedStrengthTrainingMinutes: boolean;
+} {
+  if ("trainingTimestamps" in day && day.trainingTimestamps !== undefined) {
+    return { trainingTimestamps: day.trainingTimestamps, consumedStrengthTrainingMinutes: false };
+  }
+  // Only alias when the new training feed keys are present; bare timestamp-like
+  // strengthTrainingMinutes must stay on the legacy numeric-minutes path.
+  const hasTypeOrKcal = "trainingType" in day || "trainingActiveKcal" in day;
+  if (hasTypeOrKcal && looksLikeTrainingTimestampBlob(day.strengthTrainingMinutes)) {
+    return {
+      trainingTimestamps: day.strengthTrainingMinutes,
+      consumedStrengthTrainingMinutes: true,
+    };
+  }
+  return { trainingTimestamps: day.trainingTimestamps, consumedStrengthTrainingMinutes: false };
+}
+
 /** Merge expanded training workouts into a day object without destroying structured workouts. */
 export function mergeExpandedTrainingWorkouts(
   day: JsonObject,
@@ -187,15 +226,17 @@ export function mergeExpandedTrainingWorkouts(
   const date = typeof day.date === "string" ? day.date : null;
   if (!date) return day;
 
+  const { trainingTimestamps, consumedStrengthTrainingMinutes } = resolveTrainingTimestamps(day);
   const hasTrainingFields = "trainingType" in day
     || "trainingActiveKcal" in day
-    || "trainingTimestamps" in day;
+    || "trainingTimestamps" in day
+    || consumedStrengthTrainingMinutes;
   if (!hasTrainingFields) return day;
 
   const { workouts: expanded } = expandTrainingWorkoutFields({
     trainingType: day.trainingType,
     trainingActiveKcal: day.trainingActiveKcal,
-    trainingTimestamps: day.trainingTimestamps,
+    trainingTimestamps,
     dayDate: date,
     timezone,
   });
@@ -204,6 +245,8 @@ export function mergeExpandedTrainingWorkouts(
   delete rest.trainingType;
   delete rest.trainingActiveKcal;
   delete rest.trainingTimestamps;
+  // Timestamp lines are not numeric minutes; drop them once consumed as the feed.
+  if (consumedStrengthTrainingMinutes) delete rest.strengthTrainingMinutes;
 
   const existing = Array.isArray(rest.workouts)
     ? rest.workouts.filter((item) => isObject(item))

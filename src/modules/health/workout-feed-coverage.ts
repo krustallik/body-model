@@ -1,10 +1,25 @@
 import {
   expandTrainingWorkoutFields,
+  resolveTrainingTimestamps,
   splitPositionalLines,
 } from "@/modules/health/expand-training-workouts";
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Raw Shortcut days keep original casing (`Trainingtype`, `Date`, …). */
+function readCanonicalField(day: Record<string, unknown>, canonical: string): unknown {
+  const target = canonical.toLowerCase();
+  for (const [key, value] of Object.entries(day)) {
+    if (key.toLowerCase() === target) return value;
+  }
+  return undefined;
+}
+
+function hasCanonicalField(day: Record<string, unknown>, canonical: string): boolean {
+  const target = canonical.toLowerCase();
+  return Object.keys(day).some((key) => key.toLowerCase() === target);
 }
 
 /**
@@ -18,20 +33,42 @@ function isObject(value: unknown): value is Record<string, unknown> {
 export function resolveWorkoutFeedObserved(rawDay: unknown): boolean {
   if (!isObject(rawDay)) return false;
 
-  if ("workouts" in rawDay) {
-    if (rawDay.workouts === null) return false;
-    return Array.isArray(rawDay.workouts);
+  if (hasCanonicalField(rawDay, "workouts")) {
+    const workouts = readCanonicalField(rawDay, "workouts");
+    if (workouts === null) return false;
+    return Array.isArray(workouts);
   }
 
-  const hasTrainingFields = "trainingType" in rawDay
-    || "trainingActiveKcal" in rawDay
-    || "trainingTimestamps" in rawDay;
+  const canonicalDay: Record<string, unknown> = {};
+  if (hasCanonicalField(rawDay, "date")) {
+    canonicalDay.date = readCanonicalField(rawDay, "date");
+  }
+  if (hasCanonicalField(rawDay, "trainingType")) {
+    canonicalDay.trainingType = readCanonicalField(rawDay, "trainingType");
+  }
+  if (hasCanonicalField(rawDay, "trainingActiveKcal")) {
+    canonicalDay.trainingActiveKcal = readCanonicalField(rawDay, "trainingActiveKcal");
+  }
+  if (hasCanonicalField(rawDay, "strengthTrainingMinutes")) {
+    canonicalDay.strengthTrainingMinutes = readCanonicalField(rawDay, "strengthTrainingMinutes");
+  }
+  if (hasCanonicalField(rawDay, "trainingTimestamps")) {
+    canonicalDay.trainingTimestamps = readCanonicalField(rawDay, "trainingTimestamps");
+  }
+
+  const trainingType = canonicalDay.trainingType;
+  const trainingActiveKcal = canonicalDay.trainingActiveKcal;
+  const { trainingTimestamps, consumedStrengthTrainingMinutes } = resolveTrainingTimestamps(canonicalDay);
+  const hasTrainingFields = "trainingType" in canonicalDay
+    || "trainingActiveKcal" in canonicalDay
+    || "trainingTimestamps" in canonicalDay
+    || consumedStrengthTrainingMinutes;
   if (!hasTrainingFields) return false;
 
-  const date = typeof rawDay.date === "string" ? rawDay.date : "";
-  const types = splitPositionalLines(rawDay.trainingType);
-  const timestamps = splitPositionalLines(rawDay.trainingTimestamps);
-  const kcals = splitPositionalLines(rawDay.trainingActiveKcal);
+  const date = typeof canonicalDay.date === "string" ? canonicalDay.date : "";
+  const types = splitPositionalLines(trainingType);
+  const timestamps = splitPositionalLines(trainingTimestamps);
+  const kcals = splitPositionalLines(trainingActiveKcal);
 
   // Empty-but-present training lines establish coverage (confirmed no today workout
   // once other-day events are filtered). Catastrophic structure does not.
@@ -44,9 +81,9 @@ export function resolveWorkoutFeedObserved(rawDay: unknown): boolean {
   // is malformed, the feed itself was observed for this sync day.
   if (!date) return true;
   const { diagnostics } = expandTrainingWorkoutFields({
-    trainingType: rawDay.trainingType,
-    trainingActiveKcal: rawDay.trainingActiveKcal,
-    trainingTimestamps: rawDay.trainingTimestamps,
+    trainingType,
+    trainingActiveKcal,
+    trainingTimestamps,
     dayDate: date,
   });
   const fatal = diagnostics.reasons.some((reason) => (

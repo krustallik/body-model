@@ -13,5 +13,11 @@ describe("DiagnosticsClient", () => {
     expect(html).toContain("Loading model status");
     expect(html).toContain("href=\"/diagnostics\"");
   });
+
+  it("keeps recalculate wording available for the empty modeled-history state", async () => {
+    const { recalculateModelPresentation } = await import("@/modules/model-forecast/forecast-ui");
+    expect(recalculateModelPresentation("uk").action).toBe("Перерахувати модель");
+    expect(recalculateModelPresentation("en").hint).toMatch(/health-table/);
+  });
 });
 

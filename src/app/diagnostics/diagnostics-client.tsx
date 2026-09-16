@@ -1,10 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { AppNav } from "@/components/app-nav";
 import { useI18n } from "@/i18n/i18n-provider";
 import type { DiagnosticGate, DiagnosticLevel, DiagnosticsDto } from "@/modules/model-diagnostics/model-diagnostics.types";
+import {
+  modelNeedsRecalculation,
+  recalculateModelPresentation,
+} from "@/modules/model-forecast/forecast-ui";
 import styles from "./diagnostics.module.css";
 
 const number = (value: number | null, digits = 0) => value === null ? "—" : value.toFixed(digits);
@@ -85,28 +89,73 @@ function limitationCopy(id: DiagnosticsDto["limitations"][number]["id"], uk: boo
 export function DiagnosticsClient() {
   const { locale, intlLocale } = useI18n();
   const uk = locale === "uk";
+  const recalculateCopy = recalculateModelPresentation(locale);
   const [data, setData] = useState<DiagnosticsDto | null>(null);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    const controller = new AbortController();
-    fetch("/api/diagnostics", { cache: "no-store", signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(response.status === 404 ? (uk ? "Немає активної моделі." : "No active model.") : (uk ? "Не вдалося завантажити діагностику." : "Could not load diagnostics."));
-        return response.json() as Promise<DiagnosticsDto>;
-      })
-      .then(setData).catch((cause: unknown) => { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause)); });
-    return () => controller.abort();
+  const [recalculating, setRecalculating] = useState(false);
+
+  const loadDiagnostics = useCallback(async (signal?: AbortSignal) => {
+    const response = await fetch("/api/diagnostics", { cache: "no-store", signal });
+    if (!response.ok) {
+      throw new Error(response.status === 404
+        ? (uk ? "Немає активної моделі." : "No active model.")
+        : (uk ? "Не вдалося завантажити діагностику." : "Could not load diagnostics."));
+    }
+    return response.json() as Promise<DiagnosticsDto>;
   }, [uk]);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    loadDiagnostics(controller.signal)
+      .then(setData)
+      .catch((cause: unknown) => {
+        if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause));
+      });
+    return () => controller.abort();
+  }, [loadDiagnostics]);
+
+  async function runRecalculate() {
+    setRecalculating(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/forecast/action", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "recalculate" }),
+      });
+      if (!response.ok) {
+        throw new Error(uk ? "Не вдалося перерахувати модель." : "Could not recalculate the model.");
+      }
+      setData(await loadDiagnostics());
+    } catch (cause: unknown) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setRecalculating(false);
+    }
+  }
+
   const personalization = data ? personalizationCopy(data.personalization.status, uk) : null;
+  const needsRecalculation = data
+    ? modelNeedsRecalculation({
+      daysModeled: data.dataContinuity.modeledDayCount,
+      latestModeledDate: data.episode.latestModeledDate,
+      currentPredictedWeightKg: data.currentState.predictedWeightKg,
+    })
+    : false;
+
   return <main className={styles.page}>
     <div className={styles.topbar}><Link className={styles.brand} href="/dashboard">BodyCast<span>{uk ? "Прозорість моделі" : "Model transparency"}</span></Link><AppNav active="diagnostics" /></div>
     <header className={styles.hero}>
       <div><p className={styles.eyebrow}>{uk ? "Діагностика · не оцінка здоров’я" : "Diagnostics · not a health score"}</p><h1>{uk ? "Що модель знає — і чого не знає." : "What the model knows—and what it does not."}</h1><p>{uk ? "Тут кілька окремих перевірок: дані, підлаштування під вас, пропуски й прогноз. Одного спільного бала немає." : "There are several separate checks: data, tuning to you, gaps, and forecast. There is no single overall score."}</p></div>
     </header>
     {!data && !error && <section className={styles.loading} aria-live="polite">{uk ? "Завантажуємо стан моделі…" : "Loading model status…"}</section>}
-    {error && <section className={styles.error} role="alert"><strong>{uk ? "Діагностика недоступна" : "Diagnostics unavailable"}</strong><span>{error}</span><Link href="/dashboard">{uk ? "Перейти до огляду" : "Go to dashboard"}</Link></section>}
+    {error && <section className={styles.error} role="alert"><strong>{uk ? "Діагностика недоступна" : "Diagnostics unavailable"}</strong><span>{error}</span><div className={styles.actions}><button type="button" disabled={recalculating} aria-busy={recalculating} onClick={() => void runRecalculate()}>{recalculating ? recalculateCopy.loadingAction : recalculateCopy.action}</button><Link href="/dashboard">{uk ? "Перейти до огляду" : "Go to dashboard"}</Link></div></section>}
     {data && <>
+      <section className={styles.recalculateBanner} aria-label={recalculateCopy.action}>
+        <div><strong>{needsRecalculation ? (uk ? "Порахованих днів ще немає" : "No calculated days yet") : (uk ? "Оновити пораховану історію" : "Refresh calculated history")}</strong><span>{recalculateCopy.hint}</span></div>
+        <button type="button" className={needsRecalculation ? styles.recalculatePrimary : styles.recalculateSecondary} disabled={recalculating} aria-busy={recalculating} onClick={() => void runRecalculate()}>{recalculating ? recalculateCopy.loadingAction : recalculateCopy.action}</button>
+      </section>
+
       <section className={styles.overview} aria-label={uk ? "Огляд стану моделі" : "Model status overview"}>
         <article data-level={data.currentState.level}><div className={styles.cardTop}><span>{uk ? "Поточна вага моделі" : "Current model weight"}</span><b>{levelLabel(data.currentState.level, uk)}</b></div><strong>{currentStateTitle(data.currentState.status, uk)}</strong><p>{uk ? "Звідки" : "Source"}: {data.currentState.source ?? "—"}</p></article>
         <article data-level={data.dataContinuity.level}><div className={styles.cardTop}><span>{uk ? "Дані · до 28 днів" : "Data · up to 28 days"}</span><b>{levelLabel(data.dataContinuity.level, uk)}</b></div><strong>{data.dataContinuity.completeDayCount}/{data.dataContinuity.modeledDayCount} {uk ? "повних порахованих днів" : "complete calculated days"}</strong><p>{uk ? "Зважувань" : "Weigh-ins"}: {data.dataContinuity.weightObservationCount} · {uk ? "днів без калорій" : "days without calories"}: {data.dataContinuity.nutrition.unresolvedDayCount}</p></article>
@@ -123,7 +172,7 @@ export function DiagnosticsClient() {
 
       <section className={styles.grid}>
         <article className={styles.panel}><p className={styles.eyebrow}>{uk ? "Пропуски в історії" : "Gaps in history"}</p><h2>{uk ? "Закриття пропусків" : "Closing gaps"}</h2><p className={styles.largeStatus}>{data.recovery.status}</p><p>{data.recovery.status === "not-required" ? (uk ? "Великих дірок немає; беремо звичайну оцінку." : "No big holes; the ordinary estimate is used.") : data.recovery.usableForForecast ? (uk ? "Пропуск оцінено; прогноз можна будувати з позначкою якості." : "The gap was estimated; forecasting can run with a quality label.") : (uk ? "Прогноз не стартує, доки стартова вага ненадійна." : "Forecasting stays blocked while the starting weight is unreliable.")}</p></article>
-        <article className={styles.panel}><p className={styles.eyebrow}>{uk ? "Наступна дія" : "Next action"}</p><h2>{data.forecastReadiness.allowed ? (uk ? "Спробувати сценарій" : "Try a scenario") : (uk ? "Спочатку покращити старт" : "Improve the starting point first")}</h2><p>{data.forecastReadiness.allowed ? (uk ? "Прогноз доступний, але діапазон лишається «можливо так», а не гарантією." : "Forecasting is available, but the range remains “maybe,” not a guarantee.") : (uk ? "Перевірте дірки в даних або дочекайтеся нових зважувань. Якщо в таблиці здоров’я вже є дні — оновіть модель." : "Check data gaps or wait for new weigh-ins. If the health table already has days, update the model.")}</p><div className={styles.actions}><Link href="/forecast">{uk ? "Відкрити прогноз" : "Open forecast"}</Link><Link href="/history">{uk ? "Перевірити історію" : "Review history"}</Link></div></article>
+        <article className={styles.panel}><p className={styles.eyebrow}>{uk ? "Наступна дія" : "Next action"}</p><h2>{data.forecastReadiness.allowed ? (uk ? "Спробувати сценарій" : "Try a scenario") : (uk ? "Спочатку покращити старт" : "Improve the starting point first")}</h2><p>{data.forecastReadiness.allowed ? (uk ? "Прогноз доступний, але діапазон лишається «можливо так», а не гарантією." : "Forecasting is available, but the range remains “maybe,” not a guarantee.") : (uk ? "Перевірте дірки в даних або дочекайтеся нових зважувань. Якщо в таблиці здоров’я вже є дні — перерахуйте модель." : "Check data gaps or wait for new weigh-ins. If the health table already has days, recalculate the model.")}</p><div className={styles.actions}><button type="button" disabled={recalculating} aria-busy={recalculating} onClick={() => void runRecalculate()}>{recalculating ? recalculateCopy.loadingAction : recalculateCopy.action}</button><Link href="/forecast">{uk ? "Відкрити прогноз" : "Open forecast"}</Link><Link href="/history">{uk ? "Перевірити історію" : "Review history"}</Link></div></article>
       </section>
 
       <section className={styles.panel}><p className={styles.eyebrow}>{uk ? "Межі інтерпретації" : "Interpretation limits"}</p><h2>{uk ? "Що не варто висновувати" : "What not to infer"}</h2><ul className={styles.limitations}>{data.limitations.map((item) => <li key={item.id}>{limitationCopy(item.id, uk)}</li>)}</ul></section>

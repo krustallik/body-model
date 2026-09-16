@@ -23,4 +23,10 @@ describe("ForecastClient", () => {
     expect(copy.primaryAction).toBe("Запустити модель");
     expect(copy.detail).toMatch(/Модель ще не рахувала/);
   });
+
+  it("shows a visible recalculate control on the initial forecast surface", () => {
+    const html = renderToStaticMarkup(<ForecastClient />);
+    expect(html).toContain("Recalculate model");
+    expect(html).toContain("Takes health-table rows and saves calculated days");
+  });
 });

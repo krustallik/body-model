@@ -16,11 +16,13 @@ import {
   formatValue,
   forecastReadiness,
   initializationFailureMessage,
+  modelNeedsRecalculation,
   qualityPresentation,
   isCurrentForecastRequest,
   withMinimumVisibleLoading,
   noActiveModelPresentation,
   planAssumptions,
+  recalculateModelPresentation,
   summarizeEndpoint,
   type ForecastHorizon,
   type ForecastMetric,
@@ -84,6 +86,7 @@ export function ForecastClient() {
   const { locale } = useI18n();
   const uk = locale === "uk";
   const noActiveModelCopy = noActiveModelPresentation(locale);
+  const recalculateCopy = recalculateModelPresentation(locale);
   const scenarios: Array<{ mode: ScenarioMode; label: string; hint: string }> = [
     { mode: "recent-behavior", label: uk ? "Як останнім часом" : "As lately", hint: uk ? "Бере ваші недавні дні з їжею й рухом і повторює схожий ритм." : "Uses your recent food-and-movement days and repeats a similar rhythm." },
     { mode: "fixed", label: uk ? "Точно за планом" : "Exact daily plan", hint: uk ? "Кожен день іде рівно за вашим планом, без відхилень." : "Every day follows your plan exactly, with no day-to-day drift." },
@@ -123,10 +126,14 @@ export function ForecastClient() {
     setOutcome(null);
     try {
       const payload = await withMinimumVisibleLoading((async () => {
-        const [forecastResponse, contextResponse] = await Promise.all([
-          fetch("/api/forecast", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(buildForecastRequest(selectedMode, selectedHorizon, selectedPlan)), signal: controller.signal }),
-          fetch("/api/forecast/context", { cache: "no-store", signal: controller.signal }),
-        ]);
+        // Forecast may persist DailyModelState first; load context afterward so diagnostics stay in sync.
+        const forecastResponse = await fetch("/api/forecast", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(buildForecastRequest(selectedMode, selectedHorizon, selectedPlan)),
+          signal: controller.signal,
+        });
+        const contextResponse = await fetch("/api/forecast/context", { cache: "no-store", signal: controller.signal });
         const nextContext = contextResponse.ok ? await contextResponse.json() as Context : null;
         if (!forecastResponse.ok) {
           const issue = await forecastError(forecastResponse, locale);
@@ -236,6 +243,8 @@ export function ForecastClient() {
   });
   const showStartModel = errorCode === "no_active_episode" || errorCode === "initialization_failed";
   const busy = loading || actionLoading !== null;
+  const needsRecalculation = modelNeedsRecalculation(context?.status ?? null);
+  const showRecalculate = !showStartModel;
 
   return (
     <main className={styles.page}>
@@ -272,7 +281,11 @@ export function ForecastClient() {
             </div>}
           </fieldset>
         </form>}
-        <button className={styles.runButton} type="button" aria-busy={busy} disabled={busy} onClick={() => void runForecast()}>{loading ? (uk ? "Запустити оновлений прогноз" : "Run updated forecast") : (uk ? "Побудувати прогноз" : "Run forecast")}</button>
+        <div className={styles.runRow}>
+          <button className={styles.runButton} type="button" aria-busy={busy} disabled={busy} onClick={() => void runForecast()}>{loading ? (uk ? "Запустити оновлений прогноз" : "Run updated forecast") : (uk ? "Побудувати прогноз" : "Run forecast")}</button>
+          {showRecalculate && <button className={needsRecalculation ? styles.recalculateButtonPrimary : styles.recalculateButton} type="button" aria-busy={actionLoading === "recalculate"} disabled={busy} onClick={() => void runAction("recalculate")}>{actionLoading === "recalculate" ? recalculateCopy.loadingAction : recalculateCopy.action}</button>}
+        </div>
+        {showRecalculate && <p className={styles.recalculateHint}>{recalculateCopy.hint}</p>}
       </section>
 
       <section className={`${styles.readinessCard} ${styles[readiness.level]}`} aria-label={uk ? "Наскільки зрозумілий прогноз" : "How clear the forecast is"}>
@@ -294,7 +307,7 @@ export function ForecastClient() {
 
       {error && !showStartModel && <section className={styles.blocked} role="alert"><p className={styles.eyebrow}>{uk ? "Прогноз недоступний" : "Forecast unavailable"}</p><h2>{uk ? "Цей варіант поки неможливо порахувати." : "We can’t calculate this option yet."}</h2><p>{error}</p><div className={styles.actions}>{mode === "recent-behavior" && <button type="button" onClick={() => selectMode("target-centered")}>{uk ? "Спробувати план з відхиленнями" : "Try a plan with drift"}</button>}<Link href="/history">{uk ? "Додати дані" : "Add data"}</Link></div></section>}
 
-      {!error && blockedOutcome && blockedCopy && <section className={styles.blocked}><p className={styles.eyebrow}>{uk ? "Потрібна поточна вага моделі" : "Current model weight needed"}</p><h2>{blockedCopy.title}</h2><p>{blockedCopy.detail}</p><div className={styles.actions}><button type="button" disabled={busy} onClick={() => void runAction("recover")}>{uk ? "Закрити пропуск у даних" : "Close the data gap"}</button><button type="button" disabled={busy} onClick={() => void runAction("recalculate")}>{uk ? "Оновити модель" : "Update model"}</button><Link href="/history">{uk ? "Переглянути історію" : "Review history"}</Link></div></section>}
+      {!error && blockedOutcome && blockedCopy && <section className={styles.blocked}><p className={styles.eyebrow}>{uk ? "Потрібна поточна вага моделі" : "Current model weight needed"}</p><h2>{blockedCopy.title}</h2><p>{blockedCopy.detail}</p><div className={styles.actions}><button type="button" disabled={busy} onClick={() => void runAction("recover")}>{uk ? "Закрити пропуск у даних" : "Close the data gap"}</button><button type="button" disabled={busy} onClick={() => void runAction("recalculate")}>{recalculateCopy.action}</button><Link href="/history">{uk ? "Переглянути історію" : "Review history"}</Link></div></section>}
 
       {loading && !outcome && !error && <section className={styles.loadingCard} aria-live="polite"><div className={styles.spinner} /><strong>{uk ? "Рахуємо можливі варіанти ваги" : "Calculating possible weight paths"}</strong><span>{uk ? "Кожен варіант стартує від вашої останньої зрозумілої ваги." : "Each path starts from your latest understood weight."}</span></section>}
       {!loading && !outcome && !error && <section className={styles.pendingCard}><strong>{uk ? "Налаштування змінено" : "Settings changed"}</strong><span>{uk ? "Натисніть «Побудувати прогноз», щоб оновити картинку." : "Tap “Run forecast” to refresh the chart."}</span></section>}

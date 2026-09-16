@@ -12,9 +12,11 @@ import {
   initializationFailureMessage,
   localCalendarDate,
   isCurrentForecastRequest,
+  modelNeedsRecalculation,
   noActiveModelPresentation,
   planAssumptions,
   qualityPresentation,
+  recalculateModelPresentation,
   summarizeEndpoint,
 } from "@/modules/model-forecast/forecast-ui";
 import type { ForecastResult } from "@/modules/model-forecast/forecast.types";
@@ -153,5 +155,16 @@ describe("forecast application helpers", () => {
     expect(initializationFailureMessage("insufficient-baseline-data", "uk"))
       .toMatch(/Недостатньо історії/);
     expect(initializationFailureMessage("unknown", "en")).toBe("Could not start the model.");
+  });
+
+  it("exposes a beginner-friendly recalculate CTA and emptiness check", () => {
+    expect(recalculateModelPresentation("uk")).toMatchObject({
+      action: "Перерахувати модель",
+      loadingAction: "Перераховуємо модель…",
+    });
+    expect(recalculateModelPresentation("en").action).toBe("Recalculate model");
+    expect(modelNeedsRecalculation(null)).toBe(false);
+    expect(modelNeedsRecalculation(modelStatus({ daysModeled: 0, latestModeledDate: null, currentPredictedWeightKg: null }))).toBe(true);
+    expect(modelNeedsRecalculation(modelStatus())).toBe(false);
   });
 });

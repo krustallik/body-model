@@ -36,8 +36,13 @@
 .field input, .field select { width: 100%; box-sizing: border-box; padding: .7rem; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: .55rem; font: inherit; font-size: .88rem; }
 .toggle { display: flex; align-items: center; gap: .6rem; margin-bottom: .9rem; font-size: .82rem; font-weight: 750; }
 .toggle input { width: 1.1rem; height: 1.1rem; accent-color: var(--accent); }
-.runButton { min-height: 3rem; padding: .75rem 1.2rem; color: #fff; background: var(--accent); border: 0; border-radius: .7rem; font: inherit; font-weight: 850; cursor: pointer; }
-.runButton:disabled { opacity: .62; cursor: wait; }
+.runRow { display: flex; flex-wrap: wrap; gap: .65rem; align-items: stretch; }
+.runButton, .recalculateButton, .recalculateButtonPrimary { min-height: 3rem; padding: .75rem 1.2rem; border-radius: .7rem; font: inherit; font-weight: 850; cursor: pointer; }
+.runButton { color: #fff; background: var(--accent); border: 0; flex: 1 1 14rem; }
+.recalculateButton { color: var(--ink); background: var(--soft); border: 1px solid var(--line); flex: 0 1 auto; }
+.recalculateButtonPrimary { color: #fff; background: #28566e; border: 0; flex: 0 1 auto; }
+.runButton:disabled, .recalculateButton:disabled, .recalculateButtonPrimary:disabled { opacity: .62; cursor: wait; }
+.recalculateHint { margin: -.35rem 0 0; color: var(--muted); font-size: .75rem; line-height: 1.45; }
 .qualityBanner { display: flex; justify-content: space-between; gap: 1rem; margin-top: 1rem; padding: .9rem 1rem; border: 1px solid; border-radius: .8rem; }
 .qualityBanner div { display: grid; gap: .25rem; }
 .qualityBanner span { font-size: .75rem; }
@@ -74,6 +79,6 @@
 @media (max-width: 390px) { .formGrid { grid-template-columns: 1fr; }.segmented button { padding-inline: .45rem; } }
 @media (prefers-color-scheme: dark) {
   .page { --ink: #edf4f0; --muted: #9baaa3; --line: #33423b; --surface: #17201c; --soft: #202c27; --accent: #62c99d; --accent-soft: #203d32; --chart-grid: #2a3933; --history-line: #a1aca7; --forecast-line: #62c99d; --band-inner: rgb(98 201 157 / 27%); --band-outer: rgb(98 201 157 / 10%); --boundary: #77867f; }
-  .runButton { color: #0d271d; }.good { color: #a7eccd; background: #17372b; border-color: #2e5a48; }.info { color: #b7dceb; background: #18303b; border-color: #345566; }.warning { color: #f0d395; background: #382f1d; border-color: #5e4e2d; }
+  .runButton { color: #0d271d; }.recalculateButtonPrimary { color: #0d1c24; background: #7eb6d4; }.good { color: #a7eccd; background: #17372b; border-color: #2e5a48; }.info { color: #b7dceb; background: #18303b; border-color: #345566; }.warning { color: #f0d395; background: #382f1d; border-color: #5e4e2d; }
 }
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }

@@ -258,6 +258,27 @@ export function noActiveModelPresentation(locale: Locale = "en"): {
   };
 }
 
+/** Copy for the always-visible recalculate control on Forecast / Diagnostics. */
+export function recalculateModelPresentation(locale: Locale = "en"): {
+  action: string;
+  loadingAction: string;
+  hint: string;
+} {
+  const uk = locale === "uk";
+  return {
+    action: uk ? "Перерахувати модель" : "Recalculate model",
+    loadingAction: uk ? "Перераховуємо модель…" : "Recalculating model…",
+    hint: uk
+      ? "Бере записи з таблиці здоров’я і зберігає пораховані дні для діагностики та прогнозу."
+      : "Takes health-table rows and saves calculated days for diagnostics and forecasting.",
+  };
+}
+
+export function modelNeedsRecalculation(status: Pick<ModelStatusDto, "daysModeled" | "latestModeledDate" | "currentPredictedWeightKg"> | null): boolean {
+  if (!status) return false;
+  return status.daysModeled === 0 || status.latestModeledDate === null || status.currentPredictedWeightKg === null;
+}
+
 export function initializationFailureMessage(
   reason: string | null | undefined,
   locale: Locale = "en",
@@ -321,8 +342,8 @@ export function forecastReadiness(input: {
   const factors: string[] = [];
   if (status.daysModeled === 0) {
     factors.push(uk
-      ? "Записи в таблиці здоров’я ще не пораховані моделлю. Натисніть «Оновити модель» або «Запустити модель»."
-      : "Rows in the health table are not model days yet. Tap “Update model” or “Start model”.");
+      ? "Записи в таблиці здоров’я ще не пораховані моделлю. Натисніть «Перерахувати модель» або «Побудувати прогноз»."
+      : "Rows in the health table are not model days yet. Tap “Recalculate model” or “Run forecast”.");
   }
   factors.push(
     uk ? `Модель порахувала ${status.daysModeled} днів історії; для точнішого прогнозу бажано хоча б 42.` : `The model has calculated ${status.daysModeled} history days; at least 42 are preferred for a steadier forecast.`,

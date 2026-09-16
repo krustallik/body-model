@@ -12,7 +12,6 @@ import type { ModelHistoryQuery } from "./model-episode.schema";
 import { ModelEpisodeRepository } from "./model-episode.repository";
 import { addCalendarDays, latestCompletedLocalDate } from "./model-calendar";
 import { buildSimulationDays } from "./simulation-input-builder";
-import { CURRENT_MODEL_VERSION } from "./model-version";
 
 const TRANSACTION_OPTIONS = {
   isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
@@ -41,11 +40,12 @@ export async function initializeNewModelEpisode(
     const repository = new ModelEpisodeRepository(transaction);
     const [profile, sources] = await Promise.all([
       repository.getProfile(),
-      repository.loadSources(addCalendarDays(startDate, -89), startDate),
+      repository.loadSources(addCalendarDays(startDate, -125), startDate),
     ]);
     const prepared = prepareEpisodeInitialization({
       profile,
       days: sources.days,
+      sources,
       startDate,
       timezone,
     });
@@ -84,11 +84,10 @@ export async function recalculateModelEpisode(
         baselineNutritionFallback: episode.baselineNutritionFallback,
         nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
       });
-    const recalculatedEpisode = episode.modelVersion === CURRENT_MODEL_VERSION
-      ? episode
-      : { ...episode, modelVersion: CURRENT_MODEL_VERSION };
-    const calculation = calculateEpisodeHistory({ episode: recalculatedEpisode, days: builtDays });
-    await repository.persistCalculation(episode.id, calculation, CURRENT_MODEL_VERSION);
+    // Scientific initialization semantics are frozen per episode. Legacy v4
+    // episodes must be explicitly reinitialized rather than silently relabeled v5.
+    const calculation = calculateEpisodeHistory({ episode, days: builtDays });
+    await repository.persistCalculation(episode.id, calculation, episode.modelVersion);
     // Recalculation follows all source mutations; stale conservatively until an
     // identical source/config/seed recovery resets the fingerprinted upsert.
     await repository.markRecoveryRunsStale(episode.id);
@@ -96,7 +95,7 @@ export async function recalculateModelEpisode(
     return {
       status: "ok" as const,
       episodeId: episode.id,
-      modelVersion: CURRENT_MODEL_VERSION,
+      modelVersion: episode.modelVersion,
       calibrationStatus: calculation.calibration.status,
       personalOffsetKcalPerDay:
         calculation.calibration.parameters.personalOffsetKcalPerDay,

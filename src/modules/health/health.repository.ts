@@ -1,3 +1,4 @@
+import { normalizeDailyMeasurements } from "@/modules/days/measurement-policy";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import type { HealthDayInput, HealthSyncMetadata, SyncDateResult } from "./health.types";
@@ -26,6 +27,7 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
       syncedAt: null,
     },
   ): Promise<SyncDateResult> {
+    day = normalizeDailyMeasurements(day);
     // Latest state, immutable snapshot, and workout replacement are one atomic sync.
     return this.client.$transaction(async (transaction) => {
       const existing = await transaction.dailyHealthData.findUnique({

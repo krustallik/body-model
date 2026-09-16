@@ -38,14 +38,14 @@ describe("cumulative snapshot boundary estimation", () => {
     })).toMatchObject({ value: 1_200, gapMinutes: 5, method: "nearest" });
   });
 
-  it("uses the 45-minute default boundary gap", () => {
-    expect(DEFAULT_SNAPSHOT_MAX_GAP_MINUTES).toBe(45);
+  it("uses the inclusive 60-minute default boundary gap", () => {
+    expect(DEFAULT_SNAPSHOT_MAX_GAP_MINUTES).toBe(60);
     expect(estimateCumulativeMetricAtTime({
-      snapshots: [snapshot("08:40", 1_200, 0.8)],
+      snapshots: [snapshot("09:00", 1_200, 0.8)],
       targetTime: at("08:00"), metric: "steps",
-    })).toMatchObject({ value: 1_200, gapMinutes: 40, method: "nearest" });
+    })).toMatchObject({ value: 1_200, gapMinutes: 60, method: "nearest" });
     expect(estimateCumulativeMetricAtTime({
-      snapshots: [snapshot("08:46", 1_200, 0.8)],
+      snapshots: [snapshot("09:01", 1_200, 0.8)],
       targetTime: at("08:00"), metric: "steps",
     })).toMatchObject({ value: null, reason: "gap-too-large" });
   });
@@ -55,7 +55,7 @@ describe("cumulative snapshot boundary estimation", () => {
       snapshots: [snapshot("08:00", null, 0.8)], targetTime: at("08:00"), metric: "steps",
     })).toMatchObject({ value: null, reason: "insufficient-data" });
     expect(estimateCumulativeMetricAtTime({
-      snapshots: [snapshot("07:00", 100, 0.1)], targetTime: at("08:00"), metric: "steps",
+      snapshots: [snapshot("06:59", 100, 0.1)], targetTime: at("08:00"), metric: "steps",
     })).toMatchObject({ value: null, reason: "gap-too-large" });
   });
 

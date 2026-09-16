@@ -96,6 +96,38 @@ describe("two-pass episode calculation", () => {
     expect(days).toEqual(before);
   });
 
+  it("retains the absolute initialization offset when post-start history is insufficient", () => {
+    const episode = {
+      ...persistedEpisodeFixture("2026-01-01"),
+      initialPersonalOffsetKcalPerDay: -180,
+      personalOffsetKcalPerDay: -180,
+    };
+    const result = calculateEpisodeHistory({
+      episode,
+      days: builtHistory({ episode, count: 14, varied: true,
+        personalOffsetKcalPerDay: -180, activityCalibration: 1 }),
+    });
+    expect(result.calibration.status).toBe("insufficient-history");
+    expect(result.calibration.parameters).toEqual({
+      personalOffsetKcalPerDay: -180, activityCalibration: 1,
+    });
+  });
+
+  it("uses the applied offset rather than an unapplied weak initialization estimate", () => {
+    const episode = {
+      ...persistedEpisodeFixture("2026-01-01"),
+      initialPersonalOffsetKcalPerDay: -345,
+      personalOffsetKcalPerDay: 0,
+    };
+    const result = calculateEpisodeHistory({
+      episode,
+      days: builtHistory({ episode, count: 14, varied: true,
+        personalOffsetKcalPerDay: 0, activityCalibration: 1 }),
+    });
+    expect(result.calibration.status).toBe("insufficient-history");
+    expect(result.calibration.parameters.personalOffsetKcalPerDay).toBe(0);
+  });
+
   it("performs accepted offset-only calibration before the persisted pass", () => {
     const episode = persistedEpisodeFixture("2026-01-01");
     const result = calculateEpisodeHistory({
@@ -127,7 +159,7 @@ describe("two-pass episode calculation", () => {
     expect(result.dailyStates.at(-1)).toMatchObject({
       status: "complete",
       date: addCalendarDays(episode.startDate, 179),
-      modelVersion: "bodycast-physiology-v4",
+      modelVersion: "bodycast-physiology-v5",
     });
   });
 

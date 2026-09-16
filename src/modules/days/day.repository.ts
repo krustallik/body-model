@@ -1,3 +1,4 @@
+import { normalizeDailyMeasurements } from "@/modules/days/measurement-policy";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { DuplicateDayError } from "./day.errors";
@@ -31,6 +32,7 @@ function decimalToNumber(value: Prisma.Decimal | null): number | null {
 }
 
 function toDto(record: DailyMetricRecord): DailyMetricDto {
+  record = normalizeDailyMeasurements(record);
   return {
     date: record.date,
     weightKg: record.weightKg,
@@ -84,7 +86,7 @@ export class DailyMetricRepository {
     try {
       const record = await this.client.dailyHealthData.create({
         data: {
-          ...input,
+          ...normalizeDailyMeasurements(input),
           rawPayload: { source: "manual" },
         },
         select: dailyMetricSelect,
@@ -100,7 +102,7 @@ export class DailyMetricRepository {
     try {
       const record = await this.client.dailyHealthData.update({
         where: { date },
-        data: input,
+        data: normalizeDailyMeasurements(input),
         select: dailyMetricSelect,
       });
       return toDto(record);

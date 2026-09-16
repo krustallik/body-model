@@ -10,6 +10,8 @@ export const BASELINE_DERIVATION_DEFAULTS = {
   maximumAbsoluteWeightTrendPercentPerWeek: 0.25,
 } as const;
 
+const V5_CANDIDATE_LENGTHS = [28, 42, 56, 70, 84] as const;
+
 export type BaselineDerivationConfig = {
   windowDays: number;
   lookbackDays: number;
@@ -93,7 +95,10 @@ function validateConfig(config: BaselineDerivationConfig): void {
   }
 }
 
-/** Finds the newest robust, weight-stable maintenance window without mutation. */
+/**
+ * Selects an informative historical window. Weight trend is diagnostic only:
+ * loss, maintenance, and gain receive identical eligibility treatment.
+ */
 export function deriveMaintenanceBaseline(input: {
   days: readonly ModelHealthDaySource[];
   referenceDate: string;
@@ -104,22 +109,33 @@ export function deriveMaintenanceBaseline(input: {
   calendarDayIndex(input.referenceDate);
   const sortedDays = [...input.days].sort((left, right) => left.date.localeCompare(right.date));
 
-  for (let endOffset = 0; endOffset <= config.lookbackDays - config.windowDays; endOffset += 1) {
+  const candidateLengths = input.config ? [config.windowDays] : V5_CANDIDATE_LENGTHS
+    .filter((length) => length <= config.lookbackDays);
+  const candidates: Array<MaintenanceBaseline & { rank: readonly number[] }> = [];
+  for (const windowDays of candidateLengths) {
+  for (let endOffset = 0; endOffset <= config.lookbackDays - windowDays; endOffset += 1) {
     const windowEndDate = addCalendarDays(input.referenceDate, -endOffset);
-    const windowStartDate = addCalendarDays(windowEndDate, -(config.windowDays - 1));
+    const windowStartDate = addCalendarDays(windowEndDate, -(windowDays - 1));
     const window = sortedDays.filter(({ date }) => date >= windowStartDate && date <= windowEndDate);
     const nutritionDays = window.filter(completeNutrition);
-    if (nutritionDays.length < config.minimumCompleteNutritionDays) continue;
+    const minimumNutrition = Math.ceil(
+      config.minimumCompleteNutritionDays / config.windowDays * windowDays,
+    );
+    if (nutritionDays.length < minimumNutrition) continue;
 
     const weightObservations = window.flatMap((day) => (
       day.weightKg !== null && Number.isFinite(day.weightKg) && day.weightKg > 0
         ? [{ date: day.date, weightKg: day.weightKg }]
         : []
     ));
-    if (weightObservations.length < config.minimumWeightObservations) continue;
+    const minimumWeights = Math.ceil(
+      config.minimumWeightObservations / config.windowDays * windowDays,
+    );
+    if (weightObservations.length < minimumWeights) continue;
     const weightSpanDays = calendarDayIndex(weightObservations.at(-1)!.date)
       - calendarDayIndex(weightObservations[0].date) + 1;
-    if (weightSpanDays < config.minimumWeightSpanDays) continue;
+    const minimumSpan = Math.ceil(config.minimumWeightSpanDays / config.windowDays * windowDays);
+    if (weightSpanDays < minimumSpan) continue;
 
     const baselineEnergyIntakeKcalPerDay = median(
       nutritionDays.map(({ caloriesKcal }) => caloriesKcal!),
@@ -130,8 +146,6 @@ export function deriveMaintenanceBaseline(input: {
     const medianWeightKg = median(weightObservations.map(({ weightKg }) => weightKg));
     const weightTrendKgPerWeek = theilSenSlopeKgPerDay(weightObservations) * 7;
     const weightTrendPercentPerWeek = weightTrendKgPerWeek / medianWeightKg * 100;
-    if (Math.abs(weightTrendPercentPerWeek)
-        > config.maximumAbsoluteWeightTrendPercentPerWeek) continue;
 
     const nutritionCenter = {
       caloriesKcal: baselineEnergyIntakeKcalPerDay,
@@ -141,7 +155,7 @@ export function deriveMaintenanceBaseline(input: {
     };
     const fallbackDonor = jointFallbackDonor(nutritionDays, nutritionCenter);
 
-    return {
+    const result: MaintenanceBaseline = {
       baselineEnergyIntakeKcalPerDay,
       baselineCarbIntakeG,
       fallbackNutrition: {
@@ -151,10 +165,10 @@ export function deriveMaintenanceBaseline(input: {
         carbsG: fallbackDonor.carbsG!,
       },
       diagnostics: {
-        method: "median-with-theil-sen-weight-stability",
+        method: "quality-ranked-variable-window-v5",
         windowStartDate,
         windowEndDate,
-        windowDays: config.windowDays,
+        windowDays,
         completeNutritionDayCount: nutritionDays.length,
         weightObservationCount: weightObservations.length,
         weightObservationSpanDays: weightSpanDays,
@@ -163,8 +177,34 @@ export function deriveMaintenanceBaseline(input: {
         weightTrendPercentPerWeek,
         maximumAbsoluteWeightTrendPercentPerWeek:
           config.maximumAbsoluteWeightTrendPercentPerWeek,
+        weightTrendDirection: weightTrendPercentPerWeek < -0.25
+          ? "loss" : weightTrendPercentPerWeek > 0.25 ? "gain" : "stable",
       },
     };
+    candidates.push({
+      ...result,
+      rank: [
+        nutritionDays.length / windowDays,
+        weightObservations.length / windowDays,
+        weightSpanDays / windowDays,
+        -endOffset,
+        -windowDays,
+      ],
+    });
   }
-  return null;
+  }
+  candidates.sort((left, right) => {
+    for (let index = 0; index < left.rank.length; index += 1) {
+      if (left.rank[index] !== right.rank[index]) return right.rank[index] - left.rank[index];
+    }
+    return right.diagnostics.windowEndDate.localeCompare(left.diagnostics.windowEndDate);
+  });
+  if (candidates.length === 0) return null;
+  const selected = candidates[0];
+  return {
+    baselineEnergyIntakeKcalPerDay: selected.baselineEnergyIntakeKcalPerDay,
+    baselineCarbIntakeG: selected.baselineCarbIntakeG,
+    fallbackNutrition: selected.fallbackNutrition,
+    diagnostics: selected.diagnostics,
+  };
 }

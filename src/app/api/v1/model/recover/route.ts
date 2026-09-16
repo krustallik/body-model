@@ -7,6 +7,7 @@ import { modelAuthorizationError } from "@/modules/model-episodes/model-http";
 import { ModelRecoveryEvidenceError } from "@/modules/model-recovery/model-recovery.errors";
 import { RecoverModelRequestSchema } from "@/modules/model-recovery/model-recovery.schema";
 import { recoverModelEpisode } from "@/modules/model-recovery/model-recovery.service";
+import { errorKind, logEvent } from "@/lib/logger";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +30,7 @@ export async function POST(request: Request): Promise<Response> {
     if (error instanceof ModelRecoveryEvidenceError) {
       return Response.json({ error: "insufficient_recovery_evidence", message: error.message }, { status: 422 });
     }
+    logEvent("error", "recovery_failed", { errorType: errorKind(error) });
     return Response.json({ error: "recovery_failed" }, { status: 500 });
   }
 }

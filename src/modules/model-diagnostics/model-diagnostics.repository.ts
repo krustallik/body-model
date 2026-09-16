@@ -12,7 +12,7 @@ export class ModelDiagnosticsRepository {
       this.client.dailyModelState.count({ where: { episodeId, date: { gte: from, lte: to }, nutritionSource: "observed" } }),
       this.client.dailyModelState.count({ where: { episodeId, date: { gte: from, lte: to }, nutritionSource: { in: ["imputed-local", "imputed-fallback"] } } }),
       this.client.dailyModelState.count({ where: { episodeId, date: { gte: from, lte: to }, nutritionSource: "missing" } }),
-      this.client.dailyHealthData.count({ where: { date: { gte: from, lte: to }, weightKg: { not: null } } }),
+      this.client.dailyHealthData.count({ where: { date: { gte: from, lte: to }, weightKg: { gt: 0 } } }),
     ]);
     return {
       modeledDayCount,

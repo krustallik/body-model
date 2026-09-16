@@ -7,6 +7,7 @@ import {
   ShortcutNormalizationError,
 } from "@/modules/health/normalize-shortcut-payload";
 import { normalizeShortcutNumericValues } from "@/modules/health/normalize-shortcut-numeric-values";
+import { errorKind, logEvent } from "@/lib/logger";
 
 export const dynamic = "force-dynamic";
 
@@ -59,7 +60,8 @@ export async function POST(request: Request): Promise<Response> {
 
   try {
     return Response.json(await syncHealthData(parsed.data, undefined, normalized.originalDays), { status: 200 });
-  } catch {
+  } catch (error) {
+    logEvent("error", "health_sync_failed", { errorType: errorKind(error) });
     return Response.json({ error: "internal_error" }, { status: 500 });
   }
 }

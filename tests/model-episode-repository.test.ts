@@ -150,7 +150,7 @@ describe("model episode repository mapping", () => {
     const result = await new ModelEpisodeRepository(client)
       .loadSources("2026-08-01", "2026-08-22");
     expect(result.days[0]).toMatchObject({
-      bodyFatPercent: 20, walkingDistanceKm: 5.1, strengthTrainingMinutes: 0,
+      bodyFatPercent: 20, walkingDistanceKm: 5.1, strengthTrainingMinutes: null,
     });
     expect(result.snapshots[0].walkingDistanceKm).toBe(1.25);
     expect(result.workIntervals).toHaveLength(1);
@@ -172,11 +172,32 @@ describe("model episode repository mapping", () => {
     });
     expect(db.modelEpisode.create.mock.calls[0]?.[0].data).toMatchObject({
       startDate: "2026-08-22",
-      modelVersion: "bodycast-physiology-v4",
-      baselineDerivationMethod: "median-with-theil-sen-weight-stability",
+      modelVersion: "bodycast-physiology-v5",
+      baselineDerivationMethod: "quality-ranked-variable-window-v5",
       calibrationStatus: "insufficient-history",
     });
     expect(created.id).toBe(3);
+  });
+
+  it("persists initialization estimate separately from the applied correction", async () => {
+    const repository = new ModelEpisodeRepository(client);
+    const base = prepareEpisodeInitialization({ profile: modelProfile,
+      days: stableSourceDays(), startDate: "2026-08-22" });
+    db.modelEpisode.create.mockResolvedValue(record());
+    await repository.createPrepared({ ...base, initialPersonalOffsetKcalPerDay: -345,
+      appliedPersonalOffsetKcalPerDay: 0, initializationStatus: "weak",
+      initializationApplicationReason: "weak-estimate-not-applied" });
+    expect(db.modelEpisode.create.mock.calls.at(-1)?.[0].data).toMatchObject({
+      initialPersonalOffsetKcalPerDay: -345, personalOffsetKcalPerDay: 0,
+      calibrationStatus: "insufficient-history", initializationStatus: "weak",
+    });
+    await repository.createPrepared({ ...base, initialPersonalOffsetKcalPerDay: 150,
+      appliedPersonalOffsetKcalPerDay: 150, initializationStatus: "strong",
+      initializationApplicationReason: "strong-estimate-applied" });
+    expect(db.modelEpisode.create.mock.calls.at(-1)?.[0].data).toMatchObject({
+      initialPersonalOffsetKcalPerDay: 150, personalOffsetKcalPerDay: 150,
+      calibrationStatus: "offset-only", initializationStatus: "strong",
+    });
   });
 
   it("upserts calculation rows, removes stale dates, and updates episode diagnostics", async () => {

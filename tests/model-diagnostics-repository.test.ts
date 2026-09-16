@@ -16,7 +16,7 @@ describe("ModelDiagnosticsRepository", () => {
       unresolvedNutritionDayCount: 1, weightObservationCount: 9,
     });
     expect(dailyCount).toHaveBeenCalledTimes(5);
-    expect(weightCount).toHaveBeenCalledWith({ where: { date: { gte: "2026-07-29", lte: "2026-08-25" }, weightKg: { not: null } } });
+    expect(weightCount).toHaveBeenCalledWith({ where: { date: { gte: "2026-07-29", lte: "2026-08-25" }, weightKg: { gt: 0 } } });
     expect(client).not.toHaveProperty("workInterval");
   });
 });

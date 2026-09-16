@@ -34,7 +34,7 @@ assigned to one calendar day.
 
 ## Boundary reconstruction
 
-The default maximum boundary gap is 45 minutes and is configurable by callers.
+The default maximum boundary gap is 60 minutes and is configurable by callers.
 For each cumulative metric independently:
 
 1. use an exact snapshot at the boundary;

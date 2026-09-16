@@ -1,3 +1,4 @@
+import { normalizeDailyMeasurements } from "@/modules/days/measurement-policy";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { createGlycogenParameters } from "@/model/body-composition/glycogen";
@@ -54,6 +55,12 @@ const episodeSelect = {
   activityCalibration: true,
   calibrationStatus: true,
   calibrationDiagnostics: true,
+  observedReferenceNutrition: true,
+  energyHomeostasisReferenceKcalPerDay: true,
+  glycogenReferenceCarbIntakeG: true,
+  initialPersonalOffsetKcalPerDay: true,
+  initializationStatus: true,
+  initializationDiagnostics: true,
   latestModeledDate: true,
   createdAt: true,
   updatedAt: true,
@@ -154,6 +161,9 @@ function toEpisode(record: EpisodeRecord): PersistedEpisode {
     calibrationStatus:
       record.calibrationStatus as PersistedEpisode["calibrationStatus"],
     calibrationDiagnostics: record.calibrationDiagnostics,
+    initialPersonalOffsetKcalPerDay: record.initialPersonalOffsetKcalPerDay ?? 0,
+    initializationStatus: record.initializationStatus,
+    initializationDiagnostics: record.initializationDiagnostics,
     latestModeledDate: record.latestModeledDate,
     createdAt: record.createdAt.toISOString(),
     updatedAt: record.updatedAt.toISOString(),
@@ -262,14 +272,14 @@ export class ModelEpisodeRepository {
       }),
     ]);
     return {
-      days: days.map((day) => ({
+      days: days.map(normalizeDailyMeasurements).map((day) => ({
         ...day,
         bodyFatPercent: decimal(day.bodyFatPercent),
         averageWalkingSpeedKmh: decimal(day.averageWalkingSpeedKmh),
         walkingDistanceKm: decimal(day.walkingDistanceKm),
         strengthTrainingMinutes: decimal(day.strengthTrainingMinutes),
       })),
-      snapshots: snapshots.map((snapshot) => ({
+      snapshots: snapshots.map(normalizeDailyMeasurements).map((snapshot) => ({
         ...snapshot,
         walkingDistanceKm: decimal(snapshot.walkingDistanceKm),
       })),
@@ -337,9 +347,21 @@ export class ModelEpisodeRepository {
           input.simulatorParameters.weightFilter.processNoiseVarianceKg2PerDay,
         weightMeasurementNoiseVarianceKg2:
           input.simulatorParameters.weightFilter.measurementNoiseVarianceKg2,
-        personalOffsetKcalPerDay: 0,
+        observedReferenceNutrition: jsonValue(
+          input.observedReferenceNutrition ?? input.baseline.fallbackNutrition,
+        ),
+        energyHomeostasisReferenceKcalPerDay:
+          input.energyHomeostasisReferenceKcalPerDay
+          ?? input.baseline.baselineEnergyIntakeKcalPerDay,
+        glycogenReferenceCarbIntakeG:
+          input.glycogenReferenceCarbIntakeG ?? input.baseline.baselineCarbIntakeG,
+        initialPersonalOffsetKcalPerDay: input.initialPersonalOffsetKcalPerDay ?? 0,
+        initializationStatus: input.initializationStatus ?? "insufficient",
+        initializationDiagnostics: jsonValue(input.initializationDiagnostics ?? {}),
+        personalOffsetKcalPerDay: input.appliedPersonalOffsetKcalPerDay ?? 0,
         activityCalibration: 1,
-        calibrationStatus: "insufficient-history",
+        calibrationStatus: input.appliedPersonalOffsetKcalPerDay
+          ? "offset-only" : "insufficient-history",
         calibrationDiagnostics: jsonValue({
           initialization: {
             bodyFatObservationCount: input.bodyFatObservationCount,

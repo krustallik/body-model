@@ -151,7 +151,7 @@ export function HistoryCharts({ days }: { days: DailyMetricDto[] }) {
           <p className={styles.eyebrow}>{uk ? "Лише фактичні дані" : "Actual data only"}</p>
           <h2 id="charts-heading">{uk ? "Графіки" : "Charts"}</h2>
         </div>
-        <p>{uk ? "Відсутні значення залишаються порожніми; явний нуль залишається видимим." : "Missing values stay empty; explicit zero remains visible."}</p>
+        <p>{uk ? "Нульові та відсутні значення означають відсутність запису й не показуються на графіку." : "Zero and missing values mean no record and are omitted from the chart."}</p>
       </div>
       <div className={styles.chartsGrid}>
         <HistoryLineChart

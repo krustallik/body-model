@@ -51,6 +51,8 @@ export type PhysiologicalSimulatorParameters = {
   baselineEnergyIntakeKcalPerDay: number;
   adaptiveThermogenesis: {
     beta: number;
+    /** Initialization sensitivity only. Production deficit response remains beta. */
+    positiveBeta?: number;
     timeConstantDays: number;
   };
   weightFilter: {
@@ -259,7 +261,10 @@ export function simulateOneDay(input: {
       startState.adaptiveThermogenesisKcalPerDay,
     currentEnergyIntakeKcalPerDay: input.day.caloriesKcal,
     baselineEnergyIntakeKcalPerDay: input.parameters.baselineEnergyIntakeKcalPerDay,
-    betaAdaptiveThermogenesis: input.parameters.adaptiveThermogenesis.beta,
+    betaAdaptiveThermogenesis: input.day.caloriesKcal! > input.parameters.baselineEnergyIntakeKcalPerDay
+      && input.parameters.adaptiveThermogenesis.positiveBeta !== undefined
+      ? input.parameters.adaptiveThermogenesis.positiveBeta
+      : input.parameters.adaptiveThermogenesis.beta,
     timeConstantDays: input.parameters.adaptiveThermogenesis.timeConstantDays,
     elapsedDays: 1,
   })!;

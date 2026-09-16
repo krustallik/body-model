@@ -66,6 +66,11 @@ export function calculateEpisodeHistory(input: {
     simulatorParameters: input.episode.simulatorParameters,
     history: calibrationHistory(calibrationEligibleDays),
     ecfPolicy: input.episode.ecfPolicy,
+    defaultParameters: {
+      personalOffsetKcalPerDay: input.episode.personalOffsetKcalPerDay,
+      activityCalibration: 1,
+    },
+    fitMode: "offset-and-activity",
   });
   const results = simulateDays({
     initialState: input.episode.initialState,

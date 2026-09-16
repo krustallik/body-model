@@ -44,6 +44,13 @@ export type DiagnosticsDto = {
     activeParameters: Array<"personal-offset" | "activity-calibration">;
     personalOffsetKcalPerDay: number;
     activityCalibration: number;
+    initialization: {
+      estimatedCorrectionKcalPerDay: number;
+      confidence: string;
+      appliedCorrectionKcalPerDay: number;
+      applied: boolean;
+      explanation: string;
+    };
     evidence: {
       completeDayCount: number | null;
       observationCount: number | null;

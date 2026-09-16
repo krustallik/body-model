@@ -127,7 +127,7 @@ describe("Apple Health sync with PostgreSQL", () => {
     expect(rows[0]?.walkingDistanceKm?.toString()).toBe("0.25");
     expect(snapshots).toHaveLength(2);
     expect(snapshots[0]).toMatchObject({
-      steps: 0,
+      steps: null,
       walkingDistanceKm: null,
       timezone: "Europe/Bratislava",
       rawPayload: firstRaw,

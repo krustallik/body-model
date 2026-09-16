@@ -16,6 +16,7 @@ import { serializeGoalPlanningResult } from "@/modules/model-goal-planning/goal-
 import type { GoalPlanningRequest } from "@/modules/model-goal-planning/goal-planning.schema";
 import { solveModelEpisodeTarget } from "@/modules/model-target-solver/model-target-solver.service";
 import { getModelDiagnostics } from "@/modules/model-diagnostics/model-diagnostics.service";
+import { calculateStrengthActivity } from "@/model/activity/strength";
 
 const prisma = new PrismaClient();
 const episodeStart = "2041-03-20";
@@ -96,7 +97,7 @@ async function seedSources(): Promise<void> {
         steps: 8_000,
         averageWalkingSpeedKmh: 5,
         walkingDistanceKm: date === workDate ? 5.1 : 5,
-        strengthTrainingMinutes: 0,
+        strengthTrainingMinutes: 30,
         rawPayload: { source: "model-episode-integration" },
       },
     });
@@ -201,7 +202,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(episode).toMatchObject({
       active: true,
       timezone: "Europe/Bratislava",
-      modelVersion: "bodycast-physiology-v4",
+      modelVersion: "bodycast-physiology-v5",
       ecfPolicy: "hold-ecf",
       baselineEnergyIntakeKcalPerDay: 2_450,
       baselineCarbIntakeG: 240,
@@ -261,7 +262,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(first).toEqual(second);
     expect(first).toMatchObject({
       status: "ok", initialStateQuality: "deterministic",
-      forecastVersion: "bodycast-forecast-v1", modelVersion: "bodycast-physiology-v4",
+      forecastVersion: "bodycast-forecast-v1", modelVersion: "bodycast-physiology-v5",
     });
     expect("dates" in first && first.dates).toHaveLength(30);
     expect(await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } }))
@@ -336,7 +337,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
           date, weightKg: 80 + index * 0.03, bodyFatPercent: null,
           caloriesKcal: 2_450, proteinG: 150, fatG: 75, carbsG: 240,
           steps: 8_000, averageWalkingSpeedKmh: 5, walkingDistanceKm: 5,
-          strengthTrainingMinutes: 0, rawPayload: { source: "phase-14a-canonical" },
+          strengthTrainingMinutes: 30, rawPayload: { source: "phase-14a-canonical" },
         })),
       });
       await prisma.dailyHealthData.deleteMany({
@@ -352,7 +353,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       });
       expect(recovered).toMatchObject({
         status: "ok",
-        deterministicModelVersion: "bodycast-physiology-v4",
+        deterministicModelVersion: "bodycast-physiology-v5",
         recovery: {
           seed: 1234,
           observationCount: 8,
@@ -545,11 +546,13 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       - restingPerHour * (7.5 - workWalkingHours);
     const expectedOutsideWalking = 3.8 * weight * outsideWalkingHours
       - restingPerHour * outsideWalkingHours;
+    const expectedStrength = calculateStrengthActivity({ weightKg: weight,
+      rmrKcalPerDay: workState.dynamicRmrKcalPerDay!, durationMinutes: 30 })!;
     expect(workState.activityKcalPerDay).toBeCloseTo(
-      expectedWorkWalking + expectedResidual + expectedOutsideWalking,
+      expectedWorkWalking + expectedResidual + expectedOutsideWalking + expectedStrength,
       10,
     );
-    expect(workState.modelVersion).toBe("bodycast-physiology-v4");
+    expect(workState.modelVersion).toBe("bodycast-physiology-v5");
   });
 
   it("rebuilds the later trajectory after an occupational category edit", async () => {
@@ -575,17 +578,17 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(await prisma.dailyModelState.count({ where: { episodeId } })).toBe(11);
   });
 
-  it("atomically upgrades an existing episode and all rebuilt rows to v4", async () => {
+  it("preserves an existing legacy episode version during recalculation", async () => {
     await prisma.modelEpisode.update({
       where: { id: episodeId }, data: { modelVersion: "bodycast-physiology-v1" },
     });
     await recalculateModelEpisode({ episodeId, now });
     expect((await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } })).modelVersion)
-      .toBe("bodycast-physiology-v4");
+      .toBe("bodycast-physiology-v1");
     const versions = await prisma.dailyModelState.findMany({
       where: { episodeId }, distinct: ["modelVersion"], select: { modelVersion: true },
     });
-    expect(versions).toEqual([{ modelVersion: "bodycast-physiology-v4" }]);
+    expect(versions).toEqual([{ modelVersion: "bodycast-physiology-v1" }]);
   });
 
   it("recomputes all later states after a historical source edit", async () => {
@@ -731,7 +734,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
         date, weightKg: 80, bodyFatPercent: null, caloriesKcal: 2_450,
         proteinG: 150, fatG: 75, carbsG: 240, steps: 8_000,
         averageWalkingSpeedKmh: 5, walkingDistanceKm: 5,
-        strengthTrainingMinutes: 0, rawPayload: { source: "phase-13.2-backfill" },
+        strengthTrainingMinutes: 30, rawPayload: { source: "phase-13.2-backfill" },
       },
     })));
     const healed = await recalculateModelEpisode({ episodeId, now });

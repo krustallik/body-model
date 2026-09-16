@@ -4,6 +4,8 @@ import { ForecastScenarioEvidenceError } from "@/modules/model-forecast/model-fo
 import { ForecastModelRequestSchema } from "@/modules/model-forecast/model-forecast.schema";
 import { forecastModelEpisode } from "@/modules/model-forecast/model-forecast.service";
 import { forecastQaNow } from "./qa-now";
+import { errorKind, logEvent } from "@/lib/logger";
+import { tryAcquireOperation } from "@/lib/operation-gate";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +14,8 @@ export async function POST(request: Request): Promise<Response> {
   if (body instanceof Response) return body;
   const parsed = ForecastModelRequestSchema.safeParse(body);
   if (!parsed.success) return validationResponse(parsed.error);
+  const release = tryAcquireOperation("forecast");
+  if (!release) return Response.json({ error: "operation_in_progress" }, { status: 429, headers: { "Retry-After": "1" } });
   try {
     const now = forecastQaNow();
     return Response.json(await forecastModelEpisode({ ...parsed.data, ...(now ? { now } : {}) }));
@@ -21,6 +25,9 @@ export async function POST(request: Request): Promise<Response> {
     if (error instanceof ForecastScenarioEvidenceError) {
       return Response.json({ error: "insufficient_scenario_evidence", message: error.message }, { status: 422 });
     }
+    logEvent("error", "forecast_failed", { errorType: errorKind(error) });
     return Response.json({ error: "forecast_failed" }, { status: 500 });
+  } finally {
+    release();
   }
 }

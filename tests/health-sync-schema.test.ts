@@ -50,7 +50,7 @@ describe("HealthSyncRequestSchema", () => {
   ])("accepts valid %s value %s without rounding", (field, value) => {
     const result = parse([{ ...validDay, [field]: value }]);
     expect(result.success).toBe(true);
-    if (result.success) expect(result.data.days[0]?.[field as keyof typeof result.data.days[0]]).toBe(value);
+    if (result.success) expect(result.data.days[0]?.[field as keyof typeof result.data.days[0]]).toBe(value === 0 ? null : value);
   });
 
   it.each([

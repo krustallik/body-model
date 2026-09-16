@@ -1,3 +1,4 @@
+import { normalizeDailyMeasurementInput } from "@/modules/days/measurement-policy";
 import { z } from "zod";
 import {
   DEFAULT_TIME_ZONE,
@@ -45,7 +46,7 @@ export const WorkoutSchema = z
     }
   });
 
-export const HealthDaySchema = z
+export const HealthDaySchema = z.preprocess(normalizeDailyMeasurementInput, z
   .object({
     date: z.string().refine(isCalendarDate, "date must be a real calendar date in YYYY-MM-DD format"),
     weightKg: nullableOptionalNumber(20, 400),
@@ -61,7 +62,7 @@ export const HealthDaySchema = z
     strengthTrainingMinutes: nullableOptionalNumber(0, 600),
     workouts: z.array(WorkoutSchema).nullable().optional(),
   })
-  .strict();
+  .strict());
 
 export const HealthSyncRequestSchema = z
   .object({

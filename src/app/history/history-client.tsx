@@ -351,7 +351,7 @@ function DayDialog({ editor, onClose, onSaved }: {
           ))}
         </div>
 
-        <p className={styles.formHint}>{uk ? "Порожні поля зберігаються як недоступні дані, а не як нуль." : "Empty fields are saved as unavailable, not as zero."}</p>
+        <p className={styles.formHint}>{uk ? "Порожнє поле або 0 означає, що запису немає. У таблиці показується —." : "An empty field or 0 means no record. The table displays —."}</p>
         <div className={styles.dialogActions}>
           <button className={styles.secondaryButton} type="button" onClick={onClose} disabled={saving}>{uk ? "Скасувати" : "Cancel"}</button>
           <button className={styles.primaryButton} type="submit" disabled={saving}>{saving ? (uk ? "Збереження…" : "Saving…") : (uk ? "Зберегти день" : "Save day")}</button>

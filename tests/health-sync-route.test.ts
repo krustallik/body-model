@@ -58,7 +58,7 @@ describe("POST /api/v1/health/sync", () => {
     expect(syncHealthData.mock.calls[0]?.[0]).toEqual({
       timezone: "Europe/Bratislava",
       syncedAt: "2026-08-23T10:00:00+02:00",
-      days: [{ date: "2026-08-23", steps: 0 }],
+      days: [{ date: "2026-08-23", steps: null }],
     });
   });
 
@@ -137,7 +137,7 @@ describe("POST /api/v1/health/sync", () => {
     ["65", 65],
     ["65.5", 65.5],
     ["65,5", 65.5],
-    [0, 0],
+    [0, null],
     [null, null],
   ])("accepts strengthTrainingMinutes %j as %s", async (input, expected) => {
     syncHealthData.mockResolvedValue({ status: "ok", received: 1, created: 1, updated: 0, dates: [] });
@@ -177,17 +177,17 @@ describe("POST /api/v1/health/sync", () => {
     );
   });
 
-  it("sets strength training to zero when the latest workout is not from the synced day", async () => {
+  it("marks strength training missing when the latest workout is not from the synced day", async () => {
     syncHealthData.mockResolvedValue({ status: "ok", received: 1, created: 1, updated: 0, dates: [] });
     const response = await POST(request({ Days: [{
       Date: "2026-08-22",
       Strengthtrainingminutes: "21. 8. 2026, 13:01 21. 8. 2026, 14:16",
     }] }));
     expect(response.status).toBe(200);
-    expect(syncHealthData.mock.calls[0]?.[0].days[0].strengthTrainingMinutes).toBe(0);
+    expect(syncHealthData.mock.calls[0]?.[0].days[0].strengthTrainingMinutes).toBeNull();
   });
 
-  it("accepts an empty Shortcut workout value as no workout today", async () => {
+  it("accepts an empty Shortcut workout value as missing", async () => {
     syncHealthData.mockResolvedValue({ status: "ok", received: 1, created: 0, updated: 1, dates: [] });
     const response = await POST(request({ Days: [{
       Date: "2026-08-22",
@@ -195,7 +195,7 @@ describe("POST /api/v1/health/sync", () => {
     }] }));
 
     expect(response.status).toBe(200);
-    expect(syncHealthData.mock.calls[0]?.[0].days[0].strengthTrainingMinutes).toBe(0);
+    expect(syncHealthData.mock.calls[0]?.[0].days[0].strengthTrainingMinutes).toBeNull();
   });
 
   it.each(["", " ", "\t\n"])("accepts an empty numeric metric %j as null", async (averageWalkingSpeedKmh) => {

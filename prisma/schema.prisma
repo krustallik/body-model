@@ -142,6 +142,12 @@ model ModelEpisode {
   activityCalibration                     Float             @default(1)
   calibrationStatus                       String            @default("insufficient-history") @db.VarChar(40)
   calibrationDiagnostics                  Json
+  observedReferenceNutrition              Json?
+  energyHomeostasisReferenceKcalPerDay    Float?
+  glycogenReferenceCarbIntakeG            Float?
+  initialPersonalOffsetKcalPerDay         Float?
+  initializationStatus                    String?            @db.VarChar(40)
+  initializationDiagnostics               Json?
   latestModeledDate                       String?           @db.VarChar(10)
   createdAt                               DateTime          @default(now()) @db.Timestamptz(3)
   updatedAt                               DateTime          @updatedAt @db.Timestamptz(3)

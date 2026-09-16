@@ -6,8 +6,8 @@ describe("dashboard metric formatting", () => {
     expect(formatMetric(null)).toBe("—");
   });
 
-  it("preserves explicit zero", () => {
-    expect(formatMetric(0)).toBe("0");
+  it("displays zero as a missing record", () => {
+    expect(formatMetric(0)).toBe("—");
   });
 
   it("renders a missing timestamp as an em dash", () => {

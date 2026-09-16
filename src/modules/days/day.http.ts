@@ -18,8 +18,18 @@ export async function readJson(request: Request): Promise<unknown | Response> {
     );
   }
 
+  const maximumBytes = 1_048_576;
+  const declaredLength = Number(request.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
+    return Response.json({ error: "payload_too_large" }, { status: 413 });
+  }
+
   try {
-    return await request.json();
+    const text = await request.text();
+    if (new TextEncoder().encode(text).byteLength > maximumBytes) {
+      return Response.json({ error: "payload_too_large" }, { status: 413 });
+    }
+    return JSON.parse(text) as unknown;
   } catch {
     return Response.json(
       { error: "validation_error", details: [{ path: [], message: "Invalid JSON body" }] },

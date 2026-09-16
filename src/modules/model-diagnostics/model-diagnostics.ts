@@ -41,7 +41,7 @@ export function personalizationDiagnostics(input: {
   personalOffsetKcalPerDay: number;
   activityCalibration: number;
   diagnostics: unknown;
-}): DiagnosticsDto["personalization"] {
+}): Omit<DiagnosticsDto["personalization"], "initialization"> {
   const d = calibrationDiagnostics(input.diagnostics);
   const observationCount = finite(d.observationCount);
   const observationSpanDays = finite(d.observationSpanDays);
@@ -131,6 +131,7 @@ export function buildDiagnosticsDto(input: {
     activityCalibration: episode.activityCalibration,
     diagnostics: episode.calibrationDiagnostics,
   });
+  const initializationConfidence = episode.initializationStatus ?? "insufficient";
   return {
     episode: { id: episode.id, modelVersion: episode.modelVersion, timezone: episode.timezone, startDate: episode.startDate, latestModeledDate: episode.latestModeledDate, updatedAt: episode.updatedAt },
     currentState: {
@@ -152,7 +153,16 @@ export function buildDiagnosticsDto(input: {
       unknownIntervalCount: status.unknownIntervalCount, unresolvedDayCount: status.unresolvedDayCount,
       noWorkIntervalSemantics: "zero-occupational-work-not-missing",
     },
-    personalization,
+    personalization: { ...personalization, initialization: {
+      estimatedCorrectionKcalPerDay: episode.initialPersonalOffsetKcalPerDay ?? 0,
+      confidence: initializationConfidence,
+      appliedCorrectionKcalPerDay: episode.personalOffsetKcalPerDay,
+      applied: initializationConfidence === "strong"
+        && episode.personalOffsetKcalPerDay === (episode.initialPersonalOffsetKcalPerDay ?? 0),
+      explanation: initializationConfidence === "strong"
+        ? "Initialization estimate is applied as a personalized energy-balance correction."
+        : "Initialization estimate is retained for audit but is not applied until stronger independent evidence exists.",
+    } },
     recovery: {
       level: recoveryStatus === "not-required" || recoveryStatus === "recovered" ? "good" : recoveryStatus === "degraded" ? "limited" : "blocked",
       status: recoveryStatus, usableForForecast: usable,

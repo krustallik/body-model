@@ -36,7 +36,10 @@ export function parseNullableNumericInput(value: unknown): unknown {
 }
 
 const nullableMetric = (schema: z.ZodNumber) =>
-  z.preprocess(parseNullableNumericInput, schema.nullable().optional());
+  z.preprocess((value) => {
+    const parsed = parseNullableNumericInput(value);
+    return parsed === 0 ? null : parsed;
+  }, schema.nullable().optional());
 
 export const DailyMetricFieldsSchema = z.object({
   weightKg: nullableMetric(z.number().min(0)),

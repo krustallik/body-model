@@ -157,11 +157,17 @@ export type PersonalizationCalibrationResult = {
   diagnostics: CalibrationDiagnostics;
 };
 
-type CalibrationContext = {
+export type CalibrationContext = {
   initialState: PhysiologicalSimulatorState;
   simulatorParameters: PhysiologicalSimulatorParameters;
   history: readonly CalibrationDay[];
   ecfPolicy: EcfSimulationPolicy;
+  defaultParameters?: ExpenditurePersonalization;
+  fitMode?: "offset-only" | "offset-and-activity";
+  prepareCandidateContext?: (
+    parameters: ExpenditurePersonalization,
+    context: Pick<CalibrationContext, "initialState" | "simulatorParameters">,
+  ) => Pick<CalibrationContext, "initialState" | "simulatorParameters">;
 };
 
 type EvaluationWindow = { startDayIndex: number; endDayIndex: number };
@@ -184,8 +190,8 @@ const LANCZOS_COEFFICIENTS = [
   1.5056327351493116e-7,
 ] as const;
 
-function cloneDefaults(): ExpenditurePersonalization {
-  return { ...DEFAULT_EXPENDITURE_PERSONALIZATION };
+function cloneDefaults(value?: ExpenditurePersonalization): ExpenditurePersonalization {
+  return { ...(value ?? DEFAULT_EXPENDITURE_PERSONALIZATION) };
 }
 
 function requireFinite(name: string, value: number): void {
@@ -353,9 +359,10 @@ function evaluate(
   lossConfig: ObservationLossConfig,
   window?: EvaluationWindow,
 ): CalibrationEvaluation {
+  const candidateContext = context.prepareCandidateContext?.(parameters, context) ?? context;
   const results = simulateDays({
-    initialState: context.initialState,
-    parameters: context.simulatorParameters,
+    initialState: candidateContext.initialState,
+    parameters: candidateContext.simulatorParameters,
     days: asSimulationDays(context.history),
     options: { ecfPolicy: context.ecfPolicy },
     personalization: parameters,
@@ -463,10 +470,11 @@ export function evaluatePersonalization(input: CalibrationContext & {
 function regularizationPenalty(
   parameters: ExpenditurePersonalization,
   config: PersonalizationCalibrationConfig,
+  center: ExpenditurePersonalization = DEFAULT_EXPENDITURE_PERSONALIZATION,
 ): number {
-  return 0.5 * (parameters.personalOffsetKcalPerDay
+  return 0.5 * ((parameters.personalOffsetKcalPerDay - center.personalOffsetKcalPerDay)
       / config.personalOffsetPriorScaleKcalPerDay) ** 2
-    + 0.5 * ((parameters.activityCalibration - 1)
+    + 0.5 * ((parameters.activityCalibration - center.activityCalibration)
       / config.activityCalibrationPriorScale) ** 2;
 }
 
@@ -481,7 +489,7 @@ function objective(
     return {
       parameters,
       regularizedLoss: evaluation.negativeLogLikelihood!
-        + regularizationPenalty(parameters, config),
+        + regularizationPenalty(parameters, config, context.defaultParameters),
       evaluation,
     };
   } catch {
@@ -789,7 +797,7 @@ export function calibratePersonalization(input: CalibrationContext & {
 }): PersonalizationCalibrationResult {
   const config = input.config ?? createPersonalizationCalibrationConfig();
   validateConfig(config);
-  const defaults = cloneDefaults();
+  const defaults = cloneDefaults(input.defaultParameters);
   const fullDefaultEvaluation = evaluate(input, defaults, config.observationLoss);
   const observationCount = fullDefaultEvaluation.observations.length;
   const observationSpanDays = observationCount < 2
@@ -869,7 +877,8 @@ export function calibratePersonalization(input: CalibrationContext & {
   const defaultTraining = evaluate(input, defaults, config.observationLoss, trainingWindow);
   const defaultValidation = evaluate(input, defaults, config.observationLoss, validationWindow);
   const activity = activityStatistics(defaultTraining.activityKcalPerDay);
-  const hasFullHistory = observationCount >= config.minFullObservationCount
+  const hasFullHistory = input.fitMode !== "offset-only"
+    && observationCount >= config.minFullObservationCount
     && observationSpanDays >= config.minFullObservationSpanDays;
   const hasActivityVariation = activity.standardDeviation !== null
     && activity.coefficientOfVariation !== null

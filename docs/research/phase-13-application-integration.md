@@ -1,5 +1,9 @@
 # Phase 13 — Historical application integration
 
+> Historical note: the 28-day maintenance detector and ±0.25%/week gate below
+> were v1–v4 BodyCast engineering policy. Phase 19 / physiology-v5 replaces
+> them with quality-ranked historical bootstrap while preserving this record.
+
 ## Scope
 
 Phase 13 connects PostgreSQL history to the existing pure deterministic model.
@@ -118,7 +122,7 @@ Missing metrics remain `null`. Explicit strength/activity zero remains zero.
 Measured weight is optional and contributes no likelihood when absent.
 
 Work walking is reconstructed with the existing snapshot-boundary engine and
-its 45-minute maximum gap. Only outside-work walking enters the walking term:
+its 60-minute maximum gap. Only outside-work walking enters the walking term:
 
 ```text
 daily walking 5.1 km

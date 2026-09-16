@@ -1,4 +1,4 @@
-export const DEFAULT_SNAPSHOT_MAX_GAP_MINUTES = 45;
+export const DEFAULT_SNAPSHOT_MAX_GAP_MINUTES = 60;
 
 export type CumulativeSnapshot = {
   timestamp: Date;

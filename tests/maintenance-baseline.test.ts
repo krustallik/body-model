@@ -20,7 +20,7 @@ describe("maintenance baseline derivation", () => {
         carbsG: 240,
       },
       diagnostics: {
-        method: "median-with-theil-sen-weight-stability",
+        method: "quality-ranked-variable-window-v5",
         windowStartDate: "2026-07-26",
         windowEndDate: "2026-08-22",
         windowDays: 28,
@@ -47,7 +47,7 @@ describe("maintenance baseline derivation", () => {
     });
     const result = deriveMaintenanceBaseline({ days, referenceDate: "2026-08-22" });
     expect(result).not.toBeNull();
-    expect(result!.diagnostics.completeNutritionDayCount).toBe(27);
+    expect(result!.diagnostics.completeNutritionDayCount).toBeGreaterThanOrEqual(27);
     expect(result!.fallbackNutrition).not.toEqual({
       caloriesKcal: null, proteinG: null, fatG: null, carbsG: null,
     });
@@ -60,11 +60,13 @@ describe("maintenance baseline derivation", () => {
     expect(deriveMaintenanceBaseline({ days, referenceDate: "2026-08-22" })).toBeNull();
   });
 
-  it("rejects an obvious sustained loss while resisting one scale outlier", () => {
+  it("keeps sustained loss eligible and records trend only as diagnostics", () => {
     const losing = stableSourceDays({
       override: (index) => ({ weightKg: 84 - index * 0.08 }),
     });
-    expect(deriveMaintenanceBaseline({ days: losing, referenceDate: "2026-08-22" })).toBeNull();
+    const loss = deriveMaintenanceBaseline({ days: losing, referenceDate: "2026-08-22" });
+    expect(loss).not.toBeNull();
+    expect(loss!.diagnostics.weightTrendDirection).toBe("loss");
 
     const stable = stableSourceDays();
     stable.at(-10)!.weightKg! += 3;
@@ -72,7 +74,7 @@ describe("maintenance baseline derivation", () => {
       .not.toBeNull();
   });
 
-  it("searches backward for a stable window and preserves explicit nutrition zero", () => {
+  it("does not prefer an older stable window over a newer high-quality loss window", () => {
     const days = stableSourceDays({
       override: (index) => index >= 62 ? { weightKg: 80 - (index - 62) * 0.1 } : {},
     });
@@ -80,8 +82,7 @@ describe("maintenance baseline derivation", () => {
     days[20].carbsG = 0;
     const result = deriveMaintenanceBaseline({ days, referenceDate: "2026-08-22" });
     expect(result).not.toBeNull();
-    expect(result!.diagnostics.windowEndDate.localeCompare("2026-08-22"))
-      .toBeLessThan(0);
+    expect(result!.diagnostics.windowEndDate).toBe("2026-08-22");
     expect(result!.baselineEnergyIntakeKcalPerDay).toBeGreaterThan(0);
   });
 

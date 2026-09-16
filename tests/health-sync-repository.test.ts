@@ -61,7 +61,7 @@ describe("Prisma health synchronization repository", () => {
         receivedAt,
         syncedAt: new Date("2026-08-23T08:00:00Z"),
         timezone: "Europe/Bratislava",
-        steps: 0,
+        steps: null,
         walkingDistanceKm: null,
         rawPayload: { Date: "2026-08-23", Steps: 0, Walkingdistancekm: "" },
       }),

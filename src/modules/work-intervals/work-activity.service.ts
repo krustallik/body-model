@@ -1,3 +1,4 @@
+import { normalizeDailyMeasurements } from "@/modules/days/measurement-policy";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { calculateAge } from "@/model/age";
@@ -25,7 +26,7 @@ export async function estimateWorkActivityForDay(
   },
   client: PrismaClient = prisma,
 ) {
-  const [day, snapshots, intervals] = await Promise.all([
+  const [rawDay, rawSnapshots, intervals] = await Promise.all([
     client.dailyHealthData.findUnique({
       where: { date: input.date },
       select: {
@@ -51,6 +52,8 @@ export async function estimateWorkActivityForDay(
     }),
   ]);
 
+  const day = rawDay ? normalizeDailyMeasurements(rawDay) : null;
+  const snapshots = rawSnapshots.map(normalizeDailyMeasurements);
   const cumulativeSnapshots: CumulativeSnapshot[] = snapshots.map((snapshot) => ({
     timestamp: snapshot.syncedAt ?? snapshot.receivedAt,
     steps: snapshot.steps,
@@ -129,7 +132,7 @@ export async function getWorkActivityDiagnosticsForDay(
       select: { weightKg: true },
     }),
   ]);
-  if (!profile || day?.weightKg === null || day?.weightKg === undefined) {
+  if (!profile || day?.weightKg === 0 || day?.weightKg === null || day?.weightKg === undefined) {
     return {
       date,
       diagnostics: null,

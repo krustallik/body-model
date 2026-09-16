@@ -51,7 +51,7 @@ export type HistoricalModelSources = {
 };
 
 export type MaintenanceBaselineDiagnostics = {
-  method: "median-with-theil-sen-weight-stability";
+  method: "median-with-theil-sen-weight-stability" | "quality-ranked-variable-window-v5";
   windowStartDate: string;
   windowEndDate: string;
   windowDays: number;
@@ -62,6 +62,7 @@ export type MaintenanceBaselineDiagnostics = {
   weightTrendKgPerWeek: number;
   weightTrendPercentPerWeek: number;
   maximumAbsoluteWeightTrendPercentPerWeek: number;
+  weightTrendDirection?: "loss" | "stable" | "gain";
 };
 
 export type MaintenanceBaseline = {
@@ -117,6 +118,14 @@ export type PreparedEpisodeInitialization = {
   bodyFatObservationCount: number;
   bodyFatSpreadPercent: number;
   nutritionMaxBridgeDays: number;
+  observedReferenceNutrition?: NutritionVector;
+  energyHomeostasisReferenceKcalPerDay?: number;
+  glycogenReferenceCarbIntakeG?: number;
+  initialPersonalOffsetKcalPerDay?: number;
+  appliedPersonalOffsetKcalPerDay?: number;
+  initializationApplicationReason?: "strong-estimate-applied" | "weak-estimate-not-applied" | "insufficient-not-applied" | "validated-default-zero";
+  initializationStatus?: "strong" | "weak" | "insufficient";
+  initializationDiagnostics?: unknown;
 };
 
 export type PersistedEpisode = {
@@ -144,6 +153,9 @@ export type PersistedEpisode = {
   activityCalibration: number;
   calibrationStatus: PersonalizationCalibrationStatus;
   calibrationDiagnostics: unknown;
+  initialPersonalOffsetKcalPerDay?: number;
+  initializationStatus?: string | null;
+  initializationDiagnostics?: unknown;
   latestModeledDate: string | null;
   createdAt: string;
   updatedAt: string;

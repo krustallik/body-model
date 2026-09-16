@@ -6,6 +6,7 @@ import {
 import { modelAuthorizationError } from "@/modules/model-episodes/model-http";
 import { RecalculateModelRequestSchema } from "@/modules/model-episodes/model-episode.schema";
 import { recalculateModelEpisode } from "@/modules/model-episodes/model-episode.service";
+import { errorKind, logEvent } from "@/lib/logger";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +27,7 @@ export async function POST(request: Request): Promise<Response> {
     if (error instanceof ModelEpisodeNotFoundError) {
       return Response.json({ error: "episode_not_found" }, { status: 404 });
     }
+    logEvent("error", "recalculation_failed", { errorType: errorKind(error) });
     return Response.json({ error: "recalculation_failed" }, { status: 500 });
   }
 }

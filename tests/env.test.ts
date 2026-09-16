@@ -23,4 +23,17 @@ describe("environment validation", () => {
       /DATABASE_URL/,
     );
   });
+
+  it("rejects production placeholder secrets", () => {
+    expect(() => validateEnv({
+      ...validEnv,
+      NODE_ENV: "production",
+      IOS_SHORTCUT_API_KEY: "replace_with_long_random_secret",
+    })).toThrow(/placeholder/);
+    expect(() => validateEnv({
+      ...validEnv,
+      NODE_ENV: "production",
+      DATABASE_URL: "postgresql://bodycast:change_me@localhost:5432/bodycast",
+    })).toThrow(/placeholder/);
+  });
 });

@@ -151,7 +151,7 @@ describe("historical simulation input builder", () => {
       from: date,
       to: date,
       sources: sources({
-        snapshots: [{ id: 1, date, receivedAt: instant("09:00"), syncedAt: null,
+        snapshots: [{ id: 1, date, receivedAt: instant("09:01"), syncedAt: null,
           steps: 1_000, walkingDistanceKm: 1 }],
         workIntervals: [{ id: 1, date, startAt: instant("08:00"), endAt: instant("16:00"),
           timezone: "Europe/Bratislava", category: "manualLight", breakMinutes: null }],

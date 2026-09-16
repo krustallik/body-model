@@ -54,7 +54,7 @@ describe("model episode application service", () => {
     const result = await initializeNewModelEpisode({
       now: new Date("2026-08-23T10:00:00.000Z"),
     }, client);
-    expect(repository.loadSources).toHaveBeenCalledWith("2026-05-25", "2026-08-22");
+    expect(repository.loadSources).toHaveBeenCalledWith("2026-04-19", "2026-08-22");
     expect(repository.deactivateActive).toHaveBeenCalledWith(
       new Date("2026-08-23T10:00:00.000Z"),
     );
@@ -107,7 +107,7 @@ describe("model episode application service", () => {
     expect(result.latestModeledDate).toBeNull();
   });
 
-  it("upgrades v3 input semantics before calculation and persists only v4 rows", async () => {
+  it("preserves legacy episode semantics instead of silently relabeling them v5", async () => {
     const episode = {
       ...persistedEpisodeFixture("2026-08-20"),
       modelVersion: "bodycast-physiology-v3",
@@ -124,9 +124,9 @@ describe("model episode application service", () => {
     expect(repository.persistCalculation).toHaveBeenCalledWith(
       episode.id,
       expect.objectContaining({
-        dailyStates: [expect.objectContaining({ modelVersion: "bodycast-physiology-v4" })],
+        dailyStates: [expect.objectContaining({ modelVersion: "bodycast-physiology-v3" })],
       }),
-      "bodycast-physiology-v4",
+      "bodycast-physiology-v3",
     );
   });
 

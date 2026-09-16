@@ -15,8 +15,10 @@ import {
   formatDate,
   formatValue,
   forecastReadiness,
+  initializationFailureMessage,
   qualityPresentation,
   isCurrentForecastRequest,
+  noActiveModelPresentation,
   planAssumptions,
   summarizeEndpoint,
   type ForecastHorizon,
@@ -31,19 +33,43 @@ type HistoricalDay = { date: string; modeledWeightKg: number | null; fatMassKg: 
 type Context = { status: ModelStatusDto; history: HistoricalDay[]; unknownIntervals: UnknownIntervalDto[] };
 type Outcome = ForecastResult | ForecastBlockedResult;
 type SubmittedRun = { mode: ScenarioMode; horizon: ForecastHorizon; plan: PlanValues };
+type ForecastAction = "recover" | "recalculate" | "initialize";
 
-async function forecastError(response: Response, locale: Locale): Promise<{ message: string; code: string | null; donorDayCount?: number }> {
+async function forecastError(response: Response, locale: Locale): Promise<{
+  message: string;
+  code: string | null;
+  reason?: string;
+  donorDayCount?: number;
+}> {
   const fallback = `Request failed (${response.status})`;
   try {
-    const body = await response.json() as { error?: string; message?: string; details?: Array<{ message?: string }> };
+    const body = await response.json() as {
+      error?: string;
+      message?: string;
+      reason?: string;
+      details?: Array<{ message?: string }>;
+    };
     const raw = body.message ?? body.details?.[0]?.message ?? body.error?.replaceAll("_", " ") ?? fallback;
     const received = /received\s+(\d+)/i.exec(raw)?.[1];
+    if (body.error === "initialization_failed") {
+      return {
+        message: initializationFailureMessage(body.reason ?? body.message, locale),
+        code: body.error,
+        reason: body.reason,
+      };
+    }
     const messages: Record<string, string> = locale === "uk" ? {
-      no_active_episode: "Немає активної моделі. Додайте історичні дані та запустіть розрахунок моделі.",
+      no_active_episode: "Активної моделі ще немає. Запустіть модель тут, якщо історичні дані вже є.",
       insufficient_scenario_evidence: "Для сценарію «Останній режим» потрібно щонайменше 14 повних і надійних днів. Оберіть плановий сценарій або додайте дані.",
       recovery_required: "Спочатку потрібно відновити поточний стан після пропуску в історії.",
-    } : {};
-    return { message: (body.error && messages[body.error]) || raw, code: body.error ?? null, ...(received ? { donorDayCount: Number(received) } : {}) };
+    } : {
+      no_active_episode: "There is no active model yet. Start the model here if historical data is already available.",
+    };
+    return {
+      message: (body.error && messages[body.error]) || raw,
+      code: body.error ?? null,
+      ...(received ? { donorDayCount: Number(received) } : {}),
+    };
   } catch { return { message: fallback, code: null }; }
 }
 
@@ -56,6 +82,7 @@ function NumberField({ label, value, onChange, min = 0, max, step = 1, unit }: {
 export function ForecastClient() {
   const { locale } = useI18n();
   const uk = locale === "uk";
+  const noActiveModelCopy = noActiveModelPresentation(locale);
   const scenarios: Array<{ mode: ScenarioMode; label: string; hint: string }> = [
     { mode: "recent-behavior", label: uk ? "Останній режим" : "Recent routine", hint: uk ? "Використовує надійні блоки з останніх спостережених днів." : "Resamples reliable blocks from recent observed days." },
     { mode: "fixed", label: uk ? "Точний денний план" : "Exact daily plan", hint: uk ? "Повторює план без варіації майбутньої поведінки." : "Repeats the plan exactly; future-behavior variation is intentionally off." },
@@ -75,7 +102,9 @@ export function ForecastClient() {
   const [context, setContext] = useState<Context | null>(null);
   const [submittedRun, setSubmittedRun] = useState<SubmittedRun | null>(null);
   const [loading, setLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState<ForecastAction | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<string | null>(null);
   const [scenarioEvidenceMissing, setScenarioEvidenceMissing] = useState(false);
   const [knownDonorDayCount, setKnownDonorDayCount] = useState<number | undefined>();
   const requestRef = useRef({ current: 0 });
@@ -88,6 +117,7 @@ export function ForecastClient() {
     const requestId = beginForecastRequest(requestRef.current);
     setLoading(true);
     setError(null);
+    setErrorCode(null);
     setScenarioEvidenceMissing(false);
     setOutcome(null);
     try {
@@ -101,6 +131,7 @@ export function ForecastClient() {
         const issue = await forecastError(forecastResponse, locale);
         if (isCurrentForecastRequest(requestRef.current, requestId)) {
           setScenarioEvidenceMissing(issue.code === "insufficient_scenario_evidence");
+          setErrorCode(issue.code);
           if (issue.donorDayCount !== undefined) setKnownDonorDayCount(issue.donorDayCount);
         }
         throw new Error(issue.message);
@@ -136,6 +167,7 @@ export function ForecastClient() {
     setLoading(false);
     setOutcome(null);
     setError(null);
+    setErrorCode(null);
     setScenarioEvidenceMissing(false);
     setSubmittedRun(null);
   }
@@ -145,10 +177,23 @@ export function ForecastClient() {
     setPlan((current) => ({ ...current, [key]: value }));
     invalidateDisplayedForecast();
   }
-  async function runAction(action: "recover" | "recalculate") {
-    setLoading(true); setError(null);
-    const response = await fetch("/api/forecast/action", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action }) });
-    if (!response.ok) { setError((await forecastError(response, locale)).message); setLoading(false); return; }
+  async function runAction(action: ForecastAction) {
+    setActionLoading(action);
+    setError(null);
+    setErrorCode(null);
+    const response = await fetch("/api/forecast/action", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    if (!response.ok) {
+      const issue = await forecastError(response, locale);
+      setError(issue.message);
+      setErrorCode(issue.code);
+      setActionLoading(null);
+      return;
+    }
+    setActionLoading(null);
     await runForecast();
   }
 
@@ -171,13 +216,15 @@ export function ForecastClient() {
     blocked: Boolean(blockedOutcome),
     scenarioEvidenceMissing,
   });
+  const showStartModel = errorCode === "no_active_episode" || errorCode === "initialization_failed";
+  const busy = loading || actionLoading !== null;
 
   return (
     <main className={styles.page}>
       <div className={styles.topbar}><Link className={styles.brand} href="/dashboard">BodyCast<span>{uk ? "Прогноз фізіології" : "Physiology forecast"}</span></Link><AppNav active="forecast" /></div>
       <header className={styles.hero}>
         <div><p className={styles.eyebrow}>{uk ? "Модель майбутнього · не обіцянка" : "Forward model · not a promise"}</p><h1>{uk ? "Дивіться на діапазон, а не лише на лінію." : "See the range, not just a line."}</h1><p>{uk ? "Досліджуйте, як режим може змінити вагу й склад тіла. Діапазони показують невизначеність моделі, а не гарантований результат." : "Explore how routine choices may change weight and body composition. Bands show model uncertainty, not guaranteed outcomes."}</p></div>
-        <div className={styles.readiness}><span className={result ? styles.readyDot : styles.waitingDot} />{loading ? (uk ? "Розраховуємо траєкторії…" : "Calculating paths…") : quality?.title ?? (uk ? "Потрібна увага" : "Needs attention")}</div>
+        <div className={styles.readiness}><span className={result ? styles.readyDot : styles.waitingDot} />{busy ? (actionLoading === "initialize" ? noActiveModelCopy.loadingAction : (uk ? "Розраховуємо траєкторії…" : "Calculating paths…")) : quality?.title ?? (uk ? "Потрібна увага" : "Needs attention")}</div>
       </header>
 
       <section className={styles.controlPanel} aria-label={uk ? "Налаштування прогнозу" : "Forecast controls"}>
@@ -207,7 +254,7 @@ export function ForecastClient() {
             </div>}
           </fieldset>
         </form>}
-        <button className={styles.runButton} type="button" aria-busy={loading} onClick={() => void runForecast()}>{loading ? (uk ? "Запустити оновлений прогноз" : "Run updated forecast") : (uk ? "Побудувати прогноз" : "Run forecast")}</button>
+        <button className={styles.runButton} type="button" aria-busy={busy} disabled={busy} onClick={() => void runForecast()}>{loading ? (uk ? "Запустити оновлений прогноз" : "Run updated forecast") : (uk ? "Побудувати прогноз" : "Run forecast")}</button>
       </section>
 
       <section className={`${styles.readinessCard} ${styles[readiness.level]}`} aria-label={uk ? "Оцінка якості прогнозу" : "Forecast quality assessment"}>
@@ -215,9 +262,21 @@ export function ForecastClient() {
         <div><p className={styles.eyebrow}>{readiness.canForecast ? (uk ? "Прогноз доступний" : "Forecast available") : (uk ? "Чому прогноз недоступний" : "Why forecasting is unavailable")}</p><h2>{readiness.title}</h2><p>{readiness.detail}</p><ul>{readiness.factors.map((factor) => <li key={factor}>{factor}</li>)}</ul></div>
       </section>
 
-      {error && <section className={styles.blocked} role="alert"><p className={styles.eyebrow}>{uk ? "Прогноз недоступний" : "Forecast unavailable"}</p><h2>{uk ? "Цей сценарій поки неможливо розрахувати." : "We can’t calculate this scenario yet."}</h2><p>{error}</p><div className={styles.actions}>{mode === "recent-behavior" && <button type="button" onClick={() => selectMode("target-centered")}>{uk ? "Спробувати гнучкий план" : "Use a flexible plan"}</button>}<Link href="/history">{uk ? "Додати спостереження" : "Add observations"}</Link></div></section>}
+      {error && showStartModel && <section className={styles.blocked} role="alert">
+        <p className={styles.eyebrow}>{noActiveModelCopy.eyebrow}</p>
+        <h2>{noActiveModelCopy.title}</h2>
+        <p>{error}</p>
+        <div className={styles.actions}>
+          <button type="button" disabled={busy} aria-busy={actionLoading === "initialize"} onClick={() => void runAction("initialize")}>
+            {actionLoading === "initialize" ? noActiveModelCopy.loadingAction : noActiveModelCopy.primaryAction}
+          </button>
+          <Link href="/history">{noActiveModelCopy.addObservations}</Link>
+        </div>
+      </section>}
 
-      {!error && blockedOutcome && blockedCopy && <section className={styles.blocked}><p className={styles.eyebrow}>{uk ? "Потрібен поточний стан" : "Current state required"}</p><h2>{blockedCopy.title}</h2><p>{blockedCopy.detail}</p><div className={styles.actions}><button type="button" disabled={loading} onClick={() => void runAction("recover")}>{uk ? "Відновити поточний стан" : "Recover current state"}</button><button type="button" disabled={loading} onClick={() => void runAction("recalculate")}>{uk ? "Оновити модель" : "Update model"}</button><Link href="/history">{uk ? "Переглянути історію" : "Review history"}</Link></div></section>}
+      {error && !showStartModel && <section className={styles.blocked} role="alert"><p className={styles.eyebrow}>{uk ? "Прогноз недоступний" : "Forecast unavailable"}</p><h2>{uk ? "Цей сценарій поки неможливо розрахувати." : "We can’t calculate this scenario yet."}</h2><p>{error}</p><div className={styles.actions}>{mode === "recent-behavior" && <button type="button" onClick={() => selectMode("target-centered")}>{uk ? "Спробувати гнучкий план" : "Use a flexible plan"}</button>}<Link href="/history">{uk ? "Додати спостереження" : "Add observations"}</Link></div></section>}
+
+      {!error && blockedOutcome && blockedCopy && <section className={styles.blocked}><p className={styles.eyebrow}>{uk ? "Потрібен поточний стан" : "Current state required"}</p><h2>{blockedCopy.title}</h2><p>{blockedCopy.detail}</p><div className={styles.actions}><button type="button" disabled={busy} onClick={() => void runAction("recover")}>{uk ? "Відновити поточний стан" : "Recover current state"}</button><button type="button" disabled={busy} onClick={() => void runAction("recalculate")}>{uk ? "Оновити модель" : "Update model"}</button><Link href="/history">{uk ? "Переглянути історію" : "Review history"}</Link></div></section>}
 
       {loading && !outcome && !error && <section className={styles.loadingCard} aria-live="polite"><div className={styles.spinner} /><strong>{uk ? "Будуємо розподіл можливих траєкторій" : "Building a distribution of possible paths"}</strong><span>{uk ? "Кожна траєкторія починається з останнього фізіологічного стану." : "Each path starts from the latest physiological state."}</span></section>}
       {!loading && !outcome && !error && <section className={styles.pendingCard}><strong>{uk ? "Налаштування змінено" : "Settings changed"}</strong><span>{uk ? "Запустіть прогноз, щоб оновити траєкторію та підсумок." : "Run the forecast to update the trajectory and endpoint summary."}</span></section>}

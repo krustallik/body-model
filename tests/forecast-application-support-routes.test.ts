@@ -1,13 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const modelServices = vi.hoisted(() => ({ getModelStatus: vi.fn(), getModelHistory: vi.fn(), recalculateModelEpisode: vi.fn() }));
+const modelServices = vi.hoisted(() => ({
+  getModelStatus: vi.fn(),
+  getModelHistory: vi.fn(),
+  recalculateModelEpisode: vi.fn(),
+  initializeNewModelEpisode: vi.fn(),
+}));
 const recoveryServices = vi.hoisted(() => ({ recoverModelEpisode: vi.fn() }));
 vi.mock("@/modules/model-episodes/model-episode.service", () => modelServices);
 vi.mock("@/modules/model-recovery/model-recovery.service", () => recoveryServices);
 
 import { GET } from "@/app/api/forecast/context/route";
 import { POST } from "@/app/api/forecast/action/route";
-import { NoActiveModelEpisodeError } from "@/modules/model-episodes/model-episode.errors";
+import {
+  EpisodeInitializationError,
+  NoActiveModelEpisodeError,
+} from "@/modules/model-episodes/model-episode.errors";
 import { ModelRecoveryEvidenceError } from "@/modules/model-recovery/model-recovery.errors";
 
 function actionRequest(action: string) {
@@ -47,6 +55,20 @@ describe("forecast recovery and recalculation route", () => {
     modelServices.recalculateModelEpisode.mockResolvedValue({ status: "complete" });
     expect((await POST(actionRequest("recalculate"))).status).toBe(200);
     expect(modelServices.recalculateModelEpisode).toHaveBeenCalledWith({});
+    modelServices.initializeNewModelEpisode.mockResolvedValue({
+      id: 12,
+      modelVersion: "bodycast-physiology-v5",
+      startDate: "2026-09-15",
+    });
+    const initialized = await POST(actionRequest("initialize"));
+    expect(initialized.status).toBe(200);
+    expect(await initialized.json()).toEqual({
+      status: "ok",
+      episodeId: 12,
+      modelVersion: "bodycast-physiology-v5",
+      startDate: "2026-09-15",
+    });
+    expect(modelServices.initializeNewModelEpisode).toHaveBeenCalledWith({});
   });
 
   it("keeps evidence errors actionable and unexpected errors private", async () => {
@@ -58,5 +80,15 @@ describe("forecast recovery and recalculation route", () => {
     const unexpected = await POST(actionRequest("recalculate"));
     expect(unexpected.status).toBe(500);
     expect(await unexpected.json()).toEqual({ error: "recalculation_failed" });
+    modelServices.initializeNewModelEpisode.mockRejectedValueOnce(
+      new EpisodeInitializationError("insufficient-baseline-data"),
+    );
+    const initialization = await POST(actionRequest("initialize"));
+    expect(initialization.status).toBe(422);
+    expect(await initialization.json()).toEqual({
+      error: "initialization_failed",
+      reason: "insufficient-baseline-data",
+      message: "insufficient-baseline-data",
+    });
   });
 });

@@ -9,8 +9,10 @@ import {
   formatDate,
   formatValue,
   forecastReadiness,
+  initializationFailureMessage,
   localCalendarDate,
   isCurrentForecastRequest,
+  noActiveModelPresentation,
   planAssumptions,
   qualityPresentation,
   summarizeEndpoint,
@@ -128,6 +130,18 @@ describe("forecast application helpers", () => {
 
     const unavailable = forecastReadiness({ status: null, mode: "fixed", locale: "uk" });
     expect(unavailable).toMatchObject({ score: null, title: "Прогноз поки недоступний" });
+    expect(unavailable.detail).toMatch(/запустіть модель тут/i);
     expect(unavailable.factors.join(" ")).toMatch(/21 повним днем харчування/);
+  });
+
+  it("presents an explicit start-model CTA when no active episode exists", () => {
+    expect(noActiveModelPresentation("uk")).toMatchObject({
+      primaryAction: "Запустити модель",
+      title: "Спочатку запустіть модель.",
+    });
+    expect(noActiveModelPresentation("en").primaryAction).toBe("Start model");
+    expect(initializationFailureMessage("insufficient-baseline-data", "uk"))
+      .toMatch(/Недостатньо історії/);
+    expect(initializationFailureMessage("unknown", "en")).toBe("Could not start the model.");
   });
 });

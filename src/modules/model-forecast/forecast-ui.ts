@@ -216,6 +216,50 @@ export type ForecastReadiness = {
   factors: string[];
 };
 
+/** Copy for the missing-active-model empty state on Forecast. */
+export function noActiveModelPresentation(locale: Locale = "en"): {
+  eyebrow: string;
+  title: string;
+  detail: string;
+  primaryAction: string;
+  loadingAction: string;
+  addObservations: string;
+} {
+  const uk = locale === "uk";
+  return {
+    eyebrow: uk ? "Модель ще не створена" : "Model not created yet",
+    title: uk ? "Спочатку запустіть модель." : "Start the model first.",
+    detail: uk
+      ? "Активної моделі ще немає. Якщо історичні дані вже синхронізовані, створіть її тут — після цього стане доступним прогноз."
+      : "There is no active model yet. If historical data is already synced, create it here — forecasting becomes available afterward.",
+    primaryAction: uk ? "Запустити модель" : "Start model",
+    loadingAction: uk ? "Створюємо модель…" : "Starting model…",
+    addObservations: uk ? "Додати спостереження" : "Add observations",
+  };
+}
+
+export function initializationFailureMessage(
+  reason: string | null | undefined,
+  locale: Locale = "en",
+): string {
+  const uk = locale === "uk";
+  const messages: Record<string, string> = uk ? {
+    "profile-missing": "Немає профілю. Заповніть профіль і спробуйте знову.",
+    "insufficient-baseline-data": "Недостатньо історії харчування та ваги для першої моделі.",
+    "insufficient-weight-bia": "Недостатньо вимірювань ваги й складу тіла для першої моделі.",
+    "invalid-initial-state": "Не вдалося побудувати початковий стан моделі з наявних даних.",
+    "start-date-not-complete": "День старту моделі ще не завершився в локальному часі.",
+  } : {
+    "profile-missing": "Profile is missing. Complete the profile and try again.",
+    "insufficient-baseline-data": "Not enough nutrition and weight history for the first model.",
+    "insufficient-weight-bia": "Not enough weight and body-composition observations for the first model.",
+    "invalid-initial-state": "Could not build an initial model state from the available data.",
+    "start-date-not-complete": "The model start date is not complete in local time yet.",
+  };
+  return (reason && messages[reason])
+    || (uk ? "Не вдалося створити модель." : "Could not start the model.");
+}
+
 export function forecastReadiness(input: {
   status: ModelStatusDto | null;
   locale?: Locale;
@@ -230,7 +274,9 @@ export function forecastReadiness(input: {
   if (!status) return {
     score: null, level: "unavailable", canForecast: false,
     title: uk ? "Прогноз поки недоступний" : "Forecast is not available yet",
-    detail: uk ? "Оцінка якості ще не розрахована, бо активну модель не створено." : "Quality has not been scored because there is no active model yet.",
+    detail: uk
+      ? "Активну модель ще не створено. Якщо історія вже є, запустіть модель тут; оцінка якості з’явиться після цього."
+      : "There is no active model yet. If history is already available, start the model here; quality scoring appears afterward.",
     factors: uk ? [
       "Для першої моделі потрібен стабільний 28-денний проміжок із щонайменше 21 повним днем харчування.",
       "Потрібно щонайменше 14 вимірювань ваги, розподілених мінімум на 21 календарний день.",

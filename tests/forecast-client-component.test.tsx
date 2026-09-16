@@ -10,17 +10,17 @@ describe("ForecastClient", () => {
   it("renders the complete initial control surface and honest loading state", () => {
     const html = renderToStaticMarkup(<ForecastClient />);
     expect(html).toContain("See the range, not just a line.");
-    expect(html).toContain("Recent routine");
+    expect(html).toContain("As lately");
     expect(html).toContain("Exact daily plan");
-    expect(html).toContain("Flexible plan");
-    expect(html).toContain("Building a distribution of possible paths");
+    expect(html).toContain("Plan with small drift");
+    expect(html).toContain("Calculating possible weight paths");
     expect(html).toContain("href=\"/forecast\"");
-    expect(html).toContain("start the model here");
+    expect(html).toContain("do it here");
   });
 
   it("keeps start-model wording available for the missing-episode empty state", () => {
     const copy = noActiveModelPresentation("uk");
     expect(copy.primaryAction).toBe("Запустити модель");
-    expect(copy.detail).toMatch(/Активної моделі ще немає/);
+    expect(copy.detail).toMatch(/Модель ще не рахувала/);
   });
 });

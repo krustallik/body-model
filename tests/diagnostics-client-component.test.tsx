@@ -9,7 +9,7 @@ describe("DiagnosticsClient", () => {
   it("renders an honest multi-dimensional loading surface and navigation", () => {
     const html = renderToStaticMarkup(<DiagnosticsClient />);
     expect(html).toContain("What the model knows—and what it does not.");
-    expect(html).toContain("There is no universal score");
+    expect(html).toContain("There is no single overall score");
     expect(html).toContain("Loading model status");
     expect(html).toContain("href=\"/diagnostics\"");
   });

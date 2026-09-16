@@ -109,29 +109,39 @@ describe("forecast application helpers", () => {
 
   it("prioritizes recovery, degraded evidence, and long-horizon numerical warnings", () => {
     expect(qualityPresentation(result()).title).toBe("Forecast ready");
-    expect(qualityPresentation(result(), "insufficient-history").title).toBe("Forecast uses limited personalization");
-    expect(qualityPresentation(result({ initialStateQuality: "recovered" })).title).toBe("Current state reconstructed");
-    expect(qualityPresentation(result({ status: "degraded" })).title).toBe("Forecast has limited evidence");
+    expect(qualityPresentation(result(), "insufficient-history").title).toBe("Forecast is still rough");
+    expect(qualityPresentation(result({ initialStateQuality: "recovered" })).title).toBe("A data gap was filled in");
+    expect(qualityPresentation(result({ status: "degraded" })).title).toBe("Forecast is rough right now");
     const long = result();
     long.diagnostics.numericalQuality.classification = "limited-long-horizon";
-    expect(qualityPresentation(long).title).toBe("Long-range precision is limited");
+    expect(qualityPresentation(long).title).toBe("Far-ahead forecast is less precise");
     expect(blockedPresentation({ status: "initial-state-unavailable", forecastVersion: "bodycast-forecast-v1", modelVersion: "test", recoveryVersion: null, initialStateQuality: "awaiting", reason: "The recovery ensemble no longer matches current history and must be rerun before forecasting." }).title).toBe("Model update needed");
-    expect(blockedPresentation({ status: "initial-state-unreliable", forecastVersion: "bodycast-forecast-v1", modelVersion: "test", recoveryVersion: null, initialStateQuality: "degenerate", reason: "Too concentrated" }).title).toBe("Current state is too uncertain");
+    expect(blockedPresentation({ status: "initial-state-unreliable", forecastVersion: "bodycast-forecast-v1", modelVersion: "test", recoveryVersion: null, initialStateQuality: "degenerate", reason: "Too concentrated" }).title).toBe("Starting point is too uncertain");
   });
 
   it("explains forecast readiness from actual history and donor counts in both languages", () => {
     const high = forecastReadiness({ status: modelStatus(), mode: "recent-behavior", donorDayCount: 20, successfulForecast: true, locale: "uk" });
     expect(high).toMatchObject({ canForecast: true, level: "high" });
-    expect(high.factors.join(" ")).toMatch(/55 змодельованих днів/);
+    expect(high.factors.join(" ")).toMatch(/Модель порахувала 55 днів/);
 
     const missingDonors = forecastReadiness({ status: modelStatus(), mode: "recent-behavior", donorDayCount: 8, scenarioEvidenceMissing: true });
     expect(missingDonors).toMatchObject({ canForecast: false, level: "low" });
-    expect(missingDonors.factors.join(" ")).toMatch(/requires at least 14/);
+    expect(missingDonors.factors.join(" ")).toMatch(/needs at least 14/);
+
+    const emptyModel = forecastReadiness({
+      status: modelStatus({ daysModeled: 0, observedNutritionDays: 0, currentPredictedWeightKg: null, latestModeledDate: null, calibrationStatus: "insufficient-history" }),
+      mode: "recent-behavior",
+      donorDayCount: 14,
+      successfulForecast: true,
+      locale: "uk",
+    });
+    expect(emptyModel.score).toBe(21);
+    expect(emptyModel.factors.join(" ")).toMatch(/ще не пораховані моделлю/);
 
     const unavailable = forecastReadiness({ status: null, mode: "fixed", locale: "uk" });
     expect(unavailable).toMatchObject({ score: null, title: "Прогноз поки недоступний" });
-    expect(unavailable.detail).toMatch(/запустіть модель тут/i);
-    expect(unavailable.factors.join(" ")).toMatch(/21 повним днем харчування/);
+    expect(unavailable.detail).toMatch(/запустити модель/i);
+    expect(unavailable.factors.join(" ")).toMatch(/калорії, і вагу/);
   });
 
   it("presents an explicit start-model CTA when no active episode exists", () => {

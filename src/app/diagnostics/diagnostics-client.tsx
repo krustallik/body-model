@@ -15,49 +15,69 @@ function levelLabel(level: DiagnosticLevel, uk: boolean) {
 
 function gateLabel(gate: DiagnosticGate, uk: boolean) {
   const labels = uk ? {
-    "offset-observations": "Спостереження ваги для зсуву", "offset-span": "Тривалість для зсуву",
-    "full-observations": "Спостереження для двох параметрів", "full-span": "Тривалість для двох параметрів",
-    "activity-standard-deviation": "Розкид активності (SD)", "activity-coefficient-of-variation": "Відносний розкид активності (CV)",
+    "offset-observations": "Скільки зважувань для простого підлаштування", "offset-span": "Скільки днів історії для простого підлаштування",
+    "full-observations": "Скільки зважувань для повного підлаштування", "full-span": "Скільки днів історії для повного підлаштування",
+    "activity-standard-deviation": "Наскільки різний рух день у день", "activity-coefficient-of-variation": "Наскільки відносний розкид руху",
   } : {
-    "offset-observations": "Weight observations for offset", "offset-span": "Span for offset",
-    "full-observations": "Observations for two parameters", "full-span": "Span for two parameters",
-    "activity-standard-deviation": "Activity spread (SD)", "activity-coefficient-of-variation": "Relative activity spread (CV)",
+    "offset-observations": "Weigh-ins for simple tuning", "offset-span": "History span for simple tuning",
+    "full-observations": "Weigh-ins for full tuning", "full-span": "History span for full tuning",
+    "activity-standard-deviation": "How varied movement is day to day", "activity-coefficient-of-variation": "Relative movement spread",
   };
   return labels[gate.id];
 }
 
 function personalizationCopy(status: DiagnosticsDto["personalization"]["status"], uk: boolean) {
   const copy = uk ? {
-    "insufficient-history": ["Ще замало історії", "Модель працює з консервативними типовими параметрами."],
-    "invalid-history": ["Історія не придатна", "Один або більше днів не вдалося коректно змоделювати."],
-    "offset-only": ["Особистий зсув активний", "Загальний енергетичний зсув прийнято; масштаб активності лишився типовим."],
-    "fully-calibrated": ["Два параметри активні", "Особистий зсув і масштаб активності пройшли перевірку."],
-    "defaults-retained": ["Типові параметри збережено", "Даних досить для спроби, але персоналізація не покращила незалежну перевірку."],
+    "insufficient-history": ["Ще замало історії", "Модель поки працює з типовими налаштуваннями, не сильно під вас."],
+    "invalid-history": ["Історію важко порахувати", "Один або кілька днів не вдалося безпечно порахувати."],
+    "offset-only": ["Просте підлаштування увімкнено", "Загальний зсув калорій прийнято; рух лишився типовим."],
+    "fully-calibrated": ["Повне підлаштування увімкнено", "І загальний зсув, і масштаб руху пройшли перевірку."],
+    "defaults-retained": ["Залишили типові налаштування", "Даних вистачило спробувати, але підлаштування не покращило перевірку."],
   } : {
-    "insufficient-history": ["More history needed", "The model is running with conservative default parameters."],
-    "invalid-history": ["History is not usable", "One or more days could not be simulated safely."],
-    "offset-only": ["Personal offset active", "The overall energy offset was accepted; activity scaling remains at its default."],
-    "fully-calibrated": ["Two parameters active", "Personal offset and activity scaling passed validation."],
-    "defaults-retained": ["Defaults retained", "There was enough evidence to try, but personalization did not improve held-out validation."],
+    "insufficient-history": ["More history needed", "The model is still using typical settings, not finely tuned to you."],
+    "invalid-history": ["History is hard to calculate", "One or more days could not be calculated safely."],
+    "offset-only": ["Simple tuning is on", "An overall calorie offset was accepted; movement scaling stays typical."],
+    "fully-calibrated": ["Full tuning is on", "Both the overall offset and movement scaling passed checks."],
+    "defaults-retained": ["Typical settings kept", "There was enough data to try, but tuning did not improve the check."],
   };
   return copy[status];
 }
 
+function currentStateTitle(status: DiagnosticsDto["currentState"]["status"], uk: boolean) {
+  if (status === "available") return uk ? "Поточна оцінка є" : "Current estimate is ready";
+  if (status === "awaiting-recovery") return uk ? "Чекаємо, поки закриється пропуск" : "Waiting for a data gap to close";
+  return uk ? "Поточної оцінки ще немає" : "No current estimate yet";
+}
+
+function forecastReasonLabel(reason: string, uk: boolean) {
+  const labels: Record<string, string> = uk ? {
+    "current-state-unavailable": "Немає поточної оцінки ваги моделі",
+    "degraded-recovery": "Оцінка після пропуску даних слабка",
+  } : {
+    "current-state-unavailable": "No current model weight estimate",
+    "degraded-recovery": "Estimate after a data gap is weak",
+  };
+  if (reason.startsWith("recovery-")) {
+    return uk ? "Спочатку потрібно закрити пропуск у даних" : "A data gap must be closed first";
+  }
+  return labels[reason] ?? reason;
+}
+
 function limitationCopy(id: DiagnosticsDto["limitations"][number]["id"], uk: boolean) {
   const values = uk ? {
-    "latent-state-not-scale-reading": "Поточна вага — прихована фізіологічна оцінка, а не передбачення наступного показу вагів.",
-    "future-behavior-conditional": "Прогноз умовний: він залежить від обраного або повторюваного режиму.",
-    "measurement-noise-not-modeled": "Діапазони прогнозу не включають шум майбутніх вимірювань ваги.",
-    "parameter-uncertainty-not-modeled": "Діапазони ще не включають невизначеність параметрів і всі структурні помилки моделі.",
-    "hold-ecf": "Позаклітинна рідина під час моделювання утримується сталою; натрій та інші швидкі зміни рідини не моделюються.",
-    "long-horizon-numerical-quality": "Якість 365-денного прогнозу оцінюється під час конкретного запуску й може бути обмеженою.",
+    "latent-state-not-scale-reading": "Поточна вага — внутрішня оцінка моделі, а не «що покажуть ваги завтра вранці».",
+    "future-behavior-conditional": "Прогноз залежить від того, який режим ви обрали далі.",
+    "measurement-noise-not-modeled": "Діапазон прогнозу не включає звичайну похибку вагів.",
+    "parameter-uncertainty-not-modeled": "Діапазон ще не включає всі можливі помилки налаштувань моделі.",
+    "hold-ecf": "Швидкі зміни рідини в тілі (наприклад від солі) модель зараз не рахує.",
+    "long-horizon-numerical-quality": "Прогноз на рік перевіряється окремо й може бути грубішим.",
   } : {
-    "latent-state-not-scale-reading": "Current weight is a latent physiological estimate, not a prediction of the next scale reading.",
-    "future-behavior-conditional": "Forecasts are conditional on the selected or repeated routine.",
-    "measurement-noise-not-modeled": "Forecast intervals do not include future scale-measurement noise.",
-    "parameter-uncertainty-not-modeled": "Intervals do not yet include parameter uncertainty or every structural model error.",
-    "hold-ecf": "Extracellular fluid is held constant; sodium and other fast fluid shifts are not modeled.",
-    "long-horizon-numerical-quality": "A 365-day forecast is assessed per run and may carry limited numerical quality.",
+    "latent-state-not-scale-reading": "Current weight is the model’s internal estimate, not “what the scale will show tomorrow morning.”",
+    "future-behavior-conditional": "The forecast depends on the routine you choose next.",
+    "measurement-noise-not-modeled": "Forecast ranges do not include ordinary scale noise.",
+    "parameter-uncertainty-not-modeled": "Ranges do not yet include every possible model-setting error.",
+    "hold-ecf": "Fast body-fluid shifts (for example from salt) are not calculated right now.",
+    "long-horizon-numerical-quality": "A one-year forecast is checked per run and may be rougher.",
   };
   return values[id];
 }
@@ -82,31 +102,31 @@ export function DiagnosticsClient() {
   return <main className={styles.page}>
     <div className={styles.topbar}><Link className={styles.brand} href="/dashboard">BodyCast<span>{uk ? "Прозорість моделі" : "Model transparency"}</span></Link><AppNav active="diagnostics" /></div>
     <header className={styles.hero}>
-      <div><p className={styles.eyebrow}>{uk ? "Діагностика · не оцінка здоров’я" : "Diagnostics · not a health score"}</p><h1>{uk ? "Що модель знає — і чого не знає." : "What the model knows—and what it does not."}</h1><p>{uk ? "Надійність має кілька вимірів. Тут немає універсального бала: дані, персоналізація, відновлення і прогноз оцінюються окремо." : "Reliability has several dimensions. There is no universal score: data, personalization, recovery, and forecasting are assessed separately."}</p></div>
+      <div><p className={styles.eyebrow}>{uk ? "Діагностика · не оцінка здоров’я" : "Diagnostics · not a health score"}</p><h1>{uk ? "Що модель знає — і чого не знає." : "What the model knows—and what it does not."}</h1><p>{uk ? "Тут кілька окремих перевірок: дані, підлаштування під вас, пропуски й прогноз. Одного спільного бала немає." : "There are several separate checks: data, tuning to you, gaps, and forecast. There is no single overall score."}</p></div>
     </header>
     {!data && !error && <section className={styles.loading} aria-live="polite">{uk ? "Завантажуємо стан моделі…" : "Loading model status…"}</section>}
     {error && <section className={styles.error} role="alert"><strong>{uk ? "Діагностика недоступна" : "Diagnostics unavailable"}</strong><span>{error}</span><Link href="/dashboard">{uk ? "Перейти до огляду" : "Go to dashboard"}</Link></section>}
     {data && <>
       <section className={styles.overview} aria-label={uk ? "Огляд стану моделі" : "Model status overview"}>
-        <article data-level={data.currentState.level}><div className={styles.cardTop}><span>{uk ? "Поточний стан" : "Current state"}</span><b>{levelLabel(data.currentState.level, uk)}</b></div><strong>{data.currentState.status === "available" ? (uk ? "Стан доступний" : "State available") : (uk ? "Стан очікує відновлення" : "State awaits recovery")}</strong><p>{uk ? "Джерело" : "Source"}: {data.currentState.source ?? "—"}</p></article>
-        <article data-level={data.dataContinuity.level}><div className={styles.cardTop}><span>{uk ? "Дані · до 28 днів" : "Data · up to 28 days"}</span><b>{levelLabel(data.dataContinuity.level, uk)}</b></div><strong>{data.dataContinuity.completeDayCount}/{data.dataContinuity.modeledDayCount} {uk ? "повних днів" : "complete days"}</strong><p>{uk ? "Вага" : "Weight"}: {data.dataContinuity.weightObservationCount} · {uk ? "непокрито харчування" : "unresolved nutrition"}: {data.dataContinuity.nutrition.unresolvedDayCount}</p></article>
-        <article data-level={data.personalization.level}><div className={styles.cardTop}><span>{uk ? "Персоналізація" : "Personalization"}</span><b>{levelLabel(data.personalization.level, uk)}</b></div><strong>{personalization?.[0]}</strong><p>{personalization?.[1]}</p></article>
-        <article data-level={data.forecastReadiness.level}><div className={styles.cardTop}><span>{uk ? "Прогноз" : "Forecast"}</span><b>{levelLabel(data.forecastReadiness.level, uk)}</b></div><strong>{data.forecastReadiness.allowed ? (uk ? "Можна будувати" : "Ready to run") : (uk ? "Поки заблоковано" : "Currently blocked")}</strong><p>{data.forecastReadiness.initialStateSource ? `${uk ? "Початковий стан" : "Initial state"}: ${data.forecastReadiness.initialStateSource}` : data.forecastReadiness.reasons.join(", ")}</p></article>
+        <article data-level={data.currentState.level}><div className={styles.cardTop}><span>{uk ? "Поточна вага моделі" : "Current model weight"}</span><b>{levelLabel(data.currentState.level, uk)}</b></div><strong>{currentStateTitle(data.currentState.status, uk)}</strong><p>{uk ? "Звідки" : "Source"}: {data.currentState.source ?? "—"}</p></article>
+        <article data-level={data.dataContinuity.level}><div className={styles.cardTop}><span>{uk ? "Дані · до 28 днів" : "Data · up to 28 days"}</span><b>{levelLabel(data.dataContinuity.level, uk)}</b></div><strong>{data.dataContinuity.completeDayCount}/{data.dataContinuity.modeledDayCount} {uk ? "повних порахованих днів" : "complete calculated days"}</strong><p>{uk ? "Зважувань" : "Weigh-ins"}: {data.dataContinuity.weightObservationCount} · {uk ? "днів без калорій" : "days without calories"}: {data.dataContinuity.nutrition.unresolvedDayCount}</p></article>
+        <article data-level={data.personalization.level}><div className={styles.cardTop}><span>{uk ? "Підлаштування під вас" : "Tuning to you"}</span><b>{levelLabel(data.personalization.level, uk)}</b></div><strong>{personalization?.[0]}</strong><p>{personalization?.[1]}</p></article>
+        <article data-level={data.forecastReadiness.level}><div className={styles.cardTop}><span>{uk ? "Прогноз" : "Forecast"}</span><b>{levelLabel(data.forecastReadiness.level, uk)}</b></div><strong>{data.forecastReadiness.allowed ? (uk ? "Можна будувати" : "Ready to run") : (uk ? "Поки заблоковано" : "Currently blocked")}</strong><p>{data.forecastReadiness.initialStateSource ? `${uk ? "Старт з" : "Starting from"}: ${data.forecastReadiness.initialStateSource}` : data.forecastReadiness.reasons.map((reason) => forecastReasonLabel(reason, uk)).join(", ")}</p></article>
       </section>
 
       <section className={styles.grid}>
-        <article className={styles.panel}><p className={styles.eyebrow}>{uk ? "Поточна оцінка" : "Current estimate"}</p><h2>{uk ? "Фізіологічний стан" : "Physiological state"}</h2><dl className={styles.metrics}><div><dt>{uk ? "Модельна вага" : "Modeled weight"}</dt><dd>{number(data.currentState.predictedWeightKg, 1)} kg</dd></div><div><dt>{uk ? "Жирова маса" : "Fat mass"}</dt><dd>{number(data.currentState.fatMassKg, 1)} kg</dd></div><div><dt>{uk ? "Безжирова тканина" : "Lean tissue"}</dt><dd>{number(data.currentState.leanTissueKg, 1)} kg</dd></div><div><dt>TDEE</dt><dd>{number(data.currentState.modeledTdeeKcalPerDay)} kcal</dd></div></dl><p className={styles.note}>{limitationCopy("latent-state-not-scale-reading", uk)}</p></article>
-        <article className={styles.panel}><p className={styles.eyebrow}>{uk ? "Походження даних" : "Data provenance"}</p><h2>{uk ? "Безперервність" : "Continuity"}</h2><div className={styles.provenance}><span><i data-kind="observed" />{uk ? "Спостережено" : "Observed"}<b>{data.dataContinuity.nutrition.observedDayCount}</b></span><span><i data-kind="imputed" />{uk ? "Відновлено локально" : "Locally imputed"}<b>{data.dataContinuity.nutrition.imputedDayCount}</b></span><span><i data-kind="missing" />{uk ? "Не визначено" : "Unresolved"}<b>{data.dataContinuity.nutrition.unresolvedDayCount}</b></span></div><p className={styles.note}>{uk ? "День без робочого інтервалу означає 0 робочої активності, а не пропущені дані." : "A day without a work interval means zero occupational work, not missing data."}</p></article>
+        <article className={styles.panel}><p className={styles.eyebrow}>{uk ? "Поточна оцінка" : "Current estimate"}</p><h2>{uk ? "Що модель думає зараз" : "What the model thinks now"}</h2><dl className={styles.metrics}><div><dt>{uk ? "Вага моделі" : "Model weight"}</dt><dd>{number(data.currentState.predictedWeightKg, 1)} kg</dd></div><div><dt>{uk ? "Жир" : "Fat mass"}</dt><dd>{number(data.currentState.fatMassKg, 1)} kg</dd></div><div><dt>{uk ? "М’язи й інше без жиру" : "Lean (non-fat) mass"}</dt><dd>{number(data.currentState.leanTissueKg, 1)} kg</dd></div><div><dt>{uk ? "Скільки витрачаєте за день" : "Daily burn"}</dt><dd>{number(data.currentState.modeledTdeeKcalPerDay)} kcal</dd></div></dl><p className={styles.note}>{limitationCopy("latent-state-not-scale-reading", uk)}</p></article>
+        <article className={styles.panel}><p className={styles.eyebrow}>{uk ? "Звідки взялись дані" : "Where the data came from"}</p><h2>{uk ? "Безперервність історії" : "History continuity"}</h2><div className={styles.provenance}><span><i data-kind="observed" />{uk ? "Записано вами" : "Logged by you"}<b>{data.dataContinuity.nutrition.observedDayCount}</b></span><span><i data-kind="imputed" />{uk ? "Підставлено з сусідніх днів" : "Filled from nearby days"}<b>{data.dataContinuity.nutrition.imputedDayCount}</b></span><span><i data-kind="missing" />{uk ? "Без калорій" : "Missing calories"}<b>{data.dataContinuity.nutrition.unresolvedDayCount}</b></span></div><p className={styles.note}>{uk ? "Якщо робочого інтервалу немає — це 0 роботи того дня, а не «дані загубились»." : "No work interval means 0 work that day, not “missing data.”"}</p></article>
       </section>
 
-      <section className={styles.panel}><div className={styles.sectionHead}><div><p className={styles.eyebrow}>{uk ? "Прийняті параметри" : "Accepted parameters"}</p><h2>{uk ? "Межі персоналізації" : "Personalization gates"}</h2></div><span className={styles.statusPill} data-level={data.personalization.level}>{personalization?.[0]}</span></div><p>{personalization?.[1]}</p><div className={styles.gates}>{data.personalization.gates.map((gate) => <div key={gate.id} data-met={gate.met}><span>{gateLabel(gate, uk)}</span><strong>{number(gate.current, gate.unit === "coefficient-of-variation" ? 2 : 0)} / {gate.required}{gate.unit === "kcal/day-sd" ? " kcal/day SD" : gate.unit === "days" ? ` ${uk ? "днів" : "days"}` : ""}</strong><small>{gate.met ? (uk ? "поріг пройдено" : "threshold met") : (uk ? "ще не пройдено" : "not met yet")}</small></div>)}</div><p className={styles.note}>{uk ? "Ці пороги — консервативні інженерні запобіжники, не біологічні норми. Навіть після проходження порогів параметри приймаються лише за умови покращення відкладеної перевірки." : "These thresholds are conservative engineering safeguards, not biological norms. Parameters are accepted only when held-out validation also improves."}</p></section>
+      <section className={styles.panel}><div className={styles.sectionHead}><div><p className={styles.eyebrow}>{uk ? "Прийняті налаштування" : "Accepted settings"}</p><h2>{uk ? "Коли модель підлаштовується під вас" : "When the model tunes to you"}</h2></div><span className={styles.statusPill} data-level={data.personalization.level}>{personalization?.[0]}</span></div><p>{personalization?.[1]}</p><div className={styles.gates}>{data.personalization.gates.map((gate) => <div key={gate.id} data-met={gate.met}><span>{gateLabel(gate, uk)}</span><strong>{number(gate.current, gate.unit === "coefficient-of-variation" ? 2 : 0)} / {gate.required}{gate.unit === "kcal/day-sd" ? " kcal/day SD" : gate.unit === "days" ? ` ${uk ? "днів" : "days"}` : ""}</strong><small>{gate.met ? (uk ? "достатньо" : "enough") : (uk ? "ще мало" : "not enough yet")}</small></div>)}</div><p className={styles.note}>{uk ? "Це обережні технічні пороги, не медичні норми. Налаштування приймаються лише якщо перевірка на відкладених даних теж покращується." : "These are careful technical thresholds, not medical norms. Settings are accepted only when a held-out check also improves."}</p></section>
 
       <section className={styles.grid}>
-        <article className={styles.panel}><p className={styles.eyebrow}>{uk ? "Пропуски в історії" : "Historical gaps"}</p><h2>{uk ? "Відновлення траєкторії" : "Trajectory recovery"}</h2><p className={styles.largeStatus}>{data.recovery.status}</p><p>{data.recovery.status === "not-required" ? (uk ? "Невідомих переходів немає; використовується детермінований стан." : "There are no unknown transitions; the deterministic state is used.") : data.recovery.usableForForecast ? (uk ? "Відновлений стан можна використати з відповідною позначкою якості." : "The recovered state is usable with its quality label.") : (uk ? "Прогноз не запускається, доки початковий стан ненадійний." : "Forecasting stays blocked while the initial state is unreliable.")}</p></article>
-        <article className={styles.panel}><p className={styles.eyebrow}>{uk ? "Наступна дія" : "Next action"}</p><h2>{data.forecastReadiness.allowed ? (uk ? "Дослідити сценарій" : "Explore a scenario") : (uk ? "Поліпшити вихідний стан" : "Improve the starting state")}</h2><p>{data.forecastReadiness.allowed ? (uk ? "Прогноз доступний, але його діапазони залишаються умовними." : "Forecasting is available, but its intervals remain conditional.") : (uk ? "Перевірте пропуски даних або дочекайтеся нових спостережень ваги." : "Review data gaps or wait for new weight observations.")}</p><div className={styles.actions}><Link href="/forecast">{uk ? "Відкрити прогноз" : "Open forecast"}</Link><Link href="/history">{uk ? "Перевірити історію" : "Review history"}</Link></div></article>
+        <article className={styles.panel}><p className={styles.eyebrow}>{uk ? "Пропуски в історії" : "Gaps in history"}</p><h2>{uk ? "Закриття пропусків" : "Closing gaps"}</h2><p className={styles.largeStatus}>{data.recovery.status}</p><p>{data.recovery.status === "not-required" ? (uk ? "Великих дірок немає; беремо звичайну оцінку." : "No big holes; the ordinary estimate is used.") : data.recovery.usableForForecast ? (uk ? "Пропуск оцінено; прогноз можна будувати з позначкою якості." : "The gap was estimated; forecasting can run with a quality label.") : (uk ? "Прогноз не стартує, доки стартова вага ненадійна." : "Forecasting stays blocked while the starting weight is unreliable.")}</p></article>
+        <article className={styles.panel}><p className={styles.eyebrow}>{uk ? "Наступна дія" : "Next action"}</p><h2>{data.forecastReadiness.allowed ? (uk ? "Спробувати сценарій" : "Try a scenario") : (uk ? "Спочатку покращити старт" : "Improve the starting point first")}</h2><p>{data.forecastReadiness.allowed ? (uk ? "Прогноз доступний, але діапазон лишається «можливо так», а не гарантією." : "Forecasting is available, but the range remains “maybe,” not a guarantee.") : (uk ? "Перевірте дірки в даних або дочекайтеся нових зважувань. Якщо в таблиці здоров’я вже є дні — оновіть модель." : "Check data gaps or wait for new weigh-ins. If the health table already has days, update the model.")}</p><div className={styles.actions}><Link href="/forecast">{uk ? "Відкрити прогноз" : "Open forecast"}</Link><Link href="/history">{uk ? "Перевірити історію" : "Review history"}</Link></div></article>
       </section>
 
-      <section className={styles.panel}><p className={styles.eyebrow}>{uk ? "Межі інтерпретації" : "Interpretation limits"}</p><h2>{uk ? "Що не слід висновувати" : "What not to infer"}</h2><ul className={styles.limitations}>{data.limitations.map((item) => <li key={item.id}>{limitationCopy(item.id, uk)}</li>)}</ul></section>
+      <section className={styles.panel}><p className={styles.eyebrow}>{uk ? "Межі інтерпретації" : "Interpretation limits"}</p><h2>{uk ? "Що не варто висновувати" : "What not to infer"}</h2><ul className={styles.limitations}>{data.limitations.map((item) => <li key={item.id}>{limitationCopy(item.id, uk)}</li>)}</ul></section>
       <details className={styles.technical}><summary onKeyDown={(event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();

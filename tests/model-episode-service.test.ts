@@ -199,6 +199,60 @@ describe("model episode application service", () => {
     expect(result.latestModeledDate).toBeNull();
   });
 
+  it("keeps the earliest retained run across repeated recalculates", async () => {
+    const historical = [
+      ...stableSourceDays({
+        count: 5,
+        endDate: "2026-08-21",
+        override: () => ({ bodyFatPercent: 20 }),
+      }),
+      ...stableSourceDays({
+        count: 5,
+        endDate: "2026-08-28",
+        override: () => ({ bodyFatPercent: 20 }),
+      }),
+    ];
+    // Incomplete bridge day splits the history into two qualifying runs.
+    historical.splice(5, 0, sourceDay("2026-08-22", {
+      caloriesKcal: null, proteinG: null, fatG: null, carbsG: null,
+      walkingDistanceKm: null,
+    }));
+    const sources = { days: historical, snapshots: [], workIntervals: [], workouts: [] };
+    repository.loadSources.mockResolvedValue(sources);
+    repository.createPrepared.mockImplementation(async (prepared) => ({
+      ...persistedEpisodeFixture(prepared.startDate),
+      id: prepared.startDate === "2026-08-17" ? 11 : 12,
+      modelVersion: "bodycast-physiology-v6",
+    }));
+    repository.status.mockResolvedValue({ episodeId: 11, daysModeled: 5 });
+
+    repository.getActive.mockResolvedValue({
+      ...persistedEpisodeFixture("2026-08-24"),
+      modelVersion: "bodycast-physiology-v5",
+    });
+    const first = await recalculateModelEpisode({
+      now: new Date("2026-08-29T18:00:00.000Z"),
+    }, client);
+    expect(repository.createPrepared).toHaveBeenCalledWith(
+      expect.objectContaining({ startDate: "2026-08-17" }),
+    );
+    expect(first).toMatchObject({ episodeId: 11, daysPersisted: 5 });
+
+    repository.createPrepared.mockClear();
+    repository.deactivateActive.mockClear();
+    repository.getActive.mockResolvedValue({
+      ...persistedEpisodeFixture("2026-08-17"),
+      id: 11,
+      modelVersion: "bodycast-physiology-v6",
+    });
+    const second = await recalculateModelEpisode({
+      now: new Date("2026-08-29T18:05:00.000Z"),
+    }, client);
+    expect(repository.createPrepared).not.toHaveBeenCalled();
+    expect(repository.deactivateActive).not.toHaveBeenCalled();
+    expect(second).toMatchObject({ episodeId: 11, daysPersisted: 5 });
+  });
+
   it("preserves legacy episode semantics instead of silently relabeling them v5", async () => {
     const episode = {
       ...persistedEpisodeFixture("2026-08-20"),

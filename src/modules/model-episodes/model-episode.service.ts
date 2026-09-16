@@ -52,7 +52,6 @@ function modelableRuns(
 function preferredModelableRunStart(
   days: ReturnType<typeof buildSimulationDays>,
   ecfPolicy: Parameters<typeof missingPhysiologicalTransitionFields>[1],
-  episodeStartDate: string,
   sources: HistoricalModelSources,
 ): string | null {
   const starts = modelableRuns(days, ecfPolicy).flatMap((run) => {
@@ -65,9 +64,10 @@ function preferredModelableRunStart(
     )).length;
     return remainingDays >= MINIMUM_AUTOMATIC_RESTART_DAYS ? [anchored.date] : [];
   });
-  // Never discard a usable historical block merely because the active episode
-  // was initialized recently. Gaps remain explicit and are handled by recovery.
-  return starts.find((date) => date < episodeStartDate) ?? starts.at(-1) ?? null;
+  // Always prefer the earliest retained modelable run. Choosing the newest run
+  // when the active episode already starts on an older block flips 5↔11 on every
+  // recalculate; gaps stay explicit via unknown-interval recovery.
+  return starts[0] ?? null;
 }
 
 function inputSourcesInRange(
@@ -267,7 +267,6 @@ export async function recalculateModelEpisode(
       const restartDate = preferredModelableRunStart(
         candidateDays,
         episode.ecfPolicy,
-        episode.startDate,
         sources,
       );
       if (restartDate !== null && restartDate !== episode.startDate) {

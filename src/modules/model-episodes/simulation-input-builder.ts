@@ -130,6 +130,19 @@ export function buildSimulationDays(input: {
     });
 
     let outsideWorkWalkingDistanceKm = walking.outsideWorkWalkingDistanceKm;
+    // Reconstruction stays honest (null work walk). When the daily total is known,
+    // allocate it all outside work so occupation can use category-only fallback
+    // without breaking physiological continuity.
+    const softIssues: string[] = [];
+    if (
+      dailyIntervals.length > 0
+      && walking.workWalkingDistanceKm === null
+      && day.walkingDistanceKm !== null
+      && outsideWorkWalkingDistanceKm === null
+    ) {
+      outsideWorkWalkingDistanceKm = day.walkingDistanceKm;
+      softIssues.push("work-walking-unallocated", "outside-work-assumed-from-daily-total");
+    }
     let stairDiagnostics: StairOverlapDiagnostic[] = [];
     let workoutEvents: ExplicitWorkoutActivityEvent[] | undefined;
 
@@ -170,7 +183,8 @@ export function buildSimulationDays(input: {
     if (dailyIntervals.some((interval) => !isOccupationalCategory(interval.category))) {
       workIssues.push("occupationalActivity.category");
     }
-    if (dailyIntervals.length > 0 && walking.outsideWorkWalkingDistanceKm === null) {
+    // Hard-fail only when outside walking is still unknown after the daily-total fallback.
+    if (dailyIntervals.length > 0 && outsideWorkWalkingDistanceKm === null) {
       workIssues.push("outsideWorkWalkingDistanceKm");
     }
     const activityIssues: string[] = [];
@@ -193,7 +207,9 @@ export function buildSimulationDays(input: {
     if (!sourceDay && dailyIntervals.length === 0) {
       activityIssues.push("occupationalActivity.durationHours");
     }
-    const issues = [...new Set([...nutritionIssues, ...activityIssues, ...workIssues])];
+    const issues = [...new Set([
+      ...nutritionIssues, ...activityIssues, ...workIssues, ...softIssues,
+    ])];
     const sourceObservationFields = sourceDay
       ? [
           "weightKg", "bodyFatPercent", "caloriesKcal", "proteinG", "fatG", "carbsG",

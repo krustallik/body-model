@@ -146,7 +146,7 @@ describe("historical simulation input builder", () => {
       .toBeCloseTo(workKm, 12);
   });
 
-  it("marks work reconstruction unavailable when a boundary gap is too large", () => {
+  it("allocates daily walking outside work when work-walk reconstruction is unavailable", () => {
     const result = buildSimulationDays({
       from: date,
       to: date,
@@ -157,15 +157,22 @@ describe("historical simulation input builder", () => {
           timezone: "Europe/Bratislava", category: "manualLight", breakMinutes: null }],
       }),
     });
-    expect(result[0].sourceQuality.status).toBe("work-reconstruction-unavailable");
+    expect(result[0].sourceQuality.status).toBe("complete");
+    expect(result[0].sourceQuality.issues).toEqual(expect.arrayContaining([
+      "work-walking-unallocated",
+      "outside-work-assumed-from-daily-total",
+    ]));
+    expect(result[0].sourceQuality.workWalkingDistanceKm).toBeNull();
     expect(result[0].sourceQuality.workWalkingReconstruction).toEqual([{
       intervalId: 1, distanceKm: null, reason: "gap-too-large",
       startMethod: null, endMethod: null,
     }]);
-    expect(result[0].input.outsideWorkWalkingDistanceKm).toBeNull();
+    expect(result[0].input.outsideWorkWalkingDistanceKm).toBe(5.1);
+    expect(result[0].input.occupationalActivity.intervals?.[0].workWalkingDistanceKm)
+      .toBeNull();
   });
 
-  it("propagates a decreasing work-distance counter without clamping", () => {
+  it("allocates daily walking outside work when the work-distance counter decreases", () => {
     const result = buildSimulationDays({
       from: date,
       to: date,
@@ -180,12 +187,49 @@ describe("historical simulation input builder", () => {
           timezone: "Europe/Bratislava", category: "manualLight", breakMinutes: null }],
       }),
     });
-    expect(result[0].sourceQuality.status).toBe("work-reconstruction-unavailable");
+    expect(result[0].sourceQuality.status).toBe("complete");
+    expect(result[0].sourceQuality.issues).toEqual(expect.arrayContaining([
+      "work-walking-unallocated",
+      "outside-work-assumed-from-daily-total",
+    ]));
     expect(result[0].sourceQuality.workWalkingReconstruction?.[0]).toMatchObject({
       distanceKm: null, reason: "counter-decreased",
     });
+    expect(result[0].input.outsideWorkWalkingDistanceKm).toBe(5.1);
     expect(result[0].input.occupationalActivity.intervals?.[0].workWalkingDistanceKm)
       .toBeNull();
+  });
+
+  it("keeps continuity across a work day with no usable snapshots", () => {
+    const start = "2026-08-20";
+    const days = [0, 1, 2, 3, 4].map((offset) => sourceDay(addCalendarDays(start, offset), {
+      walkingDistanceKm: offset === 2 ? 0.1567 : 5,
+      averageWalkingSpeedKmh: 4.5,
+      strengthTrainingMinutes: 0,
+    }));
+    const result = buildSimulationDays({
+      from: start,
+      to: addCalendarDays(start, 4),
+      sources: {
+        days,
+        snapshots: [],
+        workIntervals: [{
+          id: 1,
+          date: addCalendarDays(start, 2),
+          startAt: new Date("2026-08-22T12:00:00.000Z"),
+          endAt: new Date("2026-08-22T20:00:00.000Z"),
+          timezone: "Europe/Bratislava",
+          category: "manualLight",
+          breakMinutes: 30,
+        }],
+      },
+    });
+    expect(result.every(({ input }) => input.outsideWorkWalkingDistanceKm !== null)).toBe(true);
+    expect(result[2].sourceQuality.issues).toEqual(expect.arrayContaining([
+      "work-walking-unallocated",
+      "outside-work-assumed-from-daily-total",
+    ]));
+    expect(result[2].input.outsideWorkWalkingDistanceKm).toBe(0.1567);
   });
 
   it("preserves explicit strength zero and missing measured weight", () => {
@@ -222,6 +266,28 @@ describe("historical simulation input builder", () => {
     expect(result.map(({ input }) => input.date)).toEqual(["2026-08-21", date]);
     expect(result[0].sourceQuality.status).toBe("missing-nutrition");
     expect(result[0].input.caloriesKcal).toBeNull();
+  });
+
+  it("still marks outside walking unavailable when reconstructed work exceeds the daily total", () => {
+    const result = buildSimulationDays({
+      from: date,
+      to: date,
+      sources: sources({
+        days: [sourceDay(date, { walkingDistanceKm: 1 })],
+        snapshots: [
+          { id: 1, date, receivedAt: instant("08:00"), syncedAt: null,
+            steps: 0, walkingDistanceKm: 0 },
+          { id: 2, date, receivedAt: instant("16:00"), syncedAt: null,
+            steps: 3_000, walkingDistanceKm: 2 },
+        ],
+        workIntervals: [{ id: 1, date, startAt: instant("08:00"), endAt: instant("16:00"),
+          timezone: "Europe/Bratislava", category: "manualLight", breakMinutes: null }],
+      }),
+    });
+    expect(result[0].sourceQuality.status).toBe("work-reconstruction-unavailable");
+    expect(result[0].sourceQuality.workWalkingDistanceKm).toBe(2);
+    expect(result[0].input.outsideWorkWalkingDistanceKm).toBeNull();
+    expect(result[0].sourceQuality.issues).not.toContain("work-walking-unallocated");
   });
 
   it("marks an unknown occupational category unavailable", () => {

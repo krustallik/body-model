@@ -95,12 +95,30 @@ describe("model episode application service", () => {
   });
 
   it("restarts the active episode at three complete days after a gap", async () => {
-    const episode = persistedEpisodeFixture("2026-09-01");
-    const historical = stableSourceDays({ count: 90, endDate: "2026-09-01" });
+    const episode = {
+      ...persistedEpisodeFixture("2026-09-01"),
+      modelVersion: "bodycast-physiology-v5",
+    };
+    const historical = [
+      ...stableSourceDays({ count: 15, endDate: "2026-08-31" }),
+      sourceDay("2026-09-01", {
+        caloriesKcal: null, proteinG: null, fatG: null, carbsG: null,
+      }),
+      sourceDay("2026-09-02"),
+      sourceDay("2026-09-03", {
+        caloriesKcal: null, proteinG: null, fatG: null, carbsG: null,
+      }),
+    ];
     const recent = [
-      sourceDay("2026-09-14", { weightKg: 92.9 }),
-      sourceDay("2026-09-15", { weightKg: 91.1 }),
-      sourceDay("2026-09-16", { weightKg: 89.8 }),
+      sourceDay("2026-09-14", {
+        weightKg: 92.9, strengthTrainingMinutes: null, workoutFeedObserved: true,
+      }),
+      sourceDay("2026-09-15", {
+        weightKg: 91.1, strengthTrainingMinutes: null, workoutFeedObserved: true,
+      }),
+      sourceDay("2026-09-16", {
+        weightKg: 89.8, strengthTrainingMinutes: 76, workoutFeedObserved: true,
+      }),
     ];
     repository.getActive.mockResolvedValue(episode);
     repository.loadSources.mockResolvedValue({
@@ -120,7 +138,12 @@ describe("model episode application service", () => {
       new Date("2026-09-17T10:00:00.000Z"),
     );
     expect(repository.createPrepared).toHaveBeenCalledWith(
-      expect.objectContaining({ startDate: "2026-09-14" }),
+      expect.objectContaining({
+        startDate: "2026-09-14",
+        initializationDiagnostics: expect.objectContaining({
+          reason: "post-gap-restart-reused-frozen-episode",
+        }),
+      }),
     );
     expect(repository.persistCalculation).toHaveBeenCalledWith(
       8,

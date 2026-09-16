@@ -38,6 +38,15 @@ describe("resolveWorkoutFeedObserved", () => {
     })).toBe(true);
   });
 
+  it("marks an empty Shortcut strength field as an observed rest day", () => {
+    expect(resolveWorkoutFeedObserved({
+      Date: "2026-09-15",
+      Trainingtype: "",
+      Trainingactivekcal: "",
+      Strengthtrainingminutes: "",
+    })).toBe(true);
+  });
+
   it("accepts Shortcut Strengthtrainingminutes timestamp lines as the training feed", () => {
     expect(resolveWorkoutFeedObserved({
       Date: "2026-09-16",

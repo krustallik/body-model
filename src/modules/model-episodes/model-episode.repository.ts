@@ -1,4 +1,5 @@
 import { normalizeDailyMeasurements } from "@/modules/days/measurement-policy";
+import { resolveWorkoutFeedObserved } from "@/modules/health/workout-feed-coverage";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { createGlycogenParameters } from "@/model/body-composition/glycogen";
@@ -244,6 +245,7 @@ export class ModelEpisodeRepository {
           walkingDistanceKm: true,
           strengthTrainingMinutes: true,
           workoutFeedObserved: true,
+          rawPayload: true,
         },
       }),
       this.client.healthSyncSnapshot.findMany({
@@ -296,7 +298,8 @@ export class ModelEpisodeRepository {
         averageWalkingSpeedKmh: decimal(day.averageWalkingSpeedKmh),
         walkingDistanceKm: decimal(day.walkingDistanceKm),
         strengthTrainingMinutes: decimal(day.strengthTrainingMinutes),
-        workoutFeedObserved: day.workoutFeedObserved ?? null,
+        workoutFeedObserved: day.workoutFeedObserved
+          ?? (resolveWorkoutFeedObserved(day.rawPayload) ? true : null),
       })),
       snapshots: snapshots.map(normalizeDailyMeasurements).map((snapshot) => ({
         ...snapshot,

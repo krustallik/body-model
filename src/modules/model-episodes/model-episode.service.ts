@@ -10,8 +10,14 @@ import {
   NoActiveModelEpisodeError,
 } from "./model-episode.errors";
 import type { ModelHistoryQuery } from "./model-episode.schema";
+import type {
+  HistoricalModelSources,
+  PersistedEpisode,
+  PreparedEpisodeInitialization,
+} from "./model-episode.types";
 import { ModelEpisodeRepository } from "./model-episode.repository";
 import { addCalendarDays, latestCompletedLocalDate } from "./model-calendar";
+import { CURRENT_MODEL_VERSION } from "./model-version";
 import { buildSimulationDays } from "./simulation-input-builder";
 
 const MINIMUM_AUTOMATIC_RESTART_DAYS = 3;
@@ -28,6 +34,73 @@ function latestModelableRunStart(
   return startIndex > 0 && days.length - startIndex >= MINIMUM_AUTOMATIC_RESTART_DAYS
     ? days[startIndex].input.date
     : null;
+}
+
+function prepareRestartFromFrozenEpisode(input: {
+  episode: PersistedEpisode;
+  sources: HistoricalModelSources;
+  startDate: string;
+}): PreparedEpisodeInitialization {
+  const observed = input.sources.days.find(({ date }) => date === input.startDate);
+  const fallbackNutrition = input.episode.baselineNutritionFallback ?? (
+    observed?.caloriesKcal != null
+    && observed.proteinG != null
+    && observed.fatG != null
+    && observed.carbsG != null
+      ? {
+          caloriesKcal: observed.caloriesKcal,
+          proteinG: observed.proteinG,
+          fatG: observed.fatG,
+          carbsG: observed.carbsG,
+        }
+      : null
+  );
+  if (!fallbackNutrition) throw new EpisodeInitializationError("insufficient-baseline-data");
+
+  return {
+    profileId: input.episode.profileId,
+    startDate: input.startDate,
+    timezone: input.episode.timezone,
+    modelVersion: CURRENT_MODEL_VERSION,
+    ecfPolicy: input.episode.ecfPolicy,
+    baseline: {
+      baselineEnergyIntakeKcalPerDay: input.episode.baselineEnergyIntakeKcalPerDay,
+      baselineCarbIntakeG: input.episode.baselineCarbIntakeG,
+      fallbackNutrition,
+      diagnostics: {
+        method: "quality-ranked-variable-window-v5",
+        windowStartDate: input.episode.baselineWindowStartDate,
+        windowEndDate: input.episode.baselineWindowEndDate,
+        windowDays: Math.max(1, input.episode.baselineNutritionDayCount),
+        completeNutritionDayCount: input.episode.baselineNutritionDayCount,
+        weightObservationCount: input.episode.baselineWeightObservationCount,
+        weightObservationSpanDays: Math.max(0, input.episode.baselineWeightObservationCount - 1),
+        medianWeightKg: input.episode.initialState.weightFilterState.estimatedWeightKg,
+        weightTrendKgPerWeek: input.episode.baselineWeightTrendKgPerWeek,
+        weightTrendPercentPerWeek: input.episode.baselineWeightTrendPercentPerWeek,
+        maximumAbsoluteWeightTrendPercentPerWeek: 0.25,
+      },
+    },
+    initialState: input.episode.initialState,
+    simulatorParameters: input.episode.simulatorParameters,
+    initialRmrKcalPerDay: input.episode.initialRmrKcalPerDay,
+    bodyFatObservationCount: 0,
+    bodyFatSpreadPercent: 0,
+    nutritionMaxBridgeDays: input.episode.nutritionMaxBridgeDays,
+    observedReferenceNutrition: fallbackNutrition,
+    energyHomeostasisReferenceKcalPerDay:
+      input.episode.simulatorParameters.baselineEnergyIntakeKcalPerDay,
+    glycogenReferenceCarbIntakeG:
+      input.episode.simulatorParameters.glycogenParameters.baselineCarbIntakeG,
+    initialPersonalOffsetKcalPerDay: input.episode.initialPersonalOffsetKcalPerDay ?? 0,
+    appliedPersonalOffsetKcalPerDay: input.episode.personalOffsetKcalPerDay,
+    initializationApplicationReason: "validated-default-zero",
+    initializationStatus: "insufficient",
+    initializationDiagnostics: {
+      reason: "post-gap-restart-reused-frozen-episode",
+      sourceEpisodeId: input.episode.id,
+    },
+  };
 }
 
 const TRANSACTION_OPTIONS = {
@@ -98,24 +171,35 @@ export async function recalculateModelEpisode(
       : { days: [], snapshots: [], workIntervals: [], workouts: [] };
 
     if (input.episodeId === undefined && sourceStart <= latestCompletedDate) {
+      // Restart eligibility must use current semantics. Otherwise a legacy
+      // episode can never see a modern rest day (observed workout feed + no
+      // strength event) as zero, so it remains permanently stuck before the
+      // very gap that should cause a new current-version episode.
       const candidateDays = buildSimulationDays({
         from: sourceStart,
         to: latestCompletedDate,
         sources,
         baselineNutritionFallback: episode.baselineNutritionFallback,
         nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
-        modelVersion: episode.modelVersion,
+        modelVersion: CURRENT_MODEL_VERSION,
       });
       const restartDate = latestModelableRunStart(candidateDays, episode.ecfPolicy);
       if (restartDate !== null && restartDate !== episode.startDate) {
         const profile = await repository.getProfile();
-        const prepared = prepareEpisodeInitialization({
-          profile,
-          days: sources.days,
-          sources,
-          startDate: restartDate,
-          timezone: episode.timezone,
-        });
+        let prepared: PreparedEpisodeInitialization;
+        try {
+          prepared = prepareEpisodeInitialization({
+            profile,
+            days: sources.days,
+            sources,
+            startDate: restartDate,
+            timezone: episode.timezone,
+          });
+        } catch (error) {
+          if (!(error instanceof EpisodeInitializationError)
+              || error.reason !== "insufficient-baseline-data") throw error;
+          prepared = prepareRestartFromFrozenEpisode({ episode, sources, startDate: restartDate });
+        }
         await repository.deactivateActive(input.now ?? new Date());
         episode = await repository.createPrepared(prepared);
       }

@@ -97,4 +97,45 @@ describe("field-specific zero measurement semantics", () => {
     expect(built.input.strengthTrainingMinutes).toBe(0);
     expect(day.strengthTrainingMinutes.isZero()).toBe(true);
   });
+
+  it("recovers legacy rest-day coverage from that day's raw Shortcut payload", async () => {
+    const date = "2026-09-15";
+    const day = {
+      date,
+      weightKg: 91.1,
+      bodyFatPercent: new Prisma.Decimal(28),
+      caloriesKcal: 2_889,
+      proteinG: 176,
+      fatG: 113,
+      carbsG: 293,
+      averageWalkingSpeedKmh: new Prisma.Decimal(4.7963),
+      walkingDistanceKm: new Prisma.Decimal(9.915),
+      strengthTrainingMinutes: null,
+      workoutFeedObserved: null,
+      rawPayload: {
+        Date: date,
+        Trainingtype: "",
+        Trainingactivekcal: "",
+        Strengthtrainingminutes: "",
+      },
+    };
+    const client = {
+      dailyHealthData: { findMany: vi.fn().mockResolvedValue([day]) },
+      healthSyncSnapshot: { findMany: vi.fn().mockResolvedValue([]) },
+      workInterval: { findMany: vi.fn().mockResolvedValue([]) },
+      workout: { findMany: vi.fn().mockResolvedValue([]) },
+    } as unknown as PrismaClient;
+
+    const sources = await new ModelEpisodeRepository(client).loadSources(date, date);
+    const [built] = buildSimulationDays({
+      from: date,
+      to: date,
+      sources,
+      modelVersion: "bodycast-physiology-v6",
+    });
+
+    expect(sources.days[0].workoutFeedObserved).toBe(true);
+    expect(built.input.strengthTrainingMinutes).toBe(0);
+    expect(built.sourceQuality.status).toBe("complete");
+  });
 });

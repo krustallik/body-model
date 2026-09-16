@@ -64,8 +64,18 @@ export function resolveWorkoutFeedObserved(rawDay: unknown): boolean {
   const hasTrainingFields = "trainingType" in canonicalDay
     || "trainingActiveKcal" in canonicalDay
     || "trainingTimestamps" in canonicalDay
+    || "strengthTrainingMinutes" in canonicalDay
     || consumedStrengthTrainingMinutes;
   if (!hasTrainingFields) return false;
+  const suppliedTrainingValues = Object.entries(canonicalDay)
+    .filter(([key]) => key !== "date")
+    .map(([, value]) => value);
+  if (suppliedTrainingValues.length > 0 && suppliedTrainingValues.every((value) => (
+    value === null
+    || value === undefined
+    || (typeof value === "string" && value.trim() === "")
+    || (Array.isArray(value) && value.length === 0)
+  ))) return true;
 
   const date = typeof canonicalDay.date === "string" ? canonicalDay.date : "";
   const kcals = splitPositionalLines(trainingActiveKcal);

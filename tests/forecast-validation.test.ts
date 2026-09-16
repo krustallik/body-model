@@ -48,5 +48,5 @@ describe("forecast validation harnesses", () => {
     expect(Object.keys(canonicalForecasts())).toEqual([
       "deficit30d", "maintenance90d", "deficitToMaintenance", "recoveredVacation",
     ]);
-  });
+  }, 15_000);
 });

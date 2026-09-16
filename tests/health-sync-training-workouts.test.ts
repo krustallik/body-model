@@ -219,6 +219,57 @@ describe("health sync training workout pipeline", () => {
     expect(workouts.map((workout) => workout.durationMinutes)).toEqual([12, 2, 62]);
   });
 
+  it("accepts the exact Sep 16 rawBody with glued 10:44 timestamp and WalkingDistanceKm", () => {
+    const result = parseShortcutSync({
+      days: [{
+        fatG: 57,
+        carbsG: 260,
+        averageWalkingSpeedKmh: "5",
+        caloriesKcal: 2393,
+        trainingType: "Stair Climbing\nStair Climbing\nTraditional Strength Training",
+        proteinG: 202,
+        WalkingDistanceKm: "3,713",
+        bodyFatPercent: "27.6",
+        date: "2026-09-16",
+        trainingActiveKcal: "154\n18\n562",
+        strengthTrainingMinutes:
+          "16. 9. 2026, 12:40\n16. 9. 2026, 12:34\n16. 9. 2026, 10:4416. 9. 2026, 12:52\n16. 9. 2026, 12:36\n16. 9. 2026, 11:46",
+        weightKg: "89.80000305175781",
+        steps: 4449,
+      }],
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) {
+      expect(result.error.issues).toEqual([]);
+      return;
+    }
+
+    const day = result.data.days[0];
+    expect(day?.date).toBe("2026-09-16");
+    expect(day?.walkingDistanceKm).toBe(3.713);
+    expect(day).not.toHaveProperty("strengthTrainingMinutes");
+    const workouts = day?.workouts ?? [];
+    expect(workouts).toHaveLength(3);
+    expect(workouts).toEqual([
+      expect.objectContaining({
+        type: STAIR_CLIMBING_TYPE,
+        activeEnergyKcal: 154,
+        durationMinutes: 12,
+      }),
+      expect.objectContaining({
+        type: STAIR_CLIMBING_TYPE,
+        activeEnergyKcal: 18,
+        durationMinutes: 2,
+      }),
+      expect.objectContaining({
+        type: TRADITIONAL_STRENGTH_TRAINING_TYPE,
+        activeEnergyKcal: 562,
+        durationMinutes: 62,
+      }),
+    ]);
+  });
+
   it("accepts the exact Shortcuts screenshot payload with literal \\\\N separators and string Steps", () => {
     const result = parseShortcutSync({
       days: [{

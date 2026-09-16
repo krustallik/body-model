@@ -1,7 +1,9 @@
 import {
   expandTrainingWorkoutFields,
+  extractTrainingTimestampLines,
   resolveTrainingTimestamps,
   splitPositionalLines,
+  splitTrainingTypeLines,
 } from "@/modules/health/expand-training-workouts";
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -66,9 +68,14 @@ export function resolveWorkoutFeedObserved(rawDay: unknown): boolean {
   if (!hasTrainingFields) return false;
 
   const date = typeof canonicalDay.date === "string" ? canonicalDay.date : "";
-  const types = splitPositionalLines(trainingType);
-  const timestamps = splitPositionalLines(trainingTimestamps);
   const kcals = splitPositionalLines(trainingActiveKcal);
+  const timestamps = extractTrainingTimestampLines(trainingTimestamps);
+  const preferredN = kcals !== null && kcals.length > 0
+    ? kcals.length
+    : timestamps !== null && timestamps.length > 0 && timestamps.length % 2 === 0
+      ? timestamps.length / 2
+      : undefined;
+  const types = splitTrainingTypeLines(trainingType, preferredN);
 
   // Empty-but-present training lines establish coverage (confirmed no today workout
   // once other-day events are filtered). Catastrophic structure does not.

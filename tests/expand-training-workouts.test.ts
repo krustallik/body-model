@@ -3,12 +3,18 @@ import {
   STAIR_CLIMBING_TYPE,
   TRADITIONAL_STRENGTH_TRAINING_TYPE,
   expandTrainingWorkoutFields,
+  extractTrainingTimestampLines,
   mergeExpandedTrainingWorkouts,
   splitPositionalLines,
+  splitTrainingTypeLines,
 } from "@/modules/health/expand-training-workouts";
 import { HealthSyncRequestSchema, preprocessHealthDay } from "@/modules/health/health.schema";
 
 const DAY = "2026-08-22";
+const SEP16 = "2026-09-16";
+
+const SEP16_GLUED_TIMESTAMPS =
+  "16. 9. 2026, 12:40\n16. 9. 2026, 12:34\n16. 9. 2026, 10:4416. 9. 2026, 12:52\n16. 9. 2026, 12:36\n16. 9. 2026, 11:46";
 
 describe("splitPositionalLines", () => {
   it("splits LF and CRLF while preserving empty middle slots", () => {
@@ -32,6 +38,60 @@ describe("splitPositionalLines", () => {
 
   it.each([null, undefined, 12, true, ["a"]])("returns null for non-string %j", (value) => {
     expect(splitPositionalLines(value)).toBeNull();
+  });
+});
+
+describe("extractTrainingTimestampLines", () => {
+  it("extracts six timestamps from the Sep 16 glued payload", () => {
+    expect(extractTrainingTimestampLines(SEP16_GLUED_TIMESTAMPS)).toEqual([
+      "16. 9. 2026, 12:40",
+      "16. 9. 2026, 12:34",
+      "16. 9. 2026, 10:44",
+      "16. 9. 2026, 12:52",
+      "16. 9. 2026, 12:36",
+      "16. 9. 2026, 11:46",
+    ]);
+  });
+
+  it("still extracts newline-separated Shortcut dates", () => {
+    expect(extractTrainingTimestampLines(
+      "16. 9. 2026, 12:40\n16. 9. 2026, 12:52",
+    )).toEqual(["16. 9. 2026, 12:40", "16. 9. 2026, 12:52"]);
+  });
+
+  it.each(["", " ", "\t"])("treats blank string %j as empty list", (value) => {
+    expect(extractTrainingTimestampLines(value)).toEqual([]);
+  });
+
+  it.each([null, undefined, 12])("returns null for non-string %j", (value) => {
+    expect(extractTrainingTimestampLines(value)).toBeNull();
+  });
+});
+
+describe("splitTrainingTypeLines", () => {
+  it("splits glued HealthKit names when expected count comes from kcal", () => {
+    expect(splitTrainingTypeLines(
+      "Stair ClimbingStair ClimbingTraditional Strength Training",
+      3,
+    )).toEqual([
+      STAIR_CLIMBING_TYPE,
+      STAIR_CLIMBING_TYPE,
+      TRADITIONAL_STRENGTH_TRAINING_TYPE,
+    ]);
+  });
+
+  it("splits Title-Case junctions like ClimbingTraditional", () => {
+    expect(splitTrainingTypeLines(
+      `${STAIR_CLIMBING_TYPE}${TRADITIONAL_STRENGTH_TRAINING_TYPE}`,
+      2,
+    )).toEqual([STAIR_CLIMBING_TYPE, TRADITIONAL_STRENGTH_TRAINING_TYPE]);
+  });
+
+  it("keeps newline splits when counts already match", () => {
+    expect(splitTrainingTypeLines(
+      `${STAIR_CLIMBING_TYPE}\n${TRADITIONAL_STRENGTH_TRAINING_TYPE}`,
+      2,
+    )).toEqual([STAIR_CLIMBING_TYPE, TRADITIONAL_STRENGTH_TRAINING_TYPE]);
   });
 });
 
@@ -221,6 +281,84 @@ describe("expandTrainingWorkoutFields", () => {
     });
     expect(result.workouts[0]?.activeEnergyKcal).toBeNull();
     expect(result.diagnostics.acceptedCount).toBe(1);
+  });
+
+  it("expands the exact Sep 16 Shortcut payload with glued timestamps", () => {
+    const result = expandTrainingWorkoutFields({
+      trainingType: [
+        STAIR_CLIMBING_TYPE,
+        STAIR_CLIMBING_TYPE,
+        TRADITIONAL_STRENGTH_TRAINING_TYPE,
+      ].join("\n"),
+      trainingActiveKcal: "154\n18\n562",
+      trainingTimestamps: SEP16_GLUED_TIMESTAMPS,
+      dayDate: SEP16,
+      timezone: "Europe/Berlin",
+    });
+    expect(result.diagnostics.acceptedCount).toBe(3);
+    expect(result.workouts).toEqual([
+      expect.objectContaining({
+        type: STAIR_CLIMBING_TYPE,
+        activeEnergyKcal: 154,
+        durationMinutes: 12,
+        startAt: "2026-09-16T12:40:00.000Z",
+        endAt: "2026-09-16T12:52:00.000Z",
+      }),
+      expect.objectContaining({
+        type: STAIR_CLIMBING_TYPE,
+        activeEnergyKcal: 18,
+        durationMinutes: 2,
+        startAt: "2026-09-16T12:34:00.000Z",
+        endAt: "2026-09-16T12:36:00.000Z",
+      }),
+      expect.objectContaining({
+        type: TRADITIONAL_STRENGTH_TRAINING_TYPE,
+        activeEnergyKcal: 562,
+        durationMinutes: 62,
+        startAt: "2026-09-16T10:44:00.000Z",
+        endAt: "2026-09-16T11:46:00.000Z",
+      }),
+    ]);
+  });
+
+  it("returns no workouts when training fields are absent or empty (N optional)", () => {
+    expect(expandTrainingWorkoutFields({
+      trainingType: null,
+      trainingActiveKcal: null,
+      trainingTimestamps: null,
+      dayDate: SEP16,
+    }).workouts).toEqual([]);
+
+    expect(expandTrainingWorkoutFields({
+      trainingType: "",
+      trainingActiveKcal: "",
+      trainingTimestamps: "",
+      dayDate: SEP16,
+    }).workouts).toEqual([]);
+
+    expect(expandTrainingWorkoutFields({
+      trainingType: undefined,
+      trainingActiveKcal: undefined,
+      trainingTimestamps: undefined,
+      dayDate: DAY,
+    }).workouts).toEqual([]);
+  });
+
+  it("recovers glued trainingType using kcal count as N", () => {
+    const result = expandTrainingWorkoutFields({
+      trainingType: "Stair ClimbingStair ClimbingTraditional Strength Training",
+      trainingActiveKcal: "154\n18\n562",
+      trainingTimestamps: SEP16_GLUED_TIMESTAMPS,
+      dayDate: SEP16,
+      timezone: "Europe/Berlin",
+    });
+    expect(result.diagnostics.acceptedCount).toBe(3);
+    expect(result.workouts.map((workout) => workout.type)).toEqual([
+      STAIR_CLIMBING_TYPE,
+      STAIR_CLIMBING_TYPE,
+      TRADITIONAL_STRENGTH_TRAINING_TYPE,
+    ]);
+    expect(result.workouts.map((workout) => workout.activeEnergyKcal)).toEqual([154, 18, 562]);
   });
 });
 

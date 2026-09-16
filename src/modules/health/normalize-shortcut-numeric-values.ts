@@ -14,7 +14,7 @@ const DAY_NUMERIC_FIELDS = new Set([
   "strengthTrainingMinutes",
 ]);
 
-const WORKOUT_NUMERIC_FIELDS = new Set(["durationMinutes", "energyKcal"]);
+const WORKOUT_NUMERIC_FIELDS = new Set(["durationMinutes", "energyKcal", "activeEnergyKcal"]);
 const SHORTCUT_NUMBER_PATTERN = /^-?\d+(?:[.,]\d+)?$/;
 const SHORTCUT_WORKOUT_DATE_PATTERN = /(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4}),?\s*(\d{1,2}):(\d{2})/g;
 

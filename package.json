@@ -17,6 +17,7 @@
     "validate:recovery-support": "tsx scripts/validate-recovery-support.ts",
     "validate:recovery-calibration": "tsx scripts/validate-recovery-calibration.ts",
     "validate:initialization": "tsx scripts/validate-initialization-v5.ts",
+    "validate:workout-activity-v6": "tsx scripts/validate-workout-activity-v6.ts",
     "benchmark:forecast": "tsx scripts/benchmark-model-forecast.ts",
     "benchmark:target-solver": "tsx scripts/benchmark-target-solver.ts",
     "backup:postgres": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/backup-postgres.ps1",

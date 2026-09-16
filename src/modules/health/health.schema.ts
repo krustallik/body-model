@@ -1,4 +1,5 @@
 import { normalizeDailyMeasurementInput } from "@/modules/days/measurement-policy";
+import { mergeExpandedTrainingWorkouts } from "@/modules/health/expand-training-workouts";
 import { z } from "zod";
 import {
   DEFAULT_TIME_ZONE,
@@ -23,6 +24,10 @@ function isCalendarDate(value: string): boolean {
   );
 }
 
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 const nullableOptionalNumber = (minimum: number, maximum: number) =>
   z.number().min(minimum).max(maximum).nullable().optional();
 
@@ -34,6 +39,7 @@ export const WorkoutSchema = z
     endAt: z.string().datetime({ offset: true }),
     durationMinutes: nullableOptionalNumber(0, 1440),
     energyKcal: nullableOptionalNumber(0, 10000),
+    activeEnergyKcal: nullableOptionalNumber(0, 10000),
   })
   .strict()
   .superRefine((workout, context) => {
@@ -46,7 +52,7 @@ export const WorkoutSchema = z
     }
   });
 
-export const HealthDaySchema = z.preprocess(normalizeDailyMeasurementInput, z
+const HealthDayObjectSchema = z
   .object({
     date: z.string().refine(isCalendarDate, "date must be a real calendar date in YYYY-MM-DD format"),
     weightKg: nullableOptionalNumber(20, 400),
@@ -62,27 +68,53 @@ export const HealthDaySchema = z.preprocess(normalizeDailyMeasurementInput, z
     strengthTrainingMinutes: nullableOptionalNumber(0, 600),
     workouts: z.array(WorkoutSchema).nullable().optional(),
   })
-  .strict());
+  .strict();
 
-export const HealthSyncRequestSchema = z
-  .object({
-    days: z.array(HealthDaySchema).length(1, "days must contain exactly today's data"),
-    timezone: z.string().min(1).max(100).refine(isValidTimeZone, "timezone must be a valid IANA zone")
-      .optional(),
-    syncedAt: z.string().datetime({ offset: true }).nullable().optional(),
-  })
-  .strict()
-  .superRefine((request, context) => {
-    if (!request.syncedAt) return;
-    const localDate = instantToLocalDateTime(
-      new Date(request.syncedAt),
-      request.timezone ?? DEFAULT_TIME_ZONE,
-    ).date;
-    if (localDate !== request.days[0]?.date) {
-      context.addIssue({
-        code: "custom",
-        path: ["syncedAt"],
-        message: "syncedAt must fall on the synced calendar day in the supplied timezone",
-      });
-    }
-  });
+export function preprocessHealthDay(
+  value: unknown,
+  timezone: string = DEFAULT_TIME_ZONE,
+): unknown {
+  const measured = normalizeDailyMeasurementInput(value);
+  if (!isObject(measured)) return measured;
+  return mergeExpandedTrainingWorkouts(measured, timezone);
+}
+
+export const HealthDaySchema = z.preprocess(
+  (value) => preprocessHealthDay(value),
+  HealthDayObjectSchema,
+);
+
+export const HealthSyncRequestSchema = z.preprocess(
+  (value) => {
+    if (!isObject(value) || !Array.isArray(value.days)) return value;
+    const timezone = typeof value.timezone === "string" && isValidTimeZone(value.timezone)
+      ? value.timezone
+      : DEFAULT_TIME_ZONE;
+    return {
+      ...value,
+      days: value.days.map((day) => preprocessHealthDay(day, timezone)),
+    };
+  },
+  z
+    .object({
+      days: z.array(HealthDayObjectSchema).length(1, "days must contain exactly today's data"),
+      timezone: z.string().min(1).max(100).refine(isValidTimeZone, "timezone must be a valid IANA zone")
+        .optional(),
+      syncedAt: z.string().datetime({ offset: true }).nullable().optional(),
+    })
+    .strict()
+    .superRefine((request, context) => {
+      if (!request.syncedAt) return;
+      const localDate = instantToLocalDateTime(
+        new Date(request.syncedAt),
+        request.timezone ?? DEFAULT_TIME_ZONE,
+      ).date;
+      if (localDate !== request.days[0]?.date) {
+        context.addIssue({
+          code: "custom",
+          path: ["syncedAt"],
+          message: "syncedAt must fall on the synced calendar day in the supplied timezone",
+        });
+      }
+    }),
+);

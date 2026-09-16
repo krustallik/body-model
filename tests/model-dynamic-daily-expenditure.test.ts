@@ -249,6 +249,7 @@ describe("one-day dynamic expenditure composition", () => {
       tefKcalPerDay: 0,
       outsideWorkWalkingActivityKcalPerDay: 0,
       strengthActivityKcalPerDay: 0,
+      workoutActivityKcalPerDay: null,
       occupationalActivityKcalPerDay: 0,
       activityKcalPerDay: 0,
       adaptiveThermogenesisKcalPerDay: 0,

@@ -98,7 +98,7 @@
 
 .tableWrap table {
   width: 100%;
-  min-width: 92rem;
+  min-width: 78rem;
   border-collapse: collapse;
   font-variant-numeric: tabular-nums;
 }
@@ -120,6 +120,65 @@
 .tableWrap tbody tr:last-child td { border-bottom: 0; }
 .tableWrap tbody tr:hover { background: #f9fbfa; }
 .updatedCell { color: var(--muted); }
+
+.compactCol {
+  max-width: 5.6rem;
+  padding-left: 0.45rem !important;
+  padding-right: 0.45rem !important;
+  white-space: normal;
+  vertical-align: bottom;
+}
+.thStack {
+  display: grid;
+  gap: 0.15rem;
+  justify-items: end;
+  line-height: 1.2;
+}
+.thMain { font-weight: 700; }
+.thUnit {
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  opacity: 0.9;
+}
+.workoutLink {
+  padding: 0;
+  color: var(--accent);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 0;
+  font: inherit;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.workoutLink:hover { color: var(--accent-dark); }
+
+.workoutDetailList { display: grid; gap: 0.75rem; padding: 0 1.5rem 0.25rem; }
+.workoutDetailCard {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.95rem 1rem;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 0.85rem;
+}
+.workoutDetailCard strong { font-size: 1rem; letter-spacing: -0.02em; }
+.workoutDetailCard p { margin: 0; color: var(--muted); font-size: 0.86rem; }
+.workoutDetailCard small { color: var(--muted); font-size: 0.75rem; line-height: 1.4; }
+.workoutDetailMeta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin: 0.35rem 0 0;
+}
+.workoutDetailMeta > div { display: grid; gap: 0.15rem; }
+.workoutDetailMeta dt { color: var(--muted); font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; }
+.workoutDetailMeta dd { margin: 0; font-size: 0.88rem; font-weight: 750; font-variant-numeric: tabular-nums; }
+.dialog > .dialogHeader { padding: 1.5rem 1.5rem 0.75rem; }
+.dialog > .dialogActions { padding: 0 1.5rem 1.5rem; }
 
 .actions { display: flex; gap: 0.35rem; }
 .actions button { padding: 0.48rem 0.65rem; color: var(--accent); background: transparent; }

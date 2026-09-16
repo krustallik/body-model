@@ -25,6 +25,7 @@ import {
   type ExpenditurePersonalization,
   type DynamicDailyExpenditureResult,
 } from "./dynamic-daily-expenditure";
+import { hasExplicitStrengthWorkouts } from "./activity/workout-energy";
 import type { DynamicRmrParameters } from "./dynamic-rmr";
 import type { OccupationalCategory } from "./occupational-activity";
 import {
@@ -75,6 +76,8 @@ export type PhysiologicalDailyInput = {
   outsideWorkWalkingDistanceKm: OptionalMeasurement;
   averageWalkingSpeedKmh: OptionalMeasurement;
   strengthTrainingMinutes: OptionalMeasurement;
+  /** v6 explicit workouts; absent on v5 path. */
+  workoutActivity?: import("./activity/workout-energy").ExplicitWorkoutActivityInput;
   occupationalActivity: {
     category: OccupationalCategory | null | undefined;
     durationHours: OptionalMeasurement;
@@ -189,7 +192,9 @@ export function missingPhysiologicalTransitionFields(
       && input.outsideWorkWalkingDistanceKm !== 0) {
     require("averageWalkingSpeedKmh", input.averageWalkingSpeedKmh);
   }
-  require("strengthTrainingMinutes", input.strengthTrainingMinutes);
+  if (!(input.workoutActivity && hasExplicitStrengthWorkouts(input.workoutActivity.events))) {
+    require("strengthTrainingMinutes", input.strengthTrainingMinutes);
+  }
   if (input.occupationalActivity.intervals !== undefined) {
     for (const [index, interval] of input.occupationalActivity.intervals.entries()) {
       require(`occupationalActivity.intervals.${index}.durationHours`, interval.durationHours);
@@ -281,6 +286,7 @@ export function simulateOneDay(input: {
       averageSpeedKmh: input.day.averageWalkingSpeedKmh,
     },
     strength: { durationMinutes: input.day.strengthTrainingMinutes },
+    workoutActivity: input.day.workoutActivity,
     occupational: input.day.occupationalActivity,
     adaptiveThermogenesisKcalPerDay:
       adaptiveThermogenesisTransition.meanAdaptiveThermogenesisKcalPerDay,

@@ -1,7 +1,21 @@
 import { normalizeDailyMeasurements } from "@/modules/days/measurement-policy";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
-import type { HealthDayInput, HealthSyncMetadata, SyncDateResult } from "./health.types";
+import { instantToLocalDateTime } from "@/model/time-zone";
+import type { HealthDayInput, HealthSyncMetadata, SyncDateResult, WorkoutInput } from "./health.types";
+
+/** Persist only workouts whose startAt falls on the synced calendar day. */
+export function filterWorkoutsForSyncedDay(
+  workouts: readonly WorkoutInput[],
+  dayDate: string,
+  timezone: string,
+): WorkoutInput[] {
+  return workouts.filter((workout) => {
+    const start = new Date(workout.startAt);
+    if (!Number.isFinite(start.getTime())) return false;
+    return instantToLocalDateTime(start, timezone).date === dayDate;
+  });
+}
 
 export interface HealthSyncRepository {
   syncDay(day: HealthDayInput, rawDay: unknown, metadata: HealthSyncMetadata): Promise<SyncDateResult>;
@@ -92,7 +106,11 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
       });
 
       await transaction.workout.deleteMany({ where: { dailyHealthDataId: daily.id } });
-      const workouts = day.workouts ?? [];
+      const workouts = filterWorkoutsForSyncedDay(
+        day.workouts ?? [],
+        day.date,
+        metadata.timezone,
+      );
       if (workouts.length > 0) {
         await transaction.workout.createMany({
           data: workouts.map((workout) => ({
@@ -103,6 +121,7 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
             endAt: new Date(workout.endAt),
             durationMinutes: workout.durationMinutes ?? null,
             energyKcal: workout.energyKcal ?? null,
+            activeEnergyKcal: workout.activeEnergyKcal ?? null,
           })),
         });
       }

@@ -260,6 +260,7 @@ export function prepareEpisodeInitialization(input: {
         sources: input.sources,
         baselineNutritionFallback: null,
         nutritionGapPolicy: { maxBridgeDays: 0 },
+        modelVersion: CURRENT_MODEL_VERSION,
       });
       // Calibration starts after the pre-roll. Its state must be anchored at
       // the beginning of this historical interval, never at episode start.
@@ -291,6 +292,7 @@ export function prepareEpisodeInitialization(input: {
               averageSpeedKmh: day.averageWalkingSpeedKmh,
             },
             strength: { durationMinutes: day.strengthTrainingMinutes },
+            workoutActivity: day.workoutActivity,
             occupational: day.occupationalActivity,
             adaptiveThermogenesisKcalPerDay: 0,
           });

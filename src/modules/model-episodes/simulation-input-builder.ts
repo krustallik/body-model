@@ -1,12 +1,23 @@
 import { isOccupationalCategory, type OccupationalCategory } from "@/model/occupational-activity";
 import { estimateDailyWorkWalking, type CumulativeSnapshot } from "@/model/work-interval-reconstruction";
+import {
+  canonicalizeWorkoutType,
+  hasExplicitStrengthWorkouts,
+  type ExplicitWorkoutActivityEvent,
+} from "@/model/activity/workout-energy";
+import {
+  reconstructStairWalkingOverlap,
+  type StairOverlapDiagnostic,
+} from "@/model/activity/stair-walking-overlap";
 import { enumerateCalendarDates } from "./model-calendar";
 import { bridgeNutritionGaps, type NutritionGapPolicy } from "./nutrition-gap-bridge";
+import { usesWorkoutAwareActivity } from "./model-version";
 import type {
   BuiltSimulationDay,
   HistoricalModelSources,
   ModelDaySourceQuality,
   ModelHealthDaySource,
+  ModelWorkoutSource,
   NutritionVector,
 } from "./model-episode.types";
 
@@ -35,6 +46,23 @@ function qualityStatus(input: {
   return "complete";
 }
 
+function toWorkoutEvents(workouts: readonly ModelWorkoutSource[]): ExplicitWorkoutActivityEvent[] {
+  return [...workouts]
+    .sort((left, right) => left.startAt.getTime() - right.startAt.getTime())
+    .map((workout) => {
+      const canonical = canonicalizeWorkoutType(workout.type);
+      return {
+        type: workout.type,
+        canonicalType: canonical.canonicalType,
+        classification: canonical.classification,
+        startAt: workout.startAt.toISOString(),
+        endAt: workout.endAt.toISOString(),
+        durationMinutes: workout.durationMinutes,
+        activeEnergyKcal: workout.activeEnergyKcal,
+      };
+    });
+}
+
 /** Builds consecutive local model days without substituting missing data with zero. */
 export function buildSimulationDays(input: {
   from: string;
@@ -42,10 +70,14 @@ export function buildSimulationDays(input: {
   sources: HistoricalModelSources;
   nutritionGapPolicy?: NutritionGapPolicy;
   baselineNutritionFallback?: NutritionVector | null;
+  /** Episode physiology version; defaults to legacy v5 walking/strength path. */
+  modelVersion?: string;
 }): BuiltSimulationDay[] {
+  const workoutAware = usesWorkoutAwareActivity(input.modelVersion ?? "bodycast-physiology-v5");
   const days = new Map(input.sources.days.map((day) => [day.date, day]));
   const snapshots = groupByDate(input.sources.snapshots);
   const workIntervals = groupByDate(input.sources.workIntervals);
+  const workouts = groupByDate(input.sources.workouts ?? []);
   const dates = enumerateCalendarDates(input.from, input.to);
   const dayFor = (date: string): ModelHealthDaySource => days.get(date) ?? {
     date,
@@ -80,6 +112,7 @@ export function buildSimulationDays(input: {
     const bridgedNutrition = nutrition[index];
     const dailyIntervals = [...(workIntervals.get(date) ?? [])]
       .sort((left, right) => left.startAt.getTime() - right.startAt.getTime());
+    const dailyWorkouts = workouts.get(date) ?? [];
     const cumulativeSnapshots: CumulativeSnapshot[] = (snapshots.get(date) ?? []).map((item) => ({
       timestamp: item.syncedAt ?? item.receivedAt,
       steps: item.steps,
@@ -95,6 +128,38 @@ export function buildSimulationDays(input: {
       dailyWalkingDistanceKm: day.walkingDistanceKm,
     });
 
+    let outsideWorkWalkingDistanceKm = walking.outsideWorkWalkingDistanceKm;
+    let stairDiagnostics: StairOverlapDiagnostic[] = [];
+    let workoutEvents: ExplicitWorkoutActivityEvent[] | undefined;
+
+    if (workoutAware) {
+      workoutEvents = toWorkoutEvents(dailyWorkouts);
+      const stairEvents = workoutEvents.filter((event) => event.classification === "stair-climbing");
+      const stairOverlap = reconstructStairWalkingOverlap({
+        snapshots: cumulativeSnapshots.map((snapshot) => ({
+          timestamp: snapshot.timestamp,
+          steps: snapshot.steps ?? null,
+          walkingDistanceKm: snapshot.walkingDistanceKm ?? null,
+        })),
+        stairWorkouts: stairEvents.map((event) => ({
+          startAt: new Date(event.startAt),
+          endAt: new Date(event.endAt),
+          activeEnergyKcal: event.activeEnergyKcal,
+        })),
+        workIntervals: dailyIntervals.map((interval) => ({
+          startAt: interval.startAt,
+          endAt: interval.endAt,
+        })),
+      });
+      stairDiagnostics = stairOverlap.diagnostics;
+      if (outsideWorkWalkingDistanceKm !== null) {
+        outsideWorkWalkingDistanceKm = Math.max(
+          0,
+          outsideWorkWalkingDistanceKm - stairOverlap.overlapDistanceKm,
+        );
+      }
+    }
+
     const nutritionIssues = ["caloriesKcal", "proteinG", "fatG", "carbsG"]
       .filter((field) => missing(bridgedNutrition[field as keyof Pick<
         NutritionVector,
@@ -108,13 +173,16 @@ export function buildSimulationDays(input: {
       workIssues.push("outsideWorkWalkingDistanceKm");
     }
     const activityIssues: string[] = [];
-    if (walking.outsideWorkWalkingDistanceKm === null) {
+    if (outsideWorkWalkingDistanceKm === null) {
       activityIssues.push("outsideWorkWalkingDistanceKm");
-    } else if (walking.outsideWorkWalkingDistanceKm > 0
+    } else if (outsideWorkWalkingDistanceKm > 0
         && day.averageWalkingSpeedKmh === null) {
       activityIssues.push("averageWalkingSpeedKmh");
     }
-    if (day.strengthTrainingMinutes === null) {
+    const strengthSuppressed = workoutAware
+      && workoutEvents !== undefined
+      && hasExplicitStrengthWorkouts(workoutEvents);
+    if (!strengthSuppressed && day.strengthTrainingMinutes === null) {
       activityIssues.push("strengthTrainingMinutes");
     }
     if (!sourceDay && dailyIntervals.length === 0) {
@@ -129,12 +197,13 @@ export function buildSimulationDays(input: {
       : [];
     if (cumulativeSnapshots.length > 0) sourceObservationFields.push("healthSyncSnapshots");
     if (dailyIntervals.length > 0) sourceObservationFields.push("workIntervals");
+    if (workoutAware && dailyWorkouts.length > 0) sourceObservationFields.push("workouts");
     const sourceQuality: ModelDaySourceQuality = {
       status: qualityStatus({ nutritionIssues, activityIssues, workIssues }),
       issues,
       workIntervalCount: dailyIntervals.length,
       workWalkingDistanceKm: walking.workWalkingDistanceKm,
-      outsideWorkWalkingDistanceKm: walking.outsideWorkWalkingDistanceKm,
+      outsideWorkWalkingDistanceKm,
       sourceObservationFields,
       workWalkingReconstruction: walking.intervals.map((interval) => ({
         intervalId: interval.intervalId,
@@ -160,6 +229,10 @@ export function buildSimulationDays(input: {
           ? { ...bridgedNutrition.provenance.referenceMacroMadG }
           : null,
       },
+      ...(workoutAware ? {
+        stairWalkingOverlap: stairDiagnostics,
+        workoutCount: dailyWorkouts.length,
+      } : {}),
     };
     const occupationalIntervals = dailyIntervals.map((interval) => ({
       category: isOccupationalCategory(interval.category)
@@ -180,9 +253,10 @@ export function buildSimulationDays(input: {
         proteinG: bridgedNutrition.proteinG,
         fatG: bridgedNutrition.fatG,
         carbsG: bridgedNutrition.carbsG,
-        outsideWorkWalkingDistanceKm: walking.outsideWorkWalkingDistanceKm,
+        outsideWorkWalkingDistanceKm,
         averageWalkingSpeedKmh: day.averageWalkingSpeedKmh,
-        strengthTrainingMinutes: day.strengthTrainingMinutes,
+        strengthTrainingMinutes: strengthSuppressed ? 0 : day.strengthTrainingMinutes,
+        ...(workoutAware ? { workoutActivity: { events: workoutEvents ?? [] } } : {}),
         occupationalActivity: {
           category: null,
           durationHours: sourceDay || dailyIntervals.length > 0 ? 0 : null,

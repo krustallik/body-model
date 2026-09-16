@@ -79,7 +79,10 @@ model Workout {
   startAt           DateTime
   endAt             DateTime
   durationMinutes   Float?
+  /** Legacy workout energy field; semantics are not guaranteed to be active-only. */
   energyKcal        Float?
+  /** Garmin/device active workout calories excluding resting component. */
+  activeEnergyKcal  Float?
   createdAt         DateTime        @default(now())
   updatedAt         DateTime        @updatedAt
   dailyHealthData   DailyHealthData @relation(fields: [dailyHealthDataId], references: [id], onDelete: Cascade)

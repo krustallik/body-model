@@ -14,7 +14,21 @@ export const DAILY_METRIC_FIELDS = [
 
 export type DailyMetricField = (typeof DAILY_METRIC_FIELDS)[number];
 
+export type DayWorkoutDto = {
+  type: string;
+  canonicalType: string | null;
+  classification: "traditional-strength-training" | "stair-climbing" | "other";
+  startAt: string;
+  endAt: string;
+  durationMinutes: number | null;
+  activeEnergyKcal: number | null;
+};
+
 export type DailyMetricDto = {
   date: string;
   updatedAt: string;
+  workouts: DayWorkoutDto[];
+  /** Display total; null = no workout observation (not zero). */
+  totalWorkoutMinutes: number | null;
+  workoutSource: "workouts" | "legacy-strength" | "none";
 } & Record<DailyMetricField, number | null>;

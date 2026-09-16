@@ -29,12 +29,17 @@ describe("zero means no recorded daily measurement", () => {
     const day = { date, ...Object.fromEntries(DAILY_MEASUREMENT_FIELDS.map((field) => [field, 0])),
       bodyFatPercent: new Prisma.Decimal(0), averageWalkingSpeedKmh: new Prisma.Decimal(0),
       walkingDistanceKm: new Prisma.Decimal(0), strengthTrainingMinutes: new Prisma.Decimal(0),
+      workouts: [],
       updatedAt: new Date("2026-09-15T18:00:00Z") };
     const client = { dailyHealthData: { findMany: vi.fn().mockResolvedValue([day]) },
       healthSyncSnapshot: { findMany: vi.fn().mockResolvedValue([]) },
-      workInterval: { findMany: vi.fn().mockResolvedValue([]) } } as unknown as PrismaClient;
+      workInterval: { findMany: vi.fn().mockResolvedValue([]) },
+      workout: { findMany: vi.fn().mockResolvedValue([]) } } as unknown as PrismaClient;
     const [dto] = await new DailyMetricRepository(client).list({ limit: 30, offset: 0 });
     for (const field of DAILY_MEASUREMENT_FIELDS) expect(dto[field]).toBeNull();
+    expect(dto.totalWorkoutMinutes).toBeNull();
+    expect(dto.workoutSource).toBe("none");
+    expect(dto.workouts).toEqual([]);
     const sources = await new ModelEpisodeRepository(client).loadSources(date, date);
     const [built] = buildSimulationDays({ from: date, to: date, sources });
     expect(built.sourceQuality.status).toBe("missing-nutrition");

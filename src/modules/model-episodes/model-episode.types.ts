@@ -44,10 +44,24 @@ export type ModelWorkIntervalSource = {
   breakMinutes: number | null;
 };
 
+export type ModelWorkoutSource = {
+  id: number;
+  date: string;
+  externalId: string | null;
+  type: string;
+  startAt: Date;
+  endAt: Date;
+  durationMinutes: number | null;
+  energyKcal: number | null;
+  activeEnergyKcal: number | null;
+};
+
 export type HistoricalModelSources = {
   days: ModelHealthDaySource[];
   snapshots: ModelSnapshotSource[];
   workIntervals: ModelWorkIntervalSource[];
+  /** Present for v6 loaders; empty array preserves v5-compatible fixtures. */
+  workouts?: ModelWorkoutSource[];
 };
 
 export type MaintenanceBaselineDiagnostics = {
@@ -185,6 +199,9 @@ export type ModelDaySourceQuality = {
     source: "user-entered" | "legacy-unreported";
   }>;
   nutrition: NutritionProvenance;
+  /** v6 Stair Climbing overlap diagnostics; provenance only. */
+  stairWalkingOverlap?: import("@/model/activity/stair-walking-overlap").StairOverlapDiagnostic[];
+  workoutCount?: number;
 };
 
 export type BuiltSimulationDay = {

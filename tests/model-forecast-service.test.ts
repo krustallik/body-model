@@ -69,11 +69,13 @@ function mockConditionedRecovery(
     from: "2026-08-22", to: "2026-08-26", sources: sources(mainDays),
     baselineNutritionFallback: episode.baselineNutritionFallback,
     nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
+    modelVersion: episode.modelVersion,
   });
   const builtDonors = buildSimulationDays({
     from: donorFrom, to: "2026-08-22", sources: sources(donorDays),
     baselineNutritionFallback: episode.baselineNutritionFallback,
     nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
+    modelVersion: episode.modelVersion,
   });
   repositories.loadCurrentEnsemble.mockResolvedValue({
     id: 4,
@@ -151,11 +153,13 @@ describe("forecast application service", () => {
       from: "2026-08-22", to: "2026-08-26", sources: sources(mainDays),
       baselineNutritionFallback: episode.baselineNutritionFallback,
       nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
+      modelVersion: episode.modelVersion,
     });
     const builtDonors = buildSimulationDays({
       from: donorFrom, to: "2026-08-22", sources: sources(donorDays),
       baselineNutritionFallback: episode.baselineNutritionFallback,
       nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
+      modelVersion: episode.modelVersion,
     });
     repositories.loadCurrentEnsemble.mockResolvedValue({
       id: 4,

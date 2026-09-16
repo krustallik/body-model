@@ -15,6 +15,9 @@ const DAY_KEYS = canonicalKeyMap([
   "walkingDistanceKm",
   "strengthTrainingMinutes",
   "workouts",
+  "trainingType",
+  "trainingActiveKcal",
+  "trainingTimestamps",
 ]);
 const WORKOUT_KEYS = canonicalKeyMap([
   "externalId",
@@ -23,6 +26,7 @@ const WORKOUT_KEYS = canonicalKeyMap([
   "endAt",
   "durationMinutes",
   "energyKcal",
+  "activeEnergyKcal",
 ]);
 
 export interface ShortcutNormalizationIssue {

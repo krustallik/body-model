@@ -38,6 +38,11 @@ export function defaultGoalForm(latestModeledDate?: string | null, currentWeight
   };
 }
 
+/** Planner form must not render until a concrete latest modeled day exists. */
+export function canOpenGoalPlanner(latestModeledDate: string | null | undefined): latestModeledDate is string {
+  return typeof latestModeledDate === "string" && latestModeledDate.length > 0;
+}
+
 export function calendarDaysBetween(from: string, to: string): number {
   const fromTime = new Date(`${from}T12:00:00.000Z`).getTime();
   const toTime = new Date(`${to}T12:00:00.000Z`).getTime();

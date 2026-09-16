@@ -1,0 +1,89 @@
+import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
+
+export type DayWorkoutPresentation = {
+  type: string;
+  canonicalType: string | null;
+  classification: "traditional-strength-training" | "stair-climbing" | "other";
+  startAt: string;
+  endAt: string;
+  durationMinutes: number | null;
+  activeEnergyKcal: number | null;
+};
+
+export type DayWorkoutSummary = {
+  workouts: DayWorkoutPresentation[];
+  /** Null means no workout observation for the day (not zero). */
+  totalWorkoutMinutes: number | null;
+  workoutSource: "workouts" | "legacy-strength" | "none";
+};
+
+export type RawWorkoutRow = {
+  type: string;
+  startAt: Date | string;
+  endAt: Date | string;
+  durationMinutes: number | null;
+  activeEnergyKcal: number | null;
+};
+
+function toIso(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+function validDurationMinutes(value: number | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return value;
+}
+
+/** Canonical UI aggregation: explicit workouts beat legacy strength minutes. */
+export function summarizeDayWorkouts(input: {
+  workouts: readonly RawWorkoutRow[];
+  legacyStrengthTrainingMinutes: number | null;
+}): DayWorkoutSummary {
+  const workouts: DayWorkoutPresentation[] = (input.workouts ?? []).map((workout) => {
+    const canonical = canonicalizeWorkoutType(workout.type);
+    return {
+      type: workout.type,
+      canonicalType: canonical.canonicalType,
+      classification: canonical.classification,
+      startAt: toIso(workout.startAt),
+      endAt: toIso(workout.endAt),
+      durationMinutes: validDurationMinutes(workout.durationMinutes),
+      activeEnergyKcal: workout.activeEnergyKcal !== null
+        && Number.isFinite(workout.activeEnergyKcal)
+        && workout.activeEnergyKcal >= 0
+        ? workout.activeEnergyKcal
+        : null,
+    };
+  });
+
+  if (workouts.length > 0) {
+    const total = workouts.reduce((sum, workout) => (
+      sum + (workout.durationMinutes ?? 0)
+    ), 0);
+    return {
+      workouts,
+      totalWorkoutMinutes: total > 0 ? total : null,
+      workoutSource: "workouts",
+    };
+  }
+
+  const legacy = validDurationMinutes(input.legacyStrengthTrainingMinutes);
+  if (legacy !== null) {
+    return {
+      workouts: [],
+      totalWorkoutMinutes: legacy,
+      workoutSource: "legacy-strength",
+    };
+  }
+
+  return {
+    workouts: [],
+    totalWorkoutMinutes: null,
+    workoutSource: "none",
+  };
+}
+
+export function displayWorkoutType(workout: DayWorkoutPresentation): string {
+  return workout.canonicalType ?? workout.type.trim();
+}

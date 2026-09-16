@@ -1,4 +1,5 @@
 import { normalizeDailyMeasurements } from "@/modules/days/measurement-policy";
+import { summarizeDayWorkouts } from "@/modules/days/day-workout-presentation";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { DuplicateDayError } from "./day.errors";
@@ -23,6 +24,16 @@ const dailyMetricSelect = {
   walkingDistanceKm: true,
   strengthTrainingMinutes: true,
   updatedAt: true,
+  workouts: {
+    select: {
+      type: true,
+      startAt: true,
+      endAt: true,
+      durationMinutes: true,
+      activeEnergyKcal: true,
+    },
+    orderBy: { startAt: "asc" as const },
+  },
 } satisfies Prisma.DailyHealthDataSelect;
 
 type DailyMetricRecord = Prisma.DailyHealthDataGetPayload<{ select: typeof dailyMetricSelect }>;
@@ -33,6 +44,11 @@ function decimalToNumber(value: Prisma.Decimal | null): number | null {
 
 function toDto(record: DailyMetricRecord): DailyMetricDto {
   record = normalizeDailyMeasurements(record);
+  const strengthTrainingMinutes = decimalToNumber(record.strengthTrainingMinutes);
+  const summary = summarizeDayWorkouts({
+    workouts: record.workouts ?? [],
+    legacyStrengthTrainingMinutes: strengthTrainingMinutes,
+  });
   return {
     date: record.date,
     weightKg: record.weightKg,
@@ -45,8 +61,11 @@ function toDto(record: DailyMetricRecord): DailyMetricDto {
     activeEnergyKcal: record.activeEnergyKcal,
     averageWalkingSpeedKmh: decimalToNumber(record.averageWalkingSpeedKmh),
     walkingDistanceKm: decimalToNumber(record.walkingDistanceKm),
-    strengthTrainingMinutes: decimalToNumber(record.strengthTrainingMinutes),
+    strengthTrainingMinutes,
     updatedAt: record.updatedAt.toISOString(),
+    workouts: summary.workouts,
+    totalWorkoutMinutes: summary.totalWorkoutMinutes,
+    workoutSource: summary.workoutSource,
   };
 }
 

@@ -296,6 +296,9 @@ function asSimulationDays(history: readonly CalibrationDay[]): PhysiologicalDail
   return history.map((day) => ({
     ...day.simulatorInput,
     occupationalActivity: { ...day.simulatorInput.occupationalActivity },
+    workoutActivity: day.simulatorInput.workoutActivity
+      ? { events: day.simulatorInput.workoutActivity.events.map((event) => ({ ...event })) }
+      : undefined,
     date: day.date,
     measuredWeightKg: day.measuredWeightKg,
   }));

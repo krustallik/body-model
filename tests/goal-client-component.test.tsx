@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("next/link", () => ({ default: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => <a href={String(href)} {...props}>{children}</a> }));
 
 import { GoalClient } from "@/app/goal/goal-client";
+import { canOpenGoalPlanner } from "@/modules/model-goal-planning/goal-planning-ui";
 
 describe("GoalClient", () => {
   it("renders an honest initial loading state and Goal navigation", () => {
@@ -12,5 +13,12 @@ describe("GoalClient", () => {
     expect(html).toContain("Loading current model state");
     expect(html).toContain("href=\"/goal\"");
     expect(html).toContain("Scenario · not a prescription");
+  });
+
+  it("does not open the planner without a latest modeled date", () => {
+    expect(canOpenGoalPlanner(null)).toBe(false);
+    const html = renderToStaticMarkup(<GoalClient />);
+    expect(html).not.toContain("Latest modeled day:");
+    expect(html).not.toContain("Calculate scenario");
   });
 });

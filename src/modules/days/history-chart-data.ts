@@ -2,6 +2,8 @@ import type { DailyMetricDto, DailyMetricField } from "./day.types";
 
 export type HistoryRange = 7 | 30 | 90 | "all";
 
+export type HistoryChartField = DailyMetricField | "totalWorkoutMinutes";
+
 export function rangeStartDate(range: Exclude<HistoryRange, "all">, today: string): string {
   const start = new Date(`${today}T00:00:00Z`);
   start.setUTCDate(start.getUTCDate() - (range - 1));
@@ -25,6 +27,30 @@ export function sortDaysNewestFirst(days: DailyMetricDto[]): DailyMetricDto[] {
   return [...days].sort((left, right) => right.date.localeCompare(left.date));
 }
 
-export function hasChartData(days: DailyMetricDto[], fields: DailyMetricField[]): boolean {
-  return days.some((day) => fields.some((field) => day[field] !== null));
+export function chartFieldValue(day: DailyMetricDto, field: HistoryChartField): number | null {
+  return field === "totalWorkoutMinutes" ? day.totalWorkoutMinutes : day[field];
+}
+
+export function hasChartData(days: DailyMetricDto[], fields: HistoryChartField[]): boolean {
+  return days.some((day) => fields.some((field) => chartFieldValue(day, field) !== null));
+}
+
+/** Chart series model for movement + training: null days stay null (connectNulls, not zero). */
+export function movementTrainingChartModel(days: DailyMetricDto[]): {
+  points: Array<{ date: string; walkingDistanceKm: number | null; totalWorkoutMinutes: number | null }>;
+  workoutObservationDates: string[];
+  workoutConnectNulls: true;
+} {
+  const chronological = sortDaysChronologically(days);
+  return {
+    points: chronological.map((day) => ({
+      date: day.date,
+      walkingDistanceKm: day.walkingDistanceKm,
+      totalWorkoutMinutes: day.totalWorkoutMinutes,
+    })),
+    workoutObservationDates: chronological
+      .filter((day) => day.totalWorkoutMinutes !== null)
+      .map((day) => day.date),
+    workoutConnectNulls: true,
+  };
 }

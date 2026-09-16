@@ -160,11 +160,13 @@ describe("historical recovery application service", () => {
       from: episode.startDate, to: "2026-08-10", sources: gapSources,
       baselineNutritionFallback: episode.baselineNutritionFallback,
       nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
+      modelVersion: episode.modelVersion,
     });
     const donorDays = buildSimulationDays({
       from: "2026-06-23", to: "2026-08-03", sources: donorSources,
       baselineNutritionFallback: episode.baselineNutritionFallback,
       nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
+      modelVersion: episode.modelVersion,
     });
     const current = {
       id: 4, stale: false, config,

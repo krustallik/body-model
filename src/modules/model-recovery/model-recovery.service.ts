@@ -52,6 +52,7 @@ export async function recoverModelEpisode(
       sources,
       baselineNutritionFallback: episode.baselineNutritionFallback,
       nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
+      modelVersion: episode.modelVersion,
     });
     const continuity = analyzeStateContinuity(days, episode.ecfPolicy);
     if (continuity.unknownIntervals.length === 0) {
@@ -71,6 +72,7 @@ export async function recoverModelEpisode(
       sources: donorSources,
       baselineNutritionFallback: episode.baselineNutritionFallback,
       nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
+      modelVersion: episode.modelVersion,
     });
 
     let recoveryInitialState = episode.initialState;
@@ -154,6 +156,7 @@ export async function getModelRecoveryStatus(
       sources,
       baselineNutritionFallback: episode.baselineNutritionFallback,
       nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
+      modelVersion: episode.modelVersion,
     });
     const firstUnknownDate = analyzeStateContinuity(days, episode.ecfPolicy)
       .unknownIntervals[0]?.startDate;
@@ -170,6 +173,7 @@ export async function getModelRecoveryStatus(
         sources: donorSources,
         baselineNutritionFallback: episode.baselineNutritionFallback,
         nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
+        modelVersion: episode.modelVersion,
       });
       if (recoverySourceFingerprint({ episode, days, donorDays }) !== recovery.sourceFingerprint) {
         await recoveryRepository.markAllStale(episode.id);

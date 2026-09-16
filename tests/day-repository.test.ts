@@ -16,6 +16,7 @@ const record = {
   averageWalkingSpeedKmh: new Prisma.Decimal("4.572"),
   walkingDistanceKm: new Prisma.Decimal("0.0125"),
   strengthTrainingMinutes: new Prisma.Decimal("75"),
+  workouts: [],
   updatedAt: new Date("2026-08-22T10:00:00Z"),
 };
 
@@ -42,7 +43,20 @@ describe("DailyMetricRepository", () => {
       take: 30,
       skip: 0,
     }));
-    expect(days[0]).toMatchObject({ bodyFatPercent: 27.4, strengthTrainingMinutes: 75 });
+    expect(days[0]).toMatchObject({
+      bodyFatPercent: 27.4,
+      strengthTrainingMinutes: 75,
+      totalWorkoutMinutes: 75,
+      workoutSource: "legacy-strength",
+      workouts: [],
+    });
+    expect(dailyHealthData.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      select: expect.objectContaining({
+        workouts: expect.objectContaining({
+          orderBy: { startAt: "asc" },
+        }),
+      }),
+    }));
   });
 
   it("marks manually created rows without inventing metric values", async () => {

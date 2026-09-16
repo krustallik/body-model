@@ -27,6 +27,9 @@ const day = {
   averageWalkingSpeedKmh: 4.572,
   walkingDistanceKm: 0.0125,
   strengthTrainingMinutes: 75,
+  workouts: [],
+  totalWorkoutMinutes: 75,
+  workoutSource: "legacy-strength" as const,
   updatedAt: "2026-08-22T10:00:00.000Z",
 };
 

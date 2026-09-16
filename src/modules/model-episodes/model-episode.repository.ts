@@ -228,7 +228,7 @@ export class ModelEpisodeRepository {
   }
 
   async loadSources(from: string, to: string): Promise<HistoricalModelSources> {
-    const [days, snapshots, workIntervals] = await Promise.all([
+    const [days, snapshots, workIntervals, workoutRows] = await Promise.all([
       this.client.dailyHealthData.findMany({
         where: { date: { gte: from, lte: to } },
         orderBy: { date: "asc" },
@@ -270,6 +270,23 @@ export class ModelEpisodeRepository {
           breakMinutes: true,
         },
       }),
+      this.client.workout.findMany({
+        where: {
+          dailyHealthData: { date: { gte: from, lte: to } },
+        },
+        orderBy: [{ startAt: "asc" }, { id: "asc" }],
+        select: {
+          id: true,
+          externalId: true,
+          type: true,
+          startAt: true,
+          endAt: true,
+          durationMinutes: true,
+          energyKcal: true,
+          activeEnergyKcal: true,
+          dailyHealthData: { select: { date: true } },
+        },
+      }),
     ]);
     return {
       days: days.map(normalizeDailyMeasurements).map((day) => ({
@@ -284,6 +301,17 @@ export class ModelEpisodeRepository {
         walkingDistanceKm: decimal(snapshot.walkingDistanceKm),
       })),
       workIntervals,
+      workouts: workoutRows.map((workout) => ({
+        id: workout.id,
+        date: workout.dailyHealthData.date,
+        externalId: workout.externalId,
+        type: workout.type,
+        startAt: workout.startAt,
+        endAt: workout.endAt,
+        durationMinutes: workout.durationMinutes,
+        energyKcal: workout.energyKcal,
+        activeEnergyKcal: workout.activeEnergyKcal,
+      })),
     };
   }
 

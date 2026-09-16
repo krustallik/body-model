@@ -101,12 +101,67 @@ describe("Prisma health synchronization repository", () => {
             type: "strength",
             startAt: "2026-08-21T17:00:00+02:00",
             endAt: "2026-08-21T18:00:00+02:00",
+            activeEnergyKcal: 340,
           },
         ],
     });
     expect(transaction.workout.deleteMany).toHaveBeenCalledWith({ where: { dailyHealthDataId: 21 } });
     expect(transaction.workout.createMany).toHaveBeenCalledWith({
-      data: [expect.objectContaining({ externalId: "apple-1", startAt: new Date("2026-08-21T15:00:00Z") })],
+      data: [expect.objectContaining({
+        externalId: "apple-1",
+        startAt: new Date("2026-08-21T15:00:00Z"),
+        activeEnergyKcal: 340,
+        energyKcal: null,
+      })],
+    });
+  });
+
+  it("persists null activeEnergyKcal when workout energy is omitted", async () => {
+    const { repository, transaction } = repositoryFixture();
+    await repository.syncDay({
+      date: "2026-08-21",
+      workouts: [{
+        type: "strength",
+        startAt: "2026-08-21T17:00:00+02:00",
+        endAt: "2026-08-21T18:00:00+02:00",
+      }],
+    });
+    expect(transaction.workout.createMany).toHaveBeenCalledWith({
+      data: [expect.objectContaining({ activeEnergyKcal: null })],
+    });
+  });
+
+  it("drops other-calendar-day workouts before createMany", async () => {
+    const { repository, transaction } = repositoryFixture();
+    await repository.syncDay(
+      {
+        date: "2026-08-22",
+        workouts: [
+          {
+            externalId: "same-day",
+            type: "Stair Climbing",
+            startAt: "2026-08-22T07:00:00+02:00",
+            endAt: "2026-08-22T07:12:00+02:00",
+            activeEnergyKcal: 154,
+          },
+          {
+            externalId: "other-day",
+            type: "Traditional Strength Training",
+            startAt: "2026-08-21T23:30:00+02:00",
+            endAt: "2026-08-22T00:30:00+02:00",
+            activeEnergyKcal: 300,
+          },
+        ],
+      },
+      undefined,
+      {
+        timezone: "Europe/Bratislava",
+        receivedAt: new Date("2026-08-22T10:00:00Z"),
+        syncedAt: null,
+      },
+    );
+    expect(transaction.workout.createMany).toHaveBeenCalledWith({
+      data: [expect.objectContaining({ externalId: "same-day", activeEnergyKcal: 154 })],
     });
   });
 

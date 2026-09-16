@@ -13,6 +13,7 @@ import {
 import { formatDateTime, formatMetric } from "@/modules/days/metric-format";
 import { HistoryCharts } from "./history-charts";
 import { WorkActivityDialog } from "./work-activity-dialog";
+import { WorkoutDetailsDialog } from "./workout-details-dialog";
 import styles from "./history.module.css";
 
 type FormValues = Record<DailyMetricField, string> & { date: string };
@@ -34,10 +35,15 @@ const metricFields: Array<{
   { key: "activeEnergyKcal", label: "Active energy (kcal)", shortLabel: "activeEnergyKcal" },
   { key: "averageWalkingSpeedKmh", label: "Walking speed (km/h)", shortLabel: "averageWalkingSpeedKmh" },
   { key: "walkingDistanceKm", label: "Walking distance (km)", shortLabel: "walkingDistanceKm" },
-  { key: "strengthTrainingMinutes", label: "Strength training (min)", shortLabel: "strengthTrainingMinutes" },
+  { key: "strengthTrainingMinutes", label: "Training (min)", shortLabel: "strengthTrainingMinutes" },
 ];
 
 const tableFields = metricFields.filter(({ key }) => key !== "activeEnergyKcal");
+const compactTableKeys = new Set<DailyMetricField>([
+  "averageWalkingSpeedKmh",
+  "walkingDistanceKm",
+  "strengthTrainingMinutes",
+]);
 const rangeOptions: Array<{ value: HistoryRange; label: string }> = [
   { value: 7, label: "7 days" },
   { value: 30, label: "30 days" },
@@ -51,8 +57,23 @@ function localizedMetricLabel(key: DailyMetricField, uk: boolean): string {
     weightKg: "Вага (кг)", bodyFatPercent: "Жирова маса (%)", caloriesKcal: "Калорії (ккал)",
     proteinG: "Білки (г)", fatG: "Жири (г)", carbsG: "Вуглеводи (г)", steps: "Кроки",
     activeEnergyKcal: "Активна енергія (ккал)", averageWalkingSpeedKmh: "Швидкість ходьби (км/год)",
-    walkingDistanceKm: "Дистанція ходьби (км)", strengthTrainingMinutes: "Силове тренування (хв)",
+    walkingDistanceKm: "Дистанція ходьби (км)", strengthTrainingMinutes: "Тренування (хв)",
   } satisfies Record<DailyMetricField, string>)[key];
+}
+
+function compactHeaderParts(key: DailyMetricField, uk: boolean): { main: string; unit: string } | null {
+  if (!compactTableKeys.has(key)) return null;
+  if (key === "averageWalkingSpeedKmh") return { main: uk ? "Швидкість ходьби" : "Walking speed", unit: uk ? "км/год" : "km/h" };
+  if (key === "walkingDistanceKm") return { main: uk ? "Дистанція ходьби" : "Walking distance", unit: uk ? "км" : "km" };
+  return { main: uk ? "Тренування" : "Training", unit: uk ? "хв" : "min" };
+}
+
+function dayHasWorkoutDetail(day: DailyMetricDto): boolean {
+  return day.workoutSource !== "none" && day.totalWorkoutMinutes !== null;
+}
+
+function tableMetricValue(day: DailyMetricDto, key: DailyMetricField): number | null {
+  return key === "strengthTrainingMinutes" ? day.totalWorkoutMinutes : day[key];
 }
 
 function localToday(): string {
@@ -116,6 +137,7 @@ export function HistoryClient() {
   const [editor, setEditor] = useState<EditorState>(null);
   const [range, setRange] = useState<HistoryRange>(30);
   const [workDate, setWorkDate] = useState<string | null>(null);
+  const [workoutDay, setWorkoutDay] = useState<DailyMetricDto | null>(null);
 
   const loadDays = useCallback(async () => {
     setLoading(true);
@@ -230,7 +252,20 @@ export function HistoryClient() {
               <thead>
                 <tr>
                   <th>{uk ? "дата" : "date"}</th>
-                  {tableFields.map(({ key, shortLabel }) => <th key={key}>{uk ? localizedMetricLabel(key, true) : shortLabel}</th>)}
+                  {tableFields.map(({ key, shortLabel }) => {
+                    const compact = compactHeaderParts(key, uk);
+                    if (compact) {
+                      return (
+                        <th key={key} className={styles.compactCol}>
+                          <span className={styles.thStack}>
+                            <span className={styles.thMain}>{compact.main}</span>
+                            <span className={styles.thUnit}>{compact.unit}</span>
+                          </span>
+                        </th>
+                      );
+                    }
+                    return <th key={key}>{uk ? localizedMetricLabel(key, true) : shortLabel}</th>;
+                  })}
                   <th>{uk ? "оновлено" : "updatedAt"}</th>
                   <th>{uk ? "дії" : "actions"}</th>
                 </tr>
@@ -239,9 +274,30 @@ export function HistoryClient() {
                 {days.map((day) => (
                   <tr key={day.date}>
                     <td data-label="date"><strong>{day.date}</strong></td>
-                    {tableFields.map(({ key, shortLabel }) => (
-                      <td key={key} data-label={uk ? localizedMetricLabel(key, true) : shortLabel}>{formatMetric(day[key], intlLocale)}</td>
-                    ))}
+                    {tableFields.map(({ key, shortLabel }) => {
+                      const value = tableMetricValue(day, key);
+                      const label = uk ? localizedMetricLabel(key, true) : shortLabel;
+                      const display = formatMetric(value, intlLocale);
+                      const isWorkout = key === "strengthTrainingMinutes";
+                      const clickable = isWorkout && dayHasWorkoutDetail(day);
+                      return (
+                        <td
+                          key={key}
+                          data-label={label}
+                          className={compactTableKeys.has(key) ? styles.compactCol : undefined}
+                        >
+                          {clickable ? (
+                            <button
+                              type="button"
+                              className={styles.workoutLink}
+                              onClick={() => setWorkoutDay(day)}
+                            >
+                              {display}
+                            </button>
+                          ) : display}
+                        </td>
+                      );
+                    })}
                     <td data-label={uk ? "оновлено" : "updatedAt"} className={styles.updatedCell}>{formatDateTime(day.updatedAt, intlLocale)}</td>
                     <td data-label="actions">
                       <div className={styles.actions}>
@@ -269,6 +325,7 @@ export function HistoryClient() {
         />
       )}
       {workDate && <WorkActivityDialog date={workDate} onClose={() => setWorkDate(null)} />}
+      {workoutDay && <WorkoutDetailsDialog day={workoutDay} onClose={() => setWorkoutDay(null)} />}
     </main>
   );
 }

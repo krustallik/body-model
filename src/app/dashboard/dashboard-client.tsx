@@ -4,10 +4,14 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { AppNav } from "@/components/app-nav";
 import { useI18n } from "@/i18n/i18n-provider";
-import type { DailyMetricField } from "@/modules/days/day.types";
+import type { DailyMetricDto, DailyMetricField } from "@/modules/days/day.types";
 import type { DashboardDto } from "@/modules/days/dashboard.types";
 import { formatDateTime, formatMetric } from "@/modules/days/metric-format";
 import styles from "./dashboard.module.css";
+
+function displayWorkoutMinutes(day: DailyMetricDto | null | undefined): number | null {
+  return day?.totalWorkoutMinutes ?? null;
+}
 
 function localToday(): string {
   const now = new Date();
@@ -27,7 +31,7 @@ async function loadDashboard(uk: boolean): Promise<DashboardDto> {
 export function DashboardClient() {
   const { locale, intlLocale } = useI18n();
   const uk = locale === "uk";
-  const metricCards: Array<{ key: DailyMetricField; label: string; unit?: string }> = [
+  const metricCards: Array<{ key: DailyMetricField | "totalWorkoutMinutes"; label: string; unit?: string }> = [
     { key: "weightKg", label: uk ? "Вага" : "Weight", unit: "kg" },
     { key: "bodyFatPercent", label: uk ? "Жирова маса" : "Body Fat", unit: "%" },
     { key: "caloriesKcal", label: uk ? "Калорії" : "Calories", unit: "kcal" },
@@ -37,7 +41,7 @@ export function DashboardClient() {
     { key: "steps", label: uk ? "Кроки" : "Steps" },
     { key: "walkingDistanceKm", label: uk ? "Дистанція ходьби" : "Walking Distance", unit: "km" },
     { key: "averageWalkingSpeedKmh", label: uk ? "Середня швидкість ходьби" : "Average Walking Speed", unit: "km/h" },
-    { key: "strengthTrainingMinutes", label: uk ? "Силове тренування" : "Strength Training", unit: "min" },
+    { key: "totalWorkoutMinutes", label: uk ? "Тренування" : "Training", unit: "min" },
   ];
   const [dashboard, setDashboard] = useState<DashboardDto>(emptyDashboard);
   const [loading, setLoading] = useState(true);
@@ -83,7 +87,9 @@ export function DashboardClient() {
 
       <section className={styles.metricGrid} aria-busy={loading}>
         {metricCards.map(({ key, label, unit }) => {
-          const value = dashboard.today?.[key] ?? null;
+          const value = key === "totalWorkoutMinutes"
+            ? displayWorkoutMinutes(dashboard.today)
+            : dashboard.today?.[key] ?? null;
           return (
             <article className={styles.metricCard} key={key}>
               <p>{label}</p>
@@ -123,7 +129,7 @@ export function DashboardClient() {
           ) : (
             <div className={styles.tableWrap}>
               <table>
-                <thead><tr><th>{uk ? "дата" : "date"}</th><th>{uk ? "вага" : "weight"}</th><th>{uk ? "калорії" : "calories"}</th><th>{uk ? "білки" : "protein"}</th><th>{uk ? "кроки" : "steps"}</th><th>{uk ? "силове" : "strength"}</th></tr></thead>
+                <thead><tr><th>{uk ? "дата" : "date"}</th><th>{uk ? "вага" : "weight"}</th><th>{uk ? "калорії" : "calories"}</th><th>{uk ? "білки" : "protein"}</th><th>{uk ? "кроки" : "steps"}</th><th>{uk ? "тренування" : "training"}</th></tr></thead>
                 <tbody>
                   {dashboard.recentDays.map((day) => (
                     <tr key={day.date}>
@@ -132,7 +138,7 @@ export function DashboardClient() {
                       <td>{formatMetric(day.caloriesKcal, intlLocale)}</td>
                       <td>{formatMetric(day.proteinG, intlLocale)}</td>
                       <td>{formatMetric(day.steps, intlLocale)}</td>
-                      <td>{formatMetric(day.strengthTrainingMinutes, intlLocale)}</td>
+                      <td>{formatMetric(displayWorkoutMinutes(day), intlLocale)}</td>
                     </tr>
                   ))}
                 </tbody>

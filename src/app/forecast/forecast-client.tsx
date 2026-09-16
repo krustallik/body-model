@@ -18,6 +18,7 @@ import {
   initializationFailureMessage,
   qualityPresentation,
   isCurrentForecastRequest,
+  withMinimumVisibleLoading,
   noActiveModelPresentation,
   planAssumptions,
   summarizeEndpoint,
@@ -121,31 +122,48 @@ export function ForecastClient() {
     setScenarioEvidenceMissing(false);
     setOutcome(null);
     try {
-      const [forecastResponse, contextResponse] = await Promise.all([
-        fetch("/api/forecast", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(buildForecastRequest(selectedMode, selectedHorizon, selectedPlan)), signal: controller.signal }),
-        fetch("/api/forecast/context", { cache: "no-store", signal: controller.signal }),
-      ]);
-      const nextContext = contextResponse.ok ? await contextResponse.json() as Context : null;
-      if (isCurrentForecastRequest(requestRef.current, requestId)) setContext(nextContext);
-      if (!forecastResponse.ok) {
-        const issue = await forecastError(forecastResponse, locale);
-        if (isCurrentForecastRequest(requestRef.current, requestId)) {
-          setScenarioEvidenceMissing(issue.code === "insufficient_scenario_evidence");
-          setErrorCode(issue.code);
-          if (issue.donorDayCount !== undefined) setKnownDonorDayCount(issue.donorDayCount);
+      const payload = await withMinimumVisibleLoading((async () => {
+        const [forecastResponse, contextResponse] = await Promise.all([
+          fetch("/api/forecast", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(buildForecastRequest(selectedMode, selectedHorizon, selectedPlan)), signal: controller.signal }),
+          fetch("/api/forecast/context", { cache: "no-store", signal: controller.signal }),
+        ]);
+        const nextContext = contextResponse.ok ? await contextResponse.json() as Context : null;
+        if (!forecastResponse.ok) {
+          const issue = await forecastError(forecastResponse, locale);
+          const error = new Error(issue.message) as Error & {
+            forecastIssue?: typeof issue;
+            nextContext?: Context | null;
+          };
+          error.forecastIssue = issue;
+          error.nextContext = nextContext;
+          throw error;
         }
-        throw new Error(issue.message);
-      }
-      const nextOutcome = await forecastResponse.json() as Outcome;
-      if (isCurrentForecastRequest(requestRef.current, requestId)) {
-        setOutcome(nextOutcome);
-        setContext(nextContext);
-        setSubmittedRun({ mode: selectedMode, horizon: selectedHorizon, plan: { ...selectedPlan } });
-        if ("scenarioProvenance" in nextOutcome) setKnownDonorDayCount(nextOutcome.scenarioProvenance.donorEvidence.donorDayCount);
+        const nextOutcome = await forecastResponse.json() as Outcome;
+        return { nextOutcome, nextContext };
+      })());
+      if (!isCurrentForecastRequest(requestRef.current, requestId)) return;
+      setOutcome(payload.nextOutcome);
+      setContext(payload.nextContext);
+      setSubmittedRun({ mode: selectedMode, horizon: selectedHorizon, plan: { ...selectedPlan } });
+      if ("scenarioProvenance" in payload.nextOutcome) {
+        setKnownDonorDayCount(payload.nextOutcome.scenarioProvenance.donorEvidence.donorDayCount);
       }
     } catch (runError) {
       if (controller.signal.aborted) return;
-      if (isCurrentForecastRequest(requestRef.current, requestId)) setError(runError instanceof Error ? runError.message : uk ? "Не вдалося побудувати прогноз" : "Could not run forecast");
+      if (!isCurrentForecastRequest(requestRef.current, requestId)) return;
+      const issue = runError && typeof runError === "object" && "forecastIssue" in runError
+        ? (runError as { forecastIssue?: Awaited<ReturnType<typeof forecastError>>; nextContext?: Context | null }).forecastIssue
+        : undefined;
+      const nextContext = runError && typeof runError === "object" && "nextContext" in runError
+        ? (runError as { nextContext?: Context | null }).nextContext
+        : undefined;
+      if (nextContext) setContext(nextContext);
+      if (issue) {
+        setScenarioEvidenceMissing(issue.code === "insufficient_scenario_evidence");
+        setErrorCode(issue.code);
+        if (issue.donorDayCount !== undefined) setKnownDonorDayCount(issue.donorDayCount);
+      }
+      setError(runError instanceof Error ? runError.message : uk ? "Не вдалося побудувати прогноз" : "Could not run forecast");
     } finally {
       if (isCurrentForecastRequest(requestRef.current, requestId)) setLoading(false);
     }

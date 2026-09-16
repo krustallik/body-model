@@ -1,6 +1,11 @@
 import { calculateStrengthActivity } from "./activity/strength";
 import { calculateWalkingActivity } from "./activity/walking";
 import {
+  hasExplicitStrengthWorkouts,
+  resolveExplicitWorkoutActivityKcal,
+  type ExplicitWorkoutActivityInput,
+} from "./activity/workout-energy";
+import {
   reconstructBodyWeightKg,
   type BodyCompositionState,
 } from "./body-composition/state";
@@ -38,6 +43,11 @@ export type DynamicDailyExpenditureInput = {
   strength: {
     durationMinutes: OptionalMeasurement;
   };
+  /**
+   * v6 workout-aware activity. When present, device/MET workout energy replaces
+   * legacy day-level strength minutes whenever explicit strength workouts exist.
+   */
+  workoutActivity?: ExplicitWorkoutActivityInput;
   occupational: {
     category: OccupationalCategory | null | undefined;
     durationHours: OptionalMeasurement;
@@ -66,8 +76,9 @@ export type DynamicDailyExpenditureResult = {
   tefKcalPerDay: number | null;
   outsideWorkWalkingActivityKcalPerDay: number | null;
   strengthActivityKcalPerDay: number | null;
+  workoutActivityKcalPerDay: number | null;
   occupationalActivityKcalPerDay: number | null;
-  /** Uncalibrated sum of walking, strength, and occupational net Activity. */
+  /** Uncalibrated sum of walking, strength/workout, and occupational net Activity. */
   activityKcalPerDay: number | null;
   calibratedActivityKcalPerDay: number | null;
   adaptiveThermogenesisKcalPerDay: number | null;
@@ -164,11 +175,38 @@ export function calculateDynamicDailyExpenditure(
     distanceKm: input.outsideWorkWalking.distanceKm,
     averageSpeedKmh: input.outsideWorkWalking.averageSpeedKmh,
   });
-  const strengthActivityKcalPerDay = calculateStrengthActivity({
-    weightKg: currentPredictedWeightKg,
-    rmrKcalPerDay: dynamicRmrKcalPerDay,
-    durationMinutes: input.strength.durationMinutes,
-  });
+
+  const workoutResolution = input.workoutActivity
+    ? resolveExplicitWorkoutActivityKcal({
+      events: input.workoutActivity.events,
+      weightKg: currentPredictedWeightKg,
+      rmrKcalPerDay: dynamicRmrKcalPerDay,
+    })
+    : null;
+  const workoutActivityKcalPerDay = workoutResolution?.workoutActivityKcal ?? 0;
+  const suppressLegacyStrength = workoutResolution !== null
+    && hasExplicitStrengthWorkouts(input.workoutActivity!.events);
+  let strengthActivityKcalPerDay: number | null;
+  if (workoutResolution === null) {
+    strengthActivityKcalPerDay = calculateStrengthActivity({
+      weightKg: currentPredictedWeightKg,
+      rmrKcalPerDay: dynamicRmrKcalPerDay,
+      durationMinutes: input.strength.durationMinutes,
+    });
+  } else if (suppressLegacyStrength) {
+    // Explicit strength workouts replace legacy day-level strength minutes.
+    strengthActivityKcalPerDay = workoutActivityKcalPerDay;
+  } else {
+    const legacyStrengthActivityKcalPerDay = calculateStrengthActivity({
+      weightKg: currentPredictedWeightKg,
+      rmrKcalPerDay: dynamicRmrKcalPerDay,
+      durationMinutes: input.strength.durationMinutes,
+    });
+    strengthActivityKcalPerDay = legacyStrengthActivityKcalPerDay === null
+      ? null
+      : legacyStrengthActivityKcalPerDay + workoutActivityKcalPerDay;
+  }
+
   const occupationalActivityKcalPerDay = calculateOccupationalComponent({
     ...input.occupational,
     weightKg: currentPredictedWeightKg,
@@ -239,6 +277,7 @@ export function calculateDynamicDailyExpenditure(
     tefKcalPerDay,
     outsideWorkWalkingActivityKcalPerDay,
     strengthActivityKcalPerDay,
+    workoutActivityKcalPerDay: workoutResolution === null ? null : workoutActivityKcalPerDay,
     occupationalActivityKcalPerDay,
     activityKcalPerDay,
     calibratedActivityKcalPerDay,

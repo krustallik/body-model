@@ -3,6 +3,26 @@ import type { ForecastBlockedResult, ForecastResult, PredictiveSummary } from ".
 import type { ModelStatusDto } from "@/modules/model-episodes/model-episode.types";
 import type { Locale } from "@/i18n/i18n-provider";
 
+/** Minimum time the forecast loading surface stays visible to avoid flicker. */
+export const MIN_FORECAST_LOADING_MS = 800;
+
+export function minimumVisibleDelay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/** Resolve work, then wait out any remaining minimum visibility (success path only). */
+export async function withMinimumVisibleLoading<T>(
+  work: Promise<T>,
+  minMs: number = MIN_FORECAST_LOADING_MS,
+): Promise<T> {
+  const delay = minimumVisibleDelay(minMs);
+  const result = await work;
+  await delay;
+  return result;
+}
+
 export const FORECAST_HORIZONS = [7, 30, 90, 180, 365] as const;
 export type ForecastHorizon = (typeof FORECAST_HORIZONS)[number];
 export type ScenarioMode = "recent-behavior" | "fixed" | "target-centered";

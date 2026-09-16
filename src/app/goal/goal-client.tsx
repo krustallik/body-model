@@ -9,6 +9,7 @@ import { beginForecastRequest, formatDate, formatValue, isCurrentForecastRequest
 import type { ModelStatusDto } from "@/modules/model-episodes/model-episode.types";
 import {
   buildGoalPlanningRequest,
+  canOpenGoalPlanner,
   defaultGoalForm,
   goalStatusPresentation,
   probabilityDefinition,
@@ -123,14 +124,17 @@ export function GoalClient() {
   const showPlanCenter = result && ["solved", "solved-at-boundary", "numerically-limited"].includes(result.status) && displayCalories !== null;
   const probabilityCopy = result ? probabilityDefinition(result, locale) : null;
   const interval = result?.terminal?.attainment.probabilityMonteCarloInterval;
+  const latestModeledDate = context?.status.latestModeledDate ?? null;
+  const canPlan = canOpenGoalPlanner(latestModeledDate);
 
   return <main className={styles.page}>
     <div className={styles.topbar}><Link className={styles.brand} href="/dashboard">BodyCast<span>{uk ? "Планувальник цілі" : "Goal planner"}</span></Link><AppNav active="goal" /></div>
     <header className={styles.hero}><div><p className={styles.eyebrow}>{uk ? "Сценарій · не припис" : "Scenario · not a prescription"}</p><h1>{uk ? "Побудуйте шлях до цілі — разом із невизначеністю." : "Plan toward a target—with uncertainty visible."}</h1><p>{uk ? "BodyCast шукає такий центр харчування, за якого медіанна траєкторія моделі наближається до вашої цілі за введених умов." : "BodyCast searches for a nutrition center whose modeled median trajectory approaches your target under the assumptions you enter."}</p></div><div className={styles.statePill}><span className={solving ? styles.pulse : undefined} />{solving ? (uk ? "Розраховуємо…" : "Solving…") : (uk ? "Гіпотетичний план" : "Hypothetical plan")}</div></header>
 
     {loadingContext && <section className={styles.loadingCard} aria-live="polite"><div className={styles.spinner} /><strong>{uk ? "Завантажуємо поточний стан моделі" : "Loading current model state"}</strong></section>}
-    {!loadingContext && initialized && <form className={styles.planner} onSubmit={(event) => void submit(event)} noValidate>
-      <section className={styles.formSection}><div className={styles.sectionHeading}><div><span>01</span><h2>{uk ? "Ціль і дата" : "Target and date"}</h2></div><p>{uk ? `Останній змодельований день: ${formatDate(context!.status.latestModeledDate!, { year: "numeric" }, locale)}` : `Latest modeled day: ${formatDate(context!.status.latestModeledDate!, { year: "numeric" }, locale)}`}</p></div><div className={styles.formGrid}>
+    {!loadingContext && initialized && !canPlan && <section className={styles.errorCard} role="status"><strong>{uk ? "Немає змодельованого стану" : "No modeled state yet"}</strong><p>{uk ? "Активна модель є, але останній змодельований день ще недоступний. Додайте історію й розрахуйте модель, перш ніж будувати ціль." : "There is an active model, but the latest modeled day is not available yet. Add history and calculate the model before planning a goal."}</p><p><Link href="/forecast">{uk ? "Перейти до прогнозу / запуску моделі" : "Go to forecast / start model"}</Link> · <Link href="/history">{uk ? "Історія" : "History"}</Link></p></section>}
+    {!loadingContext && initialized && canPlan && latestModeledDate && <form className={styles.planner} onSubmit={(event) => void submit(event)} noValidate>
+      <section className={styles.formSection}><div className={styles.sectionHeading}><div><span>01</span><h2>{uk ? "Ціль і дата" : "Target and date"}</h2></div><p>{uk ? `Останній змодельований день: ${formatDate(latestModeledDate, { year: "numeric" }, locale)}` : `Latest modeled day: ${formatDate(latestModeledDate, { year: "numeric" }, locale)}`}</p></div><div className={styles.formGrid}>
         <TextNumberField id="targetWeightKg" label={uk ? "Цільова вага" : "Target weight"} unit={uk ? "кг" : "kg"} value={form.targetWeightKg} min={0.1} max={1000} step={0.1} error={formErrors.targetWeightKg} onChange={(value) => updateForm("targetWeightKg", value)} />
         <label className={styles.field} htmlFor="goalDate"><span>{uk ? "Дата цілі" : "Goal date"}</span><input id="goalDate" name="goalDate" type="date" value={form.goalDate} required aria-invalid={Boolean(formErrors.goalDate)} aria-describedby={formErrors.goalDate ? "goalDate-error" : undefined} onChange={(event) => updateForm("goalDate", event.currentTarget.value)} /><FieldError id="goalDate-error" message={formErrors.goalDate} /></label>
       </div></section>

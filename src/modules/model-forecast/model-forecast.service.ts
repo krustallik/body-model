@@ -210,6 +210,7 @@ export async function forecastModelEpisodeWithInternalArtifacts(
     sources,
     baselineNutritionFallback: episode.baselineNutritionFallback,
     nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
+    modelVersion: episode.modelVersion,
   });
   const continuity = analyzeStateContinuity(builtDays, episode.ecfPolicy);
   const config = resolvedForecastConfig(request.config);
@@ -224,6 +225,7 @@ export async function forecastModelEpisodeWithInternalArtifacts(
     sources: await episodes.loadSources(donorFrom, latestCompletedDate),
     baselineNutritionFallback: episode.baselineNutritionFallback,
     nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
+    modelVersion: episode.modelVersion,
   });
   const reliableDonors = behaviorDonorDays
     .map(behaviorFromReliableDay).filter((day): day is ForecastBehaviorDay => day !== null);
@@ -267,6 +269,7 @@ export async function forecastModelEpisodeWithInternalArtifacts(
       sources: recoveryDonorSources,
       baselineNutritionFallback: episode.baselineNutritionFallback,
       nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
+      modelVersion: episode.modelVersion,
     });
     const expectedRecoveryFingerprint = recoverySourceFingerprint({ episode, days: builtDays, donorDays: recoveryDonorDays });
     if (recovery.latestRecoveredDate !== latestCompletedDate

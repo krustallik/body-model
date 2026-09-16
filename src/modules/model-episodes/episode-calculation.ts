@@ -39,6 +39,9 @@ function calibrationHistory(days: readonly BuiltSimulationDay[]): CalibrationDay
       outsideWorkWalkingDistanceKm: input.outsideWorkWalkingDistanceKm,
       averageWalkingSpeedKmh: input.averageWalkingSpeedKmh,
       strengthTrainingMinutes: input.strengthTrainingMinutes,
+      workoutActivity: input.workoutActivity
+        ? { events: input.workoutActivity.events.map((event) => ({ ...event })) }
+        : undefined,
       occupationalActivity: {
         ...input.occupationalActivity,
         intervals: input.occupationalActivity.intervals?.map((interval) => ({ ...interval })),

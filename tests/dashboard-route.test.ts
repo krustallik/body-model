@@ -27,6 +27,9 @@ const day = (date: string, overrides: Record<string, unknown> = {}) => ({
   averageWalkingSpeedKmh: 4.572,
   walkingDistanceKm: 0.0125,
   strengthTrainingMinutes: null,
+  workouts: [],
+  totalWorkoutMinutes: null,
+  workoutSource: "none" as const,
   updatedAt: `${date}T10:00:00.000Z`,
   ...overrides,
 });

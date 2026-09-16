@@ -74,7 +74,7 @@ export async function recalculateModelEpisode(
     );
     const sources = episode.startDate <= latestCompletedDate
       ? await repository.loadSources(episode.startDate, latestCompletedDate)
-      : { days: [], snapshots: [], workIntervals: [] };
+      : { days: [], snapshots: [], workIntervals: [], workouts: [] };
     const builtDays = episode.startDate > latestCompletedDate
       ? []
       : buildSimulationDays({
@@ -83,6 +83,7 @@ export async function recalculateModelEpisode(
         sources,
         baselineNutritionFallback: episode.baselineNutritionFallback,
         nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
+        modelVersion: episode.modelVersion,
       });
     // Scientific initialization semantics are frozen per episode. Legacy v4
     // episodes must be explicitly reinitialized rather than silently relabeled v5.

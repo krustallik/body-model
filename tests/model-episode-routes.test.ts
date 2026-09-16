@@ -5,7 +5,11 @@ const services = vi.hoisted(() => ({
   getModelStatus: vi.fn(),
   getModelHistory: vi.fn(),
 }));
+const recoveryServices = vi.hoisted(() => ({
+  recoverModelEpisode: vi.fn(),
+}));
 vi.mock("@/modules/model-episodes/model-episode.service", () => services);
+vi.mock("@/modules/model-recovery/model-recovery.service", () => recoveryServices);
 
 import { GET as GET_HISTORY } from "@/app/api/v1/model/history/route";
 import { POST as POST_RECALCULATE } from "@/app/api/v1/model/recalculate/route";
@@ -72,6 +76,31 @@ describe("model episode API routes", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual(result);
     expect(services.recalculateModelEpisode).toHaveBeenCalledWith({ episodeId: 3 });
+  });
+
+  it("runs recovery automatically after v1 recalculate when required", async () => {
+    services.recalculateModelEpisode.mockResolvedValue({
+      status: "ok",
+      episodeId: 9,
+      recoveryRequired: true,
+    });
+    recoveryServices.recoverModelEpisode.mockResolvedValue({
+      status: "ok",
+      recovery: { status: "degraded" },
+    });
+    const response = await POST_RECALCULATE(authorized(
+      "http://localhost/api/v1/model/recalculate", "POST", "{}",
+    ));
+    expect(response.status).toBe(200);
+    expect(recoveryServices.recoverModelEpisode).toHaveBeenCalledWith({
+      seed: 20_260_824,
+      episodeId: 9,
+    });
+    await expect(response.json()).resolves.toMatchObject({
+      episodeId: 9,
+      recoveryRequired: true,
+      recovery: { status: "ok", recovery: { status: "degraded" } },
+    });
   });
 
   it.each([

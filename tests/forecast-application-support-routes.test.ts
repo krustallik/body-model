@@ -55,6 +55,7 @@ describe("forecast recovery and recalculation route", () => {
     modelServices.recalculateModelEpisode.mockResolvedValue({ status: "complete" });
     expect((await POST(actionRequest("recalculate"))).status).toBe(200);
     expect(modelServices.recalculateModelEpisode).toHaveBeenCalledWith({});
+    expect(recoveryServices.recoverModelEpisode).toHaveBeenCalledTimes(1);
     modelServices.initializeNewModelEpisode.mockResolvedValue({
       id: 12,
       modelVersion: "bodycast-physiology-v5",
@@ -69,6 +70,50 @@ describe("forecast recovery and recalculation route", () => {
       startDate: "2026-09-15",
     });
     expect(modelServices.initializeNewModelEpisode).toHaveBeenCalledWith({});
+  });
+
+  it("runs recovery automatically after recalculate when a gap remains", async () => {
+    modelServices.recalculateModelEpisode.mockResolvedValue({
+      status: "ok",
+      episodeId: 20,
+      recoveryRequired: true,
+      daysPersisted: 17,
+    });
+    recoveryServices.recoverModelEpisode.mockResolvedValue({
+      status: "ok",
+      recovery: { status: "recovered", observationCount: 2 },
+    });
+    const response = await POST(actionRequest("recalculate"));
+    expect(response.status).toBe(200);
+    expect(recoveryServices.recoverModelEpisode).toHaveBeenCalledWith({
+      seed: 20_260_824,
+      episodeId: 20,
+    });
+    expect(await response.json()).toMatchObject({
+      episodeId: 20,
+      recoveryRequired: true,
+      recovery: { status: "ok", recovery: { status: "recovered" } },
+    });
+  });
+
+  it("keeps recalculate successful when automatic recovery lacks evidence", async () => {
+    modelServices.recalculateModelEpisode.mockResolvedValue({
+      status: "ok",
+      episodeId: 21,
+      recoveryRequired: true,
+    });
+    recoveryServices.recoverModelEpisode.mockRejectedValueOnce(
+      new ModelRecoveryEvidenceError("Need more observations"),
+    );
+    const response = await POST(actionRequest("recalculate"));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      episodeId: 21,
+      recovery: {
+        status: "insufficient_recovery_evidence",
+        message: "Need more observations",
+      },
+    });
   });
 
   it("keeps evidence errors actionable and unexpected errors private", async () => {

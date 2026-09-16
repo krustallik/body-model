@@ -17,6 +17,31 @@ import { tryAcquireOperation } from "@/lib/operation-gate";
 export const dynamic = "force-dynamic";
 
 const FORECAST_ACTIONS = new Set(["recover", "recalculate", "initialize"]);
+const DEFAULT_RECOVERY_SEED = 20_260_824;
+
+async function recalculateThenRecover(now?: Date) {
+  const result = await recalculateModelEpisode(now ? { now } : {});
+  if (!result.recoveryRequired) return result;
+  try {
+    const recovery = await recoverModelEpisode({
+      seed: DEFAULT_RECOVERY_SEED,
+      episodeId: result.episodeId,
+      ...(now ? { now } : {}),
+    });
+    return { ...result, recovery };
+  } catch (error) {
+    if (error instanceof ModelRecoveryEvidenceError) {
+      return {
+        ...result,
+        recovery: {
+          status: "insufficient_recovery_evidence" as const,
+          message: error.message,
+        },
+      };
+    }
+    throw error;
+  }
+}
 
 export async function POST(request: Request): Promise<Response> {
   const body = await readJson(request);
@@ -30,7 +55,7 @@ export async function POST(request: Request): Promise<Response> {
   try {
     const now = forecastQaNow();
     if (action === "recover") {
-      return Response.json(await recoverModelEpisode({ seed: 20_260_824, ...(now ? { now } : {}) }));
+      return Response.json(await recoverModelEpisode({ seed: DEFAULT_RECOVERY_SEED, ...(now ? { now } : {}) }));
     }
     if (action === "initialize") {
       const episode = await initializeNewModelEpisode(now ? { now } : {});
@@ -41,7 +66,7 @@ export async function POST(request: Request): Promise<Response> {
         startDate: episode.startDate,
       });
     }
-    return Response.json(await recalculateModelEpisode(now ? { now } : {}));
+    return Response.json(await recalculateThenRecover(now));
   } catch (error) {
     if (error instanceof NoActiveModelEpisodeError) return Response.json({ error: "no_active_episode" }, { status: 404 });
     if (error instanceof ModelEpisodeNotFoundError) return Response.json({ error: "episode_not_found" }, { status: 404 });

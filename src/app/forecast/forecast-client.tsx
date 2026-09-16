@@ -65,9 +65,10 @@ async function forecastError(response: Response, locale: Locale): Promise<{
     const messages: Record<string, string> = locale === "uk" ? {
       no_active_episode: "Активної моделі ще немає. Запустіть модель тут, якщо вага й калорії вже є в історії.",
       insufficient_scenario_evidence: "Для сценарію «Як останнім часом» потрібно щонайменше 14 повних днів з вашими звичками. Оберіть план або додайте дані.",
-      recovery_required: "Спочатку потрібно закрити пропуск у даних і зрозуміти поточну вагу.",
+      recovery_required: "Спочатку перерахуйте модель — вона сама оцінить стан після пропуску.",
     } : {
       no_active_episode: "There is no active model yet. Start the model here if weight and calories are already in your history.",
+      recovery_required: "Recalculate the model first — it will estimate state after the data gap automatically.",
     };
     return {
       message: (body.error && messages[body.error]) || raw,
@@ -308,7 +309,7 @@ export function ForecastClient() {
 
       {error && !showStartModel && <section className={styles.blocked} role="alert"><p className={styles.eyebrow}>{uk ? "Прогноз недоступний" : "Forecast unavailable"}</p><h2>{uk ? "Цей варіант поки неможливо порахувати." : "We can’t calculate this option yet."}</h2><p>{error}</p><div className={styles.actions}>{mode === "recent-behavior" && <button type="button" onClick={() => selectMode("target-centered")}>{uk ? "Спробувати план з відхиленнями" : "Try a plan with drift"}</button>}<Link href="/history">{uk ? "Додати дані" : "Add data"}</Link></div></section>}
 
-      {!error && blockedOutcome && blockedCopy && <section className={styles.blocked}><p className={styles.eyebrow}>{uk ? "Потрібна поточна вага моделі" : "Current model weight needed"}</p><h2>{blockedCopy.title}</h2><p>{blockedCopy.detail}</p><div className={styles.actions}><button type="button" disabled={busy} onClick={() => void runAction("recover")}>{uk ? "Закрити пропуск у даних" : "Close the data gap"}</button><button type="button" disabled={busy} onClick={() => void runAction("recalculate")}>{recalculateCopy.action}</button><Link href="/history">{uk ? "Переглянути історію" : "Review history"}</Link></div></section>}
+      {!error && blockedOutcome && blockedCopy && <section className={styles.blocked}><p className={styles.eyebrow}>{uk ? "Потрібна поточна вага моделі" : "Current model weight needed"}</p><h2>{blockedCopy.title}</h2><p>{blockedCopy.detail}</p><div className={styles.actions}><button type="button" disabled={busy} onClick={() => void runAction("recalculate")}>{recalculateCopy.action}</button><Link href="/history">{uk ? "Переглянути історію" : "Review history"}</Link></div></section>}
 
       {loading && !outcome && !error && <section className={styles.loadingCard} aria-live="polite"><div className={styles.spinner} /><strong>{uk ? "Рахуємо можливі варіанти ваги" : "Calculating possible weight paths"}</strong><span>{uk ? "Кожен варіант стартує від вашої останньої зрозумілої ваги." : "Each path starts from your latest understood weight."}</span></section>}
       {!loading && !outcome && !error && <section className={styles.pendingCard}><strong>{uk ? "Налаштування змінено" : "Settings changed"}</strong><span>{uk ? "Натисніть «Побудувати прогноз», щоб оновити картинку." : "Tap “Run forecast” to refresh the chart."}</span></section>}

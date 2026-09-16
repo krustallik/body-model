@@ -284,8 +284,8 @@ export function recalculateModelPresentation(locale: Locale = "en"): {
     action: uk ? "Перерахувати модель" : "Recalculate model",
     loadingAction: uk ? "Перераховуємо модель…" : "Recalculating model…",
     hint: uk
-      ? "Бере записи з таблиці здоров’я і зберігає пораховані дні для діагностики та прогнозу."
-      : "Takes health-table rows and saves calculated days for diagnostics and forecasting.",
+      ? "Бере записи з таблиці здоров’я, зберігає пораховані дні і за потреби автоматично оцінює стан після пропуску."
+      : "Takes health-table rows, saves calculated days, and automatically estimates state after a data gap when needed.",
   };
 }
 

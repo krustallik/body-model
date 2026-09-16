@@ -82,7 +82,7 @@ describe("model episode application service", () => {
     const result = await recalculateModelEpisode({
       now: new Date("2026-08-22T10:00:00.000Z"),
     }, client);
-    expect(repository.loadSources).toHaveBeenCalledWith("2026-08-20", "2026-08-21");
+    expect(repository.loadSources).toHaveBeenCalledWith("2026-04-18", "2026-08-21");
     expect(repository.persistCalculation).toHaveBeenCalledOnce();
     expect(repository.persistCalculation.mock.calls[0]?.[1].dailyStates.every(
       ({ nutrition }: { nutrition: { source: string } }) => nutrition.source === "observed",
@@ -92,6 +92,48 @@ describe("model episode application service", () => {
       observedNutritionDays: 2, imputedNutritionDays: 0, unbridgeableNutritionDays: 0,
       calibrationStatus: "insufficient-history",
     });
+  });
+
+  it("restarts the active episode at three complete days after a gap", async () => {
+    const episode = persistedEpisodeFixture("2026-09-01");
+    const historical = stableSourceDays({ count: 90, endDate: "2026-09-01" });
+    const recent = [
+      sourceDay("2026-09-14", { weightKg: 92.9 }),
+      sourceDay("2026-09-15", { weightKg: 91.1 }),
+      sourceDay("2026-09-16", { weightKg: 89.8 }),
+    ];
+    repository.getActive.mockResolvedValue(episode);
+    repository.loadSources.mockResolvedValue({
+      days: [...historical, ...recent], snapshots: [], workIntervals: [], workouts: [],
+    });
+    repository.createPrepared.mockResolvedValue({
+      ...persistedEpisodeFixture("2026-09-14"),
+      id: 8,
+    });
+    repository.status.mockResolvedValue({ episodeId: 8, daysModeled: 3 });
+
+    const result = await recalculateModelEpisode({
+      now: new Date("2026-09-17T10:00:00.000Z"),
+    }, client);
+
+    expect(repository.deactivateActive).toHaveBeenCalledWith(
+      new Date("2026-09-17T10:00:00.000Z"),
+    );
+    expect(repository.createPrepared).toHaveBeenCalledWith(
+      expect.objectContaining({ startDate: "2026-09-14" }),
+    );
+    expect(repository.persistCalculation).toHaveBeenCalledWith(
+      8,
+      expect.objectContaining({
+        dailyStates: expect.arrayContaining([
+          expect.objectContaining({ date: "2026-09-14" }),
+          expect.objectContaining({ date: "2026-09-15" }),
+          expect.objectContaining({ date: "2026-09-16" }),
+        ]),
+      }),
+      "bodycast-physiology-v6",
+    );
+    expect(result).toMatchObject({ episodeId: 8, daysPersisted: 3, completeDays: 3 });
   });
 
   it("handles an episode with no completed source days deterministically", async () => {

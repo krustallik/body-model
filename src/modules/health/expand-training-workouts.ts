@@ -26,12 +26,16 @@ function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Split newline fields while preserving empty middle slots for positional alignment. */
+/**
+ * Split newline fields while preserving empty middle slots for positional alignment.
+ * iOS Shortcuts Quick Look often shows newlines as `\N`; some payloads also embed
+ * the literal two-character sequence `\N` or `\n` instead of a real line break.
+ */
 export function splitPositionalLines(value: unknown): string[] | null {
   if (value === null || value === undefined) return null;
   if (typeof value !== "string") return null;
   if (value.trim() === "") return [];
-  return value.split(/\r?\n/).map((line) => line.trim());
+  return value.split(/\r?\n|\\N|\\n/).map((line) => line.trim());
 }
 
 function parseIsoOrShortcutInstant(raw: string): Date | null {
@@ -224,14 +228,29 @@ export function mergeExpandedTrainingWorkouts(
   timezone?: string,
 ): JsonObject {
   const date = typeof day.date === "string" ? day.date : null;
-  if (!date) return day;
+  if (!date) {
+    // Still drop non-numeric timestamp blobs so Zod never sees a string minutes field.
+    if (looksLikeTrainingTimestampBlob(day.strengthTrainingMinutes)) {
+      const rest = { ...day };
+      delete rest.strengthTrainingMinutes;
+      return rest;
+    }
+    return day;
+  }
 
   const { trainingTimestamps, consumedStrengthTrainingMinutes } = resolveTrainingTimestamps(day);
   const hasTrainingFields = "trainingType" in day
     || "trainingActiveKcal" in day
     || "trainingTimestamps" in day
     || consumedStrengthTrainingMinutes;
-  if (!hasTrainingFields) return day;
+  if (!hasTrainingFields) {
+    if (looksLikeTrainingTimestampBlob(day.strengthTrainingMinutes)) {
+      const rest = { ...day };
+      delete rest.strengthTrainingMinutes;
+      return rest;
+    }
+    return day;
+  }
 
   const { workouts: expanded } = expandTrainingWorkoutFields({
     trainingType: day.trainingType,
@@ -247,6 +266,11 @@ export function mergeExpandedTrainingWorkouts(
   delete rest.trainingTimestamps;
   // Timestamp lines are not numeric minutes; drop them once consumed as the feed.
   if (consumedStrengthTrainingMinutes) delete rest.strengthTrainingMinutes;
+  // If a timestamp blob somehow remains (failed expansion, odd separators), never
+  // forward it to the numeric Zod field — that would 400 the whole sync day.
+  if (looksLikeTrainingTimestampBlob(rest.strengthTrainingMinutes)) {
+    delete rest.strengthTrainingMinutes;
+  }
 
   const existing = Array.isArray(rest.workouts)
     ? rest.workouts.filter((item) => isObject(item))

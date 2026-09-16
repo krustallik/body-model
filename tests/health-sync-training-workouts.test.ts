@@ -219,6 +219,53 @@ describe("health sync training workout pipeline", () => {
     expect(workouts.map((workout) => workout.durationMinutes)).toEqual([12, 2, 62]);
   });
 
+  it("accepts the exact Shortcuts screenshot payload with literal \\\\N separators and string Steps", () => {
+    const result = parseShortcutSync({
+      days: [{
+        Fatg: 62,
+        Carbsg: 253,
+        Averagewalkingspeedkmh: "5",
+        Calorieskcal: 2411,
+        Trainingtype: "Stair Climbing\\Nstair Climbing\\Ntraditional Strength Training",
+        Proteing: 203,
+        Walkingdistancekm: "0.5814353488389005",
+        Bodyfatpercent: "27.6",
+        Date: "2026-09-16",
+        Trainingactivekcal: "154\\N18\\N562",
+        Strengthtrainingminutes:
+          "16. 9. 2026, 12:40\\N16. 9. 2026, 12:34\\N16. 9. 2026, 10:44\\N16. 9. 2026, 12:52\\N16. 9. 2026, 12:36\\N16. 9. 2026, 11:46",
+        Weightkg: "89.80000305175781",
+        Steps: "4449",
+      }],
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) {
+      expect(result.error.issues).toEqual([]);
+      return;
+    }
+    expect(result.data.days[0]?.date).toBe("2026-09-16");
+    expect(result.data.days[0]?.steps).toBe(4449);
+    expect(result.data.days[0]?.workouts).toHaveLength(3);
+  });
+
+  it("still validates when Date is only remapped inside schema preprocess", () => {
+    // Simulates a path where route-level normalize was skipped but Apple `Date` remains.
+    const result = HealthSyncRequestSchema.safeParse({
+      days: [{
+        Date: "2026-09-16",
+        Steps: 4449,
+        Trainingtype: "Traditional Strength Training",
+        Trainingactivekcal: "100",
+        Strengthtrainingminutes: "16. 9. 2026, 10:00\\N16. 9. 2026, 11:00",
+      }],
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.days[0]?.date).toBe("2026-09-16");
+    expect(result.data.days[0]?.steps).toBe(4449);
+  });
+
   it("keeps legacy two-date strengthTrainingMinutes when training feed keys are absent", () => {
     const result = parseShortcutSync({
       Days: [{

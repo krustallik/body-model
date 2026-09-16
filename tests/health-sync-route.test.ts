@@ -255,6 +255,53 @@ describe("POST /api/v1/health/sync", () => {
     expect(await response.json()).toMatchObject({ error: "validation_error" });
   });
 
+  it("logs raw day keys when validation fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const response = await POST(request({ Days: [{ Steps: 100, Fatg: 10 }] }));
+    expect(response.status).toBe(400);
+    expect(warn).toHaveBeenCalled();
+    const record = JSON.parse(String(warn.mock.calls[0]?.[0])) as Record<string, unknown>;
+    expect(record).toMatchObject({
+      level: "warn",
+      event: "health_sync_validation_failed",
+      daysCount: 1,
+      hasDate: false,
+      hasDateCapital: false,
+    });
+    expect(String(record.day0Keys)).toContain("Steps");
+    expect(String(record.issueSummary)).toContain("date");
+    warn.mockRestore();
+  });
+
+  it("accepts the exact Apple-cased screenshot day through the HTTP route", async () => {
+    syncHealthData.mockResolvedValue({ status: "ok", received: 1, created: 1, updated: 0, dates: [] });
+    const response = await POST(request({
+      days: [{
+        Fatg: 62,
+        Carbsg: 253,
+        Averagewalkingspeedkmh: "5",
+        Calorieskcal: 2411,
+        Trainingtype: "Stair Climbing\\Nstair Climbing\\Ntraditional Strength Training",
+        Proteing: 203,
+        Walkingdistancekm: "0.5814353488389005",
+        Bodyfatpercent: "27.6",
+        Date: "2026-09-16",
+        Trainingactivekcal: "154\\N18\\N562",
+        Strengthtrainingminutes:
+          "16. 9. 2026, 12:40\\N16. 9. 2026, 12:34\\N16. 9. 2026, 10:44\\N16. 9. 2026, 12:52\\N16. 9. 2026, 12:36\\N16. 9. 2026, 11:46",
+        Weightkg: "89.80000305175781",
+        Steps: "4449",
+      }],
+    }));
+    expect(response.status).toBe(200);
+    expect(syncHealthData.mock.calls[0]?.[0].days[0]).toMatchObject({
+      date: "2026-09-16",
+      steps: 4449,
+      fatG: 62,
+    });
+    expect(syncHealthData.mock.calls[0]?.[0].days[0].workouts).toHaveLength(3);
+  });
+
   it("rejects the old multi-day sync payload", async () => {
     const response = await POST(request({ days: [
       { date: "2026-08-21" },

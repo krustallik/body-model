@@ -17,6 +17,15 @@ describe("splitPositionalLines", () => {
     expect(splitPositionalLines("154\n\n562")).toEqual(["154", "", "562"]);
   });
 
+  it("splits literal backslash-N / backslash-n sequences from Shortcuts text", () => {
+    expect(splitPositionalLines("Stair Climbing\\Nstair Climbing\\Ntraditional Strength Training")).toEqual([
+      "Stair Climbing",
+      "stair Climbing",
+      "traditional Strength Training",
+    ]);
+    expect(splitPositionalLines("154\\n18\\n562")).toEqual(["154", "18", "562"]);
+  });
+
   it.each(["", " ", "\t\n"])("treats blank string %j as empty list", (value) => {
     expect(splitPositionalLines(value)).toEqual([]);
   });

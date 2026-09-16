@@ -243,6 +243,7 @@ export class ModelEpisodeRepository {
           averageWalkingSpeedKmh: true,
           walkingDistanceKm: true,
           strengthTrainingMinutes: true,
+          workoutFeedObserved: true,
         },
       }),
       this.client.healthSyncSnapshot.findMany({
@@ -295,6 +296,7 @@ export class ModelEpisodeRepository {
         averageWalkingSpeedKmh: decimal(day.averageWalkingSpeedKmh),
         walkingDistanceKm: decimal(day.walkingDistanceKm),
         strengthTrainingMinutes: decimal(day.strengthTrainingMinutes),
+        workoutFeedObserved: day.workoutFeedObserved ?? null,
       })),
       snapshots: snapshots.map(normalizeDailyMeasurements).map((snapshot) => ({
         ...snapshot,

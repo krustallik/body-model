@@ -30,6 +30,7 @@ function sourceDay(date: string, index: number): ModelHealthDaySource {
     averageWalkingSpeedKmh: 5,
     walkingDistanceKm: 6 + [0, 2, -1][index % 3],
     strengthTrainingMinutes: index % 3 === 0 ? 60 : 0,
+    workoutFeedObserved: null,
   };
 }
 

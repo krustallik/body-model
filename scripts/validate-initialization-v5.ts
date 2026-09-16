@@ -45,7 +45,7 @@ const scenarios: Scenario[] = [
 const seedDays: ModelHealthDaySource[] = Array.from({ length: count }, (_, i) => ({
   date: addCalendarDays(startDate, i), weightKg: 80, bodyFatPercent: 20, caloriesKcal: 2450,
   proteinG: 150, fatG: 75, carbsG: 240, averageWalkingSpeedKmh: 5,
-  walkingDistanceKm: 5, strengthTrainingMinutes: 30,
+  walkingDistanceKm: 5, strengthTrainingMinutes: 30, workoutFeedObserved: null,
 }));
 const seed = prepareEpisodeInitialization({ profile, days: seedDays, startDate: endDate,
   baselineConfig: { windowDays: 84, lookbackDays: 90, minimumCompleteNutritionDays: 63,
@@ -91,7 +91,7 @@ function dataset(s: Scenario, seedValue = 0): HistoricalModelSources {
           + (seedValue === 0 ? 0 : (rng() - .5) * .8) : null,
       caloriesKcal: inputs[i].caloriesKcal!, proteinG: inputs[i].proteinG!, fatG: inputs[i].fatG!, carbsG: inputs[i].carbsG!,
       averageWalkingSpeedKmh: inputs[i].averageWalkingSpeedKmh!, walkingDistanceKm: inputs[i].outsideWorkWalkingDistanceKm!,
-      strengthTrainingMinutes: inputs[i].strengthTrainingMinutes! };
+      strengthTrainingMinutes: inputs[i].strengthTrainingMinutes!, workoutFeedObserved: null };
     if (seedValue !== 0 && i % (7 + seedValue % 3) === 1) day.weightKg = null;
     s.report?.(day, i); return day;
   });

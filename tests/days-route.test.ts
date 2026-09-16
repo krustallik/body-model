@@ -92,7 +92,7 @@ describe("/api/v1/days", () => {
       date: day.date,
       weightKg: 89.4,
       caloriesKcal: null,
-      steps: null,
+      steps: 0,
     });
   });
 
@@ -132,7 +132,7 @@ describe("/api/v1/days", () => {
     });
   });
 
-  it("treats empty, null and zero as missing", async () => {
+  it("treats empty/null/nutrition-zero as missing while preserving activity zero", async () => {
     dailyMetricRepository.update.mockResolvedValue(day);
     await PATCH(
       jsonRequest(`${baseUrl}/${day.date}`, "PATCH", {
@@ -148,7 +148,7 @@ describe("/api/v1/days", () => {
       caloriesKcal: null,
       proteinG: null,
       fatG: null,
-      steps: null,
+      steps: 0,
     });
   });
 

@@ -90,6 +90,7 @@ export function buildSimulationDays(input: {
     averageWalkingSpeedKmh: null,
     walkingDistanceKm: null,
     strengthTrainingMinutes: null,
+    workoutFeedObserved: null,
   };
   const nutrition = bridgeNutritionGaps({
     days: dates.map((date) => {
@@ -182,7 +183,11 @@ export function buildSimulationDays(input: {
     const strengthSuppressed = workoutAware
       && workoutEvents !== undefined
       && hasExplicitStrengthWorkouts(workoutEvents);
-    if (!strengthSuppressed && day.strengthTrainingMinutes === null) {
+    // v6 + observed workout feed for THIS day: missing legacy strength is confirmed 0
+    // (rest / non-strength day), not an unknown transition hole.
+    const workoutFeedObserved = day.workoutFeedObserved === true;
+    const confirmedZeroStrength = workoutAware && workoutFeedObserved && !strengthSuppressed;
+    if (!strengthSuppressed && !confirmedZeroStrength && day.strengthTrainingMinutes === null) {
       activityIssues.push("strengthTrainingMinutes");
     }
     if (!sourceDay && dailyIntervals.length === 0) {
@@ -198,6 +203,7 @@ export function buildSimulationDays(input: {
     if (cumulativeSnapshots.length > 0) sourceObservationFields.push("healthSyncSnapshots");
     if (dailyIntervals.length > 0) sourceObservationFields.push("workIntervals");
     if (workoutAware && dailyWorkouts.length > 0) sourceObservationFields.push("workouts");
+    if (workoutAware && workoutFeedObserved) sourceObservationFields.push("workoutFeedObserved");
     const sourceQuality: ModelDaySourceQuality = {
       status: qualityStatus({ nutritionIssues, activityIssues, workIssues }),
       issues,
@@ -232,6 +238,7 @@ export function buildSimulationDays(input: {
       ...(workoutAware ? {
         stairWalkingOverlap: stairDiagnostics,
         workoutCount: dailyWorkouts.length,
+        workoutFeedObserved,
       } : {}),
     };
     const occupationalIntervals = dailyIntervals.map((interval) => ({
@@ -246,6 +253,12 @@ export function buildSimulationDays(input: {
       averageWalkingSpeedKmh: day.averageWalkingSpeedKmh,
     }));
 
+    const strengthTrainingMinutes = strengthSuppressed
+      ? 0
+      : confirmedZeroStrength && day.strengthTrainingMinutes === null
+        ? 0
+        : day.strengthTrainingMinutes;
+
     return {
       input: {
         date,
@@ -255,7 +268,7 @@ export function buildSimulationDays(input: {
         carbsG: bridgedNutrition.carbsG,
         outsideWorkWalkingDistanceKm,
         averageWalkingSpeedKmh: day.averageWalkingSpeedKmh,
-        strengthTrainingMinutes: strengthSuppressed ? 0 : day.strengthTrainingMinutes,
+        strengthTrainingMinutes,
         ...(workoutAware ? { workoutActivity: { events: workoutEvents ?? [] } } : {}),
         occupationalActivity: {
           category: null,

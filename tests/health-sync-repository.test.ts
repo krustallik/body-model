@@ -61,11 +61,44 @@ describe("Prisma health synchronization repository", () => {
         receivedAt,
         syncedAt: new Date("2026-08-23T08:00:00Z"),
         timezone: "Europe/Bratislava",
-        steps: null,
+        steps: 0,
         walkingDistanceKm: null,
         rawPayload: { Date: "2026-08-23", Steps: 0, Walkingdistancekm: "" },
       }),
     });
+  });
+
+  it("persists workoutFeedObserved=true for valid empty workouts on the sync day", async () => {
+    const { repository, transaction } = repositoryFixture();
+    await repository.syncDay(
+      { date: "2026-09-16", walkingDistanceKm: 0, workouts: [] },
+      { date: "2026-09-16", walkingDistanceKm: 0, workouts: [] },
+    );
+    expect(transaction.dailyHealthData.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          walkingDistanceKm: 0,
+          workoutFeedObserved: true,
+        }),
+        update: expect.objectContaining({
+          walkingDistanceKm: 0,
+          workoutFeedObserved: true,
+        }),
+      }),
+    );
+  });
+
+  it("persists workoutFeedObserved=false when the workout feed is absent", async () => {
+    const { repository, transaction } = repositoryFixture();
+    await repository.syncDay(
+      { date: "2026-09-16", walkingDistanceKm: 3 },
+      { date: "2026-09-16", walkingDistanceKm: 3 },
+    );
+    expect(transaction.dailyHealthData.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ workoutFeedObserved: false }),
+      }),
+    );
   });
 
   it("maps the new decimal metrics on create and update", async () => {

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { collapsesZeroToAbsent } from "@/modules/days/measurement-policy";
 
 const CALENDAR_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 const NUMERIC_INPUT_PATTERN = /^\d+(?:[.,]\d+)?$/;
@@ -35,24 +36,25 @@ export function parseNullableNumericInput(value: unknown): unknown {
   return Number.isFinite(parsed) ? parsed : value;
 }
 
-const nullableMetric = (schema: z.ZodNumber) =>
+const nullableMetric = (field: string, schema: z.ZodNumber) =>
   z.preprocess((value) => {
     const parsed = parseNullableNumericInput(value);
-    return parsed === 0 ? null : parsed;
+    if (parsed === 0 && collapsesZeroToAbsent(field)) return null;
+    return parsed;
   }, schema.nullable().optional());
 
 export const DailyMetricFieldsSchema = z.object({
-  weightKg: nullableMetric(z.number().min(0)),
-  bodyFatPercent: nullableMetric(z.number().min(0).max(100)),
-  caloriesKcal: nullableMetric(z.number().min(0)),
-  proteinG: nullableMetric(z.number().min(0)),
-  fatG: nullableMetric(z.number().min(0)),
-  carbsG: nullableMetric(z.number().min(0)),
-  steps: nullableMetric(z.number().int().min(0)),
-  activeEnergyKcal: nullableMetric(z.number().min(0)),
-  averageWalkingSpeedKmh: nullableMetric(z.number().min(0)),
-  walkingDistanceKm: nullableMetric(z.number().min(0)),
-  strengthTrainingMinutes: nullableMetric(z.number().min(0)),
+  weightKg: nullableMetric("weightKg", z.number().min(0)),
+  bodyFatPercent: nullableMetric("bodyFatPercent", z.number().min(0).max(100)),
+  caloriesKcal: nullableMetric("caloriesKcal", z.number().min(0)),
+  proteinG: nullableMetric("proteinG", z.number().min(0)),
+  fatG: nullableMetric("fatG", z.number().min(0)),
+  carbsG: nullableMetric("carbsG", z.number().min(0)),
+  steps: nullableMetric("steps", z.number().int().min(0)),
+  activeEnergyKcal: nullableMetric("activeEnergyKcal", z.number().min(0)),
+  averageWalkingSpeedKmh: nullableMetric("averageWalkingSpeedKmh", z.number().min(0)),
+  walkingDistanceKm: nullableMetric("walkingDistanceKm", z.number().min(0)),
+  strengthTrainingMinutes: nullableMetric("strengthTrainingMinutes", z.number().min(0)),
 });
 
 export const CreateDailyMetricSchema = DailyMetricFieldsSchema.extend({

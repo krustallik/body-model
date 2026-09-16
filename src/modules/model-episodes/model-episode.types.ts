@@ -23,6 +23,11 @@ export type ModelHealthDaySource = {
   averageWalkingSpeedKmh: number | null;
   walkingDistanceKm: number | null;
   strengthTrainingMinutes: number | null;
+  /**
+   * Persisted at sync for this calendar day only.
+   * true = workout feed observed; false = unavailable; null = legacy unknown.
+   */
+  workoutFeedObserved: boolean | null;
 };
 
 export type ModelSnapshotSource = {
@@ -202,6 +207,8 @@ export type ModelDaySourceQuality = {
   /** v6 Stair Climbing overlap diagnostics; provenance only. */
   stairWalkingOverlap?: import("@/model/activity/stair-walking-overlap").StairOverlapDiagnostic[];
   workoutCount?: number;
+  /** true when sync persisted workout-feed coverage for this day. */
+  workoutFeedObserved?: boolean;
 };
 
 export type BuiltSimulationDay = {

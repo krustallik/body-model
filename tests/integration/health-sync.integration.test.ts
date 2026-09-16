@@ -127,7 +127,7 @@ describe("Apple Health sync with PostgreSQL", () => {
     expect(rows[0]?.walkingDistanceKm?.toString()).toBe("0.25");
     expect(snapshots).toHaveLength(2);
     expect(snapshots[0]).toMatchObject({
-      steps: null,
+      steps: 0,
       walkingDistanceKm: null,
       timezone: "Europe/Bratislava",
       rawPayload: firstRaw,
@@ -247,6 +247,39 @@ describe("Apple Health sync with PostgreSQL", () => {
     expect(responses.every(({ status }) => status === 200)).toBe(true);
     expect(await prisma.dailyHealthData.count({ where: { date } })).toBe(1);
     expect([111, 222]).toContain((await prisma.dailyHealthData.findUnique({ where: { date } }))?.steps);
+  });
+
+  it("persists observed walking zero and workout-feed coverage without inventing workouts", async () => {
+    const date = "2040-01-10";
+    await prisma.healthSyncSnapshot.deleteMany({ where: { date } });
+    await prisma.dailyHealthData.deleteMany({ where: { date } });
+
+    const withEmptyFeed = await POST(syncRequest([{
+      date,
+      walkingDistanceKm: 0,
+      workouts: [],
+    }]));
+    expect(withEmptyFeed.status).toBe(200);
+
+    const observed = await prisma.dailyHealthData.findUniqueOrThrow({
+      where: { date },
+      include: { workouts: true },
+    });
+    expect(observed.walkingDistanceKm?.toString()).toBe("0");
+    expect(observed.workoutFeedObserved).toBe(true);
+    expect(observed.workouts).toHaveLength(0);
+
+    const withoutFeed = await POST(syncRequest([{
+      date,
+      walkingDistanceKm: 0,
+    }]));
+    expect(withoutFeed.status).toBe(200);
+    const unknown = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date } });
+    expect(unknown.walkingDistanceKm?.toString()).toBe("0");
+    expect(unknown.workoutFeedObserved).toBe(false);
+
+    await prisma.healthSyncSnapshot.deleteMany({ where: { date } });
+    await prisma.dailyHealthData.deleteMany({ where: { date } });
   });
 
   it("rolls back today's record when a database constraint fails", async () => {

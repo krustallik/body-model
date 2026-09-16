@@ -19,7 +19,7 @@ describe("daily metric input parsing", () => {
     expect(parseNullableNumericInput(input)).toBe(expected);
   });
 
-  it("parses create metrics while treating empty and zero as missing", () => {
+  it("parses create metrics while treating empty nutrition as missing and preserving activity zero", () => {
     expect(CreateDailyMetricSchema.parse({
       date: "2026-08-22",
       bodyFatPercent: "27,4",
@@ -29,7 +29,7 @@ describe("daily metric input parsing", () => {
       date: "2026-08-22",
       bodyFatPercent: 27.4,
       caloriesKcal: null,
-      steps: null,
+      steps: 0,
     });
   });
 

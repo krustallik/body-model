@@ -28,6 +28,7 @@ export function sourceDay(
     averageWalkingSpeedKmh: 5,
     walkingDistanceKm: 5,
     strengthTrainingMinutes: 0,
+    workoutFeedObserved: null,
     ...override,
   };
 }

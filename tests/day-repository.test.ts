@@ -63,7 +63,7 @@ describe("DailyMetricRepository", () => {
     const { repository, dailyHealthData } = fixture();
     await repository.create({ date: record.date, caloriesKcal: null, steps: 0 });
     expect(dailyHealthData.create).toHaveBeenCalledWith(expect.objectContaining({
-      data: { date: record.date, caloriesKcal: null, steps: null, rawPayload: { source: "manual" } },
+      data: { date: record.date, caloriesKcal: null, steps: 0, rawPayload: { source: "manual" } },
     }));
   });
 

@@ -1,4 +1,5 @@
 import { normalizeDailyMeasurements } from "@/modules/days/measurement-policy";
+import { resolveWorkoutFeedObserved } from "@/modules/health/workout-feed-coverage";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { instantToLocalDateTime } from "@/model/time-zone";
@@ -42,6 +43,8 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
     },
   ): Promise<SyncDateResult> {
     day = normalizeDailyMeasurements(day);
+    // Coverage is decided from the raw sync observation for THIS calendar day only.
+    const workoutFeedObserved = resolveWorkoutFeedObserved(rawDay);
     // Latest state, immutable snapshot, and workout replacement are one atomic sync.
     return this.client.$transaction(async (transaction) => {
       const existing = await transaction.dailyHealthData.findUnique({
@@ -64,6 +67,7 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
           averageWalkingSpeedKmh: day.averageWalkingSpeedKmh ?? null,
           walkingDistanceKm: day.walkingDistanceKm ?? null,
           strengthTrainingMinutes: day.strengthTrainingMinutes ?? null,
+          workoutFeedObserved,
           rawPayload: jsonValue(rawDay),
         },
         update: {
@@ -78,6 +82,7 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
           averageWalkingSpeedKmh: optionalUpdate(day.averageWalkingSpeedKmh),
           walkingDistanceKm: optionalUpdate(day.walkingDistanceKm),
           strengthTrainingMinutes: optionalUpdate(day.strengthTrainingMinutes),
+          workoutFeedObserved,
           rawPayload: jsonValue(rawDay),
         },
         select: { id: true },

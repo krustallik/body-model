@@ -152,7 +152,7 @@ describe("model episode repository mapping", () => {
     const result = await new ModelEpisodeRepository(client)
       .loadSources("2026-08-01", "2026-08-22");
     expect(result.days[0]).toMatchObject({
-      bodyFatPercent: 20, walkingDistanceKm: 5.1, strengthTrainingMinutes: null,
+      bodyFatPercent: 20, walkingDistanceKm: 5.1, strengthTrainingMinutes: 0,
     });
     expect(result.snapshots[0].walkingDistanceKm).toBe(1.25);
     expect(result.workIntervals).toHaveLength(1);

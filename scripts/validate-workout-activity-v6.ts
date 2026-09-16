@@ -231,6 +231,7 @@ function scenarioV5Regression(): ScenarioResult {
       averageWalkingSpeedKmh: 5,
       walkingDistanceKm: 5,
       strengthTrainingMinutes: 45,
+      workoutFeedObserved: null,
     }],
     snapshots: [],
     workIntervals: [],

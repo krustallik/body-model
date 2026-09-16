@@ -39,6 +39,13 @@ model DailyHealthData {
   averageWalkingSpeedKmh  Decimal?             @db.Decimal(10, 4)
   walkingDistanceKm       Decimal?             @db.Decimal(10, 4)
   strengthTrainingMinutes Decimal?             @db.Decimal(10, 4)
+  /**
+   * Set at sync time for the observation day only.
+   * true  = workout feed successfully observed (events for this day and/or confirmed none)
+   * false = sync observed but workout feed absent/invalid
+   * null  = legacy row without coverage provenance
+   */
+  workoutFeedObserved     Boolean?
   rawPayload              Json
   createdAt               DateTime             @default(now())
   updatedAt               DateTime             @updatedAt

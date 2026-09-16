@@ -56,6 +56,18 @@ export function summarizeTrainingField(value: unknown): {
   };
 }
 
+/**
+ * Full JSON body as received (before normalization).
+ * Health sync bodies do not contain credentials; auth headers stay out of logs.
+ */
+export function serializeRawSyncBody(body: unknown): string {
+  try {
+    return JSON.stringify(body);
+  } catch {
+    return "[unserializable]";
+  }
+}
+
 /** Compact, secret-free sync body summary for request diagnostics. */
 export function summarizeSyncBody(body: unknown): {
   bodyType: string;

@@ -63,7 +63,7 @@ describe("POST /api/v1/health/sync", () => {
       prunedSnapshots: 3,
     });
 
-    const response = await POST(request({
+    const body = {
       Days: [{
         Date: "2026-09-16",
         Trainingtype: "Stair Climbing\\NTraditional Strength Training",
@@ -71,7 +71,8 @@ describe("POST /api/v1/health/sync", () => {
         Strengthtrainingminutes:
           "16. 9. 2026, 12:40\\N16. 9. 2026, 10:44\\N16. 9. 2026, 12:52\\N16. 9. 2026, 11:46",
       }],
-    }));
+    };
+    const response = await POST(request(body));
 
     expect(response.status).toBe(200);
     const events = info.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>);
@@ -84,6 +85,7 @@ describe("POST /api/v1/health/sync", () => {
         trainingTypeLineCount: 2,
         trainingActiveKcalLineCount: 2,
         strengthTrainingMinutesLineCount: 4,
+        rawBody: JSON.stringify(body),
       }),
       expect.objectContaining({
         event: "health_sync_success",
@@ -93,6 +95,9 @@ describe("POST /api/v1/health/sync", () => {
         retentionCutoffDate: "2026-08-17",
       }),
     ]));
+    const received = events.find((event) => event.event === "health_sync_received");
+    expect(received).not.toHaveProperty("apiKey");
+    expect(received).not.toHaveProperty("authorization");
     info.mockRestore();
   });
 

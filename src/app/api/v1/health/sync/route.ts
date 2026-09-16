@@ -3,6 +3,7 @@ import { isValidApiKey } from "@/modules/health/auth";
 import { HealthSyncRequestSchema } from "@/modules/health/health.schema";
 import { syncHealthData } from "@/modules/health/health.service";
 import {
+  serializeRawSyncBody,
   summarizeNormalizedDay,
   summarizeSyncBody,
 } from "@/modules/health/health-sync-log";
@@ -38,7 +39,10 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   const requestSummary = summarizeSyncBody(body);
-  logEvent("info", "health_sync_received", requestSummary);
+  logEvent("info", "health_sync_received", {
+    ...requestSummary,
+    rawBody: serializeRawSyncBody(body),
+  });
 
   let normalized;
   try {

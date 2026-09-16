@@ -1,8 +1,4 @@
 export const DEFAULT_SNAPSHOT_MAX_GAP_MINUTES = 60;
-/** Allowed snapshot distance before work start / after work end. */
-export const DEFAULT_SNAPSHOT_OUTSIDE_MAX_GAP_MINUTES = DEFAULT_SNAPSHOT_MAX_GAP_MINUTES;
-/** Allowed snapshot distance just inside the work interval at each boundary. */
-export const DEFAULT_SNAPSHOT_INSIDE_MAX_GAP_MINUTES = 5;
 
 export type CumulativeSnapshot = {
   timestamp: Date;
@@ -26,14 +22,7 @@ export type UnavailableBoundaryEstimate = {
 
 export type MetricBoundaryEstimate = BoundaryEstimate | UnavailableBoundaryEstimate;
 
-export type WorkBoundarySide = "start" | "end";
-
 type MetricKey = "steps" | "walkingDistanceKm";
-
-type BoundaryGapLimits = {
-  beforeMaxGapMinutes: number;
-  afterMaxGapMinutes: number;
-};
 
 function validateMaxGap(maxGapMinutes: number): void {
   if (!Number.isFinite(maxGapMinutes)) throw new TypeError("maxGapMinutes must be finite");
@@ -58,51 +47,17 @@ function metricPoints(snapshots: CumulativeSnapshot[], metric: MetricKey) {
   }).sort((left, right) => left.timestamp - right.timestamp);
 }
 
-function resolveBoundaryGapLimits(input: {
-  maxGapMinutes?: number;
-  boundarySide?: WorkBoundarySide;
-  outsideMaxGapMinutes?: number;
-  insideMaxGapMinutes?: number;
-}): BoundaryGapLimits {
-  if (input.boundarySide === undefined) {
-    const maxGapMinutes = input.maxGapMinutes ?? DEFAULT_SNAPSHOT_MAX_GAP_MINUTES;
-    validateMaxGap(maxGapMinutes);
-    return { beforeMaxGapMinutes: maxGapMinutes, afterMaxGapMinutes: maxGapMinutes };
-  }
-  const outside = input.outsideMaxGapMinutes
-    ?? input.maxGapMinutes
-    ?? DEFAULT_SNAPSHOT_OUTSIDE_MAX_GAP_MINUTES;
-  const inside = input.insideMaxGapMinutes ?? DEFAULT_SNAPSHOT_INSIDE_MAX_GAP_MINUTES;
-  validateMaxGap(outside);
-  validateMaxGap(inside);
-  return input.boundarySide === "start"
-    ? { beforeMaxGapMinutes: outside, afterMaxGapMinutes: inside }
-    : { beforeMaxGapMinutes: inside, afterMaxGapMinutes: outside };
-}
-
-function pointWithinBoundaryWindow(
-  pointTimestamp: number,
-  target: number,
-  limits: BoundaryGapLimits,
-): boolean {
-  const gapMinutes = (pointTimestamp - target) / 60_000;
-  if (gapMinutes < 0) return -gapMinutes <= limits.beforeMaxGapMinutes;
-  return gapMinutes <= limits.afterMaxGapMinutes;
-}
-
+/** Exact → interpolate within ±maxGap → nearest within ±maxGap. */
 export function estimateCumulativeMetricAtTime(input: {
   snapshots: CumulativeSnapshot[];
   targetTime: Date;
   metric: MetricKey;
   maxGapMinutes?: number;
-  /** When set, uses outside/inside asymmetric windows around the work boundary. */
-  boundarySide?: WorkBoundarySide;
-  outsideMaxGapMinutes?: number;
-  insideMaxGapMinutes?: number;
 }): MetricBoundaryEstimate {
   const target = validateTarget(input.targetTime);
   const targetIso = input.targetTime.toISOString();
-  const limits = resolveBoundaryGapLimits(input);
+  const maxGapMinutes = input.maxGapMinutes ?? DEFAULT_SNAPSHOT_MAX_GAP_MINUTES;
+  validateMaxGap(maxGapMinutes);
   const points = metricPoints(input.snapshots, input.metric);
   if (points.length === 0) return { value: null, targetTime: targetIso, reason: "insufficient-data" };
 
@@ -117,43 +72,37 @@ export function estimateCumulativeMetricAtTime(input: {
     };
   }
 
-  const before = points.findLast((point) => (
-    point.timestamp < target
-    && pointWithinBoundaryWindow(point.timestamp, target, limits)
-  ));
-  const after = points.find((point) => (
-    point.timestamp > target
-    && pointWithinBoundaryWindow(point.timestamp, target, limits)
-  ));
+  const before = points.findLast((point) => point.timestamp < target);
+  const after = points.find((point) => point.timestamp > target);
   if (before && after) {
     const beforeGap = (target - before.timestamp) / 60_000;
     const afterGap = (after.timestamp - target) / 60_000;
-    if (after.value < before.value) {
-      return { value: null, targetTime: targetIso, reason: "counter-decreased" };
+    if (beforeGap <= maxGapMinutes && afterGap <= maxGapMinutes) {
+      if (after.value < before.value) {
+        return { value: null, targetTime: targetIso, reason: "counter-decreased" };
+      }
+      const fraction = (target - before.timestamp) / (after.timestamp - before.timestamp);
+      return {
+        value: before.value + (after.value - before.value) * fraction,
+        targetTime: targetIso,
+        sourceTimes: [new Date(before.timestamp).toISOString(), new Date(after.timestamp).toISOString()],
+        gapMinutes: Math.max(beforeGap, afterGap),
+        method: "interpolated",
+      };
     }
-    const fraction = (target - before.timestamp) / (after.timestamp - before.timestamp);
-    return {
-      value: before.value + (after.value - before.value) * fraction,
-      targetTime: targetIso,
-      sourceTimes: [new Date(before.timestamp).toISOString(), new Date(after.timestamp).toISOString()],
-      gapMinutes: Math.max(beforeGap, afterGap),
-      method: "interpolated",
-    };
   }
 
-  const candidates = points.filter((point) => (
-    pointWithinBoundaryWindow(point.timestamp, target, limits)
-  ));
-  if (candidates.length === 0) {
+  const nearest = points.reduce((best, point) =>
+    Math.abs(point.timestamp - target) < Math.abs(best.timestamp - target) ? point : best);
+  const gapMinutes = Math.abs(nearest.timestamp - target) / 60_000;
+  if (gapMinutes > maxGapMinutes) {
     return { value: null, targetTime: targetIso, reason: "gap-too-large" };
   }
-  const nearest = candidates.reduce((best, point) =>
-    Math.abs(point.timestamp - target) < Math.abs(best.timestamp - target) ? point : best);
   return {
     value: nearest.value,
     targetTime: targetIso,
     sourceTimes: [new Date(nearest.timestamp).toISOString()],
-    gapMinutes: Math.abs(nearest.timestamp - target) / 60_000,
+    gapMinutes,
     method: "nearest",
   };
 }
@@ -170,26 +119,10 @@ function intervalMetric(
   startTime: Date,
   endTime: Date,
   metric: MetricKey,
-  options: {
-    maxGapMinutes?: number;
-    outsideMaxGapMinutes?: number;
-    insideMaxGapMinutes?: number;
-  },
+  maxGapMinutes: number,
 ): IntervalMetricEstimate {
-  const start = estimateCumulativeMetricAtTime({
-    snapshots,
-    targetTime: startTime,
-    metric,
-    boundarySide: "start",
-    ...options,
-  });
-  const end = estimateCumulativeMetricAtTime({
-    snapshots,
-    targetTime: endTime,
-    metric,
-    boundarySide: "end",
-    ...options,
-  });
+  const start = estimateCumulativeMetricAtTime({ snapshots, targetTime: startTime, metric, maxGapMinutes });
+  const end = estimateCumulativeMetricAtTime({ snapshots, targetTime: endTime, metric, maxGapMinutes });
   if (start.value === null) return { value: null, start, end, reason: start.reason };
   if (end.value === null) return { value: null, start, end, reason: end.reason };
   const value = end.value - start.value;
@@ -202,24 +135,16 @@ export function estimateWorkIntervalWalking(input: {
   startTime: Date;
   endTime: Date;
   maxGapMinutes?: number;
-  outsideMaxGapMinutes?: number;
-  insideMaxGapMinutes?: number;
 }): { estimatedSteps: IntervalMetricEstimate; estimatedWalkingDistanceKm: IntervalMetricEstimate } {
   const start = validateTarget(input.startTime);
   const end = validateTarget(input.endTime);
   if (end <= start) throw new RangeError("work interval must have positive duration");
-  const options = {
-    maxGapMinutes: input.maxGapMinutes,
-    outsideMaxGapMinutes: input.outsideMaxGapMinutes,
-    insideMaxGapMinutes: input.insideMaxGapMinutes,
-  };
-  if (options.maxGapMinutes !== undefined) validateMaxGap(options.maxGapMinutes);
-  if (options.outsideMaxGapMinutes !== undefined) validateMaxGap(options.outsideMaxGapMinutes);
-  if (options.insideMaxGapMinutes !== undefined) validateMaxGap(options.insideMaxGapMinutes);
+  const maxGapMinutes = input.maxGapMinutes ?? DEFAULT_SNAPSHOT_MAX_GAP_MINUTES;
+  validateMaxGap(maxGapMinutes);
   return {
-    estimatedSteps: intervalMetric(input.snapshots, input.startTime, input.endTime, "steps", options),
+    estimatedSteps: intervalMetric(input.snapshots, input.startTime, input.endTime, "steps", maxGapMinutes),
     estimatedWalkingDistanceKm: intervalMetric(
-      input.snapshots, input.startTime, input.endTime, "walkingDistanceKm", options,
+      input.snapshots, input.startTime, input.endTime, "walkingDistanceKm", maxGapMinutes,
     ),
   };
 }
@@ -229,8 +154,6 @@ export function estimateDailyWorkWalking(input: {
   intervals: { id: number; startTime: Date; endTime: Date }[];
   dailyWalkingDistanceKm: number | null | undefined;
   maxGapMinutes?: number;
-  outsideMaxGapMinutes?: number;
-  insideMaxGapMinutes?: number;
 }) {
   if (input.dailyWalkingDistanceKm !== null && input.dailyWalkingDistanceKm !== undefined) {
     if (!Number.isFinite(input.dailyWalkingDistanceKm)) throw new TypeError("dailyWalkingDistanceKm must be finite");
@@ -254,8 +177,6 @@ export function estimateDailyWorkWalking(input: {
       startTime: interval.startTime,
       endTime: interval.endTime,
       maxGapMinutes: input.maxGapMinutes,
-      outsideMaxGapMinutes: input.outsideMaxGapMinutes,
-      insideMaxGapMinutes: input.insideMaxGapMinutes,
     }),
   }));
   const distances = estimates.map(({ estimatedWalkingDistanceKm }) => estimatedWalkingDistanceKm.value);

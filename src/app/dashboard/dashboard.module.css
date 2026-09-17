@@ -1,14 +1,10 @@
 .page {
-  --ink: #17231f;
-  --muted: #63706b;
-  --line: #dfe6e2;
-  --surface: #fff;
-  --soft: #f3f7f4;
-  --accent: #176b4d;
   max-width: 90rem;
+  min-height: 100dvh;
   margin: 0 auto;
   padding: 1.5rem 2rem 4rem;
   color: var(--ink);
+  background: transparent;
 }
 
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
@@ -24,19 +20,26 @@
 }
 .hero h1 { max-width: 50rem; margin: 0; font-size: clamp(2.7rem, 6vw, 5.5rem); line-height: 0.95; letter-spacing: -0.055em; }
 .hero > div > p:last-child { max-width: 35rem; margin: 1.1rem 0 0; color: var(--muted); line-height: 1.5; }
-.eyebrow { margin: 0 0 0.7rem; color: var(--accent); font-size: 0.72rem; font-weight: 850; letter-spacing: 0.14em; text-transform: uppercase; }
+.eyebrow { margin: 0 0 0.7rem; color: var(--text-muted); font-size: 0.72rem; font-weight: 850; letter-spacing: 0.14em; text-transform: uppercase; }
 
-.todayBadge { display: inline-flex; align-items: center; gap: 0.6rem; flex: 0 0 auto; padding: 0.7rem 0.9rem; border: 1px solid var(--line); border-radius: 999px; font-size: 0.82rem; font-weight: 750; }
+.todayBadge { display: inline-flex; align-items: center; gap: 0.6rem; flex: 0 0 auto; padding: 0.7rem 0.9rem; border: 1px solid var(--line); border-radius: 999px; font-size: 0.82rem; font-weight: 750; background: var(--elevated); }
 .todayBadge span { width: 0.55rem; height: 0.55rem; border-radius: 50%; }
-.ready span { background: #1a9b68; box-shadow: 0 0 0 0.25rem rgb(26 155 104 / 13%); }
-.waiting span { background: #c58b35; box-shadow: 0 0 0 0.25rem rgb(197 139 53 / 13%); }
+.ready span { background: var(--success); box-shadow: 0 0 0 0.25rem var(--success-soft); }
+.waiting span { background: var(--warning); box-shadow: 0 0 0 0.25rem var(--warning-soft); }
 
 .metricGrid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0.8rem; }
-.metricCard { min-height: 8.5rem; padding: 1.1rem; background: var(--surface); border: 1px solid var(--line); border-radius: 0.9rem; box-shadow: 0 0.8rem 2.5rem rgb(30 53 44 / 5%); }
+.metricCard {
+  min-height: 8.5rem;
+  padding: 1.1rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 0.9rem;
+  box-shadow: 0 0.35rem 1rem var(--shadow), inset 0 1px 0 color-mix(in srgb, #fff 2.5%, transparent);
+}
 .metricCard p { min-height: 2.2rem; margin: 0; color: var(--muted); font-size: 0.76rem; font-weight: 750; line-height: 1.35; }
 .metricCard strong { display: block; margin-top: 0.75rem; font-size: clamp(1.65rem, 3vw, 2.35rem); letter-spacing: -0.045em; font-variant-numeric: tabular-nums; }
 .metricCard span { display: block; margin-top: 0.35rem; color: var(--muted); font-size: 0.7rem; }
-.heartRateCard { display: flex; align-items: end; justify-content: space-between; gap: 1rem; margin-top: .8rem; padding: 1.1rem; background: var(--soft); border: 1px solid var(--line); border-radius: .9rem; }
+.heartRateCard { display: flex; align-items: end; justify-content: space-between; gap: 1rem; margin-top: .8rem; padding: 1.1rem; background: var(--elevated); border: 1px solid var(--line); border-radius: .9rem; }
 .heartRateCard p, .heartRateCard span { margin: 0; color: var(--muted); font-size: .76rem; font-weight: 750; }
 .heartRateCard strong { display: block; margin-top: .35rem; font-size: 1.65rem; font-variant-numeric: tabular-nums; }
 
@@ -48,7 +51,7 @@
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 0.9rem;
-  box-shadow: 0 0.8rem 2.5rem rgb(30 53 44 / 5%);
+  box-shadow: 0 0.35rem 1rem var(--shadow), inset 0 1px 0 color-mix(in srgb, #fff 2.5%, transparent);
 }
 .sleepPrimary {
   display: grid;
@@ -76,7 +79,7 @@
 }
 .sleepStages div {
   padding: 0.7rem 0.75rem;
-  background: var(--soft);
+  background: var(--elevated);
   border: 1px solid var(--line);
   border-radius: 0.7rem;
 }
@@ -96,7 +99,13 @@
 .sleepEmpty { display: grid; gap: 0.2rem; }
 
 .lowerGrid { display: grid; grid-template-columns: minmax(17rem, 0.72fr) minmax(0, 1.75fr); gap: 1rem; margin-top: 1rem; }
-.syncCard, .historyCard { overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: 1rem; box-shadow: 0 0.8rem 2.5rem rgb(30 53 44 / 5%); }
+.syncCard, .historyCard {
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  box-shadow: 0 0.35rem 1rem var(--shadow), inset 0 1px 0 color-mix(in srgb, #fff 2.5%, transparent);
+}
 .syncCard { padding: 1.3rem; }
 .sectionHeading h2 { margin: 0; font-size: 1.35rem; letter-spacing: -0.035em; }
 .syncCard dl { margin: 1.25rem 0 0; }
@@ -110,10 +119,17 @@
 .tableWrap th, .tableWrap td { padding: 0.78rem 0.7rem; text-align: right; white-space: nowrap; border-top: 1px solid var(--line); }
 .tableWrap th:first-child, .tableWrap td:first-child { padding-left: 1.3rem; text-align: left; }
 .tableWrap th:last-child, .tableWrap td:last-child { padding-right: 1.3rem; }
-.tableWrap th { color: var(--muted); background: var(--soft); font-size: 0.68rem; }
+.tableWrap th { color: var(--muted); background: var(--elevated); font-size: 0.68rem; }
 .tableWrap td { font-size: 0.82rem; }
 .emptyHistory { display: grid; min-height: 12rem; place-items: center; color: var(--muted); border-top: 1px solid var(--line); }
-.errorBanner { margin-bottom: 1rem; padding: 0.85rem 1rem; color: #7c2828; background: #fff0f0; border: 1px solid #efcaca; border-radius: 0.75rem; }
+.errorBanner {
+  margin-bottom: 1rem;
+  padding: 0.85rem 1rem;
+  color: var(--danger-strong);
+  background: var(--danger-soft);
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, var(--border));
+  border-radius: 0.75rem;
+}
 
 @media (max-width: 980px) {
   .metricGrid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -128,9 +144,4 @@
   .metricGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .metricCard { min-height: 7.5rem; }
   .tableWrap table { min-width: 38rem; }
-}
-
-@media (prefers-color-scheme: dark) {
-  .page { --ink: #edf4f0; --muted: #9baaa3; --line: #33423b; --surface: #17201c; --soft: #202c27; --accent: #62c99d; }
-  .errorBanner { color: #ffc4c4; background: #3a2020; border-color: #693535; }
 }

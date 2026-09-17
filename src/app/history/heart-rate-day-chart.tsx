@@ -172,10 +172,10 @@ export function HeartRateDayChart() {
                   type="monotone"
                   dataKey="bpm"
                   name={uk ? "Пульс" : "Heart rate"}
-                  stroke="#176b4d"
+                  stroke="var(--primary)"
                   strokeWidth={2.4}
                   connectNulls
-                  dot={{ r: 2, fill: "#176b4d", strokeWidth: 0 }}
+                  dot={{ r: 2, fill: "var(--primary)", strokeWidth: 0 }}
                   activeDot={{ r: 4 }}
                   isAnimationActive={false}
                 />

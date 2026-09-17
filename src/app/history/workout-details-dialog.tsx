@@ -128,7 +128,7 @@ export function WorkoutDetailsDialog({
       <section className={styles.heartRateDetails}>
         <HeartRateSummary title={uk ? "Пульс" : "Heart rate"} data={day.heartRate ?? EMPTY_HEART_RATE} uk={uk} intlLocale={intlLocale} />
         {(day.heartRate ?? EMPTY_HEART_RATE).sampleCount === 0 ? <p className={styles.heartRateEmpty}>{uk ? "Немає даних пульсу" : "No heart rate data"}</p> : (
-          <div className={styles.heartRateChart}><ResponsiveContainer width="100%" height="100%"><LineChart data={(day.heartRate ?? EMPTY_HEART_RATE).samples}><XAxis dataKey="timestamp" tickFormatter={(value) => formatClock(String(value), intlLocale)} /><YAxis domain={["auto", "auto"]} /><Tooltip labelFormatter={(value) => formatClock(String(value), intlLocale)} formatter={(value) => [`${value} bpm`, uk ? "Пульс" : "Heart rate"]} /><Line type="monotone" dataKey="bpm" stroke="#176b4d" strokeWidth={2.5} dot={{ r: 2 }} isAnimationActive={false} /></LineChart></ResponsiveContainer></div>
+          <div className={styles.heartRateChart}><ResponsiveContainer width="100%" height="100%"><LineChart data={(day.heartRate ?? EMPTY_HEART_RATE).samples}><XAxis dataKey="timestamp" tickFormatter={(value) => formatClock(String(value), intlLocale)} /><YAxis domain={["auto", "auto"]} /><Tooltip labelFormatter={(value) => formatClock(String(value), intlLocale)} formatter={(value) => [`${value} bpm`, uk ? "Пульс" : "Heart rate"]} /><Line type="monotone" dataKey="bpm" stroke="var(--primary)" strokeWidth={2.5} dot={{ r: 2 }} isAnimationActive={false} /></LineChart></ResponsiveContainer></div>
         )}
         <HeartRateSummary title={uk ? "Пульс у спокої" : "Resting heart rate"} data={day.restingHeartRate ?? EMPTY_HEART_RATE} uk={uk} intlLocale={intlLocale} />
       </section>

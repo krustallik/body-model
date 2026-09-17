@@ -287,7 +287,14 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
             <h1 className={styles.workoutTitle}>{exercise.snapshotExerciseName}</h1>
             <div className={styles.workoutStatusRow}>
               <span className={styles.liveBadge}>{resistanceLabel(exercise.resistanceType, uk)}</span>
-              <span className={styles.workoutProgressBadge} aria-live="polite">
+              <span
+                className={
+                  completedSets >= plannedSets && plannedSets > 0
+                    ? `${styles.workoutProgressBadge} ${styles.workoutProgressBadgeComplete}`
+                    : styles.workoutProgressBadge
+                }
+                aria-live="polite"
+              >
                 {progressLabel}
               </span>
               {exercise.origin === EXERCISE_ORIGIN.EXTRA

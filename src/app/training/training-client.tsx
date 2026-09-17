@@ -22,9 +22,13 @@ import styles from "./training.module.css";
 function matchBadgeClass(status: StrengthSessionSummaryDto["matchStatus"]): string {
   switch (matchStatusBadgeTone(status)) {
     case "ok":
-      return styles.badgeOk;
+      return styles.badgeSuccess;
     case "warn":
-      return styles.badgeWarn;
+      return styles.badgeWarning;
+    case "info":
+      return styles.badgeInfo;
+    case "danger":
+      return styles.badgeDanger;
     case "neutral":
       return styles.badgeNeutral;
     default:
@@ -136,7 +140,7 @@ export function TrainingClient() {
   function renderAttention(): ReactNode {
     if (attentionHasItems) {
       return (
-        <section className={styles.panel} aria-label={uk ? "Увага до зіставлення" : "Match attention"}>
+        <section className={`${styles.panel} ${styles.panelAttention}`} aria-label={uk ? "Увага до зіставлення" : "Match attention"}>
           <div className={styles.panelHeader}>
             <div>
               <h2>{uk ? "Увага до зіставлення" : "Match attention"}</h2>
@@ -208,7 +212,7 @@ export function TrainingClient() {
           </p>
         </div>
         <div className={styles.rowActions}>
-          <Link className={styles.secondaryButton} href="/training/backfill">
+          <Link className={styles.infoButton} href="/training/backfill">
             {uk ? "Історія Garmin" : "Garmin history"}
           </Link>
           <Link className={styles.primaryButton} href="/training/programs/new">
@@ -223,7 +227,7 @@ export function TrainingClient() {
         {attentionHasItems && renderAttention()}
 
         <div className={styles.trainingHubGrid}>
-        <section className={styles.panel} aria-label={uk ? "Активна сесія" : "Active session"}>
+        <section className={`${styles.panel} ${styles.panelActive}`} aria-label={uk ? "Активна сесія" : "Active session"}>
           <div className={styles.panelHeader}>
             <div>
               <h2>{uk ? "Активна сесія" : "Active session"}</h2>
@@ -242,7 +246,7 @@ export function TrainingClient() {
                       {uk ? "Почато" : "Started"} {formatDateTime(active.webStartedAt, intlLocale)}
                     </p>
                   </div>
-                  <span className={styles.badgeOk}>{uk ? "Активна" : "Active"}</span>
+                  <span className={styles.badgePrimary}>{uk ? "Активна" : "Active"}</span>
                 </div>
                 <div className={styles.denseCardActions}>
                   <Link className={styles.primaryButton} href={`/training/sessions/${active.id}`}>
@@ -259,7 +263,7 @@ export function TrainingClient() {
           </div>
         </section>
 
-        <section className={styles.panel} aria-label={uk ? "Програми" : "Programs"}>
+        <section className={`${styles.panel} ${styles.panelPrograms}`} aria-label={uk ? "Програми" : "Programs"}>
           <div className={styles.panelHeader}>
             <div>
               <h2>{uk ? "Програми" : "Programs"}</h2>
@@ -319,7 +323,7 @@ export function TrainingClient() {
         </div>
 
         <div className={styles.trainingHubGrid}>
-        <section className={styles.panel} aria-label={uk ? "Нещодавні силові сесії" : "Recent strength sessions"}>
+        <section className={`${styles.panel} ${styles.panelRecent}`} aria-label={uk ? "Нещодавні силові сесії" : "Recent strength sessions"}>
           <div className={styles.panelHeader}>
             <div>
               <h2>{uk ? "Нещодавні силові сесії" : "Recent strength sessions"}</h2>

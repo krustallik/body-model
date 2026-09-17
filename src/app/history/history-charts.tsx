@@ -190,7 +190,7 @@ export function HistoryCharts({ days }: { days: DailyMetricDto[] }) {
           dualAxis
           locale={locale}
           series={[
-            { key: "weightKg", label: uk ? "Вага" : "Weight", unit: "kg", color: "#176b4d", yAxisId: "left" },
+            { key: "weightKg", label: uk ? "Вага" : "Weight", unit: "kg", color: "#4db890", yAxisId: "left" },
             {
               key: "bodyFatPercent",
               label: uk ? "Жир" : "Body fat",

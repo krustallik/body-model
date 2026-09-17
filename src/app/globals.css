@@ -1,5 +1,123 @@
-:root { color-scheme: light dark; font-family: Arial, sans-serif; }
-body { margin: 0; }
-main { max-width: 42rem; margin: 5rem auto; padding: 0 1.5rem; }
-h1 { font-size: 2.25rem; }
-p { font-size: 1.125rem; }
+/*
+ * BodyCast global design system
+ * Source of truth: approved Training dark premium theme (polish pass).
+ * Always dark — no separate light theme in this rollout.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* Motion */
+  --ease: 140ms ease;
+  --press: translateY(1px);
+
+  /* Background & surfaces */
+  --bg: #07090a;
+  --surface-1: #111516;
+  --surface-2: #171d1b;
+  --elevated: #1c2421;
+  --inset: #0b0e0f;
+  --selected: color-mix(in srgb, #4db890 7%, #171d1b);
+
+  /* Borders */
+  --border: #2a3531;
+  --border-strong: #384640;
+
+  /* Text */
+  --text: #eef2f0;
+  --text-secondary: #97a49d;
+  --text-muted: #6f7d76;
+
+  /* Primary */
+  --primary: #4db890;
+  --primary-strong: #63c7a2;
+  --primary-pressed: #3f9f7c;
+  --primary-soft: color-mix(in srgb, #4db890 7%, transparent);
+  --primary-ink: #06140e;
+
+  /* Semantic */
+  --info: #4a9bab;
+  --info-strong: #68b4c2;
+  --info-pressed: #3d8492;
+  --info-soft: color-mix(in srgb, #4a9bab 7%, transparent);
+
+  --warning: #c49648;
+  --warning-strong: #d4ad68;
+  --warning-soft: color-mix(in srgb, #c49648 7%, transparent);
+
+  --danger: #c96b6b;
+  --danger-strong: #d88888;
+  --danger-pressed: #b35c5c;
+  --danger-soft: color-mix(in srgb, #c96b6b 7%, transparent);
+
+  --success: #45a87a;
+  --success-strong: #5fbe93;
+  --success-soft: color-mix(in srgb, #45a87a 7%, transparent);
+
+  /* Interaction */
+  --focus: color-mix(in srgb, #4db890 38%, transparent);
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--focus);
+  --shadow: rgb(0 0 0 / 28%);
+
+  /* Chart chrome (series colors stay local where meaningful) */
+  --chart-grid: #2a3531;
+  --chart-axis: #6f7d76;
+  --chart-history: #97a49d;
+  --chart-forecast: #4db890;
+  --chart-band-inner: color-mix(in srgb, #4db890 27%, transparent);
+  --chart-band-outer: color-mix(in srgb, #4db890 10%, transparent);
+  --chart-boundary: #77867f;
+  --chart-target: #d4a07a;
+
+  /* Legacy aliases used by existing route CSS modules */
+  --ink: var(--text);
+  --muted: var(--text-secondary);
+  --line: var(--border);
+  --surface: var(--surface-1);
+  --soft: var(--surface-2);
+  --accent: var(--primary);
+  --accent-dark: var(--primary-strong);
+  --accent-soft: var(--primary-soft);
+  --field-bg: var(--inset);
+  --field-border: var(--border-strong);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--bg);
+  color: var(--text);
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  background:
+    radial-gradient(ellipse 70% 42% at 80% -12%, color-mix(in srgb, var(--info) 3.5%, transparent), transparent 55%),
+    radial-gradient(ellipse 55% 36% at 12% -8%, color-mix(in srgb, var(--primary) 3%, transparent), transparent 50%),
+    var(--bg);
+  color: var(--text);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Route shells override width; keep global main minimal */
+main {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+
+a {
+  color: inherit;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}

@@ -16,21 +16,23 @@
   width: 1.2rem;
   height: 1.2rem;
   padding: 0;
-  border: 1px solid var(--line, #8ca0b3);
+  border: 1px solid var(--border-strong);
   border-radius: 999px;
-  color: var(--accent, #456176);
-  background: var(--soft, #f7fbff);
+  color: var(--info-strong);
+  background: var(--info-soft);
   font: 700 .78rem/1 system-ui, sans-serif;
   cursor: help;
   user-select: none;
+  transition: background var(--ease), color var(--ease), border-color var(--ease), box-shadow var(--ease);
 }
 
 .trigger:hover,
 .trigger:focus-visible {
-  color: #fff;
-  background: var(--accent, #315f7d);
-  border-color: var(--accent, #315f7d);
-  outline: 3px solid color-mix(in srgb, var(--accent, #315f7d) 20%, transparent);
+  color: var(--text);
+  background: color-mix(in srgb, var(--info) 18%, transparent);
+  border-color: color-mix(in srgb, var(--info) 40%, var(--border));
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 .bubble {
@@ -38,11 +40,11 @@
   z-index: 1000;
   box-sizing: border-box;
   padding: .75rem .85rem;
-  border: 1px solid var(--line, #c8d5df);
+  border: 1px solid var(--border);
   border-radius: .75rem;
-  background: var(--surface, #fff);
-  color: var(--ink, #263845);
-  box-shadow: 0 10px 30px rgba(25, 46, 61, .18);
+  background: var(--elevated);
+  color: var(--text);
+  box-shadow: 0 10px 30px var(--shadow);
   font: 500 .86rem/1.45 system-ui, sans-serif;
   text-align: left;
 }
@@ -57,7 +59,7 @@
   left: 50%;
   bottom: 100%;
   border: .4rem solid transparent;
-  border-bottom-color: var(--line, #c8d5df);
+  border-bottom-color: var(--border);
   transform: translateX(-50%);
 }
 

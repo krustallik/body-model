@@ -25,16 +25,16 @@ export function matchStatusLabel(status: MatchStatus, uk: boolean): string {
 /** CSS module class key for match-status badges (BodyCast secondary chips). */
 export function matchStatusBadgeTone(
   status: MatchStatus,
-): "ok" | "warn" | "muted" | "neutral" {
+): "ok" | "warn" | "muted" | "neutral" | "info" | "danger" {
   switch (status) {
     case MATCH_STATUS.MATCHED:
       return "ok";
     case MATCH_STATUS.AMBIGUOUS:
       return "warn";
     case MATCH_STATUS.PENDING:
-      return "muted";
+      return "info";
     case MATCH_STATUS.UNMATCHED:
-      return "neutral";
+      return "warn";
     default:
       return "muted";
   }
@@ -45,9 +45,9 @@ export function diaryCompletenessBadgeTone(
 ): "neutral" | "muted" | "warn" | "ok" {
   switch (value) {
     case DIARY_COMPLETENESS.NO_DIARY:
-      return "neutral";
+      return "warn";
     case DIARY_COMPLETENESS.DIARY_EMPTY:
-      return "muted";
+      return "neutral";
     case DIARY_COMPLETENESS.DIARY_PARTIAL:
       return "warn";
     case DIARY_COMPLETENESS.DIARY_WITH_SETS:

@@ -41,9 +41,9 @@ function completenessBadgeClass(
 ): string {
   switch (diaryCompletenessBadgeTone(value)) {
     case "ok":
-      return styles.badgeOk;
+      return styles.badgeSuccess;
     case "warn":
-      return styles.badgeWarn;
+      return styles.badgeWarning;
     case "neutral":
       return styles.badgeNeutral;
     default:
@@ -168,7 +168,7 @@ export function BackfillClient() {
       {error && <div className={styles.errorBanner} role="alert">{error}</div>}
 
       <div className={styles.stack}>
-        <section className={styles.panel}>
+        <section className={`${styles.panel} ${styles.panelInfo}`}>
           <div className={styles.panelHeader}>
             <div>
               <h2>{uk ? "Фільтр списку" : "List filter"}</h2>
@@ -202,7 +202,7 @@ export function BackfillClient() {
         </section>
 
         {canBulk && (
-          <section className={styles.panel}>
+          <section className={`${styles.panel} ${styles.panelActive}`}>
             <div className={styles.panelHeader}>
               <div>
                 <h2>{uk ? "Масове створення записів" : "Bulk create diaries"}</h2>
@@ -283,7 +283,7 @@ export function BackfillClient() {
           </section>
         )}
 
-        <section className={styles.panel} aria-label={uk ? "Історичні workout" : "Historical workouts"}>
+        <section className={`${styles.panel} ${styles.panelInfo}`} aria-label={uk ? "Історичні workout" : "Historical workouts"}>
           <div className={styles.panelHeader}>
             <div>
               <h2>{uk ? "Силові Garmin" : "Garmin strength"}</h2>
@@ -307,7 +307,10 @@ export function BackfillClient() {
                   const eligible = workout.linkedSessionId == null;
                   const checked = selected.includes(workout.workoutId);
                   return (
-                    <article className={styles.card} key={workout.workoutId}>
+                    <article
+                      className={checked ? `${styles.card} ${styles.cardSelected}` : styles.card}
+                      key={workout.workoutId}
+                    >
                       <div className={styles.workoutSelectRow}>
                         <input
                           type="checkbox"

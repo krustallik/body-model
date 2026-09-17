@@ -1,15 +1,10 @@
 .page {
-  --ink: #17231f;
-  --muted: #63706b;
-  --line: #dfe6e2;
-  --surface: #ffffff;
-  --soft: #f3f7f4;
-  --accent: #176b4d;
-  --accent-dark: #0e4f38;
   max-width: 96rem;
+  min-height: 100dvh;
   margin: 0 auto;
   padding: 3rem 2rem 4rem;
   color: var(--ink);
+  background: transparent;
 }
 
 .navRow { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 3rem; }
@@ -42,7 +37,7 @@
 
 .eyebrow {
   margin: 0 0 0.7rem;
-  color: var(--accent);
+  color: var(--text-muted);
   font-size: 0.75rem;
   font-weight: 800;
   letter-spacing: 0.14em;
@@ -69,20 +64,34 @@
 
 .primaryButton {
   padding: 0.85rem 1.15rem;
-  color: #fff;
+  color: var(--primary-ink);
   background: var(--accent);
-  box-shadow: 0 0.55rem 1.4rem rgb(23 107 77 / 20%);
+  border: 1px solid color-mix(in srgb, var(--primary-strong) 35%, transparent);
+  box-shadow: 0 1px 0 color-mix(in srgb, #fff 8%, transparent) inset;
+  transition: background var(--ease), border-color var(--ease), transform var(--ease), box-shadow var(--ease);
 }
 
 .primaryButton:hover { background: var(--accent-dark); }
-.primaryButton:disabled, .secondaryButton:disabled { cursor: wait; opacity: 0.6; }
+.primaryButton:active { background: var(--primary-pressed); transform: var(--press); }
+.primaryButton:focus-visible,
+.secondaryButton:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.primaryButton:disabled, .secondaryButton:disabled { cursor: not-allowed; opacity: 0.45; }
 
 .secondaryButton {
   padding: 0.7rem 0.95rem;
   color: var(--ink);
-  background: var(--soft);
-  border: 1px solid var(--line);
+  background: var(--elevated);
+  border: 1px solid var(--border-strong);
+  transition: background var(--ease), border-color var(--ease), transform var(--ease);
 }
+
+.secondaryButton:hover {
+  background: color-mix(in srgb, var(--elevated) 65%, var(--surface-2));
+}
+.secondaryButton:active { transform: var(--press); }
 
 .panel {
   overflow: hidden;
@@ -193,14 +202,14 @@
 .actions { display: flex; gap: 0.35rem; }
 .actions button { padding: 0.48rem 0.65rem; color: var(--accent); background: transparent; }
 .actions button:hover { background: var(--soft); }
-.actions .deleteButton { color: #a13d3d; }
+.actions .deleteButton { color: var(--danger-strong); }
 
 .errorBanner,
 .formError {
   padding: 0.85rem 1rem;
-  color: #7c2828;
-  background: #fff0f0;
-  border: 1px solid #efcaca;
+  color: var(--danger-strong);
+  background: var(--danger-soft);
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, var(--border));
   border-radius: 0.75rem;
 }
 
@@ -223,7 +232,7 @@
 .rangeBar span { color: var(--muted); font-size: 0.72rem; }
 .rangeSwitch { display: inline-flex; gap: 0.25rem; padding: 0.25rem; background: var(--soft); border-radius: 0.65rem; }
 .rangeSwitch button { padding: 0.5rem 0.7rem; color: var(--muted); background: transparent; border: 0; border-radius: 0.48rem; font: inherit; font-size: 0.78rem; font-weight: 750; cursor: pointer; }
-.rangeSwitch button[aria-pressed="true"] { color: #fff; background: var(--accent); }
+.rangeSwitch button[aria-pressed="true"] { color: var(--primary-ink); background: var(--accent); }
 
 .heartRateDaySection { margin-bottom: 0.8rem; }
 .heartRateDayCard { width: 100%; }
@@ -249,8 +258,8 @@
   min-height: 2.4rem;
   padding: 0.45rem 0.65rem;
   color: var(--ink);
-  background: #fff;
-  border: 1px solid #cfd9d4;
+  background: var(--field-bg);
+  border: 1px solid var(--field-border);
   border-radius: 0.55rem;
   font: inherit;
   font-size: 0.86rem;
@@ -405,25 +414,27 @@
   box-sizing: border-box;
   padding: 0.72rem 0.8rem;
   color: var(--ink);
-  background: #fff;
-  border: 1px solid #cfd9d4;
+  background: var(--field-bg);
+  border: 1px solid var(--field-border);
   border-radius: 0.6rem;
   font: inherit;
+  transition: border-color var(--ease), background var(--ease), box-shadow var(--ease);
 }
 .field select {
   width: 100%;
   box-sizing: border-box;
   padding: 0.72rem 0.8rem;
   color: var(--ink);
-  background: #fff;
-  border: 1px solid #cfd9d4;
+  background: var(--field-bg);
+  border: 1px solid var(--field-border);
   border-radius: 0.6rem;
   font: inherit;
+  transition: border-color var(--ease), background var(--ease), box-shadow var(--ease);
 }
 .field select:focus { outline: 3px solid rgb(23 107 77 / 15%); border-color: var(--accent); }
 .field small { color: var(--muted); font-size: 0.75rem; line-height: 1.4; }
-.field input:focus { outline: 3px solid rgb(23 107 77 / 15%); border-color: var(--accent); }
-.field input:disabled { color: var(--muted); background: var(--soft); }
+.field input:focus-visible { outline: none; border-color: var(--primary); box-shadow: var(--focus-ring); }
+.field input:disabled { color: var(--muted); background: var(--elevated); cursor: not-allowed; }
 .formHint { margin: 1rem 0 0; color: var(--muted); font-size: 0.82rem; }
 .dialogActions { justify-content: flex-end; margin-top: 1.4rem; }
 .workoutEditor, .legacyWorkoutSection { display: grid; gap: 1rem; margin-top: 1.4rem; padding-top: 1.2rem; border-top: 1px solid var(--line); }
@@ -433,8 +444,8 @@
 .legacyWorkoutSection .formGrid { margin-top: 0; }
 .workoutRows { display: grid; gap: 0.75rem; }
 .workoutRow { display: grid; grid-template-columns: 1.3fr 1.35fr .8fr 1fr auto; align-items: end; gap: 0.65rem; padding: 0.85rem; background: var(--soft); border: 1px solid var(--line); border-radius: 0.8rem; }
-.deleteWorkoutButton { min-height: 2.65rem; padding: 0.55rem 0.7rem; color: #a13d3d; background: transparent; border: 1px solid #e6c5c5; border-radius: 0.6rem; font: inherit; font-size: 0.8rem; font-weight: 700; cursor: pointer; }
-.deleteWorkoutButton:hover { background: #fff0f0; }
+.deleteWorkoutButton { min-height: 2.65rem; padding: 0.55rem 0.7rem; color: var(--danger-strong); background: transparent; border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border)); border-radius: 0.6rem; font: inherit; font-size: 0.8rem; font-weight: 700; cursor: pointer; }
+.deleteWorkoutButton:hover { background: var(--danger-soft); }
 
 .workDialog { width: min(58rem, calc(100% - 2rem)); }
 .workDialogBody { padding: 1.5rem; }
@@ -464,9 +475,9 @@
 .quality { display: grid; gap: 0.25rem; margin-top: 0.75rem; padding: 0.7rem 0.8rem; border-radius: 0.65rem; font-size: 0.75rem; }
 .quality strong { font-size: 0.78rem; }
 .quality span { opacity: 0.82; }
-.quality.good { color: #155c42; background: #eaf7f0; }
-.quality.info { color: #315b70; background: #edf6fa; }
-.quality.warning { color: #7a4a19; background: #fff4e4; }
+.quality.good { color: var(--success-strong); background: var(--success-soft); }
+.quality.info { color: var(--info-strong); background: var(--info-soft); }
+.quality.warning { color: var(--warning-strong); background: var(--warning-soft); }
 .workEmpty { display: grid; place-items: center; gap: 0.35rem; min-height: 9rem; margin-top: 1rem; color: var(--muted); text-align: center; border: 1px dashed var(--line); border-radius: 0.85rem; }
 .workEmpty strong { color: var(--ink); }
 .activitySummary { margin-top: 1rem; padding: 1rem; background: var(--soft); border-radius: 0.9rem; }
@@ -541,23 +552,21 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  .page {
-    --ink: #edf4f0;
-    --muted: #9baaa3;
-    --line: #33423b;
-    --surface: #17201c;
-    --soft: #202c27;
-    --accent: #62c99d;
-    --accent-dark: #76d9ae;
+  /* Tokens live on :root; keep only component-level dark refinements */
+  .field input,
+  .chartDayPicker input,
+  .field select {
+    color: var(--ink);
+    background: var(--field-bg);
+    border-color: var(--field-border);
   }
-  .field input { color: var(--ink); background: #111814; border-color: var(--line); }
-  .chartDayPicker input { color: var(--ink); background: #111814; border-color: var(--line); }
-  .field select { color: var(--ink); background: #111814; border-color: var(--line); }
-  .tableWrap tbody tr:hover { background: #1b2721; }
-  .errorBanner, .formError { color: #ffc4c4; background: #3a2020; border-color: #693535; }
-  .primaryButton { color: #0d271d; }
-  .rangeSwitch button[aria-pressed="true"] { color: #0d271d; }
-  .quality.good { color: #9ce1c2; background: #1a392b; }
-  .quality.info { color: #acd6e8; background: #1d3440; }
-  .quality.warning { color: #f1c38d; background: #3b2c1c; }
+  .tableWrap tbody tr:hover { background: var(--elevated); }
+  .errorBanner, .formError {
+    color: var(--danger-strong);
+    background: var(--danger-soft);
+    border-color: color-mix(in srgb, var(--danger) 28%, var(--border));
+  }
+  .quality.good { color: var(--success-strong); background: var(--success-soft); }
+  .quality.info { color: var(--info-strong); background: var(--info-soft); }
+  .quality.warning { color: var(--warning-strong); background: var(--warning-soft); }
 }

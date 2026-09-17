@@ -121,7 +121,7 @@ export function FromWorkoutClient({ workoutId }: { workoutId: number }) {
       {error && <div className={styles.errorBanner} role="alert">{error}</div>}
 
       <div className={styles.stack}>
-        <section className={styles.panel}>
+        <section className={`${styles.panel} ${styles.panelInfo}`}>
           <div className={styles.panelHeader}>
             <div>
               <h2>{uk ? "Garmin / пристрій" : "Garmin / device"}</h2>

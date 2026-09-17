@@ -439,17 +439,18 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
       {error && <div className={styles.errorBanner} role="alert">{error}</div>}
 
       <div className={styles.stack}>
-        <section className={styles.panel}>
+        <section className={`${styles.panel} ${styles.panelInfo}`}>
           <div className={styles.panelHeader}>
             <div>
               <h2>{uk ? "Джерела" : "Sources"}</h2>
               <p>{uk ? "Щоденник і Garmin окремо" : "Diary and Garmin kept separate"}</p>
             </div>
             <span className={
-              session.matchStatus === MATCH_STATUS.MATCHED ? styles.badge
-                : session.matchStatus === MATCH_STATUS.AMBIGUOUS ? styles.badgeWarn
-                  : session.matchStatus === MATCH_STATUS.UNMATCHED ? styles.badgeDanger
-                    : styles.badgeMuted
+              session.matchStatus === MATCH_STATUS.MATCHED ? styles.badgeSuccess
+                : session.matchStatus === MATCH_STATUS.AMBIGUOUS ? styles.badgeWarning
+                  : session.matchStatus === MATCH_STATUS.UNMATCHED ? styles.badgeWarning
+                    : session.matchStatus === MATCH_STATUS.PENDING ? styles.badgeInfo
+                      : styles.badgeMuted
             }>
               {matchStatusLabel(session.matchStatus, uk)}
             </span>

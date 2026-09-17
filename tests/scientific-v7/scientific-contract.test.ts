@@ -30,6 +30,9 @@ import {
   qualifiedResistanceTrainingDoseV7Fingerprint,
 } from "@/model/physiology-v7/qualified-resistance-training-dose-v7";
 import {
+  buildResistanceTrainingExposureHistoryV7,
+} from "@/model/physiology-v7/resistance-training-exposure-history-v7";
+import {
   buildCanonicalStrengthTrainingInputV7,
 } from "@/modules/model-episodes/strength-training-input-v7";
 import { RESISTANCE } from "@/modules/training/training.constants";
@@ -832,5 +835,294 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
       expect(pullDose.muscleGroups.find((g) => g.muscleGroup === "chest")?.directMappedSetCount ?? 0)
         .toBe(0);
     }
+  });
+
+  it("volume-equated frequency has no required independent positive effect", () => {
+    const snapshot = buildExerciseMuscleMappingSnapshotV7("incline_dumbbell_press_30deg");
+
+    function doseWithSets(sessionId: number, setCount: number) {
+      const sets = Array.from({ length: setCount }, (_, index) => ({
+        id: sessionId * 10 + index,
+        sessionExerciseId: 1,
+        setNumber: index + 1,
+        reps: 8,
+        weightKg: 20,
+        bandNominalResistanceKg: null,
+        comment: null,
+        completedAt: null,
+        createdAt: "2026-09-14T17:00:00.000Z",
+        updatedAt: "2026-09-14T17:00:00.000Z",
+      }));
+      const session: StrengthSessionDto = {
+        id: sessionId,
+        status: "COMPLETED",
+        entryMode: "RETROSPECTIVE",
+        revision: 1,
+        programId: 7,
+        programName: "Press",
+        programVersionId: 9,
+        programVersionNumber: 1,
+        webStartedAt: null,
+        webEndedAt: null,
+        matchStatus: "MATCHED",
+        matchMethod: "DIRECT_BACKFILL",
+        matchedAt: "2026-09-14T18:30:00.000Z",
+        matchedWorkoutId: 99,
+        matchedWorkout: {
+          id: 99,
+          type: "Strength Training",
+          startAt: "2026-09-14T17:00:00.000Z",
+          endAt: "2026-09-14T18:00:00.000Z",
+          durationMinutes: 60,
+          activeEnergyKcal: 400,
+          externalId: "garmin-99",
+        },
+        exercises: [{
+          id: 1,
+          sourceExerciseCatalogId: 10,
+          stableKey: "incline_dumbbell_press_30deg",
+          snapshotExerciseName: "Incline DB press",
+          order: 1,
+          plannedSets: setCount,
+          resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
+          origin: "PLANNED",
+          muscleMappingSnapshot: snapshot,
+          sets,
+        }],
+        ordinaryTonnageKg: null,
+        createdAt: "2026-09-14T17:00:00.000Z",
+        updatedAt: "2026-09-14T18:30:00.000Z",
+      };
+      return buildQualifiedResistanceTrainingDoseV7(
+        buildCanonicalStrengthTrainingInputV7({ session, heartRateSamples: null }),
+      );
+    }
+
+    const lowFrequency = buildResistanceTrainingExposureHistoryV7({
+      fromDate: "2026-09-14",
+      toDate: "2026-09-20",
+      days: [{
+        date: "2026-09-14",
+        workoutFeedObserved: true,
+        sessions: [{
+          strengthDiarySessionId: 1,
+          sessionRevision: 1,
+          dose: doseWithSets(1, 4),
+        }],
+      }],
+    });
+    const highFrequency = buildResistanceTrainingExposureHistoryV7({
+      fromDate: "2026-09-14",
+      toDate: "2026-09-20",
+      days: [
+        {
+          date: "2026-09-14",
+          workoutFeedObserved: true,
+          sessions: [{
+            strengthDiarySessionId: 2,
+            sessionRevision: 1,
+            dose: doseWithSets(2, 2),
+          }],
+        },
+        {
+          date: "2026-09-17",
+          workoutFeedObserved: true,
+          sessions: [{
+            strengthDiarySessionId: 3,
+            sessionRevision: 1,
+            dose: doseWithSets(3, 2),
+          }],
+        },
+      ],
+    });
+
+    const lowWeek = lowFrequency.weeklyAggregates[0]!;
+    const highWeek = highFrequency.weeklyAggregates[0]!;
+    expect(lowWeek.totalMappedSetCount).toBe(4);
+    expect(highWeek.totalMappedSetCount).toBe(4);
+    expect(lowWeek.muscleGroups).toEqual(highWeek.muscleGroups);
+    expect(lowWeek.sessionCount).toBe(1);
+    expect(highWeek.sessionCount).toBe(2);
+    expect(lowWeek.distinctExposureDayCount).toBe(1);
+    expect(highWeek.distinctExposureDayCount).toBe(2);
+    expect(lowWeek).not.toHaveProperty("frequencyMultiplier");
+    expect(highWeek).not.toHaveProperty("frequencyMultiplier");
+    expect(lowWeek).not.toHaveProperty("anabolicFrequencyBonus");
+  });
+
+  it("validated nonzero loading is not complete cessation", () => {
+    const snapshot = buildExerciseMuscleMappingSnapshotV7("flat_dumbbell_fly");
+    const session: StrengthSessionDto = {
+      id: 80,
+      status: "COMPLETED",
+      entryMode: "RETROSPECTIVE",
+      revision: 1,
+      programId: 7,
+      programName: "Chest",
+      programVersionId: 9,
+      programVersionNumber: 1,
+      webStartedAt: null,
+      webEndedAt: null,
+      matchStatus: "MATCHED",
+      matchMethod: "DIRECT_BACKFILL",
+      matchedAt: "2026-09-14T18:30:00.000Z",
+      matchedWorkoutId: 99,
+      matchedWorkout: {
+        id: 99,
+        type: "Strength Training",
+        startAt: "2026-09-14T17:00:00.000Z",
+        endAt: "2026-09-14T18:00:00.000Z",
+        durationMinutes: 60,
+        activeEnergyKcal: 400,
+        externalId: "garmin-99",
+      },
+      exercises: [{
+        id: 1,
+        sourceExerciseCatalogId: 10,
+        stableKey: "flat_dumbbell_fly",
+        snapshotExerciseName: "Fly",
+        order: 1,
+        plannedSets: 2,
+        resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
+        origin: "PLANNED",
+        muscleMappingSnapshot: snapshot,
+        sets: [{
+          id: 11,
+          sessionExerciseId: 1,
+          setNumber: 1,
+          reps: 10,
+          weightKg: 12,
+          bandNominalResistanceKg: null,
+          comment: null,
+          completedAt: null,
+          createdAt: "2026-09-14T17:00:00.000Z",
+          updatedAt: "2026-09-14T17:00:00.000Z",
+        }],
+      }],
+      ordinaryTonnageKg: null,
+      createdAt: "2026-09-14T17:00:00.000Z",
+      updatedAt: "2026-09-14T18:30:00.000Z",
+    };
+    const dose = buildQualifiedResistanceTrainingDoseV7(
+      buildCanonicalStrengthTrainingInputV7({ session, heartRateSamples: null }),
+    );
+    expect(dose.availability).toBe("available");
+    if (dose.availability === "available") {
+      expect(dose.mappedSetCount).toBeGreaterThan(0);
+    }
+
+    const history = buildResistanceTrainingExposureHistoryV7({
+      fromDate: "2026-09-14",
+      toDate: "2026-09-14",
+      days: [{
+        date: "2026-09-14",
+        workoutFeedObserved: true,
+        sessions: [{
+          strengthDiarySessionId: 80,
+          sessionRevision: 1,
+          dose,
+        }],
+      }],
+    });
+
+    expect(history.days[0]!.kind).toBe("observed-mapped-exposure");
+    expect(history.days[0]!.completeCessation).toBe(false);
+    expect(history.days[0]!.mappedSetCount).toBeGreaterThan(0);
+  });
+
+  it("resumption restores stimulus without invented memory gain", () => {
+    const snapshot = buildExerciseMuscleMappingSnapshotV7("seated_dumbbell_press");
+    function dose(sessionId: number) {
+      const session: StrengthSessionDto = {
+        id: sessionId,
+        status: "COMPLETED",
+        entryMode: "RETROSPECTIVE",
+        revision: 1,
+        programId: 7,
+        programName: "Shoulders",
+        programVersionId: 9,
+        programVersionNumber: 1,
+        webStartedAt: null,
+        webEndedAt: null,
+        matchStatus: "MATCHED",
+        matchMethod: "DIRECT_BACKFILL",
+        matchedAt: "2026-09-14T18:30:00.000Z",
+        matchedWorkoutId: 99,
+        matchedWorkout: {
+          id: 99,
+          type: "Strength Training",
+          startAt: "2026-09-14T17:00:00.000Z",
+          endAt: "2026-09-14T18:00:00.000Z",
+          durationMinutes: 60,
+          activeEnergyKcal: 400,
+          externalId: "garmin-99",
+        },
+        exercises: [{
+          id: 1,
+          sourceExerciseCatalogId: 10,
+          stableKey: "seated_dumbbell_press",
+          snapshotExerciseName: "Press",
+          order: 1,
+          plannedSets: 3,
+          resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
+          origin: "PLANNED",
+          muscleMappingSnapshot: snapshot,
+          sets: [{
+            id: sessionId * 10,
+            sessionExerciseId: 1,
+            setNumber: 1,
+            reps: 8,
+            weightKg: 22,
+            bandNominalResistanceKg: null,
+            comment: null,
+            completedAt: null,
+            createdAt: "2026-09-14T17:00:00.000Z",
+            updatedAt: "2026-09-14T17:00:00.000Z",
+          }],
+        }],
+        ordinaryTonnageKg: null,
+        createdAt: "2026-09-14T17:00:00.000Z",
+        updatedAt: "2026-09-14T18:30:00.000Z",
+      };
+      return buildQualifiedResistanceTrainingDoseV7(
+        buildCanonicalStrengthTrainingInputV7({ session, heartRateSamples: null }),
+      );
+    }
+
+    const first = dose(91);
+    const resumed = dose(92);
+    const history = buildResistanceTrainingExposureHistoryV7({
+      fromDate: "2026-09-14",
+      toDate: "2026-09-18",
+      days: [
+        {
+          date: "2026-09-14",
+          workoutFeedObserved: true,
+          sessions: [{ strengthDiarySessionId: 91, sessionRevision: 1, dose: first }],
+        },
+        { date: "2026-09-15", workoutFeedObserved: true, sessions: [] },
+        { date: "2026-09-16", workoutFeedObserved: true, sessions: [] },
+        {
+          date: "2026-09-17",
+          workoutFeedObserved: true,
+          sessions: [{ strengthDiarySessionId: 92, sessionRevision: 1, dose: resumed }],
+        },
+      ],
+    });
+
+    expect(history.resumptionEvents).toHaveLength(1);
+    expect(history.resumptionEvents[0]).toMatchObject({
+      resumedOnDate: "2026-09-17",
+      verifiedNoExposureDates: ["2026-09-15", "2026-09-16"],
+      resumedMappedSetCount: 1,
+      quantitativeMemoryBonus: null,
+    });
+    const resumedDay = history.days.find((day) => day.date === "2026-09-17")!;
+    expect(resumedDay.kind).toBe("observed-mapped-exposure");
+    expect(resumedDay.mappedSetCount).toBeGreaterThan(0);
+    expect(qualifiedResistanceTrainingDoseV7Fingerprint(resumed))
+      .toBe(resumedDay.sessions[0]!.doseFingerprint);
+    expect(history.resumptionEvents[0]).not.toHaveProperty("muscleMemoryMultiplier");
+    expect(history).not.toHaveProperty("retrainingAcceleration");
   });
 });

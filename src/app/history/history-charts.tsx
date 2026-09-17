@@ -23,6 +23,9 @@ type Series = {
   unit: string;
   color: string;
   yAxisId?: string;
+  strokeWidth?: number;
+  strokeDasharray?: string;
+  dot?: boolean;
 };
 
 const tooltipStyle = {
@@ -110,7 +113,7 @@ function HistoryLineChart({
               }}
             />
             {series.length > 1 && <Legend wrapperStyle={{ fontSize: "11px", paddingTop: "8px" }} />}
-            {series.map(({ key, label, color, yAxisId }) => (
+            {series.map(({ key, label, color, yAxisId, strokeWidth = 2.4, strokeDasharray, dot = true }) => (
               <Line
                 key={key}
                 type="monotone"
@@ -118,9 +121,10 @@ function HistoryLineChart({
                 name={label}
                 yAxisId={dualAxis ? yAxisId ?? "left" : undefined}
                 stroke={color}
-                strokeWidth={2.4}
+                strokeWidth={strokeWidth}
+                strokeDasharray={strokeDasharray}
                 connectNulls
-                dot={{ r: 2.5, fill: color, strokeWidth: 0 }}
+                dot={dot ? { r: 2.5, fill: color, strokeWidth: 0 } : false}
                 activeDot={{ r: 4 }}
                 isAnimationActive={false}
               />
@@ -161,11 +165,21 @@ export function HistoryCharts({ days }: { days: DailyMetricDto[] }) {
       </div>
       <div className={styles.chartsGrid}>
         <HistoryLineChart
-          title={uk ? "Вага" : "Weight"}
-          description={uk ? "Маса тіла · кг" : "Body weight · kg"}
+          title={uk ? "Вага і жир" : "Weight & body fat"}
+          description={uk ? "Маса тіла · кг та жирова маса · %" : "Body weight · kg and body fat · %"}
           days={chronologicalDays}
+          dualAxis
           locale={locale}
-          series={[{ key: "weightKg", label: uk ? "Вага" : "Weight", unit: "kg", color: "#176b4d" }]}
+          series={[
+            { key: "weightKg", label: uk ? "Вага" : "Weight", unit: "kg", color: "#176b4d", yAxisId: "left" },
+            {
+              key: "bodyFatPercent",
+              label: uk ? "Жир" : "Body fat",
+              unit: "%",
+              color: "#b45f45",
+              yAxisId: "right",
+            },
+          ]}
         />
         <HistoryLineChart
           title={uk ? "Пульс у спокої" : "Resting heart rate"}
@@ -175,21 +189,25 @@ export function HistoryCharts({ days }: { days: DailyMetricDto[] }) {
           series={[{ key: "restingHeartRateLatest", label: uk ? "Пульс у спокої" : "Resting HR", unit: "bpm", color: "#b45f45" }]}
         />
         <HistoryLineChart
-          title={uk ? "Калорії" : "Calories"}
-          description={uk ? "Добове споживання · ккал" : "Daily intake · kcal"}
+          title={uk ? "Харчування" : "Nutrition"}
+          description={uk ? "Калорії · ккал та макронутрієнти · г" : "Calories · kcal and macros · g"}
           days={chronologicalDays}
-          locale={locale}
-          series={[{ key: "caloriesKcal", label: uk ? "Калорії" : "Calories", unit: "kcal", color: "#d77a2a" }]}
-        />
-        <HistoryLineChart
-          title={uk ? "Макронутрієнти" : "Macros"}
-          description={uk ? "Білки, жири та вуглеводи · г" : "Protein, fat and carbs · g"}
-          days={chronologicalDays}
+          dualAxis
           locale={locale}
           series={[
-            { key: "proteinG", label: uk ? "Білки" : "Protein", unit: "g", color: "#2878bd" },
-            { key: "fatG", label: uk ? "Жири" : "Fat", unit: "g", color: "#b45f9b" },
-            { key: "carbsG", label: uk ? "Вуглеводи" : "Carbs", unit: "g", color: "#d49a1f" },
+            {
+              key: "caloriesKcal",
+              label: uk ? "Калорії" : "Calories",
+              unit: "kcal",
+              color: "#1a1a1a",
+              yAxisId: "right",
+              strokeWidth: 2.8,
+              strokeDasharray: "7 4",
+              dot: false,
+            },
+            { key: "proteinG", label: uk ? "Білки" : "Protein", unit: "g", color: "#d4a017", yAxisId: "left" },
+            { key: "fatG", label: uk ? "Жири" : "Fat", unit: "g", color: "#b45f9b", yAxisId: "left" },
+            { key: "carbsG", label: uk ? "Вуглеводи" : "Carbs", unit: "g", color: "#1aabb8", yAxisId: "left" },
           ]}
         />
         <HistoryLineChart

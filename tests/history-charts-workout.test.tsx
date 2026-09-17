@@ -9,7 +9,14 @@ vi.mock("recharts", () => ({
     <div data-chart={JSON.stringify(data)}>{children}</div>
   ),
   Line: (props: Record<string, unknown>) => (
-    <div data-line={String(props.dataKey)} data-connect-nulls={String(props.connectNulls ?? false)} data-name={String(props.name)} />
+    <div
+      data-line={String(props.dataKey)}
+      data-connect-nulls={String(props.connectNulls ?? false)}
+      data-name={String(props.name)}
+      data-stroke={String(props.stroke ?? "")}
+      data-stroke-dasharray={String(props.strokeDasharray ?? "")}
+      data-y-axis-id={String(props.yAxisId ?? "")}
+    />
   ),
   CartesianGrid: () => null,
   XAxis: () => null,
@@ -52,6 +59,28 @@ describe("HistoryCharts workout series", () => {
     ]} />);
     expect(html).toContain("Пульс у спокої");
     expect(html).toContain('data-line="restingHeartRateLatest"');
+  });
+
+  it("merges calories into nutrition and body fat into weight with dual axes", () => {
+    const html = renderToStaticMarkup(
+      <HistoryCharts
+        days={[
+          day("2026-09-01", { weightKg: 80, bodyFatPercent: 18, caloriesKcal: 2100, proteinG: 140, fatG: 70, carbsG: 200 }),
+          day("2026-09-02", { weightKg: 79.8, bodyFatPercent: 17.9, caloriesKcal: 2000, proteinG: 135, fatG: 65, carbsG: 190 }),
+        ]}
+      />,
+    );
+
+    expect(html).toContain("Вага і жир");
+    expect(html).toContain('data-line="bodyFatPercent"');
+    expect(html).toContain("Харчування");
+    expect(html).not.toContain(">Калорії</h3>");
+    expect(html).not.toContain(">Макронутрієнти</h3>");
+    expect(html).toContain('data-line="caloriesKcal"');
+    expect(html).toContain('data-stroke-dasharray="7 4"');
+    expect(html).toContain('data-stroke="#d4a017"');
+    expect(html).toContain('data-stroke="#b45f9b"');
+    expect(html).toContain('data-stroke="#1aabb8"');
   });
   it("connects every series across missing observations without zero-filling", () => {
     const html = renderToStaticMarkup(

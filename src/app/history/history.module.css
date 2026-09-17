@@ -220,6 +220,67 @@
 .rangeSwitch button { padding: 0.5rem 0.7rem; color: var(--muted); background: transparent; border: 0; border-radius: 0.48rem; font: inherit; font-size: 0.78rem; font-weight: 750; cursor: pointer; }
 .rangeSwitch button[aria-pressed="true"] { color: #fff; background: var(--accent); }
 
+.heartRateDaySection { margin-bottom: 0.8rem; }
+.heartRateDayCard { width: 100%; }
+.heartRateDayHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.chartDayPicker {
+  display: grid;
+  gap: 0.35rem;
+  flex: 0 0 auto;
+}
+.chartDayPicker span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.chartDayPicker input {
+  min-height: 2.4rem;
+  padding: 0.45rem 0.65rem;
+  color: var(--ink);
+  background: #fff;
+  border: 1px solid #cfd9d4;
+  border-radius: 0.55rem;
+  font: inherit;
+  font-size: 0.86rem;
+}
+.heartRateDayMeta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.7rem;
+  margin: 0.85rem 0 0;
+}
+.heartRateDayMeta div {
+  padding: 0.7rem 0.8rem;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+}
+.heartRateDayMeta dt {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.heartRateDayMeta dd {
+  margin: 0.25rem 0 0;
+  font-size: 0.88rem;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+}
+.chartInlineError {
+  margin-top: 0.7rem;
+  color: #a13d3d;
+  font-size: 0.8rem;
+}
+
 .chartsSection { margin-bottom: 1rem; }
 .chartsTitle { display: flex; align-items: flex-end; justify-content: space-between; gap: 1rem; padding: 1.8rem 0 1rem; }
 .chartsTitle h2 { margin: 0; font-size: 1.8rem; letter-spacing: -0.04em; }
@@ -353,10 +414,12 @@
   .navRow { align-items: flex-start; margin-bottom: 2.5rem; }
   .header { align-items: flex-start; flex-direction: column; }
   .header .primaryButton { width: 100%; }
-  .rangeBar, .chartsTitle { align-items: flex-start; flex-direction: column; }
+  .rangeBar, .chartsTitle, .heartRateDayHeader { align-items: flex-start; flex-direction: column; }
   .rangeSwitch { width: 100%; box-sizing: border-box; }
   .rangeSwitch button { flex: 1; padding-inline: 0.3rem; }
   .chartsTitle > p { line-height: 1.4; }
+  .chartDayPicker { width: 100%; }
+  .heartRateDayMeta { grid-template-columns: 1fr; }
   .chartsGrid { grid-template-columns: 1fr; }
   .chartCard:nth-child(3) { grid-column: auto; }
   .chartCanvas { height: 15rem; }
@@ -417,6 +480,7 @@
     --accent-dark: #76d9ae;
   }
   .field input { color: var(--ink); background: #111814; border-color: var(--line); }
+  .chartDayPicker input { color: var(--ink); background: #111814; border-color: var(--line); }
   .field select { color: var(--ink); background: #111814; border-color: var(--line); }
   .tableWrap tbody tr:hover { background: #1b2721; }
   .errorBanner, .formError { color: #ffc4c4; background: #3a2020; border-color: #693535; }

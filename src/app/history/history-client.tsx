@@ -11,6 +11,7 @@ import {
   type HistoryRange,
 } from "@/modules/days/history-chart-data";
 import { formatDateTime, formatMetric } from "@/modules/days/metric-format";
+import { HeartRateDayChart } from "./heart-rate-day-chart";
 import { HistoryCharts } from "./history-charts";
 import { WorkActivityDialog } from "./work-activity-dialog";
 import { WorkoutDetailsDialog } from "./workout-details-dialog";
@@ -253,6 +254,10 @@ export function HistoryClient() {
             </button>
           ))}
         </div>
+      </section>
+
+      <section className={styles.heartRateDaySection} aria-label={uk ? "Пульс за обраний день" : "Heart rate for selected day"}>
+        <HeartRateDayChart />
       </section>
 
       {loading ? (

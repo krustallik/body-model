@@ -159,6 +159,21 @@ export class DailyMetricRepository {
     return { latestBpm: sample?.bpm ?? null, timestamp: sample?.timestamp.toISOString() ?? null };
   }
 
+  async heartRateByDate(date: string): Promise<DailyMetricDto["heartRate"]> {
+    const readClient = this.client as unknown as {
+      heartRateSample?: { findMany(args: unknown): Promise<Array<{ timestamp: Date; bpm: number }>> };
+    };
+    if (!readClient.heartRateSample) {
+      return heartRateSummary([]);
+    }
+    const samples = await readClient.heartRateSample.findMany({
+      where: { date },
+      select: { timestamp: true, bpm: true },
+      orderBy: { timestamp: "asc" },
+    });
+    return heartRateSummary(samples);
+  }
+
   async create(input: CreateDailyMetricInput): Promise<DailyMetricDto> {
     try {
       const { workouts, ...metrics } = input;

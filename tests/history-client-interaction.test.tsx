@@ -35,8 +35,16 @@ vi.mock("./history-charts", () => ({
   HistoryCharts: () => <div data-testid="history-charts" />,
 }));
 
+vi.mock("./heart-rate-day-chart", () => ({
+  HeartRateDayChart: () => <div data-testid="heart-rate-day-chart" />,
+}));
+
 vi.mock("@/app/history/history-charts", () => ({
   HistoryCharts: () => <div data-testid="history-charts" />,
+}));
+
+vi.mock("@/app/history/heart-rate-day-chart", () => ({
+  HeartRateDayChart: () => <div data-testid="heart-rate-day-chart" />,
 }));
 
 vi.mock("@/app/history/work-activity-dialog", () => ({

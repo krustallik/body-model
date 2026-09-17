@@ -11,6 +11,9 @@ import {
   resistanceTrainingExposureHistoryV7Fingerprint,
   utcMondayWeekStart,
 } from "@/model/physiology-v7/resistance-training-exposure-history-v7";
+import {
+  buildResistanceTrainingExposureHistoryFromSourcesV7,
+} from "@/model/physiology-v7/resistance-training-exposure-history-sources-v7";
 import { buildCanonicalStrengthTrainingInputV7 } from "@/modules/model-episodes/strength-training-input-v7";
 import { RESISTANCE } from "@/modules/training/training.constants";
 import type { StrengthSessionDto } from "@/modules/training/training.types";
@@ -603,5 +606,92 @@ describe("ResistanceTrainingExposureHistoryV7", () => {
       .not.toBe(resistanceTrainingExposureHistoryV7Fingerprint(base));
     expect(edited.days[0]!.mappedSetCount).toBe(3);
     expect(base.days[0]!.mappedSetCount).toBe(1);
+  });
+});
+
+describe("buildResistanceTrainingExposureHistoryFromSourcesV7", () => {
+  it("supplies unmatched traditional strength Workouts as legacy unresolved-dose", () => {
+    const history = buildResistanceTrainingExposureHistoryFromSourcesV7({
+      fromDate: "2026-09-14",
+      toDate: "2026-09-14",
+      days: [{ date: "2026-09-14", workoutFeedObserved: true }],
+      strengthWorkouts: [{
+        workoutId: 9001,
+        localDate: "2026-09-14",
+        type: "Traditional Strength Training",
+        matchedStrengthDiarySessionId: null,
+      }],
+      sessions: [],
+    });
+
+    expect(history.days[0]!.kind).toBe("unresolved-dose");
+    expect(history.days[0]!.completeCessation).toBe(false);
+    expect(history.days[0]!.legacyStrengthWorkouts).toEqual([{
+      workoutId: 9001,
+      localDate: "2026-09-14",
+      matchedStrengthDiarySessionId: null,
+    }]);
+  });
+
+  it("does not double-count a workout already linked to a provided diary session", () => {
+    const dose = doseFor(sessionDto({
+      id: 30,
+      stableKey: "incline_dumbbell_press_30deg",
+      reps: 8,
+      sets: 2,
+    }));
+    const history = buildResistanceTrainingExposureHistoryFromSourcesV7({
+      fromDate: "2026-09-14",
+      toDate: "2026-09-14",
+      days: [{ date: "2026-09-14", workoutFeedObserved: true }],
+      strengthWorkouts: [{
+        workoutId: 44,
+        localDate: "2026-09-14",
+        type: "Traditional Strength Training",
+        matchedStrengthDiarySessionId: 30,
+      }],
+      sessions: [{
+        localDate: "2026-09-14",
+        strengthDiarySessionId: 30,
+        sessionRevision: 1,
+        matchedWorkoutId: 44,
+        dose,
+      }],
+    });
+
+    expect(history.days[0]!.kind).toBe("observed-mapped-exposure");
+    expect(history.days[0]!.mappedSetCount).toBe(2);
+    expect(history.days[0]!.legacyStrengthWorkouts).toEqual([]);
+    expect(history.days[0]!.sessions).toHaveLength(1);
+  });
+
+  it("ignores non-strength workouts and keeps missing feed unobserved", () => {
+    const history = buildResistanceTrainingExposureHistoryFromSourcesV7({
+      fromDate: "2026-09-14",
+      toDate: "2026-09-15",
+      days: [
+        { date: "2026-09-14", workoutFeedObserved: true },
+        { date: "2026-09-15", workoutFeedObserved: null },
+      ],
+      strengthWorkouts: [
+        {
+          workoutId: 1,
+          localDate: "2026-09-14",
+          type: "Stair Climbing",
+          matchedStrengthDiarySessionId: null,
+        },
+        {
+          workoutId: 2,
+          localDate: "2026-09-15",
+          type: "Traditional Strength Training",
+          matchedStrengthDiarySessionId: null,
+        },
+      ],
+    });
+
+    expect(history.days[0]!.kind).toBe("observed-no-exposure");
+    expect(history.days[0]!.legacyStrengthWorkouts).toEqual([]);
+    expect(history.days[1]!.kind).toBe("unobserved");
+    expect(history.days[1]!.completeCessation).toBe(false);
   });
 });

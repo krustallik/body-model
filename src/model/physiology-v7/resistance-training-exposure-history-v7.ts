@@ -443,6 +443,11 @@ function detectResumptionEvents(
  * Pure rebuild of resistance-training exposure history over a local-date range.
  * `fromDate` / `toDate` / day.date are profile-local calendar dates.
  * Missing input days become unobserved (feed unknown) — never rest/cessation.
+ *
+ * Production loaders must use
+ * `buildResistanceTrainingExposureHistoryFromSourcesV7` so canonical strength
+ * Workouts without diary details are supplied as `legacyStrengthWorkouts`.
+ * Calling this with diary sessions alone omits legacy Garmin rows.
  */
 export function buildResistanceTrainingExposureHistoryV7(input: {
   fromDate: string;

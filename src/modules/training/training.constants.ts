@@ -3,6 +3,8 @@
  * Resistance / session / match enums are stored as VarChar strings in Prisma.
  */
 
+import { CANONICAL_EXERCISE_IDENTITIES } from "./canonical-exercise-identity";
+
 export const RESISTANCE = {
   EXTERNAL_WEIGHT: "EXTERNAL_WEIGHT",
   RESISTANCE_BAND: "RESISTANCE_BAND",
@@ -66,21 +68,13 @@ export const DIARY_COMPLETENESS = {
 
 export type DiaryCompleteness = (typeof DIARY_COMPLETENESS)[keyof typeof DIARY_COMPLETENESS];
 
-/** Exact Ukrainian names seeded by migration 20260917160000_strength_training_diary. */
-export const SEEDED_EXERCISE_NAMES = [
-  "Жим гантелей на похилій лаві вгору (30°)",
-  "Розведення гантелей на горизонтальній лаві",
-  "Віджимання від ручок",
-  "Жим гантелей сидячи",
-  "Махи гантеллю однією рукою вбік",
-  "Розгинання однієї руки в блоці",
-  "Розгинання однієї руки з гантеллю в нахилі",
-  "Тяга горизонтального блоку сидячи однією рукою",
-  "Гіперекстензія",
-  "Згинання однієї руки від коліна",
-  "Згинання рук з розворотом сидячи на похилій лаві",
-  "Згинання кисті з гантеллю в упорі",
-] as const;
+/**
+ * Exact Ukrainian display names for the original supported catalog.
+ * Identity for model code is CANONICAL_EXERCISE_IDENTITIES[].stableKey — not these names.
+ */
+export const SEEDED_EXERCISE_NAMES = CANONICAL_EXERCISE_IDENTITIES.map(
+  (exercise) => exercise.displayName,
+);
 
 export const DEFAULT_TRAINING_PROFILE_ID = 1;
 

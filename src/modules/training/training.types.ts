@@ -11,6 +11,8 @@ import type {
 export type ExerciseCatalogDto = {
   id: number;
   name: string;
+  /** Null is valid for custom exercises; it means portable mapping identity is unavailable. */
+  stableKey: string | null;
   isActive: boolean;
   archivedAt: string | null;
   muscleMapping: unknown | null;

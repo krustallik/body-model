@@ -2,6 +2,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
 import { TRADITIONAL_STRENGTH_TRAINING_TYPE } from "@/modules/health/expand-training-workouts";
+import { CANONICAL_EXERCISE_IDENTITIES } from "./canonical-exercise-identity";
 import {
   DEFAULT_TRAINING_PROFILE_ID,
   DIARY_COMPLETENESS,
@@ -40,6 +41,7 @@ import type {
 const catalogSelect = {
   id: true,
   name: true,
+  stableKey: true,
   isActive: true,
   archivedAt: true,
   muscleMapping: true,
@@ -149,6 +151,7 @@ function toCatalogDto(record: CatalogRecord): ExerciseCatalogDto {
   return {
     id: record.id,
     name: record.name,
+    stableKey: record.stableKey,
     isActive: record.isActive,
     archivedAt: record.archivedAt?.toISOString() ?? null,
     muscleMapping: record.muscleMapping ?? null,
@@ -350,6 +353,55 @@ export class TrainingRepository {
       orderBy: [{ name: "asc" }, { id: "asc" }],
     });
     return rows.map(toCatalogDto);
+  }
+
+  /**
+   * Bootstrap/upsert the twelve supported exercises with explicit portable keys.
+   * Never silently overwrites a conflicting non-null stableKey. Display-name
+   * renames of already-keyed rows are left untouched.
+   */
+  async ensureCanonicalExerciseCatalog(
+    profileId = DEFAULT_TRAINING_PROFILE_ID,
+  ): Promise<ExerciseCatalogDto[]> {
+    for (const identity of CANONICAL_EXERCISE_IDENTITIES) {
+      const byKey = await this.db.exerciseCatalog.findFirst({
+        where: { profileId, stableKey: identity.stableKey },
+        select: catalogSelect,
+      });
+      if (byKey) {
+        continue;
+      }
+
+      const byName = await this.db.exerciseCatalog.findFirst({
+        where: { profileId, name: identity.displayName },
+        select: catalogSelect,
+      });
+      if (byName) {
+        if (byName.stableKey != null && byName.stableKey !== identity.stableKey) {
+          throw new Error(
+            `ExerciseCatalog stableKey conflict for canonical exercise ${identity.stableKey}`,
+          );
+        }
+        if (byName.stableKey == null) {
+          await this.db.exerciseCatalog.update({
+            where: { id: byName.id },
+            data: { stableKey: identity.stableKey },
+          });
+        }
+        continue;
+      }
+
+      await this.db.exerciseCatalog.create({
+        data: {
+          profileId,
+          name: identity.displayName,
+          stableKey: identity.stableKey,
+          isActive: true,
+        },
+      });
+    }
+
+    return this.listCatalog({ profileId, activeOnly: false });
   }
 
   async findCatalogByIds(ids: number[], profileId = DEFAULT_TRAINING_PROFILE_ID) {

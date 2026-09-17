@@ -203,6 +203,8 @@ model ExerciseCatalog {
   id        Int       @id @default(autoincrement())
   profileId Int       @default(1)
   name      String    @db.VarChar(200)
+  /** Portable immutable identity for supported model mappings; null for custom rows. */
+  stableKey String?   @db.VarChar(80)
   isActive  Boolean   @default(true)
   archivedAt DateTime? @db.Timestamptz(3)
   /**
@@ -216,6 +218,7 @@ model ExerciseCatalog {
   sessionExercises StrengthSessionExercise[]
 
   @@unique([profileId, name])
+  @@unique([profileId, stableKey])
   @@index([profileId, isActive])
 }
 

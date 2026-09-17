@@ -1,4 +1,8 @@
 export {
+  CANONICAL_EXERCISE_IDENTITIES,
+  type CanonicalExerciseStableKey,
+} from "./canonical-exercise-identity";
+export {
   RESISTANCE,
   SESSION_STATUS,
   MATCH_STATUS,

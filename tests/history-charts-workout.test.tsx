@@ -77,6 +77,7 @@ describe("HistoryCharts workout series", () => {
     expect(html).not.toContain(">Калорії</h3>");
     expect(html).not.toContain(">Макронутрієнти</h3>");
     expect(html).toContain('data-line="caloriesKcal"');
+    expect(html).toContain('data-stroke="#e07a2f"');
     expect(html).toContain('data-stroke-dasharray="7 4"');
     expect(html).toContain('data-stroke="#d4a017"');
     expect(html).toContain('data-stroke="#b45f9b"');

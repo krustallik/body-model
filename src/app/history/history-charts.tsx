@@ -199,7 +199,7 @@ export function HistoryCharts({ days }: { days: DailyMetricDto[] }) {
               key: "caloriesKcal",
               label: uk ? "Калорії" : "Calories",
               unit: "kcal",
-              color: "#1a1a1a",
+              color: "#e07a2f",
               yAxisId: "right",
               strokeWidth: 2.8,
               strokeDasharray: "7 4",

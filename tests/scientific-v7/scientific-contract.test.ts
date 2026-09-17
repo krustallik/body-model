@@ -1211,6 +1211,10 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
     expect(failureDose.availability).toBe("available");
     expect(nearFailureDose.availability).toBe("available");
     if (failureDose.availability === "available" && nearFailureDose.availability === "available") {
+      // Narrow C-A04 oracle: failure (RIR 0) and near-failure (RIR 1) both
+      // qualify equally — not a claim that every RIR value qualifies.
+      expect(failureDose.qualifiedHardSetCount).toBe(1);
+      expect(nearFailureDose.qualifiedHardSetCount).toBe(1);
       expect(failureDose.mappedSetCount).toBe(1);
       expect(nearFailureDose.mappedSetCount).toBe(1);
       expect(failureDose.muscleGroups).toEqual(nearFailureDose.muscleGroups);

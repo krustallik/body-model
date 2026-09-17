@@ -270,7 +270,18 @@ function classifyDay(input: {
   for (const session of input.sessions) {
     recordedSetCount += session.dose.recordedSetCount;
     unmappedSetCount += session.dose.unmappedSetCount;
-    if (session.dose.availability === "available" && session.dose.mappedSetCount > 0) {
+    if (session.dose.availability === "available" && session.dose.qualifiedHardSetCount > 0) {
+      // Weekly volume uses effort-qualified hard sets only (P-A04). Mapped sets
+      // with unresolved observed RIR remain in dose evidence, not assumed rest.
+      availableMappedSessions += 1;
+      mappedSetCount += session.dose.qualifiedHardSetCount;
+      addDoseMuscleBuckets(muscleBuckets, session.dose);
+    } else if (
+      session.dose.availability === "available"
+      && session.dose.unresolvedEffortMappedSetCount > 0
+    ) {
+      unresolvedSessions += 1;
+    } else if (session.dose.availability === "available" && session.dose.mappedSetCount > 0) {
       availableMappedSessions += 1;
       mappedSetCount += session.dose.mappedSetCount;
       addDoseMuscleBuckets(muscleBuckets, session.dose);

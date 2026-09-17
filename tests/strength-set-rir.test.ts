@@ -99,7 +99,7 @@ describe("optional StrengthSet RIR", () => {
     })).toMatchObject({ ok: true, rir: null });
   });
 
-  it("treats null RIR as product assumption and observed RIR as user-reported provenance", () => {
+  it("classifies null/0/1 as hard-set evidence and leaves higher observed RIR unresolved", () => {
     expect(effortEvidenceFromRir(null)).toEqual({
       status: "qualified-by-product-assumption",
       assumption: "assumed-near-failure",
@@ -110,12 +110,22 @@ describe("optional StrengthSet RIR", () => {
       rir: 0,
       reportedProximity: "momentary-failure",
     });
-    expect(effortEvidenceFromRir(2)).toEqual({
+    expect(effortEvidenceFromRir(1)).toEqual({
       status: "qualified-by-user-reported-rir",
       provenance: "user-reported-rir",
-      rir: 2,
+      rir: 1,
       reportedProximity: "reps-in-reserve",
     });
+    for (const rir of [2, 3, 4, 7, 10]) {
+      expect(effortEvidenceFromRir(rir)).toEqual({
+        status: "observed-rir-qualification-unresolved",
+        provenance: "user-reported-rir",
+        rir,
+        reason: "no-approved-rir-hard-set-threshold",
+      });
+      expect(effortEvidenceFromRir(rir).status).not.toBe("qualified-by-product-assumption");
+      expect(effortEvidenceFromRir(rir).status).not.toBe("qualified-by-user-reported-rir");
+    }
   });
 
   it("includes RIR in canonical input and changes fingerprint when RIR changes", () => {
@@ -156,6 +166,8 @@ describe("optional StrengthSet RIR", () => {
     expect(dose.availability).toBe("available");
     if (dose.availability === "available") {
       expect(dose.mappedSetCount).toBe(3);
+      expect(dose.qualifiedHardSetCount).toBe(2);
+      expect(dose.unresolvedEffortMappedSetCount).toBe(1);
       expect(dose.setEffortEvidence).toHaveLength(3);
       expect(dose.setEffortEvidence[0]!.evidence.status).toBe("qualified-by-product-assumption");
       expect(dose.setEffortEvidence[1]!.evidence).toMatchObject({
@@ -164,9 +176,9 @@ describe("optional StrengthSet RIR", () => {
         reportedProximity: "momentary-failure",
       });
       expect(dose.setEffortEvidence[2]!.evidence).toMatchObject({
-        status: "qualified-by-user-reported-rir",
+        status: "observed-rir-qualification-unresolved",
         rir: 2,
-        reportedProximity: "reps-in-reserve",
+        reason: "no-approved-rir-hard-set-threshold",
       });
       expect(dose).not.toHaveProperty("failureBonus");
       expect(dose.hardSetQualification).toEqual({
@@ -176,7 +188,29 @@ describe("optional StrengthSet RIR", () => {
     }
   });
 
-  it("keeps equal mapped dose for RIR 0 vs near-failure RIR while fingerprints differ", () => {
+  it("does not grant hard-set qualification or assumed-near-failure to high observed RIR", () => {
+    const high = buildQualifiedResistanceTrainingDoseV7(
+      buildCanonicalStrengthTrainingInputV7({
+        session: sessionWithSets([set({ id: 1, rir: 10 })]),
+        heartRateSamples: null,
+      }),
+    );
+    expect(high.availability).toBe("available");
+    if (high.availability === "available") {
+      expect(high.mappedSetCount).toBe(1);
+      expect(high.qualifiedHardSetCount).toBe(0);
+      expect(high.unresolvedEffortMappedSetCount).toBe(1);
+      expect(high.muscleGroups).toEqual([]);
+      expect(high.setEffortEvidence[0]!.evidence).toEqual({
+        status: "observed-rir-qualification-unresolved",
+        provenance: "user-reported-rir",
+        rir: 10,
+        reason: "no-approved-rir-hard-set-threshold",
+      });
+    }
+  });
+
+  it("keeps equal qualified dose for RIR 0 vs RIR 1 while fingerprints differ", () => {
     const failure = buildQualifiedResistanceTrainingDoseV7(
       buildCanonicalStrengthTrainingInputV7({
         session: sessionWithSets([set({ id: 1, rir: 0 })]),
@@ -192,6 +226,8 @@ describe("optional StrengthSet RIR", () => {
     expect(failure.availability).toBe("available");
     expect(near.availability).toBe("available");
     if (failure.availability === "available" && near.availability === "available") {
+      expect(failure.qualifiedHardSetCount).toBe(1);
+      expect(near.qualifiedHardSetCount).toBe(1);
       expect(failure.mappedSetCount).toBe(near.mappedSetCount);
       expect(qualifiedResistanceTrainingDoseV7Fingerprint(failure))
         .not.toBe(qualifiedResistanceTrainingDoseV7Fingerprint(near));

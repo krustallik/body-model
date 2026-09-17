@@ -7,7 +7,7 @@ import { RESISTANCE, type ResistanceType } from "@/modules/training/training.con
 import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 
 export const QUALIFIED_RESISTANCE_TRAINING_DOSE_V7_VERSION =
-  "bodycast-qualified-resistance-training-dose-v7-2" as const;
+  "bodycast-qualified-resistance-training-dose-v7-3" as const;
 
 export const HARD_SET_QUALIFICATION_ASSUMPTION_V7 =
   "assumed-near-failure" as const;
@@ -23,56 +23,105 @@ export type AssumedHardSetQualificationV7 = {
 };
 
 /**
- * User-reported RIR effort evidence. Provenance only — never a dose coefficient
- * or failure bonus (C-A04 / P-A04).
+ * User-reported RIR that the audited contract can classify as qualifying
+ * hard-set effort evidence (C-A04 / P-A04).
+ *
+ * Supported observed classifications only:
+ * - RIR 0 → momentary-failure
+ * - RIR 1 → near-failure (reps-in-reserve)
+ *
+ * Provenance only — never a dose coefficient or failure bonus.
+ * No RIR≤N exclusion/qualification curve is approved (P-A04).
  */
 export type ObservedRirHardSetQualificationV7 = {
   status: "qualified-by-user-reported-rir";
   provenance: "user-reported-rir";
-  rir: number;
-  /**
-   * Descriptive label from the reported integer only.
-   * RIR 0 = momentary-failure observation; RIR ≥ 1 = reps still in reserve.
-   * Both still contribute one mapped hard set — no categorical failure bonus.
-   */
+  rir: 0 | 1;
   reportedProximity: "momentary-failure" | "reps-in-reserve";
+};
+
+/**
+ * Observed RIR exists, but v7 has no approved numeric hard-set threshold
+ * (P-A04: DEFER numeric RIR coefficient). Must not fall back to
+ * assumed-near-failure and must not invent RIR≤3-style cutoffs.
+ */
+export type UnresolvedObservedRirEffortV7 = {
+  status: "observed-rir-qualification-unresolved";
+  provenance: "user-reported-rir";
+  rir: number;
+  reason: "no-approved-rir-hard-set-threshold";
 };
 
 export type HardSetQualificationV7 =
   | AssumedHardSetQualificationV7
   | ObservedRirHardSetQualificationV7;
 
+export type SetEffortEvidenceV7 =
+  | HardSetQualificationV7
+  | UnresolvedObservedRirEffortV7;
+
 export type QualifiedResistanceSetEffortEvidenceV7 = {
   strengthSetId: number;
   setNumber: number;
-  evidence: HardSetQualificationV7;
+  evidence: SetEffortEvidenceV7;
 };
 
-export function effortEvidenceFromRir(rir: number | null): HardSetQualificationV7 {
+export function isHardSetQualifiedEffort(evidence: SetEffortEvidenceV7): boolean {
+  return (
+    evidence.status === "qualified-by-product-assumption"
+    || evidence.status === "qualified-by-user-reported-rir"
+  );
+}
+
+/**
+ * Per-set effort evidence from optional StrengthSet.rir.
+ *
+ * - null → product assumption (never invent RIR=0)
+ * - 0 / 1 → supported observed hard-set classifications for C-A04
+ * - other observed integers → preserve observation; qualification unresolved
+ */
+export function effortEvidenceFromRir(rir: number | null): SetEffortEvidenceV7 {
   if (rir == null) {
     return {
       status: "qualified-by-product-assumption",
       assumption: HARD_SET_QUALIFICATION_ASSUMPTION_V7,
     };
   }
+  if (rir === 0) {
+    return {
+      status: "qualified-by-user-reported-rir",
+      provenance: "user-reported-rir",
+      rir: 0,
+      reportedProximity: "momentary-failure",
+    };
+  }
+  if (rir === 1) {
+    return {
+      status: "qualified-by-user-reported-rir",
+      provenance: "user-reported-rir",
+      rir: 1,
+      reportedProximity: "reps-in-reserve",
+    };
+  }
   return {
-    status: "qualified-by-user-reported-rir",
+    status: "observed-rir-qualification-unresolved",
     provenance: "user-reported-rir",
     rir,
-    reportedProximity: rir === 0 ? "momentary-failure" : "reps-in-reserve",
+    reason: "no-approved-rir-hard-set-threshold",
   };
 }
 
 export type QualifiedResistanceMuscleBucketV7 = {
   muscleGroup: CanonicalMuscleGroupV7;
-  /** Count of mapped recorded sets that listed this group as direct. */
+  /** Count of effort-qualified mapped sets that listed this group as direct. */
   directMappedSetCount: number;
-  /** Count of mapped recorded sets that listed this group as indirect. */
+  /** Count of effort-qualified mapped sets that listed this group as indirect. */
   indirectMappedSetCount: number;
 };
 
 export type QualifiedResistanceTypeContextV7 = {
   resistanceType: ResistanceType;
+  /** Effort-qualified mapped sets of this resistance type. */
   mappedSetCount: number;
   /** Diagnostic only — never required for dose availability. */
   ordinaryTonnageKg: number | null;
@@ -102,13 +151,21 @@ export type AvailableQualifiedResistanceTrainingDoseV7 = {
   sessionRevision: number;
   /**
    * Session-level null-RIR fallback policy (product assumption).
-   * Per-set observed RIR lives in setEffortEvidence.
+   * Per-set observed RIR lives in setEffortEvidence and must not be overwritten.
    */
   hardSetQualification: AssumedHardSetQualificationV7;
   /** Per recorded mapped set — observed RIR takes precedence over assumption. */
   setEffortEvidence: QualifiedResistanceSetEffortEvidenceV7[];
   recordedSetCount: number;
+  /** Structurally mapped recorded sets (mapping available), including unresolved effort. */
   mappedSetCount: number;
+  /** Mapped sets whose effort evidence qualifies as a hard set. */
+  qualifiedHardSetCount: number;
+  /**
+   * Mapped sets with observed RIR that cannot be classified under the approved
+   * contract (no invented cutoff). Not erased; not assumed-near-failure.
+   */
+  unresolvedEffortMappedSetCount: number;
   unmappedSetCount: number;
   muscleGroups: QualifiedResistanceMuscleBucketV7[];
   resistanceTypes: QualifiedResistanceTypeContextV7[];
@@ -129,6 +186,8 @@ export type UnavailableQualifiedResistanceTrainingDoseV7 = {
   sessionRevision: number;
   recordedSetCount: number;
   mappedSetCount: 0;
+  qualifiedHardSetCount: 0;
+  unresolvedEffortMappedSetCount: 0;
   unmappedSetCount: number;
   heartRateContext: QualifiedResistanceHeartRateContextV7;
   ordinaryTonnageKg: number | null;
@@ -182,6 +241,8 @@ export function buildQualifiedResistanceTrainingDoseV7(
 
   let recordedSetCount = 0;
   let mappedSetCount = 0;
+  let qualifiedHardSetCount = 0;
+  let unresolvedEffortMappedSetCount = 0;
   let unmappedSetCount = 0;
   let mappedExerciseCount = 0;
   let unmappedExerciseCount = 0;
@@ -212,17 +273,25 @@ export function buildQualifiedResistanceTrainingDoseV7(
     mappedExerciseCount += 1;
     mappedSetCount += setCount;
     mappingVersions.add(snapshot.mappingVersion);
-    resistanceBuckets.set(
-      exercise.resistanceType,
-      (resistanceBuckets.get(exercise.resistanceType) ?? 0) + setCount,
-    );
 
     for (const set of exercise.sets) {
+      const evidence = effortEvidenceFromRir(set.rir);
       setEffortEvidence.push({
         strengthSetId: set.strengthSetId,
         setNumber: set.setNumber,
-        evidence: effortEvidenceFromRir(set.rir),
+        evidence,
       });
+
+      if (!isHardSetQualifiedEffort(evidence)) {
+        unresolvedEffortMappedSetCount += 1;
+        continue;
+      }
+
+      qualifiedHardSetCount += 1;
+      resistanceBuckets.set(
+        exercise.resistanceType,
+        (resistanceBuckets.get(exercise.resistanceType) ?? 0) + 1,
+      );
       for (const target of snapshot.targets) {
         const bucket = muscleBuckets.get(target.muscleGroup)!;
         if (target.role === "direct") bucket.directMappedSetCount += 1;
@@ -240,6 +309,8 @@ export function buildQualifiedResistanceTrainingDoseV7(
       sessionRevision: input.sessionRevision,
       recordedSetCount: 0,
       mappedSetCount: 0,
+      qualifiedHardSetCount: 0,
+      unresolvedEffortMappedSetCount: 0,
       unmappedSetCount: 0,
       heartRateContext: hr,
       ordinaryTonnageKg,
@@ -255,6 +326,8 @@ export function buildQualifiedResistanceTrainingDoseV7(
       sessionRevision: input.sessionRevision,
       recordedSetCount,
       mappedSetCount: 0,
+      qualifiedHardSetCount: 0,
+      unresolvedEffortMappedSetCount: 0,
       unmappedSetCount,
       heartRateContext: hr,
       ordinaryTonnageKg,
@@ -299,6 +372,8 @@ export function buildQualifiedResistanceTrainingDoseV7(
     setEffortEvidence,
     recordedSetCount,
     mappedSetCount,
+    qualifiedHardSetCount,
+    unresolvedEffortMappedSetCount,
     unmappedSetCount,
     muscleGroups,
     resistanceTypes,
@@ -339,6 +414,8 @@ export function qualifiedResistanceTrainingDoseV7Fingerprint(
     setEffortEvidence: dose.setEffortEvidence,
     recordedSetCount: dose.recordedSetCount,
     mappedSetCount: dose.mappedSetCount,
+    qualifiedHardSetCount: dose.qualifiedHardSetCount,
+    unresolvedEffortMappedSetCount: dose.unresolvedEffortMappedSetCount,
     unmappedSetCount: dose.unmappedSetCount,
     muscleGroups: dose.muscleGroups,
     resistanceTypes: dose.resistanceTypes.map((entry) => ({

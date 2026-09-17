@@ -725,6 +725,24 @@ export class TrainingService {
     return refreshed;
   }
 
+  /**
+   * Delete a completed/cancelled diary entry. Garmin Workout rows are never
+   * deleted — the user can recreate a retrospective link later.
+   */
+  async deleteDiarySession(
+    sessionId: number,
+    profileId = DEFAULT_TRAINING_PROFILE_ID,
+  ): Promise<{ matchedWorkoutId: number | null }> {
+    const session = await this.repo.getSession(sessionId, profileId);
+    if (!session) throw new SessionNotFoundError();
+    if (session.status === SESSION_STATUS.ACTIVE) {
+      throw new SessionNotEditableError();
+    }
+    const matchedWorkoutId = session.matchedWorkoutId;
+    await this.repo.deleteDiarySession(sessionId, profileId);
+    return { matchedWorkoutId };
+  }
+
   listRecentSessions(options?: { limit?: number; profileId?: number }) {
     return this.repo.listRecentSessions(options);
   }

@@ -10,6 +10,7 @@ const trainingService = vi.hoisted(() => ({
   deleteSessionExercise: vi.fn(),
   reorderSessionExercises: vi.fn(),
   listProgramVersions: vi.fn(),
+  deleteDiarySession: vi.fn(),
 }));
 
 vi.mock("@/modules/training/training.service", () => ({ trainingService }));
@@ -20,6 +21,7 @@ import * as HistoricalWorkoutsRoute from "@/app/api/v1/training/workouts/histori
 import * as ChangeProgramRoute from "@/app/api/v1/training/sessions/[id]/program/route";
 import * as SessionExercisesRoute from "@/app/api/v1/training/sessions/[id]/exercises/route";
 import * as SessionExerciseRoute from "@/app/api/v1/training/sessions/[id]/exercises/[exerciseId]/route";
+import * as SessionRoute from "@/app/api/v1/training/sessions/[id]/route";
 import * as ProgramVersionsRoute from "@/app/api/v1/training/programs/[id]/versions/route";
 import {
   ENTRY_MODE,
@@ -32,6 +34,7 @@ import {
 import {
   ProgramNotFoundError,
   ProgramVersionNotFoundError,
+  SessionNotEditableError,
   SessionNotFoundError,
   WorkoutNotEligibleError,
   WorkoutNotFoundError,
@@ -324,6 +327,37 @@ describe("Training retrospective API contracts", () => {
         idCtx("999"),
       );
       expect(response.status).toBe(404);
+    });
+  });
+
+  describe("DELETE /sessions/:id", () => {
+    it("deletes the diary and returns the linked workout id", async () => {
+      trainingService.deleteDiarySession.mockResolvedValue({ matchedWorkoutId: 501 });
+      const response = await SessionRoute.DELETE(
+        new Request("http://localhost/api/v1/training/sessions/88", { method: "DELETE" }),
+        idCtx("88"),
+      );
+      expect(response.status).toBe(200);
+      expect(trainingService.deleteDiarySession).toHaveBeenCalledWith(88);
+      await expect(response.json()).resolves.toEqual({ deleted: true, matchedWorkoutId: 501 });
+    });
+
+    it("maps missing session to 404", async () => {
+      trainingService.deleteDiarySession.mockRejectedValue(new SessionNotFoundError());
+      const response = await SessionRoute.DELETE(
+        new Request("http://localhost/api/v1/training/sessions/999", { method: "DELETE" }),
+        idCtx("999"),
+      );
+      expect(response.status).toBe(404);
+    });
+
+    it("refuses ACTIVE sessions with 400", async () => {
+      trainingService.deleteDiarySession.mockRejectedValue(new SessionNotEditableError());
+      const response = await SessionRoute.DELETE(
+        new Request("http://localhost/api/v1/training/sessions/88", { method: "DELETE" }),
+        idCtx("88"),
+      );
+      expect(response.status).toBe(400);
     });
   });
 });

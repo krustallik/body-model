@@ -10,7 +10,12 @@ import type {
   HistoricalStrengthWorkoutDto,
   TrainingProgramSummaryDto,
 } from "@/modules/training/training.types";
-import { formatClock, formatDateTime, readApiError } from "../training-labels";
+import {
+  diaryCompletenessBadgeTone,
+  formatClock,
+  formatDateTime,
+  readApiError,
+} from "../training-labels";
 import styles from "../training.module.css";
 
 function completenessLabel(
@@ -31,13 +36,27 @@ function completenessLabel(
   }
 }
 
+function completenessBadgeClass(
+  value: HistoricalStrengthWorkoutDto["diaryCompleteness"],
+): string {
+  switch (diaryCompletenessBadgeTone(value)) {
+    case "ok":
+      return styles.badgeOk;
+    case "warn":
+      return styles.badgeWarn;
+    case "neutral":
+      return styles.badgeNeutral;
+    default:
+      return styles.badgeMuted;
+  }
+}
+
 export function BackfillClient() {
   const { locale, intlLocale } = useI18n();
   const uk = locale === "uk";
   const router = useRouter();
   const [workouts, setWorkouts] = useState<HistoricalStrengthWorkoutDto[]>([]);
   const [programs, setPrograms] = useState<TrainingProgramSummaryDto[]>([]);
-  const [showArchived, setShowArchived] = useState(false);
   const [onlyMissing, setOnlyMissing] = useState(false);
   const [selected, setSelected] = useState<number[]>([]);
   const [bulkProgramId, setBulkProgramId] = useState<number | "">("");
@@ -49,10 +68,9 @@ export function BackfillClient() {
     setError(null);
     try {
       const query = onlyMissing ? "?limit=100&onlyMissingDiary=true" : "?limit=100";
-      const programsQuery = showArchived ? "?includeArchived=true" : "";
       const [workoutsRes, programsRes] = await Promise.all([
         fetch(`/api/v1/training/workouts/historical${query}`, { cache: "no-store" }),
-        fetch(`/api/v1/training/programs${programsQuery}`, { cache: "no-store" }),
+        fetch("/api/v1/training/programs", { cache: "no-store" }),
       ]);
       if (!workoutsRes.ok || !programsRes.ok) {
         setError(uk ? "Не вдалося завантажити історію." : "Could not load history.");
@@ -62,6 +80,9 @@ export function BackfillClient() {
       const programsBody = await programsRes.json() as { programs: TrainingProgramSummaryDto[] };
       setWorkouts(workoutsBody.workouts);
       setPrograms(programsBody.programs);
+      setSelected((current) => current.filter((id) => (
+        workoutsBody.workouts.some((row) => row.workoutId === id && row.linkedSessionId == null)
+      )));
       if (programsBody.programs[0] && bulkProgramId === "") {
         setBulkProgramId(programsBody.programs[0].id);
       }
@@ -70,7 +91,7 @@ export function BackfillClient() {
     } finally {
       setLoading(false);
     }
-  }, [bulkProgramId, onlyMissing, showArchived, uk]);
+  }, [bulkProgramId, onlyMissing, uk]);
 
   useEffect(() => {
     let cancelled = false;
@@ -85,10 +106,13 @@ export function BackfillClient() {
     };
   }, [load]);
 
-  const missingIds = useMemo(
+  const eligibleIds = useMemo(
     () => workouts.filter((row) => row.linkedSessionId == null).map((row) => row.workoutId),
     [workouts],
   );
+
+  const canBulk = programs.length > 0 && eligibleIds.length > 0;
+  const createDisabled = busy || selected.length === 0 || typeof bulkProgramId !== "number";
 
   function toggle(workoutId: number) {
     setSelected((current) => (
@@ -147,80 +171,114 @@ export function BackfillClient() {
         <section className={styles.panel}>
           <div className={styles.panelHeader}>
             <div>
-              <h2>{uk ? "Фільтри" : "Filters"}</h2>
-              <p>{uk ? "Працюйте системно по старих workout" : "Work through old workouts systematically"}</p>
+              <h2>{uk ? "Фільтр списку" : "List filter"}</h2>
+              <p>
+                {uk
+                  ? "Показує лише Garmin workouts без веб-запису"
+                  : "Show only Garmin workouts that still need a diary"}
+              </p>
             </div>
           </div>
-          <div className={`${styles.panelBody} ${styles.formActions}`}>
-            <label className={styles.field}>
-              <span>
-                <input
-                  type="checkbox"
-                  checked={onlyMissing}
-                  onChange={(event) => setOnlyMissing(event.target.checked)}
-                />
-                {" "}
-                {uk ? "Лише без запису" : "Only missing diary"}
-              </span>
-            </label>
-            <label className={styles.field}>
-              <span>
-                <input
-                  type="checkbox"
-                  checked={showArchived}
-                  onChange={(event) => setShowArchived(event.target.checked)}
-                />
-                {" "}
-                {uk ? "Показати архівні програми" : "Show archived programs"}
-              </span>
-            </label>
+          <div className={styles.panelBody}>
+            <div className={styles.toggleRow}>
+              <button
+                type="button"
+                className={styles.togglePill}
+                aria-pressed={onlyMissing}
+                onClick={() => setOnlyMissing((value) => !value)}
+              >
+                {uk ? "Лише без запису" : "Missing diary only"}
+              </button>
+              <button
+                type="button"
+                className={styles.togglePill}
+                aria-pressed={!onlyMissing}
+                onClick={() => setOnlyMissing(false)}
+              >
+                {uk ? "Усі силові" : "All strength"}
+              </button>
+            </div>
           </div>
         </section>
 
-        {missingIds.length > 0 && programs.length > 0 && (
+        {canBulk && (
           <section className={styles.panel}>
             <div className={styles.panelHeader}>
               <div>
-                <h2>{uk ? "Масове призначення програми" : "Bulk program assignment"}</h2>
+                <h2>{uk ? "Масове створення записів" : "Bulk create diaries"}</h2>
                 <p>
                   {uk
-                    ? "Створює лише знімок програми без підходів"
-                    : "Creates program snapshots only — no fabricated sets"}
+                    ? "Крок 1: оберіть workouts нижче → 2: програму → 3: створити. Підходи не вигадуються."
+                    : "Step 1: select workouts below → 2: pick program → 3: create. Sets are never fabricated."}
                 </p>
               </div>
             </div>
-            <div className={`${styles.panelBody} ${styles.formActions}`}>
-              <label className={styles.field}>
-                <span>{uk ? "Програма" : "Program"}</span>
-                <select
-                  value={bulkProgramId}
-                  onChange={(event) => setBulkProgramId(Number(event.target.value))}
-                >
-                  {programs.map((program) => (
-                    <option key={program.id} value={program.id}>
-                      {program.name}
-                      {program.archivedAt ? (uk ? " (архів)" : " (archived)") : ""}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                className={styles.secondaryButton}
-                type="button"
-                onClick={() => setSelected(missingIds)}
-              >
-                {uk ? "Вибрати всі без запису" : "Select all missing"}
-              </button>
-              <button
-                className={styles.primaryButton}
-                type="button"
-                disabled={busy || selected.length === 0 || typeof bulkProgramId !== "number"}
-                onClick={() => void runBulk()}
-              >
-                {busy
-                  ? (uk ? "Створення…" : "Creating…")
-                  : (uk ? `Створити записи (${selected.length})` : `Create diaries (${selected.length})`)}
-              </button>
+            <div className={styles.panelBody}>
+              <div className={styles.bulkSteps}>
+                <div className={styles.bulkStep}>
+                  <p className={styles.bulkStepLabel}>
+                    {uk
+                      ? `1 · Вибрано ${selected.length} з ${eligibleIds.length}`
+                      : `1 · Selected ${selected.length} of ${eligibleIds.length}`}
+                  </p>
+                  <div className={styles.rowActions}>
+                    <button
+                      className={styles.secondaryButton}
+                      type="button"
+                      onClick={() => setSelected(eligibleIds)}
+                    >
+                      {uk ? "Вибрати всі без запису" : "Select all missing"}
+                    </button>
+                    <button
+                      className={styles.textButton}
+                      type="button"
+                      disabled={selected.length === 0}
+                      onClick={() => setSelected([])}
+                    >
+                      {uk ? "Скинути" : "Clear"}
+                    </button>
+                  </div>
+                </div>
+                <div className={styles.bulkStep}>
+                  <p className={styles.bulkStepLabel}>{uk ? "2 · Програма" : "2 · Program"}</p>
+                  <label className={styles.field}>
+                    <span>{uk ? "Програма" : "Program"}</span>
+                    <select
+                      value={bulkProgramId}
+                      onChange={(event) => setBulkProgramId(Number(event.target.value))}
+                    >
+                      {programs.map((program) => (
+                        <option key={program.id} value={program.id}>{program.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <div className={styles.bulkStep}>
+                  <p className={styles.bulkStepLabel}>{uk ? "3 · Створити" : "3 · Create"}</p>
+                  <button
+                    className={styles.primaryButton}
+                    type="button"
+                    disabled={createDisabled}
+                    aria-busy={busy || undefined}
+                    onClick={() => void runBulk()}
+                  >
+                    {busy
+                      ? (uk ? "Створення…" : "Creating…")
+                      : (uk
+                        ? `Створити записи (${selected.length})`
+                        : `Create diaries (${selected.length})`)}
+                  </button>
+                  {createDisabled && !busy && (
+                    <p className={styles.selectHint}>
+                      {selected.length === 0
+                        ? (uk
+                          ? "Спочатку позначте workouts у списку нижче."
+                          : "Select workouts in the list below first.")
+                        : (uk ? "Оберіть програму." : "Pick a program.")}
+                    </p>
+                  )}
+                </div>
+              </div>
             </div>
           </section>
         )}
@@ -229,7 +287,13 @@ export function BackfillClient() {
           <div className={styles.panelHeader}>
             <div>
               <h2>{uk ? "Силові Garmin" : "Garmin strength"}</h2>
-              <p>{loading ? (uk ? "Завантаження…" : "Loading…") : `${workouts.length}`}</p>
+              <p>
+                {loading
+                  ? (uk ? "Завантаження…" : "Loading…")
+                  : (uk
+                    ? `${workouts.length} · галочка лише для bulk-створення`
+                    : `${workouts.length} · checkbox is for bulk create only`)}
+              </p>
             </div>
           </div>
           <div className={styles.panelBody}>
@@ -240,27 +304,26 @@ export function BackfillClient() {
             ) : (
               <div className={styles.list}>
                 {workouts.map((workout) => {
-                  const hasDiary = workout.linkedSessionId != null;
+                  const eligible = workout.linkedSessionId == null;
+                  const checked = selected.includes(workout.workoutId);
                   return (
                     <article className={styles.card} key={workout.workoutId}>
-                      <div className={styles.cardTop}>
+                      <div className={styles.workoutSelectRow}>
+                        <input
+                          type="checkbox"
+                          checked={eligible ? checked : false}
+                          disabled={!eligible}
+                          aria-label={
+                            eligible
+                              ? (uk ? "Вибрати для масового створення" : "Select for bulk create")
+                              : (uk ? "Уже має запис — недоступно для bulk" : "Already has diary — not bulk-eligible")
+                          }
+                          onChange={() => {
+                            if (eligible) toggle(workout.workoutId);
+                          }}
+                        />
                         <div>
-                          {!hasDiary && (
-                            <label className={styles.field}>
-                              <span>
-                                <input
-                                  type="checkbox"
-                                  checked={selected.includes(workout.workoutId)}
-                                  onChange={() => toggle(workout.workoutId)}
-                                />
-                                {" "}
-                                {formatDateTime(workout.startAt, intlLocale)}
-                              </span>
-                            </label>
-                          )}
-                          {hasDiary && (
-                            <strong>{formatDateTime(workout.startAt, intlLocale)}</strong>
-                          )}
+                          <strong>{formatDateTime(workout.startAt, intlLocale)}</strong>
                           <p className={styles.cardMeta}>
                             {formatClock(workout.startAt, intlLocale)}
                             {" · "}
@@ -270,34 +333,36 @@ export function BackfillClient() {
                             {" · "}
                             {workout.activeEnergyKcal == null
                               ? (uk ? "ккал —" : "kcal —")
-                              : `${workout.activeEnergyKcal} ${uk ? "активних ккал" : "active kcal"}`}
+                              : `${workout.activeEnergyKcal} ${uk ? "ккал" : "kcal"}`}
                           </p>
-                          <p className={styles.cardMeta}>
-                            {hasDiary
-                              ? (workout.linkedProgramName ?? (uk ? "Є запис" : "Has diary"))
-                              : completenessLabel(workout.diaryCompleteness, uk)}
-                          </p>
+                          {!eligible && (
+                            <p className={styles.selectHint}>
+                              {uk
+                                ? `Уже є запис${workout.linkedProgramName ? ` · ${workout.linkedProgramName}` : ""} — bulk недоступний`
+                                : `Diary exists${workout.linkedProgramName ? ` · ${workout.linkedProgramName}` : ""} — not for bulk`}
+                            </p>
+                          )}
                         </div>
-                        <span className={hasDiary ? styles.badge : styles.badgeMuted}>
+                        <span className={completenessBadgeClass(workout.diaryCompleteness)}>
                           {completenessLabel(workout.diaryCompleteness, uk)}
                         </span>
                       </div>
-                      <div className={styles.rowActions}>
-                        {hasDiary ? (
-                          <button
-                            className={styles.primaryButton}
-                            type="button"
-                            onClick={() => router.push(`/training/sessions/${workout.linkedSessionId}/edit`)}
-                          >
-                            {uk ? "Редагувати" : "Edit"}
-                          </button>
-                        ) : (
+                      <div className={styles.denseCardActions}>
+                        {eligible ? (
                           <button
                             className={styles.primaryButton}
                             type="button"
                             onClick={() => router.push(`/training/backfill/from/${workout.workoutId}`)}
                           >
                             {uk ? "Додати запис" : "Add diary"}
+                          </button>
+                        ) : (
+                          <button
+                            className={styles.secondaryButton}
+                            type="button"
+                            onClick={() => router.push(`/training/sessions/${workout.linkedSessionId}/edit`)}
+                          >
+                            {uk ? "Редагувати" : "Edit"}
                           </button>
                         )}
                       </div>

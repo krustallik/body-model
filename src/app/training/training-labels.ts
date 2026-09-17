@@ -1,5 +1,5 @@
 import type { MatchStatus, ResistanceType } from "@/modules/training/training.constants";
-import { MATCH_STATUS, RESISTANCE } from "@/modules/training/training.constants";
+import { DIARY_COMPLETENESS, MATCH_STATUS, RESISTANCE } from "@/modules/training/training.constants";
 
 export function resistanceLabel(type: ResistanceType, uk: boolean): string {
   if (type === RESISTANCE.EXTERNAL_WEIGHT) return uk ? "Зовнішня вага" : "External weight";
@@ -19,6 +19,41 @@ export function matchStatusLabel(status: MatchStatus, uk: boolean): string {
       return uk ? "Без зіставлення" : "Unmatched";
     default:
       return status;
+  }
+}
+
+/** CSS module class key for match-status badges (BodyCast secondary chips). */
+export function matchStatusBadgeTone(
+  status: MatchStatus,
+): "ok" | "warn" | "muted" | "neutral" {
+  switch (status) {
+    case MATCH_STATUS.MATCHED:
+      return "ok";
+    case MATCH_STATUS.AMBIGUOUS:
+      return "warn";
+    case MATCH_STATUS.PENDING:
+      return "muted";
+    case MATCH_STATUS.UNMATCHED:
+      return "neutral";
+    default:
+      return "muted";
+  }
+}
+
+export function diaryCompletenessBadgeTone(
+  value: (typeof DIARY_COMPLETENESS)[keyof typeof DIARY_COMPLETENESS],
+): "neutral" | "muted" | "warn" | "ok" {
+  switch (value) {
+    case DIARY_COMPLETENESS.NO_DIARY:
+      return "neutral";
+    case DIARY_COMPLETENESS.DIARY_EMPTY:
+      return "muted";
+    case DIARY_COMPLETENESS.DIARY_PARTIAL:
+      return "warn";
+    case DIARY_COMPLETENESS.DIARY_WITH_SETS:
+      return "ok";
+    default:
+      return "muted";
   }
 }
 

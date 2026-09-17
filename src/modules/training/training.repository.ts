@@ -1096,6 +1096,26 @@ export class TrainingRepository {
     });
   }
 
+  /**
+   * Hard-delete a diary session. Cascades exercises/sets/program-change audit.
+   * Does NOT delete the linked Garmin Workout — only clears the 1:1 relation.
+   */
+  async deleteDiarySession(
+    sessionId: number,
+    profileId = DEFAULT_TRAINING_PROFILE_ID,
+  ): Promise<{ deleted: true; matchedWorkoutId: number | null }> {
+    const existing = await this.db.strengthDiarySession.findFirst({
+      where: { id: sessionId, profileId },
+      select: { id: true, matchedWorkoutId: true },
+    });
+    if (!existing) {
+      return { deleted: true, matchedWorkoutId: null };
+    }
+    const matchedWorkoutId = existing.matchedWorkoutId;
+    await this.db.strengthDiarySession.delete({ where: { id: sessionId } });
+    return { deleted: true, matchedWorkoutId };
+  }
+
   async applyMatchResult(input: {
     sessionId: number;
     matchStatus: MatchStatus;

@@ -12,6 +12,8 @@ import {
 import {
   ExerciseHasSetsError,
   ResistanceChangeBlockedError,
+  SessionNotEditableError,
+  SessionNotFoundError,
   SetValidationError,
   WorkoutNotEligibleError,
 } from "@/modules/training/training.errors";
@@ -43,6 +45,7 @@ function buildDb() {
       findMany: vi.fn(),
       create: vi.fn(),
       update: vi.fn(),
+      delete: vi.fn(),
     },
     strengthDiaryProgramChange: { create: vi.fn() },
     strengthSessionExercise: {
@@ -70,6 +73,7 @@ function buildDb() {
   db.strengthSessionExercise.delete.mockResolvedValue({});
   db.strengthDiaryProgramChange.create.mockResolvedValue({ id: 1 });
   db.strengthDiarySession.update.mockResolvedValue({ revision: 2 });
+  db.strengthDiarySession.delete.mockResolvedValue({});
   db.strengthSet.updateMany.mockResolvedValue({ count: 0 });
   return db;
 }
@@ -865,5 +869,45 @@ describe("matcher isolation for retrospective sessions", () => {
         webStartedAt: expect.objectContaining({ not: null }),
       }),
     }));
+  });
+});
+
+describe("delete diary session without touching Garmin", () => {
+  let db: MockDb;
+  let service: TrainingService;
+
+  beforeEach(() => {
+    db = buildDb();
+    service = makeService(db);
+  });
+
+  it("hard-deletes the diary and returns the matched workout id untouched", async () => {
+    db.strengthDiarySession.findFirst
+      .mockResolvedValueOnce(retrospectiveDetail())
+      .mockResolvedValueOnce({ id: 50, matchedWorkoutId: 77 });
+    db.strengthDiarySession.delete.mockResolvedValue({ id: 50 });
+
+    const result = await service.deleteDiarySession(50);
+
+    expect(result).toEqual({ matchedWorkoutId: 77 });
+    expect(db.strengthDiarySession.delete).toHaveBeenCalledWith({ where: { id: 50 } });
+    expect(db.workout.findUnique).not.toHaveBeenCalled();
+    expect(db.workout.findMany).not.toHaveBeenCalled();
+  });
+
+  it("refuses to delete an ACTIVE live session", async () => {
+    db.strengthDiarySession.findFirst.mockResolvedValue(retrospectiveDetail({
+      status: SESSION_STATUS.ACTIVE,
+      entryMode: ENTRY_MODE.LIVE,
+      webStartedAt: workoutStartAt,
+    }));
+
+    await expect(service.deleteDiarySession(50)).rejects.toBeInstanceOf(SessionNotEditableError);
+    expect(db.strengthDiarySession.delete).not.toHaveBeenCalled();
+  });
+
+  it("maps missing session to not found", async () => {
+    db.strengthDiarySession.findFirst.mockResolvedValue(null);
+    await expect(service.deleteDiarySession(999)).rejects.toBeInstanceOf(SessionNotFoundError);
   });
 });

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppNav } from "@/components/app-nav";
 import { useI18n } from "@/i18n/i18n-provider";
@@ -13,7 +14,6 @@ import {
 } from "@/modules/training/training.constants";
 import type {
   ExerciseCatalogDto,
-  ProgramVersionSummaryDto,
   StrengthSessionDto,
   StrengthSessionExerciseDto,
   StrengthSetDto,
@@ -38,14 +38,12 @@ function emptyDraft(resistance: ResistanceType) {
 export function SessionEditClient({ sessionId }: { sessionId: number }) {
   const { locale, intlLocale } = useI18n();
   const uk = locale === "uk";
+  const router = useRouter();
   const [session, setSession] = useState<StrengthSessionDto | null>(null);
   const [catalog, setCatalog] = useState<ExerciseCatalogDto[]>([]);
   const [programs, setPrograms] = useState<TrainingProgramSummaryDto[]>([]);
-  const [versions, setVersions] = useState<ProgramVersionSummaryDto[]>([]);
   const [programId, setProgramId] = useState<number | "">("");
-  const [versionId, setVersionId] = useState<number | "">("");
   const [showProgramPicker, setShowProgramPicker] = useState(false);
-  const [showArchived, setShowArchived] = useState(false);
   const [addCatalogId, setAddCatalogId] = useState<number | "">("");
   const [addResistance, setAddResistance] = useState<ResistanceType>(RESISTANCE.EXTERNAL_WEIGHT);
   const [draftByExercise, setDraftByExercise] = useState<Record<number, ReturnType<typeof emptyDraft>>>({});
@@ -60,7 +58,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
       const [sessionRes, catalogRes, programsRes] = await Promise.all([
         fetch(`/api/v1/training/sessions/${sessionId}`, { cache: "no-store" }),
         fetch("/api/v1/training/exercises", { cache: "no-store" }),
-        fetch(`/api/v1/training/programs${showArchived ? "?includeArchived=true" : ""}`, { cache: "no-store" }),
+        fetch("/api/v1/training/programs", { cache: "no-store" }),
       ]);
       if (!sessionRes.ok) {
         setError(await readApiError(sessionRes, uk));
@@ -78,13 +76,12 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
       setCatalog(catalogBody.exercises);
       setPrograms(programsBody.programs);
       setProgramId(sessionBody.session.programId);
-      setVersionId(sessionBody.session.programVersionId);
     } catch {
       setError(uk ? "Не вдалося завантажити редактор." : "Could not load the editor.");
     } finally {
       setLoading(false);
     }
-  }, [sessionId, showArchived, uk]);
+  }, [sessionId, uk]);
 
   useEffect(() => {
     let cancelled = false;
@@ -97,20 +94,6 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
       cancelled = true;
     };
   }, [load]);
-
-  useEffect(() => {
-    if (!showProgramPicker || typeof programId !== "number") return;
-    let cancelled = false;
-    void (async () => {
-      const response = await fetch(`/api/v1/training/programs/${programId}/versions`, { cache: "no-store" });
-      if (!response.ok || cancelled) return;
-      const body = await response.json() as { versions: ProgramVersionSummaryDto[] };
-      if (!cancelled) setVersions(body.versions ?? []);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [programId, showProgramPicker]);
 
   const exercises = useMemo(
     () => (session?.exercises ?? []).slice().sort((a, b) => a.order - b.order),
@@ -148,12 +131,32 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
     if (typeof programId !== "number") return;
     await mutate(`/api/v1/training/sessions/${sessionId}/program`, {
       method: "POST",
-      body: JSON.stringify({
-        programId,
-        ...(typeof versionId === "number" ? { programVersionId: versionId } : {}),
-      }),
+      body: JSON.stringify({ programId }),
     });
     setShowProgramPicker(false);
+  }
+
+  async function deleteDiary() {
+    const ok = window.confirm(
+      uk
+        ? "Видалити запис щоденника? Garmin workout залишиться без змін."
+        : "Delete this diary entry? The Garmin workout will stay unchanged.",
+    );
+    if (!ok) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/v1/training/sessions/${sessionId}`, { method: "DELETE" });
+      if (!response.ok) {
+        setError(await readApiError(response, uk));
+        return;
+      }
+      router.push("/training/backfill");
+    } catch {
+      setError(uk ? "Не вдалося видалити запис." : "Could not delete the diary entry.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function addExercise() {
@@ -302,8 +305,6 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
           <h1>{session.programName}</h1>
           <p className={styles.intro}>
             {formatDateTime(occurrence, intlLocale)}
-            {" · "}
-            {uk ? `ревізія ${session.revision}` : `revision ${session.revision}`}
             {session.status !== SESSION_STATUS.COMPLETED
               ? ` · ${session.status}`
               : ""}
@@ -316,6 +317,17 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
           <Link className={styles.secondaryButton} href="/training/backfill">
             {uk ? "Історія" : "History"}
           </Link>
+          {session.status !== SESSION_STATUS.ACTIVE && (
+            <button
+              className={styles.textButton}
+              type="button"
+              disabled={busy}
+              aria-busy={busy || undefined}
+              onClick={() => void deleteDiary()}
+            >
+              {uk ? "Видалити запис" : "Delete diary"}
+            </button>
+          )}
         </div>
       </header>
 
@@ -323,11 +335,10 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
 
       <div className={styles.stack}>
         {session.matchedWorkout && (
-          <section className={styles.panel}>
+          <section className={`${styles.panel} ${styles.panelCompact}`}>
             <div className={styles.panelHeader}>
               <div>
                 <h2>{uk ? "Garmin (без змін)" : "Garmin (read-only)"}</h2>
-                <p>{uk ? "Час, тривалість, ккал залишаються з пристрою" : "Time, duration, kcal stay from device"}</p>
               </div>
             </div>
             <div className={styles.panelBody}>
@@ -371,8 +382,8 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
               <h2>{uk ? "Програма" : "Program"}</h2>
               <p>
                 {uk
-                  ? "Зміна програми — історична корекція, шаблон не змінюється"
-                  : "Changing program is a historical correction; templates stay intact"}
+                  ? "Історична корекція · шаблон не змінюється"
+                  : "Historical correction · template unchanged"}
               </p>
             </div>
             <button
@@ -380,47 +391,32 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
               type="button"
               onClick={() => setShowProgramPicker((value) => !value)}
             >
-              {uk ? "Змінити програму" : "Change program"}
+              {uk ? "Змінити" : "Change"}
             </button>
           </div>
           {showProgramPicker && (
             <div className={styles.panelBody}>
+              <p className={styles.cardMeta}>
+                {uk
+                  ? "Завжди береться поточна версія шаблону"
+                  : "Always uses the program’s current version"}
+              </p>
               <label className={styles.field}>
-                <span>
-                  <input
-                    type="checkbox"
-                    checked={showArchived}
-                    onChange={(event) => setShowArchived(event.target.checked)}
-                  />
-                  {" "}
-                  {uk ? "Показати архівні" : "Show archived"}
-                </span>
+                <span>{uk ? "Програма" : "Program"}</span>
+                <select value={programId} onChange={(event) => setProgramId(Number(event.target.value))}>
+                  {programs.map((program) => (
+                    <option key={program.id} value={program.id}>{program.name}</option>
+                  ))}
+                </select>
               </label>
-              <div className={styles.setFields}>
-                <label className={styles.field}>
-                  <span>{uk ? "Програма" : "Program"}</span>
-                  <select value={programId} onChange={(event) => setProgramId(Number(event.target.value))}>
-                    {programs.map((program) => (
-                      <option key={program.id} value={program.id}>
-                        {program.name}
-                        {program.archivedAt ? (uk ? " (архів)" : " (archived)") : ""}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className={styles.field}>
-                  <span>{uk ? "Версія" : "Version"}</span>
-                  <select value={versionId} onChange={(event) => setVersionId(Number(event.target.value))}>
-                    {versions.map((version) => (
-                      <option key={version.id} value={version.id}>
-                        v{version.versionNumber}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
               <div className={styles.formActions}>
-                <button className={styles.primaryButton} type="button" disabled={busy} onClick={() => void changeProgram()}>
+                <button
+                  className={styles.primaryButton}
+                  type="button"
+                  disabled={busy}
+                  aria-busy={busy || undefined}
+                  onClick={() => void changeProgram()}
+                >
                   {uk ? "Застосувати" : "Apply"}
                 </button>
               </div>
@@ -451,20 +447,30 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
                   disabled={busy}
                   onClick={() => void removeExercise(exercise)}
                 >
-                  {uk ? "Видалити" : "Remove"}
+                  {uk ? "Прибрати" : "Remove"}
                 </button>
               </div>
               <div className={styles.panelBody}>
-                <div className={styles.setList}>
-                  {sets.length === 0 ? (
-                    <div className={styles.empty}>
-                      <span>{uk ? "Підходів ще немає." : "No sets yet."}</span>
-                    </div>
-                  ) : sets.map((set) => (
-                    <article className={styles.setCard} key={set.id}>
-                      <header>
-                        <strong>{uk ? `Підхід ${set.setNumber}` : `Set ${set.setNumber}`}</strong>
-                        <div className={styles.rowActions}>
+                {sets.length === 0 ? (
+                  <p className={styles.emptyCompact}>
+                    {uk ? "Підходів ще немає." : "No sets yet."}
+                  </p>
+                ) : (
+                  <ul className={styles.setTable}>
+                    {sets.map((set) => (
+                      <li className={styles.setRow} key={set.id}>
+                        <span className={styles.setNum}>{set.setNumber}</span>
+                        <div className={styles.setValues}>
+                          <span>{set.reps} {uk ? "повт." : "reps"}</span>
+                          {exercise.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && set.weightKg != null
+                            ? <span>{set.weightKg} kg</span>
+                            : null}
+                          {exercise.resistanceType === RESISTANCE.RESISTANCE_BAND
+                            && set.bandNominalResistanceKg != null
+                            ? <span>{set.bandNominalResistanceKg} {uk ? "кг резинки" : "kg band"}</span>
+                            : null}
+                        </div>
+                        <div className={styles.setRowActions}>
                           <button
                             className={styles.textButton}
                             type="button"
@@ -490,89 +496,82 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
                             disabled={busy}
                             onClick={() => void deleteSet(set.id)}
                           >
-                            {uk ? "Видалити" : "Delete"}
+                            {uk ? "Видал." : "Del"}
                           </button>
                         </div>
-                      </header>
-                      <p className={styles.cardMeta}>
-                        {set.reps} {uk ? "повт." : "reps"}
-                        {exercise.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && set.weightKg != null
-                          ? ` · ${set.weightKg} kg`
-                          : null}
-                        {exercise.resistanceType === RESISTANCE.RESISTANCE_BAND
-                          && set.bandNominalResistanceKg != null
-                          ? ` · ${set.bandNominalResistanceKg} ${uk ? "кг резинки" : "kg band"}`
-                          : null}
-                      </p>
-                    </article>
-                  ))}
-                </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
 
-                <div className={styles.setFields}>
-                  <label className={styles.field}>
-                    <span>{uk ? "Повторення" : "Reps"}</span>
-                    <input
-                      inputMode="numeric"
-                      value={draft.reps}
-                      onChange={(event) => setDraftByExercise((current) => ({
-                        ...current,
-                        [exercise.id]: { ...draft, reps: event.target.value },
-                      }))}
-                    />
-                  </label>
-                  {exercise.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && (
+                <div className={styles.setComposer}>
+                  <div className={styles.setFields}>
                     <label className={styles.field}>
-                      <span>{uk ? "Вага, кг" : "Weight, kg"}</span>
+                      <span>{uk ? "Повторення" : "Reps"}</span>
                       <input
-                        inputMode="decimal"
-                        value={draft.weightKg}
+                        inputMode="numeric"
+                        value={draft.reps}
                         onChange={(event) => setDraftByExercise((current) => ({
                           ...current,
-                          [exercise.id]: { ...draft, weightKg: event.target.value },
+                          [exercise.id]: { ...draft, reps: event.target.value },
                         }))}
                       />
                     </label>
-                  )}
-                  {exercise.resistanceType === RESISTANCE.RESISTANCE_BAND && (
-                    <label className={styles.field}>
-                      <span>{uk ? "Опір резинки, кг" : "Band resistance, kg"}</span>
-                      <input
-                        inputMode="decimal"
-                        value={draft.bandNominalResistanceKg}
-                        onChange={(event) => setDraftByExercise((current) => ({
-                          ...current,
-                          [exercise.id]: { ...draft, bandNominalResistanceKg: event.target.value },
-                        }))}
-                      />
-                    </label>
-                  )}
-                </div>
-                <div className={styles.formActions}>
-                  {editingSet?.exerciseId === exercise.id && (
+                    {exercise.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && (
+                      <label className={styles.field}>
+                        <span>{uk ? "Вага, кг" : "Weight, kg"}</span>
+                        <input
+                          inputMode="decimal"
+                          value={draft.weightKg}
+                          onChange={(event) => setDraftByExercise((current) => ({
+                            ...current,
+                            [exercise.id]: { ...draft, weightKg: event.target.value },
+                          }))}
+                        />
+                      </label>
+                    )}
+                    {exercise.resistanceType === RESISTANCE.RESISTANCE_BAND && (
+                      <label className={styles.field}>
+                        <span>{uk ? "Опір резинки, кг" : "Band resistance, kg"}</span>
+                        <input
+                          inputMode="decimal"
+                          value={draft.bandNominalResistanceKg}
+                          onChange={(event) => setDraftByExercise((current) => ({
+                            ...current,
+                            [exercise.id]: { ...draft, bandNominalResistanceKg: event.target.value },
+                          }))}
+                        />
+                      </label>
+                    )}
+                  </div>
+                  <div className={styles.formActions}>
+                    {editingSet?.exerciseId === exercise.id && (
+                      <button
+                        className={styles.secondaryButton}
+                        type="button"
+                        onClick={() => {
+                          setEditingSet(null);
+                          setDraftByExercise((current) => ({
+                            ...current,
+                            [exercise.id]: emptyDraft(exercise.resistanceType),
+                          }));
+                        }}
+                      >
+                        {uk ? "Скасувати" : "Cancel"}
+                      </button>
+                    )}
                     <button
-                      className={styles.secondaryButton}
+                      className={styles.primaryButton}
                       type="button"
-                      onClick={() => {
-                        setEditingSet(null);
-                        setDraftByExercise((current) => ({
-                          ...current,
-                          [exercise.id]: emptyDraft(exercise.resistanceType),
-                        }));
-                      }}
+                      disabled={busy}
+                      aria-busy={busy || undefined}
+                      onClick={() => void saveSet(exercise)}
                     >
-                      {uk ? "Скасувати" : "Cancel"}
+                      {editingSet?.exerciseId === exercise.id
+                        ? (uk ? "Оновити" : "Update")
+                        : (uk ? "Додати підхід" : "Add set")}
                     </button>
-                  )}
-                  <button
-                    className={styles.primaryButton}
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void saveSet(exercise)}
-                  >
-                    {editingSet?.exerciseId === exercise.id
-                      ? (uk ? "Оновити підхід" : "Update set")
-                      : (uk ? "Додати підхід" : "Add set")}
-                  </button>
+                  </div>
                 </div>
               </div>
             </section>

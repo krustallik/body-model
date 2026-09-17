@@ -7,8 +7,11 @@ vi.mock("@/i18n/i18n-provider", () => ({
   useI18n: () => ({ locale: "en", intlLocale: "en-US", setLocale: () => undefined }),
 }));
 
+const routerPush = vi.fn();
+const routerReplace = vi.fn();
+
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  useRouter: () => ({ push: routerPush, replace: routerReplace }),
 }));
 
 vi.mock("@/components/app-nav", () => ({
@@ -81,6 +84,8 @@ describe("Training backfill UI", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    routerPush.mockReset();
+    routerReplace.mockReset();
   });
 
   it("lists historical workouts with add/edit actions", async () => {
@@ -136,6 +141,13 @@ describe("Training backfill UI", () => {
       expect(screen.getByRole("button", { name: /Add diary/i })).toBeTruthy();
       expect(screen.getByRole("button", { name: /^Edit$/i })).toBeTruthy();
     });
+    expect(screen.getByRole("button", { name: /Missing diary only/i })).toBeTruthy();
+    const createButton = screen.getByRole("button", { name: /Create diaries \(0\)/i });
+    expect((createButton as HTMLButtonElement).disabled).toBe(true);
+    const checkboxes = screen.getAllByRole("checkbox");
+    expect(checkboxes).toHaveLength(2);
+    expect((checkboxes[0] as HTMLInputElement).disabled).toBe(false);
+    expect((checkboxes[1] as HTMLInputElement).disabled).toBe(true);
     expect(screen.getAllByText(/No diary/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Push A/).length).toBeGreaterThan(0);
   });
@@ -145,22 +157,23 @@ describe("Session edit UI", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    routerPush.mockReset();
+    routerReplace.mockReset();
   });
 
   it("loads completed session with Garmin context and set editing", async () => {
     const user = userEvent.setup();
+    vi.stubGlobal("confirm", vi.fn(() => true));
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo, init?: RequestInit) => {
       const url = String(input);
+      if (url.includes("/sessions/88") && init?.method === "DELETE") {
+        return Response.json({ deleted: true, matchedWorkoutId: 501 });
+      }
       if (url.includes("/sessions/88") && !init?.method) {
         return Response.json({ session });
       }
       if (url.includes("/exercises") && !url.includes("/sessions/")) {
         return Response.json({ exercises: [{ id: 3, name: "Жим", isActive: true, archivedAt: null, muscleMapping: null }] });
-      }
-      if (url.includes("/versions")) {
-        return Response.json({
-          versions: [{ id: 11, programId: 7, versionNumber: 1, exerciseCount: 3, createdAt: "2026-09-01T10:00:00.000Z" }],
-        });
       }
       if (url.includes("/programs")) {
         return Response.json({
@@ -187,9 +200,18 @@ describe("Session edit UI", () => {
       expect(screen.getByText("Push A")).toBeTruthy();
       expect(screen.getByText(/Garmin \(read-only\)/i)).toBeTruthy();
       expect(screen.getByText(/30 kg/)).toBeTruthy();
+      expect(screen.getByRole("button", { name: /Delete diary/i })).toBeTruthy();
     });
 
-    await user.click(screen.getByRole("button", { name: /Change program/i }));
+    await user.click(screen.getByRole("button", { name: /^Change$/i }));
     expect(screen.getByRole("button", { name: /Apply/i })).toBeTruthy();
+    expect(screen.queryByText(/^Version$/i)).toBeNull();
+    expect(screen.queryByText(/Show archived/i)).toBeNull();
+    expect(screen.getByText(/Always uses the program/i)).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: /Delete diary/i }));
+    await waitFor(() => {
+      expect(routerPush).toHaveBeenCalledWith("/training/backfill");
+    });
   });
 });

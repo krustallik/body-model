@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { AppNav } from "@/components/app-nav";
 import { useI18n } from "@/i18n/i18n-provider";
 import type {
@@ -10,14 +10,27 @@ import type {
   StrengthSessionSummaryDto,
   TrainingProgramSummaryDto,
 } from "@/modules/training/training.types";
-import { MATCH_STATUS } from "@/modules/training/training.constants";
 import {
   formatDateTime,
   formatDurationMinutes,
+  matchStatusBadgeTone,
   matchStatusLabel,
   readApiError,
 } from "./training-labels";
 import styles from "./training.module.css";
+
+function matchBadgeClass(status: StrengthSessionSummaryDto["matchStatus"]): string {
+  switch (matchStatusBadgeTone(status)) {
+    case "ok":
+      return styles.badgeOk;
+    case "warn":
+      return styles.badgeWarn;
+    case "neutral":
+      return styles.badgeNeutral;
+    default:
+      return styles.badgeMuted;
+  }
+}
 
 export function TrainingClient() {
   const { locale, intlLocale } = useI18n();
@@ -118,6 +131,65 @@ export function TrainingClient() {
     }
   }
 
+  const attentionHasItems = attention.length > 0;
+
+  function renderAttention(): ReactNode {
+    if (attentionHasItems) {
+      return (
+        <section className={styles.panel} aria-label={uk ? "Увага до зіставлення" : "Match attention"}>
+          <div className={styles.panelHeader}>
+            <div>
+              <h2>{uk ? "Увага до зіставлення" : "Match attention"}</h2>
+              <p>{uk ? "Неоднозначні або довго очікують Garmin" : "Ambiguous or long-pending Garmin links"}</p>
+            </div>
+          </div>
+          <div className={styles.panelBody}>
+            <div className={styles.list}>
+              {attention.map((session) => (
+                <article className={styles.card} key={session.id}>
+                  <div className={styles.cardTop}>
+                    <div>
+                      <strong>{session.programName}</strong>
+                      <p className={styles.cardMeta}>
+                        {formatDateTime(session.webStartedAt, intlLocale)}
+                        {" · "}
+                        {formatDurationMinutes(session.webStartedAt, session.webEndedAt, intlLocale, uk)}
+                      </p>
+                    </div>
+                    <span className={matchBadgeClass(session.matchStatus)}>
+                      {matchStatusLabel(session.matchStatus, uk)}
+                    </span>
+                  </div>
+                  <Link className={styles.linkLike} href={`/training/sessions/${session.id}`}>
+                    {uk ? "Відкрити" : "Open"}
+                  </Link>
+                </article>
+              ))}
+            </div>
+          </div>
+        </section>
+      );
+    }
+
+    return (
+      <section
+        className={`${styles.panel} ${styles.panelCompact}`}
+        aria-label={uk ? "Увага до зіставлення" : "Match attention"}
+      >
+        <div className={styles.panelHeader}>
+          <div>
+            <h2>{uk ? "Увага до зіставлення" : "Match attention"}</h2>
+          </div>
+        </div>
+        <div className={styles.panelBody}>
+          <p className={styles.emptyCompact}>
+            {uk ? "Немає сесій, що потребують уваги." : "No sessions need attention."}
+          </p>
+        </div>
+      </section>
+    );
+  }
+
   return (
     <main className={styles.page}>
       <div className={styles.navRow}>
@@ -148,6 +220,8 @@ export function TrainingClient() {
       {error && <div className={styles.errorBanner} role="alert">{error}</div>}
 
       <div className={styles.stack}>
+        {attentionHasItems && renderAttention()}
+
         <section className={styles.panel} aria-label={uk ? "Активна сесія" : "Active session"}>
           <div className={styles.panelHeader}>
             <div>
@@ -167,9 +241,9 @@ export function TrainingClient() {
                       {uk ? "Почато" : "Started"} {formatDateTime(active.webStartedAt, intlLocale)}
                     </p>
                   </div>
-                  <span className={styles.badge}>{uk ? "Активна" : "Active"}</span>
+                  <span className={styles.badgeOk}>{uk ? "Активна" : "Active"}</span>
                 </div>
-                <div className={styles.rowActions}>
+                <div className={styles.denseCardActions}>
                   <Link className={styles.primaryButton} href={`/training/sessions/${active.id}`}>
                     {uk ? "Продовжити" : "Resume"}
                   </Link>
@@ -208,16 +282,17 @@ export function TrainingClient() {
                         <strong>{program.name}</strong>
                         <p className={styles.cardMeta}>
                           {uk
-                            ? `${program.exerciseCount} вправ · версія ${program.currentVersionNumber ?? "—"}`
+                            ? `${program.exerciseCount} вправ · v${program.currentVersionNumber ?? "—"}`
                             : `${program.exerciseCount} exercises · v${program.currentVersionNumber ?? "—"}`}
                         </p>
                       </div>
                     </div>
-                    <div className={styles.rowActions}>
+                    <div className={styles.denseCardActions}>
                       <button
                         className={styles.primaryButton}
                         type="button"
                         disabled={busyId === program.id || Boolean(active)}
+                        aria-busy={busyId === program.id || undefined}
                         onClick={() => void startProgram(program.id)}
                       >
                         {uk ? "Почати" : "Start"}
@@ -234,45 +309,6 @@ export function TrainingClient() {
                         {uk ? "Архів" : "Archive"}
                       </button>
                     </div>
-                  </article>
-                ))}
-              </div>
-            )}
-          </div>
-        </section>
-
-        <section className={styles.panel} aria-label={uk ? "Увага до зіставлення" : "Match attention"}>
-          <div className={styles.panelHeader}>
-            <div>
-              <h2>{uk ? "Увага до зіставлення" : "Match attention"}</h2>
-              <p>{uk ? "Неоднозначні або довго очікують Garmin" : "Ambiguous or long-pending Garmin links"}</p>
-            </div>
-          </div>
-          <div className={styles.panelBody}>
-            {attention.length === 0 ? (
-              <div className={styles.empty}>
-                <span>{uk ? "Немає сесій, що потребують уваги." : "No sessions need attention."}</span>
-              </div>
-            ) : (
-              <div className={styles.list}>
-                {attention.map((session) => (
-                  <article className={styles.card} key={session.id}>
-                    <div className={styles.cardTop}>
-                      <div>
-                        <strong>{session.programName}</strong>
-                        <p className={styles.cardMeta}>
-                          {formatDateTime(session.webStartedAt, intlLocale)}
-                          {" · "}
-                          {formatDurationMinutes(session.webStartedAt, session.webEndedAt, intlLocale, uk)}
-                        </p>
-                      </div>
-                      <span className={session.matchStatus === MATCH_STATUS.AMBIGUOUS ? styles.badgeWarn : styles.badgeMuted}>
-                        {matchStatusLabel(session.matchStatus, uk)}
-                      </span>
-                    </div>
-                    <Link className={styles.linkLike} href={`/training/sessions/${session.id}`}>
-                      {uk ? "Відкрити" : "Open"}
-                    </Link>
                   </article>
                 ))}
               </div>
@@ -305,16 +341,11 @@ export function TrainingClient() {
                           {formatDurationMinutes(session.webStartedAt, session.webEndedAt, intlLocale, uk)}
                         </p>
                       </div>
-                      <span className={
-                        session.matchStatus === MATCH_STATUS.MATCHED ? styles.badge
-                          : session.matchStatus === MATCH_STATUS.AMBIGUOUS ? styles.badgeWarn
-                            : session.matchStatus === MATCH_STATUS.UNMATCHED ? styles.badgeDanger
-                              : styles.badgeMuted
-                      }>
+                      <span className={matchBadgeClass(session.matchStatus)}>
                         {matchStatusLabel(session.matchStatus, uk)}
                       </span>
                     </div>
-                    <div className={styles.rowActions}>
+                    <div className={styles.denseCardActions}>
                       <Link className={styles.linkLike} href={`/training/sessions/${session.id}`}>
                         {uk ? "Деталі" : "Details"}
                       </Link>
@@ -330,6 +361,8 @@ export function TrainingClient() {
             )}
           </div>
         </section>
+
+        {!attentionHasItems && renderAttention()}
       </div>
     </main>
   );

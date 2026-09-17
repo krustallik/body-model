@@ -57,8 +57,6 @@ export function HeartRateDayChart() {
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
-    setError(null);
 
     fetch(`/api/v1/heart-rate?date=${encodeURIComponent(date)}`, { cache: "no-store" })
       .then(async (response) => {
@@ -66,7 +64,9 @@ export function HeartRateDayChart() {
           throw new Error(uk ? `Помилка запиту (${response.status})` : `Request failed (${response.status})`);
         }
         const body = await response.json() as { heartRate: HeartRateDayDto };
-        if (active) setHeartRate(body.heartRate ?? EMPTY_HEART_RATE);
+        if (!active) return;
+        setHeartRate(body.heartRate ?? EMPTY_HEART_RATE);
+        setError(null);
       })
       .catch((loadError: unknown) => {
         if (!active) return;
@@ -84,6 +84,14 @@ export function HeartRateDayChart() {
     };
   }, [date, uk]);
 
+  function selectDate(nextDate: string) {
+    if (nextDate === date) return;
+    setLoading(true);
+    setError(null);
+    setHeartRate(EMPTY_HEART_RATE);
+    setDate(nextDate);
+  }
+
   return (
     <article className={`${styles.chartCard} ${styles.heartRateDayCard}`} aria-labelledby="heart-rate-day-heading">
       <div className={styles.heartRateDayHeader}>
@@ -99,7 +107,7 @@ export function HeartRateDayChart() {
             type="date"
             value={date}
             max={today}
-            onChange={(event) => setDate(event.target.value)}
+            onChange={(event) => selectDate(event.target.value)}
           />
         </label>
       </div>

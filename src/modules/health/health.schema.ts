@@ -2,6 +2,7 @@ import { normalizeDailyMeasurementInput } from "@/modules/days/measurement-polic
 import { mergeExpandedTrainingWorkouts } from "@/modules/health/expand-training-workouts";
 import { normalizeShortcutPayload } from "@/modules/health/normalize-shortcut-payload";
 import { normalizeShortcutNumericValues } from "@/modules/health/normalize-shortcut-numeric-values";
+import { canonicalizeSleepState, SLEEP_STATES } from "@/modules/health/sleep-state";
 import { z } from "zod";
 import {
   DEFAULT_TIME_ZONE,
@@ -72,6 +73,37 @@ const RestingHeartRateSamplesSchema = z.object({
   }
 });
 
+const SleepSegmentSchema = z.preprocess(
+  (value) => {
+    if (!isObject(value)) return value;
+    const rawState = typeof value.rawState === "string"
+      ? value.rawState
+      : typeof value.state === "string"
+        ? value.state
+        : value.rawState;
+    const rawText = typeof rawState === "string" ? rawState.trim() : rawState;
+    return {
+      ...value,
+      rawState: rawText,
+      state: typeof rawText === "string" ? canonicalizeSleepState(rawText) : value.state,
+    };
+  },
+  z.object({
+    startAt: z.string().datetime({ offset: true }),
+    endAt: z.string().datetime({ offset: true }),
+    state: z.enum(SLEEP_STATES),
+    rawState: z.string().min(1).max(100),
+  }).strict().superRefine((segment, context) => {
+    if (Date.parse(segment.endAt) <= Date.parse(segment.startAt)) {
+      context.addIssue({
+        code: "custom",
+        path: ["endAt"],
+        message: "endAt must be later than startAt",
+      });
+    }
+  }),
+);
+
 const HealthDayObjectSchema = z
   .object({
     date: z.string().refine(isCalendarDate, "date must be a real calendar date in YYYY-MM-DD format"),
@@ -89,6 +121,7 @@ const HealthDayObjectSchema = z
     workouts: z.array(WorkoutSchema).nullable().optional(),
     bpm: HeartRateSamplesSchema.optional(),
     bpminpeace: RestingHeartRateSamplesSchema.optional(),
+    sleepSegments: z.array(SleepSegmentSchema).optional(),
   })
   .strict();
 

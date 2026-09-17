@@ -211,6 +211,26 @@ export function HistoryCharts({ days }: { days: DailyMetricDto[] }) {
           ]}
         />
         <HistoryLineChart
+          title={uk ? "Тривалість сну" : "Sleep duration"}
+          description={uk ? "Загальний сон за ніч · хвилини (wake date)" : "Total sleep per night · minutes (wake date)"}
+          days={chronologicalDays.map((day) => ({
+            date: day.date,
+            sleepMinutes: day.sleepMinutes ?? null,
+            deepMinutes: day.sleep?.deepMinutes ?? null,
+            remMinutes: day.sleep?.remMinutes ?? null,
+            awakeMinutes: day.sleep?.awakeMinutes ?? null,
+          }))}
+          locale={locale}
+          series={[
+            {
+              key: "sleepMinutes",
+              label: uk ? "Сон" : "Sleep",
+              unit: uk ? "хв" : "min",
+              color: "#4d8fd9",
+            },
+          ]}
+        />
+        <HistoryLineChart
           title={uk ? "Кроки" : "Steps"}
           description={uk ? "Кількість кроків за день" : "Daily step count"}
           days={chronologicalDays}

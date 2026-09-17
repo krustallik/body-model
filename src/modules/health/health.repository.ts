@@ -1,5 +1,6 @@
 import { normalizeDailyMeasurements } from "@/modules/days/measurement-policy";
 import { resolveWorkoutFeedObserved } from "@/modules/health/workout-feed-coverage";
+import { offsetMinutesFromIso } from "@/modules/health/sleep-summary";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { instantToLocalDateTime } from "@/model/time-zone";
@@ -165,6 +166,24 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
       }));
       if (restingHeartRateSamples.length > 0) {
         await transaction.restingHeartRateSample.createMany({ data: restingHeartRateSamples, skipDuplicates: true });
+      }
+
+      const sleepSegments = (day.sleepSegments ?? []).map((segment) => ({
+        startAt: new Date(segment.startAt),
+        endAt: new Date(segment.endAt),
+        startOffsetMinutes: offsetMinutesFromIso(segment.startAt),
+        endOffsetMinutes: offsetMinutesFromIso(segment.endAt),
+        state: segment.state,
+        rawState: segment.rawState,
+        source: "shortcut",
+      }));
+      if (sleepSegments.length > 0) {
+        const sleepClient = transaction as unknown as {
+          sleepSegment?: { createMany(args: unknown): Promise<unknown> };
+        };
+        if (sleepClient.sleepSegment) {
+          await sleepClient.sleepSegment.createMany({ data: sleepSegments, skipDuplicates: true });
+        }
       }
 
       return { date: day.date, action: existing ? "updated" : "created" };

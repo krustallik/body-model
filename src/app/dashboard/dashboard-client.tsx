@@ -6,7 +6,7 @@ import { AppNav } from "@/components/app-nav";
 import { useI18n } from "@/i18n/i18n-provider";
 import type { DailyMetricDto, DailyMetricField } from "@/modules/days/day.types";
 import type { DashboardDto } from "@/modules/days/dashboard.types";
-import { formatDateTime, formatMetric } from "@/modules/days/metric-format";
+import { formatDateTime, formatDurationMinutes, formatMetric } from "@/modules/days/metric-format";
 import styles from "./dashboard.module.css";
 
 function displayWorkoutMinutes(day: DailyMetricDto | null | undefined): number | null {
@@ -19,7 +19,14 @@ function localToday(): string {
 }
 
 function emptyDashboard(): DashboardDto {
-  return { today: null, recentDays: [], hasToday: false, lastSync: { at: null, status: null }, restingHeartRate: { latestBpm: null, timestamp: null } };
+  return {
+    today: null,
+    recentDays: [],
+    hasToday: false,
+    lastSync: { at: null, status: null },
+    restingHeartRate: { latestBpm: null, timestamp: null },
+    sleep: null,
+  };
 }
 
 async function loadDashboard(uk: boolean): Promise<DashboardDto> {
@@ -47,6 +54,8 @@ export function DashboardClient() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const restingHeartRate = dashboard.restingHeartRate;
+  const sleep = dashboard.sleep;
+  const sleepLocale = uk ? "uk" : "en";
 
   useEffect(() => {
     let active = true;
@@ -104,6 +113,45 @@ export function DashboardClient() {
       <section className={styles.heartRateCard} aria-label={uk ? "Пульс у спокої" : "Resting Heart Rate"}>
         <div><p>{uk ? "Пульс у спокої" : "Resting Heart Rate"}</p><strong>{formatMetric(restingHeartRate.latestBpm, intlLocale)}{restingHeartRate.latestBpm === null ? "" : " bpm"}</strong></div>
         <span>{restingHeartRate.timestamp ? (restingHeartRate.timestamp.slice(0, 10) === localToday() ? (uk ? "Сьогодні" : "Today") : (uk ? "Останнє значення" : "Latest")) : (uk ? "Немає даних" : "No data")}</span>
+      </section>
+
+      <section className={styles.sleepCard} aria-label={uk ? "Сон" : "Sleep"}>
+        {sleep ? (
+          <>
+            <div className={styles.sleepPrimary}>
+              <div>
+                <p>{uk ? "Сон" : "Sleep"}</p>
+                <strong>{formatDurationMinutes(sleep.totalSleepMinutes, sleepLocale)}</strong>
+              </div>
+              <div>
+                <p>{uk ? "Час у ліжку" : "Time in bed"}</p>
+                <strong>{formatDurationMinutes(sleep.timeInBedMinutes, sleepLocale)}</strong>
+              </div>
+            </div>
+            <dl className={styles.sleepStages}>
+              <div>
+                <dt>{uk ? "Глибокий" : "Deep"}</dt>
+                <dd>{formatDurationMinutes(sleep.deepMinutes, sleepLocale)}</dd>
+              </div>
+              <div>
+                <dt>{uk ? "Швидкий" : "REM"}</dt>
+                <dd>{formatDurationMinutes(sleep.remMinutes, sleepLocale)}</dd>
+              </div>
+              <div>
+                <dt>{uk ? "Без сну" : "Awake"}</dt>
+                <dd>{formatDurationMinutes(sleep.awakeMinutes, sleepLocale)}</dd>
+              </div>
+            </dl>
+            <span className={styles.sleepMeta}>
+              {uk ? `Ніч · ${sleep.sleepDate}` : `Night · ${sleep.sleepDate}`}
+            </span>
+          </>
+        ) : (
+          <div className={styles.sleepEmpty}>
+            <p>{uk ? "Сон" : "Sleep"}</p>
+            <strong>{uk ? "Немає даних про сон" : "No sleep data"}</strong>
+          </div>
+        )}
       </section>
 
       <section className={styles.lowerGrid}>

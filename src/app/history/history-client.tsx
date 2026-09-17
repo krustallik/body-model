@@ -10,9 +10,10 @@ import {
   sortDaysNewestFirst,
   type HistoryRange,
 } from "@/modules/days/history-chart-data";
-import { formatDateTime, formatMetric } from "@/modules/days/metric-format";
+import { formatDateTime, formatDurationClock, formatMetric } from "@/modules/days/metric-format";
 import { HeartRateDayChart } from "./heart-rate-day-chart";
 import { HistoryCharts } from "./history-charts";
+import { SleepNightChart } from "./sleep-night-chart";
 import { WorkActivityDialog } from "./work-activity-dialog";
 import { WorkoutDetailsDialog } from "./workout-details-dialog";
 import styles from "./history.module.css";
@@ -260,6 +261,10 @@ export function HistoryClient() {
         <HeartRateDayChart />
       </section>
 
+      <section className={styles.heartRateDaySection} aria-label={uk ? "Сон за обрану ніч" : "Sleep for selected night"}>
+        <SleepNightChart />
+      </section>
+
       {loading ? (
         <div className={styles.chartsLoading}>{uk ? "Завантаження графіків…" : "Loading charts…"}</div>
       ) : (
@@ -302,6 +307,17 @@ export function HistoryClient() {
                     }
                     return <th key={key}>{uk ? localizedMetricLabel(key, true) : shortLabel}</th>;
                   })}
+                  <th className={styles.compactCol}>
+                    <span className={styles.thStack}>
+                      <span className={styles.thMain}>{uk ? "Тривалість сну" : "Sleep duration"}</span>
+                    </span>
+                  </th>
+                  <th className={styles.compactCol}>
+                    <span className={styles.thStack}>
+                      <span className={styles.thMain}>{uk ? "Пульс у спокої" : "Resting HR"}</span>
+                      <span className={styles.thUnit}>bpm</span>
+                    </span>
+                  </th>
                   <th>{uk ? "оновлено" : "updatedAt"}</th>
                   <th>{uk ? "дії" : "actions"}</th>
                 </tr>
@@ -334,6 +350,14 @@ export function HistoryClient() {
                         </td>
                       );
                     })}
+                    <td data-label={uk ? "Тривалість сну" : "Sleep duration"} className={styles.compactCol}>
+                      {formatDurationClock(day.sleepMinutes ?? null)}
+                    </td>
+                    <td data-label={uk ? "Пульс у спокої" : "Resting HR"} className={styles.compactCol}>
+                      {day.restingHeartRateBpm == null
+                        ? "—"
+                        : `${formatMetric(day.restingHeartRateBpm, intlLocale)} bpm`}
+                    </td>
                     <td data-label={uk ? "оновлено" : "updatedAt"} className={styles.updatedCell}>{formatDateTime(day.updatedAt, intlLocale)}</td>
                     <td data-label="actions">
                       <div className={styles.actions}>

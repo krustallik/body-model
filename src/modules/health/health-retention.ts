@@ -6,6 +6,9 @@ export const HEALTH_DATA_RETENTION_DAYS = 30;
 /**
  * Earliest calendar date still within retention for `referenceDate`.
  * Rows with `date < cutoff` are older than `retentionDays` and should be deleted.
+ *
+ * SleepSegment rows are intentionally NOT tied to DailyHealthData and are not
+ * removed by this cutoff — they are source history for future recalculation.
  */
 export function healthRetentionCutoffDate(
   referenceDate: string,

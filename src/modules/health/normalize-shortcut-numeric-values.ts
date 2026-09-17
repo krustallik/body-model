@@ -153,6 +153,69 @@ function normalizeHeartRateObject(value: unknown, valueKey: "bpm" | "bpminpeace"
   return { timestamps, [valueKey]: normalizeBpmValues(sourceValue, timestamps.length) };
 }
 
+function parseMaybeJsonObject(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * Accept Shortcut sleepSegments dictionary (parallel series) or already-canonical
+ * segment arrays. Output becomes an array of { startAt, endAt, state, rawState }
+ * with canonical `state` and preserved `rawState`. Length mismatches stay as an
+ * object so Zod rejects them instead of silently truncating.
+ */
+export function normalizeSleepSegmentsValue(value: unknown): unknown {
+  value = parseMaybeJsonObject(value);
+  if (Array.isArray(value)) {
+    return value.map((item) => {
+      const parsed = parseMaybeJsonObject(item);
+      if (!isObject(parsed)) return item;
+      const rawSource = typeof parsed.rawState === "string"
+        ? parsed.rawState
+        : typeof parsed.state === "string"
+          ? parsed.state
+          : "";
+      const rawState = String(rawSource).trim();
+      return {
+        startAt: parsed.startAt,
+        endAt: parsed.endAt,
+        rawState,
+        state: rawState,
+      };
+    });
+  }
+  if (!isObject(value)) return value;
+
+  const startTimestamps = normalizeTimestamps(
+    value.startTimestamps ?? value.starttimestamps ?? value.starts,
+  );
+  const endTimestamps = normalizeTimestamps(
+    value.endTimestamps ?? value.endtimestamps ?? value.ends,
+  );
+  const states = splitShortcutLines(value.states ?? value.state);
+
+  if (
+    startTimestamps.length !== endTimestamps.length
+    || startTimestamps.length !== states.length
+  ) {
+    return { startTimestamps, endTimestamps, states };
+  }
+
+  return startTimestamps.map((startAt, index) => {
+    const rawState = String(states[index] ?? "").trim();
+    return {
+      startAt,
+      endAt: endTimestamps[index],
+      rawState,
+      state: rawState,
+    };
+  });
+}
+
 function normalizeDay(value: unknown): unknown {
   if (!isObject(value)) return value;
 
@@ -167,6 +230,7 @@ function normalizeDay(value: unknown): unknown {
       }
       if (key === "bpm") return [key, normalizeHeartRateObject(fieldValue, "bpm")];
       if (key === "bpminpeace") return [key, normalizeHeartRateObject(fieldValue, "bpminpeace")];
+      if (key === "sleepSegments") return [key, normalizeSleepSegmentsValue(fieldValue)];
       return [key, fieldValue];
     }),
   );

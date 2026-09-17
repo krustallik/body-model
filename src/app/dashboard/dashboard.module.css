@@ -40,6 +40,61 @@
 .heartRateCard p, .heartRateCard span { margin: 0; color: var(--muted); font-size: .76rem; font-weight: 750; }
 .heartRateCard strong { display: block; margin-top: .35rem; font-size: 1.65rem; font-variant-numeric: tabular-nums; }
 
+.sleepCard {
+  display: grid;
+  gap: 0.85rem;
+  margin-top: 0.8rem;
+  padding: 1.1rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 0.9rem;
+  box-shadow: 0 0.8rem 2.5rem rgb(30 53 44 / 5%);
+}
+.sleepPrimary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+.sleepPrimary p, .sleepEmpty p, .sleepMeta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 750;
+}
+.sleepPrimary strong, .sleepEmpty strong {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: 1.45rem;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+.sleepStages {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.6rem;
+  margin: 0;
+}
+.sleepStages div {
+  padding: 0.7rem 0.75rem;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+}
+.sleepStages dt {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.sleepStages dd {
+  margin: 0.25rem 0 0;
+  font-size: 0.92rem;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+}
+.sleepEmpty { display: grid; gap: 0.2rem; }
+
 .lowerGrid { display: grid; grid-template-columns: minmax(17rem, 0.72fr) minmax(0, 1.75fr); gap: 1rem; margin-top: 1rem; }
 .syncCard, .historyCard { overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: 1rem; box-shadow: 0 0.8rem 2.5rem rgb(30 53 44 / 5%); }
 .syncCard { padding: 1.3rem; }

@@ -1,4 +1,4 @@
-import type { DailyMetricDto } from "./day.types";
+import type { DailyMetricDto, NightlySleepSummaryDto } from "./day.types";
 
 export interface DashboardDto {
   today: DailyMetricDto | null;
@@ -9,4 +9,5 @@ export interface DashboardDto {
     status: null;
   };
   restingHeartRate: { latestBpm: number | null; timestamp: string | null };
+  sleep: NightlySleepSummaryDto | null;
 }

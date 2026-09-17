@@ -89,6 +89,31 @@ model RestingHeartRateSample {
   @@index([dailyHealthDataId, timestamp])
 }
 
+/**
+ * Raw Apple Health sleep intervals. Independent of DailyHealthData so the
+ * 30-day daily prune cannot cascade-delete source sleep history.
+ * Nightly summaries are derived on read (local wake/end date).
+ */
+model SleepSegment {
+  id               Int      @id @default(autoincrement())
+  profileId        Int      @default(1)
+  startAt          DateTime @db.Timestamptz(3)
+  endAt            DateTime @db.Timestamptz(3)
+  /** Source wall-clock offset for startAt, minutes east of UTC. */
+  startOffsetMinutes Int?
+  /** Source wall-clock offset for endAt, minutes east of UTC (preferred for sleepDate). */
+  endOffsetMinutes Int?
+  state            String   @db.VarChar(32)
+  rawState         String   @db.VarChar(100)
+  source           String   @default("shortcut") @db.VarChar(40)
+  createdAt        DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([profileId, startAt, endAt, state])
+  @@index([profileId, startAt])
+  @@index([profileId, endAt])
+}
+
 model HealthSyncSnapshot {
   id                      Int              @id @default(autoincrement())
   dailyHealthDataId       Int?

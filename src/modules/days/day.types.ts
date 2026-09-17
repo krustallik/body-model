@@ -35,6 +35,31 @@ export type HeartRateDayDto = {
   samples: HeartRateSampleDto[];
 };
 
+export type NightlySleepSummaryDto = {
+  sleepDate: string;
+  sleepStartAt: string;
+  sleepEndAt: string;
+  totalSleepMinutes: number;
+  timeInBedMinutes: number;
+  awakeMinutes: number;
+  coreMinutes: number;
+  deepMinutes: number;
+  remMinutes: number;
+  unspecifiedSleepMinutes: number;
+  efficiencyPercent: number | null;
+  segmentCount: number;
+  timeInBedProvenance: "inBed-union" | "session-span-fallback";
+  sleepDateAttribution: "segment-offset" | "fallback-timezone" | "utc-instant";
+  wakeOffsetMinutes: number | null;
+  qualityFlags: string[];
+  segments: Array<{
+    startAt: string;
+    endAt: string;
+    state: "awake" | "inBed" | "core" | "deep" | "rem" | "asleepUnspecified" | "unknown";
+    rawState: string;
+  }>;
+};
+
 export type DailyMetricDto = {
   date: string;
   updatedAt: string;
@@ -44,4 +69,9 @@ export type DailyMetricDto = {
   workoutSource: "workouts" | "legacy-strength" | "none";
   heartRate?: HeartRateDayDto;
   restingHeartRate?: HeartRateDayDto;
+  /** Convenience scalar for tables: latest resting BPM for this calendar day. */
+  restingHeartRateBpm?: number | null;
+  /** Convenience scalar for tables: total sleep minutes for sleepDate = date. */
+  sleepMinutes?: number | null;
+  sleep?: NightlySleepSummaryDto | null;
 } & Record<DailyMetricField, number | null>;

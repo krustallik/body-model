@@ -281,6 +281,72 @@
   font-size: 0.8rem;
 }
 
+.sleepHypnogram {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(0, 1fr);
+  gap: 0.55rem 0.7rem;
+  margin-top: 0.9rem;
+}
+.sleepHypnogramLabels {
+  display: grid;
+  grid-template-rows: repeat(4, 1fr);
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.sleepHypnogramLabels span,
+.sleepHypnogramRow {
+  min-height: 1.7rem;
+}
+.sleepHypnogramTrack {
+  position: relative;
+  display: grid;
+  grid-template-rows: repeat(4, 1fr);
+  gap: 0.35rem;
+  padding: 0.35rem 0;
+  border-left: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+}
+.sleepHypnogramRow {
+  position: relative;
+  background: color-mix(in srgb, var(--soft) 80%, transparent);
+  border-radius: 0.35rem;
+}
+.sleepHypnogramBlock {
+  position: absolute;
+  top: 0.2rem;
+  bottom: 0.2rem;
+  border-radius: 0.28rem;
+}
+.sleepInBedBand {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  opacity: 0.18;
+}
+.sleepInBedBand span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: #8aa0b5;
+  border-radius: 0.2rem;
+}
+.sleepHypnogramTicks {
+  grid-column: 2;
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+}
+.sleepHypnogramNote {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
 .chartsSection { margin-bottom: 1rem; }
 .chartsTitle { display: flex; align-items: flex-end; justify-content: space-between; gap: 1rem; padding: 1.8rem 0 1rem; }
 .chartsTitle h2 { margin: 0; font-size: 1.8rem; letter-spacing: -0.04em; }

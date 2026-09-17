@@ -2,13 +2,14 @@ import { normalizeDailyMeasurements } from "@/modules/days/measurement-policy";
 import { summarizeDayWorkouts } from "@/modules/days/day-workout-presentation";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { sleepRepository } from "@/modules/health/sleep.repository";
 import { DuplicateDayError } from "./day.errors";
 import type {
   CreateDailyMetricInput,
   DailyMetricListQuery,
   UpdateDailyMetricInput,
 } from "./day.schema";
-import type { DailyMetricDto } from "./day.types";
+import type { DailyMetricDto, NightlySleepSummaryDto } from "./day.types";
 
 const dailyMetricSelect = {
   date: true,
@@ -72,13 +73,21 @@ function heartRateSummary(samples: Array<{ timestamp: Date; bpm: number }> | und
   };
 }
 
-function toDto(record: DailyMetricRecord, samples?: { heartRate: Array<{ timestamp: Date; bpm: number }>; restingHeartRate: Array<{ timestamp: Date; bpm: number }> }): DailyMetricDto {
+function toDto(
+  record: DailyMetricRecord,
+  samples?: {
+    heartRate: Array<{ timestamp: Date; bpm: number }>;
+    restingHeartRate: Array<{ timestamp: Date; bpm: number }>;
+  },
+  sleep?: NightlySleepSummaryDto | null,
+): DailyMetricDto {
   record = normalizeDailyMeasurements(record);
   const strengthTrainingMinutes = decimalToNumber(record.strengthTrainingMinutes);
   const summary = summarizeDayWorkouts({
     workouts: record.workouts ?? [],
     legacyStrengthTrainingMinutes: strengthTrainingMinutes,
   });
+  const restingHeartRate = heartRateSummary(samples?.restingHeartRate ?? record.restingHeartRateSamples);
   return {
     date: record.date,
     weightKg: record.weightKg,
@@ -97,7 +106,10 @@ function toDto(record: DailyMetricRecord, samples?: { heartRate: Array<{ timesta
     totalWorkoutMinutes: summary.totalWorkoutMinutes,
     workoutSource: summary.workoutSource,
     heartRate: heartRateSummary(samples?.heartRate ?? record.heartRateSamples),
-    restingHeartRate: heartRateSummary(samples?.restingHeartRate ?? record.restingHeartRateSamples),
+    restingHeartRate,
+    restingHeartRateBpm: restingHeartRate.latestBpm,
+    sleepMinutes: sleep?.totalSleepMinutes ?? null,
+    sleep: sleep ?? null,
   };
 }
 
@@ -127,12 +139,18 @@ export class DailyMetricRepository {
       heartRateSample?: { findMany(args: unknown): Promise<Array<{ date: string; timestamp: Date; bpm: number }>> };
       restingHeartRateSample?: { findMany(args: unknown): Promise<Array<{ date: string; timestamp: Date; bpm: number }>> };
     };
-    if (!readClient.heartRateSample || !readClient.restingHeartRateSample || dates.length === 0) {
+    if (dates.length === 0) {
       return records.map((record) => toDto(record));
     }
-    const [heartRateRows, restingRows] = await Promise.all([
-      readClient.heartRateSample.findMany({ where: { date: { in: dates } }, select: { date: true, timestamp: true, bpm: true }, orderBy: { timestamp: "asc" } }),
-      readClient.restingHeartRateSample.findMany({ where: { date: { in: dates } }, select: { date: true, timestamp: true, bpm: true }, orderBy: { timestamp: "asc" } }),
+
+    const [heartRateRows, restingRows, sleepByDate] = await Promise.all([
+      readClient.heartRateSample
+        ? readClient.heartRateSample.findMany({ where: { date: { in: dates } }, select: { date: true, timestamp: true, bpm: true }, orderBy: { timestamp: "asc" } })
+        : Promise.resolve([] as Array<{ date: string; timestamp: Date; bpm: number }>),
+      readClient.restingHeartRateSample
+        ? readClient.restingHeartRateSample.findMany({ where: { date: { in: dates } }, select: { date: true, timestamp: true, bpm: true }, orderBy: { timestamp: "asc" } })
+        : Promise.resolve([] as Array<{ date: string; timestamp: Date; bpm: number }>),
+      sleepRepository.summariesByDates(dates),
     ]);
     const group = (rows: Array<{ date: string; timestamp: Date; bpm: number }>) => rows.reduce<Map<string, Array<{ timestamp: Date; bpm: number }>>>((result, row) => {
       result.set(row.date, [...(result.get(row.date) ?? []), { timestamp: row.timestamp, bpm: row.bpm }]);
@@ -140,7 +158,11 @@ export class DailyMetricRepository {
     }, new Map());
     const heartRate = group(heartRateRows);
     const restingHeartRate = group(restingRows);
-    return records.map((record) => toDto(record, { heartRate: heartRate.get(record.date) ?? [], restingHeartRate: restingHeartRate.get(record.date) ?? [] }));
+    return records.map((record) => toDto(
+      record,
+      { heartRate: heartRate.get(record.date) ?? [], restingHeartRate: restingHeartRate.get(record.date) ?? [] },
+      sleepByDate.get(record.date) ?? null,
+    ));
   }
 
   async latestUpdatedAt(): Promise<string | null> {

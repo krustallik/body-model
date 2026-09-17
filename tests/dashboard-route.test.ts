@@ -9,7 +9,14 @@ const dailyMetricRepository = vi.hoisted(() => ({
   delete: vi.fn(),
 }));
 
+const sleepRepository = vi.hoisted(() => ({
+  latestCompleted: vi.fn(),
+  summariesByDates: vi.fn(),
+  summaryForDate: vi.fn(),
+}));
+
 vi.mock("@/modules/days/day.repository", () => ({ dailyMetricRepository }));
+vi.mock("@/modules/health/sleep.repository", () => ({ sleepRepository }));
 
 import { GET } from "@/app/api/v1/dashboard/route";
 
@@ -38,8 +45,10 @@ const day = (date: string, overrides: Record<string, unknown> = {}) => ({
 describe("GET /api/v1/dashboard", () => {
   beforeEach(() => {
     Object.values(dailyMetricRepository).forEach((mock) => mock.mockReset());
+    Object.values(sleepRepository).forEach((mock) => mock.mockReset());
     dailyMetricRepository.latestUpdatedAt.mockResolvedValue(null);
     dailyMetricRepository.latestRestingHeartRate.mockResolvedValue({ latestBpm: null, timestamp: null });
+    sleepRepository.latestCompleted.mockResolvedValue(null);
   });
 
   it("returns an empty dashboard without data", async () => {
@@ -53,6 +62,7 @@ describe("GET /api/v1/dashboard", () => {
       hasToday: false,
       lastSync: { at: null, status: null },
       restingHeartRate: { latestBpm: null, timestamp: null },
+      sleep: null,
     });
   });
 

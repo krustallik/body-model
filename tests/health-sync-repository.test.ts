@@ -18,6 +18,7 @@ function repositoryFixture(existingDates: string[] = []) {
     },
     heartRateSample: { createMany: vi.fn().mockResolvedValue({ count: 1 }) },
     restingHeartRateSample: { createMany: vi.fn().mockResolvedValue({ count: 1 }) },
+    sleepSegment: { createMany: vi.fn().mockResolvedValue({ count: 1 }) },
     healthSyncSnapshot: {
       create: vi.fn().mockResolvedValue({ id: 1 }),
     },

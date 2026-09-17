@@ -1,6 +1,6 @@
 import { readJson, validationResponse } from "@/modules/days/day.http";
-import { CatalogExerciseNotFoundError } from "@/modules/training/training.errors";
 import { CreateProgramSchema } from "@/modules/training/training.schema";
+import { trainingErrorResponse, trainingInternalError } from "@/modules/training/training.http";
 import { trainingService } from "@/modules/training/training.service";
 
 export const dynamic = "force-dynamic";
@@ -10,7 +10,7 @@ export async function GET(): Promise<Response> {
     const programs = await trainingService.listPrograms();
     return Response.json({ programs });
   } catch {
-    return Response.json({ error: "internal_error" }, { status: 500 });
+    return trainingInternalError();
   }
 }
 
@@ -25,9 +25,6 @@ export async function POST(request: Request): Promise<Response> {
     const program = await trainingService.createProgram(parsed.data);
     return Response.json({ program }, { status: 201 });
   } catch (error) {
-    if (error instanceof CatalogExerciseNotFoundError) {
-      return Response.json({ error: error.code }, { status: 400 });
-    }
-    return Response.json({ error: "internal_error" }, { status: 500 });
+    return trainingErrorResponse(error) ?? trainingInternalError();
   }
 }

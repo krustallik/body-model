@@ -1,6 +1,6 @@
 import { validationResponse } from "@/modules/days/day.http";
-import { ProgramNotFoundError } from "@/modules/training/training.errors";
 import { ProgramIdParamsSchema } from "@/modules/training/training.schema";
+import { trainingErrorResponse, trainingInternalError } from "@/modules/training/training.http";
 import { trainingService } from "@/modules/training/training.service";
 
 export const dynamic = "force-dynamic";
@@ -16,9 +16,6 @@ export async function POST(
     const program = await trainingService.archiveProgram(parsed.data.id);
     return Response.json({ program });
   } catch (error) {
-    if (error instanceof ProgramNotFoundError) {
-      return Response.json({ error: error.code }, { status: 404 });
-    }
-    return Response.json({ error: "internal_error" }, { status: 500 });
+    return trainingErrorResponse(error) ?? trainingInternalError();
   }
 }

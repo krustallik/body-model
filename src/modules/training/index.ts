@@ -12,3 +12,4 @@ export { ordinaryExternalWeightTonnageKg } from "./training.tonnage";
 export { validateSetFields } from "./training.set-validation";
 export { trainingRepository, TrainingRepository } from "./training.repository";
 export { trainingService, TrainingService } from "./training.service";
+export { trainingErrorResponse, trainingInternalError } from "./training.http";

@@ -1,5 +1,6 @@
 import { validationResponse } from "@/modules/days/day.http";
 import { CatalogListQuerySchema } from "@/modules/training/training.schema";
+import { trainingInternalError } from "@/modules/training/training.http";
 import { trainingService } from "@/modules/training/training.service";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +17,6 @@ export async function GET(request: Request): Promise<Response> {
     });
     return Response.json({ exercises });
   } catch {
-    return Response.json({ error: "internal_error" }, { status: 500 });
+    return trainingInternalError();
   }
 }

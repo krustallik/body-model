@@ -1,5 +1,6 @@
 import { validationResponse } from "@/modules/days/day.http";
 import { SessionIdParamsSchema } from "@/modules/training/training.schema";
+import { trainingInternalError } from "@/modules/training/training.http";
 import { trainingService } from "@/modules/training/training.service";
 
 export const dynamic = "force-dynamic";
@@ -17,6 +18,6 @@ export async function GET(
       ? Response.json({ session })
       : Response.json({ error: "not_found" }, { status: 404 });
   } catch {
-    return Response.json({ error: "internal_error" }, { status: 500 });
+    return trainingInternalError();
   }
 }

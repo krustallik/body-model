@@ -1,13 +1,9 @@
 import { readJson, validationResponse } from "@/modules/days/day.http";
 import {
-  SessionExerciseNotFoundError,
-  SessionNotFoundError,
-  SetValidationError,
-} from "@/modules/training/training.errors";
-import {
   CreateSetSchema,
   SessionExerciseParamsSchema,
 } from "@/modules/training/training.schema";
+import { trainingErrorResponse, trainingInternalError } from "@/modules/training/training.http";
 import { trainingService } from "@/modules/training/training.service";
 
 export const dynamic = "force-dynamic";
@@ -33,12 +29,6 @@ export async function POST(
     );
     return Response.json({ set }, { status: 201 });
   } catch (error) {
-    if (error instanceof SessionExerciseNotFoundError || error instanceof SessionNotFoundError) {
-      return Response.json({ error: error.code }, { status: 404 });
-    }
-    if (error instanceof SetValidationError) {
-      return Response.json({ error: error.code, message: error.message }, { status: 400 });
-    }
-    return Response.json({ error: "internal_error" }, { status: 500 });
+    return trainingErrorResponse(error) ?? trainingInternalError();
   }
 }

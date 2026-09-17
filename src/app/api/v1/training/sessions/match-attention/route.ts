@@ -1,3 +1,4 @@
+import { trainingInternalError } from "@/modules/training/training.http";
 import { trainingService } from "@/modules/training/training.service";
 
 export const dynamic = "force-dynamic";
@@ -7,6 +8,6 @@ export async function GET(): Promise<Response> {
     const sessions = await trainingService.listMatchAttention();
     return Response.json({ sessions });
   } catch {
-    return Response.json({ error: "internal_error" }, { status: 500 });
+    return trainingInternalError();
   }
 }

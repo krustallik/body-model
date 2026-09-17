@@ -1,4 +1,4 @@
-import { normalizeDailyMeasurements } from "@/modules/days/measurement-policy";
+import { prepareDailyMeasurementsForWrite } from "@/modules/days/measurement-policy";
 import { resolveWorkoutFeedObserved } from "@/modules/health/workout-feed-coverage";
 import { offsetMinutesFromIso } from "@/modules/health/sleep-summary";
 import { Prisma, type PrismaClient } from "@prisma/client";
@@ -64,7 +64,7 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
       syncedAt: null,
     },
   ): Promise<SyncDateResult> {
-    day = normalizeDailyMeasurements(day);
+    day = prepareDailyMeasurementsForWrite(day);
     // Coverage is decided from the raw sync observation for THIS calendar day only.
     const workoutFeedObserved = resolveWorkoutFeedObserved(rawDay);
     // Latest state, immutable snapshot, and workout replacement are one atomic sync.

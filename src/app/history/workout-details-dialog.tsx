@@ -5,7 +5,7 @@ import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "rec
 import { useI18n } from "@/i18n/i18n-provider";
 import type { DailyMetricDto } from "@/modules/days/day.types";
 import { displayWorkoutType } from "@/modules/days/day-workout-presentation";
-import { formatMetric } from "@/modules/days/metric-format";
+import { formatDateTime, formatMetric } from "@/modules/days/metric-format";
 import styles from "./history.module.css";
 
 const EMPTY_HEART_RATE = { sampleCount: 0, minBpm: null, maxBpm: null, avgBpm: null, latestBpm: null, latestTimestamp: null, samples: [] };
@@ -102,6 +102,10 @@ export function WorkoutDetailsDialog({
         )}
         <HeartRateSummary title={uk ? "Пульс у спокої" : "Resting heart rate"} data={day.restingHeartRate ?? EMPTY_HEART_RATE} uk={uk} intlLocale={intlLocale} />
       </section>
+
+      <p className={styles.updatedMeta}>
+        {uk ? "Оновлено" : "Updated"}: {formatDateTime(day.updatedAt, intlLocale)}
+      </p>
 
       <div className={styles.dialogActions}>
         <button className={styles.secondaryButton} type="button" onClick={onClose}>{uk ? "Закрити" : "Close"}</button>

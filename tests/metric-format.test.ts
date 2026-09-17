@@ -12,7 +12,7 @@ describe("dashboard metric formatting", () => {
 
   it("formats positive metrics with locale-aware digits", () => {
     expect(formatMetric(72.5, "en-US")).toBe("72.5");
-    expect(formatMetric(1_234.5678, "en-US")).toBe("1,234.5678");
+    expect(formatMetric(1_234.5678, "en-US")).toBe("1,234.57");
     expect(formatMetric(8_000, "uk-UA")).toMatch(/8.?000/);
   });
 

@@ -14,8 +14,19 @@ import type { DailyMetricDto } from "@/modules/days/day.types";
 import {
   sortDaysChronologically,
 } from "@/modules/days/history-chart-data";
+import { formatMetric } from "@/modules/days/metric-format";
 import { useI18n, type Locale } from "@/i18n/i18n-provider";
 import styles from "./history.module.css";
+
+function round2(value: number | null | undefined): number | null {
+  if (value === null || value === undefined || !Number.isFinite(value)) return null;
+  return Math.round(Number(`${value}e+2`)) / 100;
+}
+
+function minutesToHours(value: number | null | undefined): number | null {
+  if (value === null || value === undefined || !Number.isFinite(value)) return null;
+  return round2(value / 60);
+}
 
 type Series = {
   key: string;
@@ -109,7 +120,11 @@ function HistoryLineChart({
               labelFormatter={(label) => longDate(String(label), locale)}
               formatter={(value, name) => {
                 const item = series.find(({ label }) => label === name);
-                return [`${value} ${item?.unit ?? ""}`.trim(), String(name)];
+                const intlLocale = locale === "uk" ? "uk-UA" : "en-US";
+                const formatted = typeof value === "number"
+                  ? formatMetric(value, intlLocale)
+                  : String(value);
+                return [`${formatted} ${item?.unit ?? ""}`.trim(), String(name)];
               }}
             />
             {series.length > 1 && <Legend wrapperStyle={{ fontSize: "11px", paddingTop: "8px" }} />}
@@ -167,7 +182,11 @@ export function HistoryCharts({ days }: { days: DailyMetricDto[] }) {
         <HistoryLineChart
           title={uk ? "Вага і жир" : "Weight & body fat"}
           description={uk ? "Маса тіла · кг та жирова маса · %" : "Body weight · kg and body fat · %"}
-          days={chronologicalDays}
+          days={chronologicalDays.map((day) => ({
+            date: day.date,
+            weightKg: round2(day.weightKg),
+            bodyFatPercent: round2(day.bodyFatPercent),
+          }))}
           dualAxis
           locale={locale}
           series={[
@@ -212,20 +231,17 @@ export function HistoryCharts({ days }: { days: DailyMetricDto[] }) {
         />
         <HistoryLineChart
           title={uk ? "Тривалість сну" : "Sleep duration"}
-          description={uk ? "Загальний сон за ніч · хвилини (wake date)" : "Total sleep per night · minutes (wake date)"}
+          description={uk ? "Загальний сон за ніч · години (wake date)" : "Total sleep per night · hours (wake date)"}
           days={chronologicalDays.map((day) => ({
             date: day.date,
-            sleepMinutes: day.sleepMinutes ?? null,
-            deepMinutes: day.sleep?.deepMinutes ?? null,
-            remMinutes: day.sleep?.remMinutes ?? null,
-            awakeMinutes: day.sleep?.awakeMinutes ?? null,
+            sleepHours: minutesToHours(day.sleepMinutes),
           }))}
           locale={locale}
           series={[
             {
-              key: "sleepMinutes",
+              key: "sleepHours",
               label: uk ? "Сон" : "Sleep",
-              unit: uk ? "хв" : "min",
+              unit: uk ? "год" : "h",
               color: "#4d8fd9",
             },
           ]}

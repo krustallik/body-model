@@ -10,7 +10,7 @@ import {
   sortDaysNewestFirst,
   type HistoryRange,
 } from "@/modules/days/history-chart-data";
-import { formatDateTime, formatDurationClock, formatMetric } from "@/modules/days/metric-format";
+import { formatDurationClock, formatMetric } from "@/modules/days/metric-format";
 import { HeartRateDayChart } from "./heart-rate-day-chart";
 import { HistoryCharts } from "./history-charts";
 import { SleepNightChart } from "./sleep-night-chart";
@@ -63,17 +63,19 @@ const rangeOptions: Array<{ value: HistoryRange; label: string }> = [
 ];
 
 function localizedMetricLabel(key: DailyMetricField, uk: boolean): string {
-  if (!uk) return metricFields.find((field) => field.key === key)?.label ?? key;
-  return ({
-    weightKg: "Вага (кг)", bodyFatPercent: "Жирова маса (%)", caloriesKcal: "Калорії (ккал)",
-    proteinG: "Білки (г)", fatG: "Жири (г)", carbsG: "Вуглеводи (г)", steps: "Кроки",
-    activeEnergyKcal: "Активна енергія (ккал)", averageWalkingSpeedKmh: "Швидкість ходьби (км/год)",
-    walkingDistanceKm: "Дистанція ходьби (км)", strengthTrainingMinutes: "Тренування (хв)",
-  } satisfies Record<DailyMetricField, string>)[key];
+  const parts = headerParts(key, uk);
+  return parts.unit ? `${parts.main} (${parts.unit})` : parts.main;
 }
 
-function compactHeaderParts(key: DailyMetricField, uk: boolean): { main: string; unit: string } | null {
-  if (!compactTableKeys.has(key)) return null;
+function headerParts(key: DailyMetricField, uk: boolean): { main: string; unit: string } {
+  if (key === "weightKg") return { main: uk ? "Вага" : "Weight", unit: uk ? "кг" : "kg" };
+  if (key === "bodyFatPercent") return { main: uk ? "Жирова маса" : "Body fat", unit: "%" };
+  if (key === "caloriesKcal") return { main: uk ? "Калорії" : "Calories", unit: uk ? "ккал" : "kcal" };
+  if (key === "proteinG") return { main: uk ? "Білки" : "Protein", unit: uk ? "г" : "g" };
+  if (key === "fatG") return { main: uk ? "Жири" : "Fat", unit: uk ? "г" : "g" };
+  if (key === "carbsG") return { main: uk ? "Вуглеводи" : "Carbs", unit: uk ? "г" : "g" };
+  if (key === "steps") return { main: uk ? "Кроки" : "Steps", unit: "" };
+  if (key === "activeEnergyKcal") return { main: uk ? "Активна енергія" : "Active energy", unit: uk ? "ккал" : "kcal" };
   if (key === "averageWalkingSpeedKmh") return { main: uk ? "Швидкість ходьби" : "Walking speed", unit: uk ? "км/год" : "km/h" };
   if (key === "walkingDistanceKm") return { main: uk ? "Дистанція ходьби" : "Walking distance", unit: uk ? "км" : "km" };
   return { main: uk ? "Тренування" : "Training", unit: uk ? "хв" : "min" };
@@ -293,23 +295,21 @@ export function HistoryClient() {
               <thead>
                 <tr>
                   <th>{uk ? "дата" : "date"}</th>
-                  {tableFields.map(({ key, shortLabel }) => {
-                    const compact = compactHeaderParts(key, uk);
-                    if (compact) {
-                      return (
-                        <th key={key} className={styles.compactCol}>
-                          <span className={styles.thStack}>
-                            <span className={styles.thMain}>{compact.main}</span>
-                            <span className={styles.thUnit}>{compact.unit}</span>
-                          </span>
-                        </th>
-                      );
-                    }
-                    return <th key={key}>{uk ? localizedMetricLabel(key, true) : shortLabel}</th>;
+                  {tableFields.map(({ key }) => {
+                    const parts = headerParts(key, uk);
+                    return (
+                      <th key={key} className={compactTableKeys.has(key) ? styles.compactCol : undefined}>
+                        <span className={styles.thStack}>
+                          <span className={styles.thMain}>{parts.main}</span>
+                          {parts.unit ? <span className={styles.thUnit}>{parts.unit}</span> : null}
+                        </span>
+                      </th>
+                    );
                   })}
                   <th className={styles.compactCol}>
                     <span className={styles.thStack}>
                       <span className={styles.thMain}>{uk ? "Тривалість сну" : "Sleep duration"}</span>
+                      <span className={styles.thUnit}>{uk ? "год:хв" : "h:mm"}</span>
                     </span>
                   </th>
                   <th className={styles.compactCol}>
@@ -318,7 +318,6 @@ export function HistoryClient() {
                       <span className={styles.thUnit}>bpm</span>
                     </span>
                   </th>
-                  <th>{uk ? "оновлено" : "updatedAt"}</th>
                   <th>{uk ? "дії" : "actions"}</th>
                 </tr>
               </thead>
@@ -326,9 +325,9 @@ export function HistoryClient() {
                 {days.map((day) => (
                   <tr key={day.date}>
                     <td data-label="date"><strong>{day.date}</strong></td>
-                    {tableFields.map(({ key, shortLabel }) => {
+                    {tableFields.map(({ key }) => {
                       const value = tableMetricValue(day, key);
-                      const label = uk ? localizedMetricLabel(key, true) : shortLabel;
+                      const label = localizedMetricLabel(key, uk);
                       const display = formatMetric(value, intlLocale);
                       const isWorkout = key === "strengthTrainingMinutes";
                       const clickable = isWorkout && dayHasWorkoutDetail(day);
@@ -356,9 +355,8 @@ export function HistoryClient() {
                     <td data-label={uk ? "Пульс у спокої" : "Resting HR"} className={styles.compactCol}>
                       {day.restingHeartRateBpm == null
                         ? "—"
-                        : `${formatMetric(day.restingHeartRateBpm, intlLocale)} bpm`}
+                        : formatMetric(day.restingHeartRateBpm, intlLocale)}
                     </td>
-                    <td data-label={uk ? "оновлено" : "updatedAt"} className={styles.updatedCell}>{formatDateTime(day.updatedAt, intlLocale)}</td>
                     <td data-label="actions">
                       <div className={styles.actions}>
                         <button type="button" onClick={() => setWorkoutDay(day)}>{uk ? "Деталі" : "Details"}</button>

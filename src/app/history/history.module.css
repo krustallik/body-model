@@ -120,6 +120,11 @@
 .tableWrap tbody tr:last-child td { border-bottom: 0; }
 .tableWrap tbody tr:hover { background: #f9fbfa; }
 .updatedCell { color: var(--muted); }
+.updatedMeta {
+  margin: 0.85rem 1.5rem 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
 
 .compactCol {
   max-width: 5.6rem;

@@ -1,4 +1,4 @@
-import { normalizeDailyMeasurements } from "@/modules/days/measurement-policy";
+import { normalizeDailyMeasurements, prepareDailyMeasurementsForWrite } from "@/modules/days/measurement-policy";
 import { summarizeDayWorkouts } from "@/modules/days/day-workout-presentation";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
@@ -201,7 +201,7 @@ export class DailyMetricRepository {
       const { workouts, ...metrics } = input;
       const record = await this.client.dailyHealthData.create({
         data: {
-          ...normalizeDailyMeasurements(metrics),
+          ...prepareDailyMeasurementsForWrite(metrics),
           ...(workouts !== undefined ? {
             workouts: { create: workoutCreateData(workouts) },
             strengthTrainingMinutes: null,
@@ -224,7 +224,7 @@ export class DailyMetricRepository {
       const record = await this.client.dailyHealthData.update({
         where: { date },
         data: {
-          ...normalizeDailyMeasurements(metrics),
+          ...prepareDailyMeasurementsForWrite(metrics),
           ...(workouts !== undefined ? {
             workouts: { deleteMany: {}, create: workoutCreateData(workouts) },
             strengthTrainingMinutes: null,

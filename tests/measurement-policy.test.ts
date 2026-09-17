@@ -4,6 +4,8 @@ import {
   ABSENT_ZERO_MEASUREMENT_FIELDS,
   ACTIVITY_PRESERVE_ZERO_FIELDS,
   normalizeDailyMeasurements,
+  prepareDailyMeasurementsForWrite,
+  roundDailyMetricFractions,
 } from "@/modules/days/measurement-policy";
 import { HealthDaySchema } from "@/modules/health/health.schema";
 import { CreateDailyMetricSchema, UpdateDailyMetricSchema } from "@/modules/days/day.schema";
@@ -48,6 +50,31 @@ describe("field-specific zero measurement semantics", () => {
     expect(normalizeDailyMeasurements({ caloriesKcal: 0, proteinG: 0 })).toEqual({
       caloriesKcal: null,
       proteinG: null,
+    });
+  });
+
+  it("rounds fractional daily metrics to hundredths on write preparation", () => {
+    expect(roundDailyMetricFractions({
+      weightKg: 89.456,
+      averageWalkingSpeedKmh: 4.7963,
+      walkingDistanceKm: 9.915,
+      steps: 8_432,
+      proteinG: 176.004,
+    })).toEqual({
+      weightKg: 89.46,
+      averageWalkingSpeedKmh: 4.8,
+      walkingDistanceKm: 9.92,
+      steps: 8_432,
+      proteinG: 176,
+    });
+    expect(prepareDailyMeasurementsForWrite({
+      weightKg: 0,
+      walkingDistanceKm: 3.333,
+      steps: 0,
+    })).toEqual({
+      weightKg: null,
+      walkingDistanceKm: 3.33,
+      steps: 0,
     });
   });
 

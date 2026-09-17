@@ -82,6 +82,43 @@ describe("HistoryCharts workout series", () => {
     expect(html).toContain('data-stroke="#d4a017"');
     expect(html).toContain('data-stroke="#b45f9b"');
     expect(html).toContain('data-stroke="#1aabb8"');
+
+    const chartPayloads = [...html.matchAll(/data-chart="([^"]*)"/g)].map((match) => (
+      JSON.parse(match[1].replace(/&quot;/g, '"')) as Array<Record<string, unknown>>
+    ));
+    const weightRows = chartPayloads.find((rows) => rows.some((row) => (
+      Object.prototype.hasOwnProperty.call(row, "weightKg")
+    )));
+    expect(weightRows).toEqual([
+      { date: "2026-09-01", weightKg: 80, bodyFatPercent: 18 },
+      { date: "2026-09-02", weightKg: 79.8, bodyFatPercent: 17.9 },
+    ]);
+  });
+
+  it("plots sleep duration in hours rounded to hundredths", () => {
+    const html = renderToStaticMarkup(
+      <HistoryCharts
+        days={[
+          day("2026-09-01", { sleepMinutes: 467 }),
+          day("2026-09-02", { sleepMinutes: 480 }),
+        ]}
+      />,
+    );
+    expect(html).toContain("Тривалість сну");
+    expect(html).toContain("години");
+    expect(html).toContain('data-line="sleepHours"');
+    expect(html).not.toContain('data-line="sleepMinutes"');
+
+    const chartPayloads = [...html.matchAll(/data-chart="([^"]*)"/g)].map((match) => (
+      JSON.parse(match[1].replace(/&quot;/g, '"')) as Array<Record<string, unknown>>
+    ));
+    const sleepRows = chartPayloads.find((rows) => rows.some((row) => (
+      Object.prototype.hasOwnProperty.call(row, "sleepHours")
+    )));
+    expect(sleepRows).toEqual([
+      { date: "2026-09-01", sleepHours: 7.78 },
+      { date: "2026-09-02", sleepHours: 8 },
+    ]);
   });
   it("connects every series across missing observations without zero-filling", () => {
     const html = renderToStaticMarkup(

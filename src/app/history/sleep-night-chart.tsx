@@ -134,22 +134,22 @@ export function SleepNightChart() {
               <dt>{uk ? "Час у ліжку" : "Time in bed"}</dt>
               <dd>{formatDurationMinutes(sleep.timeInBedMinutes, uk ? "uk" : "en")}</dd>
             </div>
-            <div>
-              <dt>{uk ? "Пробудження" : "Awake"}</dt>
-              <dd>{formatDurationMinutes(sleep.awakeMinutes, uk ? "uk" : "en")}</dd>
-            </div>
-            <div>
-              <dt>{uk ? "Повільний" : "Core"}</dt>
-              <dd>{formatDurationMinutes(sleep.coreMinutes, uk ? "uk" : "en")}</dd>
-            </div>
-            <div>
-              <dt>{uk ? "Глибокий" : "Deep"}</dt>
-              <dd>{formatDurationMinutes(sleep.deepMinutes, uk ? "uk" : "en")}</dd>
-            </div>
-            <div>
-              <dt>{uk ? "Швидкий" : "REM"}</dt>
-              <dd>{formatDurationMinutes(sleep.remMinutes, uk ? "uk" : "en")}</dd>
-            </div>
+            {([
+              { state: "awake" as const, minutes: sleep.awakeMinutes },
+              { state: "core" as const, minutes: sleep.coreMinutes },
+              { state: "deep" as const, minutes: sleep.deepMinutes },
+              { state: "rem" as const, minutes: sleep.remMinutes },
+            ]).map(({ state, minutes }) => {
+              const phase = PHASES.find((item) => item.state === state)!;
+              return (
+                <div key={state}>
+                  <dt>{uk ? phase.labelUk : phase.labelEn}</dt>
+                  <dd style={{ color: phase.color }}>
+                    {formatDurationMinutes(minutes, uk ? "uk" : "en")}
+                  </dd>
+                </div>
+              );
+            })}
           </dl>
 
           <div className={styles.sleepHypnogram} role="img" aria-label={uk ? "Графік фаз сну" : "Sleep stage chart"}>

@@ -1,5 +1,7 @@
 export function formatMetric(value: number | null, locale = "uk-UA"): string {
-  return value === null || value === 0 ? "—" : new Intl.NumberFormat(locale, { maximumFractionDigits: 4 }).format(value);
+  return value === null || value === 0
+    ? "—"
+    : new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(value);
 }
 
 export function formatDateTime(value: string | null, locale = "uk-UA"): string {

@@ -1,4 +1,7 @@
 import type {
+  DiaryCompleteness,
+  EntryMode,
+  ExerciseOrigin,
   MatchMethod,
   MatchStatus,
   ResistanceType,
@@ -44,6 +47,14 @@ export type TrainingProgramSummaryDto = {
   updatedAt: string;
 };
 
+export type ProgramVersionSummaryDto = {
+  id: number;
+  programId: number;
+  versionNumber: number;
+  exerciseCount: number;
+  createdAt: string;
+};
+
 export type StrengthSetDto = {
   id: number;
   sessionExerciseId: number;
@@ -63,6 +74,7 @@ export type StrengthSessionExerciseDto = {
   order: number;
   plannedSets: number;
   resistanceType: ResistanceType;
+  origin: ExerciseOrigin;
   muscleMappingSnapshot: unknown | null;
   sets: StrengthSetDto[];
 };
@@ -80,11 +92,14 @@ export type MatchedWorkoutDto = {
 export type StrengthSessionDto = {
   id: number;
   status: SessionStatus;
+  entryMode: EntryMode;
+  revision: number;
   programId: number;
   programName: string;
   programVersionId: number;
   programVersionNumber: number;
-  webStartedAt: string;
+  /** Null for RETROSPECTIVE — no live web Start Workout occurred. */
+  webStartedAt: string | null;
   webEndedAt: string | null;
   matchStatus: MatchStatus;
   matchMethod: MatchMethod | null;
@@ -100,13 +115,15 @@ export type StrengthSessionDto = {
 export type StrengthSessionSummaryDto = {
   id: number;
   status: SessionStatus;
+  entryMode: EntryMode;
   programId: number;
   programName: string;
-  webStartedAt: string;
+  webStartedAt: string | null;
   webEndedAt: string | null;
   matchStatus: MatchStatus;
   matchMethod: MatchMethod | null;
   matchedWorkoutId: number | null;
+  occurrenceAt: string | null;
 };
 
 export type MatchCandidateDto = {
@@ -118,4 +135,16 @@ export type MatchCandidateDto = {
   activeEnergyKcal: number | null;
   externalId: string | null;
   alreadyMatched: boolean;
+};
+
+export type HistoricalStrengthWorkoutDto = {
+  workoutId: number;
+  type: string;
+  startAt: string;
+  endAt: string;
+  durationMinutes: number | null;
+  activeEnergyKcal: number | null;
+  linkedSessionId: number | null;
+  linkedProgramName: string | null;
+  diaryCompleteness: DiaryCompleteness;
 };

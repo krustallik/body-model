@@ -91,3 +91,41 @@ export class SnapshotImmutableError extends TrainingError {
     this.name = "SnapshotImmutableError";
   }
 }
+
+export class WorkoutNotFoundError extends TrainingError {
+  constructor() {
+    super("workout not found", "workout_not_found");
+    this.name = "WorkoutNotFoundError";
+  }
+}
+
+export class ProgramVersionNotFoundError extends TrainingError {
+  constructor() {
+    super("training program version not found", "program_version_not_found");
+    this.name = "ProgramVersionNotFoundError";
+  }
+}
+
+export class ExerciseHasSetsError extends TrainingError {
+  constructor() {
+    super("session exercise has actual sets; confirm deletion", "exercise_has_sets");
+    this.name = "ExerciseHasSetsError";
+  }
+}
+
+export class ResistanceChangeBlockedError extends TrainingError {
+  constructor() {
+    super(
+      "resistance type change requires confirmation to clear incompatible load fields",
+      "resistance_change_blocked",
+    );
+    this.name = "ResistanceChangeBlockedError";
+  }
+}
+
+export class SessionNotEditableError extends TrainingError {
+  constructor() {
+    super("strength diary session is not editable", "session_not_editable");
+    this.name = "SessionNotEditableError";
+  }
+}

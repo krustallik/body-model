@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { displayWorkoutType, summarizeDayWorkouts } from "@/modules/days/day-workout-presentation";
 
+let nextWorkoutId = 1;
+
 const workout = (
   type: string,
   durationMinutes: number | null,
   activeEnergyKcal: number | null = null,
   startAt = "2026-09-16T08:44:00.000Z",
   endAt = "2026-09-16T09:46:00.000Z",
-) => ({ type, startAt, endAt, durationMinutes, activeEnergyKcal });
+) => ({ id: nextWorkoutId++, type, startAt, endAt, durationMinutes, activeEnergyKcal });
 
 describe("summarizeDayWorkouts", () => {
   it("returns no observation when workouts and legacy strength are absent", () => {
@@ -34,6 +36,7 @@ describe("summarizeDayWorkouts", () => {
   it("surfaces matched diary session linkage when present", () => {
     const summary = summarizeDayWorkouts({
       workouts: [{
+        id: 77,
         type: "Traditional Strength Training",
         startAt: "2026-09-16T08:44:00.000Z",
         endAt: "2026-09-16T09:46:00.000Z",
@@ -43,6 +46,7 @@ describe("summarizeDayWorkouts", () => {
       }],
       legacyStrengthTrainingMinutes: null,
     });
+    expect(summary.workouts[0]?.id).toBe(77);
     expect(summary.workouts[0]?.linkedTrainingSessionId).toBe(42);
     expect(summary.workouts[0]?.linkedTrainingProgramName).toBe("Push A");
   });

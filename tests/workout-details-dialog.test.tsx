@@ -101,8 +101,8 @@ describe("WorkoutDetailsDialog", () => {
     );
     expect(html).toContain("Stair Climbing");
     expect(html).toContain("Traditional Strength Training");
-    expect(html).toContain("Запис тренування");
-    expect(html).toContain("/training/sessions/7");
+    expect(html).toContain("Редагувати запис тренування");
+    expect(html).toContain("/training/sessions/7/edit");
     expect(html.match(/Силове тренування/g) ?? []).toHaveLength(0);
   });
 

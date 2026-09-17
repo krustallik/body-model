@@ -1,50 +1,119 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
-import { DEFAULT_TIME_ZONE, localDateTimeToInstant } from "@/model/time-zone";
+import { DEFAULT_TIME_ZONE, instantToLocalDateTime, localDateTimeToInstant } from "@/model/time-zone";
 import {
   DEFAULT_TRAINING_PROFILE_ID,
+  ENTRY_MODE,
+  EXERCISE_ORIGIN,
   MATCH_METHOD,
   MATCH_STATUS,
   MATCH_THRESHOLDS,
+  RESISTANCE,
   SESSION_STATUS,
+  type ExerciseOrigin,
   type ResistanceType,
 } from "./training.constants";
 import {
   ActiveSessionExistsError,
   CatalogExerciseNotFoundError,
+  ExerciseHasSetsError,
   ProgramArchivedError,
   ProgramNotFoundError,
+  ProgramVersionNotFoundError,
+  ResistanceChangeBlockedError,
   SessionExerciseNotFoundError,
+  SessionNotEditableError,
   SessionNotFoundError,
   SetNotFoundError,
   SetValidationError,
+  TrainingError,
   WorkoutAlreadyMatchedError,
   WorkoutNotEligibleError,
+  WorkoutNotFoundError,
 } from "./training.errors";
 import { matchDiaryToWorkouts } from "./training.matcher";
+import { planProgramExerciseReconcile } from "./training.program-reconcile";
 import {
   TrainingRepository,
   trainingRepository,
   type OrderedProgramExerciseWrite,
 } from "./training.repository";
 import type {
+  BulkCreateFromWorkoutsInput,
+  ChangeSessionProgramInput,
+  CreateFromWorkoutInput,
   CreateProgramInput,
+  CreateSessionExerciseInput,
   CreateSetInput,
+  DeleteSessionExerciseInput,
+  HistoricalWorkoutsQuery,
   ManualMatchInput,
+  ReorderSessionExercisesInput,
   UpdateProgramInput,
+  UpdateSessionExerciseInput,
   UpdateSetInput,
 } from "./training.schema";
 import { validateSetFields } from "./training.set-validation";
+import { noteTrainingSourceChange } from "./training.source-revision";
 import type {
+  HistoricalStrengthWorkoutDto,
   MatchCandidateDto,
+  ProgramVersionSummaryDto,
   StrengthSessionDto,
   StrengthSetDto,
   TrainingProgramDto,
 } from "./training.types";
 
+export type BulkCreateFromWorkoutsResult = {
+  sessions: StrengthSessionDto[];
+  createdSessionIds: number[];
+  existingSessionIds: number[];
+  rejected: Array<{ workoutId: number; error: string }>;
+};
+
 function isUniqueViolation(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
+}
+
+function isStrengthWorkout(type: string): boolean {
+  return canonicalizeWorkoutType(type).classification === "traditional-strength-training";
+}
+
+/** Calendar date of the linked Garmin workout, used only as a rebuild hint. */
+function workoutLocalDate(
+  startAt: Date | null | undefined,
+  timezone = DEFAULT_TIME_ZONE,
+): string | null {
+  if (!(startAt instanceof Date) || !Number.isFinite(startAt.getTime())) return null;
+  return instantToLocalDateTime(startAt, timezone).date;
+}
+
+/** ACTIVE and COMPLETED sessions accept edits; CANCELLED is frozen. */
+function assertSessionEditable(status: string): void {
+  if (status !== SESSION_STATUS.ACTIVE && status !== SESSION_STATUS.COMPLETED) {
+    throw new SessionNotEditableError();
+  }
+}
+
+/**
+ * Load columns that stop being meaningful under a new resistance type.
+ * Never converts weightKg ↔ bandNominalResistanceKg — the values are cleared
+ * so the user re-enters them in the correct semantics.
+ */
+function incompatibleLoadColumns(
+  target: ResistanceType,
+  sets: ReadonlyArray<{
+    weightKg: Prisma.Decimal | null;
+    bandNominalResistanceKg: Prisma.Decimal | null;
+  }>,
+): { clearWeightKg: boolean; clearBandNominalResistanceKg: boolean } {
+  const hasWeight = sets.some((set) => set.weightKg != null);
+  const hasBand = sets.some((set) => set.bandNominalResistanceKg != null);
+  return {
+    clearWeightKg: hasWeight && target !== RESISTANCE.EXTERNAL_WEIGHT,
+    clearBandNominalResistanceKg: hasBand && target !== RESISTANCE.RESISTANCE_BAND,
+  };
 }
 
 function normalizeProgramExercises(
@@ -181,6 +250,312 @@ export class TrainingService {
     }
   }
 
+  listHistoricalStrengthWorkouts(
+    query: Partial<HistoricalWorkoutsQuery> = {},
+  ): Promise<HistoricalStrengthWorkoutDto[]> {
+    return this.repo.listHistoricalStrengthWorkouts({
+      limit: query.limit,
+      cursor: query.cursor,
+      onlyMissingDiary: query.onlyMissingDiary,
+    });
+  }
+
+  async listProgramVersions(
+    programId: number,
+    profileId = DEFAULT_TRAINING_PROFILE_ID,
+  ): Promise<ProgramVersionSummaryDto[]> {
+    const versions = await this.repo.listProgramVersions(programId, profileId);
+    if (!versions) throw new ProgramNotFoundError();
+    return versions;
+  }
+
+  /**
+   * Retrospective backfill: create a COMPLETED diary for an existing Garmin
+   * strength workout. Deliberately different from the live flow — the workout
+   * link is explicit (DIRECT_BACKFILL, no fuzzy matcher), an unrelated ACTIVE
+   * live session may coexist, and archived programs stay selectable.
+   */
+  async createSessionFromWorkout(
+    input: CreateFromWorkoutInput,
+    profileId = DEFAULT_TRAINING_PROFILE_ID,
+  ): Promise<StrengthSessionDto> {
+    const { session } = await this.createOrGetSessionFromWorkout(input, profileId);
+    return session;
+  }
+
+  async bulkCreateSessionsFromWorkouts(
+    input: BulkCreateFromWorkoutsInput,
+    profileId = DEFAULT_TRAINING_PROFILE_ID,
+  ): Promise<BulkCreateFromWorkoutsResult> {
+    const result: BulkCreateFromWorkoutsResult = {
+      sessions: [],
+      createdSessionIds: [],
+      existingSessionIds: [],
+      rejected: [],
+    };
+
+    for (const workoutId of [...new Set(input.workoutIds)]) {
+      try {
+        const { session, created } = await this.createOrGetSessionFromWorkout(
+          {
+            workoutId,
+            programId: input.programId,
+            programVersionId: input.programVersionId,
+          },
+          profileId,
+        );
+        result.sessions.push(session);
+        if (created) result.createdSessionIds.push(session.id);
+        else result.existingSessionIds.push(session.id);
+      } catch (error) {
+        if (error instanceof TrainingError) {
+          result.rejected.push({ workoutId, error: error.code });
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    return result;
+  }
+
+  private async createOrGetSessionFromWorkout(
+    input: CreateFromWorkoutInput,
+    profileId: number,
+  ): Promise<{ session: StrengthSessionDto; created: boolean }> {
+    const workout = await this.repo.findWorkoutById(input.workoutId);
+    if (!workout) throw new WorkoutNotFoundError();
+    if (!isStrengthWorkout(workout.type)) throw new WorkoutNotEligibleError();
+
+    // A workout links to at most one diary session; re-requesting returns it.
+    if (workout.matchedDiarySession) {
+      const existing = await this.repo.getSession(workout.matchedDiarySession.id, profileId);
+      if (!existing) throw new WorkoutAlreadyMatchedError();
+      return { session: existing, created: false };
+    }
+
+    const program = await this.repo.loadProgramVersion({
+      programId: input.programId,
+      programVersionId: input.programVersionId ?? null,
+      profileId,
+    });
+    if (!program) throw new ProgramNotFoundError();
+    if (!program.version || program.version.exercises.length === 0) {
+      throw new ProgramVersionNotFoundError();
+    }
+
+    try {
+      const created = await this.repo.createRetrospectiveSession({
+        profileId,
+        programId: program.id,
+        programVersionId: program.version.id,
+        matchedWorkoutId: workout.id,
+        exercises: program.version.exercises.map((exercise) => ({
+          sourceExerciseCatalogId: exercise.exerciseCatalog.id,
+          snapshotExerciseName: exercise.exerciseCatalog.name,
+          sortOrder: exercise.sortOrder,
+          plannedSets: exercise.plannedSets,
+          resistanceType: exercise.resistanceType as ResistanceType,
+          muscleMappingSnapshot: jsonSnapshot(exercise.exerciseCatalog.muscleMapping),
+        })),
+      });
+      noteTrainingSourceChange({
+        sessionId: created.id,
+        revision: created.revision,
+        workoutLocalDate: workoutLocalDate(workout.startAt),
+        reason: "retrospective_create",
+      });
+      return { session: created, created: true };
+    } catch (error) {
+      if (isUniqueViolation(error)) throw new WorkoutAlreadyMatchedError();
+      throw error;
+    }
+  }
+
+  /**
+   * Reassign a historical session to a different program/version.
+   * Matching exercises keep their recorded sets; unmatched ones survive as
+   * EXTRA. Nothing is ever deleted and the template is not modified.
+   */
+  async changeSessionProgram(
+    sessionId: number,
+    input: ChangeSessionProgramInput,
+    profileId = DEFAULT_TRAINING_PROFILE_ID,
+  ): Promise<StrengthSessionDto> {
+    const session = await this.repo.findSessionForEdit(sessionId, profileId);
+    if (!session) throw new SessionNotFoundError();
+    assertSessionEditable(session.status);
+
+    const program = await this.repo.loadProgramVersion({
+      programId: input.programId,
+      programVersionId: input.programVersionId ?? null,
+      profileId,
+    });
+    if (!program) throw new ProgramNotFoundError();
+    if (!program.version) throw new ProgramVersionNotFoundError();
+
+    if (session.programId === program.id && session.programVersionId === program.version.id) {
+      return this.requireSession(sessionId, profileId);
+    }
+
+    const plan = planProgramExerciseReconcile(
+      session.exercises.map((exercise) => ({
+        id: exercise.id,
+        sourceExerciseCatalogId: exercise.sourceExerciseCatalogId,
+        snapshotExerciseName: exercise.snapshotExerciseName,
+        sortOrder: exercise.sortOrder,
+        plannedSets: exercise.plannedSets,
+        resistanceType: exercise.resistanceType as ResistanceType,
+        origin: exercise.origin as ExerciseOrigin,
+        setCount: exercise._count.sets,
+      })),
+      program.version.exercises.map((exercise) => ({
+        sourceExerciseCatalogId: exercise.exerciseCatalog.id,
+        snapshotExerciseName: exercise.exerciseCatalog.name,
+        sortOrder: exercise.sortOrder,
+        plannedSets: exercise.plannedSets,
+        resistanceType: exercise.resistanceType as ResistanceType,
+        muscleMappingSnapshot: exercise.exerciseCatalog.muscleMapping ?? null,
+      })),
+    );
+
+    const revision = await this.repo.changeSessionProgram({
+      sessionId,
+      fromProgramId: session.programId,
+      fromProgramVersionId: session.programVersionId,
+      toProgramId: program.id,
+      toProgramVersionId: program.version.id,
+      plan,
+    });
+
+    noteTrainingSourceChange({
+      sessionId,
+      revision,
+      workoutLocalDate: workoutLocalDate(session.matchedWorkout?.startAt),
+      reason: "program_change",
+    });
+
+    return this.requireSession(sessionId, profileId);
+  }
+
+  async addSessionExercise(
+    sessionId: number,
+    input: CreateSessionExerciseInput,
+    profileId = DEFAULT_TRAINING_PROFILE_ID,
+  ): Promise<StrengthSessionDto> {
+    const session = await this.repo.findSessionForEdit(sessionId, profileId);
+    if (!session) throw new SessionNotFoundError();
+    assertSessionEditable(session.status);
+
+    const [catalog] = await this.repo.findCatalogByIds([input.catalogId], profileId);
+    if (!catalog) throw new CatalogExerciseNotFoundError();
+
+    const { revision } = await this.repo.addSessionExercise({
+      sessionId,
+      sourceExerciseCatalogId: catalog.id,
+      snapshotExerciseName: catalog.name,
+      plannedSets: input.plannedSets,
+      resistanceType: input.resistanceType,
+      origin: EXERCISE_ORIGIN.EXTRA,
+      muscleMappingSnapshot: catalog.muscleMapping ?? null,
+      order: input.order,
+      orderedExerciseIds: session.exercises.map((exercise) => exercise.id),
+    });
+
+    this.noteExerciseMutation(sessionId, revision, session.matchedWorkout?.startAt);
+    return this.requireSession(sessionId, profileId);
+  }
+
+  async updateSessionExercise(
+    sessionId: number,
+    exerciseId: number,
+    input: UpdateSessionExerciseInput,
+    profileId = DEFAULT_TRAINING_PROFILE_ID,
+  ): Promise<StrengthSessionDto> {
+    const session = await this.repo.findSessionForEdit(sessionId, profileId);
+    if (!session) throw new SessionNotFoundError();
+    assertSessionEditable(session.status);
+
+    const exercise = await this.repo.findSessionExerciseDetail(sessionId, exerciseId, profileId);
+    if (!exercise) throw new SessionExerciseNotFoundError();
+
+    let clear = { clearWeightKg: false, clearBandNominalResistanceKg: false };
+    if (input.resistanceType !== undefined && input.resistanceType !== exercise.resistanceType) {
+      clear = incompatibleLoadColumns(input.resistanceType, exercise.sets);
+      if (
+        (clear.clearWeightKg || clear.clearBandNominalResistanceKg)
+        && !input.confirmResistanceChange
+      ) {
+        throw new ResistanceChangeBlockedError();
+      }
+    }
+
+    const revision = await this.repo.updateSessionExercise({
+      sessionId,
+      exerciseId,
+      plannedSets: input.plannedSets,
+      resistanceType: input.resistanceType,
+      clearWeightKg: clear.clearWeightKg,
+      clearBandNominalResistanceKg: clear.clearBandNominalResistanceKg,
+      order: input.order,
+      orderedExerciseIds: session.exercises.map((item) => item.id),
+    });
+
+    this.noteExerciseMutation(sessionId, revision, session.matchedWorkout?.startAt);
+    return this.requireSession(sessionId, profileId);
+  }
+
+  async deleteSessionExercise(
+    sessionId: number,
+    exerciseId: number,
+    input: DeleteSessionExerciseInput = {},
+    profileId = DEFAULT_TRAINING_PROFILE_ID,
+  ): Promise<StrengthSessionDto> {
+    const session = await this.repo.findSessionForEdit(sessionId, profileId);
+    if (!session) throw new SessionNotFoundError();
+    assertSessionEditable(session.status);
+
+    const exercise = await this.repo.findSessionExerciseDetail(sessionId, exerciseId, profileId);
+    if (!exercise) throw new SessionExerciseNotFoundError();
+    // Recorded sets are user-entered history: never drop them without consent.
+    if (exercise.sets.length > 0 && !input.confirm) throw new ExerciseHasSetsError();
+
+    const revision = await this.repo.deleteSessionExercise({
+      sessionId,
+      exerciseId,
+      orderedExerciseIds: session.exercises.map((item) => item.id),
+    });
+
+    this.noteExerciseMutation(sessionId, revision, session.matchedWorkout?.startAt);
+    return this.requireSession(sessionId, profileId);
+  }
+
+  async reorderSessionExercises(
+    sessionId: number,
+    input: ReorderSessionExercisesInput,
+    profileId = DEFAULT_TRAINING_PROFILE_ID,
+  ): Promise<StrengthSessionDto> {
+    const session = await this.repo.findSessionForEdit(sessionId, profileId);
+    if (!session) throw new SessionNotFoundError();
+    assertSessionEditable(session.status);
+
+    const existing = session.exercises.map((exercise) => exercise.id);
+    const requested = input.exerciseIds;
+    const isCompletePermutation =
+      requested.length === existing.length
+      && new Set(requested).size === requested.length
+      && requested.every((id) => existing.includes(id));
+    if (!isCompletePermutation) throw new SessionExerciseNotFoundError();
+
+    const revision = await this.repo.reorderSessionExercises({
+      sessionId,
+      orderedExerciseIds: requested,
+    });
+
+    this.noteExerciseMutation(sessionId, revision, session.matchedWorkout?.startAt);
+    return this.requireSession(sessionId, profileId);
+  }
+
   async createSet(
     sessionId: number,
     exerciseId: number,
@@ -208,7 +583,7 @@ export class TrainingService {
       ?? ((exercise.sets[0]?.setNumber ?? 0) + 1);
 
     try {
-      return await this.repo.createSet({
+      const created = await this.repo.createSet({
         sessionExerciseId: exercise.id,
         setNumber: nextSetNumber,
         reps: validated.reps,
@@ -216,6 +591,8 @@ export class TrainingService {
         bandNominalResistanceKg: validated.bandNominalResistanceKg,
         completedAt: input.completedAt ? new Date(input.completedAt) : new Date(),
       });
+      await this.noteSetMutation(exercise.session);
+      return created;
     } catch (error) {
       if (isUniqueViolation(error)) {
         throw new SetValidationError("setNumber already exists for this exercise");
@@ -278,6 +655,7 @@ export class TrainingService {
             : new Date(input.completedAt),
     });
     if (!updated) throw new SetNotFoundError();
+    await this.noteSetMutation(existing.sessionExercise.session);
     return updated;
   }
 
@@ -295,6 +673,7 @@ export class TrainingService {
       throw new SessionNotFoundError();
     }
     await this.repo.deleteSet(setId, sessionId, profileId);
+    await this.noteSetMutation(existing.sessionExercise.session);
   }
 
   async finishSession(
@@ -306,9 +685,11 @@ export class TrainingService {
 
     if (session.status === SESSION_STATUS.COMPLETED) {
       // Idempotent finish: re-run matcher only while still PENDING/AUTO-eligible.
+      // Retrospective sessions are already linked and never re-matched.
       if (
         session.matchStatus === MATCH_STATUS.PENDING
         && session.matchMethod !== MATCH_METHOD.MANUAL
+        && session.entryMode !== ENTRY_MODE.RETROSPECTIVE
       ) {
         await this.tryAutoMatchSession(sessionId, profileId);
       }
@@ -361,6 +742,9 @@ export class TrainingService {
   ): Promise<MatchCandidateDto[]> {
     const session = await this.repo.getSession(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
+    // Retrospective sessions have no live interval to search around; their
+    // workout link is chosen explicitly, so there are no fuzzy candidates.
+    if (session.webStartedAt === null) return [];
     const startAt = new Date(session.webStartedAt);
     const endAt = new Date(session.webEndedAt ?? session.webStartedAt);
     const rows = await this.repo.findWorkoutsNearInterval({
@@ -449,6 +833,9 @@ export class TrainingService {
 
     for (const session of sessions) {
       if (session.matchMethod === MATCH_METHOD.MANUAL) continue;
+      if (session.matchMethod === MATCH_METHOD.DIRECT_BACKFILL) continue;
+      if (session.entryMode === ENTRY_MODE.RETROSPECTIVE) continue;
+      if (session.webStartedAt === null) continue;
       await this.tryAutoMatchSession(session.id, profileId);
     }
   }
@@ -460,7 +847,10 @@ export class TrainingService {
     const session = await this.repo.getSession(sessionId, profileId);
     if (!session) return;
     if (session.status !== SESSION_STATUS.COMPLETED) return;
+    if (session.entryMode === ENTRY_MODE.RETROSPECTIVE) return;
     if (session.matchMethod === MATCH_METHOD.MANUAL) return;
+    if (session.matchMethod === MATCH_METHOD.DIRECT_BACKFILL) return;
+    if (session.webStartedAt === null) return;
     if (session.matchStatus === MATCH_STATUS.MATCHED && session.matchedWorkoutId != null) return;
 
     const startAt = new Date(session.webStartedAt);
@@ -531,6 +921,48 @@ export class TrainingService {
         matchedAt: null,
       });
     }
+  }
+
+  private async requireSession(
+    sessionId: number,
+    profileId: number,
+  ): Promise<StrengthSessionDto> {
+    const session = await this.repo.getSession(sessionId, profileId);
+    if (!session) throw new SessionNotFoundError();
+    return session;
+  }
+
+  private noteExerciseMutation(
+    sessionId: number,
+    revision: number,
+    workoutStartAt: Date | null | undefined,
+  ): void {
+    noteTrainingSourceChange({
+      sessionId,
+      revision,
+      workoutLocalDate: workoutLocalDate(workoutStartAt),
+      reason: "exercise_mutation",
+    });
+  }
+
+  /**
+   * Editing sets on an already COMPLETED session rewrites history, so bump the
+   * durable diary revision for future rebuild fingerprints. Live ACTIVE logging
+   * is normal data entry and does not.
+   */
+  private async noteSetMutation(session: {
+    id: number;
+    status: string;
+    matchedWorkout?: { startAt: Date } | null;
+  }): Promise<void> {
+    if (session.status !== SESSION_STATUS.COMPLETED) return;
+    const revision = await this.repo.incrementSessionRevision(session.id);
+    noteTrainingSourceChange({
+      sessionId: session.id,
+      revision,
+      workoutLocalDate: workoutLocalDate(session.matchedWorkout?.startAt),
+      reason: "set_mutation",
+    });
   }
 
   private async assertCatalogExercisesExist(

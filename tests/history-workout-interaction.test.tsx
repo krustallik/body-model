@@ -73,6 +73,7 @@ describe("WorkoutDetailsDialog interaction", () => {
       totalWorkoutMinutes: 90,
       workouts: [
         {
+          id: 11,
           type: "Stair Climbing",
           canonicalType: "Stair Climbing",
           classification: "stair-climbing",
@@ -82,6 +83,7 @@ describe("WorkoutDetailsDialog interaction", () => {
           activeEnergyKcal: 154,
         },
         {
+          id: 12,
           type: "Traditional Strength Training",
           canonicalType: "Traditional Strength Training",
           classification: "traditional-strength-training",
@@ -89,6 +91,7 @@ describe("WorkoutDetailsDialog interaction", () => {
           endAt: "2026-09-16T18:15:00.000Z",
           durationMinutes: 75,
           activeEnergyKcal: null,
+          linkedTrainingSessionId: null,
         },
       ],
     });
@@ -107,6 +110,9 @@ describe("WorkoutDetailsDialog interaction", () => {
     expect(screen.getByText(/Stair/i)).toBeTruthy();
     expect(screen.getByText(/Strength/i)).toBeTruthy();
     expect(screen.getByText(/154/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: /Add training diary entry/i }).getAttribute("href")).toBe(
+      "/training/backfill/from/12",
+    );
     // Optional active kcal renders as em dash, not invented zero.
     const cards = screen.getAllByRole("article");
     expect(within(cards[1]!).getByText("—")).toBeTruthy();
@@ -114,6 +120,36 @@ describe("WorkoutDetailsDialog interaction", () => {
     const closeButtons = screen.getAllByRole("button", { name: "Close" });
     await user.click(closeButtons[closeButtons.length - 1]!);
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("shows edit diary CTA when a strength workout is already linked", () => {
+    HTMLDialogElement.prototype.showModal = function showModal() {
+      this.setAttribute("open", "");
+    };
+    render(
+      <WorkoutDetailsDialog
+        day={day("2026-09-16", {
+          workoutSource: "workouts",
+          totalWorkoutMinutes: 75,
+          workouts: [{
+            id: 44,
+            type: "Traditional Strength Training",
+            canonicalType: "Traditional Strength Training",
+            classification: "traditional-strength-training",
+            startAt: "2026-09-16T17:00:00.000Z",
+            endAt: "2026-09-16T18:15:00.000Z",
+            durationMinutes: 75,
+            activeEnergyKcal: 200,
+            linkedTrainingSessionId: 99,
+            linkedTrainingProgramName: "Push A",
+          }],
+        })}
+        onClose={() => undefined}
+      />,
+    );
+    const link = screen.getByRole("link", { name: /Edit training diary entry/i });
+    expect(link.getAttribute("href")).toBe("/training/sessions/99/edit");
+    expect(screen.getByText(/Push A/)).toBeTruthy();
   });
 
   it("renders legacy strength fallback when workoutSource is legacy-strength", () => {

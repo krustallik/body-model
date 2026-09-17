@@ -254,12 +254,26 @@ model StrengthDiarySession {
   programVersionId  Int
   /** ACTIVE | COMPLETED | CANCELLED */
   status            String    @db.VarChar(20)
-  webStartedAt      DateTime  @db.Timestamptz(3)
+  /**
+   * LIVE = started from web "Start Workout".
+   * RETROSPECTIVE = created from an existing Garmin Workout (historical backfill).
+   */
+  entryMode         String    @default("LIVE") @db.VarChar(20)
+  /**
+   * Live web session timestamps. Null for RETROSPECTIVE — occurrence time comes
+   * from matchedWorkout, not a faked Start Workout press.
+   */
+  webStartedAt      DateTime? @db.Timestamptz(3)
   webEndedAt        DateTime? @db.Timestamptz(3)
+  /**
+   * Monotonic diary source revision. Increments on meaningful historical edits
+   * (program change, exercise/set mutations) for future rebuild fingerprints.
+   */
+  revision          Int       @default(1)
   matchedWorkoutId  Int?      @unique
   /** PENDING | MATCHED | AMBIGUOUS | UNMATCHED */
   matchStatus       String    @default("PENDING") @db.VarChar(20)
-  /** AUTO | MANUAL — null while still PENDING without a decision */
+  /** AUTO | MANUAL | DIRECT_BACKFILL — null while still PENDING without a decision */
   matchMethod       String?   @db.VarChar(20)
   matchedAt         DateTime? @db.Timestamptz(3)
   createdAt         DateTime  @default(now()) @db.Timestamptz(3)
@@ -268,10 +282,29 @@ model StrengthDiarySession {
   programVersion    TrainingProgramVersion @relation(fields: [programVersionId], references: [id], onDelete: Restrict)
   matchedWorkout    Workout?  @relation(fields: [matchedWorkoutId], references: [id], onDelete: SetNull)
   exercises         StrengthSessionExercise[]
+  programChanges    StrengthDiaryProgramChange[]
 
   @@index([profileId, status])
   @@index([profileId, webStartedAt])
+  @@index([profileId, entryMode])
   @@index([matchStatus])
+}
+
+/**
+ * Explicit historical program/version reassignment audit trail.
+ * Template edits never write here — only user-initiated session corrections.
+ */
+model StrengthDiaryProgramChange {
+  id                   Int       @id @default(autoincrement())
+  sessionId            Int
+  fromProgramId        Int
+  fromProgramVersionId Int
+  toProgramId          Int
+  toProgramVersionId   Int
+  createdAt            DateTime  @default(now()) @db.Timestamptz(3)
+  session              StrengthDiarySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
 }
 
 model StrengthSessionExercise {
@@ -283,6 +316,11 @@ model StrengthSessionExercise {
   plannedSets            Int
   /** EXTERNAL_WEIGHT | RESISTANCE_BAND | BODYWEIGHT — copied from program at start */
   resistanceType         String   @db.VarChar(32)
+  /**
+   * PLANNED = from assigned program snapshot.
+   * EXTRA = session-level addition or orphan retained after program change.
+   */
+  origin                 String   @default("PLANNED") @db.VarChar(20)
   /** Snapshot of future muscle-mapping reference; coefficients deferred. */
   muscleMappingSnapshot  Json?
   createdAt              DateTime @default(now()) @db.Timestamptz(3)

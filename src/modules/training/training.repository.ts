@@ -1,21 +1,33 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
+import { TRADITIONAL_STRENGTH_TRAINING_TYPE } from "@/modules/health/expand-training-workouts";
 import {
   DEFAULT_TRAINING_PROFILE_ID,
+  DIARY_COMPLETENESS,
+  ENTRY_MODE,
+  EXERCISE_ORIGIN,
+  MATCH_METHOD,
   MATCH_STATUS,
   SESSION_STATUS,
   TRAINING_LIMITS,
+  type DiaryCompleteness,
+  type EntryMode,
+  type ExerciseOrigin,
   type MatchMethod,
   type MatchStatus,
   type ResistanceType,
   type SessionStatus,
 } from "./training.constants";
+import type { ProgramReconcilePlan } from "./training.program-reconcile";
 import { ordinaryExternalWeightTonnageKg } from "./training.tonnage";
 import type {
   ExerciseCatalogDto,
+  HistoricalStrengthWorkoutDto,
   MatchCandidateDto,
   MatchedWorkoutDto,
   ProgramExerciseDto,
+  ProgramVersionSummaryDto,
   StrengthSessionDto,
   StrengthSessionExerciseDto,
   StrengthSessionSummaryDto,
@@ -60,6 +72,7 @@ const sessionExerciseSelect = {
   sortOrder: true,
   plannedSets: true,
   resistanceType: true,
+  origin: true,
   muscleMappingSnapshot: true,
   sets: { select: setSelect, orderBy: { setNumber: "asc" as const } },
 } satisfies Prisma.StrengthSessionExerciseSelect;
@@ -77,6 +90,8 @@ const matchedWorkoutSelect = {
 const sessionDetailSelect = {
   id: true,
   status: true,
+  entryMode: true,
+  revision: true,
   programId: true,
   programVersionId: true,
   webStartedAt: true,
@@ -93,6 +108,21 @@ const sessionDetailSelect = {
   exercises: { select: sessionExerciseSelect, orderBy: { sortOrder: "asc" as const } },
 } satisfies Prisma.StrengthDiarySessionSelect;
 
+const sessionSummarySelect = {
+  id: true,
+  status: true,
+  entryMode: true,
+  programId: true,
+  webStartedAt: true,
+  webEndedAt: true,
+  matchStatus: true,
+  matchMethod: true,
+  matchedWorkoutId: true,
+  createdAt: true,
+  program: { select: { name: true } },
+  matchedWorkout: { select: { startAt: true } },
+} satisfies Prisma.StrengthDiarySessionSelect;
+
 type CatalogRecord = Prisma.ExerciseCatalogGetPayload<{ select: typeof catalogSelect }>;
 type ProgramExerciseRecord = Prisma.ProgramExerciseGetPayload<{ select: typeof programExerciseSelect }>;
 type SetRecord = Prisma.StrengthSetGetPayload<{ select: typeof setSelect }>;
@@ -102,6 +132,15 @@ type SessionDetailRecord = Prisma.StrengthDiarySessionGetPayload<{ select: typeo
 
 function decimalToNumber(value: Prisma.Decimal | null): number | null {
   return value === null ? null : value.toNumber();
+}
+
+/** Narrow VarChar enum columns to their union type, defaulting to the legacy value. */
+function asEntryMode(value: string): EntryMode {
+  return value === ENTRY_MODE.RETROSPECTIVE ? ENTRY_MODE.RETROSPECTIVE : ENTRY_MODE.LIVE;
+}
+
+function asExerciseOrigin(value: string): ExerciseOrigin {
+  return value === EXERCISE_ORIGIN.EXTRA ? EXERCISE_ORIGIN.EXTRA : EXERCISE_ORIGIN.PLANNED;
 }
 
 function toCatalogDto(record: CatalogRecord): ExerciseCatalogDto {
@@ -147,6 +186,7 @@ function toSessionExerciseDto(record: SessionExerciseRecord): StrengthSessionExe
     order: record.sortOrder,
     plannedSets: record.plannedSets,
     resistanceType: record.resistanceType as ResistanceType,
+    origin: asExerciseOrigin(record.origin),
     muscleMappingSnapshot: record.muscleMappingSnapshot ?? null,
     sets: record.sets.map(toSetDto),
   };
@@ -178,11 +218,13 @@ export function toSessionDto(record: SessionDetailRecord): StrengthSessionDto {
   return {
     id: record.id,
     status: record.status as SessionStatus,
+    entryMode: asEntryMode(record.entryMode),
+    revision: record.revision,
     programId: record.programId,
     programName: record.program.name,
     programVersionId: record.programVersionId,
     programVersionNumber: record.programVersion.versionNumber,
-    webStartedAt: record.webStartedAt.toISOString(),
+    webStartedAt: record.webStartedAt?.toISOString() ?? null,
     webEndedAt: record.webEndedAt?.toISOString() ?? null,
     matchStatus: record.matchStatus as MatchStatus,
     matchMethod: (record.matchMethod as MatchMethod | null) ?? null,
@@ -196,28 +238,88 @@ export function toSessionDto(record: SessionDetailRecord): StrengthSessionDto {
   };
 }
 
-function toSessionSummaryDto(record: {
-  id: number;
-  status: string;
-  programId: number;
-  webStartedAt: Date;
-  webEndedAt: Date | null;
-  matchStatus: string;
-  matchMethod: string | null;
-  matchedWorkoutId: number | null;
-  program: { name: string };
-}): StrengthSessionSummaryDto {
+type SessionSummaryRecord = Prisma.StrengthDiarySessionGetPayload<{
+  select: typeof sessionSummarySelect;
+}>;
+
+/**
+ * Occurrence time is the physiological event time: the linked Garmin workout
+ * start when matched, otherwise the live web start. Null for a retrospective
+ * session whose workout link was cleared.
+ */
+function occurrenceInstant(record: {
+  webStartedAt: Date | null;
+  matchedWorkout: { startAt: Date } | null;
+}): Date | null {
+  return record.matchedWorkout?.startAt ?? record.webStartedAt ?? null;
+}
+
+function toSessionSummaryDto(record: SessionSummaryRecord): StrengthSessionSummaryDto {
   return {
     id: record.id,
     status: record.status as SessionStatus,
+    entryMode: asEntryMode(record.entryMode),
     programId: record.programId,
     programName: record.program.name,
-    webStartedAt: record.webStartedAt.toISOString(),
+    webStartedAt: record.webStartedAt?.toISOString() ?? null,
     webEndedAt: record.webEndedAt?.toISOString() ?? null,
     matchStatus: record.matchStatus as MatchStatus,
     matchMethod: (record.matchMethod as MatchMethod | null) ?? null,
     matchedWorkoutId: record.matchedWorkoutId,
+    occurrenceAt: occurrenceInstant(record)?.toISOString() ?? null,
   };
+}
+
+/**
+ * Backfill progress for a historical workout (UI only — never physiology).
+ * PARTIAL means the diary has sets but at least one snapshot exercise is empty.
+ */
+export function diaryCompletenessOf(
+  session: { exercises: Array<{ setCount: number }> } | null,
+): DiaryCompleteness {
+  if (!session) return DIARY_COMPLETENESS.NO_DIARY;
+  const withSets = session.exercises.filter((exercise) => exercise.setCount > 0);
+  if (withSets.length === 0) return DIARY_COMPLETENESS.DIARY_EMPTY;
+  if (withSets.length === session.exercises.length) return DIARY_COMPLETENESS.DIARY_WITH_SETS;
+  return DIARY_COMPLETENESS.DIARY_PARTIAL;
+}
+
+function jsonInput(value: unknown): Prisma.InputJsonValue | typeof Prisma.JsonNull {
+  if (value === null || value === undefined) return Prisma.JsonNull;
+  return value as Prisma.InputJsonValue;
+}
+
+/**
+ * Park rows on negative sortOrder before writing final positions so the
+ * (sessionId, sortOrder) unique index cannot collide mid-reorder.
+ */
+async function parkExerciseOrder(
+  tx: Prisma.TransactionClient,
+  orderedExerciseIds: readonly number[],
+): Promise<void> {
+  for (const [index, id] of orderedExerciseIds.entries()) {
+    await tx.strengthSessionExercise.update({
+      where: { id },
+      data: { sortOrder: -(index + 1) },
+    });
+  }
+}
+
+async function writeExerciseOrder(
+  tx: Prisma.TransactionClient,
+  orderedExerciseIds: readonly number[],
+  options: { skipExerciseId?: number } = {},
+): Promise<void> {
+  for (const [index, id] of orderedExerciseIds.entries()) {
+    if (id === options.skipExerciseId) continue;
+    await tx.strengthSessionExercise.update({ where: { id }, data: { sortOrder: index } });
+  }
+}
+
+function moveWithin(orderedIds: readonly number[], exerciseId: number, position: number): number[] {
+  const without = orderedIds.filter((id) => id !== exerciseId);
+  const target = Math.min(Math.max(position, 0), without.length);
+  return [...without.slice(0, target), exerciseId, ...without.slice(target)];
 }
 
 export type OrderedProgramExerciseWrite = {
@@ -489,13 +591,23 @@ export class TrainingRepository {
     profileId?: number;
     programId: number;
     programVersionId: number;
-    webStartedAt?: Date;
+    status?: SessionStatus;
+    entryMode?: EntryMode;
+    /** Explicit null keeps a RETROSPECTIVE session free of faked live times. */
+    webStartedAt?: Date | null;
+    webEndedAt?: Date | null;
+    matchStatus?: MatchStatus;
+    matchMethod?: MatchMethod | null;
+    matchedWorkoutId?: number | null;
+    matchedAt?: Date | null;
+    revision?: number;
     exercises: Array<{
       sourceExerciseCatalogId: number | null;
       snapshotExerciseName: string;
       sortOrder: number;
       plannedSets: number;
       resistanceType: ResistanceType;
+      origin?: ExerciseOrigin;
       muscleMappingSnapshot: Prisma.InputJsonValue | typeof Prisma.JsonNull;
     }>;
   }): Promise<StrengthSessionDto> {
@@ -505,9 +617,15 @@ export class TrainingRepository {
         profileId,
         programId: input.programId,
         programVersionId: input.programVersionId,
-        status: SESSION_STATUS.ACTIVE,
-        webStartedAt: input.webStartedAt ?? new Date(),
-        matchStatus: MATCH_STATUS.PENDING,
+        status: input.status ?? SESSION_STATUS.ACTIVE,
+        entryMode: input.entryMode ?? ENTRY_MODE.LIVE,
+        webStartedAt: input.webStartedAt === undefined ? new Date() : input.webStartedAt,
+        webEndedAt: input.webEndedAt ?? null,
+        revision: input.revision ?? 1,
+        matchStatus: input.matchStatus ?? MATCH_STATUS.PENDING,
+        matchMethod: input.matchMethod ?? null,
+        matchedWorkoutId: input.matchedWorkoutId ?? null,
+        matchedAt: input.matchedAt ?? null,
         exercises: {
           create: input.exercises.map((exercise) => ({
             sourceExerciseCatalogId: exercise.sourceExerciseCatalogId,
@@ -515,6 +633,7 @@ export class TrainingRepository {
             sortOrder: exercise.sortOrder,
             plannedSets: exercise.plannedSets,
             resistanceType: exercise.resistanceType,
+            origin: exercise.origin ?? EXERCISE_ORIGIN.PLANNED,
             muscleMappingSnapshot: exercise.muscleMappingSnapshot,
           })),
         },
@@ -524,6 +643,53 @@ export class TrainingRepository {
     const dto = await this.getSession(created.id, profileId);
     if (!dto) throw new Error("created session missing after write");
     return dto;
+  }
+
+  /**
+   * Historical backfill: a COMPLETED diary directly linked 1:1 to an existing
+   * Garmin workout. No fuzzy matcher runs — the user picked the workout.
+   */
+  async createRetrospectiveSession(input: {
+    profileId?: number;
+    programId: number;
+    programVersionId: number;
+    matchedWorkoutId: number;
+    matchedAt?: Date;
+    exercises: Array<{
+      sourceExerciseCatalogId: number | null;
+      snapshotExerciseName: string;
+      sortOrder: number;
+      plannedSets: number;
+      resistanceType: ResistanceType;
+      muscleMappingSnapshot: Prisma.InputJsonValue | typeof Prisma.JsonNull;
+    }>;
+  }): Promise<StrengthSessionDto> {
+    return this.createSessionSnapshot({
+      profileId: input.profileId,
+      programId: input.programId,
+      programVersionId: input.programVersionId,
+      status: SESSION_STATUS.COMPLETED,
+      entryMode: ENTRY_MODE.RETROSPECTIVE,
+      webStartedAt: null,
+      webEndedAt: null,
+      matchStatus: MATCH_STATUS.MATCHED,
+      matchMethod: MATCH_METHOD.DIRECT_BACKFILL,
+      matchedWorkoutId: input.matchedWorkoutId,
+      matchedAt: input.matchedAt ?? new Date(),
+      exercises: input.exercises.map((exercise) => ({
+        ...exercise,
+        origin: EXERCISE_ORIGIN.PLANNED,
+      })),
+    });
+  }
+
+  async incrementSessionRevision(sessionId: number): Promise<number> {
+    const row = await this.db.strengthDiarySession.update({
+      where: { id: sessionId },
+      data: { revision: { increment: 1 } },
+      select: { revision: true },
+    });
+    return row.revision;
   }
 
   async findSessionExercise(sessionId: number, exerciseId: number, profileId = DEFAULT_TRAINING_PROFILE_ID) {
@@ -537,9 +703,269 @@ export class TrainingRepository {
         id: true,
         sessionId: true,
         resistanceType: true,
-        session: { select: { id: true, status: true } },
+        session: {
+          select: {
+            id: true,
+            status: true,
+            entryMode: true,
+            matchedWorkout: { select: { startAt: true } },
+          },
+        },
         sets: { select: { setNumber: true }, orderBy: { setNumber: "desc" }, take: 1 },
       },
+    });
+  }
+
+  /**
+   * Full editable view of one session exercise: snapshot fields plus every set's
+   * load columns, so resistance-type changes can detect incompatible loads.
+   */
+  async findSessionExerciseDetail(
+    sessionId: number,
+    exerciseId: number,
+    profileId = DEFAULT_TRAINING_PROFILE_ID,
+  ) {
+    return this.db.strengthSessionExercise.findFirst({
+      where: { id: exerciseId, sessionId, session: { profileId } },
+      select: {
+        id: true,
+        sessionId: true,
+        sortOrder: true,
+        plannedSets: true,
+        resistanceType: true,
+        origin: true,
+        sets: { select: { id: true, weightKg: true, bandNominalResistanceKg: true } },
+      },
+    });
+  }
+
+  /** Session shape needed to plan program reconciliation and exercise edits. */
+  async findSessionForEdit(sessionId: number, profileId = DEFAULT_TRAINING_PROFILE_ID) {
+    return this.db.strengthDiarySession.findFirst({
+      where: { id: sessionId, profileId },
+      select: {
+        id: true,
+        status: true,
+        entryMode: true,
+        revision: true,
+        programId: true,
+        programVersionId: true,
+        webStartedAt: true,
+        matchedWorkout: { select: { id: true, startAt: true } },
+        exercises: {
+          select: {
+            id: true,
+            sourceExerciseCatalogId: true,
+            snapshotExerciseName: true,
+            sortOrder: true,
+            plannedSets: true,
+            resistanceType: true,
+            origin: true,
+            _count: { select: { sets: true } },
+          },
+          orderBy: { sortOrder: "asc" },
+        },
+      },
+    });
+  }
+
+  /**
+   * Reassign a historical session to another program version.
+   * Keeps every existing exercise (orphans become EXTRA), never deletes sets,
+   * writes an audit row, and bumps the diary source revision.
+   */
+  async changeSessionProgram(input: {
+    sessionId: number;
+    fromProgramId: number;
+    fromProgramVersionId: number;
+    toProgramId: number;
+    toProgramVersionId: number;
+    plan: ProgramReconcilePlan;
+  }): Promise<number> {
+    return this.db.$transaction(async (tx) => {
+      await parkExerciseOrder(tx, input.plan.keep.map((keep) => keep.exerciseId));
+
+      for (const added of input.plan.add) {
+        await tx.strengthSessionExercise.create({
+          data: {
+            sessionId: input.sessionId,
+            sourceExerciseCatalogId: added.sourceExerciseCatalogId,
+            snapshotExerciseName: added.snapshotExerciseName,
+            sortOrder: added.sortOrder,
+            plannedSets: added.plannedSets,
+            resistanceType: added.resistanceType,
+            origin: added.origin,
+            muscleMappingSnapshot: jsonInput(added.muscleMappingSnapshot),
+          },
+        });
+      }
+
+      for (const keep of input.plan.keep) {
+        await tx.strengthSessionExercise.update({
+          where: { id: keep.exerciseId },
+          data: {
+            sortOrder: keep.sortOrder,
+            plannedSets: keep.plannedSets,
+            origin: keep.origin,
+          },
+        });
+      }
+
+      await tx.strengthDiaryProgramChange.create({
+        data: {
+          sessionId: input.sessionId,
+          fromProgramId: input.fromProgramId,
+          fromProgramVersionId: input.fromProgramVersionId,
+          toProgramId: input.toProgramId,
+          toProgramVersionId: input.toProgramVersionId,
+        },
+      });
+
+      const session = await tx.strengthDiarySession.update({
+        where: { id: input.sessionId },
+        data: {
+          programId: input.toProgramId,
+          programVersionId: input.toProgramVersionId,
+          revision: { increment: 1 },
+        },
+        select: { revision: true },
+      });
+      return session.revision;
+    });
+  }
+
+  /** Session-only exercise addition; the program template is never touched. */
+  async addSessionExercise(input: {
+    sessionId: number;
+    sourceExerciseCatalogId: number;
+    snapshotExerciseName: string;
+    plannedSets: number;
+    resistanceType: ResistanceType;
+    origin?: ExerciseOrigin;
+    muscleMappingSnapshot: unknown;
+    /** Insert position; appended when omitted or past the end. */
+    order?: number;
+    orderedExerciseIds: readonly number[];
+  }): Promise<{ exerciseId: number; revision: number }> {
+    return this.db.$transaction(async (tx) => {
+      const existing = [...input.orderedExerciseIds];
+      const position = input.order === undefined
+        ? existing.length
+        : Math.min(Math.max(input.order, 0), existing.length);
+      const appended = position === existing.length;
+
+      if (!appended) await parkExerciseOrder(tx, existing);
+
+      const created = await tx.strengthSessionExercise.create({
+        data: {
+          sessionId: input.sessionId,
+          sourceExerciseCatalogId: input.sourceExerciseCatalogId,
+          snapshotExerciseName: input.snapshotExerciseName,
+          sortOrder: position,
+          plannedSets: input.plannedSets,
+          resistanceType: input.resistanceType,
+          origin: input.origin ?? EXERCISE_ORIGIN.EXTRA,
+          muscleMappingSnapshot: jsonInput(input.muscleMappingSnapshot),
+        },
+        select: { id: true },
+      });
+
+      if (!appended) {
+        await writeExerciseOrder(
+          tx,
+          [...existing.slice(0, position), created.id, ...existing.slice(position)],
+          { skipExerciseId: created.id },
+        );
+      }
+
+      const session = await tx.strengthDiarySession.update({
+        where: { id: input.sessionId },
+        data: { revision: { increment: 1 } },
+        select: { revision: true },
+      });
+      return { exerciseId: created.id, revision: session.revision };
+    });
+  }
+
+  async updateSessionExercise(input: {
+    sessionId: number;
+    exerciseId: number;
+    plannedSets?: number;
+    resistanceType?: ResistanceType;
+    /** Null out load columns made meaningless by a confirmed resistance change. */
+    clearWeightKg?: boolean;
+    clearBandNominalResistanceKg?: boolean;
+    order?: number;
+    orderedExerciseIds: readonly number[];
+  }): Promise<number> {
+    return this.db.$transaction(async (tx) => {
+      if (input.plannedSets !== undefined || input.resistanceType !== undefined) {
+        await tx.strengthSessionExercise.update({
+          where: { id: input.exerciseId },
+          data: {
+            ...(input.plannedSets !== undefined ? { plannedSets: input.plannedSets } : {}),
+            ...(input.resistanceType !== undefined ? { resistanceType: input.resistanceType } : {}),
+          },
+        });
+      }
+
+      if (input.clearWeightKg || input.clearBandNominalResistanceKg) {
+        await tx.strengthSet.updateMany({
+          where: { sessionExerciseId: input.exerciseId },
+          data: {
+            ...(input.clearWeightKg ? { weightKg: null } : {}),
+            ...(input.clearBandNominalResistanceKg ? { bandNominalResistanceKg: null } : {}),
+          },
+        });
+      }
+
+      if (input.order !== undefined) {
+        const reordered = moveWithin(input.orderedExerciseIds, input.exerciseId, input.order);
+        await parkExerciseOrder(tx, reordered);
+        await writeExerciseOrder(tx, reordered);
+      }
+
+      const session = await tx.strengthDiarySession.update({
+        where: { id: input.sessionId },
+        data: { revision: { increment: 1 } },
+        select: { revision: true },
+      });
+      return session.revision;
+    });
+  }
+
+  async deleteSessionExercise(input: {
+    sessionId: number;
+    exerciseId: number;
+    orderedExerciseIds: readonly number[];
+  }): Promise<number> {
+    return this.db.$transaction(async (tx) => {
+      await tx.strengthSessionExercise.delete({ where: { id: input.exerciseId } });
+      const remaining = input.orderedExerciseIds.filter((id) => id !== input.exerciseId);
+      await parkExerciseOrder(tx, remaining);
+      await writeExerciseOrder(tx, remaining);
+      const session = await tx.strengthDiarySession.update({
+        where: { id: input.sessionId },
+        data: { revision: { increment: 1 } },
+        select: { revision: true },
+      });
+      return session.revision;
+    });
+  }
+
+  async reorderSessionExercises(input: {
+    sessionId: number;
+    orderedExerciseIds: readonly number[];
+  }): Promise<number> {
+    return this.db.$transaction(async (tx) => {
+      await parkExerciseOrder(tx, input.orderedExerciseIds);
+      await writeExerciseOrder(tx, input.orderedExerciseIds);
+      const session = await tx.strengthDiarySession.update({
+        where: { id: input.sessionId },
+        data: { revision: { increment: 1 } },
+        select: { revision: true },
+      });
+      return session.revision;
     });
   }
 
@@ -632,7 +1058,14 @@ export class TrainingRepository {
           select: {
             id: true,
             resistanceType: true,
-            session: { select: { id: true, status: true } },
+            session: {
+              select: {
+                id: true,
+                status: true,
+                entryMode: true,
+                matchedWorkout: { select: { startAt: true } },
+              },
+            },
           },
         },
       },
@@ -687,26 +1120,28 @@ export class TrainingRepository {
   } = {}): Promise<StrengthSessionSummaryDto[]> {
     const profileId = options.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
     const limit = options.limit ?? TRAINING_LIMITS.recentSessionsDefaultLimit;
+    // RETROSPECTIVE rows have no webStartedAt, so page by createdAt and then
+    // present by occurrence (linked workout start) which is the real event time.
     const rows = await this.db.strengthDiarySession.findMany({
       where: {
         profileId,
         status: { in: [SESSION_STATUS.COMPLETED, SESSION_STATUS.CANCELLED] },
       },
-      select: {
-        id: true,
-        status: true,
-        programId: true,
-        webStartedAt: true,
-        webEndedAt: true,
-        matchStatus: true,
-        matchMethod: true,
-        matchedWorkoutId: true,
-        program: { select: { name: true } },
-      },
-      orderBy: [{ webStartedAt: "desc" }, { id: "desc" }],
+      select: sessionSummarySelect,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: limit,
     });
-    return rows.map(toSessionSummaryDto);
+    return rows
+      .slice()
+      .sort((a, b) => {
+        const left = occurrenceInstant(a)?.getTime() ?? null;
+        const right = occurrenceInstant(b)?.getTime() ?? null;
+        if (left === right) return b.id - a.id;
+        if (left === null) return 1;
+        if (right === null) return -1;
+        return right - left;
+      })
+      .map(toSessionSummaryDto);
   }
 
   async listMatchAttention(options: {
@@ -729,17 +1164,7 @@ export class TrainingRepository {
             : []),
         ],
       },
-      select: {
-        id: true,
-        status: true,
-        programId: true,
-        webStartedAt: true,
-        webEndedAt: true,
-        matchStatus: true,
-        matchMethod: true,
-        matchedWorkoutId: true,
-        program: { select: { name: true } },
-      },
+      select: sessionSummarySelect,
       orderBy: [{ webEndedAt: "desc" }, { id: "desc" }],
     });
     return rows.map(toSessionSummaryDto);
@@ -751,16 +1176,19 @@ export class TrainingRepository {
     windowEnd: Date;
   }) {
     const profileId = window.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+    // Retrospective backfills are already linked 1:1 by the user; the fuzzy
+    // matcher must never revisit them (and they have no live web interval).
     return this.db.strengthDiarySession.findMany({
       where: {
         profileId,
         status: SESSION_STATUS.COMPLETED,
         matchStatus: MATCH_STATUS.PENDING,
+        entryMode: { not: ENTRY_MODE.RETROSPECTIVE },
+        webStartedAt: { not: null, lt: window.windowEnd },
         OR: [
           { matchMethod: null },
-          { matchMethod: { not: "MANUAL" } },
+          { matchMethod: { notIn: [MATCH_METHOD.MANUAL, MATCH_METHOD.DIRECT_BACKFILL] } },
         ],
-        webStartedAt: { lt: window.windowEnd },
         AND: [
           {
             OR: [
@@ -772,6 +1200,7 @@ export class TrainingRepository {
       },
       select: {
         id: true,
+        entryMode: true,
         webStartedAt: true,
         webEndedAt: true,
         matchMethod: true,
@@ -848,9 +1277,155 @@ export class TrainingRepository {
         type: true,
         startAt: true,
         endAt: true,
-        matchedDiarySession: { select: { id: true } },
+        durationMinutes: true,
+        activeEnergyKcal: true,
+        externalId: true,
+        matchedDiarySession: {
+          select: {
+            id: true,
+            status: true,
+            entryMode: true,
+            program: { select: { id: true, name: true } },
+            exercises: { select: { id: true, _count: { select: { sets: true } } } },
+          },
+        },
       },
     });
+  }
+
+  /**
+   * Historical Garmin strength workouts for retrospective backfill.
+   * Only canonical Traditional Strength Training is eligible — stepper and
+   * other activity types are never diary candidates.
+   */
+  async listHistoricalStrengthWorkouts(options: {
+    limit?: number;
+    cursor?: number;
+    onlyMissingDiary?: boolean;
+  } = {}): Promise<HistoricalStrengthWorkoutDto[]> {
+    const limit = options.limit ?? TRAINING_LIMITS.recentSessionsDefaultLimit;
+    const rows = await this.db.workout.findMany({
+      where: {
+        type: { equals: TRADITIONAL_STRENGTH_TRAINING_TYPE, mode: "insensitive" },
+        ...(options.onlyMissingDiary ? { matchedDiarySession: null } : {}),
+      },
+      select: {
+        id: true,
+        type: true,
+        startAt: true,
+        endAt: true,
+        durationMinutes: true,
+        activeEnergyKcal: true,
+        matchedDiarySession: {
+          select: {
+            id: true,
+            program: { select: { name: true } },
+            exercises: { select: { _count: { select: { sets: true } } } },
+          },
+        },
+      },
+      orderBy: [{ startAt: "desc" }, { id: "desc" }],
+      take: limit,
+      ...(options.cursor !== undefined ? { cursor: { id: options.cursor }, skip: 1 } : {}),
+    });
+
+    return rows
+      .filter((row) =>
+        canonicalizeWorkoutType(row.type).classification === "traditional-strength-training"
+      )
+      .map((row) => {
+        const linked = row.matchedDiarySession;
+        return {
+          workoutId: row.id,
+          type: row.type,
+          startAt: row.startAt.toISOString(),
+          endAt: row.endAt.toISOString(),
+          durationMinutes: row.durationMinutes,
+          activeEnergyKcal: row.activeEnergyKcal,
+          linkedSessionId: linked?.id ?? null,
+          linkedProgramName: linked?.program.name ?? null,
+          diaryCompleteness: diaryCompletenessOf(
+            linked
+              ? {
+                exercises: linked.exercises.map((exercise) => ({
+                  setCount: exercise._count.sets,
+                })),
+              }
+              : null,
+          ),
+        };
+      });
+  }
+
+  /**
+   * Load a specific (or current) program version for snapshotting.
+   * Archived programs are allowed: historical sessions legitimately reference
+   * programs the user has since retired.
+   */
+  async loadProgramVersion(input: {
+    programId: number;
+    programVersionId?: number | null;
+    profileId?: number;
+  }) {
+    const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+    const program = await this.db.trainingProgram.findFirst({
+      where: { id: input.programId, profileId },
+      select: { id: true, name: true, archivedAt: true, currentVersionId: true },
+    });
+    if (!program) return null;
+
+    const versionId = input.programVersionId ?? program.currentVersionId;
+    if (versionId == null) return { ...program, version: null };
+
+    const version = await this.db.trainingProgramVersion.findFirst({
+      where: { id: versionId, programId: program.id },
+      select: {
+        id: true,
+        versionNumber: true,
+        exercises: {
+          select: {
+            exerciseCatalogId: true,
+            sortOrder: true,
+            plannedSets: true,
+            resistanceType: true,
+            exerciseCatalog: { select: { id: true, name: true, muscleMapping: true } },
+          },
+          orderBy: { sortOrder: "asc" },
+        },
+      },
+    });
+    return { ...program, version };
+  }
+
+  /** Null when the program does not exist for this profile. */
+  async listProgramVersions(
+    programId: number,
+    profileId = DEFAULT_TRAINING_PROFILE_ID,
+  ): Promise<ProgramVersionSummaryDto[] | null> {
+    const program = await this.db.trainingProgram.findFirst({
+      where: { id: programId, profileId },
+      select: { id: true },
+    });
+    if (!program) return null;
+
+    const rows = await this.db.trainingProgramVersion.findMany({
+      where: { programId },
+      select: {
+        id: true,
+        programId: true,
+        versionNumber: true,
+        createdAt: true,
+        _count: { select: { exercises: true } },
+      },
+      orderBy: [{ versionNumber: "desc" }],
+    });
+    return rows.map((row) => ({
+      id: row.id,
+      programId: row.programId,
+      versionNumber: row.versionNumber,
+      exerciseCount: row._count.exercises,
+      createdAt: row.createdAt.toISOString(),
+    }));
   }
 
   async loadProgramForStart(programId: number, profileId = DEFAULT_TRAINING_PROFILE_ID) {

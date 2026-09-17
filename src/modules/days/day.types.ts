@@ -15,6 +15,8 @@ export const DAILY_METRIC_FIELDS = [
 export type DailyMetricField = (typeof DAILY_METRIC_FIELDS)[number];
 
 export type DayWorkoutDto = {
+  /** Present whenever the row came from `workouts`; absent for legacy fallbacks. */
+  id?: number;
   type: string;
   canonicalType: string | null;
   classification: "traditional-strength-training" | "stair-climbing" | "other";

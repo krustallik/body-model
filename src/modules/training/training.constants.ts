@@ -36,9 +36,35 @@ export type MatchStatus = (typeof MATCH_STATUS)[keyof typeof MATCH_STATUS];
 export const MATCH_METHOD = {
   AUTO: "AUTO",
   MANUAL: "MANUAL",
+  /** Direct one-to-one link when creating a retrospective diary from a Workout. */
+  DIRECT_BACKFILL: "DIRECT_BACKFILL",
 } as const;
 
 export type MatchMethod = (typeof MATCH_METHOD)[keyof typeof MATCH_METHOD];
+
+export const ENTRY_MODE = {
+  LIVE: "LIVE",
+  RETROSPECTIVE: "RETROSPECTIVE",
+} as const;
+
+export type EntryMode = (typeof ENTRY_MODE)[keyof typeof ENTRY_MODE];
+
+export const EXERCISE_ORIGIN = {
+  PLANNED: "PLANNED",
+  EXTRA: "EXTRA",
+} as const;
+
+export type ExerciseOrigin = (typeof EXERCISE_ORIGIN)[keyof typeof EXERCISE_ORIGIN];
+
+/** Backfill progress for historical strength workouts (UI only — not physiology). */
+export const DIARY_COMPLETENESS = {
+  NO_DIARY: "NO_DIARY",
+  DIARY_EMPTY: "DIARY_EMPTY",
+  DIARY_PARTIAL: "DIARY_PARTIAL",
+  DIARY_WITH_SETS: "DIARY_WITH_SETS",
+} as const;
+
+export type DiaryCompleteness = (typeof DIARY_COMPLETENESS)[keyof typeof DIARY_COMPLETENESS];
 
 /** Exact Ukrainian names seeded by migration 20260917160000_strength_training_diary. */
 export const SEEDED_EXERCISE_NAMES = [

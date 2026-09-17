@@ -82,6 +82,64 @@ export const ManualMatchSchema = z.object({
   workoutId: z.number().int().positive().nullable(),
 }).strict();
 
+export const CreateFromWorkoutSchema = z.object({
+  workoutId: positiveInt,
+  programId: positiveInt,
+  programVersionId: positiveInt.optional(),
+}).strict();
+
+export const BulkCreateFromWorkoutsSchema = z.object({
+  workoutIds: z.array(positiveInt).min(1).max(50),
+  programId: positiveInt,
+  programVersionId: positiveInt.optional(),
+}).strict();
+
+export const ChangeSessionProgramSchema = z.object({
+  programId: positiveInt,
+  programVersionId: positiveInt.optional(),
+}).strict();
+
+export const CreateSessionExerciseSchema = z.object({
+  catalogId: positiveInt,
+  plannedSets: z.number().int().positive().max(TRAINING_LIMITS.maxPlannedSets).default(3),
+  resistanceType: ResistanceTypeSchema,
+  order: z.number().int().nonnegative().optional(),
+}).strict();
+
+export const UpdateSessionExerciseSchema = z.object({
+  plannedSets: z.number().int().positive().max(TRAINING_LIMITS.maxPlannedSets).optional(),
+  resistanceType: ResistanceTypeSchema.optional(),
+  order: z.number().int().nonnegative().optional(),
+  /**
+   * Required when changing resistanceType on an exercise that already has
+   * incompatible load fields on actual sets — clears those load fields.
+   */
+  confirmResistanceChange: z.boolean().optional(),
+}).strict().refine(
+  (value) =>
+    value.plannedSets !== undefined
+    || value.resistanceType !== undefined
+    || value.order !== undefined,
+  "at least one exercise field is required",
+);
+
+export const DeleteSessionExerciseSchema = z.object({
+  confirm: z.boolean().optional(),
+}).strict();
+
+export const ReorderSessionExercisesSchema = z.object({
+  exerciseIds: z.array(positiveInt).min(1).max(TRAINING_LIMITS.maxExercisesPerProgram),
+}).strict();
+
+export const HistoricalWorkoutsQuerySchema = z.object({
+  limit: z.coerce.number().int().positive().max(200).optional(),
+  cursor: z.coerce.number().int().positive().optional(),
+  onlyMissingDiary: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((value) => value === "true"),
+}).strict();
+
 export const RecentSessionsQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(100).optional(),
 }).strict();
@@ -93,9 +151,24 @@ export const CatalogListQuerySchema = z.object({
     .transform((value) => value === "true"),
 }).strict();
 
+export const ProgramListQuerySchema = z.object({
+  includeArchived: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((value) => value === "true"),
+}).strict();
+
 export type CreateProgramInput = z.infer<typeof CreateProgramSchema>;
 export type UpdateProgramInput = z.infer<typeof UpdateProgramSchema>;
 export type StartSessionInput = z.infer<typeof StartSessionSchema>;
 export type CreateSetInput = z.infer<typeof CreateSetSchema>;
 export type UpdateSetInput = z.infer<typeof UpdateSetSchema>;
 export type ManualMatchInput = z.infer<typeof ManualMatchSchema>;
+export type CreateFromWorkoutInput = z.infer<typeof CreateFromWorkoutSchema>;
+export type BulkCreateFromWorkoutsInput = z.infer<typeof BulkCreateFromWorkoutsSchema>;
+export type ChangeSessionProgramInput = z.infer<typeof ChangeSessionProgramSchema>;
+export type CreateSessionExerciseInput = z.infer<typeof CreateSessionExerciseSchema>;
+export type UpdateSessionExerciseInput = z.infer<typeof UpdateSessionExerciseSchema>;
+export type DeleteSessionExerciseInput = z.infer<typeof DeleteSessionExerciseSchema>;
+export type ReorderSessionExercisesInput = z.infer<typeof ReorderSessionExercisesSchema>;
+export type HistoricalWorkoutsQuery = z.infer<typeof HistoricalWorkoutsQuerySchema>;

@@ -91,7 +91,28 @@ export function WorkoutDetailsDialog({
                     : `${formatMetric(workout.activeEnergyKcal, intlLocale)} ${uk ? "активних ккал" : "active kcal"}`}</dd>
                 </div>
               </dl>
-              {workout.linkedTrainingSessionId != null && (
+              {workout.classification === "traditional-strength-training" && (
+                <p>
+                  {workout.linkedTrainingSessionId != null ? (
+                    <Link
+                      className={styles.workoutLink}
+                      href={`/training/sessions/${workout.linkedTrainingSessionId}/edit`}
+                    >
+                      {uk ? "Редагувати запис тренування" : "Edit training diary entry"}
+                      {workout.linkedTrainingProgramName ? ` · ${workout.linkedTrainingProgramName}` : ""}
+                    </Link>
+                  ) : workout.id != null ? (
+                    <Link
+                      className={styles.workoutLink}
+                      href={`/training/backfill/from/${workout.id}`}
+                    >
+                      {uk ? "Додати запис тренування" : "Add training diary entry"}
+                    </Link>
+                  ) : null}
+                </p>
+              )}
+              {workout.classification !== "traditional-strength-training"
+                && workout.linkedTrainingSessionId != null && (
                 <p>
                   <Link className={styles.workoutLink} href={`/training/sessions/${workout.linkedTrainingSessionId}`}>
                     {uk ? "Запис тренування" : "Training diary entry"}

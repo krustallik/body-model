@@ -1,13 +1,21 @@
 import { readJson, validationResponse } from "@/modules/days/day.http";
-import { CreateProgramSchema } from "@/modules/training/training.schema";
+import { CreateProgramSchema, ProgramListQuerySchema } from "@/modules/training/training.schema";
 import { trainingErrorResponse, trainingInternalError } from "@/modules/training/training.http";
 import { trainingService } from "@/modules/training/training.service";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(): Promise<Response> {
+export async function GET(request?: Request): Promise<Response> {
+  const url = new URL(request?.url ?? "http://localhost/api/v1/training/programs");
+  const parsed = ProgramListQuerySchema.safeParse({
+    includeArchived: url.searchParams.get("includeArchived") ?? undefined,
+  });
+  if (!parsed.success) return validationResponse(parsed.error);
+
   try {
-    const programs = await trainingService.listPrograms();
+    const programs = await trainingService.listPrograms({
+      includeArchived: parsed.data.includeArchived,
+    });
     return Response.json({ programs });
   } catch {
     return trainingInternalError();

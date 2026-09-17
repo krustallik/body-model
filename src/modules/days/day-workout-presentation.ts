@@ -1,6 +1,8 @@
 import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
 
 export type DayWorkoutPresentation = {
+  /** Workout row id — the handle retrospective diary backfill starts from. */
+  id: number;
   type: string;
   canonicalType: string | null;
   classification: "traditional-strength-training" | "stair-climbing" | "other";
@@ -20,6 +22,7 @@ export type DayWorkoutSummary = {
 };
 
 export type RawWorkoutRow = {
+  id: number;
   type: string;
   startAt: Date | string;
   endAt: Date | string;
@@ -50,6 +53,7 @@ export function summarizeDayWorkouts(input: {
     const canonical = canonicalizeWorkoutType(workout.type);
     const linked = workout.matchedDiarySession ?? null;
     return {
+      id: workout.id,
       type: workout.type,
       canonicalType: canonical.canonicalType,
       classification: canonical.classification,

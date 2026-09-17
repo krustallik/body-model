@@ -52,6 +52,7 @@ export const DURABLE_SOURCE_TABLES = [
   "TrainingProgramVersion",
   "ProgramExercise",
   "StrengthDiarySession",
+  "StrengthDiaryProgramChange",
   "StrengthSessionExercise",
   "StrengthSet",
 ] as const;

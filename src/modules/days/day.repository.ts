@@ -28,6 +28,7 @@ const dailyMetricSelect = {
   updatedAt: true,
   workouts: {
     select: {
+      id: true,
       type: true,
       startAt: true,
       endAt: true,

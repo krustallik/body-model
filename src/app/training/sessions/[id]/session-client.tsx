@@ -390,9 +390,14 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
           <p className={styles.eyebrow}>{uk ? "Сесія щоденника" : "Diary session"}</p>
           <h1>{session.programName}</h1>
           <p className={styles.intro}>
-            {formatDateTime(session.webStartedAt, intlLocale)}
+            {formatDateTime(session.matchedWorkout?.startAt ?? session.webStartedAt, intlLocale)}
             {" · "}
-            {formatDurationMinutes(session.webStartedAt, session.webEndedAt, intlLocale, uk)}
+            {formatDurationMinutes(
+              session.matchedWorkout?.startAt ?? session.webStartedAt,
+              session.matchedWorkout?.endAt ?? session.webEndedAt,
+              intlLocale,
+              uk,
+            )}
           </p>
         </div>
         <Link className={styles.secondaryButton} href="/training">{uk ? "Назад" : "Back"}</Link>

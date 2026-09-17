@@ -33,12 +33,14 @@ export async function readApiError(response: Response, uk: boolean): Promise<str
   return uk ? `Помилка ${response.status}` : `Error ${response.status}`;
 }
 
+/** Null start means a RETROSPECTIVE session that never had live web times. */
 export function formatDurationMinutes(
-  startIso: string,
+  startIso: string | null,
   endIso: string | null,
   intlLocale: string,
   uk: boolean,
 ): string {
+  if (!startIso) return "—";
   if (!endIso) return uk ? "триває" : "in progress";
   const ms = new Date(endIso).getTime() - new Date(startIso).getTime();
   if (!Number.isFinite(ms) || ms < 0) return "—";
@@ -46,7 +48,8 @@ export function formatDurationMinutes(
   return `${new Intl.NumberFormat(intlLocale).format(minutes)} ${uk ? "хв" : "min"}`;
 }
 
-export function formatClock(iso: string, intlLocale: string): string {
+export function formatClock(iso: string | null, intlLocale: string): string {
+  if (!iso) return "—";
   return new Intl.DateTimeFormat(intlLocale, {
     hour: "2-digit",
     minute: "2-digit",
@@ -54,7 +57,8 @@ export function formatClock(iso: string, intlLocale: string): string {
   }).format(new Date(iso));
 }
 
-export function formatDateTime(iso: string, intlLocale: string): string {
+export function formatDateTime(iso: string | null, intlLocale: string): string {
+  if (!iso) return "—";
   return new Intl.DateTimeFormat(intlLocale, {
     day: "numeric",
     month: "short",

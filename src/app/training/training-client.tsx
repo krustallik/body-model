@@ -131,13 +131,18 @@ export function TrainingClient() {
           <h1>{uk ? "Тренування" : "Training"}</h1>
           <p className={styles.intro}>
             {uk
-              ? "Програми, живі сесії та зіставлення з Garmin."
-              : "Programs, live sessions, and Garmin matching."}
+              ? "Програми, живі сесії, історичні записи та зіставлення з Garmin."
+              : "Programs, live sessions, historical backfill, and Garmin matching."}
           </p>
         </div>
-        <Link className={styles.primaryButton} href="/training/programs/new">
-          {uk ? "Нова програма" : "New program"}
-        </Link>
+        <div className={styles.rowActions}>
+          <Link className={styles.secondaryButton} href="/training/backfill">
+            {uk ? "Історія Garmin" : "Garmin history"}
+          </Link>
+          <Link className={styles.primaryButton} href="/training/programs/new">
+            {uk ? "Нова програма" : "New program"}
+          </Link>
+        </div>
       </header>
 
       {error && <div className={styles.errorBanner} role="alert">{error}</div>}
@@ -295,7 +300,7 @@ export function TrainingClient() {
                       <div>
                         <strong>{session.programName}</strong>
                         <p className={styles.cardMeta}>
-                          {formatDateTime(session.webStartedAt, intlLocale)}
+                          {formatDateTime(session.occurrenceAt ?? session.webStartedAt, intlLocale)}
                           {" · "}
                           {formatDurationMinutes(session.webStartedAt, session.webEndedAt, intlLocale, uk)}
                         </p>
@@ -309,9 +314,16 @@ export function TrainingClient() {
                         {matchStatusLabel(session.matchStatus, uk)}
                       </span>
                     </div>
-                    <Link className={styles.linkLike} href={`/training/sessions/${session.id}`}>
-                      {uk ? "Деталі" : "Details"}
-                    </Link>
+                    <div className={styles.rowActions}>
+                      <Link className={styles.linkLike} href={`/training/sessions/${session.id}`}>
+                        {uk ? "Деталі" : "Details"}
+                      </Link>
+                      {session.status === "COMPLETED" && (
+                        <Link className={styles.linkLike} href={`/training/sessions/${session.id}/edit`}>
+                          {uk ? "Редагувати" : "Edit"}
+                        </Link>
+                      )}
+                    </div>
                   </article>
                 ))}
               </div>

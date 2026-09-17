@@ -67,6 +67,7 @@ const session = {
   exercises: [{
     id: 1,
     sourceExerciseCatalogId: 3,
+    stableKey: null,
     snapshotExerciseName: "Жим",
     order: 0,
     plannedSets: 3,

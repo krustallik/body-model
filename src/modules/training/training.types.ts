@@ -89,6 +89,8 @@ export type ExerciseHistoryEntryDto = {
 export type StrengthSessionExerciseDto = {
   id: number;
   sourceExerciseCatalogId: number | null;
+  /** Portable catalog identity when the source catalog row is still linked. */
+  stableKey: string | null;
   snapshotExerciseName: string;
   order: number;
   plannedSets: number;

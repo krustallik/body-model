@@ -12,6 +12,7 @@ import {
   EXERCISE_ORIGIN,
   RESISTANCE,
 } from "@/modules/training/training.constants";
+import { externalWeightEntryLabel } from "@/modules/training/external-load-accounting";
 import type {
   ExerciseHistoryEntryDto,
   StrengthSessionExerciseDto,
@@ -427,7 +428,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
                 <div className={styles.liveFields}>
                   {exercise.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && (
                     <label className={styles.liveField}>
-                      <span>{uk ? "Вага, кг" : "Weight, kg"}</span>
+                      <span>{externalWeightEntryLabel(exercise.stableKey, uk)}</span>
                       <input
                         inputMode="decimal"
                         autoComplete="off"

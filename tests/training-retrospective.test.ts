@@ -187,6 +187,7 @@ function retrospectiveDetail(overrides: Record<string, unknown> = {}) {
       {
         id: 501,
         sourceExerciseCatalogId: 1,
+        stableKey: null,
         snapshotExerciseName: catalogA.name,
         sortOrder: 0,
         plannedSets: 3,
@@ -198,6 +199,7 @@ function retrospectiveDetail(overrides: Record<string, unknown> = {}) {
       {
         id: 502,
         sourceExerciseCatalogId: 2,
+        stableKey: null,
         snapshotExerciseName: catalogB.name,
         sortOrder: 1,
         plannedSets: 3,
@@ -226,6 +228,7 @@ function sessionForEdit(overrides: Record<string, unknown> = {}) {
       {
         id: 501,
         sourceExerciseCatalogId: 1,
+        stableKey: null,
         snapshotExerciseName: catalogA.name,
         sortOrder: 0,
         plannedSets: 3,
@@ -236,6 +239,7 @@ function sessionForEdit(overrides: Record<string, unknown> = {}) {
       {
         id: 502,
         sourceExerciseCatalogId: 2,
+        stableKey: null,
         snapshotExerciseName: catalogB.name,
         sortOrder: 1,
         plannedSets: 3,

@@ -73,6 +73,7 @@ describe("QualifiedResistanceTrainingDoseV7", () => {
         {
           id: 1,
           sourceExerciseCatalogId: 10,
+          stableKey: null,
           snapshotExerciseName: "Press",
           order: 1,
           plannedSets: 3,
@@ -84,6 +85,7 @@ describe("QualifiedResistanceTrainingDoseV7", () => {
         {
           id: 2,
           sourceExerciseCatalogId: 11,
+          stableKey: null,
           snapshotExerciseName: "Extra curl",
           order: 2,
           plannedSets: 2,
@@ -129,6 +131,7 @@ describe("QualifiedResistanceTrainingDoseV7", () => {
         {
           id: 1,
           sourceExerciseCatalogId: 10,
+          stableKey: null,
           snapshotExerciseName: "Mapped",
           order: 1,
           plannedSets: 5,
@@ -140,6 +143,7 @@ describe("QualifiedResistanceTrainingDoseV7", () => {
         {
           id: 2,
           sourceExerciseCatalogId: 99,
+          stableKey: null,
           snapshotExerciseName: "Custom",
           order: 2,
           plannedSets: 3,
@@ -171,6 +175,7 @@ describe("QualifiedResistanceTrainingDoseV7", () => {
       session: baseSession([{
         id: 1,
         sourceExerciseCatalogId: 10,
+        stableKey: null,
         snapshotExerciseName: "Press",
         order: 1,
         plannedSets: 3,
@@ -185,6 +190,7 @@ describe("QualifiedResistanceTrainingDoseV7", () => {
       session: baseSession([{
         id: 1,
         sourceExerciseCatalogId: 10,
+        stableKey: null,
         snapshotExerciseName: "Renamed display",
         order: 1,
         plannedSets: 3,
@@ -199,6 +205,7 @@ describe("QualifiedResistanceTrainingDoseV7", () => {
       session: baseSession([{
         id: 1,
         sourceExerciseCatalogId: 10,
+        stableKey: null,
         snapshotExerciseName: "Press",
         order: 1,
         plannedSets: 3,
@@ -213,6 +220,7 @@ describe("QualifiedResistanceTrainingDoseV7", () => {
       session: baseSession([{
         id: 1,
         sourceExerciseCatalogId: 10,
+        stableKey: null,
         snapshotExerciseName: "Press",
         order: 1,
         plannedSets: 3,

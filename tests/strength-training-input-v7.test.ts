@@ -39,6 +39,7 @@ function session(overrides: Partial<StrengthSessionDto> = {}): StrengthSessionDt
       {
         id: 1,
         sourceExerciseCatalogId: 10,
+        stableKey: null,
         snapshotExerciseName: "Press",
         order: 2,
         plannedSets: 3,
@@ -61,6 +62,7 @@ function session(overrides: Partial<StrengthSessionDto> = {}): StrengthSessionDt
       {
         id: 2,
         sourceExerciseCatalogId: 11,
+        stableKey: null,
         snapshotExerciseName: "Band row",
         order: 3,
         plannedSets: 4,
@@ -83,6 +85,7 @@ function session(overrides: Partial<StrengthSessionDto> = {}): StrengthSessionDt
       {
         id: 3,
         sourceExerciseCatalogId: null,
+        stableKey: null,
         snapshotExerciseName: "Push-up",
         order: 4,
         plannedSets: 2,

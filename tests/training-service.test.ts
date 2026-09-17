@@ -170,6 +170,7 @@ function sessionDetail(overrides: Record<string, unknown> = {}) {
       {
         id: 501,
         sourceExerciseCatalogId: 1,
+        stableKey: null,
         snapshotExerciseName: "Жим гантелей сидячи",
         sortOrder: 0,
         plannedSets: 3,
@@ -181,6 +182,7 @@ function sessionDetail(overrides: Record<string, unknown> = {}) {
       {
         id: 502,
         sourceExerciseCatalogId: 2,
+        stableKey: null,
         snapshotExerciseName: "Гіперекстензія",
         sortOrder: 1,
         plannedSets: 3,
@@ -192,6 +194,7 @@ function sessionDetail(overrides: Record<string, unknown> = {}) {
       {
         id: 503,
         sourceExerciseCatalogId: 3,
+        stableKey: null,
         snapshotExerciseName: "Віджимання від ручок",
         sortOrder: 2,
         plannedSets: 3,
@@ -332,6 +335,7 @@ describe("TrainingService snapshot immutability", () => {
         {
           id: 501,
           sourceExerciseCatalogId: 1,
+          stableKey: null,
           snapshotExerciseName: "Жим гантелей сидячи",
           sortOrder: 0,
           plannedSets: 3,
@@ -343,6 +347,7 @@ describe("TrainingService snapshot immutability", () => {
         {
           id: 502,
           sourceExerciseCatalogId: 2,
+          stableKey: null,
           snapshotExerciseName: "Гіперекстензія",
           sortOrder: 1,
           plannedSets: 3,
@@ -790,6 +795,7 @@ describe("TrainingService matching cases", () => {
         {
           id: 501,
           sourceExerciseCatalogId: 1,
+          sourceExerciseCatalog: { stableKey: "seated_dumbbell_press" },
           snapshotExerciseName: "Жим гантелей сидячи",
           sortOrder: 0,
           plannedSets: 3,
@@ -816,6 +822,6 @@ describe("TrainingService matching cases", () => {
     expect(session?.exercises[0]?.sets[0]?.weightKg).toBe(30);
     expect(session?.matchedWorkout?.activeEnergyKcal).toBe(410);
     expect(session?.matchedWorkout?.startAt).toBe("2026-09-17T16:04:00.000Z");
-    expect(session?.ordinaryTonnageKg).toBe(360);
+    expect(session?.ordinaryTonnageKg).toBe(720);
   });
 });

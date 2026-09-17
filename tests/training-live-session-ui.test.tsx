@@ -52,6 +52,7 @@ function buildSession(overrides: Partial<StrengthSessionDto> = {}): StrengthSess
       {
         id: 1,
         sourceExerciseCatalogId: 3,
+        stableKey: null,
         snapshotExerciseName: "Жим гантелей на похилій лаві вгору (30°)",
         order: 0,
         plannedSets: 4,
@@ -63,6 +64,7 @@ function buildSession(overrides: Partial<StrengthSessionDto> = {}): StrengthSess
       {
         id: 2,
         sourceExerciseCatalogId: 4,
+        stableKey: null,
         snapshotExerciseName: "Розведення гантелей на горизонтальній лаві",
         order: 1,
         plannedSets: 3,
@@ -74,6 +76,7 @@ function buildSession(overrides: Partial<StrengthSessionDto> = {}): StrengthSess
       {
         id: 3,
         sourceExerciseCatalogId: 5,
+        stableKey: null,
         snapshotExerciseName: "Віджимання від ручок",
         order: 2,
         plannedSets: 3,

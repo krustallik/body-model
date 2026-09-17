@@ -53,6 +53,7 @@ function makeSession() {
       {
         id: 1,
         sourceExerciseCatalogId: 3,
+        stableKey: null,
         snapshotExerciseName: "Жим гантелей на похилій лаві вгору (30°)",
         order: 0,
         plannedSets: 3,
@@ -75,6 +76,7 @@ function makeSession() {
       {
         id: 2,
         sourceExerciseCatalogId: 4,
+        stableKey: null,
         snapshotExerciseName: "Розгинання однієї руки в блоці",
         order: 1,
         plannedSets: 4,
@@ -86,6 +88,7 @@ function makeSession() {
       {
         id: 3,
         sourceExerciseCatalogId: 5,
+        stableKey: null,
         snapshotExerciseName: "Віджимання від ручок",
         order: 2,
         plannedSets: 3,
@@ -180,6 +183,7 @@ describe("Session edit exercise pager", () => {
               {
                 id: 2,
                 sourceExerciseCatalogId: 4,
+                stableKey: null,
                 snapshotExerciseName: "Розгинання однієї руки в блоці",
                 order: 0,
                 plannedSets: 4,
@@ -191,6 +195,7 @@ describe("Session edit exercise pager", () => {
               {
                 id: 40,
                 sourceExerciseCatalogId: 9,
+                stableKey: null,
                 snapshotExerciseName: "Тяга горизонтального блоку сидячи однією рукою",
                 order: 1,
                 plannedSets: 3,

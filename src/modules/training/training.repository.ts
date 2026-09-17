@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
+import { parseExerciseMuscleMappingSnapshotV7 } from "@/model/physiology-v7/exercise-muscle-mapping-v7";
 import { TRADITIONAL_STRENGTH_TRAINING_TYPE } from "@/modules/health/expand-training-workouts";
 import { CANONICAL_EXERCISE_IDENTITIES } from "./canonical-exercise-identity";
 import {
@@ -78,6 +79,7 @@ const sessionExerciseSelect = {
   resistanceType: true,
   origin: true,
   muscleMappingSnapshot: true,
+  sourceExerciseCatalog: { select: { stableKey: true } },
   sets: { select: setSelect, orderBy: { setNumber: "asc" as const } },
 } satisfies Prisma.StrengthSessionExerciseSelect;
 
@@ -185,9 +187,11 @@ function toSetDto(record: SetRecord): StrengthSetDto {
 }
 
 function toSessionExerciseDto(record: SessionExerciseRecord): StrengthSessionExerciseDto {
+  const snapshot = parseExerciseMuscleMappingSnapshotV7(record.muscleMappingSnapshot);
   return {
     id: record.id,
     sourceExerciseCatalogId: record.sourceExerciseCatalogId,
+    stableKey: record.sourceExerciseCatalog?.stableKey ?? snapshot?.stableKey ?? null,
     snapshotExerciseName: record.snapshotExerciseName,
     order: record.sortOrder,
     plannedSets: record.plannedSets,
@@ -218,6 +222,7 @@ export function toSessionDto(record: SessionDetailRecord): StrengthSessionDto {
       resistanceType: exercise.resistanceType,
       reps: set.reps,
       weightKg: set.weightKg,
+      stableKey: exercise.stableKey,
     })),
   );
 

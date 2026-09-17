@@ -3,6 +3,15 @@ export {
   type CanonicalExerciseStableKey,
 } from "./canonical-exercise-identity";
 export {
+  EXTERNAL_LOAD_ACCOUNTING_V1_VERSION,
+  EXTERNAL_LOAD_ACCOUNTING_REGISTRY_V1,
+  lookupExternalLoadAccountingV1,
+  ordinaryTonnageFactorForStableKey,
+  approvedExternalLoadAccountingCoverageV1,
+  externalWeightEntryLabel,
+  type ExternalLoadAccountingV1,
+} from "./external-load-accounting";
+export {
   muscleMappingSnapshotForCatalogStableKey,
   muscleMappingSnapshotJson,
   reportNullMuscleMappingSnapshotBackfill,

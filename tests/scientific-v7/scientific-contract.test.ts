@@ -321,6 +321,7 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
         exercises: [{
           id: 1,
           sourceExerciseCatalogId: 10,
+          stableKey: null,
           snapshotExerciseName: "Press",
           order: 1,
           plannedSets: 3,
@@ -349,6 +350,7 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
         exercises: [{
           id: 2,
           sourceExerciseCatalogId: 11,
+          stableKey: null,
           snapshotExerciseName: "Push-up",
           order: 1,
           plannedSets: 3,
@@ -377,6 +379,7 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
         exercises: [{
           id: 3,
           sourceExerciseCatalogId: 12,
+          stableKey: null,
           snapshotExerciseName: "Band row",
           order: 1,
           plannedSets: 4,
@@ -466,6 +469,7 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
       exercises: [{
         id: 1,
         sourceExerciseCatalogId: 10,
+        stableKey: null,
         snapshotExerciseName: "Fly",
         order: 1,
         plannedSets: 3,

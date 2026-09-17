@@ -1,0 +1,189 @@
+/** @vitest-environment jsdom */
+import {
+  afterEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import { cleanup, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { renderToStaticMarkup } from "react-dom/server";
+
+vi.mock("@/i18n/i18n-provider", () => ({
+  useI18n: () => ({ locale: "en", intlLocale: "en-US", setLocale: () => undefined }),
+}));
+
+import { WorkoutDetailsDialog } from "@/app/history/workout-details-dialog";
+import { HistoryCharts } from "@/app/history/history-charts";
+import type { DailyMetricDto } from "@/modules/days/day.types";
+
+vi.mock("recharts", () => ({
+  ResponsiveContainer: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  LineChart: ({ children, data }: { children: React.ReactNode; data: unknown }) => (
+    <div data-chart={JSON.stringify(data)}>{children}</div>
+  ),
+  Line: (props: Record<string, unknown>) => (
+    <div
+      data-line={String(props.dataKey)}
+      data-connect-nulls={String(props.connectNulls ?? false)}
+      data-name={String(props.name)}
+    />
+  ),
+  CartesianGrid: () => null,
+  XAxis: () => null,
+  YAxis: () => null,
+  Tooltip: () => null,
+  Legend: () => null,
+}));
+
+function day(date: string, overrides: Partial<DailyMetricDto> = {}): DailyMetricDto {
+  return {
+    date,
+    weightKg: null,
+    bodyFatPercent: null,
+    caloriesKcal: null,
+    proteinG: null,
+    fatG: null,
+    carbsG: null,
+    steps: null,
+    activeEnergyKcal: null,
+    averageWalkingSpeedKmh: null,
+    walkingDistanceKm: null,
+    strengthTrainingMinutes: null,
+    workouts: [],
+    totalWorkoutMinutes: null,
+    workoutSource: "none",
+    updatedAt: `${date}T10:00:00.000Z`,
+    ...overrides,
+  };
+}
+
+describe("WorkoutDetailsDialog interaction", () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("opens a modal dialog for mixed Stair + Strength workouts and closes on button", async () => {
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    const mixed = day("2026-09-16", {
+      workoutSource: "workouts",
+      totalWorkoutMinutes: 90,
+      workouts: [
+        {
+          type: "Stair Climbing",
+          canonicalType: "Stair Climbing",
+          classification: "stair-climbing",
+          startAt: "2026-09-16T08:00:00.000Z",
+          endAt: "2026-09-16T08:20:00.000Z",
+          durationMinutes: 20,
+          activeEnergyKcal: 154,
+        },
+        {
+          type: "Traditional Strength Training",
+          canonicalType: "Traditional Strength Training",
+          classification: "traditional-strength-training",
+          startAt: "2026-09-16T17:00:00.000Z",
+          endAt: "2026-09-16T18:15:00.000Z",
+          durationMinutes: 75,
+          activeEnergyKcal: null,
+        },
+      ],
+    });
+
+    // jsdom lacks HTMLDialogElement.showModal; polyfill for the component effect.
+    HTMLDialogElement.prototype.showModal = function showModal() {
+      this.setAttribute("open", "");
+    };
+    HTMLDialogElement.prototype.close = function close() {
+      this.removeAttribute("open");
+      this.dispatchEvent(new Event("close"));
+    };
+
+    render(<WorkoutDetailsDialog day={mixed} onClose={onClose} />);
+    expect(screen.getByText(/Workouts on/i)).toBeTruthy();
+    expect(screen.getByText(/Stair/i)).toBeTruthy();
+    expect(screen.getByText(/Strength/i)).toBeTruthy();
+    expect(screen.getByText(/154/)).toBeTruthy();
+    // Optional active kcal renders as em dash, not invented zero.
+    const cards = screen.getAllByRole("article");
+    expect(within(cards[1]!).getByText("—")).toBeTruthy();
+
+    const closeButtons = screen.getAllByRole("button", { name: "Close" });
+    await user.click(closeButtons[closeButtons.length - 1]!);
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("renders legacy strength fallback when workoutSource is legacy-strength", () => {
+    HTMLDialogElement.prototype.showModal = function showModal() {
+      this.setAttribute("open", "");
+    };
+    render(
+      <WorkoutDetailsDialog
+        day={day("2026-09-10", {
+          workoutSource: "legacy-strength",
+          totalWorkoutMinutes: 45,
+          strengthTrainingMinutes: 45,
+        })}
+        onClose={() => undefined}
+      />,
+    );
+    expect(screen.getByText(/legacy day field/i)).toBeTruthy();
+    expect(screen.getByText(/45/)).toBeTruthy();
+  });
+});
+
+describe("history workout detail eligibility", () => {
+  it("requires a non-none workoutSource and known total minutes", () => {
+    const rule = (row: DailyMetricDto) => (
+      row.workoutSource !== "none" && row.totalWorkoutMinutes !== null
+    );
+    expect(rule(day("2026-09-01"))).toBe(false);
+    expect(rule(day("2026-09-02", {
+      workoutSource: "workouts",
+      totalWorkoutMinutes: 60,
+    }))).toBe(true);
+    expect(rule(day("2026-09-03", {
+      workoutSource: "legacy-strength",
+      totalWorkoutMinutes: 40,
+    }))).toBe(true);
+  });
+});
+
+describe("HistoryCharts workout gaps", () => {
+  it("keeps missing workout minutes as null with connectNulls=true", () => {
+    const html = renderToStaticMarkup(
+      <HistoryCharts
+        days={[
+          day("2026-09-01", {
+            walkingDistanceKm: 4,
+            totalWorkoutMinutes: 60,
+            workoutSource: "workouts",
+          }),
+          day("2026-09-02", {
+            walkingDistanceKm: 3,
+            totalWorkoutMinutes: null,
+            workoutSource: "none",
+          }),
+          day("2026-09-03", {
+            walkingDistanceKm: 5,
+            totalWorkoutMinutes: 70,
+            workoutSource: "workouts",
+          }),
+        ]}
+      />,
+    );
+    expect(html).toContain('data-line="totalWorkoutMinutes"');
+    expect(html).toContain('data-connect-nulls="true"');
+    const charts = [...html.matchAll(/data-chart="([^"]*)"/g)].map((match) => (
+      JSON.parse(match[1]!.replace(/&quot;/g, '"')) as Array<{ totalWorkoutMinutes: number | null }>
+    ));
+    const movement = charts.find((rows) => rows.some((row) => (
+      Object.prototype.hasOwnProperty.call(row, "totalWorkoutMinutes")
+    )));
+    expect(movement?.some((row) => row.totalWorkoutMinutes === null)).toBe(true);
+    expect(movement?.every((row) => row.totalWorkoutMinutes !== 0)).toBe(true);
+  });
+});

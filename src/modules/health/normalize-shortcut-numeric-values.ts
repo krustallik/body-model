@@ -1,3 +1,5 @@
+import { normalizeShortcutWhitespace } from "@/modules/health/expand-training-workouts";
+
 type JsonObject = Record<string, unknown>;
 
 const DAY_NUMERIC_FIELDS = new Set([
@@ -74,14 +76,15 @@ export function parseShortcutStrengthTrainingMinutes(value: unknown, dayDate: un
   if (numericValue !== value || typeof value !== "string") return numericValue;
   if (typeof dayDate !== "string") return value;
 
-  const matches = [...value.matchAll(SHORTCUT_WORKOUT_DATE_PATTERN)];
+  const normalized = normalizeShortcutWhitespace(value);
+  const matches = [...normalized.matchAll(SHORTCUT_WORKOUT_DATE_PATTERN)];
   if (matches.length !== 2) return value;
 
   const start = parseWorkoutDate(matches[0]);
   const end = parseWorkoutDate(matches[1]);
   if (!start || !end || end.timestamp < start.timestamp) return value;
 
-  const separators = value.replace(start.text, "").replace(end.text, "");
+  const separators = normalized.replace(start.text, "").replace(end.text, "");
   if (!/^[\s\-–—→]*$/.test(separators)) return value;
   if (start.calendarDate !== dayDate) return 0;
 
@@ -148,8 +151,10 @@ function normalizeHeartRateObject(value: unknown, valueKey: "bpm" | "bpminpeace"
     }
   }
   if (!isObject(value)) return value;
-  const timestamps = normalizeTimestamps(value.timestamps);
-  const sourceValue = valueKey === "bpminpeace" ? (value.bvminpeace ?? value.bpminpeace) : value.bpm;
+  const timestamps = normalizeTimestamps(pickIgnoreCase(value, ["timestamps", "timestamp"]));
+  const sourceValue = valueKey === "bpminpeace"
+    ? pickIgnoreCase(value, ["bvminpeace", "bpminpeace", "bpm"])
+    : pickIgnoreCase(value, ["bpm", "values"]);
   return { timestamps, [valueKey]: normalizeBpmValues(sourceValue, timestamps.length) };
 }
 
@@ -163,11 +168,38 @@ function parseMaybeJsonObject(value: unknown): unknown {
 }
 
 function pickIgnoreCase(object: JsonObject, names: string[]): unknown {
-  const lookup = new Map(Object.entries(object).map(([key, fieldValue]) => [key.toLowerCase(), fieldValue]));
+  // Shortcuts sometimes emit padded dictionary keys ("    states").
+  const lookup = new Map(
+    Object.entries(object).map(([key, fieldValue]) => [key.trim().toLowerCase(), fieldValue]),
+  );
   for (const name of names) {
-    if (lookup.has(name.toLowerCase())) return lookup.get(name.toLowerCase());
+    const needle = name.trim().toLowerCase();
+    if (lookup.has(needle)) return lookup.get(needle);
   }
   return undefined;
+}
+
+/** Report which parallel sleep keys were found after trim/case normalization. */
+export function describeSleepSegmentKeys(value: unknown): {
+  foundKeys: string[];
+  hasStarts: boolean;
+  hasEnds: boolean;
+  hasStates: boolean;
+} {
+  if (!isObject(value)) {
+    return { foundKeys: [], hasStarts: false, hasEnds: false, hasStates: false };
+  }
+  const foundKeys = Object.keys(value);
+  const normalized = new Set(foundKeys.map((key) => key.trim().toLowerCase()));
+  return {
+    foundKeys,
+    hasStarts: ["starttimestamps", "starts", "starttimestamp", "start"]
+      .some((name) => normalized.has(name)),
+    hasEnds: ["endtimestamps", "ends", "endtimestamp", "end"]
+      .some((name) => normalized.has(name)),
+    hasStates: ["states", "state", "sleepstates", "values"]
+      .some((name) => normalized.has(name)),
+  };
 }
 
 function isCanonicalSleepSegmentArray(value: unknown): value is unknown[] {

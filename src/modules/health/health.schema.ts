@@ -2,6 +2,7 @@ import { normalizeDailyMeasurementInput } from "@/modules/days/measurement-polic
 import { mergeExpandedTrainingWorkouts } from "@/modules/health/expand-training-workouts";
 import { normalizeShortcutPayload } from "@/modules/health/normalize-shortcut-payload";
 import {
+  describeSleepSegmentKeys,
   normalizeShortcutNumericValues,
   normalizeSleepSegmentsValue,
 } from "@/modules/health/normalize-shortcut-numeric-values";
@@ -112,12 +113,20 @@ function sleepSegmentsFromParallel(value: {
   startTimestamps: unknown[];
   endTimestamps: unknown[];
   states: unknown[];
+  sourceKeys?: string[];
 }): unknown[] | { error: string } {
-  if (
-    value.startTimestamps.length !== value.endTimestamps.length
-    || value.startTimestamps.length !== value.states.length
-  ) {
-    return { error: "startTimestamps, endTimestamps, and states must have the same length" };
+  const startCount = value.startTimestamps.length;
+  const endCount = value.endTimestamps.length;
+  const stateCount = value.states.length;
+  if (startCount !== endCount || startCount !== stateCount) {
+    const keyHint = value.sourceKeys && value.sourceKeys.length > 0
+      ? `; keys=[${value.sourceKeys.map((key) => JSON.stringify(key)).join(", ")}]`
+      : "";
+    return {
+      error:
+        `startTimestamps, endTimestamps, and states must have the same length`
+        + ` (startTimestamps=${startCount}, endTimestamps=${endCount}, states=${stateCount}${keyHint})`,
+    };
   }
   return value.startTimestamps.map((startAt, index) => {
     const rawState = String(value.states[index] ?? "").trim();
@@ -135,6 +144,13 @@ type SleepSegmentParsed = z.output<typeof SleepSegmentSchema>;
 const SleepSegmentsSchema = z.preprocess(
   (value) => {
     if (value === undefined || value === null) return value;
+    const keyInfo = describeSleepSegmentKeys(
+      typeof value === "string"
+        ? (() => {
+          try { return JSON.parse(value) as unknown; } catch { return value; }
+        })()
+        : value,
+    );
     const normalized = normalizeSleepSegmentsValue(value);
     if (Array.isArray(normalized)) return normalized;
     if (
@@ -147,7 +163,20 @@ const SleepSegmentsSchema = z.preprocess(
         startTimestamps: normalized.startTimestamps,
         endTimestamps: normalized.endTimestamps,
         states: normalized.states,
+        sourceKeys: keyInfo.foundKeys,
       });
+    }
+    if (isObject(normalized)) {
+      const missing = [
+        !keyInfo.hasStarts ? "startTimestamps" : null,
+        !keyInfo.hasEnds ? "endTimestamps" : null,
+        !keyInfo.hasStates ? "states" : null,
+      ].filter((item): item is string => item !== null);
+      return {
+        error:
+          `sleepSegments dictionary is missing recognized keys: ${missing.join(", ") || "unknown"}`
+          + `; keys=[${keyInfo.foundKeys.map((key) => JSON.stringify(key)).join(", ")}]`,
+      };
     }
     return normalized;
   },

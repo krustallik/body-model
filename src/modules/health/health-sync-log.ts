@@ -1,20 +1,24 @@
-import { splitPositionalLines } from "@/modules/health/expand-training-workouts";
+import {
+  expandTrainingWorkoutFields,
+  resolveTrainingTimestamps,
+  splitPositionalLines,
+} from "@/modules/health/expand-training-workouts";
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function readDayField(day: Record<string, unknown>, canonical: string): unknown {
-  const lower = canonical.toLowerCase();
+  const lower = canonical.trim().toLowerCase();
   for (const [key, value] of Object.entries(day)) {
-    if (key.toLowerCase() === lower) return value;
+    if (key.trim().toLowerCase() === lower) return value;
   }
   return undefined;
 }
 
 function hasDayField(day: Record<string, unknown>, canonical: string): boolean {
-  const lower = canonical.toLowerCase();
-  return Object.keys(day).some((key) => key.toLowerCase() === lower);
+  const lower = canonical.trim().toLowerCase();
+  return Object.keys(day).some((key) => key.trim().toLowerCase() === lower);
 }
 
 /** Compact, secret-free summary of a training string field for diagnostics. */
@@ -155,6 +159,7 @@ export function summarizeNormalizedDay(payload: unknown): {
   normalizedHasDate: boolean;
   derivedWorkoutCount: number;
   strengthTrainingMinutes: number | null;
+  trainingExpansionReasons: string;
 } {
   if (!isObject(payload) || !Array.isArray(payload.days)) {
     return {
@@ -163,17 +168,38 @@ export function summarizeNormalizedDay(payload: unknown): {
       normalizedHasDate: false,
       derivedWorkoutCount: -1,
       strengthTrainingMinutes: null,
+      trainingExpansionReasons: "",
     };
   }
   const day0 = isObject(payload.days[0]) ? payload.days[0] : null;
   const keys = day0 ? Object.keys(day0) : [];
   const workouts = day0 && Array.isArray(day0.workouts) ? day0.workouts : [];
   const strength = day0?.strengthTrainingMinutes;
+
+  let trainingExpansionReasons = "";
+  if (day0 && typeof day0.date === "string") {
+    const { trainingTimestamps, consumedStrengthTrainingMinutes } = resolveTrainingTimestamps(day0);
+    const hasTrainingFields = "trainingType" in day0
+      || "trainingActiveKcal" in day0
+      || "trainingTimestamps" in day0
+      || consumedStrengthTrainingMinutes;
+    if (hasTrainingFields && workouts.length === 0) {
+      const { diagnostics } = expandTrainingWorkoutFields({
+        trainingType: day0.trainingType,
+        trainingActiveKcal: day0.trainingActiveKcal,
+        trainingTimestamps,
+        dayDate: day0.date,
+      });
+      trainingExpansionReasons = diagnostics.reasons.join(";").slice(0, 500);
+    }
+  }
+
   return {
     normalizedDaysCount: payload.days.length,
     normalizedDay0Keys: keys.join(",").slice(0, 500),
     normalizedHasDate: typeof day0?.date === "string",
     derivedWorkoutCount: workouts.length,
     strengthTrainingMinutes: typeof strength === "number" ? strength : null,
+    trainingExpansionReasons,
   };
 }

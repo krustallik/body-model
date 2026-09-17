@@ -68,7 +68,8 @@ function normalizeObject(
   const sources = new Map<string, string>();
 
   for (const [sourceKey, value] of Object.entries(input)) {
-    const canonicalKey = keys.get(sourceKey.toLowerCase()) ?? sourceKey;
+    const trimmedKey = sourceKey.trim();
+    const canonicalKey = keys.get(trimmedKey.toLowerCase()) ?? trimmedKey;
     const previousSource = sources.get(canonicalKey);
     if (previousSource !== undefined) {
       throw new ShortcutNormalizationError([

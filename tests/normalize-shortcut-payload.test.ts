@@ -105,4 +105,20 @@ describe("normalizeShortcutPayload", () => {
       ShortcutNormalizationError,
     );
   });
+
+  it("trims padded day keys from Shortcuts dictionaries", () => {
+    expect(normalizeShortcutPayload({
+      days: [{
+        "  date  ": "2026-09-17",
+        "\u00A0trainingType": "Stair Climbing",
+        " trainingActiveKcal ": "154",
+      }],
+    }).payload).toEqual({
+      days: [{
+        date: "2026-09-17",
+        trainingType: "Stair Climbing",
+        trainingActiveKcal: "154",
+      }],
+    });
+  });
 });

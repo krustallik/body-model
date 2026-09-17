@@ -202,7 +202,7 @@ describe("expandTrainingWorkoutFields", () => {
       dayDate: DAY,
     });
     expect(result.workouts).toEqual([]);
-    expect(result.diagnostics.reasons).toContain("mismatched-timestamp-count");
+    expect(result.diagnostics.reasons.some((reason) => reason.startsWith("mismatched-timestamp-count"))).toBe(true);
     expect(result.diagnostics.rejectedCount).toBe(2);
   });
 
@@ -219,7 +219,7 @@ describe("expandTrainingWorkoutFields", () => {
       dayDate: DAY,
     });
     expect(result.workouts).toEqual([]);
-    expect(result.diagnostics.reasons).toContain("mismatched-active-kcal-count");
+    expect(result.diagnostics.reasons.some((reason) => reason.startsWith("mismatched-active-kcal-count"))).toBe(true);
   });
 
   it("skips a malformed timestamp and keeps sibling workouts", () => {
@@ -319,6 +319,60 @@ describe("expandTrainingWorkoutFields", () => {
         endAt: "2026-09-16T11:46:00.000Z",
       }),
     ]);
+  });
+
+  it("recovers Sep 17 glued boundary with Unicode spaces in strengthTrainingMinutes", () => {
+    // Production failure: start-list end glued to end-list start as `12:3417. 9. 2026`
+    // with non-breaking spaces around date components.
+    const nbsp = "\u00A0";
+    const timestamps = [
+      `17.${nbsp}9.${nbsp}2026,${nbsp}10:00`,
+      `17.${nbsp}9.${nbsp}2026,${nbsp}12:34`,
+      `17.${nbsp}9.${nbsp}2026,${nbsp}13:00`,
+      `17.${nbsp}9.${nbsp}2026,${nbsp}10:4517.${nbsp}9.${nbsp}2026,${nbsp}12:36`,
+      `17.${nbsp}9.${nbsp}2026,${nbsp}14:00`,
+    ].join("\n");
+
+    expect(extractTrainingTimestampLines(timestamps)).toEqual([
+      "17. 9. 2026, 10:00",
+      "17. 9. 2026, 12:34",
+      "17. 9. 2026, 13:00",
+      "17. 9. 2026, 10:45",
+      "17. 9. 2026, 12:36",
+      "17. 9. 2026, 14:00",
+    ]);
+
+    const result = expandTrainingWorkoutFields({
+      trainingType: [
+        STAIR_CLIMBING_TYPE,
+        STAIR_CLIMBING_TYPE,
+        TRADITIONAL_STRENGTH_TRAINING_TYPE,
+      ].join("\n"),
+      trainingActiveKcal: "154\n18\n724",
+      trainingTimestamps: timestamps,
+      dayDate: "2026-09-17",
+      timezone: "Europe/Berlin",
+    });
+    expect(result.diagnostics.acceptedCount).toBe(3);
+    expect(result.workouts.map((workout) => workout.activeEnergyKcal)).toEqual([154, 18, 724]);
+    expect(result.workouts.map((workout) => workout.type)).toEqual([
+      STAIR_CLIMBING_TYPE,
+      STAIR_CLIMBING_TYPE,
+      TRADITIONAL_STRENGTH_TRAINING_TYPE,
+    ]);
+  });
+
+  it("includes counts in mismatch diagnostics instead of a bare zero-workout outcome", () => {
+    const result = expandTrainingWorkoutFields({
+      trainingType: `${STAIR_CLIMBING_TYPE}\n${STAIR_CLIMBING_TYPE}`,
+      trainingActiveKcal: "154\n18",
+      trainingTimestamps: "17. 9. 2026, 12:34\n17. 9. 2026, 12:36",
+      dayDate: "2026-09-17",
+    });
+    expect(result.workouts).toEqual([]);
+    expect(result.diagnostics.reasons[0]).toMatch(
+      /^mismatched-timestamp-count:types=2,kcal=2,timestamps=2,expected=4$/,
+    );
   });
 
   it("returns no workouts when training fields are absent or empty (N optional)", () => {
@@ -438,5 +492,38 @@ describe("HealthSyncRequestSchema training expansion", () => {
     expect(result.data.days[0]?.workouts).toHaveLength(3);
     expect(result.data.days[0]?.workouts?.map((workout) => workout.activeEnergyKcal))
       .toEqual([154, 18, 562]);
+  });
+
+  it("expands Sep 17 glued dates stored in strengthTrainingMinutes", () => {
+    const result = HealthSyncRequestSchema.safeParse({
+      timezone: "Europe/Berlin",
+      days: [{
+        date: "2026-09-17",
+        trainingType: [
+          STAIR_CLIMBING_TYPE,
+          STAIR_CLIMBING_TYPE,
+          TRADITIONAL_STRENGTH_TRAINING_TYPE,
+        ].join("\n"),
+        trainingActiveKcal: "154\n18\n724",
+        strengthTrainingMinutes: [
+          "17. 9. 2026, 10:00",
+          "17. 9. 2026, 12:34",
+          "17. 9. 2026, 13:00",
+          "17. 9. 2026, 10:4517. 9. 2026, 12:36",
+          "17. 9. 2026, 14:00",
+        ].join("\n"),
+        sleepSegments: {
+          startTimestamps: ["2026-09-16T22:41:00+02:00"],
+          endTimestamps: ["2026-09-16T23:10:00+02:00"],
+          "    states": ["Повільний"],
+        },
+      }],
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.days[0]?.workouts).toHaveLength(3);
+    expect(result.data.days[0]?.workouts?.map((workout) => workout.activeEnergyKcal))
+      .toEqual([154, 18, 724]);
+    expect(result.data.days[0]?.sleepSegments).toHaveLength(1);
   });
 });

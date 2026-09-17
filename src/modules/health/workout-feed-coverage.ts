@@ -104,9 +104,9 @@ export function resolveWorkoutFeedObserved(rawDay: unknown): boolean {
     dayDate: date,
   });
   const fatal = diagnostics.reasons.some((reason) => (
-    reason === "missing-training-fields"
-    || reason === "mismatched-timestamp-count"
-    || reason === "mismatched-active-kcal-count"
+    reason.startsWith("missing-training-fields")
+    || reason.startsWith("mismatched-timestamp-count")
+    || reason.startsWith("mismatched-active-kcal-count")
   ));
   return !fatal;
 }

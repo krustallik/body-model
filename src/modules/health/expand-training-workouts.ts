@@ -2,7 +2,16 @@ import { DEFAULT_TIME_ZONE, instantToLocalDateTime } from "@/model/time-zone";
 
 type JsonObject = Record<string, unknown>;
 
+/** Shortcut / Quick Look date pattern; `\s` already covers NBSP in JS engines. */
 const SHORTCUT_WORKOUT_DATE_PATTERN = /(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4}),?\s*(\d{1,2}):(\d{2})/g;
+
+/**
+ * Normalize Unicode spaces that Shortcuts/Quick Look sometimes insert between
+ * date components so glued pairs like `12:3417. 9. 2026` remain recoverable.
+ */
+export function normalizeShortcutWhitespace(value: string): string {
+  return value.replace(/[\u00A0\u202F\u2000-\u200A\u205F\u3000\uFEFF]/g, " ");
+}
 
 /** Common HealthKit workout activity names, longest-first for greedy ungluing. */
 const KNOWN_WORKOUT_TYPES = [
@@ -65,13 +74,16 @@ export function extractTrainingTimestampLines(value: unknown): string[] | null {
   if (typeof value !== "string") return null;
   if (value.trim() === "") return [];
 
-  // Shortcut datetime regex recovers glued pairs that line-splitting would miss.
+  const normalized = normalizeShortcutWhitespace(value);
+
+  // Shortcut datetime regex recovers glued pairs that line-splitting would miss
+  // (e.g. `12:3417. 9. 2026, 13:30` where start-list end met end-list start).
   SHORTCUT_WORKOUT_DATE_PATTERN.lastIndex = 0;
-  const shortcut = [...value.matchAll(SHORTCUT_WORKOUT_DATE_PATTERN)].map((match) => match[0]);
+  const shortcut = [...normalized.matchAll(SHORTCUT_WORKOUT_DATE_PATTERN)].map((match) => match[0]);
   if (shortcut.length > 0) return shortcut;
 
   // ISO / opaque lines keep positional newline splitting (preserves malformed slots).
-  return splitPositionalLines(value) ?? [];
+  return splitPositionalLines(normalized) ?? [];
 }
 
 function splitGluedTitleCaseSegments(blob: string): string[] {
@@ -151,8 +163,9 @@ function parseIsoOrShortcutInstant(raw: string): Date | null {
   const iso = Date.parse(raw);
   if (Number.isFinite(iso)) return new Date(iso);
 
+  const normalized = normalizeShortcutWhitespace(raw);
   SHORTCUT_WORKOUT_DATE_PATTERN.lastIndex = 0;
-  const matches = [...raw.matchAll(SHORTCUT_WORKOUT_DATE_PATTERN)];
+  const matches = [...normalized.matchAll(SHORTCUT_WORKOUT_DATE_PATTERN)];
   if (matches.length !== 1) return null;
   const match = matches[0];
   const year = Number(match[3]);
@@ -220,11 +233,16 @@ export function expandTrainingWorkoutFields(input: {
   }
   // Training feed optional: absent / empty types → no workouts.
   if (types === null || types.length === 0) {
+    diagnostics.reasons.push(
+      `missing-or-empty-types:kcal=${kcals?.length ?? "absent"},timestamps=${timestamps?.length ?? "absent"}`,
+    );
     return { workouts: [], diagnostics };
   }
   if (timestamps === null) {
     diagnostics.rejectedCount += 1;
-    diagnostics.reasons.push("missing-training-fields");
+    diagnostics.reasons.push(
+      `missing-training-fields:types=${types.length},kcal=${kcals?.length ?? "absent"}`,
+    );
     return { workouts: [], diagnostics };
   }
 
@@ -234,12 +252,16 @@ export function expandTrainingWorkoutFields(input: {
 
   if (timestamps.length !== 2 * n) {
     diagnostics.rejectedCount += n;
-    diagnostics.reasons.push("mismatched-timestamp-count");
+    diagnostics.reasons.push(
+      `mismatched-timestamp-count:types=${types.length},kcal=${kcals?.length ?? "absent"},timestamps=${timestamps.length},expected=${2 * n}`,
+    );
     return { workouts: [], diagnostics };
   }
   if (kcals !== null && kcals.length !== n) {
     diagnostics.rejectedCount += n;
-    diagnostics.reasons.push("mismatched-active-kcal-count");
+    diagnostics.reasons.push(
+      `mismatched-active-kcal-count:types=${types.length},kcal=${kcals.length},timestamps=${timestamps.length},expectedKcal=${n}`,
+    );
     return { workouts: [], diagnostics };
   }
 
@@ -312,7 +334,7 @@ export function expandTrainingWorkoutFields(input: {
  */
 export function looksLikeTrainingTimestampBlob(value: unknown): boolean {
   if (typeof value !== "string") return false;
-  const trimmed = value.trim();
+  const trimmed = normalizeShortcutWhitespace(value).trim();
   if (trimmed === "") return false;
   // Plain numeric minutes must keep the legacy numeric-minutes path.
   if (/^-?\d+(?:[.,]\d+)?$/.test(trimmed)) return false;

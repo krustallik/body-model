@@ -24,7 +24,7 @@ describe("workout feed malformed / incomplete training payloads", () => {
     });
     expect(observed).toBe(false);
     expect(expanded.workouts).toEqual([]);
-    expect(expanded.diagnostics.reasons).toContain("mismatched-timestamp-count");
+    expect(expanded.diagnostics.reasons.some((reason) => reason.startsWith("mismatched-timestamp-count"))).toBe(true);
   });
 
   it("rejects kcal present with malformed timestamps while keeping coverage unavailable for odd count", () => {
@@ -42,7 +42,7 @@ describe("workout feed malformed / incomplete training payloads", () => {
     });
     expect(observed).toBe(false);
     expect(expanded.workouts).toEqual([]);
-    expect(expanded.diagnostics.reasons).toContain("mismatched-timestamp-count");
+    expect(expanded.diagnostics.reasons.some((reason) => reason.startsWith("mismatched-timestamp-count"))).toBe(true);
   });
 
   it("keeps sibling workouts when kcal is present and only one timestamp pair is malformed", () => {
@@ -106,7 +106,7 @@ describe("workout feed malformed / incomplete training payloads", () => {
       dayDate: DAY,
     });
     expect(mismatched.workouts).toEqual([]);
-    expect(mismatched.diagnostics.reasons).toContain("mismatched-timestamp-count");
+    expect(mismatched.diagnostics.reasons.some((reason) => reason.startsWith("mismatched-timestamp-count"))).toBe(true);
   });
 
   it("marks a whole malformed workouts feed as unavailable, not confirmed empty zero", () => {

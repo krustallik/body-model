@@ -19,6 +19,11 @@ import {
   resolveExplicitWorkoutActivityKcal,
   type ExplicitWorkoutActivityEvent,
 } from "@/model/activity/workout-energy";
+import {
+  resolveWorkoutEnergyEvidenceV7,
+  type WorkoutEnergyEvidenceV7,
+} from "@/model/activity/workout-energy-v7";
+import { canonicalizeWorkoutHeartRateEvidenceV7 } from "@/model/activity/workout-heart-rate-v7";
 
 const completeDay: PhysiologicalDailyInput = {
   date: "2026-09-17",
@@ -43,6 +48,22 @@ function stairEvent(activeEnergyKcal: number): ExplicitWorkoutActivityEvent {
     endAt: "2026-09-17T16:20:00.000Z",
     durationMinutes: 20,
     activeEnergyKcal,
+  };
+}
+
+function v7EnergyEvidence(input: Partial<WorkoutEnergyEvidenceV7> = {}): WorkoutEnergyEvidenceV7 {
+  return {
+    workoutId: 1,
+    canonicalWorkoutType: "Traditional Strength Training",
+    startAt: "2026-09-17T16:00:00.000Z",
+    endAt: "2026-09-17T16:30:00.000Z",
+    durationMinutes: 30,
+    deviceEnergy: { availability: "unavailable", availabilityReason: "no-device-active-energy" },
+    heartRate: canonicalizeWorkoutHeartRateEvidenceV7({
+      workoutInterval: { startAt: "2026-09-17T16:00:00.000Z", endAt: "2026-09-17T16:30:00.000Z" },
+      heartRate: { availability: "loaded", samples: [{ timestamp: "2026-09-17T16:01:00.000Z", bpm: 170, provenance: { provider: "shortcut", device: null } }] },
+    }),
+    ...input,
   };
 }
 
@@ -129,6 +150,71 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
       source: "device-active-kcal",
       kcal: 211,
     }]);
+  });
+
+  it("maximum HR alone does not determine active energy", () => {
+    const shorter = resolveWorkoutEnergyEvidenceV7(v7EnergyEvidence({ durationMinutes: 10 }));
+    const longer = resolveWorkoutEnergyEvidenceV7(v7EnergyEvidence({ durationMinutes: 60 }));
+
+    expect(shorter.activeEnergy).toEqual({
+      availability: "unavailable",
+      availabilityReason: "no-device-active-energy",
+    });
+    expect(longer.activeEnergy).toEqual(shorter.activeEnergy);
+    expect(shorter.heartRateContext).toEqual(v7EnergyEvidence({ durationMinutes: 10 }).heartRate);
+  });
+
+  it("sparse HR cannot recover unobserved transitions", () => {
+    const early = canonicalizeWorkoutHeartRateEvidenceV7({
+      workoutInterval: { startAt: "2026-09-17T16:00:00.000Z", endAt: "2026-09-17T17:00:00.000Z" },
+      heartRate: { availability: "loaded", samples: [
+        { timestamp: "2026-09-17T16:05:00.000Z", bpm: 100, provenance: { provider: "shortcut", device: null } },
+        { timestamp: "2026-09-17T16:10:00.000Z", bpm: 140, provenance: { provider: "shortcut", device: null } },
+      ] },
+    });
+    const irregular = canonicalizeWorkoutHeartRateEvidenceV7({
+      workoutInterval: { startAt: "2026-09-17T16:00:00.000Z", endAt: "2026-09-17T17:00:00.000Z" },
+      heartRate: { availability: "loaded", samples: [
+        { timestamp: "2026-09-17T16:45:00.000Z", bpm: 100, provenance: { provider: "shortcut", device: null } },
+        { timestamp: "2026-09-17T16:55:00.000Z", bpm: 140, provenance: { provider: "shortcut", device: null } },
+      ] },
+    });
+
+    expect(early.summary).toEqual({ sampleMeanBpm: 120, maxObservedBpm: 140, basis: "observed-samples-only" });
+    expect(irregular.summary).toEqual(early.summary);
+    expect(irregular.samplingTopology).not.toEqual(early.samplingTopology);
+
+    const earlyEnergy = resolveWorkoutEnergyEvidenceV7(v7EnergyEvidence({ heartRate: early }));
+    const irregularEnergy = resolveWorkoutEnergyEvidenceV7(v7EnergyEvidence({ heartRate: irregular }));
+    expect(earlyEnergy.activeEnergy).toEqual({ availability: "unavailable", availabilityReason: "no-device-active-energy" });
+    expect(irregularEnergy.activeEnergy).toEqual(earlyEnergy.activeEnergy);
+    expect(earlyEnergy.activeEnergy).not.toHaveProperty("valueKcal");
+    expect(irregularEnergy.activeEnergy).not.toHaveProperty("valueKcal");
+
+    // P-K04 has no audited numeric adequacy threshold. Topology is exposed as
+    // observation fact only: no scientific quality label or confidence upgrade.
+    expect(irregular).not.toHaveProperty("coveragePercent");
+    expect(irregular).not.toHaveProperty("adequacyClassification");
+    expect(irregularEnergy).not.toHaveProperty("confidence");
+  });
+
+  it("v7 device active energy is available once with active semantics and estimate provenance", () => {
+    const result = resolveWorkoutEnergyEvidenceV7(v7EnergyEvidence({
+      deviceEnergy: {
+        availability: "available",
+        sourceValueStatus: "observed",
+        valueKcal: 211,
+        semantics: "active",
+        provenance: "device-estimate",
+      },
+    }));
+
+    expect(result.activeEnergy).toEqual({
+      availability: "available",
+      valueKcal: 211,
+      semantics: "active",
+      provenance: "device-estimate",
+    });
   });
 
   it("device active energy is counted once without a resting-energy adjustment", () => {

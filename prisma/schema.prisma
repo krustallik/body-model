@@ -23,6 +23,25 @@ model Profile {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
   modelEpisodes  ModelEpisode[]
+  stepperEquipmentAssignments StepperEquipmentAssignment[]
+}
+
+/**
+ * Versioned user-configured equipment identity. It is intentionally separate
+ * from Workout so a later configuration change cannot relabel source history.
+ */
+model StepperEquipmentAssignment {
+  id            Int      @id @default(autoincrement())
+  profileId     Int      @default(1)
+  machineFamily String   @db.VarChar(64)
+  configuration String   @db.VarChar(32)
+  effectiveFrom DateTime @db.Timestamptz(3)
+  /** Exclusive end; null means current until superseded. */
+  effectiveTo   DateTime? @db.Timestamptz(3)
+  createdAt     DateTime @default(now()) @db.Timestamptz(3)
+  profile       Profile  @relation(fields: [profileId], references: [id], onDelete: Restrict)
+
+  @@index([profileId, effectiveFrom, effectiveTo])
 }
 
 model DailyHealthData {

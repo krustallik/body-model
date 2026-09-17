@@ -74,14 +74,14 @@ function record(input: RecordInput): ScientificClaimManifestRecord {
   };
 }
 
-const v7DoseBlocker = "No v7 ProgramSnapshot/effective-set dose input or skeletal-muscle adaptation output exists.";
-const v7MuscleBlocker = "No v7 skeletalMuscleKg state, adaptation transition, or proxy-safe observation contract exists.";
+const v7DoseBlocker = "The canonical session snapshot exists, but no v7 effective-set dose or skeletal-muscle adaptation output exists.";
+const v7MuscleBlocker = "The v7 skeletalMuscleKg state contract exists, but no adaptation transition or proxy-safe observation contract exists.";
 const v7DetrainingBlocker = "No v7 training-history/cessation state or skeletal-muscle detraining transition exists.";
 const v7WorkoutGlycogenBlocker = "Workout dose is not connected to a v7 glycogen-demand transition with recruited-muscle context.";
 const v7StepperGlycogenBlocker = "No direct v7 stepper glycogen-demand seam exists; substrate coefficients remain deferred.";
 const v7CapacityBlocker = "No evidence-backed individualized glycogen-capacity state exists; universal clamps are forbidden.";
-const v7TransientWaterBlocker = "No v7 transient exercise-water state, cause provenance, or decay transition exists.";
-const v7HrBlocker = "Canonical v7 HR coverage/calibration inputs and a separately observable anabolic-dose output do not exist.";
+const v7TransientWaterBlocker = "The v7 transient exercise-water state exists, but no cause provenance or decay transition exists.";
+const v7HrBlocker = "Canonical raw HR interval provenance exists, but HR coverage/calibration inputs and a separately observable anabolic-dose output do not exist.";
 const v7SleepBlocker = "Canonical v7 sleep provenance/duration inputs and bounded sleep-context output do not exist.";
 const v7MeasurementBlocker = "No v7 measurement-role contract exposes skeletal muscle separately from lean/local/proxy endpoints.";
 
@@ -151,8 +151,8 @@ export const SCIENTIFIC_V7_CLAIMS: readonly ScientificClaimManifestRecord[] = [
 
   record({ claimId: "C-K01", title: "wearable active energy retains estimate provenance", parameterIds: ["P-K02"], evidenceIds: ["E-K01", "E-K02"], auditEligibility: "SAFE", testType: "unit", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE", "INPUT_CONTRACT"], scientificAssertion: "Device active energy retains source provenance and is not labeled criterion calorimetry.", executableTestName: "device active energy retains estimate provenance" }),
   record({ claimId: "C-K03", title: "valid current modality-relevant personal calibration can reduce uncertainty", parameterIds: ["P-K03"], evidenceIds: ["E-K03", "E-K04", "E-K05"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "unit", assertionTypes: ["ORDERING"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "A valid current modality-relevant personal calibration generally has no greater epistemic uncertainty than an uncalibrated estimate.", infrastructureBlocker: v7HrBlocker }),
-  record({ claimId: "C-K04", title: "sparse HR cannot recover unobserved transitions", parameterIds: ["P-K04"], evidenceIds: ["E-K09"], auditEligibility: "SAFE", testType: "unit", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Equal sparse average/max HR does not require equal true energy expenditure; no validated sampling cutoff is invented.", infrastructureBlocker: v7HrBlocker }),
-  record({ claimId: "C-K05", title: "maximum HR alone is not calorie dose", parameterIds: ["P-K05"], evidenceIds: ["E-K03", "E-K04", "E-K05"], auditEligibility: "SAFE", testType: "unit", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Maximum HR without duration cannot determine active energy.", infrastructureBlocker: v7HrBlocker }),
+  record({ claimId: "C-K04", title: "sparse HR cannot recover unobserved transitions", parameterIds: ["P-K04"], evidenceIds: ["E-K09"], auditEligibility: "SAFE", testType: "unit", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Equal sparse average/max HR does not require equal true energy expenditure; no validated sampling cutoff is invented.", executableTestName: "sparse HR cannot recover unobserved transitions" }),
+  record({ claimId: "C-K05", title: "maximum HR alone is not calorie dose", parameterIds: ["P-K05"], evidenceIds: ["E-K03", "E-K04", "E-K05"], auditEligibility: "SAFE", testType: "unit", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Maximum HR without duration cannot determine active energy.", executableTestName: "maximum HR alone does not determine active energy" }),
   record({ claimId: "C-K06", title: "matched mechanical stepper protocol energy is nondecreasing with duration", parameterIds: ["P-K06"], evidenceIds: ["E-G01", "E-G02", "E-G03"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "property", assertionTypes: ["MONOTONICITY"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "For the same mechanical protocol and efficiency assumptions, gross energy is nondecreasing with duration; body-mass scaling is not exact.", infrastructureBlocker: "No v7 stepper mechanical-protocol energy estimator exists; the current stair fallback deliberately returns no invented MET." }),
   record({ claimId: "C-K07", title: "active and gross energy semantics are not mixed", parameterIds: ["P-K07"], evidenceIds: ["E-G01", "E-G02"], auditEligibility: "SAFE", testType: "unit", assertionTypes: ["NO_DOUBLE_COUNTING", "CONSERVATION"], provenance: ["SCIENTIFIC_EVIDENCE", "MODEL_CONSERVATION_RULE", "INPUT_CONTRACT"], scientificAssertion: "Device active energy is used once without adding or subtracting a resting component in the active-energy resolver.", executableTestName: "device active energy is counted once without a resting-energy adjustment" }),
 
@@ -182,10 +182,10 @@ export const SCIENTIFIC_V7_CLAIMS: readonly ScientificClaimManifestRecord[] = [
 ];
 
 export const SCIENTIFIC_V7_FLOW_BLOCKERS = [
-  { id: "V7-LONGITUDINAL-COHORTS", testType: "longitudinal", testName: "audited matched cohorts expose skeletal muscle, glycogen water, fat, and total weight", reason: "The v7 state and ProgramSnapshot/sleep/HR inputs do not exist." },
+  { id: "V7-LONGITUDINAL-COHORTS", testType: "longitudinal", testName: "audited matched cohorts expose skeletal muscle, glycogen water, fat, and total weight", reason: "The v7 state and canonical session/HR seam exist, but no sleep input, transitions, or cohort harness exists." },
   { id: "V7-RECALC-WORKOUT", testType: "recalculation", testName: "historical workout edit rebuilds day D and all dependent v7 states", reason: "Episode persistence has no v7 workout-physiology state or calculation revision." },
-  { id: "V7-RECALC-PROGRAM", testType: "recalculation", testName: "program attachment change rebuilds the stimulus-dependent trajectory", reason: "Durable ProgramSnapshot attachment and v7 dose fingerprint are absent." },
+  { id: "V7-RECALC-PROGRAM", testType: "recalculation", testName: "program attachment change rebuilds the stimulus-dependent trajectory", reason: "The durable session snapshot and v7 input fingerprint exist, but they are not attached to persisted episode recalculation." },
   { id: "V7-RECALC-NUTRITION", testType: "recalculation", testName: "nutrition edit rebuilds dependent v7 physiology without mixed revisions", reason: "The episode rebuild exists, but v7 muscle/workout-glycogen/transient-water dependencies do not." },
   { id: "V7-FORECAST", testType: "forecast", testName: "matched future v7 scenarios expose fat, skeletal muscle, glycogen water, and total weight", reason: "Forecast outputs leanTissueKg and lack v7 ProgramSnapshot, skeletalMuscleKg, transient water, HR, and sleep inputs." },
-  { id: "V7-E2E", testType: "e2e", testName: "durable sources flow through canonical v7 input, rebuild, and forecast", reason: "No v7 canonical input/model entry point or durable ProgramSnapshot contract exists." },
+  { id: "V7-E2E", testType: "e2e", testName: "durable sources flow through canonical v7 input, rebuild, and forecast", reason: "The v7 canonical input contract exists, but no repository loader, simulator entry point, persistence, or forecast integration exists." },
 ] as const;

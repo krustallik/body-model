@@ -589,6 +589,7 @@ export class TrainingService {
         reps: validated.reps,
         weightKg: validated.weightKg,
         bandNominalResistanceKg: validated.bandNominalResistanceKg,
+        comment: input.comment === undefined ? undefined : input.comment,
         completedAt: input.completedAt ? new Date(input.completedAt) : new Date(),
       });
       await this.noteSetMutation(exercise.session);
@@ -647,6 +648,7 @@ export class TrainingService {
       reps: validated.reps,
       weightKg: validated.weightKg,
       bandNominalResistanceKg: validated.bandNominalResistanceKg,
+      comment: input.comment,
       completedAt:
         input.completedAt === undefined
           ? undefined
@@ -674,6 +676,21 @@ export class TrainingService {
     }
     await this.repo.deleteSet(setId, sessionId, profileId);
     await this.noteSetMutation(existing.sessionExercise.session);
+  }
+
+  async getExerciseHistory(
+    sessionId: number,
+    exerciseId: number,
+    profileId = DEFAULT_TRAINING_PROFILE_ID,
+  ) {
+    const exercise = await this.repo.findSessionExercise(sessionId, exerciseId, profileId);
+    if (!exercise) throw new SessionExerciseNotFoundError();
+    return this.repo.listExerciseHistory({
+      profileId,
+      excludeSessionId: sessionId,
+      catalogId: exercise.sourceExerciseCatalogId,
+      snapshotExerciseName: exercise.snapshotExerciseName,
+    });
   }
 
   async finishSession(

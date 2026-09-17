@@ -122,5 +122,6 @@ export const TRAINING_LIMITS = {
   maxPlannedSets: 50,
   maxReps: 10_000,
   maxLoadKg: 2_000,
+  maxSetCommentLength: 280,
   recentSessionsDefaultLimit: 20,
 } as const;

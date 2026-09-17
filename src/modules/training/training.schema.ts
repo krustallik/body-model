@@ -63,6 +63,7 @@ export const CreateSetSchema = z.object({
   bandNominalResistanceKg: nullableLoad,
   setNumber: z.preprocess(parseNullableNumericInput, z.number().int().positive().optional()),
   completedAt: z.string().datetime({ offset: true }).optional(),
+  comment: z.string().trim().max(TRAINING_LIMITS.maxSetCommentLength).nullable().optional(),
 }).strict();
 
 export const UpdateSetSchema = z.object({
@@ -70,6 +71,7 @@ export const UpdateSetSchema = z.object({
   weightKg: nullableLoad,
   bandNominalResistanceKg: nullableLoad,
   completedAt: z.string().datetime({ offset: true }).nullable().optional(),
+  comment: z.string().trim().max(TRAINING_LIMITS.maxSetCommentLength).nullable().optional(),
 }).strict().refine(
   (value) => Object.keys(value).length > 0,
   "at least one set field is required",

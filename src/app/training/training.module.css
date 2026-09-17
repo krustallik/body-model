@@ -673,6 +673,856 @@
   }
 }
 
+/* Shared live + edit workout shell (always dark — illustrations are on black) */
+.workoutShell,
+.editShell {
+  --ink: #edf4f0;
+  --muted: #a7b7af;
+  --line: #3a4a42;
+  --surface: #15201c;
+  --soft: #1d2a25;
+  --accent: #6fd1a6;
+  --accent-dark: #9ae0c0;
+  --live-save: #2f9e6d;
+  --live-save-text: #04140d;
+  --live-save-disabled-bg: #2a3832;
+  --live-save-disabled-text: #b7c6be;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-height: 100dvh;
+  margin: 0;
+  padding: 0.55rem 0.75rem calc(0.75rem + env(safe-area-inset-bottom));
+  color: var(--ink);
+  overflow-x: clip;
+  display: flex;
+  flex-direction: column;
+  touch-action: pan-y;
+  background: #0b1210;
+}
+
+.workoutFrame {
+  width: 100%;
+  max-width: 92rem; /* ~1472px */
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+
+.workoutTop {
+  position: relative;
+  display: grid;
+  gap: 0.4rem;
+  flex: 0 0 auto;
+}
+
+.workoutChrome {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 2.4rem;
+  pointer-events: none;
+}
+
+.workoutChromeBack,
+.workoutChromeMenu {
+  pointer-events: auto;
+}
+
+.workoutChromeMenu {
+  margin-left: auto;
+}
+
+.workoutHero {
+  display: grid;
+  gap: 0.12rem;
+  justify-items: center;
+  text-align: center;
+  padding: 0 2.75rem;
+}
+
+.workoutHero .liveProgram {
+  margin: 0;
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.workoutHero .liveProgress {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.workoutTitle {
+  margin: 0.2rem 0 0;
+  max-width: 42rem;
+  font-size: clamp(1.15rem, 3.8vw, 1.65rem);
+  line-height: 1.15;
+  letter-spacing: -0.03em;
+  text-align: center;
+}
+
+.workoutStatusRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem 0.45rem;
+  margin-top: 0.2rem;
+}
+
+.workoutShell .liveBadge {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent-dark);
+  padding: 0.15rem 0.5rem;
+  font-size: 0.74rem;
+}
+
+.workoutProgressBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent-dark);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.workoutExtraBadge {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.workoutDesktopActions {
+  display: none;
+}
+
+.workoutDesktopPrimary,
+.workoutDesktopDanger {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+}
+
+.workoutDesktopActionBtn {
+  min-height: 2rem;
+  padding: 0.25rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 0.45rem;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.workoutDesktopActionBtn:hover {
+  background: color-mix(in srgb, var(--surface) 75%, transparent);
+}
+
+.workoutDesktopActionBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.workoutDesktopDangerBtn {
+  min-height: 2rem;
+  padding: 0.25rem 0.55rem;
+  border: 1px solid color-mix(in srgb, #e6a0a0 40%, var(--line));
+  border-radius: 0.45rem;
+  background: color-mix(in srgb, #e6a0a0 8%, transparent);
+  color: #e6a0a0;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.workoutDesktopDangerBtn:hover {
+  background: color-mix(in srgb, #e6a0a0 14%, transparent);
+}
+
+.workoutDesktopDangerBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.editMenuBtn {
+  min-width: 2.2rem;
+  min-height: 2.2rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 1.1rem;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.workoutMenuBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  background: rgb(0 0 0 / 45%);
+  cursor: pointer;
+}
+
+.workoutActionPanel {
+  position: fixed;
+  z-index: 50;
+  left: 0.75rem;
+  right: 0.75rem;
+  bottom: calc(0.75rem + env(safe-area-inset-bottom));
+  max-height: min(70dvh, 28rem);
+  overflow: auto;
+  padding: 0.45rem;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 0.85rem 0.85rem 0.55rem 0.55rem;
+  box-shadow: 0 -8px 28px rgb(0 0 0 / 35%);
+}
+
+.editMenuList {
+  display: grid;
+  gap: 0.05rem;
+}
+
+.editMenuItem,
+.editMenuDanger {
+  display: flex;
+  align-items: center;
+  min-height: 2.25rem;
+  padding: 0.35rem 0.5rem;
+  border: 0;
+  border-radius: 0.45rem;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.editMenuItem:hover { background: color-mix(in srgb, var(--surface) 70%, transparent); }
+.editMenuDanger { color: #e6a0a0; }
+.editMenuDanger:hover { background: color-mix(in srgb, #e6a0a0 10%, transparent); }
+.editMenuItem + .editMenuDanger,
+a.editMenuItem + .editMenuDanger {
+  margin-top: 0.3rem;
+  border-top: 1px solid color-mix(in srgb, #e6a0a0 25%, var(--line));
+  padding-top: 0.55rem;
+  border-radius: 0;
+}
+
+.editMenuForm {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.editMenuForm select,
+.editMenuForm input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 2.6rem;
+  padding: 0.55rem 0.7rem;
+  color: var(--ink);
+  background: #101a16;
+  border: 1px solid #45554d;
+  border-radius: 0.55rem;
+  font: inherit;
+}
+
+.editMenuActions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.4rem;
+}
+
+.workoutWorkspace {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.55rem;
+  align-items: stretch;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.workoutSideNav {
+  display: none;
+}
+
+.workoutMain {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.65rem;
+  min-width: 0;
+  min-height: 0;
+}
+
+.workoutControls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+/* Portrait-safe image stage: size to the asset, never crop with cover */
+.workoutVisual {
+  position: relative;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 0;
+  padding: 0.35rem;
+  background: #050908;
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+
+.workoutImage {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: min(42dvh, 18rem);
+  object-fit: contain;
+  object-position: center;
+}
+
+.workoutVisualEmpty {
+  width: 100%;
+  min-height: 8rem;
+}
+
+.workoutImageHints {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  pointer-events: none;
+  padding: 0 0.2rem;
+}
+
+.workoutImageHint {
+  pointer-events: auto;
+  width: 1.85rem;
+  height: 1.85rem;
+  border: 0;
+  border-radius: 999px;
+  background: rgb(0 0 0 / 35%);
+  color: #edf4f0;
+  font: inherit;
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.55;
+}
+
+.workoutImageHint:disabled {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.workoutInfo {
+  display: grid;
+  gap: 0.3rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+  background: color-mix(in srgb, var(--soft) 80%, transparent);
+}
+
+.workoutInfoToggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.workoutInfoBody,
+.workoutInfoBodyCollapsed {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.workoutInfoBodyCollapsed {
+  display: none;
+}
+
+@media (min-width: 900px) {
+  .workoutInfoBodyCollapsed {
+    display: grid;
+  }
+
+  .workoutInfoToggle span:last-child {
+    display: none;
+  }
+}
+
+.workoutInfoLine {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.workoutInfoLine strong {
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.workoutCueList {
+  margin: 0.15rem 0 0;
+  padding-left: 1.05rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.workoutCommentToggle {
+  width: fit-content;
+  padding: 0.2rem 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.workoutSets {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.workoutShell .liveSectionTitle {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0;
+  font-size: 0.88rem;
+}
+
+.workoutSetsCount {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.workoutShell .liveEmptySets {
+  margin: 0;
+  font-size: 0.84rem;
+}
+
+.workoutShell .liveSetTable {
+  gap: 0.25rem;
+}
+
+.workoutShell .liveSetRow {
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr) auto auto;
+  grid-template-areas:
+    "num load reps actions"
+    "comment comment comment comment";
+  gap: 0.2rem 0.35rem;
+  padding: 0.4rem 0.45rem;
+  border-radius: 0.5rem;
+  font-size: 0.9rem;
+  min-height: 0;
+}
+
+.workoutShell .liveSetNum { grid-area: num; }
+.workoutShell .liveSetLoad { grid-area: load; }
+.workoutShell .liveSetReps { grid-area: reps; }
+.workoutShell .liveSetActions { grid-area: actions; }
+
+.liveSetComment {
+  grid-area: comment;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-style: italic;
+  line-height: 1.3;
+}
+
+.workoutIconBtn {
+  width: 1.85rem;
+  height: 1.85rem;
+  padding: 0;
+  border: 0;
+  border-radius: 0.4rem;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.workoutIconBtn:hover {
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  color: var(--ink);
+}
+
+.workoutIconBtnDanger:hover {
+  color: #e6a0a0;
+  background: color-mix(in srgb, #e6a0a0 12%, transparent);
+}
+
+.workoutHistory {
+  display: grid;
+  gap: 0.4rem;
+  padding-top: 0.15rem;
+}
+
+.workoutHistoryList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.workoutHistoryEntry {
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  background: color-mix(in srgb, var(--soft) 75%, transparent);
+}
+
+.workoutHistoryHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.25rem 0.6rem;
+  margin-bottom: 0.3rem;
+  font-size: 0.82rem;
+}
+
+.workoutHistoryHead span {
+  color: var(--muted);
+}
+
+.workoutHistorySets {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.15rem;
+}
+
+.workoutHistorySets li {
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr);
+  gap: 0.35rem 0.5rem;
+  align-items: baseline;
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.workoutHistorySets em {
+  grid-column: 2;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-style: italic;
+  font-weight: 500;
+}
+
+.workoutShell .liveEntry {
+  gap: 0.4rem;
+  margin-bottom: 0;
+}
+
+.workoutShell .liveField input {
+  min-height: 2.55rem;
+  padding: 0.5rem 0.65rem;
+  font-size: 1.02rem;
+  border-color: #45554d;
+  background: #101a16;
+}
+
+.workoutShell .liveSave {
+  min-height: 2.65rem;
+  font-size: 0.98rem;
+}
+
+.workoutShell .liveSecondary {
+  min-height: 2.35rem;
+}
+
+.editSlideLeft {
+  animation: editSlideFromRight 160ms ease-out;
+}
+
+.editSlideRight {
+  animation: editSlideFromLeft 160ms ease-out;
+}
+
+@keyframes editSlideFromRight {
+  from { opacity: 0.35; transform: translateX(12px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes editSlideFromLeft {
+  from { opacity: 0.35; transform: translateX(-12px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.trainingHubPage {
+  max-width: 72rem;
+}
+
+.trainingHubGrid {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.archiveButton {
+  min-height: 2.35rem;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid color-mix(in srgb, #c45a5a 55%, var(--line));
+  border-radius: 0.65rem;
+  background: color-mix(in srgb, #c45a5a 10%, transparent);
+  color: #d46b6b;
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.archiveButton:hover {
+  background: color-mix(in srgb, #c45a5a 18%, transparent);
+  border-color: #c45a5a;
+}
+
+.archiveButton:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Compact hybrid tablet */
+@media (min-width: 768px) and (max-width: 899px) {
+  .workoutFrame {
+    padding: 0 0.5rem;
+  }
+
+  .workoutImage {
+    max-height: min(46dvh, 22rem);
+  }
+}
+
+/* True desktop two-column workspace */
+@media (min-width: 900px) {
+  .workoutShell,
+  .editShell {
+    padding: 0.85rem 1.25rem 1.25rem;
+  }
+
+  .workoutFrame {
+    gap: 0.75rem;
+    min-height: calc(100dvh - 1.7rem);
+  }
+
+  .workoutTitle {
+    font-size: clamp(1.3rem, 1.6vw, 1.7rem);
+  }
+
+  .workoutWorkspace {
+    grid-template-columns: 2.75rem minmax(0, 1fr) 2.75rem;
+    gap: 0.65rem;
+    align-items: center;
+    flex: 1 1 auto;
+  }
+
+  .workoutSideNav {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.6rem;
+    height: 2.6rem;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--soft);
+    color: var(--ink);
+    font: inherit;
+    font-size: 1.1rem;
+    font-weight: 800;
+    cursor: pointer;
+    align-self: center;
+  }
+
+  .workoutSideNav:disabled,
+  .workoutSideNavHidden {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .workoutMain {
+    grid-template-columns: minmax(0, 1.35fr) minmax(17rem, 0.95fr);
+    gap: 1.15rem;
+    align-items: start;
+  }
+
+  .workoutVisual {
+    align-self: stretch;
+    min-height: min(62vh, 38rem);
+    max-height: min(72vh, 46rem);
+    padding: 0.5rem;
+  }
+
+  .workoutImage {
+    max-height: min(70vh, 44rem);
+    max-width: 100%;
+  }
+
+  .workoutImageHints {
+    display: none;
+  }
+
+  .workoutControls {
+    align-self: stretch;
+    justify-content: flex-start;
+    gap: 0.7rem;
+    max-width: 28rem;
+    max-height: min(78vh, 48rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-right: 0.15rem;
+  }
+
+  .workoutSets {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .workoutHistory {
+    margin-top: 0.15rem;
+  }
+
+  .trainingHubGrid {
+    grid-template-columns: 1fr 1fr;
+    gap: 0.9rem;
+  }
+}
+
+@media (min-width: 1024px) {
+  .workoutChromeMenu {
+    display: none;
+  }
+
+  .workoutHero {
+    padding: 0 1rem;
+  }
+
+  .workoutDesktopActions {
+    display: grid;
+    gap: 0.4rem;
+    justify-items: center;
+    margin-top: 0.15rem;
+  }
+
+  .workoutMenuBackdrop {
+    background: rgb(0 0 0 / 25%);
+  }
+
+  .workoutActionPanel {
+    position: absolute;
+    left: 50%;
+    right: auto;
+    bottom: auto;
+    top: calc(100% + 0.35rem);
+    transform: translateX(-50%);
+    width: min(28rem, 92%);
+    max-height: min(70vh, 26rem);
+    border-radius: 0.7rem;
+    box-shadow: 0 12px 32px rgb(0 0 0 / 40%);
+  }
+}
+
+@media (min-width: 1440px) {
+  .workoutFrame {
+    max-width: 94rem;
+  }
+
+  .workoutMain {
+    grid-template-columns: minmax(0, 1.45fr) minmax(18rem, 0.9fr);
+    gap: 1.5rem;
+  }
+
+  .workoutVisual {
+    min-height: min(66vh, 42rem);
+  }
+
+  .workoutImage {
+    max-height: min(72vh, 48rem);
+  }
+}
+
+@media (max-width: 430px) {
+  .workoutShell,
+  .editShell {
+    padding-left: 0.65rem;
+    padding-right: 0.65rem;
+  }
+
+  .workoutHero {
+    padding: 0 2.5rem;
+  }
+
+  .workoutImage {
+    max-height: min(38dvh, 16.5rem);
+  }
+
+  .workoutShell .liveFields {
+    gap: 0.4rem;
+  }
+}
+
+@media (max-width: 360px) {
+  .workoutShell .liveFields {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* Keep shared set helpers for non-live editors */
 .setList {
   display: grid;

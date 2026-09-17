@@ -191,7 +191,7 @@ export function TrainingClient() {
   }
 
   return (
-    <main className={styles.page}>
+    <main className={`${styles.page} ${styles.trainingHubPage}`}>
       <div className={styles.navRow}>
         <strong>BodyCast</strong>
         <AppNav active="training" />
@@ -222,6 +222,7 @@ export function TrainingClient() {
       <div className={styles.stack}>
         {attentionHasItems && renderAttention()}
 
+        <div className={styles.trainingHubGrid}>
         <section className={styles.panel} aria-label={uk ? "Активна сесія" : "Active session"}>
           <div className={styles.panelHeader}>
             <div>
@@ -301,7 +302,7 @@ export function TrainingClient() {
                         {uk ? "Редагувати" : "Edit"}
                       </Link>
                       <button
-                        className={styles.textButton}
+                        className={styles.archiveButton}
                         type="button"
                         disabled={busyId === program.id}
                         onClick={() => void archiveProgram(program.id)}
@@ -315,7 +316,9 @@ export function TrainingClient() {
             )}
           </div>
         </section>
+        </div>
 
+        <div className={styles.trainingHubGrid}>
         <section className={styles.panel} aria-label={uk ? "Нещодавні силові сесії" : "Recent strength sessions"}>
           <div className={styles.panelHeader}>
             <div>
@@ -363,6 +366,7 @@ export function TrainingClient() {
         </section>
 
         {!attentionHasItems && renderAttention()}
+        </div>
       </div>
     </main>
   );

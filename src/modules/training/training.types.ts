@@ -62,9 +62,26 @@ export type StrengthSetDto = {
   reps: number;
   weightKg: number | null;
   bandNominalResistanceKg: number | null;
+  comment: string | null;
   completedAt: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type ExerciseHistorySetDto = {
+  setNumber: number;
+  reps: number;
+  weightKg: number | null;
+  bandNominalResistanceKg: number | null;
+  comment: string | null;
+};
+
+export type ExerciseHistoryEntryDto = {
+  sessionId: number;
+  occurredAt: string;
+  programName: string;
+  resistanceType: ResistanceType;
+  sets: ExerciseHistorySetDto[];
 };
 
 export type StrengthSessionExerciseDto = {

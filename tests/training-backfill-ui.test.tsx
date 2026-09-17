@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 vi.mock("@/i18n/i18n-provider", () => ({
@@ -161,11 +161,14 @@ describe("Session edit UI", () => {
     routerReplace.mockReset();
   });
 
-  it("loads completed session with Garmin context and set editing", async () => {
+  it("loads completed session pager with delete diary in menu", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("confirm", vi.fn(() => true));
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo, init?: RequestInit) => {
       const url = String(input);
+      if (url.includes("/history")) {
+        return Response.json({ entries: [] });
+      }
       if (url.includes("/sessions/88") && init?.method === "DELETE") {
         return Response.json({ deleted: true, matchedWorkoutId: 501 });
       }
@@ -189,27 +192,21 @@ describe("Session edit UI", () => {
           }],
         });
       }
-      if (url.includes("/program") && init?.method === "POST") {
-        return Response.json({ session: { ...session, programName: "Pull B", revision: 3 } });
-      }
       return new Response("not found", { status: 404 });
     }));
 
     render(<SessionEditClient sessionId={88} />);
     await waitFor(() => {
       expect(screen.getByText("Push A")).toBeTruthy();
-      expect(screen.getByText(/Garmin \(read-only\)/i)).toBeTruthy();
-      expect(screen.getByText(/30 kg/)).toBeTruthy();
-      expect(screen.getByRole("button", { name: /Delete diary/i })).toBeTruthy();
+      expect(screen.getByText("Жим")).toBeTruthy();
+      expect(screen.getByText(/30 kg|30 кг/)).toBeTruthy();
+      expect(screen.getByRole("button", { name: /Session menu/i })).toBeTruthy();
     });
 
-    await user.click(screen.getByRole("button", { name: /^Change$/i }));
-    expect(screen.getByRole("button", { name: /Apply/i })).toBeTruthy();
-    expect(screen.queryByText(/^Version$/i)).toBeNull();
-    expect(screen.queryByText(/Show archived/i)).toBeNull();
-    expect(screen.getByText(/Always uses the program/i)).toBeTruthy();
-
-    await user.click(screen.getByRole("button", { name: /Delete diary/i }));
+    await user.click(screen.getByRole("button", { name: /Session menu/i }));
+    const dialog = screen.getByRole("dialog", { name: /Actions|Дії/i });
+    expect(within(dialog).getByRole("button", { name: /Change program/i })).toBeTruthy();
+    await user.click(within(dialog).getByRole("button", { name: /Delete diary/i }));
     await waitFor(() => {
       expect(routerPush).toHaveBeenCalledWith("/training/backfill");
     });

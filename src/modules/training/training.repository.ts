@@ -23,6 +23,7 @@ import type { ProgramReconcilePlan } from "./training.program-reconcile";
 import { ordinaryExternalWeightTonnageKg } from "./training.tonnage";
 import type {
   ExerciseCatalogDto,
+  ExerciseHistoryEntryDto,
   HistoricalStrengthWorkoutDto,
   MatchCandidateDto,
   MatchedWorkoutDto,
@@ -60,6 +61,7 @@ const setSelect = {
   reps: true,
   weightKg: true,
   bandNominalResistanceKg: true,
+  comment: true,
   completedAt: true,
   createdAt: true,
   updatedAt: true,
@@ -172,6 +174,7 @@ function toSetDto(record: SetRecord): StrengthSetDto {
     reps: record.reps,
     weightKg: decimalToNumber(record.weightKg),
     bandNominalResistanceKg: decimalToNumber(record.bandNominalResistanceKg),
+    comment: record.comment ?? null,
     completedAt: record.completedAt?.toISOString() ?? null,
     createdAt: record.createdAt.toISOString(),
     updatedAt: record.updatedAt.toISOString(),
@@ -702,6 +705,8 @@ export class TrainingRepository {
       select: {
         id: true,
         sessionId: true,
+        sourceExerciseCatalogId: true,
+        snapshotExerciseName: true,
         resistanceType: true,
         session: {
           select: {
@@ -975,6 +980,7 @@ export class TrainingRepository {
     reps: number;
     weightKg: number | null;
     bandNominalResistanceKg: number | null;
+    comment?: string | null;
     completedAt: Date | null;
   }): Promise<StrengthSetDto> {
     const row = await this.db.strengthSet.create({
@@ -984,6 +990,9 @@ export class TrainingRepository {
         reps: input.reps,
         weightKg: input.weightKg,
         bandNominalResistanceKg: input.bandNominalResistanceKg,
+        comment: input.comment === undefined
+          ? undefined
+          : (input.comment?.trim() ? input.comment.trim() : null),
         completedAt: input.completedAt,
       },
       select: setSelect,
@@ -998,6 +1007,7 @@ export class TrainingRepository {
     reps?: number;
     weightKg?: number | null;
     bandNominalResistanceKg?: number | null;
+    comment?: string | null;
     completedAt?: Date | null;
   }): Promise<StrengthSetDto | null> {
     const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
@@ -1017,6 +1027,9 @@ export class TrainingRepository {
         ...(input.weightKg !== undefined ? { weightKg: input.weightKg } : {}),
         ...(input.bandNominalResistanceKg !== undefined
           ? { bandNominalResistanceKg: input.bandNominalResistanceKg }
+          : {}),
+        ...(input.comment !== undefined
+          ? { comment: input.comment?.trim() ? input.comment.trim() : null }
           : {}),
         ...(input.completedAt !== undefined ? { completedAt: input.completedAt } : {}),
       },
@@ -1040,6 +1053,85 @@ export class TrainingRepository {
     if (!existing) return false;
     await this.db.strengthSet.delete({ where: { id: setId } });
     return true;
+  }
+
+  /**
+   * Prior completed sessions for the same catalog exercise (or snapshot name fallback).
+   * Newest first. Excludes the current session and empty set lists.
+   */
+  async listExerciseHistory(input: {
+    profileId?: number;
+    excludeSessionId: number;
+    catalogId: number | null;
+    snapshotExerciseName: string;
+    limit?: number;
+  }): Promise<ExerciseHistoryEntryDto[]> {
+    const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+    const limit = Math.min(Math.max(input.limit ?? 8, 1), 20);
+    const identityFilter = input.catalogId != null
+      ? { sourceExerciseCatalogId: input.catalogId }
+      : { snapshotExerciseName: input.snapshotExerciseName };
+
+    const rows = await this.db.strengthSessionExercise.findMany({
+      where: {
+        ...identityFilter,
+        sessionId: { not: input.excludeSessionId },
+        session: {
+          profileId,
+          status: SESSION_STATUS.COMPLETED,
+        },
+        sets: { some: {} },
+      },
+      orderBy: [
+        { session: { matchedWorkout: { startAt: "desc" } } },
+        { session: { webStartedAt: "desc" } },
+        { session: { createdAt: "desc" } },
+      ],
+      take: limit,
+      select: {
+        resistanceType: true,
+        sessionId: true,
+        session: {
+          select: {
+            webStartedAt: true,
+            createdAt: true,
+            program: { select: { name: true } },
+            matchedWorkout: { select: { startAt: true } },
+          },
+        },
+        sets: {
+          orderBy: { setNumber: "desc" },
+          select: {
+            setNumber: true,
+            reps: true,
+            weightKg: true,
+            bandNominalResistanceKg: true,
+            comment: true,
+          },
+        },
+      },
+    });
+
+    return rows.map((row) => {
+      const occurredAt = (
+        row.session.matchedWorkout?.startAt
+        ?? row.session.webStartedAt
+        ?? row.session.createdAt
+      ).toISOString();
+      return {
+        sessionId: row.sessionId,
+        occurredAt,
+        programName: row.session.program.name,
+        resistanceType: row.resistanceType as ResistanceType,
+        sets: row.sets.map((set) => ({
+          setNumber: set.setNumber,
+          reps: set.reps,
+          weightKg: decimalToNumber(set.weightKg),
+          bandNominalResistanceKg: decimalToNumber(set.bandNominalResistanceKg),
+          comment: set.comment ?? null,
+        })),
+      };
+    });
   }
 
   async findSetForSession(setId: number, sessionId: number, profileId = DEFAULT_TRAINING_PROFILE_ID) {

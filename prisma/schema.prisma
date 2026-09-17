@@ -340,6 +340,8 @@ model StrengthSet {
   reps                     Int
   weightKg                 Decimal?  @db.Decimal(8, 2)
   bandNominalResistanceKg  Decimal?  @db.Decimal(8, 2)
+  /** Optional short note for this set (form feel, band used, etc.). */
+  comment                  String?   @db.VarChar(280)
   completedAt              DateTime? @db.Timestamptz(3)
   createdAt                DateTime  @default(now()) @db.Timestamptz(3)
   updatedAt                DateTime  @updatedAt @db.Timestamptz(3)

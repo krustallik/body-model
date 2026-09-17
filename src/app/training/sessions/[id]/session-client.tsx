@@ -1,20 +1,26 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppNav } from "@/components/app-nav";
 import { useI18n } from "@/i18n/i18n-provider";
 import {
   MATCH_STATUS,
   RESISTANCE,
   SESSION_STATUS,
-  type ResistanceType,
 } from "@/modules/training/training.constants";
 import type {
   MatchCandidateDto,
   StrengthSessionDto,
   StrengthSetDto,
 } from "@/modules/training/training.types";
+import {
+  indexOfExerciseId,
+  neighborExerciseId,
+  resolveFocusedExerciseId,
+} from "../../exercise-pager";
+import { shouldHandleKeyboardExerciseNav } from "../../horizontal-swipe";
 import {
   formatClock,
   formatDateTime,
@@ -23,27 +29,31 @@ import {
   readApiError,
   resistanceLabel,
 } from "../../training-labels";
+import {
+  emptySetDraft,
+  TrainingExerciseWorkspace,
+} from "../../training-exercise-workspace";
 import styles from "../../training.module.css";
-
-function emptyDraft(resistance: ResistanceType): { reps: string; weightKg: string; bandNominalResistanceKg: string } {
-  return {
-    reps: "",
-    weightKg: resistance === RESISTANCE.EXTERNAL_WEIGHT ? "" : "",
-    bandNominalResistanceKg: resistance === RESISTANCE.RESISTANCE_BAND ? "" : "",
-  };
-}
 
 export function SessionClient({ sessionId }: { sessionId: number }) {
   const { locale, intlLocale } = useI18n();
   const uk = locale === "uk";
+  const router = useRouter();
   const [session, setSession] = useState<StrengthSessionDto | null>(null);
-  const [exerciseIndex, setExerciseIndex] = useState(0);
-  const [draft, setDraft] = useState(emptyDraft(RESISTANCE.EXTERNAL_WEIGHT));
+  const [focusedExerciseId, setFocusedExerciseId] = useState<number | null>(null);
+  const [draft, setDraft] = useState(emptySetDraft());
   const [editingSetId, setEditingSetId] = useState<number | null>(null);
   const [candidates, setCandidates] = useState<MatchCandidateDto[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [slideDir, setSlideDir] = useState<"none" | "left" | "right">("none");
+  const slideTimerRef = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (slideTimerRef.current != null) window.clearTimeout(slideTimerRef.current);
+  }, []);
 
   const load = useCallback(async () => {
     setError(null);
@@ -55,11 +65,9 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         return;
       }
       const body = await response.json() as { session: StrengthSessionDto };
+      const ordered = body.session.exercises.slice().sort((a, b) => a.order - b.order);
       setSession(body.session);
-      setExerciseIndex((current) => {
-        const max = Math.max(0, body.session.exercises.length - 1);
-        return Math.min(current, max);
-      });
+      setFocusedExerciseId((current) => resolveFocusedExerciseId(ordered, current));
     } catch {
       setError(uk ? "Не вдалося завантажити сесію." : "Could not load the session.");
     } finally {
@@ -83,16 +91,37 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     () => (session?.exercises ?? []).slice().sort((a, b) => a.order - b.order),
     [session],
   );
-  const current = exercises[exerciseIndex] ?? null;
+  const exerciseIndex = indexOfExerciseId(exercises, focusedExerciseId);
+  const current = exercises.find((exercise) => exercise.id === focusedExerciseId) ?? exercises[0] ?? null;
 
-  function goToExercise(index: number) {
-    const next = exercises[index];
-    setExerciseIndex(index);
-    if (next) {
-      setDraft(emptyDraft(next.resistanceType));
-      setEditingSetId(null);
-    }
+  function goToNeighbor(delta: -1 | 1) {
+    const nextId = neighborExerciseId(exercises, focusedExerciseId, delta);
+    if (nextId == null) return;
+    setSlideDir(delta > 0 ? "left" : "right");
+    setFocusedExerciseId(nextId);
+    setEditingSetId(null);
+    setDraft(emptySetDraft());
+    setMenuOpen(false);
+    setError(null);
+    if (slideTimerRef.current != null) window.clearTimeout(slideTimerRef.current);
+    slideTimerRef.current = window.setTimeout(() => setSlideDir("none"), 180);
   }
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (!shouldHandleKeyboardExerciseNav(event.key, document.activeElement)) return;
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        goToNeighbor(-1);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        goToNeighbor(1);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exercises, focusedExerciseId]);
 
   useEffect(() => {
     if (!session || session.status === SESSION_STATUS.ACTIVE) return;
@@ -120,7 +149,10 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
       setError(uk ? "Вкажіть кількість повторень." : "Enter reps.");
       return;
     }
-    const payload: Record<string, number | null> = { reps };
+    const payload: Record<string, number | string | null> = {
+      reps,
+      comment: draft.comment.trim() ? draft.comment.trim() : null,
+    };
     if (current.resistanceType === RESISTANCE.EXTERNAL_WEIGHT) {
       const weightKg = Number(draft.weightKg);
       if (!Number.isFinite(weightKg) || weightKg <= 0) {
@@ -161,7 +193,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         return;
       }
       await load();
-      setDraft(emptyDraft(current.resistanceType));
+      setDraft(emptySetDraft());
       setEditingSetId(null);
     } catch {
       setError(uk ? "Не вдалося зберегти підхід." : "Could not save the set.");
@@ -194,7 +226,10 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     setDraft({
       reps: String(set.reps),
       weightKg: set.weightKg === null ? "" : String(set.weightKg),
-      bandNominalResistanceKg: set.bandNominalResistanceKg === null ? "" : String(set.bandNominalResistanceKg),
+      bandNominalResistanceKg: set.bandNominalResistanceKg === null
+        ? ""
+        : String(set.bandNominalResistanceKg),
+      comment: set.comment ?? "",
     });
   }
 
@@ -212,6 +247,29 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
       await load();
     } catch {
       setError(uk ? "Не вдалося завершити сесію." : "Could not finish the session.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelSession() {
+    if (!session) return;
+    if (!window.confirm(
+      uk
+        ? "Скасувати тренування? Програма залишиться, ACTIVE-сесію буде скасовано."
+        : "Cancel this workout? The program stays; the ACTIVE session will be cancelled.",
+    )) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/v1/training/sessions/${session.id}/cancel`, { method: "POST" });
+      if (!response.ok) {
+        setError(await readApiError(response, uk));
+        return;
+      }
+      router.push("/training");
+    } catch {
+      setError(uk ? "Не вдалося скасувати тренування." : "Could not cancel the workout.");
     } finally {
       setBusy(false);
     }
@@ -241,7 +299,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
 
   if (loading) {
     return (
-      <main className={styles.page}>
+      <main className={styles.workoutShell}>
         <p className={styles.cardMeta}>{uk ? "Завантаження…" : "Loading…"}</p>
       </main>
     );
@@ -261,197 +319,91 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
   }
 
   if (session.status === SESSION_STATUS.ACTIVE && current) {
-    const sets = current.sets.slice().sort((a, b) => a.setNumber - b.setNumber);
-    const repsOk = Number.isFinite(Number(draft.reps)) && Number(draft.reps) >= 1;
-    const weightOk = current.resistanceType !== RESISTANCE.EXTERNAL_WEIGHT
-      || (Number.isFinite(Number(draft.weightKg)) && Number(draft.weightKg) > 0);
-    const bandOk = current.resistanceType !== RESISTANCE.RESISTANCE_BAND
-      || (Number.isFinite(Number(draft.bandNominalResistanceKg)) && Number(draft.bandNominalResistanceKg) > 0);
-    const canSave = !busy && repsOk && weightOk && bandOk;
-
-    function switchExercise(index: number) {
-      goToExercise(index);
-      try {
-        window.scrollTo(0, 0);
-      } catch {
-        // jsdom may not implement scrollTo
-      }
-    }
-
+    const isLast = exerciseIndex >= exercises.length - 1;
     return (
-      <main className={styles.liveShell}>
-        <header className={styles.liveTop}>
-          <Link className={styles.liveBack} href="/training">
-            {uk ? "← Тренування" : "← Training"}
-          </Link>
-          <p className={styles.liveProgram}>{session.programName}</p>
-          <p className={styles.liveProgress}>
-            {uk
-              ? `${exerciseIndex + 1} / ${exercises.length} вправ`
-              : `${exerciseIndex + 1} / ${exercises.length} exercises`}
-          </p>
-        </header>
-
-        {error && <div className={styles.errorBanner} role="alert">{error}</div>}
-
-        <section className={styles.liveExercise} aria-labelledby="live-exercise-title">
-          <h1 id="live-exercise-title" className={styles.liveExerciseTitle}>
-            {current.snapshotExerciseName}
-          </h1>
-          <p className={styles.liveExerciseMeta}>
-            <span className={styles.liveBadge}>{resistanceLabel(current.resistanceType, uk)}</span>
-            <span>
-              {uk
-                ? `${current.plannedSets} заплановані підходи`
-                : `${current.plannedSets} planned sets`}
-            </span>
-          </p>
-        </section>
-
-        <section className={styles.liveSets} aria-label={uk ? "Підходи" : "Sets"}>
-          <h2 className={styles.liveSectionTitle}>{uk ? "Підходи" : "Sets"}</h2>
-          {sets.length === 0 ? (
-            <p className={styles.liveEmptySets}>
-              {uk ? "Ще немає записаних підходів." : "No sets logged yet."}
-            </p>
-          ) : (
-            <ul className={styles.liveSetTable}>
-              {sets.map((set) => (
-                <li className={styles.liveSetRow} key={set.id}>
-                  <span className={styles.liveSetNum}>{set.setNumber}</span>
-                  <span className={styles.liveSetLoad}>
-                    {current.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && set.weightKg !== null
-                      ? `${set.weightKg} ${uk ? "кг" : "kg"}`
-                      : current.resistanceType === RESISTANCE.RESISTANCE_BAND
-                        && set.bandNominalResistanceKg !== null
-                        ? `${set.bandNominalResistanceKg} ${uk ? "кг резинки" : "kg band"}`
-                        : (uk ? "власна вага" : "bodyweight")}
-                  </span>
-                  <span className={styles.liveSetReps}>
-                    {set.reps} {uk ? "повт." : "reps"}
-                  </span>
-                  <span className={styles.liveSetActions}>
-                    <button
-                      className={styles.textButton}
-                      type="button"
-                      onClick={() => beginEdit(set)}
-                    >
-                      {uk ? "Змінити" : "Edit"}
-                    </button>
-                    <button
-                      className={styles.textButton}
-                      type="button"
-                      disabled={busy}
-                      onClick={() => void deleteSet(set.id)}
-                    >
-                      {uk ? "Видалити" : "Delete"}
-                    </button>
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-
-        <section className={styles.liveEntry} aria-label={uk ? "Новий підхід" : "New set"}>
-          <h2 className={styles.liveSectionTitle}>
-            {editingSetId === null ? (uk ? "Новий підхід" : "New set") : (uk ? "Редагувати підхід" : "Edit set")}
-          </h2>
-          <div className={styles.liveFields}>
-            {current.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && (
-              <label className={styles.liveField}>
-                <span>{uk ? "Вага, кг" : "Weight, kg"}</span>
-                <input
-                  inputMode="decimal"
-                  autoComplete="off"
-                  value={draft.weightKg}
-                  onChange={(event) => setDraft((value) => ({ ...value, weightKg: event.target.value }))}
-                />
-              </label>
-            )}
-            {current.resistanceType === RESISTANCE.RESISTANCE_BAND && (
-              <label className={styles.liveField}>
-                <span>{uk ? "Опір резинки, кг" : "Band resistance, kg"}</span>
-                <input
-                  inputMode="decimal"
-                  autoComplete="off"
-                  value={draft.bandNominalResistanceKg}
-                  onChange={(event) => setDraft((value) => ({
-                    ...value,
-                    bandNominalResistanceKg: event.target.value,
-                  }))}
-                />
-              </label>
-            )}
-            <label className={styles.liveField}>
-              <span>{uk ? "Повтори" : "Reps"}</span>
-              <input
-                inputMode="numeric"
-                autoComplete="off"
-                value={draft.reps}
-                onChange={(event) => setDraft((value) => ({ ...value, reps: event.target.value }))}
-              />
-            </label>
-          </div>
-          <div className={styles.liveSaveRow}>
-            {editingSetId !== null && (
+      <TrainingExerciseWorkspace
+        uk={uk}
+        mode="live"
+        sessionId={session.id}
+        backHref="/training"
+        programName={session.programName}
+        exercise={current}
+        exerciseIndex={exerciseIndex}
+        exerciseCount={exercises.length}
+        draft={draft}
+        editingSetId={editingSetId}
+        busy={busy}
+        error={error}
+        slideDir={slideDir}
+        menuOpen={menuOpen}
+        onToggleMenu={() => setMenuOpen((value) => !value)}
+        onCloseMenu={() => setMenuOpen(false)}
+        menuContent={(
+          <div className={styles.editMenuList}>
+            {isLast && (
               <button
-                className={styles.liveSecondary}
                 type="button"
-                onClick={() => {
-                  setEditingSetId(null);
-                  setDraft(emptyDraft(current.resistanceType));
-                }}
+                className={styles.editMenuItem}
+                disabled={busy}
+                onClick={() => void finishSession()}
               >
-                {uk ? "Скасувати" : "Cancel"}
+                {uk ? "Завершити тренування" : "Finish workout"}
               </button>
             )}
             <button
-              className={styles.liveSave}
               type="button"
-              disabled={!canSave}
-              onClick={() => void saveSet()}
+              className={styles.editMenuDanger}
+              disabled={busy}
+              onClick={() => void cancelSession()}
             >
-              {busy
-                ? (uk ? "Збереження…" : "Saving…")
-                : (uk ? "Зберегти підхід" : "Save set")}
+              {uk ? "Скасувати тренування" : "Cancel workout"}
             </button>
           </div>
-        </section>
-
-        <nav className={styles.liveNav} aria-label={uk ? "Навігація вправ" : "Exercise navigation"}>
+        )}
+        desktopPrimaryActions={isLast ? (
           <button
-            className={styles.liveNavBtn}
             type="button"
-            disabled={exerciseIndex === 0}
-            onClick={() => switchExercise(Math.max(0, exerciseIndex - 1))}
+            className={styles.workoutDesktopActionBtn}
+            disabled={busy}
+            onClick={() => void finishSession()}
           >
-            {uk ? "← Попередня" : "← Previous"}
+            {uk ? "Завершити тренування" : "Finish workout"}
           </button>
-          {exerciseIndex < exercises.length - 1 ? (
-            <button
-              className={styles.liveNavBtnNext}
-              type="button"
-              onClick={() => switchExercise(Math.min(exercises.length - 1, exerciseIndex + 1))}
-            >
-              {uk ? "Наступна →" : "Next →"}
-            </button>
-          ) : (
-            <button
-              className={styles.liveNavBtnNext}
-              type="button"
-              disabled={busy}
-              onClick={() => void finishSession()}
-            >
-              {uk ? "Завершити" : "Finish"}
-            </button>
-          )}
-        </nav>
-      </main>
+        ) : null}
+        desktopDangerActions={(
+          <button
+            type="button"
+            className={styles.workoutDesktopDangerBtn}
+            disabled={busy}
+            onClick={() => void cancelSession()}
+          >
+            {uk ? "Скасувати тренування" : "Cancel workout"}
+          </button>
+        )}
+        onPrev={() => goToNeighbor(-1)}
+        onNext={() => goToNeighbor(1)}
+        onDraftChange={setDraft}
+        onSaveSet={() => void saveSet()}
+        onBeginEditSet={beginEdit}
+        onCancelEditSet={() => {
+          setEditingSetId(null);
+          setDraft(emptySetDraft());
+        }}
+        onDeleteSet={(setId) => void deleteSet(setId)}
+        trailingAction={isLast ? (
+          <button
+            className={styles.liveSecondary}
+            type="button"
+            disabled={busy}
+            onClick={() => void finishSession()}
+          >
+            {uk ? "Завершити тренування" : "Finish workout"}
+          </button>
+        ) : null}
+      />
     );
   }
 
-  // Completed / cancelled detail + match UI
   return (
     <main className={styles.page}>
       <div className={styles.navRow}>
@@ -474,7 +426,14 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
             )}
           </p>
         </div>
-        <Link className={styles.secondaryButton} href="/training">{uk ? "Назад" : "Back"}</Link>
+        <div className={styles.rowActions}>
+          {session.status === SESSION_STATUS.COMPLETED && (
+            <Link className={styles.secondaryButton} href={`/training/sessions/${session.id}/edit`}>
+              {uk ? "Редагувати" : "Edit"}
+            </Link>
+          )}
+          <Link className={styles.secondaryButton} href="/training">{uk ? "Назад" : "Back"}</Link>
+        </div>
       </header>
 
       {error && <div className={styles.errorBanner} role="alert">{error}</div>}
@@ -521,7 +480,6 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
                 </div>
               </dl>
             </section>
-
             <section>
               <h3>{uk ? "Garmin / пристрій" : "Garmin / device"}</h3>
               {session.matchedWorkout ? (
@@ -557,9 +515,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
                 </dl>
               ) : (
                 <p className={styles.cardMeta}>
-                  {uk
-                    ? "Немає зіставленого workout з пристрою."
-                    : "No matched device workout."}
+                  {uk ? "Немає зіставленого workout з пристрою." : "No matched device workout."}
                 </p>
               )}
             </section>

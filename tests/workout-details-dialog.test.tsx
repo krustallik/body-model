@@ -106,4 +106,30 @@ describe("WorkoutDetailsDialog", () => {
     expect(html).toContain("legacy");
     expect(html).not.toContain("–");
   });
+
+  it("still lists workout timing when active energy is missing", () => {
+    const html = renderToStaticMarkup(
+      <WorkoutDetailsDialog
+        day={baseDay({
+          workoutSource: "workouts",
+          totalWorkoutMinutes: 40,
+          workouts: [{
+            type: "Yoga",
+            canonicalType: "Yoga",
+            classification: "other",
+            startAt: "2026-09-16T07:00:00.000Z",
+            endAt: "2026-09-16T07:40:00.000Z",
+            durationMinutes: 40,
+            activeEnergyKcal: null,
+          }],
+        })}
+        onClose={() => undefined}
+      />,
+    );
+    expect(html).toContain("Yoga");
+    expect(html).toContain("40");
+    expect(html).toContain("Активні ккал");
+    expect(html).not.toContain("активних ккал");
+    expect(html).toMatch(/<dd>—<\/dd>/);
+  });
 });

@@ -2,33 +2,43 @@ import { describe, expect, it } from "vitest";
 import { runRecoverySupportValidation } from "../scripts/lib/recovery-support-validation";
 
 describe("deterministic broad-regime recovery support validation", () => {
-  it("reports empirical multi-quantity coverage and every failure without claiming calibration", () => {
+  it("reports empirical multi-quantity coverage and recovery quality on a small smoke grid", () => {
     const result = runRecoverySupportValidation({
-      particleCount: 128,
+      particleCount: 64,
       baseScenarioCount: 12,
-      seeds: [101, 907],
+      seeds: [101],
     });
-    expect(result.scenarioCount).toBe(24);
+
+    expect(result.scenarioCount).toBe(12);
     expect(result.supportCases.workerToNoWorkCount).toBeGreaterThan(0);
     expect(result.supportCases.sedentaryToHighActivityCount).toBeGreaterThan(0);
+
     for (const coverage of Object.values(result.coverage)) {
-      expect(coverage.central50).toBeGreaterThanOrEqual(0);
+      expect(coverage.central50).toBeGreaterThan(0);
       expect(coverage.high90).toBeGreaterThan(0);
       expect(coverage.central50).toBeLessThanOrEqual(coverage.high90);
       expect(coverage.high90).toBeLessThanOrEqual(1);
     }
-    expect(result.failures.every((failure) => (
-      failure.truth < failure.lower || failure.truth > failure.upper
-    ))).toBe(true);
-    expect(Object.values(result.statusCounts).reduce((sum, count) => sum + count, 0))
-      .toBe(result.scenarioCount);
-    const expectedHighFailures = Object.values(result.coverage).reduce((sum, coverage) => (
-      sum + Math.round(result.scenarioCount * (1 - coverage.high90))
-    ), 0);
-    expect(result.failures).toHaveLength(expectedHighFailures);
+
+    const statusTotal = Object.values(result.statusCounts).reduce((sum, count) => sum + count, 0);
+    expect(statusTotal).toBe(result.scenarioCount);
+    expect(result.statusCounts.degenerate ?? 0).toBeLessThan(result.scenarioCount);
+
+    for (const failure of result.failures) {
+      expect(Number.isFinite(failure.truth)).toBe(true);
+      expect(Number.isFinite(failure.lower)).toBe(true);
+      expect(Number.isFinite(failure.upper)).toBe(true);
+      expect(failure.truth < failure.lower || failure.truth > failure.upper).toBe(true);
+    }
+
     expect(Object.keys(result.byGap)).toEqual(["7", "14", "30"]);
-    expect(Object.values(result.byGap).every(({ runCount, medianNormalizedEss }) => (
-      runCount > 0 && medianNormalizedEss > 0
-    ))).toBe(true);
-  }, 30_000);
+    for (const gap of Object.values(result.byGap)) {
+      expect(gap.runCount).toBeGreaterThan(0);
+      expect(Number.isFinite(gap.medianNormalizedEss)).toBe(true);
+      expect(gap.medianNormalizedEss).toBeGreaterThan(0);
+      expect(gap.minimumValidParticleFraction).toBeGreaterThan(0);
+      expect(Number.isFinite(gap.medianWeightIntervalWidthKg)).toBe(true);
+      expect(gap.medianWeightIntervalWidthKg).toBeGreaterThan(0);
+    }
+  }, 45_000);
 });

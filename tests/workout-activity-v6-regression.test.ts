@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { calculateDynamicDailyExpenditure } from "@/model/dynamic-daily-expenditure";
 import type { BodyCompositionState } from "@/model/body-composition/state";
+import { reconstructBodyWeightKg } from "@/model/body-composition/state";
 import { createDynamicRmrParameters } from "@/model/dynamic-rmr";
 import { buildSimulationDays } from "@/modules/model-episodes/simulation-input-builder";
-import { LEGACY_PHYSIOLOGY_V5 } from "@/modules/model-episodes/model-version";
+import {
+  CURRENT_MODEL_VERSION,
+  LEGACY_PHYSIOLOGY_V5,
+} from "@/modules/model-episodes/model-version";
 import type { HistoricalModelSources } from "@/modules/model-episodes/model-episode.types";
 import { sourceDay } from "./model-episode-fixtures";
 import {
@@ -28,43 +32,10 @@ const rmrParameters = createDynamicRmrParameters({
   initialLeanTissueKg: 40,
 });
 
-const garminWorkouts = [
-  {
-    id: 1,
-    date,
-    externalId: "stair-1",
-    type: STAIR_CLIMBING_TYPE,
-    startAt: instant("07:00"),
-    endAt: new Date("2026-08-22T07:12:00+02:00"),
-    durationMinutes: 12,
-    energyKcal: null,
-    activeEnergyKcal: 154,
-  },
-  {
-    id: 2,
-    date,
-    externalId: "stair-2",
-    type: STAIR_CLIMBING_TYPE,
-    startAt: instant("12:30"),
-    endAt: new Date("2026-08-22T12:35:00+02:00"),
-    durationMinutes: 5,
-    energyKcal: null,
-    activeEnergyKcal: 18,
-  },
-  {
-    id: 3,
-    date,
-    externalId: "strength-1",
-    type: TRADITIONAL_STRENGTH_TRAINING_TYPE,
-    startAt: instant("17:00"),
-    endAt: new Date("2026-08-22T18:15:00+02:00"),
-    durationMinutes: 75,
-    energyKcal: null,
-    activeEnergyKcal: 562,
-  },
-];
+/** Known Garmin active kcal that would change TDEE if v5 leaked into workout path. */
+const WORKOUT_ACTIVE_KCAL = 154 + 18 + 562; // 734
 
-function fixtureSources(): HistoricalModelSources {
+function garminLeakCapableSources(): HistoricalModelSources {
   return {
     days: [sourceDay(date, {
       walkingDistanceKm: 5.0,
@@ -89,102 +60,135 @@ function fixtureSources(): HistoricalModelSources {
       id: 1, date, startAt: instant("09:00"), endAt: instant("10:00"),
       timezone: "Europe/Bratislava", category: "standingLight", breakMinutes: 0,
     }],
-    workouts: garminWorkouts,
+    workouts: [
+      {
+        id: 1, date, externalId: "stair-1", type: STAIR_CLIMBING_TYPE,
+        startAt: instant("07:00"),
+        endAt: new Date("2026-08-22T07:12:00+02:00"),
+        durationMinutes: 12, energyKcal: null, activeEnergyKcal: 154,
+      },
+      {
+        id: 2, date, externalId: "stair-2", type: STAIR_CLIMBING_TYPE,
+        startAt: instant("12:30"),
+        endAt: new Date("2026-08-22T12:35:00+02:00"),
+        durationMinutes: 5, energyKcal: null, activeEnergyKcal: 18,
+      },
+      {
+        id: 3, date, externalId: "strength-1", type: TRADITIONAL_STRENGTH_TRAINING_TYPE,
+        startAt: instant("17:00"),
+        endAt: new Date("2026-08-22T18:15:00+02:00"),
+        durationMinutes: 75, energyKcal: null, activeEnergyKcal: 562,
+      },
+    ],
   };
 }
 
-describe("workout-activity v6 regression for v5 episodes", () => {
-  it("keeps buildSimulationDays identical for v5 whether workouts are present or empty", () => {
+function expenditureFromBuilt(built: ReturnType<typeof buildSimulationDays>[number]) {
+  return calculateDynamicDailyExpenditure({
+    bodyComposition,
+    rmrParameters,
+    macros: {
+      proteinG: built.input.proteinG,
+      carbsG: built.input.carbsG,
+      fatG: built.input.fatG,
+    },
+    outsideWorkWalking: {
+      distanceKm: built.input.outsideWorkWalkingDistanceKm,
+      averageSpeedKmh: built.input.averageWalkingSpeedKmh,
+    },
+    strength: { durationMinutes: built.input.strengthTrainingMinutes },
+    occupational: built.input.occupationalActivity,
+    adaptiveThermogenesisKcalPerDay: 0,
+    workoutActivity: built.input.workoutActivity,
+    personalization: { personalOffsetKcalPerDay: 0, activityCalibration: 1 },
+  });
+}
+
+describe("workout-activity v5/v6 regression", () => {
+  it("keeps v5 simulation inputs free of workoutActivity even when Garmin workouts are present", () => {
     const withWorkouts = buildSimulationDays({
       from: date,
       to: date,
-      sources: fixtureSources(),
+      sources: garminLeakCapableSources(),
       modelVersion: LEGACY_PHYSIOLOGY_V5,
-    });
+    })[0]!;
     const withoutWorkouts = buildSimulationDays({
       from: date,
       to: date,
-      sources: { ...fixtureSources(), workouts: [] },
+      sources: { ...garminLeakCapableSources(), workouts: [] },
       modelVersion: LEGACY_PHYSIOLOGY_V5,
-    });
-    expect(withWorkouts).toEqual(withoutWorkouts);
-    expect(withWorkouts[0].input.workoutActivity).toBeUndefined();
-    expect(withWorkouts[0].input.strengthTrainingMinutes).toBe(75);
-    expect(withWorkouts[0].input.outsideWorkWalkingDistanceKm)
-      .toBe(withoutWorkouts[0].input.outsideWorkWalkingDistanceKm);
+    })[0]!;
+
+    expect(withWorkouts.input.workoutActivity).toBeUndefined();
+    expect(withoutWorkouts.input.workoutActivity).toBeUndefined();
+    expect(withWorkouts.input.strengthTrainingMinutes).toBe(75);
+    expect(withWorkouts.input.outsideWorkWalkingDistanceKm)
+      .toBeCloseTo(withoutWorkouts.input.outsideWorkWalkingDistanceKm!, 12);
+    // Work walking still reconstructed; stair overlap must NOT run on v5.
+    expect(withWorkouts.sourceQuality.stairWalkingOverlap).toBeUndefined();
+    expect(withWorkouts.input.outsideWorkWalkingDistanceKm).toBeCloseTo(4.0, 12);
   });
 
-  it("keeps DynamicDailyExpenditure identical when workoutActivity is omitted (v5 path)", () => {
-    const before = calculateDynamicDailyExpenditure({
-      bodyComposition,
-      rmrParameters,
-      macros: { proteinG: 150, carbsG: 200, fatG: 70 },
-      outsideWorkWalking: { distanceKm: 4.0, averageSpeedKmh: 5 },
-      strength: { durationMinutes: 75 },
-      occupational: { category: "standingLightModerate", durationHours: 4 },
-      adaptiveThermogenesisKcalPerDay: -40,
-      personalization: { personalOffsetKcalPerDay: 50, activityCalibration: 0.95 },
-    });
-    const after = calculateDynamicDailyExpenditure({
-      bodyComposition,
-      rmrParameters,
-      macros: { proteinG: 150, carbsG: 200, fatG: 70 },
-      outsideWorkWalking: { distanceKm: 4.0, averageSpeedKmh: 5 },
-      strength: { durationMinutes: 75 },
-      occupational: { category: "standingLightModerate", durationHours: 4 },
-      adaptiveThermogenesisKcalPerDay: -40,
-      personalization: { personalOffsetKcalPerDay: 50, activityCalibration: 0.95 },
-    });
-    expect(after).toEqual(before);
-    expect(after.workoutActivityKcalPerDay).toBeNull();
-    expect(before.workoutActivityKcalPerDay).toBeNull();
+  it("prevents Garmin workout active kcal from leaking into v5 TDEE", () => {
+    const withWorkouts = buildSimulationDays({
+      from: date,
+      to: date,
+      sources: garminLeakCapableSources(),
+      modelVersion: LEGACY_PHYSIOLOGY_V5,
+    })[0]!;
+    const withoutWorkouts = buildSimulationDays({
+      from: date,
+      to: date,
+      sources: { ...garminLeakCapableSources(), workouts: [] },
+      modelVersion: LEGACY_PHYSIOLOGY_V5,
+    })[0]!;
+    const v5With = expenditureFromBuilt(withWorkouts);
+    const v5Without = expenditureFromBuilt(withoutWorkouts);
+
+    // Leak detector: adding 734 kcal of Garmin workouts must not change v5 TDEE at all.
+    expect(v5With.workoutActivityKcalPerDay).toBeNull();
+    expect(v5With.personalizedTdeeKcalPerDay)
+      .toBe(v5Without.personalizedTdeeKcalPerDay);
+    expect(v5With.activityKcalPerDay).toBe(v5Without.activityKcalPerDay);
+
+    const v6 = expenditureFromBuilt(buildSimulationDays({
+      from: date,
+      to: date,
+      sources: garminLeakCapableSources(),
+      modelVersion: CURRENT_MODEL_VERSION,
+    })[0]!);
+    expect(v6.workoutActivityKcalPerDay).toBe(WORKOUT_ACTIVE_KCAL);
+    expect(v6.personalizedTdeeKcalPerDay)
+      .not.toBeCloseTo(v5With.personalizedTdeeKcalPerDay!, 5);
   });
 
-  it("does not change v5 expenditure totals when day-level Garmin workouts exist only in sources", () => {
+  it("uses workout-aware reconstruction on v6 for the same physical source dataset", () => {
     const built = buildSimulationDays({
       from: date,
       to: date,
-      sources: fixtureSources(),
-      modelVersion: LEGACY_PHYSIOLOGY_V5,
-    })[0];
-    const expenditure = calculateDynamicDailyExpenditure({
-      bodyComposition,
-      rmrParameters,
-      macros: {
-        proteinG: built.input.proteinG,
-        carbsG: built.input.carbsG,
-        fatG: built.input.fatG,
-      },
-      outsideWorkWalking: {
-        distanceKm: built.input.outsideWorkWalkingDistanceKm,
-        averageSpeedKmh: built.input.averageWalkingSpeedKmh,
-      },
-      strength: { durationMinutes: built.input.strengthTrainingMinutes },
-      occupational: built.input.occupationalActivity,
-      adaptiveThermogenesisKcalPerDay: 0,
-    });
-    const baselineWithoutSourceWorkouts = calculateDynamicDailyExpenditure({
-      bodyComposition,
-      rmrParameters,
-      macros: {
-        proteinG: built.input.proteinG,
-        carbsG: built.input.carbsG,
-        fatG: built.input.fatG,
-      },
-      outsideWorkWalking: {
-        distanceKm: built.input.outsideWorkWalkingDistanceKm,
-        averageSpeedKmh: built.input.averageWalkingSpeedKmh,
-      },
-      strength: { durationMinutes: 75 },
-      occupational: built.input.occupationalActivity,
-      adaptiveThermogenesisKcalPerDay: 0,
-    });
-    expect(expenditure).toEqual(baselineWithoutSourceWorkouts);
-    expect(expenditure.workoutActivityKcalPerDay).toBeNull();
-    // Stair 154+18 and strength 562 must not leak into v5 TDEE.
-    expect(expenditure.activityKcalPerDay).not.toBeCloseTo(
-      (expenditure.activityKcalPerDay ?? 0) + 154 + 18 + 562,
-      5,
-    );
+      sources: garminLeakCapableSources(),
+      modelVersion: CURRENT_MODEL_VERSION,
+    })[0]!;
+
+    expect(built.input.workoutActivity?.events).toHaveLength(3);
+    expect(built.input.strengthTrainingMinutes).toBe(0);
+    expect(built.sourceQuality.workWalkingDistanceKm).toBeCloseTo(1.0, 12);
+    expect(built.sourceQuality.stairWalkingOverlap?.some((row) => (
+      row.overlapApplied && Math.abs(row.overlapDistanceAppliedKm - 0.6) < 1e-9
+    ))).toBe(true);
+    expect(built.input.outsideWorkWalkingDistanceKm).toBeCloseTo(3.4, 12);
+
+    const expenditure = expenditureFromBuilt(built);
+    expect(expenditure.workoutActivityKcalPerDay).toBe(WORKOUT_ACTIVE_KCAL);
+    expect(expenditure.strengthActivityKcalPerDay).toBe(WORKOUT_ACTIVE_KCAL);
+    expect(expenditure.outsideWorkWalkingActivityKcalPerDay).toBeGreaterThan(0);
+
+    const weightKg = reconstructBodyWeightKg(bodyComposition);
+    // Independent Compendium oracle for remaining walking 3.4 km @ 5 km/h, MET 3.8.
+    const durationHours = 3.4 / 5;
+    const walkingOracle = 3.8 * weightKg * durationHours
+      - expenditure.dynamicRmrKcalPerDay / 24 * durationHours;
+    expect(expenditure.outsideWorkWalkingActivityKcalPerDay)
+      .toBeCloseTo(walkingOracle, 8);
   });
 });

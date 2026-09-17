@@ -17,11 +17,21 @@ function normalLogDensity(value: number, mean: number, standardDeviation: number
 }
 
 describe("adaptive persistent recovery-regime proposal", () => {
-  it("has exact prior/proposal identity for prior draws", () => {
+  it("has exact prior/proposal identity when the adaptive nutrition matches the prior", () => {
     const regime = samplePriorRecoveryRegime(new SeededRandom(10), DEFAULT_RECOVERY_CONFIG);
     const density = logPriorRecoveryRegimeDensity(regime, DEFAULT_RECOVERY_CONFIG);
     expect(Number.isFinite(density)).toBe(true);
-    expect(density - density).toBe(0);
+    const adaptiveMatchingPrior: AdaptiveRegimeProposal = {
+      logNutritionMean: 0,
+      logNutritionStandardDeviation: DEFAULT_RECOVERY_CONFIG.nutritionRegimeLogStandardDeviation,
+    };
+    const evaluated = evaluateDefensiveRegimeMixture({
+      regime,
+      adaptive: adaptiveMatchingPrior,
+      config: DEFAULT_RECOVERY_CONFIG,
+    });
+    expect(evaluated.logPriorDensity).toBe(density);
+    expect(evaluated.logProposalDensity).toBeCloseTo(evaluated.logPriorDensity, 12);
     expect(Math.log(regime.macroCompositionMultipliers.reduce((product, value) => (
       product * value
     ), 1))).toBeCloseTo(0, 12);

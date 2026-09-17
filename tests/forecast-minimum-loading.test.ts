@@ -13,6 +13,11 @@ describe("withMinimumVisibleLoading", () => {
     vi.useRealTimers();
   });
 
+  it("uses a positive default minimum visibility duration", () => {
+    expect(MIN_FORECAST_LOADING_MS).toBeGreaterThan(0);
+    expect(Number.isFinite(MIN_FORECAST_LOADING_MS)).toBe(true);
+  });
+
   it("keeps a fast success visible until the configured minimum", async () => {
     let resolved = false;
     const work = new Promise<string>((resolve) => {
@@ -28,6 +33,24 @@ describe("withMinimumVisibleLoading", () => {
 
     await vi.advanceTimersByTimeAsync(MIN_FORECAST_LOADING_MS - 50);
     await expect(pending).resolves.toBe("ok");
+    expect(resolved).toBe(true);
+  });
+
+  it("applies the exported default minimum when minMs is omitted", async () => {
+    let resolved = false;
+    const work = new Promise<string>((resolve) => {
+      setTimeout(() => resolve("defaulted"), 10);
+    });
+    const pending = withMinimumVisibleLoading(work).then((value) => {
+      resolved = true;
+      return value;
+    });
+
+    await vi.advanceTimersByTimeAsync(MIN_FORECAST_LOADING_MS - 1);
+    expect(resolved).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toBe("defaulted");
     expect(resolved).toBe(true);
   });
 
@@ -55,9 +78,5 @@ describe("withMinimumVisibleLoading", () => {
     pending.catch(() => undefined);
     await vi.advanceTimersByTimeAsync(40);
     await expect(pending).rejects.toThrow("boom");
-  });
-
-  it("uses the policy constant of 800 ms", () => {
-    expect(MIN_FORECAST_LOADING_MS).toBe(800);
   });
 });

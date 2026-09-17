@@ -58,6 +58,12 @@ jobs:
       - name: Unit tests and coverage
         run: npm run test:coverage
 
+      - name: Validation smokes (workout v6 / initialization / target solver)
+        run: |
+          npm run validate:workout-activity-v6:smoke
+          npm run validate:initialization:smoke
+          npm run validate:target-solver:smoke
+
       - name: Apply test database migrations
         run: npm run prisma:migrate:deploy
 

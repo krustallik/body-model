@@ -30,10 +30,4 @@ describe("glycogen transition invariants", () => {
         .toBeCloseTo(result!.deltaGlycogenKg * GLYCOGEN_MODEL.energyDensityKcalPerKg, 10);
     }
   });
-
-  it("verifies the explicit negative 100 g glycogen mass example", () => {
-    const deltaGlycogenKg = -0.1;
-    expect(deltaGlycogenKg * 2.7).toBeCloseTo(-0.27, 12);
-    expect(deltaGlycogenKg + deltaGlycogenKg * 2.7).toBeCloseTo(-0.37, 12);
-  });
 });

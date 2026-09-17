@@ -49,6 +49,54 @@ describe("buildWalkingSegments", () => {
     expect(segments[0]).toMatchObject({ valid: false, invalidReason: "counter-reset" });
     expect(segments[1]).toMatchObject({ valid: true, distanceKm: 0.4 });
   });
+
+  it("marks null-distance segments invalid without aborting later segments", () => {
+    const segments = buildWalkingSegments([
+      snapshot("08:00:00", 1.0),
+      snapshot("09:00:00", null),
+      snapshot("10:00:00", 1.5),
+      snapshot("11:00:00", 2.0),
+    ]);
+    expect(segments).toHaveLength(3);
+    expect(segments[0]).toMatchObject({ valid: false, invalidReason: "null-distance" });
+    expect(segments[1]).toMatchObject({ valid: false, invalidReason: "null-distance" });
+    expect(segments[2]).toMatchObject({ valid: true, distanceKm: 0.5 });
+  });
+
+  it("marks same-timestamp segments invalid", () => {
+    const segments = buildWalkingSegments([
+      snapshot("08:00:00", 1.0),
+      snapshot("08:00:00", 1.4),
+      snapshot("09:00:00", 1.9),
+    ]);
+    expect(segments[0]).toMatchObject({
+      valid: false, invalidReason: "same-timestamp", distanceKm: 0,
+    });
+    expect(segments[1]).toMatchObject({ valid: true, distanceKm: 0.5 });
+  });
+
+  it("keeps later valid segments after a nested/partial bad middle segment", () => {
+    const segments = buildWalkingSegments([
+      snapshot("08:00:00", 1.0),
+      snapshot("09:00:00", 1.3),
+      snapshot("09:00:00", 1.3), // same-timestamp nest inside otherwise valid chain
+      snapshot("10:00:00", 1.8),
+      snapshot("11:00:00", null), // null after a good segment
+      snapshot("12:00:00", 2.4),
+      snapshot("13:00:00", 2.9),
+    ]);
+    expect(segments.map((segment) => segment.invalidReason)).toEqual([
+      null,
+      "same-timestamp",
+      null,
+      "null-distance",
+      "null-distance",
+      null,
+    ]);
+    expect(segments[0]?.distanceKm).toBeCloseTo(0.3, 12);
+    expect(segments[2]?.distanceKm).toBeCloseTo(0.5, 12);
+    expect(segments[5]?.distanceKm).toBeCloseTo(0.5, 12);
+  });
 });
 
 describe("reconstructStairWalkingOverlap gap boundaries", () => {
@@ -101,6 +149,51 @@ describe("reconstructStairWalkingOverlap gap boundaries", () => {
   });
 });
 
+describe("reconstructStairWalkingOverlap missing boundaries", () => {
+  const workout = {
+    startAt: at("12:00:00"),
+    endAt: at("12:10:00"),
+    activeEnergyKcal: 154,
+  };
+
+  it("reports missing-before-snapshot when no snapshot exists at or before start", () => {
+    const result = reconstructStairWalkingOverlap({
+      snapshots: [
+        snapshot("12:05:00", 4.2),
+        snapshot("12:15:00", 4.6),
+      ],
+      stairWorkouts: [workout],
+    });
+    expect(result.diagnostics[0]?.reason).toBe("missing-before-snapshot");
+    expect(result.diagnostics[0]?.beforeSnapshotAt).toBeNull();
+    expect(result.overlapDistanceKm).toBe(0);
+  });
+
+  it("reports missing-after-snapshot when no snapshot exists at or after end", () => {
+    const result = reconstructStairWalkingOverlap({
+      snapshots: [
+        snapshot("11:55:00", 4.0),
+        snapshot("12:05:00", 4.3),
+      ],
+      stairWorkouts: [workout],
+    });
+    expect(result.diagnostics[0]?.reason).toBe("missing-after-snapshot");
+    expect(result.diagnostics[0]?.afterSnapshotAt).toBeNull();
+    expect(result.overlapDistanceKm).toBe(0);
+  });
+
+  it("reports missing-before-snapshot when both boundary snapshots are absent", () => {
+    const result = reconstructStairWalkingOverlap({
+      snapshots: [],
+      stairWorkouts: [workout],
+    });
+    expect(result.diagnostics[0]?.reason).toBe("missing-before-snapshot");
+    expect(result.diagnostics[0]?.beforeSnapshotAt).toBeNull();
+    expect(result.diagnostics[0]?.afterSnapshotAt).toBeNull();
+    expect(result.overlapDistanceKm).toBe(0);
+  });
+});
+
 describe("reconstructStairWalkingOverlap attribution", () => {
   it("claims each walking segment at most once across overlapping stairs", () => {
     // Same before/after boundary window so the second stair can only see already-claimed segments.
@@ -124,6 +217,47 @@ describe("reconstructStairWalkingOverlap attribution", () => {
       result.diagnostics[0]!.overlapDistanceAppliedKm,
       12,
     );
+  });
+
+  it("applies adjacent stair workouts independently when windows do not share segments", () => {
+    const result = reconstructStairWalkingOverlap({
+      snapshots: [
+        snapshot("07:55:00", 1.0),
+        snapshot("08:15:00", 1.4),
+        snapshot("12:25:00", 2.0),
+        snapshot("12:40:00", 2.5),
+      ],
+      stairWorkouts: [
+        { startAt: at("08:00:00"), endAt: at("08:10:00"), activeEnergyKcal: 154 },
+        { startAt: at("12:30:00"), endAt: at("12:35:00"), activeEnergyKcal: 18 },
+      ],
+    });
+    expect(result.diagnostics.map((item) => item.reason)).toEqual(["applied", "applied"]);
+    expect(result.diagnostics[0]?.overlapDistanceAppliedKm).toBeCloseTo(0.4, 12);
+    expect(result.diagnostics[1]?.overlapDistanceAppliedKm).toBeCloseTo(0.5, 12);
+    expect(result.overlapDistanceKm).toBeCloseTo(0.9, 12);
+    expect(result.claimedSegmentIndexes).toEqual([0, 2]);
+  });
+
+  it("does not let one bad null-distance segment invalidate a later valid stair overlap", () => {
+    const result = reconstructStairWalkingOverlap({
+      snapshots: [
+        snapshot("07:55:00", 1.0),
+        snapshot("08:05:00", null), // bad segment inside first window
+        snapshot("08:15:00", 1.5),
+        snapshot("12:25:00", 2.0),
+        snapshot("12:40:00", 2.6),
+      ],
+      stairWorkouts: [
+        { startAt: at("08:00:00"), endAt: at("08:10:00"), activeEnergyKcal: 154 },
+        { startAt: at("12:30:00"), endAt: at("12:35:00"), activeEnergyKcal: 18 },
+      ],
+    });
+    expect(result.diagnostics[0]?.reason).toBe("invalid-distance-delta");
+    expect(result.diagnostics[0]?.overlapApplied).toBe(false);
+    expect(result.diagnostics[1]?.reason).toBe("applied");
+    expect(result.diagnostics[1]?.overlapDistanceAppliedKm).toBeCloseTo(0.6, 12);
+    expect(result.overlapDistanceKm).toBeCloseTo(0.6, 12);
   });
 
   it("excludes work-attributed segments from stair overlap", () => {

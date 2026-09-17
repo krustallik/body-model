@@ -73,6 +73,7 @@ export type DiagnosticsDto = {
     algorithmVersion: string | null;
     qualityReasons: string[];
     supportWarnings: string[];
+    gaps: Array<{ startDate: string; endDate: string | null; durationDays: number; missingFields: string[] }>;
   };
   forecastReadiness: {
     level: DiagnosticLevel;

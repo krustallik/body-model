@@ -172,6 +172,12 @@ export function buildDiagnosticsDto(input: {
       maximumWeight: input.recovery?.maximumWeight ?? null,
       algorithmVersion: input.recovery?.algorithmVersion ?? null,
       qualityReasons: recoveryDetails.qualityReasons, supportWarnings: recoveryDetails.supportWarnings,
+      gaps: status.unknownIntervals.map((interval) => ({
+        startDate: interval.startDate,
+        endDate: interval.endDate ?? interval.lastUnknownDate,
+        durationDays: interval.durationDays,
+        missingFields: interval.missingTransitionFields,
+      })),
     },
     forecastReadiness: {
       level: usable && hasCurrentState ? (source === "degraded" ? "limited" : "good") : "blocked",

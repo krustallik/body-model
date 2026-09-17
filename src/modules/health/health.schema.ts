@@ -130,6 +130,8 @@ function sleepSegmentsFromParallel(value: {
   });
 }
 
+type SleepSegmentParsed = z.output<typeof SleepSegmentSchema>;
+
 const SleepSegmentsSchema = z.preprocess(
   (value) => {
     if (value === undefined || value === null) return value;
@@ -155,7 +157,7 @@ const SleepSegmentsSchema = z.preprocess(
       context.addIssue({ code: z.ZodIssueCode.custom, message: value.error });
     }),
   ]),
-);
+) as unknown as z.ZodType<SleepSegmentParsed[]>;
 
 const HealthDayObjectSchema = z
   .object({

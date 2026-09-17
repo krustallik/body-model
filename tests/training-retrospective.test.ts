@@ -81,6 +81,7 @@ function buildDb() {
 const catalogA = {
   id: 1,
   name: "Жим гантелей сидячи",
+  stableKey: "seated_dumbbell_press",
   isActive: true,
   muscleMapping: null,
   resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
@@ -88,6 +89,7 @@ const catalogA = {
 const catalogB = {
   id: 2,
   name: "Гіперекстензія",
+  stableKey: "hyperextension",
   isActive: true,
   muscleMapping: null,
   resistanceType: RESISTANCE.RESISTANCE_BAND,
@@ -95,6 +97,7 @@ const catalogB = {
 const catalogC = {
   id: 3,
   name: "Віджимання від ручок",
+  stableKey: "pushup_handles",
   isActive: true,
   muscleMapping: null,
   resistanceType: RESISTANCE.BODYWEIGHT,
@@ -138,7 +141,16 @@ function versionRecord(
       sortOrder: index,
       plannedSets: exercise.plannedSets,
       resistanceType: exercise.resistanceType,
-      exerciseCatalog: { id: exercise.catalogId, name: exercise.name, muscleMapping: null },
+      exerciseCatalog: {
+        id: exercise.catalogId,
+        name: exercise.name,
+        stableKey: exercise.catalogId === 1
+          ? "seated_dumbbell_press"
+          : exercise.catalogId === 2
+            ? "hyperextension"
+            : "pushup_handles",
+        muscleMapping: null,
+      },
     })),
   };
 }
@@ -274,6 +286,25 @@ describe("retrospective diary creation from historical workouts", () => {
         matchStatus: MATCH_STATUS.MATCHED,
         matchMethod: MATCH_METHOD.DIRECT_BACKFILL,
         matchedWorkoutId: 77,
+        exercises: expect.objectContaining({
+          create: expect.arrayContaining([
+            expect.objectContaining({
+              snapshotExerciseName: catalogA.name,
+              muscleMappingSnapshot: expect.objectContaining({
+                availability: "available",
+                stableKey: "seated_dumbbell_press",
+                provenance: "approved-v7-registry",
+              }),
+            }),
+            expect.objectContaining({
+              snapshotExerciseName: catalogB.name,
+              muscleMappingSnapshot: expect.objectContaining({
+                availability: "available",
+                stableKey: "hyperextension",
+              }),
+            }),
+          ]),
+        }),
       }),
     }));
     expect(session.entryMode).toBe(ENTRY_MODE.RETROSPECTIVE);

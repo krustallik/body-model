@@ -407,7 +407,7 @@ export class TrainingRepository {
   async findCatalogByIds(ids: number[], profileId = DEFAULT_TRAINING_PROFILE_ID) {
     return this.db.exerciseCatalog.findMany({
       where: { profileId, id: { in: ids } },
-      select: { id: true, name: true, isActive: true, muscleMapping: true },
+      select: { id: true, name: true, stableKey: true, isActive: true, muscleMapping: true },
     });
   }
 
@@ -1552,7 +1552,7 @@ export class TrainingRepository {
             sortOrder: true,
             plannedSets: true,
             resistanceType: true,
-            exerciseCatalog: { select: { id: true, name: true, muscleMapping: true } },
+            exerciseCatalog: { select: { id: true, name: true, stableKey: true, muscleMapping: true } },
           },
           orderBy: { sortOrder: "asc" },
         },
@@ -1611,7 +1611,7 @@ export class TrainingRepository {
                 plannedSets: true,
                 resistanceType: true,
                 exerciseCatalog: {
-                  select: { id: true, name: true, muscleMapping: true },
+                  select: { id: true, name: true, stableKey: true, muscleMapping: true },
                 },
               },
               orderBy: { sortOrder: "asc" },

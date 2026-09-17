@@ -87,9 +87,27 @@ function buildDb(): MockDb {
   return db;
 }
 
-const catalogA = { id: 1, name: "Жим гантелей сидячи", isActive: true, muscleMapping: null };
-const catalogB = { id: 2, name: "Гіперекстензія", isActive: true, muscleMapping: null };
-const catalogC = { id: 3, name: "Віджимання від ручок", isActive: true, muscleMapping: null };
+const catalogA = {
+  id: 1,
+  name: "Жим гантелей сидячи",
+  stableKey: "seated_dumbbell_press",
+  isActive: true,
+  muscleMapping: null,
+};
+const catalogB = {
+  id: 2,
+  name: "Гіперекстензія",
+  stableKey: "hyperextension",
+  isActive: true,
+  muscleMapping: null,
+};
+const catalogC = {
+  id: 3,
+  name: "Віджимання від ручок",
+  stableKey: "pushup_handles",
+  isActive: true,
+  muscleMapping: null,
+};
 
 function programRecord(versionNumber: number, exercises: Array<{
   catalogId: number;
@@ -114,7 +132,15 @@ function programRecord(versionNumber: number, exercises: Array<{
         sortOrder: exercise.sortOrder,
         plannedSets: exercise.plannedSets,
         resistanceType: exercise.resistanceType,
-        exerciseCatalog: { id: exercise.catalogId, name: exercise.name },
+        exerciseCatalog: {
+          id: exercise.catalogId,
+          name: exercise.name,
+          stableKey: exercise.catalogId === 1
+            ? "seated_dumbbell_press"
+            : exercise.catalogId === 2
+              ? "hyperextension"
+              : "pushup_handles",
+        },
       })),
       _count: { exercises: exercises.length },
     },
@@ -404,6 +430,11 @@ describe("TrainingService live session", () => {
               snapshotExerciseName: catalogA.name,
               plannedSets: 3,
               resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
+              muscleMappingSnapshot: expect.objectContaining({
+                availability: "available",
+                stableKey: "seated_dumbbell_press",
+                provenance: "approved-v7-registry",
+              }),
             }),
           ]),
         }),

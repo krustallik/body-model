@@ -10,7 +10,14 @@ import { GET } from "@/app/api/v1/training/exercises/route";
 
 const base = "http://localhost/api/v1/training/exercises";
 const exercises = [
-  { id: 1, name: "Жим гантелей сидячи", isActive: true, archivedAt: null, muscleMapping: null },
+  {
+    id: 1,
+    name: "Жим гантелей сидячи",
+    stableKey: "seated_dumbbell_press",
+    isActive: true,
+    archivedAt: null,
+    muscleMapping: null,
+  },
 ];
 
 describe("GET /api/v1/training/exercises", () => {

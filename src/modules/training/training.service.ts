@@ -34,6 +34,7 @@ import {
 } from "./training.errors";
 import { matchDiaryToWorkouts } from "./training.matcher";
 import { planProgramExerciseReconcile } from "./training.program-reconcile";
+import { muscleMappingSnapshotJson } from "./exercise-mapping-snapshot";
 import {
   TrainingRepository,
   trainingRepository,
@@ -125,11 +126,6 @@ function normalizeProgramExercises(
     plannedSets: exercise.plannedSets,
     resistanceType: exercise.resistanceType,
   }));
-}
-
-function jsonSnapshot(value: unknown): Prisma.InputJsonValue | typeof Prisma.JsonNull {
-  if (value === null || value === undefined) return Prisma.JsonNull;
-  return value as Prisma.InputJsonValue;
 }
 
 export class TrainingService {
@@ -238,7 +234,7 @@ export class TrainingService {
           sortOrder: exercise.sortOrder,
           plannedSets: exercise.plannedSets,
           resistanceType: exercise.resistanceType as ResistanceType,
-          muscleMappingSnapshot: jsonSnapshot(exercise.exerciseCatalog.muscleMapping),
+          muscleMappingSnapshot: muscleMappingSnapshotJson(exercise.exerciseCatalog.stableKey),
         })),
       });
     } catch (error) {
@@ -356,7 +352,7 @@ export class TrainingService {
           sortOrder: exercise.sortOrder,
           plannedSets: exercise.plannedSets,
           resistanceType: exercise.resistanceType as ResistanceType,
-          muscleMappingSnapshot: jsonSnapshot(exercise.exerciseCatalog.muscleMapping),
+          muscleMappingSnapshot: muscleMappingSnapshotJson(exercise.exerciseCatalog.stableKey),
         })),
       });
       noteTrainingSourceChange({
@@ -415,7 +411,7 @@ export class TrainingService {
         sortOrder: exercise.sortOrder,
         plannedSets: exercise.plannedSets,
         resistanceType: exercise.resistanceType as ResistanceType,
-        muscleMappingSnapshot: exercise.exerciseCatalog.muscleMapping ?? null,
+        muscleMappingSnapshot: muscleMappingSnapshotJson(exercise.exerciseCatalog.stableKey),
       })),
     );
 
@@ -457,7 +453,7 @@ export class TrainingService {
       plannedSets: input.plannedSets,
       resistanceType: input.resistanceType,
       origin: EXERCISE_ORIGIN.EXTRA,
-      muscleMappingSnapshot: catalog.muscleMapping ?? null,
+      muscleMappingSnapshot: muscleMappingSnapshotJson(catalog.stableKey),
       order: input.order,
       orderedExerciseIds: session.exercises.map((exercise) => exercise.id),
     });

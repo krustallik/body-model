@@ -3,6 +3,12 @@ export {
   type CanonicalExerciseStableKey,
 } from "./canonical-exercise-identity";
 export {
+  muscleMappingSnapshotForCatalogStableKey,
+  muscleMappingSnapshotJson,
+  reportNullMuscleMappingSnapshotBackfill,
+  applyNullMuscleMappingSnapshotBackfill,
+} from "./exercise-mapping-snapshot";
+export {
   RESISTANCE,
   SESSION_STATUS,
   MATCH_STATUS,

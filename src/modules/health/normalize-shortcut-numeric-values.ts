@@ -162,15 +162,30 @@ function parseMaybeJsonObject(value: unknown): unknown {
   }
 }
 
+function pickIgnoreCase(object: JsonObject, names: string[]): unknown {
+  const lookup = new Map(Object.entries(object).map(([key, fieldValue]) => [key.toLowerCase(), fieldValue]));
+  for (const name of names) {
+    if (lookup.has(name.toLowerCase())) return lookup.get(name.toLowerCase());
+  }
+  return undefined;
+}
+
+function isCanonicalSleepSegmentArray(value: unknown): value is unknown[] {
+  if (!Array.isArray(value)) return false;
+  if (value.length === 0) return true;
+  const first = parseMaybeJsonObject(value[0]);
+  return isObject(first) && ("startAt" in first || "endAt" in first);
+}
+
 /**
- * Accept Shortcut sleepSegments dictionary (parallel series) or already-canonical
- * segment arrays. Output becomes an array of { startAt, endAt, state, rawState }
- * with canonical `state` and preserved `rawState`. Length mismatches stay as an
- * object so Zod rejects them instead of silently truncating.
+ * Normalize Shortcut sleepSegments into either:
+ * - canonical segment array [{ startAt, endAt, state, rawState }], or
+ * - parallel dictionary { startTimestamps, endTimestamps, states }
+ *   (HR-style) so Zod can validate length mismatches with a clear message.
  */
 export function normalizeSleepSegmentsValue(value: unknown): unknown {
   value = parseMaybeJsonObject(value);
-  if (Array.isArray(value)) {
+  if (isCanonicalSleepSegmentArray(value)) {
     return value.map((item) => {
       const parsed = parseMaybeJsonObject(item);
       if (!isObject(parsed)) return item;
@@ -191,29 +206,17 @@ export function normalizeSleepSegmentsValue(value: unknown): unknown {
   if (!isObject(value)) return value;
 
   const startTimestamps = normalizeTimestamps(
-    value.startTimestamps ?? value.starttimestamps ?? value.starts,
+    pickIgnoreCase(value, ["startTimestamps", "starts", "starttimestamp", "start"]),
   );
   const endTimestamps = normalizeTimestamps(
-    value.endTimestamps ?? value.endtimestamps ?? value.ends,
+    pickIgnoreCase(value, ["endTimestamps", "ends", "endtimestamp", "end"]),
   );
-  const states = splitShortcutLines(value.states ?? value.state);
+  const states = splitShortcutLines(
+    pickIgnoreCase(value, ["states", "state", "sleepStates", "values"]),
+  ).map((state) => (typeof state === "string" ? state.trim() : state));
 
-  if (
-    startTimestamps.length !== endTimestamps.length
-    || startTimestamps.length !== states.length
-  ) {
-    return { startTimestamps, endTimestamps, states };
-  }
-
-  return startTimestamps.map((startAt, index) => {
-    const rawState = String(states[index] ?? "").trim();
-    return {
-      startAt,
-      endAt: endTimestamps[index],
-      rawState,
-      state: rawState,
-    };
-  });
+  // Always emit the parallel dictionary form. Matching lengths become segments in Zod.
+  return { startTimestamps, endTimestamps, states };
 }
 
 function normalizeDay(value: unknown): unknown {

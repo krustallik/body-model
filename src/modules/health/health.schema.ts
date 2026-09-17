@@ -1,7 +1,10 @@
 import { normalizeDailyMeasurementInput } from "@/modules/days/measurement-policy";
 import { mergeExpandedTrainingWorkouts } from "@/modules/health/expand-training-workouts";
 import { normalizeShortcutPayload } from "@/modules/health/normalize-shortcut-payload";
-import { normalizeShortcutNumericValues } from "@/modules/health/normalize-shortcut-numeric-values";
+import {
+  normalizeShortcutNumericValues,
+  normalizeSleepSegmentsValue,
+} from "@/modules/health/normalize-shortcut-numeric-values";
 import { canonicalizeSleepState, SLEEP_STATES } from "@/modules/health/sleep-state";
 import { z } from "zod";
 import {
@@ -104,6 +107,56 @@ const SleepSegmentSchema = z.preprocess(
   }),
 );
 
+/** iPhone Shortcut dictionary form: three parallel series (same pattern as bpm). */
+function sleepSegmentsFromParallel(value: {
+  startTimestamps: unknown[];
+  endTimestamps: unknown[];
+  states: unknown[];
+}): unknown[] | { error: string } {
+  if (
+    value.startTimestamps.length !== value.endTimestamps.length
+    || value.startTimestamps.length !== value.states.length
+  ) {
+    return { error: "startTimestamps, endTimestamps, and states must have the same length" };
+  }
+  return value.startTimestamps.map((startAt, index) => {
+    const rawState = String(value.states[index] ?? "").trim();
+    return {
+      startAt,
+      endAt: value.endTimestamps[index],
+      rawState,
+      state: rawState,
+    };
+  });
+}
+
+const SleepSegmentsSchema = z.preprocess(
+  (value) => {
+    if (value === undefined || value === null) return value;
+    const normalized = normalizeSleepSegmentsValue(value);
+    if (Array.isArray(normalized)) return normalized;
+    if (
+      isObject(normalized)
+      && Array.isArray(normalized.startTimestamps)
+      && Array.isArray(normalized.endTimestamps)
+      && Array.isArray(normalized.states)
+    ) {
+      return sleepSegmentsFromParallel({
+        startTimestamps: normalized.startTimestamps,
+        endTimestamps: normalized.endTimestamps,
+        states: normalized.states,
+      });
+    }
+    return normalized;
+  },
+  z.union([
+    z.array(SleepSegmentSchema),
+    z.object({ error: z.string() }).strict().superRefine((value, context) => {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: value.error });
+    }),
+  ]),
+);
+
 const HealthDayObjectSchema = z
   .object({
     date: z.string().refine(isCalendarDate, "date must be a real calendar date in YYYY-MM-DD format"),
@@ -121,7 +174,7 @@ const HealthDayObjectSchema = z
     workouts: z.array(WorkoutSchema).nullable().optional(),
     bpm: HeartRateSamplesSchema.optional(),
     bpminpeace: RestingHeartRateSamplesSchema.optional(),
-    sleepSegments: z.array(SleepSegmentSchema).optional(),
+    sleepSegments: SleepSegmentsSchema.optional(),
   })
   .strict();
 

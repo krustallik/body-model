@@ -23,7 +23,11 @@ export const RESISTANCE_TRAINING_EXPOSURE_HISTORY_V7_VERSION =
 
 /**
  * ENGINEERING aggregation window only — not a biological adaptation timescale.
- * Weeks are UTC Monday–Sunday calendar weeks (ISO-8601 weekday numbering).
+ *
+ * Groups already-resolved profile-local calendar dates (YYYY-MM-DD), using
+ * Monday–Sunday weekday arithmetic on those date components. It does NOT
+ * convert workout timestamps to UTC calendar dates — callers must supply the
+ * project's canonical local workout / DailyHealthData date.
  */
 export const RESISTANCE_TRAINING_EXPOSURE_WEEK_WINDOW_V7 =
   "engineering-utc-calendar-week-monday-start" as const;
@@ -47,8 +51,9 @@ export type ResistanceTrainingSessionExposureV7 = {
 /**
  * Day-level resistance exposure. Distinguishes:
  * - validated mapped loading
- * - verified observed no-exposure (feed observed, no qualifying sessions)
- * - unresolved dose (sessions present but dose unavailable / unmapped)
+ * - verified observed no-exposure (feed observed, no strength evidence)
+ * - unresolved dose / exposure-details-unavailable
+ *   (diary dose unavailable/unmapped, OR legacy strength Workout without diary)
  * - unobserved feed (never treated as rest or cessation)
  */
 export type ResistanceTrainingDayExposureKindV7 =
@@ -57,18 +62,33 @@ export type ResistanceTrainingDayExposureKindV7 =
   | "unresolved-dose"
   | "unobserved";
 
+/**
+ * Canonical traditional-strength Workout evidence without usable mapped diary
+ * dose (legacy Garmin rows that cannot be retroactively detailed).
+ */
+export type ResistanceTrainingLegacyStrengthWorkoutV7 = {
+  workoutId: number;
+  /** Profile-local calendar date; must match the parent day.date. */
+  localDate: string;
+  matchedStrengthDiarySessionId: number | null;
+};
+
 export type ResistanceTrainingDayExposureV7 = {
+  /** Profile-local calendar date (YYYY-MM-DD), never a UTC slice of startAt. */
   date: string;
   workoutFeedObserved: boolean | null;
   /** Feed-level observation reused from the Stage-5 contract. */
   sourceObservation: WorkoutExposureObservation;
   kind: ResistanceTrainingDayExposureKindV7;
   /**
-   * Complete cessation is never inferred from unobserved feed or from
-   * validated nonzero mapped loading (C-C03 / P-C01 / P-C02).
+   * Complete cessation is never inferred from unobserved feed, unresolved
+   * legacy strength evidence, or validated nonzero mapped loading
+   * (C-C03 / P-C01 / P-C02).
    */
   completeCessation: false | "verified-observed-no-exposure";
   sessions: ResistanceTrainingSessionExposureV7[];
+  /** Legacy strength Workout rows lacking usable mapped diary dose. */
+  legacyStrengthWorkouts: ResistanceTrainingLegacyStrengthWorkoutV7[];
   mappedSetCount: number;
   recordedSetCount: number;
   unmappedSetCount: number;
@@ -80,7 +100,7 @@ export type ResistanceTrainingDayExposureV7 = {
 };
 
 export type ResistanceTrainingWeeklyAggregateV7 = {
-  /** Inclusive UTC Monday–Sunday engineering window. */
+  /** Inclusive Monday–Sunday engineering window over profile-local dates. */
   windowKind: typeof RESISTANCE_TRAINING_EXPOSURE_WEEK_WINDOW_V7;
   weekStartDate: string;
   weekEndDate: string;
@@ -128,9 +148,16 @@ export type ResistanceTrainingExposureHistoryV7 = {
 };
 
 export type ResistanceTrainingExposureHistoryDayInputV7 = {
+  /** Profile-local calendar date (DailyHealthData.date / workout local date). */
   date: string;
   workoutFeedObserved: boolean | null;
   sessions?: readonly ResistanceTrainingExposureHistorySessionInputV7[];
+  /**
+   * Canonical strength Workout evidence on this local date without usable
+   * mapped diary dose. Must not be omitted when such workouts exist — otherwise
+   * the day would be misclassified as observed-no-exposure / rest.
+   */
+  legacyStrengthWorkouts?: readonly ResistanceTrainingLegacyStrengthWorkoutV7[];
 };
 
 export type ResistanceTrainingExposureHistorySessionInputV7 = {
@@ -192,7 +219,11 @@ function addDoseMuscleBuckets(
   }
 }
 
-/** UTC Monday of the calendar week containing `date` (YYYY-MM-DD). */
+/**
+ * Monday of the engineering calendar week containing a profile-local
+ * YYYY-MM-DD date. Anchors weekday math at UTC midnight of that date string
+ * only — it never re-derives the date from a workout timestamp.
+ */
 export function utcMondayWeekStart(date: string): string {
   const parsed = Date.parse(`${date}T00:00:00.000Z`);
   if (!Number.isFinite(parsed) || new Date(parsed).toISOString().slice(0, 10) !== date) {
@@ -203,14 +234,30 @@ export function utcMondayWeekStart(date: string): string {
   return addCalendarDays(date, -daysFromMonday);
 }
 
+function normalizeLegacyStrengthWorkouts(
+  date: string,
+  workouts: readonly ResistanceTrainingLegacyStrengthWorkoutV7[],
+): ResistanceTrainingLegacyStrengthWorkoutV7[] {
+  return [...workouts]
+    .map((workout) => ({
+      workoutId: workout.workoutId,
+      localDate: workout.localDate,
+      matchedStrengthDiarySessionId: workout.matchedStrengthDiarySessionId,
+    }))
+    .filter((workout) => workout.localDate === date)
+    .sort((left, right) => left.workoutId - right.workoutId);
+}
+
 function classifyDay(input: {
   date: string;
   workoutFeedObserved: boolean | null;
   sessions: ResistanceTrainingSessionExposureV7[];
+  legacyStrengthWorkouts: ResistanceTrainingLegacyStrengthWorkoutV7[];
 }): ResistanceTrainingDayExposureV7 {
+  const strengthEvidenceCount = input.sessions.length + input.legacyStrengthWorkouts.length;
   const sourceObservation = workoutExposureObservation({
     workoutFeedObserved: input.workoutFeedObserved,
-    workoutCount: input.sessions.length,
+    workoutCount: strengthEvidenceCount,
   });
 
   const muscleBuckets = emptyMuscleBuckets();
@@ -232,6 +279,7 @@ function classifyDay(input: {
     }
   }
 
+  const hasLegacyStrengthWithoutMappedDose = input.legacyStrengthWorkouts.length > 0;
   let kind: ResistanceTrainingDayExposureKindV7;
   let completeCessation: false | "verified-observed-no-exposure";
 
@@ -241,8 +289,9 @@ function classifyDay(input: {
   } else if (availableMappedSessions > 0) {
     kind = "observed-mapped-exposure";
     completeCessation = false;
-  } else if (unresolvedSessions > 0) {
-    // Sessions exist but dose is unavailable/unmapped — not zero training.
+  } else if (unresolvedSessions > 0 || hasLegacyStrengthWithoutMappedDose) {
+    // Diary dose unavailable/unmapped, or legacy strength Workout without diary
+    // details — exposure event exists; mapped dose is unresolved. Not rest.
     kind = "unresolved-dose";
     completeCessation = false;
   } else {
@@ -257,6 +306,7 @@ function classifyDay(input: {
     kind,
     completeCessation,
     sessions: input.sessions,
+    legacyStrengthWorkouts: input.legacyStrengthWorkouts,
     mappedSetCount,
     recordedSetCount,
     unmappedSetCount,
@@ -390,7 +440,8 @@ function detectResumptionEvents(
 }
 
 /**
- * Pure rebuild of resistance-training exposure history over a calendar range.
+ * Pure rebuild of resistance-training exposure history over a local-date range.
+ * `fromDate` / `toDate` / day.date are profile-local calendar dates.
  * Missing input days become unobserved (feed unknown) — never rest/cessation.
  */
 export function buildResistanceTrainingExposureHistoryV7(input: {
@@ -410,10 +461,15 @@ export function buildResistanceTrainingExposureHistoryV7(input: {
         left.strengthDiarySessionId - right.strengthDiarySessionId
         || left.sessionRevision - right.sessionRevision
       ));
+    const legacyStrengthWorkouts = normalizeLegacyStrengthWorkouts(
+      date,
+      provided?.legacyStrengthWorkouts ?? [],
+    );
     return classifyDay({
       date,
       workoutFeedObserved: provided?.workoutFeedObserved ?? null,
       sessions,
+      legacyStrengthWorkouts,
     });
   });
 
@@ -464,6 +520,7 @@ export function resistanceTrainingExposureHistoryV7Fingerprint(
       recordedSetCount: day.recordedSetCount,
       unmappedSetCount: day.unmappedSetCount,
       muscleGroups: day.muscleGroups,
+      legacyStrengthWorkouts: day.legacyStrengthWorkouts,
       sessions: day.sessions.map((session) => ({
         strengthDiarySessionId: session.strengthDiarySessionId,
         sessionRevision: session.sessionRevision,

@@ -197,6 +197,114 @@ describe("ResistanceTrainingExposureHistoryV7", () => {
     expect(history.days[0]!.recordedSetCount).toBe(1);
   });
 
+  it("treats legacy strength Workout without diary details as unresolved, not rest", () => {
+    const history = buildResistanceTrainingExposureHistoryV7({
+      fromDate: "2026-09-14",
+      toDate: "2026-09-14",
+      days: [{
+        date: "2026-09-14",
+        workoutFeedObserved: true,
+        sessions: [],
+        legacyStrengthWorkouts: [{
+          workoutId: 501,
+          localDate: "2026-09-14",
+          matchedStrengthDiarySessionId: null,
+        }],
+      }],
+    });
+
+    expect(history.days[0]!.kind).toBe("unresolved-dose");
+    expect(history.days[0]!.kind).not.toBe("observed-no-exposure");
+    expect(history.days[0]!.completeCessation).toBe(false);
+    expect(history.days[0]!.legacyStrengthWorkouts).toEqual([{
+      workoutId: 501,
+      localDate: "2026-09-14",
+      matchedStrengthDiarySessionId: null,
+    }]);
+    expect(history.days[0]!.sourceObservation).toEqual({
+      availability: "available",
+      observation: "observed-exposure",
+    });
+    expect(history.resumptionEvents).toEqual([]);
+  });
+
+  it("does not let legacy strength without diary create false cessation before resumption", () => {
+    const dose = doseFor(sessionDto({
+      id: 8,
+      stableKey: "incline_dumbbell_press_30deg",
+      reps: 8,
+    }));
+    const history = buildResistanceTrainingExposureHistoryV7({
+      fromDate: "2026-09-14",
+      toDate: "2026-09-17",
+      days: [
+        {
+          date: "2026-09-14",
+          workoutFeedObserved: true,
+          sessions: [{ strengthDiarySessionId: 8, sessionRevision: 1, dose }],
+        },
+        {
+          date: "2026-09-15",
+          workoutFeedObserved: true,
+          sessions: [],
+          legacyStrengthWorkouts: [{
+            workoutId: 777,
+            localDate: "2026-09-15",
+            matchedStrengthDiarySessionId: null,
+          }],
+        },
+        {
+          date: "2026-09-16",
+          workoutFeedObserved: true,
+          sessions: [{ strengthDiarySessionId: 9, sessionRevision: 1, dose }],
+        },
+      ],
+    });
+
+    expect(history.days[1]!.kind).toBe("unresolved-dose");
+    expect(history.days[1]!.completeCessation).toBe(false);
+    // Legacy unresolved breaks the verified no-exposure chain — not cessation.
+    expect(history.resumptionEvents).toEqual([]);
+  });
+
+  it("groups engineering weeks by profile-local date, not UTC startAt", () => {
+    // Europe/Bratislava: 2026-09-13T22:30:00.000Z = local Mon 2026-09-14 00:30.
+    // UTC calendar date of the instant is Sunday 2026-09-13 (previous week).
+    const occurrenceStartAt = "2026-09-13T22:30:00.000Z";
+    const localDate = "2026-09-14";
+    const utcDateOfInstant = occurrenceStartAt.slice(0, 10);
+    expect(utcDateOfInstant).toBe("2026-09-13");
+    expect(utcMondayWeekStart(localDate)).toBe("2026-09-14");
+    expect(utcMondayWeekStart(utcDateOfInstant)).toBe("2026-09-07");
+
+    const dose = doseFor(sessionDto({
+      id: 20,
+      stableKey: "incline_dumbbell_press_30deg",
+      reps: 8,
+    }));
+    const history = buildResistanceTrainingExposureHistoryV7({
+      fromDate: "2026-09-07",
+      toDate: "2026-09-20",
+      days: [{
+        date: localDate,
+        workoutFeedObserved: true,
+        sessions: [{
+          strengthDiarySessionId: 20,
+          sessionRevision: 1,
+          occurrenceStartAt,
+          matchedWorkoutId: 88,
+          dose,
+        }],
+      }],
+    });
+
+    const week = history.weeklyAggregates.find((entry) => entry.weekStartDate === "2026-09-14");
+    const wrongUtcWeek = history.weeklyAggregates.find((entry) => entry.weekStartDate === "2026-09-07");
+    expect(week?.totalMappedSetCount).toBe(1);
+    expect(week?.occurrenceDates).toEqual([localDate]);
+    expect(wrongUtcWeek?.totalMappedSetCount ?? 0).toBe(0);
+  });
+
   it("aggregates weekly mapped dose while keeping direct/indirect separate", () => {
     const press = doseFor(sessionDto({
       id: 1,

@@ -262,117 +262,191 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
 
   if (session.status === SESSION_STATUS.ACTIVE && current) {
     const sets = current.sets.slice().sort((a, b) => a.setNumber - b.setNumber);
+    const repsOk = Number.isFinite(Number(draft.reps)) && Number(draft.reps) >= 1;
+    const weightOk = current.resistanceType !== RESISTANCE.EXTERNAL_WEIGHT
+      || (Number.isFinite(Number(draft.weightKg)) && Number(draft.weightKg) > 0);
+    const bandOk = current.resistanceType !== RESISTANCE.RESISTANCE_BAND
+      || (Number.isFinite(Number(draft.bandNominalResistanceKg)) && Number(draft.bandNominalResistanceKg) > 0);
+    const canSave = !busy && repsOk && weightOk && bandOk;
+
+    function switchExercise(index: number) {
+      goToExercise(index);
+      try {
+        window.scrollTo(0, 0);
+      } catch {
+        // jsdom may not implement scrollTo
+      }
+    }
+
     return (
       <main className={styles.liveShell}>
-        <div className={styles.liveTop}>
-          <Link className={styles.linkLike} href="/training">{uk ? "← Тренування" : "← Training"}</Link>
-          <p className={styles.eyebrow}>{uk ? "Жива сесія" : "Live session"}</p>
-          <h1>{session.programName}</h1>
-          <p className={styles.progress}>
-            {uk ? `Вправа ${exerciseIndex + 1} з ${exercises.length}` : `Exercise ${exerciseIndex + 1} of ${exercises.length}`}
-            {" · "}
-            {resistanceLabel(current.resistanceType, uk)}
-            {" · "}
-            {uk ? `план ${current.plannedSets}` : `planned ${current.plannedSets}`}
+        <header className={styles.liveTop}>
+          <Link className={styles.liveBack} href="/training">
+            {uk ? "← Тренування" : "← Training"}
+          </Link>
+          <p className={styles.liveProgram}>{session.programName}</p>
+          <p className={styles.liveProgress}>
+            {uk
+              ? `${exerciseIndex + 1} / ${exercises.length} вправ`
+              : `${exerciseIndex + 1} / ${exercises.length} exercises`}
           </p>
-        </div>
+        </header>
 
         {error && <div className={styles.errorBanner} role="alert">{error}</div>}
 
-        <h2 className={styles.exerciseTitle}>{current.snapshotExerciseName}</h2>
+        <section className={styles.liveExercise} aria-labelledby="live-exercise-title">
+          <h1 id="live-exercise-title" className={styles.liveExerciseTitle}>
+            {current.snapshotExerciseName}
+          </h1>
+          <p className={styles.liveExerciseMeta}>
+            <span className={styles.liveBadge}>{resistanceLabel(current.resistanceType, uk)}</span>
+            <span>
+              {uk
+                ? `${current.plannedSets} заплановані підходи`
+                : `${current.plannedSets} planned sets`}
+            </span>
+          </p>
+        </section>
 
-        <div className={styles.setList}>
+        <section className={styles.liveSets} aria-label={uk ? "Підходи" : "Sets"}>
+          <h2 className={styles.liveSectionTitle}>{uk ? "Підходи" : "Sets"}</h2>
           {sets.length === 0 ? (
-            <div className={styles.empty}>
-              <span>{uk ? "Підходів ще немає." : "No sets yet."}</span>
-            </div>
-          ) : sets.map((set) => (
-            <article className={styles.setCard} key={set.id}>
-              <header>
-                <strong>{uk ? `Підхід ${set.setNumber}` : `Set ${set.setNumber}`}</strong>
-                <div className={styles.rowActions}>
-                  <button className={styles.textButton} type="button" onClick={() => beginEdit(set)}>{uk ? "Змінити" : "Edit"}</button>
-                  <button className={styles.textButton} type="button" disabled={busy} onClick={() => void deleteSet(set.id)}>{uk ? "Видалити" : "Delete"}</button>
-                </div>
-              </header>
-              <p className={styles.cardMeta}>
-                {set.reps} {uk ? "повт." : "reps"}
-                {current.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && set.weightKg !== null
-                  ? ` · ${set.weightKg} kg`
-                  : null}
-                {current.resistanceType === RESISTANCE.RESISTANCE_BAND && set.bandNominalResistanceKg !== null
-                  ? ` · ${set.bandNominalResistanceKg} ${uk ? "кг резинки" : "kg band"}`
-                  : null}
-              </p>
-            </article>
-          ))}
-        </div>
+            <p className={styles.liveEmptySets}>
+              {uk ? "Ще немає записаних підходів." : "No sets logged yet."}
+            </p>
+          ) : (
+            <ul className={styles.liveSetTable}>
+              {sets.map((set) => (
+                <li className={styles.liveSetRow} key={set.id}>
+                  <span className={styles.liveSetNum}>{set.setNumber}</span>
+                  <span className={styles.liveSetLoad}>
+                    {current.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && set.weightKg !== null
+                      ? `${set.weightKg} ${uk ? "кг" : "kg"}`
+                      : current.resistanceType === RESISTANCE.RESISTANCE_BAND
+                        && set.bandNominalResistanceKg !== null
+                        ? `${set.bandNominalResistanceKg} ${uk ? "кг резинки" : "kg band"}`
+                        : (uk ? "власна вага" : "bodyweight")}
+                  </span>
+                  <span className={styles.liveSetReps}>
+                    {set.reps} {uk ? "повт." : "reps"}
+                  </span>
+                  <span className={styles.liveSetActions}>
+                    <button
+                      className={styles.textButton}
+                      type="button"
+                      onClick={() => beginEdit(set)}
+                    >
+                      {uk ? "Змінити" : "Edit"}
+                    </button>
+                    <button
+                      className={styles.textButton}
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void deleteSet(set.id)}
+                    >
+                      {uk ? "Видалити" : "Delete"}
+                    </button>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
 
-        <section className={styles.panel}>
-          <div className={styles.panelHeader}>
-            <div>
-              <h2>{editingSetId === null ? (uk ? "Новий підхід" : "New set") : (uk ? "Редагувати підхід" : "Edit set")}</h2>
-              <p>{uk ? "Зберігається одразу в API" : "Saves to the API immediately"}</p>
-            </div>
-          </div>
-          <div className={styles.panelBody}>
-            <div className={styles.setFields}>
-              <label className={styles.field}>
-                <span>{uk ? "Повторення" : "Reps"}</span>
-                <input inputMode="numeric" value={draft.reps} onChange={(event) => setDraft((value) => ({ ...value, reps: event.target.value }))} />
+        <section className={styles.liveEntry} aria-label={uk ? "Новий підхід" : "New set"}>
+          <h2 className={styles.liveSectionTitle}>
+            {editingSetId === null ? (uk ? "Новий підхід" : "New set") : (uk ? "Редагувати підхід" : "Edit set")}
+          </h2>
+          <div className={styles.liveFields}>
+            {current.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && (
+              <label className={styles.liveField}>
+                <span>{uk ? "Вага, кг" : "Weight, kg"}</span>
+                <input
+                  inputMode="decimal"
+                  autoComplete="off"
+                  value={draft.weightKg}
+                  onChange={(event) => setDraft((value) => ({ ...value, weightKg: event.target.value }))}
+                />
               </label>
-              {current.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && (
-                <label className={styles.field}>
-                  <span>{uk ? "Вага, кг" : "Weight, kg"}</span>
-                  <input inputMode="decimal" value={draft.weightKg} onChange={(event) => setDraft((value) => ({ ...value, weightKg: event.target.value }))} />
-                </label>
-              )}
-              {current.resistanceType === RESISTANCE.RESISTANCE_BAND && (
-                <label className={styles.field}>
-                  <span>{uk ? "Номінал резинки, кг" : "Band nominal, kg"}</span>
-                  <input inputMode="decimal" value={draft.bandNominalResistanceKg} onChange={(event) => setDraft((value) => ({ ...value, bandNominalResistanceKg: event.target.value }))} />
-                </label>
-              )}
-            </div>
-            <div className={styles.formActions}>
-              {editingSetId !== null && (
-                <button className={styles.secondaryButton} type="button" onClick={() => {
+            )}
+            {current.resistanceType === RESISTANCE.RESISTANCE_BAND && (
+              <label className={styles.liveField}>
+                <span>{uk ? "Опір резинки, кг" : "Band resistance, kg"}</span>
+                <input
+                  inputMode="decimal"
+                  autoComplete="off"
+                  value={draft.bandNominalResistanceKg}
+                  onChange={(event) => setDraft((value) => ({
+                    ...value,
+                    bandNominalResistanceKg: event.target.value,
+                  }))}
+                />
+              </label>
+            )}
+            <label className={styles.liveField}>
+              <span>{uk ? "Повтори" : "Reps"}</span>
+              <input
+                inputMode="numeric"
+                autoComplete="off"
+                value={draft.reps}
+                onChange={(event) => setDraft((value) => ({ ...value, reps: event.target.value }))}
+              />
+            </label>
+          </div>
+          <div className={styles.liveSaveRow}>
+            {editingSetId !== null && (
+              <button
+                className={styles.liveSecondary}
+                type="button"
+                onClick={() => {
                   setEditingSetId(null);
                   setDraft(emptyDraft(current.resistanceType));
-                }}>
-                  {uk ? "Скасувати" : "Cancel"}
-                </button>
-              )}
-              <button className={styles.primaryButton} type="button" disabled={busy} onClick={() => void saveSet()}>
-                {busy ? (uk ? "Збереження…" : "Saving…") : (uk ? "Зберегти підхід" : "Save set")}
+                }}
+              >
+                {uk ? "Скасувати" : "Cancel"}
               </button>
-            </div>
+            )}
+            <button
+              className={styles.liveSave}
+              type="button"
+              disabled={!canSave}
+              onClick={() => void saveSet()}
+            >
+              {busy
+                ? (uk ? "Збереження…" : "Saving…")
+                : (uk ? "Зберегти підхід" : "Save set")}
+            </button>
           </div>
         </section>
 
-        <div className={styles.liveNav}>
+        <nav className={styles.liveNav} aria-label={uk ? "Навігація вправ" : "Exercise navigation"}>
           <button
-            className={styles.secondaryButton}
+            className={styles.liveNavBtn}
             type="button"
             disabled={exerciseIndex === 0}
-            onClick={() => goToExercise(Math.max(0, exerciseIndex - 1))}
+            onClick={() => switchExercise(Math.max(0, exerciseIndex - 1))}
           >
-            {uk ? "Попередня" : "Previous"}
+            {uk ? "← Попередня" : "← Previous"}
           </button>
           {exerciseIndex < exercises.length - 1 ? (
             <button
-              className={styles.primaryButton}
+              className={styles.liveNavBtnNext}
               type="button"
-              onClick={() => goToExercise(Math.min(exercises.length - 1, exerciseIndex + 1))}
+              onClick={() => switchExercise(Math.min(exercises.length - 1, exerciseIndex + 1))}
             >
-              {uk ? "Наступна" : "Next"}
+              {uk ? "Наступна →" : "Next →"}
             </button>
           ) : (
-            <button className={styles.primaryButton} type="button" disabled={busy} onClick={() => void finishSession()}>
+            <button
+              className={styles.liveNavBtnNext}
+              type="button"
+              disabled={busy}
+              onClick={() => void finishSession()}
+            >
               {uk ? "Завершити" : "Finish"}
             </button>
           )}
-        </div>
+        </nav>
       </main>
     );
   }

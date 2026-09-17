@@ -64,6 +64,7 @@ const setSelect = {
   reps: true,
   weightKg: true,
   bandNominalResistanceKg: true,
+  rir: true,
   comment: true,
   completedAt: true,
   createdAt: true,
@@ -179,6 +180,7 @@ function toSetDto(record: SetRecord): StrengthSetDto {
     reps: record.reps,
     weightKg: decimalToNumber(record.weightKg),
     bandNominalResistanceKg: decimalToNumber(record.bandNominalResistanceKg),
+    rir: record.rir,
     comment: record.comment ?? null,
     completedAt: record.completedAt?.toISOString() ?? null,
     createdAt: record.createdAt.toISOString(),
@@ -1037,6 +1039,7 @@ export class TrainingRepository {
     reps: number;
     weightKg: number | null;
     bandNominalResistanceKg: number | null;
+    rir?: number | null;
     comment?: string | null;
     completedAt: Date | null;
   }): Promise<StrengthSetDto> {
@@ -1047,6 +1050,7 @@ export class TrainingRepository {
         reps: input.reps,
         weightKg: input.weightKg,
         bandNominalResistanceKg: input.bandNominalResistanceKg,
+        rir: input.rir === undefined ? null : input.rir,
         comment: input.comment === undefined
           ? undefined
           : (input.comment?.trim() ? input.comment.trim() : null),
@@ -1064,6 +1068,7 @@ export class TrainingRepository {
     reps?: number;
     weightKg?: number | null;
     bandNominalResistanceKg?: number | null;
+    rir?: number | null;
     comment?: string | null;
     completedAt?: Date | null;
   }): Promise<StrengthSetDto | null> {
@@ -1085,6 +1090,7 @@ export class TrainingRepository {
         ...(input.bandNominalResistanceKg !== undefined
           ? { bandNominalResistanceKg: input.bandNominalResistanceKg }
           : {}),
+        ...(input.rir !== undefined ? { rir: input.rir } : {}),
         ...(input.comment !== undefined
           ? { comment: input.comment?.trim() ? input.comment.trim() : null }
           : {}),
@@ -1163,6 +1169,7 @@ export class TrainingRepository {
             reps: true,
             weightKg: true,
             bandNominalResistanceKg: true,
+            rir: true,
             comment: true,
           },
         },
@@ -1185,6 +1192,7 @@ export class TrainingRepository {
           reps: set.reps,
           weightKg: decimalToNumber(set.weightKg),
           bandNominalResistanceKg: decimalToNumber(set.bandNominalResistanceKg),
+          rir: set.rir,
           comment: set.comment ?? null,
         })),
       };
@@ -1202,6 +1210,7 @@ export class TrainingRepository {
         reps: true,
         weightKg: true,
         bandNominalResistanceKg: true,
+        rir: true,
         completedAt: true,
         sessionExercise: {
           select: {

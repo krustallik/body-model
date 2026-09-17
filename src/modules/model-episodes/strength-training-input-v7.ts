@@ -8,7 +8,7 @@ import type { ResistanceType } from "@/modules/training/training.constants";
 import type { StrengthSessionDto, StrengthSetDto } from "@/modules/training/training.types";
 
 export const CANONICAL_STRENGTH_TRAINING_INPUT_V7_VERSION =
-  "bodycast-physiology-v7-strength-input-v2" as const;
+  "bodycast-physiology-v7-strength-input-v3" as const;
 
 export type CanonicalStrengthTrainingHeartRateSampleV7 = {
   timestamp: string;
@@ -31,6 +31,11 @@ export type CanonicalRecordedStrengthSetV7 = {
   weightKg: number | null;
   /** RESISTANCE_BAND nominal resistance only — never iron-equivalent. */
   bandNominalResistanceKg: number | null;
+  /**
+   * Optional user-reported repetitions in reserve.
+   * Null = not reported (legacy / omitted). Null is never RIR 0.
+   */
+  rir: number | null;
   /** Preserved as stored; never inferred into a performed/unperformed boolean. */
   completedAt: string | null;
 };
@@ -88,6 +93,7 @@ function toRecordedSet(
     resistanceType,
     weightKg: set.weightKg,
     bandNominalResistanceKg: set.bandNominalResistanceKg,
+    rir: set.rir,
     completedAt: set.completedAt,
   };
 }

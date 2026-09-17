@@ -53,6 +53,7 @@ function session(overrides: Partial<StrengthSessionDto> = {}): StrengthSessionDt
           reps: 8,
           weightKg: 30,
           bandNominalResistanceKg: null,
+          rir: null,
           comment: null,
           completedAt: null,
           createdAt: "2026-09-17T17:00:00.000Z",
@@ -76,6 +77,7 @@ function session(overrides: Partial<StrengthSessionDto> = {}): StrengthSessionDt
           reps: 12,
           weightKg: null,
           bandNominalResistanceKg: 15,
+          rir: null,
           comment: null,
           completedAt: "2026-09-17T17:10:00.000Z",
           createdAt: "2026-09-17T17:00:00.000Z",
@@ -99,6 +101,7 @@ function session(overrides: Partial<StrengthSessionDto> = {}): StrengthSessionDt
           reps: 15,
           weightKg: null,
           bandNominalResistanceKg: null,
+          rir: null,
           comment: null,
           completedAt: null,
           createdAt: "2026-09-17T17:00:00.000Z",
@@ -116,7 +119,7 @@ function session(overrides: Partial<StrengthSessionDto> = {}): StrengthSessionDt
 describe("canonical v7 strength-training input", () => {
   it("preserves recorded-set resistance semantics and mapping diagnostics without inventing completion", () => {
     const input = buildCanonicalStrengthTrainingInputV7({ session: session(), heartRateSamples: null });
-    expect(input.contractVersion).toBe("bodycast-physiology-v7-strength-input-v2");
+    expect(input.contractVersion).toBe("bodycast-physiology-v7-strength-input-v3");
     expect(input.program).toEqual({ programId: 7, programVersionId: 9, programVersionNumber: 2 });
     expect(input.exercises.map((exercise) => exercise.stableKey)).toEqual([
       "seated_dumbbell_press",
@@ -133,6 +136,7 @@ describe("canonical v7 strength-training input", () => {
       reps: 8,
       weightKg: 30,
       bandNominalResistanceKg: null,
+      rir: null,
       completedAt: null,
       resistanceType: "EXTERNAL_WEIGHT",
     });
@@ -140,6 +144,7 @@ describe("canonical v7 strength-training input", () => {
       reps: 12,
       weightKg: null,
       bandNominalResistanceKg: 15,
+      rir: null,
       completedAt: "2026-09-17T17:10:00.000Z",
       resistanceType: "RESISTANCE_BAND",
     });
@@ -152,6 +157,7 @@ describe("canonical v7 strength-training input", () => {
       reps: 15,
       weightKg: null,
       bandNominalResistanceKg: null,
+      rir: null,
       resistanceType: "BODYWEIGHT",
     });
     expect(input.workout).toEqual(expect.objectContaining({

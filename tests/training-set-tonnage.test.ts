@@ -22,11 +22,13 @@ describe("validateSetFields", () => {
       reps: 10,
       weightKg: 30,
       bandNominalResistanceKg: null,
+    rir: null,
     })).toEqual({
       ok: true,
       reps: 10,
       weightKg: 30,
       bandNominalResistanceKg: null,
+    rir: null,
     });
   });
 
@@ -35,11 +37,13 @@ describe("validateSetFields", () => {
       reps: 10,
       weightKg: null,
       bandNominalResistanceKg: 108,
+    rir: null,
     })).toEqual({
       ok: true,
       reps: 10,
       weightKg: null,
       bandNominalResistanceKg: 108,
+    rir: null,
     });
   });
 
@@ -48,11 +52,13 @@ describe("validateSetFields", () => {
       reps: 20,
       weightKg: null,
       bandNominalResistanceKg: null,
+    rir: null,
     })).toEqual({
       ok: true,
       reps: 20,
       weightKg: null,
       bandNominalResistanceKg: null,
+    rir: null,
     });
   });
 
@@ -61,6 +67,7 @@ describe("validateSetFields", () => {
       reps: 8,
       weightKg: 40,
       bandNominalResistanceKg: 108,
+    rir: null,
     }).ok).toBe(false);
   });
 
@@ -75,6 +82,7 @@ describe("validateSetFields", () => {
     expect(validateSetFields(RESISTANCE.EXTERNAL_WEIGHT, {
       reps: 8,
       bandNominalResistanceKg: 50,
+    rir: null,
     }).ok).toBe(false);
     expect(validateSetFields(RESISTANCE.RESISTANCE_BAND, {
       reps: 8,
@@ -252,6 +260,7 @@ describe("external load accounting + ordinary tonnage", () => {
           reps: 5,
           weightKg: 10,
           bandNominalResistanceKg: null,
+          rir: null,
           comment: null,
           completedAt: null,
           createdAt: "2026-09-17T17:00:00.000Z",

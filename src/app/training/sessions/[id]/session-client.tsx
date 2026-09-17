@@ -152,7 +152,14 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     const payload: Record<string, number | string | null> = {
       reps,
       comment: draft.comment.trim() ? draft.comment.trim() : null,
+      rir: draft.rir.trim() === "" ? null : Number(draft.rir),
     };
+    if (payload.rir !== null) {
+      if (!Number.isInteger(payload.rir) || (payload.rir as number) < 0 || (payload.rir as number) > 10) {
+        setError(uk ? "RIR має бути цілим числом від 0 до 10." : "RIR must be an integer from 0 to 10.");
+        return;
+      }
+    }
     if (current.resistanceType === RESISTANCE.EXTERNAL_WEIGHT) {
       const weightKg = Number(draft.weightKg);
       if (!Number.isFinite(weightKg) || weightKg <= 0) {
@@ -229,6 +236,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
       bandNominalResistanceKg: set.bandNominalResistanceKg === null
         ? ""
         : String(set.bandNominalResistanceKg),
+      rir: set.rir === null ? "" : String(set.rir),
       comment: set.comment ?? "",
     });
   }

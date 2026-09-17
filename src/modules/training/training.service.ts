@@ -571,6 +571,7 @@ export class TrainingService {
       reps: input.reps,
       weightKg: input.weightKg ?? null,
       bandNominalResistanceKg: input.bandNominalResistanceKg ?? null,
+      rir: input.rir === undefined ? null : input.rir,
     });
     if (!validated.ok) throw new SetValidationError(validated.message);
 
@@ -585,6 +586,7 @@ export class TrainingService {
         reps: validated.reps,
         weightKg: validated.weightKg,
         bandNominalResistanceKg: validated.bandNominalResistanceKg,
+        rir: validated.rir,
         comment: input.comment === undefined ? undefined : input.comment,
         completedAt: input.completedAt ? new Date(input.completedAt) : new Date(),
       });
@@ -626,6 +628,7 @@ export class TrainingService {
         : existing.bandNominalResistanceKg === null
           ? null
           : existing.bandNominalResistanceKg.toNumber();
+    const nextRir = input.rir !== undefined ? input.rir : existing.rir;
 
     const validated = validateSetFields(
       existing.sessionExercise.resistanceType as ResistanceType,
@@ -633,6 +636,7 @@ export class TrainingService {
         reps: nextReps,
         weightKg: nextWeight,
         bandNominalResistanceKg: nextBand,
+        rir: nextRir,
       },
     );
     if (!validated.ok) throw new SetValidationError(validated.message);
@@ -644,6 +648,7 @@ export class TrainingService {
       reps: validated.reps,
       weightKg: validated.weightKg,
       bandNominalResistanceKg: validated.bandNominalResistanceKg,
+      rir: validated.rir,
       comment: input.comment,
       completedAt:
         input.completedAt === undefined

@@ -10,6 +10,7 @@ import {
 } from "@/modules/training/training.constants";
 import {
   ActiveSessionExistsError,
+  SetValidationError,
   WorkoutAlreadyMatchedError,
 } from "@/modules/training/training.errors";
 import { TrainingRepository } from "@/modules/training/training.repository";
@@ -462,6 +463,7 @@ describe("TrainingService live session", () => {
       reps: 12,
       weightKg: decimal(30),
       bandNominalResistanceKg: null,
+      rir: null,
       completedAt: new Date("2026-09-17T16:10:00Z"),
       createdAt: new Date("2026-09-17T16:10:00Z"),
       updatedAt: new Date("2026-09-17T16:10:00Z"),
@@ -476,6 +478,7 @@ describe("TrainingService live session", () => {
       reps: 12,
       weightKg: decimal(30),
       bandNominalResistanceKg: null,
+      rir: null,
       completedAt: new Date("2026-09-17T16:10:00Z"),
       sessionExercise: {
         id: 501,
@@ -490,6 +493,7 @@ describe("TrainingService live session", () => {
       reps: 10,
       weightKg: decimal(32.5),
       bandNominalResistanceKg: null,
+      rir: null,
       completedAt: new Date("2026-09-17T16:10:00Z"),
       createdAt: new Date("2026-09-17T16:10:00Z"),
       updatedAt: new Date("2026-09-17T16:12:00Z"),
@@ -504,6 +508,7 @@ describe("TrainingService live session", () => {
       reps: 10,
       weightKg: decimal(32.5),
       bandNominalResistanceKg: null,
+      rir: null,
       completedAt: new Date("2026-09-17T16:10:00Z"),
       sessionExercise: {
         id: 501,
@@ -514,6 +519,96 @@ describe("TrainingService live session", () => {
     db.strengthSet.delete.mockResolvedValue({});
     await service.deleteSet(50, 900);
     expect(db.strengthSet.delete).toHaveBeenCalledWith({ where: { id: 900 } });
+  });
+
+  it("creates, edits, and clears optional RIR on live sets; rejects invalid RIR", async () => {
+    db.strengthSessionExercise.findFirst.mockResolvedValue({
+      id: 501,
+      sessionId: 50,
+      resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
+      session: { id: 50, status: SESSION_STATUS.ACTIVE },
+      sets: [],
+    });
+    db.strengthSet.create.mockResolvedValue({
+      id: 901,
+      sessionExerciseId: 501,
+      setNumber: 1,
+      reps: 8,
+      weightKg: decimal(40),
+      bandNominalResistanceKg: null,
+      rir: 1,
+      completedAt: new Date("2026-09-17T16:10:00Z"),
+      createdAt: new Date("2026-09-17T16:10:00Z"),
+      updatedAt: new Date("2026-09-17T16:10:00Z"),
+    });
+
+    const created = await service.createSet(50, 501, { reps: 8, weightKg: 40, rir: 1 });
+    expect(created.rir).toBe(1);
+    expect(db.strengthSet.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ rir: 1 }),
+    }));
+
+    await expect(
+      service.createSet(50, 501, { reps: 8, weightKg: 40, rir: 11 }),
+    ).rejects.toBeInstanceOf(SetValidationError);
+
+    db.strengthSet.findFirst.mockResolvedValue({
+      id: 901,
+      reps: 8,
+      weightKg: decimal(40),
+      bandNominalResistanceKg: null,
+      rir: 1,
+      completedAt: new Date("2026-09-17T16:10:00Z"),
+      sessionExercise: {
+        id: 501,
+        resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
+        session: { id: 50, status: SESSION_STATUS.ACTIVE },
+      },
+    });
+    db.strengthSet.update.mockResolvedValue({
+      id: 901,
+      sessionExerciseId: 501,
+      setNumber: 1,
+      reps: 8,
+      weightKg: decimal(40),
+      bandNominalResistanceKg: null,
+      rir: 0,
+      completedAt: new Date("2026-09-17T16:10:00Z"),
+      createdAt: new Date("2026-09-17T16:10:00Z"),
+      updatedAt: new Date("2026-09-17T16:12:00Z"),
+    });
+
+    const edited = await service.updateSet(50, 901, { rir: 0 });
+    expect(edited.rir).toBe(0);
+
+    db.strengthSet.findFirst.mockResolvedValue({
+      id: 901,
+      reps: 8,
+      weightKg: decimal(40),
+      bandNominalResistanceKg: null,
+      rir: 0,
+      completedAt: new Date("2026-09-17T16:10:00Z"),
+      sessionExercise: {
+        id: 501,
+        resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
+        session: { id: 50, status: SESSION_STATUS.ACTIVE },
+      },
+    });
+    db.strengthSet.update.mockResolvedValue({
+      id: 901,
+      sessionExerciseId: 501,
+      setNumber: 1,
+      reps: 8,
+      weightKg: decimal(40),
+      bandNominalResistanceKg: null,
+      rir: null,
+      completedAt: new Date("2026-09-17T16:10:00Z"),
+      createdAt: new Date("2026-09-17T16:10:00Z"),
+      updatedAt: new Date("2026-09-17T16:13:00Z"),
+    });
+
+    const cleared = await service.updateSet(50, 901, { rir: null });
+    expect(cleared.rir).toBeNull();
   });
 
   it("finish is idempotent and keeps PENDING when no candidate", async () => {
@@ -809,6 +904,7 @@ describe("TrainingService matching cases", () => {
             reps: 12,
             weightKg: decimal(30),
             bandNominalResistanceKg: null,
+            rir: null,
             completedAt: new Date("2026-09-17T16:10:00Z"),
             createdAt: new Date("2026-09-17T16:10:00Z"),
             updatedAt: new Date("2026-09-17T16:10:00Z"),
@@ -820,6 +916,7 @@ describe("TrainingService matching cases", () => {
     const session = await service.getSession(50);
     expect(session?.webStartedAt).toBe("2026-09-17T16:02:00.000Z");
     expect(session?.exercises[0]?.sets[0]?.weightKg).toBe(30);
+    expect(session?.exercises[0]?.sets[0]?.rir).toBeNull();
     expect(session?.matchedWorkout?.activeEnergyKcal).toBe(410);
     expect(session?.matchedWorkout?.startAt).toBe("2026-09-17T16:04:00.000Z");
     expect(session?.ordinaryTonnageKg).toBe(720);

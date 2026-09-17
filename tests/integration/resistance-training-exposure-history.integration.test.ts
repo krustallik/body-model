@@ -169,6 +169,7 @@ describe("ResistanceTrainingExposureHistoryV7 production source wiring (PostgreS
       reps: 8,
       weightKg: 24,
       bandNominalResistanceKg: null,
+    rir: null,
     }, profileId);
 
     const loaded = await repo.getSession(session.id, profileId);

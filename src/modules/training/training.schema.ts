@@ -57,10 +57,17 @@ const nullableLoad = z.preprocess(
   z.number().positive().max(TRAINING_LIMITS.maxLoadKg).nullable().optional(),
 );
 
+/** ENGINEERING RIR domain 0–10 — not a scientific exclusion threshold. */
+const nullableRir = z.preprocess(
+  parseNullableNumericInput,
+  z.number().int().min(TRAINING_LIMITS.minRir).max(TRAINING_LIMITS.maxRir).nullable().optional(),
+);
+
 export const CreateSetSchema = z.object({
   reps: z.preprocess(parseNullableNumericInput, z.number().int().positive().max(TRAINING_LIMITS.maxReps)),
   weightKg: nullableLoad,
   bandNominalResistanceKg: nullableLoad,
+  rir: nullableRir,
   setNumber: z.preprocess(parseNullableNumericInput, z.number().int().positive().optional()),
   completedAt: z.string().datetime({ offset: true }).optional(),
   comment: z.string().trim().max(TRAINING_LIMITS.maxSetCommentLength).nullable().optional(),
@@ -70,6 +77,7 @@ export const UpdateSetSchema = z.object({
   reps: z.preprocess(parseNullableNumericInput, z.number().int().positive().max(TRAINING_LIMITS.maxReps).optional()),
   weightKg: nullableLoad,
   bandNominalResistanceKg: nullableLoad,
+  rir: nullableRir,
   completedAt: z.string().datetime({ offset: true }).nullable().optional(),
   comment: z.string().trim().max(TRAINING_LIMITS.maxSetCommentLength).nullable().optional(),
 }).strict().refine(

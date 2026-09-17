@@ -64,6 +64,8 @@ export type StrengthSetDto = {
   reps: number;
   weightKg: number | null;
   bandNominalResistanceKg: number | null;
+  /** Null = not reported. Null is never RIR 0. */
+  rir: number | null;
   comment: string | null;
   completedAt: string | null;
   createdAt: string;
@@ -75,6 +77,7 @@ export type ExerciseHistorySetDto = {
   reps: number;
   weightKg: number | null;
   bandNominalResistanceKg: number | null;
+  rir: number | null;
   comment: string | null;
 };
 

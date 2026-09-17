@@ -12,12 +12,12 @@ describe("scientific v7 traceability manifest", () => {
     expect(new Set(SCIENTIFIC_V7_CLAIMS.map(({ claimId }) => claimId)).size).toBe(77);
   });
 
-  it("classifies 21 claims already green and 56 as infrastructure blocked", () => {
+  it("classifies 22 claims already green and 55 as infrastructure blocked", () => {
     const counts = SCIENTIFIC_V7_CLAIMS.reduce<Record<string, number>>((result, claim) => {
       result[claim.expectedInitialState] = (result[claim.expectedInitialState] ?? 0) + 1;
       return result;
     }, {});
-    expect(counts).toEqual({ ALREADY_GREEN: 21, INFRASTRUCTURE_BLOCKED: 56 });
+    expect(counts).toEqual({ ALREADY_GREEN: 22, INFRASTRUCTURE_BLOCKED: 55 });
   });
 
   it("excludes every unsafe claim from scientific RED-test eligibility", () => {

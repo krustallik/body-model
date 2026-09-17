@@ -761,6 +761,7 @@ describe("set edits on a completed retrospective session", () => {
       reps: 10,
       weightKg: decimal(30),
       bandNominalResistanceKg: null,
+      rir: null,
       completedAt: workoutStartAt,
       sessionExercise: {
         id: 501,
@@ -775,6 +776,7 @@ describe("set edits on a completed retrospective session", () => {
       reps: 8,
       weightKg: decimal(30),
       bandNominalResistanceKg: null,
+      rir: null,
       completedAt: workoutStartAt,
       createdAt: workoutStartAt,
       updatedAt: new Date("2026-09-17T12:30:00Z"),
@@ -810,6 +812,7 @@ describe("set edits on a completed retrospective session", () => {
       reps: 12,
       weightKg: decimal(30),
       bandNominalResistanceKg: null,
+      rir: null,
       completedAt: workoutStartAt,
       createdAt: workoutStartAt,
       updatedAt: workoutStartAt,
@@ -852,6 +855,7 @@ describe("set edits on a completed retrospective session", () => {
       reps: 15,
       weightKg: null,
       bandNominalResistanceKg: decimal(108),
+      rir: null,
       completedAt: workoutStartAt,
       createdAt: workoutStartAt,
       updatedAt: workoutStartAt,
@@ -860,6 +864,63 @@ describe("set edits on a completed retrospective session", () => {
     const created = await service.createSet(50, 502, { reps: 15, bandNominalResistanceKg: 108 });
     expect(created.weightKg).toBeNull();
     expect(created.bandNominalResistanceKg).toBe(108);
+  });
+
+  it("persists optional RIR on retrospective create and clears it on edit", async () => {
+    db.strengthSessionExercise.findFirst.mockResolvedValue({
+      id: 501,
+      sessionId: 50,
+      resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
+      session: completedSession,
+      sets: [],
+    });
+    db.strengthSet.create.mockResolvedValue({
+      id: 902,
+      sessionExerciseId: 501,
+      setNumber: 1,
+      reps: 10,
+      weightKg: decimal(30),
+      bandNominalResistanceKg: null,
+      rir: 2,
+      completedAt: workoutStartAt,
+      createdAt: workoutStartAt,
+      updatedAt: workoutStartAt,
+    });
+
+    const created = await service.createSet(50, 501, { reps: 10, weightKg: 30, rir: 2 });
+    expect(created.rir).toBe(2);
+    expect(db.strengthSet.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ rir: 2 }),
+    }));
+
+    db.strengthSet.findFirst.mockResolvedValue({
+      id: 902,
+      reps: 10,
+      weightKg: decimal(30),
+      bandNominalResistanceKg: null,
+      rir: 2,
+      completedAt: workoutStartAt,
+      sessionExercise: {
+        id: 501,
+        resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
+        session: completedSession,
+      },
+    });
+    db.strengthSet.update.mockResolvedValue({
+      id: 902,
+      sessionExerciseId: 501,
+      setNumber: 1,
+      reps: 10,
+      weightKg: decimal(30),
+      bandNominalResistanceKg: null,
+      rir: null,
+      completedAt: workoutStartAt,
+      createdAt: workoutStartAt,
+      updatedAt: new Date("2026-09-17T12:40:00Z"),
+    });
+
+    const cleared = await service.updateSet(50, 902, { rir: null });
+    expect(cleared.rir).toBeNull();
   });
 });
 

@@ -31,6 +31,7 @@ export type SetDraft = {
   reps: string;
   weightKg: string;
   bandNominalResistanceKg: string;
+  rir: string;
   comment: string;
 };
 
@@ -68,7 +69,7 @@ type TrainingExerciseWorkspaceProps = {
 };
 
 export function emptySetDraft(): SetDraft {
-  return { reps: "", weightKg: "", bandNominalResistanceKg: "", comment: "" };
+  return { reps: "", weightKg: "", bandNominalResistanceKg: "", rir: "", comment: "" };
 }
 
 function setLoadLabel(
@@ -460,7 +461,22 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
                       onChange={(event) => onDraftChange({ ...draft, reps: event.target.value })}
                     />
                   </label>
+                  <label className={styles.liveField}>
+                    <span>RIR</span>
+                    <input
+                      inputMode="numeric"
+                      autoComplete="off"
+                      placeholder={uk ? "опційно" : "optional"}
+                      value={draft.rir}
+                      onChange={(event) => onDraftChange({ ...draft, rir: event.target.value })}
+                    />
+                  </label>
                 </div>
+                <p className={styles.workoutInfoLine}>
+                  {uk
+                    ? "RIR — скільки повторів ще залишалось у запасі (опційно)."
+                    : "RIR — how many reps you still had in reserve (optional)."}
+                </p>
 
                 {!showCommentField ? (
                   <button
@@ -522,6 +538,9 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
                         <span className={styles.liveSetNum}>#{set.setNumber}</span>
                         <span className={styles.liveSetLoad}>{setLoadLabel(exercise, set, uk)}</span>
                         <span className={styles.liveSetReps}>× {set.reps}</span>
+                        {set.rir != null ? (
+                          <span className={styles.liveSetReps}>RIR {set.rir}</span>
+                        ) : null}
                         <span className={styles.liveSetActions}>
                           <button
                             className={styles.workoutIconBtn}

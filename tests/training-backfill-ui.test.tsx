@@ -71,6 +71,7 @@ const session = {
       reps: 10,
       weightKg: 30,
       bandNominalResistanceKg: null,
+      rir: null,
       completedAt: "2026-09-10T16:20:00.000Z",
       createdAt: "2026-09-10T16:20:00.000Z",
       updatedAt: "2026-09-10T16:20:00.000Z",

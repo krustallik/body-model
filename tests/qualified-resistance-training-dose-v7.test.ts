@@ -59,6 +59,7 @@ function recordedSet(input: {
     reps: input.reps,
     weightKg: input.weightKg ?? null,
     bandNominalResistanceKg: input.bandNominalResistanceKg ?? null,
+    rir: null,
     comment: null,
     completedAt: input.completedAt === undefined ? null : input.completedAt,
     createdAt: "2026-09-17T17:00:00.000Z",

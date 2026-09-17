@@ -338,6 +338,7 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
             reps: 8,
             weightKg: 30,
             bandNominalResistanceKg: null,
+            rir: null,
             comment: null,
             completedAt: null,
             createdAt: "2026-09-17T17:00:00.000Z",
@@ -367,6 +368,7 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
             reps: 15,
             weightKg: null,
             bandNominalResistanceKg: null,
+            rir: null,
             comment: null,
             completedAt: "2026-09-17T17:05:00.000Z",
             createdAt: "2026-09-17T17:00:00.000Z",
@@ -396,6 +398,7 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
             reps: 12,
             weightKg: null,
             bandNominalResistanceKg: 15,
+            rir: null,
             comment: null,
             completedAt: null,
             createdAt: "2026-09-17T17:00:00.000Z",
@@ -486,6 +489,7 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
           reps: 10,
           weightKg: 12,
           bandNominalResistanceKg: null,
+          rir: null,
           comment: null,
           completedAt: null,
           createdAt: "2026-09-17T17:00:00.000Z",
@@ -572,6 +576,7 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
             reps: 10,
             weightKg,
             bandNominalResistanceKg: null,
+            rir: null,
             comment: null,
             completedAt: null,
             createdAt: "2026-09-17T17:00:00.000Z",
@@ -654,6 +659,7 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
           reps: 8,
           weightKg: 24,
           bandNominalResistanceKg: null,
+          rir: null,
           comment: null,
           completedAt: null,
           createdAt: "2026-09-17T17:00:00.000Z",
@@ -774,6 +780,7 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
         reps: 8,
         weightKg: 30,
         bandNominalResistanceKg: null,
+        rir: null,
         comment: null,
         completedAt: null,
         createdAt: "2026-09-17T17:00:00.000Z",
@@ -797,6 +804,7 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
         reps: 8,
         weightKg: 30,
         bandNominalResistanceKg: null,
+        rir: null,
         comment: null,
         completedAt: null,
         createdAt: "2026-09-17T17:00:00.000Z",
@@ -848,6 +856,7 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
         reps: 8,
         weightKg: 20,
         bandNominalResistanceKg: null,
+        rir: null,
         comment: null,
         completedAt: null,
         createdAt: "2026-09-14T17:00:00.000Z",
@@ -993,6 +1002,7 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
           reps: 10,
           weightKg: 12,
           bandNominalResistanceKg: null,
+          rir: null,
           comment: null,
           completedAt: null,
           createdAt: "2026-09-14T17:00:00.000Z",
@@ -1074,6 +1084,7 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
             reps: 8,
             weightKg: 22,
             bandNominalResistanceKg: null,
+            rir: null,
             comment: null,
             completedAt: null,
             createdAt: "2026-09-14T17:00:00.000Z",
@@ -1124,5 +1135,101 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
       .toBe(resumedDay.sessions[0]!.doseFingerprint);
     expect(history.resumptionEvents[0]).not.toHaveProperty("muscleMemoryMultiplier");
     expect(history).not.toHaveProperty("retrainingAcceleration");
+  });
+
+  it("momentary failure is not mandatory", () => {
+    const snapshot = buildExerciseMuscleMappingSnapshotV7("incline_dumbbell_press_30deg");
+
+    function sessionWithRir(rir: number | null, setId: number): StrengthSessionDto {
+      return {
+        id: 100 + setId,
+        status: "COMPLETED",
+        entryMode: "RETROSPECTIVE",
+        revision: 1,
+        programId: 7,
+        programName: "Press",
+        programVersionId: 9,
+        programVersionNumber: 1,
+        webStartedAt: null,
+        webEndedAt: null,
+        matchStatus: "MATCHED",
+        matchMethod: "DIRECT_BACKFILL",
+        matchedAt: "2026-09-14T18:30:00.000Z",
+        matchedWorkoutId: 99,
+        matchedWorkout: {
+          id: 99,
+          type: "Strength Training",
+          startAt: "2026-09-14T17:00:00.000Z",
+          endAt: "2026-09-14T18:00:00.000Z",
+          durationMinutes: 60,
+          activeEnergyKcal: 400,
+          externalId: "garmin-99",
+        },
+        exercises: [{
+          id: 1,
+          sourceExerciseCatalogId: 10,
+          stableKey: "incline_dumbbell_press_30deg",
+          snapshotExerciseName: "Incline DB press",
+          order: 1,
+          plannedSets: 3,
+          resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
+          origin: "PLANNED",
+          muscleMappingSnapshot: snapshot,
+          sets: [{
+            id: setId,
+            sessionExerciseId: 1,
+            setNumber: 1,
+            reps: 8,
+            weightKg: 20,
+            bandNominalResistanceKg: null,
+            rir,
+            comment: null,
+            completedAt: null,
+            createdAt: "2026-09-14T17:00:00.000Z",
+            updatedAt: "2026-09-14T17:00:00.000Z",
+          }],
+        }],
+        ordinaryTonnageKg: null,
+        createdAt: "2026-09-14T17:00:00.000Z",
+        updatedAt: "2026-09-14T18:30:00.000Z",
+      };
+    }
+
+    const failureDose = buildQualifiedResistanceTrainingDoseV7(
+      buildCanonicalStrengthTrainingInputV7({
+        session: sessionWithRir(0, 1),
+        heartRateSamples: null,
+      }),
+    );
+    const nearFailureDose = buildQualifiedResistanceTrainingDoseV7(
+      buildCanonicalStrengthTrainingInputV7({
+        session: sessionWithRir(1, 2),
+        heartRateSamples: null,
+      }),
+    );
+
+    expect(failureDose.availability).toBe("available");
+    expect(nearFailureDose.availability).toBe("available");
+    if (failureDose.availability === "available" && nearFailureDose.availability === "available") {
+      expect(failureDose.mappedSetCount).toBe(1);
+      expect(nearFailureDose.mappedSetCount).toBe(1);
+      expect(failureDose.muscleGroups).toEqual(nearFailureDose.muscleGroups);
+      expect(failureDose.setEffortEvidence[0]!.evidence).toEqual({
+        status: "qualified-by-user-reported-rir",
+        provenance: "user-reported-rir",
+        rir: 0,
+        reportedProximity: "momentary-failure",
+      });
+      expect(nearFailureDose.setEffortEvidence[0]!.evidence).toEqual({
+        status: "qualified-by-user-reported-rir",
+        provenance: "user-reported-rir",
+        rir: 1,
+        reportedProximity: "reps-in-reserve",
+      });
+      expect(failureDose).not.toHaveProperty("failureBonus");
+      expect(nearFailureDose).not.toHaveProperty("failureMultiplier");
+      expect(qualifiedResistanceTrainingDoseV7Fingerprint(failureDose))
+        .not.toBe(qualifiedResistanceTrainingDoseV7Fingerprint(nearFailureDose));
+    }
   });
 });

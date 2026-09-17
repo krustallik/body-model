@@ -117,5 +117,13 @@ export const TRAINING_LIMITS = {
   maxReps: 10_000,
   maxLoadKg: 2_000,
   maxSetCommentLength: 280,
+  /**
+   * Optional StrengthSet.rir domain.
+   * ENGINEERING ASSUMPTION — NOT SCIENTIFIC PARAMETER:
+   * 0–10 is a product input bound only. No RIR exclusion threshold is approved
+   * (P-A04); null means not reported, never “RIR = 0”.
+   */
+  minRir: 0,
+  maxRir: 10,
   recentSessionsDefaultLimit: 20,
 } as const;

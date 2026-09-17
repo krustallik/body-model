@@ -31,6 +31,7 @@ function recordedSet(input: {
     reps: input.reps,
     weightKg: input.weightKg ?? null,
     bandNominalResistanceKg: null,
+    rir: null,
     comment: null,
     completedAt: null,
     createdAt: "2026-09-14T17:00:00.000Z",

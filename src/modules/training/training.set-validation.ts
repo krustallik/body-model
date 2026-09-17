@@ -4,6 +4,8 @@ export type SetFieldInput = {
   reps: number;
   weightKg?: number | null;
   bandNominalResistanceKg?: number | null;
+  /** Undefined = leave unchanged (update path). Null = clear / not reported. */
+  rir?: number | null;
 };
 
 export type SetValidationResult =
@@ -12,11 +14,34 @@ export type SetValidationResult =
       reps: number;
       weightKg: number | null;
       bandNominalResistanceKg: number | null;
+      rir: number | null;
     }
   | { ok: false; message: string };
 
 function isPresentNumber(value: number | null | undefined): value is number {
   return value != null && Number.isFinite(value);
+}
+
+/**
+ * Validate optional user-reported RIR.
+ * ENGINEERING input constraint only — not a scientific hard-set cutoff (P-A04).
+ * Null means not reported; null is never coerced to 0.
+ */
+export function validateRir(rir: number | null | undefined): {
+  ok: true;
+  rir: number | null;
+} | { ok: false; message: string } {
+  if (rir === undefined || rir === null) return { ok: true, rir: null };
+  if (!Number.isInteger(rir)) {
+    return { ok: false, message: "rir must be an integer when present" };
+  }
+  if (rir < TRAINING_LIMITS.minRir || rir > TRAINING_LIMITS.maxRir) {
+    return {
+      ok: false,
+      message: `rir must be between ${TRAINING_LIMITS.minRir} and ${TRAINING_LIMITS.maxRir} when present`,
+    };
+  }
+  return { ok: true, rir };
 }
 
 /**
@@ -33,6 +58,8 @@ export function validateSetFields(
 
   const weightKg = input.weightKg === undefined ? null : input.weightKg;
   const band = input.bandNominalResistanceKg === undefined ? null : input.bandNominalResistanceKg;
+  const rirResult = validateRir(input.rir === undefined ? null : input.rir);
+  if (!rirResult.ok) return rirResult;
 
   if (isPresentNumber(weightKg) && weightKg <= 0) {
     return { ok: false, message: "weightKg must be positive when present" };
@@ -56,19 +83,37 @@ export function validateSetFields(
       if (isPresentNumber(band)) {
         return { ok: false, message: "EXTERNAL_WEIGHT sets must not have bandNominalResistanceKg" };
       }
-      return { ok: true, reps: input.reps, weightKg, bandNominalResistanceKg: null };
+      return {
+        ok: true,
+        reps: input.reps,
+        weightKg,
+        bandNominalResistanceKg: null,
+        rir: rirResult.rir,
+      };
 
     case RESISTANCE.RESISTANCE_BAND:
       if (isPresentNumber(weightKg)) {
         return { ok: false, message: "RESISTANCE_BAND sets must not have weightKg" };
       }
-      return { ok: true, reps: input.reps, weightKg: null, bandNominalResistanceKg: band };
+      return {
+        ok: true,
+        reps: input.reps,
+        weightKg: null,
+        bandNominalResistanceKg: band,
+        rir: rirResult.rir,
+      };
 
     case RESISTANCE.BODYWEIGHT:
       if (isPresentNumber(weightKg) || isPresentNumber(band)) {
         return { ok: false, message: "BODYWEIGHT sets must not have weightKg or bandNominalResistanceKg" };
       }
-      return { ok: true, reps: input.reps, weightKg: null, bandNominalResistanceKg: null };
+      return {
+        ok: true,
+        reps: input.reps,
+        weightKg: null,
+        bandNominalResistanceKg: null,
+        rir: rirResult.rir,
+      };
 
     default:
       return { ok: false, message: "unknown resistance type" };

@@ -362,6 +362,12 @@ model StrengthSet {
   reps                     Int
   weightKg                 Decimal?  @db.Decimal(8, 2)
   bandNominalResistanceKg  Decimal?  @db.Decimal(8, 2)
+  /**
+   * Optional user-reported repetitions in reserve (RIR).
+   * Null = not reported (legacy / omitted). Null is NOT RIR 0.
+   * ENGINEERING input domain 0–10 — not a scientific exclusion threshold.
+   */
+  rir                      Int?
   /** Optional short note for this set (form feel, band used, etc.). */
   comment                  String?   @db.VarChar(280)
   completedAt              DateTime? @db.Timestamptz(3)

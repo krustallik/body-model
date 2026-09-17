@@ -213,6 +213,7 @@ describe("Live training session mobile UI", () => {
                   reps: 12,
                   weightKg: 30,
                   bandNominalResistanceKg: null,
+                  rir: null,
                   comment: "пауза",
                   completedAt: "2026-09-17T16:05:00.000Z",
                   createdAt: "2026-09-17T16:05:00.000Z",

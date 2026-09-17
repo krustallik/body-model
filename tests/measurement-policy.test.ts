@@ -78,6 +78,15 @@ describe("field-specific zero measurement semantics", () => {
     });
   });
 
+  it("keeps full precision and strict weight bounds during schema parse", () => {
+    expect(HealthDaySchema.parse({ date: "2026-09-15", walkingDistanceKm: 3.713 })).toEqual({
+      date: "2026-09-15",
+      walkingDistanceKm: 3.713,
+    });
+    expect(HealthDaySchema.safeParse({ date: "2026-09-15", weightKg: 19.999 }).success).toBe(false);
+    expect(HealthDaySchema.safeParse({ date: "2026-09-15", weightKg: 400.001 }).success).toBe(false);
+  });
+
   it("reads nutrition zeros as absent while preserving activity zeros from storage", async () => {
     const date = "2026-09-15";
     const day = {

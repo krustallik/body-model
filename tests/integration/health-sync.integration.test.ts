@@ -180,7 +180,7 @@ describe("Apple Health sync with PostgreSQL", () => {
     expect(records).toHaveLength(1);
     expect(records[0]?.bodyFatPercent?.toString()).toBe("18.6");
     expect(records[0]?.averageWalkingSpeedKmh).toBeNull();
-    expect(records[0]?.walkingDistanceKm?.toString()).toBe("8.1234");
+    expect(records[0]?.walkingDistanceKm?.toString()).toBe("8.12");
   });
 
   it("persists decimal-comma strings as precise numbers while retaining the original raw payload", async () => {
@@ -216,7 +216,7 @@ describe("Apple Health sync with PostgreSQL", () => {
 
     const records = await prisma.dailyHealthData.findMany({ where: { date } });
     expect(records).toHaveLength(1);
-    expect(records[0]?.strengthTrainingMinutes?.toString()).toBe("75.125");
+    expect(records[0]?.strengthTrainingMinutes?.toString()).toBe("75.13");
     expect(records[0]?.rawPayload).toEqual(secondDay);
   });
 

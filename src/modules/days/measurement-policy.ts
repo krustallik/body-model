@@ -84,9 +84,10 @@ export function prepareDailyMeasurementsForWrite<T extends object>(record: T): T
   return roundDailyMetricFractions(normalizeDailyMeasurements(record));
 }
 
+/** Schema/input preprocess: collapse absent zeros only. Rounding belongs on write paths. */
 export function normalizeDailyMeasurementInput(value: unknown): unknown {
   return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? prepareDailyMeasurementsForWrite(value) : value;
+    ? normalizeDailyMeasurements(value) : value;
 }
 
 export function collapsesZeroToAbsent(field: string): boolean {

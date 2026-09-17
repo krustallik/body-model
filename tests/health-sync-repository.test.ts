@@ -129,8 +129,8 @@ describe("Prisma health synchronization repository", () => {
       walkingDistanceKm: 8.1234,
     });
     expect(transaction.dailyHealthData.upsert).toHaveBeenCalledWith(expect.objectContaining({
-      create: expect.objectContaining({ bodyFatPercent: 18.73, averageWalkingSpeedKmh: null, walkingDistanceKm: 8.1234 }),
-      update: expect.objectContaining({ bodyFatPercent: 18.73, averageWalkingSpeedKmh: null, walkingDistanceKm: 8.1234 }),
+      create: expect.objectContaining({ bodyFatPercent: 18.73, averageWalkingSpeedKmh: null, walkingDistanceKm: 8.12 }),
+      update: expect.objectContaining({ bodyFatPercent: 18.73, averageWalkingSpeedKmh: null, walkingDistanceKm: 8.12 }),
     }));
   });
 

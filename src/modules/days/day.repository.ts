@@ -57,17 +57,18 @@ function decimalToNumber(value: Prisma.Decimal | null): number | null {
   return value === null ? null : value.toNumber();
 }
 
-function heartRateSummary(samples: Array<{ timestamp: Date; bpm: number }>) {
-  const values = samples.map(({ bpm }) => bpm);
-  const latest = samples.at(-1) ?? null;
+function heartRateSummary(samples: Array<{ timestamp: Date; bpm: number }> | undefined) {
+  const observedSamples = samples ?? [];
+  const values = observedSamples.map(({ bpm }) => bpm);
+  const latest = observedSamples.at(-1) ?? null;
   return {
-    sampleCount: samples.length,
+    sampleCount: observedSamples.length,
     minBpm: values.length ? Math.min(...values) : null,
     maxBpm: values.length ? Math.max(...values) : null,
     avgBpm: values.length ? values.reduce((sum, bpm) => sum + bpm, 0) / values.length : null,
     latestBpm: latest?.bpm ?? null,
     latestTimestamp: latest?.timestamp.toISOString() ?? null,
-    samples: samples.map((sample) => ({ timestamp: sample.timestamp.toISOString(), bpm: sample.bpm })),
+    samples: observedSamples.map((sample) => ({ timestamp: sample.timestamp.toISOString(), bpm: sample.bpm })),
   };
 }
 

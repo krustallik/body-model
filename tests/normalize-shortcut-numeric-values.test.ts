@@ -86,6 +86,27 @@ describe("parseShortcutStrengthTrainingMinutes", () => {
 });
 
 describe("normalizeShortcutNumericValues", () => {
+  it("normalizes the real newline-separated Shortcut heart-rate payload into canonical arrays", () => {
+    expect(normalizeShortcutNumericValues({ days: [{
+      date: "2026-09-17",
+      bpm: { timestamps: "2026-09-17T08:00:00+02:00\n\n2026-09-17T08:02:00+02:00", bpm: "61\n\n63" },
+      bpminpeace: { timestamps: "2026-09-17T00:00:00+02:00", bpminpeace: "57" },
+    }] })).toEqual({ days: [{
+      date: "2026-09-17",
+      bpm: { timestamps: ["2026-09-17T08:00:00+02:00", "2026-09-17T08:02:00+02:00"], bpm: [61, 63] },
+      bpminpeace: { timestamps: ["2026-09-17T00:00:00+02:00"], bpminpeace: [57] },
+    }] });
+  });
+
+  it("recovers glued ISO timestamps and unambiguously glued bpm values", () => {
+    expect(normalizeShortcutNumericValues({ days: [{
+      date: "2026-09-17",
+      bpm: { timestamps: "2026-09-17T08:00:00+02:002026-09-17T08:02:00+02:00", bpm: "6163" },
+    }] })).toEqual({ days: [{
+      date: "2026-09-17",
+      bpm: { timestamps: ["2026-09-17T08:00:00+02:00", "2026-09-17T08:02:00+02:00"], bpm: [61, 63] },
+    }] });
+  });
   it("normalizes all supported day and workout numeric fields", () => {
     expect(normalizeShortcutNumericValues({ days: [{
       date: "2026-08-22",

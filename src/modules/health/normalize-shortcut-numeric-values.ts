@@ -17,6 +17,7 @@ const DAY_NUMERIC_FIELDS = new Set([
 const WORKOUT_NUMERIC_FIELDS = new Set(["durationMinutes", "energyKcal", "activeEnergyKcal"]);
 const SHORTCUT_NUMBER_PATTERN = /^-?\d+(?:[.,]\d+)?$/;
 const SHORTCUT_WORKOUT_DATE_PATTERN = /(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4}),?\s*(\d{1,2}):(\d{2})/g;
+const ISO_DATETIME_PATTERN = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})/g;
 
 function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -98,6 +99,52 @@ function normalizeWorkout(value: unknown): unknown {
   );
 }
 
+function splitShortcutLines(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value.filter((item) => !(typeof item === "string" && item.trim() === ""));
+  if (typeof value !== "string") return [value];
+  return value.split(/\r?\n|\\N|\\n/).map((item) => item.trim()).filter(Boolean);
+}
+
+function normalizeTimestamps(value: unknown): unknown[] {
+  if (typeof value !== "string") return splitShortcutLines(value);
+  ISO_DATETIME_PATTERN.lastIndex = 0;
+  const recovered = [...value.matchAll(ISO_DATETIME_PATTERN)].map((match) => match[0]);
+  return recovered.length > 0 ? recovered : splitShortcutLines(value);
+}
+
+function recoverGluedBpm(value: string, expectedCount: number): unknown[] {
+  const text = value.trim();
+  if (!/^\d+$/.test(text) || expectedCount < 2) return [value];
+  const solutions: number[][] = [];
+  const visit = (index: number, parts: number[]) => {
+    if (solutions.length > 1) return;
+    if (parts.length === expectedCount) {
+      if (index === text.length) solutions.push(parts);
+      return;
+    }
+    for (let length = 1; length <= 3 && index + length <= text.length; length += 1) {
+      const bpm = Number(text.slice(index, index + length));
+      if (bpm >= 20 && bpm <= 300) visit(index + length, [...parts, bpm]);
+    }
+  };
+  visit(0, []);
+  return solutions.length === 1 ? solutions[0] : [value];
+}
+
+function normalizeBpmValues(value: unknown, expectedCount: number): unknown[] {
+  const lines = splitShortcutLines(value);
+  if (lines.length === 1 && typeof lines[0] === "string" && expectedCount > 1) {
+    return recoverGluedBpm(lines[0], expectedCount).map(parseShortcutNumber);
+  }
+  return lines.map(parseShortcutNumber);
+}
+
+function normalizeHeartRateObject(value: unknown, valueKey: "bpm" | "bpminpeace"): unknown {
+  if (!isObject(value)) return value;
+  const timestamps = normalizeTimestamps(value.timestamps);
+  return { ...value, timestamps, [valueKey]: normalizeBpmValues(value[valueKey], timestamps.length) };
+}
+
 function normalizeDay(value: unknown): unknown {
   if (!isObject(value)) return value;
 
@@ -110,6 +157,8 @@ function normalizeDay(value: unknown): unknown {
       if (key === "workouts" && Array.isArray(fieldValue)) {
         return [key, fieldValue.map(normalizeWorkout)];
       }
+      if (key === "bpm") return [key, normalizeHeartRateObject(fieldValue, "bpm")];
+      if (key === "bpminpeace") return [key, normalizeHeartRateObject(fieldValue, "bpminpeace")];
       return [key, fieldValue];
     }),
   );

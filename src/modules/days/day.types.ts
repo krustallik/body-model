@@ -24,6 +24,17 @@ export type DayWorkoutDto = {
   activeEnergyKcal: number | null;
 };
 
+export type HeartRateSampleDto = { timestamp: string; bpm: number };
+export type HeartRateDayDto = {
+  sampleCount: number;
+  minBpm: number | null;
+  maxBpm: number | null;
+  avgBpm: number | null;
+  latestBpm: number | null;
+  latestTimestamp: string | null;
+  samples: HeartRateSampleDto[];
+};
+
 export type DailyMetricDto = {
   date: string;
   updatedAt: string;
@@ -31,4 +42,6 @@ export type DailyMetricDto = {
   /** Display total; null = no workout observation (not zero). */
   totalWorkoutMinutes: number | null;
   workoutSource: "workouts" | "legacy-strength" | "none";
+  heartRate?: HeartRateDayDto;
+  restingHeartRate?: HeartRateDayDto;
 } & Record<DailyMetricField, number | null>;

@@ -37,6 +37,20 @@ function optionalUpdate<T>(value: T | null | undefined): T | null | undefined {
   return value === undefined ? undefined : value;
 }
 
+function sampleRows(
+  dailyHealthDataId: number,
+  date: string,
+  samples: { timestamps: string[]; bpm: number[] } | undefined,
+) {
+  return (samples?.timestamps ?? []).map((timestamp, index) => ({
+    dailyHealthDataId,
+    date,
+    timestamp: new Date(timestamp),
+    bpm: samples!.bpm[index]!,
+    source: "shortcut",
+  }));
+}
+
 export class PrismaHealthSyncRepository implements HealthSyncRepository {
   constructor(private readonly client: PrismaClient = prisma) {}
 
@@ -136,6 +150,21 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
             activeEnergyKcal: workout.activeEnergyKcal ?? null,
           })),
         });
+      }
+
+      const heartRateSamples = sampleRows(daily.id, day.date, day.bpm);
+      if (heartRateSamples.length > 0) {
+        await transaction.heartRateSample.createMany({ data: heartRateSamples, skipDuplicates: true });
+      }
+      const restingHeartRateSamples = (day.bpminpeace?.timestamps ?? []).map((timestamp, index) => ({
+        dailyHealthDataId: daily.id,
+        date: day.date,
+        timestamp: new Date(timestamp),
+        bpm: day.bpminpeace!.bpminpeace[index]!,
+        source: "shortcut",
+      }));
+      if (restingHeartRateSamples.length > 0) {
+        await transaction.restingHeartRateSample.createMany({ data: restingHeartRateSamples, skipDuplicates: true });
       }
 
       return { date: day.date, action: existing ? "updated" : "created" };

@@ -16,10 +16,15 @@ export async function GET(request: Request): Promise<Response> {
   const date = query.data.date ?? utcToday();
 
   try {
-    const [todayRows, recentRows, lastSyncAt] = await Promise.all([
+    const latestRestingHeartRate = (dailyMetricRepository as Partial<typeof dailyMetricRepository>)
+      .latestRestingHeartRate;
+    const [todayRows, recentRows, lastSyncAt, restingHeartRate] = await Promise.all([
       dailyMetricRepository.list({ from: date, to: date, limit: 1, offset: 0 }),
       dailyMetricRepository.list({ to: date, limit: 7, offset: 0 }),
       dailyMetricRepository.latestUpdatedAt(),
+      latestRestingHeartRate
+        ? latestRestingHeartRate.call(dailyMetricRepository)
+        : Promise.resolve({ latestBpm: null, timestamp: null }),
     ]);
     const recentDays = [...recentRows]
       .sort((left, right) => right.date.localeCompare(left.date))
@@ -30,6 +35,7 @@ export async function GET(request: Request): Promise<Response> {
       recentDays,
       hasToday: today !== null,
       lastSync: { at: lastSyncAt, status: null },
+      restingHeartRate,
     };
     return Response.json(dashboard);
   } catch {

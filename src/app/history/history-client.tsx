@@ -332,6 +332,7 @@ export function HistoryClient() {
                     <td data-label={uk ? "оновлено" : "updatedAt"} className={styles.updatedCell}>{formatDateTime(day.updatedAt, intlLocale)}</td>
                     <td data-label="actions">
                       <div className={styles.actions}>
+                        <button type="button" onClick={() => setWorkoutDay(day)}>{uk ? "Деталі" : "Details"}</button>
                         <button type="button" onClick={() => setWorkDate(day.date)}>{uk ? "Робота" : "Work"}</button>
                         <button type="button" onClick={() => setEditor({
                           mode: "edit",

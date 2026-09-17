@@ -30,6 +30,14 @@ function baseDay(overrides: Partial<DailyMetricDto> = {}): DailyMetricDto {
 }
 
 describe("WorkoutDetailsDialog", () => {
+  it("renders raw and resting heart-rate summaries and a raw chart", () => {
+    const html = renderToStaticMarkup(<WorkoutDetailsDialog day={baseDay({
+      heartRate: { sampleCount: 2, minBpm: 61, maxBpm: 63, avgBpm: 62, latestBpm: 63, latestTimestamp: "2026-09-16T08:02:00.000Z", samples: [{ timestamp: "2026-09-16T08:00:00.000Z", bpm: 61 }, { timestamp: "2026-09-16T08:02:00.000Z", bpm: 63 }] },
+      restingHeartRate: { sampleCount: 1, minBpm: 57, maxBpm: 57, avgBpm: 57, latestBpm: 57, latestTimestamp: "2026-09-16T00:00:00.000Z", samples: [{ timestamp: "2026-09-16T00:00:00.000Z", bpm: 57 }] },
+    })} onClose={() => undefined} />);
+    expect(html).toContain("Пульс у спокої");
+    expect(html).toContain("Зразків: 2");
+  });
   it("renders a single workout with active calories", () => {
     const html = renderToStaticMarkup(
       <WorkoutDetailsDialog

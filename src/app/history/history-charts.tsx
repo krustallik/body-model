@@ -12,15 +12,13 @@ import {
 } from "recharts";
 import type { DailyMetricDto } from "@/modules/days/day.types";
 import {
-  hasChartData,
   sortDaysChronologically,
-  type HistoryChartField,
 } from "@/modules/days/history-chart-data";
 import { useI18n, type Locale } from "@/i18n/i18n-provider";
 import styles from "./history.module.css";
 
 type Series = {
-  key: HistoryChartField;
+  key: string;
   label: string;
   unit: string;
   color: string;
@@ -55,12 +53,12 @@ function HistoryLineChart({
 }: {
   title: string;
   description: string;
-  days: DailyMetricDto[];
+  days: Array<Record<string, unknown>>;
   series: Series[];
   dualAxis?: boolean;
   locale: Locale;
 }) {
-  if (!hasChartData(days, series.map(({ key }) => key))) {
+  if (!series.some(({ key }) => days.some((day) => typeof day[key] === "number"))) {
     return (
       <article className={styles.chartCard}>
         <ChartHeading title={title} description={description} />
@@ -147,6 +145,10 @@ export function HistoryCharts({ days }: { days: DailyMetricDto[] }) {
   const { locale } = useI18n();
   const uk = locale === "uk";
   const chronologicalDays = sortDaysChronologically(days);
+  const restingDays = chronologicalDays.map((day) => ({
+    ...day,
+    restingHeartRateLatest: day.restingHeartRate?.latestBpm ?? null,
+  }));
 
   return (
     <section className={styles.chartsSection} aria-labelledby="charts-heading">
@@ -164,6 +166,13 @@ export function HistoryCharts({ days }: { days: DailyMetricDto[] }) {
           days={chronologicalDays}
           locale={locale}
           series={[{ key: "weightKg", label: uk ? "Вага" : "Weight", unit: "kg", color: "#176b4d" }]}
+        />
+        <HistoryLineChart
+          title={uk ? "Пульс у спокої" : "Resting heart rate"}
+          description={uk ? "Останнє значення кожного дня · bpm" : "Latest value on each day · bpm"}
+          days={restingDays}
+          locale={locale}
+          series={[{ key: "restingHeartRateLatest", label: uk ? "Пульс у спокої" : "Resting HR", unit: "bpm", color: "#b45f45" }]}
         />
         <HistoryLineChart
           title={uk ? "Калорії" : "Calories"}

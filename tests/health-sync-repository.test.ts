@@ -16,6 +16,8 @@ function repositoryFixture(existingDates: string[] = []) {
       deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
       createMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
+    heartRateSample: { createMany: vi.fn().mockResolvedValue({ count: 1 }) },
+    restingHeartRateSample: { createMany: vi.fn().mockResolvedValue({ count: 1 }) },
     healthSyncSnapshot: {
       create: vi.fn().mockResolvedValue({ id: 1 }),
     },
@@ -27,6 +29,22 @@ function repositoryFixture(existingDates: string[] = []) {
 }
 
 describe("Prisma health synchronization repository", () => {
+  it("inserts raw and resting samples with idempotent dedupe semantics", async () => {
+    const { repository, transaction } = repositoryFixture();
+    await repository.syncDay({
+      date: "2026-08-21",
+      bpm: { timestamps: ["2026-08-21T08:00:00+02:00"], bpm: [61] },
+      bpminpeace: { timestamps: ["2026-08-21T00:00:00+02:00"], bpminpeace: [57] },
+    });
+    expect(transaction.heartRateSample.createMany).toHaveBeenCalledWith(expect.objectContaining({
+      skipDuplicates: true,
+      data: [expect.objectContaining({ date: "2026-08-21", bpm: 61, source: "shortcut" })],
+    }));
+    expect(transaction.restingHeartRateSample.createMany).toHaveBeenCalledWith(expect.objectContaining({
+      skipDuplicates: true,
+      data: [expect.objectContaining({ date: "2026-08-21", bpm: 57, source: "shortcut" })],
+    }));
+  });
   it("stores the original parsed day as rawPayload", async () => {
     const { repository, transaction } = repositoryFixture();
     const day = { date: "2026-08-21", weightKg: null, steps: 1234 };

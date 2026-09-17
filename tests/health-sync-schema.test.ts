@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { HealthSyncRequestSchema } from "@/modules/health/health.schema";
+import { normalizeShortcutNumericValues } from "@/modules/health/normalize-shortcut-numeric-values";
 
 const validDay = { date: "2026-08-21" };
 const validWorkout = {
@@ -13,6 +14,36 @@ const validWorkout = {
 const parse = (days: unknown[]) => HealthSyncRequestSchema.safeParse({ days });
 
 describe("HealthSyncRequestSchema", () => {
+  it("accepts raw and resting heart-rate Shortcut payloads, including empty arrays", () => {
+    const result = parse([{ ...validDay,
+      bpm: { timestamps: ["2026-08-21T08:00:00+02:00"], bpm: [61] },
+      bpminpeace: { timestamps: ["2026-08-21T00:00:00+02:00"], bpminpeace: [57] },
+    }]);
+    expect(result.success).toBe(true);
+    expect(parse([{ ...validDay, bpm: { timestamps: [], bpm: [] }, bpminpeace: { timestamps: [], bpminpeace: [] } }]).success).toBe(true);
+  });
+
+  it("accepts canonicalized newline Shortcut heart-rate fields", () => {
+    const normalized = normalizeShortcutNumericValues({ days: [{ ...validDay,
+      bpm: { timestamps: "2026-08-21T08:00:00+02:00\n2026-08-21T08:02:00+02:00", bpm: "61\n63" },
+      bpminpeace: { timestamps: "2026-08-21T00:00:00+02:00", bpminpeace: "57" },
+    }] });
+    expect(HealthSyncRequestSchema.safeParse(normalized).success).toBe(true);
+  });
+
+  it("rejects mismatched heart-rate sample arrays with an actionable error", () => {
+    const result = parse([{ ...validDay, bpm: { timestamps: ["2026-08-21T08:00:00+02:00"], bpm: [] } }]);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.issues.some((issue) => issue.message.includes("same length"))).toBe(true);
+  });
+
+  it.each([
+    { timestamps: ["not-a-date"], bpm: [60] },
+    { timestamps: ["2026-08-21T08:00:00+02:00"], bpm: [0] },
+    { timestamps: ["2026-08-21T08:00:00+02:00"], bpm: [Number.POSITIVE_INFINITY] },
+  ])("rejects invalid raw heart-rate samples", (bpm) => {
+    expect(parse([{ ...validDay, bpm }]).success).toBe(false);
+  });
   it("accepts one day with missing optional values", () => {
     expect(parse([validDay]).success).toBe(true);
   });

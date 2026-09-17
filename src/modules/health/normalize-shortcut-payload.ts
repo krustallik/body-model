@@ -18,6 +18,8 @@ const DAY_KEYS = canonicalKeyMap([
   "trainingType",
   "trainingActiveKcal",
   "trainingTimestamps",
+  "bpm",
+  "bpminpeace",
 ]);
 const WORKOUT_KEYS = canonicalKeyMap([
   "externalId",

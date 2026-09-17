@@ -53,6 +53,24 @@ export const WorkoutSchema = z
     }
   });
 
+const HeartRateSamplesSchema = z.object({
+  timestamps: z.array(z.string().datetime({ offset: true })),
+  bpm: z.array(z.number().finite().positive()),
+}).strict().superRefine((value, context) => {
+  if (value.timestamps.length !== value.bpm.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["bpm"], message: "timestamps and bpm must have the same length" });
+  }
+});
+
+const RestingHeartRateSamplesSchema = z.object({
+  timestamps: z.array(z.string().datetime({ offset: true })),
+  bpminpeace: z.array(z.number().finite().positive()),
+}).strict().superRefine((value, context) => {
+  if (value.timestamps.length !== value.bpminpeace.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["bpminpeace"], message: "timestamps and bpminpeace must have the same length" });
+  }
+});
+
 const HealthDayObjectSchema = z
   .object({
     date: z.string().refine(isCalendarDate, "date must be a real calendar date in YYYY-MM-DD format"),
@@ -68,6 +86,8 @@ const HealthDayObjectSchema = z
     walkingDistanceKm: nullableOptionalNumber(0, 200),
     strengthTrainingMinutes: nullableOptionalNumber(0, 600),
     workouts: z.array(WorkoutSchema).nullable().optional(),
+    bpm: HeartRateSamplesSchema.optional(),
+    bpminpeace: RestingHeartRateSamplesSchema.optional(),
   })
   .strict();
 

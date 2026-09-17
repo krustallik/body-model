@@ -34,6 +34,8 @@ const dailyMetricSelect = {
     },
     orderBy: { startAt: "asc" as const },
   },
+  heartRateSamples: { select: { timestamp: true, bpm: true }, orderBy: { timestamp: "asc" as const } },
+  restingHeartRateSamples: { select: { timestamp: true, bpm: true }, orderBy: { timestamp: "asc" as const } },
 } satisfies Prisma.DailyHealthDataSelect;
 
 type DailyMetricRecord = Prisma.DailyHealthDataGetPayload<{ select: typeof dailyMetricSelect }>;
@@ -53,6 +55,20 @@ function workoutCreateData(workouts: NonNullable<CreateDailyMetricInput["workout
 
 function decimalToNumber(value: Prisma.Decimal | null): number | null {
   return value === null ? null : value.toNumber();
+}
+
+function heartRateSummary(samples: Array<{ timestamp: Date; bpm: number }>) {
+  const values = samples.map(({ bpm }) => bpm);
+  const latest = samples.at(-1) ?? null;
+  return {
+    sampleCount: samples.length,
+    minBpm: values.length ? Math.min(...values) : null,
+    maxBpm: values.length ? Math.max(...values) : null,
+    avgBpm: values.length ? values.reduce((sum, bpm) => sum + bpm, 0) / values.length : null,
+    latestBpm: latest?.bpm ?? null,
+    latestTimestamp: latest?.timestamp.toISOString() ?? null,
+    samples: samples.map((sample) => ({ timestamp: sample.timestamp.toISOString(), bpm: sample.bpm })),
+  };
 }
 
 function toDto(record: DailyMetricRecord): DailyMetricDto {
@@ -79,6 +95,8 @@ function toDto(record: DailyMetricRecord): DailyMetricDto {
     workouts: summary.workouts,
     totalWorkoutMinutes: summary.totalWorkoutMinutes,
     workoutSource: summary.workoutSource,
+    heartRate: heartRateSummary(record.heartRateSamples),
+    restingHeartRate: heartRateSummary(record.restingHeartRateSamples),
   };
 }
 
@@ -112,6 +130,14 @@ export class DailyMetricRepository {
       select: { updatedAt: true },
     });
     return record?.updatedAt.toISOString() ?? null;
+  }
+
+  async latestRestingHeartRate(): Promise<{ latestBpm: number | null; timestamp: string | null }> {
+    const sample = await this.client.restingHeartRateSample.findFirst({
+      orderBy: { timestamp: "desc" },
+      select: { bpm: true, timestamp: true },
+    });
+    return { latestBpm: sample?.bpm ?? null, timestamp: sample?.timestamp.toISOString() ?? null };
   }
 
   async create(input: CreateDailyMetricInput): Promise<DailyMetricDto> {

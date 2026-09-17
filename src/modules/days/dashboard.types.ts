@@ -8,4 +8,5 @@ export interface DashboardDto {
     at: string | null;
     status: null;
   };
+  restingHeartRate: { latestBpm: number | null; timestamp: string | null };
 }

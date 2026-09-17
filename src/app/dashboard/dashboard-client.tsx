@@ -19,7 +19,7 @@ function localToday(): string {
 }
 
 function emptyDashboard(): DashboardDto {
-  return { today: null, recentDays: [], hasToday: false, lastSync: { at: null, status: null } };
+  return { today: null, recentDays: [], hasToday: false, lastSync: { at: null, status: null }, restingHeartRate: { latestBpm: null, timestamp: null } };
 }
 
 async function loadDashboard(uk: boolean): Promise<DashboardDto> {
@@ -46,6 +46,7 @@ export function DashboardClient() {
   const [dashboard, setDashboard] = useState<DashboardDto>(emptyDashboard);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const restingHeartRate = dashboard.restingHeartRate;
 
   useEffect(() => {
     let active = true;
@@ -98,6 +99,11 @@ export function DashboardClient() {
             </article>
           );
         })}
+      </section>
+
+      <section className={styles.heartRateCard} aria-label={uk ? "Пульс у спокої" : "Resting Heart Rate"}>
+        <div><p>{uk ? "Пульс у спокої" : "Resting Heart Rate"}</p><strong>{formatMetric(restingHeartRate.latestBpm, intlLocale)}{restingHeartRate.latestBpm === null ? "" : " bpm"}</strong></div>
+        <span>{restingHeartRate.timestamp ? (restingHeartRate.timestamp.slice(0, 10) === localToday() ? (uk ? "Сьогодні" : "Today") : (uk ? "Останнє значення" : "Latest")) : (uk ? "Немає даних" : "No data")}</span>
       </section>
 
       <section className={styles.lowerGrid}>

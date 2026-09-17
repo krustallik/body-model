@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const dailyMetricRepository = vi.hoisted(() => ({
   list: vi.fn(),
   latestUpdatedAt: vi.fn(),
+  latestRestingHeartRate: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
   delete: vi.fn(),
@@ -38,6 +39,7 @@ describe("GET /api/v1/dashboard", () => {
   beforeEach(() => {
     Object.values(dailyMetricRepository).forEach((mock) => mock.mockReset());
     dailyMetricRepository.latestUpdatedAt.mockResolvedValue(null);
+    dailyMetricRepository.latestRestingHeartRate.mockResolvedValue({ latestBpm: null, timestamp: null });
   });
 
   it("returns an empty dashboard without data", async () => {
@@ -50,6 +52,7 @@ describe("GET /api/v1/dashboard", () => {
       recentDays: [],
       hasToday: false,
       lastSync: { at: null, status: null },
+      restingHeartRate: { latestBpm: null, timestamp: null },
     });
   });
 

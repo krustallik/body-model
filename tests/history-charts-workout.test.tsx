@@ -45,6 +45,14 @@ function day(date: string, overrides: Partial<DailyMetricDto> = {}): DailyMetric
 }
 
 describe("HistoryCharts workout series", () => {
+  it("renders a resting-heart-rate trend from each day's latest sample", () => {
+    const html = renderToStaticMarkup(<HistoryCharts days={[
+      day("2026-09-01", { restingHeartRate: { sampleCount: 1, minBpm: 58, maxBpm: 58, avgBpm: 58, latestBpm: 58, latestTimestamp: "2026-09-01T00:00:00.000Z", samples: [] } }),
+      day("2026-09-02", { restingHeartRate: { sampleCount: 1, minBpm: 56, maxBpm: 56, avgBpm: 56, latestBpm: 56, latestTimestamp: "2026-09-02T00:00:00.000Z", samples: [] } }),
+    ]} />);
+    expect(html).toContain("Пульс у спокої");
+    expect(html).toContain('data-line="restingHeartRateLatest"');
+  });
   it("connects every series across missing observations without zero-filling", () => {
     const html = renderToStaticMarkup(
       <HistoryCharts

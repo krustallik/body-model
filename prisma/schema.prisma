@@ -50,7 +50,43 @@ model DailyHealthData {
   createdAt               DateTime             @default(now())
   updatedAt               DateTime             @updatedAt
   workouts                Workout[]
+  heartRateSamples        HeartRateSample[]
+  restingHeartRateSamples RestingHeartRateSample[]
   syncSnapshots           HealthSyncSnapshot[]
+}
+
+model HeartRateSample {
+  id                Int      @id @default(autoincrement())
+  profileId         Int      @default(1)
+  dailyHealthDataId Int
+  date              String   @db.VarChar(10)
+  timestamp         DateTime @db.Timestamptz(3)
+  bpm               Float
+  source            String   @default("shortcut") @db.VarChar(40)
+  createdAt         DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime @updatedAt @db.Timestamptz(3)
+  dailyHealthData   DailyHealthData @relation(fields: [dailyHealthDataId], references: [id], onDelete: Cascade)
+
+  @@unique([profileId, timestamp, bpm])
+  @@index([date, timestamp])
+  @@index([dailyHealthDataId, timestamp])
+}
+
+model RestingHeartRateSample {
+  id                Int      @id @default(autoincrement())
+  profileId         Int      @default(1)
+  dailyHealthDataId Int
+  date              String   @db.VarChar(10)
+  timestamp         DateTime @db.Timestamptz(3)
+  bpm               Float
+  source            String   @default("shortcut") @db.VarChar(40)
+  createdAt         DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime @updatedAt @db.Timestamptz(3)
+  dailyHealthData   DailyHealthData @relation(fields: [dailyHealthDataId], references: [id], onDelete: Cascade)
+
+  @@unique([profileId, timestamp, bpm])
+  @@index([date, timestamp])
+  @@index([dailyHealthDataId, timestamp])
 }
 
 model HealthSyncSnapshot {

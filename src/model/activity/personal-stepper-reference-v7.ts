@@ -67,7 +67,8 @@ function timestampMs(value: string): number {
   return timestamp;
 }
 
-function assignmentAt(
+/** Assignment intervals are [effectiveFrom, effectiveTo), keyed by workout start. */
+export function assignmentAtWorkoutStartV7(
   assignments: readonly StepperEquipmentAssignmentV7[],
   startedAt: string,
 ): StepperEquipmentAssignmentV7 | null {
@@ -96,7 +97,7 @@ export function buildPersonalStepperReferenceSetV7(input: {
   for (const candidate of ordered) {
     const { workout } = candidate;
     const energy = workout.workoutEnergy;
-    const assignment = assignmentAt(candidate.assignments, energy.startAt);
+    const assignment = assignmentAtWorkoutStartV7(candidate.assignments, energy.startAt);
     const requiredReasons: PersonalStepperReferenceDiagnosticV7["requiredReasons"][number][] = [];
     if (assignment === null) requiredReasons.push("no-equipment-assignment");
     if (energy.deviceEnergy.availability !== "available") requiredReasons.push("no-device-active-energy");

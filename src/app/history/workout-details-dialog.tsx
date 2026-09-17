@@ -120,6 +120,11 @@ export function WorkoutDetailsDialog({
                   </Link>
                 </p>
               )}
+              {workout.classification === "stair-climbing" && workout.id != null && (
+                <p><Link className={styles.workoutLink} href={`/api/v1/workouts/${workout.id}/stepper-diagnostic`}>
+                  {uk ? "Відкрити діагностику степера" : "Open stepper diagnostic"}
+                </Link></p>
+              )}
             </article>
           ))}
         </div>

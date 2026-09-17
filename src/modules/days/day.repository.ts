@@ -2,7 +2,7 @@ import { normalizeDailyMeasurements } from "@/modules/days/measurement-policy";
 import { summarizeDayWorkouts } from "@/modules/days/day-workout-presentation";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
-import { sleepRepository } from "@/modules/health/sleep.repository";
+import { SleepRepository } from "@/modules/health/sleep.repository";
 import { DuplicateDayError } from "./day.errors";
 import type {
   CreateDailyMetricInput,
@@ -150,7 +150,7 @@ export class DailyMetricRepository {
       readClient.restingHeartRateSample
         ? readClient.restingHeartRateSample.findMany({ where: { date: { in: dates } }, select: { date: true, timestamp: true, bpm: true }, orderBy: { timestamp: "asc" } })
         : Promise.resolve([] as Array<{ date: string; timestamp: Date; bpm: number }>),
-      sleepRepository.summariesByDates(dates),
+      new SleepRepository(this.client).summariesByDates(dates),
     ]);
     const group = (rows: Array<{ date: string; timestamp: Date; bpm: number }>) => rows.reduce<Map<string, Array<{ timestamp: Date; bpm: number }>>>((result, row) => {
       result.set(row.date, [...(result.get(row.date) ?? []), { timestamp: row.timestamp, bpm: row.bpm }]);

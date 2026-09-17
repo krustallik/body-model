@@ -74,6 +74,13 @@ function rowToInterval(row: {
   };
 }
 
+function isMissingRelationError(error: unknown): boolean {
+  return typeof error === "object"
+    && error !== null
+    && "code" in error
+    && error.code === "P2021";
+}
+
 export class SleepRepository {
   constructor(private readonly client: PrismaClient = prisma) {}
 
@@ -90,7 +97,7 @@ export class SleepRepository {
         }>>;
       };
       healthSyncSnapshot?: {
-        findFirst(args: unknown): Promise<{ timezone: string } | null>;
+        findFirst?(args: unknown): Promise<{ timezone: string } | null>;
       };
     };
   }
@@ -98,11 +105,18 @@ export class SleepRepository {
   /** Prefer latest sync timezone as IANA fallback when segment offsets are missing. */
   async resolveFallbackTimeZone(explicit?: string): Promise<string | undefined> {
     if (explicit) return explicit;
-    const snapshot = await this.sleepClient().healthSyncSnapshot?.findFirst({
-      orderBy: { receivedAt: "desc" },
-      select: { timezone: true },
-    });
-    return snapshot?.timezone || undefined;
+    const findFirst = this.sleepClient().healthSyncSnapshot?.findFirst;
+    if (!findFirst) return undefined;
+    try {
+      const snapshot = await findFirst.call(this.sleepClient().healthSyncSnapshot, {
+        orderBy: { receivedAt: "desc" },
+        select: { timezone: true },
+      });
+      return snapshot?.timezone || undefined;
+    } catch (error) {
+      if (isMissingRelationError(error)) return undefined;
+      throw error;
+    }
   }
 
   async listSegmentsOverlappingRange(fromDate: string, toDate: string): Promise<SleepSegmentInterval[]> {
@@ -111,22 +125,27 @@ export class SleepRepository {
     // Expand one day on each side so overnight sessions near range edges are included.
     const from = new Date(`${addCalendarDays(fromDate, -1)}T00:00:00.000Z`);
     const to = new Date(`${addCalendarDays(toDate, 1)}T23:59:59.999Z`);
-    const rows = await client.findMany({
-      where: {
-        startAt: { lte: to },
-        endAt: { gte: from },
-      },
-      select: {
-        startAt: true,
-        endAt: true,
-        state: true,
-        rawState: true,
-        startOffsetMinutes: true,
-        endOffsetMinutes: true,
-      },
-      orderBy: { startAt: "asc" },
-    });
-    return rows.map(rowToInterval);
+    try {
+      const rows = await client.findMany({
+        where: {
+          startAt: { lte: to },
+          endAt: { gte: from },
+        },
+        select: {
+          startAt: true,
+          endAt: true,
+          state: true,
+          rawState: true,
+          startOffsetMinutes: true,
+          endOffsetMinutes: true,
+        },
+        orderBy: { startAt: "asc" },
+      });
+      return rows.map(rowToInterval);
+    } catch (error) {
+      if (isMissingRelationError(error)) return [];
+      throw error;
+    }
   }
 
   async summariesByDates(
@@ -163,26 +182,31 @@ export class SleepRepository {
     const client = this.sleepClient().sleepSegment;
     if (!client) return null;
     const from = new Date(now.getTime() - 21 * 24 * 60 * 60 * 1_000);
-    const [rows, resolvedZone] = await Promise.all([
-      client.findMany({
-        where: { endAt: { gte: from, lte: now } },
-        select: {
-          startAt: true,
-          endAt: true,
-          state: true,
-          rawState: true,
-          startOffsetMinutes: true,
-          endOffsetMinutes: true,
-        },
-        orderBy: { startAt: "asc" },
-      }),
-      this.resolveFallbackTimeZone(fallbackTimeZone),
-    ]);
-    const summary = pickLatestCompletedSleep(
-      buildNightlySleepSummaries(rows.map(rowToInterval), resolvedZone),
-      now,
-    );
-    return summary ? toDto(summary) : null;
+    try {
+      const [rows, resolvedZone] = await Promise.all([
+        client.findMany({
+          where: { endAt: { gte: from, lte: now } },
+          select: {
+            startAt: true,
+            endAt: true,
+            state: true,
+            rawState: true,
+            startOffsetMinutes: true,
+            endOffsetMinutes: true,
+          },
+          orderBy: { startAt: "asc" },
+        }),
+        this.resolveFallbackTimeZone(fallbackTimeZone),
+      ]);
+      const summary = pickLatestCompletedSleep(
+        buildNightlySleepSummaries(rows.map(rowToInterval), resolvedZone),
+        now,
+      );
+      return summary ? toDto(summary) : null;
+    } catch (error) {
+      if (isMissingRelationError(error)) return null;
+      throw error;
+    }
   }
 }
 

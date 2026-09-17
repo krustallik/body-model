@@ -1,0 +1,460 @@
+.page {
+  --ink: #17231f;
+  --muted: #63706b;
+  --line: #dfe6e2;
+  --surface: #ffffff;
+  --soft: #f3f7f4;
+  --accent: #176b4d;
+  --accent-dark: #0e4f38;
+  --danger: #a13d3d;
+  max-width: 56rem;
+  margin: 0 auto;
+  padding: 2rem 1.15rem 4rem;
+  color: var(--ink);
+}
+
+.navRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.navRow > strong { font-size: 1.05rem; }
+
+.header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: clamp(2rem, 6vw, 3.4rem);
+  letter-spacing: -0.035em;
+  line-height: 0.95;
+}
+
+.eyebrow {
+  margin: 0 0 0.65rem;
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.intro {
+  max-width: 36rem;
+  margin: 0.85rem 0 0;
+  color: var(--muted);
+  line-height: 1.5;
+  font-size: 0.95rem;
+}
+
+.stack { display: grid; gap: 1rem; }
+
+.panel {
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  box-shadow: 0 1rem 2.5rem rgb(30 53 44 / 7%);
+}
+
+.panelHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.1rem 1.2rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.panelHeader h2 {
+  margin: 0;
+  font-size: 1.15rem;
+  letter-spacing: -0.02em;
+}
+
+.panelHeader p {
+  margin: 0.3rem 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.panelBody { padding: 1rem 1.15rem 1.2rem; }
+
+.primaryButton,
+.secondaryButton,
+.dangerButton,
+.textButton {
+  border: 0;
+  border-radius: 0.7rem;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+}
+
+.primaryButton {
+  padding: 0.8rem 1.05rem;
+  color: #fff;
+  background: var(--accent);
+  box-shadow: 0 0.45rem 1.2rem rgb(23 107 77 / 18%);
+}
+
+.primaryButton:hover { background: var(--accent-dark); }
+.primaryButton:disabled,
+.secondaryButton:disabled,
+.dangerButton:disabled { cursor: wait; opacity: 0.6; }
+
+.secondaryButton {
+  padding: 0.65rem 0.9rem;
+  color: var(--ink);
+  background: var(--soft);
+  border: 1px solid var(--line);
+}
+
+.dangerButton {
+  padding: 0.65rem 0.9rem;
+  color: #fff;
+  background: var(--danger);
+}
+
+.textButton {
+  padding: 0.35rem 0.45rem;
+  color: var(--accent);
+  background: transparent;
+}
+
+.textButton:hover { background: var(--soft); }
+
+.rowActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.list {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.card {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.95rem 1rem;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 0.85rem;
+}
+
+.cardTop {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.card strong { font-size: 1rem; letter-spacing: -0.02em; }
+
+.cardMeta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.22rem 0.55rem;
+  border-radius: 999px;
+  background: #e7f3ec;
+  color: var(--accent-dark);
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.badgeWarn {
+  background: #fff4e4;
+  color: #7a4a19;
+}
+
+.badgeDanger {
+  background: #fff0f0;
+  color: #7c2828;
+}
+
+.badgeMuted {
+  background: #eef1ef;
+  color: var(--muted);
+}
+
+.empty {
+  display: grid;
+  place-items: center;
+  gap: 0.35rem;
+  min-height: 6rem;
+  color: var(--muted);
+  text-align: center;
+  border: 1px dashed var(--line);
+  border-radius: 0.85rem;
+  padding: 1rem;
+}
+
+.errorBanner {
+  padding: 0.85rem 1rem;
+  margin-bottom: 1rem;
+  color: #7c2828;
+  background: #fff0f0;
+  border: 1px solid #efcaca;
+  border-radius: 0.75rem;
+}
+
+.field {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.field span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.field input,
+.field select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.72rem 0.8rem;
+  color: var(--ink);
+  background: #fff;
+  border: 1px solid #cfd9d4;
+  border-radius: 0.6rem;
+  font: inherit;
+}
+
+.field input:focus,
+.field select:focus {
+  outline: 3px solid rgb(23 107 77 / 15%);
+  border-color: var(--accent);
+}
+
+.formGrid {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.exerciseEditor {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.exerciseRow {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.9rem;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 0.85rem;
+}
+
+.exerciseRowHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.exerciseFields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+.addExercise {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) repeat(2, minmax(0, 0.8fr)) auto;
+  gap: 0.55rem;
+  align-items: end;
+}
+
+.formActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  justify-content: flex-end;
+  margin-top: 0.5rem;
+}
+
+.liveShell {
+  max-width: 28rem;
+  margin: 0 auto;
+  padding: 1rem 0.85rem 5.5rem;
+}
+
+.liveTop {
+  display: grid;
+  gap: 0.35rem;
+  margin-bottom: 1rem;
+}
+
+.liveTop h1 {
+  margin: 0;
+  font-size: 1.55rem;
+  letter-spacing: -0.03em;
+}
+
+.progress {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.exerciseTitle {
+  margin: 0 0 0.75rem;
+  font-size: 1.2rem;
+  letter-spacing: -0.02em;
+}
+
+.setList {
+  display: grid;
+  gap: 0.55rem;
+  margin-bottom: 1rem;
+}
+
+.setCard {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.8rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 0.8rem;
+}
+
+.setCard header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.setFields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.liveNav {
+  position: sticky;
+  bottom: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  padding: 0.75rem 0 calc(0.75rem + env(safe-area-inset-bottom));
+  background: linear-gradient(180deg, transparent, #f7faf8 28%);
+}
+
+.liveNav .primaryButton,
+.liveNav .secondaryButton {
+  min-height: 2.9rem;
+}
+
+.sectionSplit {
+  display: grid;
+  gap: 1rem;
+}
+
+.sectionSplit > section {
+  padding: 1rem;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 0.85rem;
+}
+
+.sectionSplit h3 {
+  margin: 0 0 0.55rem;
+  font-size: 0.95rem;
+}
+
+.metaGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin: 0;
+}
+
+.metaGrid > div { display: grid; gap: 0.15rem; }
+.metaGrid dt {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.metaGrid dd {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+}
+
+.candidateList {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.75rem;
+}
+
+.candidateCard {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.8rem;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+}
+
+.linkLike {
+  color: var(--accent);
+  font-weight: 700;
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.linkLike:hover { color: var(--accent-dark); }
+
+@media (max-width: 720px) {
+  .header { flex-direction: column; align-items: stretch; }
+  .addExercise { grid-template-columns: 1fr; }
+  .exerciseFields { grid-template-columns: 1fr; }
+  .navRow { flex-direction: column; align-items: stretch; }
+}
+
+@media (prefers-color-scheme: dark) {
+  .page {
+    --ink: #edf4f0;
+    --muted: #9baaa3;
+    --line: #33423b;
+    --surface: #1a2420;
+    --soft: #202c27;
+    --accent: #62c99d;
+    --accent-dark: #8adbb6;
+  }
+  .primaryButton { color: #0d271d; }
+  .field input,
+  .field select,
+  .candidateCard { background: #16201c; color: var(--ink); border-color: var(--line); }
+  .badge { background: #244036; color: #b7ebcf; }
+}

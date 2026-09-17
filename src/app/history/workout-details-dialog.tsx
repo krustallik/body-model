@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useRef } from "react";
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useI18n } from "@/i18n/i18n-provider";
@@ -90,6 +91,14 @@ export function WorkoutDetailsDialog({
                     : `${formatMetric(workout.activeEnergyKcal, intlLocale)} ${uk ? "активних ккал" : "active kcal"}`}</dd>
                 </div>
               </dl>
+              {workout.linkedTrainingSessionId != null && (
+                <p>
+                  <Link className={styles.workoutLink} href={`/training/sessions/${workout.linkedTrainingSessionId}`}>
+                    {uk ? "Запис тренування" : "Training diary entry"}
+                    {workout.linkedTrainingProgramName ? ` · ${workout.linkedTrainingProgramName}` : ""}
+                  </Link>
+                </p>
+              )}
             </article>
           ))}
         </div>

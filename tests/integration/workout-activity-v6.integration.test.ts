@@ -11,6 +11,7 @@ import {
   STAIR_CLIMBING_TYPE,
   TRADITIONAL_STRENGTH_TRAINING_TYPE,
 } from "@/modules/health/expand-training-workouts";
+import { workoutSourceIdentity } from "@/modules/health/workout-source-identity";
 import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
 
 const prisma = new PrismaClient();
@@ -217,15 +218,21 @@ describe("v6 workout activity PostgreSQL integration", () => {
             durationMinutes: 30,
             energyKcal: 220,
             activeEnergyKcal: null,
+            sourceIdentity: workoutSourceIdentity({
+              type: "legacy-spin",
+              startAt: new Date(`${date}T10:00:00.000Z`),
+              endAt: new Date(`${date}T10:30:00.000Z`),
+            }),
           }],
         },
       },
       include: { workouts: true },
     });
-    expect(day.workouts[0]?.energyKcal).toBe(220);
-    expect(day.workouts[0]?.activeEnergyKcal).toBeNull();
+    const legacyWorkout = day.workouts[0]!;
+    expect(legacyWorkout.energyKcal).toBe(220);
+    expect(legacyWorkout.activeEnergyKcal).toBeNull();
 
-    const reloaded = await prisma.workout.findUniqueOrThrow({ where: { id: day.workouts[0]!.id } });
+    const reloaded = await prisma.workout.findUniqueOrThrow({ where: { id: legacyWorkout.id } });
     expect(reloaded).toMatchObject({
       type: "legacy-spin",
       energyKcal: 220,

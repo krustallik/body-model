@@ -1,5 +1,6 @@
 import { normalizeDailyMeasurements, prepareDailyMeasurementsForWrite } from "@/modules/days/measurement-policy";
 import { summarizeDayWorkouts } from "@/modules/days/day-workout-presentation";
+import { workoutSourceIdentity } from "@/modules/health/workout-source-identity";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { SleepRepository } from "@/modules/health/sleep.repository";
@@ -32,6 +33,12 @@ const dailyMetricSelect = {
       endAt: true,
       durationMinutes: true,
       activeEnergyKcal: true,
+      matchedDiarySession: {
+        select: {
+          id: true,
+          program: { select: { name: true } },
+        },
+      },
     },
     orderBy: { startAt: "asc" as const },
   },
@@ -44,12 +51,18 @@ type DailyMetricRecord = Prisma.DailyHealthDataGetPayload<{ select: typeof daily
 function workoutCreateData(workouts: NonNullable<CreateDailyMetricInput["workouts"]>) {
   return workouts.map((workout) => {
     const startAt = new Date(workout.startAt);
+    const endAt = new Date(startAt.getTime() + workout.durationMinutes * 60_000);
     return {
       type: workout.type,
       startAt,
-      endAt: new Date(startAt.getTime() + workout.durationMinutes * 60_000),
+      endAt,
       durationMinutes: workout.durationMinutes,
       activeEnergyKcal: workout.activeEnergyKcal ?? null,
+      sourceIdentity: workoutSourceIdentity({
+        type: workout.type,
+        startAt,
+        endAt,
+      }),
     };
   });
 }

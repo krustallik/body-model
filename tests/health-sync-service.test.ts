@@ -1,4 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const { afterHealthSyncMatch } = vi.hoisted(() => ({
+  afterHealthSyncMatch: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("@/modules/training/training.service", () => ({
+  trainingService: { afterHealthSyncMatch },
+}));
+
 import type { HealthSyncRepository } from "@/modules/health/health.repository";
 import { syncHealthData } from "@/modules/health/health.service";
 import type { HealthDayInput, HealthSyncMetadata, SyncDateResult } from "@/modules/health/health.types";
@@ -179,5 +187,18 @@ describe("health synchronization service", () => {
       retentionCutoffDate: "2026-07-22",
     });
     expect(repository.days.has("2026-08-21")).toBe(true);
+  });
+
+  it("invokes training diary matcher after syncDay and tolerates matcher failure", async () => {
+    const repository = new MemoryRepository();
+    afterHealthSyncMatch.mockClear();
+    await syncHealthData({ days: [{ date: "2026-08-21" }], timezone: "Europe/Kyiv" }, repository);
+    expect(afterHealthSyncMatch).toHaveBeenCalledWith("2026-08-21", { timezone: "Europe/Kyiv" });
+
+    afterHealthSyncMatch.mockRejectedValueOnce(new Error("matcher boom"));
+    await expect(syncHealthData({ days: [{ date: "2026-08-22" }] }, repository)).resolves.toMatchObject({
+      status: "ok",
+      dates: [{ date: "2026-08-22" }],
+    });
   });
 });

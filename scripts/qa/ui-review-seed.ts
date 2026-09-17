@@ -5,6 +5,7 @@
  * Usage: npx tsx scripts/qa/ui-review-seed.ts
  */
 import { PrismaClient } from "@prisma/client";
+import { workoutSourceIdentity } from "@/modules/health/workout-source-identity";
 import { addCalendarDays, latestCompletedLocalDate } from "@/modules/model-episodes/model-calendar";
 import { initializeNewModelEpisode, recalculateModelEpisode } from "@/modules/model-episodes/model-episode.service";
 
@@ -85,13 +86,18 @@ async function main() {
     });
 
     if (!isLegacyStrengthOnly && recent && (day === 1 || day === 3 || day === 5)) {
+      const externalId = `ui-strength-${date}`;
+      const type = "Traditional Strength Training";
+      const startAt = new Date(`${date}T16:00:00.000Z`);
+      const endAt = new Date(`${date}T16:45:00.000Z`);
       await prisma.workout.create({
         data: {
           dailyHealthDataId: row.id,
-          externalId: `ui-strength-${date}`,
-          type: "Traditional Strength Training",
-          startAt: new Date(`${date}T16:00:00.000Z`),
-          endAt: new Date(`${date}T16:45:00.000Z`),
+          externalId,
+          sourceIdentity: workoutSourceIdentity({ externalId, type, startAt, endAt }),
+          type,
+          startAt,
+          endAt,
           durationMinutes: 45,
           activeEnergyKcal: 180,
         },
@@ -99,23 +105,43 @@ async function main() {
     }
 
     if (date === addCalendarDays(finalDate, -1)) {
+      const stairExternalId = `ui-stair-${date}`;
+      const stairType = "Stair Climbing";
+      const stairStartAt = new Date(`${date}T08:44:00.000Z`);
+      const stairEndAt = new Date(`${date}T09:46:00.000Z`);
+      const strengthExternalId = `ui-strength-extra-${date}`;
+      const strengthType = "Traditional Strength Training";
+      const strengthStartAt = new Date(`${date}T17:00:00.000Z`);
+      const strengthEndAt = new Date(`${date}T17:45:00.000Z`);
       await prisma.workout.createMany({
         data: [
           {
             dailyHealthDataId: row.id,
-            externalId: `ui-stair-${date}`,
-            type: "Stair Climbing",
-            startAt: new Date(`${date}T08:44:00.000Z`),
-            endAt: new Date(`${date}T09:46:00.000Z`),
+            externalId: stairExternalId,
+            sourceIdentity: workoutSourceIdentity({
+              externalId: stairExternalId,
+              type: stairType,
+              startAt: stairStartAt,
+              endAt: stairEndAt,
+            }),
+            type: stairType,
+            startAt: stairStartAt,
+            endAt: stairEndAt,
             durationMinutes: 62,
             activeEnergyKcal: 154,
           },
           {
             dailyHealthDataId: row.id,
-            externalId: `ui-strength-extra-${date}`,
-            type: "Traditional Strength Training",
-            startAt: new Date(`${date}T17:00:00.000Z`),
-            endAt: new Date(`${date}T17:45:00.000Z`),
+            externalId: strengthExternalId,
+            sourceIdentity: workoutSourceIdentity({
+              externalId: strengthExternalId,
+              type: strengthType,
+              startAt: strengthStartAt,
+              endAt: strengthEndAt,
+            }),
+            type: strengthType,
+            startAt: strengthStartAt,
+            endAt: strengthEndAt,
             durationMinutes: 45,
             activeEnergyKcal: null,
           },
@@ -124,13 +150,18 @@ async function main() {
     }
 
     if (date === addCalendarDays(finalDate, -3)) {
+      const externalId = `ui-stair-only-${date}`;
+      const type = "Stair Climbing";
+      const startAt = new Date(`${date}T10:00:00.000Z`);
+      const endAt = new Date(`${date}T10:40:00.000Z`);
       await prisma.workout.create({
         data: {
           dailyHealthDataId: row.id,
-          externalId: `ui-stair-only-${date}`,
-          type: "Stair Climbing",
-          startAt: new Date(`${date}T10:00:00.000Z`),
-          endAt: new Date(`${date}T10:40:00.000Z`),
+          externalId,
+          sourceIdentity: workoutSourceIdentity({ externalId, type, startAt, endAt }),
+          type,
+          startAt,
+          endAt,
           durationMinutes: 40,
           activeEnergyKcal: 110,
         },

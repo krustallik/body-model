@@ -52,6 +52,8 @@ describe("WorkoutDetailsDialog", () => {
             endAt: "2026-09-16T09:46:00.000Z",
             durationMinutes: 62,
             activeEnergyKcal: 154,
+            linkedTrainingSessionId: null,
+            linkedTrainingProgramName: null,
           }],
         })}
         onClose={() => undefined}
@@ -78,6 +80,8 @@ describe("WorkoutDetailsDialog", () => {
               endAt: "2026-09-16T09:46:00.000Z",
               durationMinutes: 62,
               activeEnergyKcal: 154,
+              linkedTrainingSessionId: null,
+              linkedTrainingProgramName: null,
             },
             {
               type: "Traditional Strength Training",
@@ -87,6 +91,8 @@ describe("WorkoutDetailsDialog", () => {
               endAt: "2026-09-16T17:45:00.000Z",
               durationMinutes: 45,
               activeEnergyKcal: null,
+              linkedTrainingSessionId: 7,
+              linkedTrainingProgramName: "Push",
             },
           ],
         })}
@@ -95,6 +101,8 @@ describe("WorkoutDetailsDialog", () => {
     );
     expect(html).toContain("Stair Climbing");
     expect(html).toContain("Traditional Strength Training");
+    expect(html).toContain("Запис тренування");
+    expect(html).toContain("/training/sessions/7");
     expect(html.match(/Силове тренування/g) ?? []).toHaveLength(0);
   });
 
@@ -129,6 +137,8 @@ describe("WorkoutDetailsDialog", () => {
             endAt: "2026-09-16T07:40:00.000Z",
             durationMinutes: 40,
             activeEnergyKcal: null,
+            linkedTrainingSessionId: null,
+            linkedTrainingProgramName: null,
           }],
         })}
         onClose={() => undefined}

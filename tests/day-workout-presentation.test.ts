@@ -27,6 +27,24 @@ describe("summarizeDayWorkouts", () => {
     expect(summary.workoutSource).toBe("workouts");
     expect(summary.workouts).toHaveLength(1);
     expect(displayWorkoutType(summary.workouts[0]!)).toBe("Traditional Strength Training");
+    expect(summary.workouts[0]?.linkedTrainingSessionId).toBeNull();
+    expect(summary.workouts[0]?.linkedTrainingProgramName).toBeNull();
+  });
+
+  it("surfaces matched diary session linkage when present", () => {
+    const summary = summarizeDayWorkouts({
+      workouts: [{
+        type: "Traditional Strength Training",
+        startAt: "2026-09-16T08:44:00.000Z",
+        endAt: "2026-09-16T09:46:00.000Z",
+        durationMinutes: 62,
+        activeEnergyKcal: null,
+        matchedDiarySession: { id: 42, program: { name: "Push A" } },
+      }],
+      legacyStrengthTrainingMinutes: null,
+    });
+    expect(summary.workouts[0]?.linkedTrainingSessionId).toBe(42);
+    expect(summary.workouts[0]?.linkedTrainingProgramName).toBe("Push A");
   });
 
   it("sums one stair workout without renaming it strength", () => {

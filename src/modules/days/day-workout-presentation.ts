@@ -8,6 +8,8 @@ export type DayWorkoutPresentation = {
   endAt: string;
   durationMinutes: number | null;
   activeEnergyKcal: number | null;
+  linkedTrainingSessionId: number | null;
+  linkedTrainingProgramName: string | null;
 };
 
 export type DayWorkoutSummary = {
@@ -23,6 +25,10 @@ export type RawWorkoutRow = {
   endAt: Date | string;
   durationMinutes: number | null;
   activeEnergyKcal: number | null;
+  matchedDiarySession?: {
+    id: number;
+    program: { name: string } | null;
+  } | null;
 };
 
 function toIso(value: Date | string): string {
@@ -42,6 +48,7 @@ export function summarizeDayWorkouts(input: {
 }): DayWorkoutSummary {
   const workouts: DayWorkoutPresentation[] = (input.workouts ?? []).map((workout) => {
     const canonical = canonicalizeWorkoutType(workout.type);
+    const linked = workout.matchedDiarySession ?? null;
     return {
       type: workout.type,
       canonicalType: canonical.canonicalType,
@@ -54,6 +61,8 @@ export function summarizeDayWorkouts(input: {
         && workout.activeEnergyKcal >= 0
         ? workout.activeEnergyKcal
         : null,
+      linkedTrainingSessionId: linked?.id ?? null,
+      linkedTrainingProgramName: linked?.program?.name ?? null,
     };
   });
 
@@ -84,6 +93,6 @@ export function summarizeDayWorkouts(input: {
   };
 }
 
-export function displayWorkoutType(workout: DayWorkoutPresentation): string {
+export function displayWorkoutType(workout: Pick<DayWorkoutPresentation, "type" | "canonicalType">): string {
   return workout.canonicalType ?? workout.type.trim();
 }

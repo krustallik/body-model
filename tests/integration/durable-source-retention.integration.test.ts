@@ -12,6 +12,7 @@ import {
   STAIR_CLIMBING_TYPE,
   TRADITIONAL_STRENGTH_TRAINING_TYPE,
 } from "@/modules/health/expand-training-workouts";
+import { workoutSourceIdentity } from "@/modules/health/workout-source-identity";
 import type { BuiltSimulationDay } from "@/modules/model-episodes/model-episode.types";
 import type { PhysiologicalDailyInput } from "@/model/physiological-simulator";
 
@@ -110,6 +111,12 @@ describe("durable source retention PostgreSQL", () => {
             endAt: new Date(`${oldDate}T18:00:00.000Z`),
             durationMinutes: 60,
             activeEnergyKcal: 420,
+            sourceIdentity: workoutSourceIdentity({
+              externalId: "old-workout",
+              type: TRADITIONAL_STRENGTH_TRAINING_TYPE,
+              startAt: new Date(`${oldDate}T17:00:00.000Z`),
+              endAt: new Date(`${oldDate}T18:00:00.000Z`),
+            }),
           }],
         },
       },
@@ -207,6 +214,11 @@ describe("durable source retention PostgreSQL", () => {
               endAt: new Date(`${stairDate}T08:20:00+02:00`),
               durationMinutes: 20,
               activeEnergyKcal: 154,
+              sourceIdentity: workoutSourceIdentity({
+                type: STAIR_CLIMBING_TYPE,
+                startAt: new Date(`${stairDate}T08:00:00+02:00`),
+                endAt: new Date(`${stairDate}T08:20:00+02:00`),
+              }),
             },
             {
               type: TRADITIONAL_STRENGTH_TRAINING_TYPE,
@@ -214,6 +226,11 @@ describe("durable source retention PostgreSQL", () => {
               endAt: new Date(`${stairDate}T17:00:00+02:00`),
               durationMinutes: 60,
               activeEnergyKcal: 562,
+              sourceIdentity: workoutSourceIdentity({
+                type: TRADITIONAL_STRENGTH_TRAINING_TYPE,
+                startAt: new Date(`${stairDate}T16:00:00+02:00`),
+                endAt: new Date(`${stairDate}T17:00:00+02:00`),
+              }),
             },
           ],
         },
@@ -324,6 +341,11 @@ describe("durable source retention PostgreSQL", () => {
                     endAt: new Date(`${date}T18:00:00.000Z`),
                     durationMinutes: 60,
                     activeEnergyKcal: 400,
+                    sourceIdentity: workoutSourceIdentity({
+                      type: TRADITIONAL_STRENGTH_TRAINING_TYPE,
+                      startAt: new Date(`${date}T17:00:00.000Z`),
+                      endAt: new Date(`${date}T18:00:00.000Z`),
+                    }),
                   }],
                 },
               }
@@ -441,6 +463,11 @@ describe("durable source retention PostgreSQL", () => {
             endAt: new Date(`${date}T10:30:00.000Z`),
             durationMinutes: 30,
             activeEnergyKcal: 100,
+            sourceIdentity: workoutSourceIdentity({
+              type: "walk",
+              startAt: new Date(`${date}T10:00:00.000Z`),
+              endAt: new Date(`${date}T10:30:00.000Z`),
+            }),
           }],
         },
       },

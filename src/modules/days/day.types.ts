@@ -22,6 +22,9 @@ export type DayWorkoutDto = {
   endAt: string;
   durationMinutes: number | null;
   activeEnergyKcal: number | null;
+  /** Present when this Garmin/device workout is MATCHED to a strength diary session. */
+  linkedTrainingSessionId?: number | null;
+  linkedTrainingProgramName?: string | null;
 };
 
 export type HeartRateSampleDto = { timestamp: string; bpm: number };

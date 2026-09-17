@@ -18,7 +18,7 @@ describe("health retention / durable source policy", () => {
     expect(isFullyRebuildableSourceDate("2026-09-18")).toBe(true);
   });
 
-  it("lists all durable canonical source tables including snapshots", () => {
+  it("lists all durable canonical source tables including snapshots and training diary", () => {
     expect(DURABLE_SOURCE_TABLES).toEqual(expect.arrayContaining([
       "DailyHealthData",
       "Workout",
@@ -27,6 +27,13 @@ describe("health retention / durable source policy", () => {
       "RestingHeartRateSample",
       "SleepSegment",
       "WorkInterval",
+      "ExerciseCatalog",
+      "TrainingProgram",
+      "TrainingProgramVersion",
+      "ProgramExercise",
+      "StrengthDiarySession",
+      "StrengthSessionExercise",
+      "StrengthSet",
     ]));
   });
 });

@@ -54,9 +54,10 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     const uk = locale === "uk";
     const section = pathname.startsWith("/forecast") ? (uk ? "Прогноз" : "Forecast")
       : pathname.startsWith("/diagnostics") ? (uk ? "Стан моделі" : "Model status")
-      : pathname.startsWith("/history") ? (uk ? "Історія" : "History")
-        : pathname.startsWith("/settings/profile") ? (uk ? "Профіль" : "Profile")
-          : (uk ? "Огляд" : "Dashboard");
+      : pathname.startsWith("/training") ? (uk ? "Тренування" : "Training")
+        : pathname.startsWith("/history") ? (uk ? "Історія" : "History")
+          : pathname.startsWith("/settings/profile") ? (uk ? "Профіль" : "Profile")
+            : (uk ? "Огляд" : "Dashboard");
     document.title = `${section} · BodyCast`;
     const description = uk ? "Персональний застосунок для відстеження здоров’я та прогнозування ваги." : "Personal health and weight forecasting application.";
     document.querySelector('meta[name="description"]')?.setAttribute("content", description);

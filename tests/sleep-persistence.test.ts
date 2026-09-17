@@ -10,7 +10,12 @@ describe("sleep segment persistence", () => {
         upsert: vi.fn(async () => ({ id: 11 })),
       },
       healthSyncSnapshot: { create: vi.fn(async () => ({})) },
-      workout: { deleteMany: vi.fn(async () => ({ count: 0 })), createMany: vi.fn(async () => ({ count: 0 })) },
+      workout: {
+        findMany: vi.fn(async () => []),
+        update: vi.fn(async () => ({})),
+        deleteMany: vi.fn(async () => ({ count: 0 })),
+        createMany: vi.fn(async () => ({ count: 0 })),
+      },
       heartRateSample: { createMany: vi.fn(async () => ({ count: 0 })) },
       restingHeartRateSample: { createMany: vi.fn(async () => ({ count: 0 })) },
       sleepSegment: { createMany },

@@ -2,7 +2,15 @@ import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { PrismaHealthSyncRepository } from "@/modules/health/health.repository";
 
-function repositoryFixture(existingDates: string[] = []) {
+function repositoryFixture(existingDates: string[] = [], existingWorkouts: Array<{
+  id: number;
+  sourceIdentity: string | null;
+  externalId: string | null;
+  type: string;
+  startAt: Date;
+  endAt: Date;
+  matchedDiarySession: { id: number } | null;
+}> = []) {
   const transaction = {
     dailyHealthData: {
       findUnique: vi.fn().mockImplementation(({ where }: { where: { date: string } }) =>
@@ -13,8 +21,10 @@ function repositoryFixture(existingDates: string[] = []) {
       ),
     },
     workout: {
-      deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+      findMany: vi.fn().mockResolvedValue(existingWorkouts),
+      update: vi.fn().mockResolvedValue({}),
       createMany: vi.fn().mockResolvedValue({ count: 1 }),
+      deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
     heartRateSample: { createMany: vi.fn().mockResolvedValue({ count: 1 }) },
     restingHeartRateSample: { createMany: vi.fn().mockResolvedValue({ count: 1 }) },
@@ -143,7 +153,7 @@ describe("Prisma health synchronization repository", () => {
     }));
   });
 
-  it("creates workouts with normalized instants", async () => {
+  it("creates workouts with stable sourceIdentity instead of wipe-replace", async () => {
     const { repository, transaction } = repositoryFixture();
     await repository.syncDay({
         date: "2026-08-21",
@@ -157,15 +167,24 @@ describe("Prisma health synchronization repository", () => {
           },
         ],
     });
-    expect(transaction.workout.deleteMany).toHaveBeenCalledWith({ where: { dailyHealthDataId: 21 } });
+    expect(transaction.workout.findMany).toHaveBeenCalledWith({
+      where: { dailyHealthDataId: 21 },
+      select: expect.objectContaining({
+        id: true,
+        sourceIdentity: true,
+        matchedDiarySession: { select: { id: true } },
+      }),
+    });
     expect(transaction.workout.createMany).toHaveBeenCalledWith({
       data: [expect.objectContaining({
         externalId: "apple-1",
+        sourceIdentity: "ext:apple-1",
         startAt: new Date("2026-08-21T15:00:00Z"),
         activeEnergyKcal: 340,
         energyKcal: null,
       })],
     });
+    expect(transaction.workout.deleteMany).not.toHaveBeenCalled();
   });
 
   it("persists null activeEnergyKcal when workout energy is omitted", async () => {
@@ -179,11 +198,14 @@ describe("Prisma health synchronization repository", () => {
       }],
     });
     expect(transaction.workout.createMany).toHaveBeenCalledWith({
-      data: [expect.objectContaining({ activeEnergyKcal: null })],
+      data: [expect.objectContaining({
+        activeEnergyKcal: null,
+        sourceIdentity: "fp:strength|2026-08-21T15:00:00.000Z|2026-08-21T16:00:00.000Z",
+      })],
     });
   });
 
-  it("drops other-calendar-day workouts before createMany", async () => {
+  it("drops other-calendar-day workouts before reconciliation", async () => {
     const { repository, transaction } = repositoryFixture();
     await repository.syncDay(
       {
@@ -213,14 +235,65 @@ describe("Prisma health synchronization repository", () => {
       },
     );
     expect(transaction.workout.createMany).toHaveBeenCalledWith({
-      data: [expect.objectContaining({ externalId: "same-day", activeEnergyKcal: 154 })],
+      data: [expect.objectContaining({ externalId: "same-day", activeEnergyKcal: 154, sourceIdentity: "ext:same-day" })],
     });
   });
 
-  it("replaces workouts with an empty list when omitted", async () => {
-    const { repository, transaction } = repositoryFixture(["2026-08-21"]);
+  it("updates existing workouts in place and preserves ids", async () => {
+    const { repository, transaction } = repositoryFixture(["2026-08-21"], [{
+      id: 77,
+      sourceIdentity: "ext:apple-1",
+      externalId: "apple-1",
+      type: "strength",
+      startAt: new Date("2026-08-21T15:00:00Z"),
+      endAt: new Date("2026-08-21T16:00:00Z"),
+      matchedDiarySession: { id: 1 },
+    }]);
+    await repository.syncDay({
+      date: "2026-08-21",
+      workouts: [{
+        externalId: "apple-1",
+        type: "strength",
+        startAt: "2026-08-21T17:00:00+02:00",
+        endAt: "2026-08-21T18:10:00+02:00",
+        activeEnergyKcal: 360,
+      }],
+    });
+    expect(transaction.workout.update).toHaveBeenCalledWith({
+      where: { id: 77 },
+      data: expect.objectContaining({
+        sourceIdentity: "ext:apple-1",
+        activeEnergyKcal: 360,
+        endAt: new Date("2026-08-21T16:10:00Z"),
+      }),
+    });
+    expect(transaction.workout.createMany).not.toHaveBeenCalled();
+    expect(transaction.workout.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("keeps linked workouts when omitted from feed and deletes only unlinked ones", async () => {
+    const { repository, transaction } = repositoryFixture(["2026-08-21"], [
+      {
+        id: 10,
+        sourceIdentity: "ext:linked",
+        externalId: "linked",
+        type: "Traditional Strength Training",
+        startAt: new Date("2026-08-21T15:00:00Z"),
+        endAt: new Date("2026-08-21T16:00:00Z"),
+        matchedDiarySession: { id: 5 },
+      },
+      {
+        id: 11,
+        sourceIdentity: "ext:unlinked",
+        externalId: "unlinked",
+        type: "Stair Climbing",
+        startAt: new Date("2026-08-21T06:00:00Z"),
+        endAt: new Date("2026-08-21T06:12:00Z"),
+        matchedDiarySession: null,
+      },
+    ]);
     await repository.syncDay({ date: "2026-08-21" });
-    expect(transaction.workout.deleteMany).toHaveBeenCalledOnce();
+    expect(transaction.workout.deleteMany).toHaveBeenCalledWith({ where: { id: { in: [11] } } });
     expect(transaction.workout.createMany).not.toHaveBeenCalled();
   });
 

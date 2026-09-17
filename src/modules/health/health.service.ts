@@ -3,6 +3,7 @@ import { healthSyncRepository, type HealthSyncRepository } from "./health.reposi
 import type { HealthSyncRequest, HealthSyncResult } from "./health.types";
 import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import { errorKind, logEvent } from "@/lib/logger";
+import { trainingService } from "@/modules/training/training.service";
 
 export async function syncHealthData(
   request: HealthSyncRequest,
@@ -11,12 +12,22 @@ export async function syncHealthData(
   receivedAt: Date = new Date(),
 ): Promise<HealthSyncResult> {
   const day = request.days[0];
+  const timezone = request.timezone ?? DEFAULT_TIME_ZONE;
   const date = await repository.syncDay(day, rawDays?.[0] ?? day, {
-    timezone: request.timezone ?? DEFAULT_TIME_ZONE,
+    timezone,
     receivedAt,
     syncedAt: request.syncedAt ?? null,
   });
   const created = date.action === "created" ? 1 : 0;
+
+  try {
+    await trainingService.afterHealthSyncMatch(day.date, { timezone });
+  } catch (error) {
+    logEvent("warn", "training_match_after_sync_failed", {
+      date: day.date,
+      errorType: errorKind(error),
+    });
+  }
 
   const retentionCutoffDate = healthRetentionCutoffDate(day.date);
   let prunedDays = 0;

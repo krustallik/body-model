@@ -151,6 +151,11 @@ model Workout {
   id                Int             @id @default(autoincrement())
   dailyHealthDataId Int
   externalId        String?
+  /**
+   * Deterministic source identity for stable reconciliation across syncs.
+   * Prefer ext:{externalId}; otherwise fp:{type}|{startIso}|{endIso}.
+   */
+  sourceIdentity    String          @db.VarChar(320)
   type              String
   startAt           DateTime
   endAt             DateTime
@@ -163,9 +168,147 @@ model Workout {
   updatedAt         DateTime        @updatedAt
   /** Restrict: accidental DailyHealthData delete must not silently wipe workout history. */
   dailyHealthData   DailyHealthData @relation(fields: [dailyHealthDataId], references: [id], onDelete: Restrict)
+  matchedDiarySession StrengthDiarySession?
 
+  @@unique([dailyHealthDataId, sourceIdentity])
   @@index([dailyHealthDataId])
+  @@index([externalId])
   @@index([startAt, endAt])
+}
+
+/**
+ * Master list of resistance exercises selectable when building programs.
+ * Names are data — not frontend hardcoding.
+ */
+model ExerciseCatalog {
+  id        Int       @id @default(autoincrement())
+  profileId Int       @default(1)
+  name      String    @db.VarChar(200)
+  isActive  Boolean   @default(true)
+  archivedAt DateTime? @db.Timestamptz(3)
+  /**
+   * Future-ready muscle mapping structure. Scientifically sensitive
+   * coefficients stay unpopulated until approved v7 research lands.
+   */
+  muscleMapping Json?
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  programExercises ProgramExercise[]
+  sessionExercises StrengthSessionExercise[]
+
+  @@unique([profileId, name])
+  @@index([profileId, isActive])
+}
+
+model TrainingProgram {
+  id               Int       @id @default(autoincrement())
+  profileId        Int       @default(1)
+  name             String    @db.VarChar(160)
+  archivedAt       DateTime? @db.Timestamptz(3)
+  currentVersionId Int?      @unique
+  createdAt        DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime  @updatedAt @db.Timestamptz(3)
+  versions         TrainingProgramVersion[] @relation("ProgramVersions")
+  currentVersion   TrainingProgramVersion?  @relation("ProgramCurrentVersion", fields: [currentVersionId], references: [id], onDelete: SetNull)
+  sessions         StrengthDiarySession[]
+
+  @@index([profileId, archivedAt])
+}
+
+model TrainingProgramVersion {
+  id          Int       @id @default(autoincrement())
+  programId   Int
+  versionNumber Int
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  program     TrainingProgram @relation("ProgramVersions", fields: [programId], references: [id], onDelete: Cascade)
+  currentFor  TrainingProgram? @relation("ProgramCurrentVersion")
+  exercises   ProgramExercise[]
+  sessions    StrengthDiarySession[]
+
+  @@unique([programId, versionNumber])
+  @@index([programId])
+}
+
+model ProgramExercise {
+  id               Int      @id @default(autoincrement())
+  programVersionId Int
+  exerciseCatalogId Int
+  sortOrder        Int
+  plannedSets      Int
+  /** EXTERNAL_WEIGHT | RESISTANCE_BAND | BODYWEIGHT */
+  resistanceType   String   @db.VarChar(32)
+  createdAt        DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime @updatedAt @db.Timestamptz(3)
+  programVersion   TrainingProgramVersion @relation(fields: [programVersionId], references: [id], onDelete: Cascade)
+  exerciseCatalog  ExerciseCatalog @relation(fields: [exerciseCatalogId], references: [id], onDelete: Restrict)
+
+  @@unique([programVersionId, sortOrder])
+  @@index([programVersionId])
+  @@index([exerciseCatalogId])
+}
+
+model StrengthDiarySession {
+  id                Int       @id @default(autoincrement())
+  profileId         Int       @default(1)
+  programId         Int
+  programVersionId  Int
+  /** ACTIVE | COMPLETED | CANCELLED */
+  status            String    @db.VarChar(20)
+  webStartedAt      DateTime  @db.Timestamptz(3)
+  webEndedAt        DateTime? @db.Timestamptz(3)
+  matchedWorkoutId  Int?      @unique
+  /** PENDING | MATCHED | AMBIGUOUS | UNMATCHED */
+  matchStatus       String    @default("PENDING") @db.VarChar(20)
+  /** AUTO | MANUAL — null while still PENDING without a decision */
+  matchMethod       String?   @db.VarChar(20)
+  matchedAt         DateTime? @db.Timestamptz(3)
+  createdAt         DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime  @updatedAt @db.Timestamptz(3)
+  program           TrainingProgram @relation(fields: [programId], references: [id], onDelete: Restrict)
+  programVersion    TrainingProgramVersion @relation(fields: [programVersionId], references: [id], onDelete: Restrict)
+  matchedWorkout    Workout?  @relation(fields: [matchedWorkoutId], references: [id], onDelete: SetNull)
+  exercises         StrengthSessionExercise[]
+
+  @@index([profileId, status])
+  @@index([profileId, webStartedAt])
+  @@index([matchStatus])
+}
+
+model StrengthSessionExercise {
+  id                     Int      @id @default(autoincrement())
+  sessionId              Int
+  sourceExerciseCatalogId Int?
+  snapshotExerciseName   String   @db.VarChar(200)
+  sortOrder              Int
+  plannedSets            Int
+  /** EXTERNAL_WEIGHT | RESISTANCE_BAND | BODYWEIGHT — copied from program at start */
+  resistanceType         String   @db.VarChar(32)
+  /** Snapshot of future muscle-mapping reference; coefficients deferred. */
+  muscleMappingSnapshot  Json?
+  createdAt              DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt              DateTime @updatedAt @db.Timestamptz(3)
+  session                StrengthDiarySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sourceExerciseCatalog  ExerciseCatalog? @relation(fields: [sourceExerciseCatalogId], references: [id], onDelete: SetNull)
+  sets                   StrengthSet[]
+
+  @@unique([sessionId, sortOrder])
+  @@index([sessionId])
+}
+
+model StrengthSet {
+  id                       Int       @id @default(autoincrement())
+  sessionExerciseId        Int
+  setNumber                Int
+  reps                     Int
+  weightKg                 Decimal?  @db.Decimal(8, 2)
+  bandNominalResistanceKg  Decimal?  @db.Decimal(8, 2)
+  completedAt              DateTime? @db.Timestamptz(3)
+  createdAt                DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt                DateTime  @updatedAt @db.Timestamptz(3)
+  sessionExercise          StrengthSessionExercise @relation(fields: [sessionExerciseId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionExerciseId, setNumber])
+  @@index([sessionExerciseId])
 }
 
 model WorkInterval {

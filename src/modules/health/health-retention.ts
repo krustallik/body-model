@@ -47,6 +47,13 @@ export const DURABLE_SOURCE_TABLES = [
   "RestingHeartRateSample",
   "SleepSegment",
   "WorkInterval",
+  "ExerciseCatalog",
+  "TrainingProgram",
+  "TrainingProgramVersion",
+  "ProgramExercise",
+  "StrengthDiarySession",
+  "StrengthSessionExercise",
+  "StrengthSet",
 ] as const;
 
 /**

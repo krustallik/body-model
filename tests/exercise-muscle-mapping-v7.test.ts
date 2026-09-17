@@ -10,6 +10,7 @@ import {
   EXERCISE_MUSCLE_MAPPING_V7_VERSION,
   isCanonicalMuscleGroupV7,
   lookupExerciseMuscleMappingV7,
+  parseExerciseMuscleMappingSnapshotV7,
 } from "@/model/physiology-v7/exercise-muscle-mapping-v7";
 
 describe("ExerciseMuscleMappingV7 registry", () => {
@@ -50,6 +51,7 @@ describe("ExerciseMuscleMappingV7 registry", () => {
       "biceps",
       "forearms",
       "spinal_extensors",
+      "hip_extensors",
     ]);
 
     const snapshot = buildExerciseMuscleMappingSnapshotV7("one_arm_seated_cable_row");
@@ -78,8 +80,26 @@ describe("ExerciseMuscleMappingV7 registry", () => {
     expect(diagnostics).toMatchObject({
       mappingAvailability: "available",
       stableKey: "hyperextension",
-      directTargets: ["spinal_extensors"],
-      mappedTargetCount: 1,
+      directTargets: ["spinal_extensors", "hip_extensors"],
+      mappedTargetCount: 2,
+    });
+  });
+
+  it("keeps historical v7.1 snapshots parseable after the v7.2 taxonomy revision", () => {
+    const legacy = {
+      contractVersion: "bodycast-exercise-muscle-mapping-snapshot-v7-1",
+      availability: "available",
+      mappingVersion: "bodycast-exercise-muscle-mapping-v7.1",
+      stableKey: "hyperextension",
+      provenance: "approved-v7-registry",
+      targets: [{ muscleGroup: "spinal_extensors", role: "direct" }],
+    };
+    const parsed = parseExerciseMuscleMappingSnapshotV7(legacy);
+    expect(parsed).toMatchObject({
+      availability: "available",
+      mappingVersion: "bodycast-exercise-muscle-mapping-v7.1",
+      stableKey: "hyperextension",
+      targets: [{ muscleGroup: "spinal_extensors", role: "direct" }],
     });
   });
 });

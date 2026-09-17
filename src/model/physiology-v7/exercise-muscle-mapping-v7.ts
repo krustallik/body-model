@@ -13,12 +13,23 @@ export const CANONICAL_MUSCLE_GROUPS_V7 = [
   "biceps",
   "forearms",
   "spinal_extensors",
+  "hip_extensors",
 ] as const;
 
 export type CanonicalMuscleGroupV7 = (typeof CANONICAL_MUSCLE_GROUPS_V7)[number];
 
+/** Historical snapshots may retain older versions; new writes use CURRENT. */
+export const EXERCISE_MUSCLE_MAPPING_V7_VERSIONS = [
+  "bodycast-exercise-muscle-mapping-v7.1",
+  "bodycast-exercise-muscle-mapping-v7.2",
+] as const;
+
+export type ExerciseMuscleMappingV7Version =
+  (typeof EXERCISE_MUSCLE_MAPPING_V7_VERSIONS)[number];
+
+/** Current approved registry version. Existing non-null snapshots are never rewritten. */
 export const EXERCISE_MUSCLE_MAPPING_V7_VERSION =
-  "bodycast-exercise-muscle-mapping-v7.1" as const;
+  "bodycast-exercise-muscle-mapping-v7.2" as const satisfies ExerciseMuscleMappingV7Version;
 
 export const EXERCISE_MUSCLE_MAPPING_SNAPSHOT_V7_CONTRACT =
   "bodycast-exercise-muscle-mapping-snapshot-v7-1" as const;
@@ -46,7 +57,7 @@ export type ExerciseMuscleMappingV7 = {
 export type AvailableExerciseMuscleMappingSnapshotV7 = {
   contractVersion: typeof EXERCISE_MUSCLE_MAPPING_SNAPSHOT_V7_CONTRACT;
   availability: "available";
-  mappingVersion: typeof EXERCISE_MUSCLE_MAPPING_V7_VERSION;
+  mappingVersion: ExerciseMuscleMappingV7Version;
   stableKey: CanonicalExerciseStableKey;
   provenance: "approved-v7-registry";
   targets: readonly ExerciseMuscleMappingTargetV7[];
@@ -136,8 +147,9 @@ const REGISTRY_ENTRIES: readonly RegistryEntry[] = [
   {
     stableKey: "hyperextension",
     displayName: "Гіперекстензія",
-    targets: targets(["spinal_extensors"]),
-    rationale: "Hyperextension is treated as spinal-extensor coverage without finer hip-extension splits.",
+    targets: targets(["spinal_extensors", "hip_extensors"]),
+    rationale:
+      "Hyperextension materially loads spinal extensors and hip extensors (glute/hamstring complex) as direct movers; finer glute/hamstring splits are not required for this catalog.",
   },
   {
     stableKey: "one_arm_concentration_curl",
@@ -328,7 +340,12 @@ export function parseExerciseMuscleMappingSnapshotV7(
     };
   }
   if (record.availability !== "available") return null;
-  if (record.mappingVersion !== EXERCISE_MUSCLE_MAPPING_V7_VERSION) return null;
+  if (
+    typeof record.mappingVersion !== "string"
+    || !(EXERCISE_MUSCLE_MAPPING_V7_VERSIONS as readonly string[]).includes(record.mappingVersion)
+  ) {
+    return null;
+  }
   if (record.provenance !== "approved-v7-registry") return null;
   if (typeof record.stableKey !== "string") return null;
   if (!Array.isArray(record.targets)) return null;
@@ -347,7 +364,7 @@ export function parseExerciseMuscleMappingSnapshotV7(
   return {
     contractVersion: EXERCISE_MUSCLE_MAPPING_SNAPSHOT_V7_CONTRACT,
     availability: "available",
-    mappingVersion: EXERCISE_MUSCLE_MAPPING_V7_VERSION,
+    mappingVersion: record.mappingVersion as ExerciseMuscleMappingV7Version,
     stableKey: record.stableKey as CanonicalExerciseStableKey,
     provenance: "approved-v7-registry",
     targets: targetsParsed,

@@ -24,6 +24,16 @@ import {
   type WorkoutEnergyEvidenceV7,
 } from "@/model/activity/workout-energy-v7";
 import { canonicalizeWorkoutHeartRateEvidenceV7 } from "@/model/activity/workout-heart-rate-v7";
+import { buildExerciseMuscleMappingSnapshotV7 } from "@/model/physiology-v7/exercise-muscle-mapping-v7";
+import {
+  buildQualifiedResistanceTrainingDoseV7,
+  qualifiedResistanceTrainingDoseV7Fingerprint,
+} from "@/model/physiology-v7/qualified-resistance-training-dose-v7";
+import {
+  buildCanonicalStrengthTrainingInputV7,
+} from "@/modules/model-episodes/strength-training-input-v7";
+import { RESISTANCE } from "@/modules/training/training.constants";
+import type { StrengthSessionDto } from "@/modules/training/training.types";
 
 const completeDay: PhysiologicalDailyInput = {
   date: "2026-09-17",
@@ -264,5 +274,249 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
 
     expect(result.workoutActivityKcal).toBe(120 + 90);
     expect(result.deviceActiveEnergyKcal).toBe(result.workoutActivityKcal);
+  });
+
+  it("hard-set dose remains available without tonnage", () => {
+    const pressSnapshot = buildExerciseMuscleMappingSnapshotV7("seated_dumbbell_press");
+    const pushupSnapshot = buildExerciseMuscleMappingSnapshotV7("pushup_handles");
+    const rowSnapshot = buildExerciseMuscleMappingSnapshotV7("one_arm_seated_cable_row");
+
+    function session(partial: Partial<StrengthSessionDto> & {
+      exercises: StrengthSessionDto["exercises"];
+    }): StrengthSessionDto {
+      return {
+        id: 42,
+        status: "COMPLETED",
+        entryMode: "RETROSPECTIVE",
+        revision: 2,
+        programId: 7,
+        programName: "Upper",
+        programVersionId: 9,
+        programVersionNumber: 1,
+        webStartedAt: null,
+        webEndedAt: null,
+        matchStatus: "MATCHED",
+        matchMethod: "DIRECT_BACKFILL",
+        matchedAt: "2026-09-17T18:30:00.000Z",
+        matchedWorkoutId: 99,
+        matchedWorkout: {
+          id: 99,
+          type: "Strength Training",
+          startAt: "2026-09-17T17:00:00.000Z",
+          endAt: "2026-09-17T18:00:00.000Z",
+          durationMinutes: 60,
+          activeEnergyKcal: 400,
+          externalId: "garmin-99",
+        },
+        ordinaryTonnageKg: null,
+        createdAt: "2026-09-17T17:00:00.000Z",
+        updatedAt: "2026-09-17T18:30:00.000Z",
+        ...partial,
+      };
+    }
+
+    const externalWeight = buildCanonicalStrengthTrainingInputV7({
+      session: session({
+        ordinaryTonnageKg: 720,
+        exercises: [{
+          id: 1,
+          sourceExerciseCatalogId: 10,
+          snapshotExerciseName: "Press",
+          order: 1,
+          plannedSets: 3,
+          resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
+          origin: "PLANNED",
+          muscleMappingSnapshot: pressSnapshot,
+          sets: [{
+            id: 11,
+            sessionExerciseId: 1,
+            setNumber: 1,
+            reps: 8,
+            weightKg: 30,
+            bandNominalResistanceKg: null,
+            comment: null,
+            completedAt: null,
+            createdAt: "2026-09-17T17:00:00.000Z",
+            updatedAt: "2026-09-17T17:00:00.000Z",
+          }],
+        }],
+      }),
+      heartRateSamples: null,
+    });
+    const bodyweight = buildCanonicalStrengthTrainingInputV7({
+      session: session({
+        ordinaryTonnageKg: null,
+        exercises: [{
+          id: 2,
+          sourceExerciseCatalogId: 11,
+          snapshotExerciseName: "Push-up",
+          order: 1,
+          plannedSets: 3,
+          resistanceType: RESISTANCE.BODYWEIGHT,
+          origin: "PLANNED",
+          muscleMappingSnapshot: pushupSnapshot,
+          sets: [{
+            id: 12,
+            sessionExerciseId: 2,
+            setNumber: 1,
+            reps: 15,
+            weightKg: null,
+            bandNominalResistanceKg: null,
+            comment: null,
+            completedAt: "2026-09-17T17:05:00.000Z",
+            createdAt: "2026-09-17T17:00:00.000Z",
+            updatedAt: "2026-09-17T17:00:00.000Z",
+          }],
+        }],
+      }),
+      heartRateSamples: null,
+    });
+    const band = buildCanonicalStrengthTrainingInputV7({
+      session: session({
+        ordinaryTonnageKg: null,
+        exercises: [{
+          id: 3,
+          sourceExerciseCatalogId: 12,
+          snapshotExerciseName: "Band row",
+          order: 1,
+          plannedSets: 4,
+          resistanceType: RESISTANCE.RESISTANCE_BAND,
+          origin: "PLANNED",
+          muscleMappingSnapshot: rowSnapshot,
+          sets: [{
+            id: 13,
+            sessionExerciseId: 3,
+            setNumber: 1,
+            reps: 12,
+            weightKg: null,
+            bandNominalResistanceKg: 15,
+            comment: null,
+            completedAt: null,
+            createdAt: "2026-09-17T17:00:00.000Z",
+            updatedAt: "2026-09-17T17:00:00.000Z",
+          }],
+        }],
+      }),
+      heartRateSamples: null,
+    });
+
+    const withTonnage = buildQualifiedResistanceTrainingDoseV7(externalWeight, {
+      ordinaryTonnageKg: 720,
+    });
+    const bodyweightDose = buildQualifiedResistanceTrainingDoseV7(bodyweight, {
+      ordinaryTonnageKg: null,
+    });
+    const bandDose = buildQualifiedResistanceTrainingDoseV7(band, {
+      ordinaryTonnageKg: null,
+    });
+    const tonnageRemoved = buildQualifiedResistanceTrainingDoseV7(externalWeight, {
+      ordinaryTonnageKg: null,
+    });
+
+    expect(withTonnage.availability).toBe("available");
+    expect(bodyweightDose.availability).toBe("available");
+    expect(bandDose.availability).toBe("available");
+    expect(tonnageRemoved.availability).toBe("available");
+    if (
+      withTonnage.availability === "available"
+      && bodyweightDose.availability === "available"
+      && bandDose.availability === "available"
+      && tonnageRemoved.availability === "available"
+    ) {
+      expect(withTonnage.mappedSetCount).toBeGreaterThan(0);
+      expect(bodyweightDose.mappedSetCount).toBeGreaterThan(0);
+      expect(bandDose.mappedSetCount).toBeGreaterThan(0);
+      expect(bodyweightDose.ordinaryTonnageKg).toBeNull();
+      expect(bandDose.ordinaryTonnageKg).toBeNull();
+      expect(qualifiedResistanceTrainingDoseV7Fingerprint(tonnageRemoved))
+        .toBe(qualifiedResistanceTrainingDoseV7Fingerprint(withTonnage));
+      expect(withTonnage.hardSetQualification).toEqual({
+        status: "qualified-by-product-assumption",
+        assumption: "assumed-near-failure",
+      });
+    }
+  });
+
+  it("missing HR does not erase strength stimulus", () => {
+    const snapshot = buildExerciseMuscleMappingSnapshotV7("flat_dumbbell_fly");
+    const session: StrengthSessionDto = {
+      id: 55,
+      status: "COMPLETED",
+      entryMode: "RETROSPECTIVE",
+      revision: 4,
+      programId: 7,
+      programName: "Chest",
+      programVersionId: 9,
+      programVersionNumber: 1,
+      webStartedAt: null,
+      webEndedAt: null,
+      matchStatus: "MATCHED",
+      matchMethod: "DIRECT_BACKFILL",
+      matchedAt: "2026-09-17T18:30:00.000Z",
+      matchedWorkoutId: 99,
+      matchedWorkout: {
+        id: 99,
+        type: "Strength Training",
+        startAt: "2026-09-17T17:00:00.000Z",
+        endAt: "2026-09-17T18:00:00.000Z",
+        durationMinutes: 60,
+        activeEnergyKcal: 400,
+        externalId: "garmin-99",
+      },
+      exercises: [{
+        id: 1,
+        sourceExerciseCatalogId: 10,
+        snapshotExerciseName: "Fly",
+        order: 1,
+        plannedSets: 3,
+        resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
+        origin: "PLANNED",
+        muscleMappingSnapshot: snapshot,
+        sets: [{
+          id: 11,
+          sessionExerciseId: 1,
+          setNumber: 1,
+          reps: 10,
+          weightKg: 12,
+          bandNominalResistanceKg: null,
+          comment: null,
+          completedAt: null,
+          createdAt: "2026-09-17T17:00:00.000Z",
+          updatedAt: "2026-09-17T17:00:00.000Z",
+        }],
+      }],
+      ordinaryTonnageKg: 120,
+      createdAt: "2026-09-17T17:00:00.000Z",
+      updatedAt: "2026-09-17T18:30:00.000Z",
+    };
+
+    const withHr = buildCanonicalStrengthTrainingInputV7({
+      session,
+      heartRateSamples: [
+        { timestamp: "2026-09-17T17:01:00.000Z", bpm: 140, source: "shortcut" },
+      ],
+    });
+    const withoutHr = buildCanonicalStrengthTrainingInputV7({
+      session,
+      heartRateSamples: null,
+    });
+
+    const doseWithHr = buildQualifiedResistanceTrainingDoseV7(withHr, {
+      ordinaryTonnageKg: 120,
+    });
+    const doseWithoutHr = buildQualifiedResistanceTrainingDoseV7(withoutHr, {
+      ordinaryTonnageKg: 120,
+    });
+
+    expect(doseWithHr.availability).toBe("available");
+    expect(doseWithoutHr.availability).toBe("available");
+    expect(qualifiedResistanceTrainingDoseV7Fingerprint(doseWithHr))
+      .toBe(qualifiedResistanceTrainingDoseV7Fingerprint(doseWithoutHr));
+    if (doseWithHr.availability === "available" && doseWithoutHr.availability === "available") {
+      expect(doseWithHr.heartRateContext.availability).toBe("loaded");
+      expect(doseWithoutHr.heartRateContext.availability).toBe("unavailable");
+      expect(doseWithHr.mappedSetCount).toBe(doseWithoutHr.mappedSetCount);
+      expect(doseWithHr.muscleGroups).toEqual(doseWithoutHr.muscleGroups);
+    }
   });
 });

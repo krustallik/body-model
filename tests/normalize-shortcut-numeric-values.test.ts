@@ -86,6 +86,25 @@ describe("parseShortcutStrengthTrainingMinutes", () => {
 });
 
 describe("normalizeShortcutNumericValues", () => {
+  it("normalizes the production nested-JSON HR and resting-HR Shortcut representation", () => {
+    const payload = { days: [{ date: "2026-09-17", bpm: JSON.stringify({
+      bpm: "69\\n69\\n68", timestamps: "2026-09-15T00:00:00+02:00\\n2026-09-15T00:02:00+02:00\\n2026-09-15T00:04:00+02:00",
+    }), bpminpeace: JSON.stringify({
+      timestamps: "2026-09-13T00:00:00+02:00\\n2026-09-14T00:00:00+02:00", bvminpeace: "68\\n57",
+    }) }] };
+    expect(normalizeShortcutNumericValues(payload)).toMatchObject({ days: [{
+      bpm: { timestamps: ["2026-09-15T00:00:00+02:00", "2026-09-15T00:02:00+02:00", "2026-09-15T00:04:00+02:00"], bpm: [69, 69, 68] },
+      bpminpeace: { timestamps: ["2026-09-13T00:00:00+02:00", "2026-09-14T00:00:00+02:00"], bpminpeace: [68, 57] },
+    }] });
+  });
+
+  it("handles a production-sized 1623-sample HR series and five resting samples", () => {
+    const timestamps = Array.from({ length: 1623 }, (_, index) => `2026-09-15T00:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}+02:00`);
+    const bpm = Array.from({ length: 1623 }, (_, index) => String(60 + index % 20));
+    const normalized = normalizeShortcutNumericValues({ days: [{ date: "2026-09-17", bpm: JSON.stringify({ timestamps: timestamps.join("\\n"), bpm: bpm.join("\\n") }), bpminpeace: JSON.stringify({ timestamps: timestamps.slice(0, 5).join("\\n"), bvminpeace: "68\\n57\\n61\\n62\\n60" }) }] }) as { days: Array<{ bpm: { timestamps: string[]; bpm: number[] }; bpminpeace: { timestamps: string[]; bpminpeace: number[] } }> };
+    expect(normalized.days[0]!.bpm.bpm).toHaveLength(1623);
+    expect(normalized.days[0]!.bpminpeace.bpminpeace).toEqual([68, 57, 61, 62, 60]);
+  });
   it("normalizes the real newline-separated Shortcut heart-rate payload into canonical arrays", () => {
     expect(normalizeShortcutNumericValues({ days: [{
       date: "2026-09-17",

@@ -50,6 +50,38 @@ describe("POST /api/v1/health/sync", () => {
     );
   });
 
+  it("accepts the current iPhone serialized HR fields and sends only canonical arrays to the service", async () => {
+    syncHealthData.mockResolvedValue({ status: "ok", received: 1, created: 1, updated: 0, dates: [] });
+    const response = await POST(request({
+      days: [{
+        date: "2026-09-17T09:41:25+02:00",
+        bpm: JSON.stringify({
+          timestamps: "2026-09-15T08:00:00+02:00\\n2026-09-15T08:02:00+02:00",
+          bpm: "61\\n63",
+        }),
+        bpminpeace: JSON.stringify({
+          timestamps: "2026-09-13T00:00:00+02:00\\n2026-09-14T00:00:00+02:00",
+          bvminpeace: "68\\n57",
+        }),
+      }],
+    }));
+
+    expect(response.status).toBe(200);
+    expect(syncHealthData.mock.calls[0]?.[0]).toEqual({
+      days: [{
+        date: "2026-09-17",
+        bpm: {
+          timestamps: ["2026-09-15T08:00:00+02:00", "2026-09-15T08:02:00+02:00"],
+          bpm: [61, 63],
+        },
+        bpminpeace: {
+          timestamps: ["2026-09-13T00:00:00+02:00", "2026-09-14T00:00:00+02:00"],
+          bpminpeace: [68, 57],
+        },
+      }],
+    });
+  });
+
   it("logs received and successful sync requests including training fields", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
     syncHealthData.mockResolvedValue({

@@ -94,6 +94,10 @@ function normalizeDay(value: unknown, path: (string | number)[]): unknown {
   if (!isObject(value)) return value;
 
   return normalizeObject(value, DAY_KEYS, path, (key, fieldValue) => {
+    if (key === "date" && typeof fieldValue === "string") {
+      const iso = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})$/.test(fieldValue);
+      return iso && Number.isFinite(Date.parse(fieldValue)) ? fieldValue.slice(0, 10) : fieldValue;
+    }
     if (key !== "workouts" || !Array.isArray(fieldValue)) return fieldValue;
     return fieldValue.map((workout, index) => normalizeWorkout(workout, [...path, "workouts", index]));
   });

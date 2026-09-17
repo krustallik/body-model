@@ -72,7 +72,7 @@ function heartRateSummary(samples: Array<{ timestamp: Date; bpm: number }> | und
   };
 }
 
-function toDto(record: DailyMetricRecord): DailyMetricDto {
+function toDto(record: DailyMetricRecord, samples?: { heartRate: Array<{ timestamp: Date; bpm: number }>; restingHeartRate: Array<{ timestamp: Date; bpm: number }> }): DailyMetricDto {
   record = normalizeDailyMeasurements(record);
   const strengthTrainingMinutes = decimalToNumber(record.strengthTrainingMinutes);
   const summary = summarizeDayWorkouts({
@@ -96,8 +96,8 @@ function toDto(record: DailyMetricRecord): DailyMetricDto {
     workouts: summary.workouts,
     totalWorkoutMinutes: summary.totalWorkoutMinutes,
     workoutSource: summary.workoutSource,
-    heartRate: heartRateSummary(record.heartRateSamples),
-    restingHeartRate: heartRateSummary(record.restingHeartRateSamples),
+    heartRate: heartRateSummary(samples?.heartRate ?? record.heartRateSamples),
+    restingHeartRate: heartRateSummary(samples?.restingHeartRate ?? record.restingHeartRateSamples),
   };
 }
 
@@ -122,7 +122,25 @@ export class DailyMetricRepository {
       select: dailyMetricSelect,
     });
 
-    return records.map(toDto);
+    const dates = records.map(({ date }) => date);
+    const readClient = this.client as unknown as {
+      heartRateSample?: { findMany(args: unknown): Promise<Array<{ date: string; timestamp: Date; bpm: number }>> };
+      restingHeartRateSample?: { findMany(args: unknown): Promise<Array<{ date: string; timestamp: Date; bpm: number }>> };
+    };
+    if (!readClient.heartRateSample || !readClient.restingHeartRateSample || dates.length === 0) {
+      return records.map((record) => toDto(record));
+    }
+    const [heartRateRows, restingRows] = await Promise.all([
+      readClient.heartRateSample.findMany({ where: { date: { in: dates } }, select: { date: true, timestamp: true, bpm: true }, orderBy: { timestamp: "asc" } }),
+      readClient.restingHeartRateSample.findMany({ where: { date: { in: dates } }, select: { date: true, timestamp: true, bpm: true }, orderBy: { timestamp: "asc" } }),
+    ]);
+    const group = (rows: Array<{ date: string; timestamp: Date; bpm: number }>) => rows.reduce<Map<string, Array<{ timestamp: Date; bpm: number }>>>((result, row) => {
+      result.set(row.date, [...(result.get(row.date) ?? []), { timestamp: row.timestamp, bpm: row.bpm }]);
+      return result;
+    }, new Map());
+    const heartRate = group(heartRateRows);
+    const restingHeartRate = group(restingRows);
+    return records.map((record) => toDto(record, { heartRate: heartRate.get(record.date) ?? [], restingHeartRate: restingHeartRate.get(record.date) ?? [] }));
   }
 
   async latestUpdatedAt(): Promise<string | null> {

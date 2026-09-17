@@ -1,6 +1,7 @@
 import { normalizeDailyMeasurementInput } from "@/modules/days/measurement-policy";
 import { mergeExpandedTrainingWorkouts } from "@/modules/health/expand-training-workouts";
 import { normalizeShortcutPayload } from "@/modules/health/normalize-shortcut-payload";
+import { normalizeShortcutNumericValues } from "@/modules/health/normalize-shortcut-numeric-values";
 import { z } from "zod";
 import {
   DEFAULT_TIME_ZONE,
@@ -97,7 +98,7 @@ export function preprocessHealthDay(
 ): unknown {
   // Idempotent safety net: Apple/Shortcuts may still present `Date` if an earlier
   // normalize step was skipped or only partially applied.
-  const remapped = normalizeShortcutPayload({ days: [value] }).payload;
+  const remapped = normalizeShortcutNumericValues(normalizeShortcutPayload({ days: [value] }).payload);
   const day = isObject(remapped) && Array.isArray(remapped.days) ? remapped.days[0] : value;
   const measured = normalizeDailyMeasurementInput(day);
   if (!isObject(measured)) return measured;

@@ -31,6 +31,15 @@ describe("HealthSyncRequestSchema", () => {
     expect(HealthSyncRequestSchema.safeParse(normalized).success).toBe(true);
   });
 
+  it.each(["2026-09-17T09:41:25+02:00", "2026-09-17T00:15:00+02:00"])(
+    "normalizes an offset datetime day field without UTC calendar-day drift: %s",
+    (date) => {
+      const result = HealthSyncRequestSchema.safeParse({ days: [{ date }] });
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data.days[0]?.date).toBe("2026-09-17");
+    },
+  );
+
   it("rejects mismatched heart-rate sample arrays with an actionable error", () => {
     const result = parse([{ ...validDay, bpm: { timestamps: ["2026-08-21T08:00:00+02:00"], bpm: [] } }]);
     expect(result.success).toBe(false);
@@ -102,7 +111,7 @@ describe("HealthSyncRequestSchema", () => {
     expect(parse(days).success).toBe(false);
   });
 
-  it.each(["21-08-2026", "2026-8-21", "2026-08-21T00:00:00Z", "2026-99-99"])(
+  it.each(["21-08-2026", "2026-8-21", "2026-99-99"])(
     "rejects invalid date format/value %s",
     (date) => expect(parse([{ date }]).success).toBe(false),
   );

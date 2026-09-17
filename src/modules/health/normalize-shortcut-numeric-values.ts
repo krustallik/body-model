@@ -140,9 +140,17 @@ function normalizeBpmValues(value: unknown, expectedCount: number): unknown[] {
 }
 
 function normalizeHeartRateObject(value: unknown, valueKey: "bpm" | "bpminpeace"): unknown {
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value) as unknown;
+    } catch {
+      return value;
+    }
+  }
   if (!isObject(value)) return value;
   const timestamps = normalizeTimestamps(value.timestamps);
-  return { ...value, timestamps, [valueKey]: normalizeBpmValues(value[valueKey], timestamps.length) };
+  const sourceValue = valueKey === "bpminpeace" ? (value.bvminpeace ?? value.bpminpeace) : value.bpm;
+  return { timestamps, [valueKey]: normalizeBpmValues(sourceValue, timestamps.length) };
 }
 
 function normalizeDay(value: unknown): unknown {

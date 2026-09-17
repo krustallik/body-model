@@ -39,12 +39,12 @@ function optionalUpdate<T>(value: T | null | undefined): T | null | undefined {
 
 function sampleRows(
   dailyHealthDataId: number,
-  date: string,
+  _date: string,
   samples: { timestamps: string[]; bpm: number[] } | undefined,
 ) {
   return (samples?.timestamps ?? []).map((timestamp, index) => ({
-    dailyHealthDataId,
-    date,
+    dailyHealthDataId: timestamp.slice(0, 10) === _date ? dailyHealthDataId : null,
+    date: timestamp.slice(0, 10),
     timestamp: new Date(timestamp),
     bpm: samples!.bpm[index]!,
     source: "shortcut",
@@ -157,8 +157,8 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
         await transaction.heartRateSample.createMany({ data: heartRateSamples, skipDuplicates: true });
       }
       const restingHeartRateSamples = (day.bpminpeace?.timestamps ?? []).map((timestamp, index) => ({
-        dailyHealthDataId: daily.id,
-        date: day.date,
+        dailyHealthDataId: timestamp.slice(0, 10) === day.date ? daily.id : null,
+        date: timestamp.slice(0, 10),
         timestamp: new Date(timestamp),
         bpm: day.bpminpeace!.bpminpeace[index]!,
         source: "shortcut",

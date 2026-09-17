@@ -35,15 +35,8 @@ class MemoryRepository implements HealthSyncRepository {
   async pruneOlderThan(cutoffDate: string) {
     this.prunedCutoffs.push(cutoffDate);
     if (this.pruneFail) throw new Error("simulated prune failure");
-    let deletedDays = 0;
-    for (const date of [...this.days.keys()]) {
-      if (date < cutoffDate) {
-        this.days.delete(date);
-        this.workouts.delete(date);
-        deletedDays += 1;
-      }
-    }
-    return { cutoffDate, deletedDays, deletedSnapshots: deletedDays };
+    // Durable sources are never deleted by retention (days, workouts, snapshots).
+    return { cutoffDate, deletedDays: 0, deletedSnapshots: 0 };
   }
 }
 
@@ -167,12 +160,12 @@ describe("health synchronization service", () => {
     expect(repository.days.size).toBe(0);
   });
 
-  it("prunes health rows older than 30 days after a successful sync", async () => {
+  it("invokes retention after sync but does not delete durable source rows", async () => {
     const repository = new MemoryRepository();
     await syncHealthData({ days: [{ date: "2026-07-20" }] }, repository);
     await syncHealthData({ days: [{ date: "2026-08-21" }] }, repository);
     expect(repository.prunedCutoffs).toEqual(["2026-06-20", "2026-07-22"]);
-    expect(repository.days.has("2026-07-20")).toBe(false);
+    expect(repository.days.has("2026-07-20")).toBe(true);
     expect(repository.days.has("2026-08-21")).toBe(true);
   });
 

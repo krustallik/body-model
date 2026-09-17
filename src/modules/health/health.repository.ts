@@ -191,19 +191,17 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
   }
 
   /**
-   * Delete daily health rows (and cascaded workouts) plus sync snapshots older
-   * than the retention cutoff calendar date.
+   * Legacy retention hook invoked after sync.
+   *
+   * Durable canonical sources (DailyHealthData, Workout, HealthSyncSnapshot,
+   * HR, resting HR, SleepSegment, WorkInterval) are never deleted here —
+   * snapshots are required for identical work-walk / stair-overlap rebuild.
    */
   async pruneOlderThan(cutoffDate: string): Promise<HealthRetentionPruneResult> {
-    const [snapshots, days] = await this.client.$transaction([
-      this.client.healthSyncSnapshot.deleteMany({ where: { date: { lt: cutoffDate } } }),
-      this.client.dailyHealthData.deleteMany({ where: { date: { lt: cutoffDate } } }),
-    ]);
-
     return {
       cutoffDate,
-      deletedDays: days.count,
-      deletedSnapshots: snapshots.count,
+      deletedDays: 0,
+      deletedSnapshots: 0,
     };
   }
 }

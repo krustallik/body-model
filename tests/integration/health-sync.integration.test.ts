@@ -24,9 +24,11 @@ function rawSyncRequest(body: unknown): Request {
   });
 }
 
+import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
+
 async function cleanTestRows(): Promise<void> {
   await prisma.healthSyncSnapshot.deleteMany({ where: { date: { in: testDates } } });
-  await prisma.dailyHealthData.deleteMany({ where: { date: { in: testDates } } });
+  await deleteDailyHealthRows(prisma, testDates);
 }
 
 describe("Apple Health sync with PostgreSQL", () => {
@@ -239,7 +241,7 @@ describe("Apple Health sync with PostgreSQL", () => {
 
   it("does not create duplicate rows during concurrent retries", async () => {
     const date = testDates[3];
-    await prisma.dailyHealthData.deleteMany({ where: { date } });
+    await deleteDailyHealthRows(prisma, date!);
     const responses = await Promise.all([
       POST(syncRequest([{ date, steps: 111 }])),
       POST(syncRequest([{ date, steps: 222 }])),
@@ -252,7 +254,7 @@ describe("Apple Health sync with PostgreSQL", () => {
   it("persists observed walking zero and workout-feed coverage without inventing workouts", async () => {
     const date = "2040-01-10";
     await prisma.healthSyncSnapshot.deleteMany({ where: { date } });
-    await prisma.dailyHealthData.deleteMany({ where: { date } });
+    await deleteDailyHealthRows(prisma, date);
 
     const withEmptyFeed = await POST(syncRequest([{
       date,
@@ -279,7 +281,7 @@ describe("Apple Health sync with PostgreSQL", () => {
     expect(unknown.workoutFeedObserved).toBe(false);
 
     await prisma.healthSyncSnapshot.deleteMany({ where: { date } });
-    await prisma.dailyHealthData.deleteMany({ where: { date } });
+    await deleteDailyHealthRows(prisma, date);
   });
 
   it("rolls back today's record when a database constraint fails", async () => {

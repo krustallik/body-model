@@ -241,8 +241,18 @@ export class DailyMetricRepository {
   }
 
   async delete(date: string): Promise<boolean> {
-    const result = await this.client.dailyHealthData.deleteMany({ where: { date } });
-    return result.count > 0;
+    // Explicit application delete: remove workouts first so Restrict FK cannot
+    // leave orphan intent — accidental raw day deletes without this path fail.
+    return this.client.$transaction(async (transaction) => {
+      const day = await transaction.dailyHealthData.findUnique({
+        where: { date },
+        select: { id: true },
+      });
+      if (!day) return false;
+      await transaction.workout.deleteMany({ where: { dailyHealthDataId: day.id } });
+      await transaction.dailyHealthData.delete({ where: { id: day.id } });
+      return true;
+    });
   }
 }
 

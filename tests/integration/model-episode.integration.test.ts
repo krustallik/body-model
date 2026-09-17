@@ -73,6 +73,9 @@ async function removeTestData(): Promise<void> {
   await prisma.workInterval.deleteMany({
     where: { date: { gte: testRangeStart, lte: finalDate } },
   });
+  await prisma.workout.deleteMany({
+    where: { dailyHealthData: { date: { gte: testRangeStart, lte: finalDate } } },
+  });
   await prisma.dailyHealthData.deleteMany({
     where: { date: { gte: testRangeStart, lte: finalDate } },
   });
@@ -340,6 +343,9 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
           strengthTrainingMinutes: 30, rawPayload: { source: "phase-14a-canonical" },
         })),
       });
+      await prisma.workout.deleteMany({
+        where: { dailyHealthData: { date: { gte: "2041-03-23", lte: "2041-03-29" } } },
+      });
       await prisma.dailyHealthData.deleteMany({
         where: { date: { gte: "2041-03-23", lte: "2041-03-29" } },
       });
@@ -499,6 +505,9 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     } finally {
       await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS "model_recovery_test_failure" ON "ModelRecoveryRun"');
       await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS "model_recovery_test_failure"()');
+      await prisma.workout.deleteMany({
+        where: { dailyHealthData: { date: { in: extendedDates } } },
+      });
       await prisma.dailyHealthData.deleteMany({ where: { date: { in: extendedDates } } });
     }
   });
@@ -674,6 +683,9 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     const frozenBefore = await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } });
     await prisma.healthSyncSnapshot.deleteMany({ where: { date: { in: gapDates } } });
     await prisma.workInterval.deleteMany({ where: { date: { in: gapDates } } });
+    await prisma.workout.deleteMany({
+      where: { dailyHealthData: { date: { in: gapDates } } },
+    });
     await prisma.dailyHealthData.deleteMany({ where: { date: { in: gapDates } } });
 
     const unresolved = await recalculateModelEpisode({ episodeId, now });
@@ -756,6 +768,9 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     ];
     await prisma.healthSyncSnapshot.deleteMany({ where: { date: { in: gapDates } } });
     await prisma.workInterval.deleteMany({ where: { date: { in: gapDates } } });
+    await prisma.workout.deleteMany({
+      where: { dailyHealthData: { date: { in: gapDates } } },
+    });
     await prisma.dailyHealthData.deleteMany({ where: { date: { in: gapDates } } });
 
     const recalculated = await recalculateModelEpisode({ episodeId, now });

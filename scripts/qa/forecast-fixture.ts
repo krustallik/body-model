@@ -77,6 +77,9 @@ async function seedSources(historyStart: string, finalDate: string) {
 async function removeGap(from: string, to: string) {
   await prisma.healthSyncSnapshot.deleteMany({ where: { date: { gte: from, lte: to } } });
   await prisma.workInterval.deleteMany({ where: { date: { gte: from, lte: to } } });
+  await prisma.workout.deleteMany({
+    where: { dailyHealthData: { date: { gte: from, lte: to } } },
+  });
   await prisma.dailyHealthData.deleteMany({ where: { date: { gte: from, lte: to } } });
 }
 

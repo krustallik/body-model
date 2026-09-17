@@ -22,6 +22,7 @@ export async function syncHealthData(
   let prunedDays = 0;
   let prunedSnapshots = 0;
   try {
+    // Retention is a no-op for durable canonical sources (including snapshots).
     const pruned = await repository.pruneOlderThan(retentionCutoffDate);
     prunedDays = pruned.deletedDays;
     prunedSnapshots = pruned.deletedSnapshots;

@@ -24,12 +24,24 @@ function fixture() {
   const dailyHealthData = {
     findMany: vi.fn().mockResolvedValue([record]),
     findFirst: vi.fn().mockResolvedValue({ updatedAt: record.updatedAt }),
+    findUnique: vi.fn().mockResolvedValue({ id: 42 }),
     create: vi.fn().mockResolvedValue(record),
     update: vi.fn().mockResolvedValue(record),
+    delete: vi.fn().mockResolvedValue(record),
     deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
   };
-  const client = { dailyHealthData } as unknown as PrismaClient;
-  return { repository: new DailyMetricRepository(client), dailyHealthData };
+  const workout = {
+    deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+  };
+  const client = {
+    dailyHealthData,
+    workout,
+    $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => callback({
+      dailyHealthData,
+      workout,
+    })),
+  } as unknown as PrismaClient;
+  return { repository: new DailyMetricRepository(client), dailyHealthData, workout, client };
 }
 
 describe("DailyMetricRepository", () => {
@@ -124,8 +136,15 @@ describe("DailyMetricRepository", () => {
   it("returns null for a missing update and false for a missing delete", async () => {
     const { repository, dailyHealthData } = fixture();
     dailyHealthData.update.mockRejectedValue({ code: "P2025" });
-    dailyHealthData.deleteMany.mockResolvedValue({ count: 0 });
+    dailyHealthData.findUnique.mockResolvedValue(null);
     await expect(repository.update(record.date, { steps: 1 })).resolves.toBeNull();
     await expect(repository.delete(record.date)).resolves.toBe(false);
+  });
+
+  it("deletes workouts explicitly before deleting the day row", async () => {
+    const { repository, dailyHealthData, workout } = fixture();
+    await expect(repository.delete(record.date)).resolves.toBe(true);
+    expect(workout.deleteMany).toHaveBeenCalledWith({ where: { dailyHealthDataId: 42 } });
+    expect(dailyHealthData.delete).toHaveBeenCalledWith({ where: { id: 42 } });
   });
 });

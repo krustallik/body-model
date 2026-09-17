@@ -11,6 +11,7 @@ import {
   STAIR_CLIMBING_TYPE,
   TRADITIONAL_STRENGTH_TRAINING_TYPE,
 } from "@/modules/health/expand-training-workouts";
+import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
 
 const prisma = new PrismaClient();
 const apiKey = process.env.IOS_SHORTCUT_API_KEY ?? "integration-test-secret";
@@ -28,7 +29,7 @@ function syncRequest(body: unknown): Request {
 async function clean(): Promise<void> {
   await prisma.healthSyncSnapshot.deleteMany({ where: { date } });
   await prisma.workInterval.deleteMany({ where: { date } });
-  await prisma.dailyHealthData.deleteMany({ where: { date } });
+  await deleteDailyHealthRows(prisma, date);
 }
 
 describe("v6 workout activity PostgreSQL integration", () => {

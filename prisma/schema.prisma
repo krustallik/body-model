@@ -65,11 +65,12 @@ model HeartRateSample {
   source            String   @default("shortcut") @db.VarChar(40)
   createdAt         DateTime @default(now()) @db.Timestamptz(3)
   updatedAt         DateTime @updatedAt @db.Timestamptz(3)
-  dailyHealthData   DailyHealthData? @relation(fields: [dailyHealthDataId], references: [id], onDelete: Cascade)
+  dailyHealthData   DailyHealthData? @relation(fields: [dailyHealthDataId], references: [id], onDelete: SetNull)
 
   @@unique([profileId, timestamp, bpm])
   @@index([date, timestamp])
   @@index([dailyHealthDataId, timestamp])
+  @@index([profileId, timestamp])
 }
 
 model RestingHeartRateSample {
@@ -82,17 +83,18 @@ model RestingHeartRateSample {
   source            String   @default("shortcut") @db.VarChar(40)
   createdAt         DateTime @default(now()) @db.Timestamptz(3)
   updatedAt         DateTime @updatedAt @db.Timestamptz(3)
-  dailyHealthData   DailyHealthData? @relation(fields: [dailyHealthDataId], references: [id], onDelete: Cascade)
+  dailyHealthData   DailyHealthData? @relation(fields: [dailyHealthDataId], references: [id], onDelete: SetNull)
 
   @@unique([profileId, timestamp, bpm])
   @@index([date, timestamp])
   @@index([dailyHealthDataId, timestamp])
+  @@index([profileId, timestamp])
 }
 
 /**
- * Raw Apple Health sleep intervals. Independent of DailyHealthData so the
- * 30-day daily prune cannot cascade-delete source sleep history.
- * Nightly summaries are derived on read (local wake/end date).
+ * Raw Apple Health sleep intervals. Independent of DailyHealthData so
+ * accidental day deletion cannot wipe source sleep history.
+ * Nightly summaries are derived on read (local wake/end date) — not SoT.
  */
 model SleepSegment {
   id               Int      @id @default(autoincrement())
@@ -132,7 +134,13 @@ model HealthSyncSnapshot {
   averageWalkingSpeedKmh  Decimal?         @db.Decimal(10, 4)
   walkingDistanceKm       Decimal?         @db.Decimal(10, 4)
   strengthTrainingMinutes Decimal?         @db.Decimal(10, 4)
+  /**
+   * Full Shortcut/sync body. Durable with the row for now.
+   * TODO(storage): see docs/todos/snapshot-raw-payload-indefinite-growth.md —
+   * indefinite overlapping syncs may dominate disk vs raw HR; do not strip yet.
+   */
   rawPayload              Json
+  /** Durable: cumulative steps/distance series required for identical work-walk / stair rebuild. */
   dailyHealthData         DailyHealthData? @relation(fields: [dailyHealthDataId], references: [id], onDelete: SetNull)
 
   @@index([date, receivedAt])
@@ -153,9 +161,11 @@ model Workout {
   activeEnergyKcal  Float?
   createdAt         DateTime        @default(now())
   updatedAt         DateTime        @updatedAt
-  dailyHealthData   DailyHealthData @relation(fields: [dailyHealthDataId], references: [id], onDelete: Cascade)
+  /** Restrict: accidental DailyHealthData delete must not silently wipe workout history. */
+  dailyHealthData   DailyHealthData @relation(fields: [dailyHealthDataId], references: [id], onDelete: Restrict)
 
   @@index([dailyHealthDataId])
+  @@index([startAt, endAt])
 }
 
 model WorkInterval {

@@ -24,7 +24,7 @@ const v7State: PhysiologyV7State = {
 
 describe("physiology v7 state contract", () => {
   it("keeps the v7 compartments distinct and validates their structural invariants", () => {
-    expect(PHYSIOLOGY_V7_CONTRACT_VERSION).toBe("bodycast-physiology-v7-state-v1");
+    expect(PHYSIOLOGY_V7_CONTRACT_VERSION).toBe("bodycast-physiology-v7-state-v2");
     expect(validatePhysiologyV7State(v7State)).toEqual(v7State);
     for (const field of [
       "fatMassKg", "skeletalMuscleKg", "otherLeanTissueKg", "glycogenKg",
@@ -37,6 +37,11 @@ describe("physiology v7 state contract", () => {
 
   it("fingerprints the same v7 state deterministically", () => {
     expect(physiologyV7StateFingerprint(v7State)).toBe(physiologyV7StateFingerprint({ ...v7State }));
+  });
+
+  it("keeps an unavailable initial skeletal-muscle value unavailable rather than deriving it from lean tissue", () => {
+    const unavailable = { ...v7State, skeletalMuscleKg: null };
+    expect(validatePhysiologyV7State(unavailable)).toEqual(unavailable);
   });
 
   it("does not alter the v6 simulator state contract", () => {

@@ -3,6 +3,11 @@ import { buildExerciseMuscleMappingSnapshotV7 } from "@/model/physiology-v7/exer
 import { buildQualifiedResistanceTrainingDoseV7 } from "@/model/physiology-v7/qualified-resistance-training-dose-v7";
 import { buildResistanceTrainingAdaptationResponseV7, resistanceTrainingAdaptationResponseV7Fingerprint } from "@/model/physiology-v7/resistance-training-adaptation-response-v7";
 import { buildResistanceTrainingExposureHistoryV7 } from "@/model/physiology-v7/resistance-training-exposure-history-v7";
+import {
+  applyTrainingAdaptationTransitionV7,
+  buildTrainingAdaptationTransitionV7,
+  trainingAdaptationTransitionV7Fingerprint,
+} from "@/model/physiology-v7/training-adaptation-transition-v7";
 import { buildCanonicalStrengthTrainingInputV7 } from "@/modules/model-episodes/strength-training-input-v7";
 import { RESISTANCE } from "@/modules/training/training.constants";
 import type { StrengthSessionDto } from "@/modules/training/training.types";
@@ -57,5 +62,60 @@ describe("ResistanceTrainingAdaptationResponseV7", () => {
     const base = buildResistanceTrainingExposureHistoryV7({ fromDate: "2026-09-18", toDate: "2026-09-18", days: [{ date: "2026-09-18", workoutFeedObserved: true, sessions: [{ strengthDiarySessionId: 1, sessionRevision: 1, dose: dose(null, "Press", 20) }] }] });
     const renamed = buildResistanceTrainingExposureHistoryV7({ fromDate: "2026-09-18", toDate: "2026-09-18", days: [{ date: "2026-09-18", workoutFeedObserved: true, sessions: [{ strengthDiarySessionId: 1, sessionRevision: 1, dose: dose(null, "Renamed", 50) }] }] });
     expect(resistanceTrainingAdaptationResponseV7Fingerprint(buildResistanceTrainingAdaptationResponseV7({ date: "2026-09-18", exposureHistory: base }))).toBe(resistanceTrainingAdaptationResponseV7Fingerprint(buildResistanceTrainingAdaptationResponseV7({ date: "2026-09-18", exposureHistory: renamed })));
+  });
+
+  it("executes the training-adaptation slot without turning unavailable biology into zero", () => {
+    const response = buildResistanceTrainingAdaptationResponseV7({
+      date: "2026-09-18",
+      exposureHistory: history("qualified", 1),
+      proteinContext: { availability: "available", proteinG: 130, provenance: "observed" },
+      energyBalanceContext: { availability: "available", energyBalanceKcal: -250, provenance: "derived-model-state" },
+    });
+    const transition = buildTrainingAdaptationTransitionV7({ priorSkeletalMuscleKg: 28, response });
+    expect(transition.transitionSlot).toBe("training-adaptation-transition-slot");
+    expect(transition.skeletalMuscleTransition).toEqual({
+      availability: "unavailable",
+      reason: "no-approved-whole-body-calibration",
+      stateHandling: "carry-forward-for-simulation",
+      carriedForwardSkeletalMuscleKg: 28,
+      biologicalTransition: "not-modeled",
+    });
+    expect(transition.response).toEqual(response);
+    expect(JSON.stringify(transition)).not.toMatch(/skeletalMuscleDeltaKg|\"biologicalTransition\":\"zero\"/);
+    expect(trainingAdaptationTransitionV7Fingerprint(transition))
+      .toBe(trainingAdaptationTransitionV7Fingerprint(buildTrainingAdaptationTransitionV7({ priorSkeletalMuscleKg: 28, response })));
+  });
+
+  it("retains an unavailable initial skeletal-muscle state and response evidence", () => {
+    const response = buildResistanceTrainingAdaptationResponseV7({ date: "2026-09-18", exposureHistory: history("unresolved", 2) });
+    const transition = buildTrainingAdaptationTransitionV7({ priorSkeletalMuscleKg: null, response });
+    expect(transition.skeletalMuscleTransition).toEqual({
+      availability: "unavailable",
+      reason: "no-defensible-initial-skeletal-muscle-source",
+      stateHandling: "state-remains-unavailable",
+      carriedForwardSkeletalMuscleKg: null,
+      biologicalTransition: "not-modeled",
+    });
+    expect(transition.response.trainingStimulus).toMatchObject({
+      status: "unresolved-training-dose",
+      setEffortEvidence: [{ status: "observed-rir-qualification-unresolved", rir: 2 }],
+    });
+    expect(transition.response.proteinContext).toEqual({ availability: "unavailable", reason: "missing-protein-source" });
+    expect(transition.response.energyBalanceContext).toEqual({ availability: "unavailable", reason: "missing-energy-balance-source" });
+  });
+
+  it("keeps the state-level slot independent of generic lean, HR, and ordinary tonnage", () => {
+    const base = buildResistanceTrainingAdaptationResponseV7({ date: "2026-09-18", exposureHistory: history("qualified", 0) });
+    const changedRir = buildResistanceTrainingAdaptationResponseV7({ date: "2026-09-18", exposureHistory: history("qualified", 1) });
+    const state = {
+      fatMassKg: 18, skeletalMuscleKg: 28, otherLeanTissueKg: 17, glycogenKg: 0.4,
+      glycogenWaterKg: 1.2, ecfDeviationKg: 0, transientExerciseWaterKg: 0,
+      adaptiveThermogenesisKcalPerDay: 0, weightFilterState: { estimatedWeightKg: 64.6, varianceKg2: 1 },
+    };
+    const applied = applyTrainingAdaptationTransitionV7({ state, response: base });
+    expect(applied.state).toEqual(state);
+    expect(trainingAdaptationTransitionV7Fingerprint(applied.transition))
+      .not.toBe(trainingAdaptationTransitionV7Fingerprint(buildTrainingAdaptationTransitionV7({ priorSkeletalMuscleKg: 28, response: changedRir })));
+    expect("leanTissueKg" in applied.state).toBe(false);
   });
 });

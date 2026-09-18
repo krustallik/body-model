@@ -3,7 +3,7 @@ import type { WeightFilterState } from "../weight-observation-filter";
 import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 
 /** Independent v7 state contract. It is intentionally not a v6 simulator state. */
-export const PHYSIOLOGY_V7_CONTRACT_VERSION = "bodycast-physiology-v7-state-v1" as const;
+export const PHYSIOLOGY_V7_CONTRACT_VERSION = "bodycast-physiology-v7-state-v2" as const;
 
 export type PhysiologyV7State = {
   /**
@@ -11,7 +11,12 @@ export type PhysiologyV7State = {
    * of the other listed compartments. This is structural accounting only.
    */
   fatMassKg: number;
-  skeletalMuscleKg: number;
+  /**
+   * This is intentionally independent from generic lean tissue. A missing
+   * defensible initial skeletal-muscle source stays unavailable; it is never
+   * backfilled from another v7 compartment or a v6 lean-tissue value.
+   */
+  skeletalMuscleKg: number | null;
   otherLeanTissueKg: number;
   glycogenKg: number;
   glycogenWaterKg: number;
@@ -24,7 +29,6 @@ export type PhysiologyV7State = {
 
 const NONNEGATIVE_COMPARTMENTS = [
   "fatMassKg",
-  "skeletalMuscleKg",
   "otherLeanTissueKg",
   "glycogenKg",
   "glycogenWaterKg",
@@ -37,6 +41,10 @@ export function validatePhysiologyV7State(state: PhysiologyV7State): PhysiologyV
     const value = state[field];
     if (!Number.isFinite(value)) throw new TypeError(`${field} must be finite`);
     if (value < 0) throw new RangeError(`${field} must be nonnegative`);
+  }
+  if (state.skeletalMuscleKg !== null) {
+    if (!Number.isFinite(state.skeletalMuscleKg)) throw new TypeError("skeletalMuscleKg must be finite when available");
+    if (state.skeletalMuscleKg < 0) throw new RangeError("skeletalMuscleKg must be nonnegative when available");
   }
   for (const [field, value] of Object.entries({
     ecfDeviationKg: state.ecfDeviationKg,
@@ -63,8 +71,9 @@ export function physiologyV7StateFingerprint(state: PhysiologyV7State): string {
  * `ecfDeviationKg` is a signed deviation, so it has no nonnegative invariant.
  * No term contains another term and each is counted exactly once.
  */
-export function reconstructPhysiologyV7MassKg(state: PhysiologyV7State): number {
+export function reconstructPhysiologyV7MassKg(state: PhysiologyV7State): number | null {
   validatePhysiologyV7State(state);
+  if (state.skeletalMuscleKg === null) return null;
   const massKg = state.fatMassKg
     + state.skeletalMuscleKg
     + state.otherLeanTissueKg

@@ -73,5 +73,6 @@ describe("physiology v7 structural Stage 5 contracts", () => {
     expect(reconstructPhysiologyV7MassKg(state)).toBe(64.5);
     expect(reconstructPhysiologyV7MassKg({ ...state, glycogenWaterKg: 2.2 })).toBe(65.5);
     expect(reconstructPhysiologyV7MassKg({ ...state, ecfDeviationKg: 0.7 })).toBe(65.5);
+    expect(reconstructPhysiologyV7MassKg({ ...state, skeletalMuscleKg: null })).toBeNull();
   });
 });

@@ -40,11 +40,6 @@ const CLASSIFICATIONS: Record<string, Omit<BlockedClaimClassification, "claimId"
     reason: "Adult glycogen range must remain metadata; no individualized capacity oracle is approved.",
     closestToGreenRank: null,
   },
-  "C-H02": {
-    category: "research-blocked",
-    reason: "Capacity-bounded repletion requires individualized glycogen capacity that is forbidden as a universal clamp.",
-    closestToGreenRank: null,
-  },
   "C-B05": {
     category: "research-blocked",
     reason: "Retraining identification still needs an unsupported cessation-duration threshold before labeling.",

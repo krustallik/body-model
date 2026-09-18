@@ -157,7 +157,6 @@ const v7MuscleBlocker = "The v7 skeletalMuscleKg state contract exists, but no a
 const v7DetrainingBlocker = "No v7 training-history/cessation state or skeletal-muscle detraining transition exists.";
 const v7RetrainingIdentificationBlocker = "ResistanceTrainingExposureHistoryV7 can detect verified interruption then resumption, but labeling retraining/detraining still requires an unsupported cessation-duration threshold; no numeric muscle-memory bonus is approved.";
 const v7StepperGlycogenBlocker = "No direct v7 stepper glycogen-demand seam exists; substrate coefficients remain deferred.";
-const v7CapacityBlocker = "No evidence-backed individualized glycogen-capacity state exists; universal clamps are forbidden.";
 const experimentalTransientWaterImpl =
   "src/model/physiology-v7/experimental-transient-exercise-water-v1.ts";
 const experimentalTransientWaterTest =
@@ -329,7 +328,23 @@ export const SCIENTIFIC_V7_CLAIMS: readonly ScientificClaimManifestRecord[] = [
   }),
 
   record({ claimId: "C-H01", title: "more carbohydrate does not reduce refill opportunity", parameterIds: ["P-H01"], evidenceIds: ["E-H01", "E-H05"], auditEligibility: "SAFE", testType: "property", assertionTypes: ["MONOTONICITY"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "From the same depleted state and recovery interval, more available carbohydrate within the studied range does not produce less glycogen restoration.", executableTestName: "more carbohydrate from the same depleted state does not reduce glycogen restoration" }),
-  record({ claimId: "C-H02", title: "repletion is capacity bounded", parameterIds: ["P-H01", "P-H04"], evidenceIds: ["E-H02", "E-H05"], auditEligibility: "SAFE", testType: "property", assertionTypes: ["BOUND", "SATURATION"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Available storage space bounds repletion without a universal capacity value.", infrastructureBlocker: v7CapacityBlocker }),
+  record({
+    claimId: "C-H02",
+    title: "repletion is capacity bounded",
+    parameterIds: ["P-H01", "P-H04"],
+    evidenceIds: ["E-H02", "E-H05"],
+    auditEligibility: "SAFE",
+    testType: "property",
+    assertionTypes: ["BOUND", "SATURATION"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "Available storage space bounds repletion without a universal capacity value.",
+    experimental: {
+      implementation: "src/model/physiology-v7/experimental-glycogen-repletion-v1.ts",
+      testFile: "tests/experimental-glycogen-repletion-v1.test.ts",
+      testName: "bounds repletion to defensible store headroom without inventing personal capacity (C-H02)",
+      uncertainty: "Experimental heuristic daily carb-saturating repletion with engineering τ and kg envelope; clamps only to exercise-depletion refill headroom when available; adult literature range never becomes personal capacity; not scientifically validated.",
+    },
+  }),
   record({ claimId: "C-H03", title: "daily v7 need not apply meal-frequency effect", parameterIds: ["P-H02"], evidenceIds: ["E-H02", "E-H04"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "unit", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "At daily resolution with no second workout, v7 need not apply a meal-frequency effect; physiological equality is not asserted.", executableTestName: "daily v7 need not apply meal-frequency effect" }),
   record({ claimId: "C-H05", title: "protein is not double-counted as a glycogen bonus", parameterIds: ["P-H03"], evidenceIds: ["E-H01", "E-H06"], auditEligibility: "SAFE", testType: "integration", assertionTypes: ["NO_DOUBLE_COUNTING", "INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "With carbohydrate and energy matched, v7 adds no independent protein glycogen bonus.", executableTestName: "protein is not double-counted as a glycogen bonus" }),
 

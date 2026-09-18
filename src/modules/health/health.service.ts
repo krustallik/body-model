@@ -6,6 +6,7 @@ import { errorKind, logEvent } from "@/lib/logger";
 import { trainingService } from "@/modules/training/training.service";
 import { recordExperimentalStepperActiveEnergyShadowsForLocalDate } from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
 import { recordExperimentalStepperGlycogenDemandShadowsForLocalDate } from "@/modules/profile/experimental-stepper-glycogen-demand-shadow.service";
+import { recordExperimentalGlycogenRepletionShadow } from "@/modules/model-episodes/experimental-glycogen-repletion-shadow.service";
 
 export async function syncHealthData(
   request: HealthSyncRequest,
@@ -46,6 +47,16 @@ export async function syncHealthData(
     await recordExperimentalStepperGlycogenDemandShadowsForLocalDate({ date: day.date });
   } catch (error) {
     logEvent("warn", "experimental_stepper_glycogen_demand_shadow_failed", {
+      date: day.date,
+      errorType: errorKind(error),
+    });
+  }
+
+  try {
+    // Shadow-only daily glycogen repletion; never feeds TDEE/forecast.
+    await recordExperimentalGlycogenRepletionShadow({ date: day.date });
+  } catch (error) {
+    logEvent("warn", "experimental_glycogen_repletion_shadow_failed", {
       date: day.date,
       errorType: errorKind(error),
     });

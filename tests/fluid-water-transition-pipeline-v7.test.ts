@@ -28,11 +28,11 @@ describe("Stage 8E canonical fluid/water pipeline", () => {
       localDate: "2026-09-18",
       priorState: state,
       carbsG: 200,
-      nutrition: { ...nutrition, observedFields: ["carbsG", "proteinG"] },
+      nutrition: { ...nutrition, observedFields: ["carbsG", "proteinG"] as Array<"carbsG" | "proteinG" | "fatG" | "caloriesKcal"> },
       resistanceExposure: null,
       workoutFeedObserved: true,
       stepperWorkouts: [],
-    } as const;
+    };
     const lower = buildFluidWaterTransitionPipelineV7({ ...base, proteinG: 80 });
     const higher = buildFluidWaterTransitionPipelineV7({ ...base, proteinG: 160 });
     expect(lower.glycogen.proteinContribution).toMatchObject({ availability: "available", proteinG: 80, repletionEffect: "none" });

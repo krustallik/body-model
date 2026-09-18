@@ -75,11 +75,6 @@ const CLASSIFICATIONS: Record<string, Omit<BlockedClaimClassification, "claimId"
     reason: "No proxy-safe whole-body skeletal-muscle observation contract; local≠whole remains research-constrained.",
     closestToGreenRank: null,
   },
-  "C-MV02": {
-    category: "research-blocked",
-    reason: "Lean/DXA/BIA endpoints must not become skeletalMuscleKg without a defensible measurement role.",
-    closestToGreenRank: null,
-  },
   "C-MV05": {
     category: "validation-data",
     reason: "Needs longitudinal same-method vs mixed-method uncertainty series against real measurement protocols.",

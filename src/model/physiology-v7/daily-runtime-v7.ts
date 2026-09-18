@@ -23,6 +23,11 @@ import {
 } from "./resistance-training-exposure-history-v7";
 import { SKELETAL_MUSCLE_RESPONSE_CALIBRATION_V7_VERSION } from "./skeletal-muscle-response-calibration-v7";
 import {
+  handleLeanMassMeasurementForPhysiologyV7,
+  MEASUREMENT_ROLE_CONTRACT_V7_VERSION,
+  type LeanMassObservationV7,
+} from "./measurement-role-v7";
+import {
   PHYSIOLOGY_V7_CONTRACT_VERSION,
   physiologyV7StateFingerprint,
   reconstructPhysiologyV7MassKg,
@@ -36,7 +41,7 @@ import {
 import { TRANSIENT_EXERCISE_WATER_ECF_TRANSITION_V7_VERSION } from "./transient-exercise-water-ecf-transition-v7";
 
 export const PHYSIOLOGY_DAILY_RUNTIME_V7_VERSION =
-  "bodycast-physiology-daily-runtime-v7-1" as const;
+  "bodycast-physiology-daily-runtime-v7-2" as const;
 
 export type PhysiologyV7CompartmentKey =
   | "fatMassKg"
@@ -104,6 +109,11 @@ export type PhysiologyDaySourceV7 = {
     sleepSegmentCount: number;
     displayMetadata?: unknown;
   };
+  /**
+   * Optional lean / DXA / BIA / FFM observation. Measurement-role handling may
+   * retain aggregate lean context only; it never writes skeletalMuscleKg.
+   */
+  leanMassObservation?: LeanMassObservationV7 | null;
 };
 
 function unavailableReason(field: PhysiologyV7CompartmentKey): string {
@@ -230,6 +240,7 @@ function runtimeSourceFingerprint(
     observations: {
       weightKg: sources.observedWeightKg,
       bodyFatPercent: sources.observedBodyFatPercent,
+      leanMassObservation: sources.leanMassObservation ?? null,
     },
     nutrition: sources.nutrition,
     activity: {
@@ -270,6 +281,16 @@ export function buildPhysiologyDayV7(input: {
     lineageFingerprint: input.priorState.lineageFingerprint,
   });
   const inputSourceFingerprint = runtimeSourceFingerprint(input.sources, input.exposureHistory);
+
+  const leanMassMeasurement = handleLeanMassMeasurementForPhysiologyV7({
+    state: priorStructuralState,
+    leanObservation: input.sources.leanMassObservation ?? null,
+  });
+  // Lean observations never mutate skeletalMuscleKg; prior structural state stands.
+  if (leanMassMeasurement.skeletalMuscleFromLean.resultingSkeletalMuscleKg
+      !== priorStructuralState.skeletalMuscleKg) {
+    throw new Error("measurement-role contract violated: lean mass mutated skeletalMuscleKg");
+  }
 
   const proteinContext = input.sources.nutrition.proteinG === null
     ? { availability: "unavailable" as const, reason: "missing-protein-source" as const }
@@ -341,6 +362,7 @@ export function buildPhysiologyDayV7(input: {
     date: input.date,
     inputSourceFingerprint,
     priorStateFingerprint,
+    leanMassMeasurement,
     trainingAdaptation: afterTraining.transition,
     fluidWaterFingerprint: fluidWater.fingerprint,
     resultingCompartments,
@@ -375,6 +397,7 @@ export function buildPhysiologyDayV7(input: {
       resistanceExposure: RESISTANCE_TRAINING_EXPOSURE_HISTORY_V7_VERSION,
       adaptationResponse: RESISTANCE_TRAINING_ADAPTATION_RESPONSE_V7_VERSION,
       muscleCalibration: SKELETAL_MUSCLE_RESPONSE_CALIBRATION_V7_VERSION,
+      measurementRole: MEASUREMENT_ROLE_CONTRACT_V7_VERSION,
       trainingAdaptation: TRAINING_ADAPTATION_TRANSITION_V7_VERSION,
       glycogen: GLYCOGEN_TRANSITION_V7_VERSION,
       glycogenWater: GLYCOGEN_WATER_TRANSITION_V7_VERSION,
@@ -397,6 +420,7 @@ export function buildPhysiologyDayV7(input: {
     },
     trainingAdaptation: afterTraining.transition,
     fluidWater,
+    leanMassMeasurement,
     observations: {
       observedWeightKg: input.sources.observedWeightKg === null
         ? { availability: "unavailable" as const, valueKg: null, provenance: null }
@@ -412,6 +436,7 @@ export function buildPhysiologyDayV7(input: {
           valuePercent: input.sources.observedBodyFatPercent,
           provenance: "daily-health-data-observation" as const,
         },
+      leanMassObservation: leanMassMeasurement.leanContext,
     },
     massReconstruction: reconstructedMassKg === null
       ? {
@@ -426,6 +451,7 @@ export function buildPhysiologyDayV7(input: {
       sourceDateSemantics: "profile-local-calendar-date" as const,
       observedWeightIsNotReconstructedMass: true as const,
       heartRateAndSleepAreContextOnly: true as const,
+      leanMassIsNotSkeletalMuscle: true as const,
     },
     blockers,
     scientificFingerprint,

@@ -213,7 +213,7 @@ describe("durable source — 120-day input + output equivalence", () => {
     const days = stableSourceDays({
       count: 120,
       endDate,
-      override: (index, date) => ({
+      override: (index) => ({
         workoutFeedObserved: true,
         strengthTrainingMinutes: index % 7 === 0 ? 45 : 0,
         walkingDistanceKm: 4 + (index % 3) * 0.5,

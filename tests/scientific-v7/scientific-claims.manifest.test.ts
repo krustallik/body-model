@@ -18,9 +18,9 @@ describe("scientific v7 traceability manifest", () => {
   it("reports separate GREEN / EXPERIMENTAL / BLOCKED / REJECTED counts", () => {
     const summary = summarizeScientificManifestStatus();
     expect(summary).toMatchObject({
-      GREEN: 26,
+      GREEN: 27,
       EXPERIMENTAL: 0,
-      BLOCKED: 51,
+      BLOCKED: 50,
       REJECTED: 4,
       eligible: 77,
       tracked: 81,
@@ -78,7 +78,7 @@ describe("scientific v7 traceability manifest", () => {
 
   it("gives every blocked claim and full-flow specification a precise blocker", () => {
     const blockedClaims = SCIENTIFIC_V7_CLAIMS.filter(({ status }) => status === "BLOCKED");
-    expect(blockedClaims.length).toBe(51);
+    expect(blockedClaims.length).toBe(50);
     expect(blockedClaims.every(({ infrastructureBlocker }) => (
       typeof infrastructureBlocker === "string" && infrastructureBlocker.length > 20
     ))).toBe(true);
@@ -93,6 +93,6 @@ describe("scientific v7 traceability manifest", () => {
   it("does not blanket-convert BLOCKED claims into EXPERIMENTAL without implementations", () => {
     const experimental = SCIENTIFIC_V7_CLAIMS.filter((claim) => claim.status === "EXPERIMENTAL");
     expect(experimental).toHaveLength(0);
-    expect(SCIENTIFIC_V7_CLAIMS.filter((claim) => claim.status === "BLOCKED")).toHaveLength(51);
+    expect(SCIENTIFIC_V7_CLAIMS.filter((claim) => claim.status === "BLOCKED")).toHaveLength(50);
   });
 });

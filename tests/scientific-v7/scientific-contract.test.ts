@@ -42,6 +42,20 @@ import {
   RESISTANCE_TRAINING_VOLUME_CAP_POLICY_V7,
 } from "@/model/physiology-v7/resistance-training-adaptation-response-v7";
 import {
+  applyLeanMassObservationToPhysiologyV7State,
+  initializePhysiologyV7StateRejectingLeanAsSkeletalMuscleV7,
+  LEAN_MASS_NOT_SKELETAL_MUSCLE_POLICY_V7,
+  rejectLeanMassAsSkeletalMuscleValidatorV7,
+  rejectResidualLeanAsSkeletalMuscleV7,
+} from "@/model/physiology-v7/measurement-role-v7";
+import {
+  buildPhysiologyDayV7,
+  createUnavailablePhysiologyRuntimeStateV7,
+} from "@/model/physiology-v7/daily-runtime-v7";
+import { rebuildPhysiologyRangeV7 } from "@/model/physiology-v7/rebuild-v7";
+import { buildResistanceTrainingExposureHistoryFromSourcesV7 } from "@/model/physiology-v7/resistance-training-exposure-history-sources-v7";
+import { observedNutritionProvenance } from "@/modules/model-episodes/nutrition-gap-bridge";
+import {
   buildResistanceTrainingExposureHistoryV7,
 } from "@/model/physiology-v7/resistance-training-exposure-history-v7";
 import {
@@ -202,7 +216,7 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
       referenceDayCount: 0,
       gapLength: 0,
       referenceDates: [] as string[],
-      observedFields: ["carbsG", "proteinG", "fatG"],
+      observedFields: ["carbsG", "proteinG", "fatG"] as Array<"caloriesKcal" | "proteinG" | "fatG" | "carbsG">,
       imputedFields: [] as Array<"caloriesKcal" | "proteinG" | "fatG" | "carbsG">,
       referenceCaloriesMedian: null,
       referenceCaloriesMad: null,
@@ -275,6 +289,110 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
 
     expect(higher.leanTissueKg).toBe(lower.leanTissueKg);
     expect(reconstructBodyWeightKg(higher)).toBeGreaterThan(reconstructBodyWeightKg(lower));
+  });
+
+  it("lean mass is not skeletal muscle", () => {
+    const initialized = initializePhysiologyV7StateRejectingLeanAsSkeletalMuscleV7({
+      leanTissueKg: 54,
+      endpointKind: "dxa-lean-soft-tissue",
+    });
+    expect(initialized.state.skeletalMuscleKg).toBeNull();
+    expect(initialized.leanContext.role).toBe("aggregate-lean-context");
+    expect(initialized.skeletalMuscleFromLean.applied).toBe(false);
+    expect(initialized.skeletalMuscleFromLean.policy).toEqual(LEAN_MASS_NOT_SKELETAL_MUSCLE_POLICY_V7);
+
+    const withMuscle = applyLeanMassObservationToPhysiologyV7State({
+      state: {
+        fatMassKg: 18,
+        skeletalMuscleKg: 30,
+        otherLeanTissueKg: null,
+        glycogenKg: null,
+        glycogenWaterKg: null,
+        ecfDeviationKg: null,
+        transientExerciseWaterKg: null,
+        adaptiveThermogenesisKcalPerDay: null,
+        weightFilterState: null,
+      },
+      leanObservation: { endpointKind: "bia-lean-mass", valueKg: 57 },
+    });
+    expect(withMuscle.state.skeletalMuscleKg).toBe(30);
+    expect(withMuscle.skeletalMuscleFromLean.resultingSkeletalMuscleKg).toBe(30);
+    expect(rejectLeanMassAsSkeletalMuscleValidatorV7({
+      skeletalMuscleKg: 30,
+      leanMassKg: 57,
+    }).accepted).toBe(false);
+    expect(rejectResidualLeanAsSkeletalMuscleV7({
+      state: initialized.state,
+      residualLeanKg: 50,
+    }).applied).toBe(false);
+
+    const date = "2026-09-18";
+    const leanSources = {
+      date,
+      observedWeightKg: 80,
+      observedBodyFatPercent: 22,
+      nutrition: {
+        caloriesKcal: 2_200,
+        proteinG: 140,
+        fatG: 70,
+        carbsG: 240,
+        provenance: observedNutritionProvenance(),
+      },
+      workoutFeedObserved: true,
+      steps: 7_000,
+      walkingRunningDistanceKm: 5,
+      workouts: [] as const,
+      stepperWorkouts: [] as const,
+      context: {
+        heartRateSampleCount: 0,
+        restingHeartRateSampleCount: 0,
+        sleepSegmentCount: 0,
+      },
+      leanMassObservation: {
+        endpointKind: "device-reported-skeletal-muscle-proxy" as const,
+        valueKg: 49,
+      },
+    };
+    const day = buildPhysiologyDayV7({
+      date,
+      priorState: createUnavailablePhysiologyRuntimeStateV7(),
+      sources: leanSources,
+      exposureHistory: buildResistanceTrainingExposureHistoryFromSourcesV7({
+        fromDate: date,
+        toDate: date,
+        days: [{ date, workoutFeedObserved: true }],
+        strengthWorkouts: [],
+        sessions: [],
+      }),
+    });
+    expect(day.leanMassMeasurement.leanContext).toMatchObject({
+      availability: "available",
+      role: "aggregate-lean-context",
+      valueKg: 49,
+      skeletalMuscleInterpretation: "not-skeletal-muscle",
+    });
+    expect(day.resultingState.compartments.skeletalMuscleKg.availability).toBe("unavailable");
+    expect(day.provenance.leanMassIsNotSkeletalMuscle).toBe(true);
+
+    const rebuilt = rebuildPhysiologyRangeV7({
+      fromDate: date,
+      toDate: date,
+      initialState: createUnavailablePhysiologyRuntimeStateV7(),
+      sources: {
+        days: [leanSources],
+        exposure: {
+          historyFromDate: date,
+          days: [{ date, workoutFeedObserved: true }],
+          strengthWorkouts: [],
+          sessions: [],
+        },
+      },
+    });
+    expect(rebuilt.finalState.compartments.skeletalMuscleKg).toMatchObject({
+      availability: "unavailable",
+      valueKg: null,
+    });
+    expect(rebuilt.days[0]?.leanMassMeasurement.skeletalMuscleFromLean.applied).toBe(false);
   });
 
   it("device active energy retains estimate provenance", () => {

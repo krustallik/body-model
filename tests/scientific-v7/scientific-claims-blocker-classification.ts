@@ -55,20 +55,10 @@ const CLASSIFICATIONS: Record<string, Omit<BlockedClaimClassification, "claimId"
     reason: "Retraining identification still needs an unsupported cessation-duration threshold before labeling.",
     closestToGreenRank: null,
   },
-  "C-F01": {
-    category: "implementation-only",
-    reason: "Connect workout dose to a nonpositive glycogen-demand transition with recruitment context.",
-    closestToGreenRank: 7,
-  },
-  "C-F02": {
-    category: "implementation-only",
-    reason: "Same glycogen-demand seam as C-F01 plus store bounding.",
-    closestToGreenRank: 8,
-  },
   "C-MV05": {
     category: "validation-data",
     reason: "Needs longitudinal same-method vs mixed-method uncertainty series against real measurement protocols.",
-    closestToGreenRank: 9,
+    closestToGreenRank: 7,
   },
   "C-M01": {
     category: "research-blocked",

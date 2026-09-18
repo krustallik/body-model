@@ -12,8 +12,13 @@ import {
 describe("scientific v7 experimental claims (not scientific validation)", () => {
   it("keeps EXPERIMENTAL empty until a real experimental implementation maps to a claim", () => {
     const experimental = ALL_SCIENTIFIC_V7_CLAIM_RECORDS.filter((claim) => claim.status === "EXPERIMENTAL");
-    expect(experimental).toHaveLength(0);
-    expect(summarizeScientificManifestStatus().EXPERIMENTAL).toBe(0);
+    expect(experimental.map((claim) => claim.claimId).sort()).toEqual([
+      "C-F01",
+      "C-F02",
+      "C-F03",
+      "C-F04",
+    ]);
+    expect(summarizeScientificManifestStatus().EXPERIMENTAL).toBe(4);
   });
 
   it("requires implementation path, uncertainty, and non-GREEN test wiring when EXPERIMENTAL claims exist", () => {

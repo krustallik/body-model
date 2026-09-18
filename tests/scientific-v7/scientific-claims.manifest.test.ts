@@ -19,8 +19,8 @@ describe("scientific v7 traceability manifest", () => {
     const summary = summarizeScientificManifestStatus();
     expect(summary).toMatchObject({
       GREEN: 38,
-      EXPERIMENTAL: 0,
-      BLOCKED: 39,
+      EXPERIMENTAL: 4,
+      BLOCKED: 35,
       REJECTED: 4,
       eligible: 77,
       tracked: 81,
@@ -42,7 +42,12 @@ describe("scientific v7 traceability manifest", () => {
   it("provides evidence, parameters, provenance, assertion type, and a test mapping", () => {
     for (const claim of ALL_SCIENTIFIC_V7_CLAIM_RECORDS) {
       expect(claim.evidenceIds.length).toBeGreaterThan(0);
-      expect(claim.testFile).toMatch(/^tests\/scientific-v7\//);
+      if (claim.status === "EXPERIMENTAL") {
+        expect(claim.testFile).toMatch(/^tests\//);
+        expect(claim.experimentalImplementation).toBeTruthy();
+      } else {
+        expect(claim.testFile).toMatch(/^tests\/scientific-v7\//);
+      }
       expect(claim.testName.length).toBeGreaterThan(0);
       expect(claim.assertionTypes.length).toBeGreaterThan(0);
       expect(claim.provenance.length).toBeGreaterThan(0);
@@ -78,7 +83,7 @@ describe("scientific v7 traceability manifest", () => {
 
   it("gives every blocked claim and full-flow specification a precise blocker", () => {
     const blockedClaims = SCIENTIFIC_V7_CLAIMS.filter(({ status }) => status === "BLOCKED");
-    expect(blockedClaims.length).toBe(39);
+    expect(blockedClaims.length).toBe(35);
     expect(blockedClaims.every(({ infrastructureBlocker }) => (
       typeof infrastructureBlocker === "string" && infrastructureBlocker.length > 20
     ))).toBe(true);
@@ -92,7 +97,8 @@ describe("scientific v7 traceability manifest", () => {
 
   it("does not blanket-convert BLOCKED claims into EXPERIMENTAL without implementations", () => {
     const experimental = SCIENTIFIC_V7_CLAIMS.filter((claim) => claim.status === "EXPERIMENTAL");
-    expect(experimental).toHaveLength(0);
-    expect(SCIENTIFIC_V7_CLAIMS.filter((claim) => claim.status === "BLOCKED")).toHaveLength(39);
+    expect(experimental).toHaveLength(4);
+    expect(experimental.every((claim) => claim.experimentalImplementation)).toBe(true);
+    expect(SCIENTIFIC_V7_CLAIMS.filter((claim) => claim.status === "BLOCKED")).toHaveLength(35);
   });
 });

@@ -61,6 +61,10 @@ import {
   recordExperimentalStrengthEnergyShadow,
   recordExperimentalStrengthEnergyShadowBySessionId,
 } from "./experimental-strength-energy-shadow.service";
+import {
+  recordExperimentalStrengthGlycogenDemandShadow,
+  recordExperimentalStrengthGlycogenDemandShadowBySessionId,
+} from "./experimental-strength-glycogen-demand-shadow.service";
 import type {
   HistoricalStrengthWorkoutDto,
   MatchCandidateDto,
@@ -79,6 +83,22 @@ export type BulkCreateFromWorkoutsResult = {
 
 function isUniqueViolation(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
+}
+
+async function recordExperimentalStrengthShadows(input: {
+  session: StrengthSessionDto;
+  profileId: number;
+}): Promise<void> {
+  await recordExperimentalStrengthEnergyShadow(input);
+  await recordExperimentalStrengthGlycogenDemandShadow(input);
+}
+
+async function recordExperimentalStrengthShadowsBySessionId(input: {
+  sessionId: number;
+  profileId: number;
+}): Promise<void> {
+  await recordExperimentalStrengthEnergyShadowBySessionId(input);
+  await recordExperimentalStrengthGlycogenDemandShadowBySessionId(input);
 }
 
 function isStrengthWorkout(type: string): boolean {
@@ -137,7 +157,7 @@ export class TrainingService {
     private readonly db: PrismaClient = prisma,
     private readonly repo: TrainingRepository = new TrainingRepository(db),
     private readonly recordExperimentalShadow: (input: { session: StrengthSessionDto; profileId: number }) => Promise<void> =
-      db === prisma ? recordExperimentalStrengthEnergyShadow : async () => {},
+      db === prisma ? recordExperimentalStrengthShadows : async () => {},
   ) {}
 
   listCatalog(options?: { includeInactive?: boolean; profileId?: number }) {
@@ -887,7 +907,7 @@ export class TrainingService {
       await this.tryAutoMatchSession(session.id, profileId);
       if (this.db === prisma) {
         // A delayed sync may add Garmin diagnostic context after finishSession.
-        void recordExperimentalStrengthEnergyShadowBySessionId({ sessionId: session.id, profileId }).catch(() => {});
+        void recordExperimentalStrengthShadowsBySessionId({ sessionId: session.id, profileId }).catch(() => {});
       }
     }
   }

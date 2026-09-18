@@ -776,3 +776,22 @@ model ExperimentalGlycogenRepletionShadow {
   @@unique([profileId, date])
   @@index([profileId, updatedAt])
 }
+
+/**
+ * Isolated experimental daily glycogen-associated-water shadow. Not production
+ * TDEE, physiology, forecast, or GREEN scientific validation.
+ */
+model ExperimentalGlycogenAssociatedWaterShadow {
+  id                Int      @id @default(autoincrement())
+  profileId         Int      @default(1)
+  date              String   @db.VarChar(10)
+  sourceFingerprint String   @db.VarChar(64)
+  modelRevision     String   @db.VarChar(100)
+  features          Json
+  result            Json
+  createdAt         DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([profileId, date])
+  @@index([profileId, updatedAt])
+}

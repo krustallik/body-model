@@ -45,15 +45,31 @@ export function scenarioWithNutrition(
         ...template.schedule.defaultDay,
         nutrition: { ...nutrition },
         occupation: template.schedule.defaultDay.occupation.map((interval) => ({ ...interval })),
+        workoutActivity: template.schedule.defaultDay.workoutActivity === undefined
+          ? undefined
+          : {
+            events: template.schedule.defaultDay.workoutActivity.events.map((event) => ({ ...event })),
+          },
       },
       byDate: template.schedule.byDate === undefined ? undefined : Object.fromEntries(
         Object.entries(template.schedule.byDate).map(([date, day]) => [date, {
           ...day,
           occupation: day.occupation?.map((interval) => ({ ...interval })),
+          workoutActivity: day.workoutActivity === undefined
+            ? undefined
+            : { events: day.workoutActivity.events.map((event) => ({ ...event })) },
         }]),
       ),
       strengthByWeekday: template.schedule.strengthByWeekday === undefined
         ? undefined : { ...template.schedule.strengthByWeekday },
+      workoutsByWeekday: template.schedule.workoutsByWeekday === undefined
+        ? undefined
+        : Object.fromEntries(
+          Object.entries(template.schedule.workoutsByWeekday).map(([weekday, plan]) => [
+            weekday,
+            { events: plan.events.map((event) => ({ ...event })) },
+          ]),
+        ),
     },
   };
 }

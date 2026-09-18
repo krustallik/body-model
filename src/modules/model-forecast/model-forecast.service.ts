@@ -48,7 +48,8 @@ function robustLogSpread(values: readonly number[], fallback: number): number {
   return Math.min(1, Math.max(0.03, 1.4826 * deviations[Math.floor(deviations.length / 2)]));
 }
 
-function behaviorFromReliableDay(day: BuiltSimulationDay): ForecastBehaviorDay | null {
+/** Projects a complete historical simulation day into a forecast donor behavior day. */
+export function projectReliableForecastBehaviorDay(day: BuiltSimulationDay): ForecastBehaviorDay | null {
   if (day.sourceQuality.nutrition.source !== "observed"
       || day.sourceQuality.nutrition.dependency !== "observed"
       || day.sourceQuality.status !== "complete"
@@ -65,6 +66,20 @@ function behaviorFromReliableDay(day: BuiltSimulationDay): ForecastBehaviorDay |
         };
       });
   if (occupation.some((interval) => interval === null)) return null;
+  const strengthTrainingMinutes = day.input.strengthTrainingMinutes;
+  if (strengthTrainingMinutes === null || strengthTrainingMinutes === undefined) return null;
+  const workoutActivity = day.input.workoutActivity === undefined
+    ? undefined
+    : {
+      events: day.input.workoutActivity.events.map((event) => ({
+        ...event,
+        energyProvenance: event.activeEnergyKcal !== null && event.activeEnergyKcal > 0
+          ? "device-estimate" as const
+          : event.classification === "traditional-strength-training"
+            ? "strength-met-fallback" as const
+            : "unspecified" as const,
+      })),
+    };
   return {
     nutrition: {
       caloriesKcal: day.input.caloriesKcal!,
@@ -74,9 +89,15 @@ function behaviorFromReliableDay(day: BuiltSimulationDay): ForecastBehaviorDay |
     },
     outsideWorkWalkingDistanceKm: day.input.outsideWorkWalkingDistanceKm!,
     averageWalkingSpeedKmh: day.input.averageWalkingSpeedKmh ?? 5,
-    strengthTrainingMinutes: day.input.strengthTrainingMinutes!,
+    strengthTrainingMinutes,
     occupation: occupation as ForecastBehaviorDay["occupation"],
+    ...(workoutActivity === undefined ? {} : { workoutActivity }),
+    workoutFeedObserved: day.sourceQuality.workoutFeedObserved ?? null,
   };
+}
+
+function behaviorFromReliableDay(day: BuiltSimulationDay): ForecastBehaviorDay | null {
+  return projectReliableForecastBehaviorDay(day);
 }
 
 function variabilityEvidence(input: {

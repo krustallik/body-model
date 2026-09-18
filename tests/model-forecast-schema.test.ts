@@ -55,6 +55,31 @@ describe("forecast request schema", () => {
     }).success).toBe(true);
   });
 
+  it("accepts workoutsByWeekday and day-level workoutActivity events", () => {
+    const event = {
+      type: "Traditional Strength Training",
+      canonicalType: "Traditional Strength Training",
+      classification: "traditional-strength-training",
+      startAt: "1970-01-01T17:00:00.000Z",
+      endAt: "1970-01-01T17:45:00.000Z",
+      durationMinutes: 45,
+      activeEnergyKcal: null,
+      programVersionId: 4,
+      plannedSets: 12,
+      energyProvenance: "strength-met-fallback",
+    };
+    expect(ForecastModelRequestSchema.safeParse({
+      horizonDays: 30,
+      scenario: {
+        mode: "fixed",
+        schedule: {
+          defaultDay: day,
+          workoutsByWeekday: { "1": { events: [event] } },
+        },
+      },
+    }).success).toBe(true);
+  });
+
   it("validates long-horizon numerical-quality controls", () => {
     expect(ForecastModelRequestSchema.safeParse({
       horizonDays: 365,

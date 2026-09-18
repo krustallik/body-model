@@ -5,6 +5,10 @@ import type {
   PhysiologicalSimulatorState,
 } from "@/model/physiological-simulator";
 import type { OccupationalCategory } from "@/model/occupational-activity";
+import type {
+  ForecastWorkoutActivity,
+  ForecastWorkoutScheduleByWeekday,
+} from "./forecast-workout-scenario";
 
 export const FORECAST_ALGORITHM_VERSION = "bodycast-forecast-v1";
 
@@ -29,12 +33,25 @@ export type ForecastBehaviorDay = {
   averageWalkingSpeedKmh: number;
   strengthTrainingMinutes: number;
   occupation: ForecastOccupationInterval[];
+  /**
+   * Canonical future/historical workout events using the same production event
+   * contract as v6 historical simulation. Optional for legacy minute-only plans.
+   */
+  workoutActivity?: ForecastWorkoutActivity;
+  /**
+   * Donor/source feed coverage. true = observed (including empty rest),
+   * false/null = missing/legacy. Planned scenarios leave this undefined.
+   */
+  workoutFeedObserved?: boolean | null;
 };
 
 export type ScheduledBehavior = {
   defaultDay: ForecastBehaviorDay;
   byDate?: Record<string, Partial<ForecastBehaviorDay>>;
+  /** Legacy minute schedule; ignored for a weekday when workoutsByWeekday has strength events. */
   strengthByWeekday?: Partial<Record<0 | 1 | 2 | 3 | 4 | 5 | 6, number>>;
+  /** Canonical weekday workout events (strength, stepper, etc.). */
+  workoutsByWeekday?: ForecastWorkoutScheduleByWeekday;
 };
 
 export type FixedForecastScenario = {

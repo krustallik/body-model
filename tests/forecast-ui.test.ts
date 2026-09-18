@@ -74,7 +74,17 @@ describe("forecast application helpers", () => {
     expect(Object.keys(request.scenario.schedule.byDate ?? {})).toEqual([
       "2026-08-24", "2026-08-25", "2026-08-26", "2026-08-27", "2026-08-28",
     ]);
-    expect(request.scenario.schedule.strengthByWeekday).toMatchObject({ "1": 45, "3": 45, "5": 45, "0": 0 });
+    expect(request.scenario.schedule.strengthByWeekday).toMatchObject({
+      "1": 0, "3": 0, "5": 0, "0": 0,
+    });
+    expect(request.scenario.schedule.workoutsByWeekday?.["1"]?.events).toEqual([
+      expect.objectContaining({
+        classification: "traditional-strength-training",
+        durationMinutes: 45,
+      }),
+    ]);
+    expect(request.scenario.schedule.workoutsByWeekday?.["3"]?.events).toHaveLength(1);
+    expect(request.scenario.schedule.workoutsByWeekday?.["5"]?.events).toHaveLength(1);
   });
 
   it("builds a flexible target scenario with an empty occupation schedule when work is off", () => {
@@ -83,7 +93,29 @@ describe("forecast application helpers", () => {
     if (request.scenario.mode !== "target-centered") throw new Error("wrong mode");
     expect(request.scenario.schedule.byDate).toEqual({});
     expect(request.scenario.schedule.defaultDay.occupation).toEqual([]);
-    expect(Object.values(request.scenario.schedule.strengthByWeekday ?? {})).toEqual([45, 45, 45, 45, 45, 45, 45]);
+    expect(Object.values(request.scenario.schedule.strengthByWeekday ?? {})).toEqual([0, 0, 0, 0, 0, 0, 0]);
+    expect(Object.keys(request.scenario.schedule.workoutsByWeekday ?? {}).sort()).toEqual([
+      "0", "1", "2", "3", "4", "5", "6",
+    ]);
+  });
+
+  it("keeps stepper sessions as stair events instead of folding them into strength minutes", () => {
+    const request = buildForecastRequest("fixed", 7, {
+      ...DEFAULT_PLAN,
+      strengthDaysPerWeek: 2,
+      otherTrainingDaysPerWeek: 3,
+      otherTrainingMinutes: 20,
+    }, "2026-08-23");
+    if (request.scenario.mode !== "fixed") throw new Error("wrong mode");
+    const weekdayEvents = Object.values(request.scenario.schedule.workoutsByWeekday ?? {});
+    const strengthEvents = weekdayEvents.flatMap((day) => day.events
+      .filter((event) => event.classification === "traditional-strength-training"));
+    const stepperEvents = weekdayEvents.flatMap((day) => day.events
+      .filter((event) => event.classification === "stair-climbing"));
+    expect(strengthEvents).toHaveLength(2);
+    expect(stepperEvents).toHaveLength(3);
+    expect(Object.values(request.scenario.schedule.strengthByWeekday ?? {})
+      .every((minutes) => minutes === 0)).toBe(true);
   });
 
   it("keeps only the newest request eligible to update the UI", () => {

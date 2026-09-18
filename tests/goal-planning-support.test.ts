@@ -99,11 +99,24 @@ describe("goal planning application support", () => {
       outsideWorkWalkingDistanceKm: 7.5,
       averageWalkingSpeedKmh: 5,
     });
-    expect(built.request?.scenarioTemplate.schedule.strengthByWeekday).toMatchObject({
-      "1": 75,
-      "3": 75,
-      "5": 45,
+    expect(built.request?.scenarioTemplate.schedule.strengthByWeekday).toEqual({
+      "0": 0, "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0,
     });
+    expect(built.request?.scenarioTemplate.schedule.workoutsByWeekday?.["1"]?.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ classification: "traditional-strength-training", durationMinutes: 45 }),
+        expect.objectContaining({ classification: "stair-climbing", durationMinutes: 30 }),
+      ]),
+    );
+    expect(built.request?.scenarioTemplate.schedule.workoutsByWeekday?.["3"]?.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ classification: "traditional-strength-training", durationMinutes: 45 }),
+        expect.objectContaining({ classification: "stair-climbing", durationMinutes: 30 }),
+      ]),
+    );
+    expect(built.request?.scenarioTemplate.schedule.workoutsByWeekday?.["5"]?.events).toEqual([
+      expect.objectContaining({ classification: "traditional-strength-training", durationMinutes: 45 }),
+    ]);
     const scheduledWorkWeekdays = Object.entries(
       built.request?.scenarioTemplate.schedule.byDate ?? {},
     ).filter(([, day]) => (day.occupation?.length ?? 0) > 0)

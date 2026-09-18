@@ -5,6 +5,12 @@ import { addCalendarDays, calendarDayIndex } from "@/modules/model-episodes/mode
 import { SeededRandom, weightedQuantile } from "@/modules/model-recovery/recovery-math";
 import { ForecastScenarioEvidenceError } from "./model-forecast.errors";
 import {
+  cloneForecastWorkoutActivity,
+  filterStrengthWorkoutEvents,
+  strengthMinutesForWorkoutActivity,
+  toProductionWorkoutActivity,
+} from "./forecast-workout-scenario";
+import {
   DEFAULT_FORECAST_CONFIG,
   FORECAST_ALGORITHM_VERSION,
   type ForecastBehaviorDay,
@@ -105,19 +111,44 @@ export function stratifiedResampleIndices(
 }
 
 function mergeBehavior(base: ForecastBehaviorDay, override?: Partial<ForecastBehaviorDay>): ForecastBehaviorDay {
+  const workoutActivity = override !== undefined && Object.prototype.hasOwnProperty.call(override, "workoutActivity")
+    ? cloneForecastWorkoutActivity(override.workoutActivity)
+    : cloneForecastWorkoutActivity(base.workoutActivity);
   return {
     ...base,
     ...override,
     nutrition: override?.nutrition ? { ...override.nutrition } : { ...base.nutrition },
     occupation: (override?.occupation ?? base.occupation).map((interval) => ({ ...interval })),
+    workoutActivity,
+    strengthTrainingMinutes: strengthMinutesForWorkoutActivity(
+      workoutActivity,
+      override?.strengthTrainingMinutes ?? base.strengthTrainingMinutes,
+    ),
   };
 }
 
 function scheduledDay(schedule: ScheduledBehavior, date: string): ForecastBehaviorDay {
   const weekday = new Date(calendarDayIndex(date) * 86_400_000).getUTCDay() as 0 | 1 | 2 | 3 | 4 | 5 | 6;
   const base = mergeBehavior(schedule.defaultDay, schedule.byDate?.[date]);
+  const weekdayWorkouts = schedule.workoutsByWeekday?.[weekday];
+  const withWorkouts = weekdayWorkouts === undefined
+    ? base
+    : mergeBehavior(base, {
+      workoutActivity: cloneForecastWorkoutActivity(weekdayWorkouts),
+      strengthTrainingMinutes: strengthMinutesForWorkoutActivity(
+        weekdayWorkouts,
+        base.strengthTrainingMinutes,
+      ),
+    });
   const scheduledStrength = schedule.strengthByWeekday?.[weekday];
-  return scheduledStrength === undefined ? base : { ...base, strengthTrainingMinutes: scheduledStrength };
+  if (scheduledStrength === undefined) return withWorkouts;
+  return {
+    ...withWorkouts,
+    strengthTrainingMinutes: strengthMinutesForWorkoutActivity(
+      withWorkouts.workoutActivity,
+      scheduledStrength,
+    ),
+  };
 }
 
 function nonnegativeLogNormal(
@@ -154,6 +185,10 @@ function sampledTargetDay(input: {
     ?? input.config.strengthAdherenceProbability;
   const occupationAdherence = explicit?.occupationAdherenceProbability
     ?? input.config.occupationAdherenceProbability;
+  const keepStrength = input.random.next() < strengthAdherence;
+  const workoutActivity = keepStrength
+    ? cloneForecastWorkoutActivity(input.central.workoutActivity)
+    : filterStrengthWorkoutEvents(input.central.workoutActivity);
   return {
     nutrition: {
       caloriesKcal: input.central.nutrition.caloriesKcal * nutritionMultiplier,
@@ -167,10 +202,11 @@ function sampledTargetDay(input: {
       { normal: () => 0.6 * input.walkingRegimeZ + 0.8 * input.random.normal() },
     ),
     averageWalkingSpeedKmh: input.central.averageWalkingSpeedKmh,
-    strengthTrainingMinutes: input.random.next() < strengthAdherence
-      ? input.central.strengthTrainingMinutes : 0,
+    strengthTrainingMinutes: keepStrength ? input.central.strengthTrainingMinutes : 0,
     occupation: input.random.next() < occupationAdherence
       ? input.central.occupation.map((interval) => ({ ...interval })) : [],
+    workoutActivity,
+    workoutFeedObserved: input.central.workoutFeedObserved,
   };
 }
 
@@ -244,12 +280,17 @@ export function sampleForecastBehaviorPath(input: {
 }
 
 function toPhysiologyInput(date: string, behavior: ForecastBehaviorDay): PhysiologicalDailyInput {
+  const workoutActivity = toProductionWorkoutActivity(behavior.workoutActivity);
   return {
     date,
     ...behavior.nutrition,
     outsideWorkWalkingDistanceKm: behavior.outsideWorkWalkingDistanceKm,
     averageWalkingSpeedKmh: behavior.averageWalkingSpeedKmh,
-    strengthTrainingMinutes: behavior.strengthTrainingMinutes,
+    strengthTrainingMinutes: strengthMinutesForWorkoutActivity(
+      behavior.workoutActivity,
+      behavior.strengthTrainingMinutes,
+    ),
+    ...(workoutActivity === undefined ? {} : { workoutActivity }),
     occupationalActivity: {
       category: null,
       durationHours: 0,

@@ -135,15 +135,40 @@ export function buildForecastRequest(
     TRAINING_WEEKDAYS.slice(0, Math.round(plan.otherTrainingDaysPerWeek)),
   );
   const strengthByWeekday: NonNullable<FixedSchedule["strengthByWeekday"]> = {
-    "0": (selectedTrainingDays.has(0) ? plan.strengthTrainingMinutes : 0) + (selectedOtherTrainingDays.has(0) ? plan.otherTrainingMinutes : 0),
-    "1": (selectedTrainingDays.has(1) ? plan.strengthTrainingMinutes : 0) + (selectedOtherTrainingDays.has(1) ? plan.otherTrainingMinutes : 0),
-    "2": (selectedTrainingDays.has(2) ? plan.strengthTrainingMinutes : 0) + (selectedOtherTrainingDays.has(2) ? plan.otherTrainingMinutes : 0),
-    "3": (selectedTrainingDays.has(3) ? plan.strengthTrainingMinutes : 0) + (selectedOtherTrainingDays.has(3) ? plan.otherTrainingMinutes : 0),
-    "4": (selectedTrainingDays.has(4) ? plan.strengthTrainingMinutes : 0) + (selectedOtherTrainingDays.has(4) ? plan.otherTrainingMinutes : 0),
-    "5": (selectedTrainingDays.has(5) ? plan.strengthTrainingMinutes : 0) + (selectedOtherTrainingDays.has(5) ? plan.otherTrainingMinutes : 0),
-    "6": (selectedTrainingDays.has(6) ? plan.strengthTrainingMinutes : 0) + (selectedOtherTrainingDays.has(6) ? plan.otherTrainingMinutes : 0),
+    "0": 0, "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0,
   };
-  const schedule: FixedSchedule = { defaultDay, byDate, strengthByWeekday };
+  const workoutsByWeekday: NonNullable<FixedSchedule["workoutsByWeekday"]> = {};
+  for (const weekday of TRAINING_WEEKDAYS) {
+    const events = [];
+    if (selectedTrainingDays.has(weekday) && plan.strengthTrainingMinutes > 0) {
+      events.push({
+        type: "Traditional Strength Training",
+        canonicalType: "Traditional Strength Training" as const,
+        classification: "traditional-strength-training" as const,
+        startAt: "1970-01-01T17:00:00.000Z",
+        endAt: new Date(Date.parse("1970-01-01T17:00:00.000Z")
+          + plan.strengthTrainingMinutes * 60_000).toISOString(),
+        durationMinutes: plan.strengthTrainingMinutes,
+        activeEnergyKcal: null,
+        energyProvenance: "strength-met-fallback" as const,
+      });
+    }
+    if (selectedOtherTrainingDays.has(weekday) && plan.otherTrainingMinutes > 0) {
+      events.push({
+        type: "Stair Climbing",
+        canonicalType: "Stair Climbing" as const,
+        classification: "stair-climbing" as const,
+        startAt: "1970-01-01T12:00:00.000Z",
+        endAt: new Date(Date.parse("1970-01-01T12:00:00.000Z")
+          + plan.otherTrainingMinutes * 60_000).toISOString(),
+        durationMinutes: plan.otherTrainingMinutes,
+        activeEnergyKcal: null,
+        energyProvenance: "unspecified" as const,
+      });
+    }
+    if (events.length > 0) workoutsByWeekday[String(weekday) as keyof typeof workoutsByWeekday] = { events };
+  }
+  const schedule: FixedSchedule = { defaultDay, byDate, strengthByWeekday, workoutsByWeekday };
   return {
     horizonDays,
     seed: 20_260_824,

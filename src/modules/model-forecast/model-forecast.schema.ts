@@ -21,12 +21,35 @@ const occupationInterval = z.object({
   path: ["breakDurationHours"], message: "must not exceed durationHours",
 });
 
+const workoutEvent = z.object({
+  type: z.string().min(1).max(200),
+  canonicalType: z.enum(["Traditional Strength Training", "Stair Climbing"]).nullable(),
+  classification: z.enum(["traditional-strength-training", "stair-climbing", "other"]),
+  startAt: z.string().datetime({ offset: true }),
+  endAt: z.string().datetime({ offset: true }),
+  durationMinutes: z.number().nonnegative().max(600).nullable(),
+  activeEnergyKcal: z.number().nonnegative().max(20_000).nullable(),
+  programId: z.number().int().positive().nullable().optional(),
+  programVersionId: z.number().int().positive().nullable().optional(),
+  programVersionNumber: z.number().int().positive().nullable().optional(),
+  plannedSets: z.number().int().nonnegative().max(10_000).nullable().optional(),
+  energyProvenance: z.enum([
+    "device-estimate", "strength-met-fallback", "unspecified",
+  ]).nullable().optional(),
+}).strict();
+
+const workoutActivity = z.object({
+  events: z.array(workoutEvent).max(32),
+}).strict();
+
 const behaviorDay = z.object({
   nutrition,
   outsideWorkWalkingDistanceKm: z.number().nonnegative().max(100),
   averageWalkingSpeedKmh: z.number().positive().max(15),
   strengthTrainingMinutes: z.number().nonnegative().max(600),
   occupation: z.array(occupationInterval).max(8),
+  workoutActivity: workoutActivity.optional(),
+  workoutFeedObserved: z.boolean().nullable().optional(),
 }).strict().refine(
   (value) => value.occupation.reduce((sum, interval) => sum + interval.durationHours, 0) <= 24,
   { path: ["occupation"], message: "total duration must not exceed 24 hours" },
@@ -38,12 +61,17 @@ const partialBehaviorDay = z.object({
   averageWalkingSpeedKmh: z.number().positive().max(15).optional(),
   strengthTrainingMinutes: z.number().nonnegative().max(600).optional(),
   occupation: z.array(occupationInterval).max(8).optional(),
+  workoutActivity: workoutActivity.optional(),
+  workoutFeedObserved: z.boolean().nullable().optional(),
 }).strict();
+
+const weekdayKey = z.enum(["0", "1", "2", "3", "4", "5", "6"]);
 
 const schedule = z.object({
   defaultDay: behaviorDay,
   byDate: z.record(z.string().regex(/^\d{4}-\d{2}-\d{2}$/), partialBehaviorDay).optional(),
-  strengthByWeekday: z.record(z.enum(["0", "1", "2", "3", "4", "5", "6"]), z.number().nonnegative().max(600)).optional(),
+  strengthByWeekday: z.partialRecord(weekdayKey, z.number().nonnegative().max(600)).optional(),
+  workoutsByWeekday: z.partialRecord(weekdayKey, workoutActivity).optional(),
 }).strict();
 
 const fixedScenario = z.object({ mode: z.literal("fixed"), schedule }).strict();

@@ -237,17 +237,15 @@ function runtimeSourceFingerprint(
       steps: sources.steps,
       walkingRunningDistanceKm: sources.walkingRunningDistanceKm,
       workouts: sources.workouts.map((workout) => ({
-        workoutId: workout.workoutId,
         type: workout.type,
         startAt: workout.startAt,
         endAt: workout.endAt,
         durationMinutes: workout.durationMinutes,
-      })),
+      })).sort((left, right) => stableSha256(left).localeCompare(stableSha256(right))),
       stepper: sources.stepperWorkouts.map((workout) => ({
-        workoutId: workout.workoutEnergy.workoutId,
         canonicalWorkoutType: workout.workoutEnergy.canonicalWorkoutType,
         bracketedSteps: workout.bracketedSteps,
-      })),
+      })).sort((left, right) => stableSha256(left).localeCompare(stableSha256(right))),
     },
     exposureHistoryFingerprint: resistanceTrainingExposureHistoryV7Fingerprint(exposureHistory),
   });

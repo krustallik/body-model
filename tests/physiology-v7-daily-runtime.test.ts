@@ -168,6 +168,35 @@ describe("Physiology v7 daily runtime contract", () => {
     expect(right.scientificFingerprint).toBe(left.scientificFingerprint);
     expect(right.resultingState).toEqual(left.resultingState);
   });
+
+  it("keeps database surrogate ids outside scientific source identity", () => {
+    const date = "2026-09-01";
+    const workout = {
+      type: "Traditional Strength Training",
+      startAt: "2026-09-01T16:00:00.000Z",
+      endAt: "2026-09-01T17:00:00.000Z",
+      durationMinutes: 60,
+      activeEnergyKcal: 300,
+    };
+    const build = (workoutId: number) => buildPhysiologyDayV7({
+      date,
+      priorState: createUnavailablePhysiologyRuntimeStateV7(),
+      sources: sources(date, { workouts: [{ workoutId, ...workout }] }),
+      exposureHistory: buildResistanceTrainingExposureHistoryFromSourcesV7({
+        fromDate: date,
+        toDate: date,
+        days: [{ date, workoutFeedObserved: true }],
+        strengthWorkouts: [{
+          workoutId,
+          localDate: date,
+          type: workout.type,
+          matchedStrengthDiarySessionId: null,
+        }],
+        sessions: [],
+      }),
+    });
+    expect(build(10).inputSourceFingerprint).toBe(build(999).inputSourceFingerprint);
+  });
 });
 
 describe("Physiology v7 deterministic rebuild", () => {

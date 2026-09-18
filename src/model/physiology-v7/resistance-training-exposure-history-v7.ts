@@ -536,17 +536,19 @@ export function resistanceTrainingExposureHistoryV7Fingerprint(
       recordedSetCount: day.recordedSetCount,
       unmappedSetCount: day.unmappedSetCount,
       muscleGroups: day.muscleGroups,
-      legacyStrengthWorkouts: day.legacyStrengthWorkouts,
+      legacyStrengthWorkouts: day.legacyStrengthWorkouts.map((workout) => ({
+        localDate: workout.localDate,
+        hasMatchedStrengthDiarySession: workout.matchedStrengthDiarySessionId !== null,
+      })).sort((left, right) => stableSha256(left).localeCompare(stableSha256(right))),
       sessions: day.sessions.map((session) => ({
-        strengthDiarySessionId: session.strengthDiarySessionId,
         sessionRevision: session.sessionRevision,
         occurrenceStartAt: session.occurrenceStartAt,
-        matchedWorkoutId: session.matchedWorkoutId,
-        program: session.program,
+        hasMatchedWorkout: session.matchedWorkoutId !== null,
+        programVersionNumber: session.program?.programVersionNumber ?? null,
         doseFingerprint: session.doseFingerprint,
         doseAvailability: session.dose.availability,
         mappedSetCount: session.dose.mappedSetCount,
-      })),
+      })).sort((left, right) => stableSha256(left).localeCompare(stableSha256(right))),
     })),
     weeklyAggregates: history.weeklyAggregates.map((week) => ({
       windowKind: week.windowKind,
@@ -565,6 +567,12 @@ export function resistanceTrainingExposureHistoryV7Fingerprint(
       daysUnobserved: week.daysUnobserved,
       programContexts: week.programContexts,
     })),
-    resumptionEvents: history.resumptionEvents,
+    resumptionEvents: history.resumptionEvents.map((event) => ({
+      resumedOnDate: event.resumedOnDate,
+      verifiedNoExposureDates: event.verifiedNoExposureDates,
+      resumedMappedSetCount: event.resumedMappedSetCount,
+      resumedDoseFingerprints: [...event.resumedDoseFingerprints].sort(),
+      quantitativeMemoryBonus: event.quantitativeMemoryBonus,
+    })),
   });
 }

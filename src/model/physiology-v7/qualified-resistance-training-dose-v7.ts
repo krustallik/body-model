@@ -398,7 +398,6 @@ export function qualifiedResistanceTrainingDoseV7Fingerprint(
       contractVersion: dose.contractVersion,
       availability: dose.availability,
       reason: dose.reason,
-      strengthDiarySessionId: dose.strengthDiarySessionId,
       sessionRevision: dose.sessionRevision,
       recordedSetCount: dose.recordedSetCount,
       unmappedSetCount: dose.unmappedSetCount,
@@ -408,10 +407,12 @@ export function qualifiedResistanceTrainingDoseV7Fingerprint(
   return stableSha256({
     contractVersion: dose.contractVersion,
     availability: dose.availability,
-    strengthDiarySessionId: dose.strengthDiarySessionId,
     sessionRevision: dose.sessionRevision,
     hardSetQualification: dose.hardSetQualification,
-    setEffortEvidence: dose.setEffortEvidence,
+    setEffortEvidence: dose.setEffortEvidence.map(({ setNumber, evidence }) => ({
+      setNumber,
+      evidence,
+    })),
     recordedSetCount: dose.recordedSetCount,
     mappedSetCount: dose.mappedSetCount,
     qualifiedHardSetCount: dose.qualifiedHardSetCount,

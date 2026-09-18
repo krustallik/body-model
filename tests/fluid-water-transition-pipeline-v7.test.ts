@@ -9,13 +9,37 @@ const state: PhysiologyV7State = { fatMassKg: 18, skeletalMuscleKg: 28, otherLea
 describe("Stage 8E canonical fluid/water pipeline", () => {
   it("composes 8B, 8C, and 8D from canonical source semantics without numeric substitutions", () => {
     const result = buildFluidWaterTransitionPipelineV7({ localDate: "2026-09-18", priorState: state, carbsG: 200, nutrition, resistanceExposure: null, workoutFeedObserved: true, stepperWorkouts: [] });
-    expect(result.glycogen.contractVersion).toBe("bodycast-glycogen-transition-v7-2");
+    expect(result.glycogen.contractVersion).toBe("bodycast-glycogen-transition-v7-3");
     expect(result.glycogenWater.contractVersion).toBe("bodycast-glycogen-water-transition-v7-1");
     expect(result.transientExerciseWaterEcf.contractVersion).toBe("bodycast-transient-exercise-water-ecf-transition-v7-1");
     expect(result.glycogen.carbohydrateEvidence).toMatchObject({ provenance: "observed", carbsG: 200 });
     expect(result.glycogen.carbohydrateTimingPolicy.mealFrequencyEffect).toBe("intentionally-not-applied");
+    expect(result.glycogen.proteinContribution).toMatchObject({
+      availability: "unavailable",
+      repletionEffect: "none",
+      independentBonus: { application: "intentionally-not-applied" },
+    });
     expect(result.state.glycogenKg).toBeNull();
     expect(result.reconstructedMassKg).toBeNull();
+  });
+
+  it("passes protein into glycogen without improving repletion when carbohydrate is held fixed", () => {
+    const base = {
+      localDate: "2026-09-18",
+      priorState: state,
+      carbsG: 200,
+      nutrition: { ...nutrition, observedFields: ["carbsG", "proteinG"] },
+      resistanceExposure: null,
+      workoutFeedObserved: true,
+      stepperWorkouts: [],
+    } as const;
+    const lower = buildFluidWaterTransitionPipelineV7({ ...base, proteinG: 80 });
+    const higher = buildFluidWaterTransitionPipelineV7({ ...base, proteinG: 160 });
+    expect(lower.glycogen.proteinContribution).toMatchObject({ availability: "available", proteinG: 80, repletionEffect: "none" });
+    expect(higher.glycogen.proteinContribution).toMatchObject({ availability: "available", proteinG: 160, repletionEffect: "none" });
+    expect(higher.glycogen.repletionEvidence).toBe(lower.glycogen.repletionEvidence);
+    expect(higher.glycogen.quantitativeState).toEqual(lower.glycogen.quantitativeState);
+    expect(higher.state.glycogenKg).toBe(lower.state.glycogenKg);
   });
 
   it("is deterministic and changes its rebuild fingerprint for relevant carbohydrate source evidence", () => {

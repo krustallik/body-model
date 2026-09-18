@@ -1,11 +1,12 @@
 import type { WorkoutStepperEvidenceV7 } from "@/model/activity/workout-stepper-v7";
+import { KCAL_PER_GRAM } from "@/model/constants";
 import type { NutritionProvenance } from "@/modules/model-episodes/model-episode.types";
 import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 import type { ResistanceTrainingDayExposureV7 } from "./resistance-training-exposure-history-v7";
 import { validatePhysiologyV7State, type PhysiologyV7State } from "./state";
 
 /** Qualitative-only Stage-8 boundary; deliberately has no kg transition. */
-export const GLYCOGEN_TRANSITION_V7_VERSION = "bodycast-glycogen-transition-v7-2" as const;
+export const GLYCOGEN_TRANSITION_V7_VERSION = "bodycast-glycogen-transition-v7-3" as const;
 
 /**
  * P-H02 / C-H03: daily carbs are the carbohydrate input. Meal frequency/timing
@@ -25,10 +26,48 @@ export const GLYCOGEN_CARBOHYDRATE_TIMING_POLICY_V7 = {
 export type GlycogenCarbohydrateTimingPolicyV7 =
   typeof GLYCOGEN_CARBOHYDRATE_TIMING_POLICY_V7;
 
+/**
+ * P-H03 / C-H05: protein may be present as nutrition context, but v7 applies no
+ * independent matched-energy protein→glycogen bonus and invents no protein
+ * repletion math.
+ */
+export const GLYCOGEN_PROTEIN_BONUS_POLICY_V7 = {
+  component: "independent-protein-glycogen-bonus",
+  application: "intentionally-not-applied",
+  numericComponent: "rejected",
+  parameterId: "P-H03",
+  scientificDecision: "rejected-matched-energy-independent-bonus",
+  researchAuthority: "workout-physiology-v7-audit",
+} as const;
+
+export type GlycogenProteinBonusPolicyV7 = typeof GLYCOGEN_PROTEIN_BONUS_POLICY_V7;
+
 export type GlycogenCarbohydrateEvidenceV7 =
   | { availability: "available"; provenance: "observed"; carbsG: number }
   | { availability: "available"; provenance: "imputed"; carbsG: number }
   | { availability: "unavailable"; reason: "missing-carbohydrate" };
+
+export type GlycogenProteinContributionV7 =
+  | {
+    availability: "available";
+    provenance: "observed" | "imputed";
+    proteinG: number;
+    repletionEffect: "none";
+    independentBonus: GlycogenProteinBonusPolicyV7;
+  }
+  | {
+    availability: "unavailable";
+    reason: "missing-protein";
+    repletionEffect: "none";
+    independentBonus: GlycogenProteinBonusPolicyV7;
+  };
+
+export type GlycogenMatchedMacroEnergyV7 = {
+  carbsG: number;
+  proteinG: number;
+  fatG: number;
+  energyKcal: number;
+};
 
 export function glycogenCarbohydrateEvidenceV7(input: {
   carbsG: number | null;
@@ -39,6 +78,54 @@ export function glycogenCarbohydrateEvidenceV7(input: {
   return input.nutrition.observedFields.includes("carbsG")
     ? { availability: "available", provenance: "observed", carbsG: input.carbsG }
     : { availability: "available", provenance: "imputed", carbsG: input.carbsG };
+}
+
+export function glycogenProteinContributionV7(input: {
+  proteinG: number | null;
+  nutrition: NutritionProvenance;
+}): GlycogenProteinContributionV7 {
+  if (input.proteinG === null) {
+    return {
+      availability: "unavailable",
+      reason: "missing-protein",
+      repletionEffect: "none",
+      independentBonus: GLYCOGEN_PROTEIN_BONUS_POLICY_V7,
+    };
+  }
+  if (!Number.isFinite(input.proteinG) || input.proteinG < 0) {
+    throw new RangeError("proteinG must be finite and nonnegative when available");
+  }
+  return {
+    availability: "available",
+    provenance: input.nutrition.observedFields.includes("proteinG") ? "observed" : "imputed",
+    proteinG: input.proteinG,
+    repletionEffect: "none",
+    independentBonus: GLYCOGEN_PROTEIN_BONUS_POLICY_V7,
+  };
+}
+
+/** Atwater accounting for matched-energy protein↔fat substitution scenarios only. */
+export function resolveEnergyMatchedMacroSubstitutionV7(input: {
+  carbsG: number;
+  proteinG: number;
+  energyKcal: number;
+}): GlycogenMatchedMacroEnergyV7 {
+  if (![input.carbsG, input.proteinG, input.energyKcal].every((value) => Number.isFinite(value) && value >= 0)) {
+    throw new RangeError("matched macro inputs must be finite and nonnegative");
+  }
+  const carbohydrateKcal = input.carbsG * KCAL_PER_GRAM.carbs;
+  const proteinKcal = input.proteinG * KCAL_PER_GRAM.protein;
+  const residualFatKcal = input.energyKcal - carbohydrateKcal - proteinKcal;
+  if (residualFatKcal < 0) {
+    throw new RangeError("energyKcal is insufficient for the requested carbohydrate and protein");
+  }
+  const fatG = residualFatKcal / KCAL_PER_GRAM.fat;
+  return {
+    carbsG: input.carbsG,
+    proteinG: input.proteinG,
+    fatG,
+    energyKcal: carbohydrateKcal + proteinKcal + fatG * KCAL_PER_GRAM.fat,
+  };
 }
 
 export type GlycogenExerciseEvidenceV7 = {
@@ -80,6 +167,11 @@ export type GlycogenTransitionV7 = {
    * is not applied; does not invent meal-timing physiology or hourly precision.
    */
   carbohydrateTimingPolicy: GlycogenCarbohydrateTimingPolicyV7;
+  /**
+   * Protein may be observed as nutrition context (C-H05 / P-H03). Repletion is
+   * never improved by protein; the independent matched-energy bonus is rejected.
+   */
+  proteinContribution: GlycogenProteinContributionV7;
   exerciseEvidence: GlycogenExerciseEvidenceV7;
   depletionEvidence: "present" | "absent" | "unresolved";
   repletionEvidence: "present-observed" | "present-imputed" | "unavailable";
@@ -101,6 +193,7 @@ export type GlycogenTransitionV7 = {
 export function buildGlycogenTransitionV7(input: {
   priorGlycogenKg: number | null;
   carbohydrate: GlycogenCarbohydrateEvidenceV7;
+  protein?: GlycogenProteinContributionV7;
   resistanceExposure: ResistanceTrainingDayExposureV7 | null;
   workoutFeedObserved: boolean | null;
   stepperWorkouts: readonly WorkoutStepperEvidenceV7[];
@@ -108,6 +201,12 @@ export function buildGlycogenTransitionV7(input: {
   if (input.priorGlycogenKg !== null && (!Number.isFinite(input.priorGlycogenKg) || input.priorGlycogenKg < 0)) {
     throw new RangeError("priorGlycogenKg must be finite and nonnegative when available");
   }
+  const proteinContribution = input.protein ?? {
+    availability: "unavailable" as const,
+    reason: "missing-protein" as const,
+    repletionEffect: "none" as const,
+    independentBonus: GLYCOGEN_PROTEIN_BONUS_POLICY_V7,
+  };
   const exerciseEvidence = {
     strength: strengthEvidence(input.resistanceExposure, input.workoutFeedObserved),
     stepper: stepperEvidence(input),
@@ -118,6 +217,7 @@ export function buildGlycogenTransitionV7(input: {
     : exerciseEvidence.strength === "unresolved" || exerciseEvidence.strength === "unobserved" || exerciseEvidence.stepper === "unobserved"
       ? "unresolved"
       : "absent";
+  // Repletion is carbohydrate-driven only; proteinContribution never upgrades this.
   const repletionEvidence = input.carbohydrate.availability === "unavailable"
     ? "unavailable"
     : input.carbohydrate.provenance === "observed" ? "present-observed" : "present-imputed";
@@ -152,6 +252,7 @@ export function buildGlycogenTransitionV7(input: {
       : { availability: "unavailable", reason: "no-approved-quantitative-glycogen-transition", stateHandling: "carry-forward-for-simulation", carriedForwardGlycogenKg: input.priorGlycogenKg, biologicalTransition: "not-modeled" },
     carbohydrateEvidence: structuredClone(input.carbohydrate),
     carbohydrateTimingPolicy: GLYCOGEN_CARBOHYDRATE_TIMING_POLICY_V7,
+    proteinContribution: structuredClone(proteinContribution),
     exerciseEvidence,
     depletionEvidence,
     repletionEvidence,
@@ -163,12 +264,83 @@ export function buildGlycogenTransitionV7(input: {
   };
 }
 
+/**
+ * Runtime exposure for C-H05: same carbohydrate and total energy, different
+ * protein (fat residual adjusts). Glycogen repletion outcomes must not improve
+ * with higher protein.
+ */
+export function buildEnergyMatchedProteinSubstitutionGlycogenPairV7(input: {
+  priorGlycogenKg: number | null;
+  carbsG: number;
+  energyKcal: number;
+  lowerProteinG: number;
+  higherProteinG: number;
+  nutrition: NutritionProvenance;
+  resistanceExposure: ResistanceTrainingDayExposureV7 | null;
+  workoutFeedObserved: boolean | null;
+  stepperWorkouts: readonly WorkoutStepperEvidenceV7[];
+}): {
+  lowerMacros: GlycogenMatchedMacroEnergyV7;
+  higherMacros: GlycogenMatchedMacroEnergyV7;
+  lowerProtein: GlycogenTransitionV7;
+  higherProtein: GlycogenTransitionV7;
+} {
+  if (!(input.higherProteinG > input.lowerProteinG)) {
+    throw new RangeError("higherProteinG must exceed lowerProteinG");
+  }
+  const lowerMacros = resolveEnergyMatchedMacroSubstitutionV7({
+    carbsG: input.carbsG,
+    proteinG: input.lowerProteinG,
+    energyKcal: input.energyKcal,
+  });
+  const higherMacros = resolveEnergyMatchedMacroSubstitutionV7({
+    carbsG: input.carbsG,
+    proteinG: input.higherProteinG,
+    energyKcal: input.energyKcal,
+  });
+  const carbohydrate = glycogenCarbohydrateEvidenceV7({
+    carbsG: input.carbsG,
+    nutrition: input.nutrition,
+  });
+  const shared = {
+    priorGlycogenKg: input.priorGlycogenKg,
+    carbohydrate,
+    resistanceExposure: input.resistanceExposure,
+    workoutFeedObserved: input.workoutFeedObserved,
+    stepperWorkouts: input.stepperWorkouts,
+  } as const;
+  return {
+    lowerMacros,
+    higherMacros,
+    lowerProtein: buildGlycogenTransitionV7({
+      ...shared,
+      protein: glycogenProteinContributionV7({ proteinG: lowerMacros.proteinG, nutrition: input.nutrition }),
+    }),
+    higherProtein: buildGlycogenTransitionV7({
+      ...shared,
+      protein: glycogenProteinContributionV7({ proteinG: higherMacros.proteinG, nutrition: input.nutrition }),
+    }),
+  };
+}
+
+/** Glycogen outcome fields used by C-H05; excludes protein amount provenance. */
+export function glycogenRepletionOutcomeV7(transition: GlycogenTransitionV7) {
+  return {
+    carbohydrateEvidence: structuredClone(transition.carbohydrateEvidence),
+    repletionEvidence: transition.repletionEvidence,
+    quantitativeState: structuredClone(transition.quantitativeState),
+    proteinRepletionEffect: transition.proteinContribution.repletionEffect,
+    proteinIndependentBonusApplication: transition.proteinContribution.independentBonus.application,
+  };
+}
+
 /** Evidence identity excludes HR, device calories, display names, and tonnage. */
 export function glycogenTransitionV7Fingerprint(transition: GlycogenTransitionV7): string {
   return stableSha256({
     contractVersion: transition.contractVersion,
     carbohydrateEvidence: transition.carbohydrateEvidence,
     carbohydrateTimingPolicy: transition.carbohydrateTimingPolicy,
+    proteinContribution: transition.proteinContribution,
     exerciseEvidence: transition.exerciseEvidence,
     depletionEvidence: transition.depletionEvidence,
     repletionEvidence: transition.repletionEvidence,

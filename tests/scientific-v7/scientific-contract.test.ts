@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildEnergyMatchedProteinSubstitutionGlycogenPairV7,
   buildGlycogenTransitionV7,
   GLYCOGEN_CARBOHYDRATE_TIMING_POLICY_V7,
+  GLYCOGEN_PROTEIN_BONUS_POLICY_V7,
   glycogenCarbohydrateEvidenceV7,
+  glycogenRepletionOutcomeV7,
 } from "@/model/physiology-v7/glycogen-transition-v7";
 import {
   calculateExtracellularFluidLiters,
@@ -186,6 +189,50 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
       provenance: "observed",
       carbsG: 0,
     });
+  });
+
+  it("protein is not double-counted as a glycogen bonus", () => {
+    const nutrition = {
+      source: "observed" as const,
+      method: null,
+      referenceDayCount: 0,
+      gapLength: 0,
+      referenceDates: [] as string[],
+      observedFields: ["carbsG", "proteinG", "fatG"],
+      imputedFields: [] as Array<"caloriesKcal" | "proteinG" | "fatG" | "carbsG">,
+      referenceCaloriesMedian: null,
+      referenceCaloriesMad: null,
+      referenceMacroMadG: null,
+      dependency: "observed" as const,
+    };
+    const pair = buildEnergyMatchedProteinSubstitutionGlycogenPairV7({
+      priorGlycogenKg: 0.32,
+      carbsG: 250,
+      energyKcal: 2_600,
+      lowerProteinG: 80,
+      higherProteinG: 170,
+      nutrition,
+      resistanceExposure: null,
+      workoutFeedObserved: true,
+      stepperWorkouts: [],
+    });
+
+    expect(pair.lowerMacros.carbsG).toBe(250);
+    expect(pair.higherMacros.carbsG).toBe(250);
+    expect(pair.lowerMacros.energyKcal).toBeCloseTo(2_600, 10);
+    expect(pair.higherMacros.energyKcal).toBeCloseTo(2_600, 10);
+    expect(pair.higherMacros.proteinG).toBeGreaterThan(pair.lowerMacros.proteinG);
+    expect(pair.higherProtein.proteinContribution.availability).toBe("available");
+    expect(pair.higherProtein.proteinContribution.repletionEffect).toBe("none");
+    expect(pair.higherProtein.proteinContribution.independentBonus).toEqual(GLYCOGEN_PROTEIN_BONUS_POLICY_V7);
+    expect(pair.higherProtein.proteinContribution.independentBonus.application).toBe("intentionally-not-applied");
+    expect(glycogenRepletionOutcomeV7(pair.higherProtein)).toEqual(
+      glycogenRepletionOutcomeV7(pair.lowerProtein),
+    );
+    expect(pair.higherProtein.repletionEvidence).toBe(pair.lowerProtein.repletionEvidence);
+    expect(pair.higherProtein.quantitativeState).toEqual(pair.lowerProtein.quantitativeState);
+    expect(pair.higherProtein).not.toHaveProperty("proteinGlycogenBonusKg");
+    expect(pair.higherProtein).not.toHaveProperty("glycogenDeltaKg");
   });
 
   it("glycogen-associated water co-moves without asserting a universal ratio", () => {

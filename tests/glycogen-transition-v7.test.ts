@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   applyGlycogenTransitionV7,
+  buildEnergyMatchedProteinSubstitutionGlycogenPairV7,
   buildGlycogenTransitionV7,
   GLYCOGEN_CARBOHYDRATE_TIMING_POLICY_V7,
+  GLYCOGEN_PROTEIN_BONUS_POLICY_V7,
   glycogenCarbohydrateEvidenceV7,
+  glycogenProteinContributionV7,
+  glycogenRepletionOutcomeV7,
   glycogenTransitionV7Fingerprint,
 } from "@/model/physiology-v7/glycogen-transition-v7";
 import type { ResistanceTrainingDayExposureV7 } from "@/model/physiology-v7/resistance-training-exposure-history-v7";
@@ -67,6 +71,39 @@ describe("Stage 8B glycogen transition", () => {
     expect(withCarbs.carbohydrateTimingPolicy.mealTimingInput).toBe("unavailable-not-zero-or-fasting");
     expect(missingCarbs.carbohydrateTimingPolicy).toEqual(withCarbs.carbohydrateTimingPolicy);
     expect(missingCarbs.carbohydrateEvidence.availability).toBe("unavailable");
+  });
+
+  it("does not improve glycogen repletion when protein rises under matched carbohydrate and energy", () => {
+    const observedNutrition: NutritionProvenance = {
+      ...nutrition("observed"),
+      observedFields: ["carbsG", "proteinG", "fatG"],
+    };
+    const pair = buildEnergyMatchedProteinSubstitutionGlycogenPairV7({
+      priorGlycogenKg: 0.35,
+      carbsG: 220,
+      energyKcal: 2_400,
+      lowerProteinG: 90,
+      higherProteinG: 180,
+      nutrition: observedNutrition,
+      resistanceExposure: null,
+      workoutFeedObserved: true,
+      stepperWorkouts: [],
+    });
+    expect(pair.lowerMacros.carbsG).toBe(pair.higherMacros.carbsG);
+    expect(pair.lowerMacros.energyKcal).toBeCloseTo(pair.higherMacros.energyKcal, 10);
+    expect(pair.higherMacros.proteinG).toBeGreaterThan(pair.lowerMacros.proteinG);
+    expect(pair.higherMacros.fatG).toBeLessThan(pair.lowerMacros.fatG);
+    expect(pair.lowerProtein.proteinContribution).toEqual(
+      glycogenProteinContributionV7({ proteinG: 90, nutrition: observedNutrition }),
+    );
+    expect(pair.higherProtein.proteinContribution.independentBonus).toEqual(GLYCOGEN_PROTEIN_BONUS_POLICY_V7);
+    expect(pair.higherProtein.proteinContribution.repletionEffect).toBe("none");
+    expect(glycogenRepletionOutcomeV7(pair.higherProtein)).toEqual(
+      glycogenRepletionOutcomeV7(pair.lowerProtein),
+    );
+    expect(pair.higherProtein.repletionEvidence).toBe("present-observed");
+    expect(pair.higherProtein).not.toHaveProperty("proteinGlycogenBonusKg");
+    expect(pair.higherProtein).not.toHaveProperty("glycogenDeltaKg");
   });
 
   it("does not invent depletion on an observed no-exercise day and preserves unresolved legacy exposure", () => {

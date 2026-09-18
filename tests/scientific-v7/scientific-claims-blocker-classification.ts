@@ -25,9 +25,9 @@ export type BlockedClaimClassification = {
  * Explicit triage map. Claims omitted here fall back by infrastructureBlocker text.
  */
 const CLASSIFICATIONS: Record<string, Omit<BlockedClaimClassification, "claimId">> = {
-  "C-H05": {
+  "C-A01": {
     category: "implementation-only",
-    reason: "Glycogen transition exists; needs an energy-matched protein-substitution exposure for the invariant test.",
+    reason: "Dose/adaptation output wiring missing; monotonicity claim itself is evidence-backed within range.",
     closestToGreenRank: 1,
   },
   "C-K06": {
@@ -49,11 +49,6 @@ const CLASSIFICATIONS: Record<string, Omit<BlockedClaimClassification, "claimId"
     category: "research-blocked",
     reason: "Capacity-bounded repletion requires individualized glycogen capacity that is forbidden as a universal clamp.",
     closestToGreenRank: null,
-  },
-  "C-A01": {
-    category: "implementation-only",
-    reason: "Dose/adaptation output wiring missing; monotonicity claim itself is evidence-backed within range.",
-    closestToGreenRank: 4,
   },
   "C-A06": {
     category: "implementation-only",

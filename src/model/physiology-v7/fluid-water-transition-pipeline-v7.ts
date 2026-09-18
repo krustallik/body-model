@@ -1,7 +1,7 @@
 import type { WorkoutStepperEvidenceV7 } from "@/model/activity/workout-stepper-v7";
 import type { NutritionProvenance } from "@/modules/model-episodes/model-episode.types";
 import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
-import { applyGlycogenTransitionV7, buildGlycogenTransitionV7, glycogenCarbohydrateEvidenceV7, glycogenTransitionV7Fingerprint, type GlycogenTransitionV7 } from "./glycogen-transition-v7";
+import { applyGlycogenTransitionV7, buildGlycogenTransitionV7, glycogenCarbohydrateEvidenceV7, glycogenProteinContributionV7, glycogenTransitionV7Fingerprint, type GlycogenTransitionV7 } from "./glycogen-transition-v7";
 import { applyGlycogenWaterTransitionV7, buildGlycogenWaterTransitionV7, glycogenWaterTransitionV7Fingerprint, type GlycogenWaterTransitionV7 } from "./glycogen-water-transition-v7";
 import type { ResistanceTrainingDayExposureV7 } from "./resistance-training-exposure-history-v7";
 import { reconstructPhysiologyV7MassKg, type PhysiologyV7State } from "./state";
@@ -25,13 +25,25 @@ export function buildFluidWaterTransitionPipelineV7(input: {
   localDate: string;
   priorState: PhysiologyV7State;
   carbsG: number | null;
+  proteinG?: number | null;
   nutrition: NutritionProvenance;
   resistanceExposure: ResistanceTrainingDayExposureV7 | null;
   workoutFeedObserved: boolean | null;
   stepperWorkouts: readonly WorkoutStepperEvidenceV7[];
 }): FluidWaterTransitionPipelineV7 {
   const carbohydrate = glycogenCarbohydrateEvidenceV7({ carbsG: input.carbsG, nutrition: input.nutrition });
-  const glycogen = buildGlycogenTransitionV7({ priorGlycogenKg: input.priorState.glycogenKg, carbohydrate, resistanceExposure: input.resistanceExposure, workoutFeedObserved: input.workoutFeedObserved, stepperWorkouts: input.stepperWorkouts });
+  const protein = glycogenProteinContributionV7({
+    proteinG: input.proteinG === undefined ? null : input.proteinG,
+    nutrition: input.nutrition,
+  });
+  const glycogen = buildGlycogenTransitionV7({
+    priorGlycogenKg: input.priorState.glycogenKg,
+    carbohydrate,
+    protein,
+    resistanceExposure: input.resistanceExposure,
+    workoutFeedObserved: input.workoutFeedObserved,
+    stepperWorkouts: input.stepperWorkouts,
+  });
   const glycogenFingerprint = glycogenTransitionV7Fingerprint(glycogen);
   const afterGlycogen = applyGlycogenTransitionV7({ state: input.priorState, transition: glycogen }).state;
   const glycogenWater = buildGlycogenWaterTransitionV7({ priorGlycogenWaterKg: afterGlycogen.glycogenWaterKg, glycogenTransition: glycogen, glycogenTransitionFingerprint: glycogenFingerprint });

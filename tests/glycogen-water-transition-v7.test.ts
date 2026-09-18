@@ -7,6 +7,7 @@ import {
 import type { GlycogenTransitionV7 } from "@/model/physiology-v7/glycogen-transition-v7";
 import {
   GLYCOGEN_CARBOHYDRATE_TIMING_POLICY_V7,
+  GLYCOGEN_PROTEIN_BONUS_POLICY_V7,
   GLYCOGEN_TRANSITION_V7_VERSION,
 } from "@/model/physiology-v7/glycogen-transition-v7";
 import { reconstructPhysiologyV7MassKg, type PhysiologyV7State } from "@/model/physiology-v7/state";
@@ -17,6 +18,12 @@ function glycogen(input: Partial<Pick<GlycogenTransitionV7, "depletionEvidence" 
     quantitativeState: { availability: "unavailable", reason: "no-defensible-initial-glycogen-source", stateHandling: "state-remains-unavailable", carriedForwardGlycogenKg: null, biologicalTransition: "not-modeled" },
     carbohydrateEvidence: { availability: "unavailable", reason: "missing-carbohydrate" },
     carbohydrateTimingPolicy: GLYCOGEN_CARBOHYDRATE_TIMING_POLICY_V7,
+    proteinContribution: {
+      availability: "unavailable",
+      reason: "missing-protein",
+      repletionEffect: "none",
+      independentBonus: GLYCOGEN_PROTEIN_BONUS_POLICY_V7,
+    },
     exerciseEvidence: { strength: "observed-no-exposure", stepper: "observed-no-stepper" },
     depletionEvidence: "absent", repletionEvidence: "unavailable", sourceCoverage: "complete-for-qualitative-boundary",
     provenance: { workoutFeedObserved: true, resistance: null, stepper: [] },

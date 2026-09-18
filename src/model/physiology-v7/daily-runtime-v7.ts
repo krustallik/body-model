@@ -302,6 +302,7 @@ export function buildPhysiologyDayV7(input: {
     localDate: input.date,
     priorState: afterTraining.state,
     carbsG: input.sources.nutrition.carbsG,
+    proteinG: input.sources.nutrition.proteinG,
     nutrition: input.sources.nutrition.provenance,
     resistanceExposure,
     workoutFeedObserved: input.sources.workoutFeedObserved,

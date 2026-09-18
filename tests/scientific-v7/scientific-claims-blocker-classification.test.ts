@@ -6,29 +6,32 @@ import {
 } from "./scientific-claims-blocker-classification";
 
 describe("Stage 12 blocked scientific-claim triage", () => {
-  it("classifies all 11 remaining blocked claims after cessation EXPERIMENTAL claims", () => {
+  it("classifies all 9 remaining blocked claims after FFM-retention EXPERIMENTAL claims", () => {
     const blocked = SCIENTIFIC_V7_CLAIMS.filter((claim) => claim.status === "BLOCKED");
     const green = SCIENTIFIC_V7_CLAIMS.filter((claim) => claim.status === "GREEN");
     const experimental = SCIENTIFIC_V7_CLAIMS.filter((claim) => claim.status === "EXPERIMENTAL");
-    expect(blocked).toHaveLength(11);
+    expect(blocked).toHaveLength(9);
     expect(green).toHaveLength(38);
-    expect(experimental).toHaveLength(30);
+    expect(experimental).toHaveLength(32);
 
     const rows = classifyBlockedScientificClaims();
-    expect(rows).toHaveLength(11);
-    expect(new Set(rows.map((row) => row.claimId)).size).toBe(11);
+    expect(rows).toHaveLength(9);
+    expect(new Set(rows.map((row) => row.claimId)).size).toBe(9);
 
     const summary = summarizeBlockedClaimClassification(rows);
-    expect(summary.totalBlocked).toBe(11);
+    expect(summary.totalBlocked).toBe(9);
     expect(
       summary.counts["implementation-only"]
       + summary.counts["validation-data"]
       + summary.counts["research-blocked"],
-    ).toBe(11);
+    ).toBe(9);
     expect(summary.closestToGreen[0]?.claimId).toBe("C-I03");
     expect(rows.find((row) => row.claimId === "C-A01")).toBeUndefined();
     expect(rows.find((row) => row.claimId === "C-C01")).toBeUndefined();
     expect(rows.find((row) => row.claimId === "C-C02")).toBeUndefined();
+    expect(rows.find((row) => row.claimId === "C-D02")).toBeUndefined();
+    expect(rows.find((row) => row.claimId === "C-E03")).toBeUndefined();
+    expect(rows.find((row) => row.claimId === "C-E02")).toBeDefined();
     expect(rows.find((row) => row.claimId === "C-B05")).toBeDefined();
     expect(rows.find((row) => row.claimId === "C-B01")).toBeUndefined();
     expect(rows.find((row) => row.claimId === "C-G01")).toBeUndefined();

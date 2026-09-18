@@ -180,6 +180,12 @@ const experimentalCessationDetrainingTest =
   "tests/experimental-cessation-detraining-v1.test.ts";
 const experimentalCessationDetrainingUncertainty =
   "Experimental relative cessation/detraining heuristic with an engineering grace period and non-positive monthly atrophy band; not a scientifically validated atrophy curve, skeletalMuscleKg, or muscle-memory bonus.";
+const experimentalFfmRetentionImpl =
+  "src/model/physiology-v7/experimental-ffm-retention-v1.ts";
+const experimentalFfmRetentionTest =
+  "tests/experimental-ffm-retention-v1.test.ts";
+const experimentalFfmRetentionUncertainty =
+  "Experimental dimensionless FFM/slow-nonfat retention heuristic under energy deficit from observed protein and verified RT; Hall/Forbes mean is reference only; not skeletalMuscleKg and not scientifically validated personal retention kg.";
 const v7HrBlocker = "Canonical raw HR interval provenance exists, but HR coverage/calibration inputs and a separately observable anabolic-dose output do not exist.";
 const v7SleepBlocker = "Canonical v7 sleep provenance/duration inputs and bounded sleep-context output do not exist.";
 const v7MeasurementBlocker = "No v7 measurement-role contract exposes skeletal muscle separately from lean/local/proxy endpoints.";
@@ -338,7 +344,23 @@ export const SCIENTIFIC_V7_CLAIMS: readonly ScientificClaimManifestRecord[] = [
       uncertainty: experimentalSkeletalMuscleDeltaUncertainty,
     },
   }),
-  record({ claimId: "C-D02", title: "protein does not worsen retention during studied deficits", parameterIds: ["P-D02"], evidenceIds: ["E-D04", "E-D05", "E-D06", "E-D07", "E-D10"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "property", assertionTypes: ["MONOTONICITY"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Within studied deficit/intake ranges, higher protein does not worsen expected proxy retention and does not guarantee skeletal-muscle gain.", infrastructureBlocker: v7MuscleBlocker }),
+  record({
+    claimId: "C-D02",
+    title: "protein does not worsen retention during studied deficits",
+    parameterIds: ["P-D02"],
+    evidenceIds: ["E-D04", "E-D05", "E-D06", "E-D07", "E-D10"],
+    auditEligibility: "SAFE_AFTER_AUDIT_REVISION",
+    testType: "property",
+    assertionTypes: ["MONOTONICITY"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "Within studied deficit/intake ranges, higher protein does not worsen expected proxy retention and does not guarantee skeletal-muscle gain.",
+    experimental: {
+      implementation: experimentalFfmRetentionImpl,
+      testFile: experimentalFfmRetentionTest,
+      testName: "protein does not worsen retention during studied deficits (C-D02)",
+      uncertainty: experimentalFfmRetentionUncertainty,
+    },
+  }),
   record({
     claimId: "C-D03",
     title: "adequate protein cannot override training and physiological bounds",
@@ -393,7 +415,23 @@ export const SCIENTIFIC_V7_CLAIMS: readonly ScientificClaimManifestRecord[] = [
     },
   }),
   record({ claimId: "C-E02", title: "deficit does not make recomposition impossible", parameterIds: ["P-E01", "P-E02"], evidenceIds: ["E-E02", "E-E03"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "longitudinal", assertionTypes: ["BOUND"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Recomposition remains possible without treating DXA/FFM as skeletal-muscle tissue.", infrastructureBlocker: v7MuscleBlocker }),
-  record({ claimId: "C-E03", title: "resistance training does not worsen expected FFM retention", parameterIds: ["P-E02"], evidenceIds: ["E-E02"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "longitudinal", assertionTypes: ["ORDERING"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Resistance training does not worsen expected FFM retention versus diet only; skeletal-muscle magnitude remains uncertain.", infrastructureBlocker: v7MuscleBlocker }),
+  record({
+    claimId: "C-E03",
+    title: "resistance training does not worsen expected FFM retention",
+    parameterIds: ["P-E02"],
+    evidenceIds: ["E-E02"],
+    auditEligibility: "SAFE_AFTER_AUDIT_REVISION",
+    testType: "longitudinal",
+    assertionTypes: ["ORDERING"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "Resistance training does not worsen expected FFM retention versus diet only; skeletal-muscle magnitude remains uncertain.",
+    experimental: {
+      implementation: experimentalFfmRetentionImpl,
+      testFile: experimentalFfmRetentionTest,
+      testName: "resistance training does not worsen expected FFM retention versus diet-only (C-E03)",
+      uncertainty: experimentalFfmRetentionUncertainty,
+    },
+  }),
   record({
     claimId: "C-E04",
     title: "surplus is not required for all hypertrophy",

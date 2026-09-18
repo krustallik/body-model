@@ -12,6 +12,7 @@ import { recordExperimentalGlycogenStateShadow } from "@/modules/model-episodes/
 import { recordExperimentalSkeletalMuscleDeltaShadow } from "@/modules/model-episodes/experimental-skeletal-muscle-delta-shadow.service";
 import { recordExperimentalLocalHypertrophyResponseShadow } from "@/modules/model-episodes/experimental-local-hypertrophy-response-shadow.service";
 import { recordExperimentalCessationDetrainingShadow } from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
+import { recordExperimentalFfmRetentionShadow } from "@/modules/model-episodes/experimental-ffm-retention-shadow.service";
 
 export async function syncHealthData(
   request: HealthSyncRequest,
@@ -102,6 +103,16 @@ export async function syncHealthData(
     await recordExperimentalCessationDetrainingShadow({ date: day.date });
   } catch (error) {
     logEvent("warn", "experimental_cessation_detraining_shadow_failed", {
+      date: day.date,
+      errorType: errorKind(error),
+    });
+  }
+
+  try {
+    // Shadow-only FFM/slow-nonfat retention; never feeds TDEE/forecast/Hall mean.
+    await recordExperimentalFfmRetentionShadow({ date: day.date });
+  } catch (error) {
+    logEvent("warn", "experimental_ffm_retention_shadow_failed", {
       date: day.date,
       errorType: errorKind(error),
     });

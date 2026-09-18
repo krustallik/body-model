@@ -78,6 +78,9 @@ import {
 import {
   recordExperimentalCessationDetrainingShadowForSession,
 } from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
+import {
+  recordExperimentalFfmRetentionShadowForSession,
+} from "@/modules/model-episodes/experimental-ffm-retention-shadow.service";
 import type {
   HistoricalStrengthWorkoutDto,
   MatchCandidateDto,
@@ -113,6 +116,10 @@ async function recordExperimentalStrengthShadows(input: {
     sessionId: input.session.id,
     profileId: input.profileId,
   });
+  await recordExperimentalFfmRetentionShadowForSession({
+    sessionId: input.session.id,
+    profileId: input.profileId,
+  });
   await recordExperimentalLocalHypertrophyResponseShadowForSession({
     sessionId: input.session.id,
     profileId: input.profileId,
@@ -128,6 +135,7 @@ async function recordExperimentalStrengthShadowsBySessionId(input: {
   await recordExperimentalTransientExerciseWaterShadowBySessionId(input);
   await recordExperimentalSkeletalMuscleDeltaShadowForSession(input);
   await recordExperimentalCessationDetrainingShadowForSession(input);
+  await recordExperimentalFfmRetentionShadowForSession(input);
   await recordExperimentalLocalHypertrophyResponseShadowForSession(input);
 }
 

@@ -156,7 +156,6 @@ const v7DoseBlocker = "The canonical session snapshot exists, but no v7 effectiv
 const v7MuscleBlocker = "The v7 skeletalMuscleKg state contract exists, but no adaptation transition or proxy-safe observation contract exists.";
 const v7DetrainingBlocker = "No v7 training-history/cessation state or skeletal-muscle detraining transition exists.";
 const v7RetrainingIdentificationBlocker = "ResistanceTrainingExposureHistoryV7 can detect verified interruption then resumption, but labeling retraining/detraining still requires an unsupported cessation-duration threshold; no numeric muscle-memory bonus is approved.";
-const v7WorkoutGlycogenBlocker = "Workout dose is not connected to a v7 glycogen-demand transition with recruited-muscle context.";
 const v7StepperGlycogenBlocker = "No direct v7 stepper glycogen-demand seam exists; substrate coefficients remain deferred.";
 const v7CapacityBlocker = "No evidence-backed individualized glycogen-capacity state exists; universal clamps are forbidden.";
 const experimentalTransientWaterImpl =
@@ -275,11 +274,59 @@ export const SCIENTIFIC_V7_CLAIMS: readonly ScientificClaimManifestRecord[] = [
       uncertainty: "Heuristic uses coarse large/small recruitment class for asymmetric uncertainty; continuous per-group mass weights are intentionally rejected.",
     },
   }),
-  record({ claimId: "C-F05", title: "resistance and aerobic glycogen conversions are not interchangeable", parameterIds: ["P-F04"], evidenceIds: ["E-F01", "E-F02", "E-F03", "E-F04", "E-G05", "E-G06", "E-G07", "E-G08"], auditEligibility: "SAFE", testType: "integration", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Equal active energy does not mandate equal glycogen depletion across resistance and aerobic modalities.", infrastructureBlocker: v7WorkoutGlycogenBlocker }),
+  record({
+    claimId: "C-F05",
+    title: "resistance and aerobic glycogen conversions are not interchangeable",
+    parameterIds: ["P-F04"],
+    evidenceIds: ["E-F01", "E-F02", "E-F03", "E-F04", "E-G05", "E-G06", "E-G07", "E-G08"],
+    auditEligibility: "SAFE",
+    testType: "integration",
+    assertionTypes: ["INVARIANT"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "Equal active energy does not mandate equal glycogen depletion across resistance and aerobic modalities.",
+    experimental: {
+      implementation: "src/model/physiology-v7/experimental-stepper-glycogen-demand-v1.ts",
+      testFile: "tests/experimental-stepper-glycogen-demand-v1.test.ts",
+      testName: "allows strength vs stepper glycogen demand to differ at equal active kcal (C-G04, C-F05)",
+      uncertainty: "Experimental strength and stepper heuristics are independent dose drivers; equal ignored active-kcal context does not force equal depletion.",
+    },
+  }),
 
-  record({ claimId: "C-G01", title: "stepper glycogen demand is nonnegative and state bounded", parameterIds: ["P-G01"], evidenceIds: ["E-G05", "E-G06", "E-G07"], auditEligibility: "SAFE", testType: "unit", assertionTypes: ["BOUND", "CONSERVATION"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "A completed stepper bout may reduce glycogen but cannot create glycogen or deplete more than the available store.", infrastructureBlocker: v7StepperGlycogenBlocker }),
+  record({
+    claimId: "C-G01",
+    title: "stepper glycogen demand is nonnegative and state bounded",
+    parameterIds: ["P-G01"],
+    evidenceIds: ["E-G05", "E-G06", "E-G07"],
+    auditEligibility: "SAFE",
+    testType: "unit",
+    assertionTypes: ["BOUND", "CONSERVATION"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "A completed stepper bout may reduce glycogen but cannot create glycogen or deplete more than the available store.",
+    experimental: {
+      implementation: "src/model/physiology-v7/experimental-stepper-glycogen-demand-v1.ts",
+      testFile: "tests/experimental-stepper-glycogen-demand-v1.test.ts",
+      testName: "keeps exercise-only glycogen delta nonpositive and store-bounded (C-G01)",
+      uncertainty: "Experimental MS100 step/duration saturating heuristic with engineering whole-body kg band; not scientifically validated personal substrate fractions.",
+    },
+  }),
   record({ claimId: "C-G03", title: "matched-bout energy is nondecreasing with duration without fixed substrate rate", parameterIds: ["P-G01"], evidenceIds: ["E-G05", "E-G07"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "property", assertionTypes: ["MONOTONICITY"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "For one continuous matched bout, total energy is nondecreasing with duration; muscle glycogen and carbohydrate fraction need not be monotonic.", infrastructureBlocker: v7StepperGlycogenBlocker }),
-  record({ claimId: "C-G04", title: "equal active energy does not imply equal glycogen use", parameterIds: ["P-G03"], evidenceIds: ["E-F01", "E-G05", "E-G06", "E-G07", "E-G08"], auditEligibility: "SAFE", testType: "integration", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Equal active energy across profiles or modalities does not require equal glycogen depletion.", infrastructureBlocker: v7StepperGlycogenBlocker }),
+  record({
+    claimId: "C-G04",
+    title: "equal active energy does not imply equal glycogen use",
+    parameterIds: ["P-G03"],
+    evidenceIds: ["E-F01", "E-G05", "E-G06", "E-G07", "E-G08"],
+    auditEligibility: "SAFE",
+    testType: "integration",
+    assertionTypes: ["INVARIANT"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "Equal active energy across profiles or modalities does not require equal glycogen depletion.",
+    experimental: {
+      implementation: "src/model/physiology-v7/experimental-stepper-glycogen-demand-v1.ts",
+      testFile: "tests/experimental-stepper-glycogen-demand-v1.test.ts",
+      testName: "allows strength vs stepper glycogen demand to differ at equal active kcal (C-G04, C-F05)",
+      uncertainty: "Experimental cross-modality check uses independent strength and stepper heuristics; kcal is ignored context only.",
+    },
+  }),
 
   record({ claimId: "C-H01", title: "more carbohydrate does not reduce refill opportunity", parameterIds: ["P-H01"], evidenceIds: ["E-H01", "E-H05"], auditEligibility: "SAFE", testType: "property", assertionTypes: ["MONOTONICITY"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "From the same depleted state and recovery interval, more available carbohydrate within the studied range does not produce less glycogen restoration.", executableTestName: "more carbohydrate from the same depleted state does not reduce glycogen restoration" }),
   record({ claimId: "C-H02", title: "repletion is capacity bounded", parameterIds: ["P-H01", "P-H04"], evidenceIds: ["E-H02", "E-H05"], auditEligibility: "SAFE", testType: "property", assertionTypes: ["BOUND", "SATURATION"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Available storage space bounds repletion without a universal capacity value.", infrastructureBlocker: v7CapacityBlocker }),

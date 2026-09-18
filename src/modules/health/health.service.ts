@@ -5,6 +5,7 @@ import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import { errorKind, logEvent } from "@/lib/logger";
 import { trainingService } from "@/modules/training/training.service";
 import { recordExperimentalStepperActiveEnergyShadowsForLocalDate } from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
+import { recordExperimentalStepperGlycogenDemandShadowsForLocalDate } from "@/modules/profile/experimental-stepper-glycogen-demand-shadow.service";
 
 export async function syncHealthData(
   request: HealthSyncRequest,
@@ -35,6 +36,16 @@ export async function syncHealthData(
     await recordExperimentalStepperActiveEnergyShadowsForLocalDate({ date: day.date });
   } catch (error) {
     logEvent("warn", "experimental_stepper_active_energy_shadow_failed", {
+      date: day.date,
+      errorType: errorKind(error),
+    });
+  }
+
+  try {
+    // Shadow-only MS100 stepper glycogen demand; never feeds TDEE/forecast.
+    await recordExperimentalStepperGlycogenDemandShadowsForLocalDate({ date: day.date });
+  } catch (error) {
+    logEvent("warn", "experimental_stepper_glycogen_demand_shadow_failed", {
       date: day.date,
       errorType: errorKind(error),
     });

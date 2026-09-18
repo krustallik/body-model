@@ -203,6 +203,7 @@ model Workout {
   dailyHealthData     DailyHealthData       @relation(fields: [dailyHealthDataId], references: [id], onDelete: Restrict)
   matchedDiarySession StrengthDiarySession?
   experimentalStepperActiveEnergyShadow ExperimentalStepperActiveEnergyShadow?
+  experimentalStepperGlycogenDemandShadow ExperimentalStepperGlycogenDemandShadow?
 
   @@unique([dailyHealthDataId, sourceIdentity])
   @@index([dailyHealthDataId])
@@ -476,6 +477,26 @@ model ExperimentalTransientExerciseWaterShadow {
  * stored only as optional reference inside the result payload.
  */
 model ExperimentalStepperActiveEnergyShadow {
+  id                Int      @id @default(autoincrement())
+  workoutId         Int      @unique
+  profileId         Int      @default(1)
+  sourceFingerprint String   @db.VarChar(64)
+  modelRevision     String   @db.VarChar(100)
+  features          Json
+  result            Json
+  createdAt         DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime @updatedAt @db.Timestamptz(3)
+  workout           Workout  @relation(fields: [workoutId], references: [id], onDelete: Cascade)
+
+  @@index([profileId, updatedAt])
+}
+
+/**
+ * Isolated experimental MS100 stepper glycogen-demand shadow. Not production
+ * TDEE, physiology, forecast, or GREEN scientific validation. Active energy is
+ * stored only as ignored context inside the result payload.
+ */
+model ExperimentalStepperGlycogenDemandShadow {
   id                Int      @id @default(autoincrement())
   workoutId         Int      @unique
   profileId         Int      @default(1)

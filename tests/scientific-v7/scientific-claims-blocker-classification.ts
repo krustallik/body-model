@@ -70,11 +70,6 @@ const CLASSIFICATIONS: Record<string, Omit<BlockedClaimClassification, "claimId"
     reason: "Transient-water state exists; needs cause provenance and decay transition before acute-swelling invariant.",
     closestToGreenRank: 9,
   },
-  "C-MV01": {
-    category: "research-blocked",
-    reason: "No proxy-safe whole-body skeletal-muscle observation contract; local≠whole remains research-constrained.",
-    closestToGreenRank: null,
-  },
   "C-MV05": {
     category: "validation-data",
     reason: "Needs longitudinal same-method vs mixed-method uncertainty series against real measurement protocols.",

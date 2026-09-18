@@ -43,10 +43,16 @@ import {
 } from "@/model/physiology-v7/resistance-training-adaptation-response-v7";
 import {
   applyLeanMassObservationToPhysiologyV7State,
+  applyLocalMuscleObservationToPhysiologyV7State,
   initializePhysiologyV7StateRejectingLeanAsSkeletalMuscleV7,
+  initializePhysiologyV7StateRejectingLocalAsWholeBodyV7,
   LEAN_MASS_NOT_SKELETAL_MUSCLE_POLICY_V7,
+  LOCAL_HYPERTROPHY_NOT_WHOLE_BODY_POLICY_V7,
   rejectLeanMassAsSkeletalMuscleValidatorV7,
+  rejectLocalMuscleAsSkeletalMuscleCalibratorV7,
+  rejectLocalMuscleAsSkeletalMuscleValidatorV7,
   rejectResidualLeanAsSkeletalMuscleV7,
+  rejectResidualLocalAsSkeletalMuscleV7,
 } from "@/model/physiology-v7/measurement-role-v7";
 import {
   buildPhysiologyDayV7,
@@ -393,6 +399,119 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
       valueKg: null,
     });
     expect(rebuilt.days[0]?.leanMassMeasurement.skeletalMuscleFromLean.applied).toBe(false);
+  });
+
+  it("local hypertrophy is not whole-body hypertrophy", () => {
+    const localObservation = {
+      endpointKind: "local-muscle-percent-change" as const,
+      site: "vastus-lateralis",
+      value: 5.2,
+      unit: "percent-change" as const,
+    };
+    const initialized = initializePhysiologyV7StateRejectingLocalAsWholeBodyV7({ localObservation });
+    expect(initialized.state.skeletalMuscleKg).toBeNull();
+    expect(initialized.localContext.role).toBe("local-hypertrophy-proxy");
+    expect(initialized.skeletalMuscleFromLocal.applied).toBe(false);
+    expect(initialized.skeletalMuscleFromLocal.policy).toEqual(LOCAL_HYPERTROPHY_NOT_WHOLE_BODY_POLICY_V7);
+
+    const withMuscle = applyLocalMuscleObservationToPhysiologyV7State({
+      state: {
+        fatMassKg: 18,
+        skeletalMuscleKg: 30,
+        otherLeanTissueKg: null,
+        glycogenKg: null,
+        glycogenWaterKg: null,
+        ecfDeviationKg: null,
+        transientExerciseWaterKg: null,
+        adaptiveThermogenesisKcalPerDay: null,
+        weightFilterState: null,
+      },
+      localObservation: {
+        endpointKind: "mri-muscle-csa",
+        site: "vastus-lateralis",
+        value: 80,
+        unit: "cm2-csa",
+      },
+    });
+    expect(withMuscle.state.skeletalMuscleKg).toBe(30);
+    expect(withMuscle.skeletalMuscleFromLocal.resultingSkeletalMuscleKg).toBe(30);
+    expect(rejectLocalMuscleAsSkeletalMuscleValidatorV7({
+      skeletalMuscleKg: 30,
+      localObservation,
+    }).accepted).toBe(false);
+    expect(rejectLocalMuscleAsSkeletalMuscleCalibratorV7({
+      skeletalMuscleKg: 30,
+      localObservation,
+    }).accepted).toBe(false);
+    expect(rejectResidualLocalAsSkeletalMuscleV7({
+      state: initialized.state,
+      residualLocalValue: 5.2,
+    }).applied).toBe(false);
+
+    const date = "2026-09-18";
+    const localSources = {
+      date,
+      observedWeightKg: 80,
+      observedBodyFatPercent: 22,
+      nutrition: {
+        caloriesKcal: 2_200,
+        proteinG: 140,
+        fatG: 70,
+        carbsG: 240,
+        provenance: observedNutritionProvenance(),
+      },
+      workoutFeedObserved: true,
+      steps: 7_000,
+      walkingRunningDistanceKm: 5,
+      workouts: [] as const,
+      stepperWorkouts: [] as const,
+      context: {
+        heartRateSampleCount: 0,
+        restingHeartRateSampleCount: 0,
+        sleepSegmentCount: 0,
+      },
+      localMuscleObservation: localObservation,
+    };
+    const day = buildPhysiologyDayV7({
+      date,
+      priorState: createUnavailablePhysiologyRuntimeStateV7(),
+      sources: localSources,
+      exposureHistory: buildResistanceTrainingExposureHistoryFromSourcesV7({
+        fromDate: date,
+        toDate: date,
+        days: [{ date, workoutFeedObserved: true }],
+        strengthWorkouts: [],
+        sessions: [],
+      }),
+    });
+    expect(day.localMuscleMeasurement.localContext).toMatchObject({
+      availability: "available",
+      role: "local-hypertrophy-proxy",
+      value: 5.2,
+      wholeBodyInterpretation: "not-whole-body-skeletal-muscle",
+    });
+    expect(day.resultingState.compartments.skeletalMuscleKg.availability).toBe("unavailable");
+    expect(day.provenance.localHypertrophyIsNotWholeBodySkeletalMuscle).toBe(true);
+
+    const rebuilt = rebuildPhysiologyRangeV7({
+      fromDate: date,
+      toDate: date,
+      initialState: createUnavailablePhysiologyRuntimeStateV7(),
+      sources: {
+        days: [localSources],
+        exposure: {
+          historyFromDate: date,
+          days: [{ date, workoutFeedObserved: true }],
+          strengthWorkouts: [],
+          sessions: [],
+        },
+      },
+    });
+    expect(rebuilt.finalState.compartments.skeletalMuscleKg).toMatchObject({
+      availability: "unavailable",
+      valueKg: null,
+    });
+    expect(rebuilt.days[0]?.localMuscleMeasurement.skeletalMuscleFromLocal.applied).toBe(false);
   });
 
   it("device active energy retains estimate provenance", () => {

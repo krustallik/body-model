@@ -24,8 +24,10 @@ import {
 import { SKELETAL_MUSCLE_RESPONSE_CALIBRATION_V7_VERSION } from "./skeletal-muscle-response-calibration-v7";
 import {
   handleLeanMassMeasurementForPhysiologyV7,
+  handleLocalMuscleMeasurementForPhysiologyV7,
   MEASUREMENT_ROLE_CONTRACT_V7_VERSION,
   type LeanMassObservationV7,
+  type LocalMuscleObservationV7,
 } from "./measurement-role-v7";
 import {
   PHYSIOLOGY_V7_CONTRACT_VERSION,
@@ -41,7 +43,7 @@ import {
 import { TRANSIENT_EXERCISE_WATER_ECF_TRANSITION_V7_VERSION } from "./transient-exercise-water-ecf-transition-v7";
 
 export const PHYSIOLOGY_DAILY_RUNTIME_V7_VERSION =
-  "bodycast-physiology-daily-runtime-v7-2" as const;
+  "bodycast-physiology-daily-runtime-v7-3" as const;
 
 export type PhysiologyV7CompartmentKey =
   | "fatMassKg"
@@ -114,6 +116,12 @@ export type PhysiologyDaySourceV7 = {
    * retain aggregate lean context only; it never writes skeletalMuscleKg.
    */
   leanMassObservation?: LeanMassObservationV7 | null;
+  /**
+   * Optional local ultrasound/CSA/thickness observation. Measurement-role
+   * handling retains local hypertrophy context only; it never writes
+   * whole-body skeletalMuscleKg.
+   */
+  localMuscleObservation?: LocalMuscleObservationV7 | null;
 };
 
 function unavailableReason(field: PhysiologyV7CompartmentKey): string {
@@ -241,6 +249,7 @@ function runtimeSourceFingerprint(
       weightKg: sources.observedWeightKg,
       bodyFatPercent: sources.observedBodyFatPercent,
       leanMassObservation: sources.leanMassObservation ?? null,
+      localMuscleObservation: sources.localMuscleObservation ?? null,
     },
     nutrition: sources.nutrition,
     activity: {
@@ -290,6 +299,15 @@ export function buildPhysiologyDayV7(input: {
   if (leanMassMeasurement.skeletalMuscleFromLean.resultingSkeletalMuscleKg
       !== priorStructuralState.skeletalMuscleKg) {
     throw new Error("measurement-role contract violated: lean mass mutated skeletalMuscleKg");
+  }
+
+  const localMuscleMeasurement = handleLocalMuscleMeasurementForPhysiologyV7({
+    state: priorStructuralState,
+    localObservation: input.sources.localMuscleObservation ?? null,
+  });
+  if (localMuscleMeasurement.skeletalMuscleFromLocal.resultingSkeletalMuscleKg
+      !== priorStructuralState.skeletalMuscleKg) {
+    throw new Error("measurement-role contract violated: local muscle mutated skeletalMuscleKg");
   }
 
   const proteinContext = input.sources.nutrition.proteinG === null
@@ -363,6 +381,7 @@ export function buildPhysiologyDayV7(input: {
     inputSourceFingerprint,
     priorStateFingerprint,
     leanMassMeasurement,
+    localMuscleMeasurement,
     trainingAdaptation: afterTraining.transition,
     fluidWaterFingerprint: fluidWater.fingerprint,
     resultingCompartments,
@@ -421,6 +440,7 @@ export function buildPhysiologyDayV7(input: {
     trainingAdaptation: afterTraining.transition,
     fluidWater,
     leanMassMeasurement,
+    localMuscleMeasurement,
     observations: {
       observedWeightKg: input.sources.observedWeightKg === null
         ? { availability: "unavailable" as const, valueKg: null, provenance: null }
@@ -437,6 +457,7 @@ export function buildPhysiologyDayV7(input: {
           provenance: "daily-health-data-observation" as const,
         },
       leanMassObservation: leanMassMeasurement.leanContext,
+      localMuscleObservation: localMuscleMeasurement.localContext,
     },
     massReconstruction: reconstructedMassKg === null
       ? {
@@ -452,6 +473,7 @@ export function buildPhysiologyDayV7(input: {
       observedWeightIsNotReconstructedMass: true as const,
       heartRateAndSleepAreContextOnly: true as const,
       leanMassIsNotSkeletalMuscle: true as const,
+      localHypertrophyIsNotWholeBodySkeletalMuscle: true as const,
     },
     blockers,
     scientificFingerprint,

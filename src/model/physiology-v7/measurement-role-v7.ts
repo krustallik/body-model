@@ -6,10 +6,12 @@ import {
 
 /**
  * Measurement-role contract: classifies body-composition endpoints so lean /
- * DXA / BIA / FFM observations never become skeletalMuscleKg (C-MV02).
+ * DXA / BIA / FFM observations never become skeletalMuscleKg (C-MV02), and local
+ * ultrasound/CSA/thickness observations never become whole-body skeletalMuscleKg
+ * (C-MV01).
  */
 export const MEASUREMENT_ROLE_CONTRACT_V7_VERSION =
-  "bodycast-measurement-role-v7-1" as const;
+  "bodycast-measurement-role-v7-2" as const;
 
 export const LEAN_MASS_NOT_SKELETAL_MUSCLE_POLICY_V7 = {
   conversion: "lean-mass-to-skeletal-muscle-kg",
@@ -22,6 +24,19 @@ export const LEAN_MASS_NOT_SKELETAL_MUSCLE_POLICY_V7 = {
 
 export type LeanMassNotSkeletalMusclePolicyV7 =
   typeof LEAN_MASS_NOT_SKELETAL_MUSCLE_POLICY_V7;
+
+export const LOCAL_HYPERTROPHY_NOT_WHOLE_BODY_POLICY_V7 = {
+  conversion: "local-hypertrophy-to-whole-body-skeletal-muscle-kg",
+  application: "intentionally-rejected",
+  residualAllocation: "intentionally-rejected",
+  calibrationApplication: "intentionally-rejected",
+  claimId: "C-MV01",
+  scientificDecision: "local-proxy-is-not-whole-body-skeletal-muscle",
+  researchAuthority: "workout-physiology-v7-audit",
+} as const;
+
+export type LocalHypertrophyNotWholeBodyPolicyV7 =
+  typeof LOCAL_HYPERTROPHY_NOT_WHOLE_BODY_POLICY_V7;
 
 /** Lean / proxy endpoints that may inform aggregate lean context only. */
 export type LeanMassEndpointKindV7 =
@@ -260,6 +275,277 @@ export function handleLeanMassMeasurementForPhysiologyV7(input: {
 
 export function leanMassMeasurementHandlingV7Fingerprint(
   handling: LeanMassMeasurementHandlingV7,
+): string {
+  return stableSha256(handling);
+}
+
+/** Local ultrasound / CSA / thickness / fiber endpoints — local context only. */
+export type LocalMuscleEndpointKindV7 =
+  | "ultrasound-muscle-thickness"
+  | "mri-muscle-csa"
+  | "mri-muscle-volume"
+  | "biopsy-fiber-csa"
+  | "local-muscle-percent-change";
+
+export type LocalMuscleObservationUnitV7 =
+  | "percent-change"
+  | "mm-thickness"
+  | "cm2-csa"
+  | "cm3-volume";
+
+export type LocalMuscleObservationV7 = {
+  endpointKind: LocalMuscleEndpointKindV7;
+  site: string;
+  value: number;
+  unit: LocalMuscleObservationUnitV7;
+};
+
+export type LocalHypertrophyContextV7 = {
+  availability: "available";
+  role: "local-hypertrophy-proxy";
+  endpointKind: LocalMuscleEndpointKindV7;
+  site: string;
+  value: number;
+  unit: LocalMuscleObservationUnitV7;
+  wholeBodyInterpretation: "not-whole-body-skeletal-muscle";
+  mayInitializeSkeletalMuscleKg: false;
+  mayOverwriteSkeletalMuscleKg: false;
+  mayValidateSkeletalMuscleKg: false;
+  mayCalibrateSkeletalMuscleKg: false;
+};
+
+export type RejectedSkeletalMuscleFromLocalV7 = {
+  applied: false;
+  target: "skeletalMuscleKg";
+  policy: LocalHypertrophyNotWholeBodyPolicyV7;
+  priorSkeletalMuscleKg: number | null;
+  resultingSkeletalMuscleKg: number | null;
+  rejectedOperations: readonly [
+    "initialize",
+    "overwrite",
+    "validate",
+    "calibrate",
+    "residual-allocate",
+  ];
+};
+
+export type LocalHypertrophyMeasurementHandlingV7 = {
+  contractVersion: typeof MEASUREMENT_ROLE_CONTRACT_V7_VERSION;
+  localContext: LocalHypertrophyContextV7 | {
+    availability: "unavailable";
+    reason: "missing-local-muscle-observation";
+  };
+  skeletalMuscleFromLocal: RejectedSkeletalMuscleFromLocalV7;
+};
+
+export function classifyLocalMuscleEndpointRoleV7(
+  endpointKind: LocalMuscleEndpointKindV7,
+): {
+  role: "local-hypertrophy-proxy";
+  mayInitializeSkeletalMuscleKg: false;
+  mayOverwriteSkeletalMuscleKg: false;
+  mayValidateSkeletalMuscleKg: false;
+  mayCalibrateSkeletalMuscleKg: false;
+  wholeBodyInterpretation: "not-whole-body-skeletal-muscle";
+  endpointKind: LocalMuscleEndpointKindV7;
+} {
+  return {
+    role: "local-hypertrophy-proxy",
+    mayInitializeSkeletalMuscleKg: false,
+    mayOverwriteSkeletalMuscleKg: false,
+    mayValidateSkeletalMuscleKg: false,
+    mayCalibrateSkeletalMuscleKg: false,
+    wholeBodyInterpretation: "not-whole-body-skeletal-muscle",
+    endpointKind,
+  };
+}
+
+export function resolveLocalMuscleObservationV7(
+  observation: LocalMuscleObservationV7,
+): LocalHypertrophyContextV7 {
+  if (!Number.isFinite(observation.value)) {
+    throw new RangeError("local muscle observation value must be finite");
+  }
+  if (observation.site.trim().length === 0) {
+    throw new RangeError("local muscle observation site must be non-empty");
+  }
+  const classification = classifyLocalMuscleEndpointRoleV7(observation.endpointKind);
+  return {
+    availability: "available",
+    role: classification.role,
+    endpointKind: observation.endpointKind,
+    site: observation.site,
+    value: observation.value,
+    unit: observation.unit,
+    wholeBodyInterpretation: classification.wholeBodyInterpretation,
+    mayInitializeSkeletalMuscleKg: false,
+    mayOverwriteSkeletalMuscleKg: false,
+    mayValidateSkeletalMuscleKg: false,
+    mayCalibrateSkeletalMuscleKg: false,
+  };
+}
+
+function rejectedSkeletalMuscleFromLocal(
+  priorSkeletalMuscleKg: number | null,
+): RejectedSkeletalMuscleFromLocalV7 {
+  return {
+    applied: false,
+    target: "skeletalMuscleKg",
+    policy: LOCAL_HYPERTROPHY_NOT_WHOLE_BODY_POLICY_V7,
+    priorSkeletalMuscleKg,
+    resultingSkeletalMuscleKg: priorSkeletalMuscleKg,
+    rejectedOperations: [
+      "initialize",
+      "overwrite",
+      "validate",
+      "calibrate",
+      "residual-allocate",
+    ],
+  };
+}
+
+/**
+ * Observation handling: local ultrasound/CSA/thickness informs local context
+ * only; skeletalMuscleKg is never initialized, overwritten, validated, or
+ * calibrated from the local value, and no local→kg conversion is applied.
+ */
+export function applyLocalMuscleObservationToPhysiologyV7State(input: {
+  state: PhysiologyV7State;
+  localObservation: LocalMuscleObservationV7;
+}): {
+  state: PhysiologyV7State;
+  localContext: LocalHypertrophyContextV7;
+  skeletalMuscleFromLocal: RejectedSkeletalMuscleFromLocalV7;
+} {
+  validatePhysiologyV7State(input.state);
+  const localContext = resolveLocalMuscleObservationV7(input.localObservation);
+  const state = validatePhysiologyV7State({ ...input.state });
+  return {
+    state,
+    localContext,
+    skeletalMuscleFromLocal: rejectedSkeletalMuscleFromLocal(state.skeletalMuscleKg),
+  };
+}
+
+/**
+ * Initialization seam: a local percent/CSA/thickness change never seeds
+ * whole-body skeletalMuscleKg.
+ */
+export function initializePhysiologyV7StateRejectingLocalAsWholeBodyV7(input: {
+  localObservation: LocalMuscleObservationV7;
+  priorState?: PhysiologyV7State | null;
+}): {
+  state: PhysiologyV7State;
+  localContext: LocalHypertrophyContextV7;
+  skeletalMuscleFromLocal: RejectedSkeletalMuscleFromLocalV7;
+} {
+  const prior = input.priorState ?? {
+    fatMassKg: null,
+    skeletalMuscleKg: null,
+    otherLeanTissueKg: null,
+    glycogenKg: null,
+    glycogenWaterKg: null,
+    ecfDeviationKg: null,
+    transientExerciseWaterKg: null,
+    adaptiveThermogenesisKcalPerDay: null,
+    weightFilterState: null,
+  };
+  return applyLocalMuscleObservationToPhysiologyV7State({
+    state: prior,
+    localObservation: input.localObservation,
+  });
+}
+
+/** Residual allocation rejector: local remainder is never written into skeletalMuscleKg. */
+export function rejectResidualLocalAsSkeletalMuscleV7(input: {
+  state: PhysiologyV7State;
+  residualLocalValue: number;
+}): RejectedSkeletalMuscleFromLocalV7 {
+  validatePhysiologyV7State(input.state);
+  if (!Number.isFinite(input.residualLocalValue)) {
+    throw new RangeError("residualLocalValue must be finite");
+  }
+  return rejectedSkeletalMuscleFromLocal(input.state.skeletalMuscleKg);
+}
+
+/** Validation rejector: local proxies cannot confirm or refute skeletalMuscleKg. */
+export function rejectLocalMuscleAsSkeletalMuscleValidatorV7(input: {
+  skeletalMuscleKg: number | null;
+  localObservation: LocalMuscleObservationV7;
+}): {
+  accepted: false;
+  reason: "local-hypertrophy-is-not-whole-body-skeletal-muscle-validator";
+  policy: LocalHypertrophyNotWholeBodyPolicyV7;
+  skeletalMuscleKg: number | null;
+  localObservation: LocalMuscleObservationV7;
+} {
+  resolveLocalMuscleObservationV7(input.localObservation);
+  if (input.skeletalMuscleKg !== null
+      && (!Number.isFinite(input.skeletalMuscleKg) || input.skeletalMuscleKg < 0)) {
+    throw new RangeError("skeletalMuscleKg must be finite and nonnegative when available");
+  }
+  return {
+    accepted: false,
+    reason: "local-hypertrophy-is-not-whole-body-skeletal-muscle-validator",
+    policy: LOCAL_HYPERTROPHY_NOT_WHOLE_BODY_POLICY_V7,
+    skeletalMuscleKg: input.skeletalMuscleKg,
+    localObservation: structuredClone(input.localObservation),
+  };
+}
+
+/** Calibration rejector: local percent/CSA never calibrates skeletalMuscleKg. */
+export function rejectLocalMuscleAsSkeletalMuscleCalibratorV7(input: {
+  skeletalMuscleKg: number | null;
+  localObservation: LocalMuscleObservationV7;
+}): {
+  accepted: false;
+  reason: "local-hypertrophy-is-not-whole-body-skeletal-muscle-calibrator";
+  policy: LocalHypertrophyNotWholeBodyPolicyV7;
+  skeletalMuscleKg: number | null;
+  localObservation: LocalMuscleObservationV7;
+} {
+  resolveLocalMuscleObservationV7(input.localObservation);
+  if (input.skeletalMuscleKg !== null
+      && (!Number.isFinite(input.skeletalMuscleKg) || input.skeletalMuscleKg < 0)) {
+    throw new RangeError("skeletalMuscleKg must be finite and nonnegative when available");
+  }
+  return {
+    accepted: false,
+    reason: "local-hypertrophy-is-not-whole-body-skeletal-muscle-calibrator",
+    policy: LOCAL_HYPERTROPHY_NOT_WHOLE_BODY_POLICY_V7,
+    skeletalMuscleKg: input.skeletalMuscleKg,
+    localObservation: structuredClone(input.localObservation),
+  };
+}
+
+export function handleLocalMuscleMeasurementForPhysiologyV7(input: {
+  state: PhysiologyV7State;
+  localObservation: LocalMuscleObservationV7 | null;
+}): LocalHypertrophyMeasurementHandlingV7 {
+  validatePhysiologyV7State(input.state);
+  if (input.localObservation === null) {
+    return {
+      contractVersion: MEASUREMENT_ROLE_CONTRACT_V7_VERSION,
+      localContext: {
+        availability: "unavailable",
+        reason: "missing-local-muscle-observation",
+      },
+      skeletalMuscleFromLocal: rejectedSkeletalMuscleFromLocal(input.state.skeletalMuscleKg),
+    };
+  }
+  const applied = applyLocalMuscleObservationToPhysiologyV7State({
+    state: input.state,
+    localObservation: input.localObservation,
+  });
+  return {
+    contractVersion: MEASUREMENT_ROLE_CONTRACT_V7_VERSION,
+    localContext: applied.localContext,
+    skeletalMuscleFromLocal: applied.skeletalMuscleFromLocal,
+  };
+}
+
+export function localHypertrophyMeasurementHandlingV7Fingerprint(
+  handling: LocalHypertrophyMeasurementHandlingV7,
 ): string {
   return stableSha256(handling);
 }

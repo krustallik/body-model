@@ -53,7 +53,7 @@ import {
 import { TRANSIENT_EXERCISE_WATER_ECF_TRANSITION_V7_VERSION } from "./transient-exercise-water-ecf-transition-v7";
 
 export const PHYSIOLOGY_DAILY_RUNTIME_V7_VERSION =
-  "bodycast-physiology-daily-runtime-v7-6" as const;
+  "bodycast-physiology-daily-runtime-v7-7" as const;
 
 export type PhysiologyV7CompartmentKey =
   | "fatMassKg"
@@ -372,6 +372,7 @@ export function buildPhysiologyDayV7(input: {
       || sleepHrvContext.resultingFatMassKg !== priorStructuralState.fatMassKg
       || sleepHrvContext.physiologyEffect.adaptationPenaltyApplied
       || sleepHrvContext.physiologyEffect.sleepStageDrivenTransitionApplied
+      || sleepHrvContext.physiologyEffect.sleepDailyAnabolicMultiplierApplied
       || sleepHrvContext.physiologyEffect.hrvHypertrophyCoefficientApplied) {
     throw new Error("sleep/HRV context contract violated: physiology was mutated");
   }
@@ -562,7 +563,9 @@ export function buildPhysiologyDayV7(input: {
       missingSleepIsUnknownNotZero: true as const,
       consumerSleepStagesDoNotDrivePhysiology: true as const,
       wearableSleepIsNotPsg: true as const,
+      isolatedLowSleepHasNoExactDailyMultiplier: true as const,
       hrvHasNoHypertrophyCoefficient: true as const,
+      acuteSwellingIsNotSkeletalMuscle: true as const,
     },
     blockers,
     scientificFingerprint,

@@ -14,10 +14,12 @@ import {
   HRV_HYPERTROPHY_COEFFICIENT_POLICY_V7,
   MISSING_SLEEP_POLICY_V7,
   rejectHrvAsHypertrophyCoefficientV7,
+  rejectIsolatedLowSleepAsDailyMultiplierV7,
   rejectMissingSleepAsZeroPenaltyV7,
   rejectSleepStagesAsBodyCompositionDriverV7,
   rejectWearableSleepAsPsgV7,
   resolveSleepObservationV7,
+  SLEEP_DAILY_ANABOLIC_MULTIPLIER_POLICY_V7,
   SLEEP_HRV_CONTEXT_CONTRACT_V7_VERSION,
   SLEEP_STAGE_PHYSIOLOGY_POLICY_V7,
   WEARABLE_SLEEP_PROVENANCE_POLICY_V7,
@@ -296,5 +298,63 @@ describe("sleep/HRV context v7 guardrails", () => {
     expect(dayLow.provenance.hrvHasNoHypertrophyCoefficient).toBe(true);
     expect(JSON.stringify(dayHigh.trainingAdaptation.response.hrvContext))
       .not.toMatch(/hrvMultiplier|hypertrophyKgFromHrv/);
+  });
+
+  it("rejects an isolated poor night as an exact daily anabolic/body-composition multiplier", () => {
+    const poorNight: SleepObservationV7 = {
+      availability: "available",
+      durationMinutes: 210,
+      source: "wearable-consumer",
+      stages: { remMinutes: 20, coreMinutes: 140, deepMinutes: 20 },
+    };
+    const normalNight: SleepObservationV7 = {
+      availability: "available",
+      durationMinutes: 450,
+      source: "wearable-consumer",
+      stages: { remMinutes: 90, coreMinutes: 250, deepMinutes: 70 },
+    };
+    expect(rejectIsolatedLowSleepAsDailyMultiplierV7({ sleepObservation: poorNight })).toMatchObject({
+      accepted: false,
+      policy: SLEEP_DAILY_ANABOLIC_MULTIPLIER_POLICY_V7,
+    });
+    const resolved = resolveSleepObservationV7(poorNight);
+    expect(resolved).toMatchObject({
+      availability: "available",
+      mayApplyExactDailyAnabolicMultiplier: false,
+      mayApplyMuscleOrFatCoefficient: false,
+      dailyAnabolicMultiplierPolicy: SLEEP_DAILY_ANABOLIC_MULTIPLIER_POLICY_V7,
+    });
+
+    const handled = handleSleepHrvContextForPhysiologyV7({
+      state: emptyState,
+      sleepObservation: poorNight,
+    });
+    expect(handled.physiologyEffect.sleepDailyAnabolicMultiplierApplied).toBe(false);
+    expect(handled.resultingSkeletalMuscleKg).toBe(30);
+    expect(handled.resultingFatMassKg).toBe(18);
+
+    const date = "2026-09-18";
+    const history = buildResistanceTrainingExposureHistoryFromSourcesV7({
+      fromDate: date,
+      toDate: date,
+      days: [{ date, workoutFeedObserved: true }],
+      strengthWorkouts: [],
+      sessions: [],
+    });
+    const poorDay = buildPhysiologyDayV7({
+      date,
+      priorState: runtimeStateFromStructuralStateV7(emptyState),
+      sources: daySources(date, { sleepObservation: poorNight }),
+      exposureHistory: history,
+    });
+    const normalDay = buildPhysiologyDayV7({
+      date,
+      priorState: runtimeStateFromStructuralStateV7(emptyState),
+      sources: daySources(date, { sleepObservation: normalNight }),
+      exposureHistory: history,
+    });
+    expect(poorDay.resultingState.compartments).toEqual(normalDay.resultingState.compartments);
+    expect(poorDay.sleepHrvContext.physiologyEffect.sleepDailyAnabolicMultiplierApplied).toBe(false);
+    expect(poorDay.provenance.isolatedLowSleepHasNoExactDailyMultiplier).toBe(true);
   });
 });

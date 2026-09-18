@@ -5,13 +5,14 @@ import {
 } from "./state";
 
 /**
- * Sleep / HRV context + provenance seam (C-M05, C-M06, C-M07, C-L05).
+ * Sleep / HRV context + provenance seam (C-M03, C-M05, C-M06, C-M07, C-L05).
  * Observations may be retained for audit; they never invent sleep→muscle/fat
  * coefficients, stage-driven body-composition transitions, wearable→PSG
- * equivalence, or HRV→hypertrophy multipliers.
+ * equivalence, or HRV→hypertrophy multipliers. Acute sleep-related MPS
+ * conversion is rejected via the measurement-role seam (C-M02 / C-MV03).
  */
 export const SLEEP_HRV_CONTEXT_CONTRACT_V7_VERSION =
-  "bodycast-sleep-hrv-context-v7-1" as const;
+  "bodycast-sleep-hrv-context-v7-2" as const;
 
 /** C-M05: missing sleep is unknown, never zero, never an automatic penalty. */
 export const MISSING_SLEEP_POLICY_V7 = {
@@ -61,6 +62,22 @@ export const HRV_HYPERTROPHY_COEFFICIENT_POLICY_V7 = {
 
 export type HrvHypertrophyCoefficientPolicyV7 =
   typeof HRV_HYPERTROPHY_COEFFICIENT_POLICY_V7;
+
+/**
+ * C-M03: isolated low sleep duration / stages never apply an exact daily
+ * anabolic or body-composition multiplier without a validated model.
+ */
+export const SLEEP_DAILY_ANABOLIC_MULTIPLIER_POLICY_V7 = {
+  component: "isolated-low-sleep-daily-muscle-fat-coefficient",
+  application: "intentionally-rejected",
+  numericComponent: "rejected",
+  claimId: "C-M03",
+  scientificDecision: "one-poor-night-has-no-exact-daily-multiplier",
+  researchAuthority: "workout-physiology-v7-audit",
+} as const;
+
+export type SleepDailyAnabolicMultiplierPolicyV7 =
+  typeof SLEEP_DAILY_ANABOLIC_MULTIPLIER_POLICY_V7;
 
 export type WearableSleepStageMinutesV7 = {
   remMinutes: number | null;
@@ -114,8 +131,10 @@ export type ResolvedSleepContextV7 =
       policy: WearableSleepProvenancePolicyV7;
     };
     stagePhysiologyPolicy: SleepStagePhysiologyPolicyV7;
+    dailyAnabolicMultiplierPolicy: SleepDailyAnabolicMultiplierPolicyV7;
     mayDriveBodyCompositionTransitions: false;
     mayApplyMuscleOrFatCoefficient: false;
+    mayApplyExactDailyAnabolicMultiplier: false;
   };
 
 export type ResolvedHrvContextV7 =
@@ -147,6 +166,7 @@ export type SleepHrvContextHandlingV7 = {
     fatMassKgUnchanged: true;
     adaptationPenaltyApplied: false;
     sleepStageDrivenTransitionApplied: false;
+    sleepDailyAnabolicMultiplierApplied: false;
     hrvHypertrophyCoefficientApplied: false;
   };
   priorSkeletalMuscleKg: number | null;
@@ -200,8 +220,10 @@ export function resolveSleepObservationV7(
       policy: WEARABLE_SLEEP_PROVENANCE_POLICY_V7,
     },
     stagePhysiologyPolicy: SLEEP_STAGE_PHYSIOLOGY_POLICY_V7,
+    dailyAnabolicMultiplierPolicy: SLEEP_DAILY_ANABOLIC_MULTIPLIER_POLICY_V7,
     mayDriveBodyCompositionTransitions: false,
     mayApplyMuscleOrFatCoefficient: false,
+    mayApplyExactDailyAnabolicMultiplier: false,
   };
 }
 
@@ -306,6 +328,23 @@ export function rejectHrvAsHypertrophyCoefficientV7(input: {
   };
 }
 
+export function rejectIsolatedLowSleepAsDailyMultiplierV7(input: {
+  sleepObservation: SleepObservationV7 | null | undefined;
+}): {
+  accepted: false;
+  reason: "isolated-low-sleep-has-no-exact-daily-anabolic-multiplier";
+  policy: SleepDailyAnabolicMultiplierPolicyV7;
+  sleepContext: ResolvedSleepContextV7;
+} {
+  const sleepContext = resolveSleepObservationV7(input.sleepObservation);
+  return {
+    accepted: false,
+    reason: "isolated-low-sleep-has-no-exact-daily-anabolic-multiplier",
+    policy: SLEEP_DAILY_ANABOLIC_MULTIPLIER_POLICY_V7,
+    sleepContext,
+  };
+}
+
 /**
  * Runtime handling: sleep/HRV inform context + provenance only. State
  * compartments are never rewritten from sleep duration, stages, or HRV.
@@ -328,6 +367,7 @@ export function handleSleepHrvContextForPhysiologyV7(input: {
       fatMassKgUnchanged: true,
       adaptationPenaltyApplied: false,
       sleepStageDrivenTransitionApplied: false,
+      sleepDailyAnabolicMultiplierApplied: false,
       hrvHypertrophyCoefficientApplied: false,
     },
     priorSkeletalMuscleKg: input.state.skeletalMuscleKg,

@@ -46,6 +46,8 @@ export const ACUTE_MPS_NOT_SKELETAL_MUSCLE_POLICY_V7 = {
   calibrationApplication: "intentionally-rejected",
   numericTransition: "intentionally-rejected",
   claimId: "C-MV03",
+  /** Sleep-study acute MPS percentages share the same no-conversion invariant. */
+  relatedClaimIds: ["C-M02"] as const,
   scientificDecision: "acute-mps-is-not-accumulated-muscle-mass",
   researchAuthority: "workout-physiology-v7-audit",
 } as const;

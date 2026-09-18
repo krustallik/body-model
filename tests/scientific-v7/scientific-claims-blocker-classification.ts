@@ -65,29 +65,14 @@ const CLASSIFICATIONS: Record<string, Omit<BlockedClaimClassification, "claimId"
     reason: "Same glycogen-demand seam as C-F01 plus store bounding.",
     closestToGreenRank: 8,
   },
-  "C-J01": {
-    category: "implementation-only",
-    reason: "Transient-water state exists; needs cause provenance and decay transition before acute-swelling invariant.",
-    closestToGreenRank: 9,
-  },
   "C-MV05": {
     category: "validation-data",
     reason: "Needs longitudinal same-method vs mixed-method uncertainty series against real measurement protocols.",
-    closestToGreenRank: 10,
+    closestToGreenRank: 9,
   },
   "C-M01": {
     category: "research-blocked",
     reason: "Sleep→anabolic coupling lacks bounded v7 sleep-context physiology and chronic oracle.",
-    closestToGreenRank: null,
-  },
-  "C-M05": {
-    category: "implementation-only",
-    reason: "Missing-sleep contract can be exposed once sleep provenance inputs exist; still not a numeric penalty.",
-    closestToGreenRank: null,
-  },
-  "C-L05": {
-    category: "research-blocked",
-    reason: "No validated HRV hypertrophy coefficient; null trials do not prove equivalence.",
     closestToGreenRank: null,
   },
   "C-K03": {

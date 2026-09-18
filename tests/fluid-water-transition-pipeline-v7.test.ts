@@ -11,7 +11,7 @@ describe("Stage 8E canonical fluid/water pipeline", () => {
     const result = buildFluidWaterTransitionPipelineV7({ localDate: "2026-09-18", priorState: state, carbsG: 200, nutrition, resistanceExposure: null, workoutFeedObserved: true, stepperWorkouts: [] });
     expect(result.glycogen.contractVersion).toBe("bodycast-glycogen-transition-v7-4");
     expect(result.glycogenWater.contractVersion).toBe("bodycast-glycogen-water-transition-v7-1");
-    expect(result.transientExerciseWaterEcf.contractVersion).toBe("bodycast-transient-exercise-water-ecf-transition-v7-1");
+    expect(result.transientExerciseWaterEcf.contractVersion).toBe("bodycast-transient-exercise-water-ecf-transition-v7-2");
     expect(result.glycogen.carbohydrateEvidence).toMatchObject({ provenance: "observed", carbsG: 200 });
     expect(result.glycogen.carbohydrateTimingPolicy.mealFrequencyEffect).toBe("intentionally-not-applied");
     expect(result.glycogen.proteinContribution).toMatchObject({

@@ -92,13 +92,21 @@ import {
   HRV_HYPERTROPHY_COEFFICIENT_POLICY_V7,
   MISSING_SLEEP_POLICY_V7,
   rejectHrvAsHypertrophyCoefficientV7,
+  rejectIsolatedLowSleepAsDailyMultiplierV7,
   rejectMissingSleepAsZeroPenaltyV7,
   rejectSleepStagesAsBodyCompositionDriverV7,
   rejectWearableSleepAsPsgV7,
   resolveSleepObservationV7,
+  SLEEP_DAILY_ANABOLIC_MULTIPLIER_POLICY_V7,
   SLEEP_STAGE_PHYSIOLOGY_POLICY_V7,
   WEARABLE_SLEEP_PROVENANCE_POLICY_V7,
 } from "@/model/physiology-v7/sleep-hrv-context-v7";
+import {
+  ACUTE_SWELLING_NOT_SKELETAL_MUSCLE_POLICY_V7,
+  applyTransientExerciseWaterEcfTransitionV7,
+  buildTransientExerciseWaterEcfTransitionV7,
+  rejectAcuteSwellingAsSkeletalMuscleV7,
+} from "@/model/physiology-v7/transient-exercise-water-ecf-transition-v7";
 import {
   buildResistanceTrainingExposureHistoryV7,
 } from "@/model/physiology-v7/resistance-training-exposure-history-v7";
@@ -833,6 +841,96 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
     expect(rebuilt.days[0]?.acuteMpsMeasurement.skeletalMuscleFromMps.applied).toBe(false);
   });
 
+  it("acute sleep-related MPS is not chronic muscle kilograms", () => {
+    const mpsObservation = {
+      endpointKind: "acute-mps-percent-response" as const,
+      value: 42,
+      unit: "percent-change" as const,
+      tissueSite: "vastus-lateralis",
+    };
+    expect(ACUTE_MPS_NOT_SKELETAL_MUSCLE_POLICY_V7.relatedClaimIds).toContain("C-M02");
+    expect(rejectAcuteMpsAsSkeletalMuscleNumericTransitionV7({
+      skeletalMuscleKg: 30,
+      mpsObservation,
+    })).toMatchObject({
+      applied: false,
+      resultingSkeletalMuscleKg: 30,
+      policy: ACUTE_MPS_NOT_SKELETAL_MUSCLE_POLICY_V7,
+    });
+
+    const date = "2026-09-18";
+    const history = buildResistanceTrainingExposureHistoryFromSourcesV7({
+      fromDate: date,
+      toDate: date,
+      days: [{ date, workoutFeedObserved: true }],
+      strengthWorkouts: [],
+      sessions: [],
+    });
+    const prior = runtimeStateFromStructuralStateV7({
+      fatMassKg: 18,
+      skeletalMuscleKg: 30,
+      otherLeanTissueKg: null,
+      glycogenKg: null,
+      glycogenWaterKg: null,
+      ecfDeviationKg: null,
+      transientExerciseWaterKg: null,
+      adaptiveThermogenesisKcalPerDay: null,
+      weightFilterState: null,
+    });
+    const shared = {
+      date,
+      observedWeightKg: 80,
+      observedBodyFatPercent: 20,
+      nutrition: {
+        caloriesKcal: 2_200,
+        proteinG: 140,
+        fatG: 70,
+        carbsG: 240,
+        provenance: observedNutritionProvenance(),
+      },
+      workoutFeedObserved: true,
+      steps: 7_000,
+      walkingRunningDistanceKm: 5,
+      workouts: [] as const,
+      stepperWorkouts: [] as const,
+      context: {
+        heartRateSampleCount: 0,
+        restingHeartRateSampleCount: 0,
+        sleepSegmentCount: 1,
+      },
+      sleepObservation: {
+        availability: "available" as const,
+        durationMinutes: 240,
+        source: "wearable-consumer" as const,
+      },
+    };
+    const withMps = buildPhysiologyDayV7({
+      date,
+      priorState: prior,
+      sources: { ...shared, acuteMpsObservation: mpsObservation },
+      exposureHistory: history,
+    });
+    const withoutMps = buildPhysiologyDayV7({
+      date,
+      priorState: prior,
+      sources: shared,
+      exposureHistory: history,
+    });
+    expect(withMps.acuteMpsMeasurement.skeletalMuscleFromMps.applied).toBe(false);
+    expect(withMps.resultingState.compartments.skeletalMuscleKg).toEqual(
+      withoutMps.resultingState.compartments.skeletalMuscleKg,
+    );
+    expect(withMps.resultingState.compartments.skeletalMuscleKg).toMatchObject({
+      availability: "available",
+      valueKg: 30,
+    });
+    expect(withMps.sleepHrvContext.sleepContext).toMatchObject({
+      mayApplyMuscleOrFatCoefficient: false,
+      mayApplyExactDailyAnabolicMultiplier: false,
+    });
+    expect(withMps.provenance.acuteMpsIsNotAccumulatedSkeletalMuscle).toBe(true);
+  });
+
   it("strength loss is not muscle loss", () => {
     const strengthObservation = {
       endpointKind: "strength-trend" as const,
@@ -1299,6 +1397,186 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
     });
     expect(dayLow.resultingState.compartments).toEqual(dayHigh.resultingState.compartments);
     expect(dayHigh.provenance.hrvHasNoHypertrophyCoefficient).toBe(true);
+  });
+
+  it("one poor night has no exact daily multiplier", () => {
+    const poorNight = {
+      availability: "available" as const,
+      durationMinutes: 180,
+      source: "wearable-consumer" as const,
+      stages: { remMinutes: 15, coreMinutes: 120, deepMinutes: 15 },
+    };
+    const normalNight = {
+      availability: "available" as const,
+      durationMinutes: 480,
+      source: "wearable-consumer" as const,
+    };
+    expect(rejectIsolatedLowSleepAsDailyMultiplierV7({ sleepObservation: poorNight })).toMatchObject({
+      accepted: false,
+      policy: SLEEP_DAILY_ANABOLIC_MULTIPLIER_POLICY_V7,
+    });
+    expect(resolveSleepObservationV7(poorNight)).toMatchObject({
+      mayApplyExactDailyAnabolicMultiplier: false,
+      mayApplyMuscleOrFatCoefficient: false,
+      dailyAnabolicMultiplierPolicy: SLEEP_DAILY_ANABOLIC_MULTIPLIER_POLICY_V7,
+    });
+
+    const date = "2026-09-18";
+    const history = buildResistanceTrainingExposureHistoryFromSourcesV7({
+      fromDate: date,
+      toDate: date,
+      days: [{ date, workoutFeedObserved: true }],
+      strengthWorkouts: [],
+      sessions: [],
+    });
+    const prior = runtimeStateFromStructuralStateV7({
+      fatMassKg: 18,
+      skeletalMuscleKg: 30,
+      otherLeanTissueKg: null,
+      glycogenKg: null,
+      glycogenWaterKg: null,
+      ecfDeviationKg: null,
+      transientExerciseWaterKg: null,
+      adaptiveThermogenesisKcalPerDay: null,
+      weightFilterState: null,
+    });
+    const shared = {
+      date,
+      observedWeightKg: 80,
+      observedBodyFatPercent: 20,
+      nutrition: {
+        caloriesKcal: 2_200,
+        proteinG: 140,
+        fatG: 70,
+        carbsG: 240,
+        provenance: observedNutritionProvenance(),
+      },
+      workoutFeedObserved: true,
+      steps: 7_000,
+      walkingRunningDistanceKm: 5,
+      workouts: [] as const,
+      stepperWorkouts: [] as const,
+      context: {
+        heartRateSampleCount: 0,
+        restingHeartRateSampleCount: 0,
+        sleepSegmentCount: 1,
+      },
+    };
+    const poorDay = buildPhysiologyDayV7({
+      date,
+      priorState: prior,
+      sources: { ...shared, sleepObservation: poorNight },
+      exposureHistory: history,
+    });
+    const normalDay = buildPhysiologyDayV7({
+      date,
+      priorState: prior,
+      sources: { ...shared, sleepObservation: normalNight },
+      exposureHistory: history,
+    });
+    expect(poorDay.sleepHrvContext.physiologyEffect.sleepDailyAnabolicMultiplierApplied).toBe(false);
+    expect(poorDay.resultingState.compartments).toEqual(normalDay.resultingState.compartments);
+    expect(poorDay.provenance.isolatedLowSleepHasNoExactDailyMultiplier).toBe(true);
+  });
+
+  it("acute swelling is not muscle tissue", () => {
+    expect(rejectAcuteSwellingAsSkeletalMuscleV7({
+      skeletalMuscleKg: 30,
+      swellingSignal: { localThicknessChangePercent: 10, bodyWeightRiseKg: 0.5 },
+    })).toMatchObject({
+      accepted: false,
+      destination: "transientExerciseWaterKg",
+      resultingSkeletalMuscleKg: 30,
+      policy: ACUTE_SWELLING_NOT_SKELETAL_MUSCLE_POLICY_V7,
+    });
+
+    const baseGlycogen = buildGlycogenTransitionV7({
+      priorGlycogenKg: null,
+      carbohydrate: glycogenCarbohydrateEvidenceV7({
+        carbsG: 240,
+        nutrition: observedNutritionProvenance(),
+      }),
+      resistanceExposure: null,
+      workoutFeedObserved: true,
+      stepperWorkouts: [],
+    });
+    const resistanceGlycogen = {
+      ...baseGlycogen,
+      exerciseEvidence: {
+        strength: "qualified-depletion-pressure" as const,
+        stepper: "observed-no-stepper" as const,
+      },
+    };
+    const transition = buildTransientExerciseWaterEcfTransitionV7({
+      priorTransientExerciseWaterKg: 0.2,
+      priorEcfDeviationKg: null,
+      glycogenTransition: resistanceGlycogen,
+      glycogenTransitionFingerprint: "swelling-c-j01",
+    });
+    expect(transition.transientExerciseWater.evidence).toBe("resistance-local-swelling-plausible");
+    expect(transition.acuteSwellingClassification).toMatchObject({
+      destination: "transient-exercise-water-context",
+      mayEnterSkeletalMuscleKg: false,
+      policy: ACUTE_SWELLING_NOT_SKELETAL_MUSCLE_POLICY_V7,
+    });
+
+    const state = {
+      fatMassKg: 18,
+      skeletalMuscleKg: 30,
+      otherLeanTissueKg: null,
+      glycogenKg: null,
+      glycogenWaterKg: null,
+      ecfDeviationKg: null,
+      transientExerciseWaterKg: 0.2,
+      adaptiveThermogenesisKcalPerDay: null,
+      weightFilterState: null,
+    };
+    const applied = applyTransientExerciseWaterEcfTransitionV7({ state, transition });
+    expect(applied.state.skeletalMuscleKg).toBe(30);
+    expect(applied.state.transientExerciseWaterKg).toBe(0.2);
+    expect(applied.skeletalMuscleFromSwelling.accepted).toBe(false);
+
+    const date = "2026-09-18";
+    const day = buildPhysiologyDayV7({
+      date,
+      priorState: runtimeStateFromStructuralStateV7(state),
+      sources: {
+        date,
+        observedWeightKg: 80,
+        observedBodyFatPercent: 20,
+        nutrition: {
+          caloriesKcal: 2_200,
+          proteinG: 140,
+          fatG: 70,
+          carbsG: 240,
+          provenance: observedNutritionProvenance(),
+        },
+        workoutFeedObserved: true,
+        steps: 7_000,
+        walkingRunningDistanceKm: 5,
+        workouts: [] as const,
+        stepperWorkouts: [] as const,
+        context: {
+          heartRateSampleCount: 0,
+          restingHeartRateSampleCount: 0,
+          sleepSegmentCount: 0,
+        },
+      },
+      exposureHistory: buildResistanceTrainingExposureHistoryFromSourcesV7({
+        fromDate: date,
+        toDate: date,
+        days: [{ date, workoutFeedObserved: true }],
+        strengthWorkouts: [],
+        sessions: [],
+      }),
+    });
+    expect(day.fluidWater.transientExerciseWaterEcf.acuteSwellingClassification.mayEnterSkeletalMuscleKg)
+      .toBe(false);
+    expect(day.resultingState.compartments.skeletalMuscleKg).toMatchObject({
+      availability: "available",
+      valueKg: 30,
+    });
+    expect(day.provenance.acuteSwellingIsNotSkeletalMuscle).toBe(true);
   });
 
   it("device active energy retains estimate provenance", () => {

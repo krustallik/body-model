@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildTransientExerciseWaterEcfTransitionV7, transientExerciseWaterEcfTransitionV7Fingerprint } from "@/model/physiology-v7/transient-exercise-water-ecf-transition-v7";
+import {
+  ACUTE_SWELLING_NOT_SKELETAL_MUSCLE_POLICY_V7,
+  applyTransientExerciseWaterEcfTransitionV7,
+  buildTransientExerciseWaterEcfTransitionV7,
+  classifyAcuteSwellingDestinationV7,
+  rejectAcuteSwellingAsSkeletalMuscleV7,
+  transientExerciseWaterEcfTransitionV7Fingerprint,
+} from "@/model/physiology-v7/transient-exercise-water-ecf-transition-v7";
 import type { GlycogenTransitionV7 } from "@/model/physiology-v7/glycogen-transition-v7";
 import {
   GLYCOGEN_ADULT_CAPACITY_CLAMP_POLICY_V7,
@@ -58,6 +65,9 @@ describe("Stage 8D transient exercise water and ECF", () => {
     expect(resistance.transientExerciseWater.evidence).toBe("resistance-local-swelling-plausible");
     expect(stepper.transientExerciseWater.evidence).toBe("stepper-fluid-shift-categorically-distinct");
     expect(resistance.transientExerciseWater.magnitude.availability).toBe("unavailable");
+    expect(resistance.acuteSwellingClassification).toEqual(classifyAcuteSwellingDestinationV7());
+    expect(resistance.acuteSwellingClassification.mayEnterSkeletalMuscleKg).toBe(false);
+    expect(resistance.acuteSwellingClassification.policy).toEqual(ACUTE_SWELLING_NOT_SKELETAL_MUSCLE_POLICY_V7);
   });
 
   it("preserves unresolved/unobserved/no-exercise semantics and never derives ECF", () => {
@@ -74,6 +84,42 @@ describe("Stage 8D transient exercise water and ECF", () => {
     expect(result.ecfDeviation).toMatchObject({ stateHandling: "carry-forward-for-simulation", biologicalTransition: "not-modeled" });
     expect(result.compartmentSeparation.ecfDeviation).toBe("not-a-residual-or-transient-water-bucket");
     expect(transientExerciseWaterEcfTransitionV7Fingerprint(result)).toBe(transientExerciseWaterEcfTransitionV7Fingerprint(result));
+  });
+
+  it("routes acute swelling to transient water and never mutates skeletalMuscleKg", () => {
+    expect(rejectAcuteSwellingAsSkeletalMuscleV7({
+      skeletalMuscleKg: 30,
+      swellingSignal: { localThicknessChangePercent: 8, bodyWeightRiseKg: 0.4 },
+    })).toMatchObject({
+      accepted: false,
+      destination: "transientExerciseWaterKg",
+      resultingSkeletalMuscleKg: 30,
+      policy: ACUTE_SWELLING_NOT_SKELETAL_MUSCLE_POLICY_V7,
+    });
+
+    const state: PhysiologyV7State = {
+      fatMassKg: 18,
+      skeletalMuscleKg: 28,
+      otherLeanTissueKg: 17,
+      glycogenKg: 0.4,
+      glycogenWaterKg: 1.2,
+      ecfDeviationKg: null,
+      transientExerciseWaterKg: 0.15,
+      adaptiveThermogenesisKcalPerDay: 0,
+      weightFilterState: { estimatedWeightKg: 64.5, varianceKg2: 1 },
+    };
+    const transition = buildTransientExerciseWaterEcfTransitionV7({
+      priorTransientExerciseWaterKg: state.transientExerciseWaterKg,
+      priorEcfDeviationKg: state.ecfDeviationKg,
+      glycogenTransition: glycogen("qualified-depletion-pressure", "observed-no-stepper"),
+      glycogenTransitionFingerprint: "r",
+    });
+    expect(transition.transientExerciseWater.evidence).toBe("resistance-local-swelling-plausible");
+    const applied = applyTransientExerciseWaterEcfTransitionV7({ state, transition });
+    expect(applied.state.skeletalMuscleKg).toBe(28);
+    expect(applied.state.transientExerciseWaterKg).toBe(0.15);
+    expect(applied.skeletalMuscleFromSwelling.accepted).toBe(false);
+    expect(applied.transition.acuteSwellingClassification.destination).toBe("transient-exercise-water-context");
   });
 
   it("does not substitute unavailable transient water or ECF in mass reconstruction", () => {

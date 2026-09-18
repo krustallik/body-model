@@ -329,6 +329,7 @@ model StrengthDiarySession {
   matchedWorkout   Workout?                     @relation(fields: [matchedWorkoutId], references: [id], onDelete: SetNull)
   exercises        StrengthSessionExercise[]
   programChanges   StrengthDiaryProgramChange[]
+  experimentalStrengthEnergyShadow ExperimentalStrengthEnergyShadow?
 
   @@index([profileId, status])
   @@index([profileId, webStartedAt])
@@ -407,6 +408,25 @@ model StrengthSet {
 
   @@unique([sessionExerciseId, setNumber])
   @@index([sessionExerciseId])
+}
+
+/**
+ * Isolated experimental/shadow output. This is not a source of truth and is
+ * never read by TDEE, physiology, forecasts, or scientific contracts.
+ */
+model ExperimentalStrengthEnergyShadow {
+  id                Int                  @id @default(autoincrement())
+  sessionId         Int                  @unique
+  profileId         Int                  @default(1)
+  sourceFingerprint String               @db.VarChar(64)
+  modelRevision     String               @db.VarChar(100)
+  features          Json
+  result            Json
+  createdAt         DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime             @updatedAt @db.Timestamptz(3)
+  session           StrengthDiarySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([profileId, updatedAt])
 }
 
 model WorkInterval {

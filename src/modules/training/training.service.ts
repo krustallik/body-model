@@ -57,6 +57,10 @@ import type {
 } from "./training.schema";
 import { validateSetFields } from "./training.set-validation";
 import { noteTrainingSourceChange } from "./training.source-revision";
+import {
+  recordExperimentalStrengthEnergyShadow,
+  recordExperimentalStrengthEnergyShadowBySessionId,
+} from "./experimental-strength-energy-shadow.service";
 import type {
   HistoricalStrengthWorkoutDto,
   MatchCandidateDto,
@@ -132,6 +136,8 @@ export class TrainingService {
   constructor(
     private readonly db: PrismaClient = prisma,
     private readonly repo: TrainingRepository = new TrainingRepository(db),
+    private readonly recordExperimentalShadow: (input: { session: StrengthSessionDto; profileId: number }) => Promise<void> =
+      db === prisma ? recordExperimentalStrengthEnergyShadow : async () => {},
   ) {}
 
   listCatalog(options?: { includeInactive?: boolean; profileId?: number }) {
@@ -713,6 +719,8 @@ export class TrainingService {
       }
       const refreshed = await this.repo.getSession(sessionId, profileId);
       if (!refreshed) throw new SessionNotFoundError();
+      // Shadow telemetry is never allowed to change the completed-session path.
+      void this.recordExperimentalShadow({ session: refreshed, profileId }).catch(() => {});
       return refreshed;
     }
 
@@ -724,6 +732,8 @@ export class TrainingService {
     await this.tryAutoMatchSession(sessionId, profileId);
     const refreshed = await this.repo.getSession(sessionId, profileId);
     if (!refreshed) throw new SessionNotFoundError();
+    // Shadow telemetry is never allowed to change the completed-session path.
+    void this.recordExperimentalShadow({ session: refreshed, profileId }).catch(() => {});
     return refreshed;
   }
 
@@ -842,6 +852,8 @@ export class TrainingService {
 
     const refreshed = await this.repo.getSession(sessionId, profileId);
     if (!refreshed) throw new SessionNotFoundError();
+    // A manual link can add Garmin diagnostic context after completion.
+    void this.recordExperimentalShadow({ session: refreshed, profileId }).catch(() => {});
     return refreshed;
   }
 
@@ -873,6 +885,10 @@ export class TrainingService {
       if (session.entryMode === ENTRY_MODE.RETROSPECTIVE) continue;
       if (session.webStartedAt === null) continue;
       await this.tryAutoMatchSession(session.id, profileId);
+      if (this.db === prisma) {
+        // A delayed sync may add Garmin diagnostic context after finishSession.
+        void recordExperimentalStrengthEnergyShadowBySessionId({ sessionId: session.id, profileId }).catch(() => {});
+      }
     }
   }
 

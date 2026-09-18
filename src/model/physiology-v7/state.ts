@@ -24,7 +24,12 @@ export type PhysiologyV7State = {
    * initialized from body composition or nutrition defaults.
    */
   glycogenKg: number | null;
-  glycogenWaterKg: number;
+  /**
+   * Glycogen-associated water is distinct from ECF and transient exercise
+   * water. Without an approved ratio/transition it remains unavailable rather
+   * than being synthesized from glycogenKg or substituted with zero.
+   */
+  glycogenWaterKg: number | null;
   ecfDeviationKg: number;
   transientExerciseWaterKg: number;
 } & AdaptiveThermogenesisState & {
@@ -35,7 +40,6 @@ export type PhysiologyV7State = {
 const NONNEGATIVE_COMPARTMENTS = [
   "fatMassKg",
   "otherLeanTissueKg",
-  "glycogenWaterKg",
   "transientExerciseWaterKg",
 ] as const;
 
@@ -49,6 +53,10 @@ export function validatePhysiologyV7State(state: PhysiologyV7State): PhysiologyV
   if (state.glycogenKg !== null) {
     if (!Number.isFinite(state.glycogenKg)) throw new TypeError("glycogenKg must be finite when available");
     if (state.glycogenKg < 0) throw new RangeError("glycogenKg must be nonnegative when available");
+  }
+  if (state.glycogenWaterKg !== null) {
+    if (!Number.isFinite(state.glycogenWaterKg)) throw new TypeError("glycogenWaterKg must be finite when available");
+    if (state.glycogenWaterKg < 0) throw new RangeError("glycogenWaterKg must be nonnegative when available");
   }
   if (state.skeletalMuscleKg !== null) {
     if (!Number.isFinite(state.skeletalMuscleKg)) throw new TypeError("skeletalMuscleKg must be finite when available");
@@ -81,7 +89,7 @@ export function physiologyV7StateFingerprint(state: PhysiologyV7State): string {
  */
 export function reconstructPhysiologyV7MassKg(state: PhysiologyV7State): number | null {
   validatePhysiologyV7State(state);
-  if (state.skeletalMuscleKg === null || state.glycogenKg === null) return null;
+  if (state.skeletalMuscleKg === null || state.glycogenKg === null || state.glycogenWaterKg === null) return null;
   const massKg = state.fatMassKg
     + state.skeletalMuscleKg
     + state.otherLeanTissueKg

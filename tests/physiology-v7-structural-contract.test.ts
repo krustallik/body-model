@@ -30,6 +30,7 @@ describe("physiology v7 structural Stage 5 contracts", () => {
       "resolve-input-semantics",
       "validate-state-contract",
       "energy-nutrition-transition-slot",
+      "glycogen-transition-slot",
       "training-adaptation-transition-slot",
       "fluid-water-transition-slot",
       "reconstruct-mass",

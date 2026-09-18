@@ -18,7 +18,12 @@ export type PhysiologyV7State = {
    */
   skeletalMuscleKg: number | null;
   otherLeanTissueKg: number;
-  glycogenKg: number;
+  /**
+   * Aggregate accounting placeholder only. It stays unavailable until a
+   * defensible quantitative glycogen source/transition exists; it is never
+   * initialized from body composition or nutrition defaults.
+   */
+  glycogenKg: number | null;
   glycogenWaterKg: number;
   ecfDeviationKg: number;
   transientExerciseWaterKg: number;
@@ -30,7 +35,6 @@ export type PhysiologyV7State = {
 const NONNEGATIVE_COMPARTMENTS = [
   "fatMassKg",
   "otherLeanTissueKg",
-  "glycogenKg",
   "glycogenWaterKg",
   "transientExerciseWaterKg",
 ] as const;
@@ -41,6 +45,10 @@ export function validatePhysiologyV7State(state: PhysiologyV7State): PhysiologyV
     const value = state[field];
     if (!Number.isFinite(value)) throw new TypeError(`${field} must be finite`);
     if (value < 0) throw new RangeError(`${field} must be nonnegative`);
+  }
+  if (state.glycogenKg !== null) {
+    if (!Number.isFinite(state.glycogenKg)) throw new TypeError("glycogenKg must be finite when available");
+    if (state.glycogenKg < 0) throw new RangeError("glycogenKg must be nonnegative when available");
   }
   if (state.skeletalMuscleKg !== null) {
     if (!Number.isFinite(state.skeletalMuscleKg)) throw new TypeError("skeletalMuscleKg must be finite when available");
@@ -73,7 +81,7 @@ export function physiologyV7StateFingerprint(state: PhysiologyV7State): string {
  */
 export function reconstructPhysiologyV7MassKg(state: PhysiologyV7State): number | null {
   validatePhysiologyV7State(state);
-  if (state.skeletalMuscleKg === null) return null;
+  if (state.skeletalMuscleKg === null || state.glycogenKg === null) return null;
   const massKg = state.fatMassKg
     + state.skeletalMuscleKg
     + state.otherLeanTissueKg

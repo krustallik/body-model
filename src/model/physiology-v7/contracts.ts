@@ -59,6 +59,7 @@ export const PHYSIOLOGY_V7_DAILY_TRANSITION_ORDER = [
   "resolve-input-semantics",
   "validate-state-contract",
   "energy-nutrition-transition-slot",
+  "glycogen-transition-slot",
   "training-adaptation-transition-slot",
   "fluid-water-transition-slot",
   "reconstruct-mass",

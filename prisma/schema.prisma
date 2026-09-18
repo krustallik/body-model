@@ -759,6 +759,25 @@ model FatWeightShadowV1Result {
 }
 
 /**
+ * Isolated experimental fat/weight uncertainty shadow around FatWeightShadowV1.
+ * Not production TDEE, physiology, forecast, or GREEN scientific validation.
+ */
+model ExperimentalFatWeightUncertaintyShadow {
+  id                Int      @id @default(autoincrement())
+  profileId         Int      @default(1)
+  date              String   @db.VarChar(10)
+  sourceFingerprint String   @db.VarChar(64)
+  modelRevision     String   @db.VarChar(100)
+  features          Json
+  result            Json
+  createdAt         DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([profileId, date])
+  @@index([profileId, updatedAt])
+}
+
+/**
  * Isolated experimental daily glycogen-repletion shadow. Not production TDEE,
  * physiology, forecast, or GREEN scientific validation.
  */

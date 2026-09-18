@@ -18,6 +18,7 @@ describe("scientific v7 experimental claims (not scientific validation)", () => 
       "C-F03",
       "C-F04",
       "C-F05",
+      "C-FW01",
       "C-G01",
       "C-G04",
       "C-H02",
@@ -29,7 +30,7 @@ describe("scientific v7 experimental claims (not scientific validation)", () => 
       "C-K06",
       "C-K08",
     ]);
-    expect(summarizeScientificManifestStatus().EXPERIMENTAL).toBe(15);
+    expect(summarizeScientificManifestStatus().EXPERIMENTAL).toBe(16);
   });
 
   it("requires implementation path, uncertainty, and non-GREEN test wiring when EXPERIMENTAL claims exist", () => {

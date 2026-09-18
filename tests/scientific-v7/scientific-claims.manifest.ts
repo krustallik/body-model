@@ -504,6 +504,23 @@ export const SCIENTIFIC_V7_CLAIMS: readonly ScientificClaimManifestRecord[] = [
   record({ claimId: "C-MV03", title: "acute MPS is not accumulated muscle mass", parameterIds: [], evidenceIds: ["E-MV08", "E-MV09"], auditEligibility: "SAFE", testType: "longitudinal", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Acute tracer synthesis percentages have no direct chronic kilogram conversion.", executableTestName: "acute MPS is not accumulated muscle mass" }),
   record({ claimId: "C-MV04", title: "body weight conserves total mass without identifying composition", parameterIds: [], evidenceIds: ["E-I01", "E-I02", "E-I03", "E-I04", "E-I05", "E-J01", "E-J02", "E-J03", "E-J04", "E-J05", "E-J06", "E-J07"], auditEligibility: "SAFE", testType: "property", assertionTypes: ["CONSERVATION"], provenance: ["MODEL_CONSERVATION_RULE"], scientificAssertion: "Reconstructed weight equals the modeled component sum while weight alone does not identify tissue composition.", executableTestName: "body-weight reconstruction counts glycogen-associated mass exactly once" }),
   record({ claimId: "C-MV05", title: "longitudinal method consistency affects uncertainty", parameterIds: [], evidenceIds: ["E-MV01", "E-MV02", "E-MV03", "E-MV04", "E-MV05", "E-MV06", "E-MV07"], auditEligibility: "SAFE", testType: "longitudinal", assertionTypes: ["ORDERING"], provenance: ["SCIENTIFIC_EVIDENCE", "INPUT_CONTRACT"], scientificAssertion: "Mixed devices, sites, hydration, or acute-exercise conditions carry greater uncertainty than a standardized same-method series.", infrastructureBlocker: v7MeasurementBlocker }),
+  record({
+    claimId: "C-FW01",
+    title: "personal fat/weight uncertainty is explicit without residual allocation",
+    parameterIds: ["P-FW01"],
+    evidenceIds: ["E-MV05", "E-MV06", "E-MV07"],
+    auditEligibility: "SAFE_AFTER_AUDIT_REVISION",
+    testType: "property",
+    assertionTypes: ["BOUND", "MISSINGNESS", "NO_DOUBLE_COUNTING"],
+    provenance: ["SCIENTIFIC_EVIDENCE", "ENGINEERING_ASSUMPTION", "INPUT_CONTRACT"],
+    scientificAssertion: "FatWeightShadow mean trajectories carry explicit fat and modeled-weight uncertainty bounds; scale weight and BIA may calibrate or widen uncertainty but never overwrite tissue state or allocate residuals into fat, muscle, glycogen, water, or ECF.",
+    experimental: {
+      implementation: "src/model/physiology-v7/experimental-fat-weight-uncertainty-v1.ts",
+      testFile: "tests/experimental-fat-weight-uncertainty-v1.test.ts",
+      testName: "keeps the FatWeightShadowV1 mean point estimate unchanged (C-FW01)",
+      uncertainty: "Experimental heuristic half-width bands around unchanged Hall/Forbes mean; engineering scale/fat priors with gap widening and compatible-observation narrowing; not scientifically validated personal SDs.",
+    },
+  }),
 ];
 
 /**

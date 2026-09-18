@@ -21,6 +21,7 @@ import { CURRENT_MODEL_VERSION } from "./model-version";
 import { buildSimulationDays } from "./simulation-input-builder";
 import { physiologyV7ShadowService } from "./physiology-v7-shadow.service";
 import { rebuildFatWeightShadowV1 } from "./fat-weight-shadow-v1.service";
+import { rebuildExperimentalFatWeightUncertaintyV1 } from "./experimental-fat-weight-uncertainty-shadow.service";
 
 const MINIMUM_AUTOMATIC_RESTART_DAYS = 3;
 
@@ -352,6 +353,7 @@ export async function recalculateModelEpisode(
   if (client === prisma && committedShadowInput !== null && committedShadowInput.fromDate <= committedShadowInput.toDate) {
     void physiologyV7ShadowService.run(committedShadowInput).catch(() => {});
     void rebuildFatWeightShadowV1(committedShadowInput).catch(() => {});
+    void rebuildExperimentalFatWeightUncertaintyV1(committedShadowInput).catch(() => {});
   }
   return production;
 }

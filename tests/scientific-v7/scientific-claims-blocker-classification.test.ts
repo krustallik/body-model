@@ -6,13 +6,13 @@ import {
 } from "./scientific-claims-blocker-classification";
 
 describe("Stage 12 blocked scientific-claim triage", () => {
-  it("classifies all 25 remaining blocked claims after glycogen repletion EXPERIMENTAL batch", () => {
+  it("classifies all 25 remaining blocked claims after fat/weight uncertainty EXPERIMENTAL claim", () => {
     const blocked = SCIENTIFIC_V7_CLAIMS.filter((claim) => claim.status === "BLOCKED");
     const green = SCIENTIFIC_V7_CLAIMS.filter((claim) => claim.status === "GREEN");
     const experimental = SCIENTIFIC_V7_CLAIMS.filter((claim) => claim.status === "EXPERIMENTAL");
     expect(blocked).toHaveLength(25);
     expect(green).toHaveLength(38);
-    expect(experimental).toHaveLength(15);
+    expect(experimental).toHaveLength(16);
 
     const rows = classifyBlockedScientificClaims();
     expect(rows).toHaveLength(25);
@@ -30,6 +30,7 @@ describe("Stage 12 blocked scientific-claim triage", () => {
     expect(rows.find((row) => row.claimId === "C-G04")).toBeUndefined();
     expect(rows.find((row) => row.claimId === "C-F05")).toBeUndefined();
     expect(rows.find((row) => row.claimId === "C-H02")).toBeUndefined();
+    expect(rows.find((row) => row.claimId === "C-FW01")).toBeUndefined();
     expect(rows.find((row) => row.claimId === "C-G03")).toBeDefined();
     expect(summary.note).toMatch(/Do not unblock without a real oracle/i);
   });

@@ -19,6 +19,7 @@ import { ModelEpisodeRepository } from "./model-episode.repository";
 import { addCalendarDays, latestCompletedLocalDate } from "./model-calendar";
 import { CURRENT_MODEL_VERSION } from "./model-version";
 import { buildSimulationDays } from "./simulation-input-builder";
+import { physiologyV7ShadowService } from "./physiology-v7-shadow.service";
 
 const MINIMUM_AUTOMATIC_RESTART_DAYS = 3;
 
@@ -230,7 +231,8 @@ export async function recalculateModelEpisode(
   input: { episodeId?: number; now?: Date } = {},
   client: PrismaClient = prisma,
 ) {
-  return client.$transaction(async (transaction) => {
+  let shadowInput: { profileId: number; fromDate: string; toDate: string; timeZone: string; productionEpisodeId: number; productionModelVersion: string } | null = null;
+  const production = await client.$transaction(async (transaction) => {
     const repository = new ModelEpisodeRepository(transaction);
     let episode = input.episodeId === undefined
       ? await repository.getActive()
@@ -307,6 +309,14 @@ export async function recalculateModelEpisode(
     // identical source/config/seed recovery resets the fingerprinted upsert.
     await repository.markRecoveryRunsStale(episode.id);
     const status = await repository.status(episode.id);
+    shadowInput = {
+      profileId: episode.profileId,
+      fromDate: episode.startDate,
+      toDate: latestCompletedDate,
+      timeZone: episode.timezone,
+      productionEpisodeId: episode.id,
+      productionModelVersion: episode.modelVersion,
+    };
     return {
       status: "ok" as const,
       episodeId: episode.id,
@@ -335,6 +345,13 @@ export async function recalculateModelEpisode(
       current: status,
     };
   }, TRANSACTION_OPTIONS);
+  // Post-commit side-channel: failures cannot alter the legacy response or its
+  // durable output. Injected clients stay deterministic for legacy tests.
+  const committedShadowInput = shadowInput as { profileId: number; fromDate: string; toDate: string; timeZone: string; productionEpisodeId: number; productionModelVersion: string } | null;
+  if (client === prisma && committedShadowInput !== null && committedShadowInput.fromDate <= committedShadowInput.toDate) {
+    void physiologyV7ShadowService.run(committedShadowInput).catch(() => {});
+  }
+  return production;
 }
 
 export async function getModelStatus(

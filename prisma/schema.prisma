@@ -636,3 +636,29 @@ model PhysiologyV7Lifecycle {
 
   @@index([staleFromDate])
 }
+
+/// Operational shadow-only comparison. It is derived from persisted v7 and
+/// legacy model output; neither source data nor user-facing output reads it.
+model PhysiologyV7ShadowDiagnostic {
+  id                    Int      @id @default(autoincrement())
+  profileId             Int      @default(1)
+  date                  String   @db.VarChar(10)
+  productionEpisodeId   Int?
+  productionModelVersion String? @db.VarChar(100)
+  productionOutput       Json
+  v7Status               String   @db.VarChar(20)
+  v7ResultFingerprint    String?  @db.VarChar(64)
+  v7Versions             Json
+  v7Projection           Json
+  comparison             Json
+  reasonCodes            Json
+  runtimeDurationMs      Int
+  executionStatus        String   @db.VarChar(20)
+  errorCode              String?  @db.VarChar(100)
+  createdAt              DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt              DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([profileId, date])
+  @@index([profileId, updatedAt])
+  @@index([executionStatus, updatedAt])
+}

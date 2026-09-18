@@ -174,6 +174,12 @@ const experimentalLocalHypertrophyTest =
   "tests/experimental-local-hypertrophy-response-v1.test.ts";
 const experimentalLocalHypertrophyUncertainty =
   "Experimental weekly per-muscle dimensionless saturating response from qualified direct hard-set volume; engineering τ; not kg/set, not skeletalMuscleKg, and not scientifically validated local percent change.";
+const experimentalCessationDetrainingImpl =
+  "src/model/physiology-v7/experimental-cessation-detraining-v1.ts";
+const experimentalCessationDetrainingTest =
+  "tests/experimental-cessation-detraining-v1.test.ts";
+const experimentalCessationDetrainingUncertainty =
+  "Experimental relative cessation/detraining heuristic with an engineering grace period and non-positive monthly atrophy band; not a scientifically validated atrophy curve, skeletalMuscleKg, or muscle-memory bonus.";
 const v7HrBlocker = "Canonical raw HR interval provenance exists, but HR coverage/calibration inputs and a separately observable anabolic-dose output do not exist.";
 const v7SleepBlocker = "Canonical v7 sleep provenance/duration inputs and bounded sleep-context output do not exist.";
 const v7MeasurementBlocker = "No v7 measurement-role contract exposes skeletal muscle separately from lean/local/proxy endpoints.";
@@ -276,8 +282,40 @@ export const SCIENTIFIC_V7_CLAIMS: readonly ScientificClaimManifestRecord[] = [
   }),
   record({ claimId: "C-B05", title: "muscle memory receives no unsupported numeric bonus", parameterIds: ["P-B04"], evidenceIds: ["E-B10", "E-B11", "E-B12", "E-B13"], auditEligibility: "SAFE", testType: "longitudinal", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Retraining may be identified without an invented quantitative muscle-memory bonus.", infrastructureBlocker: v7RetrainingIdentificationBlocker }),
 
-  record({ claimId: "C-C01", title: "cessation does not instantly remove muscle tissue", parameterIds: ["P-C01"], evidenceIds: ["E-C01", "E-C02"], auditEligibility: "SAFE", testType: "longitudinal", assertionTypes: ["TIME_COURSE", "LONGITUDINAL"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Verified cessation creates no same-day negative skeletal-muscle step solely from cessation.", infrastructureBlocker: v7DetrainingBlocker }),
-  record({ claimId: "C-C02", title: "longer cessation creates no artificial recovery bonus", parameterIds: ["P-C01"], evidenceIds: ["E-C01", "E-C03"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "longitudinal", assertionTypes: ["TIME_COURSE"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "With other conditions fixed, longer continuous cessation creates no artificial recovery or bonus; no universal atrophy curve is required.", infrastructureBlocker: v7DetrainingBlocker }),
+  record({
+    claimId: "C-C01",
+    title: "cessation does not instantly remove muscle tissue",
+    parameterIds: ["P-C01"],
+    evidenceIds: ["E-C01", "E-C02"],
+    auditEligibility: "SAFE",
+    testType: "longitudinal",
+    assertionTypes: ["TIME_COURSE", "LONGITUDINAL"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "Verified cessation creates no same-day negative skeletal-muscle step solely from cessation.",
+    experimental: {
+      implementation: experimentalCessationDetrainingImpl,
+      testFile: experimentalCessationDetrainingTest,
+      testName: "cessation does not instantly remove muscle tissue (C-C01)",
+      uncertainty: experimentalCessationDetrainingUncertainty,
+    },
+  }),
+  record({
+    claimId: "C-C02",
+    title: "longer cessation creates no artificial recovery bonus",
+    parameterIds: ["P-C01"],
+    evidenceIds: ["E-C01", "E-C03"],
+    auditEligibility: "SAFE_AFTER_AUDIT_REVISION",
+    testType: "longitudinal",
+    assertionTypes: ["TIME_COURSE"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "With other conditions fixed, longer continuous cessation creates no artificial recovery or bonus; no universal atrophy curve is required.",
+    experimental: {
+      implementation: experimentalCessationDetrainingImpl,
+      testFile: experimentalCessationDetrainingTest,
+      testName: "longer cessation cannot produce less cumulative loss inside supported domain (C-C02)",
+      uncertainty: experimentalCessationDetrainingUncertainty,
+    },
+  }),
   record({ claimId: "C-C03", title: "validated nonzero loading is not complete cessation", parameterIds: ["P-C02"], evidenceIds: ["E-C04", "E-C05"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "longitudinal", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE", "INPUT_CONTRACT"], scientificAssertion: "Validated nonzero loading is not automatically complete cessation; maintenance magnitude is untested.", executableTestName: "validated nonzero loading is not complete cessation" }),
   record({ claimId: "C-C04", title: "age-specific maintenance uncertainty is preserved", parameterIds: ["P-C02"], evidenceIds: ["E-C04"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "longitudinal", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Age uncertainty is preserved without a directional multiplier from one protocol.", infrastructureBlocker: v7DetrainingBlocker }),
   record({ claimId: "C-C05", title: "strength loss is not muscle loss", parameterIds: ["P-C03"], evidenceIds: ["E-C03", "E-B13"], auditEligibility: "SAFE", testType: "unit", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Strength decline cannot be converted directly into skeletal-muscle loss.", executableTestName: "strength loss is not muscle loss" }),

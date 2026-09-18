@@ -370,7 +370,7 @@ export function estimateExperimentalSkeletalMuscleDeltaV1(input: {
   const dailyLowerBase = rates.lowerKgPerMonth / DAYS_PER_MONTH_V1;
   const dailyUpperBase = rates.upperKgPerMonth / DAYS_PER_MONTH_V1;
 
-  let point = clampDaily(dailyPointBase * doseScale * proteinScale * energy.pointScale);
+  const point = clampDaily(dailyPointBase * doseScale * proteinScale * energy.pointScale);
   let lower = clampDaily(dailyLowerBase * doseScale * proteinScale * energy.lowerScale);
   let upper = clampDaily(dailyUpperBase * doseScale * proteinScale * energy.upperScale);
   if (mappingWiden > 1) {
@@ -483,6 +483,7 @@ export function experimentalSkeletalMuscleDeltaV1Fingerprint(
     fingerprint?: string;
   },
 ): string {
-  const { fingerprint: _ignored, ...rest } = result;
+  const rest = { ...result };
+  delete rest.fingerprint;
   return stableSha256(rest);
 }

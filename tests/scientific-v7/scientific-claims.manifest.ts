@@ -152,6 +152,7 @@ function record(input: RecordInput): ScientificClaimManifestRecord {
   };
 }
 
+const v7LocalHypertrophyBlocker = "Qualified set dose and expected-local polarity exist, but no group-expected local-hypertrophy magnitude exists; experimental whole-body daily SM delta is not weekly local hypertrophy.";
 const v7MuscleBlocker = "The v7 skeletalMuscleKg state contract exists, but no adaptation transition or proxy-safe observation contract exists.";
 const v7DetrainingBlocker = "No v7 training-history/cessation state or skeletal-muscle detraining transition exists.";
 const v7RetrainingIdentificationBlocker = "ResistanceTrainingExposureHistoryV7 can detect verified interruption then resumption, but labeling retraining/detraining still requires an unsupported cessation-duration threshold; no numeric muscle-memory bonus is approved.";
@@ -177,23 +178,7 @@ export const UNSAFE_CLAIM_IDS = ["C-G02", "C-H04", "C-K02", "C-M04"] as const;
 
 /** Eligible audited claims only (GREEN / EXPERIMENTAL / BLOCKED). REJECTED are separate. */
 export const SCIENTIFIC_V7_CLAIMS: readonly ScientificClaimManifestRecord[] = [
-  record({
-    claimId: "C-A01",
-    title: "higher supported volume does not lower group-expected local hypertrophy",
-    parameterIds: ["P-A02"],
-    evidenceIds: ["E-A01", "E-A02", "E-A03"],
-    auditEligibility: "SAFE_AFTER_AUDIT_REVISION",
-    testType: "property",
-    assertionTypes: ["MONOTONICITY"],
-    provenance: ["SCIENTIFIC_EVIDENCE"],
-    scientificAssertion: "Within the supported low-to-moderate range, added effective volume does not lower group-expected local hypertrophy; global concavity is not required.",
-    experimental: {
-      implementation: experimentalSkeletalMuscleDeltaImpl,
-      testFile: experimentalSkeletalMuscleDeltaTest,
-      testName: "higher supported volume does not lower group-expected local hypertrophy (C-A01)",
-      uncertainty: experimentalSkeletalMuscleDeltaUncertainty,
-    },
-  }),
+  record({ claimId: "C-A01", title: "higher supported volume does not lower group-expected local hypertrophy", parameterIds: ["P-A02"], evidenceIds: ["E-A01", "E-A02", "E-A03"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "property", assertionTypes: ["MONOTONICITY"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Within the supported low-to-moderate range, added effective volume does not lower group-expected local hypertrophy; global concavity is not required.", infrastructureBlocker: v7LocalHypertrophyBlocker }),
   record({ claimId: "C-A02", title: "volume-equated frequency has no required independent positive effect", parameterIds: ["P-A03"], evidenceIds: ["E-A02", "E-A11", "E-A14"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "unit", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "With effective weekly volume equated, v7 adds no required positive frequency multiplier and does not require exact physiological equality.", executableTestName: "volume-equated frequency has no required independent positive effect" }),
   record({ claimId: "C-A03", title: "hard-set dose remains available without tonnage", parameterIds: ["P-A01", "P-A06"], evidenceIds: ["E-A02", "E-A08", "E-A10", "E-A14"], auditEligibility: "SAFE", testType: "integration", assertionTypes: ["MISSINGNESS", "INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE", "INPUT_CONTRACT"], scientificAssertion: "Valid program sets and muscle mapping preserve a training dose when tonnage is absent.", executableTestName: "hard-set dose remains available without tonnage" }),
   record({ claimId: "C-A04", title: "momentary failure is not mandatory", parameterIds: ["P-A04"], evidenceIds: ["E-A09", "E-A13"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "unit", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Near-failure and failure training can both be effective; v7 requires neither exact equality nor a categorical failure bonus.", executableTestName: "momentary failure is not mandatory" }),
@@ -270,23 +255,7 @@ export const SCIENTIFIC_V7_CLAIMS: readonly ScientificClaimManifestRecord[] = [
   }),
   record({ claimId: "C-B05", title: "muscle memory receives no unsupported numeric bonus", parameterIds: ["P-B04"], evidenceIds: ["E-B10", "E-B11", "E-B12", "E-B13"], auditEligibility: "SAFE", testType: "longitudinal", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Retraining may be identified without an invented quantitative muscle-memory bonus.", infrastructureBlocker: v7RetrainingIdentificationBlocker }),
 
-  record({
-    claimId: "C-C01",
-    title: "cessation does not instantly remove muscle tissue",
-    parameterIds: ["P-C01"],
-    evidenceIds: ["E-C01", "E-C02"],
-    auditEligibility: "SAFE",
-    testType: "longitudinal",
-    assertionTypes: ["TIME_COURSE", "LONGITUDINAL"],
-    provenance: ["SCIENTIFIC_EVIDENCE"],
-    scientificAssertion: "Verified cessation creates no same-day negative skeletal-muscle step solely from cessation.",
-    experimental: {
-      implementation: experimentalSkeletalMuscleDeltaImpl,
-      testFile: experimentalSkeletalMuscleDeltaTest,
-      testName: "cessation does not instantly remove muscle tissue (C-C01)",
-      uncertainty: experimentalSkeletalMuscleDeltaUncertainty,
-    },
-  }),
+  record({ claimId: "C-C01", title: "cessation does not instantly remove muscle tissue", parameterIds: ["P-C01"], evidenceIds: ["E-C01", "E-C02"], auditEligibility: "SAFE", testType: "longitudinal", assertionTypes: ["TIME_COURSE", "LONGITUDINAL"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Verified cessation creates no same-day negative skeletal-muscle step solely from cessation.", infrastructureBlocker: v7DetrainingBlocker }),
   record({ claimId: "C-C02", title: "longer cessation creates no artificial recovery bonus", parameterIds: ["P-C01"], evidenceIds: ["E-C01", "E-C03"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "longitudinal", assertionTypes: ["TIME_COURSE"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "With other conditions fixed, longer continuous cessation creates no artificial recovery or bonus; no universal atrophy curve is required.", infrastructureBlocker: v7DetrainingBlocker }),
   record({ claimId: "C-C03", title: "validated nonzero loading is not complete cessation", parameterIds: ["P-C02"], evidenceIds: ["E-C04", "E-C05"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "longitudinal", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE", "INPUT_CONTRACT"], scientificAssertion: "Validated nonzero loading is not automatically complete cessation; maintenance magnitude is untested.", executableTestName: "validated nonzero loading is not complete cessation" }),
   record({ claimId: "C-C04", title: "age-specific maintenance uncertainty is preserved", parameterIds: ["P-C02"], evidenceIds: ["E-C04"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "longitudinal", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Age uncertainty is preserved without a directional multiplier from one protocol.", infrastructureBlocker: v7DetrainingBlocker }),

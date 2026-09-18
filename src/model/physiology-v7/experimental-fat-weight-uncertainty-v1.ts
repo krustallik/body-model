@@ -429,6 +429,7 @@ export function experimentalFatWeightUncertaintyV1Fingerprint(
     fingerprint?: string;
   },
 ): string {
-  const { fingerprint: _ignored, ...rest } = result;
+  const rest = { ...result };
+  delete rest.fingerprint;
   return stableSha256(rest);
 }

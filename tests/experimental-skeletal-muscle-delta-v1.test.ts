@@ -43,7 +43,7 @@ describe("experimental skeletal muscle delta v1", () => {
     expect(trained.state.absoluteSkeletalMuscleKg).toBeNull();
   });
 
-  it("higher supported volume does not lower group-expected local hypertrophy (C-A01)", () => {
+  it("added qualified hard-set count does not lower whole-body relative delta", () => {
     const low = estimateExperimentalSkeletalMuscleDeltaV1({
       ...baseTraining,
       qualifiedHardSetCount: 4,
@@ -117,7 +117,7 @@ describe("experimental skeletal muscle delta v1", () => {
     expect(withMps.reasons).toContain("acute-mps-context-ignored");
   });
 
-  it("cessation does not instantly remove muscle tissue (C-C01)", () => {
+  it("verified no-exposure rest day is zero relative delta, not same-day atrophy", () => {
     const rest = estimateExperimentalSkeletalMuscleDeltaV1({
       qualifiedHardSetCount: 0,
       mappedMuscleGroupCount: 0,

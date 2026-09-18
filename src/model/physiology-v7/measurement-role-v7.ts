@@ -6,12 +6,12 @@ import {
 
 /**
  * Measurement-role contract: classifies body-composition endpoints so lean /
- * DXA / BIA / FFM observations never become skeletalMuscleKg (C-MV02), and local
+ * DXA / BIA / FFM observations never become skeletalMuscleKg (C-MV02), local
  * ultrasound/CSA/thickness observations never become whole-body skeletalMuscleKg
- * (C-MV01).
+ * (C-MV01), and acute MPS/tracer signals never become skeletalMuscleKg (C-MV03).
  */
 export const MEASUREMENT_ROLE_CONTRACT_V7_VERSION =
-  "bodycast-measurement-role-v7-2" as const;
+  "bodycast-measurement-role-v7-3" as const;
 
 export const LEAN_MASS_NOT_SKELETAL_MUSCLE_POLICY_V7 = {
   conversion: "lean-mass-to-skeletal-muscle-kg",
@@ -38,6 +38,20 @@ export const LOCAL_HYPERTROPHY_NOT_WHOLE_BODY_POLICY_V7 = {
 export type LocalHypertrophyNotWholeBodyPolicyV7 =
   typeof LOCAL_HYPERTROPHY_NOT_WHOLE_BODY_POLICY_V7;
 
+export const ACUTE_MPS_NOT_SKELETAL_MUSCLE_POLICY_V7 = {
+  conversion: "acute-mps-to-skeletal-muscle-kg",
+  application: "intentionally-rejected",
+  residualAllocation: "intentionally-rejected",
+  calibrationApplication: "intentionally-rejected",
+  numericTransition: "intentionally-rejected",
+  claimId: "C-MV03",
+  scientificDecision: "acute-mps-is-not-accumulated-muscle-mass",
+  researchAuthority: "workout-physiology-v7-audit",
+} as const;
+
+export type AcuteMpsNotSkeletalMusclePolicyV7 =
+  typeof ACUTE_MPS_NOT_SKELETAL_MUSCLE_POLICY_V7;
+
 /** Lean / proxy endpoints that may inform aggregate lean context only. */
 export type LeanMassEndpointKindV7 =
   | "dxa-lean-soft-tissue"
@@ -50,6 +64,7 @@ export type MeasurementRoleV7 =
   | "aggregate-lean-context"
   | "skeletal-muscle-kg"
   | "local-hypertrophy-proxy"
+  | "acute-mps-mechanistic-context"
   | "body-weight-total-mass";
 
 export type LeanMassObservationV7 = {
@@ -546,6 +561,295 @@ export function handleLocalMuscleMeasurementForPhysiologyV7(input: {
 
 export function localHypertrophyMeasurementHandlingV7Fingerprint(
   handling: LocalHypertrophyMeasurementHandlingV7,
+): string {
+  return stableSha256(handling);
+}
+
+/** Acute MPS / tracer / FSR endpoints — mechanistic context only. */
+export type AcuteMpsEndpointKindV7 =
+  | "isotope-tracer-fsr"
+  | "acute-mps-percent-response"
+  | "biopsy-fractional-synthesis"
+  | "reported-acute-synthesis-signal";
+
+export type AcuteMpsObservationUnitV7 =
+  | "percent-per-hour"
+  | "percent-change"
+  | "fractional-synthesis-rate";
+
+export type AcuteMpsObservationV7 = {
+  endpointKind: AcuteMpsEndpointKindV7;
+  value: number;
+  unit: AcuteMpsObservationUnitV7;
+  tissueSite?: string;
+};
+
+export type AcuteMpsContextV7 = {
+  availability: "available";
+  role: "acute-mps-mechanistic-context";
+  endpointKind: AcuteMpsEndpointKindV7;
+  value: number;
+  unit: AcuteMpsObservationUnitV7;
+  tissueSite: string | null;
+  skeletalMuscleInterpretation: "not-accumulated-skeletal-muscle-kg";
+  mayInitializeSkeletalMuscleKg: false;
+  mayOverwriteSkeletalMuscleKg: false;
+  mayValidateSkeletalMuscleKg: false;
+  mayCalibrateSkeletalMuscleKg: false;
+  mayNumericallyTransitionSkeletalMuscleKg: false;
+};
+
+export type RejectedSkeletalMuscleFromMpsV7 = {
+  applied: false;
+  target: "skeletalMuscleKg";
+  policy: AcuteMpsNotSkeletalMusclePolicyV7;
+  priorSkeletalMuscleKg: number | null;
+  resultingSkeletalMuscleKg: number | null;
+  rejectedOperations: readonly [
+    "initialize",
+    "overwrite",
+    "validate",
+    "calibrate",
+    "numeric-transition",
+    "residual-allocate",
+  ];
+};
+
+export type AcuteMpsMeasurementHandlingV7 = {
+  contractVersion: typeof MEASUREMENT_ROLE_CONTRACT_V7_VERSION;
+  mpsContext: AcuteMpsContextV7 | {
+    availability: "unavailable";
+    reason: "missing-acute-mps-observation";
+  };
+  skeletalMuscleFromMps: RejectedSkeletalMuscleFromMpsV7;
+};
+
+export function classifyAcuteMpsEndpointRoleV7(
+  endpointKind: AcuteMpsEndpointKindV7,
+): {
+  role: "acute-mps-mechanistic-context";
+  mayInitializeSkeletalMuscleKg: false;
+  mayOverwriteSkeletalMuscleKg: false;
+  mayValidateSkeletalMuscleKg: false;
+  mayCalibrateSkeletalMuscleKg: false;
+  mayNumericallyTransitionSkeletalMuscleKg: false;
+  skeletalMuscleInterpretation: "not-accumulated-skeletal-muscle-kg";
+  endpointKind: AcuteMpsEndpointKindV7;
+} {
+  return {
+    role: "acute-mps-mechanistic-context",
+    mayInitializeSkeletalMuscleKg: false,
+    mayOverwriteSkeletalMuscleKg: false,
+    mayValidateSkeletalMuscleKg: false,
+    mayCalibrateSkeletalMuscleKg: false,
+    mayNumericallyTransitionSkeletalMuscleKg: false,
+    skeletalMuscleInterpretation: "not-accumulated-skeletal-muscle-kg",
+    endpointKind,
+  };
+}
+
+export function resolveAcuteMpsObservationV7(
+  observation: AcuteMpsObservationV7,
+): AcuteMpsContextV7 {
+  if (!Number.isFinite(observation.value)) {
+    throw new RangeError("acute MPS observation value must be finite");
+  }
+  const classification = classifyAcuteMpsEndpointRoleV7(observation.endpointKind);
+  return {
+    availability: "available",
+    role: classification.role,
+    endpointKind: observation.endpointKind,
+    value: observation.value,
+    unit: observation.unit,
+    tissueSite: observation.tissueSite?.trim() ? observation.tissueSite.trim() : null,
+    skeletalMuscleInterpretation: classification.skeletalMuscleInterpretation,
+    mayInitializeSkeletalMuscleKg: false,
+    mayOverwriteSkeletalMuscleKg: false,
+    mayValidateSkeletalMuscleKg: false,
+    mayCalibrateSkeletalMuscleKg: false,
+    mayNumericallyTransitionSkeletalMuscleKg: false,
+  };
+}
+
+function rejectedSkeletalMuscleFromMps(
+  priorSkeletalMuscleKg: number | null,
+): RejectedSkeletalMuscleFromMpsV7 {
+  return {
+    applied: false,
+    target: "skeletalMuscleKg",
+    policy: ACUTE_MPS_NOT_SKELETAL_MUSCLE_POLICY_V7,
+    priorSkeletalMuscleKg,
+    resultingSkeletalMuscleKg: priorSkeletalMuscleKg,
+    rejectedOperations: [
+      "initialize",
+      "overwrite",
+      "validate",
+      "calibrate",
+      "numeric-transition",
+      "residual-allocate",
+    ],
+  };
+}
+
+/**
+ * Observation handling: acute MPS/tracer informs mechanistic context only;
+ * skeletalMuscleKg is never initialized, overwritten, validated, calibrated, or
+ * numerically transitioned from the MPS value.
+ */
+export function applyAcuteMpsObservationToPhysiologyV7State(input: {
+  state: PhysiologyV7State;
+  mpsObservation: AcuteMpsObservationV7;
+}): {
+  state: PhysiologyV7State;
+  mpsContext: AcuteMpsContextV7;
+  skeletalMuscleFromMps: RejectedSkeletalMuscleFromMpsV7;
+} {
+  validatePhysiologyV7State(input.state);
+  const mpsContext = resolveAcuteMpsObservationV7(input.mpsObservation);
+  const state = validatePhysiologyV7State({ ...input.state });
+  return {
+    state,
+    mpsContext,
+    skeletalMuscleFromMps: rejectedSkeletalMuscleFromMps(state.skeletalMuscleKg),
+  };
+}
+
+export function initializePhysiologyV7StateRejectingMpsAsSkeletalMuscleV7(input: {
+  mpsObservation: AcuteMpsObservationV7;
+  priorState?: PhysiologyV7State | null;
+}): {
+  state: PhysiologyV7State;
+  mpsContext: AcuteMpsContextV7;
+  skeletalMuscleFromMps: RejectedSkeletalMuscleFromMpsV7;
+} {
+  const prior = input.priorState ?? {
+    fatMassKg: null,
+    skeletalMuscleKg: null,
+    otherLeanTissueKg: null,
+    glycogenKg: null,
+    glycogenWaterKg: null,
+    ecfDeviationKg: null,
+    transientExerciseWaterKg: null,
+    adaptiveThermogenesisKcalPerDay: null,
+    weightFilterState: null,
+  };
+  return applyAcuteMpsObservationToPhysiologyV7State({
+    state: prior,
+    mpsObservation: input.mpsObservation,
+  });
+}
+
+export function rejectResidualMpsAsSkeletalMuscleV7(input: {
+  state: PhysiologyV7State;
+  residualMpsValue: number;
+}): RejectedSkeletalMuscleFromMpsV7 {
+  validatePhysiologyV7State(input.state);
+  if (!Number.isFinite(input.residualMpsValue)) {
+    throw new RangeError("residualMpsValue must be finite");
+  }
+  return rejectedSkeletalMuscleFromMps(input.state.skeletalMuscleKg);
+}
+
+export function rejectAcuteMpsAsSkeletalMuscleValidatorV7(input: {
+  skeletalMuscleKg: number | null;
+  mpsObservation: AcuteMpsObservationV7;
+}): {
+  accepted: false;
+  reason: "acute-mps-is-not-accumulated-skeletal-muscle-validator";
+  policy: AcuteMpsNotSkeletalMusclePolicyV7;
+  skeletalMuscleKg: number | null;
+  mpsObservation: AcuteMpsObservationV7;
+} {
+  resolveAcuteMpsObservationV7(input.mpsObservation);
+  if (input.skeletalMuscleKg !== null
+      && (!Number.isFinite(input.skeletalMuscleKg) || input.skeletalMuscleKg < 0)) {
+    throw new RangeError("skeletalMuscleKg must be finite and nonnegative when available");
+  }
+  return {
+    accepted: false,
+    reason: "acute-mps-is-not-accumulated-skeletal-muscle-validator",
+    policy: ACUTE_MPS_NOT_SKELETAL_MUSCLE_POLICY_V7,
+    skeletalMuscleKg: input.skeletalMuscleKg,
+    mpsObservation: structuredClone(input.mpsObservation),
+  };
+}
+
+export function rejectAcuteMpsAsSkeletalMuscleCalibratorV7(input: {
+  skeletalMuscleKg: number | null;
+  mpsObservation: AcuteMpsObservationV7;
+}): {
+  accepted: false;
+  reason: "acute-mps-is-not-accumulated-skeletal-muscle-calibrator";
+  policy: AcuteMpsNotSkeletalMusclePolicyV7;
+  skeletalMuscleKg: number | null;
+  mpsObservation: AcuteMpsObservationV7;
+} {
+  resolveAcuteMpsObservationV7(input.mpsObservation);
+  if (input.skeletalMuscleKg !== null
+      && (!Number.isFinite(input.skeletalMuscleKg) || input.skeletalMuscleKg < 0)) {
+    throw new RangeError("skeletalMuscleKg must be finite and nonnegative when available");
+  }
+  return {
+    accepted: false,
+    reason: "acute-mps-is-not-accumulated-skeletal-muscle-calibrator",
+    policy: ACUTE_MPS_NOT_SKELETAL_MUSCLE_POLICY_V7,
+    skeletalMuscleKg: input.skeletalMuscleKg,
+    mpsObservation: structuredClone(input.mpsObservation),
+  };
+}
+
+export function rejectAcuteMpsAsSkeletalMuscleNumericTransitionV7(input: {
+  skeletalMuscleKg: number | null;
+  mpsObservation: AcuteMpsObservationV7;
+}): {
+  applied: false;
+  reason: "acute-mps-is-not-skeletal-muscle-numeric-transition";
+  policy: AcuteMpsNotSkeletalMusclePolicyV7;
+  priorSkeletalMuscleKg: number | null;
+  resultingSkeletalMuscleKg: number | null;
+} {
+  resolveAcuteMpsObservationV7(input.mpsObservation);
+  if (input.skeletalMuscleKg !== null
+      && (!Number.isFinite(input.skeletalMuscleKg) || input.skeletalMuscleKg < 0)) {
+    throw new RangeError("skeletalMuscleKg must be finite and nonnegative when available");
+  }
+  return {
+    applied: false,
+    reason: "acute-mps-is-not-skeletal-muscle-numeric-transition",
+    policy: ACUTE_MPS_NOT_SKELETAL_MUSCLE_POLICY_V7,
+    priorSkeletalMuscleKg: input.skeletalMuscleKg,
+    resultingSkeletalMuscleKg: input.skeletalMuscleKg,
+  };
+}
+
+export function handleAcuteMpsMeasurementForPhysiologyV7(input: {
+  state: PhysiologyV7State;
+  mpsObservation: AcuteMpsObservationV7 | null;
+}): AcuteMpsMeasurementHandlingV7 {
+  validatePhysiologyV7State(input.state);
+  if (input.mpsObservation === null) {
+    return {
+      contractVersion: MEASUREMENT_ROLE_CONTRACT_V7_VERSION,
+      mpsContext: {
+        availability: "unavailable",
+        reason: "missing-acute-mps-observation",
+      },
+      skeletalMuscleFromMps: rejectedSkeletalMuscleFromMps(input.state.skeletalMuscleKg),
+    };
+  }
+  const applied = applyAcuteMpsObservationToPhysiologyV7State({
+    state: input.state,
+    mpsObservation: input.mpsObservation,
+  });
+  return {
+    contractVersion: MEASUREMENT_ROLE_CONTRACT_V7_VERSION,
+    mpsContext: applied.mpsContext,
+    skeletalMuscleFromMps: applied.skeletalMuscleFromMps,
+  };
+}
+
+export function acuteMpsMeasurementHandlingV7Fingerprint(
+  handling: AcuteMpsMeasurementHandlingV7,
 ): string {
   return stableSha256(handling);
 }

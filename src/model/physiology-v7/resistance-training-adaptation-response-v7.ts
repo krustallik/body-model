@@ -9,6 +9,11 @@ import {
   buildSkeletalMuscleResponseCalibrationV7,
   type SkeletalMuscleResponseCalibrationV7,
 } from "@/model/physiology-v7/skeletal-muscle-response-calibration-v7";
+import {
+  resolveAcuteMpsObservationV7,
+  type AcuteMpsContextV7,
+  type AcuteMpsObservationV7,
+} from "@/model/physiology-v7/measurement-role-v7";
 import { buildExerciseMuscleMappingSnapshotV7 } from "@/model/physiology-v7/exercise-muscle-mapping-v7";
 import { buildCanonicalStrengthTrainingInputV7 } from "@/modules/model-episodes/strength-training-input-v7";
 import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
@@ -21,7 +26,7 @@ import type { StrengthSessionDto } from "@/modules/training/training.types";
  * tissue-mass estimate, dose-response coefficient, or nutrition modifier.
  */
 export const RESISTANCE_TRAINING_ADAPTATION_RESPONSE_V7_VERSION =
-  "bodycast-resistance-training-adaptation-response-v7-3" as const;
+  "bodycast-resistance-training-adaptation-response-v7-4" as const;
 
 /**
  * P-A07 / C-A06: no approved universal sets/session or sets/week cutoff.
@@ -101,6 +106,14 @@ export type ResistanceTrainingAdaptationResponseV7 = {
   recentExposureHistory: Pick<ResistanceTrainingExposureHistoryV7, "weekWindowKind" | "weeklyAggregates" | "resumptionEvents">;
   proteinContext: ResistanceTrainingProteinContextV7;
   energyBalanceContext: ResistanceTrainingEnergyBalanceContextV7;
+  /**
+   * Optional acute MPS / tracer / FSR context. Mechanistic only — never a
+   * skeletalMuscleKg initializer, validator, calibrator, or numeric transition.
+   */
+  acuteMpsContext: AcuteMpsContextV7 | {
+    availability: "unavailable";
+    reason: "missing-acute-mps-observation";
+  };
   trainingExperience: { availability: "unavailable"; reason: "no-defensible-training-status-source" };
   programNovelty: { availability: "unavailable"; reason: "no-approved-program-novelty-response" };
   calibration: SkeletalMuscleResponseCalibrationV7;
@@ -275,11 +288,16 @@ export function buildResistanceTrainingAdaptationResponseV7(input: {
   exposureHistory: ResistanceTrainingExposureHistoryV7;
   proteinContext?: ResistanceTrainingProteinContextV7;
   energyBalanceContext?: ResistanceTrainingEnergyBalanceContextV7;
+  /** Acute MPS/tracer may inform mechanistic context only; never muscle kg. */
+  mpsObservation?: AcuteMpsObservationV7 | null;
 }): ResistanceTrainingAdaptationResponseV7 {
   const day = input.exposureHistory.days.find((candidate) => candidate.date === input.date);
   if (!day) throw new RangeError("date must be within exposureHistory");
   const calibration = buildSkeletalMuscleResponseCalibrationV7();
   const trainingStimulus = stimulusFromDay(day);
+  const acuteMpsContext = input.mpsObservation == null
+    ? { availability: "unavailable" as const, reason: "missing-acute-mps-observation" as const }
+    : resolveAcuteMpsObservationV7(input.mpsObservation);
   return {
     contractVersion: RESISTANCE_TRAINING_ADAPTATION_RESPONSE_V7_VERSION,
     date: input.date,
@@ -292,6 +310,7 @@ export function buildResistanceTrainingAdaptationResponseV7(input: {
     },
     proteinContext: input.proteinContext ?? { availability: "unavailable", reason: "missing-protein-source" },
     energyBalanceContext: input.energyBalanceContext ?? { availability: "unavailable", reason: "missing-energy-balance-source" },
+    acuteMpsContext,
     trainingExperience: { availability: "unavailable", reason: "no-defensible-training-status-source" },
     programNovelty: { availability: "unavailable", reason: "no-approved-program-novelty-response" },
     calibration,
@@ -315,6 +334,7 @@ export function resistanceTrainingAdaptationResponseV7Fingerprint(
     }),
     proteinContext: response.proteinContext,
     energyBalanceContext: response.energyBalanceContext,
+    acuteMpsContext: response.acuteMpsContext,
     calibration: response.calibration,
     muscleMassTransition: response.muscleMassTransition,
   });

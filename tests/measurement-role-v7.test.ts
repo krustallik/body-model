@@ -7,21 +7,34 @@ import {
 import {
   applyLeanMassObservationToPhysiologyV7State,
   applyLocalMuscleObservationToPhysiologyV7State,
+  applyAcuteMpsObservationToPhysiologyV7State,
   classifyLeanMassEndpointRoleV7,
   classifyLocalMuscleEndpointRoleV7,
+  classifyAcuteMpsEndpointRoleV7,
   initializePhysiologyV7StateRejectingLeanAsSkeletalMuscleV7,
   initializePhysiologyV7StateRejectingLocalAsWholeBodyV7,
+  initializePhysiologyV7StateRejectingMpsAsSkeletalMuscleV7,
   LEAN_MASS_NOT_SKELETAL_MUSCLE_POLICY_V7,
   LOCAL_HYPERTROPHY_NOT_WHOLE_BODY_POLICY_V7,
+  ACUTE_MPS_NOT_SKELETAL_MUSCLE_POLICY_V7,
   MEASUREMENT_ROLE_CONTRACT_V7_VERSION,
   rejectLeanMassAsSkeletalMuscleValidatorV7,
   rejectLocalMuscleAsSkeletalMuscleCalibratorV7,
   rejectLocalMuscleAsSkeletalMuscleValidatorV7,
+  rejectAcuteMpsAsSkeletalMuscleCalibratorV7,
+  rejectAcuteMpsAsSkeletalMuscleNumericTransitionV7,
+  rejectAcuteMpsAsSkeletalMuscleValidatorV7,
   rejectResidualLeanAsSkeletalMuscleV7,
   rejectResidualLocalAsSkeletalMuscleV7,
+  rejectResidualMpsAsSkeletalMuscleV7,
+  type AcuteMpsObservationV7,
   type LocalMuscleObservationV7,
 } from "@/model/physiology-v7/measurement-role-v7";
 import { rebuildPhysiologyRangeV7 } from "@/model/physiology-v7/rebuild-v7";
+import {
+  buildResistanceTrainingAdaptationResponseV7,
+} from "@/model/physiology-v7/resistance-training-adaptation-response-v7";
+import { applyTrainingAdaptationTransitionV7 } from "@/model/physiology-v7/training-adaptation-transition-v7";
 import { buildResistanceTrainingExposureHistoryFromSourcesV7 } from "@/model/physiology-v7/resistance-training-exposure-history-sources-v7";
 import type { PhysiologyV7State } from "@/model/physiology-v7/state";
 import { observedNutritionProvenance } from "@/modules/model-episodes/nutrition-gap-bridge";
@@ -52,6 +65,7 @@ function sources(date: string, options: {
     valueKg: number;
   } | null;
   localMuscleObservation?: LocalMuscleObservationV7 | null;
+  acuteMpsObservation?: AcuteMpsObservationV7 | null;
 } = {}) {
   return {
     date,
@@ -70,6 +84,7 @@ function sources(date: string, options: {
     },
     leanMassObservation: options.leanMassObservation ?? null,
     localMuscleObservation: options.localMuscleObservation ?? null,
+    acuteMpsObservation: options.acuteMpsObservation ?? null,
   };
 }
 
@@ -383,6 +398,237 @@ describe("measurement-role v7 local ≠ whole-body skeletal muscle", () => {
     expect(rebuilt.days).toHaveLength(2);
     for (const day of rebuilt.days) {
       expect(day.localMuscleMeasurement.skeletalMuscleFromLocal.applied).toBe(false);
+      expect(day.resultingState.compartments.skeletalMuscleKg).toMatchObject({
+        availability: "available",
+        valueKg: 28,
+        biologicalTransition: "not-modeled",
+      });
+    }
+    expect(rebuilt.finalState.compartments.skeletalMuscleKg.valueKg).toBe(28);
+  });
+});
+
+describe("measurement-role v7 acute MPS ≠ skeletal muscle kg", () => {
+  const mpsObservation: AcuteMpsObservationV7 = {
+    endpointKind: "isotope-tracer-fsr",
+    value: 0.08,
+    unit: "percent-per-hour",
+    tissueSite: "vastus-lateralis",
+  };
+
+  it("classifies tracer/FSR/MPS endpoints as mechanistic context only", () => {
+    for (const endpointKind of [
+      "isotope-tracer-fsr",
+      "acute-mps-percent-response",
+      "biopsy-fractional-synthesis",
+      "reported-acute-synthesis-signal",
+    ] as const) {
+      expect(classifyAcuteMpsEndpointRoleV7(endpointKind)).toEqual({
+        role: "acute-mps-mechanistic-context",
+        mayInitializeSkeletalMuscleKg: false,
+        mayOverwriteSkeletalMuscleKg: false,
+        mayValidateSkeletalMuscleKg: false,
+        mayCalibrateSkeletalMuscleKg: false,
+        mayNumericallyTransitionSkeletalMuscleKg: false,
+        skeletalMuscleInterpretation: "not-accumulated-skeletal-muscle-kg",
+        endpointKind,
+      });
+    }
+  });
+
+  it("initialization from acute MPS keeps skeletalMuscleKg unavailable", () => {
+    const initialized = initializePhysiologyV7StateRejectingMpsAsSkeletalMuscleV7({
+      mpsObservation,
+    });
+    expect(initialized.mpsContext).toMatchObject({
+      availability: "available",
+      role: "acute-mps-mechanistic-context",
+      value: 0.08,
+      skeletalMuscleInterpretation: "not-accumulated-skeletal-muscle-kg",
+    });
+    expect(initialized.state.skeletalMuscleKg).toBeNull();
+    expect(initialized.skeletalMuscleFromMps).toEqual({
+      applied: false,
+      target: "skeletalMuscleKg",
+      policy: ACUTE_MPS_NOT_SKELETAL_MUSCLE_POLICY_V7,
+      priorSkeletalMuscleKg: null,
+      resultingSkeletalMuscleKg: null,
+      rejectedOperations: [
+        "initialize",
+        "overwrite",
+        "validate",
+        "calibrate",
+        "numeric-transition",
+        "residual-allocate",
+      ],
+    });
+    expect(initialized).not.toHaveProperty("mpsToSkeletalMuscleKg");
+    expect(initialized).not.toHaveProperty("mpsKgConversion");
+  });
+
+  it("observation handling never overwrites skeletalMuscleKg from FSR/MPS", () => {
+    const prior = { ...emptyState, skeletalMuscleKg: 31, fatMassKg: 18 };
+    const applied = applyAcuteMpsObservationToPhysiologyV7State({
+      state: prior,
+      mpsObservation: {
+        endpointKind: "acute-mps-percent-response",
+        value: 120,
+        unit: "percent-change",
+        tissueSite: "vastus-lateralis",
+      },
+    });
+    expect(applied.state.skeletalMuscleKg).toBe(31);
+    expect(applied.mpsContext.value).toBe(120);
+    expect(applied.skeletalMuscleFromMps.applied).toBe(false);
+    expect(applied.skeletalMuscleFromMps.resultingSkeletalMuscleKg).toBe(31);
+  });
+
+  it("rejects MPS validation, calibration, numeric transition, and residual allocation", () => {
+    expect(rejectAcuteMpsAsSkeletalMuscleValidatorV7({
+      skeletalMuscleKg: 30,
+      mpsObservation,
+    })).toMatchObject({
+      accepted: false,
+      reason: "acute-mps-is-not-accumulated-skeletal-muscle-validator",
+      policy: ACUTE_MPS_NOT_SKELETAL_MUSCLE_POLICY_V7,
+    });
+    expect(rejectAcuteMpsAsSkeletalMuscleCalibratorV7({
+      skeletalMuscleKg: 30,
+      mpsObservation,
+    })).toMatchObject({
+      accepted: false,
+      reason: "acute-mps-is-not-accumulated-skeletal-muscle-calibrator",
+    });
+    expect(rejectAcuteMpsAsSkeletalMuscleNumericTransitionV7({
+      skeletalMuscleKg: 30,
+      mpsObservation,
+    })).toMatchObject({
+      applied: false,
+      reason: "acute-mps-is-not-skeletal-muscle-numeric-transition",
+      priorSkeletalMuscleKg: 30,
+      resultingSkeletalMuscleKg: 30,
+    });
+    expect(rejectResidualMpsAsSkeletalMuscleV7({
+      state: emptyState,
+      residualMpsValue: 0.08,
+    })).toMatchObject({
+      applied: false,
+      resultingSkeletalMuscleKg: null,
+      rejectedOperations: expect.arrayContaining(["residual-allocate"]),
+    });
+  });
+
+  it("adaptation path retains MPS as mechanistic context without changing skeletalMuscleKg", () => {
+    const date = "2026-09-18";
+    const exposureHistory = buildResistanceTrainingExposureHistoryFromSourcesV7({
+      fromDate: date,
+      toDate: date,
+      days: [{ date, workoutFeedObserved: true }],
+      strengthWorkouts: [],
+      sessions: [],
+    });
+    const response = buildResistanceTrainingAdaptationResponseV7({
+      date,
+      exposureHistory,
+      mpsObservation,
+    });
+    expect(response.acuteMpsContext).toMatchObject({
+      availability: "available",
+      role: "acute-mps-mechanistic-context",
+      value: 0.08,
+      mayNumericallyTransitionSkeletalMuscleKg: false,
+    });
+    expect(response.calibration.rejectedConversions).toContain(
+      "acute-mps-to-chronic-skeletal-muscle-kg",
+    );
+    expect(response.muscleMassTransition.availability).toBe("unavailable");
+    expect(JSON.stringify(response)).not.toMatch(/mpsToKg|mpsKgDelta|skeletalMuscleDeltaKg/);
+
+    const applied = applyTrainingAdaptationTransitionV7({
+      state: { ...emptyState, skeletalMuscleKg: 29 },
+      response,
+    });
+    expect(applied.state.skeletalMuscleKg).toBe(29);
+    expect(applied.transition.skeletalMuscleTransition.carriedForwardSkeletalMuscleKg).toBe(29);
+    expect(applied.transition.skeletalMuscleTransition.biologicalTransition).toBe("not-modeled");
+  });
+
+  it("daily runtime retains MPS context without writing skeletalMuscleKg", () => {
+    const date = "2026-09-18";
+    const result = buildPhysiologyDayV7({
+      date,
+      priorState: createUnavailablePhysiologyRuntimeStateV7(),
+      sources: sources(date, { acuteMpsObservation: mpsObservation }),
+      exposureHistory: buildResistanceTrainingExposureHistoryFromSourcesV7({
+        fromDate: date,
+        toDate: date,
+        days: [{ date, workoutFeedObserved: true }],
+        strengthWorkouts: [],
+        sessions: [],
+      }),
+    });
+    expect(result.acuteMpsMeasurement.contractVersion).toBe(MEASUREMENT_ROLE_CONTRACT_V7_VERSION);
+    expect(result.acuteMpsMeasurement.mpsContext).toMatchObject({
+      availability: "available",
+      role: "acute-mps-mechanistic-context",
+      endpointKind: "isotope-tracer-fsr",
+      value: 0.08,
+    });
+    expect(result.acuteMpsMeasurement.skeletalMuscleFromMps.applied).toBe(false);
+    expect(result.trainingAdaptation.response.acuteMpsContext).toMatchObject({
+      availability: "available",
+      role: "acute-mps-mechanistic-context",
+    });
+    expect(result.resultingState.compartments.skeletalMuscleKg).toMatchObject({
+      availability: "unavailable",
+      valueKg: null,
+    });
+    expect(result.provenance.acuteMpsIsNotAccumulatedSkeletalMuscle).toBe(true);
+  });
+
+  it("rebuild keeps skeletalMuscleKg independent of acute MPS observations across days", () => {
+    const fromDate = "2026-09-18";
+    const toDate = "2026-09-19";
+    const prior = runtimeStateFromStructuralStateV7({
+      ...emptyState,
+      skeletalMuscleKg: 28,
+    });
+    const rebuilt = rebuildPhysiologyRangeV7({
+      fromDate,
+      toDate,
+      initialState: prior,
+      sources: {
+        days: [
+          sources(fromDate, {
+            acuteMpsObservation: {
+              endpointKind: "isotope-tracer-fsr",
+              value: 0.09,
+              unit: "fractional-synthesis-rate",
+              tissueSite: "vastus-lateralis",
+            },
+          }),
+          sources(toDate, {
+            acuteMpsObservation: {
+              endpointKind: "biopsy-fractional-synthesis",
+              value: 0.11,
+              unit: "percent-per-hour",
+            },
+          }),
+        ],
+        exposure: {
+          historyFromDate: fromDate,
+          days: [
+            { date: fromDate, workoutFeedObserved: true },
+            { date: toDate, workoutFeedObserved: true },
+          ],
+          strengthWorkouts: [],
+          sessions: [],
+        },
+      },
+    });
+    expect(rebuilt.days).toHaveLength(2);
+    for (const day of rebuilt.days) {
+      expect(day.acuteMpsMeasurement.skeletalMuscleFromMps.applied).toBe(false);
       expect(day.resultingState.compartments.skeletalMuscleKg).toMatchObject({
         availability: "available",
         valueKg: 28,

@@ -44,15 +44,22 @@ import {
 import {
   applyLeanMassObservationToPhysiologyV7State,
   applyLocalMuscleObservationToPhysiologyV7State,
+  applyAcuteMpsObservationToPhysiologyV7State,
   initializePhysiologyV7StateRejectingLeanAsSkeletalMuscleV7,
   initializePhysiologyV7StateRejectingLocalAsWholeBodyV7,
+  initializePhysiologyV7StateRejectingMpsAsSkeletalMuscleV7,
   LEAN_MASS_NOT_SKELETAL_MUSCLE_POLICY_V7,
   LOCAL_HYPERTROPHY_NOT_WHOLE_BODY_POLICY_V7,
+  ACUTE_MPS_NOT_SKELETAL_MUSCLE_POLICY_V7,
   rejectLeanMassAsSkeletalMuscleValidatorV7,
   rejectLocalMuscleAsSkeletalMuscleCalibratorV7,
   rejectLocalMuscleAsSkeletalMuscleValidatorV7,
+  rejectAcuteMpsAsSkeletalMuscleCalibratorV7,
+  rejectAcuteMpsAsSkeletalMuscleNumericTransitionV7,
+  rejectAcuteMpsAsSkeletalMuscleValidatorV7,
   rejectResidualLeanAsSkeletalMuscleV7,
   rejectResidualLocalAsSkeletalMuscleV7,
+  rejectResidualMpsAsSkeletalMuscleV7,
 } from "@/model/physiology-v7/measurement-role-v7";
 import {
   buildPhysiologyDayV7,
@@ -61,6 +68,10 @@ import {
 import { rebuildPhysiologyRangeV7 } from "@/model/physiology-v7/rebuild-v7";
 import { buildResistanceTrainingExposureHistoryFromSourcesV7 } from "@/model/physiology-v7/resistance-training-exposure-history-sources-v7";
 import { observedNutritionProvenance } from "@/modules/model-episodes/nutrition-gap-bridge";
+import {
+  buildResistanceTrainingAdaptationResponseV7,
+} from "@/model/physiology-v7/resistance-training-adaptation-response-v7";
+import { applyTrainingAdaptationTransitionV7 } from "@/model/physiology-v7/training-adaptation-transition-v7";
 import {
   buildResistanceTrainingExposureHistoryV7,
 } from "@/model/physiology-v7/resistance-training-exposure-history-v7";
@@ -512,6 +523,162 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
       valueKg: null,
     });
     expect(rebuilt.days[0]?.localMuscleMeasurement.skeletalMuscleFromLocal.applied).toBe(false);
+  });
+
+  it("acute MPS is not accumulated muscle mass", () => {
+    const mpsObservation = {
+      endpointKind: "isotope-tracer-fsr" as const,
+      value: 0.08,
+      unit: "percent-per-hour" as const,
+      tissueSite: "vastus-lateralis",
+    };
+    const initialized = initializePhysiologyV7StateRejectingMpsAsSkeletalMuscleV7({ mpsObservation });
+    expect(initialized.state.skeletalMuscleKg).toBeNull();
+    expect(initialized.mpsContext.role).toBe("acute-mps-mechanistic-context");
+    expect(initialized.skeletalMuscleFromMps.applied).toBe(false);
+    expect(initialized.skeletalMuscleFromMps.policy).toEqual(ACUTE_MPS_NOT_SKELETAL_MUSCLE_POLICY_V7);
+    expect(initialized).not.toHaveProperty("mpsToSkeletalMuscleKg");
+
+    const withMuscle = applyAcuteMpsObservationToPhysiologyV7State({
+      state: {
+        fatMassKg: 18,
+        skeletalMuscleKg: 30,
+        otherLeanTissueKg: null,
+        glycogenKg: null,
+        glycogenWaterKg: null,
+        ecfDeviationKg: null,
+        transientExerciseWaterKg: null,
+        adaptiveThermogenesisKcalPerDay: null,
+        weightFilterState: null,
+      },
+      mpsObservation: {
+        endpointKind: "acute-mps-percent-response",
+        value: 150,
+        unit: "percent-change",
+      },
+    });
+    expect(withMuscle.state.skeletalMuscleKg).toBe(30);
+    expect(withMuscle.skeletalMuscleFromMps.resultingSkeletalMuscleKg).toBe(30);
+    expect(rejectAcuteMpsAsSkeletalMuscleValidatorV7({
+      skeletalMuscleKg: 30,
+      mpsObservation,
+    }).accepted).toBe(false);
+    expect(rejectAcuteMpsAsSkeletalMuscleCalibratorV7({
+      skeletalMuscleKg: 30,
+      mpsObservation,
+    }).accepted).toBe(false);
+    expect(rejectAcuteMpsAsSkeletalMuscleNumericTransitionV7({
+      skeletalMuscleKg: 30,
+      mpsObservation,
+    })).toMatchObject({
+      applied: false,
+      resultingSkeletalMuscleKg: 30,
+    });
+    expect(rejectResidualMpsAsSkeletalMuscleV7({
+      state: initialized.state,
+      residualMpsValue: 0.08,
+    }).applied).toBe(false);
+
+    const date = "2026-09-18";
+    const mpsSources = {
+      date,
+      observedWeightKg: 80,
+      observedBodyFatPercent: 22,
+      nutrition: {
+        caloriesKcal: 2_200,
+        proteinG: 140,
+        fatG: 70,
+        carbsG: 240,
+        provenance: observedNutritionProvenance(),
+      },
+      workoutFeedObserved: true,
+      steps: 7_000,
+      walkingRunningDistanceKm: 5,
+      workouts: [] as const,
+      stepperWorkouts: [] as const,
+      context: {
+        heartRateSampleCount: 0,
+        restingHeartRateSampleCount: 0,
+        sleepSegmentCount: 0,
+      },
+      acuteMpsObservation: mpsObservation,
+    };
+    const day = buildPhysiologyDayV7({
+      date,
+      priorState: createUnavailablePhysiologyRuntimeStateV7(),
+      sources: mpsSources,
+      exposureHistory: buildResistanceTrainingExposureHistoryFromSourcesV7({
+        fromDate: date,
+        toDate: date,
+        days: [{ date, workoutFeedObserved: true }],
+        strengthWorkouts: [],
+        sessions: [],
+      }),
+    });
+    expect(day.acuteMpsMeasurement.mpsContext).toMatchObject({
+      availability: "available",
+      role: "acute-mps-mechanistic-context",
+      value: 0.08,
+      skeletalMuscleInterpretation: "not-accumulated-skeletal-muscle-kg",
+    });
+    expect(day.trainingAdaptation.response.acuteMpsContext).toMatchObject({
+      availability: "available",
+      role: "acute-mps-mechanistic-context",
+      mayNumericallyTransitionSkeletalMuscleKg: false,
+    });
+    expect(day.trainingAdaptation.response.calibration.rejectedConversions).toContain(
+      "acute-mps-to-chronic-skeletal-muscle-kg",
+    );
+    expect(day.resultingState.compartments.skeletalMuscleKg.availability).toBe("unavailable");
+    expect(day.provenance.acuteMpsIsNotAccumulatedSkeletalMuscle).toBe(true);
+
+    const adaptation = buildResistanceTrainingAdaptationResponseV7({
+      date,
+      exposureHistory: buildResistanceTrainingExposureHistoryFromSourcesV7({
+        fromDate: date,
+        toDate: date,
+        days: [{ date, workoutFeedObserved: true }],
+        strengthWorkouts: [],
+        sessions: [],
+      }),
+      mpsObservation,
+    });
+    const transitioned = applyTrainingAdaptationTransitionV7({
+      state: {
+        fatMassKg: 18,
+        skeletalMuscleKg: 30,
+        otherLeanTissueKg: null,
+        glycogenKg: null,
+        glycogenWaterKg: null,
+        ecfDeviationKg: null,
+        transientExerciseWaterKg: null,
+        adaptiveThermogenesisKcalPerDay: null,
+        weightFilterState: null,
+      },
+      response: adaptation,
+    });
+    expect(transitioned.state.skeletalMuscleKg).toBe(30);
+    expect(transitioned.transition.skeletalMuscleTransition.biologicalTransition).toBe("not-modeled");
+
+    const rebuilt = rebuildPhysiologyRangeV7({
+      fromDate: date,
+      toDate: date,
+      initialState: createUnavailablePhysiologyRuntimeStateV7(),
+      sources: {
+        days: [mpsSources],
+        exposure: {
+          historyFromDate: date,
+          days: [{ date, workoutFeedObserved: true }],
+          strengthWorkouts: [],
+          sessions: [],
+        },
+      },
+    });
+    expect(rebuilt.finalState.compartments.skeletalMuscleKg).toMatchObject({
+      availability: "unavailable",
+      valueKg: null,
+    });
+    expect(rebuilt.days[0]?.acuteMpsMeasurement.skeletalMuscleFromMps.applied).toBe(false);
   });
 
   it("device active energy retains estimate provenance", () => {

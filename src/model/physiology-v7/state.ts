@@ -30,8 +30,10 @@ export type PhysiologyV7State = {
    * than being synthesized from glycogenKg or substituted with zero.
    */
   glycogenWaterKg: number | null;
-  ecfDeviationKg: number;
-  transientExerciseWaterKg: number;
+  /** Signed ECF deviation; unavailable without a defensible baseline/transition. */
+  ecfDeviationKg: number | null;
+  /** Separate post-exercise water concept; unavailable without amplitude/timing evidence. */
+  transientExerciseWaterKg: number | null;
 } & AdaptiveThermogenesisState & {
   /** Retained as a canonical state concept; v7 does not yet run its transition. */
   weightFilterState: WeightFilterState;
@@ -40,7 +42,6 @@ export type PhysiologyV7State = {
 const NONNEGATIVE_COMPARTMENTS = [
   "fatMassKg",
   "otherLeanTissueKg",
-  "transientExerciseWaterKg",
 ] as const;
 
 /** Structural contract validation only; it deliberately adds no scientific clamps. */
@@ -58,17 +59,23 @@ export function validatePhysiologyV7State(state: PhysiologyV7State): PhysiologyV
     if (!Number.isFinite(state.glycogenWaterKg)) throw new TypeError("glycogenWaterKg must be finite when available");
     if (state.glycogenWaterKg < 0) throw new RangeError("glycogenWaterKg must be nonnegative when available");
   }
+  if (state.transientExerciseWaterKg !== null) {
+    if (!Number.isFinite(state.transientExerciseWaterKg)) throw new TypeError("transientExerciseWaterKg must be finite when available");
+    if (state.transientExerciseWaterKg < 0) throw new RangeError("transientExerciseWaterKg must be nonnegative when available");
+  }
   if (state.skeletalMuscleKg !== null) {
     if (!Number.isFinite(state.skeletalMuscleKg)) throw new TypeError("skeletalMuscleKg must be finite when available");
     if (state.skeletalMuscleKg < 0) throw new RangeError("skeletalMuscleKg must be nonnegative when available");
   }
   for (const [field, value] of Object.entries({
-    ecfDeviationKg: state.ecfDeviationKg,
     adaptiveThermogenesisKcalPerDay: state.adaptiveThermogenesisKcalPerDay,
     estimatedWeightKg: state.weightFilterState.estimatedWeightKg,
     varianceKg2: state.weightFilterState.varianceKg2,
   })) {
     if (!Number.isFinite(value)) throw new TypeError(`${field} must be finite`);
+  }
+  if (state.ecfDeviationKg !== null && !Number.isFinite(state.ecfDeviationKg)) {
+    throw new TypeError("ecfDeviationKg must be finite when available");
   }
   return state;
 }
@@ -89,7 +96,7 @@ export function physiologyV7StateFingerprint(state: PhysiologyV7State): string {
  */
 export function reconstructPhysiologyV7MassKg(state: PhysiologyV7State): number | null {
   validatePhysiologyV7State(state);
-  if (state.skeletalMuscleKg === null || state.glycogenKg === null || state.glycogenWaterKg === null) return null;
+  if (state.skeletalMuscleKg === null || state.glycogenKg === null || state.glycogenWaterKg === null || state.ecfDeviationKg === null || state.transientExerciseWaterKg === null) return null;
   const massKg = state.fatMassKg
     + state.skeletalMuscleKg
     + state.otherLeanTissueKg

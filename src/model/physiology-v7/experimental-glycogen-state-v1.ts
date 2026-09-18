@@ -18,10 +18,15 @@ import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 /**
  * Experimental Glycogen State V1 (shadow / EXPERIMENTAL only).
  *
- * Deterministic multi-day relative glycogen trajectory around an explicit
- * engineering baseline/reference. Applies exercise depletion then carb
- * repletion. Never invents personal capacity from the adult literature range.
- * Glycogen-associated water is derived from the day's net glycogen change.
+ * Exercise-induced relative depletion-debt trajectory:
+ * - baseline/reference = 0 relative debt (not an absolute kg store);
+ * - exercise moves state negative;
+ * - repletion moves it back toward 0;
+ * - without defensible personal capacity, state never goes positive
+ *   (no invented supercompensation / no 0.5 kg absolute store).
+ *
+ * Absolute personal glycogen mass remains unavailable. Adult literature
+ * capacity is never a clamp. Water derives from the net relative change.
  *
  * Not production TDEE / forecast / validated v7 semantics.
  */
@@ -32,20 +37,18 @@ export const EXPERIMENTAL_GLYCOGEN_STATE_V1_PROVENANCE =
   "experimental-heuristic" as const;
 
 /**
- * ENGINEERING baseline/reference glycogen (kg). Explicit relative zero — not
- * a personal capacity, literature clamp, or validated individual store.
- * Motivated by common whole-body order-of-magnitude priors (Hall ~0.5 kg;
- * E-I06 contextual aggregate framing) without transferring those as capacity.
+ * Relative baseline = zero exercise-induced depletion debt.
+ * Explicitly NOT an absolute glycogen mass and NOT personal capacity.
  */
-export const ENGINEERING_GLYCOGEN_BASELINE_REFERENCE_KG_V1 = 0.5 as const;
-
-export const EXPERIMENTAL_GLYCOGEN_BASELINE_REFERENCE_V1 = {
-  baselineReferenceKg: ENGINEERING_GLYCOGEN_BASELINE_REFERENCE_KG_V1,
-  classification: "engineering-baseline-reference" as const,
+export const EXPERIMENTAL_GLYCOGEN_RELATIVE_BASELINE_V1 = {
+  relativeDeviationKg: 0,
+  meaning: "zero-exercise-induced-depletion-debt",
+  classification: "relative-depletion-debt-baseline" as const,
+  absoluteStore: "unavailable" as const,
   personalCapacity: false,
   literatureClamp: false,
   scientificNote:
-    "Relative deviation is measured against this explicit engineering reference. Adult literature 0.3–0.86 kg remains metadata only and never a personal capacity clamp.",
+    "State is a relative depletion debt around 0. Absolute glycogen kg and personal capacity remain unavailable; adult 0.3–0.86 kg is metadata only.",
   evidenceIds: ["E-I06"] as const,
 } as const;
 
@@ -53,22 +56,24 @@ export type ExperimentalGlycogenStateAvailabilityV1 = "available" | "unavailable
 
 export type ExperimentalGlycogenStateV1 = {
   availability: ExperimentalGlycogenStateAvailabilityV1;
-  baselineReferenceKg: number;
-  /** Deviation from baseline (kg). Negative = depleted vs reference. */
+  /**
+   * Relative depletion debt (kg glycogen-equivalent).
+   * 0 = no debt; negative = depleted vs relative baseline.
+   * Never positive without a defensible personal capacity (which is not invented).
+   */
   relativeDeviationKg: number | null;
   relativeDeviationLowerKg: number | null;
   relativeDeviationUpperKg: number | null;
   /**
-   * Derived absolute = baseline + relative when available.
-   * Floored at 0 when the absolute store is treated as defensible.
-   * Never equals an invented personal capacity.
+   * Absolute personal glycogen mass — intentionally unavailable.
+   * Never fabricated from a 0.5 kg engineering store or literature range.
    */
-  absoluteGlycogenKg: number | null;
-  absoluteGlycogenLowerKg: number | null;
-  absoluteGlycogenUpperKg: number | null;
+  absoluteGlycogenKg: null;
+  absoluteGlycogenLowerKg: null;
+  absoluteGlycogenUpperKg: null;
   /** Always null — personal capacity is intentionally not invented. */
   personalCapacityKg: null;
-  uncertainty: "experimental-relative-heuristic";
+  uncertainty: "experimental-relative-depletion-debt";
 };
 
 export type ExperimentalGlycogenExerciseCoverageV1 =
@@ -84,9 +89,10 @@ export type ExperimentalGlycogenRepletionCoverageV1 =
 export type ExperimentalGlycogenStateTransitionResultV1 = {
   contractVersion: typeof EXPERIMENTAL_GLYCOGEN_STATE_V1_REVISION;
   provenance: typeof EXPERIMENTAL_GLYCOGEN_STATE_V1_PROVENANCE;
-  supportedDomain: "multi-day-relative-glycogen-state-shadow-only";
+  supportedDomain: "multi-day-relative-glycogen-depletion-debt-shadow-only";
   state: ExperimentalGlycogenStateV1;
   priorState: ExperimentalGlycogenStateV1;
+  /** Net relative glycogen change this day (same units as relativeDeviationKg). */
   netGlycogenDeltaKg: number | null;
   netGlycogenDeltaLowerKg: number | null;
   netGlycogenDeltaUpperKg: number | null;
@@ -94,24 +100,29 @@ export type ExperimentalGlycogenStateTransitionResultV1 = {
   repletionDeltaKg: number | null;
   exerciseCoverage: ExperimentalGlycogenExerciseCoverageV1;
   repletionCoverage: ExperimentalGlycogenRepletionCoverageV1;
-  storeFloorApplied: boolean;
+  /** True when repletion was capped so relative state does not go above 0. */
+  debtCeilingApplied: boolean;
   literatureCapacityClampRejected: true;
+  absoluteStoreFabricationRejected: true;
   glycogenAssociatedWater: ExperimentalGlycogenAssociatedWaterResultV1 | null;
   repletionEstimate: ExperimentalGlycogenRepletionResultV1 | null;
   adultCapacityClampPolicy: GlycogenAdultCapacityClampPolicyV7;
   compartmentSeparation: {
-    glycogenAssociatedWater: "derived-from-glycogen-delta";
+    glycogenAssociatedWater: "derived-from-net-relative-glycogen-delta";
     ecfDeviation: "not-a-fallback-or-residual";
     transientExerciseWater: "not-mixed";
   };
   features: {
     carbsG: number | null;
     workoutFeedObserved: boolean | null;
-    baselineReferenceKg: number;
+    relativeBaselineDebtKg: 0;
+    debtHeadroomKg: number | null;
     rejectedConversions: readonly [
       "scale-weight-residual",
       "adult-literature-personal-capacity-clamp",
       "invented-personal-capacity",
+      "invented-absolute-0.5kg-store",
+      "positive-supercompensation-without-capacity",
       "ecf-substitution",
       "transient-exercise-water-mixing",
       "independent-water-fit",
@@ -126,6 +137,8 @@ function rejectedConversions(): ExperimentalGlycogenStateTransitionResultV1["fea
     "scale-weight-residual",
     "adult-literature-personal-capacity-clamp",
     "invented-personal-capacity",
+    "invented-absolute-0.5kg-store",
+    "positive-supercompensation-without-capacity",
     "ecf-substitution",
     "transient-exercise-water-mixing",
     "independent-water-fit",
@@ -137,79 +150,66 @@ function finiteOrThrow(name: string, value: number): number {
   return Object.is(value, -0) ? 0 : value;
 }
 
-/** Explicit relative-zero state at the engineering baseline/reference. */
-export function initialExperimentalGlycogenStateV1(
-  baselineReferenceKg: number = ENGINEERING_GLYCOGEN_BASELINE_REFERENCE_KG_V1,
-): ExperimentalGlycogenStateV1 {
-  if (!Number.isFinite(baselineReferenceKg) || baselineReferenceKg <= 0) {
-    throw new RangeError("baselineReferenceKg must be finite and positive");
+/**
+ * Clamp relative debt to (-∞, 0]: no positive supercompensation without capacity.
+ * Does not invent an absolute physical store floor.
+ */
+function clampRelativeDebt(relativeKg: number): {
+  relativeKg: number;
+  debtCeilingApplied: boolean;
+} {
+  const value = finiteOrThrow("relativeDeviationKg", relativeKg);
+  if (value > 0) {
+    return { relativeKg: 0, debtCeilingApplied: true };
   }
-  return {
-    availability: "available",
-    baselineReferenceKg,
-    relativeDeviationKg: 0,
-    relativeDeviationLowerKg: 0,
-    relativeDeviationUpperKg: 0,
-    absoluteGlycogenKg: baselineReferenceKg,
-    absoluteGlycogenLowerKg: baselineReferenceKg,
-    absoluteGlycogenUpperKg: baselineReferenceKg,
-    personalCapacityKg: null,
-    uncertainty: "experimental-relative-heuristic",
-  };
+  return { relativeKg: value, debtCeilingApplied: false };
 }
 
-function absoluteFromRelative(
-  baselineReferenceKg: number,
-  relativeDeviationKg: number,
-): { absoluteKg: number; relativeKg: number; storeFloorApplied: boolean } {
-  const rawAbsolute = baselineReferenceKg + relativeDeviationKg;
-  if (rawAbsolute < 0) {
-    return {
-      absoluteKg: 0,
-      relativeKg: -baselineReferenceKg,
-      storeFloorApplied: true,
-    };
-  }
-  return {
-    absoluteKg: finiteOrThrow("absoluteKg", rawAbsolute),
-    relativeKg: finiteOrThrow("relativeKg", relativeDeviationKg),
-    storeFloorApplied: false,
-  };
-}
-
-function packState(
-  baselineReferenceKg: number,
+function packRelativeState(
   relativePoint: number,
   relativeLower: number,
   relativeUpper: number,
-): { state: ExperimentalGlycogenStateV1; storeFloorApplied: boolean } {
-  const point = absoluteFromRelative(baselineReferenceKg, relativePoint);
-  const lower = absoluteFromRelative(baselineReferenceKg, relativeLower);
-  const upper = absoluteFromRelative(baselineReferenceKg, relativeUpper);
+): { state: ExperimentalGlycogenStateV1; debtCeilingApplied: boolean } {
+  const point = clampRelativeDebt(relativePoint);
+  const lower = clampRelativeDebt(relativeLower);
+  const upper = clampRelativeDebt(relativeUpper);
   const relatives = [point.relativeKg, lower.relativeKg, upper.relativeKg];
-  const absolutes = [point.absoluteKg, lower.absoluteKg, upper.absoluteKg];
   return {
-    storeFloorApplied: point.storeFloorApplied || lower.storeFloorApplied || upper.storeFloorApplied,
+    debtCeilingApplied: point.debtCeilingApplied || lower.debtCeilingApplied || upper.debtCeilingApplied,
     state: {
       availability: "available",
-      baselineReferenceKg,
       relativeDeviationKg: point.relativeKg,
       relativeDeviationLowerKg: Math.min(...relatives),
       relativeDeviationUpperKg: Math.max(...relatives),
-      absoluteGlycogenKg: point.absoluteKg,
-      absoluteGlycogenLowerKg: Math.min(...absolutes),
-      absoluteGlycogenUpperKg: Math.max(...absolutes),
+      absoluteGlycogenKg: null,
+      absoluteGlycogenLowerKg: null,
+      absoluteGlycogenUpperKg: null,
       personalCapacityKg: null,
-      uncertainty: "experimental-relative-heuristic",
+      uncertainty: "experimental-relative-depletion-debt",
     },
   };
 }
 
+/** Relative-zero depletion debt — no absolute glycogen mass. */
+export function initialExperimentalGlycogenStateV1(): ExperimentalGlycogenStateV1 {
+  return {
+    availability: "available",
+    relativeDeviationKg: 0,
+    relativeDeviationLowerKg: 0,
+    relativeDeviationUpperKg: 0,
+    absoluteGlycogenKg: null,
+    absoluteGlycogenLowerKg: null,
+    absoluteGlycogenUpperKg: null,
+    personalCapacityKg: null,
+    uncertainty: "experimental-relative-depletion-debt",
+  };
+}
+
 /**
- * One-day experimental glycogen state transition.
+ * One-day experimental glycogen depletion-debt transition.
  *
- * Order: carry prior → apply exercise depletion → apply carb repletion →
- * derive associated water from net glycogen change.
+ * Order: carry prior → apply exercise depletion → apply carb repletion
+ * (capped by remaining debt to 0) → derive associated water from net relative Δ.
  */
 export function transitionExperimentalGlycogenStateV1(input: {
   prior: ExperimentalGlycogenStateV1;
@@ -227,30 +227,32 @@ export function transitionExperimentalGlycogenStateV1(input: {
   activeEnergyKcal?: number | null;
 }): ExperimentalGlycogenStateTransitionResultV1 {
   rejectAdultGlycogenCapacityAsPersonalCapacityV7();
+  // Absolute store is unavailable — capacity reject must not invent one.
   const capacityRejection = rejectAdultGlycogenCapacityClampV7({
-    glycogenKg: input.prior.absoluteGlycogenKg,
+    glycogenKg: null,
   });
-  if (capacityRejection.resultingGlycogenKg !== input.prior.absoluteGlycogenKg) {
-    throw new Error("experimental glycogen state must not mutate via adult capacity");
+  if (capacityRejection.resultingGlycogenKg !== null) {
+    throw new Error("experimental glycogen state must not invent absolute glycogen via adult capacity");
   }
 
-  const baselineReferenceKg = input.prior.baselineReferenceKg
-    || ENGINEERING_GLYCOGEN_BASELINE_REFERENCE_KG_V1;
   const reasons: string[] = [
-    "experimental-heuristic-relative-glycogen-state",
+    "experimental-heuristic-relative-depletion-debt",
     "deterministic-depletion-then-repletion-order",
+    "relative-baseline-is-zero-debt-not-absolute-store",
+    "absolute-glycogen-store-intentionally-unavailable",
     "adult-literature-personal-capacity-clamp-intentionally-rejected",
     `adult-literature-range-metadata-only-${GLYCOGEN_ADULT_CAPACITY_RANGE_METADATA_V7.literatureRangeKg.lowerKg}-${GLYCOGEN_ADULT_CAPACITY_RANGE_METADATA_V7.literatureRangeKg.upperKg}-kg`,
     "scale-weight-residual-intentionally-rejected",
+    "positive-supercompensation-without-capacity-intentionally-rejected",
   ];
 
   const prior = input.prior.availability === "available"
     && input.prior.relativeDeviationKg !== null
     ? input.prior
-    : initialExperimentalGlycogenStateV1(baselineReferenceKg);
+    : initialExperimentalGlycogenStateV1();
 
   if (input.prior.availability !== "available" || input.prior.relativeDeviationKg === null) {
-    reasons.push("prior-unavailable-initialized-at-engineering-baseline-reference");
+    reasons.push("prior-unavailable-initialized-at-zero-relative-debt");
   }
 
   const priorRel = prior.relativeDeviationKg!;
@@ -273,10 +275,6 @@ export function transitionExperimentalGlycogenStateV1(input: {
     depletionUpper = input.exerciseDepletionUpperKg === undefined || input.exerciseDepletionUpperKg === null
       ? depletionPoint
       : input.exerciseDepletionUpperKg;
-    if (!(depletionLower <= depletionPoint && depletionPoint <= depletionUpper)
-        && !(depletionUpper <= depletionPoint && depletionPoint <= depletionLower)) {
-      // Allow either ordering; normalize so lower ≤ point ≤ upper after abs floor.
-    }
     if (depletionLower > 0 || depletionUpper > 0) {
       throw new RangeError("exercise depletion bounds must be ≤ 0");
     }
@@ -286,20 +284,16 @@ export function transitionExperimentalGlycogenStateV1(input: {
     exerciseCoverage = "observed-rest-zero-depletion";
     reasons.push("observed-workout-feed-rest-zero-depletion");
   } else {
-    // false or null feed with no depletion deltas — never invent rest/zero burn.
     exerciseCoverage = "unresolved-missing-workout-feed";
     reasons.push("missing-workout-feed-is-not-rest");
     reasons.push("unresolved-exercise-depletion-not-applied-as-zero");
   }
 
-  const afterDep = packState(
-    baselineReferenceKg,
+  const afterDep = packRelativeState(
     priorRel + depletionPoint,
     priorRelLower + Math.min(depletionLower, depletionUpper, depletionPoint),
     priorRelUpper + Math.max(depletionLower, depletionUpper, depletionPoint),
   );
-  let storeFloorApplied = afterDep.storeFloorApplied;
-  if (storeFloorApplied) reasons.push("absolute-store-floor-applied-at-zero");
 
   let repletionCoverage: ExperimentalGlycogenRepletionCoverageV1;
   let repletionEstimate: ExperimentalGlycogenRepletionResultV1 | null = null;
@@ -307,10 +301,8 @@ export function transitionExperimentalGlycogenStateV1(input: {
   let repletionLower = 0;
   let repletionUpper = 0;
 
-  // Headroom: today's applied exercise refill opportunity only — never literature capacity.
-  const exerciseHeadroomKg = exerciseCoverage === "applied-from-exercise-shadows"
-    ? Math.max(0, -depletionPoint)
-    : null;
+  // Remaining debt to relative baseline 0 — not literature / personal capacity.
+  const debtHeadroomKg = Math.max(0, -(afterDep.state.relativeDeviationKg ?? 0));
 
   if (input.carbsG === null) {
     repletionCoverage = "skipped-missing-carbohydrate";
@@ -319,9 +311,10 @@ export function transitionExperimentalGlycogenStateV1(input: {
     repletionEstimate = estimateExperimentalGlycogenRepletionV1({
       carbsG: input.carbsG,
       proteinG: input.proteinG ?? null,
-      currentGlycogenKg: afterDep.state.absoluteGlycogenKg,
-      storeHeadroomKg: exerciseHeadroomKg,
-      headroomSource: exerciseHeadroomKg === null ? "unavailable" : "exercise-depletion-refill",
+      // Absolute store unavailable — do not pass a fabricated kg.
+      currentGlycogenKg: null,
+      storeHeadroomKg: debtHeadroomKg,
+      headroomSource: "explicit",
       activeEnergyKcal: input.activeEnergyKcal ?? null,
     });
     if (repletionEstimate.availability !== "available"
@@ -334,25 +327,27 @@ export function transitionExperimentalGlycogenStateV1(input: {
       repletionLower = repletionEstimate.lowerBoundKg ?? repletionPoint;
       repletionUpper = repletionEstimate.upperBoundKg ?? repletionPoint;
       reasons.push("carb-repletion-applied-after-depletion");
-      if (exerciseHeadroomKg === null) {
-        reasons.push("no-invented-personal-capacity-upper-clamp");
-      }
+      reasons.push("repletion-capped-by-remaining-relative-debt-to-zero");
     }
   }
 
-  const afterRep = packState(
-    baselineReferenceKg,
+  const afterRep = packRelativeState(
     afterDep.state.relativeDeviationKg! + repletionPoint,
     (afterDep.state.relativeDeviationLowerKg ?? afterDep.state.relativeDeviationKg!)
       + Math.min(repletionLower, repletionUpper, repletionPoint),
     (afterDep.state.relativeDeviationUpperKg ?? afterDep.state.relativeDeviationKg!)
       + Math.max(repletionLower, repletionUpper, repletionPoint),
   );
-  storeFloorApplied = storeFloorApplied || afterRep.storeFloorApplied;
+  const debtCeilingApplied = afterDep.debtCeilingApplied || afterRep.debtCeilingApplied;
+  if (debtCeilingApplied) {
+    reasons.push("relative-debt-ceiling-applied-at-zero");
+  }
 
-  const netPoint = afterRep.state.absoluteGlycogenKg! - prior.absoluteGlycogenKg!;
-  const netLower = afterRep.state.absoluteGlycogenLowerKg! - (prior.absoluteGlycogenUpperKg ?? prior.absoluteGlycogenKg!);
-  const netUpper = afterRep.state.absoluteGlycogenUpperKg! - (prior.absoluteGlycogenLowerKg ?? prior.absoluteGlycogenKg!);
+  const netPoint = afterRep.state.relativeDeviationKg! - priorRel;
+  const netLower = (afterRep.state.relativeDeviationLowerKg ?? afterRep.state.relativeDeviationKg!)
+    - priorRelUpper;
+  const netUpper = (afterRep.state.relativeDeviationUpperKg ?? afterRep.state.relativeDeviationKg!)
+    - priorRelLower;
   const orderedNetLower = Math.min(netLower, netPoint, netUpper);
   const orderedNetUpper = Math.max(netLower, netPoint, netUpper);
 
@@ -362,12 +357,12 @@ export function transitionExperimentalGlycogenStateV1(input: {
     glycogenDeltaUpperKg: orderedNetUpper,
     currentGlycogenWaterKg: null,
   });
-  reasons.push("glycogen-associated-water-derived-from-net-glycogen-delta");
+  reasons.push("glycogen-associated-water-derived-from-net-relative-glycogen-delta");
 
   const result: ExperimentalGlycogenStateTransitionResultV1 = {
     contractVersion: EXPERIMENTAL_GLYCOGEN_STATE_V1_REVISION,
     provenance: EXPERIMENTAL_GLYCOGEN_STATE_V1_PROVENANCE,
-    supportedDomain: "multi-day-relative-glycogen-state-shadow-only",
+    supportedDomain: "multi-day-relative-glycogen-depletion-debt-shadow-only",
     state: afterRep.state,
     priorState: prior,
     netGlycogenDeltaKg: netPoint,
@@ -380,20 +375,22 @@ export function transitionExperimentalGlycogenStateV1(input: {
     repletionDeltaKg: repletionCoverage === "applied" ? repletionPoint : null,
     exerciseCoverage,
     repletionCoverage,
-    storeFloorApplied,
+    debtCeilingApplied,
     literatureCapacityClampRejected: true,
+    absoluteStoreFabricationRejected: true,
     glycogenAssociatedWater,
     repletionEstimate,
     adultCapacityClampPolicy: GLYCOGEN_ADULT_CAPACITY_CLAMP_POLICY_V7,
     compartmentSeparation: {
-      glycogenAssociatedWater: "derived-from-glycogen-delta",
+      glycogenAssociatedWater: "derived-from-net-relative-glycogen-delta",
       ecfDeviation: "not-a-fallback-or-residual",
       transientExerciseWater: "not-mixed",
     },
     features: {
       carbsG: input.carbsG,
       workoutFeedObserved: input.workoutFeedObserved,
-      baselineReferenceKg,
+      relativeBaselineDebtKg: 0,
+      debtHeadroomKg,
       rejectedConversions: rejectedConversions(),
     },
     reasons,

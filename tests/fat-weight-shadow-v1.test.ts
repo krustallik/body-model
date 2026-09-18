@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { transitionFatWeightShadowV1 } from "@/model/physiology-v7/fat-weight-shadow-v1";
-const prior = { fatMassKg: 20, slowNonFatKg: 50, availability: "available" as const, provenance: "legacy-model-initialization" as const, uncertainty: "personal-unavailable" as const };
+const prior = { fatMassKg: 20, slowNonFatKg: 50, availability: "available" as const, provenance: "episode-bia-derived-estimate" as const, uncertainty: "personal-unavailable" as const };
 describe("fat weight shadow v1", () => {
   it("is deterministic, directionally partitions energy, and never overwrites state from observations", () => {
     const deficit = transitionFatWeightShadowV1({ prior, energyBalanceKcal: -500, observedWeightKg: 100, observedBodyFatPercent: 5 });

@@ -72,6 +72,9 @@ import {
 import {
   recordExperimentalSkeletalMuscleDeltaShadowForSession,
 } from "@/modules/model-episodes/experimental-skeletal-muscle-delta-shadow.service";
+import {
+  recordExperimentalLocalHypertrophyResponseShadowForSession,
+} from "@/modules/model-episodes/experimental-local-hypertrophy-response-shadow.service";
 import type {
   HistoricalStrengthWorkoutDto,
   MatchCandidateDto,
@@ -103,6 +106,10 @@ async function recordExperimentalStrengthShadows(input: {
     sessionId: input.session.id,
     profileId: input.profileId,
   });
+  await recordExperimentalLocalHypertrophyResponseShadowForSession({
+    sessionId: input.session.id,
+    profileId: input.profileId,
+  });
 }
 
 async function recordExperimentalStrengthShadowsBySessionId(input: {
@@ -113,6 +120,7 @@ async function recordExperimentalStrengthShadowsBySessionId(input: {
   await recordExperimentalStrengthGlycogenDemandShadowBySessionId(input);
   await recordExperimentalTransientExerciseWaterShadowBySessionId(input);
   await recordExperimentalSkeletalMuscleDeltaShadowForSession(input);
+  await recordExperimentalLocalHypertrophyResponseShadowForSession(input);
 }
 
 function isStrengthWorkout(type: string): boolean {

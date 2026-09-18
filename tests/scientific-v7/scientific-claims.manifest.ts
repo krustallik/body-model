@@ -152,7 +152,6 @@ function record(input: RecordInput): ScientificClaimManifestRecord {
   };
 }
 
-const v7LocalHypertrophyBlocker = "Qualified set dose and expected-local polarity exist, but no group-expected local-hypertrophy magnitude exists; experimental whole-body daily SM delta is not weekly local hypertrophy.";
 const v7MuscleBlocker = "The v7 skeletalMuscleKg state contract exists, but no adaptation transition or proxy-safe observation contract exists.";
 const v7DetrainingBlocker = "No v7 training-history/cessation state or skeletal-muscle detraining transition exists.";
 const v7RetrainingIdentificationBlocker = "ResistanceTrainingExposureHistoryV7 can detect verified interruption then resumption, but labeling retraining/detraining still requires an unsupported cessation-duration threshold; no numeric muscle-memory bonus is approved.";
@@ -169,6 +168,12 @@ const experimentalSkeletalMuscleDeltaTest =
   "tests/experimental-skeletal-muscle-delta-v1.test.ts";
 const experimentalSkeletalMuscleDeltaUncertainty =
   "Experimental relative skeletal-muscle delta heuristic from monthly literature-informed engineering rate bands × saturating dose/protein/energy scales; wide uncertainty; absolute skeletalMuscleKg intentionally unavailable; not scientifically validated personal kg rates.";
+const experimentalLocalHypertrophyImpl =
+  "src/model/physiology-v7/experimental-local-hypertrophy-response-v1.ts";
+const experimentalLocalHypertrophyTest =
+  "tests/experimental-local-hypertrophy-response-v1.test.ts";
+const experimentalLocalHypertrophyUncertainty =
+  "Experimental weekly per-muscle dimensionless saturating response from qualified direct hard-set volume; engineering τ; not kg/set, not skeletalMuscleKg, and not scientifically validated local percent change.";
 const v7HrBlocker = "Canonical raw HR interval provenance exists, but HR coverage/calibration inputs and a separately observable anabolic-dose output do not exist.";
 const v7SleepBlocker = "Canonical v7 sleep provenance/duration inputs and bounded sleep-context output do not exist.";
 const v7MeasurementBlocker = "No v7 measurement-role contract exposes skeletal muscle separately from lean/local/proxy endpoints.";
@@ -178,7 +183,23 @@ export const UNSAFE_CLAIM_IDS = ["C-G02", "C-H04", "C-K02", "C-M04"] as const;
 
 /** Eligible audited claims only (GREEN / EXPERIMENTAL / BLOCKED). REJECTED are separate. */
 export const SCIENTIFIC_V7_CLAIMS: readonly ScientificClaimManifestRecord[] = [
-  record({ claimId: "C-A01", title: "higher supported volume does not lower group-expected local hypertrophy", parameterIds: ["P-A02"], evidenceIds: ["E-A01", "E-A02", "E-A03"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "property", assertionTypes: ["MONOTONICITY"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Within the supported low-to-moderate range, added effective volume does not lower group-expected local hypertrophy; global concavity is not required.", infrastructureBlocker: v7LocalHypertrophyBlocker }),
+  record({
+    claimId: "C-A01",
+    title: "higher supported volume does not lower group-expected local hypertrophy",
+    parameterIds: ["P-A02"],
+    evidenceIds: ["E-A01", "E-A02", "E-A03"],
+    auditEligibility: "SAFE_AFTER_AUDIT_REVISION",
+    testType: "property",
+    assertionTypes: ["MONOTONICITY"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "Within the supported low-to-moderate range, added effective volume does not lower group-expected local hypertrophy; global concavity is not required.",
+    experimental: {
+      implementation: experimentalLocalHypertrophyImpl,
+      testFile: experimentalLocalHypertrophyTest,
+      testName: "higher supported volume does not lower group-expected local hypertrophy (C-A01)",
+      uncertainty: experimentalLocalHypertrophyUncertainty,
+    },
+  }),
   record({ claimId: "C-A02", title: "volume-equated frequency has no required independent positive effect", parameterIds: ["P-A03"], evidenceIds: ["E-A02", "E-A11", "E-A14"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "unit", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "With effective weekly volume equated, v7 adds no required positive frequency multiplier and does not require exact physiological equality.", executableTestName: "volume-equated frequency has no required independent positive effect" }),
   record({ claimId: "C-A03", title: "hard-set dose remains available without tonnage", parameterIds: ["P-A01", "P-A06"], evidenceIds: ["E-A02", "E-A08", "E-A10", "E-A14"], auditEligibility: "SAFE", testType: "integration", assertionTypes: ["MISSINGNESS", "INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE", "INPUT_CONTRACT"], scientificAssertion: "Valid program sets and muscle mapping preserve a training dose when tonnage is absent.", executableTestName: "hard-set dose remains available without tonnage" }),
   record({ claimId: "C-A04", title: "momentary failure is not mandatory", parameterIds: ["P-A04"], evidenceIds: ["E-A09", "E-A13"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "unit", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Near-failure and failure training can both be effective; v7 requires neither exact equality nor a categorical failure bonus.", executableTestName: "momentary failure is not mandatory" }),

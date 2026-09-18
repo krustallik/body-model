@@ -10,6 +10,7 @@ import { recordExperimentalGlycogenRepletionShadow } from "@/modules/model-episo
 import { recordExperimentalGlycogenAssociatedWaterShadow } from "@/modules/model-episodes/experimental-glycogen-associated-water-shadow.service";
 import { recordExperimentalGlycogenStateShadow } from "@/modules/model-episodes/experimental-glycogen-state-shadow.service";
 import { recordExperimentalSkeletalMuscleDeltaShadow } from "@/modules/model-episodes/experimental-skeletal-muscle-delta-shadow.service";
+import { recordExperimentalLocalHypertrophyResponseShadow } from "@/modules/model-episodes/experimental-local-hypertrophy-response-shadow.service";
 
 export async function syncHealthData(
   request: HealthSyncRequest,
@@ -90,6 +91,16 @@ export async function syncHealthData(
     await recordExperimentalSkeletalMuscleDeltaShadow({ date: day.date });
   } catch (error) {
     logEvent("warn", "experimental_skeletal_muscle_delta_shadow_failed", {
+      date: day.date,
+      errorType: errorKind(error),
+    });
+  }
+
+  try {
+    // Shadow-only weekly local hypertrophy response; never feeds TDEE/forecast.
+    await recordExperimentalLocalHypertrophyResponseShadow({ date: day.date });
+  } catch (error) {
+    logEvent("warn", "experimental_local_hypertrophy_response_shadow_failed", {
       date: day.date,
       errorType: errorKind(error),
     });

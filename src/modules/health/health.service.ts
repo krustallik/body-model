@@ -8,6 +8,7 @@ import { recordExperimentalStepperActiveEnergyShadowsForLocalDate } from "@/modu
 import { recordExperimentalStepperGlycogenDemandShadowsForLocalDate } from "@/modules/profile/experimental-stepper-glycogen-demand-shadow.service";
 import { recordExperimentalGlycogenRepletionShadow } from "@/modules/model-episodes/experimental-glycogen-repletion-shadow.service";
 import { recordExperimentalGlycogenAssociatedWaterShadow } from "@/modules/model-episodes/experimental-glycogen-associated-water-shadow.service";
+import { recordExperimentalGlycogenStateShadow } from "@/modules/model-episodes/experimental-glycogen-state-shadow.service";
 
 export async function syncHealthData(
   request: HealthSyncRequest,
@@ -68,6 +69,16 @@ export async function syncHealthData(
     await recordExperimentalGlycogenAssociatedWaterShadow({ date: day.date });
   } catch (error) {
     logEvent("warn", "experimental_glycogen_associated_water_shadow_failed", {
+      date: day.date,
+      errorType: errorKind(error),
+    });
+  }
+
+  try {
+    // Shadow-only multi-day glycogen state; never feeds TDEE/forecast.
+    await recordExperimentalGlycogenStateShadow({ date: day.date });
+  } catch (error) {
+    logEvent("warn", "experimental_glycogen_state_shadow_failed", {
       date: day.date,
       errorType: errorKind(error),
     });

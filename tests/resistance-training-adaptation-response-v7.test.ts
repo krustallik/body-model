@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { buildExerciseMuscleMappingSnapshotV7 } from "@/model/physiology-v7/exercise-muscle-mapping-v7";
 import { buildQualifiedResistanceTrainingDoseV7 } from "@/model/physiology-v7/qualified-resistance-training-dose-v7";
-import { buildResistanceTrainingAdaptationResponseV7, resistanceTrainingAdaptationResponseV7Fingerprint } from "@/model/physiology-v7/resistance-training-adaptation-response-v7";
+import {
+  buildIncreasingQualifiedSetDoseAdaptationSeriesV7,
+  buildResistanceTrainingAdaptationResponseV7,
+  RESISTANCE_TRAINING_VOLUME_CAP_POLICY_V7,
+  resistanceTrainingAdaptationResponseV7Fingerprint,
+} from "@/model/physiology-v7/resistance-training-adaptation-response-v7";
 import { buildResistanceTrainingExposureHistoryV7 } from "@/model/physiology-v7/resistance-training-exposure-history-v7";
 import {
   applyTrainingAdaptationTransitionV7,
@@ -29,7 +34,37 @@ describe("ResistanceTrainingAdaptationResponseV7", () => {
     expect(response.trainingStimulus).toHaveProperty("muscleGroups");
     expect(response.muscleMassTransition).toMatchObject({ availability: "unavailable", reason: "no-approved-whole-body-calibration" });
     expect(response.calibration.highestSupportedResponseLevel).toBe("level-1-qualitative-constraints");
+    expect(response.expectedLocalAdaptation).toMatchObject({
+      availability: "available",
+      expectedPolarity: "nonnegative-stimulus-evidence",
+      cutoffForcedZeroOrNegative: false,
+      volumeCapPolicy: RESISTANCE_TRAINING_VOLUME_CAP_POLICY_V7,
+    });
     expect(JSON.stringify(response)).not.toMatch(/skeletalMuscleDeltaKg|anabolicSignal|growthScore|kg\/day/i);
+  });
+
+  it("does not force Level-1 expected adaptation to zero or negative across increasing set dose", () => {
+    const series = buildIncreasingQualifiedSetDoseAdaptationSeriesV7([1, 5, 10, 20, 40]);
+    expect(series.map((row) => row.qualifiedHardSetCount)).toEqual([1, 5, 10, 20, 40]);
+    for (const row of series) {
+      expect(row.response.trainingStimulus).toMatchObject({
+        availability: "available",
+        status: "qualified-mapped-training-dose",
+        qualifiedHardSetCount: row.qualifiedHardSetCount,
+      });
+      expect(row.expectedLocalAdaptation).toEqual({
+        availability: "available",
+        responseLevel: "level-1-qualitative-constraints",
+        expectedPolarity: "nonnegative-stimulus-evidence",
+        qualifiedHardSetCount: row.qualifiedHardSetCount,
+        volumeCapPolicy: RESISTANCE_TRAINING_VOLUME_CAP_POLICY_V7,
+        cutoffForcedZeroOrNegative: false,
+      });
+      expect(row.expectedLocalAdaptation.volumeCapPolicy.application).toBe("intentionally-not-applied");
+      expect(row.response.muscleMassTransition.availability).toBe("unavailable");
+      expect(row.response).not.toHaveProperty("skeletalMuscleDeltaKg");
+      expect(row.response).not.toHaveProperty("hypertrophyScore");
+    }
   });
 
   it("keeps unresolved legacy evidence, observed no-exposure, and unobserved coverage distinct", () => {

@@ -38,6 +38,10 @@ import {
   qualifiedResistanceTrainingDoseV7Fingerprint,
 } from "@/model/physiology-v7/qualified-resistance-training-dose-v7";
 import {
+  buildIncreasingQualifiedSetDoseAdaptationSeriesV7,
+  RESISTANCE_TRAINING_VOLUME_CAP_POLICY_V7,
+} from "@/model/physiology-v7/resistance-training-adaptation-response-v7";
+import {
   buildResistanceTrainingExposureHistoryV7,
 } from "@/model/physiology-v7/resistance-training-exposure-history-v7";
 import {
@@ -687,6 +691,41 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
       expect(doseWithHr.mappedSetCount).toBe(doseWithoutHr.mappedSetCount);
       expect(doseWithHr.muscleGroups).toEqual(doseWithoutHr.muscleGroups);
     }
+  });
+
+  it("no unsupported hard volume cap", () => {
+    const series = buildIncreasingQualifiedSetDoseAdaptationSeriesV7([1, 6, 12, 20, 40]);
+    expect(series.map((row) => row.qualifiedHardSetCount)).toEqual([1, 6, 12, 20, 40]);
+
+    for (const row of series) {
+      expect(row.response.trainingStimulus).toMatchObject({
+        availability: "available",
+        status: "qualified-mapped-training-dose",
+        qualifiedHardSetCount: row.qualifiedHardSetCount,
+      });
+      expect(row.expectedLocalAdaptation.availability).toBe("available");
+      expect(row.expectedLocalAdaptation.expectedPolarity).toBe("nonnegative-stimulus-evidence");
+      expect(row.expectedLocalAdaptation.cutoffForcedZeroOrNegative).toBe(false);
+      expect(row.expectedLocalAdaptation.volumeCapPolicy).toEqual(RESISTANCE_TRAINING_VOLUME_CAP_POLICY_V7);
+      expect(row.expectedLocalAdaptation.volumeCapPolicy.application).toBe("intentionally-not-applied");
+      expect(row.expectedLocalAdaptation.volumeCapPolicy.forcesZeroOrNegativeSolelyByCrossing).toBe(false);
+      expect(row.response.calibration.qualitativeConstraints).toContain(
+        "no-universal-set-cutoff-forces-zero-or-negative-expected-adaptation",
+      );
+      expect(row.response.calibration.rejectedConversions).toContain(
+        "universal-set-cutoff-to-zero-or-negative-hypertrophy",
+      );
+      expect(row.response.muscleMassTransition.availability).toBe("unavailable");
+      expect(row.response).not.toHaveProperty("skeletalMuscleDeltaKg");
+      expect(row.response).not.toHaveProperty("hypertrophyScore");
+      expect(row.response).not.toHaveProperty("setCutoffZeroGain");
+    }
+
+    const high = series[series.length - 1]!;
+    const low = series[0]!;
+    expect(high.qualifiedHardSetCount).toBeGreaterThan(low.qualifiedHardSetCount);
+    expect(high.expectedLocalAdaptation.expectedPolarity).toBe(low.expectedLocalAdaptation.expectedPolarity);
+    expect(high.expectedLocalAdaptation.cutoffForcedZeroOrNegative).toBe(false);
   });
 
   it("load is not a standalone hypertrophy multiplier", () => {

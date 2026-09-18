@@ -50,11 +50,6 @@ const CLASSIFICATIONS: Record<string, Omit<BlockedClaimClassification, "claimId"
     reason: "Capacity-bounded repletion requires individualized glycogen capacity that is forbidden as a universal clamp.",
     closestToGreenRank: null,
   },
-  "C-A06": {
-    category: "implementation-only",
-    reason: "Hard-set dose exists; needs hypertrophy-response output that refuses universal set cutoffs.",
-    closestToGreenRank: 5,
-  },
   "C-B05": {
     category: "research-blocked",
     reason: "Retraining identification still needs an unsupported cessation-duration threshold before labeling.",

@@ -5,7 +5,7 @@ import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
  * This is an evidence interpretation contract, not a physiology equation.
  */
 export const SKELETAL_MUSCLE_RESPONSE_CALIBRATION_V7_VERSION =
-  "bodycast-skeletal-muscle-response-calibration-v7-1" as const;
+  "bodycast-skeletal-muscle-response-calibration-v7-2" as const;
 
 export type SkeletalMuscleResponseLevelV7 =
   | "level-0-source-evidence"
@@ -39,6 +39,7 @@ export type SkeletalMuscleResponseCalibrationV7 = {
     "maintenance-or-no-surplus-does-not-force-zero-gain",
     "surplus-does-not-create-unbounded-muscle-or-kcal-to-muscle-conversion",
     "deficit-and-surplus-have-no-symmetric-muscle-multiplier",
+    "no-universal-set-cutoff-forces-zero-or-negative-expected-adaptation",
   ];
   approvedParameters: readonly [
     "P-A01", "P-A02", "P-A04", "P-B01", "P-C01", "P-C02",
@@ -51,6 +52,7 @@ export type SkeletalMuscleResponseCalibrationV7 = {
     "kcal-surplus-to-muscle-kg",
     "experience-or-retraining-to-muscle-kg-rate",
     "hr-tonnage-frequency-or-rir-to-numeric-muscle-multiplier",
+    "universal-set-cutoff-to-zero-or-negative-hypertrophy",
   ];
 };
 
@@ -78,6 +80,7 @@ const CALIBRATION: SkeletalMuscleResponseCalibrationV7 = {
     "maintenance-or-no-surplus-does-not-force-zero-gain",
     "surplus-does-not-create-unbounded-muscle-or-kcal-to-muscle-conversion",
     "deficit-and-surplus-have-no-symmetric-muscle-multiplier",
+    "no-universal-set-cutoff-forces-zero-or-negative-expected-adaptation",
   ],
   approvedParameters: [
     "P-A01", "P-A02", "P-A04", "P-B01", "P-C01", "P-C02",
@@ -90,6 +93,7 @@ const CALIBRATION: SkeletalMuscleResponseCalibrationV7 = {
     "kcal-surplus-to-muscle-kg",
     "experience-or-retraining-to-muscle-kg-rate",
     "hr-tonnage-frequency-or-rir-to-numeric-muscle-multiplier",
+    "universal-set-cutoff-to-zero-or-negative-hypertrophy",
   ],
 };
 

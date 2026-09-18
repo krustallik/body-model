@@ -23,6 +23,7 @@ describe("SkeletalMuscleResponseCalibrationV7", () => {
     expect(constraints).toContain("deficit-does-not-make-recomposition-impossible");
     expect(constraints).toContain("maintenance-or-no-surplus-does-not-force-zero-gain");
     expect(constraints).toContain("deficit-and-surplus-have-no-symmetric-muscle-multiplier");
+    expect(constraints).toContain("no-universal-set-cutoff-forces-zero-or-negative-expected-adaptation");
   });
 
   it("is deterministic and rejects unsupported response inputs and conversions", () => {
@@ -34,6 +35,7 @@ describe("SkeletalMuscleResponseCalibrationV7", () => {
       "acute-mps-to-chronic-skeletal-muscle-kg",
       "kcal-surplus-to-muscle-kg",
       "hr-tonnage-frequency-or-rir-to-numeric-muscle-multiplier",
+      "universal-set-cutoff-to-zero-or-negative-hypertrophy",
     ]));
   });
 });

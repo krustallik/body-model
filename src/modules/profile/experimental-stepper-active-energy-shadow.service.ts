@@ -1,0 +1,143 @@
+import { prisma } from "@/lib/db/prisma";
+import {
+  estimateExperimentalStepperActiveEnergyV1,
+  EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION,
+  experimentalStepperActiveEnergyV1Fingerprint,
+} from "@/model/activity/experimental-stepper-active-energy-v1";
+import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
+import type { WorkoutEnergyEvidenceV7 } from "@/model/activity/workout-energy-v7";
+import { canonicalizeWorkoutHeartRateEvidenceV7 } from "@/model/activity/workout-heart-rate-v7";
+import {
+  assignmentAtWorkoutStartV7,
+  type StepperEquipmentAssignmentV7,
+} from "@/model/activity/personal-stepper-reference-v7";
+import { canonicalizeWorkoutStepperEvidenceV7 } from "@/model/activity/workout-stepper-v7";
+import { StepperEquipmentRepository } from "./stepper-equipment.repository";
+
+/**
+ * Isolated experimental/shadow output for MS100 stepper active energy.
+ * Never an input to TDEE, production physiology, forecast, or GREEN contracts.
+ */
+export async function recordExperimentalStepperActiveEnergyShadow(input: {
+  workoutId: number;
+  profileId?: number;
+}): Promise<void> {
+  const profileId = input.profileId ?? 1;
+  const workout = await prisma.workout.findUnique({
+    where: { id: input.workoutId },
+    select: {
+      id: true,
+      type: true,
+      startAt: true,
+      endAt: true,
+      durationMinutes: true,
+      activeEnergyKcal: true,
+      dailyHealthData: { select: { weightKg: true } },
+    },
+  });
+  if (workout === null) return;
+
+  const canonical = canonicalizeWorkoutType(workout.type);
+  if (canonical.classification !== "stair-climbing" || canonical.canonicalType === null) return;
+
+  const [assignments, snapshots, heartRateSamples] = await Promise.all([
+    new StepperEquipmentRepository(prisma).list(),
+    prisma.healthSyncSnapshot.findMany({
+      select: { id: true, receivedAt: true, syncedAt: true, steps: true },
+    }),
+    prisma.heartRateSample.findMany({
+      where: {
+        profileId,
+        timestamp: { gte: workout.startAt, lte: workout.endAt },
+      },
+      select: { timestamp: true, bpm: true, source: true },
+      orderBy: { timestamp: "asc" },
+    }),
+  ]);
+
+  const startAt = workout.startAt.toISOString();
+  const endAt = workout.endAt.toISOString();
+  const heartRate = canonicalizeWorkoutHeartRateEvidenceV7({
+    workoutInterval: { startAt, endAt },
+    heartRate: heartRateSamples.length === 0
+      ? { availability: "unavailable" }
+      : {
+        availability: "loaded",
+        samples: heartRateSamples.map((sample) => ({
+          timestamp: sample.timestamp.toISOString(),
+          bpm: sample.bpm,
+          provenance: { provider: sample.source, device: null },
+        })),
+      },
+  });
+  const workoutEnergy: WorkoutEnergyEvidenceV7 = {
+    workoutId: workout.id,
+    canonicalWorkoutType: canonical.canonicalType,
+    startAt,
+    endAt,
+    durationMinutes: workout.durationMinutes,
+    deviceEnergy: workout.activeEnergyKcal === null
+      ? { availability: "unavailable", availabilityReason: "no-device-active-energy" }
+      : {
+        availability: "available",
+        sourceValueStatus: "observed",
+        valueKcal: workout.activeEnergyKcal,
+        semantics: "active",
+        provenance: "device-estimate",
+      },
+    heartRate,
+  };
+  const evidence = canonicalizeWorkoutStepperEvidenceV7({
+    workoutEnergy,
+    snapshots: snapshots.map((snapshot) => ({
+      id: snapshot.id,
+      receivedAt: snapshot.receivedAt.toISOString(),
+      syncedAt: snapshot.syncedAt?.toISOString() ?? null,
+      steps: snapshot.steps,
+    })),
+  });
+  const equipment = assignmentAtWorkoutStartV7(
+    assignments as StepperEquipmentAssignmentV7[],
+    startAt,
+  );
+  const result = estimateExperimentalStepperActiveEnergyV1({
+    workout: evidence,
+    bodyMassKg: workout.dailyHealthData.weightKg ?? null,
+    equipment,
+  });
+  const sourceFingerprint = experimentalStepperActiveEnergyV1Fingerprint(result);
+  await prisma.experimentalStepperActiveEnergyShadow.upsert({
+    where: { workoutId: workout.id },
+    create: {
+      workoutId: workout.id,
+      profileId,
+      sourceFingerprint,
+      modelRevision: EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION,
+      features: result.features,
+      result,
+    },
+    update: {
+      sourceFingerprint,
+      modelRevision: EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION,
+      features: result.features,
+      result,
+    },
+  });
+}
+
+export async function recordExperimentalStepperActiveEnergyShadowsForLocalDate(input: {
+  date: string;
+  profileId?: number;
+}): Promise<void> {
+  const profileId = input.profileId ?? 1;
+  const workouts = await prisma.workout.findMany({
+    where: {
+      dailyHealthData: { date: input.date },
+    },
+    select: { id: true, type: true },
+  });
+  for (const workout of workouts) {
+    if (canonicalizeWorkoutType(workout.type).classification !== "stair-climbing") continue;
+    await recordExperimentalStepperActiveEnergyShadow({ workoutId: workout.id, profileId });
+  }
+}

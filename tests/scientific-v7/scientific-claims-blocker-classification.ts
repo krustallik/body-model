@@ -30,11 +30,6 @@ const CLASSIFICATIONS: Record<string, Omit<BlockedClaimClassification, "claimId"
     reason: "Dose/adaptation output wiring missing; monotonicity claim itself is evidence-backed within range.",
     closestToGreenRank: 1,
   },
-  "C-K06": {
-    category: "research-blocked",
-    reason: "Mechanical stepper energy estimator is deliberately withheld; inventing MET would fake precision.",
-    closestToGreenRank: null,
-  },
   "C-I03": {
     category: "validation-data",
     reason: "Needs a water-observation classifier distinguishing associated vs other transient water against measurements.",

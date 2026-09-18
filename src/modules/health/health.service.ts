@@ -4,6 +4,7 @@ import type { HealthSyncRequest, HealthSyncResult } from "./health.types";
 import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import { errorKind, logEvent } from "@/lib/logger";
 import { trainingService } from "@/modules/training/training.service";
+import { recordExperimentalStepperActiveEnergyShadowsForLocalDate } from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
 
 export async function syncHealthData(
   request: HealthSyncRequest,
@@ -24,6 +25,16 @@ export async function syncHealthData(
     await trainingService.afterHealthSyncMatch(day.date, { timezone });
   } catch (error) {
     logEvent("warn", "training_match_after_sync_failed", {
+      date: day.date,
+      errorType: errorKind(error),
+    });
+  }
+
+  try {
+    // Shadow-only MS100 stepper energy; never feeds TDEE/forecast.
+    await recordExperimentalStepperActiveEnergyShadowsForLocalDate({ date: day.date });
+  } catch (error) {
+    logEvent("warn", "experimental_stepper_active_energy_shadow_failed", {
       date: day.date,
       errorType: errorKind(error),
     });

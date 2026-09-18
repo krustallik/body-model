@@ -2,10 +2,31 @@ import { prisma } from "@/lib/db/prisma";
 import type { StrengthSessionDto } from "./training.types";
 import { TrainingRepository } from "./training.repository";
 import {
-  EXPERIMENTAL_STRENGTH_ENERGY_MODEL_REVISION,
-  buildExperimentalStrengthEnergyShadow,
-  extractExperimentalStrengthEnergyFeatures,
-} from "./experimental-strength-energy";
+  estimateExperimentalStrengthActiveEnergyV1,
+  EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
+  experimentalStrengthActiveEnergyV1Fingerprint,
+} from "./experimental-strength-active-energy-v1";
+
+async function resolveBodyMassKg(input: {
+  session: StrengthSessionDto;
+  profileId: number;
+}): Promise<number | null> {
+  if (input.session.matchedWorkoutId !== null) {
+    const workout = await prisma.workout.findUnique({
+      where: { id: input.session.matchedWorkoutId },
+      select: { dailyHealthData: { select: { weightKg: true } } },
+    });
+    if (workout?.dailyHealthData.weightKg != null) {
+      return workout.dailyHealthData.weightKg;
+    }
+  }
+  const latest = await prisma.dailyHealthData.findFirst({
+    where: { weightKg: { not: null } },
+    orderBy: { date: "desc" },
+    select: { weightKg: true },
+  });
+  return latest?.weightKg ?? null;
+}
 
 /**
  * Writes an isolated shadow record only. It is deliberately not an input to
@@ -18,35 +39,40 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
   const interval = input.session.matchedWorkout ?? (input.session.webStartedAt && input.session.webEndedAt
     ? { startAt: input.session.webStartedAt, endAt: input.session.webEndedAt }
     : null);
-  const workout = input.session.matchedWorkoutId === null ? null : await prisma.workout.findUnique({
-    where: { id: input.session.matchedWorkoutId },
-    select: { dailyHealthData: { select: { weightKg: true } } },
-  });
-  const heartRateBpms = interval === null ? [] : await prisma.heartRateSample.findMany({
-    where: { profileId: input.profileId, timestamp: { gte: new Date(interval.startAt), lte: new Date(interval.endAt) } },
-    select: { bpm: true }, orderBy: { timestamp: "asc" },
-  }).then((rows) => rows.map((row) => row.bpm));
-  const features = extractExperimentalStrengthEnergyFeatures({
+  const [bodyMassKg, heartRateBpms] = await Promise.all([
+    resolveBodyMassKg(input),
+    interval === null
+      ? Promise.resolve([] as number[])
+      : prisma.heartRateSample.findMany({
+        where: {
+          profileId: input.profileId,
+          timestamp: { gte: new Date(interval.startAt), lte: new Date(interval.endAt) },
+        },
+        select: { bpm: true },
+        orderBy: { timestamp: "asc" },
+      }).then((rows) => rows.map((row) => row.bpm)),
+  ]);
+  const result = estimateExperimentalStrengthActiveEnergyV1({
     session: input.session,
-    bodyMassKg: workout?.dailyHealthData?.weightKg ?? null,
+    bodyMassKg,
     heartRateBpms,
   });
-  const shadow = buildExperimentalStrengthEnergyShadow(features);
+  const sourceFingerprint = experimentalStrengthActiveEnergyV1Fingerprint(result);
   await prisma.experimentalStrengthEnergyShadow.upsert({
     where: { sessionId: input.session.id },
     create: {
       sessionId: input.session.id,
       profileId: input.profileId,
-      sourceFingerprint: shadow.sourceFingerprint,
-      modelRevision: EXPERIMENTAL_STRENGTH_ENERGY_MODEL_REVISION,
-      features,
-      result: shadow.result,
+      sourceFingerprint,
+      modelRevision: EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
+      features: result.features,
+      result,
     },
     update: {
-      sourceFingerprint: shadow.sourceFingerprint,
-      modelRevision: EXPERIMENTAL_STRENGTH_ENERGY_MODEL_REVISION,
-      features,
-      result: shadow.result,
+      sourceFingerprint,
+      modelRevision: EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
+      features: result.features,
+      result,
     },
   });
 }

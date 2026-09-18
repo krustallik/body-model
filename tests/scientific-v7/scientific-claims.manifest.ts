@@ -400,6 +400,23 @@ export const SCIENTIFIC_V7_CLAIMS: readonly ScientificClaimManifestRecord[] = [
       uncertainty: "Experimental mechanical vertical-work heuristic with engineering MS100 step-height and net-efficiency priors; not scientifically validated personal calorimetry and not a fixed MET fallback.",
     },
   }),
+  record({
+    claimId: "C-K08",
+    title: "resistance diary can estimate active energy independently of Garmin",
+    parameterIds: ["P-K07"],
+    evidenceIds: ["E-K01", "E-K02"],
+    auditEligibility: "SAFE_AFTER_AUDIT_REVISION",
+    testType: "unit",
+    assertionTypes: ["MISSINGNESS", "INVARIANT"],
+    provenance: ["SCIENTIFIC_EVIDENCE", "ENGINEERING_ASSUMPTION"],
+    scientificAssertion: "A resistance diary session may produce an independent experimental active-energy estimate from body mass, elapsed duration, and observed session context without treating Garmin as truth, without HR/RIR→kcal formulas, and without universal kcal/set, kcal/rep, or kcal/tonnage coefficients.",
+    experimental: {
+      implementation: "src/modules/training/experimental-strength-active-energy-v1.ts",
+      testFile: "tests/experimental-strength-active-energy-v1.test.ts",
+      testName: "estimates positive active kcal for a valid LIVE session (C-K08)",
+      uncertainty: "Experimental session-level mass×duration×engineering net-MET band with LIVE density/class context; wide engineering priors; not scientifically validated personal calorimetry.",
+    },
+  }),
   record({ claimId: "C-K07", title: "active and gross energy semantics are not mixed", parameterIds: ["P-K07"], evidenceIds: ["E-G01", "E-G02"], auditEligibility: "SAFE", testType: "unit", assertionTypes: ["NO_DOUBLE_COUNTING", "CONSERVATION"], provenance: ["SCIENTIFIC_EVIDENCE", "MODEL_CONSERVATION_RULE", "INPUT_CONTRACT"], scientificAssertion: "Device active energy is used once without adding or subtracting a resting component in the active-energy resolver.", executableTestName: "device active energy is counted once without a resting-energy adjustment" }),
 
   record({ claimId: "C-L01", title: "resistance-training HR adds no independent hypertrophy multiplier", parameterIds: ["P-L01", "P-L02"], evidenceIds: ["E-A03", "E-L02", "E-L03", "E-L04"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "property", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "After program dose is represented, v7 adds no independent causal HR multiplier without claiming HR has zero residual information.", executableTestName: "resistance-training HR adds no independent hypertrophy multiplier" }),

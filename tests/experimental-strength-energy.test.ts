@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildExperimentalStrengthEnergyShadow,
-  extractExperimentalStrengthEnergyFeatures,
-} from "@/modules/training/experimental-strength-energy";
+  estimateExperimentalStrengthActiveEnergyV1,
+  extractExperimentalStrengthActiveEnergyFeaturesV1,
+} from "@/modules/training/experimental-strength-active-energy-v1";
 import { ENTRY_MODE, RESISTANCE, SESSION_STATUS } from "@/modules/training/training.constants";
 import type { StrengthSessionDto } from "@/modules/training/training.types";
 
@@ -19,12 +19,26 @@ const session = {
   ] }],
 } satisfies StrengthSessionDto;
 
-describe("experimental strength energy shadow", () => {
-  it("preserves source coverage and never turns unavailable estimation into zero", () => {
-    const features = extractExperimentalStrengthEnergyFeatures({ session, bodyMassKg: 80, heartRateBpms: [120, 130, 140] });
-    const shadow = buildExperimentalStrengthEnergyShadow(features);
+describe("experimental strength energy shadow compatibility", () => {
+  it("preserves source coverage and estimates via V1 without treating missing as zero", () => {
+    const features = extractExperimentalStrengthActiveEnergyFeaturesV1({
+      session,
+      bodyMassKg: 80,
+      heartRateBpms: [120, 130, 140],
+    });
+    const result = estimateExperimentalStrengthActiveEnergyV1({
+      session,
+      bodyMassKg: 80,
+      heartRateBpms: [120, 130, 140],
+    });
     expect(features.timingQuality).toBe("completion-times-complete");
     expect(features.interCompletionMedianSeconds).toBe(300);
-    expect(shadow.result).toMatchObject({ estimatedActiveKcal: null, lowerBoundKcal: null, upperBoundKcal: null, provenance: "experimental-personal-strength-energy", garminReferenceKcal: 180 });
+    expect(result.availability).toBe("available");
+    expect(result.estimatedActiveKcal).toBeGreaterThan(0);
+    expect(result.garminReferenceKcal).toBe(180);
+    expect(estimateExperimentalStrengthActiveEnergyV1({
+      session,
+      bodyMassKg: null,
+    }).estimatedActiveKcal).toBeNull();
   });
 });

@@ -10,24 +10,24 @@ import {
 } from "./scientific-claims.manifest";
 
 describe("scientific v7 traceability manifest", () => {
-  it("accounts for exactly 77 eligible audited claims with stable unique IDs", () => {
-    expect(SCIENTIFIC_V7_CLAIMS).toHaveLength(77);
-    expect(new Set(SCIENTIFIC_V7_CLAIMS.map(({ claimId }) => claimId)).size).toBe(77);
+  it("accounts for exactly 78 eligible audited claims with stable unique IDs", () => {
+    expect(SCIENTIFIC_V7_CLAIMS).toHaveLength(78);
+    expect(new Set(SCIENTIFIC_V7_CLAIMS.map(({ claimId }) => claimId)).size).toBe(78);
   });
 
   it("reports separate GREEN / EXPERIMENTAL / BLOCKED / REJECTED counts", () => {
     const summary = summarizeScientificManifestStatus();
     expect(summary).toMatchObject({
       GREEN: 38,
-      EXPERIMENTAL: 10,
+      EXPERIMENTAL: 11,
       BLOCKED: 29,
       REJECTED: 4,
-      eligible: 77,
-      tracked: 81,
+      eligible: 78,
+      tracked: 82,
     });
     expect(summary.note).toMatch(/do not count as scientific validation/i);
-    expect(summary.GREEN + summary.EXPERIMENTAL + summary.BLOCKED).toBe(77);
-    expect(summary.GREEN + summary.EXPERIMENTAL + summary.BLOCKED + summary.REJECTED).toBe(81);
+    expect(summary.GREEN + summary.EXPERIMENTAL + summary.BLOCKED).toBe(78);
+    expect(summary.GREEN + summary.EXPERIMENTAL + summary.BLOCKED + summary.REJECTED).toBe(82);
   });
 
   it("keeps REJECTED claim IDs out of eligible GREEN/BLOCKED/EXPERIMENTAL sets", () => {
@@ -36,7 +36,7 @@ describe("scientific v7 traceability manifest", () => {
     for (const unsafe of UNSAFE_CLAIM_IDS) expect(eligible.has(unsafe)).toBe(false);
     expect(SCIENTIFIC_V7_REJECTED_CLAIMS.map(({ claimId }) => claimId)).toEqual([...UNSAFE_CLAIM_IDS]);
     expect(SCIENTIFIC_V7_REJECTED_CLAIMS.every((claim) => claim.status === "REJECTED")).toBe(true);
-    expect(ALL_SCIENTIFIC_V7_CLAIM_RECORDS).toHaveLength(81);
+    expect(ALL_SCIENTIFIC_V7_CLAIM_RECORDS).toHaveLength(82);
   });
 
   it("provides evidence, parameters, provenance, assertion type, and a test mapping", () => {
@@ -97,7 +97,7 @@ describe("scientific v7 traceability manifest", () => {
 
   it("does not blanket-convert BLOCKED claims into EXPERIMENTAL without implementations", () => {
     const experimental = SCIENTIFIC_V7_CLAIMS.filter((claim) => claim.status === "EXPERIMENTAL");
-    expect(experimental).toHaveLength(10);
+    expect(experimental).toHaveLength(11);
     expect(experimental.every((claim) => claim.experimentalImplementation)).toBe(true);
     expect(SCIENTIFIC_V7_CLAIMS.filter((claim) => claim.status === "BLOCKED")).toHaveLength(29);
   });

@@ -8,10 +8,11 @@ import {
  * Measurement-role contract: classifies body-composition endpoints so lean /
  * DXA / BIA / FFM observations never become skeletalMuscleKg (C-MV02), local
  * ultrasound/CSA/thickness observations never become whole-body skeletalMuscleKg
- * (C-MV01), and acute MPS/tracer signals never become skeletalMuscleKg (C-MV03).
+ * (C-MV01), acute MPS/tracer signals never become skeletalMuscleKg (C-MV03), and
+ * strength/performance signals never become skeletalMuscleKg (C-C05).
  */
 export const MEASUREMENT_ROLE_CONTRACT_V7_VERSION =
-  "bodycast-measurement-role-v7-3" as const;
+  "bodycast-measurement-role-v7-4" as const;
 
 export const LEAN_MASS_NOT_SKELETAL_MUSCLE_POLICY_V7 = {
   conversion: "lean-mass-to-skeletal-muscle-kg",
@@ -52,6 +53,20 @@ export const ACUTE_MPS_NOT_SKELETAL_MUSCLE_POLICY_V7 = {
 export type AcuteMpsNotSkeletalMusclePolicyV7 =
   typeof ACUTE_MPS_NOT_SKELETAL_MUSCLE_POLICY_V7;
 
+export const STRENGTH_PERFORMANCE_NOT_SKELETAL_MUSCLE_POLICY_V7 = {
+  conversion: "strength-performance-to-skeletal-muscle-kg",
+  application: "intentionally-rejected",
+  residualAllocation: "intentionally-rejected",
+  calibrationApplication: "intentionally-rejected",
+  numericTransition: "intentionally-rejected",
+  claimId: "C-C05",
+  scientificDecision: "strength-loss-is-not-muscle-loss",
+  researchAuthority: "workout-physiology-v7-audit",
+} as const;
+
+export type StrengthPerformanceNotSkeletalMusclePolicyV7 =
+  typeof STRENGTH_PERFORMANCE_NOT_SKELETAL_MUSCLE_POLICY_V7;
+
 /** Lean / proxy endpoints that may inform aggregate lean context only. */
 export type LeanMassEndpointKindV7 =
   | "dxa-lean-soft-tissue"
@@ -65,6 +80,7 @@ export type MeasurementRoleV7 =
   | "skeletal-muscle-kg"
   | "local-hypertrophy-proxy"
   | "acute-mps-mechanistic-context"
+  | "strength-performance-context"
   | "body-weight-total-mass";
 
 export type LeanMassObservationV7 = {
@@ -850,6 +866,298 @@ export function handleAcuteMpsMeasurementForPhysiologyV7(input: {
 
 export function acuteMpsMeasurementHandlingV7Fingerprint(
   handling: AcuteMpsMeasurementHandlingV7,
+): string {
+  return stableSha256(handling);
+}
+
+/** Strength / performance endpoints — training context only, never tissue kg. */
+export type StrengthPerformanceEndpointKindV7 =
+  | "one-rep-max"
+  | "working-load"
+  | "repetition-count"
+  | "strength-trend"
+  | "performance-score";
+
+export type StrengthPerformanceObservationUnitV7 =
+  | "kg-load"
+  | "percent-1rm"
+  | "reps"
+  | "percent-change"
+  | "arbitrary-performance-units";
+
+export type StrengthPerformanceObservationV7 = {
+  endpointKind: StrengthPerformanceEndpointKindV7;
+  value: number;
+  unit: StrengthPerformanceObservationUnitV7;
+  movement?: string;
+};
+
+export type StrengthPerformanceContextV7 = {
+  availability: "available";
+  role: "strength-performance-context";
+  endpointKind: StrengthPerformanceEndpointKindV7;
+  value: number;
+  unit: StrengthPerformanceObservationUnitV7;
+  movement: string | null;
+  skeletalMuscleInterpretation: "not-skeletal-muscle-tissue";
+  mayInitializeSkeletalMuscleKg: false;
+  mayOverwriteSkeletalMuscleKg: false;
+  mayValidateSkeletalMuscleKg: false;
+  mayCalibrateSkeletalMuscleKg: false;
+  mayNumericallyTransitionSkeletalMuscleKg: false;
+};
+
+export type RejectedSkeletalMuscleFromStrengthV7 = {
+  applied: false;
+  target: "skeletalMuscleKg";
+  policy: StrengthPerformanceNotSkeletalMusclePolicyV7;
+  priorSkeletalMuscleKg: number | null;
+  resultingSkeletalMuscleKg: number | null;
+  rejectedOperations: readonly [
+    "initialize",
+    "overwrite",
+    "validate",
+    "calibrate",
+    "numeric-transition",
+    "residual-allocate",
+  ];
+};
+
+export type StrengthPerformanceMeasurementHandlingV7 = {
+  contractVersion: typeof MEASUREMENT_ROLE_CONTRACT_V7_VERSION;
+  strengthContext: StrengthPerformanceContextV7 | {
+    availability: "unavailable";
+    reason: "missing-strength-performance-observation";
+  };
+  skeletalMuscleFromStrength: RejectedSkeletalMuscleFromStrengthV7;
+};
+
+export function classifyStrengthPerformanceEndpointRoleV7(
+  endpointKind: StrengthPerformanceEndpointKindV7,
+): {
+  role: "strength-performance-context";
+  mayInitializeSkeletalMuscleKg: false;
+  mayOverwriteSkeletalMuscleKg: false;
+  mayValidateSkeletalMuscleKg: false;
+  mayCalibrateSkeletalMuscleKg: false;
+  mayNumericallyTransitionSkeletalMuscleKg: false;
+  skeletalMuscleInterpretation: "not-skeletal-muscle-tissue";
+  endpointKind: StrengthPerformanceEndpointKindV7;
+} {
+  return {
+    role: "strength-performance-context",
+    mayInitializeSkeletalMuscleKg: false,
+    mayOverwriteSkeletalMuscleKg: false,
+    mayValidateSkeletalMuscleKg: false,
+    mayCalibrateSkeletalMuscleKg: false,
+    mayNumericallyTransitionSkeletalMuscleKg: false,
+    skeletalMuscleInterpretation: "not-skeletal-muscle-tissue",
+    endpointKind,
+  };
+}
+
+export function resolveStrengthPerformanceObservationV7(
+  observation: StrengthPerformanceObservationV7,
+): StrengthPerformanceContextV7 {
+  if (!Number.isFinite(observation.value)) {
+    throw new RangeError("strength/performance observation value must be finite");
+  }
+  const classification = classifyStrengthPerformanceEndpointRoleV7(observation.endpointKind);
+  return {
+    availability: "available",
+    role: classification.role,
+    endpointKind: observation.endpointKind,
+    value: observation.value,
+    unit: observation.unit,
+    movement: observation.movement?.trim() ? observation.movement.trim() : null,
+    skeletalMuscleInterpretation: classification.skeletalMuscleInterpretation,
+    mayInitializeSkeletalMuscleKg: false,
+    mayOverwriteSkeletalMuscleKg: false,
+    mayValidateSkeletalMuscleKg: false,
+    mayCalibrateSkeletalMuscleKg: false,
+    mayNumericallyTransitionSkeletalMuscleKg: false,
+  };
+}
+
+function rejectedSkeletalMuscleFromStrength(
+  priorSkeletalMuscleKg: number | null,
+): RejectedSkeletalMuscleFromStrengthV7 {
+  return {
+    applied: false,
+    target: "skeletalMuscleKg",
+    policy: STRENGTH_PERFORMANCE_NOT_SKELETAL_MUSCLE_POLICY_V7,
+    priorSkeletalMuscleKg,
+    resultingSkeletalMuscleKg: priorSkeletalMuscleKg,
+    rejectedOperations: [
+      "initialize",
+      "overwrite",
+      "validate",
+      "calibrate",
+      "numeric-transition",
+      "residual-allocate",
+    ],
+  };
+}
+
+/**
+ * Observation handling: strength/performance informs training context only;
+ * skeletalMuscleKg is never initialized, overwritten, validated, calibrated, or
+ * numerically transitioned from the strength value.
+ */
+export function applyStrengthPerformanceObservationToPhysiologyV7State(input: {
+  state: PhysiologyV7State;
+  strengthObservation: StrengthPerformanceObservationV7;
+}): {
+  state: PhysiologyV7State;
+  strengthContext: StrengthPerformanceContextV7;
+  skeletalMuscleFromStrength: RejectedSkeletalMuscleFromStrengthV7;
+} {
+  validatePhysiologyV7State(input.state);
+  const strengthContext = resolveStrengthPerformanceObservationV7(input.strengthObservation);
+  const state = validatePhysiologyV7State({ ...input.state });
+  return {
+    state,
+    strengthContext,
+    skeletalMuscleFromStrength: rejectedSkeletalMuscleFromStrength(state.skeletalMuscleKg),
+  };
+}
+
+export function initializePhysiologyV7StateRejectingStrengthAsSkeletalMuscleV7(input: {
+  strengthObservation: StrengthPerformanceObservationV7;
+  priorState?: PhysiologyV7State | null;
+}): {
+  state: PhysiologyV7State;
+  strengthContext: StrengthPerformanceContextV7;
+  skeletalMuscleFromStrength: RejectedSkeletalMuscleFromStrengthV7;
+} {
+  const prior = input.priorState ?? {
+    fatMassKg: null,
+    skeletalMuscleKg: null,
+    otherLeanTissueKg: null,
+    glycogenKg: null,
+    glycogenWaterKg: null,
+    ecfDeviationKg: null,
+    transientExerciseWaterKg: null,
+    adaptiveThermogenesisKcalPerDay: null,
+    weightFilterState: null,
+  };
+  return applyStrengthPerformanceObservationToPhysiologyV7State({
+    state: prior,
+    strengthObservation: input.strengthObservation,
+  });
+}
+
+export function rejectResidualStrengthAsSkeletalMuscleV7(input: {
+  state: PhysiologyV7State;
+  residualStrengthValue: number;
+}): RejectedSkeletalMuscleFromStrengthV7 {
+  validatePhysiologyV7State(input.state);
+  if (!Number.isFinite(input.residualStrengthValue)) {
+    throw new RangeError("residualStrengthValue must be finite");
+  }
+  return rejectedSkeletalMuscleFromStrength(input.state.skeletalMuscleKg);
+}
+
+export function rejectStrengthAsSkeletalMuscleValidatorV7(input: {
+  skeletalMuscleKg: number | null;
+  strengthObservation: StrengthPerformanceObservationV7;
+}): {
+  accepted: false;
+  reason: "strength-performance-is-not-skeletal-muscle-validator";
+  policy: StrengthPerformanceNotSkeletalMusclePolicyV7;
+  skeletalMuscleKg: number | null;
+  strengthObservation: StrengthPerformanceObservationV7;
+} {
+  resolveStrengthPerformanceObservationV7(input.strengthObservation);
+  if (input.skeletalMuscleKg !== null
+      && (!Number.isFinite(input.skeletalMuscleKg) || input.skeletalMuscleKg < 0)) {
+    throw new RangeError("skeletalMuscleKg must be finite and nonnegative when available");
+  }
+  return {
+    accepted: false,
+    reason: "strength-performance-is-not-skeletal-muscle-validator",
+    policy: STRENGTH_PERFORMANCE_NOT_SKELETAL_MUSCLE_POLICY_V7,
+    skeletalMuscleKg: input.skeletalMuscleKg,
+    strengthObservation: structuredClone(input.strengthObservation),
+  };
+}
+
+export function rejectStrengthAsSkeletalMuscleCalibratorV7(input: {
+  skeletalMuscleKg: number | null;
+  strengthObservation: StrengthPerformanceObservationV7;
+}): {
+  accepted: false;
+  reason: "strength-performance-is-not-skeletal-muscle-calibrator";
+  policy: StrengthPerformanceNotSkeletalMusclePolicyV7;
+  skeletalMuscleKg: number | null;
+  strengthObservation: StrengthPerformanceObservationV7;
+} {
+  resolveStrengthPerformanceObservationV7(input.strengthObservation);
+  if (input.skeletalMuscleKg !== null
+      && (!Number.isFinite(input.skeletalMuscleKg) || input.skeletalMuscleKg < 0)) {
+    throw new RangeError("skeletalMuscleKg must be finite and nonnegative when available");
+  }
+  return {
+    accepted: false,
+    reason: "strength-performance-is-not-skeletal-muscle-calibrator",
+    policy: STRENGTH_PERFORMANCE_NOT_SKELETAL_MUSCLE_POLICY_V7,
+    skeletalMuscleKg: input.skeletalMuscleKg,
+    strengthObservation: structuredClone(input.strengthObservation),
+  };
+}
+
+export function rejectStrengthAsSkeletalMuscleNumericTransitionV7(input: {
+  skeletalMuscleKg: number | null;
+  strengthObservation: StrengthPerformanceObservationV7;
+}): {
+  applied: false;
+  reason: "strength-performance-is-not-skeletal-muscle-numeric-transition";
+  policy: StrengthPerformanceNotSkeletalMusclePolicyV7;
+  priorSkeletalMuscleKg: number | null;
+  resultingSkeletalMuscleKg: number | null;
+} {
+  resolveStrengthPerformanceObservationV7(input.strengthObservation);
+  if (input.skeletalMuscleKg !== null
+      && (!Number.isFinite(input.skeletalMuscleKg) || input.skeletalMuscleKg < 0)) {
+    throw new RangeError("skeletalMuscleKg must be finite and nonnegative when available");
+  }
+  return {
+    applied: false,
+    reason: "strength-performance-is-not-skeletal-muscle-numeric-transition",
+    policy: STRENGTH_PERFORMANCE_NOT_SKELETAL_MUSCLE_POLICY_V7,
+    priorSkeletalMuscleKg: input.skeletalMuscleKg,
+    resultingSkeletalMuscleKg: input.skeletalMuscleKg,
+  };
+}
+
+export function handleStrengthPerformanceMeasurementForPhysiologyV7(input: {
+  state: PhysiologyV7State;
+  strengthObservation: StrengthPerformanceObservationV7 | null;
+}): StrengthPerformanceMeasurementHandlingV7 {
+  validatePhysiologyV7State(input.state);
+  if (input.strengthObservation === null) {
+    return {
+      contractVersion: MEASUREMENT_ROLE_CONTRACT_V7_VERSION,
+      strengthContext: {
+        availability: "unavailable",
+        reason: "missing-strength-performance-observation",
+      },
+      skeletalMuscleFromStrength: rejectedSkeletalMuscleFromStrength(input.state.skeletalMuscleKg),
+    };
+  }
+  const applied = applyStrengthPerformanceObservationToPhysiologyV7State({
+    state: input.state,
+    strengthObservation: input.strengthObservation,
+  });
+  return {
+    contractVersion: MEASUREMENT_ROLE_CONTRACT_V7_VERSION,
+    strengthContext: applied.strengthContext,
+    skeletalMuscleFromStrength: applied.skeletalMuscleFromStrength,
+  };
+}
+
+export function strengthPerformanceMeasurementHandlingV7Fingerprint(
+  handling: StrengthPerformanceMeasurementHandlingV7,
 ): string {
   return stableSha256(handling);
 }

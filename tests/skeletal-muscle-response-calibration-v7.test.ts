@@ -33,6 +33,7 @@ describe("SkeletalMuscleResponseCalibrationV7", () => {
       .toBe(skeletalMuscleResponseCalibrationV7Fingerprint(second));
     expect(first.rejectedConversions).toEqual(expect.arrayContaining([
       "acute-mps-to-chronic-skeletal-muscle-kg",
+      "strength-performance-to-skeletal-muscle-kg",
       "kcal-surplus-to-muscle-kg",
       "hr-tonnage-frequency-or-rir-to-numeric-muscle-multiplier",
       "universal-set-cutoff-to-zero-or-negative-hypertrophy",

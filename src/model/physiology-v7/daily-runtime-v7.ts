@@ -26,10 +26,12 @@ import {
   handleAcuteMpsMeasurementForPhysiologyV7,
   handleLeanMassMeasurementForPhysiologyV7,
   handleLocalMuscleMeasurementForPhysiologyV7,
+  handleStrengthPerformanceMeasurementForPhysiologyV7,
   MEASUREMENT_ROLE_CONTRACT_V7_VERSION,
   type AcuteMpsObservationV7,
   type LeanMassObservationV7,
   type LocalMuscleObservationV7,
+  type StrengthPerformanceObservationV7,
 } from "./measurement-role-v7";
 import {
   PHYSIOLOGY_V7_CONTRACT_VERSION,
@@ -45,7 +47,7 @@ import {
 import { TRANSIENT_EXERCISE_WATER_ECF_TRANSITION_V7_VERSION } from "./transient-exercise-water-ecf-transition-v7";
 
 export const PHYSIOLOGY_DAILY_RUNTIME_V7_VERSION =
-  "bodycast-physiology-daily-runtime-v7-4" as const;
+  "bodycast-physiology-daily-runtime-v7-5" as const;
 
 export type PhysiologyV7CompartmentKey =
   | "fatMassKg"
@@ -129,6 +131,12 @@ export type PhysiologyDaySourceV7 = {
    * retains mechanistic context only; it never writes skeletalMuscleKg.
    */
   acuteMpsObservation?: AcuteMpsObservationV7 | null;
+  /**
+   * Optional strength/performance observation (1RM, load, reps, trends).
+   * Measurement-role handling retains training context only; it never writes
+   * skeletalMuscleKg.
+   */
+  strengthPerformanceObservation?: StrengthPerformanceObservationV7 | null;
 };
 
 function unavailableReason(field: PhysiologyV7CompartmentKey): string {
@@ -258,6 +266,7 @@ function runtimeSourceFingerprint(
       leanMassObservation: sources.leanMassObservation ?? null,
       localMuscleObservation: sources.localMuscleObservation ?? null,
       acuteMpsObservation: sources.acuteMpsObservation ?? null,
+      strengthPerformanceObservation: sources.strengthPerformanceObservation ?? null,
     },
     nutrition: sources.nutrition,
     activity: {
@@ -327,6 +336,15 @@ export function buildPhysiologyDayV7(input: {
     throw new Error("measurement-role contract violated: acute MPS mutated skeletalMuscleKg");
   }
 
+  const strengthPerformanceMeasurement = handleStrengthPerformanceMeasurementForPhysiologyV7({
+    state: priorStructuralState,
+    strengthObservation: input.sources.strengthPerformanceObservation ?? null,
+  });
+  if (strengthPerformanceMeasurement.skeletalMuscleFromStrength.resultingSkeletalMuscleKg
+      !== priorStructuralState.skeletalMuscleKg) {
+    throw new Error("measurement-role contract violated: strength/performance mutated skeletalMuscleKg");
+  }
+
   const proteinContext = input.sources.nutrition.proteinG === null
     ? { availability: "unavailable" as const, reason: "missing-protein-source" as const }
     : {
@@ -349,13 +367,14 @@ export function buildPhysiologyDayV7(input: {
       reason: "missing-energy-balance-source",
     },
     mpsObservation: input.sources.acuteMpsObservation ?? null,
+    strengthObservation: input.sources.strengthPerformanceObservation ?? null,
   });
   const afterTraining = applyTrainingAdaptationTransitionV7({
     state: priorStructuralState,
     response: adaptationResponse,
   });
   if (afterTraining.state.skeletalMuscleKg !== priorStructuralState.skeletalMuscleKg) {
-    throw new Error("adaptation path violated: acute MPS or training response mutated skeletalMuscleKg");
+    throw new Error("adaptation path violated: measurement or training response mutated skeletalMuscleKg");
   }
   const resistanceExposure = input.exposureHistory.days.find(({ date }) => date === input.date) ?? null;
   const fluidWater = buildFluidWaterTransitionPipelineV7({
@@ -404,6 +423,7 @@ export function buildPhysiologyDayV7(input: {
     leanMassMeasurement,
     localMuscleMeasurement,
     acuteMpsMeasurement,
+    strengthPerformanceMeasurement,
     trainingAdaptation: afterTraining.transition,
     fluidWaterFingerprint: fluidWater.fingerprint,
     resultingCompartments,
@@ -464,6 +484,7 @@ export function buildPhysiologyDayV7(input: {
     leanMassMeasurement,
     localMuscleMeasurement,
     acuteMpsMeasurement,
+    strengthPerformanceMeasurement,
     observations: {
       observedWeightKg: input.sources.observedWeightKg === null
         ? { availability: "unavailable" as const, valueKg: null, provenance: null }
@@ -482,6 +503,7 @@ export function buildPhysiologyDayV7(input: {
       leanMassObservation: leanMassMeasurement.leanContext,
       localMuscleObservation: localMuscleMeasurement.localContext,
       acuteMpsObservation: acuteMpsMeasurement.mpsContext,
+      strengthPerformanceObservation: strengthPerformanceMeasurement.strengthContext,
     },
     massReconstruction: reconstructedMassKg === null
       ? {
@@ -499,6 +521,7 @@ export function buildPhysiologyDayV7(input: {
       leanMassIsNotSkeletalMuscle: true as const,
       localHypertrophyIsNotWholeBodySkeletalMuscle: true as const,
       acuteMpsIsNotAccumulatedSkeletalMuscle: true as const,
+      strengthPerformanceIsNotSkeletalMuscle: true as const,
     },
     blockers,
     scientificFingerprint,

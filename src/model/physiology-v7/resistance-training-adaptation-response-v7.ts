@@ -11,8 +11,11 @@ import {
 } from "@/model/physiology-v7/skeletal-muscle-response-calibration-v7";
 import {
   resolveAcuteMpsObservationV7,
+  resolveStrengthPerformanceObservationV7,
   type AcuteMpsContextV7,
   type AcuteMpsObservationV7,
+  type StrengthPerformanceContextV7,
+  type StrengthPerformanceObservationV7,
 } from "@/model/physiology-v7/measurement-role-v7";
 import { buildExerciseMuscleMappingSnapshotV7 } from "@/model/physiology-v7/exercise-muscle-mapping-v7";
 import { buildCanonicalStrengthTrainingInputV7 } from "@/modules/model-episodes/strength-training-input-v7";
@@ -26,7 +29,7 @@ import type { StrengthSessionDto } from "@/modules/training/training.types";
  * tissue-mass estimate, dose-response coefficient, or nutrition modifier.
  */
 export const RESISTANCE_TRAINING_ADAPTATION_RESPONSE_V7_VERSION =
-  "bodycast-resistance-training-adaptation-response-v7-4" as const;
+  "bodycast-resistance-training-adaptation-response-v7-5" as const;
 
 /**
  * P-A07 / C-A06: no approved universal sets/session or sets/week cutoff.
@@ -113,6 +116,14 @@ export type ResistanceTrainingAdaptationResponseV7 = {
   acuteMpsContext: AcuteMpsContextV7 | {
     availability: "unavailable";
     reason: "missing-acute-mps-observation";
+  };
+  /**
+   * Optional strength/performance context (1RM, load, reps, trends). Training
+   * context only — never a skeletalMuscleKg observation or transition.
+   */
+  strengthPerformanceContext: StrengthPerformanceContextV7 | {
+    availability: "unavailable";
+    reason: "missing-strength-performance-observation";
   };
   trainingExperience: { availability: "unavailable"; reason: "no-defensible-training-status-source" };
   programNovelty: { availability: "unavailable"; reason: "no-approved-program-novelty-response" };
@@ -290,6 +301,8 @@ export function buildResistanceTrainingAdaptationResponseV7(input: {
   energyBalanceContext?: ResistanceTrainingEnergyBalanceContextV7;
   /** Acute MPS/tracer may inform mechanistic context only; never muscle kg. */
   mpsObservation?: AcuteMpsObservationV7 | null;
+  /** Strength/performance may inform training context only; never muscle kg. */
+  strengthObservation?: StrengthPerformanceObservationV7 | null;
 }): ResistanceTrainingAdaptationResponseV7 {
   const day = input.exposureHistory.days.find((candidate) => candidate.date === input.date);
   if (!day) throw new RangeError("date must be within exposureHistory");
@@ -298,6 +311,9 @@ export function buildResistanceTrainingAdaptationResponseV7(input: {
   const acuteMpsContext = input.mpsObservation == null
     ? { availability: "unavailable" as const, reason: "missing-acute-mps-observation" as const }
     : resolveAcuteMpsObservationV7(input.mpsObservation);
+  const strengthPerformanceContext = input.strengthObservation == null
+    ? { availability: "unavailable" as const, reason: "missing-strength-performance-observation" as const }
+    : resolveStrengthPerformanceObservationV7(input.strengthObservation);
   return {
     contractVersion: RESISTANCE_TRAINING_ADAPTATION_RESPONSE_V7_VERSION,
     date: input.date,
@@ -311,6 +327,7 @@ export function buildResistanceTrainingAdaptationResponseV7(input: {
     proteinContext: input.proteinContext ?? { availability: "unavailable", reason: "missing-protein-source" },
     energyBalanceContext: input.energyBalanceContext ?? { availability: "unavailable", reason: "missing-energy-balance-source" },
     acuteMpsContext,
+    strengthPerformanceContext,
     trainingExperience: { availability: "unavailable", reason: "no-defensible-training-status-source" },
     programNovelty: { availability: "unavailable", reason: "no-approved-program-novelty-response" },
     calibration,
@@ -335,6 +352,7 @@ export function resistanceTrainingAdaptationResponseV7Fingerprint(
     proteinContext: response.proteinContext,
     energyBalanceContext: response.energyBalanceContext,
     acuteMpsContext: response.acuteMpsContext,
+    strengthPerformanceContext: response.strengthPerformanceContext,
     calibration: response.calibration,
     muscleMassTransition: response.muscleMassTransition,
   });

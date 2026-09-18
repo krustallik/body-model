@@ -8,15 +8,19 @@ import {
   applyLeanMassObservationToPhysiologyV7State,
   applyLocalMuscleObservationToPhysiologyV7State,
   applyAcuteMpsObservationToPhysiologyV7State,
+  applyStrengthPerformanceObservationToPhysiologyV7State,
   classifyLeanMassEndpointRoleV7,
   classifyLocalMuscleEndpointRoleV7,
   classifyAcuteMpsEndpointRoleV7,
+  classifyStrengthPerformanceEndpointRoleV7,
   initializePhysiologyV7StateRejectingLeanAsSkeletalMuscleV7,
   initializePhysiologyV7StateRejectingLocalAsWholeBodyV7,
   initializePhysiologyV7StateRejectingMpsAsSkeletalMuscleV7,
+  initializePhysiologyV7StateRejectingStrengthAsSkeletalMuscleV7,
   LEAN_MASS_NOT_SKELETAL_MUSCLE_POLICY_V7,
   LOCAL_HYPERTROPHY_NOT_WHOLE_BODY_POLICY_V7,
   ACUTE_MPS_NOT_SKELETAL_MUSCLE_POLICY_V7,
+  STRENGTH_PERFORMANCE_NOT_SKELETAL_MUSCLE_POLICY_V7,
   MEASUREMENT_ROLE_CONTRACT_V7_VERSION,
   rejectLeanMassAsSkeletalMuscleValidatorV7,
   rejectLocalMuscleAsSkeletalMuscleCalibratorV7,
@@ -24,11 +28,16 @@ import {
   rejectAcuteMpsAsSkeletalMuscleCalibratorV7,
   rejectAcuteMpsAsSkeletalMuscleNumericTransitionV7,
   rejectAcuteMpsAsSkeletalMuscleValidatorV7,
+  rejectStrengthAsSkeletalMuscleCalibratorV7,
+  rejectStrengthAsSkeletalMuscleNumericTransitionV7,
+  rejectStrengthAsSkeletalMuscleValidatorV7,
   rejectResidualLeanAsSkeletalMuscleV7,
   rejectResidualLocalAsSkeletalMuscleV7,
   rejectResidualMpsAsSkeletalMuscleV7,
+  rejectResidualStrengthAsSkeletalMuscleV7,
   type AcuteMpsObservationV7,
   type LocalMuscleObservationV7,
+  type StrengthPerformanceObservationV7,
 } from "@/model/physiology-v7/measurement-role-v7";
 import { rebuildPhysiologyRangeV7 } from "@/model/physiology-v7/rebuild-v7";
 import {
@@ -66,6 +75,7 @@ function sources(date: string, options: {
   } | null;
   localMuscleObservation?: LocalMuscleObservationV7 | null;
   acuteMpsObservation?: AcuteMpsObservationV7 | null;
+  strengthPerformanceObservation?: StrengthPerformanceObservationV7 | null;
 } = {}) {
   return {
     date,
@@ -85,6 +95,7 @@ function sources(date: string, options: {
     leanMassObservation: options.leanMassObservation ?? null,
     localMuscleObservation: options.localMuscleObservation ?? null,
     acuteMpsObservation: options.acuteMpsObservation ?? null,
+    strengthPerformanceObservation: options.strengthPerformanceObservation ?? null,
   };
 }
 
@@ -629,6 +640,253 @@ describe("measurement-role v7 acute MPS ≠ skeletal muscle kg", () => {
     expect(rebuilt.days).toHaveLength(2);
     for (const day of rebuilt.days) {
       expect(day.acuteMpsMeasurement.skeletalMuscleFromMps.applied).toBe(false);
+      expect(day.resultingState.compartments.skeletalMuscleKg).toMatchObject({
+        availability: "available",
+        valueKg: 28,
+        biologicalTransition: "not-modeled",
+      });
+    }
+    expect(rebuilt.finalState.compartments.skeletalMuscleKg.valueKg).toBe(28);
+  });
+});
+
+describe("measurement-role v7 strength/performance ≠ skeletal muscle kg", () => {
+  const strengthObservation: StrengthPerformanceObservationV7 = {
+    endpointKind: "one-rep-max",
+    value: 100,
+    unit: "kg-load",
+    movement: "back-squat",
+  };
+
+  it("classifies 1RM/load/reps/trend/performance as training context only", () => {
+    for (const endpointKind of [
+      "one-rep-max",
+      "working-load",
+      "repetition-count",
+      "strength-trend",
+      "performance-score",
+    ] as const) {
+      expect(classifyStrengthPerformanceEndpointRoleV7(endpointKind)).toEqual({
+        role: "strength-performance-context",
+        mayInitializeSkeletalMuscleKg: false,
+        mayOverwriteSkeletalMuscleKg: false,
+        mayValidateSkeletalMuscleKg: false,
+        mayCalibrateSkeletalMuscleKg: false,
+        mayNumericallyTransitionSkeletalMuscleKg: false,
+        skeletalMuscleInterpretation: "not-skeletal-muscle-tissue",
+        endpointKind,
+      });
+    }
+  });
+
+  it("initialization from strength decline keeps skeletalMuscleKg unavailable", () => {
+    const initialized = initializePhysiologyV7StateRejectingStrengthAsSkeletalMuscleV7({
+      strengthObservation: {
+        endpointKind: "strength-trend",
+        value: -12,
+        unit: "percent-change",
+        movement: "bench-press",
+      },
+    });
+    expect(initialized.strengthContext).toMatchObject({
+      availability: "available",
+      role: "strength-performance-context",
+      value: -12,
+      skeletalMuscleInterpretation: "not-skeletal-muscle-tissue",
+    });
+    expect(initialized.state.skeletalMuscleKg).toBeNull();
+    expect(initialized.skeletalMuscleFromStrength).toEqual({
+      applied: false,
+      target: "skeletalMuscleKg",
+      policy: STRENGTH_PERFORMANCE_NOT_SKELETAL_MUSCLE_POLICY_V7,
+      priorSkeletalMuscleKg: null,
+      resultingSkeletalMuscleKg: null,
+      rejectedOperations: [
+        "initialize",
+        "overwrite",
+        "validate",
+        "calibrate",
+        "numeric-transition",
+        "residual-allocate",
+      ],
+    });
+    expect(initialized).not.toHaveProperty("strengthToSkeletalMuscleKg");
+    expect(initialized).not.toHaveProperty("performanceKgConversion");
+  });
+
+  it("observation handling never overwrites skeletalMuscleKg from 1RM/load/reps", () => {
+    const prior = { ...emptyState, skeletalMuscleKg: 31, fatMassKg: 18 };
+    const applied = applyStrengthPerformanceObservationToPhysiologyV7State({
+      state: prior,
+      strengthObservation: {
+        endpointKind: "working-load",
+        value: 80,
+        unit: "percent-1rm",
+        movement: "deadlift",
+      },
+    });
+    expect(applied.state.skeletalMuscleKg).toBe(31);
+    expect(applied.strengthContext.value).toBe(80);
+    expect(applied.skeletalMuscleFromStrength.applied).toBe(false);
+    expect(applied.skeletalMuscleFromStrength.resultingSkeletalMuscleKg).toBe(31);
+  });
+
+  it("rejects strength validation, calibration, numeric transition, and residual allocation", () => {
+    expect(rejectStrengthAsSkeletalMuscleValidatorV7({
+      skeletalMuscleKg: 30,
+      strengthObservation,
+    })).toMatchObject({
+      accepted: false,
+      reason: "strength-performance-is-not-skeletal-muscle-validator",
+      policy: STRENGTH_PERFORMANCE_NOT_SKELETAL_MUSCLE_POLICY_V7,
+    });
+    expect(rejectStrengthAsSkeletalMuscleCalibratorV7({
+      skeletalMuscleKg: 30,
+      strengthObservation,
+    })).toMatchObject({
+      accepted: false,
+      reason: "strength-performance-is-not-skeletal-muscle-calibrator",
+    });
+    expect(rejectStrengthAsSkeletalMuscleNumericTransitionV7({
+      skeletalMuscleKg: 30,
+      strengthObservation: {
+        endpointKind: "strength-trend",
+        value: -8,
+        unit: "percent-change",
+      },
+    })).toMatchObject({
+      applied: false,
+      reason: "strength-performance-is-not-skeletal-muscle-numeric-transition",
+      priorSkeletalMuscleKg: 30,
+      resultingSkeletalMuscleKg: 30,
+    });
+    expect(rejectResidualStrengthAsSkeletalMuscleV7({
+      state: emptyState,
+      residualStrengthValue: -10,
+    })).toMatchObject({
+      applied: false,
+      resultingSkeletalMuscleKg: null,
+      rejectedOperations: expect.arrayContaining(["residual-allocate"]),
+    });
+  });
+
+  it("adaptation path retains strength as training context without changing skeletalMuscleKg", () => {
+    const date = "2026-09-18";
+    const exposureHistory = buildResistanceTrainingExposureHistoryFromSourcesV7({
+      fromDate: date,
+      toDate: date,
+      days: [{ date, workoutFeedObserved: true }],
+      strengthWorkouts: [],
+      sessions: [],
+    });
+    const response = buildResistanceTrainingAdaptationResponseV7({
+      date,
+      exposureHistory,
+      strengthObservation: {
+        endpointKind: "strength-trend",
+        value: -15,
+        unit: "percent-change",
+        movement: "squat",
+      },
+    });
+    expect(response.strengthPerformanceContext).toMatchObject({
+      availability: "available",
+      role: "strength-performance-context",
+      value: -15,
+      mayNumericallyTransitionSkeletalMuscleKg: false,
+    });
+    expect(response.calibration.rejectedConversions).toContain(
+      "strength-performance-to-skeletal-muscle-kg",
+    );
+    expect(response.muscleMassTransition.availability).toBe("unavailable");
+    expect(JSON.stringify(response)).not.toMatch(/strengthToKg|performanceKgDelta|skeletalMuscleDeltaKg/);
+
+    const applied = applyTrainingAdaptationTransitionV7({
+      state: { ...emptyState, skeletalMuscleKg: 29 },
+      response,
+    });
+    expect(applied.state.skeletalMuscleKg).toBe(29);
+    expect(applied.transition.skeletalMuscleTransition.carriedForwardSkeletalMuscleKg).toBe(29);
+    expect(applied.transition.skeletalMuscleTransition.biologicalTransition).toBe("not-modeled");
+  });
+
+  it("daily runtime retains strength context without writing skeletalMuscleKg", () => {
+    const date = "2026-09-18";
+    const result = buildPhysiologyDayV7({
+      date,
+      priorState: createUnavailablePhysiologyRuntimeStateV7(),
+      sources: sources(date, { strengthPerformanceObservation: strengthObservation }),
+      exposureHistory: buildResistanceTrainingExposureHistoryFromSourcesV7({
+        fromDate: date,
+        toDate: date,
+        days: [{ date, workoutFeedObserved: true }],
+        strengthWorkouts: [],
+        sessions: [],
+      }),
+    });
+    expect(result.strengthPerformanceMeasurement.contractVersion).toBe(MEASUREMENT_ROLE_CONTRACT_V7_VERSION);
+    expect(result.strengthPerformanceMeasurement.strengthContext).toMatchObject({
+      availability: "available",
+      role: "strength-performance-context",
+      endpointKind: "one-rep-max",
+      value: 100,
+    });
+    expect(result.strengthPerformanceMeasurement.skeletalMuscleFromStrength.applied).toBe(false);
+    expect(result.trainingAdaptation.response.strengthPerformanceContext).toMatchObject({
+      availability: "available",
+      role: "strength-performance-context",
+    });
+    expect(result.resultingState.compartments.skeletalMuscleKg).toMatchObject({
+      availability: "unavailable",
+      valueKg: null,
+    });
+    expect(result.provenance.strengthPerformanceIsNotSkeletalMuscle).toBe(true);
+  });
+
+  it("rebuild keeps skeletalMuscleKg independent of strength/performance observations across days", () => {
+    const fromDate = "2026-09-18";
+    const toDate = "2026-09-19";
+    const prior = runtimeStateFromStructuralStateV7({
+      ...emptyState,
+      skeletalMuscleKg: 28,
+    });
+    const rebuilt = rebuildPhysiologyRangeV7({
+      fromDate,
+      toDate,
+      initialState: prior,
+      sources: {
+        days: [
+          sources(fromDate, {
+            strengthPerformanceObservation: {
+              endpointKind: "one-rep-max",
+              value: 120,
+              unit: "kg-load",
+              movement: "squat",
+            },
+          }),
+          sources(toDate, {
+            strengthPerformanceObservation: {
+              endpointKind: "strength-trend",
+              value: -10,
+              unit: "percent-change",
+              movement: "squat",
+            },
+          }),
+        ],
+        exposure: {
+          historyFromDate: fromDate,
+          days: [
+            { date: fromDate, workoutFeedObserved: true },
+            { date: toDate, workoutFeedObserved: true },
+          ],
+          strengthWorkouts: [],
+          sessions: [],
+        },
+      },
+    });
+    expect(rebuilt.days).toHaveLength(2);
+    for (const day of rebuilt.days) {
+      expect(day.strengthPerformanceMeasurement.skeletalMuscleFromStrength.applied).toBe(false);
       expect(day.resultingState.compartments.skeletalMuscleKg).toMatchObject({
         availability: "available",
         valueKg: 28,

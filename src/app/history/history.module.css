@@ -182,6 +182,34 @@
 .workoutDetailCard strong { font-size: 1rem; letter-spacing: -0.02em; }
 .workoutDetailCard p { margin: 0; color: var(--muted); font-size: 0.86rem; }
 .workoutDetailCard small { color: var(--muted); font-size: 0.75rem; line-height: 1.4; }
+
+.provenanceChip {
+  display: grid;
+  gap: 0.15rem;
+  margin: 0.55rem 0 0;
+  padding: 0.45rem 0.55rem;
+  border-radius: 0.45rem;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+.provenanceChip span { font-weight: 650; }
+.provenanceChip small { color: var(--muted); font-size: 0.72rem; }
+.provenanceChip[data-tone="observed"] { border-color: color-mix(in srgb, #2f6f4e 35%, var(--border)); }
+.provenanceChip[data-tone="estimated"],
+.provenanceChip[data-tone="carried"],
+.provenanceChip[data-tone="info"] { border-color: color-mix(in srgb, #8a6a2f 35%, var(--border)); }
+.provenanceChip[data-tone="unavailable"] { border-color: color-mix(in srgb, #8a3b3b 35%, var(--border)); }
+
+.provenanceHint {
+  display: block;
+  margin-top: 0.2rem;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.25;
+}
+.provenanceHint[data-tone="unavailable"] { color: color-mix(in srgb, #8a3b3b 70%, var(--muted)); }
 .workoutDetailMeta {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

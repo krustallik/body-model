@@ -346,6 +346,17 @@ export function HistoryClient() {
                               {display}
                             </button>
                           ) : display}
+                          {isWorkout && day.workoutFeedObserved === false && (
+                            <small className={styles.provenanceHint} data-tone="unavailable">
+                              {uk ? "стрічка відсутня ≠ відпочинок" : "missing feed ≠ rest"}
+                            </small>
+                          )}
+                          {isWorkout && day.workoutSource === "workouts"
+                            && day.workouts.some((workout) => workout.activeEnergyKcal === null) && (
+                            <small className={styles.provenanceHint} data-tone="unavailable">
+                              {uk ? "енергія недоступна ≠ 0" : "energy unavailable ≠ 0"}
+                            </small>
+                          )}
                         </td>
                       );
                     })}

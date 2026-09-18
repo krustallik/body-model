@@ -30,11 +30,42 @@ import {
   type PlanValues,
   type ScenarioMode,
 } from "@/modules/model-forecast/forecast-ui";
+import {
+  forecastMetricSemanticsNotes,
+  forecastWorkoutScenarioNotes,
+  productionForecastCompartmentNotes,
+  type ProvenanceChip,
+} from "@/modules/provenance/provenance-presentation";
 import { ForecastChart } from "./forecast-chart";
 import styles from "./forecast.module.css";
 
-type HistoricalDay = { date: string; modeledWeightKg: number | null; fatMassKg: number | null; leanTissueKg: number | null; glycogenAssociatedMassKg: number | null; dataQuality: string };
-type Context = { status: ModelStatusDto; history: HistoricalDay[]; unknownIntervals: UnknownIntervalDto[] };
+type HistoricalDay = {
+  date: string;
+  modeledWeightKg: number | null;
+  fatMassKg: number | null;
+  leanTissueKg: number | null;
+  glycogenAssociatedMassKg: number | null;
+  dataQuality: string;
+  nutritionSource?: string | null;
+  workoutFeedObserved?: boolean | null;
+  missingFields?: string[];
+};
+type ContextProvenance = {
+  v7Cache: ProvenanceChip;
+  v7Compartments: ProvenanceChip[];
+  latestDay: {
+    date: string;
+    dataQuality: ProvenanceChip | null;
+    nutrition: ProvenanceChip | null;
+    workoutFeed: ProvenanceChip | null;
+  } | null;
+};
+type Context = {
+  status: ModelStatusDto;
+  history: HistoricalDay[];
+  unknownIntervals: UnknownIntervalDto[];
+  provenance?: ContextProvenance;
+};
 type Outcome = ForecastResult | ForecastBlockedResult;
 type SubmittedRun = { mode: ScenarioMode; horizon: ForecastHorizon; plan: PlanValues };
 type ForecastAction = "recover" | "recalculate" | "initialize";
@@ -234,6 +265,23 @@ export function ForecastClient() {
   const assumptions = submittedRun?.mode && submittedRun.mode !== "recent-behavior"
     ? planAssumptions(submittedRun.mode, submittedRun.plan, locale)
     : [uk ? "Беремо ваші недавні повні дні й повторюємо схожий ритм." : "We take your recent complete days and repeat a similar rhythm."];
+  const workoutNotes = submittedRun
+    ? forecastWorkoutScenarioNotes(submittedRun.mode, submittedRun.plan, locale)
+    : [];
+  const metricNotes = forecastMetricSemanticsNotes(locale);
+  const productionCompartmentNotes = productionForecastCompartmentNotes(locale);
+  const provenanceChips = [
+    ...(context?.provenance
+      ? [context.provenance.v7Cache, ...context.provenance.v7Compartments]
+      : productionCompartmentNotes),
+    ...(context?.provenance?.latestDay
+      ? [
+          context.provenance.latestDay.dataQuality,
+          context.provenance.latestDay.nutrition,
+          context.provenance.latestDay.workoutFeed,
+        ]
+      : []),
+  ].filter((chip): chip is ProvenanceChip => chip !== null && chip !== undefined);
   const readiness = forecastReadiness({
     status: context?.status ?? null,
     locale,
@@ -330,9 +378,22 @@ export function ForecastClient() {
         </section>
         <section className={styles.detailGrid}>
           <article><h2>{uk ? "Енергія в кінці періоду" : "Energy at the end"}</h2><dl><div><dt>{uk ? "Скільки з’їли (очікувано)" : "Expected intake"}</dt><dd>{formatValue(result.dates.at(-1)!.energyIntakeKcal.median, "kcal", locale)}</dd></div><div><dt>{uk ? "Скільки витратили за день" : "Daily burn"}</dt><dd>{formatValue(result.dates.at(-1)!.tdeeKcalPerDay.median, "kcal", locale)}</dd></div><div><dt>{uk ? "Базовий обмін у спокої" : "Resting burn"}</dt><dd>{formatValue(result.dates.at(-1)!.dynamicRmrKcalPerDay.median, "kcal", locale)}</dd></div><div><dt>{uk ? "Витрати на рух" : "Movement burn"}</dt><dd>{formatValue(result.dates.at(-1)!.netActivityKcalPerDay.median, "kcal", locale)}</dd></div></dl></article>
-          <article><h2>{uk ? "Що ми припустили в цьому розрахунку" : "What this run assumes"}</h2><ul>{assumptions.map((assumption) => <li key={assumption}>{assumption}</li>)}<li>{uk ? "Невизначеність стартової ваги" : "Starting-weight uncertainty"}: {result.diagnostics.uncertaintySources.initialState ? (uk ? "враховано" : "included") : (uk ? "не потрібна" : "not needed")}.</li><li>{uk ? "Невизначеність майбутніх звичок" : "Future-habit uncertainty"}: {result.diagnostics.uncertaintySources.futureBehavior ? (uk ? "враховано" : "included") : (uk ? "не враховано" : "not included")}.</li><li>{uk ? "Похибку вагів і всі можливі помилки моделі поки не враховано." : "Scale noise and every possible model error are not included yet."}</li></ul></article>
+          <article><h2>{uk ? "Що ми припустили в цьому розрахунку" : "What this run assumes"}</h2><ul>{assumptions.map((assumption) => <li key={assumption}>{assumption}</li>)}{workoutNotes.map((note) => <li key={note}>{note}</li>)}{metricNotes.map((note) => <li key={note}>{note}</li>)}<li>{uk ? "Невизначеність стартової ваги" : "Starting-weight uncertainty"}: {result.diagnostics.uncertaintySources.initialState ? (uk ? "враховано" : "included") : (uk ? "не потрібна" : "not needed")}.</li><li>{uk ? "Невизначеність майбутніх звичок" : "Future-habit uncertainty"}: {result.diagnostics.uncertaintySources.futureBehavior ? (uk ? "враховано" : "included") : (uk ? "не враховано" : "not included")}.</li><li>{uk ? "Похибку вагів і всі можливі помилки моделі поки не враховано." : "Scale noise and every possible model error are not included yet."}</li></ul></article>
         </section>
-        <details className={styles.diagnostics}><summary>{uk ? "Технічна діагностика" : "Technical diagnostics"}</summary><dl><div><dt>{uk ? "Версія прогнозу" : "Forecast version"}</dt><dd>{result.forecastVersion}</dd></div><div><dt>{uk ? "Валідні траєкторії" : "Valid paths"}</dt><dd>{result.diagnostics.validPathCount} / {result.diagnostics.generatedPathCount}</dd></div><div><dt>{uk ? "Початкові стани" : "Starting states"}</dt><dd>{result.diagnostics.startingParticleCount}</dd></div><div><dt>{uk ? "Джерело даних" : "Evidence source"}</dt><dd>{result.scenarioProvenance.donorEvidence.source}</dd></div><div><dt>{uk ? "Числова якість" : "Numerical quality"}</dt><dd>{result.diagnostics.numericalQuality.classification}</dd></div><div><dt>{uk ? "Відбиток" : "Fingerprint"}</dt><dd>{result.sourceFingerprint.slice(0, 16)}…</dd></div></dl></details>
+        {provenanceChips.length > 0 && (
+          <section className={styles.provenancePanel} aria-label={uk ? "Якість і походження даних" : "Data quality and provenance"}>
+            <h2>{uk ? "Якість і походження" : "Quality and provenance"}</h2>
+            <ul className={styles.provenanceList}>
+              {provenanceChips.map((chip) => (
+                <li key={chip.key} className={styles.provenanceItem} data-tone={chip.tone}>
+                  <strong>{chip.label}</strong>
+                  <span>{chip.detail}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+        <details className={styles.diagnostics}><summary>{uk ? "Технічна діагностика" : "Technical diagnostics"}</summary><dl><div><dt>{uk ? "Версія прогнозу" : "Forecast version"}</dt><dd>{result.forecastVersion}</dd></div><div><dt>{uk ? "Якість старту" : "Initial-state quality"}</dt><dd>{result.initialStateQuality}</dd></div><div><dt>{uk ? "Сценарій" : "Scenario"}</dt><dd>{result.scenarioProvenance.mode} · {result.scenarioProvenance.nutrition} · {result.scenarioProvenance.activity}</dd></div><div><dt>{uk ? "Валідні траєкторії" : "Valid paths"}</dt><dd>{result.diagnostics.validPathCount} / {result.diagnostics.generatedPathCount}</dd></div><div><dt>{uk ? "Початкові стани" : "Starting states"}</dt><dd>{result.diagnostics.startingParticleCount}</dd></div><div><dt>{uk ? "Джерело даних" : "Evidence source"}</dt><dd>{result.scenarioProvenance.donorEvidence.source}</dd></div><div><dt>{uk ? "Числова якість" : "Numerical quality"}</dt><dd>{result.diagnostics.numericalQuality.classification}</dd></div><div><dt>{uk ? "Відбиток" : "Fingerprint"}</dt><dd>{result.sourceFingerprint.slice(0, 16)}…</dd></div></dl></details>
       </>}
     </main>
   );

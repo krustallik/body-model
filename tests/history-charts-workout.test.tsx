@@ -46,6 +46,7 @@ function day(date: string, overrides: Partial<DailyMetricDto> = {}): DailyMetric
     workouts: [],
     totalWorkoutMinutes: null,
     workoutSource: "none",
+    workoutFeedObserved: null,
     updatedAt: `${date}T10:00:00.000Z`,
     ...overrides,
   };

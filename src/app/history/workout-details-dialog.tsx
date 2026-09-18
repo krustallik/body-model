@@ -7,6 +7,10 @@ import { useI18n } from "@/i18n/i18n-provider";
 import type { DailyMetricDto } from "@/modules/days/day.types";
 import { displayWorkoutType } from "@/modules/days/day-workout-presentation";
 import { formatDateTime, formatMetric } from "@/modules/days/metric-format";
+import {
+  workoutEnergyProvenanceChip,
+  workoutFeedProvenanceChip,
+} from "@/modules/provenance/provenance-presentation";
 import styles from "./history.module.css";
 
 const EMPTY_HEART_RATE = { sampleCount: 0, minBpm: null, maxBpm: null, avgBpm: null, latestBpm: null, latestTimestamp: null, samples: [] };
@@ -44,6 +48,7 @@ export function WorkoutDetailsDialog({
   }, []);
 
   const titleDate = formatLongDate(day.date, intlLocale);
+  const feedChip = workoutFeedProvenanceChip(day.workoutFeedObserved, locale);
 
   return (
     <dialog ref={dialogRef} className={styles.dialog} onCancel={onClose} onClose={onClose}>
@@ -54,6 +59,13 @@ export function WorkoutDetailsDialog({
         </div>
         <button className={styles.closeButton} type="button" aria-label={uk ? "Закрити" : "Close"} onClick={onClose}>×</button>
       </div>
+
+      {feedChip && (
+        <p className={styles.provenanceChip} data-tone={feedChip.tone} title={feedChip.detail}>
+          <span>{feedChip.label}</span>
+          <small>{feedChip.detail}</small>
+        </p>
+      )}
 
       {day.workoutSource === "legacy-strength" ? (
         <div className={styles.workoutDetailList}>
@@ -69,7 +81,9 @@ export function WorkoutDetailsDialog({
         </div>
       ) : (
         <div className={styles.workoutDetailList}>
-          {day.workouts.map((workout) => (
+          {day.workouts.map((workout) => {
+            const energy = workoutEnergyProvenanceChip(workout.activeEnergyKcal, locale);
+            return (
             <article className={styles.workoutDetailCard} key={`${workout.startAt}-${workout.type}`}>
               <strong>{displayWorkoutType(workout)}</strong>
               <p>
@@ -86,11 +100,15 @@ export function WorkoutDetailsDialog({
                 </div>
                 <div>
                   <dt>{uk ? "Активні ккал" : "Active kcal"}</dt>
-                  <dd>{workout.activeEnergyKcal === null
+                  <dd>{energy.tone === "unavailable"
                     ? "—"
                     : `${formatMetric(workout.activeEnergyKcal, intlLocale)} ${uk ? "активних ккал" : "active kcal"}`}</dd>
                 </div>
               </dl>
+              <p className={styles.provenanceChip} data-tone={energy.tone} title={energy.detail}>
+                <span>{energy.label}</span>
+                <small>{energy.detail}</small>
+              </p>
               {workout.classification === "traditional-strength-training" && (
                 <p>
                   {workout.linkedTrainingSessionId != null ? (
@@ -126,7 +144,8 @@ export function WorkoutDetailsDialog({
                 </Link></p>
               )}
             </article>
-          ))}
+            );
+          })}
         </div>
       )}
 

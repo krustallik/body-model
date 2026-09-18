@@ -7,8 +7,16 @@ const modelServices = vi.hoisted(() => ({
   initializeNewModelEpisode: vi.fn(),
 }));
 const recoveryServices = vi.hoisted(() => ({ recoverModelEpisode: vi.fn() }));
+const v7Persistence = vi.hoisted(() => ({
+  readDay: vi.fn(),
+}));
 vi.mock("@/modules/model-episodes/model-episode.service", () => modelServices);
 vi.mock("@/modules/model-recovery/model-recovery.service", () => recoveryServices);
+vi.mock("@/modules/model-episodes/physiology-v7-persistence.repository", () => ({
+  PhysiologyV7PersistenceRepository: class {
+    readDay = v7Persistence.readDay;
+  },
+}));
 
 import { GET } from "@/app/api/forecast/context/route";
 import { POST } from "@/app/api/forecast/action/route";
@@ -23,15 +31,57 @@ function actionRequest(action: string) {
 }
 
 describe("forecast context route", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    v7Persistence.readDay.mockResolvedValue({
+      status: "missing",
+      date: "2026-08-24",
+      resultFingerprint: null,
+      result: null,
+    });
+  });
 
   it("returns the recent modeled context without exposing the full persistence record", async () => {
     modelServices.getModelStatus.mockResolvedValue({ latestModeledDate: "2026-08-24" });
-    modelServices.getModelHistory.mockResolvedValue({ days: [{ date: "2026-08-24", endWeightKg: 80, fatMassKg: 16, leanTissueKg: 60, glycogenKg: 0.5, dataQuality: "observed", updatedAt: "now", sourceQuality: { private: true } }], unknownIntervals: [] });
+    modelServices.getModelHistory.mockResolvedValue({
+      days: [{
+        date: "2026-08-24",
+        endWeightKg: 80,
+        fatMassKg: 16,
+        leanTissueKg: 60,
+        glycogenKg: 0.5,
+        dataQuality: "observed",
+        nutritionSource: "observed",
+        updatedAt: "now",
+        missingFields: [],
+        sourceQuality: { workoutFeedObserved: true, private: true },
+      }],
+      unknownIntervals: [],
+    });
     const response = await GET();
     expect(response.status).toBe(200);
     expect(modelServices.getModelHistory).toHaveBeenCalledWith({ from: "2026-06-26", to: "2026-08-24", limit: 60, offset: 0 });
-    expect(await response.json()).toMatchObject({ history: [{ date: "2026-08-24", modeledWeightKg: 80, glycogenAssociatedMassKg: 1.85, dataQuality: "observed" }] });
+    const body = await response.json();
+    expect(body).toMatchObject({
+      history: [{
+        date: "2026-08-24",
+        modeledWeightKg: 80,
+        glycogenAssociatedMassKg: 1.85,
+        dataQuality: "observed",
+        nutritionSource: "observed",
+        workoutFeedObserved: true,
+      }],
+      provenance: {
+        v7Cache: { key: "v7-cache", tone: "unavailable" },
+        latestDay: {
+          date: "2026-08-24",
+          dataQuality: { tone: "observed" },
+          nutrition: { tone: "observed" },
+          workoutFeed: { tone: "observed" },
+        },
+      },
+    });
+    expect(JSON.stringify(body)).not.toMatch(/fatWeightShadow|shadowFat|FatWeightShadow/i);
   });
 
   it("maps a missing active model and unexpected failures", async () => {

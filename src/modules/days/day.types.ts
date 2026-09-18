@@ -72,6 +72,11 @@ export type DailyMetricDto = {
   /** Display total; null = no workout observation (not zero). */
   totalWorkoutMinutes: number | null;
   workoutSource: "workouts" | "legacy-strength" | "none";
+  /**
+   * true = workout feed synced for this day (including empty rest),
+   * false = feed unavailable, null = legacy/unknown. Missing feed ≠ rest.
+   */
+  workoutFeedObserved: boolean | null;
   heartRate?: HeartRateDayDto;
   restingHeartRate?: HeartRateDayDto;
   /** Convenience scalar for tables: latest resting BPM for this calendar day. */

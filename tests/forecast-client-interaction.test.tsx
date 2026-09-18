@@ -334,4 +334,73 @@ describe("ForecastClient interaction", () => {
     expect(screen.queryByText(/99/)).toBeNull();
     expect(screen.getByTestId("forecast-chart")).toBeTruthy();
   });
+
+  it("renders quality/provenance chips and workout-scenario notes without shadow fat truth", async () => {
+    const forecastGate = deferred<ForecastResult>();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/forecast/context")) {
+        return jsonResponse({
+          status: modelStatus(),
+          history: [],
+          unknownIntervals: [],
+          provenance: {
+            v7Cache: {
+              key: "v7-cache",
+              tone: "estimated",
+              label: "v7: stale",
+              detail: "v7 cache needs refresh after source changes.",
+            },
+            v7Compartments: [{
+              key: "skeletal-muscle",
+              tone: "unavailable",
+              label: "Skeletal muscle: unavailable",
+              detail: "Unavailable ≠ 0. The value is not replaced with zero.",
+            }],
+            latestDay: {
+              date: "2026-08-24",
+              dataQuality: {
+                key: "data-quality",
+                tone: "estimated",
+                label: "Estimated",
+                detail: "Some fields were estimated.",
+              },
+              nutrition: {
+                key: "nutrition",
+                tone: "observed",
+                label: "Nutrition observed",
+                detail: "Calories/macros from the day’s records.",
+              },
+              workoutFeed: {
+                key: "workout-feed",
+                tone: "unavailable",
+                label: "Workout feed missing",
+                detail: "Missing feed ≠ rest day.",
+              },
+            },
+          },
+        });
+      }
+      if (url.includes("/api/forecast") && !url.includes("action")) {
+        return jsonResponse(await forecastGate.promise);
+      }
+      return jsonResponse({ error: "unexpected" }, 500);
+    }));
+
+    render(<ForecastClient />);
+    await act(async () => {
+      forecastGate.resolve(forecastOk());
+      await vi.advanceTimersByTimeAsync(MIN_FORECAST_LOADING_MS);
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("forecast-chart")).toBeTruthy();
+    });
+    expect(screen.getByText("Quality and provenance")).toBeTruthy();
+    expect(screen.getByText("v7: stale")).toBeTruthy();
+    expect(screen.getByText("Skeletal muscle: unavailable")).toBeTruthy();
+    expect(screen.getByText("Workout feed missing")).toBeTruthy();
+    expect(screen.getByText(/Hall\/Forbes aggregate lean/i)).toBeTruthy();
+    expect(screen.getByText(/Fat\/weight shadow is not shown as production truth/i)).toBeTruthy();
+    expect(screen.queryByText(/recovery score/i)).toBeNull();
+  });
 });

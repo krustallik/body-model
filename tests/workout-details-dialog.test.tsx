@@ -24,6 +24,7 @@ function baseDay(overrides: Partial<DailyMetricDto> = {}): DailyMetricDto {
     workouts: [],
     totalWorkoutMinutes: null,
     workoutSource: "none",
+    workoutFeedObserved: null,
     updatedAt: "2026-09-16T10:00:00.000Z",
     ...overrides,
   };

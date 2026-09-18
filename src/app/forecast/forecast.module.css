@@ -107,6 +107,31 @@
 .detailGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem; }
 .detailGrid article { padding: 1.2rem; }.detailGrid h2 { margin: 0 0 1rem; font-size: 1.1rem; }.detailGrid dl { display: grid; grid-template-columns: 1fr 1fr; gap: .8rem; margin: 0; }.detailGrid dl div { padding-top: .6rem; border-top: 1px solid var(--line); }.detailGrid dt { color: var(--muted); font-size: .7rem; }.detailGrid dd { margin: .25rem 0 0; font-weight: 800; }.detailGrid ul { margin: 0; padding-left: 1.1rem; color: var(--muted); font-size: .78rem; line-height: 1.65; }
 .diagnostics { margin-top: 1rem; padding: 1rem 1.2rem; }.diagnostics summary { font-weight: 800; cursor: pointer; }.diagnostics dl { display: grid; grid-template-columns: repeat(3, 1fr); gap: .7rem; margin: 1rem 0 0; }.diagnostics dl div { min-width: 0; padding-top: .6rem; border-top: 1px solid var(--line); }.diagnostics dt { color: var(--muted); font-size: .68rem; }.diagnostics dd { overflow: hidden; margin: .25rem 0 0; font-size: .78rem; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+.provenancePanel {
+  margin-top: 1rem;
+  padding: 1.2rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  box-shadow: 0 .35rem 1rem var(--shadow), inset 0 1px 0 color-mix(in srgb, #fff 2.5%, transparent);
+}
+.provenancePanel h2 { margin: 0 0 .85rem; font-size: 1.1rem; }
+.provenanceList { display: grid; gap: .55rem; margin: 0; padding: 0; list-style: none; }
+.provenanceItem {
+  display: grid;
+  gap: .2rem;
+  padding: .7rem .8rem;
+  border: 1px solid var(--line);
+  border-radius: .65rem;
+  background: var(--soft);
+}
+.provenanceItem strong { font-size: .82rem; }
+.provenanceItem span { color: var(--muted); font-size: .74rem; line-height: 1.45; }
+.provenanceItem[data-tone="observed"] { border-color: color-mix(in srgb, #2f6f4e 35%, var(--line)); }
+.provenanceItem[data-tone="estimated"],
+.provenanceItem[data-tone="carried"],
+.provenanceItem[data-tone="info"] { border-color: color-mix(in srgb, #8a6a2f 35%, var(--line)); }
+.provenanceItem[data-tone="unavailable"] { border-color: color-mix(in srgb, #8a3b3b 35%, var(--line)); }
 .blocked, .loadingCard, .pendingCard { display: grid; justify-items: start; gap: .6rem; margin-top: 1rem; padding: 1.4rem; background: var(--surface); border: 1px solid var(--line); border-radius: 1rem; }.blocked h2, .blocked p { margin: 0; }.blocked > p:not(.eyebrow), .pendingCard span { color: var(--muted); line-height: 1.5; }.actions { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: .35rem; }.actions button, .actions a { padding: .65rem .85rem; color: var(--ink); background: var(--soft); border: 1px solid var(--line); border-radius: .55rem; font: inherit; font-size: .78rem; font-weight: 780; text-decoration: none; cursor: pointer; }
 .loadingCard { place-items: center; min-height: 14rem; color: var(--muted); text-align: center; }.loadingCard strong { color: var(--ink); }.spinner { width: 2rem; height: 2rem; border: .2rem solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }@keyframes spin { to { transform: rotate(360deg); } }
 .chartTooltip { min-width: 13rem; max-width: min(19rem, calc(100vw - 2rem)); padding: .75rem; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: .65rem; box-shadow: 0 .6rem 1.8rem rgb(0 0 0 / 24%); }

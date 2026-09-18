@@ -25,6 +25,7 @@ const dailyMetricSelect = {
   averageWalkingSpeedKmh: true,
   walkingDistanceKm: true,
   strengthTrainingMinutes: true,
+  workoutFeedObserved: true,
   updatedAt: true,
   workouts: {
     select: {
@@ -119,6 +120,7 @@ function toDto(
     workouts: summary.workouts,
     totalWorkoutMinutes: summary.totalWorkoutMinutes,
     workoutSource: summary.workoutSource,
+    workoutFeedObserved: record.workoutFeedObserved ?? null,
     heartRate: heartRateSummary(samples?.heartRate ?? record.heartRateSamples),
     restingHeartRate,
     restingHeartRateBpm: restingHeartRate.latestBpm,

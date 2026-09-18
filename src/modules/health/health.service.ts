@@ -9,6 +9,7 @@ import { recordExperimentalStepperGlycogenDemandShadowsForLocalDate } from "@/mo
 import { recordExperimentalGlycogenRepletionShadow } from "@/modules/model-episodes/experimental-glycogen-repletion-shadow.service";
 import { recordExperimentalGlycogenAssociatedWaterShadow } from "@/modules/model-episodes/experimental-glycogen-associated-water-shadow.service";
 import { recordExperimentalGlycogenStateShadow } from "@/modules/model-episodes/experimental-glycogen-state-shadow.service";
+import { recordExperimentalSkeletalMuscleDeltaShadow } from "@/modules/model-episodes/experimental-skeletal-muscle-delta-shadow.service";
 
 export async function syncHealthData(
   request: HealthSyncRequest,
@@ -79,6 +80,16 @@ export async function syncHealthData(
     await recordExperimentalGlycogenStateShadow({ date: day.date });
   } catch (error) {
     logEvent("warn", "experimental_glycogen_state_shadow_failed", {
+      date: day.date,
+      errorType: errorKind(error),
+    });
+  }
+
+  try {
+    // Shadow-only relative skeletal-muscle delta; never feeds TDEE/forecast.
+    await recordExperimentalSkeletalMuscleDeltaShadow({ date: day.date });
+  } catch (error) {
+    logEvent("warn", "experimental_skeletal_muscle_delta_shadow_failed", {
       date: day.date,
       errorType: errorKind(error),
     });

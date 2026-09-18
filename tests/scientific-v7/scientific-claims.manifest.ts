@@ -152,7 +152,6 @@ function record(input: RecordInput): ScientificClaimManifestRecord {
   };
 }
 
-const v7DoseBlocker = "The canonical session snapshot exists, but no v7 effective-set dose or skeletal-muscle adaptation output exists.";
 const v7MuscleBlocker = "The v7 skeletalMuscleKg state contract exists, but no adaptation transition or proxy-safe observation contract exists.";
 const v7DetrainingBlocker = "No v7 training-history/cessation state or skeletal-muscle detraining transition exists.";
 const v7RetrainingIdentificationBlocker = "ResistanceTrainingExposureHistoryV7 can detect verified interruption then resumption, but labeling retraining/detraining still requires an unsupported cessation-duration threshold; no numeric muscle-memory bonus is approved.";
@@ -163,6 +162,12 @@ const experimentalTransientWaterTest =
   "tests/experimental-transient-exercise-water-v1.test.ts";
 const experimentalTransientWaterUncertainty =
   "Experimental finite-decay heuristic with engineering acute kg band and resolution horizons; not scientifically validated whole-body edema kg or half-life.";
+const experimentalSkeletalMuscleDeltaImpl =
+  "src/model/physiology-v7/experimental-skeletal-muscle-delta-v1.ts";
+const experimentalSkeletalMuscleDeltaTest =
+  "tests/experimental-skeletal-muscle-delta-v1.test.ts";
+const experimentalSkeletalMuscleDeltaUncertainty =
+  "Experimental relative skeletal-muscle delta heuristic from monthly literature-informed engineering rate bands × saturating dose/protein/energy scales; wide uncertainty; absolute skeletalMuscleKg intentionally unavailable; not scientifically validated personal kg rates.";
 const v7HrBlocker = "Canonical raw HR interval provenance exists, but HR coverage/calibration inputs and a separately observable anabolic-dose output do not exist.";
 const v7SleepBlocker = "Canonical v7 sleep provenance/duration inputs and bounded sleep-context output do not exist.";
 const v7MeasurementBlocker = "No v7 measurement-role contract exposes skeletal muscle separately from lean/local/proxy endpoints.";
@@ -172,38 +177,246 @@ export const UNSAFE_CLAIM_IDS = ["C-G02", "C-H04", "C-K02", "C-M04"] as const;
 
 /** Eligible audited claims only (GREEN / EXPERIMENTAL / BLOCKED). REJECTED are separate. */
 export const SCIENTIFIC_V7_CLAIMS: readonly ScientificClaimManifestRecord[] = [
-  record({ claimId: "C-A01", title: "higher supported volume does not lower group-expected local hypertrophy", parameterIds: ["P-A02"], evidenceIds: ["E-A01", "E-A02", "E-A03"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "property", assertionTypes: ["MONOTONICITY"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Within the supported low-to-moderate range, added effective volume does not lower group-expected local hypertrophy; global concavity is not required.", infrastructureBlocker: v7DoseBlocker }),
+  record({
+    claimId: "C-A01",
+    title: "higher supported volume does not lower group-expected local hypertrophy",
+    parameterIds: ["P-A02"],
+    evidenceIds: ["E-A01", "E-A02", "E-A03"],
+    auditEligibility: "SAFE_AFTER_AUDIT_REVISION",
+    testType: "property",
+    assertionTypes: ["MONOTONICITY"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "Within the supported low-to-moderate range, added effective volume does not lower group-expected local hypertrophy; global concavity is not required.",
+    experimental: {
+      implementation: experimentalSkeletalMuscleDeltaImpl,
+      testFile: experimentalSkeletalMuscleDeltaTest,
+      testName: "higher supported volume does not lower group-expected local hypertrophy (C-A01)",
+      uncertainty: experimentalSkeletalMuscleDeltaUncertainty,
+    },
+  }),
   record({ claimId: "C-A02", title: "volume-equated frequency has no required independent positive effect", parameterIds: ["P-A03"], evidenceIds: ["E-A02", "E-A11", "E-A14"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "unit", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "With effective weekly volume equated, v7 adds no required positive frequency multiplier and does not require exact physiological equality.", executableTestName: "volume-equated frequency has no required independent positive effect" }),
   record({ claimId: "C-A03", title: "hard-set dose remains available without tonnage", parameterIds: ["P-A01", "P-A06"], evidenceIds: ["E-A02", "E-A08", "E-A10", "E-A14"], auditEligibility: "SAFE", testType: "integration", assertionTypes: ["MISSINGNESS", "INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE", "INPUT_CONTRACT"], scientificAssertion: "Valid program sets and muscle mapping preserve a training dose when tonnage is absent.", executableTestName: "hard-set dose remains available without tonnage" }),
   record({ claimId: "C-A04", title: "momentary failure is not mandatory", parameterIds: ["P-A04"], evidenceIds: ["E-A09", "E-A13"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "unit", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Near-failure and failure training can both be effective; v7 requires neither exact equality nor a categorical failure bonus.", executableTestName: "momentary failure is not mandatory" }),
   record({ claimId: "C-A05", title: "load is not a standalone hypertrophy multiplier", parameterIds: ["P-A05"], evidenceIds: ["E-A04", "E-A10"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "unit", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Within studied loads with sufficient effort and comparable effective work, lower load does not automatically mean lower hypertrophy.", executableTestName: "load is not a standalone hypertrophy multiplier" }),
   record({ claimId: "C-A06", title: "no unsupported hard volume cap", parameterIds: ["P-A07"], evidenceIds: ["E-A02", "E-A05", "E-A06", "E-A07", "E-A12"], auditEligibility: "SAFE", testType: "property", assertionTypes: ["BOUND", "SATURATION"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "No universal set cutoff forces zero or negative hypertrophy solely because it is crossed.", executableTestName: "no unsupported hard volume cap" }),
 
-  record({ claimId: "C-B01", title: "training status shifts a response prior without pairwise determinism", parameterIds: ["P-B01"], evidenceIds: ["E-B01", "E-B04", "E-B05", "E-B06"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "longitudinal", assertionTypes: ["ORDERING"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Training status may shift the group prior but cannot deterministically order every novice-advanced pair.", infrastructureBlocker: v7MuscleBlocker }),
-  record({ claimId: "C-B02", title: "experience does not create an exact gain rate", parameterIds: ["P-B01"], evidenceIds: ["E-B01", "E-B04", "E-B06"], auditEligibility: "SAFE", testType: "unit", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Experience category cannot determine exact skeletal-muscle kilograms per day or month.", infrastructureBlocker: v7MuscleBlocker }),
-  record({ claimId: "C-B03", title: "program novelty is not chronic muscle", parameterIds: ["P-B02"], evidenceIds: ["E-B02", "E-B07", "E-B08"], auditEligibility: "SAFE", testType: "longitudinal", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Novelty alone creates no immediate skeletal-muscle tissue bonus.", infrastructureBlocker: v7MuscleBlocker }),
-  record({ claimId: "C-B04", title: "acute MPS cannot directly set long-term gain", parameterIds: ["P-B05"], evidenceIds: ["E-B02", "E-B03", "E-B07"], auditEligibility: "SAFE", testType: "longitudinal", assertionTypes: ["INVARIANT", "LONGITUDINAL"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "An acute MPS percentage is not a chronic skeletal-muscle gain coefficient.", infrastructureBlocker: v7MuscleBlocker }),
+  record({
+    claimId: "C-B01",
+    title: "training status shifts a response prior without pairwise determinism",
+    parameterIds: ["P-B01"],
+    evidenceIds: ["E-B01", "E-B04", "E-B05", "E-B06"],
+    auditEligibility: "SAFE_AFTER_AUDIT_REVISION",
+    testType: "longitudinal",
+    assertionTypes: ["ORDERING"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "Training status may shift the group prior but cannot deterministically order every novice-advanced pair.",
+    experimental: {
+      implementation: experimentalSkeletalMuscleDeltaImpl,
+      testFile: experimentalSkeletalMuscleDeltaTest,
+      testName: "training status shifts a response prior without pairwise determinism (C-B01)",
+      uncertainty: experimentalSkeletalMuscleDeltaUncertainty,
+    },
+  }),
+  record({
+    claimId: "C-B02",
+    title: "experience does not create an exact gain rate",
+    parameterIds: ["P-B01"],
+    evidenceIds: ["E-B01", "E-B04", "E-B06"],
+    auditEligibility: "SAFE",
+    testType: "unit",
+    assertionTypes: ["INVARIANT"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "Experience category cannot determine exact skeletal-muscle kilograms per day or month.",
+    experimental: {
+      implementation: experimentalSkeletalMuscleDeltaImpl,
+      testFile: experimentalSkeletalMuscleDeltaTest,
+      testName: "experience does not create an exact gain rate (C-B02)",
+      uncertainty: experimentalSkeletalMuscleDeltaUncertainty,
+    },
+  }),
+  record({
+    claimId: "C-B03",
+    title: "program novelty is not chronic muscle",
+    parameterIds: ["P-B02"],
+    evidenceIds: ["E-B02", "E-B07", "E-B08"],
+    auditEligibility: "SAFE",
+    testType: "longitudinal",
+    assertionTypes: ["INVARIANT"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "Novelty alone creates no immediate skeletal-muscle tissue bonus.",
+    experimental: {
+      implementation: experimentalSkeletalMuscleDeltaImpl,
+      testFile: experimentalSkeletalMuscleDeltaTest,
+      testName: "program novelty is not chronic muscle (C-B03)",
+      uncertainty: experimentalSkeletalMuscleDeltaUncertainty,
+    },
+  }),
+  record({
+    claimId: "C-B04",
+    title: "acute MPS cannot directly set long-term gain",
+    parameterIds: ["P-B05"],
+    evidenceIds: ["E-B02", "E-B03", "E-B07"],
+    auditEligibility: "SAFE",
+    testType: "longitudinal",
+    assertionTypes: ["INVARIANT", "LONGITUDINAL"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "An acute MPS percentage is not a chronic skeletal-muscle gain coefficient.",
+    experimental: {
+      implementation: experimentalSkeletalMuscleDeltaImpl,
+      testFile: experimentalSkeletalMuscleDeltaTest,
+      testName: "acute MPS cannot directly set long-term gain (C-B04)",
+      uncertainty: experimentalSkeletalMuscleDeltaUncertainty,
+    },
+  }),
   record({ claimId: "C-B05", title: "muscle memory receives no unsupported numeric bonus", parameterIds: ["P-B04"], evidenceIds: ["E-B10", "E-B11", "E-B12", "E-B13"], auditEligibility: "SAFE", testType: "longitudinal", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Retraining may be identified without an invented quantitative muscle-memory bonus.", infrastructureBlocker: v7RetrainingIdentificationBlocker }),
 
-  record({ claimId: "C-C01", title: "cessation does not instantly remove muscle tissue", parameterIds: ["P-C01"], evidenceIds: ["E-C01", "E-C02"], auditEligibility: "SAFE", testType: "longitudinal", assertionTypes: ["TIME_COURSE", "LONGITUDINAL"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Verified cessation creates no same-day negative skeletal-muscle step solely from cessation.", infrastructureBlocker: v7DetrainingBlocker }),
+  record({
+    claimId: "C-C01",
+    title: "cessation does not instantly remove muscle tissue",
+    parameterIds: ["P-C01"],
+    evidenceIds: ["E-C01", "E-C02"],
+    auditEligibility: "SAFE",
+    testType: "longitudinal",
+    assertionTypes: ["TIME_COURSE", "LONGITUDINAL"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "Verified cessation creates no same-day negative skeletal-muscle step solely from cessation.",
+    experimental: {
+      implementation: experimentalSkeletalMuscleDeltaImpl,
+      testFile: experimentalSkeletalMuscleDeltaTest,
+      testName: "cessation does not instantly remove muscle tissue (C-C01)",
+      uncertainty: experimentalSkeletalMuscleDeltaUncertainty,
+    },
+  }),
   record({ claimId: "C-C02", title: "longer cessation creates no artificial recovery bonus", parameterIds: ["P-C01"], evidenceIds: ["E-C01", "E-C03"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "longitudinal", assertionTypes: ["TIME_COURSE"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "With other conditions fixed, longer continuous cessation creates no artificial recovery or bonus; no universal atrophy curve is required.", infrastructureBlocker: v7DetrainingBlocker }),
   record({ claimId: "C-C03", title: "validated nonzero loading is not complete cessation", parameterIds: ["P-C02"], evidenceIds: ["E-C04", "E-C05"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "longitudinal", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE", "INPUT_CONTRACT"], scientificAssertion: "Validated nonzero loading is not automatically complete cessation; maintenance magnitude is untested.", executableTestName: "validated nonzero loading is not complete cessation" }),
   record({ claimId: "C-C04", title: "age-specific maintenance uncertainty is preserved", parameterIds: ["P-C02"], evidenceIds: ["E-C04"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "longitudinal", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Age uncertainty is preserved without a directional multiplier from one protocol.", infrastructureBlocker: v7DetrainingBlocker }),
   record({ claimId: "C-C05", title: "strength loss is not muscle loss", parameterIds: ["P-C03"], evidenceIds: ["E-C03", "E-B13"], auditEligibility: "SAFE", testType: "unit", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Strength decline cannot be converted directly into skeletal-muscle loss.", executableTestName: "strength loss is not muscle loss" }),
   record({ claimId: "C-C06", title: "resumption restores stimulus without invented memory gain", parameterIds: ["P-C05"], evidenceIds: ["E-C06", "E-C07", "E-B13"], auditEligibility: "SAFE", testType: "longitudinal", assertionTypes: ["LONGITUDINAL"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Training resumption restores stimulus without an automatic quantitative memory bonus.", executableTestName: "resumption restores stimulus without invented memory gain" }),
 
-  record({ claimId: "C-D01", title: "protein benefit is non-worsening and bounded", parameterIds: ["P-D01"], evidenceIds: ["E-D01", "E-D02", "E-D03"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "property", assertionTypes: ["MONOTONICITY", "SATURATION"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Across studied low-to-adequate population intakes, higher protein does not worsen expected adaptation; 1.62 g/kg/day is not a switch.", infrastructureBlocker: v7MuscleBlocker }),
+  record({
+    claimId: "C-D01",
+    title: "protein benefit is non-worsening and bounded",
+    parameterIds: ["P-D01"],
+    evidenceIds: ["E-D01", "E-D02", "E-D03"],
+    auditEligibility: "SAFE_AFTER_AUDIT_REVISION",
+    testType: "property",
+    assertionTypes: ["MONOTONICITY", "SATURATION"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "Across studied low-to-adequate population intakes, higher protein does not worsen expected adaptation; 1.62 g/kg/day is not a switch.",
+    experimental: {
+      implementation: experimentalSkeletalMuscleDeltaImpl,
+      testFile: experimentalSkeletalMuscleDeltaTest,
+      testName: "protein benefit is non-worsening and bounded (C-D01)",
+      uncertainty: experimentalSkeletalMuscleDeltaUncertainty,
+    },
+  }),
   record({ claimId: "C-D02", title: "protein does not worsen retention during studied deficits", parameterIds: ["P-D02"], evidenceIds: ["E-D04", "E-D05", "E-D06", "E-D07", "E-D10"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "property", assertionTypes: ["MONOTONICITY"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Within studied deficit/intake ranges, higher protein does not worsen expected proxy retention and does not guarantee skeletal-muscle gain.", infrastructureBlocker: v7MuscleBlocker }),
-  record({ claimId: "C-D03", title: "adequate protein cannot override training and physiological bounds", parameterIds: ["P-D01", "P-D05"], evidenceIds: ["E-D01", "E-D03"], auditEligibility: "SAFE", testType: "integration", assertionTypes: ["BOUND"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Protein alone cannot create unlimited training-mediated skeletal-muscle gain.", infrastructureBlocker: v7MuscleBlocker }),
+  record({
+    claimId: "C-D03",
+    title: "adequate protein cannot override training and physiological bounds",
+    parameterIds: ["P-D01", "P-D05"],
+    evidenceIds: ["E-D01", "E-D03"],
+    auditEligibility: "SAFE",
+    testType: "integration",
+    assertionTypes: ["BOUND"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "Protein alone cannot create unlimited training-mediated skeletal-muscle gain.",
+    experimental: {
+      implementation: experimentalSkeletalMuscleDeltaImpl,
+      testFile: experimentalSkeletalMuscleDeltaTest,
+      testName: "adequate protein cannot override training and physiological bounds (C-D03)",
+      uncertainty: experimentalSkeletalMuscleDeltaUncertainty,
+    },
+  }),
   record({ claimId: "C-D04", title: "missing protein remains missing rather than measured zero", parameterIds: ["P-D01"], evidenceIds: ["E-D01", "E-D02", "E-D03"], auditEligibility: "SAFE", testType: "unit", assertionTypes: ["MISSINGNESS"], provenance: ["SCIENTIFIC_EVIDENCE", "INPUT_CONTRACT"], scientificAssertion: "Missing protein is reported as unavailable and is not silently converted into measured zero.", executableTestName: "missing protein remains unavailable rather than becoming measured zero" }),
-  record({ claimId: "C-D05", title: "protein timing has no separate v7 coefficient", parameterIds: ["P-D04"], evidenceIds: ["E-D08", "E-D09"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "unit", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "V7 omits a separate timing coefficient because evidence is insufficient, not because physiology is proven equal.", infrastructureBlocker: v7MuscleBlocker }),
+  record({
+    claimId: "C-D05",
+    title: "protein timing has no separate v7 coefficient",
+    parameterIds: ["P-D04"],
+    evidenceIds: ["E-D08", "E-D09"],
+    auditEligibility: "SAFE_AFTER_AUDIT_REVISION",
+    testType: "unit",
+    assertionTypes: ["INVARIANT"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "V7 omits a separate timing coefficient because evidence is insufficient, not because physiology is proven equal.",
+    experimental: {
+      implementation: experimentalSkeletalMuscleDeltaImpl,
+      testFile: experimentalSkeletalMuscleDeltaTest,
+      testName: "protein timing has no separate v7 coefficient (C-D05)",
+      uncertainty: experimentalSkeletalMuscleDeltaUncertainty,
+    },
+  }),
 
-  record({ claimId: "C-E01", title: "larger sustained deficit does not improve expected muscle gain", parameterIds: ["P-E01"], evidenceIds: ["E-E01", "E-E04"], auditEligibility: "SAFE", testType: "property", assertionTypes: ["MONOTONICITY"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "A larger sustained deficit does not improve expected training-mediated muscle gain solely because it is larger.", infrastructureBlocker: v7MuscleBlocker }),
+  record({
+    claimId: "C-E01",
+    title: "larger sustained deficit does not improve expected muscle gain",
+    parameterIds: ["P-E01"],
+    evidenceIds: ["E-E01", "E-E04"],
+    auditEligibility: "SAFE",
+    testType: "property",
+    assertionTypes: ["MONOTONICITY"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "A larger sustained deficit does not improve expected training-mediated muscle gain solely because it is larger.",
+    experimental: {
+      implementation: experimentalSkeletalMuscleDeltaImpl,
+      testFile: experimentalSkeletalMuscleDeltaTest,
+      testName: "larger sustained deficit does not improve expected muscle gain (C-E01)",
+      uncertainty: experimentalSkeletalMuscleDeltaUncertainty,
+    },
+  }),
   record({ claimId: "C-E02", title: "deficit does not make recomposition impossible", parameterIds: ["P-E01", "P-E02"], evidenceIds: ["E-E02", "E-E03"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "longitudinal", assertionTypes: ["BOUND"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Recomposition remains possible without treating DXA/FFM as skeletal-muscle tissue.", infrastructureBlocker: v7MuscleBlocker }),
   record({ claimId: "C-E03", title: "resistance training does not worsen expected FFM retention", parameterIds: ["P-E02"], evidenceIds: ["E-E02"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "longitudinal", assertionTypes: ["ORDERING"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Resistance training does not worsen expected FFM retention versus diet only; skeletal-muscle magnitude remains uncertain.", infrastructureBlocker: v7MuscleBlocker }),
-  record({ claimId: "C-E04", title: "surplus is not required for all hypertrophy", parameterIds: ["P-E03"], evidenceIds: ["E-E05", "E-E06"], auditEligibility: "SAFE", testType: "longitudinal", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Maintenance may permit muscle gain; absence of surplus alone cannot force zero hypertrophy.", infrastructureBlocker: v7MuscleBlocker }),
-  record({ claimId: "C-E05", title: "larger surplus cannot yield unlimited muscle", parameterIds: ["P-E04"], evidenceIds: ["E-E06"], auditEligibility: "SAFE", testType: "property", assertionTypes: ["BOUND"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Skeletal-muscle response remains bounded as surplus increases; no linear kcal-to-muscle conversion is allowed.", infrastructureBlocker: v7MuscleBlocker }),
-  record({ claimId: "C-E06", title: "deficit and surplus are not mirror images", parameterIds: ["P-E05"], evidenceIds: ["E-E01", "E-E05", "E-E06"], auditEligibility: "SAFE", testType: "unit", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Equal-magnitude deficit and surplus cannot be forced through one symmetric muscle multiplier.", infrastructureBlocker: v7MuscleBlocker }),
+  record({
+    claimId: "C-E04",
+    title: "surplus is not required for all hypertrophy",
+    parameterIds: ["P-E03"],
+    evidenceIds: ["E-E05", "E-E06"],
+    auditEligibility: "SAFE",
+    testType: "longitudinal",
+    assertionTypes: ["INVARIANT"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "Maintenance may permit muscle gain; absence of surplus alone cannot force zero hypertrophy.",
+    experimental: {
+      implementation: experimentalSkeletalMuscleDeltaImpl,
+      testFile: experimentalSkeletalMuscleDeltaTest,
+      testName: "surplus is not required for all hypertrophy (C-E04)",
+      uncertainty: experimentalSkeletalMuscleDeltaUncertainty,
+    },
+  }),
+  record({
+    claimId: "C-E05",
+    title: "larger surplus cannot yield unlimited muscle",
+    parameterIds: ["P-E04"],
+    evidenceIds: ["E-E06"],
+    auditEligibility: "SAFE",
+    testType: "property",
+    assertionTypes: ["BOUND"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "Skeletal-muscle response remains bounded as surplus increases; no linear kcal-to-muscle conversion is allowed.",
+    experimental: {
+      implementation: experimentalSkeletalMuscleDeltaImpl,
+      testFile: experimentalSkeletalMuscleDeltaTest,
+      testName: "larger surplus cannot yield unlimited muscle (C-E05)",
+      uncertainty: experimentalSkeletalMuscleDeltaUncertainty,
+    },
+  }),
+  record({
+    claimId: "C-E06",
+    title: "deficit and surplus are not mirror images",
+    parameterIds: ["P-E05"],
+    evidenceIds: ["E-E01", "E-E05", "E-E06"],
+    auditEligibility: "SAFE",
+    testType: "unit",
+    assertionTypes: ["INVARIANT"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "Equal-magnitude deficit and surplus cannot be forced through one symmetric muscle multiplier.",
+    experimental: {
+      implementation: experimentalSkeletalMuscleDeltaImpl,
+      testFile: experimentalSkeletalMuscleDeltaTest,
+      testName: "deficit and surplus are not mirror images (C-E06)",
+      uncertainty: experimentalSkeletalMuscleDeltaUncertainty,
+    },
+  }),
 
   record({
     claimId: "C-F01",

@@ -25,15 +25,10 @@ export type BlockedClaimClassification = {
  * Explicit triage map. Claims omitted here fall back by infrastructureBlocker text.
  */
 const CLASSIFICATIONS: Record<string, Omit<BlockedClaimClassification, "claimId">> = {
-  "C-A01": {
-    category: "implementation-only",
-    reason: "Dose/adaptation output wiring missing; monotonicity claim itself is evidence-backed within range.",
-    closestToGreenRank: 1,
-  },
   "C-I03": {
     category: "validation-data",
     reason: "Needs a water-observation classifier distinguishing associated vs other transient water against measurements.",
-    closestToGreenRank: 6,
+    closestToGreenRank: 1,
   },
   "C-I05": {
     category: "research-blocked",
@@ -48,7 +43,7 @@ const CLASSIFICATIONS: Record<string, Omit<BlockedClaimClassification, "claimId"
   "C-MV05": {
     category: "validation-data",
     reason: "Needs longitudinal same-method vs mixed-method uncertainty series against real measurement protocols.",
-    closestToGreenRank: 7,
+    closestToGreenRank: 2,
   },
   "C-M01": {
     category: "research-blocked",

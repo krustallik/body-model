@@ -69,6 +69,9 @@ import {
   recordExperimentalTransientExerciseWaterShadow,
   recordExperimentalTransientExerciseWaterShadowBySessionId,
 } from "./experimental-transient-exercise-water-shadow.service";
+import {
+  recordExperimentalSkeletalMuscleDeltaShadowForSession,
+} from "@/modules/model-episodes/experimental-skeletal-muscle-delta-shadow.service";
 import type {
   HistoricalStrengthWorkoutDto,
   MatchCandidateDto,
@@ -96,6 +99,10 @@ async function recordExperimentalStrengthShadows(input: {
   await recordExperimentalStrengthEnergyShadow(input);
   await recordExperimentalStrengthGlycogenDemandShadow(input);
   await recordExperimentalTransientExerciseWaterShadow(input);
+  await recordExperimentalSkeletalMuscleDeltaShadowForSession({
+    sessionId: input.session.id,
+    profileId: input.profileId,
+  });
 }
 
 async function recordExperimentalStrengthShadowsBySessionId(input: {
@@ -105,6 +112,7 @@ async function recordExperimentalStrengthShadowsBySessionId(input: {
   await recordExperimentalStrengthEnergyShadowBySessionId(input);
   await recordExperimentalStrengthGlycogenDemandShadowBySessionId(input);
   await recordExperimentalTransientExerciseWaterShadowBySessionId(input);
+  await recordExperimentalSkeletalMuscleDeltaShadowForSession(input);
 }
 
 function isStrengthWorkout(type: string): boolean {

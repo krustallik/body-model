@@ -1,10 +1,26 @@
 import { describe, expect, it } from "vitest";
 import { buildTransientExerciseWaterEcfTransitionV7, transientExerciseWaterEcfTransitionV7Fingerprint } from "@/model/physiology-v7/transient-exercise-water-ecf-transition-v7";
 import type { GlycogenTransitionV7 } from "@/model/physiology-v7/glycogen-transition-v7";
+import {
+  GLYCOGEN_CARBOHYDRATE_TIMING_POLICY_V7,
+  GLYCOGEN_TRANSITION_V7_VERSION,
+} from "@/model/physiology-v7/glycogen-transition-v7";
 import { reconstructPhysiologyV7MassKg, type PhysiologyV7State } from "@/model/physiology-v7/state";
 
 function glycogen(strength: GlycogenTransitionV7["exerciseEvidence"]["strength"], stepper: GlycogenTransitionV7["exerciseEvidence"]["stepper"]): GlycogenTransitionV7 {
-  return { contractVersion: "bodycast-glycogen-transition-v7-1", transitionSlot: "glycogen-transition-slot", quantitativeState: { availability: "unavailable", reason: "no-defensible-initial-glycogen-source", stateHandling: "state-remains-unavailable", carriedForwardGlycogenKg: null, biologicalTransition: "not-modeled" }, carbohydrateEvidence: { availability: "unavailable", reason: "missing-carbohydrate" }, exerciseEvidence: { strength, stepper }, depletionEvidence: "absent", repletionEvidence: "unavailable", sourceCoverage: "complete-for-qualitative-boundary", provenance: { workoutFeedObserved: true, resistance: null, stepper: [] }, blockers: ["no-approved-quantitative-glycogen-transition"] };
+  return {
+    contractVersion: GLYCOGEN_TRANSITION_V7_VERSION,
+    transitionSlot: "glycogen-transition-slot",
+    quantitativeState: { availability: "unavailable", reason: "no-defensible-initial-glycogen-source", stateHandling: "state-remains-unavailable", carriedForwardGlycogenKg: null, biologicalTransition: "not-modeled" },
+    carbohydrateEvidence: { availability: "unavailable", reason: "missing-carbohydrate" },
+    carbohydrateTimingPolicy: GLYCOGEN_CARBOHYDRATE_TIMING_POLICY_V7,
+    exerciseEvidence: { strength, stepper },
+    depletionEvidence: "absent",
+    repletionEvidence: "unavailable",
+    sourceCoverage: "complete-for-qualitative-boundary",
+    provenance: { workoutFeedObserved: true, resistance: null, stepper: [] },
+    blockers: ["no-approved-quantitative-glycogen-transition"],
+  };
 }
 
 describe("Stage 8D transient exercise water and ECF", () => {

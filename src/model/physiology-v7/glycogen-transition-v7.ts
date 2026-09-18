@@ -5,7 +5,25 @@ import type { ResistanceTrainingDayExposureV7 } from "./resistance-training-expo
 import { validatePhysiologyV7State, type PhysiologyV7State } from "./state";
 
 /** Qualitative-only Stage-8 boundary; deliberately has no kg transition. */
-export const GLYCOGEN_TRANSITION_V7_VERSION = "bodycast-glycogen-transition-v7-1" as const;
+export const GLYCOGEN_TRANSITION_V7_VERSION = "bodycast-glycogen-transition-v7-2" as const;
+
+/**
+ * P-H02 / C-H03: daily carbs are the carbohydrate input. Meal frequency/timing
+ * is intentionally not applied at daily resolution. Absence of meal-timing
+ * fields is not fasting and is not zero intake.
+ */
+export const GLYCOGEN_CARBOHYDRATE_TIMING_POLICY_V7 = {
+  resolution: "daily-totals-only",
+  mealFrequencyEffect: "intentionally-not-applied",
+  mealTimingInput: "unavailable-not-zero-or-fasting",
+  physiologicalEqualityClaim: "not-asserted",
+  scientificDecision: "daily-resolution-policy",
+  parameterId: "P-H02",
+  researchAuthority: "workout-physiology-v7-audit",
+} as const;
+
+export type GlycogenCarbohydrateTimingPolicyV7 =
+  typeof GLYCOGEN_CARBOHYDRATE_TIMING_POLICY_V7;
 
 export type GlycogenCarbohydrateEvidenceV7 =
   | { availability: "available"; provenance: "observed"; carbsG: number }
@@ -57,6 +75,11 @@ export type GlycogenTransitionV7 = {
     biologicalTransition: "not-modeled";
   };
   carbohydrateEvidence: GlycogenCarbohydrateEvidenceV7;
+  /**
+   * Explicit daily-resolution timing policy (C-H03). Records that meal-frequency
+   * is not applied; does not invent meal-timing physiology or hourly precision.
+   */
+  carbohydrateTimingPolicy: GlycogenCarbohydrateTimingPolicyV7;
   exerciseEvidence: GlycogenExerciseEvidenceV7;
   depletionEvidence: "present" | "absent" | "unresolved";
   repletionEvidence: "present-observed" | "present-imputed" | "unavailable";
@@ -128,6 +151,7 @@ export function buildGlycogenTransitionV7(input: {
       ? { availability: "unavailable", reason: "no-defensible-initial-glycogen-source", stateHandling: "state-remains-unavailable", carriedForwardGlycogenKg: null, biologicalTransition: "not-modeled" }
       : { availability: "unavailable", reason: "no-approved-quantitative-glycogen-transition", stateHandling: "carry-forward-for-simulation", carriedForwardGlycogenKg: input.priorGlycogenKg, biologicalTransition: "not-modeled" },
     carbohydrateEvidence: structuredClone(input.carbohydrate),
+    carbohydrateTimingPolicy: GLYCOGEN_CARBOHYDRATE_TIMING_POLICY_V7,
     exerciseEvidence,
     depletionEvidence,
     repletionEvidence,
@@ -144,6 +168,7 @@ export function glycogenTransitionV7Fingerprint(transition: GlycogenTransitionV7
   return stableSha256({
     contractVersion: transition.contractVersion,
     carbohydrateEvidence: transition.carbohydrateEvidence,
+    carbohydrateTimingPolicy: transition.carbohydrateTimingPolicy,
     exerciseEvidence: transition.exerciseEvidence,
     depletionEvidence: transition.depletionEvidence,
     repletionEvidence: transition.repletionEvidence,

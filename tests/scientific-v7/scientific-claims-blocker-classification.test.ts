@@ -6,25 +6,25 @@ import {
 } from "./scientific-claims-blocker-classification";
 
 describe("Stage 12 blocked scientific-claim triage", () => {
-  it("classifies all 54 remaining blocked claims after C-N04 GREEN", () => {
+  it("classifies all 53 remaining blocked claims after C-H03 GREEN", () => {
     const blocked = SCIENTIFIC_V7_CLAIMS.filter((claim) => claim.status === "BLOCKED");
     const green = SCIENTIFIC_V7_CLAIMS.filter((claim) => claim.status === "GREEN");
-    expect(blocked).toHaveLength(54);
-    expect(green).toHaveLength(23);
+    expect(blocked).toHaveLength(53);
+    expect(green).toHaveLength(24);
 
     const rows = classifyBlockedScientificClaims();
-    expect(rows).toHaveLength(54);
-    expect(new Set(rows.map((row) => row.claimId)).size).toBe(54);
+    expect(rows).toHaveLength(53);
+    expect(new Set(rows.map((row) => row.claimId)).size).toBe(53);
 
     const summary = summarizeBlockedClaimClassification(rows);
-    expect(summary.totalBlocked).toBe(54);
+    expect(summary.totalBlocked).toBe(53);
     expect(
       summary.counts["implementation-only"]
       + summary.counts["validation-data"]
       + summary.counts["research-blocked"],
-    ).toBe(54);
-    expect(summary.closestToGreen[0]?.claimId).toBe("C-H03");
-    expect(rows.find((row) => row.claimId === "C-N04")).toBeUndefined();
+    ).toBe(53);
+    expect(summary.closestToGreen[0]?.claimId).toBe("C-H05");
+    expect(rows.find((row) => row.claimId === "C-H03")).toBeUndefined();
     expect(summary.note).toMatch(/Do not unblock without a real oracle/i);
   });
 

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildGlycogenTransitionV7,
+  GLYCOGEN_CARBOHYDRATE_TIMING_POLICY_V7,
+  glycogenCarbohydrateEvidenceV7,
+} from "@/model/physiology-v7/glycogen-transition-v7";
+import {
   calculateExtracellularFluidLiters,
   calculateExtracellularFluidMassKg,
   calculateGlycogenAssociatedMassKg,
@@ -111,6 +116,76 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
     expect(lower).not.toBeNull();
     expect(higher).not.toBeNull();
     expect(higher!.glycogenKg).toBeGreaterThanOrEqual(lower!.glycogenKg);
+  });
+
+  it("daily v7 need not apply meal-frequency effect", () => {
+    const observed = buildGlycogenTransitionV7({
+      priorGlycogenKg: null,
+      carbohydrate: glycogenCarbohydrateEvidenceV7({
+        carbsG: 220,
+        nutrition: {
+          source: "observed",
+          method: null,
+          referenceDayCount: 0,
+          gapLength: 0,
+          referenceDates: [],
+          observedFields: ["carbsG"],
+          imputedFields: [],
+          referenceCaloriesMedian: null,
+          referenceCaloriesMad: null,
+          referenceMacroMadG: null,
+          dependency: "observed",
+        },
+      }),
+      resistanceExposure: null,
+      workoutFeedObserved: true,
+      stepperWorkouts: [],
+    });
+    const missingCarbs = buildGlycogenTransitionV7({
+      priorGlycogenKg: null,
+      carbohydrate: glycogenCarbohydrateEvidenceV7({
+        carbsG: null,
+        nutrition: {
+          source: "missing",
+          method: null,
+          referenceDayCount: 0,
+          gapLength: 0,
+          referenceDates: [],
+          observedFields: [],
+          imputedFields: [],
+          referenceCaloriesMedian: null,
+          referenceCaloriesMad: null,
+          referenceMacroMadG: null,
+          dependency: "observed",
+        },
+      }),
+      resistanceExposure: null,
+      workoutFeedObserved: true,
+      stepperWorkouts: [],
+    });
+
+    expect(observed.carbohydrateEvidence).toEqual({
+      availability: "available",
+      provenance: "observed",
+      carbsG: 220,
+    });
+    expect(observed.carbohydrateTimingPolicy).toEqual(GLYCOGEN_CARBOHYDRATE_TIMING_POLICY_V7);
+    expect(observed.carbohydrateTimingPolicy.resolution).toBe("daily-totals-only");
+    expect(observed.carbohydrateTimingPolicy.mealFrequencyEffect).toBe("intentionally-not-applied");
+    expect(observed.carbohydrateTimingPolicy.mealTimingInput).toBe("unavailable-not-zero-or-fasting");
+    expect(observed.carbohydrateTimingPolicy.physiologicalEqualityClaim).toBe("not-asserted");
+    expect(observed).not.toHaveProperty("mealFrequency");
+    expect(observed).not.toHaveProperty("mealTimingMultiplier");
+    expect(missingCarbs.carbohydrateEvidence).toEqual({
+      availability: "unavailable",
+      reason: "missing-carbohydrate",
+    });
+    expect(missingCarbs.carbohydrateTimingPolicy).toEqual(observed.carbohydrateTimingPolicy);
+    expect(missingCarbs.carbohydrateEvidence).not.toEqual({
+      availability: "available",
+      provenance: "observed",
+      carbsG: 0,
+    });
   });
 
   it("glycogen-associated water co-moves without asserting a universal ratio", () => {

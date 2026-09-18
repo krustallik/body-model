@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyGlycogenTransitionV7,
   buildGlycogenTransitionV7,
+  GLYCOGEN_CARBOHYDRATE_TIMING_POLICY_V7,
   glycogenCarbohydrateEvidenceV7,
   glycogenTransitionV7Fingerprint,
 } from "@/model/physiology-v7/glycogen-transition-v7";
@@ -46,8 +47,26 @@ describe("Stage 8B glycogen transition", () => {
     });
     expect(result.depletionEvidence).toBe("present");
     expect(result.repletionEvidence).toBe("present-observed");
+    expect(result.carbohydrateTimingPolicy).toEqual(GLYCOGEN_CARBOHYDRATE_TIMING_POLICY_V7);
     expect(result.quantitativeState).toMatchObject({ availability: "unavailable", carriedForwardGlycogenKg: null, biologicalTransition: "not-modeled" });
     expect(result).not.toHaveProperty("glycogenDeltaKg");
+  });
+
+  it("records that meal frequency/timing is not applied at daily resolution and missing timing is not fasting", () => {
+    const withCarbs = buildGlycogenTransitionV7({
+      priorGlycogenKg: null,
+      carbohydrate: glycogenCarbohydrateEvidenceV7({ carbsG: 180, nutrition: nutrition("observed") }),
+      resistanceExposure: null, workoutFeedObserved: true, stepperWorkouts: [],
+    });
+    const missingCarbs = buildGlycogenTransitionV7({
+      priorGlycogenKg: null,
+      carbohydrate: glycogenCarbohydrateEvidenceV7({ carbsG: null, nutrition: nutrition("missing") }),
+      resistanceExposure: null, workoutFeedObserved: true, stepperWorkouts: [],
+    });
+    expect(withCarbs.carbohydrateTimingPolicy.mealFrequencyEffect).toBe("intentionally-not-applied");
+    expect(withCarbs.carbohydrateTimingPolicy.mealTimingInput).toBe("unavailable-not-zero-or-fasting");
+    expect(missingCarbs.carbohydrateTimingPolicy).toEqual(withCarbs.carbohydrateTimingPolicy);
+    expect(missingCarbs.carbohydrateEvidence.availability).toBe("unavailable");
   });
 
   it("does not invent depletion on an observed no-exercise day and preserves unresolved legacy exposure", () => {

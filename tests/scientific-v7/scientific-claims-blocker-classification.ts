@@ -25,15 +25,10 @@ export type BlockedClaimClassification = {
  * Explicit triage map. Claims omitted here fall back by infrastructureBlocker text.
  */
 const CLASSIFICATIONS: Record<string, Omit<BlockedClaimClassification, "claimId">> = {
-  "C-H03": {
-    category: "implementation-only",
-    reason: "Daily nutrition exists; expose an explicit v7 timing-policy result that records non-application.",
-    closestToGreenRank: 1,
-  },
   "C-H05": {
     category: "implementation-only",
     reason: "Glycogen transition exists; needs an energy-matched protein-substitution exposure for the invariant test.",
-    closestToGreenRank: 3,
+    closestToGreenRank: 1,
   },
   "C-K06": {
     category: "research-blocked",

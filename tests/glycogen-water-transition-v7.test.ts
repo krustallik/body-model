@@ -5,13 +5,18 @@ import {
   glycogenWaterTransitionV7Fingerprint,
 } from "@/model/physiology-v7/glycogen-water-transition-v7";
 import type { GlycogenTransitionV7 } from "@/model/physiology-v7/glycogen-transition-v7";
+import {
+  GLYCOGEN_CARBOHYDRATE_TIMING_POLICY_V7,
+  GLYCOGEN_TRANSITION_V7_VERSION,
+} from "@/model/physiology-v7/glycogen-transition-v7";
 import { reconstructPhysiologyV7MassKg, type PhysiologyV7State } from "@/model/physiology-v7/state";
 
 function glycogen(input: Partial<Pick<GlycogenTransitionV7, "depletionEvidence" | "repletionEvidence" | "sourceCoverage">> = {}): GlycogenTransitionV7 {
   return {
-    contractVersion: "bodycast-glycogen-transition-v7-1", transitionSlot: "glycogen-transition-slot",
+    contractVersion: GLYCOGEN_TRANSITION_V7_VERSION, transitionSlot: "glycogen-transition-slot",
     quantitativeState: { availability: "unavailable", reason: "no-defensible-initial-glycogen-source", stateHandling: "state-remains-unavailable", carriedForwardGlycogenKg: null, biologicalTransition: "not-modeled" },
     carbohydrateEvidence: { availability: "unavailable", reason: "missing-carbohydrate" },
+    carbohydrateTimingPolicy: GLYCOGEN_CARBOHYDRATE_TIMING_POLICY_V7,
     exerciseEvidence: { strength: "observed-no-exposure", stepper: "observed-no-stepper" },
     depletionEvidence: "absent", repletionEvidence: "unavailable", sourceCoverage: "complete-for-qualitative-boundary",
     provenance: { workoutFeedObserved: true, resistance: null, stepper: [] },

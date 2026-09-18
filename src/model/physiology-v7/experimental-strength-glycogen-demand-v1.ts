@@ -9,67 +9,73 @@ import {
 import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 
 /**
- * Experimental Strength Glycogen Demand V1 (shadow / EXPERIMENTAL only).
+ * Experimental Strength Glycogen Demand V1.1 (shadow / EXPERIMENTAL only).
  *
- * Estimates a bounded whole-body glycogen depletion demand from a completed
- * resistance session using qualified mapped dose + recruitment context.
+ * Direct mapped hard-set count is the primary dose driver. Unsupported
+ * per-group mass weights and fixed indirect coefficients are rejected; those
+ * factors widen uncertainty / context instead of inventing precision.
  * Not scientifically validated. Never writes production TDEE / forecast / v7
  * glycogen transitions.
  */
 export const EXPERIMENTAL_STRENGTH_GLYCOGEN_DEMAND_V1_REVISION =
-  "experimental-strength-glycogen-demand-v1" as const;
+  "experimental-strength-glycogen-demand-v1.1" as const;
 
 export const EXPERIMENTAL_STRENGTH_GLYCOGEN_DEMAND_V1_PROVENANCE =
   "experimental-heuristic" as const;
 
 /**
- * Relative anatomical recruitment weights for canonical mapping groups.
- * Engineering prior for ordinal/scaled demand — not measured muscle mass.
+ * ENGINEERING PRIOR — saturating scale τ for direct hard-set count.
+ * Not derived from E-F01 protocols; chosen so modest sessions stay below the
+ * reference magnitude envelope without a hard linear divisor/cap.
  */
-export const EXPERIMENTAL_MUSCLE_RECRUITMENT_WEIGHT_V1: Readonly<
-  Record<CanonicalMuscleGroupV7, number>
-> = {
-  hip_extensors: 1.0,
-  back: 0.95,
-  spinal_extensors: 0.7,
-  chest: 0.65,
-  deltoids: 0.45,
-  triceps: 0.35,
-  biceps: 0.3,
-  forearms: 0.15,
-};
-
-/** Indirect mapped sets contribute less than direct (engineering relative prior). */
-export const EXPERIMENTAL_INDIRECT_SET_WEIGHT_V1 = 0.35 as const;
+export const ENGINEERING_DIRECT_SET_SCALE_TAU_V1 = 8 as const;
 
 /**
- * Reference session ≈ 8 effective direct hard-set units on large musculature.
- * Used only to normalize the relative dose scale.
+ * ENGINEERING PRIOR — coarse taxonomy only (not continuous mass fractions).
+ * Used to classify recruitment context for uncertainty envelopes, never as
+ * per-group kg weights.
  */
-export const EXPERIMENTAL_REFERENCE_EFFECTIVE_UNITS_V1 = 8 as const;
+export const ENGINEERING_LARGE_MUSCLE_GROUPS_V1 = [
+  "hip_extensors",
+  "back",
+  "spinal_extensors",
+  "chest",
+] as const satisfies readonly CanonicalMuscleGroupV7[];
+
+const LARGE_MUSCLE_GROUP_SET: ReadonlySet<CanonicalMuscleGroupV7> = new Set(
+  ENGINEERING_LARGE_MUSCLE_GROUPS_V1,
+);
 
 /**
- * Soft scale ceiling — prevents unbounded extrapolation; not a physiology clamp.
+ * Bounded whole-body glycogen depletion magnitudes (kg) for a saturated
+ * direct-hard-set session envelope.
+ *
+ * Scientific basis for *having* a wide uncertain band: E-F01 local
+ * concentration change (~−104 mmol/kg dry mass; ~21% local mean) shows
+ * recruited muscle can deplete, but active mass / anatomical aggregation to
+ * whole-body kg is unknown (prediction interval crosses zero; high I²).
+ *
+ * The numeric endpoints are ENGINEERING order-of-magnitude priors for an
+ * experimental heuristic — not personal coefficients and not the rejected
+ * −11.2 mmol/kgdm/set ecological slope.
  */
-export const EXPERIMENTAL_MAX_DOSE_SCALE_V1 = 2.5 as const;
-
-/**
- * Bounded whole-body glycogen depletion magnitudes (kg) for a reference
- * resistance session. Order-of-magnitude prior from E-F01 local concentration
- * change (~−104 mmol/kg dry mass; ~21% local mean) with unknown recruited
- * active mass / anatomical aggregation — explicit uncertainty, not a personal
- * coefficient. Must not be treated as the −11.2 mmol/kgdm/set ecological slope.
- */
-export const EXPERIMENTAL_REFERENCE_SESSION_DEMAND_KG_V1 = {
+export const EXPERIMENTAL_REFERENCE_DEMAND_KG_V1 = {
+  /** ENGINEERING midpoint of the uncertain whole-body aggregation band. */
   pointMagnitudeKg: 0.025,
-  /** Less depletion → upper (less negative) delta bound. */
-  lowerMagnitudeKg: 0.008,
-  /** More depletion → lower (more negative) delta bound. */
-  upperMagnitudeKg: 0.07,
+  /** ENGINEERING less-depletion edge of the band. */
+  lowerMagnitudeKg: 0.005,
+  /** ENGINEERING more-depletion edge of the band. */
+  upperMagnitudeKg: 0.1,
   evidenceIds: ["E-F01", "E-F02", "E-F03", "E-F04"] as const,
+  pointClassification: "engineering-midpoint" as const,
+  boundClassification: "engineering-order-of-magnitude-band" as const,
   scientificNote:
-    "Local vastus-lateralis concentration evidence only; whole-body kg is an uncertain heuristic aggregation.",
+    "E-F01 supports local depletion existence/sign; whole-body kg endpoints remain engineering priors under unknown recruited mass.",
 } as const;
+
+export type ExperimentalRecruitmentClassV1 =
+  | "includes-large-direct"
+  | "small-direct-only";
 
 export type ExperimentalStrengthGlycogenDemandAvailabilityV1 =
   | "available"
@@ -87,8 +93,16 @@ export type ExperimentalStrengthGlycogenDemandFeaturesV1 = {
   qualifiedHardSetCount: number;
   mappedSetCount: number;
   unresolvedEffortMappedSetCount: number;
-  effectiveRecruitmentUnits: number;
+  /** Primary driver: unique qualified hard-set count (not per-group sum). */
+  directMappedHardSetUnits: number;
+  indirectMappedSetCount: number;
+  /**
+   * Indirect work is context only — never a fixed dose coefficient.
+   * When present, only the more-depleted bound is widened.
+   */
+  indirectPolicy: "uncertainty-only-not-dose-coefficient";
   doseScale: number;
+  recruitmentClass: ExperimentalRecruitmentClassV1 | null;
   muscleGroupsUsed: CanonicalMuscleGroupV7[];
   availableGlycogenKg: number | null;
   storeBoundApplied: boolean;
@@ -99,6 +113,8 @@ export type ExperimentalStrengthGlycogenDemandFeaturesV1 = {
     "scale-weight-residual",
     "literature-personal-capacity",
     "ecological-mmol-per-set-coefficient",
+    "fixed-indirect-set-coefficient",
+    "continuous-muscle-group-mass-weights",
   ];
 };
 
@@ -129,31 +145,53 @@ function finiteNonnegativeOrNull(value: number | null | undefined): number | nul
   return value;
 }
 
-export function computeExperimentalRecruitmentUnitsV1(
-  dose: AvailableQualifiedResistanceTrainingDoseV7,
-): { units: number; muscleGroupsUsed: CanonicalMuscleGroupV7[] } {
-  let units = 0;
-  const muscleGroupsUsed: CanonicalMuscleGroupV7[] = [];
-  for (const bucket of dose.muscleGroups) {
-    const weight = EXPERIMENTAL_MUSCLE_RECRUITMENT_WEIGHT_V1[bucket.muscleGroup];
-    const contribution = (
-      bucket.directMappedSetCount
-      + EXPERIMENTAL_INDIRECT_SET_WEIGHT_V1 * bucket.indirectMappedSetCount
-    ) * weight;
-    if (contribution > 0) {
-      units += contribution;
-      muscleGroupsUsed.push(bucket.muscleGroup);
-    }
-  }
-  return { units, muscleGroupsUsed: muscleGroupsUsed.sort() };
+/** Saturating ENGINEERING scale in (0, 1); monotonic in direct set count. */
+export function engineeringDirectSetScaleV1(directMappedHardSetUnits: number): number {
+  if (!(directMappedHardSetUnits > 0)) return 0;
+  return 1 - Math.exp(-directMappedHardSetUnits / ENGINEERING_DIRECT_SET_SCALE_TAU_V1);
 }
 
-function doseScaleFromUnits(units: number): number {
-  if (!(units > 0)) return 0;
-  return Math.min(
-    EXPERIMENTAL_MAX_DOSE_SCALE_V1,
-    units / EXPERIMENTAL_REFERENCE_EFFECTIVE_UNITS_V1,
-  );
+export function computeExperimentalRecruitmentContextV1(
+  dose: AvailableQualifiedResistanceTrainingDoseV7,
+): {
+  directMappedHardSetUnits: number;
+  indirectMappedSetCount: number;
+  muscleGroupsUsed: CanonicalMuscleGroupV7[];
+  recruitmentClass: ExperimentalRecruitmentClassV1 | null;
+} {
+  // Primary driver is unique qualified hard sets (not sum across groups, which
+  // would double-count multi-group exercises).
+  const directMappedHardSetUnits = dose.qualifiedHardSetCount;
+  let indirectMappedSetCount = 0;
+  const muscleGroupsUsed: CanonicalMuscleGroupV7[] = [];
+  let hasLargeDirect = false;
+  let hasSmallDirect = false;
+
+  for (const bucket of dose.muscleGroups) {
+    indirectMappedSetCount += bucket.indirectMappedSetCount;
+    if (bucket.directMappedSetCount > 0 || bucket.indirectMappedSetCount > 0) {
+      muscleGroupsUsed.push(bucket.muscleGroup);
+    }
+    if (bucket.directMappedSetCount > 0) {
+      if (LARGE_MUSCLE_GROUP_SET.has(bucket.muscleGroup)) hasLargeDirect = true;
+      else hasSmallDirect = true;
+    }
+  }
+
+  const recruitmentClass: ExperimentalRecruitmentClassV1 | null = directMappedHardSetUnits <= 0
+    ? null
+    : hasLargeDirect
+      ? "includes-large-direct"
+      : hasSmallDirect
+        ? "small-direct-only"
+        : null;
+
+  return {
+    directMappedHardSetUnits,
+    indirectMappedSetCount,
+    muscleGroupsUsed: muscleGroupsUsed.sort(),
+    recruitmentClass,
+  };
 }
 
 function clampToStore(deltaKg: number, availableGlycogenKg: number | null): number {
@@ -169,7 +207,39 @@ function rejectedConversions(): ExperimentalStrengthGlycogenDemandFeaturesV1["re
     "scale-weight-residual",
     "literature-personal-capacity",
     "ecological-mmol-per-set-coefficient",
+    "fixed-indirect-set-coefficient",
+    "continuous-muscle-group-mass-weights",
   ] as const;
+}
+
+function emptyFeatures(input: {
+  dose: QualifiedResistanceTrainingDoseV7;
+  availableGlycogenKg: number | null;
+  ignoredActiveEnergyKcal: number | null;
+  directMappedHardSetUnits?: number;
+  indirectMappedSetCount?: number;
+  doseScale?: number;
+  recruitmentClass?: ExperimentalRecruitmentClassV1 | null;
+  muscleGroupsUsed?: CanonicalMuscleGroupV7[];
+}): ExperimentalStrengthGlycogenDemandFeaturesV1 {
+  const dose = input.dose;
+  return {
+    doseFingerprint: qualifiedResistanceTrainingDoseV7Fingerprint(dose),
+    doseAvailability: dose.availability,
+    qualifiedHardSetCount: dose.qualifiedHardSetCount,
+    mappedSetCount: dose.mappedSetCount,
+    unresolvedEffortMappedSetCount: dose.unresolvedEffortMappedSetCount,
+    directMappedHardSetUnits: input.directMappedHardSetUnits ?? 0,
+    indirectMappedSetCount: input.indirectMappedSetCount ?? 0,
+    indirectPolicy: "uncertainty-only-not-dose-coefficient",
+    doseScale: input.doseScale ?? 0,
+    recruitmentClass: input.recruitmentClass ?? null,
+    muscleGroupsUsed: input.muscleGroupsUsed ?? [],
+    availableGlycogenKg: input.availableGlycogenKg,
+    storeBoundApplied: false,
+    ignoredActiveEnergyKcal: input.ignoredActiveEnergyKcal,
+    rejectedConversions: rejectedConversions(),
+  };
 }
 
 function unavailableResult(input: {
@@ -178,11 +248,12 @@ function unavailableResult(input: {
   ignoredActiveEnergyKcal: number | null;
   reason: ExperimentalStrengthGlycogenDemandUnavailableReasonV1;
   reasons: string[];
-  effectiveRecruitmentUnits?: number;
+  directMappedHardSetUnits?: number;
+  indirectMappedSetCount?: number;
   doseScale?: number;
+  recruitmentClass?: ExperimentalRecruitmentClassV1 | null;
   muscleGroupsUsed?: CanonicalMuscleGroupV7[];
 }): ExperimentalStrengthGlycogenDemandResultV1 {
-  const dose = input.dose;
   return {
     contractVersion: EXPERIMENTAL_STRENGTH_GLYCOGEN_DEMAND_V1_REVISION,
     provenance: EXPERIMENTAL_STRENGTH_GLYCOGEN_DEMAND_V1_PROVENANCE,
@@ -192,27 +263,14 @@ function unavailableResult(input: {
     lowerBoundKg: null,
     upperBoundKg: null,
     unavailableReason: input.reason,
-    features: {
-      doseFingerprint: qualifiedResistanceTrainingDoseV7Fingerprint(dose),
-      doseAvailability: dose.availability,
-      qualifiedHardSetCount: dose.qualifiedHardSetCount,
-      mappedSetCount: dose.mappedSetCount,
-      unresolvedEffortMappedSetCount: dose.unresolvedEffortMappedSetCount,
-      effectiveRecruitmentUnits: input.effectiveRecruitmentUnits ?? 0,
-      doseScale: input.doseScale ?? 0,
-      muscleGroupsUsed: input.muscleGroupsUsed ?? [],
-      availableGlycogenKg: input.availableGlycogenKg,
-      storeBoundApplied: false,
-      ignoredActiveEnergyKcal: input.ignoredActiveEnergyKcal,
-      rejectedConversions: rejectedConversions(),
-    },
+    features: emptyFeatures(input),
     reasons: input.reasons,
   };
 }
 
 /**
  * Experimental heuristic: bounded nonpositive glycogen demand from qualified
- * resistance dose + muscle mapping. Missing dose/mapping ≠ zero demand.
+ * resistance dose + muscle-mapping context. Missing dose/mapping ≠ zero demand.
  */
 export function estimateExperimentalStrengthGlycogenDemandV1(input: {
   dose: QualifiedResistanceTrainingDoseV7;
@@ -258,49 +316,79 @@ export function estimateExperimentalStrengthGlycogenDemandV1(input: {
     });
   }
 
-  const { units, muscleGroupsUsed } = computeExperimentalRecruitmentUnitsV1(dose);
-  const scale = doseScaleFromUnits(units);
-  if (!(scale > 0) || muscleGroupsUsed.length === 0) {
+  const context = computeExperimentalRecruitmentContextV1(dose);
+  const doseScale = engineeringDirectSetScaleV1(context.directMappedHardSetUnits);
+  if (!(doseScale > 0) || context.recruitmentClass === null) {
     return unavailableResult({
       dose,
       availableGlycogenKg,
       ignoredActiveEnergyKcal,
       reason: "no-qualified-mapped-hard-sets",
       reasons: [
-        "recruitment-units-zero",
+        "direct-mapped-hard-set-units-zero",
         "missing-muscle-mapping-contribution-is-not-zero-depletion",
       ],
-      effectiveRecruitmentUnits: units,
-      doseScale: scale,
-      muscleGroupsUsed,
+      ...context,
+      doseScale,
     });
   }
 
-  const rawEstimated = -EXPERIMENTAL_REFERENCE_SESSION_DEMAND_KG_V1.pointMagnitudeKg * scale;
-  const rawLower = -EXPERIMENTAL_REFERENCE_SESSION_DEMAND_KG_V1.upperMagnitudeKg * scale;
-  const rawUpper = -EXPERIMENTAL_REFERENCE_SESSION_DEMAND_KG_V1.lowerMagnitudeKg * scale;
+  const ref = EXPERIMENTAL_REFERENCE_DEMAND_KG_V1;
+  // Point + nominal bounds from direct sets only.
+  let estimatedGlycogenDeltaKg = -ref.pointMagnitudeKg * doseScale;
+  let lowerBoundKg = -ref.upperMagnitudeKg * doseScale;
+  let upperBoundKg = -ref.lowerMagnitudeKg * doseScale;
 
-  const estimatedGlycogenDeltaKg = clampToStore(rawEstimated, availableGlycogenKg);
-  const lowerBoundKg = Math.min(
-    clampToStore(rawLower, availableGlycogenKg),
+  // Small-muscle-only sessions: do not invent continuous weights. Move the
+  // point/less-depleted edge to the engineering lower-magnitude prior while
+  // keeping the more-depleted bound wide (asymmetric uncertainty).
+  if (context.recruitmentClass === "small-direct-only") {
+    estimatedGlycogenDeltaKg = -ref.lowerMagnitudeKg * doseScale;
+    upperBoundKg = -ref.lowerMagnitudeKg * doseScale;
+    // lowerBoundKg unchanged at -upperMagnitudeKg * doseScale
+  }
+
+  // Indirect mapped work: widen more-depleted bound only (binary context bit,
+  // not a 0.35·n coefficient).
+  if (context.indirectMappedSetCount > 0) {
+    const widenedLowerScale = engineeringDirectSetScaleV1(
+      context.directMappedHardSetUnits + 1,
+    );
+    lowerBoundKg = Math.min(lowerBoundKg, -ref.upperMagnitudeKg * widenedLowerScale);
+  }
+
+  estimatedGlycogenDeltaKg = clampToStore(estimatedGlycogenDeltaKg, availableGlycogenKg);
+  lowerBoundKg = Math.min(
+    clampToStore(lowerBoundKg, availableGlycogenKg),
     estimatedGlycogenDeltaKg,
   );
-  const upperBoundKg = Math.max(
-    clampToStore(rawUpper, availableGlycogenKg),
+  upperBoundKg = Math.max(
+    clampToStore(upperBoundKg, availableGlycogenKg),
     estimatedGlycogenDeltaKg,
   );
+  // Keep upper ≤ 0 after asymmetric small-muscle pull.
+  upperBoundKg = Math.min(0, upperBoundKg);
+
   const storeBoundApplied = availableGlycogenKg !== null;
 
   const reasons = [
     "experimental-heuristic-bounded-prior",
-    "qualified-hard-set-recruitment-scaled",
-    "muscle-mapping-weighted",
+    "direct-mapped-hard-sets-primary-driver",
+    "muscle-mapping-context-not-continuous-weights",
     "exercise-only-delta-nonpositive",
+    ...(context.recruitmentClass === "small-direct-only"
+      ? ["small-direct-only-asymmetric-uncertainty"]
+      : ["includes-large-direct-full-envelope"]),
+    ...(context.indirectMappedSetCount > 0
+      ? ["indirect-mapping-widens-lower-bound-only"]
+      : ["no-indirect-mapping-context"]),
     ...(storeBoundApplied
       ? ["store-bounded-to-available-glycogen"]
       : ["store-bound-not-applied-glycogen-unavailable"]),
     "kcal-to-glycogen-intentionally-rejected",
     "ecological-mmol-per-set-coefficient-intentionally-rejected",
+    "fixed-indirect-set-coefficient-intentionally-rejected",
+    "continuous-muscle-group-mass-weights-intentionally-rejected",
   ];
 
   return {
@@ -313,18 +401,14 @@ export function estimateExperimentalStrengthGlycogenDemandV1(input: {
     upperBoundKg,
     unavailableReason: null,
     features: {
-      doseFingerprint: qualifiedResistanceTrainingDoseV7Fingerprint(dose),
-      doseAvailability: dose.availability,
-      qualifiedHardSetCount: dose.qualifiedHardSetCount,
-      mappedSetCount: dose.mappedSetCount,
-      unresolvedEffortMappedSetCount: dose.unresolvedEffortMappedSetCount,
-      effectiveRecruitmentUnits: units,
-      doseScale: scale,
-      muscleGroupsUsed,
-      availableGlycogenKg,
+      ...emptyFeatures({
+        dose,
+        availableGlycogenKg,
+        ignoredActiveEnergyKcal,
+        ...context,
+        doseScale,
+      }),
       storeBoundApplied,
-      ignoredActiveEnergyKcal,
-      rejectedConversions: rejectedConversions(),
     },
     reasons,
   };

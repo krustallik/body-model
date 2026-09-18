@@ -216,7 +216,7 @@ export const SCIENTIFIC_V7_CLAIMS: readonly ScientificClaimManifestRecord[] = [
       implementation: "src/model/physiology-v7/experimental-strength-glycogen-demand-v1.ts",
       testFile: "tests/experimental-strength-glycogen-demand-v1.test.ts",
       testName: "keeps exercise-only glycogen delta nonpositive (C-F01)",
-      uncertainty: "Experimental heuristic with bounded priors from local biopsy evidence; not scientifically validated whole-body kg.",
+      uncertainty: "Experimental heuristic with engineering order-of-magnitude kg band from local biopsy evidence; not scientifically validated whole-body kg.",
     },
   }),
   record({
@@ -250,7 +250,7 @@ export const SCIENTIFIC_V7_CLAIMS: readonly ScientificClaimManifestRecord[] = [
       implementation: "src/model/physiology-v7/experimental-strength-glycogen-demand-v1.ts",
       testFile: "tests/experimental-strength-glycogen-demand-v1.test.ts",
       testName: "does not lower estimated demand when contained comparable work increases (C-F03)",
-      uncertainty: "Experimental heuristic monotonic scaling uses relative recruitment units; not the −11.2 mmol/kgdm/set ecological coefficient.",
+      uncertainty: "Experimental heuristic monotonicity uses saturating direct-set scale (engineering τ); not the −11.2 mmol/kgdm/set ecological coefficient.",
     },
   }),
   record({
@@ -267,7 +267,7 @@ export const SCIENTIFIC_V7_CLAIMS: readonly ScientificClaimManifestRecord[] = [
       implementation: "src/model/physiology-v7/experimental-strength-glycogen-demand-v1.ts",
       testFile: "tests/experimental-strength-glycogen-demand-v1.test.ts",
       testName: "uses muscle mapping so equal set counts are not universal (C-F04)",
-      uncertainty: "Relative anatomical weights are engineering heuristic priors; not measured active muscle mass.",
+      uncertainty: "Heuristic uses coarse large/small recruitment class for asymmetric uncertainty; continuous per-group mass weights are intentionally rejected.",
     },
   }),
   record({ claimId: "C-F05", title: "resistance and aerobic glycogen conversions are not interchangeable", parameterIds: ["P-F04"], evidenceIds: ["E-F01", "E-F02", "E-F03", "E-F04", "E-G05", "E-G06", "E-G07", "E-G08"], auditEligibility: "SAFE", testType: "integration", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Equal active energy does not mandate equal glycogen depletion across resistance and aerobic modalities.", infrastructureBlocker: v7WorkoutGlycogenBlocker }),

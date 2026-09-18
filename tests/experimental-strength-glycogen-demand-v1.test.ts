@@ -240,12 +240,47 @@ describe("experimental strength glycogen demand v1", () => {
       }]),
       availableGlycogenKg: 0.5,
     });
+    expect(large.features.recruitmentClass).toBe("includes-large-direct");
+    expect(small.features.recruitmentClass).toBe("small-direct-only");
     expect(large.features.muscleGroupsUsed).toEqual(
       expect.arrayContaining(["hip_extensors", "spinal_extensors"]),
     );
     expect(small.features.muscleGroupsUsed).toContain("biceps");
-    expect(Math.abs(large.estimatedGlycogenDeltaKg!))
-      .toBeGreaterThan(Math.abs(small.estimatedGlycogenDeltaKg!));
+    expect(large.features.directMappedHardSetUnits).toBe(small.features.directMappedHardSetUnits);
+    // Same direct set count is not treated as a universal identical demand:
+    // coarse recruitment class shifts the point estimate.
+    expect(small.estimatedGlycogenDeltaKg!).toBeGreaterThan(large.estimatedGlycogenDeltaKg!);
+    expect(small.features.recruitmentClass).not.toBe(large.features.recruitmentClass);
+    expect(JSON.stringify(large.features)).not.toMatch(/0\.95|0\.65|0\.45|indirectWeight|0\.35/);
+  });
+
+  it("treats indirect mapping as uncertainty widening, not a fixed dose coefficient", () => {
+    const pressOnly = estimateExperimentalStrengthGlycogenDemandV1({
+      dose: doseFor([{
+        id: 1,
+        sourceExerciseCatalogId: 10,
+        stableKey: "seated_dumbbell_press",
+        snapshotExerciseName: "Press",
+        order: 1,
+        plannedSets: 4,
+        resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
+        origin: "PLANNED",
+        muscleMappingSnapshot: buildExerciseMuscleMappingSnapshotV7("seated_dumbbell_press"),
+        sets: Array.from({ length: 4 }, (_, index) => set({
+          id: 50 + index,
+          sessionExerciseId: 1,
+          setNumber: index + 1,
+          weightKg: 30,
+        })),
+      }]),
+      availableGlycogenKg: 0.5,
+    });
+    // seated_dumbbell_press maps deltoids direct + triceps indirect
+    expect(pressOnly.features.indirectMappedSetCount).toBeGreaterThan(0);
+    expect(pressOnly.features.indirectPolicy).toBe("uncertainty-only-not-dose-coefficient");
+    expect(pressOnly.reasons).toContain("indirect-mapping-widens-lower-bound-only");
+    expect(pressOnly.features.rejectedConversions).toContain("fixed-indirect-set-coefficient");
+    expect(pressOnly.lowerBoundKg!).toBeLessThanOrEqual(pressOnly.estimatedGlycogenDeltaKg!);
   });
 
   it("treats missing mapped dose as unavailable, not zero depletion", () => {
@@ -337,8 +372,23 @@ describe("experimental strength glycogen demand v1", () => {
       "scale-weight-residual",
       "literature-personal-capacity",
       "ecological-mmol-per-set-coefficient",
+      "fixed-indirect-set-coefficient",
+      "continuous-muscle-group-mass-weights",
     ]);
     expect(JSON.stringify(withKcal)).not.toMatch(/residualAllocate|substratePercent|kcalToGlycogen/i);
+  });
+
+  it("documents engineering priors instead of unsupported continuous coefficients", () => {
+    const source = readFileSync(
+      "src/model/physiology-v7/experimental-strength-glycogen-demand-v1.ts",
+      "utf8",
+    );
+    expect(source).not.toMatch(/EXPERIMENTAL_INDIRECT_SET_WEIGHT|INDIRECT_SET_WEIGHT_V1 = 0\.35/);
+    expect(source).not.toMatch(/hip_extensors:\s*1\.0/);
+    expect(source).not.toMatch(/forearms:\s*0\.15/);
+    expect(source).toMatch(/ENGINEERING_DIRECT_SET_SCALE_TAU_V1/);
+    expect(source).toMatch(/engineering-order-of-magnitude-band/);
+    expect(source).toContain("experimental-strength-glycogen-demand-v1.1");
   });
 
   it("does not appear in production daily-runtime or forecast glycogen paths", () => {

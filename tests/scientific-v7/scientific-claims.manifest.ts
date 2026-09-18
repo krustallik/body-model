@@ -159,7 +159,12 @@ const v7RetrainingIdentificationBlocker = "ResistanceTrainingExposureHistoryV7 c
 const v7WorkoutGlycogenBlocker = "Workout dose is not connected to a v7 glycogen-demand transition with recruited-muscle context.";
 const v7StepperGlycogenBlocker = "No direct v7 stepper glycogen-demand seam exists; substrate coefficients remain deferred.";
 const v7CapacityBlocker = "No evidence-backed individualized glycogen-capacity state exists; universal clamps are forbidden.";
-const v7TransientWaterBlocker = "The v7 transient exercise-water state exists, but no cause provenance or decay transition exists.";
+const experimentalTransientWaterImpl =
+  "src/model/physiology-v7/experimental-transient-exercise-water-v1.ts";
+const experimentalTransientWaterTest =
+  "tests/experimental-transient-exercise-water-v1.test.ts";
+const experimentalTransientWaterUncertainty =
+  "Experimental finite-decay heuristic with engineering acute kg band and resolution horizons; not scientifically validated whole-body edema kg or half-life.";
 const v7HrBlocker = "Canonical raw HR interval provenance exists, but HR coverage/calibration inputs and a separately observable anabolic-dose output do not exist.";
 const v7SleepBlocker = "Canonical v7 sleep provenance/duration inputs and bounded sleep-context output do not exist.";
 const v7MeasurementBlocker = "No v7 measurement-role contract exposes skeletal muscle separately from lean/local/proxy endpoints.";
@@ -288,11 +293,91 @@ export const SCIENTIFIC_V7_CLAIMS: readonly ScientificClaimManifestRecord[] = [
   record({ claimId: "C-I05", title: "adult glycogen range is contextual rather than a universal clamp", parameterIds: ["P-I02"], evidenceIds: ["E-I06"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "unit", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "The 0.3-0.86 kg adult range is metadata only and never a pass/fail threshold, universal clamp, personal capacity, or default.", executableTestName: "adult glycogen range is contextual rather than a universal clamp" }),
 
   record({ claimId: "C-J01", title: "acute swelling is not muscle tissue", parameterIds: ["P-J01", "P-J02"], evidenceIds: ["E-J01", "E-J02", "E-J03", "E-J04", "E-J05", "E-J06", "E-J07"], auditEligibility: "SAFE", testType: "unit", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Acute post-workout swelling enters transient water, never immediate skeletal-muscle tissue.", executableTestName: "acute swelling is not muscle tissue" }),
-  record({ claimId: "C-J02", title: "different transient-water time courses are permitted", parameterIds: ["P-J01", "P-J02"], evidenceIds: ["E-J03", "E-J05", "E-J06", "E-J07"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "longitudinal", assertionTypes: ["TIME_COURSE"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Different time courses are permitted; v7 need not infer a response class or force two components.", infrastructureBlocker: v7TransientWaterBlocker }),
-  record({ claimId: "C-J03", title: "prior exposure may attenuate damage response on average", parameterIds: ["P-J03"], evidenceIds: ["E-J05", "E-J08"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "longitudinal", assertionTypes: ["ORDERING"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Prior exposure may lower expected markers or edema on average; deterministic non-increase is not required.", infrastructureBlocker: v7TransientWaterBlocker }),
-  record({ claimId: "C-J04", title: "routine trained workout may resolve rapidly", parameterIds: ["P-J01"], evidenceIds: ["E-J06"], auditEligibility: "SAFE", testType: "longitudinal", assertionTypes: ["TIME_COURSE"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "The model permits no sustained edema beyond the next day after an accustomed trained session.", infrastructureBlocker: v7TransientWaterBlocker }),
-  record({ claimId: "C-J05", title: "damaging bout may persist across days", parameterIds: ["P-J02"], evidenceIds: ["E-J02", "E-J03", "E-J04", "E-J05", "E-J07"], auditEligibility: "SAFE", testType: "longitudinal", assertionTypes: ["TIME_COURSE"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Novel damaging bouts may remain elevated across days without treating extreme tails as routine.", infrastructureBlocker: v7TransientWaterBlocker }),
-  record({ claimId: "C-J06", title: "isolated transient water trends toward baseline", parameterIds: ["P-J01", "P-J02"], evidenceIds: ["E-J03", "E-J04", "E-J05", "E-J06", "E-J07"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "property", assertionTypes: ["TIME_COURSE", "BOUND"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Absent new causes, an isolated transient component remains finite and trends toward baseline without an exact zero time or half-life.", infrastructureBlocker: v7TransientWaterBlocker }),
+  record({
+    claimId: "C-J02",
+    title: "different transient-water time courses are permitted",
+    parameterIds: ["P-J01", "P-J02"],
+    evidenceIds: ["E-J03", "E-J05", "E-J06", "E-J07"],
+    auditEligibility: "SAFE_AFTER_AUDIT_REVISION",
+    testType: "longitudinal",
+    assertionTypes: ["TIME_COURSE"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "Different time courses are permitted; v7 need not infer a response class or force two components.",
+    experimental: {
+      implementation: experimentalTransientWaterImpl,
+      testFile: experimentalTransientWaterTest,
+      testName: "permits distinct accustomed vs novel resolution domains without a two-component force (C-J02)",
+      uncertainty: experimentalTransientWaterUncertainty,
+    },
+  }),
+  record({
+    claimId: "C-J03",
+    title: "prior exposure may attenuate damage response on average",
+    parameterIds: ["P-J03"],
+    evidenceIds: ["E-J05", "E-J08"],
+    auditEligibility: "SAFE_AFTER_AUDIT_REVISION",
+    testType: "longitudinal",
+    assertionTypes: ["ORDERING"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "Prior exposure may lower expected markers or edema on average; deterministic non-increase is not required.",
+    experimental: {
+      implementation: experimentalTransientWaterImpl,
+      testFile: experimentalTransientWaterTest,
+      testName: "uses exposure for resolution domain only without inventing attenuation coefficients (C-J03)",
+      uncertainty: `${experimentalTransientWaterUncertainty} Exposure affects horizon domain/uncertainty only; no exact repeated-bout attenuation coefficient.`,
+    },
+  }),
+  record({
+    claimId: "C-J04",
+    title: "routine trained workout may resolve rapidly",
+    parameterIds: ["P-J01"],
+    evidenceIds: ["E-J06"],
+    auditEligibility: "SAFE",
+    testType: "longitudinal",
+    assertionTypes: ["TIME_COURSE"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "The model permits no sustained edema beyond the next day after an accustomed trained session.",
+    experimental: {
+      implementation: experimentalTransientWaterImpl,
+      testFile: experimentalTransientWaterTest,
+      testName: "permits accustomed resolution about the next day (C-J04)",
+      uncertainty: experimentalTransientWaterUncertainty,
+    },
+  }),
+  record({
+    claimId: "C-J05",
+    title: "damaging bout may persist across days",
+    parameterIds: ["P-J02"],
+    evidenceIds: ["E-J02", "E-J03", "E-J04", "E-J05", "E-J07"],
+    auditEligibility: "SAFE",
+    testType: "longitudinal",
+    assertionTypes: ["TIME_COURSE"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "Novel damaging bouts may remain elevated across days without treating extreme tails as routine.",
+    experimental: {
+      implementation: experimentalTransientWaterImpl,
+      testFile: experimentalTransientWaterTest,
+      testName: "permits novel multi-day elevation without extreme tails (C-J05)",
+      uncertainty: experimentalTransientWaterUncertainty,
+    },
+  }),
+  record({
+    claimId: "C-J06",
+    title: "isolated transient water trends toward baseline",
+    parameterIds: ["P-J01", "P-J02"],
+    evidenceIds: ["E-J03", "E-J04", "E-J05", "E-J06", "E-J07"],
+    auditEligibility: "SAFE_AFTER_AUDIT_REVISION",
+    testType: "property",
+    assertionTypes: ["TIME_COURSE", "BOUND"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "Absent new causes, an isolated transient component remains finite and trends toward baseline without an exact zero time or half-life.",
+    experimental: {
+      implementation: experimentalTransientWaterImpl,
+      testFile: experimentalTransientWaterTest,
+      testName: "decays isolated transient water monotonically toward baseline (C-J06)",
+      uncertainty: experimentalTransientWaterUncertainty,
+    },
+  }),
 
   record({ claimId: "C-K01", title: "wearable active energy retains estimate provenance", parameterIds: ["P-K02"], evidenceIds: ["E-K01", "E-K02"], auditEligibility: "SAFE", testType: "unit", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE", "INPUT_CONTRACT"], scientificAssertion: "Device active energy retains source provenance and is not labeled criterion calorimetry.", executableTestName: "device active energy retains estimate provenance" }),
   record({ claimId: "C-K03", title: "valid current modality-relevant personal calibration can reduce uncertainty", parameterIds: ["P-K03"], evidenceIds: ["E-K03", "E-K04", "E-K05"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "unit", assertionTypes: ["ORDERING"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "A valid current modality-relevant personal calibration generally has no greater epistemic uncertainty than an uncalibrated estimate.", infrastructureBlocker: v7HrBlocker }),

@@ -65,6 +65,10 @@ import {
   recordExperimentalStrengthGlycogenDemandShadow,
   recordExperimentalStrengthGlycogenDemandShadowBySessionId,
 } from "./experimental-strength-glycogen-demand-shadow.service";
+import {
+  recordExperimentalTransientExerciseWaterShadow,
+  recordExperimentalTransientExerciseWaterShadowBySessionId,
+} from "./experimental-transient-exercise-water-shadow.service";
 import type {
   HistoricalStrengthWorkoutDto,
   MatchCandidateDto,
@@ -91,6 +95,7 @@ async function recordExperimentalStrengthShadows(input: {
 }): Promise<void> {
   await recordExperimentalStrengthEnergyShadow(input);
   await recordExperimentalStrengthGlycogenDemandShadow(input);
+  await recordExperimentalTransientExerciseWaterShadow(input);
 }
 
 async function recordExperimentalStrengthShadowsBySessionId(input: {
@@ -99,6 +104,7 @@ async function recordExperimentalStrengthShadowsBySessionId(input: {
 }): Promise<void> {
   await recordExperimentalStrengthEnergyShadowBySessionId(input);
   await recordExperimentalStrengthGlycogenDemandShadowBySessionId(input);
+  await recordExperimentalTransientExerciseWaterShadowBySessionId(input);
 }
 
 function isStrengthWorkout(type: string): boolean {

@@ -22,7 +22,8 @@ describe("ResistanceTrainingAdaptationResponseV7", () => {
     const response = buildResistanceTrainingAdaptationResponseV7({ date: "2026-09-18", exposureHistory: history("qualified"), proteinContext: { availability: "available", proteinG: 130, provenance: "observed" }, energyBalanceContext: { availability: "available", energyBalanceKcal: -250, provenance: "derived-model-state" } });
     expect(response.trainingStimulus).toMatchObject({ availability: "available", status: "qualified-mapped-training-dose", qualifiedHardSetCount: 1 });
     expect(response.trainingStimulus).toHaveProperty("muscleGroups");
-    expect(response.muscleMassTransition).toEqual({ availability: "unavailable", reason: "no-approved-whole-body-calibration" });
+    expect(response.muscleMassTransition).toMatchObject({ availability: "unavailable", reason: "no-approved-whole-body-calibration" });
+    expect(response.calibration.highestSupportedResponseLevel).toBe("level-1-qualitative-constraints");
     expect(JSON.stringify(response)).not.toMatch(/skeletalMuscleDeltaKg|anabolicSignal|growthScore|kg\/day/i);
   });
 

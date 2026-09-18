@@ -3,6 +3,10 @@ import {
   type ResistanceTrainingDayExposureV7,
   type ResistanceTrainingExposureHistoryV7,
 } from "@/model/physiology-v7/resistance-training-exposure-history-v7";
+import {
+  buildSkeletalMuscleResponseCalibrationV7,
+  type SkeletalMuscleResponseCalibrationV7,
+} from "@/model/physiology-v7/skeletal-muscle-response-calibration-v7";
 import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 
 /**
@@ -11,7 +15,7 @@ import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
  * tissue-mass estimate, dose-response coefficient, or nutrition modifier.
  */
 export const RESISTANCE_TRAINING_ADAPTATION_RESPONSE_V7_VERSION =
-  "bodycast-resistance-training-adaptation-response-v7-1" as const;
+  "bodycast-resistance-training-adaptation-response-v7-2" as const;
 
 export type ResistanceTrainingProteinContextV7 =
   | { availability: "available"; proteinG: number; provenance: "observed" | "imputed-local" | "imputed-fallback" }
@@ -49,7 +53,8 @@ export type ResistanceTrainingAdaptationResponseV7 = {
   energyBalanceContext: ResistanceTrainingEnergyBalanceContextV7;
   trainingExperience: { availability: "unavailable"; reason: "no-defensible-training-status-source" };
   programNovelty: { availability: "unavailable"; reason: "no-approved-program-novelty-response" };
-  muscleMassTransition: { availability: "unavailable"; reason: "no-approved-whole-body-calibration" };
+  calibration: SkeletalMuscleResponseCalibrationV7;
+  muscleMassTransition: SkeletalMuscleResponseCalibrationV7["quantitativeTransition"];
 };
 
 function stimulusFromDay(day: ResistanceTrainingDayExposureV7): ResistanceTrainingStimulusV7 {
@@ -90,6 +95,7 @@ export function buildResistanceTrainingAdaptationResponseV7(input: {
 }): ResistanceTrainingAdaptationResponseV7 {
   const day = input.exposureHistory.days.find((candidate) => candidate.date === input.date);
   if (!day) throw new RangeError("date must be within exposureHistory");
+  const calibration = buildSkeletalMuscleResponseCalibrationV7();
   return {
     contractVersion: RESISTANCE_TRAINING_ADAPTATION_RESPONSE_V7_VERSION,
     date: input.date,
@@ -103,7 +109,8 @@ export function buildResistanceTrainingAdaptationResponseV7(input: {
     energyBalanceContext: input.energyBalanceContext ?? { availability: "unavailable", reason: "missing-energy-balance-source" },
     trainingExperience: { availability: "unavailable", reason: "no-defensible-training-status-source" },
     programNovelty: { availability: "unavailable", reason: "no-approved-program-novelty-response" },
-    muscleMassTransition: { availability: "unavailable", reason: "no-approved-whole-body-calibration" },
+    calibration,
+    muscleMassTransition: calibration.quantitativeTransition,
   };
 }
 
@@ -122,6 +129,7 @@ export function resistanceTrainingAdaptationResponseV7Fingerprint(
     }),
     proteinContext: response.proteinContext,
     energyBalanceContext: response.energyBalanceContext,
+    calibration: response.calibration,
     muscleMassTransition: response.muscleMassTransition,
   });
 }

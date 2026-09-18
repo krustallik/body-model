@@ -6,9 +6,12 @@ import {
 } from "@/model/physiology-v7/glycogen-water-transition-v7";
 import type { GlycogenTransitionV7 } from "@/model/physiology-v7/glycogen-transition-v7";
 import {
+  GLYCOGEN_ADULT_CAPACITY_CLAMP_POLICY_V7,
+  GLYCOGEN_ADULT_CAPACITY_RANGE_METADATA_V7,
   GLYCOGEN_CARBOHYDRATE_TIMING_POLICY_V7,
   GLYCOGEN_PROTEIN_BONUS_POLICY_V7,
   GLYCOGEN_TRANSITION_V7_VERSION,
+  resolveAdultGlycogenCapacityContextV7,
 } from "@/model/physiology-v7/glycogen-transition-v7";
 import { reconstructPhysiologyV7MassKg, type PhysiologyV7State } from "@/model/physiology-v7/state";
 
@@ -23,6 +26,24 @@ function glycogen(input: Partial<Pick<GlycogenTransitionV7, "depletionEvidence" 
       reason: "missing-protein",
       repletionEffect: "none",
       independentBonus: GLYCOGEN_PROTEIN_BONUS_POLICY_V7,
+    },
+    adultCapacityContext: resolveAdultGlycogenCapacityContextV7(),
+    glycogenFromAdultCapacity: {
+      applied: false,
+      target: "glycogenKg",
+      policy: GLYCOGEN_ADULT_CAPACITY_CLAMP_POLICY_V7,
+      literatureRangeKg: GLYCOGEN_ADULT_CAPACITY_RANGE_METADATA_V7.literatureRangeKg,
+      priorGlycogenKg: null,
+      resultingGlycogenKg: null,
+      rejectedOperations: [
+        "initialize",
+        "cap",
+        "clamp",
+        "overwrite",
+        "validate",
+        "derive-personal-capacity",
+        "residual-allocate-from-scale-weight",
+      ],
     },
     exerciseEvidence: { strength: "observed-no-exposure", stepper: "observed-no-stepper" },
     depletionEvidence: "absent", repletionEvidence: "unavailable", sourceCoverage: "complete-for-qualitative-boundary",

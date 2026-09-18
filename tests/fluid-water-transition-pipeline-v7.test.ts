@@ -9,7 +9,7 @@ const state: PhysiologyV7State = { fatMassKg: 18, skeletalMuscleKg: 28, otherLea
 describe("Stage 8E canonical fluid/water pipeline", () => {
   it("composes 8B, 8C, and 8D from canonical source semantics without numeric substitutions", () => {
     const result = buildFluidWaterTransitionPipelineV7({ localDate: "2026-09-18", priorState: state, carbsG: 200, nutrition, resistanceExposure: null, workoutFeedObserved: true, stepperWorkouts: [] });
-    expect(result.glycogen.contractVersion).toBe("bodycast-glycogen-transition-v7-3");
+    expect(result.glycogen.contractVersion).toBe("bodycast-glycogen-transition-v7-4");
     expect(result.glycogenWater.contractVersion).toBe("bodycast-glycogen-water-transition-v7-1");
     expect(result.transientExerciseWaterEcf.contractVersion).toBe("bodycast-transient-exercise-water-ecf-transition-v7-1");
     expect(result.glycogen.carbohydrateEvidence).toMatchObject({ provenance: "observed", carbsG: 200 });

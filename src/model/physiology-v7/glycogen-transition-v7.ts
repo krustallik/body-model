@@ -6,7 +6,7 @@ import type { ResistanceTrainingDayExposureV7 } from "./resistance-training-expo
 import { validatePhysiologyV7State, type PhysiologyV7State } from "./state";
 
 /** Qualitative-only Stage-8 boundary; deliberately has no kg transition. */
-export const GLYCOGEN_TRANSITION_V7_VERSION = "bodycast-glycogen-transition-v7-3" as const;
+export const GLYCOGEN_TRANSITION_V7_VERSION = "bodycast-glycogen-transition-v7-4" as const;
 
 /**
  * P-H02 / C-H03: daily carbs are the carbohydrate input. Meal frequency/timing
@@ -41,6 +41,186 @@ export const GLYCOGEN_PROTEIN_BONUS_POLICY_V7 = {
 } as const;
 
 export type GlycogenProteinBonusPolicyV7 = typeof GLYCOGEN_PROTEIN_BONUS_POLICY_V7;
+
+/**
+ * P-I02 / C-I05: aggregate adult literature envelope is research/context
+ * metadata only. It never becomes a personal capacity, default, pass/fail
+ * threshold, clamp, or scale-weight residual allocator.
+ */
+export const GLYCOGEN_ADULT_CAPACITY_RANGE_METADATA_V7 = {
+  role: "research-context-metadata",
+  literatureRangeKg: { lowerKg: 0.3, upperKg: 0.86 },
+  parameterId: "P-I02",
+  evidenceId: "E-I06",
+  researchAuthority: "workout-physiology-v7-audit",
+} as const;
+
+export type GlycogenAdultCapacityRangeMetadataV7 =
+  typeof GLYCOGEN_ADULT_CAPACITY_RANGE_METADATA_V7;
+
+export const GLYCOGEN_ADULT_CAPACITY_CLAMP_POLICY_V7 = {
+  conversion: "adult-literature-range-to-personal-glycogen-capacity",
+  application: "intentionally-rejected",
+  initialization: "intentionally-rejected",
+  capping: "intentionally-rejected",
+  clamping: "intentionally-rejected",
+  overwrite: "intentionally-rejected",
+  validation: "intentionally-rejected",
+  personalCapacityDerivation: "intentionally-rejected",
+  residualScaleWeightAllocation: "intentionally-rejected",
+  claimId: "C-I05",
+  scientificDecision: "adult-range-is-contextual-metadata-not-universal-clamp",
+  researchAuthority: "workout-physiology-v7-audit",
+  metadata: GLYCOGEN_ADULT_CAPACITY_RANGE_METADATA_V7,
+} as const;
+
+export type GlycogenAdultCapacityClampPolicyV7 =
+  typeof GLYCOGEN_ADULT_CAPACITY_CLAMP_POLICY_V7;
+
+export type GlycogenAdultCapacityContextV7 = {
+  availability: "available";
+  role: "research-context-metadata";
+  literatureRangeKg: GlycogenAdultCapacityRangeMetadataV7["literatureRangeKg"];
+  policy: GlycogenAdultCapacityClampPolicyV7;
+  mayInitializeGlycogenKg: false;
+  mayCapGlycogenKg: false;
+  mayClampGlycogenKg: false;
+  mayOverwriteGlycogenKg: false;
+  mayValidateGlycogenKg: false;
+  mayDerivePersonalCapacity: false;
+  mayAllocateResidualScaleWeight: false;
+};
+
+export type RejectedGlycogenFromAdultCapacityV7 = {
+  applied: false;
+  target: "glycogenKg";
+  policy: GlycogenAdultCapacityClampPolicyV7;
+  literatureRangeKg: GlycogenAdultCapacityRangeMetadataV7["literatureRangeKg"];
+  priorGlycogenKg: number | null;
+  resultingGlycogenKg: number | null;
+  rejectedOperations: readonly [
+    "initialize",
+    "cap",
+    "clamp",
+    "overwrite",
+    "validate",
+    "derive-personal-capacity",
+    "residual-allocate-from-scale-weight",
+  ];
+};
+
+export function resolveAdultGlycogenCapacityContextV7(): GlycogenAdultCapacityContextV7 {
+  return {
+    availability: "available",
+    role: "research-context-metadata",
+    literatureRangeKg: GLYCOGEN_ADULT_CAPACITY_RANGE_METADATA_V7.literatureRangeKg,
+    policy: GLYCOGEN_ADULT_CAPACITY_CLAMP_POLICY_V7,
+    mayInitializeGlycogenKg: false,
+    mayCapGlycogenKg: false,
+    mayClampGlycogenKg: false,
+    mayOverwriteGlycogenKg: false,
+    mayValidateGlycogenKg: false,
+    mayDerivePersonalCapacity: false,
+    mayAllocateResidualScaleWeight: false,
+  };
+}
+
+function rejectedGlycogenFromAdultCapacity(
+  priorGlycogenKg: number | null,
+): RejectedGlycogenFromAdultCapacityV7 {
+  return {
+    applied: false,
+    target: "glycogenKg",
+    policy: GLYCOGEN_ADULT_CAPACITY_CLAMP_POLICY_V7,
+    literatureRangeKg: GLYCOGEN_ADULT_CAPACITY_RANGE_METADATA_V7.literatureRangeKg,
+    priorGlycogenKg,
+    resultingGlycogenKg: priorGlycogenKg,
+    rejectedOperations: [
+      "initialize",
+      "cap",
+      "clamp",
+      "overwrite",
+      "validate",
+      "derive-personal-capacity",
+      "residual-allocate-from-scale-weight",
+    ],
+  };
+}
+
+/** Literature range never supplies a personal glycogen default. */
+export function initializeGlycogenRejectingAdultCapacityDefaultV7(): {
+  glycogenKg: null;
+  adultCapacityContext: GlycogenAdultCapacityContextV7;
+  glycogenFromAdultCapacity: RejectedGlycogenFromAdultCapacityV7;
+} {
+  return {
+    glycogenKg: null,
+    adultCapacityContext: resolveAdultGlycogenCapacityContextV7(),
+    glycogenFromAdultCapacity: rejectedGlycogenFromAdultCapacity(null),
+  };
+}
+
+/**
+ * Runtime clamp rejection: values below, inside, or above the literature
+ * envelope are left unchanged. The range never becomes a hard personal bound.
+ */
+export function rejectAdultGlycogenCapacityClampV7(input: {
+  glycogenKg: number | null;
+}): RejectedGlycogenFromAdultCapacityV7 {
+  if (input.glycogenKg !== null
+      && (!Number.isFinite(input.glycogenKg) || input.glycogenKg < 0)) {
+    throw new RangeError("glycogenKg must be finite and nonnegative when available");
+  }
+  return rejectedGlycogenFromAdultCapacity(input.glycogenKg);
+}
+
+export function rejectAdultGlycogenCapacityAsValidatorV7(input: {
+  glycogenKg: number | null;
+}): {
+  accepted: false;
+  reason: "adult-literature-range-is-not-personal-glycogen-validator";
+  policy: GlycogenAdultCapacityClampPolicyV7;
+  glycogenKg: number | null;
+  literatureRangeKg: GlycogenAdultCapacityRangeMetadataV7["literatureRangeKg"];
+} {
+  if (input.glycogenKg !== null
+      && (!Number.isFinite(input.glycogenKg) || input.glycogenKg < 0)) {
+    throw new RangeError("glycogenKg must be finite and nonnegative when available");
+  }
+  return {
+    accepted: false,
+    reason: "adult-literature-range-is-not-personal-glycogen-validator",
+    policy: GLYCOGEN_ADULT_CAPACITY_CLAMP_POLICY_V7,
+    glycogenKg: input.glycogenKg,
+    literatureRangeKg: GLYCOGEN_ADULT_CAPACITY_RANGE_METADATA_V7.literatureRangeKg,
+  };
+}
+
+export function rejectAdultGlycogenCapacityAsPersonalCapacityV7(): {
+  derived: false;
+  reason: "adult-literature-range-is-not-personal-glycogen-capacity";
+  policy: GlycogenAdultCapacityClampPolicyV7;
+  personalCapacityKg: null;
+} {
+  return {
+    derived: false,
+    reason: "adult-literature-range-is-not-personal-glycogen-capacity",
+    policy: GLYCOGEN_ADULT_CAPACITY_CLAMP_POLICY_V7,
+    personalCapacityKg: null,
+  };
+}
+
+/** Scale-weight residual never allocates into glycogenKg via the adult range. */
+export function rejectResidualScaleWeightAsGlycogenV7(input: {
+  state: PhysiologyV7State;
+  residualScaleWeightKg: number;
+}): RejectedGlycogenFromAdultCapacityV7 {
+  validatePhysiologyV7State(input.state);
+  if (!Number.isFinite(input.residualScaleWeightKg)) {
+    throw new RangeError("residualScaleWeightKg must be finite");
+  }
+  return rejectedGlycogenFromAdultCapacity(input.state.glycogenKg);
+}
 
 export type GlycogenCarbohydrateEvidenceV7 =
   | { availability: "available"; provenance: "observed"; carbsG: number }
@@ -172,6 +352,12 @@ export type GlycogenTransitionV7 = {
    * never improved by protein; the independent matched-energy bonus is rejected.
    */
   proteinContribution: GlycogenProteinContributionV7;
+  /**
+   * Adult literature envelope (C-I05 / P-I02). Research/context metadata only;
+   * never initializes, caps, clamps, overwrites, or validates glycogenKg.
+   */
+  adultCapacityContext: GlycogenAdultCapacityContextV7;
+  glycogenFromAdultCapacity: RejectedGlycogenFromAdultCapacityV7;
   exerciseEvidence: GlycogenExerciseEvidenceV7;
   depletionEvidence: "present" | "absent" | "unresolved";
   repletionEvidence: "present-observed" | "present-imputed" | "unavailable";
@@ -225,6 +411,14 @@ export function buildGlycogenTransitionV7(input: {
   if (input.priorGlycogenKg === null) blockers.push("no-defensible-initial-glycogen-source");
   if (input.carbohydrate.availability === "unavailable") blockers.push("missing-carbohydrate");
   if (depletionEvidence === "unresolved") blockers.push("unresolved-workout-evidence");
+  const adultCapacityContext = resolveAdultGlycogenCapacityContextV7();
+  // Literature range never clamps, caps, or rewrites the carried-forward store.
+  const glycogenFromAdultCapacity = rejectAdultGlycogenCapacityClampV7({
+    glycogenKg: input.priorGlycogenKg,
+  });
+  if (glycogenFromAdultCapacity.resultingGlycogenKg !== input.priorGlycogenKg) {
+    throw new Error("adult glycogen capacity policy violated: literature range mutated glycogenKg");
+  }
   const provenance: GlycogenTransitionV7["provenance"] = {
     workoutFeedObserved: input.workoutFeedObserved,
     resistance: input.resistanceExposure === null ? null : {
@@ -253,6 +447,8 @@ export function buildGlycogenTransitionV7(input: {
     carbohydrateEvidence: structuredClone(input.carbohydrate),
     carbohydrateTimingPolicy: GLYCOGEN_CARBOHYDRATE_TIMING_POLICY_V7,
     proteinContribution: structuredClone(proteinContribution),
+    adultCapacityContext,
+    glycogenFromAdultCapacity,
     exerciseEvidence,
     depletionEvidence,
     repletionEvidence,
@@ -341,6 +537,8 @@ export function glycogenTransitionV7Fingerprint(transition: GlycogenTransitionV7
     carbohydrateEvidence: transition.carbohydrateEvidence,
     carbohydrateTimingPolicy: transition.carbohydrateTimingPolicy,
     proteinContribution: transition.proteinContribution,
+    adultCapacityContext: transition.adultCapacityContext,
+    glycogenFromAdultCapacity: transition.glycogenFromAdultCapacity,
     exerciseEvidence: transition.exerciseEvidence,
     depletionEvidence: transition.depletionEvidence,
     repletionEvidence: transition.repletionEvidence,
@@ -356,8 +554,15 @@ export function applyGlycogenTransitionV7(input: {
   transition: GlycogenTransitionV7;
 }): { state: PhysiologyV7State; transition: GlycogenTransitionV7 } {
   validatePhysiologyV7State(input.state);
+  const resultingGlycogenKg = input.transition.quantitativeState.carriedForwardGlycogenKg;
+  if (input.transition.glycogenFromAdultCapacity.resultingGlycogenKg !== resultingGlycogenKg) {
+    throw new Error("adult glycogen capacity policy violated during apply");
+  }
+  if (resultingGlycogenKg !== input.state.glycogenKg) {
+    throw new Error("glycogen transition mutated glycogenKg outside carry-forward contract");
+  }
   return {
-    state: { ...input.state, glycogenKg: input.transition.quantitativeState.carriedForwardGlycogenKg },
+    state: { ...input.state, glycogenKg: resultingGlycogenKg },
     transition: structuredClone(input.transition),
   };
 }

@@ -2,10 +2,17 @@ import { describe, expect, it } from "vitest";
 import {
   buildEnergyMatchedProteinSubstitutionGlycogenPairV7,
   buildGlycogenTransitionV7,
+  GLYCOGEN_ADULT_CAPACITY_CLAMP_POLICY_V7,
   GLYCOGEN_CARBOHYDRATE_TIMING_POLICY_V7,
   GLYCOGEN_PROTEIN_BONUS_POLICY_V7,
   glycogenCarbohydrateEvidenceV7,
   glycogenRepletionOutcomeV7,
+  initializeGlycogenRejectingAdultCapacityDefaultV7,
+  rejectAdultGlycogenCapacityAsPersonalCapacityV7,
+  rejectAdultGlycogenCapacityAsValidatorV7,
+  rejectAdultGlycogenCapacityClampV7,
+  rejectResidualScaleWeightAsGlycogenV7,
+  applyGlycogenTransitionV7,
 } from "@/model/physiology-v7/glycogen-transition-v7";
 import {
   calculateExtracellularFluidLiters,
@@ -71,6 +78,7 @@ import {
 import {
   buildPhysiologyDayV7,
   createUnavailablePhysiologyRuntimeStateV7,
+  runtimeStateFromStructuralStateV7,
 } from "@/model/physiology-v7/daily-runtime-v7";
 import { rebuildPhysiologyRangeV7 } from "@/model/physiology-v7/rebuild-v7";
 import { buildResistanceTrainingExposureHistoryFromSourcesV7 } from "@/model/physiology-v7/resistance-training-exposure-history-sources-v7";
@@ -275,6 +283,131 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
     expect(pair.higherProtein.quantitativeState).toEqual(pair.lowerProtein.quantitativeState);
     expect(pair.higherProtein).not.toHaveProperty("proteinGlycogenBonusKg");
     expect(pair.higherProtein).not.toHaveProperty("glycogenDeltaKg");
+  });
+
+  it("adult glycogen range is contextual rather than a universal clamp", () => {
+    const initialized = initializeGlycogenRejectingAdultCapacityDefaultV7();
+    expect(initialized.glycogenKg).toBeNull();
+    expect(initialized.adultCapacityContext.role).toBe("research-context-metadata");
+    expect(initialized.adultCapacityContext.literatureRangeKg).toEqual({
+      lowerKg: 0.3,
+      upperKg: 0.86,
+    });
+    expect(initialized.adultCapacityContext.mayClampGlycogenKg).toBe(false);
+    expect(initialized.glycogenFromAdultCapacity.applied).toBe(false);
+    expect(initialized.glycogenFromAdultCapacity.policy).toEqual(
+      GLYCOGEN_ADULT_CAPACITY_CLAMP_POLICY_V7,
+    );
+    expect(rejectAdultGlycogenCapacityAsPersonalCapacityV7().personalCapacityKg).toBeNull();
+    expect(rejectAdultGlycogenCapacityAsValidatorV7({ glycogenKg: 0.1 }).accepted).toBe(false);
+    expect(rejectAdultGlycogenCapacityClampV7({ glycogenKg: 1.5 }).resultingGlycogenKg).toBe(1.5);
+
+    const below = buildGlycogenTransitionV7({
+      priorGlycogenKg: 0.1,
+      carbohydrate: glycogenCarbohydrateEvidenceV7({
+        carbsG: 200,
+        nutrition: {
+          source: "observed",
+          method: null,
+          referenceDayCount: 0,
+          gapLength: 0,
+          referenceDates: [],
+          observedFields: ["carbsG"],
+          imputedFields: [],
+          referenceCaloriesMedian: null,
+          referenceCaloriesMad: null,
+          referenceMacroMadG: null,
+          dependency: "observed",
+        },
+      }),
+      resistanceExposure: null,
+      workoutFeedObserved: true,
+      stepperWorkouts: [],
+    });
+    const above = buildGlycogenTransitionV7({
+      priorGlycogenKg: 1.5,
+      carbohydrate: below.carbohydrateEvidence,
+      resistanceExposure: null,
+      workoutFeedObserved: true,
+      stepperWorkouts: [],
+    });
+    expect(below.adultCapacityContext.mayInitializeGlycogenKg).toBe(false);
+    expect(below.quantitativeState.carriedForwardGlycogenKg).toBe(0.1);
+    expect(above.quantitativeState.carriedForwardGlycogenKg).toBe(1.5);
+    expect(below.glycogenFromAdultCapacity.applied).toBe(false);
+    expect(below).not.toHaveProperty("personalGlycogenCapacityKg");
+
+    const state = {
+      fatMassKg: 18,
+      skeletalMuscleKg: 28,
+      otherLeanTissueKg: 17,
+      glycogenKg: 0.1,
+      glycogenWaterKg: null,
+      ecfDeviationKg: null,
+      transientExerciseWaterKg: null,
+      adaptiveThermogenesisKcalPerDay: 0,
+      weightFilterState: { estimatedWeightKg: 64, varianceKg2: 1 },
+    };
+    expect(applyGlycogenTransitionV7({ state, transition: below }).state.glycogenKg).toBe(0.1);
+    expect(rejectResidualScaleWeightAsGlycogenV7({
+      state,
+      residualScaleWeightKg: 3,
+    }).applied).toBe(false);
+
+    const date = "2026-09-18";
+    const sources = {
+      date,
+      observedWeightKg: 80,
+      observedBodyFatPercent: 20,
+      nutrition: {
+        caloriesKcal: 2_300,
+        proteinG: 150,
+        fatG: 75,
+        carbsG: 250,
+        provenance: observedNutritionProvenance(),
+      },
+      workoutFeedObserved: true,
+      steps: 8_000,
+      walkingRunningDistanceKm: 6,
+      workouts: [] as const,
+      stepperWorkouts: [] as const,
+      context: {
+        heartRateSampleCount: 0,
+        restingHeartRateSampleCount: 0,
+        sleepSegmentCount: 0,
+      },
+    };
+    const day = buildPhysiologyDayV7({
+      date,
+      priorState: runtimeStateFromStructuralStateV7({ ...state, glycogenKg: 1.5 }),
+      sources,
+      exposureHistory: buildResistanceTrainingExposureHistoryFromSourcesV7({
+        fromDate: date,
+        toDate: date,
+        days: [{ date, workoutFeedObserved: true }],
+        strengthWorkouts: [],
+        sessions: [],
+      }),
+    });
+    expect(day.fluidWater.glycogen.adultCapacityContext.mayValidateGlycogenKg).toBe(false);
+    expect(day.resultingState.compartments.glycogenKg.valueKg).toBe(1.5);
+
+    const rebuilt = rebuildPhysiologyRangeV7({
+      fromDate: date,
+      toDate: date,
+      initialState: runtimeStateFromStructuralStateV7(state),
+      sources: {
+        days: [sources],
+        exposure: {
+          historyFromDate: date,
+          days: [{ date, workoutFeedObserved: true }],
+          strengthWorkouts: [],
+          sessions: [],
+        },
+      },
+    });
+    expect(rebuilt.finalState.compartments.glycogenKg.valueKg).toBe(0.1);
+    expect(rebuilt.days[0]?.fluidWater.glycogen.glycogenFromAdultCapacity.applied).toBe(false);
   });
 
   it("glycogen-associated water co-moves without asserting a universal ratio", () => {

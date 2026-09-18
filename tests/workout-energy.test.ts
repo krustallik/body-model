@@ -159,4 +159,18 @@ describe("resolveExplicitWorkoutActivityKcal", () => {
     });
     expect(result.perEvent[0]?.source).toBe("none");
   });
+
+  it("rejects a separate EPOC kcal component without claiming EPOC physiology is zero", () => {
+    const result = resolveExplicitWorkoutActivityKcal({
+      weightKg: WEIGHT_KG,
+      rmrKcalPerDay: RMR,
+      events: [event({ type: STAIR_CLIMBING_TYPE, activeEnergyKcal: 154, durationMinutes: 12 })],
+    });
+    expect(result.workoutActivityKcal).toBe(154);
+    expect(result.recoveryEnergy.application).toBe("intentionally-not-applied");
+    expect(result.recoveryEnergy.numericComponent).toBe("rejected");
+    expect(result.recoveryEnergy.addedKcal).toBeNull();
+    expect(result.recoveryEnergy.physiologyClaim).toBe("does-not-assert-epoc-is-physiologically-zero");
+    expect(result.recoveryEnergy.researchAuthority).toBe("research-6.1");
+  });
 });

@@ -279,6 +279,42 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
     expect(result.deviceActiveEnergyKcal).toBe(result.workoutActivityKcal);
   });
 
+  it("excluding an EPOC add-on does not deny EPOC physiology", () => {
+    const device = resolveWorkoutEnergyEvidenceV7(v7EnergyEvidence({
+      deviceEnergy: {
+        availability: "available",
+        sourceValueStatus: "observed",
+        valueKcal: 211,
+        semantics: "active",
+        provenance: "device-estimate",
+      },
+    }));
+    const missing = resolveWorkoutEnergyEvidenceV7(v7EnergyEvidence());
+    const production = resolveExplicitWorkoutActivityKcal({
+      events: [stairEvent(211)],
+      weightKg: 80,
+      rmrKcalPerDay: 1_700,
+    });
+
+    expect(device.activeEnergy).toEqual({
+      availability: "available",
+      valueKcal: 211,
+      semantics: "active",
+      provenance: "device-estimate",
+    });
+    expect(device.recoveryEnergy.application).toBe("intentionally-not-applied");
+    expect(device.recoveryEnergy.numericComponent).toBe("rejected");
+    expect(device.recoveryEnergy.researchAuthority).toBe("research-6.1");
+    expect(device.recoveryEnergy.scientificDecision).toBe("uncertainty-and-double-counting");
+    expect(device.recoveryEnergy.physiologyClaim).toBe("does-not-assert-epoc-is-physiologically-zero");
+    expect(device.recoveryEnergy.addedKcal).toBeNull();
+    expect(missing.recoveryEnergy).toEqual(device.recoveryEnergy);
+    expect(production.recoveryEnergy).toEqual(device.recoveryEnergy);
+    expect(production.workoutActivityKcal).toBe(211);
+    expect(production).not.toHaveProperty("epocKcal");
+    expect(device).not.toHaveProperty("epocKcal");
+  });
+
   it("hard-set dose remains available without tonnage", () => {
     const pressSnapshot = buildExerciseMuscleMappingSnapshotV7("seated_dumbbell_press");
     const pushupSnapshot = buildExerciseMuscleMappingSnapshotV7("pushup_handles");

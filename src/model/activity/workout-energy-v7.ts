@@ -1,4 +1,8 @@
-import type { CanonicalWorkoutType } from "./workout-energy";
+import {
+  WORKOUT_RECOVERY_ENERGY_SCIENTIFIC_DECISION,
+  type CanonicalWorkoutType,
+  type WorkoutRecoveryEnergyScientificDecision,
+} from "./workout-energy";
 import type { WorkoutHeartRateEvidenceV7 } from "./workout-heart-rate-v7";
 
 export type WorkoutEnergyEvidenceV7 = {
@@ -31,6 +35,11 @@ export type WorkoutEnergyResolutionV7 = {
     availability: "unavailable";
     availabilityReason: "no-device-active-energy";
   };
+  /**
+   * Research 6.1: omitting a separate EPOC/recovery kcal term is an
+   * uncertainty/double-counting decision, not a claim that EPOC is zero.
+   */
+  recoveryEnergy: WorkoutRecoveryEnergyScientificDecision;
   /** Preserved context; this slice never converts HR into kcal. */
   heartRateContext: WorkoutEnergyEvidenceV7["heartRate"];
 };
@@ -50,6 +59,7 @@ export function resolveWorkoutEnergyEvidenceV7(
         semantics: "active",
         provenance: "device-estimate",
       },
+      recoveryEnergy: WORKOUT_RECOVERY_ENERGY_SCIENTIFIC_DECISION,
       heartRateContext,
     };
   }
@@ -58,6 +68,7 @@ export function resolveWorkoutEnergyEvidenceV7(
       availability: "unavailable",
       availabilityReason: "no-device-active-energy",
     },
+    recoveryEnergy: WORKOUT_RECOVERY_ENERGY_SCIENTIFIC_DECISION,
     heartRateContext,
   };
 }

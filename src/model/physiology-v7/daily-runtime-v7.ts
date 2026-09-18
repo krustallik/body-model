@@ -34,6 +34,12 @@ import {
   type StrengthPerformanceObservationV7,
 } from "./measurement-role-v7";
 import {
+  handleSleepHrvContextForPhysiologyV7,
+  SLEEP_HRV_CONTEXT_CONTRACT_V7_VERSION,
+  type HrvObservationV7,
+  type SleepObservationV7,
+} from "./sleep-hrv-context-v7";
+import {
   PHYSIOLOGY_V7_CONTRACT_VERSION,
   physiologyV7StateFingerprint,
   reconstructPhysiologyV7MassKg,
@@ -47,7 +53,7 @@ import {
 import { TRANSIENT_EXERCISE_WATER_ECF_TRANSITION_V7_VERSION } from "./transient-exercise-water-ecf-transition-v7";
 
 export const PHYSIOLOGY_DAILY_RUNTIME_V7_VERSION =
-  "bodycast-physiology-daily-runtime-v7-5" as const;
+  "bodycast-physiology-daily-runtime-v7-6" as const;
 
 export type PhysiologyV7CompartmentKey =
   | "fatMassKg"
@@ -137,6 +143,16 @@ export type PhysiologyDaySourceV7 = {
    * skeletalMuscleKg.
    */
   strengthPerformanceObservation?: StrengthPerformanceObservationV7 | null;
+  /**
+   * Optional sleep observation. Context/provenance only: missing ≠ zero, stages
+   * never drive body composition, wearable sleep is never PSG (C-M05/M06/M07).
+   */
+  sleepObservation?: SleepObservationV7 | null;
+  /**
+   * Optional HRV/readiness observation. Context only; never an independent
+   * hypertrophy or skeletalMuscleKg coefficient (C-L05).
+   */
+  hrvObservation?: HrvObservationV7 | null;
 };
 
 function unavailableReason(field: PhysiologyV7CompartmentKey): string {
@@ -267,6 +283,8 @@ function runtimeSourceFingerprint(
       localMuscleObservation: sources.localMuscleObservation ?? null,
       acuteMpsObservation: sources.acuteMpsObservation ?? null,
       strengthPerformanceObservation: sources.strengthPerformanceObservation ?? null,
+      sleepObservation: sources.sleepObservation ?? null,
+      hrvObservation: sources.hrvObservation ?? null,
     },
     nutrition: sources.nutrition,
     activity: {
@@ -345,6 +363,19 @@ export function buildPhysiologyDayV7(input: {
     throw new Error("measurement-role contract violated: strength/performance mutated skeletalMuscleKg");
   }
 
+  const sleepHrvContext = handleSleepHrvContextForPhysiologyV7({
+    state: priorStructuralState,
+    sleepObservation: input.sources.sleepObservation ?? null,
+    hrvObservation: input.sources.hrvObservation ?? null,
+  });
+  if (sleepHrvContext.resultingSkeletalMuscleKg !== priorStructuralState.skeletalMuscleKg
+      || sleepHrvContext.resultingFatMassKg !== priorStructuralState.fatMassKg
+      || sleepHrvContext.physiologyEffect.adaptationPenaltyApplied
+      || sleepHrvContext.physiologyEffect.sleepStageDrivenTransitionApplied
+      || sleepHrvContext.physiologyEffect.hrvHypertrophyCoefficientApplied) {
+    throw new Error("sleep/HRV context contract violated: physiology was mutated");
+  }
+
   const proteinContext = input.sources.nutrition.proteinG === null
     ? { availability: "unavailable" as const, reason: "missing-protein-source" as const }
     : {
@@ -368,6 +399,7 @@ export function buildPhysiologyDayV7(input: {
     },
     mpsObservation: input.sources.acuteMpsObservation ?? null,
     strengthObservation: input.sources.strengthPerformanceObservation ?? null,
+    hrvObservation: input.sources.hrvObservation ?? null,
   });
   const afterTraining = applyTrainingAdaptationTransitionV7({
     state: priorStructuralState,
@@ -424,6 +456,7 @@ export function buildPhysiologyDayV7(input: {
     localMuscleMeasurement,
     acuteMpsMeasurement,
     strengthPerformanceMeasurement,
+    sleepHrvContext,
     trainingAdaptation: afterTraining.transition,
     fluidWaterFingerprint: fluidWater.fingerprint,
     resultingCompartments,
@@ -459,6 +492,7 @@ export function buildPhysiologyDayV7(input: {
       adaptationResponse: RESISTANCE_TRAINING_ADAPTATION_RESPONSE_V7_VERSION,
       muscleCalibration: SKELETAL_MUSCLE_RESPONSE_CALIBRATION_V7_VERSION,
       measurementRole: MEASUREMENT_ROLE_CONTRACT_V7_VERSION,
+      sleepHrvContext: SLEEP_HRV_CONTEXT_CONTRACT_V7_VERSION,
       trainingAdaptation: TRAINING_ADAPTATION_TRANSITION_V7_VERSION,
       glycogen: GLYCOGEN_TRANSITION_V7_VERSION,
       glycogenWater: GLYCOGEN_WATER_TRANSITION_V7_VERSION,
@@ -485,6 +519,7 @@ export function buildPhysiologyDayV7(input: {
     localMuscleMeasurement,
     acuteMpsMeasurement,
     strengthPerformanceMeasurement,
+    sleepHrvContext,
     observations: {
       observedWeightKg: input.sources.observedWeightKg === null
         ? { availability: "unavailable" as const, valueKg: null, provenance: null }
@@ -504,6 +539,8 @@ export function buildPhysiologyDayV7(input: {
       localMuscleObservation: localMuscleMeasurement.localContext,
       acuteMpsObservation: acuteMpsMeasurement.mpsContext,
       strengthPerformanceObservation: strengthPerformanceMeasurement.strengthContext,
+      sleepObservation: sleepHrvContext.sleepContext,
+      hrvObservation: sleepHrvContext.hrvContext,
     },
     massReconstruction: reconstructedMassKg === null
       ? {
@@ -522,6 +559,10 @@ export function buildPhysiologyDayV7(input: {
       localHypertrophyIsNotWholeBodySkeletalMuscle: true as const,
       acuteMpsIsNotAccumulatedSkeletalMuscle: true as const,
       strengthPerformanceIsNotSkeletalMuscle: true as const,
+      missingSleepIsUnknownNotZero: true as const,
+      consumerSleepStagesDoNotDrivePhysiology: true as const,
+      wearableSleepIsNotPsg: true as const,
+      hrvHasNoHypertrophyCoefficient: true as const,
     },
     blockers,
     scientificFingerprint,

@@ -85,8 +85,20 @@ import { buildResistanceTrainingExposureHistoryFromSourcesV7 } from "@/model/phy
 import { observedNutritionProvenance } from "@/modules/model-episodes/nutrition-gap-bridge";
 import {
   buildResistanceTrainingAdaptationResponseV7,
+  resistanceTrainingAdaptationResponseV7Fingerprint,
 } from "@/model/physiology-v7/resistance-training-adaptation-response-v7";
 import { applyTrainingAdaptationTransitionV7 } from "@/model/physiology-v7/training-adaptation-transition-v7";
+import {
+  HRV_HYPERTROPHY_COEFFICIENT_POLICY_V7,
+  MISSING_SLEEP_POLICY_V7,
+  rejectHrvAsHypertrophyCoefficientV7,
+  rejectMissingSleepAsZeroPenaltyV7,
+  rejectSleepStagesAsBodyCompositionDriverV7,
+  rejectWearableSleepAsPsgV7,
+  resolveSleepObservationV7,
+  SLEEP_STAGE_PHYSIOLOGY_POLICY_V7,
+  WEARABLE_SLEEP_PROVENANCE_POLICY_V7,
+} from "@/model/physiology-v7/sleep-hrv-context-v7";
 import {
   buildResistanceTrainingExposureHistoryV7,
 } from "@/model/physiology-v7/resistance-training-exposure-history-v7";
@@ -980,6 +992,313 @@ describe("scientific v7 contract — currently reachable audited behavior", () =
       valueKg: null,
     });
     expect(rebuilt.days[0]?.strengthPerformanceMeasurement.skeletalMuscleFromStrength.applied).toBe(false);
+  });
+
+  it("missing sleep remains unknown", () => {
+    const missing = resolveSleepObservationV7(null);
+    expect(missing).toMatchObject({
+      availability: "unavailable",
+      interpretation: "unknown-not-zero",
+      mayPenalizePhysiology: false,
+      mayAssumeZeroSleep: false,
+      missingSleepPolicy: MISSING_SLEEP_POLICY_V7,
+    });
+    expect(rejectMissingSleepAsZeroPenaltyV7({ sleepObservation: null }).accepted).toBe(false);
+
+    const date = "2026-09-18";
+    const shared = {
+      date,
+      observedWeightKg: 80,
+      observedBodyFatPercent: 20,
+      nutrition: {
+        caloriesKcal: 2_200,
+        proteinG: 140,
+        fatG: 70,
+        carbsG: 240,
+        provenance: observedNutritionProvenance(),
+      },
+      workoutFeedObserved: true,
+      steps: 7_000,
+      walkingRunningDistanceKm: 5,
+      workouts: [] as const,
+      stepperWorkouts: [] as const,
+      context: {
+        heartRateSampleCount: 0,
+        restingHeartRateSampleCount: 0,
+        sleepSegmentCount: 0,
+      },
+    };
+    const history = buildResistanceTrainingExposureHistoryFromSourcesV7({
+      fromDate: date,
+      toDate: date,
+      days: [{ date, workoutFeedObserved: true }],
+      strengthWorkouts: [],
+      sessions: [],
+    });
+    const prior = runtimeStateFromStructuralStateV7({
+      fatMassKg: 18,
+      skeletalMuscleKg: 30,
+      otherLeanTissueKg: null,
+      glycogenKg: null,
+      glycogenWaterKg: null,
+      ecfDeviationKg: null,
+      transientExerciseWaterKg: null,
+      adaptiveThermogenesisKcalPerDay: null,
+      weightFilterState: null,
+    });
+    const missingDay = buildPhysiologyDayV7({
+      date,
+      priorState: prior,
+      sources: {
+        ...shared,
+        sleepObservation: { availability: "unavailable", reason: "missing-sleep-record" },
+      },
+      exposureHistory: history,
+    });
+    const observedDay = buildPhysiologyDayV7({
+      date,
+      priorState: prior,
+      sources: {
+        ...shared,
+        context: { ...shared.context, sleepSegmentCount: 1 },
+        sleepObservation: {
+          availability: "available",
+          durationMinutes: 420,
+          source: "wearable-consumer",
+        },
+      },
+      exposureHistory: history,
+    });
+    expect(missingDay.sleepHrvContext.physiologyEffect.adaptationPenaltyApplied).toBe(false);
+    expect(missingDay.resultingState.compartments).toEqual(observedDay.resultingState.compartments);
+    expect(missingDay.provenance.missingSleepIsUnknownNotZero).toBe(true);
+  });
+
+  it("consumer sleep stages do not drive v7 physiology", () => {
+    const date = "2026-09-18";
+    const shared = {
+      date,
+      observedWeightKg: 80,
+      observedBodyFatPercent: 20,
+      nutrition: {
+        caloriesKcal: 2_200,
+        proteinG: 140,
+        fatG: 70,
+        carbsG: 240,
+        provenance: observedNutritionProvenance(),
+      },
+      workoutFeedObserved: true,
+      steps: 7_000,
+      walkingRunningDistanceKm: 5,
+      workouts: [] as const,
+      stepperWorkouts: [] as const,
+      context: {
+        heartRateSampleCount: 0,
+        restingHeartRateSampleCount: 0,
+        sleepSegmentCount: 1,
+      },
+    };
+    const history = buildResistanceTrainingExposureHistoryFromSourcesV7({
+      fromDate: date,
+      toDate: date,
+      days: [{ date, workoutFeedObserved: true }],
+      strengthWorkouts: [],
+      sessions: [],
+    });
+    const prior = runtimeStateFromStructuralStateV7({
+      fatMassKg: 18,
+      skeletalMuscleKg: 30,
+      otherLeanTissueKg: null,
+      glycogenKg: null,
+      glycogenWaterKg: null,
+      ecfDeviationKg: null,
+      transientExerciseWaterKg: null,
+      adaptiveThermogenesisKcalPerDay: null,
+      weightFilterState: null,
+    });
+    const stageA = {
+      availability: "available" as const,
+      durationMinutes: 450,
+      source: "wearable-consumer" as const,
+      stages: { remMinutes: 90, coreMinutes: 240, deepMinutes: 60 },
+    };
+    const stageB = {
+      ...stageA,
+      stages: { remMinutes: 20, coreMinutes: 310, deepMinutes: 100 },
+    };
+    expect(rejectSleepStagesAsBodyCompositionDriverV7({
+      sleepObservation: stageA,
+    }).policy).toEqual(SLEEP_STAGE_PHYSIOLOGY_POLICY_V7);
+    const dayA = buildPhysiologyDayV7({
+      date,
+      priorState: prior,
+      sources: { ...shared, sleepObservation: stageA },
+      exposureHistory: history,
+    });
+    const dayB = buildPhysiologyDayV7({
+      date,
+      priorState: prior,
+      sources: { ...shared, sleepObservation: stageB },
+      exposureHistory: history,
+    });
+    expect(dayA.resultingState.compartments).toEqual(dayB.resultingState.compartments);
+    expect(dayA.resultingStructuralStateFingerprint).toBe(dayB.resultingStructuralStateFingerprint);
+    expect(dayA.provenance.consumerSleepStagesDoNotDrivePhysiology).toBe(true);
+  });
+
+  it("wearable sleep is not PSG", () => {
+    const wearable = {
+      availability: "available" as const,
+      durationMinutes: 410,
+      source: "wearable-consumer" as const,
+      stages: { remMinutes: 70, coreMinutes: 230, deepMinutes: 55 },
+    };
+    const rejected = rejectWearableSleepAsPsgV7({ sleepObservation: wearable });
+    expect(rejected.accepted).toBe(false);
+    expect(rejected.policy).toEqual(WEARABLE_SLEEP_PROVENANCE_POLICY_V7);
+    expect(rejected.sleepContext.provenance.psgEquivalence).toBe("intentionally-rejected");
+    expect(rejected.sleepContext.provenance.measurementUncertainty).toBe("retained");
+
+    const date = "2026-09-18";
+    const day = buildPhysiologyDayV7({
+      date,
+      priorState: createUnavailablePhysiologyRuntimeStateV7(),
+      sources: {
+        date,
+        observedWeightKg: 80,
+        observedBodyFatPercent: 20,
+        nutrition: {
+          caloriesKcal: 2_200,
+          proteinG: 140,
+          fatG: 70,
+          carbsG: 240,
+          provenance: observedNutritionProvenance(),
+        },
+        workoutFeedObserved: true,
+        steps: 7_000,
+        walkingRunningDistanceKm: 5,
+        workouts: [] as const,
+        stepperWorkouts: [] as const,
+        context: {
+          heartRateSampleCount: 0,
+          restingHeartRateSampleCount: 0,
+          sleepSegmentCount: 1,
+        },
+        sleepObservation: wearable,
+      },
+      exposureHistory: buildResistanceTrainingExposureHistoryFromSourcesV7({
+        fromDate: date,
+        toDate: date,
+        days: [{ date, workoutFeedObserved: true }],
+        strengthWorkouts: [],
+        sessions: [],
+      }),
+    });
+    expect(day.sleepHrvContext.sleepContext).toMatchObject({
+      availability: "available",
+      provenance: {
+        deviceKind: "wearable-consumer",
+        psgEquivalence: "intentionally-rejected",
+      },
+    });
+    expect(day.provenance.wearableSleepIsNotPsg).toBe(true);
+  });
+
+  it("HRV has no validated v7 hypertrophy coefficient", () => {
+    const low = { availability: "available" as const, valueMs: 28, readinessScore: 35 };
+    const high = { availability: "available" as const, valueMs: 95, readinessScore: 88 };
+    expect(rejectHrvAsHypertrophyCoefficientV7({ hrvObservation: high })).toMatchObject({
+      accepted: false,
+      policy: HRV_HYPERTROPHY_COEFFICIENT_POLICY_V7,
+    });
+
+    const date = "2026-09-18";
+    const history = buildResistanceTrainingExposureHistoryFromSourcesV7({
+      fromDate: date,
+      toDate: date,
+      days: [{ date, workoutFeedObserved: true }],
+      strengthWorkouts: [],
+      sessions: [],
+    });
+    const lowResponse = buildResistanceTrainingAdaptationResponseV7({
+      date,
+      exposureHistory: history,
+      hrvObservation: low,
+    });
+    const highResponse = buildResistanceTrainingAdaptationResponseV7({
+      date,
+      exposureHistory: history,
+      hrvObservation: high,
+    });
+    expect(lowResponse.hrvContext.mayMultiplyTrainingStimulus).toBe(false);
+    expect(highResponse.calibration.rejectedConversions).toContain(
+      "hrv-to-hypertrophy-or-skeletal-muscle-kg",
+    );
+    expect(lowResponse.expectedLocalAdaptation).toEqual(highResponse.expectedLocalAdaptation);
+    expect(resistanceTrainingAdaptationResponseV7Fingerprint(lowResponse))
+      .toBe(resistanceTrainingAdaptationResponseV7Fingerprint(highResponse));
+    expect(applyTrainingAdaptationTransitionV7({
+      state: {
+        fatMassKg: 18,
+        skeletalMuscleKg: 30,
+        otherLeanTissueKg: null,
+        glycogenKg: null,
+        glycogenWaterKg: null,
+        ecfDeviationKg: null,
+        transientExerciseWaterKg: null,
+        adaptiveThermogenesisKcalPerDay: null,
+        weightFilterState: null,
+      },
+      response: highResponse,
+    }).state.skeletalMuscleKg).toBe(30);
+
+    const shared = {
+      date,
+      observedWeightKg: 80,
+      observedBodyFatPercent: 20,
+      nutrition: {
+        caloriesKcal: 2_200,
+        proteinG: 140,
+        fatG: 70,
+        carbsG: 240,
+        provenance: observedNutritionProvenance(),
+      },
+      workoutFeedObserved: true,
+      steps: 7_000,
+      walkingRunningDistanceKm: 5,
+      workouts: [] as const,
+      stepperWorkouts: [] as const,
+      context: {
+        heartRateSampleCount: 0,
+        restingHeartRateSampleCount: 0,
+        sleepSegmentCount: 0,
+      },
+    };
+    const prior = runtimeStateFromStructuralStateV7({
+      fatMassKg: 18,
+      skeletalMuscleKg: 30,
+      otherLeanTissueKg: null,
+      glycogenKg: null,
+      glycogenWaterKg: null,
+      ecfDeviationKg: null,
+      transientExerciseWaterKg: null,
+      adaptiveThermogenesisKcalPerDay: null,
+      weightFilterState: null,
+    });
+    const dayLow = buildPhysiologyDayV7({
+      date,
+      priorState: prior,
+      sources: { ...shared, hrvObservation: low },
+      exposureHistory: history,
+    });
+    const dayHigh = buildPhysiologyDayV7({
+      date,
+      priorState: prior,
+      sources: { ...shared, hrvObservation: high },
+      exposureHistory: history,
+    });
+    expect(dayLow.resultingState.compartments).toEqual(dayHigh.resultingState.compartments);
+    expect(dayHigh.provenance.hrvHasNoHypertrophyCoefficient).toBe(true);
   });
 
   it("device active energy retains estimate provenance", () => {

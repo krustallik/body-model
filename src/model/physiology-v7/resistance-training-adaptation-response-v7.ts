@@ -17,6 +17,11 @@ import {
   type StrengthPerformanceContextV7,
   type StrengthPerformanceObservationV7,
 } from "@/model/physiology-v7/measurement-role-v7";
+import {
+  resolveHrvObservationV7,
+  type HrvObservationV7,
+  type ResolvedHrvContextV7,
+} from "@/model/physiology-v7/sleep-hrv-context-v7";
 import { buildExerciseMuscleMappingSnapshotV7 } from "@/model/physiology-v7/exercise-muscle-mapping-v7";
 import { buildCanonicalStrengthTrainingInputV7 } from "@/modules/model-episodes/strength-training-input-v7";
 import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
@@ -29,7 +34,7 @@ import type { StrengthSessionDto } from "@/modules/training/training.types";
  * tissue-mass estimate, dose-response coefficient, or nutrition modifier.
  */
 export const RESISTANCE_TRAINING_ADAPTATION_RESPONSE_V7_VERSION =
-  "bodycast-resistance-training-adaptation-response-v7-5" as const;
+  "bodycast-resistance-training-adaptation-response-v7-6" as const;
 
 /**
  * P-A07 / C-A06: no approved universal sets/session or sets/week cutoff.
@@ -125,6 +130,11 @@ export type ResistanceTrainingAdaptationResponseV7 = {
     availability: "unavailable";
     reason: "missing-strength-performance-observation";
   };
+  /**
+   * Optional HRV/readiness context. Never multiplies training stimulus or
+   * converts into skeletalMuscleKg (C-L05).
+   */
+  hrvContext: ResolvedHrvContextV7;
   trainingExperience: { availability: "unavailable"; reason: "no-defensible-training-status-source" };
   programNovelty: { availability: "unavailable"; reason: "no-approved-program-novelty-response" };
   calibration: SkeletalMuscleResponseCalibrationV7;
@@ -303,6 +313,8 @@ export function buildResistanceTrainingAdaptationResponseV7(input: {
   mpsObservation?: AcuteMpsObservationV7 | null;
   /** Strength/performance may inform training context only; never muscle kg. */
   strengthObservation?: StrengthPerformanceObservationV7 | null;
+  /** HRV may inform readiness context only; never a hypertrophy coefficient. */
+  hrvObservation?: HrvObservationV7 | null;
 }): ResistanceTrainingAdaptationResponseV7 {
   const day = input.exposureHistory.days.find((candidate) => candidate.date === input.date);
   if (!day) throw new RangeError("date must be within exposureHistory");
@@ -314,6 +326,7 @@ export function buildResistanceTrainingAdaptationResponseV7(input: {
   const strengthPerformanceContext = input.strengthObservation == null
     ? { availability: "unavailable" as const, reason: "missing-strength-performance-observation" as const }
     : resolveStrengthPerformanceObservationV7(input.strengthObservation);
+  const hrvContext = resolveHrvObservationV7(input.hrvObservation);
   return {
     contractVersion: RESISTANCE_TRAINING_ADAPTATION_RESPONSE_V7_VERSION,
     date: input.date,
@@ -328,6 +341,7 @@ export function buildResistanceTrainingAdaptationResponseV7(input: {
     energyBalanceContext: input.energyBalanceContext ?? { availability: "unavailable", reason: "missing-energy-balance-source" },
     acuteMpsContext,
     strengthPerformanceContext,
+    hrvContext,
     trainingExperience: { availability: "unavailable", reason: "no-defensible-training-status-source" },
     programNovelty: { availability: "unavailable", reason: "no-approved-program-novelty-response" },
     calibration,
@@ -353,6 +367,13 @@ export function resistanceTrainingAdaptationResponseV7Fingerprint(
     energyBalanceContext: response.energyBalanceContext,
     acuteMpsContext: response.acuteMpsContext,
     strengthPerformanceContext: response.strengthPerformanceContext,
+    hrvContext: {
+      availability: response.hrvContext.availability,
+      mayMultiplyTrainingStimulus: response.hrvContext.mayMultiplyTrainingStimulus,
+      mayConvertToSkeletalMuscleKg: response.hrvContext.mayConvertToSkeletalMuscleKg,
+      hypertrophyCoefficientApplication:
+        response.hrvContext.hypertrophyCoefficientPolicy.application,
+    },
     calibration: response.calibration,
     muscleMassTransition: response.muscleMassTransition,
   });

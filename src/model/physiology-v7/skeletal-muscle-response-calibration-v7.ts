@@ -5,7 +5,7 @@ import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
  * This is an evidence interpretation contract, not a physiology equation.
  */
 export const SKELETAL_MUSCLE_RESPONSE_CALIBRATION_V7_VERSION =
-  "bodycast-skeletal-muscle-response-calibration-v7-3" as const;
+  "bodycast-skeletal-muscle-response-calibration-v7-4" as const;
 
 export type SkeletalMuscleResponseLevelV7 =
   | "level-0-source-evidence"
@@ -49,6 +49,7 @@ export type SkeletalMuscleResponseCalibrationV7 = {
     "local-or-ffm-proxy-to-whole-body-skeletal-muscle-kg",
     "acute-mps-to-chronic-skeletal-muscle-kg",
     "strength-performance-to-skeletal-muscle-kg",
+    "hrv-to-hypertrophy-or-skeletal-muscle-kg",
     "sets-times-nutrition-or-energy-multiplier-to-muscle-kg",
     "kcal-surplus-to-muscle-kg",
     "experience-or-retraining-to-muscle-kg-rate",
@@ -91,6 +92,7 @@ const CALIBRATION: SkeletalMuscleResponseCalibrationV7 = {
     "local-or-ffm-proxy-to-whole-body-skeletal-muscle-kg",
     "acute-mps-to-chronic-skeletal-muscle-kg",
     "strength-performance-to-skeletal-muscle-kg",
+    "hrv-to-hypertrophy-or-skeletal-muscle-kg",
     "sets-times-nutrition-or-energy-multiplier-to-muscle-kg",
     "kcal-surplus-to-muscle-kg",
     "experience-or-retraining-to-muscle-kg-rate",

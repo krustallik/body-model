@@ -1,0 +1,3 @@
+CREATE TABLE "FatWeightShadowV1Result" ("id" SERIAL NOT NULL, "profileId" INTEGER NOT NULL DEFAULT 1, "date" VARCHAR(10) NOT NULL, "sourceFingerprint" VARCHAR(64) NOT NULL, "modelVersion" VARCHAR(100) NOT NULL, "result" JSONB NOT NULL, "createdAt" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMPTZ(3) NOT NULL, CONSTRAINT "FatWeightShadowV1Result_pkey" PRIMARY KEY ("id"));
+CREATE UNIQUE INDEX "FatWeightShadowV1Result_profileId_date_key" ON "FatWeightShadowV1Result"("profileId", "date");
+CREATE INDEX "FatWeightShadowV1Result_profileId_updatedAt_idx" ON "FatWeightShadowV1Result"("profileId", "updatedAt");

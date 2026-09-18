@@ -662,3 +662,16 @@ model PhysiologyV7ShadowDiagnostic {
   @@index([profileId, updatedAt])
   @@index([executionStatus, updatedAt])
 }
+
+model FatWeightShadowV1Result {
+  id Int @id @default(autoincrement())
+  profileId Int @default(1)
+  date String @db.VarChar(10)
+  sourceFingerprint String @db.VarChar(64)
+  modelVersion String @db.VarChar(100)
+  result Json
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  @@unique([profileId, date])
+  @@index([profileId, updatedAt])
+}

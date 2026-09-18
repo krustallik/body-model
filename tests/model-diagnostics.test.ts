@@ -94,9 +94,46 @@ describe("multidimensional diagnostic composition", () => {
     expect(result.recovery.status).toBe(expected);
     expect(result.forecastReadiness).toMatchObject({ allowed, initialStateSource: source });
     if (source === "recovered" || source === "degraded") {
-      expect(result.currentState).toMatchObject({ predictedWeightKg: 72.5, fatMassKg: 18.1, leanTissueKg: 53.2, dynamicRmrKcalPerDay: null, modeledTdeeKcalPerDay: null });
+      expect(result.currentState).toMatchObject({
+        predictedWeightKg: 72.5,
+        fatMassKg: 18.1,
+        leanTissueKg: 53.2,
+        dynamicRmrKcalPerDay: null,
+        modeledTdeeKcalPerDay: null,
+      });
+      expect(result.currentState.glycogenAndExtracellularFluidMassKg).toBeCloseTo(1.2, 10);
     }
     if (!allowed) expect(result.currentState.predictedWeightKg).toBeNull();
+  });
+
+  it("closes Hall weight as fat + lean tissue + glycogen/ECF residual on the diagnostics card", () => {
+    // Live /diagnostics example: 24.4 + 44.7 left 20.3 kg unexplained vs 89.4 kg
+    // because leanTissueKg is not FFM — glycogen-associated mass + ECF were omitted.
+    const result = buildDiagnosticsDto({
+      episode: episode(),
+      status: {
+        ...status(false),
+        currentPredictedWeightKg: 89.4,
+        currentFatMassKg: 24.4,
+        currentLeanTissueKg: 44.7,
+        currentModeledTdeeKcalPerDay: 3053,
+      },
+      evidence,
+      windowStartDate: "2026-07-29",
+      recovery: null,
+    });
+    expect(result.currentState).toMatchObject({
+      predictedWeightKg: 89.4,
+      fatMassKg: 24.4,
+      leanTissueKg: 44.7,
+      modeledTdeeKcalPerDay: 3053,
+    });
+    expect(result.currentState.glycogenAndExtracellularFluidMassKg).toBeCloseTo(20.3, 10);
+    expect(
+      (result.currentState.fatMassKg ?? 0)
+      + (result.currentState.leanTissueKg ?? 0)
+      + (result.currentState.glycogenAndExtracellularFluidMassKg ?? 0),
+    ).toBeCloseTo(result.currentState.predictedWeightKg ?? 0, 10);
   });
 
   it("keeps missing weight and absent work intervals separate from day completeness", () => {

@@ -125,6 +125,12 @@ export function buildDiagnosticsDto(input: {
     : source === "recovered" || source === "degraded" ? recoveredState.leanTissueKg : null;
   const hasCurrentState = usable && currentWeightKg !== null && status.latestModeledDate !== null;
   const currentStatus = !hasCurrentState ? "unavailable" : usable ? "available" : "awaiting-recovery";
+  const glycogenAndExtracellularFluidMassKg = hasCurrentState
+    && currentWeightKg !== null
+    && currentFatMassKg !== null
+    && currentLeanTissueKg !== null
+    ? currentWeightKg - currentFatMassKg - currentLeanTissueKg
+    : null;
   const personalization = personalizationDiagnostics({
     status: episode.calibrationStatus,
     personalOffsetKcalPerDay: episode.personalOffsetKcalPerDay,
@@ -141,6 +147,7 @@ export function buildDiagnosticsDto(input: {
       filteredWeightKg: source === "deterministic" && hasCurrentState ? status.currentFilteredWeightKg : null,
       fatMassKg: hasCurrentState ? currentFatMassKg : null,
       leanTissueKg: hasCurrentState ? currentLeanTissueKg : null,
+      glycogenAndExtracellularFluidMassKg,
       dynamicRmrKcalPerDay: source === "deterministic" && hasCurrentState ? status.currentDynamicRmrKcalPerDay : null,
       modeledTdeeKcalPerDay: source === "deterministic" && hasCurrentState ? status.currentModeledTdeeKcalPerDay : null,
     },

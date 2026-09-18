@@ -19,7 +19,17 @@ export type DiagnosticsDto = {
     predictedWeightKg: number | null;
     filteredWeightKg: number | null;
     fatMassKg: number | null;
+    /**
+     * Hall lean-tissue compartment only — excludes glycogen-associated mass
+     * and extracellular fluid. Not FFM and not skeletal muscle.
+     */
     leanTissueKg: number | null;
+    /**
+     * Residual Hall compartments that complete body weight:
+     * predictedWeightKg − fatMassKg − leanTissueKg
+     * (= glycogen + glycogen water + ECF mass).
+     */
+    glycogenAndExtracellularFluidMassKg: number | null;
     dynamicRmrKcalPerDay: number | null;
     modeledTdeeKcalPerDay: number | null;
   };

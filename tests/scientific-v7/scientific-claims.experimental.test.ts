@@ -1,0 +1,32 @@
+import { describe, expect, it } from "vitest";
+import { existsSync, readFileSync } from "node:fs";
+import {
+  ALL_SCIENTIFIC_V7_CLAIM_RECORDS,
+  summarizeScientificManifestStatus,
+} from "./scientific-claims.manifest";
+
+/**
+ * EXPERIMENTAL harness: contract/provenance checks only.
+ * Passing these tests must never be interpreted as scientific validation.
+ */
+describe("scientific v7 experimental claims (not scientific validation)", () => {
+  it("keeps EXPERIMENTAL empty until a real experimental implementation maps to a claim", () => {
+    const experimental = ALL_SCIENTIFIC_V7_CLAIM_RECORDS.filter((claim) => claim.status === "EXPERIMENTAL");
+    expect(experimental).toHaveLength(0);
+    expect(summarizeScientificManifestStatus().EXPERIMENTAL).toBe(0);
+  });
+
+  it("requires implementation path, uncertainty, and non-GREEN test wiring when EXPERIMENTAL claims exist", () => {
+    const experimental = ALL_SCIENTIFIC_V7_CLAIM_RECORDS.filter((claim) => claim.status === "EXPERIMENTAL");
+    const greenSource = readFileSync("tests/scientific-v7/scientific-contract.test.ts", "utf8");
+    for (const claim of experimental) {
+      expect(claim.experimentalImplementation).toBeTruthy();
+      expect(existsSync(claim.experimentalImplementation!)).toBe(true);
+      expect(claim.experimentalUncertainty).toMatch(/uncertain|heuristic|approximation|not scientifically validated|personal-unavailable|estimate/i);
+      expect(claim.testFile).not.toBe("tests/scientific-v7/scientific-contract.test.ts");
+      expect(existsSync(claim.testFile)).toBe(true);
+      expect(greenSource).not.toContain(`it(\"${claim.testName}\"`);
+      expect(claim.status).not.toBe("GREEN");
+    }
+  });
+});

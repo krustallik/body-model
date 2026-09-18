@@ -1,5 +1,5 @@
 /**
- * Stage 12 audit of INFRASTRUCTURE_BLOCKED scientific claims.
+ * Stage 12 audit of BLOCKED scientific claims.
  * Classification is engineering triage only — it does not unblock claims.
  * Do not promote any claim to GREEN without a real measurement oracle where required.
  */
@@ -147,7 +147,7 @@ function fallbackCategory(claim: ScientificClaimManifestRecord): BlockedClaimCat
 
 export function classifyBlockedScientificClaims(): BlockedClaimClassification[] {
   return SCIENTIFIC_V7_CLAIMS
-    .filter((claim) => claim.expectedInitialState === "INFRASTRUCTURE_BLOCKED")
+    .filter((claim) => claim.status === "BLOCKED")
     .map((claim) => {
       const explicit = CLASSIFICATIONS[claim.claimId];
       if (explicit) {

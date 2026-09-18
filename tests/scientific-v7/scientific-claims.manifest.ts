@@ -1,5 +1,17 @@
-export type AuditEligibility = "SAFE" | "SAFE_AFTER_AUDIT_REVISION";
-export type InitialState = "EXPECTED_RED" | "ALREADY_GREEN" | "INFRASTRUCTURE_BLOCKED";
+export type AuditEligibility = "SAFE" | "SAFE_AFTER_AUDIT_REVISION" | "NOT_SAFE";
+/**
+ * Scientific manifest status model:
+ * - GREEN — scientifically validated + executable oracle contract
+ * - EXPERIMENTAL — bounded heuristic/approximation with tests, provenance, and
+ *   uncertainty; implemented but NOT scientifically validated
+ * - BLOCKED — no acceptable implementation yet
+ * - REJECTED — intentionally not modeled after research
+ *
+ * Legacy aliases ALREADY_GREEN / INFRASTRUCTURE_BLOCKED are not used.
+ */
+export type ScientificClaimStatus = "GREEN" | "EXPERIMENTAL" | "BLOCKED" | "REJECTED";
+/** @deprecated Prefer ScientificClaimStatus; kept for type search during migration. */
+export type InitialState = ScientificClaimStatus;
 export type TestType =
   | "unit"
   | "property"
@@ -34,26 +46,91 @@ export type ScientificClaimManifestRecord = {
   testFile: string;
   testName: string;
   testType: TestType;
-  expectedInitialState: InitialState;
+  /** Canonical status. GREEN criteria are unchanged from prior ALREADY_GREEN. */
+  status: ScientificClaimStatus;
+  /**
+   * Backward-compatible alias of `status` for older readers.
+   * Prefer `status`.
+   */
+  expectedInitialState: ScientificClaimStatus;
   assertionTypes: readonly AssertionType[];
   provenance: readonly Provenance[];
   scientificAssertion: string;
   numericAssertions: readonly [];
   infrastructureBlocker?: string;
+  /** Present only for EXPERIMENTAL claims; never treated as a scientific oracle. */
+  experimentalImplementation?: string;
+  experimentalUncertainty?: string;
+  rejectionReason?: string;
 };
 
 const executableFile = "tests/scientific-v7/scientific-contract.test.ts";
 const blockedFile = "tests/scientific-v7/scientific-claims.blocked.test.ts";
+const rejectedFile = "tests/scientific-v7/scientific-claims.rejected.test.ts";
 
 type RecordInput = Omit<ScientificClaimManifestRecord,
-  "testFile" | "testName" | "expectedInitialState" | "numericAssertions"
+  | "testFile"
+  | "testName"
+  | "status"
+  | "expectedInitialState"
+  | "numericAssertions"
+  | "experimentalImplementation"
+  | "experimentalUncertainty"
+  | "rejectionReason"
 > & {
   title: string;
   executableTestName?: string;
   infrastructureBlocker?: string;
+  experimental?: {
+    implementation: string;
+    testFile: string;
+    testName: string;
+    uncertainty: string;
+  };
+  rejectionReason?: string;
 };
 
 function record(input: RecordInput): ScientificClaimManifestRecord {
+  if (input.rejectionReason !== undefined) {
+    return {
+      claimId: input.claimId,
+      parameterIds: input.parameterIds,
+      evidenceIds: input.evidenceIds,
+      auditEligibility: input.auditEligibility,
+      testFile: rejectedFile,
+      testName: `[${input.claimId}] ${input.title}`,
+      testType: input.testType,
+      status: "REJECTED",
+      expectedInitialState: "REJECTED",
+      assertionTypes: input.assertionTypes,
+      provenance: input.provenance,
+      scientificAssertion: input.scientificAssertion,
+      numericAssertions: [],
+      rejectionReason: input.rejectionReason,
+    };
+  }
+  if (input.experimental !== undefined) {
+    return {
+      claimId: input.claimId,
+      parameterIds: input.parameterIds,
+      evidenceIds: input.evidenceIds,
+      auditEligibility: input.auditEligibility,
+      testFile: input.experimental.testFile,
+      testName: input.experimental.testName,
+      testType: input.testType,
+      status: "EXPERIMENTAL",
+      expectedInitialState: "EXPERIMENTAL",
+      assertionTypes: input.assertionTypes,
+      provenance: input.provenance,
+      scientificAssertion: input.scientificAssertion,
+      numericAssertions: [],
+      experimentalImplementation: input.experimental.implementation,
+      experimentalUncertainty: input.experimental.uncertainty,
+      ...(input.infrastructureBlocker === undefined
+        ? {}
+        : { infrastructureBlocker: input.infrastructureBlocker }),
+    };
+  }
   const executable = input.executableTestName !== undefined;
   return {
     claimId: input.claimId,
@@ -63,7 +140,8 @@ function record(input: RecordInput): ScientificClaimManifestRecord {
     testFile: executable ? executableFile : blockedFile,
     testName: input.executableTestName ?? `[${input.claimId}] ${input.title}`,
     testType: input.testType,
-    expectedInitialState: executable ? "ALREADY_GREEN" : "INFRASTRUCTURE_BLOCKED",
+    status: executable ? "GREEN" : "BLOCKED",
+    expectedInitialState: executable ? "GREEN" : "BLOCKED",
     assertionTypes: input.assertionTypes,
     provenance: input.provenance,
     scientificAssertion: input.scientificAssertion,
@@ -87,8 +165,10 @@ const v7HrBlocker = "Canonical raw HR interval provenance exists, but HR coverag
 const v7SleepBlocker = "Canonical v7 sleep provenance/duration inputs and bounded sleep-context output do not exist.";
 const v7MeasurementBlocker = "No v7 measurement-role contract exposes skeletal muscle separately from lean/local/proxy endpoints.";
 
+/** Claim IDs intentionally excluded from scientific GREEN/BLOCKED eligibility. */
 export const UNSAFE_CLAIM_IDS = ["C-G02", "C-H04", "C-K02", "C-M04"] as const;
 
+/** Eligible audited claims only (GREEN / EXPERIMENTAL / BLOCKED). REJECTED are separate. */
 export const SCIENTIFIC_V7_CLAIMS: readonly ScientificClaimManifestRecord[] = [
   record({ claimId: "C-A01", title: "higher supported volume does not lower group-expected local hypertrophy", parameterIds: ["P-A02"], evidenceIds: ["E-A01", "E-A02", "E-A03"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "property", assertionTypes: ["MONOTONICITY"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Within the supported low-to-moderate range, added effective volume does not lower group-expected local hypertrophy; global concavity is not required.", infrastructureBlocker: v7DoseBlocker }),
   record({ claimId: "C-A02", title: "volume-equated frequency has no required independent positive effect", parameterIds: ["P-A03"], evidenceIds: ["E-A02", "E-A11", "E-A14"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "unit", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "With effective weekly volume equated, v7 adds no required positive frequency multiplier and does not require exact physiological equality.", executableTestName: "volume-equated frequency has no required independent positive effect" }),
@@ -183,6 +263,66 @@ export const SCIENTIFIC_V7_CLAIMS: readonly ScientificClaimManifestRecord[] = [
   record({ claimId: "C-MV05", title: "longitudinal method consistency affects uncertainty", parameterIds: [], evidenceIds: ["E-MV01", "E-MV02", "E-MV03", "E-MV04", "E-MV05", "E-MV06", "E-MV07"], auditEligibility: "SAFE", testType: "longitudinal", assertionTypes: ["ORDERING"], provenance: ["SCIENTIFIC_EVIDENCE", "INPUT_CONTRACT"], scientificAssertion: "Mixed devices, sites, hydration, or acute-exercise conditions carry greater uncertainty than a standardized same-method series.", infrastructureBlocker: v7MeasurementBlocker }),
 ];
 
+/**
+ * Intentionally not modeled as scientific claims after research/audit.
+ * These keep claim IDs and metadata but are REJECTED, not BLOCKED.
+ */
+export const SCIENTIFIC_V7_REJECTED_CLAIMS: readonly ScientificClaimManifestRecord[] = [
+  record({
+    claimId: "C-G02",
+    title: "relative intensity orders carbohydrate reliance",
+    parameterIds: ["P-G02"],
+    evidenceIds: ["E-G05", "E-G06", "E-G01", "E-G02", "E-G03", "E-G04"],
+    auditEligibility: "NOT_SAFE",
+    testType: "property",
+    assertionTypes: ["MONOTONICITY"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "Matched stepper relative intensity must not lower carbohydrate reliance; direct stepper substrate evidence is insufficient for a scientific invariant.",
+    rejectionReason: "Independent audit: NOT SAFE. Direct stepper substrate evidence is absent and cross-modality ordering is too strong; keep deferred research expectation only, not a v7 production/scientific claim.",
+  }),
+  record({
+    claimId: "C-H04",
+    title: "short recovery preserves timing relevance",
+    parameterIds: ["P-H02"],
+    evidenceIds: ["E-H01", "E-H03"],
+    auditEligibility: "NOT_SAFE",
+    testType: "unit",
+    assertionTypes: ["TIME_COURSE"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "Immediate carbohydrate after short recovery can produce faster interim repletion; intraday timing remains deferred.",
+    rejectionReason: "Independent audit: NOT SAFE. Direction is credible but the intraday timing feature is deferred and is not a v7 production invariant.",
+  }),
+  record({
+    claimId: "C-K02",
+    title: "source hierarchy degrades explicitly",
+    parameterIds: ["P-K01"],
+    evidenceIds: ["E-K01", "E-K02", "E-K03", "E-K04", "E-K05", "E-K09", "E-G01", "E-G02", "E-G03"],
+    auditEligibility: "NOT_SAFE",
+    testType: "unit",
+    assertionTypes: ["ORDERING"],
+    provenance: ["ENGINEERING_ASSUMPTION"],
+    scientificAssertion: "Device → HR-assisted → MET fallback may be an engineering policy; evidence does not establish a universal scientific accuracy ordering.",
+    rejectionReason: "Independent audit: NOT SAFE as scientific accuracy ordering. Acceptable only as labelled engineering fallback policy, not a scientific claim.",
+  }),
+  record({
+    claimId: "C-M04",
+    title: "sleep-restricted diet can shift partition adversely",
+    parameterIds: ["P-M03"],
+    evidenceIds: ["E-M03"],
+    auditEligibility: "NOT_SAFE",
+    testType: "longitudinal",
+    assertionTypes: ["ORDERING"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "Severe shorter sleep under deficit may permit less fat loss / more nonfat loss; one small DXA trial cannot support production skeletal-muscle assertion.",
+    rejectionReason: "Independent audit: NOT SAFE. One n=10 DXA crossover supports only low-certainty direction; do not encode a production partition assertion.",
+  }),
+];
+
+export const ALL_SCIENTIFIC_V7_CLAIM_RECORDS: readonly ScientificClaimManifestRecord[] = [
+  ...SCIENTIFIC_V7_CLAIMS,
+  ...SCIENTIFIC_V7_REJECTED_CLAIMS,
+];
+
 export const SCIENTIFIC_V7_FLOW_BLOCKERS = [
   { id: "V7-LONGITUDINAL-COHORTS", testType: "longitudinal", testName: "audited matched cohorts expose skeletal muscle, glycogen water, fat, and total weight", reason: "The v7 state and canonical session/HR seam exist, but no sleep input, transitions, or cohort harness exists." },
   { id: "V7-RECALC-WORKOUT", testType: "recalculation", testName: "historical workout edit rebuilds day D and all dependent v7 states", reason: "Episode persistence has no v7 workout-physiology state or calculation revision." },
@@ -191,3 +331,39 @@ export const SCIENTIFIC_V7_FLOW_BLOCKERS = [
   { id: "V7-FORECAST", testType: "forecast", testName: "matched future v7 scenarios expose fat, skeletal muscle, glycogen water, and total weight", reason: "Forecast outputs leanTissueKg and lack v7 ProgramSnapshot, skeletalMuscleKg, transient water, HR, and sleep inputs." },
   { id: "V7-E2E", testType: "e2e", testName: "durable sources flow through canonical v7 input, rebuild, and forecast", reason: "The v7 canonical input contract exists, but no repository loader, simulator entry point, persistence, or forecast integration exists." },
 ] as const;
+
+export type ScientificManifestStatusCounts = {
+  GREEN: number;
+  EXPERIMENTAL: number;
+  BLOCKED: number;
+  REJECTED: number;
+  eligible: number;
+  tracked: number;
+};
+
+/**
+ * Reporting helper. EXPERIMENTAL is listed separately and must never be summed
+ * into GREEN / scientific-validation counts.
+ */
+export function summarizeScientificManifestStatus(
+  records: readonly ScientificClaimManifestRecord[] = ALL_SCIENTIFIC_V7_CLAIM_RECORDS,
+): ScientificManifestStatusCounts & {
+  note: string;
+} {
+  const counts: ScientificManifestStatusCounts = {
+    GREEN: 0,
+    EXPERIMENTAL: 0,
+    BLOCKED: 0,
+    REJECTED: 0,
+    eligible: 0,
+    tracked: records.length,
+  };
+  for (const claim of records) {
+    counts[claim.status] += 1;
+  }
+  counts.eligible = counts.GREEN + counts.EXPERIMENTAL + counts.BLOCKED;
+  return {
+    ...counts,
+    note: "EXPERIMENTAL implementations are bounded heuristics with tests/provenance/uncertainty; they do not count as scientific validation.",
+  };
+}

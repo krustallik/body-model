@@ -18,7 +18,7 @@ export function glycogenCarbohydrateEvidenceV7(input: {
 }): GlycogenCarbohydrateEvidenceV7 {
   if (input.carbsG === null) return { availability: "unavailable", reason: "missing-carbohydrate" };
   if (!Number.isFinite(input.carbsG) || input.carbsG < 0) throw new RangeError("carbsG must be finite and nonnegative when available");
-  return input.nutrition.source === "observed"
+  return input.nutrition.observedFields.includes("carbsG")
     ? { availability: "available", provenance: "observed", carbsG: input.carbsG }
     : { availability: "available", provenance: "imputed", carbsG: input.carbsG };
 }

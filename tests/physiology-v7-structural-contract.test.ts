@@ -24,13 +24,12 @@ const state: PhysiologyV7State = {
 };
 
 describe("physiology v7 structural Stage 5 contracts", () => {
-  it("defines a contract-only daily transition order without an executable v7 engine", () => {
+  it("defines the canonical daily transition order executed by the v7 runtime", () => {
     expect(PHYSIOLOGY_V7_DAILY_TRANSITION_ORDER).toEqual([
       "normalize-sources",
       "resolve-input-semantics",
       "validate-state-contract",
       "energy-nutrition-transition-slot",
-      "glycogen-transition-slot",
       "training-adaptation-transition-slot",
       "fluid-water-transition-slot",
       "reconstruct-mass",

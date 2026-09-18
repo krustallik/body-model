@@ -24,7 +24,7 @@ const v7State: PhysiologyV7State = {
 
 describe("physiology v7 state contract", () => {
   it("keeps the v7 compartments distinct and validates their structural invariants", () => {
-    expect(PHYSIOLOGY_V7_CONTRACT_VERSION).toBe("bodycast-physiology-v7-state-v2");
+    expect(PHYSIOLOGY_V7_CONTRACT_VERSION).toBe("bodycast-physiology-v7-state-v3");
     expect(validatePhysiologyV7State(v7State)).toEqual(v7State);
     for (const field of [
       "fatMassKg", "skeletalMuscleKg", "otherLeanTissueKg", "glycogenKg",

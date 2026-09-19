@@ -217,6 +217,11 @@ describe("health sync training workout pipeline", () => {
     ]);
     expect(workouts.map((workout) => workout.activeEnergyKcal)).toEqual([154, 18, 562]);
     expect(workouts.map((workout) => workout.durationMinutes)).toEqual([12, 2, 62]);
+    expect(workouts.map((workout) => workout.startAt)).toEqual([
+      "2026-09-16T10:40:00.000Z",
+      "2026-09-16T10:34:00.000Z",
+      "2026-09-16T08:44:00.000Z",
+    ]);
   });
 
   it("accepts the exact Sep 16 rawBody with glued 10:44 timestamp and WalkingDistanceKm", () => {

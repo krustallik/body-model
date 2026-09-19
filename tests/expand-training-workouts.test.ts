@@ -283,6 +283,50 @@ describe("expandTrainingWorkoutFields", () => {
     expect(result.diagnostics.acceptedCount).toBe(1);
   });
 
+  it("treats Shortcut Quick Look dates as Europe/Bratislava wall clock, not UTC", () => {
+    const result = expandTrainingWorkoutFields({
+      trainingType: TRADITIONAL_STRENGTH_TRAINING_TYPE,
+      trainingActiveKcal: "727",
+      trainingTimestamps: "19. 9. 2026, 17:24\n19. 9. 2026, 18:46",
+      dayDate: "2026-09-19",
+      timezone: "Europe/Bratislava",
+    });
+    expect(result.diagnostics.acceptedCount).toBe(1);
+    expect(result.workouts[0]).toMatchObject({
+      durationMinutes: 82,
+      startAt: "2026-09-19T15:24:00.000Z",
+      endAt: "2026-09-19T16:46:00.000Z",
+    });
+  });
+
+  it("treats timezone-less ISO timestamps as local wall clock in the sync timezone", () => {
+    const result = expandTrainingWorkoutFields({
+      trainingType: TRADITIONAL_STRENGTH_TRAINING_TYPE,
+      trainingActiveKcal: "727",
+      trainingTimestamps: "2026-09-19T17:24:00\n2026-09-19T18:46:00",
+      dayDate: "2026-09-19",
+      timezone: "Europe/Bratislava",
+    });
+    expect(result.workouts[0]).toMatchObject({
+      startAt: "2026-09-19T15:24:00.000Z",
+      endAt: "2026-09-19T16:46:00.000Z",
+    });
+  });
+
+  it("keeps explicit ISO offsets unchanged", () => {
+    const result = expandTrainingWorkoutFields({
+      trainingType: TRADITIONAL_STRENGTH_TRAINING_TYPE,
+      trainingActiveKcal: "727",
+      trainingTimestamps: "2026-09-19T17:24:00+02:00\n2026-09-19T18:46:00+02:00",
+      dayDate: "2026-09-19",
+      timezone: "Europe/Bratislava",
+    });
+    expect(result.workouts[0]).toMatchObject({
+      startAt: "2026-09-19T15:24:00.000Z",
+      endAt: "2026-09-19T16:46:00.000Z",
+    });
+  });
+
   it("expands the exact Sep 16 Shortcut payload with glued timestamps", () => {
     const result = expandTrainingWorkoutFields({
       trainingType: [
@@ -301,22 +345,22 @@ describe("expandTrainingWorkoutFields", () => {
         type: STAIR_CLIMBING_TYPE,
         activeEnergyKcal: 154,
         durationMinutes: 12,
-        startAt: "2026-09-16T12:40:00.000Z",
-        endAt: "2026-09-16T12:52:00.000Z",
+        startAt: "2026-09-16T10:40:00.000Z",
+        endAt: "2026-09-16T10:52:00.000Z",
       }),
       expect.objectContaining({
         type: STAIR_CLIMBING_TYPE,
         activeEnergyKcal: 18,
         durationMinutes: 2,
-        startAt: "2026-09-16T12:34:00.000Z",
-        endAt: "2026-09-16T12:36:00.000Z",
+        startAt: "2026-09-16T10:34:00.000Z",
+        endAt: "2026-09-16T10:36:00.000Z",
       }),
       expect.objectContaining({
         type: TRADITIONAL_STRENGTH_TRAINING_TYPE,
         activeEnergyKcal: 562,
         durationMinutes: 62,
-        startAt: "2026-09-16T10:44:00.000Z",
-        endAt: "2026-09-16T11:46:00.000Z",
+        startAt: "2026-09-16T08:44:00.000Z",
+        endAt: "2026-09-16T09:46:00.000Z",
       }),
     ]);
   });

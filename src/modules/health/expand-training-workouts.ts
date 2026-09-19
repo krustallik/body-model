@@ -1,4 +1,4 @@
-import { DEFAULT_TIME_ZONE, instantToLocalDateTime } from "@/model/time-zone";
+import { DEFAULT_TIME_ZONE, instantToLocalDateTime, localDateTimeToInstant } from "@/model/time-zone";
 
 type JsonObject = Record<string, unknown>;
 
@@ -158,33 +158,74 @@ export function splitTrainingTypeLines(
   return lines;
 }
 
-function parseIsoOrShortcutInstant(raw: string): Date | null {
+const OFFSET_ISO_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})$/;
+const NAIVE_ISO_PATTERN =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?$/;
+
+function pad2(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+function localWallClockToInstant(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  timeZone: string,
+): Date | null {
+  try {
+    return localDateTimeToInstant(
+      `${year}-${pad2(month)}-${pad2(day)}`,
+      `${pad2(hour)}:${pad2(minute)}`,
+      timeZone,
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse a workout instant.
+ * Offset ISO stays an exact instant. Shortcut Quick Look dates and timezone-less
+ * ISO are local wall-clock times in the sync timezone — never UTC, never the
+ * server's process zone.
+ */
+function parseIsoOrShortcutInstant(raw: string, timeZone: string): Date | null {
   if (raw === "") return null;
-  const iso = Date.parse(raw);
-  if (Number.isFinite(iso)) return new Date(iso);
+  const trimmed = raw.trim();
+
+  if (OFFSET_ISO_PATTERN.test(trimmed)) {
+    const iso = Date.parse(trimmed);
+    return Number.isFinite(iso) ? new Date(iso) : null;
+  }
+
+  const naiveIso = NAIVE_ISO_PATTERN.exec(trimmed);
+  if (naiveIso) {
+    return localWallClockToInstant(
+      Number(naiveIso[1]),
+      Number(naiveIso[2]),
+      Number(naiveIso[3]),
+      Number(naiveIso[4]),
+      Number(naiveIso[5]),
+      timeZone,
+    );
+  }
 
   const normalized = normalizeShortcutWhitespace(raw);
   SHORTCUT_WORKOUT_DATE_PATTERN.lastIndex = 0;
   const matches = [...normalized.matchAll(SHORTCUT_WORKOUT_DATE_PATTERN)];
   if (matches.length !== 1) return null;
   const match = matches[0];
-  const year = Number(match[3]);
-  const month = Number(match[2]);
-  const day = Number(match[1]);
-  const hour = Number(match[4]);
-  const minute = Number(match[5]);
-  const timestamp = Date.UTC(year, month - 1, day, hour, minute);
-  const date = new Date(timestamp);
-  if (
-    date.getUTCFullYear() !== year
-    || date.getUTCMonth() !== month - 1
-    || date.getUTCDate() !== day
-    || date.getUTCHours() !== hour
-    || date.getUTCMinutes() !== minute
-  ) {
-    return null;
-  }
-  return date;
+  return localWallClockToInstant(
+    Number(match[3]),
+    Number(match[2]),
+    Number(match[1]),
+    Number(match[4]),
+    Number(match[5]),
+    timeZone,
+  );
 }
 
 function parseOptionalActiveKcal(raw: string): { ok: true; value: number | null } | { ok: false } {
@@ -280,8 +321,8 @@ export function expandTrainingWorkoutFields(input: {
       continue;
     }
 
-    const startAt = parseIsoOrShortcutInstant(startRaw);
-    const endAt = parseIsoOrShortcutInstant(endRaw);
+    const startAt = parseIsoOrShortcutInstant(startRaw, timezone);
+    const endAt = parseIsoOrShortcutInstant(endRaw, timezone);
     if (!startAt) {
       diagnostics.rejectedCount += 1;
       diagnostics.reasons.push(`workout-${index}:malformed-start`);

@@ -12,9 +12,13 @@ vi.mock("@/components/app-nav", () => ({
 }));
 
 const routerPush = vi.fn();
+const routerReplace = vi.fn();
+const searchParams = new URLSearchParams();
 
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: routerPush, replace: vi.fn() }),
+  useRouter: () => ({ push: routerPush, replace: routerReplace }),
+  usePathname: () => "/training/sessions/42",
+  useSearchParams: () => searchParams,
 }));
 
 import { SessionClient } from "@/app/training/sessions/[id]/session-client";
@@ -95,6 +99,8 @@ describe("Live training session mobile UI", () => {
     cleanup();
     vi.restoreAllMocks();
     routerPush.mockReset();
+    routerReplace.mockReset();
+    searchParams.delete("exercise");
   });
 
   function stubSessionFetch(
@@ -111,8 +117,8 @@ describe("Live training session mobile UI", () => {
             programName: "ТИСНИ",
             resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
             sets: [
-              { setNumber: 2, reps: 10, weightKg: 32, bandNominalResistanceKg: null, comment: "важко" },
-              { setNumber: 1, reps: 12, weightKg: 30, bandNominalResistanceKg: null, comment: null },
+              { setNumber: 2, reps: 10, weightKg: 32, bandNominalResistanceKg: null, rir: 2, comment: "важко" },
+              { setNumber: 1, reps: 12, weightKg: 30, bandNominalResistanceKg: null, rir: null, comment: null },
             ],
           }],
         });
@@ -286,15 +292,21 @@ describe("Live training session mobile UI", () => {
     const { container } = render(<SessionClient sessionId={42} />);
     await waitFor(() => expect(screen.getByText("ТИСНИ")).toBeTruthy());
 
-    const shell = container.querySelector("main");
-    expect(shell).toBeTruthy();
-    fireEvent.pointerDown(shell!, {
+    const viewport = container.querySelector(`.${styles.workoutCarouselViewport}`);
+    expect(viewport).toBeTruthy();
+    fireEvent.pointerDown(viewport!, {
       pointerId: 1,
       pointerType: "touch",
       clientX: 220,
       clientY: 300,
     });
-    fireEvent.pointerUp(shell!, {
+    fireEvent.pointerMove(viewport!, {
+      pointerId: 1,
+      pointerType: "touch",
+      clientX: 80,
+      clientY: 305,
+    });
+    fireEvent.pointerUp(viewport!, {
       pointerId: 1,
       pointerType: "touch",
       clientX: 80,
@@ -356,6 +368,105 @@ describe("Live training session mobile UI", () => {
       expect(screen.getByRole("heading", {
         name: "Жим гантелей на похилій лаві вгору (30°)",
       })).toBeTruthy();
+    });
+  });
+
+  it("opens the exercise from the URL query", async () => {
+    searchParams.set("exercise", "2");
+    stubSessionFetch();
+    render(<SessionClient sessionId={42} />);
+    await waitFor(() => {
+      expect(screen.getByRole("heading", {
+        name: "Розведення гантелей на горизонтальній лаві",
+      })).toBeTruthy();
+      expect(screen.getByText("2 / 3 вправ")).toBeTruthy();
+    });
+  });
+
+  it("copies a historical set into the draft without saving", async () => {
+    const user = userEvent.setup();
+    stubSessionFetch();
+    render(<SessionClient sessionId={42} />);
+    await waitFor(() => expect(screen.getByText(/32 кг × 10/)).toBeTruthy());
+    await user.click(screen.getByRole("button", { name: /#2/ }));
+    expect((screen.getByLabelText("Вага, кг") as HTMLInputElement).value).toBe("32");
+    expect((screen.getByLabelText("Повтори") as HTMLInputElement).value).toBe("10");
+    expect((screen.getByPlaceholderText("опційно") as HTMLInputElement).value).toBe("2");
+    expect(screen.getByText(/Поля підставлено/)).toBeTruthy();
+  });
+
+  it("accepts a comma decimal for kilograms", async () => {
+    const user = userEvent.setup();
+    const posted: unknown[] = [];
+    stubSessionFetch(buildSession(), (url, init) => {
+      if (init?.method === "POST" && url.includes("/sets")) {
+        posted.push(JSON.parse(String(init.body)));
+        return Response.json({ set: { id: 1 } }, { status: 201 });
+      }
+      return null;
+    });
+    render(<SessionClient sessionId={42} />);
+    await waitFor(() => expect(screen.getByLabelText("Вага, кг")).toBeTruthy());
+    await user.type(screen.getByLabelText("Вага, кг"), "33,5");
+    await user.type(screen.getByLabelText("Повтори"), "8");
+    await user.click(screen.getByRole("button", { name: "Додати підхід" }));
+    await waitFor(() => {
+      expect(posted[0]).toEqual(expect.objectContaining({ weightKg: 33.5, reps: 8 }));
+    });
+  });
+
+  it("offers to finish after filling the last planned set of the last exercise", async () => {
+    const user = userEvent.setup();
+    let session = buildSession({
+      exercises: [{
+        id: 3,
+        sourceExerciseCatalogId: 5,
+        stableKey: null,
+        snapshotExerciseName: "Віджимання від ручок",
+        order: 0,
+        plannedSets: 1,
+        resistanceType: RESISTANCE.BODYWEIGHT,
+        origin: EXERCISE_ORIGIN.PLANNED,
+        muscleMappingSnapshot: null,
+        sets: [],
+      }],
+    });
+    stubSessionFetch(session, (url, init) => {
+      if (init?.method === "POST" && url.includes("/sets")) {
+        session = {
+          ...session,
+          exercises: [{
+            ...session.exercises[0]!,
+            sets: [{
+              id: 91,
+              sessionExerciseId: 3,
+              setNumber: 1,
+              reps: 12,
+              weightKg: null,
+              bandNominalResistanceKg: null,
+              rir: null,
+              comment: null,
+              completedAt: "2026-09-17T16:05:00.000Z",
+              createdAt: "2026-09-17T16:05:00.000Z",
+              updatedAt: "2026-09-17T16:05:00.000Z",
+            }],
+          }],
+        };
+        return Response.json({ set: session.exercises[0]!.sets[0] }, { status: 201 });
+      }
+      if (!init?.method && url.includes("/sessions/42")) {
+        return Response.json({ session });
+      }
+      return null;
+    });
+
+    render(<SessionClient sessionId={42} />);
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Віджимання від ручок" })).toBeTruthy());
+    await user.type(screen.getByLabelText("Повтори"), "12");
+    await user.click(screen.getByRole("button", { name: "Додати підхід" }));
+    await waitFor(() => {
+      expect(screen.getByRole("dialog", { name: "Завершити тренування?" })).toBeTruthy();
+      expect(screen.getByText(/100% плану/)).toBeTruthy();
     });
   });
 });

@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { SessionClient } from "./session-client";
 
 export const metadata: Metadata = {
@@ -13,8 +14,10 @@ type PageProps = {
 export default async function TrainingSessionPage({ params }: PageProps) {
   const { id } = await params;
   const sessionId = Number(id);
-  if (!Number.isFinite(sessionId) || sessionId < 1) {
-    return <SessionClient sessionId={0} />;
-  }
-  return <SessionClient sessionId={sessionId} />;
+  const resolved = Number.isFinite(sessionId) && sessionId >= 1 ? sessionId : 0;
+  return (
+    <Suspense fallback={null}>
+      <SessionClient sessionId={resolved} />
+    </Suspense>
+  );
 }

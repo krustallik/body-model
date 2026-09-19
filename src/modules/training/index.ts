@@ -34,6 +34,8 @@ export { matchDiaryToWorkouts } from "./training.matcher";
 export { planProgramExerciseReconcile } from "./training.program-reconcile";
 export { noteTrainingSourceChange } from "./training.source-revision";
 export { ordinaryExternalWeightTonnageKg } from "./training.tonnage";
+export { parseTrainingDecimal } from "./parse-training-decimal";
+export { sessionPlanCompletion } from "./session-plan-completion";
 export { validateSetFields, validateRir } from "./training.set-validation";
 export { trainingRepository, TrainingRepository, diaryCompletenessOf } from "./training.repository";
 export { trainingService, TrainingService } from "./training.service";

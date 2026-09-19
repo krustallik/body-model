@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppNav } from "@/components/app-nav";
 import { useI18n } from "@/i18n/i18n-provider";
@@ -10,17 +10,20 @@ import {
   RESISTANCE,
   SESSION_STATUS,
 } from "@/modules/training/training.constants";
+import { parseTrainingDecimal } from "@/modules/training/parse-training-decimal";
+import { sessionPlanCompletion } from "@/modules/training/session-plan-completion";
 import type {
   MatchCandidateDto,
   StrengthSessionDto,
   StrengthSetDto,
 } from "@/modules/training/training.types";
 import {
+  exerciseSearchValue,
   indexOfExerciseId,
   neighborExerciseId,
+  parseExerciseSearchParam,
   resolveFocusedExerciseId,
 } from "../../exercise-pager";
-import { shouldHandleKeyboardExerciseNav } from "../../horizontal-swipe";
 import {
   formatClock,
   formatDateTime,
@@ -39,6 +42,8 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
   const { locale, intlLocale } = useI18n();
   const uk = locale === "uk";
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [session, setSession] = useState<StrengthSessionDto | null>(null);
   const [focusedExerciseId, setFocusedExerciseId] = useState<number | null>(null);
   const [draft, setDraft] = useState(emptySetDraft());
@@ -48,12 +53,8 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [slideDir, setSlideDir] = useState<"none" | "left" | "right">("none");
-  const slideTimerRef = useRef<number | null>(null);
-
-  useEffect(() => () => {
-    if (slideTimerRef.current != null) window.clearTimeout(slideTimerRef.current);
-  }, []);
+  const [finishOffer, setFinishOffer] = useState(false);
+  const finishOfferedRef = useRef(false);
 
   const load = useCallback(async () => {
     setError(null);
@@ -66,14 +67,18 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
       }
       const body = await response.json() as { session: StrengthSessionDto };
       const ordered = body.session.exercises.slice().sort((a, b) => a.order - b.order);
+      const urlIndex = parseExerciseSearchParam(searchParams.get("exercise"), ordered.length);
       setSession(body.session);
-      setFocusedExerciseId((current) => resolveFocusedExerciseId(ordered, current));
+      setFocusedExerciseId((current) => resolveFocusedExerciseId(
+        ordered,
+        current ?? ordered[urlIndex]?.id ?? null,
+      ));
     } catch {
       setError(uk ? "Не вдалося завантажити сесію." : "Could not load the session.");
     } finally {
       setLoading(false);
     }
-  }, [sessionId, uk]);
+  }, [searchParams, sessionId, uk]);
 
   useEffect(() => {
     let cancelled = false;
@@ -93,35 +98,26 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
   );
   const exerciseIndex = indexOfExerciseId(exercises, focusedExerciseId);
   const current = exercises.find((exercise) => exercise.id === focusedExerciseId) ?? exercises[0] ?? null;
+  const previousExercise = exerciseIndex > 0 ? exercises[exerciseIndex - 1] ?? null : null;
+  const nextExercise = exerciseIndex < exercises.length - 1 ? exercises[exerciseIndex + 1] ?? null : null;
+  const completion = sessionPlanCompletion(exercises);
 
   function goToNeighbor(delta: -1 | 1) {
     const nextId = neighborExerciseId(exercises, focusedExerciseId, delta);
     if (nextId == null) return;
-    setSlideDir(delta > 0 ? "left" : "right");
     setFocusedExerciseId(nextId);
     setEditingSetId(null);
     setDraft(emptySetDraft());
     setMenuOpen(false);
     setError(null);
-    if (slideTimerRef.current != null) window.clearTimeout(slideTimerRef.current);
-    slideTimerRef.current = window.setTimeout(() => setSlideDir("none"), 180);
   }
 
   useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (!shouldHandleKeyboardExerciseNav(event.key, document.activeElement)) return;
-      if (event.key === "ArrowLeft") {
-        event.preventDefault();
-        goToNeighbor(-1);
-      } else if (event.key === "ArrowRight") {
-        event.preventDefault();
-        goToNeighbor(1);
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [exercises, focusedExerciseId]);
+    if (!session || session.status !== SESSION_STATUS.ACTIVE || exercises.length === 0) return;
+    const next = exerciseSearchValue(exerciseIndex);
+    if (searchParams.get("exercise") === next) return;
+    router.replace(`${pathname}?exercise=${next}`, { scroll: false });
+  }, [exerciseIndex, exercises.length, pathname, router, searchParams, session]);
 
   useEffect(() => {
     if (!session || session.status === SESSION_STATUS.ACTIVE) return;
@@ -161,7 +157,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
       }
     }
     if (current.resistanceType === RESISTANCE.EXTERNAL_WEIGHT) {
-      const weightKg = Number(draft.weightKg);
+      const weightKg = parseTrainingDecimal(draft.weightKg);
       if (!Number.isFinite(weightKg) || weightKg <= 0) {
         setError(uk ? "Вкажіть вагу (кг)." : "Enter weight (kg).");
         return;
@@ -169,7 +165,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
       payload.weightKg = weightKg;
       payload.bandNominalResistanceKg = null;
     } else if (current.resistanceType === RESISTANCE.RESISTANCE_BAND) {
-      const band = Number(draft.bandNominalResistanceKg);
+      const band = parseTrainingDecimal(draft.bandNominalResistanceKg);
       if (!Number.isFinite(band) || band <= 0) {
         setError(uk ? "Вкажіть номінальний опір резинки (кг)." : "Enter band nominal resistance (kg).");
         return;
@@ -199,9 +195,17 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         setError(await readApiError(response, uk));
         return;
       }
+      const adding = editingSetId === null;
+      const lastExercise = exerciseIndex >= exercises.length - 1;
+      const reachedPlan = adding && lastExercise && current.sets.length + 1 >= current.plannedSets
+        && current.sets.length < current.plannedSets;
       await load();
       setDraft(emptySetDraft());
       setEditingSetId(null);
+      if (reachedPlan && !finishOfferedRef.current) {
+        finishOfferedRef.current = true;
+        setFinishOffer(true);
+      }
     } catch {
       setError(uk ? "Не вдалося зберегти підхід." : "Could not save the set.");
     } finally {
@@ -241,9 +245,10 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     });
   }
 
-  async function finishSession() {
+  async function finishSession(skipConfirm = false) {
     if (!session) return;
-    if (!window.confirm(uk ? "Завершити тренування?" : "Finish this workout?")) return;
+    if (!skipConfirm && !window.confirm(uk ? "Завершити тренування?" : "Finish this workout?")) return;
+    setFinishOffer(false);
     setBusy(true);
     setError(null);
     try {
@@ -359,13 +364,17 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         backHref="/training"
         programName={session.programName}
         exercise={current}
+        previousExercise={previousExercise}
+        nextExercise={nextExercise}
         exerciseIndex={exerciseIndex}
         exerciseCount={exercises.length}
         draft={draft}
         editingSetId={editingSetId}
         busy={busy}
         error={error}
-        slideDir={slideDir}
+        clockStartedAt={session.webStartedAt}
+        clockEndedAt={session.webEndedAt}
+        clockTicking
         menuOpen={menuOpen}
         onToggleMenu={() => setMenuOpen((value) => !value)}
         onCloseMenu={() => setMenuOpen(false)}
@@ -431,6 +440,49 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
             {uk ? "Завершити тренування" : "Finish workout"}
           </button>
         ) : null}
+        finishDialog={finishOffer ? (
+          <div className={styles.workoutFinishDialog} role="presentation">
+            <div className={styles.workoutFinishCard} role="dialog" aria-labelledby="finish-offer-title">
+              <h2 id="finish-offer-title">
+                {uk ? "Завершити тренування?" : "Finish this workout?"}
+              </h2>
+              <p>
+                {completion.percent == null
+                  ? (uk ? "Немає запланованих підходів." : "No planned sets.")
+                  : (uk
+                    ? `Виконано ${completion.percent}% плану (${completion.loggedSets} / ${completion.plannedSets} підходів).`
+                    : `${completion.percent}% of the plan (${completion.loggedSets} / ${completion.plannedSets} sets).`)}
+              </p>
+              {completion.incompleteExercises.length > 0 && (
+                <>
+                  <p>{uk ? "Є вправи з меншою кількістю підходів, ніж у плані:" : "Some exercises have fewer sets than planned:"}</p>
+                  <ul>
+                    {completion.incompleteExercises.map((item) => (
+                      <li key={item.name}>{item.name}: {item.loggedSets}/{item.plannedSets}</li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              <div className={styles.workoutFinishActions}>
+                <button
+                  className={styles.liveSecondary}
+                  type="button"
+                  onClick={() => setFinishOffer(false)}
+                >
+                  {uk ? "Ще потренуюсь" : "Keep training"}
+                </button>
+                <button
+                  className={styles.liveSave}
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void finishSession(true)}
+                >
+                  {uk ? "Завершити" : "Finish"}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
       />
     );
   }
@@ -454,6 +506,14 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
               session.matchedWorkout?.endAt ?? session.webEndedAt,
               intlLocale,
               uk,
+            )}
+            {completion.percent != null && (
+              <>
+                {" · "}
+                {uk
+                  ? `${completion.percent}% плану (${completion.loggedSets}/${completion.plannedSets})`
+                  : `${completion.percent}% of plan (${completion.loggedSets}/${completion.plannedSets})`}
+              </>
             )}
           </p>
         </div>
@@ -572,7 +632,11 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
             </div>
           </div>
           <div className={styles.panelBody}>
-            {candidates.length === 0 ? (
+            {session.matchStatus === MATCH_STATUS.MATCHED ? (
+              <p className={styles.cardMeta}>
+                {uk ? "Garmin уже зіставлено з цим записом." : "Garmin is already matched to this entry."}
+              </p>
+            ) : candidates.length === 0 ? (
               <div className={styles.empty}>
                 <span>{uk ? "Кандидатів немає." : "No candidates."}</span>
               </div>
@@ -587,15 +651,12 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
                         {candidate.activeEnergyKcal !== null
                           ? ` · ${candidate.activeEnergyKcal} ${uk ? "ккал (оцінка)" : "kcal (estimate)"}`
                           : ""}
-                        {candidate.alreadyMatched
-                          ? (uk ? " · вже зіставлено" : " · already matched")
-                          : ""}
                       </p>
                     </div>
                     <button
                       className={styles.secondaryButton}
                       type="button"
-                      disabled={busy || candidate.alreadyMatched}
+                      disabled={busy}
                       onClick={() => void matchWorkout(candidate.id)}
                     >
                       {uk ? "Зіставити" : "Match"}

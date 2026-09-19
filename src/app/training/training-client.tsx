@@ -369,6 +369,14 @@ export function TrainingClient() {
                           {formatDateTime(session.occurrenceAt ?? session.webStartedAt, intlLocale)}
                           {" · "}
                           {formatDurationMinutes(session.webStartedAt, session.webEndedAt, intlLocale, uk)}
+                          {session.planCompletionPercent != null && (
+                            <>
+                              {" · "}
+                              {uk
+                                ? `${session.planCompletionPercent}% плану`
+                                : `${session.planCompletionPercent}% of plan`}
+                            </>
+                          )}
                         </p>
                       </div>
                       <span className={matchBadgeClass(session.matchStatus)}>

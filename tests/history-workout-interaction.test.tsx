@@ -148,6 +148,8 @@ describe("WorkoutDetailsDialog interaction", () => {
         onClose={() => undefined}
       />,
     );
+    expect(screen.getByRole("link", { name: /Traditional Strength Training/i }).getAttribute("href"))
+      .toBe("/training/sessions/99");
     const link = screen.getByRole("link", { name: /Edit training diary entry/i });
     expect(link.getAttribute("href")).toBe("/training/sessions/99/edit");
     expect(screen.getByText(/Push A/)).toBeTruthy();

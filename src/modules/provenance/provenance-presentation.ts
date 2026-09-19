@@ -65,8 +65,8 @@ export function workoutFeedProvenanceChip(
       tone: "observed",
       label: uk ? "Стрічка тренувань є" : "Workout feed observed",
       detail: uk
-        ? "Стрічку тренувань для цього дня синхронізовано (може бути порожньою — відпочинок)."
-        : "Workout feed was synced for this day (empty can mean a confirmed rest day).",
+        ? "Синхронізовано на цей день. Порожня стрічка може означати відпочинок."
+        : "Synced for this day. An empty feed can mean a rest day.",
     };
   }
   if (workoutFeedObserved === false) {

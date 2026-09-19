@@ -32,3 +32,17 @@ export function neighborExerciseId(
   if (next < 0 || next >= exercises.length) return null;
   return exercises[next]!.id;
 }
+
+/**
+ * `?exercise=2` is 1-based. Invalid or out-of-range values fall back to the first exercise.
+ */
+export function parseExerciseSearchParam(raw: string | null | undefined, exerciseCount: number): number {
+  if (exerciseCount <= 0) return 0;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > exerciseCount) return 0;
+  return value - 1;
+}
+
+export function exerciseSearchValue(index: number): string {
+  return String(Math.max(0, index) + 1);
+}

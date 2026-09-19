@@ -867,7 +867,9 @@ export class TrainingService {
       .toMatchCandidateDtos(rows, sessionId)
       .filter((candidate) =>
         canonicalizeWorkoutType(candidate.type).classification === "traditional-strength-training"
-      );
+      )
+      .filter((candidate) => candidate.id !== session.matchedWorkoutId)
+      .filter((candidate) => !candidate.alreadyMatched);
   }
 
   async manualMatch(

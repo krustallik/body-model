@@ -921,4 +921,25 @@ describe("TrainingService matching cases", () => {
     expect(session?.matchedWorkout?.startAt).toBe("2026-09-17T16:04:00.000Z");
     expect(session?.ordinaryTonnageKg).toBe(720);
   });
+
+  it("hides the current match and already-matched Garmin candidates", async () => {
+    const repo = {
+      getSession: vi.fn().mockResolvedValue({
+        webStartedAt: "2026-09-19T15:00:00.000Z",
+        webEndedAt: "2026-09-19T16:20:00.000Z",
+        matchedWorkoutId: 10,
+      }),
+      findWorkoutsNearInterval: vi.fn().mockResolvedValue([]),
+      toMatchCandidateDtos: vi.fn().mockReturnValue([
+        { id: 10, type: "Traditional Strength Training", alreadyMatched: false },
+        { id: 11, type: "Traditional Strength Training", alreadyMatched: true },
+        { id: 12, type: "Traditional Strength Training", alreadyMatched: false },
+        { id: 13, type: "Stair Climbing", alreadyMatched: false },
+      ]),
+    };
+    const isolated = new TrainingService({} as never, repo as never);
+    await expect(isolated.listMatchCandidates(42)).resolves.toEqual([
+      expect.objectContaining({ id: 12 }),
+    ]);
+  });
 });

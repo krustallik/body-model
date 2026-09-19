@@ -85,7 +85,13 @@ export function WorkoutDetailsDialog({
             const energy = workoutEnergyProvenanceChip(workout.activeEnergyKcal, locale);
             return (
             <article className={styles.workoutDetailCard} key={`${workout.startAt}-${workout.type}`}>
-              <strong>{displayWorkoutType(workout)}</strong>
+              {workout.classification === "traditional-strength-training" && workout.linkedTrainingSessionId != null ? (
+                <Link className={styles.workoutTitleLink} href={`/training/sessions/${workout.linkedTrainingSessionId}`}>
+                  <strong>{displayWorkoutType(workout)}</strong>
+                </Link>
+              ) : (
+                <strong>{displayWorkoutType(workout)}</strong>
+              )}
               <p>
                 {formatClock(workout.startAt, intlLocale)}
                 –

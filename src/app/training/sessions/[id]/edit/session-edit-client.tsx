@@ -1,14 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useI18n } from "@/i18n/i18n-provider";
 import {
   RESISTANCE,
   SESSION_STATUS,
   type ResistanceType,
 } from "@/modules/training/training.constants";
+import { parseTrainingDecimal } from "@/modules/training/parse-training-decimal";
 import type {
   ExerciseCatalogDto,
   StrengthSessionDto,
@@ -17,11 +18,12 @@ import type {
   TrainingProgramSummaryDto,
 } from "@/modules/training/training.types";
 import {
+  exerciseSearchValue,
   indexOfExerciseId,
   neighborExerciseId,
+  parseExerciseSearchParam,
   resolveFocusedExerciseId,
 } from "../../../exercise-pager";
-import { shouldHandleKeyboardExerciseNav } from "../../../horizontal-swipe";
 import { readApiError, resistanceLabel } from "../../../training-labels";
 import {
   emptySetDraft,
@@ -35,6 +37,8 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
   const { locale } = useI18n();
   const uk = locale === "uk";
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [session, setSession] = useState<StrengthSessionDto | null>(null);
   const [catalog, setCatalog] = useState<ExerciseCatalogDto[]>([]);
   const [programs, setPrograms] = useState<TrainingProgramSummaryDto[]>([]);
@@ -50,22 +54,20 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [slideDir, setSlideDir] = useState<"none" | "left" | "right">("none");
-  const slideTimerRef = useRef<number | null>(null);
-
-  useEffect(() => () => {
-    if (slideTimerRef.current != null) window.clearTimeout(slideTimerRef.current);
-  }, []);
 
   const applySession = useCallback((next: StrengthSessionDto, preferId: number | null = focusedExerciseId) => {
     const ordered = next.exercises.slice().sort((a, b) => a.order - b.order);
-    const nextFocus = resolveFocusedExerciseId(ordered, preferId);
+    const urlIndex = parseExerciseSearchParam(searchParams.get("exercise"), ordered.length);
+    const nextFocus = resolveFocusedExerciseId(
+      ordered,
+      preferId ?? ordered[urlIndex]?.id ?? null,
+    );
     setSession(next);
     setProgramId(next.programId);
     setFocusedExerciseId(nextFocus);
     setEditingSet(null);
     setDraft(emptySetDraft());
-  }, [focusedExerciseId]);
+  }, [focusedExerciseId, searchParams]);
 
   const load = useCallback(async () => {
     setError(null);
@@ -116,35 +118,25 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
   );
   const exerciseIndex = indexOfExerciseId(exercises, focusedExerciseId);
   const current = exercises.find((exercise) => exercise.id === focusedExerciseId) ?? exercises[0] ?? null;
+  const previousExercise = exerciseIndex > 0 ? exercises[exerciseIndex - 1] ?? null : null;
+  const nextExercise = exerciseIndex < exercises.length - 1 ? exercises[exerciseIndex + 1] ?? null : null;
 
   function goToNeighbor(delta: -1 | 1) {
     const nextId = neighborExerciseId(exercises, focusedExerciseId, delta);
     if (nextId == null) return;
-    setSlideDir(delta > 0 ? "left" : "right");
     setFocusedExerciseId(nextId);
     setEditingSet(null);
     setMenu("closed");
     setError(null);
     setDraft(emptySetDraft());
-    if (slideTimerRef.current != null) window.clearTimeout(slideTimerRef.current);
-    slideTimerRef.current = window.setTimeout(() => setSlideDir("none"), 180);
   }
 
   useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (!shouldHandleKeyboardExerciseNav(event.key, document.activeElement)) return;
-      if (event.key === "ArrowLeft") {
-        event.preventDefault();
-        goToNeighbor(-1);
-      } else if (event.key === "ArrowRight") {
-        event.preventDefault();
-        goToNeighbor(1);
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [exercises, focusedExerciseId]);
+    if (!session || exercises.length === 0) return;
+    const next = exerciseSearchValue(exerciseIndex);
+    if (searchParams.get("exercise") === next) return;
+    router.replace(`${pathname}?exercise=${next}`, { scroll: false });
+  }, [exerciseIndex, exercises.length, pathname, router, searchParams, session]);
 
   async function mutate(path: string, init: RequestInit): Promise<StrengthSessionDto | null> {
     setBusy(true);
@@ -295,7 +287,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
       }
     }
     if (current.resistanceType === RESISTANCE.EXTERNAL_WEIGHT) {
-      const weight = Number(draft.weightKg);
+      const weight = parseTrainingDecimal(draft.weightKg);
       if (!Number.isFinite(weight) || weight <= 0) {
         setError(uk ? "Вкажіть вагу." : "Enter weight.");
         return;
@@ -303,7 +295,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
       payload.weightKg = weight;
     }
     if (current.resistanceType === RESISTANCE.RESISTANCE_BAND) {
-      const band = Number(draft.bandNominalResistanceKg);
+      const band = parseTrainingDecimal(draft.bandNominalResistanceKg);
       if (!Number.isFinite(band) || band <= 0) {
         setError(uk ? "Вкажіть опір резинки." : "Enter band resistance.");
         return;
@@ -551,13 +543,17 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
       backHref="/training/backfill"
       programName={session.programName}
       exercise={current}
+      previousExercise={previousExercise}
+      nextExercise={nextExercise}
       exerciseIndex={exerciseIndex}
       exerciseCount={exercises.length}
       draft={draft}
       editingSetId={editingSet?.id ?? null}
       busy={busy}
       error={error}
-      slideDir={slideDir}
+      clockStartedAt={session.webStartedAt ?? session.matchedWorkout?.startAt ?? null}
+      clockEndedAt={session.webEndedAt ?? session.matchedWorkout?.endAt ?? null}
+      clockTicking={false}
       menuOpen={menu !== "closed"}
       onToggleMenu={() => setMenu((value) => (value === "closed" ? "root" : "closed"))}
       onCloseMenu={() => setMenu("closed")}

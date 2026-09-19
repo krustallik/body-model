@@ -12,6 +12,8 @@ const routerReplace = vi.fn();
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: routerPush, replace: routerReplace }),
+  usePathname: () => "/training/sessions/88/edit",
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 vi.mock("@/components/app-nav", () => ({

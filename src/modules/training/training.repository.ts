@@ -23,6 +23,7 @@ import {
 } from "./training.constants";
 import type { ProgramReconcilePlan } from "./training.program-reconcile";
 import { ordinaryExternalWeightTonnageKg } from "./training.tonnage";
+import { sessionPlanCompletion } from "./session-plan-completion";
 import type {
   ExerciseCatalogDto,
   ExerciseHistoryEntryDto,
@@ -128,6 +129,13 @@ const sessionSummarySelect = {
   createdAt: true,
   program: { select: { name: true } },
   matchedWorkout: { select: { startAt: true } },
+  exercises: {
+    select: {
+      snapshotExerciseName: true,
+      plannedSets: true,
+      _count: { select: { sets: true } },
+    },
+  },
 } satisfies Prisma.StrengthDiarySessionSelect;
 
 type CatalogRecord = Prisma.ExerciseCatalogGetPayload<{ select: typeof catalogSelect }>;
@@ -246,8 +254,24 @@ export function toSessionDto(record: SessionDetailRecord): StrengthSessionDto {
     matchedWorkout: toMatchedWorkoutDto(record.matchedWorkout),
     exercises,
     ordinaryTonnageKg: ordinaryExternalWeightTonnageKg(tonnageSets),
+    ...planCompletionFields(exercises),
     createdAt: record.createdAt.toISOString(),
     updatedAt: record.updatedAt.toISOString(),
+  };
+}
+
+function planCompletionFields(
+  exercises: ReadonlyArray<{
+    snapshotExerciseName: string;
+    plannedSets: number;
+    sets: ReadonlyArray<unknown> | { length: number };
+  }>,
+) {
+  const completion = sessionPlanCompletion(exercises);
+  return {
+    loggedSets: completion.loggedSets,
+    plannedSets: completion.plannedSets,
+    planCompletionPercent: completion.percent,
   };
 }
 
@@ -280,6 +304,11 @@ function toSessionSummaryDto(record: SessionSummaryRecord): StrengthSessionSumma
     matchMethod: (record.matchMethod as MatchMethod | null) ?? null,
     matchedWorkoutId: record.matchedWorkoutId,
     occurrenceAt: occurrenceInstant(record)?.toISOString() ?? null,
+    ...planCompletionFields(record.exercises.map((exercise) => ({
+      snapshotExerciseName: exercise.snapshotExerciseName,
+      plannedSets: exercise.plannedSets,
+      sets: { length: exercise._count.sets },
+    }))),
   };
 }
 

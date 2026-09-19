@@ -1029,6 +1029,13 @@
     grid-area: actions;
     justify-content: flex-start;
   }
+
+  .workoutShell .liveSetRow {
+    grid-template-columns: 1.4rem minmax(0, 1fr) auto auto auto;
+    grid-template-areas:
+      "num load reps rir actions"
+      "comment comment comment comment comment";
+  }
 }
 
 @media (min-width: 720px) {
@@ -1087,8 +1094,19 @@
 }
 
 .workoutChromeBack,
-.workoutChromeMenu {
+.workoutChromeMenu,
+.workoutTimer {
   pointer-events: auto;
+}
+
+.workoutTimer {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.98rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
 }
 
 .workoutChromeMenu {
@@ -1361,6 +1379,49 @@ a.editMenuItem + .editMenuDanger {
   min-height: 0;
 }
 
+.workoutCarouselViewport {
+  overflow: hidden;
+  width: 100%;
+  min-width: 0;
+  touch-action: pan-y;
+}
+
+.workoutCarouselTrack {
+  display: flex;
+  width: 300%;
+  will-change: transform;
+}
+
+.workoutCarouselPane {
+  flex: 0 0 33.333%;
+  width: 33.333%;
+  min-width: 0;
+}
+
+.workoutCarouselPeek {
+  display: grid;
+  gap: 0.45rem;
+  align-content: start;
+  min-height: 100%;
+  padding: 0 0.4rem;
+  opacity: 0.72;
+}
+
+.workoutCarouselPeek .workoutVisual {
+  min-height: 10rem;
+  max-height: min(42dvh, 18rem);
+}
+
+.workoutCarouselPeekName {
+  font-size: 0.95rem;
+  font-weight: 750;
+}
+
+.workoutCarouselPeekMeta {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
 .workoutSideNav {
   display: none;
 }
@@ -1581,20 +1642,28 @@ a.editMenuItem + .editMenuDanger {
 
 .workoutShell .liveSetRow {
   display: grid;
-  grid-template-columns: 2rem minmax(0, 1fr) auto auto;
+  grid-template-columns: 2rem minmax(0, 1fr) auto auto auto;
   grid-template-areas:
-    "num load reps actions"
-    "comment comment comment comment";
-  gap: 0.2rem 0.35rem;
+    "num load reps rir actions"
+    "comment comment comment comment comment";
+  gap: 0.2rem 0.45rem;
   padding: 0.4rem 0.45rem;
   border-radius: 0.5rem;
   font-size: 0.9rem;
   min-height: 0;
+  align-items: baseline;
 }
 
 .workoutShell .liveSetNum { grid-area: num; }
 .workoutShell .liveSetLoad { grid-area: load; }
 .workoutShell .liveSetReps { grid-area: reps; }
+.workoutShell .liveSetRir {
+  grid-area: rir;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 750;
+  white-space: nowrap;
+}
 .workoutShell .liveSetActions { grid-area: actions; }
 
 .liveSetComment {
@@ -1683,13 +1752,51 @@ a.editMenuItem + .editMenuDanger {
   gap: 0.15rem;
 }
 
+.workoutHistoryHint,
+.workoutHistoryCopied {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
+.workoutHistoryCopied {
+  color: var(--training-success-strong);
+  font-weight: 700;
+}
+
 .workoutHistorySets li {
   display: grid;
-  grid-template-columns: 2rem minmax(0, 1fr);
-  gap: 0.35rem 0.5rem;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.15rem;
   align-items: baseline;
   font-size: 0.84rem;
   font-weight: 700;
+}
+
+.workoutHistorySetBtn {
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr);
+  gap: 0.35rem 0.5rem;
+  width: 100%;
+  margin: 0;
+  padding: 0.2rem 0.15rem;
+  border: 0;
+  border-radius: 0.4rem;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workoutHistorySetBtn:hover {
+  background: color-mix(in srgb, var(--training-elevated) 70%, transparent);
+}
+
+.workoutHistorySetBtn:active {
+  transform: var(--training-press);
 }
 
 .workoutHistorySets em {
@@ -1720,22 +1827,50 @@ a.editMenuItem + .editMenuDanger {
   min-height: 2.35rem;
 }
 
-.editSlideLeft {
-  animation: editSlideFromRight 160ms ease-out;
+.workoutFinishDialog {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: end center;
+  padding: 0.75rem;
+  background: rgb(0 0 0 / 45%);
 }
 
-.editSlideRight {
-  animation: editSlideFromLeft 160ms ease-out;
+.workoutFinishCard {
+  width: min(26rem, 100%);
+  margin-bottom: calc(0.5rem + env(safe-area-inset-bottom));
+  padding: 1rem 1.05rem;
+  border: 1px solid var(--training-border);
+  border-radius: 0.85rem;
+  background: var(--training-elevated);
+  display: grid;
+  gap: 0.55rem;
 }
 
-@keyframes editSlideFromRight {
-  from { opacity: 0.35; transform: translateX(12px); }
-  to { opacity: 1; transform: translateX(0); }
+.workoutFinishCard h2 {
+  margin: 0;
+  font-size: 1.05rem;
 }
 
-@keyframes editSlideFromLeft {
-  from { opacity: 0.35; transform: translateX(-12px); }
-  to { opacity: 1; transform: translateX(0); }
+.workoutFinishCard p,
+.workoutFinishCard li {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.4;
+}
+
+.workoutFinishCard ul {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.workoutFinishActions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.4rem;
+  margin-top: 0.25rem;
 }
 
 .trainingHubPage {

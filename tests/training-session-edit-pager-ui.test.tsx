@@ -8,9 +8,12 @@ vi.mock("@/i18n/i18n-provider", () => ({
 }));
 
 const routerPush = vi.fn();
+const searchParams = new URLSearchParams();
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: routerPush, replace: vi.fn() }),
+  usePathname: () => "/training/sessions/88/edit",
+  useSearchParams: () => searchParams,
 }));
 
 import { SessionEditClient } from "@/app/training/sessions/[id]/edit/session-edit-client";
@@ -112,6 +115,7 @@ describe("Session edit exercise pager", () => {
     cleanup();
     vi.restoreAllMocks();
     routerPush.mockReset();
+    searchParams.delete("exercise");
   });
 
   function stubFetch(session = makeSession()) {
@@ -224,7 +228,7 @@ describe("Session edit exercise pager", () => {
       expect(screen.getByText("Жим гантелей на похилій лаві вгору (30°)")).toBeTruthy();
       expect(screen.getByText("1 / 3 exercises")).toBeTruthy();
     });
-    expect(screen.queryByText("Розгинання однієї руки в блоці")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Розгинання однієї руки в блоці" })).toBeNull();
     expect(screen.getByText(/30 kg|30 кг/)).toBeTruthy();
     expect(screen.getAllByText("1 / 3 sets").length).toBeGreaterThan(0);
     expect(screen.queryByText(/UI Review/i)).toBeNull();
@@ -244,7 +248,7 @@ describe("Session edit exercise pager", () => {
       expect(screen.getByText("Розгинання однієї руки в блоці")).toBeTruthy();
       expect(screen.getByText("2 / 3 exercises")).toBeTruthy();
     });
-    expect(screen.queryByText("Жим гантелей на похилій лаві вгору (30°)")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Жим гантелей на похилій лаві вгору (30°)" })).toBeNull();
     expect(screen.getByLabelText(/Band resistance/i)).toBeTruthy();
     expect(screen.queryByLabelText(/Weight, kg/i)).toBeNull();
     expect((screen.getByRole("img", {
@@ -289,7 +293,7 @@ describe("Session edit exercise pager", () => {
       expect(screen.getByText("Розгинання однієї руки в блоці")).toBeTruthy();
       expect(screen.getByText("1 / 2 exercises")).toBeTruthy();
     });
-    expect(screen.queryByText("Жим гантелей на похилій лаві вгору (30°)")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Жим гантелей на похилій лаві вгору (30°)" })).toBeNull();
   });
 
   it("supports editing a set from the compact list", async () => {

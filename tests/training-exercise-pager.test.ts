@@ -1,11 +1,14 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it } from "vitest";
 import {
+  exerciseSearchValue,
   indexOfExerciseId,
   neighborExerciseId,
+  parseExerciseSearchParam,
   resolveFocusedExerciseId,
 } from "@/app/training/exercise-pager";
 import {
+  classifyCarouselRelease,
   classifyPointerSwipe,
   isEditableSwipeTarget,
   shouldHandleKeyboardExerciseNav,
@@ -31,6 +34,13 @@ describe("exercise pager focus", () => {
     expect(neighborExerciseId(exercises, 10, 1)).toBe(20);
     expect(neighborExerciseId(exercises, 30, 1)).toBeNull();
     expect(indexOfExerciseId(exercises, 30)).toBe(2);
+  });
+
+  it("parses 1-based ?exercise= and falls back to the first", () => {
+    expect(parseExerciseSearchParam("2", 3)).toBe(1);
+    expect(parseExerciseSearchParam("9", 3)).toBe(0);
+    expect(parseExerciseSearchParam("nope", 3)).toBe(0);
+    expect(exerciseSearchValue(0)).toBe("1");
   });
 });
 
@@ -64,5 +74,25 @@ describe("horizontal swipe classification", () => {
     expect(shouldHandleKeyboardExerciseNav("ArrowRight", document.body)).toBe(true);
     expect(shouldHandleKeyboardExerciseNav("Enter", document.body)).toBe(false);
     input.remove();
+  });
+});
+
+describe("carousel release", () => {
+  it("commits a wide enough left drag and snaps back a short one", () => {
+    expect(classifyCarouselRelease({
+      startX: 200, startY: 120, endX: 40, endY: 122, durationMs: 180,
+      paneWidth: 320, canPrev: true, canNext: true,
+    })).toEqual({ type: "commit", direction: "left" });
+    expect(classifyCarouselRelease({
+      startX: 200, startY: 120, endX: 180, endY: 122, durationMs: 180,
+      paneWidth: 320, canPrev: true, canNext: true,
+    }).type).toBe("snap-back");
+  });
+
+  it("does not page past the ends", () => {
+    expect(classifyCarouselRelease({
+      startX: 200, startY: 120, endX: 40, endY: 122, durationMs: 180,
+      paneWidth: 320, canPrev: true, canNext: false,
+    }).type).toBe("snap-back");
   });
 });

@@ -132,6 +132,10 @@ export type StrengthSessionDto = {
   matchedWorkout: MatchedWorkoutDto | null;
   exercises: StrengthSessionExerciseDto[];
   ordinaryTonnageKg: number | null;
+  loggedSets?: number;
+  plannedSets?: number;
+  /** May exceed 100 when extra sets were logged. Null if plannedSets is 0. */
+  planCompletionPercent?: number | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -148,6 +152,9 @@ export type StrengthSessionSummaryDto = {
   matchMethod: MatchMethod | null;
   matchedWorkoutId: number | null;
   occurrenceAt: string | null;
+  loggedSets: number;
+  plannedSets: number;
+  planCompletionPercent: number | null;
 };
 
 export type MatchCandidateDto = {

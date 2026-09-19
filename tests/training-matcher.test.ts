@@ -73,6 +73,34 @@ describe("matchDiaryToWorkouts", () => {
     expect(result.kind).toBe("NO_MATCH");
   });
 
+  it("auto-matches a unique strength workout with a 14-minute start skew and identical end", () => {
+    const result = matchDiaryToWorkouts(
+      {
+        startAt: new Date("2026-09-19T15:38:00Z"),
+        endAt: new Date("2026-09-19T16:46:00Z"),
+      },
+      [strength(19, "2026-09-19T15:24:00Z", "2026-09-19T16:46:00Z")],
+    );
+    expect(result.kind).toBe("MATCH");
+    expect(result.workoutId).toBe(19);
+  });
+
+  it("auto-matches a unique candidate at the ±1 hour start bound", () => {
+    const result = matchDiaryToWorkouts(session, [
+      strength(6, "2026-09-17T15:02:00Z", "2026-09-17T16:57:00Z"),
+    ]);
+    expect(result.kind).toBe("MATCH");
+    expect(result.workoutId).toBe(6);
+  });
+
+  it("does not treat a workout more than an hour off as a candidate", () => {
+    const result = matchDiaryToWorkouts(session, [
+      strength(7, "2026-09-17T15:01:00Z", "2026-09-17T16:17:00Z"),
+    ]);
+    expect(result.kind).toBe("NO_MATCH");
+    expect(result.plausible).toHaveLength(0);
+  });
+
   it("rejects unique but weak duration compatibility as NO_MATCH", () => {
     const result = matchDiaryToWorkouts(session, [
       // Overlaps but duration relative delta exceeds maxDurationRelativeDelta.

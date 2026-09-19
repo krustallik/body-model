@@ -84,22 +84,24 @@ export const DEFAULT_TRAINING_PROFILE_ID = 1;
  * Conservative time-window thresholds for diary ↔ Garmin strength matching.
  * Prefer missed auto-match over a wrong link. Values are product engineering
  * choices for sync latency / clock skew — not physiological parameters.
+ * Unique traditional-strength candidates within ±1 hour auto-match; two
+ * plausible workouts in that window stay AMBIGUOUS.
  */
 export const MATCH_THRESHOLDS = {
   /** Maximum |session.start − workout.start| for a plausible candidate. */
-  maxStartDeltaMs: 20 * 60_000,
+  maxStartDeltaMs: 60 * 60_000,
   /** Maximum |session.end − workout.end| for a plausible candidate. */
-  maxEndDeltaMs: 20 * 60_000,
+  maxEndDeltaMs: 60 * 60_000,
   /** Absolute minimum overlap between intervals. */
   minOverlapMs: 5 * 60_000,
   /** Minimum overlap as a fraction of the shorter interval. */
   minOverlapRatio: 0.5,
   /** Maximum relative duration difference |d1−d2| / max(d1,d2). */
   maxDurationRelativeDelta: 0.35,
-  /** Tighter start window required for a uniquely strong auto-match. */
-  strongStartDeltaMs: 10 * 60_000,
-  /** Tighter end window required for a uniquely strong auto-match. */
-  strongEndDeltaMs: 10 * 60_000,
+  /** Start window required for a uniquely strong auto-match. */
+  strongStartDeltaMs: 60 * 60_000,
+  /** End window required for a uniquely strong auto-match. */
+  strongEndDeltaMs: 60 * 60_000,
   /** Stronger overlap fraction of the shorter interval for auto-match. */
   strongMinOverlapRatio: 0.7,
   /**

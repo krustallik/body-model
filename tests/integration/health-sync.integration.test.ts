@@ -265,7 +265,11 @@ describe("Apple Health sync with PostgreSQL", () => {
       orderBy: { id: "desc" },
       select: { rawBody: true },
     });
-    expect(JSON.parse(audit.rawBody!)).toMatchObject({ steps: [expect.objectContaining({ stepCounts: expect.any(String) })] });
+    expect(JSON.parse(audit.rawBody!)).toMatchObject({
+      days: [expect.objectContaining({
+        steps: [expect.objectContaining({ stepCounts: expect.any(String) })],
+      })],
+    });
   });
 
   it("does not create duplicate rows during concurrent retries", async () => {

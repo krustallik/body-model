@@ -231,12 +231,13 @@ describe("Apple Health sync with PostgreSQL", () => {
     expect(stored.rawPayload).toEqual(originalDay);
   });
 
-  it("rejects the old multi-day sync payload", async () => {
+  it("accepts a multi-day sync payload for the recent three-day window", async () => {
     const response = await POST(
       syncRequest([{ date: testDates[2], steps: 200 }, { date: testDates[3], steps: 200 }]),
     );
-    expect(response.status).toBe(400);
-    expect(await prisma.dailyHealthData.count({ where: { date: { in: testDates.slice(2, 4) } } })).toBe(0);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ received: 2, created: 2, updated: 0 });
+    expect(await prisma.dailyHealthData.count({ where: { date: { in: testDates.slice(2, 4) } } })).toBe(2);
   });
 
   it("does not create duplicate rows during concurrent retries", async () => {

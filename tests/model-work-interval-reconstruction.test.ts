@@ -246,6 +246,24 @@ describe("work interval walking reconstruction", () => {
     expect(result.outsideWorkWalkingDistanceKm).toBeCloseTo(0.9125, 10);
   });
 
+  it("does not double-count overlapping Apple Health walking samples in a work window", () => {
+    const result = estimateDailyWorkWalking({
+      snapshots: [],
+      activityIntervals: {
+        steps: [],
+        walkingDistanceKm: [
+          { startTime: at("08:00"), endTime: at("10:00"), value: 2 },
+          { startTime: at("08:00"), endTime: at("10:00"), value: 2 },
+          { startTime: at("08:00"), endTime: at("12:00"), value: 4 },
+        ],
+      },
+      intervals: [{ id: 1, startTime: at("08:00"), endTime: at("10:00") }],
+      dailyWalkingDistanceKm: 4,
+    });
+    expect(result.workWalkingDistanceKm).toBe(2);
+    expect(result.outsideWorkWalkingDistanceKm).toBe(2);
+  });
+
   it("returns unavailable outside distance for missing or inconsistent inputs", () => {
     const missing = estimateDailyWorkWalking({
       snapshots: [], intervals: [{ id: 1, startTime: at("08:00"), endTime: at("09:00") }],

@@ -105,6 +105,21 @@ describe("WorkoutStepperEvidenceV7", () => {
     });
   });
 
+  it("does not double-count overlapping step intervals inside a stepper workout", () => {
+    const result = canonicalizeWorkoutStepperEvidenceV7({
+      workoutEnergy: workout(),
+      snapshots: [],
+      stepIntervals: [
+        { id: 1, startAt: "2026-09-17T16:00:00.000Z", endAt: "2026-09-17T16:30:00.000Z", stepCount: 90 },
+        { id: 2, startAt: "2026-09-17T16:00:00.000Z", endAt: "2026-09-17T16:30:00.000Z", stepCount: 90 },
+      ],
+    });
+    expect(result.bracketedSteps).toMatchObject({
+      availability: "available",
+      derivedStepDelta: { value: 90, provenance: "health-step-interval-overlap" },
+    });
+  });
+
   it("does not fall back to snapshots when modern interval records leave a coverage gap", () => {
     const result = canonicalizeWorkoutStepperEvidenceV7({
       workoutEnergy: workout(),

@@ -161,6 +161,81 @@ function validateActivitySamples(samples: readonly ActivityIntervalSample[]): vo
   }
 }
 
+function remainingRanges(
+  start: number,
+  end: number,
+  blocked: readonly { start: number; end: number }[],
+): Array<{ start: number; end: number }> {
+  let parts = end > start ? [{ start, end }] : [];
+  for (const block of blocked) {
+    parts = parts.flatMap((part) => {
+      const lo = Math.max(part.start, block.start);
+      const hi = Math.min(part.end, block.end);
+      if (hi <= lo) return [part];
+      const out: Array<{ start: number; end: number }> = [];
+      if (part.start < lo) out.push({ start: part.start, end: lo });
+      if (hi < part.end) out.push({ start: hi, end: part.end });
+      return out;
+    });
+  }
+  return parts.filter((part) => part.end > part.start);
+}
+
+export type IntervalAllocationClaim = { start: number; end: number };
+
+/**
+ * Attribute interval-sample values onto a window without double-counting overlap.
+ * Shorter samples claim time first so nested hourly records beat a day-long dump.
+ */
+export function allocateIntervalSampleValue(input: {
+  samples: readonly ActivityIntervalSample[];
+  startTime: Date;
+  endTime: Date;
+  claimedMs?: IntervalAllocationClaim[];
+  excludedWindows?: readonly { startTime: Date; endTime: Date }[];
+}): { value: number; claimedSampleIndexes: number[] } {
+  const windowStart = validateTarget(input.startTime);
+  const windowEnd = validateTarget(input.endTime);
+  if (windowEnd <= windowStart) throw new RangeError("allocation window must have positive duration");
+  validateActivitySamples(input.samples);
+
+  const blocked: IntervalAllocationClaim[] = [
+    ...(input.claimedMs ?? []),
+    ...(input.excludedWindows ?? []).map((window) => ({
+      start: window.startTime.getTime(),
+      end: window.endTime.getTime(),
+    })),
+  ];
+  const ranked = input.samples
+    .map((sample, index) => ({ sample, index }))
+    .sort((left, right) => {
+      const leftDuration = left.sample.endTime.getTime() - left.sample.startTime.getTime();
+      const rightDuration = right.sample.endTime.getTime() - right.sample.startTime.getTime();
+      return leftDuration - rightDuration || left.sample.startTime.getTime() - right.sample.startTime.getTime();
+    });
+
+  let value = 0;
+  const newlyClaimed: IntervalAllocationClaim[] = [];
+  const claimedSampleIndexes: number[] = [];
+  for (const { sample, index } of ranked) {
+    const sampleStart = sample.startTime.getTime();
+    const sampleEnd = sample.endTime.getTime();
+    const overlapStart = Math.max(windowStart, sampleStart);
+    const overlapEnd = Math.min(windowEnd, sampleEnd);
+    const free = remainingRanges(overlapStart, overlapEnd, [...blocked, ...newlyClaimed]);
+    if (free.length === 0) continue;
+    let used = false;
+    for (const piece of free) {
+      value += sample.value * (piece.end - piece.start) / (sampleEnd - sampleStart);
+      newlyClaimed.push(piece);
+      used = true;
+    }
+    if (used) claimedSampleIndexes.push(index);
+  }
+  input.claimedMs?.push(...newlyClaimed);
+  return { value, claimedSampleIndexes };
+}
+
 /**
  * Apple Health interval samples record a value over a span, rather than a
  * cumulative counter at one point. Allocate a boundary-crossing sample by the
@@ -183,12 +258,11 @@ export function estimateIntervalSampleMetric(input: {
     });
     return { value: null, start: unavailable(input.startTime), end: unavailable(input.endTime), reason: "insufficient-data" };
   }
-  const value = input.samples.reduce((sum, sample) => {
-    const sampleStart = sample.startTime.getTime();
-    const sampleEnd = sample.endTime.getTime();
-    const overlap = Math.max(0, Math.min(end, sampleEnd) - Math.max(start, sampleStart));
-    return sum + sample.value * overlap / (sampleEnd - sampleStart);
-  }, 0);
+  const { value } = allocateIntervalSampleValue({
+    samples: input.samples,
+    startTime: input.startTime,
+    endTime: input.endTime,
+  });
   const sourceTimes = input.samples
     .filter((sample) => sample.startTime.getTime() < end && sample.endTime.getTime() > start)
     .flatMap((sample) => [sample.startTime.toISOString(), sample.endTime.toISOString()]);

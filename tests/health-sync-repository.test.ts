@@ -19,6 +19,7 @@ function repositoryFixture(existingDates: string[] = [], existingWorkouts: Array
       upsert: vi.fn().mockImplementation(({ where }: { where: { date: string } }) =>
         Promise.resolve({ id: where.date === "2026-08-21" ? 21 : 22 }),
       ),
+      update: vi.fn().mockResolvedValue({}),
     },
     workout: {
       findMany: vi.fn().mockResolvedValue(existingWorkouts),
@@ -34,8 +35,9 @@ function repositoryFixture(existingDates: string[] = [], existingWorkouts: Array
     },
     healthActivityInterval: {
       createMany: vi.fn().mockResolvedValue({ count: 1 }),
+      deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
       aggregate: vi.fn().mockImplementation(({ where }: { where: { metric: string } }) => Promise.resolve({
-        _sum: { value: where.metric === "steps" ? { toNumber: () => 60 } : { toNumber: () => 0.5 } },
+        _sum: { value: where.metric === "steps" ? { toNumber: () => 60 } : 0.5 },
       })),
     },
   };
@@ -96,16 +98,50 @@ describe("Prisma health synchronization repository", () => {
         values: [0.5],
       },
     });
+    expect(transaction.healthActivityInterval.deleteMany).toHaveBeenCalledWith({
+      where: { date: "2026-09-19", metric: "walking-distance-km" },
+    });
     expect(transaction.healthActivityInterval.createMany).toHaveBeenCalledWith({
-      data: expect.arrayContaining([
-        expect.objectContaining({ metric: "steps", value: 60, sourceFingerprint: expect.stringContaining("steps|") }),
-        expect.objectContaining({ metric: "walking-distance-km", value: 0.5 }),
-      ]),
+      data: [expect.objectContaining({ metric: "steps", value: 60, sourceFingerprint: expect.stringContaining("steps|") })],
       skipDuplicates: true,
     });
-    expect(transaction.dailyHealthData.upsert).toHaveBeenLastCalledWith(expect.objectContaining({
+    expect(transaction.healthActivityInterval.createMany).toHaveBeenCalledWith({
+      data: [expect.objectContaining({ metric: "walking-distance-km", value: 0.5 })],
+      skipDuplicates: true,
+    });
+    expect(transaction.dailyHealthData.update).toHaveBeenCalledWith(expect.objectContaining({
       where: { date: "2026-09-19" },
-      update: { steps: 60, walkingDistanceKm: expect.anything() },
+      data: { steps: 60 },
+    }));
+    expect(transaction.dailyHealthData.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { date: "2026-09-19" },
+      data: { walkingDistanceKm: 0.5 },
+    }));
+  });
+
+  it("keeps only the synced day's walking intervals and replaces prior rows", async () => {
+    const { repository, transaction } = repositoryFixture();
+    await repository.syncDay({
+      date: "2026-09-19",
+      walkingDistanceIntervals: {
+        starts: ["2026-09-17T08:00:00+02:00", "2026-09-19T09:00:00+02:00"],
+        ends: ["2026-09-17T08:15:00+02:00", "2026-09-19T09:15:00+02:00"],
+        values: [12.4, 8.1],
+      },
+    });
+    expect(transaction.healthActivityInterval.deleteMany).toHaveBeenCalledWith({
+      where: { date: "2026-09-19", metric: "walking-distance-km" },
+    });
+    expect(transaction.healthActivityInterval.createMany).toHaveBeenCalledWith({
+      data: [expect.objectContaining({
+        date: "2026-09-19",
+        metric: "walking-distance-km",
+        value: 8.1,
+      })],
+      skipDuplicates: true,
+    });
+    expect(transaction.dailyHealthData.upsert).not.toHaveBeenCalledWith(expect.objectContaining({
+      where: { date: "2026-09-17" },
     }));
   });
 

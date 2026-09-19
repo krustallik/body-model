@@ -189,8 +189,9 @@ model HealthSyncAudit {
 }
 
 /**
- * Apple Health quantity samples. Unlike HealthSyncSnapshot, these are source
- * measurement intervals and may be replayed for the recent three-day window.
+ * Apple Health quantity samples for one local calendar day.
+ * A three-day Shortcut replay is applied per synced day, replacing that day's
+ * rows rather than appending across the window.
  */
 model HealthActivityInterval {
   id                Int      @id @default(autoincrement())

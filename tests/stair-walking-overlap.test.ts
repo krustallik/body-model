@@ -294,6 +294,21 @@ describe("reconstructStairWalkingOverlap attribution", () => {
     expect(result.overlapDistanceKm).toBeCloseTo(0.4, 12);
   });
 
+  it("splits one walking interval across two stair sessions instead of claiming it once", () => {
+    const result = reconstructStairWalkingOverlap({
+      snapshots: [],
+      walkingDistanceIntervals: [
+        { startAt: at("12:00:00"), endAt: at("12:20:00"), walkingDistanceKm: 0.8 },
+      ],
+      stairWorkouts: [
+        { startAt: at("12:00:00"), endAt: at("12:10:00"), activeEnergyKcal: 154 },
+        { startAt: at("12:10:00"), endAt: at("12:20:00"), activeEnergyKcal: 18 },
+      ],
+    });
+    expect(result.diagnostics.map((item) => item.overlapDistanceAppliedKm)).toEqual([0.4, 0.4]);
+    expect(result.overlapDistanceKm).toBeCloseTo(0.8, 12);
+  });
+
   it("reports counter-reset when boundary distance decreases", () => {
     const result = reconstructStairWalkingOverlap({
       snapshots: [

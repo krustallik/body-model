@@ -1,4 +1,5 @@
 import { STAIR_CLIMBING_TYPE } from "@/modules/health/expand-training-workouts";
+import { allocateIntervalSampleValue } from "@/model/work-interval-reconstruction";
 import type { WorkoutEnergyEvidenceV7 } from "./workout-energy-v7";
 
 export type HealthSyncStepSnapshotV7 = {
@@ -156,10 +157,15 @@ export function canonicalizeWorkoutStepperEvidenceV7(input: {
         },
       };
     }
-    const derivedStepDelta = normalized.reduce((sum, sample) => {
-      const overlap = Math.max(0, Math.min(endMs, sample.sampleEnd) - Math.max(startMs, sample.sampleStart));
-      return sum + sample.stepCount * overlap / (sample.sampleEnd - sample.sampleStart);
-    }, 0);
+    const derivedStepDelta = allocateIntervalSampleValue({
+      samples: normalized.map((sample) => ({
+        startTime: new Date(sample.startAt),
+        endTime: new Date(sample.endAt),
+        value: sample.stepCount,
+      })),
+      startTime: new Date(workoutEnergy.startAt),
+      endTime: new Date(workoutEnergy.endAt),
+    }).value;
     const durationMinutes = workoutEnergy.durationMinutes;
     return {
       workoutEnergy,

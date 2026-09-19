@@ -46,17 +46,18 @@ function activityRows(
   series: { starts: string[]; ends: string[]; values: number[] } | undefined,
   timezone: string,
 ) {
-  return (series?.values ?? []).map((value, index) => {
+  return (series?.values ?? []).flatMap((value, index) => {
     const startAt = new Date(series!.starts[index]!);
     const endAt = new Date(series!.ends[index]!);
-    return {
+    if (!Number.isFinite(startAt.getTime()) || !Number.isFinite(endAt.getTime())) return [];
+    return [{
       date: instantToLocalDateTime(startAt, timezone).date,
       metric,
       startAt,
       endAt,
       value,
       sourceFingerprint: `${metric}|${startAt.toISOString()}|${endAt.toISOString()}|${value}`,
-    };
+    }];
   });
 }
 
@@ -65,37 +66,33 @@ async function persistActivityIntervals(
   day: HealthDayInput,
   timezone: string,
 ): Promise<void> {
-  const rows = [
-    ...activityRows("steps", day.stepIntervals, timezone),
-    ...activityRows("walking-distance-km", day.walkingDistanceIntervals, timezone),
+  const seriesByMetric: Array<{
+    metric: ActivityMetric;
+    series: { starts: string[]; ends: string[]; values: number[] } | undefined;
+  }> = [
+    { metric: "steps", series: day.stepIntervals },
+    { metric: "walking-distance-km", series: day.walkingDistanceIntervals },
   ];
-  if (rows.length === 0) return;
 
-  await transaction.healthActivityInterval.createMany({ data: rows, skipDuplicates: true });
-  const dates = [...new Set(rows.map(({ date }) => date))];
-  for (const date of dates) {
-    const [steps, distance] = await Promise.all([
-      transaction.healthActivityInterval.aggregate({
-        where: { date, metric: "steps" }, _sum: { value: true },
-      }),
-      transaction.healthActivityInterval.aggregate({
-        where: { date, metric: "walking-distance-km" }, _sum: { value: true },
-      }),
-    ]);
-    const stepTotal = steps._sum.value === null ? undefined : steps._sum.value.toNumber();
-    const distanceTotal = distance._sum.value === null ? undefined : distance._sum.value;
-    await transaction.dailyHealthData.upsert({
-      where: { date },
-      create: {
-        date,
-        steps: stepTotal === undefined ? null : Math.round(stepTotal),
-        walkingDistanceKm: distanceTotal ?? null,
-        rawPayload: {},
-      },
-      update: {
-        ...(stepTotal === undefined ? {} : { steps: Math.round(stepTotal) }),
-        ...(distanceTotal === undefined ? {} : { walkingDistanceKm: distanceTotal }),
-      },
+  for (const { metric, series } of seriesByMetric) {
+    if (series === undefined) continue;
+    // A 3-day Shortcut dump can land in today's field. Keep this calendar day
+    // only, matching workout filtering, then replace rather than append.
+    const rows = activityRows(metric, series, timezone).filter((row) => row.date === day.date);
+    await transaction.healthActivityInterval.deleteMany({ where: { date: day.date, metric } });
+    if (rows.length > 0) {
+      await transaction.healthActivityInterval.createMany({ data: rows, skipDuplicates: true });
+    }
+    const aggregated = await transaction.healthActivityInterval.aggregate({
+      where: { date: day.date, metric },
+      _sum: { value: true },
+    });
+    const total = aggregated._sum.value;
+    await transaction.dailyHealthData.update({
+      where: { date: day.date },
+      data: metric === "steps"
+        ? { steps: total === null ? 0 : Math.round(total.toNumber()) }
+        : { walkingDistanceKm: total ?? 0 },
     });
   }
 }

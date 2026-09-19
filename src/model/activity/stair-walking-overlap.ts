@@ -1,3 +1,5 @@
+import { allocateIntervalSampleValue } from "@/model/work-interval-reconstruction";
+
 export const STAIR_SNAPSHOT_BOUNDARY_MAX_GAP_MINUTES = 10;
 
 export type StairOverlapReason =
@@ -231,9 +233,22 @@ export function reconstructStairWalkingOverlap(input: {
 } {
   const intervalRecords = input.walkingDistanceIntervals ?? [];
   if (intervalRecords.length > 0) {
-    const claimed = new Set<number>();
+    const claimedMs: Array<{ start: number; end: number }> = [];
+    const claimedIndexes = new Set<number>();
     const diagnostics: StairOverlapDiagnostic[] = [];
     let overlapDistanceKm = 0;
+    const samples = intervalRecords.flatMap((sample) => {
+      const sampleStart = sample.startAt.getTime();
+      const sampleEnd = sample.endAt.getTime();
+      if (!Number.isFinite(sample.walkingDistanceKm) || sample.walkingDistanceKm < 0 || sampleEnd <= sampleStart) {
+        return [];
+      }
+      return [{
+        startTime: sample.startAt,
+        endTime: sample.endAt,
+        value: sample.walkingDistanceKm,
+      }];
+    });
     for (const workout of [...input.stairWorkouts].sort((left, right) => left.startAt.getTime() - right.startAt.getTime())) {
       if (workout.activeEnergyKcal === null || workout.activeEnergyKcal <= 0) {
         diagnostics.push({
@@ -244,36 +259,27 @@ export function reconstructStairWalkingOverlap(input: {
         });
         continue;
       }
-      let distanceKm = 0;
-      const claimedIndexes: number[] = [];
-      for (const [index, sample] of intervalRecords.entries()) {
-        const sampleStart = sample.startAt.getTime();
-        const sampleEnd = sample.endAt.getTime();
-        if (!Number.isFinite(sample.walkingDistanceKm) || sample.walkingDistanceKm < 0 || sampleEnd <= sampleStart) continue;
-        const overlapStart = Math.max(sampleStart, workout.startAt.getTime());
-        const overlapEnd = Math.min(sampleEnd, workout.endAt.getTime());
-        if (overlapEnd <= overlapStart || claimed.has(index)) continue;
-        // Work walking is already accounted for by its own direct interval allocation.
-        const workOverlapMs = (input.workIntervals ?? []).reduce((sum, work) => sum + Math.max(
-          0,
-          Math.min(overlapEnd, work.endAt.getTime()) - Math.max(overlapStart, work.startAt.getTime()),
-        ), 0);
-        const usableMs = Math.max(0, overlapEnd - overlapStart - workOverlapMs);
-        if (usableMs <= 0) continue;
-        distanceKm += sample.walkingDistanceKm * usableMs / (sampleEnd - sampleStart);
-        claimed.add(index);
-        claimedIndexes.push(index);
-      }
-      overlapDistanceKm += distanceKm;
+      const allocated = allocateIntervalSampleValue({
+        samples,
+        startTime: workout.startAt,
+        endTime: workout.endAt,
+        claimedMs,
+        excludedWindows: input.workIntervals?.map((work) => ({
+          startTime: work.startAt,
+          endTime: work.endAt,
+        })),
+      });
+      overlapDistanceKm += allocated.value;
+      for (const index of allocated.claimedSampleIndexes) claimedIndexes.add(index);
       diagnostics.push({
         startAt: workout.startAt.toISOString(), endAt: workout.endAt.toISOString(), activeEnergyKcal: workout.activeEnergyKcal,
         beforeSnapshotAt: null, beforeGapMinutes: 0, afterSnapshotAt: null, afterGapMinutes: 0,
-        observedWalkingDistanceDeltaKm: distanceKm, observedStepsDelta: null, overlapApplied: distanceKm > 0,
-        overlapDistanceAppliedKm: distanceKm, claimedSegmentIndexes: claimedIndexes,
-        reason: distanceKm > 0 ? "applied" : "overlap-already-attributed-to-work",
+        observedWalkingDistanceDeltaKm: allocated.value, observedStepsDelta: null, overlapApplied: allocated.value > 0,
+        overlapDistanceAppliedKm: allocated.value, claimedSegmentIndexes: allocated.claimedSampleIndexes,
+        reason: allocated.value > 0 ? "applied" : "overlap-already-attributed-to-work",
       });
     }
-    return { overlapDistanceKm, diagnostics, claimedSegmentIndexes: [...claimed] };
+    return { overlapDistanceKm, diagnostics, claimedSegmentIndexes: [...claimedIndexes] };
   }
   const maxGapMinutes = input.maxGapMinutes ?? STAIR_SNAPSHOT_BOUNDARY_MAX_GAP_MINUTES;
   const orderedSnapshots = [...input.snapshots]

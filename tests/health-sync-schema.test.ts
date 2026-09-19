@@ -82,13 +82,31 @@ describe("HealthSyncRequestSchema", () => {
     }
   });
 
+  it("accepts the Shortcut singleton step interval array and keeps scalar steps legacy-compatible", () => {
+    const intervalResult = parse([{ ...validDay, steps: [{
+      stepCounts: "20\n43\n190",
+      timeStampsStart: "2026-09-19T15:00:00+02:00\n2026-09-19T15:15:00+02:00\n2026-09-19T15:30:00+02:00",
+      timeStampsEnd: "2026-09-19T15:14:59+02:00\n2026-09-19T15:29:59+02:00\n2026-09-19T15:44:59+02:00",
+    }] }]);
+    expect(intervalResult.success).toBe(true);
+    if (intervalResult.success) {
+      expect(intervalResult.data.days[0]).toMatchObject({
+        steps: undefined,
+        stepIntervals: { starts: expect.any(Array), ends: expect.any(Array), values: [20, 43, 190] },
+      });
+    }
+    expect(parse([{ ...validDay, steps: 12_345 }]).data?.days[0]?.steps).toBe(12_345);
+  });
+
   it.each([
     [{ stepCounts: "20\n40", timeStampsStart: "2026-09-19T08:00:00+02:00", timeStampsEnd: "2026-09-19T08:15:00+02:00\n2026-09-19T08:30:00+02:00" }],
     [{ stepCounts: "20", timeStampsStart: "2026-09-19T08:15:00+02:00", timeStampsEnd: "2026-09-19T08:00:00+02:00" }],
+    [[{ stepCounts: "20\n40", timeStampsStart: "2026-09-19T08:00:00+02:00", timeStampsEnd: "2026-09-19T08:15:00+02:00\n2026-09-19T08:30:00+02:00" }]],
+    [[{ stepCounts: "20", timeStampsStart: "not-a-date", timeStampsEnd: "2026-09-19T08:15:00+02:00" }]],
   ])("rejects invalid parallel Apple Health step intervals", (steps) => {
     const result = parse([{ ...validDay, steps }]);
     expect(result.success).toBe(false);
-    if (!result.success) expect(result.error.issues.some((issue) => issue.message.includes("same length") || issue.message.includes("later"))).toBe(true);
+    if (!result.success) expect(result.error.issues.some((issue) => issue.message.includes("same length") || issue.message.includes("later") || issue.message.includes("Invalid ISO"))).toBe(true);
   });
 
   it("accepts null optional values and an empty workout list", () => {

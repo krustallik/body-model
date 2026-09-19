@@ -55,15 +55,20 @@ export function normalizeActivityIntervalSeries(
   valueKeys: string[],
 ): unknown {
   const parsed = parseJson(value);
-  if (!isObject(parsed)) return value;
+  // The Shortcut sends steps as a singleton list containing its interval
+  // dictionary. Treat that wrapper as transport syntax, not a scalar metric.
+  const dictionary = Array.isArray(parsed) && parsed.length === 1 && isObject(parsed[0])
+    ? parsed[0]
+    : parsed;
+  if (!isObject(dictionary)) return value;
   // HealthDay preprocessing and the field schema both normalize input. Keep
   // the internal canonical form intact on that second pass.
-  if (Array.isArray(parsed.starts) && Array.isArray(parsed.ends) && Array.isArray(parsed.values)) {
-    return parsed;
+  if (Array.isArray(dictionary.starts) && Array.isArray(dictionary.ends) && Array.isArray(dictionary.values)) {
+    return dictionary;
   }
   return {
-    starts: timestamps(pickIgnoreCase(parsed, ["timeStampsStart"])),
-    ends: timestamps(pickIgnoreCase(parsed, ["timeStampsEnd"])),
-    values: values(pickIgnoreCase(parsed, valueKeys)),
+    starts: timestamps(pickIgnoreCase(dictionary, ["timeStampsStart"])),
+    ends: timestamps(pickIgnoreCase(dictionary, ["timeStampsEnd"])),
+    values: values(pickIgnoreCase(dictionary, valueKeys)),
   } satisfies ActivityIntervalSeries;
 }

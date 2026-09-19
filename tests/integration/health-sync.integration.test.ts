@@ -28,6 +28,7 @@ import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
 
 async function cleanTestRows(): Promise<void> {
   await prisma.healthSyncSnapshot.deleteMany({ where: { date: { in: testDates } } });
+  await prisma.healthActivityInterval.deleteMany({ where: { date: { in: testDates } } });
   await deleteDailyHealthRows(prisma, testDates);
 }
 
@@ -238,6 +239,33 @@ describe("Apple Health sync with PostgreSQL", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ received: 2, created: 2, updated: 0 });
     expect(await prisma.dailyHealthData.count({ where: { date: { in: testDates.slice(2, 4) } } })).toBe(2);
+  });
+
+  it("persists 167 singleton-array step intervals and recomputes their daily total", async () => {
+    const date = testDates[8]!;
+    const base = new Date(`${date}T00:00:00.000Z`).getTime();
+    const starts = Array.from({ length: 167 }, (_, index) => new Date(base + index * 2).toISOString());
+    const ends = Array.from({ length: 167 }, (_, index) => new Date(base + index * 2 + 1).toISOString());
+    const response = await POST(syncRequest([{
+      date,
+      steps: [{
+        stepCounts: Array.from({ length: 167 }, () => "1").join("\n"),
+        timeStampsStart: starts.join("\n"),
+        timeStampsEnd: ends.join("\n"),
+      }],
+    }]));
+    expect(response.status).toBe(200);
+    expect(await prisma.healthActivityInterval.count({ where: { date, metric: "steps" } })).toBe(167);
+    expect((await prisma.dailyHealthData.findUniqueOrThrow({ where: { date } })).steps).toBe(167);
+    expect((await prisma.healthSyncSnapshot.findFirstOrThrow({
+      where: { date }, orderBy: { id: "desc" }, select: { rawPayload: true },
+    })).rawPayload).toMatchObject({ steps: [expect.objectContaining({ stepCounts: expect.any(String) })] });
+    const audit = await prisma.healthSyncAudit.findFirstOrThrow({
+      where: { outcome: "success", rawBody: { contains: date } },
+      orderBy: { id: "desc" },
+      select: { rawBody: true },
+    });
+    expect(JSON.parse(audit.rawBody!)).toMatchObject({ steps: [expect.objectContaining({ stepCounts: expect.any(String) })] });
   });
 
   it("does not create duplicate rows during concurrent retries", async () => {

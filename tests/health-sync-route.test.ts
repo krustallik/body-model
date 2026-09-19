@@ -92,6 +92,45 @@ describe("POST /api/v1/health/sync", () => {
     });
   });
 
+  it("accepts singleton step interval arrays and sends the canonical interval series to the service", async () => {
+    syncHealthData.mockResolvedValue({ status: "ok", received: 1, created: 1, updated: 0, dates: [] });
+    const intervalPayload = {
+      stepCounts: "20\n43\n190",
+      timeStampsStart: "2026-09-19T15:00:00+02:00\n2026-09-19T15:15:00+02:00\n2026-09-19T15:30:00+02:00",
+      timeStampsEnd: "2026-09-19T15:14:59+02:00\n2026-09-19T15:29:59+02:00\n2026-09-19T15:44:59+02:00",
+    };
+
+    const response = await POST(request({ days: [{ date: "2026-09-19", steps: [intervalPayload] }] }));
+
+    expect(response.status).toBe(200);
+    expect(syncHealthData.mock.calls[0]?.[0]).toEqual({
+      days: [{
+        date: "2026-09-19",
+        steps: undefined,
+        stepIntervals: {
+          starts: intervalPayload.timeStampsStart.split("\n"),
+          ends: intervalPayload.timeStampsEnd.split("\n"),
+          values: [20, 43, 190],
+        },
+      }],
+    });
+    expect(syncHealthData.mock.calls[0]?.[2]).toEqual([{ date: "2026-09-19", steps: [intervalPayload] }]);
+  });
+
+  it("rejects singleton step interval arrays with mismatched lengths", async () => {
+    const response = await POST(request({ days: [{
+      date: "2026-09-19",
+      steps: [{
+        stepCounts: "20\n43",
+        timeStampsStart: "2026-09-19T15:00:00+02:00",
+        timeStampsEnd: "2026-09-19T15:14:59+02:00\n2026-09-19T15:29:59+02:00",
+      }],
+    }] }));
+
+    expect(response.status).toBe(400);
+    expect(syncHealthData).not.toHaveBeenCalled();
+  });
+
   it("logs received and successful sync requests including training fields", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
     syncHealthData.mockResolvedValue({

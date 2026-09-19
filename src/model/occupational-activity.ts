@@ -1,6 +1,5 @@
 import { calculateIndividualizedNetMetActivity } from "./activity/energy";
 import { MAX_SUPPORTED_WALKING_SPEED_KMH } from "./activity/constants";
-import { calculateStrengthActivity } from "./activity/strength";
 import { calculateWalkingActivity } from "./activity/walking";
 import {
   assertFinite,
@@ -243,18 +242,16 @@ export function calculateHybridOccupationalActivity(input: {
   };
 }
 
-/** Combines occupation, only walking outside work, and strength without overlap. */
+/** Combines occupation and walking outside work without overlap. Strength belongs to training, not work. */
 export function calculateOverlapAwareActivity(input: {
   occupationalActivityKcal: number | null | undefined;
   outsideWorkWalkingDistanceKm: number | null | undefined;
   dailyAverageWalkingSpeedKmh: number | null | undefined;
-  strengthTrainingMinutes: number | null | undefined;
   weightKg: number;
   rmrKcalPerDay: number;
 }): {
   occupationalActivityKcal: number;
   outsideWorkWalkingActivityKcal: number;
-  strengthActivityKcal: number;
   totalActivityKcal: number;
 } | null {
   validateOptionalNonnegative("occupationalActivityKcal", input.occupationalActivityKcal);
@@ -267,19 +264,13 @@ export function calculateOverlapAwareActivity(input: {
     distanceKm: input.outsideWorkWalkingDistanceKm,
     averageSpeedKmh: input.dailyAverageWalkingSpeedKmh,
   });
-  const strengthActivityKcal = calculateStrengthActivity({
-    weightKg: input.weightKg,
-    rmrKcalPerDay: input.rmrKcalPerDay,
-    durationMinutes: input.strengthTrainingMinutes,
-  });
-  if (outsideWorkWalkingActivityKcal === null || strengthActivityKcal === null) return null;
+  if (outsideWorkWalkingActivityKcal === null) return null;
   const totalActivityKcal = input.occupationalActivityKcal
-    + outsideWorkWalkingActivityKcal + strengthActivityKcal;
+    + outsideWorkWalkingActivityKcal;
   if (!Number.isFinite(totalActivityKcal)) throw new RangeError("activity total exceeds numeric precision");
   return {
     occupationalActivityKcal: input.occupationalActivityKcal,
     outsideWorkWalkingActivityKcal,
-    strengthActivityKcal,
     totalActivityKcal,
   };
 }

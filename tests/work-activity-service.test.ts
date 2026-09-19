@@ -33,6 +33,9 @@ function clientFixture(options: { missingDay?: boolean; useReceivedAt?: boolean 
         walkingDistanceKm: new Prisma.Decimal(String(distances[index])),
       }))),
     },
+    healthActivityInterval: {
+      findMany: vi.fn().mockResolvedValue([]),
+    },
     workInterval: {
       findMany: vi.fn().mockResolvedValue([{
         id: 1,
@@ -46,7 +49,7 @@ function clientFixture(options: { missingDay?: boolean; useReceivedAt?: boolean 
 }
 
 describe("daily work activity orchestration", () => {
-  it("uses sync timestamps, subtracts work walking, and combines activity once", async () => {
+  it("uses sync timestamps, subtracts work walking, and combines work activity once", async () => {
     const result = await estimateWorkActivityForDay({
       date: "2026-08-23", weightKg: 80, rmrKcalPerDay: 1_800,
     }, clientFixture());
@@ -68,10 +71,48 @@ describe("daily work activity orchestration", () => {
     expect(result.activity).not.toBeNull();
     expect(result.activity!.totalActivityKcal).toBeCloseTo(
       result.activity!.occupationalActivityKcal
-      + result.activity!.outsideWorkWalkingActivityKcal
-      + result.activity!.strengthActivityKcal,
+      + result.activity!.outsideWorkWalkingActivityKcal,
       12,
     );
+  });
+
+  it("does not require strength data to calculate work activity", async () => {
+    const client = clientFixture() as unknown as {
+      dailyHealthData: { findUnique: ReturnType<typeof vi.fn> };
+    };
+    client.dailyHealthData.findUnique.mockResolvedValue({
+      weightKg: 80,
+      walkingDistanceKm: new Prisma.Decimal("5.1"),
+      averageWalkingSpeedKmh: new Prisma.Decimal("5.2"),
+    });
+    const result = await estimateWorkActivityForDay({
+      date: "2026-08-23", weightKg: 80, rmrKcalPerDay: 1_800,
+    }, client as unknown as PrismaClient);
+    expect(result.activity).toMatchObject({
+      occupationalActivityKcal: expect.any(Number),
+      outsideWorkWalkingActivityKcal: expect.any(Number),
+      totalActivityKcal: expect.any(Number),
+    });
+  });
+
+  it("uses interval records for work walking when the modern Health source is present", async () => {
+    const client = clientFixture() as unknown as {
+      healthActivityInterval: { findMany: ReturnType<typeof vi.fn> };
+    };
+    client.healthActivityInterval.findMany.mockResolvedValue([
+      { metric: "steps", startAt: new Date("2026-08-23T07:45:00Z"), endAt: new Date("2026-08-23T08:15:00Z"), value: new Prisma.Decimal("60") },
+      { metric: "steps", startAt: new Date("2026-08-23T08:15:00Z"), endAt: new Date("2026-08-23T16:15:00Z"), value: new Prisma.Decimal("480") },
+      { metric: "walking-distance-km", startAt: new Date("2026-08-23T07:45:00Z"), endAt: new Date("2026-08-23T08:15:00Z"), value: new Prisma.Decimal("0.3") },
+      { metric: "walking-distance-km", startAt: new Date("2026-08-23T08:15:00Z"), endAt: new Date("2026-08-23T16:15:00Z"), value: new Prisma.Decimal("2.4") },
+    ]);
+    const result = await estimateWorkActivityForDay({
+      date: "2026-08-23", weightKg: 80, rmrKcalPerDay: 1_800,
+    }, client as unknown as PrismaClient);
+    expect(result.walking.intervals[0]).toMatchObject({
+      snapshotCoverage: null,
+      estimatedWalkingDistanceKm: { value: 2.475, start: { method: "interval-overlap" } },
+    });
+    expect(result.walking.outsideWorkWalkingDistanceKm).toBeCloseTo(2.625, 12);
   });
 
   it("exposes legacy break provenance without silently applying the UI default", async () => {

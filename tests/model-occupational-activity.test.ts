@@ -181,26 +181,23 @@ describe("occupational activity", () => {
     })).toThrow(RangeError);
   });
 
-  it("counts occupation, outside-work walking, and strength exactly once", () => {
+  it("counts occupation and outside-work walking exactly once", () => {
     const result = calculateOverlapAwareActivity({
       occupationalActivityKcal: 276,
       outsideWorkWalkingDistanceKm: 2.6,
       dailyAverageWalkingSpeedKmh: 5.2,
-      strengthTrainingMinutes: 30,
       weightKg: 80,
       rmrKcalPerDay: 1_800,
     })!;
     expect(result.totalActivityKcal).toBeCloseTo(
       result.occupationalActivityKcal
-      + result.outsideWorkWalkingActivityKcal
-      + result.strengthActivityKcal,
+      + result.outsideWorkWalkingActivityKcal,
       12,
     );
     const wronglyDoubleCounted = calculateOverlapAwareActivity({
       occupationalActivityKcal: 276,
       outsideWorkWalkingDistanceKm: 5.1,
       dailyAverageWalkingSpeedKmh: 5.2,
-      strengthTrainingMinutes: 30,
       weightKg: 80,
       rmrKcalPerDay: 1_800,
     })!;
@@ -212,7 +209,6 @@ describe("occupational activity", () => {
       occupationalActivityKcal: null,
       outsideWorkWalkingDistanceKm: 0,
       dailyAverageWalkingSpeedKmh: null,
-      strengthTrainingMinutes: 0,
       weightKg: 80,
       rmrKcalPerDay: 1_800,
     })).toBeNull();
@@ -220,7 +216,6 @@ describe("occupational activity", () => {
       occupationalActivityKcal: 0,
       outsideWorkWalkingDistanceKm: null,
       dailyAverageWalkingSpeedKmh: 5,
-      strengthTrainingMinutes: 0,
       weightKg: 80,
       rmrKcalPerDay: 1_800,
     })).toBeNull();
@@ -228,10 +223,13 @@ describe("occupational activity", () => {
       occupationalActivityKcal: 0,
       outsideWorkWalkingDistanceKm: 0,
       dailyAverageWalkingSpeedKmh: null,
-      strengthTrainingMinutes: null,
       weightKg: 80,
       rmrKcalPerDay: 1_800,
-    })).toBeNull();
+    })).toEqual({
+      occupationalActivityKcal: 0,
+      outsideWorkWalkingActivityKcal: 0,
+      totalActivityKcal: 0,
+    });
   });
 
   it("rejects invalid occupational kcal and overflowing totals", () => {
@@ -239,7 +237,6 @@ describe("occupational activity", () => {
       occupationalActivityKcal: -1,
       outsideWorkWalkingDistanceKm: 0,
       dailyAverageWalkingSpeedKmh: null,
-      strengthTrainingMinutes: 0,
       weightKg: 80,
       rmrKcalPerDay: 1_800,
     })).toThrow(RangeError);
@@ -247,7 +244,6 @@ describe("occupational activity", () => {
       occupationalActivityKcal: Number.MAX_VALUE,
       outsideWorkWalkingDistanceKm: Number.MAX_VALUE / 1_000,
       dailyAverageWalkingSpeedKmh: 5,
-      strengthTrainingMinutes: 0,
       weightKg: 1_000,
       rmrKcalPerDay: 1_800,
     })).toThrow(RangeError);

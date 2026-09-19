@@ -73,6 +73,19 @@ describe("health synchronization service", () => {
     expect(repository.days.get("2026-08-21")?.weightKg).toBe(79);
   });
 
+  it("syncs all three supplied days and runs post-sync matching for each", async () => {
+    const repository = new MemoryRepository();
+    afterHealthSyncMatch.mockClear();
+    const result = await syncHealthData({
+      days: [{ date: "2026-08-21" }, { date: "2026-08-22" }, { date: "2026-08-23" }],
+      timezone: "Europe/Bratislava",
+    }, repository);
+    expect(result).toMatchObject({ received: 3, created: 3, updated: 0 });
+    expect(repository.days.size).toBe(3);
+    expect(afterHealthSyncMatch).toHaveBeenCalledTimes(3);
+    expect(afterHealthSyncMatch).toHaveBeenNthCalledWith(2, "2026-08-22", { timezone: "Europe/Bratislava" });
+  });
+
   it("creates and updates body composition and walking metrics without duplicating the day", async () => {
     const repository = new MemoryRepository();
     await syncHealthData({ days: [{

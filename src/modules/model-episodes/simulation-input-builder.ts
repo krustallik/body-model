@@ -76,6 +76,7 @@ export function buildSimulationDays(input: {
   const workoutAware = usesWorkoutAwareActivity(input.modelVersion ?? "bodycast-physiology-v5");
   const days = new Map(input.sources.days.map((day) => [day.date, day]));
   const snapshots = groupByDate(input.sources.snapshots);
+  const activityIntervals = groupByDate(input.sources.activityIntervals ?? []);
   const workIntervals = groupByDate(input.sources.workIntervals);
   const workouts = groupByDate(input.sources.workouts ?? []);
   const dates = enumerateCalendarDates(input.from, input.to);
@@ -119,8 +120,21 @@ export function buildSimulationDays(input: {
       steps: item.steps,
       walkingDistanceKm: item.walkingDistanceKm,
     }));
+    const dailyActivityIntervals = activityIntervals.get(date) ?? [];
     const walking = estimateDailyWorkWalking({
       snapshots: cumulativeSnapshots,
+      activityIntervals: {
+        steps: dailyActivityIntervals.filter((sample) => sample.metric === "steps").map((sample) => ({
+          startTime: sample.startAt,
+          endTime: sample.endAt,
+          value: sample.value,
+        })),
+        walkingDistanceKm: dailyActivityIntervals.filter((sample) => sample.metric === "walking-distance-km").map((sample) => ({
+          startTime: sample.startAt,
+          endTime: sample.endAt,
+          value: sample.value,
+        })),
+      },
       intervals: dailyIntervals.map((interval) => ({
         id: interval.id,
         startTime: interval.startAt,
@@ -155,6 +169,13 @@ export function buildSimulationDays(input: {
           steps: snapshot.steps ?? null,
           walkingDistanceKm: snapshot.walkingDistanceKm ?? null,
         })),
+        walkingDistanceIntervals: dailyActivityIntervals
+          .filter((sample) => sample.metric === "walking-distance-km")
+          .map((sample) => ({
+            startAt: sample.startAt,
+            endAt: sample.endAt,
+            walkingDistanceKm: sample.value,
+          })),
         stairWorkouts: stairEvents.map((event) => ({
           startAt: new Date(event.startAt),
           endAt: new Date(event.endAt),

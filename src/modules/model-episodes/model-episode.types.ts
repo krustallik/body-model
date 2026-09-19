@@ -39,6 +39,16 @@ export type ModelSnapshotSource = {
   walkingDistanceKm: number | null;
 };
 
+/** Modern non-cumulative Apple Health motion record. */
+export type ModelActivityIntervalSource = {
+  id: number;
+  date: string;
+  metric: "steps" | "walking-distance-km";
+  startAt: Date;
+  endAt: Date;
+  value: number;
+};
+
 export type ModelWorkIntervalSource = {
   id: number;
   date: string;
@@ -64,6 +74,8 @@ export type ModelWorkoutSource = {
 export type HistoricalModelSources = {
   days: ModelHealthDaySource[];
   snapshots: ModelSnapshotSource[];
+  /** Optional to keep historical fixtures and legacy source sets compatible. */
+  activityIntervals?: ModelActivityIntervalSource[];
   workIntervals: ModelWorkIntervalSource[];
   /** Present for v6 loaders; empty array preserves v5-compatible fixtures. */
   workouts?: ModelWorkoutSource[];
@@ -195,8 +207,8 @@ export type ModelDaySourceQuality = {
     intervalId: number;
     distanceKm: number | null;
     reason: "insufficient-data" | "gap-too-large" | "counter-decreased" | null;
-    startMethod: "exact" | "interpolated" | "nearest" | null;
-    endMethod: "exact" | "interpolated" | "nearest" | null;
+    startMethod: "exact" | "interpolated" | "nearest" | "interval-overlap" | null;
+    endMethod: "exact" | "interpolated" | "nearest" | "interval-overlap" | null;
   }>;
   workBreaks?: Array<{
     intervalId: number;

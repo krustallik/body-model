@@ -152,9 +152,13 @@ function workoutLocalDate(
   return instantToLocalDateTime(startAt, timezone).date;
 }
 
-/** ACTIVE and COMPLETED sessions accept edits; CANCELLED is frozen. */
+/** Diary sessions remain editable after completion or cancellation; only unknown states are frozen. */
 function assertSessionEditable(status: string): void {
-  if (status !== SESSION_STATUS.ACTIVE && status !== SESSION_STATUS.COMPLETED) {
+  if (
+    status !== SESSION_STATUS.ACTIVE
+    && status !== SESSION_STATUS.COMPLETED
+    && status !== SESSION_STATUS.CANCELLED
+  ) {
     throw new SessionNotEditableError();
   }
 }
@@ -627,6 +631,7 @@ export class TrainingService {
     if (
       exercise.session.status !== SESSION_STATUS.ACTIVE
       && exercise.session.status !== SESSION_STATUS.COMPLETED
+      && exercise.session.status !== SESSION_STATUS.CANCELLED
     ) {
       throw new SessionNotFoundError();
     }
@@ -675,6 +680,7 @@ export class TrainingService {
     if (
       existing.sessionExercise.session.status !== SESSION_STATUS.ACTIVE
       && existing.sessionExercise.session.status !== SESSION_STATUS.COMPLETED
+      && existing.sessionExercise.session.status !== SESSION_STATUS.CANCELLED
     ) {
       throw new SessionNotFoundError();
     }
@@ -736,6 +742,7 @@ export class TrainingService {
     if (
       existing.sessionExercise.session.status !== SESSION_STATUS.ACTIVE
       && existing.sessionExercise.session.status !== SESSION_STATUS.COMPLETED
+      && existing.sessionExercise.session.status !== SESSION_STATUS.CANCELLED
     ) {
       throw new SessionNotFoundError();
     }
@@ -1056,16 +1063,18 @@ export class TrainingService {
   }
 
   /**
-   * Editing sets on an already COMPLETED session rewrites history, so bump the
-   * durable diary revision for future rebuild fingerprints. Live ACTIVE logging
-   * is normal data entry and does not.
+   * Editing sets on a terminal diary session rewrites history, so bump the
+   * durable revision for future rebuild fingerprints. Live ACTIVE logging does not.
    */
   private async noteSetMutation(session: {
     id: number;
     status: string;
     matchedWorkout?: { startAt: Date } | null;
   }): Promise<void> {
-    if (session.status !== SESSION_STATUS.COMPLETED) return;
+    if (
+      session.status !== SESSION_STATUS.COMPLETED
+      && session.status !== SESSION_STATUS.CANCELLED
+    ) return;
     const revision = await this.repo.incrementSessionRevision(session.id);
     noteTrainingSourceChange({
       sessionId: session.id,

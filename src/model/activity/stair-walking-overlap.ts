@@ -20,6 +20,13 @@ export type SnapshotPoint = {
   walkingDistanceKm: number | null;
 };
 
+/** Modern Apple Health value recorded across a span instead of at a sync instant. */
+export type WalkingDistanceIntervalPoint = {
+  startAt: Date;
+  endAt: Date;
+  walkingDistanceKm: number;
+};
+
 export type WalkingSegment = {
   index: number;
   previousTimestamp: Date;
@@ -212,6 +219,8 @@ function findBoundarySnapshot(
  */
 export function reconstructStairWalkingOverlap(input: {
   snapshots: readonly SnapshotPoint[];
+  /** Preferred modern source; legacy snapshots are used when this has no records. */
+  walkingDistanceIntervals?: readonly WalkingDistanceIntervalPoint[];
   stairWorkouts: readonly StairWorkoutWindow[];
   workIntervals?: readonly WorkIntervalWindow[];
   maxGapMinutes?: number;
@@ -220,6 +229,52 @@ export function reconstructStairWalkingOverlap(input: {
   diagnostics: StairOverlapDiagnostic[];
   claimedSegmentIndexes: number[];
 } {
+  const intervalRecords = input.walkingDistanceIntervals ?? [];
+  if (intervalRecords.length > 0) {
+    const claimed = new Set<number>();
+    const diagnostics: StairOverlapDiagnostic[] = [];
+    let overlapDistanceKm = 0;
+    for (const workout of [...input.stairWorkouts].sort((left, right) => left.startAt.getTime() - right.startAt.getTime())) {
+      if (workout.activeEnergyKcal === null || workout.activeEnergyKcal <= 0) {
+        diagnostics.push({
+          startAt: workout.startAt.toISOString(), endAt: workout.endAt.toISOString(), activeEnergyKcal: workout.activeEnergyKcal,
+          beforeSnapshotAt: null, beforeGapMinutes: null, afterSnapshotAt: null, afterGapMinutes: null,
+          observedWalkingDistanceDeltaKm: null, observedStepsDelta: null, overlapApplied: false,
+          overlapDistanceAppliedKm: 0, claimedSegmentIndexes: [], reason: "missing-active-energy",
+        });
+        continue;
+      }
+      let distanceKm = 0;
+      const claimedIndexes: number[] = [];
+      for (const [index, sample] of intervalRecords.entries()) {
+        const sampleStart = sample.startAt.getTime();
+        const sampleEnd = sample.endAt.getTime();
+        if (!Number.isFinite(sample.walkingDistanceKm) || sample.walkingDistanceKm < 0 || sampleEnd <= sampleStart) continue;
+        const overlapStart = Math.max(sampleStart, workout.startAt.getTime());
+        const overlapEnd = Math.min(sampleEnd, workout.endAt.getTime());
+        if (overlapEnd <= overlapStart || claimed.has(index)) continue;
+        // Work walking is already accounted for by its own direct interval allocation.
+        const workOverlapMs = (input.workIntervals ?? []).reduce((sum, work) => sum + Math.max(
+          0,
+          Math.min(overlapEnd, work.endAt.getTime()) - Math.max(overlapStart, work.startAt.getTime()),
+        ), 0);
+        const usableMs = Math.max(0, overlapEnd - overlapStart - workOverlapMs);
+        if (usableMs <= 0) continue;
+        distanceKm += sample.walkingDistanceKm * usableMs / (sampleEnd - sampleStart);
+        claimed.add(index);
+        claimedIndexes.push(index);
+      }
+      overlapDistanceKm += distanceKm;
+      diagnostics.push({
+        startAt: workout.startAt.toISOString(), endAt: workout.endAt.toISOString(), activeEnergyKcal: workout.activeEnergyKcal,
+        beforeSnapshotAt: null, beforeGapMinutes: 0, afterSnapshotAt: null, afterGapMinutes: 0,
+        observedWalkingDistanceDeltaKm: distanceKm, observedStepsDelta: null, overlapApplied: distanceKm > 0,
+        overlapDistanceAppliedKm: distanceKm, claimedSegmentIndexes: claimedIndexes,
+        reason: distanceKm > 0 ? "applied" : "overlap-already-attributed-to-work",
+      });
+    }
+    return { overlapDistanceKm, diagnostics, claimedSegmentIndexes: [...claimed] };
+  }
   const maxGapMinutes = input.maxGapMinutes ?? STAIR_SNAPSHOT_BOUNDARY_MAX_GAP_MINUTES;
   const orderedSnapshots = [...input.snapshots]
     .filter((snapshot) => Number.isFinite(snapshot.timestamp.getTime()))

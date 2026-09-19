@@ -87,6 +87,33 @@ describe("WorkoutStepperEvidenceV7", () => {
     expect(evidence(snapshots, { durationMinutes: 0 }).bracketedSteps).toMatchObject({ availability: "available", derivedStepRatePerMinute: null });
   });
 
+  it("uses complete Apple Health step intervals in preference to legacy cumulative snapshots", () => {
+    const result = canonicalizeWorkoutStepperEvidenceV7({
+      workoutEnergy: workout(),
+      snapshots: [snapshot("2026-09-17T15:59:00.000Z", 100), snapshot("2026-09-17T16:31:00.000Z", 900)],
+      stepIntervals: [
+        { id: 1, startAt: "2026-09-17T15:45:00.000Z", endAt: "2026-09-17T16:15:00.000Z", stepCount: 60 },
+        { id: 2, startAt: "2026-09-17T16:15:00.000Z", endAt: "2026-09-17T16:45:00.000Z", stepCount: 120 },
+      ],
+    });
+    expect(result.bracketedSteps).toMatchObject({
+      availability: "available",
+      before: null,
+      after: null,
+      derivedStepDelta: { value: 90, provenance: "health-step-interval-overlap" },
+      derivedStepRatePerMinute: { value: 3, provenance: "derived-from-health-step-interval-overlap-and-workout-duration" },
+    });
+  });
+
+  it("does not fall back to snapshots when modern interval records leave a coverage gap", () => {
+    const result = canonicalizeWorkoutStepperEvidenceV7({
+      workoutEnergy: workout(),
+      snapshots: [snapshot("2026-09-17T15:59:00.000Z", 100), snapshot("2026-09-17T16:31:00.000Z", 900)],
+      stepIntervals: [{ id: 1, startAt: "2026-09-17T16:00:00.000Z", endAt: "2026-09-17T16:15:00.000Z", stepCount: 60 }],
+    });
+    expect(result.bracketedSteps).toMatchObject({ availability: "unavailable", availabilityReason: "incomplete-step-interval-coverage" });
+  });
+
   it("composes existing device-energy and HR evidence without changing their semantics", () => {
     const present = evidence([
       snapshot("2026-09-17T15:59:00.000Z", 100), snapshot("2026-09-17T16:31:00.000Z", 200),

@@ -277,6 +277,23 @@ describe("reconstructStairWalkingOverlap attribution", () => {
     expect(result.claimedSegmentIndexes).toEqual([]);
   });
 
+  it("uses Apple Health distance intervals without looking for nearby snapshots", () => {
+    const result = reconstructStairWalkingOverlap({
+      snapshots: [],
+      walkingDistanceIntervals: [
+        { startAt: at("11:55:00"), endAt: at("12:15:00"), walkingDistanceKm: 0.8 },
+      ],
+      stairWorkouts: [{ startAt: at("12:00:00"), endAt: at("12:10:00"), activeEnergyKcal: 154 }],
+    });
+    expect(result.diagnostics[0]).toMatchObject({
+      reason: "applied",
+      beforeSnapshotAt: null,
+      afterSnapshotAt: null,
+      overlapDistanceAppliedKm: 0.4,
+    });
+    expect(result.overlapDistanceKm).toBeCloseTo(0.4, 12);
+  });
+
   it("reports counter-reset when boundary distance decreases", () => {
     const result = reconstructStairWalkingOverlap({
       snapshots: [

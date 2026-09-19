@@ -792,6 +792,41 @@ describe("set edits on a completed retrospective session", () => {
     });
   });
 
+  it("allows a cancelled session's recorded set to be corrected", async () => {
+    db.strengthSet.findFirst.mockResolvedValue({
+      id: 900,
+      reps: 10,
+      weightKg: decimal(30),
+      bandNominalResistanceKg: null,
+      rir: null,
+      completedAt: workoutStartAt,
+      sessionExercise: {
+        id: 501,
+        resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
+        session: { ...completedSession, status: SESSION_STATUS.CANCELLED },
+      },
+    });
+    db.strengthSet.update.mockResolvedValue({
+      id: 900,
+      sessionExerciseId: 501,
+      setNumber: 1,
+      reps: 8,
+      weightKg: decimal(30),
+      bandNominalResistanceKg: null,
+      rir: null,
+      completedAt: workoutStartAt,
+      createdAt: workoutStartAt,
+      updatedAt: new Date("2026-09-17T12:30:00Z"),
+    });
+
+    await expect(service.updateSet(50, 900, { reps: 8 })).resolves.toMatchObject({ reps: 8 });
+    expect(db.strengthDiarySession.update).toHaveBeenCalledWith({
+      where: { id: 50 },
+      data: { revision: { increment: 1 } },
+      select: { revision: true },
+    });
+  });
+
   it("does not bump the revision while logging a live ACTIVE session", async () => {
     db.strengthSessionExercise.findFirst.mockResolvedValue({
       id: 501,

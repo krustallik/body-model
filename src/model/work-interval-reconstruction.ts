@@ -6,12 +6,19 @@ export type CumulativeSnapshot = {
   walkingDistanceKm: number | null | undefined;
 };
 
+/** A Health sample whose value belongs to the complete [startTime, endTime] span. */
+export type ActivityIntervalSample = {
+  startTime: Date;
+  endTime: Date;
+  value: number;
+};
+
 export type BoundaryEstimate = {
   value: number;
   targetTime: string;
   sourceTimes: string[];
   gapMinutes: number;
-  method: "exact" | "interpolated" | "nearest";
+  method: "exact" | "interpolated" | "nearest" | "interval-overlap";
 };
 
 export type UnavailableBoundaryEstimate = {
@@ -114,6 +121,20 @@ export type IntervalMetricEstimate = {
   reason?: "insufficient-data" | "gap-too-large" | "counter-decreased";
 };
 
+export type SnapshotCoverage = {
+  startGapMinutes: number;
+  endGapMinutes: number;
+};
+
+function nearestSnapshotGapMinutes(snapshots: CumulativeSnapshot[], targetTime: Date): number {
+  const target = validateTarget(targetTime);
+  if (snapshots.length === 0) throw new RangeError("at least one snapshot is required");
+  return Math.min(...snapshots.map((snapshot) => {
+    const timestamp = validateTarget(snapshot.timestamp);
+    return Math.abs(timestamp - target) / 60_000;
+  }));
+}
+
 function intervalMetric(
   snapshots: CumulativeSnapshot[],
   startTime: Date,
@@ -130,12 +151,67 @@ function intervalMetric(
   return { value, start, end };
 }
 
+function validateActivitySamples(samples: readonly ActivityIntervalSample[]): void {
+  for (const sample of samples) {
+    const start = validateTarget(sample.startTime);
+    const end = validateTarget(sample.endTime);
+    if (end <= start) throw new RangeError("activity samples must have positive duration");
+    if (!Number.isFinite(sample.value)) throw new TypeError("activity sample value must be finite");
+    if (sample.value < 0) throw new RangeError("activity sample value must be nonnegative");
+  }
+}
+
+/**
+ * Apple Health interval samples record a value over a span, rather than a
+ * cumulative counter at one point. Allocate a boundary-crossing sample by the
+ * exact time overlap, so a work period never needs a nearby sync snapshot.
+ */
+export function estimateIntervalSampleMetric(input: {
+  samples: readonly ActivityIntervalSample[];
+  startTime: Date;
+  endTime: Date;
+}): IntervalMetricEstimate {
+  const start = validateTarget(input.startTime);
+  const end = validateTarget(input.endTime);
+  if (end <= start) throw new RangeError("work interval must have positive duration");
+  validateActivitySamples(input.samples);
+  if (input.samples.length === 0) {
+    const unavailable = (targetTime: Date): UnavailableBoundaryEstimate => ({
+      value: null,
+      targetTime: targetTime.toISOString(),
+      reason: "insufficient-data",
+    });
+    return { value: null, start: unavailable(input.startTime), end: unavailable(input.endTime), reason: "insufficient-data" };
+  }
+  const value = input.samples.reduce((sum, sample) => {
+    const sampleStart = sample.startTime.getTime();
+    const sampleEnd = sample.endTime.getTime();
+    const overlap = Math.max(0, Math.min(end, sampleEnd) - Math.max(start, sampleStart));
+    return sum + sample.value * overlap / (sampleEnd - sampleStart);
+  }, 0);
+  const sourceTimes = input.samples
+    .filter((sample) => sample.startTime.getTime() < end && sample.endTime.getTime() > start)
+    .flatMap((sample) => [sample.startTime.toISOString(), sample.endTime.toISOString()]);
+  const boundary = (targetTime: Date): BoundaryEstimate => ({
+    value,
+    targetTime: targetTime.toISOString(),
+    sourceTimes,
+    gapMinutes: 0,
+    method: "interval-overlap",
+  });
+  return { value, start: boundary(input.startTime), end: boundary(input.endTime) };
+}
+
 export function estimateWorkIntervalWalking(input: {
   snapshots: CumulativeSnapshot[];
   startTime: Date;
   endTime: Date;
   maxGapMinutes?: number;
-}): { estimatedSteps: IntervalMetricEstimate; estimatedWalkingDistanceKm: IntervalMetricEstimate } {
+}): {
+  estimatedSteps: IntervalMetricEstimate;
+  estimatedWalkingDistanceKm: IntervalMetricEstimate;
+  snapshotCoverage: SnapshotCoverage | null;
+} {
   const start = validateTarget(input.startTime);
   const end = validateTarget(input.endTime);
   if (end <= start) throw new RangeError("work interval must have positive duration");
@@ -146,11 +222,19 @@ export function estimateWorkIntervalWalking(input: {
     estimatedWalkingDistanceKm: intervalMetric(
       input.snapshots, input.startTime, input.endTime, "walkingDistanceKm", maxGapMinutes,
     ),
+    snapshotCoverage: input.snapshots.length === 0 ? null : {
+      startGapMinutes: nearestSnapshotGapMinutes(input.snapshots, input.startTime),
+      endGapMinutes: nearestSnapshotGapMinutes(input.snapshots, input.endTime),
+    },
   };
 }
 
 export function estimateDailyWorkWalking(input: {
   snapshots: CumulativeSnapshot[];
+  activityIntervals?: {
+    steps: readonly ActivityIntervalSample[];
+    walkingDistanceKm: readonly ActivityIntervalSample[];
+  };
   intervals: { id: number; startTime: Date; endTime: Date }[];
   dailyWalkingDistanceKm: number | null | undefined;
   maxGapMinutes?: number;
@@ -170,15 +254,28 @@ export function estimateDailyWorkWalking(input: {
       throw new RangeError("work intervals must not overlap");
     }
   }
-  const estimates = intervals.map((interval) => ({
-    intervalId: interval.id,
-    ...estimateWorkIntervalWalking({
+  const estimates = intervals.map((interval) => {
+    const legacy = estimateWorkIntervalWalking({
       snapshots: input.snapshots,
       startTime: interval.startTime,
       endTime: interval.endTime,
       maxGapMinutes: input.maxGapMinutes,
-    }),
-  }));
+    });
+    const useStepIntervals = (input.activityIntervals?.steps.length ?? 0) > 0;
+    const useDistanceIntervals = (input.activityIntervals?.walkingDistanceKm.length ?? 0) > 0;
+    return {
+      intervalId: interval.id,
+      estimatedSteps: useStepIntervals
+        ? estimateIntervalSampleMetric({ samples: input.activityIntervals!.steps, startTime: interval.startTime, endTime: interval.endTime })
+        : legacy.estimatedSteps,
+      estimatedWalkingDistanceKm: useDistanceIntervals
+        ? estimateIntervalSampleMetric({ samples: input.activityIntervals!.walkingDistanceKm, startTime: interval.startTime, endTime: interval.endTime })
+        : legacy.estimatedWalkingDistanceKm,
+      // The UI quality line describes walking distance, so only hide snapshot
+      // coverage when distance itself came from interval records.
+      snapshotCoverage: useDistanceIntervals ? null : legacy.snapshotCoverage,
+    };
+  });
   const distances = estimates.map(({ estimatedWalkingDistanceKm }) => estimatedWalkingDistanceKm.value);
   const workWalkingDistanceKm = distances.some((value) => value === null)
     ? null

@@ -20,115 +20,122 @@ export async function syncHealthData(
   rawDays?: unknown[],
   receivedAt: Date = new Date(),
 ): Promise<HealthSyncResult> {
-  const day = request.days[0];
   const timezone = request.timezone ?? DEFAULT_TIME_ZONE;
-  const date = await repository.syncDay(day, rawDays?.[0] ?? day, {
-    timezone,
-    receivedAt,
-    syncedAt: request.syncedAt ?? null,
-  });
-  const created = date.action === "created" ? 1 : 0;
+  const dates = [];
+  for (const [index, day] of request.days.entries()) {
+    dates.push(await repository.syncDay(day, rawDays?.[index] ?? day, {
+      timezone,
+      receivedAt,
+      syncedAt: request.syncedAt ?? null,
+    }));
+  }
+  const referenceDate = dates[dates.length - 1]!;
+  const created = dates.filter((result) => result.action === "created").length;
 
+  // A request can carry the most recent three days; each deserves the same
+  // post-sync reconciliation instead of only processing the final array item.
+  for (const date of dates) {
   try {
-    await trainingService.afterHealthSyncMatch(day.date, { timezone });
+    await trainingService.afterHealthSyncMatch(date.date, { timezone });
   } catch (error) {
     logEvent("warn", "training_match_after_sync_failed", {
-      date: day.date,
+      date: date.date,
       errorType: errorKind(error),
     });
   }
 
   try {
     // Shadow-only MS100 stepper energy; never feeds TDEE/forecast.
-    await recordExperimentalStepperActiveEnergyShadowsForLocalDate({ date: day.date });
+    await recordExperimentalStepperActiveEnergyShadowsForLocalDate({ date: date.date });
   } catch (error) {
     logEvent("warn", "experimental_stepper_active_energy_shadow_failed", {
-      date: day.date,
+      date: date.date,
       errorType: errorKind(error),
     });
   }
 
   try {
     // Shadow-only MS100 stepper glycogen demand; never feeds TDEE/forecast.
-    await recordExperimentalStepperGlycogenDemandShadowsForLocalDate({ date: day.date });
+    await recordExperimentalStepperGlycogenDemandShadowsForLocalDate({ date: date.date });
   } catch (error) {
     logEvent("warn", "experimental_stepper_glycogen_demand_shadow_failed", {
-      date: day.date,
+      date: date.date,
       errorType: errorKind(error),
     });
   }
 
   try {
     // Shadow-only daily glycogen repletion; never feeds TDEE/forecast.
-    await recordExperimentalGlycogenRepletionShadow({ date: day.date });
+    await recordExperimentalGlycogenRepletionShadow({ date: date.date });
   } catch (error) {
     logEvent("warn", "experimental_glycogen_repletion_shadow_failed", {
-      date: day.date,
+      date: date.date,
       errorType: errorKind(error),
     });
   }
 
   try {
     // Shadow-only glycogen-associated water; never feeds TDEE/forecast.
-    await recordExperimentalGlycogenAssociatedWaterShadow({ date: day.date });
+    await recordExperimentalGlycogenAssociatedWaterShadow({ date: date.date });
   } catch (error) {
     logEvent("warn", "experimental_glycogen_associated_water_shadow_failed", {
-      date: day.date,
+      date: date.date,
       errorType: errorKind(error),
     });
   }
 
   try {
     // Shadow-only multi-day glycogen state; never feeds TDEE/forecast.
-    await recordExperimentalGlycogenStateShadow({ date: day.date });
+    await recordExperimentalGlycogenStateShadow({ date: date.date });
   } catch (error) {
     logEvent("warn", "experimental_glycogen_state_shadow_failed", {
-      date: day.date,
+      date: date.date,
       errorType: errorKind(error),
     });
   }
 
   try {
     // Shadow-only relative skeletal-muscle delta; never feeds TDEE/forecast.
-    await recordExperimentalSkeletalMuscleDeltaShadow({ date: day.date });
+    await recordExperimentalSkeletalMuscleDeltaShadow({ date: date.date });
   } catch (error) {
     logEvent("warn", "experimental_skeletal_muscle_delta_shadow_failed", {
-      date: day.date,
+      date: date.date,
       errorType: errorKind(error),
     });
   }
 
   try {
     // Shadow-only cessation/detraining; never feeds TDEE/forecast.
-    await recordExperimentalCessationDetrainingShadow({ date: day.date });
+    await recordExperimentalCessationDetrainingShadow({ date: date.date });
   } catch (error) {
     logEvent("warn", "experimental_cessation_detraining_shadow_failed", {
-      date: day.date,
+      date: date.date,
       errorType: errorKind(error),
     });
   }
 
   try {
     // Shadow-only FFM/slow-nonfat retention; never feeds TDEE/forecast/Hall mean.
-    await recordExperimentalFfmRetentionShadow({ date: day.date });
+    await recordExperimentalFfmRetentionShadow({ date: date.date });
   } catch (error) {
     logEvent("warn", "experimental_ffm_retention_shadow_failed", {
-      date: day.date,
+      date: date.date,
       errorType: errorKind(error),
     });
   }
 
   try {
     // Shadow-only weekly local hypertrophy response; never feeds TDEE/forecast.
-    await recordExperimentalLocalHypertrophyResponseShadow({ date: day.date });
+    await recordExperimentalLocalHypertrophyResponseShadow({ date: date.date });
   } catch (error) {
     logEvent("warn", "experimental_local_hypertrophy_response_shadow_failed", {
-      date: day.date,
+      date: date.date,
       errorType: errorKind(error),
     });
   }
+  }
 
-  const retentionCutoffDate = healthRetentionCutoffDate(day.date);
+  const retentionCutoffDate = healthRetentionCutoffDate(referenceDate.date);
   let prunedDays = 0;
   let prunedSnapshots = 0;
   try {
@@ -141,23 +148,23 @@ export async function syncHealthData(
         retentionCutoffDate,
         prunedDays,
         prunedSnapshots,
-        referenceDate: day.date,
+        referenceDate: referenceDate.date,
       });
     }
   } catch (error) {
     logEvent("warn", "health_sync_retention_prune_failed", {
       retentionCutoffDate,
-      referenceDate: day.date,
+      referenceDate: referenceDate.date,
       errorType: errorKind(error),
     });
   }
 
   return {
     status: "ok",
-    received: 1,
+    received: dates.length,
     created,
-    updated: 1 - created,
-    dates: [date],
+    updated: dates.length - created,
+    dates,
     retentionCutoffDate,
     prunedDays,
     prunedSnapshots,

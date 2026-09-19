@@ -32,6 +32,12 @@ function repositoryFixture(existingDates: string[] = [], existingWorkouts: Array
     healthSyncSnapshot: {
       create: vi.fn().mockResolvedValue({ id: 1 }),
     },
+    healthActivityInterval: {
+      createMany: vi.fn().mockResolvedValue({ count: 1 }),
+      aggregate: vi.fn().mockImplementation(({ where }: { where: { metric: string } }) => Promise.resolve({
+        _sum: { value: where.metric === "steps" ? { toNumber: () => 60 } : { toNumber: () => 0.5 } },
+      })),
+    },
   };
   const client = {
     $transaction: vi.fn((callback: (tx: typeof transaction) => unknown) => callback(transaction)),
@@ -73,6 +79,34 @@ describe("Prisma health synchronization repository", () => {
     expect(transaction.dailyHealthData.upsert).toHaveBeenCalledWith(
       expect.objectContaining({ create: expect.objectContaining({ rawPayload: original }) }),
     );
+  });
+
+  it("deduplicates interval step and distance records and derives the daily totals", async () => {
+    const { repository, transaction } = repositoryFixture();
+    await repository.syncDay({
+      date: "2026-09-19",
+      stepIntervals: {
+        starts: ["2026-09-19T08:00:00+02:00"],
+        ends: ["2026-09-19T08:15:00+02:00"],
+        values: [60],
+      },
+      walkingDistanceIntervals: {
+        starts: ["2026-09-19T08:00:00+02:00"],
+        ends: ["2026-09-19T08:15:00+02:00"],
+        values: [0.5],
+      },
+    });
+    expect(transaction.healthActivityInterval.createMany).toHaveBeenCalledWith({
+      data: expect.arrayContaining([
+        expect.objectContaining({ metric: "steps", value: 60, sourceFingerprint: expect.stringContaining("steps|") }),
+        expect.objectContaining({ metric: "walking-distance-km", value: 0.5 }),
+      ]),
+      skipDuplicates: true,
+    });
+    expect(transaction.dailyHealthData.upsert).toHaveBeenLastCalledWith(expect.objectContaining({
+      where: { date: "2026-09-19" },
+      update: { steps: 60, walkingDistanceKm: expect.anything() },
+    }));
   });
 
   it("appends an immutable cumulative snapshot with timezone metadata", async () => {

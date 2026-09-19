@@ -283,6 +283,29 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     }
   }
 
+  async function deleteCancelledSession() {
+    if (!session || session.status !== SESSION_STATUS.CANCELLED) return;
+    if (!window.confirm(
+      uk
+        ? "Видалити скасований запис? Дані Garmin залишаться без змін."
+        : "Delete this cancelled diary entry? Garmin data will remain unchanged.",
+    )) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/v1/training/sessions/${session.id}`, { method: "DELETE" });
+      if (!response.ok) {
+        setError(await readApiError(response, uk));
+        return;
+      }
+      router.push("/training");
+    } catch {
+      setError(uk ? "Не вдалося видалити скасоване тренування." : "Could not delete the cancelled workout.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function matchWorkout(workoutId: number | null) {
     if (!session) return;
     setBusy(true);
@@ -435,10 +458,20 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
           </p>
         </div>
         <div className={styles.rowActions}>
-          {session.status === SESSION_STATUS.COMPLETED && (
+          {(session.status === SESSION_STATUS.COMPLETED || session.status === SESSION_STATUS.CANCELLED) && (
             <Link className={styles.secondaryButton} href={`/training/sessions/${session.id}/edit`}>
               {uk ? "Редагувати" : "Edit"}
             </Link>
+          )}
+          {session.status === SESSION_STATUS.CANCELLED && (
+            <button
+              className={styles.dangerButton}
+              type="button"
+              disabled={busy}
+              onClick={() => void deleteCancelledSession()}
+            >
+              {uk ? "Видалити" : "Delete"}
+            </button>
           )}
           <Link className={styles.secondaryButton} href="/training">{uk ? "Назад" : "Back"}</Link>
         </div>

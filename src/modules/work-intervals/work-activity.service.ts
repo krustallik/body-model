@@ -26,13 +26,12 @@ export async function estimateWorkActivityForDay(
   },
   client: PrismaClient = prisma,
 ) {
-  const [rawDay, rawSnapshots, intervals] = await Promise.all([
+  const [rawDay, rawSnapshots, intervals, rawActivityIntervals] = await Promise.all([
     client.dailyHealthData.findUnique({
       where: { date: input.date },
       select: {
         walkingDistanceKm: true,
         averageWalkingSpeedKmh: true,
-        strengthTrainingMinutes: true,
       },
     }),
     client.healthSyncSnapshot.findMany({
@@ -50,6 +49,14 @@ export async function estimateWorkActivityForDay(
       orderBy: [{ startAt: "asc" }, { id: "asc" }],
       select: { id: true, startAt: true, endAt: true, category: true, breakMinutes: true },
     }),
+    client.healthActivityInterval.findMany({
+      where: {
+        date: input.date,
+        metric: { in: ["steps", "walking-distance-km"] },
+      },
+      orderBy: [{ startAt: "asc" }, { id: "asc" }],
+      select: { metric: true, startAt: true, endAt: true, value: true },
+    }),
   ]);
 
   const day = rawDay ? normalizeDailyMeasurements(rawDay) : null;
@@ -59,8 +66,25 @@ export async function estimateWorkActivityForDay(
     steps: snapshot.steps,
     walkingDistanceKm: decimalToNumber(snapshot.walkingDistanceKm),
   }));
+  const activityIntervals = {
+    steps: rawActivityIntervals
+      .filter((interval) => interval.metric === "steps")
+      .map((interval) => ({
+        startTime: interval.startAt,
+        endTime: interval.endAt,
+        value: interval.value.toNumber(),
+      })),
+    walkingDistanceKm: rawActivityIntervals
+      .filter((interval) => interval.metric === "walking-distance-km")
+      .map((interval) => ({
+        startTime: interval.startAt,
+        endTime: interval.endAt,
+        value: interval.value.toNumber(),
+      })),
+  };
   const walking = estimateDailyWorkWalking({
     snapshots: cumulativeSnapshots,
+    activityIntervals,
     intervals: intervals.map((interval) => ({
       id: interval.id,
       startTime: interval.startAt,
@@ -105,7 +129,6 @@ export async function estimateWorkActivityForDay(
     occupationalActivityKcal,
     outsideWorkWalkingDistanceKm: walking.outsideWorkWalkingDistanceKm,
     dailyAverageWalkingSpeedKmh: decimalToNumber(day?.averageWalkingSpeedKmh ?? null),
-    strengthTrainingMinutes: decimalToNumber(day?.strengthTrainingMinutes ?? null),
     weightKg: input.weightKg,
     rmrKcalPerDay: input.rmrKcalPerDay,
   });

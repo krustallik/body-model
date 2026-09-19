@@ -61,8 +61,7 @@ describe("work activity UI view model", () => {
       activity: {
         occupationalActivityKcal: 620,
         outsideWorkWalkingActivityKcal: 210,
-        strengthActivityKcal: 180,
-        totalActivityKcal: 1_010,
+        totalActivityKcal: 830,
       },
     } as WorkActivityDiagnosticsDto;
     expect(dailyActivityView(diagnostics)).toEqual({
@@ -72,8 +71,7 @@ describe("work activity UI view model", () => {
       workWalkingActivityKcal: null,
       residualWorkActivityKcal: null,
       outsideWorkWalkingActivityKcal: 210,
-      strengthActivityKcal: 180,
-      totalActivityKcal: 1_010,
+      totalActivityKcal: 830,
     });
     expect(dailyActivityView(diagnostics).outsideWorkWalkingDistanceKm).not.toBe(5.1);
   });

@@ -40,10 +40,19 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
   const canonical = canonicalizeWorkoutType(workout.type);
   if (canonical.classification !== "stair-climbing" || canonical.canonicalType === null) return;
 
-  const [assignments, snapshots, heartRateSamples] = await Promise.all([
+  const [assignments, snapshots, stepIntervals, heartRateSamples] = await Promise.all([
     new StepperEquipmentRepository(prisma).list(),
     prisma.healthSyncSnapshot.findMany({
       select: { id: true, receivedAt: true, syncedAt: true, steps: true },
+    }),
+    prisma.healthActivityInterval.findMany({
+      where: {
+        metric: "steps",
+        startAt: { lt: workout.endAt },
+        endAt: { gt: workout.startAt },
+      },
+      select: { id: true, startAt: true, endAt: true, value: true },
+      orderBy: [{ startAt: "asc" }, { id: "asc" }],
     }),
     prisma.heartRateSample.findMany({
       where: {
@@ -94,6 +103,12 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
       receivedAt: snapshot.receivedAt.toISOString(),
       syncedAt: snapshot.syncedAt?.toISOString() ?? null,
       steps: snapshot.steps,
+    })),
+    stepIntervals: stepIntervals.map((interval) => ({
+      id: interval.id,
+      startAt: interval.startAt.toISOString(),
+      endAt: interval.endAt.toISOString(),
+      stepCount: interval.value.toNumber(),
     })),
   });
   const equipment = assignmentAtWorkoutStartV7(

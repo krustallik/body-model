@@ -45,7 +45,7 @@ export class PhysiologyV7RuntimeRepository implements PhysiologyV7RangeSourceLoa
     const historyDates = enumerateCalendarDates(input.historyFromDate, input.toDate);
     const rangeStart = localDateTimeToInstant(input.historyFromDate, "00:00", input.timeZone);
     const rangeEnd = localDateTimeToInstant(addCalendarDays(input.toDate, 1), "00:00", input.timeZone);
-    const [dailyRows, snapshotRows, workoutRows, heartRateRows, restingRows, sleepRows, sessionIds] = await Promise.all([
+    const [dailyRows, snapshotRows, activityIntervalRows, workoutRows, heartRateRows, restingRows, sleepRows, sessionIds] = await Promise.all([
       this.client.dailyHealthData.findMany({
         where: { date: { gte: input.historyFromDate, lte: input.toDate } },
         orderBy: { date: "asc" },
@@ -67,6 +67,15 @@ export class PhysiologyV7RuntimeRepository implements PhysiologyV7RangeSourceLoa
         where: { date: { gte: input.historyFromDate, lte: input.toDate } },
         orderBy: [{ date: "asc" }, { receivedAt: "asc" }, { id: "asc" }],
         select: { id: true, date: true, receivedAt: true, syncedAt: true, steps: true },
+      }),
+      this.client.healthActivityInterval.findMany({
+        where: {
+          metric: "steps",
+          startAt: { lt: rangeEnd },
+          endAt: { gt: rangeStart },
+        },
+        orderBy: [{ startAt: "asc" }, { id: "asc" }],
+        select: { id: true, startAt: true, endAt: true, value: true },
       }),
       this.client.workout.findMany({
         where: { dailyHealthData: { date: { gte: input.historyFromDate, lte: input.toDate } } },
@@ -205,7 +214,18 @@ export class PhysiologyV7RuntimeRepository implements PhysiologyV7RangeSourceLoa
         };
         return {
           raw: workout,
-          stepper: canonicalizeWorkoutStepperEvidenceV7({ workoutEnergy, snapshots: stepSnapshots }),
+          stepper: canonicalizeWorkoutStepperEvidenceV7({
+            workoutEnergy,
+            snapshots: stepSnapshots,
+            stepIntervals: activityIntervalRows
+              .filter((sample) => sample.startAt < workout.endAt && sample.endAt > workout.startAt)
+              .map((sample) => ({
+                id: sample.id,
+                startAt: sample.startAt.toISOString(),
+                endAt: sample.endAt.toISOString(),
+                stepCount: sample.value.toNumber(),
+              })),
+          }),
         };
       });
       const bridged = nutritionByDate.get(date)!;

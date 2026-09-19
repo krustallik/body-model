@@ -8,9 +8,9 @@
  *     → simulation input builder
  *     → latest approved physiology
  *
- * Proven: HealthSyncSnapshot steps/walkingDistanceKm series are required for
- * identical rebuild of outside-work walking and stair-overlap subtraction.
- * Therefore snapshots are durable (Variant A), not 30-day transient.
+ * Proven: HealthSyncSnapshot legacy counters and HealthActivityInterval modern
+ * step/distance records are required for identical work and stair rebuilds.
+ * Therefore both sources are durable (Variant A), not 30-day transient.
  *
  * TODO(storage): HealthSyncSnapshot.rawPayload grows with every overlapping
  * sync and may outpace raw HR as the dominant per-profile storage consumer
@@ -43,6 +43,7 @@ export const DURABLE_SOURCE_TABLES = [
   "DailyHealthData",
   "Workout",
   "HealthSyncSnapshot",
+  "HealthActivityInterval",
   "HeartRateSample",
   "RestingHeartRateSample",
   "SleepSegment",

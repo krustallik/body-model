@@ -50,9 +50,11 @@ export function reconstructionQuality(interval: IntervalEstimate, locale: Locale
     ? (uk ? "Оцінено за найближчою синхронізацією." : "Estimated from nearest sync.")
     : methods.includes("interpolated")
       ? (uk ? "Оцінено між сусідніми синхронізаціями." : "Estimated between nearby syncs.")
-      : (uk ? "Відмінне покриття знімками." : "Excellent snapshot coverage.");
+      : methods.includes("interval-overlap")
+        ? (uk ? "Оцінено за інтервалами записів Apple Health." : "Estimated from Apple Health record intervals.")
+        : (uk ? "Відмінне покриття знімками." : "Excellent snapshot coverage.");
   return {
-    tone: methods.includes("exact") && methods.every((method) => method === "exact") ? "good" : "info",
+    tone: methods.length > 0 && methods.every((method) => method === "exact" || method === "interval-overlap") ? "good" : "info",
     label,
     startGapMinutes: availableGap(distance.start),
     endGapMinutes: availableGap(distance.end),
@@ -89,7 +91,6 @@ export function dailyActivityView(diagnostics: WorkActivityDiagnosticsDto) {
       ? null
       : residualComponents.reduce<number>((sum, value) => sum + value!, 0),
     outsideWorkWalkingActivityKcal: diagnostics.activity?.outsideWorkWalkingActivityKcal ?? null,
-    strengthActivityKcal: diagnostics.activity?.strengthActivityKcal ?? null,
     totalActivityKcal: diagnostics.activity?.totalActivityKcal ?? null,
   };
 }

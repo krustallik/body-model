@@ -13,6 +13,7 @@ import {
   instantToLocalDateTime,
   isValidTimeZone,
 } from "@/model/time-zone";
+import { normalizeActivityIntervalSeries } from "./activity-intervals";
 
 function isCalendarDate(value: string): boolean {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
@@ -37,6 +38,30 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 const nullableOptionalNumber = (minimum: number, maximum: number) =>
   z.number().min(minimum).max(maximum).nullable().optional();
+
+const ActivityIntervalSeriesSchema = (integerValues: boolean, maximum: number) => z.object({
+  starts: z.array(z.string().datetime({ offset: true })),
+  ends: z.array(z.string().datetime({ offset: true })),
+  values: z.array(integerValues ? z.number().int().min(0).max(maximum) : z.number().finite().min(0).max(maximum)),
+}).strict().superRefine((series, context) => {
+  if (series.starts.length !== series.ends.length || series.starts.length !== series.values.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "timeStampsStart, timeStampsEnd, and values must have the same length" });
+  }
+  for (let index = 0; index < Math.min(series.starts.length, series.ends.length); index += 1) {
+    if (Date.parse(series.ends[index]!) <= Date.parse(series.starts[index]!)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["ends", index], message: "timeStampsEnd must be later than timeStampsStart" });
+    }
+  }
+});
+
+const StepIntervalsSchema = z.preprocess(
+  (value) => normalizeActivityIntervalSeries(value, ["stepCounts"]),
+  ActivityIntervalSeriesSchema(true, 200000),
+);
+const WalkingDistanceIntervalsSchema = z.preprocess(
+  (value) => normalizeActivityIntervalSeries(value, ["walkingDistances"]),
+  ActivityIntervalSeriesSchema(false, 200),
+);
 
 export const WorkoutSchema = z
   .object({
@@ -198,9 +223,11 @@ const HealthDayObjectSchema = z
     fatG: nullableOptionalNumber(0, 2000),
     carbsG: nullableOptionalNumber(0, 2000),
     steps: z.number().int().min(0).max(200000).nullable().optional(),
+    stepIntervals: StepIntervalsSchema.optional(),
     activeEnergyKcal: nullableOptionalNumber(0, 10000),
     averageWalkingSpeedKmh: nullableOptionalNumber(0, 20),
     walkingDistanceKm: nullableOptionalNumber(0, 200),
+    walkingDistanceIntervals: WalkingDistanceIntervalsSchema.optional(),
     strengthTrainingMinutes: nullableOptionalNumber(0, 600),
     workouts: z.array(WorkoutSchema).nullable().optional(),
     bpm: HeartRateSamplesSchema.optional(),
@@ -219,7 +246,13 @@ export function preprocessHealthDay(
   const day = isObject(remapped) && Array.isArray(remapped.days) ? remapped.days[0] : value;
   const measured = normalizeDailyMeasurementInput(day);
   if (!isObject(measured)) return measured;
-  return mergeExpandedTrainingWorkouts(measured, timezone);
+  const steps = normalizeActivityIntervalSeries(measured.steps, ["stepCounts"]);
+  const walkingDistance = normalizeActivityIntervalSeries(measured.walkingDistanceKm, ["walkingDistances"]);
+  return mergeExpandedTrainingWorkouts({
+    ...measured,
+    ...(isObject(steps) ? { steps: undefined, stepIntervals: steps } : {}),
+    ...(isObject(walkingDistance) ? { walkingDistanceKm: undefined, walkingDistanceIntervals: walkingDistance } : {}),
+  }, timezone);
 }
 
 export const HealthDaySchema = z.preprocess(
@@ -240,7 +273,7 @@ export const HealthSyncRequestSchema = z.preprocess(
   },
   z
     .object({
-      days: z.array(HealthDayObjectSchema).length(1, "days must contain exactly today's data"),
+      days: z.array(HealthDayObjectSchema).min(1).max(3, "days must contain at most the latest three days"),
       timezone: z.string().min(1).max(100).refine(isValidTimeZone, "timezone must be a valid IANA zone")
         .optional(),
       syncedAt: z.string().datetime({ offset: true }).nullable().optional(),
@@ -252,7 +285,7 @@ export const HealthSyncRequestSchema = z.preprocess(
         new Date(request.syncedAt),
         request.timezone ?? DEFAULT_TIME_ZONE,
       ).date;
-      if (localDate !== request.days[0]?.date) {
+      if (!request.days.some((day) => day.date === localDate)) {
         context.addIssue({
           code: "custom",
           path: ["syncedAt"],

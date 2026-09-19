@@ -23,6 +23,7 @@ describe("health retention / durable source policy", () => {
       "DailyHealthData",
       "Workout",
       "HealthSyncSnapshot",
+      "HealthActivityInterval",
       "HeartRateSample",
       "RestingHeartRateSample",
       "SleepSegment",

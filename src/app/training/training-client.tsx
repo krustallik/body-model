@@ -47,6 +47,7 @@ export function TrainingClient() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [busySessionId, setBusySessionId] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -132,6 +133,28 @@ export function TrainingClient() {
       setError(uk ? "Не вдалося архівувати програму." : "Could not archive the program.");
     } finally {
       setBusyId(null);
+    }
+  }
+
+  async function deleteCancelledSession(sessionId: number) {
+    if (!window.confirm(
+      uk
+        ? "Видалити скасований запис? Дані Garmin залишаться без змін."
+        : "Delete this cancelled diary entry? Garmin data will remain unchanged.",
+    )) return;
+    setBusySessionId(sessionId);
+    setError(null);
+    try {
+      const response = await fetch(`/api/v1/training/sessions/${sessionId}`, { method: "DELETE" });
+      if (!response.ok) {
+        setError(await readApiError(response, uk));
+        return;
+      }
+      await load();
+    } catch {
+      setError(uk ? "Не вдалося видалити скасоване тренування." : "Could not delete the cancelled workout.");
+    } finally {
+      setBusySessionId(null);
     }
   }
 
@@ -356,10 +379,22 @@ export function TrainingClient() {
                       <Link className={styles.linkLike} href={`/training/sessions/${session.id}`}>
                         {uk ? "Деталі" : "Details"}
                       </Link>
-                      {session.status === "COMPLETED" && (
+                      {(session.status === "COMPLETED" || session.status === "CANCELLED") && (
                         <Link className={styles.linkLike} href={`/training/sessions/${session.id}/edit`}>
                           {uk ? "Редагувати" : "Edit"}
                         </Link>
+                      )}
+                      {session.status === "CANCELLED" && (
+                        <button
+                          className={styles.dangerButton}
+                          type="button"
+                          disabled={busySessionId === session.id}
+                          onClick={() => void deleteCancelledSession(session.id)}
+                        >
+                          {busySessionId === session.id
+                            ? (uk ? "Видалення…" : "Deleting…")
+                            : (uk ? "Видалити" : "Delete")}
+                        </button>
                       )}
                     </div>
                   </article>

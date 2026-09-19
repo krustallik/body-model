@@ -57,6 +57,40 @@ describe("HealthSyncRequestSchema", () => {
     expect(parse([validDay]).success).toBe(true);
   });
 
+  it("accepts Apple Health step and distance interval dictionaries as JSON strings", () => {
+    const result = parse([{ ...validDay,
+      steps: JSON.stringify({
+        stepCounts: "20\\n40",
+        // Deliberately glue the first two values: this is recovered just like HR timestamps.
+        timeStampsStart: "2026-09-19T08:00:00+02:002026-09-19T08:15:00+02:00",
+        timeStampsEnd: "2026-09-19T08:15:00+02:00\\n2026-09-19T08:30:00+02:00",
+      }),
+      WalkingDistanceKm: JSON.stringify({
+        walkingDistances: "0,2\n0.35",
+        timeStampsStart: "2026-09-19T08:00:00+02:00\n2026-09-19T08:15:00+02:00",
+        timeStampsEnd: "2026-09-19T08:15:00+02:00\n2026-09-19T08:30:00+02:00",
+      }),
+    }]);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.days[0]).toMatchObject({
+        steps: undefined,
+        walkingDistanceKm: undefined,
+        stepIntervals: { values: [20, 40] },
+        walkingDistanceIntervals: { values: [0.2, 0.35] },
+      });
+    }
+  });
+
+  it.each([
+    [{ stepCounts: "20\n40", timeStampsStart: "2026-09-19T08:00:00+02:00", timeStampsEnd: "2026-09-19T08:15:00+02:00\n2026-09-19T08:30:00+02:00" }],
+    [{ stepCounts: "20", timeStampsStart: "2026-09-19T08:15:00+02:00", timeStampsEnd: "2026-09-19T08:00:00+02:00" }],
+  ])("rejects invalid parallel Apple Health step intervals", (steps) => {
+    const result = parse([{ ...validDay, steps }]);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.issues.some((issue) => issue.message.includes("same length") || issue.message.includes("later"))).toBe(true);
+  });
+
   it("accepts null optional values and an empty workout list", () => {
     expect(
       parse([{
@@ -106,9 +140,13 @@ describe("HealthSyncRequestSchema", () => {
 
   it.each([
     ["empty days", []],
-    ["more than one day", [validDay, { date: "2026-08-22" }]],
+    ["more than three days", [validDay, { date: "2026-08-22" }, { date: "2026-08-23" }, { date: "2026-08-24" }]],
   ])("rejects %s", (_name, days) => {
     expect(parse(days).success).toBe(false);
+  });
+
+  it("accepts up to three recent day payloads", () => {
+    expect(parse([validDay, { date: "2026-08-22" }, { date: "2026-08-23" }]).success).toBe(true);
   });
 
   it.each(["21-08-2026", "2026-8-21", "2026-99-99"])(

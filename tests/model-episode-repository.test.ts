@@ -13,6 +13,7 @@ const db = {
   },
   dailyHealthData: { findMany: vi.fn() },
   healthSyncSnapshot: { findMany: vi.fn() },
+  healthActivityInterval: { findMany: vi.fn() },
   workInterval: { findMany: vi.fn() },
   workout: { findMany: vi.fn() },
   dailyModelState: {
@@ -144,6 +145,7 @@ describe("model episode repository mapping", () => {
       id: 1, date: "2026-08-22", receivedAt: new Date(), syncedAt: null,
       steps: 1_000, walkingDistanceKm: new Prisma.Decimal("1.25"),
     }]);
+    db.healthActivityInterval.findMany.mockResolvedValue([]);
     db.workInterval.findMany.mockResolvedValue([{
       id: 1, date: "2026-08-22", startAt: new Date(), endAt: new Date(),
       timezone: "Europe/Bratislava", category: "manualLight", breakMinutes: null,

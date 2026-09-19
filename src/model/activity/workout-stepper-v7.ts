@@ -9,6 +9,14 @@ export type HealthSyncStepSnapshotV7 = {
   steps: number | null;
 };
 
+/** A non-cumulative Apple Health step value covering the complete interval. */
+export type HealthStepIntervalV7 = {
+  id: number;
+  startAt: string;
+  endAt: string;
+  stepCount: number;
+};
+
 export type EffectiveHealthSyncStepSnapshotV7 = {
   snapshotId: number;
   timestamp: string;
@@ -18,18 +26,18 @@ export type EffectiveHealthSyncStepSnapshotV7 = {
 
 export type BracketedStepperStepEvidenceV7 = {
   availability: "available";
-  before: EffectiveHealthSyncStepSnapshotV7;
-  after: EffectiveHealthSyncStepSnapshotV7;
-  preGapSeconds: number;
-  postGapSeconds: number;
+  before: EffectiveHealthSyncStepSnapshotV7 | null;
+  after: EffectiveHealthSyncStepSnapshotV7 | null;
+  preGapSeconds: number | null;
+  postGapSeconds: number | null;
   derivedStepDelta: {
     value: number;
-    provenance: "bracketed-health-step-delta";
+    provenance: "bracketed-health-step-delta" | "health-step-interval-overlap";
   };
   /** Derived interval rate, never a directly measured machine cadence. */
   derivedStepRatePerMinute: {
     value: number;
-    provenance: "derived-from-bracketed-health-step-delta-and-workout-duration";
+    provenance: "derived-from-bracketed-health-step-delta-and-workout-duration" | "derived-from-health-step-interval-overlap-and-workout-duration";
   } | null;
 } | {
   availability: "unavailable";
@@ -38,7 +46,8 @@ export type BracketedStepperStepEvidenceV7 = {
     | "no-before-snapshot"
     | "no-after-snapshot"
     | "missing-step-counter"
-    | "counter-decrease";
+    | "counter-decrease"
+    | "incomplete-step-interval-coverage";
   before: EffectiveHealthSyncStepSnapshotV7 | null;
   after: EffectiveHealthSyncStepSnapshotV7 | null;
   preGapSeconds: number | null;
@@ -89,6 +98,8 @@ function effectiveSnapshot(snapshot: HealthSyncStepSnapshotV7): EffectiveHealthS
 export function canonicalizeWorkoutStepperEvidenceV7(input: {
   workoutEnergy: WorkoutEnergyEvidenceV7;
   snapshots: readonly HealthSyncStepSnapshotV7[];
+  /** Preferred modern source. Legacy snapshots are used only when this is empty. */
+  stepIntervals?: readonly HealthStepIntervalV7[];
 }): WorkoutStepperEvidenceV7 {
   const { workoutEnergy } = input;
   if (workoutEnergy.canonicalWorkoutType !== STAIR_CLIMBING_TYPE) {
@@ -110,6 +121,64 @@ export function canonicalizeWorkoutStepperEvidenceV7(input: {
   const startMs = timestampMs(workoutEnergy.startAt);
   const endMs = timestampMs(workoutEnergy.endAt);
   if (endMs < startMs) throw new Error("Stepper workout end must not precede start");
+
+  const stepIntervals = input.stepIntervals ?? [];
+  if (stepIntervals.length > 0) {
+    const normalized = stepIntervals.map((sample) => {
+      const sampleStart = timestampMs(sample.startAt);
+      const sampleEnd = timestampMs(sample.endAt);
+      if (sampleEnd <= sampleStart) throw new Error("Health step interval must have positive duration");
+      if (!Number.isFinite(sample.stepCount) || sample.stepCount < 0) {
+        throw new Error("Health step interval count must be a nonnegative finite number");
+      }
+      return { ...sample, sampleStart, sampleEnd };
+    }).filter((sample) => sample.sampleStart < endMs && sample.sampleEnd > startMs);
+    const coverage = normalized
+      .map((sample) => ({ start: Math.max(startMs, sample.sampleStart), end: Math.min(endMs, sample.sampleEnd) }))
+      .sort((left, right) => left.start - right.start);
+    let coveredUntil = startMs;
+    for (const span of coverage) {
+      if (span.start > coveredUntil) break;
+      coveredUntil = Math.max(coveredUntil, span.end);
+    }
+    if (coveredUntil < endMs) {
+      return {
+        workoutEnergy,
+        bracketedSteps: {
+          availability: "unavailable",
+          availabilityReason: "incomplete-step-interval-coverage",
+          before: null,
+          after: null,
+          preGapSeconds: null,
+          postGapSeconds: null,
+          derivedStepDelta: null,
+          derivedStepRatePerMinute: null,
+        },
+      };
+    }
+    const derivedStepDelta = normalized.reduce((sum, sample) => {
+      const overlap = Math.max(0, Math.min(endMs, sample.sampleEnd) - Math.max(startMs, sample.sampleStart));
+      return sum + sample.stepCount * overlap / (sample.sampleEnd - sample.sampleStart);
+    }, 0);
+    const durationMinutes = workoutEnergy.durationMinutes;
+    return {
+      workoutEnergy,
+      bracketedSteps: {
+        availability: "available",
+        before: null,
+        after: null,
+        preGapSeconds: 0,
+        postGapSeconds: 0,
+        derivedStepDelta: { value: derivedStepDelta, provenance: "health-step-interval-overlap" },
+        derivedStepRatePerMinute: durationMinutes !== null && durationMinutes > 0
+          ? {
+            value: derivedStepDelta / durationMinutes,
+            provenance: "derived-from-health-step-interval-overlap-and-workout-duration",
+          }
+          : null,
+      },
+    };
+  }
 
   const snapshots = input.snapshots
     .map((snapshot, sourceIndex) => ({ snapshot: effectiveSnapshot(snapshot), sourceIndex }))

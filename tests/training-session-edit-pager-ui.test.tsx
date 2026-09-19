@@ -24,10 +24,12 @@ import {
   SESSION_STATUS,
 } from "@/modules/training/training.constants";
 
-function makeSession() {
+function makeSession(
+  status: (typeof SESSION_STATUS)[keyof typeof SESSION_STATUS] = SESSION_STATUS.COMPLETED,
+) {
   return {
     id: 88,
-    status: SESSION_STATUS.COMPLETED,
+    status,
     entryMode: ENTRY_MODE.RETROSPECTIVE,
     revision: 2,
     programId: 7,
@@ -344,5 +346,16 @@ describe("Session edit exercise pager", () => {
     });
     await userEvent.setup().click(screen.getByRole("button", { name: /Session menu/i }));
     expect(screen.queryByRole("button", { name: /Cancel workout/i })).toBeNull();
+  });
+
+  it("keeps cancelled sessions editable and exposes diary deletion", async () => {
+    stubFetch(makeSession(SESSION_STATUS.CANCELLED));
+    render(<SessionEditClient sessionId={88} />);
+    await waitFor(() => {
+      expect(screen.getByText("Жим гантелей на похилій лаві вгору (30°)")).toBeTruthy();
+    });
+    await userEvent.setup().click(screen.getByRole("button", { name: /Session menu/i }));
+    expect(screen.getAllByRole("button", { name: /Delete diary/i })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: /Edit exercise/i })).toHaveLength(2);
   });
 });

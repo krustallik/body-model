@@ -13,10 +13,19 @@ export class StepperWorkoutDiagnosticRepository {
       select: { id: true, type: true, startAt: true, endAt: true, durationMinutes: true, activeEnergyKcal: true },
     });
     if (workout === null) return undefined;
-    const [assignments, snapshots, heartRateSamples] = await Promise.all([
+    const [assignments, snapshots, stepIntervals, heartRateSamples] = await Promise.all([
       this.equipment.list(),
       this.client.healthSyncSnapshot.findMany({
         select: { id: true, receivedAt: true, syncedAt: true, steps: true },
+      }),
+      this.client.healthActivityInterval.findMany({
+        where: {
+          metric: "steps",
+          startAt: { lt: workout.endAt },
+          endAt: { gt: workout.startAt },
+        },
+        select: { id: true, startAt: true, endAt: true, value: true },
+        orderBy: [{ startAt: "asc" }, { id: "asc" }],
       }),
       this.client.heartRateSample.findMany({
         where: { timestamp: { gte: workout.startAt, lte: workout.endAt } },
@@ -31,6 +40,12 @@ export class StepperWorkoutDiagnosticRepository {
       assignments: assignments as StepperEquipmentAssignmentV7[],
       snapshots: snapshots.map((snapshot) => ({
         id: snapshot.id, receivedAt: snapshot.receivedAt.toISOString(), syncedAt: snapshot.syncedAt?.toISOString() ?? null, steps: snapshot.steps,
+      })),
+      stepIntervals: stepIntervals.map((sample) => ({
+        id: sample.id,
+        startAt: sample.startAt.toISOString(),
+        endAt: sample.endAt.toISOString(),
+        stepCount: sample.value.toNumber(),
       })),
       heartRateSamples: heartRateSamples.map((sample) => ({
         timestamp: sample.timestamp.toISOString(), bpm: sample.bpm, provenance: { provider: sample.source, device: null },

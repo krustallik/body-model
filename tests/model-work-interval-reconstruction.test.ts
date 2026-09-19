@@ -138,6 +138,21 @@ describe("work interval walking reconstruction", () => {
     expect(result.estimatedSteps.end).toMatchObject({ method: "nearest", gapMinutes: 20 });
   });
 
+  it("reports the nearest actual syncs at Bratislava work boundaries", () => {
+    const result = estimateWorkIntervalWalking({
+      snapshots: [
+        { timestamp: new Date("2026-08-23T03:23:37Z"), steps: 1_000, walkingDistanceKm: 0.8 }, // 05:23:37 Europe/Bratislava (UTC+2)
+        { timestamp: new Date("2026-08-23T12:02:29Z"), steps: 4_000, walkingDistanceKm: 3.1 }, // 14:02:29 Europe/Bratislava (UTC+2)
+      ],
+      startTime: at("04:00"), // 06:00 Europe/Bratislava (UTC+2)
+      endTime: at("12:00"), // 14:00 Europe/Bratislava (UTC+2)
+    });
+    expect(result.snapshotCoverage).toEqual({
+      startGapMinutes: (36 * 60 + 23) / 60,
+      endGapMinutes: (2 * 60 + 29) / 60,
+    });
+  });
+
   it("accepts syncs up to one hour inside either work boundary", () => {
     const result = estimateWorkIntervalWalking({
       snapshots: [snapshot("06:45", 1_100, 0.8), snapshot("13:15", 2_600, 1.9)],
@@ -202,6 +217,33 @@ describe("work interval walking reconstruction", () => {
     expect(result.intervals.map(({ intervalId }) => intervalId)).toEqual([1, 2]);
     expect(result.workWalkingDistanceKm).toBe(3);
     expect(result.outsideWorkWalkingDistanceKm).toBe(2);
+  });
+
+  it("prefers Apple Health interval samples and prorates records crossing work boundaries", () => {
+    const result = estimateDailyWorkWalking({
+      snapshots: [snapshot("08:00", 0, 0), snapshot("17:00", 99_999, 99)],
+      activityIntervals: {
+        steps: [
+          { startTime: at("07:45"), endTime: at("08:15"), value: 60 },
+          { startTime: at("08:15"), endTime: at("09:15"), value: 120 },
+          { startTime: at("09:15"), endTime: at("10:15"), value: 90 },
+        ],
+        walkingDistanceKm: [
+          { startTime: at("07:45"), endTime: at("08:15"), value: 0.3 },
+          { startTime: at("08:15"), endTime: at("09:15"), value: 0.6 },
+          { startTime: at("09:15"), endTime: at("10:15"), value: 0.45 },
+        ],
+      },
+      intervals: [{ id: 1, startTime: at("08:00"), endTime: at("10:00") }],
+      dailyWalkingDistanceKm: 2,
+    });
+    expect(result.intervals[0]).toMatchObject({
+      estimatedSteps: { value: 217.5, start: { method: "interval-overlap" } },
+      estimatedWalkingDistanceKm: { value: 1.0875, end: { method: "interval-overlap" } },
+      snapshotCoverage: null,
+    });
+    expect(result.workWalkingDistanceKm).toBe(1.0875);
+    expect(result.outsideWorkWalkingDistanceKm).toBeCloseTo(0.9125, 10);
   });
 
   it("returns unavailable outside distance for missing or inconsistent inputs", () => {

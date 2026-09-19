@@ -241,8 +241,8 @@ export function WorkActivityDialog({ date, onClose }: { date: string; onClose: (
                   {quality && (
                     <div className={`${styles.quality} ${styles[quality.tone]}`}>
                       <strong>{quality.label}</strong>
-                      {quality.startGapMinutes !== null && quality.endGapMinutes !== null && (
-                        <span>{uk ? "Проміжок на початку" : "Start gap"}: {decimal.format(quality.startGapMinutes)} {uk ? "хв" : "min"} · {uk ? "наприкінці" : "End gap"}: {decimal.format(quality.endGapMinutes)} {uk ? "хв" : "min"}</span>
+                      {walking?.snapshotCoverage && (
+                        <span>{uk ? "Найближча синхронізація — на початку" : "Nearest sync — start"}: {decimal.format(walking.snapshotCoverage.startGapMinutes)} {uk ? "хв" : "min"} · {uk ? "наприкінці" : "end"}: {decimal.format(walking.snapshotCoverage.endGapMinutes)} {uk ? "хв" : "min"}</span>
                       )}
                     </div>
                   )}
@@ -270,7 +270,7 @@ function WorkSummary({ activity }: { activity: WorkActivityResponseDto | null })
   const summary = dailyActivityView(diagnostics);
   return (
     <section className={styles.activitySummary}>
-      <div><h3>{uk ? "Розподіл денної активності" : "Daily activity breakdown"}</h3><span>{uk ? "Оцінка; ходьба під час роботи врахована лише в розділі «Робота»." : "Estimated; walking during work appears only inside Work."}</span></div>
+      <div><h3>{uk ? "Розподіл денної активності" : "Daily activity breakdown"}</h3><span>{uk ? "Оцінка роботи й ходьби; ходьба під час роботи врахована лише в розділі «Робота»." : "Estimated work and walking; walking during work appears only inside Work."}</span></div>
       <dl>
         <div><dt>{uk ? "Ходьба під час роботи" : "Walking during work"}</dt><dd>{summary.workWalkingDistanceKm === null ? "—" : `~${decimal.format(summary.workWalkingDistanceKm)} km`}</dd></div>
         <div><dt>{uk ? "Ходьба поза роботою" : "Walking outside work"}</dt><dd>{summary.outsideWorkWalkingDistanceKm === null ? "—" : `~${decimal.format(summary.outsideWorkWalkingDistanceKm)} km`}</dd></div>
@@ -278,7 +278,6 @@ function WorkSummary({ activity }: { activity: WorkActivityResponseDto | null })
         <div><dt>{uk ? "Робота без ходьби" : "Non-walking work"}</dt><dd>{summary.residualWorkActivityKcal === null ? "—" : `~${number.format(summary.residualWorkActivityKcal)} kcal`}</dd></div>
         <div><dt>{uk ? "Робота загалом" : "Work total"}</dt><dd>{summary.occupationalActivityKcal === null ? "—" : `~${number.format(summary.occupationalActivityKcal)} kcal`}</dd></div>
         <div><dt>{uk ? "Активність ходьби поза роботою" : "Walking outside work"}</dt><dd>{summary.outsideWorkWalkingActivityKcal === null ? "—" : `~${number.format(summary.outsideWorkWalkingActivityKcal)} kcal`}</dd></div>
-        <div><dt>{uk ? "Силове тренування" : "Strength"}</dt><dd>{summary.strengthActivityKcal === null ? "—" : `~${number.format(summary.strengthActivityKcal)} kcal`}</dd></div>
         <div className={styles.activityTotal}><dt>{uk ? "Оцінена активність" : "Estimated activity"}</dt><dd>{summary.totalActivityKcal === null ? "—" : `~${number.format(summary.totalActivityKcal)} kcal`}</dd></div>
       </dl>
     </section>

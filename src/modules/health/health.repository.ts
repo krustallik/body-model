@@ -39,6 +39,67 @@ function optionalUpdate<T>(value: T | null | undefined): T | null | undefined {
   return value === undefined ? undefined : value;
 }
 
+type ActivityMetric = "steps" | "walking-distance-km";
+
+function activityRows(
+  metric: ActivityMetric,
+  series: { starts: string[]; ends: string[]; values: number[] } | undefined,
+  timezone: string,
+) {
+  return (series?.values ?? []).map((value, index) => {
+    const startAt = new Date(series!.starts[index]!);
+    const endAt = new Date(series!.ends[index]!);
+    return {
+      date: instantToLocalDateTime(startAt, timezone).date,
+      metric,
+      startAt,
+      endAt,
+      value,
+      sourceFingerprint: `${metric}|${startAt.toISOString()}|${endAt.toISOString()}|${value}`,
+    };
+  });
+}
+
+async function persistActivityIntervals(
+  transaction: Prisma.TransactionClient,
+  day: HealthDayInput,
+  timezone: string,
+): Promise<void> {
+  const rows = [
+    ...activityRows("steps", day.stepIntervals, timezone),
+    ...activityRows("walking-distance-km", day.walkingDistanceIntervals, timezone),
+  ];
+  if (rows.length === 0) return;
+
+  await transaction.healthActivityInterval.createMany({ data: rows, skipDuplicates: true });
+  const dates = [...new Set(rows.map(({ date }) => date))];
+  for (const date of dates) {
+    const [steps, distance] = await Promise.all([
+      transaction.healthActivityInterval.aggregate({
+        where: { date, metric: "steps" }, _sum: { value: true },
+      }),
+      transaction.healthActivityInterval.aggregate({
+        where: { date, metric: "walking-distance-km" }, _sum: { value: true },
+      }),
+    ]);
+    const stepTotal = steps._sum.value === null ? undefined : steps._sum.value.toNumber();
+    const distanceTotal = distance._sum.value === null ? undefined : distance._sum.value;
+    await transaction.dailyHealthData.upsert({
+      where: { date },
+      create: {
+        date,
+        steps: stepTotal === undefined ? null : Math.round(stepTotal),
+        walkingDistanceKm: distanceTotal ?? null,
+        rawPayload: {},
+      },
+      update: {
+        ...(stepTotal === undefined ? {} : { steps: Math.round(stepTotal) }),
+        ...(distanceTotal === undefined ? {} : { walkingDistanceKm: distanceTotal }),
+      },
+    });
+  }
+}
+
 function sampleRows(
   dailyHealthDataId: number,
   _date: string,
@@ -203,6 +264,8 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
         },
       });
 
+      await persistActivityIntervals(transaction, day, metadata.timezone);
+
       const workouts = filterWorkoutsForSyncedDay(
         day.workouts ?? [],
         day.date,
@@ -250,7 +313,7 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
   /**
    * Legacy retention hook invoked after sync.
    *
-   * Durable canonical sources (DailyHealthData, Workout, HealthSyncSnapshot,
+   * Durable canonical sources (DailyHealthData, Workout, HealthSyncSnapshot, HealthActivityInterval,
    * HR, resting HR, SleepSegment, WorkInterval, training diary tables) are
    * never deleted here — snapshots are required for identical work-walk /
    * stair-overlap rebuild.

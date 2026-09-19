@@ -3,7 +3,7 @@ import { SessionEditClient } from "./session-edit-client";
 
 export const metadata: Metadata = {
   title: "Edit training diary · BodyCast",
-  description: "Edit historical or completed strength diary sessions.",
+  description: "Edit historical, completed, or cancelled strength diary sessions.",
 };
 
 type PageProps = {

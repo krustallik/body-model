@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { syncHealthData } = vi.hoisted(() => ({ syncHealthData: vi.fn() }));
+const { syncHealthData, recordHealthSyncAudit } = vi.hoisted(() => ({
+  syncHealthData: vi.fn(),
+  recordHealthSyncAudit: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock("@/modules/health/health.service", () => ({ syncHealthData }));
+vi.mock("@/modules/health/health-sync-audit", () => ({ recordHealthSyncAudit }));
 
 import { POST } from "@/app/api/v1/health/sync/route";
 
@@ -19,6 +23,8 @@ describe("POST /api/v1/health/sync", () => {
     process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
     process.env.IOS_SHORTCUT_API_KEY = apiKey;
     syncHealthData.mockReset();
+    recordHealthSyncAudit.mockReset();
+    recordHealthSyncAudit.mockResolvedValue(undefined);
   });
 
   it.each([[null], ["wrong-key"], [""]])("returns 401 for an unauthorized key: %s", async (key) => {
@@ -26,6 +32,9 @@ describe("POST /api/v1/health/sync", () => {
     expect(response.status).toBe(401);
     await expect(response.json()).resolves.toEqual({ error: "unauthorized" });
     expect(syncHealthData).not.toHaveBeenCalled();
+    expect(recordHealthSyncAudit).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: "unauthorized", httpStatus: 401, rawBody: JSON.stringify({ days: [{ date: "2026-08-21" }] }),
+    }));
   });
 
   it("returns the service result for a valid request", async () => {
@@ -48,6 +57,7 @@ describe("POST /api/v1/health/sync", () => {
       undefined,
       [{ date: "2026-08-21", steps: 10000 }],
     );
+    expect(recordHealthSyncAudit).toHaveBeenCalledWith(expect.objectContaining({ outcome: "success", httpStatus: 200 }));
   });
 
   it("accepts the current iPhone serialized HR fields and sends only canonical arrays to the service", async () => {
@@ -388,13 +398,14 @@ describe("POST /api/v1/health/sync", () => {
     expect(syncHealthData.mock.calls[0]?.[0].days[0].workouts).toHaveLength(3);
   });
 
-  it("rejects the old multi-day sync payload", async () => {
+  it("accepts a sync payload of up to three days", async () => {
+    syncHealthData.mockResolvedValue({ status: "ok", received: 2, created: 2, updated: 0, dates: [] });
     const response = await POST(request({ days: [
       { date: "2026-08-21" },
       { date: "2026-08-22" },
     ] }));
-    expect(response.status).toBe(400);
-    expect(syncHealthData).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(syncHealthData).toHaveBeenCalled();
   });
 
   it("returns 400 for malformed JSON", async () => {
@@ -406,6 +417,7 @@ describe("POST /api/v1/health/sync", () => {
       }),
     );
     expect(response.status).toBe(400);
+    expect(recordHealthSyncAudit).toHaveBeenCalledWith(expect.objectContaining({ outcome: "invalid-json", httpStatus: 400, rawBody: "{broken" }));
   });
 
   it("returns 400 for a non-JSON content type", async () => {
@@ -418,6 +430,7 @@ describe("POST /api/v1/health/sync", () => {
     );
     expect(response.status).toBe(400);
     expect(syncHealthData).not.toHaveBeenCalled();
+    expect(recordHealthSyncAudit).toHaveBeenCalledWith(expect.objectContaining({ outcome: "invalid-content-type", httpStatus: 400 }));
   });
 
   it("does not expose database errors", async () => {
@@ -425,5 +438,6 @@ describe("POST /api/v1/health/sync", () => {
     const response = await POST(request({ days: [{ date: "2026-08-21" }] }));
     expect(response.status).toBe(500);
     await expect(response.json()).resolves.toEqual({ error: "internal_error" });
+    expect(recordHealthSyncAudit).toHaveBeenCalledWith(expect.objectContaining({ outcome: "internal-error", httpStatus: 500 }));
   });
 });

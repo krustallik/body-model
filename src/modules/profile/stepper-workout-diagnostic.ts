@@ -2,12 +2,12 @@ import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
 import type { WorkoutEnergyEvidenceV7 } from "@/model/activity/workout-energy-v7";
 import { canonicalizeWorkoutHeartRateEvidenceV7, type WorkoutHeartRateSampleV7 } from "@/model/activity/workout-heart-rate-v7";
 import { assignmentAtWorkoutStartV7, type StepperEquipmentAssignmentV7 } from "@/model/activity/personal-stepper-reference-v7";
-import { canonicalizeWorkoutStepperEvidenceV7, workoutStepperEvidenceDiagnosticV7, type HealthSyncStepSnapshotV7 } from "@/model/activity/workout-stepper-v7";
+import { canonicalizeWorkoutStepperEvidenceV7, workoutStepperEvidenceDiagnosticV7, type HealthStepIntervalV7, type HealthSyncStepSnapshotV7 } from "@/model/activity/workout-stepper-v7";
 
 export type StepperWorkoutDiagnosticV7 = ReturnType<typeof workoutStepperEvidenceDiagnosticV7> & {
   equipmentAssignment: StepperEquipmentAssignmentV7 | null;
   labels: {
-    derivedStepDelta: "derived health step-counter attribution";
+    derivedStepDelta: "derived health step-counter attribution" | "derived Apple Health interval attribution";
     garminActiveEnergy: "device estimate";
   };
 };
@@ -27,6 +27,7 @@ export function buildStepperWorkoutDiagnosticV7(input: {
   };
   assignments: readonly StepperEquipmentAssignmentV7[];
   snapshots: readonly HealthSyncStepSnapshotV7[];
+  stepIntervals?: readonly HealthStepIntervalV7[];
   heartRateSamples: readonly WorkoutHeartRateSampleV7[];
 }): StepperWorkoutDiagnosticV7 | null {
   const canonical = canonicalizeWorkoutType(input.workout.type);
@@ -47,12 +48,19 @@ export function buildStepperWorkoutDiagnosticV7(input: {
       : { availability: "available", sourceValueStatus: "observed", valueKcal: input.workout.activeEnergyKcal, semantics: "active", provenance: "device-estimate" },
     heartRate,
   };
-  const evidence = canonicalizeWorkoutStepperEvidenceV7({ workoutEnergy, snapshots: input.snapshots });
+  const evidence = canonicalizeWorkoutStepperEvidenceV7({
+    workoutEnergy,
+    snapshots: input.snapshots,
+    stepIntervals: input.stepIntervals,
+  });
   return {
     ...workoutStepperEvidenceDiagnosticV7(evidence),
     equipmentAssignment: assignmentAtWorkoutStartV7(input.assignments, input.workout.startAt),
     labels: {
-      derivedStepDelta: "derived health step-counter attribution",
+      derivedStepDelta: evidence.bracketedSteps.availability === "available"
+        && evidence.bracketedSteps.derivedStepDelta.provenance === "health-step-interval-overlap"
+        ? "derived Apple Health interval attribution"
+        : "derived health step-counter attribution",
       garminActiveEnergy: "device estimate",
     },
   };

@@ -2158,6 +2158,7 @@ a.editMenuItem + .editMenuDanger {
 .denseCardActions .primaryButton,
 .denseCardActions .secondaryButton,
 .denseCardActions .infoButton,
+.denseCardActions .dangerButton,
 .denseCardActions .archiveButton {
   min-height: 2.35rem;
   padding: 0.45rem 0.75rem;

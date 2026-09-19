@@ -105,6 +105,7 @@ describe("Training hub UI", () => {
             matchStatus: MATCH_STATUS.UNMATCHED,
             matchMethod: null,
             matchedWorkoutId: null,
+            planCompletionPercent: 100,
           }],
         });
       }
@@ -116,7 +117,9 @@ describe("Training hub UI", () => {
     await waitFor(() => {
       expect(screen.getByText(/Unmatched/i)).toBeTruthy();
       expect(screen.getByText(/No sessions need attention/i)).toBeTruthy();
+      expect(screen.getByText("100% of plan")).toBeTruthy();
     });
+    expect(screen.getByText("100% of plan").className).toContain(styles.planCompletionComplete);
     const sections = Array.from(container.querySelectorAll("section"));
     const attentionIndex = sections.findIndex((node) => (
       node.getAttribute("aria-label") === "Match attention"

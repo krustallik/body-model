@@ -15,6 +15,7 @@ import {
   formatDurationMinutes,
   matchStatusBadgeTone,
   matchStatusLabel,
+  planCompletionPillClass,
   readApiError,
 } from "./training-labels";
 import styles from "./training.module.css";
@@ -366,16 +367,17 @@ export function TrainingClient() {
                       <div>
                         <strong>{session.programName}</strong>
                         <p className={styles.cardMeta}>
-                          {formatDateTime(session.occurrenceAt ?? session.webStartedAt, intlLocale)}
-                          {" · "}
-                          {formatDurationMinutes(session.webStartedAt, session.webEndedAt, intlLocale, uk)}
+                          <span>
+                            {formatDateTime(session.occurrenceAt ?? session.webStartedAt, intlLocale)}
+                            {" · "}
+                            {formatDurationMinutes(session.webStartedAt, session.webEndedAt, intlLocale, uk)}
+                          </span>
                           {session.planCompletionPercent != null && (
-                            <>
-                              {" · "}
+                            <span className={planCompletionPillClass(session.planCompletionPercent, styles)}>
                               {uk
                                 ? `${session.planCompletionPercent}% плану`
                                 : `${session.planCompletionPercent}% of plan`}
-                            </>
+                            </span>
                           )}
                         </p>
                       </div>

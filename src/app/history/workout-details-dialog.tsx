@@ -83,15 +83,33 @@ export function WorkoutDetailsDialog({
         <div className={styles.workoutDetailList}>
           {day.workouts.map((workout) => {
             const energy = workoutEnergyProvenanceChip(workout.activeEnergyKcal, locale);
+            const isStrength = workout.classification === "traditional-strength-training";
+            const cardHref = isStrength
+              ? (workout.linkedTrainingSessionId != null
+                ? `/training/sessions/${workout.linkedTrainingSessionId}`
+                : workout.id != null
+                  ? `/training/backfill/from/${workout.id}`
+                  : null)
+              : null;
             return (
-            <article className={styles.workoutDetailCard} key={`${workout.startAt}-${workout.type}`}>
-              {workout.classification === "traditional-strength-training" && workout.linkedTrainingSessionId != null ? (
-                <Link className={styles.workoutTitleLink} href={`/training/sessions/${workout.linkedTrainingSessionId}`}>
-                  <strong>{displayWorkoutType(workout)}</strong>
+            <article
+              className={
+                cardHref
+                  ? `${styles.workoutDetailCard} ${styles.workoutDetailCardInteractive}`
+                  : styles.workoutDetailCard
+              }
+              key={`${workout.startAt}-${workout.type}`}
+            >
+              {cardHref ? (
+                <Link
+                  className={styles.workoutCardHit}
+                  href={cardHref}
+                  aria-label={displayWorkoutType(workout)}
+                >
+                  <span aria-hidden="true" />
                 </Link>
-              ) : (
-                <strong>{displayWorkoutType(workout)}</strong>
-              )}
+              ) : null}
+              <strong>{displayWorkoutType(workout)}</strong>
               <p>
                 {formatClock(workout.startAt, intlLocale)}
                 –

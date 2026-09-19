@@ -23,6 +23,10 @@ vi.mock("next/navigation", () => ({
 
 import { SessionClient } from "@/app/training/sessions/[id]/session-client";
 import styles from "@/app/training/training.module.css";
+
+function activePane() {
+  return within(screen.getByTestId("active-exercise-pane"));
+}
 import {
   ENTRY_MODE,
   EXERCISE_ORIGIN,
@@ -142,9 +146,9 @@ describe("Live training session mobile UI", () => {
     expect(screen.getByText("Зовнішня вага")).toBeTruthy();
     expect(screen.getAllByText("0 / 4 підходів").length).toBeGreaterThan(0);
     expect(screen.queryByText(/UI Review/i)).toBeNull();
-    expect(screen.getByText("Вага, кг")).toBeTruthy();
-    expect(screen.getByText("Повтори")).toBeTruthy();
-    expect(screen.getByText("Ще немає записаних підходів.")).toBeTruthy();
+    expect(activePane().getByText("Вага, кг")).toBeTruthy();
+    expect(activePane().getByText("Повтори")).toBeTruthy();
+    expect(activePane().getByText("Ще немає записаних підходів.")).toBeTruthy();
   });
 
   it("keeps composer above logged sets and renders exercise history", async () => {
@@ -152,9 +156,9 @@ describe("Live training session mobile UI", () => {
     render(<SessionClient sessionId={42} />);
     await waitFor(() => expect(screen.getByText("ТИСНИ")).toBeTruthy());
 
-    const composer = screen.getByLabelText("Новий підхід");
-    const logged = screen.getByLabelText("Підходи");
-    const history = screen.getByLabelText("Історія вправи");
+    const composer = activePane().getByLabelText("Новий підхід");
+    const logged = activePane().getByLabelText("Підходи");
+    const history = activePane().getByLabelText("Історія вправи");
     expect(
       composer.compareDocumentPosition(logged) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
@@ -162,8 +166,8 @@ describe("Live training session mobile UI", () => {
       logged.compareDocumentPosition(history) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     await waitFor(() => {
-      expect(screen.getByText(/32 кг × 10|32 кг/)).toBeTruthy();
-      expect(screen.getByText("важко")).toBeTruthy();
+      expect(activePane().getByText(/32 кг × 10|32 кг/)).toBeTruthy();
+      expect(activePane().getByText("важко")).toBeTruthy();
     });
   });
 
@@ -246,9 +250,9 @@ describe("Live training session mobile UI", () => {
     expect(save).toHaveProperty("disabled", true);
 
     await user.click(screen.getByRole("button", { name: /\+ Коментар/i }));
-    const weight = screen.getByLabelText("Вага, кг");
-    const reps = screen.getByLabelText("Повтори");
-    const comment = screen.getByLabelText("Коментар");
+    const weight = activePane().getByLabelText("Вага, кг");
+    const reps = activePane().getByLabelText("Повтори");
+    const comment = activePane().getByLabelText("Коментар");
     await user.type(weight, "30");
     await user.type(reps, "12");
     await user.type(comment, "пауза");
@@ -256,8 +260,8 @@ describe("Live training session mobile UI", () => {
 
     await user.click(save);
     await waitFor(() => {
-      expect(screen.getByText("30 кг")).toBeTruthy();
-      expect(screen.getByText("пауза")).toBeTruthy();
+      expect(activePane().getAllByText(/30 кг × 12/).length).toBeGreaterThan(0);
+      expect(activePane().getByText("пауза")).toBeTruthy();
       expect(screen.getAllByText("1 / 4 підходів").length).toBeGreaterThan(0);
     });
 
@@ -267,16 +271,16 @@ describe("Live training session mobile UI", () => {
         name: "Розведення гантелей на горизонтальній лаві",
       })).toBeTruthy();
       expect(screen.getByText("2 / 3 вправ")).toBeTruthy();
-      expect(screen.getByText("Опір резинки, кг")).toBeTruthy();
+      expect(activePane().getByText("Опір резинки, кг")).toBeTruthy();
     });
 
     await user.click(screen.getAllByRole("button", { name: /Наступна вправа/i })[0]!);
     await waitFor(() => {
       expect(screen.getByRole("heading", { name: "Віджимання від ручок" })).toBeTruthy();
-      expect(screen.getByText("Власна вага")).toBeTruthy();
-      expect(screen.queryByText("Вага, кг")).toBeNull();
-      expect(screen.queryByText("Опір резинки, кг")).toBeNull();
-      expect(within(screen.getByLabelText("Новий підхід")).getByText("Повтори")).toBeTruthy();
+      expect(activePane().getByText("Власна вага")).toBeTruthy();
+      expect(activePane().queryByText("Вага, кг")).toBeNull();
+      expect(activePane().queryByText("Опір резинки, кг")).toBeNull();
+      expect(within(activePane().getByLabelText("Новий підхід")).getByText("Повтори")).toBeTruthy();
     });
 
     await user.click(screen.getAllByRole("button", { name: /Попередня вправа/i })[0]!);
@@ -387,12 +391,12 @@ describe("Live training session mobile UI", () => {
     const user = userEvent.setup();
     stubSessionFetch();
     render(<SessionClient sessionId={42} />);
-    await waitFor(() => expect(screen.getByText(/32 кг × 10/)).toBeTruthy());
-    await user.click(screen.getByRole("button", { name: /#2/ }));
-    expect((screen.getByLabelText("Вага, кг") as HTMLInputElement).value).toBe("32");
-    expect((screen.getByLabelText("Повтори") as HTMLInputElement).value).toBe("10");
-    expect((screen.getByPlaceholderText("опційно") as HTMLInputElement).value).toBe("2");
-    expect(screen.getByText(/Поля підставлено/)).toBeTruthy();
+    await waitFor(() => expect(activePane().getByText(/32 кг × 10/)).toBeTruthy());
+    await user.click(activePane().getByRole("button", { name: /#2/ }));
+    expect((activePane().getByLabelText("Вага, кг") as HTMLInputElement).value).toBe("32");
+    expect((activePane().getByLabelText("Повтори") as HTMLInputElement).value).toBe("10");
+    expect((activePane().getByPlaceholderText("опційно") as HTMLInputElement).value).toBe("2");
+    expect(activePane().getByText(/Поля підставлено/)).toBeTruthy();
   });
 
   it("accepts a comma decimal for kilograms", async () => {
@@ -406,9 +410,9 @@ describe("Live training session mobile UI", () => {
       return null;
     });
     render(<SessionClient sessionId={42} />);
-    await waitFor(() => expect(screen.getByLabelText("Вага, кг")).toBeTruthy());
-    await user.type(screen.getByLabelText("Вага, кг"), "33,5");
-    await user.type(screen.getByLabelText("Повтори"), "8");
+    await waitFor(() => expect(activePane().getByLabelText("Вага, кг")).toBeTruthy());
+    await user.type(activePane().getByLabelText("Вага, кг"), "33,5");
+    await user.type(activePane().getByLabelText("Повтори"), "8");
     await user.click(screen.getByRole("button", { name: "Додати підхід" }));
     await waitFor(() => {
       expect(posted[0]).toEqual(expect.objectContaining({ weightKg: 33.5, reps: 8 }));

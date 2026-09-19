@@ -8,26 +8,19 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import {
-  EXERCISE_ORIGIN,
-  RESISTANCE,
-} from "@/modules/training/training.constants";
-import { externalWeightEntryLabel } from "@/modules/training/external-load-accounting";
-import { parseTrainingDecimal } from "@/modules/training/parse-training-decimal";
 import type {
   ExerciseHistoryEntryDto,
   ExerciseHistorySetDto,
   StrengthSessionExerciseDto,
   StrengthSetDto,
 } from "@/modules/training/training.types";
-import { resolveExerciseImageSrc } from "./exercise-images";
-import { resolveExerciseInfo } from "./exercise-info";
+import { ExercisePane } from "./training-exercise-pane";
 import {
   classifyCarouselRelease,
   isEditableSwipeTarget,
   shouldHandleKeyboardExerciseNav,
 } from "./horizontal-swipe";
-import { formatElapsedClock, resistanceLabel } from "./training-labels";
+import { formatElapsedClock } from "./training-labels";
 import styles from "./training.module.css";
 
 export type SetDraft = {
@@ -80,82 +73,6 @@ type TrainingExerciseWorkspaceProps = {
 
 export function emptySetDraft(): SetDraft {
   return { reps: "", weightKg: "", bandNominalResistanceKg: "", rir: "", comment: "" };
-}
-
-function setLoadLabel(
-  exercise: StrengthSessionExerciseDto,
-  set: Pick<StrengthSetDto, "weightKg" | "bandNominalResistanceKg">,
-  uk: boolean,
-): string {
-  if (exercise.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && set.weightKg !== null) {
-    return `${set.weightKg} ${uk ? "кг" : "kg"}`;
-  }
-  if (
-    exercise.resistanceType === RESISTANCE.RESISTANCE_BAND
-    && set.bandNominalResistanceKg !== null
-  ) {
-    return `${set.bandNominalResistanceKg} ${uk ? "кг резинки" : "kg band"}`;
-  }
-  return uk ? "власна вага" : "bodyweight";
-}
-
-function historyLoadLabel(
-  resistanceType: string,
-  set: ExerciseHistoryEntryDto["sets"][number],
-  uk: boolean,
-): string {
-  if (resistanceType === RESISTANCE.EXTERNAL_WEIGHT && set.weightKg !== null) {
-    return `${set.weightKg} ${uk ? "кг" : "kg"}`;
-  }
-  if (resistanceType === RESISTANCE.RESISTANCE_BAND && set.bandNominalResistanceKg !== null) {
-    return `${set.bandNominalResistanceKg} ${uk ? "кг резинки" : "kg band"}`;
-  }
-  return uk ? "власна вага" : "bodyweight";
-}
-
-function formatHistoryDate(iso: string, uk: boolean): string {
-  try {
-    return new Date(iso).toLocaleDateString(uk ? "uk-UA" : "en-US", {
-      day: "numeric",
-      month: "short",
-      year: "numeric",
-    });
-  } catch {
-    return iso.slice(0, 10);
-  }
-}
-
-function ExercisePeek({
-  exercise,
-  uk,
-}: {
-  exercise: StrengthSessionExerciseDto | null | undefined;
-  uk: boolean;
-}) {
-  if (!exercise) {
-    return <div className={styles.workoutCarouselPeek} aria-hidden="true" />;
-  }
-  const imageSrc = resolveExerciseImageSrc({
-    snapshotExerciseName: exercise.snapshotExerciseName,
-  });
-  return (
-    <div className={styles.workoutCarouselPeek} aria-hidden="true">
-      <figure className={styles.workoutVisual}>
-        {imageSrc ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={imageSrc} alt="" className={styles.workoutImage} />
-        ) : (
-          <div className={styles.workoutVisualEmpty} />
-        )}
-      </figure>
-      <p className={styles.workoutCarouselPeekName}>{exercise.snapshotExerciseName}</p>
-      <p className={styles.workoutCarouselPeekMeta}>
-        {resistanceLabel(exercise.resistanceType, uk)}
-        {" · "}
-        {exercise.sets.length}/{exercise.plannedSets}
-      </p>
-    </div>
-  );
 }
 
 function elapsedMs(startedAt: string | null | undefined, endedAt: string | null | undefined, now: number): number | null {
@@ -215,8 +132,8 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
   const animatingRef = useRef(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [commentOpen, setCommentOpen] = useState(false);
-  const [history, setHistory] = useState<ExerciseHistoryEntryDto[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyById, setHistoryById] = useState<Record<number, ExerciseHistoryEntryDto[]>>({});
+  const [historyLoadingIds, setHistoryLoadingIds] = useState<Record<number, boolean>>({});
   const [infoExerciseId, setInfoExerciseId] = useState(exercise.id);
   const [dragPx, setDragPx] = useState(0);
   const [animating, setAnimating] = useState(false);
@@ -234,25 +151,6 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
 
   const canPrev = exerciseIndex > 0;
   const canNext = exerciseIndex < exerciseCount - 1;
-  const sets = exercise.sets.slice().sort((a, b) => a.setNumber - b.setNumber);
-  const completedSets = sets.length;
-  const plannedSets = exercise.plannedSets;
-  const imageSrc = resolveExerciseImageSrc({
-    snapshotExerciseName: exercise.snapshotExerciseName,
-  });
-  const info = resolveExerciseInfo({
-    snapshotExerciseName: exercise.snapshotExerciseName,
-  });
-
-  const repsOk = Number.isFinite(Number(draft.reps)) && Number(draft.reps) >= 1;
-  const weightValue = parseTrainingDecimal(draft.weightKg);
-  const bandValue = parseTrainingDecimal(draft.bandNominalResistanceKg);
-  const weightOk = exercise.resistanceType !== RESISTANCE.EXTERNAL_WEIGHT
-    || (Number.isFinite(weightValue) && weightValue > 0);
-  const bandOk = exercise.resistanceType !== RESISTANCE.RESISTANCE_BAND
-    || (Number.isFinite(bandValue) && bandValue > 0);
-  const canSave = !busy && repsOk && weightOk && bandOk;
-
   const clockMs = elapsedMs(clockStartedAt, clockTicking ? null : clockEndedAt, nowMs);
 
   useEffect(() => {
@@ -281,28 +179,38 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
     };
   }, [menuOpen, onCloseMenu]);
 
+  const historyByIdRef = useRef(historyById);
+  historyByIdRef.current = historyById;
+
   useEffect(() => {
+    const ids = [previousExercise?.id, exercise.id, nextExercise?.id]
+      .filter((id): id is number => id != null);
     let cancelled = false;
-    void (async () => {
-      if (!cancelled) setHistoryLoading(true);
+    void Promise.all(ids.map(async (id) => {
+      if (historyByIdRef.current[id] !== undefined) return;
+      setHistoryLoadingIds((current) => ({ ...current, [id]: true }));
       try {
         const response = await fetch(
-          `/api/v1/training/sessions/${sessionId}/exercises/${exercise.id}/history`,
+          `/api/v1/training/sessions/${sessionId}/exercises/${id}/history`,
           { cache: "no-store" },
         );
         if (!response.ok || cancelled) return;
         const body = await response.json() as { entries: ExerciseHistoryEntryDto[] };
-        if (!cancelled) setHistory(Array.isArray(body.entries) ? body.entries : []);
+        if (cancelled) return;
+        setHistoryById((current) => ({
+          ...current,
+          [id]: Array.isArray(body.entries) ? body.entries : [],
+        }));
       } catch {
-        if (!cancelled) setHistory([]);
+        if (!cancelled) setHistoryById((current) => ({ ...current, [id]: [] }));
       } finally {
-        if (!cancelled) setHistoryLoading(false);
-      }
-    })();
+          setHistoryLoadingIds((current) => ({ ...current, [id]: false }));
+        }
+    }));
     return () => {
       cancelled = true;
     };
-  }, [sessionId, exercise.id]);
+  }, [sessionId, exercise.id, previousExercise?.id, nextExercise?.id]);
 
   function paneWidth(): number {
     const width = viewportRef.current?.clientWidth ?? 0;
@@ -438,12 +346,53 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
     setCopiedHint(true);
   }
 
-  const progressLabel = uk
-    ? `${completedSets} / ${plannedSets} підходів`
-    : `${completedSets} / ${plannedSets} sets`;
   const exerciseCountLabel = uk
     ? `${exerciseIndex + 1} / ${exerciseCount} вправ`
     : `${exerciseIndex + 1} / ${exerciseCount} exercises`;
+
+  function renderCarouselPane(
+    target: StrengthSessionExerciseDto | null,
+    interactive: boolean,
+  ) {
+    if (!target) {
+      return <div className={styles.workoutCarouselPane} aria-hidden="true" />;
+    }
+    return (
+      <div
+        className={styles.workoutCarouselPane}
+        aria-hidden={interactive ? undefined : true}
+        inert={interactive ? undefined : true}
+        data-testid={interactive ? "active-exercise-pane" : "peek-exercise-pane"}
+      >
+        <ExercisePane
+          uk={uk}
+          exercise={target}
+          interactive={interactive}
+          draft={interactive ? draft : emptySetDraft()}
+          editingSetId={interactive ? editingSetId : null}
+          busy={interactive && busy}
+          canPrev={canPrev}
+          canNext={canNext}
+          infoOpen={interactive && infoOpen}
+          showCommentField={interactive && showCommentField}
+          onToggleInfo={() => setInfoOpen((value) => !value)}
+          onOpenComment={() => setCommentOpen(true)}
+          onPrev={() => requestNeighbor(-1)}
+          onNext={() => requestNeighbor(1)}
+          onDraftChange={interactive ? onDraftChange : () => undefined}
+          onSaveSet={interactive ? onSaveSet : () => undefined}
+          onBeginEditSet={interactive ? onBeginEditSet : () => undefined}
+          onCancelEditSet={interactive ? onCancelEditSet : () => undefined}
+          onDeleteSet={interactive ? onDeleteSet : () => undefined}
+          trailingAction={interactive ? trailingAction : undefined}
+          history={historyById[target.id] ?? []}
+          historyLoading={historyById[target.id] === undefined}
+          copiedHint={interactive && copiedHint}
+          onCopyHistorySet={copyHistorySet}
+        />
+      </div>
+    );
+  }
 
   return (
     <main className={styles.workoutShell}>
@@ -475,23 +424,6 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
           <div className={styles.workoutHero}>
             <p className={styles.liveProgram}>{programName}</p>
             <p className={styles.liveProgress} aria-live="polite">{exerciseCountLabel}</p>
-            <h1 className={styles.workoutTitle}>{exercise.snapshotExerciseName}</h1>
-            <div className={styles.workoutStatusRow}>
-              <span className={styles.liveBadge}>{resistanceLabel(exercise.resistanceType, uk)}</span>
-              <span
-                className={
-                  completedSets >= plannedSets && plannedSets > 0
-                    ? `${styles.workoutProgressBadge} ${styles.workoutProgressBadgeComplete}`
-                    : styles.workoutProgressBadge
-                }
-                aria-live="polite"
-              >
-                {progressLabel}
-              </span>
-              {exercise.origin === EXERCISE_ORIGIN.EXTRA
-                ? <span className={styles.workoutExtraBadge}>{uk ? "додаткова" : "extra"}</span>
-                : null}
-            </div>
           </div>
 
           {(desktopPrimaryActions || desktopDangerActions) && (
@@ -556,283 +488,9 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
                 transition: animating ? `transform ${CAROUSEL_MS}ms ease-out` : "none",
               }}
             >
-              <div className={styles.workoutCarouselPane}>
-                <ExercisePeek exercise={previousExercise} uk={uk} />
-              </div>
-              <div className={styles.workoutCarouselPane}>
-                <div className={styles.workoutMain}>
-                  <figure className={styles.workoutVisual}>
-                    {imageSrc ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={imageSrc}
-                        alt={exercise.snapshotExerciseName}
-                        className={styles.workoutImage}
-                      />
-                    ) : (
-                      <div className={styles.workoutVisualEmpty} aria-hidden="true" />
-                    )}
-                    <div className={styles.workoutImageHints}>
-                      <button
-                        className={styles.workoutImageHint}
-                        type="button"
-                        tabIndex={canPrev ? 0 : -1}
-                        disabled={!canPrev}
-                        aria-label={uk ? "Попередня вправа" : "Previous exercise"}
-                        onClick={() => requestNeighbor(-1)}
-                      >
-                        ‹
-                      </button>
-                      <button
-                        className={styles.workoutImageHint}
-                        type="button"
-                        tabIndex={canNext ? 0 : -1}
-                        disabled={!canNext}
-                        aria-label={uk ? "Наступна вправа" : "Next exercise"}
-                        onClick={() => requestNeighbor(1)}
-                      >
-                        ›
-                      </button>
-                    </div>
-                  </figure>
-
-                  <div className={styles.workoutControls}>
-                    {info && (
-                      <section className={styles.workoutInfo} aria-label={uk ? "Про вправу" : "About exercise"}>
-                        <button
-                          type="button"
-                          className={styles.workoutInfoToggle}
-                          aria-expanded={infoOpen}
-                          onClick={() => setInfoOpen((value) => !value)}
-                        >
-                          <span>{uk ? "М’язи та підказки" : "Muscles & cues"}</span>
-                          <span aria-hidden="true">{infoOpen ? "▴" : "▾"}</span>
-                        </button>
-                        <div className={infoOpen ? styles.workoutInfoBody : styles.workoutInfoBodyCollapsed}>
-                          <p className={styles.workoutInfoLine}>
-                            <strong>{uk ? "Основні:" : "Primary:"}</strong>{" "}
-                            {uk ? info.primaryMusclesUk : info.primaryMusclesEn}
-                          </p>
-                          {(uk ? info.secondaryMusclesUk : info.secondaryMusclesEn) && (
-                            <p className={styles.workoutInfoLine}>
-                              <strong>{uk ? "Додаткові:" : "Secondary:"}</strong>{" "}
-                              {uk ? info.secondaryMusclesUk : info.secondaryMusclesEn}
-                            </p>
-                          )}
-                          <ul className={styles.workoutCueList}>
-                            {(uk ? info.cuesUk : info.cuesEn).map((cue) => (
-                              <li key={cue}>{cue}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      </section>
-                    )}
-
-                    <section className={styles.liveEntry} aria-label={uk ? "Новий підхід" : "New set"}>
-                      <div className={styles.liveFields}>
-                        {exercise.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && (
-                          <label className={styles.liveField}>
-                            <span>{externalWeightEntryLabel(exercise.stableKey, uk)}</span>
-                            <input
-                              inputMode="decimal"
-                              autoComplete="off"
-                              value={draft.weightKg}
-                              onChange={(event) => onDraftChange({ ...draft, weightKg: event.target.value })}
-                            />
-                          </label>
-                        )}
-                        {exercise.resistanceType === RESISTANCE.RESISTANCE_BAND && (
-                          <label className={styles.liveField}>
-                            <span>{uk ? "Опір резинки, кг" : "Band resistance, kg"}</span>
-                            <input
-                              inputMode="decimal"
-                              autoComplete="off"
-                              value={draft.bandNominalResistanceKg}
-                              onChange={(event) => onDraftChange({
-                                ...draft,
-                                bandNominalResistanceKg: event.target.value,
-                              })}
-                            />
-                          </label>
-                        )}
-                        <label className={styles.liveField}>
-                          <span>{uk ? "Повтори" : "Reps"}</span>
-                          <input
-                            inputMode="numeric"
-                            autoComplete="off"
-                            value={draft.reps}
-                            onChange={(event) => onDraftChange({ ...draft, reps: event.target.value })}
-                          />
-                        </label>
-                        <label className={styles.liveField}>
-                          <span>RIR</span>
-                          <input
-                            inputMode="numeric"
-                            autoComplete="off"
-                            placeholder={uk ? "опційно" : "optional"}
-                            value={draft.rir}
-                            onChange={(event) => onDraftChange({ ...draft, rir: event.target.value })}
-                          />
-                        </label>
-                      </div>
-                      <p className={styles.workoutInfoLine}>
-                        {uk
-                          ? "RIR — скільки повторів ще залишалось у запасі (опційно)."
-                          : "RIR — how many reps you still had in reserve (optional)."}
-                      </p>
-
-                      {!showCommentField ? (
-                        <button
-                          type="button"
-                          className={styles.workoutCommentToggle}
-                          onClick={() => setCommentOpen(true)}
-                        >
-                          {uk ? "+ Коментар" : "+ Comment"}
-                        </button>
-                      ) : (
-                        <label className={styles.liveField}>
-                          <span>{uk ? "Коментар" : "Comment"}</span>
-                          <input
-                            autoComplete="off"
-                            maxLength={280}
-                            placeholder={uk ? "напр. важко / читинг" : "e.g. hard / cheat reps"}
-                            value={draft.comment}
-                            onChange={(event) => onDraftChange({ ...draft, comment: event.target.value })}
-                          />
-                        </label>
-                      )}
-
-                      <div className={styles.liveSaveRow}>
-                        {editingSetId != null && (
-                          <button className={styles.liveSecondary} type="button" onClick={onCancelEditSet}>
-                            {uk ? "Скасувати" : "Cancel"}
-                          </button>
-                        )}
-                        <button
-                          className={styles.liveSave}
-                          type="button"
-                          disabled={!canSave}
-                          aria-busy={busy || undefined}
-                          onClick={onSaveSet}
-                        >
-                          {busy
-                            ? (uk ? "Збереження…" : "Saving…")
-                            : editingSetId != null
-                              ? (uk ? "Оновити підхід" : "Update set")
-                              : (uk ? "Додати підхід" : "Add set")}
-                        </button>
-                      </div>
-                      {trailingAction}
-                    </section>
-
-                    <section className={styles.workoutSets} aria-label={uk ? "Підходи" : "Sets"}>
-                      <h2 className={styles.liveSectionTitle}>
-                        {uk ? "Записані підходи" : "Logged sets"}
-                        <span className={styles.workoutSetsCount}>{progressLabel}</span>
-                      </h2>
-                      {sets.length === 0 ? (
-                        <p className={styles.liveEmptySets}>
-                          {uk ? "Ще немає записаних підходів." : "No sets logged yet."}
-                        </p>
-                      ) : (
-                        <ul className={styles.liveSetTable}>
-                          {sets.map((set) => (
-                            <li className={styles.liveSetRow} key={set.id}>
-                              <span className={styles.liveSetNum}>#{set.setNumber}</span>
-                              <span className={styles.liveSetLoad}>{setLoadLabel(exercise, set, uk)}</span>
-                              <span className={styles.liveSetReps}>× {set.reps}</span>
-                              {set.rir != null ? (
-                                <span className={styles.liveSetRir}>RIR {set.rir}</span>
-                              ) : (
-                                <span className={styles.liveSetRir} />
-                              )}
-                              <span className={styles.liveSetActions}>
-                                <button
-                                  className={styles.workoutIconBtn}
-                                  type="button"
-                                  aria-label={uk ? "Змінити підхід" : "Edit set"}
-                                  onClick={() => onBeginEditSet(set)}
-                                >
-                                  ✎
-                                </button>
-                                <button
-                                  className={`${styles.workoutIconBtn} ${styles.workoutIconBtnDanger}`}
-                                  type="button"
-                                  disabled={busy}
-                                  aria-label={uk ? "Видалити підхід" : "Delete set"}
-                                  onClick={() => onDeleteSet(set.id)}
-                                >
-                                  ×
-                                </button>
-                              </span>
-                              {set.comment ? (
-                                <p className={styles.liveSetComment}>{set.comment}</p>
-                              ) : null}
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </section>
-
-                    <section className={styles.workoutHistory} aria-label={uk ? "Історія вправи" : "Exercise history"}>
-                      <h2 className={styles.liveSectionTitle}>
-                        {uk ? "Історія вправи" : "Exercise history"}
-                      </h2>
-                      <p className={styles.workoutHistoryHint}>
-                        {uk
-                          ? "Натисни підхід, щоб підставити вагу, повтори й RIR."
-                          : "Tap a set to fill weight, reps, and RIR."}
-                      </p>
-                      {copiedHint && (
-                        <p className={styles.workoutHistoryCopied} role="status">
-                          {uk ? "Поля підставлено — додай підхід, коли будеш готовий." : "Fields filled — add the set when ready."}
-                        </p>
-                      )}
-                      {historyLoading ? (
-                        <p className={styles.liveEmptySets}>{uk ? "Завантаження…" : "Loading…"}</p>
-                      ) : (history ?? []).length === 0 ? (
-                        <p className={styles.liveEmptySets}>
-                          {uk ? "Поки немає попередніх записів." : "No previous entries yet."}
-                        </p>
-                      ) : (
-                        <ul className={styles.workoutHistoryList}>
-                          {(history ?? []).map((entry) => (
-                            <li className={styles.workoutHistoryEntry} key={`${entry.sessionId}-${entry.occurredAt}`}>
-                              <div className={styles.workoutHistoryHead}>
-                                <strong>{formatHistoryDate(entry.occurredAt, uk)}</strong>
-                                <span>{entry.programName}</span>
-                              </div>
-                              <ul className={styles.workoutHistorySets}>
-                                {entry.sets.map((set) => (
-                                  <li key={`${entry.sessionId}-${set.setNumber}`}>
-                                    <button
-                                      type="button"
-                                      className={styles.workoutHistorySetBtn}
-                                      onClick={() => copyHistorySet(set)}
-                                    >
-                                      <span>#{set.setNumber}</span>
-                                      <span>
-                                        {historyLoadLabel(entry.resistanceType, set, uk)}
-                                        {" × "}
-                                        {set.reps}
-                                        {set.rir != null ? ` · RIR ${set.rir}` : ""}
-                                      </span>
-                                    </button>
-                                    {set.comment ? <em>{set.comment}</em> : null}
-                                  </li>
-                                ))}
-                              </ul>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </section>
-                  </div>
-                </div>
-              </div>
-              <div className={styles.workoutCarouselPane}>
-                <ExercisePeek exercise={nextExercise} uk={uk} />
-              </div>
+              {renderCarouselPane(previousExercise, false)}
+              {renderCarouselPane(exercise, true)}
+              {renderCarouselPane(nextExercise, false)}
             </div>
           </div>
 

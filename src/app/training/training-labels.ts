@@ -102,6 +102,30 @@ export function formatClock(iso: string | null, intlLocale: string): string {
   }).format(new Date(iso));
 }
 
+export function planCompletionTone(percent: number): "complete" | "good" | "low" {
+  if (percent >= 100) return "complete";
+  if (percent >= 70) return "good";
+  return "low";
+}
+
+export function planCompletionPillClass(
+  percent: number,
+  styles: {
+    planCompletionPill: string;
+    planCompletionComplete: string;
+    planCompletionGood: string;
+    planCompletionLow: string;
+  },
+): string {
+  const tone = planCompletionTone(percent);
+  const toneClass = tone === "complete"
+    ? styles.planCompletionComplete
+    : tone === "good"
+      ? styles.planCompletionGood
+      : styles.planCompletionLow;
+  return `${styles.planCompletionPill} ${toneClass}`;
+}
+
 export function formatDateTime(iso: string | null, intlLocale: string): string {
   if (!iso) return "—";
   return new Intl.DateTimeFormat(intlLocale, {

@@ -29,6 +29,7 @@ import {
   formatDateTime,
   formatDurationMinutes,
   matchStatusLabel,
+  planCompletionPillClass,
   readApiError,
   resistanceLabel,
 } from "../../training-labels";
@@ -499,21 +500,22 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
           <p className={styles.eyebrow}>{uk ? "Сесія щоденника" : "Diary session"}</p>
           <h1>{session.programName}</h1>
           <p className={styles.intro}>
-            {formatDateTime(session.matchedWorkout?.startAt ?? session.webStartedAt, intlLocale)}
-            {" · "}
-            {formatDurationMinutes(
-              session.matchedWorkout?.startAt ?? session.webStartedAt,
-              session.matchedWorkout?.endAt ?? session.webEndedAt,
-              intlLocale,
-              uk,
-            )}
+            <span>
+              {formatDateTime(session.matchedWorkout?.startAt ?? session.webStartedAt, intlLocale)}
+              {" · "}
+              {formatDurationMinutes(
+                session.matchedWorkout?.startAt ?? session.webStartedAt,
+                session.matchedWorkout?.endAt ?? session.webEndedAt,
+                intlLocale,
+                uk,
+              )}
+            </span>
             {completion.percent != null && (
-              <>
-                {" · "}
+              <span className={planCompletionPillClass(completion.percent, styles)}>
                 {uk
                   ? `${completion.percent}% плану (${completion.loggedSets}/${completion.plannedSets})`
                   : `${completion.percent}% of plan (${completion.loggedSets}/${completion.plannedSets})`}
-              </>
+              </span>
             )}
           </p>
         </div>

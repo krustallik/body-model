@@ -150,6 +150,10 @@
   color: var(--training-text-secondary);
   line-height: 1.45;
   font-size: 0.9rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.55rem;
 }
 
 .stack { display: grid; gap: 0.95rem; }
@@ -478,6 +482,47 @@
   color: var(--training-text-muted);
   font-size: 0.78rem;
   line-height: 1.35;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.45rem;
+}
+
+.planCompletionPill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.12rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+}
+
+.planCompletionComplete {
+  color: var(--badge-ok-fg);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, #fff 10%, transparent), transparent 55%),
+    var(--badge-ok-bg);
+  border: 1px solid color-mix(in srgb, var(--training-success) 38%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--training-success) 12%, transparent);
+}
+
+.planCompletionGood {
+  color: var(--badge-info-fg);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, #fff 10%, transparent), transparent 55%),
+    var(--badge-info-bg);
+  border: 1px solid color-mix(in srgb, var(--training-info) 36%, transparent);
+}
+
+.planCompletionLow {
+  color: var(--badge-warn-fg);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, #fff 8%, transparent), transparent 55%),
+    var(--badge-warn-bg);
+  border: 1px solid color-mix(in srgb, var(--training-warning) 34%, transparent);
 }
 
 .badge,
@@ -1031,10 +1076,10 @@
   }
 
   .workoutShell .liveSetRow {
-    grid-template-columns: 1.4rem minmax(0, 1fr) auto auto auto;
+    grid-template-columns: 1.4rem minmax(0, 1fr) auto auto;
     grid-template-areas:
-      "num load reps rir actions"
-      "comment comment comment comment comment";
+      "num load rir actions"
+      "comment comment comment comment";
   }
 }
 
@@ -1141,6 +1186,10 @@
   line-height: 1.15;
   letter-spacing: -0.03em;
   text-align: center;
+}
+
+.workoutMain .workoutTitle {
+  font-size: clamp(1.05rem, 3.4vw, 1.45rem);
 }
 
 .workoutStatusRow {
@@ -1398,6 +1447,13 @@ a.editMenuItem + .editMenuDanger {
   min-width: 0;
 }
 
+.workoutCarouselPane[aria-hidden="true"] {
+  height: 0;
+  overflow: visible;
+  pointer-events: none;
+  user-select: none;
+}
+
 .workoutCarouselPeek {
   display: grid;
   gap: 0.45rem;
@@ -1432,6 +1488,10 @@ a.editMenuItem + .editMenuDanger {
   gap: 0.65rem;
   min-width: 0;
   min-height: 0;
+}
+
+.workoutMain .workoutHero {
+  padding: 0;
 }
 
 .workoutControls {
@@ -1642,10 +1702,10 @@ a.editMenuItem + .editMenuDanger {
 
 .workoutShell .liveSetRow {
   display: grid;
-  grid-template-columns: 2rem minmax(0, 1fr) auto auto auto;
+  grid-template-columns: 2rem minmax(0, 1fr) auto auto;
   grid-template-areas:
-    "num load reps rir actions"
-    "comment comment comment comment comment";
+    "num load rir actions"
+    "comment comment comment comment";
   gap: 0.2rem 0.45rem;
   padding: 0.4rem 0.45rem;
   border-radius: 0.5rem;
@@ -1655,8 +1715,11 @@ a.editMenuItem + .editMenuDanger {
 }
 
 .workoutShell .liveSetNum { grid-area: num; }
-.workoutShell .liveSetLoad { grid-area: load; }
-.workoutShell .liveSetReps { grid-area: reps; }
+.workoutShell .liveSetLoad {
+  grid-area: load;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
 .workoutShell .liveSetRir {
   grid-area: rir;
   color: var(--muted);

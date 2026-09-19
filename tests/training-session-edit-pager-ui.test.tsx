@@ -18,6 +18,10 @@ vi.mock("next/navigation", () => ({
 
 import { SessionEditClient } from "@/app/training/sessions/[id]/edit/session-edit-client";
 import styles from "@/app/training/training.module.css";
+
+function activePane() {
+  return within(screen.getByTestId("active-exercise-pane"));
+}
 import {
   ENTRY_MODE,
   EXERCISE_ORIGIN,
@@ -229,11 +233,13 @@ describe("Session edit exercise pager", () => {
       expect(screen.getByText("1 / 3 exercises")).toBeTruthy();
     });
     expect(screen.queryByRole("heading", { name: "Розгинання однієї руки в блоці" })).toBeNull();
-    expect(screen.getByText(/30 kg|30 кг/)).toBeTruthy();
+    expect(activePane().getByText(/30 kg × 10|30 кг × 10/)).toBeTruthy();
+    expect(screen.getByText("Розгинання однієї руки в блоці", { hidden: true })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Розгинання однієї руки в блоці" })).toBeNull();
     expect(screen.getAllByText("1 / 3 sets").length).toBeGreaterThan(0);
     expect(screen.queryByText(/UI Review/i)).toBeNull();
-    expect(screen.getByLabelText(/Weight, kg/i)).toBeTruthy();
-    expect(screen.queryByLabelText(/Band resistance/i)).toBeNull();
+    expect(activePane().getByLabelText(/Weight, kg/i)).toBeTruthy();
+    expect(activePane().queryByLabelText(/Band resistance/i)).toBeNull();
     expect((screen.getByRole("img", {
       name: "Жим гантелей на похилій лаві вгору (30°)",
     }) as HTMLImageElement).getAttribute("src")).toBe(
@@ -249,8 +255,8 @@ describe("Session edit exercise pager", () => {
       expect(screen.getByText("2 / 3 exercises")).toBeTruthy();
     });
     expect(screen.queryByRole("heading", { name: "Жим гантелей на похилій лаві вгору (30°)" })).toBeNull();
-    expect(screen.getByLabelText(/Band resistance/i)).toBeTruthy();
-    expect(screen.queryByLabelText(/Weight, kg/i)).toBeNull();
+    expect(activePane().getByLabelText(/Band resistance/i)).toBeTruthy();
+    expect(activePane().queryByLabelText(/Weight, kg/i)).toBeNull();
     expect((screen.getByRole("img", {
       name: "Розгинання однієї руки в блоці",
     }) as HTMLImageElement).getAttribute("src")).toBe(
@@ -262,9 +268,9 @@ describe("Session edit exercise pager", () => {
       expect(screen.getByText("Віджимання від ручок")).toBeTruthy();
       expect(screen.getByText("3 / 3 exercises")).toBeTruthy();
     });
-    expect(screen.queryByLabelText(/Weight, kg/i)).toBeNull();
-    expect(screen.queryByLabelText(/Band resistance/i)).toBeNull();
-    expect(screen.getByLabelText(/Reps/i)).toBeTruthy();
+    expect(activePane().queryByLabelText(/Weight, kg/i)).toBeNull();
+    expect(activePane().queryByLabelText(/Band resistance/i)).toBeNull();
+    expect(activePane().getByLabelText(/Reps/i)).toBeTruthy();
     expect((screen.getAllByRole("button", { name: /Next exercise/i })[0] as HTMLButtonElement).disabled).toBe(true);
 
     await user.click(screen.getAllByRole("button", { name: /Previous exercise/i })[0]!);
@@ -304,9 +310,9 @@ describe("Session edit exercise pager", () => {
       expect(screen.getByText("Жим гантелей на похилій лаві вгору (30°)")).toBeTruthy();
     });
 
-    await user.click(screen.getByRole("button", { name: /Edit set/i }));
-    expect((screen.getByLabelText(/Weight, kg/i) as HTMLInputElement).value).toBe("30");
-    expect((screen.getByLabelText(/Reps/i) as HTMLInputElement).value).toBe("10");
+    await user.click(activePane().getByRole("button", { name: /Edit set/i }));
+    expect((activePane().getByLabelText(/Weight, kg/i) as HTMLInputElement).value).toBe("30");
+    expect((activePane().getByLabelText(/Reps/i) as HTMLInputElement).value).toBe("10");
     expect(screen.getByRole("button", { name: /Update set/i })).toBeTruthy();
   });
 

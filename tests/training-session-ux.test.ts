@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseTrainingDecimal } from "@/modules/training/parse-training-decimal";
 import { sessionPlanCompletion } from "@/modules/training/session-plan-completion";
-import { formatElapsedClock } from "@/app/training/training-labels";
+import { formatElapsedClock, planCompletionTone } from "@/app/training/training-labels";
 
 describe("parseTrainingDecimal", () => {
   it("accepts comma and dot decimals", () => {
@@ -36,5 +36,14 @@ describe("formatElapsedClock", () => {
   it("formats mm:ss and h:mm:ss", () => {
     expect(formatElapsedClock(82_000)).toBe("01:22");
     expect(formatElapsedClock(3_662_000)).toBe("1:01:02");
+  });
+});
+
+describe("planCompletionTone", () => {
+  it("maps percent bands for the colored pill", () => {
+    expect(planCompletionTone(125)).toBe("complete");
+    expect(planCompletionTone(100)).toBe("complete");
+    expect(planCompletionTone(70)).toBe("good");
+    expect(planCompletionTone(69)).toBe("low");
   });
 });

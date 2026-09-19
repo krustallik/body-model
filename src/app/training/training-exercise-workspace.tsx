@@ -133,7 +133,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
   const [infoOpen, setInfoOpen] = useState(false);
   const [commentOpen, setCommentOpen] = useState(false);
   const [historyById, setHistoryById] = useState<Record<number, ExerciseHistoryEntryDto[]>>({});
-  const [historyLoadingIds, setHistoryLoadingIds] = useState<Record<number, boolean>>({});
+  const historyByIdRef = useRef<Record<number, ExerciseHistoryEntryDto[]>>({});
   const [infoExerciseId, setInfoExerciseId] = useState(exercise.id);
   const [dragPx, setDragPx] = useState(0);
   const [animating, setAnimating] = useState(false);
@@ -179,16 +179,12 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
     };
   }, [menuOpen, onCloseMenu]);
 
-  const historyByIdRef = useRef(historyById);
-  historyByIdRef.current = historyById;
-
   useEffect(() => {
     const ids = [previousExercise?.id, exercise.id, nextExercise?.id]
       .filter((id): id is number => id != null);
     let cancelled = false;
     void Promise.all(ids.map(async (id) => {
       if (historyByIdRef.current[id] !== undefined) return;
-      setHistoryLoadingIds((current) => ({ ...current, [id]: true }));
       try {
         const response = await fetch(
           `/api/v1/training/sessions/${sessionId}/exercises/${id}/history`,
@@ -197,15 +193,14 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
         if (!response.ok || cancelled) return;
         const body = await response.json() as { entries: ExerciseHistoryEntryDto[] };
         if (cancelled) return;
-        setHistoryById((current) => ({
-          ...current,
-          [id]: Array.isArray(body.entries) ? body.entries : [],
-        }));
+        const entries = Array.isArray(body.entries) ? body.entries : [];
+        historyByIdRef.current = { ...historyByIdRef.current, [id]: entries };
+        setHistoryById((current) => ({ ...current, [id]: entries }));
       } catch {
-        if (!cancelled) setHistoryById((current) => ({ ...current, [id]: [] }));
-      } finally {
-          setHistoryLoadingIds((current) => ({ ...current, [id]: false }));
-        }
+        if (cancelled) return;
+        historyByIdRef.current = { ...historyByIdRef.current, [id]: [] };
+        setHistoryById((current) => ({ ...current, [id]: [] }));
+      }
     }));
     return () => {
       cancelled = true;

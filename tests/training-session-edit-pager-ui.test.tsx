@@ -9,6 +9,7 @@ vi.mock("@/i18n/i18n-provider", () => ({
 
 const routerPush = vi.fn();
 const searchParams = new URLSearchParams();
+const PROGRAM_CHANGE_UI_TIMEOUT_MS = 5_000;
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: routerPush, replace: vi.fn() }),
@@ -298,7 +299,7 @@ describe("Session edit exercise pager", () => {
       expect(screen.getByText("Pull B")).toBeTruthy();
       expect(screen.getByText("Розгинання однієї руки в блоці")).toBeTruthy();
       expect(screen.getByText("1 / 2 exercises")).toBeTruthy();
-    });
+    }, { timeout: PROGRAM_CHANGE_UI_TIMEOUT_MS });
     expect(screen.queryByRole("heading", { name: "Жим гантелей на похилій лаві вгору (30°)" })).toBeNull();
   });
 

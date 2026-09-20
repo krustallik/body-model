@@ -2,7 +2,7 @@ import type { CanonicalExerciseStableKey } from "@/modules/training/canonical-ex
 import { CANONICAL_EXERCISE_IDENTITIES } from "@/modules/training/canonical-exercise-identity";
 
 /**
- * Smallest stable anatomical taxonomy for the current 12 supported exercises.
+ * Smallest stable anatomical taxonomy for the current supported exercises.
  * Groups describe local stimulus/coverage only — not body-mass state slots.
  */
 export const CANONICAL_MUSCLE_GROUPS_V7 = [
@@ -143,6 +143,12 @@ const REGISTRY_ENTRIES: readonly RegistryEntry[] = [
     displayName: "Тяга горизонтального блоку сидячи однією рукою",
     targets: targets(["back"], ["biceps"]),
     rationale: "Seated horizontal row loads the back; biceps assist elbow flexion.",
+  },
+  {
+    stableKey: "pull_up",
+    displayName: "Підтягування на перекладині",
+    targets: targets(["back"], ["biceps", "forearms"]),
+    rationale: "Standard pull-up loads the back; biceps and forearms assist elbow flexion and grip.",
   },
   {
     stableKey: "hyperextension",

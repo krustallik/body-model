@@ -14,10 +14,10 @@ import {
 } from "@/model/physiology-v7/exercise-muscle-mapping-v7";
 
 describe("ExerciseMuscleMappingV7 registry", () => {
-  it("covers all twelve canonical stableKeys with the same mappingVersion", () => {
+  it("covers all thirteen canonical stableKeys with the same mappingVersion", () => {
     const coverage = approvedExerciseMuscleMappingCoverageV7();
-    expect(coverage).toEqual({ expected: 12, mapped: 12, missingStableKeys: [] });
-    expect(EXERCISE_MUSCLE_MAPPING_REGISTRY_V7.size).toBe(12);
+    expect(coverage).toEqual({ expected: 13, mapped: 13, missingStableKeys: [] });
+    expect(EXERCISE_MUSCLE_MAPPING_REGISTRY_V7.size).toBe(13);
 
     for (const identity of CANONICAL_EXERCISE_IDENTITIES) {
       const mapping = lookupExerciseMuscleMappingV7(identity.stableKey);
@@ -30,6 +30,18 @@ describe("ExerciseMuscleMappingV7 registry", () => {
       ))).toBe(true);
       assertMappingHasNoNumericWeights(mapping!);
     }
+  });
+
+  it("maps standard pull-ups to back with biceps and forearms assisting", () => {
+    expect(buildExerciseMuscleMappingSnapshotV7("pull_up")).toMatchObject({
+      availability: "available",
+      stableKey: "pull_up",
+      targets: [
+        { muscleGroup: "back", role: "direct" },
+        { muscleGroup: "biceps", role: "indirect" },
+        { muscleGroup: "forearms", role: "indirect" },
+      ],
+    });
   });
 
   it("looks up only by stableKey and never by display name", () => {

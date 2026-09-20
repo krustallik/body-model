@@ -392,7 +392,7 @@ export class TrainingRepository {
   }
 
   /**
-   * Bootstrap/upsert the twelve supported exercises with explicit portable keys.
+   * Bootstrap/upsert the supported exercises with explicit portable keys.
    * Never silently overwrites a conflicting non-null stableKey. Display-name
    * renames of already-keyed rows are left untouched.
    */

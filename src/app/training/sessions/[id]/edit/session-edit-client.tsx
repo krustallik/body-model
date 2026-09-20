@@ -5,6 +5,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useI18n } from "@/i18n/i18n-provider";
 import {
+  recommendedResistanceTypeForCatalogStableKey,
   RESISTANCE,
   SESSION_STATUS,
   type ResistanceType,
@@ -213,6 +214,12 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
       setAddCatalogId("");
       setMenu("closed");
     }
+  }
+
+  function selectCatalogExercise(catalogId: number | "") {
+    setAddCatalogId(catalogId);
+    const selected = catalog.find((item) => item.id === catalogId);
+    setAddResistance(recommendedResistanceTypeForCatalogStableKey(selected?.stableKey));
   }
 
   async function removeExercise(exercise: StrengthSessionExerciseDto) {
@@ -457,7 +464,12 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
         <div className={styles.editMenuForm}>
           <label className={styles.liveField}>
             <span>{uk ? "З каталогу" : "From catalog"}</span>
-            <select value={addCatalogId} onChange={(event) => setAddCatalogId(Number(event.target.value))}>
+            <select
+              value={addCatalogId}
+              onChange={(event) => selectCatalogExercise(
+                event.target.value === "" ? "" : Number(event.target.value),
+              )}
+            >
               <option value="">{uk ? "Оберіть…" : "Choose…"}</option>
               {catalog.map((item) => (
                 <option key={item.id} value={item.id}>{item.name}</option>

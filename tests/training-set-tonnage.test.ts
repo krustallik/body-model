@@ -5,7 +5,10 @@ import {
   externalWeightEntryLabel,
   lookupExternalLoadAccountingV1,
 } from "@/modules/training/external-load-accounting";
-import { RESISTANCE } from "@/modules/training/training.constants";
+import {
+  recommendedResistanceTypeForCatalogStableKey,
+  RESISTANCE,
+} from "@/modules/training/training.constants";
 import { ordinaryExternalWeightTonnageKg } from "@/modules/training/training.tonnage";
 import { validateSetFields } from "@/modules/training/training.set-validation";
 import { buildExerciseMuscleMappingSnapshotV7 } from "@/model/physiology-v7/exercise-muscle-mapping-v7";
@@ -92,9 +95,15 @@ describe("validateSetFields", () => {
 });
 
 describe("external load accounting + ordinary tonnage", () => {
+  it("defaults canonical standard pull-ups to bodyweight while leaving the selector editable", () => {
+    expect(recommendedResistanceTypeForCatalogStableKey("pull_up")).toBe(RESISTANCE.BODYWEIGHT);
+    expect(recommendedResistanceTypeForCatalogStableKey("incline_dumbbell_press_30deg"))
+      .toBe(RESISTANCE.EXTERNAL_WEIGHT);
+  });
+
   it("covers every canonical stableKey with explicit load-accounting semantics", () => {
     const coverage = approvedExternalLoadAccountingCoverageV1();
-    expect(coverage).toEqual({ expected: 12, mapped: 12, missingStableKeys: [] });
+    expect(coverage).toEqual({ expected: 13, mapped: 13, missingStableKeys: [] });
     for (const identity of CANONICAL_EXERCISE_IDENTITIES) {
       expect(lookupExternalLoadAccountingV1(identity.stableKey)).not.toBeNull();
     }
@@ -169,6 +178,12 @@ describe("external load accounting + ordinary tonnage", () => {
       stableKey: "hyperextension",
       weightKg: 10,
       reps: 5,
+    }])).toBeNull();
+    expect(ordinaryExternalWeightTonnageKg([{
+      resistanceType: RESISTANCE.BODYWEIGHT,
+      stableKey: "pull_up",
+      weightKg: null,
+      reps: 10,
     }])).toBeNull();
   });
 

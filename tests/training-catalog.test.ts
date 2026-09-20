@@ -3,8 +3,8 @@ import { CANONICAL_EXERCISE_IDENTITIES } from "@/modules/training/canonical-exer
 import { SEEDED_EXERCISE_NAMES } from "@/modules/training/training.constants";
 
 describe("SEEDED_EXERCISE_NAMES", () => {
-  it("matches the 12 Ukrainian names seeded by the strength diary migration", () => {
-    expect(SEEDED_EXERCISE_NAMES).toHaveLength(12);
+  it("matches the 13 Ukrainian names seeded by the strength diary migrations", () => {
+    expect(SEEDED_EXERCISE_NAMES).toHaveLength(13);
     expect([...SEEDED_EXERCISE_NAMES]).toEqual([
       "Жим гантелей на похилій лаві вгору (30°)",
       "Розведення гантелей на горизонтальній лаві",
@@ -14,6 +14,7 @@ describe("SEEDED_EXERCISE_NAMES", () => {
       "Розгинання однієї руки в блоці",
       "Розгинання однієї руки з гантеллю в нахилі",
       "Тяга горизонтального блоку сидячи однією рукою",
+      "Підтягування на перекладині",
       "Гіперекстензія",
       "Згинання однієї руки від коліна",
       "Згинання рук з розворотом сидячи на похилій лаві",
@@ -22,12 +23,12 @@ describe("SEEDED_EXERCISE_NAMES", () => {
   });
 
   it("assigns every supported exercise an explicit immutable ASCII stable key", () => {
-    expect(CANONICAL_EXERCISE_IDENTITIES).toHaveLength(12);
+    expect(CANONICAL_EXERCISE_IDENTITIES).toHaveLength(13);
     expect(CANONICAL_EXERCISE_IDENTITIES.map((exercise) => exercise.displayName))
       .toEqual([...SEEDED_EXERCISE_NAMES]);
 
     const stableKeys = CANONICAL_EXERCISE_IDENTITIES.map((exercise) => exercise.stableKey);
-    expect(new Set(stableKeys)).toHaveLength(12);
+    expect(new Set(stableKeys)).toHaveLength(13);
     expect(stableKeys.every((stableKey) => /^[a-z0-9_]+$/.test(stableKey))).toBe(true);
   });
 

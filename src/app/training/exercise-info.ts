@@ -132,6 +132,22 @@ const EXERCISE_INFO_BY_CATALOG_NAME: Record<string, ExerciseInfoCopy> = {
       "don’t round the upper back",
     ],
   },
+  "Підтягування на перекладині": {
+    primaryMusclesUk: "найширші, середня спина",
+    primaryMusclesEn: "lats, mid-back",
+    secondaryMusclesUk: "біцепси, передпліччя",
+    secondaryMusclesEn: "biceps, forearms",
+    cuesUk: [
+      "починайте рух зі зведення та опускання лопаток",
+      "тягніть груди до перекладини без розгойдування",
+      "контролюйте повне опускання",
+    ],
+    cuesEn: [
+      "initiate by setting the shoulder blades down and back",
+      "pull the chest toward the bar without swinging",
+      "control the full lowering phase",
+    ],
+  },
   "Гіперекстензія": {
     primaryMusclesUk: "розгиначі спини, сідниці, задня поверхня стегна",
     primaryMusclesEn: "spinal erectors, glutes, hamstrings",

@@ -234,7 +234,7 @@ describe("Session edit exercise pager", () => {
     });
     expect(screen.queryByRole("heading", { name: "Розгинання однієї руки в блоці" })).toBeNull();
     expect(activePane().getByText(/30 kg × 10|30 кг × 10/)).toBeTruthy();
-    expect(screen.getByText("Розгинання однієї руки в блоці", { hidden: true })).toBeTruthy();
+    expect(screen.getByText("Розгинання однієї руки в блоці")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Розгинання однієї руки в блоці" })).toBeNull();
     expect(screen.getAllByText("1 / 3 sets").length).toBeGreaterThan(0);
     expect(screen.queryByText(/UI Review/i)).toBeNull();

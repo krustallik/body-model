@@ -19,11 +19,11 @@ describe("ExerciseCatalog stable identity with PostgreSQL", () => {
     await prisma.$disconnect();
   });
 
-  it("exposes all twelve migrated canonical rows through the catalog repository surface", async () => {
+  it("exposes all thirteen migrated canonical rows through the catalog repository surface", async () => {
     const rows = (await trainingRepository.listCatalog({ profileId: 1, activeOnly: false }))
       .filter((row) => CANONICAL_EXERCISE_IDENTITIES.some((exercise) => exercise.displayName === row.name));
 
-    expect(rows).toHaveLength(12);
+    expect(rows).toHaveLength(13);
     expect(new Map(rows.map((row) => [row.name, row.stableKey]))).toEqual(new Map(
       CANONICAL_EXERCISE_IDENTITIES.map((exercise) => [exercise.displayName, exercise.stableKey]),
     ));
@@ -72,7 +72,7 @@ describe("ExerciseCatalog stable identity with PostgreSQL", () => {
 
     const ensured = await trainingRepository.ensureCanonicalExerciseCatalog(profileSeed);
     const keyed = ensured.filter((row) => row.stableKey != null);
-    expect(keyed).toHaveLength(12);
+    expect(keyed).toHaveLength(13);
     expect(new Map(keyed.map((row) => [row.stableKey, row.name]))).toEqual(new Map(
       CANONICAL_EXERCISE_IDENTITIES.map((exercise) => [exercise.stableKey, exercise.displayName]),
     ));
@@ -81,7 +81,7 @@ describe("ExerciseCatalog stable identity with PostgreSQL", () => {
     await clean([secondProfile]);
     await trainingRepository.ensureCanonicalExerciseCatalog(secondProfile);
     const fresh = await trainingRepository.listCatalog({ profileId: secondProfile, activeOnly: false });
-    expect(fresh).toHaveLength(12);
+    expect(fresh).toHaveLength(13);
     expect(new Set(fresh.map((row) => row.stableKey))).toEqual(
       new Set(CANONICAL_EXERCISE_IDENTITIES.map((exercise) => exercise.stableKey)),
     );
@@ -149,6 +149,6 @@ describe("ExerciseCatalog stable identity with PostgreSQL", () => {
     expect(await prisma.trainingProgram.count()).toBe(beforePrograms);
     expect(await prisma.programExercise.count()).toBe(beforeProgramExercises);
     expect(await prisma.strengthSet.count()).toBe(beforeSets);
-    expect(beforeCatalog).toHaveLength(12);
+    expect(beforeCatalog).toHaveLength(13);
   });
 });

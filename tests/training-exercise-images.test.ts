@@ -21,7 +21,7 @@ describe("exercise image catalog mapping", () => {
     })).toBeNull();
   });
 
-  it("covers all twelve catalog exercises", () => {
-    expect(knownExerciseImageCatalogNames()).toHaveLength(12);
+  it("covers all thirteen catalog exercises", () => {
+    expect(knownExerciseImageCatalogNames()).toHaveLength(13);
   });
 });

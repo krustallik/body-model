@@ -5,7 +5,11 @@ import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import { AppNav } from "@/components/app-nav";
 import { useI18n } from "@/i18n/i18n-provider";
-import { RESISTANCE, type ResistanceType } from "@/modules/training/training.constants";
+import {
+  recommendedResistanceTypeForCatalogStableKey,
+  RESISTANCE,
+  type ResistanceType,
+} from "@/modules/training/training.constants";
 import type { ExerciseCatalogDto, TrainingProgramDto } from "@/modules/training/training.types";
 import { readApiError, resistanceLabel } from "./training-labels";
 import styles from "./training.module.css";
@@ -110,6 +114,12 @@ export function ProgramEditorClient({
       },
     ]);
     setError(null);
+  }
+
+  function selectCatalogExercise(catalogId: string) {
+    setAddCatalogId(catalogId);
+    const selected = catalog.find((item) => item.id === Number(catalogId));
+    setAddResistance(recommendedResistanceTypeForCatalogStableKey(selected?.stableKey));
   }
 
   function moveExercise(index: number, direction: -1 | 1) {
@@ -290,7 +300,7 @@ export function ProgramEditorClient({
               <div className={styles.addExercise}>
                 <label className={styles.field}>
                   <span>{uk ? "З каталогу" : "From catalog"}</span>
-                  <select value={addCatalogId} onChange={(event) => setAddCatalogId(event.target.value)}>
+                  <select value={addCatalogId} onChange={(event) => selectCatalogExercise(event.target.value)}>
                     {catalog.map((item) => (
                       <option key={item.id} value={item.id}>{item.name}</option>
                     ))}

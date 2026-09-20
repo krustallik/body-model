@@ -65,6 +65,7 @@ const REGISTRY_ENTRIES: readonly RegistryEntry[] = [
   { stableKey: "one_arm_cable_triceps_extension", accounting: unilateralBothSides },
   { stableKey: "bent_over_one_arm_dumbbell_triceps_extension", accounting: unilateralBothSides },
   { stableKey: "one_arm_seated_cable_row", accounting: unilateralBothSides },
+  { stableKey: "pull_up", accounting: notApplicable },
   { stableKey: "hyperextension", accounting: notApplicable },
   { stableKey: "one_arm_concentration_curl", accounting: unilateralBothSides },
   { stableKey: "incline_seated_rotating_dumbbell_curl", accounting: bilateralPerImplement },

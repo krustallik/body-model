@@ -13,6 +13,17 @@ export const RESISTANCE = {
 
 export type ResistanceType = (typeof RESISTANCE)[keyof typeof RESISTANCE];
 
+/**
+ * New program/session entries retain an editable resistance selector. This is
+ * merely the safe default for the canonical standard pull-up, not a restriction
+ * on recording a weighted variation later.
+ */
+export function recommendedResistanceTypeForCatalogStableKey(
+  stableKey: string | null | undefined,
+): ResistanceType {
+  return stableKey === "pull_up" ? RESISTANCE.BODYWEIGHT : RESISTANCE.EXTERNAL_WEIGHT;
+}
+
 export const SESSION_STATUS = {
   ACTIVE: "ACTIVE",
   COMPLETED: "COMPLETED",

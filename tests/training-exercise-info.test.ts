@@ -19,4 +19,13 @@ describe("exercise presentation copy", () => {
       snapshotExerciseName: "Гіперекстензія",
     })?.primaryMusclesEn).toMatch(/erectors|glutes/i);
   });
+
+  it("provides pull-up guidance and the supplied exercise image", () => {
+    expect(resolveExerciseImageSrc({
+      snapshotExerciseName: "Підтягування на перекладині",
+    })).toBe("/training/exercises/pull-up.png");
+    expect(resolveExerciseInfo({
+      snapshotExerciseName: "Підтягування на перекладині",
+    })?.primaryMusclesEn).toMatch(/lats/);
+  });
 });

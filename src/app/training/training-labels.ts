@@ -110,12 +110,7 @@ export function planCompletionTone(percent: number): "complete" | "good" | "low"
 
 export function planCompletionPillClass(
   percent: number,
-  styles: {
-    planCompletionPill: string;
-    planCompletionComplete: string;
-    planCompletionGood: string;
-    planCompletionLow: string;
-  },
+  styles: Readonly<Record<string, string>>,
 ): string {
   const tone = planCompletionTone(percent);
   const toneClass = tone === "complete"

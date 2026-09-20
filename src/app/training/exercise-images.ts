@@ -12,6 +12,7 @@ const EXERCISE_IMAGE_BY_CATALOG_NAME: Record<string, string> = {
   "Розгинання однієї руки в блоці": "/training/exercises/one-arm-cable-pushdown.jpg",
   "Розгинання однієї руки з гантеллю в нахилі": "/training/exercises/dumbbell-triceps-kickback.jpg",
   "Тяга горизонтального блоку сидячи однією рукою": "/training/exercises/seated-one-arm-cable-row.jpg",
+  "Підтягування на перекладині": "/training/exercises/pull-up.png",
   "Гіперекстензія": "/training/exercises/hyperextension.jpg",
   "Згинання однієї руки від коліна": "/training/exercises/one-arm-curl-from-knee.jpg",
   "Згинання рук з розворотом сидячи на похилій лаві": "/training/exercises/incline-dumbbell-curl.jpg",

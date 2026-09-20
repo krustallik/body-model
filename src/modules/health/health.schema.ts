@@ -277,10 +277,12 @@ export const HealthSyncRequestSchema = z.preprocess(
       timezone: z.string().min(1).max(100).refine(isValidTimeZone, "timezone must be a valid IANA zone")
         .optional(),
       syncedAt: z.string().datetime({ offset: true }).nullable().optional(),
+      /** Internal marker added only by the timestamped-range payload adapter. */
+      rangePayload: z.literal(true).optional(),
     })
     .strict()
     .superRefine((request, context) => {
-      if (!request.syncedAt) return;
+      if (!request.syncedAt || request.rangePayload) return;
       const localDate = instantToLocalDateTime(
         new Date(request.syncedAt),
         request.timezone ?? DEFAULT_TIME_ZONE,

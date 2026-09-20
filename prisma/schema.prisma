@@ -74,6 +74,23 @@ model DailyHealthData {
   heartRateSamples        HeartRateSample[]
   restingHeartRateSamples RestingHeartRateSample[]
   syncSnapshots           HealthSyncSnapshot[]
+  metricSamples           HealthMetricSample[]
+}
+
+/** Individual timestamped measurements from the Shortcut range payload. */
+model HealthMetricSample {
+  id                Int             @id @default(autoincrement())
+  dailyHealthDataId Int?
+  date              String          @db.VarChar(10)
+  metric            String          @db.VarChar(64)
+  timestamp         DateTime        @db.Timestamptz(3)
+  value             Decimal         @db.Decimal(18, 10)
+  createdAt         DateTime        @default(now()) @db.Timestamptz(3)
+  dailyHealthData   DailyHealthData? @relation(fields: [dailyHealthDataId], references: [id], onDelete: SetNull)
+
+  @@index([date, metric, timestamp])
+  @@unique([metric, timestamp])
+  @@index([dailyHealthDataId])
 }
 
 model HeartRateSample {

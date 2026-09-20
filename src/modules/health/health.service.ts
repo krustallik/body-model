@@ -1,6 +1,7 @@
 import { healthRetentionCutoffDate } from "./health-retention";
 import { healthSyncRepository, type HealthSyncRepository } from "./health.repository";
 import type { HealthSyncRequest, HealthSyncResult } from "./health.types";
+import type { TimestampedHealthMetricSample } from "./normalize-shortcut-range-payload";
 import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import { errorKind, logEvent } from "@/lib/logger";
 import { trainingService } from "@/modules/training/training.service";
@@ -19,6 +20,7 @@ export async function syncHealthData(
   repository: HealthSyncRepository = healthSyncRepository,
   rawDays?: unknown[],
   receivedAt: Date = new Date(),
+  metricSamplesByDate?: ReadonlyMap<string, readonly TimestampedHealthMetricSample[]>,
 ): Promise<HealthSyncResult> {
   const timezone = request.timezone ?? DEFAULT_TIME_ZONE;
   const dates = [];
@@ -27,7 +29,7 @@ export async function syncHealthData(
       timezone,
       receivedAt,
       syncedAt: request.syncedAt ?? null,
-    }));
+    }, metricSamplesByDate?.get(day.date)));
   }
   const referenceDate = dates[dates.length - 1]!;
   const created = dates.filter((result) => result.action === "created").length;

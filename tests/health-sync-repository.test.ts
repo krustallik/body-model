@@ -33,6 +33,9 @@ function repositoryFixture(existingDates: string[] = [], existingWorkouts: Array
     healthSyncSnapshot: {
       create: vi.fn().mockResolvedValue({ id: 1 }),
     },
+    healthMetricSample: {
+      upsert: vi.fn().mockResolvedValue({ id: 1 }),
+    },
     healthActivityInterval: {
       createMany: vi.fn().mockResolvedValue({ count: 1 }),
       deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
@@ -81,6 +84,25 @@ describe("Prisma health synchronization repository", () => {
     expect(transaction.dailyHealthData.upsert).toHaveBeenCalledWith(
       expect.objectContaining({ create: expect.objectContaining({ rawPayload: original }) }),
     );
+  });
+
+  it("keeps one current timestamped sample per metric and instant", async () => {
+    const { repository, transaction } = repositoryFixture();
+    await repository.syncDay(
+      { date: "2026-09-17", weightKg: 81.1 },
+      { date: "2026-09-17", weightKg: 81.1 },
+      undefined,
+      [
+        { metric: "weight-kg", date: "2026-09-17", timestamp: "2026-09-17T07:00:00+02:00", value: 81.4 },
+        { metric: "weight-kg", date: "2026-09-17", timestamp: "2026-09-17T20:00:00+02:00", value: 81.1 },
+      ],
+    );
+    expect(transaction.healthMetricSample.upsert).toHaveBeenCalledTimes(2);
+    expect(transaction.healthMetricSample.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { metric_timestamp: { metric: "weight-kg", timestamp: new Date("2026-09-17T05:00:00.000Z") } },
+      create: expect.objectContaining({ dailyHealthDataId: 22, date: "2026-09-17", value: 81.4 }),
+      update: expect.objectContaining({ value: 81.4 }),
+    }));
   });
 
   it("deduplicates interval step and distance records and derives the daily totals", async () => {

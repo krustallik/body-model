@@ -1,9 +1,11 @@
 import type { z } from "zod";
 import type { HealthDaySchema, HealthSyncRequestSchema, WorkoutSchema } from "./health.schema";
+import type { TimestampedHealthMetricSample } from "./normalize-shortcut-range-payload";
 
 export type WorkoutInput = z.infer<typeof WorkoutSchema>;
 export type HealthDayInput = z.infer<typeof HealthDaySchema>;
 export type HealthSyncRequest = z.infer<typeof HealthSyncRequestSchema>;
+export type HealthMetricSampleInput = TimestampedHealthMetricSample;
 export type SyncAction = "created" | "updated";
 
 export type HealthSyncMetadata = {

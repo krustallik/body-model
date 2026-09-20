@@ -92,6 +92,27 @@ describe("POST /api/v1/health/sync", () => {
     });
   });
 
+  it("expands the timestamped range nutrition/body metrics without touching other feeds", async () => {
+    syncHealthData.mockResolvedValue({ status: "ok", received: 3, created: 3, updated: 0, dates: [] });
+    const response = await POST(request({ days: [{
+      date: "2026-09-20T18:44:44+02:00",
+      caloriesKcal: { timeStamps: "2026-09-17T08:31:00+02:002026-09-18T08:33:00+02:00", Calories: "2300\\n2400" },
+      weightKg: JSON.stringify({ TimeStamps: "2026-09-17T07:00:00+02:00\\n2026-09-17T20:00:00+02:00", Weights: "81.4\\n81.1" }),
+      averageWalkingSpeedKmh: JSON.stringify({ timeStamps: "2026-09-17T12:00:00+02:00\\n2026-09-17T18:00:00+02:00", speeds: "4\\n6" }),
+    }] }));
+
+    expect(response.status).toBe(200);
+    expect(syncHealthData.mock.calls[0]?.[0]).toEqual({
+      syncedAt: "2026-09-20T18:44:44+02:00",
+      rangePayload: true,
+      days: [
+        { date: "2026-09-17", caloriesKcal: 2300, weightKg: 81.1, averageWalkingSpeedKmh: 5 },
+        { date: "2026-09-18", caloriesKcal: 2400 },
+      ],
+    });
+    expect(syncHealthData.mock.calls[0]?.[4]).toBeInstanceOf(Map);
+  });
+
   it("accepts singleton step interval arrays and sends the canonical interval series to the service", async () => {
     syncHealthData.mockResolvedValue({ status: "ok", received: 1, created: 1, updated: 0, dates: [] });
     const intervalPayload = {

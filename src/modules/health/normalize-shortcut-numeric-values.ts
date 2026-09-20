@@ -102,13 +102,18 @@ function normalizeWorkout(value: unknown): unknown {
   );
 }
 
-function splitShortcutLines(value: unknown): unknown[] {
+/** Split the several newline encodings emitted by Shortcuts dictionaries. */
+export function splitShortcutLines(value: unknown): unknown[] {
   if (Array.isArray(value)) return value.filter((item) => !(typeof item === "string" && item.trim() === ""));
   if (typeof value !== "string") return [value];
   return value.split(/\r?\n|\\N|\\n/).map((item) => item.trim()).filter(Boolean);
 }
 
-function normalizeTimestamps(value: unknown): unknown[] {
+/**
+ * Extract ISO instants even when Shortcuts has accidentally glued two lines
+ * together. This is deliberately shared by every timestamped Shortcut feed.
+ */
+export function normalizeShortcutTimestamps(value: unknown): unknown[] {
   if (typeof value !== "string") return splitShortcutLines(value);
   ISO_DATETIME_PATTERN.lastIndex = 0;
   const recovered = [...value.matchAll(ISO_DATETIME_PATTERN)].map((match) => match[0]);
@@ -151,7 +156,7 @@ function normalizeHeartRateObject(value: unknown, valueKey: "bpm" | "bpminpeace"
     }
   }
   if (!isObject(value)) return value;
-  const timestamps = normalizeTimestamps(pickIgnoreCase(value, ["timestamps", "timestamp"]));
+  const timestamps = normalizeShortcutTimestamps(pickIgnoreCase(value, ["timestamps", "timestamp"]));
   const sourceValue = valueKey === "bpminpeace"
     ? pickIgnoreCase(value, ["bvminpeace", "bpminpeace", "bpm"])
     : pickIgnoreCase(value, ["bpm", "values"]);
@@ -237,10 +242,10 @@ export function normalizeSleepSegmentsValue(value: unknown): unknown {
   }
   if (!isObject(value)) return value;
 
-  const startTimestamps = normalizeTimestamps(
+  const startTimestamps = normalizeShortcutTimestamps(
     pickIgnoreCase(value, ["startTimestamps", "starts", "starttimestamp", "start"]),
   );
-  const endTimestamps = normalizeTimestamps(
+  const endTimestamps = normalizeShortcutTimestamps(
     pickIgnoreCase(value, ["endTimestamps", "ends", "endtimestamp", "end"]),
   );
   const states = splitShortcutLines(

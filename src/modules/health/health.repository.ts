@@ -7,6 +7,7 @@ import { prisma } from "@/lib/db/prisma";
 import { instantToLocalDateTime } from "@/model/time-zone";
 import type {
   HealthDayInput,
+  HealthMetricSampleInput,
   HealthRetentionPruneResult,
   HealthSyncMetadata,
   SyncDateResult,
@@ -27,7 +28,12 @@ export function filterWorkoutsForSyncedDay(
 }
 
 export interface HealthSyncRepository {
-  syncDay(day: HealthDayInput, rawDay: unknown, metadata: HealthSyncMetadata): Promise<SyncDateResult>;
+  syncDay(
+    day: HealthDayInput,
+    rawDay: unknown,
+    metadata: HealthSyncMetadata,
+    metricSamples?: readonly HealthMetricSampleInput[],
+  ): Promise<SyncDateResult>;
   pruneOlderThan(cutoffDate: string): Promise<HealthRetentionPruneResult>;
 }
 
@@ -95,6 +101,45 @@ async function persistActivityIntervals(
         : { walkingDistanceKm: total ?? 0 },
     });
   }
+}
+
+async function persistMetricSamples(
+  transaction: Prisma.TransactionClient,
+  dailyHealthDataId: number,
+  dayDate: string,
+  samples: readonly HealthMetricSampleInput[],
+): Promise<void> {
+  // A corrected series can repeat a metric/timestamp in one payload. Keep its
+  // final occurrence before issuing upserts, so the outcome is deterministic.
+  const rowsByIdentity = new Map<string, {
+    dailyHealthDataId: number;
+    date: string;
+    metric: HealthMetricSampleInput["metric"];
+    timestamp: Date;
+    value: number;
+  }>();
+  for (const sample of samples) {
+    if (sample.date !== dayDate) continue;
+    const timestamp = new Date(sample.timestamp);
+    rowsByIdentity.set(`${sample.metric}|${timestamp.toISOString()}`, {
+      dailyHealthDataId,
+      date: sample.date,
+      metric: sample.metric,
+      timestamp,
+      value: sample.value,
+    });
+  }
+  const rows = [...rowsByIdentity.values()];
+  if (rows.length === 0) return;
+  await Promise.all(rows.map((row) => transaction.healthMetricSample.upsert({
+    where: { metric_timestamp: { metric: row.metric, timestamp: row.timestamp } },
+    create: row,
+    update: {
+      dailyHealthDataId: row.dailyHealthDataId,
+      date: row.date,
+      value: row.value,
+    },
+  })));
 }
 
 function sampleRows(
@@ -192,6 +237,7 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
       receivedAt: new Date(),
       syncedAt: null,
     },
+    metricSamples: readonly HealthMetricSampleInput[] = [],
   ): Promise<SyncDateResult> {
     day = prepareDailyMeasurementsForWrite(day);
     // Coverage is decided from the raw sync observation for THIS calendar day only.
@@ -260,6 +306,8 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
           rawPayload: jsonValue(rawDay),
         },
       });
+
+      await persistMetricSamples(transaction, daily.id, day.date, metricSamples);
 
       await persistActivityIntervals(transaction, day, metadata.timezone);
 

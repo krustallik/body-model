@@ -12,6 +12,10 @@ import {
   ShortcutNormalizationError,
 } from "@/modules/health/normalize-shortcut-payload";
 import { normalizeShortcutNumericValues } from "@/modules/health/normalize-shortcut-numeric-values";
+import {
+  normalizeShortcutRangePayload,
+  ShortcutRangeNormalizationError,
+} from "@/modules/health/normalize-shortcut-range-payload";
 import { errorKind, logEvent } from "@/lib/logger";
 
 export const dynamic = "force-dynamic";
@@ -71,9 +75,27 @@ export async function POST(request: Request): Promise<Response> {
   });
 
   let normalized;
+  let rangeNormalized;
   try {
-    normalized = normalizeShortcutPayload(body);
+    rangeNormalized = normalizeShortcutRangePayload(body);
+    normalized = normalizeShortcutPayload(rangeNormalized?.payload ?? body);
   } catch (error) {
+    if (error instanceof ShortcutRangeNormalizationError) {
+      logEvent("warn", "health_sync_range_normalization_failed", {
+        ...requestSummary,
+        issueSummary: error.issues
+          .slice(0, 8)
+          .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+          .join("; ")
+          .slice(0, 500),
+        issueCount: error.issues.length,
+      });
+      await audit("normalization-error", 400, errorKind(error));
+      return Response.json(
+        { error: "validation_error", details: error.issues },
+        { status: 400 },
+      );
+    }
     if (error instanceof ShortcutNormalizationError) {
       logEvent("warn", "health_sync_normalization_failed", {
         ...requestSummary,
@@ -130,7 +152,9 @@ export async function POST(request: Request): Promise<Response> {
   };
 
   try {
-    const result = await syncHealthData(parsed.data, undefined, normalized.originalDays);
+    const result = rangeNormalized
+      ? await syncHealthData(parsed.data, undefined, normalized.originalDays, undefined, rangeNormalized.metricSamplesByDate)
+      : await syncHealthData(parsed.data, undefined, normalized.originalDays);
     logEvent("info", "health_sync_success", {
       ...requestSummary,
       ...normalizedSummary,

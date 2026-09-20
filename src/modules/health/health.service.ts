@@ -34,7 +34,7 @@ export async function syncHealthData(
   const referenceDate = dates[dates.length - 1]!;
   const created = dates.filter((result) => result.action === "created").length;
 
-  // A request can carry the most recent three days; each deserves the same
+  // A request can carry up to one calendar month; each day deserves the same
   // post-sync reconciliation instead of only processing the final array item.
   for (const date of dates) {
   try {

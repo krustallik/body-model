@@ -458,12 +458,12 @@ describe("POST /api/v1/health/sync", () => {
     expect(syncHealthData.mock.calls[0]?.[0].days[0].workouts).toHaveLength(3);
   });
 
-  it("accepts a sync payload of up to three days", async () => {
-    syncHealthData.mockResolvedValue({ status: "ok", received: 2, created: 2, updated: 0, dates: [] });
-    const response = await POST(request({ days: [
-      { date: "2026-08-21" },
-      { date: "2026-08-22" },
-    ] }));
+  it("accepts a sync payload of up to one calendar month", async () => {
+    const days = Array.from({ length: 31 }, (_, index) => ({
+      date: new Date(Date.UTC(2026, 7, 1 + index)).toISOString().slice(0, 10),
+    }));
+    syncHealthData.mockResolvedValue({ status: "ok", received: days.length, created: days.length, updated: 0, dates: [] });
+    const response = await POST(request({ days }));
     expect(response.status).toBe(200);
     expect(syncHealthData).toHaveBeenCalled();
   });

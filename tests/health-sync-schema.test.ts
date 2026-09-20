@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { HealthSyncRequestSchema } from "@/modules/health/health.schema";
+import { MAX_HEALTH_SYNC_CALENDAR_DAYS } from "@/modules/health/health-sync-limits";
 import { normalizeShortcutNumericValues } from "@/modules/health/normalize-shortcut-numeric-values";
 
 const validDay = { date: "2026-08-21" };
@@ -12,6 +13,10 @@ const validWorkout = {
 };
 
 const parse = (days: unknown[]) => HealthSyncRequestSchema.safeParse({ days });
+
+const calendarDays = (count: number) => Array.from({ length: count }, (_, index) => ({
+  date: new Date(Date.UTC(2026, 7, 1 + index)).toISOString().slice(0, 10),
+}));
 
 describe("HealthSyncRequestSchema", () => {
   it("accepts raw and resting heart-rate Shortcut payloads, including empty arrays", () => {
@@ -158,13 +163,13 @@ describe("HealthSyncRequestSchema", () => {
 
   it.each([
     ["empty days", []],
-    ["more than three days", [validDay, { date: "2026-08-22" }, { date: "2026-08-23" }, { date: "2026-08-24" }]],
+    ["more than one calendar month", calendarDays(MAX_HEALTH_SYNC_CALENDAR_DAYS + 1)],
   ])("rejects %s", (_name, days) => {
     expect(parse(days).success).toBe(false);
   });
 
-  it("accepts up to three recent day payloads", () => {
-    expect(parse([validDay, { date: "2026-08-22" }, { date: "2026-08-23" }]).success).toBe(true);
+  it("accepts up to one calendar month of daily payloads", () => {
+    expect(parse(calendarDays(MAX_HEALTH_SYNC_CALENDAR_DAYS)).success).toBe(true);
   });
 
   it.each(["21-08-2026", "2026-8-21", "2026-99-99"])(

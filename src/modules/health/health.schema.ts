@@ -14,6 +14,7 @@ import {
   isValidTimeZone,
 } from "@/model/time-zone";
 import { normalizeActivityIntervalSeries } from "./activity-intervals";
+import { MAX_HEALTH_SYNC_CALENDAR_DAYS } from "./health-sync-limits";
 
 function isCalendarDate(value: string): boolean {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
@@ -273,7 +274,9 @@ export const HealthSyncRequestSchema = z.preprocess(
   },
   z
     .object({
-      days: z.array(HealthDayObjectSchema).min(1).max(3, "days must contain at most the latest three days"),
+      days: z.array(HealthDayObjectSchema)
+        .min(1)
+        .max(MAX_HEALTH_SYNC_CALENDAR_DAYS, `days must contain at most ${MAX_HEALTH_SYNC_CALENDAR_DAYS} calendar days`),
       timezone: z.string().min(1).max(100).refine(isValidTimeZone, "timezone must be a valid IANA zone")
         .optional(),
       syncedAt: z.string().datetime({ offset: true }).nullable().optional(),

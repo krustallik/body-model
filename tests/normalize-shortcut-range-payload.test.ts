@@ -3,6 +3,7 @@ import {
   normalizeShortcutRangePayload,
   ShortcutRangeNormalizationError,
 } from "@/modules/health/normalize-shortcut-range-payload";
+import { MAX_HEALTH_SYNC_CALENDAR_DAYS } from "@/modules/health/health-sync-limits";
 
 const iso = (date: string, time: string) => `${date}T${time}+02:00`;
 
@@ -34,6 +35,12 @@ function payload(overrides: Record<string, unknown> = {}) {
       ...overrides,
     }],
   };
+}
+
+function consecutiveDates(count: number): string[] {
+  return Array.from({ length: count }, (_, index) => (
+    new Date(Date.UTC(2026, 7, 21 + index)).toISOString().slice(0, 10)
+  ));
 }
 
 describe("normalizeShortcutRangePayload", () => {
@@ -70,6 +77,28 @@ describe("normalizeShortcutRangePayload", () => {
       timeStamps: `${iso("2026-09-17", "08:00:00")}\\n${iso("2026-09-17", "20:00:00")}`,
       carboHydrates: "50\\n70",
     } }))).toThrow(/exactly one value/);
+  });
+
+  it("accepts timestamped backfill for a full calendar month", () => {
+    const dates = consecutiveDates(MAX_HEALTH_SYNC_CALENDAR_DAYS);
+    const result = normalizeShortcutRangePayload(payload({
+      weightKg: JSON.stringify({
+        TimeStamps: dates.map((date) => iso(date, "07:00:00")).join("\n"),
+        Weights: dates.map(() => "81.4").join("\n"),
+      }),
+    }));
+
+    expect((result?.payload as { days: unknown[] }).days).toHaveLength(MAX_HEALTH_SYNC_CALENDAR_DAYS);
+  });
+
+  it("rejects timestamped backfill beyond one calendar month", () => {
+    const dates = consecutiveDates(MAX_HEALTH_SYNC_CALENDAR_DAYS + 1);
+    expect(() => normalizeShortcutRangePayload(payload({
+      weightKg: JSON.stringify({
+        TimeStamps: dates.map((date) => iso(date, "07:00:00")).join("\n"),
+        Weights: dates.map(() => "81.4").join("\n"),
+      }),
+    }))).toThrow(`at most ${MAX_HEALTH_SYNC_CALENDAR_DAYS} calendar days`);
   });
 
   it("leaves legacy daily payloads to the existing normalizer", () => {

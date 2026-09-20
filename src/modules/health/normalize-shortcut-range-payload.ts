@@ -3,6 +3,7 @@ import {
   parseShortcutNumber,
   splitShortcutLines,
 } from "@/modules/health/normalize-shortcut-numeric-values";
+import { MAX_HEALTH_SYNC_CALENDAR_DAYS } from "@/modules/health/health-sync-limits";
 
 type JsonObject = Record<string, unknown>;
 
@@ -195,7 +196,9 @@ export function normalizeShortcutRangePayload(input: unknown): RangeNormalizedSh
   }
 
   if (daily.size === 0) fail(["days", 0], "must contain at least one timestamped metric value");
-  if (daily.size > 3) fail(["days", 0], "must contain values for at most the latest three calendar days");
+  if (daily.size > MAX_HEALTH_SYNC_CALENDAR_DAYS) {
+    fail(["days", 0], `must contain values for at most ${MAX_HEALTH_SYNC_CALENDAR_DAYS} calendar days`);
+  }
 
   return {
     payload: {

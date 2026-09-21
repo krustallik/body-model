@@ -30,11 +30,6 @@ const CLASSIFICATIONS: Record<string, Omit<BlockedClaimClassification, "claimId"
     reason: "Adult glycogen range must remain metadata; no individualized capacity oracle is approved.",
     closestToGreenRank: null,
   },
-  "C-M01": {
-    category: "research-blocked",
-    reason: "Sleep→anabolic coupling lacks bounded v7 sleep-context physiology and chronic oracle.",
-    closestToGreenRank: null,
-  },
   "C-K03": {
     category: "validation-data",
     reason: "Needs modality-relevant personal calibration coverage and separately observable anabolic-dose outputs.",

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import {
   ENGINEERING_RESOLUTION_HORIZON_DAYS_V1,
   estimateExperimentalTransientExerciseWaterV1,
+  rebuildExperimentalTransientExerciseWaterTrajectoryV1,
   experimentalTransientExerciseWaterV1Fingerprint,
   EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V1_PROVENANCE,
   EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V1_REVISION,
@@ -17,6 +18,23 @@ import {
  * EXPERIMENTAL harness — not scientific validation / GREEN oracle.
  */
 describe("experimental transient exercise water v1", () => {
+  it("ages a known impulse through missing calendar days without creating an impulse", () => {
+    const replay = rebuildExperimentalTransientExerciseWaterTrajectoryV1({
+      priorTransientWaterKg: 0,
+      days: [
+        { date: "2026-09-01", resistanceSession: { qualifiedHardSetCount: 8, exposureContext: "novel-or-unknown" } },
+        { date: "2026-09-04" },
+      ],
+    });
+    const direct = estimateExperimentalTransientExerciseWaterV1({
+      priorTransientWaterKg: replay[0]!.resultingTransientWaterKg.point,
+      daysElapsed: 3,
+      resistanceSession: null,
+    });
+    expect(replay[1]!.acuteImpulseKg.point).toBe(0);
+    expect(replay[1]!.resultingTransientWaterKg.point).toBe(direct.resultingTransientWaterKg.point);
+    expect(replay[1]!.reasons).toContain("decay-only-no-new-resistance-cause");
+  });
   it("applies a nonnegative acute resistance transient-water impulse", () => {
     const result = estimateExperimentalTransientExerciseWaterV1({
       priorTransientWaterKg: 0,

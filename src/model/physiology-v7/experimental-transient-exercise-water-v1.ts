@@ -382,6 +382,36 @@ export function estimateExperimentalTransientExerciseWaterV1(input: {
   };
 }
 
+/**
+ * Date-aware replay contract for the shadow service.  Calendar elapsed time,
+ * not ingestion count, drives decay, so omitted diary days cannot freeze a
+ * known impulse or create a new one.
+ */
+export function rebuildExperimentalTransientExerciseWaterTrajectoryV1(input: {
+  priorTransientWaterKg?: number | null;
+  priorDate?: string | null;
+  days: readonly {
+    date: string;
+    resistanceSession?: ExperimentalResistanceSessionEvidenceV1 | null;
+  }[];
+}): ExperimentalTransientExerciseWaterResultV1[] {
+  let prior = input.priorTransientWaterKg ?? null;
+  let priorDate = input.priorDate ?? null;
+  return input.days.map((day) => {
+    const elapsed = priorDate === null ? 0 : Math.max(0,
+      (Date.parse(`${day.date}T00:00:00.000Z`) - Date.parse(`${priorDate}T00:00:00.000Z`)) / 86_400_000,
+    );
+    const result = estimateExperimentalTransientExerciseWaterV1({
+      priorTransientWaterKg: prior,
+      daysElapsed: elapsed,
+      resistanceSession: day.resistanceSession ?? null,
+    });
+    prior = result.resultingTransientWaterKg.point;
+    priorDate = day.date;
+    return result;
+  });
+}
+
 export function experimentalTransientExerciseWaterV1Fingerprint(
   result: ExperimentalTransientExerciseWaterResultV1,
 ): string {

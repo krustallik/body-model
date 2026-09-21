@@ -347,13 +347,14 @@ export async function recalculateModelEpisode(
       current: status,
     };
   }, TRANSACTION_OPTIONS);
-  // Post-commit side-channel: failures cannot alter the legacy response or its
-  // durable output. Injected clients stay deterministic for legacy tests.
+  // Post-commit shadow rebuild: preserve the legacy result on failure, but do
+  // not publish a response while dependency-relevant rebuilds are still
+  // running in the background.
   const committedShadowInput = shadowInput as { profileId: number; fromDate: string; toDate: string; timeZone: string; productionEpisodeId: number; productionModelVersion: string } | null;
   if (client === prisma && committedShadowInput !== null && committedShadowInput.fromDate <= committedShadowInput.toDate) {
-    void physiologyV7ShadowService.run(committedShadowInput).catch(() => {});
-    void rebuildFatWeightShadowV1(committedShadowInput).catch(() => {});
-    void rebuildExperimentalFatWeightUncertaintyV1(committedShadowInput).catch(() => {});
+    await physiologyV7ShadowService.run(committedShadowInput).catch(() => {});
+    await rebuildFatWeightShadowV1(committedShadowInput).catch(() => {});
+    await rebuildExperimentalFatWeightUncertaintyV1(committedShadowInput).catch(() => {});
   }
   return production;
 }

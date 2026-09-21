@@ -9,6 +9,7 @@ import { buildQualifiedResistanceTrainingDoseV7 } from "@/model/physiology-v7/qu
 import { buildCanonicalStrengthTrainingInputV7 } from "@/modules/model-episodes/strength-training-input-v7";
 import type { StrengthSessionDto } from "./training.types";
 import { TrainingRepository } from "./training.repository";
+import { calendarDayIndex } from "@/modules/model-episodes/model-calendar";
 
 /**
  * ENGINEERING exposure-context prior for V1 shadow only.
@@ -17,6 +18,19 @@ import { TrainingRepository } from "./training.repository";
  */
 const EXPOSURE_LOOKBACK_MS = 14 * 24 * 60 * 60 * 1000;
 const ACCUSTOMED_PRIOR_SESSION_FLOOR = 2;
+
+function localSessionDate(session: StrengthSessionDto): string | null {
+  const value = session.matchedWorkout?.startAt ?? session.webStartedAt ?? session.createdAt;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString().slice(0, 10) : null;
+}
+
+function transientWaterFromResult(result: unknown): number | null {
+  const point = result && typeof result === "object"
+    ? (result as { resultingTransientWaterKg?: { point?: number | null } }).resultingTransientWaterKg?.point
+    : null;
+  return typeof point === "number" && Number.isFinite(point) && point >= 0 ? point : null;
+}
 
 async function resolveExposureContext(input: {
   session: StrengthSessionDto;
@@ -72,46 +86,44 @@ export async function recordExperimentalTransientExerciseWaterShadow(input: {
   session: StrengthSessionDto;
   profileId: number;
 }): Promise<void> {
+  const targetDate = localSessionDate(input.session);
   const dose = buildQualifiedResistanceTrainingDoseV7(
     buildCanonicalStrengthTrainingInputV7({
       session: input.session,
       heartRateSamples: null,
     }),
   );
-  const latestV7 = await prisma.physiologyV7DailyResult.findFirst({
-    where: { profileId: input.profileId },
-    orderBy: { date: "desc" },
-    select: { result: true },
-  });
-  const compartments = (
-    latestV7?.result as {
-      resultingState?: {
-        compartments?: {
-          transientExerciseWaterKg?: { availability?: string; valueKg?: number | null };
-          skeletalMuscleKg?: { availability?: string; valueKg?: number | null };
-        };
-      };
-    } | null
-  )?.resultingState?.compartments;
-  const priorTransient = compartments?.transientExerciseWaterKg;
-  const priorSm = compartments?.skeletalMuscleKg;
-  const exposureContext = await resolveExposureContext(input);
+  const [priorRows, exposureContext] = await Promise.all([
+    prisma.experimentalTransientExerciseWaterShadow.findMany({
+      where: { profileId: input.profileId, sessionId: { not: input.session.id } },
+      select: {
+        result: true,
+        session: { select: { webStartedAt: true, createdAt: true, matchedWorkout: { select: { startAt: true } } } },
+      },
+    }),
+    resolveExposureContext(input),
+  ]);
+  // Select a predecessor only as-of the target workout.  A later V7 row or
+  // future diary session must never alter historical transient-water output.
+  const predecessor = targetDate === null ? null : priorRows
+    .map((row) => ({ row, date: row.session.matchedWorkout?.startAt ?? row.session.webStartedAt ?? row.session.createdAt }))
+    .map(({ row, date }) => ({ row, date: date.toISOString().slice(0, 10) }))
+    .filter((item) => item.date < targetDate)
+    .sort((left, right) => right.date.localeCompare(left.date))[0] ?? null;
+  const priorTransient = transientWaterFromResult(predecessor?.row.result);
+  const daysElapsed = predecessor === null || targetDate === null
+    ? 0
+    : Math.max(0, calendarDayIndex(targetDate) - calendarDayIndex(predecessor.date));
   const result = estimateExperimentalTransientExerciseWaterV1({
-    priorTransientWaterKg: priorTransient?.availability === "available"
-      && typeof priorTransient.valueKg === "number"
-      ? priorTransient.valueKg
-      : 0,
-    daysElapsed: 0,
+    priorTransientWaterKg: priorTransient ?? 0,
+    daysElapsed,
     resistanceSession: dose.availability === "available"
       ? {
         qualifiedHardSetCount: dose.qualifiedHardSetCount,
         exposureContext,
       }
       : null,
-    skeletalMuscleKg: priorSm?.availability === "available"
-      && typeof priorSm.valueKg === "number"
-      ? priorSm.valueKg
-      : null,
+    skeletalMuscleKg: null,
   });
   const sourceFingerprint = experimentalTransientExerciseWaterV1Fingerprint(result);
   await prisma.experimentalTransientExerciseWaterShadow.upsert({

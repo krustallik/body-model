@@ -1,5 +1,4 @@
 import type { ExperimentalFfmRetentionResultV1 } from "@/model/physiology-v7/experimental-ffm-retention-v1";
-import type { ExperimentalSkeletalMuscleDeltaResultV1 } from "@/model/physiology-v7/experimental-skeletal-muscle-delta-v1";
 import type { FatWeightShadowStateV1 } from "@/model/physiology-v7/fat-weight-shadow-v1";
 import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 
@@ -52,10 +51,11 @@ export type ExperimentalBodyRecompositionEvidenceStrengthV1 =
   | "supportive"
   | "none";
 
-type RelativeSmSnapshot = Pick<
-  ExperimentalSkeletalMuscleDeltaResultV1,
-  "availability" | "state"
->;
+/** Common relative-only state emitted by the authoritative daily trajectory. */
+type RelativeSmSnapshot = {
+  availability: "available" | "unavailable";
+  state: { relativeCumulativeDeltaKg: number | null };
+};
 
 type FfmRetentionContext = Pick<
   ExperimentalFfmRetentionResultV1,
@@ -158,7 +158,7 @@ export function estimateExperimentalBodyRecompositionV1(input: {
   const reasons = [
     "experimental-heuristic-compatible-evidence-classifier",
     "fatWeightShadowV1-used-as-read-only-fat-evidence",
-    "relative-skeletal-muscle-delta-used-without-absolute-skeletalMuscleKg",
+    "unified-relative-skeletal-muscle-trajectory-used-without-absolute-skeletalMuscleKg",
     "ffm-retention-is-context-only-not-skeletal-muscle-evidence",
     "no-residual-allocation-or-body-compartment-balancing",
     "surplus-not-required-for-recomposition-classification",

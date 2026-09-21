@@ -784,8 +784,9 @@ export class TrainingService {
       }
       const refreshed = await this.repo.getSession(sessionId, profileId);
       if (!refreshed) throw new SessionNotFoundError();
-      // Shadow telemetry is never allowed to change the completed-session path.
-      void this.recordExperimentalShadow({ session: refreshed, profileId }).catch(() => {});
+      // Keep the shadow dependency chain ordered; its failure remains isolated
+      // from the completed-session result.
+      await this.recordExperimentalShadow({ session: refreshed, profileId }).catch(() => {});
       return refreshed;
     }
 
@@ -797,8 +798,7 @@ export class TrainingService {
     await this.tryAutoMatchSession(sessionId, profileId);
     const refreshed = await this.repo.getSession(sessionId, profileId);
     if (!refreshed) throw new SessionNotFoundError();
-    // Shadow telemetry is never allowed to change the completed-session path.
-    void this.recordExperimentalShadow({ session: refreshed, profileId }).catch(() => {});
+    await this.recordExperimentalShadow({ session: refreshed, profileId }).catch(() => {});
     return refreshed;
   }
 
@@ -920,7 +920,7 @@ export class TrainingService {
     const refreshed = await this.repo.getSession(sessionId, profileId);
     if (!refreshed) throw new SessionNotFoundError();
     // A manual link can add Garmin diagnostic context after completion.
-    void this.recordExperimentalShadow({ session: refreshed, profileId }).catch(() => {});
+    await this.recordExperimentalShadow({ session: refreshed, profileId }).catch(() => {});
     return refreshed;
   }
 
@@ -954,7 +954,7 @@ export class TrainingService {
       await this.tryAutoMatchSession(session.id, profileId);
       if (this.db === prisma) {
         // A delayed sync may add Garmin diagnostic context after finishSession.
-        void recordExperimentalStrengthShadowsBySessionId({ sessionId: session.id, profileId }).catch(() => {});
+        await recordExperimentalStrengthShadowsBySessionId({ sessionId: session.id, profileId }).catch(() => {});
       }
     }
   }

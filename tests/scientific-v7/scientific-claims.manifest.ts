@@ -154,7 +154,6 @@ function record(input: RecordInput): ScientificClaimManifestRecord {
 
 const v7MuscleBlocker = "The v7 skeletalMuscleKg state contract exists, but no adaptation transition or proxy-safe observation contract exists.";
 const v7DetrainingBlocker = "No v7 training-history/cessation state or skeletal-muscle detraining transition exists.";
-const v7RetrainingIdentificationBlocker = "ResistanceTrainingExposureHistoryV7 can detect verified interruption then resumption, but labeling retraining/detraining still requires an unsupported cessation-duration threshold; no numeric muscle-memory bonus is approved.";
 const v7StepperGlycogenBlocker = "No direct v7 stepper glycogen-demand seam exists; substrate coefficients remain deferred.";
 const experimentalTransientWaterImpl =
   "src/model/physiology-v7/experimental-transient-exercise-water-v1.ts";
@@ -180,6 +179,12 @@ const experimentalCessationDetrainingTest =
   "tests/experimental-cessation-detraining-v1.test.ts";
 const experimentalCessationDetrainingUncertainty =
   "Experimental relative cessation/detraining heuristic with an engineering grace period and non-positive monthly atrophy band; not a scientifically validated atrophy curve, skeletalMuscleKg, or muscle-memory bonus.";
+const experimentalRetrainingIdentificationImpl =
+  "src/model/physiology-v7/experimental-retraining-identification-v1.ts";
+const experimentalRetrainingIdentificationTest =
+  "tests/experimental-retraining-identification-v1.test.ts";
+const experimentalRetrainingIdentificationUncertainty =
+  "Experimental heuristic retraining identification label reusing the 14-day cessation grace period solely as an engineering threshold; it is not a universal scientific duration, does not modify skeletal-muscle delta or protein/energy/training-status math, and contains no quantitative muscle-memory bonus.";
 const experimentalFfmRetentionImpl =
   "src/model/physiology-v7/experimental-ffm-retention-v1.ts";
 const experimentalFfmRetentionTest =
@@ -302,7 +307,7 @@ export const SCIENTIFIC_V7_CLAIMS: readonly ScientificClaimManifestRecord[] = [
       uncertainty: experimentalSkeletalMuscleDeltaUncertainty,
     },
   }),
-  record({ claimId: "C-B05", title: "muscle memory receives no unsupported numeric bonus", parameterIds: ["P-B04"], evidenceIds: ["E-B10", "E-B11", "E-B12", "E-B13"], auditEligibility: "SAFE", testType: "longitudinal", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Retraining may be identified without an invented quantitative muscle-memory bonus.", infrastructureBlocker: v7RetrainingIdentificationBlocker }),
+  record({ claimId: "C-B05", title: "muscle memory receives no unsupported numeric bonus", parameterIds: ["P-B04"], evidenceIds: ["E-B10", "E-B11", "E-B12", "E-B13"], auditEligibility: "SAFE", testType: "longitudinal", assertionTypes: ["INVARIANT", "MISSINGNESS"], provenance: ["SCIENTIFIC_EVIDENCE", "INPUT_CONTRACT", "ENGINEERING_ASSUMPTION"], scientificAssertion: "Qualified training resumption may be experimentally identified only after a verified grace-qualified cessation/detraining episode; missing coverage and ordinary rest do not qualify, and the label adds no quantitative muscle-memory bonus or skeletal-muscle delta modification.", experimental: { implementation: experimentalRetrainingIdentificationImpl, testFile: experimentalRetrainingIdentificationTest, testName: "labels qualified training after verified cessation as experimental retraining (C-B05)", uncertainty: experimentalRetrainingIdentificationUncertainty } }),
 
   record({
     claimId: "C-C01",

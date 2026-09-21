@@ -7,6 +7,8 @@ import {
   type ExperimentalCessationStateV1,
 } from "@/model/physiology-v7/experimental-cessation-detraining-v1";
 import type { ExperimentalTrainingExposureKindV1 } from "@/model/physiology-v7/experimental-skeletal-muscle-delta-v1";
+import { addCalendarDays } from "./model-calendar";
+import { recordExperimentalSkeletalMuscleDeltaShadow } from "./experimental-skeletal-muscle-delta-shadow.service";
 
 /**
  * Isolated experimental/shadow cessation-detraining transition.
@@ -110,4 +112,24 @@ export async function recordExperimentalCessationDetrainingShadowForSession(inpu
     date,
     profileId: input.profileId,
   });
+}
+
+/**
+ * Replays the one authoritative relative-muscle trajectory in calendar order.
+ * A historical diary correction therefore replaces every dependent suffix,
+ * rather than leaving a mixed training-only/cessation history behind.
+ */
+export async function rebuildAuthoritativeRelativeMuscleTrajectory(input: {
+  fromDate: string;
+  profileId?: number;
+}): Promise<void> {
+  const profileId = input.profileId ?? 1;
+  const last = await prisma.dailyHealthData.findFirst({
+    where: { date: { gte: input.fromDate } }, orderBy: { date: "desc" }, select: { date: true },
+  });
+  if (last === null) return;
+  for (let date = input.fromDate; date <= last.date; date = addCalendarDays(date, 1)) {
+    await recordExperimentalSkeletalMuscleDeltaShadow({ date, profileId });
+    await recordExperimentalCessationDetrainingShadow({ date, profileId });
+  }
 }

@@ -77,6 +77,7 @@ import {
 } from "@/modules/model-episodes/experimental-local-hypertrophy-response-shadow.service";
 import {
   recordExperimentalCessationDetrainingShadowForSession,
+  rebuildAuthoritativeRelativeMuscleTrajectory,
 } from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
 import {
   recordExperimentalFfmRetentionShadowForSession,
@@ -105,6 +106,9 @@ async function recordExperimentalStrengthShadows(input: {
   session: StrengthSessionDto;
   profileId: number;
 }): Promise<void> {
+  const sourceDate = (input.session.matchedWorkout?.startAt
+    ?? input.session.webStartedAt
+    ?? input.session.createdAt).slice(0, 10);
   await recordExperimentalStrengthEnergyShadow(input);
   await recordExperimentalStrengthGlycogenDemandShadow(input);
   await recordExperimentalTransientExerciseWaterShadow(input);
@@ -116,6 +120,7 @@ async function recordExperimentalStrengthShadows(input: {
     sessionId: input.session.id,
     profileId: input.profileId,
   });
+  await rebuildAuthoritativeRelativeMuscleTrajectory({ fromDate: sourceDate, profileId: input.profileId });
   await recordExperimentalFfmRetentionShadowForSession({
     sessionId: input.session.id,
     profileId: input.profileId,
@@ -130,11 +135,16 @@ async function recordExperimentalStrengthShadowsBySessionId(input: {
   sessionId: number;
   profileId: number;
 }): Promise<void> {
+  const session = await new TrainingRepository(prisma).getSession(input.sessionId, input.profileId);
   await recordExperimentalStrengthEnergyShadowBySessionId(input);
   await recordExperimentalStrengthGlycogenDemandShadowBySessionId(input);
   await recordExperimentalTransientExerciseWaterShadowBySessionId(input);
   await recordExperimentalSkeletalMuscleDeltaShadowForSession(input);
   await recordExperimentalCessationDetrainingShadowForSession(input);
+  if (session !== null) {
+    const sourceDate = (session.matchedWorkout?.startAt ?? session.webStartedAt ?? session.createdAt).slice(0, 10);
+    await rebuildAuthoritativeRelativeMuscleTrajectory({ fromDate: sourceDate, profileId: input.profileId });
+  }
   await recordExperimentalFfmRetentionShadowForSession(input);
   await recordExperimentalLocalHypertrophyResponseShadowForSession(input);
 }

@@ -290,10 +290,16 @@ describe("Session edit exercise pager", () => {
     });
 
     await user.click(screen.getAllByRole("button", { name: /Next exercise/i })[0]!);
-    await waitFor(() => expect(screen.getByText("Розгинання однієї руки в блоці")).toBeTruthy());
+    await waitFor(() => {
+      expect(activePane().getByRole("heading", { name: "Розгинання однієї руки в блоці" })).toBeTruthy();
+      expect(screen.getByText("2 / 3 exercises")).toBeTruthy();
+    });
 
     await user.click(screen.getByRole("button", { name: /Session menu/i }));
     await user.click(within(screen.getByRole("dialog", { name: "Actions" })).getByRole("button", { name: /Change program/i }));
+    const programSelect = screen.getByLabelText("Program") as HTMLSelectElement;
+    await user.selectOptions(programSelect, "8");
+    await waitFor(() => expect(programSelect.value).toBe("8"));
     await user.click(screen.getByRole("button", { name: /Apply/i }));
 
     await waitFor(() => {
@@ -301,6 +307,10 @@ describe("Session edit exercise pager", () => {
       expect(screen.getByText("Розгинання однієї руки в блоці")).toBeTruthy();
       expect(screen.getByText("1 / 2 exercises")).toBeTruthy();
     }, { timeout: PROGRAM_CHANGE_UI_TIMEOUT_MS });
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/v1/training/sessions/88/program",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ programId: 8 }) }),
+    );
     expect(screen.queryByRole("heading", { name: "Жим гантелей на похилій лаві вгору (30°)" })).toBeNull();
   }, PROGRAM_CHANGE_TEST_TIMEOUT_MS);
 

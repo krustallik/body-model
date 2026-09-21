@@ -6,7 +6,7 @@ describe("resolveWorkoutFeedObserved", () => {
     expect(resolveWorkoutFeedObserved({ date: "2026-09-16", workouts: [] })).toBe(true);
   });
 
-  it("marks latest-3 with only other days as observed for the sync day", () => {
+  it("does not treat a latest-3 feed for other days as an empty feed for this date", () => {
     expect(resolveWorkoutFeedObserved({
       date: "2026-09-16",
       workouts: [{
@@ -15,7 +15,7 @@ describe("resolveWorkoutFeedObserved", () => {
         endAt: "2026-09-15T09:00:00.000Z",
         durationMinutes: 60,
       }],
-    })).toBe(true);
+    })).toBe(false);
   });
 
   it("marks workouts key absent as unavailable", () => {
@@ -70,7 +70,7 @@ describe("resolveWorkoutFeedObserved", () => {
   });
 
   it("does not use a later latest-3 payload to decide an older day", () => {
-    // Coverage is a function of the payload attached to THAT sync day's raw observation.
+    // A latest-N list without an event for the synced date cannot confirm zero.
     expect(resolveWorkoutFeedObserved({
       date: "2026-09-10",
       workouts: [
@@ -78,10 +78,7 @@ describe("resolveWorkoutFeedObserved", () => {
         { type: "Traditional Strength Training", startAt: "2026-09-19T08:00:00.000Z", endAt: "2026-09-19T09:00:00.000Z" },
         { type: "Stair Climbing", startAt: "2026-09-18T08:00:00.000Z", endAt: "2026-09-18T09:00:00.000Z" },
       ],
-    })).toBe(true);
-    // Presence of a modern latest-3 on Sep 10's raw payload would be a sync bug;
-    // historical safety is enforced by persisting coverage only onto the synced date,
-    // never by re-reading a newer day's feed during recalculation.
+    })).toBe(false);
     expect(resolveWorkoutFeedObserved({ date: "2026-09-10" })).toBe(false);
   });
 

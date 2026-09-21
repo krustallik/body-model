@@ -1,5 +1,8 @@
 import { prepareDailyMeasurementsForWrite } from "@/modules/days/measurement-policy";
-import { resolveWorkoutFeedObserved } from "@/modules/health/workout-feed-coverage";
+import {
+  hasWorkoutFeedPayload,
+  resolveWorkoutFeedObserved,
+} from "@/modules/health/workout-feed-coverage";
 import { planDayWorkoutReconciliation } from "@/modules/health/reconcile-day-workouts";
 import { offsetMinutesFromIso } from "@/modules/health/sleep-summary";
 import { Prisma, type PrismaClient } from "@prisma/client";
@@ -82,9 +85,11 @@ async function persistActivityIntervals(
 
   for (const { metric, series } of seriesByMetric) {
     if (series === undefined) continue;
-    // A 3-day Shortcut dump can land in today's field. Keep this calendar day
-    // only, matching workout filtering, then replace rather than append.
+    // A latest-N Shortcut dump can land in multiple generated daily records.
+    // It is authoritative only for a calendar day that it actually contains;
+    // an empty subset must never clear that day's historical total.
     const rows = activityRows(metric, series, timezone).filter((row) => row.date === day.date);
+    if (rows.length === 0) continue;
     await transaction.healthActivityInterval.deleteMany({ where: { date: day.date, metric } });
     if (rows.length > 0) {
       await transaction.healthActivityInterval.createMany({ data: rows, skipDuplicates: true });
@@ -242,6 +247,7 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
     day = prepareDailyMeasurementsForWrite(day);
     // Coverage is decided from the raw sync observation for THIS calendar day only.
     const workoutFeedObserved = resolveWorkoutFeedObserved(rawDay);
+    const workoutFeedPresent = hasWorkoutFeedPayload(rawDay);
     // Latest state, immutable snapshot, and workout reconciliation are one atomic sync.
     return this.client.$transaction(async (transaction) => {
       const existing = await transaction.dailyHealthData.findUnique({
@@ -279,7 +285,8 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
           averageWalkingSpeedKmh: optionalUpdate(day.averageWalkingSpeedKmh),
           walkingDistanceKm: optionalUpdate(day.walkingDistanceKm),
           strengthTrainingMinutes: optionalUpdate(day.strengthTrainingMinutes),
-          workoutFeedObserved,
+          // Missing feed coverage must not overwrite an earlier observed state.
+          workoutFeedObserved: workoutFeedPresent ? workoutFeedObserved : undefined,
           rawPayload: jsonValue(rawDay),
         },
         select: { id: true },
@@ -311,12 +318,17 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
 
       await persistActivityIntervals(transaction, day, metadata.timezone);
 
-      const workouts = filterWorkoutsForSyncedDay(
-        day.workouts ?? [],
-        day.date,
-        metadata.timezone,
-      );
-      await reconcileDayWorkouts(transaction, daily.id, workouts);
+      // Reconciliation deletes workouts absent from the incoming feed, so it is
+      // safe only when this calendar date was explicitly observed. Missing or
+      // latest-N-only payloads leave historical workouts untouched.
+      if (workoutFeedObserved) {
+        const workouts = filterWorkoutsForSyncedDay(
+          day.workouts ?? [],
+          day.date,
+          metadata.timezone,
+        );
+        await reconcileDayWorkouts(transaction, daily.id, workouts);
+      }
 
       const heartRateSamples = sampleRows(daily.id, day.date, day.bpm);
       if (heartRateSamples.length > 0) {

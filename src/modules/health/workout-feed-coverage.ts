@@ -24,13 +24,31 @@ function hasCanonicalField(day: Record<string, unknown>, canonical: string): boo
   return Object.keys(day).some((key) => key.toLowerCase() === target);
 }
 
+/** Whether the payload actually included any workout-feed field. */
+export function hasWorkoutFeedPayload(rawDay: unknown): boolean {
+  if (!isObject(rawDay)) return false;
+  if (hasCanonicalField(rawDay, "workouts")
+    || hasCanonicalField(rawDay, "trainingType")
+    || hasCanonicalField(rawDay, "trainingActiveKcal")
+    || hasCanonicalField(rawDay, "trainingTimestamps")) return true;
+  if (!hasCanonicalField(rawDay, "strengthTrainingMinutes")) return false;
+  const timestamps = resolveTrainingTimestamps({
+    strengthTrainingMinutes: readCanonicalField(rawDay, "strengthTrainingMinutes"),
+  });
+  return timestamps.consumedStrengthTrainingMinutes;
+}
+
 /**
  * Whether a sync payload established a valid workout feed observation for the
  * synced calendar day. This must be decided at sync time and persisted — never
  * re-inferred later from a newer latest-3 feed.
  *
- * - true: feed present (array, possibly empty / other-day events only)
- * - false: feed absent or structurally invalid for coverage
+ * - true: an explicit empty feed, or a valid workout for this calendar day
+ * - false: feed absent, structurally invalid, or contains only other-day events
+ *
+ * A latest-N feed that happens not to contain this date does not establish that
+ * the date had no workouts. Treating it as an empty daily feed would delete
+ * already-synced history.
  */
 export function resolveWorkoutFeedObserved(rawDay: unknown): boolean {
   if (!isObject(rawDay)) return false;
@@ -38,7 +56,16 @@ export function resolveWorkoutFeedObserved(rawDay: unknown): boolean {
   if (hasCanonicalField(rawDay, "workouts")) {
     const workouts = readCanonicalField(rawDay, "workouts");
     if (workouts === null) return false;
-    return Array.isArray(workouts);
+    if (!Array.isArray(workouts)) return false;
+    if (workouts.length === 0) return true;
+    const date = typeof readCanonicalField(rawDay, "date") === "string"
+      ? readCanonicalField(rawDay, "date") as string
+      : "";
+    return date !== "" && workouts.some((workout) => (
+      isObject(workout)
+      && typeof workout.startAt === "string"
+      && workout.startAt.slice(0, 10) === date
+    ));
   }
 
   const canonicalDay: Record<string, unknown> = {};
@@ -94,9 +121,7 @@ export function resolveWorkoutFeedObserved(rawDay: unknown): boolean {
   if (timestamps.length !== 2 * types.length) return false;
   if (kcals !== null && kcals.length !== types.length) return false;
 
-  // Structure is usable; even if every event is another calendar day or one slot
-  // is malformed, the feed itself was observed for this sync day.
-  if (!date) return true;
+  if (!date) return false;
   const { diagnostics } = expandTrainingWorkoutFields({
     trainingType,
     trainingActiveKcal,
@@ -108,5 +133,5 @@ export function resolveWorkoutFeedObserved(rawDay: unknown): boolean {
     || reason.startsWith("mismatched-timestamp-count")
     || reason.startsWith("mismatched-active-kcal-count")
   ));
-  return !fatal;
+  return !fatal && diagnostics.acceptedCount > 0;
 }

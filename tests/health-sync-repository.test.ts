@@ -167,6 +167,26 @@ describe("Prisma health synchronization repository", () => {
     }));
   });
 
+  it("does not clear step or distance history when a latest-N interval feed has no rows for this date", async () => {
+    const { repository, transaction } = repositoryFixture(["2026-09-19"]);
+    await repository.syncDay({
+      date: "2026-09-19",
+      stepIntervals: {
+        starts: ["2026-09-20T08:00:00+02:00"],
+        ends: ["2026-09-20T08:15:00+02:00"],
+        values: [120],
+      },
+      walkingDistanceIntervals: {
+        starts: ["2026-09-20T08:00:00+02:00"],
+        ends: ["2026-09-20T08:15:00+02:00"],
+        values: [0.8],
+      },
+    });
+    expect(transaction.healthActivityInterval.deleteMany).not.toHaveBeenCalled();
+    expect(transaction.healthActivityInterval.createMany).not.toHaveBeenCalled();
+    expect(transaction.dailyHealthData.update).not.toHaveBeenCalled();
+  });
+
   it("appends an immutable cumulative snapshot with timezone metadata", async () => {
     const { repository, transaction } = repositoryFixture();
     const receivedAt = new Date("2026-08-23T08:00:00Z");
@@ -363,7 +383,7 @@ describe("Prisma health synchronization repository", () => {
     expect(transaction.workout.deleteMany).not.toHaveBeenCalled();
   });
 
-  it("keeps linked workouts when omitted from feed and deletes only unlinked ones", async () => {
+  it("does not delete workouts when the workout feed is absent", async () => {
     const { repository, transaction } = repositoryFixture(["2026-08-21"], [
       {
         id: 10,
@@ -385,8 +405,35 @@ describe("Prisma health synchronization repository", () => {
       },
     ]);
     await repository.syncDay({ date: "2026-08-21" });
-    expect(transaction.workout.deleteMany).toHaveBeenCalledWith({ where: { id: { in: [11] } } });
+    expect(transaction.workout.findMany).not.toHaveBeenCalled();
+    expect(transaction.workout.deleteMany).not.toHaveBeenCalled();
     expect(transaction.workout.createMany).not.toHaveBeenCalled();
+  });
+
+  it("does not delete this day's workouts from a latest-N workout list for other dates", async () => {
+    const { repository, transaction } = repositoryFixture(["2026-08-21"], [{
+      id: 11,
+      sourceIdentity: "ext:historical",
+      externalId: "historical",
+      type: "Stair Climbing",
+      startAt: new Date("2026-08-21T06:00:00Z"),
+      endAt: new Date("2026-08-21T06:12:00Z"),
+      matchedDiarySession: null,
+    }]);
+    await repository.syncDay(
+      { date: "2026-08-21", workouts: [] },
+      {
+        date: "2026-08-21",
+        workouts: [{
+          type: "Stair Climbing",
+          startAt: "2026-08-22T08:00:00.000Z",
+          endAt: "2026-08-22T08:12:00.000Z",
+          durationMinutes: 12,
+        }],
+      },
+    );
+    expect(transaction.workout.findMany).not.toHaveBeenCalled();
+    expect(transaction.workout.deleteMany).not.toHaveBeenCalled();
   });
 
   it("reports whether today's date was updated", async () => {

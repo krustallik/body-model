@@ -9,6 +9,7 @@ import {
   serializePhysiologyDayResultV7,
   versionsAreCurrent,
 } from "./physiology-v7-persistence";
+import { addCalendarDays } from "./model-calendar";
 
 type DbClient = PrismaClient | Prisma.TransactionClient;
 
@@ -51,6 +52,11 @@ export class PhysiologyV7PersistenceRepository {
       where: { profileId },
       data: {
         staleFromDate: mergeEarliestStaleDate(lifecycle.staleFromDate, affectedDate),
+        // A watermark after the invalidated source would falsely claim that
+        // dependent rows are fresh until their suffix has actually replayed.
+        currentThroughDate: lifecycle.currentThroughDate !== null && lifecycle.currentThroughDate >= affectedDate
+          ? addCalendarDays(affectedDate, -1)
+          : lifecycle.currentThroughDate,
         invalidationGeneration: { increment: 1 },
       },
     });
@@ -111,13 +117,21 @@ export class PhysiologyV7PersistenceRepository {
         update: data,
       });
     }
-    const staleFromDate = lifecycle.staleFromDate !== null
-      && lifecycle.staleFromDate > input.rebuiltThroughDate
-      ? lifecycle.staleFromDate
-      : null;
-    const currentThroughDate = lifecycle.currentThroughDate !== null
+    const firstRebuiltDate = input.days[0]?.date;
+    if (firstRebuiltDate === undefined || firstRebuiltDate > input.rebuiltThroughDate) {
+      throw new RangeError("persisted v7 rebuild must contain its rebuilt range");
+    }
+    const staleWasRebuilt = lifecycle.staleFromDate !== null && lifecycle.staleFromDate >= firstRebuiltDate
+      && lifecycle.staleFromDate <= input.rebuiltThroughDate;
+    // Partial replay at the stale point leaves its dependent suffix stale.
+    const staleFromDate = staleWasRebuilt && lifecycle.currentThroughDate !== null
       && lifecycle.currentThroughDate > input.rebuiltThroughDate
-      ? lifecycle.currentThroughDate
+      ? addCalendarDays(input.rebuiltThroughDate, 1)
+      : lifecycle.staleFromDate !== null && lifecycle.staleFromDate > input.rebuiltThroughDate
+        ? lifecycle.staleFromDate
+        : null;
+    const currentThroughDate = staleFromDate === null
+      ? input.rebuiltThroughDate
       : input.rebuiltThroughDate;
     const promoted = await this.client.physiologyV7Lifecycle.updateMany({
       where: { profileId: input.profileId, invalidationGeneration: input.expectedGeneration },

@@ -23,43 +23,40 @@ export async function rebuildExperimentalFatWeightUncertaintyV1(input: {
   fromDate: string;
   toDate: string;
 }): Promise<void> {
-  const [states, health, episode, priorUncertaintyRow] = await Promise.all([
+  const source = await prisma.dailyModelState.findFirst({
+    where: { date: { gte: input.fromDate, lte: input.toDate }, episode: { profileId: input.profileId } },
+    orderBy: [{ date: "asc" }, { id: "asc" }],
+    select: { episodeId: true, episode: { select: { initialFatMassKg: true, initialLeanTissueKg: true, startDate: true } } },
+  });
+  if (source === null) return;
+  const predecessorSource = await prisma.dailyModelState.findFirst({ where: { episodeId: source.episodeId, date: { lt: input.fromDate } }, orderBy: { date: "desc" }, select: { date: true } });
+  const [priorMeanRow, priorUncertaintyRow] = predecessorSource === null ? [null, null] : await Promise.all([
+    prisma.fatWeightShadowV1Result.findUnique({ where: { profileId_date: { profileId: input.profileId, date: predecessorSource.date } }, select: { result: true } }),
+    prisma.experimentalFatWeightUncertaintyShadow.findUnique({ where: { profileId_date: { profileId: input.profileId, date: predecessorSource.date } }, select: { result: true } }),
+  ]);
+  const storedMean = priorMeanRow?.result && typeof priorMeanRow.result === "object" ? (priorMeanRow.result as { state?: FatWeightShadowStateV1 }).state : null;
+  const rebuildFrom = predecessorSource !== null && storedMean?.availability === "available" && uncertaintyFromStored(priorUncertaintyRow?.result) !== null
+    ? input.fromDate
+    : source.episode.startDate;
+  const [states, health] = await Promise.all([
     prisma.dailyModelState.findMany({
       where: {
-        date: { gte: input.fromDate, lte: input.toDate },
-        episode: { profileId: input.profileId },
+        date: { gte: rebuildFrom, lte: input.toDate },
+        episodeId: source.episodeId,
       },
       orderBy: { date: "asc" },
       select: { date: true, energyBalanceKcal: true },
     }),
     prisma.dailyHealthData.findMany({
-      where: { date: { gte: input.fromDate, lte: input.toDate } },
+      where: { date: { gte: rebuildFrom, lte: input.toDate } },
       select: { date: true, weightKg: true, bodyFatPercent: true },
-    }),
-    prisma.modelEpisode.findFirst({
-      where: { profileId: input.profileId, startDate: { lte: input.fromDate } },
-      orderBy: { startDate: "desc" },
-      select: { initialFatMassKg: true, initialLeanTissueKg: true },
-    }),
-    prisma.experimentalFatWeightUncertaintyShadow.findFirst({
-      where: { profileId: input.profileId, date: { lt: input.fromDate } },
-      orderBy: { date: "desc" },
-      select: { result: true },
     }),
   ]);
 
   const byDate = new Map(health.map((row) => [row.date, row]));
-  let priorMean: FatWeightShadowStateV1 = episode === null
-    ? {
-      fatMassKg: null,
-      slowNonFatKg: null,
-      availability: "unavailable",
-      provenance: null,
-      uncertainty: "personal-unavailable",
-    }
-    : {
-      fatMassKg: episode.initialFatMassKg,
-      slowNonFatKg: episode.initialLeanTissueKg,
+  let priorMean: FatWeightShadowStateV1 = storedMean?.availability === "available" ? storedMean : {
+      fatMassKg: source.episode.initialFatMassKg,
+      slowNonFatKg: source.episode.initialLeanTissueKg,
       availability: "available",
       provenance: "episode-bia-derived-estimate",
       uncertainty: "personal-unavailable",

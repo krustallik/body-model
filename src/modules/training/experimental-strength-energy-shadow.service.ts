@@ -5,6 +5,7 @@ import {
   estimateExperimentalStrengthActiveEnergyV1,
   EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
   experimentalStrengthActiveEnergyV1Fingerprint,
+  resolveExperimentalStrengthActiveEnergyV1,
 } from "./experimental-strength-active-energy-v1";
 
 async function resolveBodyMassKg(input: {
@@ -57,6 +58,11 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
     bodyMassKg,
     heartRateBpms,
   });
+  const activeEnergyResolution = resolveExperimentalStrengthActiveEnergyV1({
+    bodycast: result,
+    matchedGarminActiveKcal: input.session.matchedWorkout?.activeEnergyKcal ?? null,
+  });
+  const persistedResult = { ...result, activeEnergyResolution };
   const sourceFingerprint = experimentalStrengthActiveEnergyV1Fingerprint(result);
   await prisma.experimentalStrengthEnergyShadow.upsert({
     where: { sessionId: input.session.id },
@@ -66,13 +72,13 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
       sourceFingerprint,
       modelRevision: EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
       features: result.features,
-      result,
+      result: persistedResult,
     },
     update: {
       sourceFingerprint,
       modelRevision: EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
       features: result.features,
-      result,
+      result: persistedResult,
     },
   });
 }

@@ -8,6 +8,8 @@ import {
 import { buildQualifiedResistanceTrainingDoseV7 } from "@/model/physiology-v7/qualified-resistance-training-dose-v7";
 import { buildCanonicalStrengthTrainingInputV7 } from "@/modules/model-episodes/strength-training-input-v7";
 import { TrainingRepository } from "@/modules/training/training.repository";
+import { classifyExperimentalResistanceExposureV1 } from "@/model/physiology-v7/experimental-resistance-exposure-v1";
+import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
 
 /**
  * Isolated experimental/shadow daily skeletal-muscle delta.
@@ -20,8 +22,11 @@ export async function recordExperimentalSkeletalMuscleDeltaShadow(input: {
 }): Promise<void> {
   const profileId = input.profileId ?? 1;
   const trainingRepo = new TrainingRepository(prisma);
+  const dayStart = new Date(`${input.date}T00:00:00.000Z`);
+  const nextDay = new Date(dayStart);
+  nextDay.setUTCDate(nextDay.getUTCDate() + 1);
 
-  const [health, modelState, priorShadow, sessionRows] = await Promise.all([
+  const [health, modelState, priorShadow, sessionRows, workouts] = await Promise.all([
     prisma.dailyHealthData.findUnique({
       where: { date: input.date },
       select: {
@@ -47,9 +52,16 @@ export async function recordExperimentalSkeletalMuscleDeltaShadow(input: {
       where: {
         profileId,
         status: "COMPLETED",
-        matchedWorkout: { dailyHealthData: { date: input.date } },
+        OR: [
+          { matchedWorkout: { dailyHealthData: { date: input.date } } },
+          { matchedWorkoutId: null, webStartedAt: { gte: dayStart, lt: nextDay } },
+        ],
       },
       select: { id: true },
+    }),
+    prisma.workout.findMany({
+      where: { dailyHealthData: { date: input.date } },
+      select: { type: true },
     }),
   ]);
 
@@ -70,18 +82,14 @@ export async function recordExperimentalSkeletalMuscleDeltaShadow(input: {
     }
   }
 
-  let trainingExposureKind: "qualified-mapped-training" | "verified-no-exposure" | "unresolved-missing-training";
-  let hardSets: number | null;
-  if (sawQualified && qualifiedHardSetCount > 0) {
-    trainingExposureKind = "qualified-mapped-training";
-    hardSets = qualifiedHardSetCount;
-  } else if (health?.workoutFeedObserved === true) {
-    trainingExposureKind = "verified-no-exposure";
-    hardSets = 0;
-  } else {
-    trainingExposureKind = "unresolved-missing-training";
-    hardSets = null;
-  }
+  const exposure = classifyExperimentalResistanceExposureV1({
+    diaryQualifiedMapped: sawQualified && qualifiedHardSetCount > 0,
+    diaryTrainingObserved: sessionRows.length > 0,
+    canonicalStrengthObserved: workouts.some((workout) => canonicalizeWorkoutType(workout.type).classification === "traditional-strength-training"),
+    workoutFeedObserved: health?.workoutFeedObserved ?? null,
+  });
+  const trainingExposureKind = exposure.kind;
+  const hardSets = exposure.doseStatus === "mapped" ? qualifiedHardSetCount : exposure.doseStatus === "verified-no-exposure" ? 0 : null;
 
   const bodyMassKg = health?.weightKg ?? null;
   const proteinGPerKg = health?.proteinG != null && bodyMassKg != null && bodyMassKg > 0
@@ -102,6 +110,7 @@ export async function recordExperimentalSkeletalMuscleDeltaShadow(input: {
     bodyMassKg,
     priorRelativeCumulativeDeltaKg: typeof priorCumulative === "number" ? priorCumulative : 0,
   });
+  result.reasons.push(exposure.reason);
   const sourceFingerprint = experimentalSkeletalMuscleDeltaV1Fingerprint(result);
   await prisma.experimentalSkeletalMuscleDeltaShadow.upsert({
     where: { profileId_date: { profileId, date: input.date } },

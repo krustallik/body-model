@@ -19,16 +19,9 @@ export async function recordExperimentalStrengthGlycogenDemandShadow(input: {
       heartRateSamples: null,
     }),
   );
-  const latestGlycogen = await prisma.dailyModelState.findFirst({
-    where: {
-      status: "complete",
-      glycogenKg: { not: null },
-      episode: { profileId: input.profileId, active: true },
-    },
-    orderBy: { date: "desc" },
-    select: { glycogenKg: true },
-  });
-  const availableGlycogenKg = latestGlycogen?.glycogenKg ?? null;
+  // The daily relative-debt trajectory owns the single shared depletion cap.
+  // Per-workout shadows must not independently clamp against the same store.
+  const availableGlycogenKg = null;
   const activeEnergyKcal = input.session.matchedWorkout?.activeEnergyKcal ?? null;
   const result = estimateExperimentalStrengthGlycogenDemandV1({
     dose,

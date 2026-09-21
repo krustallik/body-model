@@ -7,8 +7,6 @@ import { errorKind, logEvent } from "@/lib/logger";
 import { trainingService } from "@/modules/training/training.service";
 import { recordExperimentalStepperActiveEnergyShadowsForLocalDate } from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
 import { recordExperimentalStepperGlycogenDemandShadowsForLocalDate } from "@/modules/profile/experimental-stepper-glycogen-demand-shadow.service";
-import { recordExperimentalGlycogenRepletionShadow } from "@/modules/model-episodes/experimental-glycogen-repletion-shadow.service";
-import { recordExperimentalGlycogenAssociatedWaterShadow } from "@/modules/model-episodes/experimental-glycogen-associated-water-shadow.service";
 import { recordExperimentalGlycogenStateShadow } from "@/modules/model-episodes/experimental-glycogen-state-shadow.service";
 import { recordExperimentalSkeletalMuscleDeltaShadow } from "@/modules/model-episodes/experimental-skeletal-muscle-delta-shadow.service";
 import { recordExperimentalLocalHypertrophyResponseShadow } from "@/modules/model-episodes/experimental-local-hypertrophy-response-shadow.service";
@@ -46,6 +44,11 @@ export async function syncHealthData(
     });
   }
 
+  // Unit callers inject an isolated health repository.  Shadow writers use
+  // the production Prisma client, so running them there leaks outside the
+  // harness and can neither validate nor affect the injected sync result.
+  if (repository !== healthSyncRepository) continue;
+
   try {
     // Shadow-only MS100 stepper energy; never feeds TDEE/forecast.
     await recordExperimentalStepperActiveEnergyShadowsForLocalDate({ date: date.date });
@@ -61,26 +64,6 @@ export async function syncHealthData(
     await recordExperimentalStepperGlycogenDemandShadowsForLocalDate({ date: date.date });
   } catch (error) {
     logEvent("warn", "experimental_stepper_glycogen_demand_shadow_failed", {
-      date: date.date,
-      errorType: errorKind(error),
-    });
-  }
-
-  try {
-    // Shadow-only daily glycogen repletion; never feeds TDEE/forecast.
-    await recordExperimentalGlycogenRepletionShadow({ date: date.date });
-  } catch (error) {
-    logEvent("warn", "experimental_glycogen_repletion_shadow_failed", {
-      date: date.date,
-      errorType: errorKind(error),
-    });
-  }
-
-  try {
-    // Shadow-only glycogen-associated water; never feeds TDEE/forecast.
-    await recordExperimentalGlycogenAssociatedWaterShadow({ date: date.date });
-  } catch (error) {
-    logEvent("warn", "experimental_glycogen_associated_water_shadow_failed", {
       date: date.date,
       errorType: errorKind(error),
     });

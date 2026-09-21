@@ -118,6 +118,28 @@ export type ExperimentalStrengthActiveEnergyResultV1 = {
   garminReferenceKcal: number | null;
 };
 
+/** Resolution layer: diary heuristic is primary; a matched device number is
+ * explicitly a fallback estimate, never a calibration target or truth. */
+export type ExperimentalStrengthActiveEnergyResolutionV1 = {
+  availability: "available" | "unavailable";
+  estimatedActiveKcal: number | null;
+  source: "bodycast-diary-estimate" | "device-estimate-fallback" | null;
+  provenance: "experimental-heuristic" | "device-estimate" | null;
+};
+
+export function resolveExperimentalStrengthActiveEnergyV1(input: {
+  bodycast: ExperimentalStrengthActiveEnergyResultV1;
+  matchedGarminActiveKcal: number | null;
+}): ExperimentalStrengthActiveEnergyResolutionV1 {
+  if (input.bodycast.availability === "available" && input.bodycast.estimatedActiveKcal !== null) {
+    return { availability: "available", estimatedActiveKcal: input.bodycast.estimatedActiveKcal, source: "bodycast-diary-estimate", provenance: "experimental-heuristic" };
+  }
+  if (input.matchedGarminActiveKcal !== null && Number.isFinite(input.matchedGarminActiveKcal) && input.matchedGarminActiveKcal >= 0) {
+    return { availability: "available", estimatedActiveKcal: input.matchedGarminActiveKcal, source: "device-estimate-fallback", provenance: "device-estimate" };
+  }
+  return { availability: "unavailable", estimatedActiveKcal: null, source: null, provenance: null };
+}
+
 function minutesBetween(start: string | null, end: string | null): number | null {
   if (start === null || end === null) return null;
   const value = (Date.parse(end) - Date.parse(start)) / 60_000;

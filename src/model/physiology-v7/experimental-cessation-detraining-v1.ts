@@ -254,6 +254,7 @@ export function transitionExperimentalCessationDetrainingV1(input: {
       lowerBoundKg: 0,
       upperBoundKg: 0,
       state: {
+        // Unresolved coverage never advances a verified-rest run.
         observedNoExposureStreakDays: prior.observedNoExposureStreakDays,
         hadPriorQualifiedTraining: prior.hadPriorQualifiedTraining,
         phase: "unknown-coverage-not-cessation",

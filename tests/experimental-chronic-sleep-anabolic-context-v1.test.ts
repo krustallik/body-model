@@ -62,6 +62,26 @@ describe("Experimental Chronic Sleep / Anabolic Context V1 (shadow only)", () =>
     expect(rows[2]!.result.sleepAdjustedPointEstimateKg).toBe(underlying.estimatedSkeletalMuscleDeltaKg);
   });
 
+  it("counts one calendar night once and does not bridge weeks of unobserved nights", () => {
+    const underlying = trainedDelta();
+    const duplicateNight = rebuildExperimentalChronicSleepAnabolicContextTrajectoryV1({
+      days: [
+        { date: "2026-09-20", sleepObservation: sleep(300), underlying },
+        { date: "2026-09-20", sleepObservation: sleep(300), underlying },
+        { date: "2026-09-21", sleepObservation: sleep(300), underlying },
+      ],
+    });
+    const separated = rebuildExperimentalChronicSleepAnabolicContextTrajectoryV1({
+      days: [
+        { date: "2026-09-01", sleepObservation: sleep(300), underlying },
+        { date: "2026-09-15", sleepObservation: sleep(300), underlying },
+      ],
+    });
+    expect(duplicateNight).toHaveLength(2);
+    expect(duplicateNight[1]!.result.state.consecutiveObservedLowSleepNights).toBe(2);
+    expect(separated[1]!.result.state.consecutiveObservedLowSleepNights).toBe(1);
+  });
+
   it("keeps missing sleep unknown rather than treating it as zero sleep", () => {
     const underlying = trainedDelta();
     const result = transitionExperimentalChronicSleepAnabolicContextV1({

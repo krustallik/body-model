@@ -91,6 +91,19 @@ describe("Experimental Measurement Validation V1 (shadow only)", () => {
     expect(result.latentStateApplication).toBe("intentionally-not-applied");
   });
 
+  it("does not treat replayed copies as independent measurements", () => {
+    const original = measurement(1);
+    const result = evaluateExperimentalMeasurementMethodConsistencyV1({
+      observations: [original, { ...original }, { ...original }],
+    });
+    expect(result.inputObservationCount).toBe(3);
+    expect(result.duplicateObservationCount).toBe(2);
+    expect(result.observationCount).toBe(1);
+    expect(result.status).toBe("insufficient-compatible-series");
+    expect(result.uncertaintyWidthMultiplier).toBe(1);
+    expect(result.reasons).toContain("duplicate-import-rows-do-not-count-as-independent-measurements");
+  });
+
   it("widens experimental uncertainty for mixed measurement methods and devices (C-MV05)", () => {
     const sameMethod = evaluateExperimentalMeasurementMethodConsistencyV1({
       observations: [measurement(1), measurement(2), measurement(3)],

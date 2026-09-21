@@ -74,6 +74,9 @@ export type ExperimentalMethodConsistencyResultV1 = {
   availability: "available" | "unavailable";
   status: "missing-evidence" | "insufficient-compatible-series" | "compatible-same-method-series" | "mixed-or-nonstandard-series";
   uncertaintyWidthMultiplier: number | null;
+  /** Raw imported rows may include replayed copies; only unique identities count. */
+  inputObservationCount: number;
+  duplicateObservationCount: number;
   observationCount: number;
   endpoint: MeasurementEndpointV1 | null;
   source: string | null;
@@ -112,6 +115,18 @@ function rejectedConversions(): ExperimentalMethodConsistencyResultV1["rejectedC
     "local-measurement-to-whole-body-skeletal-muscle-kg",
     "scale-residual-allocation",
   ] as const;
+}
+
+function measurementIdentity(observation: LongitudinalMeasurementObservationV1): string | null {
+  const id = identity(observation.id);
+  const source = identity(observation.source);
+  const device = identity(observation.deviceId);
+  if (id === null || source === null || device === null || !Number.isFinite(Date.parse(observation.observedAt))) return null;
+  // The immutable measurement id handles normal replays.  The remaining
+  // provenance dimensions make independently generated ids for an identical
+  // import timestamp conservative too; no unavailable numeric value is used
+  // to manufacture agreement.
+  return [id, observation.observedAt, observation.endpoint, source, device, observation.site ?? "whole-body"].join("|");
 }
 
 /** Hydration, TBW, and ECF observations are context, not glycogenWaterKg. */
@@ -198,13 +213,14 @@ export function classifyExperimentalWaterObservationV1(input: {
 export function evaluateExperimentalMeasurementMethodConsistencyV1(input: {
   observations: readonly LongitudinalMeasurementObservationV1[];
 }): ExperimentalMethodConsistencyResultV1 {
-  const valid = input.observations
-    .filter((observation) => identity(observation.id) !== null
-      && identity(observation.source) !== null
-      && identity(observation.deviceId) !== null
-      && Number.isFinite(Date.parse(observation.observedAt)))
-    .slice()
+  const unique = new Map<string, LongitudinalMeasurementObservationV1>();
+  for (const observation of input.observations) {
+    const key = measurementIdentity(observation);
+    if (key !== null && !unique.has(key)) unique.set(key, observation);
+  }
+  const valid = [...unique.values()]
     .sort((a, b) => a.observedAt.localeCompare(b.observedAt) || a.id.localeCompare(b.id));
+  const duplicateObservationCount = input.observations.length - valid.length;
   const base = {
     contractVersion: EXPERIMENTAL_MEASUREMENT_VALIDATION_V1_REVISION,
     provenance: EXPERIMENTAL_MEASUREMENT_VALIDATION_V1_PROVENANCE,
@@ -215,6 +231,7 @@ export function evaluateExperimentalMeasurementMethodConsistencyV1(input: {
   };
   if (valid.length === 0) {
     return { ...base, availability: "unavailable", status: "missing-evidence", uncertaintyWidthMultiplier: null,
+      inputObservationCount: input.observations.length, duplicateObservationCount,
       observationCount: 0, endpoint: null, source: null, deviceId: null, measurementRole: null,
       reasons: ["missing-or-unidentified-measurements-are-not-zero-uncertainty"] };
   }
@@ -223,21 +240,25 @@ export function evaluateExperimentalMeasurementMethodConsistencyV1(input: {
     && item.acuteExerciseCondition === "standardized");
   const first = valid[0]!;
   const compatible = keys.size === 1 && standardized;
-  const fixed = { observationCount: valid.length, endpoint: compatible ? first.endpoint : null,
+  const fixed = { inputObservationCount: input.observations.length, duplicateObservationCount,
+    observationCount: valid.length, endpoint: compatible ? first.endpoint : null,
     source: compatible ? identity(first.source) : null, deviceId: compatible ? identity(first.deviceId) : null,
     measurementRole: compatible ? measurementRole(first.endpoint) : null };
   if (!compatible) {
     return { ...base, availability: "available", status: "mixed-or-nonstandard-series",
       uncertaintyWidthMultiplier: EXPERIMENTAL_MEASUREMENT_VALIDATION_V1_PRIORS.mixedOrNonstandardUncertaintyWidthMultiplier,
-      ...fixed, reasons: ["mixed-method-device-site-or-protocol-series-widens-uncertainty", "no-method-is-universal-truth"] };
+      ...fixed, reasons: ["mixed-method-device-site-or-protocol-series-widens-uncertainty", "no-method-is-universal-truth",
+        ...(duplicateObservationCount > 0 ? ["duplicate-import-rows-do-not-count-as-independent-measurements"] : [])] };
   }
   if (valid.length < EXPERIMENTAL_MEASUREMENT_VALIDATION_V1_PRIORS.minimumCompatibleSeriesObservations) {
     return { ...base, availability: "available", status: "insufficient-compatible-series", uncertaintyWidthMultiplier: 1,
-      ...fixed, reasons: ["same-method-series-needs-repeated-compatible-observations-before-narrowing", "no-method-is-universal-truth"] };
+      ...fixed, reasons: ["same-method-series-needs-repeated-compatible-observations-before-narrowing", "no-method-is-universal-truth",
+        ...(duplicateObservationCount > 0 ? ["duplicate-import-rows-do-not-count-as-independent-measurements"] : [])] };
   }
   return { ...base, availability: "available", status: "compatible-same-method-series",
     uncertaintyWidthMultiplier: EXPERIMENTAL_MEASUREMENT_VALIDATION_V1_PRIORS.compatibleSeriesUncertaintyWidthMultiplier,
-    ...fixed, reasons: ["repeated-standardized-same-method-device-site-series-narrows-experimental-uncertainty", "no-method-is-universal-truth"] };
+    ...fixed, reasons: ["repeated-standardized-same-method-device-site-series-narrows-experimental-uncertainty", "no-method-is-universal-truth",
+      ...(duplicateObservationCount > 0 ? ["duplicate-import-rows-do-not-count-as-independent-measurements"] : [])] };
 }
 
 /** Deterministic chronological rebuild; outputs validation only, never state transitions. */

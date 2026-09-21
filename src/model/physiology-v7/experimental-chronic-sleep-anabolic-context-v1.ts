@@ -202,15 +202,42 @@ export function rebuildExperimentalChronicSleepAnabolicContextTrajectoryV1(input
   }[];
 }): Array<{ date: string; result: ExperimentalChronicSleepAnabolicContextResultV1 }> {
   let state = initialState();
-  return input.days.slice().sort((a, b) => a.date.localeCompare(b.date)).map((day) => {
+  let priorDate: string | null = null;
+  // A feed may duplicate a single night.  It is one chronological night, not
+  // repeated evidence.  The stable tie-breaker also makes shuffled imports
+  // replay identically; it does not confer extra confidence on either copy.
+  const onePerCalendarNight = new Map<string, (typeof input.days)[number]>();
+  for (const day of input.days) {
+    const candidateKey = stableSha256({
+      source: day.sleepObservation?.availability === "available" ? day.sleepObservation.source : null,
+      minutes: day.sleepObservation?.availability === "available" ? day.sleepObservation.durationMinutes : null,
+      underlying: day.underlying,
+    });
+    const existing = onePerCalendarNight.get(day.date);
+    const existingKey = existing === undefined ? null : stableSha256({
+      source: existing.sleepObservation?.availability === "available" ? existing.sleepObservation.source : null,
+      minutes: existing.sleepObservation?.availability === "available" ? existing.sleepObservation.durationMinutes : null,
+      underlying: existing.underlying,
+    });
+    if (existingKey === null || candidateKey < existingKey) onePerCalendarNight.set(day.date, day);
+  }
+  return [...onePerCalendarNight.values()].sort((a, b) => a.date.localeCompare(b.date)).map((day) => {
+    if (priorDate !== null && calendarDayDistance(priorDate, day.date) !== 1) state = initialState();
     const result = transitionExperimentalChronicSleepAnabolicContextV1({
       sleepObservation: day.sleepObservation,
       underlying: day.underlying,
       prior: state,
     });
     state = result.state;
+    priorDate = day.date;
     return { date: day.date, result };
   });
+}
+
+function calendarDayDistance(from: string, to: string): number {
+  const fromMs = Date.parse(`${from}T00:00:00.000Z`);
+  const toMs = Date.parse(`${to}T00:00:00.000Z`);
+  return Number.isFinite(fromMs) && Number.isFinite(toMs) ? Math.round((toMs - fromMs) / 86_400_000) : Number.NaN;
 }
 
 export function experimentalChronicSleepAnabolicContextV1Fingerprint(

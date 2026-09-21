@@ -11,6 +11,7 @@ import { recordExperimentalGlycogenStateShadow } from "@/modules/model-episodes/
 import { recordExperimentalSkeletalMuscleDeltaShadow } from "@/modules/model-episodes/experimental-skeletal-muscle-delta-shadow.service";
 import { recordExperimentalLocalHypertrophyResponseShadow } from "@/modules/model-episodes/experimental-local-hypertrophy-response-shadow.service";
 import { recordExperimentalCessationDetrainingShadow } from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
+import { rebuildAuthoritativeRelativeMuscleTrajectory } from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
 import { recordExperimentalFfmRetentionShadow } from "@/modules/model-episodes/experimental-ffm-retention-shadow.service";
 
 export async function syncHealthData(
@@ -29,12 +30,15 @@ export async function syncHealthData(
       syncedAt: request.syncedAt ?? null,
     }, metricSamplesByDate?.get(day.date)));
   }
-  const referenceDate = dates[dates.length - 1]!;
+  // Sync providers may return a historical batch in either direction.  Shadow
+  // predecessors are calendar-state, not transport-order state.
+  const chronologicalDates = [...dates].sort((left, right) => left.date.localeCompare(right.date));
+  const referenceDate = chronologicalDates[chronologicalDates.length - 1]!;
   const created = dates.filter((result) => result.action === "created").length;
 
   // A request can carry up to one calendar month; each day deserves the same
   // post-sync reconciliation instead of only processing the final array item.
-  for (const date of dates) {
+  for (const date of chronologicalDates) {
   try {
     await trainingService.afterHealthSyncMatch(date.date, { timezone });
   } catch (error) {
@@ -118,6 +122,20 @@ export async function syncHealthData(
       errorType: errorKind(error),
     });
   }
+  }
+
+  // A health backfill can change exposure/coverage on an earlier date. Replay
+  // the one authoritative relative-muscle suffix once, after the entire
+  // chronological batch, rather than doing redundant request-order replays.
+  if (repository === healthSyncRepository && chronologicalDates.length > 0) {
+    try {
+      await rebuildAuthoritativeRelativeMuscleTrajectory({ fromDate: chronologicalDates[0]!.date });
+    } catch (error) {
+      logEvent("warn", "experimental_authoritative_muscle_suffix_rebuild_failed", {
+        fromDate: chronologicalDates[0]!.date,
+        errorType: errorKind(error),
+      });
+    }
   }
 
   const retentionCutoffDate = healthRetentionCutoffDate(referenceDate.date);

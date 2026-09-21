@@ -5,7 +5,7 @@ import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
  *
  * This is a shadow validation contract, not a calorimetry calibration. It
  * records whether repeated personal comparisons are sufficiently compatible to
- * narrow an experimental estimator's epistemic interval. Garmin active kcal is
+ * be eligible for later validation. Garmin active kcal is
  * only a diagnostic reference; HR is only timing/coverage context. Neither is
  * converted to kcal or used to alter a point estimate.
  */
@@ -73,6 +73,8 @@ export type ExperimentalPersonalEnergyCalibrationResultV1 = {
   timingQualityCounts: Record<PersonalEnergyCalibrationTimingQualityV1, number>;
   hrCoverageCounts: Record<PersonalEnergyCalibrationHrCoverageV1, number>;
   garminDiagnosticReferenceCount: number;
+  eligibleForCalibration: boolean;
+  validatedAccuracyImprovement: false;
   calibrationApplication: "intentionally-not-applied";
   hrUncertainty: {
     role: "context-and-coverage-only-not-kcal-conversion";
@@ -154,6 +156,10 @@ function baseResult(input: {
     timingQualityCounts,
     hrCoverageCounts,
     garminDiagnosticReferenceCount: input.observations.filter(({ garminReferenceKcal }) => garminReferenceKcal !== null).length,
+    eligibleForCalibration: input.status === "repeated-compatible-observations",
+    // Metadata consistency is not an indirect-calorimetry oracle. A later,
+    // explicit validation contract would be required before shrinking error.
+    validatedAccuracyImprovement: false,
     calibrationApplication: "intentionally-not-applied",
     hrUncertainty: {
       role: "context-and-coverage-only-not-kcal-conversion",
@@ -222,10 +228,10 @@ export function evaluateExperimentalPersonalEnergyCalibrationCoverageV1(input: {
   return baseResult({
     status: "repeated-compatible-observations",
     observations,
-    uncertaintyWidthMultiplier:
-      EXPERIMENTAL_PERSONAL_ENERGY_CALIBRATION_V1_PRIORS.compatibleUncertaintyWidthMultiplier,
+    uncertaintyWidthMultiplier: 1,
     reasons: [
-      "repeated-current-modality-device-compatible-observations-narrow-experimental-uncertainty",
+      "repeated-current-modality-device-compatible-observations-establish-eligibility-only",
+      "compatible-metadata-does-not-validate-accuracy-or-narrow-uncertainty",
       "calibration-coverage-only-point-estimate-unchanged",
       "garmin-reference-diagnostic-only-not-calibration-target",
       "hr-context-coverage-only-not-kcal-conversion",

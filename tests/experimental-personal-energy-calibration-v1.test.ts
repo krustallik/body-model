@@ -24,17 +24,20 @@ function observation(index: number, overrides: Record<string, unknown> = {}) {
 
 /** EXPERIMENTAL harness — validation coverage, never calorimetry truth. */
 describe("experimental personal active-energy calibration coverage v1", () => {
-  it("narrows experimental uncertainty after repeated same-modality/device compatible observations (C-K03)", () => {
+  it("makes repeated same-modality/device observations eligible but does not mistake metadata for validated accuracy (C-K03)", () => {
     const result = evaluateExperimentalPersonalEnergyCalibrationCoverageV1({
       asOf,
       observations: [observation(1), observation(2), observation(3)],
     });
     expect(result.status).toBe("repeated-compatible-observations");
-    expect(result.uncertaintyWidthMultiplier).toBeLessThan(1);
+    expect(result.uncertaintyWidthMultiplier).toBe(1);
     expect(result.modality).toBe("resistance-diary");
     expect(result.source).toBe("garmin");
     expect(result.deviceId).toBe("garmin-watch-a");
     expect(result.calibrationApplication).toBe("intentionally-not-applied");
+    expect(result.eligibleForCalibration).toBe(true);
+    expect(result.validatedAccuracyImprovement).toBe(false);
+    expect(result.reasons).toContain("compatible-metadata-does-not-validate-accuracy-or-narrow-uncertainty");
     expect(result.provenance).toBe(EXPERIMENTAL_PERSONAL_ENERGY_CALIBRATION_V1_PROVENANCE);
   });
 

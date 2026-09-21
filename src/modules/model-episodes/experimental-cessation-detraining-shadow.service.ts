@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db/prisma";
+import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 import {
   EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION,
-  experimentalCessationDetrainingV1Fingerprint,
   initialExperimentalCessationStateV1,
   transitionExperimentalCessationDetrainingV1,
   type ExperimentalCessationStateV1,
@@ -9,6 +9,10 @@ import {
 import type { ExperimentalTrainingExposureKindV1 } from "@/model/physiology-v7/experimental-skeletal-muscle-delta-v1";
 import { addCalendarDays } from "./model-calendar";
 import { recordExperimentalSkeletalMuscleDeltaShadow } from "./experimental-skeletal-muscle-delta-shadow.service";
+import {
+  transitionExperimentalDataGapContextV1,
+  type ExperimentalDataGapContextV1,
+} from "@/model/physiology-v7/experimental-data-gap-context-v1";
 
 /**
  * Isolated experimental/shadow cessation-detraining transition.
@@ -59,17 +63,26 @@ export async function recordExperimentalCessationDetrainingShadow(input: {
     ?? initialExperimentalCessationStateV1(
       typeof priorSmCumulative === "number" ? priorSmCumulative : 0,
     );
+  const priorGapContext = (priorCessation?.result as { gapContext?: ExperimentalDataGapContextV1 } | null)?.gapContext ?? null;
 
   const trainingDelta = exposureKind === "qualified-mapped-training"
     ? (sm?.estimatedSkeletalMuscleDeltaKg ?? 0)
     : null;
 
-  const result = transitionExperimentalCessationDetrainingV1({
+  const transition = transitionExperimentalCessationDetrainingV1({
     exposureKind,
     prior: priorState,
     trainingSkeletalMuscleDeltaKg: trainingDelta,
   });
-  const sourceFingerprint = experimentalCessationDetrainingV1Fingerprint(result);
+  const gapContext = transitionExperimentalDataGapContextV1({
+    date: input.date,
+    sources: {
+      training: exposureKind === "unresolved-missing-training" ? "unresolved" : "observed",
+    },
+    prior: priorGapContext,
+  });
+  const result = { ...transition, gapContext };
+  const sourceFingerprint = stableSha256(result);
   await prisma.experimentalCessationDetrainingShadow.upsert({
     where: { profileId_date: { profileId, date: input.date } },
     create: {
@@ -77,13 +90,13 @@ export async function recordExperimentalCessationDetrainingShadow(input: {
       date: input.date,
       sourceFingerprint,
       modelRevision: EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION,
-      features: result.features,
+      features: { ...result.features, gapContext },
       result,
     },
     update: {
       sourceFingerprint,
       modelRevision: EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION,
-      features: result.features,
+      features: { ...result.features, gapContext },
       result,
     },
   });

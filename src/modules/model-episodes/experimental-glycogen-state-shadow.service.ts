@@ -1,11 +1,17 @@
 import { prisma } from "@/lib/db/prisma";
 import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
+import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 import {
   EXPERIMENTAL_GLYCOGEN_STATE_V1_REVISION,
   initialExperimentalGlycogenStateV1,
   transitionExperimentalGlycogenStateV1,
   type ExperimentalGlycogenStateV1,
 } from "@/model/physiology-v7/experimental-glycogen-state-v1";
+import {
+  transitionExperimentalDataGapContextV1,
+  type ExperimentalDataGapContextV1,
+  type ExperimentalSourceCoverageV1,
+} from "@/model/physiology-v7/experimental-data-gap-context-v1";
 
 type GlycogenShadowResult = {
   availability?: string;
@@ -56,6 +62,12 @@ function stateFromStoredResult(result: unknown): ExperimentalGlycogenStateV1 | n
     return null;
   }
   return state;
+}
+
+function gapContextFromStoredResult(result: unknown): ExperimentalDataGapContextV1 | null {
+  if (!result || typeof result !== "object") return null;
+  const context = (result as { gapContext?: ExperimentalDataGapContextV1 }).gapContext;
+  return context?.fingerprint ? context : null;
 }
 
 async function loadDayInputs(profileId: number, date: string): Promise<{
@@ -109,6 +121,17 @@ async function loadDayInputs(profileId: number, date: string): Promise<{
   };
 }
 
+function glycogenCoverage(day: Awaited<ReturnType<typeof loadDayInputs>>): Record<string, ExperimentalSourceCoverageV1> {
+  return {
+    // Glycogen needs carbohydrate evidence; protein is retained separately as
+    // context for the existing transition and never fabricated here.
+    nutrition: day.carbsG === null ? "missing" : "observed",
+    training: day.workoutFeedObserved === true ? "observed"
+      : day.workoutFeedObserved === false ? "observed" : "unresolved",
+    activity: day.activeEnergyKcal === null ? "missing" : "device-estimated",
+  };
+}
+
 /**
  * Deterministic historical rebuild of experimental glycogen state.
  * Delayed sync / replay with the same day inputs reproduces the same trajectory.
@@ -129,9 +152,15 @@ export async function rebuildExperimentalGlycogenStateShadows(input: {
     select: { result: true },
   });
   let prior = stateFromStoredResult(priorRow?.result) ?? initialExperimentalGlycogenStateV1();
+  let priorGapContext = gapContextFromStoredResult(priorRow?.result);
 
   for (let date = input.fromDate; date <= input.toDate; date = addCalendarDays(date, 1)) {
     const day = await loadDayInputs(profileId, date);
+    const gapContext = transitionExperimentalDataGapContextV1({
+      date,
+      sources: glycogenCoverage(day),
+      prior: priorGapContext,
+    });
     const transition = transitionExperimentalGlycogenStateV1({
       prior,
       exerciseDepletionKg: day.exerciseDepletionKg,
@@ -142,24 +171,28 @@ export async function rebuildExperimentalGlycogenStateShadows(input: {
       proteinG: day.proteinG,
       activeEnergyKcal: day.activeEnergyKcal,
     });
+    const result = { ...transition, gapContext };
+    const features = { ...transition.features, gapContext };
+    const sourceFingerprint = stableSha256(result);
     await prisma.experimentalGlycogenStateShadow.upsert({
       where: { profileId_date: { profileId, date } },
       create: {
         profileId,
         date,
-        sourceFingerprint: transition.fingerprint,
+        sourceFingerprint,
         modelRevision: EXPERIMENTAL_GLYCOGEN_STATE_V1_REVISION,
-        features: transition.features,
-        result: transition,
+        features,
+        result,
       },
       update: {
-        sourceFingerprint: transition.fingerprint,
+        sourceFingerprint,
         modelRevision: EXPERIMENTAL_GLYCOGEN_STATE_V1_REVISION,
-        features: transition.features,
-        result: transition,
+        features,
+        result,
       },
     });
     prior = transition.state;
+    priorGapContext = gapContext;
   }
 }
 

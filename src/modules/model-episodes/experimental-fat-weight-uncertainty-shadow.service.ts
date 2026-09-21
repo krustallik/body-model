@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db/prisma";
+import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 import {
   EXPERIMENTAL_FAT_WEIGHT_UNCERTAINTY_V1_REVISION,
   initialExperimentalFatWeightUncertaintyStateV1,
@@ -6,6 +7,10 @@ import {
   type ExperimentalFatWeightUncertaintyStateV1,
 } from "@/model/physiology-v7/experimental-fat-weight-uncertainty-v1";
 import type { FatWeightShadowStateV1 } from "@/model/physiology-v7/fat-weight-shadow-v1";
+import {
+  transitionExperimentalDataGapContextV1,
+  type ExperimentalDataGapContextV1,
+} from "@/model/physiology-v7/experimental-data-gap-context-v1";
 
 function uncertaintyFromStored(result: unknown): ExperimentalFatWeightUncertaintyStateV1 | null {
   if (!result || typeof result !== "object") return null;
@@ -63,10 +68,11 @@ export async function rebuildExperimentalFatWeightUncertaintyV1(input: {
     };
   let priorUncertainty = uncertaintyFromStored(priorUncertaintyRow?.result)
     ?? initialExperimentalFatWeightUncertaintyStateV1();
+  let priorGapContext = (priorUncertaintyRow?.result as { gapContext?: ExperimentalDataGapContextV1 } | null)?.gapContext ?? null;
 
   for (const row of states) {
     const observed = byDate.get(row.date);
-    const result = transitionExperimentalFatWeightUncertaintyV1({
+    const transition = transitionExperimentalFatWeightUncertaintyV1({
       priorMean,
       priorUncertainty,
       energyBalanceKcal: row.energyBalanceKcal,
@@ -74,20 +80,31 @@ export async function rebuildExperimentalFatWeightUncertaintyV1(input: {
       observedBodyFatPercent: observed?.bodyFatPercent?.toNumber() ?? null,
       fastCompartmentContextKg: null,
     });
+    const gapContext = transitionExperimentalDataGapContextV1({
+      date: row.date,
+      sources: {
+        nutrition: row.energyBalanceKcal === null ? "missing" : "model-estimated",
+        weight: observed?.weightKg === null || observed?.weightKg === undefined ? "missing" : "observed",
+        bodyComposition: observed?.bodyFatPercent === null || observed?.bodyFatPercent === undefined ? "missing" : "device-estimated",
+      },
+      prior: priorGapContext,
+    });
+    const result = { ...transition, gapContext };
+    const sourceFingerprint = stableSha256(result);
     await prisma.experimentalFatWeightUncertaintyShadow.upsert({
       where: { profileId_date: { profileId: input.profileId, date: row.date } },
       create: {
         profileId: input.profileId,
         date: row.date,
-        sourceFingerprint: result.fingerprint,
+        sourceFingerprint,
         modelRevision: EXPERIMENTAL_FAT_WEIGHT_UNCERTAINTY_V1_REVISION,
-        features: result.features,
+        features: { ...result.features, gapContext },
         result,
       },
       update: {
-        sourceFingerprint: result.fingerprint,
+        sourceFingerprint,
         modelRevision: EXPERIMENTAL_FAT_WEIGHT_UNCERTAINTY_V1_REVISION,
-        features: result.features,
+        features: { ...result.features, gapContext },
         result,
       },
     });
@@ -119,5 +136,6 @@ export async function rebuildExperimentalFatWeightUncertaintyV1(input: {
         daysSinceEnergyBalance: 0,
       };
     }
+    priorGapContext = gapContext;
   }
 }

@@ -12,6 +12,9 @@ async function resolveBodyMassKg(input: {
   session: StrengthSessionDto;
   profileId: number;
 }): Promise<number | null> {
+  const asOfDate = (input.session.matchedWorkout?.startAt
+    ?? input.session.webStartedAt
+    ?? input.session.createdAt).slice(0, 10);
   if (input.session.matchedWorkoutId !== null) {
     const workout = await prisma.workout.findUnique({
       where: { id: input.session.matchedWorkoutId },
@@ -22,7 +25,10 @@ async function resolveBodyMassKg(input: {
     }
   }
   const latest = await prisma.dailyHealthData.findFirst({
-    where: { weightKg: { not: null } },
+    // An energy estimate for an old diary session must not change because a
+    // user later records a scale weight. This is a historical as-of fallback,
+    // not retrospective smoothing.
+    where: { weightKg: { not: null }, date: { lte: asOfDate } },
     orderBy: { date: "desc" },
     select: { weightKg: true },
   });

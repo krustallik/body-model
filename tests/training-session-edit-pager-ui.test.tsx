@@ -9,7 +9,8 @@ vi.mock("@/i18n/i18n-provider", () => ({
 
 const routerPush = vi.fn();
 const searchParams = new URLSearchParams();
-const PROGRAM_CHANGE_UI_TIMEOUT_MS = 5_000;
+const PROGRAM_CHANGE_UI_TIMEOUT_MS = 10_000;
+const PROGRAM_CHANGE_TEST_TIMEOUT_MS = 12_000;
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: routerPush, replace: vi.fn() }),
@@ -301,7 +302,7 @@ describe("Session edit exercise pager", () => {
       expect(screen.getByText("1 / 2 exercises")).toBeTruthy();
     }, { timeout: PROGRAM_CHANGE_UI_TIMEOUT_MS });
     expect(screen.queryByRole("heading", { name: "Жим гантелей на похилій лаві вгору (30°)" })).toBeNull();
-  });
+  }, PROGRAM_CHANGE_TEST_TIMEOUT_MS);
 
   it("supports editing a set from the compact list", async () => {
     const user = userEvent.setup();

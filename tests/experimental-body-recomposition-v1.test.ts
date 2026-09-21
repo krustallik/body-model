@@ -6,6 +6,10 @@ import {
   estimateExperimentalBodyRecompositionV1,
   rebuildExperimentalBodyRecompositionTrajectoryV1,
 } from "@/model/physiology-v7/experimental-body-recomposition-v1";
+import {
+  initialExperimentalCessationStateV1,
+  transitionExperimentalCessationDetrainingV1,
+} from "@/model/physiology-v7/experimental-cessation-detraining-v1";
 import type { FatWeightShadowStateV1 } from "@/model/physiology-v7/fat-weight-shadow-v1";
 
 const fat = (fatMassKg: number | null, availability: "available" | "unavailable" = "available"): FatWeightShadowStateV1 => ({
@@ -30,6 +34,20 @@ const base = {
 
 /** EXPERIMENTAL harness — not scientific validation / GREEN oracle. */
 describe("experimental body recomposition v1", () => {
+  it("accepts the persisted cessation-aware unified relative trajectory", () => {
+    const start = transitionExperimentalCessationDetrainingV1({
+      exposureKind: "qualified-mapped-training", prior: initialExperimentalCessationStateV1(), trainingSkeletalMuscleDeltaKg: 0.02,
+    });
+    const end = transitionExperimentalCessationDetrainingV1({
+      exposureKind: "verified-no-exposure", prior: start.state,
+    });
+    const result = estimateExperimentalBodyRecompositionV1({
+      fatStart: fat(20), fatEnd: fat(19.8),
+      skeletalMuscleStart: { availability: "available", state: start.state },
+      skeletalMuscleEnd: { availability: "available", state: end.state },
+    });
+    expect(result.reasons).toContain("unified-relative-skeletal-muscle-trajectory-used-without-absolute-skeletalMuscleKg");
+  });
   it("classifies fat loss plus positive relative SM delta as supported recomposition (C-E02)", () => {
     const result = estimateExperimentalBodyRecompositionV1(base);
     expect(result.status).toBe("available");

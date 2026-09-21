@@ -100,6 +100,8 @@ export type ExperimentalCessationDetrainingResultV1 = {
   upperBoundKg: number;
   state: ExperimentalCessationStateV1;
   features: {
+    /** This state is the single persisted relative-muscle total. */
+    trajectoryRole: "authoritative-unified-relative-muscle-state";
     exposureKind: ExperimentalTrainingExposureKindV1;
     observedNoExposureStreakDays: number;
     daysPastGrace: number;
@@ -228,6 +230,7 @@ export function transitionExperimentalCessationDetrainingV1(input: {
         absoluteSkeletalMuscleKg: null,
       },
       features: {
+        trajectoryRole: "authoritative-unified-relative-muscle-state",
         exposureKind: input.exposureKind,
         observedNoExposureStreakDays: 0,
         daysPastGrace: 0,
@@ -262,6 +265,7 @@ export function transitionExperimentalCessationDetrainingV1(input: {
         absoluteSkeletalMuscleKg: null,
       },
       features: {
+        trajectoryRole: "authoritative-unified-relative-muscle-state",
         exposureKind: input.exposureKind,
         observedNoExposureStreakDays: prior.observedNoExposureStreakDays,
         daysPastGrace: Math.max(0, prior.observedNoExposureStreakDays - ENGINEERING_CESSATION_GRACE_DAYS_V1),
@@ -295,6 +299,7 @@ export function transitionExperimentalCessationDetrainingV1(input: {
         absoluteSkeletalMuscleKg: null,
       },
       features: {
+        trajectoryRole: "authoritative-unified-relative-muscle-state",
         exposureKind: input.exposureKind,
         observedNoExposureStreakDays: 0,
         daysPastGrace: 0,
@@ -332,6 +337,7 @@ export function transitionExperimentalCessationDetrainingV1(input: {
         absoluteSkeletalMuscleKg: null,
       },
       features: {
+        trajectoryRole: "authoritative-unified-relative-muscle-state",
         exposureKind: input.exposureKind,
         observedNoExposureStreakDays: streak,
         daysPastGrace: 0,
@@ -372,6 +378,7 @@ export function transitionExperimentalCessationDetrainingV1(input: {
       absoluteSkeletalMuscleKg: null,
     },
     features: {
+      trajectoryRole: "authoritative-unified-relative-muscle-state",
       exposureKind: input.exposureKind,
       observedNoExposureStreakDays: streak,
       daysPastGrace,

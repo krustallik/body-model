@@ -78,6 +78,8 @@ export type ExperimentalSkeletalMuscleDeltaUnavailableReasonV1 =
   | "non-finite-inputs";
 
 export type ExperimentalSkeletalMuscleDeltaFeaturesV1 = {
+  /** Training response contribution only; never an authoritative total. */
+  trajectoryRole: "diagnostic-training-contribution";
   qualifiedHardSetCount: number | null;
   mappedMuscleGroupCount: number | null;
   trainingStatus: ExperimentalTrainingStatusV1;
@@ -240,6 +242,7 @@ export function estimateExperimentalSkeletalMuscleDeltaV1(input: {
     : input.priorRelativeCumulativeDeltaKg;
 
   const baseFeatures: ExperimentalSkeletalMuscleDeltaFeaturesV1 = {
+    trajectoryRole: "diagnostic-training-contribution",
     qualifiedHardSetCount: input.qualifiedHardSetCount,
     mappedMuscleGroupCount,
     trainingStatus,

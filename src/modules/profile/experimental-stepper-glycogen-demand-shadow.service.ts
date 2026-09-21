@@ -41,7 +41,7 @@ export async function recordExperimentalStepperGlycogenDemandShadow(input: {
   const canonical = canonicalizeWorkoutType(workout.type);
   if (canonical.classification !== "stair-climbing" || canonical.canonicalType === null) return;
 
-  const [assignments, snapshots, stepIntervals, heartRateSamples, latestGlycogen] = await Promise.all([
+  const [assignments, snapshots, stepIntervals, heartRateSamples] = await Promise.all([
     new StepperEquipmentRepository(prisma).list(),
     prisma.healthSyncSnapshot.findMany({
       select: { id: true, receivedAt: true, syncedAt: true, steps: true },
@@ -62,15 +62,6 @@ export async function recordExperimentalStepperGlycogenDemandShadow(input: {
       },
       select: { timestamp: true, bpm: true, source: true },
       orderBy: { timestamp: "asc" },
-    }),
-    prisma.dailyModelState.findFirst({
-      where: {
-        status: "complete",
-        glycogenKg: { not: null },
-        episode: { profileId, active: true },
-      },
-      orderBy: { date: "desc" },
-      select: { glycogenKg: true },
     }),
   ]);
 
@@ -138,7 +129,10 @@ export async function recordExperimentalStepperGlycogenDemandShadow(input: {
     workout: evidence,
     bodyMassKg,
     equipment,
-    availableGlycogenKg: latestGlycogen?.glycogenKg ?? null,
+    // The authoritative daily relative-debt trajectory applies the one shared
+    // cap. A workout-level shadow must not read a newer production glycogen
+    // row or independently consume the same headroom.
+    availableGlycogenKg: null,
     activeEnergyKcal: ignoredActiveEnergyKcal,
   });
   const sourceFingerprint = experimentalStepperGlycogenDemandV1Fingerprint(result);

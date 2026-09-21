@@ -84,6 +84,7 @@ export type ExperimentalGlycogenExerciseCoverageV1 =
 export type ExperimentalGlycogenRepletionCoverageV1 =
   | "applied"
   | "skipped-missing-carbohydrate"
+  | "skipped-unresolved-exercise"
   | "skipped-unavailable-repletion";
 
 export type ExperimentalGlycogenStateTransitionResultV1 = {
@@ -117,6 +118,8 @@ export type ExperimentalGlycogenStateTransitionResultV1 = {
     workoutFeedObserved: boolean | null;
     relativeBaselineDebtKg: 0;
     debtHeadroomKg: number | null;
+    coverageState: "complete" | "partial" | "modeled-gap-bridge";
+    netChangeAsserted: boolean;
     rejectedConversions: readonly [
       "scale-weight-residual",
       "adult-literature-personal-capacity-clamp",
@@ -307,6 +310,11 @@ export function transitionExperimentalGlycogenStateV1(input: {
   if (input.carbsG === null) {
     repletionCoverage = "skipped-missing-carbohydrate";
     reasons.push("missing-carbohydrate-is-not-zero-repletion");
+  } else if (exerciseCoverage === "unresolved-missing-workout-feed") {
+    // Carbohydrate is observed, but applying repletion against a debt whose
+    // same-day exercise depletion is unknown would manufacture a net state.
+    repletionCoverage = "skipped-unresolved-exercise";
+    reasons.push("known-carbohydrate-does-not-resolve-unknown-exercise-net-change");
   } else {
     repletionEstimate = estimateExperimentalGlycogenRepletionV1({
       carbsG: input.carbsG,
@@ -343,6 +351,8 @@ export function transitionExperimentalGlycogenStateV1(input: {
     reasons.push("relative-debt-ceiling-applied-at-zero");
   }
 
+  const completeCoverage = exerciseCoverage !== "unresolved-missing-workout-feed"
+    && repletionCoverage === "applied";
   const netPoint = afterRep.state.relativeDeviationKg! - priorRel;
   const netLower = (afterRep.state.relativeDeviationLowerKg ?? afterRep.state.relativeDeviationKg!)
     - priorRelUpper;
@@ -351,13 +361,15 @@ export function transitionExperimentalGlycogenStateV1(input: {
   const orderedNetLower = Math.min(netLower, netPoint, netUpper);
   const orderedNetUpper = Math.max(netLower, netPoint, netUpper);
 
-  const glycogenAssociatedWater = estimateExperimentalGlycogenAssociatedWaterV1({
+  const glycogenAssociatedWater = completeCoverage ? estimateExperimentalGlycogenAssociatedWaterV1({
     glycogenDeltaKg: netPoint,
     glycogenDeltaLowerKg: orderedNetLower,
     glycogenDeltaUpperKg: orderedNetUpper,
     currentGlycogenWaterKg: null,
-  });
-  reasons.push("glycogen-associated-water-derived-from-net-relative-glycogen-delta");
+  }) : null;
+  reasons.push(completeCoverage
+    ? "glycogen-associated-water-derived-from-net-relative-glycogen-delta"
+    : "partial-coverage-net-change-and-glycogen-water-not-asserted");
 
   const result: ExperimentalGlycogenStateTransitionResultV1 = {
     contractVersion: EXPERIMENTAL_GLYCOGEN_STATE_V1_REVISION,
@@ -365,9 +377,9 @@ export function transitionExperimentalGlycogenStateV1(input: {
     supportedDomain: "multi-day-relative-glycogen-depletion-debt-shadow-only",
     state: afterRep.state,
     priorState: prior,
-    netGlycogenDeltaKg: netPoint,
-    netGlycogenDeltaLowerKg: orderedNetLower,
-    netGlycogenDeltaUpperKg: orderedNetUpper,
+    netGlycogenDeltaKg: completeCoverage ? netPoint : null,
+    netGlycogenDeltaLowerKg: completeCoverage ? orderedNetLower : null,
+    netGlycogenDeltaUpperKg: completeCoverage ? orderedNetUpper : null,
     depletionDeltaKg: exerciseCoverage === "applied-from-exercise-shadows"
       || exerciseCoverage === "observed-rest-zero-depletion"
       ? depletionPoint
@@ -391,6 +403,9 @@ export function transitionExperimentalGlycogenStateV1(input: {
       workoutFeedObserved: input.workoutFeedObserved,
       relativeBaselineDebtKg: 0,
       debtHeadroomKg,
+      coverageState: completeCoverage ? "complete" : input.carbsG === null && exerciseCoverage === "unresolved-missing-workout-feed"
+        ? "modeled-gap-bridge" : "partial",
+      netChangeAsserted: completeCoverage,
       rejectedConversions: rejectedConversions(),
     },
     reasons,

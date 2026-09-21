@@ -191,6 +191,21 @@ describe("experimental glycogen state v1", () => {
     expect(observedRest.state.relativeDeviationKg).toBe(0);
   });
 
+  it("bridges a fully missing day without asserting a zero net change or water", () => {
+    const prior = transitionExperimentalGlycogenStateV1({
+      prior: initialExperimentalGlycogenStateV1(), exerciseDepletionKg: -0.04,
+      workoutFeedObserved: true, carbsG: null,
+    }).state;
+    const gap = transitionExperimentalGlycogenStateV1({
+      prior, exerciseDepletionKg: null, workoutFeedObserved: null, carbsG: null,
+    });
+    expect(gap.features.coverageState).toBe("modeled-gap-bridge");
+    expect(gap.features.netChangeAsserted).toBe(false);
+    expect(gap.netGlycogenDeltaKg).toBeNull();
+    expect(gap.glycogenAssociatedWater).toBeNull();
+    expect(gap.state.relativeDeviationKg).toBe(prior.relativeDeviationKg);
+  });
+
   it("rejects scale-weight residual and literature capacity clamps", () => {
     const result = transitionExperimentalGlycogenStateV1({
       prior: initialExperimentalGlycogenStateV1(),

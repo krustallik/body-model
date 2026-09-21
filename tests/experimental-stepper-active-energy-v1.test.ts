@@ -122,6 +122,24 @@ describe("experimental stepper active energy v1", () => {
     expect(long.estimatedActiveKcal!).toBeGreaterThan(short.estimatedActiveKcal!);
   });
 
+  it("keeps matched-bout total energy nondecreasing without imposing a fixed glycogen rate (C-G03)", () => {
+    const short = estimateMatchedProtocolDurationEnergyV1({
+      bodyMassKg: 75,
+      durationMinutes: 20,
+      stepRatePerMinute: 70,
+      equipment,
+    });
+    const long = estimateMatchedProtocolDurationEnergyV1({
+      bodyMassKg: 75,
+      durationMinutes: 40,
+      stepRatePerMinute: 70,
+      equipment,
+    });
+    expect(long.estimatedActiveKcal!).toBeGreaterThanOrEqual(short.estimatedActiveKcal!);
+    const source = readFileSync("src/model/activity/experimental-stepper-active-energy-v1.ts", "utf8");
+    expect(source).not.toMatch(/glycogen.*(?:per-minute|per minute|rate)|substrate.*(?:coefficient|rate)/i);
+  });
+
   it("increases estimated energy when attributed step work increases at fixed mass", () => {
     const fewer = estimateExperimentalStepperActiveEnergyV1({
       workout: stepper({ steps: 1_000 }),

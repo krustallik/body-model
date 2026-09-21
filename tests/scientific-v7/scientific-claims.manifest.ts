@@ -186,6 +186,12 @@ const experimentalFfmRetentionTest =
   "tests/experimental-ffm-retention-v1.test.ts";
 const experimentalFfmRetentionUncertainty =
   "Experimental dimensionless FFM/slow-nonfat retention heuristic under energy deficit from observed protein and verified RT; Hall/Forbes mean is reference only; not skeletalMuscleKg and not scientifically validated personal retention kg.";
+const experimentalBodyRecompositionImpl =
+  "src/model/physiology-v7/experimental-body-recomposition-v1.ts";
+const experimentalBodyRecompositionTest =
+  "tests/experimental-body-recomposition-v1.test.ts";
+const experimentalBodyRecompositionUncertainty =
+  "Experimental heuristic longitudinal compatibility classifier combining read-only FatWeightShadowV1 fat change with relative skeletal-muscle delta; FFM retention is context only; no absolute skeletalMuscleKg, residual allocation, or scientifically validated personal recomposition truth.";
 const v7HrBlocker = "Canonical raw HR interval provenance exists, but HR coverage/calibration inputs and a separately observable anabolic-dose output do not exist.";
 const v7SleepBlocker = "Canonical v7 sleep provenance/duration inputs and bounded sleep-context output do not exist.";
 const v7MeasurementBlocker = "No v7 measurement-role contract exposes skeletal muscle separately from lean/local/proxy endpoints.";
@@ -414,7 +420,23 @@ export const SCIENTIFIC_V7_CLAIMS: readonly ScientificClaimManifestRecord[] = [
       uncertainty: experimentalSkeletalMuscleDeltaUncertainty,
     },
   }),
-  record({ claimId: "C-E02", title: "deficit does not make recomposition impossible", parameterIds: ["P-E01", "P-E02"], evidenceIds: ["E-E02", "E-E03"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "longitudinal", assertionTypes: ["BOUND"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Recomposition remains possible without treating DXA/FFM as skeletal-muscle tissue.", infrastructureBlocker: v7MuscleBlocker }),
+  record({
+    claimId: "C-E02",
+    title: "deficit does not make recomposition impossible",
+    parameterIds: ["P-E01", "P-E02"],
+    evidenceIds: ["E-E02", "E-E03"],
+    auditEligibility: "SAFE_AFTER_AUDIT_REVISION",
+    testType: "longitudinal",
+    assertionTypes: ["BOUND"],
+    provenance: ["SCIENTIFIC_EVIDENCE"],
+    scientificAssertion: "Recomposition remains possible without treating DXA/FFM as skeletal-muscle tissue.",
+    experimental: {
+      implementation: experimentalBodyRecompositionImpl,
+      testFile: experimentalBodyRecompositionTest,
+      testName: "classifies fat loss plus positive relative SM delta as supported recomposition (C-E02)",
+      uncertainty: experimentalBodyRecompositionUncertainty,
+    },
+  }),
   record({
     claimId: "C-E03",
     title: "resistance training does not worsen expected FFM retention",

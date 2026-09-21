@@ -136,7 +136,8 @@
 }
 
 .compactCol {
-  max-width: 5.6rem;
+  width: 7.25rem;
+  min-width: 7.25rem;
   padding-left: 0.45rem !important;
   padding-right: 0.45rem !important;
   white-space: normal;
@@ -148,7 +149,7 @@
   justify-items: end;
   line-height: 1.2;
 }
-.thMain { font-weight: 700; }
+.thMain { font-weight: 700; overflow-wrap: anywhere; }
 .thUnit {
   color: var(--muted);
   font-size: 0.64rem;

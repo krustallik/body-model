@@ -284,7 +284,7 @@ describe("Apple Health sync with PostgreSQL", () => {
     expect([111, 222]).toContain((await prisma.dailyHealthData.findUnique({ where: { date } }))?.steps);
   });
 
-  it("persists observed walking zero and workout-feed coverage without inventing workouts", async () => {
+  it("preserves observed walking zero and workout-feed coverage when a later payload omits the feed", async () => {
     const date = "2040-01-10";
     await prisma.healthSyncSnapshot.deleteMany({ where: { date } });
     await deleteDailyHealthRows(prisma, date);
@@ -311,7 +311,9 @@ describe("Apple Health sync with PostgreSQL", () => {
     expect(withoutFeed.status).toBe(200);
     const unknown = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date } });
     expect(unknown.walkingDistanceKm?.toString()).toBe("0");
-    expect(unknown.workoutFeedObserved).toBe(false);
+    // Missing feed coverage is unknown, not an observed negative; preserve the
+    // earlier explicit empty-feed observation instead of erasing it.
+    expect(unknown.workoutFeedObserved).toBe(true);
 
     await prisma.healthSyncSnapshot.deleteMany({ where: { date } });
     await deleteDailyHealthRows(prisma, date);

@@ -153,7 +153,6 @@ function record(input: RecordInput): ScientificClaimManifestRecord {
 }
 
 const v7MuscleBlocker = "The v7 skeletalMuscleKg state contract exists, but no adaptation transition or proxy-safe observation contract exists.";
-const v7DetrainingBlocker = "No v7 training-history/cessation state or skeletal-muscle detraining transition exists.";
 const v7StepperGlycogenBlocker = "No direct v7 stepper glycogen-demand seam exists; substrate coefficients remain deferred.";
 const experimentalTransientWaterImpl =
   "src/model/physiology-v7/experimental-transient-exercise-water-v1.ts";
@@ -179,6 +178,12 @@ const experimentalCessationDetrainingTest =
   "tests/experimental-cessation-detraining-v1.test.ts";
 const experimentalCessationDetrainingUncertainty =
   "Experimental relative cessation/detraining heuristic with an engineering grace period and non-positive monthly atrophy band; not a scientifically validated atrophy curve, skeletalMuscleKg, or muscle-memory bonus.";
+const experimentalAgeRelatedMaintenanceUncertaintyImpl =
+  "src/model/physiology-v7/experimental-age-related-maintenance-uncertainty-v1.ts";
+const experimentalAgeRelatedMaintenanceUncertaintyTest =
+  "tests/experimental-age-related-maintenance-uncertainty-v1.test.ts";
+const experimentalAgeRelatedMaintenanceUncertainty =
+  "Experimental smooth age-context uncertainty heuristic around an existing relative skeletal-muscle interval: it widens bounds without shifting the central delta, uses no hard age cutoff or universal sarcopenia coefficient, and preserves training/protein/energy/status math.";
 const experimentalRetrainingIdentificationImpl =
   "src/model/physiology-v7/experimental-retraining-identification-v1.ts";
 const experimentalRetrainingIdentificationTest =
@@ -344,7 +349,7 @@ export const SCIENTIFIC_V7_CLAIMS: readonly ScientificClaimManifestRecord[] = [
     },
   }),
   record({ claimId: "C-C03", title: "validated nonzero loading is not complete cessation", parameterIds: ["P-C02"], evidenceIds: ["E-C04", "E-C05"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "longitudinal", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE", "INPUT_CONTRACT"], scientificAssertion: "Validated nonzero loading is not automatically complete cessation; maintenance magnitude is untested.", executableTestName: "validated nonzero loading is not complete cessation" }),
-  record({ claimId: "C-C04", title: "age-specific maintenance uncertainty is preserved", parameterIds: ["P-C02"], evidenceIds: ["E-C04"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "longitudinal", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Age uncertainty is preserved without a directional multiplier from one protocol.", infrastructureBlocker: v7DetrainingBlocker }),
+  record({ claimId: "C-C04", title: "age-specific maintenance uncertainty is preserved", parameterIds: ["P-C02"], evidenceIds: ["E-C04"], auditEligibility: "SAFE_AFTER_AUDIT_REVISION", testType: "longitudinal", assertionTypes: ["INVARIANT", "ORDERING", "MISSINGNESS"], provenance: ["SCIENTIFIC_EVIDENCE", "INPUT_CONTRACT", "ENGINEERING_ASSUMPTION"], scientificAssertion: "Age is a smooth uncertainty context around an existing relative skeletal-muscle interval, not a directional maintenance multiplier: it does not create negative muscle delta, use a hard age cutoff, or alter training/protein/energy/status math.", experimental: { implementation: experimentalAgeRelatedMaintenanceUncertaintyImpl, testFile: experimentalAgeRelatedMaintenanceUncertaintyTest, testName: "does not let age automatically create skeletal-muscle loss (C-C04)", uncertainty: experimentalAgeRelatedMaintenanceUncertainty } }),
   record({ claimId: "C-C05", title: "strength loss is not muscle loss", parameterIds: ["P-C03"], evidenceIds: ["E-C03", "E-B13"], auditEligibility: "SAFE", testType: "unit", assertionTypes: ["INVARIANT"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Strength decline cannot be converted directly into skeletal-muscle loss.", executableTestName: "strength loss is not muscle loss" }),
   record({ claimId: "C-C06", title: "resumption restores stimulus without invented memory gain", parameterIds: ["P-C05"], evidenceIds: ["E-C06", "E-C07", "E-B13"], auditEligibility: "SAFE", testType: "longitudinal", assertionTypes: ["LONGITUDINAL"], provenance: ["SCIENTIFIC_EVIDENCE"], scientificAssertion: "Training resumption restores stimulus without an automatic quantitative memory bonus.", executableTestName: "resumption restores stimulus without invented memory gain" }),
 

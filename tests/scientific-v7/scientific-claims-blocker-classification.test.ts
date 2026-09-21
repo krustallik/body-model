@@ -6,25 +6,25 @@ import {
 } from "./scientific-claims-blocker-classification";
 
 describe("Stage 12 blocked scientific-claim triage", () => {
-  it("classifies all 7 remaining blocked claims after matched-bout energy EXPERIMENTAL coverage", () => {
+  it("classifies all 5 remaining blocked claims after calibration-coverage EXPERIMENTAL contracts", () => {
     const blocked = SCIENTIFIC_V7_CLAIMS.filter((claim) => claim.status === "BLOCKED");
     const green = SCIENTIFIC_V7_CLAIMS.filter((claim) => claim.status === "GREEN");
     const experimental = SCIENTIFIC_V7_CLAIMS.filter((claim) => claim.status === "EXPERIMENTAL");
-    expect(blocked).toHaveLength(7);
+    expect(blocked).toHaveLength(5);
     expect(green).toHaveLength(38);
-    expect(experimental).toHaveLength(34);
+    expect(experimental).toHaveLength(36);
 
     const rows = classifyBlockedScientificClaims();
-    expect(rows).toHaveLength(7);
-    expect(new Set(rows.map((row) => row.claimId)).size).toBe(7);
+    expect(rows).toHaveLength(5);
+    expect(new Set(rows.map((row) => row.claimId)).size).toBe(5);
 
     const summary = summarizeBlockedClaimClassification(rows);
-    expect(summary.totalBlocked).toBe(7);
+    expect(summary.totalBlocked).toBe(5);
     expect(
       summary.counts["implementation-only"]
       + summary.counts["validation-data"]
       + summary.counts["research-blocked"],
-    ).toBe(7);
+    ).toBe(5);
     expect(summary.closestToGreen[0]?.claimId).toBe("C-I03");
     expect(rows.find((row) => row.claimId === "C-A01")).toBeUndefined();
     expect(rows.find((row) => row.claimId === "C-C01")).toBeUndefined();
@@ -40,6 +40,8 @@ describe("Stage 12 blocked scientific-claim triage", () => {
     expect(rows.find((row) => row.claimId === "C-H02")).toBeUndefined();
     expect(rows.find((row) => row.claimId === "C-FW01")).toBeUndefined();
     expect(rows.find((row) => row.claimId === "C-G03")).toBeUndefined();
+    expect(rows.find((row) => row.claimId === "C-K03")).toBeUndefined();
+    expect(rows.find((row) => row.claimId === "C-L04")).toBeUndefined();
     expect(summary.note).toMatch(/Do not unblock without a real oracle/i);
   });
 

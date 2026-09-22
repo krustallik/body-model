@@ -33,6 +33,13 @@ export type DiagnosticsDto = {
     dynamicRmrKcalPerDay: number | null;
     modeledTdeeKcalPerDay: number | null;
   };
+  experimentalEnergySummary?: {
+    restingRmrKcalPerDay: number | null;
+    recentTypicalMaintenanceKcalPerDay: number | null;
+    todayEstimatedExpenditureKcalPerDay: number | null;
+    latestModeledExpenditureKcalPerDay: number | null;
+    typicalMaintenanceEligibleDays: number;
+  } | null;
   dataContinuity: {
     level: DiagnosticLevel;
     recentWindowDays: 28;
@@ -105,4 +112,5 @@ export type DiagnosticsEvidence = {
   imputedNutritionDayCount: number;
   unresolvedNutritionDayCount: number;
   weightObservationCount: number;
+  experimentalEnergySummary?: DiagnosticsDto["experimentalEnergySummary"];
 };

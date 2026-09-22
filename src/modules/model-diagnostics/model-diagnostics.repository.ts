@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db/prisma";
 import type { ModelDatabaseClient } from "@/modules/model-episodes/model-episode.repository";
 import type { DiagnosticsEvidence } from "./model-diagnostics.types";
+import { buildUnifiedEnergySummaryV1 } from "@/model/unified-experimental-physiology-v1/energy-summary";
 
 export class ModelDiagnosticsRepository {
   constructor(private readonly client: ModelDatabaseClient = prisma) {}
@@ -14,6 +15,11 @@ export class ModelDiagnosticsRepository {
       this.client.dailyModelState.count({ where: { episodeId, date: { gte: from, lte: to }, nutritionSource: "missing" } }),
       this.client.dailyHealthData.count({ where: { date: { gte: from, lte: to }, weightKg: { gt: 0 } } }),
     ]);
+    const unified = (this.client as unknown as { unifiedExperimentalPhysiologyState?: { findMany: (args: unknown) => Promise<unknown[]> } }).unifiedExperimentalPhysiologyState;
+    const experimentalEnergySummary = unified ? buildUnifiedEnergySummaryV1({
+      days: (await this.client.dailyModelState.findMany({ where: { episodeId, date: { gte: from, lte: to } }, orderBy: { date: "asc" }, select: { date: true, energyExpenditureKcal: true, dynamicRmrKcalPerDay: true } })).map((row) => ({ date: row.date, productionTdeeKcalPerDay: row.energyExpenditureKcal, dynamicRmrKcalPerDay: row.dynamicRmrKcalPerDay })),
+      todayDate: new Date().toISOString().slice(0, 10),
+    }) : null;
     return {
       modeledDayCount,
       completeDayCount,
@@ -22,9 +28,9 @@ export class ModelDiagnosticsRepository {
       imputedNutritionDayCount,
       unresolvedNutritionDayCount,
       weightObservationCount,
+      experimentalEnergySummary,
     };
   }
 }
 
 export const modelDiagnosticsRepository = new ModelDiagnosticsRepository();
-

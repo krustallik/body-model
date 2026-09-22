@@ -1,6 +1,7 @@
 import { normalizeDailyMeasurements, prepareDailyMeasurementsForWrite } from "@/modules/days/measurement-policy";
 import { summarizeDayWorkouts } from "@/modules/days/day-workout-presentation";
 import { workoutSourceIdentity } from "@/modules/health/workout-source-identity";
+import { DEFAULT_TIME_ZONE, instantToLocalDateTime } from "@/model/time-zone";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { SleepRepository } from "@/modules/health/sleep.repository";
@@ -50,6 +51,25 @@ const dailyMetricSelect = {
 
 type DailyMetricRecord = Prisma.DailyHealthDataGetPayload<{ select: typeof dailyMetricSelect }>;
 
+type DiaryShadowWorkout = {
+  type: "Traditional Strength Training";
+  startAt: Date;
+  endAt: Date;
+  durationMinutes: number;
+  activeEnergyKcal: number | null;
+  energySource: "shadow-diary-estimate" | "unavailable";
+  diaryOnly: true;
+  matchedDiarySession: { id: number; program: { name: string } };
+};
+
+function shadowResolutionKcal(result: unknown): number | null {
+  if (typeof result !== "object" || result === null || Array.isArray(result)) return null;
+  const resolution = (result as { activeEnergyResolution?: unknown }).activeEnergyResolution;
+  if (typeof resolution !== "object" || resolution === null || Array.isArray(resolution)) return null;
+  const value = (resolution as { estimatedActiveKcal?: unknown }).estimatedActiveKcal;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
 function workoutCreateData(workouts: NonNullable<CreateDailyMetricInput["workouts"]>) {
   return workouts.map((workout) => {
     const startAt = new Date(workout.startAt);
@@ -95,11 +115,12 @@ function toDto(
     restingHeartRate: Array<{ timestamp: Date; bpm: number }>;
   },
   sleep?: NightlySleepSummaryDto | null,
+  diaryShadowWorkouts: readonly DiaryShadowWorkout[] = [],
 ): DailyMetricDto {
   record = normalizeDailyMeasurements(record);
   const strengthTrainingMinutes = decimalToNumber(record.strengthTrainingMinutes);
   const summary = summarizeDayWorkouts({
-    workouts: record.workouts ?? [],
+    workouts: [...(record.workouts ?? []), ...diaryShadowWorkouts],
     legacyStrengthTrainingMinutes: strengthTrainingMinutes,
   });
   const restingHeartRate = heartRateSummary(samples?.restingHeartRate ?? record.restingHeartRateSamples);
@@ -154,12 +175,21 @@ export class DailyMetricRepository {
     const readClient = this.client as unknown as {
       heartRateSample?: { findMany(args: unknown): Promise<Array<{ date: string; timestamp: Date; bpm: number }>> };
       restingHeartRateSample?: { findMany(args: unknown): Promise<Array<{ date: string; timestamp: Date; bpm: number }>> };
+      strengthDiarySession?: {
+        findMany(args: unknown): Promise<Array<{
+          id: number;
+          webStartedAt: Date | null;
+          webEndedAt: Date | null;
+          program: { name: string };
+          experimentalStrengthEnergyShadow: { result: unknown } | null;
+        }>>;
+      };
     };
     if (dates.length === 0) {
       return records.map((record) => toDto(record));
     }
 
-    const [heartRateRows, restingRows, sleepByDate] = await Promise.all([
+    const [heartRateRows, restingRows, sleepByDate, diarySessions] = await Promise.all([
       readClient.heartRateSample
         ? readClient.heartRateSample.findMany({ where: { date: { in: dates } }, select: { date: true, timestamp: true, bpm: true }, orderBy: { timestamp: "asc" } })
         : Promise.resolve([] as Array<{ date: string; timestamp: Date; bpm: number }>),
@@ -167,6 +197,29 @@ export class DailyMetricRepository {
         ? readClient.restingHeartRateSample.findMany({ where: { date: { in: dates } }, select: { date: true, timestamp: true, bpm: true }, orderBy: { timestamp: "asc" } })
         : Promise.resolve([] as Array<{ date: string; timestamp: Date; bpm: number }>),
       new SleepRepository(this.client).summariesByDates(dates),
+      readClient.strengthDiarySession
+        ? readClient.strengthDiarySession.findMany({
+          where: {
+            status: "COMPLETED",
+            matchedWorkoutId: null,
+            webStartedAt: { not: null },
+            webEndedAt: { not: null },
+          },
+          select: {
+            id: true,
+            webStartedAt: true,
+            webEndedAt: true,
+            program: { select: { name: true } },
+            experimentalStrengthEnergyShadow: { select: { result: true } },
+          },
+        })
+        : Promise.resolve([] as Array<{
+          id: number;
+          webStartedAt: Date | null;
+          webEndedAt: Date | null;
+          program: { name: string };
+          experimentalStrengthEnergyShadow: { result: unknown } | null;
+        }>),
     ]);
     const group = (rows: Array<{ date: string; timestamp: Date; bpm: number }>) => rows.reduce<Map<string, Array<{ timestamp: Date; bpm: number }>>>((result, row) => {
       result.set(row.date, [...(result.get(row.date) ?? []), { timestamp: row.timestamp, bpm: row.bpm }]);
@@ -174,10 +227,29 @@ export class DailyMetricRepository {
     }, new Map());
     const heartRate = group(heartRateRows);
     const restingHeartRate = group(restingRows);
+    const diaryShadowByDate = new Map<string, DiaryShadowWorkout[]>();
+    for (const session of diarySessions) {
+      if (session.webStartedAt === null || session.webEndedAt === null || !(session.webEndedAt > session.webStartedAt)) continue;
+      const date = instantToLocalDateTime(session.webStartedAt, DEFAULT_TIME_ZONE).date;
+      if (!dates.includes(date)) continue;
+      const kcal = shadowResolutionKcal(session.experimentalStrengthEnergyShadow?.result);
+      const event: DiaryShadowWorkout = {
+        type: "Traditional Strength Training",
+        startAt: session.webStartedAt,
+        endAt: session.webEndedAt,
+        durationMinutes: (session.webEndedAt.getTime() - session.webStartedAt.getTime()) / 60_000,
+        activeEnergyKcal: kcal,
+        energySource: kcal === null ? "unavailable" : "shadow-diary-estimate",
+        diaryOnly: true,
+        matchedDiarySession: { id: session.id, program: session.program },
+      };
+      diaryShadowByDate.set(date, [...(diaryShadowByDate.get(date) ?? []), event]);
+    }
     return records.map((record) => toDto(
       record,
       { heartRate: heartRate.get(record.date) ?? [], restingHeartRate: restingHeartRate.get(record.date) ?? [] },
       sleepByDate.get(record.date) ?? null,
+      diaryShadowByDate.get(record.date) ?? [],
     ));
   }
 

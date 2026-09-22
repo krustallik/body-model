@@ -2,7 +2,7 @@ import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
 
 export type DayWorkoutPresentation = {
   /** Workout row id — the handle retrospective diary backfill starts from. */
-  id: number;
+  id?: number;
   type: string;
   canonicalType: string | null;
   classification: "traditional-strength-training" | "stair-climbing" | "other";
@@ -10,6 +10,8 @@ export type DayWorkoutPresentation = {
   endAt: string;
   durationMinutes: number | null;
   activeEnergyKcal: number | null;
+  energySource: "device-estimate" | "shadow-diary-estimate" | "unavailable";
+  diaryOnly: boolean;
   linkedTrainingSessionId: number | null;
   linkedTrainingProgramName: string | null;
 };
@@ -22,12 +24,14 @@ export type DayWorkoutSummary = {
 };
 
 export type RawWorkoutRow = {
-  id: number;
+  id?: number;
   type: string;
   startAt: Date | string;
   endAt: Date | string;
   durationMinutes: number | null;
   activeEnergyKcal: number | null;
+  energySource?: "device-estimate" | "shadow-diary-estimate" | "unavailable";
+  diaryOnly?: boolean;
   matchedDiarySession?: {
     id: number;
     program: { name: string } | null;
@@ -65,6 +69,11 @@ export function summarizeDayWorkouts(input: {
         && workout.activeEnergyKcal >= 0
         ? workout.activeEnergyKcal
         : null,
+      energySource: workout.energySource
+        ?? (workout.activeEnergyKcal !== null && Number.isFinite(workout.activeEnergyKcal) && workout.activeEnergyKcal >= 0
+          ? "device-estimate"
+          : "unavailable"),
+      diaryOnly: workout.diaryOnly ?? false,
       linkedTrainingSessionId: linked?.id ?? null,
       linkedTrainingProgramName: linked?.program?.name ?? null,
     };

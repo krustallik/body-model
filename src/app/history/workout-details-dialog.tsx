@@ -82,7 +82,7 @@ export function WorkoutDetailsDialog({
       ) : (
         <div className={styles.workoutDetailList}>
           {day.workouts.map((workout) => {
-            const energy = workoutEnergyProvenanceChip(workout.activeEnergyKcal, locale);
+            const energy = workoutEnergyProvenanceChip(workout.activeEnergyKcal, locale, workout.energySource);
             const isStrength = workout.classification === "traditional-strength-training";
             const cardHref = isStrength
               ? (workout.linkedTrainingSessionId != null
@@ -115,6 +115,12 @@ export function WorkoutDetailsDialog({
                 –
                 {formatClock(workout.endAt, intlLocale)}
               </p>
+              {workout.diaryOnly && (
+                <p className={styles.provenanceChip} data-tone="info">
+                  <span>{uk ? "Без синхронізації Garmin" : "No Garmin sync"}</span>
+                  <small>{uk ? "Час узято зі щоденника тренування." : "Time comes from the training diary."}</small>
+                </p>
+              )}
               <dl className={styles.workoutDetailMeta}>
                 <div>
                   <dt>{uk ? "Тривалість" : "Duration"}</dt>

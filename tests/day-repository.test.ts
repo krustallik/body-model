@@ -71,6 +71,48 @@ describe("DailyMetricRepository", () => {
     }));
   });
 
+  it("adds an unmatched diary session to History with its shadow energy, without creating a device workout", async () => {
+    const { repository, client } = fixture();
+    const strengthDiarySession = {
+      findMany: vi.fn().mockResolvedValue([{
+        id: 4,
+        webStartedAt: new Date("2026-08-22T08:44:00.000Z"),
+        webEndedAt: new Date("2026-08-22T09:46:00.000Z"),
+        program: { name: "Push A" },
+        experimentalStrengthEnergyShadow: {
+          result: {
+            activeEnergyResolution: {
+              estimatedActiveKcal: 311,
+              source: "bodycast-diary-estimate",
+            },
+          },
+        },
+      }]),
+    };
+    Object.assign(client as object, { strengthDiarySession });
+
+    const [day] = await repository.list({ from: "2026-08-22", to: "2026-08-22", limit: 30, offset: 0 });
+
+    expect(strengthDiarySession.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ status: "COMPLETED", matchedWorkoutId: null }),
+    }));
+    expect(day?.workouts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: undefined,
+        type: "Traditional Strength Training",
+        startAt: "2026-08-22T08:44:00.000Z",
+        endAt: "2026-08-22T09:46:00.000Z",
+        durationMinutes: 62,
+        activeEnergyKcal: 311,
+        energySource: "shadow-diary-estimate",
+        diaryOnly: true,
+        linkedTrainingSessionId: 4,
+        linkedTrainingProgramName: "Push A",
+      }),
+    ]));
+    expect(day?.totalWorkoutMinutes).toBe(62);
+  });
+
   it("marks manually created rows without inventing metric values", async () => {
     const { repository, dailyHealthData } = fixture();
     await repository.create({ date: record.date, caloriesKcal: null, steps: 0 });

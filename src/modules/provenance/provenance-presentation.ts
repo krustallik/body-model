@@ -10,7 +10,7 @@ export type ProvenanceChip = {
   detail: string;
 };
 
-export type WorkoutEnergyProvenanceKind = "device-estimate" | "unavailable";
+export type WorkoutEnergyProvenanceKind = "device-estimate" | "shadow-diary-estimate" | "unavailable";
 
 type WorkoutScenarioPlan = {
   strengthDaysPerWeek: number;
@@ -31,9 +31,20 @@ export function workoutEnergyProvenanceKind(
 export function workoutEnergyProvenanceChip(
   activeEnergyKcal: number | null | undefined,
   locale: Locale = "en",
+  source?: WorkoutEnergyProvenanceKind,
 ): ProvenanceChip {
   const uk = locale === "uk";
-  const kind = workoutEnergyProvenanceKind(activeEnergyKcal);
+  const kind = source ?? workoutEnergyProvenanceKind(activeEnergyKcal);
+  if (kind === "shadow-diary-estimate") {
+    return {
+      key: "workout-energy",
+      tone: "estimated",
+      label: uk ? "Shadow-оцінка щоденника" : "Diary shadow estimate",
+      detail: uk
+        ? "Оцінка активних ккал з даних щоденника; Garmin-тренування для цієї сесії не синхронізовано."
+        : "Active-kcal estimate from diary evidence; no Garmin workout is synced for this session.",
+    };
+  }
   if (kind === "device-estimate") {
     return {
       key: "workout-energy",

@@ -959,3 +959,32 @@ model ExperimentalFfmRetentionShadow {
   @@unique([profileId, date])
   @@index([profileId, updatedAt])
 }
+
+/// Unified experimental daily state. This is shadow-only and never feeds
+/// production TDEE, forecast, goal planning, or canonical body composition.
+model UnifiedExperimentalPhysiologyState {
+  id                    Int      @id @default(autoincrement())
+  profileId             Int      @default(1)
+  date                  String   @db.VarChar(10)
+  modelRevision         String   @db.VarChar(120)
+  sourceFingerprint     String   @db.VarChar(64)
+  priorStateFingerprint String?  @db.VarChar(64)
+  resultFingerprint     String   @db.VarChar(64)
+  qualityStatus         String   @db.VarChar(30)
+  gapSeverity           String   @db.VarChar(30)
+  state                 Json
+  deltas                Json
+  uncertainty           Json
+  reconciliation        Json
+  energyLedger          Json
+  sourceLineage         Json
+  diagnostics           Json
+  createdAt             DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt             DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([profileId, date])
+  @@index([profileId, date])
+  @@index([profileId, modelRevision, updatedAt])
+  @@index([profileId, qualityStatus, date])
+  @@index([profileId, resultFingerprint])
+}

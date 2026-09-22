@@ -156,6 +156,99 @@ describe("experimental glycogen state v1", () => {
     expect(a.every((row) => row.state.relativeDeviationKg! <= 0)).toBe(true);
   });
 
+  it("keeps prior uncertainty correlated with a zero transition (A-C, J)", () => {
+    for (const prior of [
+      { point: -0.1, lower: -0.2, upper: 0 },
+      { point: -0.1, lower: -0.11, upper: -0.09 },
+      { point: -0.1, lower: -0.5, upper: 0 },
+    ]) {
+      const result = transitionExperimentalGlycogenStateV1({
+        prior: {
+          ...initialExperimentalGlycogenStateV1(),
+          relativeDeviationKg: prior.point,
+          relativeDeviationLowerKg: prior.lower,
+          relativeDeviationUpperKg: prior.upper,
+        },
+        exerciseDepletionKg: 0,
+        workoutFeedObserved: true,
+        carbsG: 0,
+      });
+      expect(result.state.relativeDeviationKg).toBe(prior.point);
+      expect(result.state.relativeDeviationLowerKg).toBe(prior.lower);
+      expect(result.state.relativeDeviationUpperKg).toBe(prior.upper);
+      expect(result.netGlycogenDeltaKg).toBe(0);
+      expect(result.netGlycogenDeltaLowerKg).toBe(0);
+      expect(result.netGlycogenDeltaUpperKg).toBe(0);
+      expect(result.glycogenAssociatedWater?.estimatedGlycogenWaterDeltaKg).toBe(0);
+      expect(result.glycogenAssociatedWater?.lowerBoundKg).toBe(0);
+      expect(result.glycogenAssociatedWater?.upperBoundKg).toBe(0);
+    }
+  });
+
+  it("keeps depletion/repletion branches dependent through caps (E-G, I, J)", () => {
+    const prior = {
+      ...initialExperimentalGlycogenStateV1(),
+      relativeDeviationKg: -0.1,
+      relativeDeviationLowerKg: -0.2,
+      relativeDeviationUpperKg: -0.05,
+    };
+    const depletionOnly = transitionExperimentalGlycogenStateV1({
+      prior,
+      exerciseDepletionKg: -0.1,
+      exerciseDepletionLowerKg: -0.2,
+      exerciseDepletionUpperKg: -0.05,
+      workoutFeedObserved: true,
+      carbsG: 0,
+    });
+    expect(depletionOnly.netGlycogenDeltaKg).toBe(-0.1);
+    expect(depletionOnly.netGlycogenDeltaLowerKg).toBe(-0.2);
+    expect(depletionOnly.netGlycogenDeltaUpperKg).toBe(-0.05);
+
+    const cappedRepletion = transitionExperimentalGlycogenStateV1({
+      prior,
+      exerciseDepletionKg: 0,
+      workoutFeedObserved: true,
+      carbsG: 10_000,
+    });
+    // The upper branch alone reaches zero debt. The transition range is still
+    // the range of corresponding branch deltas, not a cross-subtraction of
+    // state envelopes (which would have manufactured [-0.2, +0.2]).
+    expect(cappedRepletion.state.relativeDeviationKg).toBeCloseTo(-0.05);
+    expect(cappedRepletion.state.relativeDeviationLowerKg).toBeCloseTo(-0.19);
+    expect(cappedRepletion.state.relativeDeviationUpperKg).toBe(0);
+    expect(cappedRepletion.netGlycogenDeltaKg).toBeCloseTo(0.05);
+    expect(cappedRepletion.netGlycogenDeltaLowerKg).toBeCloseTo(0.01);
+    expect(cappedRepletion.netGlycogenDeltaUpperKg).toBeCloseTo(0.05);
+    expect(cappedRepletion.glycogenAssociatedWater?.estimatedGlycogenWaterDeltaKg).toBeCloseTo(0.175);
+    expect(cappedRepletion.glycogenAssociatedWater?.lowerBoundKg).toBeCloseTo(0.03);
+    expect(cappedRepletion.glycogenAssociatedWater?.upperBoundKg).toBeCloseTo(0.2);
+
+    const offsetThenCapped = transitionExperimentalGlycogenStateV1({
+      prior,
+      exerciseDepletionKg: -0.1,
+      exerciseDepletionLowerKg: -0.2,
+      exerciseDepletionUpperKg: -0.05,
+      workoutFeedObserved: true,
+      carbsG: 10_000,
+    });
+    expect(offsetThenCapped.state.relativeDeviationKg).toBeCloseTo(-0.15);
+    expect(offsetThenCapped.netGlycogenDeltaKg).toBeCloseTo(-0.05);
+    expect(offsetThenCapped.netGlycogenDeltaLowerKg).toBeCloseTo(-0.19);
+    expect(offsetThenCapped.netGlycogenDeltaUpperKg).toBeCloseTo(0.05);
+  });
+
+  it("does not invent a lower absolute-store clamp when depletion is extreme (H)", () => {
+    const result = transitionExperimentalGlycogenStateV1({
+      prior: initialExperimentalGlycogenStateV1(),
+      exerciseDepletionKg: -5,
+      workoutFeedObserved: true,
+      carbsG: 0,
+    });
+    expect(result.state.relativeDeviationKg).toBe(-5);
+    expect(result.netGlycogenDeltaKg).toBe(-5);
+    expect(result.state.absoluteGlycogenKg).toBeNull();
+  });
+
   it("treats missing carbs as unavailable repletion, not zero", () => {
     const result = transitionExperimentalGlycogenStateV1({
       prior: initialExperimentalGlycogenStateV1(),

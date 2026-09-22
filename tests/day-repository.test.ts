@@ -41,7 +41,14 @@ function fixture() {
       workout,
     })),
   } as unknown as PrismaClient;
-  return { repository: new DailyMetricRepository(client), dailyHealthData, workout, client };
+  const shadowReplayer = { replayFrom: vi.fn().mockResolvedValue(undefined) };
+  return {
+    repository: new DailyMetricRepository(client, shadowReplayer),
+    dailyHealthData,
+    workout,
+    client,
+    shadowReplayer,
+  };
 }
 
 describe("DailyMetricRepository", () => {
@@ -138,13 +145,14 @@ describe("DailyMetricRepository", () => {
   });
 
   it("updates only supplied metrics and preserves rawPayload", async () => {
-    const { repository, dailyHealthData } = fixture();
+    const { repository, dailyHealthData, shadowReplayer } = fixture();
     await repository.update(record.date, { weightKg: 88.5, proteinG: null });
     expect(dailyHealthData.update).toHaveBeenCalledWith(expect.objectContaining({
       where: { date: record.date },
       data: { weightKg: 88.5, proteinG: null },
     }));
     expect(dailyHealthData.update.mock.calls[0]?.[0].data).not.toHaveProperty("rawPayload");
+    expect(shadowReplayer.replayFrom).toHaveBeenCalledWith(record.date);
   });
 
   it("replaces explicit workouts while clearing legacy daily workout aggregates", async () => {
@@ -184,9 +192,10 @@ describe("DailyMetricRepository", () => {
   });
 
   it("deletes workouts explicitly before deleting the day row", async () => {
-    const { repository, dailyHealthData, workout } = fixture();
+    const { repository, dailyHealthData, workout, shadowReplayer } = fixture();
     await expect(repository.delete(record.date)).resolves.toBe(true);
     expect(workout.deleteMany).toHaveBeenCalledWith({ where: { dailyHealthDataId: 42 } });
     expect(dailyHealthData.delete).toHaveBeenCalledWith({ where: { id: 42 } });
+    expect(shadowReplayer.replayFrom).toHaveBeenCalledWith(record.date);
   });
 });

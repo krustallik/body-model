@@ -5,6 +5,8 @@ import { DEFAULT_TIME_ZONE, instantToLocalDateTime } from "@/model/time-zone";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { SleepRepository } from "@/modules/health/sleep.repository";
+import { recordExperimentalGlycogenStateShadow } from "@/modules/model-episodes/experimental-glycogen-state-shadow.service";
+import { rebuildAuthoritativeRelativeMuscleTrajectory } from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
 import { DuplicateDayError } from "./day.errors";
 import type {
   CreateDailyMetricInput,
@@ -50,6 +52,17 @@ const dailyMetricSelect = {
 } satisfies Prisma.DailyHealthDataSelect;
 
 type DailyMetricRecord = Prisma.DailyHealthDataGetPayload<{ select: typeof dailyMetricSelect }>;
+
+type DailyMetricShadowReplayer = {
+  replayFrom(date: string): Promise<void>;
+};
+
+const productionShadowReplayer: DailyMetricShadowReplayer = {
+  async replayFrom(date) {
+    await recordExperimentalGlycogenStateShadow({ date });
+    await rebuildAuthoritativeRelativeMuscleTrajectory({ fromDate: date });
+  },
+};
 
 type DiaryShadowWorkout = {
   type: "Traditional Strength Training";
@@ -155,7 +168,12 @@ function isPrismaError(error: unknown, code: string): boolean {
 }
 
 export class DailyMetricRepository {
-  constructor(private readonly client: PrismaClient = prisma) {}
+  constructor(
+    private readonly client: PrismaClient = prisma,
+    private readonly shadowReplayer: DailyMetricShadowReplayer | null = client === prisma
+      ? productionShadowReplayer
+      : null,
+  ) {}
 
   async list(query: DailyMetricListQuery): Promise<DailyMetricDto[]> {
     const records = await this.client.dailyHealthData.findMany({
@@ -321,6 +339,7 @@ export class DailyMetricRepository {
         },
         select: dailyMetricSelect,
       });
+      await this.shadowReplayer?.replayFrom(date);
       return toDto(record);
     } catch (error) {
       if (isPrismaError(error, "P2025")) return null;
@@ -331,7 +350,7 @@ export class DailyMetricRepository {
   async delete(date: string): Promise<boolean> {
     // Explicit application delete: remove workouts first so Restrict FK cannot
     // leave orphan intent — accidental raw day deletes without this path fail.
-    return this.client.$transaction(async (transaction) => {
+    const deleted = await this.client.$transaction(async (transaction) => {
       const day = await transaction.dailyHealthData.findUnique({
         where: { date },
         select: { id: true },
@@ -341,6 +360,8 @@ export class DailyMetricRepository {
       await transaction.dailyHealthData.delete({ where: { id: day.id } });
       return true;
     });
+    if (deleted) await this.shadowReplayer?.replayFrom(date);
+    return deleted;
   }
 }
 

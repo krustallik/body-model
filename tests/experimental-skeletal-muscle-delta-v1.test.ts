@@ -5,6 +5,8 @@ import {
   EXPERIMENTAL_MONTHLY_SM_RATE_KG_V1,
   EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_PROVENANCE,
   EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION,
+  engineeringEnergyScaleV1,
+  engineeringProteinScaleV1,
   estimateExperimentalSkeletalMuscleDeltaV1,
   rebuildExperimentalSkeletalMuscleDeltaTrajectoryV1,
 } from "@/model/physiology-v7/experimental-skeletal-muscle-delta-v1";
@@ -267,6 +269,75 @@ describe("experimental skeletal muscle delta v1", () => {
     expect(missingEnergy.unavailableReason).toBe("missing-energy-balance");
     expect(missingProtein.reasons).toContain("missing-protein-is-not-zero");
     expect(missingEnergy.reasons).toContain("missing-energy-balance-is-not-zero-or-neutral");
+    expect(missingProtein.support).toEqual({
+      status: "degraded",
+      reason: "required-input-unavailable",
+      authoritativeUse: "forbidden",
+    });
+  });
+
+  it("keeps engineering tier boundaries numerical-only and marks every available point diagnostic", () => {
+    const proteinCases = [
+      [0, 0.55],
+      [0.799999, 0.55],
+      [0.8, 0.7],
+      [1.199999, 0.7],
+      [1.2, 0.88],
+      [1.599999, 0.88],
+      [1.6, 1],
+      [2.5, 1],
+    ] as const;
+    for (const [proteinGPerKg, expectedScale] of proteinCases) {
+      const result = estimateExperimentalSkeletalMuscleDeltaV1({
+        ...baseTraining,
+        proteinGPerKg,
+      });
+      expect(engineeringProteinScaleV1(proteinGPerKg)).toBe(expectedScale);
+      expect(result.features.proteinScale).toBe(expectedScale);
+      expect(result.availability).toBe("available");
+      expect(result.estimatedSkeletalMuscleDeltaKg).not.toBeNull();
+      expect(result.support).toEqual({
+        status: "degraded",
+        reason: "no-defensible-personal-quantitative-supported-domain",
+        authoritativeUse: "forbidden",
+      });
+      expect(result.provenance).toBe("experimental-heuristic");
+    }
+
+    const energyCases = [
+      [-900, 0.45], [-750.001, 0.45], [-750, 0.45], [-749.999, 0.7],
+      [-250.001, 0.7], [-250, 0.7], [-249.999, 1], [0, 1], [249.999, 1],
+      [250, 1.08], [250.001, 1.08], [749.999, 1.08], [750, 1.12], [750.001, 1.12],
+    ] as const;
+    for (const [energyBalanceKcal, expectedScale] of energyCases) {
+      const result = estimateExperimentalSkeletalMuscleDeltaV1({
+        ...baseTraining,
+        energyBalanceKcal,
+      });
+      expect(engineeringEnergyScaleV1(energyBalanceKcal).pointScale).toBe(expectedScale);
+      expect(result.features.energyScale).toBe(expectedScale);
+      expect(result.support.status).toBe("degraded");
+      expect(result.support.authoritativeUse).toBe("forbidden");
+    }
+  });
+
+  it("keeps extreme observed inputs distinct from missingness without changing coefficients", () => {
+    const combined = [
+      { name: "low protein + maintenance", proteinGPerKg: 0.5, energyBalanceKcal: 0 },
+      { name: "adequate protein + severe deficit", proteinGPerKg: 1.6, energyBalanceKcal: -900 },
+      { name: "low protein + severe deficit", proteinGPerKg: 0, energyBalanceKcal: -900 },
+      { name: "low protein + surplus", proteinGPerKg: 0.5, energyBalanceKcal: 800 },
+      { name: "high protein + severe deficit", proteinGPerKg: 2.2, energyBalanceKcal: -900 },
+      { name: "qualified adequate engineering example", proteinGPerKg: 1.8, energyBalanceKcal: 0 },
+    ] as const;
+    for (const row of combined) {
+      const result = estimateExperimentalSkeletalMuscleDeltaV1({ ...baseTraining, ...row });
+      expect(result.availability, row.name).toBe("available");
+      expect(result.estimatedSkeletalMuscleDeltaKg, row.name).not.toBeNull();
+      expect(result.support.status, row.name).toBe("degraded");
+      expect(result.support.reason, row.name)
+        .toBe("no-defensible-personal-quantitative-supported-domain");
+    }
   });
 
   it("rejects measurement-role conversions and keeps absolute skeletalMuscleKg unavailable", () => {

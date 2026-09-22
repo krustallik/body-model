@@ -74,16 +74,6 @@ export async function syncHealthData(
   }
 
   try {
-    // Shadow-only multi-day glycogen state; never feeds TDEE/forecast.
-    await recordExperimentalGlycogenStateShadow({ date: date.date });
-  } catch (error) {
-    logEvent("warn", "experimental_glycogen_state_shadow_failed", {
-      date: date.date,
-      errorType: errorKind(error),
-    });
-  }
-
-  try {
     // Shadow-only relative skeletal-muscle delta; never feeds TDEE/forecast.
     await recordExperimentalSkeletalMuscleDeltaShadow({ date: date.date });
   } catch (error) {
@@ -122,6 +112,20 @@ export async function syncHealthData(
       errorType: errorKind(error),
     });
   }
+  }
+
+  // Glycogen is a stateful suffix. All same-batch source shadows above must be
+  // written before one chronological replay; replaying after each day would be
+  // redundant and makes a 30-day historical batch quadratic.
+  if (repository === healthSyncRepository && chronologicalDates.length > 0) {
+    try {
+      await recordExperimentalGlycogenStateShadow({ date: chronologicalDates[0]!.date });
+    } catch (error) {
+      logEvent("warn", "experimental_glycogen_state_shadow_failed", {
+        date: chronologicalDates[0]!.date,
+        errorType: errorKind(error),
+      });
+    }
   }
 
   // A health backfill can change exposure/coverage on an earlier date. Replay

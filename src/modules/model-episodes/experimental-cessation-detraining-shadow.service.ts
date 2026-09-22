@@ -6,7 +6,10 @@ import {
   transitionExperimentalCessationDetrainingV1,
   type ExperimentalCessationStateV1,
 } from "@/model/physiology-v7/experimental-cessation-detraining-v1";
-import type { ExperimentalTrainingExposureKindV1 } from "@/model/physiology-v7/experimental-skeletal-muscle-delta-v1";
+import {
+  EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION,
+  type ExperimentalTrainingExposureKindV1,
+} from "@/model/physiology-v7/experimental-skeletal-muscle-delta-v1";
 import { addCalendarDays } from "./model-calendar";
 import { recordExperimentalSkeletalMuscleDeltaShadow } from "./experimental-skeletal-muscle-delta-shadow.service";
 import {
@@ -137,11 +140,28 @@ export async function rebuildAuthoritativeRelativeMuscleTrajectory(input: {
   profileId?: number;
 }): Promise<void> {
   const profileId = input.profileId ?? 1;
+  // A corrected skeletal-muscle result contract invalidates every successor
+  // that used its cumulative state. Start at the earliest durable source once
+  // instead of allowing an old-revision predecessor to seed a new suffix.
+  const staleDelta = await prisma.experimentalSkeletalMuscleDeltaShadow.findFirst({
+    where: {
+      profileId,
+      modelRevision: { not: EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION },
+    },
+    orderBy: { date: "asc" },
+    select: { date: true },
+  });
+  const earliestSource = staleDelta === null ? null : await prisma.dailyHealthData.findFirst({
+    orderBy: { date: "asc" }, select: { date: true },
+  });
+  const fromDate = earliestSource?.date && earliestSource.date < input.fromDate
+    ? earliestSource.date
+    : input.fromDate;
   const last = await prisma.dailyHealthData.findFirst({
-    where: { date: { gte: input.fromDate } }, orderBy: { date: "desc" }, select: { date: true },
+    where: { date: { gte: fromDate } }, orderBy: { date: "desc" }, select: { date: true },
   });
   if (last === null) return;
-  for (let date = input.fromDate; date <= last.date; date = addCalendarDays(date, 1)) {
+  for (let date = fromDate; date <= last.date; date = addCalendarDays(date, 1)) {
     await recordExperimentalSkeletalMuscleDeltaShadow({ date, profileId });
     await recordExperimentalCessationDetrainingShadow({ date, profileId });
   }

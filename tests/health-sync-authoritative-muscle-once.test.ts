@@ -84,11 +84,9 @@ describe("health sync authoritative muscle suffix rebuild", () => {
     expect(rebuildAuthoritativeRelativeMuscleTrajectory).toHaveBeenCalledWith({
       fromDate: "2026-09-21",
     });
-    // Per-day shadows still run in calendar order after the transport shuffle.
-    expect(recordExperimentalGlycogenStateShadow.mock.calls.map((call) => call[0].date)).toEqual([
-      "2026-09-21",
-      "2026-09-22",
-      "2026-09-23",
-    ]);
+    // Glycogen is stateful, so its suffix replays once only after all same-day
+    // stepper/depletion source shadows have been written.
+    expect(recordExperimentalGlycogenStateShadow).toHaveBeenCalledTimes(1);
+    expect(recordExperimentalGlycogenStateShadow).toHaveBeenCalledWith({ date: "2026-09-21" });
   });
 });

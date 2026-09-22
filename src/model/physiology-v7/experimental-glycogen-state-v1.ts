@@ -31,7 +31,7 @@ import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
  * Not production TDEE / forecast / validated v7 semantics.
  */
 export const EXPERIMENTAL_GLYCOGEN_STATE_V1_REVISION =
-  "experimental-glycogen-state-v1" as const;
+  "experimental-glycogen-state-v2" as const;
 
 export const EXPERIMENTAL_GLYCOGEN_STATE_V1_PROVENANCE =
   "experimental-heuristic" as const;
@@ -292,10 +292,24 @@ export function transitionExperimentalGlycogenStateV1(input: {
     reasons.push("unresolved-exercise-depletion-not-applied-as-zero");
   }
 
+  // These are dependent trajectories, not independent state envelopes.  Keep
+  // the corresponding prior branch throughout the whole daily transition so a
+  // delta describes today's transition uncertainty rather than prior-state
+  // uncertainty re-subtracted from itself.
+  const depletionBranches = {
+    lower: Math.min(depletionLower, depletionUpper, depletionPoint),
+    point: depletionPoint,
+    upper: Math.max(depletionLower, depletionUpper, depletionPoint),
+  };
+  const afterDepBranches = {
+    lower: clampRelativeDebt(priorRelLower + depletionBranches.lower).relativeKg,
+    point: clampRelativeDebt(priorRel + depletionBranches.point).relativeKg,
+    upper: clampRelativeDebt(priorRelUpper + depletionBranches.upper).relativeKg,
+  };
   const afterDep = packRelativeState(
-    priorRel + depletionPoint,
-    priorRelLower + Math.min(depletionLower, depletionUpper, depletionPoint),
-    priorRelUpper + Math.max(depletionLower, depletionUpper, depletionPoint),
+    afterDepBranches.point,
+    afterDepBranches.lower,
+    afterDepBranches.upper,
   );
 
   let repletionCoverage: ExperimentalGlycogenRepletionCoverageV1;
@@ -305,7 +319,10 @@ export function transitionExperimentalGlycogenStateV1(input: {
   let repletionUpper = 0;
 
   // Remaining debt to relative baseline 0 — not literature / personal capacity.
-  const debtHeadroomKg = Math.max(0, -(afterDep.state.relativeDeviationKg ?? 0));
+  // The point headroom remains a feature for presentation. Each uncertainty
+  // branch below receives its own headroom; using this point headroom for every
+  // branch would break the dependency between a prior trajectory and its cap.
+  const debtHeadroomKg = Math.max(0, -afterDepBranches.point);
 
   if (input.carbsG === null) {
     repletionCoverage = "skipped-missing-carbohydrate";
@@ -316,35 +333,55 @@ export function transitionExperimentalGlycogenStateV1(input: {
     repletionCoverage = "skipped-unresolved-exercise";
     reasons.push("known-carbohydrate-does-not-resolve-unknown-exercise-net-change");
   } else {
-    repletionEstimate = estimateExperimentalGlycogenRepletionV1({
+    const repletionForBranch = (headroomKg: number) => estimateExperimentalGlycogenRepletionV1({
       carbsG: input.carbsG,
       proteinG: input.proteinG ?? null,
-      // Absolute store unavailable — do not pass a fabricated kg.
+      // Absolute store unavailable — each branch only receives the debt it
+      // actually carries; no fabricated shared personal capacity is used.
       currentGlycogenKg: null,
-      storeHeadroomKg: debtHeadroomKg,
+      storeHeadroomKg: Math.max(0, headroomKg),
       headroomSource: "explicit",
       activeEnergyKcal: input.activeEnergyKcal ?? null,
     });
-    if (repletionEstimate.availability !== "available"
-        || repletionEstimate.estimatedGlycogenDeltaKg === null) {
+    const pointRepletion = repletionForBranch(-afterDepBranches.point);
+    const lowerRepletion = repletionForBranch(-afterDepBranches.lower);
+    const upperRepletion = repletionForBranch(-afterDepBranches.upper);
+    // Keep the point estimate as the presentation/result object. Its lower
+    // and upper bounds are not used to cross-subtract state envelopes.
+    repletionEstimate = pointRepletion;
+    if (pointRepletion.availability !== "available"
+        || pointRepletion.estimatedGlycogenDeltaKg === null
+        || lowerRepletion.availability !== "available"
+        || lowerRepletion.lowerBoundKg === null
+        || upperRepletion.availability !== "available"
+        || upperRepletion.upperBoundKg === null) {
       repletionCoverage = "skipped-unavailable-repletion";
       reasons.push("repletion-unavailable-not-applied-as-zero");
     } else {
       repletionCoverage = "applied";
-      repletionPoint = repletionEstimate.estimatedGlycogenDeltaKg;
-      repletionLower = repletionEstimate.lowerBoundKg ?? repletionPoint;
-      repletionUpper = repletionEstimate.upperBoundKg ?? repletionPoint;
+      repletionPoint = pointRepletion.estimatedGlycogenDeltaKg;
+      repletionLower = lowerRepletion.lowerBoundKg;
+      repletionUpper = upperRepletion.upperBoundKg;
       reasons.push("carb-repletion-applied-after-depletion");
       reasons.push("repletion-capped-by-remaining-relative-debt-to-zero");
+      reasons.push("uncertainty-branches-use-corresponding-relative-debt-headroom");
     }
   }
 
+  const repletionBranches = {
+    lower: Math.min(repletionLower, repletionUpper, repletionPoint),
+    point: repletionPoint,
+    upper: Math.max(repletionLower, repletionUpper, repletionPoint),
+  };
+  const afterRepBranches = {
+    lower: clampRelativeDebt(afterDepBranches.lower + repletionBranches.lower).relativeKg,
+    point: clampRelativeDebt(afterDepBranches.point + repletionBranches.point).relativeKg,
+    upper: clampRelativeDebt(afterDepBranches.upper + repletionBranches.upper).relativeKg,
+  };
   const afterRep = packRelativeState(
-    afterDep.state.relativeDeviationKg! + repletionPoint,
-    (afterDep.state.relativeDeviationLowerKg ?? afterDep.state.relativeDeviationKg!)
-      + Math.min(repletionLower, repletionUpper, repletionPoint),
-    (afterDep.state.relativeDeviationUpperKg ?? afterDep.state.relativeDeviationKg!)
-      + Math.max(repletionLower, repletionUpper, repletionPoint),
+    afterRepBranches.point,
+    afterRepBranches.lower,
+    afterRepBranches.upper,
   );
   const debtCeilingApplied = afterDep.debtCeilingApplied || afterRep.debtCeilingApplied;
   if (debtCeilingApplied) {
@@ -353,11 +390,9 @@ export function transitionExperimentalGlycogenStateV1(input: {
 
   const completeCoverage = exerciseCoverage !== "unresolved-missing-workout-feed"
     && repletionCoverage === "applied";
-  const netPoint = afterRep.state.relativeDeviationKg! - priorRel;
-  const netLower = (afterRep.state.relativeDeviationLowerKg ?? afterRep.state.relativeDeviationKg!)
-    - priorRelUpper;
-  const netUpper = (afterRep.state.relativeDeviationUpperKg ?? afterRep.state.relativeDeviationKg!)
-    - priorRelLower;
+  const netPoint = afterRepBranches.point - priorRel;
+  const netLower = afterRepBranches.lower - priorRelLower;
+  const netUpper = afterRepBranches.upper - priorRelUpper;
   const orderedNetLower = Math.min(netLower, netPoint, netUpper);
   const orderedNetUpper = Math.max(netLower, netPoint, netUpper);
 

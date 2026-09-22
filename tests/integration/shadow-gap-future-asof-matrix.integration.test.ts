@@ -1,11 +1,13 @@
 /**
- * PostgreSQL fixture matrix A–I for shadow historical as-of / rebuild contracts.
+ * PostgreSQL fixture matrix A–K for shadow historical as-of / rebuild contracts.
  * Exercises real Prisma persistence + shadow services (not pure-function doubles).
  */
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { estimateExperimentalBodyRecompositionV1 } from "@/model/physiology-v7/experimental-body-recomposition-v1";
+import { EXPERIMENTAL_GLYCOGEN_STATE_V1_REVISION } from "@/model/physiology-v7/experimental-glycogen-state-v1";
 import { rebuildExperimentalGlycogenStateShadows } from "@/modules/model-episodes/experimental-glycogen-state-shadow.service";
+import { DailyMetricRepository } from "@/modules/days/day.repository";
 import {
   rebuildAuthoritativeRelativeMuscleTrajectory,
   recordExperimentalCessationDetrainingShadow,
@@ -400,8 +402,18 @@ async function seedEpisodeForFat(dates: readonly string[]) {
   return episode.id;
 }
 
-describe("PostgreSQL shadow gap future-asof matrix A–I", () => {
+describe("PostgreSQL shadow gap future-asof matrix A–K", () => {
   beforeAll(async () => {
+    await prisma.profile.upsert({
+      where: { id: profileId },
+      create: {
+        id: profileId,
+        sex: "male",
+        dateOfBirth: new Date("1990-01-01T00:00:00.000Z"),
+        heightCm: 180,
+      },
+      update: {},
+    });
     await cleanAll();
   });
   afterAll(async () => {
@@ -558,6 +570,93 @@ describe("PostgreSQL shadow gap future-asof matrix A–I", () => {
     expect(after.sourceFingerprint).toBe(before.sourceFingerprint);
     expect(after.result).toEqual(before.result);
   });
+
+  it("J — replaces an old glycogen revision from durable history and persists source lineage", async () => {
+    await cleanAll();
+    const revisionScenarioDates = [D1, D2, D3];
+    for (const date of revisionScenarioDates) {
+      await ensureHealth(date, {
+        carbsG: 180,
+        proteinG: 150,
+        activeEnergyKcal: 400,
+        workoutFeedObserved: true,
+      });
+    }
+    await rebuildExperimentalGlycogenStateShadows({ profileId, fromDate: D1, toDate: D3 });
+    const baseline = await prisma.experimentalGlycogenStateShadow.findMany({
+      where: { profileId, date: { in: revisionScenarioDates } }, orderBy: { date: "asc" },
+    });
+    expect(baseline).toHaveLength(3);
+    const corruptedD1 = baseline[0]!;
+    const corruptResult = structuredClone(corruptedD1.result) as {
+      state?: { relativeDeviationKg?: number | null };
+    };
+    corruptResult.state = { ...corruptResult.state, relativeDeviationKg: -999 };
+    await prisma.experimentalGlycogenStateShadow.update({
+      where: { profileId_date: { profileId, date: D1 } },
+      data: { modelRevision: "experimental-glycogen-state-v1", result: corruptResult },
+    });
+
+    // Requesting only the later suffix must still detect the obsolete row and
+    // restart from the earliest durable source rather than use it as prior.
+    await rebuildExperimentalGlycogenStateShadows({ profileId, fromDate: D3, toDate: D3 });
+    const repaired = await prisma.experimentalGlycogenStateShadow.findMany({
+      where: { profileId, date: { in: revisionScenarioDates } }, orderBy: { date: "asc" },
+    });
+    expect(repaired).toHaveLength(3);
+    expect(repaired.every((row) => row.modelRevision === EXPERIMENTAL_GLYCOGEN_STATE_V1_REVISION)).toBe(true);
+    expect((repaired[0]!.result as { state?: { relativeDeviationKg?: number } }).state?.relativeDeviationKg)
+      .not.toBe(-999);
+    expect(repaired.map((row) => row.sourceFingerprint))
+      .toEqual(baseline.map((row) => row.sourceFingerprint));
+    const lineage = repaired[1]!.result as {
+      sourceLineage?: { dailyHealthData?: { id?: number; updatedAt?: string } | null };
+    };
+    expect(lineage.sourceLineage?.dailyHealthData?.id).toBeTypeOf("number");
+    expect(lineage.sourceLineage?.dailyHealthData?.updatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+    expect(await prisma.experimentalGlycogenStateShadow.count({
+      where: { profileId, date: { in: revisionScenarioDates } },
+    })).toBe(3);
+  }, 30_000);
+
+  it("K — History day edits and deletes replay dependent shadow suffixes", async () => {
+    await cleanAll();
+    for (const date of [D1, D2, D3]) {
+      await ensureHealth(date, {
+        carbsG: 180,
+        proteinG: 150,
+        activeEnergyKcal: 400,
+        workoutFeedObserved: true,
+      });
+    }
+    await rebuildExperimentalGlycogenStateShadows({ profileId, fromDate: D1, toDate: D3 });
+    await rebuildAuthoritativeRelativeMuscleTrajectory({ profileId, fromDate: D1 });
+    const before = await prisma.experimentalGlycogenStateShadow.findUniqueOrThrow({
+      where: { profileId_date: { profileId, date: D2 } },
+    });
+
+    const days = new DailyMetricRepository();
+    await days.update(D2, { carbsG: 175 });
+    const afterEdit = await prisma.experimentalGlycogenStateShadow.findUniqueOrThrow({
+      where: { profileId_date: { profileId, date: D2 } },
+    });
+    expect(afterEdit.sourceFingerprint).not.toBe(before.sourceFingerprint);
+
+    await expect(days.delete(D2)).resolves.toBe(true);
+    const afterDelete = await prisma.experimentalGlycogenStateShadow.findUniqueOrThrow({
+      where: { profileId_date: { profileId, date: D2 } },
+    });
+    expect((afterDelete.result as {
+      sourceLineage?: { dailyHealthData?: unknown };
+    }).sourceLineage?.dailyHealthData).toBeNull();
+    expect(await prisma.experimentalGlycogenStateShadow.count({
+      where: { profileId, date: { in: [D1, D2, D3] } },
+    })).toBe(3);
+    expect(await prisma.experimentalSkeletalMuscleDeltaShadow.count({
+      where: { profileId, date: { in: [D1, D2, D3] } },
+    })).toBe(3);
+  }, 30_000);
 
   it("E — future HR does not alter D1 energy; sleep/context DB consumers N/A where pure-only", async () => {
     await cleanAll();

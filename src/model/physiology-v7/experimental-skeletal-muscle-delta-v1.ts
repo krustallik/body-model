@@ -11,7 +11,7 @@ import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
  * Not production TDEE / forecast / validated v7 semantics / GREEN validation.
  */
 export const EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION =
-  "experimental-skeletal-muscle-delta-v1" as const;
+  "experimental-skeletal-muscle-delta-v2" as const;
 
 export const EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_PROVENANCE =
   "experimental-heuristic" as const;
@@ -77,6 +77,26 @@ export type ExperimentalSkeletalMuscleDeltaUnavailableReasonV1 =
   | "missing-energy-balance"
   | "non-finite-inputs";
 
+/**
+ * Quantitative applicability is intentionally stricter than input availability.
+ * The research contract supports directional context, but does not define a
+ * defensible personal kg/day domain for this engineering heuristic.  Retain
+ * the diagnostic point for comparison, while making authoritative use
+ * explicitly forbidden until such a domain exists.
+ */
+export type ExperimentalSkeletalMuscleDeltaSupportStatusV1 =
+  | "supported"
+  | "degraded"
+  | "outside-supported-domain";
+
+export type ExperimentalSkeletalMuscleDeltaSupportV1 = {
+  status: ExperimentalSkeletalMuscleDeltaSupportStatusV1;
+  reason:
+    | "no-defensible-personal-quantitative-supported-domain"
+    | "required-input-unavailable";
+  authoritativeUse: "forbidden";
+};
+
 export type ExperimentalSkeletalMuscleDeltaFeaturesV1 = {
   /** Training response contribution only; never an authoritative total. */
   trajectoryRole: "diagnostic-training-contribution";
@@ -112,6 +132,7 @@ export type ExperimentalSkeletalMuscleDeltaResultV1 = {
   provenance: typeof EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_PROVENANCE;
   supportedDomain: "relative-skeletal-muscle-delta-shadow-only";
   availability: ExperimentalSkeletalMuscleDeltaAvailabilityV1;
+  support: ExperimentalSkeletalMuscleDeltaSupportV1;
   estimatedSkeletalMuscleDeltaKg: number | null;
   lowerBoundKg: number | null;
   upperBoundKg: number | null;
@@ -124,6 +145,19 @@ export type ExperimentalSkeletalMuscleDeltaResultV1 = {
   reasons: string[];
   fingerprint: string;
 };
+
+function diagnosticOnlySupport(
+  reason: ExperimentalSkeletalMuscleDeltaSupportV1["reason"],
+): ExperimentalSkeletalMuscleDeltaSupportV1 {
+  return {
+    // The modifier boundaries are engineering tiers, not research-established
+    // applicability cutoffs. Therefore no numeric output currently claims the
+    // "supported" state and no arbitrary threshold is relabelled as outside.
+    status: "degraded",
+    reason,
+    authoritativeUse: "forbidden",
+  };
+}
 
 function rejectedConversions(): ExperimentalSkeletalMuscleDeltaFeaturesV1["rejectedConversions"] {
   return [
@@ -338,6 +372,7 @@ export function estimateExperimentalSkeletalMuscleDeltaV1(input: {
       provenance: EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_PROVENANCE,
       supportedDomain: "relative-skeletal-muscle-delta-shadow-only",
       availability: "available",
+      support: diagnosticOnlySupport("no-defensible-personal-quantitative-supported-domain"),
       estimatedSkeletalMuscleDeltaKg: zero,
       lowerBoundKg: zero,
       upperBoundKg: zero,
@@ -398,6 +433,7 @@ export function estimateExperimentalSkeletalMuscleDeltaV1(input: {
     provenance: EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_PROVENANCE,
     supportedDomain: "relative-skeletal-muscle-delta-shadow-only",
     availability: "available",
+    support: diagnosticOnlySupport("no-defensible-personal-quantitative-supported-domain"),
     estimatedSkeletalMuscleDeltaKg: orderedPoint,
     lowerBoundKg: orderedLower,
     upperBoundKg: orderedUpper,
@@ -433,6 +469,7 @@ function unavailable(
     provenance: EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_PROVENANCE,
     supportedDomain: "relative-skeletal-muscle-delta-shadow-only",
     availability: "unavailable",
+    support: diagnosticOnlySupport("required-input-unavailable"),
     estimatedSkeletalMuscleDeltaKg: null,
     lowerBoundKg: null,
     upperBoundKg: null,

@@ -72,6 +72,7 @@ import {
 import {
   recordExperimentalSkeletalMuscleDeltaShadowForSession,
 } from "@/modules/model-episodes/experimental-skeletal-muscle-delta-shadow.service";
+import { recordExperimentalGlycogenStateShadow } from "@/modules/model-episodes/experimental-glycogen-state-shadow.service";
 import {
   recordExperimentalLocalHypertrophyResponseShadowForSession,
 } from "@/modules/model-episodes/experimental-local-hypertrophy-response-shadow.service";
@@ -111,6 +112,10 @@ async function recordExperimentalStrengthShadows(input: {
     ?? input.session.createdAt).slice(0, 10);
   await recordExperimentalStrengthEnergyShadow(input);
   await recordExperimentalStrengthGlycogenDemandShadow(input);
+  // State is replayed from the edited session's calendar date through the
+  // durable suffix, so a historical diary/workout correction cannot leave
+  // dependent glycogen rows current-looking but stale.
+  await recordExperimentalGlycogenStateShadow({ date: sourceDate, profileId: input.profileId });
   await recordExperimentalTransientExerciseWaterShadow(input);
   await recordExperimentalSkeletalMuscleDeltaShadowForSession({
     sessionId: input.session.id,
@@ -138,6 +143,10 @@ async function recordExperimentalStrengthShadowsBySessionId(input: {
   const session = await new TrainingRepository(prisma).getSession(input.sessionId, input.profileId);
   await recordExperimentalStrengthEnergyShadowBySessionId(input);
   await recordExperimentalStrengthGlycogenDemandShadowBySessionId(input);
+  if (session !== null) {
+    const sourceDate = (session.matchedWorkout?.startAt ?? session.webStartedAt ?? session.createdAt).slice(0, 10);
+    await recordExperimentalGlycogenStateShadow({ date: sourceDate, profileId: input.profileId });
+  }
   await recordExperimentalTransientExerciseWaterShadowBySessionId(input);
   await recordExperimentalSkeletalMuscleDeltaShadowForSession(input);
   await recordExperimentalCessationDetrainingShadowForSession(input);

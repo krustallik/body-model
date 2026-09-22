@@ -131,6 +131,7 @@ export type ForecastInitialParticle = {
 export type ForecastInitialStateQuality =
   | "deterministic"
   | "recovered"
+  | "bootstrap"
   | "degraded"
   | "awaiting"
   | "degenerate";
@@ -176,7 +177,13 @@ export type ForecastResult = {
   sourceFingerprint: string;
   scenarioFingerprint: string;
   initialStateQuality: ForecastInitialStateQuality;
-  experimentalQuality?: "standard" | "limited-history" | "degraded" | "unavailable";
+  experimentalQuality?: "standard" | "limited-history" | "bootstrap" | "degraded" | "unavailable";
+  experimentalProvenance?: {
+    source: "observed-history" | "engineering-fallback" | "profile-bootstrap" | "unavailable";
+    anchor: "observed-weight" | "profile-weight" | "none";
+    reasons: string[];
+    improvements: string[];
+  };
   experimentalCurrent?: {
     modeledWeightKg: number | null;
     fatMassKg: number | null;

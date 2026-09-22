@@ -1,11 +1,12 @@
 import { HelpTip } from "@/components/help-tip";
 
-export type ModelStateSource = "deterministic" | "recovered" | "degraded" | "awaiting" | "degenerate";
+export type ModelStateSource = "deterministic" | "recovered" | "bootstrap" | "degraded" | "awaiting" | "degenerate";
 
 const copy = {
   uk: {
     deterministic: ["прямий розрахунок", "Історія без критичного розриву: поточний стан послідовно розраховано зі збережених даних."],
     recovered: ["відновлена оцінка", "В історії був розрив. Модель оцінила стан після нього за даними до і після пропуску; даних вистачило для прийнятної оцінки."],
+    bootstrap: ["стартова оцінка", "Повну історію ще не пораховано. Прогноз стартує від останньої ваги та профільних припущень і має ширший інженерний діапазон."],
     degraded: ["наближена оцінка", "В історії був розрив, а спостережень навколо нього замало або вони недостатньо узгоджені. Модель відновила можливий стан, але впевненість нижча, тому прогноз позначено як обмежений."],
     awaiting: ["очікує даних", "Після розриву ще замало нових спостережень, щоб відновити поточний стан. Прогноз поки недоступний."],
     degenerate: ["ненадійна оцінка", "Спроба відновити стан після розриву не дала достатньо надійного результату. Потрібно доповнити історію або додати нові зважування."],
@@ -13,6 +14,7 @@ const copy = {
   en: {
     deterministic: ["direct calculation", "There is no critical break in history, so the current state was calculated sequentially from saved data."],
     recovered: ["recovered estimate", "There was a break in history. The model estimated the state after it from data before and after the gap, with enough evidence for a usable estimate."],
+    bootstrap: ["bootstrap estimate", "The full history is not modeled yet. The forecast starts from the latest weight and profile assumptions with a wider engineering range."],
     degraded: ["rough estimate", "There was a break in history and the observations around it are sparse or inconsistent. The model recovered a possible state with lower confidence, so the forecast is marked as limited."],
     awaiting: ["waiting for data", "There are not enough new observations after the gap to recover the current state. Forecasting is not available yet."],
     degenerate: ["unreliable estimate", "The recovery attempt after the gap did not produce a sufficiently reliable result. Complete the history or add new weigh-ins."],

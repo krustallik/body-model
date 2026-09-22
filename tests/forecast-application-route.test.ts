@@ -14,7 +14,7 @@ vi.mock("@/modules/model-episodes/model-episode.service", () => ({
 }));
 
 import { POST } from "@/app/api/forecast/route";
-import { ForecastScenarioEvidenceError } from "@/modules/model-forecast/model-forecast.errors";
+import { ForecastScenarioEvidenceError, ForecastUnavailableError } from "@/modules/model-forecast/model-forecast.errors";
 import { NoActiveModelEpisodeError } from "@/modules/model-episodes/model-episode.errors";
 
 const validBody = { horizonDays: 7, scenario: { mode: "recent-behavior" } };
@@ -55,6 +55,13 @@ describe("forecast application route", () => {
     const response = await POST(request(validBody));
     expect(response.status).toBe(422);
     expect(await response.json()).toEqual({ error: "insufficient_scenario_evidence", message: "Need seven reliable donor days" });
+  });
+
+  it("returns an actionable bootstrap CTA when no weight exists", async () => {
+    services.forecastModelEpisode.mockRejectedValue(new ForecastUnavailableError("missing-weight"));
+    const response = await POST(request(validBody));
+    expect(response.status).toBe(422);
+    expect(await response.json()).toMatchObject({ error: "forecast_unavailable", reason: "missing-weight" });
   });
 
   it("does not leak unexpected exceptions", async () => {

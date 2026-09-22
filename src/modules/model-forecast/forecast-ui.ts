@@ -208,6 +208,12 @@ export function blockedPresentation(result: ForecastBlockedResult, locale: Local
 
 export function qualityPresentation(result: ForecastResult, calibrationStatus?: string, locale: Locale = "en"): QualityPresentation {
   const uk = locale === "uk";
+  if (result.experimentalQuality === "bootstrap") {
+    return { tone: "warning", title: uk ? "Орієнтовний стартовий прогноз" : "Provisional starter forecast", detail: uk ? "Повна історія ще не порахована. Прогноз стартує від останньої ваги й профільних припущень, тому діапазон ширший." : "The full history is not modeled yet. This forecast starts from your latest weight and profile assumptions, so the range is wider." };
+  }
+  if (result.experimentalQuality === "limited-history") {
+    return { tone: "warning", title: uk ? "Прогноз з обмеженою історією" : "Forecast with limited history", detail: uk ? "Прогноз уже доступний, але донорів мало — діапазон свідомо ширший." : "The forecast is available, but there are few history donors, so the range is intentionally wider." };
+  }
   if (result.diagnostics.numericalQuality.classification === "limited-long-horizon") {
     return { tone: "warning", title: uk ? "Далекий прогноз менш точний" : "Far-ahead forecast is less precise", detail: uk ? "Загальний напрям ще корисний, але діапазон на довгий строк ширший і менш стабільний." : "The overall direction is still useful, but the range farther out is wider and less stable." };
   }
@@ -349,10 +355,20 @@ export function forecastReadiness(input: {
   successfulForecast?: boolean;
   blocked?: boolean;
   scenarioEvidenceMissing?: boolean;
+  forecastQuality?: ForecastResult["experimentalQuality"];
 }): ForecastReadiness {
   const uk = input.locale === "uk";
   const status = input.status;
-  if (!status) return {
+  if (!status) {
+    if (input.successfulForecast) return {
+      score: input.forecastQuality === "bootstrap" ? 25 : 40,
+      level: "low",
+      canForecast: true,
+      title: uk ? "Прогноз можна побудувати" : "Forecast can run",
+      detail: uk ? "Поточний результат побудовано від доступної ваги; модель ще не має повної збереженої історії." : "The current result uses the available weight; the full persisted history is not modeled yet.",
+      factors: uk ? ["Історія моделі ще не завершена — діапазон ширший.", "Додаткові дні харчування та ваги зроблять прогноз точнішим."] : ["The model history is not complete yet, so the range is wider.", "More food and weight days will make the forecast more precise."],
+    };
+    return {
     score: null, level: "unavailable", canForecast: false,
     title: uk ? "Прогноз поки недоступний" : "Forecast is not available yet",
     detail: uk
@@ -368,6 +384,7 @@ export function forecastReadiness(input: {
       "At least one weigh-in with body-fat % from the latest 14 days is required.",
     ],
   };
+  }
 
   const modeledRatio = Math.min(status.daysModeled / 42, 1);
   const nutritionRatio = status.daysModeled === 0 ? 0 : Math.min(status.observedNutritionDays / status.daysModeled, 1);
@@ -377,7 +394,7 @@ export function forecastReadiness(input: {
   let score = Math.round(modeledRatio * 25 + nutritionRatio * 25 + (hasCurrentState ? 20 : 0) + (continuityResolved ? 15 : 0) + (personalized ? 15 : 6));
   const insufficientDonors = input.mode === "recent-behavior" && input.donorDayCount !== undefined && input.donorDayCount < 14;
   if (insufficientDonors) score = Math.min(score, 49);
-  const canForecast = Boolean(input.successfulForecast || (hasCurrentState && continuityResolved && !input.blocked && !input.scenarioEvidenceMissing && !insufficientDonors));
+  const canForecast = Boolean(input.successfulForecast || (hasCurrentState && continuityResolved && !input.blocked && !input.scenarioEvidenceMissing));
   const level = score >= 80 ? "high" : score >= 55 ? "medium" : "low";
   const factors: string[] = [];
   if (status.daysModeled === 0) {
@@ -396,7 +413,9 @@ export function forecastReadiness(input: {
       : (uk ? `Є ${status.unresolvedDayCount} днів з дірками, які модель ще не закрила.` : `${status.unresolvedDayCount} days still have holes the model has not closed.`),
   );
   if (input.mode === "recent-behavior" && input.donorDayCount !== undefined) factors.push(
-    uk ? `${input.donorDayCount} днів з вашими звичками; для сценарію «Як останнім часом» потрібно щонайменше 14.` : `${input.donorDayCount} days of your usual habits; “As lately” needs at least 14.`,
+    input.donorDayCount < 14
+      ? (uk ? `${input.donorDayCount} днів зі звичками; для повнішої персоналізації потрібно щонайменше 14, але запуск не блокується — діапазон розширено.` : `${input.donorDayCount} behavior days; full personalization needs at least 14, but forecasting is not blocked and the range is widened.`)
+      : (uk ? `${input.donorDayCount} днів з вашими звичками.` : `${input.donorDayCount} days of your usual habits.`),
   );
   return {
     score, level, canForecast,

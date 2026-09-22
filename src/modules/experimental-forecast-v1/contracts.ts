@@ -9,6 +9,7 @@ export const EXPERIMENTAL_FORECAST_V1_REVISION = "experimental-forecast-v1" as c
 export type ExperimentalForecastQuality =
   | "standard"
   | "limited-history"
+  | "bootstrap"
   | "degraded"
   | "unavailable";
 
@@ -99,7 +100,7 @@ export type ExperimentalForecastDate = {
 };
 
 export type ExperimentalForecastResult = {
-  status: "ok" | "limited-history" | "degraded" | "unavailable";
+  status: "ok" | "limited-history" | "bootstrap" | "degraded" | "unavailable";
   forecastRevision: typeof EXPERIMENTAL_FORECAST_V1_REVISION;
   horizonDays: number;
   anchorDate: string;
@@ -132,5 +133,11 @@ export type ExperimentalForecastResult = {
       missingAssumptions: boolean;
     };
     notes: string[];
+  };
+  provenance?: {
+    source: "observed-history" | "engineering-fallback" | "profile-bootstrap" | "unavailable";
+    anchor: "observed-weight" | "profile-weight" | "none";
+    reasons: string[];
+    improvements: string[];
   };
 };

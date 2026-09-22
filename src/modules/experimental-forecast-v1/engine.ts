@@ -213,7 +213,7 @@ export function runExperimentalForecast(input: ExperimentalForecastEngineInput):
     const expectedWeight = result.calculations.endWeightKg + transientChange;
     const modeledChange = expectedWeight - (input.initial.anchorWeightKg ?? result.calculations.startWeightKg);
     const uncertainty = resolvedConfig.horizonUncertaintyPerDayKg * Math.sqrt(dayIndex + 1)
-      + (input.initial.quality === "limited-history" ? 0.5 : 0);
+      + (input.initial.quality === "limited-history" ? 0.5 : input.initial.quality === "bootstrap" ? 1 : 0);
     const fat = range(state.fatMassKg, uncertainty * 0.3);
     const slowNonFat = range(state.leanTissueKg, uncertainty * 0.2);
     const glycogen = range(state.glycogenKg, uncertainty * 0.2);
@@ -240,14 +240,15 @@ export function runExperimentalForecast(input: ExperimentalForecastEngineInput):
       quality: input.initial.quality,
       uncertaintyReasons: [
         ...(input.initial.uncertaintyReasons),
-        ...(input.initial.quality === "limited-history" ? ["limited-history"] : []),
+        ...(input.initial.quality === "limited-history" ? ["limited-history"] : input.initial.quality === "bootstrap" ? ["profile-bootstrap"] : []),
         "horizon-engineering-range",
       ],
     });
   }
   const limited = input.initial.quality === "limited-history";
+  const bootstrap = input.initial.quality === "bootstrap";
   return {
-    status: limited ? "limited-history" : input.initial.quality === "degraded" ? "degraded" : "ok",
+    status: bootstrap ? "bootstrap" : limited ? "limited-history" : input.initial.quality === "degraded" ? "degraded" : "ok",
     forecastRevision: EXPERIMENTAL_FORECAST_V1_REVISION,
     horizonDays: input.horizonDays,
     anchorDate: input.initial.anchorDate,
@@ -277,7 +278,7 @@ export function runExperimentalForecast(input: ExperimentalForecastEngineInput):
         futureInputs: true,
         model: true,
         horizon: true,
-        missingAssumptions: limited,
+        missingAssumptions: limited || bootstrap,
       },
       notes: ["engineering ranges are not confidence intervals", "future scenario inputs are assumptions, never observations", "relative muscle and unexplained residual are excluded from mass"],
     },

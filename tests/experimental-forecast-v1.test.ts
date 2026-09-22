@@ -92,6 +92,26 @@ describe("ExperimentalForecastV1", () => {
       .toBeGreaterThan(0.5);
   });
 
+  it("supports a forecast-only bootstrap quality without changing persisted state", () => {
+    const bootstrap = runExperimentalForecast({
+      initial: { ...initial, quality: "bootstrap", eligibleDays: 2, requestedWindowDays: 28 },
+      simulatorState: episode.initialState,
+      parameters: episode.simulatorParameters,
+      personalization: { personalOffsetKcalPerDay: 0, activityCalibration: 1 },
+      ecfPolicy: "hold-ecf",
+      baseline,
+      scenario: { mode: "maintain-current" },
+      startDate: "2026-08-23",
+      horizonDays: 30,
+      seed: 1,
+    });
+    expect(bootstrap.status).toBe("bootstrap");
+    expect(bootstrap.initialStateQuality).toBe("bootstrap");
+    expect(bootstrap.diagnostics.uncertaintySources.missingAssumptions).toBe(true);
+    expect(bootstrap.dates[29]!.weightChangeFromAnchorKg.upper - bootstrap.dates[29]!.weightChangeFromAnchorKg.lower)
+      .toBeGreaterThan(1);
+  });
+
   it("applies rest, strength, stepper, and combined future days without duplicate activity doses", () => {
     const strength = createForecastWorkoutEvent({ type: "Traditional Strength Training", durationMinutes: 45 });
     const stepper = createForecastWorkoutEvent({ type: "Stair Climbing", durationMinutes: 20 });

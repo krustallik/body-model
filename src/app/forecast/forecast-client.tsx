@@ -95,10 +95,12 @@ async function forecastError(response: Response, locale: Locale): Promise<{
     }
     const messages: Record<string, string> = locale === "uk" ? {
       no_active_episode: "Активної моделі ще немає. Запустіть модель тут, якщо вага й калорії вже є в історії.",
-      insufficient_scenario_evidence: "Для сценарію «Як останнім часом» потрібно щонайменше 14 повних днів з вашими звичками. Оберіть план або додайте дані.",
+      forecast_unavailable: body.reason === "missing-weight" ? "Додайте хоча б одне вимірювання ваги — тоді BodyCast зможе побудувати стартовий прогноз." : "Заповніть профіль, щоб BodyCast міг побудувати стартовий прогноз.",
+      insufficient_scenario_evidence: "Історії мало, тому діапазон прогнозу буде ширшим. Оберіть план або додайте дані, щоб зробити його точнішим.",
       recovery_required: "Спочатку перерахуйте модель — вона сама оцінить стан після пропуску.",
     } : {
       no_active_episode: "There is no active model yet. Start the model here if weight and calories are already in your history.",
+      forecast_unavailable: body.reason === "missing-weight" ? "Add at least one weight measurement so BodyCast can build a starter forecast." : "Complete your profile so BodyCast can build a starter forecast.",
       recovery_required: "Recalculate the model first — it will estimate state after the data gap automatically.",
     };
     return {
@@ -146,8 +148,14 @@ export function ForecastClient() {
   const [knownDonorDayCount, setKnownDonorDayCount] = useState<number | undefined>();
   const requestRef = useRef({ current: 0 });
   const controllerRef = useRef<AbortController | null>(null);
+  const autoRunTimerRef = useRef<number | null>(null);
+  const [settingsDirty, setSettingsDirty] = useState(false);
 
   const runForecast = useCallback(async (selectedMode = mode, selectedHorizon = horizon, selectedPlan = plan) => {
+    if (autoRunTimerRef.current !== null) {
+      window.clearTimeout(autoRunTimerRef.current);
+      autoRunTimerRef.current = null;
+    }
     controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
@@ -156,7 +164,6 @@ export function ForecastClient() {
     setError(null);
     setErrorCode(null);
     setScenarioEvidenceMissing(false);
-    setOutcome(null);
     try {
       const payload = await withMinimumVisibleLoading((async () => {
         // Forecast may persist DailyModelState first; load context afterward so diagnostics stay in sync.
@@ -185,6 +192,7 @@ export function ForecastClient() {
       setOutcome(payload.nextOutcome);
       setContext(payload.nextContext);
       setSubmittedRun({ mode: selectedMode, horizon: selectedHorizon, plan: { ...selectedPlan } });
+      setSettingsDirty(false);
       if ("scenarioProvenance" in payload.nextOutcome) {
         setKnownDonorDayCount(payload.nextOutcome.scenarioProvenance.donorEvidence.donorDayCount);
       }
@@ -213,9 +221,10 @@ export function ForecastClient() {
     const initialRequest = window.setTimeout(() => void runForecast("recent-behavior", 30, DEFAULT_PLAN), 0);
     return () => {
       window.clearTimeout(initialRequest);
+      if (autoRunTimerRef.current !== null) window.clearTimeout(autoRunTimerRef.current);
       controllerRef.current?.abort();
     };
-  // Intentional: initial default run only. Later changes require the explicit button.
+  // Intentional: initial default run only; subsequent controls schedule a debounced run.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -223,17 +232,33 @@ export function ForecastClient() {
     controllerRef.current?.abort();
     beginForecastRequest(requestRef.current);
     setLoading(false);
-    setOutcome(null);
     setError(null);
     setErrorCode(null);
     setScenarioEvidenceMissing(false);
-    setSubmittedRun(null);
+    setSettingsDirty(true);
   }
-  function selectHorizon(next: ForecastHorizon) { setHorizon(next); invalidateDisplayedForecast(); }
-  function selectMode(next: ScenarioMode) { setMode(next); invalidateDisplayedForecast(); }
-  function updatePlan<K extends keyof PlanValues>(key: K, value: PlanValues[K]) {
-    setPlan((current) => ({ ...current, [key]: value }));
+  function scheduleAutoForecast(nextMode: ScenarioMode, nextHorizon: ForecastHorizon, nextPlan: PlanValues, delayMs: number) {
+    if (autoRunTimerRef.current !== null) window.clearTimeout(autoRunTimerRef.current);
+    autoRunTimerRef.current = window.setTimeout(() => {
+      autoRunTimerRef.current = null;
+      void runForecast(nextMode, nextHorizon, nextPlan);
+    }, delayMs);
+  }
+  function selectHorizon(next: ForecastHorizon) {
+    setHorizon(next);
     invalidateDisplayedForecast();
+    scheduleAutoForecast(mode, next, plan, 200);
+  }
+  function selectMode(next: ScenarioMode) {
+    setMode(next);
+    invalidateDisplayedForecast();
+    scheduleAutoForecast(next, horizon, plan, 200);
+  }
+  function updatePlan<K extends keyof PlanValues>(key: K, value: PlanValues[K]) {
+    const nextPlan = { ...plan, [key]: value };
+    setPlan(nextPlan);
+    invalidateDisplayedForecast();
+    scheduleAutoForecast(mode, horizon, nextPlan, 650);
   }
   async function runAction(action: ForecastAction) {
     setActionLoading(action);
@@ -259,7 +284,10 @@ export function ForecastClient() {
   const blockedOutcome = outcome?.status === "initial-state-unreliable" || outcome?.status === "initial-state-unavailable" ? outcome : null;
   const blockedCopy = blockedOutcome ? blockedPresentation(blockedOutcome, locale) : null;
   const endpoint = result ? summarizeEndpoint(result, metric) : null;
-  const startWeight = context?.status.currentPredictedWeightKg ?? context?.status.currentFilteredWeightKg ?? null;
+  const startWeight = context?.status.currentPredictedWeightKg
+    ?? context?.status.currentFilteredWeightKg
+    ?? result?.experimentalCurrent?.modeledWeightKg
+    ?? null;
   const quality = result ? qualityPresentation(result, context?.status.calibrationStatus, locale) : null;
   const metricLabel = metrics.find((item) => item.key === metric)?.label ?? "Estimate";
   const assumptions = submittedRun?.mode && submittedRun.mode !== "recent-behavior"
@@ -270,7 +298,7 @@ export function ForecastClient() {
     : [];
   const metricNotes = forecastMetricSemanticsNotes(locale);
   const productionCompartmentNotes = productionForecastCompartmentNotes(locale);
-  const provenanceChips = [
+  const provenanceChips = result?.experimentalProvenance ? [] : [
     ...(context?.provenance
       ? [context.provenance.v7Cache, ...context.provenance.v7Compartments]
       : productionCompartmentNotes),
@@ -290,6 +318,7 @@ export function ForecastClient() {
     successfulForecast: Boolean(result),
     blocked: Boolean(blockedOutcome),
     scenarioEvidenceMissing,
+    forecastQuality: result?.experimentalQuality,
   });
   const showStartModel = errorCode === "no_active_episode" || errorCode === "initialization_failed";
   const busy = loading || actionLoading !== null;
@@ -332,7 +361,7 @@ export function ForecastClient() {
           </fieldset>
         </form>}
         <div className={styles.runRow}>
-          <button className={styles.runButton} type="button" aria-busy={busy} disabled={busy} onClick={() => void runForecast()}>{loading ? (uk ? "Запустити оновлений прогноз" : "Run updated forecast") : (uk ? "Побудувати прогноз" : "Run forecast")}</button><HelpTip>{uk ? "Оберіть період і режим, заповніть поля плану за потреби, а потім натисніть кнопку. Після зміни налаштувань графік треба запустити знову." : "Choose a horizon and mode, fill plan fields if needed, then press the button. Run it again after changing settings."}</HelpTip>
+          <button className={styles.runButton} type="button" aria-busy={busy} disabled={busy} onClick={() => void runForecast()}>{loading ? (uk ? "Запустити оновлений прогноз" : "Run updated forecast") : (uk ? "Побудувати прогноз" : "Run forecast")}</button><HelpTip>{uk ? "Після зміни періоду, режиму або числового поля прогноз оновиться автоматично; кнопка — для ручного повтору." : "After changing the horizon, mode, or a number, the forecast updates automatically; use this button to rerun manually."}</HelpTip>
           {showRecalculate && <button className={needsRecalculation ? styles.recalculateButtonPrimary : styles.recalculateButton} type="button" aria-busy={actionLoading === "recalculate"} disabled={busy} onClick={() => void runAction("recalculate")}>{actionLoading === "recalculate" ? recalculateCopy.loadingAction : recalculateCopy.action}</button>}
         </div>
         {showRecalculate && <p className={styles.recalculateHint}>{recalculateCopy.hint}</p>}
@@ -360,10 +389,11 @@ export function ForecastClient() {
       {!error && blockedOutcome && blockedCopy && <section className={styles.blocked}><p className={styles.eyebrow}>{uk ? "Потрібна поточна вага моделі" : "Current model weight needed"}</p><h2>{blockedCopy.title}</h2><p>{blockedCopy.detail}</p><div className={styles.actions}><button type="button" disabled={busy} onClick={() => void runAction("recalculate")}>{recalculateCopy.action}</button><Link href="/history">{uk ? "Переглянути історію" : "Review history"}</Link></div></section>}
 
       {loading && !outcome && !error && <section className={styles.loadingCard} aria-live="polite"><div className={styles.spinner} /><strong>{uk ? "Рахуємо можливі варіанти ваги" : "Calculating possible weight paths"}</strong><span>{uk ? "Кожен варіант стартує від вашої останньої зрозумілої ваги." : "Each path starts from your latest understood weight."}</span></section>}
-      {!loading && !outcome && !error && <section className={styles.pendingCard}><strong>{uk ? "Налаштування змінено" : "Settings changed"}</strong><span>{uk ? "Натисніть «Побудувати прогноз», щоб оновити картинку." : "Tap “Run forecast” to refresh the chart."}</span></section>}
+      {loading && outcome && <div className={styles.updateOverlay} role="status">{uk ? "Оновлюємо прогноз…" : "Updating forecast…"}</div>}
+      {!loading && !outcome && !error && (settingsDirty || submittedRun === null) && <section className={styles.pendingCard}><strong>{uk ? "Налаштування змінено" : "Settings changed"}</strong><span>{uk ? "Прогноз оновиться автоматично через мить." : "The forecast will update automatically in a moment."}</span></section>}
 
       {result && endpoint && <>
-        {quality && <section className={`${styles.qualityBanner} ${styles[quality.tone]}`}><div><strong>{quality.title}</strong><span>{quality.detail}</span>{result.experimentalQuality === "limited-history" && <span>{uk ? "Обмежена історія: оцінка provisional, діапазон ширший." : "Limited history: provisional estimate with a wider range."}</span>}</div><span>{result.scenarioProvenance.donorEvidence.donorDayCount} {uk ? "днів з даними" : "days with data"}</span></section>}
+        {quality && <section className={`${styles.qualityBanner} ${styles[quality.tone]}`}><div><strong>{quality.title}</strong><span>{quality.detail}</span>{(result.experimentalQuality === "limited-history" || result.experimentalQuality === "bootstrap") && <span>{uk ? "Це provisional-оцінка: діапазон ширший, але модель не заблокована." : "This is a provisional estimate: the range is wider, but the model is not blocked."}</span>}{result.experimentalProvenance?.improvements.map((item) => <span key={item}>{item}</span>)}</div><span>{result.scenarioProvenance.donorEvidence.donorDayCount} {uk ? "днів з даними" : "days with data"}</span></section>}
         <section className={styles.summaryGrid}>
           <article><span>{uk ? `Очікувана метрика «${metricLabel.toLowerCase()}» на ${formatDate(result.dates.at(-1)!.date, undefined, locale)}` : `Expected ${metricLabel.toLowerCase()} on ${formatDate(result.dates.at(-1)!.date, undefined, locale)}`}</span><strong>{formatValue(endpoint.median, "kg", locale)}</strong><small>{uk ? "Медіанна оцінка" : "Median estimate"}</small></article>
           <article><span>{result.forecastVersion === "experimental-forecast-v1" ? (uk ? "Інженерний діапазон" : "Engineering range") : (uk ? "Імовірний діапазон" : "Likely range")}<HelpTip>{result.forecastVersion === "experimental-forecast-v1" ? (uk ? "Детерміновані межі моделі, не статистичний confidence interval." : "Deterministic model bounds, not a statistical confidence interval.") : (uk ? "Межі 25–75%: половина змодельованих траєкторій опинилася всередині. Це не гарантія і не весь можливий діапазон." : "The 25th–75th percentile range: half of modeled paths landed inside. It is not a guarantee or the full possible range.")}</HelpTip></span><strong>{formatValue(endpoint.p25, "kg", locale)}–{formatValue(endpoint.p75, "kg", locale)}</strong><small>{result.forecastVersion === "experimental-forecast-v1" ? (uk ? "Інженерні межі" : "Engineering bounds") : (uk ? "Середня половина варіантів" : "Middle half of the options")}</small></article>

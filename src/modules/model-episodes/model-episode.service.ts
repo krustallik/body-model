@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { missingPhysiologicalTransitionFields } from "@/model/physiological-simulator";
 import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import { calculateEpisodeHistory } from "./episode-calculation";
-import { prepareEpisodeInitialization } from "./episode-initialization";
+import { prepareBootstrapEpisodeInitialization, prepareEpisodeInitialization } from "./episode-initialization";
 import {
   EpisodeInitializationError,
   ModelEpisodeNotFoundError,
@@ -216,13 +216,32 @@ export async function initializeNewModelEpisode(
       repository.getProfile(),
       repository.loadSources(addCalendarDays(startDate, -125), startDate),
     ]);
-    const prepared = prepareEpisodeInitialization({
-      profile,
-      days: sources.days,
-      sources,
-      startDate,
-      timezone,
-    });
+    let prepared: PreparedEpisodeInitialization;
+    try {
+      prepared = prepareEpisodeInitialization({
+        profile,
+        days: sources.days,
+        sources,
+        startDate,
+        timezone,
+      });
+    } catch (error) {
+      if (!(error instanceof EpisodeInitializationError)
+          || (error.reason !== "insufficient-baseline-data" && error.reason !== "insufficient-weight-bia")) {
+        throw error;
+      }
+      // Keep the start action useful with short histories. This is an
+      // explicit, auditable bootstrap episode: raw rows remain untouched,
+      // fallback nutrition/body-fat assumptions live in episode provenance,
+      // and initializationStatus stays `insufficient` until history grows.
+      prepared = prepareBootstrapEpisodeInitialization({
+        profile,
+        days: sources.days,
+        sources,
+        startDate,
+        timezone,
+      });
+    }
     await repository.deactivateActive(now);
     return repository.createPrepared(prepared);
   }, TRANSACTION_OPTIONS);

@@ -120,6 +120,7 @@ describe("forecast recovery and recalculation route", () => {
       startDate: "2026-09-15",
     });
     expect(modelServices.initializeNewModelEpisode).toHaveBeenCalledWith({});
+    expect(modelServices.recalculateModelEpisode).toHaveBeenLastCalledWith({});
   });
 
   it("runs recovery automatically after recalculate when a gap remains", async () => {

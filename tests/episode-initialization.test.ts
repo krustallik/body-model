@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { reconstructBodyWeightKg } from "@/model/body-composition/state";
-import { prepareEpisodeInitialization } from "@/modules/model-episodes/episode-initialization";
+import {
+  prepareBootstrapEpisodeInitialization,
+  prepareEpisodeInitialization,
+} from "@/modules/model-episodes/episode-initialization";
 import { EpisodeInitializationError } from "@/modules/model-episodes/model-episode.errors";
 import { modelProfile, stableSourceDays } from "./model-episode-fixtures";
 
@@ -51,6 +54,30 @@ describe("model episode initialization", () => {
       days: complete.map((day) => ({ ...day, bodyFatPercent: null })),
       startDate: "2026-08-22",
     })).toThrow(new EpisodeInitializationError("insufficient-weight-bia"));
+  });
+
+  it("builds an auditable insufficient-history bootstrap from a short history", () => {
+    const days = stableSourceDays({ count: 10 }).map((day) => ({
+      ...day,
+      bodyFatPercent: null,
+      caloriesKcal: null,
+      proteinG: null,
+      fatG: null,
+      carbsG: null,
+    }));
+    const result = prepareBootstrapEpisodeInitialization({
+      profile: modelProfile,
+      days,
+      startDate: "2026-08-22",
+    });
+    expect(result.initializationStatus).toBe("insufficient");
+    expect(result.initializationApplicationReason).toBe("insufficient-not-applied");
+    expect(result.bodyFatObservationCount).toBe(0);
+    expect(result.baseline.diagnostics.windowDays).toBe(1);
+    expect(result.initialState.weightFilterState.estimatedWeightKg).toBeGreaterThan(0);
+    expect(result.initializationDiagnostics).toMatchObject({
+      bootstrap: { mode: "insufficient-history", fallbackBodyFatPercent: 25 },
+    });
   });
 
   it("rejects a raw boundary BIA that cannot initialize latent state", () => {

@@ -664,3 +664,104 @@ export function prepareEpisodeInitialization(input: {
     throw new EpisodeInitializationError("invalid-initial-state");
   }
 }
+
+/**
+ * Explicit low-history initialization used by the UI bootstrap action.
+ *
+ * This keeps raw health rows untouched and stores the fallback nutrition/body
+ * composition only as auditable episode assumptions. The resulting episode is
+ * deliberately marked `insufficient`, so it can power the full surface while
+ * clearly communicating that it has not been personalized yet.
+ */
+export function prepareBootstrapEpisodeInitialization(input: {
+  profile: ModelProfileSource | null;
+  days: readonly ModelHealthDaySource[];
+  sources?: HistoricalModelSources;
+  startDate: string;
+  timezone?: string;
+}): PreparedEpisodeInitialization {
+  if (!input.profile) throw new EpisodeInitializationError("profile-missing");
+  const weightedDays = input.days
+    .filter((day) => day.weightKg !== null && Number.isFinite(day.weightKg) && day.weightKg > 0)
+    .sort((left, right) => left.date.localeCompare(right.date));
+  const anchor = weightedDays.at(-1);
+  if (!anchor?.weightKg) throw new EpisodeInitializationError("insufficient-baseline-data");
+
+  const nutritionDonor = [...input.days].reverse().find((day) => (
+    [day.caloriesKcal, day.proteinG, day.fatG, day.carbsG]
+      .every((value) => typeof value === "number" && Number.isFinite(value) && value > 0)
+  ));
+  const fallbackNutrition = nutritionDonor
+    ? {
+        caloriesKcal: nutritionDonor.caloriesKcal!,
+        proteinG: nutritionDonor.proteinG!,
+        fatG: nutritionDonor.fatG!,
+        carbsG: nutritionDonor.carbsG!,
+      }
+    : {
+        caloriesKcal: Math.max(1_600, Math.round(anchor.weightKg * 28)),
+        proteinG: Math.max(40, Math.round(anchor.weightKg * 1.6)),
+        fatG: Math.max(30, Math.round(anchor.weightKg * 0.8)),
+        carbsG: Math.max(50, Math.round((Math.max(1_600, Math.round(anchor.weightKg * 28))
+          - Math.max(40, Math.round(anchor.weightKg * 1.6)) * 4
+          - Math.max(30, Math.round(anchor.weightKg * 0.8)) * 9) / 4)),
+      };
+  const fallbackBodyFat = input.profile.sex === "female" ? 32 : 25;
+  const bootstrapDays = input.days.map((day) => {
+    const hasWeight = day.weightKg !== null && Number.isFinite(day.weightKg) && day.weightKg > 0;
+    return {
+      ...day,
+      bodyFatPercent: hasWeight
+        ? day.bodyFatPercent !== null && day.bodyFatPercent !== undefined
+          && Number.isFinite(day.bodyFatPercent) && day.bodyFatPercent >= 0 && day.bodyFatPercent <= 100
+          ? day.bodyFatPercent : fallbackBodyFat
+        : day.bodyFatPercent,
+      caloriesKcal: day.caloriesKcal !== null && day.caloriesKcal !== undefined && day.caloriesKcal > 0
+        ? day.caloriesKcal : fallbackNutrition.caloriesKcal,
+      proteinG: day.proteinG !== null && day.proteinG !== undefined && day.proteinG > 0
+        ? day.proteinG : fallbackNutrition.proteinG,
+      fatG: day.fatG !== null && day.fatG !== undefined && day.fatG > 0
+        ? day.fatG : fallbackNutrition.fatG,
+      carbsG: day.carbsG !== null && day.carbsG !== undefined && day.carbsG > 0
+        ? day.carbsG : fallbackNutrition.carbsG,
+    };
+  });
+  const startDate = input.startDate > anchor.date ? anchor.date : input.startDate;
+  const prepared = prepareEpisodeInitialization({
+    ...input,
+    days: bootstrapDays,
+    startDate,
+    baselineConfig: {
+      windowDays: 1,
+      lookbackDays: 90,
+      minimumCompleteNutritionDays: 1,
+      minimumWeightObservations: 1,
+      minimumWeightSpanDays: 1,
+      maximumAbsoluteWeightTrendPercentPerWeek: 0.25,
+    },
+  });
+  const actualBodyFatObservations = input.days.filter((day) => (
+    day.weightKg !== null && day.weightKg !== undefined && day.weightKg > 0
+    && day.bodyFatPercent !== null && day.bodyFatPercent !== undefined
+    && Number.isFinite(day.bodyFatPercent) && day.bodyFatPercent >= 0 && day.bodyFatPercent <= 100
+  )).length;
+  return {
+    ...prepared,
+    bodyFatObservationCount: actualBodyFatObservations,
+    bodyFatSpreadPercent: actualBodyFatObservations > 1 ? prepared.bodyFatSpreadPercent : 0,
+    initializationStatus: "insufficient",
+    initializationApplicationReason: "insufficient-not-applied",
+    initialPersonalOffsetKcalPerDay: 0,
+    appliedPersonalOffsetKcalPerDay: 0,
+    initializationDiagnostics: {
+      ...(prepared.initializationDiagnostics && typeof prepared.initializationDiagnostics === "object"
+        ? prepared.initializationDiagnostics : {}),
+      bootstrap: {
+        mode: "insufficient-history",
+        fallbackBodyFatPercent: actualBodyFatObservations === 0 ? fallbackBodyFat : null,
+        fallbackNutrition,
+        actualBodyFatObservationCount: actualBodyFatObservations,
+      },
+    },
+  };
+}

@@ -59,6 +59,11 @@ export async function POST(request: Request): Promise<Response> {
     }
     if (action === "initialize") {
       const episode = await initializeNewModelEpisode(now ? { now } : {});
+      // Initialization creates the active episode and freezes its assumptions;
+      // immediately materialize the available history so Diagnostics is
+      // populated on the same click, including insufficient-history bootstrap
+      // episodes.
+      await recalculateModelEpisode(now ? { now } : {});
       return Response.json({
         status: "ok",
         episodeId: episode.id,

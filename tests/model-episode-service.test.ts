@@ -62,6 +62,29 @@ describe("model episode application service", () => {
     expect(result).toMatchObject({ id: 7, startDate: "2026-08-22", ecfPolicy: "hold-ecf" });
   });
 
+  it("initializes an explicit insufficient-history episode instead of dead-ending the start action", async () => {
+    repository.loadSources.mockResolvedValue({
+      days: stableSourceDays({ count: 10 }).map((day) => ({
+        ...day,
+        bodyFatPercent: null,
+        caloriesKcal: null,
+        proteinG: null,
+        fatG: null,
+        carbsG: null,
+      })),
+      snapshots: [], workIntervals: [], workouts: [],
+    });
+    const result = await initializeNewModelEpisode({
+      now: new Date("2026-08-23T10:00:00.000Z"),
+    }, client);
+    expect(repository.deactivateActive).toHaveBeenCalledOnce();
+    expect(repository.createPrepared).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ id: 7, initializationStatus: "insufficient" });
+    expect(result.initializationDiagnostics).toMatchObject({
+      bootstrap: { mode: "insufficient-history", fallbackBodyFatPercent: 25 },
+    });
+  });
+
   it("rejects a current or future local start date before database work", async () => {
     await expect(initializeNewModelEpisode({
       startDate: "2026-08-23",

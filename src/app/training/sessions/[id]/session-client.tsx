@@ -12,6 +12,7 @@ import {
 } from "@/modules/training/training.constants";
 import { parseTrainingDecimal } from "@/modules/training/parse-training-decimal";
 import { sessionPlanCompletion } from "@/modules/training/session-plan-completion";
+import { shouldAutoAdvanceAfterSet } from "@/modules/training/auto-advance";
 import type {
   MatchCandidateDto,
   StrengthSessionDto,
@@ -198,12 +199,17 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
       }
       const adding = editingSetId === null;
       const lastExercise = exerciseIndex >= exercises.length - 1;
-      const reachedPlan = adding && lastExercise && current.sets.length + 1 >= current.plannedSets
+      const completedPlannedExercise = adding
+        && current.origin === "PLANNED"
+        && current.plannedSets > 0
+        && current.sets.length + 1 >= current.plannedSets
         && current.sets.length < current.plannedSets;
       await load();
       setDraft(emptySetDraft());
       setEditingSetId(null);
-      if (reachedPlan && !finishOfferedRef.current) {
+      if (shouldAutoAdvanceAfterSet({ enabled: session.autoAdvanceExercises === true, adding, exerciseOrigin: current.origin, plannedSets: current.plannedSets, previousSetCount: current.sets.length, isLastExercise: lastExercise })) {
+        goToNeighbor(1);
+      } else if (completedPlannedExercise && lastExercise && !finishOfferedRef.current) {
         finishOfferedRef.current = true;
         setFinishOffer(true);
       }

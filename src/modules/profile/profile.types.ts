@@ -6,6 +6,7 @@ export type ProfileDto = {
   heightCm: number;
   targetWeightKg: number | null;
   targetDate: string | null;
+  autoAdvanceExercises: boolean;
   createdAt: string;
   updatedAt: string;
 };

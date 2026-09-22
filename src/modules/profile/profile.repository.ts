@@ -13,6 +13,7 @@ const profileSelect = {
   heightCm: true,
   targetWeightKg: true,
   targetDate: true,
+  autoAdvanceExercises: true,
   createdAt: true,
   updatedAt: true,
 } satisfies Prisma.ProfileSelect;
@@ -32,6 +33,7 @@ function toDto(record: ProfileRecord): ProfileDto {
     heightCm: record.heightCm.toNumber(),
     targetWeightKg: record.targetWeightKg?.toNumber() ?? null,
     targetDate: record.targetDate ? calendarDate(record.targetDate) : null,
+    autoAdvanceExercises: record.autoAdvanceExercises ?? false,
     createdAt: record.createdAt.toISOString(),
     updatedAt: record.updatedAt.toISOString(),
   };
@@ -60,6 +62,7 @@ export class ProfileRepository {
       heightCm: input.heightCm,
       targetWeightKg: input.targetWeightKg ?? null,
       targetDate: input.targetDate ? asDatabaseDate(input.targetDate) : null,
+      autoAdvanceExercises: input.autoAdvanceExercises ?? false,
     };
     const record = await this.client.profile.upsert({
       where: { id: SINGLETON_PROFILE_ID },

@@ -132,6 +132,7 @@ export type StrengthSessionDto = {
   matchedWorkout: MatchedWorkoutDto | null;
   exercises: StrengthSessionExerciseDto[];
   ordinaryTonnageKg: number | null;
+  autoAdvanceExercises?: boolean;
   loggedSets?: number;
   plannedSets?: number;
   /** May exceed 100 when extra sets were logged. Null if plannedSets is 0. */

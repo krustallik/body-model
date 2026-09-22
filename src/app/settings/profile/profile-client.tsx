@@ -8,7 +8,7 @@ import type { ProfileDto } from "@/modules/profile/profile.types";
 import type { StepperEquipmentAssignmentDto } from "@/modules/profile/stepper-equipment.schema";
 import styles from "./profile.module.css";
 
-type ProfileField = "locale" | "sex" | "dateOfBirth" | "heightCm" | "targetWeightKg" | "targetDate";
+type ProfileField = "locale" | "sex" | "dateOfBirth" | "heightCm" | "targetWeightKg" | "targetDate" | "autoAdvanceExercises";
 type FormValues = Record<ProfileField, string>;
 type FieldErrors = Partial<Record<ProfileField, string>>;
 
@@ -19,6 +19,7 @@ const emptyForm: FormValues = {
   heightCm: "",
   targetWeightKg: "",
   targetDate: "",
+  autoAdvanceExercises: "false",
 };
 
 function formFromProfile(profile: ProfileDto): FormValues {
@@ -29,6 +30,7 @@ function formFromProfile(profile: ProfileDto): FormValues {
     heightCm: String(profile.heightCm),
     targetWeightKg: profile.targetWeightKg === null ? "" : String(profile.targetWeightKg),
     targetDate: profile.targetDate ?? "",
+    autoAdvanceExercises: String(profile.autoAdvanceExercises),
   };
 }
 
@@ -102,7 +104,7 @@ export function ProfileClient() {
       const response = await fetch("/api/v1/profile", {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(values),
+        body: JSON.stringify({ ...values, autoAdvanceExercises: values.autoAdvanceExercises === "true" }),
       });
       if (!response.ok) {
         const issue = await readError(response, uk);
@@ -222,6 +224,17 @@ export function ProfileClient() {
                   aria-invalid={Boolean(fieldErrors.targetDate)}
                 />
                 {fieldErrors.targetDate && <small role="alert">{fieldErrors.targetDate}</small>}
+              </label>
+              <label className={styles.field}>
+                <span>{uk ? "Тренування" : "Training"}</span>
+                <span className={styles.checkboxRow}>
+                  <input
+                    type="checkbox"
+                    checked={values.autoAdvanceExercises === "true"}
+                    onChange={(event) => updateField("autoAdvanceExercises", String(event.target.checked))}
+                  />
+                  {uk ? "Автоматично переходити до наступної вправи" : "Automatically go to the next exercise"}
+                </span>
               </label>
             </div>
 

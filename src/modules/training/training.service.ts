@@ -292,11 +292,13 @@ export class TrainingService {
     return archived;
   }
 
-  getActiveSession(profileId = DEFAULT_TRAINING_PROFILE_ID) {
+  async getActiveSession(profileId = DEFAULT_TRAINING_PROFILE_ID) {
+    if (typeof this.repo.finishInactiveSessions === "function") await this.repo.finishInactiveSessions({ profileId });
     return this.repo.getActiveSession(profileId);
   }
 
-  getSession(sessionId: number, profileId = DEFAULT_TRAINING_PROFILE_ID) {
+  async getSession(sessionId: number, profileId = DEFAULT_TRAINING_PROFILE_ID) {
+    if (typeof this.repo.finishInactiveSessions === "function") await this.repo.finishInactiveSessions({ profileId });
     return this.repo.getSession(sessionId, profileId);
   }
 

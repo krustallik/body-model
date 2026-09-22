@@ -24,6 +24,7 @@ import {
 import type { ProgramReconcilePlan } from "./training.program-reconcile";
 import { ordinaryExternalWeightTonnageKg } from "./training.tonnage";
 import { sessionPlanCompletion } from "./session-plan-completion";
+import { evaluateSessionInactivity } from "./session-inactivity";
 import type {
   ExerciseCatalogDto,
   ExerciseHistoryEntryDto,
@@ -111,6 +112,7 @@ const sessionDetailSelect = {
   createdAt: true,
   updatedAt: true,
   program: { select: { id: true, name: true } },
+  profile: { select: { autoAdvanceExercises: true } },
   programVersion: { select: { id: true, versionNumber: true } },
   matchedWorkout: { select: matchedWorkoutSelect },
   exercises: { select: sessionExerciseSelect, orderBy: { sortOrder: "asc" as const } },
@@ -254,6 +256,7 @@ export function toSessionDto(record: SessionDetailRecord): StrengthSessionDto {
     matchedWorkout: toMatchedWorkoutDto(record.matchedWorkout),
     exercises,
     ordinaryTonnageKg: ordinaryExternalWeightTonnageKg(tonnageSets),
+    autoAdvanceExercises: record.profile?.autoAdvanceExercises ?? false,
     ...planCompletionFields(exercises),
     createdAt: record.createdAt.toISOString(),
     updatedAt: record.updatedAt.toISOString(),
@@ -665,6 +668,26 @@ export class TrainingRepository {
       select: sessionDetailSelect,
     });
     return row ? toSessionDto(row) : null;
+  }
+
+  async finishInactiveSessions(input: { profileId?: number; now?: Date } = {}): Promise<number[]> {
+    const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+    const now = input.now ?? new Date();
+    const rows = (await this.db.strengthDiarySession.findMany({
+      where: { profileId, status: SESSION_STATUS.ACTIVE },
+      select: { id: true, exercises: { select: { sets: { select: { completedAt: true, createdAt: true } } } } },
+    })) ?? [];
+    const finished: number[] = [];
+    for (const row of rows) {
+      const lastSetAt = row.exercises.flatMap((exercise) => exercise.sets)
+        .map((set) => set.completedAt ?? set.createdAt)
+        .sort((left, right) => right.getTime() - left.getTime())[0] ?? null;
+      const decision = evaluateSessionInactivity({ status: SESSION_STATUS.ACTIVE, lastSetAt, now });
+      if (decision.action !== "finish") continue;
+      const updated = await this.db.strengthDiarySession.updateMany({ where: { id: row.id, profileId, status: SESSION_STATUS.ACTIVE }, data: { status: SESSION_STATUS.COMPLETED, webEndedAt: decision.endAt } });
+      if (updated.count > 0) finished.push(row.id);
+    }
+    return finished;
   }
 
   async getSession(

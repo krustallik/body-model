@@ -20,10 +20,12 @@ model Profile {
   heightCm                    Decimal                      @db.Decimal(6, 2)
   targetWeightKg              Decimal?                     @db.Decimal(6, 2)
   targetDate                  DateTime?                    @db.Date
+  autoAdvanceExercises        Boolean                      @default(false)
   createdAt                   DateTime                     @default(now())
   updatedAt                   DateTime                     @updatedAt
   modelEpisodes               ModelEpisode[]
   stepperEquipmentAssignments StepperEquipmentAssignment[]
+  strengthDiarySessions       StrengthDiarySession[]
 }
 
 /**
@@ -376,6 +378,7 @@ model StrengthDiarySession {
   matchedAt        DateTime?                    @db.Timestamptz(3)
   createdAt        DateTime                     @default(now()) @db.Timestamptz(3)
   updatedAt        DateTime                     @updatedAt @db.Timestamptz(3)
+  profile          Profile                      @relation(fields: [profileId], references: [id], onDelete: Restrict)
   program          TrainingProgram              @relation(fields: [programId], references: [id], onDelete: Restrict)
   programVersion   TrainingProgramVersion       @relation(fields: [programVersionId], references: [id], onDelete: Restrict)
   matchedWorkout   Workout?                     @relation(fields: [matchedWorkoutId], references: [id], onDelete: SetNull)

@@ -117,7 +117,7 @@ export function ExercisePane(props: ExercisePaneProps) {
     onCopyHistorySet,
   } = props;
 
-  const sets = exercise.sets.slice().sort((a, b) => a.setNumber - b.setNumber);
+  const sets = exercise.sets.slice().sort((a, b) => b.setNumber - a.setNumber);
   const completedSets = sets.length;
   const plannedSets = exercise.plannedSets;
   const imageSrc = resolveExerciseImageSrc({

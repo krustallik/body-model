@@ -947,6 +947,8 @@
 .liveSaveRow {
   display: grid;
   gap: 0.45rem;
+  /* Keep the add/edit action area from shifting the exercise image and fields. */
+  min-height: 3.15rem;
 }
 
 .liveSave {
@@ -1731,6 +1733,9 @@ a.editMenuItem + .editMenuDanger {
 
 .liveSetComment {
   grid-area: comment;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   margin: 0;
   color: var(--muted);
   font-size: 0.78rem;
@@ -1829,6 +1834,7 @@ a.editMenuItem + .editMenuDanger {
 }
 
 .workoutHistorySets li {
+  min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 0.15rem;
@@ -1864,6 +1870,10 @@ a.editMenuItem + .editMenuDanger {
 
 .workoutHistorySets em {
   grid-column: 2;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  display: block;
   color: var(--muted);
   font-size: 0.76rem;
   font-style: italic;

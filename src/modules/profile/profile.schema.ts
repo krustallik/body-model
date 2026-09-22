@@ -27,6 +27,7 @@ export const ProfileInputSchema = z.object({
   heightCm: requiredNumeric(z.number().positive().max(300)),
   targetWeightKg: optionalNumeric(z.number().positive().max(500)),
   targetDate: optionalDate,
+  autoAdvanceExercises: z.boolean().optional(),
 }).strict();
 
 export type ProfileInput = z.infer<typeof ProfileInputSchema>;

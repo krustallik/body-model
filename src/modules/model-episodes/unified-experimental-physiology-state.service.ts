@@ -123,19 +123,26 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: { profi
   if (input.toDate < input.fromDate) throw new RangeError("toDate must not precede fromDate");
   const profileId = input.profileId ?? 1;
   const sourceLoader = new UnifiedExperimentalPhysiologySourceLoaderV1(prisma);
-  const predecessor = await prisma.unifiedExperimentalPhysiologyState.findFirst({ where: { profileId, date: { lt: input.fromDate }, modelRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V1_REVISION }, orderBy: { date: "desc" }, select: { resultFingerprint: true, state: true, uncertainty: true } });
-  const range = await sourceLoader.loadRange({ profileId, fromDate: input.fromDate, toDate: input.toDate });
+  const [latestDurable, predecessor, priorObservation] = await Promise.all([
+    prisma.dailyHealthData.findFirst({ orderBy: { date: "desc" }, select: { date: true } }),
+    prisma.unifiedExperimentalPhysiologyState.findFirst({ where: { profileId, date: { lt: input.fromDate }, modelRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V1_REVISION }, orderBy: { date: "desc" }, select: { resultFingerprint: true, state: true, uncertainty: true } }),
+    prisma.dailyHealthData.findFirst({ where: { date: { lt: input.fromDate }, weightKg: { not: null } }, orderBy: { date: "desc" }, select: { date: true, weightKg: true } }),
+  ]);
+  const effectiveToDate = latestDurable?.date && latestDurable.date > input.toDate ? latestDurable.date : input.toDate;
+  const range = await sourceLoader.loadRange({ profileId, fromDate: input.fromDate, toDate: effectiveToDate });
   let priorState = predecessor?.state as UnifiedExperimentalPhysiologyStateV1 | null ?? null;
   let priorFingerprint = predecessor?.resultFingerprint ?? null;
   let priorUncertainty = predecessor?.uncertainty as UnifiedUncertaintyV1 | null ?? null;
   let previousDate: string | null = null;
+  let previousObservedWeight: number | null = priorObservation?.weightKg ?? null;
+  let gapRun = 0;
   for (const day of range.days) {
-    const gapDays = previousDate === null ? 0 : Math.max(0, Math.round((Date.parse(`${day.date}T00:00:00Z`) - Date.parse(`${previousDate}T00:00:00Z`)) / 86_400_000) - 1);
+    const gapDays = day.dailyHealthData === null ? ++gapRun : gapRun;
     const children = childTransitions(day, priorState);
     const production = day.productionDailyState;
     const ledger = buildUnifiedEnergyLedgerV1({ production: { dynamicRmrKcalPerDay: production?.dynamicRmrKcalPerDay ?? null, tefKcalPerDay: production?.tefKcalPerDay ?? null, walkingKcalPerDay: null, occupationalKcalPerDay: null, workoutKcalPerDay: null, stepperKcalPerDay: null, activityKcalPerDay: production?.activityKcalPerDay ?? null, adaptiveThermogenesisKcalPerDay: production?.adaptiveThermogenesisKcalPerDay ?? null, personalOffsetKcalPerDay: null, productionTdeeKcalPerDay: production?.energyExpenditureKcal ?? null }, activities: day.workouts.map((workout) => ({ doseKey: `workout:${workout.id}`, kind: "workout" as const, garminActiveKcal: workout.activeEnergyKcal, bodyCastEstimateKcal: null })) });
     const observedWeight = day.dailyHealthData?.weightKg ?? null;
-    const anchorWeight = priorState?.slowTissue.fatMassKg !== null || priorState?.slowTissue.slowNonFatKg !== null ? null : null;
+    const anchorWeight = previousObservedWeight;
     const result = transitionUnifiedExperimentalPhysiologyV1({ profileId, date: day.date, priorState, priorStateFingerprint: priorFingerprint, children, energyLedger: ledger, quality: quality(day, gapDays), uncertainty: uncertainty(priorUncertainty, day), reconciliation: { anchorDate: previousDate, anchorWeightKg: anchorWeight, observedWeightKg: observedWeight, reason: anchorWeight === null ? "no-prior-observed-weight" : null }, sourceLineage: sourceLineage(day), diagnostics: { notes: ["Unified V1 is shadow-only; production state is read-only input", `transient-output-count:${day.childOutputs.transientWater.length}`] } });
     const serialized = serializeUnifiedExperimentalPhysiologyV1(result);
     await prisma.unifiedExperimentalPhysiologyState.upsert({ where: { profileId_date: { profileId, date: day.date } }, create: toPersisted(serialized), update: toPersisted(serialized) });
@@ -143,6 +150,10 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: { profi
     priorFingerprint = serialized.resultFingerprint;
     priorUncertainty = serialized.uncertainty;
     previousDate = day.date;
+    if (observedWeight !== null) {
+      previousObservedWeight = observedWeight;
+      gapRun = 0;
+    }
   }
 }
 

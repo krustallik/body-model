@@ -16,4 +16,20 @@ describe("unified energy summary v1", () => {
     expect(result.recentTypicalMaintenanceKcalPerDay).toBeNull();
     expect(result.typicalMaintenanceEligibleDays).toBe(1);
   });
+
+  it("uses exactly fourteen eligible days, excludes missing days, and resists an expenditure outlier", () => {
+    const days = Array.from({ length: 28 }, (_, index) => ({
+      date: `2026-09-${String(index + 1).padStart(2, "0")}`,
+      dynamicRmrKcalPerDay: index < 14 ? 1800 : null,
+      productionTdeeKcalPerDay: index < 13 ? 3000 : index === 27 ? 100_000 : null,
+    }));
+    const result = buildUnifiedEnergySummaryV1({ days, todayDate: "2026-09-28" });
+    expect(result.typicalMaintenanceEligibleDays).toBe(14);
+    expect(result.recentTypicalMaintenanceKcalPerDay).toBe(3000);
+    expect(result.recentTypicalMaintenanceRangeKcalPerDay).toEqual({ lower: 3000, upper: 3000 });
+    expect(result.todayEstimatedExpenditureKcalPerDay).toBe(100_000);
+    expect(result.latestModeledExpenditureKcalPerDay).toBe(100_000);
+    expect(result.notes.join(" ")).not.toMatch(/confidence interval/i);
+    expect(result.notes).toContain("missing days are excluded, not treated as zero");
+  });
 });

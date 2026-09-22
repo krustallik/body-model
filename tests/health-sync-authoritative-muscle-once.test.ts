@@ -11,6 +11,7 @@ const {
   recordExperimentalCessationDetrainingShadow,
   recordExperimentalFfmRetentionShadow,
   recordExperimentalLocalHypertrophyResponseShadow,
+  rebuildUnifiedExperimentalPhysiologyStateV1,
 } = vi.hoisted(() => {
   const healthSyncRepository = {
     syncDay: vi.fn(),
@@ -27,6 +28,7 @@ const {
     recordExperimentalCessationDetrainingShadow: vi.fn().mockResolvedValue(undefined),
     recordExperimentalFfmRetentionShadow: vi.fn().mockResolvedValue(undefined),
     recordExperimentalLocalHypertrophyResponseShadow: vi.fn().mockResolvedValue(undefined),
+    rebuildUnifiedExperimentalPhysiologyStateV1: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -55,6 +57,9 @@ vi.mock("@/modules/model-episodes/experimental-ffm-retention-shadow.service", ()
 }));
 vi.mock("@/modules/model-episodes/experimental-local-hypertrophy-response-shadow.service", () => ({
   recordExperimentalLocalHypertrophyResponseShadow,
+}));
+vi.mock("@/modules/model-episodes/unified-experimental-physiology-state.service", () => ({
+  rebuildUnifiedExperimentalPhysiologyStateV1,
 }));
 
 import { syncHealthData } from "@/modules/health/health.service";
@@ -88,5 +93,7 @@ describe("health sync authoritative muscle suffix rebuild", () => {
     // stepper/depletion source shadows have been written.
     expect(recordExperimentalGlycogenStateShadow).toHaveBeenCalledTimes(1);
     expect(recordExperimentalGlycogenStateShadow).toHaveBeenCalledWith({ date: "2026-09-21" });
+    expect(rebuildUnifiedExperimentalPhysiologyStateV1).toHaveBeenCalledTimes(1);
+    expect(rebuildUnifiedExperimentalPhysiologyStateV1).toHaveBeenCalledWith({ fromDate: "2026-09-21", toDate: "2026-09-23" });
   });
 });

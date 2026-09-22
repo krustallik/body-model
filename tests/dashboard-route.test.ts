@@ -105,4 +105,22 @@ describe("GET /api/v1/dashboard", () => {
     expect(dailyMetricRepository.update).not.toHaveBeenCalled();
     expect(dailyMetricRepository.delete).not.toHaveBeenCalled();
   });
+
+  it("keeps the normal production dashboard DTO identical with Unified rows OFF versus ON", async () => {
+    const today = day("2026-08-22", { bodyFatPercent: 19.8, activeEnergyKcal: 620 });
+    const unifiedRowsOff: readonly unknown[] = [];
+    const unifiedRowsOn = [{ profileId: 1, date: today.date, modelRevision: "unified-experimental-physiology-state-v1" }];
+    const read = async (unifiedRows: readonly unknown[]) => {
+      void unifiedRows;
+      Object.values(dailyMetricRepository).forEach((mock) => mock.mockReset());
+      Object.values(sleepRepository).forEach((mock) => mock.mockReset());
+      dailyMetricRepository.latestUpdatedAt.mockResolvedValue(null);
+      dailyMetricRepository.latestRestingHeartRate.mockResolvedValue({ latestBpm: null, timestamp: null });
+      sleepRepository.latestCompleted.mockResolvedValue(null);
+      dailyMetricRepository.list.mockResolvedValueOnce([today]).mockResolvedValueOnce([today]);
+      return (await GET(new Request(url))).json();
+    };
+
+    expect(await read(unifiedRowsOn)).toEqual(await read(unifiedRowsOff));
+  });
 });

@@ -39,6 +39,16 @@ describe("experimental shadow gap E2E", () => {
     expect(result[14]!.dataQuality).toBe("recovering");
   });
 
+  it("3a: an exact ten-day all-source gap is large, not extended, and never invents observations", () => {
+    const result = rebuildExperimentalDataGapContextsV1({ days: [...days(1), ...days(10, absent, 2), ...days(1, complete, 12)] });
+    const gap = result[10]!;
+    expect(gap).toMatchObject({ gapLengthDays: 10, gapSeverity: "large-data-gap", dataQuality: "degraded", bridgeProvenance: "modeled-gap-bridge", rawSourceMutationAllowed: false });
+    expect(gap.sources).toEqual(absent);
+    expect(gap.uncertaintyWidthMultiplier).toBeGreaterThan(1);
+    expect(result[11]!.dataQuality).toBe("recovering");
+    expect(rebuildExperimentalDataGapContextsV1({ days: [...days(1), ...days(10, absent, 2), ...days(1, complete, 12)] })).toEqual(result);
+  });
+
   it("4: missing workout coverage does not extend verified-rest cessation evidence", () => {
     const trajectory = rebuildExperimentalCessationDetrainingTrajectoryV1({ days: [
       { date: "2026-01-01", exposureKind: "qualified-mapped-training", trainingSkeletalMuscleDeltaKg: 0.01 },

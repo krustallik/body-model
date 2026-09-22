@@ -187,11 +187,12 @@ export async function rebuildExperimentalGlycogenStateShadows(input: {
     orderBy: { date: "asc" },
     select: { date: true },
   });
-  const earliestSource = staleRow === null ? null : await prisma.dailyHealthData.findFirst({
-    orderBy: { date: "asc" }, select: { date: true },
-  });
-  const fromDate = earliestSource?.date && earliestSource.date < input.fromDate
-    ? earliestSource.date
+  // Rebuild from the earliest obsolete shadow row. Looking up the oldest
+  // DailyHealthData globally can pull an unrelated, much older account
+  // history into a targeted suffix replay and turn a three-day repair into a
+  // multi-year day-by-day rebuild.
+  const fromDate = staleRow?.date && staleRow.date < input.fromDate
+    ? staleRow.date
     : input.fromDate;
 
   const priorRow = await prisma.experimentalGlycogenStateShadow.findFirst({

@@ -323,7 +323,12 @@ export function ForecastClient() {
   const showStartModel = errorCode === "no_active_episode" || errorCode === "initialization_failed";
   const busy = loading || actionLoading !== null;
   const needsRecalculation = modelNeedsRecalculation(context?.status ?? null);
-  const showRecalculate = !showStartModel;
+  const hasForecastResult = Boolean(result);
+  // The forecast surface remains usable even when the persisted production
+  // episode is missing or initialization is incomplete. In that case the
+  // bootstrap/previous result and all controls stay visible; the error is only
+  // an informational notice rather than a blocking empty state.
+  const showRecalculate = true;
 
   return (
     <main className={styles.page}>
@@ -372,7 +377,7 @@ export function ForecastClient() {
         <div><p className={styles.eyebrow}>{readiness.canForecast ? (uk ? "Прогноз можна побудувати" : "Forecast can run") : (uk ? "Чому прогнозу ще немає" : "Why there is no forecast yet")}</p><h2>{readiness.title}</h2><p>{readiness.detail}</p><ul>{readiness.factors.map((factor) => <li key={factor}>{factor}</li>)}</ul></div>
       </section>
 
-      {error && showStartModel && <section className={styles.blocked} role="alert">
+      {error && showStartModel && !hasForecastResult && <section className={styles.blocked} role="alert">
         <p className={styles.eyebrow}>{noActiveModelCopy.eyebrow}</p>
         <h2>{noActiveModelCopy.title}</h2>
         <p>{error}</p>
@@ -384,7 +389,17 @@ export function ForecastClient() {
         </div>
       </section>}
 
-      {error && !showStartModel && <section className={styles.blocked} role="alert"><p className={styles.eyebrow}>{uk ? "Прогноз недоступний" : "Forecast unavailable"}</p><h2>{uk ? "Цей варіант поки неможливо порахувати." : "We can’t calculate this option yet."}</h2><p>{error}</p><div className={styles.actions}>{mode === "recent-behavior" && <button type="button" onClick={() => selectMode("target-centered")}>{uk ? "Спробувати план з відхиленнями" : "Try a plan with drift"}</button>}<Link href="/history">{uk ? "Додати дані" : "Add data"}</Link></div></section>}
+      {error && !showStartModel && !hasForecastResult && <section className={styles.blocked} role="alert"><p className={styles.eyebrow}>{uk ? "Прогноз недоступний" : "Forecast unavailable"}</p><h2>{uk ? "Цей варіант поки неможливо порахувати." : "We can’t calculate this option yet."}</h2><p>{error}</p><div className={styles.actions}>{mode === "recent-behavior" && <button type="button" onClick={() => selectMode("target-centered")}>{uk ? "Спробувати план з відхиленнями" : "Try a plan with drift"}</button>}<Link href="/history">{uk ? "Додати дані" : "Add data"}</Link></div></section>}
+      {error && hasForecastResult && <section className={styles.notice} role="status">
+        <strong>{uk ? "Показано доступний прогноз" : "Showing the available forecast"}</strong>
+        <span>{error}</span>
+        {showStartModel && <div className={styles.actions}>
+          <button type="button" disabled={busy} aria-busy={actionLoading === "initialize"} onClick={() => void runAction("initialize")}>
+            {actionLoading === "initialize" ? noActiveModelCopy.loadingAction : noActiveModelCopy.primaryAction}
+          </button>
+          <Link href="/history">{noActiveModelCopy.addObservations}</Link>
+        </div>}
+      </section>}
 
       {!error && blockedOutcome && blockedCopy && <section className={styles.blocked}><p className={styles.eyebrow}>{uk ? "Потрібна поточна вага моделі" : "Current model weight needed"}</p><h2>{blockedCopy.title}</h2><p>{blockedCopy.detail}</p><div className={styles.actions}><button type="button" disabled={busy} onClick={() => void runAction("recalculate")}>{recalculateCopy.action}</button><Link href="/history">{uk ? "Переглянути історію" : "Review history"}</Link></div></section>}
 

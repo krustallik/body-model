@@ -140,7 +140,7 @@ export function buildDiagnosticsDto(input: {
   const initializationConfidence = episode.initializationStatus ?? "insufficient";
   return {
     episode: { id: episode.id, modelVersion: episode.modelVersion, timezone: episode.timezone, startDate: episode.startDate, latestModeledDate: episode.latestModeledDate, updatedAt: episode.updatedAt },
-    experimentalEnergySummary: evidence.experimentalEnergySummary ?? null,
+    ...(evidence.experimentalEnergySummary !== undefined ? { experimentalEnergySummary: evidence.experimentalEnergySummary } : {}),
     currentState: {
       level: currentStatus === "available" ? (source === "degraded" ? "limited" : "good") : "blocked",
       status: currentStatus, source,

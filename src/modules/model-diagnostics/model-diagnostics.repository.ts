@@ -28,7 +28,7 @@ export class ModelDiagnosticsRepository {
       imputedNutritionDayCount,
       unresolvedNutritionDayCount,
       weightObservationCount,
-      experimentalEnergySummary,
+      ...(experimentalEnergySummary === null ? {} : { experimentalEnergySummary }),
     };
   }
 }

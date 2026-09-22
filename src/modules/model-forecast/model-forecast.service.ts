@@ -35,6 +35,7 @@ import {
   type ForecastScenario,
   type ForecastVariabilityEvidence,
 } from "./forecast.types";
+import { experimentalForecastModelEpisode } from "@/modules/experimental-forecast-v1/service";
 
 function resolvedForecastConfig(config?: Partial<ForecastConfig>): ForecastConfig {
   return { ...DEFAULT_FORECAST_CONFIG, ...config };
@@ -213,6 +214,18 @@ export async function forecastModelEpisodeWithInternalArtifacts(
   request: ForecastModelRequest & { now?: Date },
   client: PrismaClient = prisma,
 ): Promise<ForecastModelEpisodeInternalResult> {
+  const experimental = await experimentalForecastModelEpisode(request, client);
+  if (experimental) {
+    const initial = experimental.experimentalCurrent?.modeledWeightKg
+      ?? experimental.dates[0]?.physiologicalBodyWeightKg.median
+      ?? 0;
+    const terminal = experimental.dates.at(-1)?.physiologicalBodyWeightKg.median ?? initial;
+    return {
+      result: experimental,
+      initialPhysiologicalBodyWeightKg: initial,
+      terminalPhysiologicalBodyWeightSamplesKg: [terminal],
+    };
+  }
   const episodes = new ModelEpisodeRepository(client);
   const recoveryRepository = new ModelRecoveryRepository(client);
   const episode = request.episodeId === undefined

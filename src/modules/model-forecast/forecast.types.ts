@@ -11,6 +11,7 @@ import type {
 } from "./forecast-workout-scenario";
 
 export const FORECAST_ALGORITHM_VERSION = "bodycast-forecast-v1";
+export const EXPERIMENTAL_PRODUCTION_FORECAST_VERSION = "experimental-forecast-v1";
 
 export type ForecastNutrition = {
   caloriesKcal: number;
@@ -169,12 +170,25 @@ export type ForecastDateSummary = {
 
 export type ForecastResult = {
   status: "ok" | "degraded" | "insufficient-scenario-evidence";
-  forecastVersion: typeof FORECAST_ALGORITHM_VERSION;
+  forecastVersion: typeof FORECAST_ALGORITHM_VERSION | typeof EXPERIMENTAL_PRODUCTION_FORECAST_VERSION;
   modelVersion: string;
   recoveryVersion: string | null;
   sourceFingerprint: string;
   scenarioFingerprint: string;
   initialStateQuality: ForecastInitialStateQuality;
+  experimentalQuality?: "standard" | "limited-history" | "degraded" | "unavailable";
+  experimentalCurrent?: {
+    modeledWeightKg: number | null;
+    fatMassKg: number | null;
+    slowNonFatKg: number | null;
+    glycogenWaterKg: number | null;
+    transientWaterKg: number | null;
+    restingRmrKcalPerDay: number | null;
+    typicalMaintenanceKcalPerDay: number | null;
+    latestExpenditureKcalPerDay: number | null;
+    eligibleDays: number;
+    requestedWindowDays: number;
+  };
   horizonDays: number;
   scenarioProvenance: {
     mode: ForecastScenario["mode"];
@@ -216,7 +230,7 @@ export type ForecastResult = {
 
 export type ForecastBlockedResult = {
   status: "initial-state-unreliable" | "initial-state-unavailable";
-  forecastVersion: typeof FORECAST_ALGORITHM_VERSION;
+  forecastVersion: typeof FORECAST_ALGORITHM_VERSION | typeof EXPERIMENTAL_PRODUCTION_FORECAST_VERSION;
   modelVersion: string;
   recoveryVersion: string | null;
   initialStateQuality: "degenerate" | "awaiting";

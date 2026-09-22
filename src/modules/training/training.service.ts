@@ -83,6 +83,7 @@ import {
 import {
   recordExperimentalFfmRetentionShadowForSession,
 } from "@/modules/model-episodes/experimental-ffm-retention-shadow.service";
+import { rebuildUnifiedExperimentalPhysiologyStateV1 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
 import type {
   HistoricalStrengthWorkoutDto,
   MatchCandidateDto,
@@ -134,6 +135,7 @@ async function recordExperimentalStrengthShadows(input: {
     sessionId: input.session.id,
     profileId: input.profileId,
   });
+  await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: input.profileId, fromDate: sourceDate, toDate: sourceDate });
 }
 
 async function recordExperimentalStrengthShadowsBySessionId(input: {
@@ -156,6 +158,10 @@ async function recordExperimentalStrengthShadowsBySessionId(input: {
   }
   await recordExperimentalFfmRetentionShadowForSession(input);
   await recordExperimentalLocalHypertrophyResponseShadowForSession(input);
+  if (session !== null) {
+    const sourceDate = (session.matchedWorkout?.startAt ?? session.webStartedAt ?? session.createdAt).slice(0, 10);
+    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: input.profileId, fromDate: sourceDate, toDate: sourceDate });
+  }
 }
 
 function isStrengthWorkout(type: string): boolean {

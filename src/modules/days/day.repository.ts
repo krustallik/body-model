@@ -7,6 +7,7 @@ import { prisma } from "@/lib/db/prisma";
 import { SleepRepository } from "@/modules/health/sleep.repository";
 import { recordExperimentalGlycogenStateShadow } from "@/modules/model-episodes/experimental-glycogen-state-shadow.service";
 import { rebuildAuthoritativeRelativeMuscleTrajectory } from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
+import { rebuildUnifiedExperimentalPhysiologyStateV1 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
 import { DuplicateDayError } from "./day.errors";
 import type {
   CreateDailyMetricInput,
@@ -61,6 +62,8 @@ const productionShadowReplayer: DailyMetricShadowReplayer = {
   async replayFrom(date) {
     await recordExperimentalGlycogenStateShadow({ date });
     await rebuildAuthoritativeRelativeMuscleTrajectory({ fromDate: date });
+    const latest = await prisma.dailyHealthData.findFirst({ orderBy: { date: "desc" }, select: { date: true } });
+    if (latest !== null) await rebuildUnifiedExperimentalPhysiologyStateV1({ fromDate: date, toDate: latest.date });
   },
 };
 

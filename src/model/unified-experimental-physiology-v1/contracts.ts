@@ -109,6 +109,7 @@ export type UnifiedSourceLineageV1 = {
   workouts: Array<{ id: number; updatedAt: string; sourceFingerprint: string | null }>;
   diarySessions: Array<{ id: number; revision: number; updatedAt: string }>;
   childModelRevisions: Record<string, string>;
+  childOutputs?: Array<{ kind: string; id: number; updatedAt: string; sourceFingerprint: string }>;
   sourceDate: string;
 };
 

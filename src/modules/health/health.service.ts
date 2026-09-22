@@ -13,6 +13,7 @@ import { recordExperimentalLocalHypertrophyResponseShadow } from "@/modules/mode
 import { recordExperimentalCessationDetrainingShadow } from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
 import { rebuildAuthoritativeRelativeMuscleTrajectory } from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
 import { recordExperimentalFfmRetentionShadow } from "@/modules/model-episodes/experimental-ffm-retention-shadow.service";
+import { rebuildUnifiedExperimentalPhysiologyStateV1 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
 
 export async function syncHealthData(
   request: HealthSyncRequest,
@@ -125,6 +126,14 @@ export async function syncHealthData(
         date: chronologicalDates[0]!.date,
         errorType: errorKind(error),
       });
+    }
+  }
+
+  if (repository === healthSyncRepository && chronologicalDates.length > 0) {
+    try {
+      await rebuildUnifiedExperimentalPhysiologyStateV1({ fromDate: chronologicalDates[0]!.date, toDate: referenceDate.date });
+    } catch (error) {
+      logEvent("warn", "unified_experimental_physiology_state_failed", { fromDate: chronologicalDates[0]!.date, toDate: referenceDate.date, errorType: errorKind(error) });
     }
   }
 

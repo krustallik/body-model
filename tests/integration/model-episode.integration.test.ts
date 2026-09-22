@@ -226,6 +226,25 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     })).rejects.toThrow();
   });
 
+  it("treats missing strength records as rest days instead of stopping the model prefix", async () => {
+    const restDates = ["2041-03-25", "2041-03-27"];
+    await prisma.dailyHealthData.updateMany({
+      where: { date: { in: restDates } },
+      data: { strengthTrainingMinutes: null, workoutFeedObserved: false },
+    });
+
+    const recalculated = await recalculateModelEpisode({ episodeId, now });
+    expect(recalculated).toMatchObject({
+      daysPersisted: 11,
+      resolvedUntil: finalDate,
+      continuityStatus: "resolved",
+      recoveryRequired: false,
+      unknownIntervals: [],
+    });
+    expect(await prisma.dailyModelState.count({ where: { episodeId, status: "complete" } })).toBe(11);
+    expect(await prisma.modelUnknownInterval.count({ where: { episodeId } })).toBe(0);
+  });
+
   it("reads compact diagnostics from PostgreSQL without mutating model records", async () => {
     const before = {
       episode: await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } }),

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { missingPhysiologicalTransitionFields } from "@/model/physiological-simulator";
 import { buildSimulationDays } from "@/modules/model-episodes/simulation-input-builder";
+import { analyzeStateContinuity } from "@/modules/model-episodes/unknown-intervals";
 import { sourceDay } from "./model-episode-fixtures";
 import type { HistoricalModelSources } from "@/modules/model-episodes/model-episode.types";
 
@@ -63,7 +64,7 @@ describe("activity missing/zero continuity", () => {
     expect(result[0].input.workoutActivity?.events).toHaveLength(1);
   });
 
-  it("keeps unknown strength when workout feed was unavailable", () => {
+  it("treats an absent strength record as a rest day when workout feed was unavailable", () => {
     const result = buildSimulationDays({
       from: date,
       to: date,
@@ -75,13 +76,13 @@ describe("activity missing/zero continuity", () => {
         })],
       }),
     });
-    expect(result[0].sourceQuality.status).toBe("missing-activity");
-    expect(result[0].sourceQuality.issues).toContain("strengthTrainingMinutes");
+    expect(result[0].sourceQuality.status).toBe("complete");
+    expect(result[0].input.strengthTrainingMinutes).toBe(0);
     expect(missingPhysiologicalTransitionFields(result[0].input, "hold-ecf"))
-      .toContain("strengthTrainingMinutes");
+      .not.toContain("strengthTrainingMinutes");
   });
 
-  it("keeps legacy null unknown when coverage provenance is absent", () => {
+  it("treats an absent strength record as rest even when feed provenance is absent", () => {
     const result = buildSimulationDays({
       from: date,
       to: date,
@@ -93,7 +94,8 @@ describe("activity missing/zero continuity", () => {
         })],
       }),
     });
-    expect(result[0].sourceQuality.status).toBe("missing-activity");
+    expect(result[0].sourceQuality.status).toBe("complete");
+    expect(result[0].input.strengthTrainingMinutes).toBe(0);
   });
 
   it("uses observed legacy strength zero when feed unavailable", () => {
@@ -194,25 +196,26 @@ describe("activity missing/zero continuity", () => {
     expect(result[0].sourceQuality.issues).toContain("outsideWorkWalkingDistanceKm");
   });
 
-  it("requires walking speed only when walking distance is positive", () => {
+  it("does not block on missing walking speed when a recent personal value exists", () => {
     const result = buildSimulationDays({
       from: date,
       to: date,
       modelVersion: "bodycast-physiology-v6",
       sources: sources({
-        days: [sourceDay(date, {
-          walkingDistanceKm: 5,
-          averageWalkingSpeedKmh: null,
-          strengthTrainingMinutes: 0,
-          workoutFeedObserved: true,
-        })],
+        days: [
+          sourceDay("2026-09-14", { averageWalkingSpeedKmh: 4.8 }),
+          sourceDay("2026-09-15", { averageWalkingSpeedKmh: 5.2 }),
+          sourceDay(date, { walkingDistanceKm: 5, averageWalkingSpeedKmh: null,
+            strengthTrainingMinutes: 0, workoutFeedObserved: true }),
+        ],
       }),
     });
-    expect(result[0].sourceQuality.status).toBe("missing-activity");
-    expect(result[0].sourceQuality.issues).toContain("averageWalkingSpeedKmh");
+    expect(result[0].sourceQuality.status).toBe("complete");
+    expect(result[0].input.averageWalkingSpeedKmh).toBe(5);
+    expect(result[0].sourceQuality.issues).not.toContain("averageWalkingSpeedKmh");
   });
 
-  it("does not let a later day's observed feed reinterpret an older unknown day", () => {
+  it("does not require a workout feed to keep a multi-day rest sequence continuous", () => {
     const older = "2026-09-10";
     const newer = "2026-09-20";
     const result = buildSimulationDays({
@@ -220,16 +223,10 @@ describe("activity missing/zero continuity", () => {
       to: newer,
       modelVersion: "bodycast-physiology-v6",
       sources: {
-        days: [
-          sourceDay(older, {
-            strengthTrainingMinutes: null,
-            workoutFeedObserved: null,
-          }),
-          sourceDay(newer, {
-            strengthTrainingMinutes: null,
-            workoutFeedObserved: true,
-          }),
-        ],
+        days: Array.from({ length: 11 }, (_, index) => {
+          const current = `2026-09-${String(10 + index).padStart(2, "0")}`;
+          return sourceDay(current, { strengthTrainingMinutes: null, workoutFeedObserved: index % 2 === 0 });
+        }),
         snapshots: [],
         workIntervals: [],
         workouts: [{
@@ -245,11 +242,10 @@ describe("activity missing/zero continuity", () => {
         }],
       },
     });
-    const olderDay = result.find((day) => day.input.date === older);
-    const newerDay = result.find((day) => day.input.date === newer);
-    expect(olderDay?.sourceQuality.status).toBe("missing-activity");
-    expect(olderDay?.input.strengthTrainingMinutes).toBeNull();
-    expect(newerDay?.sourceQuality.status).toBe("complete");
-    expect(newerDay?.input.strengthTrainingMinutes).toBe(0);
+    const continuity = analyzeStateContinuity(result, "hold-ecf");
+    expect(continuity.resolvedDays).toHaveLength(11);
+    expect(continuity.unknownIntervals).toEqual([]);
+    expect(result.find((day) => day.input.date === older)?.input.strengthTrainingMinutes).toBe(0);
+    expect(result.find((day) => day.input.date === newer)?.input.strengthTrainingMinutes).toBe(0);
   });
 });

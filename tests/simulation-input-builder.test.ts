@@ -44,16 +44,33 @@ describe("historical simulation input builder", () => {
     expect(result[1].sourceQuality.issues).toContain("occupationalActivity.durationHours");
   });
 
-  it("marks walking speed unavailable when observed walking distance is positive", () => {
+  it("uses a recent personal speed when observed walking distance lacks speed", () => {
     const result = buildSimulationDays({
       from: date,
       to: date,
+      modelVersion: "bodycast-physiology-v6",
+      sources: sources({ days: [
+        sourceDay("2026-08-20", { averageWalkingSpeedKmh: 4.8 }),
+        sourceDay("2026-08-21", { averageWalkingSpeedKmh: 5.2 }),
+        sourceDay(date, { walkingDistanceKm: 5, averageWalkingSpeedKmh: null }),
+      ] }),
+    });
+    expect(result[0].input.averageWalkingSpeedKmh).toBe(5);
+    expect(result[0].sourceQuality.issues).not.toContain("averageWalkingSpeedKmh");
+    expect(result[0].sourceQuality.sourceObservationFields).not.toContain("averageWalkingSpeedKmh");
+  });
+
+  it("uses the conservative default when no prior speed exists", () => {
+    const result = buildSimulationDays({
+      from: date,
+      to: date,
+      modelVersion: "bodycast-physiology-v6",
       sources: sources({ days: [sourceDay(date, {
-        walkingDistanceKm: 5,
-        averageWalkingSpeedKmh: null,
+        walkingDistanceKm: 5, averageWalkingSpeedKmh: null,
       })] }),
     });
-    expect(result[0].sourceQuality.issues).toContain("averageWalkingSpeedKmh");
+    expect(result[0].input.averageWalkingSpeedKmh).toBe(5);
+    expect(result[0].sourceQuality.status).toBe("complete");
   });
 
   it("subtracts reconstructed work walking from full daily walking", () => {

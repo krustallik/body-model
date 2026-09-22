@@ -103,10 +103,10 @@ describe("Stage 10 forecast workout scenarios", () => {
     });
     expect(trained!.strengthTrainingMinutes).toBe(0);
     expect(trained!.workoutFeedObserved).toBe(true);
-    // Missing feed with null strength is incomplete, not a rest donor.
-    expect(missingFeed).toBeNull();
-    expect(days[1]!.sourceQuality.status).toBe("missing-activity");
-    expect(days[1]!.sourceQuality.issues).toContain("strengthTrainingMinutes");
+    // No strength record means a deterministic rest donor, even without feed coverage.
+    expect(missingFeed).not.toBeNull();
+    expect(missingFeed!.strengthTrainingMinutes).toBe(0);
+    expect(days[1]!.sourceQuality.status).toBe("complete");
   });
 
   it("distinguishes three vs four strength sessions without changing nutrition", () => {

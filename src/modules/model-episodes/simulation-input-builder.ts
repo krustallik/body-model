@@ -35,6 +35,27 @@ function missing(value: number | null): boolean {
   return value === null;
 }
 
+const WALKING_SPEED_LOOKBACK_DAYS = 14;
+const DEFAULT_WALKING_SPEED_KMH = 5;
+
+function recentWalkingSpeedKmh(
+  date: string,
+  days: readonly ModelHealthDaySource[],
+): number | null {
+  const candidates = days
+    .filter((day) => day.date < date && day.averageWalkingSpeedKmh !== null
+      && day.averageWalkingSpeedKmh > 0)
+    .sort((left, right) => right.date.localeCompare(left.date))
+    .slice(0, WALKING_SPEED_LOOKBACK_DAYS)
+    .map((day) => day.averageWalkingSpeedKmh!);
+  if (candidates.length === 0) return null;
+  const sorted = [...candidates].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[middle - 1]! + sorted[middle]!) / 2
+    : sorted[middle]!;
+}
+
 function qualityStatus(input: {
   nutritionIssues: string[];
   activityIssues: string[];
@@ -111,6 +132,13 @@ export function buildSimulationDays(input: {
   return dates.map((date, index) => {
     const day = dayFor(date);
     const sourceDay = days.get(date);
+    // Use a recent personal median (or the model's conservative default when
+    // no prior observation exists) only for model calculations. The raw day
+    // remains null, so history/provenance continues to show the missing speed.
+    const effectiveWalkingSpeedKmh = day.averageWalkingSpeedKmh
+      ?? (workoutAware
+        ? recentWalkingSpeedKmh(date, input.sources.days) ?? DEFAULT_WALKING_SPEED_KMH
+        : null);
     const bridgedNutrition = nutrition[index];
     const dailyIntervals = [...(workIntervals.get(date) ?? [])]
       .sort((left, right) => left.startAt.getTime() - right.startAt.getTime());
@@ -212,17 +240,19 @@ export function buildSimulationDays(input: {
     if (outsideWorkWalkingDistanceKm === null) {
       activityIssues.push("outsideWorkWalkingDistanceKm");
     } else if (outsideWorkWalkingDistanceKm > 0
-        && day.averageWalkingSpeedKmh === null) {
+        && effectiveWalkingSpeedKmh === null) {
       activityIssues.push("averageWalkingSpeedKmh");
     }
     const strengthSuppressed = workoutAware
       && workoutEvents !== undefined
       && hasExplicitStrengthWorkouts(workoutEvents);
-    // v6 + observed workout feed for THIS day: missing legacy strength is confirmed 0
-    // (rest / non-strength day), not an unknown transition hole.
+    // For workout-aware models, an absent strength record means that no
+    // strength session was recorded for this day. It is therefore a
+    // deterministic zero, even when the optional workout feed itself is
+    // absent. Explicit strength workouts remain authoritative below.
     const workoutFeedObserved = day.workoutFeedObserved === true;
-    const confirmedZeroStrength = workoutAware && workoutFeedObserved && !strengthSuppressed;
-    if (!strengthSuppressed && !confirmedZeroStrength && day.strengthTrainingMinutes === null) {
+    const assumedZeroStrength = workoutAware && !strengthSuppressed && day.strengthTrainingMinutes === null;
+    if (!workoutAware && day.strengthTrainingMinutes === null) {
       activityIssues.push("strengthTrainingMinutes");
     }
     if (!sourceDay && dailyIntervals.length === 0) {
@@ -287,12 +317,12 @@ export function buildSimulationDays(input: {
       workWalkingDistanceKm: walking.intervals.find(({ intervalId }) => (
         intervalId === interval.id
       ))?.estimatedWalkingDistanceKm.value ?? null,
-      averageWalkingSpeedKmh: day.averageWalkingSpeedKmh,
+      averageWalkingSpeedKmh: effectiveWalkingSpeedKmh,
     }));
 
     const strengthTrainingMinutes = strengthSuppressed
       ? 0
-      : confirmedZeroStrength && day.strengthTrainingMinutes === null
+      : assumedZeroStrength
         ? 0
         : day.strengthTrainingMinutes;
 
@@ -304,7 +334,7 @@ export function buildSimulationDays(input: {
         fatG: bridgedNutrition.fatG,
         carbsG: bridgedNutrition.carbsG,
         outsideWorkWalkingDistanceKm,
-        averageWalkingSpeedKmh: day.averageWalkingSpeedKmh,
+        averageWalkingSpeedKmh: effectiveWalkingSpeedKmh,
         strengthTrainingMinutes,
         ...(workoutAware ? { workoutActivity: { events: workoutEvents ?? [] } } : {}),
         occupationalActivity: {

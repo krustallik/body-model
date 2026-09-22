@@ -3,7 +3,12 @@ import {
   parseShortcutNumber,
   splitShortcutLines,
 } from "@/modules/health/normalize-shortcut-numeric-values";
+import {
+  expandTrainingWorkoutFields,
+  looksLikeTrainingTimestampBlob,
+} from "@/modules/health/expand-training-workouts";
 import { MAX_HEALTH_SYNC_CALENDAR_DAYS } from "@/modules/health/health-sync-limits";
+import { DEFAULT_TIME_ZONE, instantToLocalDateTime, isValidTimeZone } from "@/model/time-zone";
 
 type JsonObject = Record<string, unknown>;
 
@@ -173,10 +178,81 @@ export function normalizeShortcutRangePayload(input: unknown): RangeNormalizedSh
   const metricSamplesByDate = new Map<string, TimestampedHealthMetricSample[]>();
   const daily = new Map<string, JsonObject>();
   const rangeFields = new Set(METRICS.map(({ field }) => field.toLowerCase()));
+  const trainingFields = new Set([
+    "trainingtype",
+    "trainingactivekcal",
+    "trainingtimestamps",
+    "strengthtrainingminutes",
+    "workouts",
+  ]);
   const passthrough = Object.fromEntries(Object.entries(rawDay).filter(([key]) => {
     const normalized = key.trim().toLowerCase();
-    return normalized !== "date" && !rangeFields.has(normalized);
+    return normalized !== "date" && !rangeFields.has(normalized) && !trainingFields.has(normalized);
   }));
+
+  const ensureDay = (date: string): JsonObject => {
+    const existing = daily.get(date);
+    if (existing) return existing;
+    const created = { ...passthrough, date };
+    daily.set(date, created);
+    return created;
+  };
+
+  const timezoneValue = readKey(input, "timezone");
+  const timezone = typeof timezoneValue === "string" && isValidTimeZone(timezoneValue)
+    ? timezoneValue
+    : DEFAULT_TIME_ZONE;
+
+  // Training fields in a range payload describe one latest-N feed, not every
+  // generated calendar record. Expand it once and partition workouts by their
+  // own local start date instead of copying the raw strings to every day.
+  const trainingType = readKey(rawDay, "trainingType");
+  const trainingActiveKcal = readKey(rawDay, "trainingActiveKcal");
+  const explicitTimestamps = readKey(rawDay, "trainingTimestamps");
+  const legacyTimestampBlob = readKey(rawDay, "strengthTrainingMinutes");
+  const trainingTimestamps = explicitTimestamps !== undefined
+    ? explicitTimestamps
+    : (trainingType !== undefined || trainingActiveKcal !== undefined)
+      && looksLikeTrainingTimestampBlob(legacyTimestampBlob)
+      ? legacyTimestampBlob
+      : undefined;
+  if (trainingType !== undefined || trainingActiveKcal !== undefined || trainingTimestamps !== undefined) {
+    const expanded = expandTrainingWorkoutFields({
+      trainingType,
+      trainingActiveKcal,
+      trainingTimestamps,
+      timezone,
+    }).workouts;
+    for (const workout of expanded) {
+      const date = instantToLocalDateTime(new Date(workout.startAt), timezone).date;
+      const day = ensureDay(date);
+      const current = Array.isArray(day.workouts) ? day.workouts : [];
+      day.workouts = [...current, workout];
+    }
+  }
+
+  // Structured workouts may also be present in a range envelope. Partition
+  // them by start date for the same reason; never copy them to every day.
+  const structured = readKey(rawDay, "workouts");
+  if (Array.isArray(structured)) {
+    const syncDate = instantToLocalDateTime(new Date(syncAt), timezone).date;
+    for (const workout of structured) {
+      if (!isObject(workout) || typeof workout.startAt !== "string") {
+        const day = ensureDay(syncDate);
+        day.workouts = [...(Array.isArray(day.workouts) ? day.workouts : []), workout];
+        continue;
+      }
+      const startAt = new Date(workout.startAt);
+      if (!Number.isFinite(startAt.getTime())) {
+        const day = ensureDay(syncDate);
+        day.workouts = [...(Array.isArray(day.workouts) ? day.workouts : []), workout];
+        continue;
+      }
+      const day = ensureDay(instantToLocalDateTime(startAt, timezone).date);
+      const current = Array.isArray(day.workouts) ? day.workouts : [];
+      day.workouts = [...current, workout];
+    }
+  }
 
   for (const definition of METRICS) {
     const rawMetric = readKey(rawDay, definition.field);
@@ -187,7 +263,7 @@ export function normalizeShortcutRangePayload(input: unknown): RangeNormalizedSh
       const perDate = metricSamplesByDate.get(sample.date) ?? [];
       perDate.push(sample);
       metricSamplesByDate.set(sample.date, perDate);
-      if (!daily.has(sample.date)) daily.set(sample.date, { ...passthrough, date: sample.date });
+      ensureDay(sample.date);
     }
     for (const [date, record] of daily) {
       const perDay = samples.filter((sample) => sample.date === date);

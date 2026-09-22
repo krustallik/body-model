@@ -187,7 +187,6 @@ describe("POST /api/v1/health/sync", () => {
         trainingTypeLineCount: 2,
         trainingActiveKcalLineCount: 2,
         strengthTrainingMinutesLineCount: 4,
-        rawBody: JSON.stringify(body),
       }),
       expect.objectContaining({
         event: "health_sync_success",
@@ -198,6 +197,7 @@ describe("POST /api/v1/health/sync", () => {
       }),
     ]));
     const received = events.find((event) => event.event === "health_sync_received");
+    expect(received).not.toHaveProperty("rawBody");
     expect(received).not.toHaveProperty("apiKey");
     expect(received).not.toHaveProperty("authorization");
     info.mockRestore();

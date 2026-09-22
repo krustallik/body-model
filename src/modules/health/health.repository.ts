@@ -208,21 +208,36 @@ async function reconcileDayWorkouts(
     });
   }
 
-  if (plan.creates.length > 0) {
-    await transaction.workout.createMany({
-      data: plan.creates.map((fields) => ({
+  // Use the composite unique identity for creates so concurrent retries
+  // converge on one Workout row instead of racing through createMany().
+  await Promise.all(plan.creates.map((fields) => transaction.workout.upsert({
+    where: {
+      dailyHealthDataId_sourceIdentity: {
         dailyHealthDataId,
-        externalId: fields.externalId,
         sourceIdentity: fields.sourceIdentity,
-        type: fields.type,
-        startAt: fields.startAt,
-        endAt: fields.endAt,
-        durationMinutes: fields.durationMinutes,
-        energyKcal: fields.energyKcal,
-        activeEnergyKcal: fields.activeEnergyKcal,
-      })),
-    });
-  }
+      },
+    },
+    create: {
+      dailyHealthDataId,
+      externalId: fields.externalId,
+      sourceIdentity: fields.sourceIdentity,
+      type: fields.type,
+      startAt: fields.startAt,
+      endAt: fields.endAt,
+      durationMinutes: fields.durationMinutes,
+      energyKcal: fields.energyKcal,
+      activeEnergyKcal: fields.activeEnergyKcal,
+    },
+    update: {
+      externalId: fields.externalId,
+      type: fields.type,
+      startAt: fields.startAt,
+      endAt: fields.endAt,
+      durationMinutes: fields.durationMinutes,
+      energyKcal: fields.energyKcal,
+      activeEnergyKcal: fields.activeEnergyKcal,
+    },
+  })));
 
   if (plan.deletes.length > 0) {
     await transaction.workout.deleteMany({

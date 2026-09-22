@@ -28,6 +28,16 @@ describe("workoutSourceIdentity", () => {
       endAt: new Date("2026-09-17T06:12:00Z"),
     })).toBe("fp:Stair Climbing|2026-09-17T06:00:00.000Z|2026-09-17T06:12:00.000Z");
   });
+
+  it("ignores the positional index in legacy synthetic IDs", () => {
+    const fields = {
+      type: "Traditional Strength Training",
+      startAt: "2026-09-21T07:45:00.000Z",
+      endAt: "2026-09-21T09:03:00.000Z",
+    };
+    expect(workoutSourceIdentity({ ...fields, externalId: "training-2026-09-21-0-2026-09-21T07:45:00.000Z" }))
+      .toBe(workoutSourceIdentity({ ...fields, externalId: "training-2026-09-21-1-2026-09-21T07:45:00.000Z" }));
+  });
 });
 
 describe("planDayWorkoutReconciliation", () => {
@@ -181,5 +191,48 @@ describe("planDayWorkoutReconciliation", () => {
     ]));
     expect(plan.creates).toEqual([]);
     expect(plan.deletes).toEqual([]);
+  });
+
+  it("deduplicates repeated incoming fingerprints and prefers linked legacy rows", () => {
+    const plan = planDayWorkoutReconciliation(
+      [
+        {
+          id: 55,
+          sourceIdentity: "ext:training-2026-09-21-0-2026-09-21T07:45:00.000Z",
+          externalId: "training-2026-09-21-0-2026-09-21T07:45:00.000Z",
+          type: "Traditional Strength Training",
+          startAt: new Date("2026-09-21T07:45:00.000Z"),
+          endAt: new Date("2026-09-21T09:03:00.000Z"),
+          linkedToDiary: true,
+        },
+        {
+          id: 59,
+          sourceIdentity: "ext:training-2026-09-21-1-2026-09-21T07:45:00.000Z",
+          externalId: "training-2026-09-21-1-2026-09-21T07:45:00.000Z",
+          type: "Traditional Strength Training",
+          startAt: new Date("2026-09-21T07:45:00.000Z"),
+          endAt: new Date("2026-09-21T09:03:00.000Z"),
+          linkedToDiary: false,
+        },
+      ],
+      [
+        {
+          type: "Traditional Strength Training",
+          startAt: "2026-09-21T07:45:00.000Z",
+          endAt: "2026-09-21T09:03:00.000Z",
+          activeEnergyKcal: 593,
+        },
+        {
+          type: "Traditional Strength Training",
+          startAt: "2026-09-21T07:45:00.000Z",
+          endAt: "2026-09-21T09:03:00.000Z",
+          activeEnergyKcal: 594,
+        },
+      ],
+    );
+    expect(plan.updates).toHaveLength(1);
+    expect(plan.updates[0]).toMatchObject({ id: 55, fields: { activeEnergyKcal: 594, sourceIdentity: "fp:Traditional Strength Training|2026-09-21T07:45:00.000Z|2026-09-21T09:03:00.000Z" } });
+    expect(plan.creates).toEqual([]);
+    expect(plan.deletes).toEqual([59]);
   });
 });

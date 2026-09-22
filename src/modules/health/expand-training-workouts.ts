@@ -39,7 +39,8 @@ export type ExpandedTrainingWorkout = {
   endAt: string;
   durationMinutes: number;
   activeEnergyKcal: number | null;
-  externalId: string;
+  /** No positional synthetic ID: reconciliation derives a stable fingerprint. */
+  externalId: null;
 };
 
 export type TrainingWorkoutExpansionDiagnostics = {
@@ -246,7 +247,7 @@ export function expandTrainingWorkoutFields(input: {
   trainingType: unknown;
   trainingActiveKcal: unknown;
   trainingTimestamps: unknown;
-  dayDate: string;
+  dayDate?: string;
   timezone?: string;
 }): {
   workouts: ExpandedTrainingWorkout[];
@@ -347,7 +348,7 @@ export function expandTrainingWorkoutFields(input: {
     }
 
     const localStartDate = instantToLocalDateTime(startAt, timezone).date;
-    if (localStartDate !== input.dayDate) {
+    if (input.dayDate !== undefined && localStartDate !== input.dayDate) {
       diagnostics.rejectedCount += 1;
       diagnostics.reasons.push(`workout-${index}:other-calendar-day`);
       continue;
@@ -360,7 +361,7 @@ export function expandTrainingWorkoutFields(input: {
       endAt: endAt.toISOString(),
       durationMinutes,
       activeEnergyKcal: kcalParsed.value,
-      externalId: `training-${input.dayDate}-${index}-${startAt.toISOString()}`,
+      externalId: null,
     });
     diagnostics.acceptedCount += 1;
   }

@@ -1,4 +1,9 @@
-import { workoutSourceIdentity, type WorkoutIdentitySource } from "./workout-source-identity";
+import {
+  isLegacySyntheticWorkoutId,
+  workoutFingerprint,
+  workoutSourceIdentity,
+  type WorkoutIdentitySource,
+} from "./workout-source-identity";
 import type { WorkoutInput } from "./health.types";
 
 export type ExistingDayWorkout = {
@@ -21,6 +26,8 @@ export type WorkoutWriteFields = {
   durationMinutes: number | null;
   energyKcal: number | null;
   activeEnergyKcal: number | null;
+  /** Exact type/start/end identity used only for legacy synthetic fallback. */
+  fingerprint: string;
 };
 
 export type WorkoutReconciliationPlan = {
@@ -37,6 +44,7 @@ export type WorkoutReconciliationPlan = {
 
 function toWriteFields(workout: WorkoutInput): WorkoutWriteFields {
   const sourceIdentity = workoutSourceIdentity(workout);
+  const fingerprint = workoutFingerprint(workout);
   return {
     externalId: workout.externalId ?? null,
     sourceIdentity,
@@ -46,13 +54,17 @@ function toWriteFields(workout: WorkoutInput): WorkoutWriteFields {
     durationMinutes: workout.durationMinutes ?? null,
     energyKcal: workout.energyKcal ?? null,
     activeEnergyKcal: workout.activeEnergyKcal ?? null,
+    fingerprint,
   };
 }
 
 function legacyIdentity(existing: ExistingDayWorkout): string {
-  if (existing.sourceIdentity) return existing.sourceIdentity;
+  const sourceIdentity = existing.sourceIdentity?.trim() ?? "";
+  const legacyExternalId = isLegacySyntheticWorkoutId(existing.externalId)
+    || sourceIdentity.startsWith("ext:training-");
+  if (sourceIdentity && !legacyExternalId) return sourceIdentity;
   const source: WorkoutIdentitySource = {
-    externalId: existing.externalId,
+    externalId: legacyExternalId ? null : existing.externalId,
     type: existing.type,
     startAt: existing.startAt,
     endAt: existing.endAt,
@@ -68,18 +80,41 @@ export function planDayWorkoutReconciliation(
   existing: readonly ExistingDayWorkout[],
   incoming: readonly WorkoutInput[],
 ): WorkoutReconciliationPlan {
-  const incomingFields = incoming.map(toWriteFields);
-  const existingByIdentity = new Map<string, ExistingDayWorkout>();
+  // A retry or copied range feed can contain the same workout more than once.
+  // Last occurrence wins its mutable values, while the identity remains stable.
+  const incomingFields = [...new Map(incoming.map((workout) => {
+    const fields = toWriteFields(workout);
+    return [fields.sourceIdentity, fields] as const;
+  })).values()];
+  const existingByIdentity = new Map<string, ExistingDayWorkout[]>();
+  const existingByFingerprint = new Map<string, ExistingDayWorkout[]>();
   for (const row of existing) {
-    existingByIdentity.set(legacyIdentity(row), row);
+    const identity = legacyIdentity(row);
+    const identityRows = existingByIdentity.get(identity) ?? [];
+    identityRows.push(row);
+    existingByIdentity.set(identity, identityRows);
+    const legacy = identity.startsWith("fp:");
+    if (legacy) {
+      const fingerprintRows = existingByFingerprint.get(identity) ?? [];
+      fingerprintRows.push(row);
+      existingByFingerprint.set(identity, fingerprintRows);
+    }
   }
+
+  const chooseCanonical = (rows: readonly ExistingDayWorkout[]): ExistingDayWorkout | undefined => (
+    [...rows].sort((left, right) => Number(right.linkedToDiary) - Number(left.linkedToDiary) || left.id - right.id)[0]
+  );
 
   const matchedExistingIds = new Set<number>();
   const updates: WorkoutReconciliationPlan["updates"] = [];
   const creates: WorkoutWriteFields[] = [];
 
   for (const fields of incomingFields) {
-    const prior = existingByIdentity.get(fields.sourceIdentity);
+    const exact = chooseCanonical(existingByIdentity.get(fields.sourceIdentity) ?? []);
+    const legacy = fields.sourceIdentity.startsWith("ext:")
+      ? chooseCanonical(existingByFingerprint.get(fields.fingerprint) ?? [])
+      : undefined;
+    const prior = exact ?? legacy;
     if (prior && !matchedExistingIds.has(prior.id)) {
       matchedExistingIds.add(prior.id);
       updates.push({ id: prior.id, fields });

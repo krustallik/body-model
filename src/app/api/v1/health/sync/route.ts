@@ -43,13 +43,13 @@ export async function POST(request: Request): Promise<Response> {
 
   if (!isValidApiKey(request.headers.get("x-api-key"), getEnv().IOS_SHORTCUT_API_KEY)) {
     await audit("unauthorized", 401);
-    logEvent("warn", "health_sync_unauthorized", { rawBody, contentType });
+    logEvent("warn", "health_sync_unauthorized", { contentType });
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
 
   if (!contentType?.toLowerCase().startsWith("application/json")) {
     await audit("invalid-content-type", 400);
-    logEvent("warn", "health_sync_invalid_content_type", { rawBody, contentType });
+    logEvent("warn", "health_sync_invalid_content_type", { contentType });
     return Response.json(
       { error: "validation_error", details: [{ path: [], message: "Content-Type must be application/json" }] },
       { status: 400 },
@@ -61,7 +61,7 @@ export async function POST(request: Request): Promise<Response> {
     body = JSON.parse(rawBody);
   } catch (error) {
     await audit("invalid-json", 400, errorKind(error));
-    logEvent("warn", "health_sync_invalid_json", { rawBody, contentType, errorType: errorKind(error) });
+    logEvent("warn", "health_sync_invalid_json", { contentType, errorType: errorKind(error) });
     return Response.json(
       { error: "validation_error", details: [{ path: [], message: "Invalid JSON body" }] },
       { status: 400 },
@@ -71,7 +71,6 @@ export async function POST(request: Request): Promise<Response> {
   const requestSummary = summarizeSyncBody(body);
   logEvent("info", "health_sync_received", {
     ...requestSummary,
-    rawBody,
   });
 
   let normalized;
@@ -115,7 +114,6 @@ export async function POST(request: Request): Promise<Response> {
     await audit("internal-error", 500, errorKind(error));
     logEvent("error", "health_sync_normalization_unexpected_failed", {
       ...requestSummary,
-      rawBody,
       errorType: errorKind(error),
     });
     return Response.json({ error: "internal_error" }, { status: 500 });

@@ -24,6 +24,7 @@ function repositoryFixture(existingDates: string[] = [], existingWorkouts: Array
     workout: {
       findMany: vi.fn().mockResolvedValue(existingWorkouts),
       update: vi.fn().mockResolvedValue({}),
+      upsert: vi.fn().mockResolvedValue({}),
       createMany: vi.fn().mockResolvedValue({ count: 1 }),
       deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
@@ -287,15 +288,15 @@ describe("Prisma health synchronization repository", () => {
         matchedDiarySession: { select: { id: true } },
       }),
     });
-    expect(transaction.workout.createMany).toHaveBeenCalledWith({
-      data: [expect.objectContaining({
+    expect(transaction.workout.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({
         externalId: "apple-1",
         sourceIdentity: "ext:apple-1",
         startAt: new Date("2026-08-21T15:00:00Z"),
         activeEnergyKcal: 340,
         energyKcal: null,
-      })],
-    });
+      }),
+    }));
     expect(transaction.workout.deleteMany).not.toHaveBeenCalled();
   });
 
@@ -309,12 +310,12 @@ describe("Prisma health synchronization repository", () => {
         endAt: "2026-08-21T18:00:00+02:00",
       }],
     });
-    expect(transaction.workout.createMany).toHaveBeenCalledWith({
-      data: [expect.objectContaining({
+    expect(transaction.workout.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({
         activeEnergyKcal: null,
         sourceIdentity: "fp:strength|2026-08-21T15:00:00.000Z|2026-08-21T16:00:00.000Z",
-      })],
-    });
+      }),
+    }));
   });
 
   it("drops other-calendar-day workouts before reconciliation", async () => {
@@ -346,9 +347,9 @@ describe("Prisma health synchronization repository", () => {
         syncedAt: null,
       },
     );
-    expect(transaction.workout.createMany).toHaveBeenCalledWith({
-      data: [expect.objectContaining({ externalId: "same-day", activeEnergyKcal: 154, sourceIdentity: "ext:same-day" })],
-    });
+    expect(transaction.workout.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({ externalId: "same-day", activeEnergyKcal: 154, sourceIdentity: "ext:same-day" }),
+    }));
   });
 
   it("updates existing workouts in place and preserves ids", async () => {

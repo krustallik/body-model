@@ -62,6 +62,37 @@ describe("normalizeShortcutRangePayload", () => {
     expect(result?.metricSamplesByDate.get("2026-09-17")).toHaveLength(8);
   });
 
+  it("partitions one latest-N training feed by workout date instead of copying it", () => {
+    const result = normalizeShortcutRangePayload(payload({
+      trainingType: "Traditional Strength Training\nStair Climbing",
+      trainingActiveKcal: "593\n18",
+      trainingTimestamps: [
+        iso("2026-09-21", "09:45:00"),
+        iso("2026-09-22", "09:00:00"),
+        iso("2026-09-21", "11:03:00"),
+        iso("2026-09-22", "09:12:00"),
+      ].join("\n"),
+    }));
+    const days = (result?.payload as { days: Array<Record<string, unknown>> }).days;
+    const sep21 = days.find((day) => day.date === "2026-09-21");
+    const sep22 = days.find((day) => day.date === "2026-09-22");
+    const sep17 = days.find((day) => day.date === "2026-09-17");
+
+    expect(sep21?.workouts).toEqual([expect.objectContaining({
+      type: "Traditional Strength Training",
+      externalId: null,
+      activeEnergyKcal: 593,
+    })]);
+    expect(sep22?.workouts).toEqual([expect.objectContaining({
+      type: "Stair Climbing",
+      externalId: null,
+      activeEnergyKcal: 18,
+    })]);
+    expect(sep17).not.toHaveProperty("workouts");
+    expect(sep17).not.toHaveProperty("trainingType");
+    expect(sep17).not.toHaveProperty("trainingActiveKcal");
+  });
+
   it("rejects mismatched parallel series before any daily output is produced", () => {
     expect(() => normalizeShortcutRangePayload(payload({ fatG: {
       timeStamps: iso("2026-09-17", "08:00:00"), fat: "20\\n30",

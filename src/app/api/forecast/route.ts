@@ -11,6 +11,7 @@ import { forecastModelEpisode } from "@/modules/model-forecast/model-forecast.se
 import { forecastQaNow } from "./qa-now";
 import { errorKind, logEvent } from "@/lib/logger";
 import { tryAcquireOperation } from "@/lib/operation-gate";
+import { latestCompletedLocalDate } from "@/modules/model-episodes/model-calendar";
 
 export const dynamic = "force-dynamic";
 
@@ -20,7 +21,12 @@ const DEFAULT_RECOVERY_SEED = 20_260_824;
 async function ensurePersistedModelDays(now?: Date): Promise<void> {
   try {
     let status = await getModelStatus();
-    if (status.daysModeled === 0 || status.latestModeledDate === null) {
+    const latestCompletedDate = status.timezone
+      ? latestCompletedLocalDate(now ?? new Date(), status.timezone)
+      : null;
+    const modelIsBehind = latestCompletedDate !== null
+      && (status.latestModeledDate === null || status.latestModeledDate < latestCompletedDate);
+    if (status.daysModeled === 0 || status.latestModeledDate === null || modelIsBehind) {
       try {
         await recalculateModelEpisode(now ? { now } : {});
         status = await getModelStatus();

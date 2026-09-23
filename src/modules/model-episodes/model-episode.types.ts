@@ -276,6 +276,8 @@ export type DailyModelStateWrite = {
 export type ModelStatusDto = {
   episodeId: number;
   episodeStartDate: string;
+  /** Episode timezone used to decide whether a new local day is complete. */
+  timezone?: string;
   latestModeledDate: string | null;
   modelVersion: string;
   calibrationStatus: PersonalizationCalibrationStatus;

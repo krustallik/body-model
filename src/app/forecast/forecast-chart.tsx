@@ -27,6 +27,8 @@ type HistoricalDay = {
   dataQuality: string;
 };
 
+type ObservedWeight = { date: string; weightKg: number };
+
 const historyKeys: Record<ForecastMetric, keyof HistoricalDay> = {
   physiologicalBodyWeightKg: "modeledWeightKg",
   fatMassKg: "fatMassKg",
@@ -68,18 +70,32 @@ function Tick({ x, y, payload, locale }: { x?: number; y?: number; payload?: { v
   return <text x={x} y={(y ?? 0) + 14} textAnchor="middle" fill="currentColor" fontSize="11">{payload ? formatDate(payload.value, undefined, locale) : ""}</text>;
 }
 
-export function ForecastChart({ result, metric, history, locale, target }: {
+export function ForecastChart({ result, metric, history, observedWeights = [], locale, target }: {
   result: ForecastResult;
   metric: ForecastMetric;
   history: HistoricalDay[];
+  observedWeights?: ObservedWeight[];
   locale: Locale;
   target?: { date: string; weightKg: number };
 }) {
   const uk = locale === "uk";
-  const historical = history
-    .map((day) => ({ date: day.date, historical: day[historyKeys[metric]] as number | null }))
-    .filter((day) => day.historical !== null);
-  const rows = [...historical, ...chartRows(result, metric)];
+  const observed = metric === "physiologicalBodyWeightKg"
+    ? observedWeights.map((day) => ({ date: day.date, observed: day.weightKg }))
+    : [];
+  // For weight, scale observations are the authoritative historical line.
+  // Keep latent modeled history for compartments that have no direct scale
+  // observation, but do not present a multi-kilogram latent offset as past
+  // measured weight.
+  const historical = metric === "physiologicalBodyWeightKg" && observed.length > 0
+    ? []
+    : history
+      .map((day) => ({ date: day.date, historical: day[historyKeys[metric]] as number | null }))
+      .filter((day) => day.historical !== null);
+  const rowsByDate = new Map<string, Record<string, unknown>>();
+  for (const row of [...historical, ...observed, ...chartRows(result, metric)]) {
+    rowsByDate.set(row.date, { ...(rowsByDate.get(row.date) ?? {}), ...row });
+  }
+  const rows = [...rowsByDate.values()].sort((left, right) => String(left.date).localeCompare(String(right.date)));
   const firstForecastDate = result.dates[0]?.date;
 
   return (
@@ -93,6 +109,7 @@ export function ForecastChart({ result, metric, history, locale, target }: {
           <Area type="monotone" dataKey="possible" name={uk ? "Ширший можливий діапазон (5–95%)" : "Wider possible range (5–95%)"} fill="var(--band-outer)" stroke="none" connectNulls={false} />
           <Area type="monotone" dataKey="likely" name={uk ? "Імовірний діапазон (25–75%)" : "Likely range (25–75%)"} fill="var(--band-inner)" stroke="none" connectNulls={false} />
           <Line type="monotone" dataKey="historical" name={uk ? "Змодельована історія" : "Modeled history"} stroke="var(--history-line)" strokeWidth={2} dot={false} connectNulls={false} />
+          {observed.length > 0 && <Line type="monotone" dataKey="observed" name={uk ? "Виміряна вага" : "Observed scale weight"} stroke="var(--accent)" strokeWidth={2} dot={true} connectNulls={false} />}
           <Line type="monotone" dataKey="median" name={uk ? "Очікувана оцінка" : "Expected estimate"} stroke="var(--forecast-line)" strokeWidth={3} dot={false} connectNulls={false} />
           {firstForecastDate && <ReferenceLine x={firstForecastDate} stroke="var(--boundary)" strokeDasharray="4 4" label={{ value: uk ? "Прогноз" : "Forecast", position: "insideTopRight", fill: "var(--muted)", fontSize: 11 }} />}
           {target && <ReferenceLine y={target.weightKg} stroke="var(--target, #b35b36)" strokeDasharray="6 4" />}

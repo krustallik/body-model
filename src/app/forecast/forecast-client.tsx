@@ -63,6 +63,7 @@ type ContextProvenance = {
 type Context = {
   status: ModelStatusDto;
   history: HistoricalDay[];
+  observedWeights?: Array<{ date: string; weightKg: number }>;
   unknownIntervals: UnknownIntervalDto[];
   provenance?: ContextProvenance;
 };
@@ -284,9 +285,11 @@ export function ForecastClient() {
   const blockedOutcome = outcome?.status === "initial-state-unreliable" || outcome?.status === "initial-state-unavailable" ? outcome : null;
   const blockedCopy = blockedOutcome ? blockedPresentation(blockedOutcome, locale) : null;
   const endpoint = result ? summarizeEndpoint(result, metric) : null;
-  const startWeight = context?.status.currentPredictedWeightKg
+  const observedStartWeight = context?.observedWeights?.at(-1)?.weightKg ?? null;
+  const startWeight = result?.experimentalCurrent?.modeledWeightKg
+    ?? observedStartWeight
     ?? context?.status.currentFilteredWeightKg
-    ?? result?.experimentalCurrent?.modeledWeightKg
+    ?? context?.status.currentPredictedWeightKg
     ?? null;
   const quality = result ? qualityPresentation(result, context?.status.calibrationStatus, locale) : null;
   const metricLabel = metrics.find((item) => item.key === metric)?.label ?? "Estimate";
@@ -416,10 +419,10 @@ export function ForecastClient() {
           <article><span>{uk ? "Очікувана зміна ваги" : "Expected weight change"}</span><strong>{metric === "physiologicalBodyWeightKg" && startWeight !== null ? `${endpoint.median - startWeight >= 0 ? "+" : ""}${new Intl.NumberFormat(uk ? "uk-UA" : "en-US", { maximumFractionDigits: 1 }).format(endpoint.median - startWeight)} kg` : "—"}</strong><small>{metric === "physiologicalBodyWeightKg" ? (uk ? "Від поточної оцінки моделі" : "From the current model estimate") : (uk ? "Показується в режимі ваги" : "Shown for weight view")}</small></article>
         </section>
         <section className={styles.chartPanel}>
-          <div className={styles.chartHeader}><div><p className={styles.eyebrow}>{uk ? "Минуле (пораховано) → майбутнє" : "Past (calculated) → future"}</p><h2>{uk ? "Як може змінюватись тіло" : "How the body may change"}</h2></div><div className={styles.metricTabs}>{metrics.map((item) => <button type="button" key={item.key} aria-pressed={metric === item.key} onClick={() => setMetric(item.key)}>{item.label}</button>)}</div></div>
-          <div className={styles.legend}><span><i className={styles.historyKey} />{uk ? "Пораховане минуле" : "Calculated past"}</span><span><i className={styles.medianKey} />{uk ? "Найімовірніше" : "Most likely"}</span><span><i className={styles.innerKey} />{result.forecastVersion === "experimental-forecast-v1" ? (uk ? "Інженерні межі" : "Engineering bounds") : (uk ? "Імовірно 25–75%" : "Likely 25–75%")}</span><span><i className={styles.outerKey} />{result.forecastVersion === "experimental-forecast-v1" ? (uk ? "Широкі інженерні межі" : "Wide engineering bounds") : (uk ? "Можливо 5–95%" : "Possible 5–95%")}</span></div>
-          <ForecastChart result={result} metric={metric} history={context?.history ?? []} locale={locale} />
-          <p className={styles.chartNote}>{uk ? "Суцільна лінія — найімовірніша оцінка ваги всередині. Смужки — діапазон «можливо так»; вони не враховують похибку вагів і всі можливі помилки моделі." : "The solid line is the most likely internal weight estimate. The bands are a “maybe around here” range; they do not include scale noise or every possible model error."}</p>
+          <div className={styles.chartHeader}><div><p className={styles.eyebrow}>{metric === "physiologicalBodyWeightKg" && context?.observedWeights?.length ? (uk ? "Минуле (зважування) → майбутнє" : "Past (scale readings) → future") : (uk ? "Минуле (пораховано) → майбутнє" : "Past (calculated) → future")}</p><h2>{uk ? "Як може змінюватись тіло" : "How the body may change"}</h2></div><div className={styles.metricTabs}>{metrics.map((item) => <button type="button" key={item.key} aria-pressed={metric === item.key} onClick={() => setMetric(item.key)}>{item.label}</button>)}</div></div>
+          <div className={styles.legend}>{(metric !== "physiologicalBodyWeightKg" || !context?.observedWeights?.length) && <span><i className={styles.historyKey} />{uk ? "Пораховане минуле" : "Calculated past"}</span>}{metric === "physiologicalBodyWeightKg" && context?.observedWeights?.length ? <span><i className={styles.observedKey} />{uk ? "Вага з таблиці" : "Scale weight"}</span> : null}<span><i className={styles.medianKey} />{uk ? "Найімовірніше" : "Most likely"}</span><span><i className={styles.innerKey} />{result.forecastVersion === "experimental-forecast-v1" ? (uk ? "Інженерні межі" : "Engineering bounds") : (uk ? "Імовірно 25–75%" : "Likely 25–75%")}</span><span><i className={styles.outerKey} />{result.forecastVersion === "experimental-forecast-v1" ? (uk ? "Широкі інженерні межі" : "Wide engineering bounds") : (uk ? "Можливо 5–95%" : "Possible 5–95%")}</span></div>
+          <ForecastChart result={result} metric={metric} history={context?.history ?? []} observedWeights={context?.observedWeights ?? []} locale={locale} />
+          <p className={styles.chartNote}>{metric === "physiologicalBodyWeightKg" && context?.observedWeights?.length ? (uk ? "Точки — реальні зважування з таблиці. Майбутня лінія стартує від останнього доступного зважування; смужки показують інженерний діапазон моделі." : "Points are real scale readings from the health table. The future line starts from the latest available reading; bands show the model’s engineering range.") : (uk ? "Суцільна лінія — найімовірніша оцінка ваги всередині. Смужки — діапазон «можливо так»; вони не враховують похибку вагів і всі можливі помилки моделі." : "The solid line is the most likely internal weight estimate. The bands are a “maybe around here” range; they do not include scale noise or every possible model error.")}</p>
         </section>
         {result.experimentalCurrent && <section className={styles.detailGrid} aria-label={uk ? "Поточний Unified стан" : "Current Unified state"}>
           <article><h2>{uk ? "Поточний стан" : "Current state"}</h2><dl>

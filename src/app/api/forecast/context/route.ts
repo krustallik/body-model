@@ -1,4 +1,5 @@
 import { NoActiveModelEpisodeError } from "@/modules/model-episodes/model-episode.errors";
+import { prisma } from "@/lib/db/prisma";
 import { getModelHistory, getModelStatus } from "@/modules/model-episodes/model-episode.service";
 import type { ModelDaySourceQuality } from "@/modules/model-episodes/model-episode.types";
 import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
@@ -36,6 +37,13 @@ export async function GET(): Promise<Response> {
       offset: 0,
     });
     const days = history.days as HistoryDayRow[];
+    const observedWeights = await prisma.dailyHealthData.findMany({
+      where: status.latestModeledDate
+        ? { date: { gte: addCalendarDays(status.latestModeledDate, -59) } }
+        : undefined,
+      orderBy: { date: "asc" },
+      select: { date: true, weightKg: true },
+    }).catch(() => [] as Array<{ date: string; weightKg: number | null }>);
     const latestDate = status.latestModeledDate;
     const latestDay = latestDate === null
       ? null
@@ -60,6 +68,9 @@ export async function GET(): Promise<Response> {
         workoutFeedObserved: day.sourceQuality?.workoutFeedObserved ?? null,
         missingFields: day.missingFields,
       })),
+      observedWeights: observedWeights
+        .filter((day) => day.weightKg !== null && Number.isFinite(day.weightKg) && day.weightKg > 0)
+        .map((day) => ({ date: day.date, weightKg: day.weightKg })),
       unknownIntervals: history.unknownIntervals,
       provenance: {
         v7Cache: physiologyV7CacheChip(v7Status),

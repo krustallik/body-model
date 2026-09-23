@@ -192,6 +192,22 @@ function replayResolvedState(episode: PersistedEpisode, days: readonly BuiltSimu
   return latest.endState;
 }
 
+function latestObservedWeightKg(days: readonly BuiltSimulationDay[]): number | null {
+  for (let index = days.length - 1; index >= 0; index -= 1) {
+    const weightKg = days[index]?.input.measuredWeightKg;
+    if (typeof weightKg === "number" && Number.isFinite(weightKg) && weightKg > 0) return weightKg;
+  }
+  return null;
+}
+
+function latestSourceWeightKg(days: readonly { weightKg: number | null }[]): number | null {
+  for (let index = days.length - 1; index >= 0; index -= 1) {
+    const weightKg = days[index]?.weightKg;
+    if (typeof weightKg === "number" && Number.isFinite(weightKg) && weightKg > 0) return weightKg;
+  }
+  return null;
+}
+
 function blocked(input: {
   episode: PersistedEpisode;
   recoveryVersion: string | null;
@@ -247,6 +263,12 @@ export async function forecastModelEpisodeWithInternalArtifacts(
     modelVersion: episode.modelVersion,
   });
   const continuity = analyzeStateContinuity(builtDays, episode.ecfPolicy);
+  // A current-day scale measurement may anchor the future level, but its
+  // incomplete food/activity row remains excluded from historical replay.
+  const currentDate = addCalendarDays(latestCompletedDate, 1);
+  const currentSources = await episodes.loadSources(currentDate, currentDate);
+  const observedAnchorWeightKg = latestSourceWeightKg(currentSources.days)
+    ?? latestObservedWeightKg(builtDays);
   const config = resolvedForecastConfig(request.config);
   const scenario = request.scenario as ForecastScenario;
   const donorLookback = scenario.mode === "recent-behavior"
@@ -276,7 +298,7 @@ export async function forecastModelEpisodeWithInternalArtifacts(
     initialParticles = [{ state, weight: 1 }];
     initialStateQuality = "deterministic";
     startDate = addCalendarDays(latestCompletedDate, 1);
-    currentStateSource = { latestCompletedDate, builtDays, state };
+    currentStateSource = { latestCompletedDate, observedAnchorWeightKg, builtDays, state };
   } else {
     const recovery = await recoveryRepository.loadCurrentEnsemble(episode.id);
     if (!recovery) return blocked({
@@ -320,7 +342,7 @@ export async function forecastModelEpisodeWithInternalArtifacts(
     initialStateQuality = recovery.status as Extract<RecoveryQuality, "recovered" | "degraded">;
     recoveryFingerprint = recovery.sourceFingerprint;
     startDate = addCalendarDays(recovery.latestRecoveredDate, 1);
-    currentStateSource = { recoveryId: recovery.id, recoveryFingerprint, particleCount: particles.length };
+    currentStateSource = { recoveryId: recovery.id, recoveryFingerprint, observedAnchorWeightKg, particleCount: particles.length };
   }
   const personalization = {
     personalOffsetKcalPerDay: episode.personalOffsetKcalPerDay,
@@ -347,6 +369,7 @@ export async function forecastModelEpisodeWithInternalArtifacts(
     scenarioFingerprint,
     initialStateQuality,
     initialParticles,
+    anchorWeightKg: observedAnchorWeightKg,
     parameters: episode.simulatorParameters,
     personalization,
     ecfPolicy: episode.ecfPolicy,

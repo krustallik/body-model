@@ -53,6 +53,35 @@ function forecast(mode: "maintain-current" | "target-deficit" | "target-surplus"
 }
 
 describe("ExperimentalForecastV1", () => {
+  it("anchors future weight to the observed current state", () => {
+    const lower = runExperimentalForecast({
+      initial,
+      simulatorState: episode.initialState,
+      parameters: episode.simulatorParameters,
+      personalization: { personalOffsetKcalPerDay: 0, activityCalibration: 1 },
+      ecfPolicy: "hold-ecf",
+      baseline,
+      scenario: { mode: "maintain-current" },
+      startDate: "2026-08-23",
+      horizonDays: 1,
+      seed: 1,
+    });
+    const higher = runExperimentalForecast({
+      initial: { ...initial, anchorWeightKg: 90 },
+      simulatorState: episode.initialState,
+      parameters: episode.simulatorParameters,
+      personalization: { personalOffsetKcalPerDay: 0, activityCalibration: 1 },
+      ecfPolicy: "hold-ecf",
+      baseline,
+      scenario: { mode: "maintain-current" },
+      startDate: "2026-08-23",
+      horizonDays: 1,
+      seed: 1,
+    });
+    expect(higher.dates[0]!.expectedWeightKg! - lower.dates[0]!.expectedWeightKg!).toBeCloseTo(10, 10);
+    expect(higher.current.modeledWeightKg).toBe(90);
+  });
+
   it.each([7, 30, 90, 180, 365])("supports %i-day horizon", (horizonDays) => {
     expect(forecast("maintain-current", horizonDays).dates).toHaveLength(horizonDays);
   });

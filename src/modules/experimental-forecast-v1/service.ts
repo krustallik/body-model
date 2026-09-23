@@ -60,6 +60,14 @@ function median(values: readonly number[]): number | null {
   return sorted.length % 2 === 0 ? (sorted[middle - 1]! + sorted[middle]!) / 2 : sorted[middle]!;
 }
 
+function latestObservedWeightKg(days: readonly { weightKg: number | null }[]): number | null {
+  for (let index = days.length - 1; index >= 0; index -= 1) {
+    const weightKg = days[index]?.weightKg;
+    if (typeof weightKg === "number" && Number.isFinite(weightKg) && weightKg > 0) return weightKg;
+  }
+  return null;
+}
+
 function rangeFrom(value: number, spread = 0) {
   return { point: value, lower: value - spread, upper: value + spread, representation: "engineering-range" as const };
 }
@@ -509,6 +517,9 @@ export async function experimentalForecastModelEpisode(
   const requestedWindowDays = DEFAULT_EXPERIMENTAL_FORECAST_CONFIG.limitedHistoryRequestedWindowDays;
   const windowFrom = addCalendarDays(latest.date, -(requestedWindowDays - 1));
   const sources = await episodes.loadSources(windowFrom, latest.date);
+  const currentObservedDate = addCalendarDays(latestCompletedLocalDate(now, episode.timezone), 1);
+  const currentSources = await episodes.loadSources(currentObservedDate, currentObservedDate);
+  const currentObservedWeightKg = latestObservedWeightKg(currentSources.days);
   const validDays = sources.days.filter((day) => day.caloriesKcal !== null && day.proteinG !== null && day.fatG !== null && day.carbsG !== null);
   const ledgers = (await client.unifiedExperimentalPhysiologyState.findMany({
     where: { profileId: episode.profileId, date: { gte: windowFrom, lte: latest.date }, modelRevision: "unified-experimental-physiology-state-v1" },
@@ -519,7 +530,14 @@ export async function experimentalForecastModelEpisode(
   const latestRmr = numberValue((Array.isArray(latestLedger.entries) ? latestLedger.entries : []).find((entry) => object(entry).kind === "dynamic-rmr") ? object((Array.isArray(latestLedger.entries) ? latestLedger.entries : []).find((entry) => object(entry).kind === "dynamic-rmr")).valueKcal : null);
   const typicalMaintenance = median(maintenanceValues);
   const latestExpenditure = numberValue(latestLedger.productionTdeeKcal);
-  const initial = initialStateFrom({ latest, episode, eligibleDays: validDays.length, requestedWindowDays, typicalMaintenance, latestRmr, latestExpenditure });
+  const initialBase = initialStateFrom({ latest, episode, eligibleDays: validDays.length, requestedWindowDays, typicalMaintenance, latestRmr, latestExpenditure });
+  const initial = initialBase && currentObservedWeightKg !== null
+    ? {
+      ...initialBase,
+      anchorWeightKg: currentObservedWeightKg,
+      unifiedFingerprint: stableSha256({ base: initialBase.unifiedFingerprint, currentObservedWeightKg }),
+    }
+    : initialBase;
   if (!initial || initial.fatMassKg === null || initial.slowNonFatKg === null) return null;
   const latestProduction = await client.dailyModelState.findFirst({ where: { episodeId: episode.id, date: { lte: latest.date }, status: "complete" }, orderBy: { date: "desc" }, select: { glycogenKg: true, extracellularFluidDeviationLiters: true } });
   const productionGlycogenKg = latestProduction?.glycogenKg ?? episode.initialState.glycogenKg;

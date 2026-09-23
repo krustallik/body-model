@@ -60,6 +60,15 @@ function forecastInput(overrides: Partial<RunForecastInput> = {}): RunForecastIn
 }
 
 describe("future forecast engine", () => {
+  it("anchors future weight to the latest observed scale value without changing physiology deltas", () => {
+    const latentWeightKg = reconstructBodyWeightKg(episode.initialState);
+    const unanchored = runForecast(forecastInput({ horizonDays: 1 }));
+    const anchored = runForecast(forecastInput({ horizonDays: 1, anchorWeightKg: 76 }));
+    const expectedOffsetKg = 76 - latentWeightKg;
+    expect(anchored.dates[0]!.physiologicalBodyWeightKg.median)
+      .toBeCloseTo(unanchored.dates[0]!.physiologicalBodyWeightKg.median + expectedOffsetKg, 10);
+  });
+
   it("collapses exactly to deterministic physiology for one state and fixed inputs", () => {
     const result = runForecast(forecastInput());
     expect(result.status).toBe("ok");

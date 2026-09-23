@@ -365,6 +365,9 @@ export function runForecastWithInternalArtifacts(input: RunForecastInput): Forec
     });
     const path: PathDay[] = [];
     try {
+      const observedAnchorOffsetKg = input.anchorWeightKg === null || input.anchorWeightKg === undefined
+        ? 0
+        : input.anchorWeightKg - reconstructBodyWeightKg(state);
       for (let dayIndex = 0; dayIndex < input.horizonDays; dayIndex += 1) {
         const date = addCalendarDays(input.startDate, dayIndex);
         const behavior = behaviorPath[dayIndex];
@@ -378,9 +381,15 @@ export function runForecastWithInternalArtifacts(input: RunForecastInput): Forec
         if (result.status !== "complete") {
           throw new Error(`incomplete:${result.missingFields.join(",")}`);
         }
+        // The compartment model is deliberately latent: it can differ from
+        // the scale because of water, gut content, and other unmodelled mass.
+        // Forecast deltas must nevertheless start from the latest observed
+        // weight when one is available. Apply one constant offset to the
+        // physiological trajectory instead of changing energy/composition
+        // calculations or pretending the observation was a full-day state.
         const glycogenWaterKg = result.endState.glycogenKg * GLYCOGEN_WATER_KG_PER_KG;
         path.push({
-          physiologicalBodyWeightKg: result.calculations.endWeightKg,
+          physiologicalBodyWeightKg: result.calculations.endWeightKg + observedAnchorOffsetKg,
           fatMassKg: result.endState.fatMassKg,
           leanTissueKg: result.endState.leanTissueKg,
           glycogenKg: result.endState.glycogenKg,
@@ -467,7 +476,7 @@ export function runForecastWithInternalArtifacts(input: RunForecastInput): Forec
     },
   };
   const initialPhysiologicalBodyWeightKg = empiricalPredictiveSummary(
-    validStartingIndices.map((index) => reconstructBodyWeightKg(particles[index].state)),
+    validStartingIndices.map((index) => input.anchorWeightKg ?? reconstructBodyWeightKg(particles[index].state)),
   ).median;
   return {
     result,

@@ -8,6 +8,7 @@ import {
   type PhysiologicalSimulatorParameters,
   type PhysiologicalSimulatorState,
 } from "@/model/physiological-simulator";
+import { reconstructBodyWeightKg } from "@/model/body-composition/state";
 import type { ExpenditurePersonalization } from "@/model/dynamic-daily-expenditure";
 import {
   createForecastWorkoutEvent,
@@ -177,6 +178,7 @@ export function runExperimentalForecast(input: ExperimentalForecastEngineInput):
   const dates: ExperimentalForecastDate[] = [];
   let state = input.simulatorState;
   let transientWaterPoint = input.initial.transientWaterKg?.point ?? null;
+  const latentAnchorWeightKg = reconstructBodyWeightKg(input.simulatorState);
   const initialFat = input.initial.fatMassKg;
   const initialSlowNonFat = input.initial.slowNonFatKg;
   for (let dayIndex = 0; dayIndex < input.horizonDays; dayIndex += 1) {
@@ -210,8 +212,11 @@ export function runExperimentalForecast(input: ExperimentalForecastEngineInput):
     const transientChange = transientWaterPoint === null || input.initial.transientWaterKg?.point === null
       ? 0
       : transientWaterPoint - (input.initial.transientWaterKg?.point ?? 0);
-    const expectedWeight = result.calculations.endWeightKg + transientChange;
-    const modeledChange = expectedWeight - (input.initial.anchorWeightKg ?? result.calculations.startWeightKg);
+    const anchorWeightKg = input.initial.anchorWeightKg ?? latentAnchorWeightKg;
+    const expectedWeight = anchorWeightKg
+      + (result.calculations.endWeightKg - latentAnchorWeightKg)
+      + transientChange;
+    const modeledChange = expectedWeight - anchorWeightKg;
     const uncertainty = resolvedConfig.horizonUncertaintyPerDayKg * Math.sqrt(dayIndex + 1)
       + (input.initial.quality === "limited-history" ? 0.5 : input.initial.quality === "bootstrap" ? 1 : 0);
     const fat = range(state.fatMassKg, uncertainty * 0.3);

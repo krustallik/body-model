@@ -570,6 +570,7 @@ export class ModelEpisodeRepository {
     return {
       episodeId: episode.id,
       episodeStartDate: episode.startDate,
+      timezone: episode.timezone,
       latestModeledDate: episode.latestModeledDate,
       modelVersion: episode.modelVersion,
       calibrationStatus: episode.calibrationStatus,

@@ -254,6 +254,8 @@ export type RunForecastInput = {
   scenarioFingerprint: string;
   initialStateQuality: Exclude<ForecastInitialStateQuality, "awaiting" | "degenerate">;
   initialParticles: readonly ForecastInitialParticle[];
+  /** Latest observed scale weight used only to anchor the future trajectory. */
+  anchorWeightKg?: number | null;
   parameters: PhysiologicalSimulatorParameters;
   personalization: ExpenditurePersonalization;
   ecfPolicy: EcfSimulationPolicy;

@@ -37,7 +37,9 @@ vi.mock("@/components/model-state-source", () => ({
 }));
 
 vi.mock("@/app/forecast/forecast-chart", () => ({
-  ForecastChart: () => <div data-testid="goal-forecast-chart" />,
+  ForecastChart: ({ history, observedWeights }: { history?: Array<{ filteredWeightKg?: number | null }>; observedWeights?: unknown[] }) => (
+    <div data-testid="goal-forecast-chart" data-model-count={history?.filter((day) => day.filteredWeightKg != null).length ?? 0} data-observed-count={observedWeights?.length ?? 0} />
+  ),
 }));
 
 vi.mock("@/i18n/i18n-provider", () => ({
@@ -161,7 +163,7 @@ describe("GoalClient interaction", () => {
     vi.restoreAllMocks();
   });
 
-  it("restores the complete canonical form and explicit manual macros before a solver request", async () => {
+  it("restores scenario inputs but ignores legacy manual nutrition and keeps its template internal", async () => {
     const form = {
       ...defaultGoalForm("2026-08-24", 80),
       targetWeightKg: "77.4",
@@ -205,19 +207,20 @@ describe("GoalClient interaction", () => {
     expect((screen.getByLabelText(/Other training.*per week/) as HTMLInputElement).value).toBe("2");
     expect((screen.getByLabelText("I have work days") as HTMLInputElement).checked).toBe(true);
     expect((screen.getByLabelText("Work type") as HTMLSelectElement).value).toBe("manualModerate");
-    await userEvent.setup().click(screen.getByText("Adjust nutrition manually"));
-    expect((screen.getByLabelText(/Starting calories/) as HTMLInputElement).value).toBe("2345");
+    expect(screen.queryByText("Recommended nutrition")).toBeNull();
+    expect(screen.queryByText("Adjust nutrition manually")).toBeNull();
+    expect(screen.queryByLabelText(/Starting calories/)).toBeNull();
     await userEvent.setup().click(screen.getByRole("button", { name: "Calculate scenario" }));
     await waitFor(() => expect(posted).toBeTruthy());
     const request = posted as unknown as { goal: { targetValueKg: number; goalDate: string }; constraints: { minCaloriesKcal: number; maxCaloriesKcal: number }; scenarioTemplate: { mode: string; schedule: { defaultDay: { nutrition: { caloriesKcal: number } }; byDate: Record<string, { occupation?: Array<{ category: string }> }> } } };
     expect(request.goal).toMatchObject({ targetValueKg: 77.4, goalDate: "2026-11-22" });
     expect(request.constraints).toMatchObject({ minCaloriesKcal: 1650, maxCaloriesKcal: 2550 });
     expect(request.scenarioTemplate.mode).toBe("fixed");
-    expect(request.scenarioTemplate.schedule.defaultDay.nutrition.caloriesKcal).toBe(2345);
+    expect(request.scenarioTemplate.schedule.defaultDay.nutrition.caloriesKcal).toBe(2400);
     expect(Object.values(request.scenarioTemplate.schedule.byDate).flatMap((day) => day.occupation ?? []).some((job) => job.category === "manualModerate")).toBe(true);
   });
 
-  it("reset returns to fresh model recommendations and removes only the goal settings key", async () => {
+  it("reset restores scenario defaults and removes only the goal settings key", async () => {
     localStorage.setItem("bodycast.forecast.settings.v1", "keep");
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).includes("/api/forecast/context")
       ? jsonResponse({ status: modelStatus(), history: [] })
@@ -225,15 +228,13 @@ describe("GoalClient interaction", () => {
     const user = userEvent.setup();
     render(<GoalClient />);
     await screen.findByText(/Latest modeled day:/i);
-    await user.click(screen.getByText("Adjust nutrition manually"));
-    await user.clear(screen.getByLabelText(/Starting calories/));
-    await user.type(screen.getByLabelText(/Starting calories/), "2800");
-    expect(localStorage.getItem(GOAL_SETTINGS_KEY)).toContain('"caloriesKcal":2800');
+    await user.clear(screen.getByLabelText(/Target weight/));
+    await user.type(screen.getByLabelText(/Target weight/), "78.5");
+    expect(localStorage.getItem(GOAL_SETTINGS_KEY)).toContain('"targetWeightKg":"78.5"');
     await user.click(screen.getByRole("button", { name: "Reset settings" }));
     expect(localStorage.getItem(GOAL_SETTINGS_KEY)).toBeNull();
     expect(localStorage.getItem("bodycast.forecast.settings.v1")).toBe("keep");
     expect((screen.getByLabelText(/Target weight/) as HTMLInputElement).value).toBe("77");
-    expect((screen.getByLabelText(/Starting calories/) as HTMLInputElement).value).not.toBe("2800");
   });
 
   it("does not crash or open the planner when latestModeledDate is null", async () => {
@@ -274,24 +275,48 @@ describe("GoalClient interaction", () => {
     await waitFor(() => {
       expect(screen.getByText(/Latest modeled day:/i)).toBeTruthy();
     });
-    expect(screen.getByText("2,400")).toBeTruthy();
-    expect(screen.getByText("128")).toBeTruthy();
-    expect(screen.getByText(/Approximate starting estimate/)).toBeTruthy();
-    expect(screen.getByText(/not account for body composition or clinical context/i)).toBeTruthy();
-    await user.click(screen.getByText("Adjust nutrition manually"));
-    expect((screen.getByLabelText(/Starting calories/) as HTMLInputElement).value).toBe("2400");
-    expect((screen.getByLabelText(/^Protein \(g\)/) as HTMLInputElement).value).toBe("128");
+    expect(screen.queryByText("Recommended nutrition")).toBeNull();
+    expect(screen.queryByLabelText(/Starting calories/)).toBeNull();
     expect(screen.getByRole("button", { name: "Calculate scenario" })).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "Calculate scenario" }));
     await waitFor(() => {
-      expect(screen.getByText(/Solver’s modeled calorie target/)).toBeTruthy();
+      expect(screen.getByText("Recommended nutrition")).toBeTruthy();
     });
-    expect(screen.getByText(/Solver’s modeled calorie target/i)).toBeTruthy();
-    expect(screen.getByText(/~2,?100/)).toBeTruthy();
+    expect(screen.getByText(/Calories selected by the solver/)).toBeTruthy();
+    expect(screen.getByText(/not account for body composition or clinical context/i)).toBeTruthy();
+    expect(screen.getByText("2,100")).toBeTruthy();
+    expect(screen.getByText("128")).toBeTruthy();
   });
 
-  it("uses the recommended template once and preserves manual macro edits in the legacy request contract", async () => {
+  it("passes measured scale readings and filtered historical model estimates to the shared forecast chart", async () => {
+    const chartResult = { ...solvedGoal(), forecast: {} as NonNullable<GoalPlanningResponse["forecast"]> };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/forecast/context")) return jsonResponse({
+        status: modelStatus(),
+        history: [
+          { date: "2026-08-23", modeledWeightKg: 80.4, filteredWeightKg: 80.1, fatMassKg: 16, leanTissueKg: 45, glycogenAssociatedMassKg: 1, dataQuality: "complete" },
+          { date: "2026-08-24", modeledWeightKg: 80.2, filteredWeightKg: null, fatMassKg: 16, leanTissueKg: 45, glycogenAssociatedMassKg: 1, dataQuality: "complete" },
+        ],
+        observedWeights: [
+          { date: "2026-08-23", weightKg: 80.8 },
+          { date: "2026-08-24", weightKg: 80.3 },
+        ],
+      });
+      if (url.includes("/api/goal") && init?.method === "POST") return jsonResponse(chartResult);
+      return jsonResponse({ error: "optional profile unavailable" }, 404);
+    }));
+
+    const user = userEvent.setup();
+    render(<GoalClient />);
+    await user.click(await screen.findByRole("button", { name: "Calculate scenario" }));
+    const chart = await screen.findByTestId("goal-forecast-chart");
+    expect(chart.getAttribute("data-model-count")).toBe("1");
+    expect(chart.getAttribute("data-observed-count")).toBe("2");
+  });
+
+  it("keeps reference nutrition internal and refreshes it from current context and activity inputs", async () => {
     let posted: unknown;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -311,54 +336,48 @@ describe("GoalClient interaction", () => {
     const user = userEvent.setup();
     render(<GoalClient />);
     await screen.findByText(/Latest modeled day:/i);
-    expect(screen.getByText(/starting-template energy uses current modeled expenditure/i)).toBeTruthy();
+    expect(screen.queryByText(/starting-template energy uses current modeled expenditure/i)).toBeNull();
+    expect(screen.queryByText("Recommended nutrition")).toBeNull();
     expect((screen.getByLabelText(/Target weight/) as HTMLInputElement).value).toBe("77");
     expect((screen.getByLabelText(/Goal date/) as HTMLInputElement).value).toBe("2026-11-22");
     await user.clear(screen.getByLabelText(/Target weight/));
     await user.type(screen.getByLabelText(/Target weight/), "74.5");
     fireEvent.change(screen.getByLabelText(/Goal date/), { target: { value: "2026-12-10" } });
-    await user.click(screen.getByText("Adjust nutrition manually"));
-    await user.clear(screen.getByLabelText(/Starting calories/));
-    await user.type(screen.getByLabelText(/Starting calories/), "2600");
-    await user.clear(screen.getByLabelText(/^Protein \(g\)/));
-    await user.type(screen.getByLabelText(/^Protein \(g\)/), "140");
     await user.click(screen.getByRole("button", { name: "Calculate scenario" }));
     await waitFor(() => expect(posted).toBeTruthy());
     const request = posted as unknown as {
       goal: { targetValueKg: number; goalDate: string };
-      scenarioTemplate: { schedule: { defaultDay: { nutrition: unknown } } };
+      scenarioTemplate: { schedule: { defaultDay: { nutrition: { caloriesKcal: number; proteinG: number } } } };
     };
     const scenarioTemplate = request.scenarioTemplate;
-    expect(scenarioTemplate.schedule.defaultDay.nutrition).toMatchObject({ caloriesKcal: 2600, proteinG: 140 });
+    expect(scenarioTemplate.schedule.defaultDay.nutrition).toMatchObject({ caloriesKcal: 2400, proteinG: 128 });
     expect(request.goal).toEqual({ metric: "weightKg", targetValueKg: 74.5, goalDate: "2026-12-10" });
   });
 
-  it("updates the target-rate limitation as target inputs change without overwriting the nutrition template", async () => {
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input).includes("/api/v1/profile")) return jsonResponse({ profile: {
+  it("shows target-rate review only with the post-solver macro recommendation", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/v1/profile")) return jsonResponse({ profile: {
         id: 1, locale: "en", sex: "female", dateOfBirth: "1991-01-01", heightCm: 170,
         targetWeightKg: 80, targetDate: "2030-01-01", autoAdvanceExercises: false,
         createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
       } });
-      if (String(input).includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), history: [] });
+      if (url.includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), history: [] });
+      if (url.includes("/api/goal") && init?.method === "POST") return jsonResponse(solvedGoal());
       return jsonResponse({ error: "optional profile unavailable" }, 404);
     }));
 
     const user = userEvent.setup();
     render(<GoalClient />);
     await screen.findByText(/Latest modeled day:/i);
-    await user.click(screen.getByText("Adjust nutrition manually"));
-    await user.clear(screen.getByLabelText(/Starting calories/));
-    await user.type(screen.getByLabelText(/Starting calories/), "2600");
-    await user.clear(screen.getByLabelText(/^Protein \(g\)/));
-    await user.type(screen.getByLabelText(/^Protein \(g\)/), "140");
     await user.clear(screen.getByLabelText(/Target weight/));
     await user.type(screen.getByLabelText(/Target weight/), "79.1");
     fireEvent.change(screen.getByLabelText(/Goal date/), { target: { value: "2026-08-31" } });
 
-    expect(await screen.findByText(/requested pace is above a product review guideline/i)).toBeTruthy();
-    expect((screen.getByLabelText(/Starting calories/) as HTMLInputElement).value).toBe("2600");
-    expect((screen.getByLabelText(/^Protein \(g\)/) as HTMLInputElement).value).toBe("140");
+    expect(screen.queryByText(/requested pace is above a product review guideline/i)).toBeNull();
+    expect(screen.queryByText("Recommended nutrition")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Calculate scenario" }));
+    expect(await screen.findByText(/requested pace exceeds a product review guideline/i)).toBeTruthy();
   });
 
   it("renders numerically-limited BodyCast status without crashing", async () => {
@@ -385,7 +404,7 @@ describe("GoalClient interaction", () => {
     await waitFor(() => {
       expect(screen.getByText("Numerical precision is limited")).toBeTruthy();
     });
-    expect(screen.getByText(/does not support a plan center/i)).toBeTruthy();
+    expect(screen.getByText(/plan center is not available for this status/i)).toBeTruthy();
   });
 
   it("shows a controlled API error UI instead of crashing", async () => {
@@ -444,37 +463,48 @@ describe("GoalClient interaction", () => {
     const work = Object.values(schedule.byDate).flatMap((day) => day.occupation ?? []);
     expect(work.length).toBeGreaterThan(0);
     expect(work[0]).toMatchObject({ category: "standingLight", durationHours: 8, breakDurationHours: 1 });
-    expect(screen.getByText(/Solver’s modeled calorie target/)).toBeTruthy();
+    expect(screen.getByText(/Calories selected by the solver/)).toBeTruthy();
   });
 
   it.each([
     ["2010-01-01", /not tailored for people under 18/i],
     ["1950-01-01", /specific guidance for people 65\+ is not modeled/i],
-  ])("makes age-domain limitation obvious for birth date %s", async (dateOfBirth, limitation) => {
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input).includes("/api/v1/profile")) return jsonResponse({ profile: {
+  ])("makes age-domain limitation obvious for birth date %s after solver result", async (dateOfBirth, limitation) => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/v1/profile")) return jsonResponse({ profile: {
         id: 1, locale: "en", sex: "female", dateOfBirth, heightCm: 170,
         targetWeightKg: null, targetDate: null, autoAdvanceExercises: false,
         createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
       } });
-      if (String(input).includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), history: [] });
+      if (url.includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), history: [] });
+      if (url.includes("/api/goal") && init?.method === "POST") return jsonResponse(solvedGoal());
       return jsonResponse({ error: "unexpected" }, 500);
     }));
+    const user = userEvent.setup();
     render(<GoalClient />);
-    await screen.findByText(limitation);
-    expect(screen.getByText("Approximate starting estimate")).toBeTruthy();
+    await user.click(await screen.findByRole("button", { name: "Calculate scenario" }));
+    expect(await screen.findByText(limitation)).toBeTruthy();
+    expect(screen.getByText("Recommended nutrition")).toBeTruthy();
   });
 
-  it("labels fallback nutrition clearly and keeps walking internals out of user inputs", async () => {
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input).includes("/api/forecast/context")) {
+  it("uses solver calories for result macros without exposing the fallback reference or walking internals", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/forecast/context")) {
         return jsonResponse({ status: modelStatus({ currentModeledTdeeKcalPerDay: null }), history: [] });
       }
+      if (url.includes("/api/goal") && init?.method === "POST") return jsonResponse(solvedGoal());
       return jsonResponse({ error: "optional profile unavailable" }, 404);
     }));
+    const user = userEvent.setup();
     render(<GoalClient />);
-    await screen.findByText("Limited data for personalization");
-    expect(screen.getByText(/general product fallback is used/i)).toBeTruthy();
+    await screen.findByRole("button", { name: "Calculate scenario" });
+    expect(screen.queryByText("Recommended nutrition")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Calculate scenario" }));
+    expect(await screen.findByText("Recommended nutrition")).toBeTruthy();
+    expect(screen.getByText("2,100")).toBeTruthy();
+    expect(screen.queryByText("2,200")).toBeNull();
     const userInputs = Array.from(document.querySelectorAll("input, select"));
     expect(userInputs.map((input) => input.getAttribute("aria-label") ?? input.id).join(" "))
       .not.toMatch(/walking distance|walking speed|km/i);

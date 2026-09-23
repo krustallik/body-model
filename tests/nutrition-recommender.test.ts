@@ -11,6 +11,7 @@ import {
   LOSS_PACE_REVIEW_LIMIT_PER_WEEK,
   MACRO_ENERGY_KCAL_PER_GRAM,
   recommendNutrition,
+  recommendNutritionAtCalories,
   type NutritionRecommendationInput,
 } from "@/modules/nutrition-recommender/nutrition-recommender";
 
@@ -47,6 +48,22 @@ describe("deterministic nutrition recommender", () => {
     expect(result.nutrition.proteinG).toBe(128);
     expect(result.basis).toBe("model-tdee");
     expect(result.confidence).toBe("model-anchored");
+  });
+
+  it("rebuilds macros at the solver-selected calories instead of scaling the reference template", () => {
+    const result = recommendNutritionAtCalories(supported, 2100.5);
+    expect(result.basis).toBe("solver-selected-calories");
+    expect(result.nutrition.caloriesKcal).toBe(2100.5);
+    expect(result.nutrition.proteinG).toBe(128);
+    expect(Math.abs(energy(result.nutrition) - 2100.5)).toBeLessThan(0.001);
+    expect(result.nutrition.fatG * 9 / 2100.5).toBeCloseTo(0.25, 4);
+    expect(result.nutrition.carbsG * 4 / 2100.5).toBeGreaterThanOrEqual(ADULT_MIN_CARBOHYDRATE_ENERGY_FRACTION - 0.001);
+    expect(result.nutrition.carbsG * 4 / 2100.5).toBeLessThanOrEqual(ADULT_MAX_CARBOHYDRATE_ENERGY_FRACTION + 0.001);
+  });
+
+  it("rejects a missing or invalid solver calorie center instead of applying the old template", () => {
+    expect(() => recommendNutritionAtCalories(supported, 0)).toThrow(/finite and positive/i);
+    expect(() => recommendNutritionAtCalories(supported, Number.NaN)).toThrow(/finite and positive/i);
   });
 
   it("does not translate loss/gain weight and dates into a calorie deficit or surplus", () => {

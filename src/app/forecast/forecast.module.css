@@ -31,7 +31,7 @@
   border-radius: 1rem;
   box-shadow: 0 .35rem 1rem var(--shadow), inset 0 1px 0 color-mix(in srgb, #fff 2.5%, transparent);
 }
-.controlPanel { display: grid; width: 100%; min-width: 0; max-width: 82rem; margin-inline: auto; gap: 0; padding: 1.25rem; }
+.controlPanel { display: grid; width: 100%; min-width: 0; max-width: none; margin-inline: auto; gap: 0; padding: 1.25rem; }
 .controlStep { min-width: 0; padding: 1.1rem 0; border: 0; border-bottom: 1px solid var(--line); }
 .controlStep:first-child { padding-top: 0; }
 .controlStep:last-child { padding-bottom: 0; border-bottom: 0; }
@@ -160,3 +160,9 @@
 }
 @media (max-width: 390px) { .formGrid { grid-template-columns: 1fr; }.segmented button { padding-inline: .45rem; } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+
+.resetButton { min-height: 2.5rem; padding: .55rem .9rem; color: var(--primary-strong); background: var(--primary-soft); border: 1px solid color-mix(in srgb, var(--primary) 35%, var(--line)); border-radius: 999px; font: inherit; font-size: .75rem; font-weight: 780; cursor: pointer; transition: color var(--ease), background var(--ease), border-color var(--ease), transform var(--ease); }
+.resetButton:hover { color: var(--ink); background: var(--selected); border-color: var(--accent); }
+.resetButton:active { transform: var(--press); }
+.resetButton:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.resetButton:disabled { opacity: .45; cursor: not-allowed; filter: grayscale(.2); }

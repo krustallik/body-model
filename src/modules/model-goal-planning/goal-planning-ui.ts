@@ -2,7 +2,12 @@ import type { Locale } from "@/i18n/i18n-provider";
 import { addCalendarDays, buildPlanningScenario, DEFAULT_PLAN, type PlanValues } from "@/modules/planning-scenario/planning-scenario";
 import type { ModelStatusDto } from "@/modules/model-episodes/model-episode.types";
 import type { ProfileDto } from "@/modules/profile/profile.types";
-import { recommendNutrition, type NutritionRecommendation } from "@/modules/nutrition-recommender/nutrition-recommender";
+import {
+  recommendNutrition,
+  recommendNutritionAtCalories,
+  type NutritionRecommendation,
+  type NutritionRecommendationInput,
+} from "@/modules/nutrition-recommender/nutrition-recommender";
 import type { GoalPlanningRequest } from "./goal-planning.schema";
 import type { GoalPlanningResponse, GoalPlanningStatus } from "./goal-planning.types";
 
@@ -73,9 +78,31 @@ export function recommendGoalFormNutrition(
   status: ModelStatusDto,
   profile: Pick<ProfileDto, "sex" | "dateOfBirth" | "heightCm"> | null = null,
 ): NutritionRecommendation {
+  return recommendNutrition(goalNutritionInput(values, latestModeledDate, status, profile));
+}
+
+export function recommendGoalNutritionAtCalories(
+  values: GoalFormValues,
+  caloriesKcal: number,
+  latestModeledDate: string | null,
+  status: ModelStatusDto,
+  profile: Pick<ProfileDto, "sex" | "dateOfBirth" | "heightCm"> | null = null,
+): NutritionRecommendation {
+  return recommendNutritionAtCalories(
+    goalNutritionInput(values, latestModeledDate, status, profile),
+    caloriesKcal,
+  );
+}
+
+function goalNutritionInput(
+  values: GoalFormValues,
+  latestModeledDate: string | null,
+  status: ModelStatusDto,
+  profile: Pick<ProfileDto, "sex" | "dateOfBirth" | "heightCm"> | null,
+): NutritionRecommendationInput {
   const currentWeightKg = status.currentPredictedWeightKg ?? status.currentFilteredWeightKg;
   const parsedTargetWeight = values.targetWeightKg.trim() === "" ? null : Number(values.targetWeightKg);
-  return recommendNutrition({
+  return {
     currentWeightKg,
     modeledTdeeKcalPerDay: status.currentModeledTdeeKcalPerDay,
     modelEnergyStatus: status.continuityStatus === "resolved" && !status.recoveryRequired ? "available" : "limited",
@@ -91,7 +118,7 @@ export function recommendGoalFormNutrition(
     bodyCompositionAvailable: Number.isFinite(status.currentFatMassKg) || Number.isFinite(status.currentLeanTissueKg),
     sex: profile?.sex ?? null,
     heightCm: profile?.heightCm ?? null,
-  });
+  };
 }
 
 function ageOnDate(dateOfBirth: string, referenceDate: string): number | null {

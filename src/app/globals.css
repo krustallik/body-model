@@ -60,7 +60,7 @@
   --shadow: rgb(0 0 0 / 28%);
 
   /* Shared page shell for the main data and planning screens. */
-  --app-page-max-width: 104rem;
+  --app-page-max-width: 110rem;
   --app-page-gutter: clamp(1rem, 1.8vw, 1.75rem);
 
   /* Chart chrome (series colors stay local where meaningful) */

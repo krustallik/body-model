@@ -53,7 +53,7 @@ export type NutritionLimitationCode =
 
 export type NutritionRecommendation = {
   nutrition: { caloriesKcal: number; proteinG: number; fatG: number; carbsG: number };
-  basis: "model-tdee" | "product-fallback";
+  basis: "model-tdee" | "product-fallback" | "solver-selected-calories";
   confidence: "model-anchored" | "approximate" | "fallback";
   limitations: NutritionLimitationCode[];
 };
@@ -91,27 +91,18 @@ function targetRateNeedsReview(input: NutritionRecommendationInput): boolean | "
   return weeklyRelativeChange > GAIN_PACE_REVIEW_LIMIT_PER_WEEK;
 }
 
-/**
- * Deterministic starter template. Current modeled TDEE anchors energy; activity is deliberately not
- * added again because the model expenditure already reflects the modeled activity history.
- * Goal target/date only emit a review limitation; the target solver owns calorie search.
- */
-export function recommendNutrition(input: NutritionRecommendationInput): NutritionRecommendation {
-  const numericInputs = [input.currentWeightKg, input.modeledTdeeKcalPerDay, input.strengthSessionsPerWeek,
-    input.otherTrainingSessionsPerWeek, input.averageStepsPerDay, input.workActivity?.daysPerWeek,
-    input.targetWeightKg, input.ageYears, input.heightCm];
+function recommendationLimitations(input: NutritionRecommendationInput, options: {
+  modelAvailable: boolean;
+  checkModelEnergy: boolean;
+}): NutritionLimitationCode[] {
+  const numericInputs = [input.currentWeightKg, ...(options.checkModelEnergy ? [input.modeledTdeeKcalPerDay] : []),
+    input.strengthSessionsPerWeek, input.otherTrainingSessionsPerWeek, input.averageStepsPerDay,
+    input.workActivity?.daysPerWeek, input.targetWeightKg, input.ageYears, input.heightCm];
   const invalidInput = numericInputs.some((value) => value != null && !Number.isFinite(value))
     || (input.sex != null && !["female", "male", "other"].includes(input.sex));
-  const usableTdee = isPositiveFinite(input.modeledTdeeKcalPerDay)
-    && input.modelEnergyStatus !== "limited"
-    && input.calibrationStatus !== "invalid-history"
-    && input.calibrationStatus !== "insufficient-history"
-    ? input.modeledTdeeKcalPerDay : null;
-  const modelAvailable = usableTdee !== null;
-  const caloriesKcal = Math.round(usableTdee ?? DEFAULT_STARTING_CALORIES_KCAL);
   const limitations: NutritionLimitationCode[] = [];
   if (invalidInput) limitations.push("invalid-input");
-  if (!modelAvailable) limitations.push("model-expenditure-unavailable");
+  if (options.checkModelEnergy && !options.modelAvailable) limitations.push("model-expenditure-unavailable");
   if (!isPositiveFinite(input.currentWeightKg)) limitations.push("current-weight-unavailable");
   if (input.ageYears != null && input.ageYears < 18) limitations.push("adult-guidance-only");
   // Older-adult expert guidance can recommend higher protein than the generic adult RDA;
@@ -128,7 +119,14 @@ export function recommendNutrition(input: NutritionRecommendationInput): Nutriti
       && (!isPositiveFinite(input.targetWeightKg) || !input.targetDate || !input.latestModeledDate)) {
     limitations.push("target-date-or-weight-incomplete");
   }
+  return limitations;
+}
 
+function macroTargetsAtCalories(
+  input: NutritionRecommendationInput,
+  caloriesKcal: number,
+  limitations: NutritionLimitationCode[],
+): { proteinG: number; fatG: number; carbsG: number } {
   const strengthTraining = (input.strengthSessionsPerWeek ?? 0) > 0;
   const otherTraining = (input.otherTrainingSessionsPerWeek ?? 0) > 0;
   const losing = isPositiveFinite(input.currentWeightKg)
@@ -157,15 +155,59 @@ export function recommendNutrition(input: NutritionRecommendationInput): Nutriti
   const carbsG = roundTo((caloriesKcal
     - proteinG * MACRO_ENERGY_KCAL_PER_GRAM.protein
     - fatG * MACRO_ENERGY_KCAL_PER_GRAM.fat) / MACRO_ENERGY_KCAL_PER_GRAM.carbohydrate, 6);
+  return { proteinG, fatG, carbsG };
+}
+
+/**
+ * Deterministic starter template. Current modeled TDEE anchors energy; activity is deliberately not
+ * added again because the model expenditure already reflects the modeled activity history.
+ * Goal target/date only emit a review limitation; the target solver owns calorie search.
+ */
+export function recommendNutrition(input: NutritionRecommendationInput): NutritionRecommendation {
+  const usableTdee = isPositiveFinite(input.modeledTdeeKcalPerDay)
+    && input.modelEnergyStatus !== "limited"
+    && input.calibrationStatus !== "invalid-history"
+    && input.calibrationStatus !== "insufficient-history"
+    ? input.modeledTdeeKcalPerDay : null;
+  const modelAvailable = usableTdee !== null;
+  const caloriesKcal = Math.round(usableTdee ?? DEFAULT_STARTING_CALORIES_KCAL);
+  const limitations = recommendationLimitations(input, { modelAvailable, checkModelEnergy: true });
+  const macros = macroTargetsAtCalories(input, caloriesKcal, limitations);
 
   const qualitySignalsUsable = modelAvailable && isPositiveFinite(input.currentWeightKg)
     && input.ageYears !== undefined && input.ageYears !== null && input.ageYears >= 18
     && input.calibrationStatus === "fully-calibrated";
   return {
-    nutrition: { caloriesKcal, proteinG, fatG, carbsG },
+    nutrition: { caloriesKcal, ...macros },
     basis: modelAvailable ? "model-tdee" : "product-fallback",
     confidence: !modelAvailable ? "fallback" : qualitySignalsUsable && limitations.length === 0
       ? "model-anchored" : "approximate",
+    limitations,
+  };
+}
+
+/**
+ * Derives the macro recommendation from calories selected by the goal solver.
+ * The protein heuristics and adult AMDR bounds are shared with the starter-template recommender;
+ * this keeps solver reference macros from being proportionally copied into the user-facing result.
+ */
+export function recommendNutritionAtCalories(
+  input: NutritionRecommendationInput,
+  caloriesKcal: number,
+): NutritionRecommendation {
+  if (!Number.isFinite(caloriesKcal) || caloriesKcal <= 0) {
+    throw new RangeError("solver-selected calories must be finite and positive");
+  }
+  const limitations = recommendationLimitations(input, { modelAvailable: true, checkModelEnergy: false });
+  const macros = macroTargetsAtCalories(input, caloriesKcal, limitations);
+  const qualitySignalsUsable = isPositiveFinite(input.currentWeightKg)
+    && input.ageYears !== undefined && input.ageYears !== null && input.ageYears >= 18
+    && input.calibrationStatus === "fully-calibrated";
+  return {
+    nutrition: { caloriesKcal, ...macros },
+    basis: "solver-selected-calories",
+    confidence: !isPositiveFinite(input.currentWeightKg) ? "fallback"
+      : qualitySignalsUsable && limitations.length === 0 ? "model-anchored" : "approximate",
     limitations,
   };
 }

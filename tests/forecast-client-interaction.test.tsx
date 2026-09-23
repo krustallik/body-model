@@ -7,7 +7,7 @@ import {
   it,
   vi,
 } from "vitest";
-import { cleanup, render, screen, waitFor, act } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 vi.mock("next/link", () => ({
@@ -242,6 +242,83 @@ describe("ForecastClient interaction", () => {
     await waitFor(() => {
       expect(screen.getByTestId("forecast-chart")).toBeTruthy();
     });
+  });
+
+  it("exposes steps, training, and work settings without manual walking km or speed fields", async () => {
+    const requests: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/forecast/context")) {
+        return jsonResponse({ status: modelStatus(), history: [], unknownIntervals: [] });
+      }
+      if (url.includes("/api/forecast") && !url.includes("action")) {
+        // The request body is asserted after toggling work below.
+        requests.push(JSON.parse(String(init?.body)));
+        return jsonResponse(forecastOk());
+      }
+      return jsonResponse({ error: "unexpected" }, 500);
+    }));
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTimeAsync });
+    render(<ForecastClient />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(MIN_FORECAST_LOADING_MS + 100); });
+    await screen.findByTestId("forecast-chart");
+    await user.click(screen.getByRole("button", { name: /Exact daily plan/ }));
+
+    expect(screen.getByLabelText(/Average steps/)).toBeTruthy();
+    expect(screen.getByLabelText(/^Strength sessions/)).toBeTruthy();
+    expect(screen.getByLabelText(/^Strength session \(min\)/)).toBeTruthy();
+    expect(screen.getByLabelText(/Other sessions/)).toBeTruthy();
+    expect(screen.getByLabelText(/^Other session \(min\)/)).toBeTruthy();
+    expect(screen.queryByLabelText(/Walking outside work|Walking speed|Walking at work|Work walking speed/i))
+      .toBeNull();
+
+    await user.click(screen.getByLabelText("Include work days"));
+    expect(screen.getByLabelText(/Work days/)).toBeTruthy();
+    expect(screen.getByLabelText(/Work intensity/)).toBeTruthy();
+    expect(screen.getByLabelText(/Shift/)).toBeTruthy();
+    expect(screen.getByLabelText(/Breaks/)).toBeTruthy();
+    await act(async () => { await vi.advanceTimersByTimeAsync(700); });
+    const workRequest = requests.at(-1) as { scenario: { schedule: { byDate?: Record<string, { occupation?: unknown[] }> } } };
+    expect(Object.values(workRequest.scenario.schedule.byDate ?? {}).some((day) => (day.occupation?.length ?? 0) > 0)).toBe(true);
+  });
+
+  it("shows numbered forecast steps, hides ignored plan fields in recent mode, and omits them from its request", async () => {
+    const requests: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), history: [], unknownIntervals: [] });
+      if (url.includes("/api/forecast") && !url.includes("action")) {
+        requests.push(JSON.parse(String(init?.body)));
+        return jsonResponse(forecastOk());
+      }
+      return jsonResponse({ error: "unexpected" }, 500);
+    }));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTimeAsync });
+    render(<ForecastClient />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(MIN_FORECAST_LOADING_MS + 100); });
+    await screen.findByTestId("forecast-chart");
+    expect(screen.getByRole("heading", { name: "Forecast horizon" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "What happens next?" })).toBeTruthy();
+    expect(screen.getByText(/Manual food, movement, and work fields do not apply/)).toBeTruthy();
+    expect(screen.queryByLabelText(/Average steps/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: /Exact daily plan/ }));
+    expect(screen.getByRole("heading", { name: "Planned nutrition" })).toBeTruthy();
+    expect(screen.getByLabelText(/Average steps/)).toBeTruthy();
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    const recentRequest = requests[0] as { scenario: unknown };
+    expect(recentRequest.scenario).toEqual({ mode: "recent-behavior" });
+    expect(JSON.stringify(recentRequest)).not.toMatch(/averageSteps|caloriesKcal|plannedWork/);
+    const plannedRequest = requests.at(-1) as { scenario: { mode: string; schedule?: { defaultDay: { nutrition: unknown; outsideWorkWalkingDistanceKm: number } } } };
+    expect(plannedRequest.scenario.mode).toBe("fixed");
+    expect(plannedRequest.scenario.schedule?.defaultDay).toMatchObject({
+      nutrition: { caloriesKcal: 2200, proteinG: 150, fatG: 75, carbsG: 240 },
+      outsideWorkWalkingDistanceKm: 6,
+    });
+    fireEvent.change(screen.getByLabelText(/^Energy/), { target: { value: "2100" } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(700); });
+    const editedRequest = requests.at(-1) as typeof plannedRequest;
+    expect(editedRequest.scenario.schedule?.defaultDay.nutrition).toMatchObject({ caloriesKcal: 2100 });
   });
 
   it("surfaces API errors without waiting for the minimum loading delay", async () => {

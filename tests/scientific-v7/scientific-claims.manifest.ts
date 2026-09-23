@@ -863,6 +863,23 @@ export const SCIENTIFIC_V7_CLAIMS: readonly ScientificClaimManifestRecord[] = [
       uncertainty: "Experimental heuristic half-width bands around unchanged Hall/Forbes mean; engineering scale/fat priors with gap widening and compatible-observation narrowing; not scientifically validated personal SDs.",
     },
   }),
+  record({
+    claimId: "C-PR01",
+    title: "nutrition template is an explicit approximate starting point",
+    parameterIds: ["P-PR01", "P-PR02", "P-PR03", "P-PR04"],
+    evidenceIds: ["E-PR01", "E-PR02", "E-PR03", "E-PR04", "E-PR05"],
+    auditEligibility: "SAFE_AFTER_AUDIT_REVISION",
+    testType: "property",
+    assertionTypes: ["BOUND", "INVARIANT", "MISSINGNESS", "NO_DOUBLE_COUNTING"],
+    provenance: ["SCIENTIFIC_EVIDENCE", "ENGINEERING_ASSUMPTION", "INPUT_CONTRACT"],
+    scientificAssertion: "The nutrition helper uses modeled expenditure when available, never infers a calorie target from a linear weight/date conversion, marks fallback/limited inputs, and returns nonnegative energy-consistent macros; quantitative choices remain an approximate starter template rather than a validated personal prescription.",
+    experimental: {
+      implementation: "src/modules/nutrition-recommender/nutrition-recommender.ts",
+      testFile: "tests/nutrition-recommender.test.ts",
+      testName: "keeps macros energy-consistent and enforces the literature-derived protein/fat distribution bounds",
+      uncertainty: "Experimental nutrition-template heuristic: adult AMDR bounds and exercise protein ranges are transferred into a UI starting point; 2200 kcal/150 g fallback, sedentary loss factor, 1% loss and 0.5% gain weekly pace reviews are product assumptions informed by athlete/bodybuilder literature; body-composition and medical contexts are not fully known; no individualized energy-availability or weight-change solver is claimed.",
+    },
+  }),
 ];
 
 /**

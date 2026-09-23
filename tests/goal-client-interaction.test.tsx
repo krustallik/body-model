@@ -6,7 +6,7 @@ import {
   it,
   vi,
 } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 vi.mock("next/link", () => ({
@@ -193,6 +193,8 @@ describe("GoalClient interaction", () => {
     await waitFor(() => {
       expect(screen.getByText(/Latest modeled day:/i)).toBeTruthy();
     });
+    expect((screen.getByLabelText(/Template energy/) as HTMLInputElement).value).toBe("2400");
+    expect((screen.getByLabelText(/^Protein \(g\)/) as HTMLInputElement).value).toBe("128");
     expect(screen.getByRole("button", { name: "Calculate scenario" })).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "Calculate scenario" }));
@@ -201,6 +203,55 @@ describe("GoalClient interaction", () => {
     });
     expect(screen.getByText(/Modeled plan center/i)).toBeTruthy();
     expect(screen.getByText(/~2,?100/)).toBeTruthy();
+  });
+
+  it("uses the recommended template once and preserves manual macro edits in the legacy request contract", async () => {
+    let posted: unknown;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/v1/profile")) return jsonResponse({ profile: {
+        id: 1, locale: "en", sex: "female", dateOfBirth: "1991-01-01", heightCm: 170,
+        targetWeightKg: null, targetDate: null, autoAdvanceExercises: false,
+        createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+      } });
+      if (url.includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), history: [] });
+      if (url.includes("/api/goal") && init?.method === "POST") {
+        posted = JSON.parse(String(init.body)) as Record<string, unknown>;
+        return jsonResponse(solvedGoal());
+      }
+      return jsonResponse({ error: "unexpected" }, 500);
+    }));
+
+    const user = userEvent.setup();
+    render(<GoalClient />);
+    await screen.findByText(/Latest modeled day:/i);
+    expect(screen.getByText(/energy is anchored to current modeled expenditure/i)).toBeTruthy();
+    await user.clear(screen.getByLabelText(/Template energy/));
+    await user.type(screen.getByLabelText(/Template energy/), "2600");
+    await user.clear(screen.getByLabelText(/^Protein \(g\)/));
+    await user.type(screen.getByLabelText(/^Protein \(g\)/), "140");
+    await user.click(screen.getByRole("button", { name: "Calculate scenario" }));
+    await waitFor(() => expect(posted).toBeTruthy());
+    const scenarioTemplate = (posted as { scenarioTemplate: { schedule: { defaultDay: { nutrition: unknown } } } }).scenarioTemplate;
+    expect(scenarioTemplate.schedule.defaultDay.nutrition).toMatchObject({ caloriesKcal: 2600, proteinG: 140 });
+  });
+
+  it("updates the target-rate limitation as target inputs change without overwriting the nutrition template", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), history: [] });
+      return jsonResponse({ error: "optional profile unavailable" }, 404);
+    }));
+
+    const user = userEvent.setup();
+    render(<GoalClient />);
+    await screen.findByText(/Latest modeled day:/i);
+    await user.clear(screen.getByLabelText(/Target weight/));
+    await user.type(screen.getByLabelText(/Target weight/), "79.1");
+    fireEvent.change(screen.getByLabelText(/Goal date/), { target: { value: "2026-08-31" } });
+
+    expect(await screen.findByText(/entered pace exceeds the product review threshold/i)).toBeTruthy();
+    expect((screen.getByLabelText(/Template energy/) as HTMLInputElement).value).toBe("2400");
+    expect((screen.getByLabelText(/^Protein \(g\)/) as HTMLInputElement).value).toBe("128");
   });
 
   it("renders numerically-limited BodyCast status without crashing", async () => {

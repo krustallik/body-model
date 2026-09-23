@@ -10,7 +10,7 @@ import {
  * Passing these tests must never be interpreted as scientific validation.
  */
 describe("scientific v7 experimental claims (not scientific validation)", () => {
-  it("keeps EXPERIMENTAL empty until a real experimental implementation maps to a claim", () => {
+  it("maps heuristic implementations as EXPERIMENTAL rather than scientific validation", () => {
     const experimental = ALL_SCIENTIFIC_V7_CLAIM_RECORDS.filter((claim) => claim.status === "EXPERIMENTAL");
     expect(experimental.map((claim) => claim.claimId).sort()).toEqual([
       "C-A01",
@@ -54,8 +54,9 @@ describe("scientific v7 experimental claims (not scientific validation)", () => 
       "C-L04",
       "C-M01",
       "C-MV05",
+      "C-PR01",
     ]);
-    expect(summarizeScientificManifestStatus().EXPERIMENTAL).toBe(41);
+    expect(summarizeScientificManifestStatus().EXPERIMENTAL).toBe(42);
   });
 
   it("requires implementation path, uncertainty, and non-GREEN test wiring when EXPERIMENTAL claims exist", () => {

@@ -2,6 +2,10 @@ import type { ForecastModelRequest } from "./model-forecast.schema";
 import type { ForecastBlockedResult, ForecastResult, PredictiveSummary } from "./forecast.types";
 import type { ModelStatusDto } from "@/modules/model-episodes/model-episode.types";
 import type { Locale } from "@/i18n/i18n-provider";
+import { buildPlanningScenario } from "@/modules/planning-scenario/planning-scenario";
+import type { PlanValues } from "@/modules/planning-scenario/planning-scenario";
+
+export { addCalendarDays, DEFAULT_PLAN, type PlanValues } from "@/modules/planning-scenario/planning-scenario";
 
 /** Minimum time the forecast loading surface stays visible to avoid flicker. */
 export const MIN_FORECAST_LOADING_MS = 800;
@@ -28,60 +32,6 @@ export type ForecastHorizon = (typeof FORECAST_HORIZONS)[number];
 export type ScenarioMode = "recent-behavior" | "fixed" | "target-centered";
 export type ForecastMetric = "physiologicalBodyWeightKg" | "fatMassKg" | "leanTissueKg" | "glycogenAssociatedMassKg";
 
-export type PlanValues = {
-  caloriesKcal: number;
-  proteinG: number;
-  fatG: number;
-  carbsG: number;
-  outsideWorkWalkingDistanceKm: number;
-  averageWalkingSpeedKmh: number;
-  averageStepsPerDay: number;
-  strengthDaysPerWeek: number;
-  strengthTrainingMinutes: number;
-  otherTrainingDaysPerWeek: number;
-  otherTrainingMinutes: number;
-  plannedWork: boolean;
-  workDaysPerWeek: number;
-  workCategory: "standingLight" | "manualLight" | "standingLightModerate" | "manualModerate";
-  shiftHours: number;
-  breakHours: number;
-  workWalkingDistanceKm: number;
-  workWalkingSpeedKmh: number;
-};
-
-export const DEFAULT_PLAN: PlanValues = {
-  caloriesKcal: 2200,
-  proteinG: 150,
-  fatG: 75,
-  carbsG: 240,
-  outsideWorkWalkingDistanceKm: 4,
-  averageWalkingSpeedKmh: 5,
-  averageStepsPerDay: 8_000,
-  strengthDaysPerWeek: 3,
-  strengthTrainingMinutes: 45,
-  otherTrainingDaysPerWeek: 0,
-  otherTrainingMinutes: 45,
-  plannedWork: false,
-  workDaysPerWeek: 5,
-  workCategory: "standingLight",
-  shiftHours: 8,
-  breakHours: 0.5,
-  workWalkingDistanceKm: 0,
-  workWalkingSpeedKmh: 5,
-};
-
-const TRAINING_WEEKDAYS: ReadonlyArray<0 | 1 | 2 | 3 | 4 | 5 | 6> = [1, 3, 5, 2, 4, 6, 0];
-
-function calendarWeekday(date: string): 0 | 1 | 2 | 3 | 4 | 5 | 6 {
-  return new Date(`${date}T12:00:00Z`).getUTCDay() as 0 | 1 | 2 | 3 | 4 | 5 | 6;
-}
-
-export function addCalendarDays(date: string, days: number): string {
-  const next = new Date(`${date}T12:00:00Z`);
-  next.setUTCDate(next.getUTCDate() + days);
-  return next.toISOString().slice(0, 10);
-}
-
 export function localCalendarDate(now = new Date()): string {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: "Europe/Bratislava",
@@ -100,79 +50,11 @@ export function buildForecastRequest(
   if (mode === "recent-behavior") {
     return { horizonDays, seed: 20_260_824, scenario: { mode } };
   }
-
-  const occupation = plan.plannedWork ? [{
-    category: plan.workCategory,
-    durationHours: plan.shiftHours,
-    breakDurationHours: plan.breakHours,
-    workWalkingDistanceKm: plan.workWalkingDistanceKm,
-    averageWalkingSpeedKmh: plan.workWalkingSpeedKmh,
-  }] : [];
-  const defaultDay = {
-    nutrition: {
-      caloriesKcal: plan.caloriesKcal,
-      proteinG: plan.proteinG,
-      fatG: plan.fatG,
-      carbsG: plan.carbsG,
-    },
-    outsideWorkWalkingDistanceKm: plan.outsideWorkWalkingDistanceKm,
-    averageWalkingSpeedKmh: plan.averageWalkingSpeedKmh,
-    strengthTrainingMinutes: 0,
-    occupation: [],
-  };
-  const selectedTrainingDays = new Set(TRAINING_WEEKDAYS.slice(0, Math.round(plan.strengthDaysPerWeek)));
-  type FixedSchedule = Extract<ForecastModelRequest["scenario"], { mode: "fixed" }>["schedule"];
-  const byDate: NonNullable<FixedSchedule["byDate"]> = {};
-  const selectedWorkDays = new Set(TRAINING_WEEKDAYS.slice(0, Math.round(plan.workDaysPerWeek)));
-  if (plan.plannedWork) {
-    for (let index = 1; index <= horizonDays; index += 1) {
-      const date = addCalendarDays(today, index);
-      const weekday = calendarWeekday(date);
-      if (selectedWorkDays.has(weekday)) byDate[date] = { occupation };
-    }
-  }
-  const selectedOtherTrainingDays = new Set(
-    TRAINING_WEEKDAYS.slice(0, Math.round(plan.otherTrainingDaysPerWeek)),
-  );
-  const strengthByWeekday: NonNullable<FixedSchedule["strengthByWeekday"]> = {
-    "0": 0, "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0,
-  };
-  const workoutsByWeekday: NonNullable<FixedSchedule["workoutsByWeekday"]> = {};
-  for (const weekday of TRAINING_WEEKDAYS) {
-    const events = [];
-    if (selectedTrainingDays.has(weekday) && plan.strengthTrainingMinutes > 0) {
-      events.push({
-        type: "Traditional Strength Training",
-        canonicalType: "Traditional Strength Training" as const,
-        classification: "traditional-strength-training" as const,
-        startAt: "1970-01-01T17:00:00.000Z",
-        endAt: new Date(Date.parse("1970-01-01T17:00:00.000Z")
-          + plan.strengthTrainingMinutes * 60_000).toISOString(),
-        durationMinutes: plan.strengthTrainingMinutes,
-        activeEnergyKcal: null,
-        energyProvenance: "strength-met-fallback" as const,
-      });
-    }
-    if (selectedOtherTrainingDays.has(weekday) && plan.otherTrainingMinutes > 0) {
-      events.push({
-        type: "Stair Climbing",
-        canonicalType: "Stair Climbing" as const,
-        classification: "stair-climbing" as const,
-        startAt: "1970-01-01T12:00:00.000Z",
-        endAt: new Date(Date.parse("1970-01-01T12:00:00.000Z")
-          + plan.otherTrainingMinutes * 60_000).toISOString(),
-        durationMinutes: plan.otherTrainingMinutes,
-        activeEnergyKcal: null,
-        energyProvenance: "unspecified" as const,
-      });
-    }
-    if (events.length > 0) workoutsByWeekday[String(weekday) as keyof typeof workoutsByWeekday] = { events };
-  }
-  const schedule: FixedSchedule = { defaultDay, byDate, strengthByWeekday, workoutsByWeekday };
+  const scenario = buildPlanningScenario(mode, horizonDays, plan, today);
   return {
     horizonDays,
     seed: 20_260_824,
-    scenario: mode === "fixed" ? { mode, schedule } : { mode, schedule },
+    scenario,
   };
 }
 
@@ -260,7 +142,7 @@ export function planAssumptions(mode: Exclude<ScenarioMode, "recent-behavior">, 
       ? (uk ? "Введений денний план виконується точно." : "The entered daily plan is followed exactly.")
       : (uk ? "Щоденна поведінка змінюється навколо цих типових цілей." : "Daily behavior varies around these typical targets."),
     uk ? `${precision(plan.caloriesKcal)} ккал, ${precision(plan.proteinG)} г білків, ${precision(plan.fatG)} г жирів і ${precision(plan.carbsG)} г вуглеводів на день.` : `${precision(plan.caloriesKcal)} kcal, ${precision(plan.proteinG)} g protein, ${precision(plan.fatG)} g fat, and ${precision(plan.carbsG)} g carbs per day.`,
-    uk ? `${precision(plan.outsideWorkWalkingDistanceKm)} км ходьби поза роботою зі швидкістю ${precision(plan.averageWalkingSpeedKmh)} км/год.` : `${precision(plan.outsideWorkWalkingDistanceKm)} km walking outside work at ${precision(plan.averageWalkingSpeedKmh)} km/h.`,
+    uk ? `${precision(plan.averageStepsPerDay)} середніх кроків на день.` : `${precision(plan.averageStepsPerDay)} average steps per day.`,
     plan.strengthDaysPerWeek === 0 || plan.strengthTrainingMinutes === 0
       ? (uk ? "Силові тренування не заплановані." : "No strength training is scheduled.")
       : (uk ? `${precision(plan.strengthDaysPerWeek)} силових тренувань на тиждень по ${precision(plan.strengthTrainingMinutes)} хв.` : `${precision(plan.strengthDaysPerWeek)} strength sessions per week, ${precision(plan.strengthTrainingMinutes)} minutes each.`),

@@ -9,10 +9,13 @@ import { useI18n, type Locale } from "@/i18n/i18n-provider";
 import { ForecastChart } from "@/app/forecast/forecast-chart";
 import { beginForecastRequest, formatDate, formatValue, isCurrentForecastRequest, type PlanValues } from "@/modules/model-forecast/forecast-ui";
 import type { ModelStatusDto } from "@/modules/model-episodes/model-episode.types";
+import type { ProfileDto } from "@/modules/profile/profile.types";
 import {
   buildGoalPlanningRequest,
   canOpenGoalPlanner,
   defaultGoalForm,
+  initialGoalFormWithRecommendation,
+  recommendGoalFormNutrition,
   goalStatusPresentation,
   probabilityDefinition,
   roundedPlanCalories,
@@ -23,7 +26,7 @@ import type { GoalPlanningResponse } from "@/modules/model-goal-planning/goal-pl
 import styles from "./goal.module.css";
 
 type HistoricalDay = { date: string; modeledWeightKg: number | null; fatMassKg: number | null; leanTissueKg: number | null; glycogenAssociatedMassKg: number | null; dataQuality: string };
-type Context = { status: ModelStatusDto; history: HistoricalDay[] };
+type Context = { status: ModelStatusDto; history: HistoricalDay[]; profile?: ProfileDto | null };
 
 async function responseError(response: Response, locale: Locale): Promise<string> {
   const uk = locale === "uk";
@@ -76,11 +79,19 @@ export function GoalClient() {
 
   useEffect(() => {
     const controller = new AbortController();
-    void fetch("/api/forecast/context", { cache: "no-store", signal: controller.signal }).then(async (response) => {
+    const profileRequest = fetch("/api/v1/profile", { cache: "no-store", signal: controller.signal })
+      .then(async (response) => response.ok ? await response.json() as { profile?: ProfileDto | null } : { profile: null })
+      .catch(() => ({ profile: null }));
+    void Promise.all([
+      fetch("/api/forecast/context", { cache: "no-store", signal: controller.signal }),
+      profileRequest,
+    ]).then(async ([response, profileResult]) => {
       if (!response.ok) throw new Error(await responseError(response, locale));
       const next = await response.json() as Context;
-      setContext(next);
-      setForm(defaultGoalForm(next.status.latestModeledDate, next.status.currentPredictedWeightKg ?? next.status.currentFilteredWeightKg));
+      const profile = profileResult.profile;
+      setContext({ ...next, profile });
+      const initial = initialGoalFormWithRecommendation(next.status.latestModeledDate, next.status, profile);
+      setForm(initial.form);
       setInitialized(true);
     }).catch((reason) => {
       if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : uk ? "Не вдалося завантажити модель." : "Could not load the model.");
@@ -128,6 +139,9 @@ export function GoalClient() {
   const interval = result?.terminal?.attainment.probabilityMonteCarloInterval;
   const latestModeledDate = context?.status.latestModeledDate ?? null;
   const canPlan = canOpenGoalPlanner(latestModeledDate);
+  const nutritionRecommendation = context
+    ? recommendGoalFormNutrition(form, latestModeledDate, context.status, context.profile ?? null)
+    : null;
 
   return <main className={styles.page}>
     <div className={styles.topbar}><Link className={styles.brand} href="/dashboard">BodyCast<span>{uk ? "Планувальник цілі" : "Goal planner"}</span></Link><AppNav active="goal" /></div>
@@ -136,6 +150,9 @@ export function GoalClient() {
     {loadingContext && <section className={styles.loadingCard} aria-live="polite"><div className={styles.spinner} /><strong>{uk ? "Завантажуємо поточний стан моделі" : "Loading current model state"}</strong></section>}
     {!loadingContext && initialized && !canPlan && <section className={styles.errorCard} role="status"><strong>{uk ? "Немає змодельованого стану" : "No modeled state yet"}</strong><p>{uk ? "Активна модель є, але останній змодельований день ще недоступний. Додайте історію й розрахуйте модель, перш ніж будувати ціль." : "There is an active model, but the latest modeled day is not available yet. Add history and calculate the model before planning a goal."}</p><p><Link href="/forecast">{uk ? "Перейти до прогнозу / запуску моделі" : "Go to forecast / start model"}</Link> · <Link href="/history">{uk ? "Історія" : "History"}</Link></p></section>}
     {!loadingContext && initialized && canPlan && latestModeledDate && <form className={styles.planner} onSubmit={(event) => void submit(event)} noValidate>
+      <p className={styles.recommendationNote} role="note">{uk
+        ? `${nutritionRecommendation?.confidence !== "model-anchored" ? "Орієнтовний початковий шаблон" : "Початковий шаблон"}: ${nutritionRecommendation?.basis === "model-tdee" ? "енергія прив’язана до поточних витрат моделі" : "використано продуктовий fallback"}. Значення можна змінити; цільову калорійність окремо шукає solver.${nutritionRecommendation?.limitations.includes("target-rate-review") ? " Введений темп перевищує довідкову межу продукту; калорійна ціль не виводиться з дати." : ""}${nutritionRecommendation?.limitations.includes("body-composition-and-clinical-context-not-modeled") ? " Шаблон не враховує склад тіла чи клінічний контекст." : ""}${nutritionRecommendation?.limitations.includes("adult-guidance-only") ? " Правила для дорослих не призначені для користувачів до 18 років." : ""}${nutritionRecommendation?.limitations.includes("older-adult-guidance-not-modeled") ? " Спеціальні рекомендації для людей 65+ не змодельовані." : ""}`
+        : `${nutritionRecommendation?.confidence !== "model-anchored" ? "Approximate starting template" : "Starting template"}: ${nutritionRecommendation?.basis === "model-tdee" ? "energy is anchored to current modeled expenditure" : "product fallback used"}. You can edit these values; the solver searches the goal calories separately.${nutritionRecommendation?.limitations.includes("target-rate-review") ? " The entered pace exceeds the product review threshold; calories are not inferred from the date." : ""}${nutritionRecommendation?.limitations.includes("body-composition-and-clinical-context-not-modeled") ? " The template does not account for body composition or clinical context." : ""}${nutritionRecommendation?.limitations.includes("adult-guidance-only") ? " Adult guidance is not intended for users under 18." : ""}${nutritionRecommendation?.limitations.includes("older-adult-guidance-not-modeled") ? " Specific guidance for adults 65+ is not modeled." : ""}`}</p>
       <section className={styles.formSection}><div className={styles.sectionHeading}><div><span>01</span><h2>{uk ? "Ціль і дата" : "Target and date"}</h2></div><p>{uk ? `Останній змодельований день: ${formatDate(latestModeledDate, { year: "numeric" }, locale)}` : `Latest modeled day: ${formatDate(latestModeledDate, { year: "numeric" }, locale)}`}</p></div><div className={styles.formGrid}>
         <TextNumberField id="targetWeightKg" label={uk ? "Цільова вага" : "Target weight"} unit={uk ? "кг" : "kg"} help={uk ? "Введіть вагу, до якої хочете наблизитися. Це ціль сценарію, а не медична рекомендація." : "Enter the weight you want to approach. This is a scenario target, not medical advice."} value={form.targetWeightKg} min={0.1} max={1000} step={0.1} error={formErrors.targetWeightKg} onChange={(value) => updateForm("targetWeightKg", value)} />
         <label className={styles.field} htmlFor="goalDate"><span>{uk ? "Дата цілі" : "Goal date"}<HelpTip>{uk ? "Оберіть майбутню дату. Чим вона далі, тим ширша невизначеність і тим менш буквально слід читати результат." : "Choose a future date. Farther dates carry wider uncertainty and should be read less literally."}</HelpTip></span><input id="goalDate" name="goalDate" type="date" value={form.goalDate} required aria-invalid={Boolean(formErrors.goalDate)} aria-describedby={formErrors.goalDate ? "goalDate-error" : undefined} onChange={(event) => updateForm("goalDate", event.currentTarget.value)} /><FieldError id="goalDate-error" message={formErrors.goalDate} /></label>

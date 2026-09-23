@@ -7,3 +7,5 @@
 @media(max-width:620px){.page{overflow-x:clip;padding:1rem 1rem 2.5rem}.topbar,.hero,.sectionHeading,.submitRow{align-items:stretch;flex-direction:column}.hero{padding:3rem 0 1.5rem}.statePill{justify-content:center}.sectionHeading p{text-align:left}.formGrid,.modeGrid,.uncertaintyCard,.detailGrid{grid-template-columns:1fr}.summaryGrid{grid-template-columns:1fr 1fr}.submitRow button{width:100%}}
 @media(max-width:390px){.page{padding-inline:.75rem}.formSection,.chartPanel{padding-inline:1rem}.hero h1{font-size:clamp(2.35rem,14vw,3.2rem)}.summaryGrid{grid-template-columns:1fr}.summaryGrid span{min-height:0}}
 @media(prefers-reduced-motion:reduce){.spinner,.pulse{animation:none}}
+
+.recommendationNote{margin:0;padding:.8rem 1rem;color:var(--muted);background:var(--surface);border:1px solid var(--line);border-radius:.75rem;font-size:.78rem;line-height:1.5}

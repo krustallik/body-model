@@ -21,6 +21,8 @@ import {
 } from "@/modules/model-forecast/forecast-ui";
 import type { ForecastResult } from "@/modules/model-forecast/forecast.types";
 import type { ModelStatusDto } from "@/modules/model-episodes/model-episode.types";
+import { ForecastModelRequestSchema } from "@/modules/model-forecast/model-forecast.schema";
+import { buildGoalPlanningRequest, defaultGoalForm } from "@/modules/model-goal-planning/goal-planning-ui";
 
 function result(overrides: Partial<ForecastResult> = {}): ForecastResult {
   const summary = { mean: 80, p05: 78, p25: 79, median: 80, p75: 81, p95: 82 };
@@ -68,11 +70,18 @@ describe("forecast application helpers", () => {
   });
 
   it("maps planned weekday work and a deterministic three-day strength pattern", () => {
-    const request = buildForecastRequest("fixed", 7, { ...DEFAULT_PLAN, plannedWork: true }, "2026-08-23");
+    const request = buildForecastRequest("fixed", 7, {
+      ...DEFAULT_PLAN, plannedWork: true, workDaysPerWeek: 2,
+    }, "2026-08-23");
     expect(request.scenario.mode).toBe("fixed");
     if (request.scenario.mode !== "fixed") throw new Error("wrong mode");
-    expect(Object.keys(request.scenario.schedule.byDate ?? {})).toEqual([
-      "2026-08-24", "2026-08-25", "2026-08-26", "2026-08-27", "2026-08-28",
+    expect(Object.keys(request.scenario.schedule.byDate ?? {})).toEqual(["2026-08-24", "2026-08-26"]);
+    expect(request.scenario.schedule.defaultDay).toMatchObject({
+      outsideWorkWalkingDistanceKm: 6,
+      averageWalkingSpeedKmh: 5,
+    });
+    expect(request.scenario.schedule.byDate?.["2026-08-24"]?.occupation).toEqual([
+      expect.objectContaining({ workWalkingDistanceKm: 0, averageWalkingSpeedKmh: 5 }),
     ]);
     expect(request.scenario.schedule.strengthByWeekday).toMatchObject({
       "1": 0, "3": 0, "5": 0, "0": 0,
@@ -85,6 +94,39 @@ describe("forecast application helpers", () => {
     ]);
     expect(request.scenario.schedule.workoutsByWeekday?.["3"]?.events).toHaveLength(1);
     expect(request.scenario.schedule.workoutsByWeekday?.["5"]?.events).toHaveLength(1);
+  });
+
+  it("builds a schema-valid canonical request from steps at zero, 10,000, and maximum planning input", () => {
+    for (const [steps, expectedKm] of [[0, 0], [10_000, 7.5], [100_000, 75]] as const) {
+      const request = buildForecastRequest("fixed", 7, {
+        ...DEFAULT_PLAN, averageStepsPerDay: steps, plannedWork: true,
+      }, "2026-08-23");
+      expect(ForecastModelRequestSchema.safeParse(request).success).toBe(true);
+      if (request.scenario.mode !== "fixed") throw new Error("wrong mode");
+      expect(request.scenario.schedule.defaultDay.outsideWorkWalkingDistanceKm).toBe(expectedKm);
+      expect(request.scenario.schedule.defaultDay.averageWalkingSpeedKmh).toBe(5);
+      expect(request.scenario.schedule.byDate?.["2026-08-24"]?.occupation?.[0]).toMatchObject({
+        workWalkingDistanceKm: 0,
+        averageWalkingSpeedKmh: 5,
+      });
+    }
+  });
+
+  it("uses the same planning conversion and schedule builder for goal requests", () => {
+    const plan = {
+      ...DEFAULT_PLAN,
+      averageStepsPerDay: 10_000,
+      plannedWork: true,
+      workDaysPerWeek: 2,
+      strengthDaysPerWeek: 2,
+      otherTrainingDaysPerWeek: 1,
+    };
+    const forecast = buildForecastRequest("target-centered", 90, plan, "2026-10-19");
+    const values = defaultGoalForm("2026-10-19", 82);
+    values.plan = plan;
+    const goal = buildGoalPlanningRequest(values, "2026-10-19");
+    expect(goal.errors).toEqual({});
+    expect(goal.request?.scenarioTemplate).toEqual(forecast.scenario);
   });
 
   it("builds a flexible target scenario with an empty occupation schedule when work is off", () => {

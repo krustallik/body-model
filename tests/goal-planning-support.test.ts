@@ -99,6 +99,8 @@ describe("goal planning application support", () => {
       outsideWorkWalkingDistanceKm: 7.5,
       averageWalkingSpeedKmh: 5,
     });
+    expect(built.request?.scenarioTemplate.schedule.byDate?.["2026-10-21"]?.occupation?.[0])
+      .toMatchObject({ workWalkingDistanceKm: 0, averageWalkingSpeedKmh: 5 });
     expect(built.request?.scenarioTemplate.schedule.strengthByWeekday).toEqual({
       "0": 0, "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0,
     });
@@ -122,6 +124,18 @@ describe("goal planning application support", () => {
     ).filter(([, day]) => (day.occupation?.length ?? 0) > 0)
       .map(([date]) => new Date(`${date}T12:00:00Z`).getUTCDay());
     expect(new Set(scheduledWorkWeekdays)).toEqual(new Set([1, 3]));
+  });
+
+  it("accepts the zero-step boundary and converts the maximum allowed step value", () => {
+    const zero = defaultGoalForm("2026-10-19", 82);
+    zero.plan.averageStepsPerDay = 0;
+    expect(buildGoalPlanningRequest(zero, "2026-10-19").request?.scenarioTemplate.schedule.defaultDay)
+      .toMatchObject({ outsideWorkWalkingDistanceKm: 0, averageWalkingSpeedKmh: 5 });
+
+    const maximum = defaultGoalForm("2026-10-19", 82);
+    maximum.plan.averageStepsPerDay = 100_000;
+    expect(buildGoalPlanningRequest(maximum, "2026-10-19").request?.scenarioTemplate.schedule.defaultDay)
+      .toMatchObject({ outsideWorkWalkingDistanceKm: 75, averageWalkingSpeedKmh: 5 });
   });
 
   it("rejects missing/non-finite values, invalid bounds, and non-future dates", () => {

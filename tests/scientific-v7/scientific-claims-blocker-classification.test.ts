@@ -6,13 +6,13 @@ import {
 } from "./scientific-claims-blocker-classification";
 
 describe("Stage 12 blocked scientific-claim triage", () => {
-  it("has no blocked claims after chronic sleep-context EXPERIMENTAL contracts", () => {
+  it("has no blocked claims after chronic sleep and nutrition EXPERIMENTAL contracts", () => {
     const blocked = SCIENTIFIC_V7_CLAIMS.filter((claim) => claim.status === "BLOCKED");
     const green = SCIENTIFIC_V7_CLAIMS.filter((claim) => claim.status === "GREEN");
     const experimental = SCIENTIFIC_V7_CLAIMS.filter((claim) => claim.status === "EXPERIMENTAL");
     expect(blocked).toHaveLength(0);
     expect(green).toHaveLength(38);
-    expect(experimental).toHaveLength(41);
+    expect(experimental).toHaveLength(42);
 
     const rows = classifyBlockedScientificClaims();
     expect(rows).toHaveLength(0);

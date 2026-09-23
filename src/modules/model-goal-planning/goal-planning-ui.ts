@@ -1,5 +1,8 @@
 import type { Locale } from "@/i18n/i18n-provider";
-import { addCalendarDays, buildForecastRequest, DEFAULT_PLAN, type PlanValues } from "@/modules/model-forecast/forecast-ui";
+import { addCalendarDays, buildPlanningScenario, DEFAULT_PLAN, type PlanValues } from "@/modules/planning-scenario/planning-scenario";
+import type { ModelStatusDto } from "@/modules/model-episodes/model-episode.types";
+import type { ProfileDto } from "@/modules/profile/profile.types";
+import { recommendNutrition, type NutritionRecommendation } from "@/modules/nutrition-recommender/nutrition-recommender";
 import type { GoalPlanningRequest } from "./goal-planning.schema";
 import type { GoalPlanningResponse, GoalPlanningStatus } from "./goal-planning.types";
 
@@ -20,9 +23,6 @@ export type GoalFormValues = {
 
 export type GoalFormErrors = Partial<Record<Exclude<keyof GoalFormValues, "plan" | "mode"> | "plan", string>>;
 
-const AVERAGE_STEP_LENGTH_KM = 0.00075;
-const DEFAULT_PLANNING_WALKING_SPEED_KMH = 5;
-
 export function defaultGoalForm(latestModeledDate?: string | null, currentWeightKg?: number | null): GoalFormValues {
   return {
     targetWeightKg: currentWeightKg === null || currentWeightKg === undefined
@@ -39,6 +39,61 @@ export function defaultGoalForm(latestModeledDate?: string | null, currentWeight
     mode: "target-centered",
     plan: { ...DEFAULT_PLAN },
   };
+}
+
+/** Apply the suggestion only to the untouched default template; caller edits always win. */
+export function initialGoalFormWithRecommendation(
+  latestModeledDate: string | null,
+  status: ModelStatusDto,
+  profile: Pick<ProfileDto, "sex" | "dateOfBirth" | "heightCm"> | null = null,
+): { form: GoalFormValues; recommendation: NutritionRecommendation } {
+  const currentWeightKg = status.currentPredictedWeightKg ?? status.currentFilteredWeightKg;
+  const form = defaultGoalForm(latestModeledDate, currentWeightKg);
+  const recommendation = recommendGoalFormNutrition(form, latestModeledDate, status, profile);
+  return {
+    form: { ...form, plan: { ...form.plan, ...recommendation.nutrition } },
+    recommendation,
+  };
+}
+
+/** Re-evaluate only recommendation metadata from live inputs; callers must not apply it over edits. */
+export function recommendGoalFormNutrition(
+  values: GoalFormValues,
+  latestModeledDate: string | null,
+  status: ModelStatusDto,
+  profile: Pick<ProfileDto, "sex" | "dateOfBirth" | "heightCm"> | null = null,
+): NutritionRecommendation {
+  const currentWeightKg = status.currentPredictedWeightKg ?? status.currentFilteredWeightKg;
+  const parsedTargetWeight = values.targetWeightKg.trim() === "" ? null : Number(values.targetWeightKg);
+  return recommendNutrition({
+    currentWeightKg,
+    modeledTdeeKcalPerDay: status.currentModeledTdeeKcalPerDay,
+    modelEnergyStatus: status.continuityStatus === "resolved" && !status.recoveryRequired ? "available" : "limited",
+    calibrationStatus: status.calibrationStatus,
+    strengthSessionsPerWeek: values.plan.strengthDaysPerWeek,
+    otherTrainingSessionsPerWeek: values.plan.otherTrainingDaysPerWeek,
+    averageStepsPerDay: values.plan.averageStepsPerDay,
+    workActivity: { planned: values.plan.plannedWork, daysPerWeek: values.plan.workDaysPerWeek },
+    targetWeightKg: parsedTargetWeight,
+    targetDate: values.goalDate || null,
+    latestModeledDate,
+    ageYears: profile && latestModeledDate ? ageOnDate(profile.dateOfBirth, latestModeledDate) : null,
+    bodyCompositionAvailable: Number.isFinite(status.currentFatMassKg) || Number.isFinite(status.currentLeanTissueKg),
+    sex: profile?.sex ?? null,
+    heightCm: profile?.heightCm ?? null,
+  });
+}
+
+function ageOnDate(dateOfBirth: string, referenceDate: string): number | null {
+  const birth = new Date(`${dateOfBirth}T12:00:00.000Z`);
+  const reference = new Date(`${referenceDate}T12:00:00.000Z`);
+  if (!Number.isFinite(birth.getTime()) || birth.toISOString().slice(0, 10) !== dateOfBirth
+      || !Number.isFinite(reference.getTime()) || reference.toISOString().slice(0, 10) !== referenceDate
+      || dateOfBirth > referenceDate) return null;
+  let age = reference.getUTCFullYear() - birth.getUTCFullYear();
+  if (reference.getUTCMonth() < birth.getUTCMonth()
+      || (reference.getUTCMonth() === birth.getUTCMonth() && reference.getUTCDate() < birth.getUTCDate())) age -= 1;
+  return age;
 }
 
 /** Planner form must not render until a concrete latest modeled day exists. */
@@ -117,14 +172,7 @@ export function buildGoalPlanningRequest(values: GoalFormValues, latestModeledDa
   if (Object.keys(errors).length > 0 || targetValueKg === null || minCaloriesKcal === null || maxCaloriesKcal === null) {
     return { request: null, errors };
   }
-  const scenario = buildForecastRequest(values.mode, horizonDays, {
-    ...values.plan,
-    outsideWorkWalkingDistanceKm: values.plan.averageStepsPerDay * AVERAGE_STEP_LENGTH_KM,
-    averageWalkingSpeedKmh: DEFAULT_PLANNING_WALKING_SPEED_KMH,
-    workWalkingDistanceKm: 0,
-    workWalkingSpeedKmh: DEFAULT_PLANNING_WALKING_SPEED_KMH,
-  }, latestModeledDate).scenario;
-  if (scenario.mode === "recent-behavior") throw new Error("goal planning requires an explicit scenario");
+  const scenario = buildPlanningScenario(values.mode, horizonDays, values.plan, latestModeledDate);
   return {
     request: {
       goal: { metric: "weightKg", targetValueKg, goalDate: values.goalDate },

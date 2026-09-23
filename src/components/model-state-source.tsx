@@ -4,24 +4,24 @@ export type ModelStateSource = "deterministic" | "recovered" | "bootstrap" | "de
 
 const copy = {
   uk: {
-    deterministic: ["прямий розрахунок", "Історія без критичного розриву: поточний стан послідовно розраховано зі збережених даних."],
-    recovered: ["відновлена оцінка", "В історії був розрив. Модель оцінила стан після нього за даними до і після пропуску; даних вистачило для прийнятної оцінки."],
-    bootstrap: ["стартова оцінка", "Повну історію ще не пораховано. Прогноз стартує від останньої ваги та профільних припущень і має ширший інженерний діапазон."],
-    degraded: ["наближена оцінка", "В історії був розрив, а спостережень навколо нього замало або вони недостатньо узгоджені. Модель відновила можливий стан, але впевненість нижча, тому прогноз позначено як обмежений."],
-    awaiting: ["очікує даних", "Після розриву ще замало нових спостережень, щоб відновити поточний стан. Прогноз поки недоступний."],
-    degenerate: ["ненадійна оцінка", "Спроба відновити стан після розриву не дала достатньо надійного результату. Потрібно доповнити історію або додати нові зважування."],
+    deterministic: ["Послідовний розрахунок", "Стан порахований день за днем із доступної історії без критичного пропуску. Інші типи оцінки можливі, якщо історія неповна або стан відновлюється після пропуску."],
+    recovered: ["Стан відновлено", "Стан відновлено після пропуску в історії."],
+    bootstrap: ["Стартова оцінка", "Стартова оцінка побудована за короткою історією та доступними даними профілю."],
+    degraded: ["Орієнтовна оцінка", "Орієнтовна оцінка через неповні або неузгоджені дані."],
+    awaiting: ["Очікуємо дані", "Даних поки недостатньо для повної оцінки."],
+    degenerate: ["Ненадійний поточний стан", "Поточний стан моделі недостатньо надійний для звичайної оцінки."],
   },
   en: {
-    deterministic: ["direct calculation", "There is no critical break in history, so the current state was calculated sequentially from saved data."],
-    recovered: ["recovered estimate", "There was a break in history. The model estimated the state after it from data before and after the gap, with enough evidence for a usable estimate."],
-    bootstrap: ["bootstrap estimate", "The full history is not modeled yet. The forecast starts from the latest weight and profile assumptions with a wider engineering range."],
-    degraded: ["rough estimate", "There was a break in history and the observations around it are sparse or inconsistent. The model recovered a possible state with lower confidence, so the forecast is marked as limited."],
-    awaiting: ["waiting for data", "There are not enough new observations after the gap to recover the current state. Forecasting is not available yet."],
-    degenerate: ["unreliable estimate", "The recovery attempt after the gap did not produce a sufficiently reliable result. Complete the history or add new weigh-ins."],
+    deterministic: ["Sequential calculation", "The state was calculated day by day from available history without a critical gap. Other estimate types can appear when history is incomplete or the state is recovered after a gap."],
+    recovered: ["State recovered", "The state was recovered after a gap in history."],
+    bootstrap: ["Starting estimate", "The starting estimate uses a short history and available profile data."],
+    degraded: ["Approximate estimate", "This estimate is approximate because some data is missing or inconsistent."],
+    awaiting: ["Waiting for data", "There is not enough data yet for a complete estimate."],
+    degenerate: ["Unreliable current state", "The model’s current state is not reliable enough for a regular estimate."],
   },
 } as const;
 
 export function ModelStateSource({ value, uk }: { value: ModelStateSource; uk: boolean }) {
   const [label, explanation] = copy[uk ? "uk" : "en"][value];
-  return <span>{label}<HelpTip label={uk ? `Пояснення типу моделі: ${label}` : `Explain model type: ${label}`}>{explanation}</HelpTip></span>;
+  return <span>{label}<HelpTip label={uk ? `Пояснення: ${label}` : `Explanation: ${label}`}>{explanation}</HelpTip></span>;
 }

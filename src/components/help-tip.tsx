@@ -96,9 +96,12 @@ export function HelpTip({ children, label = "Показати пояснення
       onClick={(event) => {
         event.preventDefault();
         event.stopPropagation();
-        if (usesFineHover()) return;
+        // Pointer users on desktop already have the hover behavior. Keyboard activation
+        // produces click.detail === 0 and must open the tip even on hover-capable devices.
+        if (usesFineHover() && event.detail > 0) return;
         setOpen((value) => !value);
       }}
+      aria-describedby={open ? tipId : undefined}
     >?</button>
     {open && <span
       id={tipId}

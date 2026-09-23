@@ -193,15 +193,20 @@ describe("GoalClient interaction", () => {
     await waitFor(() => {
       expect(screen.getByText(/Latest modeled day:/i)).toBeTruthy();
     });
-    expect((screen.getByLabelText(/Template energy/) as HTMLInputElement).value).toBe("2400");
+    expect(screen.getByText("2,400")).toBeTruthy();
+    expect(screen.getByText("128")).toBeTruthy();
+    expect(screen.getByText(/Approximate starting estimate/)).toBeTruthy();
+    expect(screen.getByText(/not account for body composition or clinical context/i)).toBeTruthy();
+    await user.click(screen.getByText("Adjust nutrition manually"));
+    expect((screen.getByLabelText(/Starting calories/) as HTMLInputElement).value).toBe("2400");
     expect((screen.getByLabelText(/^Protein \(g\)/) as HTMLInputElement).value).toBe("128");
     expect(screen.getByRole("button", { name: "Calculate scenario" })).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "Calculate scenario" }));
     await waitFor(() => {
-      expect(screen.getByText("solved")).toBeTruthy();
+      expect(screen.getByText(/Solver’s modeled calorie target/)).toBeTruthy();
     });
-    expect(screen.getByText(/Modeled plan center/i)).toBeTruthy();
+    expect(screen.getByText(/Solver’s modeled calorie target/i)).toBeTruthy();
     expect(screen.getByText(/~2,?100/)).toBeTruthy();
   });
 
@@ -225,15 +230,26 @@ describe("GoalClient interaction", () => {
     const user = userEvent.setup();
     render(<GoalClient />);
     await screen.findByText(/Latest modeled day:/i);
-    expect(screen.getByText(/energy is anchored to current modeled expenditure/i)).toBeTruthy();
-    await user.clear(screen.getByLabelText(/Template energy/));
-    await user.type(screen.getByLabelText(/Template energy/), "2600");
+    expect(screen.getByText(/starting-template energy uses current modeled expenditure/i)).toBeTruthy();
+    expect((screen.getByLabelText(/Target weight/) as HTMLInputElement).value).toBe("77");
+    expect((screen.getByLabelText(/Goal date/) as HTMLInputElement).value).toBe("2026-11-22");
+    await user.clear(screen.getByLabelText(/Target weight/));
+    await user.type(screen.getByLabelText(/Target weight/), "74.5");
+    fireEvent.change(screen.getByLabelText(/Goal date/), { target: { value: "2026-12-10" } });
+    await user.click(screen.getByText("Adjust nutrition manually"));
+    await user.clear(screen.getByLabelText(/Starting calories/));
+    await user.type(screen.getByLabelText(/Starting calories/), "2600");
     await user.clear(screen.getByLabelText(/^Protein \(g\)/));
     await user.type(screen.getByLabelText(/^Protein \(g\)/), "140");
     await user.click(screen.getByRole("button", { name: "Calculate scenario" }));
     await waitFor(() => expect(posted).toBeTruthy());
-    const scenarioTemplate = (posted as { scenarioTemplate: { schedule: { defaultDay: { nutrition: unknown } } } }).scenarioTemplate;
+    const request = posted as unknown as {
+      goal: { targetValueKg: number; goalDate: string };
+      scenarioTemplate: { schedule: { defaultDay: { nutrition: unknown } } };
+    };
+    const scenarioTemplate = request.scenarioTemplate;
     expect(scenarioTemplate.schedule.defaultDay.nutrition).toMatchObject({ caloriesKcal: 2600, proteinG: 140 });
+    expect(request.goal).toEqual({ metric: "weightKg", targetValueKg: 74.5, goalDate: "2026-12-10" });
   });
 
   it("updates the target-rate limitation as target inputs change without overwriting the nutrition template", async () => {
@@ -245,13 +261,18 @@ describe("GoalClient interaction", () => {
     const user = userEvent.setup();
     render(<GoalClient />);
     await screen.findByText(/Latest modeled day:/i);
+    await user.click(screen.getByText("Adjust nutrition manually"));
+    await user.clear(screen.getByLabelText(/Starting calories/));
+    await user.type(screen.getByLabelText(/Starting calories/), "2600");
+    await user.clear(screen.getByLabelText(/^Protein \(g\)/));
+    await user.type(screen.getByLabelText(/^Protein \(g\)/), "140");
     await user.clear(screen.getByLabelText(/Target weight/));
     await user.type(screen.getByLabelText(/Target weight/), "79.1");
     fireEvent.change(screen.getByLabelText(/Goal date/), { target: { value: "2026-08-31" } });
 
-    expect(await screen.findByText(/entered pace exceeds the product review threshold/i)).toBeTruthy();
-    expect((screen.getByLabelText(/Template energy/) as HTMLInputElement).value).toBe("2400");
-    expect((screen.getByLabelText(/^Protein \(g\)/) as HTMLInputElement).value).toBe("128");
+    expect(await screen.findByText(/requested pace is above a product review guideline/i)).toBeTruthy();
+    expect((screen.getByLabelText(/Starting calories/) as HTMLInputElement).value).toBe("2600");
+    expect((screen.getByLabelText(/^Protein \(g\)/) as HTMLInputElement).value).toBe("140");
   });
 
   it("renders numerically-limited BodyCast status without crashing", async () => {
@@ -302,5 +323,74 @@ describe("GoalClient interaction", () => {
     });
     expect(screen.getByText(/no active model/i)).toBeTruthy();
     expect(screen.queryByText("solved")).toBeNull();
+  });
+
+  it("guides work setup into the same canonical schedule used by the solver", async () => {
+    let posted: Record<string, unknown> | null = null;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), history: [] });
+      if (url.includes("/api/goal") && init?.method === "POST") {
+        posted = JSON.parse(String(init.body)) as Record<string, unknown>;
+        return jsonResponse(solvedGoal());
+      }
+      return jsonResponse({ error: "optional profile unavailable" }, 404);
+    }));
+    const user = userEvent.setup();
+    render(<GoalClient />);
+    await screen.findByText(/Latest modeled day:/i);
+    await user.click(screen.getByLabelText("I have work days"));
+    await user.click(screen.getByRole("button", { name: /Not sure — help me choose/ }));
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.click(screen.getByRole("button", { name: "Mostly sitting or waiting" }));
+    expect(screen.getByLabelText(/Breaks per shift/)).toBeTruthy();
+    const breakInput = screen.getByLabelText(/Breaks per shift/);
+    await user.clear(breakInput);
+    await user.type(breakInput, "1");
+    await user.click(screen.getByRole("button", { name: /I know my work type/ }));
+    expect((screen.getByLabelText("Work type") as HTMLSelectElement).value).toBe("standingLight");
+    expect((screen.getByLabelText(/Work days/) as HTMLInputElement).value).toBe("5");
+    await user.click(screen.getByRole("button", { name: "Calculate scenario" }));
+    await waitFor(() => expect(posted).toBeTruthy());
+    const submitted = posted as unknown as { scenarioTemplate: { schedule: { byDate: Record<string, { occupation?: Array<{ category: string; durationHours: number; breakDurationHours: number }> }> } } };
+    const schedule = submitted.scenarioTemplate.schedule;
+    const work = Object.values(schedule.byDate).flatMap((day) => day.occupation ?? []);
+    expect(work.length).toBeGreaterThan(0);
+    expect(work[0]).toMatchObject({ category: "standingLight", durationHours: 8, breakDurationHours: 1 });
+    expect(screen.getByText(/Solver’s modeled calorie target/)).toBeTruthy();
+  });
+
+  it.each([
+    ["2010-01-01", /not tailored for people under 18/i],
+    ["1950-01-01", /specific guidance for people 65\+ is not modeled/i],
+  ])("makes age-domain limitation obvious for birth date %s", async (dateOfBirth, limitation) => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/v1/profile")) return jsonResponse({ profile: {
+        id: 1, locale: "en", sex: "female", dateOfBirth, heightCm: 170,
+        targetWeightKg: null, targetDate: null, autoAdvanceExercises: false,
+        createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+      } });
+      if (String(input).includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), history: [] });
+      return jsonResponse({ error: "unexpected" }, 500);
+    }));
+    render(<GoalClient />);
+    await screen.findByText(limitation);
+    expect(screen.getByText("Approximate starting estimate")).toBeTruthy();
+  });
+
+  it("labels fallback nutrition clearly and keeps walking internals out of user inputs", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/forecast/context")) {
+        return jsonResponse({ status: modelStatus({ currentModeledTdeeKcalPerDay: null }), history: [] });
+      }
+      return jsonResponse({ error: "optional profile unavailable" }, 404);
+    }));
+    render(<GoalClient />);
+    await screen.findByText("Limited data for personalization");
+    expect(screen.getByText(/general product fallback is used/i)).toBeTruthy();
+    const userInputs = Array.from(document.querySelectorAll("input, select"));
+    expect(userInputs.map((input) => input.getAttribute("aria-label") ?? input.id).join(" "))
+      .not.toMatch(/walking distance|walking speed|km/i);
   });
 });

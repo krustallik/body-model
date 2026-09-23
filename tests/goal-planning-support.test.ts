@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ForecastResult } from "@/modules/model-forecast/forecast.types";
-import { buildGoalPlanningRequest, calendarDaysBetween, defaultGoalForm, goalStatusPresentation, probabilityDefinition, roundedPlanCalories } from "@/modules/model-goal-planning/goal-planning-ui";
+import { buildGoalPlanningRequest, calendarDaysBetween, defaultGoalForm, goalStatusPresentation, guidedWorkCategory, probabilityDefinition, roundedPlanCalories } from "@/modules/model-goal-planning/goal-planning-ui";
 import { serializeGoalPlanningResult } from "@/modules/model-goal-planning/goal-planning";
 import type { GoalPlanningRequest } from "@/modules/model-goal-planning/goal-planning.schema";
 import type { TargetSolverBlockedResult, TargetSolverResult } from "@/modules/model-target-solver/target-solver.types";
@@ -66,6 +66,14 @@ function solved(overrides: Partial<TargetSolverResult> = {}): TargetSolverResult
 }
 
 describe("goal planning application support", () => {
+  it.each([
+    ["mostly-sitting", "standingLight"],
+    ["mostly-standing", "standingLight"],
+    ["manual-handling", "manualLight"],
+  ] as const)("maps guided work answer %s to supported category %s", (answer, expected) => {
+    expect(guidedWorkCategory(answer)).toBe(expected);
+  });
+
   it("derives editable convenience defaults without inventing a state", () => {
     expect(defaultGoalForm()).toMatchObject({ targetWeightKg: "", goalDate: "", minCaloriesKcal: "1500", maxCaloriesKcal: "3300" });
     expect(defaultGoalForm("2026-10-19", 82)).toMatchObject({ targetWeightKg: "79", goalDate: "2027-01-17" });
@@ -153,6 +161,10 @@ describe("goal planning application support", () => {
     reversed.minCaloriesKcal = "3300"; reversed.maxCaloriesKcal = "1500";
     reversed.minFatG = "100"; reversed.maxFatG = "50";
     expect(buildGoalPlanningRequest(reversed, "2026-10-19").errors).toMatchObject({ minCaloriesKcal: expect.any(String), minFatG: expect.any(String) });
+    const equalBounds = defaultGoalForm("2026-10-19", 82);
+    equalBounds.minCaloriesKcal = "2000";
+    equalBounds.maxCaloriesKcal = "2000";
+    expect(buildGoalPlanningRequest(equalBounds, "2026-10-19")).toMatchObject({ request: null, errors: { minCaloriesKcal: expect.any(String) } });
   });
 
   it("keeps calendar dates consecutive across the late-October DST transition", () => {

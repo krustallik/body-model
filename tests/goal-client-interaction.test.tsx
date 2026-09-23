@@ -216,7 +216,7 @@ describe("GoalClient interaction", () => {
       const url = String(input);
       if (url.includes("/api/v1/profile")) return jsonResponse({ profile: {
         id: 1, locale: "en", sex: "female", dateOfBirth: "1991-01-01", heightCm: 170,
-        targetWeightKg: null, targetDate: null, autoAdvanceExercises: false,
+        targetWeightKg: 51, targetDate: "2030-01-01", autoAdvanceExercises: false,
         createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
       } });
       if (url.includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), history: [] });
@@ -254,6 +254,11 @@ describe("GoalClient interaction", () => {
 
   it("updates the target-rate limitation as target inputs change without overwriting the nutrition template", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/v1/profile")) return jsonResponse({ profile: {
+        id: 1, locale: "en", sex: "female", dateOfBirth: "1991-01-01", heightCm: 170,
+        targetWeightKg: 80, targetDate: "2030-01-01", autoAdvanceExercises: false,
+        createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+      } });
       if (String(input).includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), history: [] });
       return jsonResponse({ error: "optional profile unavailable" }, 404);
     }));

@@ -27,7 +27,8 @@ import type { GoalPlanningResponse } from "@/modules/model-goal-planning/goal-pl
 import styles from "./goal.module.css";
 
 type HistoricalDay = { date: string; modeledWeightKg: number | null; fatMassKg: number | null; leanTissueKg: number | null; glycogenAssociatedMassKg: number | null; dataQuality: string };
-type Context = { status: ModelStatusDto; history: HistoricalDay[]; profile?: ProfileDto | null };
+type GoalProfileAttributes = Pick<ProfileDto, "sex" | "dateOfBirth" | "heightCm">;
+type Context = { status: ModelStatusDto; history: HistoricalDay[]; profile?: GoalProfileAttributes | null };
 
 async function responseError(response: Response, locale: Locale): Promise<string> {
   const uk = locale === "uk";
@@ -89,7 +90,7 @@ export function GoalClient() {
   useEffect(() => {
     const controller = new AbortController();
     const profileRequest = fetch("/api/v1/profile", { cache: "no-store", signal: controller.signal })
-      .then(async (response) => response.ok ? await response.json() as { profile?: ProfileDto | null } : { profile: null })
+      .then(async (response) => response.ok ? await response.json() as { profile?: GoalProfileAttributes | null } : { profile: null })
       .catch(() => ({ profile: null }));
     void Promise.all([
       fetch("/api/forecast/context", { cache: "no-store", signal: controller.signal }),
@@ -97,7 +98,13 @@ export function GoalClient() {
     ]).then(async ([response, profileResult]) => {
       if (!response.ok) throw new Error(await responseError(response, locale));
       const next = await response.json() as Context;
-      const profile = profileResult.profile;
+      const profile = profileResult.profile
+        ? {
+          sex: profileResult.profile.sex,
+          dateOfBirth: profileResult.profile.dateOfBirth,
+          heightCm: profileResult.profile.heightCm,
+        }
+        : null;
       setContext({ ...next, profile });
       const initial = initialGoalFormWithRecommendation(next.status.latestModeledDate, next.status, profile);
       setForm(initial.form);

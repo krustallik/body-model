@@ -44,6 +44,15 @@ describe("/api/v1/profile", () => {
     await expect(response.json()).resolves.toEqual({ profile: null });
   });
 
+  it("keeps legacy target fields in profile read responses", async () => {
+    profileRepository.get.mockResolvedValue(profile);
+    const response = await GET();
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      profile: { targetWeightKg: 81.4, targetDate: "2027-06-01" },
+    });
+  });
+
   it("creates a profile and parses decimal comma", async () => {
     profileRepository.upsert.mockResolvedValue(profile);
     const response = await PUT(request({
@@ -63,6 +72,22 @@ describe("/api/v1/profile", () => {
       targetWeightKg: 81.4,
       targetDate: "2027-06-01",
     });
+  });
+
+  it("accepts a profile-only update without legacy goal fields", async () => {
+    profileRepository.upsert.mockResolvedValue(profile);
+    const response = await PUT(request({
+      locale: "en",
+      sex: "female",
+      dateOfBirth: "1991-01-01",
+      heightCm: "171.5",
+    }));
+
+    expect(response.status).toBe(200);
+    const input = profileRepository.upsert.mock.calls[0]?.[0];
+    expect(input).toMatchObject({ locale: "en", sex: "female", heightCm: 171.5 });
+    expect(input).not.toHaveProperty("targetWeightKg");
+    expect(input).not.toHaveProperty("targetDate");
   });
 
   it("fully updates a profile and clears omitted goal values", async () => {

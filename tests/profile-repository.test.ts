@@ -33,9 +33,12 @@ function fixture(initial: ReturnType<typeof record> | null = record()) {
         ...base,
         ...update,
         heightCm: new Prisma.Decimal(String(update.heightCm)),
-        targetWeightKg: update.targetWeightKg === null
-          ? null
-          : new Prisma.Decimal(String(update.targetWeightKg)),
+        targetWeightKg: update.targetWeightKg === undefined
+          ? base.targetWeightKg
+          : update.targetWeightKg === null
+            ? null
+            : new Prisma.Decimal(String(update.targetWeightKg)),
+        targetDate: update.targetDate === undefined ? base.targetDate : update.targetDate,
         updatedAt: new Date("2026-08-22T11:00:00Z"),
       });
       return stored;
@@ -84,5 +87,25 @@ describe("ProfileRepository", () => {
     expect(profile.upsert).toHaveBeenCalledTimes(1);
     expect(profile.upsert.mock.calls[0]?.[0].where).toEqual({ id: 1 });
     expect(persisted).toMatchObject({ id: 1, locale: "en", sex: "female", heightCm: 172, targetWeightKg: 70.5 });
+  });
+
+  it("preserves legacy goal columns when a profile-only write omits them", async () => {
+    const { repository, profile } = fixture();
+    await repository.upsert({
+      locale: "en",
+      sex: "female",
+      dateOfBirth: "1991-02-03",
+      heightCm: 172,
+    });
+
+    expect(profile.upsert).toHaveBeenCalledTimes(1);
+    const update = profile.upsert.mock.calls[0]?.[0].update;
+    expect(update).not.toHaveProperty("targetWeightKg");
+    expect(update).not.toHaveProperty("targetDate");
+    await expect(repository.get()).resolves.toMatchObject({
+      targetWeightKg: 81.4,
+      targetDate: "2027-06-01",
+      heightCm: 172,
+    });
   });
 });

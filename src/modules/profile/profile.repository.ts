@@ -55,19 +55,30 @@ export class ProfileRepository {
   }
 
   async upsert(input: ProfileInput): Promise<ProfileDto> {
-    const data = {
+    const profileData = {
       locale: input.locale,
       sex: input.sex,
       dateOfBirth: asDatabaseDate(input.dateOfBirth),
       heightCm: input.heightCm,
-      targetWeightKg: input.targetWeightKg ?? null,
-      targetDate: input.targetDate ? asDatabaseDate(input.targetDate) : null,
       autoAdvanceExercises: input.autoAdvanceExercises ?? false,
+    };
+    // Goal fields remain in the profile DTO for legacy API clients. New profile writes
+    // omit them, so only an explicitly supplied legacy value may update those columns.
+    const legacyGoalUpdate = {
+      ...(input.targetWeightKg !== undefined ? { targetWeightKg: input.targetWeightKg } : {}),
+      ...(input.targetDate !== undefined
+        ? { targetDate: input.targetDate === null ? null : asDatabaseDate(input.targetDate) }
+        : {}),
     };
     const record = await this.client.profile.upsert({
       where: { id: SINGLETON_PROFILE_ID },
-      create: { id: SINGLETON_PROFILE_ID, ...data },
-      update: data,
+      create: {
+        id: SINGLETON_PROFILE_ID,
+        ...profileData,
+        targetWeightKg: input.targetWeightKg ?? null,
+        targetDate: input.targetDate ? asDatabaseDate(input.targetDate) : null,
+      },
+      update: { ...profileData, ...legacyGoalUpdate },
       select: profileSelect,
     });
     return toDto(record);

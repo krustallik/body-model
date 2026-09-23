@@ -29,6 +29,23 @@ describe("ProfileInputSchema", () => {
     expect(result).toMatchObject({ locale: "uk", heightCm: 180, targetWeightKg: null, targetDate: null });
   });
 
+  it("accepts new profile-only writes and explicit null legacy goal values", () => {
+    const profileOnly = ProfileInputSchema.parse({
+      locale: "en",
+      sex: "female",
+      dateOfBirth: "1990-05-12",
+      heightCm: 180,
+    });
+    expect(profileOnly).not.toHaveProperty("targetWeightKg");
+    expect(profileOnly).not.toHaveProperty("targetDate");
+
+    expect(ProfileInputSchema.parse({
+      ...validProfile,
+      targetWeightKg: null,
+      targetDate: null,
+    })).toMatchObject({ targetWeightKg: null, targetDate: null });
+  });
+
   it("accepts Ukrainian and English interface locales", () => {
     expect(ProfileInputSchema.parse({ ...validProfile, locale: "en" }).locale).toBe("en");
     expect(ProfileInputSchema.safeParse({ ...validProfile, locale: "de" }).success).toBe(false);

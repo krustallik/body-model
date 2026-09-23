@@ -8,7 +8,7 @@ import type { ProfileDto } from "@/modules/profile/profile.types";
 import type { StepperEquipmentAssignmentDto } from "@/modules/profile/stepper-equipment.schema";
 import styles from "./profile.module.css";
 
-type ProfileField = "locale" | "sex" | "dateOfBirth" | "heightCm" | "targetWeightKg" | "targetDate" | "autoAdvanceExercises";
+type ProfileField = "locale" | "sex" | "dateOfBirth" | "heightCm" | "autoAdvanceExercises";
 type FormValues = Record<ProfileField, string>;
 type FieldErrors = Partial<Record<ProfileField, string>>;
 
@@ -17,8 +17,6 @@ const emptyForm: FormValues = {
   sex: "",
   dateOfBirth: "",
   heightCm: "",
-  targetWeightKg: "",
-  targetDate: "",
   autoAdvanceExercises: "false",
 };
 
@@ -28,8 +26,6 @@ function formFromProfile(profile: ProfileDto): FormValues {
     sex: profile.sex,
     dateOfBirth: profile.dateOfBirth,
     heightCm: String(profile.heightCm),
-    targetWeightKg: profile.targetWeightKg === null ? "" : String(profile.targetWeightKg),
-    targetDate: profile.targetDate ?? "",
     autoAdvanceExercises: String(profile.autoAdvanceExercises),
   };
 }
@@ -134,14 +130,14 @@ export function ProfileClient() {
       <section className={styles.hero}>
         <p className={styles.eyebrow}>{uk ? "Налаштування" : "Settings"}</p>
         <h1>{uk ? "Ваш профіль." : "Your profile."}</h1>
-        <p>{uk ? "Збережіть основні персональні дані, мову інтерфейсу та необов’язкову ціль ваги для моделей BodyCast." : "Keep the basic personal inputs, interface language, and optional weight goal that BodyCast models will use."}</p>
+        <p>{uk ? "Збережіть основні персональні дані та мову інтерфейсу." : "Keep your basic personal details and interface language."}</p>
       </section>
 
       <section className={styles.card} aria-labelledby="profile-form-title">
         <div className={styles.cardHeading}>
           <div>
             <p className={styles.eyebrow}>{uk ? "Персональні дані" : "Personal inputs"}</p>
-            <h2 id="profile-form-title">{uk ? "Профіль і ціль" : "Profile & goal"}</h2>
+            <h2 id="profile-form-title">{uk ? "Профіль" : "Profile"}</h2>
           </div>
           <p>{uk ? "Обов’язкові поля позначені *" : "Required fields are marked with *"}</p>
         </div>
@@ -199,32 +195,6 @@ export function ProfileClient() {
                 {fieldErrors.heightCm && <small role="alert">{fieldErrors.heightCm}</small>}
               </label>
 
-              <label className={styles.field}>
-                <span>{uk ? "Цільова вага" : "Target weight"}</span>
-                <div className={styles.unitInput}>
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    value={values.targetWeightKg}
-                    onChange={(event) => updateField("targetWeightKg", event.target.value)}
-                    placeholder="81,4"
-                    aria-invalid={Boolean(fieldErrors.targetWeightKg)}
-                  />
-                  <span>kg</span>
-                </div>
-                {fieldErrors.targetWeightKg && <small role="alert">{fieldErrors.targetWeightKg}</small>}
-              </label>
-
-              <label className={styles.field}>
-                <span>{uk ? "Цільова дата" : "Target date"}</span>
-                <input
-                  type="date"
-                  value={values.targetDate}
-                  onChange={(event) => updateField("targetDate", event.target.value)}
-                  aria-invalid={Boolean(fieldErrors.targetDate)}
-                />
-                {fieldErrors.targetDate && <small role="alert">{fieldErrors.targetDate}</small>}
-              </label>
               <label className={styles.field}>
                 <span>{uk ? "Тренування" : "Training"}</span>
                 <span className={styles.checkboxRow}>

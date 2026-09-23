@@ -44,6 +44,8 @@ import { ForecastClient } from "@/app/forecast/forecast-client";
 import { MIN_FORECAST_LOADING_MS } from "@/modules/model-forecast/forecast-ui";
 import type { ForecastResult } from "@/modules/model-forecast/forecast.types";
 import type { ModelStatusDto } from "@/modules/model-episodes/model-episode.types";
+import { FORECAST_SETTINGS_KEY } from "@/modules/browser-settings/versioned-settings";
+import { DEFAULT_PLAN } from "@/modules/planning-scenario/planning-scenario";
 
 function modelStatus(overrides: Partial<ModelStatusDto> = {}): ModelStatusDto {
   return {
@@ -169,6 +171,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 describe("ForecastClient interaction", () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
+    localStorage.clear();
   });
 
   afterEach(() => {
@@ -176,6 +179,62 @@ describe("ForecastClient interaction", () => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    localStorage.clear();
+  });
+
+  it("atomically restores planned settings before one initial request and keeps them when switching recent then planned", async () => {
+    const plan = { ...DEFAULT_PLAN, caloriesKcal: 2050, proteinG: 155, averageStepsPerDay: 9600, strengthDaysPerWeek: 4, strengthTrainingMinutes: 50, otherTrainingDaysPerWeek: 2, otherTrainingMinutes: 35, plannedWork: true, workDaysPerWeek: 4, workCategory: "manualModerate" as const, shiftHours: 7, breakHours: 1 };
+    localStorage.setItem(FORECAST_SETTINGS_KEY, JSON.stringify({ version: 1, settings: { horizon: 90, mode: "fixed", plan } }));
+    const requests: Array<{ horizonDays: number; scenario: Record<string, unknown> }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), history: [], unknownIntervals: [] });
+      if (url.includes("/api/forecast") && !url.includes("action")) {
+        requests.push(JSON.parse(String(init?.body)) as typeof requests[number]);
+        return jsonResponse(forecastOk());
+      }
+      return jsonResponse({ error: "unexpected" }, 500);
+    }));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTimeAsync });
+    render(<ForecastClient />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(MIN_FORECAST_LOADING_MS + 50); });
+    await screen.findByTestId("forecast-chart");
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.horizonDays).toBe(90);
+    expect(requests[0]?.scenario.mode).toBe("fixed");
+    expect(JSON.stringify(requests[0]?.scenario)).toContain("manualModerate");
+    expect((screen.getByLabelText(/Energy/) as HTMLInputElement).value).toBe("2050");
+
+    await user.click(screen.getByRole("button", { name: /As lately/ }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    const recent = requests.at(-1)!;
+    expect(recent.horizonDays).toBe(90);
+    expect(recent.scenario).toEqual({ mode: "recent-behavior" });
+    await user.click(screen.getByRole("button", { name: /Exact daily plan/ }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    const planned = requests.at(-1)!;
+    expect(planned.scenario.mode).toBe("fixed");
+    expect(JSON.stringify(planned.scenario)).toContain("manualModerate");
+    expect(JSON.stringify(planned.scenario)).toContain('"caloriesKcal":2050');
+  });
+
+  it("reset clears only forecast settings and restores recent defaults without reloading", async () => {
+    localStorage.setItem("bodycast.goal.settings.v1", "keep");
+    localStorage.setItem(FORECAST_SETTINGS_KEY, JSON.stringify({ version: 1, settings: { horizon: 90, mode: "fixed", plan: { ...DEFAULT_PLAN, caloriesKcal: 2000 } } }));
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).includes("/api/forecast/context")
+      ? jsonResponse({ status: modelStatus(), history: [], unknownIntervals: [] })
+      : jsonResponse(forecastOk())));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTimeAsync });
+    render(<ForecastClient />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(MIN_FORECAST_LOADING_MS + 50); });
+    await screen.findByTestId("forecast-chart");
+    expect((screen.getByLabelText(/Energy/) as HTMLInputElement).value).toBe("2000");
+    await user.click(screen.getByRole("button", { name: "Reset settings" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(localStorage.getItem(FORECAST_SETTINGS_KEY)).toBeNull();
+    expect(localStorage.getItem("bodycast.goal.settings.v1")).toBe("keep");
+    expect(screen.getByRole("button", { name: "30d" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: /As lately/ }).getAttribute("aria-pressed")).toBe("true");
   });
 
   it("shows loading on mount, keeps fast success hidden until ~800ms, then renders result", async () => {

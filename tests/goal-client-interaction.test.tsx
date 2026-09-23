@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 import {
   afterEach,
+  beforeEach,
   describe,
   expect,
   it,
@@ -46,6 +47,9 @@ vi.mock("@/i18n/i18n-provider", () => ({
 import { GoalClient } from "@/app/goal/goal-client";
 import type { ModelStatusDto } from "@/modules/model-episodes/model-episode.types";
 import type { GoalPlanningResponse } from "@/modules/model-goal-planning/goal-planning.types";
+import { GOAL_SETTINGS_KEY } from "@/modules/browser-settings/versioned-settings";
+import { goalSettingsFromForm } from "@/modules/browser-settings/planning-settings";
+import { defaultGoalForm } from "@/modules/model-goal-planning/goal-planning-ui";
 
 function modelStatus(overrides: Partial<ModelStatusDto> = {}): ModelStatusDto {
   return {
@@ -149,10 +153,87 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 describe("GoalClient interaction", () => {
+  beforeEach(() => localStorage.clear());
   afterEach(() => {
     cleanup();
+    localStorage.clear();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it("restores the complete canonical form and explicit manual macros before a solver request", async () => {
+    const form = {
+      ...defaultGoalForm("2026-08-24", 80),
+      targetWeightKg: "77.4",
+      goalDate: "2026-11-22",
+      minCaloriesKcal: "1650",
+      maxCaloriesKcal: "2550",
+      mode: "fixed" as const,
+      plan: {
+        ...defaultGoalForm("2026-08-24", 80).plan,
+        averageStepsPerDay: 9100,
+        strengthDaysPerWeek: 4,
+        strengthTrainingMinutes: 55,
+        otherTrainingDaysPerWeek: 2,
+        otherTrainingMinutes: 35,
+        plannedWork: true,
+        workDaysPerWeek: 4,
+        workCategory: "manualModerate" as const,
+        shiftHours: 7.5,
+        breakHours: 0.75,
+      },
+    };
+    const settings = goalSettingsFromForm(form, { caloriesKcal: 2345, proteinG: 165, fatG: 80, carbsG: 250 });
+    localStorage.setItem(GOAL_SETTINGS_KEY, JSON.stringify({ version: 1, settings }));
+    let posted: Record<string, unknown> | null = null;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), history: [] });
+      if (String(input).includes("/api/goal") && init?.method === "POST") {
+        posted = JSON.parse(String(init.body)) as Record<string, unknown>;
+        return jsonResponse(solvedGoal());
+      }
+      return jsonResponse({ error: "optional profile unavailable" }, 404);
+    }));
+    render(<GoalClient />);
+    await screen.findByText(/Latest modeled day:/i);
+    expect((screen.getByLabelText(/Target weight/) as HTMLInputElement).value).toBe("77.4");
+    expect((screen.getByLabelText(/Goal date/) as HTMLInputElement).value).toBe("2026-11-22");
+    expect((screen.getByLabelText(/Minimum calories/) as HTMLInputElement).value).toBe("1650");
+    expect((screen.getByLabelText(/Maximum energy/) as HTMLInputElement).value).toBe("2550");
+    expect((screen.getByLabelText(/Average steps/) as HTMLInputElement).value).toBe("9100");
+    expect((screen.getByLabelText(/Strength sessions/) as HTMLInputElement).value).toBe("4");
+    expect((screen.getByLabelText(/Other training.*per week/) as HTMLInputElement).value).toBe("2");
+    expect((screen.getByLabelText("I have work days") as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText("Work type") as HTMLSelectElement).value).toBe("manualModerate");
+    await userEvent.setup().click(screen.getByText("Adjust nutrition manually"));
+    expect((screen.getByLabelText(/Starting calories/) as HTMLInputElement).value).toBe("2345");
+    await userEvent.setup().click(screen.getByRole("button", { name: "Calculate scenario" }));
+    await waitFor(() => expect(posted).toBeTruthy());
+    const request = posted as unknown as { goal: { targetValueKg: number; goalDate: string }; constraints: { minCaloriesKcal: number; maxCaloriesKcal: number }; scenarioTemplate: { mode: string; schedule: { defaultDay: { nutrition: { caloriesKcal: number } }; byDate: Record<string, { occupation?: Array<{ category: string }> }> } } };
+    expect(request.goal).toMatchObject({ targetValueKg: 77.4, goalDate: "2026-11-22" });
+    expect(request.constraints).toMatchObject({ minCaloriesKcal: 1650, maxCaloriesKcal: 2550 });
+    expect(request.scenarioTemplate.mode).toBe("fixed");
+    expect(request.scenarioTemplate.schedule.defaultDay.nutrition.caloriesKcal).toBe(2345);
+    expect(Object.values(request.scenarioTemplate.schedule.byDate).flatMap((day) => day.occupation ?? []).some((job) => job.category === "manualModerate")).toBe(true);
+  });
+
+  it("reset returns to fresh model recommendations and removes only the goal settings key", async () => {
+    localStorage.setItem("bodycast.forecast.settings.v1", "keep");
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).includes("/api/forecast/context")
+      ? jsonResponse({ status: modelStatus(), history: [] })
+      : jsonResponse({ error: "optional profile unavailable" }, 404)));
+    const user = userEvent.setup();
+    render(<GoalClient />);
+    await screen.findByText(/Latest modeled day:/i);
+    await user.click(screen.getByText("Adjust nutrition manually"));
+    await user.clear(screen.getByLabelText(/Starting calories/));
+    await user.type(screen.getByLabelText(/Starting calories/), "2800");
+    expect(localStorage.getItem(GOAL_SETTINGS_KEY)).toContain('"caloriesKcal":2800');
+    await user.click(screen.getByRole("button", { name: "Reset settings" }));
+    expect(localStorage.getItem(GOAL_SETTINGS_KEY)).toBeNull();
+    expect(localStorage.getItem("bodycast.forecast.settings.v1")).toBe("keep");
+    expect((screen.getByLabelText(/Target weight/) as HTMLInputElement).value).toBe("77");
+    expect((screen.getByLabelText(/Starting calories/) as HTMLInputElement).value).not.toBe("2800");
   });
 
   it("does not crash or open the planner when latestModeledDate is null", async () => {

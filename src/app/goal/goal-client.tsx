@@ -25,6 +25,8 @@ import {
 } from "@/modules/model-goal-planning/goal-planning-ui";
 import type { GoalPlanningResponse } from "@/modules/model-goal-planning/goal-planning.types";
 import styles from "./goal.module.css";
+import { goalSettingsFromForm, isGoalBrowserSettings } from "@/modules/browser-settings/planning-settings";
+import { GOAL_SETTINGS_KEY, readBrowserSettings, resetBrowserSettings, writeBrowserSettings } from "@/modules/browser-settings/versioned-settings";
 
 type HistoricalDay = { date: string; modeledWeightKg: number | null; fatMassKg: number | null; leanTissueKg: number | null; glycogenAssociatedMassKg: number | null; dataQuality: string };
 type GoalProfileAttributes = Pick<ProfileDto, "sex" | "dateOfBirth" | "heightCm">;
@@ -76,6 +78,7 @@ export function GoalClient() {
   const uk = locale === "uk";
   const [context, setContext] = useState<Context | null>(null);
   const [form, setForm] = useState<GoalFormValues>(() => defaultGoalForm());
+  const [manualNutrition, setManualNutrition] = useState<Pick<PlanValues, "caloriesKcal" | "proteinG" | "fatG" | "carbsG"> | null>(null);
   const [initialized, setInitialized] = useState(false);
   const [formErrors, setFormErrors] = useState<GoalFormErrors>({});
   const [workInputMode, setWorkInputMode] = useState<"direct" | "guided">("direct");
@@ -86,6 +89,7 @@ export function GoalClient() {
   const [error, setError] = useState<string | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
   const requestRef = useRef({ current: 0 });
+  const skipSettingsWrite = useRef(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -107,7 +111,25 @@ export function GoalClient() {
         : null;
       setContext({ ...next, profile });
       const initial = initialGoalFormWithRecommendation(next.status.latestModeledDate, next.status, profile);
-      setForm(initial.form);
+      const persisted = readBrowserSettings(GOAL_SETTINGS_KEY, isGoalBrowserSettings);
+      if (persisted) {
+        const restored: GoalFormValues = {
+          ...initial.form,
+          ...persisted.form,
+          plan: { ...initial.form.plan, ...persisted.form.plan },
+        };
+        const refreshedRecommendation = recommendGoalFormNutrition(restored, next.status.latestModeledDate, next.status, profile);
+        const restoredManual = persisted.manualNutrition;
+        restored.plan = {
+          ...restored.plan,
+          ...(!restoredManual ? refreshedRecommendation.nutrition : restoredManual),
+        };
+        setForm(restored);
+        setManualNutrition(restoredManual);
+      } else {
+        setForm(initial.form);
+        setManualNutrition(null);
+      }
       setInitialized(true);
     }).catch((reason) => {
       if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : uk ? "Не вдалося завантажити модель." : "Could not load the model.");
@@ -115,12 +137,33 @@ export function GoalClient() {
     return () => { controller.abort(); controllerRef.current?.abort(); };
   }, [locale, uk]);
 
+  useEffect(() => {
+    if (!initialized) return;
+    if (skipSettingsWrite.current) { skipSettingsWrite.current = false; return; }
+    const settings = goalSettingsFromForm(form, manualNutrition);
+    if (isGoalBrowserSettings(settings)) writeBrowserSettings(GOAL_SETTINGS_KEY, settings);
+  }, [form, initialized, manualNutrition]);
+
   function updateForm<K extends keyof GoalFormValues>(key: K, value: GoalFormValues[K]) {
     setForm((current) => ({ ...current, [key]: value }));
     setResult(null); setError(null); setFormErrors({});
   }
   function updatePlan<K extends keyof PlanValues>(key: K, value: PlanValues[K]) {
+    const plan = { ...form.plan, [key]: value };
     setForm((current) => ({ ...current, plan: { ...current.plan, [key]: value } }));
+    if (key === "caloriesKcal" || key === "proteinG" || key === "fatG" || key === "carbsG") {
+      setManualNutrition({ caloriesKcal: plan.caloriesKcal, proteinG: plan.proteinG, fatG: plan.fatG, carbsG: plan.carbsG });
+    }
+    setResult(null); setError(null); setFormErrors({});
+  }
+
+  function resetSettings() {
+    if (!context) return;
+    resetBrowserSettings(GOAL_SETTINGS_KEY);
+    const initial = initialGoalFormWithRecommendation(context.status.latestModeledDate, context.status, context.profile ?? null);
+    skipSettingsWrite.current = true;
+    setForm(initial.form);
+    setManualNutrition(null);
     setResult(null); setError(null); setFormErrors({});
   }
 
@@ -174,6 +217,7 @@ export function GoalClient() {
     {loadingContext && <section className={styles.loadingCard} aria-live="polite"><div className={styles.spinner} /><strong>{uk ? "Завантажуємо поточний стан моделі" : "Loading current model state"}</strong></section>}
     {!loadingContext && initialized && !canPlan && <section className={styles.errorCard} role="status"><strong>{uk ? "Немає змодельованого стану" : "No modeled state yet"}</strong><p>{uk ? "Активна модель є, але останній змодельований день ще недоступний. Додайте історію й розрахуйте модель, перш ніж будувати ціль." : "There is an active model, but the latest modeled day is not available yet. Add history and calculate the model before planning a goal."}</p><p><Link href="/forecast">{uk ? "Перейти до прогнозу / запуску моделі" : "Go to forecast / start model"}</Link> · <Link href="/history">{uk ? "Історія" : "History"}</Link></p></section>}
     {!loadingContext && initialized && canPlan && latestModeledDate && <form className={styles.planner} onSubmit={(event) => void submit(event)} noValidate>
+      <div className={styles.sectionHeading}><span /> <button type="button" onClick={resetSettings}>{uk ? "Скинути налаштування" : "Reset settings"}</button></div>
       <section className={`${styles.recommendationNote} ${unsupportedAge ? styles.limitedRecommendation : ""}`} role="note" aria-label={uk ? "Статус стартового харчування" : "Starting nutrition status"}>
         <strong>{nutritionStatus}</strong>
         <span>{uk

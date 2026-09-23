@@ -38,6 +38,8 @@ import {
 } from "@/modules/provenance/provenance-presentation";
 import { ForecastChart } from "./forecast-chart";
 import styles from "./forecast.module.css";
+import { isForecastBrowserSettings } from "@/modules/browser-settings/planning-settings";
+import { FORECAST_SETTINGS_KEY, readBrowserSettings, resetBrowserSettings, writeBrowserSettings } from "@/modules/browser-settings/versioned-settings";
 
 type HistoricalDay = {
   date: string;
@@ -151,6 +153,8 @@ export function ForecastClient() {
   const controllerRef = useRef<AbortController | null>(null);
   const autoRunTimerRef = useRef<number | null>(null);
   const [settingsDirty, setSettingsDirty] = useState(false);
+  const [settingsReady, setSettingsReady] = useState(false);
+  const skipSettingsWrite = useRef(false);
 
   const runForecast = useCallback(async (selectedMode = mode, selectedHorizon = horizon, selectedPlan = plan) => {
     if (autoRunTimerRef.current !== null) {
@@ -219,7 +223,19 @@ export function ForecastClient() {
   }, [horizon, locale, mode, plan, uk]);
 
   useEffect(() => {
-    const initialRequest = window.setTimeout(() => void runForecast("recent-behavior", 30, DEFAULT_PLAN), 0);
+    const persisted = readBrowserSettings(FORECAST_SETTINGS_KEY, isForecastBrowserSettings);
+    const initialHorizon = persisted?.horizon ?? 30;
+    const initialMode = persisted?.mode ?? "recent-behavior";
+    const initialPlan = persisted?.plan ?? DEFAULT_PLAN;
+    const initialRequest = window.setTimeout(() => {
+      if (persisted) {
+        setHorizon(initialHorizon);
+        setMode(initialMode);
+        setPlan(initialPlan);
+      }
+      setSettingsReady(true);
+      void runForecast(initialMode, initialHorizon, initialPlan);
+    }, 0);
     return () => {
       window.clearTimeout(initialRequest);
       if (autoRunTimerRef.current !== null) window.clearTimeout(autoRunTimerRef.current);
@@ -228,6 +244,13 @@ export function ForecastClient() {
   // Intentional: initial default run only; subsequent controls schedule a debounced run.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!settingsReady) return;
+    if (skipSettingsWrite.current) { skipSettingsWrite.current = false; return; }
+    const settings = { horizon, mode, plan };
+    if (isForecastBrowserSettings(settings)) writeBrowserSettings(FORECAST_SETTINGS_KEY, settings);
+  }, [horizon, mode, plan, settingsReady]);
 
   function invalidateDisplayedForecast() {
     controllerRef.current?.abort();
@@ -260,6 +283,18 @@ export function ForecastClient() {
     setPlan(nextPlan);
     invalidateDisplayedForecast();
     scheduleAutoForecast(mode, horizon, nextPlan, 650);
+  }
+  function resetSettings() {
+    resetBrowserSettings(FORECAST_SETTINGS_KEY);
+    const defaultHorizon: ForecastHorizon = 30;
+    const defaultMode: ScenarioMode = "recent-behavior";
+    const defaultPlan = { ...DEFAULT_PLAN };
+    skipSettingsWrite.current = true;
+    setHorizon(defaultHorizon);
+    setMode(defaultMode);
+    setPlan(defaultPlan);
+    invalidateDisplayedForecast();
+    scheduleAutoForecast(defaultMode, defaultHorizon, defaultPlan, 200);
   }
   async function runAction(action: ForecastAction) {
     setActionLoading(action);
@@ -342,6 +377,7 @@ export function ForecastClient() {
       </header>
 
       <section className={styles.controlPanel} aria-label={uk ? "Налаштування прогнозу" : "Forecast controls"}>
+        <div className={styles.stepHeading}><span /> <button type="button" onClick={resetSettings}>{uk ? "Скинути налаштування" : "Reset settings"}</button></div>
         <section className={styles.controlStep} aria-labelledby="forecast-horizon-heading"><div className={styles.stepHeading}><span>01</span><div><h2 id="forecast-horizon-heading">{uk ? "Період прогнозу" : "Forecast horizon"}</h2><p>{uk ? "На скільки днів уперед дивимось?" : "How far ahead should we look?"}</p></div></div><div className={styles.segmented} aria-label={uk ? "Кількість днів" : "Number of days"}>{FORECAST_HORIZONS.map((days) => <button type="button" key={days} aria-pressed={horizon === days} onClick={() => selectHorizon(days)}>{days < 365 ? `${days}${uk ? "д" : "d"}` : (uk ? "1р" : "1y")}</button>)}</div><p className={styles.stepHint}>{uk ? "На довшому періоді діапазон невизначеності ширшає." : "Uncertainty grows over longer periods."}<HelpTip>{uk ? "30–90 днів зручні для практичних сценаріїв. На 180–365 днів кінцева цифра показує напрям, а не обіцянку." : "30–90 days works well for practical scenarios. At 180–365 days, the endpoint shows direction, not a promise."}</HelpTip></p></section>
         <section className={styles.controlStep} aria-labelledby="forecast-mode-heading"><div className={styles.stepHeading}><span>02</span><div><h2 id="forecast-mode-heading">{uk ? "Що відбуватиметься далі?" : "What happens next?"}</h2><p>{uk ? "Оберіть звички або задайте майбутній план." : "Use recent habits or describe a future plan."}</p></div></div><div className={styles.scenarioGrid}>{scenarios.map((scenario) => <button type="button" key={scenario.mode} aria-pressed={mode === scenario.mode} onClick={() => selectMode(scenario.mode)}><strong>{scenario.label}</strong><span>{scenario.hint}</span></button>)}</div><p className={styles.stepHint}><HelpTip>{uk ? "«Як останнім часом» використовує типові повні дні з Історії. У цьому режимі поля майбутнього плану не діють. Точний план повторює введені числа щодня; гнучкий план додає невеликі коливання." : "Recent behavior repeats typical complete days from History; future-plan fields do not apply in this mode. Exact plan repeats your entries daily; flexible plan adds small variations."}</HelpTip></p></section>
 

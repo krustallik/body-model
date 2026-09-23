@@ -4,7 +4,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { AppNav } from "@/components/app-nav";
+import { DEFAULT_TIME_ZONE, instantToLocalDateTime, localDateTimeToInstant } from "@/model/time-zone";
 import { useI18n } from "@/i18n/i18n-provider";
+import type { StepperWorkoutDto } from "@/modules/training/stepper-workout.repository";
 import type {
   StrengthSessionDto,
   StrengthSessionSummaryDto,
@@ -19,6 +21,24 @@ import {
   readApiError,
 } from "./training-labels";
 import styles from "./training.module.css";
+
+function nowLocalDateTime(): string {
+  const { date, time } = instantToLocalDateTime(new Date(), DEFAULT_TIME_ZONE);
+  return `${date}T${time}`;
+}
+
+function workoutLocalDateTime(value: string): string {
+  const { date, time } = instantToLocalDateTime(new Date(value), DEFAULT_TIME_ZONE);
+  return `${date}T${time}`;
+}
+
+function formatStepperDateTime(value: string, intlLocale: string): string {
+  return new Intl.DateTimeFormat(intlLocale, {
+    timeZone: DEFAULT_TIME_ZONE,
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
 
 function matchBadgeClass(status: StrengthSessionSummaryDto["matchStatus"]): string {
   switch (matchStatusBadgeTone(status)) {
@@ -45,6 +65,12 @@ export function TrainingClient() {
   const [programs, setPrograms] = useState<TrainingProgramSummaryDto[]>([]);
   const [recent, setRecent] = useState<StrengthSessionSummaryDto[]>([]);
   const [attention, setAttention] = useState<StrengthSessionSummaryDto[]>([]);
+  const [stepperWorkouts, setStepperWorkouts] = useState<StepperWorkoutDto[]>([]);
+  const [stepperFormOpen, setStepperFormOpen] = useState(false);
+  const [editingStepper, setEditingStepper] = useState<StepperWorkoutDto | null>(null);
+  const [stepperStartAt, setStepperStartAt] = useState(nowLocalDateTime);
+  const [stepperDuration, setStepperDuration] = useState("20");
+  const [stepperBusy, setStepperBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -53,13 +79,14 @@ export function TrainingClient() {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [activeRes, programsRes, recentRes, attentionRes] = await Promise.all([
+      const [activeRes, programsRes, recentRes, attentionRes, stepperRes] = await Promise.all([
         fetch("/api/v1/training/sessions/active", { cache: "no-store" }),
         fetch("/api/v1/training/programs", { cache: "no-store" }),
         fetch("/api/v1/training/sessions/recent?limit=12", { cache: "no-store" }),
         fetch("/api/v1/training/sessions/match-attention", { cache: "no-store" }),
+        fetch("/api/v1/training/stepper-workouts", { cache: "no-store" }),
       ]);
-      if (!activeRes.ok || !programsRes.ok || !recentRes.ok || !attentionRes.ok) {
+      if (!activeRes.ok || !programsRes.ok || !recentRes.ok || !attentionRes.ok || !stepperRes.ok) {
         setError(uk ? "Не вдалося завантажити тренування." : "Could not load training data.");
         return;
       }
@@ -67,16 +94,79 @@ export function TrainingClient() {
       const programsBody = await programsRes.json() as { programs: TrainingProgramSummaryDto[] };
       const recentBody = await recentRes.json() as { sessions: StrengthSessionSummaryDto[] };
       const attentionBody = await attentionRes.json() as { sessions: StrengthSessionSummaryDto[] };
+      const stepperBody = await stepperRes.json() as { workouts: StepperWorkoutDto[] };
       setActive(activeBody.session);
       setPrograms(programsBody.programs);
       setRecent(recentBody.sessions);
       setAttention(attentionBody.sessions);
+      setStepperWorkouts(stepperBody.workouts);
     } catch {
       setError(uk ? "Не вдалося завантажити тренування." : "Could not load training data.");
     } finally {
       setLoading(false);
     }
   }, [uk]);
+
+  function openNewStepperForm() {
+    setEditingStepper(null);
+    setStepperStartAt(nowLocalDateTime());
+    setStepperDuration("20");
+    setStepperFormOpen(true);
+  }
+
+  function openEditStepperForm(workout: StepperWorkoutDto) {
+    setEditingStepper(workout);
+    setStepperStartAt(workoutLocalDateTime(workout.startAt));
+    setStepperDuration(String(workout.durationMinutes ?? 20));
+    setStepperFormOpen(true);
+  }
+
+  async function saveStepperWorkout(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setStepperBusy(true);
+    setError(null);
+    try {
+      const [date, time] = stepperStartAt.split("T");
+      const instant = localDateTimeToInstant(date!, time!, DEFAULT_TIME_ZONE).toISOString();
+      const response = await fetch(editingStepper
+        ? `/api/v1/training/stepper-workouts/${editingStepper.id}`
+        : "/api/v1/training/stepper-workouts", {
+        method: editingStepper ? "PUT" : "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ startAt: instant, durationMinutes: Number(stepperDuration) }),
+      });
+      if (!response.ok) {
+        setError(await readApiError(response, uk));
+        return;
+      }
+      setStepperFormOpen(false);
+      setEditingStepper(null);
+      await load();
+    } catch {
+      setError(uk ? "Перевірте дату й час тренування." : "Check the workout date and time.");
+    } finally {
+      setStepperBusy(false);
+    }
+  }
+
+  async function deleteStepperWorkout(workout: StepperWorkoutDto) {
+    if (!window.confirm(uk ? "Видалити цей запис степера?" : "Delete this stepper workout?")) return;
+    setStepperBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/v1/training/stepper-workouts/${workout.id}`, { method: "DELETE" });
+      if (!response.ok) {
+        setError(await readApiError(response, uk));
+        return;
+      }
+      if (editingStepper?.id === workout.id) setStepperFormOpen(false);
+      await load();
+    } catch {
+      setError(uk ? "Не вдалося видалити тренування." : "Could not delete the workout.");
+    } finally {
+      setStepperBusy(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -227,12 +317,12 @@ export function TrainingClient() {
 
       <header className={styles.header}>
         <div>
-          <p className={styles.eyebrow}>{uk ? "Щоденник сили" : "Strength diary"}</p>
+          <p className={styles.eyebrow}>{uk ? "Щоденник тренувань" : "Training diary"}</p>
           <h1>{uk ? "Тренування" : "Training"}</h1>
           <p className={styles.intro}>
             {uk
-              ? "Програми, живі сесії, історичні записи та зіставлення з Garmin."
-              : "Programs, live sessions, historical backfill, and Garmin matching."}
+              ? "Силові програми, степер, історичні записи та зіставлення з Garmin."
+              : "Strength programs, stepper workouts, historical backfill, and Garmin matching."}
           </p>
         </div>
         <div className={styles.rowActions}>
@@ -249,6 +339,86 @@ export function TrainingClient() {
 
       <div className={styles.stack}>
         {attentionHasItems && renderAttention()}
+
+        <section className={`${styles.panel} ${styles.panelInfo}`} aria-label={uk ? "Тренування на степері" : "Stepper workouts"}>
+          <div className={styles.panelHeader}>
+            <div>
+              <h2>{uk ? "Тренування на степері" : "Stepper workouts"}</h2>
+              <p>{uk ? "Apple Health і власні записи · час, тривалість, діагностика" : "Apple Health and manual entries · time, duration, diagnostics"}</p>
+            </div>
+            <button className={styles.primaryButton} type="button" onClick={openNewStepperForm}>
+              {uk ? "Додати степер" : "Add stepper"}
+            </button>
+          </div>
+          <div className={styles.panelBody}>
+            {stepperFormOpen && (
+              <form className={`${styles.exerciseRow} ${styles.stepperForm}`} onSubmit={(event) => void saveStepperWorkout(event)}>
+                <div className={styles.exerciseRowHeader}>
+                  <strong>{editingStepper ? (uk ? "Редагувати запис" : "Edit workout") : (uk ? "Нове тренування" : "New workout")}</strong>
+                  <button className={styles.textButton} type="button" onClick={() => setStepperFormOpen(false)}>
+                    {uk ? "Закрити" : "Close"}
+                  </button>
+                </div>
+                <p className={styles.cardMeta}>
+                  {uk
+                    ? "Для ручного запису зберігаються дата, час і тривалість. Калорії, кроки та пульс додаються лише з фактичних даних Apple Health."
+                    : "Manual entries store date, time, and duration. Calories, steps, and heart rate come only from observed Apple Health data."}
+                </p>
+                <div className={`${styles.exerciseFields} ${styles.stepperFields}`}>
+                  <label className={styles.field}>
+                    <span>{uk ? "Дата й час · Europe/Bratislava" : "Date and time · Europe/Bratislava"}</span>
+                    <input aria-label={uk ? "Дата й час степера" : "Stepper date and time"} type="datetime-local" required value={stepperStartAt} onChange={(event) => setStepperStartAt(event.target.value)} />
+                  </label>
+                  <label className={styles.field}>
+                    <span>{uk ? "Тривалість · хвилини" : "Duration · minutes"}</span>
+                    <input aria-label={uk ? "Тривалість степера" : "Stepper duration"} type="number" min="1" max="1440" step="1" required value={stepperDuration} onChange={(event) => setStepperDuration(event.target.value)} />
+                  </label>
+                </div>
+                <div className={styles.denseCardActions}>
+                  <button className={styles.primaryButton} type="submit" disabled={stepperBusy}>
+                    {stepperBusy ? (uk ? "Збереження…" : "Saving…") : (uk ? "Зберегти" : "Save")}
+                  </button>
+                  {editingStepper && <button className={styles.secondaryButton} type="button" disabled={stepperBusy} onClick={() => void deleteStepperWorkout(editingStepper)}>{uk ? "Видалити" : "Delete"}</button>}
+                </div>
+              </form>
+            )}
+            {loading ? (
+              <p className={styles.cardMeta}>{uk ? "Завантаження…" : "Loading…"}</p>
+            ) : stepperWorkouts.length === 0 ? (
+              <div className={styles.empty}>
+                <strong>{uk ? "Записів степера поки немає" : "No stepper workouts yet"}</strong>
+                <span>{uk ? "Додайте тренування вручну або синхронізуйте Apple Health." : "Add one manually or sync Apple Health."}</span>
+              </div>
+            ) : (
+              <div className={styles.list}>
+                {stepperWorkouts.map((workout) => (
+                  <article className={styles.card} key={workout.id}>
+                    <div className={styles.cardTop}>
+                      <div>
+                        <strong>{uk ? "Степер" : "Stepper"}</strong>
+                        <p className={styles.cardMeta}>
+                          <span>{formatStepperDateTime(workout.startAt, intlLocale)}</span>
+                          <span>{formatDurationMinutes(workout.startAt, workout.endAt, intlLocale, uk)}</span>
+                          <span>{workout.activeEnergyKcal === null ? (uk ? "Енергія не записана" : "No energy recorded") : `${workout.activeEnergyKcal} ${uk ? "активних ккал · пристрій" : "active kcal · device"}`}</span>
+                        </p>
+                      </div>
+                      <span className={workout.source === "manual" ? styles.badgePrimary : styles.badgeInfo}>
+                        {workout.source === "manual" ? (uk ? "Ручний запис" : "Manual entry") : "Apple Health"}
+                      </span>
+                    </div>
+                    <div className={styles.denseCardActions}>
+                      <Link className={styles.linkLike} href={`/training/workouts/${workout.id}/stepper-diagnostic`}>
+                        {uk ? "Діагностика" : "Diagnostics"}
+                      </Link>
+                      {workout.source === "manual" && <button className={styles.linkLike} type="button" disabled={stepperBusy} onClick={() => openEditStepperForm(workout)}>{uk ? "Редагувати" : "Edit"}</button>}
+                      {workout.source === "manual" && <button className={styles.dangerButton} type="button" disabled={stepperBusy} onClick={() => void deleteStepperWorkout(workout)}>{uk ? "Видалити" : "Delete"}</button>}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
 
         <div className={styles.trainingHubGrid}>
         <section className={`${styles.panel} ${styles.panelActive}`} aria-label={uk ? "Активна сесія" : "Active session"}>

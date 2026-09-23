@@ -727,6 +727,9 @@
   gap: 0.65rem;
 }
 
+.stepperForm { margin-bottom: 0.75rem; }
+.stepperFields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
 .addExercise {
   display: grid;
   grid-template-columns: minmax(0, 1.4fr) repeat(2, minmax(0, 0.8fr)) auto;

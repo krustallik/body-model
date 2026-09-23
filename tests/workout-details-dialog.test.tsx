@@ -46,6 +46,7 @@ describe("WorkoutDetailsDialog", () => {
           workoutSource: "workouts",
           totalWorkoutMinutes: 62,
           workouts: [{
+            id: 61,
             type: "Stair Climbing",
             canonicalType: "Stair Climbing",
             classification: "stair-climbing",
@@ -63,6 +64,7 @@ describe("WorkoutDetailsDialog", () => {
     expect(html).toContain("Тренування за");
     expect(html).toContain("Stair Climbing");
     expect(html).toContain("активних ккал");
+    expect(html).toContain("/training/workouts/61/stepper-diagnostic");
     expect(html).toContain("Закрити");
   });
 

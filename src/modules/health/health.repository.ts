@@ -5,6 +5,7 @@ import {
 } from "@/modules/health/workout-feed-coverage";
 import { planDayWorkoutReconciliation } from "@/modules/health/reconcile-day-workouts";
 import { offsetMinutesFromIso } from "@/modules/health/sleep-summary";
+import { MANUAL_STEPPER_SOURCE_PREFIX } from "@/modules/health/workout-source-identity";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { instantToLocalDateTime } from "@/model/time-zone";
@@ -180,7 +181,7 @@ async function reconcileDayWorkouts(
   });
 
   const plan = planDayWorkoutReconciliation(
-    existing.map((row) => ({
+    existing.filter((row) => !row.sourceIdentity?.startsWith(MANUAL_STEPPER_SOURCE_PREFIX)).map((row) => ({
       id: row.id,
       sourceIdentity: row.sourceIdentity,
       externalId: row.externalId,

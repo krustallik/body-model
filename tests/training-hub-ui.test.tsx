@@ -32,6 +32,7 @@ describe("Training hub UI", () => {
       if (url.includes("/programs")) return Response.json({ programs: [] });
       if (url.includes("/sessions/recent")) return Response.json({ sessions: [] });
       if (url.includes("/match-attention")) return Response.json({ sessions: [] });
+      if (url.includes("/stepper-workouts")) return Response.json({ workouts: [] });
       return new Response("not found", { status: 404 });
     }));
 
@@ -62,6 +63,7 @@ describe("Training hub UI", () => {
       }
       if (url.includes("/sessions/recent")) return Response.json({ sessions: [] });
       if (url.includes("/match-attention")) return Response.json({ sessions: [] });
+      if (url.includes("/stepper-workouts")) return Response.json({ workouts: [] });
       if (url.includes("/archive") && init?.method === "POST") {
         return Response.json({ ok: true });
       }
@@ -110,6 +112,7 @@ describe("Training hub UI", () => {
         });
       }
       if (url.includes("/match-attention")) return Response.json({ sessions: [] });
+      if (url.includes("/stepper-workouts")) return Response.json({ workouts: [] });
       return new Response("not found", { status: 404 });
     }));
 
@@ -153,6 +156,7 @@ describe("Training hub UI", () => {
           }],
         });
       }
+      if (url.includes("/stepper-workouts")) return Response.json({ workouts: [] });
       return new Response("not found", { status: 404 });
     }));
 

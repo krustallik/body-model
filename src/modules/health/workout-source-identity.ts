@@ -6,6 +6,9 @@
  * It must never use fuzzy time windows or calorie similarity.
  */
 
+/** User-entered stepper rows are durable records, not members of a sync feed. */
+export const MANUAL_STEPPER_SOURCE_PREFIX = "manual:stepper:";
+
 export type WorkoutIdentitySource = {
   externalId?: string | null;
   type: string;

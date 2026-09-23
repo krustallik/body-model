@@ -59,6 +59,10 @@
   --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--focus);
   --shadow: rgb(0 0 0 / 28%);
 
+  /* Shared page shell for the main data and planning screens. */
+  --app-page-max-width: 104rem;
+  --app-page-gutter: clamp(1rem, 1.8vw, 1.75rem);
+
   /* Chart chrome (series colors stay local where meaningful) */
   --chart-grid: #2a3531;
   --chart-axis: #6f7d76;

@@ -18,6 +18,7 @@ function weekday(date: string): number {
 
 async function clearLocalReviewData() {
   await prisma.modelEpisode.deleteMany();
+  await prisma.unifiedExperimentalPhysiologyState.deleteMany();
   await prisma.healthSyncSnapshot.deleteMany();
   await prisma.workInterval.deleteMany();
   await prisma.workout.deleteMany();

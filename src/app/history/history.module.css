@@ -1,8 +1,11 @@
 .page {
-  max-width: 96rem;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: var(--app-page-max-width);
   min-height: 100dvh;
-  margin: 0 auto;
-  padding: 3rem 2rem 4rem;
+  margin-inline: auto;
+  padding: 3rem var(--app-page-gutter) 4rem;
   color: var(--ink);
   background: transparent;
 }
@@ -104,6 +107,8 @@
 .panelHeader { padding: 1.25rem 1.35rem; border-bottom: 1px solid var(--line); }
 .panelHeader p { margin: 0.25rem 0 0; color: var(--muted); font-size: 0.9rem; }
 .tableWrap { overflow-x: auto; }
+.desktopTable { display: block; min-width: 0; }
+.mobileDayCards { display: none; }
 
 .tableWrap table {
   width: 100%;
@@ -267,6 +272,37 @@
 .actions button { padding: 0.48rem 0.65rem; color: var(--accent); background: transparent; }
 .actions button:hover { background: var(--soft); }
 .actions .deleteButton { color: var(--danger-strong); }
+
+.dayCard {
+  min-width: 0;
+  padding: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 0.9rem;
+  box-shadow: 0 0.7rem 2rem rgb(30 53 44 / 6%);
+}
+.dayCardHeader { display: grid; gap: 0.35rem; min-width: 0; }
+.dayCardHeader h3 { margin: 0; font-size: 1.05rem; font-variant-numeric: tabular-nums; }
+.dayWorkStatus { color: var(--muted); font-size: 0.76rem; line-height: 1.4; overflow-wrap: anywhere; }
+.daySummary,
+.daySecondary > dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+  margin: 0;
+}
+.daySummary { margin-top: 0.9rem; }
+.daySummary > div,
+.daySecondary > dl > div { display: grid; gap: 0.22rem; min-width: 0; }
+.daySummary dt,
+.daySecondary dt { color: var(--muted); font-size: 0.7rem; font-weight: 700; }
+.daySummary dd,
+.daySecondary dd { margin: 0; font-size: 0.88rem; font-weight: 750; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.daySecondary { margin-top: 0.9rem; border-top: 1px solid var(--line); }
+.daySecondary summary { min-height: 2.75rem; display: flex; align-items: center; color: var(--accent); font-size: 0.8rem; font-weight: 750; cursor: pointer; }
+.daySecondary > dl { padding: 0.25rem 0 0.8rem; }
+.dayActions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.45rem; margin-top: 0.85rem; }
+.dayActions button { min-width: 0; min-height: 2.75rem; padding: 0.55rem 0.45rem; overflow-wrap: anywhere; }
 
 .errorBanner,
 .formError {
@@ -450,6 +486,8 @@
 
 .dialog {
   width: min(48rem, calc(100% - 2rem));
+  max-width: calc(100vw - 1rem);
+  box-sizing: border-box;
   max-height: calc(100dvh - 2rem);
   padding: 0;
   overflow: auto;
@@ -555,8 +593,8 @@
 .activitySummary .activityTotal { padding-top: 0.7rem; border-bottom: 0; }
 .activitySummary .activityTotal dt, .activitySummary .activityTotal dd { color: var(--ink); font-size: 0.9rem; }
 
-@media (max-width: 760px) {
-  .page { padding: 1.5rem 1rem 2.5rem; }
+@media (max-width: 820px) {
+  .page { padding-block: 1.5rem 2.5rem; }
   .navRow { align-items: flex-start; margin-bottom: 2.5rem; }
   .header { align-items: flex-start; flex-direction: column; }
   .header .primaryButton { width: 100%; }
@@ -571,33 +609,8 @@
   .chartCanvas { height: 15rem; }
   .panel { overflow: visible; background: transparent; border: 0; box-shadow: none; }
   .panelHeader { padding: 0 0 1rem; border: 0; }
-  .tableWrap { overflow: visible; }
-  .tableWrap table, .tableWrap tbody { display: block; min-width: 0; }
-  .tableWrap thead { display: none; }
-  .tableWrap tr {
-    display: grid;
-    gap: 0;
-    margin-bottom: 0.85rem;
-    overflow: hidden;
-    background: var(--surface);
-    border: 1px solid var(--line);
-    border-radius: 0.85rem;
-    box-shadow: 0 0.7rem 2rem rgb(30 53 44 / 6%);
-  }
-  .tableWrap td,
-  .tableWrap td:first-child,
-  .tableWrap td:last-child {
-    display: flex;
-    justify-content: space-between;
-    gap: 1rem;
-    padding: 0.65rem 0.85rem;
-    text-align: right;
-    white-space: normal;
-  }
-  .tableWrap td::before { content: attr(data-label); color: var(--muted); font-size: 0.72rem; font-weight: 700; text-align: left; }
-  .tableWrap td:first-child { padding-top: 0.85rem; }
-  .tableWrap td:last-child { padding-bottom: 0.85rem; border-bottom: 0; }
-  .actions { justify-content: flex-end; }
+  .desktopTable { display: none; }
+  .mobileDayCards { display: grid; gap: 0.8rem; }
   .formGrid { grid-template-columns: 1fr; }
   .workoutEditorHeader { align-items: stretch; flex-direction: column; }
   .workoutEditorHeader .secondaryButton { width: 100%; }

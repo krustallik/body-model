@@ -56,7 +56,11 @@ vi.mock("@/app/history/sleep-night-chart", () => ({
 }));
 
 vi.mock("@/app/history/work-activity-dialog", () => ({
-  WorkActivityDialog: () => null,
+  WorkActivityDialog: ({ date, onClose }: { date: string; onClose: () => void }) => (
+    <div role="dialog" aria-label={`Work activity for ${date}`}>
+      <button type="button" onClick={onClose}>Close work activity</button>
+    </div>
+  ),
 }));
 
 import { HistoryClient } from "@/app/history/history-client";
@@ -147,16 +151,21 @@ describe("HistoryClient workout cell interaction", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("/api/v1/days")) return jsonResponse({ days: rows });
+      if (url.includes("/api/v1/work-intervals")) {
+        return jsonResponse({ intervals: [{ date: "2026-09-03" }] });
+      }
       return jsonResponse({ error: "unexpected" }, 500);
     }));
 
     const user = userEvent.setup();
     render(<HistoryClient />);
     await waitFor(() => {
-      expect(screen.getByText("2026-09-03")).toBeTruthy();
+      expect(within(screen.getByTestId("desktop-history-table")).getByText("2026-09-03")).toBeTruthy();
     });
 
-    const workoutLinks = screen.getAllByRole("button", { name: /95|45/ });
+    const desktop = within(screen.getByTestId("desktop-history-table"));
+    const cards = within(screen.getByTestId("mobile-history-cards"));
+    const workoutLinks = desktop.getAllByRole("button", { name: /95|45/ });
     expect(workoutLinks.length).toBe(2);
     // Rest day shows em dash, not a button with 0.
     expect(screen.queryByRole("button", { name: "0" })).toBeNull();
@@ -166,15 +175,26 @@ describe("HistoryClient workout cell interaction", () => {
     await waitFor(() => {
       expect(screen.getByText(/Workouts on/i)).toBeTruthy();
     });
-    expect(screen.getByText(/Stair/i)).toBeTruthy();
-    expect(screen.getByText(/562/)).toBeTruthy();
-
     const dialog = screen.getByRole("dialog", { hidden: true }) ?? document.querySelector("dialog");
     expect(dialog).toBeTruthy();
+    expect(within(dialog as HTMLElement).getByText(/Stair/i)).toBeTruthy();
+    expect(within(dialog as HTMLElement).getByText(/562/)).toBeTruthy();
     const closes = within(dialog as HTMLElement).getAllByRole("button", { name: /Close/i });
     await user.click(closes[closes.length - 1]!);
     await waitFor(() => {
       expect(screen.queryByText(/Workouts on/i)).toBeNull();
     });
+
+    await user.click(cards.getByRole("button", { name: "Workout details for 2026-09-03" }));
+    await waitFor(() => expect(screen.getByText(/Workouts on/i)).toBeTruthy());
+    const cardDialog = screen.getByRole("dialog", { hidden: true });
+    await user.click(within(cardDialog).getAllByRole("button", { name: /Close/i }).at(-1)!);
+    await waitFor(() => expect(screen.queryByText(/Workouts on/i)).toBeNull());
+
+    await user.click(cards.getByRole("button", { name: "Work activity for 2026-09-03" }));
+    expect(screen.getByRole("dialog", { name: "Work activity for 2026-09-03" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Close work activity" }));
+    await user.click(cards.getByRole("button", { name: "Edit 2026-09-03" }));
+    expect(screen.getByRole("dialog", { hidden: true })).toBeTruthy();
   });
 });

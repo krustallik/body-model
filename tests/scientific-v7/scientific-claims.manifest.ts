@@ -152,8 +152,6 @@ function record(input: RecordInput): ScientificClaimManifestRecord {
   };
 }
 
-const v7MuscleBlocker = "The v7 skeletalMuscleKg state contract exists, but no adaptation transition or proxy-safe observation contract exists.";
-const v7StepperGlycogenBlocker = "No direct v7 stepper glycogen-demand seam exists; substrate coefficients remain deferred.";
 const experimentalTransientWaterImpl =
   "src/model/physiology-v7/experimental-transient-exercise-water-v1.ts";
 const experimentalTransientWaterTest =

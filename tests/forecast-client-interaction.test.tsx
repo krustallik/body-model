@@ -227,6 +227,46 @@ describe("ForecastClient interaction", () => {
     expect(JSON.stringify(planned.scenario)).toContain('"caloriesKcal":2050');
   });
 
+  it("retries the latest forecast after a conflicting server operation finishes", async () => {
+    const firstResponse = deferred<Response>();
+    let forecastRequestCount = 0;
+    const scenarios: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), history: [], unknownIntervals: [] });
+      if (url.includes("/api/forecast") && !url.includes("action")) {
+        forecastRequestCount += 1;
+        scenarios.push(JSON.parse(String(init?.body)).scenario as Record<string, unknown>);
+        if (forecastRequestCount === 1) return firstResponse.promise;
+        if (forecastRequestCount === 2) {
+          return new Response(JSON.stringify({ error: "operation_in_progress" }), {
+            status: 429,
+            headers: { "content-type": "application/json", "retry-after": "1" },
+          });
+        }
+        return jsonResponse(forecastOk());
+      }
+      return jsonResponse({ error: "unexpected" }, 500);
+    }));
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTimeAsync });
+    render(<ForecastClient />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(forecastRequestCount).toBe(1);
+
+    await user.click(screen.getByRole("button", { name: /Exact daily plan/ }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(forecastRequestCount).toBe(2);
+    expect(scenarios[1]).toMatchObject({ mode: "fixed" });
+
+    firstResponse.resolve(jsonResponse(forecastOk()));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_100); });
+    await screen.findByTestId("forecast-chart");
+    expect(forecastRequestCount).toBe(3);
+    expect(scenarios[2]).toMatchObject({ mode: "fixed" });
+    expect(screen.queryByText("operation in progress")).toBeNull();
+  });
+
   it("shows Ukrainian chart labels and explains filtered history separately from the future forecast", async () => {
     localeMock.value = "uk";
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).includes("/api/forecast/context")
@@ -350,6 +390,8 @@ describe("ForecastClient interaction", () => {
     await screen.findByTestId("forecast-chart");
     await user.click(screen.getByRole("button", { name: /Exact daily plan/ }));
 
+    expect(screen.getByRole("spinbutton", { name: "Energy (kcal)" })).toBeTruthy();
+    expect(screen.getByRole("spinbutton", { name: "Average steps (per day)" })).toBeTruthy();
     expect(screen.getByLabelText(/Average steps/)).toBeTruthy();
     expect(screen.getByLabelText(/^Strength sessions/)).toBeTruthy();
     expect(screen.getByLabelText(/^Strength session \(min\)/)).toBeTruthy();

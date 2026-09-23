@@ -10,12 +10,14 @@ import {
   sortDaysNewestFirst,
   type HistoryRange,
 } from "@/modules/days/history-chart-data";
+import { historyRecordCount } from "@/modules/days/history-card-presentation";
 import { formatDurationClock, formatMetric } from "@/modules/days/metric-format";
 import { HeartRateDayChart } from "./heart-rate-day-chart";
 import { HistoryCharts } from "./history-charts";
 import { SleepNightChart } from "./sleep-night-chart";
 import { WorkActivityDialog } from "./work-activity-dialog";
 import { WorkoutDetailsDialog } from "./workout-details-dialog";
+import { HistoryDayCard } from "./history-day-card";
 import styles from "./history.module.css";
 
 type FormValues = Record<DailyMetricField, string> & { date: string };
@@ -160,10 +162,37 @@ async function fetchDays(range: HistoryRange, uk = false): Promise<DailyMetricDt
   return sortDaysNewestFirst(filterDaysByRange(collected, range, today));
 }
 
+async function fetchWorkActivityDates(): Promise<Set<string> | null> {
+  try {
+    const response = await fetch("/api/v1/work-intervals", { cache: "no-store" });
+    if (!response.ok) return null;
+    const body = await response.json() as { intervals?: Array<{ date?: unknown }> };
+    return new Set((body.intervals ?? []).flatMap(({ date }) => (
+      typeof date === "string" ? [date] : []
+    )));
+  } catch {
+    return null;
+  }
+}
+
+async function fetchHistoryData(range: HistoryRange, uk: boolean): Promise<{
+  days: DailyMetricDto[];
+  workActivityDates: Set<string> | null;
+}> {
+  const [days, allWorkDates] = await Promise.all([fetchDays(range, uk), fetchWorkActivityDates()]);
+  if (allWorkDates === null) return { days, workActivityDates: null };
+  const visibleDates = new Set(days.map(({ date }) => date));
+  return {
+    days,
+    workActivityDates: new Set([...allWorkDates].filter((date) => visibleDates.has(date))),
+  };
+}
+
 export function HistoryClient() {
   const { locale, intlLocale } = useI18n();
   const uk = locale === "uk";
   const [days, setDays] = useState<DailyMetricDto[]>([]);
+  const [workActivityDates, setWorkActivityDates] = useState<Set<string> | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState>(null);
@@ -175,7 +204,9 @@ export function HistoryClient() {
     setLoading(true);
     setError(null);
     try {
-      setDays(await fetchDays(range, uk));
+      const loaded = await fetchHistoryData(range, uk);
+      setDays(loaded.days);
+      setWorkActivityDates(loaded.workActivityDates);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : uk ? "Не вдалося завантажити історію" : "Could not load history");
     } finally {
@@ -185,9 +216,11 @@ export function HistoryClient() {
 
   useEffect(() => {
     let active = true;
-    fetchDays(range, uk)
-      .then((loadedDays) => {
-        if (active) setDays(loadedDays);
+    fetchHistoryData(range, uk)
+      .then((loaded) => {
+        if (!active) return;
+        setDays(loaded.days);
+        setWorkActivityDates(loaded.workActivityDates);
       })
       .catch((loadError: unknown) => {
         if (active) setError(loadError instanceof Error ? loadError.message : uk ? "Не вдалося завантажити історію" : "Could not load history");
@@ -216,6 +249,26 @@ export function HistoryClient() {
       return;
     }
     await loadDays();
+  }
+
+  function editDay(day: DailyMetricDto) {
+    setEditor({
+      mode: "edit",
+      values: editForm(day),
+      workouts: workoutForm(day),
+      legacyWorkoutFields: day.workoutSource !== "workouts",
+    });
+  }
+
+  function renderDayActions(day: DailyMetricDto) {
+    return (
+      <div className={styles.actions}>
+        <button type="button" onClick={() => setWorkoutDay(day)}>{uk ? "Деталі" : "Details"}</button>
+        <button type="button" onClick={() => setWorkDate(day.date)}>{uk ? "Робота" : "Work"}</button>
+        <button type="button" onClick={() => editDay(day)}>{uk ? "Редагувати" : "Edit"}</button>
+        <button className={styles.deleteButton} type="button" onClick={() => void deleteDay(day.date)}>{uk ? "Видалити" : "Delete"}</button>
+      </div>
+    );
   }
 
   return (
@@ -277,7 +330,7 @@ export function HistoryClient() {
         <div className={styles.panelHeader}>
           <div>
             <h2>{range === "all" ? (uk ? "Усі записи" : "All records") : (uk ? `Останні ${range} днів` : `Last ${range} days`)}</h2>
-            <p>{loading ? (uk ? "Оновлення…" : "Refreshing…") : (uk ? `${days.length} записів` : `${days.length} ${days.length === 1 ? "record" : "records"}`)}</p>
+            <p>{loading ? (uk ? "Оновлення…" : "Refreshing…") : historyRecordCount(days.length, uk)}</p>
           </div>
           <button className={styles.secondaryButton} type="button" onClick={() => void loadDays()} disabled={loading}>
             {uk ? "Оновити" : "Refresh"}
@@ -290,6 +343,8 @@ export function HistoryClient() {
             <span>{uk ? "Додайте день вручну або дочекайтеся наступної синхронізації iPhone." : "Add a day manually or wait for the next iPhone sync."}</span>
           </div>
         ) : (
+          <>
+          <div className={styles.desktopTable} data-testid="desktop-history-table">
           <div className={styles.tableWrap}>
             <table>
               <thead>
@@ -364,23 +419,30 @@ export function HistoryClient() {
                         : formatMetric(day.restingHeartRateBpm, intlLocale)}
                     </td>
                     <td data-label="actions">
-                      <div className={styles.actions}>
-                        <button type="button" onClick={() => setWorkoutDay(day)}>{uk ? "Деталі" : "Details"}</button>
-                        <button type="button" onClick={() => setWorkDate(day.date)}>{uk ? "Робота" : "Work"}</button>
-                        <button type="button" onClick={() => setEditor({
-                          mode: "edit",
-                          values: editForm(day),
-                          workouts: workoutForm(day),
-                          legacyWorkoutFields: day.workoutSource !== "workouts",
-                        })}>{uk ? "Редагувати" : "Edit"}</button>
-                        <button className={styles.deleteButton} type="button" onClick={() => void deleteDay(day.date)}>{uk ? "Видалити" : "Delete"}</button>
-                      </div>
+                      {renderDayActions(day)}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+          </div>
+          <section className={styles.mobileDayCards} data-testid="mobile-history-cards" aria-label={uk ? "Денні записи" : "Daily entries"}>
+            {days.map((day) => (
+              <HistoryDayCard
+                key={day.date}
+                day={day}
+                intlLocale={intlLocale}
+                uk={uk}
+                workActivityPresent={workActivityDates === null ? null : workActivityDates.has(day.date)}
+                onDetails={() => setWorkoutDay(day)}
+                onWork={() => setWorkDate(day.date)}
+                onEdit={() => editDay(day)}
+                onDelete={() => void deleteDay(day.date)}
+              />
+            ))}
+          </section>
+          </>
         )}
       </section>
 
@@ -394,7 +456,10 @@ export function HistoryClient() {
           }}
         />
       )}
-      {workDate && <WorkActivityDialog date={workDate} onClose={() => setWorkDate(null)} />}
+      {workDate && <WorkActivityDialog date={workDate} onClose={() => {
+        setWorkDate(null);
+        void fetchWorkActivityDates().then(setWorkActivityDates);
+      }} />}
       {workoutDay && <WorkoutDetailsDialog day={workoutDay} onClose={() => setWorkoutDay(null)} />}
     </main>
   );

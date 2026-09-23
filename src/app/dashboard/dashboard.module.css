@@ -1,8 +1,11 @@
 .page {
-  max-width: 90rem;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: var(--app-page-max-width);
   min-height: 100dvh;
-  margin: 0 auto;
-  padding: 1.5rem 2rem 4rem;
+  margin-inline: auto;
+  padding: 1.5rem var(--app-page-gutter) 4rem;
   color: var(--ink);
   background: transparent;
 }
@@ -137,7 +140,7 @@
 }
 
 @media (max-width: 620px) {
-  .page { padding: 1rem 1rem 2.5rem; }
+  .page { padding-block: 1rem 2.5rem; }
   .topbar { align-items: flex-start; }
   .hero { align-items: flex-start; flex-direction: column; padding: 3rem 0 1.6rem; }
   .todayBadge { align-self: stretch; justify-content: center; }

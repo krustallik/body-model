@@ -217,7 +217,7 @@ export function GoalClient() {
     {loadingContext && <section className={styles.loadingCard} aria-live="polite"><div className={styles.spinner} /><strong>{uk ? "Завантажуємо поточний стан моделі" : "Loading current model state"}</strong></section>}
     {!loadingContext && initialized && !canPlan && <section className={styles.errorCard} role="status"><strong>{uk ? "Немає змодельованого стану" : "No modeled state yet"}</strong><p>{uk ? "Активна модель є, але останній змодельований день ще недоступний. Додайте історію й розрахуйте модель, перш ніж будувати ціль." : "There is an active model, but the latest modeled day is not available yet. Add history and calculate the model before planning a goal."}</p><p><Link href="/forecast">{uk ? "Перейти до прогнозу / запуску моделі" : "Go to forecast / start model"}</Link> · <Link href="/history">{uk ? "Історія" : "History"}</Link></p></section>}
     {!loadingContext && initialized && canPlan && latestModeledDate && <form className={styles.planner} onSubmit={(event) => void submit(event)} noValidate>
-      <div className={styles.sectionHeading}><span /> <button type="button" onClick={resetSettings}>{uk ? "Скинути налаштування" : "Reset settings"}</button></div>
+      <div className={styles.sectionHeading}><span /> <button className={styles.resetButton} type="button" onClick={resetSettings}>{uk ? "Скинути налаштування" : "Reset settings"}</button></div>
       <section className={`${styles.recommendationNote} ${unsupportedAge ? styles.limitedRecommendation : ""}`} role="note" aria-label={uk ? "Статус стартового харчування" : "Starting nutrition status"}>
         <strong>{nutritionStatus}</strong>
         <span>{uk

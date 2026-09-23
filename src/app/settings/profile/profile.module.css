@@ -2,10 +2,10 @@
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
-  max-width: 90rem;
+  max-width: var(--app-page-max-width);
   min-height: 100dvh;
-  margin: 0 auto;
-  padding: 1.5rem 2rem 4rem;
+  margin-inline: auto;
+  padding: 1.5rem var(--app-page-gutter) 4rem;
   color: var(--ink);
   background: transparent;
 }
@@ -19,7 +19,7 @@
 .hero > p:last-child { max-width: 38rem; margin: 1.1rem 0 0; color: var(--muted); line-height: 1.5; }
 .eyebrow { margin: 0 0 0.7rem; color: var(--text-muted); font-size: 0.72rem; font-weight: 850; letter-spacing: 0.14em; text-transform: uppercase; }
 
-.card { box-sizing: border-box; width: 100%; max-width: 58rem; overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: 1rem; box-shadow: 0 0.35rem 1rem var(--shadow); }
+.card { box-sizing: border-box; width: 100%; max-width: 58rem; margin-inline: auto; overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: 1rem; box-shadow: 0 0.35rem 1rem var(--shadow); }
 .card + .card { margin-top: 1.25rem; }
 .cardHeading { display: flex; align-items: flex-end; justify-content: space-between; gap: 1rem; padding: 1.4rem 1.5rem; border-bottom: 1px solid var(--line); }
 .cardHeading h2 { margin: 0; font-size: 1.45rem; letter-spacing: -0.035em; }
@@ -57,7 +57,7 @@
 .assignmentHistory span { color: var(--muted); text-align: right; }
 
 @media (max-width: 620px) {
-  .page { overflow-x: clip; padding: 1rem 1rem 2.5rem; }
+  .page { padding-block: 1rem 2.5rem; }
   .topbar { align-items: stretch; flex-direction: column; }
   .hero { padding: 3rem 0 1.6rem; }
   .cardHeading { align-items: flex-start; flex-direction: column; }
@@ -71,7 +71,6 @@
 }
 
 @media (max-width: 390px) {
-  .page { padding-inline: 0.75rem; }
   .card form, .cardHeading { padding-inline: 1rem; }
   .hero h1 { font-size: clamp(2.4rem, 15vw, 3.4rem); }
 }

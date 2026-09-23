@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useId, useRef, useState } from "react";
 import { AppNav } from "@/components/app-nav";
 import { HelpTip } from "@/components/help-tip";
 import { useI18n, type Locale } from "@/i18n/i18n-provider";
@@ -106,8 +106,12 @@ async function forecastError(response: Response, locale: Locale): Promise<{
     } : {
       no_active_episode: "There is no active model yet. Start the model here if weight and calories are already in your history.",
       forecast_unavailable: body.reason === "missing-weight" ? "Add at least one weight measurement so BodyCast can build a starter forecast." : "Complete your profile so BodyCast can build a starter forecast.",
+      operation_in_progress: "A forecast is already being calculated. Try again in a moment.",
       recovery_required: "Recalculate the model first — it will estimate state after the data gap automatically.",
     };
+    if (locale === "uk" && body.error === "operation_in_progress") {
+      return { message: "Прогноз уже розраховується. Спробуйте ще раз за мить.", code: body.error };
+    }
     return {
       message: (body.error && messages[body.error]) || raw,
       code: body.error ?? null,
@@ -116,10 +120,57 @@ async function forecastError(response: Response, locale: Locale): Promise<{
   } catch { return { message: fallback, code: null }; }
 }
 
+const MAX_OPERATION_RETRIES = 10;
+
+function waitForOperationRetry(signal: AbortSignal, delayMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException("The operation was aborted", "AbortError"));
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      reject(new DOMException("The operation was aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+async function fetchForecastResponse(payload: unknown, signal: AbortSignal): Promise<Response> {
+  for (let retries = 0; ; retries += 1) {
+    const response = await fetch("/api/forecast", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+      signal,
+    });
+    if (response.status !== 429 || retries >= MAX_OPERATION_RETRIES) return response;
+    const body = await response.clone().json().catch(() => null) as { error?: string } | null;
+    if (body?.error !== "operation_in_progress") return response;
+    const retryAfterSeconds = Number(response.headers.get("retry-after"));
+    const delayMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+      ? Math.min(5_000, Math.max(250, retryAfterSeconds * 1_000))
+      : 1_000;
+    await waitForOperationRetry(signal, delayMs);
+  }
+}
+
 function NumberField({ label, value, onChange, min = 0, max, step = 1, unit, help }: {
   label: string; value: number; onChange: (value: number) => void; min?: number; max?: number; step?: number; unit?: string; help?: string;
 }) {
-  return <label className={styles.field}><span>{label}{unit ? ` (${unit})` : ""}{help && <HelpTip>{help}</HelpTip>}</span><input type="number" value={value} min={min} max={max} step={step} required onChange={(event) => onChange(event.currentTarget.valueAsNumber)} /></label>;
+  const inputId = useId();
+  return <div className={styles.field}>
+    <div className={styles.fieldLabel}>
+      <label htmlFor={inputId}>{label}{unit ? ` (${unit})` : ""}</label>
+      {help && <HelpTip>{help}</HelpTip>}
+    </div>
+    <input id={inputId} type="number" value={value} min={min} max={max} step={step} required onChange={(event) => onChange(event.currentTarget.valueAsNumber)} />
+  </div>;
 }
 
 export function ForecastClient() {
@@ -174,12 +225,10 @@ export function ForecastClient() {
     try {
       const payload = await withMinimumVisibleLoading((async () => {
         // Forecast may persist DailyModelState first; load context afterward so diagnostics stay in sync.
-        const forecastResponse = await fetch("/api/forecast", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(buildForecastRequest(selectedMode, selectedHorizon, selectedPlan)),
-          signal: controller.signal,
-        });
+        const forecastResponse = await fetchForecastResponse(
+          buildForecastRequest(selectedMode, selectedHorizon, selectedPlan),
+          controller.signal,
+        );
         const contextResponse = await fetch("/api/forecast/context", { cache: "no-store", signal: controller.signal });
         const nextContext = contextResponse.ok ? await contextResponse.json() as Context : null;
         if (!forecastResponse.ok) {

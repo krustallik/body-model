@@ -9,6 +9,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
+import { useI18n } from "@/i18n/i18n-provider";
 import styles from "./help-tip.module.css";
 
 function usesFineHover(): boolean {
@@ -16,10 +17,12 @@ function usesFineHover(): boolean {
     && window.matchMedia("(hover: hover) and (pointer: fine)").matches;
 }
 
-export function HelpTip({ children, label = "Показати пояснення" }: {
+export function HelpTip({ children, label }: {
   children: ReactNode;
   label?: string;
 }) {
+  const { locale } = useI18n();
+  const accessibleLabel = label ?? (locale === "uk" ? "Показати пояснення" : "Show explanation");
   const tipId = useId();
   const rootRef = useRef<HTMLSpanElement>(null);
   const [open, setOpen] = useState(false);
@@ -90,7 +93,7 @@ export function HelpTip({ children, label = "Показати пояснення
     <button
       type="button"
       className={styles.trigger}
-      aria-label={label}
+      aria-label={accessibleLabel}
       aria-expanded={open}
       aria-controls={tipId}
       onClick={(event) => {

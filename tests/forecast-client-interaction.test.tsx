@@ -32,12 +32,14 @@ vi.mock("@/components/help-tip", () => ({
   HelpTip: ({ children }: { children: React.ReactNode }) => <span data-testid="help">{children}</span>,
 }));
 
+const localeMock = vi.hoisted(() => ({ value: "en" as "en" | "uk" }));
+
 vi.mock("@/app/forecast/forecast-chart", () => ({
   ForecastChart: () => <div data-testid="forecast-chart" />,
 }));
 
 vi.mock("@/i18n/i18n-provider", () => ({
-  useI18n: () => ({ locale: "en", intlLocale: "en-US", setLocale: () => undefined }),
+  useI18n: () => ({ locale: localeMock.value, intlLocale: localeMock.value === "uk" ? "uk-UA" : "en-US", setLocale: () => undefined }),
 }));
 
 import { ForecastClient } from "@/app/forecast/forecast-client";
@@ -171,6 +173,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 describe("ForecastClient interaction", () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
+    localeMock.value = "en";
     localStorage.clear();
   });
 
@@ -199,6 +202,12 @@ describe("ForecastClient interaction", () => {
     render(<ForecastClient />);
     await act(async () => { await vi.advanceTimersByTimeAsync(MIN_FORECAST_LOADING_MS + 50); });
     await screen.findByTestId("forecast-chart");
+    expect(screen.getByText("Measured weight")).toBeTruthy();
+    expect(screen.getByText("Model estimate")).toBeTruthy();
+    expect(screen.getByText("Future forecast")).toBeTruthy();
+    expect(screen.getByText("25–75% forecast interval")).toBeTruthy();
+    expect(screen.getByText("5–95% forecast interval")).toBeTruthy();
+    expect(screen.getByText(/historical model estimate uses measurements available/i)).toBeTruthy();
     expect(requests).toHaveLength(1);
     expect(requests[0]?.horizonDays).toBe(90);
     expect(requests[0]?.scenario.mode).toBe("fixed");
@@ -216,6 +225,23 @@ describe("ForecastClient interaction", () => {
     expect(planned.scenario.mode).toBe("fixed");
     expect(JSON.stringify(planned.scenario)).toContain("manualModerate");
     expect(JSON.stringify(planned.scenario)).toContain('"caloriesKcal":2050');
+  });
+
+  it("shows Ukrainian chart labels and explains filtered history separately from the future forecast", async () => {
+    localeMock.value = "uk";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).includes("/api/forecast/context")
+      ? jsonResponse({ status: modelStatus(), history: [], observedWeights: [], unknownIntervals: [] })
+      : jsonResponse(forecastOk())));
+    render(<ForecastClient />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(MIN_FORECAST_LOADING_MS + 50); });
+    await screen.findByTestId("forecast-chart");
+    expect(screen.getByText("Вага з вагів")).toBeTruthy();
+    expect(screen.getByText("Оцінка моделі")).toBeTruthy();
+    expect(screen.getByText("Майбутній прогноз")).toBeTruthy();
+    expect(screen.getByText("25–75% прогнозу")).toBeTruthy();
+    expect(screen.getByText("5–95% прогнозу")).toBeTruthy();
+    expect(screen.getByText(/історична оцінка моделі враховує вимірювання/i)).toBeTruthy();
+    expect(screen.getByText(/це не прогноз, зроблений до вимірювання/i)).toBeTruthy();
   });
 
   it("reset clears only forecast settings and restores recent defaults without reloading", async () => {

@@ -2,7 +2,8 @@ import { NoActiveModelEpisodeError } from "@/modules/model-episodes/model-episod
 import { prisma } from "@/lib/db/prisma";
 import { getModelHistory, getModelStatus } from "@/modules/model-episodes/model-episode.service";
 import type { ModelDaySourceQuality } from "@/modules/model-episodes/model-episode.types";
-import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
+import { addCalendarDays, latestCompletedLocalDate } from "@/modules/model-episodes/model-calendar";
+import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import { calculateGlycogenAssociatedMassKg } from "@/model/body-composition/state";
 import {
@@ -18,6 +19,7 @@ export const dynamic = "force-dynamic";
 type HistoryDayRow = {
   date: string;
   endWeightKg: number | null;
+  filteredWeightKg: number | null;
   fatMassKg: number | null;
   leanTissueKg: number | null;
   glycogenKg: number | null;
@@ -37,10 +39,14 @@ export async function GET(): Promise<Response> {
       offset: 0,
     });
     const days = history.days as HistoryDayRow[];
+    const forecastStartDate = addCalendarDays(
+      latestCompletedLocalDate(new Date(), status.timezone ?? DEFAULT_TIME_ZONE),
+      1,
+    );
     const observedWeights = await prisma.dailyHealthData.findMany({
       where: status.latestModeledDate
-        ? { date: { gte: addCalendarDays(status.latestModeledDate, -59) } }
-        : undefined,
+        ? { date: { gte: addCalendarDays(status.latestModeledDate, -59), lte: forecastStartDate } }
+        : { date: { lte: forecastStartDate } },
       orderBy: { date: "asc" },
       select: { date: true, weightKg: true },
     }).catch(() => [] as Array<{ date: string; weightKg: number | null }>);
@@ -58,6 +64,7 @@ export async function GET(): Promise<Response> {
       history: days.map((day) => ({
         date: day.date,
         modeledWeightKg: day.endWeightKg,
+        filteredWeightKg: day.filteredWeightKg,
         fatMassKg: day.fatMassKg,
         leanTissueKg: day.leanTissueKg,
         glycogenAssociatedMassKg: day.glycogenKg === null

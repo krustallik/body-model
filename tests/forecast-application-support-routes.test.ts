@@ -47,6 +47,7 @@ describe("forecast context route", () => {
       days: [{
         date: "2026-08-24",
         endWeightKg: 80,
+        filteredWeightKg: 79.6,
         fatMassKg: 16,
         leanTissueKg: 60,
         glycogenKg: 0.5,
@@ -66,6 +67,7 @@ describe("forecast context route", () => {
       history: [{
         date: "2026-08-24",
         modeledWeightKg: 80,
+        filteredWeightKg: 79.6,
         glycogenAssociatedMassKg: 1.85,
         dataQuality: "observed",
         nutritionSource: "observed",

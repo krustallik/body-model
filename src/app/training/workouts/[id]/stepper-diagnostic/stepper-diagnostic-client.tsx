@@ -9,18 +9,15 @@ import { useI18n } from "@/i18n/i18n-provider";
 import styles from "./stepper-diagnostic.module.css";
 
 type DiagnosticResponse = { diagnostic?: StepperWorkoutDiagnosticV7; error?: string };
+type IntervalStepEvidence = Extract<StepperWorkoutDiagnosticV7["bracketedSteps"], { availability: "available" }> & {
+  intervalCoveragePercent: number;
+  observedIntervalStepCount: number;
+};
 
-function displayReason(value: string, uk: boolean): string {
-  const labels: Record<string, [string, string]> = {
-    "no-before-snapshot": ["Немає знімка кроків перед тренуванням", "No step snapshot before the workout"],
-    "no-after-snapshot": ["Немає знімка кроків після тренування", "No step snapshot after the workout"],
-    "missing-step-counter": ["У знімку відсутній лічильник кроків", "A snapshot has no step counter"],
-    "counter-decrease": ["Лічильник кроків зменшився між знімками", "The step counter decreased between snapshots"],
-    "incomplete-step-interval-coverage": ["Інтервали кроків не покривають усе тренування", "Step intervals do not cover the whole workout"],
-    "not-stair-workout": ["Це не тренування Stair Climbing", "This is not a Stair Climbing workout"],
-    "no-device-active-energy": ["Немає active energy з пристрою", "No device active energy was recorded"],
-  };
-  return labels[value]?.[uk ? 0 : 1] ?? value;
+function hasIntervalEvidence(value: StepperWorkoutDiagnosticV7["bracketedSteps"] | undefined): value is IntervalStepEvidence {
+  return value?.availability === "available"
+    && typeof value.intervalCoveragePercent === "number"
+    && typeof value.observedIntervalStepCount === "number";
 }
 
 function formatInstant(value: string, intlLocale: string): string {
@@ -47,29 +44,6 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 
 function CodeMeaning({ value, uk }: { value: string; uk?: string }) {
   return <span className={styles.codeMeaning}>{uk ?? value}</span>;
-}
-
-function Snapshot({ value, name, intlLocale, uk }: {
-  value: StepperWorkoutDiagnosticV7["bracketedSteps"]["before"];
-  name: string;
-  intlLocale: string;
-  uk: boolean;
-}) {
-  return (
-    <section className={styles.subpanel} aria-label={name}>
-      <h3>{name}</h3>
-      {value === null ? <p className={styles.muted}>{uk ? "Немає знімка" : "No snapshot"}</p> : (
-        <dl className={styles.fieldGrid}>
-          <Field label={uk ? "ID знімка" : "Snapshot ID"}>{value.snapshotId}</Field>
-          <Field label={uk ? "Час" : "Timestamp"}><Instant value={value.timestamp} intlLocale={intlLocale} /></Field>
-          <Field label={uk ? "Основа часу" : "Timestamp basis"}>
-            <CodeMeaning value={value.timestampBasis} uk={value.timestampBasis === "synced-at" ? (uk ? "Час синхронізації" : "Sync time") : (uk ? "Час отримання" : "Receive time")} />
-          </Field>
-          <Field label={uk ? "Лічильник кроків" : "Step counter"}>{value.stepCount === null ? "—" : <NumberValue value={value.stepCount} intlLocale={intlLocale} />}</Field>
-        </dl>
-      )}
-    </section>
-  );
 }
 
 function Interval({ value, intlLocale, uk }: {
@@ -126,6 +100,8 @@ export function StepperDiagnosticClient({ workoutId }: { workoutId: string }) {
   }, [uk, workoutId]);
 
   const steps = diagnostic?.bracketedSteps;
+  const intervalEvidence = hasIntervalEvidence(steps) ? steps : null;
+  const intervalEvidenceAvailable = intervalEvidence !== null;
   const hr = diagnostic?.heartRate;
   const topology = hr?.samplingTopology;
 
@@ -136,7 +112,7 @@ export function StepperDiagnosticClient({ workoutId }: { workoutId: string }) {
         <div>
           <p className={styles.eyebrow}>{uk ? "Тренування · фактичні джерела" : "Workout · observed sources"}</p>
           <h1>{uk ? "Діагностика степера" : "Stepper diagnostics"}</h1>
-          <p className={styles.intro}>{uk ? "Факти тренування, знімки кроків, енергія пристрою та структура зразків пульсу." : "Workout facts, step snapshots, device energy, and heart-rate sampling."}</p>
+          <p className={styles.intro}>{uk ? "Факти тренування, кроки за інтервалами активності, енергія пристрою та структура зразків пульсу." : "Workout facts, steps from activity intervals, device energy, and heart-rate sampling."}</p>
         </div>
         <div className={styles.headerActions}>
           <Link className={styles.secondaryButton} href="/history">{uk ? "Історія" : "History"}</Link>
@@ -158,24 +134,18 @@ export function StepperDiagnosticClient({ workoutId }: { workoutId: string }) {
             </dl>
           </Section>
 
-          <Section title={uk ? "Кроки навколо тренування" : "Steps around the workout"} subtitle={uk ? "Лічильник Apple Health між знімками або покриття інтервалами" : "Apple Health counter snapshots or interval coverage"}>
+          <Section title={uk ? "Кроки за інтервалами" : "Steps from intervals"} subtitle={uk ? "Кроки з інтервалів активності, що збігаються з тренуванням" : "Steps from activity intervals overlapping the workout"}>
             <div className={styles.statusRow}>
-              <span className={steps?.availability === "available" ? styles.badgeSuccess : styles.badgeWarning}>
-                {steps?.availability === "available" ? (uk ? "Доступно" : "Available") : (uk ? "Недоступно" : "Unavailable")}
+              <span className={intervalEvidenceAvailable ? styles.badgeSuccess : styles.badgeWarning}>
+                {intervalEvidenceAvailable ? (uk ? "Доступно" : "Available") : (uk ? "Недоступно" : "Unavailable")}
               </span>
-              {steps?.availability === "unavailable" && <span>{displayReason(steps.availabilityReason, uk)}</span>}
-            </div>
-            <div className={styles.snapshotGrid}>
-              <Snapshot value={steps?.before ?? null} name={uk ? "До тренування" : "Before workout"} intlLocale={intlLocale} uk={uk} />
-              <Snapshot value={steps?.after ?? null} name={uk ? "Після тренування" : "After workout"} intlLocale={intlLocale} uk={uk} />
+              {!intervalEvidenceAvailable && <span>{uk ? "Немає інтервалів кроків у межах тренування" : "No step intervals overlap the workout"}</span>}
             </div>
             <dl className={styles.fieldGrid}>
-              <Field label={uk ? "Проміжок перед стартом · с" : "Gap before start · s"}>{steps?.preGapSeconds === null || steps?.preGapSeconds === undefined ? "—" : <NumberValue value={steps.preGapSeconds} intlLocale={intlLocale} />}</Field>
-              <Field label={uk ? "Проміжок після завершення · с" : "Gap after end · s"}>{steps?.postGapSeconds === null || steps?.postGapSeconds === undefined ? "—" : <NumberValue value={steps.postGapSeconds} intlLocale={intlLocale} />}</Field>
-              <Field label={uk ? "Покриття інтервалами кроків" : "Step interval coverage"}>{steps?.intervalCoveragePercent === null || steps?.intervalCoveragePercent === undefined ? "—" : `${new Intl.NumberFormat(intlLocale, { maximumFractionDigits: 1 }).format(steps.intervalCoveragePercent)}%`}</Field>
-              <Field label={uk ? "Кроки у виміряних частинах" : "Steps in observed portions"}>{steps?.observedIntervalStepCount === null || steps?.observedIntervalStepCount === undefined ? "—" : <NumberValue value={steps.observedIntervalStepCount} intlLocale={intlLocale} />}</Field>
-              <Field label={uk ? "Оцінка кроків за тренування" : "Estimated workout steps"}>{steps?.derivedStepDelta === null || steps?.derivedStepDelta === undefined ? "—" : <NumberValue value={steps.derivedStepDelta.value} intlLocale={intlLocale} />}</Field>
-              <Field label={uk ? "Темп · кроків/хв" : "Rate · steps/min"}>{steps?.derivedStepRatePerMinute === null || steps?.derivedStepRatePerMinute === undefined ? "—" : <NumberValue value={steps.derivedStepRatePerMinute.value} intlLocale={intlLocale} />}</Field>
+              <Field label={uk ? "Покриття інтервалами кроків" : "Step interval coverage"}>{intervalEvidence ? new Intl.NumberFormat(intlLocale, { maximumFractionDigits: 1 }).format(intervalEvidence.intervalCoveragePercent) + "%" : "—"}</Field>
+              <Field label={uk ? "Кроки у виміряних частинах" : "Steps in observed portions"}>{intervalEvidence ? <NumberValue value={intervalEvidence.observedIntervalStepCount} intlLocale={intlLocale} /> : "—"}</Field>
+              <Field label={uk ? "Оцінка кроків за тренування" : "Estimated workout steps"}>{intervalEvidence?.derivedStepDelta ? <NumberValue value={intervalEvidence.derivedStepDelta.value} intlLocale={intlLocale} /> : "—"}</Field>
+              <Field label={uk ? "Темп · кроків/хв" : "Rate · steps/min"}>{intervalEvidence?.derivedStepRatePerMinute ? <NumberValue value={intervalEvidence.derivedStepRatePerMinute.value} intlLocale={intlLocale} /> : "—"}</Field>
             </dl>
           </Section>
 

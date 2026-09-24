@@ -53,10 +53,6 @@
 .field dd { display: grid; gap: 0.25rem; min-width: 0; margin: 0; color: var(--text); font-size: 0.88rem; line-height: 1.4; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .codeMeaning { display: grid; gap: 0.18rem; min-width: 0; }
 .codeMeaning > span { overflow-wrap: anywhere; }
-.snapshotGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.65rem; min-width: 0; }
-.subpanel { min-width: 0; padding: 0.65rem; border: 1px solid var(--border); border-radius: 0.7rem; background: color-mix(in srgb, var(--surface-2) 65%, transparent); }
-.subpanel h3 { margin: 0 0 0.5rem; font-size: 0.86rem; }
-.subpanel .fieldGrid { grid-template-columns: 1fr; }
 .statusRow { justify-content: flex-start; flex-wrap: wrap; }
 .badgeSuccess,
 .badgeWarning,
@@ -89,7 +85,6 @@
   .stack { gap: 0.95rem; }
   .panelBody { padding: 0.95rem 1.1rem 1.1rem; }
   .fieldGrid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .subpanel .fieldGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .topologyRow { grid-template-columns: minmax(12rem, 0.8fr) minmax(0, 1.2fr); align-items: start; }
 }
 
@@ -98,11 +93,9 @@
   .navRow { align-items: flex-start; gap: 0.4rem; margin-bottom: 1.1rem; }
   .header { display: grid; align-items: start; gap: 0.65rem; }
   .headerActions { justify-content: flex-start; }
-  .snapshotGrid { grid-template-columns: 1fr; }
   .panelHeader { gap: 0.45rem; padding: 0.7rem 0.75rem; }
   .panelBody { padding: 0.7rem 0.75rem 0.8rem; }
   .fieldGrid { grid-template-columns: 1fr; }
-  .subpanel .fieldGrid { grid-template-columns: 1fr; }
   .gapList ol { max-height: 24rem; }
 }
 

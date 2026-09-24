@@ -16,6 +16,7 @@ const db = {
   healthActivityInterval: { findMany: vi.fn() },
   workInterval: { findMany: vi.fn() },
   workout: { findMany: vi.fn() },
+  heartRateSample: { findMany: vi.fn() },
   dailyModelState: {
     deleteMany: vi.fn(), upsert: vi.fn(), count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(),
   },
@@ -151,6 +152,7 @@ describe("model episode repository mapping", () => {
       timezone: "Europe/Bratislava", category: "manualLight", breakMinutes: null,
     }]);
     db.workout.findMany.mockResolvedValue([]);
+    db.heartRateSample.findMany.mockResolvedValue([]);
     const result = await new ModelEpisodeRepository(client)
       .loadSources("2026-08-01", "2026-08-22");
     expect(result.days[0]).toMatchObject({
@@ -176,7 +178,7 @@ describe("model episode repository mapping", () => {
     });
     expect(db.modelEpisode.create.mock.calls[0]?.[0].data).toMatchObject({
       startDate: "2026-08-22",
-      modelVersion: "bodycast-physiology-v6",
+      modelVersion: "bodycast-physiology-v7",
       baselineDerivationMethod: "quality-ranked-variable-window-v5",
       calibrationStatus: "insufficient-history",
     });

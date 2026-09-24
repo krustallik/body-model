@@ -49,6 +49,13 @@ export type ModelActivityIntervalSource = {
   value: number;
 };
 
+export type ModelHeartRateSampleSource = {
+  date: string;
+  timestamp: Date;
+  bpm: number;
+  source: string;
+};
+
 export type ModelWorkIntervalSource = {
   id: number;
   date: string;
@@ -77,8 +84,10 @@ export type HistoricalModelSources = {
   /** Optional to keep historical fixtures and legacy source sets compatible. */
   activityIntervals?: ModelActivityIntervalSource[];
   workIntervals: ModelWorkIntervalSource[];
-  /** Present for v6 loaders; empty array preserves v5-compatible fixtures. */
+  /** Present for workout-aware loaders; empty array preserves legacy fixtures. */
   workouts?: ModelWorkoutSource[];
+  /** Optional in old source fixtures; values are matched to exact workout intervals. */
+  heartRateSamples?: ModelHeartRateSampleSource[];
 };
 
 export type MaintenanceBaselineDiagnostics = {
@@ -218,6 +227,8 @@ export type ModelDaySourceQuality = {
   nutrition: NutritionProvenance;
   /** v6 Stair Climbing overlap diagnostics; provenance only. */
   stairWalkingOverlap?: import("@/model/activity/stair-walking-overlap").StairOverlapDiagnostic[];
+  /** v7 per-workout selected active-energy methods and HR decision provenance. */
+  workoutEnergyResolution?: import("@/model/activity/workout-energy").WorkoutEnergyResolutionSummaryV1;
   workoutCount?: number;
   /** true when sync persisted workout-feed coverage for this day. */
   workoutFeedObserved?: boolean;

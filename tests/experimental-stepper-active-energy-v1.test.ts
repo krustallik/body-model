@@ -98,7 +98,7 @@ describe("experimental stepper active energy v1", () => {
     expect(result.lowerBoundKcal!).toBeLessThanOrEqual(result.estimatedActiveKcal!);
     expect(result.provenance).toBe(EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_PROVENANCE);
     expect(result.contractVersion).toBe(EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION);
-    expect(result.supportedDomain).toBe("ms100-stair-stepper-shadow-only");
+    expect(result.supportedDomain).toBe("ms100-stair-stepper-experimental-v1");
     expect(result.recoveryEnergy).toEqual(WORKOUT_RECOVERY_ENERGY_SCIENTIFIC_DECISION);
     expect(result.recoveryEnergy.addedKcal).toBeNull();
   });
@@ -267,6 +267,20 @@ describe("experimental stepper active energy v1", () => {
     expect(noHr.features.hrCoverage).toBe("unavailable");
     expect(withHr.features.rejectedMethods).toContain("hr-to-kcal-formula");
     expect(withHr.reasons).toContain("hr-context-coverage-only-not-kcal");
+  });
+
+  it("reproduces the 180 kcal illustrative calculation from its explicit mechanics", () => {
+    const result = estimateExperimentalStepperActiveEnergyV1({
+      workout: stepper({ steps: 1_200, durationMinutes: 20 }),
+      bodyMassKg: 80,
+      equipment,
+    });
+
+    expect(result.features.bracketedStepDelta).toBe(1_200);
+    expect(result.features.derivedStepRatePerMinute).toBe(60);
+    expect(result.features.mechanicalWorkPointJ).toBeCloseTo(150_630.144, 3);
+    expect(result.estimatedActiveKcal).toBeCloseTo(180.007342, 5);
+    expect(result.garminReferenceKcal).toBeNull();
   });
 
   it("is deterministic for identical inputs", () => {

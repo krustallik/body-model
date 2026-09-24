@@ -8,6 +8,9 @@ import {
 } from "@/model/dynamic-daily-expenditure";
 import { createDynamicRmrParameters } from "@/model/dynamic-rmr";
 import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
+import { canonicalizeWorkoutHeartRateEvidenceV7 } from "@/model/activity/workout-heart-rate-v7";
+import { canonicalizeWorkoutStepperEvidenceV7 } from "@/model/activity/workout-stepper-v7";
+import { buildUnifiedEnergyLedgerV1 } from "@/model/unified-experimental-physiology-v1";
 import {
   STAIR_CLIMBING_TYPE,
   TRADITIONAL_STRENGTH_TRAINING_TYPE,
@@ -65,6 +68,108 @@ function workoutEvent(input: {
 }
 
 describe("workout-aware dynamic daily expenditure", () => {
+  it("routes observed MS100 interval steps and HR through active workout kcal into TDEE", () => {
+    const startAt = "2026-08-22T05:00:00.000Z";
+    const endAt = "2026-08-22T05:10:00.000Z";
+    const heartRate = canonicalizeWorkoutHeartRateEvidenceV7({
+      workoutInterval: { startAt, endAt },
+      heartRate: {
+        availability: "loaded",
+        samples: [
+          { timestamp: startAt, bpm: 120, provenance: { provider: "garmin-connect", device: null } },
+          { timestamp: "2026-08-22T05:05:00.000Z", bpm: 135, provenance: { provider: "garmin-connect", device: null } },
+          { timestamp: endAt, bpm: 145, provenance: { provider: "garmin-connect", device: null } },
+        ],
+      },
+    });
+    const stepperEvidence = canonicalizeWorkoutStepperEvidenceV7({
+      workoutEnergy: {
+        workoutId: 61,
+        canonicalWorkoutType: "Stair Climbing",
+        startAt,
+        endAt,
+        durationMinutes: 10,
+        deviceEnergy: { availability: "available", sourceValueStatus: "observed", valueKcal: 356, semantics: "active", provenance: "device-estimate" },
+        heartRate,
+      },
+      snapshots: [],
+      stepIntervals: [{ id: 1, startAt, endAt, stepCount: 750 }],
+    });
+    const event = {
+      ...workoutEvent({ type: STAIR_CLIMBING_TYPE, activeEnergyKcal: 356, durationMinutes: 10, startAt, endAt }),
+      workoutId: 61,
+      stepperEvidence,
+    };
+    const result = calculate({ strength: { durationMinutes: 0 }, workoutActivity: { events: [event] } });
+    const energy = result.workoutEnergyResolution!.perEvent[0].stepperEnergy!;
+    expect(result.workoutEnergyResolution?.perEvent[0].source).toBe("mechanical-stepper");
+    expect(result.workoutActivityKcalPerDay).toBe(energy.selected.valueKcal);
+    expect(result.workoutEnergyResolution?.deviceActiveEnergyKcal).toBe(0);
+    expect(result.strengthActivityKcalPerDay).toBe(energy.selected.valueKcal);
+    expect(energy.heartRate.decisionReason).toBe("no-personal-ms100-calibration");
+  });
+
+  it("carries selected stepper kcal once through daily Activity, Unified ledger, and TDEE", () => {
+    const startAt = "2026-08-22T05:00:00.000Z";
+    const endAt = "2026-08-22T05:10:00.000Z";
+    const evidence = canonicalizeWorkoutStepperEvidenceV7({
+      workoutEnergy: {
+        workoutId: 62,
+        canonicalWorkoutType: "Stair Climbing",
+        startAt,
+        endAt,
+        durationMinutes: 10,
+        deviceEnergy: { availability: "available", sourceValueStatus: "observed", valueKcal: 356, semantics: "active", provenance: "device-estimate" },
+        heartRate: canonicalizeWorkoutHeartRateEvidenceV7({
+          workoutInterval: { startAt, endAt },
+          heartRate: { availability: "unavailable" },
+        }),
+      },
+      snapshots: [],
+      stepIntervals: [{ id: 2, startAt, endAt, stepCount: 750 }],
+    });
+    const event = {
+      ...workoutEvent({ type: STAIR_CLIMBING_TYPE, activeEnergyKcal: 356, durationMinutes: 10, startAt, endAt }),
+      workoutId: 62,
+      stepperEvidence: evidence,
+    };
+    const daily = calculate({
+      outsideWorkWalking: { distanceKm: 0, averageSpeedKmh: 5 },
+      strength: { durationMinutes: 0 },
+      workoutActivity: { events: [event] },
+      occupational: { category: null, durationHours: 0 },
+      adaptiveThermogenesisKcalPerDay: 0,
+    });
+    const selectedWorkoutKcal = daily.workoutEnergyResolution!.perEvent[0]!.kcal;
+    const unified = buildUnifiedEnergyLedgerV1({
+      production: {
+        dynamicRmrKcalPerDay: daily.dynamicRmrKcalPerDay,
+        tefKcalPerDay: daily.tefKcalPerDay,
+        walkingKcalPerDay: null,
+        occupationalKcalPerDay: null,
+        workoutKcalPerDay: null,
+        stepperKcalPerDay: null,
+        activityKcalPerDay: daily.activityKcalPerDay,
+        adaptiveThermogenesisKcalPerDay: daily.adaptiveThermogenesisKcalPerDay,
+        personalOffsetKcalPerDay: null,
+        productionTdeeKcalPerDay: daily.modelTdeeBeforePersonalizationKcalPerDay,
+      },
+      activities: [{ doseKey: "workout:62", kind: "stepper", garminActiveKcal: 356, bodyCastEstimateKcal: null }],
+    });
+
+    expect(daily.workoutActivityKcalPerDay).toBeCloseTo(selectedWorkoutKcal, 12);
+    expect(daily.strengthActivityKcalPerDay).toBeCloseTo(selectedWorkoutKcal, 12);
+    expect(daily.activityKcalPerDay).toBeCloseTo(selectedWorkoutKcal, 12);
+    expect(daily.modelTdeeBeforePersonalizationKcalPerDay).toBeCloseTo(
+      daily.dynamicRmrKcalPerDay + daily.tefKcalPerDay! + selectedWorkoutKcal,
+      10,
+    );
+    expect(unified.selectedActivityKcal).toBeCloseTo(selectedWorkoutKcal, 12);
+    expect(unified.productionTdeeKcal).toBeCloseTo(daily.modelTdeeBeforePersonalizationKcalPerDay!, 12);
+    expect(unified.entries.filter((entry) => entry.status === "selected" && entry.kind === "garmin-device")).toHaveLength(0);
+    expect(unified.entries.find((entry) => entry.kind === "garmin-device")).toMatchObject({ valueKcal: 356, status: "diagnostic" });
+  });
+
   it("uses remaining outside-work walking after stair overlap subtraction (5.0 - 1.0 work - 0.6 stair = 3.4)", () => {
     const remainingWalkingKm = 5.0 - 1.0 - 0.6;
     expect(remainingWalkingKm).toBeCloseTo(3.4, 12);

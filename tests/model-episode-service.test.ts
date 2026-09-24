@@ -174,7 +174,7 @@ describe("model episode application service", () => {
           expect.objectContaining({ date: "2026-08-31" }),
         ]),
       }),
-      "bodycast-physiology-v6",
+      "bodycast-physiology-v7",
     );
     expect(result).toMatchObject({ episodeId: 8, daysPersisted: 16, completeDays: 16 });
   });
@@ -245,7 +245,7 @@ describe("model episode application service", () => {
     repository.createPrepared.mockImplementation(async (prepared) => ({
       ...persistedEpisodeFixture(prepared.startDate),
       id: prepared.startDate === "2026-08-17" ? 11 : 12,
-      modelVersion: "bodycast-physiology-v6",
+      modelVersion: "bodycast-physiology-v7",
     }));
     repository.status.mockResolvedValue({ episodeId: 11, daysModeled: 5 });
 
@@ -266,7 +266,7 @@ describe("model episode application service", () => {
     repository.getActive.mockResolvedValue({
       ...persistedEpisodeFixture("2026-08-17"),
       id: 11,
-      modelVersion: "bodycast-physiology-v6",
+      modelVersion: "bodycast-physiology-v7",
     });
     const second = await recalculateModelEpisode({
       now: new Date("2026-08-29T18:05:00.000Z"),

@@ -83,6 +83,9 @@ export function calculateEpisodeHistory(input: {
     personalization: calibration.parameters,
   });
   const dailyStates = results.map((result, index): DailyModelStateWrite => {
+    if (result.status !== "complete" || result.calculations === null) {
+      throw new Error(`resolved-prefix invariant violated on ${result.date}`);
+    }
     const sourceQuality = { ...continuity.resolvedDays[index].sourceQuality,
       issues: [...continuity.resolvedDays[index].sourceQuality.issues],
       sourceObservationFields: [
@@ -97,11 +100,19 @@ export function calculateEpisodeHistory(input: {
           ? { ...continuity.resolvedDays[index].sourceQuality.nutrition.referenceMacroMadG }
           : null,
       },
+      ...(result.calculations.expenditure.workoutEnergyResolution === null
+        ? {}
+        : {
+          workoutEnergyResolution: {
+            ...result.calculations.expenditure.workoutEnergyResolution,
+            perEvent: result.calculations.expenditure.workoutEnergyResolution.perEvent.map((event) => ({
+              ...event,
+              ...(event.stepperEnergy ? { stepperEnergy: { ...event.stepperEnergy, heartRate: { ...event.stepperEnergy.heartRate }, selected: { ...event.stepperEnergy.selected } } } : {}),
+            })),
+          },
+        }),
     };
     const nutrition = sourceQuality.nutrition;
-    if (result.status !== "complete") {
-      throw new Error(`resolved-prefix invariant violated on ${result.date}`);
-    }
     return {
       date: result.date,
       status: result.status,

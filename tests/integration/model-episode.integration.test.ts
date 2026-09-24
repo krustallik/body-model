@@ -205,7 +205,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(episode).toMatchObject({
       active: true,
       timezone: "Europe/Bratislava",
-      modelVersion: "bodycast-physiology-v6",
+      modelVersion: "bodycast-physiology-v7",
       ecfPolicy: "hold-ecf",
       baselineEnergyIntakeKcalPerDay: 2_450,
       baselineCarbIntakeG: 240,
@@ -284,7 +284,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(first).toEqual(second);
     expect(first).toMatchObject({
       status: "ok", initialStateQuality: "deterministic",
-      forecastVersion: "bodycast-forecast-v1", modelVersion: "bodycast-physiology-v6",
+      forecastVersion: "bodycast-forecast-v1", modelVersion: "bodycast-physiology-v7",
     });
     expect("dates" in first && first.dates).toHaveLength(30);
     expect(await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } }))
@@ -378,7 +378,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       });
       expect(recovered).toMatchObject({
         status: "ok",
-        deterministicModelVersion: "bodycast-physiology-v6",
+        deterministicModelVersion: "bodycast-physiology-v7",
         recovery: {
           seed: 1234,
           observationCount: 8,
@@ -580,7 +580,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       expectedWorkWalking + expectedResidual + expectedOutsideWalking + expectedStrength,
       10,
     );
-    expect(workState.modelVersion).toBe("bodycast-physiology-v6");
+    expect(workState.modelVersion).toBe("bodycast-physiology-v7");
   });
 
   it("rebuilds the later trajectory after an occupational category edit", async () => {

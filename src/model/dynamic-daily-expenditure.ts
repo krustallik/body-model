@@ -4,6 +4,7 @@ import {
   hasExplicitStrengthWorkouts,
   resolveExplicitWorkoutActivityKcal,
   type ExplicitWorkoutActivityInput,
+  type WorkoutEnergyResolutionSummaryV1,
 } from "./activity/workout-energy";
 import {
   reconstructBodyWeightKg,
@@ -44,8 +45,8 @@ export type DynamicDailyExpenditureInput = {
     durationMinutes: OptionalMeasurement;
   };
   /**
-   * v6 workout-aware activity. When present, device/MET workout energy replaces
-   * legacy day-level strength minutes whenever explicit strength workouts exist.
+   * v7 workout-aware activity. When present, stepper/device/MET workout energy
+   * replaces legacy day-level strength minutes whenever explicit strength workouts exist.
    */
   workoutActivity?: ExplicitWorkoutActivityInput;
   occupational: {
@@ -77,6 +78,7 @@ export type DynamicDailyExpenditureResult = {
   outsideWorkWalkingActivityKcalPerDay: number | null;
   strengthActivityKcalPerDay: number | null;
   workoutActivityKcalPerDay: number | null;
+  workoutEnergyResolution: WorkoutEnergyResolutionSummaryV1 | null;
   occupationalActivityKcalPerDay: number | null;
   /** Uncalibrated sum of walking, strength/workout, and occupational net Activity. */
   activityKcalPerDay: number | null;
@@ -278,6 +280,7 @@ export function calculateDynamicDailyExpenditure(
     outsideWorkWalkingActivityKcalPerDay,
     strengthActivityKcalPerDay,
     workoutActivityKcalPerDay: workoutResolution === null ? null : workoutActivityKcalPerDay,
+    workoutEnergyResolution: workoutResolution,
     occupationalActivityKcalPerDay,
     activityKcalPerDay,
     calibratedActivityKcalPerDay,

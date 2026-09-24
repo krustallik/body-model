@@ -292,7 +292,8 @@ export async function recalculateModelEpisode(
         episode.ecfPolicy,
         sources,
       );
-      if (restartDate !== null && restartDate !== episode.startDate) {
+      if (restartDate !== null
+          && (restartDate !== episode.startDate || episode.modelVersion !== CURRENT_MODEL_VERSION)) {
         const profile = await repository.getProfile();
         let prepared: PreparedEpisodeInitialization;
         try {

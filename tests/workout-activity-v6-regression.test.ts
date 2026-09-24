@@ -5,7 +5,6 @@ import { reconstructBodyWeightKg } from "@/model/body-composition/state";
 import { createDynamicRmrParameters } from "@/model/dynamic-rmr";
 import { buildSimulationDays } from "@/modules/model-episodes/simulation-input-builder";
 import {
-  CURRENT_MODEL_VERSION,
   LEGACY_PHYSIOLOGY_V5,
 } from "@/modules/model-episodes/model-version";
 import type { HistoricalModelSources } from "@/modules/model-episodes/model-episode.types";
@@ -16,6 +15,7 @@ import {
 } from "@/modules/health/expand-training-workouts";
 
 const date = "2026-08-22";
+const PHYSIOLOGY_V6 = "bodycast-physiology-v6";
 const instant = (time: string) => new Date(`2026-08-22T${time}:00+02:00`);
 
 const bodyComposition: BodyCompositionState = {
@@ -155,7 +155,7 @@ describe("workout-activity v5/v6 regression", () => {
       from: date,
       to: date,
       sources: garminLeakCapableSources(),
-      modelVersion: CURRENT_MODEL_VERSION,
+      modelVersion: PHYSIOLOGY_V6,
     })[0]!);
     expect(v6.workoutActivityKcalPerDay).toBe(WORKOUT_ACTIVE_KCAL);
     expect(v6.personalizedTdeeKcalPerDay)
@@ -167,16 +167,16 @@ describe("workout-activity v5/v6 regression", () => {
       from: date,
       to: date,
       sources: garminLeakCapableSources(),
-      modelVersion: CURRENT_MODEL_VERSION,
+      modelVersion: PHYSIOLOGY_V6,
     })[0]!;
 
     expect(built.input.workoutActivity?.events).toHaveLength(3);
     expect(built.input.strengthTrainingMinutes).toBe(0);
     expect(built.sourceQuality.workWalkingDistanceKm).toBeCloseTo(1.0, 12);
     expect(built.sourceQuality.stairWalkingOverlap?.some((row) => (
-      row.overlapApplied && Math.abs(row.overlapDistanceAppliedKm - 0.6) < 1e-9
+      row.overlapApplied && Math.abs(row.overlapDistanceAppliedKm - 0.2) < 1e-9
     ))).toBe(true);
-    expect(built.input.outsideWorkWalkingDistanceKm).toBeCloseTo(3.4, 12);
+    expect(built.input.outsideWorkWalkingDistanceKm).toBeCloseTo(3.8, 12);
 
     const expenditure = expenditureFromBuilt(built);
     expect(expenditure.workoutActivityKcalPerDay).toBe(WORKOUT_ACTIVE_KCAL);
@@ -184,8 +184,8 @@ describe("workout-activity v5/v6 regression", () => {
     expect(expenditure.outsideWorkWalkingActivityKcalPerDay).toBeGreaterThan(0);
 
     const weightKg = reconstructBodyWeightKg(bodyComposition);
-    // Independent Compendium oracle for remaining walking 3.4 km @ 5 km/h, MET 3.8.
-    const durationHours = 3.4 / 5;
+    // Independent Compendium oracle for remaining walking 3.8 km @ 5 km/h, MET 3.8.
+    const durationHours = 3.8 / 5;
     const walkingOracle = 3.8 * weightKg * durationHours
       - expenditure.dynamicRmrKcalPerDay / 24 * durationHours;
     expect(expenditure.outsideWorkWalkingActivityKcalPerDay)

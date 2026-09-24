@@ -42,8 +42,20 @@ export type WalkingSegment = {
 export type StairWorkoutWindow = {
   startAt: Date;
   endAt: Date;
+  /** Device estimate retained for diagnostics and legacy model versions. */
   activeEnergyKcal: number | null;
+  /** v7 may select a BodyCast stepper estimate even when the device has no kcal. */
+  bodyCastEstimateAvailable?: boolean;
+  /** Whether its available estimate represents positive mechanical work. */
+  bodyCastEstimatePositive?: boolean;
 };
+
+function hasSelectedActivityEnergy(workout: StairWorkoutWindow): boolean {
+  if (workout.bodyCastEstimateAvailable === true) {
+    return workout.bodyCastEstimatePositive ?? true;
+  }
+  return workout.activeEnergyKcal !== null && workout.activeEnergyKcal > 0;
+}
 
 export type StairOverlapDiagnostic = {
   startAt: string;
@@ -57,6 +69,8 @@ export type StairOverlapDiagnostic = {
   observedStepsDelta: number | null;
   overlapApplied: boolean;
   overlapDistanceAppliedKm: number;
+  /** Indicates whether applied overlap came from timed samples or estimated snapshot allocation. */
+  distanceAllocation?: "timed-intervals" | "timed-plus-proportional-snapshot" | "proportional-snapshot";
   claimedSegmentIndexes: number[];
   reason: StairOverlapReason;
 };
@@ -249,8 +263,16 @@ export function reconstructStairWalkingOverlap(input: {
         value: sample.walkingDistanceKm,
       }];
     });
+    const maxGapMinutes = input.maxGapMinutes ?? STAIR_SNAPSHOT_BOUNDARY_MAX_GAP_MINUTES;
+    const snapshotSegments = buildWalkingSegments(input.snapshots)
+      .filter((segment) => segment.valid && segment.distanceKm >= 0)
+      .map((segment) => ({
+        startTime: segment.previousTimestamp,
+        endTime: segment.nextTimestamp,
+        value: segment.distanceKm,
+      }));
     for (const workout of [...input.stairWorkouts].sort((left, right) => left.startAt.getTime() - right.startAt.getTime())) {
-      if (workout.activeEnergyKcal === null || workout.activeEnergyKcal <= 0) {
+      if (!hasSelectedActivityEnergy(workout)) {
         diagnostics.push({
           startAt: workout.startAt.toISOString(), endAt: workout.endAt.toISOString(), activeEnergyKcal: workout.activeEnergyKcal,
           beforeSnapshotAt: null, beforeGapMinutes: null, afterSnapshotAt: null, afterGapMinutes: null,
@@ -259,7 +281,23 @@ export function reconstructStairWalkingOverlap(input: {
         });
         continue;
       }
-      const allocated = allocateIntervalSampleValue({
+      const workoutStart = workout.startAt.getTime();
+      const workoutEnd = workout.endAt.getTime();
+      // Timed Health intervals are the preferred source. Cumulative snapshots
+      // fill only uncovered time when their segment brackets the session within
+      // the established boundary-gap policy. Allocation claims keep the mixed
+      // sources and multiple sessions from charging the same instant twice.
+      const snapshotFallback = snapshotSegments.filter((sample) => {
+        const sampleStart = sample.startTime.getTime();
+        const sampleEnd = sample.endTime.getTime();
+        if (sampleStart >= workoutEnd || sampleEnd <= workoutStart) return false;
+        const beforeGapMinutes = Math.max(0, sampleStart - workoutStart) / 60_000;
+        const afterGapMinutes = Math.max(0, workoutEnd - sampleEnd) / 60_000;
+        return beforeGapMinutes <= maxGapMinutes && afterGapMinutes <= maxGapMinutes;
+      });
+      // Resolve modern timed samples first regardless of duration. The shared
+      // claims then let snapshots estimate only portions no timed sample covers.
+      const timedAllocation = allocateIntervalSampleValue({
         samples,
         startTime: workout.startAt,
         endTime: workout.endAt,
@@ -269,28 +307,59 @@ export function reconstructStairWalkingOverlap(input: {
           endTime: work.endAt,
         })),
       });
-      overlapDistanceKm += allocated.value;
-      for (const index of allocated.claimedSampleIndexes) claimedIndexes.add(index);
+      const snapshotAllocation = allocateIntervalSampleValue({
+        samples: snapshotFallback,
+        startTime: workout.startAt,
+        endTime: workout.endAt,
+        claimedMs,
+        excludedWindows: input.workIntervals?.map((work) => ({
+          startTime: work.startAt,
+          endTime: work.endAt,
+        })),
+      });
+      const allocatedValue = timedAllocation.value + snapshotAllocation.value;
+      overlapDistanceKm += allocatedValue;
+      for (const index of timedAllocation.claimedSampleIndexes) claimedIndexes.add(index);
+      for (const index of snapshotAllocation.claimedSampleIndexes) claimedIndexes.add(samples.length + index);
       diagnostics.push({
         startAt: workout.startAt.toISOString(), endAt: workout.endAt.toISOString(), activeEnergyKcal: workout.activeEnergyKcal,
-        beforeSnapshotAt: null, beforeGapMinutes: 0, afterSnapshotAt: null, afterGapMinutes: 0,
-        observedWalkingDistanceDeltaKm: allocated.value, observedStepsDelta: null, overlapApplied: allocated.value > 0,
-        overlapDistanceAppliedKm: allocated.value, claimedSegmentIndexes: allocated.claimedSampleIndexes,
-        reason: allocated.value > 0 ? "applied" : "overlap-already-attributed-to-work",
+        beforeSnapshotAt: null, beforeGapMinutes: null, afterSnapshotAt: null, afterGapMinutes: null,
+        // Allocated overlap is an estimate, not a direct observed workout distance.
+        observedWalkingDistanceDeltaKm: null, observedStepsDelta: null, overlapApplied: allocatedValue > 0,
+        overlapDistanceAppliedKm: allocatedValue,
+        ...(allocatedValue > 0 ? {
+          distanceAllocation: snapshotAllocation.value > 0
+            ? "timed-plus-proportional-snapshot" as const
+            : timedAllocation.value > 0 ? "timed-intervals" as const : "proportional-snapshot" as const,
+        } : {}),
+        claimedSegmentIndexes: [
+          ...timedAllocation.claimedSampleIndexes,
+          ...snapshotAllocation.claimedSampleIndexes.map((index) => samples.length + index),
+        ],
+        reason: allocatedValue > 0 ? "applied" : "overlap-already-attributed-to-work",
       });
     }
-    return { overlapDistanceKm, diagnostics, claimedSegmentIndexes: [...claimedIndexes] };
+    if (samples.length > 0) {
+      return { overlapDistanceKm, diagnostics, claimedSegmentIndexes: [...claimedIndexes] };
+    }
   }
   const maxGapMinutes = input.maxGapMinutes ?? STAIR_SNAPSHOT_BOUNDARY_MAX_GAP_MINUTES;
   const orderedSnapshots = [...input.snapshots]
     .filter((snapshot) => Number.isFinite(snapshot.timestamp.getTime()))
     .sort((left, right) => left.timestamp.getTime() - right.timestamp.getTime());
   const segments = buildWalkingSegments(orderedSnapshots);
-  const workAttributed = markWorkAttributedSegments(
-    segments,
-    input.workIntervals ?? [],
-  );
-  const claimed = new Set<number>();
+  const legacyDistanceSamples: Array<{ startTime: Date; endTime: Date; value: number }> = [];
+  const legacySampleSegmentIndexes: number[] = [];
+  for (const segment of segments) {
+    if (!segment.valid) continue;
+    legacySampleSegmentIndexes.push(segment.index);
+    legacyDistanceSamples.push({
+      startTime: segment.previousTimestamp,
+      endTime: segment.nextTimestamp,
+      value: segment.distanceKm,
+    });
+  }
+  const claimedMs: Array<{ start: number; end: number }> = [];
   const diagnostics: StairOverlapDiagnostic[] = [];
   let overlapDistanceKm = 0;
 
@@ -298,7 +367,7 @@ export function reconstructStairWalkingOverlap(input: {
     .sort((left, right) => left.startAt.getTime() - right.startAt.getTime());
 
   for (const workout of chronologicalStairs) {
-    if (workout.activeEnergyKcal === null || workout.activeEnergyKcal <= 0) {
+    if (!hasSelectedActivityEnergy(workout)) {
       diagnostics.push({
         startAt: workout.startAt.toISOString(),
         endAt: workout.endAt.toISOString(),
@@ -434,28 +503,33 @@ export function reconstructStairWalkingOverlap(input: {
       continue;
     }
 
-    let appliedKm = 0;
-    const newlyClaimed: number[] = [];
-    let skippedWork = false;
-    let skippedDedup = false;
-    for (const segment of claimable) {
-      if (workAttributed.has(segment.index)) {
-        skippedWork = true;
-        continue;
-      }
-      if (claimed.has(segment.index)) {
-        skippedDedup = true;
-        continue;
-      }
-      claimed.add(segment.index);
-      newlyClaimed.push(segment.index);
-      appliedKm += segment.distanceKm;
-    }
+    const previousClaims = [...claimedMs];
+    const allocated = allocateIntervalSampleValue({
+      samples: legacyDistanceSamples,
+      startTime: workout.startAt,
+      endTime: workout.endAt,
+      claimedMs,
+      excludedWindows: input.workIntervals?.map((work) => ({
+        startTime: work.startAt,
+        endTime: work.endAt,
+      })),
+    });
+    const newlyClaimed = allocated.claimedSampleIndexes
+      .map((sampleIndex) => legacySampleSegmentIndexes[sampleIndex])
+      .filter((segmentIndex): segmentIndex is number => segmentIndex !== undefined);
+    const appliedKm = allocated.value;
+    const hadPreviousClaimInWorkout = previousClaims.some((claim) => (
+      claim.start < workout.endAt.getTime() && claim.end > workout.startAt.getTime()
+    ));
+    const overlapsWork = (input.workIntervals ?? []).some((work) => (
+      work.startAt.getTime() < workout.endAt.getTime()
+      && work.endAt.getTime() > workout.startAt.getTime()
+    ));
 
     let reason: StairOverlapReason = "applied";
     if (newlyClaimed.length === 0) {
-      if (skippedWork) reason = "overlap-already-attributed-to-work";
-      else if (skippedDedup) reason = "overlap-deduplicated";
+      if (hadPreviousClaimInWorkout) reason = "overlap-deduplicated";
+      else if (overlapsWork) reason = "overlap-already-attributed-to-work";
       else reason = "invalid-distance-delta";
     }
 
@@ -472,6 +546,7 @@ export function reconstructStairWalkingOverlap(input: {
       observedStepsDelta: observedSteps,
       overlapApplied: newlyClaimed.length > 0,
       overlapDistanceAppliedKm: appliedKm,
+      ...(appliedKm > 0 ? { distanceAllocation: "proportional-snapshot" as const } : {}),
       claimedSegmentIndexes: newlyClaimed,
       reason,
     });
@@ -480,6 +555,7 @@ export function reconstructStairWalkingOverlap(input: {
   return {
     overlapDistanceKm,
     diagnostics,
-    claimedSegmentIndexes: [...claimed].sort((left, right) => left - right),
+    claimedSegmentIndexes: [...new Set(diagnostics.flatMap((diagnostic) => diagnostic.claimedSegmentIndexes))]
+      .sort((left, right) => left - right),
   };
 }

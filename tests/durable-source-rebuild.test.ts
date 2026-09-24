@@ -174,9 +174,20 @@ describe("durable source — snapshot necessity for identical rebuild", () => {
       .not.toEqual(inputB.outsideWorkWalkingDistanceKm);
     expect(inputA.occupationalActivity.intervals?.[0]?.workWalkingDistanceKm)
       .not.toEqual(inputB.occupationalActivity.intervals?.[0]?.workWalkingDistanceKm);
-    // Strength / workout events themselves do not depend on snapshots.
+    // The canonical workout facts stay fixed; v7 stepper evidence intentionally
+    // depends on snapshots because that is how bracketed step rate is derived.
     expect(inputA.strengthTrainingMinutes).toBe(inputB.strengthTrainingMinutes);
-    expect(inputA.workoutActivity?.events).toEqual(inputB.workoutActivity?.events);
+    const withoutStepperEvidence = (event: NonNullable<typeof inputA.workoutActivity>["events"][number]) => {
+      const { stepperEvidence: _stepperEvidence, ...canonicalWorkout } = event;
+      void _stepperEvidence;
+      return canonicalWorkout;
+    };
+    expect(inputA.workoutActivity?.events.map(withoutStepperEvidence))
+      .toEqual(inputB.workoutActivity?.events.map(withoutStepperEvidence));
+    expect(inputA.workoutActivity?.events[0]?.stepperEvidence?.bracketedSteps.availability)
+      .toBe("available");
+    expect(inputB.workoutActivity?.events[0]?.stepperEvidence?.bracketedSteps.availability)
+      .toBe("unavailable");
     expect(fingerprintDays(withSnapshots)).not.toEqual(fingerprintDays(withoutSnapshots));
   });
 

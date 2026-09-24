@@ -107,11 +107,11 @@ describe("reconstructStairWalkingOverlap gap boundaries", () => {
   };
 
   it.each([
-    ["0s before and after", "12:00:00", "12:10:00", true, "applied"],
-    ["1s before and after", "11:59:59", "12:10:01", true, "applied"],
-    ["9:59 before and after", "11:50:01", "12:19:59", true, "applied"],
-    ["exactly 10:00 before and after", "11:50:00", "12:20:00", true, "applied"],
-  ] as const)("accepts %s", (_name, before, after, applied, reason) => {
+    ["0s before and after", "12:00:00", "12:10:00", 0.6, true, "applied"],
+    ["1s before and after", "11:59:59", "12:10:01", 0.6 * 600 / 602, true, "applied"],
+    ["9:59 before and after", "11:50:01", "12:19:59", 0.6 * 600 / 1_798, true, "applied"],
+    ["exactly 10:00 before and after", "11:50:00", "12:20:00", 0.2, true, "applied"],
+  ] as const)("accepts %s", (_name, before, after, expectedOverlapKm, applied, reason) => {
     const result = reconstructStairWalkingOverlap({
       snapshots: [
         snapshot(before, 4.0),
@@ -121,7 +121,7 @@ describe("reconstructStairWalkingOverlap gap boundaries", () => {
     });
     expect(result.diagnostics[0]?.reason).toBe(reason);
     expect(result.diagnostics[0]?.overlapApplied).toBe(applied);
-    expect(result.overlapDistanceKm).toBeCloseTo(0.6, 12);
+    expect(result.overlapDistanceKm).toBeCloseTo(expectedOverlapKm, 12);
   });
 
   it("rejects a before-gap of 10 minutes + 1 second", () => {
@@ -233,9 +233,9 @@ describe("reconstructStairWalkingOverlap attribution", () => {
       ],
     });
     expect(result.diagnostics.map((item) => item.reason)).toEqual(["applied", "applied"]);
-    expect(result.diagnostics[0]?.overlapDistanceAppliedKm).toBeCloseTo(0.4, 12);
-    expect(result.diagnostics[1]?.overlapDistanceAppliedKm).toBeCloseTo(0.5, 12);
-    expect(result.overlapDistanceKm).toBeCloseTo(0.9, 12);
+    expect(result.diagnostics[0]?.overlapDistanceAppliedKm).toBeCloseTo(0.2, 12);
+    expect(result.diagnostics[1]?.overlapDistanceAppliedKm).toBeCloseTo(0.5 * 5 / 15, 12);
+    expect(result.overlapDistanceKm).toBeCloseTo(0.2 + 0.5 * 5 / 15, 12);
     expect(result.claimedSegmentIndexes).toEqual([0, 2]);
   });
 
@@ -256,8 +256,8 @@ describe("reconstructStairWalkingOverlap attribution", () => {
     expect(result.diagnostics[0]?.reason).toBe("invalid-distance-delta");
     expect(result.diagnostics[0]?.overlapApplied).toBe(false);
     expect(result.diagnostics[1]?.reason).toBe("applied");
-    expect(result.diagnostics[1]?.overlapDistanceAppliedKm).toBeCloseTo(0.6, 12);
-    expect(result.overlapDistanceKm).toBeCloseTo(0.6, 12);
+    expect(result.diagnostics[1]?.overlapDistanceAppliedKm).toBeCloseTo(0.2, 12);
+    expect(result.overlapDistanceKm).toBeCloseTo(0.2, 12);
   });
 
   it("excludes work-attributed segments from stair overlap", () => {
@@ -277,6 +277,20 @@ describe("reconstructStairWalkingOverlap attribution", () => {
     expect(result.claimedSegmentIndexes).toEqual([]);
   });
 
+  it("subtracts only non-work time from a snapshot segment that crosses both work and stair intervals", () => {
+    const result = reconstructStairWalkingOverlap({
+      snapshots: [
+        snapshot("11:55:00", 1.0),
+        snapshot("12:15:00", 1.4),
+      ],
+      stairWorkouts: [{ startAt: at("12:00:00"), endAt: at("12:10:00"), activeEnergyKcal: 154 }],
+      workIntervals: [{ startAt: at("12:00:00"), endAt: at("12:05:00") }],
+    });
+
+    expect(result.diagnostics[0]?.reason).toBe("applied");
+    expect(result.overlapDistanceKm).toBeCloseTo(0.1, 12);
+  });
+
   it("uses Apple Health distance intervals without looking for nearby snapshots", () => {
     const result = reconstructStairWalkingOverlap({
       snapshots: [],
@@ -294,6 +308,66 @@ describe("reconstructStairWalkingOverlap attribution", () => {
     expect(result.overlapDistanceKm).toBeCloseTo(0.4, 12);
   });
 
+  it("uses nearby cumulative snapshots to fill gaps beside modern walking intervals", () => {
+    const result = reconstructStairWalkingOverlap({
+      snapshots: [
+        snapshot("11:55:00", 2.0),
+        snapshot("12:05:00", 2.2),
+        snapshot("12:15:00", 2.4),
+      ],
+      walkingDistanceIntervals: [
+        { startAt: at("12:30:00"), endAt: at("12:40:00"), walkingDistanceKm: 0.1 },
+      ],
+      stairWorkouts: [{ startAt: at("12:00:00"), endAt: at("12:10:00"), activeEnergyKcal: 154 }],
+    });
+
+    expect(result.diagnostics[0]?.reason).toBe("applied");
+    expect(result.diagnostics[0]?.overlapDistanceAppliedKm).toBeCloseTo(0.2, 12);
+    expect(result.overlapDistanceKm).toBeCloseTo(0.2, 12);
+  });
+
+  it("prefers timed intervals over a shorter snapshot estimate and labels snapshot allocation as estimated", () => {
+    const workout = { startAt: at("12:00:00"), endAt: at("12:10:00"), activeEnergyKcal: 154 };
+    const preferred = reconstructStairWalkingOverlap({
+      snapshots: [snapshot("12:00:00", 2.0), snapshot("12:05:00", 2.5)],
+      walkingDistanceIntervals: [
+        { startAt: at("12:00:00"), endAt: at("12:20:00"), walkingDistanceKm: 0.8 },
+      ],
+      stairWorkouts: [workout],
+    });
+    expect(preferred.overlapDistanceKm).toBeCloseTo(0.4, 12);
+    expect(preferred.diagnostics[0]).toMatchObject({
+      observedWalkingDistanceDeltaKm: null,
+      overlapDistanceAppliedKm: 0.4,
+      distanceAllocation: "timed-intervals",
+    });
+
+    const snapshotOnly = reconstructStairWalkingOverlap({
+      snapshots: [snapshot("11:50:00", 2.0), snapshot("12:20:00", 2.6)],
+      stairWorkouts: [workout],
+    });
+    expect(snapshotOnly.overlapDistanceKm).toBeCloseTo(0.2, 12);
+    expect(snapshotOnly.diagnostics[0]?.observedWalkingDistanceDeltaKm).toBeCloseTo(0.6, 12);
+    expect(snapshotOnly.diagnostics[0]?.overlapDistanceAppliedKm).toBeCloseTo(0.2, 12);
+    expect(snapshotOnly.diagnostics[0]?.distanceAllocation).toBe("proportional-snapshot");
+  });
+
+  it("falls back to valid snapshots when all modern walking intervals are malformed", () => {
+    const result = reconstructStairWalkingOverlap({
+      snapshots: [
+        snapshot("11:55:00", 2.0),
+        snapshot("12:15:00", 2.4),
+      ],
+      walkingDistanceIntervals: [
+        { startAt: at("12:20:00"), endAt: at("12:10:00"), walkingDistanceKm: 0.5 },
+      ],
+      stairWorkouts: [{ startAt: at("12:00:00"), endAt: at("12:10:00"), activeEnergyKcal: 154 }],
+    });
+
+    expect(result.diagnostics[0]?.reason).toBe("applied");
+    expect(result.overlapDistanceKm).toBeCloseTo(0.2, 12);
+  });
+
   it("splits one walking interval across two stair sessions instead of claiming it once", () => {
     const result = reconstructStairWalkingOverlap({
       snapshots: [],
@@ -307,6 +381,22 @@ describe("reconstructStairWalkingOverlap attribution", () => {
     });
     expect(result.diagnostics.map((item) => item.overlapDistanceAppliedKm)).toEqual([0.4, 0.4]);
     expect(result.overlapDistanceKm).toBeCloseTo(0.8, 12);
+  });
+
+  it("does not subtract shared timed walking twice when stair sessions overlap", () => {
+    const result = reconstructStairWalkingOverlap({
+      snapshots: [],
+      walkingDistanceIntervals: [
+        { startAt: at("12:00:00"), endAt: at("12:20:00"), walkingDistanceKm: 0.8 },
+      ],
+      stairWorkouts: [
+        { startAt: at("12:00:00"), endAt: at("12:10:00"), activeEnergyKcal: 154 },
+        { startAt: at("12:05:00"), endAt: at("12:15:00"), activeEnergyKcal: 80 },
+      ],
+    });
+    expect(result.diagnostics[0]?.overlapDistanceAppliedKm).toBeCloseTo(0.4, 12);
+    expect(result.diagnostics[1]?.overlapDistanceAppliedKm).toBeCloseTo(0.2, 12);
+    expect(result.overlapDistanceKm).toBeCloseTo(0.6, 12);
   });
 
   it("reports counter-reset when boundary distance decreases", () => {

@@ -9,14 +9,18 @@ import {
   reconstructStairWalkingOverlap,
   type StairOverlapDiagnostic,
 } from "@/model/activity/stair-walking-overlap";
+import { canonicalizeWorkoutHeartRateEvidenceV7 } from "@/model/activity/workout-heart-rate-v7";
+import { canonicalizeWorkoutStepperEvidenceV7 } from "@/model/activity/workout-stepper-v7";
 import { enumerateCalendarDates } from "./model-calendar";
 import { bridgeNutritionGaps, type NutritionGapPolicy } from "./nutrition-gap-bridge";
-import { usesWorkoutAwareActivity } from "./model-version";
+import { usesBodyCastStepperEnergy, usesWorkoutAwareActivity } from "./model-version";
 import type {
   BuiltSimulationDay,
   HistoricalModelSources,
   ModelDaySourceQuality,
   ModelHealthDaySource,
+  ModelHeartRateSampleSource,
+  ModelSnapshotSource,
   ModelWorkoutSource,
   NutritionVector,
 } from "./model-episode.types";
@@ -67,12 +71,19 @@ function qualityStatus(input: {
   return "complete";
 }
 
-function toWorkoutEvents(workouts: readonly ModelWorkoutSource[]): ExplicitWorkoutActivityEvent[] {
-  return [...workouts]
+function toWorkoutEvents(input: {
+  workouts: readonly ModelWorkoutSource[];
+  snapshots: readonly ModelSnapshotSource[];
+  stepIntervals: readonly { id: number; startAt: Date; endAt: Date; value: number }[];
+  heartRateSamples: readonly ModelHeartRateSampleSource[];
+  includeStepperEnergyEvidence: boolean;
+}): ExplicitWorkoutActivityEvent[] {
+  return [...input.workouts]
     .sort((left, right) => left.startAt.getTime() - right.startAt.getTime())
     .map((workout) => {
       const canonical = canonicalizeWorkoutType(workout.type);
-      return {
+      const event: ExplicitWorkoutActivityEvent = {
+        workoutId: workout.id,
         type: workout.type,
         canonicalType: canonical.canonicalType,
         classification: canonical.classification,
@@ -81,6 +92,58 @@ function toWorkoutEvents(workouts: readonly ModelWorkoutSource[]): ExplicitWorko
         durationMinutes: workout.durationMinutes,
         activeEnergyKcal: workout.activeEnergyKcal,
       };
+      if (input.includeStepperEnergyEvidence
+          && canonical.classification === "stair-climbing" && canonical.canonicalType !== null) {
+        const interval = { startAt: event.startAt, endAt: event.endAt };
+        const matchingHr = input.heartRateSamples
+          .filter((sample) => sample.timestamp.getTime() >= workout.startAt.getTime()
+            && sample.timestamp.getTime() <= workout.endAt.getTime())
+          .map((sample) => ({
+            timestamp: sample.timestamp.toISOString(),
+            bpm: sample.bpm,
+            provenance: { provider: sample.source, device: null },
+          }));
+        const heartRate = canonicalizeWorkoutHeartRateEvidenceV7({
+          workoutInterval: interval,
+          heartRate: matchingHr.length === 0
+            ? { availability: "unavailable" }
+            : { availability: "loaded", samples: matchingHr },
+        });
+        event.stepperEvidence = canonicalizeWorkoutStepperEvidenceV7({
+          workoutEnergy: {
+            workoutId: workout.id,
+            canonicalWorkoutType: canonical.canonicalType,
+            startAt: event.startAt,
+            endAt: event.endAt,
+            durationMinutes: workout.durationMinutes,
+            deviceEnergy: workout.activeEnergyKcal === null
+              ? { availability: "unavailable", availabilityReason: "no-device-active-energy" }
+              : {
+                availability: "available",
+                sourceValueStatus: "observed",
+                valueKcal: workout.activeEnergyKcal,
+                semantics: "active",
+                provenance: "device-estimate",
+              },
+            heartRate,
+          },
+          snapshots: input.snapshots.map((snapshot) => ({
+            id: snapshot.id,
+            receivedAt: snapshot.receivedAt.toISOString(),
+            syncedAt: snapshot.syncedAt?.toISOString() ?? null,
+            steps: snapshot.steps,
+          })),
+          stepIntervals: input.stepIntervals
+            .filter((sample) => sample.startAt < workout.endAt && sample.endAt > workout.startAt)
+            .map((sample) => ({
+              id: sample.id,
+              startAt: sample.startAt.toISOString(),
+              endAt: sample.endAt.toISOString(),
+              stepCount: sample.value,
+            })),
+        });
+      }
+      return event;
     });
 }
 
@@ -100,6 +163,31 @@ export function buildSimulationDays(input: {
   const activityIntervals = groupByDate(input.sources.activityIntervals ?? []);
   const workIntervals = groupByDate(input.sources.workIntervals);
   const workouts = groupByDate(input.sources.workouts ?? []);
+  const allWorkouts = input.sources.workouts ?? [];
+  const allStepIntervals = (input.sources.activityIntervals ?? [])
+    .filter((sample) => sample.metric === "steps")
+    .map((sample) => ({
+      id: sample.id,
+      startAt: sample.startAt,
+      endAt: sample.endAt,
+      value: sample.value,
+    }));
+  const allHeartRateSamples = input.sources.heartRateSamples ?? [];
+  const allWorkoutEvents = workoutAware
+    ? allWorkouts.flatMap((workout) => toWorkoutEvents({
+      workouts: [workout],
+      // Keep legacy cumulative snapshots scoped to the workout's source day;
+      // those counters can reset at local midnight. Timed intervals are global
+      // to the loaded range and safely bracket a session spanning two dates.
+      snapshots: snapshots.get(workout.date) ?? [],
+      stepIntervals: allStepIntervals,
+      heartRateSamples: allHeartRateSamples,
+      includeStepperEnergyEvidence: usesBodyCastStepperEnergy(input.modelVersion ?? "bodycast-physiology-v5"),
+    }))
+    : [];
+  const workoutEventById = new Map(
+    allWorkoutEvents.flatMap((event) => event.workoutId === undefined ? [] : [[event.workoutId, event] as const]),
+  );
   const dates = enumerateCalendarDates(input.from, input.to);
   const dayFor = (date: string): ModelHealthDaySource => days.get(date) ?? {
     date,
@@ -149,6 +237,8 @@ export function buildSimulationDays(input: {
       walkingDistanceKm: item.walkingDistanceKm,
     }));
     const dailyActivityIntervals = activityIntervals.get(date) ?? [];
+    const dailyHeartRateSamples = allHeartRateSamples
+      .filter((sample) => sample.date === date);
     const walking = estimateDailyWorkWalking({
       snapshots: cumulativeSnapshots,
       activityIntervals: {
@@ -189,27 +279,45 @@ export function buildSimulationDays(input: {
     let workoutEvents: ExplicitWorkoutActivityEvent[] | undefined;
 
     if (workoutAware) {
-      workoutEvents = toWorkoutEvents(dailyWorkouts);
-      const stairEvents = workoutEvents.filter((event) => event.classification === "stair-climbing");
+      workoutEvents = dailyWorkouts.flatMap((workout) => {
+        const event = workoutEventById.get(workout.id);
+        return event === undefined ? [] : [event];
+      });
+      const dailyWalkingDistanceIntervals = dailyActivityIntervals
+        .filter((sample) => sample.metric === "walking-distance-km");
+      const stairEventsForOverlap = allWorkoutEvents.filter((event) => {
+        if (event.classification !== "stair-climbing") return false;
+        if (dailyWorkouts.some((workout) => workout.id === event.workoutId)) return true;
+        const workoutStart = new Date(event.startAt).getTime();
+        const workoutEnd = new Date(event.endAt).getTime();
+        // A session is booked to its start date, but interval walking distance
+        // can be recorded on the following date. Include it there for overlap
+        // subtraction while retaining its kcal exactly once on its source date.
+        return dailyWalkingDistanceIntervals.some((sample) => (
+          sample.startAt.getTime() < workoutEnd && sample.endAt.getTime() > workoutStart
+        ));
+      });
       const stairOverlap = reconstructStairWalkingOverlap({
         snapshots: cumulativeSnapshots.map((snapshot) => ({
           timestamp: snapshot.timestamp,
           steps: snapshot.steps ?? null,
           walkingDistanceKm: snapshot.walkingDistanceKm ?? null,
         })),
-        walkingDistanceIntervals: dailyActivityIntervals
-          .filter((sample) => sample.metric === "walking-distance-km")
+        walkingDistanceIntervals: dailyWalkingDistanceIntervals
           .map((sample) => ({
             startAt: sample.startAt,
             endAt: sample.endAt,
             walkingDistanceKm: sample.value,
           })),
-        stairWorkouts: stairEvents.map((event) => ({
+        stairWorkouts: stairEventsForOverlap.map((event) => ({
           startAt: new Date(event.startAt),
           endAt: new Date(event.endAt),
           activeEnergyKcal: event.activeEnergyKcal,
+          bodyCastEstimateAvailable: event.stepperEvidence?.bracketedSteps.availability === "available",
+          bodyCastEstimatePositive: event.stepperEvidence?.bracketedSteps.availability === "available"
+            && event.stepperEvidence.bracketedSteps.derivedStepDelta.value > 0,
         })),
-        workIntervals: dailyIntervals.map((interval) => ({
+        workIntervals: input.sources.workIntervals.map((interval) => ({
           startAt: interval.startAt,
           endAt: interval.endAt,
         })),
@@ -270,6 +378,7 @@ export function buildSimulationDays(input: {
     if (cumulativeSnapshots.length > 0) sourceObservationFields.push("healthSyncSnapshots");
     if (dailyIntervals.length > 0) sourceObservationFields.push("workIntervals");
     if (workoutAware && dailyWorkouts.length > 0) sourceObservationFields.push("workouts");
+    if (workoutAware && dailyHeartRateSamples.length > 0) sourceObservationFields.push("heartRateSamples");
     if (workoutAware && workoutFeedObserved) sourceObservationFields.push("workoutFeedObserved");
     const sourceQuality: ModelDaySourceQuality = {
       status: qualityStatus({ nutritionIssues, activityIssues, workIssues }),

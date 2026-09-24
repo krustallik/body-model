@@ -124,7 +124,10 @@ export function canonicalizeWorkoutHeartRateEvidenceV7(
     startAt: samples[index].timestamp,
     endAt: sample.timestamp,
   }));
-  const sampleMeanBpm = samples.reduce((sum, sample) => sum + sample.bpm, 0) / samples.length;
+  const bpmSeriesIsValid = samples.every((sample) => Number.isFinite(sample.bpm) && sample.bpm > 0);
+  const sampleMeanBpm = bpmSeriesIsValid
+    ? samples.reduce((sum, sample) => sum + sample.bpm, 0) / samples.length
+    : null;
 
   return {
     availability: "loaded",
@@ -138,7 +141,7 @@ export function canonicalizeWorkoutHeartRateEvidenceV7(
       interSampleGaps,
       trailingGap: { startAt: last.timestamp, endAt: workoutInterval.endAt },
     },
-    summary: {
+    summary: sampleMeanBpm === null ? null : {
       sampleMeanBpm,
       maxObservedBpm: Math.max(...samples.map((sample) => sample.bpm)),
       basis: "observed-samples-only",

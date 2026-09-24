@@ -159,7 +159,7 @@ describe("two-pass episode calculation", () => {
     expect(result.dailyStates.at(-1)).toMatchObject({
       status: "complete",
       date: addCalendarDays(episode.startDate, 179),
-      modelVersion: "bodycast-physiology-v6",
+      modelVersion: "bodycast-physiology-v7",
     });
   });
 

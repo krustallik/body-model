@@ -642,6 +642,14 @@ not be silently promoted from **EXTRAPOLATED/PROXY** to **DIRECT**.
   with provenance and uncertainty exposed.
 - **Open:** device-specific bias calibration; disagreement policy.
 
+**Implementation note (2026-09-24):** the current v7 BodyCast resolver selects
+its experimental MS100 mechanical estimate when timed steps and modeled body
+mass are available, with device active kcal as fallback. This product-selection
+policy does not demonstrate that the mechanical estimate is more accurate than
+Garmin. Its assumptions and uncertainty remain experimental until MS100-specific
+indirect-calorimetry validation is available; see
+`docs/research/stepper-hr-energy-quantitative-follow-up.md`.
+
 ### P-K02 — Wearable active-kcal uncertainty
 
 - **Purpose:** prevent device estimate from being treated as exact.
@@ -860,7 +868,6 @@ not be silently promoted from **EXTRAPOLATED/PROXY** to **DIRECT**.
 - Any retained fallback, clamp, source order, sampling threshold, midpoint,
   smoothing window, or coefficient lacking direct support is
   `ENGINEERING ASSUMPTION — NOT SCIENTIFIC PARAMETER`.
-
 
 
 

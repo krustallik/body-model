@@ -7,7 +7,8 @@ import type { WorkoutStepperEvidenceV7 } from "@/model/activity/workout-stepper-
 import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 
 /**
- * Experimental Stepper Active Energy V1 (shadow / EXPERIMENTAL only).
+ * Experimental mechanical stepper estimate. The v7 workout resolver selects
+ * it when its inputs are available; its output remains unvalidated for MS100.
  *
  * MS100 / Stair Climbing mechanical vertical-work heuristic. Garmin active kcal
  * is optional reference only. HR is coverage/context only. No fixed MET
@@ -95,7 +96,7 @@ export type ExperimentalStepperActiveEnergyFeaturesV1 = {
 export type ExperimentalStepperActiveEnergyResultV1 = {
   contractVersion: typeof EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION;
   provenance: typeof EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_PROVENANCE;
-  supportedDomain: "ms100-stair-stepper-shadow-only";
+  supportedDomain: "ms100-stair-stepper-experimental-v1";
   availability: ExperimentalStepperActiveEnergyAvailabilityV1;
   estimatedActiveKcal: number | null;
   lowerBoundKcal: number | null;
@@ -207,7 +208,7 @@ function unavailable(input: {
   return {
     contractVersion: EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION,
     provenance: EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_PROVENANCE,
-    supportedDomain: "ms100-stair-stepper-shadow-only",
+    supportedDomain: "ms100-stair-stepper-experimental-v1",
     availability: "unavailable",
     estimatedActiveKcal: null,
     lowerBoundKcal: null,
@@ -340,7 +341,7 @@ export function estimateExperimentalStepperActiveEnergyV1(input: {
   return {
     contractVersion: EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION,
     provenance: EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_PROVENANCE,
-    supportedDomain: "ms100-stair-stepper-shadow-only",
+    supportedDomain: "ms100-stair-stepper-experimental-v1",
     availability: "available",
     estimatedActiveKcal: point,
     lowerBoundKcal: orderedLower,

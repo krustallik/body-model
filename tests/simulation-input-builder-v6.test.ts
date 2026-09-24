@@ -3,6 +3,7 @@ import { buildSimulationDays } from "@/modules/model-episodes/simulation-input-b
 import {
   CURRENT_MODEL_VERSION,
   LEGACY_PHYSIOLOGY_V5,
+  usesBodyCastStepperEnergy,
   usesWorkoutAwareActivity,
 } from "@/modules/model-episodes/model-version";
 import type { HistoricalModelSources } from "@/modules/model-episodes/model-episode.types";
@@ -75,14 +76,16 @@ function sources(
 }
 
 describe("model-version physiology gate", () => {
-  it("publishes CURRENT_MODEL_VERSION as v6", () => {
-    expect(CURRENT_MODEL_VERSION).toBe("bodycast-physiology-v6");
+  it("publishes CURRENT_MODEL_VERSION as v7", () => {
+    expect(CURRENT_MODEL_VERSION).toBe("bodycast-physiology-v7");
     expect(usesWorkoutAwareActivity(CURRENT_MODEL_VERSION)).toBe(true);
+    expect(usesBodyCastStepperEnergy(CURRENT_MODEL_VERSION)).toBe(true);
     expect(usesWorkoutAwareActivity(LEGACY_PHYSIOLOGY_V5)).toBe(false);
+    expect(usesBodyCastStepperEnergy("bodycast-physiology-v6")).toBe(false);
   });
 });
 
-describe("simulation-input-builder v5 vs v6", () => {
+describe("simulation-input-builder versioned activity", () => {
   it("ignores workouts and keeps old walking on bodycast-physiology-v5", () => {
     const fixture = sources({
       snapshots: [
@@ -174,8 +177,8 @@ describe("simulation-input-builder v5 vs v6", () => {
     expect(result[0].sourceQuality.stairWalkingOverlap?.[0]?.overlapApplied).toBe(true);
     expect(result[0].sourceQuality.stairWalkingOverlap?.[0]?.reason).toBe("applied");
     expect(result[0].sourceQuality.stairWalkingOverlap?.[0]?.overlapDistanceAppliedKm)
-      .toBeCloseTo(0.6, 12);
-    expect(result[0].input.outsideWorkWalkingDistanceKm).toBeCloseTo(3.4, 12);
+      .toBeCloseTo(0.2, 12);
+    expect(result[0].input.outsideWorkWalkingDistanceKm).toBeCloseTo(3.8, 12);
     expect(result[0].input.strengthTrainingMinutes).toBe(0);
     expect(result[0].input.workoutActivity?.events).toHaveLength(2);
     expect(result[0].input.workoutActivity?.events.map((event) => event.activeEnergyKcal))

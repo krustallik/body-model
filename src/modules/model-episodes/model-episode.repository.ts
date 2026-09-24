@@ -229,7 +229,7 @@ export class ModelEpisodeRepository {
   }
 
   async loadSources(from: string, to: string): Promise<HistoricalModelSources> {
-    const [days, snapshots, activityIntervals, workIntervals, workoutRows] = await Promise.all([
+    const [days, snapshots, activityIntervals, workIntervals, workoutRows, heartRateSamples] = await Promise.all([
       this.client.dailyHealthData.findMany({
         where: { date: { gte: from, lte: to } },
         orderBy: { date: "asc" },
@@ -296,6 +296,11 @@ export class ModelEpisodeRepository {
           dailyHealthData: { select: { date: true } },
         },
       }),
+      this.client.heartRateSample.findMany({
+        where: { date: { gte: from, lte: to } },
+        orderBy: [{ timestamp: "asc" }, { id: "asc" }],
+        select: { date: true, timestamp: true, bpm: true, source: true },
+      }),
     ]);
     return {
       days: days.map(normalizeDailyMeasurements).map((day) => ({
@@ -328,6 +333,7 @@ export class ModelEpisodeRepository {
         energyKcal: workout.energyKcal,
         activeEnergyKcal: workout.activeEnergyKcal,
       })),
+      heartRateSamples,
     };
   }
 

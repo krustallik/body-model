@@ -408,7 +408,7 @@ export function TrainingClient() {
                     </div>
                     <div className={styles.denseCardActions}>
                       <Link className={styles.linkLike} href={`/training/workouts/${workout.id}/stepper-diagnostic`}>
-                        {uk ? "Діагностика" : "Diagnostics"}
+                        {uk ? "Енергія · діагностика" : "Energy · diagnostics"}
                       </Link>
                       {workout.editable && <button className={styles.linkLike} type="button" disabled={stepperBusy} onClick={() => openEditStepperForm(workout)}>{uk ? "Редагувати" : "Edit"}</button>}
                       {workout.editable && <button className={styles.dangerButton} type="button" disabled={stepperBusy} onClick={() => void deleteStepperWorkout(workout)}>{uk ? "Видалити" : "Delete"}</button>}

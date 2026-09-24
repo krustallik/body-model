@@ -110,6 +110,7 @@ describe("field-specific zero measurement semantics", () => {
       dailyHealthData: { findMany: vi.fn().mockResolvedValue([day]) },
       healthSyncSnapshot: { findMany: vi.fn().mockResolvedValue([]) },
       healthActivityInterval: { findMany: vi.fn().mockResolvedValue([]) },
+      heartRateSample: { findMany: vi.fn().mockResolvedValue([]) },
       workInterval: { findMany: vi.fn().mockResolvedValue([]) },
       workout: { findMany: vi.fn().mockResolvedValue([]) },
     } as unknown as PrismaClient;
@@ -160,6 +161,7 @@ describe("field-specific zero measurement semantics", () => {
       dailyHealthData: { findMany: vi.fn().mockResolvedValue([day]) },
       healthSyncSnapshot: { findMany: vi.fn().mockResolvedValue([]) },
       healthActivityInterval: { findMany: vi.fn().mockResolvedValue([]) },
+      heartRateSample: { findMany: vi.fn().mockResolvedValue([]) },
       workInterval: { findMany: vi.fn().mockResolvedValue([]) },
       workout: { findMany: vi.fn().mockResolvedValue([]) },
     } as unknown as PrismaClient;

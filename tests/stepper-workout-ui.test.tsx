@@ -48,10 +48,10 @@ describe("StepperDiagnosticClient", () => {
     expect(await screen.findByText("Степер")).toBeTruthy();
     expect(screen.getByText(/DOMYOS MS100 · фіксована конфігурація/)).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Активна енергія" })).toBeTruthy();
-    expect(screen.getByText("Експериментальна оцінка BodyCast")).toBeTruthy();
-    expect(screen.getByText("Оцінка BodyCast · ккал")).toBeTruthy();
-    expect(screen.getByText("Енергія годинника · ккал")).toBeTruthy();
-    expect(screen.getByText(/ще не перевірена як персональна витрата енергії/)).toBeTruthy();
+    expect(screen.getByText("Механічну оцінку BodyCast використано")).toBeTruthy();
+    expect(screen.getByText("Використано в розрахунку · активні ккал")).toBeTruthy();
+    expect(screen.getByText("Оцінка пристрою · активні ккал")).toBeTruthy();
+    expect(screen.getByText(/немає незалежно перевіреної персональної калібровки/)).toBeTruthy();
     expect(screen.queryByText("Workout ID")).toBeNull();
     expect(screen.queryByText("Summary basis")).toBeNull();
     expect(screen.getByText(/DOMYOS MS100/)).toBeTruthy();
@@ -60,38 +60,62 @@ describe("StepperDiagnosticClient", () => {
     expect(document.querySelector("main")?.className).toContain("page");
   });
 
+  it("shows the HR-aware result and its replacement impact when calibration passes", async () => {
+    const samples = [
+      { timestamp: "2042-03-15T08:00:05.000Z", bpm: 100, provenance: { provider: "Apple Health", device: "Watch" } },
+      { timestamp: "2042-03-15T08:00:10.000Z", bpm: 101, provenance: { provider: "Apple Health", device: "Watch" } },
+    ];
+    const diagnostic = buildStepperWorkoutDiagnosticV7({
+      workout: { id: 61, type: "Stair Climbing", startAt, endAt, durationMinutes: 20, activeEnergyKcal: 154 },
+      bodyMassKg: 80,
+      snapshots: [
+        { id: 9, receivedAt: "2042-03-15T07:59:50.000Z", syncedAt: "2042-03-15T07:59:52.000Z", steps: 1_000 },
+        { id: 10, receivedAt: "2042-03-15T08:20:10.000Z", syncedAt: null, steps: 1_300 },
+      ],
+      heartRateSamples: samples,
+      heartRateCalibration: {
+        contractVersion: "bodycast-ms100-hr-vo2-calibration-v1",
+        validation: { status: "independent-holdout-validated", referenceMethod: "indirect-calorimetry", heldOutWorkoutCount: 1 },
+        equipment: { machineFamily: "DOMYOS_MS100", configuration: "fixed" },
+        heartRateSource: { provider: "Apple Health", device: "Watch" },
+        effectiveFrom: "2042-01-01T00:00:00.000Z",
+        effectiveUntil: null,
+        model: {
+          vo2InterceptMlKgMin: 0,
+          vo2SlopeMlKgMinPerBpm: 0.2,
+          restingVo2MlKgMin: 3.5,
+          acceptedHeartRateBpm: { min: 90, max: 110 },
+          acceptedStepRatePerMinute: { min: 0, max: 20 },
+          acceptedDurationMinutes: { min: 1, max: 30 },
+          maximumInterSampleGapSeconds: 10,
+          maximumEdgeGapSeconds: 1_200,
+        },
+      },
+    })!;
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ diagnostic })));
+    render(<StepperDiagnosticClient workoutId="61" />);
+
+    expect(await screen.findByText("Персональну оцінку HR застосовано")).toBeTruthy();
+    expect(screen.getByText("Калібровку застосовано")).toBeTruthy();
+    expect(screen.getByText("Оцінка HR після калібровки · ккал")).toBeTruthy();
+    expect(screen.getByText("Вплив пульсу на результат")).toBeTruthy();
+  });
+
   it("renders unavailable interval steps, null values, unavailable energy, and loaded HR with no samples", async () => {
-    const base = completeDiagnostic(0);
-    const diagnostic = {
-      ...base,
-      bracketedSteps: {
-        availability: "unavailable" as const,
-        availabilityReason: "no-before-snapshot" as const,
-        before: null,
-        after: null,
-        preGapSeconds: null,
-        postGapSeconds: null,
-        derivedStepDelta: null,
-        derivedStepRatePerMinute: null,
-      },
-      deviceEnergy: { availability: "unavailable" as const, availabilityReason: "no-device-active-energy" as const },
-      programEnergy: {
-        contractVersion: "experimental-stepper-active-energy-v1" as const,
-        provenance: "experimental-heuristic" as const,
-        availability: "unavailable" as const,
-        estimatedActiveKcal: null,
-        lowerBoundKcal: null,
-        upperBoundKcal: null,
-        unavailableReason: "missing-bracketed-step-evidence" as const,
-      },
-    };
+    const diagnostic = buildStepperWorkoutDiagnosticV7({
+      workout: { id: 61, type: "Stair Climbing", startAt, endAt, durationMinutes: 20, activeEnergyKcal: null },
+      bodyMassKg: 80,
+      snapshots: [],
+      stepIntervals: [],
+      heartRateSamples: [],
+    })!;
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ diagnostic })));
     render(<StepperDiagnosticClient workoutId="61" />);
 
     expect(await screen.findByText("Немає інтервалів кроків у межах тренування")).toBeTruthy();
     expect(screen.queryByText(/Немає знімка кроків/)).toBeNull();
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
-    expect(screen.getByText("Оцінка BodyCast недоступна: немає достатніх даних кроків за інтервалами.")).toBeTruthy();
+    expect(screen.getByText(/Немає надійної частоти кроків/)).toBeTruthy();
     expect(screen.queryByText(/Проміжки між зразками/)).toBeNull();
     expect(screen.getByText("Завантажено")).toBeTruthy();
   });

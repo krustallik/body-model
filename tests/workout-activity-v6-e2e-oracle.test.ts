@@ -4,7 +4,6 @@ import type { BodyCompositionState } from "@/model/body-composition/state";
 import { reconstructBodyWeightKg } from "@/model/body-composition/state";
 import { createDynamicRmrParameters } from "@/model/dynamic-rmr";
 import { buildSimulationDays } from "@/modules/model-episodes/simulation-input-builder";
-import { CURRENT_MODEL_VERSION } from "@/modules/model-episodes/model-version";
 import type { HistoricalModelSources } from "@/modules/model-episodes/model-episode.types";
 import { sourceDay } from "./model-episode-fixtures";
 import {
@@ -14,11 +13,12 @@ import {
 
 /**
  * Cross-module known-number oracle:
- * daily walking 5.0 − work 1.0 − stair overlap 0.6 = 3.4 remaining
+ * daily walking 5.0 − work 1.0 − stair-time overlap 0.2 = 3.8 remaining
  * workout active kcal 154 + 18 + 562 = 734
  * activityCalibration = 1.1 applied once
  */
 const date = "2026-08-22";
+const PHYSIOLOGY_V6 = "bodycast-physiology-v6";
 const instant = (time: string) => new Date(`2026-08-22T${time}:00+02:00`);
 const ACTIVITY_CALIBRATION = 1.1;
 const WORKOUT_KCAL = 154 + 18 + 562;
@@ -94,10 +94,10 @@ describe("v6 workout known-number oracle (builder → expenditure)", () => {
       from: date,
       to: date,
       sources: knownNumberSources(),
-      modelVersion: CURRENT_MODEL_VERSION,
+      modelVersion: PHYSIOLOGY_V6,
     })[0]!;
 
-    expect(built.input.outsideWorkWalkingDistanceKm).toBeCloseTo(3.4, 12);
+    expect(built.input.outsideWorkWalkingDistanceKm).toBeCloseTo(3.8, 12);
     expect(built.input.strengthTrainingMinutes).toBe(0);
     expect(built.input.workoutActivity?.events.map((event) => event.activeEnergyKcal))
       .toEqual([154, 18, 562]);
@@ -125,7 +125,7 @@ describe("v6 workout known-number oracle (builder → expenditure)", () => {
     });
 
     const weightKg = reconstructBodyWeightKg(bodyComposition);
-    const durationHours = 3.4 / 5;
+    const durationHours = 3.8 / 5;
     // 2024 Adult Compendium level-walking MET at 5.0 km/h → 3.8
     const walkingOracle = 3.8 * weightKg * durationHours
       - result.dynamicRmrKcalPerDay / 24 * durationHours;
@@ -157,7 +157,7 @@ describe("v6 workout known-number oracle (builder → expenditure)", () => {
       from: date,
       to: date,
       sources: knownNumberSources(),
-      modelVersion: CURRENT_MODEL_VERSION,
+      modelVersion: PHYSIOLOGY_V6,
     })[0]!;
     const result = calculateDynamicDailyExpenditure({
       bodyComposition,

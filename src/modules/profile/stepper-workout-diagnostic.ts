@@ -2,6 +2,7 @@ import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
 import type { WorkoutEnergyEvidenceV7 } from "@/model/activity/workout-energy-v7";
 import { canonicalizeWorkoutHeartRateEvidenceV7, type WorkoutHeartRateSampleV7 } from "@/model/activity/workout-heart-rate-v7";
 import { estimateExperimentalStepperActiveEnergyV1, type ExperimentalStepperActiveEnergyResultV1 } from "@/model/activity/experimental-stepper-active-energy-v1";
+import { estimateHrAwareStepperActiveEnergyV1, type StepperHeartRateEnergyCalibrationV1, type StepperHrAwareActiveEnergyResultV1 } from "@/model/activity/stepper-hr-aware-active-energy-v1";
 import { FIXED_STEPPER_EQUIPMENT_V7, type StepperEquipmentAssignmentV7 } from "@/model/activity/personal-stepper-reference-v7";
 import { canonicalizeWorkoutStepperEvidenceV7, workoutStepperEvidenceDiagnosticV7, type HealthStepIntervalV7, type HealthSyncStepSnapshotV7 } from "@/model/activity/workout-stepper-v7";
 
@@ -13,6 +14,7 @@ export type StepperProgramActiveEnergyDiagnosticV1 = Pick<
 export type StepperWorkoutDiagnosticV7 = ReturnType<typeof workoutStepperEvidenceDiagnosticV7> & {
   equipmentAssignment: StepperEquipmentAssignmentV7;
   programEnergy: StepperProgramActiveEnergyDiagnosticV1;
+  activeEnergyResolution: StepperHrAwareActiveEnergyResultV1;
   labels: {
     derivedStepDelta: "derived health step-counter attribution" | "derived Apple Health interval attribution";
     garminActiveEnergy: "device estimate";
@@ -36,6 +38,7 @@ export function buildStepperWorkoutDiagnosticV7(input: {
   snapshots: readonly HealthSyncStepSnapshotV7[];
   stepIntervals?: readonly HealthStepIntervalV7[];
   heartRateSamples: readonly WorkoutHeartRateSampleV7[];
+  heartRateCalibration?: StepperHeartRateEnergyCalibrationV1 | null;
 }): StepperWorkoutDiagnosticV7 | null {
   const canonical = canonicalizeWorkoutType(input.workout.type);
   if (canonical.classification !== "stair-climbing" || canonical.canonicalType === null) return null;
@@ -65,9 +68,16 @@ export function buildStepperWorkoutDiagnosticV7(input: {
     bodyMassKg: input.bodyMassKg ?? null,
     equipment: FIXED_STEPPER_EQUIPMENT_V7,
   });
+  const activeEnergyResolution = estimateHrAwareStepperActiveEnergyV1({
+    workout: evidence,
+    bodyMassKg: input.bodyMassKg ?? null,
+    calibration: input.heartRateCalibration ?? null,
+    deviceActiveEnergyKcal: input.workout.activeEnergyKcal,
+  });
   return {
     ...workoutStepperEvidenceDiagnosticV7(evidence),
     equipmentAssignment: FIXED_STEPPER_EQUIPMENT_V7,
+    activeEnergyResolution,
     programEnergy: {
       contractVersion: programEnergy.contractVersion,
       provenance: programEnergy.provenance,

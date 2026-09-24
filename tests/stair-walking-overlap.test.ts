@@ -147,6 +147,21 @@ describe("reconstructStairWalkingOverlap gap boundaries", () => {
     expect(result.diagnostics[0]?.reason).toBe("after-gap-too-large");
     expect(result.overlapDistanceKm).toBe(0);
   });
+
+  it("apportions a 60-minute snapshot delta across the 58 minutes occupied by a workout", () => {
+    const result = reconstructStairWalkingOverlap({
+      snapshots: [snapshot("10:00:00", 2.0, 1_000), snapshot("11:00:00", 2.6, 1_600)],
+      stairWorkouts: [{
+        startAt: at("10:01:00"),
+        endAt: at("10:59:00"),
+        activeEnergyKcal: 154,
+      }],
+    });
+    expect(result.diagnostics[0]?.observedWalkingDistanceDeltaKm).toBeCloseTo(0.6, 12);
+    expect(result.diagnostics[0]?.overlapDistanceAppliedKm).toBeCloseTo(0.58, 12);
+    expect(result.diagnostics[0]?.distanceAllocation).toBe("proportional-snapshot");
+    expect(result.overlapDistanceKm).toBeCloseTo(0.6 * (58 / 60), 12);
+  });
 });
 
 describe("reconstructStairWalkingOverlap missing boundaries", () => {

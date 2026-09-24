@@ -117,12 +117,15 @@ function scenarioStairOverlap(): ScenarioResult {
       activeEnergyKcal: 154,
     }],
   });
-  const ok = assertClose(overlap.overlapDistanceKm, 0.6, 1e-9)
+  // The workout spans 58 of the 60 minutes bracketed by the cumulative
+  // snapshots, so the snapshot-derived distance is apportioned by time.
+  const expectedOverlapKm = 0.6 * (58 / 60);
+  const ok = assertClose(overlap.overlapDistanceKm, expectedOverlapKm, 1e-9)
     && overlap.diagnostics[0]?.reason === "applied";
   return {
     name: "stair-kcal-known-overlap",
     ok,
-    detail: `overlapKm=${overlap.overlapDistanceKm}`,
+    detail: `overlapKm=${overlap.overlapDistanceKm} expected=${expectedOverlapKm}`,
   };
 }
 

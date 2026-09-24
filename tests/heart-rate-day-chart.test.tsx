@@ -29,6 +29,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 describe("HeartRateDayChart", () => {
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -82,6 +83,18 @@ describe("HeartRateDayChart", () => {
       expect(fetchMock.mock.calls.some(([input]) => String(input).includes("date=2026-09-10"))).toBe(true);
       expect(screen.getByText(/70 \/ 90 \/ 80/)).toBeTruthy();
     });
+  });
+
+  it("selects today in Bratislava even when the runtime timezone is different", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-24T22:30:00.000Z"));
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ date: "2026-09-25", heartRate: {
+      sampleCount: 0, minBpm: null, maxBpm: null, avgBpm: null, latestBpm: null, latestTimestamp: null, samples: [],
+    } })));
+
+    render(<HeartRateDayChart />);
+
+    expect((screen.getByLabelText("День") as HTMLInputElement).value).toBe("2026-09-25");
   });
 
   it("shows an empty state when the selected day has no samples", async () => {

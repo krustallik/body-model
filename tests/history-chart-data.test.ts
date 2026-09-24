@@ -82,18 +82,18 @@ describe("history chart data transformations", () => {
     expect(hasChartData(input, ["weightKg"])).toBe(true);
   });
 
-  it("connects workout observations across missing days without inventing zeros", () => {
+  it("fills unobserved calendar dates with zero training events", () => {
     const input = [
-      { ...day("2026-09-01"), walkingDistanceKm: 4.2, totalWorkoutMinutes: 60, workoutSource: "workouts" as const },
-      { ...day("2026-09-02"), walkingDistanceKm: 3.1, totalWorkoutMinutes: null, workoutSource: "none" as const },
-      { ...day("2026-09-03"), walkingDistanceKm: 5.0, totalWorkoutMinutes: 70, workoutSource: "workouts" as const },
+      { ...day("2026-09-01"), walkingDistanceKm: 4.2, totalWorkoutMinutes: 60, workoutSource: "workouts" as const, trainingDayFact: { date: "2026-09-01", eventCount: 1, durationMinutes: 60, hiddenEventCount: 0, events: [] } },
+      { ...day("2026-09-02"), walkingDistanceKm: 3.1, totalWorkoutMinutes: 0, workoutSource: "none" as const, trainingDayFact: { date: "2026-09-02", eventCount: 0, durationMinutes: 0, hiddenEventCount: 0, events: [] } },
+      { ...day("2026-09-03"), walkingDistanceKm: 5.0, totalWorkoutMinutes: 70, workoutSource: "workouts" as const, trainingDayFact: { date: "2026-09-03", eventCount: 1, durationMinutes: 70, hiddenEventCount: 0, events: [] } },
     ];
-    const model = movementTrainingChartModel(input);
+    const model = movementTrainingChartModel(input, { today: "2026-09-03" });
     expect(model.workoutConnectNulls).toBe(true);
     expect(model.workoutObservationDates).toEqual(["2026-09-01", "2026-09-03"]);
-    expect(model.points.map((point) => point.totalWorkoutMinutes)).toEqual([60, null, 70]);
+    expect(model.points.map((point) => point.totalWorkoutMinutes)).toEqual([60, 0, 70]);
     expect(model.points.map((point) => point.walkingDistanceKm)).toEqual([4.2, 3.1, 5]);
-    expect(model.points.some((point) => point.totalWorkoutMinutes === 0)).toBe(false);
+    expect(model.points.some((point) => point.totalWorkoutMinutes === 0)).toBe(true);
     expect(hasChartData(input, ["walkingDistanceKm", "totalWorkoutMinutes"])).toBe(true);
   });
 });

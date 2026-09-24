@@ -38,7 +38,7 @@ vi.mock("recharts", () => ({
 }));
 
 function day(date: string, overrides: Partial<DailyMetricDto> = {}): DailyMetricDto {
-  return {
+  const result: DailyMetricDto = {
     date,
     weightKg: null,
     bodyFatPercent: null,
@@ -57,6 +57,16 @@ function day(date: string, overrides: Partial<DailyMetricDto> = {}): DailyMetric
     workoutFeedObserved: null,
     updatedAt: `${date}T10:00:00.000Z`,
     ...overrides,
+  };
+  return {
+    ...result,
+    trainingDayFact: result.trainingDayFact ?? {
+      date,
+      eventCount: result.workoutSource === "workouts" ? Math.max(1, result.workouts.length) : 0,
+      durationMinutes: result.workoutSource === "workouts" ? result.totalWorkoutMinutes : 0,
+      hiddenEventCount: 0,
+      events: [],
+    },
   };
 }
 
@@ -155,7 +165,7 @@ describe("WorkoutDetailsDialog interaction", () => {
     expect(screen.getByText(/Push A/)).toBeTruthy();
   });
 
-  it("renders legacy strength fallback when workoutSource is legacy-strength", () => {
+  it("does not render legacy duration as workout detail", () => {
     HTMLDialogElement.prototype.showModal = function showModal() {
       this.setAttribute("open", "");
     };
@@ -169,30 +179,27 @@ describe("WorkoutDetailsDialog interaction", () => {
         onClose={() => undefined}
       />,
     );
-    expect(screen.getByText(/legacy day field/i)).toBeTruthy();
-    expect(screen.getByText(/45/)).toBeTruthy();
+    expect(screen.getByText(/No training events recorded/i)).toBeTruthy();
+    expect(screen.getByText(/Training events: 0/i)).toBeTruthy();
   });
 });
 
 describe("history workout detail eligibility", () => {
-  it("requires a non-none workoutSource and known total minutes", () => {
+  it("uses eventCount for workout detail eligibility", () => {
     const rule = (row: DailyMetricDto) => (
-      row.workoutSource !== "none" && row.totalWorkoutMinutes !== null
+      (row.trainingDayFact?.eventCount ?? row.workouts.length) > 0
     );
     expect(rule(day("2026-09-01"))).toBe(false);
     expect(rule(day("2026-09-02", {
       workoutSource: "workouts",
       totalWorkoutMinutes: 60,
     }))).toBe(true);
-    expect(rule(day("2026-09-03", {
-      workoutSource: "legacy-strength",
-      totalWorkoutMinutes: 40,
-    }))).toBe(true);
+    expect(rule(day("2026-09-03", { workoutSource: "legacy-strength", totalWorkoutMinutes: 40 }))).toBe(false);
   });
 });
 
 describe("HistoryCharts workout gaps", () => {
-  it("keeps missing workout minutes as null with connectNulls=true", () => {
+  it("shows zero training on days with no event and preserves unknown duration for events", () => {
     const html = renderToStaticMarkup(
       <HistoryCharts
         days={[
@@ -204,7 +211,7 @@ describe("HistoryCharts workout gaps", () => {
           day("2026-09-02", {
             walkingDistanceKm: 3,
             totalWorkoutMinutes: null,
-            workoutSource: "none",
+            workoutSource: "workouts",
           }),
           day("2026-09-03", {
             walkingDistanceKm: 5,
@@ -223,6 +230,6 @@ describe("HistoryCharts workout gaps", () => {
       Object.prototype.hasOwnProperty.call(row, "totalWorkoutMinutes")
     )));
     expect(movement?.some((row) => row.totalWorkoutMinutes === null)).toBe(true);
-    expect(movement?.every((row) => row.totalWorkoutMinutes !== 0)).toBe(true);
+    expect(movement?.some((row) => row.totalWorkoutMinutes === 0)).toBe(true);
   });
 });

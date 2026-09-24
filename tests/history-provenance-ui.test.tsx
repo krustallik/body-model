@@ -59,7 +59,7 @@ describe("History provenance UI", () => {
       <WorkoutDetailsDialog day={day()} onClose={() => undefined} />,
     );
     expect(html).toMatch(/Workout feed missing/);
-    expect(html).toMatch(/Missing feed ≠ rest day/);
+    expect(html).toMatch(/event facts are resolved separately/);
     expect(html).toMatch(/Energy unavailable/);
     expect(html).toMatch(/not 0 kcal/);
     expect(html).not.toMatch(/>0</);

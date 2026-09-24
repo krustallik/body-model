@@ -4,6 +4,11 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { AppNav } from "@/components/app-nav";
 import { useI18n } from "@/i18n/i18n-provider";
 import type { DailyMetricDto, DailyMetricField } from "@/modules/days/day.types";
+import { DAILY_METRIC_FIELDS } from "@/modules/days/day.types";
+import { todayInCalendarTimeZone } from "@/modules/days/calendar-range";
+import { summarizeDayWorkouts } from "@/modules/days/day-workout-presentation";
+import type { TrainingDayFact } from "@/modules/days/training-day-fact";
+import { DEFAULT_TIME_ZONE, instantToLocalDateTime, localDateTimeToInstant } from "@/model/time-zone";
 import {
   filterDaysByRange,
   rangeStartDate,
@@ -84,16 +89,59 @@ function headerParts(key: DailyMetricField, uk: boolean): { main: string; unit: 
 }
 
 function dayHasWorkoutDetail(day: DailyMetricDto): boolean {
-  return day.workoutSource !== "none" && day.totalWorkoutMinutes !== null;
+  return (day.trainingDayFact?.eventCount ?? day.workouts.length) > 0;
 }
 
 function tableMetricValue(day: DailyMetricDto, key: DailyMetricField): number | null {
-  return key === "strengthTrainingMinutes" ? day.totalWorkoutMinutes : day[key];
+  if (key !== "strengthTrainingMinutes") return day[key];
+  if (day.trainingDayFact) return day.trainingDayFact.durationMinutes;
+  return day.workoutSource === "none" || day.workoutSource === "legacy-strength"
+    ? 0
+    : day.totalWorkoutMinutes;
 }
 
 function localToday(): string {
-  const now = new Date();
-  return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+  return todayInCalendarTimeZone();
+}
+
+function eventOnlyHistoryDay(fact: TrainingDayFact): DailyMetricDto {
+  const summary = summarizeDayWorkouts({
+    workouts: fact.events.map((event) => ({
+      id: event.workoutId ?? undefined,
+      type: event.type,
+      startAt: event.occurrenceAt,
+      endAt: event.endAt,
+      durationMinutes: event.durationMinutes,
+      activeEnergyKcal: event.activeEnergyKcal,
+      energySource: event.energySource,
+      diaryOnly: event.diaryOnly,
+      matchedDiarySession: event.diarySessionId === null ? null : {
+        id: event.diarySessionId,
+        program: event.diaryProgramName === null ? null : { name: event.diaryProgramName },
+      },
+      exerciseDetailAvailability: event.exerciseDetailAvailability,
+      loggedSetCount: event.loggedSetCount,
+    })),
+    legacyStrengthTrainingMinutes: null,
+    trainingDayFact: fact,
+  });
+  const emptyMetrics = Object.fromEntries(DAILY_METRIC_FIELDS.map((field) => [field, null])) as Record<DailyMetricField, number | null>;
+  return {
+    ...emptyMetrics,
+    date: fact.date,
+    updatedAt: null,
+    hasHealthRecord: false,
+    workouts: summary.workouts,
+    totalWorkoutMinutes: fact.durationMinutes,
+    workoutSource: fact.eventCount > 0 ? "workouts" : "none",
+    workoutFeedObserved: null,
+    trainingDayFact: fact,
+    heartRate: { sampleCount: 0, minBpm: null, maxBpm: null, avgBpm: null, latestBpm: null, latestTimestamp: null, samples: [] },
+    restingHeartRate: { sampleCount: 0, minBpm: null, maxBpm: null, avgBpm: null, latestBpm: null, latestTimestamp: null, samples: [] },
+    restingHeartRateBpm: null,
+    sleepMinutes: null,
+    sleep: null,
+  } as DailyMetricDto;
 }
 
 function emptyForm(): FormValues {
@@ -111,16 +159,23 @@ function editForm(day: DailyMetricDto): FormValues {
 }
 
 function toLocalDateTime(iso: string): string {
-  const value = new Date(iso);
-  const pad = (part: number) => String(part).padStart(2, "0");
-  return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}T${pad(value.getHours())}:${pad(value.getMinutes())}`;
+  const local = instantToLocalDateTime(new Date(iso), DEFAULT_TIME_ZONE);
+  return `${local.date}T${local.time}`;
+}
+
+function localDateTimeInputToIso(value: string): string {
+  const separator = value.indexOf("T");
+  if (separator < 1) throw new RangeError("local date and time are required");
+  return localDateTimeToInstant(value.slice(0, separator), value.slice(separator + 1), DEFAULT_TIME_ZONE).toISOString();
 }
 
 function workoutForm(day: DailyMetricDto): WorkoutForm[] {
   return day.workouts.map((workout) => ({
     type: workout.type,
     startAt: toLocalDateTime(workout.startAt),
-    durationMinutes: String(workout.durationMinutes ?? Math.max(1, Math.round((new Date(workout.endAt).getTime() - new Date(workout.startAt).getTime()) / 60_000))),
+    durationMinutes: workout.durationMinutes === null
+      ? workout.endAt === null ? "" : String(Math.max(1, Math.round((new Date(workout.endAt).getTime() - new Date(workout.startAt).getTime()) / 60_000)))
+      : String(workout.durationMinutes),
     activeEnergyKcal: workout.activeEnergyKcal === null ? "" : String(workout.activeEnergyKcal),
   }));
 }
@@ -145,21 +200,32 @@ async function responseError(response: Response, uk = false): Promise<string> {
 async function fetchDays(range: HistoryRange, uk = false): Promise<DailyMetricDto[]> {
   const today = localToday();
   const collected: DailyMetricDto[] = [];
+  const trainingFacts = new Map<string, TrainingDayFact>();
   let offset = 0;
 
   do {
     const query = new URLSearchParams({ to: today, limit: "100", offset: String(offset) });
     if (range !== "all") query.set("from", rangeStartDate(range, today));
+    if (offset > 0) query.set("includeTrainingDays", "false");
 
     const response = await fetch(`/api/v1/days?${query}`, { cache: "no-store" });
     if (!response.ok) throw new Error(await responseError(response, uk));
-    const body = await response.json() as { days: DailyMetricDto[] };
+    const body = await response.json() as { days: DailyMetricDto[]; trainingDays?: TrainingDayFact[] };
     collected.push(...body.days);
+    for (const fact of body.trainingDays ?? []) trainingFacts.set(fact.date, fact);
     offset += body.days.length;
     if (range !== "all" || body.days.length < 100) break;
   } while (true);
 
-  return sortDaysNewestFirst(filterDaysByRange(collected, range, today));
+  const healthDays = new Map<string, DailyMetricDto>();
+  for (const day of collected) {
+    const fact = trainingFacts.get(day.date) ?? day.trainingDayFact;
+    healthDays.set(day.date, fact ? { ...day, trainingDayFact: fact, totalWorkoutMinutes: fact.durationMinutes } : day);
+  }
+  for (const fact of trainingFacts.values()) {
+    if (fact.eventCount > 0 && !healthDays.has(fact.date)) healthDays.set(fact.date, eventOnlyHistoryDay(fact));
+  }
+  return sortDaysNewestFirst(filterDaysByRange([...healthDays.values()], range, today));
 }
 
 async function fetchWorkActivityDates(): Promise<Set<string> | null> {
@@ -256,7 +322,8 @@ export function HistoryClient() {
       mode: "edit",
       values: editForm(day),
       workouts: workoutForm(day),
-      legacyWorkoutFields: day.workoutSource !== "workouts",
+      legacyWorkoutFields: (day.trainingDayFact?.eventCount ?? (day.workoutSource === "workouts" ? 1 : 0)) === 0
+        && day.strengthTrainingMinutes !== null,
     });
   }
 
@@ -265,8 +332,8 @@ export function HistoryClient() {
       <div className={styles.actions}>
         <button type="button" onClick={() => setWorkoutDay(day)}>{uk ? "Деталі" : "Details"}</button>
         <button type="button" onClick={() => setWorkDate(day.date)}>{uk ? "Робота" : "Work"}</button>
-        <button type="button" onClick={() => editDay(day)}>{uk ? "Редагувати" : "Edit"}</button>
-        <button className={styles.deleteButton} type="button" onClick={() => void deleteDay(day.date)}>{uk ? "Видалити" : "Delete"}</button>
+        {day.hasHealthRecord !== false && <button type="button" onClick={() => editDay(day)}>{uk ? "Редагувати" : "Edit"}</button>}
+        {day.hasHealthRecord !== false && <button className={styles.deleteButton} type="button" onClick={() => void deleteDay(day.date)}>{uk ? "Видалити" : "Delete"}</button>}
       </div>
     );
   }
@@ -323,7 +390,7 @@ export function HistoryClient() {
       {loading ? (
         <div className={styles.chartsLoading}>{uk ? "Завантаження графіків…" : "Loading charts…"}</div>
       ) : (
-        <HistoryCharts days={days} />
+        <HistoryCharts days={days} range={range} />
       )}
 
       <section className={styles.panel} aria-busy={loading}>
@@ -506,14 +573,23 @@ function DayDialog({ editor, onClose, onSaved }: {
         ["activeEnergyKcal", values.activeEnergyKcal.trim() || null],
       ] : []),
     ]);
-    const workoutPayload = legacyWorkoutFields ? {} : {
-      workouts: workouts.map((workout) => ({
-        type: workout.type.trim(),
-        startAt: new Date(workout.startAt).toISOString(),
-        durationMinutes: workout.durationMinutes.trim(),
-        activeEnergyKcal: workout.activeEnergyKcal.trim() || null,
-      })),
-    };
+    let workoutPayload: Record<string, unknown>;
+    try {
+      workoutPayload = legacyWorkoutFields ? {} : {
+        workouts: workouts.map((workout) => ({
+          type: workout.type.trim(),
+          startAt: localDateTimeInputToIso(workout.startAt),
+          durationMinutes: workout.durationMinutes.trim(),
+          activeEnergyKcal: workout.activeEnergyKcal.trim() || null,
+        })),
+      };
+    } catch {
+      setFormError(uk
+        ? "Цей місцевий час не існує або повторюється під час переходу на літній/зимовий час."
+        : "This local time is nonexistent or ambiguous during a daylight-saving transition.");
+      setSaving(false);
+      return;
+    }
     const isCreate = editor.mode === "create";
     const response = await fetch(
       isCreate ? "/api/v1/days" : `/api/v1/days/${encodeURIComponent(values.date)}`,

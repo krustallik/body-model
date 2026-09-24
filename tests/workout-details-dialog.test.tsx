@@ -111,7 +111,7 @@ describe("WorkoutDetailsDialog", () => {
     expect(html.match(/Силове тренування/g) ?? []).toHaveLength(0);
   });
 
-  it("explains legacy strength fallback without inventing timestamps", () => {
+  it("does not use legacy strength minutes as evidence of a workout event", () => {
     const html = renderToStaticMarkup(
       <WorkoutDetailsDialog
         day={baseDay({
@@ -122,10 +122,36 @@ describe("WorkoutDetailsDialog", () => {
         onClose={() => undefined}
       />,
     );
-    expect(html).toContain("Силове тренування");
-    expect(html).toContain("62");
-    expect(html).toContain("legacy");
+    expect(html).toContain("Подій тренування: 0");
+    expect(html).toContain("Події тренування відсутні.");
+    expect(html).not.toContain("legacy day field");
     expect(html).not.toContain("–");
+  });
+
+  it("labels a cancelled session with saved sets as partially completed", () => {
+    const html = renderToStaticMarkup(
+      <WorkoutDetailsDialog
+        day={baseDay({
+          workoutSource: "workouts",
+          totalWorkoutMinutes: null,
+          workouts: [{
+            type: "Traditional Strength Training",
+            canonicalType: "Traditional Strength Training",
+            classification: "traditional-strength-training",
+            startAt: "2026-09-16T17:00:00.000Z",
+            endAt: "2026-09-16T17:20:00.000Z",
+            durationMinutes: 20,
+            activeEnergyKcal: null,
+            linkedTrainingSessionId: 7,
+            linkedTrainingProgramName: "Push",
+            executionStatus: "partial",
+          }],
+        })}
+        onClose={() => undefined}
+      />,
+    );
+    expect(html).toContain("Частково виконано");
+    expect(html).toContain("Збережені сети до скасування тренування.");
   });
 
   it("still lists workout timing when active energy is missing", () => {

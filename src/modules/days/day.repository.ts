@@ -1,7 +1,8 @@
 import { normalizeDailyMeasurements, prepareDailyMeasurementsForWrite } from "@/modules/days/measurement-policy";
 import { summarizeDayWorkouts } from "@/modules/days/day-workout-presentation";
+import { TrainingDayFactRepository } from "@/modules/days/training-day-fact.repository";
+import { emptyTrainingDayFact, type TrainingDayFact } from "@/modules/days/training-day-fact";
 import { workoutSourceIdentity } from "@/modules/health/workout-source-identity";
-import { DEFAULT_TIME_ZONE, instantToLocalDateTime } from "@/model/time-zone";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { SleepRepository } from "@/modules/health/sleep.repository";
@@ -9,6 +10,11 @@ import { recordExperimentalGlycogenStateShadow } from "@/modules/model-episodes/
 import { rebuildAuthoritativeRelativeMuscleTrajectory } from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
 import { rebuildUnifiedExperimentalPhysiologyStateV1 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
 import { DuplicateDayError } from "./day.errors";
+import {
+  addCalendarDays,
+  inclusiveCalendarDayCount,
+  MAX_MATERIALIZED_TRAINING_DAY_RANGE_DAYS,
+} from "./calendar-range";
 import type {
   CreateDailyMetricInput,
   DailyMetricListQuery,
@@ -68,25 +74,6 @@ const productionShadowReplayer: DailyMetricShadowReplayer = {
   },
 };
 
-type DiaryShadowWorkout = {
-  type: "Traditional Strength Training";
-  startAt: Date;
-  endAt: Date;
-  durationMinutes: number;
-  activeEnergyKcal: number | null;
-  energySource: "shadow-diary-estimate" | "unavailable";
-  diaryOnly: true;
-  matchedDiarySession: { id: number; program: { name: string } };
-};
-
-function shadowResolutionKcal(result: unknown): number | null {
-  if (typeof result !== "object" || result === null || Array.isArray(result)) return null;
-  const resolution = (result as { activeEnergyResolution?: unknown }).activeEnergyResolution;
-  if (typeof resolution !== "object" || resolution === null || Array.isArray(resolution)) return null;
-  const value = (resolution as { estimatedActiveKcal?: unknown }).estimatedActiveKcal;
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
-}
-
 function workoutCreateData(workouts: NonNullable<CreateDailyMetricInput["workouts"]>) {
   return workouts.map((workout) => {
     const startAt = new Date(workout.startAt);
@@ -125,6 +112,26 @@ function heartRateSummary(samples: Array<{ timestamp: Date; bpm: number }> | und
   };
 }
 
+function rawWorkoutEvents(fact: TrainingDayFact) {
+  return fact.events.map((event) => ({
+    id: event.workoutId ?? undefined,
+    type: event.type,
+    startAt: new Date(event.occurrenceAt),
+    endAt: event.endAt === null ? null : new Date(event.endAt),
+    durationMinutes: event.durationMinutes,
+    activeEnergyKcal: event.activeEnergyKcal,
+    energySource: event.energySource,
+    diaryOnly: event.diaryOnly,
+    executionStatus: event.executionStatus,
+    matchedDiarySession: event.diarySessionId === null ? null : {
+      id: event.diarySessionId,
+      program: event.diaryProgramName === null ? null : { name: event.diaryProgramName },
+    },
+    exerciseDetailAvailability: event.exerciseDetailAvailability,
+    loggedSetCount: event.loggedSetCount,
+  }));
+}
+
 function toDto(
   record: DailyMetricRecord,
   samples?: {
@@ -132,17 +139,19 @@ function toDto(
     restingHeartRate: Array<{ timestamp: Date; bpm: number }>;
   },
   sleep?: NightlySleepSummaryDto | null,
-  diaryShadowWorkouts: readonly DiaryShadowWorkout[] = [],
+  trainingDayFact: TrainingDayFact = emptyTrainingDayFact(record.date),
 ): DailyMetricDto {
   record = normalizeDailyMeasurements(record);
   const strengthTrainingMinutes = decimalToNumber(record.strengthTrainingMinutes);
   const summary = summarizeDayWorkouts({
-    workouts: [...(record.workouts ?? []), ...diaryShadowWorkouts],
+    workouts: rawWorkoutEvents(trainingDayFact),
     legacyStrengthTrainingMinutes: strengthTrainingMinutes,
+    trainingDayFact,
   });
   const restingHeartRate = heartRateSummary(samples?.restingHeartRate ?? record.restingHeartRateSamples);
   return {
     date: record.date,
+    hasHealthRecord: true,
     weightKg: record.weightKg,
     bodyFatPercent: decimalToNumber(record.bodyFatPercent),
     caloriesKcal: record.caloriesKcal,
@@ -159,6 +168,7 @@ function toDto(
     totalWorkoutMinutes: summary.totalWorkoutMinutes,
     workoutSource: summary.workoutSource,
     workoutFeedObserved: record.workoutFeedObserved ?? null,
+    trainingDayFact,
     heartRate: heartRateSummary(samples?.heartRate ?? record.heartRateSamples),
     restingHeartRate,
     restingHeartRateBpm: restingHeartRate.latestBpm,
@@ -172,14 +182,25 @@ function isPrismaError(error: unknown, code: string): boolean {
 }
 
 export class DailyMetricRepository {
+  private readonly trainingFacts: TrainingDayFactRepository;
+
   constructor(
     private readonly client: PrismaClient = prisma,
     private readonly shadowReplayer: DailyMetricShadowReplayer | null = client === prisma
       ? productionShadowReplayer
       : null,
-  ) {}
+  ) {
+    this.trainingFacts = new TrainingDayFactRepository(client);
+  }
 
   async list(query: DailyMetricListQuery): Promise<DailyMetricDto[]> {
+    return (await this.listWithTrainingFacts(query)).days;
+  }
+
+  async listWithTrainingFacts(query: DailyMetricListQuery): Promise<{
+    days: DailyMetricDto[];
+    trainingDays: TrainingDayFact[];
+  }> {
     const records = await this.client.dailyHealthData.findMany({
       where: {
         date: {
@@ -194,24 +215,38 @@ export class DailyMetricRepository {
     });
 
     const dates = records.map(({ date }) => date);
+    const pageDates = records.map(({ date }) => date).sort();
+    const factsRange = query.includeTrainingDays === false && pageDates.length > 0
+      ? { from: pageDates[0], to: pageDates.at(-1) }
+      : { from: query.from, to: query.to };
+    const eventFacts = query.includeTrainingDays === false && pageDates.length === 0
+      ? []
+      : await this.trainingFacts.list(factsRange);
+    const factByDate = new Map(eventFacts.map((fact) => [fact.date, fact]));
+    const trainingDaysByDate = new Map<string, TrainingDayFact>();
+    if (query.includeTrainingDays !== false) {
+      for (const fact of eventFacts) trainingDaysByDate.set(fact.date, fact);
+      for (const date of dates) {
+        if (!trainingDaysByDate.has(date)) trainingDaysByDate.set(date, emptyTrainingDayFact(date));
+      }
+      // Explicit calendar ranges return an explicit zero fact for every date.
+      if (query.from && query.to) {
+        for (let date = query.from; date <= query.to; date = addCalendarDays(date, 1)) {
+          if (!trainingDaysByDate.has(date)) trainingDaysByDate.set(date, emptyTrainingDayFact(date));
+        }
+      }
+    }
+    const trainingDays = [...trainingDaysByDate.values()].sort((left, right) => right.date.localeCompare(left.date));
+
     const readClient = this.client as unknown as {
       heartRateSample?: { findMany(args: unknown): Promise<Array<{ date: string; timestamp: Date; bpm: number }>> };
       restingHeartRateSample?: { findMany(args: unknown): Promise<Array<{ date: string; timestamp: Date; bpm: number }>> };
-      strengthDiarySession?: {
-        findMany(args: unknown): Promise<Array<{
-          id: number;
-          webStartedAt: Date | null;
-          webEndedAt: Date | null;
-          program: { name: string };
-          experimentalStrengthEnergyShadow: { result: unknown } | null;
-        }>>;
-      };
     };
     if (dates.length === 0) {
-      return records.map((record) => toDto(record));
+      return { days: [], trainingDays };
     }
 
-    const [heartRateRows, restingRows, sleepByDate, diarySessions] = await Promise.all([
+    const [heartRateRows, restingRows, sleepByDate] = await Promise.all([
       readClient.heartRateSample
         ? readClient.heartRateSample.findMany({ where: { date: { in: dates } }, select: { date: true, timestamp: true, bpm: true }, orderBy: { timestamp: "asc" } })
         : Promise.resolve([] as Array<{ date: string; timestamp: Date; bpm: number }>),
@@ -219,29 +254,6 @@ export class DailyMetricRepository {
         ? readClient.restingHeartRateSample.findMany({ where: { date: { in: dates } }, select: { date: true, timestamp: true, bpm: true }, orderBy: { timestamp: "asc" } })
         : Promise.resolve([] as Array<{ date: string; timestamp: Date; bpm: number }>),
       new SleepRepository(this.client).summariesByDates(dates),
-      readClient.strengthDiarySession
-        ? readClient.strengthDiarySession.findMany({
-          where: {
-            status: "COMPLETED",
-            matchedWorkoutId: null,
-            webStartedAt: { not: null },
-            webEndedAt: { not: null },
-          },
-          select: {
-            id: true,
-            webStartedAt: true,
-            webEndedAt: true,
-            program: { select: { name: true } },
-            experimentalStrengthEnergyShadow: { select: { result: true } },
-          },
-        })
-        : Promise.resolve([] as Array<{
-          id: number;
-          webStartedAt: Date | null;
-          webEndedAt: Date | null;
-          program: { name: string };
-          experimentalStrengthEnergyShadow: { result: unknown } | null;
-        }>),
     ]);
     const group = (rows: Array<{ date: string; timestamp: Date; bpm: number }>) => rows.reduce<Map<string, Array<{ timestamp: Date; bpm: number }>>>((result, row) => {
       result.set(row.date, [...(result.get(row.date) ?? []), { timestamp: row.timestamp, bpm: row.bpm }]);
@@ -249,30 +261,34 @@ export class DailyMetricRepository {
     }, new Map());
     const heartRate = group(heartRateRows);
     const restingHeartRate = group(restingRows);
-    const diaryShadowByDate = new Map<string, DiaryShadowWorkout[]>();
-    for (const session of diarySessions) {
-      if (session.webStartedAt === null || session.webEndedAt === null || !(session.webEndedAt > session.webStartedAt)) continue;
-      const date = instantToLocalDateTime(session.webStartedAt, DEFAULT_TIME_ZONE).date;
-      if (!dates.includes(date)) continue;
-      const kcal = shadowResolutionKcal(session.experimentalStrengthEnergyShadow?.result);
-      const event: DiaryShadowWorkout = {
-        type: "Traditional Strength Training",
-        startAt: session.webStartedAt,
-        endAt: session.webEndedAt,
-        durationMinutes: (session.webEndedAt.getTime() - session.webStartedAt.getTime()) / 60_000,
-        activeEnergyKcal: kcal,
-        energySource: kcal === null ? "unavailable" : "shadow-diary-estimate",
-        diaryOnly: true,
-        matchedDiarySession: { id: session.id, program: session.program },
-      };
-      diaryShadowByDate.set(date, [...(diaryShadowByDate.get(date) ?? []), event]);
-    }
-    return records.map((record) => toDto(
+    const days = records.map((record) => toDto(
       record,
       { heartRate: heartRate.get(record.date) ?? [], restingHeartRate: restingHeartRate.get(record.date) ?? [] },
       sleepByDate.get(record.date) ?? null,
-      diaryShadowByDate.get(record.date) ?? [],
+      factByDate.get(record.date) ?? emptyTrainingDayFact(record.date),
     ));
+    return { days, trainingDays };
+  }
+
+  async trainingDayFactForDate(date: string): Promise<TrainingDayFact> {
+    return this.trainingFacts.forDate(date);
+  }
+
+  async trainingDayFactsForRange(from: string, to: string): Promise<TrainingDayFact[]> {
+    const dayCount = inclusiveCalendarDayCount(from, to);
+    if (dayCount === null || dayCount > MAX_MATERIALIZED_TRAINING_DAY_RANGE_DAYS) {
+      throw new RangeError(`training-day fact ranges must not exceed ${MAX_MATERIALIZED_TRAINING_DAY_RANGE_DAYS} calendar days`);
+    }
+    const facts = new Map((await this.trainingFacts.list({ from, to })).map((fact) => [fact.date, fact]));
+    const result: TrainingDayFact[] = [];
+    for (let date = from; date <= to; date = addCalendarDays(date, 1)) {
+      result.push(facts.get(date) ?? emptyTrainingDayFact(date));
+    }
+    return result;
+  }
+
+  private async dtoForRecord(record: DailyMetricRecord): Promise<DailyMetricDto> {
+    return toDto(record, undefined, null, await this.trainingFacts.forDate(record.date));
   }
 
   async latestUpdatedAt(): Promise<string | null> {
@@ -321,7 +337,7 @@ export class DailyMetricRepository {
         },
         select: dailyMetricSelect,
       });
-      return toDto(record);
+      return await this.dtoForRecord(record);
     } catch (error) {
       if (isPrismaError(error, "P2002")) throw new DuplicateDayError();
       throw error;
@@ -336,7 +352,7 @@ export class DailyMetricRepository {
         data: {
           ...prepareDailyMeasurementsForWrite(metrics),
           ...(workouts !== undefined ? {
-            workouts: { deleteMany: {}, create: workoutCreateData(workouts) },
+            workouts: { deleteMany: { hiddenFromHistory: false }, create: workoutCreateData(workouts) },
             strengthTrainingMinutes: null,
             activeEnergyKcal: null,
           } : {}),
@@ -344,7 +360,7 @@ export class DailyMetricRepository {
         select: dailyMetricSelect,
       });
       await this.shadowReplayer?.replayFrom(date);
-      return toDto(record);
+      return await this.dtoForRecord(record);
     } catch (error) {
       if (isPrismaError(error, "P2025")) return null;
       throw error;

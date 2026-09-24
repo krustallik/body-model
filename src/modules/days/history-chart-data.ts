@@ -1,4 +1,5 @@
 import type { DailyMetricDto, DailyMetricField } from "./day.types";
+import { addCalendarDays, todayInCalendarTimeZone } from "./calendar-range";
 
 export type HistoryRange = 7 | 30 | 90 | "all";
 
@@ -36,21 +37,39 @@ export function hasChartData(days: DailyMetricDto[], fields: HistoryChartField[]
 }
 
 /** Chart series model for movement + training: null days stay null (connectNulls, not zero). */
-export function movementTrainingChartModel(days: DailyMetricDto[]): {
+export function movementTrainingChartModel(
+  days: DailyMetricDto[],
+  options: { range?: HistoryRange; today?: string } = {},
+): {
   points: Array<{ date: string; walkingDistanceKm: number | null; totalWorkoutMinutes: number | null }>;
   workoutObservationDates: string[];
   workoutConnectNulls: true;
 } {
   const chronological = sortDaysChronologically(days);
+  const byDate = new Map(chronological.map((day) => [day.date, day]));
+  const range = options.range ?? "all";
+  const today = options.today ?? chronological.at(-1)?.date ?? todayInCalendarTimeZone();
+  const firstObservedDate = chronological[0]?.date ?? today;
+  const from = range === "all" ? firstObservedDate : rangeStartDate(range, today);
+  const points: Array<{ date: string; walkingDistanceKm: number | null; totalWorkoutMinutes: number | null }> = [];
+  const workoutObservationDates: string[] = [];
+  for (let date = from; date <= today; date = addCalendarDays(date, 1)) {
+    const day = byDate.get(date);
+    const eventCount = day?.trainingDayFact?.eventCount
+      ?? (day?.workoutSource === "workouts" ? day.workouts.length : 0);
+    const duration = day?.trainingDayFact
+      ? day.trainingDayFact.durationMinutes
+      : day?.totalWorkoutMinutes ?? (eventCount === 0 ? 0 : null);
+    points.push({
+      date,
+      walkingDistanceKm: day?.walkingDistanceKm ?? null,
+      totalWorkoutMinutes: duration,
+    });
+    if (eventCount > 0) workoutObservationDates.push(date);
+  }
   return {
-    points: chronological.map((day) => ({
-      date: day.date,
-      walkingDistanceKm: day.walkingDistanceKm,
-      totalWorkoutMinutes: day.totalWorkoutMinutes,
-    })),
-    workoutObservationDates: chronological
-      .filter((day) => day.totalWorkoutMinutes !== null)
-      .map((day) => day.date),
+    points,
+    workoutObservationDates,
     workoutConnectNulls: true,
   };
 }

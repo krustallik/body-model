@@ -65,6 +65,7 @@ vi.mock("@/app/history/work-activity-dialog", () => ({
 
 import { HistoryClient } from "@/app/history/history-client";
 import type { DailyMetricDto } from "@/modules/days/day.types";
+import type { TrainingDayFact } from "@/modules/days/training-day-fact";
 
 function day(date: string, overrides: Partial<DailyMetricDto> = {}): DailyMetricDto {
   return {
@@ -94,6 +95,37 @@ function jsonResponse(body: unknown, status = 200): Response {
     status,
     headers: { "content-type": "application/json" },
   });
+}
+
+function eventFact(date: string, id: string): TrainingDayFact {
+  return {
+    date,
+    eventCount: 1,
+    durationMinutes: null,
+    hiddenEventCount: 0,
+    events: [{
+      eventId: id,
+      source: "workout",
+      type: "Traditional Strength Training",
+      occurrenceAt: `${date}T22:30:00.000Z`,
+      endAt: null,
+      durationMinutes: null,
+      activeEnergyKcal: null,
+      energySource: "unavailable",
+      executionStatus: "unknown",
+      workoutId: Number(id),
+      diarySessionId: null,
+      diaryProgramName: null,
+      diaryOnly: false,
+      exerciseDetailAvailability: "unavailable",
+      loggedSetCount: null,
+    }],
+  };
+}
+
+function shiftDate(date: string, days: number): string {
+  const [year, month, dayOfMonth] = date.split("-").map(Number);
+  return new Date(Date.UTC(year!, month! - 1, dayOfMonth! + days)).toISOString().slice(0, 10);
 }
 
 describe("HistoryClient workout cell interaction", () => {
@@ -150,7 +182,38 @@ describe("HistoryClient workout cell interaction", () => {
 
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes("/api/v1/days")) return jsonResponse({ days: rows });
+      if (url.includes("/api/v1/days")) return jsonResponse({
+        days: rows,
+        trainingDays: [{
+          date: "2026-09-04",
+          eventCount: 0,
+          durationMinutes: 0,
+          hiddenEventCount: 0,
+          events: [],
+        }, {
+          date: "2026-09-05",
+          eventCount: 1,
+          durationMinutes: null,
+          hiddenEventCount: 0,
+          events: [{
+            eventId: "diary:99",
+            source: "diary",
+            type: "Traditional Strength Training",
+            occurrenceAt: "2026-09-05T10:00:00.000Z",
+            endAt: null,
+            durationMinutes: null,
+            activeEnergyKcal: null,
+            energySource: "unavailable",
+            executionStatus: "in-progress",
+            workoutId: null,
+            diarySessionId: 99,
+            diaryProgramName: "Live session",
+            diaryOnly: true,
+            exerciseDetailAvailability: "no-logged-sets",
+            loggedSetCount: 0,
+          }],
+        }],
+      });
       if (url.includes("/api/v1/work-intervals")) {
         return jsonResponse({ intervals: [{ date: "2026-09-03" }] });
       }
@@ -161,12 +224,17 @@ describe("HistoryClient workout cell interaction", () => {
     render(<HistoryClient />);
     await waitFor(() => {
       expect(within(screen.getByTestId("desktop-history-table")).getByText("2026-09-03")).toBeTruthy();
+      expect(within(screen.getByTestId("desktop-history-table")).getByText("2026-09-05")).toBeTruthy();
     });
 
     const desktop = within(screen.getByTestId("desktop-history-table"));
     const cards = within(screen.getByTestId("mobile-history-cards"));
-    const workoutLinks = desktop.getAllByRole("button", { name: /95|45/ });
-    expect(workoutLinks.length).toBe(2);
+    expect(desktop.queryByText("2026-09-04")).toBeNull();
+    expect(desktop.getByText("2026-09-05")).toBeTruthy();
+    const workoutLinks = desktop.getAllByRole("button", { name: /95/ });
+    expect(workoutLinks.length).toBe(1);
+    // Legacy duration alone is not evidence that a workout event exists.
+    expect(desktop.queryByRole("button", { name: /45/ })).toBeNull();
     // Rest day shows em dash, not a button with 0.
     expect(screen.queryByRole("button", { name: "0" })).toBeNull();
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
@@ -196,5 +264,61 @@ describe("HistoryClient workout cell interaction", () => {
     await user.click(screen.getByRole("button", { name: "Close work activity" }));
     await user.click(cards.getByRole("button", { name: "Edit 2026-09-03" }));
     expect(screen.getByRole("dialog", { hidden: true })).toBeTruthy();
+  });
+
+  it("paginates all Health history without losing or duplicating event-only dates", async () => {
+    const healthDates = Array.from({ length: 200 }, (_, index) => {
+      const date = new Date(Date.UTC(2025, 0, 1 - index * 5));
+      return date.toISOString().slice(0, 10);
+    });
+    const healthPages = [healthDates.slice(0, 100), healthDates.slice(100)];
+    const pageBoundaryEventDate = shiftDate(healthDates[100]!, 2);
+    const afterLatestHealthEventDate = shiftDate(healthDates[0]!, 9);
+    const noHealthRowsEventDate = shiftDate(healthDates.at(-1)!, -30);
+    const allHistoryFacts = [
+      eventFact(noHealthRowsEventDate, "901"),
+      eventFact(pageBoundaryEventDate, "902"),
+      eventFact(afterLatestHealthEventDate, "903"),
+    ];
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname === "/api/v1/days") {
+        if (url.searchParams.has("from")) return jsonResponse({ days: [], trainingDays: [] });
+        const offset = Number(url.searchParams.get("offset") ?? 0);
+        const page = offset / 100;
+        return jsonResponse({
+          days: (healthPages[page] ?? []).map((date) => day(date)),
+          trainingDays: offset === 0 ? allHistoryFacts : [],
+        });
+      }
+      if (url.pathname === "/api/v1/work-intervals") return jsonResponse({ intervals: [] });
+      return jsonResponse({ error: "unexpected" }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<HistoryClient />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await user.click(screen.getByRole("button", { name: "All" }));
+
+    const desktop = within(screen.getByTestId("desktop-history-table"));
+    await waitFor(() => {
+      expect(desktop.getByText(noHealthRowsEventDate)).toBeTruthy();
+      expect(desktop.getByText(pageBoundaryEventDate)).toBeTruthy();
+      expect(desktop.getByText(afterLatestHealthEventDate)).toBeTruthy();
+      expect(desktop.getByText(healthDates.at(-1)!)).toBeTruthy();
+    });
+
+    const dayRequests = fetchMock.mock.calls
+      .map(([input]) => new URL(String(input), "http://localhost"))
+      .filter((url) => url.pathname === "/api/v1/days" && !url.searchParams.has("from"));
+    expect(dayRequests.map((url) => url.searchParams.get("offset"))).toEqual(["0", "100", "200"]);
+    expect(dayRequests.slice(1).every((url) => url.searchParams.get("includeTrainingDays") === "false")).toBe(true);
+    expect(desktop.getAllByText(pageBoundaryEventDate)).toHaveLength(1);
+    expect(desktop.getAllByText(afterLatestHealthEventDate)).toHaveLength(1);
+    expect(healthDates[0]).toBe("2025-01-01");
+    expect(Date.parse(`${healthDates[0]}T00:00:00Z`) - Date.parse(`${healthDates.at(-1)}T00:00:00Z`))
+      .toBeGreaterThan(366 * 86_400_000);
   });
 });

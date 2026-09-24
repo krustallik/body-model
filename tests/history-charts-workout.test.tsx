@@ -30,7 +30,7 @@ vi.mock("@/i18n/i18n-provider", () => ({
 }));
 
 function day(date: string, overrides: Partial<DailyMetricDto> = {}): DailyMetricDto {
-  return {
+  const result: DailyMetricDto = {
     date,
     weightKg: null,
     bodyFatPercent: null,
@@ -49,6 +49,16 @@ function day(date: string, overrides: Partial<DailyMetricDto> = {}): DailyMetric
     workoutFeedObserved: null,
     updatedAt: `${date}T10:00:00.000Z`,
     ...overrides,
+  };
+  return {
+    ...result,
+    trainingDayFact: result.trainingDayFact ?? {
+      date,
+      eventCount: result.workoutSource === "workouts" ? Math.max(1, result.workouts.length) : 0,
+      durationMinutes: result.workoutSource === "workouts" ? result.totalWorkoutMinutes : 0,
+      hiddenEventCount: 0,
+      events: [],
+    },
   };
 }
 
@@ -121,12 +131,12 @@ describe("HistoryCharts workout series", () => {
       { date: "2026-09-02", sleepHours: 8 },
     ]);
   });
-  it("connects every series across missing observations without zero-filling", () => {
+  it("shows zero event days and keeps event duration unknown when an event has no duration", () => {
     const html = renderToStaticMarkup(
       <HistoryCharts
         days={[
           day("2026-09-01", { walkingDistanceKm: 4, totalWorkoutMinutes: 60, workoutSource: "workouts" }),
-          day("2026-09-02", { walkingDistanceKm: 3, totalWorkoutMinutes: null }),
+          day("2026-09-02", { walkingDistanceKm: 3, totalWorkoutMinutes: null, workoutSource: "workouts" }),
           day("2026-09-03", { walkingDistanceKm: 5, totalWorkoutMinutes: 70, workoutSource: "workouts" }),
         ]}
       />,
@@ -153,10 +163,10 @@ describe("HistoryCharts workout series", () => {
     expect(movementRows).toBeDefined();
     expect(movementRows!.some((row) => row.totalWorkoutMinutes === null)).toBe(true);
     expect(movementRows!.some((row) => row.totalWorkoutMinutes === 60)).toBe(true);
-    expect(movementRows!.every((row) => row.totalWorkoutMinutes !== 0)).toBe(true);
+    expect(movementRows!.some((row) => row.totalWorkoutMinutes === 0)).toBe(true);
   });
 
-  it("shows an empty-state message when the workout series has no observations", () => {
+  it("plots a zero workout line when the selected period has no recorded events", () => {
     const html = renderToStaticMarkup(
       <HistoryCharts
         days={[
@@ -165,6 +175,6 @@ describe("HistoryCharts workout series", () => {
         ]}
       />,
     );
-    expect(html).toContain("За цей період даних немає");
+    expect(html).toContain('data-line="totalWorkoutMinutes"');
   });
 });

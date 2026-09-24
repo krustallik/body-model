@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { formatDateTime, formatMetric } from "@/modules/days/metric-format";
+import { formatDateTime as formatTrainingDateTime, formatClock as formatTrainingClock } from "@/app/training/training-labels";
 
 describe("dashboard metric formatting", () => {
   it("renders missing metrics as an em dash instead of zero", () => {
@@ -21,6 +22,13 @@ describe("dashboard metric formatting", () => {
     expect(formatted).not.toBe("—");
     expect(formatted).toMatch(/2026/);
     expect(formatted).toMatch(/Sep/);
+  });
+
+  it("formats timestamps in the shared Bratislava timezone, regardless of runtime timezone", () => {
+    const iso = "2026-09-16T10:30:00.000Z";
+    expect(formatDateTime(iso, "en-US")).toMatch(/12:30\s?PM/);
+    expect(formatTrainingDateTime(iso, "en-US")).toMatch(/12:30/);
+    expect(formatTrainingClock(iso, "en-US")).toMatch(/12:30/);
   });
 
   it("renders a missing timestamp as an em dash", () => {

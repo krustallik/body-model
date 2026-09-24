@@ -52,7 +52,7 @@ describe("Stage 11 provenance presentation", () => {
 
   it("distinguishes workout-feed observed, missing, and legacy unknown", () => {
     expect(workoutFeedProvenanceChip(true)?.tone).toBe("observed");
-    expect(workoutFeedProvenanceChip(false)?.detail).toMatch(/≠ rest/i);
+    expect(workoutFeedProvenanceChip(false)?.detail).toMatch(/event facts are resolved separately/i);
     expect(workoutFeedProvenanceChip(null)?.tone).toBe("info");
     expect(workoutFeedProvenanceChip(undefined)).toBeNull();
   });

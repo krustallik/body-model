@@ -86,8 +86,8 @@ export function workoutFeedProvenanceChip(
       tone: "unavailable",
       label: uk ? "Стрічка тренувань відсутня" : "Workout feed missing",
       detail: uk
-        ? "Відсутня стрічка ≠ день відпочинку. Активність може бути невідомою."
-        : "Missing feed ≠ rest day. Activity may be unknown.",
+        ? "Це позначка покриття синхронізації, окрема від факту тренування зі щоденника або Workout."
+        : "This describes sync-feed coverage; event facts are resolved separately from diary and Workout records.",
     };
   }
   if (workoutFeedObserved === null) {
@@ -96,8 +96,8 @@ export function workoutFeedProvenanceChip(
       tone: "info",
       label: uk ? "Стрічка невідома" : "Workout feed unknown",
       detail: uk
-        ? "Старі записи без покриття стрічки. Не трактуйте відсутність як 0."
-        : "Legacy rows lack feed coverage. Do not treat absence as zero.",
+        ? "У старих записах немає метаданих покриття стрічки; це не змінює факт тренування."
+        : "Legacy rows lack feed-coverage metadata; this does not determine whether an event occurred.",
     };
   }
   return null;

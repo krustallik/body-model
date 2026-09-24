@@ -96,18 +96,18 @@ describe("HistoryDayCard", () => {
     expect(onDelete).toHaveBeenCalledOnce();
   });
 
-  it("keeps rest, unavailable-feed, and legacy strength states distinct", () => {
+  it("uses event facts for rest days regardless of feed coverage or legacy minutes", () => {
     const restDay = day({ workouts: [], totalWorkoutMinutes: null, workoutSource: "none", workoutFeedObserved: true });
     const unavailableDay = day({ workouts: [], totalWorkoutMinutes: null, workoutSource: "none", workoutFeedObserved: false });
     const legacyDay = day({ workouts: [], totalWorkoutMinutes: 45, workoutSource: "legacy-strength", workoutFeedObserved: null });
 
     expect(historyWorkoutSummary(restDay, false)).toBe("Rest day");
-    expect(historyWorkoutSummary(unavailableDay, false)).toBe("Workout data unavailable");
-    expect(historyWorkoutSummary(legacyDay, false)).toBe("strength · 45m");
+    expect(historyWorkoutSummary(unavailableDay, false)).toBe("Rest day");
+    expect(historyWorkoutSummary(legacyDay, false)).toBe("Rest day");
     expect(historyWorkoutSummary(restDay, true)).toBe("Відпочинок");
-    expect(historyWorkoutSummary(unavailableDay, true)).toBe("Дані про тренування відсутні");
-    expect(historyWorkoutSummary(legacyDay, true)).toBe("силове · 45 хв");
-    expect(historyWorkoutSummary(day({ workouts: [], workoutFeedObserved: null }), false)).toBe("—");
+    expect(historyWorkoutSummary(unavailableDay, true)).toBe("Відпочинок");
+    expect(historyWorkoutSummary(legacyDay, true)).toBe("Відпочинок");
+    expect(historyWorkoutSummary(day({ workouts: [], workoutFeedObserved: null }), false)).toBe("Rest day");
   });
 
   it("uses localized Ukrainian units and plural forms", () => {

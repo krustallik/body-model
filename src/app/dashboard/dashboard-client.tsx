@@ -4,24 +4,25 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { AppNav } from "@/components/app-nav";
 import { useI18n } from "@/i18n/i18n-provider";
-import type { DailyMetricDto, DailyMetricField } from "@/modules/days/day.types";
+import type { DailyMetricField } from "@/modules/days/day.types";
 import type { DashboardDto } from "@/modules/days/dashboard.types";
+import { dashboardRecentRows, dashboardTrainingMetricCaption } from "@/modules/days/dashboard-presentation";
+import { emptyTrainingDayFact } from "@/modules/days/training-day-fact";
+import { todayInCalendarTimeZone } from "@/modules/days/calendar-range";
+import { DEFAULT_TIME_ZONE, instantToLocalDateTime } from "@/model/time-zone";
 import { formatDateTime, formatDurationMinutes, formatMetric } from "@/modules/days/metric-format";
 import styles from "./dashboard.module.css";
 
-function displayWorkoutMinutes(day: DailyMetricDto | null | undefined): number | null {
-  return day?.totalWorkoutMinutes ?? null;
-}
-
 function localToday(): string {
-  const now = new Date();
-  return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+  return todayInCalendarTimeZone();
 }
 
 function emptyDashboard(): DashboardDto {
   return {
     today: null,
+    todayTrainingDay: emptyTrainingDayFact(localToday()),
     recentDays: [],
+    recentTrainingDays: [],
     hasToday: false,
     lastSync: { at: null, status: null },
     restingHeartRate: { latestBpm: null, timestamp: null },
@@ -56,6 +57,9 @@ export function DashboardClient() {
   const restingHeartRate = dashboard.restingHeartRate;
   const sleep = dashboard.sleep;
   const sleepLocale = uk ? "uk" : "en";
+  const recentRows = dashboardRecentRows(dashboard);
+  const hasRecentHealthOrTraining = dashboard.recentDays.length > 0
+    || dashboard.recentTrainingDays.some((fact) => fact.eventCount > 0);
 
   useEffect(() => {
     let active = true;
@@ -85,7 +89,7 @@ export function DashboardClient() {
         <div>
           <p className={styles.eyebrow}>{uk ? "Сьогодні" : "Today"} · {localToday()}</p>
           <h1>{uk ? "Ваш день у цифрах" : "Your daily snapshot"}</h1>
-          <p>{uk ? "Зрозумілий огляд сьогоднішніх показників здоров’я та семи попередніх записів." : "A clear view of today’s health data and the previous seven records."}</p>
+          <p>{uk ? "Огляд сьогоднішніх показників здоров’я та тренувань за останні сім днів." : "A clear view of today’s health data and training events over the last seven days."}</p>
         </div>
         <div className={`${styles.todayBadge} ${dashboard.hasToday ? styles.ready : styles.waiting}`}>
           <span aria-hidden="true" />
@@ -98,13 +102,17 @@ export function DashboardClient() {
       <section className={styles.metricGrid} aria-busy={loading}>
         {metricCards.map(({ key, label, unit }) => {
           const value = key === "totalWorkoutMinutes"
-            ? displayWorkoutMinutes(dashboard.today)
+            ? (dashboard.todayTrainingDay
+              ? dashboard.todayTrainingDay.durationMinutes
+              : dashboard.today?.totalWorkoutMinutes ?? 0)
             : dashboard.today?.[key] ?? null;
           return (
             <article className={styles.metricCard} key={key}>
               <p>{label}</p>
               <strong>{formatMetric(value, intlLocale)}</strong>
-              <span>{value === null ? (uk ? "Немає даних" : "No data") : unit ?? (uk ? "сьогодні" : "today")}</span>
+            <span>{key === "totalWorkoutMinutes"
+              ? dashboardTrainingMetricCaption(dashboard.todayTrainingDay, uk)
+              : value === null ? (uk ? "Немає даних" : "No data") : unit ?? (uk ? "сьогодні" : "today")}</span>
             </article>
           );
         })}
@@ -112,7 +120,7 @@ export function DashboardClient() {
 
       <section className={styles.heartRateCard} aria-label={uk ? "Пульс у спокої" : "Resting Heart Rate"}>
         <div><p>{uk ? "Пульс у спокої" : "Resting Heart Rate"}</p><strong>{formatMetric(restingHeartRate.latestBpm, intlLocale)}{restingHeartRate.latestBpm === null ? "" : " bpm"}</strong></div>
-        <span>{restingHeartRate.timestamp ? (restingHeartRate.timestamp.slice(0, 10) === localToday() ? (uk ? "Сьогодні" : "Today") : (uk ? "Останнє значення" : "Latest")) : (uk ? "Немає даних" : "No data")}</span>
+        <span>{restingHeartRate.timestamp ? (instantToLocalDateTime(new Date(restingHeartRate.timestamp), DEFAULT_TIME_ZONE).date === localToday() ? (uk ? "Сьогодні" : "Today") : (uk ? "Останнє значення" : "Latest")) : (uk ? "Немає даних" : "No data")}</span>
       </section>
 
       <section className={styles.sleepCard} aria-label={uk ? "Сон" : "Sleep"}>
@@ -178,23 +186,31 @@ export function DashboardClient() {
               <h2>{uk ? "Останні 7 днів" : "Last 7 days"}</h2>
             </div>
           </div>
-          {dashboard.recentDays.length === 0 ? (
+          {!hasRecentHealthOrTraining ? (
             <div className={styles.emptyHistory}>{uk ? "Останніх денних показників немає." : "No recent daily metrics."}</div>
           ) : (
             <div className={styles.tableWrap}>
               <table>
                 <thead><tr><th>{uk ? "дата" : "date"}</th><th>{uk ? "вага" : "weight"}</th><th>{uk ? "калорії" : "calories"}</th><th>{uk ? "білки" : "protein"}</th><th>{uk ? "кроки" : "steps"}</th><th>{uk ? "тренування" : "training"}</th></tr></thead>
                 <tbody>
-                  {dashboard.recentDays.map((day) => (
+                  {recentRows.map((day) => {
+                    const duration = day.trainingDay.durationMinutes;
+                    const durationText = duration === null
+                      ? "—"
+                      : `${formatMetric(duration, intlLocale)} ${uk ? "хв" : "min"}`;
+                    const eventText = day.trainingDay.eventCount === 0
+                      ? ""
+                      : ` · ${uk ? "подій" : "events"}: ${day.trainingDay.eventCount}`;
+                    return (
                     <tr key={day.date}>
                       <td>{day.date}</td>
                       <td>{formatMetric(day.weightKg, intlLocale)}</td>
                       <td>{formatMetric(day.caloriesKcal, intlLocale)}</td>
                       <td>{formatMetric(day.proteinG, intlLocale)}</td>
                       <td>{formatMetric(day.steps, intlLocale)}</td>
-                      <td>{formatMetric(displayWorkoutMinutes(day), intlLocale)}</td>
+                      <td>{durationText}{eventText}</td>
                     </tr>
-                  ))}
+                  );})}
                 </tbody>
               </table>
             </div>

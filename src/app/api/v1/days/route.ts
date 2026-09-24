@@ -2,14 +2,13 @@ import { DuplicateDayError } from "@/modules/days/day.errors";
 import { readJson, validationResponse } from "@/modules/days/day.http";
 import { dailyMetricRepository } from "@/modules/days/day.repository";
 import { CreateDailyMetricSchema, DailyMetricListQuerySchema } from "@/modules/days/day.schema";
+import { addCalendarDays, todayInCalendarTimeZone } from "@/modules/days/calendar-range";
 
 export const dynamic = "force-dynamic";
 
 function defaultDateRange(): { from: string; to: string } {
-  const today = new Date();
-  const from = new Date(today);
-  from.setUTCDate(from.getUTCDate() - 29);
-  return { from: from.toISOString().slice(0, 10), to: today.toISOString().slice(0, 10) };
+  const to = todayInCalendarTimeZone();
+  return { from: addCalendarDays(to, -29), to };
 }
 
 export async function GET(request: Request): Promise<Response> {
@@ -21,8 +20,8 @@ export async function GET(request: Request): Promise<Response> {
   if (!query.success) return validationResponse(query.error);
 
   try {
-    const days = await dailyMetricRepository.list(query.data);
-    return Response.json({ days, limit: query.data.limit, offset: query.data.offset });
+    const { days, trainingDays } = await dailyMetricRepository.listWithTrainingFacts(query.data);
+    return Response.json({ days, trainingDays, limit: query.data.limit, offset: query.data.offset });
   } catch {
     return Response.json({ error: "internal_error" }, { status: 500 });
   }

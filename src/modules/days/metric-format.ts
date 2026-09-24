@@ -1,3 +1,5 @@
+import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
+
 export function formatMetric(value: number | null, locale = "uk-UA"): string {
   return value === null || value === 0
     ? "—"
@@ -9,6 +11,7 @@ export function formatDateTime(value: string | null, locale = "uk-UA"): string {
   return new Intl.DateTimeFormat(locale, {
     dateStyle: "medium",
     timeStyle: "short",
+    timeZone: DEFAULT_TIME_ZONE,
   }).format(new Date(value));
 }
 

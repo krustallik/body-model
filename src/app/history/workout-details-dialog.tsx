@@ -5,6 +5,7 @@ import { useEffect, useRef } from "react";
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useI18n } from "@/i18n/i18n-provider";
 import type { DailyMetricDto } from "@/modules/days/day.types";
+import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import { displayWorkoutType } from "@/modules/days/day-workout-presentation";
 import { formatDateTime, formatMetric } from "@/modules/days/metric-format";
 import {
@@ -15,11 +16,13 @@ import styles from "./history.module.css";
 
 const EMPTY_HEART_RATE = { sampleCount: 0, minBpm: null, maxBpm: null, avgBpm: null, latestBpm: null, latestTimestamp: null, samples: [] };
 
-function formatClock(iso: string, locale: string): string {
+function formatClock(iso: string | null, locale: string): string {
+  if (iso === null) return "—";
   return new Intl.DateTimeFormat(locale, {
     hour: "2-digit",
     minute: "2-digit",
     hourCycle: "h23",
+    timeZone: DEFAULT_TIME_ZONE,
   }).format(new Date(iso));
 }
 
@@ -49,6 +52,11 @@ export function WorkoutDetailsDialog({
 
   const titleDate = formatLongDate(day.date, intlLocale);
   const feedChip = workoutFeedProvenanceChip(day.workoutFeedObserved, locale);
+  const eventCount = day.trainingDayFact?.eventCount
+    ?? (day.workoutSource === "workouts" ? day.workouts.length : 0);
+  const durationMinutes = day.trainingDayFact
+    ? day.trainingDayFact.durationMinutes
+    : eventCount === 0 ? 0 : day.totalWorkoutMinutes;
 
   return (
     <dialog ref={dialogRef} className={styles.dialog} onCancel={onClose} onClose={onClose}>
@@ -67,20 +75,21 @@ export function WorkoutDetailsDialog({
         </p>
       )}
 
-      {day.workoutSource === "legacy-strength" ? (
-        <div className={styles.workoutDetailList}>
-          <article className={styles.workoutDetailCard}>
-            <strong>{uk ? "Силове тренування" : "Strength training"}</strong>
-            <p>{uk
-              ? `${formatMetric(day.totalWorkoutMinutes, intlLocale)} хв · legacy day field`
-              : `${formatMetric(day.totalWorkoutMinutes, intlLocale)} min · legacy day field`}</p>
-            <small>{uk
-              ? "Окремі workout events відсутні. Показано денне поле силового тренування."
-              : "No explicit workout events. Showing the legacy day strength field."}</small>
-          </article>
-        </div>
-      ) : (
-        <div className={styles.workoutDetailList}>
+      <p className={styles.provenanceChip} data-tone="info">
+        <span>{uk ? `Подій тренування: ${eventCount}` : `Training events: ${eventCount}`}</span>
+        <small>{uk
+          ? `Тривалість: ${durationMinutes == null ? "невідома" : `${formatMetric(durationMinutes, intlLocale)} хв`}.`
+          : `Duration: ${durationMinutes == null ? "unknown" : `${formatMetric(durationMinutes, intlLocale)} min`}.`}</small>
+      </p>
+
+      <div className={styles.workoutDetailList}>
+        {day.workouts.length === 0 && (
+          <p className={styles.heartRateEmpty}>
+            {(day.trainingDayFact?.hiddenEventCount ?? 0) > 0
+              ? (uk ? "Деталі події приховані налаштуванням історії." : "Event details are hidden by history visibility.")
+              : (uk ? "Події тренування відсутні." : "No training events recorded.")}
+          </p>
+        )}
           {day.workouts.map((workout) => {
             const energy = workoutEnergyProvenanceChip(workout.activeEnergyKcal, locale, workout.energySource);
             const isStrength = workout.classification === "traditional-strength-training";
@@ -112,13 +121,27 @@ export function WorkoutDetailsDialog({
               <strong>{displayWorkoutType(workout)}</strong>
               <p>
                 {formatClock(workout.startAt, intlLocale)}
-                –
-                {formatClock(workout.endAt, intlLocale)}
+                {workout.endAt === null ? "" : ` – ${formatClock(workout.endAt, intlLocale)}`}
               </p>
+              {workout.executionStatus === "partial" && (
+                <p className={styles.provenanceChip} data-tone="info">
+                  <span>{uk ? "Частково виконано" : "Partially completed"}</span>
+                  <small>{uk ? "Збережені сети до скасування тренування." : "Sets were logged before the workout was cancelled."}</small>
+                </p>
+              )}
               {workout.diaryOnly && (
                 <p className={styles.provenanceChip} data-tone="info">
                   <span>{uk ? "Без синхронізації Garmin" : "No Garmin sync"}</span>
                   <small>{uk ? "Час узято зі щоденника тренування." : "Time comes from the training diary."}</small>
+                </p>
+              )}
+              {workout.exerciseDetailAvailability && (
+                <p className={styles.provenanceChip} data-tone={workout.exerciseDetailAvailability === "logged-sets" ? "observed" : "info"}>
+                  <span>{workout.exerciseDetailAvailability === "logged-sets"
+                    ? (uk ? `Записано підходів: ${workout.loggedSetCount ?? 0}` : `Logged sets: ${workout.loggedSetCount ?? 0}`)
+                    : workout.exerciseDetailAvailability === "no-logged-sets"
+                      ? (uk ? "Підходи не записані; фактичну роботу не визначено." : "No sets logged; performed work is not established.")
+                      : (uk ? "Деталізація вправ недоступна." : "Exercise detail is unavailable.")}</span>
                 </p>
               )}
               <dl className={styles.workoutDetailMeta}>
@@ -176,8 +199,7 @@ export function WorkoutDetailsDialog({
             </article>
             );
           })}
-        </div>
-      )}
+      </div>
 
       <section className={styles.heartRateDetails}>
         <HeartRateSummary title={uk ? "Пульс" : "Heart rate"} data={day.heartRate ?? EMPTY_HEART_RATE} uk={uk} intlLocale={intlLocale} />
@@ -187,9 +209,9 @@ export function WorkoutDetailsDialog({
         <HeartRateSummary title={uk ? "Пульс у спокої" : "Resting heart rate"} data={day.restingHeartRate ?? EMPTY_HEART_RATE} uk={uk} intlLocale={intlLocale} />
       </section>
 
-      <p className={styles.updatedMeta}>
+      {day.updatedAt && <p className={styles.updatedMeta}>
         {uk ? "Оновлено" : "Updated"}: {formatDateTime(day.updatedAt, intlLocale)}
-      </p>
+      </p>}
 
       <div className={styles.dialogActions}>
         <button className={styles.secondaryButton} type="button" onClick={onClose}>{uk ? "Закрити" : "Close"}</button>

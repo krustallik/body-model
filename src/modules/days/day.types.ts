@@ -21,7 +21,7 @@ export type DayWorkoutDto = {
   canonicalType: string | null;
   classification: "traditional-strength-training" | "stair-climbing" | "other";
   startAt: string;
-  endAt: string;
+  endAt: string | null;
   durationMinutes: number | null;
   activeEnergyKcal: number | null;
   /** Where the active-energy value came from; diary shadow stays separate from device sync. */
@@ -31,6 +31,9 @@ export type DayWorkoutDto = {
   /** Present when this Garmin/device workout is MATCHED to a strength diary session. */
   linkedTrainingSessionId?: number | null;
   linkedTrainingProgramName?: string | null;
+  executionStatus?: import("./training-day-fact").TrainingEventExecutionStatus;
+  exerciseDetailAvailability?: import("./training-day-fact").ExerciseDetailAvailability;
+  loggedSetCount?: number | null;
 };
 
 export type HeartRateSampleDto = { timestamp: string; bpm: number };
@@ -71,9 +74,11 @@ export type NightlySleepSummaryDto = {
 
 export type DailyMetricDto = {
   date: string;
-  updatedAt: string;
+  updatedAt: string | null;
+  /** False when this row exists only to present a training event, without a Health row. */
+  hasHealthRecord?: boolean;
   workouts: DayWorkoutDto[];
-  /** Display total; null = no workout observation (not zero). */
+  /** Event-derived duration: 0 for no events, null when at least one duration is unknown. */
   totalWorkoutMinutes: number | null;
   workoutSource: "workouts" | "legacy-strength" | "none";
   /**
@@ -81,6 +86,8 @@ export type DailyMetricDto = {
    * false = feed unavailable, null = legacy/unknown. Missing feed ≠ rest.
    */
   workoutFeedObserved: boolean | null;
+  /** Event fact is independent of Health measurements and workout feed coverage. */
+  trainingDayFact?: import("./training-day-fact").TrainingDayFact;
   heartRate?: HeartRateDayDto;
   restingHeartRate?: HeartRateDayDto;
   /** Convenience scalar for tables: latest resting BPM for this calendar day. */

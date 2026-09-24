@@ -12,10 +12,10 @@ const workout = (
 ) => ({ id: nextWorkoutId++, type, startAt, endAt, durationMinutes, activeEnergyKcal });
 
 describe("summarizeDayWorkouts", () => {
-  it("returns no observation when workouts and legacy strength are absent", () => {
+  it("returns zero duration when no workout events exist", () => {
     expect(summarizeDayWorkouts({ workouts: [], legacyStrengthTrainingMinutes: null })).toEqual({
       workouts: [],
-      totalWorkoutMinutes: null,
+      totalWorkoutMinutes: 0,
       workoutSource: "none",
     });
   });
@@ -87,14 +87,14 @@ describe("summarizeDayWorkouts", () => {
     expect(summary.workouts).toHaveLength(3);
   });
 
-  it("falls back to legacy strength when no workout rows exist", () => {
+  it("does not use legacy strength minutes as a workout event or duration", () => {
     expect(summarizeDayWorkouts({
       workouts: [],
       legacyStrengthTrainingMinutes: 62,
     })).toEqual({
       workouts: [],
-      totalWorkoutMinutes: 62,
-      workoutSource: "legacy-strength",
+      totalWorkoutMinutes: 0,
+      workoutSource: "none",
     });
   });
 
@@ -107,7 +107,7 @@ describe("summarizeDayWorkouts", () => {
     expect(summary.workoutSource).toBe("workouts");
   });
 
-  it("excludes malformed and non-positive durations from the total safely", () => {
+  it("returns an unknown total if any event duration is missing or invalid", () => {
     const summary = summarizeDayWorkouts({
       workouts: [
         workout("Stair Climbing", null),
@@ -117,7 +117,7 @@ describe("summarizeDayWorkouts", () => {
       ],
       legacyStrengthTrainingMinutes: null,
     });
-    expect(summary.totalWorkoutMinutes).toBe(40);
+    expect(summary.totalWorkoutMinutes).toBeNull();
     expect(summary.workouts).toHaveLength(4);
     expect(summary.workouts.map((item) => item.durationMinutes)).toEqual([null, null, null, 40]);
   });

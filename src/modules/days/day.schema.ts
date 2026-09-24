@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { collapsesZeroToAbsent } from "@/modules/days/measurement-policy";
+import { inclusiveCalendarDayCount, MAX_MATERIALIZED_TRAINING_DAY_RANGE_DAYS } from "@/modules/days/calendar-range";
 
 const CALENDAR_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 const NUMERIC_INPUT_PATTERN = /^\d+(?:[.,]\d+)?$/;
@@ -92,11 +93,21 @@ export const DailyMetricListQuerySchema = z
     to: CalendarDateSchema.optional(),
     limit: queryInteger(30, 100),
     offset: queryInteger(0),
+    /** Skip the unpaginated range facts after a consumer has loaded page one. */
+    includeTrainingDays: z.enum(["true", "false"]).optional().transform((value) => value !== "false"),
   })
   .strict()
   .refine(({ from, to }) => !from || !to || from <= to, {
     path: ["to"],
     message: "to must not be earlier than from",
+  })
+  .refine(({ from, to, includeTrainingDays }) => {
+    if (includeTrainingDays === false || !from || !to || from > to) return true;
+    const dayCount = inclusiveCalendarDayCount(from, to);
+    return dayCount !== null && dayCount <= MAX_MATERIALIZED_TRAINING_DAY_RANGE_DAYS;
+  }, {
+    path: ["to"],
+    message: `training-day fact ranges must not exceed ${MAX_MATERIALIZED_TRAINING_DAY_RANGE_DAYS} calendar days`,
   });
 
 export type CreateDailyMetricInput = z.infer<typeof CreateDailyMetricSchema>;

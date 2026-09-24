@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const dailyMetricRepository = vi.hoisted(() => ({
   list: vi.fn(),
+  listWithTrainingFacts: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
   delete: vi.fn(),
@@ -50,31 +51,61 @@ describe("/api/v1/days", () => {
   });
 
   it("returns newest-first history using filters and pagination", async () => {
-    dailyMetricRepository.list.mockResolvedValue([day]);
+    dailyMetricRepository.listWithTrainingFacts.mockResolvedValue({ days: [day], trainingDays: [] });
     const response = await GET(new Request(`${baseUrl}?from=2026-08-01&to=2026-08-22&limit=10&offset=2`));
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ days: [day], limit: 10, offset: 2 });
-    expect(dailyMetricRepository.list).toHaveBeenCalledWith({
+    await expect(response.json()).resolves.toEqual({ days: [day], trainingDays: [], limit: 10, offset: 2 });
+    expect(dailyMetricRepository.listWithTrainingFacts).toHaveBeenCalledWith({
       from: "2026-08-01",
       to: "2026-08-22",
       limit: 10,
       offset: 2,
+      includeTrainingDays: true,
     });
+  });
+
+  it("allows page consumers to skip repeated range-wide training facts", async () => {
+    dailyMetricRepository.listWithTrainingFacts.mockResolvedValue({ days: [], trainingDays: [] });
+    await GET(new Request(`${baseUrl}?from=2026-08-01&to=2026-08-22&limit=10&offset=10&includeTrainingDays=false`));
+
+    expect(dailyMetricRepository.listWithTrainingFacts).toHaveBeenCalledWith({
+      from: "2026-08-01",
+      to: "2026-08-22",
+      limit: 10,
+      offset: 10,
+      includeTrainingDays: false,
+    });
+  });
+
+  it("rejects oversized explicit fact ranges before reading data but keeps Health-only ranges available", async () => {
+    const oversized = await GET(new Request(`${baseUrl}?from=2025-01-01&to=2026-01-02`));
+    expect(oversized.status).toBe(400);
+    expect(dailyMetricRepository.listWithTrainingFacts).not.toHaveBeenCalled();
+
+    dailyMetricRepository.listWithTrainingFacts.mockResolvedValue({ days: [day], trainingDays: [] });
+    const healthOnly = await GET(new Request(`${baseUrl}?from=0100-01-01&to=9999-12-31&includeTrainingDays=false`));
+    expect(healthOnly.status).toBe(200);
+    expect(dailyMetricRepository.listWithTrainingFacts).toHaveBeenCalledWith(expect.objectContaining({
+      from: "0100-01-01",
+      to: "9999-12-31",
+      includeTrainingDays: false,
+    }));
   });
 
   it("defaults to the last 30 calendar days", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-22T12:00:00Z"));
-    dailyMetricRepository.list.mockResolvedValue([]);
+    dailyMetricRepository.listWithTrainingFacts.mockResolvedValue({ days: [], trainingDays: [] });
 
     await GET(new Request(baseUrl));
 
-    expect(dailyMetricRepository.list).toHaveBeenCalledWith({
+    expect(dailyMetricRepository.listWithTrainingFacts).toHaveBeenCalledWith({
       from: "2026-07-24",
       to: "2026-08-22",
       limit: 30,
       offset: 0,
+      includeTrainingDays: true,
     });
   });
 

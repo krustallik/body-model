@@ -68,4 +68,18 @@ describe("daily metric input parsing", () => {
   it("parses list pagination parameters", () => {
     expect(DailyMetricListQuerySchema.parse({ limit: "25", offset: "5" })).toMatchObject({ limit: 25, offset: 5 });
   });
+
+  it("bounds explicit zero-fact ranges while retaining longer Health-only and unbounded-history requests", () => {
+    expect(DailyMetricListQuerySchema.safeParse({ from: "2024-01-01", to: "2024-12-31" }).success).toBe(true);
+    expect(DailyMetricListQuerySchema.safeParse({ from: "2025-01-01", to: "2026-01-02" }).success).toBe(false);
+    expect(DailyMetricListQuerySchema.safeParse({ from: "0100-01-01", to: "9999-12-31" }).success).toBe(false);
+    expect(DailyMetricListQuerySchema.safeParse({
+      from: "0100-01-01",
+      to: "9999-12-31",
+      includeTrainingDays: "false",
+    }).success).toBe(true);
+    expect(DailyMetricListQuerySchema.safeParse({ from: "2026-02-30", to: "2026-03-01" }).success).toBe(false);
+    expect(DailyMetricListQuerySchema.safeParse({ from: "2026-08-23", to: "2026-08-22" }).success).toBe(false);
+    expect(DailyMetricListQuerySchema.safeParse({ to: "2026-08-22" }).success).toBe(true);
+  });
 });

@@ -85,8 +85,8 @@ export function HistoryDayCard({
       <div className={`${styles.actions} ${styles.dayActions}`}>
         <button type="button" aria-label={uk ? `Деталі тренування за ${day.date}` : `Workout details for ${day.date}`} onClick={onDetails}>{uk ? "Деталі" : "Details"}</button>
         <button type="button" aria-label={uk ? `Робоча активність за ${day.date}` : `Work activity for ${day.date}`} onClick={onWork}>{uk ? "Робота" : "Work"}</button>
-        <button type="button" aria-label={uk ? `Редагувати ${day.date}` : `Edit ${day.date}`} onClick={onEdit}>{uk ? "Редагувати" : "Edit"}</button>
-        <button type="button" className={styles.deleteButton} aria-label={uk ? `Видалити ${day.date}` : `Delete ${day.date}`} onClick={onDelete}>{uk ? "Видалити" : "Delete"}</button>
+        {day.hasHealthRecord !== false && <button type="button" aria-label={uk ? `Редагувати ${day.date}` : `Edit ${day.date}`} onClick={onEdit}>{uk ? "Редагувати" : "Edit"}</button>}
+        {day.hasHealthRecord !== false && <button type="button" className={styles.deleteButton} aria-label={uk ? `Видалити ${day.date}` : `Delete ${day.date}`} onClick={onDelete}>{uk ? "Видалити" : "Delete"}</button>}
       </div>
     </article>
   );

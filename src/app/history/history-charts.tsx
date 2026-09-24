@@ -13,7 +13,10 @@ import {
 import type { DailyMetricDto } from "@/modules/days/day.types";
 import {
   sortDaysChronologically,
+  movementTrainingChartModel,
+  type HistoryRange,
 } from "@/modules/days/history-chart-data";
+import { todayInCalendarTimeZone } from "@/modules/days/calendar-range";
 import { formatMetric } from "@/modules/days/metric-format";
 import { useI18n, type Locale } from "@/i18n/i18n-provider";
 import styles from "./history.module.css";
@@ -160,7 +163,7 @@ function ChartHeading({ title, description }: { title: string; description: stri
   );
 }
 
-export function HistoryCharts({ days }: { days: DailyMetricDto[] }) {
+export function HistoryCharts({ days, range = 30 }: { days: DailyMetricDto[]; range?: HistoryRange }) {
   const { locale } = useI18n();
   const uk = locale === "uk";
   const chronologicalDays = sortDaysChronologically(days);
@@ -168,6 +171,7 @@ export function HistoryCharts({ days }: { days: DailyMetricDto[] }) {
     ...day,
     restingHeartRateLatest: day.restingHeartRate?.latestBpm ?? null,
   }));
+  const movementTraining = movementTrainingChartModel(days, { range, today: todayInCalendarTimeZone() });
 
   return (
     <section className={styles.chartsSection} aria-labelledby="charts-heading">
@@ -176,7 +180,7 @@ export function HistoryCharts({ days }: { days: DailyMetricDto[] }) {
           <p className={styles.eyebrow}>{uk ? "Лише фактичні дані" : "Actual data only"}</p>
           <h2 id="charts-heading">{uk ? "Графіки" : "Charts"}</h2>
         </div>
-        <p>{uk ? "Нульові та відсутні значення означають відсутність запису й не показуються на графіку." : "Zero and missing values mean no record and are omitted from the chart."}</p>
+      <p>{uk ? "Нуль подій тренування означає день без події; відсутні вимірювання залишаються порожніми." : "Zero training events means no event that day; missing measurements remain blank."}</p>
       </div>
       <div className={styles.chartsGrid}>
         <HistoryLineChart
@@ -256,7 +260,7 @@ export function HistoryCharts({ days }: { days: DailyMetricDto[] }) {
         <HistoryLineChart
           title={uk ? "Рух і тренування" : "Movement & training"}
           description={uk ? "Дистанція ходьби та сумарна тривалість тренувань" : "Walking distance and total workout duration"}
-          days={chronologicalDays}
+          days={movementTraining.points}
           dualAxis
           locale={locale}
           series={[

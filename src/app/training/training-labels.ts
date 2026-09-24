@@ -1,5 +1,6 @@
 import type { MatchStatus, ResistanceType } from "@/modules/training/training.constants";
 import { DIARY_COMPLETENESS, MATCH_STATUS, RESISTANCE } from "@/modules/training/training.constants";
+import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 
 export function resistanceLabel(type: ResistanceType, uk: boolean): string {
   if (type === RESISTANCE.EXTERNAL_WEIGHT) return uk ? "Зовнішня вага" : "External weight";
@@ -99,6 +100,7 @@ export function formatClock(iso: string | null, intlLocale: string): string {
     hour: "2-digit",
     minute: "2-digit",
     hourCycle: "h23",
+    timeZone: DEFAULT_TIME_ZONE,
   }).format(new Date(iso));
 }
 
@@ -129,5 +131,6 @@ export function formatDateTime(iso: string | null, intlLocale: string): string {
     hour: "2-digit",
     minute: "2-digit",
     hourCycle: "h23",
+    timeZone: DEFAULT_TIME_ZONE,
   }).format(new Date(iso));
 }

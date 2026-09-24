@@ -11,6 +11,8 @@ import {
   YAxis,
 } from "recharts";
 import { useI18n } from "@/i18n/i18n-provider";
+import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
+import { todayInCalendarTimeZone } from "@/modules/days/calendar-range";
 import type { HeartRateDayDto } from "@/modules/days/day.types";
 import { formatMetric } from "@/modules/days/metric-format";
 import styles from "./history.module.css";
@@ -34,8 +36,7 @@ const tooltipStyle = {
 };
 
 function localToday(): string {
-  const now = new Date();
-  return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+  return todayInCalendarTimeZone();
 }
 
 function formatClock(iso: string, locale: string): string {
@@ -43,6 +44,7 @@ function formatClock(iso: string, locale: string): string {
     hour: "2-digit",
     minute: "2-digit",
     hourCycle: "h23",
+    timeZone: DEFAULT_TIME_ZONE,
   }).format(new Date(iso));
 }
 

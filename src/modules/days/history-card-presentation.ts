@@ -28,23 +28,21 @@ export function historyRecordCount(count: number, uk: boolean): string {
 /** Short summary of the canonical workout DTO; it does not recalculate activity or energy. */
 export function historyWorkoutSummary(day: DailyMetricDto, uk: boolean): string {
   const workouts = day.workouts ?? [];
-  if (workouts.length > 0) {
+  const eventCount = day.trainingDayFact?.eventCount
+    ?? (day.workoutSource === "workouts" ? workouts.length : 0);
+  if (eventCount > 0) {
     const kinds = [...new Set(workouts.map((workout) => workoutKind(workout, uk)))];
-    const count = workouts.length > 1
-      ? (uk ? ukrainianCount(workouts.length, "тренування", "тренування", "тренувань") : `${workouts.length} workouts`)
+    const count = eventCount > 1
+      ? (uk ? ukrainianCount(eventCount, "тренування", "тренування", "тренувань") : `${eventCount} workouts`)
+      : kinds.length === 0
+        ? (uk ? "1 тренування" : "1 workout")
       : null;
-    const duration = day.totalWorkoutMinutes === null
+    const totalMinutes = day.trainingDayFact ? day.trainingDayFact.durationMinutes : day.totalWorkoutMinutes;
+    const duration = totalMinutes === null
       ? null
-      : formatDurationMinutes(day.totalWorkoutMinutes, uk ? "uk" : "en");
+      : formatDurationMinutes(totalMinutes, uk ? "uk" : "en");
     return [count, kinds.join(" + "), duration].filter(Boolean).join(" · ");
   }
 
-  if (day.workoutSource === "legacy-strength" && day.totalWorkoutMinutes !== null) {
-    return [uk ? "силове" : "strength", formatDurationMinutes(day.totalWorkoutMinutes, uk ? "uk" : "en")]
-      .join(" · ");
-  }
-
-  if (day.workoutFeedObserved === true) return uk ? "Відпочинок" : "Rest day";
-  if (day.workoutFeedObserved === false) return uk ? "Дані про тренування відсутні" : "Workout data unavailable";
-  return "—";
+  return uk ? "Відпочинок" : "Rest day";
 }

@@ -114,7 +114,7 @@ describe("field-specific zero measurement semantics", () => {
       workInterval: { findMany: vi.fn().mockResolvedValue([]) },
       workout: { findMany: vi.fn().mockResolvedValue([]) },
     } as unknown as PrismaClient;
-    const [dto] = await new DailyMetricRepository(client).list({ limit: 30, offset: 0 });
+    const [dto] = await new DailyMetricRepository(client).list({ limit: 30, offset: 0, includeTrainingDays: true });
     expect(dto.caloriesKcal).toBeNull();
     expect(dto.proteinG).toBeNull();
     expect(dto.weightKg).toBeNull();

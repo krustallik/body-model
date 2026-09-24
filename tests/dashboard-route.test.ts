@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const dailyMetricRepository = vi.hoisted(() => ({
-  list: vi.fn(),
+  listWithTrainingFacts: vi.fn(),
   latestUpdatedAt: vi.fn(),
   latestRestingHeartRate: vi.fn(),
   create: vi.fn(),
@@ -21,6 +21,7 @@ vi.mock("@/modules/health/sleep.repository", () => ({ sleepRepository }));
 import { GET } from "@/app/api/v1/dashboard/route";
 
 const url = "http://localhost/api/v1/dashboard?date=2026-08-22";
+const emptyTrainingDay = (date: string) => ({ date, eventCount: 0, durationMinutes: 0, hiddenEventCount: 0, events: [] });
 
 const day = (date: string, overrides: Record<string, unknown> = {}) => ({
   date,
@@ -48,17 +49,19 @@ describe("GET /api/v1/dashboard", () => {
     Object.values(sleepRepository).forEach((mock) => mock.mockReset());
     dailyMetricRepository.latestUpdatedAt.mockResolvedValue(null);
     dailyMetricRepository.latestRestingHeartRate.mockResolvedValue({ latestBpm: null, timestamp: null });
+    dailyMetricRepository.listWithTrainingFacts.mockResolvedValue({ days: [], trainingDays: [] });
     sleepRepository.latestCompleted.mockResolvedValue(null);
   });
 
   it("returns an empty dashboard without data", async () => {
-    dailyMetricRepository.list.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
     const response = await GET(new Request(url));
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
       today: null,
+      todayTrainingDay: emptyTrainingDay("2026-08-22"),
       recentDays: [],
+      recentTrainingDays: [],
       hasToday: false,
       lastSync: { at: null, status: null },
       restingHeartRate: { latestBpm: null, timestamp: null },
@@ -68,7 +71,10 @@ describe("GET /api/v1/dashboard", () => {
 
   it("returns today's record and keeps missing metrics null", async () => {
     const today = day("2026-08-22", { bodyFatPercent: null, strengthTrainingMinutes: null });
-    dailyMetricRepository.list.mockResolvedValueOnce([today]).mockResolvedValueOnce([today]);
+    dailyMetricRepository.listWithTrainingFacts.mockResolvedValue({
+      days: [today],
+      trainingDays: [emptyTrainingDay("2026-08-22")],
+    });
     const response = await GET(new Request(url));
     const body = await response.json();
 
@@ -78,7 +84,10 @@ describe("GET /api/v1/dashboard", () => {
 
   it("returns recent days newest first and limits them to seven", async () => {
     const recent = Array.from({ length: 8 }, (_, index) => day(`2026-08-${String(14 + index).padStart(2, "0")}`));
-    dailyMetricRepository.list.mockResolvedValueOnce([]).mockResolvedValueOnce(recent);
+    dailyMetricRepository.listWithTrainingFacts.mockResolvedValue({
+      days: recent,
+      trainingDays: [emptyTrainingDay("2026-08-22")],
+    });
     const response = await GET(new Request(url));
     const body = await response.json() as { recentDays: Array<{ date: string }> };
 
@@ -86,11 +95,43 @@ describe("GET /api/v1/dashboard", () => {
     expect(body.recentDays.map(({ date }) => date)).toEqual([
       "2026-08-21", "2026-08-20", "2026-08-19", "2026-08-18", "2026-08-17", "2026-08-16", "2026-08-15",
     ]);
-    expect(dailyMetricRepository.list).toHaveBeenNthCalledWith(2, { to: "2026-08-22", limit: 7, offset: 0 });
+    expect(dailyMetricRepository.listWithTrainingFacts).toHaveBeenCalledWith({
+      from: "2026-08-16",
+      to: "2026-08-22",
+      limit: 7,
+      offset: 0,
+      includeTrainingDays: true,
+    });
+  });
+
+  it("uses one bounded training-fact read and includes event-only dates", async () => {
+    const eventOnly = {
+      date: "2026-08-21",
+      eventCount: 1,
+      durationMinutes: null,
+      hiddenEventCount: 0,
+      events: [],
+    };
+    dailyMetricRepository.listWithTrainingFacts.mockResolvedValue({
+      days: [],
+      trainingDays: [emptyTrainingDay("2026-08-22"), eventOnly],
+    });
+
+    const body = await (await GET(new Request(url))).json();
+
+    expect(dailyMetricRepository.listWithTrainingFacts).toHaveBeenCalledTimes(1);
+    expect(dailyMetricRepository.listWithTrainingFacts).toHaveBeenCalledWith({
+      from: "2026-08-16",
+      to: "2026-08-22",
+      limit: 7,
+      offset: 0,
+      includeTrainingDays: true,
+    });
+    expect(body.recentTrainingDays).toContainEqual(eventOnly);
   });
 
   it("returns the latest available data timestamp as last sync", async () => {
-    dailyMetricRepository.list.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    dailyMetricRepository.listWithTrainingFacts.mockResolvedValue({ days: [], trainingDays: [] });
     dailyMetricRepository.latestUpdatedAt.mockResolvedValue("2026-08-22T12:45:00.000Z");
     const response = await GET(new Request(url));
     await expect(response.json()).resolves.toMatchObject({
@@ -99,7 +140,7 @@ describe("GET /api/v1/dashboard", () => {
   });
 
   it("is read-only and never invokes mutation methods", async () => {
-    dailyMetricRepository.list.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    dailyMetricRepository.listWithTrainingFacts.mockResolvedValue({ days: [], trainingDays: [] });
     await GET(new Request(url));
     expect(dailyMetricRepository.create).not.toHaveBeenCalled();
     expect(dailyMetricRepository.update).not.toHaveBeenCalled();
@@ -117,7 +158,10 @@ describe("GET /api/v1/dashboard", () => {
       dailyMetricRepository.latestUpdatedAt.mockResolvedValue(null);
       dailyMetricRepository.latestRestingHeartRate.mockResolvedValue({ latestBpm: null, timestamp: null });
       sleepRepository.latestCompleted.mockResolvedValue(null);
-      dailyMetricRepository.list.mockResolvedValueOnce([today]).mockResolvedValueOnce([today]);
+      dailyMetricRepository.listWithTrainingFacts.mockResolvedValue({
+        days: [today],
+        trainingDays: [emptyTrainingDay("2026-08-22")],
+      });
       return (await GET(new Request(url))).json();
     };
 

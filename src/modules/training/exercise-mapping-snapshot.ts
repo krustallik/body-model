@@ -4,6 +4,7 @@ import {
   buildExerciseMuscleMappingSnapshotV7,
   EXERCISE_MUSCLE_MAPPING_V7_VERSION,
   lookupExerciseMuscleMappingV7,
+  parseExerciseMuscleMappingSnapshotV7,
   type ExerciseMuscleMappingSnapshotV7,
 } from "@/model/physiology-v7/exercise-muscle-mapping-v7";
 import { DEFAULT_TRAINING_PROFILE_ID } from "./training.constants";
@@ -18,6 +19,15 @@ export function muscleMappingSnapshotJson(
   stableKey: string | null | undefined,
 ): Prisma.InputJsonValue {
   return muscleMappingSnapshotForCatalogStableKey(stableKey) as unknown as Prisma.InputJsonValue;
+}
+
+/** Historical snapshot identity wins over a mutable catalog row. */
+export function historicalExerciseStableKey(
+  snapshotValue: unknown,
+  currentCatalogStableKey: string | null | undefined,
+): string | null {
+  const snapshot = parseExerciseMuscleMappingSnapshotV7(snapshotValue);
+  return snapshot ? snapshot.stableKey : currentCatalogStableKey ?? null;
 }
 
 /** Historical rows may store SQL NULL or JSON null from earlier snapshotting. */

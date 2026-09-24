@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyNullMuscleMappingSnapshotBackfill,
+  historicalExerciseStableKey,
+  muscleMappingSnapshotForCatalogStableKey,
   reportNullMuscleMappingSnapshotBackfill,
 } from "@/modules/training/exercise-mapping-snapshot";
 import { EXERCISE_MUSCLE_MAPPING_V7_VERSION } from "@/model/physiology-v7/exercise-muscle-mapping-v7";
@@ -17,6 +19,21 @@ function buildDb() {
 
 describe("null muscleMappingSnapshot backfill", () => {
   let db: ReturnType<typeof buildDb>;
+
+  it("prefers immutable snapshot identity over mutable catalog identity", () => {
+    const snapshot = muscleMappingSnapshotForCatalogStableKey("hyperextension");
+    expect(historicalExerciseStableKey(snapshot, "pull_up")).toBe("hyperextension");
+    expect(historicalExerciseStableKey({
+      ...snapshot,
+      mappingVersion: "bodycast-exercise-muscle-mapping-v7.1",
+    }, "pull_up")).toBe("hyperextension");
+    const customUnmappedSnapshot = muscleMappingSnapshotForCatalogStableKey("custom_personal_exercise");
+    expect(historicalExerciseStableKey(customUnmappedSnapshot, "pull_up")).toBe("custom_personal_exercise");
+    const explicitUnknownSnapshot = muscleMappingSnapshotForCatalogStableKey(null);
+    expect(historicalExerciseStableKey(explicitUnknownSnapshot, "catalog_key_added_later")).toBeNull();
+    expect(historicalExerciseStableKey(null, "pull_up")).toBe("pull_up");
+    expect(historicalExerciseStableKey(null, null)).toBeNull();
+  });
 
   beforeEach(() => {
     db = buildDb();

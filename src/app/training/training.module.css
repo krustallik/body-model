@@ -2048,13 +2048,26 @@ a.editMenuItem + .editMenuDanger {
   }
 
   .workoutMain {
-    grid-template-columns: minmax(0, 1.35fr) minmax(17rem, 0.95fr);
+    grid-template-columns: minmax(0, 1fr) minmax(17rem, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas:
+      "hero visual"
+      "controls visual";
     gap: 1.15rem;
     align-items: start;
   }
 
+  .workoutMain > .workoutHero {
+    grid-area: hero;
+    width: 100%;
+    max-width: 34rem;
+    justify-self: center;
+  }
+
   .workoutVisual {
+    grid-area: visual;
     align-self: stretch;
+    grid-row: 1 / span 2;
     min-height: min(62vh, 38rem);
     max-height: min(72vh, 46rem);
     padding: 0.5rem;
@@ -2070,10 +2083,13 @@ a.editMenuItem + .editMenuDanger {
   }
 
   .workoutControls {
+    grid-area: controls;
     align-self: stretch;
     justify-content: flex-start;
     gap: 0.7rem;
-    max-width: 28rem;
+    width: 100%;
+    max-width: 34rem;
+    justify-self: center;
     max-height: min(78vh, 48rem);
     overflow-y: auto;
     overscroll-behavior: contain;
@@ -2135,7 +2151,7 @@ a.editMenuItem + .editMenuDanger {
   }
 
   .workoutMain {
-    grid-template-columns: minmax(0, 1.45fr) minmax(18rem, 0.9fr);
+    grid-template-columns: minmax(0, 1fr) minmax(18rem, 1fr);
     gap: 1.5rem;
   }
 

@@ -314,31 +314,27 @@ export function ExercisePane(props: ExercisePaneProps) {
             </label>
           ) : null}
 
-          {interactive && (
-            <>
-              <div className={styles.liveSaveRow}>
-                {editingSetId != null && (
-                  <button className={styles.liveSecondary} type="button" onClick={onCancelEditSet}>
-                    {uk ? "Скасувати" : "Cancel"}
-                  </button>
-                )}
-                <button
-                  className={styles.liveSave}
-                  type="button"
-                  disabled={!canSave}
-                  aria-busy={busy || undefined}
-                  onClick={onSaveSet}
-                >
-                  {busy
-                    ? (uk ? "Збереження…" : "Saving…")
-                    : editingSetId != null
-                      ? (uk ? "Оновити підхід" : "Update set")
-                      : (uk ? "Додати підхід" : "Add set")}
-                </button>
-              </div>
-              {trailingAction}
-            </>
-          )}
+          <div className={styles.liveSaveRow}>
+            {interactive && editingSetId != null && (
+              <button className={styles.liveSecondary} type="button" onClick={onCancelEditSet}>
+                {uk ? "Скасувати" : "Cancel"}
+              </button>
+            )}
+            <button
+              className={styles.liveSave}
+              type="button"
+              disabled={!interactive || !canSave}
+              aria-busy={interactive && busy || undefined}
+              onClick={interactive ? onSaveSet : undefined}
+            >
+              {interactive && busy
+                ? (uk ? "Збереження…" : "Saving…")
+                : interactive && editingSetId != null
+                  ? (uk ? "Оновити підхід" : "Update set")
+                  : (uk ? "Додати підхід" : "Add set")}
+            </button>
+          </div>
+          {interactive ? trailingAction : null}
         </section>
 
         <section className={styles.workoutSets} aria-label={uk ? "Підходи" : "Sets"}>

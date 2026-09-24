@@ -127,7 +127,7 @@ export class UnifiedExperimentalPhysiologySourceLoaderV1 {
     });
     const [workoutRows, diaryRows, activityRows, snapshots, hr, restingHr, sleep, production, slowTissueRows, glycogenRows, glycogenWaterRows, transientWaterRows, relativeMuscleRows] = await Promise.all([
       this.client.workout.findMany({
-        where: { dailyHealthData: { date: { gte: input.fromDate, lte: input.toDate } } },
+        where: { hiddenFromHistory: false, dailyHealthData: { date: { gte: input.fromDate, lte: input.toDate } } },
         orderBy: [{ dailyHealthData: { date: "asc" } }, { startAt: "asc" }, { id: "asc" }],
         select: { id: true, type: true, startAt: true, endAt: true, durationMinutes: true, activeEnergyKcal: true, updatedAt: true, sourceIdentity: true, dailyHealthData: { select: { date: true } } },
       }),

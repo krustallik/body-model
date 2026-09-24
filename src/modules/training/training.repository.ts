@@ -1457,6 +1457,7 @@ export class TrainingRepository {
     const padEnd = new Date(interval.endAt.getTime() + interval.padMs);
     return this.db.workout.findMany({
       where: {
+        hiddenFromHistory: false,
         startAt: { lt: padEnd },
         endAt: { gt: padStart },
       },
@@ -1501,7 +1502,7 @@ export class TrainingRepository {
 
   async findWorkoutById(workoutId: number) {
     return this.db.workout.findUnique({
-      where: { id: workoutId },
+        where: { id: workoutId, hiddenFromHistory: false },
       select: {
         id: true,
         type: true,
@@ -1536,6 +1537,7 @@ export class TrainingRepository {
     const limit = options.limit ?? TRAINING_LIMITS.recentSessionsDefaultLimit;
     const rows = await this.db.workout.findMany({
       where: {
+        hiddenFromHistory: false,
         type: { equals: TRADITIONAL_STRENGTH_TRAINING_TYPE, mode: "insensitive" },
         ...(options.onlyMissingDiary ? { matchedDiarySession: null } : {}),
       },

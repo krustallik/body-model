@@ -32,6 +32,7 @@ const dailyMetricSelect = {
   workoutFeedObserved: true,
   updatedAt: true,
   workouts: {
+    where: { hiddenFromHistory: false },
     select: {
       id: true,
       type: true,

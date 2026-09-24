@@ -43,7 +43,7 @@ export async function recordExperimentalLocalHypertrophyResponseShadow(input: {
       },
     }),
     prisma.workout.findMany({
-      where: { dailyHealthData: { date: { in: dates } } },
+      where: { hiddenFromHistory: false, dailyHealthData: { date: { in: dates } } },
       select: {
         id: true,
         type: true,

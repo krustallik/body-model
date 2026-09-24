@@ -1,20 +1,17 @@
 import type { PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
-import type { StepperEquipmentAssignmentV7 } from "@/model/activity/personal-stepper-reference-v7";
-import { StepperEquipmentRepository } from "./stepper-equipment.repository";
 import { buildStepperWorkoutDiagnosticV7, type StepperWorkoutDiagnosticV7 } from "./stepper-workout-diagnostic";
 
 export class StepperWorkoutDiagnosticRepository {
-  constructor(private readonly client: PrismaClient = prisma, private readonly equipment = new StepperEquipmentRepository(client)) {}
+  constructor(private readonly client: PrismaClient = prisma) {}
 
   async get(workoutId: number): Promise<StepperWorkoutDiagnosticV7 | null | undefined> {
-    const workout = await this.client.workout.findUnique({
-      where: { id: workoutId },
+    const workout = await this.client.workout.findFirst({
+      where: { id: workoutId, hiddenFromHistory: false },
       select: { id: true, type: true, startAt: true, endAt: true, durationMinutes: true, activeEnergyKcal: true },
     });
     if (workout === null) return undefined;
-    const [assignments, snapshots, stepIntervals, heartRateSamples] = await Promise.all([
-      this.equipment.list(),
+    const [snapshots, stepIntervals, heartRateSamples] = await Promise.all([
       this.client.healthSyncSnapshot.findMany({
         select: { id: true, receivedAt: true, syncedAt: true, steps: true },
       }),
@@ -37,7 +34,6 @@ export class StepperWorkoutDiagnosticRepository {
         ...workout,
         startAt: workout.startAt.toISOString(), endAt: workout.endAt.toISOString(),
       },
-      assignments: assignments as StepperEquipmentAssignmentV7[],
       snapshots: snapshots.map((snapshot) => ({
         id: snapshot.id, receivedAt: snapshot.receivedAt.toISOString(), syncedAt: snapshot.syncedAt?.toISOString() ?? null, steps: snapshot.steps,
       })),

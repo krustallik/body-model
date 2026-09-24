@@ -14,9 +14,18 @@ export type StepperEquipmentAssignmentV7 = {
   createdAt: string;
 };
 
+/** This user's equipment is fixed: DOMYOS MS100 in the fixed configuration. */
+export const FIXED_STEPPER_EQUIPMENT_V7: StepperEquipmentAssignmentV7 = {
+  id: 0,
+  machineFamily: "DOMYOS_MS100",
+  configuration: "fixed",
+  effectiveFrom: "1970-01-01T00:00:00.000Z",
+  effectiveTo: null,
+  createdAt: "1970-01-01T00:00:00.000Z",
+};
+
 export type PersonalStepperReferenceCandidateV7 = {
   workout: WorkoutStepperEvidenceV7;
-  assignments: readonly StepperEquipmentAssignmentV7[];
   /** Observed daily context only; no body-mass scaling is performed. */
   bodyMassKg: number | null;
 };
@@ -26,7 +35,6 @@ export type PersonalStepperReferenceDiagnosticV7 = {
   startedAt: string;
   status: "eligible" | "ineligible";
   requiredReasons: readonly (
-    | "no-equipment-assignment"
     | "no-device-active-energy"
     | "no-duration"
   )[];
@@ -63,26 +71,14 @@ export type PersonalStepperReferenceSetV7 = {
 
 function timestampMs(value: string): number {
   const timestamp = Date.parse(value);
-  if (Number.isNaN(timestamp)) throw new Error(`Invalid personal-stepper assignment timestamp: ${value}`);
+  if (Number.isNaN(timestamp)) throw new Error(`Invalid personal-stepper workout timestamp: ${value}`);
   return timestamp;
-}
-
-/** Assignment intervals are [effectiveFrom, effectiveTo), keyed by workout start. */
-export function assignmentAtWorkoutStartV7(
-  assignments: readonly StepperEquipmentAssignmentV7[],
-  startedAt: string,
-): StepperEquipmentAssignmentV7 | null {
-  const startedMs = timestampMs(startedAt);
-  return [...assignments]
-    .filter((assignment) => timestampMs(assignment.effectiveFrom) <= startedMs
-      && (assignment.effectiveTo === null || startedMs < timestampMs(assignment.effectiveTo)))
-    .sort((left, right) => timestampMs(right.effectiveFrom) - timestampMs(left.effectiveFrom) || right.id - left.id)[0] ?? null;
 }
 
 /**
  * Builds reference facts only. It never estimates kcal: an eligible sample has
- * an observed Garmin active-energy target and a historically applicable MS100
- * assignment. Step, HR, and body-mass context remain optional.
+ * an observed Garmin active-energy target and the fixed MS100 equipment profile.
+ * Step, HR, and body-mass context remain optional.
  */
 export function buildPersonalStepperReferenceSetV7(input: {
   candidates: readonly PersonalStepperReferenceCandidateV7[];
@@ -97,9 +93,8 @@ export function buildPersonalStepperReferenceSetV7(input: {
   for (const candidate of ordered) {
     const { workout } = candidate;
     const energy = workout.workoutEnergy;
-    const assignment = assignmentAtWorkoutStartV7(candidate.assignments, energy.startAt);
+    const assignment = FIXED_STEPPER_EQUIPMENT_V7;
     const requiredReasons: PersonalStepperReferenceDiagnosticV7["requiredReasons"][number][] = [];
-    if (assignment === null) requiredReasons.push("no-equipment-assignment");
     if (energy.deviceEnergy.availability !== "available") requiredReasons.push("no-device-active-energy");
     if (energy.durationMinutes === null || energy.durationMinutes <= 0) requiredReasons.push("no-duration");
 
@@ -119,7 +114,7 @@ export function buildPersonalStepperReferenceSetV7(input: {
     });
     if (requiredReasons.length !== 0) continue;
     // Type-level narrowing mirrors the required-field diagnostics above.
-    if (energy.deviceEnergy.availability !== "available" || energy.durationMinutes === null || energy.durationMinutes <= 0 || assignment === null) continue;
+    if (energy.deviceEnergy.availability !== "available" || energy.durationMinutes === null || energy.durationMinutes <= 0) continue;
     samples.push({
       workoutId: energy.workoutId,
       startedAt: energy.startAt,

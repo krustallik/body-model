@@ -9,7 +9,6 @@ import { useI18n } from "@/i18n/i18n-provider";
 import styles from "./stepper-diagnostic.module.css";
 
 type DiagnosticResponse = { diagnostic?: StepperWorkoutDiagnosticV7; error?: string };
-const GAP_PAGE_SIZE = 50;
 
 function displayReason(value: string, uk: boolean): string {
   const labels: Record<string, [string, string]> = {
@@ -47,7 +46,7 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 }
 
 function CodeMeaning({ value, uk }: { value: string; uk?: string }) {
-  return <span className={styles.codeMeaning}>{uk && <span>{uk}</span>}<code>{value}</code></span>;
+  return <span className={styles.codeMeaning}>{uk ?? value}</span>;
 }
 
 function Snapshot({ value, name, intlLocale, uk }: {
@@ -83,33 +82,6 @@ function Interval({ value, intlLocale, uk }: {
       <span>{uk ? "Від" : "From"}: <Instant value={value.startAt} intlLocale={intlLocale} /></span>
       <span>{uk ? "До" : "To"}: <Instant value={value.endAt} intlLocale={intlLocale} /></span>
     </span>
-  );
-}
-
-function GapList({ gaps, intlLocale, uk }: {
-  gaps: readonly { startAt: string; endAt: string }[];
-  intlLocale: string;
-  uk: boolean;
-}) {
-  const [visibleCount, setVisibleCount] = useState(GAP_PAGE_SIZE);
-  const visible = gaps.slice(0, visibleCount);
-  return (
-    <div className={styles.gapList}>
-      {visible.length === 0 ? <p className={styles.muted}>{uk ? "Проміжків немає" : "No gaps"}</p> : (
-        <ol>
-          {visible.map((gap, index) => <li key={`${gap.startAt}:${gap.endAt}:${index}`}>
-            <span className={styles.gapIndex}>#{index + 1}</span>
-            <Interval value={gap} intlLocale={intlLocale} uk={uk} />
-          </li>)}
-        </ol>
-      )}
-      {visibleCount < gaps.length && (
-        <button className={styles.secondaryButton} type="button" onClick={() => setVisibleCount((count) => Math.min(count + GAP_PAGE_SIZE, gaps.length))}>
-          {uk ? `Показати ще ${Math.min(GAP_PAGE_SIZE, gaps.length - visibleCount)} · ${gaps.length - visibleCount} залишилося` : `Show ${Math.min(GAP_PAGE_SIZE, gaps.length - visibleCount)} more · ${gaps.length - visibleCount} remaining`}
-        </button>
-      )}
-      <p className={styles.muted}>{uk ? `Проміжків: ${gaps.length}` : `Gaps: ${gaps.length}`}</p>
-    </div>
   );
 }
 
@@ -179,8 +151,7 @@ export function StepperDiagnosticClient({ workoutId }: { workoutId: string }) {
         <div className={styles.stack}>
           <Section title={uk ? "Тренування" : "Workout"} subtitle={uk ? "Канонічний тип і записаний інтервал" : "Canonical type and recorded interval"} tone="info">
             <dl className={styles.fieldGrid}>
-              <Field label={uk ? "Workout ID" : "Workout ID"}>{diagnostic.workout.workoutId}</Field>
-              <Field label={uk ? "Канонічний тип" : "Canonical workout type"}><CodeMeaning value={diagnostic.workout.canonicalWorkoutType ?? "null"} uk={uk && diagnostic.workout.canonicalWorkoutType === "Stair Climbing" ? "Підйом сходами / степер" : undefined} /></Field>
+              <Field label={uk ? "Тип тренування" : "Workout type"}><CodeMeaning value={diagnostic.workout.canonicalWorkoutType ?? "null"} uk={uk && diagnostic.workout.canonicalWorkoutType === "Stair Climbing" ? "Степер" : undefined} /></Field>
               <Field label={uk ? "Початок" : "Start"}><Instant value={diagnostic.workout.startAt} intlLocale={intlLocale} /></Field>
               <Field label={uk ? "Завершення" : "End"}><Instant value={diagnostic.workout.endAt} intlLocale={intlLocale} /></Field>
               <Field label={uk ? "Тривалість · хв" : "Duration · min"}>{diagnostic.workout.durationMinutes === null ? "—" : <NumberValue value={diagnostic.workout.durationMinutes} intlLocale={intlLocale} />}</Field>
@@ -192,7 +163,7 @@ export function StepperDiagnosticClient({ workoutId }: { workoutId: string }) {
               <span className={steps?.availability === "available" ? styles.badgeSuccess : styles.badgeWarning}>
                 {steps?.availability === "available" ? (uk ? "Доступно" : "Available") : (uk ? "Недоступно" : "Unavailable")}
               </span>
-              {steps?.availability === "unavailable" && <CodeMeaning value={steps.availabilityReason} uk={displayReason(steps.availabilityReason, uk)} />}
+              {steps?.availability === "unavailable" && <span>{displayReason(steps.availabilityReason, uk)}</span>}
             </div>
             <div className={styles.snapshotGrid}>
               <Snapshot value={steps?.before ?? null} name={uk ? "До тренування" : "Before workout"} intlLocale={intlLocale} uk={uk} />
@@ -201,8 +172,10 @@ export function StepperDiagnosticClient({ workoutId }: { workoutId: string }) {
             <dl className={styles.fieldGrid}>
               <Field label={uk ? "Проміжок перед стартом · с" : "Gap before start · s"}>{steps?.preGapSeconds === null || steps?.preGapSeconds === undefined ? "—" : <NumberValue value={steps.preGapSeconds} intlLocale={intlLocale} />}</Field>
               <Field label={uk ? "Проміжок після завершення · с" : "Gap after end · s"}>{steps?.postGapSeconds === null || steps?.postGapSeconds === undefined ? "—" : <NumberValue value={steps.postGapSeconds} intlLocale={intlLocale} />}</Field>
-              <Field label={uk ? "Похідна зміна кроків" : "Derived step delta"}>{steps?.derivedStepDelta === null || steps?.derivedStepDelta === undefined ? "—" : <><NumberValue value={steps.derivedStepDelta.value} intlLocale={intlLocale} /><CodeMeaning value={steps.derivedStepDelta.provenance} uk={diagnostic.labels.derivedStepDelta === "derived Apple Health interval attribution" ? (uk ? "Розподіл за інтервалами Apple Health" : "Apple Health interval allocation") : (uk ? "Різниця між знімками Health" : "Health snapshot difference")} /></>}</Field>
-              <Field label={uk ? "Похідний темп · кроків/хв" : "Derived rate · steps/min"}>{steps?.derivedStepRatePerMinute === null || steps?.derivedStepRatePerMinute === undefined ? "—" : <><NumberValue value={steps.derivedStepRatePerMinute.value} intlLocale={intlLocale} /><CodeMeaning value={steps.derivedStepRatePerMinute.provenance} /></>}</Field>
+              <Field label={uk ? "Покриття інтервалами кроків" : "Step interval coverage"}>{steps?.intervalCoveragePercent === null || steps?.intervalCoveragePercent === undefined ? "—" : `${new Intl.NumberFormat(intlLocale, { maximumFractionDigits: 1 }).format(steps.intervalCoveragePercent)}%`}</Field>
+              <Field label={uk ? "Кроки у виміряних частинах" : "Steps in observed portions"}>{steps?.observedIntervalStepCount === null || steps?.observedIntervalStepCount === undefined ? "—" : <NumberValue value={steps.observedIntervalStepCount} intlLocale={intlLocale} />}</Field>
+              <Field label={uk ? "Оцінка кроків за тренування" : "Estimated workout steps"}>{steps?.derivedStepDelta === null || steps?.derivedStepDelta === undefined ? "—" : <><NumberValue value={steps.derivedStepDelta.value} intlLocale={intlLocale} /><span className={styles.muted}>{steps.intervalCoveragePercent !== null && steps.intervalCoveragePercent !== undefined && steps.intervalCoveragePercent < 99.999 ? (uk ? "Оцінено з виміряного покриття" : "Estimated from observed coverage") : (uk ? "За даними Health" : "From Health data")}</span></>}</Field>
+              <Field label={uk ? "Темп · кроків/хв" : "Rate · steps/min"}>{steps?.derivedStepRatePerMinute === null || steps?.derivedStepRatePerMinute === undefined ? "—" : <><NumberValue value={steps.derivedStepRatePerMinute.value} intlLocale={intlLocale} /><span className={styles.muted}>{uk ? "Розраховано за тривалістю" : "Calculated from duration"}</span></>}</Field>
             </dl>
           </Section>
 
@@ -211,49 +184,27 @@ export function StepperDiagnosticClient({ workoutId }: { workoutId: string }) {
               <Field label={uk ? "Доступність" : "Availability"}><CodeMeaning value={diagnostic.deviceEnergy.availability} uk={diagnostic.deviceEnergy.availability === "available" ? (uk ? "Доступно" : "Available") : (uk ? "Недоступно" : "Unavailable")} /></Field>
               {diagnostic.deviceEnergy.availability === "available" ? <>
                 <Field label={uk ? "Значення · ккал" : "Value · kcal"}><NumberValue value={diagnostic.deviceEnergy.valueKcal} intlLocale={intlLocale} /></Field>
-                <Field label={uk ? "Статус джерела" : "Source value status"}><CodeMeaning value={diagnostic.deviceEnergy.sourceValueStatus} uk={uk ? "Спостережене значення" : "Observed value"} /></Field>
-                <Field label={uk ? "Семантика" : "Semantics"}><CodeMeaning value={diagnostic.deviceEnergy.semantics} uk={diagnostic.deviceEnergy.semantics === "active" ? (uk ? "Активна енергія" : "Active energy") : (uk ? "Загальна енергія" : "Gross energy")} /></Field>
-                <Field label={uk ? "Походження" : "Provenance"}><CodeMeaning value={diagnostic.deviceEnergy.provenance} uk={uk ? "Оцінка пристрою" : "Device estimate"} /></Field>
-              </> : <Field label={uk ? "Причина" : "Reason"}><CodeMeaning value={diagnostic.deviceEnergy.availabilityReason} uk={displayReason(diagnostic.deviceEnergy.availabilityReason, uk)} /></Field>}
-              <Field label={uk ? "Мітка діагностики" : "Diagnostic label"}><CodeMeaning value={diagnostic.labels.garminActiveEnergy} uk={uk ? "Оцінка пристрою" : "Device estimate"} /></Field>
+                <Field label={uk ? "Тип енергії" : "Energy type"}><CodeMeaning value={diagnostic.deviceEnergy.semantics} uk={diagnostic.deviceEnergy.semantics === "active" ? (uk ? "Активна енергія" : "Active energy") : (uk ? "Загальна енергія" : "Gross energy")} /></Field>
+              </> : null}
             </dl>
           </Section>
 
           <Section title={uk ? "Пульс" : "Heart rate"} subtitle={uk ? "Статистика описує лише наявні зразки; це не середній пульс за часом" : "Statistics describe observed samples only; this is not a time-weighted mean"}>
             <div className={styles.statusRow}><span className={hr?.availability === "loaded" ? styles.badgeInfo : styles.badgeMuted}>{hr?.availability === "loaded" ? (uk ? "Завантажено" : "Loaded") : (uk ? "Недоступно" : "Unavailable")}</span></div>
             <dl className={styles.fieldGrid}>
-              <Field label={uk ? "Статус" : "Status"}><CodeMeaning value={hr?.availability ?? "null"} /></Field>
               <Field label={uk ? "Середнє спостережених зразків · bpm" : "Observed sample mean · bpm"}>{hr?.summary === null || hr?.summary === undefined ? "—" : <NumberValue value={hr.summary.sampleMeanBpm} intlLocale={intlLocale} />}</Field>
               <Field label={uk ? "Максимум серед зразків · bpm" : "Maximum observed · bpm"}>{hr?.summary === null || hr?.summary === undefined ? "—" : <NumberValue value={hr.summary.maxObservedBpm} intlLocale={intlLocale} />}</Field>
-              <Field label={uk ? "Основа підсумку" : "Summary basis"}>{hr?.summary === null || hr?.summary === undefined ? "—" : <CodeMeaning value={hr.summary.basis} uk={uk ? "Лише спостережені зразки" : "Observed samples only"} />}</Field>
             </dl>
             {topology === null || topology === undefined ? (
               <p className={styles.muted}>{uk ? "Топологія зразків недоступна." : "Sampling topology is unavailable."}</p>
             ) : (
               <div className={styles.topology}>
                 <div className={styles.topologyRow}><strong>{uk ? "Охоплений зразками проміжок" : "Sampled span"}</strong><Interval value={topology.sampledSpan} intlLocale={intlLocale} uk={uk} /></div>
-                <div className={styles.topologyRow}><strong>{uk ? "Проміжок перед першим зразком" : "Leading gap"}</strong><Interval value={topology.leadingGap} intlLocale={intlLocale} uk={uk} /></div>
-                <div className={styles.topologyRow}><strong>{uk ? "Проміжок після останнього зразка" : "Trailing gap"}</strong><Interval value={topology.trailingGap} intlLocale={intlLocale} uk={uk} /></div>
-                <details className={styles.details}>
-                  <summary>{uk ? `Проміжки між зразками · ${topology.interSampleGaps.length}` : `Inter-sample gaps · ${topology.interSampleGaps.length}`}</summary>
-                  <GapList gaps={topology.interSampleGaps} intlLocale={intlLocale} uk={uk} />
-                </details>
               </div>
             )}
           </Section>
 
-          <Section title={uk ? "Обладнання" : "Equipment assignment"} subtitle={uk ? "Історичне призначення на момент початку тренування" : "Equipment assignment applicable at workout start"}>
-            {diagnostic.equipmentAssignment === null ? <p className={styles.muted}>{uk ? "Призначення степера на цей час відсутнє." : "No stepper assignment was active at this time."}</p> : (
-              <dl className={styles.fieldGrid}>
-                <Field label="ID">{diagnostic.equipmentAssignment.id}</Field>
-                <Field label={uk ? "Родина обладнання" : "Machine family"}><CodeMeaning value={diagnostic.equipmentAssignment.machineFamily} uk="DOMYOS MS100" /></Field>
-                <Field label={uk ? "Конфігурація" : "Configuration"}><CodeMeaning value={diagnostic.equipmentAssignment.configuration} uk={uk ? "Фіксована" : "Fixed"} /></Field>
-                <Field label={uk ? "Початок дії" : "Effective from"}><Instant value={diagnostic.equipmentAssignment.effectiveFrom} intlLocale={intlLocale} /></Field>
-                <Field label={uk ? "Завершення дії · виключно" : "Effective to · exclusive"}>{diagnostic.equipmentAssignment.effectiveTo === null ? "—" : <Instant value={diagnostic.equipmentAssignment.effectiveTo} intlLocale={intlLocale} />}</Field>
-                <Field label={uk ? "Створено" : "Created"}><Instant value={diagnostic.equipmentAssignment.createdAt} intlLocale={intlLocale} /></Field>
-              </dl>
-            )}
-          </Section>
+          <Section title={uk ? "Обладнання" : "Equipment"}><p>DOMYOS MS100 · {uk ? "фіксована конфігурація" : "fixed configuration"}</p></Section>
         </div>
       )}
     </main>

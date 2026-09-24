@@ -410,8 +410,9 @@ export function TrainingClient() {
                       <Link className={styles.linkLike} href={`/training/workouts/${workout.id}/stepper-diagnostic`}>
                         {uk ? "Діагностика" : "Diagnostics"}
                       </Link>
-                      {workout.source === "manual" && <button className={styles.linkLike} type="button" disabled={stepperBusy} onClick={() => openEditStepperForm(workout)}>{uk ? "Редагувати" : "Edit"}</button>}
-                      {workout.source === "manual" && <button className={styles.dangerButton} type="button" disabled={stepperBusy} onClick={() => void deleteStepperWorkout(workout)}>{uk ? "Видалити" : "Delete"}</button>}
+                      {workout.editable && <button className={styles.linkLike} type="button" disabled={stepperBusy} onClick={() => openEditStepperForm(workout)}>{uk ? "Редагувати" : "Edit"}</button>}
+                      {workout.editable && <button className={styles.dangerButton} type="button" disabled={stepperBusy} onClick={() => void deleteStepperWorkout(workout)}>{uk ? "Видалити" : "Delete"}</button>}
+                      {!workout.editable && <span className={styles.cardMeta}>{uk ? "Зв’язано із записом щоденника" : "Linked to a training diary entry"}</span>}
                     </div>
                   </article>
                 ))}

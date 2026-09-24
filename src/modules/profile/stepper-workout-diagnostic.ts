@@ -1,11 +1,11 @@
 import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
 import type { WorkoutEnergyEvidenceV7 } from "@/model/activity/workout-energy-v7";
 import { canonicalizeWorkoutHeartRateEvidenceV7, type WorkoutHeartRateSampleV7 } from "@/model/activity/workout-heart-rate-v7";
-import { assignmentAtWorkoutStartV7, type StepperEquipmentAssignmentV7 } from "@/model/activity/personal-stepper-reference-v7";
+import { FIXED_STEPPER_EQUIPMENT_V7, type StepperEquipmentAssignmentV7 } from "@/model/activity/personal-stepper-reference-v7";
 import { canonicalizeWorkoutStepperEvidenceV7, workoutStepperEvidenceDiagnosticV7, type HealthStepIntervalV7, type HealthSyncStepSnapshotV7 } from "@/model/activity/workout-stepper-v7";
 
 export type StepperWorkoutDiagnosticV7 = ReturnType<typeof workoutStepperEvidenceDiagnosticV7> & {
-  equipmentAssignment: StepperEquipmentAssignmentV7 | null;
+  equipmentAssignment: StepperEquipmentAssignmentV7;
   labels: {
     derivedStepDelta: "derived health step-counter attribution" | "derived Apple Health interval attribution";
     garminActiveEnergy: "device estimate";
@@ -25,7 +25,6 @@ export function buildStepperWorkoutDiagnosticV7(input: {
     durationMinutes: number | null;
     activeEnergyKcal: number | null;
   };
-  assignments: readonly StepperEquipmentAssignmentV7[];
   snapshots: readonly HealthSyncStepSnapshotV7[];
   stepIntervals?: readonly HealthStepIntervalV7[];
   heartRateSamples: readonly WorkoutHeartRateSampleV7[];
@@ -55,7 +54,7 @@ export function buildStepperWorkoutDiagnosticV7(input: {
   });
   return {
     ...workoutStepperEvidenceDiagnosticV7(evidence),
-    equipmentAssignment: assignmentAtWorkoutStartV7(input.assignments, input.workout.startAt),
+    equipmentAssignment: FIXED_STEPPER_EQUIPMENT_V7,
     labels: {
       derivedStepDelta: evidence.bracketedSteps.availability === "available"
         && evidence.bracketedSteps.derivedStepDelta.provenance === "health-step-interval-overlap"

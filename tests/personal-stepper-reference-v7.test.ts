@@ -4,22 +4,14 @@ import { canonicalizeWorkoutStepperEvidenceV7 } from "@/model/activity/workout-s
 import {
   buildPersonalStepperReferenceSetV7,
   personalStepperReferenceSetFingerprintV7,
-  type StepperEquipmentAssignmentV7,
 } from "@/model/activity/personal-stepper-reference-v7";
 import type { WorkoutEnergyEvidenceV7 } from "@/model/activity/workout-energy-v7";
-
-const assignment = (overrides: Partial<StepperEquipmentAssignmentV7> = {}): StepperEquipmentAssignmentV7 => ({
-  id: 1, machineFamily: "DOMYOS_MS100", configuration: "fixed",
-  effectiveFrom: "2026-09-01T00:00:00.000Z", effectiveTo: null,
-  createdAt: "2026-09-01T00:00:00.000Z", ...overrides,
-});
 
 function candidate(input: {
   workoutId?: number;
   startedAt?: string;
   activeKcal?: number | null;
   durationMinutes?: number | null;
-  assignments?: readonly StepperEquipmentAssignmentV7[];
   hr?: "available" | "unavailable";
   bodyMassKg?: number | null;
 }) {
@@ -45,23 +37,20 @@ function candidate(input: {
         { id: 11, receivedAt: "2026-09-17T16:31:00.000Z", syncedAt: null, steps: 200 },
       ],
     }),
-    assignments: input.assignments ?? [assignment()],
     bodyMassKg: input.bodyMassKg === undefined ? 80 : input.bodyMassKg,
   };
 }
 
 describe("personal stepper reference set v7", () => {
-  it("uses only the assignment interval containing workout start and preserves historical changes", () => {
-    const old = assignment({ id: 1, effectiveFrom: "2026-09-01T00:00:00.000Z", effectiveTo: "2026-09-10T00:00:00.000Z" });
-    const current = assignment({ id: 2, effectiveFrom: "2026-09-10T00:00:00.000Z" });
+  it("uses the fixed MS100 regardless of profile assignment history", () => {
     const result = buildPersonalStepperReferenceSetV7({ candidates: [
-      candidate({ workoutId: 2, startedAt: "2026-09-12T16:00:00.000Z", assignments: [old, current] }),
-      candidate({ workoutId: 1, startedAt: "2026-09-05T16:00:00.000Z", assignments: [old, current] }),
-      candidate({ workoutId: 3, startedAt: "2026-08-31T16:00:00.000Z", assignments: [old, current] }),
+      candidate({ workoutId: 2, startedAt: "2026-09-12T16:00:00.000Z" }),
+      candidate({ workoutId: 1, startedAt: "2026-09-05T16:00:00.000Z" }),
+      candidate({ workoutId: 3, startedAt: "2026-08-31T16:00:00.000Z" }),
     ] });
 
-    expect(result.samples.map((sample) => [sample.workoutId, sample.equipmentAssignment.id])).toEqual([[1, 1], [2, 2]]);
-    expect(result.diagnostics.find((diagnostic) => diagnostic.workoutId === 3)).toMatchObject({ status: "ineligible", requiredReasons: ["no-equipment-assignment"] });
+    expect(result.samples.map((sample) => [sample.workoutId, sample.equipmentAssignment.id])).toEqual([[3, 0], [1, 0], [2, 0]]);
+    expect(result.diagnostics.every(({ status }) => status === "eligible")).toBe(true);
   });
 
   it("keeps device energy and duration required while HR, body mass, and step context stay optional", () => {

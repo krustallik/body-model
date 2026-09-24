@@ -60,7 +60,7 @@ export async function recordExperimentalSkeletalMuscleDeltaShadow(input: {
       select: { id: true },
     }),
     prisma.workout.findMany({
-      where: { dailyHealthData: { date: input.date } },
+      where: { hiddenFromHistory: false, dailyHealthData: { date: input.date } },
       select: { type: true },
     }),
   ]);

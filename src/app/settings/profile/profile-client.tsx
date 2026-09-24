@@ -5,7 +5,6 @@ import Link from "next/link";
 import { AppNav } from "@/components/app-nav";
 import { useI18n, type Locale } from "@/i18n/i18n-provider";
 import type { ProfileDto } from "@/modules/profile/profile.types";
-import type { StepperEquipmentAssignmentDto } from "@/modules/profile/stepper-equipment.schema";
 import styles from "./profile.module.css";
 
 type ProfileField = "locale" | "sex" | "dateOfBirth" | "heightCm" | "autoAdvanceExercises";
@@ -216,73 +215,6 @@ export function ProfileClient() {
           </form>
         )}
       </section>
-      <StepperEquipmentSection uk={uk} />
     </main>
   );
-}
-
-function formatAssignmentTime(value: string, locale: string): string {
-  return new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
-}
-
-/** One intentionally narrow UI for the only currently supported equipment contract. */
-function StepperEquipmentSection({ uk }: { uk: boolean }) {
-  const [assignments, setAssignments] = useState<StepperEquipmentAssignmentDto[] | null>(null);
-  const [effectiveFrom, setEffectiveFrom] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    fetch("/api/v1/profile/stepper-equipment", { cache: "no-store" })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`Request failed (${response.status})`);
-        return response.json() as Promise<{ assignments: StepperEquipmentAssignmentDto[] }>;
-      })
-      .then((body) => { if (active) setAssignments(body.assignments); })
-      .catch(() => { if (active) setError(uk ? "Не вдалося завантажити конфігурацію степера." : "Unable to load stepper configuration."); });
-    return () => { active = false; };
-  }, [uk]);
-
-  const activeAssignment = assignments?.find((assignment) => assignment.effectiveTo === null) ?? null;
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!effectiveFrom) return;
-    setSaving(true); setError(null);
-    try {
-      const response = await fetch("/api/v1/profile/stepper-equipment", {
-        method: "POST", headers: { "content-type": "application/json" },
-        // The local datetime is explicitly converted to an instant accepted by the API.
-        body: JSON.stringify({ effectiveFrom: new Date(effectiveFrom).toISOString() }),
-      });
-      if (!response.ok) throw new Error(`Request failed (${response.status})`);
-      const body = await response.json() as { assignment: StepperEquipmentAssignmentDto };
-      setAssignments((current) => [...(current ?? []).map((assignment) => (
-        assignment.effectiveTo === null ? { ...assignment, effectiveTo: body.assignment.effectiveFrom } : assignment
-      )), body.assignment]);
-      setEffectiveFrom("");
-    } catch {
-      setError(uk ? "Не вдалося зберегти дату конфігурації. Вона має бути пізнішою за поточну." : "Unable to save configuration date. It must follow the current assignment.");
-    } finally { setSaving(false); }
-  }
-
-  return <section className={styles.card} aria-labelledby="stepper-equipment-title">
-    <div className={styles.cardHeading}><div><p className={styles.eyebrow}>{uk ? "Stepper evidence" : "Stepper evidence"}</p><h2 id="stepper-equipment-title">DOMYOS MS100</h2></div><p>{uk ? "Лише fixed configuration" : "Fixed configuration only"}</p></div>
-    <div className={styles.equipmentBody}>
-      {assignments === null ? <p className={styles.loading}>{uk ? "Завантаження…" : "Loading…"}</p> : <>
-        <p className={styles.equipmentHint}>{uk
-          ? "Вкажіть момент, від якого ви використовуєте цей степер. Зміна створює новий історичний інтервал і не переписує старі тренування."
-          : "Set the instant from which you use this stepper. A change creates a new historical interval and does not rewrite older workouts."}</p>
-        <p className={styles.equipmentStatus}>{activeAssignment
-          ? `${uk ? "Поточна конфігурація з" : "Current configuration since"} ${formatAssignmentTime(activeAssignment.effectiveFrom, uk ? "uk-UA" : "en-US")}`
-          : (uk ? "Конфігурацію степера ще не задано." : "No stepper configuration has been recorded yet.")}</p>
-        <form className={styles.equipmentForm} onSubmit={submit}>
-          <label className={styles.field}><span>{uk ? "Початок дії" : "Effective from"}</span><input type="datetime-local" value={effectiveFrom} onChange={(event) => setEffectiveFrom(event.target.value)} required /></label>
-          <button type="submit" disabled={saving}>{saving ? (uk ? "Збереження…" : "Saving…") : activeAssignment ? (uk ? "Змінити з цієї дати" : "Change from this date") : (uk ? "Додати MS100" : "Add MS100")}</button>
-        </form>
-        {error && <p className={styles.error} role="alert">{error}</p>}
-        {assignments.length > 0 && <ol className={styles.assignmentHistory}>{assignments.map((assignment) => <li key={assignment.id}><strong>DOMYOS MS100 · fixed</strong><span>{formatAssignmentTime(assignment.effectiveFrom, uk ? "uk-UA" : "en-US")} → {assignment.effectiveTo ? formatAssignmentTime(assignment.effectiveTo, uk ? "uk-UA" : "en-US") : (uk ? "поточна" : "current")}</span></li>)}</ol>}
-      </>}
-    </div>
-  </section>;
 }

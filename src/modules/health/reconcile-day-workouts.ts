@@ -15,6 +15,9 @@ export type ExistingDayWorkout = {
   endAt: Date;
   /** True when a StrengthDiarySession currently points at this Workout. */
   linkedToDiary: boolean;
+  /** User edits and deletion tombstones win over subsequent feed copies. */
+  syncProtected?: boolean;
+  hiddenFromHistory?: boolean;
 };
 
 export type WorkoutWriteFields = {
@@ -40,6 +43,7 @@ export type WorkoutReconciliationPlan = {
    * Keep them to protect diary FK; do not rebind diary elsewhere.
    */
   retainedLinkedMissingFromFeed: number[];
+  retainedSyncProtected: number[];
 };
 
 function toWriteFields(workout: WorkoutInput): WorkoutWriteFields {
@@ -102,10 +106,13 @@ export function planDayWorkoutReconciliation(
   }
 
   const chooseCanonical = (rows: readonly ExistingDayWorkout[]): ExistingDayWorkout | undefined => (
-    [...rows].sort((left, right) => Number(right.linkedToDiary) - Number(left.linkedToDiary) || left.id - right.id)[0]
+    [...rows].sort((left, right) => Number(Boolean(right.syncProtected || right.hiddenFromHistory)) - Number(Boolean(left.syncProtected || left.hiddenFromHistory))
+      || Number(right.linkedToDiary) - Number(left.linkedToDiary)
+      || left.id - right.id)[0]
   );
 
   const matchedExistingIds = new Set<number>();
+  const retainedSyncProtected: number[] = [];
   const updates: WorkoutReconciliationPlan["updates"] = [];
   const creates: WorkoutWriteFields[] = [];
 
@@ -117,6 +124,10 @@ export function planDayWorkoutReconciliation(
     const prior = exact ?? legacy;
     if (prior && !matchedExistingIds.has(prior.id)) {
       matchedExistingIds.add(prior.id);
+      if (prior.syncProtected || prior.hiddenFromHistory) {
+        retainedSyncProtected.push(prior.id);
+        continue;
+      }
       updates.push({ id: prior.id, fields });
       continue;
     }
@@ -127,12 +138,14 @@ export function planDayWorkoutReconciliation(
   const retainedLinkedMissingFromFeed: number[] = [];
   for (const row of existing) {
     if (matchedExistingIds.has(row.id)) continue;
-    if (row.linkedToDiary) {
+    if (row.syncProtected || row.hiddenFromHistory) {
+      retainedSyncProtected.push(row.id);
+    } else if (row.linkedToDiary) {
       retainedLinkedMissingFromFeed.push(row.id);
     } else {
       deletes.push(row.id);
     }
   }
 
-  return { updates, creates, deletes, retainedLinkedMissingFromFeed };
+  return { updates, creates, deletes, retainedLinkedMissingFromFeed, retainedSyncProtected };
 }

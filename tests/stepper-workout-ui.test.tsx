@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { buildStepperWorkoutDiagnosticV7 } from "@/modules/profile/stepper-workout-diagnostic";
 
@@ -22,7 +22,6 @@ function completeDiagnostic(sampleCount = 2) {
   }));
   return buildStepperWorkoutDiagnosticV7({
     workout: { id: 61, type: "Stair Climbing", startAt, endAt, durationMinutes: 20, activeEnergyKcal: 154 },
-    assignments: [{ id: 3, machineFamily: "DOMYOS_MS100", configuration: "fixed", effectiveFrom: "2042-01-01T00:00:00.000Z", effectiveTo: null, createdAt: "2042-01-01T00:00:00.000Z" }],
     snapshots: [
       { id: 9, receivedAt: "2042-03-15T07:59:50.000Z", syncedAt: "2042-03-15T07:59:52.000Z", steps: 1000 },
       { id: 10, receivedAt: "2042-03-15T08:20:10.000Z", syncedAt: null, steps: 1300 },
@@ -45,10 +44,12 @@ describe("StepperDiagnosticClient", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ diagnostic })));
     render(<StepperDiagnosticClient workoutId="61" />);
 
-    expect(await screen.findByText("Підйом сходами / степер")).toBeTruthy();
-    expect(screen.getByText("Різниця між знімками Health")).toBeTruthy();
-    expect(screen.getByText("Лише спостережені зразки")).toBeTruthy();
-    expect(screen.getByText("DOMYOS MS100")).toBeTruthy();
+    expect(await screen.findByText("Степер")).toBeTruthy();
+    expect(screen.getByText(/DOMYOS MS100 · фіксована конфігурація/)).toBeTruthy();
+    expect(screen.getByText("Активна енергія")).toBeTruthy();
+    expect(screen.queryByText("Workout ID")).toBeNull();
+    expect(screen.queryByText("Summary basis")).toBeNull();
+    expect(screen.getByText(/DOMYOS MS100/)).toBeTruthy();
     expect(screen.getByRole("link", { name: "Історія" }).getAttribute("href")).toBe("/history");
     expect(screen.getByRole("link", { name: "Тренування" }).getAttribute("href")).toBe("/training");
     expect(document.querySelector("main")?.className).toContain("page");
@@ -75,45 +76,69 @@ describe("StepperDiagnosticClient", () => {
 
     expect(await screen.findByText("Немає знімка кроків перед тренуванням")).toBeTruthy();
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
-    expect(screen.getByText("Проміжків немає")).toBeTruthy();
+    expect(screen.queryByText(/Проміжки між зразками/)).toBeNull();
     expect(screen.getByText("Завантажено")).toBeTruthy();
   });
 
   it("shows HR-unavailable state and a null sampling topology", async () => {
     const diagnostic = {
       ...completeDiagnostic(0),
-      equipmentAssignment: null,
       heartRate: { availability: "unavailable" as const, summary: null, samplingTopology: null },
     };
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ diagnostic })));
     render(<StepperDiagnosticClient workoutId="61" />);
 
     expect(await screen.findByText("Топологія зразків недоступна.")).toBeTruthy();
-    expect(screen.getByText("Призначення степера на цей час відсутнє.")).toBeTruthy();
+    expect(screen.getByText(/DOMYOS MS100 · фіксована конфігурація/)).toBeTruthy();
   });
 
-  it("pages a long loaded-HR gap array without omitting remaining entries", async () => {
+  it("does not expose HR sampling gaps in the user view", async () => {
     const base = completeDiagnostic(126);
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ diagnostic: base })));
     render(<StepperDiagnosticClient workoutId="61" />);
 
-    const summary = await screen.findByText("Проміжки між зразками · 125");
-    const details = summary.closest("details")!;
-    fireEvent.click(summary);
-    expect(within(details).getByText("Показати ще 50 · 75 залишилося")).toBeTruthy();
-    await userEvent.click(within(details).getByText("Показати ще 50 · 75 залишилося"));
-    expect(within(details).getByText("#51")).toBeTruthy();
-    await userEvent.click(within(details).getByText("Показати ще 25 · 25 залишилося"));
-    expect(within(details).getByText("#125")).toBeTruthy();
+    await screen.findByText("Максимум серед зразків · bpm");
+    expect(screen.queryByText(/Проміжки між зразками/)).toBeNull();
+    expect(screen.queryByText(/Leading gap|Trailing gap/)).toBeNull();
   });
 });
 
 describe("stepper section in Training", () => {
-  it("creates, updates, and deletes a manual stepper session and keeps Health rows read only", async () => {
+  it("allows editing and deleting an Apple Health stepper workout", async () => {
+    const user = userEvent.setup();
+    const row = { id: 70, type: "Stair Climbing", startAt, endAt, durationMinutes: 20, activeEnergyKcal: 155, source: "health" as const, syncProtected: false, editable: true };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.endsWith("/api/v1/training/stepper-workouts") && method === "GET") return response({ workouts: [row] });
+      if (url.endsWith("/api/v1/training/stepper-workouts/70") && method === "PUT") return response({ workout: { ...row, syncProtected: true } });
+      if (url.endsWith("/api/v1/training/stepper-workouts/70") && method === "DELETE") return response(null, 204);
+      if (url.includes("/api/v1/training/sessions/active")) return response({ session: null });
+      if (url.includes("/api/v1/training/programs")) return response({ programs: [] });
+      if (url.includes("/api/v1/training/sessions/recent")) return response({ sessions: [] });
+      if (url.includes("/api/v1/training/sessions/match-attention")) return response({ sessions: [] });
+      throw new Error(`Unexpected fetch ${method} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<TrainingClient />);
+
+    await screen.findByText("Apple Health");
+    await user.click(screen.getByRole("button", { name: "Редагувати" }));
+    await user.clear(screen.getByRole("spinbutton", { name: "Тривалість степера" }));
+    await user.type(screen.getByRole("spinbutton", { name: "Тривалість степера" }), "25");
+    await user.click(screen.getByRole("button", { name: "Зберегти" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/stepper-workouts/70"), expect.objectContaining({ method: "PUT" })));
+    await user.click(screen.getByRole("button", { name: "Редагувати" }));
+    await user.click(screen.getAllByRole("button", { name: "Видалити" })[0]!);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/stepper-workouts/70"), expect.objectContaining({ method: "DELETE" })));
+  });
+
+  it("creates, updates, and deletes stepper sessions from manual and Health sources", async () => {
     const user = userEvent.setup();
     let rows = [
-      { id: 50, type: "Stair Climbing", startAt, endAt, durationMinutes: 20, activeEnergyKcal: null, source: "manual" as const },
-      { id: 49, type: "Stair Climbing", startAt: "2042-03-15T07:00:00.000Z", endAt: "2042-03-15T07:10:00.000Z", durationMinutes: 10, activeEnergyKcal: 44, source: "health" as const },
+      { id: 50, type: "Stair Climbing", startAt, endAt, durationMinutes: 20, activeEnergyKcal: null, source: "manual" as const, syncProtected: false, editable: true },
+      { id: 49, type: "Stair Climbing", startAt: "2042-03-15T07:00:00.000Z", endAt: "2042-03-15T07:10:00.000Z", durationMinutes: 10, activeEnergyKcal: 44, source: "health" as const, syncProtected: false, editable: true },
     ];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -121,7 +146,7 @@ describe("stepper section in Training", () => {
       if (url.endsWith("/api/v1/training/stepper-workouts") && method === "GET") return response({ workouts: rows });
       if (url.endsWith("/api/v1/training/stepper-workouts") && method === "POST") {
         const value = JSON.parse(String(init?.body)) as { startAt: string; durationMinutes: number };
-        const created = { id: 51, type: "Stair Climbing", ...value, endAt: new Date(Date.parse(value.startAt) + value.durationMinutes * 60_000).toISOString(), activeEnergyKcal: null, source: "manual" as const };
+        const created = { id: 51, type: "Stair Climbing", ...value, endAt: new Date(Date.parse(value.startAt) + value.durationMinutes * 60_000).toISOString(), activeEnergyKcal: null, source: "manual" as const, syncProtected: false, editable: true };
         rows = [created, ...rows];
         return response({ workout: created }, 201);
       }

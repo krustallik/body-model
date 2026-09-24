@@ -8,11 +8,9 @@ import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
 import type { WorkoutEnergyEvidenceV7 } from "@/model/activity/workout-energy-v7";
 import { canonicalizeWorkoutHeartRateEvidenceV7 } from "@/model/activity/workout-heart-rate-v7";
 import {
-  assignmentAtWorkoutStartV7,
-  type StepperEquipmentAssignmentV7,
+  FIXED_STEPPER_EQUIPMENT_V7,
 } from "@/model/activity/personal-stepper-reference-v7";
 import { canonicalizeWorkoutStepperEvidenceV7 } from "@/model/activity/workout-stepper-v7";
-import { StepperEquipmentRepository } from "./stepper-equipment.repository";
 
 /**
  * Isolated experimental/shadow output for MS100 stepper active energy.
@@ -24,7 +22,7 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
 }): Promise<void> {
   const profileId = input.profileId ?? 1;
   const workout = await prisma.workout.findUnique({
-    where: { id: input.workoutId },
+    where: { id: input.workoutId, hiddenFromHistory: false },
     select: {
       id: true,
       type: true,
@@ -40,8 +38,7 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
   const canonical = canonicalizeWorkoutType(workout.type);
   if (canonical.classification !== "stair-climbing" || canonical.canonicalType === null) return;
 
-  const [assignments, snapshots, stepIntervals, heartRateSamples] = await Promise.all([
-    new StepperEquipmentRepository(prisma).list(),
+  const [snapshots, stepIntervals, heartRateSamples] = await Promise.all([
     prisma.healthSyncSnapshot.findMany({
       select: { id: true, receivedAt: true, syncedAt: true, steps: true },
     }),
@@ -111,10 +108,7 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
       stepCount: interval.value.toNumber(),
     })),
   });
-  const equipment = assignmentAtWorkoutStartV7(
-    assignments as StepperEquipmentAssignmentV7[],
-    startAt,
-  );
+  const equipment = FIXED_STEPPER_EQUIPMENT_V7;
   const result = estimateExperimentalStepperActiveEnergyV1({
     workout: evidence,
     bodyMassKg: workout.dailyHealthData.weightKg ?? null,
@@ -147,6 +141,7 @@ export async function recordExperimentalStepperActiveEnergyShadowsForLocalDate(i
   const profileId = input.profileId ?? 1;
   const workouts = await prisma.workout.findMany({
     where: {
+      hiddenFromHistory: false,
       dailyHealthData: { date: input.date },
     },
     select: { id: true, type: true },

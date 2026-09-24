@@ -280,6 +280,7 @@ export class ModelEpisodeRepository {
       }),
       this.client.workout.findMany({
         where: {
+          hiddenFromHistory: false,
           dailyHealthData: { date: { gte: from, lte: to } },
         },
         orderBy: [{ startAt: "asc" }, { id: "asc" }],

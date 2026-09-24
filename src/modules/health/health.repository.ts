@@ -176,6 +176,8 @@ async function reconcileDayWorkouts(
       type: true,
       startAt: true,
       endAt: true,
+      syncProtected: true,
+      hiddenFromHistory: true,
       matchedDiarySession: { select: { id: true } },
     },
   });
@@ -189,6 +191,8 @@ async function reconcileDayWorkouts(
       startAt: row.startAt,
       endAt: row.endAt,
       linkedToDiary: row.matchedDiarySession !== null,
+      syncProtected: row.syncProtected,
+      hiddenFromHistory: row.hiddenFromHistory,
     })),
     incoming,
   );

@@ -17,7 +17,7 @@ async function resolveBodyMassKg(input: {
     ?? input.session.createdAt).slice(0, 10);
   if (input.session.matchedWorkoutId !== null) {
     const workout = await prisma.workout.findUnique({
-      where: { id: input.session.matchedWorkoutId },
+      where: { id: input.session.matchedWorkoutId, hiddenFromHistory: false },
       select: { dailyHealthData: { select: { weightKg: true } } },
     });
     if (workout?.dailyHealthData.weightKg != null) {

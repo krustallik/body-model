@@ -33,8 +33,12 @@ export type BracketedStepperStepEvidenceV7 = {
   postGapSeconds: number | null;
   derivedStepDelta: {
     value: number;
-    provenance: "bracketed-health-step-delta" | "health-step-interval-overlap";
+    provenance: "bracketed-health-step-delta" | "health-step-interval-overlap" | "duration-scaled-partial-health-step-interval";
   };
+  /** Fraction of workout duration with a step interval, in percent. Null for snapshot evidence. */
+  intervalCoveragePercent?: number | null;
+  /** Observed step count allocated to covered portions before partial-coverage scaling. */
+  observedIntervalStepCount?: number | null;
   /** Derived interval rate, never a directly measured machine cadence. */
   derivedStepRatePerMinute: {
     value: number;
@@ -55,6 +59,8 @@ export type BracketedStepperStepEvidenceV7 = {
   postGapSeconds: number | null;
   derivedStepDelta: null;
   derivedStepRatePerMinute: null;
+  intervalCoveragePercent?: number | null;
+  observedIntervalStepCount?: number | null;
 };
 
 /**
@@ -115,6 +121,8 @@ export function canonicalizeWorkoutStepperEvidenceV7(input: {
         postGapSeconds: null,
         derivedStepDelta: null,
         derivedStepRatePerMinute: null,
+        intervalCoveragePercent: null,
+        observedIntervalStepCount: null,
       },
     };
   }
@@ -124,7 +132,7 @@ export function canonicalizeWorkoutStepperEvidenceV7(input: {
   if (endMs < startMs) throw new Error("Stepper workout end must not precede start");
 
   const stepIntervals = input.stepIntervals ?? [];
-  if (stepIntervals.length > 0) {
+  if (stepIntervals.some((sample) => Date.parse(sample.startAt) < endMs && Date.parse(sample.endAt) > startMs)) {
     const normalized = stepIntervals.map((sample) => {
       const sampleStart = timestampMs(sample.startAt);
       const sampleEnd = timestampMs(sample.endAt);
@@ -138,26 +146,21 @@ export function canonicalizeWorkoutStepperEvidenceV7(input: {
       .map((sample) => ({ start: Math.max(startMs, sample.sampleStart), end: Math.min(endMs, sample.sampleEnd) }))
       .sort((left, right) => left.start - right.start);
     let coveredUntil = startMs;
+    let coveredMilliseconds = 0;
     for (const span of coverage) {
-      if (span.start > coveredUntil) break;
-      coveredUntil = Math.max(coveredUntil, span.end);
+      if (span.start > coveredUntil) {
+        coveredUntil = span.end;
+        coveredMilliseconds += span.end - span.start;
+      } else if (span.end > coveredUntil) {
+        coveredMilliseconds += span.end - coveredUntil;
+        coveredUntil = span.end;
+      }
     }
-    if (coveredUntil < endMs) {
-      return {
-        workoutEnergy,
-        bracketedSteps: {
-          availability: "unavailable",
-          availabilityReason: "incomplete-step-interval-coverage",
-          before: null,
-          after: null,
-          preGapSeconds: null,
-          postGapSeconds: null,
-          derivedStepDelta: null,
-          derivedStepRatePerMinute: null,
-        },
-      };
-    }
-    const derivedStepDelta = allocateIntervalSampleValue({
+    const durationMilliseconds = endMs - startMs;
+    const intervalCoveragePercent = durationMilliseconds > 0
+      ? Math.min(100, coveredMilliseconds / durationMilliseconds * 100)
+      : 100;
+    const observedIntervalStepCount = allocateIntervalSampleValue({
       samples: normalized.map((sample) => ({
         startTime: new Date(sample.startAt),
         endTime: new Date(sample.endAt),
@@ -166,6 +169,14 @@ export function canonicalizeWorkoutStepperEvidenceV7(input: {
       startTime: new Date(workoutEnergy.startAt),
       endTime: new Date(workoutEnergy.endAt),
     }).value;
+    // Apple Health intervals can be sparse around a known Stair Climbing
+    // workout. Scale only the observed interval overlap to workout duration;
+    // retain the actual covered fraction so callers can present this as an
+    // estimate rather than an exact counter delta.
+    const partialCoverage = intervalCoveragePercent < 99.999;
+    const derivedStepDelta = partialCoverage && intervalCoveragePercent > 0
+      ? observedIntervalStepCount / (intervalCoveragePercent / 100)
+      : observedIntervalStepCount;
     const durationMinutes = workoutEnergy.durationMinutes;
     return {
       workoutEnergy,
@@ -173,9 +184,11 @@ export function canonicalizeWorkoutStepperEvidenceV7(input: {
         availability: "available",
         before: null,
         after: null,
-        preGapSeconds: 0,
-        postGapSeconds: 0,
-        derivedStepDelta: { value: derivedStepDelta, provenance: "health-step-interval-overlap" },
+        preGapSeconds: Math.max(0, (coverage[0]?.start ?? startMs) - startMs) / 1_000,
+        postGapSeconds: Math.max(0, endMs - coveredUntil) / 1_000,
+        derivedStepDelta: { value: derivedStepDelta, provenance: partialCoverage ? "duration-scaled-partial-health-step-interval" : "health-step-interval-overlap" },
+        intervalCoveragePercent,
+        observedIntervalStepCount,
         derivedStepRatePerMinute: durationMinutes !== null && durationMinutes > 0
           ? {
             value: derivedStepDelta / durationMinutes,
@@ -221,6 +234,8 @@ export function canonicalizeWorkoutStepperEvidenceV7(input: {
       postGapSeconds,
       derivedStepDelta: null,
       derivedStepRatePerMinute: null,
+      intervalCoveragePercent: null,
+      observedIntervalStepCount: null,
     },
   });
 
@@ -240,6 +255,8 @@ export function canonicalizeWorkoutStepperEvidenceV7(input: {
       preGapSeconds: preGapSeconds!,
       postGapSeconds: postGapSeconds!,
       derivedStepDelta: { value: derivedStepDelta, provenance: "bracketed-health-step-delta" },
+      intervalCoveragePercent: null,
+      observedIntervalStepCount: null,
       derivedStepRatePerMinute: durationMinutes !== null && durationMinutes > 0
         ? {
           value: derivedStepDelta / durationMinutes,

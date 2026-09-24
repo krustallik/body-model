@@ -120,13 +120,18 @@ describe("WorkoutStepperEvidenceV7", () => {
     });
   });
 
-  it("does not fall back to snapshots when modern interval records leave a coverage gap", () => {
+  it("estimates workout steps from partial interval coverage and exposes measured coverage", () => {
     const result = canonicalizeWorkoutStepperEvidenceV7({
       workoutEnergy: workout(),
       snapshots: [snapshot("2026-09-17T15:59:00.000Z", 100), snapshot("2026-09-17T16:31:00.000Z", 900)],
       stepIntervals: [{ id: 1, startAt: "2026-09-17T16:00:00.000Z", endAt: "2026-09-17T16:15:00.000Z", stepCount: 60 }],
     });
-    expect(result.bracketedSteps).toMatchObject({ availability: "unavailable", availabilityReason: "incomplete-step-interval-coverage" });
+    expect(result.bracketedSteps).toMatchObject({
+      availability: "available",
+      intervalCoveragePercent: 50,
+      observedIntervalStepCount: 60,
+      derivedStepDelta: { value: 120, provenance: "duration-scaled-partial-health-step-interval" },
+    });
   });
 
   it("composes existing device-energy and HR evidence without changing their semantics", () => {

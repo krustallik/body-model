@@ -30,7 +30,7 @@ describe("Unified V1 durable source loader", () => {
     expect(result.days[1]?.dailyHealthData).toBeNull();
     expect(result.days[0]?.childModelRevisions.glycogenState).toBe("experimental-glycogen-state-v2");
     expect(client.workout.findMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { dailyHealthData: { date: { gte: "2065-01-01", lte: "2065-01-02" } } },
+      where: { hiddenFromHistory: false, dailyHealthData: { date: { gte: "2065-01-01", lte: "2065-01-02" } } },
     }));
   });
 

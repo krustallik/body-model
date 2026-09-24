@@ -78,7 +78,7 @@ export class PhysiologyV7RuntimeRepository implements PhysiologyV7RangeSourceLoa
         select: { id: true, startAt: true, endAt: true, value: true },
       }),
       this.client.workout.findMany({
-        where: { dailyHealthData: { date: { gte: input.historyFromDate, lte: input.toDate } } },
+        where: { hiddenFromHistory: false, dailyHealthData: { date: { gte: input.historyFromDate, lte: input.toDate } } },
         orderBy: [{ dailyHealthData: { date: "asc" } }, { startAt: "asc" }, { id: "asc" }],
         select: {
           id: true,

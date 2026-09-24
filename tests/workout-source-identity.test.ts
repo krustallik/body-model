@@ -146,6 +146,29 @@ describe("planDayWorkoutReconciliation", () => {
     expect(plan.retainedLinkedMissingFromFeed).toEqual([]);
   });
 
+  it("preserves edited and hidden Health rows when the same workout is synced again", () => {
+    const startAt = new Date("2026-09-24T16:00:00.000Z");
+    const existing = {
+      id: 41,
+      sourceIdentity: "fp:Stair Climbing|2026-09-24T16:00:00.000Z|2026-09-24T16:15:00.000Z",
+      externalId: null,
+      type: "Stair Climbing",
+      startAt,
+      endAt: new Date("2026-09-24T16:15:00.000Z"),
+      linkedToDiary: false,
+      syncProtected: true,
+    };
+    const incoming = [{ type: existing.type, startAt: startAt.toISOString(), endAt: existing.endAt.toISOString(), activeEnergyKcal: 110 }];
+    const edited = planDayWorkoutReconciliation([existing], incoming);
+    expect(edited.updates).toEqual([]);
+    expect(edited.creates).toEqual([]);
+    expect(edited.retainedSyncProtected).toEqual([41]);
+
+    const deleted = planDayWorkoutReconciliation([{ ...existing, hiddenFromHistory: true }], []);
+    expect(deleted.deletes).toEqual([]);
+    expect(deleted.retainedSyncProtected).toEqual([41]);
+  });
+
   it("does not cross-wire two same-day strength workouts", () => {
     const plan = planDayWorkoutReconciliation(
       [

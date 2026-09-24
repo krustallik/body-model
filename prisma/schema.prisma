@@ -246,7 +246,11 @@ model Workout {
   /**
    * Garmin/device active workout calories excluding resting component.
    */
-  activeEnergyKcal    Float?
+    activeEnergyKcal    Float?
+    /** User edited/deleted this imported row; health sync must preserve it. */
+    syncProtected       Boolean               @default(false)
+    /** Soft deletion keeps a sync tombstone while hiding the row from users. */
+    hiddenFromHistory   Boolean               @default(false)
   createdAt           DateTime              @default(now())
   updatedAt           DateTime              @updatedAt
   /**

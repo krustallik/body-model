@@ -2433,10 +2433,17 @@ a.editMenuItem + .editMenuDanger {
 }
 
 .linkLike {
+  appearance: none;
+  padding: 0;
   color: var(--training-text-secondary);
-  font-weight: 700;
-  text-decoration: none;
+  background: transparent;
+  border: 0;
   border-bottom: 1px solid color-mix(in srgb, var(--training-text-muted) 40%, transparent);
+  border-radius: 0;
+  font: inherit;
+  font-weight: 700;
+  line-height: inherit;
+  text-decoration: none;
   cursor: pointer;
   transition:
     color var(--training-ease),
@@ -2452,6 +2459,16 @@ a.editMenuItem + .editMenuDanger {
 .linkLike:active {
   color: var(--training-info-pressed);
   transform: var(--training-press);
+}
+
+.linkLike:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.linkLike:disabled:hover {
+  color: var(--training-text-secondary);
+  border-bottom-color: color-mix(in srgb, var(--training-text-muted) 40%, transparent);
 }
 
 @media (max-width: 720px) {

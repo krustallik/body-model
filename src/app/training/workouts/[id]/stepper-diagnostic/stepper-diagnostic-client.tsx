@@ -34,11 +34,11 @@ function formatInstant(value: string, intlLocale: string): string {
 }
 
 function Instant({ value, intlLocale }: { value: string; intlLocale: string }) {
-  return <span className={styles.technicalValue}><time dateTime={value}>{formatInstant(value, intlLocale)}</time><code>{value}</code></span>;
+  return <time dateTime={value}>{formatInstant(value, intlLocale)}</time>;
 }
 
 function NumberValue({ value, intlLocale }: { value: number; intlLocale: string }) {
-  return <span className={styles.technicalValue}><span>{new Intl.NumberFormat(intlLocale, { maximumFractionDigits: 3 }).format(value)}</span><code>{String(value)}</code></span>;
+  return <span>{new Intl.NumberFormat(intlLocale, { maximumFractionDigits: 3 }).format(value)}</span>;
 }
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
@@ -174,8 +174,8 @@ export function StepperDiagnosticClient({ workoutId }: { workoutId: string }) {
               <Field label={uk ? "Проміжок після завершення · с" : "Gap after end · s"}>{steps?.postGapSeconds === null || steps?.postGapSeconds === undefined ? "—" : <NumberValue value={steps.postGapSeconds} intlLocale={intlLocale} />}</Field>
               <Field label={uk ? "Покриття інтервалами кроків" : "Step interval coverage"}>{steps?.intervalCoveragePercent === null || steps?.intervalCoveragePercent === undefined ? "—" : `${new Intl.NumberFormat(intlLocale, { maximumFractionDigits: 1 }).format(steps.intervalCoveragePercent)}%`}</Field>
               <Field label={uk ? "Кроки у виміряних частинах" : "Steps in observed portions"}>{steps?.observedIntervalStepCount === null || steps?.observedIntervalStepCount === undefined ? "—" : <NumberValue value={steps.observedIntervalStepCount} intlLocale={intlLocale} />}</Field>
-              <Field label={uk ? "Оцінка кроків за тренування" : "Estimated workout steps"}>{steps?.derivedStepDelta === null || steps?.derivedStepDelta === undefined ? "—" : <><NumberValue value={steps.derivedStepDelta.value} intlLocale={intlLocale} /><span className={styles.muted}>{steps.intervalCoveragePercent !== null && steps.intervalCoveragePercent !== undefined && steps.intervalCoveragePercent < 99.999 ? (uk ? "Оцінено з виміряного покриття" : "Estimated from observed coverage") : (uk ? "За даними Health" : "From Health data")}</span></>}</Field>
-              <Field label={uk ? "Темп · кроків/хв" : "Rate · steps/min"}>{steps?.derivedStepRatePerMinute === null || steps?.derivedStepRatePerMinute === undefined ? "—" : <><NumberValue value={steps.derivedStepRatePerMinute.value} intlLocale={intlLocale} /><span className={styles.muted}>{uk ? "Розраховано за тривалістю" : "Calculated from duration"}</span></>}</Field>
+              <Field label={uk ? "Оцінка кроків за тренування" : "Estimated workout steps"}>{steps?.derivedStepDelta === null || steps?.derivedStepDelta === undefined ? "—" : <NumberValue value={steps.derivedStepDelta.value} intlLocale={intlLocale} />}</Field>
+              <Field label={uk ? "Темп · кроків/хв" : "Rate · steps/min"}>{steps?.derivedStepRatePerMinute === null || steps?.derivedStepRatePerMinute === undefined ? "—" : <NumberValue value={steps.derivedStepRatePerMinute.value} intlLocale={intlLocale} />}</Field>
             </dl>
           </Section>
 

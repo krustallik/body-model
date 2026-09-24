@@ -58,6 +58,7 @@
   --focus: color-mix(in srgb, #4db890 38%, transparent);
   --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--focus);
   --shadow: rgb(0 0 0 / 28%);
+  --bodycast-cursor: url("/bodycast-cursor.png") 3 2, auto;
 
   /* Shared page shell for the main data and planning screens. */
   --app-page-max-width: 110rem;
@@ -124,4 +125,28 @@ input,
 select,
 textarea {
   font: inherit;
+}
+
+/* Use the same luminous pointer throughout the app, including interactive controls. */
+html body,
+html body * {
+  cursor: var(--bodycast-cursor) !important;
+}
+
+/* Keep the native text-entry affordance and meaningful unavailable/loading states. */
+html body :is(
+  input:not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]):not([type="image"]),
+  textarea,
+  [contenteditable]:not([contenteditable="false"]),
+  [role="textbox"]
+) {
+  cursor: text !important;
+}
+
+html body :is(:disabled, [aria-disabled="true"]) {
+  cursor: not-allowed !important;
+}
+
+html body [aria-busy="true"] {
+  cursor: progress !important;
 }

@@ -8,7 +8,15 @@ export class StepperWorkoutDiagnosticRepository {
   async get(workoutId: number): Promise<StepperWorkoutDiagnosticV7 | null | undefined> {
     const workout = await this.client.workout.findFirst({
       where: { id: workoutId, hiddenFromHistory: false },
-      select: { id: true, type: true, startAt: true, endAt: true, durationMinutes: true, activeEnergyKcal: true },
+      select: {
+        id: true,
+        type: true,
+        startAt: true,
+        endAt: true,
+        durationMinutes: true,
+        activeEnergyKcal: true,
+        dailyHealthData: { select: { weightKg: true } },
+      },
     });
     if (workout === null) return undefined;
     const [snapshots, stepIntervals, heartRateSamples] = await Promise.all([
@@ -34,6 +42,7 @@ export class StepperWorkoutDiagnosticRepository {
         ...workout,
         startAt: workout.startAt.toISOString(), endAt: workout.endAt.toISOString(),
       },
+      bodyMassKg: workout.dailyHealthData.weightKg,
       snapshots: snapshots.map((snapshot) => ({
         id: snapshot.id, receivedAt: snapshot.receivedAt.toISOString(), syncedAt: snapshot.syncedAt?.toISOString() ?? null, steps: snapshot.steps,
       })),

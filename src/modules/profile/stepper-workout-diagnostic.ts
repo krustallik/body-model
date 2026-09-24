@@ -1,11 +1,18 @@
 import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
 import type { WorkoutEnergyEvidenceV7 } from "@/model/activity/workout-energy-v7";
 import { canonicalizeWorkoutHeartRateEvidenceV7, type WorkoutHeartRateSampleV7 } from "@/model/activity/workout-heart-rate-v7";
+import { estimateExperimentalStepperActiveEnergyV1, type ExperimentalStepperActiveEnergyResultV1 } from "@/model/activity/experimental-stepper-active-energy-v1";
 import { FIXED_STEPPER_EQUIPMENT_V7, type StepperEquipmentAssignmentV7 } from "@/model/activity/personal-stepper-reference-v7";
 import { canonicalizeWorkoutStepperEvidenceV7, workoutStepperEvidenceDiagnosticV7, type HealthStepIntervalV7, type HealthSyncStepSnapshotV7 } from "@/model/activity/workout-stepper-v7";
 
+export type StepperProgramActiveEnergyDiagnosticV1 = Pick<
+  ExperimentalStepperActiveEnergyResultV1,
+  "contractVersion" | "provenance" | "availability" | "estimatedActiveKcal" | "lowerBoundKcal" | "upperBoundKcal" | "unavailableReason"
+>;
+
 export type StepperWorkoutDiagnosticV7 = ReturnType<typeof workoutStepperEvidenceDiagnosticV7> & {
   equipmentAssignment: StepperEquipmentAssignmentV7;
+  programEnergy: StepperProgramActiveEnergyDiagnosticV1;
   labels: {
     derivedStepDelta: "derived health step-counter attribution" | "derived Apple Health interval attribution";
     garminActiveEnergy: "device estimate";
@@ -13,8 +20,8 @@ export type StepperWorkoutDiagnosticV7 = ReturnType<typeof workoutStepperEvidenc
 };
 
 /**
- * Read-side diagnostic composition only. It deliberately contains no energy
- * fallback, calibration, or scientific quality classification.
+ * Read-side diagnostic composition. The BodyCast estimate is explicitly the
+ * existing experimental shadow model; device energy remains a separate fact.
  */
 export function buildStepperWorkoutDiagnosticV7(input: {
   workout: {
@@ -25,6 +32,7 @@ export function buildStepperWorkoutDiagnosticV7(input: {
     durationMinutes: number | null;
     activeEnergyKcal: number | null;
   };
+  bodyMassKg?: number | null;
   snapshots: readonly HealthSyncStepSnapshotV7[];
   stepIntervals?: readonly HealthStepIntervalV7[];
   heartRateSamples: readonly WorkoutHeartRateSampleV7[];
@@ -52,9 +60,23 @@ export function buildStepperWorkoutDiagnosticV7(input: {
     snapshots: input.snapshots,
     stepIntervals: input.stepIntervals,
   });
+  const programEnergy = estimateExperimentalStepperActiveEnergyV1({
+    workout: evidence,
+    bodyMassKg: input.bodyMassKg ?? null,
+    equipment: FIXED_STEPPER_EQUIPMENT_V7,
+  });
   return {
     ...workoutStepperEvidenceDiagnosticV7(evidence),
     equipmentAssignment: FIXED_STEPPER_EQUIPMENT_V7,
+    programEnergy: {
+      contractVersion: programEnergy.contractVersion,
+      provenance: programEnergy.provenance,
+      availability: programEnergy.availability,
+      estimatedActiveKcal: programEnergy.estimatedActiveKcal,
+      lowerBoundKcal: programEnergy.lowerBoundKcal,
+      upperBoundKcal: programEnergy.upperBoundKcal,
+      unavailableReason: programEnergy.unavailableReason,
+    },
     labels: {
       derivedStepDelta: evidence.bracketedSteps.availability === "available"
         && evidence.bracketedSteps.derivedStepDelta.provenance === "health-step-interval-overlap"

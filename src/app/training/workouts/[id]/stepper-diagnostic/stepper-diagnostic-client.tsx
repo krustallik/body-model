@@ -38,8 +38,12 @@ function NumberValue({ value, intlLocale }: { value: number; intlLocale: string 
   return <span>{new Intl.NumberFormat(intlLocale, { maximumFractionDigits: 3 }).format(value)}</span>;
 }
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return <div className={styles.field}><dt>{label}</dt><dd>{children}</dd></div>;
+function CalorieValue({ value, intlLocale }: { value: number; intlLocale: string }) {
+  return <span>{new Intl.NumberFormat(intlLocale, { maximumFractionDigits: 0 }).format(value)}</span>;
+}
+
+function Field({ label, children, featured }: { label: string; children: ReactNode; featured?: boolean }) {
+  return <div className={featured ? `${styles.field} ${styles.fieldFeatured}` : styles.field}><dt>{label}</dt><dd>{children}</dd></div>;
 }
 
 function CodeMeaning({ value, uk }: { value: string; uk?: string }) {
@@ -149,14 +153,43 @@ export function StepperDiagnosticClient({ workoutId }: { workoutId: string }) {
             </dl>
           </Section>
 
-          <Section title={uk ? "Енергія пристрою" : "Device energy"} subtitle={uk ? "Значення пристрою — оцінка, не вимірювання калориметром" : "A device estimate, not calorimetry"}>
+          <Section title={uk ? "Активна енергія" : "Active energy"} subtitle={uk ? "Оцінка BodyCast основна; оцінка годинника показана окремо" : "BodyCast estimate is primary; watch estimate is shown separately"}>
+            <div className={styles.statusRow}>
+              <span className={styles.badgeWarning}>{uk ? "Експериментальна оцінка BodyCast" : "Experimental BodyCast estimate"}</span>
+            </div>
             <dl className={styles.fieldGrid}>
-              <Field label={uk ? "Доступність" : "Availability"}><CodeMeaning value={diagnostic.deviceEnergy.availability} uk={diagnostic.deviceEnergy.availability === "available" ? (uk ? "Доступно" : "Available") : (uk ? "Недоступно" : "Unavailable")} /></Field>
-              {diagnostic.deviceEnergy.availability === "available" ? <>
-                <Field label={uk ? "Значення · ккал" : "Value · kcal"}><NumberValue value={diagnostic.deviceEnergy.valueKcal} intlLocale={intlLocale} /></Field>
-                <Field label={uk ? "Тип енергії" : "Energy type"}><CodeMeaning value={diagnostic.deviceEnergy.semantics} uk={diagnostic.deviceEnergy.semantics === "active" ? (uk ? "Активна енергія" : "Active energy") : (uk ? "Загальна енергія" : "Gross energy")} /></Field>
-              </> : null}
+              <Field featured label={uk ? "Оцінка BodyCast · ккал" : "BodyCast estimate · kcal"}>
+                {diagnostic.programEnergy.availability === "available" && diagnostic.programEnergy.estimatedActiveKcal !== null
+                  ? <CalorieValue value={diagnostic.programEnergy.estimatedActiveKcal} intlLocale={intlLocale} />
+                  : <span className={styles.muted}>{uk ? "Недоступно" : "Unavailable"}</span>}
+              </Field>
+              <Field label={uk ? "Орієнтовний діапазон · ккал" : "Estimated range · kcal"}>
+                {diagnostic.programEnergy.lowerBoundKcal !== null && diagnostic.programEnergy.upperBoundKcal !== null
+                  ? <><CalorieValue value={diagnostic.programEnergy.lowerBoundKcal} intlLocale={intlLocale} />–<CalorieValue value={diagnostic.programEnergy.upperBoundKcal} intlLocale={intlLocale} /></>
+                  : "—"}
+              </Field>
+              <Field label={uk ? "Енергія годинника · ккал" : "Watch energy · kcal"}>
+                {diagnostic.deviceEnergy.availability === "available"
+                  ? <CalorieValue value={diagnostic.deviceEnergy.valueKcal} intlLocale={intlLocale} />
+                  : <span className={styles.muted}>{uk ? "Недоступно" : "Unavailable"}</span>}
+              </Field>
+              <Field label={uk ? "Тип енергії годинника" : "Watch energy type"}>
+                {diagnostic.deviceEnergy.availability === "available"
+                  ? <CodeMeaning value={diagnostic.deviceEnergy.semantics} uk={diagnostic.deviceEnergy.semantics === "active" ? (uk ? "Активна енергія" : "Active energy") : (uk ? "Загальна енергія" : "Gross energy")} />
+                  : "—"}
+              </Field>
             </dl>
+            <p className={styles.muted}>
+              {diagnostic.programEnergy.availability === "available"
+                ? (uk
+                  ? "Це експериментальна оцінка за кроками, масою тіла та інженерними припущеннями для MS100; вона ще не перевірена як персональна витрата енергії. Діапазон показує невизначеність цих припущень."
+                  : "This experimental estimate uses steps, body mass, and MS100 engineering assumptions; it has not been validated as personal energy expenditure. The range reflects uncertainty in those assumptions.")
+                : diagnostic.programEnergy.unavailableReason === "missing-body-mass"
+                  ? (uk ? "Оцінка BodyCast недоступна: немає ваги тіла за дату тренування." : "BodyCast estimate is unavailable: body mass for the workout date is missing.")
+                  : diagnostic.programEnergy.unavailableReason === "missing-bracketed-step-evidence"
+                    ? (uk ? "Оцінка BodyCast недоступна: немає достатніх даних кроків за інтервалами." : "BodyCast estimate is unavailable: there is not enough interval step data.")
+                    : (uk ? "Оцінка BodyCast недоступна через брак даних для цього розрахунку." : "BodyCast estimate is unavailable because required calculation data is missing.")}
+            </p>
           </Section>
 
           <Section title={uk ? "Пульс" : "Heart rate"} subtitle={uk ? "Статистика описує лише наявні зразки; це не середній пульс за часом" : "Statistics describe observed samples only; this is not a time-weighted mean"}>

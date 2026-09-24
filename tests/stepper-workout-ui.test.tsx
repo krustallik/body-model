@@ -22,6 +22,7 @@ function completeDiagnostic(sampleCount = 2) {
   }));
   return buildStepperWorkoutDiagnosticV7({
     workout: { id: 61, type: "Stair Climbing", startAt, endAt, durationMinutes: 20, activeEnergyKcal: 154 },
+    bodyMassKg: 80,
     snapshots: [
       { id: 9, receivedAt: "2042-03-15T07:59:50.000Z", syncedAt: "2042-03-15T07:59:52.000Z", steps: 1000 },
       { id: 10, receivedAt: "2042-03-15T08:20:10.000Z", syncedAt: null, steps: 1300 },
@@ -46,7 +47,11 @@ describe("StepperDiagnosticClient", () => {
 
     expect(await screen.findByText("Степер")).toBeTruthy();
     expect(screen.getByText(/DOMYOS MS100 · фіксована конфігурація/)).toBeTruthy();
-    expect(screen.getByText("Активна енергія")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Активна енергія" })).toBeTruthy();
+    expect(screen.getByText("Експериментальна оцінка BodyCast")).toBeTruthy();
+    expect(screen.getByText("Оцінка BodyCast · ккал")).toBeTruthy();
+    expect(screen.getByText("Енергія годинника · ккал")).toBeTruthy();
+    expect(screen.getByText(/ще не перевірена як персональна витрата енергії/)).toBeTruthy();
     expect(screen.queryByText("Workout ID")).toBeNull();
     expect(screen.queryByText("Summary basis")).toBeNull();
     expect(screen.getByText(/DOMYOS MS100/)).toBeTruthy();
@@ -70,6 +75,15 @@ describe("StepperDiagnosticClient", () => {
         derivedStepRatePerMinute: null,
       },
       deviceEnergy: { availability: "unavailable" as const, availabilityReason: "no-device-active-energy" as const },
+      programEnergy: {
+        contractVersion: "experimental-stepper-active-energy-v1" as const,
+        provenance: "experimental-heuristic" as const,
+        availability: "unavailable" as const,
+        estimatedActiveKcal: null,
+        lowerBoundKcal: null,
+        upperBoundKcal: null,
+        unavailableReason: "missing-bracketed-step-evidence" as const,
+      },
     };
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ diagnostic })));
     render(<StepperDiagnosticClient workoutId="61" />);
@@ -77,6 +91,7 @@ describe("StepperDiagnosticClient", () => {
     expect(await screen.findByText("Немає інтервалів кроків у межах тренування")).toBeTruthy();
     expect(screen.queryByText(/Немає знімка кроків/)).toBeNull();
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+    expect(screen.getByText("Оцінка BodyCast недоступна: немає достатніх даних кроків за інтервалами.")).toBeTruthy();
     expect(screen.queryByText(/Проміжки між зразками/)).toBeNull();
     expect(screen.getByText("Завантажено")).toBeTruthy();
   });

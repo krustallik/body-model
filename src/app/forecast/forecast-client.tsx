@@ -183,6 +183,7 @@ export function ForecastClient() {
     { mode: "fixed", label: uk ? "Точно за планом" : "Exact daily plan", hint: uk ? "Кожен день іде рівно за вашим планом, без відхилень." : "Every day follows your plan exactly, with no day-to-day drift." },
     { mode: "target-centered", label: uk ? "План з невеликими відхиленнями" : "Plan with small drift", hint: uk ? "В цілому за планом, але з реалістичними щоденними коливаннями." : "Mostly on plan, with realistic day-to-day ups and downs." },
   ];
+  const scenarioLabel = (selectedMode: ScenarioMode) => scenarios.find((scenario) => scenario.mode === selectedMode)?.label ?? selectedMode;
   const metrics: Array<{ key: ForecastMetric; label: string }> = [
     { key: "physiologicalBodyWeightKg", label: uk ? "Вага" : "Weight" },
     { key: "fatMassKg", label: uk ? "Жир" : "Fat" },
@@ -379,11 +380,12 @@ export function ForecastClient() {
     ?? null;
   const quality = result ? qualityPresentation(result, context?.status.calibrationStatus, locale) : null;
   const metricLabel = metrics.find((item) => item.key === metric)?.label ?? "Estimate";
-  const assumptions = submittedRun?.mode && submittedRun.mode !== "recent-behavior"
-    ? planAssumptions(submittedRun.mode, submittedRun.plan, locale)
+  const completedMode = result?.scenarioProvenance.mode ?? submittedRun?.mode;
+  const assumptions = completedMode && completedMode !== "recent-behavior" && submittedRun
+    ? planAssumptions(completedMode, submittedRun.plan, locale)
     : [uk ? "Беремо ваші недавні повні дні й повторюємо схожий ритм." : "We take your recent complete days and repeat a similar rhythm."];
-  const workoutNotes = submittedRun
-    ? forecastWorkoutScenarioNotes(submittedRun.mode, submittedRun.plan, locale)
+  const workoutNotes = completedMode && submittedRun
+    ? forecastWorkoutScenarioNotes(completedMode, submittedRun.plan, locale)
     : [];
   const metricNotes = forecastMetricSemanticsNotes(locale);
   const productionCompartmentNotes = productionForecastCompartmentNotes(locale);
@@ -414,6 +416,11 @@ export function ForecastClient() {
   const busy = loading || actionLoading !== null;
   const needsRecalculation = modelNeedsRecalculation(context?.status ?? null);
   const hasForecastResult = Boolean(result);
+  const showPreviousForecastNotice = Boolean(result && (
+    settingsDirty
+    || result.scenarioProvenance.mode !== mode
+    || result.horizonDays !== horizon
+  ));
   // The forecast surface remains usable even when the persisted production
   // episode is missing or initialization is incomplete. In that case the
   // bootstrap/previous result and all controls stay visible; the error is only
@@ -433,7 +440,7 @@ export function ForecastClient() {
         <section className={styles.controlStep} aria-labelledby="forecast-horizon-heading"><div className={styles.stepHeading}><span>01</span><div><h2 id="forecast-horizon-heading">{uk ? "Період прогнозу" : "Forecast horizon"}</h2><p>{uk ? "На скільки днів уперед дивимось?" : "How far ahead should we look?"}</p></div></div><div className={styles.segmented} aria-label={uk ? "Кількість днів" : "Number of days"}>{FORECAST_HORIZONS.map((days) => <button type="button" key={days} aria-pressed={horizon === days} onClick={() => selectHorizon(days)}>{days < 365 ? `${days}${uk ? "д" : "d"}` : (uk ? "1р" : "1y")}</button>)}</div><p className={styles.stepHint}>{uk ? "На довшому періоді діапазон невизначеності ширшає." : "Uncertainty grows over longer periods."}<HelpTip>{uk ? "30–90 днів зручні для практичних сценаріїв. На 180–365 днів кінцева цифра показує напрям, а не обіцянку." : "30–90 days works well for practical scenarios. At 180–365 days, the endpoint shows direction, not a promise."}</HelpTip></p></section>
         <section className={styles.controlStep} aria-labelledby="forecast-mode-heading"><div className={styles.stepHeading}><span>02</span><div><h2 id="forecast-mode-heading">{uk ? "Що відбуватиметься далі?" : "What happens next?"}</h2><p>{uk ? "Оберіть звички або задайте майбутній план." : "Use recent habits or describe a future plan."}</p></div></div><div className={styles.scenarioGrid}>{scenarios.map((scenario) => <button type="button" key={scenario.mode} aria-pressed={mode === scenario.mode} onClick={() => selectMode(scenario.mode)}><strong>{scenario.label}</strong><span>{scenario.hint}</span></button>)}</div><p className={styles.stepHint}><HelpTip>{uk ? "«Як останнім часом» використовує типові повні дні з Історії. У цьому режимі поля майбутнього плану не діють. Точний план повторює введені числа щодня; гнучкий план додає невеликі коливання." : "Recent behavior repeats typical complete days from History; future-plan fields do not apply in this mode. Exact plan repeats your entries daily; flexible plan adds small variations."}</HelpTip></p></section>
 
-        {mode === "recent-behavior" ? <p className={styles.recentNotice} role="status">{uk ? "Прогноз повторює ваші недавні повні дні з Історії. Ручні поля харчування, руху й роботи тут не застосовуються." : "This forecast repeats your recent complete days from History. Manual food, movement, and work fields do not apply here."}</p> : <form className={styles.planForm} onSubmit={(event: FormEvent) => { event.preventDefault(); void runForecast(); }}>
+        {mode === "recent-behavior" ? <p className={styles.recentNotice} role="status">{uk ? "Прогноз повторює ваші недавні повні дні з Історії. Ручний план харчування й активності в цей запит не передається; значення збережені для режимів за планом." : "This forecast repeats your recent complete days from History. Your manual food and activity plan is not sent with this request; it stays saved for the planned modes."}</p> : <form className={styles.planForm} onSubmit={(event: FormEvent) => { event.preventDefault(); void runForecast(); }}>
           <fieldset className={styles.controlStep}><legend className={styles.visuallyHidden}>{uk ? "03 Щоденне харчування" : "03 Daily nutrition"}</legend><div className={styles.stepHeading}><span>03</span><div><h2>{uk ? "Заплановане харчування" : "Planned nutrition"}</h2><p>{uk ? "Середнє за день; змінюйте значення під ваш план." : "Daily averages; edit these to match your plan."}</p></div></div><div className={styles.formGrid}>
             <NumberField label={uk ? "Енергія" : "Energy"} unit={uk ? "ккал" : "kcal"} help={uk ? "Заплановані середні калорії на один день. Візьміть значення з вашого харчового трекера; макроси нижче мають належати цьому самому дню." : "Planned average calories per day. Use your food tracker; the macros below should describe that same day."} value={plan.caloriesKcal} max={20000} onChange={(value) => updatePlan("caloriesKcal", value)} />
             <NumberField label={uk ? "Білки" : "Protein"} unit={uk ? "г" : "g"} value={plan.proteinG} max={1000} onChange={(value) => updatePlan("proteinG", value)} />
@@ -457,11 +464,21 @@ export function ForecastClient() {
           </fieldset>
         </form>}
         <div className={styles.runRow}>
-          <button className={styles.runButton} type="button" aria-busy={busy} disabled={busy} onClick={() => void runForecast()}>{loading ? (uk ? "Запустити оновлений прогноз" : "Run updated forecast") : (uk ? "Побудувати прогноз" : "Run forecast")}</button><HelpTip>{uk ? "Після зміни періоду, режиму або числового поля прогноз оновиться автоматично; кнопка — для ручного повтору." : "After changing the horizon, mode, or a number, the forecast updates automatically; use this button to rerun manually."}</HelpTip>
+          <div className={styles.runPrimaryActions}>
+            <button className={styles.runButton} type="button" aria-busy={busy} disabled={busy} onClick={() => void runForecast()}>{loading ? (uk ? "Запустити оновлений прогноз" : "Run updated forecast") : (uk ? "Побудувати прогноз" : "Run forecast")}</button>
+            <HelpTip>{uk ? "Після зміни періоду, режиму або числового поля прогноз оновиться автоматично; кнопка — для ручного повтору." : "After changing the horizon, mode, or a number, the forecast updates automatically; use this button to rerun manually."}</HelpTip>
+          </div>
           {showRecalculate && <button className={needsRecalculation ? styles.recalculateButtonPrimary : styles.recalculateButton} type="button" aria-busy={actionLoading === "recalculate"} disabled={busy} onClick={() => void runAction("recalculate")}>{actionLoading === "recalculate" ? recalculateCopy.loadingAction : recalculateCopy.action}</button>}
         </div>
         {showRecalculate && <p className={styles.recalculateHint}>{recalculateCopy.hint}</p>}
       </section>
+
+      {result && showPreviousForecastNotice && <section className={styles.notice} role="status">
+        <strong>{uk ? "Поки показано попередній розрахунок." : "The previous forecast is still shown."}</strong>
+        <span>{uk
+          ? `Він побудований у режимі «${scenarioLabel(result.scenarioProvenance.mode)}», на ${result.horizonDays} днів. Зараз вибрано «${scenarioLabel(mode)}», на ${horizon} днів. Результат і припущення нижче належать попередньому розрахунку.`
+          : `It used “${scenarioLabel(result.scenarioProvenance.mode)}” for ${result.horizonDays} days. The current selection is “${scenarioLabel(mode)}” for ${horizon} days. The result and assumptions below belong to the previous run.`}</span>
+      </section>}
 
       <section className={`${styles.readinessCard} ${styles[readiness.level]}`} aria-label={uk ? "Наскільки зрозумілий прогноз" : "How clear the forecast is"}>
         <div className={styles.readinessScore}><strong>{readiness.score ?? "—"}</strong><span>/ 100</span></div>

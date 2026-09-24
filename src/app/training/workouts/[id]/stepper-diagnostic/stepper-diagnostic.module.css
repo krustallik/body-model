@@ -49,6 +49,8 @@
 .panelBody { display: grid; gap: 0.8rem; min-width: 0; padding: 0.8rem 0.95rem 0.95rem; }
 .fieldGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.65rem; min-width: 0; margin: 0; }
 .field { display: grid; align-content: start; gap: 0.25rem; min-width: 0; padding: 0.5rem 0.6rem; border: 1px solid color-mix(in srgb, var(--border) 78%, transparent); border-radius: 0.65rem; background: color-mix(in srgb, var(--inset) 70%, transparent); }
+.fieldFeatured { border-color: color-mix(in srgb, var(--success) 45%, var(--border)); background: color-mix(in srgb, var(--success-soft) 62%, var(--inset)); }
+.fieldFeatured dd { font-size: 1.25rem; font-weight: 800; }
 .field dt { color: var(--text-muted); font-size: 0.72rem; font-weight: 700; }
 .field dd { display: grid; gap: 0.25rem; min-width: 0; margin: 0; color: var(--text); font-size: 0.88rem; line-height: 1.4; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .codeMeaning { display: grid; gap: 0.18rem; min-width: 0; }

@@ -80,8 +80,10 @@ function modelStatus(overrides: Partial<ModelStatusDto> = {}): ModelStatusDto {
   };
 }
 
-function forecastOk(): ForecastResult {
+function forecastOk(mode: ForecastResult["scenarioProvenance"]["mode"] = "fixed"): ForecastResult {
   const summary = { mean: 80, p05: 78, p25: 79, median: 80, p75: 81, p95: 82 };
+  const isRecent = mode === "recent-behavior";
+  const isTargetCentered = mode === "target-centered";
   return {
     status: "ok",
     forecastVersion: "bodycast-forecast-v1",
@@ -92,9 +94,9 @@ function forecastOk(): ForecastResult {
     initialStateQuality: "deterministic",
     horizonDays: 30,
     scenarioProvenance: {
-      mode: "fixed",
-      nutrition: "fixed",
-      activity: "fixed-scheduled",
+      mode,
+      nutrition: isRecent ? "observed-joint-block-resampling" : isTargetCentered ? "joint-target-distribution" : "fixed",
+      activity: isRecent ? "observed-joint-block-resampling" : isTargetCentered ? "stochastic-adherence" : "fixed-scheduled",
       donorEvidence: {
         donorDayCount: 20,
         source: "observed-history",
@@ -416,8 +418,9 @@ describe("ForecastClient interaction", () => {
       const url = String(input);
       if (url.includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), history: [], unknownIntervals: [] });
       if (url.includes("/api/forecast") && !url.includes("action")) {
-        requests.push(JSON.parse(String(init?.body)));
-        return jsonResponse(forecastOk());
+        const request = JSON.parse(String(init?.body)) as { scenario: { mode: ForecastResult["scenarioProvenance"]["mode"] } };
+        requests.push(request);
+        return jsonResponse(forecastOk(request.scenario.mode));
       }
       return jsonResponse({ error: "unexpected" }, 500);
     }));
@@ -427,7 +430,7 @@ describe("ForecastClient interaction", () => {
     await screen.findByTestId("forecast-chart");
     expect(screen.getByRole("heading", { name: "Forecast horizon" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "What happens next?" })).toBeTruthy();
-    expect(screen.getByText(/Manual food, movement, and work fields do not apply/)).toBeTruthy();
+    expect(screen.getByText(/manual food and activity plan is not sent with this request/i)).toBeTruthy();
     expect(screen.queryByLabelText(/Average steps/)).toBeNull();
     await user.click(screen.getByRole("button", { name: /Exact daily plan/ }));
     expect(screen.getByRole("heading", { name: "Planned nutrition" })).toBeTruthy();
@@ -436,6 +439,8 @@ describe("ForecastClient interaction", () => {
     const recentRequest = requests[0] as { scenario: unknown };
     expect(recentRequest.scenario).toEqual({ mode: "recent-behavior" });
     expect(JSON.stringify(recentRequest)).not.toMatch(/averageSteps|caloriesKcal|plannedWork/);
+    expect(screen.getByText("We take your recent complete days and repeat a similar rhythm.")).toBeTruthy();
+    expect(screen.queryByText("The entered daily plan is followed exactly.")).toBeNull();
     const plannedRequest = requests.at(-1) as { scenario: { mode: string; schedule?: { defaultDay: { nutrition: unknown; outsideWorkWalkingDistanceKm: number } } } };
     expect(plannedRequest.scenario.mode).toBe("fixed");
     expect(plannedRequest.scenario.schedule?.defaultDay).toMatchObject({
@@ -446,6 +451,38 @@ describe("ForecastClient interaction", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(700); });
     const editedRequest = requests.at(-1) as typeof plannedRequest;
     expect(editedRequest.scenario.schedule?.defaultDay.nutrition).toMatchObject({ caloriesKcal: 2100 });
+  });
+
+  it("labels the previous plan result if a recent-behavior forecast fails", async () => {
+    localStorage.setItem(FORECAST_SETTINGS_KEY, JSON.stringify({
+      version: 1,
+      settings: { horizon: 30, mode: "fixed", plan: { ...DEFAULT_PLAN, caloriesKcal: 2050 } },
+    }));
+    let forecastRequests = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), history: [], unknownIntervals: [] });
+      if (url.includes("/api/forecast") && !url.includes("action")) {
+        forecastRequests += 1;
+        return forecastRequests === 1
+          ? jsonResponse(forecastOk("fixed"))
+          : jsonResponse({ error: "insufficient_scenario_evidence", message: "Recent history unavailable" }, 422);
+      }
+      return jsonResponse({ error: "unexpected" }, 500);
+    }));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTimeAsync });
+    render(<ForecastClient />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(MIN_FORECAST_LOADING_MS + 50); });
+    await screen.findByTestId("forecast-chart");
+    expect(screen.getByText("The entered daily plan is followed exactly.")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: /As lately/ }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+
+    expect(await screen.findByText("Recent history unavailable")).toBeTruthy();
+    expect(screen.getByText("The previous forecast is still shown.")).toBeTruthy();
+    expect(screen.getByText(/It used “Exact daily plan” for 30 days\. The current selection is “As lately”/)).toBeTruthy();
+    expect(screen.getByText("The entered daily plan is followed exactly.")).toBeTruthy();
   });
 
   it("surfaces API errors without waiting for the minimum loading delay", async () => {

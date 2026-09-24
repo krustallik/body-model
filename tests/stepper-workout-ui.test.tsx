@@ -55,7 +55,7 @@ describe("StepperDiagnosticClient", () => {
     expect(document.querySelector("main")?.className).toContain("page");
   });
 
-  it("renders unavailable bracketed steps, null values, unavailable energy, and loaded HR with no samples", async () => {
+  it("renders unavailable interval steps, null values, unavailable energy, and loaded HR with no samples", async () => {
     const base = completeDiagnostic(0);
     const diagnostic = {
       ...base,
@@ -74,7 +74,8 @@ describe("StepperDiagnosticClient", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ diagnostic })));
     render(<StepperDiagnosticClient workoutId="61" />);
 
-    expect(await screen.findByText("Немає знімка кроків перед тренуванням")).toBeTruthy();
+    expect(await screen.findByText("Немає інтервалів кроків у межах тренування")).toBeTruthy();
+    expect(screen.queryByText(/Немає знімка кроків/)).toBeNull();
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
     expect(screen.queryByText(/Проміжки між зразками/)).toBeNull();
     expect(screen.getByText("Завантажено")).toBeTruthy();

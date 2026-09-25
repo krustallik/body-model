@@ -8,6 +8,7 @@ import {
   type ExerciseMuscleMappingSnapshotV7,
 } from "@/model/physiology-v7/exercise-muscle-mapping-v7";
 import { DEFAULT_TRAINING_PROFILE_ID } from "./training.constants";
+import { exerciseMappingSnapshotWithAnatomyV1 } from "./exercise-anatomy-mapping-v1";
 
 export function muscleMappingSnapshotForCatalogStableKey(
   stableKey: string | null | undefined,
@@ -19,6 +20,13 @@ export function muscleMappingSnapshotJson(
   stableKey: string | null | undefined,
 ): Prisma.InputJsonValue {
   return muscleMappingSnapshotForCatalogStableKey(stableKey) as unknown as Prisma.InputJsonValue;
+}
+
+/** Add the anatomy v1 snapshot for new diary exercise rows without altering V7 fields. */
+export function trainingExerciseMappingSnapshotJsonV1(
+  stableKey: string | null | undefined,
+): Prisma.InputJsonValue {
+  return exerciseMappingSnapshotWithAnatomyV1(stableKey) as unknown as Prisma.InputJsonValue;
 }
 
 /** Historical snapshot identity wins over a mutable catalog row. */

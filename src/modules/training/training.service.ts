@@ -34,7 +34,7 @@ import {
 } from "./training.errors";
 import { matchDiaryToWorkouts } from "./training.matcher";
 import { planProgramExerciseReconcile } from "./training.program-reconcile";
-import { muscleMappingSnapshotJson } from "./exercise-mapping-snapshot";
+import { trainingExerciseMappingSnapshotJsonV1 } from "./exercise-mapping-snapshot";
 import {
   TrainingRepository,
   trainingRepository,
@@ -329,7 +329,7 @@ export class TrainingService {
           sortOrder: exercise.sortOrder,
           plannedSets: exercise.plannedSets,
           resistanceType: exercise.resistanceType as ResistanceType,
-          muscleMappingSnapshot: muscleMappingSnapshotJson(exercise.exerciseCatalog.stableKey),
+          muscleMappingSnapshot: trainingExerciseMappingSnapshotJsonV1(exercise.exerciseCatalog.stableKey),
         })),
       });
     } catch (error) {
@@ -447,7 +447,7 @@ export class TrainingService {
           sortOrder: exercise.sortOrder,
           plannedSets: exercise.plannedSets,
           resistanceType: exercise.resistanceType as ResistanceType,
-          muscleMappingSnapshot: muscleMappingSnapshotJson(exercise.exerciseCatalog.stableKey),
+          muscleMappingSnapshot: trainingExerciseMappingSnapshotJsonV1(exercise.exerciseCatalog.stableKey),
         })),
       });
       noteTrainingSourceChange({
@@ -506,7 +506,7 @@ export class TrainingService {
         sortOrder: exercise.sortOrder,
         plannedSets: exercise.plannedSets,
         resistanceType: exercise.resistanceType as ResistanceType,
-        muscleMappingSnapshot: muscleMappingSnapshotJson(exercise.exerciseCatalog.stableKey),
+        muscleMappingSnapshot: trainingExerciseMappingSnapshotJsonV1(exercise.exerciseCatalog.stableKey),
       })),
     );
 
@@ -548,7 +548,7 @@ export class TrainingService {
       plannedSets: input.plannedSets,
       resistanceType: input.resistanceType,
       origin: EXERCISE_ORIGIN.EXTRA,
-      muscleMappingSnapshot: muscleMappingSnapshotJson(catalog.stableKey),
+      muscleMappingSnapshot: trainingExerciseMappingSnapshotJsonV1(catalog.stableKey),
       order: input.order,
       orderedExerciseIds: session.exercises.map((exercise) => exercise.id),
     });

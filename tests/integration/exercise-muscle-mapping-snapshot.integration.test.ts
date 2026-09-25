@@ -1,10 +1,17 @@
 import { Prisma, PrismaClient } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
-import { buildExerciseMuscleMappingSnapshotV7 } from "@/model/physiology-v7/exercise-muscle-mapping-v7";
+import {
+  buildExerciseMuscleMappingSnapshotV7,
+  parseExerciseMuscleMappingSnapshotV7,
+} from "@/model/physiology-v7/exercise-muscle-mapping-v7";
 import {
   applyNullMuscleMappingSnapshotBackfill,
   reportNullMuscleMappingSnapshotBackfill,
 } from "@/modules/training/exercise-mapping-snapshot";
+import {
+  parseExerciseAnatomySnapshotFromCombinedV1,
+  resolveStoredExerciseAnatomySnapshotV1,
+} from "@/modules/training/exercise-anatomy-mapping-v1";
 import { TrainingRepository } from "@/modules/training/training.repository";
 import { TrainingService } from "@/modules/training/training.service";
 import { RESISTANCE } from "@/modules/training/training.constants";
@@ -32,7 +39,7 @@ async function clean(): Promise<void> {
   await prisma.exerciseCatalog.deleteMany({ where: { profileId } });
 }
 
-describe("Stage-7 Slice-1 mapping snapshots with PostgreSQL", () => {
+describe("V7 and anatomy mapping snapshots with PostgreSQL", () => {
   afterAll(async () => {
     await clean();
     await prisma.$disconnect();
@@ -72,12 +79,22 @@ describe("Stage-7 Slice-1 mapping snapshots with PostgreSQL", () => {
 
     const session = await service.startSession(program.id, profileId);
     expect(session.exercises).toHaveLength(2);
-    expect(session.exercises[0]?.muscleMappingSnapshot).toEqual(
+    expect(parseExerciseMuscleMappingSnapshotV7(session.exercises[0]?.muscleMappingSnapshot)).toEqual(
       buildExerciseMuscleMappingSnapshotV7("seated_dumbbell_press"),
     );
-    expect(session.exercises[1]?.muscleMappingSnapshot).toEqual(
+    expect(parseExerciseAnatomySnapshotFromCombinedV1(session.exercises[0]?.muscleMappingSnapshot)).toMatchObject({
+      availability: "available",
+      stableKey: "seated_dumbbell_press",
+      mappingVersion: "bodycast-exercise-anatomy-mapping-v1",
+      provenance: "versioned-registry-snapshot",
+    });
+    expect(parseExerciseMuscleMappingSnapshotV7(session.exercises[1]?.muscleMappingSnapshot)).toEqual(
       buildExerciseMuscleMappingSnapshotV7(null),
     );
+    expect(parseExerciseAnatomySnapshotFromCombinedV1(session.exercises[1]?.muscleMappingSnapshot)).toMatchObject({
+      availability: "unavailable",
+      reason: "missing-stable-key",
+    });
 
     const before = session.exercises[0]?.muscleMappingSnapshot;
     await prisma.exerciseCatalog.update({
@@ -152,5 +169,48 @@ describe("Stage-7 Slice-1 mapping snapshots with PostgreSQL", () => {
       buildExerciseMuscleMappingSnapshotV7("hyperextension"),
     );
     expect(refreshed?.exercises[1]?.muscleMappingSnapshot).toEqual(preexisting);
+    expect(resolveStoredExerciseAnatomySnapshotV1(refreshed?.exercises[0]?.muscleMappingSnapshot)).toMatchObject({
+      availability: "available",
+      provenance: "retrospective-interpretation",
+      stableKey: "hyperextension",
+      sourceSnapshotMappingVersion: "bodycast-exercise-muscle-mapping-v7.2",
+    });
+  });
+
+  it("preserves snapshots through program reconciliation and exercise editing", async () => {
+    await clean();
+    const press = await prisma.exerciseCatalog.create({
+      data: { profileId, name: "slice1-preserve-press", stableKey: "seated_dumbbell_press" },
+    });
+    const fly = await prisma.exerciseCatalog.create({
+      data: { profileId, name: "slice1-new-fly", stableKey: "flat_dumbbell_fly" },
+    });
+    const firstProgram = await service.createProgram({
+      name: "slice1-preserve-source",
+      exercises: [{ catalogId: press.id, plannedSets: 3, resistanceType: RESISTANCE.EXTERNAL_WEIGHT }],
+    }, profileId);
+    const nextProgram = await service.createProgram({
+      name: "slice1-preserve-target",
+      exercises: [
+        { catalogId: press.id, plannedSets: 4, resistanceType: RESISTANCE.EXTERNAL_WEIGHT },
+        { catalogId: fly.id, plannedSets: 2, resistanceType: RESISTANCE.EXTERNAL_WEIGHT },
+      ],
+    }, profileId);
+
+    const session = await service.startSession(firstProgram.id, profileId);
+    const originalSnapshot = session.exercises[0]?.muscleMappingSnapshot;
+    const reconciled = await service.changeSessionProgram(session.id, { programId: nextProgram.id }, profileId);
+    expect(reconciled.exercises).toHaveLength(2);
+    const kept = reconciled.exercises.find(({ sourceExerciseCatalogId }) => sourceExerciseCatalogId === press.id)!;
+    const added = reconciled.exercises.find(({ sourceExerciseCatalogId }) => sourceExerciseCatalogId === fly.id)!;
+    expect(kept.muscleMappingSnapshot).toEqual(originalSnapshot);
+    expect(parseExerciseAnatomySnapshotFromCombinedV1(added.muscleMappingSnapshot)).toMatchObject({
+      availability: "available",
+      stableKey: "flat_dumbbell_fly",
+      provenance: "versioned-registry-snapshot",
+    });
+
+    const edited = await service.updateSessionExercise(session.id, kept.id, { plannedSets: 5 }, profileId);
+    expect(edited.exercises.find(({ id }) => id === kept.id)?.muscleMappingSnapshot).toEqual(originalSnapshot);
   });
 });

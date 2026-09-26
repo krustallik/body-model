@@ -308,6 +308,8 @@ export function TrainingClient() {
     );
   }
 
+  const activeHasLoggedSets = (active?.exercises ?? []).some((exercise) => exercise.sets.length > 0);
+
   return (
     <main className={`${styles.page} ${styles.trainingHubPage}`}>
       <div className={styles.navRow}>
@@ -406,7 +408,7 @@ export function TrainingClient() {
                         {workout.source === "manual" ? (uk ? "Ручний запис" : "Manual entry") : "Apple Health"}
                       </span>
                     </div>
-                    <div className={styles.denseCardActions}>
+                    <div className={`${styles.denseCardActions} ${styles.stepperCardActions}`}>
                       <Link className={styles.linkLike} href={`/training/workouts/${workout.id}/stepper-diagnostic`}>
                         {uk ? "Енергія · діагностика" : "Energy · diagnostics"}
                       </Link>
@@ -421,7 +423,7 @@ export function TrainingClient() {
           </div>
         </section>
 
-        <div className={styles.trainingHubGrid}>
+        <div className={styles.trainingHubGrid} style={{ order: activeHasLoggedSets ? 0 : 2 }}>
         <section className={`${styles.panel} ${styles.panelActive}`} aria-label={uk ? "Активна сесія" : "Active session"}>
           <div className={styles.panelHeader}>
             <div>

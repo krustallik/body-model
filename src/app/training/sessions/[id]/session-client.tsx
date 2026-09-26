@@ -56,6 +56,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
   const [loading, setLoading] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
   const [finishOffer, setFinishOffer] = useState(false);
+  const [autoAdvanceNonce, setAutoAdvanceNonce] = useState(0);
   const finishOfferedRef = useRef(false);
 
   const load = useCallback(async () => {
@@ -208,7 +209,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
       setDraft(emptySetDraft());
       setEditingSetId(null);
       if (shouldAutoAdvanceAfterSet({ enabled: session.autoAdvanceExercises === true, adding, exerciseOrigin: current.origin, plannedSets: current.plannedSets, previousSetCount: current.sets.length, isLastExercise: lastExercise })) {
-        goToNeighbor(1);
+        setAutoAdvanceNonce((value) => value + 1);
       } else if (completedPlannedExercise && lastExercise && !finishOfferedRef.current) {
         finishOfferedRef.current = true;
         setFinishOffer(true);
@@ -382,6 +383,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         clockStartedAt={session.webStartedAt}
         clockEndedAt={session.webEndedAt}
         clockTicking
+        autoAdvanceNonce={autoAdvanceNonce}
         menuOpen={menuOpen}
         onToggleMenu={() => setMenuOpen((value) => !value)}
         onCloseMenu={() => setMenuOpen(false)}

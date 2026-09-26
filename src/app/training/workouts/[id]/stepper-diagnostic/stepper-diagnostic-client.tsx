@@ -5,7 +5,6 @@ import { useEffect, useState, type ReactNode } from "react";
 import { AppNav } from "@/components/app-nav";
 import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import type { StepperWorkoutDiagnosticV7 } from "@/modules/profile/stepper-workout-diagnostic";
-import type { StepperHrDecisionReasonV1 } from "@/model/activity/stepper-hr-aware-active-energy-v1";
 import { useI18n } from "@/i18n/i18n-provider";
 import styles from "./stepper-diagnostic.module.css";
 
@@ -19,30 +18,6 @@ function hasIntervalEvidence(value: StepperWorkoutDiagnosticV7["bracketedSteps"]
   return value?.availability === "available"
     && typeof value.intervalCoveragePercent === "number"
     && typeof value.observedIntervalStepCount === "number";
-}
-
-function hrDecisionText(reason: StepperHrDecisionReasonV1 | null, uk: boolean): string {
-  if (reason === null) return uk ? "Індивідуальну калібровку застосовано." : "Individual calibration was applied.";
-  const copy: Record<StepperHrDecisionReasonV1, [string, string]> = {
-    "no-personal-ms100-calibration": ["Пульс не змінив ккал: немає незалежно перевіреної персональної калібровки HR–VO₂ для MS100.", "HR did not change kcal: no independently validated personal MS100 HR–VO₂ calibration is registered."],
-    "hr-unavailable": ["Пульс за інтервал тренування недоступний.", "Heart-rate samples for the workout interval are unavailable."],
-    "hr-no-interval-samples": ["У межах тренування немає зразків пульсу.", "There are no heart-rate samples inside the workout interval."],
-    "hr-samples-invalid": ["У зразках пульсу є некоректні значення або неповне часове покриття.", "The HR series contains invalid values or does not cover the workout interval."],
-    "hr-sample-times-ambiguous": ["Часові мітки пульсу неоднозначні, тому інтегрувати ряд неможливо.", "Heart-rate timestamps are ambiguous, so the series cannot be integrated."],
-    "hr-source-does-not-match-calibration": ["Джерело пульсу відрізняється від джерела персональної калібровки.", "The HR source does not match the source used for personal calibration."],
-    "calibration-not-valid-for-workout-date": ["Тренування поза датами чинності калібровки.", "The workout falls outside the calibration's effective dates."],
-    "calibration-not-holdout-validated": ["Калібровка не пройшла незалежну перевірку на окремих тренуваннях.", "The calibration has not passed independent holdout validation."],
-    "calibration-invalid": ["Калібровка має некоректні або неповні параметри.", "The calibration has invalid or incomplete parameters."],
-    "missing-body-mass": ["Немає маси тіла для розрахунку.", "Body mass is unavailable for the calculation."],
-    "missing-step-rate": ["Немає надійної частоти кроків для перевірки діапазону калібровки.", "No usable step rate is available to check the calibration domain."],
-    "outside-calibrated-step-rate-range": ["Частота кроків поза перевіреним для калібровки діапазоном.", "Step rate is outside the validated calibration range."],
-    "outside-calibrated-duration-range": ["Тривалість тренування поза перевіреним діапазоном калібровки.", "Workout duration is outside the validated calibration range."],
-    "outside-calibrated-heart-rate-range": ["Є значення пульсу поза перевіреним діапазоном калібровки.", "An HR value is outside the validated calibration range."],
-    "hr-edge-gap-exceeds-calibrated-limit": ["На початку або в кінці тренування є надто довга прогалина в пульсі.", "The HR series has an edge gap longer than the validated limit."],
-    "hr-gap-exceeds-calibrated-limit": ["Між зразками пульсу є прогалина довша за перевірений ліміт.", "An inter-sample HR gap exceeds the validated limit."],
-    "missing-mechanical-and-device-energy": ["Немає ні механічної оцінки BodyCast, ні енергії пристрою.", "Neither a BodyCast mechanical estimate nor device energy is available."],
-  };
-  return copy[reason][uk ? 0 : 1];
 }
 
 function selectedEnergyText(source: StepperWorkoutDiagnosticV7["activeEnergyResolution"]["selected"]["source"], uk: boolean): string {
@@ -63,17 +38,6 @@ function selectedEnergyNote(source: StepperWorkoutDiagnosticV7["activeEnergyReso
     ? "BodyCast не зміг оцінити енергію за кроками й масою тіла, тому production використав активні ккал пристрою як fallback."
     : "BodyCast could not estimate energy from steps and body mass, so production used device active kcal as a fallback.";
   return uk ? "Немає даних для оцінки BodyCast або енергії пристрою." : "Neither a BodyCast estimate nor device energy is available.";
-}
-
-function hrQualityText(quality: StepperWorkoutDiagnosticV7["activeEnergyResolution"]["heartRate"]["quality"], uk: boolean): string {
-  const copy = {
-    unavailable: ["Недоступний", "Unavailable"],
-    "context-only": ["Контекст · без калібровки", "Context only · uncalibrated"],
-    "data-rejected": ["Часовий ряд непридатний", "Series is invalid"],
-    "calibration-accepted": ["Калібровку застосовано", "Calibration applied"],
-    "calibration-rejected": ["Поза доменом калібровки", "Outside calibration domain"],
-  } as const;
-  return copy[quality][uk ? 0 : 1];
 }
 
 function formatInstant(value: string, intlLocale: string): string {
@@ -231,28 +195,6 @@ export function StepperDiagnosticClient({ workoutId }: { workoutId: string }) {
                   ? <><CalorieValue value={diagnostic.programEnergy.lowerBoundKcal} intlLocale={intlLocale} />–<CalorieValue value={diagnostic.programEnergy.upperBoundKcal} intlLocale={intlLocale} /></>
                   : "—"}
               </Field>
-              <Field label={uk ? "Оцінка HR після калібровки · ккал" : "Calibrated HR estimate · kcal"}>
-                {diagnostic.activeEnergyResolution.hrAwareEstimate.availability === "available"
-                  ? <CalorieValue value={diagnostic.activeEnergyResolution.hrAwareEstimate.activeKcal} intlLocale={intlLocale} />
-                  : <span className={styles.muted}>{uk ? "Не застосовано" : "Not applied"}</span>}
-              </Field>
-              <Field label={uk ? "Вплив пульсу на результат" : "HR impact on selected kcal"}>
-                {diagnostic.activeEnergyResolution.selected.source === "hr-calibrated-ms100"
-                  && diagnostic.activeEnergyResolution.selected.impactVsMechanicalKcal !== null
-                  ? <><NumberValue value={diagnostic.activeEnergyResolution.selected.impactVsMechanicalKcal} intlLocale={intlLocale} /> {uk ? "ккал проти механічної оцінки" : "kcal vs mechanical estimate"}</>
-                  : <span className={styles.muted}>{uk ? "Не вплинув" : "No impact"}</span>}
-              </Field>
-              <Field label={uk ? "Охоплений HR-зразками інтервал · % тренування" : "Span between HR samples · % workout"}>
-                {diagnostic.activeEnergyResolution.heartRate.sampledCoveragePercent === null
-                  ? "—"
-                  : `${new Intl.NumberFormat(intlLocale, { maximumFractionDigits: 1 }).format(diagnostic.activeEnergyResolution.heartRate.sampledCoveragePercent)}%`}
-              </Field>
-              <Field label={uk ? "Кількість HR зразків" : "HR sample count"}>
-                <NumberValue value={diagnostic.activeEnergyResolution.heartRate.sampleCount} intlLocale={intlLocale} />
-              </Field>
-              <Field label={uk ? "Якість для енергетичної оцінки" : "Quality for energy estimation"}>
-                {hrQualityText(diagnostic.activeEnergyResolution.heartRate.quality, uk)}
-              </Field>
               <Field label={uk ? "Оцінка пристрою · активні ккал" : "Device estimate · active kcal"}>
                 {diagnostic.deviceEnergy.availability === "available"
                   ? <CalorieValue value={diagnostic.deviceEnergy.valueKcal} intlLocale={intlLocale} />
@@ -265,7 +207,7 @@ export function StepperDiagnosticClient({ workoutId }: { workoutId: string }) {
               </Field>
             </dl>
             <p className={styles.muted}>
-              {selectedEnergyNote(diagnostic.activeEnergyResolution.selected.source, uk)} {diagnostic.activeEnergyResolution.selected.source === "hr-calibrated-ms100" ? "" : hrDecisionText(diagnostic.activeEnergyResolution.heartRate.decisionReason, uk)}
+              {selectedEnergyNote(diagnostic.activeEnergyResolution.selected.source, uk)}
             </p>
           </Section>
 

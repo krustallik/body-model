@@ -35,7 +35,8 @@ export const CAROUSEL_MANUAL_MS = 220;
 export const CAROUSEL_AUTOMATIC_MS = 440;
 
 function carouselDurationMs(mode: "manual" | "automatic"): number {
-  if (typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return 0;
+  if (typeof window !== "undefined" && typeof window.matchMedia === "function"
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return 0;
   return mode === "automatic" ? CAROUSEL_AUTOMATIC_MS : CAROUSEL_MANUAL_MS;
 }
 

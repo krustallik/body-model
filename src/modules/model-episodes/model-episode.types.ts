@@ -76,6 +76,13 @@ export type ModelWorkoutSource = {
   durationMinutes: number | null;
   energyKcal: number | null;
   activeEnergyKcal: number | null;
+  /** Declared MS100 steps. Absent is distinct from an Apple step sample. */
+  manualStepCount?: number | null;
+  manualActiveEnergyKcal?: number | null;
+  bodyCastEstimateKcal?: number | null;
+  bodyCastEstimateFresh?: boolean;
+  strengthSessionCompleted?: boolean;
+  mechanicalStepperKcal?: number | null;
 };
 
 export type HistoricalModelSources = {
@@ -232,6 +239,16 @@ export type ModelDaySourceQuality = {
   workoutCount?: number;
   /** true when sync persisted workout-feed coverage for this day. */
   workoutFeedObserved?: boolean;
+  /** Present only for the staged selection-v1 physiology path. */
+  selectionV1?: {
+    massSource: "same-day-observed" | "unified-start-of-day" | "unavailable";
+    distanceComplete: boolean;
+    distanceConflicted: boolean;
+    partialCoverage: boolean;
+    knownAcceptedSubtotalKm: number | null;
+    historicalDonorEligible: boolean;
+    invalidatedDates: string[];
+  };
 };
 
 export type BuiltSimulationDay = {

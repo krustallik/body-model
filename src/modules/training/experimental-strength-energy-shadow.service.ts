@@ -7,6 +7,7 @@ import {
   experimentalStrengthActiveEnergyV1Fingerprint,
   resolveExperimentalStrengthActiveEnergyV1,
 } from "./experimental-strength-active-energy-v1";
+import { strengthPublicationDecisionV1 } from "./strength-publication-v1";
 
 async function resolveBodyMassKg(input: {
   session: StrengthSessionDto;
@@ -68,8 +69,30 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
     bodycast: result,
     matchedGarminActiveKcal: input.session.matchedWorkout?.activeEnergyKcal ?? null,
   });
-  const persistedResult = { ...result, activeEnergyResolution };
+  const persistedResult = { ...result, activeEnergyResolution, sessionRevision: input.session.revision };
   const sourceFingerprint = experimentalStrengthActiveEnergyV1Fingerprint(result);
+  const previous = await prisma.experimentalStrengthEnergyShadow.findUnique({
+    where: { sessionId: input.session.id },
+    select: { sourceFingerprint: true, result: true },
+  });
+  const previousResult = previous?.result;
+  const previousSessionRevision = previousResult !== null
+    && typeof previousResult === "object"
+    && !Array.isArray(previousResult)
+    && typeof (previousResult as { sessionRevision?: unknown }).sessionRevision === "number"
+    ? (previousResult as { sessionRevision: number }).sessionRevision
+    : null;
+  const publication = strengthPublicationDecisionV1({
+    sessionStatus: input.session.status,
+    estimateKcal: result.estimatedActiveKcal,
+    estimateFresh: result.availability === "available",
+    massKg: bodyMassKg,
+    inputFingerprint: sourceFingerprint,
+    previousFingerprint: previous?.sourceFingerprint ?? null,
+    previousSessionRevision,
+    sessionRevision: input.session.revision,
+  });
+  if (publication.reason === "stale-inputs") return;
   await prisma.experimentalStrengthEnergyShadow.upsert({
     where: { sessionId: input.session.id },
     create: {

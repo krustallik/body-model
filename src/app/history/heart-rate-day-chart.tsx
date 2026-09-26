@@ -14,7 +14,6 @@ import { useI18n } from "@/i18n/i18n-provider";
 import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import { todayInCalendarTimeZone } from "@/modules/days/calendar-range";
 import type { HeartRateDayDto } from "@/modules/days/day.types";
-import { formatMetric } from "@/modules/days/metric-format";
 import styles from "./history.module.css";
 
 const EMPTY_HEART_RATE: HeartRateDayDto = {

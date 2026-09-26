@@ -590,6 +590,16 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
                       : `${session.ordinaryTonnageKg} kg`}
                   </dd>
                 </div>
+                <div>
+                  <dt>{uk ? "Обрана активна енергія" : "Selected active energy"}</dt>
+                  <dd>
+                    {session.selectedActiveEnergy === undefined
+                      ? "—"
+                      : session.selectedActiveEnergy.kcal === null
+                        ? (uk ? "Недоступно" : "Unavailable")
+                        : `${session.selectedActiveEnergy.kcal} ${uk ? "ккал" : "kcal"} · ${session.selectedActiveEnergy.source}${session.selectedActiveEnergy.fullCoverage ? "" : (uk ? " · неповне покриття" : " · partial coverage")}`}
+                  </dd>
+                </div>
               </dl>
             </section>
             <section>

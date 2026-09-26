@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { resolveEventEnergyV1 } from "@/model/activity/canonical-activity-policy-v1";
 import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
 import { TRADITIONAL_STRENGTH_TRAINING_TYPE } from "@/modules/health/expand-training-workouts";
 import { CANONICAL_EXERCISE_IDENTITIES } from "./canonical-exercise-identity";
@@ -115,6 +116,7 @@ const sessionDetailSelect = {
   profile: { select: { autoAdvanceExercises: true } },
   programVersion: { select: { id: true, versionNumber: true } },
   matchedWorkout: { select: matchedWorkoutSelect },
+  experimentalStrengthEnergyShadow: { select: { result: true } },
   exercises: { select: sessionExerciseSelect, orderBy: { sortOrder: "asc" as const } },
 } satisfies Prisma.StrengthDiarySessionSelect;
 
@@ -213,6 +215,34 @@ function toSessionExerciseDto(record: SessionExerciseRecord): StrengthSessionExe
   };
 }
 
+function shadowEstimateKcal(result: unknown): number | null {
+  if (result === null || typeof result !== "object" || Array.isArray(result)) return null;
+  const kcal = (result as { estimatedActiveKcal?: unknown }).estimatedActiveKcal;
+  return typeof kcal === "number" && Number.isFinite(kcal) && kcal >= 0 ? kcal : null;
+}
+
+function selectedStrengthEnergy(record: {
+  status: string;
+  matchedWorkout: { activeEnergyKcal: number | null } | null;
+  experimentalStrengthEnergyShadow: { result: unknown } | null;
+}) {
+  const estimate = record.status === "COMPLETED"
+    ? shadowEstimateKcal(record.experimentalStrengthEnergyShadow?.result ?? null)
+    : null;
+  const selected = resolveEventEnergyV1({
+    classification: "traditional-strength-training",
+    activeEnergyKcal: record.matchedWorkout?.activeEnergyKcal ?? null,
+    bodyCastEstimateKcal: estimate,
+    bodyCastEstimateFresh: estimate !== null,
+    strengthSessionCompleted: record.status === "COMPLETED",
+  });
+  return {
+    kcal: selected.selectedKcal,
+    source: selected.source,
+    fullCoverage: selected.fullCoverage,
+  };
+}
+
 function toMatchedWorkoutDto(record: MatchedWorkoutRecord | null): MatchedWorkoutDto | null {
   if (!record) return null;
   return {
@@ -253,6 +283,7 @@ export function toSessionDto(record: SessionDetailRecord): StrengthSessionDto {
     matchedAt: record.matchedAt?.toISOString() ?? null,
     matchedWorkoutId: record.matchedWorkoutId,
     matchedWorkout: toMatchedWorkoutDto(record.matchedWorkout),
+    selectedActiveEnergy: selectedStrengthEnergy(record),
     exercises,
     ordinaryTonnageKg: ordinaryExternalWeightTonnageKg(tonnageSets),
     autoAdvanceExercises: record.profile?.autoAdvanceExercises ?? false,

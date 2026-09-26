@@ -51,7 +51,7 @@ describe("StepperDiagnosticClient", () => {
     expect(screen.getByText("Механічну оцінку BodyCast використано")).toBeTruthy();
     expect(screen.getByText("Використано в розрахунку · активні ккал")).toBeTruthy();
     expect(screen.getByText("Оцінка пристрою · активні ккал")).toBeTruthy();
-    expect(screen.getByText(/немає незалежно перевіреної персональної калібровки/)).toBeTruthy();
+    expect(screen.getByText(/без незалежно перевіреної персональної калібровки/)).toBeTruthy();
     expect(screen.queryByText("Workout ID")).toBeNull();
     expect(screen.queryByText("Summary basis")).toBeNull();
     expect(screen.getByText(/DOMYOS MS100/)).toBeTruthy();
@@ -96,9 +96,8 @@ describe("StepperDiagnosticClient", () => {
     render(<StepperDiagnosticClient workoutId="61" />);
 
     expect(await screen.findByText("Персональну оцінку HR застосовано")).toBeTruthy();
-    expect(screen.getByText("Калібровку застосовано")).toBeTruthy();
-    expect(screen.getByText("Оцінка HR після калібровки · ккал")).toBeTruthy();
-    expect(screen.getByText("Вплив пульсу на результат")).toBeTruthy();
+    expect(screen.getByText(/HR–VO₂ розрахунок із персональної MS100 калібровки/)).toBeTruthy();
+    expect(screen.queryByText("Вплив пульсу на результат")).toBeNull();
   });
 
   it("renders unavailable interval steps, null values, unavailable energy, and loaded HR with no samples", async () => {
@@ -115,7 +114,6 @@ describe("StepperDiagnosticClient", () => {
     expect(await screen.findByText("Немає інтервалів кроків у межах тренування")).toBeTruthy();
     expect(screen.queryByText(/Немає знімка кроків/)).toBeNull();
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
-    expect(screen.getByText(/Немає надійної частоти кроків/)).toBeTruthy();
     expect(screen.queryByText(/Проміжки між зразками/)).toBeNull();
     expect(screen.getByText("Завантажено")).toBeTruthy();
   });

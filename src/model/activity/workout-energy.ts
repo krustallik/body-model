@@ -1,5 +1,11 @@
 import { calculateStrengthActivity } from "./strength";
 import {
+  knownEnergyCoverageV1,
+  resolveEventEnergyV1,
+  type EnergySourceKind,
+  type KnownEnergyCoverageV1,
+} from "./canonical-activity-policy-v1";
+import {
   STAIR_CLIMBING_TYPE,
   TRADITIONAL_STRENGTH_TRAINING_TYPE,
 } from "@/modules/health/expand-training-workouts";
@@ -43,10 +49,21 @@ export type ExplicitWorkoutActivityEvent = {
   stepperEvidence?: WorkoutStepperEvidenceV7;
   /** No production calibration exists yet; this is an explicit future input. */
   stepperHeartRateCalibration?: StepperHeartRateEnergyCalibrationV1 | null;
+  /** Staged selection v1 only. Ignored by the legacy resolver. */
+  bodyCastEstimateKcal?: number | null;
+  bodyCastEstimateFresh?: boolean;
+  strengthSessionCompleted?: boolean;
+  manualActiveKcal?: number | null;
+  manualActiveKcalPresent?: boolean;
+  mechanicalStepperKcal?: number | null;
+  /** Future forecast only. Historical events leave this unset. */
+  forecastScenarioStrengthMet?: boolean;
 };
 
 export type ExplicitWorkoutActivityInput = {
   events: readonly ExplicitWorkoutActivityEvent[];
+  /** Omitted means the historical Garmin/MET resolver. */
+  selectionPolicy?: "legacy" | "bodycast-active-energy-selection-v1";
 };
 
 export type WorkoutEnergyResolutionSummaryV1 = {
@@ -58,7 +75,7 @@ export type WorkoutEnergyResolutionSummaryV1 = {
   perEvent: Array<{
     workoutId?: number;
     classification: WorkoutActivityClassification;
-    source: "hr-calibrated-stepper" | "mechanical-stepper" | "device-active-kcal" | "strength-met-fallback" | "none";
+    source: "hr-calibrated-stepper" | "mechanical-stepper" | "device-active-kcal" | "strength-met-fallback" | "bodycast-strength-estimate" | "manual-kcal" | "forecast-scenario-strength-met" | "none";
     kcal: number;
     stepperEnergy?: StepperHrAwareActiveEnergyResultV1;
   }>;
@@ -100,6 +117,27 @@ export function classifyWorkoutType(type: string): WorkoutActivityClassification
   return canonicalizeWorkoutType(type).classification;
 }
 
+function selectionProvenance(
+  source: EnergySourceKind,
+): "device-active-kcal" | "mechanical-stepper" | "bodycast-strength-estimate" | "manual-kcal" | "forecast-scenario-strength-met" | "none" {
+  switch (source) {
+    case "garmin-fallback":
+      return "device-active-kcal";
+    case "bodycast-stepper-mechanical":
+      return "mechanical-stepper";
+    case "bodycast-strength-estimate":
+      return "bodycast-strength-estimate";
+    case "manual-kcal":
+      return "manual-kcal";
+    case "forecast-scenario-strength-met":
+      return "forecast-scenario-strength-met";
+    case "unavailable":
+      return "none";
+    default:
+      return "none";
+  }
+}
+
 export function hasExplicitStrengthWorkouts(
   events: readonly ExplicitWorkoutActivityEvent[],
 ): boolean {
@@ -120,25 +158,51 @@ export function resolveExplicitWorkoutActivityKcal(input: {
   weightKg: number;
   rmrKcalPerDay: number;
   stepperHeartRateCalibration?: StepperHeartRateEnergyCalibrationV1 | null;
+  selectionPolicy?: "legacy" | "bodycast-active-energy-selection-v1";
 }): WorkoutEnergyResolutionSummaryV1 & {
   workoutActivityKcal: number;
   deviceActiveEnergyKcal: number;
   bodyCastStepperActiveEnergyKcal: number;
   strengthMetFallbackKcal: number;
   recoveryEnergy: WorkoutRecoveryEnergyScientificDecision;
+  energyCoverage?: KnownEnergyCoverageV1;
+  publishedStrengthEstimateKcal?: number;
 } {
   let deviceActiveEnergyKcal = 0;
   let bodyCastStepperActiveEnergyKcal = 0;
   let strengthMetFallbackKcal = 0;
+  let publishedStrengthEstimateKcal = 0;
+  const selectedValues: Array<number | null> = [];
+  const selectionV1 = input.selectionPolicy === "bodycast-active-energy-selection-v1";
   const perEvent: Array<{
     workoutId?: number;
     classification: WorkoutActivityClassification;
-    source: "hr-calibrated-stepper" | "mechanical-stepper" | "device-active-kcal" | "strength-met-fallback" | "none";
+    source: "hr-calibrated-stepper" | "mechanical-stepper" | "device-active-kcal" | "strength-met-fallback" | "bodycast-strength-estimate" | "manual-kcal" | "forecast-scenario-strength-met" | "none";
     kcal: number;
     stepperEnergy?: StepperHrAwareActiveEnergyResultV1;
   }> = [];
 
   for (const event of input.events) {
+    if (selectionV1) {
+      const selected = resolveEventEnergyV1(event);
+      const provenance = selectionProvenance(selected.source);
+      if (selected.selectedKcal === null || provenance === "none") {
+        selectedValues.push(null);
+      } else {
+        selectedValues.push(selected.selectedKcal);
+        if (selected.source === "garmin-fallback") deviceActiveEnergyKcal += selected.selectedKcal;
+        else if (selected.source === "bodycast-strength-estimate" || selected.source === "forecast-scenario-strength-met") {
+          publishedStrengthEstimateKcal += selected.selectedKcal;
+        } else bodyCastStepperActiveEnergyKcal += selected.selectedKcal;
+      }
+      perEvent.push({
+        ...(event.workoutId === undefined ? {} : { workoutId: event.workoutId }),
+        classification: event.classification,
+        source: provenance,
+        kcal: selected.selectedKcal ?? 0,
+      });
+      continue;
+    }
     let stepperEnergy: StepperHrAwareActiveEnergyResultV1 | undefined;
     if (event.classification === "stair-climbing" && event.stepperEvidence !== undefined) {
       stepperEnergy = estimateHrAwareStepperActiveEnergyV1({
@@ -208,11 +272,15 @@ export function resolveExplicitWorkoutActivityKcal(input: {
 
   return {
     modelVersion: "bodycast-workout-energy-v2",
-    workoutActivityKcal: deviceActiveEnergyKcal + bodyCastStepperActiveEnergyKcal + strengthMetFallbackKcal,
+    workoutActivityKcal: deviceActiveEnergyKcal + bodyCastStepperActiveEnergyKcal + strengthMetFallbackKcal + publishedStrengthEstimateKcal,
     deviceActiveEnergyKcal,
     bodyCastStepperActiveEnergyKcal,
     strengthMetFallbackKcal,
     recoveryEnergy: WORKOUT_RECOVERY_ENERGY_SCIENTIFIC_DECISION,
+    ...(selectionV1 ? {
+      energyCoverage: knownEnergyCoverageV1(selectedValues),
+      publishedStrengthEstimateKcal,
+    } : {}),
     perEvent,
   };
 }

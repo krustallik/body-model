@@ -13,7 +13,7 @@ import {
 import { ModelEpisodeRepository } from "@/modules/model-episodes/model-episode.repository";
 import type { BuiltSimulationDay, PersistedEpisode } from "@/modules/model-episodes/model-episode.types";
 import { addCalendarDays, latestCompletedLocalDate } from "@/modules/model-episodes/model-calendar";
-import { buildSimulationDays } from "@/modules/model-episodes/simulation-input-builder";
+import { buildSimulationDays, eligibleHistoricalDonors } from "@/modules/model-episodes/simulation-input-builder";
 import { analyzeStateContinuity } from "@/modules/model-episodes/unknown-intervals";
 import { ModelRecoveryRepository } from "@/modules/model-recovery/model-recovery.repository";
 import {
@@ -283,7 +283,7 @@ export async function forecastModelEpisodeWithInternalArtifacts(
     nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
     modelVersion: episode.modelVersion,
   });
-  const reliableDonors = behaviorDonorDays
+  const reliableDonors = eligibleHistoricalDonors(episode.modelVersion, behaviorDonorDays)
     .map(behaviorFromReliableDay).filter((day): day is ForecastBehaviorDay => day !== null);
   const evidence = variabilityEvidence({ scenario, donors: reliableDonors, config });
 
@@ -319,14 +319,14 @@ export async function forecastModelEpisodeWithInternalArtifacts(
     const recoveryDonorFrom = addCalendarDays(firstUnknownDate, -recoveryConfig.donorLookbackDays);
     const recoveryDonorTo = addCalendarDays(firstUnknownDate, -1);
     const recoveryDonorSources = await episodes.loadSources(recoveryDonorFrom, recoveryDonorTo);
-    const recoveryDonorDays = buildSimulationDays({
+    const recoveryDonorDays = eligibleHistoricalDonors(episode.modelVersion, buildSimulationDays({
       from: recoveryDonorFrom,
       to: recoveryDonorTo,
       sources: recoveryDonorSources,
       baselineNutritionFallback: episode.baselineNutritionFallback,
       nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
       modelVersion: episode.modelVersion,
-    });
+    }));
     const expectedRecoveryFingerprint = recoverySourceFingerprint({ episode, days: builtDays, donorDays: recoveryDonorDays });
     if (recovery.latestRecoveredDate !== latestCompletedDate
         || recovery.sourceFingerprint !== expectedRecoveryFingerprint) return blocked({

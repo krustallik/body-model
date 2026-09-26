@@ -32,6 +32,28 @@ function workoutLocalDateTime(value: string): string {
   return `${date}T${time}`;
 }
 
+function stepperSelectedEnergyText(workout: StepperWorkoutDto, uk: boolean): string {
+  if (typeof workout.selectedActiveEnergyKcal === "number") {
+    const source = workout.selectedActiveEnergySource === "manual-kcal"
+      ? (uk ? "введені ккал" : "entered kcal")
+      : workout.selectedActiveEnergySource === "bodycast-stepper-mechanical"
+        ? (uk ? "механічна оцінка" : "mechanical estimate")
+        : workout.selectedActiveEnergySource === "garmin-fallback"
+          ? (uk ? "запасний варіант пристрою" : "device fallback")
+          : workout.selectedActiveEnergySource;
+    const partial = workout.selectedActiveEnergyFullCoverage
+      ? ""
+      : (uk ? " · неповне покриття" : " · partial coverage");
+    return `${workout.selectedActiveEnergyKcal} ${uk ? "активних ккал" : "active kcal"} · ${source}${partial}`;
+  }
+  if (workout.activeEnergyKcal !== null) {
+    return uk
+      ? `Енергію не обрано · ${workout.activeEnergyKcal} ккал пристрою не використано`
+      : `Energy not selected · device ${workout.activeEnergyKcal} kcal not used`;
+  }
+  return uk ? "Енергія недоступна" : "Energy unavailable";
+}
+
 function formatStepperDateTime(value: string, intlLocale: string): string {
   return new Intl.DateTimeFormat(intlLocale, {
     timeZone: DEFAULT_TIME_ZONE,
@@ -70,6 +92,8 @@ export function TrainingClient() {
   const [editingStepper, setEditingStepper] = useState<StepperWorkoutDto | null>(null);
   const [stepperStartAt, setStepperStartAt] = useState(nowLocalDateTime);
   const [stepperDuration, setStepperDuration] = useState("20");
+  const [stepperSteps, setStepperSteps] = useState("");
+  const [stepperKcal, setStepperKcal] = useState("");
   const [stepperBusy, setStepperBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -111,6 +135,8 @@ export function TrainingClient() {
     setEditingStepper(null);
     setStepperStartAt(nowLocalDateTime());
     setStepperDuration("20");
+    setStepperSteps("");
+    setStepperKcal("");
     setStepperFormOpen(true);
   }
 
@@ -118,6 +144,8 @@ export function TrainingClient() {
     setEditingStepper(workout);
     setStepperStartAt(workoutLocalDateTime(workout.startAt));
     setStepperDuration(String(workout.durationMinutes ?? 20));
+    setStepperSteps(workout.manualStepCount === null ? "" : String(workout.manualStepCount));
+    setStepperKcal(workout.manualActiveEnergyKcal === null ? "" : String(workout.manualActiveEnergyKcal));
     setStepperFormOpen(true);
   }
 
@@ -133,7 +161,12 @@ export function TrainingClient() {
         : "/api/v1/training/stepper-workouts", {
         method: editingStepper ? "PUT" : "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ startAt: instant, durationMinutes: Number(stepperDuration) }),
+        body: JSON.stringify({
+          startAt: instant,
+          durationMinutes: Number(stepperDuration),
+          manualStepCount: stepperSteps.trim() === "" ? null : Number(stepperSteps),
+          manualActiveEnergyKcal: stepperKcal.trim() === "" ? null : Number(stepperKcal),
+        }),
       });
       if (!response.ok) {
         setError(await readApiError(response, uk));
@@ -363,8 +396,8 @@ export function TrainingClient() {
                 </div>
                 <p className={styles.cardMeta}>
                   {uk
-                    ? "Для ручного запису зберігаються дата, час і тривалість. Калорії, кроки та пульс додаються лише з фактичних даних Apple Health."
-                    : "Manual entries store date, time, and duration. Calories, steps, and heart rate come only from observed Apple Health data."}
+                    ? "Дата, час і тривалість обов’язкові. Кроки та активні ккал можна вказати окремо: вони не є спостереженням Apple Health. Якщо вказані ккал, кроки їх не перераховують."
+                    : "Date, time, and duration are required. Steps and active kcal are optional declarations, not Apple Health observations. Entered kcal are not recalculated from steps."}
                 </p>
                 <div className={`${styles.exerciseFields} ${styles.stepperFields}`}>
                   <label className={styles.field}>
@@ -374,6 +407,14 @@ export function TrainingClient() {
                   <label className={styles.field}>
                     <span>{uk ? "Тривалість · хвилини" : "Duration · minutes"}</span>
                     <input aria-label={uk ? "Тривалість степера" : "Stepper duration"} type="number" min="1" max="1440" step="1" required value={stepperDuration} onChange={(event) => setStepperDuration(event.target.value)} />
+                  </label>
+                  <label className={styles.field}>
+                    <span>{uk ? "Кроки MS100 · необов’язково" : "MS100 steps · optional"}</span>
+                    <input aria-label={uk ? "Кроки степера" : "Stepper steps"} type="number" min="0" step="1" value={stepperSteps} onChange={(event) => setStepperSteps(event.target.value)} />
+                  </label>
+                  <label className={styles.field}>
+                    <span>{uk ? "Активні ккал · необов’язково" : "Active kcal · optional"}</span>
+                    <input aria-label={uk ? "Активні ккал степера" : "Stepper active kcal"} type="number" min="0" step="1" value={stepperKcal} onChange={(event) => setStepperKcal(event.target.value)} />
                   </label>
                 </div>
                 <div className={styles.denseCardActions}>
@@ -401,7 +442,7 @@ export function TrainingClient() {
                         <p className={styles.cardMeta}>
                           <span>{formatStepperDateTime(workout.startAt, intlLocale)}</span>
                           <span>{formatDurationMinutes(workout.startAt, workout.endAt, intlLocale, uk)}</span>
-                          <span>{workout.activeEnergyKcal === null ? (uk ? "Енергія не записана" : "No energy recorded") : `${workout.activeEnergyKcal} ${uk ? "активних ккал · пристрій" : "active kcal · device"}`}</span>
+                          <span>{stepperSelectedEnergyText(workout, uk)}</span>
                         </p>
                       </div>
                       <span className={workout.source === "manual" ? styles.badgePrimary : styles.badgeInfo}>

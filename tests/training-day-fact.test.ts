@@ -82,7 +82,7 @@ describe("TrainingDayFact resolver", () => {
     expect(facts[0]?.events.map(({ exerciseDetailAvailability }) => exerciseDetailAvailability))
       .toEqual(["no-logged-sets", "no-logged-sets"]);
     expect(facts[0]?.events.map(({ executionStatus }) => executionStatus))
-      .toEqual(["in-progress", "completed"]);
+      .toEqual(["completed", "in-progress"]);
   });
 
   it("counts cancelled sessions only when a recorded set remains", () => {

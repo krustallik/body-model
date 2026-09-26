@@ -1247,6 +1247,10 @@ export class TrainingRepository {
           comment: set.comment ?? null,
         })),
       };
+    }).sort((left, right) => {
+      const time = Date.parse(right.occurredAt) - Date.parse(left.occurredAt);
+      if (time !== 0) return time;
+      return right.sessionId - left.sessionId;
     });
   }
 

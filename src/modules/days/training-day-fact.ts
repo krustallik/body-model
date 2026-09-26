@@ -187,5 +187,8 @@ export function resolveTrainingDayFacts(input: {
 
   return [...byDate.entries()]
     .sort(([left], [right]) => right.localeCompare(left))
-    .map(([date, value]) => makeFact(date, value.events.sort((left, right) => left.occurrenceAt.localeCompare(right.occurrenceAt)), value.hiddenEventCount));
+    .map(([date, value]) => makeFact(date, value.events.sort((left, right) => {
+      const time = right.occurrenceAt.localeCompare(left.occurrenceAt);
+      return time !== 0 ? time : right.eventId.localeCompare(left.eventId);
+    }), value.hiddenEventCount));
 }

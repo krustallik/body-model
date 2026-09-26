@@ -1,0 +1,23 @@
+# Downloaded vendor/source trees and full-source inventory stay local. Keep the
+# small, reusable Z-Anatomy inspection scripts visible as source code.
+/checkpoint-*/sources/
+!/checkpoint-7-20260925/sources/
+!/checkpoint-7-20260925/sources/z-anatomy-2026-09-25/
+/checkpoint-7-20260925/sources/z-anatomy-2026-09-25/*
+!/checkpoint-7-20260925/sources/z-anatomy-2026-09-25/inspect_blend_inventory.py
+!/checkpoint-7-20260925/sources/z-anatomy-2026-09-25/inspect_muscle_objects.py
+# Large downloaded source trees, archives, and raw inventories remain local.
+/checkpoint-*/previews/
+/checkpoint-*/reports/*.log
+/checkpoint-*/reports/*-log-v*.txt
+/checkpoint-*/reports/*-console-v*.txt
+/checkpoint-*/exports/**/*.blend
+/checkpoint-*/exports/**/*.glb
+/checkpoint-*/exports/**/*.gltf
+/checkpoint-*/exports/**/*.bin
+/checkpoint-*/exports/**/*.png
+/checkpoint-*/exports/**/*.zip
+/checkpoint-*/exports/**/*.blend1
+/checkpoint-*/scripts/__pycache__/
+# Locally generated anatomy, manifests and source-selection metadata are not public Git assets.
+/local-assets/

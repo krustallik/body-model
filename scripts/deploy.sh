@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Production app release (no Prisma migrate, no replay, no selection activation).
+# Requires DEPLOY_SHA (exact main commit that passed CI).
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -13,6 +15,22 @@ readonly CURRENT_IMAGE="bodycast-app:latest"
 readonly ROLLBACK_IMAGE="bodycast-app:rollback"
 readonly APP_HOST="${APP_HOST:?APP_HOST is required}"
 readonly CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:?CADDY_ROUTES_PATH is required}"
+readonly DEPLOY_SHA="${DEPLOY_SHA:?DEPLOY_SHA is required}"
+
+if [[ ! "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "DEPLOY_SHA must be a full 40-character commit SHA (got: ${DEPLOY_SHA})." >&2
+  exit 1
+fi
+
+echo "Deploying exact commit ${DEPLOY_SHA} (app recreate only; migrate/replay/activation not run)."
+
+git fetch --no-tags origin "$DEPLOY_SHA"
+git checkout --detach --force "$DEPLOY_SHA"
+deployed_sha="$(git rev-parse HEAD)"
+if [[ "$deployed_sha" != "$DEPLOY_SHA" ]]; then
+  echo "Checked-out SHA ${deployed_sha} does not match DEPLOY_SHA ${DEPLOY_SHA}." >&2
+  exit 1
+fi
 
 compose() {
   docker compose -f "$COMPOSE_FILE" "$@"
@@ -38,7 +56,6 @@ trap rollback ERR
 
 compose config --quiet
 compose build "$APP_SERVICE"
-compose --profile tools build migrate
 compose up -d "$DB_SERVICE"
 
 for attempt in $(seq 1 30); do
@@ -52,7 +69,9 @@ for attempt in $(seq 1 30); do
   sleep 5
 done
 
-compose --profile tools run --rm migrate
+# Schema must already be compatible. Ordinary deploy never runs migrate deploy.
+bash "${ROOT_DIR}/scripts/deploy-preflight-schema.sh"
+
 compose up -d --no-deps --force-recreate "$APP_SERVICE"
 
 for attempt in $(seq 1 30); do
@@ -101,4 +120,5 @@ curl --fail --silent --show-error --retry 12 --retry-delay 5 \
 
 trap - ERR
 docker image rm "$ROLLBACK_IMAGE" >/dev/null 2>&1 || true
-echo "BodyCast deployment completed successfully."
+echo "BodyCast deployment completed successfully for ${DEPLOY_SHA}."
+echo "DEPLOYED_SHA=${DEPLOY_SHA}"

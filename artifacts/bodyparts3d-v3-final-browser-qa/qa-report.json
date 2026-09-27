@@ -1,0 +1,146 @@
+{
+  "status": "passed",
+  "browser": "Chromium",
+  "browserVersion": "153.0.8010.53",
+  "pageUrl": "http://127.0.0.1:3191/dev/body-map",
+  "runtime": {
+    "renderer": {
+      "webgl2": true,
+      "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 SUPER (0x00002783) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "vendor": "Google Inc. (NVIDIA)",
+      "bvhInitializationMs": 583.5,
+      "graphicsQuality": "high",
+      "pixelRatio": 1,
+      "drawingBuffer": [
+        751,
+        713
+      ],
+      "renderedFrames": 5,
+      "drawCalls": 311,
+      "triangles": 2440984,
+      "geometries": 310,
+      "textures": 1
+    },
+    "visiblePresentationCounts": {
+      "mapped-muscle": 152,
+      "body-silhouette-context": 1,
+      "supplemental-muscle": 223
+    },
+    "meshCounts": {
+      "total": 376,
+      "selectable": 152,
+      "context": 224
+    },
+    "bounds": {
+      "allMin": [
+        -0.3341189920902252,
+        -0.0781112015247345,
+        -0.045247599482536316
+      ],
+      "allMax": [
+        0.3328250050544739,
+        1.6413600444793701,
+        0.24678300321102142
+      ],
+      "visibleMin": [
+        -0.3341189920902252,
+        -0.0781112015247345,
+        -0.045247599482536316
+      ],
+      "visibleMax": [
+        0.3328250050544739,
+        1.6413600444793701,
+        0.24678300321102142
+      ],
+      "lastFocus": {
+        "min": [
+          -0.3341189920902252,
+          -0.0781112015247345,
+          -0.045247599482536316
+        ],
+        "max": [
+          0.3328250050544739,
+          1.6413600444793701,
+          0.24678300321102142
+        ],
+        "requestKind": "overview",
+        "requestPreset": null
+      },
+      "lastDestination": {
+        "position": [
+          -0.0006469935178756714,
+          0.7816244214773178,
+          4.913212823591323
+        ],
+        "target": [
+          -0.0006469935178756714,
+          0.7816244214773178,
+          0.10076770186424255
+        ]
+      },
+      "lastCameraResult": null
+    },
+    "title": "BodyCast"
+  },
+  "mobileRenderer": {
+    "webgl2": true,
+    "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 SUPER (0x00002783) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    "vendor": "Google Inc. (NVIDIA)",
+    "bvhInitializationMs": 552.9000000059605,
+    "graphicsQuality": "high",
+    "pixelRatio": 1,
+    "drawingBuffer": [
+      370,
+      408
+    ],
+    "renderedFrames": 3,
+    "drawCalls": 310,
+    "triangles": 2439534,
+    "geometries": 309,
+    "textures": 1
+  },
+  "exercisedGroupCount": 20,
+  "screenshots": [
+    "D:\\body-model-bodyparts3d-worktree\\artifacts\\bodyparts3d-v3-final-browser-qa\\overview-front.png",
+    "D:\\body-model-bodyparts3d-worktree\\artifacts\\bodyparts3d-v3-final-browser-qa\\overview-back.png",
+    "D:\\body-model-bodyparts3d-worktree\\artifacts\\bodyparts3d-v3-final-browser-qa\\hover-chest.png",
+    "D:\\body-model-bodyparts3d-worktree\\artifacts\\bodyparts3d-v3-final-browser-qa\\selected-chest.png",
+    "D:\\body-model-bodyparts3d-worktree\\artifacts\\bodyparts3d-v3-final-browser-qa\\deep-selection.png",
+    "D:\\body-model-bodyparts3d-worktree\\artifacts\\bodyparts3d-v3-final-browser-qa\\latissimus_dorsi.png",
+    "D:\\body-model-bodyparts3d-worktree\\artifacts\\bodyparts3d-v3-final-browser-qa\\rectus_abdominis.png",
+    "D:\\body-model-bodyparts3d-worktree\\artifacts\\bodyparts3d-v3-final-browser-qa\\internal_oblique.png",
+    "D:\\body-model-bodyparts3d-worktree\\artifacts\\bodyparts3d-v3-final-browser-qa\\transversus_abdominis.png",
+    "D:\\body-model-bodyparts3d-worktree\\artifacts\\bodyparts3d-v3-final-browser-qa\\mobile-overview.png"
+  ],
+  "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 500 (Internal Server Error)",
+    "Failed to load resource: the server responded with a status of 500 (Internal Server Error)"
+  ],
+  "failedRequests": [],
+  "successfulViewerResponses": [
+    {
+      "url": "http://127.0.0.1:3191/api/dev/body-map-prototype/manifest",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:3191/api/dev/body-map-prototype/manifest",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:3191/api/dev/body-map-prototype/asset?assetId=bodyparts3d-v4.0-full-body-v3",
+      "status": 200
+    }
+  ],
+  "badResponses": [
+    {
+      "url": "http://127.0.0.1:3191/api/v1/profile",
+      "status": 500
+    },
+    {
+      "url": "http://127.0.0.1:3191/api/v1/profile",
+      "status": 500
+    }
+  ],
+  "note": "Non-viewer API errors, if any, are reported above and do not count as GLB/WebGL success or failure."
+}

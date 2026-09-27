@@ -1,0 +1,469 @@
+{
+  "contract": "bodycast-bodyparts3d-visual-mapping-v2",
+  "version": "bodycast-bodyparts3d-visual-mapping-v2.0.0",
+  "source": {
+    "dataset": "BodyParts3D",
+    "release": "4.0",
+    "sourceArchive": "official BodyParts3D LATEST download endpoint; release 4.0 OBJ files",
+    "preferredTree": "IS-A",
+    "fileIdentity": "FJ element file IDs from the official element-parts tables",
+    "coordinateTransform": "BodyParts3D source millimeters (x,y,z) to runtime meters (x,z,-y)",
+    "sideIdentity": "Resolved from explicit right/left FMA concepts referencing each FJ element; the FJ filename suffix is not the source of truth."
+  },
+  "mappings": [
+    {
+      "anatomyId": "pectoralis_major",
+      "sourceConceptIds": [
+        "FMA34699"
+      ],
+      "depthLayer": "superficial",
+      "note": "Abdominal part remains part of the parent muscle view; BodyCast has no separate abdominal-part node."
+    },
+    {
+      "anatomyId": "pectoralis_major_clavicular_head",
+      "sourceConceptIds": [
+        "FMA34687"
+      ],
+      "depthLayer": "superficial",
+      "note": "Source calls this the clavicular part; separate exercise head exposure is not inferred."
+    },
+    {
+      "anatomyId": "pectoralis_major_sternocostal_head",
+      "sourceConceptIds": [
+        "FMA34696"
+      ],
+      "depthLayer": "superficial",
+      "note": "Source calls this the sternocostal part; separate exercise head exposure is not inferred."
+    },
+    {
+      "anatomyId": "deltoid_anterior",
+      "sourceConceptIds": [
+        "FMA34677"
+      ],
+      "depthLayer": "superficial",
+      "note": "BodyCast anterior region maps to the source clavicular part."
+    },
+    {
+      "anatomyId": "deltoid_middle",
+      "sourceConceptIds": [
+        "FMA34678"
+      ],
+      "depthLayer": "superficial",
+      "note": "BodyCast middle region maps to the source acromial part."
+    },
+    {
+      "anatomyId": "deltoid_posterior",
+      "sourceConceptIds": [
+        "FMA34679"
+      ],
+      "depthLayer": "superficial",
+      "note": "BodyCast posterior region maps to the source spinal part."
+    },
+    {
+      "anatomyId": "triceps_long_head",
+      "sourceConceptIds": [
+        "FMA37692"
+      ],
+      "depthLayer": "superficial"
+    },
+    {
+      "anatomyId": "triceps_medial_head",
+      "sourceConceptIds": [
+        "FMA37693"
+      ],
+      "depthLayer": "deep"
+    },
+    {
+      "anatomyId": "triceps_lateral_head",
+      "sourceConceptIds": [
+        "FMA37694"
+      ],
+      "depthLayer": "superficial"
+    },
+    {
+      "anatomyId": "biceps_brachii_long_head",
+      "sourceConceptIds": [
+        "FMA37683"
+      ],
+      "depthLayer": "superficial"
+    },
+    {
+      "anatomyId": "biceps_brachii_short_head",
+      "sourceConceptIds": [
+        "FMA37682"
+      ],
+      "depthLayer": "superficial"
+    },
+    {
+      "anatomyId": "brachialis",
+      "sourceConceptIds": [
+        "FMA37667"
+      ],
+      "depthLayer": "deep"
+    },
+    {
+      "anatomyId": "brachioradialis",
+      "sourceConceptIds": [
+        "FMA38485"
+      ],
+      "depthLayer": "superficial"
+    },
+    {
+      "anatomyId": "trapezius_upper",
+      "sourceConceptIds": [
+        "FMA32557"
+      ],
+      "depthLayer": "superficial",
+      "note": "Descending fibers form the upper trapezius region."
+    },
+    {
+      "anatomyId": "trapezius_middle",
+      "sourceConceptIds": [
+        "FMA32556"
+      ],
+      "depthLayer": "superficial",
+      "note": "Transverse fibers form the middle trapezius region."
+    },
+    {
+      "anatomyId": "trapezius_lower",
+      "sourceConceptIds": [
+        "FMA32555"
+      ],
+      "depthLayer": "superficial",
+      "note": "Ascending fibers form the lower trapezius region."
+    },
+    {
+      "anatomyId": "rhomboid_major",
+      "sourceConceptIds": [
+        "FMA13379"
+      ],
+      "depthLayer": "deep"
+    },
+    {
+      "anatomyId": "rhomboid_minor",
+      "sourceConceptIds": [
+        "FMA13380"
+      ],
+      "depthLayer": "deep"
+    },
+    {
+      "anatomyId": "forearm_flexor_region",
+      "sourceConceptIds": [
+        "FMA38456"
+      ],
+      "depthLayer": "superficial",
+      "note": "Official anterior forearm compartment, including its available superficial and deep FJ pieces."
+    },
+    {
+      "anatomyId": "forearm_extensor_region",
+      "sourceConceptIds": [
+        "FMA38488"
+      ],
+      "excludeSourceObjectIds": [
+        "FJ1487",
+        "FJ1487M"
+      ],
+      "depthLayer": "superficial",
+      "note": "Official posterior forearm compartment; brachioradialis is mapped separately."
+    },
+    {
+      "anatomyId": "erector_spinae_lumbar_region",
+      "sourceConceptIds": [
+        "FMA22702"
+      ],
+      "depthLayer": "superficial",
+      "note": "Iliocostalis lumborum only; no wider unsupported lumbar boundary is inferred."
+    },
+    {
+      "anatomyId": "erector_spinae_thoracic_region",
+      "sourceConceptIds": [
+        "FMA22703",
+        "FMA22709",
+        "FMA22765"
+      ],
+      "depthLayer": "superficial",
+      "note": "Thoracic iliocostalis, longissimus and spinalis source concepts."
+    },
+    {
+      "anatomyId": "gluteus_maximus",
+      "sourceConceptIds": [
+        "FMA22314"
+      ],
+      "depthLayer": "superficial"
+    },
+    {
+      "anatomyId": "biceps_femoris_long_head",
+      "sourceConceptIds": [
+        "FMA45887"
+      ],
+      "depthLayer": "superficial"
+    },
+    {
+      "anatomyId": "biceps_femoris_short_head",
+      "sourceConceptIds": [
+        "FMA45890"
+      ],
+      "depthLayer": "deep"
+    },
+    {
+      "anatomyId": "semitendinosus",
+      "sourceConceptIds": [
+        "FMA22357"
+      ],
+      "depthLayer": "superficial"
+    },
+    {
+      "anatomyId": "semimembranosus",
+      "sourceConceptIds": [
+        "FMA22438"
+      ],
+      "depthLayer": "deep"
+    },
+    {
+      "anatomyId": "external_oblique",
+      "sourceConceptIds": [
+        "FMA13335"
+      ],
+      "depthLayer": "superficial"
+    },
+    {
+      "anatomyId": "rectus_femoris",
+      "sourceConceptIds": [
+        "FMA22430"
+      ],
+      "depthLayer": "superficial"
+    },
+    {
+      "anatomyId": "vastus_lateralis",
+      "sourceConceptIds": [
+        "FMA22431"
+      ],
+      "depthLayer": "superficial"
+    },
+    {
+      "anatomyId": "vastus_medialis",
+      "sourceConceptIds": [
+        "FMA22432"
+      ],
+      "depthLayer": "superficial"
+    },
+    {
+      "anatomyId": "vastus_intermedius",
+      "sourceConceptIds": [
+        "FMA22433"
+      ],
+      "depthLayer": "deep"
+    },
+    {
+      "anatomyId": "gluteus_medius",
+      "sourceConceptIds": [
+        "FMA22315"
+      ],
+      "depthLayer": "superficial"
+    },
+    {
+      "anatomyId": "gluteus_minimus",
+      "sourceConceptIds": [
+        "FMA22317"
+      ],
+      "depthLayer": "deep"
+    },
+    {
+      "anatomyId": "adductor_longus",
+      "sourceConceptIds": [
+        "FMA22441"
+      ],
+      "depthLayer": "superficial"
+    },
+    {
+      "anatomyId": "adductor_brevis",
+      "sourceConceptIds": [
+        "FMA22442"
+      ],
+      "depthLayer": "deep"
+    },
+    {
+      "anatomyId": "adductor_magnus",
+      "sourceConceptIds": [
+        "FMA22443"
+      ],
+      "depthLayer": "deep"
+    },
+    {
+      "anatomyId": "gracilis",
+      "sourceConceptIds": [
+        "FMA43882"
+      ],
+      "depthLayer": "superficial"
+    },
+    {
+      "anatomyId": "pectineus",
+      "sourceConceptIds": [
+        "FMA22440"
+      ],
+      "depthLayer": "deep"
+    },
+    {
+      "anatomyId": "tensor_fasciae_latae",
+      "sourceConceptIds": [
+        "FMA22423"
+      ],
+      "depthLayer": "superficial"
+    },
+    {
+      "anatomyId": "iliacus",
+      "sourceConceptIds": [
+        "FMA22310"
+      ],
+      "depthLayer": "deep"
+    },
+    {
+      "anatomyId": "psoas_major",
+      "sourceConceptIds": [
+        "FMA18060"
+      ],
+      "depthLayer": "deep"
+    },
+    {
+      "anatomyId": "gastrocnemius_medial_head",
+      "sourceConceptIds": [
+        "FMA45956"
+      ],
+      "depthLayer": "superficial"
+    },
+    {
+      "anatomyId": "gastrocnemius_lateral_head",
+      "sourceConceptIds": [
+        "FMA45959"
+      ],
+      "depthLayer": "superficial"
+    },
+    {
+      "anatomyId": "soleus",
+      "sourceConceptIds": [
+        "FMA22542"
+      ],
+      "depthLayer": "deep"
+    },
+    {
+      "anatomyId": "tibialis_anterior",
+      "sourceConceptIds": [
+        "FMA22532"
+      ],
+      "depthLayer": "superficial"
+    },
+    {
+      "anatomyId": "extensor_digitorum_longus",
+      "sourceConceptIds": [
+        "FMA22534"
+      ],
+      "depthLayer": "superficial"
+    },
+    {
+      "anatomyId": "fibularis_longus",
+      "sourceConceptIds": [
+        "FMA22539"
+      ],
+      "depthLayer": "superficial"
+    },
+    {
+      "anatomyId": "fibularis_brevis",
+      "sourceConceptIds": [
+        "FMA22540"
+      ],
+      "depthLayer": "deep"
+    },
+    {
+      "anatomyId": "supraspinatus",
+      "sourceConceptIds": [
+        "FMA9629"
+      ],
+      "depthLayer": "deep"
+    },
+    {
+      "anatomyId": "infraspinatus",
+      "sourceConceptIds": [
+        "FMA32546"
+      ],
+      "depthLayer": "deep"
+    },
+    {
+      "anatomyId": "teres_minor",
+      "sourceConceptIds": [
+        "FMA32550"
+      ],
+      "depthLayer": "deep"
+    },
+    {
+      "anatomyId": "subscapularis",
+      "sourceConceptIds": [
+        "FMA13413"
+      ],
+      "depthLayer": "deep"
+    },
+    {
+      "anatomyId": "serratus_anterior",
+      "sourceConceptIds": [
+        "FMA13397"
+      ],
+      "depthLayer": "superficial"
+    }
+  ],
+  "unavailable": [],
+  "context": {
+    "muscleTreeRootFmaConceptId": "FMA5022",
+    "wholeBodySilhouetteFmaConceptId": "FMA7163",
+    "silhouettePresentation": "semitransparent body envelope; non-selectable and excluded from picking"
+  },
+  "licenseReview": {
+    "status": "official-current-terms-cover-listed-release-4.0-archives-with-legacy-OBJ-notices-disclosed",
+    "officialReadme": "https://dbarchive.biosciencedbc.jp/data/bodyparts3d/LATEST/README_e.html",
+    "officialReadmeDate": "2025-02-27",
+    "officialLicenseUrl": "https://dbarchive.biosciencedbc.jp/en/bodyparts3d/lic.html",
+    "listedArchiveFiles": [
+      "isa_BP3D_4.0_obj_99.zip",
+      "partof_BP3D_4.0_obj_99.zip"
+    ],
+    "currentOfficialLicense": "CC BY 4.0",
+    "currentOfficialAttribution": "BodyParts3D, © The Database Center for Life Science licensed under CC Attribution 4.0 International",
+    "legacyObjHeaderLicense": "CC BY-SA 2.1 Japan",
+    "legacyObjHeaderAttribution": "BodyParts3D, (c) The Database Center for Life Science licensed under CC Attribution-Share Alike 2.1 Japan",
+    "interpretation": "The current official README names these exact Release 4.0 archives and publishes CC BY 4.0 grant and attribution. Older per-OBJ headers are preserved and documented; this branch follows the current official database terms without treating separate written permission as an automatic prerequisite.",
+    "uncertainty": "2013 archive OBJ headers still state CC BY-SA 2.1 Japan. No asset-level change log explains the header update; disclose the discrepancy.",
+    "redistribution": "Permitted under the current official README/license terms with required attribution and modification notice; legacy OBJ notice discrepancy disclosed."
+  },
+  "independentGeometry": [
+    {
+      "geometryId": "bodycast-authored-muscle-volumes-v1.0.0",
+      "construction": "closed tapered posterior fan-shaped volume conformed to BodyParts3D skin; not source-derived",
+      "reference": "https://www.ncbi.nlm.nih.gov/books/NBK448120/",
+      "leftMeshId": "bodycast-authored-latissimus-dorsi-left",
+      "anatomyId": "latissimus_dorsi",
+      "rightMeshId": "bodycast-authored-latissimus-dorsi-right"
+    },
+    {
+      "geometryId": "bodycast-authored-muscle-volumes-v1.0.0",
+      "construction": "paired closed longitudinal muscle bellies with linea-alba gap and shallow tendinous intersections; not source-derived",
+      "reference": "https://www.ncbi.nlm.nih.gov/books/NBK556034/",
+      "leftMeshId": "bodycast-authored-rectus-abdominis-left",
+      "anatomyId": "rectus_abdominis",
+      "rightMeshId": "bodycast-authored-rectus-abdominis-right"
+    },
+    {
+      "geometryId": "bodycast-authored-muscle-volumes-v1.0.0",
+      "construction": "closed sheet-like flank muscle volumes, layered deep to external oblique, superomedial fascicles; not source-derived",
+      "reference": "https://www.ncbi.nlm.nih.gov/books/NBK556034/",
+      "leftMeshId": "bodycast-authored-internal_oblique-left",
+      "anatomyId": "internal_oblique",
+      "rightMeshId": "bodycast-authored-internal_oblique-right"
+    },
+    {
+      "geometryId": "bodycast-authored-muscle-volumes-v1.0.0",
+      "construction": "closed sheet-like flank muscle volumes, deepest lateral abdominal layer with near-transverse fascicles; not source-derived",
+      "reference": "https://www.ncbi.nlm.nih.gov/books/NBK556034/",
+      "leftMeshId": "bodycast-authored-transversus_abdominis-left",
+      "anatomyId": "transversus_abdominis",
+      "rightMeshId": "bodycast-authored-transversus_abdominis-right"
+    }
+  ]
+}

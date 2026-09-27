@@ -110,7 +110,7 @@ type PrototypeManifest = {
   asset: { assetVersion: string; visualSelectionStatus: string; selectableRegionCount: number; totalRuntimeBytes: number; contextMeshCount: number };
   viewerAsset: { path: string; sha256: string; status: string; mayClaimMusclePicking: boolean; assetId: string; selectableMeshCount: number; contextMeshCount: number; triangleCount: number; byteLength: number };
   runtimeAssets: RuntimeAsset[];
-  visualIdentity: { manifestVersion: string; supportedRegions: ManifestRegion[]; contextNodes: Array<{ meshId: string; gltfNodeName: string; sourceObjectName: string; contextLayer: string; contextPresentation: "supplemental-muscle" | "support-only" | "skeletal-context" | "cranial-context"; selectable: false }>; groupAssetIds: Record<string, string[]> };
+  visualIdentity: { manifestVersion: string; supportedRegions: ManifestRegion[]; contextNodes: Array<{ meshId: string; gltfNodeName: string; sourceObjectName: string; contextLayer: string; contextPresentation: "supplemental-muscle" | "support-only" | "skeletal-context" | "cranial-context" | "body-silhouette-context"; selectable: false }>; groupAssetIds: Record<string, string[]> };
   demoData: { label: string; groupExposureStates: ExposureState[]; groupUniqueSetCounts: Record<string, number | null>; note: string };
   status: string;
 };
@@ -185,6 +185,7 @@ function isEffectivelyVisible(object: THREE.Object3D) {
   return true;
 }
 
+function isMusclePickTarget(object: THREE.Object3D) { return isEffectivelyVisible(object) && object.userData.bodycastContextPresentation !== "body-silhouette-context"; }
 export default function BodyMapPrototype() {
   const [manifest, setManifest] = useState<PrototypeManifest | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -526,7 +527,7 @@ export default function BodyMapPrototype() {
                 camera={{ fov: 35, near: 0.01, far: 100, position: [0, 0, 4.5] }}
                 dpr={renderDpr}
                 gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
-                aria-label="Curated Z-Anatomy full-body model. Drag to orbit, scroll to zoom, click a highlighted muscle group."
+                aria-label="BodyParts3D full-body anatomy scene. Drag to orbit, scroll to zoom, click a highlighted muscle group."
                 fallback={<TwoDimensionalFallback groups={manifest.bodyMapGroups} onSelectGroup={selectGroup} onReady={onFallbackVisible} />}
                 onCreated={({ gl }) => {
                   setRendererAvailable(true);
@@ -625,7 +626,7 @@ export default function BodyMapPrototype() {
               && deepDetailAnatomyId === selectedSubregion.anatomyId
               ? <p className={styles.coverageNotice} data-testid="deep-context-status">Selected deep anatomy is shown in place. Superficial meshes from its own analytics group are temporarily muted; the rest of the body remains visible.</p>
               : null}
-            {selectedAnatomyCoverage?.limitations?.length ? <p className={styles.muted}>{selectedAnatomyCoverage.limitations.join(" ")}</p> : null}
+            {selectedAnatomyCoverage?.visualAvailability === "unavailable" ? <p className={styles.coverageNotice} data-testid="source-geometry-unavailable">No matching BodyParts3D geometry is available for this anatomy. No synthetic mesh is shown.</p> : null}{selectedAnatomyCoverage?.visualAvailability === "partial" ? <p className={styles.coverageNotice} data-testid="source-geometry-partial">This anatomy view is partial in BodyParts3D 4.0. Missing structures are listed below.</p> : null}{selectedAnatomyCoverage?.limitations?.length ? <p className={styles.muted}>{selectedAnatomyCoverage.limitations.join(" ")}</p> : null}
             <h3>Exercise association</h3>
             <div className={styles.metricCard}><span>Child-region set metric</span><strong>Unavailable</strong><small>Recorded set exposure is shown only at its mapped group or parent anatomy. Child-region exposure is unavailable, not zero.</small></div>
             <div className={styles.detailFacts}>
@@ -641,7 +642,7 @@ export default function BodyMapPrototype() {
           </footer>
         </aside>
       </section>
-      <details className={styles.footnote}><summary>Assets &amp; licenses</summary><p>Local model credits, requested by the <a href="https://raw.githubusercontent.com/Z-Anatomy/Models-of-human-anatomy/e38ea5e6c7e22d229a975f3fde563a5aca52099e/License.txt" target="_blank" rel="noreferrer">pinned Z-Anatomy license notice</a>: “BodyParts3D - The Database Center for Life Science - CC-BY-SA 2.1 Japan” and “Z-Anatomy - The libre 3D atlas of anatomy - CC-BY-SA 4.0”. The Z-Anatomy material is under <a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" rel="noreferrer">CC BY-SA 4.0</a>. This local viewer is for review; public redistribution of a derived model remains pending asset-level rights clearance, including review of separately licensed components.</p></details>
+      <details className={styles.footnote}><summary>Assets &amp; licenses</summary><p>Versioned BodyParts3D 4.0 candidate. The <a href="https://dbarchive.biosciencedbc.jp/data/bodyparts3d/LATEST/README_e.html" target="_blank" rel="noreferrer">official README dated 2025-02-27</a> lists the exact Release 4.0 archives and states CC BY 4.0 with the required attribution: “BodyParts3D, © The Database Center for Life Science licensed under CC Attribution 4.0 International”. All 3,492 archived OBJ headers also carry the older CC BY-SA 2.1 Japan notice. We follow the current official database terms, preserve attribution, and disclose the header discrepancy in the bundled notice; this remains an interpretive uncertainty. Four missing muscle volumes are BodyCast-authored educational approximations and require anatomy review.</p></details>
     </main>
   );
 }
@@ -704,7 +705,7 @@ function SubregionList({ group, manifest, onSelect }: { group: ManifestGroup; ma
       const representedMeshIds = subregion.representedMeshIds;
       const regionRows = manifest.visualIdentity.supportedRegions.filter(({ meshId }) => representedMeshIds.includes(meshId));
       const hasDeepGeometry = regionRows.some(({ depthLayer }) => depthLayer === "deep");
-      const availability = regionRows.length === 0 ? "Visual detail unavailable" : hasDeepGeometry ? "Includes deep muscle" : "Muscle detail";
+      const availability = subregion.visualAvailability === "unavailable" ? "Not represented in source model" : subregion.visualAvailability === "partial" ? "Partial source coverage" : hasDeepGeometry ? "Includes deep muscle" : "Muscle detail";
       return <button key={subregion.anatomyId} data-testid={`subregion-${subregion.anatomyId}`} onClick={() => onSelect(subregion.anatomyId)}>
         <span>{subregion.label}</span><small>{availability}</small>
       </button>;
@@ -781,8 +782,8 @@ function FullBodyScene({
       object.userData.bodycastContextLayer = identity.bodycastContextLayer;
       object.userData.bodycastContextPresentation = identity.bodycastContextPresentation;
       object.userData.bodycastSourceObjectName = identity.bodycastSourceObjectName;
-      const isVisibleSupplementalMuscle = identity.bodycastContextPresentation === "supplemental-muscle";
-      if (!region && !isVisibleSupplementalMuscle) return;
+      const isVisibleSupplementalMuscle = identity.bodycastContextPresentation === "supplemental-muscle"; const isBodySilhouette = identity.bodycastContextPresentation === "body-silhouette-context";
+      if (!region && !isVisibleSupplementalMuscle && !isBodySilhouette) return;
       if (region) object.userData.bodyMapRegion = region;
       const sourceMaterials = Array.isArray(object.material) ? object.material : [object.material];
       const clones = sourceMaterials.map((source) => {
@@ -792,7 +793,7 @@ function FullBodyScene({
           material.emissive.set(0x000000);
           material.emissiveIntensity = 0;
           material.roughness = Math.max(material.roughness, 0.6);
-          material.metalness = 0;
+          material.metalness = 0; if (isBodySilhouette) { material.transparent = true; material.opacity = Math.min(material.opacity, 0.14); material.depthWrite = false; material.roughness = 1; }
           material.userData.bodyMapTinted = true;
           if (region) {
             material.userData.bodyMapBaseColor = material.color.clone();
@@ -891,7 +892,7 @@ function FullBodyScene({
       const raycaster = new THREE.Raycaster();
       raycaster.firstHitOnly = true;
       const ndc = new THREE.Vector2();
-      const visibleMeshes = sceneMeshes.filter(isEffectivelyVisible);
+      const visibleMeshes = sceneMeshes.filter(isMusclePickTarget);
       const candidateByPoint = new Map<string, { groupId: BodyMapGroupIdV2; meshId: string; x: number; y: number; hitMeshId: string; role: string; side: string }>();
       for (const mesh of [...selectableMeshes.values()].flat()) {
         const region = mesh.userData.bodyMapRegion as ManifestRegion | undefined;
@@ -936,7 +937,7 @@ function FullBodyScene({
       model.updateMatrixWorld(true);
       const rect = gl.domElement.getBoundingClientRect();
       if (!rect.width || !rect.height) return [];
-      const visibleMeshes = sceneMeshes.filter(isEffectivelyVisible);
+      const visibleMeshes = sceneMeshes.filter(isMusclePickTarget);
       const raycaster = new THREE.Raycaster();
       raycaster.firstHitOnly = true;
       const candidates: Array<{ meshId: string; sourceObjectName: string; contextPresentation: string; x: number; y: number; groupId: null; role: "context-only" }> = [];
@@ -981,7 +982,7 @@ function FullBodyScene({
       const raycaster = new THREE.Raycaster();
       raycaster.firstHitOnly = true;
       raycaster.setFromCamera(pointer, camera);
-      const hit = raycaster.intersectObjects(sceneMeshes.filter(isEffectivelyVisible), false)[0]?.object as (THREE.Object3D & { userData: { bodycastMeshId?: string; bodycastSelectable?: boolean; bodycastSourceObjectName?: string; bodycastRole?: string; bodycastContextPresentation?: string; bodyMapRegion?: ManifestRegion } }) | undefined;
+      const hit = raycaster.intersectObjects(sceneMeshes.filter(isMusclePickTarget), false)[0]?.object as (THREE.Object3D & { userData: { bodycastMeshId?: string; bodycastSelectable?: boolean; bodycastSourceObjectName?: string; bodycastRole?: string; bodycastContextPresentation?: string; bodyMapRegion?: ManifestRegion } }) | undefined;
       if (!hit) return null;
       return {
         groupId: hit.userData.bodycastSelectable === false ? null : (selectedGroupId && hit.userData.bodyMapRegion?.bodyMapGroupIds.includes(selectedGroupId) ? selectedGroupId : hit.userData.bodyMapRegion?.primaryPickGroupId ?? null),
@@ -1120,12 +1121,12 @@ function FullBodyScene({
     model.traverse((object) => {
       if (!(object instanceof THREE.Mesh) || object.userData.bodyMapRegion) return;
       const presentation = object.userData.bodycastContextPresentation;
-      object.visible = presentation === "supplemental-muscle"
+      object.visible = presentation === "supplemental-muscle" || presentation === "body-silhouette-context"
         || (presentation === "support-only" && showSurfaceSupport)
         || presentation === "cranial-context"
         || (presentation === "skeletal-context" && showSkeletalContext);
     });
-    visibleMeshesRef.current = sceneMeshes.filter(isEffectivelyVisible);
+    visibleMeshesRef.current = sceneMeshes.filter(isMusclePickTarget);
     invalidate();
   }, [deepDetailAnatomyId, hoveredGroupId, invalidate, layer, model, sceneMeshes, selectedGroupId, selectedVisualRegionIds, showSkeletalContext, showSurfaceSupport, selectableMeshes]);
 

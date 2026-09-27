@@ -128,6 +128,7 @@ try {
   await selectAnatomyAndCapture("back", "latissimus_dorsi");
   await selectAnatomyAndCapture("core", "rectus_abdominis");
   await selectAnatomyAndCapture("core", "internal_oblique");
+  await page.screenshot({ path: resolve(screenshotDir, "deep-abdominal-view.png"), fullPage: true });
   await selectAnatomyAndCapture("core", "transversus_abdominis");
   let exercisedGroups = 0;
   for (const { groupId } of manifest.bodyMapGroups) {
@@ -176,7 +177,7 @@ try {
     mobileRenderer,
     exercisedGroupCount: exercisedGroups,
     hiddenInternalHeadContextCount: hiddenHeadMeshIds.length,
-    screenshots: ["overview-front.png", "overview-back.png", "hover-chest.png", "selected-chest.png", "deep-selection.png", "latissimus_dorsi.png", "rectus_abdominis.png", "internal_oblique.png", "transversus_abdominis.png", "mobile-overview.png"]
+    screenshots: ["overview-front.png", "overview-back.png", "hover-chest.png", "selected-chest.png", "deep-selection.png", "deep-abdominal-view.png", "latissimus_dorsi.png", "rectus_abdominis.png", "internal_oblique.png", "transversus_abdominis.png", "mobile-overview.png"]
       .map((name) => resolve(screenshotDir, name)),
     consoleErrors,
     failedRequests,

@@ -130,6 +130,8 @@ for (const source of nodeRows) {
     sourceObjectId: source.sourceObjectId,
     geometryOrigin: source.geometryOrigin,
     geometryMethod: source.geometryMethod,
+    geometryProfileContract: source.geometryProfileContract,
+    geometryMetrics: source.geometryMetrics,
     attachmentContract: source.attachmentContract,
     sourceObjectName: anatomyIds.map((id) => BODY_MAP_TAXONOMY_V2.find((node) => node.id === id)?.label).filter(Boolean).join(" / ") || "Mapped muscle region",
     assetId,
@@ -441,6 +443,8 @@ type SourceMesh = {
   sourceObjectId: string;
   geometryOrigin?: string;
   geometryMethod?: string;
+  geometryProfileContract?: string;
+  geometryMetrics?: Record<string, unknown>;
   attachmentContract?: string;
   selectable: boolean;
   anatomyIds: AnatomyIdV2[]
@@ -468,5 +472,7 @@ type Region = {
   sourceObjectId?: string;
   geometryOrigin?: string;
   geometryMethod?: string;
+  geometryProfileContract?: string;
+  geometryMetrics?: Record<string, unknown>;
   attachmentContract?: string;
 };

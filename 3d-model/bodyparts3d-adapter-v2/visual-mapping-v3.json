@@ -9,7 +9,7 @@
     "fileIdentity": "FJ element file IDs from the official element-parts tables",
     "coordinateTransform": "BodyParts3D source millimeters (x,y,z) to runtime meters (x,z,-y)",
     "sideIdentity": "Resolved from explicit right/left FMA concepts referencing each FJ element; the FJ filename suffix is not the source of truth.",
-    "mappingNote": "The four absent muscles use independently authored body-conformed closed volumes with rounded boundaries; exact source anatomy remains unavailable in BodyParts3D 4.0."
+    "mappingNote": "The source-absent latissimus uses its v2 independently authored body-conformed volume; the three abdominal-wall regions use v3 tapered, envelope-conformed profiles."
   },
   "mappings": [
     {
@@ -420,10 +420,44 @@
     "contract": "bodycast-body-map-context-visibility",
     "version": "1.0.0",
     "defaultHiddenSourceObjectIds": [
-      "FJ1294", "FJ1295", "FJ1304", "FJ1306", "FJ1308", "FJ1322", "FJ1323",
-      "FJ1345", "FJ1346", "FJ1355", "FJ1357", "FJ1359", "FJ1373", "FJ1374",
-      "FJ1555", "FJ1556", "FJ1559", "FJ1560", "FJ1562", "FJ1576", "FJ1578", "FJ1579", "FJ1580", "FJ1583", "FJ1598",
-      "FJ2738", "FJ2739", "FJ2741", "FJ2742", "FJ2747", "FJ2748", "FJ2750", "FJ2751", "FJ2753", "FJ2754", "FJ2759", "FJ2760", "FJ2762"
+      "FJ1294",
+      "FJ1295",
+      "FJ1304",
+      "FJ1306",
+      "FJ1308",
+      "FJ1322",
+      "FJ1323",
+      "FJ1345",
+      "FJ1346",
+      "FJ1355",
+      "FJ1357",
+      "FJ1359",
+      "FJ1373",
+      "FJ1374",
+      "FJ1555",
+      "FJ1556",
+      "FJ1559",
+      "FJ1560",
+      "FJ1562",
+      "FJ1576",
+      "FJ1578",
+      "FJ1579",
+      "FJ1580",
+      "FJ1583",
+      "FJ1598",
+      "FJ2738",
+      "FJ2739",
+      "FJ2741",
+      "FJ2742",
+      "FJ2747",
+      "FJ2748",
+      "FJ2750",
+      "FJ2751",
+      "FJ2753",
+      "FJ2754",
+      "FJ2759",
+      "FJ2760",
+      "FJ2762"
     ],
     "note": "Retain internal orbital, facial, lingual, and palatal muscle context in the source scene, but hide it in the default full-body viewer so the face reads calmly through the semitransparent body envelope.",
     "headSurfaceRepair": {
@@ -433,16 +467,26 @@
       "opaqueSurfaceMinSourceZ": 1.37,
       "eyeBoundarySelection": {
         "minimumVertexCount": 6,
-        "centerSourceZRange": [1.5, 1.53],
+        "centerSourceZRange": [
+          1.5,
+          1.53
+        ],
         "maximumCenterSourceY": -0.15,
         "maximumAbsoluteCenterSourceX": 0.06,
         "expectedLoopCount": 15
       },
       "neutralEyeClosures": {
-        "centersSourceX": [-0.032, 0.032],
+        "centersSourceX": [
+          -0.032,
+          0.032
+        ],
         "centerSourceY": -0.162,
         "centerSourceZ": 1.518,
-        "radiiSourceMeters": [0.013, 0.004, 0.0055],
+        "radiiSourceMeters": [
+          0.013,
+          0.004,
+          0.0055
+        ],
         "longitudinalSegments": 24,
         "latitudinalSegments": 12
       },
@@ -473,31 +517,35 @@
       "reference": "https://www.ncbi.nlm.nih.gov/books/NBK448120/",
       "leftMeshId": "bodycast-authored-latissimus-dorsi-left",
       "anatomyId": "latissimus_dorsi",
-      "rightMeshId": "bodycast-authored-latissimus-dorsi-right"
+      "rightMeshId": "bodycast-authored-latissimus-dorsi-right",
+      "geometryProfileContract": "bodycast-latissimus-fan-v2"
     },
     {
-      "geometryId": "bodycast-authored-muscle-volumes-v2.0.0",
-      "construction": "Paired closed belly volumes with a linea alba gap and shallow tendinous intersections; independently authored.",
+      "geometryId": "bodycast-authored-muscle-volumes-v3.0.0",
+      "construction": "Paired shallow elliptic belly volumes with a soft linea-alba separation, tapered perimeter and low-relief tendinous intersections; independently authored.",
       "reference": "https://www.ncbi.nlm.nih.gov/books/NBK556034/",
       "leftMeshId": "bodycast-authored-rectus-abdominis-left",
       "anatomyId": "rectus_abdominis",
-      "rightMeshId": "bodycast-authored-rectus-abdominis-right"
+      "rightMeshId": "bodycast-authored-rectus-abdominis-right",
+      "geometryProfileContract": "bodycast-rectus-envelope-relief-v3"
     },
     {
-      "geometryId": "bodycast-authored-muscle-volumes-v2.0.0",
-      "construction": "Paired rounded flank muscle volumes, deep to external oblique, with superomedial fiber direction; independently authored.",
+      "geometryId": "bodycast-authored-muscle-volumes-v3.0.0",
+      "construction": "Paired body-envelope-conformed anterolateral fans with a sloped medial border, tapered ends and superomedial fiber direction; independently authored.",
       "reference": "https://www.ncbi.nlm.nih.gov/books/NBK556034/",
       "leftMeshId": "bodycast-authored-internal_oblique-left",
       "anatomyId": "internal_oblique",
-      "rightMeshId": "bodycast-authored-internal_oblique-right"
+      "rightMeshId": "bodycast-authored-internal_oblique-right",
+      "geometryProfileContract": "bodycast-internal-oblique-envelope-fan-v3"
     },
     {
-      "geometryId": "bodycast-authored-muscle-volumes-v2.0.0",
-      "construction": "Paired rounded deep flank muscle volumes with transverse fiber direction; independently authored.",
+      "geometryId": "bodycast-authored-muscle-volumes-v3.0.0",
+      "construction": "Paired deeper body-envelope-conformed fans with tapered ends and near-transverse fiber direction; independently authored.",
       "reference": "https://www.ncbi.nlm.nih.gov/books/NBK556034/",
       "leftMeshId": "bodycast-authored-transversus_abdominis-left",
       "anatomyId": "transversus_abdominis",
-      "rightMeshId": "bodycast-authored-transversus_abdominis-right"
+      "rightMeshId": "bodycast-authored-transversus_abdominis-right",
+      "geometryProfileContract": "bodycast-transversus-envelope-fan-v3"
     }
   ]
 }

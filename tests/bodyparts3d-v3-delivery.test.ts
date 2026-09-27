@@ -7,11 +7,11 @@ import { BODY_MAP_GROUP_CATALOG_V2, BODY_MAP_TAXONOMY_V2 } from "@/modules/train
 const deliveryRoot = resolve("public/body-map/bodyparts3d-v3");
 const manifestPath = resolve(deliveryRoot, "manifest.json");
 const glbPath = resolve(deliveryRoot, "bodyparts3d-v4.0-full-body-v3.glb");
-const requiredAuthored: Record<string, { groupId: string; sideMeshIds: string[]; depth: string }> = {
-  latissimus_dorsi: { groupId: "back", sideMeshIds: ["bodycast-authored-latissimus-dorsi-left", "bodycast-authored-latissimus-dorsi-right"], depth: "superficial" },
-  rectus_abdominis: { groupId: "core", sideMeshIds: ["bodycast-authored-rectus-abdominis-left", "bodycast-authored-rectus-abdominis-right"], depth: "superficial" },
-  internal_oblique: { groupId: "core", sideMeshIds: ["bodycast-authored-internal_oblique-left", "bodycast-authored-internal_oblique-right"], depth: "deep" },
-  transversus_abdominis: { groupId: "core", sideMeshIds: ["bodycast-authored-transversus_abdominis-left", "bodycast-authored-transversus_abdominis-right"], depth: "deep" },
+const requiredAuthored: Record<string, { groupId: string; sideMeshIds: string[]; depth: string; geometryOrigin: string; profileContract: string }> = {
+  latissimus_dorsi: { groupId: "back", sideMeshIds: ["bodycast-authored-latissimus-dorsi-left", "bodycast-authored-latissimus-dorsi-right"], depth: "superficial", geometryOrigin: "bodycast-authored-muscle-volumes-v2.0.0", profileContract: "bodycast-latissimus-fan-v2" },
+  rectus_abdominis: { groupId: "core", sideMeshIds: ["bodycast-authored-rectus-abdominis-left", "bodycast-authored-rectus-abdominis-right"], depth: "superficial", geometryOrigin: "bodycast-authored-muscle-volumes-v3.0.0", profileContract: "bodycast-rectus-envelope-relief-v3" },
+  internal_oblique: { groupId: "core", sideMeshIds: ["bodycast-authored-internal_oblique-left", "bodycast-authored-internal_oblique-right"], depth: "deep", geometryOrigin: "bodycast-authored-muscle-volumes-v3.0.0", profileContract: "bodycast-internal-oblique-envelope-fan-v3" },
+  transversus_abdominis: { groupId: "core", sideMeshIds: ["bodycast-authored-transversus_abdominis-left", "bodycast-authored-transversus_abdominis-right"], depth: "deep", geometryOrigin: "bodycast-authored-muscle-volumes-v3.0.0", profileContract: "bodycast-transversus-envelope-fan-v3" },
 };
 
 describe("BodyParts3D v3 static delivery", () => {
@@ -40,10 +40,42 @@ describe("BodyParts3D v3 static delivery", () => {
       expect(BODY_MAP_TAXONOMY_V2.some((entry) => entry.id === anatomyId)).toBe(true);
       expect(manifest.anatomyCoverage.some((entry: { anatomyId: string; visualAvailability: string }) => entry.anatomyId === anatomyId && entry.visualAvailability === "represented")).toBe(true);
       expect(manifest.visualIdentity.supportedRegions.filter((region: { anatomyIds: string[]; bodyMapGroupIds: string[]; depthLayer: string }) => region.anatomyIds.includes(anatomyId) && region.bodyMapGroupIds.includes(contract.groupId) && region.depthLayer === contract.depth)).toHaveLength(2);
+      const mappingRow = JSON.parse(await readFile(resolve("3d-model/bodyparts3d-adapter-v2/visual-mapping-v3.json"), "utf8")).independentGeometry.find((row: { anatomyId: string }) => row.anatomyId === anatomyId);
+      expect(mappingRow?.geometryId).toBe(contract.geometryOrigin);
+      expect(mappingRow?.geometryProfileContract).toBe(contract.profileContract);
       for (const meshId of contract.sideMeshIds) {
-        const node = nodeById.get(meshId) as { extras?: { bodycastSelectable?: boolean; bodycastGeometryOrigin?: string } } | undefined;
+        const node = nodeById.get(meshId) as TestNode | undefined;
         expect(node?.extras?.bodycastSelectable).toBe(true);
-        expect(node?.extras?.bodycastGeometryOrigin).toBe("BodyCast-authored-volumetric-anatomy-v2.0.0");
+        expect(node?.extras?.bodycastGeometryOrigin).toBe(contract.geometryOrigin);
+        expect(node?.extras?.bodycastGeometryProfileContract).toBe(contract.profileContract);
+        const metrics = JSON.parse(String(node?.extras?.bodycastGeometryMetricsJson));
+        expect(metrics.bodySurfaceConformed).toBe(true);
+        expect(metrics.inputThicknessRangeMeters[0]).toBeGreaterThan(0);
+        expect(metrics.inputThicknessRangeMeters[1]).toBeGreaterThan(metrics.inputThicknessRangeMeters[0]);
+        if (anatomyId !== "latissimus_dorsi") {
+          expect(metrics.perimeterTapered).toBe(true);
+          expect(metrics.longitudinalEndsTapered).toBe(true);
+          expect(metrics.surfaceOffsetRangeMeters).toHaveLength(2);
+          if (anatomyId === "rectus_abdominis") {
+            expect(metrics.surfaceOffsetRangeMeters[0]).toBeGreaterThan(-0.007);
+            expect(metrics.maximumTendinousIndentMeters).toBeGreaterThan(0.007);
+            expect(metrics.maximumTendonBoundaryNarrowingFraction).toBeGreaterThan(0.15);
+            expect(metrics.surfaceOffsetRangeMeters[1]).toBeLessThan(0.003);
+          }
+          if (anatomyId === "internal_oblique") {
+            expect(metrics.surfaceOffsetRangeMeters[0]).toBeGreaterThan(0.014);
+            expect(metrics.surfaceOffsetRangeMeters[1]).toBeLessThan(0.017);
+          }
+          if (anatomyId === "transversus_abdominis") {
+            expect(metrics.surfaceOffsetRangeMeters[0]).toBeGreaterThan(0.027);
+            expect(metrics.surfaceOffsetRangeMeters[1]).toBeLessThan(0.030);
+          }
+        }
+        const manifestRegion = manifest.visualIdentity.supportedRegions.find((region: { meshId: string }) => region.meshId === meshId);
+        expect(manifestRegion?.geometryProfileContract).toBe(contract.profileContract);
+        expect(manifestRegion?.geometryMetrics?.inputThicknessRangeMeters).toEqual(metrics.inputThicknessRangeMeters);
+        const provenance = manifest.provenance.bodycastAuthoredGeometry.find((entry: { anatomyId: string }) => entry.anatomyId === anatomyId);
+        expect(provenance?.geometryProfileContract).toBe(contract.profileContract);
       }
     }
   });
@@ -107,7 +139,7 @@ describe("BodyParts3D v3 static delivery", () => {
   });
 });
 
-type TestNode = { name: string; extras?: { bodycastMeshId?: string; bodycastSelectable?: boolean; bodycastGeometryOrigin?: string; bodyparts3dFileId?: string; [key: string]: unknown } };
+type TestNode = { name: string; extras?: { bodycastMeshId?: string; bodycastSelectable?: boolean; bodycastGeometryOrigin?: string; bodycastGeometryProfileContract?: string; bodycastGeometryMetricsJson?: string; bodyparts3dFileId?: string; [key: string]: unknown } };
 
 function readGlbJson(buffer: Buffer): { nodes?: TestNode[]; materials?: Array<{ name?: string; extras?: Record<string, unknown> }> } {
   expect(buffer.readUInt32LE(0)).toBe(0x46546c67);

@@ -7,9 +7,9 @@
     "assetId": "bodyparts3d-v4.0-full-body-v3",
     "url": "/body-map/bodyparts3d-v3/bodyparts3d-v4.0-full-body-v3.glb",
     "mediaType": "model/gltf-binary",
-    "sha256": "8a0b0419181b49c55e014287e4c6ee03103c0d8651a224df2744c85054e10292",
-    "byteLength": 23165104,
-    "triangleCount": 2534309,
+    "sha256": "0edfdadd4cb12722ed8a7bb1b3ec5975f8a7c740ae48958bc77339732a981945",
+    "byteLength": 23400872,
+    "triangleCount": 2569509,
     "selectableMeshCount": 152,
     "contextMeshCount": 224,
     "compression": "EXT_meshopt_compression",
@@ -2014,7 +2014,7 @@
           ],
           "representation": "bodycast-authored-volumetric-meshes",
           "limitations": [
-            "BodyCast-authored educational approximation (bodycast-authored-muscle-volumes-v2.0.0): Paired closed belly volumes with a linea alba gap and shallow tendinous intersections; independently authored."
+            "BodyCast-authored educational approximation (bodycast-authored-muscle-volumes-v3.0.0): Paired shallow elliptic belly volumes with a soft linea-alba separation, tapered perimeter and low-relief tendinous intersections; independently authored."
           ]
         },
         {
@@ -2086,7 +2086,7 @@
           ],
           "representation": "bodycast-authored-volumetric-meshes",
           "limitations": [
-            "BodyCast-authored educational approximation (bodycast-authored-muscle-volumes-v2.0.0): Paired rounded flank muscle volumes, deep to external oblique, with superomedial fiber direction; independently authored."
+            "BodyCast-authored educational approximation (bodycast-authored-muscle-volumes-v3.0.0): Paired body-envelope-conformed anterolateral fans with a sloped medial border, tapered ends and superomedial fiber direction; independently authored."
           ]
         },
         {
@@ -2123,14 +2123,14 @@
           ],
           "representation": "bodycast-authored-volumetric-meshes",
           "limitations": [
-            "BodyCast-authored educational approximation (bodycast-authored-muscle-volumes-v2.0.0): Paired rounded deep flank muscle volumes with transverse fiber direction; independently authored."
+            "BodyCast-authored educational approximation (bodycast-authored-muscle-volumes-v3.0.0): Paired deeper body-envelope-conformed fans with tapered ends and near-transverse fiber direction; independently authored."
           ]
         }
       ],
       "cameraBounds": {
         "min": [
           -0.140823,
-          -0.2272743074815164,
+          -0.22395179887118108,
           0.0370208
         ],
         "max": [
@@ -5443,7 +5443,7 @@
       ],
       "visualAvailability": "represented",
       "limitations": [
-        "BodyCast-authored educational approximation (bodycast-authored-muscle-volumes-v2.0.0): Paired closed belly volumes with a linea alba gap and shallow tendinous intersections; independently authored."
+        "BodyCast-authored educational approximation (bodycast-authored-muscle-volumes-v3.0.0): Paired shallow elliptic belly volumes with a soft linea-alba separation, tapered perimeter and low-relief tendinous intersections; independently authored."
       ]
     },
     {
@@ -5489,7 +5489,7 @@
       ],
       "visualAvailability": "represented",
       "limitations": [
-        "BodyCast-authored educational approximation (bodycast-authored-muscle-volumes-v2.0.0): Paired rounded flank muscle volumes, deep to external oblique, with superomedial fiber direction; independently authored."
+        "BodyCast-authored educational approximation (bodycast-authored-muscle-volumes-v3.0.0): Paired body-envelope-conformed anterolateral fans with a sloped medial border, tapered ends and superomedial fiber direction; independently authored."
       ]
     },
     {
@@ -5513,7 +5513,7 @@
       ],
       "visualAvailability": "represented",
       "limitations": [
-        "BodyCast-authored educational approximation (bodycast-authored-muscle-volumes-v2.0.0): Paired rounded deep flank muscle volumes with transverse fiber direction; independently authored."
+        "BodyCast-authored educational approximation (bodycast-authored-muscle-volumes-v3.0.0): Paired deeper body-envelope-conformed fans with tapered ends and near-transverse fiber direction; independently authored."
       ]
     },
     {
@@ -9507,8 +9507,18 @@
         "side": "left",
         "depthLayer": "superficial",
         "sourceObjectId": "BODYCAST-AUTHORED",
-        "geometryOrigin": "BodyCast-authored-volumetric-anatomy-v2.0.0",
-        "geometryMethod": "Closed body-envelope-conformed volume with rounded perimeter, independently authored without copied source geometry.",
+        "geometryOrigin": "bodycast-authored-muscle-volumes-v2.0.0",
+        "geometryMethod": "Smooth, tapered closed muscle volume conformed to the BodyParts3D body envelope; independently authored.",
+        "geometryProfileContract": "bodycast-latissimus-fan-v2",
+        "geometryMetrics": {
+          "bodySurfaceConformed": true,
+          "perimeterTapered": false,
+          "profileFamily": "posterior-fan",
+          "inputThicknessRangeMeters": [
+            0.014,
+            0.022
+          ]
+        },
         "attachmentContract": "Broad lower thoracic/lumbar fascia, posterior iliac crest and lower-rib origin converging superolaterally to humeral intertubercular-groove region.",
         "sourceObjectName": "Latissimus dorsi",
         "assetId": "bodyparts3d-v4.0-full-body-v3",
@@ -9530,9 +9540,27 @@
         "side": "left",
         "depthLayer": "superficial",
         "sourceObjectId": "BODYCAST-AUTHORED",
-        "geometryOrigin": "BodyCast-authored-volumetric-anatomy-v2.0.0",
-        "geometryMethod": "Closed body-envelope-conformed volume with rounded perimeter, independently authored without copied source geometry.",
-        "attachmentContract": "Paired bellies from pubic symphysis to xiphoid/costal-cartilage region; linea-alba gap and three shallow tendinous intersections.",
+        "geometryOrigin": "bodycast-authored-muscle-volumes-v3.0.0",
+        "geometryMethod": "Smooth, tapered closed muscle volume conformed to the BodyParts3D body envelope; independently authored.",
+        "geometryProfileContract": "bodycast-rectus-envelope-relief-v3",
+        "geometryMetrics": {
+          "bodySurfaceConformed": true,
+          "perimeterTapered": true,
+          "longitudinalEndsTapered": true,
+          "profileFamily": "paired-elliptic-bellies",
+          "maximumSurfaceReliefMeters": 0.0055,
+          "maximumTendinousIndentMeters": 0.0075,
+          "maximumTendonBoundaryNarrowingFraction": 0.16,
+          "inputThicknessRangeMeters": [
+            0.0008,
+            0.0073
+          ],
+          "surfaceOffsetRangeMeters": [
+            -0.0057270920444344176,
+            0.0016622504405321703
+          ]
+        },
+        "attachmentContract": "Paired, shallow body-conformed bellies from pubic symphysis toward the xiphoid/costal-cartilage region; soft linea-alba separation and low-relief tendinous intersections.",
         "sourceObjectName": "Rectus abdominis",
         "assetId": "bodyparts3d-v4.0-full-body-v3",
         "selectable": true
@@ -9553,9 +9581,27 @@
         "side": "left",
         "depthLayer": "deep",
         "sourceObjectId": "BODYCAST-AUTHORED",
-        "geometryOrigin": "BodyCast-authored-volumetric-anatomy-v2.0.0",
-        "geometryMethod": "Closed body-envelope-conformed volume with rounded perimeter, independently authored without copied source geometry.",
-        "attachmentContract": "Iliac/inguinal and lower-costal attachment region toward rectus sheath; diagonal superomedial fibers.",
+        "geometryOrigin": "bodycast-authored-muscle-volumes-v3.0.0",
+        "geometryMethod": "Smooth, tapered closed muscle volume conformed to the BodyParts3D body envelope; independently authored.",
+        "geometryProfileContract": "bodycast-internal-oblique-envelope-fan-v3",
+        "geometryMetrics": {
+          "bodySurfaceConformed": true,
+          "perimeterTapered": true,
+          "longitudinalEndsTapered": true,
+          "wrapsLateralTorso": true,
+          "profileFamily": "deep-superomedial-wrapped-fan",
+          "maximumAngularSpanRadians": 0.955,
+          "maximumSurfaceReliefMeters": 0.0015,
+          "inputThicknessRangeMeters": [
+            0.0008,
+            0.0073
+          ],
+          "surfaceOffsetRangeMeters": [
+            0.0145,
+            0.016
+          ]
+        },
+        "attachmentContract": "Deep anterolateral abdominal-wall volume wrapping around the torso; tapered borders and superomedial fiber direction.",
         "sourceObjectName": "Internal abdominal oblique",
         "assetId": "bodyparts3d-v4.0-full-body-v3",
         "selectable": true
@@ -9576,9 +9622,27 @@
         "side": "left",
         "depthLayer": "deep",
         "sourceObjectId": "BODYCAST-AUTHORED",
-        "geometryOrigin": "BodyCast-authored-volumetric-anatomy-v2.0.0",
-        "geometryMethod": "Closed body-envelope-conformed volume with rounded perimeter, independently authored without copied source geometry.",
-        "attachmentContract": "Lower costal cartilage, iliac crest and inguinal-ligament region; near-transverse fibers.",
+        "geometryOrigin": "bodycast-authored-muscle-volumes-v3.0.0",
+        "geometryMethod": "Smooth, tapered closed muscle volume conformed to the BodyParts3D body envelope; independently authored.",
+        "geometryProfileContract": "bodycast-transversus-envelope-fan-v3",
+        "geometryMetrics": {
+          "bodySurfaceConformed": true,
+          "perimeterTapered": true,
+          "longitudinalEndsTapered": true,
+          "wrapsLateralTorso": true,
+          "profileFamily": "deep-transverse-wrapped-fan",
+          "maximumAngularSpanRadians": 0.895,
+          "maximumSurfaceReliefMeters": 0.0011,
+          "inputThicknessRangeMeters": [
+            0.0008,
+            0.0063
+          ],
+          "surfaceOffsetRangeMeters": [
+            0.0279,
+            0.029
+          ]
+        },
+        "attachmentContract": "Deep transverse abdominal-wall volume wrapping from the anterior flank around the lateral torso; tapered ends and near-transverse fascicle direction.",
         "sourceObjectName": "Transversus abdominis",
         "assetId": "bodyparts3d-v4.0-full-body-v3",
         "selectable": true
@@ -9601,8 +9665,18 @@
         "side": "right",
         "depthLayer": "superficial",
         "sourceObjectId": "BODYCAST-AUTHORED",
-        "geometryOrigin": "BodyCast-authored-volumetric-anatomy-v2.0.0",
-        "geometryMethod": "Closed body-envelope-conformed volume with rounded perimeter, independently authored without copied source geometry.",
+        "geometryOrigin": "bodycast-authored-muscle-volumes-v2.0.0",
+        "geometryMethod": "Smooth, tapered closed muscle volume conformed to the BodyParts3D body envelope; independently authored.",
+        "geometryProfileContract": "bodycast-latissimus-fan-v2",
+        "geometryMetrics": {
+          "bodySurfaceConformed": true,
+          "perimeterTapered": false,
+          "profileFamily": "posterior-fan",
+          "inputThicknessRangeMeters": [
+            0.014,
+            0.022
+          ]
+        },
         "attachmentContract": "Broad lower thoracic/lumbar fascia, posterior iliac crest and lower-rib origin converging superolaterally to humeral intertubercular-groove region.",
         "sourceObjectName": "Latissimus dorsi",
         "assetId": "bodyparts3d-v4.0-full-body-v3",
@@ -9624,9 +9698,27 @@
         "side": "right",
         "depthLayer": "superficial",
         "sourceObjectId": "BODYCAST-AUTHORED",
-        "geometryOrigin": "BodyCast-authored-volumetric-anatomy-v2.0.0",
-        "geometryMethod": "Closed body-envelope-conformed volume with rounded perimeter, independently authored without copied source geometry.",
-        "attachmentContract": "Paired bellies from pubic symphysis to xiphoid/costal-cartilage region; linea-alba gap and three shallow tendinous intersections.",
+        "geometryOrigin": "bodycast-authored-muscle-volumes-v3.0.0",
+        "geometryMethod": "Smooth, tapered closed muscle volume conformed to the BodyParts3D body envelope; independently authored.",
+        "geometryProfileContract": "bodycast-rectus-envelope-relief-v3",
+        "geometryMetrics": {
+          "bodySurfaceConformed": true,
+          "perimeterTapered": true,
+          "longitudinalEndsTapered": true,
+          "profileFamily": "paired-elliptic-bellies",
+          "maximumSurfaceReliefMeters": 0.0055,
+          "maximumTendinousIndentMeters": 0.0075,
+          "maximumTendonBoundaryNarrowingFraction": 0.16,
+          "inputThicknessRangeMeters": [
+            0.0008,
+            0.0073
+          ],
+          "surfaceOffsetRangeMeters": [
+            -0.0057270920444344176,
+            0.0016622504405321703
+          ]
+        },
+        "attachmentContract": "Paired, shallow body-conformed bellies from pubic symphysis toward the xiphoid/costal-cartilage region; soft linea-alba separation and low-relief tendinous intersections.",
         "sourceObjectName": "Rectus abdominis",
         "assetId": "bodyparts3d-v4.0-full-body-v3",
         "selectable": true
@@ -9647,9 +9739,27 @@
         "side": "right",
         "depthLayer": "deep",
         "sourceObjectId": "BODYCAST-AUTHORED",
-        "geometryOrigin": "BodyCast-authored-volumetric-anatomy-v2.0.0",
-        "geometryMethod": "Closed body-envelope-conformed volume with rounded perimeter, independently authored without copied source geometry.",
-        "attachmentContract": "Iliac/inguinal and lower-costal attachment region toward rectus sheath; diagonal superomedial fibers.",
+        "geometryOrigin": "bodycast-authored-muscle-volumes-v3.0.0",
+        "geometryMethod": "Smooth, tapered closed muscle volume conformed to the BodyParts3D body envelope; independently authored.",
+        "geometryProfileContract": "bodycast-internal-oblique-envelope-fan-v3",
+        "geometryMetrics": {
+          "bodySurfaceConformed": true,
+          "perimeterTapered": true,
+          "longitudinalEndsTapered": true,
+          "wrapsLateralTorso": true,
+          "profileFamily": "deep-superomedial-wrapped-fan",
+          "maximumAngularSpanRadians": 0.955,
+          "maximumSurfaceReliefMeters": 0.0015,
+          "inputThicknessRangeMeters": [
+            0.0008,
+            0.0073
+          ],
+          "surfaceOffsetRangeMeters": [
+            0.0145,
+            0.016
+          ]
+        },
+        "attachmentContract": "Deep anterolateral abdominal-wall volume wrapping around the torso; tapered borders and superomedial fiber direction.",
         "sourceObjectName": "Internal abdominal oblique",
         "assetId": "bodyparts3d-v4.0-full-body-v3",
         "selectable": true
@@ -9670,9 +9780,27 @@
         "side": "right",
         "depthLayer": "deep",
         "sourceObjectId": "BODYCAST-AUTHORED",
-        "geometryOrigin": "BodyCast-authored-volumetric-anatomy-v2.0.0",
-        "geometryMethod": "Closed body-envelope-conformed volume with rounded perimeter, independently authored without copied source geometry.",
-        "attachmentContract": "Lower costal cartilage, iliac crest and inguinal-ligament region; near-transverse fibers.",
+        "geometryOrigin": "bodycast-authored-muscle-volumes-v3.0.0",
+        "geometryMethod": "Smooth, tapered closed muscle volume conformed to the BodyParts3D body envelope; independently authored.",
+        "geometryProfileContract": "bodycast-transversus-envelope-fan-v3",
+        "geometryMetrics": {
+          "bodySurfaceConformed": true,
+          "perimeterTapered": true,
+          "longitudinalEndsTapered": true,
+          "wrapsLateralTorso": true,
+          "profileFamily": "deep-transverse-wrapped-fan",
+          "maximumAngularSpanRadians": 0.895,
+          "maximumSurfaceReliefMeters": 0.0011,
+          "inputThicknessRangeMeters": [
+            0.0008,
+            0.0063
+          ],
+          "surfaceOffsetRangeMeters": [
+            0.0279,
+            0.029
+          ]
+        },
+        "attachmentContract": "Deep transverse abdominal-wall volume wrapping from the anterior flank around the lateral torso; tapered ends and near-transverse fascicle direction.",
         "sourceObjectName": "Transversus abdominis",
         "assetId": "bodyparts3d-v4.0-full-body-v3",
         "selectable": true
@@ -11471,6 +11599,50 @@
         "selectable": false
       }
     ],
+    "contextVisibility": {
+      "contract": "bodycast-body-map-context-visibility",
+      "version": "1.0.0",
+      "defaultHiddenContextMeshIds": [
+        "bp3d-v4-fj1294",
+        "bp3d-v4-fj1295",
+        "bp3d-v4-fj1304",
+        "bp3d-v4-fj1306",
+        "bp3d-v4-fj1308",
+        "bp3d-v4-fj1322",
+        "bp3d-v4-fj1323",
+        "bp3d-v4-fj1345",
+        "bp3d-v4-fj1346",
+        "bp3d-v4-fj1355",
+        "bp3d-v4-fj1357",
+        "bp3d-v4-fj1359",
+        "bp3d-v4-fj1373",
+        "bp3d-v4-fj1374",
+        "bp3d-v4-fj1555",
+        "bp3d-v4-fj1556",
+        "bp3d-v4-fj1559",
+        "bp3d-v4-fj1560",
+        "bp3d-v4-fj1562",
+        "bp3d-v4-fj1576",
+        "bp3d-v4-fj1578",
+        "bp3d-v4-fj1579",
+        "bp3d-v4-fj1580",
+        "bp3d-v4-fj1583",
+        "bp3d-v4-fj1598",
+        "bp3d-v4-fj2738",
+        "bp3d-v4-fj2739",
+        "bp3d-v4-fj2741",
+        "bp3d-v4-fj2742",
+        "bp3d-v4-fj2747",
+        "bp3d-v4-fj2748",
+        "bp3d-v4-fj2750",
+        "bp3d-v4-fj2751",
+        "bp3d-v4-fj2753",
+        "bp3d-v4-fj2754",
+        "bp3d-v4-fj2759",
+        "bp3d-v4-fj2760",
+        "bp3d-v4-fj2762"
+      ]
+    },
     "groupAssetIds": {
       "chest": [
         "bp3d-v4-fj1446",
@@ -11680,50 +11852,6 @@
         "bp3d-v4-fj1459",
         "bp3d-v4-fj1459m"
       ]
-    },
-    "contextVisibility": {
-      "contract": "bodycast-body-map-context-visibility",
-      "version": "1.0.0",
-      "defaultHiddenContextMeshIds": [
-        "bp3d-v4-fj1294",
-        "bp3d-v4-fj1295",
-        "bp3d-v4-fj1304",
-        "bp3d-v4-fj1306",
-        "bp3d-v4-fj1308",
-        "bp3d-v4-fj1322",
-        "bp3d-v4-fj1323",
-        "bp3d-v4-fj1345",
-        "bp3d-v4-fj1346",
-        "bp3d-v4-fj1355",
-        "bp3d-v4-fj1357",
-        "bp3d-v4-fj1359",
-        "bp3d-v4-fj1373",
-        "bp3d-v4-fj1374",
-        "bp3d-v4-fj1555",
-        "bp3d-v4-fj1556",
-        "bp3d-v4-fj1559",
-        "bp3d-v4-fj1560",
-        "bp3d-v4-fj1562",
-        "bp3d-v4-fj1576",
-        "bp3d-v4-fj1578",
-        "bp3d-v4-fj1579",
-        "bp3d-v4-fj1580",
-        "bp3d-v4-fj1583",
-        "bp3d-v4-fj1598",
-        "bp3d-v4-fj2738",
-        "bp3d-v4-fj2739",
-        "bp3d-v4-fj2741",
-        "bp3d-v4-fj2742",
-        "bp3d-v4-fj2747",
-        "bp3d-v4-fj2748",
-        "bp3d-v4-fj2750",
-        "bp3d-v4-fj2751",
-        "bp3d-v4-fj2753",
-        "bp3d-v4-fj2754",
-        "bp3d-v4-fj2759",
-        "bp3d-v4-fj2760",
-        "bp3d-v4-fj2762"
-      ]
     }
   },
   "provenance": {
@@ -11747,42 +11875,46 @@
       {
         "anatomyId": "latissimus_dorsi",
         "geometryId": "bodycast-authored-muscle-volumes-v2.0.0",
-        "construction": "closed edge-rounded tapered posterior fan-shaped volume conformed to BodyParts3D skin; not source-derived",
+        "construction": "Closed, body-conformed posterior fan volume with a rounded perimeter; independently authored.",
         "reference": "https://www.ncbi.nlm.nih.gov/books/NBK448120/",
         "meshIds": [
           "bodycast-authored-latissimus-dorsi-left",
           "bodycast-authored-latissimus-dorsi-right"
-        ]
+        ],
+        "geometryProfileContract": "bodycast-latissimus-fan-v2"
       },
       {
         "anatomyId": "rectus_abdominis",
-        "geometryId": "bodycast-authored-muscle-volumes-v2.0.0",
-        "construction": "paired closed edge-rounded edge-rounded longitudinal muscle bellies with linea-alba gap and shallow tendinous intersections; not source-derived",
+        "geometryId": "bodycast-authored-muscle-volumes-v3.0.0",
+        "construction": "Paired shallow elliptic belly volumes with a soft linea-alba separation, tapered perimeter and low-relief tendinous intersections; independently authored.",
         "reference": "https://www.ncbi.nlm.nih.gov/books/NBK556034/",
         "meshIds": [
           "bodycast-authored-rectus-abdominis-left",
           "bodycast-authored-rectus-abdominis-right"
-        ]
+        ],
+        "geometryProfileContract": "bodycast-rectus-envelope-relief-v3"
       },
       {
         "anatomyId": "internal_oblique",
-        "geometryId": "bodycast-authored-muscle-volumes-v2.0.0",
-        "construction": "closed edge-rounded sheet-like flank muscle volumes, layered deep to external oblique, superomedial fascicles; not source-derived",
+        "geometryId": "bodycast-authored-muscle-volumes-v3.0.0",
+        "construction": "Paired body-envelope-conformed anterolateral fans with a sloped medial border, tapered ends and superomedial fiber direction; independently authored.",
         "reference": "https://www.ncbi.nlm.nih.gov/books/NBK556034/",
         "meshIds": [
           "bodycast-authored-internal_oblique-left",
           "bodycast-authored-internal_oblique-right"
-        ]
+        ],
+        "geometryProfileContract": "bodycast-internal-oblique-envelope-fan-v3"
       },
       {
         "anatomyId": "transversus_abdominis",
-        "geometryId": "bodycast-authored-muscle-volumes-v2.0.0",
-        "construction": "closed edge-rounded sheet-like flank muscle volumes, deepest lateral abdominal layer with near-transverse fascicles; not source-derived",
+        "geometryId": "bodycast-authored-muscle-volumes-v3.0.0",
+        "construction": "Paired deeper body-envelope-conformed fans with tapered ends and near-transverse fiber direction; independently authored.",
         "reference": "https://www.ncbi.nlm.nih.gov/books/NBK556034/",
         "meshIds": [
           "bodycast-authored-transversus_abdominis-left",
           "bodycast-authored-transversus_abdominis-right"
-        ]
+        ],
+        "geometryProfileContract": "bodycast-transversus-envelope-fan-v3"
       }
     ]
   },

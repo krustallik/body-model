@@ -178,17 +178,26 @@ def skin_y(tree,x,z,anterior):
     if hit is None: raise ValueError(f"Skin ray missed x={x:.4f}, z={z:.4f}")
     return hit.y
 
-def closed_volume(name,anatomy,side,rows,cols,point_at,inward_sign,collection,mat,layer,note):
-    outer=[]; thick=[]
+def closed_volume(name,anatomy,side,rows,cols,point_at,inward_sign,collection,mat,layer,note,
+                  geometry_contract,profile_contract,profile_metrics,bevel_amount=0.0015):
+    outer=[]; thick=[]; surface_offsets=[]; inward_directions=[]
     for i in range(rows):
         t=i/(rows-1)
         for j in range(cols):
             p=point_at(t,j/(cols-1))
-            if len(p)!=4 or not all(math.isfinite(float(v)) for v in p): raise ValueError(f"{name}: bad vertex")
-            x,y,z,d=map(float,p)
+            if len(p) not in (4,5,7) or not all(math.isfinite(float(v)) for v in p): raise ValueError(f"{name}: bad vertex")
+            x,y,z,d=map(float,p[:4])
             if d<=0: raise ValueError(f"{name}: invalid thickness")
+            if len(p)>=5: surface_offsets.append(float(p[4]))
+            if len(p)==7:
+                nx,ny=map(float,p[5:7]); magnitude=math.hypot(nx,ny)
+                if magnitude<=1e-8: raise ValueError(f"{name}: invalid inward surface normal")
+                inward_directions.append((nx/magnitude,ny/magnitude))
+            else:
+                inward_directions.append((0.0,float(inward_sign)))
             outer.append((x,y,z)); thick.append(d)
-    n=len(outer); vertices=outer+[(x,y+inward_sign*thick[i],z) for i,(x,y,z) in enumerate(outer)]
+    n=len(outer); vertices=outer+[(x+inward_directions[i][0]*thick[i],y+inward_directions[i][1]*thick[i],z)
+      for i,(x,y,z) in enumerate(outer)]
     faces=[]
     for i in range(rows-1):
         for j in range(cols-1):
@@ -210,7 +219,7 @@ def closed_volume(name,anatomy,side,rows,cols,point_at,inward_sign,collection,ma
     for a,b in zip(closed_boundary,closed_boundary[1:]): loop_pairs.add(tuple(sorted((n+a,n+b))))
     bevel_edges=[e for e in bm.edges if tuple(sorted((e.verts[0].index,e.verts[1].index))) in loop_pairs]
     if bevel_edges:
-        bmesh.ops.bevel(bm,geom=bevel_edges,offset=0.0015,segments=3,profile=0.5,affect='EDGES')
+        bmesh.ops.bevel(bm,geom=bevel_edges,offset=bevel_amount,segments=3,profile=0.5,affect='EDGES')
         bmesh.ops.recalc_face_normals(bm,faces=bm.faces)
     bad=sum(not e.is_manifold for e in bm.edges); volume=abs(bm.calc_volume(signed=True))
     if bad or volume<=1e-9:
@@ -223,46 +232,89 @@ def closed_volume(name,anatomy,side,rows,cols,point_at,inward_sign,collection,ma
     obj["bodycastMeshId"]=name; obj["bodycastSelectable"]=True; obj["bodycastRole"]="selectable-muscle"
     obj["bodycastContextLayer"]=layer; obj["bodycastContextPresentation"]="selectable-surface"
     obj["bodycastSourceObjectName"]=anatomy.replace("_"," ").title(); obj["bodycastAnatomyIds"]=anatomy
-    obj["bodycastSide"]=side; obj["bodycastGeometryOrigin"]="BodyCast-authored-volumetric-anatomy-v2.0.0"
-    obj["bodycastGeometryMethod"]="Closed body-envelope-conformed volume; independently authored without copied source geometry."
+    obj["bodycastSide"]=side; obj["bodycastGeometryOrigin"]=geometry_contract
+    obj["bodycastGeometryMethod"]="Smooth, tapered closed muscle volume conformed to the BodyParts3D body envelope; independently authored."
     obj["bodycastAttachmentContract"]=note
+    obj["bodycastGeometryProfileContract"]=profile_contract
+    geometry_metrics={**profile_metrics,"inputThicknessRangeMeters":[min(thick),max(thick)]}
+    if surface_offsets: geometry_metrics["surfaceOffsetRangeMeters"]=[min(surface_offsets),max(surface_offsets)]
+    obj["bodycastGeometryMetricsJson"]=json.dumps(geometry_metrics,sort_keys=True,separators=(",",":"))
     return {"meshId":name,"sourceObjectId":"BODYCAST-AUTHORED","selectable":True,"anatomyIds":[anatomy],
       "sourceFmaConceptIds":[],"bindingConceptIds":[],"sourceTermNames":[],
       "sourceObjectName":anatomy.replace("_"," ").title(),
-      "geometryOrigin":"BodyCast-authored-volumetric-anatomy-v2.0.0",
-      "geometryMethod":"Closed body-envelope-conformed volume with rounded perimeter, independently authored without copied source geometry.",
+      "geometryOrigin":geometry_contract,
+      "geometryMethod":"Smooth, tapered closed muscle volume conformed to the BodyParts3D body envelope; independently authored.",
+      "geometryProfileContract":profile_contract,"geometryMetrics":geometry_metrics,
       "attachmentContract":note,"side":side,"depthLayer":layer,"contextPresentation":"selectable-surface",
       "vertexCount":len(mesh.vertices),"faceCount":len(mesh.polygons),
       "triangleCount":sum(max(0,len(p.vertices)-2) for p in mesh.polygons),
       "bounds":{"min":[min(v[i] for v in outer) for i in range(3)],"max":[max(v[i] for v in outer) for i in range(3)]},
       "sourcePath":None,"signedVolumeMetersCubed":volume}
 
-def rectus(tree,side,sign,coll,mat):
+def rectus(tree,side,sign,coll,mat,geometry_definition):
+    if geometry_definition.get("geometryProfileContract")!="bodycast-rectus-envelope-relief-v3":
+        raise ValueError("The rectus profile must match the versioned visual-mapping contract")
     z0,z1=.868,1.172
     def p(t,u):
-        z=z0+(z1-z0)*t; width=.0035+.039*math.sin(math.pi*t)**.72; x=sign*(.010+width*u)
-        sy=skin_y(tree,x,z,True); groove=max(math.exp(-((t-l)/.012)**2) for l in (.26,.49,.72))
-        bulge=(.004+.006*math.sin(math.pi*t)*(.65+.35*math.sin(math.pi*u)))*(1-.5*groove)
-        thick=(.010+.005*math.sin(math.pi*t))*(1-.34*groove)
-        return x,sy+.0015-bulge,z,thick
-    return closed_volume(f"bodycast-authored-rectus-abdominis-{side}","rectus_abdominis",side,65,25,p,1,coll,mat,"superficial",
-      "Paired bellies from pubic symphysis to xiphoid/costal-cartilage region; linea-alba gap and three shallow tendinous intersections.")
+        z=z0+(z1-z0)*t; longitudinal=math.sin(math.pi*t); transverse=math.sin(math.pi*u)
+        belly=longitudinal**.58*transverse**.62
+        intersection=max(math.exp(-((t-level)/.042)**2) for level in (.25,.49,.73))
+        medial=.0055+.0015*(1-longitudinal)+.0025*intersection
+        width=(.0015+.039*longitudinal**.78)*(1-.16*intersection)
+        x=sign*(medial+width*u)
+        sy=skin_y(tree,x,z,True)
+        prominence=(.0010+.0045*longitudinal**.4)*belly
+        tendon_indent=.0075*intersection*belly
+        thickness=.0008+.0065*belly
+        y=sy-.00045-prominence+tendon_indent
+        return x,y,z,thickness,y-sy
+    return closed_volume(f"bodycast-authored-rectus-abdominis-{side}","rectus_abdominis",side,73,33,p,1,coll,mat,"superficial",
+      "Paired, shallow body-conformed bellies from pubic symphysis toward the xiphoid/costal-cartilage region; soft linea-alba separation and low-relief tendinous intersections.",
+      geometry_definition["geometryId"],geometry_definition["geometryProfileContract"],
+      {"bodySurfaceConformed":True,"perimeterTapered":True,"longitudinalEndsTapered":True,"profileFamily":"paired-elliptic-bellies","maximumSurfaceReliefMeters":.0055,"maximumTendinousIndentMeters":.0075,"maximumTendonBoundaryNarrowingFraction":.16},.0007)
 
-def abdominal_sheet(tree,anatomy,side,sign,coll,mat,transverse):
-    z0,z1=(.895,1.135) if transverse else (.882,1.158)
+def abdominal_sheet(tree,anatomy,side,sign,coll,mat,transverse,geometry_definition):
+    z0,z1=(.916,1.126) if transverse else (.900,1.145)
+    center_by_z={}
     def p(t,u):
-        z=z0+(z1-z0)*t; taper=.008+.010*math.sin(math.pi*t)**.7
-        inner=.050+(.008*t if not transverse else 0); outer=.137-(.008*(1-t) if transverse else 0)
-        x=sign*(inner+taper+(outer-inner-taper)*u)
-        if not transverse: x+=sign*.008*math.sin(math.pi*t)*(.5-u)
-        sy=skin_y(tree,x,z,True); profile=math.sin(math.pi*u)**.65*math.sin(math.pi*t)**.55
-        depth,thick,bulge=(.020,.009,.004) if transverse else (.011,.011,.005)
-        return x,sy+depth-bulge*profile,z,thick
-    note=("Lower costal cartilage, iliac crest and inguinal-ligament region; near-transverse fibers."
-      if transverse else "Iliac/inguinal and lower-costal attachment region toward rectus sheath; diagonal superomedial fibers.")
-    return closed_volume(f"bodycast-authored-{anatomy}-{side}",anatomy,side,49,33,p,1,coll,mat,"deep",note)
+        z=z0+(z1-z0)*t; longitudinal=math.sin(math.pi*t)
+        if transverse:
+            center_angle=.90; maximum_span=.86
+            depth=.029; thickness_base=.0008; thickness_belly=.0055; relief_max=.0011
+        else:
+            center_angle=1.04-.23*t; maximum_span=.92
+            depth=.016; thickness_base=.0008; thickness_belly=.0065; relief_max=.0015
+        # Sweep around the real torso cross-section from the anterior flank to its side.
+        # This keeps the muscle volume body-conformed instead of projecting a front-facing panel.
+        front=skin_y(tree,0.0,z,True)
+        back=skin_y(tree,0.0,z,False)
+        center_y=center_by_z.setdefault(z,(front+back)*.5)
+        angular_span=.035+maximum_span*longitudinal**.65
+        theta=center_angle+angular_span*(u-.5)
+        outward=Vector((sign*math.sin(theta),-math.cos(theta),0.0))
+        hit,_normal,_face,_distance=tree.ray_cast(Vector((0.0,center_y,z)),outward,2.0)
+        if hit is None: raise ValueError(f"{anatomy}: radial body-envelope ray missed z={z:.4f}, theta={theta:.4f}")
+        inward=-outward
+        profile=longitudinal**.62*math.sin(math.pi*u)**.62
+        thickness=thickness_base+thickness_belly*profile
+        relief=relief_max*profile
+        offset=depth-relief
+        point=hit+inward*offset
+        return point.x,point.y,z,thickness,offset,inward.x,inward.y
+    if transverse:
+        note="Deep transverse abdominal-wall volume wrapping from the anterior flank around the lateral torso; tapered ends and near-transverse fascicle direction."
+        profile_contract="bodycast-transversus-envelope-fan-v3"
+        profile_metrics={"bodySurfaceConformed":True,"perimeterTapered":True,"longitudinalEndsTapered":True,"wrapsLateralTorso":True,"profileFamily":"deep-transverse-wrapped-fan","maximumAngularSpanRadians":.895,"maximumSurfaceReliefMeters":.0011}
+    else:
+        note="Deep anterolateral abdominal-wall volume wrapping around the torso; tapered borders and superomedial fiber direction."
+        profile_contract="bodycast-internal-oblique-envelope-fan-v3"
+        profile_metrics={"bodySurfaceConformed":True,"perimeterTapered":True,"longitudinalEndsTapered":True,"wrapsLateralTorso":True,"profileFamily":"deep-superomedial-wrapped-fan","maximumAngularSpanRadians":.955,"maximumSurfaceReliefMeters":.0015}
+    if geometry_definition.get("geometryProfileContract")!=profile_contract:
+        raise ValueError(f"{anatomy}: generated profile does not match the versioned visual-mapping contract")
+    return closed_volume(f"bodycast-authored-{anatomy}-{side}",anatomy,side,65,49,p,1,coll,mat,"deep",note,
+      geometry_definition["geometryId"],geometry_definition["geometryProfileContract"],profile_metrics,.0007)
 
-def latissimus(tree,side,sign,coll,mat):
+def latissimus(tree,side,sign,coll,mat,geometry_definition):
     z0,z1=.895,1.328
     def p(t,u):
         z=z0+(z1-z0)*t; medial=.014+.150*t**2.2
@@ -271,7 +323,9 @@ def latissimus(tree,side,sign,coll,mat):
         belly=math.sin(math.pi*t)**.7*math.sin(math.pi*u)**.65
         return x,sy-.004+.010*belly,z,.014+.008*belly
     return closed_volume(f"bodycast-authored-latissimus-dorsi-{side}","latissimus_dorsi",side,73,41,p,-1,coll,mat,"superficial",
-      "Broad lower thoracic/lumbar fascia, posterior iliac crest and lower-rib origin converging superolaterally to humeral intertubercular-groove region.")
+      "Broad lower thoracic/lumbar fascia, posterior iliac crest and lower-rib origin converging superolaterally to humeral intertubercular-groove region.",
+      geometry_definition["geometryId"],geometry_definition["geometryProfileContract"],
+      {"bodySurfaceConformed":True,"perimeterTapered":False,"profileFamily":"posterior-fan"})
 
 def main():
     parser=argparse.ArgumentParser()
@@ -287,21 +341,25 @@ def main():
         if path.exists(): raise FileExistsError(f"Refusing to overwrite {path}")
     report=json.loads(base.read_text(encoding="utf-8")); mapping=json.loads(mapping_path.read_text(encoding="utf-8"))
     required={"latissimus_dorsi","rectus_abdominis","internal_oblique","transversus_abdominis"}
-    if {x["anatomyId"] for x in mapping.get("independentGeometry",[])}!=required: raise ValueError("v2 mapping missing required anatomy")
+    geometry_rows={x["anatomyId"]:x for x in mapping.get("independentGeometry",[])}
+    if set(geometry_rows)!=required: raise ValueError("v3 mapping missing required anatomy")
+    if any(not row.get("geometryId") or not row.get("geometryProfileContract") for row in geometry_rows.values()):
+        raise ValueError("Every authored muscle must have a versioned geometry and profile contract")
     if required & {x["anatomyId"] for x in mapping.get("unavailable",[])}: raise ValueError("Required anatomy still unavailable")
     skin=next((o for o in bpy.context.scene.objects if o.get("bodyparts3dFileId")=="FJ2810"),None)
     if skin is None: raise RuntimeError("BodyParts3D skin envelope FJ2810 is absent")
     root=next((c for c in bpy.context.scene.collection.children if c.name=="BodyCast BodyParts3D 4.0"),None)
     if root is None: raise RuntimeError("BodyParts3D root collection is absent")
     tree=BVHTree.FromObject(skin,bpy.context.evaluated_depsgraph_get())
-    coll=bpy.data.collections.new("BodyCast independently authored muscle volumes v1.0.0"); root.children.link(coll)
+    coll=bpy.data.collections.new("BodyCast independently authored muscle volumes v3.0.0"); root.children.link(coll)
     surf=bpy.data.materials.get("BodyCast muscle surface"); deep=bpy.data.materials.get("BodyCast deep muscle")
     if surf is None or deep is None: raise RuntimeError("Base muscle materials are absent")
+    geometry_contracts={row["anatomyId"]:row for row in mapping.get("independentGeometry",[])}
     generated=[]
     for side,sign in (("left",1.0),("right",-1.0)):
-        generated.extend((latissimus(tree,side,sign,coll,surf),rectus(tree,side,sign,coll,surf),
-            abdominal_sheet(tree,"internal_oblique",side,sign,coll,deep,False),
-            abdominal_sheet(tree,"transversus_abdominis",side,sign,coll,deep,True)))
+        generated.extend((latissimus(tree,side,sign,coll,surf,geometry_contracts["latissimus_dorsi"]),rectus(tree,side,sign,coll,surf,geometry_contracts["rectus_abdominis"]),
+            abdominal_sheet(tree,"internal_oblique",side,sign,coll,deep,False,geometry_contracts["internal_oblique"]),
+            abdominal_sheet(tree,"transversus_abdominis",side,sign,coll,deep,True,geometry_contracts["transversus_abdominis"])))
     presentation = mapping.get("presentation", {})
     head_repair = repair_head_surface(skin, presentation.get("headSurfaceRepair"))
     skin_report = next((row for row in report["contextNodes"] if row.get("sourceObjectId") == head_repair["sourceObjectId"]), None)
@@ -314,12 +372,12 @@ def main():
     report["selectableRegions"].extend(generated); report["selectableMeshCount"]=len(report["selectableRegions"])
     report["authoredMeshCount"]=len(generated); report["mappingVersion"]=mapping["version"]
     report["unavailableAnatomy"]=mapping.get("unavailable",[]); report["licenseReview"]=mapping["licenseReview"]
-    report["authoredAnatomyContract"]={"version":mapping["independentGeometry"][0]["geometryId"],
+    report["authoredAnatomyContract"]={"versions":{row["anatomyId"]:row["geometryId"] for row in mapping["independentGeometry"]},
       "source":"Independently authored Blender volumes guided by documented attachment/fascicle-direction anatomy; no copied source meshes.",
       "limitations":"Educational visual approximations, not surgical or patient-specific models; geometry needs anatomy review.",
       "anatomyIds":sorted(required)}
     report["headSurfaceRepair"]={key: value for key, value in head_repair.items() if key != "skinMetrics"}
-    report["geometryProcessing"]="BodyParts3D 4.0 OBJ meshes retained; eight paired BodyCast-authored closed muscle volumes added; FJ2810 received the versioned neutral head-surface repair. No Z-Anatomy, mirrored source mesh or decorative plane."
+    report["geometryProcessing"]="BodyParts3D 4.0 OBJ meshes retained; eight bilateral BodyCast-authored selectable muscle meshes added, including v3 smooth tapered abdominal-wall fans; FJ2810 received the versioned neutral head-surface repair. No Z-Anatomy, mirrored source mesh or decorative plane."
     bpy.ops.wm.save_as_mainfile(filepath=str(blend),check_existing=False)
     bpy.ops.export_scene.gltf(filepath=str(glb),export_format="GLB",export_extras=True,
       export_meshopt_compression_enable=True,export_yup=True,export_apply=True,export_materials="EXPORT",

@@ -32,9 +32,12 @@ const authored = (mapping.independentGeometry ?? []).map((item) => ({
   construction: item.construction,
   reference: item.reference,
   meshIds: [item.leftMeshId, item.rightMeshId],
+  geometryProfileContract: item.geometryProfileContract,
 }));
 for (const item of authored) for (const meshId of item.meshIds) {
-  if (!nodes.has(meshId) || nodes.get(meshId).extras.bodycastGeometryOrigin !== 'BodyCast-authored-volumetric-anatomy-v2.0.0') {
+  const node = nodes.get(meshId);
+  if (!node || node.extras.bodycastGeometryOrigin !== item.geometryId
+    || node.extras.bodycastGeometryProfileContract !== item.geometryProfileContract) {
     throw new Error(`BodyCast authored geometry is missing or has unexpected provenance: ${meshId}`);
   }
 }

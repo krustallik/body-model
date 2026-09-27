@@ -13,12 +13,21 @@ CREATE TABLE IF NOT EXISTS "StepperReconciliationGroup" (
   "evaluationRevision" INTEGER NOT NULL DEFAULT 0,
   "provisionalWorkoutId" INTEGER,
   "policyVersion" VARCHAR(80) NOT NULL,
+  "localDate" VARCHAR(10) NOT NULL,
+  "sourceRevision" VARCHAR(80),
   "createdAt" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS "StepperReconciliationGroup_profileId_status_idx"
   ON "StepperReconciliationGroup" ("profileId", "status");
+CREATE INDEX IF NOT EXISTS "StepperReconciliationGroup_profileId_localDate_idx"
+  ON "StepperReconciliationGroup" ("profileId", "localDate");
+
+ALTER TABLE "StepperReconciliationGroup" DROP CONSTRAINT IF EXISTS "StepperReconciliationGroup_status_check";
+ALTER TABLE "StepperReconciliationGroup"
+  ADD CONSTRAINT "StepperReconciliationGroup_status_check"
+  CHECK ("status" IN ('pending', 'ambiguous', 'confirmed', 'rejected'));
 
 CREATE TABLE IF NOT EXISTS "StepperReconciliationCandidate" (
   "id" SERIAL PRIMARY KEY,
@@ -52,3 +61,23 @@ CREATE TABLE IF NOT EXISTS "ActivationRollbackEntry" (
 
 CREATE INDEX IF NOT EXISTS "ActivationRollbackEntry_generationId_idx"
   ON "ActivationRollbackEntry" ("generationId");
+
+DO $$ BEGIN
+  ALTER TABLE "StepperReconciliationCandidate"
+    ADD CONSTRAINT "StepperReconciliationCandidate_manualWorkoutId_fkey"
+    FOREIGN KEY ("manualWorkoutId") REFERENCES "Workout"("id") ON DELETE RESTRICT;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+DO $$ BEGIN
+  ALTER TABLE "StepperReconciliationCandidate"
+    ADD CONSTRAINT "StepperReconciliationCandidate_garminWorkoutId_fkey"
+    FOREIGN KEY ("garminWorkoutId") REFERENCES "Workout"("id") ON DELETE RESTRICT;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS "StepperReconciliationCandidate_confirmed_manual_key"
+  ON "StepperReconciliationCandidate" ("manualWorkoutId")
+  WHERE "candidateStatus" = 'confirmed';
+CREATE UNIQUE INDEX IF NOT EXISTS "StepperReconciliationCandidate_confirmed_garmin_key"
+  ON "StepperReconciliationCandidate" ("garminWorkoutId")
+  WHERE "candidateStatus" = 'confirmed';

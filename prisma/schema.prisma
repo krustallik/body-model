@@ -265,6 +265,8 @@ model Workout {
    */
   dailyHealthData     DailyHealthData       @relation(fields: [dailyHealthDataId], references: [id], onDelete: Restrict)
   matchedDiarySession StrengthDiarySession?
+  reconciliationAsManual StepperReconciliationCandidate[] @relation("ReconciliationManual")
+  reconciliationAsGarmin StepperReconciliationCandidate[] @relation("ReconciliationGarmin")
   experimentalStepperActiveEnergyShadow ExperimentalStepperActiveEnergyShadow?
   experimentalStepperGlycogenDemandShadow ExperimentalStepperGlycogenDemandShadow?
 
@@ -1011,11 +1013,14 @@ model StepperReconciliationGroup {
   evaluationRevision   Int      @default(0)
   provisionalWorkoutId Int?
   policyVersion        String   @db.VarChar(80)
+  localDate            String   @db.VarChar(10)
+  sourceRevision       String?  @db.VarChar(80)
   createdAt            DateTime @default(now()) @db.Timestamptz(3)
   updatedAt            DateTime @updatedAt @db.Timestamptz(3)
   candidates           StepperReconciliationCandidate[]
 
   @@index([profileId, status])
+  @@index([profileId, localDate])
 }
 
 model StepperReconciliationCandidate {
@@ -1028,6 +1033,8 @@ model StepperReconciliationCandidate {
   garminCoverage     Float
   stepEvidenceStatus String                     @db.VarChar(40)
   group              StepperReconciliationGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  manualWorkout      Workout                    @relation("ReconciliationManual", fields: [manualWorkoutId], references: [id], onDelete: Restrict)
+  garminWorkout      Workout                    @relation("ReconciliationGarmin", fields: [garminWorkoutId], references: [id], onDelete: Restrict)
 
   @@unique([manualWorkoutId, garminWorkoutId])
   @@index([groupId])

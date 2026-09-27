@@ -2552,3 +2552,23 @@ a.editMenuItem + .editMenuDanger {
   .setFields { grid-template-columns: 1fr; }
   .metaGrid { grid-template-columns: 1fr 1fr; }
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .trainingScope,
+  .page,
+  .liveShell,
+  .workoutShell,
+  .editShell {
+    --training-ease: 0ms;
+  }
+
+  .trainingScope *,
+  .page *,
+  .liveShell *,
+  .workoutShell *,
+  .editShell * {
+    animation: none !important;
+    transition-duration: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -20,23 +20,34 @@ function hasIntervalEvidence(value: StepperWorkoutDiagnosticV7["bracketedSteps"]
     && typeof value.observedIntervalStepCount === "number";
 }
 
+/**
+ * Diagnostic vocabulary stays HR-aware (default v7 path), but labels must stay
+ * coherent with history/day-fact EnergySourceKind wording: mechanical BodyCast
+ * estimate vs device Garmin measurement vs calibrated HR estimate.
+ */
 function selectedEnergyText(source: StepperWorkoutDiagnosticV7["activeEnergyResolution"]["selected"]["source"], uk: boolean): string {
-  if (source === "hr-calibrated-ms100") return uk ? "Персональну оцінку HR застосовано" : "Personal HR estimate applied";
-  if (source === "mechanical-ms100") return uk ? "Механічну оцінку BodyCast використано" : "BodyCast mechanical estimate used";
-  if (source === "device-active-energy-fallback") return uk ? "Немає оцінки BodyCast · fallback пристрою" : "BodyCast estimate unavailable · device fallback";
-  return uk ? "Оцінка енергії недоступна" : "Energy estimate unavailable";
+  if (source === "hr-calibrated-ms100") {
+    return uk ? "Оцінка BodyCast (HR-калібрування MS100)" : "BodyCast estimate (MS100 HR calibration)";
+  }
+  if (source === "mechanical-ms100") {
+    return uk ? "Механічна оцінка BodyCast (не Garmin)" : "BodyCast mechanical estimate (not Garmin)";
+  }
+  if (source === "device-active-energy-fallback") {
+    return uk ? "Оцінка пристрою Garmin · fallback" : "Garmin device estimate · fallback";
+  }
+  return uk ? "Енергія недоступна" : "Energy unavailable";
 }
 
 function selectedEnergyNote(source: StepperWorkoutDiagnosticV7["activeEnergyResolution"]["selected"]["source"], uk: boolean): string {
   if (source === "hr-calibrated-ms100") return uk
-    ? "Використано часово зважений HR–VO₂ розрахунок із персональної MS100 калібровки; він замінює механічну оцінку, Garmin до нього не додається."
-    : "A time-weighted HR–VO₂ calculation from personal MS100 calibration replaced the mechanical estimate; Garmin kcal are not added.";
+    ? "Діагностика default v7: часово зважений HR–VO₂ з персональної MS100 калібровки замінює механічну оцінку. Це не Garmin active kcal і не staged selection-v1."
+    : "Default v7 diagnostic: a time-weighted HR–VO₂ reading from personal MS100 calibration replaces the mechanical estimate. This is not Garmin active kcal and not staged selection-v1.";
   if (source === "mechanical-ms100") return uk
-    ? "У TDEE передано механічну оцінку за кроками, масою тіла та припущеннями MS100. Пульс не коригує її без незалежно перевіреної персональної калібровки; Garmin показано окремо."
-    : "TDEE uses the mechanical estimate from steps, body mass, and MS100 assumptions. HR does not adjust it without independently validated personal calibration; Garmin is shown separately.";
+    ? "Механічна оцінка BodyCast за кроками, масою та припущеннями MS100. Це той самий клас джерела, що bodycast-stepper-mechanical в історії; Garmin active kcal показані окремо і не змішуються."
+    : "BodyCast mechanical estimate from steps, mass, and MS100 assumptions. Same source class as bodycast-stepper-mechanical in history; Garmin active kcal are shown separately and are not mixed in.";
   if (source === "device-active-energy-fallback") return uk
-    ? "BodyCast не зміг оцінити енергію за кроками й масою тіла, тому production використав активні ккал пристрою як fallback."
-    : "BodyCast could not estimate energy from steps and body mass, so production used device active kcal as a fallback.";
+    ? "BodyCast не зміг оцінити енергію; production використав активні ккал пристрою Garmin як fallback (garmin-fallback / device estimate)."
+    : "BodyCast could not estimate energy; production used Garmin device active kcal as fallback (garmin-fallback / device estimate).";
   return uk ? "Немає даних для оцінки BodyCast або енергії пристрою." : "Neither a BodyCast estimate nor device energy is available.";
 }
 

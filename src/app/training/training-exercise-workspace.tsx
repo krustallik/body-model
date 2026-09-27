@@ -34,9 +34,14 @@ export type SetDraft = {
 export const CAROUSEL_MANUAL_MS = 220;
 export const CAROUSEL_AUTOMATIC_MS = 440;
 
-function carouselDurationMs(mode: "manual" | "automatic"): number {
-  if (typeof window !== "undefined" && typeof window.matchMedia === "function"
-    && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return 0;
+/** Manual=220ms, automatic=440ms; reduced-motion disables movement (0ms). */
+export function carouselDurationMs(
+  mode: "manual" | "automatic",
+  media: Pick<MediaQueryList, "matches"> | null = typeof window === "undefined" || typeof window.matchMedia !== "function"
+    ? null
+    : window.matchMedia("(prefers-reduced-motion: reduce)"),
+): number {
+  if (media?.matches === true) return 0;
   return mode === "automatic" ? CAROUSEL_AUTOMATIC_MS : CAROUSEL_MANUAL_MS;
 }
 

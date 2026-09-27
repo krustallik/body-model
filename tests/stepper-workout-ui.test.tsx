@@ -48,10 +48,10 @@ describe("StepperDiagnosticClient", () => {
     expect(await screen.findByText("Степер")).toBeTruthy();
     expect(screen.getByText(/DOMYOS MS100 · фіксована конфігурація/)).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Активна енергія" })).toBeTruthy();
-    expect(screen.getByText("Механічну оцінку BodyCast використано")).toBeTruthy();
+    expect(screen.getByText("Механічна оцінка BodyCast (не Garmin)")).toBeTruthy();
     expect(screen.getByText("Використано в розрахунку · активні ккал")).toBeTruthy();
     expect(screen.getByText("Оцінка пристрою · активні ккал")).toBeTruthy();
-    expect(screen.getByText(/без незалежно перевіреної персональної калібровки/)).toBeTruthy();
+    expect(screen.getByText(/bodycast-stepper-mechanical в історії/)).toBeTruthy();
     expect(screen.queryByText("Workout ID")).toBeNull();
     expect(screen.queryByText("Summary basis")).toBeNull();
     expect(screen.getByText(/DOMYOS MS100/)).toBeTruthy();
@@ -95,8 +95,8 @@ describe("StepperDiagnosticClient", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ diagnostic })));
     render(<StepperDiagnosticClient workoutId="61" />);
 
-    expect(await screen.findByText("Персональну оцінку HR застосовано")).toBeTruthy();
-    expect(screen.getByText(/HR–VO₂ розрахунок із персональної MS100 калібровки/)).toBeTruthy();
+    expect(await screen.findByText("Оцінка BodyCast (HR-калібрування MS100)")).toBeTruthy();
+    expect(screen.getByText(/Default v7 diagnostic|Діагностика default v7/)).toBeTruthy();
     expect(screen.queryByText("Вплив пульсу на результат")).toBeNull();
   });
 

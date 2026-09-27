@@ -10,7 +10,18 @@ export type ProvenanceChip = {
   detail: string;
 };
 
-export type WorkoutEnergyProvenanceKind = "device-estimate" | "shadow-diary-estimate" | "unavailable";
+/** Presentation kinds plus canonical EnergySourceKind aliases used by day/history UI. */
+export type WorkoutEnergyProvenanceKind =
+  | "device-estimate"
+  | "shadow-diary-estimate"
+  | "bodycast-mechanical-estimate"
+  | "bodycast-strength-estimate"
+  | "bodycast-cardio-estimate"
+  | "bodycast-stepper-mechanical"
+  | "garmin-fallback"
+  | "manual-kcal"
+  | "forecast-scenario-strength-met"
+  | "unavailable";
 
 type WorkoutScenarioPlan = {
   strengthDaysPerWeek: number;
@@ -35,6 +46,56 @@ export function workoutEnergyProvenanceChip(
 ): ProvenanceChip {
   const uk = locale === "uk";
   const kind = source ?? workoutEnergyProvenanceKind(activeEnergyKcal);
+  if (
+    kind === "bodycast-mechanical-estimate" ||
+    kind === "bodycast-stepper-mechanical"
+  ) {
+    return {
+      key: "workout-energy",
+      tone: "estimated",
+      label: uk ? "Механічна оцінка BodyCast" : "BodyCast mechanical estimate",
+      detail: uk
+        ? "Канонічна оцінка з stepper/механічних доказів має пріоритет над Garmin active kcal."
+        : "Canonical estimate from stepper/mechanical evidence takes priority over Garmin active kcal.",
+    };
+  }
+  if (kind === "bodycast-strength-estimate" || kind === "bodycast-cardio-estimate") {
+    return {
+      key: "workout-energy",
+      tone: "estimated",
+      label:
+        kind === "bodycast-strength-estimate"
+          ? uk
+            ? "Оцінка сили BodyCast"
+            : "BodyCast strength estimate"
+          : uk
+            ? "Оцінка кардіо BodyCast"
+            : "BodyCast cardio estimate",
+      detail: uk
+        ? "Оцінка BodyCast з доказів сесії; не лабораторна істина."
+        : "BodyCast estimate from session evidence; not lab truth.",
+    };
+  }
+  if (kind === "manual-kcal") {
+    return {
+      key: "workout-energy",
+      tone: "estimated",
+      label: uk ? "Ручні ккал" : "Manual kcal",
+      detail: uk
+        ? "Користувач вказав active kcal вручну."
+        : "User-supplied active kcal.",
+    };
+  }
+  if (kind === "forecast-scenario-strength-met") {
+    return {
+      key: "workout-energy",
+      tone: "estimated",
+      label: uk ? "Сценарій прогнозу (MET)" : "Forecast scenario (MET)",
+      detail: uk
+        ? "Майбутній сценарій сили використовує позначений MET, не історичний Garmin."
+        : "Future strength scenario uses labeled MET, not historical Garmin.",
+    };
+  }
   if (kind === "shadow-diary-estimate") {
     return {
       key: "workout-energy",
@@ -45,7 +106,7 @@ export function workoutEnergyProvenanceChip(
         : "Active-kcal estimate from diary evidence; no Garmin workout is synced for this session.",
     };
   }
-  if (kind === "device-estimate") {
+  if (kind === "device-estimate" || kind === "garmin-fallback") {
     return {
       key: "workout-energy",
       tone: "observed",

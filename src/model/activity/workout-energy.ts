@@ -10,6 +10,8 @@ import {
   TRADITIONAL_STRENGTH_TRAINING_TYPE,
 } from "@/modules/health/expand-training-workouts";
 import type { WorkoutStepperEvidenceV7 } from "./workout-stepper-v7";
+import { estimateExperimentalStepperActiveEnergyV1 } from "./experimental-stepper-active-energy-v1";
+import { FIXED_STEPPER_EQUIPMENT_V7 } from "./personal-stepper-reference-v7";
 import {
   estimateHrAwareStepperActiveEnergyV1,
   type StepperHeartRateEnergyCalibrationV1,
@@ -185,8 +187,49 @@ export function resolveExplicitWorkoutActivityKcal(input: {
   }> = [];
 
   for (const event of input.events) {
-    if (selectionV1) {
+    // Forecast scenario MET is labeled and must work on plain v7 episodes without
+    // forcing the full selection-v1 policy onto every historical event.
+    if (!selectionV1 && event.forecastScenarioStrengthMet === true) {
       const selected = resolveEventEnergyV1(event);
+      const provenance = selectionProvenance(selected.source);
+      if (selected.selectedKcal !== null && provenance !== "none") {
+        publishedStrengthEstimateKcal += selected.selectedKcal;
+        perEvent.push({
+          ...(event.workoutId === undefined ? {} : { workoutId: event.workoutId }),
+          classification: event.classification,
+          source: provenance,
+          kcal: selected.selectedKcal,
+        });
+      } else {
+        perEvent.push({
+          ...(event.workoutId === undefined ? {} : { workoutId: event.workoutId }),
+          classification: event.classification,
+          source: "none",
+          kcal: 0,
+        });
+      }
+      continue;
+    }
+    if (selectionV1) {
+      let mechanicalStepperKcal = event.mechanicalStepperKcal ?? null;
+      if (
+        mechanicalStepperKcal === null
+        && event.classification === "stair-climbing"
+        && event.stepperEvidence !== undefined
+      ) {
+        const mechanical = estimateExperimentalStepperActiveEnergyV1({
+          workout: event.stepperEvidence,
+          bodyMassKg: input.weightKg,
+          equipment: FIXED_STEPPER_EQUIPMENT_V7,
+        });
+        if (mechanical.availability === "available" && mechanical.estimatedActiveKcal !== null) {
+          mechanicalStepperKcal = mechanical.estimatedActiveKcal;
+        }
+      }
+      const selected = resolveEventEnergyV1({
+        ...event,
+        mechanicalStepperKcal,
+      });
       const provenance = selectionProvenance(selected.source);
       if (selected.selectedKcal === null || provenance === "none") {
         selectedValues.push(null);

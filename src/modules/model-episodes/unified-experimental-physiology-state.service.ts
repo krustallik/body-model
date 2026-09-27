@@ -105,8 +105,27 @@ function unifiedBodyCastKcal(workout: UnifiedDurableWorkoutV1): number | null {
   return typeof kcal === "number" && Number.isFinite(kcal) && kcal >= 0 ? kcal : null;
 }
 
-function uncertainty(prior: UnifiedUncertaintyV1 | null, day: UnifiedDurableDayEvidenceV1): UnifiedUncertaintyV1 {
-  return carryUnifiedUncertaintyV1(prior, day.dailyHealthData === null ? "no-daily-health-observation" : "child-output-uncertainty-preserved");
+function selectionCoverageNote(day: UnifiedDurableDayEvidenceV1): string | null {
+  const quality = day.productionDailyState?.sourceQuality;
+  if (quality === null || typeof quality !== "object" || Array.isArray(quality)) return null;
+  const selection = (quality as { selectionV1?: unknown }).selectionV1;
+  if (selection === null || typeof selection !== "object" || Array.isArray(selection)) return null;
+  const coverage = (selection as { energyCoverage?: unknown }).energyCoverage;
+  if (coverage === null || typeof coverage !== "object" || Array.isArray(coverage)) return null;
+  const unknown = (coverage as { unknownEventCount?: unknown }).unknownEventCount;
+  const full = (coverage as { fullCoverage?: unknown }).fullCoverage;
+  const known = (coverage as { knownSubtotalKcal?: unknown }).knownSubtotalKcal;
+  return `selection-v1-energy-coverage:unknown=${String(unknown)};full=${String(full)};known=${String(known)}`;
+}
+
+function uncertainty(prior: UnifiedUncertaintyV1 | null, day: UnifiedDurableDayEvidenceV1, unknownEnergyCount: number): UnifiedUncertaintyV1 {
+  const selectionNote = selectionCoverageNote(day);
+  const reasons = [
+    day.dailyHealthData === null ? "no-daily-health-observation" : "child-output-uncertainty-preserved",
+    ...(unknownEnergyCount > 0 ? [`energy-coverage-unknown=${unknownEnergyCount}`] : []),
+    ...(selectionNote !== null ? [selectionNote] : []),
+  ];
+  return carryUnifiedUncertaintyV1(prior, reasons.join("; "));
 }
 
 function sourceLineage(day: UnifiedDurableDayEvidenceV1) {
@@ -162,7 +181,8 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: { profi
     const ledger = buildUnifiedEnergyLedgerV1({ production: { dynamicRmrKcalPerDay: production?.dynamicRmrKcalPerDay ?? null, tefKcalPerDay: production?.tefKcalPerDay ?? null, walkingKcalPerDay: null, occupationalKcalPerDay: null, workoutKcalPerDay: null, stepperKcalPerDay: null, activityKcalPerDay: production?.activityKcalPerDay ?? null, adaptiveThermogenesisKcalPerDay: production?.adaptiveThermogenesisKcalPerDay ?? null, personalOffsetKcalPerDay: null, productionTdeeKcalPerDay: production?.energyExpenditureKcal ?? null }, activities });
     const observedWeight = day.dailyHealthData?.weightKg ?? null;
     const anchorWeight = previousObservedWeight;
-    const result = transitionUnifiedExperimentalPhysiologyV1({ profileId, date: day.date, priorState, priorStateFingerprint: priorFingerprint, children, energyLedger: ledger, quality: quality(day, gapDays), uncertainty: uncertainty(priorUncertainty, day), reconciliation: { anchorDate: previousDate, anchorWeightKg: anchorWeight, observedWeightKg: observedWeight, reason: anchorWeight === null ? "no-prior-observed-weight" : null }, sourceLineage: sourceLineage(day), diagnostics: { notes: ["Unified V1 is shadow-only; production state is read-only input", `transient-output-count:${day.childOutputs.transientWater.length}`, `energy-coverage:unknown=${unknownEnergyCount}`] } });
+    const selectionNote = selectionCoverageNote(day);
+    const result = transitionUnifiedExperimentalPhysiologyV1({ profileId, date: day.date, priorState, priorStateFingerprint: priorFingerprint, children, energyLedger: ledger, quality: quality(day, gapDays), uncertainty: uncertainty(priorUncertainty, day, unknownEnergyCount), reconciliation: { anchorDate: previousDate, anchorWeightKg: anchorWeight, observedWeightKg: observedWeight, reason: anchorWeight === null ? "no-prior-observed-weight" : null }, sourceLineage: sourceLineage(day), diagnostics: { notes: ["Unified V1 is shadow-only; production state is read-only input", `transient-output-count:${day.childOutputs.transientWater.length}`, `energy-coverage:unknown=${unknownEnergyCount}`, ...(selectionNote !== null ? [selectionNote] : [])] } });
     const serialized = serializeUnifiedExperimentalPhysiologyV1(result);
     await prisma.unifiedExperimentalPhysiologyState.upsert({ where: { profileId_date: { profileId, date: day.date } }, create: toPersisted(serialized), update: toPersisted(serialized) });
     priorState = serialized.state;

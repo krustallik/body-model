@@ -55,6 +55,9 @@ export function projectReliableForecastBehaviorDay(day: BuiltSimulationDay): For
       || day.sourceQuality.nutrition.dependency !== "observed"
       || day.sourceQuality.status !== "complete"
       || missingPhysiologicalTransitionFields(day.input, "hold-ecf").length > 0) return null;
+  // Partial workout-energy coverage must not seed forecast as if energy were complete.
+  if (day.sourceQuality.selectionV1?.energyCoverage?.fullCoverage === false) return null;
+  if (day.sourceQuality.selectionV1?.historicalDonorEligible === false) return null;
   const occupation = (day.input.occupationalActivity.intervals ?? []).map((interval) => {
         if (!interval.category || !isOccupationalCategory(interval.category)
             || interval.durationHours === null || interval.durationHours === undefined) return null;

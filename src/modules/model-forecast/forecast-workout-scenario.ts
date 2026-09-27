@@ -48,9 +48,8 @@ export function toProductionWorkoutActivity(
   activity: ForecastWorkoutActivity | undefined,
 ): ExplicitWorkoutActivityInput | undefined {
   if (activity === undefined) return undefined;
-  const scenarioMet = activity.events.some((event) => event.energyProvenance === FORECAST_SCENARIO_STRENGTH_MET);
+  // Do not inject selection-v1 onto the whole activity. Scenario MET is per-event.
   return {
-    ...(scenarioMet ? { selectionPolicy: "bodycast-active-energy-selection-v1" as const } : {}),
     events: activity.events.map((event) => ({
       type: event.type,
       canonicalType: event.canonicalType,

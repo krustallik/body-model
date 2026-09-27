@@ -103,6 +103,12 @@ export function calculateEpisodeHistory(input: {
       ...(result.calculations.expenditure.workoutEnergyResolution === null
         ? {}
         : {
+          selectionV1: continuity.resolvedDays[index].sourceQuality.selectionV1 === undefined
+            ? undefined
+            : {
+              ...continuity.resolvedDays[index].sourceQuality.selectionV1,
+              energyCoverage: result.calculations.expenditure.workoutEnergyResolution.energyCoverage ?? null,
+            },
           workoutEnergyResolution: {
             ...result.calculations.expenditure.workoutEnergyResolution,
             perEvent: result.calculations.expenditure.workoutEnergyResolution.perEvent.map((event) => ({

@@ -121,12 +121,12 @@ describe("TrainingDayFact PostgreSQL repository", () => {
       hiddenEventCount: 0,
     });
     expect(fact.events.map((event) => event.exerciseDetailAvailability)).toEqual([
-      "no-logged-sets",
       "logged-sets",
+      "no-logged-sets",
     ]);
-    expect(fact.events.map((event) => event.executionStatus)).toEqual(["in-progress", "partial"]);
-    expect(fact.events[0]?.durationMinutes).toBeNull();
-    expect(fact.events[1]?.durationMinutes).toBe(20);
+    expect(fact.events.map((event) => event.executionStatus)).toEqual(["partial", "in-progress"]);
+    expect(fact.events[0]?.durationMinutes).toBe(20);
+    expect(fact.events[1]?.durationMinutes).toBeNull();
     expect(fact.events.every((event) => event.diaryOnly)).toBe(true);
 
     const firstAllHistoryPage = await dailyMetrics.listWithTrainingFacts({
@@ -204,5 +204,108 @@ describe("TrainingDayFact PostgreSQL repository", () => {
     expect(hidden).toMatchObject({ eventCount: 2, hiddenEventCount: 1, durationMinutes: null });
     expect(hidden.events).toHaveLength(1);
     expect(hidden.events[0]?.source).toBe("workout");
+  });
+
+  it("invalidates diary shadow energy when same-day mass changes without a session revision bump", async () => {
+    const freshDate = "2046-02-10";
+    await prisma.dailyHealthData.deleteMany({ where: { date: { in: [freshDate, "2046-02-09"] } } });
+    await prisma.dailyHealthData.create({
+      data: { date: "2046-02-09", weightKg: 79.5, rawPayload: { marker: "day-fact-freshness-prior" } },
+    });
+    await prisma.dailyHealthData.create({
+      data: { date: freshDate, weightKg: 80, rawPayload: { marker: "day-fact-freshness-same-day" } },
+    });
+    const program = await prisma.trainingProgram.findFirst({
+      where: { name: programName },
+      include: { versions: { orderBy: { versionNumber: "desc" }, take: 1 } },
+    }) ?? await prisma.trainingProgram.create({
+      data: {
+        name: programName,
+        versions: { create: { versionNumber: 1, exercises: { create: [] } } },
+      },
+      include: { versions: true },
+    });
+    const versionId = program.versions[0]?.id
+      ?? (await prisma.trainingProgramVersion.create({
+        data: { programId: program.id, versionNumber: 1 },
+      })).id;
+    const { strengthInputFingerprintV1, strengthSetFingerprintV1 } = await import(
+      "@/modules/training/strength-publication-v1"
+    );
+    const session = await prisma.strengthDiarySession.create({
+      data: {
+        programId: program.id,
+        programVersionId: versionId,
+        status: "COMPLETED",
+        entryMode: "LIVE",
+        revision: 1,
+        webStartedAt: new Date("2046-02-10T08:00:00.000Z"),
+        webEndedAt: new Date("2046-02-10T09:00:00.000Z"),
+        matchStatus: "UNMATCHED",
+        exercises: {
+          create: [{
+            sortOrder: 0,
+            snapshotExerciseName: exerciseName,
+            plannedSets: 1,
+            resistanceType: "EXTERNAL_WEIGHT",
+            sets: {
+              create: [{ setNumber: 1, reps: 8, weightKg: 60, rir: null }],
+            },
+          }],
+        },
+      },
+      include: { exercises: { include: { sets: true } } },
+    });
+    const setRows = session.exercises.flatMap((exercise) => exercise.sets).map((set) => ({
+      id: set.id,
+      reps: set.reps,
+      weightKg: set.weightKg?.toNumber() ?? null,
+      bandNominalResistanceKg: set.bandNominalResistanceKg?.toNumber() ?? null,
+      rir: set.rir,
+    }));
+    const fingerprint = strengthInputFingerprintV1({
+      sessionId: session.id,
+      sessionRevision: 1,
+      massKg: 80,
+      sameDayMassKg: 80,
+      startOfDayMassKg: 79.5,
+      setFingerprint: strengthSetFingerprintV1(setRows),
+    });
+    await prisma.experimentalStrengthEnergyShadow.create({
+      data: {
+        sessionId: session.id,
+        profileId: 1,
+        sourceFingerprint: fingerprint,
+        modelRevision: "experimental-strength-active-energy-v1",
+        features: {},
+        result: {
+          estimatedActiveKcal: 270,
+          sessionRevision: 1,
+          inputFingerprint: fingerprint,
+        },
+      },
+    });
+
+    const fresh = await facts.forDate(freshDate);
+    expect(fresh.events[0]).toMatchObject({
+      diaryOnly: true,
+      activeEnergyKcal: 270,
+      energySource: "shadow-diary-estimate",
+    });
+
+    await prisma.dailyHealthData.update({
+      where: { date: freshDate },
+      data: { weightKg: 81.4 },
+    });
+    const stale = await facts.forDate(freshDate);
+    expect(stale.events[0]).toMatchObject({
+      diaryOnly: true,
+      activeEnergyKcal: null,
+      energySource: "unavailable",
+    });
+
+    await prisma.experimentalStrengthEnergyShadow.deleteMany({ where: { sessionId: session.id } });
+    await prisma.strengthDiarySession.delete({ where: { id: session.id } });
+    await prisma.dailyHealthData.deleteMany({ where: { date: { in: [freshDate, "2046-02-09"] } } });
   });
 });

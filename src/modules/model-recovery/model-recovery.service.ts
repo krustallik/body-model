@@ -7,7 +7,7 @@ import {
 } from "@/modules/model-episodes/model-episode.errors";
 import { ModelEpisodeRepository } from "@/modules/model-episodes/model-episode.repository";
 import { addCalendarDays, latestCompletedLocalDate } from "@/modules/model-episodes/model-calendar";
-import { buildSimulationDays } from "@/modules/model-episodes/simulation-input-builder";
+import { buildSimulationDays, eligibleHistoricalDonors } from "@/modules/model-episodes/simulation-input-builder";
 import { analyzeStateContinuity } from "@/modules/model-episodes/unknown-intervals";
 import { ModelRecoveryEvidenceError } from "./model-recovery.errors";
 import { ModelRecoveryRepository } from "./model-recovery.repository";
@@ -66,14 +66,14 @@ export async function recoverModelEpisode(
     const donorFrom = addCalendarDays(firstUnknownDate, -config.donorLookbackDays);
     const donorTo = addCalendarDays(firstUnknownDate, -1);
     const donorSources = await episodes.loadSources(donorFrom, donorTo);
-    const donorDays = buildSimulationDays({
+    const donorDays = eligibleHistoricalDonors(episode.modelVersion, buildSimulationDays({
       from: donorFrom,
       to: donorTo,
       sources: donorSources,
       baselineNutritionFallback: episode.baselineNutritionFallback,
       nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
       modelVersion: episode.modelVersion,
-    });
+    }));
 
     let recoveryInitialState = episode.initialState;
     if (continuity.resolvedDays.length > 0) {
@@ -167,14 +167,14 @@ export async function getModelRecoveryStatus(
       const donorFrom = addCalendarDays(firstUnknownDate, -config.donorLookbackDays);
       const donorTo = addCalendarDays(firstUnknownDate, -1);
       const donorSources = await episodes.loadSources(donorFrom, donorTo);
-      const donorDays = buildSimulationDays({
+      const donorDays = eligibleHistoricalDonors(episode.modelVersion, buildSimulationDays({
         from: donorFrom,
         to: donorTo,
         sources: donorSources,
         baselineNutritionFallback: episode.baselineNutritionFallback,
         nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
         modelVersion: episode.modelVersion,
-      });
+      }));
       if (recoverySourceFingerprint({ episode, days, donorDays }) !== recovery.sourceFingerprint) {
         await recoveryRepository.markAllStale(episode.id);
         recovery = await recoveryRepository.latestStatus(episode.id);

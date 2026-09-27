@@ -183,6 +183,7 @@ export function calculateDynamicDailyExpenditure(
       events: input.workoutActivity.events,
       weightKg: currentPredictedWeightKg,
       rmrKcalPerDay: dynamicRmrKcalPerDay,
+      selectionPolicy: input.workoutActivity.selectionPolicy,
     })
     : null;
   const workoutActivityKcalPerDay = workoutResolution?.workoutActivityKcal ?? 0;
@@ -195,8 +196,9 @@ export function calculateDynamicDailyExpenditure(
       rmrKcalPerDay: dynamicRmrKcalPerDay,
       durationMinutes: input.strength.durationMinutes,
     });
-  } else if (suppressLegacyStrength) {
+  } else if (suppressLegacyStrength || input.workoutActivity?.selectionPolicy === "bodycast-active-energy-selection-v1") {
     // Explicit strength workouts replace legacy day-level strength minutes.
+    // Selection v1 never adds the historical strength MET fallback.
     strengthActivityKcalPerDay = workoutActivityKcalPerDay;
   } else {
     const legacyStrengthActivityKcalPerDay = calculateStrengthActivity({

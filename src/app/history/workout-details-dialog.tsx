@@ -220,6 +220,11 @@ export function WorkoutDetailsDialog({
   );
 }
 
-function HeartRateSummary({ title, data, uk, intlLocale }: { title: string; data: NonNullable<DailyMetricDto["heartRate"]>; uk: boolean; intlLocale: string }) {
-  return <article className={styles.heartRateSummary}><strong>{title}</strong>{data.sampleCount === 0 ? <p>{uk ? "Немає даних" : "No data"}</p> : <><p>{uk ? `Зразків: ${data.sampleCount}` : `Samples: ${data.sampleCount}`} · {data.latestTimestamp ? formatClock(data.latestTimestamp, intlLocale) : "—"}</p><dl className={styles.workoutDetailMeta}><div><dt>{uk ? "Останній" : "Latest"}</dt><dd>{formatMetric(data.latestBpm, intlLocale)} bpm</dd></div><div><dt>Min / Max / Avg</dt><dd>{formatMetric(data.minBpm, intlLocale)} / {formatMetric(data.maxBpm, intlLocale)} / {formatMetric(data.avgBpm, intlLocale)}</dd></div></dl></>}</article>;
+function wholeBpm(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "—";
+  return String(Math.round(value));
+}
+
+function HeartRateSummary({ title, data, uk }: { title: string; data: NonNullable<DailyMetricDto["heartRate"]>; uk: boolean; intlLocale: string }) {
+  return <article className={styles.heartRateSummary}><strong>{title}</strong>{data.sampleCount === 0 ? <p>{uk ? "Недоступно" : "Unavailable"}</p> : <dl className={styles.workoutDetailMeta}><div><dt>{uk ? "Середній" : "Mean"}</dt><dd>{wholeBpm(data.avgBpm)}</dd></div><div><dt>{uk ? "Максимальний" : "Maximum"}</dt><dd>{wholeBpm(data.maxBpm)}</dd></div><div><dt>{uk ? "Мінімальний" : "Minimum"}</dt><dd>{wholeBpm(data.minBpm)}</dd></div></dl>}</article>;
 }

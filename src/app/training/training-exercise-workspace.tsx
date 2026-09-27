@@ -31,7 +31,19 @@ export type SetDraft = {
   comment: string;
 };
 
-const CAROUSEL_MS = 220;
+export const CAROUSEL_MANUAL_MS = 220;
+export const CAROUSEL_AUTOMATIC_MS = 440;
+
+/** Manual=220ms, automatic=440ms; reduced-motion disables movement (0ms). */
+export function carouselDurationMs(
+  mode: "manual" | "automatic",
+  media: Pick<MediaQueryList, "matches"> | null = typeof window === "undefined" || typeof window.matchMedia !== "function"
+    ? null
+    : window.matchMedia("(prefers-reduced-motion: reduce)"),
+): number {
+  if (media?.matches === true) return 0;
+  return mode === "automatic" ? CAROUSEL_AUTOMATIC_MS : CAROUSEL_MANUAL_MS;
+}
 
 type TrainingExerciseWorkspaceProps = {
   uk: boolean;
@@ -69,6 +81,7 @@ type TrainingExerciseWorkspaceProps = {
   onDeleteSet: (setId: number) => void;
   trailingAction?: ReactNode;
   finishDialog?: ReactNode;
+  autoAdvanceNonce?: number;
 };
 
 export function emptySetDraft(): SetDraft {
@@ -117,6 +130,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
     onDeleteSet,
     trailingAction,
     finishDialog,
+    autoAdvanceNonce = 0,
   } = props;
 
   const pointerStart = useRef<{
@@ -137,6 +151,8 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
   const [infoExerciseId, setInfoExerciseId] = useState(exercise.id);
   const [dragPx, setDragPx] = useState(0);
   const [animating, setAnimating] = useState(false);
+  const [transitionMs, setTransitionMs] = useState(CAROUSEL_MANUAL_MS);
+  const lastAutoAdvance = useRef(0);
   const [copiedHint, setCopiedHint] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
@@ -220,22 +236,32 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
     else onPrev();
   }
 
-  function animateTo(offset: number, then?: () => void) {
+  function animateTo(offset: number, durationMs: number, then?: () => void) {
     animatingRef.current = true;
     setAnimating(true);
     setDragPx(offset);
     window.setTimeout(() => {
       then?.();
-    }, CAROUSEL_MS);
+    }, durationMs);
   }
 
-  function requestNeighbor(delta: -1 | 1) {
+  function requestNeighbor(delta: -1 | 1, mode: "manual" | "automatic" = "manual") {
     if (animatingRef.current) return;
     if (delta < 0 && !canPrev) return;
     if (delta > 0 && !canNext) return;
     const width = paneWidth();
-    animateTo(delta > 0 ? -width : width, () => finishCommit(delta > 0 ? "left" : "right"));
+    const durationMs = carouselDurationMs(mode);
+    setTransitionMs(durationMs);
+    animateTo(delta > 0 ? -width : width, durationMs, () => finishCommit(delta > 0 ? "left" : "right"));
   }
+
+  useEffect(() => {
+    if (!autoAdvanceNonce || autoAdvanceNonce === lastAutoAdvance.current) return;
+    lastAutoAdvance.current = autoAdvanceNonce;
+    requestNeighbor(1, "automatic");
+    // The nonce is the trigger. requestNeighbor closes over the current neighbors.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoAdvanceNonce]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -317,7 +343,9 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
       return;
     }
     if (decision.type === "snap-back") {
-      animateTo(0, () => {
+      const durationMs = carouselDurationMs("manual");
+      setTransitionMs(durationMs);
+      animateTo(0, durationMs, () => {
         animatingRef.current = false;
         setAnimating(false);
         setDragPx(0);
@@ -325,7 +353,9 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
       return;
     }
     const width = paneWidth();
-    animateTo(decision.direction === "left" ? -width : width, () => finishCommit(decision.direction));
+    const durationMs = carouselDurationMs("manual");
+    setTransitionMs(durationMs);
+    animateTo(decision.direction === "left" ? -width : width, durationMs, () => finishCommit(decision.direction));
   }
 
   function copyHistorySet(set: ExerciseHistorySetDto) {
@@ -480,7 +510,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
               className={styles.workoutCarouselTrack}
               style={{
                 transform: `translateX(calc(-33.333% + ${dragPx}px))`,
-                transition: animating ? `transform ${CAROUSEL_MS}ms ease-out` : "none",
+                transition: animating ? `transform ${transitionMs}ms ease-out` : "none",
               }}
             >
               {renderCarouselPane(previousExercise, false)}

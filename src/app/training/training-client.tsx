@@ -32,6 +32,28 @@ function workoutLocalDateTime(value: string): string {
   return `${date}T${time}`;
 }
 
+function stepperSelectedEnergyText(workout: StepperWorkoutDto, uk: boolean): string {
+  if (typeof workout.selectedActiveEnergyKcal === "number") {
+    const source = workout.selectedActiveEnergySource === "manual-kcal"
+      ? (uk ? "введені ккал" : "entered kcal")
+      : workout.selectedActiveEnergySource === "bodycast-stepper-mechanical"
+        ? (uk ? "механічна оцінка" : "mechanical estimate")
+        : workout.selectedActiveEnergySource === "garmin-fallback"
+          ? (uk ? "запасний варіант пристрою" : "device fallback")
+          : workout.selectedActiveEnergySource;
+    const partial = workout.selectedActiveEnergyFullCoverage
+      ? ""
+      : (uk ? " · неповне покриття" : " · partial coverage");
+    return `${workout.selectedActiveEnergyKcal} ${uk ? "активних ккал" : "active kcal"} · ${source}${partial}`;
+  }
+  if (workout.activeEnergyKcal !== null) {
+    return uk
+      ? `Енергію не обрано · ${workout.activeEnergyKcal} ккал пристрою не використано`
+      : `Energy not selected · device ${workout.activeEnergyKcal} kcal not used`;
+  }
+  return uk ? "Енергія недоступна" : "Energy unavailable";
+}
+
 function formatStepperDateTime(value: string, intlLocale: string): string {
   return new Intl.DateTimeFormat(intlLocale, {
     timeZone: DEFAULT_TIME_ZONE,
@@ -70,11 +92,14 @@ export function TrainingClient() {
   const [editingStepper, setEditingStepper] = useState<StepperWorkoutDto | null>(null);
   const [stepperStartAt, setStepperStartAt] = useState(nowLocalDateTime);
   const [stepperDuration, setStepperDuration] = useState("20");
+  const [stepperSteps, setStepperSteps] = useState("");
+  const [stepperKcal, setStepperKcal] = useState("");
   const [stepperBusy, setStepperBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [busySessionId, setBusySessionId] = useState<number | null>(null);
+  const [reconBusyId, setReconBusyId] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -111,6 +136,8 @@ export function TrainingClient() {
     setEditingStepper(null);
     setStepperStartAt(nowLocalDateTime());
     setStepperDuration("20");
+    setStepperSteps("");
+    setStepperKcal("");
     setStepperFormOpen(true);
   }
 
@@ -118,6 +145,8 @@ export function TrainingClient() {
     setEditingStepper(workout);
     setStepperStartAt(workoutLocalDateTime(workout.startAt));
     setStepperDuration(String(workout.durationMinutes ?? 20));
+    setStepperSteps(workout.manualStepCount === null ? "" : String(workout.manualStepCount));
+    setStepperKcal(workout.manualActiveEnergyKcal === null ? "" : String(workout.manualActiveEnergyKcal));
     setStepperFormOpen(true);
   }
 
@@ -133,7 +162,12 @@ export function TrainingClient() {
         : "/api/v1/training/stepper-workouts", {
         method: editingStepper ? "PUT" : "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ startAt: instant, durationMinutes: Number(stepperDuration) }),
+        body: JSON.stringify({
+          startAt: instant,
+          durationMinutes: Number(stepperDuration),
+          manualStepCount: stepperSteps.trim() === "" ? null : Number(stepperSteps),
+          manualActiveEnergyKcal: stepperKcal.trim() === "" ? null : Number(stepperKcal),
+        }),
       });
       if (!response.ok) {
         setError(await readApiError(response, uk));
@@ -165,6 +199,63 @@ export function TrainingClient() {
       setError(uk ? "Не вдалося видалити тренування." : "Could not delete the workout.");
     } finally {
       setStepperBusy(false);
+    }
+  }
+
+  async function confirmStepperReconciliation(workout: StepperWorkoutDto) {
+    if (workout.reconciliationPeerWorkoutId === null || workout.reconciliationRole === null) return;
+    const manualWorkoutId = workout.reconciliationRole === "manual" ? workout.id : workout.reconciliationPeerWorkoutId;
+    const garminWorkoutId = workout.reconciliationRole === "garmin" ? workout.id : workout.reconciliationPeerWorkoutId;
+    if (!window.confirm(uk
+      ? "Підтвердити пару? Garmin лишається канонічним джерелом; ручний запис — для аудиту. Visibility не змінюється."
+      : "Confirm this pair? Garmin stays the canonical source; the manual row remains for audit. Visibility does not change.")) return;
+    setReconBusyId(workout.id);
+    setError(null);
+    try {
+      const response = await fetch("/api/v1/training/stepper-reconciliation/confirm", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          manualWorkoutId,
+          garminWorkoutId,
+          // Confirm only. Authorized activation is a separate operator step.
+          activateVisibility: false,
+        }),
+      });
+      if (!response.ok) {
+        setError(await readApiError(response, uk));
+        return;
+      }
+      await load();
+    } catch {
+      setError(uk ? "Не вдалося підтвердити узгодження." : "Could not confirm reconciliation.");
+    } finally {
+      setReconBusyId(null);
+    }
+  }
+
+  async function rejectStepperReconciliation(workout: StepperWorkoutDto) {
+    if (workout.reconciliationGroupId === null) return;
+    if (!window.confirm(uk
+      ? "Відхилити цю пару узгодження?"
+      : "Reject this reconciliation pair?")) return;
+    setReconBusyId(workout.id);
+    setError(null);
+    try {
+      const response = await fetch("/api/v1/training/stepper-reconciliation/reject", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ groupId: workout.reconciliationGroupId }),
+      });
+      if (!response.ok) {
+        setError(await readApiError(response, uk));
+        return;
+      }
+      await load();
+    } catch {
+      setError(uk ? "Не вдалося відхилити узгодження." : "Could not reject reconciliation.");
+    } finally {
+      setReconBusyId(null);
     }
   }
 
@@ -308,6 +399,8 @@ export function TrainingClient() {
     );
   }
 
+  const activeHasLoggedSets = (active?.exercises ?? []).some((exercise) => exercise.sets.length > 0);
+
   return (
     <main className={`${styles.page} ${styles.trainingHubPage}`}>
       <div className={styles.navRow}>
@@ -361,8 +454,8 @@ export function TrainingClient() {
                 </div>
                 <p className={styles.cardMeta}>
                   {uk
-                    ? "Для ручного запису зберігаються дата, час і тривалість. Калорії, кроки та пульс додаються лише з фактичних даних Apple Health."
-                    : "Manual entries store date, time, and duration. Calories, steps, and heart rate come only from observed Apple Health data."}
+                    ? "Дата, час і тривалість обов’язкові. Кроки та активні ккал можна вказати окремо: вони не є спостереженням Apple Health. Якщо вказані ккал, кроки їх не перераховують."
+                    : "Date, time, and duration are required. Steps and active kcal are optional declarations, not Apple Health observations. Entered kcal are not recalculated from steps."}
                 </p>
                 <div className={`${styles.exerciseFields} ${styles.stepperFields}`}>
                   <label className={styles.field}>
@@ -372,6 +465,14 @@ export function TrainingClient() {
                   <label className={styles.field}>
                     <span>{uk ? "Тривалість · хвилини" : "Duration · minutes"}</span>
                     <input aria-label={uk ? "Тривалість степера" : "Stepper duration"} type="number" min="1" max="1440" step="1" required value={stepperDuration} onChange={(event) => setStepperDuration(event.target.value)} />
+                  </label>
+                  <label className={styles.field}>
+                    <span>{uk ? "Кроки MS100 · необов’язково" : "MS100 steps · optional"}</span>
+                    <input aria-label={uk ? "Кроки степера" : "Stepper steps"} type="number" min="0" step="1" value={stepperSteps} onChange={(event) => setStepperSteps(event.target.value)} />
+                  </label>
+                  <label className={styles.field}>
+                    <span>{uk ? "Активні ккал · необов’язково" : "Active kcal · optional"}</span>
+                    <input aria-label={uk ? "Активні ккал степера" : "Stepper active kcal"} type="number" min="0" step="1" value={stepperKcal} onChange={(event) => setStepperKcal(event.target.value)} />
                   </label>
                 </div>
                 <div className={styles.denseCardActions}>
@@ -399,17 +500,43 @@ export function TrainingClient() {
                         <p className={styles.cardMeta}>
                           <span>{formatStepperDateTime(workout.startAt, intlLocale)}</span>
                           <span>{formatDurationMinutes(workout.startAt, workout.endAt, intlLocale, uk)}</span>
-                          <span>{workout.activeEnergyKcal === null ? (uk ? "Енергія не записана" : "No energy recorded") : `${workout.activeEnergyKcal} ${uk ? "активних ккал · пристрій" : "active kcal · device"}`}</span>
+                          <span>{stepperSelectedEnergyText(workout, uk)}</span>
+                          {workout.reconciliationStatus === "pending" || workout.reconciliationStatus === "ambiguous" ? (
+                            <span>{uk ? "Можливе дублювання з Garmin · кроки лишаються доданими" : "Possible Garmin duplicate · steps stay additive"}</span>
+                          ) : null}
                         </p>
                       </div>
                       <span className={workout.source === "manual" ? styles.badgePrimary : styles.badgeInfo}>
                         {workout.source === "manual" ? (uk ? "Ручний запис" : "Manual entry") : "Apple Health"}
                       </span>
                     </div>
-                    <div className={styles.denseCardActions}>
+                    <div className={`${styles.denseCardActions} ${styles.stepperCardActions}`}>
                       <Link className={styles.linkLike} href={`/training/workouts/${workout.id}/stepper-diagnostic`}>
                         {uk ? "Енергія · діагностика" : "Energy · diagnostics"}
                       </Link>
+                      {(workout.reconciliationStatus === "pending" || workout.reconciliationStatus === "ambiguous")
+                        && workout.reconciliationPeerWorkoutId !== null
+                        && workout.reconciliationRole === "manual" && (
+                        <button
+                          className={styles.linkLike}
+                          type="button"
+                          disabled={reconBusyId === workout.id || stepperBusy}
+                          onClick={() => void confirmStepperReconciliation(workout)}
+                        >
+                          {uk ? "Підтвердити пару" : "Confirm pair"}
+                        </button>
+                      )}
+                      {(workout.reconciliationStatus === "pending" || workout.reconciliationStatus === "ambiguous")
+                        && workout.reconciliationGroupId !== null && (
+                        <button
+                          className={styles.dangerButton}
+                          type="button"
+                          disabled={reconBusyId === workout.id || stepperBusy}
+                          onClick={() => void rejectStepperReconciliation(workout)}
+                        >
+                          {uk ? "Відхилити" : "Reject"}
+                        </button>
+                      )}
                       {workout.editable && <button className={styles.linkLike} type="button" disabled={stepperBusy} onClick={() => openEditStepperForm(workout)}>{uk ? "Редагувати" : "Edit"}</button>}
                       {workout.editable && <button className={styles.dangerButton} type="button" disabled={stepperBusy} onClick={() => void deleteStepperWorkout(workout)}>{uk ? "Видалити" : "Delete"}</button>}
                       {!workout.editable && <span className={styles.cardMeta}>{uk ? "Зв’язано із записом щоденника" : "Linked to a training diary entry"}</span>}
@@ -421,7 +548,7 @@ export function TrainingClient() {
           </div>
         </section>
 
-        <div className={styles.trainingHubGrid}>
+        <div className={styles.trainingHubGrid} style={{ order: activeHasLoggedSets ? 0 : 2 }}>
         <section className={`${styles.panel} ${styles.panelActive}`} aria-label={uk ? "Активна сесія" : "Active session"}>
           <div className={styles.panelHeader}>
             <div>

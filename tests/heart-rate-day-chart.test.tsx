@@ -81,7 +81,9 @@ describe("HeartRateDayChart", () => {
 
     await waitFor(() => {
       expect(fetchMock.mock.calls.some(([input]) => String(input).includes("date=2026-09-10"))).toBe(true);
-      expect(screen.getByText(/70 \/ 90 \/ 80/)).toBeTruthy();
+      expect(screen.getByText("80")).toBeTruthy();
+      expect(screen.getByText("90")).toBeTruthy();
+      expect(screen.getByText("70")).toBeTruthy();
     });
   });
 

@@ -157,6 +157,7 @@
 }
 
 .stack { display: grid; gap: 0.95rem; }
+.trainingHubPage .stack { display: flex; flex-direction: column; }
 
 .panel {
   overflow: hidden;
@@ -1188,6 +1189,7 @@
   margin: 0.2rem 0 0;
   max-width: 42rem;
   font-size: clamp(1.15rem, 3.8vw, 1.65rem);
+  font-weight: 800;
   line-height: 1.15;
   letter-spacing: -0.03em;
   text-align: center;
@@ -1453,8 +1455,6 @@ a.editMenuItem + .editMenuDanger {
 }
 
 .workoutCarouselPane[aria-hidden="true"] {
-  height: 0;
-  overflow: visible;
   pointer-events: none;
   user-select: none;
 }
@@ -1872,15 +1872,39 @@ a.editMenuItem + .editMenuDanger {
 }
 
 .workoutHistorySets em {
-  grid-column: 2;
+  grid-column: 1;
   min-width: 0;
   max-width: 100%;
   overflow-wrap: anywhere;
+  white-space: pre-wrap;
   display: block;
   color: var(--muted);
   font-size: 0.76rem;
   font-style: italic;
   font-weight: 500;
+}
+
+.liveSetClock {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.stepperCardActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.stepperCardActions .linkLike,
+.stepperCardActions .dangerButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.75rem;
+  padding: 0.45rem 0.75rem;
 }
 
 .workoutShell .liveEntry {
@@ -2527,4 +2551,24 @@ a.editMenuItem + .editMenuDanger {
   }
   .setFields { grid-template-columns: 1fr; }
   .metaGrid { grid-template-columns: 1fr 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trainingScope,
+  .page,
+  .liveShell,
+  .workoutShell,
+  .editShell {
+    --training-ease: 0ms;
+  }
+
+  .trainingScope *,
+  .page *,
+  .liveShell *,
+  .workoutShell *,
+  .editShell * {
+    animation: none !important;
+    transition-duration: 0ms !important;
+    scroll-behavior: auto !important;
+  }
 }

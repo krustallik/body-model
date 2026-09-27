@@ -14,7 +14,6 @@ import { useI18n } from "@/i18n/i18n-provider";
 import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import { todayInCalendarTimeZone } from "@/modules/days/calendar-range";
 import type { HeartRateDayDto } from "@/modules/days/day.types";
-import { formatMetric } from "@/modules/days/metric-format";
 import styles from "./history.module.css";
 
 const EMPTY_HEART_RATE: HeartRateDayDto = {
@@ -124,25 +123,16 @@ export function HeartRateDayChart() {
         <>
           <dl className={styles.heartRateDayMeta}>
             <div>
-              <dt>{uk ? "Зразків" : "Samples"}</dt>
-              <dd>{heartRate.sampleCount}</dd>
+              <dt>{uk ? "Середній" : "Mean"}</dt>
+              <dd>{heartRate.avgBpm === null ? "—" : Math.round(heartRate.avgBpm)}</dd>
             </div>
             <div>
-              <dt>Min / Max / Avg</dt>
-              <dd>
-                {formatMetric(heartRate.minBpm, intlLocale)}
-                {" / "}
-                {formatMetric(heartRate.maxBpm, intlLocale)}
-                {" / "}
-                {formatMetric(heartRate.avgBpm, intlLocale)}
-              </dd>
+              <dt>{uk ? "Максимальний" : "Maximum"}</dt>
+              <dd>{heartRate.maxBpm === null ? "—" : Math.round(heartRate.maxBpm)}</dd>
             </div>
             <div>
-              <dt>{uk ? "Останній" : "Latest"}</dt>
-              <dd>
-                {formatMetric(heartRate.latestBpm, intlLocale)} bpm
-                {heartRate.latestTimestamp ? ` · ${formatClock(heartRate.latestTimestamp, intlLocale)}` : ""}
-              </dd>
+              <dt>{uk ? "Мінімальний" : "Minimum"}</dt>
+              <dd>{heartRate.minBpm === null ? "—" : Math.round(heartRate.minBpm)}</dd>
             </div>
           </dl>
           <div className={styles.chartCanvas}>

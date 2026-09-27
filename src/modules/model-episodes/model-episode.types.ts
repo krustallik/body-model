@@ -70,12 +70,21 @@ export type ModelWorkoutSource = {
   id: number;
   date: string;
   externalId: string | null;
+  /** Stable sync or manual identity. Present when loaded from Workout. */
+  sourceIdentity?: string;
   type: string;
   startAt: Date;
   endAt: Date;
   durationMinutes: number | null;
   energyKcal: number | null;
   activeEnergyKcal: number | null;
+  /** Declared MS100 steps. Absent is distinct from an Apple step sample. */
+  manualStepCount?: number | null;
+  manualActiveEnergyKcal?: number | null;
+  bodyCastEstimateKcal?: number | null;
+  bodyCastEstimateFresh?: boolean;
+  strengthSessionCompleted?: boolean;
+  mechanicalStepperKcal?: number | null;
 };
 
 export type HistoricalModelSources = {
@@ -88,6 +97,43 @@ export type HistoricalModelSources = {
   workouts?: ModelWorkoutSource[];
   /** Optional in old source fixtures; values are matched to exact workout intervals. */
   heartRateSamples?: ModelHeartRateSampleSource[];
+  /** Completed or active web strength sessions that are not a Garmin workout. */
+  webOnlyStrengthSessions?: WebOnlyStrengthSource[];
+  /** Open or confirmed stepper reconciliation. Rejected links are omitted. */
+  reconciliationLinks?: ReconciliationLinkSource[];
+};
+
+export type WebOnlyStrengthSource = {
+  sessionId: number;
+  date: string;
+  status: string;
+  revision: number;
+  startAt: Date;
+  endAt: Date;
+  bodyCastEstimateKcal: number | null;
+  bodyCastEstimateFresh?: boolean;
+  inputFingerprint: string | null;
+};
+
+export type ReconciliationLinkSource = {
+  groupId: number;
+  status: "pending" | "ambiguous" | "confirmed";
+  evaluationRevision: number;
+  policyVersion: string;
+  sourceRevision: string | null;
+  provisionalWorkoutId: number | null;
+  manualWorkoutId: number;
+  garminWorkoutId: number;
+  /**
+   * Pending pairs omit Garmin energy so the unresolved pair contributes once
+   * from the provisional manual record. Confirmed pairs keep Garmin (canonical).
+   */
+  suppressGarminEnergy: boolean;
+  /**
+   * Confirmed pairs omit manual energy (audit-only). Ambiguous pairs suppress
+   * every member instead of choosing one by id.
+   */
+  suppressManualEnergy: boolean;
 };
 
 export type MaintenanceBaselineDiagnostics = {
@@ -232,6 +278,22 @@ export type ModelDaySourceQuality = {
   workoutCount?: number;
   /** true when sync persisted workout-feed coverage for this day. */
   workoutFeedObserved?: boolean;
+  /** Present only for the staged selection-v1 physiology path. */
+  selectionV1?: {
+    massSource: "same-day-observed" | "unified-start-of-day" | "unavailable";
+    distanceComplete: boolean;
+    distanceConflicted: boolean;
+    partialCoverage: boolean;
+    knownAcceptedSubtotalKm: number | null;
+    historicalDonorEligible: boolean;
+    invalidatedDates: string[];
+    calculationPolicyVersion?: string;
+    energyCoverage?: {
+      knownSubtotalKcal: number;
+      unknownEventCount: number;
+      fullCoverage: boolean;
+    } | null;
+  };
 };
 
 export type BuiltSimulationDay = {

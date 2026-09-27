@@ -100,12 +100,32 @@ export function formatElapsedClock(elapsedMs: number): string {
 
 export function formatClock(iso: string | null, intlLocale: string): string {
   if (!iso) return "—";
+  const instant = new Date(iso);
+  if (Number.isNaN(instant.getTime())) return "—";
   return new Intl.DateTimeFormat(intlLocale, {
     hour: "2-digit",
     minute: "2-digit",
     hourCycle: "h23",
     timeZone: DEFAULT_TIME_ZONE,
-  }).format(new Date(iso));
+  }).format(instant);
+}
+
+/** Persisted set completion clock: completedAt, else createdAt. Never invents times. */
+export function setCompletionTimestampIso(set: {
+  completedAt: string | null;
+  createdAt: string;
+}): string | null {
+  const iso = set.completedAt ?? set.createdAt;
+  if (!iso) return null;
+  if (Number.isNaN(new Date(iso).getTime())) return null;
+  return iso;
+}
+
+export function formatSetCompletionClock(
+  set: { completedAt: string | null; createdAt: string },
+  intlLocale: string,
+): string {
+  return formatClock(setCompletionTimestampIso(set), intlLocale);
 }
 
 export function planCompletionTone(percent: number): "complete" | "good" | "low" {

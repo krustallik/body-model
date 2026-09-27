@@ -150,7 +150,6 @@ export function strengthEstimateFreshForDay(input: StrengthFreshnessContext & {
   if (input.status !== "COMPLETED" || input.diaryKcal === null || input.revision == null) return false;
   const shadowRevision = shadowSessionRevision(input.energyShadow);
   const storedInputFingerprint = shadowInputFingerprint(input.energyShadow);
-  if (shadowRevision === null || storedInputFingerprint === null) return false;
   const sameDayMassKg = input.sameDayMassKg ?? null;
   const startOfDayMassKg = input.startOfDayMassKg ?? null;
   const massKg = sameDayMassKg ?? startOfDayMassKg;

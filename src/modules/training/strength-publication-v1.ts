@@ -45,6 +45,11 @@ export function strengthInputFingerprintV1(input: {
 /**
  * A published shadow is fresh only when every estimator input still matches.
  * sessionRevision alone is insufficient — mass, sets, and estimator version matter.
+ *
+ * Legacy shadows published before fingerprint markers exist have null for
+ * neither marker. Those available estimates remain selectable until a later
+ * diary write re-publishes a fingerprinted shadow; once markers exist, the
+ * full fingerprint contract applies (stale → Garmin fallback, never a rename).
  */
 export function strengthEstimateFreshV1(input: {
   estimateKcal: number | null;
@@ -54,6 +59,11 @@ export function strengthEstimateFreshV1(input: {
   currentInputFingerprint: string;
 }): boolean {
   if (input.estimateKcal === null) return false;
+  const hasModernMarkers = input.storedInputFingerprint !== null
+    || input.shadowSessionRevision !== null;
+  if (!hasModernMarkers) {
+    return true;
+  }
   if (input.shadowSessionRevision === null || input.shadowSessionRevision !== input.sessionRevision) {
     return false;
   }

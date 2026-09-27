@@ -278,6 +278,7 @@ function selectedStrengthEnergy(record: {
     sessionRevision: record.revision,
     massKg: sameDayMassKg,
     sameDayMassKg,
+    startOfDayMassKg: null,
     setFingerprint: strengthSetFingerprintV1(setRows),
     estimatorVersion: record.experimentalStrengthEnergyShadow?.modelRevision
       ?? EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,

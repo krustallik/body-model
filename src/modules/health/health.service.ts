@@ -14,6 +14,8 @@ import { recordExperimentalCessationDetrainingShadow } from "@/modules/model-epi
 import { rebuildAuthoritativeRelativeMuscleTrajectory } from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
 import { recordExperimentalFfmRetentionShadow } from "@/modules/model-episodes/experimental-ffm-retention-shadow.service";
 import { rebuildUnifiedExperimentalPhysiologyStateV1 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
+import { persistStepperReconciliationV1 } from "@/modules/training/stepper-reconciliation.service";
+import { prisma } from "@/lib/db/prisma";
 
 export async function syncHealthData(
   request: HealthSyncRequest,
@@ -53,6 +55,15 @@ export async function syncHealthData(
   // the production Prisma client, so running them there leaks outside the
   // harness and can neither validate nor affect the injected sync result.
   if (repository !== healthSyncRepository) continue;
+
+  try {
+    await persistStepperReconciliationV1(prisma, { from: date.date, to: date.date, timezone });
+  } catch (error) {
+    logEvent("warn", "stepper_reconciliation_after_sync_failed", {
+      date: date.date,
+      errorType: errorKind(error),
+    });
+  }
 
   try {
     // Shadow-only MS100 stepper energy; never feeds TDEE/forecast.

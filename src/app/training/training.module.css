@@ -157,6 +157,7 @@
 }
 
 .stack { display: grid; gap: 0.95rem; }
+.trainingHubPage .stack { display: flex; flex-direction: column; }
 
 .panel {
   overflow: hidden;
@@ -1188,6 +1189,7 @@
   margin: 0.2rem 0 0;
   max-width: 42rem;
   font-size: clamp(1.15rem, 3.8vw, 1.65rem);
+  font-weight: 800;
   line-height: 1.15;
   letter-spacing: -0.03em;
   text-align: center;
@@ -1453,8 +1455,6 @@ a.editMenuItem + .editMenuDanger {
 }
 
 .workoutCarouselPane[aria-hidden="true"] {
-  height: 0;
-  overflow: visible;
   pointer-events: none;
   user-select: none;
 }
@@ -1872,15 +1872,96 @@ a.editMenuItem + .editMenuDanger {
 }
 
 .workoutHistorySets em {
-  grid-column: 2;
+  grid-column: 1;
   min-width: 0;
   max-width: 100%;
   overflow-wrap: anywhere;
+  white-space: pre-wrap;
   display: block;
   color: var(--muted);
   font-size: 0.76rem;
   font-style: italic;
   font-weight: 500;
+}
+
+.liveSetClock {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.historicalSetList {
+  list-style: none;
+  margin: 0.55rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.historicalSetRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  color: var(--training-text-secondary);
+  font-size: 0.86rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.historicalSetRow .liveSetClock {
+  grid-column: auto;
+  flex-shrink: 0;
+  margin: 0;
+}
+
+.stepperCardActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.stepperCardActions .linkLike,
+.stepperCardActions .secondaryButton,
+.stepperCardActions .dangerButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.75rem;
+  padding: 0.45rem 0.75rem;
+}
+
+.energyLine {
+  margin: 0.35rem 0 0;
+  color: var(--training-text-secondary);
+  font-size: 0.82rem;
+  font-weight: 650;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+}
+
+.reconNotice {
+  margin: 0.4rem 0 0;
+  padding: 0.35rem 0.55rem;
+  border-radius: 0.55rem;
+  border: 1px solid color-mix(in srgb, var(--training-warning) 28%, var(--training-border));
+  background: var(--training-warning-soft);
+  color: var(--training-warning-strong);
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+@media (max-width: 430px) {
+  .panelHeader {
+    flex-wrap: wrap;
+  }
+
+  .panelHeader .primaryButton {
+    width: 100%;
+  }
 }
 
 .workoutShell .liveEntry {
@@ -2527,4 +2608,24 @@ a.editMenuItem + .editMenuDanger {
   }
   .setFields { grid-template-columns: 1fr; }
   .metaGrid { grid-template-columns: 1fr 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trainingScope,
+  .page,
+  .liveShell,
+  .workoutShell,
+  .editShell {
+    --training-ease: 0ms;
+  }
+
+  .trainingScope *,
+  .page *,
+  .liveShell *,
+  .workoutShell *,
+  .editShell * {
+    animation: none !important;
+    transition-duration: 0ms !important;
+    scroll-behavior: auto !important;
+  }
 }

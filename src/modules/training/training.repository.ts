@@ -2,6 +2,12 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
 import { TRADITIONAL_STRENGTH_TRAINING_TYPE } from "@/modules/health/expand-training-workouts";
+import { EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION } from "./experimental-strength-active-energy-v1";
+import {
+  recomputeHistoricalStrengthEstimateKcalV1,
+  selectHistoricalStrengthEnergyV1,
+  strengthWorkoutAsOfDateV1,
+} from "./strength-historical-energy-v1";
 import { CANONICAL_EXERCISE_IDENTITIES } from "./canonical-exercise-identity";
 import {
   DEFAULT_TRAINING_PROFILE_ID,
@@ -94,6 +100,7 @@ const matchedWorkoutSelect = {
   durationMinutes: true,
   activeEnergyKcal: true,
   externalId: true,
+  dailyHealthData: { select: { date: true, weightKg: true } },
 } satisfies Prisma.WorkoutSelect;
 
 const sessionDetailSelect = {
@@ -115,6 +122,7 @@ const sessionDetailSelect = {
   profile: { select: { autoAdvanceExercises: true } },
   programVersion: { select: { id: true, versionNumber: true } },
   matchedWorkout: { select: matchedWorkoutSelect },
+  experimentalStrengthEnergyShadow: { select: { result: true, modelRevision: true } },
   exercises: { select: sessionExerciseSelect, orderBy: { sortOrder: "asc" as const } },
 } satisfies Prisma.StrengthDiarySessionSelect;
 
@@ -213,6 +221,94 @@ function toSessionExerciseDto(record: SessionExerciseRecord): StrengthSessionExe
   };
 }
 
+async function loadHistoricalMassContext(
+  db: PrismaClient,
+  record: {
+    matchedWorkout: {
+      startAt: Date;
+      dailyHealthData?: { date: string; weightKg: number | null } | null;
+    } | null;
+    webStartedAt: Date | null;
+    createdAt: Date;
+  },
+): Promise<{ sameDayMassKg: number | null; startOfDayMassKg: number | null }> {
+  const asOfDate = strengthWorkoutAsOfDateV1({
+    matchedWorkoutStartAt: record.matchedWorkout?.startAt.toISOString() ?? null,
+    webStartedAt: record.webStartedAt?.toISOString() ?? null,
+    createdAt: record.createdAt.toISOString(),
+  });
+  let sameDayMassKg: number | null = null;
+  const workoutDay = record.matchedWorkout?.dailyHealthData ?? null;
+  if (workoutDay?.date === asOfDate && workoutDay.weightKg != null) {
+    sameDayMassKg = workoutDay.weightKg;
+  }
+  const health = (db as {
+    dailyHealthData?: {
+      findUnique?: (args: unknown) => Promise<{ weightKg: number | null } | null>;
+      findFirst?: (args: unknown) => Promise<{ weightKg: number | null } | null>;
+    };
+  }).dailyHealthData;
+  if (sameDayMassKg === null && typeof health?.findUnique === "function") {
+    const sameDay = await health.findUnique({
+      where: { date: asOfDate },
+      select: { weightKg: true },
+    });
+    sameDayMassKg = sameDay?.weightKg ?? null;
+  }
+  let startOfDayMassKg: number | null = null;
+  if (typeof health?.findFirst === "function") {
+    const prior = await health.findFirst({
+      where: { weightKg: { not: null }, date: { lt: asOfDate } },
+      orderBy: { date: "desc" },
+      select: { weightKg: true },
+    });
+    startOfDayMassKg = prior?.weightKg ?? null;
+  }
+  return {
+    sameDayMassKg,
+    startOfDayMassKg,
+  };
+}
+
+function selectedStrengthEnergy(
+  session: StrengthSessionDto,
+  massContext: { sameDayMassKg: number | null; startOfDayMassKg: number | null },
+  energyShadow: { result: unknown; modelRevision?: string } | null,
+) {
+  const setRows = session.exercises.flatMap((exercise) => exercise.sets).map((set) => ({
+    id: set.id,
+    reps: set.reps,
+    weightKg: set.weightKg,
+    bandNominalResistanceKg: set.bandNominalResistanceKg,
+    rir: set.rir,
+  }));
+  const onDemandEstimateKcal = session.status === "COMPLETED"
+    ? recomputeHistoricalStrengthEstimateKcalV1({
+      session,
+      sameDayMassKg: massContext.sameDayMassKg,
+      startOfDayMassKg: massContext.startOfDayMassKg,
+    })
+    : null;
+  const selected = selectHistoricalStrengthEnergyV1({
+    sessionCompleted: session.status === "COMPLETED",
+    sessionId: session.id,
+    sessionRevision: session.revision,
+    energyShadow: energyShadow?.result ?? null,
+    sets: setRows,
+    sameDayMassKg: massContext.sameDayMassKg,
+    startOfDayMassKg: massContext.startOfDayMassKg,
+    estimatorVersion: energyShadow?.modelRevision
+      ?? EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
+    onDemandEstimateKcal,
+    garminKcal: session.matchedWorkout?.activeEnergyKcal ?? null,
+  });
+  return {
+    kcal: selected.selectedKcal,
+    source: selected.source,
+    fullCoverage: selected.fullCoverage,
+  };
+}
+
 function toMatchedWorkoutDto(record: MatchedWorkoutRecord | null): MatchedWorkoutDto | null {
   if (!record) return null;
   return {
@@ -226,7 +322,13 @@ function toMatchedWorkoutDto(record: MatchedWorkoutRecord | null): MatchedWorkou
   };
 }
 
-export function toSessionDto(record: SessionDetailRecord): StrengthSessionDto {
+export function toSessionDto(
+  record: SessionDetailRecord,
+  massContext: { sameDayMassKg: number | null; startOfDayMassKg: number | null } = {
+    sameDayMassKg: null,
+    startOfDayMassKg: null,
+  },
+): StrengthSessionDto {
   const exercises = record.exercises.map(toSessionExerciseDto);
   const tonnageSets = exercises.flatMap((exercise) =>
     exercise.sets.map((set) => ({
@@ -237,7 +339,7 @@ export function toSessionDto(record: SessionDetailRecord): StrengthSessionDto {
     })),
   );
 
-  return {
+  const sessionWithoutEnergy: StrengthSessionDto = {
     id: record.id,
     status: record.status as SessionStatus,
     entryMode: asEntryMode(record.entryMode),
@@ -260,6 +362,22 @@ export function toSessionDto(record: SessionDetailRecord): StrengthSessionDto {
     createdAt: record.createdAt.toISOString(),
     updatedAt: record.updatedAt.toISOString(),
   };
+  return {
+    ...sessionWithoutEnergy,
+    selectedActiveEnergy: selectedStrengthEnergy(
+      sessionWithoutEnergy,
+      massContext,
+      record.experimentalStrengthEnergyShadow,
+    ),
+  };
+}
+
+async function toSessionDtoWithHistoricalMass(
+  db: PrismaClient,
+  record: SessionDetailRecord,
+): Promise<StrengthSessionDto> {
+  const massContext = await loadHistoricalMassContext(db, record);
+  return toSessionDto(record, massContext);
 }
 
 function planCompletionFields(
@@ -666,7 +784,7 @@ export class TrainingRepository {
       where: { profileId, status: SESSION_STATUS.ACTIVE },
       select: sessionDetailSelect,
     });
-    return row ? toSessionDto(row) : null;
+    return row ? toSessionDtoWithHistoricalMass(this.db, row) : null;
   }
 
   async finishInactiveSessions(input: { profileId?: number; now?: Date } = {}): Promise<number[]> {
@@ -697,7 +815,7 @@ export class TrainingRepository {
       where: { id: sessionId, profileId },
       select: sessionDetailSelect,
     });
-    return row ? toSessionDto(row) : null;
+    return row ? toSessionDtoWithHistoricalMass(this.db, row) : null;
   }
 
   async createSessionSnapshot(input: {
@@ -1196,12 +1314,10 @@ export class TrainingRepository {
         },
         sets: { some: {} },
       },
-      orderBy: [
-        { session: { matchedWorkout: { startAt: "desc" } } },
-        { session: { webStartedAt: "desc" } },
-        { session: { createdAt: "desc" } },
-      ],
-      take: limit,
+      // Page by durable ids; occurrence order is applied in memory so nullable
+      // matchedWorkout.startAt cannot steal the top-N window via NULLS FIRST.
+      orderBy: [{ sessionId: "desc" }, { id: "desc" }],
+      take: Math.min(limit * 8, 160),
       select: {
         resistanceType: true,
         sessionId: true,
@@ -1247,7 +1363,15 @@ export class TrainingRepository {
           comment: set.comment ?? null,
         })),
       };
-    });
+    }).sort((left, right) => {
+      const leftMs = Date.parse(left.occurredAt);
+      const rightMs = Date.parse(right.occurredAt);
+      const leftOk = Number.isFinite(leftMs);
+      const rightOk = Number.isFinite(rightMs);
+      if (leftOk && rightOk && leftMs !== rightMs) return rightMs - leftMs;
+      if (leftOk !== rightOk) return leftOk ? -1 : 1;
+      return right.sessionId - left.sessionId;
+    }).slice(0, limit);
   }
 
   async findSetForSession(setId: number, sessionId: number, profileId = DEFAULT_TRAINING_PROFILE_ID) {

@@ -29,10 +29,13 @@ import {
   formatClock,
   formatDateTime,
   formatDurationMinutes,
+  formatSelectedActiveEnergyText,
+  formatSetCompletionClock,
   matchStatusLabel,
   planCompletionPillClass,
   readApiError,
   resistanceLabel,
+  setCompletionTimestampIso,
 } from "../../training-labels";
 import {
   emptySetDraft,
@@ -56,6 +59,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
   const [loading, setLoading] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
   const [finishOffer, setFinishOffer] = useState(false);
+  const [autoAdvanceNonce, setAutoAdvanceNonce] = useState(0);
   const finishOfferedRef = useRef(false);
 
   const load = useCallback(async () => {
@@ -208,7 +212,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
       setDraft(emptySetDraft());
       setEditingSetId(null);
       if (shouldAutoAdvanceAfterSet({ enabled: session.autoAdvanceExercises === true, adding, exerciseOrigin: current.origin, plannedSets: current.plannedSets, previousSetCount: current.sets.length, isLastExercise: lastExercise })) {
-        goToNeighbor(1);
+        setAutoAdvanceNonce((value) => value + 1);
       } else if (completedPlannedExercise && lastExercise && !finishOfferedRef.current) {
         finishOfferedRef.current = true;
         setFinishOffer(true);
@@ -382,6 +386,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         clockStartedAt={session.webStartedAt}
         clockEndedAt={session.webEndedAt}
         clockTicking
+        autoAdvanceNonce={autoAdvanceNonce}
         menuOpen={menuOpen}
         onToggleMenu={() => setMenuOpen((value) => !value)}
         onCloseMenu={() => setMenuOpen(false)}
@@ -588,6 +593,19 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
                       : `${session.ordinaryTonnageKg} kg`}
                   </dd>
                 </div>
+                <div>
+                  <dt>{uk ? "Обрана активна енергія" : "Selected active energy"}</dt>
+                  <dd>
+                    {session.selectedActiveEnergy === undefined
+                      ? "—"
+                      : formatSelectedActiveEnergyText({
+                        kcal: session.selectedActiveEnergy.kcal,
+                        source: session.selectedActiveEnergy.source,
+                        fullCoverage: session.selectedActiveEnergy.fullCoverage,
+                        uk,
+                      })}
+                  </dd>
+                </div>
               </dl>
             </section>
             <section>
@@ -705,7 +723,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
                     </div>
                   </div>
                   {exercise.sets.length > 0 && (
-                    <p className={styles.cardMeta}>
+                    <ul className={styles.historicalSetList}>
                       {exercise.sets
                         .slice()
                         .sort((a, b) => a.setNumber - b.setNumber)
@@ -715,10 +733,25 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
                             : exercise.resistanceType === RESISTANCE.RESISTANCE_BAND && set.bandNominalResistanceKg !== null
                               ? `${set.bandNominalResistanceKg}kg band`
                               : "";
-                          return `#${set.setNumber} ${set.reps}${load ? `×${load}` : ""}`;
-                        })
-                        .join(" · ")}
-                    </p>
+                          const clockIso = setCompletionTimestampIso(set);
+                          return (
+                            <li className={styles.historicalSetRow} key={set.id}>
+                              <span>
+                                {`#${set.setNumber} ${set.reps}${load ? `×${load}` : ""}`}
+                              </span>
+                              {clockIso ? (
+                                <time className={styles.liveSetClock} dateTime={clockIso}>
+                                  {formatSetCompletionClock(set, intlLocale)}
+                                </time>
+                              ) : (
+                                <span className={styles.liveSetClock}>
+                                  {uk ? "час недоступний" : "time unavailable"}
+                                </span>
+                              )}
+                            </li>
+                          );
+                        })}
+                    </ul>
                   )}
                 </article>
               ))}

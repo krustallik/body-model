@@ -87,21 +87,37 @@ describe("DailyMetricRepository", () => {
 
   it("adds an unmatched diary session to History with its shadow energy, without creating a device workout", async () => {
     const { repository, client } = fixture();
+    const sets = [{ id: 91, reps: 8, weightKg: 60, bandNominalResistanceKg: null, rir: 2 }];
+    const { strengthInputFingerprintV1, strengthSetFingerprintV1 } = await import(
+      "@/modules/training/strength-publication-v1"
+    );
+    const inputFingerprint = strengthInputFingerprintV1({
+      sessionId: 4,
+      sessionRevision: 3,
+      massKg: 89.4,
+      sameDayMassKg: 89.4,
+      startOfDayMassKg: null,
+      setFingerprint: strengthSetFingerprintV1(sets),
+    });
     const strengthDiarySession = {
       findMany: vi.fn().mockResolvedValue([{
         id: 4,
         status: "COMPLETED",
         entryMode: "LIVE",
+        revision: 3,
         webStartedAt: new Date("2026-08-22T08:44:00.000Z"),
         webEndedAt: new Date("2026-08-22T09:46:00.000Z"),
         program: { name: "Push A" },
-        exercises: [{ _count: { sets: 1 } }],
+        exercises: [{ sets }],
         experimentalStrengthEnergyShadow: {
+          modelRevision: "experimental-strength-active-energy-v1",
           result: {
             activeEnergyResolution: {
               estimatedActiveKcal: 311,
               source: "bodycast-diary-estimate",
             },
+            sessionRevision: 3,
+            inputFingerprint,
           },
         },
       }]),

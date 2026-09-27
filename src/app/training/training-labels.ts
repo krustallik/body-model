@@ -1,6 +1,10 @@
 import type { MatchStatus, ResistanceType } from "@/modules/training/training.constants";
 import { DIARY_COMPLETENESS, MATCH_STATUS, RESISTANCE } from "@/modules/training/training.constants";
 import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
+import {
+  workoutEnergyProvenanceChip,
+  type WorkoutEnergyProvenanceKind,
+} from "@/modules/provenance/provenance-presentation";
 
 export function resistanceLabel(type: ResistanceType, uk: boolean): string {
   if (type === RESISTANCE.EXTERNAL_WEIGHT) return uk ? "Зовнішня вага" : "External weight";
@@ -96,12 +100,32 @@ export function formatElapsedClock(elapsedMs: number): string {
 
 export function formatClock(iso: string | null, intlLocale: string): string {
   if (!iso) return "—";
+  const instant = new Date(iso);
+  if (Number.isNaN(instant.getTime())) return "—";
   return new Intl.DateTimeFormat(intlLocale, {
     hour: "2-digit",
     minute: "2-digit",
     hourCycle: "h23",
     timeZone: DEFAULT_TIME_ZONE,
-  }).format(new Date(iso));
+  }).format(instant);
+}
+
+/** Persisted set completion clock: completedAt, else createdAt. Never invents times. */
+export function setCompletionTimestampIso(set: {
+  completedAt: string | null;
+  createdAt: string;
+}): string | null {
+  const iso = set.completedAt ?? set.createdAt;
+  if (!iso) return null;
+  if (Number.isNaN(new Date(iso).getTime())) return null;
+  return iso;
+}
+
+export function formatSetCompletionClock(
+  set: { completedAt: string | null; createdAt: string },
+  intlLocale: string,
+): string {
+  return formatClock(setCompletionTimestampIso(set), intlLocale);
 }
 
 export function planCompletionTone(percent: number): "complete" | "good" | "low" {
@@ -133,4 +157,49 @@ export function formatDateTime(iso: string | null, intlLocale: string): string {
     hourCycle: "h23",
     timeZone: DEFAULT_TIME_ZONE,
   }).format(new Date(iso));
+}
+
+const KNOWN_ENERGY_SOURCES = new Set<WorkoutEnergyProvenanceKind>([
+  "device-estimate",
+  "shadow-diary-estimate",
+  "bodycast-mechanical-estimate",
+  "bodycast-strength-estimate",
+  "bodycast-cardio-estimate",
+  "bodycast-stepper-mechanical",
+  "garmin-fallback",
+  "manual-kcal",
+  "forecast-scenario-strength-met",
+  "unavailable",
+]);
+
+/** Human label for selected/canonical energy sources; never invent kcal. */
+export function selectedActiveEnergySourceLabel(source: string, uk: boolean): string {
+  const kind = KNOWN_ENERGY_SOURCES.has(source as WorkoutEnergyProvenanceKind)
+    ? (source as WorkoutEnergyProvenanceKind)
+    : undefined;
+  if (!kind) return source;
+  return workoutEnergyProvenanceChip(1, uk ? "uk" : "en", kind).label;
+}
+
+export function formatSelectedActiveEnergyText(input: {
+  kcal: number | null | undefined;
+  source: string | null | undefined;
+  fullCoverage: boolean | null | undefined;
+  uk: boolean;
+  deviceKcalUnused?: number | null;
+}): string {
+  const { uk } = input;
+  if (typeof input.kcal === "number") {
+    const source = selectedActiveEnergySourceLabel(input.source ?? "unavailable", uk);
+    const partial = input.fullCoverage === false
+      ? (uk ? " · неповне покриття" : " · partial coverage")
+      : "";
+    return `${input.kcal} ${uk ? "активних ккал" : "active kcal"} · ${source}${partial}`;
+  }
+  if (typeof input.deviceKcalUnused === "number") {
+    return uk
+      ? `Енергію не обрано · ${input.deviceKcalUnused} ккал пристрою не використано`
+      : `Energy not selected · device ${input.deviceKcalUnused} kcal not used`;
+  }
+  return uk ? "Енергія недоступна" : "Energy unavailable";
 }

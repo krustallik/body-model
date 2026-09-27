@@ -43,3 +43,8 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 coverage/
+
+# local agent QA artifacts
+/artifacts/
+.playwright-mcp/
+

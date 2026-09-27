@@ -327,11 +327,17 @@ describe("experimental stepper active energy v1", () => {
       .toBe(work / eta / JOULES_PER_THERMOCHEMICAL_KCAL);
   });
 
-  it("does not appear in production TDEE, forecast, or workout-energy resolver paths", () => {
+  it("does not appear in default production TDEE, forecast, or runtime paths", () => {
     const workoutEnergy = readFileSync("src/model/activity/workout-energy.ts", "utf8");
     const forecast = readFileSync("src/modules/model-forecast/forecast-engine.ts", "utf8");
     const runtime = readFileSync("src/model/physiology-v7/daily-runtime-v7.ts", "utf8");
-    expect(workoutEnergy).not.toContain("estimateExperimentalStepperActiveEnergyV1");
+    // Opt-in selection-v1 may call the mechanical estimator behind selectionPolicy.
+    // Default (non-selection) production paths must not invoke it.
+    expect(workoutEnergy).toMatch(
+      /selectionV1[\s\S]*estimateExperimentalStepperActiveEnergyV1\s*\(/,
+    );
+    const callSites = [...workoutEnergy.matchAll(/estimateExperimentalStepperActiveEnergyV1\s*\(/g)];
+    expect(callSites).toHaveLength(1);
     expect(forecast).not.toContain("estimateExperimentalStepperActiveEnergyV1");
     expect(runtime).not.toContain("estimateExperimentalStepperActiveEnergyV1");
   });

@@ -113,6 +113,8 @@ describe("field-specific zero measurement semantics", () => {
       heartRateSample: { findMany: vi.fn().mockResolvedValue([]) },
       workInterval: { findMany: vi.fn().mockResolvedValue([]) },
       workout: { findMany: vi.fn().mockResolvedValue([]) },
+      strengthDiarySession: { findMany: vi.fn().mockResolvedValue([]) },
+      stepperReconciliationCandidate: { findMany: vi.fn().mockResolvedValue([]) },
     } as unknown as PrismaClient;
     const [dto] = await new DailyMetricRepository(client).list({ limit: 30, offset: 0, includeTrainingDays: true });
     expect(dto.caloriesKcal).toBeNull();
@@ -164,6 +166,8 @@ describe("field-specific zero measurement semantics", () => {
       heartRateSample: { findMany: vi.fn().mockResolvedValue([]) },
       workInterval: { findMany: vi.fn().mockResolvedValue([]) },
       workout: { findMany: vi.fn().mockResolvedValue([]) },
+      strengthDiarySession: { findMany: vi.fn().mockResolvedValue([]) },
+      stepperReconciliationCandidate: { findMany: vi.fn().mockResolvedValue([]) },
     } as unknown as PrismaClient;
 
     const sources = await new ModelEpisodeRepository(client).loadSources(date, date);

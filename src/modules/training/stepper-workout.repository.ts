@@ -4,6 +4,9 @@ import { prisma } from "@/lib/db/prisma";
 import { DEFAULT_TIME_ZONE, instantToLocalDateTime } from "@/model/time-zone";
 import { MANUAL_STEPPER_SOURCE_PREFIX } from "@/modules/health/workout-source-identity";
 import type { StepperWorkoutInput } from "./stepper-workout.schema";
+import { resolveEventEnergyV1 } from "@/model/activity/canonical-activity-policy-v1";
+import { adaptManualStepperEnergyV1 } from "./manual-stepper-fields-v1";
+import { persistStepperReconciliationV1 } from "./stepper-reconciliation.service";
 
 const STEPPER_TYPE = "Stair Climbing";
 
@@ -14,10 +17,43 @@ export type StepperWorkoutDto = {
   endAt: string;
   durationMinutes: number | null;
   activeEnergyKcal: number | null;
+  manualStepCount: number | null;
+  manualActiveEnergyKcal: number | null;
+  selectedActiveEnergyKcal: number | null;
+  selectedActiveEnergySource: string;
+  selectedActiveEnergyFullCoverage: boolean;
+  reconciliationStatus: "pending" | "ambiguous" | "confirmed" | null;
+  reconciliationGroupId: number | null;
+  reconciliationPeerWorkoutId: number | null;
+  reconciliationRole: "manual" | "garmin" | null;
   source: "manual" | "health";
   syncProtected: boolean;
   editable: boolean;
 };
+
+const stepperSelect = {
+  id: true,
+  type: true,
+  startAt: true,
+  endAt: true,
+  durationMinutes: true,
+  activeEnergyKcal: true,
+  manualStepCount: true,
+  manualActiveEnergyKcal: true,
+  sourceIdentity: true,
+  syncProtected: true,
+  matchedDiarySession: { select: { id: true } },
+  dailyHealthData: { select: { weightKg: true } },
+  experimentalStepperActiveEnergyShadow: { select: { result: true } },
+} as const;
+
+function shadowMechanicalKcal(result: unknown): number | null {
+  if (result === null || typeof result !== "object" || Array.isArray(result)) return null;
+  const availability = (result as { availability?: unknown }).availability;
+  const kcal = (result as { estimatedActiveKcal?: unknown }).estimatedActiveKcal;
+  if (availability !== "available") return null;
+  return typeof kcal === "number" && Number.isFinite(kcal) && kcal >= 0 ? kcal : null;
+}
 
 function toDto(row: {
   id: number;
@@ -26,11 +62,30 @@ function toDto(row: {
   endAt: Date;
   durationMinutes: number | null;
   activeEnergyKcal: number | null;
+  manualStepCount: number | null;
+  manualActiveEnergyKcal: number | null;
   sourceIdentity: string;
   syncProtected: boolean;
   matchedDiarySession: { id: number } | null;
+  dailyHealthData: { weightKg: number | null };
+  experimentalStepperActiveEnergyShadow: { result: unknown } | null;
 }): StepperWorkoutDto {
   const source = row.sourceIdentity.startsWith(MANUAL_STEPPER_SOURCE_PREFIX) ? "manual" : "health";
+  const adapted = adaptManualStepperEnergyV1({
+    manualStepCount: row.manualStepCount,
+    manualActiveEnergyKcal: row.manualActiveEnergyKcal,
+    bodyMassKg: row.dailyHealthData.weightKg,
+  });
+  const mechanicalFromShadow = source === "health"
+    ? shadowMechanicalKcal(row.experimentalStepperActiveEnergyShadow?.result ?? null)
+    : null;
+  const selected = resolveEventEnergyV1({
+    classification: "stair-climbing",
+    activeEnergyKcal: row.activeEnergyKcal,
+    manualActiveKcalPresent: adapted.manualKcalPresent,
+    manualActiveKcal: adapted.manualKcal,
+    mechanicalStepperKcal: adapted.mechanicalKcal ?? mechanicalFromShadow,
+  });
   return {
     id: row.id,
     type: row.type,
@@ -38,6 +93,15 @@ function toDto(row: {
     endAt: row.endAt.toISOString(),
     durationMinutes: row.durationMinutes,
     activeEnergyKcal: row.activeEnergyKcal,
+    manualStepCount: row.manualStepCount,
+    manualActiveEnergyKcal: row.manualActiveEnergyKcal,
+    selectedActiveEnergyKcal: selected.selectedKcal,
+    selectedActiveEnergySource: selected.source,
+    selectedActiveEnergyFullCoverage: selected.fullCoverage,
+    reconciliationStatus: null,
+    reconciliationGroupId: null,
+    reconciliationPeerWorkoutId: null,
+    reconciliationRole: null,
     source,
     syncProtected: row.syncProtected,
     editable: source === "manual" || row.matchedDiarySession === null,
@@ -51,6 +115,46 @@ function workoutDates(input: StepperWorkoutInput) {
   return { startAt, endAt, date };
 }
 
+async function attachReconciliation(
+  client: PrismaClient | import("@prisma/client").Prisma.TransactionClient,
+  workouts: StepperWorkoutDto[],
+): Promise<StepperWorkoutDto[]> {
+  if (workouts.length === 0) return workouts;
+  const ids = workouts.map((workout) => workout.id);
+  const links = await client.stepperReconciliationCandidate.findMany({
+    where: {
+      group: { status: { in: ["pending", "ambiguous", "confirmed"] } },
+      OR: [{ manualWorkoutId: { in: ids } }, { garminWorkoutId: { in: ids } }],
+    },
+    select: {
+      manualWorkoutId: true,
+      garminWorkoutId: true,
+      groupId: true,
+      group: { select: { id: true, status: true } },
+    },
+  });
+  return workouts.map((workout) => {
+    const link = links.find((row) => row.manualWorkoutId === workout.id || row.garminWorkoutId === workout.id);
+    const status = link?.group.status;
+    const role = link === undefined
+      ? null
+      : link.manualWorkoutId === workout.id
+        ? "manual" as const
+        : "garmin" as const;
+    return {
+      ...workout,
+      reconciliationStatus: status === "pending" || status === "ambiguous" || status === "confirmed" ? status : null,
+      reconciliationGroupId: link?.groupId ?? null,
+      reconciliationPeerWorkoutId: link === undefined
+        ? null
+        : link.manualWorkoutId === workout.id
+          ? link.garminWorkoutId
+          : link.manualWorkoutId,
+      reconciliationRole: role,
+    };
+  });
+}
+
 export class StepperWorkoutRepository {
   constructor(private readonly client: PrismaClient = prisma) {}
 
@@ -59,9 +163,9 @@ export class StepperWorkoutRepository {
       where: { type: { equals: STEPPER_TYPE, mode: "insensitive" }, hiddenFromHistory: false },
       orderBy: [{ startAt: "desc" }, { id: "desc" }],
       take: 100,
-      select: { id: true, type: true, startAt: true, endAt: true, durationMinutes: true, activeEnergyKcal: true, sourceIdentity: true, syncProtected: true, matchedDiarySession: { select: { id: true } } },
+      select: stepperSelect,
     });
-    return rows.map(toDto);
+    return attachReconciliation(this.client, rows.map(toDto));
   }
 
   async create(input: StepperWorkoutInput): Promise<StepperWorkoutDto> {
@@ -83,11 +187,15 @@ export class StepperWorkoutRepository {
           durationMinutes: input.durationMinutes,
           energyKcal: null,
           activeEnergyKcal: null,
+          manualStepCount: input.manualStepCount ?? null,
+          manualActiveEnergyKcal: input.manualActiveEnergyKcal ?? null,
         },
-        select: { id: true, type: true, startAt: true, endAt: true, durationMinutes: true, activeEnergyKcal: true, sourceIdentity: true, syncProtected: true, matchedDiarySession: { select: { id: true } } },
+        select: stepperSelect,
       });
     });
-    return toDto(row);
+    await persistStepperReconciliationV1(this.client, { from: date, to: date });
+    const [dto] = await attachReconciliation(this.client, [toDto(row)]);
+    return dto!;
   }
 
   async update(id: number, input: StepperWorkoutInput): Promise<StepperWorkoutDto | null> {
@@ -132,10 +240,20 @@ export class StepperWorkoutRepository {
       }
       const updated = await transaction.workout.update({
         where: { id },
-        data: { dailyHealthDataId: day.id, startAt, endAt, durationMinutes: input.durationMinutes, ...(isManual ? {} : { syncProtected: true }) },
-        select: { id: true, type: true, startAt: true, endAt: true, durationMinutes: true, activeEnergyKcal: true, sourceIdentity: true, syncProtected: true, matchedDiarySession: { select: { id: true } } },
+        data: {
+          dailyHealthDataId: day.id,
+          startAt,
+          endAt,
+          durationMinutes: input.durationMinutes,
+          manualStepCount: input.manualStepCount ?? null,
+          manualActiveEnergyKcal: input.manualActiveEnergyKcal ?? null,
+          ...(isManual ? {} : { syncProtected: true }),
+        },
+        select: stepperSelect,
       });
-      return toDto(updated);
+      await persistStepperReconciliationV1(transaction, { from: date, to: date });
+      const [dto] = await attachReconciliation(transaction, [toDto(updated)]);
+      return dto!;
     });
   }
 

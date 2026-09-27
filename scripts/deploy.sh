@@ -1,4 +1,14 @@
 #!/usr/bin/env bash
+# Production app release (no Prisma migrate, no replay, no selection activation).
+# Requires DEPLOY_SHA (exact main commit that passed CI).
+#
+# Ordering contract:
+# 1) verify exact SHA
+# 2) verify compose config + DB readiness
+# 3) schema preflight (non-destructive)
+# 4) build release image
+# 5) only then recreate the running app
+# A failed preflight must leave the running application container unchanged.
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -13,12 +23,31 @@ readonly CURRENT_IMAGE="bodycast-app:latest"
 readonly ROLLBACK_IMAGE="bodycast-app:rollback"
 readonly APP_HOST="${APP_HOST:?APP_HOST is required}"
 readonly CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:?CADDY_ROUTES_PATH is required}"
+readonly DEPLOY_SHA="${DEPLOY_SHA:?DEPLOY_SHA is required}"
+
+if [[ ! "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "DEPLOY_SHA must be a full 40-character commit SHA (got: ${DEPLOY_SHA})." >&2
+  exit 1
+fi
+
+echo "Deploying exact commit ${DEPLOY_SHA} (app recreate only; migrate/replay/activation not run)."
+
+git fetch --no-tags origin "$DEPLOY_SHA"
+git checkout --detach --force "$DEPLOY_SHA"
+deployed_sha="$(git rev-parse HEAD)"
+if [[ "$deployed_sha" != "$DEPLOY_SHA" ]]; then
+  echo "Checked-out SHA ${deployed_sha} does not match DEPLOY_SHA ${DEPLOY_SHA}." >&2
+  exit 1
+fi
+chmod +x "${ROOT_DIR}/scripts/deploy.sh" "${ROOT_DIR}/scripts/deploy-preflight-schema.sh"
 
 compose() {
   docker compose -f "$COMPOSE_FILE" "$@"
 }
 
 previous_image_exists=false
+app_cut_over=false
+
 if docker image inspect "$CURRENT_IMAGE" >/dev/null 2>&1; then
   docker image tag "$CURRENT_IMAGE" "$ROLLBACK_IMAGE"
   previous_image_exists=true
@@ -26,7 +55,17 @@ fi
 
 rollback() {
   exit_code=$?
-  echo "Deployment failed; restoring the previous application image." >&2
+  if [[ "$app_cut_over" != "true" ]]; then
+    echo "Deployment failed before app cutover; leaving the running application unchanged." >&2
+    if [[ "$previous_image_exists" == "true" ]] && docker image inspect "$ROLLBACK_IMAGE" >/dev/null 2>&1; then
+      # Restore :latest tag for cleanliness without recreating the container.
+      docker image tag "$ROLLBACK_IMAGE" "$CURRENT_IMAGE" || true
+    fi
+    compose logs --tail=100 "$APP_SERVICE" || true
+    exit "$exit_code"
+  fi
+
+  echo "Deployment failed after app cutover; restoring the previous application image." >&2
   if [[ "$previous_image_exists" == "true" ]] && docker image inspect "$ROLLBACK_IMAGE" >/dev/null 2>&1; then
     docker image tag "$ROLLBACK_IMAGE" "$CURRENT_IMAGE"
     compose up -d --no-deps --force-recreate "$APP_SERVICE" || true
@@ -37,8 +76,6 @@ rollback() {
 trap rollback ERR
 
 compose config --quiet
-compose build "$APP_SERVICE"
-compose --profile tools build migrate
 compose up -d "$DB_SERVICE"
 
 for attempt in $(seq 1 30); do
@@ -52,7 +89,14 @@ for attempt in $(seq 1 30); do
   sleep 5
 done
 
-compose --profile tools run --rm migrate
+# Schema must already be compatible. Ordinary deploy never runs migrate deploy.
+# Preflight runs before build/cutover so pending migrations never bounce the live app.
+bash "${ROOT_DIR}/scripts/deploy-preflight-schema.sh"
+
+compose build "$APP_SERVICE"
+
+# Cutover boundary: only recreate the running app after successful preflight + build.
+app_cut_over=true
 compose up -d --no-deps --force-recreate "$APP_SERVICE"
 
 for attempt in $(seq 1 30); do
@@ -101,4 +145,5 @@ curl --fail --silent --show-error --retry 12 --retry-delay 5 \
 
 trap - ERR
 docker image rm "$ROLLBACK_IMAGE" >/dev/null 2>&1 || true
-echo "BodyCast deployment completed successfully."
+echo "BodyCast deployment completed successfully for ${DEPLOY_SHA}."
+echo "DEPLOYED_SHA=${DEPLOY_SHA}"

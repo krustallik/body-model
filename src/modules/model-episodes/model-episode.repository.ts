@@ -2,6 +2,7 @@ import { normalizeDailyMeasurements } from "@/modules/days/measurement-policy";
 import { resolveWorkoutFeedObserved } from "@/modules/health/workout-feed-coverage";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { DEFAULT_TIME_ZONE, instantToLocalDateTime } from "@/model/time-zone";
 import { createGlycogenParameters } from "@/model/body-composition/glycogen";
 import type { EpisodeCalculation } from "./episode-calculation";
 import type { ModelHistoryQuery } from "./model-episode.schema";
@@ -16,7 +17,93 @@ import type {
 } from "./model-episode.types";
 import { unknownIntervalDurationDays } from "./unknown-intervals";
 
+import {
+  strengthEstimateFreshV1,
+  strengthInputFingerprintV1,
+  strengthSetFingerprintV1,
+} from "@/modules/training/strength-publication-v1";
+import { EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION } from "@/modules/training/experimental-strength-active-energy-v1";
+
 export type ModelDatabaseClient = PrismaClient | Prisma.TransactionClient;
+
+function strengthShadowSessionRevision(result: unknown): number | null {
+  if (result === null || typeof result !== "object" || Array.isArray(result)) return null;
+  const revision = (result as { sessionRevision?: unknown }).sessionRevision;
+  return typeof revision === "number" && Number.isInteger(revision) ? revision : null;
+}
+
+function strengthShadowKcal(result: unknown): number | null {
+  if (result === null || typeof result !== "object" || Array.isArray(result)) return null;
+  const kcal = (result as { estimatedActiveKcal?: unknown }).estimatedActiveKcal;
+  return typeof kcal === "number" && Number.isFinite(kcal) && kcal >= 0 ? kcal : null;
+}
+
+function strengthShadowInputFingerprint(result: unknown): string | null {
+  if (result === null || typeof result !== "object" || Array.isArray(result)) return null;
+  const fingerprint = (result as { inputFingerprint?: unknown }).inputFingerprint;
+  return typeof fingerprint === "string" && fingerprint.length > 0 ? fingerprint : null;
+}
+
+function toSetFingerprintRows(
+  sets: readonly {
+    id?: number;
+    reps: number;
+    weightKg: number | { toNumber(): number } | null;
+    bandNominalResistanceKg?: number | { toNumber(): number } | null;
+    rir?: number | null;
+  }[],
+): Array<{ id?: number; reps: number; weightKg: number | null; bandNominalResistanceKg?: number | null; rir?: number | null }> {
+  return sets.map((set) => ({
+    id: set.id,
+    reps: set.reps,
+    weightKg: set.weightKg === null || set.weightKg === undefined
+      ? null
+      : typeof set.weightKg === "number"
+        ? set.weightKg
+        : set.weightKg.toNumber(),
+    bandNominalResistanceKg: set.bandNominalResistanceKg === null || set.bandNominalResistanceKg === undefined
+      ? null
+      : typeof set.bandNominalResistanceKg === "number"
+        ? set.bandNominalResistanceKg
+        : set.bandNominalResistanceKg.toNumber(),
+    rir: set.rir ?? null,
+  }));
+}
+
+function strengthEstimateFresh(input: {
+  estimateKcal: number | null;
+  sessionId: number;
+  sessionRevision: number;
+  shadowResult: unknown;
+  massKg: number | null;
+  sameDayMassKg: number | null;
+  startOfDayMassKg?: number | null;
+  sets: readonly {
+    id?: number;
+    reps: number;
+    weightKg: number | { toNumber(): number } | null;
+    bandNominalResistanceKg?: number | { toNumber(): number } | null;
+    rir?: number | null;
+  }[];
+  estimatorVersion?: string | null;
+}): boolean {
+  const currentInputFingerprint = strengthInputFingerprintV1({
+    sessionId: input.sessionId,
+    sessionRevision: input.sessionRevision,
+    massKg: input.massKg,
+    sameDayMassKg: input.sameDayMassKg,
+    startOfDayMassKg: input.startOfDayMassKg ?? null,
+    setFingerprint: strengthSetFingerprintV1(toSetFingerprintRows(input.sets)),
+    estimatorVersion: input.estimatorVersion ?? EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
+  });
+  return strengthEstimateFreshV1({
+    estimateKcal: input.estimateKcal,
+    sessionRevision: input.sessionRevision,
+    shadowSessionRevision: strengthShadowSessionRevision(input.shadowResult),
+    storedInputFingerprint: strengthShadowInputFingerprint(input.shadowResult),
+    currentInputFingerprint,
+  });
+}
 
 const episodeSelect = {
   id: true,
@@ -229,7 +316,11 @@ export class ModelEpisodeRepository {
   }
 
   async loadSources(from: string, to: string): Promise<HistoricalModelSources> {
-    const [days, snapshots, activityIntervals, workIntervals, workoutRows, heartRateSamples] = await Promise.all([
+    const webWindowStart = new Date(`${from}T00:00:00.000Z`);
+    webWindowStart.setUTCDate(webWindowStart.getUTCDate() - 2);
+    const webWindowEnd = new Date(`${to}T00:00:00.000Z`);
+    webWindowEnd.setUTCDate(webWindowEnd.getUTCDate() + 3);
+    const [days, snapshots, activityIntervals, workIntervals, workoutRows, heartRateSamples, webSessions, reconciliationRows] = await Promise.all([
       this.client.dailyHealthData.findMany({
         where: { date: { gte: from, lte: to } },
         orderBy: { date: "asc" },
@@ -287,19 +378,99 @@ export class ModelEpisodeRepository {
         select: {
           id: true,
           externalId: true,
+          sourceIdentity: true,
           type: true,
           startAt: true,
           endAt: true,
           durationMinutes: true,
           energyKcal: true,
           activeEnergyKcal: true,
-          dailyHealthData: { select: { date: true } },
+          manualStepCount: true,
+          manualActiveEnergyKcal: true,
+          dailyHealthData: { select: { date: true, weightKg: true } },
+          matchedDiarySession: {
+            select: {
+              id: true,
+              status: true,
+              revision: true,
+              experimentalStrengthEnergyShadow: {
+                select: { result: true, sourceFingerprint: true, modelRevision: true },
+              },
+              exercises: {
+                select: {
+                  sets: {
+                    select: {
+                      id: true,
+                      reps: true,
+                      weightKg: true,
+                      bandNominalResistanceKg: true,
+                      rir: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
         },
       }),
       this.client.heartRateSample.findMany({
         where: { date: { gte: from, lte: to } },
         orderBy: [{ timestamp: "asc" }, { id: "asc" }],
         select: { date: true, timestamp: true, bpm: true, source: true },
+      }),
+      this.client.strengthDiarySession.findMany({
+        where: {
+          matchedWorkoutId: null,
+          status: { in: ["COMPLETED", "ACTIVE"] },
+          webStartedAt: { gte: webWindowStart, lt: webWindowEnd },
+          webEndedAt: { not: null },
+        },
+        select: {
+          id: true,
+          status: true,
+          revision: true,
+          webStartedAt: true,
+          webEndedAt: true,
+          experimentalStrengthEnergyShadow: {
+            select: { result: true, sourceFingerprint: true, modelRevision: true },
+          },
+          exercises: {
+            select: {
+              sets: {
+                select: {
+                  id: true,
+                  reps: true,
+                  weightKg: true,
+                  bandNominalResistanceKg: true,
+                  rir: true,
+                },
+              },
+            },
+          },
+        },
+      }),
+      this.client.stepperReconciliationCandidate.findMany({
+        where: {
+          group: { status: { in: ["pending", "ambiguous", "confirmed"] } },
+          OR: [
+            { manualWorkout: { dailyHealthData: { date: { gte: from, lte: to } } } },
+            { garminWorkout: { dailyHealthData: { date: { gte: from, lte: to } } } },
+          ],
+        },
+        select: {
+          manualWorkoutId: true,
+          garminWorkoutId: true,
+          group: {
+            select: {
+              id: true,
+              status: true,
+              evaluationRevision: true,
+              provisionalWorkoutId: true,
+              policyVersion: true,
+              sourceRevision: true,
+            },
+          },
+        },
       }),
     ]);
     return {
@@ -322,18 +493,93 @@ export class ModelEpisodeRepository {
         value: interval.value.toNumber(),
       })),
       workIntervals,
-      workouts: workoutRows.map((workout) => ({
-        id: workout.id,
-        date: workout.dailyHealthData.date,
-        externalId: workout.externalId,
-        type: workout.type,
-        startAt: workout.startAt,
-        endAt: workout.endAt,
-        durationMinutes: workout.durationMinutes,
-        energyKcal: workout.energyKcal,
-        activeEnergyKcal: workout.activeEnergyKcal,
-      })),
+      workouts: workoutRows.map((workout) => {
+        const session = workout.matchedDiarySession;
+        const estimate = session?.status === "COMPLETED"
+          ? strengthShadowKcal(session.experimentalStrengthEnergyShadow?.result)
+          : null;
+        const sameDayMassKg = workout.dailyHealthData.weightKg;
+        const sets = session?.exercises.flatMap((exercise) => exercise.sets) ?? [];
+        return {
+          id: workout.id,
+          date: workout.dailyHealthData.date,
+          externalId: workout.externalId,
+          type: workout.type,
+          startAt: workout.startAt,
+          endAt: workout.endAt,
+          durationMinutes: workout.durationMinutes,
+          energyKcal: workout.energyKcal,
+          activeEnergyKcal: workout.activeEnergyKcal,
+          manualStepCount: workout.manualStepCount,
+          manualActiveEnergyKcal: workout.manualActiveEnergyKcal,
+          bodyCastEstimateKcal: estimate,
+          bodyCastEstimateFresh: session !== null && session !== undefined
+            && strengthEstimateFresh({
+              estimateKcal: estimate,
+              sessionId: session.id,
+              sessionRevision: session.revision,
+              shadowResult: session.experimentalStrengthEnergyShadow?.result ?? null,
+              massKg: sameDayMassKg,
+              sameDayMassKg,
+              sets,
+              estimatorVersion: session.experimentalStrengthEnergyShadow?.modelRevision ?? null,
+            }),
+          strengthSessionCompleted: session?.status === "COMPLETED",
+          sourceIdentity: workout.sourceIdentity,
+        };
+      }),
       heartRateSamples,
+      webOnlyStrengthSessions: webSessions.flatMap((session) => {
+        if (session.webStartedAt === null || session.webEndedAt === null) return [];
+        const date = instantToLocalDateTime(session.webStartedAt, DEFAULT_TIME_ZONE).date;
+        if (date < from || date > to) return [];
+        const estimate = session.status === "COMPLETED"
+          ? strengthShadowKcal(session.experimentalStrengthEnergyShadow?.result)
+          : null;
+        const dayMass = days.find((day) => day.date === date)?.weightKg ?? null;
+        const sets = session.exercises.flatMap((exercise) => exercise.sets);
+        return [{
+          sessionId: session.id,
+          date,
+          status: session.status,
+          revision: session.revision,
+          startAt: session.webStartedAt,
+          endAt: session.webEndedAt,
+          bodyCastEstimateKcal: estimate,
+          bodyCastEstimateFresh: strengthEstimateFresh({
+            estimateKcal: estimate,
+            sessionId: session.id,
+            sessionRevision: session.revision,
+            shadowResult: session.experimentalStrengthEnergyShadow?.result ?? null,
+            massKg: dayMass,
+            sameDayMassKg: dayMass,
+            sets,
+            estimatorVersion: session.experimentalStrengthEnergyShadow?.modelRevision ?? null,
+          }),
+          inputFingerprint: strengthShadowInputFingerprint(session.experimentalStrengthEnergyShadow?.result)
+            ?? session.experimentalStrengthEnergyShadow?.sourceFingerprint
+            ?? null,
+        }];
+      }),
+      reconciliationLinks: reconciliationRows.flatMap((row) => {
+        const status = row.group.status;
+        if (status !== "pending" && status !== "ambiguous" && status !== "confirmed") return [];
+        return [{
+          groupId: row.group.id,
+          status,
+          evaluationRevision: row.group.evaluationRevision,
+          policyVersion: row.group.policyVersion,
+          sourceRevision: row.group.sourceRevision,
+          provisionalWorkoutId: row.group.provisionalWorkoutId,
+          manualWorkoutId: row.manualWorkoutId,
+          garminWorkoutId: row.garminWorkoutId,
+          // Pending: provisional manual contributes; Garmin withheld.
+          // Confirmed: Garmin is canonical; manual remains audit-only.
+          // Ambiguous: neither contributes until resolved.
+          suppressGarminEnergy: status === "pending" || status === "ambiguous",
+          suppressManualEnergy: status === "confirmed" || status === "ambiguous",
+        }];
+      }),
     };
   }
 

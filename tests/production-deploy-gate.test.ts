@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluateProductionDeployGate } from "../scripts/ci/production-deploy-gate.mjs";
+import { evaluateProductionDeployGate } from "../scripts/ci/production-deploy-gate";
 
 const tip = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const older = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";

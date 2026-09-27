@@ -3,42 +3,36 @@
  * Used by GitHub Actions and unit tests — no network side effects.
  */
 
-/**
- * @typedef {{
- *   conclusion: string | null,
- *   event: string,
- *   head_branch: string | null,
- *   head_sha: string,
- *   path?: string | null,
- *   name?: string | null,
- * }} WorkflowRunLike
- *
- * @typedef {{
- *   eventName: string,
- *   repositoryFullName: string,
- *   workflowRepositoryFullName: string,
- *   workflowName: string,
- *   expectedWorkflowName: string,
- *   workflowRun: WorkflowRunLike | null,
- *   mainTipSha: string,
- *   candidateSha: string,
- *   dispatchConfirm?: string | null,
- * }} DeployGateInput
- *
- * @typedef {{
- *   decision: "deploy" | "skip" | "block",
- *   reason: string,
- *   candidateSha: string | null,
- * }} DeployGateResult
- */
+export type WorkflowRunLike = {
+  conclusion: string | null;
+  event: string;
+  head_branch: string | null;
+  head_sha: string;
+  path?: string | null;
+  name?: string | null;
+};
+
+export type DeployGateInput = {
+  eventName: string;
+  repositoryFullName: string;
+  workflowRepositoryFullName: string;
+  workflowName: string;
+  expectedWorkflowName: string;
+  workflowRun: WorkflowRunLike | null;
+  mainTipSha: string;
+  candidateSha: string;
+  dispatchConfirm?: string | null;
+};
+
+export type DeployGateResult = {
+  decision: "deploy" | "skip" | "block";
+  reason: string;
+  candidateSha: string | null;
+};
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
 
-/**
- * @param {DeployGateInput} input
- * @returns {DeployGateResult}
- */
-export function evaluateProductionDeployGate(input) {
+export function evaluateProductionDeployGate(input: DeployGateInput): DeployGateResult {
   if (input.repositoryFullName !== input.workflowRepositoryFullName) {
     return {
       decision: "block",

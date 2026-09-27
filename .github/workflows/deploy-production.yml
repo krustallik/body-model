@@ -85,9 +85,9 @@ jobs:
           CI_RUN_URL: ${{ steps.resolve.outputs.ci_run_url }}
         run: |
           set -Eeuo pipefail
-          node --input-type=module <<'EOF'
+          node --experimental-strip-types --input-type=module <<'EOF'
           import { appendFileSync } from "node:fs";
-          import { evaluateProductionDeployGate } from "./scripts/ci/production-deploy-gate.mjs";
+          import { evaluateProductionDeployGate } from "./scripts/ci/production-deploy-gate.ts";
 
           const eventName = process.env.EVENT_NAME;
           const workflowRun = eventName === "workflow_run"

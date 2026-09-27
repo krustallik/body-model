@@ -6,6 +6,7 @@ import { MANUAL_STEPPER_SOURCE_PREFIX } from "@/modules/health/workout-source-id
 import type { StepperWorkoutInput } from "./stepper-workout.schema";
 import { resolveEventEnergyV1 } from "@/model/activity/canonical-activity-policy-v1";
 import { adaptManualStepperEnergyV1 } from "./manual-stepper-fields-v1";
+import { persistStepperReconciliationV1 } from "./stepper-reconciliation.service";
 
 const STEPPER_TYPE = "Stair Climbing";
 
@@ -21,6 +22,7 @@ export type StepperWorkoutDto = {
   selectedActiveEnergyKcal: number | null;
   selectedActiveEnergySource: string;
   selectedActiveEnergyFullCoverage: boolean;
+  reconciliationStatus: "pending" | "ambiguous" | "confirmed" | null;
   source: "manual" | "health";
   syncProtected: boolean;
   editable: boolean;
@@ -80,6 +82,7 @@ function toDto(row: {
     selectedActiveEnergyKcal: selected.selectedKcal,
     selectedActiveEnergySource: selected.source,
     selectedActiveEnergyFullCoverage: selected.fullCoverage,
+    reconciliationStatus: null,
     source,
     syncProtected: row.syncProtected,
     editable: source === "manual" || row.matchedDiarySession === null,
@@ -93,6 +96,33 @@ function workoutDates(input: StepperWorkoutInput) {
   return { startAt, endAt, date };
 }
 
+async function attachReconciliation(
+  client: PrismaClient | import("@prisma/client").Prisma.TransactionClient,
+  workouts: StepperWorkoutDto[],
+): Promise<StepperWorkoutDto[]> {
+  if (workouts.length === 0) return workouts;
+  const ids = workouts.map((workout) => workout.id);
+  const links = await client.stepperReconciliationCandidate.findMany({
+    where: {
+      group: { status: { in: ["pending", "ambiguous", "confirmed"] } },
+      OR: [{ manualWorkoutId: { in: ids } }, { garminWorkoutId: { in: ids } }],
+    },
+    select: {
+      manualWorkoutId: true,
+      garminWorkoutId: true,
+      group: { select: { status: true } },
+    },
+  });
+  return workouts.map((workout) => {
+    const link = links.find((row) => row.manualWorkoutId === workout.id || row.garminWorkoutId === workout.id);
+    const status = link?.group.status;
+    return {
+      ...workout,
+      reconciliationStatus: status === "pending" || status === "ambiguous" || status === "confirmed" ? status : null,
+    };
+  });
+}
+
 export class StepperWorkoutRepository {
   constructor(private readonly client: PrismaClient = prisma) {}
 
@@ -103,7 +133,7 @@ export class StepperWorkoutRepository {
       take: 100,
       select: stepperSelect,
     });
-    return rows.map(toDto);
+    return attachReconciliation(this.client, rows.map(toDto));
   }
 
   async create(input: StepperWorkoutInput): Promise<StepperWorkoutDto> {
@@ -131,7 +161,9 @@ export class StepperWorkoutRepository {
         select: stepperSelect,
       });
     });
-    return toDto(row);
+    await persistStepperReconciliationV1(this.client, { from: date, to: date });
+    const [dto] = await attachReconciliation(this.client, [toDto(row)]);
+    return dto!;
   }
 
   async update(id: number, input: StepperWorkoutInput): Promise<StepperWorkoutDto | null> {
@@ -187,7 +219,9 @@ export class StepperWorkoutRepository {
         },
         select: stepperSelect,
       });
-      return toDto(updated);
+      await persistStepperReconciliationV1(transaction, { from: date, to: date });
+      const [dto] = await attachReconciliation(transaction, [toDto(updated)]);
+      return dto!;
     });
   }
 

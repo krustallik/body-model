@@ -72,6 +72,8 @@ export type WorkoutEnergyResolutionSummaryV1 = {
   deviceActiveEnergyKcal: number;
   bodyCastStepperActiveEnergyKcal: number;
   strengthMetFallbackKcal: number;
+  energyCoverage?: KnownEnergyCoverageV1;
+  publishedStrengthEstimateKcal?: number;
   perEvent: Array<{
     workoutId?: number;
     classification: WorkoutActivityClassification;

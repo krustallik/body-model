@@ -18,6 +18,7 @@ import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import { selectCanonicalBodyMassV1, occupationalEnergyDurationHours } from "@/model/activity/canonical-activity-policy-v1";
 import { allocateDistanceLedgerV1, dayBoundsAroundV1 } from "@/model/activity/distance-ledger-v1";
 import { adaptManualStepperEnergyV1 } from "@/modules/training/manual-stepper-fields-v1";
+import { TRADITIONAL_STRENGTH_TRAINING_TYPE } from "@/modules/health/expand-training-workouts";
 import type {
   BuiltSimulationDay,
   HistoricalModelSources,
@@ -378,6 +379,36 @@ export function buildSimulationDays(input: {
           mechanicalStepperKcal: adapted.mechanicalKcal ?? event.mechanicalStepperKcal ?? null,
         };
       });
+      const suppressedWorkoutIds = new Set<number>();
+      for (const link of input.sources.reconciliationLinks ?? []) {
+        if (link.suppressGarminEnergy) suppressedWorkoutIds.add(link.garminWorkoutId);
+        if (link.suppressManualEnergy) {
+          suppressedWorkoutIds.add(link.manualWorkoutId);
+          suppressedWorkoutIds.add(link.garminWorkoutId);
+        }
+      }
+      const webEvents: ExplicitWorkoutActivityEvent[] = (input.sources.webOnlyStrengthSessions ?? [])
+        .filter((session) => session.date === date)
+        .map((session) => {
+          const canonical = canonicalizeWorkoutType(TRADITIONAL_STRENGTH_TRAINING_TYPE);
+          const durationMinutes = Math.max(0, (session.endAt.getTime() - session.startAt.getTime()) / 60_000);
+          return {
+            type: TRADITIONAL_STRENGTH_TRAINING_TYPE,
+            canonicalType: canonical.canonicalType,
+            classification: canonical.classification,
+            startAt: session.startAt.toISOString(),
+            endAt: session.endAt.toISOString(),
+            durationMinutes,
+            activeEnergyKcal: null,
+            bodyCastEstimateKcal: session.bodyCastEstimateKcal,
+            bodyCastEstimateFresh: session.status === "COMPLETED" && session.bodyCastEstimateKcal !== null,
+            strengthSessionCompleted: session.status === "COMPLETED",
+          };
+        });
+      workoutEvents = [
+        ...workoutEvents.filter((event) => event.workoutId === undefined || !suppressedWorkoutIds.has(event.workoutId)),
+        ...webEvents,
+      ];
     }
     if (selectionV1) {
       const bounds = dayBoundsAroundV1(date, DEFAULT_TIME_ZONE);
@@ -529,6 +560,7 @@ export function buildSimulationDays(input: {
       } : {}),
       ...(selectionV1 ? {
         selectionV1: {
+          calculationPolicyVersion: "bodycast-active-energy-selection-v1",
           massSource: canonicalMass.source,
           distanceComplete: selectionUsable,
           distanceConflicted: (selectionLedger?.conflictedIntervalIds.length ?? 0) > 0,

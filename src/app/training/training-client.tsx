@@ -443,6 +443,9 @@ export function TrainingClient() {
                           <span>{formatStepperDateTime(workout.startAt, intlLocale)}</span>
                           <span>{formatDurationMinutes(workout.startAt, workout.endAt, intlLocale, uk)}</span>
                           <span>{stepperSelectedEnergyText(workout, uk)}</span>
+                          {workout.reconciliationStatus === "pending" || workout.reconciliationStatus === "ambiguous" ? (
+                            <span>{uk ? "Можливе дублювання з Garmin · кроки лишаються доданими" : "Possible Garmin duplicate · steps stay additive"}</span>
+                          ) : null}
                         </p>
                       </div>
                       <span className={workout.source === "manual" ? styles.badgePrimary : styles.badgeInfo}>

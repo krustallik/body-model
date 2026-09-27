@@ -2,6 +2,7 @@ import { normalizeDailyMeasurements } from "@/modules/days/measurement-policy";
 import { resolveWorkoutFeedObserved } from "@/modules/health/workout-feed-coverage";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { DEFAULT_TIME_ZONE, instantToLocalDateTime } from "@/model/time-zone";
 import { createGlycogenParameters } from "@/model/body-composition/glycogen";
 import type { EpisodeCalculation } from "./episode-calculation";
 import type { ModelHistoryQuery } from "./model-episode.schema";
@@ -17,6 +18,12 @@ import type {
 import { unknownIntervalDurationDays } from "./unknown-intervals";
 
 export type ModelDatabaseClient = PrismaClient | Prisma.TransactionClient;
+
+function strengthShadowKcal(result: unknown): number | null {
+  if (result === null || typeof result !== "object" || Array.isArray(result)) return null;
+  const kcal = (result as { estimatedActiveKcal?: unknown }).estimatedActiveKcal;
+  return typeof kcal === "number" && Number.isFinite(kcal) && kcal >= 0 ? kcal : null;
+}
 
 const episodeSelect = {
   id: true,
@@ -229,7 +236,11 @@ export class ModelEpisodeRepository {
   }
 
   async loadSources(from: string, to: string): Promise<HistoricalModelSources> {
-    const [days, snapshots, activityIntervals, workIntervals, workoutRows, heartRateSamples] = await Promise.all([
+    const webWindowStart = new Date(`${from}T00:00:00.000Z`);
+    webWindowStart.setUTCDate(webWindowStart.getUTCDate() - 2);
+    const webWindowEnd = new Date(`${to}T00:00:00.000Z`);
+    webWindowEnd.setUTCDate(webWindowEnd.getUTCDate() + 3);
+    const [days, snapshots, activityIntervals, workIntervals, workoutRows, heartRateSamples, webSessions, reconciliationRows] = await Promise.all([
       this.client.dailyHealthData.findMany({
         where: { date: { gte: from, lte: to } },
         orderBy: { date: "asc" },
@@ -287,19 +298,69 @@ export class ModelEpisodeRepository {
         select: {
           id: true,
           externalId: true,
+          sourceIdentity: true,
           type: true,
           startAt: true,
           endAt: true,
           durationMinutes: true,
           energyKcal: true,
           activeEnergyKcal: true,
-          dailyHealthData: { select: { date: true } },
+          manualStepCount: true,
+          manualActiveEnergyKcal: true,
+          dailyHealthData: { select: { date: true, weightKg: true } },
+          matchedDiarySession: {
+            select: {
+              id: true,
+              status: true,
+              revision: true,
+              experimentalStrengthEnergyShadow: { select: { result: true, sourceFingerprint: true } },
+            },
+          },
         },
       }),
       this.client.heartRateSample.findMany({
         where: { date: { gte: from, lte: to } },
         orderBy: [{ timestamp: "asc" }, { id: "asc" }],
         select: { date: true, timestamp: true, bpm: true, source: true },
+      }),
+      this.client.strengthDiarySession.findMany({
+        where: {
+          matchedWorkoutId: null,
+          status: { in: ["COMPLETED", "ACTIVE"] },
+          webStartedAt: { gte: webWindowStart, lt: webWindowEnd },
+          webEndedAt: { not: null },
+        },
+        select: {
+          id: true,
+          status: true,
+          revision: true,
+          webStartedAt: true,
+          webEndedAt: true,
+          experimentalStrengthEnergyShadow: { select: { result: true, sourceFingerprint: true } },
+        },
+      }),
+      this.client.stepperReconciliationCandidate.findMany({
+        where: {
+          group: { status: { in: ["pending", "ambiguous", "confirmed"] } },
+          OR: [
+            { manualWorkout: { dailyHealthData: { date: { gte: from, lte: to } } } },
+            { garminWorkout: { dailyHealthData: { date: { gte: from, lte: to } } } },
+          ],
+        },
+        select: {
+          manualWorkoutId: true,
+          garminWorkoutId: true,
+          group: {
+            select: {
+              id: true,
+              status: true,
+              evaluationRevision: true,
+              provisionalWorkoutId: true,
+              policyVersion: true,
+              sourceRevision: true,
+            },
+          },
+        },
       }),
     ]);
     return {
@@ -322,18 +383,64 @@ export class ModelEpisodeRepository {
         value: interval.value.toNumber(),
       })),
       workIntervals,
-      workouts: workoutRows.map((workout) => ({
-        id: workout.id,
-        date: workout.dailyHealthData.date,
-        externalId: workout.externalId,
-        type: workout.type,
-        startAt: workout.startAt,
-        endAt: workout.endAt,
-        durationMinutes: workout.durationMinutes,
-        energyKcal: workout.energyKcal,
-        activeEnergyKcal: workout.activeEnergyKcal,
-      })),
+      workouts: workoutRows.map((workout) => {
+        const session = workout.matchedDiarySession;
+        const estimate = session?.status === "COMPLETED"
+          ? strengthShadowKcal(session.experimentalStrengthEnergyShadow?.result)
+          : null;
+        return {
+          id: workout.id,
+          date: workout.dailyHealthData.date,
+          externalId: workout.externalId,
+          type: workout.type,
+          startAt: workout.startAt,
+          endAt: workout.endAt,
+          durationMinutes: workout.durationMinutes,
+          energyKcal: workout.energyKcal,
+          activeEnergyKcal: workout.activeEnergyKcal,
+          manualStepCount: workout.manualStepCount,
+          manualActiveEnergyKcal: workout.manualActiveEnergyKcal,
+          bodyCastEstimateKcal: estimate,
+          bodyCastEstimateFresh: estimate !== null,
+          strengthSessionCompleted: session?.status === "COMPLETED",
+          sourceIdentity: workout.sourceIdentity,
+        };
+      }),
       heartRateSamples,
+      webOnlyStrengthSessions: webSessions.flatMap((session) => {
+        if (session.webStartedAt === null || session.webEndedAt === null) return [];
+        const date = instantToLocalDateTime(session.webStartedAt, DEFAULT_TIME_ZONE).date;
+        if (date < from || date > to) return [];
+        const estimate = session.status === "COMPLETED"
+          ? strengthShadowKcal(session.experimentalStrengthEnergyShadow?.result)
+          : null;
+        return [{
+          sessionId: session.id,
+          date,
+          status: session.status,
+          revision: session.revision,
+          startAt: session.webStartedAt,
+          endAt: session.webEndedAt,
+          bodyCastEstimateKcal: estimate,
+          inputFingerprint: session.experimentalStrengthEnergyShadow?.sourceFingerprint ?? null,
+        }];
+      }),
+      reconciliationLinks: reconciliationRows.flatMap((row) => {
+        const status = row.group.status;
+        if (status !== "pending" && status !== "ambiguous" && status !== "confirmed") return [];
+        return [{
+          groupId: row.group.id,
+          status,
+          evaluationRevision: row.group.evaluationRevision,
+          policyVersion: row.group.policyVersion,
+          sourceRevision: row.group.sourceRevision,
+          provisionalWorkoutId: row.group.provisionalWorkoutId,
+          manualWorkoutId: row.manualWorkoutId,
+          garminWorkoutId: row.garminWorkoutId,
+          suppressGarminEnergy: true,
+          suppressManualEnergy: status === "ambiguous",
+        }];
+      }),
     };
   }
 

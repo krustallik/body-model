@@ -19,6 +19,11 @@ export type UnifiedDurableWorkoutV1 = {
   endAt: string;
   durationMinutes: number | null;
   activeEnergyKcal: number | null;
+  manualActiveEnergyKcal?: number | null;
+  matchedDiarySession?: {
+    status: string;
+    experimentalStrengthEnergyShadow: { result: unknown } | null;
+  } | null;
   updatedAt: string;
   sourceIdentity: string;
 };
@@ -129,7 +134,14 @@ export class UnifiedExperimentalPhysiologySourceLoaderV1 {
       this.client.workout.findMany({
         where: { hiddenFromHistory: false, dailyHealthData: { date: { gte: input.fromDate, lte: input.toDate } } },
         orderBy: [{ dailyHealthData: { date: "asc" } }, { startAt: "asc" }, { id: "asc" }],
-        select: { id: true, type: true, startAt: true, endAt: true, durationMinutes: true, activeEnergyKcal: true, updatedAt: true, sourceIdentity: true, dailyHealthData: { select: { date: true } } },
+        select: {
+          id: true, type: true, startAt: true, endAt: true, durationMinutes: true,
+          activeEnergyKcal: true, manualActiveEnergyKcal: true, updatedAt: true, sourceIdentity: true,
+          dailyHealthData: { select: { date: true } },
+          matchedDiarySession: {
+            select: { status: true, experimentalStrengthEnergyShadow: { select: { result: true } } },
+          },
+        },
       }),
       this.client.strengthDiarySession.findMany({
         where: { profileId, status: { not: "CANCELLED" }, OR: [
@@ -189,7 +201,13 @@ export class UnifiedExperimentalPhysiologySourceLoaderV1 {
             proteinG: daily.proteinG, fatG: daily.fatG, carbsG: daily.carbsG, steps: daily.steps,
             walkingDistanceKm: decimal(daily.walkingDistanceKm), workoutFeedObserved: daily.workoutFeedObserved,
           } : null,
-          workouts: dayWorkouts.map((row) => ({ id: row.id, date, type: row.type, startAt: row.startAt.toISOString(), endAt: row.endAt.toISOString(), durationMinutes: row.durationMinutes, activeEnergyKcal: row.activeEnergyKcal, updatedAt: row.updatedAt.toISOString(), sourceIdentity: row.sourceIdentity })),
+          workouts: dayWorkouts.map((row) => ({
+            id: row.id, date, type: row.type, startAt: row.startAt.toISOString(), endAt: row.endAt.toISOString(),
+            durationMinutes: row.durationMinutes, activeEnergyKcal: row.activeEnergyKcal,
+            manualActiveEnergyKcal: row.manualActiveEnergyKcal,
+            matchedDiarySession: row.matchedDiarySession,
+            updatedAt: row.updatedAt.toISOString(), sourceIdentity: row.sourceIdentity,
+          })),
           diarySessions: (diaryByDate.get(date) ?? []).map((row) => ({ id: row.id, date, status: row.status, entryMode: row.entryMode, revision: row.revision, webStartedAt: row.webStartedAt?.toISOString() ?? null, webEndedAt: row.webEndedAt?.toISOString() ?? null, matchedWorkoutId: row.matchedWorkoutId, updatedAt: row.updatedAt.toISOString() })),
           activity: { stepIntervals: activityRows.filter((row) => row.date === date).map((row) => ({ id: row.id, startAt: row.startAt.toISOString(), endAt: row.endAt.toISOString(), value: row.value.toNumber() })), snapshotIds: snapshots.filter((row) => row.date === date).map((row) => row.id) },
           context: { heartRateSampleCount: hr.filter((row) => row.date === date).length, restingHeartRateSampleCount: restingHr.filter((row) => row.date === date).length, sleepSegmentCount: sleep.filter((row) => row.endAt.toISOString().slice(0, 10) === date).length },

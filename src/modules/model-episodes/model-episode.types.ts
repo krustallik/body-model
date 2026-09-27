@@ -70,6 +70,8 @@ export type ModelWorkoutSource = {
   id: number;
   date: string;
   externalId: string | null;
+  /** Stable sync or manual identity. Present when loaded from Workout. */
+  sourceIdentity?: string;
   type: string;
   startAt: Date;
   endAt: Date;
@@ -95,6 +97,36 @@ export type HistoricalModelSources = {
   workouts?: ModelWorkoutSource[];
   /** Optional in old source fixtures; values are matched to exact workout intervals. */
   heartRateSamples?: ModelHeartRateSampleSource[];
+  /** Completed or active web strength sessions that are not a Garmin workout. */
+  webOnlyStrengthSessions?: WebOnlyStrengthSource[];
+  /** Open or confirmed stepper reconciliation. Rejected links are omitted. */
+  reconciliationLinks?: ReconciliationLinkSource[];
+};
+
+export type WebOnlyStrengthSource = {
+  sessionId: number;
+  date: string;
+  status: string;
+  revision: number;
+  startAt: Date;
+  endAt: Date;
+  bodyCastEstimateKcal: number | null;
+  inputFingerprint: string | null;
+};
+
+export type ReconciliationLinkSource = {
+  groupId: number;
+  status: "pending" | "ambiguous" | "confirmed";
+  evaluationRevision: number;
+  policyVersion: string;
+  sourceRevision: string | null;
+  provisionalWorkoutId: number | null;
+  manualWorkoutId: number;
+  garminWorkoutId: number;
+  /** Garmin energy is omitted so the pair contributes once. */
+  suppressGarminEnergy: boolean;
+  /** Ambiguous groups suppress every member instead of choosing one by id. */
+  suppressManualEnergy: boolean;
 };
 
 export type MaintenanceBaselineDiagnostics = {
@@ -248,6 +280,12 @@ export type ModelDaySourceQuality = {
     knownAcceptedSubtotalKm: number | null;
     historicalDonorEligible: boolean;
     invalidatedDates: string[];
+    calculationPolicyVersion?: string;
+    energyCoverage?: {
+      knownSubtotalKcal: number;
+      unknownEventCount: number;
+      fullCoverage: boolean;
+    } | null;
   };
 };
 

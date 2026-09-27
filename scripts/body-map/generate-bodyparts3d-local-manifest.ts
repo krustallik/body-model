@@ -63,6 +63,7 @@ type GenerationReport = {
 type VisualMapping = {
   version: string;
   mappings: Array<{ anatomyId: string; note?: string }>;
+  presentation?: { contract: string; version: string; defaultHiddenSourceObjectIds: string[]; note?: string };
   independentGeometry?: Array<{ anatomyId: string; geometryId: string; construction: string; reference?: string; leftMeshId: string; rightMeshId: string }>;
   unavailable: Array<{ anatomyId: string; reason: string }>;
   licenseReview: Record<string, unknown>;
@@ -153,6 +154,16 @@ const contextNodes = contextRows.map((source: SourceMesh) => {
     sourceObjectId: source.sourceObjectId,
   };
 });
+const hiddenContextSourceIds = new Set(mapping.presentation?.defaultHiddenSourceObjectIds ?? []);
+const defaultHiddenContextMeshIds = contextRows
+  .filter((source: SourceMesh) => hiddenContextSourceIds.has(source.sourceObjectId))
+  .map((source: SourceMesh) => source.meshId)
+  .sort();
+if (defaultHiddenContextMeshIds.length !== hiddenContextSourceIds.size) {
+  const resolved = new Set(contextRows.map((source: SourceMesh) => source.sourceObjectId));
+  const missing = [...hiddenContextSourceIds].filter((sourceObjectId) => !resolved.has(sourceObjectId));
+  throw new Error("Default-hidden context IDs must resolve to non-selectable source meshes: " + (missing.join(", ") || "duplicate source IDs"));
+}
 const glbIdentityCount = (gltf.nodes ?? []).filter((node) => Number.isInteger(node.mesh) && typeof node.extras?.bodycastMeshId === "string").length;
 if (regions.length !== report.selectableMeshCount || contextNodes.length !== report.contextMeshCount || glbIdentityCount !== regions.length + contextNodes.length) {
   throw new Error("Generation report, GLB identities, and BodyCast adapter counts differ.");
@@ -339,6 +350,13 @@ const output = {
     manifestVersion: "bodycast-bodyparts3d-visual-identity-v1.0.0",
     supportedRegions: regions.map(withoutBounds),
     contextNodes: contextNodes.map(withoutContextMetadata),
+    ...(mapping.presentation ? {
+      contextVisibility: {
+        contract: mapping.presentation.contract,
+        version: mapping.presentation.version,
+        defaultHiddenContextMeshIds,
+      },
+    } : {}),
     groupAssetIds,
   },
   demoData: {

@@ -27,6 +27,7 @@ import styles from "./body-map-prototype.module.css";
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
+const EMPTY_DEFAULT_HIDDEN_CONTEXT_MESH_IDS: string[] = [];
 
 type ManifestRegion = {
   visualRegionId: string;
@@ -110,7 +111,7 @@ type PrototypeManifest = {
   asset: { assetVersion: string; visualSelectionStatus: string; selectableRegionCount: number; totalRuntimeBytes: number; contextMeshCount: number };
   viewerAsset: { path: string; sha256: string; status: string; mayClaimMusclePicking: boolean; assetId: string; selectableMeshCount: number; contextMeshCount: number; triangleCount: number; byteLength: number };
   runtimeAssets: RuntimeAsset[];
-  visualIdentity: { manifestVersion: string; supportedRegions: ManifestRegion[]; contextNodes: Array<{ meshId: string; gltfNodeName: string; sourceObjectName: string; contextLayer: string; contextPresentation: "supplemental-muscle" | "support-only" | "skeletal-context" | "cranial-context" | "body-silhouette-context"; selectable: false }>; groupAssetIds: Record<string, string[]> };
+  visualIdentity: { manifestVersion: string; supportedRegions: ManifestRegion[]; contextNodes: Array<{ meshId: string; gltfNodeName: string; sourceObjectName: string; contextLayer: string; contextPresentation: "supplemental-muscle" | "support-only" | "skeletal-context" | "cranial-context" | "body-silhouette-context"; selectable: false }>; contextVisibility?: { contract: string; version: string; defaultHiddenContextMeshIds: string[] }; groupAssetIds: Record<string, string[]> };
   demoData: { label: string; groupExposureStates: ExposureState[]; groupUniqueSetCounts: Record<string, number | null>; note: string };
   status: string;
 };
@@ -738,6 +739,7 @@ function FullBodyScene({
   onAssetError: (message: string) => void;
 }) {
   const gltf = useGLTF(assetUrl, true, true);
+  const defaultHiddenContextMeshIds = manifest.visualIdentity.contextVisibility?.defaultHiddenContextMeshIds ?? EMPTY_DEFAULT_HIDDEN_CONTEXT_MESH_IDS;
   const camera = useThree(({ camera }) => camera);
   const gl = useThree(({ gl }) => gl);
   const invalidate = useThree(({ invalidate }) => invalidate);
@@ -776,6 +778,9 @@ function FullBodyScene({
       if (typeof meshId !== "string") return;
       const identity = identityNode.userData;
       const region = regionByMeshId.get(meshId);
+      const isDefaultHiddenContext = defaultHiddenContextMeshIds.includes(meshId);
+      object.visible = !isDefaultHiddenContext;
+      object.userData.bodycastDefaultHiddenContext = isDefaultHiddenContext;
       object.userData.bodycastMeshId = meshId;
       object.userData.bodycastSelectable = identity.bodycastSelectable === true;
       object.userData.bodycastRole = identity.bodycastRole;
@@ -793,7 +798,18 @@ function FullBodyScene({
           material.emissive.set(0x000000);
           material.emissiveIntensity = 0;
           material.roughness = Math.max(material.roughness, 0.6);
-          material.metalness = 0; if (isBodySilhouette) { material.transparent = true; material.opacity = Math.min(material.opacity, 0.14); material.depthWrite = false; material.roughness = 1; }
+          material.metalness = 0;
+          if (isBodySilhouette && material.userData.bodycastOpaqueFaceClosure === true) {
+            material.transparent = false;
+            material.opacity = 1;
+            material.depthWrite = true;
+            material.roughness = 1;
+          } else if (isBodySilhouette) {
+            material.transparent = true;
+            material.opacity = Math.min(material.opacity, 0.14);
+            material.depthWrite = false;
+            material.roughness = 1;
+          }
           material.userData.bodyMapTinted = true;
           if (region) {
             material.userData.bodyMapBaseColor = material.color.clone();
@@ -807,7 +823,7 @@ function FullBodyScene({
     });
     clone.userData.bodycastBvhInitializationMs = performance.now() - bvhStartedAt;
     return clone;
-  }, [gltf.scene, manifest.visualIdentity.supportedRegions]);
+  }, [defaultHiddenContextMeshIds, gltf.scene, manifest.visualIdentity.supportedRegions]);
   /* eslint-enable react-hooks/purity */
   const selectableMeshes = useMemo(() => {
     const meshes = new Map<string, THREE.Mesh[]>();
@@ -1121,10 +1137,10 @@ function FullBodyScene({
     model.traverse((object) => {
       if (!(object instanceof THREE.Mesh) || object.userData.bodyMapRegion) return;
       const presentation = object.userData.bodycastContextPresentation;
-      object.visible = presentation === "supplemental-muscle" || presentation === "body-silhouette-context"
+      object.visible = object.userData.bodycastDefaultHiddenContext !== true && (presentation === "supplemental-muscle" || presentation === "body-silhouette-context"
         || (presentation === "support-only" && showSurfaceSupport)
         || presentation === "cranial-context"
-        || (presentation === "skeletal-context" && showSkeletalContext);
+        || (presentation === "skeletal-context" && showSkeletalContext));
     });
     visibleMeshesRef.current = sceneMeshes.filter(isMusclePickTarget);
     invalidate();

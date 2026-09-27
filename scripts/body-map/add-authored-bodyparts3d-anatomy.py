@@ -11,6 +11,166 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda:f.read(1048576),b""): h.update(chunk)
     return h.hexdigest()
 
+def repair_head_surface(skin, config):
+    if not isinstance(config, dict) or config.get("contract") != "bodycast-neutral-head-surface-repair":
+        raise ValueError("The versioned neutral head-surface repair contract is missing")
+    if skin.get("bodyparts3dFileId") != config["skinEnvelopeSourceObjectId"]:
+        raise ValueError("Head repair may only modify the configured official skin-envelope object")
+
+    selection = config["eyeBoundarySelection"]
+    eye_closures = config["neutralEyeClosures"]
+    before = {
+        "vertexCount": len(skin.data.vertices),
+        "faceCount": len(skin.data.polygons),
+        "triangleCount": sum(max(0, len(poly.vertices) - 2) for poly in skin.data.polygons),
+    }
+    bm = bmesh.new()
+    bm.from_mesh(skin.data)
+    try:
+        boundary_edges = sorted(
+            (edge for edge in bm.edges if edge.is_boundary),
+            key=lambda edge: tuple(sorted(vertex.index for vertex in edge.verts)),
+        )
+        adjacency = {}
+        for edge in boundary_edges:
+            for vertex in edge.verts:
+                adjacency.setdefault(vertex, []).append(edge)
+
+        seen = set()
+        selected_components = []
+        for start in boundary_edges:
+            if start in seen:
+                continue
+            stack = [start]
+            seen.add(start)
+            component = []
+            vertices = set()
+            while stack:
+                edge = stack.pop()
+                component.append(edge)
+                vertices.update(edge.verts)
+                for vertex in edge.verts:
+                    for neighbor in adjacency.get(vertex, ()):
+                        if neighbor not in seen:
+                            seen.add(neighbor)
+                            stack.append(neighbor)
+            ordered_vertices = sorted(vertices, key=lambda vertex: vertex.index)
+            if not ordered_vertices:
+                continue
+            center = sum((vertex.co for vertex in ordered_vertices), Vector()) / len(ordered_vertices)
+            z_min, z_max = selection["centerSourceZRange"]
+            if (
+                len(ordered_vertices) >= selection["minimumVertexCount"]
+                and z_min <= center.z <= z_max
+                and center.y <= selection["maximumCenterSourceY"]
+                and abs(center.x) <= selection["maximumAbsoluteCenterSourceX"]
+            ):
+                selected_components.append((component, center))
+        if len(selected_components) != selection["expectedLoopCount"]:
+            raise ValueError(
+                "Expected "
+                + str(selection["expectedLoopCount"])
+                + " eye-region source boundary loops, found "
+                + str(len(selected_components))
+            )
+
+        head_material_name = "BodyCast neutral head surface closure"
+        if bpy.data.materials.get(head_material_name):
+            raise ValueError("Refusing to add a duplicate neutral head closure material")
+        head_material = bpy.data.materials.new(head_material_name)
+        head_color = (0.75, 0.70, 0.65, 1.0)
+        head_material.diffuse_color = head_color
+        head_material.use_nodes = True
+        principled = head_material.node_tree.nodes.get("Principled BSDF")
+        if principled:
+            principled.inputs["Base Color"].default_value = head_color
+            principled.inputs["Roughness"].default_value = 0.95
+            principled.inputs["Metallic"].default_value = 0.0
+        head_material["bodycastOpaqueFaceClosure"] = True
+        skin.data.materials.append(head_material)
+        head_material_index = len(skin.data.materials) - 1
+
+        eye_edges = sorted(
+            (edge for component, _center in selected_components for edge in component),
+            key=lambda edge: tuple(sorted(vertex.index for vertex in edge.verts)),
+        )
+        fill_result = bmesh.ops.holes_fill(bm, edges=eye_edges, sides=0)
+        filled_faces = fill_result.get("faces", [])
+        if not filled_faces:
+            raise ValueError("No selected eye-region source boundary could be closed")
+        for face in filled_faces:
+            face.material_index = head_material_index
+            face.smooth = True
+
+        opaque_min_z = config["opaqueSurfaceMinSourceZ"]
+        opaque_face_count = 0
+        for face in bm.faces:
+            if face.calc_center_median().z >= opaque_min_z:
+                face.material_index = head_material_index
+                opaque_face_count += 1
+
+        centers_x = eye_closures["centersSourceX"]
+        if len(centers_x) != 2:
+            raise ValueError("The neutral face contract must define exactly two eye-surface closures")
+        radii = eye_closures["radiiSourceMeters"]
+        if len(radii) != 3 or any(float(radius) <= 0 for radius in radii):
+            raise ValueError("The neutral eye-closure radii must be three positive meter values")
+        cap_face_count = 0
+        for center_x in centers_x:
+            old_faces = set(bm.faces)
+            created = bmesh.ops.create_uvsphere(
+                bm,
+                u_segments=eye_closures["longitudinalSegments"],
+                v_segments=eye_closures["latitudinalSegments"],
+                radius=1.0,
+            )
+            created_faces = [face for face in bm.faces if face not in old_faces]
+            for vertex in created["verts"]:
+                vertex.co = Vector((
+                    float(center_x) + vertex.co.x * float(radii[0]),
+                    float(eye_closures["centerSourceY"]) + vertex.co.y * float(radii[1]),
+                    float(eye_closures["centerSourceZ"]) + vertex.co.z * float(radii[2]),
+                ))
+            for face in created_faces:
+                face.material_index = head_material_index
+                face.smooth = True
+            cap_face_count += len(created_faces)
+
+        bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
+        bm.to_mesh(skin.data)
+    finally:
+        bm.free()
+    skin.data.update()
+    for polygon in skin.data.polygons:
+        polygon.use_smooth = True
+
+    after = {
+        "vertexCount": len(skin.data.vertices),
+        "faceCount": len(skin.data.polygons),
+        "triangleCount": sum(max(0, len(poly.vertices) - 2) for poly in skin.data.polygons),
+    }
+    skin["bodycastHeadSurfaceRepair"] = config["contract"] + "-v" + config["version"]
+    skin["bodycastHeadSurfaceRepairSelectedLoopCount"] = len(selected_components)
+    skin["bodycastHeadSurfaceRepairFilledFaceCount"] = len(filled_faces)
+    skin["bodycastHeadOpaqueSurfaceMinZ"] = float(opaque_min_z)
+    skin["bodycastNeutralEyeCapCount"] = len(centers_x)
+    metrics = {
+        "sourceObjectId": config["skinEnvelopeSourceObjectId"],
+        "selectedEyeBoundaryLoopCount": len(selected_components),
+        "filledEyeBoundaryFaceCount": len(filled_faces),
+        "opaqueHeadFaceCount": opaque_face_count,
+        "neutralEyeClosureCount": len(centers_x),
+        "neutralEyeClosureFaceCount": cap_face_count,
+        "opaqueSurfaceMinSourceZ": float(opaque_min_z),
+        "vertexDelta": after["vertexCount"] - before["vertexCount"],
+        "faceDelta": after["faceCount"] - before["faceCount"],
+        "triangleDelta": after["triangleCount"] - before["triangleCount"],
+        "skinMetrics": after,
+    }
+    if metrics["vertexDelta"] <= 0 or metrics["faceDelta"] <= 0 or metrics["triangleDelta"] <= 0:
+        raise ValueError("Head-surface repair did not add valid closure geometry")
+    return metrics
+
 def skin_y(tree,x,z,anterior):
     origin=Vector((x,-1.0 if anterior else 1.0,z))
     direction=Vector((0.0,1.0 if anterior else -1.0,0.0))
@@ -142,6 +302,13 @@ def main():
         generated.extend((latissimus(tree,side,sign,coll,surf),rectus(tree,side,sign,coll,surf),
             abdominal_sheet(tree,"internal_oblique",side,sign,coll,deep,False),
             abdominal_sheet(tree,"transversus_abdominis",side,sign,coll,deep,True)))
+    presentation = mapping.get("presentation", {})
+    head_repair = repair_head_surface(skin, presentation.get("headSurfaceRepair"))
+    skin_report = next((row for row in report["contextNodes"] if row.get("sourceObjectId") == head_repair["sourceObjectId"]), None)
+    if skin_report is None:
+        raise ValueError("The base generation report has no FJ2810 skin context record")
+    skin_report.update(head_repair["skinMetrics"])
+    skin_report["headSurfaceRepair"] = {key: value for key, value in head_repair.items() if key not in {"skinMetrics", "vertexDelta", "faceDelta", "triangleDelta"}}
     ids={x["meshId"] for x in report["selectableRegions"]}
     if ids & {x["meshId"] for x in generated}: raise ValueError("Generated mesh identity collision")
     report["selectableRegions"].extend(generated); report["selectableMeshCount"]=len(report["selectableRegions"])
@@ -151,7 +318,8 @@ def main():
       "source":"Independently authored Blender volumes guided by documented attachment/fascicle-direction anatomy; no copied source meshes.",
       "limitations":"Educational visual approximations, not surgical or patient-specific models; geometry needs anatomy review.",
       "anatomyIds":sorted(required)}
-    report["geometryProcessing"]="BodyParts3D 4.0 OBJ meshes retained; eight paired BodyCast-authored closed muscle volumes added. No Z-Anatomy, mirrored source mesh or decorative plane."
+    report["headSurfaceRepair"]={key: value for key, value in head_repair.items() if key != "skinMetrics"}
+    report["geometryProcessing"]="BodyParts3D 4.0 OBJ meshes retained; eight paired BodyCast-authored closed muscle volumes added; FJ2810 received the versioned neutral head-surface repair. No Z-Anatomy, mirrored source mesh or decorative plane."
     bpy.ops.wm.save_as_mainfile(filepath=str(blend),check_existing=False)
     bpy.ops.export_scene.gltf(filepath=str(glb),export_format="GLB",export_extras=True,
       export_meshopt_compression_enable=True,export_yup=True,export_apply=True,export_materials="EXPORT",
@@ -160,9 +328,9 @@ def main():
     report.update({"generatedAt":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"glbBytes":glb.stat().st_size,
       "glbSha256":sha256(glb),"blendBytes":blend.stat().st_size,"blendSha256":sha256(blend),
       "glbPath":str(glb),"blendPath":str(blend),
-      "triangleCount":report["triangleCount"]+sum(x["triangleCount"] for x in generated),
-      "faceCount":report["faceCount"]+sum(x["faceCount"] for x in generated),
-      "vertexCount":report["vertexCount"]+sum(x["vertexCount"] for x in generated)})
+      "triangleCount":report["triangleCount"]+sum(x["triangleCount"] for x in generated)+head_repair["triangleDelta"],
+      "faceCount":report["faceCount"]+sum(x["faceCount"] for x in generated)+head_repair["faceDelta"],
+      "vertexCount":report["vertexCount"]+sum(x["vertexCount"] for x in generated)+head_repair["vertexDelta"]})
     report_path.write_text(json.dumps(report,indent=2)+"\n",encoding="utf-8")
     scene=bpy.context.scene; scene.render.engine="BLENDER_EEVEE"; scene.render.resolution_x=1120
     scene.render.resolution_y=1560; scene.render.resolution_percentage=75; scene.render.image_settings.file_format="PNG"

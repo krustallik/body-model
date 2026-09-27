@@ -64,11 +64,52 @@ describe("BodyParts3D v3 static delivery", () => {
     expect(manifest).not.toHaveProperty("trainingExposure");
     expect(manifest).not.toHaveProperty("demoData");
   });
+
+  it("retains internal head context while excluding it from the default viewer presentation", async () => {
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    const mapping = JSON.parse(await readFile(resolve("3d-model/bodyparts3d-adapter-v2/visual-mapping-v3.json"), "utf8"));
+    const gltf = readGlbJson(await readFile(glbPath));
+    const hiddenMeshIds = manifest.visualIdentity.contextVisibility.defaultHiddenContextMeshIds as string[];
+    const sourceIds = mapping.presentation.defaultHiddenSourceObjectIds as string[];
+    const nodeBySourceId = new Map((gltf.nodes ?? []).map((node) => [node.extras?.bodyparts3dFileId, node] as const));
+    const selectableIds = new Set(manifest.visualIdentity.supportedRegions.map((region: { meshId: string }) => region.meshId));
+
+    expect(manifest.visualIdentity.contextVisibility).toMatchObject({ contract: mapping.presentation.contract, version: mapping.presentation.version });
+    expect(sourceIds).toHaveLength(38);
+    expect(new Set(sourceIds).size).toBe(sourceIds.length);
+    expect(hiddenMeshIds).toHaveLength(sourceIds.length);
+    expect(manifest.visualIdentity.contextNodes.map((node: { meshId: string }) => node.meshId)).toEqual(expect.arrayContaining(hiddenMeshIds));
+
+    const headRepair = mapping.presentation.headSurfaceRepair;
+    expect(headRepair).toMatchObject({
+      contract: "bodycast-neutral-head-surface-repair",
+      version: "1.1.0",
+      skinEnvelopeSourceObjectId: "FJ2810",
+      opaqueSurfaceMinSourceZ: 1.37,
+      eyeBoundarySelection: { expectedLoopCount: 15 },
+      neutralEyeClosures: { centersSourceX: [-0.032, 0.032] },
+    });
+    const skinNode = nodeBySourceId.get("FJ2810");
+    expect(skinNode?.extras?.bodycastSelectable).toBe(false);
+    expect(skinNode?.extras?.bodycastHeadSurfaceRepair).toBe("bodycast-neutral-head-surface-repair-v1.1.0");
+    expect(skinNode?.extras?.bodycastHeadSurfaceRepairSelectedLoopCount).toBe(15);
+    expect(skinNode?.extras?.bodycastHeadSurfaceRepairFilledFaceCount).toBeGreaterThan(0);
+    expect(skinNode?.extras?.bodycastNeutralEyeCapCount).toBe(2);
+    expect(gltf.materials?.find((material) => material.name === "BodyCast neutral head surface closure")?.extras)
+      .toMatchObject({ bodycastOpaqueFaceClosure: true });
+
+    for (const sourceId of sourceIds) {
+      const node = nodeBySourceId.get(sourceId) as TestNode | undefined;
+      expect(node?.extras?.bodycastSelectable).toBe(false);
+      expect(hiddenMeshIds).toContain(node?.extras?.bodycastMeshId);
+      expect(selectableIds.has(String(node?.extras?.bodycastMeshId))).toBe(false);
+    }
+  });
 });
 
-type TestNode = { name: string; extras?: { bodycastMeshId?: string; bodycastSelectable?: boolean; bodycastGeometryOrigin?: string; [key: string]: unknown } };
+type TestNode = { name: string; extras?: { bodycastMeshId?: string; bodycastSelectable?: boolean; bodycastGeometryOrigin?: string; bodyparts3dFileId?: string; [key: string]: unknown } };
 
-function readGlbJson(buffer: Buffer): { nodes?: TestNode[] } {
+function readGlbJson(buffer: Buffer): { nodes?: TestNode[]; materials?: Array<{ name?: string; extras?: Record<string, unknown> }> } {
   expect(buffer.readUInt32LE(0)).toBe(0x46546c67);
   expect(buffer.readUInt32LE(4)).toBe(2);
   expect(buffer.readUInt32LE(8)).toBe(buffer.byteLength);

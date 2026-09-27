@@ -42,6 +42,8 @@ The remainder of the selectable taxonomy is mapped to source objects by the vers
 
 The public static manifest carries the shared catalog/taxonomy/navigation/camera contracts, mesh identity manifest, source hashes and license disclosure; it omits demo exposure and user data. A deployment smoke check must still verify the public URL after a feature deployment or merge.
 
+The V3 generator also applies the versioned head presentation contract in visual-mapping-v3.json: it closes the 15 detected eye-region boundary loops on the official FJ2810 skin envelope, makes the existing head surface opaque above the configured source-space threshold, and adds two shallow smooth skin-toned eye-surface closures without eye or mouth detail. Internal source anatomy remains in the scene and GLB; the runtime manifest hides its designated context identities by default. This is presentation geometry and does not add or relabel anatomy taxonomy entries.
+
 ## Rebuild and verify
 
 The local generator writes into an ignored, versioned path and refuses to overwrite artifacts:

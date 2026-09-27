@@ -61,6 +61,13 @@ try {
   assert.equal(runtime.renderer.webgl2, true, "Three.js did not create a WebGL2 context");
   assert.ok(runtime.meshCounts.selectable > 0, "no selectable scene meshes were loaded");
   assert.ok(runtime.renderer.renderedFrames > 0, "the scene did not render a frame");
+  const manifestResponse = await page.request.get(new URL("/api/dev/body-map-prototype/manifest", baseUrl).toString());
+  assert.equal(manifestResponse.status(), 200, "local manifest route failed");
+  const manifest = await manifestResponse.json();
+  const hiddenHeadMeshIds = manifest.visualIdentity.contextVisibility?.defaultHiddenContextMeshIds ?? [];
+  assert.ok(hiddenHeadMeshIds.length > 0, "the manifest has no default-hidden internal head context");
+  const supplementalCount = manifest.visualIdentity.contextNodes.filter((node) => node.contextPresentation === "supplemental-muscle").length;
+  assert.equal(runtime.visiblePresentationCounts["supplemental-muscle"] ?? 0, supplementalCount - hiddenHeadMeshIds.length, "internal head context is visible in the default viewer presentation");
   await page.waitForTimeout(400);
   await page.getByTestId("view-front").click();
   await page.waitForTimeout(900);
@@ -83,9 +90,6 @@ try {
   await page.getByTestId("group-report").waitFor({ state: "visible", timeout: 15_000 });
   await page.screenshot({ path: resolve(screenshotDir, "selected-chest.png"), fullPage: true });
 
-  const manifestResponse = await page.request.get(new URL("/api/dev/body-map-prototype/manifest", baseUrl).toString());
-  assert.equal(manifestResponse.status(), 200, "local manifest route failed");
-  const manifest = await manifestResponse.json();
   const deepSubregion = manifest.bodyMapGroups
     .flatMap((group) => group.subregions.map((subregion) => ({ group, subregion })))
     .find(({ subregion }) => subregion.representedMeshIds.some((meshId) =>
@@ -171,6 +175,7 @@ try {
     runtime,
     mobileRenderer,
     exercisedGroupCount: exercisedGroups,
+    hiddenInternalHeadContextCount: hiddenHeadMeshIds.length,
     screenshots: ["overview-front.png", "overview-back.png", "hover-chest.png", "selected-chest.png", "deep-selection.png", "latissimus_dorsi.png", "rectus_abdominis.png", "internal_oblique.png", "transversus_abdominis.png", "mobile-overview.png"]
       .map((name) => resolve(screenshotDir, name)),
     consoleErrors,

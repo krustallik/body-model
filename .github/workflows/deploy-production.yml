@@ -121,6 +121,26 @@ jobs:
           console.log(JSON.stringify(result, null, 2));
           EOF
 
+      - name: Require green main CI for manual dispatch tip
+        if: github.event_name == 'workflow_dispatch' && steps.gate.outputs.decision == 'deploy'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE: ${{ steps.gate.outputs.candidate_sha }}
+        run: |
+          set -Eeuo pipefail
+          RUN_JSON="$(gh run list --repo "${{ github.repository }}" --branch main --commit "$CANDIDATE" --workflow "BodyCast CI/CD" --limit 20 --json databaseId,conclusion,event,status,url)"
+          MATCH="$(printf '%s' "$RUN_JSON" | node --input-type=module -e '
+            const runs = JSON.parse(await new Response(process.stdin).text());
+            const ok = runs.find((r) => r.event === "push" && r.status === "completed" && r.conclusion === "success");
+            if (!ok) {
+              console.error("No successful main-push BodyCast CI/CD run found for this SHA.");
+              process.exit(1);
+            }
+            console.log(ok.url);
+          ')"
+          echo "Verified green main CI: ${MATCH}"
+          echo "ci_run_url=${MATCH}" >> "$GITHUB_OUTPUT"
+
       - name: Summarize authorization
         if: always()
         env:

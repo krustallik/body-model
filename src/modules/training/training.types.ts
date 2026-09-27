@@ -103,6 +103,12 @@ export type StrengthSessionExerciseDto = {
   sets: StrengthSetDto[];
 };
 
+export type SelectedActiveEnergyDto = {
+  kcal: number | null;
+  source: string;
+  fullCoverage: boolean;
+};
+
 export type MatchedWorkoutDto = {
   id: number;
   type: string;
@@ -130,6 +136,8 @@ export type StrengthSessionDto = {
   matchedAt: string | null;
   matchedWorkoutId: number | null;
   matchedWorkout: MatchedWorkoutDto | null;
+  /** Canonical selected active energy. Device kcal stays on matchedWorkout. */
+  selectedActiveEnergy?: SelectedActiveEnergyDto;
   exercises: StrengthSessionExerciseDto[];
   ordinaryTonnageKg: number | null;
   autoAdvanceExercises?: boolean;

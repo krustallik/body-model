@@ -3,6 +3,7 @@ import { estimateDailyWorkWalking, type CumulativeSnapshot } from "@/model/work-
 import {
   canonicalizeWorkoutType,
   hasExplicitStrengthWorkouts,
+  resolveExplicitWorkoutActivityKcal,
   type ExplicitWorkoutActivityEvent,
 } from "@/model/activity/workout-energy";
 import {
@@ -13,7 +14,12 @@ import { canonicalizeWorkoutHeartRateEvidenceV7 } from "@/model/activity/workout
 import { canonicalizeWorkoutStepperEvidenceV7 } from "@/model/activity/workout-stepper-v7";
 import { enumerateCalendarDates } from "./model-calendar";
 import { bridgeNutritionGaps, type NutritionGapPolicy } from "./nutrition-gap-bridge";
-import { usesBodyCastStepperEnergy, usesWorkoutAwareActivity } from "./model-version";
+import { usesBodyCastStepperEnergy, usesSelectionV1, usesWorkoutAwareActivity } from "./model-version";
+import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
+import { selectCanonicalBodyMassV1, occupationalEnergyDurationHours } from "@/model/activity/canonical-activity-policy-v1";
+import { allocateDistanceLedgerV1, dayBoundsAroundV1 } from "@/model/activity/distance-ledger-v1";
+import { adaptManualStepperEnergyV1 } from "@/modules/training/manual-stepper-fields-v1";
+import { TRADITIONAL_STRENGTH_TRAINING_TYPE } from "@/modules/health/expand-training-workouts";
 import type {
   BuiltSimulationDay,
   HistoricalModelSources,
@@ -91,6 +97,13 @@ function toWorkoutEvents(input: {
         endAt: workout.endAt.toISOString(),
         durationMinutes: workout.durationMinutes,
         activeEnergyKcal: workout.activeEnergyKcal,
+        manualActiveKcal: workout.manualActiveEnergyKcal ?? null,
+        manualActiveKcalPresent: workout.manualActiveEnergyKcal !== undefined
+          && workout.manualActiveEnergyKcal !== null,
+        bodyCastEstimateKcal: workout.bodyCastEstimateKcal ?? null,
+        bodyCastEstimateFresh: workout.bodyCastEstimateFresh === true,
+        strengthSessionCompleted: workout.strengthSessionCompleted === true,
+        mechanicalStepperKcal: workout.mechanicalStepperKcal ?? null,
       };
       if (input.includeStepperEnergyEvidence
           && canonical.classification === "stair-climbing" && canonical.canonicalType !== null) {
@@ -147,6 +160,15 @@ function toWorkoutEvents(input: {
     });
 }
 
+/** Selection v1 drops donors whose distance, energy coverage, mass, or invalidation is incomplete. */
+export function eligibleHistoricalDonors(
+  modelVersion: string | undefined,
+  days: readonly BuiltSimulationDay[],
+): BuiltSimulationDay[] {
+  if (!usesSelectionV1(modelVersion)) return [...days];
+  return days.filter((day) => day.sourceQuality.selectionV1?.historicalDonorEligible === true);
+}
+
 /** Builds consecutive local model days without substituting missing data with zero. */
 export function buildSimulationDays(input: {
   from: string;
@@ -156,8 +178,11 @@ export function buildSimulationDays(input: {
   baselineNutritionFallback?: NutritionVector | null;
   /** Episode physiology version; defaults to legacy v5 walking/strength path. */
   modelVersion?: string;
+  /** Staged selection v1 only. Same-day scale weight still wins when present. */
+  unifiedStartOfDayMassKgByDate?: Readonly<Record<string, number | null>>;
 }): BuiltSimulationDay[] {
   const workoutAware = usesWorkoutAwareActivity(input.modelVersion ?? "bodycast-physiology-v5");
+  const selectionV1 = usesSelectionV1(input.modelVersion);
   const days = new Map(input.sources.days.map((day) => [day.date, day]));
   const snapshots = groupByDate(input.sources.snapshots);
   const activityIntervals = groupByDate(input.sources.activityIntervals ?? []);
@@ -323,11 +348,124 @@ export function buildSimulationDays(input: {
         })),
       });
       stairDiagnostics = stairOverlap.diagnostics;
-      if (outsideWorkWalkingDistanceKm !== null) {
+      if (!selectionV1 && outsideWorkWalkingDistanceKm !== null) {
         outsideWorkWalkingDistanceKm = Math.max(
           0,
           outsideWorkWalkingDistanceKm - stairOverlap.overlapDistanceKm,
         );
+      }
+    }
+
+    let selectionLedger: ReturnType<typeof allocateDistanceLedgerV1> | null = null;
+    let selectionUsable = false;
+    const canonicalMass = selectionV1
+      ? selectCanonicalBodyMassV1({
+        sameDayObservedKg: day.weightKg,
+        unifiedStartOfDayKg: input.unifiedStartOfDayMassKgByDate?.[date] ?? null,
+      })
+      : { massKg: day.weightKg, source: "same-day-observed" as const };
+    if (selectionV1 && workoutEvents !== undefined) {
+      workoutEvents = workoutEvents.map((event) => {
+        const source = allWorkouts.find((workout) => workout.id === event.workoutId);
+        if (source?.manualStepCount === undefined && source?.manualActiveEnergyKcal === undefined) return event;
+        const adapted = adaptManualStepperEnergyV1({
+          manualStepCount: source?.manualStepCount ?? null,
+          manualActiveEnergyKcal: source?.manualActiveEnergyKcal ?? null,
+          bodyMassKg: canonicalMass.massKg,
+        });
+        return {
+          ...event,
+          manualActiveKcalPresent: adapted.manualKcalPresent,
+          manualActiveKcal: adapted.manualKcal,
+          mechanicalStepperKcal: adapted.mechanicalKcal ?? event.mechanicalStepperKcal ?? null,
+        };
+      });
+      const suppressedWorkoutIds = new Set<number>();
+      for (const link of input.sources.reconciliationLinks ?? []) {
+        if (link.suppressGarminEnergy) suppressedWorkoutIds.add(link.garminWorkoutId);
+        if (link.suppressManualEnergy) suppressedWorkoutIds.add(link.manualWorkoutId);
+      }
+      const webEvents: ExplicitWorkoutActivityEvent[] = (input.sources.webOnlyStrengthSessions ?? [])
+        .filter((session) => session.date === date)
+        .map((session) => {
+          const canonical = canonicalizeWorkoutType(TRADITIONAL_STRENGTH_TRAINING_TYPE);
+          const durationMinutes = Math.max(0, (session.endAt.getTime() - session.startAt.getTime()) / 60_000);
+          return {
+            type: TRADITIONAL_STRENGTH_TRAINING_TYPE,
+            canonicalType: canonical.canonicalType,
+            classification: canonical.classification,
+            startAt: session.startAt.toISOString(),
+            endAt: session.endAt.toISOString(),
+            durationMinutes,
+            activeEnergyKcal: null,
+            bodyCastEstimateKcal: session.bodyCastEstimateKcal,
+            bodyCastEstimateFresh: session.bodyCastEstimateFresh === true,
+            strengthSessionCompleted: session.status === "COMPLETED",
+          };
+        });
+      workoutEvents = [
+        ...workoutEvents.filter((event) => event.workoutId === undefined || !suppressedWorkoutIds.has(event.workoutId)),
+        ...webEvents,
+      ];
+    }
+    if (selectionV1) {
+      const bounds = dayBoundsAroundV1(date, DEFAULT_TIME_ZONE);
+      const dayBound = bounds.find((bound) => bound.date === date)!;
+      const distanceIntervals = (input.sources.activityIntervals ?? [])
+        .filter((sample) => sample.metric === "walking-distance-km"
+          && sample.startAt.getTime() < dayBound.endMs
+          && sample.endAt.getTime() > dayBound.startMs)
+        .map((sample) => ({
+          id: String(sample.id),
+          startMs: sample.startAt.getTime(),
+          endMs: sample.endAt.getTime(),
+          distanceKm: sample.value,
+        }));
+      if (distanceIntervals.length > 0) {
+        const stepSamples = (input.sources.activityIntervals ?? [])
+          .filter((sample) => sample.metric === "steps")
+          .map((sample) => ({
+            id: String(sample.id),
+            startMs: sample.startAt.getTime(),
+            endMs: sample.endAt.getTime(),
+            steps: sample.value,
+            source: "apple" as const,
+          }));
+        const workWindows = input.sources.workIntervals
+          .filter((interval) => interval.startAt.getTime() < dayBound.endMs
+            && interval.endAt.getTime() > dayBound.startMs)
+          .map((interval) => ({
+            id: String(interval.id),
+            startMs: interval.startAt.getTime(),
+            endMs: interval.endAt.getTime(),
+          }));
+        const stepperWindows = (workoutEvents ?? []).filter((event) => event.classification === "stair-climbing")
+          .map((event) => ({
+            id: String(event.workoutId ?? event.startAt),
+            startMs: Date.parse(event.startAt),
+            endMs: Date.parse(event.endAt),
+          }));
+        selectionLedger = allocateDistanceLedgerV1({
+          intervals: distanceIntervals,
+          stepSamples,
+          workWindows,
+          stepperWindows,
+          dayBounds: bounds,
+        });
+        const selectionDay = selectionLedger.days.find((item) => item.date === date);
+        const dailyTotal = day.walkingDistanceKm;
+        const mismatch = dailyTotal !== null
+          && selectionDay !== undefined
+          && Math.abs(dailyTotal - selectionDay.knownAcceptedSubtotalKm) > 0.001;
+        selectionUsable = selectionLedger.complete
+          && selectionDay?.complete === true
+          && selectionDay?.invalidated !== true
+          && !mismatch;
+        if (selectionUsable && selectionDay) {
+          outsideWorkWalkingDistanceKm = selectionDay.cells.outsideWithoutStepperKm;
+        } else {
+          outsideWorkWalkingDistanceKm = null;
+        }
       }
     }
 
@@ -384,7 +522,10 @@ export function buildSimulationDays(input: {
       status: qualityStatus({ nutritionIssues, activityIssues, workIssues }),
       issues,
       workIntervalCount: dailyIntervals.length,
-      workWalkingDistanceKm: walking.workWalkingDistanceKm,
+      workWalkingDistanceKm: selectionUsable && selectionLedger
+        ? (selectionLedger.days.find((item) => item.date === date)?.cells.workWithoutStepperKm ?? 0)
+          + (selectionLedger.days.find((item) => item.date === date)?.cells.workWithStepperKm ?? 0)
+        : walking.workWalkingDistanceKm,
       outsideWorkWalkingDistanceKm,
       sourceObservationFields,
       workWalkingReconstruction: walking.intervals.map((interval) => ({
@@ -416,18 +557,57 @@ export function buildSimulationDays(input: {
         workoutCount: dailyWorkouts.length,
         workoutFeedObserved,
       } : {}),
+      ...(selectionV1 ? {
+        selectionV1: {
+          calculationPolicyVersion: "bodycast-active-energy-selection-v1",
+          massSource: canonicalMass.source,
+          distanceComplete: selectionUsable,
+          distanceConflicted: (selectionLedger?.conflictedIntervalIds.length ?? 0) > 0,
+          partialCoverage: selectionLedger?.complete === false,
+          knownAcceptedSubtotalKm: selectionLedger?.knownAcceptedSubtotalKm ?? null,
+          historicalDonorEligible: false,
+          invalidatedDates: selectionLedger?.invalidatedDates ?? [],
+          energyCoverage: null,
+        },
+      } : {}),
     };
-    const occupationalIntervals = dailyIntervals.map((interval) => ({
-      category: isOccupationalCategory(interval.category)
-        ? interval.category as OccupationalCategory
-        : null,
-      durationHours: (interval.endAt.getTime() - interval.startAt.getTime()) / 3_600_000,
-      breakDurationHours: interval.breakMinutes === null ? null : interval.breakMinutes / 60,
-      workWalkingDistanceKm: walking.intervals.find(({ intervalId }) => (
-        intervalId === interval.id
-      ))?.estimatedWalkingDistanceKm.value ?? null,
-      averageWalkingSpeedKmh: effectiveWalkingSpeedKmh,
-    }));
+    if (selectionV1 && sourceQuality.selectionV1) {
+      const energyPreview = resolveExplicitWorkoutActivityKcal({
+        weightKg: canonicalMass.massKg ?? 0,
+        rmrKcalPerDay: 1,
+        selectionPolicy: "bodycast-active-energy-selection-v1",
+        events: workoutEvents ?? [],
+      }).energyCoverage ?? { knownSubtotalKcal: 0, unknownEventCount: 0, fullCoverage: (workoutEvents ?? []).length === 0 };
+      const dayInvalidated = selectionLedger?.days.find((item) => item.date === date)?.invalidated === true
+        || (selectionLedger?.invalidatedDates.includes(date) ?? false);
+      sourceQuality.selectionV1 = {
+        ...sourceQuality.selectionV1,
+        energyCoverage: energyPreview,
+        historicalDonorEligible: selectionUsable
+          && canonicalMass.source !== "unavailable"
+          && !dayInvalidated
+          && energyPreview.fullCoverage,
+      };
+    }
+    const occupationalIntervals = dailyIntervals.map((interval) => {
+      const rawHours = (interval.endAt.getTime() - interval.startAt.getTime()) / 3_600_000;
+      const stepperOverlapHours = selectionLedger?.workWindowStepperOverlapHours[String(interval.id)] ?? 0;
+      return {
+        category: isOccupationalCategory(interval.category)
+          ? interval.category as OccupationalCategory
+          : null,
+        durationHours: selectionUsable
+          ? occupationalEnergyDurationHours({ workDurationHours: rawHours, stepperOverlapHours })
+          : rawHours,
+        breakDurationHours: interval.breakMinutes === null ? null : interval.breakMinutes / 60,
+        workWalkingDistanceKm: selectionUsable
+          ? selectionLedger?.workWindowWithoutStepperKm[String(interval.id)] ?? 0
+          : walking.intervals.find(({ intervalId }) => (
+            intervalId === interval.id
+          ))?.estimatedWalkingDistanceKm.value ?? null,
+        averageWalkingSpeedKmh: effectiveWalkingSpeedKmh,
+      };
+    });
 
     const strengthTrainingMinutes = strengthSuppressed
       ? 0
@@ -445,14 +625,21 @@ export function buildSimulationDays(input: {
         outsideWorkWalkingDistanceKm,
         averageWalkingSpeedKmh: effectiveWalkingSpeedKmh,
         strengthTrainingMinutes,
-        ...(workoutAware ? { workoutActivity: { events: workoutEvents ?? [] } } : {}),
+        ...(workoutAware ? {
+          workoutActivity: {
+            events: workoutEvents ?? [],
+            ...(selectionV1
+              ? { selectionPolicy: "bodycast-active-energy-selection-v1" as const }
+              : {}),
+          },
+        } : {}),
         occupationalActivity: {
           category: null,
           durationHours: sourceDay || dailyIntervals.length > 0 ? 0 : null,
           intervals: sourceDay || dailyIntervals.length > 0 ? occupationalIntervals : undefined,
         },
         sodiumChangeMgPerDay: null,
-        measuredWeightKg: day.weightKg,
+        measuredWeightKg: selectionV1 ? canonicalMass.massKg : day.weightKg,
       },
       sourceQuality,
     };

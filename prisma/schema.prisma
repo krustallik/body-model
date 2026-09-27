@@ -251,13 +251,25 @@ model Workout {
     syncProtected       Boolean               @default(false)
     /** Soft deletion keeps a sync tombstone while hiding the row from users. */
     hiddenFromHistory   Boolean               @default(false)
+    /** Declared MS100 steps. Absent is distinct from zero. Not a Garmin observation. */
+    manualStepCount     Int?
+    /** Declared MS100 active kcal. Absent is distinct from zero. */
+    manualActiveEnergyKcal Float?
+    supersededByWorkoutId Int?
+    supersededAt        DateTime?             @db.Timestamptz(3)
+    supersessionReason  String?               @db.VarChar(80)
   createdAt           DateTime              @default(now())
   updatedAt           DateTime              @updatedAt
   /**
    * Restrict: accidental DailyHealthData delete must not silently wipe workout history.
    */
   dailyHealthData     DailyHealthData       @relation(fields: [dailyHealthDataId], references: [id], onDelete: Restrict)
+  supersededByWorkout Workout?              @relation("WorkoutSupersession", fields: [supersededByWorkoutId], references: [id], onDelete: SetNull)
+  supersedingWorkouts Workout[]             @relation("WorkoutSupersession")
   matchedDiarySession StrengthDiarySession?
+  reconciliationAsManual StepperReconciliationCandidate[] @relation("ReconciliationManual")
+  reconciliationAsGarmin StepperReconciliationCandidate[] @relation("ReconciliationGarmin")
+  provisionalForGroups StepperReconciliationGroup[] @relation("ReconciliationProvisional")
   experimentalStepperActiveEnergyShadow ExperimentalStepperActiveEnergyShadow?
   experimentalStepperGlycogenDemandShadow ExperimentalStepperGlycogenDemandShadow?
 
@@ -994,4 +1006,56 @@ model UnifiedExperimentalPhysiologyState {
   @@index([profileId, modelRevision, updatedAt])
   @@index([profileId, qualityStatus, date])
   @@index([profileId, resultFingerprint])
+}
+
+/// Staged Garmin/manual stepper reconciliation. Does not hide Workout rows by itself.
+model StepperReconciliationGroup {
+  id                   Int      @id @default(autoincrement())
+  profileId            Int      @default(1)
+  status               String   @db.VarChar(20)
+  evaluationRevision   Int      @default(0)
+  provisionalWorkoutId Int?
+  policyVersion        String   @db.VarChar(80)
+  localDate            String   @db.VarChar(10)
+  sourceRevision       String?  @db.VarChar(80)
+  createdAt            DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt            DateTime @updatedAt @db.Timestamptz(3)
+  candidates           StepperReconciliationCandidate[]
+  provisionalWorkout   Workout? @relation("ReconciliationProvisional", fields: [provisionalWorkoutId], references: [id], onDelete: SetNull)
+
+  @@index([profileId, status])
+  @@index([profileId, localDate])
+}
+
+model StepperReconciliationCandidate {
+  id                 Int                        @id @default(autoincrement())
+  groupId            Int
+  manualWorkoutId    Int
+  garminWorkoutId    Int
+  candidateStatus    String                     @db.VarChar(40)
+  manualCoverage     Float
+  garminCoverage     Float
+  stepEvidenceStatus String                     @db.VarChar(40)
+  group              StepperReconciliationGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  manualWorkout      Workout                    @relation("ReconciliationManual", fields: [manualWorkoutId], references: [id], onDelete: Restrict)
+  garminWorkout      Workout                    @relation("ReconciliationGarmin", fields: [garminWorkoutId], references: [id], onDelete: Restrict)
+
+  @@unique([manualWorkoutId, garminWorkoutId])
+  @@index([groupId])
+  @@index([garminWorkoutId])
+}
+
+/// Exact previous values changed by an activation. Rollback restores these, not a blanket false.
+model ActivationRollbackEntry {
+  id             Int      @id @default(autoincrement())
+  generationId   String   @db.VarChar(80)
+  recordKind     String   @db.VarChar(40)
+  recordId       Int
+  field          String   @db.VarChar(80)
+  previousValue  Json
+  newValue       Json
+  sourceRevision String?  @db.VarChar(80)
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([generationId])
 }

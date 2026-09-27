@@ -1,0 +1,52 @@
+name: BodyCast production deploy
+
+# Manual production deployment only.
+# Never runs on pull_request. Does not use pull_request_target.
+# Requires an operator to dispatch this workflow on main after CI is green.
+# Repository environment "production" may add required reviewers in GitHub settings;
+# that gate is not assumed configured here.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_production_deploy:
+        description: Type deploy to confirm production migrate + app recreate
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to production
+    if: >-
+      github.ref == 'refs/heads/main'
+      && github.event.inputs.confirm_production_deploy == 'deploy'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    concurrency:
+      group: bodycast-production
+      cancel-in-progress: false
+
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
+        env:
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          APP_HOST: ${{ secrets.APP_HOST }}
+          CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          command_timeout: 25m
+          envs: DEPLOY_PATH,APP_HOST,CADDY_ROUTES_PATH
+          script: |
+            set -Eeuo pipefail
+            cd "$DEPLOY_PATH"
+            git fetch origin main
+            git checkout main
+            git pull --ff-only origin main
+            APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" bash scripts/deploy.sh

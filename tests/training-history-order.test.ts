@@ -15,6 +15,17 @@ describe("training exercise history ordering", () => {
         },
         sets: [],
       },
+      {
+        resistanceType: "EXTERNAL_WEIGHT",
+        sessionId: 10,
+        session: {
+          webStartedAt: new Date("2026-09-20T10:00:00.000Z"),
+          createdAt: new Date("2026-09-20T10:00:00.000Z"),
+          program: { name: "Older" },
+          matchedWorkout: { startAt: new Date("2026-09-22T08:00:00.000Z") },
+        },
+        sets: [],
+      },
     ]);
     const repository = new TrainingRepository({ strengthSessionExercise: { findMany } } as never);
 
@@ -24,13 +35,12 @@ describe("training exercise history ordering", () => {
       snapshotExerciseName: "Press",
     });
 
-    expect(entries[0]?.occurredAt).toBe("2026-09-21T10:00:00.000Z");
+    // Occurrence order is applied in memory so nullable matchedWorkout.startAt
+    // cannot steal the SQL top-N window via NULLS FIRST.
     expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
-      orderBy: [
-        { session: { matchedWorkout: { startAt: "desc" } } },
-        { session: { webStartedAt: "desc" } },
-        { session: { createdAt: "desc" } },
-      ],
+      orderBy: [{ sessionId: "desc" }, { id: "desc" }],
     }));
+    expect(entries.map((entry) => entry.sessionId)).toEqual([10, 20]);
+    expect(entries[0]?.occurredAt).toBe("2026-09-22T08:00:00.000Z");
   });
 });

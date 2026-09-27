@@ -11,7 +11,7 @@ export type DayWorkoutPresentation = {
   endAt: string | null;
   durationMinutes: number | null;
   activeEnergyKcal: number | null;
-  energySource: "device-estimate" | "shadow-diary-estimate" | "unavailable";
+  energySource: import("./training-day-fact").TrainingDayEnergySource;
   diaryOnly: boolean;
   linkedTrainingSessionId: number | null;
   linkedTrainingProgramName: string | null;
@@ -33,7 +33,7 @@ export type RawWorkoutRow = {
   endAt: Date | string | null;
   durationMinutes: number | null;
   activeEnergyKcal: number | null;
-  energySource?: "device-estimate" | "shadow-diary-estimate" | "unavailable";
+  energySource?: import("./training-day-fact").TrainingDayEnergySource;
   diaryOnly?: boolean;
   matchedDiarySession?: {
     id: number;

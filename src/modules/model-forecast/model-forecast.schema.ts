@@ -34,7 +34,7 @@ const workoutEvent = z.object({
   programVersionNumber: z.number().int().positive().nullable().optional(),
   plannedSets: z.number().int().nonnegative().max(10_000).nullable().optional(),
   energyProvenance: z.enum([
-    "device-estimate", "strength-met-fallback", "unspecified",
+    "device-estimate", "strength-met-fallback", "forecast-scenario-strength-met", "unspecified",
   ]).nullable().optional(),
 }).strict();
 

@@ -25,7 +25,7 @@ export type DayWorkoutDto = {
   durationMinutes: number | null;
   activeEnergyKcal: number | null;
   /** Where the active-energy value came from; diary shadow stays separate from device sync. */
-  energySource?: "device-estimate" | "shadow-diary-estimate" | "unavailable";
+  energySource?: import("./training-day-fact").TrainingDayEnergySource;
   /** True for a diary-only event synthesized for History, not a persisted device Workout. */
   diaryOnly?: boolean;
   /** Present when this Garmin/device workout is MATCHED to a strength diary session. */

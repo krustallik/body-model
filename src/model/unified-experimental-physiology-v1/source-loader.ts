@@ -19,6 +19,11 @@ export type UnifiedDurableWorkoutV1 = {
   endAt: string;
   durationMinutes: number | null;
   activeEnergyKcal: number | null;
+  manualActiveEnergyKcal?: number | null;
+  matchedDiarySession?: {
+    status: string;
+    experimentalStrengthEnergyShadow: { result: unknown } | null;
+  } | null;
   updatedAt: string;
   sourceIdentity: string;
 };
@@ -67,6 +72,7 @@ export type UnifiedDurableDayEvidenceV1 = {
     tefKcalPerDay: number | null;
     activityKcalPerDay: number | null;
     adaptiveThermogenesisKcalPerDay: number | null;
+    sourceQuality: unknown;
   } | null;
   childOutputs: {
     slowTissue: { id: number; updatedAt: string; sourceFingerprint: string; result: unknown } | null;
@@ -129,7 +135,14 @@ export class UnifiedExperimentalPhysiologySourceLoaderV1 {
       this.client.workout.findMany({
         where: { hiddenFromHistory: false, dailyHealthData: { date: { gte: input.fromDate, lte: input.toDate } } },
         orderBy: [{ dailyHealthData: { date: "asc" } }, { startAt: "asc" }, { id: "asc" }],
-        select: { id: true, type: true, startAt: true, endAt: true, durationMinutes: true, activeEnergyKcal: true, updatedAt: true, sourceIdentity: true, dailyHealthData: { select: { date: true } } },
+        select: {
+          id: true, type: true, startAt: true, endAt: true, durationMinutes: true,
+          activeEnergyKcal: true, manualActiveEnergyKcal: true, updatedAt: true, sourceIdentity: true,
+          dailyHealthData: { select: { date: true } },
+          matchedDiarySession: {
+            select: { status: true, experimentalStrengthEnergyShadow: { select: { result: true } } },
+          },
+        },
       }),
       this.client.strengthDiarySession.findMany({
         where: { profileId, status: { not: "CANCELLED" }, OR: [
@@ -144,7 +157,7 @@ export class UnifiedExperimentalPhysiologySourceLoaderV1 {
       this.client.heartRateSample.findMany({ where: { profileId, date: { gte: input.fromDate, lte: input.toDate } }, select: { date: true } }),
       this.client.restingHeartRateSample.findMany({ where: { profileId, date: { gte: input.fromDate, lte: input.toDate } }, select: { date: true } }),
       this.client.sleepSegment.findMany({ where: { profileId }, select: { endAt: true } }),
-      this.client.dailyModelState.findMany({ where: { date: { gte: input.fromDate, lte: input.toDate }, episode: { profileId } }, orderBy: [{ date: "asc" }, { id: "asc" }], select: { id: true, date: true, updatedAt: true, modelVersion: true, energyExpenditureKcal: true, energyBalanceKcal: true, dynamicRmrKcalPerDay: true, tefKcalPerDay: true, activityKcalPerDay: true, adaptiveThermogenesisKcalPerDay: true } }),
+      this.client.dailyModelState.findMany({ where: { date: { gte: input.fromDate, lte: input.toDate }, episode: { profileId } }, orderBy: [{ date: "asc" }, { id: "asc" }], select: { id: true, date: true, updatedAt: true, modelVersion: true, energyExpenditureKcal: true, energyBalanceKcal: true, dynamicRmrKcalPerDay: true, tefKcalPerDay: true, activityKcalPerDay: true, adaptiveThermogenesisKcalPerDay: true, sourceQuality: true } }),
       optional("fatWeightShadowV1Result", () => this.client.fatWeightShadowV1Result.findMany({ where: { profileId, date: { gte: input.fromDate, lte: input.toDate } }, orderBy: [{ date: "asc" }, { id: "asc" }], select: { id: true, date: true, updatedAt: true, sourceFingerprint: true, result: true } })),
       optional("experimentalGlycogenStateShadow", () => this.client.experimentalGlycogenStateShadow.findMany({ where: { profileId, date: { gte: input.fromDate, lte: input.toDate } }, orderBy: [{ date: "asc" }, { id: "asc" }], select: { id: true, date: true, updatedAt: true, sourceFingerprint: true, result: true } })),
       optional("experimentalGlycogenAssociatedWaterShadow", () => this.client.experimentalGlycogenAssociatedWaterShadow.findMany({ where: { profileId, date: { gte: input.fromDate, lte: input.toDate } }, orderBy: [{ date: "asc" }, { id: "asc" }], select: { id: true, date: true, updatedAt: true, sourceFingerprint: true, result: true } })),
@@ -189,11 +202,17 @@ export class UnifiedExperimentalPhysiologySourceLoaderV1 {
             proteinG: daily.proteinG, fatG: daily.fatG, carbsG: daily.carbsG, steps: daily.steps,
             walkingDistanceKm: decimal(daily.walkingDistanceKm), workoutFeedObserved: daily.workoutFeedObserved,
           } : null,
-          workouts: dayWorkouts.map((row) => ({ id: row.id, date, type: row.type, startAt: row.startAt.toISOString(), endAt: row.endAt.toISOString(), durationMinutes: row.durationMinutes, activeEnergyKcal: row.activeEnergyKcal, updatedAt: row.updatedAt.toISOString(), sourceIdentity: row.sourceIdentity })),
+          workouts: dayWorkouts.map((row) => ({
+            id: row.id, date, type: row.type, startAt: row.startAt.toISOString(), endAt: row.endAt.toISOString(),
+            durationMinutes: row.durationMinutes, activeEnergyKcal: row.activeEnergyKcal,
+            manualActiveEnergyKcal: row.manualActiveEnergyKcal,
+            matchedDiarySession: row.matchedDiarySession,
+            updatedAt: row.updatedAt.toISOString(), sourceIdentity: row.sourceIdentity,
+          })),
           diarySessions: (diaryByDate.get(date) ?? []).map((row) => ({ id: row.id, date, status: row.status, entryMode: row.entryMode, revision: row.revision, webStartedAt: row.webStartedAt?.toISOString() ?? null, webEndedAt: row.webEndedAt?.toISOString() ?? null, matchedWorkoutId: row.matchedWorkoutId, updatedAt: row.updatedAt.toISOString() })),
           activity: { stepIntervals: activityRows.filter((row) => row.date === date).map((row) => ({ id: row.id, startAt: row.startAt.toISOString(), endAt: row.endAt.toISOString(), value: row.value.toNumber() })), snapshotIds: snapshots.filter((row) => row.date === date).map((row) => row.id) },
           context: { heartRateSampleCount: hr.filter((row) => row.date === date).length, restingHeartRateSampleCount: restingHr.filter((row) => row.date === date).length, sleepSegmentCount: sleep.filter((row) => row.endAt.toISOString().slice(0, 10) === date).length },
-          productionDailyState: productionRow ? { id: productionRow.id, updatedAt: productionRow.updatedAt.toISOString(), modelVersion: productionRow.modelVersion, energyExpenditureKcal: productionRow.energyExpenditureKcal, energyBalanceKcal: productionRow.energyBalanceKcal, dynamicRmrKcalPerDay: productionRow.dynamicRmrKcalPerDay, tefKcalPerDay: productionRow.tefKcalPerDay, activityKcalPerDay: productionRow.activityKcalPerDay, adaptiveThermogenesisKcalPerDay: productionRow.adaptiveThermogenesisKcalPerDay } : null,
+          productionDailyState: productionRow ? { id: productionRow.id, updatedAt: productionRow.updatedAt.toISOString(), modelVersion: productionRow.modelVersion, energyExpenditureKcal: productionRow.energyExpenditureKcal, energyBalanceKcal: productionRow.energyBalanceKcal, dynamicRmrKcalPerDay: productionRow.dynamicRmrKcalPerDay, tefKcalPerDay: productionRow.tefKcalPerDay, activityKcalPerDay: productionRow.activityKcalPerDay, adaptiveThermogenesisKcalPerDay: productionRow.adaptiveThermogenesisKcalPerDay, sourceQuality: productionRow.sourceQuality } : null,
           childOutputs: {
             slowTissue: (() => { const row = slowTissueByDate.get(date); return row ? { id: row.id, updatedAt: row.updatedAt.toISOString(), sourceFingerprint: row.sourceFingerprint, result: row.result } : null; })(),
             glycogen: (() => { const row = glycogenByDate.get(date); return row ? { id: row.id, updatedAt: row.updatedAt.toISOString(), sourceFingerprint: row.sourceFingerprint, result: row.result } : null; })(),

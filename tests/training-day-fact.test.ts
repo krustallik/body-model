@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { emptyTrainingDayFact, resolveTrainingDayFacts, type DiaryFactSource, type WorkoutFactSource } from "@/modules/days/training-day-fact";
+import {
+  strengthInputFingerprintV1,
+  strengthSetFingerprintV1,
+} from "@/modules/training/strength-publication-v1";
 
 const workout = (overrides: Partial<WorkoutFactSource> = {}): WorkoutFactSource => ({
   id: 1,
@@ -82,7 +86,7 @@ describe("TrainingDayFact resolver", () => {
     expect(facts[0]?.events.map(({ exerciseDetailAvailability }) => exerciseDetailAvailability))
       .toEqual(["no-logged-sets", "no-logged-sets"]);
     expect(facts[0]?.events.map(({ executionStatus }) => executionStatus))
-      .toEqual(["in-progress", "completed"]);
+      .toEqual(["completed", "in-progress"]);
   });
 
   it("counts cancelled sessions only when a recorded set remains", () => {
@@ -136,5 +140,144 @@ describe("TrainingDayFact resolver", () => {
       loggedSetCount: null,
       executionStatus: "unknown",
     });
+  });
+
+  it("prefers BodyCast mechanical over Garmin active kcal for stair events", () => {
+    const facts = resolveTrainingDayFacts({
+      workouts: [workout({
+        type: "Stair Climbing",
+        activeEnergyKcal: 400,
+        mechanicalStepperKcal: 275,
+      })],
+      diarySessions: [],
+    });
+    expect(facts[0]?.events[0]).toMatchObject({
+      activeEnergyKcal: 275,
+      energySource: "bodycast-stepper-mechanical",
+    });
+  });
+
+  it("withholds stale shadow strength estimates when sessionRevision mismatches", () => {
+    const facts = resolveTrainingDayFacts({
+      workouts: [workout({
+        activeEnergyKcal: 380,
+        matchedDiarySession: {
+          id: 9,
+          status: "COMPLETED",
+          revision: 5,
+          loggedSetCount: 8,
+          programName: "Push",
+          energyShadow: {
+            estimatedActiveKcal: 250,
+            sessionRevision: 4,
+            inputFingerprint: "stale-fingerprint",
+          },
+        },
+      })],
+      diarySessions: [],
+    });
+    expect(facts[0]?.events[0]).toMatchObject({
+      activeEnergyKcal: 380,
+      energySource: "garmin-fallback",
+    });
+  });
+
+  it("withholds shadow strength estimates that lack an input fingerprint", () => {
+    const facts = resolveTrainingDayFacts({
+      workouts: [],
+      diarySessions: [diary({
+        revision: 2,
+        energyShadow: {
+          estimatedActiveKcal: 311,
+          sessionRevision: 2,
+        },
+        sets: [{ id: 1, reps: 8, weightKg: 60 }],
+        sameDayMassKg: 80,
+        startOfDayMassKg: 79,
+      })],
+    });
+    expect(facts[0]?.events[0]).toMatchObject({
+      activeEnergyKcal: null,
+      energySource: "unavailable",
+      diaryOnly: true,
+    });
+  });
+
+  it("withholds a published shadow when late same-day mass changes without a revision bump", () => {
+    const sets = [{ id: 3, reps: 8, weightKg: 60, bandNominalResistanceKg: null, rir: null }];
+    const published = strengthInputFingerprintV1({
+      sessionId: 4,
+      sessionRevision: 2,
+      massKg: 80,
+      sameDayMassKg: 80,
+      startOfDayMassKg: 79,
+      setFingerprint: strengthSetFingerprintV1(sets),
+    });
+    const facts = resolveTrainingDayFacts({
+      workouts: [],
+      diarySessions: [diary({
+        id: 4,
+        revision: 2,
+        sets,
+        sameDayMassKg: 81.2,
+        startOfDayMassKg: 79,
+        energyShadow: {
+          estimatedActiveKcal: 311,
+          sessionRevision: 2,
+          inputFingerprint: published,
+        },
+      })],
+    });
+    expect(facts[0]?.events[0]).toMatchObject({
+      activeEnergyKcal: null,
+      energySource: "unavailable",
+      diaryOnly: true,
+    });
+  });
+
+  it("publishes a fresh diary shadow only when the recomputed fingerprint still matches", () => {
+    const sets = [{ id: 3, reps: 8, weightKg: 60, bandNominalResistanceKg: null, rir: null }];
+    const published = strengthInputFingerprintV1({
+      sessionId: 4,
+      sessionRevision: 2,
+      massKg: 80,
+      sameDayMassKg: 80,
+      startOfDayMassKg: 79,
+      setFingerprint: strengthSetFingerprintV1(sets),
+    });
+    const facts = resolveTrainingDayFacts({
+      workouts: [],
+      diarySessions: [diary({
+        id: 4,
+        revision: 2,
+        sets,
+        sameDayMassKg: 80,
+        startOfDayMassKg: 79,
+        energyShadow: {
+          estimatedActiveKcal: 311,
+          sessionRevision: 2,
+          inputFingerprint: published,
+        },
+      })],
+    });
+    expect(facts[0]?.events[0]).toMatchObject({
+      activeEnergyKcal: 311,
+      energySource: "shadow-diary-estimate",
+      diaryOnly: true,
+    });
+  });
+
+  it("sorts events newest-first with deterministic eventId tie-break", () => {
+    const facts = resolveTrainingDayFacts({
+      workouts: [
+        workout({ id: 10, sourceIdentity: "a", startAt: new Date("2026-09-23T10:00:00.000Z"), endAt: new Date("2026-09-23T11:00:00.000Z"), activeEnergyKcal: 100 }),
+        workout({ id: 11, sourceIdentity: "b", startAt: new Date("2026-09-23T12:00:00.000Z"), endAt: new Date("2026-09-23T13:00:00.000Z"), activeEnergyKcal: 120 }),
+      ],
+      diarySessions: [],
+    });
+    expect(facts[0]?.events.map((event) => event.eventId)).toEqual([
+      "workout:11",
+      "workout:10",
+    ]);
   });
 });

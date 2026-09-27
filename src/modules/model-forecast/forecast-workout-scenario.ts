@@ -4,6 +4,8 @@ import {
   type ExplicitWorkoutActivityEvent,
   type ExplicitWorkoutActivityInput,
 } from "@/model/activity/workout-energy";
+import { FORECAST_SCENARIO_STRENGTH_MET } from "@/model/activity/canonical-activity-policy-v1";
+import { calculateStrengthActivity } from "@/model/activity/strength";
 import {
   STAIR_CLIMBING_TYPE,
   TRADITIONAL_STRENGTH_TRAINING_TYPE,
@@ -17,7 +19,7 @@ export type ForecastWorkoutEvent = ExplicitWorkoutActivityEvent & {
   programVersionId?: number | null;
   programVersionNumber?: number | null;
   plannedSets?: number | null;
-  energyProvenance?: "device-estimate" | "strength-met-fallback" | "unspecified" | null;
+  energyProvenance?: "device-estimate" | "strength-met-fallback" | "forecast-scenario-strength-met" | "unspecified" | null;
 };
 
 export type ForecastWorkoutActivity = {
@@ -46,6 +48,7 @@ export function toProductionWorkoutActivity(
   activity: ForecastWorkoutActivity | undefined,
 ): ExplicitWorkoutActivityInput | undefined {
   if (activity === undefined) return undefined;
+  // Do not inject selection-v1 onto the whole activity. Scenario MET is per-event.
   return {
     events: activity.events.map((event) => ({
       type: event.type,
@@ -55,8 +58,24 @@ export function toProductionWorkoutActivity(
       endAt: event.endAt,
       durationMinutes: event.durationMinutes,
       activeEnergyKcal: event.activeEnergyKcal,
+      ...(event.energyProvenance === FORECAST_SCENARIO_STRENGTH_MET
+        ? {
+          forecastScenarioStrengthMet: true,
+          strengthSessionCompleted: true,
+          bodyCastEstimateFresh: false,
+        }
+        : {}),
     })),
   };
+}
+
+/** Future scenario only. Uses the existing strength formula as a labeled scenario input. */
+export function forecastScenarioStrengthMetKcal(input: {
+  weightKg: number;
+  rmrKcalPerDay: number;
+  durationMinutes: number;
+}): number | null {
+  return calculateStrengthActivity(input);
 }
 
 export function strengthMinutesForWorkoutActivity(
@@ -123,6 +142,10 @@ export function buildForecastWorkoutSchedule(input: {
   stepperWeekdays?: readonly ForecastWeekday[];
   stepperDurationMinutes?: number;
   stepperActiveEnergyKcal?: number | null;
+  /** When set, strength events are a future scenario, not historical MET. */
+  strengthScenario?: typeof FORECAST_SCENARIO_STRENGTH_MET;
+  strengthScenarioWeightKg?: number;
+  strengthScenarioRmrKcalPerDay?: number;
 }): ForecastWorkoutScheduleByWeekday {
   const schedule: ForecastWorkoutScheduleByWeekday = {};
   const strengthWeekdays = input.strengthWeekdays ?? [];
@@ -131,14 +154,28 @@ export function buildForecastWorkoutSchedule(input: {
   for (const weekday of weekdays) {
     const events: ForecastWorkoutEvent[] = [];
     if (strengthWeekdays.includes(weekday)) {
+      const durationMinutes = input.strengthDurationMinutes ?? 45;
+      const scenarioKcal = input.strengthScenario === FORECAST_SCENARIO_STRENGTH_MET
+        && input.strengthActiveEnergyKcal === undefined
+        && input.strengthScenarioWeightKg !== undefined
+        && input.strengthScenarioRmrKcalPerDay !== undefined
+        ? forecastScenarioStrengthMetKcal({
+          weightKg: input.strengthScenarioWeightKg,
+          rmrKcalPerDay: input.strengthScenarioRmrKcalPerDay,
+          durationMinutes,
+        })
+        : input.strengthActiveEnergyKcal ?? null;
       events.push(createForecastWorkoutEvent({
         type: TRADITIONAL_STRENGTH_TRAINING_TYPE,
-        durationMinutes: input.strengthDurationMinutes ?? 45,
-        activeEnergyKcal: input.strengthActiveEnergyKcal ?? null,
+        durationMinutes,
+        activeEnergyKcal: scenarioKcal,
         programId: input.programId,
         programVersionId: input.programVersionId,
         programVersionNumber: input.programVersionNumber,
         plannedSets: input.plannedSets,
+        energyProvenance: input.strengthScenario === FORECAST_SCENARIO_STRENGTH_MET
+          ? FORECAST_SCENARIO_STRENGTH_MET
+          : undefined,
       }));
     }
     if (stepperWeekdays.includes(weekday)) {

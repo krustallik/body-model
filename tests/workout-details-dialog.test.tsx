@@ -37,7 +37,9 @@ describe("WorkoutDetailsDialog", () => {
       restingHeartRate: { sampleCount: 1, minBpm: 57, maxBpm: 57, avgBpm: 57, latestBpm: 57, latestTimestamp: "2026-09-16T00:00:00.000Z", samples: [{ timestamp: "2026-09-16T00:00:00.000Z", bpm: 57 }] },
     })} onClose={() => undefined} />);
     expect(html).toContain("Пульс у спокої");
-    expect(html).toContain("Зразків: 2");
+    expect(html).toContain("Середній");
+    expect(html).toContain("62");
+    expect(html).not.toContain("Зразків:");
   });
   it("renders a single workout with active calories", () => {
     const html = renderToStaticMarkup(

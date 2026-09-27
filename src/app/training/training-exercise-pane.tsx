@@ -15,7 +15,7 @@ import type {
 } from "@/modules/training/training.types";
 import { resolveExerciseImageSrc } from "./exercise-images";
 import { resolveExerciseInfo } from "./exercise-info";
-import { resistanceLabel } from "./training-labels";
+import { formatClock, resistanceLabel } from "./training-labels";
 import type { SetDraft } from "./training-exercise-workspace";
 import styles from "./training.module.css";
 
@@ -138,12 +138,10 @@ export function ExercisePane(props: ExercisePaneProps) {
   const progressLabel = uk
     ? `${completedSets} / ${plannedSets} підходів`
     : `${completedSets} / ${plannedSets} sets`;
-  const TitleTag = interactive ? "h1" : "p";
-
   return (
     <div className={styles.workoutMain}>
       <div className={styles.workoutHero}>
-        <TitleTag className={styles.workoutTitle}>{exercise.snapshotExerciseName}</TitleTag>
+        <h1 className={styles.workoutTitle}>{exercise.snapshotExerciseName}</h1>
         <div className={styles.workoutStatusRow}>
           <span className={styles.liveBadge}>{resistanceLabel(exercise.resistanceType, uk)}</span>
           <span
@@ -293,15 +291,17 @@ export function ExercisePane(props: ExercisePaneProps) {
               : "RIR — how many reps you still had in reserve (optional)."}
           </p>
 
-          {interactive && !showCommentField ? (
+          {!showCommentField || !interactive ? (
             <button
               type="button"
               className={styles.workoutCommentToggle}
-              onClick={onOpenComment}
+              tabIndex={interactive ? 0 : -1}
+              disabled={!interactive}
+              onClick={interactive ? onOpenComment : undefined}
             >
               {uk ? "+ Коментар" : "+ Comment"}
             </button>
-          ) : interactive ? (
+          ) : (
             <label className={styles.liveField}>
               <span>{uk ? "Коментар" : "Comment"}</span>
               <input
@@ -312,7 +312,7 @@ export function ExercisePane(props: ExercisePaneProps) {
                 onChange={(event) => onDraftChange({ ...paneDraft, comment: event.target.value })}
               />
             </label>
-          ) : null}
+          )}
 
           <div className={styles.liveSaveRow}>
             {interactive && editingSetId != null && (
@@ -361,6 +361,9 @@ export function ExercisePane(props: ExercisePaneProps) {
                   ) : (
                     <span className={styles.liveSetRir} />
                   )}
+                  <time className={styles.liveSetClock} dateTime={set.completedAt ?? set.createdAt}>
+                    {formatClock(set.completedAt ?? set.createdAt, uk ? "uk-UA" : "en-US")}
+                  </time>
                   {interactive ? (
                     <span className={styles.liveSetActions}>
                       <button

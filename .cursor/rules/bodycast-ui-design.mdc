@@ -1,0 +1,16 @@
+﻿---
+description: BodyCast UI work must follow the BodyCast Design System Skill; generic design skills are supplementary only.
+globs: src/app/**/*.{tsx,css},src/components/**/*.{tsx,css}
+alwaysApply: false
+---
+
+# BodyCast UI design authority
+
+Thin Cursor adapter. Full contract: `.agents/skills/bodycast-design-system/SKILL.md` and `AGENTS.md`.
+
+1. Load the BodyCast Design System Skill first. It is authoritative.
+2. Treat `src/app/globals.css` as the CURRENT visual token source.
+3. Generic design skills may supplement hierarchy, accessibility, and performance. They never override BodyCast.
+4. Inspect the target route, neighbors, spacing, and desktop/mobile behavior before editing. Do not design in isolation.
+5. Verify visual work in a real browser at 360 / 390 / 768 / 1280. Tests alone are not UI acceptance.
+6. Reuse existing BodyCast components and tokens. No unsolicited global redesign or generic AI dashboard aesthetics.

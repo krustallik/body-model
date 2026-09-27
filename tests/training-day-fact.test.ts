@@ -182,7 +182,7 @@ describe("TrainingDayFact resolver", () => {
     });
   });
 
-  it("withholds shadow strength estimates that lack an input fingerprint", () => {
+  it("recomputes as-of-date BodyCast when a shadow lacks an input fingerprint", () => {
     const facts = resolveTrainingDayFacts({
       workouts: [],
       diarySessions: [diary({
@@ -196,14 +196,13 @@ describe("TrainingDayFact resolver", () => {
         startOfDayMassKg: 79,
       })],
     });
-    expect(facts[0]?.events[0]).toMatchObject({
-      activeEnergyKcal: null,
-      energySource: "unavailable",
-      diaryOnly: true,
-    });
+    expect(facts[0]?.events[0]?.energySource).toBe("shadow-diary-estimate");
+    expect(facts[0]?.events[0]?.activeEnergyKcal).not.toBeNull();
+    // Must not silently reuse the unmarked legacy shadow number.
+    expect(facts[0]?.events[0]?.activeEnergyKcal).not.toBe(311);
   });
 
-  it("withholds a published shadow when late same-day mass changes without a revision bump", () => {
+  it("recomputes as-of-date BodyCast when historical same-day mass changes without a revision bump", () => {
     const sets = [{ id: 3, reps: 8, weightKg: 60, bandNominalResistanceKg: null, rir: null }];
     const published = strengthInputFingerprintV1({
       sessionId: 4,
@@ -228,11 +227,9 @@ describe("TrainingDayFact resolver", () => {
         },
       })],
     });
-    expect(facts[0]?.events[0]).toMatchObject({
-      activeEnergyKcal: null,
-      energySource: "unavailable",
-      diaryOnly: true,
-    });
+    expect(facts[0]?.events[0]?.energySource).toBe("shadow-diary-estimate");
+    expect(facts[0]?.events[0]?.activeEnergyKcal).not.toBeNull();
+    expect(facts[0]?.events[0]?.activeEnergyKcal).not.toBe(311);
   });
 
   it("publishes a fresh diary shadow only when the recomputed fingerprint still matches", () => {

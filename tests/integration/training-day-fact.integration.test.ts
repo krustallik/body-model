@@ -298,11 +298,12 @@ describe("TrainingDayFact PostgreSQL repository", () => {
       data: { weightKg: 81.4 },
     });
     const stale = await facts.forDate(freshDate);
-    expect(stale.events[0]).toMatchObject({
-      diaryOnly: true,
-      activeEnergyKcal: null,
-      energySource: "unavailable",
-    });
+    // Stored shadow is stale after historical same-day mass correction; read path
+    // recomputes as-of-date BodyCast instead of showing the old shadow or inventing
+    // today's mass. Original shadow row remains untouched.
+    expect(stale.events[0]?.energySource).toBe("shadow-diary-estimate");
+    expect(stale.events[0]?.activeEnergyKcal).not.toBeNull();
+    expect(stale.events[0]?.activeEnergyKcal).not.toBe(270);
 
     await prisma.experimentalStrengthEnergyShadow.deleteMany({ where: { sessionId: session.id } });
     await prisma.strengthDiarySession.delete({ where: { id: session.id } });

@@ -21,7 +21,7 @@ type SetRow = {
   rir: number | null;
 };
 
-function toSetRows(sets: readonly SetRow[]): StrengthSetFactRow[] {
+function toSetRows(sets: readonly SetRow[], resistanceType?: string | null): StrengthSetFactRow[] {
   return sets.map((set) => ({
     id: set.id,
     reps: set.reps,
@@ -36,6 +36,7 @@ function toSetRows(sets: readonly SetRow[]): StrengthSetFactRow[] {
         ? null
         : set.bandNominalResistanceKg.toNumber(),
     rir: set.rir,
+    resistanceType: resistanceType ?? null,
   }));
 }
 
@@ -68,8 +69,11 @@ function workoutSource(
       id: number;
       status: string;
       revision: number;
+      entryMode: string;
+      webStartedAt: Date | null;
+      webEndedAt: Date | null;
       program: { name: string } | null;
-      exercises: Array<{ sets: SetRow[] }>;
+      exercises: Array<{ resistanceType: string; sets: SetRow[] }>;
       experimentalStrengthEnergyShadow: { result: Prisma.JsonValue; modelRevision: string } | null;
     };
   },
@@ -77,9 +81,13 @@ function workoutSource(
   sortedWeightDates: readonly string[],
   timeZone: string,
 ): WorkoutFactSource {
-  const sets = row.matchedDiarySession === null
+  const exerciseGroups = row.matchedDiarySession === null
     ? []
-    : toSetRows(row.matchedDiarySession.exercises.flatMap((exercise) => exercise.sets));
+    : row.matchedDiarySession.exercises.map((exercise) => ({
+      resistanceType: exercise.resistanceType,
+      sets: toSetRows(exercise.sets, exercise.resistanceType),
+    }));
+  const sets = exerciseGroups.flatMap((exercise) => exercise.sets);
   const localDate = row.dailyHealthData?.date
     ?? instantToLocalDateTime(row.startAt, timeZone).date;
   const sameDayMassKg = row.dailyHealthData?.weightKg ?? weightsByDate.get(localDate) ?? null;
@@ -97,10 +105,14 @@ function workoutSource(
       id: row.matchedDiarySession.id,
       status: row.matchedDiarySession.status,
       revision: row.matchedDiarySession.revision,
+      entryMode: row.matchedDiarySession.entryMode,
+      webStartedAt: row.matchedDiarySession.webStartedAt?.toISOString() ?? null,
+      webEndedAt: row.matchedDiarySession.webEndedAt?.toISOString() ?? null,
       programName: row.matchedDiarySession.program?.name ?? null,
       loggedSetCount: sets.length,
       energyShadow: row.matchedDiarySession.experimentalStrengthEnergyShadow?.result ?? null,
       sets,
+      exercises: exerciseGroups,
       sameDayMassKg,
       startOfDayMassKg,
       estimatorVersion: row.matchedDiarySession.experimentalStrengthEnergyShadow?.modelRevision ?? null,
@@ -117,14 +129,18 @@ function diarySource(
     webStartedAt: Date | null;
     webEndedAt: Date | null;
     program: { name: string } | null;
-    exercises: Array<{ sets: SetRow[] }>;
+    exercises: Array<{ resistanceType: string; sets: SetRow[] }>;
     experimentalStrengthEnergyShadow: { result: Prisma.JsonValue; modelRevision: string } | null;
   },
   weightsByDate: ReadonlyMap<string, number | null>,
   sortedWeightDates: readonly string[],
   timeZone: string,
 ): DiaryFactSource {
-  const sets = toSetRows(row.exercises.flatMap((exercise) => exercise.sets));
+  const exerciseGroups = row.exercises.map((exercise) => ({
+    resistanceType: exercise.resistanceType,
+    sets: toSetRows(exercise.sets, exercise.resistanceType),
+  }));
+  const sets = exerciseGroups.flatMap((exercise) => exercise.sets);
   const localDate = row.webStartedAt === null
     ? null
     : instantToLocalDateTime(row.webStartedAt, timeZone).date;
@@ -143,6 +159,7 @@ function diarySource(
     loggedSetCount: sets.length,
     energyShadow: row.experimentalStrengthEnergyShadow?.result ?? null,
     sets,
+    exercises: exerciseGroups,
     sameDayMassKg,
     startOfDayMassKg,
     estimatorVersion: row.experimentalStrengthEnergyShadow?.modelRevision ?? null,
@@ -183,9 +200,13 @@ export class TrainingDayFactRepository {
               id: true,
               status: true,
               revision: true,
+              entryMode: true,
+              webStartedAt: true,
+              webEndedAt: true,
               program: { select: { name: true } },
               exercises: {
                 select: {
+                  resistanceType: true,
                   sets: {
                     select: {
                       id: true,
@@ -223,6 +244,7 @@ export class TrainingDayFactRepository {
           program: { select: { name: true } },
           exercises: {
             select: {
+              resistanceType: true,
               sets: {
                 select: {
                   id: true,

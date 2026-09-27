@@ -31,6 +31,7 @@ if [[ "$deployed_sha" != "$DEPLOY_SHA" ]]; then
   echo "Checked-out SHA ${deployed_sha} does not match DEPLOY_SHA ${DEPLOY_SHA}." >&2
   exit 1
 fi
+chmod +x "${ROOT_DIR}/scripts/deploy.sh" "${ROOT_DIR}/scripts/deploy-preflight-schema.sh"
 
 compose() {
   docker compose -f "$COMPOSE_FILE" "$@"

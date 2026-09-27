@@ -226,6 +226,10 @@ jobs:
             : "${CADDY_ROUTES_PATH:?}"
             : "${DEPLOY_SHA:?}"
             cd "$DEPLOY_PATH"
+            # Server tree may predate new scripts — checkout exact SHA before chmod/run.
+            git fetch --no-tags origin "$DEPLOY_SHA"
+            git checkout --detach --force "$DEPLOY_SHA"
+            test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
             chmod +x scripts/deploy.sh scripts/deploy-preflight-schema.sh
             APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" DEPLOY_SHA="$DEPLOY_SHA" \
               bash scripts/deploy.sh

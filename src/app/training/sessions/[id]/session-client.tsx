@@ -29,6 +29,7 @@ import {
   formatClock,
   formatDateTime,
   formatDurationMinutes,
+  formatSelectedActiveEnergyText,
   matchStatusLabel,
   planCompletionPillClass,
   readApiError,
@@ -595,9 +596,12 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
                   <dd>
                     {session.selectedActiveEnergy === undefined
                       ? "—"
-                      : session.selectedActiveEnergy.kcal === null
-                        ? (uk ? "Недоступно" : "Unavailable")
-                        : `${session.selectedActiveEnergy.kcal} ${uk ? "ккал" : "kcal"} · ${session.selectedActiveEnergy.source}${session.selectedActiveEnergy.fullCoverage ? "" : (uk ? " · неповне покриття" : " · partial coverage")}`}
+                      : formatSelectedActiveEnergyText({
+                        kcal: session.selectedActiveEnergy.kcal,
+                        source: session.selectedActiveEnergy.source,
+                        fullCoverage: session.selectedActiveEnergy.fullCoverage,
+                        uk,
+                      })}
                   </dd>
                 </div>
               </dl>

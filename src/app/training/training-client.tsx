@@ -15,6 +15,7 @@ import type {
 import {
   formatDateTime,
   formatDurationMinutes,
+  formatSelectedActiveEnergyText,
   matchStatusBadgeTone,
   matchStatusLabel,
   planCompletionPillClass,
@@ -33,25 +34,13 @@ function workoutLocalDateTime(value: string): string {
 }
 
 function stepperSelectedEnergyText(workout: StepperWorkoutDto, uk: boolean): string {
-  if (typeof workout.selectedActiveEnergyKcal === "number") {
-    const source = workout.selectedActiveEnergySource === "manual-kcal"
-      ? (uk ? "введені ккал" : "entered kcal")
-      : workout.selectedActiveEnergySource === "bodycast-stepper-mechanical"
-        ? (uk ? "механічна оцінка" : "mechanical estimate")
-        : workout.selectedActiveEnergySource === "garmin-fallback"
-          ? (uk ? "запасний варіант пристрою" : "device fallback")
-          : workout.selectedActiveEnergySource;
-    const partial = workout.selectedActiveEnergyFullCoverage
-      ? ""
-      : (uk ? " · неповне покриття" : " · partial coverage");
-    return `${workout.selectedActiveEnergyKcal} ${uk ? "активних ккал" : "active kcal"} · ${source}${partial}`;
-  }
-  if (workout.activeEnergyKcal !== null) {
-    return uk
-      ? `Енергію не обрано · ${workout.activeEnergyKcal} ккал пристрою не використано`
-      : `Energy not selected · device ${workout.activeEnergyKcal} kcal not used`;
-  }
-  return uk ? "Енергія недоступна" : "Energy unavailable";
+  return formatSelectedActiveEnergyText({
+    kcal: workout.selectedActiveEnergyKcal,
+    source: workout.selectedActiveEnergySource,
+    fullCoverage: workout.selectedActiveEnergyFullCoverage,
+    uk,
+    deviceKcalUnused: workout.activeEnergyKcal,
+  });
 }
 
 function formatStepperDateTime(value: string, intlLocale: string): string {
@@ -500,25 +489,29 @@ export function TrainingClient() {
                         <p className={styles.cardMeta}>
                           <span>{formatStepperDateTime(workout.startAt, intlLocale)}</span>
                           <span>{formatDurationMinutes(workout.startAt, workout.endAt, intlLocale, uk)}</span>
-                          <span>{stepperSelectedEnergyText(workout, uk)}</span>
-                          {workout.reconciliationStatus === "pending" || workout.reconciliationStatus === "ambiguous" ? (
-                            <span>{uk ? "Можливе дублювання з Garmin · кроки лишаються доданими" : "Possible Garmin duplicate · steps stay additive"}</span>
-                          ) : null}
                         </p>
+                        <p className={styles.energyLine}>{stepperSelectedEnergyText(workout, uk)}</p>
+                        {(workout.reconciliationStatus === "pending" || workout.reconciliationStatus === "ambiguous") ? (
+                          <p className={styles.reconNotice} role="status">
+                            {uk
+                              ? "Можливе дублювання з Garmin · кроки лишаються доданими"
+                              : "Possible Garmin duplicate · steps stay additive"}
+                          </p>
+                        ) : null}
                       </div>
                       <span className={workout.source === "manual" ? styles.badgePrimary : styles.badgeInfo}>
                         {workout.source === "manual" ? (uk ? "Ручний запис" : "Manual entry") : "Apple Health"}
                       </span>
                     </div>
                     <div className={`${styles.denseCardActions} ${styles.stepperCardActions}`}>
-                      <Link className={styles.linkLike} href={`/training/workouts/${workout.id}/stepper-diagnostic`}>
+                      <Link className={styles.secondaryButton} href={`/training/workouts/${workout.id}/stepper-diagnostic`}>
                         {uk ? "Енергія · діагностика" : "Energy · diagnostics"}
                       </Link>
                       {(workout.reconciliationStatus === "pending" || workout.reconciliationStatus === "ambiguous")
                         && workout.reconciliationPeerWorkoutId !== null
                         && workout.reconciliationRole === "manual" && (
                         <button
-                          className={styles.linkLike}
+                          className={styles.secondaryButton}
                           type="button"
                           disabled={reconBusyId === workout.id || stepperBusy}
                           onClick={() => void confirmStepperReconciliation(workout)}

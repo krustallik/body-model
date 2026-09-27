@@ -1899,12 +1899,44 @@ a.editMenuItem + .editMenuDanger {
 }
 
 .stepperCardActions .linkLike,
+.stepperCardActions .secondaryButton,
 .stepperCardActions .dangerButton {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   min-height: 2.75rem;
   padding: 0.45rem 0.75rem;
+}
+
+.energyLine {
+  margin: 0.35rem 0 0;
+  color: var(--training-text-secondary);
+  font-size: 0.82rem;
+  font-weight: 650;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+}
+
+.reconNotice {
+  margin: 0.4rem 0 0;
+  padding: 0.35rem 0.55rem;
+  border-radius: 0.55rem;
+  border: 1px solid color-mix(in srgb, var(--training-warning) 28%, var(--training-border));
+  background: var(--training-warning-soft);
+  color: var(--training-warning-strong);
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+@media (max-width: 430px) {
+  .panelHeader {
+    flex-wrap: wrap;
+  }
+
+  .panelHeader .primaryButton {
+    width: 100%;
+  }
 }
 
 .workoutShell .liveEntry {

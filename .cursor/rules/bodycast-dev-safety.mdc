@@ -1,0 +1,15 @@
+﻿---
+description: BodyCast development safety — worktrees, Prisma/PostgreSQL isolation, and no production operations from tooling.
+alwaysApply: true
+---
+
+# BodyCast development safety
+
+Thin Cursor adapter. Full contract: `AGENTS.md`.
+
+- Respect Git worktree isolation; do not modify other occupied worktrees or unfinished BodyParts3D unless assigned.
+- Never point MCP or scripts at production PostgreSQL; prefer isolated `*_test` databases on localhost.
+- Production migration, historical replay, selection activation, and deployment require separate explicit authorization.
+- Do not send production credentials, personal health records, or `.env` secrets to external MCP/design services.
+- Follow `AGENTS.md` and Next docs in `node_modules/next/dist/docs/` for this checkout.
+- Physiological contracts remain binding (unavailable ≠ 0, provenance, staged/active isolation) unless the task changes them.

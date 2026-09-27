@@ -23,6 +23,9 @@ export type StepperWorkoutDto = {
   selectedActiveEnergySource: string;
   selectedActiveEnergyFullCoverage: boolean;
   reconciliationStatus: "pending" | "ambiguous" | "confirmed" | null;
+  reconciliationGroupId: number | null;
+  reconciliationPeerWorkoutId: number | null;
+  reconciliationRole: "manual" | "garmin" | null;
   source: "manual" | "health";
   syncProtected: boolean;
   editable: boolean;
@@ -41,7 +44,16 @@ const stepperSelect = {
   syncProtected: true,
   matchedDiarySession: { select: { id: true } },
   dailyHealthData: { select: { weightKg: true } },
+  experimentalStepperActiveEnergyShadow: { select: { result: true } },
 } as const;
+
+function shadowMechanicalKcal(result: unknown): number | null {
+  if (result === null || typeof result !== "object" || Array.isArray(result)) return null;
+  const availability = (result as { availability?: unknown }).availability;
+  const kcal = (result as { estimatedActiveKcal?: unknown }).estimatedActiveKcal;
+  if (availability !== "available") return null;
+  return typeof kcal === "number" && Number.isFinite(kcal) && kcal >= 0 ? kcal : null;
+}
 
 function toDto(row: {
   id: number;
@@ -56,6 +68,7 @@ function toDto(row: {
   syncProtected: boolean;
   matchedDiarySession: { id: number } | null;
   dailyHealthData: { weightKg: number | null };
+  experimentalStepperActiveEnergyShadow: { result: unknown } | null;
 }): StepperWorkoutDto {
   const source = row.sourceIdentity.startsWith(MANUAL_STEPPER_SOURCE_PREFIX) ? "manual" : "health";
   const adapted = adaptManualStepperEnergyV1({
@@ -63,12 +76,15 @@ function toDto(row: {
     manualActiveEnergyKcal: row.manualActiveEnergyKcal,
     bodyMassKg: row.dailyHealthData.weightKg,
   });
+  const mechanicalFromShadow = source === "health"
+    ? shadowMechanicalKcal(row.experimentalStepperActiveEnergyShadow?.result ?? null)
+    : null;
   const selected = resolveEventEnergyV1({
     classification: "stair-climbing",
     activeEnergyKcal: row.activeEnergyKcal,
     manualActiveKcalPresent: adapted.manualKcalPresent,
     manualActiveKcal: adapted.manualKcal,
-    mechanicalStepperKcal: adapted.mechanicalKcal,
+    mechanicalStepperKcal: adapted.mechanicalKcal ?? mechanicalFromShadow,
   });
   return {
     id: row.id,
@@ -83,6 +99,9 @@ function toDto(row: {
     selectedActiveEnergySource: selected.source,
     selectedActiveEnergyFullCoverage: selected.fullCoverage,
     reconciliationStatus: null,
+    reconciliationGroupId: null,
+    reconciliationPeerWorkoutId: null,
+    reconciliationRole: null,
     source,
     syncProtected: row.syncProtected,
     editable: source === "manual" || row.matchedDiarySession === null,
@@ -110,15 +129,28 @@ async function attachReconciliation(
     select: {
       manualWorkoutId: true,
       garminWorkoutId: true,
-      group: { select: { status: true } },
+      groupId: true,
+      group: { select: { id: true, status: true } },
     },
   });
   return workouts.map((workout) => {
     const link = links.find((row) => row.manualWorkoutId === workout.id || row.garminWorkoutId === workout.id);
     const status = link?.group.status;
+    const role = link === undefined
+      ? null
+      : link.manualWorkoutId === workout.id
+        ? "manual" as const
+        : "garmin" as const;
     return {
       ...workout,
       reconciliationStatus: status === "pending" || status === "ambiguous" || status === "confirmed" ? status : null,
+      reconciliationGroupId: link?.groupId ?? null,
+      reconciliationPeerWorkoutId: link === undefined
+        ? null
+        : link.manualWorkoutId === workout.id
+          ? link.garminWorkoutId
+          : link.manualWorkoutId,
+      reconciliationRole: role,
     };
   });
 }

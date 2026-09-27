@@ -14,6 +14,7 @@ export function prismaVisibilityStoreV1(client: StoreClient): VisibilityStoreV1 
           hiddenFromHistory: true,
           syncProtected: true,
           supersededByWorkoutId: true,
+          updatedAt: true,
         },
       });
       if (row === null) return null;
@@ -22,7 +23,12 @@ export function prismaVisibilityStoreV1(client: StoreClient): VisibilityStoreV1 
         hiddenFromHistory: row.hiddenFromHistory,
         syncProtected: row.syncProtected,
         supersededByWorkoutId: row.supersededByWorkoutId,
-        revision: "workout-visibility",
+        // Flag identity only. Including updatedAt would false-conflict after our own write.
+        revision: [
+          row.hiddenFromHistory ? "1" : "0",
+          row.syncProtected ? "1" : "0",
+          String(row.supersededByWorkoutId ?? "null"),
+        ].join("|"),
       };
       return snapshot;
     },

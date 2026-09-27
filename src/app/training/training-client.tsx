@@ -99,6 +99,7 @@ export function TrainingClient() {
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [busySessionId, setBusySessionId] = useState<number | null>(null);
+  const [reconBusyId, setReconBusyId] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -198,6 +199,63 @@ export function TrainingClient() {
       setError(uk ? "Не вдалося видалити тренування." : "Could not delete the workout.");
     } finally {
       setStepperBusy(false);
+    }
+  }
+
+  async function confirmStepperReconciliation(workout: StepperWorkoutDto) {
+    if (workout.reconciliationPeerWorkoutId === null || workout.reconciliationRole === null) return;
+    const manualWorkoutId = workout.reconciliationRole === "manual" ? workout.id : workout.reconciliationPeerWorkoutId;
+    const garminWorkoutId = workout.reconciliationRole === "garmin" ? workout.id : workout.reconciliationPeerWorkoutId;
+    if (!window.confirm(uk
+      ? "Підтвердити пару? Garmin лишається канонічним джерелом; ручний запис — для аудиту. Visibility не змінюється."
+      : "Confirm this pair? Garmin stays the canonical source; the manual row remains for audit. Visibility does not change.")) return;
+    setReconBusyId(workout.id);
+    setError(null);
+    try {
+      const response = await fetch("/api/v1/training/stepper-reconciliation/confirm", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          manualWorkoutId,
+          garminWorkoutId,
+          // Confirm only. Authorized activation is a separate operator step.
+          activateVisibility: false,
+        }),
+      });
+      if (!response.ok) {
+        setError(await readApiError(response, uk));
+        return;
+      }
+      await load();
+    } catch {
+      setError(uk ? "Не вдалося підтвердити узгодження." : "Could not confirm reconciliation.");
+    } finally {
+      setReconBusyId(null);
+    }
+  }
+
+  async function rejectStepperReconciliation(workout: StepperWorkoutDto) {
+    if (workout.reconciliationGroupId === null) return;
+    if (!window.confirm(uk
+      ? "Відхилити цю пару узгодження?"
+      : "Reject this reconciliation pair?")) return;
+    setReconBusyId(workout.id);
+    setError(null);
+    try {
+      const response = await fetch("/api/v1/training/stepper-reconciliation/reject", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ groupId: workout.reconciliationGroupId }),
+      });
+      if (!response.ok) {
+        setError(await readApiError(response, uk));
+        return;
+      }
+      await load();
+    } catch {
+      setError(uk ? "Не вдалося відхилити узгодження." : "Could not reject reconciliation.");
+    } finally {
+      setReconBusyId(null);
     }
   }
 
@@ -456,6 +514,29 @@ export function TrainingClient() {
                       <Link className={styles.linkLike} href={`/training/workouts/${workout.id}/stepper-diagnostic`}>
                         {uk ? "Енергія · діагностика" : "Energy · diagnostics"}
                       </Link>
+                      {(workout.reconciliationStatus === "pending" || workout.reconciliationStatus === "ambiguous")
+                        && workout.reconciliationPeerWorkoutId !== null
+                        && workout.reconciliationRole === "manual" && (
+                        <button
+                          className={styles.linkLike}
+                          type="button"
+                          disabled={reconBusyId === workout.id || stepperBusy}
+                          onClick={() => void confirmStepperReconciliation(workout)}
+                        >
+                          {uk ? "Підтвердити пару" : "Confirm pair"}
+                        </button>
+                      )}
+                      {(workout.reconciliationStatus === "pending" || workout.reconciliationStatus === "ambiguous")
+                        && workout.reconciliationGroupId !== null && (
+                        <button
+                          className={styles.dangerButton}
+                          type="button"
+                          disabled={reconBusyId === workout.id || stepperBusy}
+                          onClick={() => void rejectStepperReconciliation(workout)}
+                        >
+                          {uk ? "Відхилити" : "Reject"}
+                        </button>
+                      )}
                       {workout.editable && <button className={styles.linkLike} type="button" disabled={stepperBusy} onClick={() => openEditStepperForm(workout)}>{uk ? "Редагувати" : "Edit"}</button>}
                       {workout.editable && <button className={styles.dangerButton} type="button" disabled={stepperBusy} onClick={() => void deleteStepperWorkout(workout)}>{uk ? "Видалити" : "Delete"}</button>}
                       {!workout.editable && <span className={styles.cardMeta}>{uk ? "Зв’язано із записом щоденника" : "Linked to a training diary entry"}</span>}

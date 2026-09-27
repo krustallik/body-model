@@ -111,6 +111,7 @@ export type WebOnlyStrengthSource = {
   startAt: Date;
   endAt: Date;
   bodyCastEstimateKcal: number | null;
+  bodyCastEstimateFresh?: boolean;
   inputFingerprint: string | null;
 };
 
@@ -123,9 +124,15 @@ export type ReconciliationLinkSource = {
   provisionalWorkoutId: number | null;
   manualWorkoutId: number;
   garminWorkoutId: number;
-  /** Garmin energy is omitted so the pair contributes once. */
+  /**
+   * Pending pairs omit Garmin energy so the unresolved pair contributes once
+   * from the provisional manual record. Confirmed pairs keep Garmin (canonical).
+   */
   suppressGarminEnergy: boolean;
-  /** Ambiguous groups suppress every member instead of choosing one by id. */
+  /**
+   * Confirmed pairs omit manual energy (audit-only). Ambiguous pairs suppress
+   * every member instead of choosing one by id.
+   */
   suppressManualEnergy: boolean;
 };
 

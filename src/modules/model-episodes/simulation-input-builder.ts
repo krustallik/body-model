@@ -3,6 +3,7 @@ import { estimateDailyWorkWalking, type CumulativeSnapshot } from "@/model/work-
 import {
   canonicalizeWorkoutType,
   hasExplicitStrengthWorkouts,
+  resolveExplicitWorkoutActivityKcal,
   type ExplicitWorkoutActivityEvent,
 } from "@/model/activity/workout-energy";
 import {
@@ -159,7 +160,7 @@ function toWorkoutEvents(input: {
     });
 }
 
-/** Selection v1 drops donors whose distance, energy coverage, or mass is incomplete. */
+/** Selection v1 drops donors whose distance, energy coverage, mass, or invalidation is incomplete. */
 export function eligibleHistoricalDonors(
   modelVersion: string | undefined,
   days: readonly BuiltSimulationDay[],
@@ -382,10 +383,7 @@ export function buildSimulationDays(input: {
       const suppressedWorkoutIds = new Set<number>();
       for (const link of input.sources.reconciliationLinks ?? []) {
         if (link.suppressGarminEnergy) suppressedWorkoutIds.add(link.garminWorkoutId);
-        if (link.suppressManualEnergy) {
-          suppressedWorkoutIds.add(link.manualWorkoutId);
-          suppressedWorkoutIds.add(link.garminWorkoutId);
-        }
+        if (link.suppressManualEnergy) suppressedWorkoutIds.add(link.manualWorkoutId);
       }
       const webEvents: ExplicitWorkoutActivityEvent[] = (input.sources.webOnlyStrengthSessions ?? [])
         .filter((session) => session.date === date)
@@ -401,7 +399,7 @@ export function buildSimulationDays(input: {
             durationMinutes,
             activeEnergyKcal: null,
             bodyCastEstimateKcal: session.bodyCastEstimateKcal,
-            bodyCastEstimateFresh: session.status === "COMPLETED" && session.bodyCastEstimateKcal !== null,
+            bodyCastEstimateFresh: session.bodyCastEstimateFresh === true,
             strengthSessionCompleted: session.status === "COMPLETED",
           };
         });
@@ -461,6 +459,7 @@ export function buildSimulationDays(input: {
           && Math.abs(dailyTotal - selectionDay.knownAcceptedSubtotalKm) > 0.001;
         selectionUsable = selectionLedger.complete
           && selectionDay?.complete === true
+          && selectionDay?.invalidated !== true
           && !mismatch;
         if (selectionUsable && selectionDay) {
           outsideWorkWalkingDistanceKm = selectionDay.cells.outsideWithoutStepperKm;
@@ -566,11 +565,30 @@ export function buildSimulationDays(input: {
           distanceConflicted: (selectionLedger?.conflictedIntervalIds.length ?? 0) > 0,
           partialCoverage: selectionLedger?.complete === false,
           knownAcceptedSubtotalKm: selectionLedger?.knownAcceptedSubtotalKm ?? null,
-          historicalDonorEligible: selectionUsable && canonicalMass.source !== "unavailable",
+          historicalDonorEligible: false,
           invalidatedDates: selectionLedger?.invalidatedDates ?? [],
+          energyCoverage: null,
         },
       } : {}),
     };
+    if (selectionV1 && sourceQuality.selectionV1) {
+      const energyPreview = resolveExplicitWorkoutActivityKcal({
+        weightKg: canonicalMass.massKg ?? 0,
+        rmrKcalPerDay: 1,
+        selectionPolicy: "bodycast-active-energy-selection-v1",
+        events: workoutEvents ?? [],
+      }).energyCoverage ?? { knownSubtotalKcal: 0, unknownEventCount: 0, fullCoverage: (workoutEvents ?? []).length === 0 };
+      const dayInvalidated = selectionLedger?.days.find((item) => item.date === date)?.invalidated === true
+        || (selectionLedger?.invalidatedDates.includes(date) ?? false);
+      sourceQuality.selectionV1 = {
+        ...sourceQuality.selectionV1,
+        energyCoverage: energyPreview,
+        historicalDonorEligible: selectionUsable
+          && canonicalMass.source !== "unavailable"
+          && !dayInvalidated
+          && energyPreview.fullCoverage,
+      };
+    }
     const occupationalIntervals = dailyIntervals.map((interval) => {
       const rawHours = (interval.endAt.getTime() - interval.startAt.getTime()) / 3_600_000;
       const stepperOverlapHours = selectionLedger?.workWindowStepperOverlapHours[String(interval.id)] ?? 0;

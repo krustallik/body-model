@@ -17,6 +17,8 @@ const db = {
   workInterval: { findMany: vi.fn() },
   workout: { findMany: vi.fn() },
   heartRateSample: { findMany: vi.fn() },
+  strengthDiarySession: { findMany: vi.fn() },
+  stepperReconciliationCandidate: { findMany: vi.fn() },
   dailyModelState: {
     deleteMany: vi.fn(), upsert: vi.fn(), count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(),
   },
@@ -153,6 +155,8 @@ describe("model episode repository mapping", () => {
     }]);
     db.workout.findMany.mockResolvedValue([]);
     db.heartRateSample.findMany.mockResolvedValue([]);
+    db.strengthDiarySession.findMany.mockResolvedValue([]);
+    db.stepperReconciliationCandidate.findMany.mockResolvedValue([]);
     const result = await new ModelEpisodeRepository(client)
       .loadSources("2026-08-01", "2026-08-22");
     expect(result.days[0]).toMatchObject({

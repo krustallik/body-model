@@ -121,12 +121,12 @@ describe("TrainingDayFact PostgreSQL repository", () => {
       hiddenEventCount: 0,
     });
     expect(fact.events.map((event) => event.exerciseDetailAvailability)).toEqual([
-      "no-logged-sets",
       "logged-sets",
+      "no-logged-sets",
     ]);
-    expect(fact.events.map((event) => event.executionStatus)).toEqual(["in-progress", "partial"]);
-    expect(fact.events[0]?.durationMinutes).toBeNull();
-    expect(fact.events[1]?.durationMinutes).toBe(20);
+    expect(fact.events.map((event) => event.executionStatus)).toEqual(["partial", "in-progress"]);
+    expect(fact.events[0]?.durationMinutes).toBe(20);
+    expect(fact.events[1]?.durationMinutes).toBeNull();
     expect(fact.events.every((event) => event.diaryOnly)).toBe(true);
 
     const firstAllHistoryPage = await dailyMetrics.listWithTrainingFacts({

@@ -23,9 +23,10 @@ There are no Vercel/Netlify auto-deploy hooks for this app.
    - event `push`;
    - branch `main`;
    - CI `head_sha` equals current `origin/main` tip (rejects stale runs).
-4. Deploy checks out that exact SHA on the server and recreates the app container.
-5. If production schema has pending migrations, deploy **blocks** (exit 2). Ordinary deploy never runs `prisma migrate deploy`.
-6. Health: container readiness + `https://$APP_HOST/api/health`.
+4. Deploy checks out that exact SHA on the server.
+5. Schema preflight runs **before** app cutover. If production schema has pending migrations, deploy **blocks** (exit 2) and leaves the running app container unchanged. Ordinary deploy never runs `prisma migrate deploy`.
+6. Only after preflight succeeds does deploy build/recreate the app container.
+7. Health: container readiness + `https://$APP_HOST/api/health`.
 
 PR CI success never deploys. Feature pushes without PR never deploy.
 

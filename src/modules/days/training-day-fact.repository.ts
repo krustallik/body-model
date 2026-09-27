@@ -23,6 +23,7 @@ function workoutSource(row: {
   matchedDiarySession: null | {
     id: number;
     status: string;
+    revision: number;
     program: { name: string } | null;
     exercises: Array<{ _count: { sets: number } }>;
     experimentalStrengthEnergyShadow: { result: Prisma.JsonValue } | null;
@@ -33,6 +34,7 @@ function workoutSource(row: {
     matchedDiarySession: row.matchedDiarySession === null ? null : {
       id: row.matchedDiarySession.id,
       status: row.matchedDiarySession.status,
+      revision: row.matchedDiarySession.revision,
       programName: row.matchedDiarySession.program?.name ?? null,
       loggedSetCount: row.matchedDiarySession.exercises.reduce((sum, exercise) => sum + exercise._count.sets, 0),
       energyShadow: row.matchedDiarySession.experimentalStrengthEnergyShadow?.result ?? null,
@@ -44,6 +46,7 @@ function diarySource(row: {
   id: number;
   status: string;
   entryMode: string;
+  revision: number;
   webStartedAt: Date | null;
   webEndedAt: Date | null;
   program: { name: string } | null;
@@ -54,6 +57,7 @@ function diarySource(row: {
     id: row.id,
     status: row.status,
     entryMode: row.entryMode,
+    revision: row.revision,
     webStartedAt: row.webStartedAt,
     webEndedAt: row.webEndedAt,
     programName: row.program?.name ?? null,
@@ -93,6 +97,7 @@ export class TrainingDayFactRepository {
             select: {
               id: true,
               status: true,
+              revision: true,
               program: { select: { name: true } },
               exercises: { select: { _count: { select: { sets: true } } } },
               experimentalStrengthEnergyShadow: { select: { result: true } },
@@ -115,6 +120,7 @@ export class TrainingDayFactRepository {
           id: true,
           status: true,
           entryMode: true,
+          revision: true,
           webStartedAt: true,
           webEndedAt: true,
           program: { select: { name: true } },

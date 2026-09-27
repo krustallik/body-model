@@ -1,7 +1,13 @@
 import { DEFAULT_TIME_ZONE, instantToLocalDateTime } from "@/model/time-zone";
+import { resolveEventEnergyV1, type EnergySourceKind } from "@/model/activity/canonical-activity-policy-v1";
 
 export type ExerciseDetailAvailability = "logged-sets" | "no-logged-sets" | "unavailable";
 export type TrainingEventExecutionStatus = "in-progress" | "completed" | "partial" | "unknown";
+
+export type TrainingDayEnergySource =
+  | EnergySourceKind
+  | "device-estimate"
+  | "shadow-diary-estimate";
 
 export type TrainingDayEventFact = {
   eventId: string;
@@ -11,7 +17,7 @@ export type TrainingDayEventFact = {
   endAt: string | null;
   durationMinutes: number | null;
   activeEnergyKcal: number | null;
-  energySource: "device-estimate" | "shadow-diary-estimate" | "unavailable";
+  energySource: TrainingDayEnergySource;
   executionStatus: TrainingEventExecutionStatus;
   workoutId: number | null;
   diarySessionId: number | null;
@@ -40,10 +46,14 @@ export type WorkoutFactSource = {
   endAt: Date;
   durationMinutes: number | null;
   activeEnergyKcal: number | null;
+  manualStepCount?: number | null;
+  manualActiveEnergyKcal?: number | null;
+  mechanicalStepperKcal?: number | null;
   hiddenFromHistory: boolean;
   matchedDiarySession: {
     id: number;
     status: string | null;
+    revision?: number | null;
     programName: string | null;
     loggedSetCount: number;
     energyShadow: unknown;
@@ -54,6 +64,7 @@ export type DiaryFactSource = {
   id: number;
   status: string;
   entryMode: string;
+  revision?: number | null;
   webStartedAt: Date | null;
   webEndedAt: Date | null;
   matchedWorkoutId?: number | null;
@@ -73,10 +84,68 @@ function elapsedDuration(startAt: Date, endAt: Date | null): number | null {
 
 function shadowKcal(value: unknown): number | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const resolution = (value as { activeEnergyResolution?: unknown }).activeEnergyResolution;
-  if (typeof resolution !== "object" || resolution === null || Array.isArray(resolution)) return null;
+  const resolution = (value as { activeEnergyResolution?: unknown; estimatedActiveKcal?: unknown }).activeEnergyResolution
+    ?? value;
+  if (typeof resolution !== "object" || resolution === null || Array.isArray(resolution)) {
+    const direct = (value as { estimatedActiveKcal?: unknown }).estimatedActiveKcal;
+    return typeof direct === "number" && Number.isFinite(direct) && direct >= 0 ? direct : null;
+  }
   const kcal = (resolution as { estimatedActiveKcal?: unknown }).estimatedActiveKcal;
   return typeof kcal === "number" && Number.isFinite(kcal) && kcal >= 0 ? kcal : null;
+}
+
+function shadowSessionRevision(value: unknown): number | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const revision = (value as { sessionRevision?: unknown }).sessionRevision;
+  return typeof revision === "number" && Number.isInteger(revision) ? revision : null;
+}
+
+function shadowInputFingerprint(value: unknown): string | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const fingerprint = (value as { inputFingerprint?: unknown }).inputFingerprint;
+  return typeof fingerprint === "string" && fingerprint.length > 0 ? fingerprint : null;
+}
+
+function strengthEstimateFreshForDay(input: {
+  status: string | null | undefined;
+  revision: number | null | undefined;
+  energyShadow: unknown;
+  diaryKcal: number | null;
+}): boolean {
+  if (input.status !== "COMPLETED" || input.diaryKcal === null || input.revision == null) return false;
+  const shadowRevision = shadowSessionRevision(input.energyShadow);
+  if (shadowRevision === null || shadowRevision !== input.revision) return false;
+  // Published shadows under the freshness contract carry an input fingerprint.
+  // Absence means the estimate cannot be treated as complete-fresh.
+  return shadowInputFingerprint(input.energyShadow) !== null;
+}
+
+function selectedDayEnergy(input: {
+  classification: "traditional-strength-training" | "stair-climbing" | "other";
+  deviceKcal: number | null;
+  bodyCastKcal: number | null;
+  bodyCastFresh: boolean;
+  sessionCompleted: boolean;
+  manualKcal: number | null;
+  manualKcalPresent: boolean;
+  mechanicalKcal: number | null;
+  diaryOnly?: boolean;
+}): { kcal: number | null; energySource: TrainingDayEnergySource } {
+  const selected = resolveEventEnergyV1({
+    classification: input.classification,
+    activeEnergyKcal: input.deviceKcal,
+    bodyCastEstimateKcal: input.bodyCastKcal,
+    bodyCastEstimateFresh: input.bodyCastFresh,
+    strengthSessionCompleted: input.sessionCompleted,
+    manualActiveKcal: input.manualKcal,
+    manualActiveKcalPresent: input.manualKcalPresent,
+    mechanicalStepperKcal: input.mechanicalKcal,
+  });
+  const energySource: TrainingDayEnergySource = input.diaryOnly === true
+    && selected.source === "bodycast-strength-estimate"
+    ? "shadow-diary-estimate"
+    : selected.source;
+  return { kcal: selected.selectedKcal, energySource };
 }
 
 function executionStatus(status: string | null | undefined, loggedSetCount: number): TrainingEventExecutionStatus {
@@ -135,10 +204,33 @@ export function resolveTrainingDayFacts(input: {
   for (const workout of canonicalWorkouts.values()) {
     const matched = workout.matchedDiarySession;
     const durationMinutes = validDuration(workout.durationMinutes) ?? elapsedDuration(workout.startAt, workout.endAt);
-    const kcal = validDuration(workout.activeEnergyKcal) === null
+    const deviceKcal = validDuration(workout.activeEnergyKcal) === null
       ? (workout.activeEnergyKcal === 0 ? 0 : null)
       : workout.activeEnergyKcal;
     const diaryKcal = matched ? shadowKcal(matched.energyShadow) : null;
+    const sessionCompleted = matched?.status === "COMPLETED";
+    const classification = workout.type.trim().toLowerCase() === "stair climbing"
+      ? "stair-climbing" as const
+      : workout.type.trim().toLowerCase() === "traditional strength training"
+        ? "traditional-strength-training" as const
+        : "other" as const;
+    const selected = selectedDayEnergy({
+      classification,
+      deviceKcal,
+      bodyCastKcal: sessionCompleted ? diaryKcal : null,
+      bodyCastFresh: matched
+        ? strengthEstimateFreshForDay({
+          status: matched.status,
+          revision: matched.revision,
+          energyShadow: matched.energyShadow,
+          diaryKcal,
+        })
+        : false,
+      sessionCompleted: sessionCompleted === true,
+      manualKcal: workout.manualActiveEnergyKcal ?? null,
+      manualKcalPresent: workout.manualActiveEnergyKcal !== undefined && workout.manualActiveEnergyKcal !== null,
+      mechanicalKcal: workout.mechanicalStepperKcal ?? null,
+    });
     add({
       eventId: `workout:${workout.id}`,
       source: matched ? "matched" : "workout",
@@ -146,8 +238,8 @@ export function resolveTrainingDayFacts(input: {
       occurrenceAt: workout.startAt.toISOString(),
       endAt: workout.endAt.toISOString(),
       durationMinutes,
-      activeEnergyKcal: kcal ?? diaryKcal,
-      energySource: kcal !== null ? "device-estimate" : diaryKcal !== null ? "shadow-diary-estimate" : "unavailable",
+      activeEnergyKcal: selected.kcal,
+      energySource: selected.energySource,
       executionStatus: matched ? executionStatus(matched.status, matched.loggedSetCount) : "unknown",
       workoutId: workout.id,
       diarySessionId: matched?.id ?? null,
@@ -165,7 +257,23 @@ export function resolveTrainingDayFacts(input: {
     const eligible = session.status === "ACTIVE" || session.status === "COMPLETED"
       || (session.status === "CANCELLED" && session.loggedSetCount > 0);
     if (!eligible) continue;
-    const kcal = shadowKcal(session.energyShadow);
+    const diaryKcal = shadowKcal(session.energyShadow);
+    const selected = selectedDayEnergy({
+      classification: "traditional-strength-training",
+      deviceKcal: null,
+      bodyCastKcal: session.status === "COMPLETED" ? diaryKcal : null,
+      bodyCastFresh: strengthEstimateFreshForDay({
+        status: session.status,
+        revision: session.revision,
+        energyShadow: session.energyShadow,
+        diaryKcal,
+      }),
+      sessionCompleted: session.status === "COMPLETED",
+      manualKcal: null,
+      manualKcalPresent: false,
+      mechanicalKcal: null,
+      diaryOnly: true,
+    });
     add({
       eventId: `diary:${session.id}`,
       source: "diary",
@@ -173,8 +281,8 @@ export function resolveTrainingDayFacts(input: {
       occurrenceAt: session.webStartedAt.toISOString(),
       endAt: session.webEndedAt?.toISOString() ?? null,
       durationMinutes: elapsedDuration(session.webStartedAt, session.webEndedAt),
-      activeEnergyKcal: kcal,
-      energySource: kcal === null ? "unavailable" : "shadow-diary-estimate",
+      activeEnergyKcal: selected.kcal,
+      energySource: selected.energySource,
       executionStatus: executionStatus(session.status, session.loggedSetCount),
       workoutId: null,
       diarySessionId: session.id,

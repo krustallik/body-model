@@ -15,8 +15,14 @@ import {
 } from "@/modules/model-episodes/activation-rollback-v1";
 import { prismaVisibilityStoreV1 } from "@/modules/model-episodes/activation-rollback-store";
 import { runSyntheticReplayV1 } from "@/modules/model-episodes/staged-replay-v1";
-import { persistStepperReconciliationV1 } from "@/modules/training/stepper-reconciliation.service";
+import { reconstructSelectionHistoryV1, persistSelectionEpisodeHistoryV1, rollbackSelectionEpisodeActivationV1 } from "@/modules/model-episodes/selection-v1-episode-ops";
+import { persistStepperReconciliationV1, confirmStepperReconciliationV1, rejectStepperReconciliationV1 } from "@/modules/training/stepper-reconciliation.service";
 import { StepperWorkoutRepository } from "@/modules/training/stepper-workout.repository";
+import {
+  strengthInputFingerprintV1,
+  strengthSetFingerprintV1,
+} from "@/modules/training/strength-publication-v1";
+import { EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION } from "@/modules/training/experimental-strength-active-energy-v1";
 import { persistedEpisodeFixture } from "../model-episode-fixtures";
 import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
 
@@ -26,6 +32,28 @@ const steppers = new StepperWorkoutRepository(prisma);
 const version = "bodycast-physiology-v7+selection-v1";
 const programName = "energy-distance-e2e";
 const exerciseName = "energy-distance-e2e-exercise";
+
+function strengthShadowResult(input: {
+  sessionId: number;
+  kcal: number;
+  massKg: number;
+  revision?: number;
+}) {
+  const sessionRevision = input.revision ?? 1;
+  return {
+    estimatedActiveKcal: input.kcal,
+    availability: "available",
+    sessionRevision,
+    inputFingerprint: strengthInputFingerprintV1({
+      sessionId: input.sessionId,
+      sessionRevision,
+      massKg: input.massKg,
+      sameDayMassKg: input.massKg,
+      setFingerprint: strengthSetFingerprintV1([]),
+      estimatorVersion: EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
+    }),
+  };
+}
 const dates = [
   "2091-04-01", "2091-04-02", "2091-04-03", "2091-04-04",
   "2091-04-05", "2091-04-06", "2091-04-07", "2091-04-08", "2091-04-09",
@@ -134,7 +162,6 @@ describe("staged energy and distance PostgreSQL integration", () => {
 
   afterAll(async () => {
     await clean();
-    await prisma.$disconnect();
   });
 
   it("carries saved web, matched, manual, distance, and mass records into staged expenditure", async () => {
@@ -153,9 +180,9 @@ describe("staged energy and distance PostgreSQL integration", () => {
       data: {
         sessionId: web.id,
         sourceFingerprint: "e2e-web",
-        modelRevision: "experimental-strength-active-energy-v1",
+        modelRevision: EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
         features: {},
-        result: { estimatedActiveKcal: 250, availability: "available", sessionRevision: 1 },
+        result: strengthShadowResult({ sessionId: web.id, kcal: 250, massKg: 81 }),
       },
     });
 
@@ -174,9 +201,9 @@ describe("staged energy and distance PostgreSQL integration", () => {
       data: {
         sessionId: active.id,
         sourceFingerprint: "e2e-active",
-        modelRevision: "experimental-strength-active-energy-v1",
+        modelRevision: EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
         features: {},
-        result: { estimatedActiveKcal: 999, availability: "available", sessionRevision: 1 },
+        result: strengthShadowResult({ sessionId: active.id, kcal: 999, massKg: 81 }),
       },
     });
 
@@ -209,9 +236,9 @@ describe("staged energy and distance PostgreSQL integration", () => {
       data: {
         sessionId: matched.id,
         sourceFingerprint: "e2e-matched",
-        modelRevision: "experimental-strength-active-energy-v1",
+        modelRevision: EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
         features: {},
-        result: { estimatedActiveKcal: 250, availability: "available", sessionRevision: 1 },
+        result: strengthShadowResult({ sessionId: matched.id, kcal: 250, massKg: 81 }),
       },
     });
 
@@ -313,8 +340,11 @@ describe("staged energy and distance PostgreSQL integration", () => {
     });
     await prisma.experimentalStrengthEnergyShadow.create({
       data: {
-        sessionId: known.id, sourceFingerprint: "e2e-partial", modelRevision: "experimental-strength-active-energy-v1",
-        features: {}, result: { estimatedActiveKcal: 200, availability: "available" },
+        sessionId: known.id,
+        sourceFingerprint: "e2e-partial",
+        modelRevision: EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
+        features: {},
+        result: strengthShadowResult({ sessionId: known.id, kcal: 200, massKg: 81 }),
       },
     });
     await prisma.strengthDiarySession.create({
@@ -326,7 +356,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
     });
 
     const sources = await repository.loadSources("2091-04-01", "2091-04-07");
-    expect(sources.webOnlyStrengthSessions?.some((session) => session.sessionId === web.id && session.bodyCastEstimateKcal === 250)).toBe(true);
+    expect(sources.webOnlyStrengthSessions?.some((session) => session.sessionId === web.id && session.bodyCastEstimateKcal === 250 && session.bodyCastEstimateFresh === true)).toBe(true);
     expect(sources.workouts?.find((workout) => workout.id === garmin.id)).toMatchObject({
       activeEnergyKcal: 400,
       bodyCastEstimateKcal: 250,
@@ -443,19 +473,340 @@ describe("staged energy and distance PostgreSQL integration", () => {
     expect(interrupted.resumeAt).toBe("2091-04-02");
 
     const store = prismaVisibilityStoreV1(prisma);
+    const garminCanonical = await prisma.workout.create({
+      data: {
+        dailyHealthDataId: hiddenDay.id,
+        sourceIdentity: "ext:e2e-garmin-canonical",
+        type: STAIR_CLIMBING_TYPE,
+        startAt: new Date("2091-04-09T07:00:00.000Z"),
+        endAt: new Date("2091-04-09T08:00:00.000Z"),
+        durationMinutes: 60,
+        activeEnergyKcal: 400,
+        hiddenFromHistory: false,
+        syncProtected: false,
+      },
+    });
+    const manualAudit = await prisma.workout.create({
+      data: {
+        dailyHealthDataId: hiddenDay.id,
+        sourceIdentity: "manual:stepper:e2e-audit",
+        type: STAIR_CLIMBING_TYPE,
+        startAt: new Date("2091-04-09T07:00:00.000Z"),
+        endAt: new Date("2091-04-09T08:00:00.000Z"),
+        durationMinutes: 60,
+        activeEnergyKcal: null,
+        manualStepCount: 1000,
+        manualActiveEnergyKcal: 120,
+        hiddenFromHistory: false,
+        syncProtected: false,
+      },
+    });
+    const confirmedGroup = await prisma.stepperReconciliationGroup.create({
+      data: {
+        status: "confirmed",
+        policyVersion: "bodycast-stepper-reconciliation-v1",
+        localDate: "2091-04-09",
+        provisionalWorkoutId: manualAudit.id,
+        candidates: {
+          create: [{
+            manualWorkoutId: manualAudit.id,
+            garminWorkoutId: garminCanonical.id,
+            candidateStatus: "confirmed",
+            manualCoverage: 1,
+            garminCoverage: 1,
+            stepEvidenceStatus: "comparable",
+          }],
+        },
+      },
+    });
+    // Confirmed status alone must not mutate production-facing visibility.
+    const beforeActivationGarmin = await prisma.workout.findUniqueOrThrow({ where: { id: garminCanonical.id } });
+    const beforeActivationManual = await prisma.workout.findUniqueOrThrow({ where: { id: manualAudit.id } });
+    expect(beforeActivationGarmin.hiddenFromHistory).toBe(false);
+    expect(beforeActivationManual.hiddenFromHistory).toBe(false);
+    expect(beforeActivationManual.supersededByWorkoutId).toBeNull();
+    expect(confirmedGroup.status).toBe("confirmed");
+
+    const confirmedSources = await repository.loadSources("2091-04-09", "2091-04-09");
+    const confirmedLink = confirmedSources.reconciliationLinks?.find(
+      (link) => link.manualWorkoutId === manualAudit.id && link.garminWorkoutId === garminCanonical.id,
+    );
+    expect(confirmedLink).toMatchObject({
+      status: "confirmed",
+      suppressGarminEnergy: false,
+      suppressManualEnergy: true,
+    });
+
     await activateVisibilityGenerationV1({
       store,
       generationId: "e2e-activation",
-      changes: [{ recordId: hidden.id, supersedingWorkoutId: 1 }],
+      changes: [{ recordId: manualAudit.id, supersedingWorkoutId: garminCanonical.id }],
     });
-    const activated = await prisma.workout.findUniqueOrThrow({ where: { id: hidden.id } });
-    expect(activated.hiddenFromHistory).toBe(true);
-    expect(activated.syncProtected).toBe(true);
+    const activatedManual = await prisma.workout.findUniqueOrThrow({ where: { id: manualAudit.id } });
+    const activatedGarmin = await prisma.workout.findUniqueOrThrow({ where: { id: garminCanonical.id } });
+    expect(activatedManual.hiddenFromHistory).toBe(true);
+    expect(activatedManual.syncProtected).toBe(true);
+    expect(activatedManual.supersededByWorkoutId).toBe(garminCanonical.id);
+    expect(activatedGarmin.hiddenFromHistory).toBe(false);
+    expect(activatedGarmin.supersededByWorkoutId).toBeNull();
     await rollbackVisibilityGenerationV1({ store, generationId: "e2e-activation" });
-    const restored = await prisma.workout.findUniqueOrThrow({ where: { id: hidden.id } });
-    expect(restored.hiddenFromHistory).toBe(true);
-    expect(restored.syncProtected).toBe(false);
-    expect(restored.supersededByWorkoutId).toBeNull();
+    const restoredManual = await prisma.workout.findUniqueOrThrow({ where: { id: manualAudit.id } });
+    expect(restoredManual.hiddenFromHistory).toBe(false);
+    expect(restoredManual.syncProtected).toBe(false);
+    expect(restoredManual.supersededByWorkoutId).toBeNull();
     expect(await prisma.activationRollbackEntry.count({ where: { generationId: "e2e-activation" } })).toBeGreaterThan(0);
-  }, 30_000);
+
+    // Keep legacy fixture row for later cleanup paths.
+    expect(hidden.hiddenFromHistory).toBe(true);
+
+    const episode = await repository.getActive() ?? {
+      ...persistedEpisodeFixture("2091-04-01"),
+      active: false,
+      modelVersion: CURRENT_MODEL_VERSION,
+    };
+    const reconstruction = await reconstructSelectionHistoryV1({
+      repository,
+      episode: { ...episode, modelVersion: version, active: false },
+      from: "2091-04-01",
+      to: "2091-04-07",
+    });
+    expect(reconstruction.status).toBe("complete");
+    expect(reconstruction.completed.length).toBeGreaterThan(0);
+    expect(reconstruction.donorEligibleDates).not.toContain("2091-04-07");
+    const stale = await reconstructSelectionHistoryV1({
+      repository,
+      episode: { ...episode, modelVersion: version, active: false },
+      from: "2091-04-01",
+      to: "2091-04-01",
+      expectedSourceRevision: "not-current",
+    });
+    expect(stale.status).toBe("stale-source");
+
+    // Real ModelEpisode persist + opt-in activation/rollback (isolated DB only).
+    // Never flip an unrelated active episode — create a dedicated inactive staging row.
+    await prisma.dailyModelState.deleteMany({
+      where: { date: { in: dates }, episode: { startDate: "2091-04-01", baselineDerivationMethod: "fixture-selection-v1" } },
+    });
+    await prisma.modelEpisode.deleteMany({
+      where: { startDate: "2091-04-01", baselineDerivationMethod: "fixture-selection-v1" },
+    });
+    const created = await prisma.modelEpisode.create({
+      data: {
+        profileId: 1,
+        startDate: "2091-04-01",
+        timezone: "Europe/Bratislava",
+        modelVersion: CURRENT_MODEL_VERSION,
+        active: false,
+        deactivatedAt: new Date(),
+        ecfPolicy: "hold-ecf",
+        baselineEnergyIntakeKcalPerDay: 2500,
+        baselineCarbIntakeG: 250,
+        baselineWindowStartDate: "2091-04-01",
+        baselineWindowEndDate: "2091-04-01",
+        baselineNutritionDayCount: 1,
+        baselineWeightObservationCount: 1,
+        baselineWeightTrendKgPerWeek: 0,
+        baselineWeightTrendPercentPerWeek: 0,
+        baselineDerivationMethod: "fixture-selection-v1",
+        initialFatMassKg: 20,
+        initialLeanTissueKg: 60,
+        initialGlycogenKg: 0.5,
+        baselineExtracellularFluidLiters: 15,
+        initialExtracellularFluidDeviationLiters: 0,
+        initialAdaptiveThermogenesisKcalPerDay: 0,
+        initialFilteredWeightKg: 80,
+        initialWeightFilterVarianceKg2: 1,
+        initialRmrKcalPerDay: 1600,
+        dynamicRmrFatCoefficient: 1,
+        dynamicRmrLeanCoefficient: 1,
+        dynamicRmrCalibrationOffsetKcalPerDay: 0,
+        adaptiveThermogenesisBeta: 0,
+        adaptiveThermogenesisTimeConstantDays: 14,
+        weightProcessNoiseVarianceKg2PerDay: 0.1,
+        weightMeasurementNoiseVarianceKg2: 0.1,
+        calibrationDiagnostics: {},
+      },
+    });
+    const persistedEpisode = await repository.getById(created.id);
+    expect(persistedEpisode).not.toBeNull();
+    const priorVersion = persistedEpisode!.modelVersion;
+    const staged = await persistSelectionEpisodeHistoryV1({
+      client: prisma,
+      repository,
+      episode: persistedEpisode!,
+      from: "2091-04-01",
+      to: "2091-04-07",
+      generationId: "e2e-episode-activation",
+      confirmActivation: true,
+    });
+    expect(staged.status).toBe("complete");
+    expect(staged.persisted).toBe(true);
+    expect(staged.activated).toBe(true);
+    const activatedEpisode = await repository.getById(persistedEpisode!.id);
+    expect(activatedEpisode?.modelVersion).toBe(version);
+    expect(activatedEpisode?.active).toBe(false);
+    const activatedDay = await prisma.dailyModelState.findFirst({
+      where: { episodeId: persistedEpisode!.id, date: "2091-04-01" },
+      select: { modelVersion: true, sourceQuality: true },
+    });
+    expect(activatedDay?.modelVersion).toBe(version);
+    expect(JSON.stringify(activatedDay?.sourceQuality)).toContain("selectionV1");
+    const rolled = await rollbackSelectionEpisodeActivationV1({
+      client: prisma,
+      repository,
+      episode: { ...persistedEpisode!, modelVersion: version },
+      from: "2091-04-01",
+      to: "2091-04-07",
+      generationId: "e2e-episode-activation",
+    });
+    expect(rolled.conflicts).toBe(false);
+    expect(rolled.restoredModelVersion).toBe(priorVersion);
+    const restoredEpisode = await repository.getById(persistedEpisode!.id);
+    expect(restoredEpisode?.modelVersion).toBe(priorVersion);
+    // Default constant remains isolated from activation.
+    expect(CURRENT_MODEL_VERSION).toBe("bodycast-physiology-v7");
+    await prisma.dailyModelState.deleteMany({ where: { episodeId: created.id } });
+    await prisma.modelEpisode.delete({ where: { id: created.id } });
+  }, 60_000);
+});
+
+describe("reconciliation confirm/reject PostgreSQL", () => {
+  const reconDates = ["2091-05-01"];
+
+  async function cleanRecon() {
+    await prisma.activationRollbackEntry.deleteMany({ where: { generationId: { startsWith: "recon-e2e-" } } });
+    await prisma.stepperReconciliationCandidate.deleteMany({
+      where: { group: { localDate: { in: reconDates } } },
+    });
+    await prisma.stepperReconciliationGroup.deleteMany({ where: { localDate: { in: reconDates } } });
+    await deleteDailyHealthRows(prisma, reconDates);
+  }
+
+  beforeAll(async () => {
+    await cleanRecon();
+  }, 60_000);
+
+  afterAll(async () => {
+    await cleanRecon();
+    await prisma.$disconnect();
+  });
+
+  it("confirms one-to-one matching and rejects remaining candidates", async () => {
+    await day("2091-05-01", 80, 10_000);
+    const manual = await steppers.create({
+      startAt: "2091-05-01T09:00:00.000+02:00",
+      durationMinutes: 60,
+      manualStepCount: 2000,
+      manualActiveEnergyKcal: 300,
+    });
+    await prisma.dailyHealthData.update({
+      where: { date: "2091-05-01" },
+      data: { steps: 10_000, weightKg: 80, caloriesKcal: 2500, proteinG: 150, fatG: 70, carbsG: 250, averageWalkingSpeedKmh: 5, walkingDistanceKm: 0, strengthTrainingMinutes: 0, workoutFeedObserved: true },
+    });
+    await syncHealthData({
+      timezone: "Europe/Bratislava",
+      days: [{
+        date: "2091-05-01",
+        steps: 10_000,
+        weightKg: 80,
+        caloriesKcal: 2500,
+        proteinG: 150,
+        fatG: 70,
+        carbsG: 250,
+        workouts: [{
+          externalId: "recon-e2e-garmin",
+          type: STAIR_CLIMBING_TYPE,
+          startAt: "2091-05-01T09:00:00+02:00",
+          endAt: "2091-05-01T10:00:00+02:00",
+          durationMinutes: 60,
+          activeEnergyKcal: 400,
+        }],
+      }],
+    });
+    const garmin = await prisma.workout.findFirstOrThrow({
+      where: { externalId: "recon-e2e-garmin" },
+    });
+    await persistStepperReconciliationV1(prisma, {
+      from: "2091-05-01",
+      to: "2091-05-01",
+      synchronizedSteps: 10_000,
+    });
+    const candidate = await prisma.stepperReconciliationCandidate.findFirstOrThrow({
+      where: { manualWorkoutId: manual.id, garminWorkoutId: garmin.id },
+    });
+    expect(["pending", "ambiguous"]).toContain(candidate.candidateStatus);
+    await confirmStepperReconciliationV1(prisma, {
+      manualWorkoutId: manual.id,
+      garminWorkoutId: garmin.id,
+    });
+    const confirmed = await prisma.stepperReconciliationCandidate.findUniqueOrThrow({
+      where: { id: candidate.id },
+    });
+    expect(confirmed.candidateStatus).toBe("confirmed");
+    const group = await prisma.stepperReconciliationGroup.findUniqueOrThrow({
+      where: { id: candidate.groupId },
+    });
+    expect(group.status).toBe("confirmed");
+    expect(group.provisionalWorkoutId).toBe(manual.id);
+    const garminAfterConfirm = await prisma.workout.findUniqueOrThrow({ where: { id: garmin.id } });
+    const manualAfterConfirm = await prisma.workout.findUniqueOrThrow({ where: { id: manual.id } });
+    expect(garminAfterConfirm.hiddenFromHistory).toBe(false);
+    expect(manualAfterConfirm.hiddenFromHistory).toBe(false);
+
+    const { activateConfirmedReconciliationVisibilityV1, rollbackActivationGenerationV1 } = await import(
+      "@/modules/model-episodes/selection-v1-episode-ops"
+    );
+    await activateConfirmedReconciliationVisibilityV1({
+      client: prisma,
+      generationId: "recon-e2e-activation",
+      manualWorkoutId: manual.id,
+      garminWorkoutId: garmin.id,
+    });
+    const afterActivationManual = await prisma.workout.findUniqueOrThrow({ where: { id: manual.id } });
+    const afterActivationGarmin = await prisma.workout.findUniqueOrThrow({ where: { id: garmin.id } });
+    expect(afterActivationManual.hiddenFromHistory).toBe(true);
+    expect(afterActivationManual.supersededByWorkoutId).toBe(garmin.id);
+    expect(afterActivationGarmin.hiddenFromHistory).toBe(false);
+    await rollbackActivationGenerationV1({ client: prisma, generationId: "recon-e2e-activation" });
+    const rolledManual = await prisma.workout.findUniqueOrThrow({ where: { id: manual.id } });
+    expect(rolledManual.hiddenFromHistory).toBe(false);
+    expect(rolledManual.supersededByWorkoutId).toBeNull();
+
+    const otherManual = await steppers.create({
+      startAt: "2091-05-01T11:00:00.000+02:00",
+      durationMinutes: 60,
+      manualStepCount: 1500,
+      manualActiveEnergyKcal: 200,
+    });
+    const otherDay = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: "2091-05-01" } });
+    const otherGarmin = await prisma.workout.create({
+      data: {
+        dailyHealthDataId: otherDay.id,
+        sourceIdentity: "ext:recon-e2e-garmin-2",
+        externalId: "recon-e2e-garmin-2",
+        type: STAIR_CLIMBING_TYPE,
+        startAt: new Date("2091-05-01T09:00:00.000Z"),
+        endAt: new Date("2091-05-01T10:00:00.000Z"),
+        durationMinutes: 60,
+        activeEnergyKcal: 250,
+      },
+    });
+    await persistStepperReconciliationV1(prisma, {
+      from: "2091-05-01",
+      to: "2091-05-01",
+      synchronizedSteps: 10_000,
+    });
+    const other = await prisma.stepperReconciliationCandidate.findFirstOrThrow({
+      where: { manualWorkoutId: otherManual.id, garminWorkoutId: otherGarmin.id },
+    });
+    await rejectStepperReconciliationV1(prisma, { groupId: other.groupId });
+    const rejected = await prisma.stepperReconciliationGroup.findUniqueOrThrow({
+      where: { id: other.groupId },
+    });
+    expect(rejected.status).toBe("rejected");
+    const rejectedCandidates = await prisma.stepperReconciliationCandidate.findMany({
+      where: { groupId: other.groupId },
+    });
+    expect(rejectedCandidates.every((row) => row.candidateStatus === "rejected")).toBe(true);
+  }, 60_000);
 });

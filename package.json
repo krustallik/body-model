@@ -32,7 +32,11 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
-    "env:check": "tsx scripts/validate-env.ts"
+    "env:check": "tsx scripts/validate-env.ts",
+    "body-map:manifest:v2": "tsx scripts/body-map/generate-bodyparts3d-local-manifest.ts --v2",
+    "body-map:manifest:v3": "tsx scripts/body-map/generate-bodyparts3d-local-manifest.ts --v3",
+    "body-map:delivery:v2": "node scripts/body-map/build-public-bodyparts3d-delivery.mjs --v2",
+    "body-map:delivery:v3": "node scripts/body-map/build-public-bodyparts3d-delivery.mjs --v3"
   },
   "dependencies": {
     "@prisma/client": "^6.19.0",

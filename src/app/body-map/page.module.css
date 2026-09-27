@@ -1,0 +1,38 @@
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  width: min(100%, var(--app-page-max-width));
+  margin: 0 auto;
+  padding: 1rem var(--app-page-gutter) 0;
+}
+
+.brand {
+  flex: 0 0 auto;
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 850;
+  text-decoration: none;
+}
+
+.brand:focus-visible {
+  outline: none;
+  border-radius: 0.25rem;
+  box-shadow: var(--focus-ring);
+}
+
+@media (max-width: 850px) {
+  .topbar :global(nav) {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    width: 100%;
+  }
+}
+
+@media (max-width: 620px) {
+  .topbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

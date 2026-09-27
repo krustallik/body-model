@@ -5,7 +5,7 @@ import {
   CameraTransitionControllerV1,
   easeInOutCubicV1,
   frameBoundsV1,
-} from "@/app/dev/body-map/camera-transition-v1";
+} from "@/components/body-map/camera-transition-v1";
 
 describe("Body Map camera transitions v1", () => {
   it("defines a focused viewing direction for each of the eight analytics groups", () => {

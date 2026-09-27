@@ -7,3 +7,5 @@ npm-debug.log*
 !.env.example
 coverage
 .idea
+artifacts
+3d-model

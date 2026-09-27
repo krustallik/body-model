@@ -4,18 +4,19 @@ import Link from "next/link";
 import { useI18n } from "@/i18n/i18n-provider";
 import styles from "./app-nav.module.css";
 
-type NavKey = "dashboard" | "history" | "training" | "forecast" | "goal" | "diagnostics" | "profile";
+type NavKey = "dashboard" | "history" | "training" | "bodyMap" | "forecast" | "goal" | "diagnostics" | "profile";
 
 export function AppNav({ active }: { active: NavKey }) {
   const { locale } = useI18n();
   const labels = locale === "uk"
-    ? { dashboard: "Огляд", history: "Історія", training: "Тренування", forecast: "Прогноз", goal: "Ціль", diagnostics: "Стан моделі", profile: "Профіль", aria: "Основна навігація" }
-    : { dashboard: "Dashboard", history: "History", training: "Training", forecast: "Forecast", goal: "Goal", diagnostics: "Model status", profile: "Profile", aria: "Primary navigation" };
+    ? { dashboard: "Огляд", history: "Історія", training: "Тренування", bodyMap: "Карта тіла", forecast: "Прогноз", goal: "Ціль", diagnostics: "Стан моделі", profile: "Профіль", aria: "Основна навігація" }
+    : { dashboard: "Dashboard", history: "History", training: "Training", bodyMap: "Body Map", forecast: "Forecast", goal: "Goal", diagnostics: "Model status", profile: "Profile", aria: "Primary navigation" };
 
   const items: { key: NavKey; href: string; label: string }[] = [
     { key: "dashboard", href: "/dashboard", label: labels.dashboard },
     { key: "history", href: "/history", label: labels.history },
     { key: "training", href: "/training", label: labels.training },
+    { key: "bodyMap", href: "/body-map", label: labels.bodyMap },
     { key: "forecast", href: "/forecast", label: labels.forecast },
     { key: "goal", href: "/goal", label: labels.goal },
     { key: "diagnostics", href: "/diagnostics", label: labels.diagnostics },

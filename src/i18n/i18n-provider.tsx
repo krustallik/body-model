@@ -37,6 +37,9 @@ export function I18nProvider({ children }: { children: ReactNode }) {
       ? window.setTimeout(() => applyLocale(storedLocale), 0)
       : null;
 
+    if (pathname.startsWith("/body-map")) {
+      return () => { if (storedLocaleTimer !== null) window.clearTimeout(storedLocaleTimer); };
+    }
     let active = true;
     fetch("/api/v1/profile", { cache: "no-store" })
       .then((response) => response.ok ? response.json() : null)
@@ -48,11 +51,12 @@ export function I18nProvider({ children }: { children: ReactNode }) {
       active = false;
       if (storedLocaleTimer !== null) window.clearTimeout(storedLocaleTimer);
     };
-  }, [applyLocale]);
+  }, [applyLocale, pathname]);
 
   useEffect(() => {
     const uk = locale === "uk";
-    const section = pathname.startsWith("/forecast") ? (uk ? "Прогноз" : "Forecast")
+    const section = pathname.startsWith("/body-map") ? (uk ? "Карта тіла" : "Body Map")
+      : pathname.startsWith("/forecast") ? (uk ? "Прогноз" : "Forecast")
       : pathname.startsWith("/diagnostics") ? (uk ? "Стан моделі" : "Model status")
       : pathname.startsWith("/training") ? (uk ? "Тренування" : "Training")
         : pathname.startsWith("/history") ? (uk ? "Історія" : "History")

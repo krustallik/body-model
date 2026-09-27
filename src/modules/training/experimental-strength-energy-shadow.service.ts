@@ -7,6 +7,7 @@ import {
   experimentalStrengthActiveEnergyV1Fingerprint,
   resolveExperimentalStrengthActiveEnergyV1,
 } from "./experimental-strength-active-energy-v1";
+import { strengthWorkoutAsOfDateV1 } from "./strength-historical-energy-v1";
 import {
   strengthInputFingerprintV1,
   strengthPublicationDecisionV1,
@@ -21,9 +22,11 @@ async function resolveBodyMassContext(input: {
   sameDayMassKg: number | null;
   startOfDayMassKg: number | null;
 }> {
-  const asOfDate = (input.session.matchedWorkout?.startAt
-    ?? input.session.webStartedAt
-    ?? input.session.createdAt).slice(0, 10);
+  const asOfDate = strengthWorkoutAsOfDateV1({
+    matchedWorkoutStartAt: input.session.matchedWorkout?.startAt ?? null,
+    webStartedAt: input.session.webStartedAt,
+    createdAt: input.session.createdAt,
+  });
   let sameDayMassKg: number | null = null;
   if (input.session.matchedWorkoutId !== null) {
     const workout = await prisma.workout.findUnique({

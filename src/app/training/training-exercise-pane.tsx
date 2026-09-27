@@ -15,7 +15,7 @@ import type {
 } from "@/modules/training/training.types";
 import { resolveExerciseImageSrc } from "./exercise-images";
 import { resolveExerciseInfo } from "./exercise-info";
-import { formatClock, resistanceLabel } from "./training-labels";
+import { formatSetCompletionClock, resistanceLabel, setCompletionTimestampIso } from "./training-labels";
 import type { SetDraft } from "./training-exercise-workspace";
 import styles from "./training.module.css";
 
@@ -348,7 +348,9 @@ export function ExercisePane(props: ExercisePaneProps) {
             </p>
           ) : (
             <ul className={styles.liveSetTable}>
-              {sets.map((set) => (
+              {sets.map((set) => {
+                const clockIso = setCompletionTimestampIso(set);
+                return (
                 <li className={styles.liveSetRow} key={set.id}>
                   <span className={styles.liveSetNum}>#{set.setNumber}</span>
                   <span className={styles.liveSetLoad}>
@@ -361,9 +363,15 @@ export function ExercisePane(props: ExercisePaneProps) {
                   ) : (
                     <span className={styles.liveSetRir} />
                   )}
-                  <time className={styles.liveSetClock} dateTime={set.completedAt ?? set.createdAt}>
-                    {formatClock(set.completedAt ?? set.createdAt, uk ? "uk-UA" : "en-US")}
-                  </time>
+                  {clockIso ? (
+                    <time className={styles.liveSetClock} dateTime={clockIso}>
+                      {formatSetCompletionClock(set, uk ? "uk-UA" : "en-US")}
+                    </time>
+                  ) : (
+                    <span className={styles.liveSetClock}>
+                      {uk ? "час недоступний" : "time unavailable"}
+                    </span>
+                  )}
                   {interactive ? (
                     <span className={styles.liveSetActions}>
                       <button
@@ -391,7 +399,8 @@ export function ExercisePane(props: ExercisePaneProps) {
                     <p className={styles.liveSetComment}>{set.comment}</p>
                   ) : null}
                 </li>
-              ))}
+                );
+              })}
             </ul>
           )}
         </section>

@@ -43,8 +43,10 @@ export function strengthInputFingerprintV1(input: {
 }
 
 /**
- * A published shadow is fresh only when every estimator input still matches.
- * sessionRevision alone is insufficient — mass, sets, and estimator version matter.
+ * A published shadow is fresh only when every estimator input still matches
+ * the historical as-of-date fingerprint (mass, sets, revision, estimator).
+ * Legacy unmarked shadows are never treated as fresh — callers must recompute
+ * on demand from historical inputs or fall back to Garmin.
  */
 export function strengthEstimateFreshV1(input: {
   estimateKcal: number | null;

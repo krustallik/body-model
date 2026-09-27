@@ -30,10 +30,12 @@ import {
   formatDateTime,
   formatDurationMinutes,
   formatSelectedActiveEnergyText,
+  formatSetCompletionClock,
   matchStatusLabel,
   planCompletionPillClass,
   readApiError,
   resistanceLabel,
+  setCompletionTimestampIso,
 } from "../../training-labels";
 import {
   emptySetDraft,
@@ -721,7 +723,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
                     </div>
                   </div>
                   {exercise.sets.length > 0 && (
-                    <p className={styles.cardMeta}>
+                    <ul className={styles.historicalSetList}>
                       {exercise.sets
                         .slice()
                         .sort((a, b) => a.setNumber - b.setNumber)
@@ -731,10 +733,25 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
                             : exercise.resistanceType === RESISTANCE.RESISTANCE_BAND && set.bandNominalResistanceKg !== null
                               ? `${set.bandNominalResistanceKg}kg band`
                               : "";
-                          return `#${set.setNumber} ${set.reps}${load ? `×${load}` : ""}`;
-                        })
-                        .join(" · ")}
-                    </p>
+                          const clockIso = setCompletionTimestampIso(set);
+                          return (
+                            <li className={styles.historicalSetRow} key={set.id}>
+                              <span>
+                                {`#${set.setNumber} ${set.reps}${load ? `×${load}` : ""}`}
+                              </span>
+                              {clockIso ? (
+                                <time className={styles.liveSetClock} dateTime={clockIso}>
+                                  {formatSetCompletionClock(set, intlLocale)}
+                                </time>
+                              ) : (
+                                <span className={styles.liveSetClock}>
+                                  {uk ? "час недоступний" : "time unavailable"}
+                                </span>
+                              )}
+                            </li>
+                          );
+                        })}
+                    </ul>
                   )}
                 </article>
               ))}

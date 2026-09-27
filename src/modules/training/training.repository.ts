@@ -1,14 +1,13 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
-import { resolveEventEnergyV1 } from "@/model/activity/canonical-activity-policy-v1";
 import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
 import { TRADITIONAL_STRENGTH_TRAINING_TYPE } from "@/modules/health/expand-training-workouts";
 import { EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION } from "./experimental-strength-active-energy-v1";
 import {
-  strengthEstimateFreshV1,
-  strengthInputFingerprintV1,
-  strengthSetFingerprintV1,
-} from "./strength-publication-v1";
+  recomputeHistoricalStrengthEstimateKcalV1,
+  selectHistoricalStrengthEnergyV1,
+  strengthWorkoutAsOfDateV1,
+} from "./strength-historical-energy-v1";
 import { CANONICAL_EXERCISE_IDENTITIES } from "./canonical-exercise-identity";
 import {
   DEFAULT_TRAINING_PROFILE_ID,
@@ -222,79 +221,86 @@ function toSessionExerciseDto(record: SessionExerciseRecord): StrengthSessionExe
   };
 }
 
-function shadowEstimateKcal(result: unknown): number | null {
-  if (result === null || typeof result !== "object" || Array.isArray(result)) return null;
-  const kcal = (result as { estimatedActiveKcal?: unknown }).estimatedActiveKcal;
-  return typeof kcal === "number" && Number.isFinite(kcal) && kcal >= 0 ? kcal : null;
+async function loadHistoricalMassContext(
+  db: PrismaClient,
+  record: {
+    matchedWorkout: {
+      startAt: Date;
+      dailyHealthData?: { date: string; weightKg: number | null } | null;
+    } | null;
+    webStartedAt: Date | null;
+    createdAt: Date;
+  },
+): Promise<{ sameDayMassKg: number | null; startOfDayMassKg: number | null }> {
+  const asOfDate = strengthWorkoutAsOfDateV1({
+    matchedWorkoutStartAt: record.matchedWorkout?.startAt.toISOString() ?? null,
+    webStartedAt: record.webStartedAt?.toISOString() ?? null,
+    createdAt: record.createdAt.toISOString(),
+  });
+  let sameDayMassKg: number | null = null;
+  const workoutDay = record.matchedWorkout?.dailyHealthData ?? null;
+  if (workoutDay?.date === asOfDate && workoutDay.weightKg != null) {
+    sameDayMassKg = workoutDay.weightKg;
+  }
+  const health = (db as {
+    dailyHealthData?: {
+      findUnique?: (args: unknown) => Promise<{ weightKg: number | null } | null>;
+      findFirst?: (args: unknown) => Promise<{ weightKg: number | null } | null>;
+    };
+  }).dailyHealthData;
+  if (sameDayMassKg === null && typeof health?.findUnique === "function") {
+    const sameDay = await health.findUnique({
+      where: { date: asOfDate },
+      select: { weightKg: true },
+    });
+    sameDayMassKg = sameDay?.weightKg ?? null;
+  }
+  let startOfDayMassKg: number | null = null;
+  if (typeof health?.findFirst === "function") {
+    const prior = await health.findFirst({
+      where: { weightKg: { not: null }, date: { lt: asOfDate } },
+      orderBy: { date: "desc" },
+      select: { weightKg: true },
+    });
+    startOfDayMassKg = prior?.weightKg ?? null;
+  }
+  return {
+    sameDayMassKg,
+    startOfDayMassKg,
+  };
 }
 
-function selectedStrengthEnergy(record: {
-  id: number;
-  status: string;
-  revision: number;
-  matchedWorkout: {
-    activeEnergyKcal: number | null;
-    dailyHealthData?: { date: string; weightKg: number | null } | null;
-  } | null;
-  experimentalStrengthEnergyShadow: { result: unknown; modelRevision?: string } | null;
-  exercises: Array<{
-    sets: Array<{
-      id: number;
-      reps: number;
-      weightKg: { toNumber(): number } | number | null;
-      bandNominalResistanceKg: { toNumber(): number } | number | null;
-      rir: number | null;
-    }>;
-  }>;
-}) {
-  const shadow = record.experimentalStrengthEnergyShadow?.result ?? null;
-  const estimate = record.status === "COMPLETED" ? shadowEstimateKcal(shadow) : null;
-  const shadowRevision = shadow !== null && typeof shadow === "object" && !Array.isArray(shadow)
-    && typeof (shadow as { sessionRevision?: unknown }).sessionRevision === "number"
-    ? (shadow as { sessionRevision: number }).sessionRevision
-    : null;
-  const storedInputFingerprint = shadow !== null && typeof shadow === "object" && !Array.isArray(shadow)
-    && typeof (shadow as { inputFingerprint?: unknown }).inputFingerprint === "string"
-    ? (shadow as { inputFingerprint: string }).inputFingerprint
-    : null;
-  const sameDayMassKg = record.matchedWorkout?.dailyHealthData?.weightKg ?? null;
-  const setRows = record.exercises.flatMap((exercise) => exercise.sets).map((set) => ({
+function selectedStrengthEnergy(
+  session: StrengthSessionDto,
+  massContext: { sameDayMassKg: number | null; startOfDayMassKg: number | null },
+  energyShadow: { result: unknown; modelRevision?: string } | null,
+) {
+  const setRows = session.exercises.flatMap((exercise) => exercise.sets).map((set) => ({
     id: set.id,
     reps: set.reps,
-    weightKg: set.weightKg === null
-      ? null
-      : typeof set.weightKg === "number"
-        ? set.weightKg
-        : set.weightKg.toNumber(),
-    bandNominalResistanceKg: set.bandNominalResistanceKg === null
-      ? null
-      : typeof set.bandNominalResistanceKg === "number"
-        ? set.bandNominalResistanceKg
-        : set.bandNominalResistanceKg.toNumber(),
+    weightKg: set.weightKg,
+    bandNominalResistanceKg: set.bandNominalResistanceKg,
     rir: set.rir,
   }));
-  const currentInputFingerprint = strengthInputFingerprintV1({
-    sessionId: record.id,
-    sessionRevision: record.revision,
-    massKg: sameDayMassKg,
-    sameDayMassKg,
-    setFingerprint: strengthSetFingerprintV1(setRows),
-    estimatorVersion: record.experimentalStrengthEnergyShadow?.modelRevision
+  const onDemandEstimateKcal = session.status === "COMPLETED"
+    ? recomputeHistoricalStrengthEstimateKcalV1({
+      session,
+      sameDayMassKg: massContext.sameDayMassKg,
+      startOfDayMassKg: massContext.startOfDayMassKg,
+    })
+    : null;
+  const selected = selectHistoricalStrengthEnergyV1({
+    sessionCompleted: session.status === "COMPLETED",
+    sessionId: session.id,
+    sessionRevision: session.revision,
+    energyShadow: energyShadow?.result ?? null,
+    sets: setRows,
+    sameDayMassKg: massContext.sameDayMassKg,
+    startOfDayMassKg: massContext.startOfDayMassKg,
+    estimatorVersion: energyShadow?.modelRevision
       ?? EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
-  });
-  const fresh = strengthEstimateFreshV1({
-    estimateKcal: estimate,
-    sessionRevision: record.revision,
-    shadowSessionRevision: shadowRevision,
-    storedInputFingerprint,
-    currentInputFingerprint,
-  });
-  const selected = resolveEventEnergyV1({
-    classification: "traditional-strength-training",
-    activeEnergyKcal: record.matchedWorkout?.activeEnergyKcal ?? null,
-    bodyCastEstimateKcal: estimate,
-    bodyCastEstimateFresh: fresh,
-    strengthSessionCompleted: record.status === "COMPLETED",
+    onDemandEstimateKcal,
+    garminKcal: session.matchedWorkout?.activeEnergyKcal ?? null,
   });
   return {
     kcal: selected.selectedKcal,
@@ -316,7 +322,13 @@ function toMatchedWorkoutDto(record: MatchedWorkoutRecord | null): MatchedWorkou
   };
 }
 
-export function toSessionDto(record: SessionDetailRecord): StrengthSessionDto {
+export function toSessionDto(
+  record: SessionDetailRecord,
+  massContext: { sameDayMassKg: number | null; startOfDayMassKg: number | null } = {
+    sameDayMassKg: null,
+    startOfDayMassKg: null,
+  },
+): StrengthSessionDto {
   const exercises = record.exercises.map(toSessionExerciseDto);
   const tonnageSets = exercises.flatMap((exercise) =>
     exercise.sets.map((set) => ({
@@ -327,7 +339,7 @@ export function toSessionDto(record: SessionDetailRecord): StrengthSessionDto {
     })),
   );
 
-  return {
+  const sessionWithoutEnergy: StrengthSessionDto = {
     id: record.id,
     status: record.status as SessionStatus,
     entryMode: asEntryMode(record.entryMode),
@@ -343,7 +355,6 @@ export function toSessionDto(record: SessionDetailRecord): StrengthSessionDto {
     matchedAt: record.matchedAt?.toISOString() ?? null,
     matchedWorkoutId: record.matchedWorkoutId,
     matchedWorkout: toMatchedWorkoutDto(record.matchedWorkout),
-    selectedActiveEnergy: selectedStrengthEnergy(record),
     exercises,
     ordinaryTonnageKg: ordinaryExternalWeightTonnageKg(tonnageSets),
     autoAdvanceExercises: record.profile?.autoAdvanceExercises ?? false,
@@ -351,6 +362,22 @@ export function toSessionDto(record: SessionDetailRecord): StrengthSessionDto {
     createdAt: record.createdAt.toISOString(),
     updatedAt: record.updatedAt.toISOString(),
   };
+  return {
+    ...sessionWithoutEnergy,
+    selectedActiveEnergy: selectedStrengthEnergy(
+      sessionWithoutEnergy,
+      massContext,
+      record.experimentalStrengthEnergyShadow,
+    ),
+  };
+}
+
+async function toSessionDtoWithHistoricalMass(
+  db: PrismaClient,
+  record: SessionDetailRecord,
+): Promise<StrengthSessionDto> {
+  const massContext = await loadHistoricalMassContext(db, record);
+  return toSessionDto(record, massContext);
 }
 
 function planCompletionFields(
@@ -757,7 +784,7 @@ export class TrainingRepository {
       where: { profileId, status: SESSION_STATUS.ACTIVE },
       select: sessionDetailSelect,
     });
-    return row ? toSessionDto(row) : null;
+    return row ? toSessionDtoWithHistoricalMass(this.db, row) : null;
   }
 
   async finishInactiveSessions(input: { profileId?: number; now?: Date } = {}): Promise<number[]> {
@@ -788,7 +815,7 @@ export class TrainingRepository {
       where: { id: sessionId, profileId },
       select: sessionDetailSelect,
     });
-    return row ? toSessionDto(row) : null;
+    return row ? toSessionDtoWithHistoricalMass(this.db, row) : null;
   }
 
   async createSessionSnapshot(input: {

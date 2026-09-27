@@ -1,5 +1,11 @@
 import { DEFAULT_TIME_ZONE, instantToLocalDateTime } from "@/model/time-zone";
 import { resolveEventEnergyV1, type EnergySourceKind } from "@/model/activity/canonical-activity-policy-v1";
+import { EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION } from "@/modules/training/experimental-strength-active-energy-v1";
+import {
+  strengthEstimateFreshV1,
+  strengthInputFingerprintV1,
+  strengthSetFingerprintV1,
+} from "@/modules/training/strength-publication-v1";
 
 export type ExerciseDetailAvailability = "logged-sets" | "no-logged-sets" | "unavailable";
 export type TrainingEventExecutionStatus = "in-progress" | "completed" | "partial" | "unknown";
@@ -38,6 +44,25 @@ export type TrainingDayFact = {
   events: TrainingDayEventFact[];
 };
 
+export type StrengthSetFactRow = {
+  id: number;
+  reps: number;
+  weightKg: number | null;
+  bandNominalResistanceKg?: number | null;
+  rir?: number | null;
+};
+
+export type StrengthFreshnessContext = {
+  sessionId: number;
+  revision: number | null | undefined;
+  status: string | null | undefined;
+  energyShadow: unknown;
+  sets: readonly StrengthSetFactRow[];
+  sameDayMassKg: number | null;
+  startOfDayMassKg: number | null;
+  estimatorVersion?: string | null;
+};
+
 export type WorkoutFactSource = {
   id: number;
   sourceIdentity: string;
@@ -57,6 +82,10 @@ export type WorkoutFactSource = {
     programName: string | null;
     loggedSetCount: number;
     energyShadow: unknown;
+    sets?: readonly StrengthSetFactRow[];
+    sameDayMassKg?: number | null;
+    startOfDayMassKg?: number | null;
+    estimatorVersion?: string | null;
   } | null;
 };
 
@@ -71,6 +100,10 @@ export type DiaryFactSource = {
   loggedSetCount: number;
   programName: string | null;
   energyShadow: unknown;
+  sets?: readonly StrengthSetFactRow[];
+  sameDayMassKg?: number | null;
+  startOfDayMassKg?: number | null;
+  estimatorVersion?: string | null;
 };
 
 function validDuration(value: number | null): number | null {
@@ -106,18 +139,37 @@ function shadowInputFingerprint(value: unknown): string | null {
   return typeof fingerprint === "string" && fingerprint.length > 0 ? fingerprint : null;
 }
 
-function strengthEstimateFreshForDay(input: {
-  status: string | null | undefined;
-  revision: number | null | undefined;
-  energyShadow: unknown;
+/**
+ * Fresh only when the stored shadow fingerprint still matches current estimator
+ * inputs. Presence of a fingerprint string alone is not enough — late same-day
+ * mass or set edits without a revision bump must invalidate the estimate.
+ */
+export function strengthEstimateFreshForDay(input: StrengthFreshnessContext & {
   diaryKcal: number | null;
 }): boolean {
   if (input.status !== "COMPLETED" || input.diaryKcal === null || input.revision == null) return false;
   const shadowRevision = shadowSessionRevision(input.energyShadow);
-  if (shadowRevision === null || shadowRevision !== input.revision) return false;
-  // Published shadows under the freshness contract carry an input fingerprint.
-  // Absence means the estimate cannot be treated as complete-fresh.
-  return shadowInputFingerprint(input.energyShadow) !== null;
+  const storedInputFingerprint = shadowInputFingerprint(input.energyShadow);
+  if (shadowRevision === null || storedInputFingerprint === null) return false;
+  const sameDayMassKg = input.sameDayMassKg ?? null;
+  const startOfDayMassKg = input.startOfDayMassKg ?? null;
+  const massKg = sameDayMassKg ?? startOfDayMassKg;
+  const currentInputFingerprint = strengthInputFingerprintV1({
+    sessionId: input.sessionId,
+    sessionRevision: input.revision,
+    massKg,
+    sameDayMassKg,
+    startOfDayMassKg,
+    setFingerprint: strengthSetFingerprintV1(input.sets),
+    estimatorVersion: input.estimatorVersion ?? EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
+  });
+  return strengthEstimateFreshV1({
+    estimateKcal: input.diaryKcal,
+    sessionRevision: input.revision,
+    shadowSessionRevision: shadowRevision,
+    storedInputFingerprint,
+    currentInputFingerprint,
+  });
 }
 
 function selectedDayEnergy(input: {
@@ -220,10 +272,15 @@ export function resolveTrainingDayFacts(input: {
       bodyCastKcal: sessionCompleted ? diaryKcal : null,
       bodyCastFresh: matched
         ? strengthEstimateFreshForDay({
+          sessionId: matched.id,
           status: matched.status,
           revision: matched.revision,
           energyShadow: matched.energyShadow,
           diaryKcal,
+          sets: matched.sets ?? [],
+          sameDayMassKg: matched.sameDayMassKg ?? null,
+          startOfDayMassKg: matched.startOfDayMassKg ?? null,
+          estimatorVersion: matched.estimatorVersion,
         })
         : false,
       sessionCompleted: sessionCompleted === true,
@@ -263,10 +320,15 @@ export function resolveTrainingDayFacts(input: {
       deviceKcal: null,
       bodyCastKcal: session.status === "COMPLETED" ? diaryKcal : null,
       bodyCastFresh: strengthEstimateFreshForDay({
+        sessionId: session.id,
         status: session.status,
         revision: session.revision,
         energyShadow: session.energyShadow,
         diaryKcal,
+        sets: session.sets ?? [],
+        sameDayMassKg: session.sameDayMassKg ?? null,
+        startOfDayMassKg: session.startOfDayMassKg ?? null,
+        estimatorVersion: session.estimatorVersion,
       }),
       sessionCompleted: session.status === "COMPLETED",
       manualKcal: null,

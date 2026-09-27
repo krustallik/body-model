@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { emptyTrainingDayFact, resolveTrainingDayFacts, type DiaryFactSource, type WorkoutFactSource } from "@/modules/days/training-day-fact";
+import {
+  strengthInputFingerprintV1,
+  strengthSetFingerprintV1,
+} from "@/modules/training/strength-publication-v1";
 
 const workout = (overrides: Partial<WorkoutFactSource> = {}): WorkoutFactSource => ({
   id: 1,
@@ -187,11 +191,78 @@ describe("TrainingDayFact resolver", () => {
           estimatedActiveKcal: 311,
           sessionRevision: 2,
         },
+        sets: [{ id: 1, reps: 8, weightKg: 60 }],
+        sameDayMassKg: 80,
+        startOfDayMassKg: 79,
       })],
     });
     expect(facts[0]?.events[0]).toMatchObject({
       activeEnergyKcal: null,
       energySource: "unavailable",
+      diaryOnly: true,
+    });
+  });
+
+  it("withholds a published shadow when late same-day mass changes without a revision bump", () => {
+    const sets = [{ id: 3, reps: 8, weightKg: 60, bandNominalResistanceKg: null, rir: null }];
+    const published = strengthInputFingerprintV1({
+      sessionId: 4,
+      sessionRevision: 2,
+      massKg: 80,
+      sameDayMassKg: 80,
+      startOfDayMassKg: 79,
+      setFingerprint: strengthSetFingerprintV1(sets),
+    });
+    const facts = resolveTrainingDayFacts({
+      workouts: [],
+      diarySessions: [diary({
+        id: 4,
+        revision: 2,
+        sets,
+        sameDayMassKg: 81.2,
+        startOfDayMassKg: 79,
+        energyShadow: {
+          estimatedActiveKcal: 311,
+          sessionRevision: 2,
+          inputFingerprint: published,
+        },
+      })],
+    });
+    expect(facts[0]?.events[0]).toMatchObject({
+      activeEnergyKcal: null,
+      energySource: "unavailable",
+      diaryOnly: true,
+    });
+  });
+
+  it("publishes a fresh diary shadow only when the recomputed fingerprint still matches", () => {
+    const sets = [{ id: 3, reps: 8, weightKg: 60, bandNominalResistanceKg: null, rir: null }];
+    const published = strengthInputFingerprintV1({
+      sessionId: 4,
+      sessionRevision: 2,
+      massKg: 80,
+      sameDayMassKg: 80,
+      startOfDayMassKg: 79,
+      setFingerprint: strengthSetFingerprintV1(sets),
+    });
+    const facts = resolveTrainingDayFacts({
+      workouts: [],
+      diarySessions: [diary({
+        id: 4,
+        revision: 2,
+        sets,
+        sameDayMassKg: 80,
+        startOfDayMassKg: 79,
+        energyShadow: {
+          estimatedActiveKcal: 311,
+          sessionRevision: 2,
+          inputFingerprint: published,
+        },
+      })],
+    });
+    expect(facts[0]?.events[0]).toMatchObject({
+      activeEnergyKcal: 311,
+      energySource: "shadow-diary-estimate",
       diaryOnly: true,
     });
   });

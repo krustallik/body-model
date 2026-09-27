@@ -14,6 +14,7 @@ export function prismaVisibilityStoreV1(client: StoreClient): VisibilityStoreV1 
           hiddenFromHistory: true,
           syncProtected: true,
           supersededByWorkoutId: true,
+          supersessionReason: true,
           updatedAt: true,
         },
       });
@@ -23,11 +24,13 @@ export function prismaVisibilityStoreV1(client: StoreClient): VisibilityStoreV1 
         hiddenFromHistory: row.hiddenFromHistory,
         syncProtected: row.syncProtected,
         supersededByWorkoutId: row.supersededByWorkoutId,
+        supersessionReason: row.supersessionReason,
         // Flag identity only. Including updatedAt would false-conflict after our own write.
         revision: [
           row.hiddenFromHistory ? "1" : "0",
           row.syncProtected ? "1" : "0",
           String(row.supersededByWorkoutId ?? "null"),
+          row.supersessionReason ?? "null",
         ].join("|"),
       };
       return snapshot;
@@ -39,6 +42,8 @@ export function prismaVisibilityStoreV1(client: StoreClient): VisibilityStoreV1 
           hiddenFromHistory: next.hiddenFromHistory,
           syncProtected: next.syncProtected,
           supersededByWorkoutId: next.supersededByWorkoutId,
+          supersessionReason: next.supersessionReason,
+          supersededAt: next.supersededByWorkoutId === null ? null : new Date(),
         },
       });
     },

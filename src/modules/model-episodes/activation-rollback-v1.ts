@@ -12,6 +12,7 @@ export type VisibilitySnapshotV1 = {
   hiddenFromHistory: boolean;
   syncProtected: boolean;
   supersededByWorkoutId: number | null;
+  supersessionReason: string | null;
   revision: string;
 };
 
@@ -22,17 +23,21 @@ export type VisibilitySnapshotV1 = {
 export function planActivationVisibilityV1(input: {
   current: VisibilitySnapshotV1;
   supersedingWorkoutId: number;
+  supersessionReason?: string;
 }): { next: VisibilitySnapshotV1; journal: RollbackJournalEntryV1[] } {
+  const reason = input.supersessionReason ?? "stepper-reconciliation-activated";
   const next: VisibilitySnapshotV1 = {
     ...input.current,
     hiddenFromHistory: true,
     syncProtected: true,
     supersededByWorkoutId: input.supersedingWorkoutId,
+    supersessionReason: reason,
   };
   const journal: RollbackJournalEntryV1[] = [
     entry(input.current, "hiddenFromHistory", input.current.hiddenFromHistory, true),
     entry(input.current, "syncProtected", input.current.syncProtected, true),
     entry(input.current, "supersededByWorkoutId", input.current.supersededByWorkoutId, input.supersedingWorkoutId),
+    entry(input.current, "supersessionReason", input.current.supersessionReason, reason),
   ];
   return { next, journal };
 }
@@ -52,6 +57,9 @@ export function rollbackVisibilityV1(input: {
     if (row.field === "syncProtected") restored.syncProtected = row.previousValue === true;
     if (row.field === "supersededByWorkoutId") {
       restored.supersededByWorkoutId = typeof row.previousValue === "number" ? row.previousValue : null;
+    }
+    if (row.field === "supersessionReason") {
+      restored.supersessionReason = typeof row.previousValue === "string" ? row.previousValue : null;
     }
   }
   return restored;

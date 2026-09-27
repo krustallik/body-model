@@ -97,6 +97,7 @@ describe("staged physiology v1", () => {
       hiddenFromHistory: true,
       syncProtected: false,
       supersededByWorkoutId: null,
+      supersessionReason: null,
       revision: "r1",
     }]);
     await activateVisibilityGenerationV1({

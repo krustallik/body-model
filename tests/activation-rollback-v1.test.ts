@@ -8,6 +8,7 @@ describe("activation rollback journal", () => {
       hiddenFromHistory: true,
       syncProtected: false,
       supersededByWorkoutId: null,
+      supersessionReason: null,
       revision: "r1",
     };
     const planned = planActivationVisibilityV1({ current, supersedingWorkoutId: 4 });
@@ -19,6 +20,9 @@ describe("activation rollback journal", () => {
       hiddenFromHistory: true,
       syncProtected: false,
       supersededByWorkoutId: null,
+      supersessionReason: null,
     });
+    expect(planned.next.supersessionReason).toBe("stepper-reconciliation-activated");
+    expect(planned.journal.some((row) => row.field === "supersessionReason")).toBe(true);
   });
 });

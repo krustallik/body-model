@@ -33,14 +33,6 @@ export async function POST(request: Request): Promise<Response> {
         manualWorkoutId: parsed.data.manualWorkoutId,
         garminWorkoutId: parsed.data.garminWorkoutId,
       });
-      // Manual is the audit duplicate that is superseded; Garmin stays canonical.
-      await prisma.workout.update({
-        where: { id: parsed.data.manualWorkoutId },
-        data: {
-          supersededAt: new Date(),
-          supersessionReason: "stepper-reconciliation-activated",
-        },
-      });
     }
     return Response.json({ ok: true, activated: parsed.data.activateVisibility === true });
   } catch (error) {

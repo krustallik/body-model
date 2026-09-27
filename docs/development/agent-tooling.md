@@ -58,6 +58,14 @@ Context7 and Figma typically need user OAuth in Cursor Settings. Do not commit O
 - Production database URLs
 - Absolute machine-specific paths in project files
 
+## Production deployment
+
+See `docs/development/production-deploy.md`.
+
+- Automatic app deploy follows green **main push** CI only.
+- Ordinary deploy never runs production Prisma migrate, historical replay, or selection-v1 activation.
+- Pending production migrations **block** the release until separately authorized.
+
 ## UI verification expectation
 
 For visual UI tasks:

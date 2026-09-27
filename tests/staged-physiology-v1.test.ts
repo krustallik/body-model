@@ -4,7 +4,8 @@ import { CURRENT_MODEL_VERSION, usesSelectionV1, usesWorkoutAwareActivity } from
 import { selectCanonicalBodyMassV1 } from "@/model/activity/canonical-activity-policy-v1";
 import { adaptManualStepperEnergyV1 } from "@/modules/training/manual-stepper-fields-v1";
 import { evaluateStepperReconciliationV1 } from "@/modules/training/stepper-reconciliation-v1";
-import { strengthPublicationDecisionV1, strengthInputFingerprintV1 } from "@/modules/training/strength-publication-v1";
+import { strengthPublicationDecisionV1, strengthInputFingerprintV1, strengthEstimateFreshV1, strengthSetFingerprintV1 } from "@/modules/training/strength-publication-v1";
+import { EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION } from "@/modules/training/experimental-strength-active-energy-v1";
 import { runSyntheticReplayV1 } from "@/modules/model-episodes/staged-replay-v1";
 import {
   activateVisibilityGenerationV1,
@@ -109,6 +110,43 @@ describe("staged physiology v1", () => {
       syncProtected: false,
       supersededByWorkoutId: null,
     });
+  });
+
+  it("marks strength estimates stale when late same-day mass changes without a revision bump", () => {
+    const sets = strengthSetFingerprintV1([{ reps: 8, weightKg: 60 }]);
+    const published = strengthInputFingerprintV1({
+      sessionId: 11,
+      sessionRevision: 3,
+      massKg: 80,
+      sameDayMassKg: 80,
+      startOfDayMassKg: 79.5,
+      setFingerprint: sets,
+      estimatorVersion: EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
+    });
+    const afterLateWeight = strengthInputFingerprintV1({
+      sessionId: 11,
+      sessionRevision: 3,
+      massKg: 81.2,
+      sameDayMassKg: 81.2,
+      startOfDayMassKg: 79.5,
+      setFingerprint: sets,
+      estimatorVersion: EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
+    });
+    expect(published).not.toBe(afterLateWeight);
+    expect(strengthEstimateFreshV1({
+      estimateKcal: 250,
+      sessionRevision: 3,
+      shadowSessionRevision: 3,
+      storedInputFingerprint: published,
+      currentInputFingerprint: afterLateWeight,
+    })).toBe(false);
+    expect(strengthEstimateFreshV1({
+      estimateKcal: 250,
+      sessionRevision: 3,
+      shadowSessionRevision: 3,
+      storedInputFingerprint: published,
+      currentInputFingerprint: published,
+    })).toBe(true);
   });
 
   it("replays deterministically, stops on a stale source, and resumes after an interruption", () => {
@@ -217,8 +255,8 @@ describe("staged physiology v1", () => {
     expect(event.energyProvenance).toBe("forecast-scenario-strength-met");
     expect(event.activeEnergyKcal).toBeGreaterThan(0);
     const production = toProductionWorkoutActivity({ events: [event] });
+    expect(production?.selectionPolicy).toBeUndefined();
     const resolved = resolveExplicitWorkoutActivityKcal({
-      selectionPolicy: production?.selectionPolicy,
       weightKg: 80,
       rmrKcalPerDay: 1600,
       events: production?.events ?? [],

@@ -17,12 +17,92 @@ import type {
 } from "./model-episode.types";
 import { unknownIntervalDurationDays } from "./unknown-intervals";
 
+import {
+  strengthEstimateFreshV1,
+  strengthInputFingerprintV1,
+  strengthSetFingerprintV1,
+} from "@/modules/training/strength-publication-v1";
+import { EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION } from "@/modules/training/experimental-strength-active-energy-v1";
+
 export type ModelDatabaseClient = PrismaClient | Prisma.TransactionClient;
+
+function strengthShadowSessionRevision(result: unknown): number | null {
+  if (result === null || typeof result !== "object" || Array.isArray(result)) return null;
+  const revision = (result as { sessionRevision?: unknown }).sessionRevision;
+  return typeof revision === "number" && Number.isInteger(revision) ? revision : null;
+}
 
 function strengthShadowKcal(result: unknown): number | null {
   if (result === null || typeof result !== "object" || Array.isArray(result)) return null;
   const kcal = (result as { estimatedActiveKcal?: unknown }).estimatedActiveKcal;
   return typeof kcal === "number" && Number.isFinite(kcal) && kcal >= 0 ? kcal : null;
+}
+
+function strengthShadowInputFingerprint(result: unknown): string | null {
+  if (result === null || typeof result !== "object" || Array.isArray(result)) return null;
+  const fingerprint = (result as { inputFingerprint?: unknown }).inputFingerprint;
+  return typeof fingerprint === "string" && fingerprint.length > 0 ? fingerprint : null;
+}
+
+function toSetFingerprintRows(
+  sets: readonly {
+    id?: number;
+    reps: number;
+    weightKg: number | { toNumber(): number } | null;
+    bandNominalResistanceKg?: number | { toNumber(): number } | null;
+    rir?: number | null;
+  }[],
+): Array<{ id?: number; reps: number; weightKg: number | null; bandNominalResistanceKg?: number | null; rir?: number | null }> {
+  return sets.map((set) => ({
+    id: set.id,
+    reps: set.reps,
+    weightKg: set.weightKg === null || set.weightKg === undefined
+      ? null
+      : typeof set.weightKg === "number"
+        ? set.weightKg
+        : set.weightKg.toNumber(),
+    bandNominalResistanceKg: set.bandNominalResistanceKg === null || set.bandNominalResistanceKg === undefined
+      ? null
+      : typeof set.bandNominalResistanceKg === "number"
+        ? set.bandNominalResistanceKg
+        : set.bandNominalResistanceKg.toNumber(),
+    rir: set.rir ?? null,
+  }));
+}
+
+function strengthEstimateFresh(input: {
+  estimateKcal: number | null;
+  sessionId: number;
+  sessionRevision: number;
+  shadowResult: unknown;
+  massKg: number | null;
+  sameDayMassKg: number | null;
+  startOfDayMassKg?: number | null;
+  sets: readonly {
+    id?: number;
+    reps: number;
+    weightKg: number | { toNumber(): number } | null;
+    bandNominalResistanceKg?: number | { toNumber(): number } | null;
+    rir?: number | null;
+  }[];
+  estimatorVersion?: string | null;
+}): boolean {
+  const currentInputFingerprint = strengthInputFingerprintV1({
+    sessionId: input.sessionId,
+    sessionRevision: input.sessionRevision,
+    massKg: input.massKg,
+    sameDayMassKg: input.sameDayMassKg,
+    startOfDayMassKg: input.startOfDayMassKg ?? null,
+    setFingerprint: strengthSetFingerprintV1(toSetFingerprintRows(input.sets)),
+    estimatorVersion: input.estimatorVersion ?? EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
+  });
+  return strengthEstimateFreshV1({
+    estimateKcal: input.estimateKcal,
+    sessionRevision: input.sessionRevision,
+    shadowSessionRevision: strengthShadowSessionRevision(input.shadowResult),
+    storedInputFingerprint: strengthShadowInputFingerprint(input.shadowResult),
+    currentInputFingerprint,
+  });
 }
 
 const episodeSelect = {
@@ -313,7 +393,22 @@ export class ModelEpisodeRepository {
               id: true,
               status: true,
               revision: true,
-              experimentalStrengthEnergyShadow: { select: { result: true, sourceFingerprint: true } },
+              experimentalStrengthEnergyShadow: {
+                select: { result: true, sourceFingerprint: true, modelRevision: true },
+              },
+              exercises: {
+                select: {
+                  sets: {
+                    select: {
+                      id: true,
+                      reps: true,
+                      weightKg: true,
+                      bandNominalResistanceKg: true,
+                      rir: true,
+                    },
+                  },
+                },
+              },
             },
           },
         },
@@ -336,7 +431,22 @@ export class ModelEpisodeRepository {
           revision: true,
           webStartedAt: true,
           webEndedAt: true,
-          experimentalStrengthEnergyShadow: { select: { result: true, sourceFingerprint: true } },
+          experimentalStrengthEnergyShadow: {
+            select: { result: true, sourceFingerprint: true, modelRevision: true },
+          },
+          exercises: {
+            select: {
+              sets: {
+                select: {
+                  id: true,
+                  reps: true,
+                  weightKg: true,
+                  bandNominalResistanceKg: true,
+                  rir: true,
+                },
+              },
+            },
+          },
         },
       }),
       this.client.stepperReconciliationCandidate.findMany({
@@ -388,6 +498,8 @@ export class ModelEpisodeRepository {
         const estimate = session?.status === "COMPLETED"
           ? strengthShadowKcal(session.experimentalStrengthEnergyShadow?.result)
           : null;
+        const sameDayMassKg = workout.dailyHealthData.weightKg;
+        const sets = session?.exercises.flatMap((exercise) => exercise.sets) ?? [];
         return {
           id: workout.id,
           date: workout.dailyHealthData.date,
@@ -401,7 +513,17 @@ export class ModelEpisodeRepository {
           manualStepCount: workout.manualStepCount,
           manualActiveEnergyKcal: workout.manualActiveEnergyKcal,
           bodyCastEstimateKcal: estimate,
-          bodyCastEstimateFresh: estimate !== null,
+          bodyCastEstimateFresh: session !== null && session !== undefined
+            && strengthEstimateFresh({
+              estimateKcal: estimate,
+              sessionId: session.id,
+              sessionRevision: session.revision,
+              shadowResult: session.experimentalStrengthEnergyShadow?.result ?? null,
+              massKg: sameDayMassKg,
+              sameDayMassKg,
+              sets,
+              estimatorVersion: session.experimentalStrengthEnergyShadow?.modelRevision ?? null,
+            }),
           strengthSessionCompleted: session?.status === "COMPLETED",
           sourceIdentity: workout.sourceIdentity,
         };
@@ -414,6 +536,8 @@ export class ModelEpisodeRepository {
         const estimate = session.status === "COMPLETED"
           ? strengthShadowKcal(session.experimentalStrengthEnergyShadow?.result)
           : null;
+        const dayMass = days.find((day) => day.date === date)?.weightKg ?? null;
+        const sets = session.exercises.flatMap((exercise) => exercise.sets);
         return [{
           sessionId: session.id,
           date,
@@ -422,7 +546,19 @@ export class ModelEpisodeRepository {
           startAt: session.webStartedAt,
           endAt: session.webEndedAt,
           bodyCastEstimateKcal: estimate,
-          inputFingerprint: session.experimentalStrengthEnergyShadow?.sourceFingerprint ?? null,
+          bodyCastEstimateFresh: strengthEstimateFresh({
+            estimateKcal: estimate,
+            sessionId: session.id,
+            sessionRevision: session.revision,
+            shadowResult: session.experimentalStrengthEnergyShadow?.result ?? null,
+            massKg: dayMass,
+            sameDayMassKg: dayMass,
+            sets,
+            estimatorVersion: session.experimentalStrengthEnergyShadow?.modelRevision ?? null,
+          }),
+          inputFingerprint: strengthShadowInputFingerprint(session.experimentalStrengthEnergyShadow?.result)
+            ?? session.experimentalStrengthEnergyShadow?.sourceFingerprint
+            ?? null,
         }];
       }),
       reconciliationLinks: reconciliationRows.flatMap((row) => {
@@ -437,8 +573,11 @@ export class ModelEpisodeRepository {
           provisionalWorkoutId: row.group.provisionalWorkoutId,
           manualWorkoutId: row.manualWorkoutId,
           garminWorkoutId: row.garminWorkoutId,
-          suppressGarminEnergy: true,
-          suppressManualEnergy: status === "ambiguous",
+          // Pending: provisional manual contributes; Garmin withheld.
+          // Confirmed: Garmin is canonical; manual remains audit-only.
+          // Ambiguous: neither contributes until resolved.
+          suppressGarminEnergy: status === "pending" || status === "ambiguous",
+          suppressManualEnergy: status === "confirmed" || status === "ambiguous",
         }];
       }),
     };

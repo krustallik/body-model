@@ -7,33 +7,52 @@ import {
   experimentalStrengthActiveEnergyV1Fingerprint,
   resolveExperimentalStrengthActiveEnergyV1,
 } from "./experimental-strength-active-energy-v1";
-import { strengthPublicationDecisionV1 } from "./strength-publication-v1";
+import {
+  strengthInputFingerprintV1,
+  strengthPublicationDecisionV1,
+  strengthSetFingerprintV1,
+} from "./strength-publication-v1";
 
-async function resolveBodyMassKg(input: {
+async function resolveBodyMassContext(input: {
   session: StrengthSessionDto;
   profileId: number;
-}): Promise<number | null> {
+}): Promise<{
+  massKg: number | null;
+  sameDayMassKg: number | null;
+  startOfDayMassKg: number | null;
+}> {
   const asOfDate = (input.session.matchedWorkout?.startAt
     ?? input.session.webStartedAt
     ?? input.session.createdAt).slice(0, 10);
+  let sameDayMassKg: number | null = null;
   if (input.session.matchedWorkoutId !== null) {
     const workout = await prisma.workout.findUnique({
       where: { id: input.session.matchedWorkoutId, hiddenFromHistory: false },
-      select: { dailyHealthData: { select: { weightKg: true } } },
+      select: { dailyHealthData: { select: { date: true, weightKg: true } } },
     });
-    if (workout?.dailyHealthData.weightKg != null) {
-      return workout.dailyHealthData.weightKg;
+    if (workout?.dailyHealthData.date === asOfDate && workout.dailyHealthData.weightKg != null) {
+      sameDayMassKg = workout.dailyHealthData.weightKg;
     }
   }
-  const latest = await prisma.dailyHealthData.findFirst({
-    // An energy estimate for an old diary session must not change because a
-    // user later records a scale weight. This is a historical as-of fallback,
-    // not retrospective smoothing.
-    where: { weightKg: { not: null }, date: { lte: asOfDate } },
+  if (sameDayMassKg === null) {
+    const sameDay = await prisma.dailyHealthData.findUnique({
+      where: { date: asOfDate },
+      select: { weightKg: true },
+    });
+    sameDayMassKg = sameDay?.weightKg ?? null;
+  }
+  // Prior-day mass is the calculated start-of-day fallback, not a later scale rewrite.
+  const prior = await prisma.dailyHealthData.findFirst({
+    where: { weightKg: { not: null }, date: { lt: asOfDate } },
     orderBy: { date: "desc" },
     select: { weightKg: true },
   });
-  return latest?.weightKg ?? null;
+  const startOfDayMassKg = prior?.weightKg ?? null;
+  return {
+    massKg: sameDayMassKg ?? startOfDayMassKg,
+    sameDayMassKg,
+    startOfDayMassKg,
+  };
 }
 
 /**
@@ -47,8 +66,8 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
   const interval = input.session.matchedWorkout ?? (input.session.webStartedAt && input.session.webEndedAt
     ? { startAt: input.session.webStartedAt, endAt: input.session.webEndedAt }
     : null);
-  const [bodyMassKg, heartRateBpms] = await Promise.all([
-    resolveBodyMassKg(input),
+  const [massContext, heartRateBpms] = await Promise.all([
+    resolveBodyMassContext(input),
     interval === null
       ? Promise.resolve([] as number[])
       : prisma.heartRateSample.findMany({
@@ -60,6 +79,7 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
         orderBy: { timestamp: "asc" },
       }).then((rows) => rows.map((row) => row.bpm)),
   ]);
+  const bodyMassKg = massContext.massKg;
   const result = estimateExperimentalStrengthActiveEnergyV1({
     session: input.session,
     bodyMassKg,
@@ -69,7 +89,24 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
     bodycast: result,
     matchedGarminActiveKcal: input.session.matchedWorkout?.activeEnergyKcal ?? null,
   });
-  const persistedResult = { ...result, activeEnergyResolution, sessionRevision: input.session.revision };
+  const setFingerprint = strengthSetFingerprintV1(
+    input.session.exercises.flatMap((exercise) => exercise.sets),
+  );
+  const inputFingerprint = strengthInputFingerprintV1({
+    sessionId: input.session.id,
+    sessionRevision: input.session.revision,
+    massKg: bodyMassKg,
+    sameDayMassKg: massContext.sameDayMassKg,
+    startOfDayMassKg: massContext.startOfDayMassKg,
+    setFingerprint,
+    estimatorVersion: EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
+  });
+  const persistedResult = {
+    ...result,
+    activeEnergyResolution,
+    sessionRevision: input.session.revision,
+    inputFingerprint,
+  };
   const sourceFingerprint = experimentalStrengthActiveEnergyV1Fingerprint(result);
   const previous = await prisma.experimentalStrengthEnergyShadow.findUnique({
     where: { sessionId: input.session.id },
@@ -87,8 +124,15 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
     estimateKcal: result.estimatedActiveKcal,
     estimateFresh: result.availability === "available",
     massKg: bodyMassKg,
-    inputFingerprint: sourceFingerprint,
-    previousFingerprint: previous?.sourceFingerprint ?? null,
+    inputFingerprint,
+    previousFingerprint: (
+      previousResult !== null
+      && typeof previousResult === "object"
+      && !Array.isArray(previousResult)
+      && typeof (previousResult as { inputFingerprint?: unknown }).inputFingerprint === "string"
+        ? (previousResult as { inputFingerprint: string }).inputFingerprint
+        : previous?.sourceFingerprint ?? null
+    ),
     previousSessionRevision,
     sessionRevision: input.session.revision,
   });

@@ -264,9 +264,12 @@ model Workout {
    * Restrict: accidental DailyHealthData delete must not silently wipe workout history.
    */
   dailyHealthData     DailyHealthData       @relation(fields: [dailyHealthDataId], references: [id], onDelete: Restrict)
+  supersededByWorkout Workout?              @relation("WorkoutSupersession", fields: [supersededByWorkoutId], references: [id], onDelete: SetNull)
+  supersedingWorkouts Workout[]             @relation("WorkoutSupersession")
   matchedDiarySession StrengthDiarySession?
   reconciliationAsManual StepperReconciliationCandidate[] @relation("ReconciliationManual")
   reconciliationAsGarmin StepperReconciliationCandidate[] @relation("ReconciliationGarmin")
+  provisionalForGroups StepperReconciliationGroup[] @relation("ReconciliationProvisional")
   experimentalStepperActiveEnergyShadow ExperimentalStepperActiveEnergyShadow?
   experimentalStepperGlycogenDemandShadow ExperimentalStepperGlycogenDemandShadow?
 
@@ -1018,6 +1021,7 @@ model StepperReconciliationGroup {
   createdAt            DateTime @default(now()) @db.Timestamptz(3)
   updatedAt            DateTime @updatedAt @db.Timestamptz(3)
   candidates           StepperReconciliationCandidate[]
+  provisionalWorkout   Workout? @relation("ReconciliationProvisional", fields: [provisionalWorkoutId], references: [id], onDelete: SetNull)
 
   @@index([profileId, status])
   @@index([profileId, localDate])

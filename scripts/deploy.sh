@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # Production app release (no Prisma migrate, no replay, no selection activation).
 # Requires DEPLOY_SHA (exact main commit that passed CI).
+#
+# Ordering contract:
+# 1) verify exact SHA
+# 2) verify compose config + DB readiness
+# 3) schema preflight (non-destructive)
+# 4) build release image
+# 5) only then recreate the running app
+# A failed preflight must leave the running application container unchanged.
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -38,6 +46,8 @@ compose() {
 }
 
 previous_image_exists=false
+app_cut_over=false
+
 if docker image inspect "$CURRENT_IMAGE" >/dev/null 2>&1; then
   docker image tag "$CURRENT_IMAGE" "$ROLLBACK_IMAGE"
   previous_image_exists=true
@@ -45,7 +55,17 @@ fi
 
 rollback() {
   exit_code=$?
-  echo "Deployment failed; restoring the previous application image." >&2
+  if [[ "$app_cut_over" != "true" ]]; then
+    echo "Deployment failed before app cutover; leaving the running application unchanged." >&2
+    if [[ "$previous_image_exists" == "true" ]] && docker image inspect "$ROLLBACK_IMAGE" >/dev/null 2>&1; then
+      # Restore :latest tag for cleanliness without recreating the container.
+      docker image tag "$ROLLBACK_IMAGE" "$CURRENT_IMAGE" || true
+    fi
+    compose logs --tail=100 "$APP_SERVICE" || true
+    exit "$exit_code"
+  fi
+
+  echo "Deployment failed after app cutover; restoring the previous application image." >&2
   if [[ "$previous_image_exists" == "true" ]] && docker image inspect "$ROLLBACK_IMAGE" >/dev/null 2>&1; then
     docker image tag "$ROLLBACK_IMAGE" "$CURRENT_IMAGE"
     compose up -d --no-deps --force-recreate "$APP_SERVICE" || true
@@ -56,7 +76,6 @@ rollback() {
 trap rollback ERR
 
 compose config --quiet
-compose build "$APP_SERVICE"
 compose up -d "$DB_SERVICE"
 
 for attempt in $(seq 1 30); do
@@ -71,8 +90,13 @@ for attempt in $(seq 1 30); do
 done
 
 # Schema must already be compatible. Ordinary deploy never runs migrate deploy.
+# Preflight runs before build/cutover so pending migrations never bounce the live app.
 bash "${ROOT_DIR}/scripts/deploy-preflight-schema.sh"
 
+compose build "$APP_SERVICE"
+
+# Cutover boundary: only recreate the running app after successful preflight + build.
+app_cut_over=true
 compose up -d --no-deps --force-recreate "$APP_SERVICE"
 
 for attempt in $(seq 1 30); do

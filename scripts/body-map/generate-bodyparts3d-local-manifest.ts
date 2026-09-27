@@ -32,7 +32,7 @@ import {
   BODY_MAP_CAMERA_CONTRACT_V1,
   BODY_MAP_CAMERA_VERSION_V1,
   BODY_MAP_OVERVIEW_PADDING_FACTOR_V1,
-} from "@/app/dev/body-map/camera-transition-v1";
+} from "@/components/body-map/camera-transition-v1";
 
 import type { AnatomyIdV2, BodyMapGroupIdV2 } from "@/modules/training/body-map-catalog-v2";
 

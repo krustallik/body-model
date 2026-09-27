@@ -9,8 +9,8 @@
 .breadcrumbs { display: flex; align-items: center; gap: 9px; max-width: 1520px; margin: 0 auto 14px; color: #718098; font-size: 12px; }
 .breadcrumbs button { padding: 0; border: 0; color: #c7d6eb; background: none; cursor: pointer; }
 .breadcrumbs button[aria-current="page"] { color: #81c3ff; }
-.layout { display: grid; grid-template-columns: minmax(420px, 1.12fr) minmax(340px, .88fr); gap: 14px; max-width: 1520px; min-height: min(79vh, 840px); margin: 0 auto; }
-.viewerColumn { display: flex; min-height: 620px; flex-direction: column; }
+.layout { display: grid; min-width: 0; grid-template-columns: minmax(0, 1.12fr) minmax(0, .88fr); gap: 14px; max-width: 1520px; min-height: min(79vh, 840px); margin: 0 auto; }
+.viewerColumn { display: flex; min-width: 0; min-height: 620px; flex-direction: column; }
 .viewer { position: relative; flex: 1; overflow: hidden; min-height: 560px; border: 1px solid #263448; border-radius: 12px; background: radial-gradient(ellipse at 50% 42%, #192435, #0d141e 66%); }
 .viewer canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 .viewerInteractive canvas { cursor: pointer; }
@@ -28,7 +28,7 @@
 .qualityControl { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; color: #95a8c0; font-size: 11px; }
 .qualityControl select { min-height: 34px; padding: 5px 24px 5px 9px; border: 1px solid #34455a; border-radius: 6px; color: #d8e4f2; background: #111a26; }
 .hint { margin: 5px 2px 0; color: #8190a7; font-size: 11px; line-height: 1.4; }
-.panel { display: flex; min-height: 620px; max-height: min(79vh, 840px); flex-direction: column; overflow: auto; padding: clamp(16px, 2vw, 24px); border: 1px solid #263448; border-radius: 12px; background: #101722; }
+.panel { display: flex; min-width: 0; min-height: 620px; max-height: min(79vh, 840px); flex-direction: column; overflow: auto; padding: clamp(16px, 2vw, 24px); border: 1px solid #263448; border-radius: 12px; background: #101722; }
 .panelHeading { margin-bottom: 10px; }
 .panelHeading h2 { margin: 5px 0 0; font-size: 23px; letter-spacing: -.02em; }
 .panel h3 { margin: 17px 0 8px; color: #b7c5d8; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
@@ -76,5 +76,5 @@
 .fallbackHotspot { position: absolute; display: grid; place-items: center; width: 17px; height: 17px; padding: 0; border: 2px solid #ffe0a8; border-radius: 50%; color: #fff3dc; background: #da8e35; box-shadow: 0 0 0 4px #da8e3544; transform: translate(-50%, -50%); cursor: pointer; }
 .fallbackHotspot span { position: absolute; left: 19px; width: max-content; max-width: 120px; color: #dfe9f4; font-size: 9px; text-shadow: 0 1px 2px #05080c; text-align: left; }
 .fallbackNote { align-self: end; margin: 2px 0 0; line-height: 1.45; }
-@media (max-width: 930px) { .layout { grid-template-columns: 1fr; } .viewerColumn { min-height: 540px; } .viewer { min-height: 470px; } .panel { min-height: 440px; max-height: none; } .header { align-items: flex-start; flex-direction: column; } .badges { justify-content: flex-start; } }
+@media (max-width: 930px) { .layout { grid-template-columns: minmax(0, 1fr); } .viewerColumn { min-height: 540px; } .viewer { min-height: 470px; } .panel { min-height: 440px; max-height: none; } .header { align-items: flex-start; flex-direction: column; } .badges { justify-content: flex-start; } }
 @media (max-width: 520px) { .page { padding: 15px 9px; } .viewerColumn { min-height: 470px; } .viewer { min-height: 410px; } .viewerModeNotice { right: 12px; left: auto; max-width: 112px; } .panel { padding: 14px; } .metricRow, .detailFacts { grid-template-columns: 1fr; } .groupListCompact { grid-template-columns: 1fr; } .fallbackBody { min-height: 350px; } }

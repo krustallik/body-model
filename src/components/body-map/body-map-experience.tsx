@@ -11,6 +11,7 @@ import {
 } from "@/modules/training/body-map-navigation-contract-v2";
 import { BODY_MAP_GROUP_CATALOG_V2, type AnatomyIdV2, type BodyMapGroupIdV2 } from "@/modules/training/body-map-catalog-v2";
 import type { BodyMapNavigationStateV2 } from "@/modules/training/body-map-navigation-contract-v2";
+import { normalizeStaticPublicBodyMapManifestV1, type StaticPublicBodyMapManifestV1 } from "@/modules/body-map/static-public-manifest-adapter-v1";
 import {
   BODY_MAP_URL_OVERVIEW_V1,
   defaultBodyMapGroupViewV1,
@@ -22,7 +23,7 @@ import {
   type BodyMapUrlViewV1,
 } from "@/modules/training/body-map-url-state-v1";
 import { BODY_MAP_OVERVIEW_PADDING_FACTOR_V1, CameraTransitionControllerV1, frameBoundsV1 } from "./camera-transition-v1";
-import styles from "./body-map-prototype.module.css";
+import styles from "./body-map-experience.module.css";
 
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
@@ -112,7 +113,8 @@ type PrototypeManifest = {
   viewerAsset: { path: string; sha256: string; status: string; mayClaimMusclePicking: boolean; assetId: string; selectableMeshCount: number; contextMeshCount: number; triangleCount: number; byteLength: number };
   runtimeAssets: RuntimeAsset[];
   visualIdentity: { manifestVersion: string; supportedRegions: ManifestRegion[]; contextNodes: Array<{ meshId: string; gltfNodeName: string; sourceObjectName: string; contextLayer: string; contextPresentation: "supplemental-muscle" | "support-only" | "skeletal-context" | "cranial-context" | "body-silhouette-context"; selectable: false }>; contextVisibility?: { contract: string; version: string; defaultHiddenContextMeshIds: string[] }; groupAssetIds: Record<string, string[]> };
-  demoData: { label: string; groupExposureStates: ExposureState[]; groupUniqueSetCounts: Record<string, number | null>; note: string };
+  demoData?: { label: string; groupExposureStates: ExposureState[]; groupUniqueSetCounts: Record<string, number | null>; note: string };
+  dataNotice?: string;
   status: string;
 };
 type LayerSelection = "all" | "superficial" | "deep";
@@ -187,7 +189,7 @@ function isEffectivelyVisible(object: THREE.Object3D) {
 }
 
 function isMusclePickTarget(object: THREE.Object3D) { return isEffectivelyVisible(object) && object.userData.bodycastContextPresentation !== "body-silhouette-context"; }
-export default function BodyMapPrototype() {
+export default function BodyMapExperience({ delivery = "development" }: { delivery?: "development" | "public" }) {
   const [manifest, setManifest] = useState<PrototypeManifest | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [assetError, setAssetError] = useState<string | null>(null);
@@ -220,20 +222,26 @@ export default function BodyMapPrototype() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/dev/body-map-prototype/manifest", { cache: "no-store" })
+    const manifestUrl = delivery === "public"
+      ? "/body-map/bodyparts3d-v3/manifest.json"
+      : "/api/dev/body-map-prototype/manifest";
+    fetch(manifestUrl, { cache: "no-store" })
       .then(async (response) => {
         if (!response.ok) throw new Error(await response.text());
-        return response.json() as Promise<PrototypeManifest>;
+        return response.json() as Promise<PrototypeManifest | StaticPublicBodyMapManifestV1>;
       })
-      .then((data) => {
+      .then((source) => {
         if (cancelled) return;
+        const data = (delivery === "public"
+          ? normalizeStaticPublicBodyMapManifestV1(source as StaticPublicBodyMapManifestV1)
+          : source) as PrototypeManifest;
         if (!data.viewerAsset.assetId || data.runtimeAssets.length !== 1) throw new Error("A single full-body runtime asset is required.");
         if (data.bodyMapGroups.length !== BODY_MAP_GROUP_CATALOG_V2.length || data.visualIdentity.supportedRegions.length !== data.viewerAsset.selectableMeshCount) throw new Error("Runtime anatomy manifest failed catalog or mesh identity checks.");
         setManifest(data);
       })
       .catch((error: unknown) => { if (!cancelled) setLoadError(error instanceof Error ? error.message : String(error)); });
     return () => { cancelled = true; };
-  }, []);
+  }, [delivery]);
 
   const selectedGroup = useMemo(() => manifest?.bodyMapGroups.find(({ groupId }) =>
     groupId === navState.groupId,
@@ -247,7 +255,9 @@ export default function BodyMapPrototype() {
     : null;
   const layer: LayerSelection = pageState.deep && deepDetailAnatomyId === null ? "deep" : "all";
   const asset = manifest?.runtimeAssets[0] ?? null;
-  const assetUrl = asset ? `/api/dev/body-map-prototype/asset?assetId=${encodeURIComponent(asset.assetId)}` : null;
+  const assetUrl = asset ? delivery === "public"
+    ? asset.path
+    : `/api/dev/body-map-prototype/asset?assetId=${encodeURIComponent(asset.assetId)}` : null;
 
   const requestFocus = useCallback((next: FocusRequestInput) => {
     const id = ++focusSequence.current;
@@ -473,7 +483,7 @@ export default function BodyMapPrototype() {
   if (loadError || !manifest || !assetUrl) {
     return (
       <main className={styles.page} data-testid="body-map-prototype">
-        <header className={styles.header}><div><h1>Body Map</h1></div><span className={styles.demoBadge}>DEMO DATA</span></header>
+        <header className={styles.header}><div><h1>Body Map</h1></div><span className={styles.demoBadge}>{delivery === "public" ? "TRAINING DATA NOT CONNECTED" : "DEMO DATA"}</span></header>
         {loadError ? <p className={styles.viewerError} role="alert">Body Map is unavailable: {loadError}</p> : <p className={styles.loading}>Loading anatomy…</p>}
       </main>
     );
@@ -484,7 +494,7 @@ export default function BodyMapPrototype() {
       <header className={styles.header}>
         <div><h1>Body Map</h1></div>
         <div className={styles.badges}>
-          <span className={styles.demoBadge}>{manifest.demoData.label}</span>
+          <span className={styles.demoBadge}>{delivery === "public" ? manifest.dataNotice : manifest.demoData?.label}</span>
         </div>
       </header>
 
@@ -632,7 +642,7 @@ export default function BodyMapPrototype() {
             <div className={styles.metricCard}><span>Child-region set metric</span><strong>Unavailable</strong><small>Recorded set exposure is shown only at its mapped group or parent anatomy. Child-region exposure is unavailable, not zero.</small></div>
             <div className={styles.detailFacts}>
               <span>Training exposure <b>{exposureLabel(activeExposure)}</b></span>
-              <span>Data source <b>DEMO DATA</b></span>
+              <span>Data source <b>{delivery === "public" ? "Not connected" : "DEMO DATA"}</b></span>
             </div>
           </>}
 
@@ -885,7 +895,7 @@ function FullBodyScene({
     }
     const totalMeshes = selectableMeshes.size;
     const regions = manifest.visualIdentity.supportedRegions.length;
-    const started = performance.getEntriesByType("resource").find((entry) => entry.name.includes(`/asset?assetId=${manifest.viewerAsset.assetId}`));
+    const started = performance.getEntriesByType("resource").find((entry) => entry.name.includes(assetUrl));
     onLoaded(totalMeshes, regions, model.uuid, started?.duration ?? null);
     return () => {
       model.traverse((object) => {
@@ -896,7 +906,7 @@ function FullBodyScene({
         });
       });
     };
-  }, [manifest.viewerAsset.assetId, manifest.viewerAsset.selectableMeshCount, manifest.visualIdentity.supportedRegions, model, onAssetError, onLoaded, regionIds, selectableMeshes]);
+  }, [assetUrl, manifest.viewerAsset.assetId, manifest.viewerAsset.selectableMeshCount, manifest.visualIdentity.supportedRegions, model, onAssetError, onLoaded, regionIds, selectableMeshes]);
 
   useEffect(() => {
     if (process.env.NODE_ENV !== "development") return;

@@ -101,13 +101,17 @@ Status: COMPLETE
 - Tests: seven existing suites passed (37 tests) for program routes/reconciliation, backfill, snapshot mapping, and stepper UI/diagnostics. ESLint passed for the adjusted diagnostic client.
 
 ### Stage 5 — Forecast, Goal, and Diagnostics
-Status: PENDING
+Status: COMPLETE — route-local presentation changes; all calculations, results, payloads, and APIs remain unchanged.
 
 - Routes: /forecast, /goal, /diagnostics.
 - Reuse ForecastChart and existing global chart roles. Improve reading order, filters/forms, provenance, dense diagnostics, and responsive chart/table surfaces.
 - Preserve observations, historical estimates, forecast, uncertainty, coverage, sources, units, all calculations, scenarios, horizons, results, and payloads.
 - Use the existing isolated forecast fixture where applicable; exercise observed/estimated/forecast/unavailable coverage variants.
 - Acceptance: chart meanings remain clear, no missing value becomes zero, and all calculation and route interactions remain unchanged.
+- Added a consistent four-column route-local AppNav layout and 40 px link targets on tablet/phone widths for Forecast, Goal, and Diagnostics. Added restrained fine-pointer hover surfaces and hover states for scenario/metric controls, while keeping information surfaces noninteractive in appearance. Focus rings and reduced-motion behavior remain available; no global styles or shared navigation implementation changed.
+- Browser QA used intercepted, read-only response fixtures for `/forecast`, `/goal`, and `/diagnostics`; every POST was intercepted, so no application database was written. It covered populated state with measured weights, historical model estimates, forward forecast quantile bands, provenance and missing-coverage distinctions, solver output with a target chart, partial-calibration gates, technical diagnostics, and mobile disclosure states. Forecast metric and scenario selection emitted the expected fixed-mode request; Goal submitted one scenario and rendered its target chart; Diagnostics technical details opened. Tablet/phone taps worked; visible keyboard focus rings and reduced-motion `0s` transitions were checked. Hover color/shadow changed with stable geometry. At 1280, 768, 390, 360, and 619/620/621, there were no page exceptions or horizontal overflow. Measured cumulative layout shift peaked at 0.00078 during forecast chart initialization.
+- Before captures: `artifacts/ui-redesign/full-site/stage-5/before/{forecast,goal,diagnostics}-{1280,390}.png`. After captures at 1280, 768, 390, and 360 are under `artifacts/ui-redesign/full-site/stage-5/after/`; included result, fixed-scenario, graph-hover, card-hover, and expanded-diagnostics examples. All captures use browser-only mock data and omit the Next development indicator.
+- Tests: 14 focused suites passed (101 tests), covering Forecast/Goal/Diagnostics client rendering, interactions, chart tooltip/data, UI helpers, and route behavior.
 
 ### Stage 6 — Body Map
 Status: BLOCKED — do not edit this phase until parallel work is reconciled.

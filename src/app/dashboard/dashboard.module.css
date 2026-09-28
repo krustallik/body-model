@@ -158,6 +158,10 @@
   .lowerGrid { grid-template-columns: 1fr; gap: 1.8rem; }
 }
 
+@media (min-width: 621px) and (max-width: 820px) and (pointer: coarse) {
+  .topbar > nav a { box-sizing: border-box; display: inline-flex; min-height: 2.5rem; align-items: center; justify-content: center; }
+}
+
 @media (max-width: 620px) {
   .page { padding-block: 1rem 2.5rem; }
   .topbar { align-items: stretch; flex-direction: column; gap: 0.75rem; }

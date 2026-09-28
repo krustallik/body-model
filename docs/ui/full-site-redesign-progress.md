@@ -6,7 +6,7 @@
 - Branch: feat/ui-dashboard-history-exploration
 - Approved visual baseline: 47654005f945228af9f38d301ba67d428efc027c
 - Latest checked remote main: 00798cb8eff76593a12d1f486e68ee5b65cf09da
-- After fetch: feature is 4 commits ahead and 0 behind main. No merge or rebase was performed.
+- After the final main fetch and before the final-audit commit: feature was 9 commits ahead and 0 behind `origin/main` (`00798cb8eff76593a12d1f486e68ee5b65cf09da`). No merge or rebase was performed.
 - The feature worktree started clean. The main worktree also checked clean. A separate Body Map branch has uncommitted work in its own worktree; it remains untouched.
 - Do not push, open a PR, merge, deploy, change APIs, schema, data, calculations, training semantics, or production infrastructure.
 - Use only the feature worktree. Do not overwrite changes from parallel worktrees.
@@ -123,12 +123,18 @@ Status: BLOCKED — do not edit this phase until parallel work is reconciled.
 - Acceptance once unblocked: reconcile the active implementation first; then verify real 3D loading, anatomy selection, highlighting, camera controls, URL refresh/back/forward, touch, responsive panels, fallback, and attribution without replacing the scene with 2D.
 
 ### Stage 7 — Cross-route regression and final audit
-Status: PENDING
+Status: COMPLETE FOR UNBLOCKED ROUTES — Body Map remains blocked under Stage 6.
 
 - Revisit every available route and checkpoint, all shared navigation and repeated surfaces, localization, keyboard/focus/contrast, reduced motion, touch, loading/error/empty states, overflow, and visual consistency.
 - Recheck Dashboard/History against their screenshots after shared styles. Capture final desktop/tablet/mobile states for every completed route.
 - Run typecheck, lint, targeted unit/interaction tests, isolated PostgreSQL integration tests where needed, and production build. Do not connect to production data.
 - Acceptance: all unblocked routes are browser-checked; all required technical checks pass or are individually documented as unavailable; final diff contains only authorized presentation/design documentation changes.
+- Final Dashboard/History browser regression ran against `BODYCAST_DEMO_MODE=1` at 1280, 768, 390, 360, and 619/620/621 px (14 route/viewport combinations). No horizontal overflow or page exceptions. Touch navigation links measured 40 px at all touch widths, including the previously short 768 px and 621 px tablet targets; desktop links stayed 34 px. Touch taps worked at 768 and 621 px.
+- History's desktop table remained visible above 820 px. At 820 px and below, the table was replaced by the existing mobile day-card layout. All eight chart cards loaded in the verified populated states. Fine-pointer hover changed the selected Dashboard/History surface while its bounds remained stable; hover captures are included.
+- Final captures: `artifacts/ui-redesign/full-site/stage-7/before/` and `artifacts/ui-redesign/full-site/stage-7/after/` include Dashboard/History at 1280 and 390 px; `after/` also includes both hover states. Machine-readable viewport results are in `dashboard-history-final.json`. Approved baseline captures remain unchanged.
+- `npm test`: 279 files passed, 2 skipped; 2,638 tests passed, 11 skipped. `npm run lint`, `npm run typecheck`, and production `npm run build` all passed. The build used temporary local-only environment values and did not connect to a database.
+- PostgreSQL integration tests were not run: no isolated `DATABASE_URL` is configured in this worktree, and the relevant fixture/integration workflows write or delete database data. No production database or fixture data was touched.
+- Final code change is limited to route-local CSS Modules for 40 px coarse-pointer tablet navigation targets on `/dashboard` and `/history`; no shared AppNav, data, API, calculations, behavior, or demo fixtures changed. The progress document records findings and the Stage 6 blocker.
 
 ## QA approach
 
@@ -154,9 +160,16 @@ Status: PENDING
 - Clarified feature-branch Body Map route status and recorded the active parallel implementation as a blocker. No Body Map runtime files were touched.
 - Browser QA: Dashboard and History loaded HTTP 200 with demo data at 1280, 768, 390, 360, and 619/620/621 px. No horizontal overflow, console errors, or measured layout shift. Keyboard focus ring, informational-card hover without geometry change, reduced-motion emulation, and coarse-pointer touch navigation (40 px links) were checked.
 - Captures: artifacts/ui-redesign/full-site/stage-1/dashboard-1280.png, dashboard-390.png, history-1280.png, history-390.png.
+- Later final browser audit found the 621–820 px coarse-pointer nav links on these two routes fell below the 40 px target used on other redesigned pages; Stage 7 corrects that locally without changing desktop or narrow-mobile layout.
 ### Stage 2 — Profile — 2026-09-28
 - Refined the centered profile shell, form surface, fields, checkbox treatment, validation/success feedback, and reduced-motion loading indicator using existing global tokens. Kept API, validation, data, and save behavior unchanged.
 - Matched this route shell to the approved navigation sizing. Browser QA found and fixed a 768 px nav overflow and a checkbox inherited from the general text-input sizing rule; the label now wraps within the control.
 - Browser QA used only mocked profile API responses. Empty, populated, pending, load-error, field-validation-error, save-success, keyboard, hover, touch checkbox, and reduced-motion states were exercised. No page exceptions, overflow, or measured CLS at 1280, 768, 390, 360, and 619/620/621 px. Hover changed the card border without geometry change; touch nav links were 40 px high.
 - Screenshots include before/after empty state, populated desktop/mobile, validation error, and loading state in artifacts/ui-redesign/full-site/stage-2/.
 - Tests: 15 relevant Profile client/schema tests passed; ESLint passed for profile-client.tsx. Error-state browser mocks intentionally returned HTTP 400/500; no uncaught page errors occurred. No database writes were made.
+
+### Stage 7 — Final audit — 2026-09-28
+- Rechecked Git/main/worktree state. `origin/main` remained `00798cb8eff76593a12d1f486e68ee5b65cf09da`; the main worktree at `D:/body-model/.worktrees/bodycast-safe-3d-publication` was clean. The active Body Map worktree at `D:/body-model` remains on `bodycast/full-3d-development-20260926` with pre-existing untracked `.agents/`, `.pnpm-store/`, `docs/audits/bodycast-application-and-design-system-audit-2026-09-26.md`, and `tests/node_modules/`; it was left untouched.
+- Fixed coarse-pointer tablet navigation target height at 621–820 px in the Dashboard and History route modules only. The final 14-case real-browser matrix passed with demo data, no page errors, and no horizontal overflow. Touch taps worked at 768 and 621 px; hover changed the informational chart/metric surface without geometry shifts.
+- History desktop table/mobile-card behavior and eight chart cards were verified in the populated captures. Final screenshots and JSON matrix are under `artifacts/ui-redesign/full-site/stage-7/`.
+- Full unit suite, lint, typecheck, and production build passed. PostgreSQL integration checks remain unrun for the isolated-database reason recorded above.

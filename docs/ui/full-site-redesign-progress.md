@@ -70,7 +70,7 @@ Status: COMPLETE — presentation update only; profile API and save behavior unc
 - Acceptance: all existing profile actions work and the presentation follows the approved tokens with no narrow-screen overflow.
 
 ### Stage 3 — Training diary
-Status: PENDING
+Status: COMPLETE
 
 Checkpoints, each browser-reviewed before proceeding:
 1. /training — diary and session list.
@@ -82,6 +82,10 @@ Checkpoints, each browser-reviewed before proceeding:
 - Preserve quick entry and mobile reachability; do not make display-only surfaces look like buttons.
 - Verify populated/empty/error states and all existing interactions at 1280, 768, 390, 360, plus the 619/620/621 navigation boundary. Capture screenshots at each checkpoint.
 - Acceptance: no behavior/data contract changes; core daily recording and editing flows work on touch and keyboard.
+- Applied route-local four-column mobile AppNav sizing with 40 px targets, dedicated tablet wrapping, and restrained color/shadow hover states for noninteractive panels and cards. All treatments are touch-safe and reduced-motion aware; shared AppNav and Dashboard/History styles remain untouched.
+- Browser QA covered populated Hub, active session, matched retrospective completion, and edit states at 1280, 768, 390, 360, and 619/620/621. No horizontal overflow or page exceptions. Verified the active-session redirect, set submission with weight 32 kg / 8 reps / RIR 2 through a mocked API, refreshed set count, next-exercise paging, touch navigation, visible keyboard focus, and reduced-motion transition duration (0s). The hovered panel border changed while its box geometry stayed identical.
+- Screenshots: `artifacts/ui-redesign/full-site/stage-3/before/` and `artifacts/ui-redesign/full-site/stage-3/after/` include Hub, active/completed/edit desktop and mobile captures plus Hub panel/card hover examples. Browser-only training fixtures did not write to any database.
+- Tests: five existing focused suites passed (50 tests): Training Hub UI, live session UI, session edit pager, session UX, and session routes.
 
 ### Stage 4 — Programs and historical training
 Status: PENDING

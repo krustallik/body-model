@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CANONICAL_EXERCISE_IDENTITIES } from "@/modules/training/canonical-exercise-identity";
+import { workoutSourceIdentity } from "@/modules/health/workout-source-identity";
 import {
   createTrainingHistoryStage01FixtureV1,
   TRAINING_HISTORY_STAGE01_WEEK_STARTS,
@@ -9,6 +10,7 @@ import {
 import {
   EXPECTED_FIXTURE_SCHEMA_LIMITS_V1,
   EXPECTED_GOLDEN_V1,
+  EXPECTED_MS100_V1,
   EXPECTED_NONLINEAR_V1,
   EXPECTED_ORDER_WEEKS_V1,
 } from "./fixtures/training-history-stage01/expected-v1";
@@ -168,6 +170,17 @@ describe("Training History Stage 01 deterministic fixtures", () => {
       const byKey = Object.fromEntries(session.exercises.map((exercise) => [exercise.stableKey, exercise])) as Record<string, Stage01ExerciseFixture>;
       const counts = Object.fromEntries(session.exercises.map((exercise) => [exercise.stableKey, exercise.sets.length]));
       expect(counts).toEqual(expected.setCounts);
+      const exactRows = session.exercises.flatMap((exercise) => exercise.sets.map((set) => [
+        exercise.stableKey,
+        exercise.sortOrder,
+        set.setNumber,
+        set.reps,
+        set.weightKg,
+        set.bandNominalResistanceKg,
+        exercise.loadBasis,
+        set.rir,
+      ]));
+      expect(exactRows).toEqual(expected.rows);
       expect(session.exercises.flatMap((exercise) => exercise.sets.map((set) => set.rir))).toEqual(
         session.exercises.flatMap((exercise) => exercise.sets.map(() => null)),
       );
@@ -199,6 +212,16 @@ describe("Training History Stage 01 deterministic fixtures", () => {
       }
       expect(session.matchedWorkoutId).not.toBeNull();
     }
+    const pushWorkout = fixture.workouts.find((row) => row.matchedDiarySessionId === fixture.sessions.find((session) => session.scenarioId === "golden-push")!.id)!;
+    expect(pushWorkout.type).toBe("Traditional Strength Training");
+    expect(pushWorkout.externalId).toBeNull();
+    expect(pushWorkout.sourceIdentity).toBe(EXPECTED_GOLDEN_V1.push.sourceIdentity);
+    expect(workoutSourceIdentity({
+      externalId: "training-2026-09-25-1-legacy",
+      type: pushWorkout.type,
+      startAt: pushWorkout.startAt,
+      endAt: pushWorkout.endAt,
+    })).toBe(EXPECTED_GOLDEN_V1.push.legacyGarminFallbackIdentity);
     expect(EXPECTED_FIXTURE_SCHEMA_LIMITS_V1).toMatchObject({
       equipmentPersisted: false,
       independentRepsPerSidePersisted: false,
@@ -212,16 +235,40 @@ describe("Training History Stage 01 deterministic fixtures", () => {
     const emptyDiary = fixture.sessions.find((session) => session.scenarioId === "edge-cases")!;
     expect(emptyDiary.exercises).toEqual([]);
     expect(emptyDiary.matchedWorkoutId).not.toBeNull();
-    expect(fixture.dailyHealthRows.every((day) => day.weightKg === null && day.steps === null)).toBe(true);
+    expect(fixture.dailyHealthRows.map(({ date, steps, rawPayload }) => ({
+      date,
+      steps,
+      source: rawPayload.stepObservation?.source ?? null,
+      method: rawPayload.stepObservation?.method ?? (steps === null ? "unavailable-no-observation" : null),
+    }))).toEqual(EXPECTED_MS100_V1.dailySteps);
     expect(fixture.workouts.filter((workout) => workout.scenario === "ms100-boundary")).toHaveLength(2);
-    const ms100 = fixture.workouts.filter((workout) => workout.scenario === "ms100-boundary");
-    expect(new Date(ms100[0]!.endAt).getTime()).toBeGreaterThan(new Date(ms100[0]!.startAt).getTime());
-    expect(new Date(ms100[1]!.startAt).getTime()).toBeLessThan(new Date(ms100[0]!.endAt).getTime());
+    const ms100 = fixture.workouts.filter((workout) => workout.scenario === "ms100-boundary").sort((a, b) => a.startAt.localeCompare(b.startAt));
+    expect(ms100.map((workout) => ({
+      startAt: workout.startAt,
+      endAt: workout.endAt,
+      sourceIdentity: workout.sourceIdentity,
+      durationMinutes: workout.durationMinutes,
+      manualStepCount: workout.manualStepCount,
+    }))).toEqual(EXPECTED_MS100_V1.intervals.map((row) => ({
+      startAt: row.startAt,
+      endAt: row.endAt,
+      sourceIdentity: row.sourceIdentity,
+      durationMinutes: row.durationMinutes,
+      manualStepCount: row.manualStepCount,
+    })));
+    expect(Math.min(...ms100.map((workout) => new Date(workout.endAt).getTime()))
+      - Math.max(...ms100.map((workout) => new Date(workout.startAt).getTime()))).toBe(EXPECTED_MS100_V1.overlapMinutes * 60_000);
     const localDate = (date: string) => new Intl.DateTimeFormat("en-CA", { timeZone: fixture.timezone }).format(new Date(date));
     expect(localDate(ms100[0]!.startAt)).toBe("2026-09-24");
     expect(localDate(ms100[0]!.endAt)).toBe("2026-09-25");
-    expect(ms100[1]!.manualStepCount).toBe(100);
+    expect(ms100.map((workout) => workout.manualStepCount === null || workout.durationMinutes === null
+      ? null
+      : workout.manualStepCount / workout.durationMinutes)).toEqual(EXPECTED_MS100_V1.intervals.map((row) => row.cadenceStepsPerMinute));
+    expect(ms100.map((workout) => workout.manualStepCount === null || workout.durationMinutes === null
+      ? "unavailable-no-step-count"
+      : "declared-manual-steps-over-timestamp-duration")).toEqual(EXPECTED_MS100_V1.intervals.map((row) => row.cadenceProvenance));
     expect(ms100.every((workout) => workout.matchedDiarySessionId === null)).toBe(true);
+    expect(ms100.every((workout) => workout.energyKcal === null && workout.activeEnergyKcal === null && workout.manualActiveEnergyKcal === null)).toBe(true);
     expect(fixture.workouts.filter((workout) => workout.date === "2026-09-26")).toEqual([]);
     expect(fixture.workouts.filter((workout) => workout.externalId !== null).every((workout) => workout.sourceIdentity === `ext:${workout.externalId}`)).toBe(true);
     expect(fixture.dailyHealthRows.some((day) => day.date === "2026-09-26")).toBe(false);

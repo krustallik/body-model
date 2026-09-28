@@ -5,9 +5,12 @@ import {
   retrospectiveExerciseAnatomyInterpretationV1,
 } from "@/modules/training/exercise-anatomy-mapping-v1";
 import { RESISTANCE } from "@/modules/training/training.constants";
+import { workoutSourceIdentity } from "@/modules/health/workout-source-identity";
 
 export const TRAINING_HISTORY_STAGE01_NAMESPACE_V1 = "bodycast-training-history-stage01:v1" as const;
 export const TRAINING_HISTORY_STAGE01_TIME_ZONE = "Europe/Bratislava" as const;
+export const TRAINING_HISTORY_STAGE01_PROFILE_ID = 1;
+export const TRAINING_HISTORY_STAGE01_CREATED_AT = "2026-01-01T00:00:00.000Z" as const;
 export const TRAINING_HISTORY_STAGE01_WEEK_STARTS = [
   "2026-01-05", "2026-01-12", "2026-01-19", "2026-01-26",
   "2026-02-02", "2026-02-09", "2026-02-16", "2026-02-23",
@@ -125,9 +128,13 @@ export type Stage01DailyHealthFixture = {
   id: number;
   date: string;
   weightKg: null;
-  steps: null;
+  steps: number | null;
   workoutFeedObserved: true;
-  rawPayload: { fixtureNamespace: typeof TRAINING_HISTORY_STAGE01_NAMESPACE_V1 };
+  rawPayload: {
+    fixtureNamespace: typeof TRAINING_HISTORY_STAGE01_NAMESPACE_V1;
+    fixtureProfileId: typeof TRAINING_HISTORY_STAGE01_PROFILE_ID;
+    stepObservation: { source: "stage01-synthetic-fixture"; method: "observed-daily-total"; value: number } | null;
+  };
 };
 export type Stage01ProgramVersionFixture = {
   id: number;
@@ -145,7 +152,14 @@ export type TrainingHistoryStage01FixtureV1 = {
   namespace: typeof TRAINING_HISTORY_STAGE01_NAMESPACE_V1;
   version: 1;
   timezone: typeof TRAINING_HISTORY_STAGE01_TIME_ZONE;
-  profiles: Array<{ id: number; sex: "male"; dateOfBirth: "1900-01-01"; heightCm: "1.00"; locale: "en" }>;
+  profiles: Array<{
+    id: typeof TRAINING_HISTORY_STAGE01_PROFILE_ID;
+    sex: "male";
+    dateOfBirth: "1900-01-01";
+    heightCm: "1.00";
+    locale: "en";
+    createdAt: typeof TRAINING_HISTORY_STAGE01_CREATED_AT;
+  }>;
   catalogExercises: Stage01CatalogExerciseFixture[];
   programs: Array<{ id: number; profileId: number; name: string; currentVersionId: number }>;
   programVersions: Stage01ProgramVersionFixture[];
@@ -277,7 +291,7 @@ const EQUIPMENT_BY_KEY: Readonly<Record<string, EquipmentHint>> = {
   supported_dumbbell_wrist_curl: "dumbbell-and-wrist-support",
 };
 
-function profileId(): number { return 1; }
+function profileId(): number { return TRAINING_HISTORY_STAGE01_PROFILE_ID; }
 function programId(slot: number): number { return PROGRAM_ID_BASE + slot + 1; }
 function programVersionId(slot: number, version: number): number { return PROGRAM_VERSION_ID_BASE + slot * 10 + version; }
 function catalogId(slot: number, index: number): number { return slot === 0 ? index + 1 : CATALOG_ID_BASE + slot * 100 + index + 1; }
@@ -599,13 +613,17 @@ function makeWorkout(
   startAt: string,
   endAt: string,
   scenario: Stage01WorkoutFixture["scenario"],
-  options: { externalId?: string | null; sourceIdentity?: string; matchedDiarySessionId?: number | null; manualStepCount?: number | null } = {},
+  options: { externalId?: string | null; matchedDiarySessionId?: number | null; manualStepCount?: number | null } = {},
 ): Stage01WorkoutFixture {
+  const startAtUtc = new Date(startAt).toISOString();
+  const endAtUtc = new Date(endAt).toISOString();
+  const externalId = options.externalId ?? null;
   return {
-    id, dailyHealthDataId, date, externalId: options.externalId ?? null,
-    sourceIdentity: options.sourceIdentity ?? (options.externalId ? `ext:${options.externalId}` : "fp:stage01|" + type + "|" + startAt + "|" + endAt),
-    type, startAt: new Date(startAt).toISOString(), endAt: new Date(endAt).toISOString(),
-    durationMinutes: null, energyKcal: null, activeEnergyKcal: null, syncProtected: false, hiddenFromHistory: false,
+    id, dailyHealthDataId, date, externalId,
+    sourceIdentity: workoutSourceIdentity({ externalId, type, startAt: startAtUtc, endAt: endAtUtc }),
+    type, startAt: startAtUtc, endAt: endAtUtc,
+    durationMinutes: (new Date(endAtUtc).getTime() - new Date(startAtUtc).getTime()) / 60_000,
+    energyKcal: null, activeEnergyKcal: null, syncProtected: false, hiddenFromHistory: false,
     manualStepCount: options.manualStepCount ?? null, manualActiveEnergyKcal: null,
     matchedDiarySessionId: options.matchedDiarySessionId ?? null, scenario,
   };
@@ -618,16 +636,15 @@ function createWorkouts(sessions: readonly Stage01SessionFixture[]): Stage01Work
   const pushDay = DAILY_HEALTH_ID_BASE + 2;
   return [
     makeWorkout(WORKOUT_ID_BASE + 1, pullDay, "2026-09-24", "Traditional Strength Training", "2026-09-24T09:00:00+02:00", "2026-09-24T10:30:00+02:00", "golden", {
-      externalId: "stage01-golden-pull-source", sourceIdentity: "ext:stage01-golden-pull-source", matchedDiarySessionId: pull.id,
+      externalId: "stage01-golden-pull-source", matchedDiarySessionId: pull.id,
     }),
     makeWorkout(WORKOUT_ID_BASE + 2, pushDay, "2026-09-25", "Traditional Strength Training", "2026-09-25T09:00:00+02:00", "2026-09-25T10:30:00+02:00", "golden", {
-      externalId: "stage01-golden-push-source", sourceIdentity: "ext:stage01-golden-push-source", matchedDiarySessionId: push.id,
+      matchedDiarySessionId: push.id,
     }),
     makeWorkout(WORKOUT_ID_BASE + 3, pullDay, "2026-09-24", "Traditional Strength Training", "2026-09-24T11:30:00+02:00", "2026-09-24T12:30:00+02:00", "empty-diary", {
-      externalId: "stage01-empty-diary-source", sourceIdentity: "ext:stage01-empty-diary-source", matchedDiarySessionId: empty.id,
+      externalId: "stage01-empty-diary-source", matchedDiarySessionId: empty.id,
     }),
     makeWorkout(WORKOUT_ID_BASE + 4, pullDay, "2026-09-24", "MS100", "2026-09-24T23:40:00+02:00", "2026-09-25T00:25:00+02:00", "ms100-boundary", {
-      externalId: "stage01-ms100-cross-midnight-a",
     }),
     makeWorkout(WORKOUT_ID_BASE + 5, pullDay, "2026-09-24", "MS100", "2026-09-24T23:55:00+02:00", "2026-09-25T00:30:00+02:00", "ms100-boundary", {
       manualStepCount: 100,
@@ -635,10 +652,23 @@ function createWorkouts(sessions: readonly Stage01SessionFixture[]): Stage01Work
   ];
 }
 function createDailyHealthRows(): Stage01DailyHealthFixture[] {
-  return ["2026-09-24", "2026-09-25"].map((date, index) => ({
-    id: DAILY_HEALTH_ID_BASE + index + 1, date, weightKg: null, steps: null, workoutFeedObserved: true,
-    rawPayload: { fixtureNamespace: TRAINING_HISTORY_STAGE01_NAMESPACE_V1 },
-  }));
+  return ["2026-09-24", "2026-09-25"].map((date, index) => {
+    const steps = date === "2026-09-24" ? 8_421 : null;
+    return {
+      id: DAILY_HEALTH_ID_BASE + index + 1,
+      date,
+      weightKg: null,
+      steps,
+      workoutFeedObserved: true,
+      rawPayload: {
+        fixtureNamespace: TRAINING_HISTORY_STAGE01_NAMESPACE_V1,
+        fixtureProfileId: TRAINING_HISTORY_STAGE01_PROFILE_ID,
+        stepObservation: steps === null
+          ? null
+          : { source: "stage01-synthetic-fixture", method: "observed-daily-total", value: steps },
+      },
+    };
+  });
 }
 function createCatalogExercises(): Stage01CatalogExerciseFixture[] {
   const rows = CANONICAL_EXERCISE_IDENTITIES.map((exercise) => catalogForSlot(0, exercise.stableKey));
@@ -661,7 +691,8 @@ export function createTrainingHistoryStage01FixtureV1(): TrainingHistoryStage01F
   }
   sessions.push(createGoldenSession("pull", PULL_GOLDEN_ROWS), createGoldenSession("push", PUSH_GOLDEN_ROWS), createEmptyDiarySession());
   const profiles = [{
-    id: 1, sex: "male" as const, dateOfBirth: "1900-01-01" as const, heightCm: "1.00" as const, locale: "en" as const,
+    id: TRAINING_HISTORY_STAGE01_PROFILE_ID as 1, sex: "male" as const, dateOfBirth: "1900-01-01" as const, heightCm: "1.00" as const, locale: "en" as const,
+    createdAt: TRAINING_HISTORY_STAGE01_CREATED_AT,
   }];
   const { programs, programVersions } = createPrograms(sessions);
   return {

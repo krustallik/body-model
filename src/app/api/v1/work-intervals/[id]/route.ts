@@ -5,6 +5,7 @@ import {
   UpdateWorkIntervalSchema,
   WorkIntervalIdParamsSchema,
 } from "@/modules/work-intervals/work-interval.schema";
+import { isLocalDemoMode, localDemoReadOnlyResponse } from "@/modules/demo/local-demo-mode";
 
 async function parseId(params: Promise<{ id: string }>): Promise<number | Response> {
   const parsed = WorkIntervalIdParamsSchema.safeParse(await params);
@@ -15,6 +16,7 @@ export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
+  if (isLocalDemoMode()) return localDemoReadOnlyResponse();
   const id = await parseId(params);
   if (id instanceof Response) return id;
   const body = await readJson(request);
@@ -38,6 +40,7 @@ export async function DELETE(
   _request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
+  if (isLocalDemoMode()) return localDemoReadOnlyResponse();
   const id = await parseId(params);
   if (id instanceof Response) return id;
   try {

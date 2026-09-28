@@ -5,6 +5,8 @@ import type { DashboardDto } from "@/modules/days/dashboard.types";
 import { sleepRepository } from "@/modules/health/sleep.repository";
 import { addCalendarDays, todayInCalendarTimeZone } from "@/modules/days/calendar-range";
 import { emptyTrainingDayFact } from "@/modules/days/training-day-fact";
+import { isLocalDemoMode } from "@/modules/demo/local-demo-mode";
+import { localDemoDashboard } from "@/modules/demo/local-demo-data";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +15,7 @@ export async function GET(request: Request): Promise<Response> {
   if (!query.success) return validationResponse(query.error);
 
   const date = query.data.date ?? todayInCalendarTimeZone();
+  if (isLocalDemoMode()) return Response.json(localDemoDashboard(date));
   const recentFrom = addCalendarDays(date, -6);
 
   try {

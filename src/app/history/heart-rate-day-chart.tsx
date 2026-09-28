@@ -27,11 +27,11 @@ const EMPTY_HEART_RATE: HeartRateDayDto = {
 };
 
 const tooltipStyle = {
-  backgroundColor: "var(--surface)",
+  backgroundColor: "var(--surface-2)",
   border: "1px solid var(--line)",
   borderRadius: "10px",
   color: "var(--ink)",
-  fontSize: "12px",
+  fontSize: "13px",
 };
 
 function localToday(): string {
@@ -137,21 +137,21 @@ export function HeartRateDayChart() {
           </dl>
           <div className={styles.chartCanvas}>
             <ResponsiveContainer width="100%" height="100%" minWidth={0}>
-              <LineChart data={heartRate.samples} margin={{ top: 8, right: 18, left: -18, bottom: 0 }} accessibilityLayer>
+              <LineChart data={heartRate.samples} margin={{ top: 10, right: 6, left: 4, bottom: 4 }} accessibilityLayer>
                 <CartesianGrid stroke="var(--line)" strokeDasharray="4 5" vertical={false} />
                 <XAxis
                   dataKey="timestamp"
                   tickFormatter={(value) => formatClock(String(value), intlLocale)}
-                  tick={{ fill: "var(--muted)", fontSize: 11 }}
+                  tick={{ fill: "var(--text-secondary)", fontSize: 12 }}
                   tickLine={false}
                   axisLine={{ stroke: "var(--line)" }}
                   minTickGap={28}
                 />
                 <YAxis
-                  tick={{ fill: "var(--muted)", fontSize: 11 }}
+                  tick={{ fill: "var(--text-secondary)", fontSize: 12 }}
                   tickLine={false}
                   axisLine={false}
-                  width={52}
+                  width={76}
                   domain={["auto", "auto"]}
                   unit=" bpm"
                 />
@@ -164,10 +164,10 @@ export function HeartRateDayChart() {
                   type="monotone"
                   dataKey="bpm"
                   name={uk ? "Пульс" : "Heart rate"}
-                  stroke="var(--primary)"
+                  stroke="var(--health-heart)"
                   strokeWidth={2.4}
                   connectNulls
-                  dot={{ r: 2, fill: "var(--primary)", strokeWidth: 0 }}
+                  dot={{ r: 2, fill: "var(--health-heart)", strokeWidth: 0 }}
                   activeDot={{ r: 4 }}
                   isAnimationActive={false}
                 />

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { AppNav } from "@/components/app-nav";
+import { DemoDataBadge } from "@/components/demo-data-badge";
 import { useI18n } from "@/i18n/i18n-provider";
 import type { DailyMetricField } from "@/modules/days/day.types";
 import type { DashboardDto } from "@/modules/days/dashboard.types";
@@ -36,7 +37,7 @@ async function loadDashboard(uk: boolean): Promise<DashboardDto> {
   return response.json() as Promise<DashboardDto>;
 }
 
-export function DashboardClient() {
+export function DashboardClient({ demoMode = false }: { demoMode?: boolean } = {}) {
   const { locale, intlLocale } = useI18n();
   const uk = locale === "uk";
   const metricCards: Array<{ key: DailyMetricField | "totalWorkoutMinutes"; label: string; unit?: string }> = [
@@ -113,7 +114,7 @@ export function DashboardClient() {
 
       <section className={styles.hero}>
         <div>
-          <p className={styles.eyebrow}>{uk ? "Поточний огляд" : "Daily record"}</p>
+          <p className={styles.eyebrow}>{uk ? "Поточний огляд" : "Daily record"}<DemoDataBadge active={demoMode} /></p>
           <h1>{uk ? "Ваш день у цифрах" : "Your daily snapshot"}</h1>
           <p>{uk ? "Огляд сьогоднішніх показників здоров’я та тренувань за останні сім днів." : "A clear view of today’s health data and training events over the last seven days."}</p>
         </div>
@@ -138,7 +139,7 @@ export function DashboardClient() {
         </div>
         <div className={styles.metricGroups}>
           {groupedMetrics.map(({ key: groupKey, label: groupLabel, metrics }) => (
-            <section className={styles.metricGroup} key={groupKey} aria-label={groupLabel}>
+            <section className={styles.metricGroup} key={groupKey} aria-label={groupLabel} data-group={groupKey}>
               <h3>{groupLabel}</h3>
               <dl className={styles.metricRows}>
                 {metrics.map(({ key, label, unit }) => {
@@ -150,7 +151,10 @@ export function DashboardClient() {
                   return (
                     <div className={styles.metricRow} key={key}>
                       <dt>{label}</dt>
-                      <dd className={styles.metricReading}>
+                      <dd
+                        className={styles.metricReading}
+                        data-primary-metric={key === "weightKg" || key === "caloriesKcal" || key === "steps" ? key : undefined}
+                      >
                         <strong>{formatMetric(value, intlLocale)}</strong>
                         <span>{key === "totalWorkoutMinutes"
                           ? dashboardTrainingMetricCaption(dashboard.todayTrainingDay, uk)

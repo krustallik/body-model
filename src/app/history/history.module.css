@@ -665,14 +665,24 @@
 }
 .skipLink:focus-visible { transform: translateY(0); outline: none; box-shadow: var(--focus-ring); }
 
-.page { position: relative; padding-block: 1.5rem 4rem; }
-.navRow { margin-bottom: 2.2rem; padding-bottom: 1rem; border-bottom: 1px solid var(--line); }
+.page {
+  --health-body: #4db890;
+  --health-nutrition: #d4a017;
+  --health-nutrition-primary: #e07a2f;
+  --health-movement: #8794ff;
+  --health-steps: #5b69c9;
+  --health-heart: #b45f45;
+  --health-sleep: #7b6cc9;
+  position: relative;
+  padding-block: 1.35rem 4rem;
+}
+.navRow { margin-bottom: 1.75rem; padding-bottom: 0.85rem; border-bottom: 1px solid var(--line); }
 .navRow > strong { letter-spacing: -0.03em; }
 .navRow > nav { max-width: 100%; }
-.header { margin-bottom: 1.35rem; }
-.header h1 { font-size: clamp(2.45rem, 5vw, 4.5rem); line-height: 1; text-wrap: balance; }
-.eyebrow { margin-bottom: 0.6rem; color: var(--text-secondary); font-size: 0.77rem; font-weight: 700; letter-spacing: 0.02em; text-transform: none; }
-.intro { margin-top: 0.8rem; }
+.header { margin-bottom: 1.1rem; }
+.header h1 { font-size: clamp(2.4rem, 4.3vw, 4.15rem); line-height: 1; text-wrap: balance; }
+.eyebrow { margin-bottom: 0.5rem; color: var(--text-secondary); font-size: 0.8rem; font-weight: 700; letter-spacing: 0.02em; text-transform: none; }
+.intro { margin-top: 0.7rem; color: var(--text-secondary); font-size: 0.94rem; line-height: 1.55; }
 .primaryButton,
 .secondaryButton { min-height: 2.75rem; border-radius: 0.55rem; }
 .primaryButton:focus-visible,
@@ -685,8 +695,8 @@
 .actions button { min-height: 2.5rem; border-radius: 0.45rem; }
 
 .rangeBar {
-  margin: 0.2rem 0 1rem;
-  padding: 0.8rem 0;
+  margin: 0.15rem 0 1rem;
+  padding: 0.7rem 0;
   background: transparent;
   border-top: 1px solid var(--line);
   border-right: 0;
@@ -697,57 +707,74 @@
 .rangeBar:focus { outline: none; }
 .rangeBar:focus-visible { box-shadow: var(--focus-ring); }
 .rangeBar strong { font-size: 0.88rem; }
-.rangeBar span { font-size: 0.74rem; }
+.rangeBar span { color: var(--text-secondary); font-size: 0.78rem; }
 .rangeSwitch { gap: 0.2rem; padding: 0; background: transparent; border-radius: 0; }
 .rangeSwitch button {
   min-width: 3.4rem;
   min-height: 2.75rem;
-  padding: 0.5rem 0.8rem;
+  padding: 0.5rem 0.75rem;
   color: var(--muted);
   border: 1px solid transparent;
   border-radius: 0.45rem;
-  font-size: 0.8rem;
+  font-size: 0.82rem;
   transition: color var(--ease), background var(--ease), border-color var(--ease);
 }
 .rangeSwitch button:hover { color: var(--ink); background: var(--surface-2); }
 .rangeSwitch button[aria-pressed="true"] { color: var(--primary-strong); background: var(--selected); border-color: color-mix(in srgb, var(--primary) 28%, var(--border)); }
 
-.chartsSection { margin: 0 0 1.6rem; }
-.chartsTitle { align-items: end; padding: 1.1rem 0 0.95rem; border-bottom: 1px solid var(--line); }
-.chartsTitle h2 { font-size: clamp(1.5rem, 2.4vw, 2.05rem); letter-spacing: -0.04em; }
-.chartsTitle > p { max-width: 27rem; line-height: 1.45; text-align: right; }
-.chartsGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; }
+.chartsSection { margin: 0 0 1.5rem; }
+.chartsTitle { align-items: end; padding: 0.9rem 0 0.95rem; border-bottom: 1px solid var(--line); }
+.chartsTitle h2 { font-size: clamp(1.55rem, 2.3vw, 1.95rem); letter-spacing: -0.04em; }
+.chartsTitle > p { max-width: 27rem; color: var(--text-secondary); font-size: 0.84rem; line-height: 1.5; text-align: right; }
+.chartsGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.8rem; }
 .chartCard {
   min-width: 0;
-  padding: 1.15rem 1.35rem 1.25rem 0;
-  background: transparent;
-  border: 0;
-  border-bottom: 1px solid var(--line);
-  border-radius: 0;
+  padding: 1.05rem 1.1rem 1.15rem;
+  background: color-mix(in srgb, var(--chart-accent) 4%, var(--surface-1));
+  border: 1px solid color-mix(in srgb, var(--chart-accent) 21%, var(--border));
+  border-radius: 0.82rem;
   box-shadow: none;
 }
-.chartCard:nth-child(odd) { padding-right: 1.35rem; border-right: 1px solid var(--line); }
-.chartCard:nth-child(even) { padding-left: 1.35rem; }
+.chartCard[data-tone="body"] { --chart-accent: var(--health-body); }
+.chartCard[data-tone="heart"] { --chart-accent: var(--health-heart); }
+.chartCard[data-tone="nutrition"] { --chart-accent: var(--health-nutrition); }
+.chartCard[data-tone="sleep"] { --chart-accent: var(--health-sleep); }
+.chartCard[data-tone="steps"] { --chart-accent: var(--health-steps); }
+.chartCard[data-tone="movement"] { --chart-accent: #168ca3; }
 .chartCard:nth-child(3) { grid-column: auto; }
-.chartHeading h3 { font-size: 1rem; letter-spacing: -0.02em; }
-.chartHeading p { min-height: 1.25rem; line-height: 1.4; }
-.chartCanvas { height: 15.5rem; margin-top: 0.8rem; }
-.chartEmpty { min-height: 15.5rem; border-top: 1px dashed var(--line); border-bottom: 1px dashed var(--line); }
-.chartsLoading { display: flex; align-items: center; min-height: 5rem; margin-bottom: 1rem; padding: 0.7rem 0; background: transparent; border: 0; border-block: 1px solid var(--line); border-radius: 0; box-shadow: none; }
-.dailySignals { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2rem; margin: 2.2rem 0; }
+.chartHeading h3 { font-size: 1.04rem; letter-spacing: -0.02em; }
+.chartHeading p { min-height: 1.25rem; margin-top: 0.35rem; color: var(--text-secondary); font-size: 0.8rem; line-height: 1.45; }
+.axisUnits { display: flex; justify-content: space-between; gap: 0.5rem 1rem; margin-top: 0.65rem; color: var(--text-secondary); font-size: 0.74rem; font-variant-numeric: tabular-nums; }
+.axisUnits span { display: inline-flex; align-items: center; gap: 0.4rem; }
+.axisUnits i { width: 0.45rem; height: 0.45rem; flex: 0 0 auto; border-radius: 50%; background: currentColor; }
+.chartCanvas { height: 16rem; margin-top: 0.75rem; }
+.chartEmpty { min-height: 14rem; margin-top: 0.7rem; background: color-mix(in srgb, var(--chart-accent) 2%, var(--inset)); border: 1px dashed color-mix(in srgb, var(--chart-accent) 28%, var(--border)); border-radius: 0.65rem; color: var(--text-secondary); font-size: 0.9rem; }
+.chartsLoading { display: flex; align-items: center; min-height: 5rem; margin-bottom: 1rem; padding: 0.7rem 0; color: var(--text-secondary); background: transparent; border: 0; border-block: 1px solid var(--line); border-radius: 0; box-shadow: none; }
+.dailySignals { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.85rem; margin: 1.8rem 0; }
 .heartRateDaySection { min-width: 0; margin: 0; }
-.dailySignals .heartRateDayCard { height: 100%; padding: 1rem 0 1.15rem; background: transparent; border: 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); border-radius: 0; box-shadow: none; }
-.dailySignals .heartRateDayMeta div { padding: 0.65rem 0.7rem; background: var(--surface-2); border-color: var(--line); border-radius: 0.45rem; }
-.chartDayPicker span { text-transform: none; letter-spacing: 0.01em; }
+.dailySignals .heartRateDayCard { height: 100%; padding: 1.05rem 1.1rem 1.15rem; background: color-mix(in srgb, var(--signal-accent) 5%, var(--surface-1)); border: 1px solid color-mix(in srgb, var(--signal-accent) 22%, var(--border)); border-radius: 0.82rem; box-shadow: none; }
+.dailySignals > .heartRateDaySection:first-child .heartRateDayCard { --signal-accent: var(--health-heart); }
+.dailySignals > .heartRateDaySection:nth-child(2) .heartRateDayCard { --signal-accent: var(--health-sleep); }
+.dailySignals .heartRateDayMeta div { padding: 0.7rem 0.75rem; background: color-mix(in srgb, var(--signal-accent) 5%, var(--surface-2)); border-color: color-mix(in srgb, var(--signal-accent) 16%, var(--border)); border-radius: 0.58rem; }
+.dailySignals .heartRateDayMeta dt { color: var(--text-secondary); font-size: 0.74rem; letter-spacing: 0.02em; text-transform: none; }
+.dailySignals .heartRateDayMeta dd { color: var(--text); font-size: 1.2rem; }
+.chartDayPicker span { color: var(--text-secondary); font-size: 0.76rem; font-weight: 650; text-transform: none; letter-spacing: 0.01em; }
 .chartDayPicker input { min-height: 2.75rem; border-radius: 0.45rem; }
 .chartDayPicker input:focus-visible { outline: none; border-color: var(--primary); box-shadow: var(--focus-ring); }
+.sleepHypnogramLabels { color: var(--text-secondary); font-size: 0.76rem; }
+.sleepHypnogramTicks { color: var(--text-secondary); font-size: 0.74rem; }
+.sleepHypnogramNote { color: var(--text-secondary); font-size: 0.76rem; }
+.sleepHypnogramRow { background: color-mix(in srgb, var(--health-sleep) 8%, var(--surface-2)); }
+.sleepInBedBand span { background: var(--health-sleep); }
+.chartInlineError { padding: 0.65rem 0.75rem; color: var(--danger-strong); background: var(--danger-soft); border: 1px solid color-mix(in srgb, var(--danger) 26%, var(--border)); border-radius: 0.55rem; }
 
 .panel { overflow: visible; background: transparent; border: 0; border-top: 1px solid var(--line); border-radius: 0; box-shadow: none; }
 .panelHeader { padding: 1rem 0; border-bottom: 1px solid var(--line); }
 .panelHeader p { font-size: 0.78rem; }
 .secondaryButton { padding: 0.55rem 0.85rem; background: var(--surface-2); }
 .tableWrap { min-width: 0; overscroll-behavior-inline: contain; scrollbar-color: var(--border-strong) var(--inset); }
-.tableWrap th { background: var(--surface-2); }
+.tableWrap th { color: var(--text-secondary); background: var(--surface-2); font-size: 0.76rem; }
+.tableWrap td { font-size: 0.88rem; }
 .tableWrap tbody tr:hover { background: var(--elevated); }
 .emptyState { min-height: 13rem; }
 .errorBanner { color: var(--danger-strong); background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 28%, var(--border)); }
@@ -755,14 +782,15 @@
 .daySecondary summary { min-height: 2.75rem; }
 
 @media (max-width: 980px) {
-  .navRow > nav { flex-wrap: wrap; justify-content: flex-end; }
+  .navRow > nav { flex-wrap: wrap; justify-content: flex-end; gap: 0.15rem; }
+  .navRow > nav a { padding: 0.45rem 0.58rem; font-size: 0.8rem; }
 }
 
 @media (max-width: 820px) {
   .page { padding-block: 1.25rem 2.5rem; }
-  .navRow { align-items: stretch; flex-direction: column; gap: 1rem; margin-bottom: 1.8rem; }
+  .navRow { align-items: stretch; flex-direction: column; gap: 0.75rem; margin-bottom: 1.35rem; }
   .navRow > nav { width: 100%; justify-content: initial; }
-  .header { gap: 1.1rem; margin-bottom: 1rem; }
+  .header { gap: 1rem; margin-bottom: 0.9rem; }
   .header .primaryButton { width: auto; align-self: flex-start; }
   .rangeBar { align-items: stretch; gap: 0.75rem; }
   .rangeSwitch { width: 100%; }
@@ -772,14 +800,15 @@
   .chartsGrid { grid-template-columns: minmax(0, 1fr); }
   .chartCard,
   .chartCard:nth-child(odd),
-  .chartCard:nth-child(even) { padding: 1rem 0 1.1rem; border-right: 0; }
+  .chartCard:nth-child(even) { padding: 0.95rem 0.9rem 1rem; border: 1px solid color-mix(in srgb, var(--chart-accent) 21%, var(--border)); }
   .chartCard:nth-child(3) { grid-column: auto; }
   .chartCanvas { height: 14rem; }
-  .chartEmpty { min-height: 12rem; }
-  .dailySignals { grid-template-columns: minmax(0, 1fr); gap: 1.25rem; margin: 1.6rem 0; }
-  .dailySignals .heartRateDayCard { padding: 1rem 0; }
-  .heartRateDayHeader { align-items: flex-end; flex-direction: row; }
-  .chartDayPicker { width: auto; }
+  .chartEmpty { min-height: 11rem; }
+  .dailySignals { grid-template-columns: minmax(0, 1fr); gap: 0.75rem; margin: 1.25rem 0; }
+  .dailySignals .heartRateDayCard { height: auto; padding: 0.95rem 0.9rem 1rem; }
+  .heartRateDayHeader { align-items: flex-start; flex-direction: row; gap: 0.65rem; }
+  .chartDayPicker { width: 8.4rem; }
+  .chartDayPicker input { width: 100%; }
   .heartRateDayMeta { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .panel { overflow: visible; }
   .panelHeader { padding: 0.95rem 0; border-bottom: 1px solid var(--line); }
@@ -789,22 +818,28 @@
 
 @media (max-width: 620px) {
   .page { padding-block: 1rem 2rem; }
-  .navRow { margin-bottom: 1.5rem; }
+  .navRow { margin-bottom: 1rem; }
   .header { align-items: stretch; }
-  .header h1 { font-size: clamp(2.25rem, 11vw, 3.15rem); }
+  .header h1 { font-size: clamp(2.25rem, 9vw, 3rem); }
+  .navRow > nav { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.15rem; padding: 0.25rem; }
+  .navRow > nav a { min-height: 2.5rem; display: grid; place-items: center; padding: 0.35rem 0.08rem; font-size: 0.7rem; line-height: 1.15; }
   .header .primaryButton { width: 100%; align-self: stretch; }
   .rangeBar { padding-block: 0.75rem; }
   .rangeBar span { line-height: 1.4; }
   .rangeSwitch { gap: 0.1rem; }
   .rangeSwitch button { min-width: 0; min-height: 2.75rem; padding-inline: 0.18rem; font-size: 0.74rem; }
-  .chartCanvas { height: 12.5rem; }
-  .dailySignals { gap: 0.85rem; }
-  .heartRateDayHeader { align-items: flex-start; flex-direction: column; }
-  .chartDayPicker { width: 100%; }
-  .chartDayPicker input { width: 100%; }
+  .chartCanvas { height: 13.25rem; }
+  .axisUnits { flex-wrap: wrap; font-size: 0.7rem; }
+  .dailySignals { gap: 0.65rem; }
+  .heartRateDayHeader { align-items: flex-start; flex-direction: row; gap: 0.5rem; }
+  .chartHeading { min-width: 0; }
+  .chartHeading p { font-size: 0.74rem; }
+  .chartDayPicker { width: 7.7rem; }
+  .chartDayPicker span { font-size: 0.72rem; }
+  .chartDayPicker input { width: 100%; min-width: 0; padding-inline: 0.4rem; font-size: 0.8rem; }
   .heartRateDayMeta { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem; }
-  .sleepHypnogram { grid-template-columns: 4.3rem minmax(0, 1fr); gap: 0.5rem; }
-  .sleepHypnogramLabels { font-size: 0.66rem; }
+  .sleepHypnogram { grid-template-columns: 4.2rem minmax(0, 1fr); gap: 0.5rem; }
+  .sleepHypnogramLabels { font-size: 0.7rem; }
   .panelHeader { align-items: flex-start; }
   .panelHeader .secondaryButton { min-height: 2.75rem; }
   .dayCard { padding: 0.9rem; }

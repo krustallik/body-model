@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { AppNav } from "@/components/app-nav";
+import { DemoDataBadge } from "@/components/demo-data-badge";
 import { useI18n } from "@/i18n/i18n-provider";
 import type { DailyMetricDto, DailyMetricField } from "@/modules/days/day.types";
 import { DAILY_METRIC_FIELDS } from "@/modules/days/day.types";
@@ -254,7 +255,7 @@ async function fetchHistoryData(range: HistoryRange, uk: boolean): Promise<{
   };
 }
 
-export function HistoryClient() {
+export function HistoryClient({ demoMode = false }: { demoMode?: boolean } = {}) {
   const { locale, intlLocale } = useI18n();
   const uk = locale === "uk";
   const [days, setDays] = useState<DailyMetricDto[]>([]);
@@ -347,7 +348,7 @@ export function HistoryClient() {
       </div>
       <header className={styles.header}>
         <div>
-          <p className={styles.eyebrow}>{uk ? "BodyCast · Денні показники" : "BodyCast · Daily metrics"}</p>
+          <p className={styles.eyebrow}>{uk ? "BodyCast · Денні показники" : "BodyCast · Daily metrics"}<DemoDataBadge active={demoMode} /></p>
           <h1>{uk ? "Історія здоров’я" : "Health history"}</h1>
           <p className={styles.intro}>{uk ? "Переглядайте записи Apple Health і обережно вносьте ручні виправлення." : "Review Apple Health records and make careful manual corrections."}</p>
         </div>

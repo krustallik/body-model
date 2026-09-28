@@ -117,11 +117,19 @@
 
 .lowerGrid { display: grid; grid-template-columns: minmax(15rem, 0.7fr) minmax(0, 1.8fr); gap: 2.25rem; margin-top: 2.35rem; }
 .syncCard,
-.historyCard { min-width: 0; background: transparent; border: 0; border-top: 1px solid var(--line); border-radius: 0; box-shadow: none; }
-.syncCard { padding: 1.05rem 0 0; }
+.historyCard {
+  --surface-accent: var(--health-body);
+  min-width: 0;
+  background: color-mix(in srgb, var(--surface-accent) 3%, var(--surface-1));
+  border: 1px solid color-mix(in srgb, var(--surface-accent) 20%, var(--border));
+  border-radius: 0.85rem;
+  box-shadow: none;
+}
+.syncCard { padding: 1rem; border-inline-start: 2px solid color-mix(in srgb, var(--health-body) 34%, var(--border)); }
+.historyCard { --surface-accent: var(--health-movement); overflow: hidden; padding: 0 1rem 0.9rem; }
 .sectionHeading h2 { margin: 0; font-size: 1.2rem; letter-spacing: -0.03em; }
 .syncCard dl { margin: 1rem 0 0; }
-.syncCard dl div { display: grid; gap: 0.3rem; padding: 0.7rem 0; border-top: 1px solid var(--line); }
+.syncCard dl div { display: grid; gap: 0.3rem; margin-inline: -0.55rem; padding: 0.7rem 0.55rem; border-top: 1px solid var(--line); border-radius: 0.45rem; }
 .syncCard dt { color: var(--muted); font-size: 0.72rem; font-weight: 650; }
 .syncCard dd { margin: 0; font-size: 0.86rem; font-weight: 700; overflow-wrap: anywhere; }
 .syncNote { margin: 0.8rem 0 0; color: var(--muted); font-size: 0.72rem; line-height: 1.5; }
@@ -135,8 +143,9 @@
 .tableWrap td:first-child { padding-left: 0; text-align: left; }
 .tableWrap th:last-child,
 .tableWrap td:last-child { padding-right: 0; }
-.tableWrap th { color: var(--muted); background: transparent; font-size: 0.68rem; font-weight: 650; }
+.tableWrap th { color: var(--muted); background: color-mix(in srgb, var(--health-movement) 4%, var(--surface-2)); font-size: 0.68rem; font-weight: 650; }
 .tableWrap td { font-size: 0.8rem; }
+.tableWrap tbody tr:nth-child(even) { background: color-mix(in srgb, var(--surface-2) 42%, var(--surface-1)); }
 .emptyHistory { display: grid; min-height: 8rem; place-items: center; color: var(--muted); border-top: 1px solid var(--line); }
 .errorBanner { margin-bottom: 1rem; padding: 0.85rem 1rem; color: var(--danger-strong); background: var(--danger-soft); border: 1px solid color-mix(in srgb, var(--danger) 28%, var(--border)); border-radius: 0.75rem; }
 
@@ -181,6 +190,33 @@
   .tableWrap table { min-width: 34rem; }
 }
 
+@media (hover: hover) and (pointer: fine) {
+  .metricGroup,
+  .heartRateCard,
+  .sleepCard,
+  .syncCard,
+  .historyCard,
+  .syncCard dl div,
+  .tableWrap tbody tr {
+    transition: background-color var(--ease), border-color var(--ease), box-shadow var(--ease);
+  }
+
+  .metricGroup:hover { background-color: color-mix(in srgb, var(--group-accent) 7%, var(--surface-1)); border-color: color-mix(in srgb, var(--group-accent) 38%, var(--border)); }
+  .heartRateCard:hover { background-color: color-mix(in srgb, var(--health-heart) 8%, var(--surface-1)); border-color: color-mix(in srgb, var(--health-heart) 38%, var(--border)); }
+  .sleepCard:hover { background-color: color-mix(in srgb, var(--health-sleep) 8%, var(--surface-1)); border-color: color-mix(in srgb, var(--health-sleep) 38%, var(--border)); }
+  .syncCard:hover { background-color: color-mix(in srgb, var(--health-body) 6%, var(--surface-1)); border-color: color-mix(in srgb, var(--health-body) 38%, var(--border)); }
+  .historyCard:hover { background-color: color-mix(in srgb, var(--health-movement) 5%, var(--surface-1)); border-color: color-mix(in srgb, var(--health-movement) 36%, var(--border)); }
+  .syncCard dl div:hover { background-color: color-mix(in srgb, var(--health-body) 5%, var(--surface-2)); border-top-color: color-mix(in srgb, var(--health-body) 24%, var(--border)); }
+  .tableWrap tbody tr:hover { background-color: color-mix(in srgb, var(--primary) 8%, var(--surface-2)); }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .skipLink { transition: none; }
+  .skipLink,
+  .metricGroup,
+  .heartRateCard,
+  .sleepCard,
+  .syncCard,
+  .historyCard,
+  .syncCard dl div,
+  .tableWrap tbody tr { transition: none; }
 }

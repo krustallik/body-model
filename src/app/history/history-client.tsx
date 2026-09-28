@@ -340,6 +340,7 @@ export function HistoryClient() {
 
   return (
     <main className={styles.page}>
+      <a className={styles.skipLink} href="#history-range">{uk ? "Перейти до історії" : "Skip to history data"}</a>
       <div className={styles.navRow}>
         <strong>BodyCast</strong>
         <AppNav active="history" />
@@ -360,7 +361,7 @@ export function HistoryClient() {
 
       {error && <div className={styles.errorBanner} role="alert">{error}</div>}
 
-      <section className={styles.rangeBar} aria-label={uk ? "Діапазон дат історії" : "History date range"}>
+      <section className={styles.rangeBar} id="history-range" tabIndex={-1} aria-label={uk ? "Діапазон дат історії" : "History date range"}>
         <div>
           <strong>{uk ? "Діапазон дат" : "Date range"}</strong>
           <span>{uk ? "Графіки й таблиця синхронізовані" : "Charts and table stay in sync"}</span>
@@ -379,19 +380,21 @@ export function HistoryClient() {
         </div>
       </section>
 
-      <section className={styles.heartRateDaySection} aria-label={uk ? "Пульс за обраний день" : "Heart rate for selected day"}>
-        <HeartRateDayChart />
-      </section>
-
-      <section className={styles.heartRateDaySection} aria-label={uk ? "Сон за обрану ніч" : "Sleep for selected night"}>
-        <SleepNightChart />
-      </section>
-
       {loading ? (
         <div className={styles.chartsLoading}>{uk ? "Завантаження графіків…" : "Loading charts…"}</div>
       ) : (
         <HistoryCharts days={days} range={range} />
       )}
+
+      <section className={styles.dailySignals} aria-label={uk ? "Пульс і сон за день" : "Daily heart rate and sleep"}>
+        <section className={styles.heartRateDaySection} aria-label={uk ? "Пульс за обраний день" : "Heart rate for selected day"}>
+          <HeartRateDayChart />
+        </section>
+
+        <section className={styles.heartRateDaySection} aria-label={uk ? "Сон за обрану ніч" : "Sleep for selected night"}>
+          <SleepNightChart />
+        </section>
+      </section>
 
       <section className={styles.panel} aria-busy={loading}>
         <div className={styles.panelHeader}>

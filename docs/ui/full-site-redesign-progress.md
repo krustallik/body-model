@@ -61,7 +61,7 @@ Status: COMPLETE — canonical visual contract documented; no app CSS/JS changes
 - Acceptance: the canonical design-system contract agrees with the approved screenshots; Dashboard/History remain visually unchanged.
 
 ### Stage 2 — Profile
-Status: PENDING
+Status: COMPLETE — presentation update only; profile API and save behavior unchanged.
 
 - Route: /settings/profile.
 - Refine form hierarchy, field surfaces, help/error/success/loading states, equipment assignment history, and narrow-screen layout.
@@ -136,9 +136,15 @@ Status: PENDING
 - Real-browser checks on /dashboard and /history returned HTTP 200 with demo data at 1280, 768, 390, 360, and 619/620/621 px; no horizontal overflow, browser console errors, or measured layout shift.
 - Keyboard Tab showed the shared visible focus ring; the informational dashboard card changed surface color on hover without transform or geometry change. Reduced-motion and coarse-pointer touch emulation were active; navigation links measured 40 px tall.
 - Screenshots: artifacts/ui-redesign/full-site/stage-1/dashboard-1280.png, dashboard-390.png, history-1280.png, history-390.png.
-- Next: implement Profile, then continue through the independent stages.
+- Next: implement the Training Diary checkpoints, then continue with the independent route groups.
 ### Stage 1 — 2026-09-28
 - Documented the approved sitewide visual reference in the canonical BodyCast design-system skill. Existing global tokens and shared shell already matched; no app CSS/JS changes were needed.
 - Clarified feature-branch Body Map route status and recorded the active parallel implementation as a blocker. No Body Map runtime files were touched.
 - Browser QA: Dashboard and History loaded HTTP 200 with demo data at 1280, 768, 390, 360, and 619/620/621 px. No horizontal overflow, console errors, or measured layout shift. Keyboard focus ring, informational-card hover without geometry change, reduced-motion emulation, and coarse-pointer touch navigation (40 px links) were checked.
 - Captures: artifacts/ui-redesign/full-site/stage-1/dashboard-1280.png, dashboard-390.png, history-1280.png, history-390.png.
+### Stage 2 — Profile — 2026-09-28
+- Refined the centered profile shell, form surface, fields, checkbox treatment, validation/success feedback, and reduced-motion loading indicator using existing global tokens. Kept API, validation, data, and save behavior unchanged.
+- Matched this route shell to the approved navigation sizing. Browser QA found and fixed a 768 px nav overflow and a checkbox inherited from the general text-input sizing rule; the label now wraps within the control.
+- Browser QA used only mocked profile API responses. Empty, populated, pending, load-error, field-validation-error, save-success, keyboard, hover, touch checkbox, and reduced-motion states were exercised. No page exceptions, overflow, or measured CLS at 1280, 768, 390, 360, and 619/620/621 px. Hover changed the card border without geometry change; touch nav links were 40 px high.
+- Screenshots include before/after empty state, populated desktop/mobile, validation error, and loading state in artifacts/ui-redesign/full-site/stage-2/.
+- Tests: 15 relevant Profile client/schema tests passed; ESLint passed for profile-client.tsx. Error-state browser mocks intentionally returned HTTP 400/500; no uncaught page errors occurred. No database writes were made.

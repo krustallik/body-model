@@ -1,6 +1,9 @@
 import { CANONICAL_EXERCISE_IDENTITIES } from "@/modules/training/canonical-exercise-identity";
 import { lookupExternalLoadAccountingV1 } from "@/modules/training/external-load-accounting";
-import { exerciseMappingSnapshotWithAnatomyV1 } from "@/modules/training/exercise-anatomy-mapping-v1";
+import {
+  exerciseMappingSnapshotWithAnatomyV1,
+  retrospectiveExerciseAnatomyInterpretationV1,
+} from "@/modules/training/exercise-anatomy-mapping-v1";
 import { RESISTANCE } from "@/modules/training/training.constants";
 
 export const TRAINING_HISTORY_STAGE01_NAMESPACE_V1 = "bodycast-training-history-stage01:v1" as const;
@@ -56,6 +59,7 @@ export type Stage01CatalogExerciseFixture = {
   name: string;
   stableKey: string | null;
   kind: "canonical" | "custom-mapped" | "custom-unmapped";
+  fixtureOwned: boolean;
   equipment: EquipmentHint;
   equipmentPersisted: false;
   snapshotStableKey: string | null;
@@ -141,7 +145,7 @@ export type TrainingHistoryStage01FixtureV1 = {
   namespace: typeof TRAINING_HISTORY_STAGE01_NAMESPACE_V1;
   version: 1;
   timezone: typeof TRAINING_HISTORY_STAGE01_TIME_ZONE;
-  profiles: Array<{ id: number; sex: "other"; dateOfBirth: "1900-01-01"; heightCm: "1.00"; locale: "en" }>;
+  profiles: Array<{ id: number; sex: "male"; dateOfBirth: "1900-01-01"; heightCm: "1.00"; locale: "en" }>;
   catalogExercises: Stage01CatalogExerciseFixture[];
   programs: Array<{ id: number; profileId: number; name: string; currentVersionId: number }>;
   programVersions: Stage01ProgramVersionFixture[];
@@ -166,14 +170,13 @@ export type TrainingHistoryStage01FixtureV1 = {
   edgeCaseIds: readonly string[];
 };
 
-const PROFILE_ID_BASE = 970_001;
 const CATALOG_ID_BASE = 971_000;
 const PROGRAM_ID_BASE = 972_000;
 const PROGRAM_VERSION_ID_BASE = 973_000;
 const SESSION_ID_BASE = 974_000;
 const SESSION_EXERCISE_ID_BASE = 975_000;
 const SET_ID_BASE = 1_000_000;
-const PROGRAM_EXERCISE_ID_BASE = 1_060_000;
+export const STAGE01_PROGRAM_EXERCISE_ID_BASE = 1_060_000;
 const WORKOUT_ID_BASE = 1_050_000;
 const DAILY_HEALTH_ID_BASE = 1_070_000;
 const SCENARIO_SLOTS: Record<Stage01SessionFixture["scenarioId"], number> = {
@@ -274,10 +277,10 @@ const EQUIPMENT_BY_KEY: Readonly<Record<string, EquipmentHint>> = {
   supported_dumbbell_wrist_curl: "dumbbell-and-wrist-support",
 };
 
-function profileId(slot: number): number { return PROFILE_ID_BASE + slot + 1; }
+function profileId(): number { return 1; }
 function programId(slot: number): number { return PROGRAM_ID_BASE + slot + 1; }
 function programVersionId(slot: number, version: number): number { return PROGRAM_VERSION_ID_BASE + slot * 10 + version; }
-function catalogId(slot: number, index: number): number { return CATALOG_ID_BASE + slot * 100 + index + 1; }
+function catalogId(slot: number, index: number): number { return slot === 0 ? index + 1 : CATALOG_ID_BASE + slot * 100 + index + 1; }
 function sessionId(slot: number, week: number): number { return SESSION_ID_BASE + slot * 100 + week; }
 
 function localIso(date: string, clock: string): string {
@@ -292,10 +295,11 @@ function catalogForSlot(slot: number, key: string | null, kind: Stage01CatalogEx
   const canonical = key === null ? null : CANONICAL_EXERCISE_IDENTITIES.find((entry) => entry.stableKey === key);
   return {
     id: catalogId(slot, index),
-    profileId: profileId(slot),
+    profileId: profileId(),
     name: canonical?.displayName ?? (kind === "custom-mapped" ? "Stage 01 custom mapped cable press" : "Stage 01 custom unmapped movement"),
     stableKey: kind === "canonical" ? key : null,
     kind,
+    fixtureOwned: kind !== "canonical",
     equipment: key ? EQUIPMENT_BY_KEY[key] ?? "equipment-unspecified" : "equipment-unspecified",
     equipmentPersisted: false,
     snapshotStableKey: kind === "custom-mapped" ? "seated_dumbbell_press" : key,
@@ -338,7 +342,13 @@ function makeExercise(
     equipment?: EquipmentHint;
   },
 ): Stage01ExerciseFixture {
-  const snapshot = exerciseMappingSnapshotWithAnatomyV1(catalog.snapshotStableKey);
+  const initialSnapshot = exerciseMappingSnapshotWithAnatomyV1(catalog.snapshotStableKey);
+  const snapshot = catalog.kind === "custom-mapped"
+    ? {
+      ...initialSnapshot,
+      anatomyMappingSnapshotV1: retrospectiveExerciseAnatomyInterpretationV1(initialSnapshot),
+    }
+    : initialSnapshot;
   const id = SESSION_EXERCISE_ID_BASE + slot * 1_000 + week * 10 + exerciseIndex + 1;
   const sets = options.sets.map((values, index) => ({
     id: SET_ID_BASE + slot * 10_000 + week * 100 + exerciseIndex * 10 + index + 1,
@@ -370,7 +380,7 @@ function makeExercise(
   };
 }
 function supplementalExercise(slot: number, week: number, exerciseIndex: number, position: number, stableKey: string): Stage01ExerciseFixture {
-  const catalog = catalogForSlot(slot, stableKey);
+  const catalog = catalogForSlot(0, stableKey);
   const resistanceType = stableKey === "pull_up" || stableKey === "pushup_handles"
     ? RESISTANCE.BODYWEIGHT
     : stableKey === "one_arm_cable_triceps_extension" || stableKey === "one_arm_seated_cable_row"
@@ -397,7 +407,7 @@ function preWorkSpecs(scenario: Stage01ScenarioId, week: number): Array<{
       sets: [{ reps: 10, weightKg: 15, rir: 3 }, { reps: 10, weightKg: 15, rir: 2 }] }];
   }
   if (scenario === "regression" && week === 10) {
-    return [{ stableKey: "one_arm_cable_triceps_extension", equipment: "resistance-band", resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
+    return [{ stableKey: "bent_over_one_arm_dumbbell_triceps_extension", equipment: "dumbbell", resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
       sets: [{ reps: 15, weightKg: 15, rir: 3 }] }];
   }
   if (scenario === "exercise-order" && week >= 4 && week <= 6) {
@@ -444,10 +454,10 @@ function createSession(scenario: Stage01ScenarioId, week: number, catalogs: Map<
     exercises.push(supplementalExercise(slot, week, exercises.length, position++, CANONICAL_EXERCISE_IDENTITIES[week]!.stableKey));
     if (week === 11 || week === 12) {
       exercises.push(makeExercise(slot, week, exercises.length, position++, catalogs.get("custom-mapped")!, {
-        resistanceType: RESISTANCE.RESISTANCE_BAND, sets: [{ reps: 10, bandNominalResistanceKg: 20, rir: 2 }],
+        resistanceType: RESISTANCE.RESISTANCE_BAND, origin: "EXTRA", sets: [{ reps: 10, bandNominalResistanceKg: 20, rir: 2 }],
       }));
       exercises.push(makeExercise(slot, week, exercises.length, position, catalogs.get("custom-unmapped")!, {
-        resistanceType: RESISTANCE.BODYWEIGHT, sets: [{ reps: 8, rir: null }],
+        resistanceType: RESISTANCE.BODYWEIGHT, origin: "EXTRA", sets: [{ reps: 8, rir: null }],
       }));
     }
   }
@@ -462,7 +472,7 @@ function createSession(scenario: Stage01ScenarioId, week: number, catalogs: Map<
   );
   const phase = Math.floor((week - 1) / 3) + 1;
   return {
-    id: sessionId(slot, week), profileId: profileId(slot), programId: programId(slot), programVersionId: programVersionId(slot, phase),
+    id: sessionId(slot, week), profileId: profileId(), programId: programId(slot), programVersionId: programVersionId(slot, phase),
     scenarioId: scenario, weekNumber: week, date, status: "COMPLETED", entryMode: "LIVE",
     webStartedAt: localIso(date, "17:00:00"), webEndedAt: localIso(date, "18:00:00"), revision: 1,
     matchedWorkoutId: null, matchStatus: "PENDING", matchMethod: null, matchedAt: null,
@@ -492,7 +502,7 @@ const PUSH_GOLDEN_ROWS: readonly GoldenExerciseInput[] = [
 ];
 
 function goldenExercise(slot: number, week: number, index: number, input: GoldenExerciseInput): Stage01ExerciseFixture {
-  const exercise = makeExercise(slot, week, index, index + 1, catalogForSlot(slot, input.stableKey), {
+  const exercise = makeExercise(slot, week, index, index + 1, catalogForSlot(0, input.stableKey), {
     resistanceType: input.resistanceType,
     equipment: input.equipment,
     sets: input.sets.map((set) => ({
@@ -507,7 +517,7 @@ function createGoldenSession(side: "pull" | "push", rows: readonly GoldenExercis
   const date = side === "pull" ? "2026-09-24" : "2026-09-25";
   const week = side === "pull" ? 90 : 91;
   return {
-    id: sessionId(slot, week), profileId: profileId(slot), programId: programId(slot), programVersionId: programVersionId(slot, 1),
+    id: sessionId(slot, week), profileId: profileId(), programId: programId(slot), programVersionId: programVersionId(slot, 1),
     scenarioId: name, weekNumber: null, date, status: "COMPLETED", entryMode: "RETROSPECTIVE",
     webStartedAt: null, webEndedAt: null, revision: 1,
     matchedWorkoutId: WORKOUT_ID_BASE + (side === "pull" ? 1 : 2), matchStatus: "MATCHED",
@@ -520,7 +530,7 @@ function createEmptyDiarySession(): Stage01SessionFixture {
   const slot = SCENARIO_SLOTS["edge-cases"];
   const date = "2026-09-24";
   return {
-    id: 974_699, profileId: profileId(slot), programId: programId(slot), programVersionId: programVersionId(slot, 1),
+    id: 974_699, profileId: profileId(), programId: programId(slot), programVersionId: programVersionId(slot, 1),
     scenarioId: "edge-cases", weekNumber: null, date, status: "COMPLETED", entryMode: "RETROSPECTIVE",
     webStartedAt: null, webEndedAt: null, revision: 1, matchedWorkoutId: WORKOUT_ID_BASE + 3,
     matchStatus: "MATCHED", matchMethod: "DIRECT_BACKFILL", matchedAt: localIso(date, "12:30:00"),
@@ -528,12 +538,12 @@ function createEmptyDiarySession(): Stage01SessionFixture {
   };
 }
 
-function createPrograms(sessions: readonly Stage01SessionFixture[], catalogExercises: readonly Stage01CatalogExerciseFixture[]) {
+function createPrograms(sessions: readonly Stage01SessionFixture[]) {
   const names = Object.keys(SCENARIO_SLOTS) as Array<keyof typeof SCENARIO_SLOTS>;
   const programs = names.map((name) => {
     const slot = SCENARIO_SLOTS[name];
     const versions = ["progress", "regression", "plateau", "exercise-order"].includes(name) ? 4 : 1;
-    return { id: programId(slot), profileId: profileId(slot), name: "stage01-v1-" + SCENARIO_NAMES[name], currentVersionId: programVersionId(slot, versions) };
+    return { id: programId(slot), profileId: profileId(), name: "stage01-v1-" + SCENARIO_NAMES[name], currentVersionId: programVersionId(slot, versions) };
   });
   const programVersions: Stage01ProgramVersionFixture[] = [];
   for (const name of names) {
@@ -541,7 +551,7 @@ function createPrograms(sessions: readonly Stage01SessionFixture[], catalogExerc
     const versionCount = ["progress", "regression", "plateau", "exercise-order"].includes(name) ? 4 : 1;
     for (let versionNumber = 1; versionNumber <= versionCount; versionNumber += 1) {
       const phaseSessions = sessions.filter((session) =>
-        session.profileId === profileId(slot)
+        session.programId === programId(slot)
         && (session.weekNumber === null || Math.floor(((session.weekNumber ?? 1) - 1) / 3) + 1 === versionNumber),
       );
       const first = phaseSessions[0];
@@ -571,7 +581,7 @@ function createProgramChanges(sessions: readonly Stage01SessionFixture[]) {
   const changes: TrainingHistoryStage01FixtureV1["programChanges"] = [];
   for (const session of sessions) {
     if (session.weekNumber === null || ![4, 7, 10].includes(session.weekNumber)) continue;
-    const slot = Object.values(SCENARIO_SLOTS).find((value) => profileId(value) === session.profileId)!;
+    const slot = session.programId - PROGRAM_ID_BASE - 1;
     const fromVersion = Math.floor((session.weekNumber - 2) / 3) + 1;
     changes.push({
       id: 1_080_000 + slot * 10 + session.weekNumber, sessionId: session.id, fromProgramId: session.programId,
@@ -593,7 +603,7 @@ function makeWorkout(
 ): Stage01WorkoutFixture {
   return {
     id, dailyHealthDataId, date, externalId: options.externalId ?? null,
-    sourceIdentity: options.sourceIdentity ?? "fp:stage01|" + type + "|" + startAt + "|" + endAt,
+    sourceIdentity: options.sourceIdentity ?? (options.externalId ? `ext:${options.externalId}` : "fp:stage01|" + type + "|" + startAt + "|" + endAt),
     type, startAt: new Date(startAt).toISOString(), endAt: new Date(endAt).toISOString(),
     durationMinutes: null, energyKcal: null, activeEnergyKcal: null, syncProtected: false, hiddenFromHistory: false,
     manualStepCount: options.manualStepCount ?? null, manualActiveEnergyKcal: null,
@@ -620,7 +630,7 @@ function createWorkouts(sessions: readonly Stage01SessionFixture[]): Stage01Work
       externalId: "stage01-ms100-cross-midnight-a",
     }),
     makeWorkout(WORKOUT_ID_BASE + 5, pullDay, "2026-09-24", "MS100", "2026-09-24T23:55:00+02:00", "2026-09-25T00:30:00+02:00", "ms100-boundary", {
-      externalId: "stage01-ms100-overlap-b", manualStepCount: 100,
+      manualStepCount: 100,
     }),
   ];
 }
@@ -631,13 +641,11 @@ function createDailyHealthRows(): Stage01DailyHealthFixture[] {
   }));
 }
 function createCatalogExercises(): Stage01CatalogExerciseFixture[] {
-  const rows: Stage01CatalogExerciseFixture[] = [];
-  for (const slot of Object.values(SCENARIO_SLOTS)) {
-    for (const exercise of CANONICAL_EXERCISE_IDENTITIES) rows.push(catalogForSlot(slot, exercise.stableKey));
-    if (slot === SCENARIO_SLOTS["exercise-order"]) {
-      rows.push(catalogForSlot(slot, null, "custom-mapped"), catalogForSlot(slot, null, "custom-unmapped"));
-    }
-  }
+  const rows = CANONICAL_EXERCISE_IDENTITIES.map((exercise) => catalogForSlot(0, exercise.stableKey));
+  rows.push(
+    catalogForSlot(SCENARIO_SLOTS["exercise-order"], null, "custom-mapped"),
+    catalogForSlot(SCENARIO_SLOTS["exercise-order"], null, "custom-unmapped"),
+  );
   return rows;
 }
 
@@ -645,18 +653,17 @@ export function createTrainingHistoryStage01FixtureV1(): TrainingHistoryStage01F
   const catalogExercises = createCatalogExercises();
   const sessions: Stage01SessionFixture[] = [];
   for (const scenario of ["progress", "regression", "plateau", "exercise-order"] as const) {
-    const slot = SCENARIO_SLOTS[scenario];
     const catalogs = new Map<string, Stage01CatalogExerciseFixture>();
-    for (const exercise of catalogExercises.filter((row) => row.profileId === profileId(slot))) {
+    for (const exercise of catalogExercises.filter((row) => row.profileId === profileId())) {
       catalogs.set(exercise.kind === "canonical" ? exercise.stableKey! : exercise.kind, exercise);
     }
     for (let week = 1; week <= 12; week += 1) sessions.push(createSession(scenario, week, catalogs));
   }
   sessions.push(createGoldenSession("pull", PULL_GOLDEN_ROWS), createGoldenSession("push", PUSH_GOLDEN_ROWS), createEmptyDiarySession());
-  const profiles = Object.values(SCENARIO_SLOTS).map((slot) => ({
-    id: profileId(slot), sex: "other" as const, dateOfBirth: "1900-01-01" as const, heightCm: "1.00" as const, locale: "en" as const,
-  }));
-  const { programs, programVersions } = createPrograms(sessions, catalogExercises);
+  const profiles = [{
+    id: 1, sex: "male" as const, dateOfBirth: "1900-01-01" as const, heightCm: "1.00" as const, locale: "en" as const,
+  }];
+  const { programs, programVersions } = createPrograms(sessions);
   return {
     namespace: TRAINING_HISTORY_STAGE01_NAMESPACE_V1, version: 1, timezone: TRAINING_HISTORY_STAGE01_TIME_ZONE,
     profiles, catalogExercises, programs, programVersions, programChanges: createProgramChanges(sessions),

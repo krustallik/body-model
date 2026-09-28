@@ -203,7 +203,7 @@ export function StepperDiagnosticClient({ workoutId }: { workoutId: string }) {
               </Field>
               <Field label={uk ? "Межі механічної оцінки · ккал" : "Mechanical estimate range · kcal"}>
                 {diagnostic.programEnergy.lowerBoundKcal !== null && diagnostic.programEnergy.upperBoundKcal !== null
-                  ? <><CalorieValue value={diagnostic.programEnergy.lowerBoundKcal} intlLocale={intlLocale} />–<CalorieValue value={diagnostic.programEnergy.upperBoundKcal} intlLocale={intlLocale} /></>
+                  ? <span className={styles.valueRange}><CalorieValue value={diagnostic.programEnergy.lowerBoundKcal} intlLocale={intlLocale} /><span>–</span><CalorieValue value={diagnostic.programEnergy.upperBoundKcal} intlLocale={intlLocale} /></span>
                   : "—"}
               </Field>
               <Field label={uk ? "Оцінка пристрою · активні ккал" : "Device estimate · active kcal"}>

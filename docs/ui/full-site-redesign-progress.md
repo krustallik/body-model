@@ -88,13 +88,17 @@ Checkpoints, each browser-reviewed before proceeding:
 - Tests: five existing focused suites passed (50 tests): Training Hub UI, live session UI, session edit pager, session UX, and session routes.
 
 ### Stage 4 — Programs and historical training
-Status: PENDING
+Status: COMPLETE
 
 - Routes: /training/programs/new, /training/programs/[id], /training/backfill, /training/backfill/from/[workoutId], /training/workouts/[id]/stepper-diagnostic.
 - Refine program editors, selection, forms, historical workout views, Garmin matching, reconciliation states, and diagnostic information.
 - Preserve immutable snapshots, matching/reconciliation rules, and all existing actions.
 - Verify new/edit programs, matched/unmatched historical workouts, form errors, loading/empty states, and mobile layouts using isolated QA data only.
 - Acceptance: existing editing and historical actions pass targeted tests and browser interaction review.
+- Program editing, backfill, and history routes reuse the stage-3 shared Training surfaces. Added only a local hover for ordered exercise/form rows. Stepper diagnostics now use the same responsive AppNav treatment, restrained analytical-surface hover/focus styling, reduced-motion handling, and a single-line energy-range presentation; sources, availability, readings, and formulas are unchanged.
+- Browser QA covered new/edit program, historical list with missing/partial/already-linked records, single-workout backfill, and populated stepper diagnostics at 1280, 768, 390, 360, and 619/620/621. No horizontal overflow or page exceptions. Verified exercise add/reorder and payload order, bulk filter/selection and mocked payload, single-workout create-to-edit navigation, diagnostic range grouping, visible keyboard ring after focus transition, 40 px touch nav target at 768, reduced-motion transition duration (0s), and stable panel/exercise-row bounds during hover.
+- Screenshots: `artifacts/ui-redesign/full-site/stage-4/before/` and `artifacts/ui-redesign/full-site/stage-4/after/` contain desktop/mobile states for all five routes plus diagnostic and program-row hover examples. All write routes were intercepted in-browser; no application database was written.
+- Tests: seven existing suites passed (37 tests) for program routes/reconciliation, backfill, snapshot mapping, and stepper UI/diagnostics. ESLint passed for the adjusted diagnostic client.
 
 ### Stage 5 — Forecast, Goal, and Diagnostics
 Status: PENDING

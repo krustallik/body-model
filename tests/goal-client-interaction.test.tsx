@@ -37,8 +37,8 @@ vi.mock("@/components/model-state-source", () => ({
 }));
 
 vi.mock("@/app/forecast/forecast-chart", () => ({
-  ForecastChart: ({ history, observedWeights }: { history?: Array<{ filteredWeightKg?: number | null }>; observedWeights?: unknown[] }) => (
-    <div data-testid="goal-forecast-chart" data-model-count={history?.filter((day) => day.filteredWeightKg != null).length ?? 0} data-observed-count={observedWeights?.length ?? 0} />
+  ForecastChart: ({ history, observedWeights, historyWindowDays }: { history?: Array<{ filteredWeightKg?: number | null }>; observedWeights?: unknown[]; historyWindowDays?: number | null }) => (
+    <div data-testid="goal-forecast-chart" data-history-window={historyWindowDays ?? "full"} data-model-count={history?.filter((day) => day.filteredWeightKg != null).length ?? 0} data-observed-count={observedWeights?.length ?? 0} />
   ),
 }));
 
@@ -291,7 +291,7 @@ describe("GoalClient interaction", () => {
 
   it("passes measured scale readings and filtered historical model estimates to the shared forecast chart", async () => {
     const chartResult = { ...solvedGoal(), forecast: {} as NonNullable<GoalPlanningResponse["forecast"]> };
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("/api/forecast/context")) return jsonResponse({
         status: modelStatus(),
@@ -306,7 +306,8 @@ describe("GoalClient interaction", () => {
       });
       if (url.includes("/api/goal") && init?.method === "POST") return jsonResponse(chartResult);
       return jsonResponse({ error: "optional profile unavailable" }, 404);
-    }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
 
     const user = userEvent.setup();
     render(<GoalClient />);
@@ -314,6 +315,14 @@ describe("GoalClient interaction", () => {
     const chart = await screen.findByTestId("goal-forecast-chart");
     expect(chart.getAttribute("data-model-count")).toBe("1");
     expect(chart.getAttribute("data-observed-count")).toBe("2");
+    expect(chart.getAttribute("data-history-window")).toBe("21");
+    const goalPosts = () => fetchMock.mock.calls.filter(([url, init]) => String(url).includes("/api/goal") && init?.method === "POST").length;
+    expect(goalPosts()).toBe(1);
+    await user.click(screen.getByRole("button", { name: "Full history" }));
+    expect(chart.getAttribute("data-history-window")).toBe("full");
+    await user.click(screen.getByRole("button", { name: "Recent history" }));
+    expect(chart.getAttribute("data-history-window")).toBe("21");
+    expect(goalPosts()).toBe(1);
   });
 
   it("keeps reference nutrition internal and refreshes it from current context and activity inputs", async () => {

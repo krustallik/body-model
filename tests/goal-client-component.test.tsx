@@ -13,7 +13,7 @@ import { formatDate } from "@/modules/model-forecast/forecast-ui";
 describe("GoalClient", () => {
   it("renders an honest initial loading state and Goal navigation", () => {
     const html = renderToStaticMarkup(<GoalClient />);
-    expect(html).toContain("Plan toward a target—with uncertainty visible.");
+    expect(html).toContain("Explore a path to your goal");
     expect(html).toContain("Loading current model state");
     expect(html).toContain("href=\"/goal\"");
     expect(html).toContain("Scenario · not a prescription");

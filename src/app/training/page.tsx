@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { TrainingClient } from "./training-client";
 
 export const metadata: Metadata = {
@@ -7,5 +8,5 @@ export const metadata: Metadata = {
 };
 
 export default function TrainingPage() {
-  return <TrainingClient />;
+  return <Suspense fallback={<main aria-busy="true" />}><TrainingClient /></Suspense>;
 }

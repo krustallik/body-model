@@ -30,6 +30,7 @@ import {
   formatDateTime,
   formatDurationMinutes,
   formatSelectedActiveEnergyText,
+  formatTrainingKcal,
   formatSetCompletionClock,
   matchStatusLabel,
   planCompletionPillClass,
@@ -346,7 +347,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
 
   if (loading) {
     return (
-      <main className={styles.workoutShell}>
+      <main className={`${styles.page} ${styles.sessionDetailPage}`}>
         <p className={styles.cardMeta}>{uk ? "Завантаження…" : "Loading…"}</p>
       </main>
     );
@@ -354,7 +355,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
 
   if (!session) {
     return (
-      <main className={styles.page}>
+      <main className={`${styles.page} ${styles.sessionDetailPage}`}>
         <div className={styles.navRow}>
           <strong>BodyCast</strong>
           <AppNav active="training" />
@@ -500,7 +501,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
   }
 
   return (
-    <main className={styles.page}>
+    <main className={`${styles.page} ${styles.sessionDetailPage}`}>
       <div className={styles.navRow}>
         <strong>BodyCast</strong>
         <AppNav active="training" />
@@ -552,7 +553,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
 
       {error && <div className={styles.errorBanner} role="alert">{error}</div>}
 
-      <div className={styles.stack}>
+      <div className={`${styles.stack} ${styles.sessionDetailStack}`}>
         <section className={`${styles.panel} ${styles.panelInfo}`}>
           <div className={styles.panelHeader}>
             <div>
@@ -637,7 +638,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
                     <dd>
                       {session.matchedWorkout.activeEnergyKcal === null
                         ? "—"
-                        : `${session.matchedWorkout.activeEnergyKcal} ${uk ? "оцінка/пристрій" : "estimated/device"}`}
+                        : `${formatTrainingKcal(session.matchedWorkout.activeEnergyKcal, intlLocale)} ${uk ? "оцінка/пристрій" : "estimated/device"}`}
                     </dd>
                   </div>
                 </dl>
@@ -650,7 +651,8 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
           </div>
         </section>
 
-        <section className={styles.panel}>
+        <div className={styles.sessionDetailBody}>
+        <section className={`${styles.panel} ${styles.sessionMatchPanel}`}>
           <div className={styles.panelHeader}>
             <div>
               <h2>{uk ? "Ручне зіставлення" : "Manual match"}</h2>
@@ -675,7 +677,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
                       <p className={styles.cardMeta}>
                         {formatClock(candidate.startAt, intlLocale)}–{formatClock(candidate.endAt, intlLocale)}
                         {candidate.activeEnergyKcal !== null
-                          ? ` · ${candidate.activeEnergyKcal} ${uk ? "ккал (оцінка)" : "kcal (estimate)"}`
+                          ? ` · ${formatTrainingKcal(candidate.activeEnergyKcal, intlLocale)} ${uk ? "ккал (оцінка)" : "kcal (estimate)"}`
                           : ""}
                       </p>
                     </div>
@@ -699,7 +701,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
           </div>
         </section>
 
-        <section className={styles.panel}>
+        <section className={`${styles.panel} ${styles.sessionExercisesPanel}`}>
           <div className={styles.panelHeader}>
             <div>
               <h2>{uk ? "Вправи та підходи" : "Exercises and sets"}</h2>
@@ -758,6 +760,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
             </div>
           </div>
         </section>
+        </div>
       </div>
     </main>
   );

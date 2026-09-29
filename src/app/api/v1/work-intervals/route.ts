@@ -5,6 +5,7 @@ import {
   CreateWorkIntervalSchema,
   WorkIntervalListQuerySchema,
 } from "@/modules/work-intervals/work-interval.schema";
+import { isLocalDemoMode, localDemoReadOnlyResponse } from "@/modules/demo/local-demo-mode";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +14,7 @@ export async function GET(request: Request): Promise<Response> {
     Object.fromEntries(new URL(request.url).searchParams),
   );
   if (!query.success) return validationResponse(query.error);
+  if (isLocalDemoMode()) return Response.json({ intervals: [] });
   try {
     return Response.json({ intervals: await workIntervalRepository.list(query.data.date) });
   } catch {
@@ -21,6 +23,7 @@ export async function GET(request: Request): Promise<Response> {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  if (isLocalDemoMode()) return localDemoReadOnlyResponse();
   const body = await readJson(request);
   if (body instanceof Response) return body;
   const parsed = CreateWorkIntervalSchema.safeParse(body);

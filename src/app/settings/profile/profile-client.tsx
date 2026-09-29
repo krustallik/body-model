@@ -202,7 +202,7 @@ export function ProfileClient() {
                     checked={values.autoAdvanceExercises === "true"}
                     onChange={(event) => updateField("autoAdvanceExercises", String(event.target.checked))}
                   />
-                  {uk ? "Автоматично переходити до наступної вправи" : "Automatically go to the next exercise"}
+                  <span>{uk ? "Автоматично переходити до наступної вправи" : "Automatically go to the next exercise"}</span>
                 </span>
               </label>
             </div>

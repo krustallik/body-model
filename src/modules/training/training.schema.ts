@@ -143,6 +143,7 @@ export const ReorderSessionExercisesSchema = z.object({
 
 export const HistoricalWorkoutsQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(200).optional(),
+  offset: z.coerce.number().int().nonnegative().max(1_000_000).optional(),
   cursor: z.coerce.number().int().positive().optional(),
   onlyMissingDiary: z
     .enum(["true", "false"])
@@ -152,6 +153,7 @@ export const HistoricalWorkoutsQuerySchema = z.object({
 
 export const RecentSessionsQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(100).optional(),
+  offset: z.coerce.number().int().nonnegative().max(1_000_000).optional(),
 }).strict();
 
 export const CatalogListQuerySchema = z.object({

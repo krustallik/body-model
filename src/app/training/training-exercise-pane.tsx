@@ -6,6 +6,7 @@ import {
   RESISTANCE,
 } from "@/modules/training/training.constants";
 import { externalWeightEntryLabel } from "@/modules/training/external-load-accounting";
+import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import { parseTrainingDecimal } from "@/modules/training/parse-training-decimal";
 import type {
   ExerciseHistoryEntryDto,
@@ -52,11 +53,12 @@ function historyLoadLabel(
 
 function formatHistoryDate(iso: string, uk: boolean): string {
   try {
-    return new Date(iso).toLocaleDateString(uk ? "uk-UA" : "en-US", {
+    return new Intl.DateTimeFormat(uk ? "uk-UA" : "en-US", {
       day: "numeric",
       month: "short",
       year: "numeric",
-    });
+      timeZone: DEFAULT_TIME_ZONE,
+    }).format(new Date(iso));
   } catch {
     return iso.slice(0, 10);
   }
@@ -451,6 +453,13 @@ export function ExercisePane(props: ExercisePaneProps) {
                               {set.reps}
                               {set.rir != null ? ` · RIR ${set.rir}` : ""}
                             </span>
+                            <time dateTime={set.completedAt ?? undefined}>
+                              {set.completedAt && Number.isFinite(Date.parse(set.completedAt))
+                                ? new Intl.DateTimeFormat(uk ? "uk-UA" : "en-US", {
+                                    hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: DEFAULT_TIME_ZONE,
+                                  }).format(new Date(set.completedAt))
+                                : (uk ? "час не записано" : "time not recorded")}
+                            </time>
                           </button>
                         ) : (
                           <div className={styles.workoutHistorySetBtn}>
@@ -461,6 +470,13 @@ export function ExercisePane(props: ExercisePaneProps) {
                               {set.reps}
                               {set.rir != null ? ` · RIR ${set.rir}` : ""}
                             </span>
+                            <time dateTime={set.completedAt ?? undefined}>
+                              {set.completedAt && Number.isFinite(Date.parse(set.completedAt))
+                                ? new Intl.DateTimeFormat(uk ? "uk-UA" : "en-US", {
+                                    hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: DEFAULT_TIME_ZONE,
+                                  }).format(new Date(set.completedAt))
+                                : (uk ? "час не записано" : "time not recorded")}
+                            </time>
                           </div>
                         )}
                         {set.comment ? <em>{set.comment}</em> : null}

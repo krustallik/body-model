@@ -3,6 +3,8 @@ import { readJson, validationResponse } from "@/modules/days/day.http";
 import { dailyMetricRepository } from "@/modules/days/day.repository";
 import { CreateDailyMetricSchema, DailyMetricListQuerySchema } from "@/modules/days/day.schema";
 import { addCalendarDays, todayInCalendarTimeZone } from "@/modules/days/calendar-range";
+import { isLocalDemoMode, localDemoReadOnlyResponse } from "@/modules/demo/local-demo-mode";
+import { getLocalDemoDataset } from "@/modules/demo/local-demo-data";
 
 export const dynamic = "force-dynamic";
 
@@ -19,6 +21,20 @@ export async function GET(request: Request): Promise<Response> {
   );
   if (!query.success) return validationResponse(query.error);
 
+  if (isLocalDemoMode()) {
+    const { from, to, limit, offset, includeTrainingDays } = query.data;
+    const daysInRange = getLocalDemoDataset(to ?? todayInCalendarTimeZone()).days.filter((day) => (
+      (!from || day.date >= from) && (!to || day.date <= to)
+    ));
+    const days = daysInRange.slice(offset, offset + limit);
+    const trainingDays = includeTrainingDays
+      ? getLocalDemoDataset(to ?? todayInCalendarTimeZone()).trainingDays.filter((fact) => (
+        (!from || fact.date >= from) && (!to || fact.date <= to)
+      ))
+      : [];
+    return Response.json({ days, trainingDays, limit, offset });
+  }
+
   try {
     const { days, trainingDays } = await dailyMetricRepository.listWithTrainingFacts(query.data);
     return Response.json({ days, trainingDays, limit: query.data.limit, offset: query.data.offset });
@@ -28,6 +44,7 @@ export async function GET(request: Request): Promise<Response> {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  if (isLocalDemoMode()) return localDemoReadOnlyResponse();
   const body = await readJson(request);
   if (body instanceof Response) return body;
 

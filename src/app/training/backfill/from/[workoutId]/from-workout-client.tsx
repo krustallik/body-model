@@ -10,7 +10,7 @@ import type {
   StrengthSessionDto,
   TrainingProgramSummaryDto,
 } from "@/modules/training/training.types";
-import { formatClock, formatDateTime, readApiError } from "../../../training-labels";
+import { formatClock, formatDateTime, formatTrainingKcal, readApiError } from "../../../training-labels";
 import styles from "../../../training.module.css";
 
 export function FromWorkoutClient({ workoutId }: { workoutId: number }) {
@@ -151,7 +151,7 @@ export function FromWorkoutClient({ workoutId }: { workoutId: number }) {
                 </div>
                 <div>
                   <dt>{uk ? "Активні ккал" : "Active kcal"}</dt>
-                  <dd>{workout.activeEnergyKcal ?? "—"}</dd>
+                  <dd>{formatTrainingKcal(workout.activeEnergyKcal, intlLocale) ?? "—"}</dd>
                 </div>
               </dl>
             )}

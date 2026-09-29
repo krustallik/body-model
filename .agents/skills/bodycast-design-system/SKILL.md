@@ -65,9 +65,21 @@ The source of truth is `src/app/globals.css`. The app is always dark in the curr
 - Keep selected-state presentation and camera transitions synchronized with URL state; refresh and Back/Forward must restore the canonical selection.
 - Preserve a persistent scene root, demand rendering, picking performance, quality profiles, bilateral highlight, deep selection, and useful loading/error behavior.
 - Keep 2D fallback as a fallback; do not replace the approved normal experience with a schematic merely because an asset failed to load.
-- **CURRENT:** The checked-in viewer lives at a development-only route, uses a clearly marked deterministic demo exposure fixture, and its manifest/asset APIs return 404 outside development. It is not production Body Map or user-specific training analytics.
+- **CURRENT on the earlier rollout:** The checked-in viewer lived at a development-only route and was backed by a deterministic demo exposure fixture.
+- **CURRENT in feat/ui-dashboard-history-exploration:** /body-map mounts BodyMapExperience with public delivery, and /dev/body-map is a separate development route. This feature branch has public Body Map assets and manifest files.
+- **BLOCKED for the full-site redesign:** The active bodycast/full-3d-development-20260926 worktree has a newer, incompatible Body Map architecture and asset-delivery decision. Do not treat the earlier development-only sentence as describing this feature branch. Do not edit routes, assets, manifests, BodyMapExperience, or navigation behavior for this phase until the parallel worktrees are reconciled.
 - Do not bundle or redistribute anatomical geometry or source-derived manifests unless the exact asset's rights and notices are cleared. This skill is asset-agnostic and intentionally contains no source mesh IDs.
 
 ## Design workflow
 
 For UI changes, review the existing route and neighboring components first; state which behavior/design is CURRENT, APPROVED, PROPOSED, or UNKNOWN; implement only the requested scope; then review desktop and mobile in a real browser when available. Check keyboard/focus, labels, contrast, reduced motion, loading/error/empty states, localization, and data provenance. Run targeted regression checks, then broader checks when their scope warrants it. Do not claim visual acceptance if screenshots or browser interaction were not actually performed.
+
+
+## Approved sitewide reference — Balanced Premium Health Analytics
+
+- **APPROVED:** The accepted Dashboard and History at commit 47654005f945228af9f38d301ba67d428efc027c set the visual reference for the rest of BodyCast.
+- Preserve the existing always-dark canvas, category accents, information hierarchy, tonal surfaces, chart and table treatment, navigation character, hover/focus behavior, and responsive patterns. The values above in src/app/globals.css remain the source of truth; do not add a parallel palette.
+- Carry the visual language across routes while keeping each workflow's composition, density, and actions specific to its job. Do not turn training entry, settings, diagnostics, or anatomy navigation into dashboard-style tiles.
+- Use the existing page gutter, max width, typography, semantic colors, control states, and reduced-motion behavior. New route CSS should consume these variables rather than hard-code a competing theme.
+- Keep the accepted captures at artifacts/ui-exploration/final-polish-after as the Dashboard/History regression reference. Recheck both routes after shared style changes.
+- This contract governs presentation only. Existing data meanings, action semantics, formulas, API contracts, and Body Map scene behavior remain unchanged.

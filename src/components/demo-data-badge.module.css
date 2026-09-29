@@ -1,0 +1,22 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  margin-inline-start: 0.55rem;
+  padding: 0.2rem 0.45rem;
+  border: 1px solid color-mix(in srgb, currentColor 24%, transparent);
+  border-radius: 999px;
+  color: #77614a;
+  background: #f4eee5;
+  font: 700 0.62rem/1.2 var(--font-sans, Arial, sans-serif);
+  letter-spacing: 0.08em;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+@media (prefers-color-scheme: dark) {
+  .badge {
+    color: #e2c9a9;
+    background: #332d25;
+    border-color: #625343;
+  }
+}

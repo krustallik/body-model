@@ -189,17 +189,25 @@ export function formatSelectedActiveEnergyText(input: {
   deviceKcalUnused?: number | null;
 }): string {
   const { uk } = input;
-  if (typeof input.kcal === "number") {
+  const kcalText = formatTrainingKcal(input.kcal, uk ? "uk" : "en");
+  if (kcalText !== null) {
     const source = selectedActiveEnergySourceLabel(input.source ?? "unavailable", uk);
     const partial = input.fullCoverage === false
       ? (uk ? " · неповне покриття" : " · partial coverage")
       : "";
-    return `${input.kcal} ${uk ? "активних ккал" : "active kcal"} · ${source}${partial}`;
+    return `${kcalText} ${uk ? "активних ккал" : "active kcal"} · ${source}${partial}`;
   }
-  if (typeof input.deviceKcalUnused === "number") {
+  const deviceKcalText = formatTrainingKcal(input.deviceKcalUnused, uk ? "uk" : "en");
+  if (deviceKcalText !== null) {
     return uk
-      ? `Енергію не обрано · ${input.deviceKcalUnused} ккал пристрою не використано`
-      : `Energy not selected · device ${input.deviceKcalUnused} kcal not used`;
+      ? `Енергію не обрано · ${deviceKcalText} ккал пристрою не використано`
+      : `Energy not selected · device ${deviceKcalText} kcal not used`;
   }
   return uk ? "Енергія недоступна" : "Energy unavailable";
+}
+
+/** Presentation-only whole-kcal formatting. Null, undefined and invalid values stay unavailable. */
+export function formatTrainingKcal(value: number | null | undefined, intlLocale: string): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return new Intl.NumberFormat(intlLocale, { maximumFractionDigits: 0 }).format(value);
 }

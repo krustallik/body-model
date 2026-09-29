@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { AppNav } from "@/components/app-nav";
+import { DemoDataBadge } from "@/components/demo-data-badge";
 import { useI18n } from "@/i18n/i18n-provider";
 import type { DailyMetricDto, DailyMetricField } from "@/modules/days/day.types";
 import { DAILY_METRIC_FIELDS } from "@/modules/days/day.types";
@@ -254,7 +255,7 @@ async function fetchHistoryData(range: HistoryRange, uk: boolean): Promise<{
   };
 }
 
-export function HistoryClient() {
+export function HistoryClient({ demoMode = false }: { demoMode?: boolean } = {}) {
   const { locale, intlLocale } = useI18n();
   const uk = locale === "uk";
   const [days, setDays] = useState<DailyMetricDto[]>([]);
@@ -340,13 +341,14 @@ export function HistoryClient() {
 
   return (
     <main className={styles.page}>
+      <a className={styles.skipLink} href="#history-range">{uk ? "Перейти до історії" : "Skip to history data"}</a>
       <div className={styles.navRow}>
         <strong>BodyCast</strong>
         <AppNav active="history" />
       </div>
       <header className={styles.header}>
         <div>
-          <p className={styles.eyebrow}>{uk ? "BodyCast · Денні показники" : "BodyCast · Daily metrics"}</p>
+          <p className={styles.eyebrow}>{uk ? "BodyCast · Денні показники" : "BodyCast · Daily metrics"}<DemoDataBadge active={demoMode} /></p>
           <h1>{uk ? "Історія здоров’я" : "Health history"}</h1>
           <p className={styles.intro}>{uk ? "Переглядайте записи Apple Health і обережно вносьте ручні виправлення." : "Review Apple Health records and make careful manual corrections."}</p>
         </div>
@@ -360,7 +362,7 @@ export function HistoryClient() {
 
       {error && <div className={styles.errorBanner} role="alert">{error}</div>}
 
-      <section className={styles.rangeBar} aria-label={uk ? "Діапазон дат історії" : "History date range"}>
+      <section className={styles.rangeBar} id="history-range" tabIndex={-1} aria-label={uk ? "Діапазон дат історії" : "History date range"}>
         <div>
           <strong>{uk ? "Діапазон дат" : "Date range"}</strong>
           <span>{uk ? "Графіки й таблиця синхронізовані" : "Charts and table stay in sync"}</span>
@@ -379,19 +381,21 @@ export function HistoryClient() {
         </div>
       </section>
 
-      <section className={styles.heartRateDaySection} aria-label={uk ? "Пульс за обраний день" : "Heart rate for selected day"}>
-        <HeartRateDayChart />
-      </section>
-
-      <section className={styles.heartRateDaySection} aria-label={uk ? "Сон за обрану ніч" : "Sleep for selected night"}>
-        <SleepNightChart />
-      </section>
-
       {loading ? (
         <div className={styles.chartsLoading}>{uk ? "Завантаження графіків…" : "Loading charts…"}</div>
       ) : (
         <HistoryCharts days={days} range={range} />
       )}
+
+      <section className={styles.dailySignals} aria-label={uk ? "Пульс і сон за день" : "Daily heart rate and sleep"}>
+        <section className={styles.heartRateDaySection} aria-label={uk ? "Пульс за обраний день" : "Heart rate for selected day"}>
+          <HeartRateDayChart />
+        </section>
+
+        <section className={styles.heartRateDaySection} aria-label={uk ? "Сон за обрану ніч" : "Sleep for selected night"}>
+          <SleepNightChart />
+        </section>
+      </section>
 
       <section className={styles.panel} aria-busy={loading}>
         <div className={styles.panelHeader}>

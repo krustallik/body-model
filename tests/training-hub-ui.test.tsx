@@ -9,6 +9,7 @@ vi.mock("@/i18n/i18n-provider", () => ({
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 vi.mock("@/components/app-nav", () => ({
@@ -88,7 +89,7 @@ describe("Training hub UI", () => {
     });
   });
 
-  it("keeps empty match-attention compact at the bottom", async () => {
+  it("keeps empty match-attention in a compact stable status slot", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo) => {
       const url = String(input);
       if (url.includes("/sessions/active")) return Response.json({ session: null });
@@ -130,7 +131,7 @@ describe("Training hub UI", () => {
     const recentIndex = sections.findIndex((node) => (
       node.getAttribute("aria-label") === "Recent strength sessions"
     ));
-    expect(attentionIndex).toBeGreaterThan(recentIndex);
+    expect(attentionIndex).toBeLessThan(recentIndex);
   });
 
   it("surfaces match-attention above active session when items exist", async () => {

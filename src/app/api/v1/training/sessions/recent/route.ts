@@ -12,8 +12,14 @@ export async function GET(request: Request): Promise<Response> {
   if (!query.success) return validationResponse(query.error);
 
   try {
-    const sessions = await trainingService.listRecentSessions({ limit: query.data.limit });
-    return Response.json({ sessions });
+    const [sessions, totalCount] = await Promise.all([
+      trainingService.listRecentSessions({
+        limit: query.data.limit,
+        ...(query.data.offset !== undefined ? { offset: query.data.offset } : {}),
+      }),
+      trainingService.countRecentSessions(),
+    ]);
+    return Response.json({ sessions, totalCount });
   } catch {
     return trainingInternalError();
   }

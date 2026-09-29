@@ -4,6 +4,7 @@ const trainingService = vi.hoisted(() => ({
   createSessionFromWorkout: vi.fn(),
   bulkCreateSessionsFromWorkouts: vi.fn(),
   listHistoricalStrengthWorkouts: vi.fn(),
+  countHistoricalStrengthWorkouts: vi.fn(),
   changeSessionProgram: vi.fn(),
   addSessionExercise: vi.fn(),
   updateSessionExercise: vi.fn(),
@@ -171,10 +172,12 @@ describe("Training retrospective API contracts", () => {
         linkedProgramName: null,
         diaryCompleteness: "NO_DIARY",
       }]);
+      trainingService.countHistoricalStrengthWorkouts.mockResolvedValue(37);
       const response = await HistoricalWorkoutsRoute.GET(new Request(
         "http://localhost/api/v1/training/workouts/historical?limit=20",
       ));
       expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({ totalCount: 37 });
       expect(trainingService.listHistoricalStrengthWorkouts).toHaveBeenCalledWith({
         limit: 20,
         cursor: undefined,

@@ -67,6 +67,7 @@ function HistoryLineChart({
   series,
   tone,
   dualAxis = false,
+  loading = false,
   locale,
 }: {
   title: string;
@@ -75,12 +76,22 @@ function HistoryLineChart({
   series: Series[];
   tone: "body" | "heart" | "nutrition" | "sleep" | "steps" | "movement";
   dualAxis?: boolean;
+  loading?: boolean;
   locale: Locale;
 }) {
   const leftAxisSeries = series.find(({ yAxisId }) => yAxisId === "left")
     ?? series.find(({ yAxisId }) => yAxisId === undefined)
     ?? series[0];
   const rightAxisSeries = series.find(({ yAxisId }) => yAxisId === "right");
+  if (loading) {
+    return (
+      <article className={styles.chartCard} data-tone={tone}>
+        <ChartHeading title={title} description={description} />
+        {dualAxis && <div className={styles.axisUnitsPlaceholder} aria-hidden="true" />}
+        <div className={styles.chartCanvasPlaceholder} aria-hidden="true" />
+      </article>
+    );
+  }
   if (!series.some(({ key }) => days.some((day) => typeof day[key] === "number"))) {
     return (
       <article className={styles.chartCard} data-tone={tone}>
@@ -186,7 +197,7 @@ function ChartHeading({ title, description }: { title: string; description: stri
   );
 }
 
-export function HistoryCharts({ days, range = 30 }: { days: DailyMetricDto[]; range?: HistoryRange }) {
+export function HistoryCharts({ days, range = 30, loading = false }: { days: DailyMetricDto[]; range?: HistoryRange; loading?: boolean }) {
   const { locale } = useI18n();
   const uk = locale === "uk";
   const chronologicalDays = sortDaysChronologically(days);
@@ -197,7 +208,7 @@ export function HistoryCharts({ days, range = 30 }: { days: DailyMetricDto[]; ra
   const movementTraining = movementTrainingChartModel(days, { range, today: todayInCalendarTimeZone() });
 
   return (
-    <section className={styles.chartsSection} aria-labelledby="charts-heading">
+    <section className={styles.chartsSection} aria-labelledby="charts-heading" aria-busy={loading}>
       <div className={styles.chartsTitle}>
         <div>
           <p className={styles.eyebrow}>{uk ? "Лише фактичні дані" : "Actual data only"}</p>
@@ -208,6 +219,7 @@ export function HistoryCharts({ days, range = 30 }: { days: DailyMetricDto[]; ra
       <div className={styles.chartsGrid}>
         <HistoryLineChart
           tone="body"
+          loading={loading}
           title={uk ? "Вага і жир" : "Weight & body fat"}
           description={uk ? "Маса тіла · кг та жирова маса · %" : "Body weight · kg and body fat · %"}
           days={chronologicalDays.map((day) => ({
@@ -230,6 +242,7 @@ export function HistoryCharts({ days, range = 30 }: { days: DailyMetricDto[]; ra
         />
         <HistoryLineChart
           tone="heart"
+          loading={loading}
           title={uk ? "Пульс у спокої" : "Resting heart rate"}
           description={uk ? "Останнє значення кожного дня · bpm" : "Latest value on each day · bpm"}
           days={restingDays}
@@ -238,6 +251,7 @@ export function HistoryCharts({ days, range = 30 }: { days: DailyMetricDto[]; ra
         />
         <HistoryLineChart
           tone="nutrition"
+          loading={loading}
           title={uk ? "Харчування" : "Nutrition"}
           description={uk ? "Калорії · ккал та макронутрієнти · г" : "Calories · kcal and macros · g"}
           days={chronologicalDays}
@@ -261,6 +275,7 @@ export function HistoryCharts({ days, range = 30 }: { days: DailyMetricDto[]; ra
         />
         <HistoryLineChart
           tone="sleep"
+          loading={loading}
           title={uk ? "Тривалість сну" : "Sleep duration"}
           description={uk ? "Загальний сон за ніч · години (wake date)" : "Total sleep per night · hours (wake date)"}
           days={chronologicalDays.map((day) => ({
@@ -279,6 +294,7 @@ export function HistoryCharts({ days, range = 30 }: { days: DailyMetricDto[]; ra
         />
         <HistoryLineChart
           tone="steps"
+          loading={loading}
           title={uk ? "Кроки" : "Steps"}
           description={uk ? "Кількість кроків за день" : "Daily step count"}
           days={chronologicalDays}
@@ -287,6 +303,7 @@ export function HistoryCharts({ days, range = 30 }: { days: DailyMetricDto[]; ra
         />
         <HistoryLineChart
           tone="movement"
+          loading={loading}
           title={uk ? "Рух і тренування" : "Movement & training"}
           description={uk ? "Дистанція ходьби та сумарна тривалість тренувань" : "Walking distance and total workout duration"}
           days={movementTraining.points}

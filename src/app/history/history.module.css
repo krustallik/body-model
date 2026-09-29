@@ -747,6 +747,8 @@
 .axisUnits span { display: inline-flex; align-items: center; gap: 0.4rem; }
 .axisUnits i { width: 0.45rem; height: 0.45rem; flex: 0 0 auto; border-radius: 50%; background: currentColor; }
 .chartCanvas { height: 16rem; margin-top: 0.75rem; }
+.axisUnitsPlaceholder { min-height: 1.2rem; margin-top: 0.65rem; }
+.chartCanvasPlaceholder { height: 16rem; margin-top: 0.75rem; border: 1px solid color-mix(in srgb, var(--chart-accent) 12%, var(--border)); border-radius: 0.65rem; background: color-mix(in srgb, var(--chart-accent) 2%, var(--inset)); }
 .chartEmpty { min-height: 14rem; margin-top: 0.7rem; background: color-mix(in srgb, var(--chart-accent) 2%, var(--inset)); border: 1px dashed color-mix(in srgb, var(--chart-accent) 28%, var(--border)); border-radius: 0.65rem; color: var(--text-secondary); font-size: 0.9rem; }
 .chartsLoading { display: flex; align-items: center; min-height: 5rem; margin-bottom: 1rem; padding: 0.7rem 0; color: var(--text-secondary); background: transparent; border: 0; border-block: 1px solid var(--line); border-radius: 0; box-shadow: none; }
 .dailySignals { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.85rem; margin: 1.8rem 0; }
@@ -809,6 +811,8 @@
   .chartCard:nth-child(even) { padding: 0.95rem 0.9rem 1rem; border: 1px solid color-mix(in srgb, var(--chart-accent) 21%, var(--border)); }
   .chartCard:nth-child(3) { grid-column: auto; }
   .chartCanvas { height: 14rem; }
+  .axisUnitsPlaceholder { min-height: 2rem; }
+  .chartCanvasPlaceholder { height: 14rem; }
   .chartEmpty { min-height: 11rem; }
   .dailySignals { grid-template-columns: minmax(0, 1fr); gap: 0.75rem; margin: 1.25rem 0; }
   .dailySignals .heartRateDayCard { height: auto; padding: 0.95rem 0.9rem 1rem; }
@@ -839,6 +843,7 @@
   .rangeSwitch { gap: 0.1rem; }
   .rangeSwitch button { min-width: 0; min-height: 2.75rem; padding-inline: 0.18rem; font-size: 0.74rem; }
   .chartCanvas { height: 13.25rem; }
+  .chartCanvasPlaceholder { height: 13.25rem; }
   .axisUnits { flex-wrap: wrap; font-size: 0.7rem; }
   .dailySignals { gap: 0.65rem; }
   .heartRateDayHeader { align-items: flex-start; flex-direction: row; gap: 0.5rem; }

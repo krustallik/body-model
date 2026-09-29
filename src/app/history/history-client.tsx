@@ -381,11 +381,7 @@ export function HistoryClient({ demoMode = false }: { demoMode?: boolean } = {})
         </div>
       </section>
 
-      {loading ? (
-        <div className={styles.chartsLoading}>{uk ? "Завантаження графіків…" : "Loading charts…"}</div>
-      ) : (
-        <HistoryCharts days={days} range={range} />
-      )}
+      <HistoryCharts days={loading ? [] : days} range={range} loading={loading} />
 
       <section className={styles.dailySignals} aria-label={uk ? "Пульс і сон за день" : "Daily heart rate and sleep"}>
         <section className={styles.heartRateDaySection} aria-label={uk ? "Пульс за обраний день" : "Heart rate for selected day"}>

@@ -1,10 +1,12 @@
 import { readJson, validationResponse } from "@/modules/days/day.http";
 import { profileRepository } from "@/modules/profile/profile.repository";
 import { ProfileInputSchema } from "@/modules/profile/profile.schema";
+import { isLocalDemoMode, localDemoReadOnlyResponse } from "@/modules/demo/local-demo-mode";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(): Promise<Response> {
+  if (isLocalDemoMode()) return Response.json({ profile: null });
   try {
     return Response.json({ profile: await profileRepository.get() });
   } catch {
@@ -13,6 +15,7 @@ export async function GET(): Promise<Response> {
 }
 
 export async function PUT(request: Request): Promise<Response> {
+  if (isLocalDemoMode()) return localDemoReadOnlyResponse();
   const body = await readJson(request);
   if (body instanceof Response) return body;
 

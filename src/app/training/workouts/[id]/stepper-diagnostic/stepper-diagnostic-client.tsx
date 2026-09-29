@@ -1,14 +1,21 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { AppNav } from "@/components/app-nav";
 import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import type { StepperWorkoutDiagnosticV7 } from "@/modules/profile/stepper-workout-diagnostic";
 import { useI18n } from "@/i18n/i18n-provider";
+import { formatTrainingKcal } from "../../../training-labels";
 import styles from "./stepper-diagnostic.module.css";
 
 type DiagnosticResponse = { diagnostic?: StepperWorkoutDiagnosticV7; error?: string };
+
+function trainingReturnHref(value: string | null): string {
+  return value && /^\/training(?:\?[^#\\\r\n]*)?$/.test(value) ? value : "/training";
+}
+
 type IntervalStepEvidence = Extract<StepperWorkoutDiagnosticV7["bracketedSteps"], { availability: "available" }> & {
   intervalCoveragePercent: number;
   observedIntervalStepCount: number;
@@ -70,7 +77,7 @@ function NumberValue({ value, intlLocale }: { value: number; intlLocale: string 
 }
 
 function CalorieValue({ value, intlLocale }: { value: number; intlLocale: string }) {
-  return <span>{new Intl.NumberFormat(intlLocale, { maximumFractionDigits: 0 }).format(value)}</span>;
+  return <span>{formatTrainingKcal(value, intlLocale)}</span>;
 }
 
 function Field({ label, children, featured }: { label: string; children: ReactNode; featured?: boolean }) {
@@ -111,6 +118,8 @@ function Section({ title, subtitle, children, tone }: {
 export function StepperDiagnosticClient({ workoutId }: { workoutId: string }) {
   const { locale, intlLocale } = useI18n();
   const uk = locale === "uk";
+  const searchParams = useSearchParams();
+  const trainingHref = trainingReturnHref(searchParams.get("returnTo"));
   const [diagnostic, setDiagnostic] = useState<StepperWorkoutDiagnosticV7 | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -151,7 +160,7 @@ export function StepperDiagnosticClient({ workoutId }: { workoutId: string }) {
         </div>
         <div className={styles.headerActions}>
           <Link className={styles.secondaryButton} href="/history">{uk ? "Історія" : "History"}</Link>
-          <Link className={styles.secondaryButton} href="/training">{uk ? "Тренування" : "Training"}</Link>
+          <Link className={styles.secondaryButton} href={trainingHref}>{uk ? "← Назад до тренувань" : "← Back to Training"}</Link>
         </div>
       </header>
 
@@ -203,7 +212,7 @@ export function StepperDiagnosticClient({ workoutId }: { workoutId: string }) {
               </Field>
               <Field label={uk ? "Межі механічної оцінки · ккал" : "Mechanical estimate range · kcal"}>
                 {diagnostic.programEnergy.lowerBoundKcal !== null && diagnostic.programEnergy.upperBoundKcal !== null
-                  ? <><CalorieValue value={diagnostic.programEnergy.lowerBoundKcal} intlLocale={intlLocale} />–<CalorieValue value={diagnostic.programEnergy.upperBoundKcal} intlLocale={intlLocale} /></>
+                  ? <span className={styles.valueRange}><CalorieValue value={diagnostic.programEnergy.lowerBoundKcal} intlLocale={intlLocale} /><span>–</span><CalorieValue value={diagnostic.programEnergy.upperBoundKcal} intlLocale={intlLocale} /></span>
                   : "—"}
               </Field>
               <Field label={uk ? "Оцінка пристрою · активні ккал" : "Device estimate · active kcal"}>

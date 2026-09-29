@@ -1,6 +1,7 @@
 import { readJson, validationResponse } from "@/modules/days/day.http";
 import { dailyMetricRepository } from "@/modules/days/day.repository";
 import { DailyMetricDateParamsSchema, UpdateDailyMetricSchema } from "@/modules/days/day.schema";
+import { isLocalDemoMode, localDemoReadOnlyResponse } from "@/modules/demo/local-demo-mode";
 
 export const dynamic = "force-dynamic";
 
@@ -10,6 +11,7 @@ async function parseDate(params: Promise<{ date: string }>): Promise<string | Re
 }
 
 export async function PATCH(request: Request, { params }: RouteContext<"/api/v1/days/[date]">): Promise<Response> {
+  if (isLocalDemoMode()) return localDemoReadOnlyResponse();
   const date = await parseDate(params);
   if (date instanceof Response) return date;
 
@@ -30,6 +32,7 @@ export async function PATCH(request: Request, { params }: RouteContext<"/api/v1/
 }
 
 export async function DELETE(_request: Request, { params }: RouteContext<"/api/v1/days/[date]">): Promise<Response> {
+  if (isLocalDemoMode()) return localDemoReadOnlyResponse();
   const date = await parseDate(params);
   if (date instanceof Response) return date;
 

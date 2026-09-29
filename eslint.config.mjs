@@ -9,6 +9,8 @@ const eslintConfig = defineConfig([
   globalIgnores([
     // Default ignores of eslint-config-next:
     ".next/**",
+    // Local BODYCAST_DEMO_MODE build output is generated, like .next.
+    ".next-fullsite-preview/**",
     "out/**",
     "build/**",
     "coverage/**",

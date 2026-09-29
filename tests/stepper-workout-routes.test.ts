@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const stepperWorkoutRepository = vi.hoisted(() => ({ list: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() }));
+const stepperWorkoutRepository = vi.hoisted(() => ({ list: vi.fn(), count: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() }));
 vi.mock("@/modules/training/stepper-workout.repository", () => ({ stepperWorkoutRepository }));
 
 import { GET, POST } from "@/app/api/v1/training/stepper-workouts/route";
@@ -14,9 +14,11 @@ describe("stepper workout CRUD routes", () => {
 
   it("lists and creates workout events without a made-up energy value", async () => {
     stepperWorkoutRepository.list.mockResolvedValue([workout]);
-    const listed = await GET();
+    stepperWorkoutRepository.count.mockResolvedValue(23);
+    const listed = await GET(new Request("http://localhost/api/v1/training/stepper-workouts?limit=5&offset=10"));
     expect(listed.status).toBe(200);
-    await expect(listed.json()).resolves.toEqual({ workouts: [workout] });
+    await expect(listed.json()).resolves.toEqual({ workouts: [workout], totalCount: 23 });
+    expect(stepperWorkoutRepository.list).toHaveBeenCalledWith({ limit: 5, offset: 10 });
 
     stepperWorkoutRepository.create.mockResolvedValue(workout);
     const created = await POST(new Request("http://localhost/api/v1/training/stepper-workouts", {

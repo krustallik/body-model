@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const trainingService = vi.hoisted(() => ({
   getActiveSession: vi.fn(),
   listRecentSessions: vi.fn(),
+  countRecentSessions: vi.fn(),
   getSession: vi.fn(),
   startSession: vi.fn(),
   createSet: vi.fn(),
@@ -95,10 +96,11 @@ describe("/api/v1/training/sessions", () => {
 
   it("lists recent sessions with optional limit", async () => {
     trainingService.listRecentSessions.mockResolvedValue([session]);
-    const response = await RECENT(new Request(`${base}/recent?limit=5`));
+    trainingService.countRecentSessions.mockResolvedValue(17);
+    const response = await RECENT(new Request(`${base}/recent?limit=5&offset=10`));
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ sessions: [session] });
-    expect(trainingService.listRecentSessions).toHaveBeenCalledWith({ limit: 5 });
+    await expect(response.json()).resolves.toEqual({ sessions: [session], totalCount: 17 });
+    expect(trainingService.listRecentSessions).toHaveBeenCalledWith({ limit: 5, offset: 10 });
   });
 
   it("rejects invalid recent limit without service call", async () => {

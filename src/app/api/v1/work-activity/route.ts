@@ -1,5 +1,6 @@
 import { CalendarDateSchema } from "@/modules/days/day.schema";
 import { getWorkActivityDiagnosticsForDay } from "@/modules/work-intervals/work-activity.service";
+import { isLocalDemoMode } from "@/modules/demo/local-demo-mode";
 
 export const dynamic = "force-dynamic";
 
@@ -10,6 +11,9 @@ export async function GET(request: Request): Promise<Response> {
       error: "validation_error",
       details: parsed.error.issues.map(({ path, message, code }) => ({ path, message, code })),
     }, { status: 400 });
+  }
+  if (isLocalDemoMode()) {
+    return Response.json({ date: parsed.data, diagnostics: null, unavailableReason: "profile-or-weight-missing" });
   }
   try {
     return Response.json(await getWorkActivityDiagnosticsForDay(parsed.data));

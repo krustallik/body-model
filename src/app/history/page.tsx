@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { HistoryClient } from "./history-client";
+import { isLocalDemoMode } from "@/modules/demo/local-demo-mode";
 
 export const metadata: Metadata = {
   title: "Daily history · BodyCast",
@@ -7,5 +8,5 @@ export const metadata: Metadata = {
 };
 
 export default function HistoryPage() {
-  return <HistoryClient />;
+  return <HistoryClient demoMode={isLocalDemoMode()} />;
 }

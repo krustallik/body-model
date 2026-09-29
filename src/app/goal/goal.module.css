@@ -29,3 +29,46 @@
 .nutritionResult .recommendedMacros{margin-top:1rem}
 .nutritionLimitations{margin:.8rem 0 0;padding-left:1.2rem;color:var(--muted);font-size:.74rem;line-height:1.5}
 .measuredKey{background:var(--accent)}
+
+/* Keep the global eight-destination navigation readable without a 768px overflow. */
+@media (min-width: 621px) and (max-width: 820px) {
+  .topbar { align-items: stretch; flex-direction: column; }
+  .topbar nav { display: grid; width: 100%; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .topbar nav a { display: flex; min-width: 0; min-height: 2.5rem; align-items: center; justify-content: center; padding: .2rem .25rem; text-align: center; line-height: 1.2; white-space: normal; }
+}
+@media (max-width: 620px) {
+  .topbar nav { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .topbar nav a { display: flex; min-width: 0; min-height: 2.5rem; align-items: center; justify-content: center; padding: .2rem .1rem; font-size: .72rem; text-align: center; line-height: 1.2; white-space: normal; }
+}
+
+.formSection, .summaryGrid article, .chartPanel, .detailGrid article,
+.statusCard, .uncertaintyCard, .loadingCard, .errorCard, .recommendationNote,
+.recommendedMacros article, .optional {
+  transition: border-color var(--ease), background-color var(--ease), box-shadow var(--ease);
+}
+.modeGrid button, .guidedControls button, .guidedChoices button, .backButton,
+.actions a, .actions button { transition: color var(--ease), background-color var(--ease), border-color var(--ease), box-shadow var(--ease); }
+@media (hover: hover) and (pointer: fine) {
+  .formSection:hover, .summaryGrid article:hover, .chartPanel:hover,
+  .detailGrid article:hover, .statusCard:hover, .uncertaintyCard:hover,
+  .loadingCard:hover, .errorCard:hover, .recommendationNote:hover,
+  .recommendedMacros article:hover, .optional:hover {
+    border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
+    box-shadow: 0 .45rem 1.2rem var(--shadow);
+  }
+  .summaryGrid article:hover, .detailGrid article:hover, .recommendedMacros article:hover {
+    background-color: color-mix(in srgb, var(--surface) 94%, var(--accent));
+  }
+  .modeGrid button:not([aria-pressed="true"]):hover,
+  .guidedControls button:hover, .guidedChoices button:hover, .backButton:hover,
+  .actions a:hover, .actions button:not(:disabled):hover {
+    border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
+    background-color: color-mix(in srgb, var(--surface) 88%, var(--accent));
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .formSection, .summaryGrid article, .chartPanel, .detailGrid article,
+  .statusCard, .uncertaintyCard, .loadingCard, .errorCard, .recommendationNote,
+  .recommendedMacros article, .optional, .modeGrid button, .guidedControls button,
+  .guidedChoices button, .backButton, .actions a, .actions button { transition-duration: 0s; }
+}

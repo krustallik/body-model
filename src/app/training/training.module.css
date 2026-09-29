@@ -2975,6 +2975,8 @@ a.editMenuItem + .editMenuDanger {
 
 .pagination {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
   justify-items: center;
   gap: 0.45rem;
 }
@@ -3044,8 +3046,8 @@ a.editMenuItem + .editMenuDanger {
 }
 
 @media (max-width: 430px) {
-  .paginationControls { gap: 0.1rem; }
+  .paginationControls { width: 100%; flex-wrap: wrap; gap: 0.1rem; }
   .pageButton,
   .pageNumber,
-  .pageButtonArrow { min-width: 1.85rem; }
+  .pageButtonArrow { min-width: 2.75rem; }
 }

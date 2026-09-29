@@ -2949,3 +2949,84 @@ a.editMenuItem + .editMenuDanger {
   .workoutHistorySetBtn { grid-template-columns: 2rem minmax(0, 1fr); }
   .workoutHistorySetBtn time { grid-column: 2; }
 }
+
+/* Training polish: fit actual content, avoid balancing history with empty space. */
+.trainingHubPage .trainingPrimaryGrid { min-height: 0; }
+.trainingHubPage .trainingHistoryGrid { grid-template-columns: minmax(0, 1fr); }
+.trainingHubPage .panelRecent .list,
+.trainingHubPage .panelInfo .list {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 27rem), 1fr));
+  align-items: start;
+}
+
+.field { min-width: 0; }
+.stepperFields .field { min-width: 0; }
+.stepperFields .field input { min-width: 0; max-width: 100%; }
+
+.workoutCarouselViewport {
+  overflow: clip;
+  contain: paint;
+}
+.workoutCarouselPane {
+  flex-basis: 33.333333333333336%;
+  width: 33.333333333333336%;
+}
+
+.pagination {
+  display: grid;
+  justify-items: center;
+  gap: 0.45rem;
+}
+.paginationSummary {
+  color: var(--training-text-muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.paginationControls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.2rem;
+  max-width: 100%;
+}
+.pageButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2rem;
+  min-height: 2.75rem;
+  padding: 0.35rem 0.3rem;
+  text-decoration: none;
+}
+.pageButton:hover:not([aria-disabled="true"]):not([aria-current="page"]) {
+  border-color: color-mix(in srgb, var(--training-primary) 48%, var(--training-border-strong));
+  background: color-mix(in srgb, var(--training-primary) 9%, var(--training-elevated));
+}
+.pageButton:active:not([aria-disabled="true"]):not([aria-current="page"]) { transform: var(--training-press); }
+.pageButton[aria-disabled="true"] { opacity: 0.42; cursor: default; }
+.pageButtonArrow { min-width: 2rem; font-size: 1.3rem; line-height: 1; }
+.pageNumber { min-width: 2rem; }
+.pageButtonCurrent,
+.pageButtonCurrent:hover {
+  border-color: color-mix(in srgb, var(--training-primary) 70%, var(--training-border-strong));
+  background: color-mix(in srgb, var(--training-primary) 17%, var(--training-elevated));
+  color: var(--training-text);
+}
+.paginationEllipsis { min-width: 0.7rem; text-align: center; color: var(--training-text-muted); }
+
+.sessionDetailPage {
+  box-sizing: border-box;
+  width: min(100%, 56rem);
+  margin-inline: auto;
+}
+
+@media (max-width: 720px) {
+  .stepperFields { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 430px) {
+  .paginationControls { gap: 0.1rem; }
+  .pageButton,
+  .pageNumber,
+  .pageButtonArrow { min-width: 1.85rem; }
+}

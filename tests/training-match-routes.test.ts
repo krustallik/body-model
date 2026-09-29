@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const trainingService = vi.hoisted(() => ({
   listMatchAttention: vi.fn(),
+  countMatchAttention: vi.fn(),
   listMatchCandidates: vi.fn(),
   manualMatch: vi.fn(),
 }));
@@ -66,10 +67,12 @@ describe("/api/v1/training matching routes", () => {
 
   it("lists match-attention sessions", async () => {
     trainingService.listMatchAttention.mockResolvedValue([{ id: 42, matchStatus: MATCH_STATUS.AMBIGUOUS }]);
+    trainingService.countMatchAttention.mockResolvedValue(12);
     const response = await ATTENTION(new Request(`${base}?limit=5&offset=10`));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
       sessions: [{ id: 42, matchStatus: MATCH_STATUS.AMBIGUOUS }],
+      totalCount: 12,
     });
     expect(trainingService.listMatchAttention).toHaveBeenCalledWith({ limit: 5, offset: 10 });
   });

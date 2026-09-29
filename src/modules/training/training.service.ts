@@ -352,6 +352,10 @@ export class TrainingService {
     });
   }
 
+  countHistoricalStrengthWorkouts(onlyMissingDiary = false): Promise<number> {
+    return this.repo.countHistoricalStrengthWorkouts({ onlyMissingDiary });
+  }
+
   async listProgramVersions(
     programId: number,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
@@ -868,11 +872,22 @@ export class TrainingService {
     return this.repo.listRecentSessions(options);
   }
 
+  countRecentSessions(profileId = DEFAULT_TRAINING_PROFILE_ID) {
+    return this.repo.countRecentSessions(profileId);
+  }
+
   listMatchAttention(options: { limit?: number; offset?: number; profileId?: number } = {}) {
     return this.repo.listMatchAttention({
       profileId: options.profileId ?? DEFAULT_TRAINING_PROFILE_ID,
       limit: options.limit,
       offset: options.offset,
+      longPendingBefore: new Date(Date.now() - MATCH_THRESHOLDS.longPendingMs),
+    });
+  }
+
+  countMatchAttention(profileId = DEFAULT_TRAINING_PROFILE_ID) {
+    return this.repo.countMatchAttention({
+      profileId,
       longPendingBefore: new Date(Date.now() - MATCH_THRESHOLDS.longPendingMs),
     });
   }

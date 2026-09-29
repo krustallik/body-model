@@ -30,6 +30,7 @@ import {
   formatDateTime,
   formatDurationMinutes,
   formatSelectedActiveEnergyText,
+  formatTrainingKcal,
   formatSetCompletionClock,
   matchStatusLabel,
   planCompletionPillClass,
@@ -346,7 +347,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
 
   if (loading) {
     return (
-      <main className={styles.workoutShell}>
+      <main className={`${styles.page} ${styles.sessionDetailPage}`}>
         <p className={styles.cardMeta}>{uk ? "Завантаження…" : "Loading…"}</p>
       </main>
     );
@@ -354,7 +355,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
 
   if (!session) {
     return (
-      <main className={styles.page} style={{ width: "min(100%, 56rem)", marginInline: "auto" }}>
+      <main className={`${styles.page} ${styles.sessionDetailPage}`}>
         <div className={styles.navRow}>
           <strong>BodyCast</strong>
           <AppNav active="training" />
@@ -500,7 +501,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
   }
 
   return (
-    <main className={styles.page} style={{ width: "min(100%, 56rem)", marginInline: "auto" }}>
+    <main className={`${styles.page} ${styles.sessionDetailPage}`}>
       <div className={styles.navRow}>
         <strong>BodyCast</strong>
         <AppNav active="training" />
@@ -637,7 +638,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
                     <dd>
                       {session.matchedWorkout.activeEnergyKcal === null
                         ? "—"
-                        : `${session.matchedWorkout.activeEnergyKcal} ${uk ? "оцінка/пристрій" : "estimated/device"}`}
+                        : `${formatTrainingKcal(session.matchedWorkout.activeEnergyKcal, intlLocale)} ${uk ? "оцінка/пристрій" : "estimated/device"}`}
                     </dd>
                   </div>
                 </dl>
@@ -675,7 +676,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
                       <p className={styles.cardMeta}>
                         {formatClock(candidate.startAt, intlLocale)}–{formatClock(candidate.endAt, intlLocale)}
                         {candidate.activeEnergyKcal !== null
-                          ? ` · ${candidate.activeEnergyKcal} ${uk ? "ккал (оцінка)" : "kcal (estimate)"}`
+                          ? ` · ${formatTrainingKcal(candidate.activeEnergyKcal, intlLocale)} ${uk ? "ккал (оцінка)" : "kcal (estimate)"}`
                           : ""}
                       </p>
                     </div>

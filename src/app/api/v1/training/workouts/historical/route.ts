@@ -16,13 +16,16 @@ export async function GET(request: Request): Promise<Response> {
   if (!parsed.success) return validationResponse(parsed.error);
 
   try {
-    const workouts = await trainingService.listHistoricalStrengthWorkouts({
-      limit: parsed.data.limit,
-      ...(parsed.data.offset !== undefined ? { offset: parsed.data.offset } : {}),
-      cursor: parsed.data.cursor,
-      onlyMissingDiary: parsed.data.onlyMissingDiary,
-    });
-    return Response.json({ workouts });
+    const [workouts, totalCount] = await Promise.all([
+      trainingService.listHistoricalStrengthWorkouts({
+        limit: parsed.data.limit,
+        ...(parsed.data.offset !== undefined ? { offset: parsed.data.offset } : {}),
+        cursor: parsed.data.cursor,
+        onlyMissingDiary: parsed.data.onlyMissingDiary,
+      }),
+      trainingService.countHistoricalStrengthWorkouts(parsed.data.onlyMissingDiary),
+    ]);
+    return Response.json({ workouts, totalCount });
   } catch {
     return trainingInternalError();
   }

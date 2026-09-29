@@ -13,7 +13,11 @@ export async function GET(request: Request): Promise<Response> {
   );
   if (!parsed.success) return validationResponse(parsed.error);
   try {
-    return Response.json({ workouts: await stepperWorkoutRepository.list(parsed.data) });
+    const [workouts, totalCount] = await Promise.all([
+      stepperWorkoutRepository.list(parsed.data),
+      stepperWorkoutRepository.count(),
+    ]);
+    return Response.json({ workouts, totalCount });
   } catch {
     return Response.json({ error: "internal_error" }, { status: 500 });
   }

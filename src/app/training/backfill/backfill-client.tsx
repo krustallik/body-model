@@ -14,8 +14,10 @@ import {
   diaryCompletenessBadgeTone,
   formatClock,
   formatDateTime,
+  formatTrainingKcal,
   readApiError,
 } from "../training-labels";
+import { TrainingPagination } from "../training-pagination";
 import styles from "../training.module.css";
 
 const GARMIN_PAGE_SIZE = 10;
@@ -69,9 +71,16 @@ export function BackfillClient() {
   const missingValue = searchParams.get("onlyMissingDiary");
   const page = parsePage(pageValue);
   const onlyMissing = missingValue === "true";
+  const pageHref = useCallback((nextPage: number): string => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (nextPage <= 1) params.delete("garminPage");
+    else params.set("garminPage", String(nextPage));
+    const query = params.toString();
+    return `/training/backfill${query ? `?${query}` : ""}`;
+  }, [searchParams]);
   const [workouts, setWorkouts] = useState<HistoricalStrengthWorkoutDto[]>([]);
   const [programs, setPrograms] = useState<TrainingProgramSummaryDto[]>([]);
-  const [hasNext, setHasNext] = useState(false);
+  const [totalCount, setTotalCount] = useState(0);
   const [selected, setSelected] = useState<number[]>([]);
   const [bulkProgramId, setBulkProgramId] = useState<number | "">("");
   const [loading, setLoading] = useState(true);
@@ -94,10 +103,16 @@ export function BackfillClient() {
         setError(uk ? "Не вдалося завантажити історію." : "Could not load history.");
         return;
       }
-      const workoutsBody = await workoutsRes.json() as { workouts: HistoricalStrengthWorkoutDto[] };
+      const workoutsBody = await workoutsRes.json() as { workouts: HistoricalStrengthWorkoutDto[]; totalCount?: number };
       const programsBody = await programsRes.json() as { programs: TrainingProgramSummaryDto[] };
+      const count = workoutsBody.totalCount ?? Math.max(0, (page - 1) * GARMIN_PAGE_SIZE + workoutsBody.workouts.length);
+      const totalPages = Math.max(1, Math.ceil(count / GARMIN_PAGE_SIZE));
+      if (page > totalPages) {
+        router.replace(pageHref(totalPages), { scroll: false });
+        return;
+      }
       setWorkouts(workoutsBody.workouts.slice(0, GARMIN_PAGE_SIZE));
-      setHasNext(workoutsBody.workouts.length > GARMIN_PAGE_SIZE);
+      setTotalCount(count);
       setPrograms(programsBody.programs);
       if (programsBody.programs[0] && bulkProgramId === "") {
         setBulkProgramId(programsBody.programs[0].id);
@@ -107,7 +122,7 @@ export function BackfillClient() {
     } finally {
       setLoading(false);
     }
-  }, [bulkProgramId, onlyMissing, page, uk]);
+  }, [bulkProgramId, onlyMissing, page, pageHref, router, uk]);
 
   useEffect(() => {
     const invalidPage = pageValue !== null && parsePage(pageValue) === 1 && pageValue !== "1";
@@ -146,14 +161,6 @@ export function BackfillClient() {
     if (missing) params.set("onlyMissingDiary", "true");
     else params.delete("onlyMissingDiary");
     params.delete("garminPage");
-    const query = params.toString();
-    return `/training/backfill${query ? `?${query}` : ""}`;
-  }
-
-  function pageHref(nextPage: number): string {
-    const params = new URLSearchParams(searchParams.toString());
-    if (nextPage <= 1) params.delete("garminPage");
-    else params.set("garminPage", String(nextPage));
     const query = params.toString();
     return `/training/backfill${query ? `?${query}` : ""}`;
   }
@@ -380,9 +387,9 @@ export function BackfillClient() {
                               ? "—"
                               : `${workout.durationMinutes} ${uk ? "хв" : "min"}`}
                             {" · "}
-                            {workout.activeEnergyKcal == null
+                            {formatTrainingKcal(workout.activeEnergyKcal, intlLocale) === null
                               ? (uk ? "ккал —" : "kcal —")
-                              : `${workout.activeEnergyKcal} ${uk ? "ккал" : "kcal"}`}
+                              : `${formatTrainingKcal(workout.activeEnergyKcal, intlLocale)} ${uk ? "ккал" : "kcal"}`}
                           </p>
                           {!eligible && (
                             <p className={styles.selectHint}>
@@ -420,18 +427,14 @@ export function BackfillClient() {
                 })}
               </div>
             )}
-            {(hasNext || page > 1) && (
-              <nav className={styles.pagination} aria-label={uk ? "Сторінки Garmin" : "Garmin pages"}>
-                <button type="button" className={styles.pageButton} disabled={page <= 1 || loading}
-                  onClick={() => router.push(pageHref(page - 1), { scroll: false })}>
-                  {uk ? "Назад" : "Previous"}
-                </button>
-                <span aria-live="polite">{uk ? `Сторінка ${page}` : `Page ${page}`}</span>
-                <button type="button" className={styles.pageButton} disabled={!hasNext || loading}
-                  onClick={() => router.push(pageHref(page + 1), { scroll: false })}>
-                  {uk ? "Далі" : "Next"}
-                </button>
-              </nav>
+            {(totalCount > GARMIN_PAGE_SIZE || page > 1) && (
+              <TrainingPagination
+                currentPage={page}
+                totalPages={Math.max(1, Math.ceil(totalCount / GARMIN_PAGE_SIZE))}
+                hrefForPage={pageHref}
+                label={uk ? "Сторінки Garmin" : "Garmin pages"}
+                uk={uk}
+              />
             )}
           </div>
         </section>

@@ -169,6 +169,15 @@ export class StepperWorkoutRepository {
     return attachReconciliation(this.client, rows.map(toDto));
   }
 
+  count(): Promise<number> {
+    return this.client.workout.count({
+      where: {
+        type: { equals: STEPPER_TYPE, mode: "insensitive" },
+        hiddenFromHistory: false,
+      },
+    });
+  }
+
   async create(input: StepperWorkoutInput): Promise<StepperWorkoutDto> {
     const { startAt, endAt, date } = workoutDates(input);
     const row = await this.client.$transaction(async (transaction) => {

@@ -59,7 +59,7 @@ describe("StepperDiagnosticClient", () => {
     expect(screen.queryByText("Summary basis")).toBeNull();
     expect(screen.getByText(/DOMYOS MS100/)).toBeTruthy();
     expect(screen.getByRole("link", { name: "Історія" }).getAttribute("href")).toBe("/history");
-    expect(screen.getByRole("link", { name: "Тренування" }).getAttribute("href")).toBe("/training");
+    expect(screen.getByRole("link", { name: "← Назад до тренувань" }).getAttribute("href")).toBe("/training");
     expect(document.querySelector("main")?.className).toContain("page");
   });
 

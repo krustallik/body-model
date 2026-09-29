@@ -12,6 +12,7 @@ import type {
   StrengthSessionSummaryDto,
   TrainingProgramSummaryDto,
 } from "@/modules/training/training.types";
+import { TrainingPagination } from "./training-pagination";
 import {
   formatDateTime,
   formatDurationMinutes,
@@ -98,10 +99,10 @@ export function TrainingClient() {
   const [programs, setPrograms] = useState<TrainingProgramSummaryDto[]>([]);
   const [recent, setRecent] = useState<StrengthSessionSummaryDto[]>([]);
   const [attention, setAttention] = useState<StrengthSessionSummaryDto[]>([]);
-  const [attentionHasNext, setAttentionHasNext] = useState(false);
+  const [attentionTotalCount, setAttentionTotalCount] = useState(0);
   const [stepperWorkouts, setStepperWorkouts] = useState<StepperWorkoutDto[]>([]);
-  const [recentHasNext, setRecentHasNext] = useState(false);
-  const [stepperHasNext, setStepperHasNext] = useState(false);
+  const [recentTotalCount, setRecentTotalCount] = useState(0);
+  const [stepperTotalCount, setStepperTotalCount] = useState(0);
   const [stepperFormOpen, setStepperFormOpen] = useState(false);
   const [editingStepper, setEditingStepper] = useState<StepperWorkoutDto | null>(null);
   const [stepperStartAt, setStepperStartAt] = useState(nowLocalDateTime);
@@ -132,23 +133,46 @@ export function TrainingClient() {
       }
       const activeBody = await activeRes.json() as { session: StrengthSessionDto | null };
       const programsBody = await programsRes.json() as { programs: TrainingProgramSummaryDto[] };
-      const recentBody = await recentRes.json() as { sessions: StrengthSessionSummaryDto[] };
-      const attentionBody = await attentionRes.json() as { sessions: StrengthSessionSummaryDto[] };
-      const stepperBody = await stepperRes.json() as { workouts: StepperWorkoutDto[] };
+      const recentBody = await recentRes.json() as { sessions: StrengthSessionSummaryDto[]; totalCount?: number };
+      const attentionBody = await attentionRes.json() as { sessions: StrengthSessionSummaryDto[]; totalCount?: number };
+      const stepperBody = await stepperRes.json() as { workouts: StepperWorkoutDto[]; totalCount?: number };
+      const recentCount = recentBody.totalCount ?? Math.max(0, (recentPage - 1) * RECENT_PAGE_SIZE + recentBody.sessions.length);
+      const attentionCount = attentionBody.totalCount ?? Math.max(0, (attentionPage - 1) * ATTENTION_PAGE_SIZE + attentionBody.sessions.length);
+      const stepperCount = stepperBody.totalCount ?? Math.max(0, (stepperPage - 1) * STEPPER_PAGE_SIZE + stepperBody.workouts.length);
+      const correction = [
+        ["recentPage", recentPage, recentCount, RECENT_PAGE_SIZE],
+        ["attentionPage", attentionPage, attentionCount, ATTENTION_PAGE_SIZE],
+        ["stepperPage", stepperPage, stepperCount, STEPPER_PAGE_SIZE],
+      ] as const;
+      const params = new URLSearchParams(searchParams.toString());
+      let needsCorrection = false;
+      for (const [key, currentPage, count, size] of correction) {
+        const lastPage = Math.max(1, Math.ceil(count / size));
+        if (currentPage > lastPage) {
+          if (lastPage === 1) params.delete(key);
+          else params.set(key, String(lastPage));
+          needsCorrection = true;
+        }
+      }
+      if (needsCorrection) {
+        const query = params.toString();
+        router.replace(`/training${query ? `?${query}` : ""}`, { scroll: false });
+        return;
+      }
       setActive(activeBody.session);
       setPrograms(programsBody.programs);
       setRecent(recentBody.sessions.slice(0, RECENT_PAGE_SIZE));
-      setRecentHasNext(recentBody.sessions.length > RECENT_PAGE_SIZE);
+      setRecentTotalCount(recentCount);
       setAttention(attentionBody.sessions.slice(0, ATTENTION_PAGE_SIZE));
-      setAttentionHasNext(attentionBody.sessions.length > ATTENTION_PAGE_SIZE);
+      setAttentionTotalCount(attentionCount);
       setStepperWorkouts(stepperBody.workouts.slice(0, STEPPER_PAGE_SIZE));
-      setStepperHasNext(stepperBody.workouts.length > STEPPER_PAGE_SIZE);
+      setStepperTotalCount(stepperCount);
     } catch {
       setError(uk ? "Не вдалося завантажити тренування." : "Could not load training data.");
     } finally {
       setLoading(false);
     }
-  }, [attentionPage, recentPage, stepperPage, uk]);
+  }, [attentionPage, recentPage, router, searchParams, stepperPage, uk]);
 
   function openNewStepperForm() {
     setEditingStepper(null);
@@ -403,7 +427,7 @@ export function TrainingClient() {
                 </article>
               ))}
             </div>
-            {(attentionHasNext || attentionPage > 1) && pageControls("attentionPage", attentionPage, attentionHasNext, uk ? "Сторінки зіставлення" : "Match attention pages")}
+            {(attentionTotalCount > ATTENTION_PAGE_SIZE || attentionPage > 1) && pageControls("attentionPage", attentionPage, attentionTotalCount, ATTENTION_PAGE_SIZE, uk ? "Сторінки зіставлення" : "Match attention pages")}
           </div>
         </section>
       );
@@ -428,7 +452,7 @@ export function TrainingClient() {
                 ? (uk ? "На цій сторінці записів немає." : "No items on this page.")
                 : (uk ? "Немає сесій, що потребують уваги." : "No sessions need attention.")}
           </p>
-          {attentionPage > 1 && pageControls("attentionPage", attentionPage, attentionHasNext, uk ? "Сторінки зіставлення" : "Match attention pages")}
+          {attentionPage > 1 && pageControls("attentionPage", attentionPage, attentionTotalCount, ATTENTION_PAGE_SIZE, uk ? "Сторінки зіставлення" : "Match attention pages")}
         </div>
       </section>
     );
@@ -442,19 +466,22 @@ export function TrainingClient() {
     return `/training${query ? `?${query}` : ""}`;
   }
 
-  function pageControls(key: "recentPage" | "stepperPage" | "attentionPage", page: number, hasNext: boolean, label: string) {
+  function stepperDiagnosticHref(workoutId: number): string {
+    const query = searchParams.toString();
+    const returnTo = `/training${query ? `?${query}` : ""}`;
+    return `/training/workouts/${workoutId}/stepper-diagnostic?returnTo=${encodeURIComponent(returnTo)}`;
+  }
+
+  function pageControls(key: "recentPage" | "stepperPage" | "attentionPage", page: number, totalCount: number, pageSize: number, label: string) {
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
     return (
-      <nav className={styles.pagination} aria-label={label}>
-        <button type="button" className={styles.pageButton} disabled={page <= 1 || loading}
-          onClick={() => router.push(pageHref(key, page - 1), { scroll: false })}>
-          {uk ? "Назад" : "Previous"}
-        </button>
-        <span aria-live="polite">{uk ? `Сторінка ${page}` : `Page ${page}`}</span>
-        <button type="button" className={styles.pageButton} disabled={!hasNext || loading}
-          onClick={() => router.push(pageHref(key, page + 1), { scroll: false })}>
-          {uk ? "Далі" : "Next"}
-        </button>
-      </nav>
+      <TrainingPagination
+        currentPage={page}
+        totalPages={totalPages}
+        hrefForPage={(nextPage) => pageHref(key, nextPage)}
+        label={label}
+        uk={uk}
+      />
     );
   }
 
@@ -654,7 +681,7 @@ export function TrainingClient() {
                 ))}
               </div>
             )}
-            {(recentHasNext || recentPage > 1) && pageControls("recentPage", recentPage, recentHasNext, uk ? "Сторінки силових сесій" : "Strength session pages")}
+            {(recentTotalCount > RECENT_PAGE_SIZE || recentPage > 1) && pageControls("recentPage", recentPage, recentTotalCount, RECENT_PAGE_SIZE, uk ? "Сторінки силових сесій" : "Strength session pages")}
           </div>
         </section>
 
@@ -744,7 +771,7 @@ export function TrainingClient() {
                       </span>
                     </div>
                     <div className={`${styles.denseCardActions} ${styles.stepperCardActions}`}>
-                      <Link className={styles.secondaryButton} href={`/training/workouts/${workout.id}/stepper-diagnostic`}>
+                      <Link className={styles.secondaryButton} href={stepperDiagnosticHref(workout.id)}>
                         {uk ? "Енергія · діагностика" : "Energy · diagnostics"}
                       </Link>
                       {(workout.reconciliationStatus === "pending" || workout.reconciliationStatus === "ambiguous")
@@ -778,7 +805,7 @@ export function TrainingClient() {
                 ))}
               </div>
             )}
-            {(stepperHasNext || stepperPage > 1) && pageControls("stepperPage", stepperPage, stepperHasNext, uk ? "Сторінки степера" : "Stepper pages")}
+            {(stepperTotalCount > STEPPER_PAGE_SIZE || stepperPage > 1) && pageControls("stepperPage", stepperPage, stepperTotalCount, STEPPER_PAGE_SIZE, uk ? "Сторінки степера" : "Stepper pages")}
           </div>
         </section>
         </div>

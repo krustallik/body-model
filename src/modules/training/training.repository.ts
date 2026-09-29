@@ -1500,6 +1500,15 @@ export class TrainingRepository {
     });
   }
 
+  countRecentSessions(profileId = DEFAULT_TRAINING_PROFILE_ID): Promise<number> {
+    return this.db.strengthDiarySession.count({
+      where: {
+        profileId,
+        status: { in: [SESSION_STATUS.COMPLETED, SESSION_STATUS.CANCELLED] },
+      },
+    });
+  }
+
   async listMatchAttention(options: {
     profileId?: number;
     longPendingBefore?: Date;
@@ -1530,6 +1539,28 @@ export class TrainingRepository {
       skip: offset,
     });
     return rows.map(toSessionSummaryDto);
+  }
+
+  countMatchAttention(options: {
+    profileId?: number;
+    longPendingBefore?: Date;
+  } = {}): Promise<number> {
+    const profileId = options.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+    return this.db.strengthDiarySession.count({
+      where: {
+        profileId,
+        status: SESSION_STATUS.COMPLETED,
+        OR: [
+          { matchStatus: MATCH_STATUS.AMBIGUOUS },
+          ...(options.longPendingBefore
+            ? [{
+                matchStatus: MATCH_STATUS.PENDING,
+                webEndedAt: { lte: options.longPendingBefore },
+              }]
+            : []),
+        ],
+      },
+    });
   }
 
   async findPendingCompletedSessionsOverlapping(window: {
@@ -1724,6 +1755,18 @@ export class TrainingRepository {
           ),
         };
       });
+  }
+
+  countHistoricalStrengthWorkouts(options: {
+    onlyMissingDiary?: boolean;
+  } = {}): Promise<number> {
+    return this.db.workout.count({
+      where: {
+        hiddenFromHistory: false,
+        type: { equals: TRADITIONAL_STRENGTH_TRAINING_TYPE, mode: "insensitive" },
+        ...(options.onlyMissingDiary ? { matchedDiarySession: null } : {}),
+      },
+    });
   }
 
   /**

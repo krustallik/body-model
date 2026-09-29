@@ -28,19 +28,19 @@ jobs:
       postgres:
         image: postgres:17-alpine
         env:
-          POSTGRES_DB: bodycast_test
-          POSTGRES_USER: bodycast_test
+          POSTGRES_DB: bodycast_training_history_stage01_test
+          POSTGRES_USER: bodycast_stage01_test
           POSTGRES_PASSWORD: integration_test_password
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U bodycast_test -d bodycast_test"
+          --health-cmd "pg_isready -U bodycast_stage01_test -d bodycast_training_history_stage01_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
       NODE_ENV: test
-      DATABASE_URL: postgresql://bodycast_test:integration_test_password@localhost:5432/bodycast_test
+      DATABASE_URL: postgresql://bodycast_stage01_test:integration_test_password@localhost:5432/bodycast_training_history_stage01_test
       IOS_SHORTCUT_API_KEY: integration-test-secret
 
     steps:

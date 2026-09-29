@@ -2952,6 +2952,7 @@ a.editMenuItem + .editMenuDanger {
 
 /* Training polish: fit actual content, avoid balancing history with empty space. */
 .trainingHubPage .trainingPrimaryGrid { min-height: 0; }
+.trainingHubPage .trainingPrimaryGrid { align-items: stretch; }
 .trainingHubPage .trainingHistoryGrid { grid-template-columns: minmax(0, 1fr); }
 .trainingHubPage .panelRecent .list,
 .trainingHubPage .panelInfo .list {
@@ -3016,8 +3017,26 @@ a.editMenuItem + .editMenuDanger {
 
 .sessionDetailPage {
   box-sizing: border-box;
-  width: min(100%, 56rem);
+  width: 100%;
+  max-width: 72rem;
   margin-inline: auto;
+}
+
+.sessionDetailBody { display: contents; }
+
+@media (min-width: 960px) {
+  .sessionDetailPage { max-width: 78rem; }
+  .sessionDetailPage .sectionSplit { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sessionDetailBody {
+    display: grid;
+    grid-template-columns: minmax(0, 1.65fr) minmax(18rem, 0.75fr);
+    align-items: start;
+    gap: 1rem;
+  }
+  .sessionExercisesPanel { grid-column: 1; grid-row: 1; min-width: 0; }
+  .sessionMatchPanel { grid-column: 2; grid-row: 1; min-width: 0; }
+  .sessionExercisesPanel .list { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+  .sessionExercisesPanel .card { min-width: 0; }
 }
 
 @media (max-width: 720px) {

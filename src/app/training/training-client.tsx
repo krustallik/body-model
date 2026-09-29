@@ -24,8 +24,8 @@ import {
 } from "./training-labels";
 import styles from "./training.module.css";
 
-const RECENT_PAGE_SIZE = 5;
-const STEPPER_PAGE_SIZE = 5;
+const RECENT_PAGE_SIZE = 6;
+const STEPPER_PAGE_SIZE = 6;
 const ATTENTION_PAGE_SIZE = 5;
 
 function parsePage(value: string | null): number {

@@ -1,43 +1,19 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useState } from "react";
 import { AppNav } from "@/components/app-nav";
 import { DEFAULT_TIME_ZONE, instantToLocalDateTime, localDateTimeToInstant } from "@/model/time-zone";
 import { useI18n } from "@/i18n/i18n-provider";
 import type { StepperWorkoutDto } from "@/modules/training/stepper-workout.repository";
-import type {
-  StrengthSessionDto,
-  StrengthSessionSummaryDto,
-  TrainingProgramSummaryDto,
-} from "@/modules/training/training.types";
-import { TrainingPagination } from "./training-pagination";
+import type { StrengthSessionDto, TrainingProgramSummaryDto } from "@/modules/training/training.types";
+import { TrainingAttentionPanel, TrainingRecentSessionsPanel, TrainingStepperList } from "./training-paginated-sections";
 import {
   formatDateTime,
-  formatDurationMinutes,
-  formatSelectedActiveEnergyText,
-  matchStatusBadgeTone,
-  matchStatusLabel,
-  planCompletionPillClass,
   readApiError,
 } from "./training-labels";
 import styles from "./training.module.css";
-
-const RECENT_PAGE_SIZE = 6;
-const STEPPER_PAGE_SIZE = 6;
-const ATTENTION_PAGE_SIZE = 5;
-
-function parsePage(value: string | null): number {
-  if (value === null) return 1;
-  if (!/^[1-9]\d*$/.test(value)) return 1;
-  const page = Number(value);
-  return Number.isSafeInteger(page) ? page : 1;
-}
-
-function hasInvalidPage(value: string | null): boolean {
-  return value !== null && parsePage(value) === 1 && value !== "1";
-}
 
 function nowLocalDateTime(): string {
   const { date, time } = instantToLocalDateTime(new Date(), DEFAULT_TIME_ZONE);
@@ -49,60 +25,13 @@ function workoutLocalDateTime(value: string): string {
   return `${date}T${time}`;
 }
 
-function stepperSelectedEnergyText(workout: StepperWorkoutDto, uk: boolean): string {
-  return formatSelectedActiveEnergyText({
-    kcal: workout.selectedActiveEnergyKcal,
-    source: workout.selectedActiveEnergySource,
-    fullCoverage: workout.selectedActiveEnergyFullCoverage,
-    uk,
-    deviceKcalUnused: workout.activeEnergyKcal,
-  });
-}
-
-function formatStepperDateTime(value: string, intlLocale: string): string {
-  return new Intl.DateTimeFormat(intlLocale, {
-    timeZone: DEFAULT_TIME_ZONE,
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(value));
-}
-
-function matchBadgeClass(status: StrengthSessionSummaryDto["matchStatus"]): string {
-  switch (matchStatusBadgeTone(status)) {
-    case "ok":
-      return styles.badgeSuccess;
-    case "warn":
-      return styles.badgeWarning;
-    case "info":
-      return styles.badgeInfo;
-    case "danger":
-      return styles.badgeDanger;
-    case "neutral":
-      return styles.badgeNeutral;
-    default:
-      return styles.badgeMuted;
-  }
-}
-
 export function TrainingClient() {
   const { locale, intlLocale } = useI18n();
   const uk = locale === "uk";
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const recentPageValue = searchParams.get("recentPage");
-  const stepperPageValue = searchParams.get("stepperPage");
-  const attentionPageValue = searchParams.get("attentionPage");
-  const recentPage = parsePage(recentPageValue);
-  const stepperPage = parsePage(stepperPageValue);
-  const attentionPage = parsePage(attentionPageValue);
   const [active, setActive] = useState<StrengthSessionDto | null>(null);
   const [programs, setPrograms] = useState<TrainingProgramSummaryDto[]>([]);
-  const [recent, setRecent] = useState<StrengthSessionSummaryDto[]>([]);
-  const [attention, setAttention] = useState<StrengthSessionSummaryDto[]>([]);
-  const [attentionTotalCount, setAttentionTotalCount] = useState(0);
-  const [stepperWorkouts, setStepperWorkouts] = useState<StepperWorkoutDto[]>([]);
-  const [recentTotalCount, setRecentTotalCount] = useState(0);
-  const [stepperTotalCount, setStepperTotalCount] = useState(0);
+  const [listsRevision, setListsRevision] = useState(0);
   const [stepperFormOpen, setStepperFormOpen] = useState(false);
   const [editingStepper, setEditingStepper] = useState<StepperWorkoutDto | null>(null);
   const [stepperStartAt, setStepperStartAt] = useState(nowLocalDateTime);
@@ -117,62 +46,26 @@ export function TrainingClient() {
   const [reconBusyId, setReconBusyId] = useState<number | null>(null);
 
   const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
     try {
-      const [activeRes, programsRes, recentRes, attentionRes, stepperRes] = await Promise.all([
+      const [activeRes, programsRes] = await Promise.all([
         fetch("/api/v1/training/sessions/active", { cache: "no-store" }),
         fetch("/api/v1/training/programs", { cache: "no-store" }),
-        fetch(`/api/v1/training/sessions/recent?limit=${RECENT_PAGE_SIZE + 1}&offset=${(recentPage - 1) * RECENT_PAGE_SIZE}`, { cache: "no-store" }),
-        fetch(`/api/v1/training/sessions/match-attention?limit=${ATTENTION_PAGE_SIZE + 1}&offset=${(attentionPage - 1) * ATTENTION_PAGE_SIZE}`, { cache: "no-store" }),
-        fetch(`/api/v1/training/stepper-workouts?limit=${STEPPER_PAGE_SIZE + 1}&offset=${(stepperPage - 1) * STEPPER_PAGE_SIZE}`, { cache: "no-store" }),
       ]);
-      if (!activeRes.ok || !programsRes.ok || !recentRes.ok || !attentionRes.ok || !stepperRes.ok) {
+      if (!activeRes.ok || !programsRes.ok) {
         setError(uk ? "Не вдалося завантажити тренування." : "Could not load training data.");
         return;
       }
       const activeBody = await activeRes.json() as { session: StrengthSessionDto | null };
       const programsBody = await programsRes.json() as { programs: TrainingProgramSummaryDto[] };
-      const recentBody = await recentRes.json() as { sessions: StrengthSessionSummaryDto[]; totalCount?: number };
-      const attentionBody = await attentionRes.json() as { sessions: StrengthSessionSummaryDto[]; totalCount?: number };
-      const stepperBody = await stepperRes.json() as { workouts: StepperWorkoutDto[]; totalCount?: number };
-      const recentCount = recentBody.totalCount ?? Math.max(0, (recentPage - 1) * RECENT_PAGE_SIZE + recentBody.sessions.length);
-      const attentionCount = attentionBody.totalCount ?? Math.max(0, (attentionPage - 1) * ATTENTION_PAGE_SIZE + attentionBody.sessions.length);
-      const stepperCount = stepperBody.totalCount ?? Math.max(0, (stepperPage - 1) * STEPPER_PAGE_SIZE + stepperBody.workouts.length);
-      const correction = [
-        ["recentPage", recentPage, recentCount, RECENT_PAGE_SIZE],
-        ["attentionPage", attentionPage, attentionCount, ATTENTION_PAGE_SIZE],
-        ["stepperPage", stepperPage, stepperCount, STEPPER_PAGE_SIZE],
-      ] as const;
-      const params = new URLSearchParams(searchParams.toString());
-      let needsCorrection = false;
-      for (const [key, currentPage, count, size] of correction) {
-        const lastPage = Math.max(1, Math.ceil(count / size));
-        if (currentPage > lastPage) {
-          if (lastPage === 1) params.delete(key);
-          else params.set(key, String(lastPage));
-          needsCorrection = true;
-        }
-      }
-      if (needsCorrection) {
-        const query = params.toString();
-        router.replace(`/training${query ? `?${query}` : ""}`, { scroll: false });
-        return;
-      }
+      setError(null);
       setActive(activeBody.session);
       setPrograms(programsBody.programs);
-      setRecent(recentBody.sessions.slice(0, RECENT_PAGE_SIZE));
-      setRecentTotalCount(recentCount);
-      setAttention(attentionBody.sessions.slice(0, ATTENTION_PAGE_SIZE));
-      setAttentionTotalCount(attentionCount);
-      setStepperWorkouts(stepperBody.workouts.slice(0, STEPPER_PAGE_SIZE));
-      setStepperTotalCount(stepperCount);
     } catch {
       setError(uk ? "Не вдалося завантажити тренування." : "Could not load training data.");
     } finally {
       setLoading(false);
     }
-  }, [attentionPage, recentPage, router, searchParams, stepperPage, uk]);
+  }, [uk]);
 
   function openNewStepperForm() {
     setEditingStepper(null);
@@ -217,7 +110,7 @@ export function TrainingClient() {
       }
       setStepperFormOpen(false);
       setEditingStepper(null);
-      await load();
+      setListsRevision((current) => current + 1);
     } catch {
       setError(uk ? "Перевірте дату й час тренування." : "Check the workout date and time.");
     } finally {
@@ -236,7 +129,7 @@ export function TrainingClient() {
         return;
       }
       if (editingStepper?.id === workout.id) setStepperFormOpen(false);
-      await load();
+      setListsRevision((current) => current + 1);
     } catch {
       setError(uk ? "Не вдалося видалити тренування." : "Could not delete the workout.");
     } finally {
@@ -268,7 +161,7 @@ export function TrainingClient() {
         setError(await readApiError(response, uk));
         return;
       }
-      await load();
+      setListsRevision((current) => current + 1);
     } catch {
       setError(uk ? "Не вдалося підтвердити узгодження." : "Could not confirm reconciliation.");
     } finally {
@@ -293,7 +186,7 @@ export function TrainingClient() {
         setError(await readApiError(response, uk));
         return;
       }
-      await load();
+      setListsRevision((current) => current + 1);
     } catch {
       setError(uk ? "Не вдалося відхилити узгодження." : "Could not reject reconciliation.");
     } finally {
@@ -302,25 +195,9 @@ export function TrainingClient() {
   }
 
   useEffect(() => {
-    if (!hasInvalidPage(recentPageValue) && !hasInvalidPage(stepperPageValue) && !hasInvalidPage(attentionPageValue)) return;
-    const params = new URLSearchParams(searchParams.toString());
-    if (hasInvalidPage(recentPageValue)) params.delete("recentPage");
-    if (hasInvalidPage(stepperPageValue)) params.delete("stepperPage");
-    if (hasInvalidPage(attentionPageValue)) params.delete("attentionPage");
-    const query = params.toString();
-    router.replace(`/training${query ? `?${query}` : ""}`, { scroll: false });
-  }, [attentionPageValue, recentPageValue, router, searchParams, stepperPageValue]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      await Promise.resolve();
-      if (cancelled) return;
-      await load();
-    })();
-    return () => {
-      cancelled = true;
-    };
+    // Start an async refresh; state changes happen after the network response.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void load();
   }, [load]);
 
   async function startProgram(programId: number) {
@@ -392,99 +269,6 @@ export function TrainingClient() {
     }
   }
 
-  const attentionHasItems = attention.length > 0;
-
-  function renderAttention(): ReactNode {
-    if (attentionHasItems) {
-      return (
-        <section className={`${styles.panel} ${styles.panelAttention}`} aria-label={uk ? "Увага до зіставлення" : "Match attention"}>
-          <div className={styles.panelHeader}>
-            <div>
-              <h2>{uk ? "Увага до зіставлення" : "Match attention"}</h2>
-              <p>{uk ? "Неоднозначні або довго очікують Garmin" : "Ambiguous or long-pending Garmin links"}</p>
-            </div>
-          </div>
-          <div className={styles.panelBody}>
-            <div className={styles.list}>
-              {attention.map((session) => (
-                <article className={styles.card} key={session.id}>
-                  <div className={styles.cardTop}>
-                    <div>
-                      <strong>{session.programName}</strong>
-                      <p className={styles.cardMeta}>
-                        {formatDateTime(session.webStartedAt, intlLocale)}
-                        {" · "}
-                        {formatDurationMinutes(session.webStartedAt, session.webEndedAt, intlLocale, uk)}
-                      </p>
-                    </div>
-                    <span className={matchBadgeClass(session.matchStatus)}>
-                      {matchStatusLabel(session.matchStatus, uk)}
-                    </span>
-                  </div>
-                  <Link className={styles.linkLike} href={`/training/sessions/${session.id}`}>
-                    {uk ? "Відкрити" : "Open"}
-                  </Link>
-                </article>
-              ))}
-            </div>
-            {(attentionTotalCount > ATTENTION_PAGE_SIZE || attentionPage > 1) && pageControls("attentionPage", attentionPage, attentionTotalCount, ATTENTION_PAGE_SIZE, uk ? "Сторінки зіставлення" : "Match attention pages")}
-          </div>
-        </section>
-      );
-    }
-
-    return (
-      <section
-        className={`${styles.panel} ${styles.panelCompact} ${styles.panelAttention}`}
-        aria-label={uk ? "Увага до зіставлення" : "Match attention"}
-      >
-        <div className={styles.panelHeader}>
-          <div>
-            <h2>{uk ? "Увага до зіставлення" : "Match attention"}</h2>
-            <p>{uk ? "Неоднозначні або довго очікують Garmin" : "Ambiguous or long-pending Garmin links"}</p>
-          </div>
-        </div>
-        <div className={styles.panelBody}>
-          <p className={styles.emptyCompact}>
-            {loading
-              ? (uk ? "Перевіряємо стан зіставлення…" : "Checking match status…")
-              : attentionPage > 1
-                ? (uk ? "На цій сторінці записів немає." : "No items on this page.")
-                : (uk ? "Немає сесій, що потребують уваги." : "No sessions need attention.")}
-          </p>
-          {attentionPage > 1 && pageControls("attentionPage", attentionPage, attentionTotalCount, ATTENTION_PAGE_SIZE, uk ? "Сторінки зіставлення" : "Match attention pages")}
-        </div>
-      </section>
-    );
-  }
-
-  function pageHref(key: "recentPage" | "stepperPage" | "attentionPage", page: number): string {
-    const params = new URLSearchParams(searchParams.toString());
-    if (page <= 1) params.delete(key);
-    else params.set(key, String(page));
-    const query = params.toString();
-    return `/training${query ? `?${query}` : ""}`;
-  }
-
-  function stepperDiagnosticHref(workoutId: number): string {
-    const query = searchParams.toString();
-    const returnTo = `/training${query ? `?${query}` : ""}`;
-    return `/training/workouts/${workoutId}/stepper-diagnostic?returnTo=${encodeURIComponent(returnTo)}`;
-  }
-
-  function pageControls(key: "recentPage" | "stepperPage" | "attentionPage", page: number, totalCount: number, pageSize: number, label: string) {
-    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
-    return (
-      <TrainingPagination
-        currentPage={page}
-        totalPages={totalPages}
-        hrefForPage={(nextPage) => pageHref(key, nextPage)}
-        label={label}
-        uk={uk}
-      />
-    );
-  }
-
   return (
     <main className={`${styles.page} ${styles.trainingHubPage}`}>
       <div className={styles.navRow}>
@@ -515,7 +299,7 @@ export function TrainingClient() {
       {error && <div className={styles.errorBanner} role="alert">{error}</div>}
 
       <div className={styles.stack}>
-        {renderAttention()}
+        <TrainingAttentionPanel uk={uk} intlLocale={intlLocale} refreshVersion={listsRevision} />
 
 
         <div className={`${styles.trainingHubGrid} ${styles.trainingPrimaryGrid}`}>
@@ -615,75 +399,13 @@ export function TrainingClient() {
         </div>
 
         <div className={`${styles.trainingHubGrid} ${styles.trainingHistoryGrid}`}>
-        <section className={`${styles.panel} ${styles.panelRecent}`} aria-label={uk ? "Нещодавні силові сесії" : "Recent strength sessions"}>
-          <div className={styles.panelHeader}>
-            <div>
-              <h2>{uk ? "Нещодавні силові сесії" : "Recent strength sessions"}</h2>
-              <p>{uk ? "Дата, програма, тривалість, зіставлення" : "Date, program, duration, match state"}</p>
-            </div>
-          </div>
-          <div className={styles.panelBody}>
-            {recent.length === 0 ? (
-              <div className={styles.empty}>
-                <span>{recentPage > 1
-                  ? (uk ? "На цій сторінці сесій немає. Поверніться назад." : "No sessions on this page. Go back a page.")
-                  : (uk ? "Ще немає завершених сесій." : "No sessions yet.")}</span>
-              </div>
-            ) : (
-              <div className={styles.list}>
-                {recent.map((session) => (
-                  <article className={styles.card} key={session.id}>
-                    <div className={styles.cardTop}>
-                      <div>
-                        <strong>{session.programName}</strong>
-                        <p className={styles.cardMeta}>
-                          <span>
-                            {formatDateTime(session.occurrenceAt ?? session.webStartedAt, intlLocale)}
-                            {" · "}
-                            {formatDurationMinutes(session.webStartedAt, session.webEndedAt, intlLocale, uk)}
-                          </span>
-                          {session.planCompletionPercent != null && (
-                            <span className={planCompletionPillClass(session.planCompletionPercent, styles)}>
-                              {uk
-                                ? `${session.planCompletionPercent}% плану`
-                                : `${session.planCompletionPercent}% of plan`}
-                            </span>
-                          )}
-                        </p>
-                      </div>
-                      <span className={matchBadgeClass(session.matchStatus)}>
-                        {matchStatusLabel(session.matchStatus, uk)}
-                      </span>
-                    </div>
-                    <div className={styles.denseCardActions}>
-                      <Link className={styles.linkLike} href={`/training/sessions/${session.id}`}>
-                        {uk ? "Деталі" : "Details"}
-                      </Link>
-                      {(session.status === "COMPLETED" || session.status === "CANCELLED") && (
-                        <Link className={styles.linkLike} href={`/training/sessions/${session.id}/edit`}>
-                          {uk ? "Редагувати" : "Edit"}
-                        </Link>
-                      )}
-                      {session.status === "CANCELLED" && (
-                        <button
-                          className={styles.dangerButton}
-                          type="button"
-                          disabled={busySessionId === session.id}
-                          onClick={() => void deleteCancelledSession(session.id)}
-                        >
-                          {busySessionId === session.id
-                            ? (uk ? "Видалення…" : "Deleting…")
-                            : (uk ? "Видалити" : "Delete")}
-                        </button>
-                      )}
-                    </div>
-                  </article>
-                ))}
-              </div>
-            )}
-            {(recentTotalCount > RECENT_PAGE_SIZE || recentPage > 1) && pageControls("recentPage", recentPage, recentTotalCount, RECENT_PAGE_SIZE, uk ? "Сторінки силових сесій" : "Strength session pages")}
-          </div>
-        </section>
+        <TrainingRecentSessionsPanel
+          uk={uk}
+          intlLocale={intlLocale}
+          refreshVersion={listsRevision}
+          busySessionId={busySessionId}
+          onDeleteCancelledSession={deleteCancelledSession}
+        />
 
         <section className={`${styles.panel} ${styles.panelInfo}`} aria-label={uk ? "Тренування на степері" : "Stepper workouts"}>
           <div className={styles.panelHeader}>
@@ -735,77 +457,17 @@ export function TrainingClient() {
                 </div>
               </form>
             )}
-            {loading ? (
-              <p className={styles.cardMeta}>{uk ? "Завантаження…" : "Loading…"}</p>
-            ) : stepperWorkouts.length === 0 ? (
-              <div className={styles.empty}>
-                <strong>{stepperPage > 1
-                  ? (uk ? "На цій сторінці записів немає" : "No workouts on this page")
-                  : (uk ? "Записів степера поки немає" : "No stepper workouts yet")}</strong>
-                <span>{stepperPage > 1
-                  ? (uk ? "Поверніться до попередньої сторінки." : "Return to the previous page.")
-                  : (uk ? "Додайте тренування вручну або синхронізуйте Apple Health." : "Add one manually or sync Apple Health.")}</span>
-              </div>
-            ) : (
-              <div className={styles.list}>
-                {stepperWorkouts.map((workout) => (
-                  <article className={styles.card} key={workout.id}>
-                    <div className={styles.cardTop}>
-                      <div>
-                        <strong>{uk ? "Степер" : "Stepper"}</strong>
-                        <p className={styles.cardMeta}>
-                          <span>{formatStepperDateTime(workout.startAt, intlLocale)}</span>
-                          <span>{formatDurationMinutes(workout.startAt, workout.endAt, intlLocale, uk)}</span>
-                        </p>
-                        <p className={styles.energyLine}>{stepperSelectedEnergyText(workout, uk)}</p>
-                        {(workout.reconciliationStatus === "pending" || workout.reconciliationStatus === "ambiguous") ? (
-                          <p className={styles.reconNotice} role="status">
-                            {uk
-                              ? "Можливе дублювання з Garmin · кроки лишаються доданими"
-                              : "Possible Garmin duplicate · steps stay additive"}
-                          </p>
-                        ) : null}
-                      </div>
-                      <span className={workout.source === "manual" ? styles.badgePrimary : styles.badgeInfo}>
-                        {workout.source === "manual" ? (uk ? "Ручний запис" : "Manual entry") : "Apple Health"}
-                      </span>
-                    </div>
-                    <div className={`${styles.denseCardActions} ${styles.stepperCardActions}`}>
-                      <Link className={styles.secondaryButton} href={stepperDiagnosticHref(workout.id)}>
-                        {uk ? "Енергія · діагностика" : "Energy · diagnostics"}
-                      </Link>
-                      {(workout.reconciliationStatus === "pending" || workout.reconciliationStatus === "ambiguous")
-                        && workout.reconciliationPeerWorkoutId !== null
-                        && workout.reconciliationRole === "manual" && (
-                        <button
-                          className={styles.secondaryButton}
-                          type="button"
-                          disabled={reconBusyId === workout.id || stepperBusy}
-                          onClick={() => void confirmStepperReconciliation(workout)}
-                        >
-                          {uk ? "Підтвердити пару" : "Confirm pair"}
-                        </button>
-                      )}
-                      {(workout.reconciliationStatus === "pending" || workout.reconciliationStatus === "ambiguous")
-                        && workout.reconciliationGroupId !== null && (
-                        <button
-                          className={styles.dangerButton}
-                          type="button"
-                          disabled={reconBusyId === workout.id || stepperBusy}
-                          onClick={() => void rejectStepperReconciliation(workout)}
-                        >
-                          {uk ? "Відхилити" : "Reject"}
-                        </button>
-                      )}
-                      {workout.editable && <button className={styles.linkLike} type="button" disabled={stepperBusy} onClick={() => openEditStepperForm(workout)}>{uk ? "Редагувати" : "Edit"}</button>}
-                      {workout.editable && <button className={styles.dangerButton} type="button" disabled={stepperBusy} onClick={() => void deleteStepperWorkout(workout)}>{uk ? "Видалити" : "Delete"}</button>}
-                      {!workout.editable && <span className={styles.cardMeta}>{uk ? "Зв’язано із записом щоденника" : "Linked to a training diary entry"}</span>}
-                    </div>
-                  </article>
-                ))}
-              </div>
-            )}
-            {(stepperTotalCount > STEPPER_PAGE_SIZE || stepperPage > 1) && pageControls("stepperPage", stepperPage, stepperTotalCount, STEPPER_PAGE_SIZE, uk ? "Сторінки степера" : "Stepper pages")}
+          <TrainingStepperList
+            uk={uk}
+            intlLocale={intlLocale}
+            refreshVersion={listsRevision}
+            busy={stepperBusy}
+            reconBusyId={reconBusyId}
+            onEdit={openEditStepperForm}
+            onDelete={(workout) => void deleteStepperWorkout(workout)}
+            onConfirmReconciliation={(workout) => void confirmStepperReconciliation(workout)}
+            onRejectReconciliation={(workout) => void rejectStepperReconciliation(workout)}
+          />
           </div>
         </section>
         </div>

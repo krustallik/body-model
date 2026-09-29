@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppNav } from "@/components/app-nav";
 import { useI18n } from "@/i18n/i18n-provider";
 import { DIARY_COMPLETENESS } from "@/modules/training/training.constants";
@@ -18,16 +18,16 @@ import {
   readApiError,
 } from "../training-labels";
 import { TrainingPagination } from "../training-pagination";
+import {
+  handleTrainingPaginationNavigate,
+  parseTrainingPage,
+  trainingSearchParamHref,
+  updateTrainingSearchParams,
+  useTrainingSearchParam,
+} from "../training-url-state";
 import styles from "../training.module.css";
 
 const GARMIN_PAGE_SIZE = 10;
-
-function parsePage(value: string | null): number {
-  if (value === null) return 1;
-  if (!/^[1-9]\d*$/.test(value)) return 1;
-  const page = Number(value);
-  return Number.isSafeInteger(page) ? page : 1;
-}
 
 function completenessLabel(
   value: HistoricalStrengthWorkoutDto["diaryCompleteness"],
@@ -66,87 +66,90 @@ export function BackfillClient() {
   const { locale, intlLocale } = useI18n();
   const uk = locale === "uk";
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const pageValue = searchParams.get("garminPage");
-  const missingValue = searchParams.get("onlyMissingDiary");
-  const page = parsePage(pageValue);
+  const { value: pageValue, ready } = useTrainingSearchParam("garminPage");
+  const { value: missingValue } = useTrainingSearchParam("onlyMissingDiary");
+  const page = parseTrainingPage(pageValue);
   const onlyMissing = missingValue === "true";
   const pageHref = useCallback((nextPage: number): string => {
-    const params = new URLSearchParams(searchParams.toString());
-    if (nextPage <= 1) params.delete("garminPage");
-    else params.set("garminPage", String(nextPage));
-    const query = params.toString();
-    return `/training/backfill${query ? `?${query}` : ""}`;
-  }, [searchParams]);
+    return trainingSearchParamHref("garminPage", nextPage <= 1 ? null : String(nextPage), "/training/backfill");
+  }, []);
   const [workouts, setWorkouts] = useState<HistoricalStrengthWorkoutDto[]>([]);
   const [programs, setPrograms] = useState<TrainingProgramSummaryDto[]>([]);
   const [totalCount, setTotalCount] = useState(0);
   const [selected, setSelected] = useState<number[]>([]);
   const [bulkProgramId, setBulkProgramId] = useState<number | "">("");
-  const [loading, setLoading] = useState(true);
+  const [loadedRequestKey, setLoadedRequestKey] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [listRevision, setListRevision] = useState(0);
+  const requestSequence = useRef(0);
+  const requestKey = `${page}:${onlyMissing}:${listRevision}`;
+  const loading = loadedRequestKey !== requestKey;
 
-  const load = useCallback(async () => {
-    setError(null);
+  const loadPrograms = useCallback(async () => {
     try {
-      const query = new URLSearchParams({
-        limit: String(GARMIN_PAGE_SIZE + 1),
-        offset: String((page - 1) * GARMIN_PAGE_SIZE),
-        ...(onlyMissing ? { onlyMissingDiary: "true" } : {}),
-      }).toString();
-      const [workoutsRes, programsRes] = await Promise.all([
-        fetch(`/api/v1/training/workouts/historical?${query}`, { cache: "no-store" }),
-        fetch("/api/v1/training/programs", { cache: "no-store" }),
-      ]);
-      if (!workoutsRes.ok || !programsRes.ok) {
-        setError(uk ? "Не вдалося завантажити історію." : "Could not load history.");
-        return;
-      }
-      const workoutsBody = await workoutsRes.json() as { workouts: HistoricalStrengthWorkoutDto[]; totalCount?: number };
-      const programsBody = await programsRes.json() as { programs: TrainingProgramSummaryDto[] };
-      const count = workoutsBody.totalCount ?? Math.max(0, (page - 1) * GARMIN_PAGE_SIZE + workoutsBody.workouts.length);
-      const totalPages = Math.max(1, Math.ceil(count / GARMIN_PAGE_SIZE));
-      if (page > totalPages) {
-        router.replace(pageHref(totalPages), { scroll: false });
-        return;
-      }
-      setWorkouts(workoutsBody.workouts.slice(0, GARMIN_PAGE_SIZE));
-      setTotalCount(count);
-      setPrograms(programsBody.programs);
-      if (programsBody.programs[0] && bulkProgramId === "") {
-        setBulkProgramId(programsBody.programs[0].id);
-      }
+      const response = await fetch("/api/v1/training/programs", { cache: "no-store" });
+      if (!response.ok) throw new Error();
+      const body = await response.json() as { programs: TrainingProgramSummaryDto[] };
+      setPrograms(body.programs);
+      setBulkProgramId((current) => current === "" && body.programs[0] ? body.programs[0].id : current);
     } catch {
-      setError(uk ? "Не вдалося завантажити історію." : "Could not load history.");
-    } finally {
-      setLoading(false);
+      setError(uk ? "Не вдалося завантажити програми." : "Could not load programs.");
     }
-  }, [bulkProgramId, onlyMissing, page, pageHref, router, uk]);
+  }, [uk]);
+
+  // Start an async program fetch; state changes happen after the response.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { void loadPrograms(); }, [loadPrograms]);
 
   useEffect(() => {
-    const invalidPage = pageValue !== null && parsePage(pageValue) === 1 && pageValue !== "1";
+    if (!ready || (pageValue !== null && page === 1 && pageValue !== "1")) return;
+    const requestId = ++requestSequence.current;
+    const controller = new AbortController();
+    let current = true;
+    const query = new URLSearchParams({
+      limit: String(GARMIN_PAGE_SIZE + 1),
+      offset: String((page - 1) * GARMIN_PAGE_SIZE),
+      ...(onlyMissing ? { onlyMissingDiary: "true" } : {}),
+    }).toString();
+    void (async () => {
+      try {
+        const response = await fetch(`/api/v1/training/workouts/historical?${query}`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error(uk ? "Не вдалося завантажити історію." : "Could not load history.");
+        const body = await response.json() as { workouts: HistoricalStrengthWorkoutDto[]; totalCount?: number };
+        if (!current || requestId !== requestSequence.current) return;
+        const count = body.totalCount ?? Math.max(0, (page - 1) * GARMIN_PAGE_SIZE + body.workouts.length);
+        const totalPages = Math.max(1, Math.ceil(count / GARMIN_PAGE_SIZE));
+        if (page > totalPages) {
+          updateTrainingSearchParams({ garminPage: totalPages === 1 ? null : String(totalPages) }, true);
+          return;
+        }
+        setWorkouts(body.workouts.slice(0, GARMIN_PAGE_SIZE));
+        setTotalCount(count);
+        setError(null);
+        setLoadedRequestKey(requestKey);
+      } catch (cause) {
+        if (!current || controller.signal.aborted) return;
+        setError(cause instanceof Error ? cause.message : (uk ? "Не вдалося завантажити історію." : "Could not load history."));
+        setLoadedRequestKey(requestKey);
+      }
+    })();
+    return () => { current = false; controller.abort(); };
+  }, [listRevision, onlyMissing, page, pageValue, ready, requestKey, uk]);
+
+  useEffect(() => {
+    if (!ready) return;
+    const invalidPage = pageValue !== null && parseTrainingPage(pageValue) === 1 && pageValue !== "1";
     const invalidFilter = missingValue !== null && missingValue !== "true" && missingValue !== "false";
     if (!invalidPage && !invalidFilter) return;
-    const params = new URLSearchParams(searchParams.toString());
-    if (invalidPage) params.delete("garminPage");
-    if (invalidFilter) params.delete("onlyMissingDiary");
-    const query = params.toString();
-    router.replace(`/training/backfill${query ? `?${query}` : ""}`, { scroll: false });
-  }, [missingValue, pageValue, router, searchParams]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      await Promise.resolve();
-      if (cancelled) return;
-      setLoading(true);
-      await load();
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [load]);
+    updateTrainingSearchParams({
+      ...(invalidPage ? { garminPage: null } : {}),
+      ...(invalidFilter ? { onlyMissingDiary: null } : {}),
+    }, true);
+  }, [missingValue, pageValue, ready]);
 
   const eligibleIds = useMemo(
     () => workouts.filter((row) => row.linkedSessionId == null).map((row) => row.workoutId),
@@ -156,13 +159,8 @@ export function BackfillClient() {
   const canBulk = programs.length > 0 && eligibleIds.length > 0;
   const createDisabled = busy || selected.length === 0 || typeof bulkProgramId !== "number";
 
-  function filterHref(missing: boolean): string {
-    const params = new URLSearchParams(searchParams.toString());
-    if (missing) params.set("onlyMissingDiary", "true");
-    else params.delete("onlyMissingDiary");
-    params.delete("garminPage");
-    const query = params.toString();
-    return `/training/backfill${query ? `?${query}` : ""}`;
+  function setFilter(missing: boolean): void {
+    updateTrainingSearchParams({ onlyMissingDiary: missing ? "true" : null, garminPage: null });
   }
 
   function toggle(workoutId: number) {
@@ -188,7 +186,7 @@ export function BackfillClient() {
         return;
       }
       setSelected([]);
-      await load();
+      setListRevision((revision) => revision + 1);
     } catch {
       setError(uk ? "Не вдалося створити записи." : "Could not create diary entries.");
     } finally {
@@ -236,7 +234,7 @@ export function BackfillClient() {
                 type="button"
                 className={styles.togglePill}
                 aria-pressed={onlyMissing}
-                onClick={() => router.push(filterHref(!onlyMissing), { scroll: false })}
+                onClick={() => setFilter(!onlyMissing)}
               >
                 {uk ? "Лише без запису" : "Missing diary only"}
               </button>
@@ -244,7 +242,7 @@ export function BackfillClient() {
                 type="button"
                 className={styles.togglePill}
                 aria-pressed={!onlyMissing}
-                onClick={() => router.push(filterHref(false), { scroll: false })}
+                onClick={() => setFilter(false)}
               >
                 {uk ? "Усі силові" : "All strength"}
               </button>
@@ -433,6 +431,7 @@ export function BackfillClient() {
                 totalPages={Math.max(1, Math.ceil(totalCount / GARMIN_PAGE_SIZE))}
                 hrefForPage={pageHref}
                 label={uk ? "Сторінки Garmin" : "Garmin pages"}
+                onNavigate={handleTrainingPaginationNavigate}
                 uk={uk}
               />
             )}

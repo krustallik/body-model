@@ -193,6 +193,7 @@ export function ForecastClient() {
   const [horizon, setHorizon] = useState<ForecastHorizon>(30);
   const [mode, setMode] = useState<ScenarioMode>("recent-behavior");
   const [metric, setMetric] = useState<ForecastMetric>("physiologicalBodyWeightKg");
+  const [chartHistoryRange, setChartHistoryRange] = useState<"recent" | "full">("recent");
   const [plan, setPlan] = useState<PlanValues>(DEFAULT_PLAN);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [context, setContext] = useState<Context | null>(null);
@@ -464,6 +465,7 @@ export function ForecastClient() {
             </div>}
           </fieldset>
         </form>}
+        <div className={styles.actionPanel}>
         <div className={styles.runRow}>
           <div className={styles.runPrimaryActions}>
             <button className={styles.runButton} type="button" aria-busy={busy} disabled={busy} onClick={() => void runForecast()}>{loading ? (uk ? "Запустити оновлений прогноз" : "Run updated forecast") : (uk ? "Побудувати прогноз" : "Run forecast")}</button>
@@ -472,7 +474,28 @@ export function ForecastClient() {
           {showRecalculate && <button className={needsRecalculation ? styles.recalculateButtonPrimary : styles.recalculateButton} type="button" aria-busy={actionLoading === "recalculate"} disabled={busy} onClick={() => void runAction("recalculate")}>{actionLoading === "recalculate" ? recalculateCopy.loadingAction : recalculateCopy.action}</button>}
         </div>
         {showRecalculate && <p className={styles.recalculateHint}>{recalculateCopy.hint}</p>}
+        </div>
       </section>
+      {result && endpoint && <section className={styles.chartPanel}>
+          <div className={styles.chartHeader}><div><p className={styles.eyebrow}>{uk ? "Історія → поточний стан → майбутнє" : "History → current state → future"}</p><h2>{uk ? "Як може змінюватись тіло" : "How the body may change"} <HelpTip label={uk ? "Пояснення оцінки й прогнозу" : "About model estimate and forecast"}>{uk ? "Історична оцінка моделі враховує вимірювання, доступні на той час, тому може бути близькою до ваги з вагів. Це не прогноз, зроблений до вимірювання. Майбутній прогноз моделює зміни вперед від актуальної ваги з вимірювання, якщо вона доступна." : "The historical model estimate uses measurements available at that time, so it may be close to scale weight. It is not a forecast made before the measurement. The future forecast projects forward from the latest measured weight when available."}</HelpTip></h2></div><div className={styles.chartTools}><div className={styles.historyRange} role="group" aria-label={uk ? "Вікно історії на графіку" : "Chart history window"}><button type="button" aria-pressed={chartHistoryRange === "recent"} onClick={() => setChartHistoryRange("recent")}>{uk ? "Остання історія" : "Recent history"}</button><button type="button" aria-pressed={chartHistoryRange === "full"} onClick={() => setChartHistoryRange("full")}>{uk ? "Повна історія" : "Full history"}</button></div><div className={styles.metricTabs}>{metrics.map((item) => <button type="button" key={item.key} aria-pressed={metric === item.key} onClick={() => setMetric(item.key)}>{item.label}</button>)}</div></div></div>
+          <div className={styles.legend} aria-label={uk ? "Легенда графіка" : "Chart legend"}>
+            {metric === "physiologicalBodyWeightKg" ? <>
+              <span><i className={styles.observedKey} />{chartLabels.measuredWeight}</span>
+              <span><i className={styles.historyKey} />{chartLabels.modelEstimate}</span>
+            </> : <span><i className={styles.historyKey} />{chartLabels.historicalEstimate}</span>}
+            <span><i className={styles.medianKey} />{uk ? "Майбутній прогноз" : "Future forecast"}</span>
+            {result.forecastVersion === "experimental-forecast-v1"
+              ? <span><i className={styles.outerKey} />{chartLabels.engineeringRange}</span>
+              : <>
+                <span><i className={styles.innerKey} />{uk ? "25–75% прогнозу" : "25–75% forecast interval"}</span>
+                <span><i className={styles.outerKey} />{uk ? "5–95% прогнозу" : "5–95% forecast interval"}</span>
+              </>}
+          </div>
+          <ForecastChart result={result} metric={metric} history={context?.history ?? []} observedWeights={context?.observedWeights ?? []} locale={locale} historyWindowDays={chartHistoryRange === "recent" ? 21 : null} />
+          <p className={styles.chartNote}>{result.forecastVersion === "experimental-forecast-v1"
+            ? (uk ? "Інженерний діапазон показує детерміновані межі моделі, а не статистичні квантилі. Суцільна лінія — центральна оцінка майбутнього." : "The engineering range shows deterministic model bounds, not statistical quantiles. The solid line is the central future estimate.")
+            : (uk ? "Межі 25–75% та 5–95% — емпіричні квантильні інтервали змодельованих траєкторій, не гарантія результату." : "The 25–75% and 5–95% bands are empirical quantile intervals across simulated paths, not a guarantee of the outcome.")}</p>
+        </section>}
       <div className={styles.outcomeColumn}>
 
       {result && showPreviousForecastNotice && <section className={styles.notice} role="status">
@@ -529,26 +552,7 @@ export function ForecastClient() {
       </div>
       </div>
       {result && endpoint && <>
-        <section className={styles.chartPanel}>
-          <div className={styles.chartHeader}><div><p className={styles.eyebrow}>{uk ? "Історія → поточний стан → майбутнє" : "History → current state → future"}</p><h2>{uk ? "Як може змінюватись тіло" : "How the body may change"} <HelpTip label={uk ? "Пояснення оцінки й прогнозу" : "About model estimate and forecast"}>{uk ? "Історична оцінка моделі враховує вимірювання, доступні на той час, тому може бути близькою до ваги з вагів. Це не прогноз, зроблений до вимірювання. Майбутній прогноз моделює зміни вперед від актуальної ваги з вимірювання, якщо вона доступна." : "The historical model estimate uses measurements available at that time, so it may be close to scale weight. It is not a forecast made before the measurement. The future forecast projects forward from the latest measured weight when available."}</HelpTip></h2></div><div className={styles.metricTabs}>{metrics.map((item) => <button type="button" key={item.key} aria-pressed={metric === item.key} onClick={() => setMetric(item.key)}>{item.label}</button>)}</div></div>
-          <div className={styles.legend} aria-label={uk ? "Легенда графіка" : "Chart legend"}>
-            {metric === "physiologicalBodyWeightKg" ? <>
-              <span><i className={styles.observedKey} />{chartLabels.measuredWeight}</span>
-              <span><i className={styles.historyKey} />{chartLabels.modelEstimate}</span>
-            </> : <span><i className={styles.historyKey} />{chartLabels.historicalEstimate}</span>}
-            <span><i className={styles.medianKey} />{uk ? "Майбутній прогноз" : "Future forecast"}</span>
-            {result.forecastVersion === "experimental-forecast-v1"
-              ? <span><i className={styles.outerKey} />{chartLabels.engineeringRange}</span>
-              : <>
-                <span><i className={styles.innerKey} />{uk ? "25–75% прогнозу" : "25–75% forecast interval"}</span>
-                <span><i className={styles.outerKey} />{uk ? "5–95% прогнозу" : "5–95% forecast interval"}</span>
-              </>}
-          </div>
-          <ForecastChart result={result} metric={metric} history={context?.history ?? []} observedWeights={context?.observedWeights ?? []} locale={locale} />
-          <p className={styles.chartNote}>{result.forecastVersion === "experimental-forecast-v1"
-            ? (uk ? "Інженерний діапазон показує детерміновані межі моделі, а не статистичні квантилі. Суцільна лінія — центральна оцінка майбутнього." : "The engineering range shows deterministic model bounds, not statistical quantiles. The solid line is the central future estimate.")
-            : (uk ? "Межі 25–75% та 5–95% — емпіричні квантильні інтервали змодельованих траєкторій, не гарантія результату." : "The 25–75% and 5–95% bands are empirical quantile intervals across simulated paths, not a guarantee of the outcome.")}</p>
-        </section>
+
         {result.experimentalCurrent && <section className={styles.detailGrid} aria-label={uk ? "Поточний Unified стан" : "Current Unified state"}>
           <article><h2>{uk ? "Поточний стан" : "Current state"}</h2><dl>
             <div><dt>{uk ? "Модельована вага" : "Modeled weight"}</dt><dd>{result.experimentalCurrent.modeledWeightKg === null ? "—" : formatValue(result.experimentalCurrent.modeledWeightKg, "kg", locale)}</dd></div>

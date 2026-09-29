@@ -248,7 +248,7 @@ export function forecastReadiness(input: {
       canForecast: true,
       title: uk ? "Прогноз можна побудувати" : "Forecast can run",
       detail: uk ? "Поточний результат побудовано від доступної ваги; модель ще не має повної збереженої історії." : "The current result uses the available weight; the full persisted history is not modeled yet.",
-      factors: uk ? ["Історія моделі ще не завершена — діапазон ширший.", "Додаткові дні харчування та ваги зроблять прогноз точнішим."] : ["The model history is not complete yet, so the range is wider.", "More food and weight days will make the forecast more precise."],
+      factors: uk ? ["Історія моделі ще не завершена — діапазон ширший.", "Додаткові дні харчування та зважувань допоможуть звузити невизначеність."] : ["The model history is not complete yet, so the range is wider.", "More food and weigh-in days help narrow uncertainty."],
     };
     return {
     score: null, level: "unavailable", canForecast: false,
@@ -301,8 +301,8 @@ export function forecastReadiness(input: {
   );
   return {
     score, level, canForecast,
-    title: canForecast
-      ? (level === "high" ? (uk ? "Прогноз досить точний" : "Forecast looks solid") : level === "medium" ? (uk ? "Прогноз середньої точності" : "Forecast is okay") : (uk ? "Зараз прогноз грубий" : "Forecast is rough right now"))
+      title: canForecast
+      ? (level === "high" ? (uk ? "Історія підтримує стабільніший прогноз" : "History supports a steadier forecast") : level === "medium" ? (uk ? "Історія дає помірну опору прогнозу" : "History gives the forecast some support") : (uk ? "Прогноз спирається на обмежені дані" : "Forecast is based on limited evidence"))
       : (uk ? "Зараз прогноз побудувати не можна" : "Cannot build a forecast right now"),
     detail: canForecast
       ? (uk ? "Оцінка показує, наскільки повні дані для цього прогнозу. Це не гарантія результату." : "The score shows how complete the data is for this forecast. It is not a promise of the outcome.")

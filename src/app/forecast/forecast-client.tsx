@@ -230,7 +230,7 @@ export function ForecastClient() {
           buildForecastRequest(selectedMode, selectedHorizon, selectedPlan),
           controller.signal,
         );
-        const contextResponse = await fetch("/api/forecast/context", { cache: "no-store", signal: controller.signal });
+        const contextResponse = await fetch(`/api/forecast/context?locale=${locale}`, { cache: "no-store", signal: controller.signal });
         const nextContext = contextResponse.ok ? await contextResponse.json() as Context : null;
         if (!forecastResponse.ok) {
           const issue = await forecastError(forecastResponse, locale);
@@ -435,7 +435,8 @@ export function ForecastClient() {
         <div className={styles.readiness}><span className={result ? styles.readyDot : styles.waitingDot} />{busy ? (actionLoading === "initialize" ? noActiveModelCopy.loadingAction : (uk ? "Рахуємо варіанти…" : "Calculating options…")) : quality?.title ?? (uk ? "Потрібна увага" : "Needs attention")}</div>
       </header>
 
-      <section className={styles.controlPanel} aria-label={uk ? "Налаштування прогнозу" : "Forecast controls"}>
+      <div className={styles.forecastLayout}>
+      <section className={styles.controlPanel} aria-label={uk ? "Налаштування сценарію" : "Scenario settings"}>
         <div className={styles.stepHeading}><span aria-hidden="true">↺</span> <button className={styles.resetButton} type="button" disabled={busy} onClick={resetSettings}>{uk ? "Скинути налаштування" : "Reset settings"}</button></div>
         <section className={styles.controlStep} aria-labelledby="forecast-horizon-heading"><div className={styles.stepHeading}><span>01</span><div><h2 id="forecast-horizon-heading">{uk ? "Період прогнозу" : "Forecast horizon"}</h2><p>{uk ? "На скільки днів уперед дивимось?" : "How far ahead should we look?"}</p></div></div><div className={styles.segmented} aria-label={uk ? "Кількість днів" : "Number of days"}>{FORECAST_HORIZONS.map((days) => <button type="button" key={days} aria-pressed={horizon === days} onClick={() => selectHorizon(days)}>{days < 365 ? `${days}${uk ? "д" : "d"}` : (uk ? "1р" : "1y")}</button>)}</div><p className={styles.stepHint}>{uk ? "На довшому періоді діапазон невизначеності ширшає." : "Uncertainty grows over longer periods."}<HelpTip>{uk ? "30–90 днів зручні для практичних сценаріїв. На 180–365 днів кінцева цифра показує напрям, а не обіцянку." : "30–90 days works well for practical scenarios. At 180–365 days, the endpoint shows direction, not a promise."}</HelpTip></p></section>
         <section className={styles.controlStep} aria-labelledby="forecast-mode-heading"><div className={styles.stepHeading}><span>02</span><div><h2 id="forecast-mode-heading">{uk ? "Що відбуватиметься далі?" : "What happens next?"}</h2><p>{uk ? "Оберіть звички або задайте майбутній план." : "Use recent habits or describe a future plan."}</p></div></div><div className={styles.scenarioGrid}>{scenarios.map((scenario) => <button type="button" key={scenario.mode} aria-pressed={mode === scenario.mode} onClick={() => selectMode(scenario.mode)}><strong>{scenario.label}</strong><span>{scenario.hint}</span></button>)}</div><p className={styles.stepHint}><HelpTip>{uk ? "«Як останнім часом» використовує типові повні дні з Історії. У цьому режимі поля майбутнього плану не діють. Точний план повторює введені числа щодня; гнучкий план додає невеликі коливання." : "Recent behavior repeats typical complete days from History; future-plan fields do not apply in this mode. Exact plan repeats your entries daily; flexible plan adds small variations."}</HelpTip></p></section>
@@ -472,6 +473,7 @@ export function ForecastClient() {
         </div>
         {showRecalculate && <p className={styles.recalculateHint}>{recalculateCopy.hint}</p>}
       </section>
+      <div className={styles.outcomeColumn}>
 
       {result && showPreviousForecastNotice && <section className={styles.notice} role="status">
         <strong>{uk ? "Поки показано попередній розрахунок." : "The previous forecast is still shown."}</strong>
@@ -480,9 +482,9 @@ export function ForecastClient() {
           : `It used “${scenarioLabel(result.scenarioProvenance.mode)}” for ${result.horizonDays} days. The current selection is “${scenarioLabel(mode)}” for ${horizon} days. The result and assumptions below belong to the previous run.`}</span>
       </section>}
 
-      <section className={`${styles.readinessCard} ${styles[readiness.level]}`} aria-label={uk ? "Наскільки зрозумілий прогноз" : "How clear the forecast is"}>
-        <div className={styles.readinessScore}><strong>{readiness.score ?? "—"}</strong><span>/ 100</span></div>
-        <div><p className={styles.eyebrow}>{readiness.canForecast ? (uk ? "Прогноз можна побудувати" : "Forecast can run") : (uk ? "Чому прогнозу ще немає" : "Why there is no forecast yet")}</p><h2>{readiness.title}</h2><p>{readiness.detail}</p><ul>{readiness.factors.map((factor) => <li key={factor}>{factor}</li>)}</ul></div>
+      <section className={`${styles.readinessCard} ${styles[readiness.level]}`} aria-label={uk ? "Повнота та готовність даних" : "Data coverage and forecast readiness"}>
+        <div className={styles.readinessHeading}><p className={styles.eyebrow}>{uk ? "Повнота та готовність даних" : "Data coverage and readiness"}</p><div className={styles.readinessScore}><strong>{readiness.score ?? "—"}</strong><span>/ 100</span></div></div>
+        <div><h2>{readiness.title}</h2><p>{readiness.detail}</p><p className={styles.readinessClarifier}>{uk ? "Це складений індикатор повноти історії, її цілісності та персоналізації моделі — не ймовірність і не відсоток точності." : "This index combines history coverage, continuity, and model calibration. It is not a probability or an accuracy percentage."}</p><details className={styles.readinessBreakdown}><summary>{uk ? "Що враховано в оцінці" : "What goes into this score"}</summary><ul>{readiness.factors.map((factor) => <li key={factor}>{factor}</li>)}</ul></details></div>
       </section>
 
       {error && showStartModel && !hasForecastResult && <section className={styles.blocked} role="alert">
@@ -516,13 +518,17 @@ export function ForecastClient() {
       {!loading && !outcome && !error && (settingsDirty || submittedRun === null) && <section className={styles.pendingCard}><strong>{uk ? "Налаштування змінено" : "Settings changed"}</strong><span>{uk ? "Прогноз оновиться автоматично через мить." : "The forecast will update automatically in a moment."}</span></section>}
 
       {result && endpoint && <>
-        {quality && <section className={`${styles.qualityBanner} ${styles[quality.tone]}`}><div><strong>{quality.title}</strong><span>{quality.detail}</span>{(result.experimentalQuality === "limited-history" || result.experimentalQuality === "bootstrap") && <span>{uk ? "Це provisional-оцінка: діапазон ширший, але модель не заблокована." : "This is a provisional estimate: the range is wider, but the model is not blocked."}</span>}{result.experimentalProvenance?.improvements.map((item) => <span key={item}>{item}</span>)}<span>{uk ? "Числовий інтервал прогнозу не включає невідому енергію тренувань: дні з неповним покриттям енергії не стають донорами." : "The numerical forecast interval does not include unknown workout energy: days with incomplete energy coverage are not donors."}</span></div><span>{result.scenarioProvenance.donorEvidence.donorDayCount} {uk ? "днів з даними" : "days with data"}</span></section>}
+        {quality && <section className={`${styles.qualityBanner} ${styles[quality.tone]}`}><div><strong>{uk ? "Стан результату · " : "Result status · "}{quality.title}</strong><span>{quality.detail}</span>{(result.experimentalQuality === "limited-history" || result.experimentalQuality === "bootstrap") && <span>{uk ? "Це попередня оцінка: діапазон ширший, але модель не заблокована." : "This is a provisional estimate: the range is wider, but the model is not blocked."}</span>}{result.experimentalProvenance?.improvements.map((item) => <span key={item}>{item}</span>)}<span>{uk ? "Числовий інтервал прогнозу не включає невідому енергію тренувань: дні з неповним покриттям енергії не стають донорами." : "The numerical forecast interval does not include unknown workout energy: days with incomplete energy coverage are not donors."}</span></div><span>{result.scenarioProvenance.donorEvidence.donorDayCount} {uk ? "днів з даними" : "days with data"}</span></section>}
         <section className={styles.summaryGrid}>
           <article><span>{uk ? `Очікувана метрика «${metricLabel.toLowerCase()}» на ${formatDate(result.dates.at(-1)!.date, undefined, locale)}` : `Expected ${metricLabel.toLowerCase()} on ${formatDate(result.dates.at(-1)!.date, undefined, locale)}`}</span><strong>{formatValue(endpoint.median, "kg", locale)}</strong><small>{uk ? "Медіанна оцінка" : "Median estimate"}</small></article>
           <article><span>{result.forecastVersion === "experimental-forecast-v1" ? (uk ? "Інженерний діапазон" : "Engineering range") : (uk ? "Імовірний діапазон" : "Likely range")}<HelpTip>{result.forecastVersion === "experimental-forecast-v1" ? (uk ? "Детерміновані межі моделі, не статистичний confidence interval." : "Deterministic model bounds, not a statistical confidence interval.") : (uk ? "Межі 25–75%: половина змодельованих траєкторій опинилася всередині. Це не гарантія і не весь можливий діапазон." : "The 25th–75th percentile range: half of modeled paths landed inside. It is not a guarantee or the full possible range.")}</HelpTip></span><strong>{formatValue(endpoint.p25, "kg", locale)}–{formatValue(endpoint.p75, "kg", locale)}</strong><small>{result.forecastVersion === "experimental-forecast-v1" ? (uk ? "Інженерні межі" : "Engineering bounds") : (uk ? "Середня половина варіантів" : "Middle half of the options")}</small></article>
           <article><span>{result.forecastVersion === "experimental-forecast-v1" ? (uk ? "Широкий інженерний діапазон" : "Wide engineering range") : (uk ? "Ширший можливий діапазон" : "Wider possible range")}</span><strong>{formatValue(endpoint.p05, "kg", locale)}–{formatValue(endpoint.p95, "kg", locale)}</strong><small>{result.forecastVersion === "experimental-forecast-v1" ? (uk ? "Не confidence interval" : "Not a confidence interval") : (uk ? "Більшість варіантів (близько 9 з 10)" : "Most options (about 9 in 10)")}</small></article>
           <article><span>{uk ? "Очікувана зміна ваги" : "Expected weight change"}</span><strong>{metric === "physiologicalBodyWeightKg" && startWeight !== null ? `${endpoint.median - startWeight >= 0 ? "+" : ""}${new Intl.NumberFormat(uk ? "uk-UA" : "en-US", { maximumFractionDigits: 1 }).format(endpoint.median - startWeight)} kg` : "—"}</strong><small>{metric === "physiologicalBodyWeightKg" ? (uk ? "Від поточної оцінки моделі" : "From the current model estimate") : (uk ? "Показується в режимі ваги" : "Shown for weight view")}</small></article>
         </section>
+      </>}
+      </div>
+      </div>
+      {result && endpoint && <>
         <section className={styles.chartPanel}>
           <div className={styles.chartHeader}><div><p className={styles.eyebrow}>{uk ? "Історія → поточний стан → майбутнє" : "History → current state → future"}</p><h2>{uk ? "Як може змінюватись тіло" : "How the body may change"} <HelpTip label={uk ? "Пояснення оцінки й прогнозу" : "About model estimate and forecast"}>{uk ? "Історична оцінка моделі враховує вимірювання, доступні на той час, тому може бути близькою до ваги з вагів. Це не прогноз, зроблений до вимірювання. Майбутній прогноз моделює зміни вперед від актуальної ваги з вимірювання, якщо вона доступна." : "The historical model estimate uses measurements available at that time, so it may be close to scale weight. It is not a forecast made before the measurement. The future forecast projects forward from the latest measured weight when available."}</HelpTip></h2></div><div className={styles.metricTabs}>{metrics.map((item) => <button type="button" key={item.key} aria-pressed={metric === item.key} onClick={() => setMetric(item.key)}>{item.label}</button>)}</div></div>
           <div className={styles.legend} aria-label={uk ? "Легенда графіка" : "Chart legend"}>
@@ -557,13 +563,13 @@ export function ForecastClient() {
             <div><dt>{uk ? "Покриття історії" : "History coverage"}</dt><dd>{result.experimentalCurrent.eligibleDays}/{result.experimentalCurrent.requestedWindowDays} {uk ? "днів" : "days"}</dd></div>
           </dl></article>
         </section>}
-        <section className={styles.detailGrid}>
+        <details className={styles.detailDisclosure}><summary>{uk ? "Енергія, припущення та обмеження" : "Energy, assumptions, and limitations"}</summary><section className={styles.detailGrid}>
           <article><h2>{uk ? "Енергія в кінці періоду" : "Energy at the end"}</h2><dl><div><dt>{uk ? "Скільки з’їли (очікувано)" : "Expected intake"}</dt><dd>{formatValue(result.dates.at(-1)!.energyIntakeKcal.median, "kcal", locale)}</dd></div><div><dt>{uk ? "Скільки витратили за день" : "Daily burn"}</dt><dd>{formatValue(result.dates.at(-1)!.tdeeKcalPerDay.median, "kcal", locale)}</dd></div><div><dt>{uk ? "Базовий обмін у спокої" : "Resting burn"}</dt><dd>{formatValue(result.dates.at(-1)!.dynamicRmrKcalPerDay.median, "kcal", locale)}</dd></div><div><dt>{uk ? "Витрати на рух" : "Movement burn"}</dt><dd>{formatValue(result.dates.at(-1)!.netActivityKcalPerDay.median, "kcal", locale)}</dd></div></dl></article>
           <article><h2>{uk ? "Що ми припустили в цьому розрахунку" : "What this run assumes"}</h2><ul>{assumptions.map((assumption) => <li key={assumption}>{assumption}</li>)}{workoutNotes.map((note) => <li key={note}>{note}</li>)}{metricNotes.map((note) => <li key={note}>{note}</li>)}<li>{uk ? "Невизначеність стартової ваги" : "Starting-weight uncertainty"}: {result.diagnostics.uncertaintySources.initialState ? (uk ? "враховано" : "included") : (uk ? "не потрібна" : "not needed")}.</li><li>{uk ? "Невизначеність майбутніх звичок" : "Future-habit uncertainty"}: {result.diagnostics.uncertaintySources.futureBehavior ? (uk ? "враховано" : "included") : (uk ? "не враховано" : "not included")}.</li><li>{uk ? "Похибку вагів і всі можливі помилки моделі поки не враховано." : "Scale noise and every possible model error are not included yet."}</li></ul></article>
-        </section>
+        </section></details>
         {provenanceChips.length > 0 && (
-          <section className={styles.provenancePanel} aria-label={uk ? "Якість і походження даних" : "Data quality and provenance"}>
-            <h2>{uk ? "Якість і походження" : "Quality and provenance"}</h2>
+          <details className={styles.detailDisclosure} aria-label={uk ? "Якість і походження даних" : "Data quality and provenance"}>
+            <summary>{uk ? "Якість і походження даних" : "Data quality and provenance"}</summary>
             <ul className={styles.provenanceList}>
               {provenanceChips.map((chip) => (
                 <li key={chip.key} className={styles.provenanceItem} data-tone={chip.tone}>
@@ -572,7 +578,7 @@ export function ForecastClient() {
                 </li>
               ))}
             </ul>
-          </section>
+          </details>
         )}
         <details className={styles.diagnostics}><summary>{uk ? "Технічна діагностика" : "Technical diagnostics"}</summary><dl><div><dt>{uk ? "Версія прогнозу" : "Forecast version"}</dt><dd>{result.forecastVersion}</dd></div><div><dt>{uk ? "Якість старту" : "Initial-state quality"}</dt><dd>{result.initialStateQuality}</dd></div><div><dt>{uk ? "Сценарій" : "Scenario"}</dt><dd>{result.scenarioProvenance.mode} · {result.scenarioProvenance.nutrition} · {result.scenarioProvenance.activity}</dd></div><div><dt>{uk ? "Валідні траєкторії" : "Valid paths"}</dt><dd>{result.diagnostics.validPathCount} / {result.diagnostics.generatedPathCount}</dd></div><div><dt>{uk ? "Початкові стани" : "Starting states"}</dt><dd>{result.diagnostics.startingParticleCount}</dd></div><div><dt>{uk ? "Джерело даних" : "Evidence source"}</dt><dd>{result.scenarioProvenance.donorEvidence.source}</dd></div><div><dt>{uk ? "Числова якість" : "Numerical quality"}</dt><dd>{result.diagnostics.numericalQuality.classification}</dd></div><div><dt>{uk ? "Відбиток" : "Fingerprint"}</dt><dd>{result.sourceFingerprint.slice(0, 16)}…</dd></div></dl></details>
       </>}

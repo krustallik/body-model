@@ -636,7 +636,9 @@ describe("ForecastClient interaction", () => {
     await waitFor(() => {
       expect(screen.getByTestId("forecast-chart")).toBeTruthy();
     });
-    expect(screen.getByText("Quality and provenance")).toBeTruthy();
+    const provenanceDisclosure = screen.getByText("Data quality and provenance").closest("details");
+    expect(provenanceDisclosure).toBeTruthy();
+    expect(provenanceDisclosure?.open).toBe(false);
     expect(screen.getByText("v7: stale")).toBeTruthy();
     expect(screen.getByText("Skeletal muscle: unavailable")).toBeTruthy();
     expect(screen.getByText("Workout feed missing")).toBeTruthy();

@@ -91,8 +91,8 @@ export function ForecastChart({ result, metric, history, observedWeights = [], l
             </>}
           {bodyWeight
             ? <>
-              <Line type="monotone" dataKey="modelEstimateKg" name={labels.modelEstimate} stroke="var(--history-line)" strokeWidth={2} dot={false} connectNulls={false} />
-              <Line type="monotone" dataKey="measuredWeightKg" name={labels.measuredWeight} stroke="var(--accent)" strokeWidth={2} dot={{ r: 3 }} connectNulls={false} />
+              <Line type="monotone" dataKey="modelEstimateKg" name={labels.modelEstimate} stroke="var(--history-line)" strokeWidth={2} strokeDasharray="4 4" dot={false} connectNulls={false} />
+              <Line type="monotone" dataKey="measuredWeightKg" name={labels.measuredWeight} stroke="var(--info)" strokeWidth={2.5} dot={{ r: 3.5, fill: "var(--info)", stroke: "var(--surface)", strokeWidth: 1.5 }} connectNulls={false} />
             </>
             : <Line type="monotone" dataKey="historicalCompartmentKg" name={labels.historicalEstimate} stroke="var(--history-line)" strokeWidth={2} dot={false} connectNulls={false} />}
           <Line type="monotone" dataKey="futureMedianKg" name={labels.futureMedian} stroke="var(--forecast-line)" strokeWidth={3} dot={false} connectNulls={false} />

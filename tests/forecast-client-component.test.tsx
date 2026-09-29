@@ -93,7 +93,8 @@ describe("ForecastClient", () => {
     });
     expect(readiness.canForecast).toBe(true);
     expect(readiness.score).toBeGreaterThan(0);
-    expect(readiness.title).toMatch(/Forecast/);
+    expect(readiness.title).toBe("History supports a steadier forecast");
+    expect(readiness.title).not.toMatch(/accurate|accuracy|probability|precise/i);
 
     const quality = qualityPresentation(forecastResult(), "fully-calibrated", "en");
     expect(quality.tone).toBe("good");

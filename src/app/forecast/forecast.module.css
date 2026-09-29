@@ -216,3 +216,66 @@
 .resetButton:active { transform: var(--press); }
 .resetButton:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .resetButton:disabled { opacity: .45; cursor: not-allowed; filter: grayscale(.2); }
+
+/* Keep the scenario and its outcome together while reserving full width for the chart. */
+.hero { padding: 2.75rem 0 1.5rem; }
+.hero h1 { max-width: 47rem; font-size: clamp(2.4rem, 4.5vw, 4.25rem); }
+.forecastLayout { display: grid; grid-template-columns: minmax(19rem, .82fr) minmax(0, 1.65fr); align-items: start; gap: 1rem; }
+.forecastLayout > .controlPanel { margin: 0; }
+.outcomeColumn { display: grid; min-width: 0; gap: .75rem; }
+.outcomeColumn > :first-child { margin-top: 0; }
+.readinessCard { grid-template-columns: 1fr; gap: .55rem; margin: 0; padding: 1rem 1.1rem; border-left-width: 1px; border-top: .2rem solid var(--accent); }
+.readinessCard.high { border-top-color: var(--success); }
+.readinessCard.medium { border-top-color: var(--warning); }
+.readinessCard.low, .readinessCard.unavailable { border-top-color: var(--danger); }
+.readinessHeading { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
+.readinessHeading .eyebrow { margin: 0; }
+.readinessScore { display: flex; align-items: baseline; gap: .2rem; width: auto; height: auto; padding: .3rem .5rem; color: var(--ink); background: var(--soft); border: 1px solid var(--line); border-radius: .45rem; }
+.readinessScore strong { font-size: 1rem; }
+.readinessScore span { margin: 0; font-size: .65rem; }
+.readinessCard h2 { font-size: 1rem; }
+.readinessCard > div:last-child > p:not(.eyebrow) { margin-top: .25rem; font-size: .78rem; }
+.readinessClarifier { color: var(--muted); font-size: .7rem !important; line-height: 1.45; }
+.readinessBreakdown { margin-top: .5rem; }
+.readinessBreakdown summary { width: fit-content; color: var(--info-strong); font-size: .73rem; font-weight: 750; cursor: pointer; }
+.readinessBreakdown ul { margin: .55rem 0 0; }
+.summaryGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; gap: .55rem; }
+.summaryGrid article { min-width: 0; padding: .85rem; }
+.summaryGrid span { min-height: 0; }
+.summaryGrid strong { font-size: clamp(1.2rem, 2vw, 1.8rem); }
+.scenarioGrid { grid-template-columns: 1fr; }
+.scenarioGrid button { padding: .72rem .8rem; }
+.runRow { grid-template-columns: minmax(0, 1fr); }
+.runPrimaryActions { width: 100%; }
+.runPrimaryActions .runButton { flex: 1 1 auto; }
+.runRow > .recalculateButton, .runRow > .recalculateButtonPrimary { width: 100%; }
+.observedKey { flex: 0 0 .52rem; width: .52rem !important; height: .52rem !important; border-radius: 50% !important; outline: 2px solid color-mix(in srgb, var(--info) 25%, transparent); }
+.qualityBanner { margin: 0; padding: .75rem .85rem; }
+.qualityBanner > span { flex: 0 0 auto; align-self: flex-start; padding: .3rem .45rem; background: color-mix(in srgb, currentColor 7%, transparent); border-radius: .45rem; font-weight: 750; white-space: nowrap; }
+.detailDisclosure { min-width: 0; margin-top: .7rem; padding: .8rem 1rem; background: var(--surface); border: 1px solid var(--line); border-radius: .8rem; }
+.detailDisclosure > summary { width: fit-content; color: var(--info-strong); font-size: .8rem; font-weight: 780; cursor: pointer; }
+.detailDisclosure[open] > .detailGrid { margin-top: .85rem; }
+.detailDisclosure > .provenanceList { margin-top: .8rem; }
+.observedKey { background: var(--info); }
+.historyKey { height: 0 !important; background: transparent; border-top: 2px dashed var(--history-line); border-radius: 0 !important; }
+.medianKey { background: var(--forecast-line); }
+.innerKey, .outerKey { height: .65rem !important; border-radius: .15rem !important; }
+.legend { align-items: center; }
+@media (max-width: 900px) {
+  .forecastLayout { grid-template-columns: minmax(17rem, .85fr) minmax(0, 1.35fr); gap: .75rem; }
+  .scenarioGrid button { padding: .65rem .75rem; }
+  .readinessHeading { align-items: flex-start; }
+  .qualityBanner { flex-direction: column; }
+}
+@media (max-width: 620px) {
+  .hero { padding: 2rem 0 1rem; }
+  .hero h1 { font-size: clamp(2rem, 10vw, 3rem); line-height: 1; }
+  .forecastLayout { grid-template-columns: minmax(0, 1fr); }
+  .outcomeColumn { gap: .65rem; }
+  .summaryGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .qualityBanner { flex-direction: row; align-items: flex-start; }
+  .qualityBanner > span { white-space: normal; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .forecastLayout, .outcomeColumn, .readinessBreakdown { scroll-behavior: auto; }
+}

@@ -29,8 +29,9 @@ type HistoryDayRow = {
   missingFields: string[];
 };
 
-export async function GET(): Promise<Response> {
+export async function GET(request?: Request): Promise<Response> {
   try {
+    const locale = new URL(request?.url ?? "http://localhost").searchParams.get("locale") === "uk" ? "uk" : "en";
     const status = await getModelStatus();
     const history = await getModelHistory({
       from: status.latestModeledDate ? addCalendarDays(status.latestModeledDate, -59) : undefined,
@@ -80,14 +81,15 @@ export async function GET(): Promise<Response> {
         .map((day) => ({ date: day.date, weightKg: day.weightKg })),
       unknownIntervals: history.unknownIntervals,
       provenance: {
-        v7Cache: physiologyV7CacheChip(v7Status),
-        v7Compartments: physiologyV7CompartmentChips(v7Result),
+        v7Cache: physiologyV7CacheChip(v7Status, locale),
+        v7Compartments: physiologyV7CompartmentChips(v7Result, locale),
         latestDay: latestDay === null ? null : {
           date: latestDay.date,
-          dataQuality: dataQualityChip(latestDay.dataQuality),
-          nutrition: nutritionSourceChip(latestDay.nutritionSource),
+          dataQuality: dataQualityChip(latestDay.dataQuality, locale),
+          nutrition: nutritionSourceChip(latestDay.nutritionSource, locale),
           workoutFeed: workoutFeedProvenanceChip(
             latestDay.sourceQuality?.workoutFeedObserved ?? null,
+            locale,
           ),
         },
       },

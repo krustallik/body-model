@@ -190,3 +190,40 @@
   .formSection, .chartPanel, .summaryGrid article, .statusCard, .uncertaintyCard,
   .detailGrid article, .historyRange button, .modeGrid button, .submitRow button { transition-duration: 0s; }
 }
+
+/* Result explanations stay visible as summaries and open without hover. */
+.summaryGrid article { border-inline-start: 3px solid var(--border-strong); }
+.summaryGrid .attainmentMetric { border-inline-start-color: var(--info); }
+.summaryGrid .medianMetric { border-inline-start-color: var(--success); }
+.summaryGrid .rangeMetric { border-inline-start-color: var(--warning); }
+.summaryGrid .rangeMetric strong { color: var(--warning-strong); }
+.summaryGrid .caloriesMetric { border-inline-start-color: var(--info); }
+.metricExplanation { min-width: 0; margin-top: .2rem; border-top: 1px solid var(--line); }
+.metricExplanation summary {
+  display: flex;
+  min-height: 2.75rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem;
+  color: var(--info-strong);
+  font-size: .7rem;
+  font-weight: 780;
+  list-style: none;
+  cursor: pointer;
+}
+.metricExplanation summary::-webkit-details-marker { display: none; }
+.metricExplanation summary::after { content: "+"; color: var(--info-strong); font-size: 1rem; }
+.metricExplanation[open] summary::after { content: "−"; }
+.metricExplanation > p { margin: 0 0 .6rem; color: var(--muted); font-size: .7rem; line-height: 1.5; }
+.uncertaintyCard { grid-template-columns: minmax(12rem, .8fr) minmax(0, 1.2fr); align-items: start; border-inline-start: 3px solid var(--warning); }
+.uncertaintyMain { display: grid; gap: .4rem; }
+.uncertaintyMain .eyebrow { margin: 0; color: var(--warning-strong); }
+.uncertaintyMain strong { color: var(--ink); font-size: .95rem; line-height: 1.35; }
+.simulationCount { color: var(--info-strong); font-size: .8rem !important; font-weight: 800; font-variant-numeric: tabular-nums; }
+.uncertaintyDetail { display: grid; gap: .25rem; }
+.uncertaintyDetail > p { margin: 0; color: var(--muted); font-size: .72rem; line-height: 1.5; }
+.uncertaintyDetail .metricExplanation { margin-top: .25rem; }
+.intervalValue { color: var(--warning-strong); font-size: .68rem !important; font-weight: 760; font-variant-numeric: tabular-nums; }
+@media (max-width: 620px) {
+  .uncertaintyCard { grid-template-columns: minmax(0, 1fr); }
+}

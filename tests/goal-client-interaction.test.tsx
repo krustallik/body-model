@@ -323,6 +323,17 @@ describe("GoalClient interaction", () => {
     await user.click(screen.getByRole("button", { name: "Recent history" }));
     expect(chart.getAttribute("data-history-window")).toBe("21");
     expect(goalPosts()).toBe(1);
+
+    const explanations = screen.getAllByText("How to read");
+    expect(explanations).toHaveLength(4);
+    await user.click(explanations[0]);
+    expect(explanations[0].parentElement).toHaveProperty("open", true);
+    expect(screen.getByText(/not a guarantee or the probability that the model itself is correct/i)).toBeTruthy();
+
+    const probabilityExplanation = screen.getByText("Why there is an interval");
+    await user.click(probabilityExplanation);
+    expect(probabilityExplanation.parentElement).toHaveProperty("open", true);
+    expect(screen.getByText(/describes this sampling error in the estimated share, not weight/i)).toBeTruthy();
   });
 
   it("keeps reference nutrition internal and refreshes it from current context and activity inputs", async () => {

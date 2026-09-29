@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useRef, useState, type ReactNode } from "react";
 import { AppNav } from "@/components/app-nav";
 import { HelpTip } from "@/components/help-tip";
 import { ModelStateSource } from "@/components/model-state-source";
@@ -49,6 +49,13 @@ async function responseError(response: Response, locale: Locale): Promise<string
 
 function FieldError({ id, message }: { id: string; message?: string }) {
   return message ? <small id={id} className={styles.fieldError}>{message}</small> : null;
+}
+
+function MetricExplanation({ children, locale }: { children: ReactNode; locale: Locale }) {
+  return <details className={styles.metricExplanation}>
+    <summary>{locale === "uk" ? "Як читати" : "How to read"}</summary>
+    <p>{children}</p>
+  </details>;
 }
 
 function TextNumberField({ id, label, value, onChange, error, unit, min, max, step = "any", optional = false, help, helpLabel }: {
@@ -295,12 +302,60 @@ export function GoalClient() {
     {result && statusCopy && <section className={`${styles.statusCard} ${styles[statusCopy.tone]}`}><p className={styles.eyebrow}>{uk ? "Результат планування" : "Planning result"}</p><h2>{statusCopy.title}</h2><p>{statusCopy.detail}</p>{result.reason && <small>{result.reason}</small>}</section>}
     {result && <>
       <section className={styles.summaryGrid} aria-label={uk ? "Основний результат" : "Goal result summary"}>
-        <article className={styles.attainmentMetric}><span>{uk ? "Досягнення цілі" : "Target attainment"}</span><strong>{result.terminal ? percent(result.terminal.attainment.probability, locale) : "—"}</strong><small>{probabilityCopy ?? (uk ? "Емпірична частка фінальних траєкторій" : "Empirical share of final paths")}</small></article>
-        <article className={styles.medianMetric}><span>{uk ? `Медіана на ${formatDate(result.goal.goalDate, { year: "numeric" }, locale)}` : `Median on ${formatDate(result.goal.goalDate, { year: "numeric" }, locale)}`}</span><strong>{result.terminal ? formatValue(result.terminal.median, "kg", locale) : "—"}</strong><small>{result.terminal ? `${uk ? "Відхилення" : "Residual"}: ${result.terminal.targetErrorKg >= 0 ? "+" : ""}${result.terminal.targetErrorKg.toFixed(2)} kg` : (uk ? "Фінальний Forecast недоступний" : "Final Forecast unavailable")}</small></article>
-        <article className={styles.rangeMetric}><span>{uk ? "Прогнозний діапазон 5–95%" : "Predictive 5–95% range"}</span><strong>{result.terminal ? `${formatValue(result.terminal.p05, "kg", locale)}–${formatValue(result.terminal.p95, "kg", locale)}` : "—"}</strong><small>{uk ? "Варіативність змодельованих фізіологічних результатів" : "Variation in modeled physiological outcomes"}</small></article>
-        <article className={styles.caloriesMetric}><span>{uk ? "Калорійність, яку обрав solver" : "Calories selected by the solver"}<HelpTip label={uk ? "Пояснення калорійності solver-а" : "Explain solver calories"}>{uk ? "Solver підібрав цей центр у межах, які ви задали. Окрема рекомендація Б/Ж/В нижче використовує саме це значення." : "The solver chose this calorie center within your bounds. The separate macro recommendation below uses this value."}</HelpTip></span><strong>{showPlanCenter ? `${displayPlanValue(displayCalories!, locale)} ${uk ? "ккал/день" : "kcal/day"}` : "—"}</strong><small>{showPlanCenter ? (uk ? `Практична роздільність пошуку: ≈${result.numerical.practicalResolutionKcal} ккал` : `Practical search resolution: ≈${result.numerical.practicalResolutionKcal} kcal`) : (uk ? "Центр не підтримується цим статусом" : "A plan center is not available for this status")}</small></article>
+        <article className={styles.attainmentMetric}>
+          <span>{uk ? "Досягнення цілі" : "Target attainment"}</span>
+          <strong>{result.terminal ? percent(result.terminal.attainment.probability, locale) : "—"}</strong>
+          <small>{probabilityCopy ?? (uk ? "Частка фінальних симуляцій, що відповідають вашій цілі." : "Share of final simulations that meet your target.")}</small>
+          <MetricExplanation locale={locale}>{uk
+            ? "Це частка змодельованих фінальних результатів, які відповідають напрямку цілі: для зниження ваги — ціль або нижче, для набору — ціль або вище, для підтримки — у межах заданого допуску. Це результат сценарію, а не гарантія і не шанс того, що сама модель правильна."
+            : "This is the share of modeled final outcomes that meet the target direction: for weight loss, at or below the target; for gain, at or above it; for maintenance, within the set tolerance. It describes this scenario, not a guarantee or the probability that the model itself is correct."}</MetricExplanation>
+        </article>
+        <article className={styles.medianMetric}>
+          <span>{uk ? `Медіана на ${formatDate(result.goal.goalDate, { year: "numeric" }, locale)}` : `Median on ${formatDate(result.goal.goalDate, { year: "numeric" }, locale)}`}</span>
+          <strong>{result.terminal ? formatValue(result.terminal.median, "kg", locale) : "—"}</strong>
+          <small>{result.terminal ? `${uk ? "Відхилення" : "Residual"}: ${result.terminal.targetErrorKg >= 0 ? "+" : ""}${result.terminal.targetErrorKg.toFixed(2)} kg` : (uk ? "Фінальний Forecast недоступний" : "Final Forecast unavailable")}</small>
+          <MetricExplanation locale={locale}>{uk
+            ? "Медіана — середина змодельованих результатів на дату цілі: приблизно половина симуляцій дала нижче значення, половина — вище. Це не середнє арифметичне, не обіцянка точного ранкового зважування і не окрема виміряна вага."
+            : "The median is the midpoint of modeled outcomes on the goal date: about half of the simulations are lower and half are higher. It is not the arithmetic average, a promise about a morning weigh-in, or a measured weight."}</MetricExplanation>
+        </article>
+        <article className={styles.rangeMetric}>
+          <span>{uk ? "Прогнозний діапазон 5–95%" : "Predictive 5–95% range"}</span>
+          <strong>{result.terminal ? `${formatValue(result.terminal.p05, "kg", locale)}–${formatValue(result.terminal.p95, "kg", locale)}` : "—"}</strong>
+          <small>{uk ? "Центральні 90% змодельованих результатів." : "Central 90% of modeled outcomes."}</small>
+          <MetricExplanation locale={locale}>{uk
+            ? "Межі 5-го і 95-го перцентилів показують розкид центральної частини змодельованих фінальних значень. Це не гарантійний коридор: частина симуляцій може бути за його межами. Діапазон не враховує всі можливі похибки моделі чи звичайний шум вагів."
+            : "The 5th and 95th percentile bounds show the spread of the central part of modeled final values. This is not a guaranteed corridor; some simulations can fall outside it. The range does not capture every possible model error or ordinary scale noise."}</MetricExplanation>
+        </article>
+        <article className={styles.caloriesMetric}>
+          <span>{uk ? "Калорійність, яку обрав solver" : "Calories selected by the solver"}</span>
+          <strong>{showPlanCenter ? `${displayPlanValue(displayCalories!, locale)} ${uk ? "ккал/день" : "kcal/day"}` : "—"}</strong>
+          <small>{showPlanCenter ? (uk ? `Центр у заданих межах · крок пошуку ≈${result.numerical.practicalResolutionKcal} ккал` : `Center within your bounds · search step ≈${result.numerical.practicalResolutionKcal} kcal`) : (uk ? "Центр не підтримується цим статусом" : "A plan center is not available for this status")}</small>
+          <MetricExplanation locale={locale}>{uk
+            ? "Це підібране добове значення енергії, за якого медіанна траєкторія наближається до цілі в заданих вами умовах. Пошук має практичний крок, показаний під значенням, а межі задаєте ви. Це не медичний припис і не гарантія результату. Окрема рекомендація білків, жирів і вуглеводів нижче використовує цей центр."
+            : "This is the selected daily energy value at which the median trajectory approaches the target under your assumptions. The search has the practical step shown below, and you set its bounds. This is not medical advice or a guarantee. The separate protein, fat, and carbohydrate recommendation below uses this center."}</MetricExplanation>
+        </article>
       </section>
-      {result.terminal && interval && <section className={styles.uncertaintyCard}><div><strong>{uk ? "Числова невизначеність імовірності" : "Probability numerical uncertainty"}</strong><span>{uk ? `95% Wilson Monte Carlo interval: ${percent(interval.lower, locale)}–${percent(interval.upper, locale)} (${result.terminal.attainment.successes}/${result.terminal.attainment.sampleCount} траєкторій).` : `95% Wilson Monte Carlo interval: ${percent(interval.lower, locale)}–${percent(interval.upper, locale)} (${result.terminal.attainment.successes}/${result.terminal.attainment.sampleCount} paths).`}</span></div><p>{uk ? "Це невизначеність оцінки ймовірності через скінченну кількість Monte Carlo траєкторій — не діапазон ваги й не ймовірність правильності моделі." : "This is uncertainty in the probability estimate from finite Monte Carlo paths—not a weight range or the probability that the model is correct."}</p></section>}
+      {result.terminal && interval && <section className={styles.uncertaintyCard} aria-labelledby="goal-probability-uncertainty-heading">
+        <div className={styles.uncertaintyMain}>
+          <p className={styles.eyebrow}>{uk ? "Точність оцінки" : "Estimate precision"}</p>
+          <strong id="goal-probability-uncertainty-heading">{uk ? "Скільки симуляцій досягли цілі" : "How many simulations met the target"}</strong>
+          <span className={styles.simulationCount}>{uk
+            ? `${result.terminal.attainment.successes} із ${result.terminal.attainment.sampleCount} симуляцій · ${percent(result.terminal.attainment.probability, locale)}`
+            : `${result.terminal.attainment.successes} of ${result.terminal.attainment.sampleCount} simulations · ${percent(result.terminal.attainment.probability, locale)}`}</span>
+        </div>
+        <div className={styles.uncertaintyDetail}>
+          <p>{uk
+            ? `Змодельована частка — ${percent(result.terminal.attainment.probability, locale)}. Через скінченну кількість симуляцій оцінка має 95% числовий інтервал: ${percent(interval.lower, locale)}–${percent(interval.upper, locale)}.`
+            : `The modeled share is ${percent(result.terminal.attainment.probability, locale)}. Because the simulation count is finite, its 95% numerical interval is ${percent(interval.lower, locale)}–${percent(interval.upper, locale)}.`}</p>
+          <details className={styles.metricExplanation}>
+            <summary>{uk ? "Чому є інтервал" : "Why there is an interval"}</summary>
+            <p>{uk
+              ? "Якби ми знову виконали скінченну кількість симуляцій, отримана частка могла б трохи відрізнятися. Wilson Monte Carlo interval описує цю похибку оцінювання частки (а не ваги). Він не показує ймовірність правильності моделі й не охоплює всі її припущення та обмеження."
+              : "If we ran a finite set of simulations again, the share could differ slightly. The Wilson Monte Carlo interval describes this sampling error in the estimated share, not weight. It is not the probability that the model is correct and does not cover all model assumptions and limitations."}</p>
+          </details>
+          <span className={styles.intervalValue}>{uk ? "95% інтервал Monte Carlo" : "95% Monte Carlo interval"}: {percent(interval.lower, locale)}–{percent(interval.upper, locale)}</span>
+        </div>
+      </section>}
       {result.forecast && chartLabels && <section className={`${styles.chartPanel} ${styles.goalChart}`} aria-labelledby="goal-trajectory-heading">
         <div className={styles.chartHeading}>
           <div><p className={styles.eyebrow}>{uk ? "Історія → сценарій → ціль" : "History → scenario → target"}</p><h2 id="goal-trajectory-heading">{uk ? "Траєкторія ваги" : "Weight trajectory"}</h2></div>

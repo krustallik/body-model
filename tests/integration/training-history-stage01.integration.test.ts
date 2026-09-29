@@ -238,6 +238,121 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
     }
   });
 
+  it("preserves a legacy client's active workout across catalog changes, reload, and finish", async () => {
+    const db = prisma!;
+    const catalog = await db.exerciseCatalog.findUniqueOrThrow({
+      where: {
+        profileId_stableKey: {
+          profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID,
+          stableKey: "incline_dumbbell_press_30deg",
+        },
+      },
+      select: { id: true, currentLoadAccountingConfigId: true, updatedAt: true },
+    });
+    expect(catalog.currentLoadAccountingConfigId).toBeNull();
+
+    let programId: number | null = null;
+    let sessionId: number | null = null;
+    let mutatedConfigId: number | null = null;
+    try {
+      const { TrainingService } = await import("../../src/modules/training/training.service");
+      const service = new TrainingService(db);
+      const program = await service.createProgram({
+        name: `stage02-old-client-${Date.now()}`,
+        exercises: [{ catalogId: catalog.id, plannedSets: 3, resistanceType: "EXTERNAL_WEIGHT" }],
+      });
+      programId = program.id;
+      const session = await service.startSession(program.id);
+      sessionId = session.id;
+      const exerciseId = session.exercises[0]!.id;
+      const initialSnapshot = session.exercises[0]!.loadAccountingConfigSnapshot;
+      expect(initialSnapshot).toMatchObject({
+        configVersion: "bodycast-historical-load-entry-v1",
+        inventoryCount: 2,
+      });
+
+      const firstSet = await service.createSet(session.id, exerciseId, { reps: 12, weightKg: 10, rir: 2 });
+      const secondSet = await service.createSet(session.id, exerciseId, { reps: 8, weightKg: 20, rir: 1 });
+      expect([firstSet, secondSet].map(({ reps, rir, loadAccountingOverride }) => [reps, rir, loadAccountingOverride]))
+        .toEqual([[12, 2, null], [8, 1, null]]);
+
+      await service.updateCatalogLoadAccountingConfig(catalog.id, {
+        loadAccountingConfig: {
+          schemaVersion: 1,
+          configVersion: `integration-mutated-${Date.now()}`,
+          inventoryCount: 1,
+          loadedSides: 1,
+          execution: "unilateral",
+          equipment: { equipmentId: "dumbbell", setupId: "single" },
+          accountingKind: "external-per-implement-per-side",
+          resistanceType: "external",
+          loadInput: "per-implement-kg",
+          repsMeaning: "per-side",
+        },
+      });
+      mutatedConfigId = (await db.exerciseCatalog.findUniqueOrThrow({
+        where: { id: catalog.id }, select: { currentLoadAccountingConfigId: true },
+      })).currentLoadAccountingConfigId;
+      expect(mutatedConfigId).not.toBeNull();
+
+      const thirdSet = await service.createSet(session.id, exerciseId, { reps: 6, weightKg: 5, rir: 3 });
+      expect(thirdSet).toMatchObject({ reps: 6, rir: 3, loadAccountingOverride: null });
+
+      const reloadedActive = await service.getSession(session.id);
+      expect(reloadedActive?.status).toBe("ACTIVE");
+      expect(reloadedActive?.exercises[0]?.loadAccountingConfigSnapshot).toEqual(initialSnapshot);
+      expect(reloadedActive?.exercises[0]?.sets.map(({ setNumber }) => setNumber)).toEqual([1, 2, 3]);
+      expect(new Set(reloadedActive!.exercises[0]!.sets.map(({ id }) => id)).size).toBe(3);
+      expect(reloadedActive?.exercises[0]?.sets.map(({ reps, rir, loadAccountingOverride }) => [reps, rir, loadAccountingOverride]))
+        .toEqual([[12, 2, null], [8, 1, null], [6, 3, null]]);
+      expect(reloadedActive?.ordinaryTonnageKg).toBe(620);
+      expect(reloadedActive?.loadAccountingV1?.externalLoadVolume).toMatchObject({
+        value: 620,
+        coverage: { eligibleRows: 3, accountedRows: 3, omittedRows: 0 },
+      });
+
+      const persistedBeforeFinish = await db.strengthSessionExercise.findUniqueOrThrow({
+        where: { id: exerciseId },
+        select: { sets: { orderBy: { setNumber: "asc" }, select: {
+          id: true, setNumber: true, reps: true, rir: true, completedAt: true, createdAt: true, updatedAt: true,
+        } } },
+      });
+      const finished = await service.finishSession(session.id);
+      expect(finished.status).toBe("COMPLETED");
+      expect(finished.webEndedAt).not.toBeNull();
+
+      const reloadedCompleted = await service.getSession(session.id);
+      expect(reloadedCompleted?.status).toBe("COMPLETED");
+      expect(reloadedCompleted?.webEndedAt).toBe(finished.webEndedAt);
+      expect(reloadedCompleted?.exercises[0]?.loadAccountingConfigSnapshot).toEqual(initialSnapshot);
+      expect(reloadedCompleted?.exercises[0]?.sets.map(({ reps, rir, loadAccountingOverride }) => [reps, rir, loadAccountingOverride]))
+        .toEqual([[12, 2, null], [8, 1, null], [6, 3, null]]);
+      expect(reloadedCompleted?.ordinaryTonnageKg).toBe(620);
+      expect(reloadedCompleted?.loadAccountingV1?.externalLoadVolume.value).toBe(620);
+
+      const persistedAfterFinish = await db.strengthSessionExercise.findUniqueOrThrow({
+        where: { id: exerciseId },
+        select: { sets: { orderBy: { setNumber: "asc" }, select: {
+          id: true, setNumber: true, reps: true, rir: true, completedAt: true, createdAt: true, updatedAt: true,
+        } } },
+      });
+      expect(persistedAfterFinish.sets).toEqual(persistedBeforeFinish.sets);
+      expect(persistedAfterFinish.sets).toHaveLength(3);
+    } finally {
+      if (sessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: sessionId } });
+      if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });
+      if (mutatedConfigId !== null) {
+        await db.$transaction(async (tx) => {
+          await tx.exerciseCatalog.update({
+            where: { id: catalog.id },
+            data: { currentLoadAccountingConfigId: catalog.currentLoadAccountingConfigId, updatedAt: catalog.updatedAt },
+          });
+          await tx.exerciseLoadConfiguration.deleteMany({ where: { id: mutatedConfigId! } });
+        });
+      }
+    }
+  });
+
   it("deduplicates a repeated Workout source identity by the database unique key", async () => {
     const db = prisma!;
     const row = createTrainingHistoryStage01FixtureV1().workouts.find((workout) => workout.scenario === "ms100-boundary" && workout.externalId === null)!;

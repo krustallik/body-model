@@ -37,8 +37,8 @@ vi.mock("@/components/model-state-source", () => ({
 }));
 
 vi.mock("@/app/forecast/forecast-chart", () => ({
-  ForecastChart: ({ history, observedWeights, historyWindowDays }: { history?: Array<{ filteredWeightKg?: number | null }>; observedWeights?: unknown[]; historyWindowDays?: number | null }) => (
-    <div data-testid="goal-forecast-chart" data-history-window={historyWindowDays ?? "full"} data-model-count={history?.filter((day) => day.filteredWeightKg != null).length ?? 0} data-observed-count={observedWeights?.length ?? 0} />
+  ForecastChart: ({ history, observedWeights, historyWindowDays, metric, target }: { history?: Array<{ filteredWeightKg?: number | null }>; observedWeights?: Array<{ bodyFatPercent?: number | null }>; historyWindowDays?: number | null; metric?: string; target?: unknown }) => (
+    <div data-testid="goal-forecast-chart" data-history-window={historyWindowDays ?? "full"} data-model-count={history?.filter((day) => day.filteredWeightKg != null).length ?? 0} data-observed-count={observedWeights?.length ?? 0} data-observed-fat-count={observedWeights?.filter((day) => day.bodyFatPercent != null).length ?? 0} data-metric={metric} data-has-target={target ? "true" : "false"} />
   ),
 }));
 
@@ -304,6 +304,10 @@ describe("GoalClient interaction", () => {
           { date: "2026-08-24", weightKg: 80.3 },
         ],
       });
+      if (url.includes("/api/v1/days?")) return jsonResponse({ days: [
+        { date: "2026-08-23", weightKg: 80.8, bodyFatPercent: 22.1 },
+        { date: "2026-08-24", weightKg: 80.3, bodyFatPercent: null },
+      ] });
       if (url.includes("/api/goal") && init?.method === "POST") return jsonResponse(chartResult);
       return jsonResponse({ error: "optional profile unavailable" }, 404);
     });
@@ -315,8 +319,15 @@ describe("GoalClient interaction", () => {
     const chart = await screen.findByTestId("goal-forecast-chart");
     expect(chart.getAttribute("data-model-count")).toBe("1");
     expect(chart.getAttribute("data-observed-count")).toBe("2");
+    expect(chart.getAttribute("data-observed-fat-count")).toBe("1");
     expect(chart.getAttribute("data-history-window")).toBe("21");
+    expect(chart.getAttribute("data-metric")).toBe("physiologicalBodyWeightKg");
+    expect(chart.getAttribute("data-has-target")).toBe("true");
     const goalPosts = () => fetchMock.mock.calls.filter(([url, init]) => String(url).includes("/api/goal") && init?.method === "POST").length;
+    expect(goalPosts()).toBe(1);
+    await user.click(screen.getByRole("button", { name: "Fat mass" }));
+    expect(chart.getAttribute("data-metric")).toBe("fatMassKg");
+    expect(chart.getAttribute("data-has-target")).toBe("false");
     expect(goalPosts()).toBe(1);
     await user.click(screen.getByRole("button", { name: "Full history" }));
     expect(chart.getAttribute("data-history-window")).toBe("full");

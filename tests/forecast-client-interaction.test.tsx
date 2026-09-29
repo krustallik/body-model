@@ -210,6 +210,8 @@ describe("ForecastClient interaction", () => {
     expect(screen.getByText("25–75% forecast interval")).toBeTruthy();
     expect(screen.getByText("5–95% forecast interval")).toBeTruthy();
     expect(screen.getByText(/historical model estimate uses measurements available/i)).toBeTruthy();
+    expect(screen.getByText(/The forecast updates after you change the horizon, mode, or a number/)).toBeTruthy();
+    expect(screen.queryByText(/After changing the horizon, mode, or a number/)).toBeNull();
     expect(requests).toHaveLength(1);
     expect(screen.getByTestId("forecast-chart").getAttribute("data-history-window")).toBe("21");
     await user.click(screen.getByRole("button", { name: "Full history" }));
@@ -217,6 +219,11 @@ describe("ForecastClient interaction", () => {
     expect(requests).toHaveLength(1);
     await user.click(screen.getByRole("button", { name: "Recent history" }));
     expect(screen.getByTestId("forecast-chart").getAttribute("data-history-window")).toBe("21");
+    expect(requests).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: "Fat" }));
+    expect(screen.getByText("Observed fat mass")).toBeTruthy();
+    expect(screen.getByText("Model-estimated fat mass")).toBeTruthy();
+    expect(screen.getByText(/Observed fat mass is derived from recorded weight and body-fat percentage/)).toBeTruthy();
     expect(requests).toHaveLength(1);
     expect(requests[0]?.horizonDays).toBe(90);
     expect(requests[0]?.scenario.mode).toBe("fixed");

@@ -7,6 +7,7 @@ import { HelpTip } from "@/components/help-tip";
 import { ModelStateSource } from "@/components/model-state-source";
 import { useI18n, type Locale } from "@/i18n/i18n-provider";
 import { ForecastChart } from "@/app/forecast/forecast-chart";
+import { attachObservedBodyFatPercent } from "@/app/forecast/forecast-chart-measurements";
 import { beginForecastRequest, formatDate, formatValue, isCurrentForecastRequest, type PlanValues } from "@/modules/model-forecast/forecast-ui";
 import { forecastChartLabels } from "@/modules/model-forecast/forecast-chart-data";
 import type { ModelStatusDto } from "@/modules/model-episodes/model-episode.types";
@@ -30,7 +31,7 @@ import { goalSettingsFromForm, isGoalBrowserSettings } from "@/modules/browser-s
 import { GOAL_SETTINGS_KEY, readBrowserSettings, resetBrowserSettings, writeBrowserSettings } from "@/modules/browser-settings/versioned-settings";
 
 type HistoricalDay = { date: string; modeledWeightKg: number | null; filteredWeightKg: number | null; fatMassKg: number | null; leanTissueKg: number | null; glycogenAssociatedMassKg: number | null; dataQuality: string };
-type ObservedWeight = { date: string; weightKg: number };
+type ObservedWeight = { date: string; weightKg: number; bodyFatPercent?: number | null };
 type GoalProfileAttributes = Pick<ProfileDto, "sex" | "dateOfBirth" | "heightCm">;
 type Context = { status: ModelStatusDto; history: HistoricalDay[]; observedWeights?: ObservedWeight[]; profile?: GoalProfileAttributes | null };
 
@@ -109,6 +110,7 @@ export function GoalClient() {
   const [guidedWorkStep, setGuidedWorkStep] = useState(1);
   const [result, setResult] = useState<GoalPlanningResponse | null>(null);
   const [chartHistoryRange, setChartHistoryRange] = useState<"recent" | "full">("recent");
+  const [chartMetric, setChartMetric] = useState<"physiologicalBodyWeightKg" | "fatMassKg">("physiologicalBodyWeightKg");
   const [loadingContext, setLoadingContext] = useState(true);
   const [solving, setSolving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -126,7 +128,11 @@ export function GoalClient() {
       profileRequest,
     ]).then(async ([response, profileResult]) => {
       if (!response.ok) throw new Error(await responseError(response, locale));
-      const next = await response.json() as Context;
+      const contextResponse = await response.json() as Context;
+      const next = {
+        ...contextResponse,
+        observedWeights: await attachObservedBodyFatPercent(contextResponse.observedWeights ?? [], controller.signal),
+      };
       const profile = profileResult.profile
         ? {
           sex: profileResult.profile.sex,
@@ -230,7 +236,7 @@ export function GoalClient() {
     : null;
   const nutritionLimitations = nutritionRecommendation?.limitations ?? [];
   const chartLabels = result?.forecast
-    ? forecastChartLabels(locale, "physiologicalBodyWeightKg", result.forecast.forecastVersion === "experimental-forecast-v1")
+    ? forecastChartLabels(locale, chartMetric, result.forecast.forecastVersion === "experimental-forecast-v1")
     : null;
 
   return <main className={styles.page}>
@@ -358,23 +364,30 @@ export function GoalClient() {
       </section>}
       {result.forecast && chartLabels && <section className={`${styles.chartPanel} ${styles.goalChart}`} aria-labelledby="goal-trajectory-heading">
         <div className={styles.chartHeading}>
-          <div><p className={styles.eyebrow}>{uk ? "Історія → сценарій → ціль" : "History → scenario → target"}</p><h2 id="goal-trajectory-heading">{uk ? "Траєкторія ваги" : "Weight trajectory"}</h2></div>
+          <div><p className={styles.eyebrow}>{uk ? "Історія → сценарій → ціль" : "History → scenario → target"}</p><h2 id="goal-trajectory-heading">{chartMetric === "physiologicalBodyWeightKg" ? (uk ? "Траєкторія ваги" : "Weight trajectory") : (uk ? "Траєкторія жирової маси" : "Fat-mass trajectory")}</h2></div>
           <div className={styles.chartTools}>
+            <div className={`${styles.historyRange} ${styles.chartMetricRange}`} role="group" aria-label={uk ? "Показник графіка цілі" : "Goal chart metric"}>
+              <button type="button" aria-pressed={chartMetric === "physiologicalBodyWeightKg"} onClick={() => setChartMetric("physiologicalBodyWeightKg")}>{uk ? "Вага" : "Weight"}</button>
+              <button type="button" aria-pressed={chartMetric === "fatMassKg"} onClick={() => setChartMetric("fatMassKg")}>{uk ? "Жирова маса" : "Fat mass"}</button>
+            </div>
             <div className={styles.historyRange} role="group" aria-label={uk ? "Вікно історії на графіку" : "Chart history window"}>
               <button type="button" aria-pressed={chartHistoryRange === "recent"} onClick={() => setChartHistoryRange("recent")}>{uk ? "Остання історія" : "Recent history"}</button>
               <button type="button" aria-pressed={chartHistoryRange === "full"} onClick={() => setChartHistoryRange("full")}>{uk ? "Повна історія" : "Full history"}</button>
             </div>
             <div className={styles.legend} aria-label={uk ? "Легенда траєкторії" : "Trajectory legend"}>
-              <span><i className={styles.measuredKey} />{chartLabels.measuredWeight}</span>
-              <span><i className={styles.historyKey} />{chartLabels.modelEstimate}</span>
+              {chartMetric === "physiologicalBodyWeightKg"
+                ? <><span><i className={styles.measuredKey} />{chartLabels.measuredWeight}</span><span><i className={styles.historyKey} />{chartLabels.modelEstimate}</span></>
+                : <><span><i className={styles.measuredKey} />{chartLabels.measuredFatMass}</span><span><i className={styles.historyKey} />{chartLabels.historicalEstimate}</span></>}
               <span><i className={styles.medianKey} />{chartLabels.futureMedian}</span>
               {chartLabels.hasQuantileBands ? <><span><i className={styles.innerKey} />{chartLabels.innerInterval}</span><span><i className={styles.outerKey} />{chartLabels.outerInterval}</span></> : <span><i className={styles.outerKey} />{chartLabels.engineeringRange}</span>}
-              <span><i className={styles.targetKey} />{uk ? "Ціль" : "Target"}</span>
+              {chartMetric === "physiologicalBodyWeightKg" && <span><i className={styles.targetKey} />{uk ? "Ціль" : "Target"}</span>}
             </div>
           </div>
         </div>
-        <ForecastChart result={result.forecast} metric="physiologicalBodyWeightKg" history={context?.history ?? []} observedWeights={context?.observedWeights ?? []} locale={locale} historyWindowDays={chartHistoryRange === "recent" ? 21 : null} target={{ date: result.goal.goalDate, weightKg: result.goal.targetValueKg }} />
-        <p className={styles.chartNote}>{uk ? "Вага з вагів — вимірювання; оцінка моделі — історична. Маркер цілі є майбутнім припущенням. Смуги показують невизначеність прогнозу." : "Scale readings are measurements; model estimates are historical. The target marker is a future assumption. Shaded bands show forecast uncertainty."}</p>
+        <ForecastChart result={result.forecast} metric={chartMetric} history={context?.history ?? []} observedWeights={context?.observedWeights ?? []} locale={locale} historyWindowDays={chartHistoryRange === "recent" ? 21 : null} target={chartMetric === "physiologicalBodyWeightKg" ? { date: result.goal.goalDate, weightKg: result.goal.targetValueKg } : undefined} />
+        <p className={styles.chartNote}>{chartMetric === "fatMassKg"
+          ? (uk ? "Фактична серія жирової маси розрахована з ваги та записаного відсотка жиру; пунктир — історична оцінка моделі. Ціль задана для ваги, тому на цьому графіку її немає." : "Observed fat mass is derived from recorded weight and body-fat percentage; the dashed line is the historical model estimate. The goal is defined for body weight, so it is not shown on this chart.")
+          : (uk ? "Вага з вагів — вимірювання; пунктирна оцінка моделі — історична. Маркер цілі є майбутнім припущенням. Смуги показують невизначеність прогнозу." : "Scale readings are measurements; the dashed model estimate is historical. The goal marker is a future assumption. Shaded bands show forecast uncertainty.")}</p>
       </section>}
       {showPlanCenter && nutritionRecommendation && <section className={`${styles.chartPanel} ${styles.nutritionResult}`} aria-labelledby="goal-nutrition-result-heading">
         <div className={styles.chartHeading}><div><p className={styles.eyebrow}>{uk ? "Результат solver-а" : "Solver result"}</p><h2 id="goal-nutrition-result-heading">{uk ? "Рекомендоване харчування" : "Recommended nutrition"}</h2></div></div>

@@ -38,6 +38,7 @@ import {
   type ProvenanceChip,
 } from "@/modules/provenance/provenance-presentation";
 import { ForecastChart } from "./forecast-chart";
+import { attachObservedBodyFatPercent } from "./forecast-chart-measurements";
 import styles from "./forecast.module.css";
 import { isForecastBrowserSettings } from "@/modules/browser-settings/planning-settings";
 import { FORECAST_SETTINGS_KEY, readBrowserSettings, resetBrowserSettings, writeBrowserSettings } from "@/modules/browser-settings/versioned-settings";
@@ -67,7 +68,7 @@ type ContextProvenance = {
 type Context = {
   status: ModelStatusDto;
   history: HistoricalDay[];
-  observedWeights?: Array<{ date: string; weightKg: number }>;
+  observedWeights?: Array<{ date: string; weightKg: number; bodyFatPercent?: number | null }>;
   unknownIntervals: UnknownIntervalDto[];
   provenance?: ContextProvenance;
 };
@@ -232,7 +233,13 @@ export function ForecastClient() {
           controller.signal,
         );
         const contextResponse = await fetch(`/api/forecast/context?locale=${locale}`, { cache: "no-store", signal: controller.signal });
-        const nextContext = contextResponse.ok ? await contextResponse.json() as Context : null;
+        const nextContextResponse = contextResponse.ok ? await contextResponse.json() as Context : null;
+        const nextContext = nextContextResponse
+          ? {
+            ...nextContextResponse,
+            observedWeights: await attachObservedBodyFatPercent(nextContextResponse.observedWeights ?? [], controller.signal),
+          }
+          : null;
         if (!forecastResponse.ok) {
           const issue = await forecastError(forecastResponse, locale);
           const error = new Error(issue.message) as Error & {
@@ -467,12 +474,10 @@ export function ForecastClient() {
         </form>}
         <div className={styles.actionPanel}>
         <div className={styles.runRow}>
-          <div className={styles.runPrimaryActions}>
-            <button className={styles.runButton} type="button" aria-busy={busy} disabled={busy} onClick={() => void runForecast()}>{loading ? (uk ? "Запустити оновлений прогноз" : "Run updated forecast") : (uk ? "Побудувати прогноз" : "Run forecast")}</button>
-            <HelpTip>{uk ? "Після зміни періоду, режиму або числового поля прогноз оновиться автоматично; кнопка — для ручного повтору." : "After changing the horizon, mode, or a number, the forecast updates automatically; use this button to rerun manually."}</HelpTip>
-          </div>
+          <button className={styles.runButton} type="button" aria-busy={busy} disabled={busy} onClick={() => void runForecast()}>{loading ? (uk ? "Запустити оновлений прогноз" : "Run updated forecast") : (uk ? "Побудувати прогноз" : "Run forecast")}</button>
           {showRecalculate && <button className={needsRecalculation ? styles.recalculateButtonPrimary : styles.recalculateButton} type="button" aria-busy={actionLoading === "recalculate"} disabled={busy} onClick={() => void runAction("recalculate")}>{actionLoading === "recalculate" ? recalculateCopy.loadingAction : recalculateCopy.action}</button>}
         </div>
+        <p className={styles.runHelp}>{uk ? "Після зміни періоду, режиму або числового поля прогноз оновиться автоматично. Ця кнопка повторює розрахунок вручну." : "The forecast updates after you change the horizon, mode, or a number. Use this button to rerun it manually."}</p>
         {showRecalculate && <p className={styles.recalculateHint}>{recalculateCopy.hint}</p>}
         </div>
       </section>
@@ -482,6 +487,9 @@ export function ForecastClient() {
             {metric === "physiologicalBodyWeightKg" ? <>
               <span><i className={styles.observedKey} />{chartLabels.measuredWeight}</span>
               <span><i className={styles.historyKey} />{chartLabels.modelEstimate}</span>
+            </> : metric === "fatMassKg" ? <>
+              <span><i className={styles.observedKey} />{chartLabels.measuredFatMass}</span>
+              <span><i className={styles.historyKey} />{chartLabels.historicalEstimate}</span>
             </> : <span><i className={styles.historyKey} />{chartLabels.historicalEstimate}</span>}
             <span><i className={styles.medianKey} />{uk ? "Майбутній прогноз" : "Future forecast"}</span>
             {result.forecastVersion === "experimental-forecast-v1"
@@ -492,7 +500,9 @@ export function ForecastClient() {
               </>}
           </div>
           <ForecastChart result={result} metric={metric} history={context?.history ?? []} observedWeights={context?.observedWeights ?? []} locale={locale} historyWindowDays={chartHistoryRange === "recent" ? 21 : null} />
-          <p className={styles.chartNote}>{result.forecastVersion === "experimental-forecast-v1"
+          <p className={styles.chartNote}>{metric === "fatMassKg"
+            ? (uk ? "Фактична серія жирової маси розрахована з ваги та записаного відсотка жиру; пунктир — історична оцінка моделі. Майбутні смуги показують невизначеність прогнозу." : "Observed fat mass is derived from recorded weight and body-fat percentage; the dashed line is the historical model estimate. Future bands show forecast uncertainty.")
+            : result.forecastVersion === "experimental-forecast-v1"
             ? (uk ? "Інженерний діапазон показує детерміновані межі моделі, а не статистичні квантилі. Суцільна лінія — центральна оцінка майбутнього." : "The engineering range shows deterministic model bounds, not statistical quantiles. The solid line is the central future estimate.")
             : (uk ? "Межі 25–75% та 5–95% — емпіричні квантильні інтервали змодельованих траєкторій, не гарантія результату." : "The 25–75% and 5–95% bands are empirical quantile intervals across simulated paths, not a guarantee of the outcome.")}</p>
         </section>}

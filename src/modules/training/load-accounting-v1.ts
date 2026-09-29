@@ -675,11 +675,6 @@ export function calculateLoadAccountingV1(
         continue;
       }
       const override = parsed;
-      if (override?.reps
-          && set.reps !== override.reps.left + override.reps.right) {
-        for (const target of targets) omit(target, "invalid-set-override");
-        continue;
-      }
       const config = effectiveConfig(resolved.config, override);
       if (!config) {
         for (const target of targets) omit(target, "invalid-set-override");

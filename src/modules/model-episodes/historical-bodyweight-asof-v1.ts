@@ -121,7 +121,8 @@ export function calculateHistoricalBodyweightAsOfV1(input: {
     if (elapsedDays > MAX_HISTORICAL_BODYWEIGHT_REPLAY_DAYS_V1) {
       return unavailable(episode, localDate, "replay-limit");
     }
-    if (sourceRowCount(input.sources) > MAX_SOURCE_ROWS_V1) {
+    const sources = sourcesThrough(input.sources, episode.startDate, localDate);
+    if (sourceRowCount(sources) > MAX_SOURCE_ROWS_V1) {
       return unavailable(episode, localDate, "too-many-source-rows");
     }
     if (episode.initializationStatus !== "strong" && episode.initializationStatus !== "weak") {
@@ -138,7 +139,6 @@ export function calculateHistoricalBodyweightAsOfV1(input: {
       return unavailable(episode, localDate, "unsafe-initial-state");
     }
 
-    const sources = sourcesThrough(input.sources, episode.startDate, localDate);
     const days = buildSimulationDays({
       from: episode.startDate,
       to: localDate,

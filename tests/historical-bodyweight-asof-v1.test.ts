@@ -78,6 +78,13 @@ describe("read-only historical bodyweight as-of adapter", () => {
       id: 900, date: futureDate, receivedAt: new Date(futureDate + "T20:00:00Z"),
       syncedAt: new Date(futureDate + "T20:00:00Z"), steps: 100_000, walkingDistanceKm: 100,
     });
+    futurePoisoned.days.push(...Array.from({ length: 100_001 }, () => sourceDay(futureDate, {
+      weightKg: 250,
+      caloriesKcal: 10_000,
+      proteinG: 900,
+      fatG: 800,
+      carbsG: 1_000,
+    })));
     const withFutureRows = calculateHistoricalBodyweightAsOfV1({
       episode, sources: futurePoisoned, localDate,
     });
@@ -118,5 +125,15 @@ describe("read-only historical bodyweight as-of adapter", () => {
     expect(result.localDate).toBe(localDate);
     expect(result.status).toBe("available");
     expect(result.valueKg).toBeGreaterThan(0);
+  });
+
+  it("returns unavailable when the allowed historical prefix exceeds the input-count limit", () => {
+    const localDate = "2026-08-22";
+    const episode = asOfSafeEpisode(localDate);
+    const input = sources(localDate);
+    input.days = Array.from({ length: 100_001 }, () => sourceDay(localDate));
+
+    expect(calculateHistoricalBodyweightAsOfV1({ episode, sources: input, localDate }))
+      .toMatchObject({ status: "unavailable", reason: "too-many-source-rows" });
   });
 });

@@ -137,7 +137,7 @@ describe("versioned config and execution semantics", () => {
     expect(result.externalLoadVolume.value).toBe(240);
   });
 
-  it("uses ×1 for hyperextension and validates asymmetric repetitions against scalar reps", () => {
+  it("uses ×1 for hyperextension and accounts asymmetric repetitions without changing scalar reps", () => {
     const config = LEGACY_LOAD_CONFIGS_V1.hyperextension;
     const run = (reps: number) => calculateLoadAccountingV1({
       localDate: "2026-09-24",
@@ -145,22 +145,32 @@ describe("versioned config and execution semantics", () => {
         sets: [{ reps, weightKg: 10, bandNominalResistanceKg: null }] }],
     });
     expect(run(12).externalLoadVolume.value).toBe(120);
+    const asymmetricSet = { reps: 12, weightKg: 10, bandNominalResistanceKg: null,
+      override: { reps: { kind: "asymmetric-per-side", left: 12, right: 10 } } };
     const asymmetric = calculateLoadAccountingV1({
       localDate: "2026-09-24",
       exercises: [{ identity: identity("incline_dumbbell_press_30deg"),
         configSnapshot: LEGACY_LOAD_CONFIGS_V1.incline_dumbbell_press_30deg,
-        sets: [{ reps: 22, weightKg: 10, bandNominalResistanceKg: null,
-          override: { reps: { kind: "asymmetric-per-side", left: 12, right: 10 } } }] }],
+        sets: [asymmetricSet] }],
     });
     expect(asymmetric.externalLoadVolume.value).toBe(220);
-    const inconsistent = calculateLoadAccountingV1({
+    expect(asymmetricSet.reps).toBe(12);
+    expect(asymmetricSet.override.reps.left + asymmetricSet.override.reps.right).toBe(22);
+    expect(setExecutionOverrideV1Schema.safeParse({
+      reps: { kind: "asymmetric-per-side", left: -1, right: 12 },
+    }).success).toBe(false);
+    expect(setExecutionOverrideV1Schema.safeParse({
+      reps: { kind: "asymmetric-per-side", left: 12.5, right: 10 },
+    }).success).toBe(false);
+    const incompatible = calculateLoadAccountingV1({
       localDate: "2026-09-24",
       exercises: [{ identity: identity("incline_dumbbell_press_30deg"),
         configSnapshot: LEGACY_LOAD_CONFIGS_V1.incline_dumbbell_press_30deg,
         sets: [{ reps: 12, weightKg: 10, bandNominalResistanceKg: null,
-          override: { reps: { kind: "asymmetric-per-side", left: 12, right: 10 } } }] }],
+          override: { repsMeaning: "per-movement",
+            reps: { kind: "asymmetric-per-side", left: 12, right: 10 } } }] }],
     });
-    expect(inconsistent.externalLoadVolume).toMatchObject({
+    expect(incompatible.externalLoadVolume).toMatchObject({
       value: null, availability: "unavailable", coverage: { omittedRows: 1 },
     });
     expect(setExecutionOverrideV1Schema.safeParse({

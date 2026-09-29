@@ -43,11 +43,11 @@ type Series = {
 };
 
 const tooltipStyle = {
-  backgroundColor: "var(--surface)",
+  backgroundColor: "var(--surface-2)",
   border: "1px solid var(--line)",
   borderRadius: "10px",
   color: "var(--ink)",
-  fontSize: "12px",
+  fontSize: "13px",
 };
 
 function shortDate(value: string, locale: Locale): string {
@@ -65,19 +65,36 @@ function HistoryLineChart({
   description,
   days,
   series,
+  tone,
   dualAxis = false,
+  loading = false,
   locale,
 }: {
   title: string;
   description: string;
   days: Array<Record<string, unknown>>;
   series: Series[];
+  tone: "body" | "heart" | "nutrition" | "sleep" | "steps" | "movement";
   dualAxis?: boolean;
+  loading?: boolean;
   locale: Locale;
 }) {
+  const leftAxisSeries = series.find(({ yAxisId }) => yAxisId === "left")
+    ?? series.find(({ yAxisId }) => yAxisId === undefined)
+    ?? series[0];
+  const rightAxisSeries = series.find(({ yAxisId }) => yAxisId === "right");
+  if (loading) {
+    return (
+      <article className={styles.chartCard} data-tone={tone}>
+        <ChartHeading title={title} description={description} />
+        {dualAxis && <div className={styles.axisUnitsPlaceholder} aria-hidden="true" />}
+        <div className={styles.chartCanvasPlaceholder} aria-hidden="true" />
+      </article>
+    );
+  }
   if (!series.some(({ key }) => days.some((day) => typeof day[key] === "number"))) {
     return (
-      <article className={styles.chartCard}>
+      <article className={styles.chartCard} data-tone={tone}>
         <ChartHeading title={title} description={description} />
         <div className={styles.chartEmpty}>{locale === "uk" ? "За цей період даних немає" : "No data for this period"}</div>
       </article>
@@ -85,37 +102,49 @@ function HistoryLineChart({
   }
 
   return (
-    <article className={styles.chartCard}>
+    <article className={styles.chartCard} data-tone={tone}>
       <ChartHeading title={title} description={description} />
+      {dualAxis && leftAxisSeries && rightAxisSeries && (
+        <div className={styles.axisUnits} aria-label={locale === "uk" ? "Одиниці лівої та правої осей" : "Left and right axis units"}>
+          <span>
+            <i aria-hidden="true" style={{ backgroundColor: leftAxisSeries.color }} />{locale === "uk" ? "Ліва вісь" : "Left axis"} · {leftAxisSeries.unit}
+          </span>
+          <span>
+            <i aria-hidden="true" style={{ backgroundColor: rightAxisSeries.color }} />{locale === "uk" ? "Права вісь" : "Right axis"} · {rightAxisSeries.unit}
+          </span>
+        </div>
+      )}
       <div className={styles.chartCanvas}>
         <ResponsiveContainer width="100%" height="100%" minWidth={0}>
-          <LineChart data={days} margin={{ top: 8, right: dualAxis ? 8 : 18, left: -18, bottom: 0 }} accessibilityLayer>
+          <LineChart data={days} margin={{ top: 10, right: dualAxis ? 6 : 4, left: 4, bottom: 4 }} accessibilityLayer>
             <CartesianGrid stroke="var(--line)" strokeDasharray="4 5" vertical={false} />
             <XAxis
               dataKey="date"
               tickFormatter={(value) => shortDate(value, locale)}
-              tick={{ fill: "var(--muted)", fontSize: 11 }}
+              tick={{ fill: "var(--text-secondary)", fontSize: 12 }}
               tickLine={false}
               axisLine={{ stroke: "var(--line)" }}
               minTickGap={24}
             />
             <YAxis
               yAxisId={dualAxis ? "left" : undefined}
-              tick={{ fill: "var(--muted)", fontSize: 11 }}
+              tick={{ fill: "var(--text-secondary)", fontSize: 12 }}
               tickLine={false}
               axisLine={false}
-              width={52}
+              width={64}
               domain={["auto", "auto"]}
+              unit={!dualAxis && leftAxisSeries?.unit && leftAxisSeries.unit.length <= 4 ? ` ${leftAxisSeries.unit}` : undefined}
             />
             {dualAxis && (
               <YAxis
                 yAxisId="right"
                 orientation="right"
-                tick={{ fill: "var(--muted)", fontSize: 11 }}
+                tick={{ fill: "var(--text-secondary)", fontSize: 12 }}
                 tickLine={false}
                 axisLine={false}
-                width={42}
+                width={64}
                 domain={["auto", "auto"]}
+                unit={undefined}
               />
             )}
             <Tooltip
@@ -130,7 +159,12 @@ function HistoryLineChart({
                 return [`${formatted} ${item?.unit ?? ""}`.trim(), String(name)];
               }}
             />
-            {series.length > 1 && <Legend wrapperStyle={{ fontSize: "11px", paddingTop: "8px" }} />}
+            {series.length > 1 && (
+              <Legend
+                wrapperStyle={{ color: "var(--text-secondary)", fontSize: "12px", paddingTop: "10px" }}
+                formatter={(value) => <span style={{ color: "var(--text-secondary)" }}>{value}</span>}
+              />
+            )}
             {series.map(({ key, label, color, yAxisId, strokeWidth = 2.4, strokeDasharray, dot = true }) => (
               <Line
                 key={key}
@@ -163,7 +197,7 @@ function ChartHeading({ title, description }: { title: string; description: stri
   );
 }
 
-export function HistoryCharts({ days, range = 30 }: { days: DailyMetricDto[]; range?: HistoryRange }) {
+export function HistoryCharts({ days, range = 30, loading = false }: { days: DailyMetricDto[]; range?: HistoryRange; loading?: boolean }) {
   const { locale } = useI18n();
   const uk = locale === "uk";
   const chronologicalDays = sortDaysChronologically(days);
@@ -174,7 +208,7 @@ export function HistoryCharts({ days, range = 30 }: { days: DailyMetricDto[]; ra
   const movementTraining = movementTrainingChartModel(days, { range, today: todayInCalendarTimeZone() });
 
   return (
-    <section className={styles.chartsSection} aria-labelledby="charts-heading">
+    <section className={styles.chartsSection} aria-labelledby="charts-heading" aria-busy={loading}>
       <div className={styles.chartsTitle}>
         <div>
           <p className={styles.eyebrow}>{uk ? "Лише фактичні дані" : "Actual data only"}</p>
@@ -184,6 +218,8 @@ export function HistoryCharts({ days, range = 30 }: { days: DailyMetricDto[]; ra
       </div>
       <div className={styles.chartsGrid}>
         <HistoryLineChart
+          tone="body"
+          loading={loading}
           title={uk ? "Вага і жир" : "Weight & body fat"}
           description={uk ? "Маса тіла · кг та жирова маса · %" : "Body weight · kg and body fat · %"}
           days={chronologicalDays.map((day) => ({
@@ -205,6 +241,8 @@ export function HistoryCharts({ days, range = 30 }: { days: DailyMetricDto[]; ra
           ]}
         />
         <HistoryLineChart
+          tone="heart"
+          loading={loading}
           title={uk ? "Пульс у спокої" : "Resting heart rate"}
           description={uk ? "Останнє значення кожного дня · bpm" : "Latest value on each day · bpm"}
           days={restingDays}
@@ -212,6 +250,8 @@ export function HistoryCharts({ days, range = 30 }: { days: DailyMetricDto[]; ra
           series={[{ key: "restingHeartRateLatest", label: uk ? "Пульс у спокої" : "Resting HR", unit: "bpm", color: "#b45f45" }]}
         />
         <HistoryLineChart
+          tone="nutrition"
+          loading={loading}
           title={uk ? "Харчування" : "Nutrition"}
           description={uk ? "Калорії · ккал та макронутрієнти · г" : "Calories · kcal and macros · g"}
           days={chronologicalDays}
@@ -234,6 +274,8 @@ export function HistoryCharts({ days, range = 30 }: { days: DailyMetricDto[]; ra
           ]}
         />
         <HistoryLineChart
+          tone="sleep"
+          loading={loading}
           title={uk ? "Тривалість сну" : "Sleep duration"}
           description={uk ? "Загальний сон за ніч · години (wake date)" : "Total sleep per night · hours (wake date)"}
           days={chronologicalDays.map((day) => ({
@@ -246,11 +288,13 @@ export function HistoryCharts({ days, range = 30 }: { days: DailyMetricDto[]; ra
               key: "sleepHours",
               label: uk ? "Сон" : "Sleep",
               unit: uk ? "год" : "h",
-              color: "#4d8fd9",
+              color: "var(--health-sleep)",
             },
           ]}
         />
         <HistoryLineChart
+          tone="steps"
+          loading={loading}
           title={uk ? "Кроки" : "Steps"}
           description={uk ? "Кількість кроків за день" : "Daily step count"}
           days={chronologicalDays}
@@ -258,6 +302,8 @@ export function HistoryCharts({ days, range = 30 }: { days: DailyMetricDto[]; ra
           series={[{ key: "steps", label: uk ? "Кроки" : "Steps", unit: uk ? "кроків" : "steps", color: "#5b69c9" }]}
         />
         <HistoryLineChart
+          tone="movement"
+          loading={loading}
           title={uk ? "Рух і тренування" : "Movement & training"}
           description={uk ? "Дистанція ходьби та сумарна тривалість тренувань" : "Walking distance and total workout duration"}
           days={movementTraining.points}

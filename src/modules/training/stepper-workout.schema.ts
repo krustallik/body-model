@@ -9,6 +9,10 @@ const StepperWorkoutInputSchema = z.object({
 
 export const CreateStepperWorkoutSchema = StepperWorkoutInputSchema;
 export const UpdateStepperWorkoutSchema = StepperWorkoutInputSchema;
+export const StepperWorkoutListQuerySchema = z.object({
+  limit: z.coerce.number().int().positive().max(100).optional(),
+  offset: z.coerce.number().int().nonnegative().max(1_000_000).optional(),
+}).strict();
 export const StepperWorkoutIdParamsSchema = z.object({
   id: z.preprocess((value) => typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value,
     z.number().int().positive().safe()),

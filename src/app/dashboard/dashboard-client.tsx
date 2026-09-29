@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { AppNav } from "@/components/app-nav";
+import { DemoDataBadge } from "@/components/demo-data-badge";
 import { useI18n } from "@/i18n/i18n-provider";
 import type { DailyMetricField } from "@/modules/days/day.types";
 import type { DashboardDto } from "@/modules/days/dashboard.types";
@@ -36,7 +37,7 @@ async function loadDashboard(uk: boolean): Promise<DashboardDto> {
   return response.json() as Promise<DashboardDto>;
 }
 
-export function DashboardClient() {
+export function DashboardClient({ demoMode = false }: { demoMode?: boolean } = {}) {
   const { locale, intlLocale } = useI18n();
   const uk = locale === "uk";
   const metricCards: Array<{ key: DailyMetricField | "totalWorkoutMinutes"; label: string; unit?: string }> = [
@@ -51,6 +52,31 @@ export function DashboardClient() {
     { key: "averageWalkingSpeedKmh", label: uk ? "Середня швидкість ходьби" : "Average Walking Speed", unit: "km/h" },
     { key: "totalWorkoutMinutes", label: uk ? "Тренування" : "Training", unit: "min" },
   ];
+  const metricGroups: Array<{
+    key: string;
+    label: string;
+    metricKeys: Set<DailyMetricField | "totalWorkoutMinutes">;
+  }> = [
+    {
+      key: "body",
+      label: uk ? "Тіло" : "Body",
+      metricKeys: new Set(["weightKg", "bodyFatPercent"]),
+    },
+    {
+      key: "nutrition",
+      label: uk ? "Харчування" : "Nutrition",
+      metricKeys: new Set(["caloriesKcal", "proteinG", "fatG", "carbsG"]),
+    },
+    {
+      key: "movement",
+      label: uk ? "Рух і тренування" : "Movement & training",
+      metricKeys: new Set(["steps", "walkingDistanceKm", "averageWalkingSpeedKmh", "totalWorkoutMinutes"]),
+    },
+  ];
+  const groupedMetrics = metricGroups.map((group) => ({
+    ...group,
+    metrics: metricCards.filter(({ key }) => group.metricKeys.has(key)),
+  }));
   const [dashboard, setDashboard] = useState<DashboardDto>(emptyDashboard);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -80,6 +106,7 @@ export function DashboardClient() {
 
   return (
     <main className={styles.page}>
+      <a className={styles.skipLink} href="#daily-overview">{uk ? "Перейти до показників дня" : "Skip to today’s measurements"}</a>
       <header className={styles.topbar}>
         <LinkBrand uk={uk} />
         <AppNav active="dashboard" />
@@ -87,43 +114,68 @@ export function DashboardClient() {
 
       <section className={styles.hero}>
         <div>
-          <p className={styles.eyebrow}>{uk ? "Сьогодні" : "Today"} · {localToday()}</p>
+          <p className={styles.eyebrow}>{uk ? "Поточний огляд" : "Daily record"}<DemoDataBadge active={demoMode} /></p>
           <h1>{uk ? "Ваш день у цифрах" : "Your daily snapshot"}</h1>
           <p>{uk ? "Огляд сьогоднішніх показників здоров’я та тренувань за останні сім днів." : "A clear view of today’s health data and training events over the last seven days."}</p>
         </div>
-        <div className={`${styles.todayBadge} ${dashboard.hasToday ? styles.ready : styles.waiting}`}>
-          <span aria-hidden="true" />
-          {loading ? (uk ? "Перевіряємо дані…" : "Checking today…") : dashboard.hasToday ? (uk ? "Сьогодні синхронізовано" : "Today is synced") : (uk ? "Запису за сьогодні немає" : "No record for today")}
+        <div className={styles.heroAside}>
+          <time className={styles.heroDate} dateTime={localToday()}>{localToday()}</time>
+          <div className={`${styles.todayBadge} ${dashboard.hasToday ? styles.ready : styles.waiting}`}>
+            <span aria-hidden="true" />
+            {loading ? (uk ? "Перевіряємо дані…" : "Checking today…") : dashboard.hasToday ? (uk ? "Сьогодні синхронізовано" : "Today is synced") : (uk ? "Запису за сьогодні немає" : "No record for today")}
+          </div>
         </div>
       </section>
 
       {error && <div className={styles.errorBanner} role="alert">{error}</div>}
 
-      <section className={styles.metricGrid} aria-busy={loading}>
-        {metricCards.map(({ key, label, unit }) => {
-          const value = key === "totalWorkoutMinutes"
-            ? (dashboard.todayTrainingDay
-              ? dashboard.todayTrainingDay.durationMinutes
-              : dashboard.today?.totalWorkoutMinutes ?? 0)
-            : dashboard.today?.[key] ?? null;
-          return (
-            <article className={styles.metricCard} key={key}>
-              <p>{label}</p>
-              <strong>{formatMetric(value, intlLocale)}</strong>
-            <span>{key === "totalWorkoutMinutes"
-              ? dashboardTrainingMetricCaption(dashboard.todayTrainingDay, uk)
-              : value === null ? (uk ? "Немає даних" : "No data") : unit ?? (uk ? "сьогодні" : "today")}</span>
-            </article>
-          );
-        })}
+      <section className={styles.metricLedger} id="daily-overview" tabIndex={-1} aria-busy={loading}>
+        <div className={styles.ledgerHeading}>
+          <div>
+            <p className={styles.eyebrow}>{uk ? "Запис за день" : "Today’s record"}</p>
+            <h2>{uk ? "Показники" : "Measurements"}</h2>
+          </div>
+          <span>{uk ? "Дані здоров’я та активності" : "Health and activity data"}</span>
+        </div>
+        <div className={styles.metricGroups}>
+          {groupedMetrics.map(({ key: groupKey, label: groupLabel, metrics }) => (
+            <section className={styles.metricGroup} key={groupKey} aria-label={groupLabel} data-group={groupKey}>
+              <h3>{groupLabel}</h3>
+              <dl className={styles.metricRows}>
+                {metrics.map(({ key, label, unit }) => {
+                  const value = key === "totalWorkoutMinutes"
+                    ? (dashboard.todayTrainingDay
+                      ? dashboard.todayTrainingDay.durationMinutes
+                      : dashboard.today?.totalWorkoutMinutes ?? 0)
+                    : dashboard.today?.[key] ?? null;
+                  return (
+                    <div className={styles.metricRow} key={key}>
+                      <dt>{label}</dt>
+                      <dd
+                        className={styles.metricReading}
+                        data-primary-metric={key === "weightKg" || key === "caloriesKcal" || key === "steps" ? key : undefined}
+                      >
+                        <strong>{formatMetric(value, intlLocale)}</strong>
+                        <span>{key === "totalWorkoutMinutes"
+                          ? dashboardTrainingMetricCaption(dashboard.todayTrainingDay, uk)
+                          : value === null ? (uk ? "Немає даних" : "No data") : unit ?? (uk ? "сьогодні" : "today")}</span>
+                      </dd>
+                    </div>
+                  );
+                })}
+              </dl>
+            </section>
+          ))}
+        </div>
       </section>
 
-      <section className={styles.heartRateCard} aria-label={uk ? "Пульс у спокої" : "Resting Heart Rate"}>
-        <div><p>{uk ? "Пульс у спокої" : "Resting Heart Rate"}</p><strong>{formatMetric(restingHeartRate.latestBpm, intlLocale)}{restingHeartRate.latestBpm === null ? "" : " bpm"}</strong></div>
-        <span>{restingHeartRate.timestamp ? (instantToLocalDateTime(new Date(restingHeartRate.timestamp), DEFAULT_TIME_ZONE).date === localToday() ? (uk ? "Сьогодні" : "Today") : (uk ? "Останнє значення" : "Latest")) : (uk ? "Немає даних" : "No data")}</span>
-      </section>
+      <section className={styles.signalGrid} aria-label={uk ? "Сон і пульс у спокої" : "Sleep and resting heart rate"}>
+        <article className={styles.heartRateCard} aria-label={uk ? "Пульс у спокої" : "Resting Heart Rate"}>
+          <div><p>{uk ? "Пульс у спокої" : "Resting Heart Rate"}</p><strong>{formatMetric(restingHeartRate.latestBpm, intlLocale)}{restingHeartRate.latestBpm === null ? "" : " bpm"}</strong></div>
+          <span>{restingHeartRate.timestamp ? (instantToLocalDateTime(new Date(restingHeartRate.timestamp), DEFAULT_TIME_ZONE).date === localToday() ? (uk ? "Сьогодні" : "Today") : (uk ? "Останнє значення" : "Latest")) : (uk ? "Немає даних" : "No data")}</span>
+        </article>
 
-      <section className={styles.sleepCard} aria-label={uk ? "Сон" : "Sleep"}>
+        <article className={styles.sleepCard} aria-label={uk ? "Сон" : "Sleep"}>
         {sleep ? (
           <>
             <div className={styles.sleepPrimary}>
@@ -160,6 +212,7 @@ export function DashboardClient() {
             <strong>{uk ? "Немає даних про сон" : "No sleep data"}</strong>
           </div>
         )}
+        </article>
       </section>
 
       <section className={styles.lowerGrid}>

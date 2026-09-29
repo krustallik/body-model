@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppNav } from "@/components/app-nav";
 import { useI18n } from "@/i18n/i18n-provider";
 import { DIARY_COMPLETENESS } from "@/modules/training/training.constants";
@@ -14,9 +14,20 @@ import {
   diaryCompletenessBadgeTone,
   formatClock,
   formatDateTime,
+  formatTrainingKcal,
   readApiError,
 } from "../training-labels";
+import { TrainingPagination } from "../training-pagination";
+import {
+  handleTrainingPaginationNavigate,
+  parseTrainingPage,
+  trainingSearchParamHref,
+  updateTrainingSearchParams,
+  useTrainingSearchParam,
+} from "../training-url-state";
 import styles from "../training.module.css";
+
+const GARMIN_PAGE_SIZE = 10;
 
 function completenessLabel(
   value: HistoricalStrengthWorkoutDto["diaryCompleteness"],
@@ -55,56 +66,90 @@ export function BackfillClient() {
   const { locale, intlLocale } = useI18n();
   const uk = locale === "uk";
   const router = useRouter();
+  const { value: pageValue, ready } = useTrainingSearchParam("garminPage");
+  const { value: missingValue } = useTrainingSearchParam("onlyMissingDiary");
+  const page = parseTrainingPage(pageValue);
+  const onlyMissing = missingValue === "true";
+  const pageHref = useCallback((nextPage: number): string => {
+    return trainingSearchParamHref("garminPage", nextPage <= 1 ? null : String(nextPage), "/training/backfill");
+  }, []);
   const [workouts, setWorkouts] = useState<HistoricalStrengthWorkoutDto[]>([]);
   const [programs, setPrograms] = useState<TrainingProgramSummaryDto[]>([]);
-  const [onlyMissing, setOnlyMissing] = useState(false);
+  const [totalCount, setTotalCount] = useState(0);
   const [selected, setSelected] = useState<number[]>([]);
   const [bulkProgramId, setBulkProgramId] = useState<number | "">("");
-  const [loading, setLoading] = useState(true);
+  const [loadedRequestKey, setLoadedRequestKey] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [listRevision, setListRevision] = useState(0);
+  const requestSequence = useRef(0);
+  const requestKey = `${page}:${onlyMissing}:${listRevision}`;
+  const loading = loadedRequestKey !== requestKey;
 
-  const load = useCallback(async () => {
-    setError(null);
+  const loadPrograms = useCallback(async () => {
     try {
-      const query = onlyMissing ? "?limit=100&onlyMissingDiary=true" : "?limit=100";
-      const [workoutsRes, programsRes] = await Promise.all([
-        fetch(`/api/v1/training/workouts/historical${query}`, { cache: "no-store" }),
-        fetch("/api/v1/training/programs", { cache: "no-store" }),
-      ]);
-      if (!workoutsRes.ok || !programsRes.ok) {
-        setError(uk ? "Не вдалося завантажити історію." : "Could not load history.");
-        return;
-      }
-      const workoutsBody = await workoutsRes.json() as { workouts: HistoricalStrengthWorkoutDto[] };
-      const programsBody = await programsRes.json() as { programs: TrainingProgramSummaryDto[] };
-      setWorkouts(workoutsBody.workouts);
-      setPrograms(programsBody.programs);
-      setSelected((current) => current.filter((id) => (
-        workoutsBody.workouts.some((row) => row.workoutId === id && row.linkedSessionId == null)
-      )));
-      if (programsBody.programs[0] && bulkProgramId === "") {
-        setBulkProgramId(programsBody.programs[0].id);
-      }
+      const response = await fetch("/api/v1/training/programs", { cache: "no-store" });
+      if (!response.ok) throw new Error();
+      const body = await response.json() as { programs: TrainingProgramSummaryDto[] };
+      setPrograms(body.programs);
+      setBulkProgramId((current) => current === "" && body.programs[0] ? body.programs[0].id : current);
     } catch {
-      setError(uk ? "Не вдалося завантажити історію." : "Could not load history.");
-    } finally {
-      setLoading(false);
+      setError(uk ? "Не вдалося завантажити програми." : "Could not load programs.");
     }
-  }, [bulkProgramId, onlyMissing, uk]);
+  }, [uk]);
+
+  // Start an async program fetch; state changes happen after the response.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { void loadPrograms(); }, [loadPrograms]);
 
   useEffect(() => {
-    let cancelled = false;
+    if (!ready || (pageValue !== null && page === 1 && pageValue !== "1")) return;
+    const requestId = ++requestSequence.current;
+    const controller = new AbortController();
+    let current = true;
+    const query = new URLSearchParams({
+      limit: String(GARMIN_PAGE_SIZE + 1),
+      offset: String((page - 1) * GARMIN_PAGE_SIZE),
+      ...(onlyMissing ? { onlyMissingDiary: "true" } : {}),
+    }).toString();
     void (async () => {
-      await Promise.resolve();
-      if (cancelled) return;
-      setLoading(true);
-      await load();
+      try {
+        const response = await fetch(`/api/v1/training/workouts/historical?${query}`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error(uk ? "Не вдалося завантажити історію." : "Could not load history.");
+        const body = await response.json() as { workouts: HistoricalStrengthWorkoutDto[]; totalCount?: number };
+        if (!current || requestId !== requestSequence.current) return;
+        const count = body.totalCount ?? Math.max(0, (page - 1) * GARMIN_PAGE_SIZE + body.workouts.length);
+        const totalPages = Math.max(1, Math.ceil(count / GARMIN_PAGE_SIZE));
+        if (page > totalPages) {
+          updateTrainingSearchParams({ garminPage: totalPages === 1 ? null : String(totalPages) }, true);
+          return;
+        }
+        setWorkouts(body.workouts.slice(0, GARMIN_PAGE_SIZE));
+        setTotalCount(count);
+        setError(null);
+        setLoadedRequestKey(requestKey);
+      } catch (cause) {
+        if (!current || controller.signal.aborted) return;
+        setError(cause instanceof Error ? cause.message : (uk ? "Не вдалося завантажити історію." : "Could not load history."));
+        setLoadedRequestKey(requestKey);
+      }
     })();
-    return () => {
-      cancelled = true;
-    };
-  }, [load]);
+    return () => { current = false; controller.abort(); };
+  }, [listRevision, onlyMissing, page, pageValue, ready, requestKey, uk]);
+
+  useEffect(() => {
+    if (!ready) return;
+    const invalidPage = pageValue !== null && parseTrainingPage(pageValue) === 1 && pageValue !== "1";
+    const invalidFilter = missingValue !== null && missingValue !== "true" && missingValue !== "false";
+    if (!invalidPage && !invalidFilter) return;
+    updateTrainingSearchParams({
+      ...(invalidPage ? { garminPage: null } : {}),
+      ...(invalidFilter ? { onlyMissingDiary: null } : {}),
+    }, true);
+  }, [missingValue, pageValue, ready]);
 
   const eligibleIds = useMemo(
     () => workouts.filter((row) => row.linkedSessionId == null).map((row) => row.workoutId),
@@ -113,6 +158,10 @@ export function BackfillClient() {
 
   const canBulk = programs.length > 0 && eligibleIds.length > 0;
   const createDisabled = busy || selected.length === 0 || typeof bulkProgramId !== "number";
+
+  function setFilter(missing: boolean): void {
+    updateTrainingSearchParams({ onlyMissingDiary: missing ? "true" : null, garminPage: null });
+  }
 
   function toggle(workoutId: number) {
     setSelected((current) => (
@@ -137,7 +186,7 @@ export function BackfillClient() {
         return;
       }
       setSelected([]);
-      await load();
+      setListRevision((revision) => revision + 1);
     } catch {
       setError(uk ? "Не вдалося створити записи." : "Could not create diary entries.");
     } finally {
@@ -185,7 +234,7 @@ export function BackfillClient() {
                 type="button"
                 className={styles.togglePill}
                 aria-pressed={onlyMissing}
-                onClick={() => setOnlyMissing((value) => !value)}
+                onClick={() => setFilter(!onlyMissing)}
               >
                 {uk ? "Лише без запису" : "Missing diary only"}
               </button>
@@ -193,7 +242,7 @@ export function BackfillClient() {
                 type="button"
                 className={styles.togglePill}
                 aria-pressed={!onlyMissing}
-                onClick={() => setOnlyMissing(false)}
+                onClick={() => setFilter(false)}
               >
                 {uk ? "Усі силові" : "All strength"}
               </button>
@@ -218,8 +267,8 @@ export function BackfillClient() {
                 <div className={styles.bulkStep}>
                   <p className={styles.bulkStepLabel}>
                     {uk
-                      ? `1 · Вибрано ${selected.length} з ${eligibleIds.length}`
-                      : `1 · Selected ${selected.length} of ${eligibleIds.length}`}
+                      ? `1 · Вибрано ${selected.length} · ${eligibleIds.length} доступно на сторінці`
+                      : `1 · Selected ${selected.length} · ${eligibleIds.length} available on this page`}
                   </p>
                   <div className={styles.rowActions}>
                     <button
@@ -227,7 +276,7 @@ export function BackfillClient() {
                       type="button"
                       onClick={() => setSelected(eligibleIds)}
                     >
-                      {uk ? "Вибрати всі без запису" : "Select all missing"}
+                      {uk ? "Вибрати без запису на сторінці" : "Select missing on this page"}
                     </button>
                     <button
                       className={styles.textButton}
@@ -291,15 +340,17 @@ export function BackfillClient() {
                 {loading
                   ? (uk ? "Завантаження…" : "Loading…")
                   : (uk
-                    ? `${workouts.length} · галочка лише для bulk-створення`
-                    : `${workouts.length} · checkbox is for bulk create only`)}
+                    ? `${workouts.length} на сторінці · галочка лише для bulk-створення`
+                    : `${workouts.length} on this page · checkbox is for bulk create only`)}
               </p>
             </div>
           </div>
           <div className={styles.panelBody}>
             {workouts.length === 0 ? (
               <div className={styles.empty}>
-                <span>{uk ? "Немає канонічних силових workout." : "No canonical strength workouts."}</span>
+                <span>{page > 1
+                  ? (uk ? "На цій сторінці записів немає. Поверніться назад." : "No workouts on this page. Go back a page.")
+                  : (uk ? "Немає канонічних силових workout." : "No canonical strength workouts.")}</span>
               </div>
             ) : (
               <div className={styles.list}>
@@ -334,9 +385,9 @@ export function BackfillClient() {
                               ? "—"
                               : `${workout.durationMinutes} ${uk ? "хв" : "min"}`}
                             {" · "}
-                            {workout.activeEnergyKcal == null
+                            {formatTrainingKcal(workout.activeEnergyKcal, intlLocale) === null
                               ? (uk ? "ккал —" : "kcal —")
-                              : `${workout.activeEnergyKcal} ${uk ? "ккал" : "kcal"}`}
+                              : `${formatTrainingKcal(workout.activeEnergyKcal, intlLocale)} ${uk ? "ккал" : "kcal"}`}
                           </p>
                           {!eligible && (
                             <p className={styles.selectHint}>
@@ -373,6 +424,16 @@ export function BackfillClient() {
                   );
                 })}
               </div>
+            )}
+            {(totalCount > GARMIN_PAGE_SIZE || page > 1) && (
+              <TrainingPagination
+                currentPage={page}
+                totalPages={Math.max(1, Math.ceil(totalCount / GARMIN_PAGE_SIZE))}
+                hrefForPage={pageHref}
+                label={uk ? "Сторінки Garmin" : "Garmin pages"}
+                onNavigate={handleTrainingPaginationNavigate}
+                uk={uk}
+              />
             )}
           </div>
         </section>

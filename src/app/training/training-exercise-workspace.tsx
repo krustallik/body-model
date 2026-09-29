@@ -509,7 +509,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
             <div
               className={styles.workoutCarouselTrack}
               style={{
-                transform: `translateX(calc(-33.333% + ${dragPx}px))`,
+                transform: `translateX(calc(-33.333333333333336% + ${dragPx}px))`,
                 transition: animating ? `transform ${transitionMs}ms ease-out` : "none",
               }}
             >

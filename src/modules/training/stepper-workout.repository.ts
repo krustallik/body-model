@@ -158,14 +158,24 @@ async function attachReconciliation(
 export class StepperWorkoutRepository {
   constructor(private readonly client: PrismaClient = prisma) {}
 
-  async list(): Promise<StepperWorkoutDto[]> {
+  async list(options: { limit?: number; offset?: number } = {}): Promise<StepperWorkoutDto[]> {
     const rows = await this.client.workout.findMany({
       where: { type: { equals: STEPPER_TYPE, mode: "insensitive" }, hiddenFromHistory: false },
       orderBy: [{ startAt: "desc" }, { id: "desc" }],
-      take: 100,
+      take: options.limit ?? 100,
+      ...(options.offset !== undefined ? { skip: Math.min(options.offset, 1_000_000) } : {}),
       select: stepperSelect,
     });
     return attachReconciliation(this.client, rows.map(toDto));
+  }
+
+  count(): Promise<number> {
+    return this.client.workout.count({
+      where: {
+        type: { equals: STEPPER_TYPE, mode: "insensitive" },
+        hiddenFromHistory: false,
+      },
+    });
   }
 
   async create(input: StepperWorkoutInput): Promise<StepperWorkoutDto> {

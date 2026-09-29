@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { DashboardClient } from "./dashboard-client";
+import { isLocalDemoMode } from "@/modules/demo/local-demo-mode";
 
 export const metadata: Metadata = {
   title: "Dashboard · BodyCast",
@@ -7,5 +8,5 @@ export const metadata: Metadata = {
 };
 
 export default function DashboardPage() {
-  return <DashboardClient />;
+  return <DashboardClient demoMode={isLocalDemoMode()} />;
 }

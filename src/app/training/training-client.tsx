@@ -2,23 +2,15 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { AppNav } from "@/components/app-nav";
 import { DEFAULT_TIME_ZONE, instantToLocalDateTime, localDateTimeToInstant } from "@/model/time-zone";
 import { useI18n } from "@/i18n/i18n-provider";
 import type { StepperWorkoutDto } from "@/modules/training/stepper-workout.repository";
-import type {
-  StrengthSessionDto,
-  StrengthSessionSummaryDto,
-  TrainingProgramSummaryDto,
-} from "@/modules/training/training.types";
+import type { StrengthSessionDto, TrainingProgramSummaryDto } from "@/modules/training/training.types";
+import { TrainingAttentionPanel, TrainingRecentSessionsPanel, TrainingStepperList } from "./training-paginated-sections";
 import {
   formatDateTime,
-  formatDurationMinutes,
-  formatSelectedActiveEnergyText,
-  matchStatusBadgeTone,
-  matchStatusLabel,
-  planCompletionPillClass,
   readApiError,
 } from "./training-labels";
 import styles from "./training.module.css";
@@ -33,50 +25,13 @@ function workoutLocalDateTime(value: string): string {
   return `${date}T${time}`;
 }
 
-function stepperSelectedEnergyText(workout: StepperWorkoutDto, uk: boolean): string {
-  return formatSelectedActiveEnergyText({
-    kcal: workout.selectedActiveEnergyKcal,
-    source: workout.selectedActiveEnergySource,
-    fullCoverage: workout.selectedActiveEnergyFullCoverage,
-    uk,
-    deviceKcalUnused: workout.activeEnergyKcal,
-  });
-}
-
-function formatStepperDateTime(value: string, intlLocale: string): string {
-  return new Intl.DateTimeFormat(intlLocale, {
-    timeZone: DEFAULT_TIME_ZONE,
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(value));
-}
-
-function matchBadgeClass(status: StrengthSessionSummaryDto["matchStatus"]): string {
-  switch (matchStatusBadgeTone(status)) {
-    case "ok":
-      return styles.badgeSuccess;
-    case "warn":
-      return styles.badgeWarning;
-    case "info":
-      return styles.badgeInfo;
-    case "danger":
-      return styles.badgeDanger;
-    case "neutral":
-      return styles.badgeNeutral;
-    default:
-      return styles.badgeMuted;
-  }
-}
-
 export function TrainingClient() {
   const { locale, intlLocale } = useI18n();
   const uk = locale === "uk";
   const router = useRouter();
   const [active, setActive] = useState<StrengthSessionDto | null>(null);
   const [programs, setPrograms] = useState<TrainingProgramSummaryDto[]>([]);
-  const [recent, setRecent] = useState<StrengthSessionSummaryDto[]>([]);
-  const [attention, setAttention] = useState<StrengthSessionSummaryDto[]>([]);
-  const [stepperWorkouts, setStepperWorkouts] = useState<StepperWorkoutDto[]>([]);
+  const [listsRevision, setListsRevision] = useState(0);
   const [stepperFormOpen, setStepperFormOpen] = useState(false);
   const [editingStepper, setEditingStepper] = useState<StepperWorkoutDto | null>(null);
   const [stepperStartAt, setStepperStartAt] = useState(nowLocalDateTime);
@@ -91,29 +46,20 @@ export function TrainingClient() {
   const [reconBusyId, setReconBusyId] = useState<number | null>(null);
 
   const load = useCallback(async () => {
-    setError(null);
     try {
-      const [activeRes, programsRes, recentRes, attentionRes, stepperRes] = await Promise.all([
+      const [activeRes, programsRes] = await Promise.all([
         fetch("/api/v1/training/sessions/active", { cache: "no-store" }),
         fetch("/api/v1/training/programs", { cache: "no-store" }),
-        fetch("/api/v1/training/sessions/recent?limit=12", { cache: "no-store" }),
-        fetch("/api/v1/training/sessions/match-attention", { cache: "no-store" }),
-        fetch("/api/v1/training/stepper-workouts", { cache: "no-store" }),
       ]);
-      if (!activeRes.ok || !programsRes.ok || !recentRes.ok || !attentionRes.ok || !stepperRes.ok) {
+      if (!activeRes.ok || !programsRes.ok) {
         setError(uk ? "Не вдалося завантажити тренування." : "Could not load training data.");
         return;
       }
       const activeBody = await activeRes.json() as { session: StrengthSessionDto | null };
       const programsBody = await programsRes.json() as { programs: TrainingProgramSummaryDto[] };
-      const recentBody = await recentRes.json() as { sessions: StrengthSessionSummaryDto[] };
-      const attentionBody = await attentionRes.json() as { sessions: StrengthSessionSummaryDto[] };
-      const stepperBody = await stepperRes.json() as { workouts: StepperWorkoutDto[] };
+      setError(null);
       setActive(activeBody.session);
       setPrograms(programsBody.programs);
-      setRecent(recentBody.sessions);
-      setAttention(attentionBody.sessions);
-      setStepperWorkouts(stepperBody.workouts);
     } catch {
       setError(uk ? "Не вдалося завантажити тренування." : "Could not load training data.");
     } finally {
@@ -164,7 +110,7 @@ export function TrainingClient() {
       }
       setStepperFormOpen(false);
       setEditingStepper(null);
-      await load();
+      setListsRevision((current) => current + 1);
     } catch {
       setError(uk ? "Перевірте дату й час тренування." : "Check the workout date and time.");
     } finally {
@@ -183,7 +129,7 @@ export function TrainingClient() {
         return;
       }
       if (editingStepper?.id === workout.id) setStepperFormOpen(false);
-      await load();
+      setListsRevision((current) => current + 1);
     } catch {
       setError(uk ? "Не вдалося видалити тренування." : "Could not delete the workout.");
     } finally {
@@ -215,7 +161,7 @@ export function TrainingClient() {
         setError(await readApiError(response, uk));
         return;
       }
-      await load();
+      setListsRevision((current) => current + 1);
     } catch {
       setError(uk ? "Не вдалося підтвердити узгодження." : "Could not confirm reconciliation.");
     } finally {
@@ -240,7 +186,7 @@ export function TrainingClient() {
         setError(await readApiError(response, uk));
         return;
       }
-      await load();
+      setListsRevision((current) => current + 1);
     } catch {
       setError(uk ? "Не вдалося відхилити узгодження." : "Could not reject reconciliation.");
     } finally {
@@ -249,15 +195,9 @@ export function TrainingClient() {
   }
 
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      await Promise.resolve();
-      if (cancelled) return;
-      await load();
-    })();
-    return () => {
-      cancelled = true;
-    };
+    // Start an async refresh; state changes happen after the network response.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void load();
   }, [load]);
 
   async function startProgram(programId: number) {
@@ -329,67 +269,6 @@ export function TrainingClient() {
     }
   }
 
-  const attentionHasItems = attention.length > 0;
-
-  function renderAttention(): ReactNode {
-    if (attentionHasItems) {
-      return (
-        <section className={`${styles.panel} ${styles.panelAttention}`} aria-label={uk ? "Увага до зіставлення" : "Match attention"}>
-          <div className={styles.panelHeader}>
-            <div>
-              <h2>{uk ? "Увага до зіставлення" : "Match attention"}</h2>
-              <p>{uk ? "Неоднозначні або довго очікують Garmin" : "Ambiguous or long-pending Garmin links"}</p>
-            </div>
-          </div>
-          <div className={styles.panelBody}>
-            <div className={styles.list}>
-              {attention.map((session) => (
-                <article className={styles.card} key={session.id}>
-                  <div className={styles.cardTop}>
-                    <div>
-                      <strong>{session.programName}</strong>
-                      <p className={styles.cardMeta}>
-                        {formatDateTime(session.webStartedAt, intlLocale)}
-                        {" · "}
-                        {formatDurationMinutes(session.webStartedAt, session.webEndedAt, intlLocale, uk)}
-                      </p>
-                    </div>
-                    <span className={matchBadgeClass(session.matchStatus)}>
-                      {matchStatusLabel(session.matchStatus, uk)}
-                    </span>
-                  </div>
-                  <Link className={styles.linkLike} href={`/training/sessions/${session.id}`}>
-                    {uk ? "Відкрити" : "Open"}
-                  </Link>
-                </article>
-              ))}
-            </div>
-          </div>
-        </section>
-      );
-    }
-
-    return (
-      <section
-        className={`${styles.panel} ${styles.panelCompact}`}
-        aria-label={uk ? "Увага до зіставлення" : "Match attention"}
-      >
-        <div className={styles.panelHeader}>
-          <div>
-            <h2>{uk ? "Увага до зіставлення" : "Match attention"}</h2>
-          </div>
-        </div>
-        <div className={styles.panelBody}>
-          <p className={styles.emptyCompact}>
-            {uk ? "Немає сесій, що потребують уваги." : "No sessions need attention."}
-          </p>
-        </div>
-      </section>
-    );
-  }
-
-  const activeHasLoggedSets = (active?.exercises ?? []).some((exercise) => exercise.sets.length > 0);
-
   return (
     <main className={`${styles.page} ${styles.trainingHubPage}`}>
       <div className={styles.navRow}>
@@ -420,128 +299,10 @@ export function TrainingClient() {
       {error && <div className={styles.errorBanner} role="alert">{error}</div>}
 
       <div className={styles.stack}>
-        {attentionHasItems && renderAttention()}
+        <TrainingAttentionPanel uk={uk} intlLocale={intlLocale} refreshVersion={listsRevision} />
 
-        <section className={`${styles.panel} ${styles.panelInfo}`} aria-label={uk ? "Тренування на степері" : "Stepper workouts"}>
-          <div className={styles.panelHeader}>
-            <div>
-              <h2>{uk ? "Тренування на степері" : "Stepper workouts"}</h2>
-              <p>{uk ? "Apple Health і власні записи · час, тривалість, діагностика" : "Apple Health and manual entries · time, duration, diagnostics"}</p>
-            </div>
-            <button className={styles.primaryButton} type="button" onClick={openNewStepperForm}>
-              {uk ? "Додати степер" : "Add stepper"}
-            </button>
-          </div>
-          <div className={styles.panelBody}>
-            {stepperFormOpen && (
-              <form className={`${styles.exerciseRow} ${styles.stepperForm}`} onSubmit={(event) => void saveStepperWorkout(event)}>
-                <div className={styles.exerciseRowHeader}>
-                  <strong>{editingStepper ? (uk ? "Редагувати запис" : "Edit workout") : (uk ? "Нове тренування" : "New workout")}</strong>
-                  <button className={styles.textButton} type="button" onClick={() => setStepperFormOpen(false)}>
-                    {uk ? "Закрити" : "Close"}
-                  </button>
-                </div>
-                <p className={styles.cardMeta}>
-                  {uk
-                    ? "Дата, час і тривалість обов’язкові. Кроки та активні ккал можна вказати окремо: вони не є спостереженням Apple Health. Якщо вказані ккал, кроки їх не перераховують."
-                    : "Date, time, and duration are required. Steps and active kcal are optional declarations, not Apple Health observations. Entered kcal are not recalculated from steps."}
-                </p>
-                <div className={`${styles.exerciseFields} ${styles.stepperFields}`}>
-                  <label className={styles.field}>
-                    <span>{uk ? "Дата й час · Europe/Bratislava" : "Date and time · Europe/Bratislava"}</span>
-                    <input aria-label={uk ? "Дата й час степера" : "Stepper date and time"} type="datetime-local" required value={stepperStartAt} onChange={(event) => setStepperStartAt(event.target.value)} />
-                  </label>
-                  <label className={styles.field}>
-                    <span>{uk ? "Тривалість · хвилини" : "Duration · minutes"}</span>
-                    <input aria-label={uk ? "Тривалість степера" : "Stepper duration"} type="number" min="1" max="1440" step="1" required value={stepperDuration} onChange={(event) => setStepperDuration(event.target.value)} />
-                  </label>
-                  <label className={styles.field}>
-                    <span>{uk ? "Кроки MS100 · необов’язково" : "MS100 steps · optional"}</span>
-                    <input aria-label={uk ? "Кроки степера" : "Stepper steps"} type="number" min="0" step="1" value={stepperSteps} onChange={(event) => setStepperSteps(event.target.value)} />
-                  </label>
-                  <label className={styles.field}>
-                    <span>{uk ? "Активні ккал · необов’язково" : "Active kcal · optional"}</span>
-                    <input aria-label={uk ? "Активні ккал степера" : "Stepper active kcal"} type="number" min="0" step="1" value={stepperKcal} onChange={(event) => setStepperKcal(event.target.value)} />
-                  </label>
-                </div>
-                <div className={styles.denseCardActions}>
-                  <button className={styles.primaryButton} type="submit" disabled={stepperBusy}>
-                    {stepperBusy ? (uk ? "Збереження…" : "Saving…") : (uk ? "Зберегти" : "Save")}
-                  </button>
-                  {editingStepper && <button className={styles.secondaryButton} type="button" disabled={stepperBusy} onClick={() => void deleteStepperWorkout(editingStepper)}>{uk ? "Видалити" : "Delete"}</button>}
-                </div>
-              </form>
-            )}
-            {loading ? (
-              <p className={styles.cardMeta}>{uk ? "Завантаження…" : "Loading…"}</p>
-            ) : stepperWorkouts.length === 0 ? (
-              <div className={styles.empty}>
-                <strong>{uk ? "Записів степера поки немає" : "No stepper workouts yet"}</strong>
-                <span>{uk ? "Додайте тренування вручну або синхронізуйте Apple Health." : "Add one manually or sync Apple Health."}</span>
-              </div>
-            ) : (
-              <div className={styles.list}>
-                {stepperWorkouts.map((workout) => (
-                  <article className={styles.card} key={workout.id}>
-                    <div className={styles.cardTop}>
-                      <div>
-                        <strong>{uk ? "Степер" : "Stepper"}</strong>
-                        <p className={styles.cardMeta}>
-                          <span>{formatStepperDateTime(workout.startAt, intlLocale)}</span>
-                          <span>{formatDurationMinutes(workout.startAt, workout.endAt, intlLocale, uk)}</span>
-                        </p>
-                        <p className={styles.energyLine}>{stepperSelectedEnergyText(workout, uk)}</p>
-                        {(workout.reconciliationStatus === "pending" || workout.reconciliationStatus === "ambiguous") ? (
-                          <p className={styles.reconNotice} role="status">
-                            {uk
-                              ? "Можливе дублювання з Garmin · кроки лишаються доданими"
-                              : "Possible Garmin duplicate · steps stay additive"}
-                          </p>
-                        ) : null}
-                      </div>
-                      <span className={workout.source === "manual" ? styles.badgePrimary : styles.badgeInfo}>
-                        {workout.source === "manual" ? (uk ? "Ручний запис" : "Manual entry") : "Apple Health"}
-                      </span>
-                    </div>
-                    <div className={`${styles.denseCardActions} ${styles.stepperCardActions}`}>
-                      <Link className={styles.secondaryButton} href={`/training/workouts/${workout.id}/stepper-diagnostic`}>
-                        {uk ? "Енергія · діагностика" : "Energy · diagnostics"}
-                      </Link>
-                      {(workout.reconciliationStatus === "pending" || workout.reconciliationStatus === "ambiguous")
-                        && workout.reconciliationPeerWorkoutId !== null
-                        && workout.reconciliationRole === "manual" && (
-                        <button
-                          className={styles.secondaryButton}
-                          type="button"
-                          disabled={reconBusyId === workout.id || stepperBusy}
-                          onClick={() => void confirmStepperReconciliation(workout)}
-                        >
-                          {uk ? "Підтвердити пару" : "Confirm pair"}
-                        </button>
-                      )}
-                      {(workout.reconciliationStatus === "pending" || workout.reconciliationStatus === "ambiguous")
-                        && workout.reconciliationGroupId !== null && (
-                        <button
-                          className={styles.dangerButton}
-                          type="button"
-                          disabled={reconBusyId === workout.id || stepperBusy}
-                          onClick={() => void rejectStepperReconciliation(workout)}
-                        >
-                          {uk ? "Відхилити" : "Reject"}
-                        </button>
-                      )}
-                      {workout.editable && <button className={styles.linkLike} type="button" disabled={stepperBusy} onClick={() => openEditStepperForm(workout)}>{uk ? "Редагувати" : "Edit"}</button>}
-                      {workout.editable && <button className={styles.dangerButton} type="button" disabled={stepperBusy} onClick={() => void deleteStepperWorkout(workout)}>{uk ? "Видалити" : "Delete"}</button>}
-                      {!workout.editable && <span className={styles.cardMeta}>{uk ? "Зв’язано із записом щоденника" : "Linked to a training diary entry"}</span>}
-                    </div>
-                  </article>
-                ))}
-              </div>
-            )}
-          </div>
-        </section>
 
-        <div className={styles.trainingHubGrid} style={{ order: activeHasLoggedSets ? 0 : 2 }}>
+        <div className={`${styles.trainingHubGrid} ${styles.trainingPrimaryGrid}`}>
         <section className={`${styles.panel} ${styles.panelActive}`} aria-label={uk ? "Активна сесія" : "Active session"}>
           <div className={styles.panelHeader}>
             <div>
@@ -637,76 +398,80 @@ export function TrainingClient() {
         </section>
         </div>
 
-        <div className={styles.trainingHubGrid}>
-        <section className={`${styles.panel} ${styles.panelRecent}`} aria-label={uk ? "Нещодавні силові сесії" : "Recent strength sessions"}>
+        <div className={`${styles.trainingHubGrid} ${styles.trainingHistoryGrid}`}>
+        <TrainingRecentSessionsPanel
+          uk={uk}
+          intlLocale={intlLocale}
+          refreshVersion={listsRevision}
+          busySessionId={busySessionId}
+          onDeleteCancelledSession={deleteCancelledSession}
+        />
+
+        <section className={`${styles.panel} ${styles.panelInfo}`} aria-label={uk ? "Тренування на степері" : "Stepper workouts"}>
           <div className={styles.panelHeader}>
             <div>
-              <h2>{uk ? "Нещодавні силові сесії" : "Recent strength sessions"}</h2>
-              <p>{uk ? "Дата, програма, тривалість, зіставлення" : "Date, program, duration, match state"}</p>
+              <h2>{uk ? "Тренування на степері" : "Stepper workouts"}</h2>
+              <p>{uk ? "Apple Health і власні записи · час, тривалість, діагностика" : "Apple Health and manual entries · time, duration, diagnostics"}</p>
             </div>
+            <button className={styles.primaryButton} type="button" onClick={openNewStepperForm}>
+              {uk ? "Додати степер" : "Add stepper"}
+            </button>
           </div>
           <div className={styles.panelBody}>
-            {recent.length === 0 ? (
-              <div className={styles.empty}>
-                <span>{uk ? "Ще немає завершених сесій." : "No sessions yet."}</span>
-              </div>
-            ) : (
-              <div className={styles.list}>
-                {recent.map((session) => (
-                  <article className={styles.card} key={session.id}>
-                    <div className={styles.cardTop}>
-                      <div>
-                        <strong>{session.programName}</strong>
-                        <p className={styles.cardMeta}>
-                          <span>
-                            {formatDateTime(session.occurrenceAt ?? session.webStartedAt, intlLocale)}
-                            {" · "}
-                            {formatDurationMinutes(session.webStartedAt, session.webEndedAt, intlLocale, uk)}
-                          </span>
-                          {session.planCompletionPercent != null && (
-                            <span className={planCompletionPillClass(session.planCompletionPercent, styles)}>
-                              {uk
-                                ? `${session.planCompletionPercent}% плану`
-                                : `${session.planCompletionPercent}% of plan`}
-                            </span>
-                          )}
-                        </p>
-                      </div>
-                      <span className={matchBadgeClass(session.matchStatus)}>
-                        {matchStatusLabel(session.matchStatus, uk)}
-                      </span>
-                    </div>
-                    <div className={styles.denseCardActions}>
-                      <Link className={styles.linkLike} href={`/training/sessions/${session.id}`}>
-                        {uk ? "Деталі" : "Details"}
-                      </Link>
-                      {(session.status === "COMPLETED" || session.status === "CANCELLED") && (
-                        <Link className={styles.linkLike} href={`/training/sessions/${session.id}/edit`}>
-                          {uk ? "Редагувати" : "Edit"}
-                        </Link>
-                      )}
-                      {session.status === "CANCELLED" && (
-                        <button
-                          className={styles.dangerButton}
-                          type="button"
-                          disabled={busySessionId === session.id}
-                          onClick={() => void deleteCancelledSession(session.id)}
-                        >
-                          {busySessionId === session.id
-                            ? (uk ? "Видалення…" : "Deleting…")
-                            : (uk ? "Видалити" : "Delete")}
-                        </button>
-                      )}
-                    </div>
-                  </article>
-                ))}
-              </div>
+            {stepperFormOpen && (
+              <form className={`${styles.exerciseRow} ${styles.stepperForm}`} onSubmit={(event) => void saveStepperWorkout(event)}>
+                <div className={styles.exerciseRowHeader}>
+                  <strong>{editingStepper ? (uk ? "Редагувати запис" : "Edit workout") : (uk ? "Нове тренування" : "New workout")}</strong>
+                  <button className={styles.textButton} type="button" onClick={() => setStepperFormOpen(false)}>
+                    {uk ? "Закрити" : "Close"}
+                  </button>
+                </div>
+                <p className={styles.cardMeta}>
+                  {uk
+                    ? "Дата, час і тривалість обов’язкові. Кроки та активні ккал можна вказати окремо: вони не є спостереженням Apple Health. Якщо вказані ккал, кроки їх не перераховують."
+                    : "Date, time, and duration are required. Steps and active kcal are optional declarations, not Apple Health observations. Entered kcal are not recalculated from steps."}
+                </p>
+                <div className={`${styles.exerciseFields} ${styles.stepperFields}`}>
+                  <label className={styles.field}>
+                    <span>{uk ? "Дата й час · Europe/Bratislava" : "Date and time · Europe/Bratislava"}</span>
+                    <input aria-label={uk ? "Дата й час степера" : "Stepper date and time"} type="datetime-local" required value={stepperStartAt} onChange={(event) => setStepperStartAt(event.target.value)} />
+                  </label>
+                  <label className={styles.field}>
+                    <span>{uk ? "Тривалість · хвилини" : "Duration · minutes"}</span>
+                    <input aria-label={uk ? "Тривалість степера" : "Stepper duration"} type="number" min="1" max="1440" step="1" required value={stepperDuration} onChange={(event) => setStepperDuration(event.target.value)} />
+                  </label>
+                  <label className={styles.field}>
+                    <span>{uk ? "Кроки MS100 · необов’язково" : "MS100 steps · optional"}</span>
+                    <input aria-label={uk ? "Кроки степера" : "Stepper steps"} type="number" min="0" step="1" value={stepperSteps} onChange={(event) => setStepperSteps(event.target.value)} />
+                  </label>
+                  <label className={styles.field}>
+                    <span>{uk ? "Активні ккал · необов’язково" : "Active kcal · optional"}</span>
+                    <input aria-label={uk ? "Активні ккал степера" : "Stepper active kcal"} type="number" min="0" step="1" value={stepperKcal} onChange={(event) => setStepperKcal(event.target.value)} />
+                  </label>
+                </div>
+                <div className={styles.denseCardActions}>
+                  <button className={styles.primaryButton} type="submit" disabled={stepperBusy}>
+                    {stepperBusy ? (uk ? "Збереження…" : "Saving…") : (uk ? "Зберегти" : "Save")}
+                  </button>
+                  {editingStepper && <button className={styles.secondaryButton} type="button" disabled={stepperBusy} onClick={() => void deleteStepperWorkout(editingStepper)}>{uk ? "Видалити" : "Delete"}</button>}
+                </div>
+              </form>
             )}
+          <TrainingStepperList
+            uk={uk}
+            intlLocale={intlLocale}
+            refreshVersion={listsRevision}
+            busy={stepperBusy}
+            reconBusyId={reconBusyId}
+            onEdit={openEditStepperForm}
+            onDelete={(workout) => void deleteStepperWorkout(workout)}
+            onConfirmReconciliation={(workout) => void confirmStepperReconciliation(workout)}
+            onRejectReconciliation={(workout) => void rejectStepperReconciliation(workout)}
+          />
           </div>
         </section>
-
-        {!attentionHasItems && renderAttention()}
         </div>
+
       </div>
     </main>
   );

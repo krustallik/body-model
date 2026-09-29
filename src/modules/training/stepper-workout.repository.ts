@@ -263,17 +263,25 @@ export class StepperWorkoutRepository {
       });
       const linked = await transaction.strengthDiarySession.findFirst({
         where: { matchedWorkoutId: id },
-        select: { id: true, effectiveAccountingAt: true },
+        select: { id: true, effectiveAccountingAt: true, accountingTimeZone: true, webStartedAt: true, createdAt: true },
       });
-      if (linked && linked.effectiveAccountingAt?.getTime() !== startAt.getTime()) {
-        await transaction.strengthDiarySession.update({
-          where: { id: linked.id },
-          data: {
-            effectiveAccountingAt: startAt,
-            accountingInputRevision: { increment: 1 },
-            currentSnapshotRevision: null,
-          },
-        });
+      if (linked) {
+        const previousEffectiveAt = linked.effectiveAccountingAt ?? linked.webStartedAt ?? linked.createdAt;
+        if (previousEffectiveAt.getTime() !== startAt.getTime()) {
+          const timeZone = linked.accountingTimeZone ?? DEFAULT_TIME_ZONE;
+          const previousLocalDate = instantToLocalDateTime(previousEffectiveAt, timeZone).date;
+          const nextLocalDate = instantToLocalDateTime(startAt, timeZone).date;
+          await transaction.strengthDiarySession.update({
+            where: { id: linked.id },
+            data: {
+              effectiveAccountingAt: startAt,
+              ...(previousLocalDate === nextLocalDate ? {} : {
+                accountingInputRevision: { increment: 1 },
+                currentSnapshotRevision: null,
+              }),
+            },
+          });
+        }
       }
       await persistStepperReconciliationV1(transaction, { from: date, to: date });
       const [dto] = await attachReconciliation(transaction, [toDto(updated)]);

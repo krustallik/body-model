@@ -2189,6 +2189,10 @@ export class TrainingRepository {
       });
       const nextEffectiveAt = workout?.startAt ?? session.webStartedAt ?? session.createdAt;
       const previousEffectiveAt = session.effectiveAccountingAt ?? session.webStartedAt ?? session.createdAt;
+      const accountingTimeZone = session.accountingTimeZone ?? DEFAULT_TIME_ZONE;
+      const previousLocalDate = instantToLocalDateTime(previousEffectiveAt, accountingTimeZone).date;
+      const nextLocalDate = instantToLocalDateTime(nextEffectiveAt, accountingTimeZone).date;
+      const accountingDateChanged = previousLocalDate !== nextLocalDate;
       await tx.strengthDiarySession.update({
         where: { id: input.sessionId },
         data: {
@@ -2198,8 +2202,10 @@ export class TrainingRepository {
           matchedAt: input.matchedAt,
           ...(previousEffectiveAt.getTime() === nextEffectiveAt.getTime() ? {} : {
             effectiveAccountingAt: nextEffectiveAt,
-            accountingInputRevision: { increment: 1 },
-            currentSnapshotRevision: null,
+            ...(accountingDateChanged ? {
+              accountingInputRevision: { increment: 1 },
+              currentSnapshotRevision: null,
+            } : {}),
           }),
         },
       });

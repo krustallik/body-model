@@ -116,6 +116,13 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       { id: fixture.sessions.find((row) => row.scenarioId === "golden-push")!.id, rows: STAGE01_PUSH_ROWS_V1, side: "push" as const },
     ];
     const { calculateLoadAccountingV1 } = await import("../../src/modules/training/load-accounting-v1");
+    const { TrainingService } = await import("../../src/modules/training/training.service");
+    const { localDateTimeToInstant } = await import("../../src/model/time-zone");
+    const service = new TrainingService(db);
+    let pullObservationId: number | null = null;
+    const syntheticProgramIds: number[] = [];
+    const syntheticSessionIds: number[] = [];
+    try {
     for (const expectedSession of sessions) {
       const persisted = await db.strengthDiarySession.findUniqueOrThrow({
         where: { id: expectedSession.id },
@@ -175,6 +182,472 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       if (expectedSession.side === "pull") {
         expect(result.bodyweight.referenceVolume.value).toBe(STAGE01_GOLDEN_TOTALS_V1.pullUpReferenceKgReps);
       }
+
+      const exerciseDefinitions = [...new Map(expectedSession.rows.map((row) => [row[1], row])).values()]
+        .sort((left, right) => left[1] - right[1]);
+      const exercisesForProgram = [];
+      for (const row of exerciseDefinitions) {
+        const catalog = await db.exerciseCatalog.findUniqueOrThrow({
+          where: { profileId_stableKey: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID, stableKey: row[0] } },
+          select: { id: true },
+        });
+        const basis = row[6];
+        exercisesForProgram.push({
+          catalogId: catalog.id,
+          plannedSets: expectedSession.rows.filter((candidate) => candidate[1] === row[1]).length,
+          resistanceType: basis === "band-nominal-per-logged-side" ? "RESISTANCE_BAND" as const
+            : basis === "bodyweight-reference-separate" ? "BODYWEIGHT" as const : "EXTERNAL_WEIGHT" as const,
+        });
+      }
+      const program = await service.createProgram({
+        name: `stage02-golden-${expectedSession.side}-${Date.now()}`,
+        exercises: exercisesForProgram,
+      }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      syntheticProgramIds.push(program.id);
+      const synthetic = await service.startSession(program.id, TRAINING_HISTORY_STAGE01_PROFILE_ID, "Europe/Bratislava");
+      syntheticSessionIds.push(synthetic.id);
+      const targetDate = expectedSession.side === "pull" ? "2026-09-24" : "2026-09-25";
+      await service.updateSessionAccountingContext(synthetic.id, {
+        effectiveAccountingAt: localDateTimeToInstant(targetDate, "12:00", "Europe/Bratislava").toISOString(),
+      }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      for (const row of expectedSession.rows) {
+        const exercise = synthetic.exercises[row[1]];
+        if (!exercise) throw new Error(`missing synthetic Stage 01 exercise at sort order ${row[1]}`);
+        await service.createSet(synthetic.id, exercise.id, {
+          setNumber: row[2], reps: row[3], weightKg: row[4], bandNominalResistanceKg: row[5], rir: row[7],
+        }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      }
+      if (expectedSession.side === "pull") {
+        const observed = await db.healthMetricSample.create({
+          data: {
+            date: targetDate,
+            metric: "weight-kg",
+            source: "apple-health-shortcut",
+            timestamp: localDateTimeToInstant(targetDate, "12:00", "Europe/Bratislava"),
+            value: 87,
+          },
+          select: { id: true },
+        });
+        pullObservationId = observed.id;
+      }
+
+      const persistedResult = await service.materializeSessionAccounting(synthetic.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      expect(persistedResult.loadAccountingV1?.externalLoadVolume.value).toBe(expectedSession.side === "pull"
+        ? STAGE01_GOLDEN_TOTALS_V1.pullExternalKgReps : STAGE01_GOLDEN_TOTALS_V1.pushExternalKgReps);
+      expect(persistedResult.loadAccountingV1?.bandNominalIndex.perLoggedSide.value).toBe(expectedSession.side === "pull"
+        ? STAGE01_GOLDEN_TOTALS_V1.pullBandNominalPerLoggedSideKgReps : STAGE01_GOLDEN_TOTALS_V1.pushBandNominalPerLoggedSideKgReps);
+      const persistedSnapshot = await db.strengthSessionAccountingSnapshot.findFirstOrThrow({
+        where: { sessionId: synthetic.id, snapshotRevision: persistedResult.snapshotRevision },
+        select: { payload: true, payloadVersion: true },
+      });
+      expect(persistedSnapshot.payloadVersion).toBe("bodycast-persisted-load-accounting-v1");
+      const payload = persistedSnapshot.payload as {
+        result: typeof persistedResult.loadAccountingV1;
+        massReference: { status: string; valueKg: number | null; source: string | null };
+      };
+      expect(payload.result?.externalLoadVolume.value).toBe(expectedSession.side === "pull"
+        ? STAGE01_GOLDEN_TOTALS_V1.pullExternalKgReps : STAGE01_GOLDEN_TOTALS_V1.pushExternalKgReps);
+      expect(payload.result?.externalLoadVolume.availability).toBe("available");
+      expect(payload.result?.bandNominalIndex.perLoggedSide.value).toBe(expectedSession.side === "pull"
+        ? STAGE01_GOLDEN_TOTALS_V1.pullBandNominalPerLoggedSideKgReps : STAGE01_GOLDEN_TOTALS_V1.pushBandNominalPerLoggedSideKgReps);
+      expect(payload.result?.bandNominalIndex.perLoggedSide.availability).toBe("available");
+      if (expectedSession.side === "pull") {
+        const hyperextensionRows = expectedSession.rows.filter((row) => row[0] === "hyperextension");
+        expect(hyperextensionRows.reduce((total, row) => total + row[3] * row[4]!, 0))
+          .toBe(STAGE01_GOLDEN_TOTALS_V1.hyperextensionKgReps);
+        const hyperextension = await db.strengthSessionExercise.findFirstOrThrow({
+          where: { sessionId: synthetic.id, sourceExerciseCatalog: { stableKey: "hyperextension" } },
+          select: { loadAccountingConfigSnapshot: true },
+        });
+        expect(hyperextension.loadAccountingConfigSnapshot).toMatchObject({
+          repsMeaning: "per-movement",
+          implementsPerMovement: 1,
+          configVersion: "bodycast-historical-load-entry-v1",
+        });
+      }
+      expect(payload.result?.bandNominalIndex.perLoggedSide.value).toBe(expectedSession.side === "pull"
+        ? STAGE01_GOLDEN_TOTALS_V1.pullBandNominalPerLoggedSideKgReps : STAGE01_GOLDEN_TOTALS_V1.pushBandNominalPerLoggedSideKgReps);
+      expect(payload.result?.externalLoadVolume.provenance.some((row) => row.kind === "bodyweight-observation")).toBe(false);
+      if (expectedSession.side === "pull") {
+        expect(payload.massReference).toMatchObject({ status: "observed", valueKg: 87, source: "apple-health-shortcut" });
+        expect(payload.result?.bodyweight.referenceVolume.value).toBe(STAGE01_GOLDEN_TOTALS_V1.pullUpReferenceKgReps);
+        expect(payload.result?.bodyweight.referenceVolume.availability).toBe("available");
+        expect(payload.result?.bodyweight.referenceVolume.provenance).toContainEqual(expect.objectContaining({
+          kind: "bodyweight-observation", version: "apple-health-shortcut", localDate: "2026-09-24",
+        }));
+      }
+      const reread = await service.getSession(synthetic.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      expect(reread?.loadAccountingV1?.externalLoadVolume.value).toBe(payload.result?.externalLoadVolume.value);
+      expect(reread?.loadAccountingV1?.bandNominalIndex.perLoggedSide.value).toBe(payload.result?.bandNominalIndex.perLoggedSide.value);
+      await service.finishSession(synthetic.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+    }
+    } finally {
+      if (syntheticSessionIds.length > 0) await db.strengthDiarySession.deleteMany({ where: { id: { in: syntheticSessionIds } } });
+      if (syntheticProgramIds.length > 0) await db.trainingProgram.deleteMany({ where: { id: { in: syntheticProgramIds } } });
+      if (pullObservationId !== null) await db.healthMetricSample.deleteMany({ where: { id: pullObservationId } });
+    }
+  });
+
+  it("uses explicit refresh for a better observed mass while ordinary materialization stays idempotent", async () => {
+    const db = prisma!;
+    let programId: number | null = null;
+    let sessionId: number | null = null;
+    const sampleIds: number[] = [];
+    try {
+      const { TrainingService } = await import("../../src/modules/training/training.service");
+      const { localDateTimeToInstant } = await import("../../src/model/time-zone");
+      const service = new TrainingService(db);
+      const catalog = await db.exerciseCatalog.findUniqueOrThrow({
+        where: { profileId_stableKey: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID, stableKey: "pull_up" } },
+        select: { id: true },
+      });
+      const program = await service.createProgram({
+        name: `stage02-refresh-${Date.now()}`,
+        exercises: [{ catalogId: catalog.id, plannedSets: 1, resistanceType: "BODYWEIGHT" }],
+      }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      programId = program.id;
+      const session = await service.startSession(program.id, TRAINING_HISTORY_STAGE01_PROFILE_ID, "Europe/Bratislava");
+      sessionId = session.id;
+      const { instantToLocalDateTime } = await import("../../src/model/time-zone");
+      const date = instantToLocalDateTime(new Date(session.webStartedAt!), "Europe/Bratislava").date;
+      await service.createSet(session.id, session.exercises[0]!.id, { reps: 10 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      const firstSample = await db.healthMetricSample.create({
+        data: { date, metric: "weight-kg", source: "apple-health-shortcut", timestamp: localDateTimeToInstant(date, "10:00", "Europe/Bratislava"), value: 80 },
+        select: { id: true },
+      });
+      sampleIds.push(firstSample.id);
+      const first = await service.materializeSessionAccounting(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      expect(first.loadAccountingV1?.bodyweight.reference).toMatchObject({ status: "observed", valueKg: 80 });
+      const secondSample = await db.healthMetricSample.create({
+        data: { date, metric: "weight-kg", source: "apple-health-shortcut", timestamp: localDateTimeToInstant(date, "14:00", "Europe/Bratislava"), value: 82 },
+        select: { id: true },
+      });
+      sampleIds.push(secondSample.id);
+      const ordinary = await service.materializeSessionAccounting(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      expect(ordinary.snapshotRevision).toBe(first.snapshotRevision);
+      expect(ordinary.loadAccountingV1?.bodyweight.reference.valueKg).toBe(80);
+      const refreshed = await service.refreshSessionAccounting(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID, "stage02-refresh-once");
+      expect(refreshed.snapshotRevision).toBeGreaterThan(first.snapshotRevision!);
+      expect(refreshed.loadAccountingV1?.bodyweight.reference).toMatchObject({ status: "observed", valueKg: 82 });
+      const repeatedRefresh = await service.refreshSessionAccounting(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID, "stage02-refresh-once");
+      expect(repeatedRefresh.snapshotRevision).toBe(refreshed.snapshotRevision);
+      const history = await db.strengthSessionAccountingSnapshot.findMany({
+        where: { sessionId: session.id }, orderBy: { snapshotRevision: "asc" }, select: { snapshotRevision: true, payload: true },
+      });
+      expect(history).toHaveLength(2);
+      expect((history[0]!.payload as { massReference: { valueKg: number } }).massReference.valueKg).toBe(80);
+      expect((history[1]!.payload as { massReference: { valueKg: number } }).massReference.valueKg).toBe(82);
+    } finally {
+      if (sessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: sessionId } });
+      if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });
+      if (sampleIds.length > 0) await db.healthMetricSample.deleteMany({ where: { id: { in: sampleIds } } });
+    }
+  });
+
+  it("rejects a deterministic stale candidate and never exposes it as current", async () => {
+    const db = prisma!;
+    let programId: number | null = null;
+    let sessionId: number | null = null;
+    let sampleId: number | null = null;
+    try {
+      const { TrainingService } = await import("../../src/modules/training/training.service");
+      const { TrainingRepository, StaleAccountingCandidateError } = await import("../../src/modules/training/training.repository");
+      const { localDateTimeToInstant } = await import("../../src/model/time-zone");
+      const service = new TrainingService(db);
+      const catalog = await db.exerciseCatalog.findUniqueOrThrow({
+        where: { profileId_stableKey: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID, stableKey: "pull_up" } },
+        select: { id: true },
+      });
+      const program = await service.createProgram({
+        name: `stage02-stale-candidate-${Date.now()}`,
+        exercises: [{ catalogId: catalog.id, plannedSets: 1, resistanceType: "BODYWEIGHT" }],
+      }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      programId = program.id;
+      const session = await service.startSession(program.id, TRAINING_HISTORY_STAGE01_PROFILE_ID, "Europe/Bratislava");
+      sessionId = session.id;
+      const exercise = session.exercises[0]!;
+      const set = await service.createSet(session.id, exercise.id, { reps: 8 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      const { instantToLocalDateTime } = await import("../../src/model/time-zone");
+      const date = instantToLocalDateTime(new Date(), "Europe/Bratislava").date;
+      const sample = await db.healthMetricSample.create({
+        data: { date, metric: "weight-kg", source: "apple-health-shortcut", timestamp: localDateTimeToInstant(date, "12:00", "Europe/Bratislava"), value: 80 },
+        select: { id: true },
+      });
+      sampleId = sample.id;
+      let changed = false;
+      const wrapped = new Proxy(db, {
+        get(target, property, receiver) {
+          const value = Reflect.get(target, property, receiver);
+          if (property !== "healthMetricSample" || !value) return typeof value === "function" ? value.bind(target) : value;
+          return new Proxy(value, {
+            get(model, modelProperty, modelReceiver) {
+              const method = Reflect.get(model, modelProperty, modelReceiver);
+              if (modelProperty !== "findMany") return typeof method === "function" ? method.bind(model) : method;
+              return async (...args: unknown[]) => {
+                if (!changed) {
+                  changed = true;
+                  await service.updateSet(session.id, set.id, { reps: 9 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+                }
+                return method.apply(model, args);
+              };
+            },
+          });
+        },
+      });
+      const staleRepository = new TrainingRepository(wrapped as unknown as typeof db);
+      await expect(staleRepository.materializeAccounting({ sessionId: session.id, profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID }))
+        .rejects.toBeInstanceOf(StaleAccountingCandidateError);
+      expect(changed).toBe(true);
+      expect(await db.strengthSessionAccountingSnapshot.count({ where: { sessionId: session.id } })).toBe(0);
+      const pending = await service.getSession(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      expect(pending?.materializationState).not.toBe("current");
+      const current = await service.materializeSessionAccounting(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      expect(current.loadAccountingV1?.bodyweight.referenceVolume.value).toBe(720);
+      expect(current.exercises[0]?.sets[0]?.reps).toBe(9);
+    } finally {
+      if (sessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: sessionId } });
+      if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });
+      if (sampleId !== null) await db.healthMetricSample.deleteMany({ where: { id: sampleId } });
+    }
+  });
+
+  it("persists the asymmetric 12/10 override as 220 while leaving scalar reps at 12", async () => {
+    const db = prisma!;
+    let programId: number | null = null;
+    let sessionId: number | null = null;
+    try {
+      const { TrainingService } = await import("../../src/modules/training/training.service");
+      const service = new TrainingService(db);
+      const catalog = await db.exerciseCatalog.findUniqueOrThrow({
+        where: { profileId_stableKey: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID, stableKey: "flat_dumbbell_fly" } },
+        select: { id: true },
+      });
+      const program = await service.createProgram({
+        name: `stage02-asymmetric-persisted-${Date.now()}`,
+        exercises: [{ catalogId: catalog.id, plannedSets: 1, resistanceType: "EXTERNAL_WEIGHT" }],
+      }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      programId = program.id;
+      const session = await service.startSession(program.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      sessionId = session.id;
+      const set = await service.createSet(session.id, session.exercises[0]!.id, {
+        reps: 12,
+        weightKg: 10,
+        loadAccountingOverride: { reps: { kind: "asymmetric-per-side", left: 12, right: 10 } },
+      }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      expect(set.reps).toBe(12);
+      const materialized = await service.materializeSessionAccounting(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      expect(materialized.loadAccountingV1?.externalLoadVolume.value).toBe(220);
+      const persisted = await db.strengthSet.findUniqueOrThrow({
+        where: { id: set.id },
+        select: { reps: true, weightKg: true, loadAccountingOverride: true },
+      });
+      expect(persisted).toMatchObject({ reps: 12, loadAccountingOverride: { reps: { kind: "asymmetric-per-side", left: 12, right: 10 } } });
+      expect(persisted.weightKg?.toNumber()).toBe(10);
+      const snapshot = await db.strengthSessionAccountingSnapshot.findFirstOrThrow({
+        where: { sessionId: session.id, snapshotRevision: materialized.snapshotRevision },
+        select: { payload: true },
+      });
+      expect((snapshot.payload as { result: { externalLoadVolume: { value: number } } }).result.externalLoadVolume.value).toBe(220);
+      expect((await service.getSession(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID))?.exercises[0]?.sets[0]?.reps).toBe(12);
+    } finally {
+      if (sessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: sessionId } });
+      if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });
+    }
+  });
+
+  it("keeps ordinary GET read-only and finalizes expired sessions idempotently", async () => {
+    const db = prisma!;
+    let programId: number | null = null;
+    let ordinarySessionId: number | null = null;
+    let expiredSessionId: number | null = null;
+    try {
+      const { TrainingService } = await import("../../src/modules/training/training.service");
+      const service = new TrainingService(db);
+      const catalog = await db.exerciseCatalog.findUniqueOrThrow({
+        where: { profileId_stableKey: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID, stableKey: "incline_dumbbell_press_30deg" } },
+        select: { id: true },
+      });
+      const program = await service.createProgram({
+        name: `stage02-get-${Date.now()}`,
+        exercises: [{ catalogId: catalog.id, plannedSets: 1, resistanceType: "EXTERNAL_WEIGHT" }],
+      }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      programId = program.id;
+      const ordinary = await service.startSession(program.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      ordinarySessionId = ordinary.id;
+      await service.createSet(ordinary.id, ordinary.exercises[0]!.id, { reps: 8, weightKg: 10 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      await service.materializeSessionAccounting(ordinary.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      const before = await db.strengthDiarySession.findUniqueOrThrow({ where: { id: ordinary.id }, select: { accountingInputRevision: true, currentSnapshotRevision: true } });
+      const [snapshotCount, operationCount] = await Promise.all([
+        db.strengthSessionAccountingSnapshot.count({ where: { sessionId: ordinary.id } }),
+        db.strengthSessionAccountingOperation.count({ where: { sessionId: ordinary.id } }),
+      ]);
+      await Promise.all([service.getSession(ordinary.id, TRAINING_HISTORY_STAGE01_PROFILE_ID), service.getSession(ordinary.id, TRAINING_HISTORY_STAGE01_PROFILE_ID)]);
+      const after = await db.strengthDiarySession.findUniqueOrThrow({ where: { id: ordinary.id }, select: { accountingInputRevision: true, currentSnapshotRevision: true } });
+      expect(after).toEqual(before);
+      expect(await db.strengthSessionAccountingSnapshot.count({ where: { sessionId: ordinary.id } })).toBe(snapshotCount);
+      expect(await db.strengthSessionAccountingOperation.count({ where: { sessionId: ordinary.id } })).toBe(operationCount);
+      await service.finishSession(ordinary.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+
+      const expired = await service.startSession(program.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      expiredSessionId = expired.id;
+      const lastSetAt = new Date(Date.now() - 31 * 60_000);
+      await service.createSet(expired.id, expired.exercises[0]!.id, {
+        reps: 12, weightKg: 10, completedAt: lastSetAt.toISOString(),
+      }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      const [one, two] = await Promise.all([
+        service.getSession(expired.id, TRAINING_HISTORY_STAGE01_PROFILE_ID),
+        service.getSession(expired.id, TRAINING_HISTORY_STAGE01_PROFILE_ID),
+      ]);
+      expect(one?.status).toBe("COMPLETED");
+      expect(two?.status).toBe("COMPLETED");
+      expect(one?.webEndedAt).toBe(lastSetAt.toISOString());
+      expect(two?.webEndedAt).toBe(one?.webEndedAt);
+      expect(one?.loadAccountingV1?.externalLoadVolume.value).toBe(240);
+      expect(await db.strengthSessionAccountingSnapshot.count({ where: { sessionId: expired.id } })).toBe(1);
+      expect(await db.strengthSessionAccountingOperation.count({ where: { sessionId: expired.id, idempotencyKey: { startsWith: `inactivity-finalize:${expired.id}:` } } })).toBe(1);
+      const revision = await db.strengthDiarySession.findUniqueOrThrow({ where: { id: expired.id }, select: { currentSnapshotRevision: true } });
+      const repeated = await service.getSession(expired.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      expect(repeated?.loadAccountingV1?.externalLoadVolume.value).toBe(240);
+      expect((await db.strengthDiarySession.findUniqueOrThrow({ where: { id: expired.id }, select: { currentSnapshotRevision: true } })).currentSnapshotRevision)
+        .toBe(revision.currentSnapshotRevision);
+    } finally {
+      if (ordinarySessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: ordinarySessionId } });
+      if (expiredSessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: expiredSessionId } });
+      if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });
+    }
+  });
+
+  it("finishes with unavailable bodyweight mass while preserving external metrics", async () => {
+    const db = prisma!;
+    let programId: number | null = null;
+    let sessionId: number | null = null;
+    try {
+      const { TrainingService } = await import("../../src/modules/training/training.service");
+      const service = new TrainingService(db);
+      const catalogs = await Promise.all(["pull_up", "incline_dumbbell_press_30deg"].map((stableKey) =>
+        db.exerciseCatalog.findUniqueOrThrow({ where: { profileId_stableKey: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID, stableKey } }, select: { id: true } })));
+      const program = await service.createProgram({
+        name: `stage02-unavailable-finish-${Date.now()}`,
+        exercises: [
+          { catalogId: catalogs[0]!.id, plannedSets: 1, resistanceType: "BODYWEIGHT" },
+          { catalogId: catalogs[1]!.id, plannedSets: 1, resistanceType: "EXTERNAL_WEIGHT" },
+        ],
+      }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      programId = program.id;
+      const session = await service.startSession(program.id, TRAINING_HISTORY_STAGE01_PROFILE_ID, "Europe/Bratislava");
+      sessionId = session.id;
+      await service.updateSessionAccountingContext(session.id, { effectiveAccountingAt: "2010-04-15T10:00:00.000Z" }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      await service.createSet(session.id, session.exercises[0]!.id, { reps: 10 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      await service.createSet(session.id, session.exercises[1]!.id, { reps: 8, weightKg: 20 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      const finished = await service.finishSession(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      expect(finished.status).toBe("COMPLETED");
+      expect(finished.loadAccountingV1?.bodyweight.reference).toMatchObject({ status: "unavailable", valueKg: null });
+      expect(finished.loadAccountingV1?.bodyweight.referenceVolume).toMatchObject({ value: null, availability: "unavailable" });
+      expect(finished.loadAccountingV1?.externalLoadVolume).toMatchObject({ value: 320, availability: "available" });
+      const reloaded = await service.getSession(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      expect(reloaded?.status).toBe("COMPLETED");
+      expect(reloaded?.loadAccountingV1?.bodyweight.reference.valueKg).toBeNull();
+      expect(reloaded?.loadAccountingV1?.externalLoadVolume.value).toBe(320);
+    } finally {
+      if (sessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: sessionId } });
+      if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });
+    }
+  });
+
+  it("keeps same-local-date matching stable and invalidates when manual match changes the accounting date", async () => {
+    const db = prisma!;
+    let programId: number | null = null;
+    const sessionIds: number[] = [];
+    const dates = ["2045-01-01", "2045-01-02", "2045-01-03"];
+    try {
+      const { TrainingService } = await import("../../src/modules/training/training.service");
+      const { PrismaHealthSyncRepository } = await import("../../src/modules/health/health.repository");
+      const service = new TrainingService(db);
+      const sync = new PrismaHealthSyncRepository(db);
+      const syncWorkout = async (date: string, startAt: string, externalId: string, durationMinutes = 30) => {
+        const day = { date, workouts: [{ externalId, type: "Traditional Strength Training", startAt, endAt: new Date(Date.parse(startAt) + durationMinutes * 60_000).toISOString() }] };
+        await sync.syncDay(day, day, { timezone: "UTC", receivedAt: new Date(), syncedAt: null });
+        return db.workout.findFirstOrThrow({ where: { externalId }, select: { id: true, startAt: true } });
+      };
+      const firstWorkout = await syncWorkout(dates[0]!, "2045-01-01T10:00:00.000Z", "stage02-refreshable-linked-workout");
+      const nextDayWorkout = await syncWorkout(dates[1]!, "2045-01-02T10:00:00.000Z", "stage02-nextday-linked-workout");
+      const catalog = await db.exerciseCatalog.findUniqueOrThrow({
+        where: { profileId_stableKey: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID, stableKey: "incline_dumbbell_press_30deg" } },
+        select: { id: true },
+      });
+      const program = await service.createProgram({
+        name: `stage02-match-invalidation-${Date.now()}`,
+        exercises: [{ catalogId: catalog.id, plannedSets: 1, resistanceType: "EXTERNAL_WEIGHT" }],
+      }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      programId = program.id;
+
+      const sameDate = await service.startSession(program.id, TRAINING_HISTORY_STAGE01_PROFILE_ID, "Pacific/Auckland");
+      sessionIds.push(sameDate.id);
+      await service.updateSessionAccountingContext(sameDate.id, { effectiveAccountingAt: "2045-01-01T09:00:00.000Z" }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      await service.createSet(sameDate.id, sameDate.exercises[0]!.id, { reps: 8, weightKg: 10 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      await service.finishSession(sameDate.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      const beforeMatch = await db.strengthDiarySession.findUniqueOrThrow({ where: { id: sameDate.id }, select: { accountingInputRevision: true, currentSnapshotRevision: true } });
+      const matched = await service.manualMatch(sameDate.id, { workoutId: firstWorkout.id }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      expect(matched.effectiveAccountingAt).toBe(firstWorkout.startAt.toISOString());
+      const afterSameDateMatch = await db.strengthDiarySession.findUniqueOrThrow({ where: { id: sameDate.id }, select: { accountingInputRevision: true, currentSnapshotRevision: true } });
+      expect(afterSameDateMatch.accountingInputRevision).toBe(beforeMatch.accountingInputRevision);
+      expect(afterSameDateMatch.currentSnapshotRevision).toBe(beforeMatch.currentSnapshotRevision);
+      expect(await db.strengthSessionAccountingSnapshot.count({ where: { sessionId: sameDate.id } })).toBe(1);
+
+      await syncWorkout(dates[0]!, "2045-01-01T23:00:00.000Z", "stage02-refreshable-linked-workout");
+      const afterHealthCorrection = await db.strengthDiarySession.findUniqueOrThrow({ where: { id: sameDate.id }, select: { effectiveAccountingAt: true, accountingInputRevision: true, currentSnapshotRevision: true } });
+      expect(afterHealthCorrection.effectiveAccountingAt?.toISOString()).toBe("2045-01-01T23:00:00.000Z");
+      expect(afterHealthCorrection.accountingInputRevision).toBe(beforeMatch.accountingInputRevision + 1);
+      expect(afterHealthCorrection.currentSnapshotRevision).toBeNull();
+      const correctedSnapshot = await service.materializeSessionAccounting(sameDate.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      expect(await db.strengthSessionAccountingSnapshot.count({ where: { sessionId: sameDate.id } })).toBe(2);
+      expect((await db.strengthSessionAccountingSnapshot.findFirstOrThrow({ where: { sessionId: sameDate.id, snapshotRevision: correctedSnapshot.snapshotRevision }, select: { effectiveLocalDate: true } })).effectiveLocalDate)
+        .toBe("2045-01-02");
+
+      const changedDate = await service.startSession(program.id, TRAINING_HISTORY_STAGE01_PROFILE_ID, "UTC");
+      sessionIds.push(changedDate.id);
+      await service.updateSessionAccountingContext(changedDate.id, { effectiveAccountingAt: "2045-01-01T09:00:00.000Z" }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      await service.createSet(changedDate.id, changedDate.exercises[0]!.id, { reps: 8, weightKg: 10 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      await service.finishSession(changedDate.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      const beforeLateMatch = await db.strengthDiarySession.findUniqueOrThrow({ where: { id: changedDate.id }, select: { accountingInputRevision: true, currentSnapshotRevision: true } });
+      const lateMatched = await service.manualMatch(changedDate.id, { workoutId: nextDayWorkout.id }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      expect(lateMatched.effectiveAccountingAt).toBe(nextDayWorkout.startAt.toISOString());
+      const afterLateMatch = await db.strengthDiarySession.findUniqueOrThrow({ where: { id: changedDate.id }, select: { accountingInputRevision: true, currentSnapshotRevision: true } });
+      expect(afterLateMatch.accountingInputRevision).toBe(beforeLateMatch.accountingInputRevision + 1);
+      expect(await db.strengthSessionAccountingSnapshot.count({ where: { sessionId: changedDate.id } })).toBe(2);
+      const unmatched = await service.manualMatch(changedDate.id, { workoutId: null }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      expect(unmatched.matchedWorkoutId).toBeNull();
+      expect(await db.strengthSessionAccountingSnapshot.count({ where: { sessionId: changedDate.id } })).toBe(3);
+
+      const lateAuto = await service.startSession(program.id, TRAINING_HISTORY_STAGE01_PROFILE_ID, "UTC");
+      sessionIds.push(lateAuto.id);
+      await service.updateSessionAccountingContext(lateAuto.id, { effectiveAccountingAt: "2045-01-02T23:30:00.000Z" }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      await service.createSet(lateAuto.id, lateAuto.exercises[0]!.id, { reps: 8, weightKg: 10 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      await service.finishSession(lateAuto.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      const beforeAutoMatch = await db.strengthDiarySession.findUniqueOrThrow({ where: { id: lateAuto.id }, select: { accountingInputRevision: true } });
+      await db.strengthDiarySession.update({
+        where: { id: lateAuto.id },
+        data: { webStartedAt: new Date("2045-01-02T23:30:00.000Z"), webEndedAt: new Date("2045-01-03T01:00:00.000Z") },
+      });
+      const lateWorkout = await syncWorkout(dates[2]!, "2045-01-03T00:00:00.000Z", "stage02-late-auto-match", 60);
+      await service.afterHealthSyncMatch(dates[2]!, { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID, timezone: "UTC" });
+      const autoMatched = await db.strengthDiarySession.findUniqueOrThrow({
+        where: { id: lateAuto.id },
+        select: { matchedWorkoutId: true, effectiveAccountingAt: true, currentSnapshotRevision: true, accountingInputRevision: true },
+      });
+      expect(autoMatched.matchedWorkoutId).toBe(lateWorkout.id);
+      expect(autoMatched.effectiveAccountingAt?.toISOString()).toBe("2045-01-03T00:00:00.000Z");
+      expect(autoMatched.accountingInputRevision).toBe(beforeAutoMatch.accountingInputRevision + 1);
+      expect(autoMatched.currentSnapshotRevision).toBeNull();
+      const rematerialized = await service.materializeSessionAccounting(lateAuto.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      expect(rematerialized.effectiveAccountingAt).toBe("2045-01-03T00:00:00.000Z");
+      expect(await db.strengthSessionAccountingSnapshot.count({ where: { sessionId: lateAuto.id } })).toBe(2);
+    } finally {
+      if (sessionIds.length > 0) await db.strengthDiarySession.deleteMany({ where: { id: { in: sessionIds } } });
+      if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });
+      await db.healthSyncSnapshot.deleteMany({ where: { date: { in: dates } } });
+      await db.workout.deleteMany({ where: { dailyHealthData: { date: { in: dates } } } });
+      await db.dailyHealthData.deleteMany({ where: { date: { in: dates } } });
     }
   });
 

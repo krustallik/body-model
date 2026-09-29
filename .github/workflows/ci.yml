@@ -79,6 +79,8 @@ jobs:
         run: npm run prisma:migrate:deploy
 
       - name: PostgreSQL integration tests
+        env:
+          BODYCAST_STAGE01_MODE: test
         run: npm run test:integration
 
       - name: Next.js production build

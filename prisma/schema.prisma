@@ -85,6 +85,8 @@ model HealthMetricSample {
   dailyHealthDataId Int?
   date              String          @db.VarChar(10)
   metric            String          @db.VarChar(64)
+  /** Set only by the authenticated Apple Shortcut range ingestion; old rows remain unproven. */
+  source            String?         @db.VarChar(40)
   timestamp         DateTime        @db.Timestamptz(3)
   value             Decimal         @db.Decimal(18, 10)
   createdAt         DateTime        @default(now()) @db.Timestamptz(3)
@@ -291,6 +293,7 @@ model ExerciseCatalog {
    * Portable immutable identity for supported model mappings; null for custom rows.
    */
   stableKey        String?                   @db.VarChar(80)
+  currentLoadAccountingConfigId Int? @unique
   isActive         Boolean                   @default(true)
   archivedAt       DateTime?                 @db.Timestamptz(3)
   /**
@@ -302,10 +305,26 @@ model ExerciseCatalog {
   updatedAt        DateTime                  @updatedAt @db.Timestamptz(3)
   programExercises ProgramExercise[]
   sessionExercises StrengthSessionExercise[]
+  loadAccountingConfigurations ExerciseLoadConfiguration[] @relation("CatalogLoadConfigurations")
+  currentLoadAccountingConfig ExerciseLoadConfiguration? @relation("CurrentCatalogLoadConfiguration", fields: [currentLoadAccountingConfigId], references: [id], onDelete: SetNull)
 
   @@unique([profileId, name])
   @@unique([profileId, stableKey])
   @@index([profileId, isActive])
+}
+
+/** Append-only, explicitly versioned exercise load configuration. */
+model ExerciseLoadConfiguration {
+  id                Int             @id @default(autoincrement())
+  exerciseCatalogId Int
+  configVersion     String          @db.VarChar(80)
+  configuration     Json
+  createdAt         DateTime        @default(now()) @db.Timestamptz(3)
+  exerciseCatalog   ExerciseCatalog @relation("CatalogLoadConfigurations", fields: [exerciseCatalogId], references: [id], onDelete: Cascade)
+  currentFor        ExerciseCatalog? @relation("CurrentCatalogLoadConfiguration")
+
+  @@unique([exerciseCatalogId, configVersion])
+  @@index([exerciseCatalogId, createdAt])
 }
 
 model TrainingProgram {
@@ -347,6 +366,8 @@ model ProgramExercise {
    * EXTERNAL_WEIGHT | RESISTANCE_BAND | BODYWEIGHT
    */
   resistanceType    String                 @db.VarChar(32)
+  /** Immutable validated accounting config copied when this program version is created. */
+  loadAccountingConfigSnapshot Json?
   createdAt         DateTime               @default(now()) @db.Timestamptz(3)
   updatedAt         DateTime               @updatedAt @db.Timestamptz(3)
   programVersion    TrainingProgramVersion @relation(fields: [programVersionId], references: [id], onDelete: Cascade)
@@ -447,6 +468,8 @@ model StrengthSessionExercise {
    * Snapshot of future muscle-mapping reference; coefficients deferred.
    */
   muscleMappingSnapshot   Json?
+  /** Immutable Stage 02 load interpretation for this session exercise. */
+  loadAccountingConfigSnapshot Json?
   createdAt               DateTime             @default(now()) @db.Timestamptz(3)
   updatedAt               DateTime             @updatedAt @db.Timestamptz(3)
   session                 StrengthDiarySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
@@ -474,6 +497,8 @@ model StrengthSet {
    * Optional short note for this set (form feel, band used, etc.).
    */
   comment                 String?                 @db.VarChar(280)
+  /** Optional, strictly versioned per-set execution deviations. */
+  loadAccountingOverride  Json?
   completedAt             DateTime?               @db.Timestamptz(3)
   createdAt               DateTime                @default(now()) @db.Timestamptz(3)
   updatedAt               DateTime                @updatedAt @db.Timestamptz(3)

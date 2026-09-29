@@ -1,5 +1,9 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { ModelEpisodeRepository } from "@/modules/model-episodes/model-episode.repository";
+import { calculateHistoricalBodyweightAsOfV1, MAX_HISTORICAL_BODYWEIGHT_REPLAY_DAYS_V1 } from "@/modules/model-episodes/historical-bodyweight-asof-v1";
+import { calendarDayIndex } from "@/modules/model-episodes/model-calendar";
+import { DEFAULT_TIME_ZONE, localDateTimeToInstant } from "@/model/time-zone";
 import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
 import { TRADITIONAL_STRENGTH_TRAINING_TYPE } from "@/modules/health/expand-training-workouts";
 import { EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION } from "./experimental-strength-active-energy-v1";
@@ -16,6 +20,7 @@ import {
   EXERCISE_ORIGIN,
   MATCH_METHOD,
   MATCH_STATUS,
+  RESISTANCE,
   SESSION_STATUS,
   TRAINING_LIMITS,
   type DiaryCompleteness,
@@ -29,6 +34,8 @@ import {
 import type { ProgramReconcilePlan } from "./training.program-reconcile";
 import { ordinaryExternalWeightTonnageKg } from "./training.tonnage";
 import { historicalExerciseStableKey } from "./exercise-mapping-snapshot";
+import { calculateLoadAccountingV1, LEGACY_LOAD_INTERPRETATION_V1, classifyPersistedExerciseIdentityV1, loadConfigV1Schema, type BodyweightReferenceV1, type IdentityStatusV1 } from "./load-accounting-v1";
+import { resolveBodyweightReferenceV1 } from "./bodyweight-reference-v1";
 import { sessionPlanCompletion } from "./session-plan-completion";
 import { evaluateSessionInactivity } from "./session-inactivity";
 import type {
@@ -54,6 +61,7 @@ const catalogSelect = {
   isActive: true,
   archivedAt: true,
   muscleMapping: true,
+  currentLoadAccountingConfig: { select: { configVersion: true, configuration: true } },
 } satisfies Prisma.ExerciseCatalogSelect;
 
 const programExerciseSelect = {
@@ -62,6 +70,7 @@ const programExerciseSelect = {
   sortOrder: true,
   plannedSets: true,
   resistanceType: true,
+  loadAccountingConfigSnapshot: true,
   exerciseCatalog: { select: { id: true, name: true } },
 } satisfies Prisma.ProgramExerciseSelect;
 
@@ -77,6 +86,7 @@ const setSelect = {
   completedAt: true,
   createdAt: true,
   updatedAt: true,
+  loadAccountingOverride: true,
 } satisfies Prisma.StrengthSetSelect;
 
 const sessionExerciseSelect = {
@@ -88,6 +98,7 @@ const sessionExerciseSelect = {
   resistanceType: true,
   origin: true,
   muscleMappingSnapshot: true,
+  loadAccountingConfigSnapshot: true,
   sourceExerciseCatalog: { select: { stableKey: true } },
   sets: { select: setSelect, orderBy: { setNumber: "asc" as const } },
 } satisfies Prisma.StrengthSessionExerciseSelect;
@@ -176,6 +187,7 @@ function toCatalogDto(record: CatalogRecord): ExerciseCatalogDto {
     isActive: record.isActive,
     archivedAt: record.archivedAt?.toISOString() ?? null,
     muscleMapping: record.muscleMapping ?? null,
+    loadAccountingConfig: record.currentLoadAccountingConfig?.configuration ?? null,
   };
 }
 
@@ -187,6 +199,7 @@ function toProgramExerciseDto(record: ProgramExerciseRecord): ProgramExerciseDto
     order: record.sortOrder,
     plannedSets: record.plannedSets,
     resistanceType: record.resistanceType as ResistanceType,
+    loadAccountingConfigSnapshot: record.loadAccountingConfigSnapshot ?? null,
   };
 }
 
@@ -203,6 +216,7 @@ function toSetDto(record: SetRecord): StrengthSetDto {
     completedAt: record.completedAt?.toISOString() ?? null,
     createdAt: record.createdAt.toISOString(),
     updatedAt: record.updatedAt.toISOString(),
+    loadAccountingOverride: record.loadAccountingOverride ?? null,
   };
 }
 
@@ -217,6 +231,7 @@ function toSessionExerciseDto(record: SessionExerciseRecord): StrengthSessionExe
     resistanceType: record.resistanceType as ResistanceType,
     origin: asExerciseOrigin(record.origin),
     muscleMappingSnapshot: record.muscleMappingSnapshot ?? null,
+    loadAccountingConfigSnapshot: record.loadAccountingConfigSnapshot ?? null,
     sets: record.sets.map(toSetDto),
   };
 }
@@ -322,12 +337,165 @@ function toMatchedWorkoutDto(record: MatchedWorkoutRecord | null): MatchedWorkou
   };
 }
 
+function nextLocalDate(date: string): string {
+  const day = new Date(`${date}T00:00:00.000Z`);
+  day.setUTCDate(day.getUTCDate() + 1);
+  return day.toISOString().slice(0, 10);
+}
+
+async function resolveSessionBodyweightReference(
+  db: PrismaClient,
+  record: SessionDetailRecord,
+  localDate: string,
+): Promise<BodyweightReferenceV1> {
+  const unavailable: BodyweightReferenceV1 = {
+    status: "unavailable", valueKg: null, localDate, source: null, sourceId: null,
+  };
+  if (!record.exercises.some((exercise) => (
+    exercise.resistanceType === RESISTANCE.BODYWEIGHT && exercise.sets.length > 0
+  ))) return unavailable;
+  const dataClient = db as unknown as {
+    healthMetricSample?: {
+      findMany?: (args: unknown) => Promise<Array<{
+        id: number;
+        timestamp: Date;
+        value: { toNumber(): number };
+        source: string | null;
+      }>>;
+    };
+  };
+  const findSamples = dataClient.healthMetricSample?.findMany;
+  if (typeof findSamples !== "function") return unavailable;
+  const start = localDateTimeToInstant(localDate, "00:00", DEFAULT_TIME_ZONE);
+  const end = localDateTimeToInstant(nextLocalDate(localDate), "00:00", DEFAULT_TIME_ZONE);
+  let observedSamples;
+  try {
+    const samples = await findSamples.call(dataClient.healthMetricSample, {
+      where: {
+        metric: "weight-kg",
+        source: "apple-health-shortcut",
+        timestamp: { gte: start, lt: end },
+      },
+      orderBy: [{ timestamp: "desc" }, { id: "desc" }],
+      select: { id: true, timestamp: true, value: true, source: true },
+    });
+    observedSamples = samples.map((sample) => ({
+      id: String(sample.id),
+      timestamp: sample.timestamp,
+      valueKg: sample.value.toNumber(),
+      source: sample.source,
+    }));
+  } catch {
+    return unavailable;
+  }
+
+  const observedReference = resolveBodyweightReferenceV1({
+    localDate,
+    timeZone: DEFAULT_TIME_ZONE,
+    observedSamples,
+  });
+  if (observedReference.status === "observed") return observedReference;
+
+  let modelEstimate = null;
+  try {
+    const episodes = new ModelEpisodeRepository(db);
+    const episode = await episodes.getAsOf(localDate);
+    if (episode && calendarDayIndex(localDate) - calendarDayIndex(episode.startDate) + 1
+        <= MAX_HISTORICAL_BODYWEIGHT_REPLAY_DAYS_V1) {
+      const sources = await episodes.loadSources(episode.startDate, localDate);
+      const estimate = calculateHistoricalBodyweightAsOfV1({ episode, sources, localDate });
+      if (estimate.status === "available" && estimate.valueKg !== null) {
+        modelEstimate = {
+          localDate: estimate.localDate,
+          valueKg: estimate.valueKg,
+          episodeId: estimate.episodeId,
+          modelVersion: estimate.modelVersion,
+          uncertainty: estimate.uncertainty,
+        };
+      }
+    }
+  } catch {
+    // Historical fallback is optional; fail closed while preserving observed inputs.
+  }
+
+  return resolveBodyweightReferenceV1({
+    localDate,
+    timeZone: DEFAULT_TIME_ZONE,
+    observedSamples,
+    modelEstimate,
+  });
+}
+
+function calculateSessionLoadAccounting(
+  record: SessionDetailRecord,
+  localDate: string,
+  bodyweightReference: BodyweightReferenceV1,
+) {
+  return calculateLoadAccountingV1({
+    localDate,
+    bodyweightReference,
+    exercises: record.exercises.map((exercise) => {
+      const stableKey = historicalExerciseStableKey(
+        exercise.muscleMappingSnapshot,
+        exercise.sourceExerciseCatalog?.stableKey,
+      );
+      const identityClass = classifyPersistedExerciseIdentityV1({
+        sourceExerciseCatalogId: exercise.sourceExerciseCatalogId,
+        snapshotStableKey: exercise.muscleMappingSnapshot ? stableKey : null,
+        catalogStableKey: exercise.sourceExerciseCatalog?.stableKey ?? null,
+      });
+      const identity: IdentityStatusV1 = identityClass === "canonical"
+        ? "canonical-snapshot"
+        : identityClass === "legacy" ? "known-legacy"
+          : identityClass === "custom" ? "custom" : "ambiguous";
+      const config = exercise.loadAccountingConfigSnapshot;
+      const configParsed = config == null ? null : loadConfigV1Schema.safeParse(config);
+      const configValue = configParsed?.success ? configParsed.data : config;
+      const provenance = configParsed?.success
+        ? {
+          kind: configParsed.data.configVersion === LEGACY_LOAD_INTERPRETATION_V1
+            ? "legacy-interpretation" as const : "session-snapshot" as const,
+          version: configParsed.data.configVersion,
+          stableKey: stableKey ?? undefined,
+        }
+        : undefined;
+      return {
+        identity: { status: identity, stableKey },
+        resistanceHint: exercise.resistanceType === "RESISTANCE_BAND" ? "band-nominal" as const
+          : exercise.resistanceType === "BODYWEIGHT" ? "bodyweight" as const
+            : "external" as const,
+        configSnapshot: configValue,
+        configProvenance: provenance,
+        sets: exercise.sets.map((set) => ({
+          reps: set.reps,
+          weightKg: decimalToNumber(set.weightKg),
+          bandNominalResistanceKg: decimalToNumber(set.bandNominalResistanceKg),
+          override: set.loadAccountingOverride,
+        })),
+      };
+    }),
+  });
+}
+
 export function toSessionDto(
   record: SessionDetailRecord,
   massContext: { sameDayMassKg: number | null; startOfDayMassKg: number | null } = {
     sameDayMassKg: null,
     startOfDayMassKg: null,
   },
+  loadAccountingV1 = calculateSessionLoadAccounting(
+    record,
+    strengthWorkoutAsOfDateV1({
+      matchedWorkoutStartAt: record.matchedWorkout?.startAt.toISOString() ?? null,
+      webStartedAt: record.webStartedAt?.toISOString() ?? null,
+      createdAt: record.createdAt.toISOString(),
+    }),
+    { status: "unavailable", valueKg: null, localDate: strengthWorkoutAsOfDateV1({
+      matchedWorkoutStartAt: record.matchedWorkout?.startAt.toISOString() ?? null,
+      webStartedAt: record.webStartedAt?.toISOString() ?? null,
+      createdAt: record.createdAt.toISOString(),
+    }), source: null, sourceId: null },
+  ),
 ): StrengthSessionDto {
   const exercises = record.exercises.map(toSessionExerciseDto);
   const tonnageSets = exercises.flatMap((exercise) =>
@@ -357,6 +525,7 @@ export function toSessionDto(
     matchedWorkout: toMatchedWorkoutDto(record.matchedWorkout),
     exercises,
     ordinaryTonnageKg: ordinaryExternalWeightTonnageKg(tonnageSets),
+    loadAccountingV1,
     autoAdvanceExercises: record.profile?.autoAdvanceExercises ?? false,
     ...planCompletionFields(exercises),
     createdAt: record.createdAt.toISOString(),
@@ -377,7 +546,13 @@ async function toSessionDtoWithHistoricalMass(
   record: SessionDetailRecord,
 ): Promise<StrengthSessionDto> {
   const massContext = await loadHistoricalMassContext(db, record);
-  return toSessionDto(record, massContext);
+  const localDate = strengthWorkoutAsOfDateV1({
+    matchedWorkoutStartAt: record.matchedWorkout?.startAt.toISOString() ?? null,
+    webStartedAt: record.webStartedAt?.toISOString() ?? null,
+    createdAt: record.createdAt.toISOString(),
+  });
+  const bodyweight = await resolveSessionBodyweightReference(db, record, localDate);
+  return toSessionDto(record, massContext, calculateSessionLoadAccounting(record, localDate, bodyweight));
 }
 
 function planCompletionFields(
@@ -451,6 +626,10 @@ function jsonInput(value: unknown): Prisma.InputJsonValue | typeof Prisma.JsonNu
   return value as Prisma.InputJsonValue;
 }
 
+function nullableJsonInput(value: Prisma.InputJsonValue | null): Prisma.InputJsonValue | typeof Prisma.DbNull {
+  return value === null ? Prisma.DbNull : value;
+}
+
 /**
  * Park rows on negative sortOrder before writing final positions so the
  * (sessionId, sortOrder) unique index cannot collide mid-reorder.
@@ -489,6 +668,7 @@ export type OrderedProgramExerciseWrite = {
   sortOrder: number;
   plannedSets: number;
   resistanceType: ResistanceType;
+  loadAccountingConfigSnapshot: Prisma.InputJsonValue | null;
 };
 
 export class TrainingRepository {
@@ -563,7 +743,46 @@ export class TrainingRepository {
   async findCatalogByIds(ids: number[], profileId = DEFAULT_TRAINING_PROFILE_ID) {
     return this.db.exerciseCatalog.findMany({
       where: { profileId, id: { in: ids } },
-      select: { id: true, name: true, stableKey: true, isActive: true, muscleMapping: true },
+      select: {
+        id: true, name: true, stableKey: true, isActive: true, muscleMapping: true,
+        currentLoadAccountingConfig: { select: { configVersion: true, configuration: true } },
+      },
+    });
+  }
+
+  async setCatalogLoadAccountingConfig(input: {
+    catalogId: number;
+    profileId?: number;
+    config: Prisma.InputJsonValue | null;
+    configVersion?: string;
+  }): Promise<boolean> {
+    const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+    return this.db.$transaction(async (tx) => {
+      const catalog = await tx.exerciseCatalog.findFirst({
+        where: { id: input.catalogId, profileId },
+        select: { id: true },
+      });
+      if (!catalog) return false;
+      if (input.config === null || input.configVersion === undefined) {
+        await tx.exerciseCatalog.update({
+          where: { id: catalog.id },
+          data: { currentLoadAccountingConfigId: null },
+        });
+        return true;
+      }
+      const version = await tx.exerciseLoadConfiguration.create({
+        data: {
+          exerciseCatalogId: catalog.id,
+          configVersion: input.configVersion,
+          configuration: input.config,
+        },
+        select: { id: true },
+      });
+      await tx.exerciseCatalog.update({
+        where: { id: catalog.id },
+        data: { currentLoadAccountingConfigId: version.id },
+      });
+      return true;
     });
   }
 
@@ -668,6 +887,7 @@ export class TrainingRepository {
               sortOrder: exercise.sortOrder,
               plannedSets: exercise.plannedSets,
               resistanceType: exercise.resistanceType,
+              loadAccountingConfigSnapshot: nullableJsonInput(exercise.loadAccountingConfigSnapshot),
             })),
           },
         },
@@ -709,6 +929,7 @@ export class TrainingRepository {
                   sortOrder: true,
                   plannedSets: true,
                   resistanceType: true,
+                  loadAccountingConfigSnapshot: true,
                 },
                 orderBy: { sortOrder: "asc" },
               },
@@ -726,6 +947,7 @@ export class TrainingRepository {
           sortOrder: exercise.sortOrder,
           plannedSets: exercise.plannedSets,
           resistanceType: exercise.resistanceType as ResistanceType,
+          loadAccountingConfigSnapshot: exercise.loadAccountingConfigSnapshot as Prisma.InputJsonValue | null,
         }));
 
       const nextVersionNumber = (existing.currentVersion?.versionNumber ?? 0) + 1;
@@ -739,6 +961,7 @@ export class TrainingRepository {
               sortOrder: exercise.sortOrder,
               plannedSets: exercise.plannedSets,
               resistanceType: exercise.resistanceType,
+              loadAccountingConfigSnapshot: nullableJsonInput(exercise.loadAccountingConfigSnapshot),
             })),
           },
         },
@@ -840,6 +1063,7 @@ export class TrainingRepository {
       resistanceType: ResistanceType;
       origin?: ExerciseOrigin;
       muscleMappingSnapshot: Prisma.InputJsonValue | typeof Prisma.JsonNull;
+      loadAccountingConfigSnapshot: Prisma.InputJsonValue | null;
     }>;
   }): Promise<StrengthSessionDto> {
     const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
@@ -866,6 +1090,7 @@ export class TrainingRepository {
             resistanceType: exercise.resistanceType,
             origin: exercise.origin ?? EXERCISE_ORIGIN.PLANNED,
             muscleMappingSnapshot: exercise.muscleMappingSnapshot,
+            loadAccountingConfigSnapshot: nullableJsonInput(exercise.loadAccountingConfigSnapshot),
           })),
         },
       },
@@ -893,6 +1118,7 @@ export class TrainingRepository {
       plannedSets: number;
       resistanceType: ResistanceType;
       muscleMappingSnapshot: Prisma.InputJsonValue | typeof Prisma.JsonNull;
+      loadAccountingConfigSnapshot: Prisma.InputJsonValue | null;
     }>;
   }): Promise<StrengthSessionDto> {
     return this.createSessionSnapshot({
@@ -1029,6 +1255,7 @@ export class TrainingRepository {
             resistanceType: added.resistanceType,
             origin: added.origin,
             muscleMappingSnapshot: jsonInput(added.muscleMappingSnapshot),
+            loadAccountingConfigSnapshot: nullableJsonInput(added.loadAccountingConfigSnapshot ?? null),
           },
         });
       }
@@ -1076,6 +1303,7 @@ export class TrainingRepository {
     resistanceType: ResistanceType;
     origin?: ExerciseOrigin;
     muscleMappingSnapshot: unknown;
+    loadAccountingConfigSnapshot: Prisma.InputJsonValue | null;
     /** Insert position; appended when omitted or past the end. */
     order?: number;
     orderedExerciseIds: readonly number[];
@@ -1099,6 +1327,7 @@ export class TrainingRepository {
           resistanceType: input.resistanceType,
           origin: input.origin ?? EXERCISE_ORIGIN.EXTRA,
           muscleMappingSnapshot: jsonInput(input.muscleMappingSnapshot),
+          loadAccountingConfigSnapshot: nullableJsonInput(input.loadAccountingConfigSnapshot),
         },
         select: { id: true },
       });
@@ -1211,6 +1440,7 @@ export class TrainingRepository {
     rir?: number | null;
     comment?: string | null;
     completedAt: Date | null;
+    loadAccountingOverride?: Prisma.InputJsonValue | null;
   }): Promise<StrengthSetDto> {
     const row = await this.db.strengthSet.create({
       data: {
@@ -1224,6 +1454,7 @@ export class TrainingRepository {
           ? undefined
           : (input.comment?.trim() ? input.comment.trim() : null),
         completedAt: input.completedAt,
+        loadAccountingOverride: nullableJsonInput(input.loadAccountingOverride ?? null),
       },
       select: setSelect,
     });
@@ -1240,6 +1471,7 @@ export class TrainingRepository {
     rir?: number | null;
     comment?: string | null;
     completedAt?: Date | null;
+    loadAccountingOverride?: Prisma.InputJsonValue | null;
   }): Promise<StrengthSetDto | null> {
     const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
     const existing = await this.db.strengthSet.findFirst({
@@ -1264,6 +1496,9 @@ export class TrainingRepository {
           ? { comment: input.comment?.trim() ? input.comment.trim() : null }
           : {}),
         ...(input.completedAt !== undefined ? { completedAt: input.completedAt } : {}),
+        ...(input.loadAccountingOverride !== undefined
+          ? { loadAccountingOverride: nullableJsonInput(input.loadAccountingOverride) }
+          : {}),
       },
       select: setSelect,
     });
@@ -1800,6 +2035,7 @@ export class TrainingRepository {
             sortOrder: true,
             plannedSets: true,
             resistanceType: true,
+            loadAccountingConfigSnapshot: true,
             exerciseCatalog: { select: { id: true, name: true, stableKey: true, muscleMapping: true } },
           },
           orderBy: { sortOrder: "asc" },
@@ -1858,6 +2094,7 @@ export class TrainingRepository {
                 sortOrder: true,
                 plannedSets: true,
                 resistanceType: true,
+                loadAccountingConfigSnapshot: true,
                 exerciseCatalog: {
                   select: { id: true, name: true, stableKey: true, muscleMapping: true },
                 },

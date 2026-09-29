@@ -1,5 +1,6 @@
 import type { ResistanceType } from "./training.constants";
 import { EXERCISE_ORIGIN, type ExerciseOrigin } from "./training.constants";
+import type { Prisma } from "@prisma/client";
 
 export type ReconcileExistingExercise = {
   id: number;
@@ -19,6 +20,7 @@ export type ReconcileProgramExercise = {
   plannedSets: number;
   resistanceType: ResistanceType;
   muscleMappingSnapshot: unknown | null;
+  loadAccountingConfigSnapshot?: Prisma.InputJsonValue | null;
 };
 
 export type ReconcileKeep = {
@@ -36,6 +38,7 @@ export type ReconcileAdd = {
   resistanceType: ResistanceType;
   origin: ExerciseOrigin;
   muscleMappingSnapshot: unknown | null;
+  loadAccountingConfigSnapshot?: Prisma.InputJsonValue | null;
 };
 
 export type ProgramReconcilePlan = {
@@ -92,6 +95,7 @@ export function planProgramExerciseReconcile(
       resistanceType: planned.resistanceType,
       origin: EXERCISE_ORIGIN.PLANNED,
       muscleMappingSnapshot: planned.muscleMappingSnapshot,
+      loadAccountingConfigSnapshot: planned.loadAccountingConfigSnapshot,
     });
     nextOrder += 1;
   }

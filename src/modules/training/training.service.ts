@@ -54,8 +54,16 @@ import type {
   UpdateProgramInput,
   UpdateSessionExerciseInput,
   UpdateSetInput,
+  UpdateCatalogLoadAccountingConfigInput,
 } from "./training.schema";
 import { validateSetFields } from "./training.set-validation";
+import {
+  LEGACY_LOAD_INTERPRETATION_V1,
+  legacyLoadConfigForIdentityV1,
+  loadConfigV1Schema,
+  setExecutionOverrideV1Schema,
+  type LoadConfigV1,
+} from "./load-accounting-v1";
 import { noteTrainingSourceChange } from "./training.source-revision";
 import {
   recordExperimentalStrengthEnergyShadow,
@@ -216,7 +224,34 @@ function normalizeProgramExercises(
     sortOrder: exercise.order ?? index,
     plannedSets: exercise.plannedSets,
     resistanceType: exercise.resistanceType,
+    loadAccountingConfigSnapshot: null,
   }));
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
+    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function persistedJson(config: LoadConfigV1 | null): Prisma.InputJsonValue | null {
+  return config === null ? null : JSON.parse(JSON.stringify(config)) as Prisma.InputJsonValue;
+}
+
+function legacyConfigForStableKey(stableKey: string | null): LoadConfigV1 | null {
+  if (!stableKey) return null;
+  const resolved = legacyLoadConfigForIdentityV1({ status: "known-legacy", stableKey });
+  return resolved.config ?? null;
+}
+
+function validatedProgramSnapshot(value: unknown, stableKey: string | null): LoadConfigV1 | null {
+  if (value === null || value === undefined) return legacyConfigForStableKey(stableKey);
+  const parsed = loadConfigV1Schema.safeParse(value);
+  if (!parsed.success) throw new SetValidationError("stored program load accounting snapshot is invalid");
+  return parsed.data;
 }
 
 export class TrainingService {
@@ -234,6 +269,48 @@ export class TrainingService {
     });
   }
 
+  async updateCatalogLoadAccountingConfig(
+    catalogId: number,
+    input: UpdateCatalogLoadAccountingConfigInput,
+    profileId = DEFAULT_TRAINING_PROFILE_ID,
+  ): Promise<void> {
+    const [catalog] = await this.repo.findCatalogByIds([catalogId], profileId);
+    if (!catalog) throw new CatalogExerciseNotFoundError();
+    const parsed = input.loadAccountingConfig === null
+      ? null
+      : loadConfigV1Schema.safeParse(input.loadAccountingConfig);
+    if (parsed !== null && !parsed.success) {
+      throw new SetValidationError("invalid load accounting configuration");
+    }
+    const next = parsed === null ? null : parsed.data;
+    if (next?.configVersion === LEGACY_LOAD_INTERPRETATION_V1) {
+      throw new SetValidationError("configVersion is reserved for legacy interpretation");
+    }
+    const current = catalog.currentLoadAccountingConfig?.configuration ?? null;
+    if (next !== null && current !== null) {
+      const currentParse = loadConfigV1Schema.safeParse(current);
+      if (!currentParse.success) throw new SetValidationError("stored load accounting configuration is invalid");
+      if (next.configVersion === currentParse.data.configVersion
+          && stableJson(next) !== stableJson(currentParse.data)) {
+        throw new SetValidationError("configVersion must change when configuration changes");
+      }
+      if (stableJson(next) === stableJson(currentParse.data)) return;
+    }
+    try {
+      await this.repo.setCatalogLoadAccountingConfig({
+        catalogId,
+        profileId,
+        config: persistedJson(next),
+        configVersion: next?.configVersion,
+      });
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        throw new SetValidationError("configVersion has already been used for this exercise");
+      }
+      throw error;
+    }
+  }
+
   listPrograms(options?: { includeArchived?: boolean; profileId?: number }) {
     return this.repo.listPrograms(options);
   }
@@ -247,14 +324,11 @@ export class TrainingService {
     profileId = DEFAULT_TRAINING_PROFILE_ID,
   ): Promise<TrainingProgramDto> {
     const ordered = normalizeProgramExercises(input.exercises);
-    await this.assertCatalogExercisesExist(
-      ordered.map((exercise) => exercise.exerciseCatalogId),
-      profileId,
-    );
+    const snapshotted = await this.snapshotProgramExerciseConfigs(ordered, profileId);
     return this.repo.createProgramWithVersion({
       profileId,
       name: input.name,
-      exercises: ordered,
+      exercises: snapshotted,
     });
   }
 
@@ -269,10 +343,7 @@ export class TrainingService {
     let ordered: OrderedProgramExerciseWrite[] | undefined;
     if (input.exercises) {
       ordered = normalizeProgramExercises(input.exercises);
-      await this.assertCatalogExercisesExist(
-        ordered.map((exercise) => exercise.exerciseCatalogId),
-        profileId,
-      );
+      ordered = await this.snapshotProgramExerciseConfigs(ordered, profileId);
     }
 
     // Program edits always create a new version; never mutate old version exercises.
@@ -330,6 +401,10 @@ export class TrainingService {
           plannedSets: exercise.plannedSets,
           resistanceType: exercise.resistanceType as ResistanceType,
           muscleMappingSnapshot: trainingExerciseMappingSnapshotJsonV1(exercise.exerciseCatalog.stableKey),
+          loadAccountingConfigSnapshot: persistedJson(validatedProgramSnapshot(
+            exercise.loadAccountingConfigSnapshot,
+            exercise.exerciseCatalog.stableKey,
+          )),
         })),
       });
     } catch (error) {
@@ -453,6 +528,10 @@ export class TrainingService {
           plannedSets: exercise.plannedSets,
           resistanceType: exercise.resistanceType as ResistanceType,
           muscleMappingSnapshot: trainingExerciseMappingSnapshotJsonV1(exercise.exerciseCatalog.stableKey),
+          loadAccountingConfigSnapshot: persistedJson(validatedProgramSnapshot(
+            exercise.loadAccountingConfigSnapshot,
+            exercise.exerciseCatalog.stableKey,
+          )),
         })),
       });
       noteTrainingSourceChange({
@@ -512,6 +591,10 @@ export class TrainingService {
         plannedSets: exercise.plannedSets,
         resistanceType: exercise.resistanceType as ResistanceType,
         muscleMappingSnapshot: trainingExerciseMappingSnapshotJsonV1(exercise.exerciseCatalog.stableKey),
+        loadAccountingConfigSnapshot: validatedProgramSnapshot(
+          exercise.loadAccountingConfigSnapshot,
+          exercise.exerciseCatalog.stableKey,
+        ),
       })),
     );
 
@@ -546,6 +629,18 @@ export class TrainingService {
     const [catalog] = await this.repo.findCatalogByIds([input.catalogId], profileId);
     if (!catalog) throw new CatalogExerciseNotFoundError();
 
+    const stored = catalog.currentLoadAccountingConfig?.configuration ?? null;
+    let config: LoadConfigV1 | null = null;
+    if (stored !== null) {
+      const parsed = loadConfigV1Schema.safeParse(stored);
+      if (!parsed.success || parsed.data.configVersion !== catalog.currentLoadAccountingConfig?.configVersion) {
+        throw new SetValidationError("stored load accounting configuration is invalid");
+      }
+      config = parsed.data;
+    } else {
+      config = legacyConfigForStableKey(catalog.stableKey);
+    }
+
     const { revision } = await this.repo.addSessionExercise({
       sessionId,
       sourceExerciseCatalogId: catalog.id,
@@ -554,6 +649,7 @@ export class TrainingService {
       resistanceType: input.resistanceType,
       origin: EXERCISE_ORIGIN.EXTRA,
       muscleMappingSnapshot: trainingExerciseMappingSnapshotJsonV1(catalog.stableKey),
+      loadAccountingConfigSnapshot: persistedJson(config),
       order: input.order,
       orderedExerciseIds: session.exercises.map((exercise) => exercise.id),
     });
@@ -675,6 +771,10 @@ export class TrainingService {
       rir: input.rir === undefined ? null : input.rir,
     });
     if (!validated.ok) throw new SetValidationError(validated.message);
+    const override = input.loadAccountingOverride === undefined || input.loadAccountingOverride === null
+      ? null
+      : setExecutionOverrideV1Schema.safeParse(input.loadAccountingOverride);
+    if (override !== null && !override.success) throw new SetValidationError("invalid load accounting override");
 
     const nextSetNumber =
       input.setNumber
@@ -690,6 +790,7 @@ export class TrainingService {
         rir: validated.rir,
         comment: input.comment === undefined ? undefined : input.comment,
         completedAt: input.completedAt ? new Date(input.completedAt) : new Date(),
+        loadAccountingOverride: override === null ? null : JSON.parse(JSON.stringify(override.data)) as Prisma.InputJsonValue,
       });
       await this.noteSetMutation(exercise.session);
       return created;
@@ -742,6 +843,14 @@ export class TrainingService {
       },
     );
     if (!validated.ok) throw new SetValidationError(validated.message);
+    const override = input.loadAccountingOverride === undefined
+      ? undefined
+      : input.loadAccountingOverride === null
+        ? null
+        : setExecutionOverrideV1Schema.safeParse(input.loadAccountingOverride);
+    if (override !== undefined && override !== null && !override.success) {
+      throw new SetValidationError("invalid load accounting override");
+    }
 
     const updated = await this.repo.updateSet({
       setId,
@@ -758,6 +867,9 @@ export class TrainingService {
           : input.completedAt === null
             ? null
             : new Date(input.completedAt),
+      loadAccountingOverride: override === undefined || override === null
+        ? override
+        : JSON.parse(JSON.stringify(override.data)) as Prisma.InputJsonValue,
     });
     if (!updated) throw new SetNotFoundError();
     await this.noteSetMutation(existing.sessionExercise.session);
@@ -1131,13 +1243,31 @@ export class TrainingService {
     });
   }
 
-  private async assertCatalogExercisesExist(
-    ids: number[],
+  private async snapshotProgramExerciseConfigs(
+    exercises: OrderedProgramExerciseWrite[],
     profileId: number,
-  ): Promise<void> {
-    const unique = [...new Set(ids)];
+  ): Promise<OrderedProgramExerciseWrite[]> {
+    const unique = [...new Set(exercises.map((exercise) => exercise.exerciseCatalogId))];
     const found = await this.repo.findCatalogByIds(unique, profileId);
     if (found.length !== unique.length) throw new CatalogExerciseNotFoundError();
+    const byId = new Map(found.map((catalog) => [catalog.id, catalog]));
+    return exercises.map((exercise) => {
+      const catalog = byId.get(exercise.exerciseCatalogId);
+      if (!catalog) throw new CatalogExerciseNotFoundError();
+      const stored = catalog.currentLoadAccountingConfig?.configuration ?? null;
+      let config: LoadConfigV1 | null;
+      if (stored !== null) {
+        const parsed = loadConfigV1Schema.safeParse(stored);
+        if (!parsed.success
+            || parsed.data.configVersion !== catalog.currentLoadAccountingConfig?.configVersion) {
+          throw new SetValidationError("stored load accounting configuration is invalid");
+        }
+        config = parsed.data;
+      } else {
+        config = legacyConfigForStableKey(catalog.stableKey);
+      }
+      return { ...exercise, loadAccountingConfigSnapshot: persistedJson(config) };
+    });
   }
 }
 

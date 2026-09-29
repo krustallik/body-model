@@ -315,6 +315,16 @@ export class ModelEpisodeRepository {
     return record ? toEpisode(record) : null;
   }
 
+  /** Resolve the latest episode that had started by the requested local date. */
+  async getAsOf(localDate: string): Promise<PersistedEpisode | null> {
+    const record = await this.client.modelEpisode.findFirst({
+      where: { profileId: 1, startDate: { lte: localDate } },
+      orderBy: [{ startDate: "desc" }, { id: "desc" }],
+      select: episodeSelect,
+    });
+    return record ? toEpisode(record) : null;
+  }
+
   async loadSources(from: string, to: string): Promise<HistoricalModelSources> {
     const webWindowStart = new Date(`${from}T00:00:00.000Z`);
     webWindowStart.setUTCDate(webWindowStart.getUTCDate() - 2);

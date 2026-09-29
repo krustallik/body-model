@@ -18,6 +18,8 @@ import type {
   WorkoutInput,
 } from "./health.types";
 
+export const APPLE_HEALTH_SHORTCUT_SOURCE = "apple-health-shortcut" as const;
+
 /** Persist only workouts whose startAt falls on the synced calendar day. */
 export function filterWorkoutsForSyncedDay(
   workouts: readonly WorkoutInput[],
@@ -121,6 +123,7 @@ async function persistMetricSamples(
     dailyHealthDataId: number;
     date: string;
     metric: HealthMetricSampleInput["metric"];
+    source: typeof APPLE_HEALTH_SHORTCUT_SOURCE;
     timestamp: Date;
     value: number;
   }>();
@@ -131,6 +134,7 @@ async function persistMetricSamples(
       dailyHealthDataId,
       date: sample.date,
       metric: sample.metric,
+      source: APPLE_HEALTH_SHORTCUT_SOURCE,
       timestamp,
       value: sample.value,
     });
@@ -143,6 +147,7 @@ async function persistMetricSamples(
     update: {
       dailyHealthDataId: row.dailyHealthDataId,
       date: row.date,
+      source: row.source,
       value: row.value,
     },
   })));

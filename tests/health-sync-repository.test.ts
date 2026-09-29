@@ -101,8 +101,11 @@ describe("Prisma health synchronization repository", () => {
     expect(transaction.healthMetricSample.upsert).toHaveBeenCalledTimes(2);
     expect(transaction.healthMetricSample.upsert).toHaveBeenCalledWith(expect.objectContaining({
       where: { metric_timestamp: { metric: "weight-kg", timestamp: new Date("2026-09-17T05:00:00.000Z") } },
-      create: expect.objectContaining({ dailyHealthDataId: 22, date: "2026-09-17", value: 81.4 }),
-      update: expect.objectContaining({ value: 81.4 }),
+      create: expect.objectContaining({
+        dailyHealthDataId: 22, date: "2026-09-17", value: 81.4,
+        source: "apple-health-shortcut",
+      }),
+      update: expect.objectContaining({ value: 81.4, source: "apple-health-shortcut" }),
     }));
   });
 

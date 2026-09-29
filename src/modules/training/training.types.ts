@@ -7,6 +7,7 @@ import type {
   ResistanceType,
   SessionStatus,
 } from "./training.constants";
+import type { LoadAccountingOutputV1 } from "./load-accounting-v1";
 
 export type ExerciseCatalogDto = {
   id: number;
@@ -16,6 +17,7 @@ export type ExerciseCatalogDto = {
   isActive: boolean;
   archivedAt: string | null;
   muscleMapping: unknown | null;
+  loadAccountingConfig?: unknown | null;
 };
 
 export type ProgramExerciseDto = {
@@ -25,6 +27,7 @@ export type ProgramExerciseDto = {
   order: number;
   plannedSets: number;
   resistanceType: ResistanceType;
+  loadAccountingConfigSnapshot?: unknown | null;
 };
 
 export type TrainingProgramDto = {
@@ -70,6 +73,7 @@ export type StrengthSetDto = {
   completedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  loadAccountingOverride?: unknown | null;
 };
 
 export type ExerciseHistorySetDto = {
@@ -102,6 +106,7 @@ export type StrengthSessionExerciseDto = {
   resistanceType: ResistanceType;
   origin: ExerciseOrigin;
   muscleMappingSnapshot: unknown | null;
+  loadAccountingConfigSnapshot?: unknown | null;
   sets: StrengthSetDto[];
 };
 
@@ -142,6 +147,7 @@ export type StrengthSessionDto = {
   selectedActiveEnergy?: SelectedActiveEnergyDto;
   exercises: StrengthSessionExerciseDto[];
   ordinaryTonnageKg: number | null;
+  loadAccountingV1?: LoadAccountingOutputV1;
   autoAdvanceExercises?: boolean;
   loggedSets?: number;
   plannedSets?: number;

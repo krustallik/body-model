@@ -1,6 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { execFileSync } from "node:child_process";
 import * as ts from "typescript";
 import { describe, expect, it } from "vitest";
 import {
@@ -13,19 +12,9 @@ const stage01ExpectedPath = resolve(
   process.cwd(),
   "tests/fixtures/training-history-stage01/expected-v1.ts",
 );
-const stage01MergedFixtureCommit = "387a08ce84e393bba2f6285bc84de87e97e82216";
-const stage01ExpectedText = existsSync(stage01ExpectedPath)
-  ? readFileSync(stage01ExpectedPath, "utf8")
-  : (() => {
-    try {
-      return execFileSync("git", [
-        "show",
-        `${stage01MergedFixtureCommit}:tests/fixtures/training-history-stage01/expected-v1.ts`,
-      ], { encoding: "utf8" });
-    } catch {
-      return null;
-    }
-  })();
+// The current repository tree is the contract source after Stage 01 merges.
+// Missing fixtures fail at module load; this check never depends on Git objects/network.
+const stage01ExpectedText = readFileSync(stage01ExpectedPath, "utf8");
 
 function unwrapExpression(expression: ts.Expression | null): ts.Expression | null {
   let value = expression;
@@ -87,7 +76,7 @@ function rowsFromMergedStage01(): {
 }
 
 describe("Stage 01 golden fixture compatibility", () => {
-  it.skipIf(stage01ExpectedText === null)(
+  it(
     "keeps every Stage 02 literal row identical to merged Stage 01 expected rows",
     () => {
       const expected = rowsFromMergedStage01();

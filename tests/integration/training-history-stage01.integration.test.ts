@@ -1,5 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { EXPECTED_MS100_V1, EXPECTED_GOLDEN_V1 } from "../fixtures/training-history-stage01/expected-v1";
+import {
+  STAGE01_GOLDEN_TOTALS_V1,
+  STAGE01_PULL_ROWS_V1,
+  STAGE01_PUSH_ROWS_V1,
+} from "../fixtures/training-load-accounting-stage01-golden-v1";
 import { requireIsolatedStage01Database } from "../../src/modules/training/testing/require-isolated-database";
 import {
   createTrainingHistoryStage01FixtureV1,
@@ -101,6 +106,136 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL ORDER BY migration_name
     `;
     expect(migrationRows.length).toBeGreaterThan(0);
+  });
+
+  it("matches the Stage 02 literal rows and accounting totals against persisted Stage 01 golden sessions", async () => {
+    const db = prisma!;
+    const fixture = createTrainingHistoryStage01FixtureV1();
+    const sessions = [
+      { id: fixture.sessions.find((row) => row.scenarioId === "golden-pull")!.id, rows: STAGE01_PULL_ROWS_V1, side: "pull" as const },
+      { id: fixture.sessions.find((row) => row.scenarioId === "golden-push")!.id, rows: STAGE01_PUSH_ROWS_V1, side: "push" as const },
+    ];
+    const { calculateLoadAccountingV1 } = await import("../../src/modules/training/load-accounting-v1");
+    for (const expectedSession of sessions) {
+      const persisted = await db.strengthDiarySession.findUniqueOrThrow({
+        where: { id: expectedSession.id },
+        select: {
+          exercises: {
+            select: {
+              sortOrder: true,
+              sourceExerciseCatalog: { select: { stableKey: true } },
+              sets: { orderBy: { setNumber: "asc" }, select: { setNumber: true, reps: true, weightKg: true, bandNominalResistanceKg: true, rir: true } },
+            },
+            orderBy: { sortOrder: "asc" },
+          },
+        },
+      });
+      const literalRows = persisted.exercises.flatMap((exercise) => exercise.sets.map((set) => [
+        exercise.sourceExerciseCatalog?.stableKey ?? "",
+        exercise.sortOrder,
+        set.setNumber,
+        set.reps,
+        set.weightKg?.toNumber() ?? null,
+        set.bandNominalResistanceKg?.toNumber() ?? null,
+        set.rir,
+      ]));
+      expect(literalRows).toEqual(expectedSession.rows.map((row) => [row[0], row[1], row[2], row[3], row[4], row[5], row[7]]));
+
+      const grouped = new Map<string, typeof persisted.exercises[number]["sets"]>();
+      for (const exercise of persisted.exercises) {
+        const key = exercise.sourceExerciseCatalog?.stableKey;
+        if (!key) throw new Error("Stage 01 golden exercise is missing its stable key");
+        grouped.set(key, [...(grouped.get(key) ?? []), ...exercise.sets]);
+      }
+      const exercises = [...grouped].map(([stableKey, sets]) => {
+        const setBasis = expectedSession.rows.find((row) => row[0] === stableKey)?.[6];
+        return {
+          identity: { status: "known-legacy" as const, stableKey },
+          resistanceHint: setBasis === "band-nominal-per-logged-side" ? "band-nominal" as const
+            : setBasis === "bodyweight-reference-separate" ? "bodyweight" as const : "external" as const,
+          sets: sets.map((set) => ({
+            reps: set.reps,
+            weightKg: set.weightKg?.toNumber() ?? null,
+            bandNominalResistanceKg: set.bandNominalResistanceKg?.toNumber() ?? null,
+          })),
+        };
+      });
+      const result = calculateLoadAccountingV1({
+        localDate: expectedSession.side === "pull" ? "2026-09-24" : "2026-09-25",
+        exercises,
+        ...(expectedSession.side === "pull" ? { bodyweightReference: {
+          status: "observed" as const, valueKg: 87, localDate: "2026-09-24",
+          source: "apple-health-shortcut" as const, sourceId: "stage01-golden-observation",
+        } } : {}),
+      });
+      expect(result.externalLoadVolume.value).toBe(expectedSession.side === "pull"
+        ? STAGE01_GOLDEN_TOTALS_V1.pullExternalKgReps : STAGE01_GOLDEN_TOTALS_V1.pushExternalKgReps);
+      expect(result.bandNominalIndex.perLoggedSide.value).toBe(expectedSession.side === "pull"
+        ? STAGE01_GOLDEN_TOTALS_V1.pullBandNominalPerLoggedSideKgReps : STAGE01_GOLDEN_TOTALS_V1.pushBandNominalPerLoggedSideKgReps);
+      if (expectedSession.side === "pull") {
+        expect(result.bodyweight.referenceVolume.value).toBe(STAGE01_GOLDEN_TOTALS_V1.pullUpReferenceKgReps);
+      }
+    }
+  });
+
+  it("keeps an unfinished session compatible with a legacy client while storing an explicit asymmetric override", async () => {
+    const db = prisma!;
+    const catalog = await db.exerciseCatalog.create({
+      data: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID, name: `stage02-compat-${Date.now()}` },
+      select: { id: true },
+    });
+    let programId: number | null = null;
+    let sessionId: number | null = null;
+    try {
+      const { TrainingService } = await import("../../src/modules/training/training.service");
+      const service = new TrainingService(db);
+      await service.updateCatalogLoadAccountingConfig(catalog.id, {
+        loadAccountingConfig: {
+          schemaVersion: 1,
+          configVersion: "integration-pair-v1",
+          inventoryCount: 2,
+          loadedSides: 2,
+          execution: "simultaneous",
+          equipment: { equipmentId: "dumbbell", setupId: "pair" },
+          accountingKind: "external-per-implement-per-side",
+          resistanceType: "external",
+          loadInput: "per-implement-kg",
+          repsMeaning: "per-side",
+        },
+      });
+      const program = await service.createProgram({
+        name: `stage02-compat-program-${Date.now()}`,
+        exercises: [{ catalogId: catalog.id, plannedSets: 2, resistanceType: "EXTERNAL_WEIGHT" }],
+      });
+      programId = program.id;
+      const session = await service.startSession(program.id);
+      sessionId = session.id;
+      const exerciseId = session.exercises[0]!.id;
+
+      // Existing clients send only the pre-Stage-02 scalar fields.
+      const oldClientSet = await service.createSet(session.id, exerciseId, { reps: 12, weightKg: 10 });
+      expect(oldClientSet).toMatchObject({ reps: 12, weightKg: 10, loadAccountingOverride: null });
+      const asymmetricSet = await service.createSet(session.id, exerciseId, {
+        reps: 12,
+        weightKg: 10,
+        loadAccountingOverride: {
+          reps: { kind: "asymmetric-per-side", left: 12, right: 10 },
+        },
+      });
+      expect(asymmetricSet.reps).toBe(12);
+
+      const stillActive = await service.getSession(session.id);
+      expect(stillActive?.status).toBe("ACTIVE");
+      expect(stillActive?.exercises[0]?.sets.map(({ reps }) => reps)).toEqual([12, 12]);
+      expect(stillActive?.loadAccountingV1?.externalLoadVolume.value).toBe(460);
+      expect(stillActive?.loadAccountingV1?.externalLoadVolume.coverage).toMatchObject({
+        eligibleRows: 2, accountedRows: 2, omittedRows: 0,
+      });
+    } finally {
+      if (sessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: sessionId } });
+      if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });
+      await db.exerciseCatalog.deleteMany({ where: { id: catalog.id } });
+    }
   });
 
   it("deduplicates a repeated Workout source identity by the database unique key", async () => {

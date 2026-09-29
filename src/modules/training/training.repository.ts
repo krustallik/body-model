@@ -1338,6 +1338,7 @@ export class TrainingRepository {
             bandNominalResistanceKg: true,
             rir: true,
             comment: true,
+            completedAt: true,
           },
         },
       },
@@ -1361,6 +1362,7 @@ export class TrainingRepository {
           bandNominalResistanceKg: decimalToNumber(set.bandNominalResistanceKg),
           rir: set.rir,
           comment: set.comment ?? null,
+          completedAt: set.completedAt?.toISOString() ?? null,
         })),
       };
     }).sort((left, right) => {
@@ -1470,39 +1472,44 @@ export class TrainingRepository {
   async listRecentSessions(options: {
     profileId?: number;
     limit?: number;
+    offset?: number;
   } = {}): Promise<StrengthSessionSummaryDto[]> {
     const profileId = options.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
-    const limit = options.limit ?? TRAINING_LIMITS.recentSessionsDefaultLimit;
-    // RETROSPECTIVE rows have no webStartedAt, so page by createdAt and then
-    // present by occurrence (linked workout start) which is the real event time.
+    const limit = Math.min(Math.max(options.limit ?? TRAINING_LIMITS.recentSessionsDefaultLimit, 1), 100);
+    const offset = Math.min(Math.max(options.offset ?? 0, 0), 1_000_000);
+    // Page by the same canonical occurrence time shown in the diary. The id tie
+    // break makes pages stable, including retrospective and unmatched sessions.
+    const pageIds = await this.db.$queryRaw<Array<{ id: number }>>`
+      SELECT s."id"
+      FROM "StrengthDiarySession" AS s
+      LEFT JOIN "Workout" AS w ON w."id" = s."matchedWorkoutId"
+      WHERE s."profileId" = ${profileId}
+        AND s."status" IN (${SESSION_STATUS.COMPLETED}, ${SESSION_STATUS.CANCELLED})
+      ORDER BY COALESCE(w."startAt" AT TIME ZONE 'UTC', s."webStartedAt", s."createdAt") DESC, s."id" DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `;
+    if (pageIds.length === 0) return [];
     const rows = await this.db.strengthDiarySession.findMany({
-      where: {
-        profileId,
-        status: { in: [SESSION_STATUS.COMPLETED, SESSION_STATUS.CANCELLED] },
-      },
+      where: { profileId, id: { in: pageIds.map(({ id }) => id) } },
       select: sessionSummarySelect,
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      take: limit,
     });
-    return rows
-      .slice()
-      .sort((a, b) => {
-        const left = occurrenceInstant(a)?.getTime() ?? null;
-        const right = occurrenceInstant(b)?.getTime() ?? null;
-        if (left === right) return b.id - a.id;
-        if (left === null) return 1;
-        if (right === null) return -1;
-        return right - left;
-      })
-      .map(toSessionSummaryDto);
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    return pageIds.flatMap(({ id }) => {
+      const row = byId.get(id);
+      return row ? [toSessionSummaryDto(row)] : [];
+    });
   }
 
   async listMatchAttention(options: {
     profileId?: number;
     longPendingBefore?: Date;
+    limit?: number;
+    offset?: number;
   } = {}): Promise<StrengthSessionSummaryDto[]> {
     const profileId = options.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
     const longPendingBefore = options.longPendingBefore;
+    const limit = Math.min(Math.max(options.limit ?? 100, 1), 100);
+    const offset = Math.min(Math.max(options.offset ?? 0, 0), 1_000_000);
     const rows = await this.db.strengthDiarySession.findMany({
       where: {
         profileId,
@@ -1518,7 +1525,9 @@ export class TrainingRepository {
         ],
       },
       select: sessionSummarySelect,
-      orderBy: [{ webEndedAt: "desc" }, { id: "desc" }],
+      orderBy: [{ webEndedAt: { sort: "desc", nulls: "last" } }, { id: "desc" }],
+      take: limit,
+      skip: offset,
     });
     return rows.map(toSessionSummaryDto);
   }
@@ -1654,6 +1663,7 @@ export class TrainingRepository {
    */
   async listHistoricalStrengthWorkouts(options: {
     limit?: number;
+    offset?: number;
     cursor?: number;
     onlyMissingDiary?: boolean;
   } = {}): Promise<HistoricalStrengthWorkoutDto[]> {
@@ -1681,7 +1691,11 @@ export class TrainingRepository {
       },
       orderBy: [{ startAt: "desc" }, { id: "desc" }],
       take: limit,
-      ...(options.cursor !== undefined ? { cursor: { id: options.cursor }, skip: 1 } : {}),
+      ...(options.offset !== undefined
+        ? { skip: Math.min(options.offset, 1_000_000) }
+        : options.cursor !== undefined
+          ? { cursor: { id: options.cursor }, skip: 1 }
+          : {}),
     });
 
     return rows

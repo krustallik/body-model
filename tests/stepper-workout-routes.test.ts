@@ -14,9 +14,10 @@ describe("stepper workout CRUD routes", () => {
 
   it("lists and creates workout events without a made-up energy value", async () => {
     stepperWorkoutRepository.list.mockResolvedValue([workout]);
-    const listed = await GET();
+    const listed = await GET(new Request("http://localhost/api/v1/training/stepper-workouts?limit=5&offset=10"));
     expect(listed.status).toBe(200);
     await expect(listed.json()).resolves.toEqual({ workouts: [workout] });
+    expect(stepperWorkoutRepository.list).toHaveBeenCalledWith({ limit: 5, offset: 10 });
 
     stepperWorkoutRepository.create.mockResolvedValue(workout);
     const created = await POST(new Request("http://localhost/api/v1/training/stepper-workouts", {

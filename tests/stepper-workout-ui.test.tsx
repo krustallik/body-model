@@ -6,7 +6,10 @@ import { buildStepperWorkoutDiagnosticV7 } from "@/modules/profile/stepper-worko
 
 vi.mock("@/i18n/i18n-provider", () => ({ useI18n: () => ({ locale: "uk", intlLocale: "uk-UA" }) }));
 vi.mock("@/components/app-nav", () => ({ AppNav: () => <nav aria-label="App navigation">BodyCast nav</nav> }));
-vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn() }) }));
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  useSearchParams: () => new URLSearchParams(),
+}));
 
 import { StepperDiagnosticClient } from "@/app/training/workouts/[id]/stepper-diagnostic/stepper-diagnostic-client";
 import { TrainingClient } from "@/app/training/training-client";
@@ -148,7 +151,7 @@ describe("stepper section in Training", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = init?.method ?? "GET";
-      if (url.endsWith("/api/v1/training/stepper-workouts") && method === "GET") return response({ workouts: [row] });
+      if (url.startsWith("/api/v1/training/stepper-workouts") && method === "GET") return response({ workouts: [row] });
       if (url.endsWith("/api/v1/training/stepper-workouts/70") && method === "PUT") return response({ workout: { ...row, syncProtected: true } });
       if (url.endsWith("/api/v1/training/stepper-workouts/70") && method === "DELETE") return response(null, 204);
       if (url.includes("/api/v1/training/sessions/active")) return response({ session: null });
@@ -181,7 +184,7 @@ describe("stepper section in Training", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = init?.method ?? "GET";
-      if (url.endsWith("/api/v1/training/stepper-workouts") && method === "GET") return response({ workouts: rows });
+      if (url.startsWith("/api/v1/training/stepper-workouts") && method === "GET") return response({ workouts: rows });
       if (url.endsWith("/api/v1/training/stepper-workouts") && method === "POST") {
         const value = JSON.parse(String(init?.body)) as { startAt: string; durationMinutes: number };
         const created = { id: 51, type: "Stair Climbing", ...value, endAt: new Date(Date.parse(value.startAt) + value.durationMinutes * 60_000).toISOString(), activeEnergyKcal: null, source: "manual" as const, syncProtected: false, editable: true };

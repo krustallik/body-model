@@ -12,7 +12,10 @@ export async function GET(request: Request): Promise<Response> {
   if (!query.success) return validationResponse(query.error);
 
   try {
-    const sessions = await trainingService.listRecentSessions({ limit: query.data.limit });
+    const sessions = await trainingService.listRecentSessions({
+      limit: query.data.limit,
+      ...(query.data.offset !== undefined ? { offset: query.data.offset } : {}),
+    });
     return Response.json({ sessions });
   } catch {
     return trainingInternalError();

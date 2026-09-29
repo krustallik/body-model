@@ -1523,7 +1523,7 @@ a.editMenuItem + .editMenuDanger {
   align-items: center;
   justify-content: center;
   width: 100%;
-  min-height: 0;
+  min-height: min(42dvh, 18rem);
   padding: 0.35rem;
   background: #080a0b;
   border-radius: 0.75rem;
@@ -2100,6 +2100,10 @@ a.editMenuItem + .editMenuDanger {
 
   .workoutImage {
     max-height: min(46dvh, 22rem);
+  }
+
+  .workoutVisual {
+    min-height: min(46dvh, 22rem);
   }
 }
 
@@ -2711,4 +2715,237 @@ a.editMenuItem + .editMenuDanger {
     transition-duration: 0ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+
+/* Training diary refinement: stronger hierarchy, denser records, same approved tokens. */
+.trainingHubPage {
+  max-width: 80rem;
+  padding-top: clamp(1rem, 2vw, 1.5rem);
+}
+
+.trainingHubPage .header {
+  align-items: flex-end;
+  padding: 0 0 1.35rem;
+  margin-bottom: 1.2rem;
+  border-bottom: 1px solid var(--training-border);
+}
+
+.trainingHubPage .header h1 {
+  font-size: clamp(2.25rem, 4vw, 3.15rem);
+  letter-spacing: -0.045em;
+}
+
+.trainingHubPage .eyebrow {
+  color: var(--training-primary-strong);
+  letter-spacing: 0.12em;
+}
+
+.trainingHubPage .intro {
+  max-width: 42rem;
+  font-size: 0.96rem;
+  line-height: 1.55;
+}
+
+.trainingHubPage .rowActions { gap: 0.55rem; }
+
+.trainingHubPage .stack { gap: 1rem; }
+.trainingHubPage .stack > .panelAttention { order: 0; }
+.trainingHubPage .trainingPrimaryGrid { order: 1; }
+.trainingHubPage .trainingHistoryGrid { order: 2; }
+
+/* Export these grid classes from the CSS module for the hub's responsive layout. */
+.trainingPrimaryGrid { order: 1; }
+.trainingHistoryGrid { order: 2; grid-template-columns: minmax(0, 1.45fr) minmax(17rem, 0.75fr); }
+
+.trainingHubPage .panel {
+  border-radius: 1rem;
+  box-shadow: 0 0.6rem 1.4rem color-mix(in srgb, var(--training-shadow) 85%, transparent),
+    inset 0 1px 0 color-mix(in srgb, #fff 3%, transparent);
+}
+
+.trainingHubPage .panelHeader {
+  align-items: center;
+  min-height: 3.65rem;
+  padding: 0.95rem 1.15rem;
+}
+
+.trainingHubPage .panelHeader h2 {
+  font-size: 1.08rem;
+  letter-spacing: -0.025em;
+}
+
+.trainingHubPage .panelHeader p { font-size: 0.82rem; }
+.trainingHubPage .panelBody { padding: 0.95rem 1.15rem 1.1rem; }
+.trainingHubPage .panelAttention .panelBody { min-height: 7.7rem; box-sizing: border-box; }
+
+.trainingHubPage .panelActive {
+  border-color: color-mix(in srgb, var(--training-primary) 38%, var(--training-border));
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--training-primary) 11%, transparent), transparent 52%),
+    var(--training-surface);
+}
+
+.trainingHubPage .panelActive .panelHeader {
+  background: color-mix(in srgb, var(--training-primary) 7%, var(--training-elevated));
+}
+
+.trainingHubPage .panelInfo {
+  border-color: color-mix(in srgb, var(--training-info) 34%, var(--training-border));
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--training-info) 8%, transparent), transparent 55%),
+    var(--training-surface);
+}
+
+.trainingHubPage .panelInfo .panelHeader {
+  background: color-mix(in srgb, var(--training-info) 7%, var(--training-elevated));
+}
+
+.trainingHubPage .panelPrograms {
+  border-color: color-mix(in srgb, var(--training-warning) 22%, var(--training-border));
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--training-warning) 5%, transparent), transparent 58%),
+    var(--training-surface);
+}
+
+.trainingHubPage .panelPrograms .panelHeader {
+  background: color-mix(in srgb, var(--training-warning) 5%, var(--training-elevated));
+}
+
+.trainingHubPage .panelRecent {
+  border-color: color-mix(in srgb, var(--training-success) 26%, var(--training-border));
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--training-success) 5%, transparent), transparent 58%),
+    var(--training-surface);
+}
+
+.trainingHubPage .panelRecent .panelHeader {
+  background: color-mix(in srgb, var(--training-success) 5%, var(--training-elevated));
+}
+
+.trainingHubPage .trainingPrimaryGrid { min-height: 26rem; }
+.trainingHubPage .panelPrograms .list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.trainingHubPage .panelActive .panelBody { min-height: 6rem; box-sizing: border-box; }
+
+.trainingHubPage .trainingHubGrid {
+  grid-template-columns: minmax(17rem, 0.84fr) minmax(0, 1.16fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.trainingHubPage .trainingHistoryGrid {
+  grid-template-columns: minmax(0, 1.45fr) minmax(17rem, 0.75fr);
+}
+
+.trainingHubPage .list { gap: 0.55rem; }
+
+.trainingHubPage .card {
+  padding: 0.85rem 0.95rem;
+  border-radius: 0.8rem;
+  background: color-mix(in srgb, var(--training-elevated) 78%, var(--training-surface));
+}
+
+.trainingHubPage .panelActive .card {
+  border-color: color-mix(in srgb, var(--training-primary) 24%, var(--training-border-strong));
+  background: color-mix(in srgb, var(--training-primary) 4%, var(--training-elevated));
+}
+
+.trainingHubPage .panelInfo .card {
+  border-color: color-mix(in srgb, var(--training-info) 18%, var(--training-border-strong));
+}
+
+.trainingHubPage .panelPrograms .card {
+  border-color: color-mix(in srgb, var(--training-warning) 15%, var(--training-border-strong));
+}
+
+.trainingHubPage .panelRecent .card {
+  border-left: 2px solid color-mix(in srgb, var(--training-success) 55%, var(--training-border));
+}
+
+.trainingHubPage .cardMeta { font-size: 0.81rem; }
+.trainingHubPage .energyLine { color: var(--training-info-strong); }
+.trainingHubPage .panelPrograms .primaryButton { min-height: 2.7rem; }
+.trainingHubPage .stepperCardActions { padding-top: 0.35rem; border-top: 1px solid color-mix(in srgb, var(--training-border) 72%, transparent); }
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 0.85rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid color-mix(in srgb, var(--training-border) 82%, transparent);
+  color: var(--training-text-secondary);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.pageButton {
+  min-width: 6rem;
+  min-height: 2.75rem;
+  padding: 0.45rem 0.8rem;
+  border: 1px solid var(--training-border-strong);
+  border-radius: 0.65rem;
+  background: var(--training-elevated);
+  color: var(--training-text);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background var(--training-ease), border-color var(--training-ease), color var(--training-ease), transform var(--training-ease);
+}
+
+.pageButton:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--training-primary) 48%, var(--training-border-strong));
+  background: color-mix(in srgb, var(--training-primary) 9%, var(--training-elevated));
+}
+
+.pageButton:active:not(:disabled) { transform: var(--training-press); }
+.pageButton:focus-visible { outline: none; box-shadow: var(--training-focus-ring); }
+.pageButton:disabled { opacity: 0.42; cursor: not-allowed; }
+
+.workoutHistorySetBtn {
+  grid-template-columns: 2rem minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 2.5rem;
+  padding: 0.35rem 0.45rem;
+  border: 1px solid color-mix(in srgb, var(--training-border) 55%, transparent);
+  background: color-mix(in srgb, var(--training-elevated) 38%, transparent);
+}
+
+.workoutHistorySetBtn time {
+  color: var(--training-info-strong);
+  font-size: 0.74rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .trainingHubPage .card:hover {
+    transform: translateY(-1px);
+    border-color: color-mix(in srgb, var(--training-primary) 38%, var(--training-border-strong));
+  }
+}
+
+@media (max-width: 900px) {
+  .trainingHubPage .trainingHubGrid,
+  .trainingHubPage .trainingHistoryGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .trainingHubPage .trainingPrimaryGrid { min-height: 26rem; }
+}
+
+@media (max-width: 620px) {
+  .trainingHubPage .header { gap: 0.85rem; padding-bottom: 1rem; }
+  .trainingHubPage .header h1 { font-size: clamp(2rem, 9vw, 2.65rem); }
+  .trainingHubPage .header .rowActions > * { flex: 1 1 9rem; }
+  .trainingHubPage .panelHeader { align-items: flex-start; padding: 0.85rem 0.9rem; }
+  .trainingHubPage .panelBody { padding: 0.8rem 0.9rem 0.95rem; }
+  .trainingHubPage .cardTop { gap: 0.7rem; }
+  .trainingHubPage .denseCardActions { align-items: stretch; }
+  .trainingHubPage .denseCardActions > * { min-height: 2.75rem; }
+  .trainingHubPage .panelPrograms .list { grid-template-columns: minmax(0, 1fr); }
+  .trainingHubPage .trainingPrimaryGrid { min-height: 0; }
+  .pageButton { min-width: 5.5rem; }
+  .workoutHistorySetBtn { grid-template-columns: 2rem minmax(0, 1fr); }
+  .workoutHistorySetBtn time { grid-column: 2; }
 }

@@ -9,13 +9,19 @@ export async function GET(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const parsed = HistoricalWorkoutsQuerySchema.safeParse({
     limit: url.searchParams.get("limit") ?? undefined,
+    offset: url.searchParams.get("offset") ?? undefined,
     cursor: url.searchParams.get("cursor") ?? undefined,
     onlyMissingDiary: url.searchParams.get("onlyMissingDiary") ?? undefined,
   });
   if (!parsed.success) return validationResponse(parsed.error);
 
   try {
-    const workouts = await trainingService.listHistoricalStrengthWorkouts(parsed.data);
+    const workouts = await trainingService.listHistoricalStrengthWorkouts({
+      limit: parsed.data.limit,
+      ...(parsed.data.offset !== undefined ? { offset: parsed.data.offset } : {}),
+      cursor: parsed.data.cursor,
+      onlyMissingDiary: parsed.data.onlyMissingDiary,
+    });
     return Response.json({ workouts });
   } catch {
     return trainingInternalError();

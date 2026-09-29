@@ -95,10 +95,10 @@ describe("/api/v1/training/sessions", () => {
 
   it("lists recent sessions with optional limit", async () => {
     trainingService.listRecentSessions.mockResolvedValue([session]);
-    const response = await RECENT(new Request(`${base}/recent?limit=5`));
+    const response = await RECENT(new Request(`${base}/recent?limit=5&offset=10`));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ sessions: [session] });
-    expect(trainingService.listRecentSessions).toHaveBeenCalledWith({ limit: 5 });
+    expect(trainingService.listRecentSessions).toHaveBeenCalledWith({ limit: 5, offset: 10 });
   });
 
   it("rejects invalid recent limit without service call", async () => {

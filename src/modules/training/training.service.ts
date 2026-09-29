@@ -346,6 +346,7 @@ export class TrainingService {
   ): Promise<HistoricalStrengthWorkoutDto[]> {
     return this.repo.listHistoricalStrengthWorkouts({
       limit: query.limit,
+      offset: query.offset,
       cursor: query.cursor,
       onlyMissingDiary: query.onlyMissingDiary,
     });
@@ -863,13 +864,15 @@ export class TrainingService {
     return { matchedWorkoutId };
   }
 
-  listRecentSessions(options?: { limit?: number; profileId?: number }) {
+  listRecentSessions(options?: { limit?: number; offset?: number; profileId?: number }) {
     return this.repo.listRecentSessions(options);
   }
 
-  listMatchAttention(profileId = DEFAULT_TRAINING_PROFILE_ID) {
+  listMatchAttention(options: { limit?: number; offset?: number; profileId?: number } = {}) {
     return this.repo.listMatchAttention({
-      profileId,
+      profileId: options.profileId ?? DEFAULT_TRAINING_PROFILE_ID,
+      limit: options.limit,
+      offset: options.offset,
       longPendingBefore: new Date(Date.now() - MATCH_THRESHOLDS.longPendingMs),
     });
   }

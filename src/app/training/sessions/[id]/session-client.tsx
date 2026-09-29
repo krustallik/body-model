@@ -354,7 +354,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
 
   if (!session) {
     return (
-      <main className={styles.page}>
+      <main className={styles.page} style={{ width: "min(100%, 56rem)", marginInline: "auto" }}>
         <div className={styles.navRow}>
           <strong>BodyCast</strong>
           <AppNav active="training" />
@@ -500,7 +500,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
   }
 
   return (
-    <main className={styles.page}>
+    <main className={styles.page} style={{ width: "min(100%, 56rem)", marginInline: "auto" }}>
       <div className={styles.navRow}>
         <strong>BodyCast</strong>
         <AppNav active="training" />

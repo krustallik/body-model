@@ -74,6 +74,8 @@ export type StrengthSetDto = {
 
 export type ExerciseHistorySetDto = {
   setNumber: number;
+  /** Actual set completion instant; null when the source did not record it. */
+  completedAt: string | null;
   reps: number;
   weightKg: number | null;
   bandNominalResistanceKg: number | null;

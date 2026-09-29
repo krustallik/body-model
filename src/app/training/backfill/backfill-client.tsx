@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppNav } from "@/components/app-nav";
 import { useI18n } from "@/i18n/i18n-provider";
@@ -17,6 +17,15 @@ import {
   readApiError,
 } from "../training-labels";
 import styles from "../training.module.css";
+
+const GARMIN_PAGE_SIZE = 10;
+
+function parsePage(value: string | null): number {
+  if (value === null) return 1;
+  if (!/^[1-9]\d*$/.test(value)) return 1;
+  const page = Number(value);
+  return Number.isSafeInteger(page) ? page : 1;
+}
 
 function completenessLabel(
   value: HistoricalStrengthWorkoutDto["diaryCompleteness"],
@@ -55,9 +64,14 @@ export function BackfillClient() {
   const { locale, intlLocale } = useI18n();
   const uk = locale === "uk";
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const pageValue = searchParams.get("garminPage");
+  const missingValue = searchParams.get("onlyMissingDiary");
+  const page = parsePage(pageValue);
+  const onlyMissing = missingValue === "true";
   const [workouts, setWorkouts] = useState<HistoricalStrengthWorkoutDto[]>([]);
   const [programs, setPrograms] = useState<TrainingProgramSummaryDto[]>([]);
-  const [onlyMissing, setOnlyMissing] = useState(false);
+  const [hasNext, setHasNext] = useState(false);
   const [selected, setSelected] = useState<number[]>([]);
   const [bulkProgramId, setBulkProgramId] = useState<number | "">("");
   const [loading, setLoading] = useState(true);
@@ -67,9 +81,13 @@ export function BackfillClient() {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const query = onlyMissing ? "?limit=100&onlyMissingDiary=true" : "?limit=100";
+      const query = new URLSearchParams({
+        limit: String(GARMIN_PAGE_SIZE + 1),
+        offset: String((page - 1) * GARMIN_PAGE_SIZE),
+        ...(onlyMissing ? { onlyMissingDiary: "true" } : {}),
+      }).toString();
       const [workoutsRes, programsRes] = await Promise.all([
-        fetch(`/api/v1/training/workouts/historical${query}`, { cache: "no-store" }),
+        fetch(`/api/v1/training/workouts/historical?${query}`, { cache: "no-store" }),
         fetch("/api/v1/training/programs", { cache: "no-store" }),
       ]);
       if (!workoutsRes.ok || !programsRes.ok) {
@@ -78,11 +96,9 @@ export function BackfillClient() {
       }
       const workoutsBody = await workoutsRes.json() as { workouts: HistoricalStrengthWorkoutDto[] };
       const programsBody = await programsRes.json() as { programs: TrainingProgramSummaryDto[] };
-      setWorkouts(workoutsBody.workouts);
+      setWorkouts(workoutsBody.workouts.slice(0, GARMIN_PAGE_SIZE));
+      setHasNext(workoutsBody.workouts.length > GARMIN_PAGE_SIZE);
       setPrograms(programsBody.programs);
-      setSelected((current) => current.filter((id) => (
-        workoutsBody.workouts.some((row) => row.workoutId === id && row.linkedSessionId == null)
-      )));
       if (programsBody.programs[0] && bulkProgramId === "") {
         setBulkProgramId(programsBody.programs[0].id);
       }
@@ -91,7 +107,18 @@ export function BackfillClient() {
     } finally {
       setLoading(false);
     }
-  }, [bulkProgramId, onlyMissing, uk]);
+  }, [bulkProgramId, onlyMissing, page, uk]);
+
+  useEffect(() => {
+    const invalidPage = pageValue !== null && parsePage(pageValue) === 1 && pageValue !== "1";
+    const invalidFilter = missingValue !== null && missingValue !== "true" && missingValue !== "false";
+    if (!invalidPage && !invalidFilter) return;
+    const params = new URLSearchParams(searchParams.toString());
+    if (invalidPage) params.delete("garminPage");
+    if (invalidFilter) params.delete("onlyMissingDiary");
+    const query = params.toString();
+    router.replace(`/training/backfill${query ? `?${query}` : ""}`, { scroll: false });
+  }, [missingValue, pageValue, router, searchParams]);
 
   useEffect(() => {
     let cancelled = false;
@@ -113,6 +140,23 @@ export function BackfillClient() {
 
   const canBulk = programs.length > 0 && eligibleIds.length > 0;
   const createDisabled = busy || selected.length === 0 || typeof bulkProgramId !== "number";
+
+  function filterHref(missing: boolean): string {
+    const params = new URLSearchParams(searchParams.toString());
+    if (missing) params.set("onlyMissingDiary", "true");
+    else params.delete("onlyMissingDiary");
+    params.delete("garminPage");
+    const query = params.toString();
+    return `/training/backfill${query ? `?${query}` : ""}`;
+  }
+
+  function pageHref(nextPage: number): string {
+    const params = new URLSearchParams(searchParams.toString());
+    if (nextPage <= 1) params.delete("garminPage");
+    else params.set("garminPage", String(nextPage));
+    const query = params.toString();
+    return `/training/backfill${query ? `?${query}` : ""}`;
+  }
 
   function toggle(workoutId: number) {
     setSelected((current) => (
@@ -185,7 +229,7 @@ export function BackfillClient() {
                 type="button"
                 className={styles.togglePill}
                 aria-pressed={onlyMissing}
-                onClick={() => setOnlyMissing((value) => !value)}
+                onClick={() => router.push(filterHref(!onlyMissing), { scroll: false })}
               >
                 {uk ? "Лише без запису" : "Missing diary only"}
               </button>
@@ -193,7 +237,7 @@ export function BackfillClient() {
                 type="button"
                 className={styles.togglePill}
                 aria-pressed={!onlyMissing}
-                onClick={() => setOnlyMissing(false)}
+                onClick={() => router.push(filterHref(false), { scroll: false })}
               >
                 {uk ? "Усі силові" : "All strength"}
               </button>
@@ -218,8 +262,8 @@ export function BackfillClient() {
                 <div className={styles.bulkStep}>
                   <p className={styles.bulkStepLabel}>
                     {uk
-                      ? `1 · Вибрано ${selected.length} з ${eligibleIds.length}`
-                      : `1 · Selected ${selected.length} of ${eligibleIds.length}`}
+                      ? `1 · Вибрано ${selected.length} · ${eligibleIds.length} доступно на сторінці`
+                      : `1 · Selected ${selected.length} · ${eligibleIds.length} available on this page`}
                   </p>
                   <div className={styles.rowActions}>
                     <button
@@ -227,7 +271,7 @@ export function BackfillClient() {
                       type="button"
                       onClick={() => setSelected(eligibleIds)}
                     >
-                      {uk ? "Вибрати всі без запису" : "Select all missing"}
+                      {uk ? "Вибрати без запису на сторінці" : "Select missing on this page"}
                     </button>
                     <button
                       className={styles.textButton}
@@ -291,15 +335,17 @@ export function BackfillClient() {
                 {loading
                   ? (uk ? "Завантаження…" : "Loading…")
                   : (uk
-                    ? `${workouts.length} · галочка лише для bulk-створення`
-                    : `${workouts.length} · checkbox is for bulk create only`)}
+                    ? `${workouts.length} на сторінці · галочка лише для bulk-створення`
+                    : `${workouts.length} on this page · checkbox is for bulk create only`)}
               </p>
             </div>
           </div>
           <div className={styles.panelBody}>
             {workouts.length === 0 ? (
               <div className={styles.empty}>
-                <span>{uk ? "Немає канонічних силових workout." : "No canonical strength workouts."}</span>
+                <span>{page > 1
+                  ? (uk ? "На цій сторінці записів немає. Поверніться назад." : "No workouts on this page. Go back a page.")
+                  : (uk ? "Немає канонічних силових workout." : "No canonical strength workouts.")}</span>
               </div>
             ) : (
               <div className={styles.list}>
@@ -373,6 +419,19 @@ export function BackfillClient() {
                   );
                 })}
               </div>
+            )}
+            {(hasNext || page > 1) && (
+              <nav className={styles.pagination} aria-label={uk ? "Сторінки Garmin" : "Garmin pages"}>
+                <button type="button" className={styles.pageButton} disabled={page <= 1 || loading}
+                  onClick={() => router.push(pageHref(page - 1), { scroll: false })}>
+                  {uk ? "Назад" : "Previous"}
+                </button>
+                <span aria-live="polite">{uk ? `Сторінка ${page}` : `Page ${page}`}</span>
+                <button type="button" className={styles.pageButton} disabled={!hasNext || loading}
+                  onClick={() => router.push(pageHref(page + 1), { scroll: false })}>
+                  {uk ? "Далі" : "Next"}
+                </button>
+              </nav>
             )}
           </div>
         </section>

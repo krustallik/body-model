@@ -66,12 +66,12 @@ describe("/api/v1/training matching routes", () => {
 
   it("lists match-attention sessions", async () => {
     trainingService.listMatchAttention.mockResolvedValue([{ id: 42, matchStatus: MATCH_STATUS.AMBIGUOUS }]);
-    const response = await ATTENTION();
+    const response = await ATTENTION(new Request(`${base}?limit=5&offset=10`));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
       sessions: [{ id: 42, matchStatus: MATCH_STATUS.AMBIGUOUS }],
     });
-    expect(trainingService.listMatchAttention).toHaveBeenCalledOnce();
+    expect(trainingService.listMatchAttention).toHaveBeenCalledWith({ limit: 5, offset: 10 });
   });
 
   it("returns match candidates for a session", async () => {

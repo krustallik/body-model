@@ -13,7 +13,11 @@ export async function POST(request: Request): Promise<Response> {
   if (!parsed.success) return validationResponse(parsed.error);
 
   try {
-    const session = await trainingService.startSession(parsed.data.programId);
+    const session = await trainingService.startSession(
+      parsed.data.programId,
+      undefined,
+      parsed.data.timeZone,
+    );
     return Response.json({ session }, { status: 201 });
   } catch (error) {
     return trainingErrorResponse(error) ?? trainingInternalError();

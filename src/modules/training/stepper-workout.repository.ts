@@ -261,6 +261,20 @@ export class StepperWorkoutRepository {
         },
         select: stepperSelect,
       });
+      const linked = await transaction.strengthDiarySession.findFirst({
+        where: { matchedWorkoutId: id },
+        select: { id: true, effectiveAccountingAt: true },
+      });
+      if (linked && linked.effectiveAccountingAt?.getTime() !== startAt.getTime()) {
+        await transaction.strengthDiarySession.update({
+          where: { id: linked.id },
+          data: {
+            effectiveAccountingAt: startAt,
+            accountingInputRevision: { increment: 1 },
+            currentSnapshotRevision: null,
+          },
+        });
+      }
       await persistStepperReconciliationV1(transaction, { from: date, to: date });
       const [dto] = await attachReconciliation(transaction, [toDto(updated)]);
       return dto!;

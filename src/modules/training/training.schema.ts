@@ -2,6 +2,7 @@ import { z } from "zod";
 import { RESISTANCE, TRAINING_LIMITS } from "./training.constants";
 import { parseNullableNumericInput } from "@/modules/days/day.schema";
 import { loadConfigV1Schema, setExecutionOverrideV1Schema } from "./load-accounting-v1";
+import { isValidTimeZone } from "@/model/time-zone";
 
 export const ResistanceTypeSchema = z.enum([
   RESISTANCE.EXTERNAL_WEIGHT,
@@ -59,7 +60,16 @@ export const SessionSetParamsSchema = z.object({
 
 export const StartSessionSchema = z.object({
   programId: positiveInt,
+  /** Optional for old clients; omitted values use legacy-default provenance. */
+  timeZone: z.string().optional().refine((value) => value === undefined || isValidTimeZone(value)),
 }).strict();
+
+export const UpdateSessionAccountingContextSchema = z.object({
+  effectiveAccountingAt: z.string().datetime({ offset: true }).optional(),
+  timeZone: z.string().min(1).max(80).optional().refine((value) => value === undefined || isValidTimeZone(value)),
+}).strict().refine((value) => value.effectiveAccountingAt !== undefined || value.timeZone !== undefined, {
+  message: "provide effectiveAccountingAt or timeZone",
+});
 
 const nullableLoad = z.preprocess(
   parseNullableNumericInput,

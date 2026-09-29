@@ -1,7 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
-import { DEFAULT_TIME_ZONE, instantToLocalDateTime, localDateTimeToInstant } from "@/model/time-zone";
+import { DEFAULT_TIME_ZONE, instantToLocalDateTime, isValidTimeZone, localDateTimeToInstant } from "@/model/time-zone";
 import {
   DEFAULT_TRAINING_PROFILE_ID,
   ENTRY_MODE,
@@ -37,6 +37,7 @@ import { planProgramExerciseReconcile } from "./training.program-reconcile";
 import { trainingExerciseMappingSnapshotJsonV1 } from "./exercise-mapping-snapshot";
 import {
   TrainingRepository,
+  StaleAccountingCandidateError,
   trainingRepository,
   type OrderedProgramExerciseWrite,
 } from "./training.repository";
@@ -364,19 +365,85 @@ export class TrainingService {
   }
 
   async getActiveSession(profileId = DEFAULT_TRAINING_PROFILE_ID) {
-    if (typeof this.repo.finishInactiveSessions === "function") await this.repo.finishInactiveSessions({ profileId });
+    await this.finalizeInactiveSessions(profileId);
     return this.repo.getActiveSession(profileId);
   }
 
   async getSession(sessionId: number, profileId = DEFAULT_TRAINING_PROFILE_ID) {
-    if (typeof this.repo.finishInactiveSessions === "function") await this.repo.finishInactiveSessions({ profileId });
+    await this.finalizeInactiveSessions(profileId);
     return this.repo.getSession(sessionId, profileId);
+  }
+
+  async materializeSessionAccounting(
+    sessionId: number,
+    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    idempotencyKey?: string,
+  ) {
+    const revision = await this.repo.materializeAccounting({
+      sessionId, profileId, mode: "ordinary", idempotencyKey,
+    });
+    const session = await this.repo.getSession(sessionId, profileId);
+    if (!session) throw new SessionNotFoundError();
+    return { ...session, snapshotRevision: revision };
+  }
+
+  async refreshSessionAccounting(
+    sessionId: number,
+    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    idempotencyKey?: string,
+  ) {
+    const revision = await this.repo.materializeAccounting({
+      sessionId, profileId, mode: "refresh", idempotencyKey,
+    });
+    const session = await this.repo.getSession(sessionId, profileId);
+    if (!session) throw new SessionNotFoundError();
+    return { ...session, snapshotRevision: revision };
+  }
+
+  async updateSessionAccountingContext(
+    sessionId: number,
+    input: { effectiveAccountingAt?: string; timeZone?: string },
+    profileId = DEFAULT_TRAINING_PROFILE_ID,
+  ) {
+    if (input.timeZone !== undefined && !isValidTimeZone(input.timeZone)) {
+      throw new SetValidationError("invalid session accounting timezone");
+    }
+    await this.repo.updateAccountingContext({
+      sessionId,
+      profileId,
+      ...(input.effectiveAccountingAt ? { effectiveAccountingAt: new Date(input.effectiveAccountingAt) } : {}),
+      ...(input.timeZone !== undefined ? { timeZone: input.timeZone } : {}),
+    });
+    const session = await this.repo.getSession(sessionId, profileId);
+    if (!session) throw new SessionNotFoundError();
+    return session;
+  }
+
+  /** Existing lazy expiry behavior, now finalized with its persisted accounting result. */
+  private async finalizeInactiveSessions(profileId: number, now = new Date()): Promise<void> {
+    if (typeof this.repo.finishInactiveSessions !== "function") return;
+    const expired = await this.repo.finishInactiveSessions({ profileId, now });
+    for (const candidate of expired) {
+      await this.repo.materializeAccounting({
+        sessionId: candidate.id,
+        profileId,
+        mode: "ordinary",
+        idempotencyKey: `inactivity-finalize:${candidate.id}:${candidate.endAt.toISOString()}`,
+        finalizeAt: candidate.endAt,
+      }).catch((error) => {
+        // If another request finalized it, the idempotent operation/current
+        // snapshot is authoritative; otherwise preserve the active session.
+        if (!(error instanceof StaleAccountingCandidateError)) throw error;
+      });
+    }
   }
 
   async startSession(
     programId: number,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
+    accountingTimeZone?: string,
   ): Promise<StrengthSessionDto> {
+    await this.finalizeInactiveSessions(profileId);
     const active = await this.repo.getActiveSession(profileId);
     if (active) throw new ActiveSessionExistsError(active.id);
 
@@ -394,6 +461,8 @@ export class TrainingService {
         profileId,
         programId: program.id,
         programVersionId: program.currentVersion.id,
+        accountingTimeZone,
+        accountingTimeZoneProvenance: accountingTimeZone ? "client-session" : "legacy-default",
         exercises: program.currentVersion.exercises.map((exercise) => ({
           sourceExerciseCatalogId: exercise.exerciseCatalog.id,
           snapshotExerciseName: exercise.exerciseCatalog.name,
@@ -521,6 +590,7 @@ export class TrainingService {
         programId: program.id,
         programVersionId: program.version.id,
         matchedWorkoutId: workout.id,
+        effectiveAccountingAt: workout.startAt,
         exercises: program.version.exercises.map((exercise) => ({
           sourceExerciseCatalogId: exercise.exerciseCatalog.id,
           snapshotExerciseName: exercise.exerciseCatalog.name,
@@ -926,6 +996,7 @@ export class TrainingService {
       ) {
         await this.tryAutoMatchSession(sessionId, profileId);
       }
+      await this.repo.materializeAccounting({ sessionId, profileId, mode: "ordinary" });
       const refreshed = await this.repo.getSession(sessionId, profileId);
       if (!refreshed) throw new SessionNotFoundError();
       // Keep the shadow dependency chain ordered; its failure remains isolated
@@ -938,8 +1009,15 @@ export class TrainingService {
       throw new SessionNotFoundError();
     }
 
-    await this.repo.markSessionCompleted(sessionId, new Date());
+    await this.repo.materializeAccounting({
+      sessionId,
+      profileId,
+      mode: "ordinary",
+      idempotencyKey: `finish:${sessionId}:${session.updatedAt}`,
+      finalizeAt: new Date(),
+    });
     await this.tryAutoMatchSession(sessionId, profileId);
+    await this.repo.materializeAccounting({ sessionId, profileId, mode: "ordinary" });
     const refreshed = await this.repo.getSession(sessionId, profileId);
     if (!refreshed) throw new SessionNotFoundError();
     await this.recordExperimentalShadow({ session: refreshed, profileId }).catch(() => {});
@@ -1074,6 +1152,7 @@ export class TrainingService {
       }
     }
 
+    await this.repo.materializeAccounting({ sessionId, profileId, mode: "ordinary" });
     const refreshed = await this.repo.getSession(sessionId, profileId);
     if (!refreshed) throw new SessionNotFoundError();
     // A manual link can add Garmin diagnostic context after completion.

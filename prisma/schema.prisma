@@ -403,6 +403,15 @@ model StrengthDiarySession {
    * (program change, exercise/set mutations) for future rebuild fingerprints.
    */
   revision         Int                          @default(1)
+  /** Monotonic revision of inputs consumed by persisted Stage 02 accounting. */
+  accountingInputRevision Int                   @default(1)
+  /** Canonical event instant; never derived dynamically from a mutable Workout join. */
+  effectiveAccountingAt DateTime?                @db.Timestamptz(3)
+  /** Validated IANA timezone captured for accounting; null is legacy-only. */
+  accountingTimeZone String?                     @db.VarChar(80)
+  accountingTimeZoneProvenance String?            @db.VarChar(40)
+  /** Current snapshot pointer. Composite FK is added by the additive migration. */
+  currentSnapshotRevision Int?
   matchedWorkoutId Int?                         @unique
   /**
    * PENDING | MATCHED | AMBIGUOUS | UNMATCHED
@@ -424,11 +433,61 @@ model StrengthDiarySession {
   experimentalStrengthEnergyShadow ExperimentalStrengthEnergyShadow?
   experimentalStrengthGlycogenDemandShadow ExperimentalStrengthGlycogenDemandShadow?
   experimentalTransientExerciseWaterShadow ExperimentalTransientExerciseWaterShadow?
+  accountingSnapshots StrengthSessionAccountingSnapshot[] @relation("SessionAccountingSnapshots")
+  currentAccountingSnapshot StrengthSessionAccountingSnapshot? @relation("CurrentSessionAccountingSnapshot", fields: [id, currentSnapshotRevision], references: [sessionId, snapshotRevision], onDelete: NoAction, onUpdate: NoAction)
+  accountingOperations StrengthSessionAccountingOperation[]
 
   @@index([profileId, status])
   @@index([profileId, webStartedAt])
   @@index([profileId, entryMode])
   @@index([matchStatus])
+  @@unique([id, currentSnapshotRevision])
+}
+
+model StrengthSessionAccountingSnapshot {
+  id                         Int                  @id @default(autoincrement())
+  sessionId                  Int
+  snapshotRevision           Int
+  accountingInputRevision    Int
+  inputFingerprint           String               @db.VarChar(64)
+  effectiveLocalDate         String               @db.VarChar(10)
+  timeZone                   String               @db.VarChar(80)
+  timeZoneProvenance         String               @db.VarChar(40)
+  accountingMethodVersion    String               @db.VarChar(80)
+  massResolutionMethodVersion String              @db.VarChar(80)
+  massResolutionIdentity     String               @db.VarChar(160)
+  payloadVersion             String               @db.VarChar(80)
+  payload                    Json
+  createdAt                  DateTime             @default(now()) @db.Timestamptz(3)
+  session                    StrengthDiarySession @relation("SessionAccountingSnapshots", fields: [sessionId], references: [id], onDelete: Cascade)
+  currentFor                 StrengthDiarySession? @relation("CurrentSessionAccountingSnapshot")
+  operations                 StrengthSessionAccountingOperation[]
+
+  @@unique([sessionId, snapshotRevision])
+  @@index([sessionId, accountingInputRevision])
+  @@index([sessionId, inputFingerprint])
+}
+
+model StrengthSessionAccountingOperation {
+  id                      Int                  @id @default(autoincrement())
+  sessionId               Int
+  idempotencyKey          String               @db.VarChar(160)
+  requestDigest           String               @db.VarChar(64)
+  status                  StrengthAccountingOperationStatus
+  resultSnapshotRevision  Int?
+  createdAt               DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt               DateTime             @updatedAt @db.Timestamptz(3)
+  session                 StrengthDiarySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  resultSnapshot          StrengthSessionAccountingSnapshot? @relation(fields: [sessionId, resultSnapshotRevision], references: [sessionId, snapshotRevision], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([sessionId, idempotencyKey])
+  @@index([sessionId, status, createdAt])
+}
+
+enum StrengthAccountingOperationStatus {
+  PENDING
+  COMPLETED
+  RETRYABLE
 }
 
 /**

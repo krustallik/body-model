@@ -138,6 +138,9 @@ export type StrengthSessionDto = {
   /** Null for RETROSPECTIVE — no live web Start Workout occurred. */
   webStartedAt: string | null;
   webEndedAt: string | null;
+  effectiveAccountingAt?: string | null;
+  accountingTimeZone?: string | null;
+  accountingTimeZoneProvenance?: string | null;
   matchStatus: MatchStatus;
   matchMethod: MatchMethod | null;
   matchedAt: string | null;
@@ -147,6 +150,8 @@ export type StrengthSessionDto = {
   selectedActiveEnergy?: SelectedActiveEnergyDto;
   exercises: StrengthSessionExerciseDto[];
   ordinaryTonnageKg: number | null;
+  /** Whether the persisted Stage 02 result matches the current accounting inputs. */
+  materializationState?: "current" | "missing" | "pending" | "stale";
   loadAccountingV1?: LoadAccountingOutputV1;
   autoAdvanceExercises?: boolean;
   loggedSets?: number;

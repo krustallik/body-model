@@ -224,6 +224,7 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       });
       expect(asymmetricSet.reps).toBe(12);
 
+      await service.materializeSessionAccounting(session.id);
       const stillActive = await service.getSession(session.id);
       expect(stillActive?.status).toBe("ACTIVE");
       expect(stillActive?.exercises[0]?.sets.map(({ reps }) => reps)).toEqual([12, 12]);
@@ -298,6 +299,41 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       const thirdSet = await service.createSet(session.id, exerciseId, { reps: 6, weightKg: 5, rir: 3 });
       expect(thirdSet).toMatchObject({ reps: 6, rir: 3, loadAccountingOverride: null });
 
+      const snapshotA = await service.materializeSessionAccounting(session.id, undefined, "stage02-a-b-a-first");
+      const repeatedA = await service.materializeSessionAccounting(session.id, undefined, "stage02-a-b-a-first");
+      expect(repeatedA.snapshotRevision).toBe(snapshotA.snapshotRevision);
+      const concurrentA = await Promise.all([
+        service.materializeSessionAccounting(session.id),
+        service.materializeSessionAccounting(session.id),
+      ]);
+      expect(concurrentA.map(({ snapshotRevision }) => snapshotRevision)).toEqual([
+        snapshotA.snapshotRevision, snapshotA.snapshotRevision,
+      ]);
+
+      await service.updateSet(session.id, firstSet.id, { reps: 20 });
+      const snapshotB = await service.materializeSessionAccounting(session.id);
+      await service.updateSet(session.id, firstSet.id, { reps: 12 });
+      const snapshotAAgain = await service.materializeSessionAccounting(session.id);
+      expect(snapshotB.snapshotRevision).toBeGreaterThan(snapshotA.snapshotRevision!);
+      expect(snapshotAAgain.snapshotRevision).toBeGreaterThan(snapshotB.snapshotRevision!);
+      const revisions = await db.strengthSessionAccountingSnapshot.findMany({
+        where: { sessionId: session.id },
+        orderBy: { snapshotRevision: "asc" },
+        select: { snapshotRevision: true, inputFingerprint: true },
+      });
+      expect(revisions).toHaveLength(3);
+      expect(revisions[0]!.inputFingerprint).not.toBe(revisions[1]!.inputFingerprint);
+      expect(revisions[0]!.inputFingerprint).toBe(revisions[2]!.inputFingerprint);
+
+      const contextChanged = await service.updateSessionAccountingContext(session.id, {
+        effectiveAccountingAt: "2026-09-29T12:00:00.000Z",
+        timeZone: "Europe/Bratislava",
+      });
+      expect(contextChanged.materializationState).toBe("missing");
+      const contextSnapshot = await service.materializeSessionAccounting(session.id);
+      expect(contextSnapshot.accountingTimeZone).toBe("Europe/Bratislava");
+      expect(contextSnapshot.effectiveAccountingAt).toBe("2026-09-29T12:00:00.000Z");
+
       const reloadedActive = await service.getSession(session.id);
       expect(reloadedActive?.status).toBe("ACTIVE");
       expect(reloadedActive?.exercises[0]?.loadAccountingConfigSnapshot).toEqual(initialSnapshot);
@@ -350,6 +386,63 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
           await tx.exerciseLoadConfiguration.deleteMany({ where: { id: mutatedConfigId! } });
         });
       }
+    }
+  });
+
+  it("keeps a materialized observed mass after source deletion and uses it for edited repetitions", async () => {
+    const db = prisma!;
+    let programId: number | null = null;
+    let sessionId: number | null = null;
+    let sourceId: number | null = null;
+    try {
+      const { TrainingService } = await import("../../src/modules/training/training.service");
+      const { instantToLocalDateTime, localDateTimeToInstant } = await import("../../src/model/time-zone");
+      const service = new TrainingService(db);
+      const catalog = await db.exerciseCatalog.findUniqueOrThrow({
+        where: { profileId_stableKey: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID, stableKey: "pull_up" } },
+        select: { id: true },
+      });
+      const program = await service.createProgram({
+        name: `stage02-mass-snapshot-${Date.now()}`,
+        exercises: [{ catalogId: catalog.id, plannedSets: 1, resistanceType: "BODYWEIGHT" }],
+      }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      programId = program.id;
+      const session = await service.startSession(program.id, TRAINING_HISTORY_STAGE01_PROFILE_ID, "Europe/Bratislava");
+      sessionId = session.id;
+      const localDate = instantToLocalDateTime(new Date(session.webStartedAt!), "Europe/Bratislava").date;
+      const sample = await db.healthMetricSample.create({
+        data: {
+          date: localDate,
+          metric: "weight-kg",
+          source: "apple-health-shortcut",
+          timestamp: localDateTimeToInstant(localDate, "12:00", "Europe/Bratislava"),
+          value: 87,
+        },
+        select: { id: true },
+      });
+      sourceId = sample.id;
+      const exercise = session.exercises[0]!;
+      const set = await service.createSet(session.id, exercise.id, { reps: 18 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      const initial = await service.materializeSessionAccounting(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      expect(initial.loadAccountingV1?.bodyweight.referenceVolume.value).toBe(1566);
+      expect(initial.loadAccountingV1?.bodyweight.reference).toMatchObject({
+        status: "observed", valueKg: 87, source: "apple-health-shortcut",
+      });
+
+      await db.healthMetricSample.delete({ where: { id: sample.id } });
+      const afterDelete = await service.getSession(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      expect(afterDelete?.loadAccountingV1?.bodyweight.referenceVolume.value).toBe(1566);
+
+      await service.updateSet(session.id, set.id, { reps: 20 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      const edited = await service.materializeSessionAccounting(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      expect(edited.loadAccountingV1?.bodyweight.reference).toMatchObject({
+        status: "observed", valueKg: 87, source: "apple-health-shortcut",
+      });
+      expect(edited.loadAccountingV1?.bodyweight.referenceVolume.value).toBe(1740);
+    } finally {
+      if (sourceId !== null) await db.healthMetricSample.deleteMany({ where: { id: sourceId } });
+      if (sessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: sessionId } });
+      if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });
     }
   });
 

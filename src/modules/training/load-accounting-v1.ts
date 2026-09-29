@@ -316,6 +316,17 @@ export type BodyweightReferenceV1 =
       sourceId: string;
     }
   | {
+      status: "nearest-observed";
+      valueKg: number;
+      /** Requested session local date; observationLocalDate is the actual sample date. */
+      localDate: string;
+      observationLocalDate: string;
+      dayOffset: number;
+      approximate: true;
+      source: "apple-health-shortcut";
+      sourceId: string;
+    }
+  | {
       status: "model-estimated";
       valueKg: number;
       localDate: string;
@@ -748,11 +759,14 @@ export function calculateLoadAccountingV1(
         }
         if (validReferenceForDate(reference, input.localDate)) {
           addProvenance(bodyweightReferenceVolume, reference.status === "observed"
+            || reference.status === "nearest-observed"
             ? {
               kind: "bodyweight-observation",
-              version: reference.source,
+              version: reference.status === "nearest-observed"
+                ? "apple-health-shortcut-nearest-v2" : reference.source,
               sourceId: reference.sourceId,
-              localDate: reference.localDate,
+              localDate: reference.status === "nearest-observed"
+                ? reference.observationLocalDate : reference.localDate,
               stableKey: exercise.identity.stableKey ?? undefined,
             }
             : {

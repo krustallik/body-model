@@ -216,6 +216,20 @@ async function reconcileDayWorkouts(
         activeEnergyKcal: update.fields.activeEnergyKcal,
       },
     });
+    const linked = await transaction.strengthDiarySession.findFirst({
+      where: { matchedWorkoutId: update.id },
+      select: { id: true, effectiveAccountingAt: true },
+    });
+    if (linked && linked.effectiveAccountingAt?.getTime() !== update.fields.startAt.getTime()) {
+      await transaction.strengthDiarySession.update({
+        where: { id: linked.id },
+        data: {
+          effectiveAccountingAt: update.fields.startAt,
+          accountingInputRevision: { increment: 1 },
+          currentSnapshotRevision: null,
+        },
+      });
+    }
   }
 
   // Use the composite unique identity for creates so concurrent retries

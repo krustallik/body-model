@@ -37,6 +37,7 @@ function repositoryFixture(existingDates: string[] = [], existingWorkouts: Array
     healthMetricSample: {
       upsert: vi.fn().mockResolvedValue({ id: 1 }),
     },
+    strengthDiarySession: { findFirst: vi.fn().mockResolvedValue(null) },
     healthActivityInterval: {
       createMany: vi.fn().mockResolvedValue({ count: 1 }),
       deleteMany: vi.fn().mockResolvedValue({ count: 1 }),

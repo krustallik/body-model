@@ -465,7 +465,7 @@ describe("Live training session mobile UI", () => {
     });
   });
 
-  it("loads accounting from session GET and refreshes only through the explicit endpoint", async () => {
+  it("loads accounting from session GET, materializes missing snapshots ordinarily, and refreshes explicitly", async () => {
     const user = userEvent.setup();
     const initial = buildSession({ materializationState: "missing" });
     const current = buildSession({
@@ -492,22 +492,29 @@ describe("Live training session mobile UI", () => {
     const calls: Array<{ url: string; method?: string }> = [];
     stubSessionFetch(initial, (url, init) => {
       calls.push({ url, method: init?.method });
+      if (url.endsWith("/accounting/materialize") && init?.method === "POST") {
+        return Response.json({ session: current });
+      }
       if (url.endsWith("/accounting/refresh") && init?.method === "POST") {
         return Response.json({ session: current });
       }
       if (url === "/api/v1/training/sessions/42" && !init?.method) {
-        return Response.json({ session: calls.some((call) => call.url.endsWith("/accounting/refresh")) ? current : initial });
+        return Response.json({ session: calls.some((call) => call.url.endsWith("/accounting/materialize")) ? current : initial });
       }
       return null;
     });
     const { unmount } = render(<SessionClient sessionId={42} />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Створити знімок обліку" })).toBeTruthy());
+    expect(calls.some((call) => call.method === "POST" && call.url.includes("/accounting/"))).toBe(false);
     await user.click(screen.getByRole("button", { name: "Створити знімок обліку" }));
     await waitFor(() => expect(screen.getByText(/4\s?667/)).toBeTruthy());
-    expect(calls.some((call) => call.url.endsWith("/accounting/refresh") && call.method === "POST")).toBe(true);
+    expect(calls.some((call) => call.url.endsWith("/accounting/materialize") && call.method === "POST")).toBe(true);
+    expect(calls.some((call) => call.url.endsWith("/accounting/refresh") && call.method === "POST")).toBe(false);
     unmount();
     render(<SessionClient sessionId={42} />);
     await waitFor(() => expect(screen.getByText(/4\s?667/)).toBeTruthy());
+    await user.click(screen.getByRole("button", { name: "Оновити облік" }));
+    await waitFor(() => expect(calls.some((call) => call.url.endsWith("/accounting/refresh") && call.method === "POST")).toBe(true));
   });
 
   it("offers to finish after filling the last planned set of the last exercise", async () => {

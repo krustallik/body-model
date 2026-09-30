@@ -1624,11 +1624,36 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       expect(afterDelete?.loadAccountingV1?.bodyweight.referenceVolume.value).toBe(1566);
 
       await service.updateSet(session.id, set.id, { reps: 20 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
-      const edited = await service.materializeSessionAccounting(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      const invalidated = await db.strengthDiarySession.findUniqueOrThrow({
+        where: { id: session.id },
+        select: { currentSnapshotRevision: true },
+      });
+      expect(invalidated.currentSnapshotRevision).toBeNull();
+
+      // Exercise the exact route used by the missing-snapshot UI action. This
+      // must use ordinary materialization so the previously persisted mass is
+      // reused after its HealthMetricSample source has been deleted.
+      const materializeRoute = await import("../../src/app/api/v1/training/sessions/[id]/accounting/materialize/route");
+      const response = await materializeRoute.POST(
+        new Request(`http://localhost/api/v1/training/sessions/${session.id}/accounting/materialize`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ idempotencyKey: `stage02-frozen-mass-${session.id}` }),
+        }),
+        { params: Promise.resolve({ id: String(session.id) }) },
+      );
+      expect(response.status).toBe(200);
+      const materializeBody = await response.json() as { session: Awaited<ReturnType<typeof service.materializeSessionAccounting>> };
+      const edited = materializeBody.session;
+      if (!edited) throw new Error("ordinary materialization route returned no session");
       expect(edited.loadAccountingV1?.bodyweight.reference).toMatchObject({
         status: "observed", valueKg: 87, source: "apple-health-shortcut",
       });
       expect(edited.loadAccountingV1?.bodyweight.referenceVolume.value).toBe(1740);
+      expect(await db.strengthDiarySession.findUniqueOrThrow({
+        where: { id: session.id },
+        select: { currentSnapshotRevision: true },
+      })).toMatchObject({ currentSnapshotRevision: edited.snapshotRevision });
       const persistedSnapshots = await db.strengthSessionAccountingSnapshot.findMany({
         where: { sessionId: session.id },
         orderBy: { snapshotRevision: "asc" },

@@ -12,6 +12,7 @@ import styles from "./training.module.css";
 type Props = {
   session: StrengthSessionDto;
   uk: boolean;
+  onMaterialize?: () => void;
   onRefresh?: () => void;
   refreshing?: boolean;
   error?: string | null;
@@ -198,7 +199,7 @@ function BreakdownRow({ row, uk }: { row: LoadAccountingBreakdownRowV1; uk: bool
   );
 }
 
-export function SessionAccountingPanel({ session, uk, onRefresh, refreshing = false, error = null }: Props) {
+export function SessionAccountingPanel({ session, uk, onMaterialize, onRefresh, refreshing = false, error = null }: Props) {
   const reportedState = session.materializationState ?? (session.loadAccountingV1 ? "current" : "missing");
   const state = reportedState === "current" && !session.loadAccountingV1 ? "error" : reportedState;
   const accounting = state === "current" ? session.loadAccountingV1 : undefined;
@@ -259,9 +260,14 @@ export function SessionAccountingPanel({ session, uk, onRefresh, refreshing = fa
             </div>
           </>
         )}
-        {onRefresh && state !== "pending" && (
+        {(state === "missing" ? onMaterialize : onRefresh) && state !== "pending" && (
           <div className={styles.accountingRefreshRow}>
-            <button type="button" className={styles.secondaryButton} onClick={onRefresh} disabled={refreshing}>
+            <button
+              type="button"
+              className={styles.secondaryButton}
+              onClick={state === "missing" ? onMaterialize : onRefresh}
+              disabled={refreshing}
+            >
               {refreshing
                 ? (uk ? "Оновлення обліку…" : "Refreshing accounting…")
                 : state === "missing"

@@ -158,11 +158,13 @@ describe("persisted session accounting UI", () => {
   });
 
   it("handles missing, pending, stale, and legacy snapshots without presenting stale values as current", async () => {
+    const onMaterialize = vi.fn();
     const onRefresh = vi.fn();
-    const { rerender } = render(<SessionAccountingPanel session={session({ materializationState: "missing", loadAccountingV1: undefined, loadAccountingBreakdown: undefined })} uk onRefresh={onRefresh} />);
+    const { rerender } = render(<SessionAccountingPanel session={session({ materializationState: "missing", loadAccountingV1: undefined, loadAccountingBreakdown: undefined })} uk onMaterialize={onMaterialize} onRefresh={onRefresh} />);
     expect(screen.getAllByText("Знімок ще не створено")).toHaveLength(2);
     await userEvent.setup().click(screen.getByRole("button", { name: "Створити знімок обліку" }));
-    expect(onRefresh).toHaveBeenCalledTimes(1);
+    expect(onMaterialize).toHaveBeenCalledTimes(1);
+    expect(onRefresh).not.toHaveBeenCalled();
 
     rerender(<SessionAccountingPanel session={session({ materializationState: "pending" })} uk onRefresh={onRefresh} />);
     expect(screen.getAllByText("Облік очікує завершення")).toHaveLength(2);
@@ -172,6 +174,8 @@ describe("persisted session accounting UI", () => {
     expect(screen.getAllByText("Знімок застарів після змін")).toHaveLength(2);
     expect(screen.queryByText("4 667")).toBeNull();
     expect(screen.getByRole("button", { name: "Оновити облік" })).toBeTruthy();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Оновити облік" }));
+    expect(onRefresh).toHaveBeenCalledTimes(1);
 
     rerender(<SessionAccountingPanel session={session({ loadAccountingBreakdown: { status: "unavailable", reason: "legacy-snapshot-no-breakdown" } })} uk />);
     expect(screen.getByText(/Підсумки цього старого знімка/)).toBeTruthy();

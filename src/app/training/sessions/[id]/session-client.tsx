@@ -313,15 +313,15 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     }
   }
 
-  async function refreshAccounting() {
+  async function runAccountingAction(mode: "materialize" | "refresh") {
     if (!session) return;
     setRefreshingAccounting(true);
     setAccountingError(null);
     try {
-      const response = await fetch(`/api/v1/training/sessions/${session.id}/accounting/refresh`, {
+      const response = await fetch(`/api/v1/training/sessions/${session.id}/accounting/${mode}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ idempotencyKey: `ui-refresh-${session.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }),
+        body: JSON.stringify({ idempotencyKey: `ui-${mode}-${session.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }),
       });
       if (!response.ok) {
         setAccountingError(await readApiError(response, uk));
@@ -331,7 +331,9 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
       setSession(body.session);
       setError(null);
     } catch {
-      setAccountingError(uk ? "Не вдалося оновити облік." : "Could not refresh accounting.");
+      setAccountingError(mode === "refresh"
+        ? (uk ? "Не вдалося оновити облік." : "Could not refresh accounting.")
+        : (uk ? "Не вдалося створити знімок обліку." : "Could not create accounting snapshot."));
     } finally {
       setRefreshingAccounting(false);
     }
@@ -560,7 +562,8 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
           <SessionAccountingPanel
             session={session}
             uk={uk}
-            onRefresh={() => void refreshAccounting()}
+            onMaterialize={() => void runAccountingAction("materialize")}
+            onRefresh={() => void runAccountingAction("refresh")}
             refreshing={refreshingAccounting}
             error={accountingError}
           />
@@ -626,7 +629,8 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         <SessionAccountingPanel
           session={session}
           uk={uk}
-          onRefresh={() => void refreshAccounting()}
+          onMaterialize={() => void runAccountingAction("materialize")}
+          onRefresh={() => void runAccountingAction("refresh")}
           refreshing={refreshingAccounting}
           error={accountingError}
         />

@@ -400,6 +400,103 @@ export type LoadAccountingSessionInputV1 = {
   bodyweightReference?: BodyweightReferenceV1;
 };
 
+export const LOAD_ACCOUNTING_BREAKDOWN_SCHEMA_V1 = "bodycast-load-accounting-breakdown-v1" as const;
+
+export type LoadAccountingBreakdownCategoryV1 =
+  | "externalLoadVolume"
+  | "bandNominalPerLoggedSide"
+  | "bandNominalLeftSide"
+  | "bandNominalRightSide"
+  | "bodyweightSets"
+  | "bodyweightRepetitions"
+  | "bodyweightReferenceVolume"
+  | "additionalLoad"
+  | "assistanceLoad";
+
+export type LoadAccountingBreakdownBasisV1 =
+  | "per-implement-kg"
+  | "complete-setup-kg"
+  | "nominal-kg-per-logged-side"
+  | "bodyweight-reference"
+  | "sets"
+  | "repetitions"
+  | "additional-load-kg"
+  | "assistance-load-kg";
+
+export type LoadAccountingBreakdownUnitV1 =
+  | "kg-repetitions"
+  | "nominal-kg-repetitions-per-logged-side"
+  | "nominal-kg-repetitions-per-side"
+  | "sets"
+  | "repetitions"
+  | "bodyweight-reference-kg-repetitions";
+
+export type LoadAccountingBreakdownContributionV1 = {
+  category: LoadAccountingBreakdownCategoryV1;
+  basis: LoadAccountingBreakdownBasisV1;
+  unit: LoadAccountingBreakdownUnitV1;
+  value: number | null;
+  effectiveMultiplier: number | null;
+  availability: "available" | "unavailable";
+  unavailableReason: OmitReason | null;
+  provenance: ConfigProvenanceV1[];
+};
+
+export type LoadAccountingBreakdownRowV1 = {
+  accountingMethodVersion: typeof LOAD_ACCOUNTING_METHOD_V1;
+  sessionId: number;
+  sessionExerciseId: number;
+  exerciseOrder: number;
+  exerciseName: string;
+  stableKey: string | null;
+  identityStatus: IdentityStatusV1;
+  strengthSetId: number;
+  setNumber: number;
+  scalarReps: number | null;
+  effectiveReps: number | null;
+  asymmetricReps: { left: number; right: number } | null;
+  enteredLoad: { externalKg: number | null; bandNominalKg: number | null };
+  config: {
+    sourceSnapshot: LoadConfigV1 | null;
+    resolved: LoadConfigV1 | null;
+    effective: LoadConfigV1 | null;
+    provenance: ConfigProvenanceV1 | null;
+    resolution: "resolved" | "unresolved";
+    unavailableReason: OmitReason | null;
+  };
+  override: {
+    snapshot: SetExecutionOverrideV1 | null;
+    status: "absent" | "valid" | "invalid";
+  };
+  mechanics: {
+    inventoryCount: 1 | 2;
+    loadedSides: 1 | 2;
+    execution: LoadConfigV1["execution"];
+    implementsPerMovement: 1 | 2 | null;
+    effectiveMultiplier: number;
+  } | null;
+  contributions: LoadAccountingBreakdownContributionV1[];
+};
+
+export type LoadAccountingBreakdownV1 = {
+  schemaVersion: typeof LOAD_ACCOUNTING_BREAKDOWN_SCHEMA_V1;
+  accountingMethodVersion: typeof LOAD_ACCOUNTING_METHOD_V1;
+  rows: LoadAccountingBreakdownRowV1[];
+};
+
+type LoadAccountingBreakdownInputV1 = Omit<LoadAccountingSessionInputV1, "exercises"> & {
+  sessionId: number;
+  exercises: readonly (Omit<LoadAccountingExerciseInputV1, "sets"> & {
+    sessionExerciseId: number;
+    exerciseOrder: number;
+    exerciseName: string;
+    sets: readonly (LoadAccountingSetInputV1 & {
+      strengthSetId: number;
+      setNumber: number;
+    })[];
+  })[];
+};
+
 type OmitReason =
   | "unknown-identity"
   | "ambiguous-identity"
@@ -635,9 +732,25 @@ function appendIdentityIssue(
  * Pure calculator. StrengthSet.reps remains intact for old consumers; an
  * asymmetric override replaces it completely for this method version.
  */
-export function calculateLoadAccountingV1(
+function implementsPerMovementForBreakdown(
+  config: LoadConfigV1,
+): 1 | 2 | null {
+  return config.accountingKind === "external-per-implement-per-movement"
+    ? config.implementsPerMovement
+    : null;
+}
+
+type BreakdownTarget = {
+  accumulator: MetricAccumulator;
+  category: LoadAccountingBreakdownCategoryV1;
+  unit: LoadAccountingBreakdownUnitV1;
+  fallbackBasis: LoadAccountingBreakdownBasisV1;
+};
+
+function calculateLoadAccountingCoreV1(
   input: LoadAccountingSessionInputV1,
-): LoadAccountingOutputV1 {
+  captureBreakdown: boolean,
+): { result: LoadAccountingOutputV1; rows: LoadAccountingBreakdownRowV1[] } {
   const external = accumulator();
   const bandLoggedSide = accumulator();
   const bandLeft = accumulator();
@@ -655,6 +768,111 @@ export function calculateLoadAccountingV1(
   const reference = validReferenceForDate(input.bodyweightReference, input.localDate)
     ? input.bodyweightReference
     : emptyReference(input.localDate);
+  const rows: LoadAccountingBreakdownRowV1[] = [];
+  const breakdownInput = input as Partial<LoadAccountingBreakdownInputV1>;
+
+  function targetFor(target: MetricAccumulator): BreakdownTarget {
+    if (target === external) return {
+      accumulator: target, category: "externalLoadVolume", unit: "kg-repetitions",
+      fallbackBasis: "per-implement-kg",
+    };
+    if (target === bandLoggedSide) return {
+      accumulator: target, category: "bandNominalPerLoggedSide",
+      unit: "nominal-kg-repetitions-per-logged-side",
+      fallbackBasis: "nominal-kg-per-logged-side",
+    };
+    if (target === bandLeft) return {
+      accumulator: target, category: "bandNominalLeftSide",
+      unit: "nominal-kg-repetitions-per-side", fallbackBasis: "nominal-kg-per-logged-side",
+    };
+    if (target === bandRight) return {
+      accumulator: target, category: "bandNominalRightSide",
+      unit: "nominal-kg-repetitions-per-side", fallbackBasis: "nominal-kg-per-logged-side",
+    };
+    if (target === bodyweightSets) return {
+      accumulator: target, category: "bodyweightSets", unit: "sets", fallbackBasis: "sets",
+    };
+    if (target === bodyweightReps) return {
+      accumulator: target, category: "bodyweightRepetitions", unit: "repetitions",
+      fallbackBasis: "repetitions",
+    };
+    if (target === bodyweightReferenceVolume) return {
+      accumulator: target, category: "bodyweightReferenceVolume",
+      unit: "bodyweight-reference-kg-repetitions", fallbackBasis: "bodyweight-reference",
+    };
+    if (target === additional) return {
+      accumulator: target, category: "additionalLoad", unit: "kg-repetitions",
+      fallbackBasis: "additional-load-kg",
+    };
+    return {
+      accumulator: target, category: "assistanceLoad", unit: "kg-repetitions",
+      fallbackBasis: "assistance-load-kg",
+    };
+  }
+
+  function emit(
+    row: LoadAccountingBreakdownRowV1 | null,
+    target: MetricAccumulator,
+    state: {
+      value: number | null;
+      reason: OmitReason | null;
+      config: LoadConfigV1 | null;
+      effectiveMultiplier: number | null;
+      provenance: ConfigProvenanceV1 | null;
+      additionalProvenance?: ConfigProvenanceV1;
+    },
+  ): void {
+    if (!row) return;
+    const targetInfo = targetFor(target);
+    const provenance = [
+      ...(state.provenance ? [state.provenance] : []),
+      ...(state.additionalProvenance ? [state.additionalProvenance] : []),
+    ];
+    const basis = targetInfo.category === "additionalLoad" || targetInfo.category === "assistanceLoad"
+      || targetInfo.category === "bodyweightSets" || targetInfo.category === "bodyweightRepetitions"
+      ? targetInfo.fallbackBasis
+      : state.config?.loadInput ?? targetInfo.fallbackBasis;
+    row.contributions.push({
+      category: targetInfo.category,
+      basis,
+      unit: targetInfo.unit,
+      value: state.value,
+      effectiveMultiplier: state.effectiveMultiplier,
+      availability: state.reason === null ? "available" : "unavailable",
+      unavailableReason: state.reason,
+      provenance,
+    });
+  }
+
+  function omitWithBreakdown(
+    target: MetricAccumulator,
+    reason: OmitReason,
+    row: LoadAccountingBreakdownRowV1 | null,
+    config: LoadConfigV1 | null,
+    provenance: ConfigProvenanceV1 | null,
+  ): void {
+    omit(target, reason);
+    emit(row, target, {
+      value: null, reason, config,
+      effectiveMultiplier: row?.mechanics?.effectiveMultiplier ?? null,
+      provenance,
+    });
+  }
+
+  function contributeWithBreakdown(
+    target: MetricAccumulator,
+    value: number,
+    provenance: ConfigProvenanceV1,
+    row: LoadAccountingBreakdownRowV1 | null,
+    config: LoadConfigV1,
+    effectiveMultiplier: number,
+    additionalProvenance?: ConfigProvenanceV1,
+  ): void {
+    contribute(target, value, provenance);
+    emit(row, target, {
+      value, reason: null, config, effectiveMultiplier, provenance, additionalProvenance,
+    });
+  }
 
   for (const exercise of input.exercises) {
     appendIdentityIssue(identityCoverage, exercise.identity.status);
@@ -663,7 +881,48 @@ export function calculateLoadAccountingV1(
     const candidateResistance = resolved.config?.resistanceType ?? hint;
     if (!resolved.config && candidateResistance === null) continue;
 
+    const sourceConfig = exercise.configSnapshot == null
+      ? null
+      : loadConfigV1Schema.safeParse(exercise.configSnapshot);
+    const sourceSnapshot = sourceConfig?.success ? sourceConfig.data : null;
+
     for (const set of exercise.sets) {
+      let row: LoadAccountingBreakdownRowV1 | null = null;
+      if (captureBreakdown) {
+        const breakdownExercise = exercise as LoadAccountingBreakdownInputV1["exercises"][number];
+        const breakdownSet = set as LoadAccountingBreakdownInputV1["exercises"][number]["sets"][number];
+        row = {
+          accountingMethodVersion: LOAD_ACCOUNTING_METHOD_V1,
+          sessionId: breakdownInput.sessionId!,
+          sessionExerciseId: breakdownExercise.sessionExerciseId,
+          exerciseOrder: breakdownExercise.exerciseOrder,
+          exerciseName: breakdownExercise.exerciseName,
+          stableKey: exercise.identity.stableKey,
+          identityStatus: exercise.identity.status,
+          strengthSetId: breakdownSet.strengthSetId,
+          setNumber: breakdownSet.setNumber,
+          scalarReps: set.reps,
+          effectiveReps: null,
+          asymmetricReps: null,
+          enteredLoad: {
+            externalKg: set.weightKg,
+            bandNominalKg: set.bandNominalResistanceKg,
+          },
+          config: {
+            sourceSnapshot,
+            resolved: resolved.config,
+            effective: null,
+            provenance: resolved.provenance,
+            resolution: resolved.config ? "resolved" : "unresolved",
+            unavailableReason: resolved.omittedReason,
+          },
+          override: { snapshot: null, status: "absent" },
+          mechanics: null,
+          contributions: [],
+        };
+        rows.push(row);
+      }
+
       const candidate = candidateResistance;
       const targets = candidate === "external" ? [external]
         : candidate === "band-nominal" ? [bandLoggedSide]
@@ -673,30 +932,40 @@ export function calculateLoadAccountingV1(
 
       if (!resolved.config || !resolved.provenance) {
         const reason = resolved.omittedReason ?? "unknown-identity";
-        for (const target of targets) omit(target, reason);
+        for (const target of targets) omitWithBreakdown(target, reason, row, null, null);
         continue;
       }
       if (!configMatchesResistanceHint(resolved.config, hint)) {
-        for (const target of targets) omit(target, "invalid-configuration");
+        for (const target of targets) omitWithBreakdown(target, "invalid-configuration", row, resolved.config, resolved.provenance);
         continue;
       }
       const parsed = parsedOverride(set.override);
+      if (row) row.override = {
+        snapshot: parsed === "invalid" ? null : parsed,
+        status: parsed === "invalid" ? "invalid" : parsed ? "valid" : "absent",
+      };
       if (parsed === "invalid") {
-        for (const target of targets) omit(target, "invalid-set-override");
+        for (const target of targets) omitWithBreakdown(target, "invalid-set-override", row, resolved.config, resolved.provenance);
         continue;
       }
       const override = parsed;
       const config = effectiveConfig(resolved.config, override);
       if (!config) {
-        for (const target of targets) omit(target, "invalid-set-override");
+        for (const target of targets) omitWithBreakdown(target, "invalid-set-override", row, resolved.config, resolved.provenance);
         continue;
       }
+      if (row) row.config.effective = config;
 
       const reps = repsForSet(set.reps, config.repsMeaning, config.loadedSides, override);
       if (reps === null) {
         const reason = override?.reps ? "invalid-set-override" : "missing-repetitions";
-        for (const target of targets) omit(target, reason);
+        for (const target of targets) omitWithBreakdown(target, reason, row, config, resolved.provenance);
         continue;
+      }
+      if (row) {
+        row.effectiveReps = reps.total;
+        row.asymmetricReps = reps.left === undefined || reps.right === undefined
+          ? null : { left: reps.left, right: reps.right };
       }
       const provenance: ConfigProvenanceV1 = override
         ? { kind: "set-override", version: config.configVersion, stableKey: exercise.identity.stableKey ?? undefined }
@@ -704,61 +973,84 @@ export function calculateLoadAccountingV1(
       const actualReps = reps.total;
 
       if (config.resistanceType === "external") {
-        if (set.weightKg === null || !Number.isFinite(set.weightKg)) {
-          omit(external, "missing-load");
-          continue;
-        }
-        if (set.weightKg <= 0) {
-          omit(external, "invalid-load");
-          continue;
-        }
         const multiplier = config.loadInput === "complete-setup-kg"
           ? 1
           : config.repsMeaning === "per-movement" && "implementsPerMovement" in config
             ? config.implementsPerMovement
             : 1;
-        contribute(external, set.weightKg * actualReps * multiplier, provenance);
+        if (row) row.mechanics = {
+          inventoryCount: config.inventoryCount,
+          loadedSides: config.loadedSides,
+          execution: config.execution,
+          implementsPerMovement: implementsPerMovementForBreakdown(config),
+          effectiveMultiplier: multiplier,
+        };
+        if (set.weightKg === null || !Number.isFinite(set.weightKg)) {
+          omitWithBreakdown(external, "missing-load", row, config, provenance);
+          continue;
+        }
+        if (set.weightKg <= 0) {
+          omitWithBreakdown(external, "invalid-load", row, config, provenance);
+          continue;
+        }
+        contributeWithBreakdown(
+          external, set.weightKg * actualReps * multiplier, provenance, row, config, multiplier,
+        );
       } else if (config.resistanceType === "band-nominal") {
+        if (row) row.mechanics = {
+          inventoryCount: config.inventoryCount,
+          loadedSides: config.loadedSides,
+          execution: config.execution,
+          implementsPerMovement: implementsPerMovementForBreakdown(config),
+          effectiveMultiplier: 1,
+        };
         if (set.bandNominalResistanceKg === null
             || !Number.isFinite(set.bandNominalResistanceKg)) {
-          omit(bandLoggedSide, "missing-load");
+          omitWithBreakdown(bandLoggedSide, "missing-load", row, config, provenance);
           continue;
         }
         if (set.bandNominalResistanceKg < 0) {
-          omit(bandLoggedSide, "invalid-load");
+          omitWithBreakdown(bandLoggedSide, "invalid-load", row, config, provenance);
           continue;
         }
         if (override?.reps) {
           if (config.repsMeaning !== "per-side") {
-            omit(bandLoggedSide, "asymmetric-side-breakdown");
+            omitWithBreakdown(bandLoggedSide, "asymmetric-side-breakdown", row, config, provenance);
             continue;
           }
-          omit(bandLoggedSide, "asymmetric-side-breakdown");
-          contribute(bandLeft, set.bandNominalResistanceKg * override.reps.left, provenance);
-          contribute(bandRight, set.bandNominalResistanceKg * override.reps.right, provenance);
-        } else {
-          omit(bandLeft, "asymmetric-side-breakdown");
-          omit(bandRight, "asymmetric-side-breakdown");
-          if (set.reps === null || !Number.isInteger(set.reps) || set.reps < 0) {
-            omit(bandLoggedSide, "missing-repetitions");
-            continue;
-          }
-          contribute(bandLoggedSide, set.bandNominalResistanceKg * set.reps, provenance);
-        }
-      } else {
-        contribute(bodyweightSets, 1, provenance);
-        contribute(bodyweightReps, actualReps, provenance);
-        if (validReferenceForDate(reference, input.localDate)) {
-          contribute(
-            bodyweightReferenceVolume,
-            reference.valueKg * config.bodyweightFraction * actualReps,
-            provenance,
+          omitWithBreakdown(bandLoggedSide, "asymmetric-side-breakdown", row, config, provenance);
+          contributeWithBreakdown(
+            bandLeft, set.bandNominalResistanceKg * override.reps.left,
+            provenance, row, config, 1,
+          );
+          contributeWithBreakdown(
+            bandRight, set.bandNominalResistanceKg * override.reps.right,
+            provenance, row, config, 1,
           );
         } else {
-          omit(bodyweightReferenceVolume, "missing-bodyweight-reference");
+          omitWithBreakdown(bandLeft, "asymmetric-side-breakdown", row, config, provenance);
+          omitWithBreakdown(bandRight, "asymmetric-side-breakdown", row, config, provenance);
+          if (set.reps === null || !Number.isInteger(set.reps) || set.reps < 0) {
+            omitWithBreakdown(bandLoggedSide, "missing-repetitions", row, config, provenance);
+            continue;
+          }
+          contributeWithBreakdown(
+            bandLoggedSide, set.bandNominalResistanceKg * set.reps, provenance, row, config, 1,
+          );
         }
+      } else {
+        const referenceMultiplier = config.bodyweightFraction;
+        if (row) row.mechanics = {
+          inventoryCount: config.inventoryCount,
+          loadedSides: config.loadedSides,
+          execution: config.execution,
+          implementsPerMovement: implementsPerMovementForBreakdown(config),
+          effectiveMultiplier: referenceMultiplier,
+        };
+        contributeWithBreakdown(bodyweightSets, 1, provenance, row, config, 1);
+        contributeWithBreakdown(bodyweightReps, actualReps, provenance, row, config, 1);
         if (validReferenceForDate(reference, input.localDate)) {
-          addProvenance(bodyweightReferenceVolume, reference.status === "observed"
+          const referenceProvenance: ConfigProvenanceV1 = reference.status === "observed"
             || reference.status === "nearest-observed"
             ? {
               kind: "bodyweight-observation",
@@ -776,35 +1068,88 @@ export function calculateLoadAccountingV1(
               localDate: reference.localDate,
               uncertaintyStatus: reference.uncertainty === null ? "not-reported" : "reported",
               stableKey: exercise.identity.stableKey ?? undefined,
-            });
+            };
+          contributeWithBreakdown(
+            bodyweightReferenceVolume,
+            reference.valueKg * config.bodyweightFraction * actualReps,
+            provenance, row, config, referenceMultiplier, referenceProvenance,
+          );
+          addProvenance(bodyweightReferenceVolume, referenceProvenance);
+        } else {
+          omitWithBreakdown(
+            bodyweightReferenceVolume, "missing-bodyweight-reference", row, config, provenance,
+          );
         }
         const additionalLoadKg = override?.additionalLoadKg ?? 0;
         const assistanceLoadKg = override?.assistanceLoadKg ?? 0;
-        contribute(additional, additionalLoadKg * actualReps, provenance);
-        contribute(assistance, assistanceLoadKg * actualReps, provenance);
+        contributeWithBreakdown(additional, additionalLoadKg * actualReps, provenance, row, config, 1);
+        contributeWithBreakdown(assistance, assistanceLoadKg * actualReps, provenance, row, config, 1);
       }
     }
   }
 
   return {
-    methodVersion: LOAD_ACCOUNTING_METHOD_V1,
-    externalLoadVolume: finishMetric(external, "kg-repetitions"),
-    bandNominalIndex: {
-      perLoggedSide: finishMetric(bandLoggedSide, "nominal-kg-repetitions-per-logged-side"),
-      leftSide: finishMetric(bandLeft, "nominal-kg-repetitions-per-side"),
-      rightSide: finishMetric(bandRight, "nominal-kg-repetitions-per-side"),
+    result: {
+      methodVersion: LOAD_ACCOUNTING_METHOD_V1,
+      externalLoadVolume: finishMetric(external, "kg-repetitions"),
+      bandNominalIndex: {
+        perLoggedSide: finishMetric(bandLoggedSide, "nominal-kg-repetitions-per-logged-side"),
+        leftSide: finishMetric(bandLeft, "nominal-kg-repetitions-per-side"),
+        rightSide: finishMetric(bandRight, "nominal-kg-repetitions-per-side"),
+      },
+      bodyweight: {
+        sets: finishMetric(bodyweightSets, "sets"),
+        repetitions: finishMetric(bodyweightReps, "repetitions"),
+        reference,
+        referenceVolume: finishMetric(
+          bodyweightReferenceVolume,
+          "bodyweight-reference-kg-repetitions",
+        ),
+      },
+      additionalLoad: finishMetric(additional, "kg-repetitions"),
+      assistanceLoad: finishMetric(assistance, "kg-repetitions"),
+      identityCoverage,
     },
-    bodyweight: {
-      sets: finishMetric(bodyweightSets, "sets"),
-      repetitions: finishMetric(bodyweightReps, "repetitions"),
-      reference,
-      referenceVolume: finishMetric(
-        bodyweightReferenceVolume,
-        "bodyweight-reference-kg-repetitions",
-      ),
+    rows,
+  };
+}
+
+/**
+ * Pure aggregate calculator. StrengthSet.reps remains intact for old consumers;
+ * an asymmetric override replaces it completely for this method version.
+ */
+export function calculateLoadAccountingV1(
+  input: LoadAccountingSessionInputV1,
+): LoadAccountingOutputV1 {
+  return calculateLoadAccountingCoreV1(input, false).result;
+}
+
+export function calculateLoadAccountingWithBreakdownV1(
+  input: LoadAccountingBreakdownInputV1,
+): { result: LoadAccountingOutputV1; breakdown: LoadAccountingBreakdownV1 } {
+  if (!Number.isInteger(input.sessionId) || input.sessionId <= 0) {
+    throw new Error("Stage 02 breakdown requires a persisted session id");
+  }
+  for (const exercise of input.exercises) {
+    if (!Number.isInteger(exercise.sessionExerciseId) || exercise.sessionExerciseId <= 0
+        || !Number.isInteger(exercise.exerciseOrder) || exercise.exerciseOrder < 0
+        || !exercise.exerciseName.trim()) {
+      throw new Error("Stage 02 breakdown requires persisted exercise identity and order");
+    }
+    for (const set of exercise.sets) {
+      if (!Number.isInteger(set.strengthSetId) || set.strengthSetId <= 0
+          || !Number.isInteger(set.setNumber) || set.setNumber <= 0) {
+        throw new Error("Stage 02 breakdown requires persisted set identity and order");
+      }
+    }
+  }
+  const calculated = calculateLoadAccountingCoreV1(input, true);
+  return {
+    result: calculated.result,
+    breakdown: {
+      schemaVersion: LOAD_ACCOUNTING_BREAKDOWN_SCHEMA_V1,
+      accountingMethodVersion: LOAD_ACCOUNTING_METHOD_V1,
+      rows: calculated.rows,
     },
-    additionalLoad: finishMetric(additional, "kg-repetitions"),
-    assistanceLoad: finishMetric(assistance, "kg-repetitions"),
-    identityCoverage,
   };
 }

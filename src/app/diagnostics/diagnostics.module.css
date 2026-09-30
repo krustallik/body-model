@@ -184,3 +184,19 @@
     transition-duration: 0s;
   }
 }
+
+/* Desktop pairs share their natural row track; useful content absorbs the extra room. */
+@media (min-width: 981px) {
+  .modelWorkspace, .readinessGrid { align-items: stretch; }
+  .modelWorkspace > .coveragePanel {
+    display: flex;
+    flex-direction: column;
+  }
+  .coveragePanel .coverageFacts { flex: 1; }
+  .recoveryPanel .gapList { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .readinessGrid > .readinessPanel {
+    display: flex;
+    flex-direction: column;
+  }
+  .readinessPanel .actions { margin-top: auto; padding-top: 1rem; }
+}

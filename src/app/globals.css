@@ -128,7 +128,7 @@ textarea {
   font: inherit;
 }
 
-/* Semantic controls keep a standard hand cursor as the accessible clickability cue. */
+/* Semantic controls keep a pointer fallback until fine-pointer devices opt into the branded interactive cursor below. */
 html body :is(
   a[href], area[href], button, summary, select,
   input[type="button"], input[type="submit"], input[type="reset"],
@@ -142,8 +142,19 @@ html body :is(
   cursor: var(--bodycast-cursor-interactive) !important;
 }
 
-/* Preserve the native text-entry and unavailable/loading states. */
-html body :is(
+/* Keep the branded cursor on desktop information surfaces only. Touch has no desktop cursor artwork. */
+@media (hover: hover) and (pointer: fine) {
+  :root {
+    --bodycast-cursor-interactive: url("/bodycast-cursor-interactive.svg") 3 2, pointer;
+  }
+  html body,
+  html body * {
+    cursor: var(--bodycast-cursor) !important;
+  }
+}
+
+/* Preserve text entry and let disabled/busy states override even text inputs. */
+html body :where(
   input:not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]):not([type="image"]),
   textarea,
   [contenteditable]:not([contenteditable="false"]),
@@ -158,12 +169,4 @@ html body :is(:disabled, [aria-disabled="true"]) {
 
 html body [aria-busy="true"] {
   cursor: progress !important;
-}
-
-/* Keep the branded cursor on desktop information surfaces only. Touch has no desktop cursor artwork. */
-@media (hover: hover) and (pointer: fine) {
-  html body,
-  html body * {
-    cursor: var(--bodycast-cursor) !important;
-  }
 }

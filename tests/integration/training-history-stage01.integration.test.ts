@@ -1395,6 +1395,21 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       expect([firstSet, secondSet].map(({ reps, rir, loadAccountingOverride }) => [reps, rir, loadAccountingOverride]))
         .toEqual([[12, 2, null], [8, 1, null]]);
 
+      const { persistedPayloadFromUnknown } = await import("../../src/modules/training/persisted-load-accounting-v1");
+      const historicalMaterialization = await service.materializeSessionAccounting(
+        session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID,
+      );
+      const historicalSnapshot = await db.strengthSessionAccountingSnapshot.findFirstOrThrow({
+        where: { sessionId: session.id, snapshotRevision: historicalMaterialization.snapshotRevision },
+        select: { snapshotRevision: true, payload: true },
+      });
+      const historicalPayload = persistedPayloadFromUnknown(historicalSnapshot.payload);
+      if (!historicalPayload || !("breakdown" in historicalPayload)) {
+        throw new Error("catalog-change fixture is missing a V2 historical breakdown");
+      }
+      const historicalRows = structuredClone(historicalPayload.breakdown.rows);
+      expect(historicalRows).toHaveLength(2);
+
       await service.updateCatalogLoadAccountingConfig(catalog.id, {
         loadAccountingConfig: {
           schemaVersion: 1,
@@ -1414,10 +1429,34 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       })).currentLoadAccountingConfigId;
       expect(mutatedConfigId).not.toBeNull();
 
+      const historicalAfterCatalogChange = await db.strengthSessionAccountingSnapshot.findFirstOrThrow({
+        where: { sessionId: session.id, snapshotRevision: historicalSnapshot.snapshotRevision },
+        select: { payload: true },
+      });
+      expect(historicalAfterCatalogChange.payload).toEqual(historicalSnapshot.payload);
+      const rereadHistoricalPayload = persistedPayloadFromUnknown(historicalAfterCatalogChange.payload);
+      if (!rereadHistoricalPayload || !("breakdown" in rereadHistoricalPayload)) {
+        throw new Error("catalog change caused historical V2 breakdown to become unreadable");
+      }
+      expect(rereadHistoricalPayload.breakdown.rows).toEqual(historicalRows);
+
       const thirdSet = await service.createSet(session.id, exerciseId, { reps: 6, weightKg: 5, rir: 3 });
       expect(thirdSet).toMatchObject({ reps: 6, rir: 3, loadAccountingOverride: null });
 
       const snapshotA = await service.materializeSessionAccounting(session.id, undefined, "stage02-a-b-a-first");
+      const newlyMaterializedSnapshot = await db.strengthSessionAccountingSnapshot.findFirstOrThrow({
+        where: { sessionId: session.id, snapshotRevision: snapshotA.snapshotRevision },
+        select: { payload: true },
+      });
+      const newlyMaterializedPayload = persistedPayloadFromUnknown(newlyMaterializedSnapshot.payload);
+      if (!newlyMaterializedPayload || !("breakdown" in newlyMaterializedPayload)) {
+        throw new Error("new materialization after catalog change is missing V2 breakdown");
+      }
+      expect(newlyMaterializedPayload.breakdown.rows).toHaveLength(3);
+      const historicalConfigVersion = historicalRows[0]?.config.sourceSnapshot?.configVersion;
+      expect(historicalConfigVersion).toBeDefined();
+      expect(newlyMaterializedPayload.breakdown.rows.every((row) =>
+        row.config.sourceSnapshot?.configVersion === historicalConfigVersion)).toBe(true);
       const repeatedA = await service.materializeSessionAccounting(session.id, undefined, "stage02-a-b-a-first");
       expect(repeatedA.snapshotRevision).toBe(snapshotA.snapshotRevision);
       const concurrentA = await Promise.all([
@@ -1439,9 +1478,11 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
         orderBy: { snapshotRevision: "asc" },
         select: { snapshotRevision: true, inputFingerprint: true },
       });
-      expect(revisions).toHaveLength(3);
+      expect(revisions).toHaveLength(4);
+      expect(revisions[0]!.snapshotRevision).toBe(historicalSnapshot.snapshotRevision);
       expect(revisions[0]!.inputFingerprint).not.toBe(revisions[1]!.inputFingerprint);
-      expect(revisions[0]!.inputFingerprint).toBe(revisions[2]!.inputFingerprint);
+      expect(revisions[1]!.inputFingerprint).not.toBe(revisions[2]!.inputFingerprint);
+      expect(revisions[1]!.inputFingerprint).toBe(revisions[3]!.inputFingerprint);
 
       const contextChanged = await service.updateSessionAccountingContext(session.id, {
         effectiveAccountingAt: "2026-09-29T12:00:00.000Z",
@@ -1547,7 +1588,38 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
         status: "observed", valueKg: 87, source: "apple-health-shortcut",
       });
 
+      const { persistedPayloadFromUnknown } = await import("../../src/modules/training/persisted-load-accounting-v1");
+      const initialSnapshot = await db.strengthSessionAccountingSnapshot.findFirstOrThrow({
+        where: { sessionId: session.id, snapshotRevision: initial.snapshotRevision },
+        select: { snapshotRevision: true, payload: true },
+      });
+      const initialPayload = persistedPayloadFromUnknown(initialSnapshot.payload);
+      if (!initialPayload || !("breakdown" in initialPayload)) {
+        throw new Error("source-deletion fixture is missing a V2 historical breakdown");
+      }
+      const initialBodyweightRow = initialPayload.breakdown.rows.find(({ strengthSetId }) =>
+        strengthSetId === set.id);
+      if (!initialBodyweightRow) throw new Error("source-deletion fixture is missing its persisted set row");
+      expect(initialPayload.massReference).toMatchObject({
+        status: "observed", valueKg: 87, sourceId: String(sample.id),
+      });
+      expect(initialBodyweightRow.contributions).toContainEqual(expect.objectContaining({
+        category: "bodyweightReferenceVolume",
+        basis: "bodyweight-reference",
+        value: 1566,
+        unit: "bodyweight-reference-kg-repetitions",
+        availability: "available",
+        provenance: expect.arrayContaining([expect.objectContaining({
+          kind: "bodyweight-observation",
+          sourceId: String(sample.id),
+          version: "apple-health-shortcut",
+        })]),
+      }));
+      const frozenHistoricalPayload = structuredClone(initialSnapshot.payload);
+      const frozenHistoricalRow = structuredClone(initialBodyweightRow);
+
       await db.healthMetricSample.delete({ where: { id: sample.id } });
+      expect(await db.healthMetricSample.findUnique({ where: { id: sample.id }, select: { id: true } })).toBeNull();
       const afterDelete = await service.getSession(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
       expect(afterDelete?.loadAccountingV1?.bodyweight.referenceVolume.value).toBe(1566);
 
@@ -1563,6 +1635,29 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
         select: { snapshotRevision: true, payload: true },
       });
       expect(persistedSnapshots).toHaveLength(2);
+      const rereadHistoricalSnapshot = persistedSnapshots.find(({ snapshotRevision }) =>
+        snapshotRevision === initialSnapshot.snapshotRevision);
+      expect(rereadHistoricalSnapshot?.payload).toEqual(frozenHistoricalPayload);
+      const rereadHistoricalPayload = persistedPayloadFromUnknown(rereadHistoricalSnapshot?.payload);
+      if (!rereadHistoricalPayload || !("breakdown" in rereadHistoricalPayload)) {
+        throw new Error("source deletion changed historical V2 breakdown readability");
+      }
+      expect(rereadHistoricalPayload.massReference).toEqual(initialPayload.massReference);
+      const rereadHistoricalRow = rereadHistoricalPayload.breakdown.rows.find(({ strengthSetId }) =>
+        strengthSetId === set.id);
+      expect(rereadHistoricalRow).toEqual(frozenHistoricalRow);
+      expect(rereadHistoricalRow?.contributions).toContainEqual(expect.objectContaining({
+        category: "bodyweightReferenceVolume",
+        basis: "bodyweight-reference",
+        value: 1566,
+        unit: "bodyweight-reference-kg-repetitions",
+        availability: "available",
+        provenance: expect.arrayContaining([expect.objectContaining({
+          kind: "bodyweight-observation",
+          sourceId: String(sample.id),
+          version: "apple-health-shortcut",
+        })]),
+      }));
       expect((persistedSnapshots[0]!.payload as { massReference: { sourceId: string; valueKg: number } }).massReference)
         .toMatchObject({ sourceId: String(sample.id), valueKg: 87 });
       expect((persistedSnapshots[1]!.payload as { massReference: { sourceId: string; valueKg: number } }).massReference)

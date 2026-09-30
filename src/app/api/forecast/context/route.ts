@@ -30,9 +30,11 @@ type HistoryDayRow = {
   missingFields: string[];
 };
 
-export async function GET(request?: Request): Promise<Response> {
+export function GET(): Promise<Response>;
+export function GET(request: Request): Promise<Response>;
+export async function GET(request: Request = new Request("http://localhost")): Promise<Response> {
   try {
-    const locale = new URL(request?.url ?? "http://localhost").searchParams.get("locale") === "uk" ? "uk" : "en";
+    const locale = new URL(request.url).searchParams.get("locale") === "uk" ? "uk" : "en";
     const status = await getModelStatus();
     const history = await getModelHistory({
       from: status.latestModeledDate ? addCalendarDays(status.latestModeledDate, -59) : undefined,

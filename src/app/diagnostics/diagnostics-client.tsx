@@ -314,6 +314,7 @@ export function DiagnosticsClient() {
           <div className={styles.cardTop}><span>{uk ? "Поточна оцінка" : "Current estimate"}<HelpTip>{uk ? "Внутрішня оцінка складу тіла після останнього порахованого дня. Вона може не збігатися з ранковим показом вагів через воду, їжу та шум вимірювання." : "The internal body-state estimate after the latest calculated day. It can differ from a morning weigh-in because of water, food, and measurement noise."}</HelpTip></span><b>{levelLabel(data.currentState.level, uk)}</b></div>
           <strong>{currentStateTitle(data.currentState.status, uk)}</strong>
           <p>{uk ? "Тип стартової оцінки" : "Starting estimate type"}: {data.currentState.source ? <ModelStateSource value={data.currentState.source} uk={uk} /> : "—"}</p>
+          <a className={styles.modelViewAction} href="#model-estimate-details">{uk ? "Переглянути модель" : "View model"}</a>
         </article>
         <article data-kind="coverage" data-level={data.dataContinuity.level}>
           <div className={styles.cardTop}><span>{uk ? "Покриття даних · 28 днів" : "Data coverage · 28 days"}<HelpTip>{uk ? "Повні дні — це дні, які модель змогла повністю порахувати. Кількість не дорівнює кількості записів у таблиці здоров’я." : "Complete days are days the model could fully calculate. This count is not the number of entries in Health History."}</HelpTip></span><b>{levelLabel(data.dataContinuity.level, uk)}</b></div>
@@ -332,7 +333,7 @@ export function DiagnosticsClient() {
       </section>
 
       <section className={styles.modelWorkspace} aria-label={uk ? "Стан і походження оцінки" : "State and estimate sources"}>
-        <article className={`${styles.panel} ${styles.modelPanel}`} data-kind="state">
+        <article id="model-estimate-details" tabIndex={-1} className={`${styles.panel} ${styles.modelPanel} ${styles.modelEstimateAnchor}`} data-kind="state">
           <p className={styles.eyebrow}>{uk ? "Оцінка моделі" : "Model estimate"}<HelpTip>{uk ? "Це розрахований внутрішній стан на кінець останнього обробленого дня, а не показ вагів. Вага моделі складається з окремо показаних компартментів." : "This is the calculated internal state at the end of the latest processed day, not a scale reading. Model weight is composed of the compartments shown below."}</HelpTip></p>
           <h2>{uk ? "Що модель оцінює зараз" : "What the model estimates now"}</h2>
           <div className={styles.currentWeight}><span>{uk ? "Розрахункова вага" : "Estimated weight"}</span><strong>{number(data.currentState.predictedWeightKg, 1)} kg</strong><small>{uk ? "Останній змодельований день" : "Latest modeled day"}: {data.episode.latestModeledDate ? formatDiagnosticDate(data.episode.latestModeledDate, intlLocale) : "—"}</small></div>

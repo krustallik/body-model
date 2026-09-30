@@ -8,7 +8,7 @@ import { useI18n } from "@/i18n/i18n-provider";
 import type { DailyMetricField } from "@/modules/days/day.types";
 import type { DashboardDto } from "@/modules/days/dashboard.types";
 import { dashboardRecentRows, dashboardTrainingMetricCaption } from "@/modules/days/dashboard-presentation";
-import { emptyTrainingDayFact } from "@/modules/days/training-day-fact";
+import { emptyTrainingDayFact } from "@/modules/days/training-day-fact-empty";
 import { todayInCalendarTimeZone } from "@/modules/days/calendar-range";
 import { DEFAULT_TIME_ZONE, instantToLocalDateTime } from "@/model/time-zone";
 import { formatDateTime, formatDurationMinutes, formatMetric } from "@/modules/days/metric-format";

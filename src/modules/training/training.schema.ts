@@ -1,12 +1,22 @@
 import { z } from "zod";
 import { RESISTANCE, TRAINING_LIMITS } from "./training.constants";
 import { parseNullableNumericInput } from "@/modules/days/day.schema";
+import { loadConfigV1Schema, setExecutionOverrideV1Schema } from "./load-accounting-v1";
+import { isValidTimeZone } from "@/model/time-zone";
 
 export const ResistanceTypeSchema = z.enum([
   RESISTANCE.EXTERNAL_WEIGHT,
   RESISTANCE.RESISTANCE_BAND,
   RESISTANCE.BODYWEIGHT,
 ]);
+
+export const UpdateCatalogLoadAccountingConfigSchema = z.object({
+  loadAccountingConfig: loadConfigV1Schema.nullable(),
+}).strict();
+
+export const CatalogExerciseIdParamsSchema = z.object({
+  id: z.coerce.number().int().positive(),
+}).strict();
 
 const positiveInt = z.number().int().positive();
 
@@ -50,7 +60,16 @@ export const SessionSetParamsSchema = z.object({
 
 export const StartSessionSchema = z.object({
   programId: positiveInt,
+  /** Optional for old clients; omitted values use legacy-default provenance. */
+  timeZone: z.string().optional().refine((value) => value === undefined || isValidTimeZone(value)),
 }).strict();
+
+export const UpdateSessionAccountingContextSchema = z.object({
+  effectiveAccountingAt: z.string().datetime({ offset: true }).optional(),
+  timeZone: z.string().min(1).max(80).optional().refine((value) => value === undefined || isValidTimeZone(value)),
+}).strict().refine((value) => value.effectiveAccountingAt !== undefined || value.timeZone !== undefined, {
+  message: "provide effectiveAccountingAt or timeZone",
+});
 
 const nullableLoad = z.preprocess(
   parseNullableNumericInput,
@@ -71,6 +90,7 @@ export const CreateSetSchema = z.object({
   setNumber: z.preprocess(parseNullableNumericInput, z.number().int().positive().optional()),
   completedAt: z.string().datetime({ offset: true }).optional(),
   comment: z.string().trim().max(TRAINING_LIMITS.maxSetCommentLength).nullable().optional(),
+  loadAccountingOverride: setExecutionOverrideV1Schema.nullable().optional(),
 }).strict();
 
 export const UpdateSetSchema = z.object({
@@ -80,6 +100,7 @@ export const UpdateSetSchema = z.object({
   rir: nullableRir,
   completedAt: z.string().datetime({ offset: true }).nullable().optional(),
   comment: z.string().trim().max(TRAINING_LIMITS.maxSetCommentLength).nullable().optional(),
+  loadAccountingOverride: setExecutionOverrideV1Schema.nullable().optional(),
 }).strict().refine(
   (value) => Object.keys(value).length > 0,
   "at least one set field is required",
@@ -183,4 +204,5 @@ export type CreateSessionExerciseInput = z.infer<typeof CreateSessionExerciseSch
 export type UpdateSessionExerciseInput = z.infer<typeof UpdateSessionExerciseSchema>;
 export type DeleteSessionExerciseInput = z.infer<typeof DeleteSessionExerciseSchema>;
 export type ReorderSessionExercisesInput = z.infer<typeof ReorderSessionExercisesSchema>;
+export type UpdateCatalogLoadAccountingConfigInput = z.infer<typeof UpdateCatalogLoadAccountingConfigSchema>;
 export type HistoricalWorkoutsQuery = z.infer<typeof HistoricalWorkoutsQuerySchema>;

@@ -416,7 +416,85 @@ describe("Live training session mobile UI", () => {
     await user.click(screen.getByRole("button", { name: "Додати підхід" }));
     await waitFor(() => {
       expect(posted[0]).toEqual(expect.objectContaining({ weightKg: 33.5, reps: 8 }));
+      expect(posted[0]).not.toHaveProperty("loadAccountingOverride");
     });
+  });
+
+  it("keeps ordinary set entry scalar and hides asymmetric side controls", async () => {
+    const user = userEvent.setup();
+    const posted: Record<string, unknown>[] = [];
+    stubSessionFetch(buildSession(), (url, init) => {
+      if (init?.method === "POST" && url.includes("/sets")) {
+        posted.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+        return Response.json({ set: { id: 99 } }, { status: 201 });
+      }
+      return null;
+    });
+    render(<SessionClient sessionId={42} />);
+    await waitFor(() => expect(activePane().getByLabelText("Вага, кг")).toBeTruthy());
+    await user.type(activePane().getByLabelText("Вага, кг"), "10");
+    await user.type(activePane().getByLabelText("Повтори"), "12");
+    expect(activePane().queryByLabelText(/Ліва сторона|Права сторона/)).toBeNull();
+    expect(activePane().queryByText(/Різні повтори для сторін|asymmetric reps/i)).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Додати підхід" }));
+    await waitFor(() => expect(posted).toHaveLength(1));
+    expect(posted[0]).toMatchObject({
+      reps: 12,
+      weightKg: 10,
+    });
+    expect(posted[0]).not.toHaveProperty("loadAccountingOverride");
+  });
+
+  it("loads accounting from session GET, materializes missing snapshots ordinarily, and refreshes explicitly", async () => {
+    const user = userEvent.setup();
+    const initial = buildSession({ materializationState: "missing" });
+    const current = buildSession({
+      materializationState: "current",
+      loadAccountingV1: {
+        methodVersion: "bodycast-load-accounting-v1",
+        externalLoadVolume: { value: 4667, unit: "kg-repetitions", availability: "available", coverage: { eligibleRows: 4, accountedRows: 4, omittedRows: 0, omittedReasons: {} }, provenance: [] },
+        bandNominalIndex: {
+          perLoggedSide: { value: null, unit: "nominal-kg-repetitions-per-logged-side", availability: "unavailable", coverage: { eligibleRows: 0, accountedRows: 0, omittedRows: 0, omittedReasons: {} }, provenance: [] },
+          leftSide: { value: null, unit: "nominal-kg-repetitions-per-side", availability: "unavailable", coverage: { eligibleRows: 0, accountedRows: 0, omittedRows: 0, omittedReasons: {} }, provenance: [] },
+          rightSide: { value: null, unit: "nominal-kg-repetitions-per-side", availability: "unavailable", coverage: { eligibleRows: 0, accountedRows: 0, omittedRows: 0, omittedReasons: {} }, provenance: [] },
+        },
+        bodyweight: {
+          sets: { value: null, unit: "sets", availability: "unavailable", coverage: { eligibleRows: 0, accountedRows: 0, omittedRows: 0, omittedReasons: {} }, provenance: [] },
+          repetitions: { value: null, unit: "repetitions", availability: "unavailable", coverage: { eligibleRows: 0, accountedRows: 0, omittedRows: 0, omittedReasons: {} }, provenance: [] },
+          referenceVolume: { value: null, unit: "bodyweight-reference-kg-repetitions", availability: "unavailable", coverage: { eligibleRows: 0, accountedRows: 0, omittedRows: 0, omittedReasons: {} }, provenance: [] },
+          reference: { status: "unavailable", valueKg: null, localDate: "2026-09-17", source: null, sourceId: null },
+        },
+        additionalLoad: { value: null, unit: "kg-repetitions", availability: "unavailable", coverage: { eligibleRows: 0, accountedRows: 0, omittedRows: 0, omittedReasons: {} }, provenance: [] },
+        assistanceLoad: { value: null, unit: "kg-repetitions", availability: "unavailable", coverage: { eligibleRows: 0, accountedRows: 0, omittedRows: 0, omittedReasons: {} }, provenance: [] },
+        identityCoverage: { customExercises: 0, ambiguousExercises: 0, unverifiedExercises: 0 },
+      },
+    });
+    const calls: Array<{ url: string; method?: string }> = [];
+    stubSessionFetch(initial, (url, init) => {
+      calls.push({ url, method: init?.method });
+      if (url.endsWith("/accounting/materialize") && init?.method === "POST") {
+        return Response.json({ session: current });
+      }
+      if (url.endsWith("/accounting/refresh") && init?.method === "POST") {
+        return Response.json({ session: current });
+      }
+      if (url === "/api/v1/training/sessions/42" && !init?.method) {
+        return Response.json({ session: calls.some((call) => call.url.endsWith("/accounting/materialize")) ? current : initial });
+      }
+      return null;
+    });
+    const { unmount } = render(<SessionClient sessionId={42} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Створити знімок обліку" })).toBeTruthy());
+    expect(calls.some((call) => call.method === "POST" && call.url.includes("/accounting/"))).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Створити знімок обліку" }));
+    await waitFor(() => expect(screen.getByText(/4\s?667/)).toBeTruthy());
+    expect(calls.some((call) => call.url.endsWith("/accounting/materialize") && call.method === "POST")).toBe(true);
+    expect(calls.some((call) => call.url.endsWith("/accounting/refresh") && call.method === "POST")).toBe(false);
+    unmount();
+    render(<SessionClient sessionId={42} />);
+    await waitFor(() => expect(screen.getByText(/4\s?667/)).toBeTruthy());
+    await user.click(screen.getByRole("button", { name: "Оновити облік" }));
+    await waitFor(() => expect(calls.some((call) => call.url.endsWith("/accounting/refresh") && call.method === "POST")).toBe(true));
   });
 
   it("offers to finish after filling the last planned set of the last exercise", async () => {

@@ -14,6 +14,7 @@ import type {
   StrengthSessionExerciseDto,
   StrengthSetDto,
 } from "@/modules/training/training.types";
+import { setExecutionOverrideV1Schema } from "@/modules/training/load-accounting-v1";
 import { resolveExerciseImageSrc } from "./exercise-images";
 import { resolveExerciseInfo } from "./exercise-info";
 import { formatSetCompletionClock, resistanceLabel, setCompletionTimestampIso } from "./training-labels";
@@ -360,6 +361,12 @@ export function ExercisePane(props: ExercisePaneProps) {
                     {" × "}
                     {set.reps}
                   </span>
+                  {(() => {
+                    const parsedOverride = setExecutionOverrideV1Schema.safeParse(set.loadAccountingOverride);
+                    return parsedOverride.success && parsedOverride.data.reps
+                      ? <span className={styles.liveSetRir}>{uk ? `Л/П ${parsedOverride.data.reps.left}/${parsedOverride.data.reps.right}` : `L/R ${parsedOverride.data.reps.left}/${parsedOverride.data.reps.right}`}</span>
+                      : null;
+                  })()}
                   {set.rir != null ? (
                     <span className={styles.liveSetRir}>RIR {set.rir}</span>
                   ) : (

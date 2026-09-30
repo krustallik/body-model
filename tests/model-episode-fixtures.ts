@@ -89,6 +89,8 @@ export function persistedEpisodeFixture(startDate = "2026-08-22"): PersistedEpis
     activityCalibration: 1,
     calibrationStatus: "insufficient-history",
     calibrationDiagnostics: {},
+    initializationStatus: prepared.initializationStatus,
+    initializationDiagnostics: prepared.initializationDiagnostics,
     latestModeledDate: null,
     createdAt: "2026-08-23T00:00:00.000Z",
     updatedAt: "2026-08-23T00:00:00.000Z",

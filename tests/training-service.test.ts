@@ -32,11 +32,13 @@ type MockDb = {
   strengthDiarySession: {
     findFirst: ReturnType<typeof vi.fn>;
     findMany: ReturnType<typeof vi.fn>;
+    findUnique: ReturnType<typeof vi.fn>;
     create: ReturnType<typeof vi.fn>;
     update: ReturnType<typeof vi.fn>;
   };
   strengthSessionExercise: {
     findFirst: ReturnType<typeof vi.fn>;
+    findUnique: ReturnType<typeof vi.fn>;
   };
   strengthSet: {
     findFirst: ReturnType<typeof vi.fn>;
@@ -49,6 +51,7 @@ type MockDb = {
     findUnique: ReturnType<typeof vi.fn>;
   };
   $transaction: ReturnType<typeof vi.fn>;
+  $queryRaw: ReturnType<typeof vi.fn>;
 };
 
 function decimal(value: number | null) {
@@ -68,10 +71,11 @@ function buildDb(): MockDb {
     strengthDiarySession: {
       findFirst: vi.fn(),
       findMany: vi.fn(),
+      findUnique: vi.fn(),
       create: vi.fn(),
-      update: vi.fn(),
+      update: vi.fn().mockResolvedValue({ accountingInputRevision: 2 }),
     },
-    strengthSessionExercise: { findFirst: vi.fn() },
+    strengthSessionExercise: { findFirst: vi.fn(), findUnique: vi.fn().mockResolvedValue({ sessionId: 50 }) },
     strengthSet: {
       findFirst: vi.fn(),
       create: vi.fn(),
@@ -83,8 +87,14 @@ function buildDb(): MockDb {
       findUnique: vi.fn(),
     },
     $transaction: vi.fn(),
+    $queryRaw: vi.fn().mockResolvedValue([]),
   };
   db.$transaction.mockImplementation(async (callback: (tx: MockDb) => unknown) => callback(db));
+  db.strengthDiarySession.findUnique = vi.fn().mockResolvedValue({
+    effectiveAccountingAt: null,
+    webStartedAt: new Date("2026-09-17T16:00:00Z"),
+    createdAt: new Date("2026-09-17T15:00:00Z"),
+  });
   return db;
 }
 
@@ -215,7 +225,9 @@ describe("TrainingService programs", () => {
 
   beforeEach(() => {
     db = buildDb();
-    service = new TrainingService(db as never, new TrainingRepository(db as never));
+    const repo = new TrainingRepository(db as never);
+    vi.spyOn(repo, "materializeAccounting").mockResolvedValue(1);
+    service = new TrainingService(db as never, repo);
   });
 
   it("creates a program with version 1, order, planned sets, and resistance types", async () => {
@@ -377,7 +389,9 @@ describe("TrainingService live session", () => {
 
   beforeEach(() => {
     db = buildDb();
-    service = new TrainingService(db as never, new TrainingRepository(db as never));
+    const repo = new TrainingRepository(db as never);
+    vi.spyOn(repo, "materializeAccounting").mockResolvedValue(1);
+    service = new TrainingService(db as never, repo);
   });
 
   it("enforces one ACTIVE session", async () => {
@@ -637,7 +651,9 @@ describe("TrainingService matching cases", () => {
 
   beforeEach(() => {
     db = buildDb();
-    service = new TrainingService(db as never, new TrainingRepository(db as never));
+    const repo = new TrainingRepository(db as never);
+    vi.spyOn(repo, "materializeAccounting").mockResolvedValue(1);
+    service = new TrainingService(db as never, repo);
   });
 
   function completedPending() {

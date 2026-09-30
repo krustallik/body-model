@@ -121,6 +121,16 @@ describe("completed session historical set clocks and energy", () => {
     await waitFor(() => {
       expect(screen.getByText("270 активних ккал · Оцінка сили BodyCast")).toBeTruthy();
     });
+    const headings = Array.from(screen.getByRole("main").querySelectorAll("h2"))
+      .map((heading) => heading.textContent?.trim());
+    const sourcePosition = headings.indexOf("Джерела");
+    const matchPosition = headings.indexOf("Ручне зіставлення");
+    const exercisesPosition = headings.indexOf("Вправи та підходи");
+    const accountingPosition = headings.indexOf("Облік навантаження");
+    expect(sourcePosition).toBeGreaterThanOrEqual(0);
+    expect(matchPosition).toBeGreaterThan(sourcePosition);
+    expect(exercisesPosition).toBeGreaterThan(matchPosition);
+    expect(accountingPosition).toBeGreaterThan(exercisesPosition);
     // 15:30 UTC → 17:30 Bratislava; createdAt fallback 15:26 UTC → 17:26
     expect(screen.getByText("17:30")).toBeTruthy();
     expect(screen.getByText("17:26")).toBeTruthy();

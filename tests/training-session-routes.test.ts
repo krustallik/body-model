@@ -129,7 +129,7 @@ describe("/api/v1/training/sessions", () => {
     const response = await START(jsonRequest(`${base}/start`, "POST", { programId: 7 }));
     expect(response.status).toBe(201);
     await expect(response.json()).resolves.toEqual({ session });
-    expect(trainingService.startSession).toHaveBeenCalledWith(7);
+    expect(trainingService.startSession).toHaveBeenCalledWith(7, undefined, undefined);
   });
 
   it("rejects invalid start body without mutation", async () => {

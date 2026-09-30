@@ -5,10 +5,12 @@ import {
 } from "@/modules/health/workout-feed-coverage";
 import { planDayWorkoutReconciliation } from "@/modules/health/reconcile-day-workouts";
 import { offsetMinutesFromIso } from "@/modules/health/sleep-summary";
+import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import { MANUAL_STEPPER_SOURCE_PREFIX } from "@/modules/health/workout-source-identity";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { instantToLocalDateTime } from "@/model/time-zone";
+import { rebaseCurrentAccountingSnapshotTimestamp } from "@/modules/training/rebase-current-accounting-snapshot";
 import type {
   HealthDayInput,
   HealthMetricSampleInput,
@@ -17,6 +19,8 @@ import type {
   SyncDateResult,
   WorkoutInput,
 } from "./health.types";
+
+export const APPLE_HEALTH_SHORTCUT_SOURCE = "apple-health-shortcut" as const;
 
 /** Persist only workouts whose startAt falls on the synced calendar day. */
 export function filterWorkoutsForSyncedDay(
@@ -121,6 +125,7 @@ async function persistMetricSamples(
     dailyHealthDataId: number;
     date: string;
     metric: HealthMetricSampleInput["metric"];
+    source: typeof APPLE_HEALTH_SHORTCUT_SOURCE;
     timestamp: Date;
     value: number;
   }>();
@@ -131,6 +136,7 @@ async function persistMetricSamples(
       dailyHealthDataId,
       date: sample.date,
       metric: sample.metric,
+      source: APPLE_HEALTH_SHORTCUT_SOURCE,
       timestamp,
       value: sample.value,
     });
@@ -143,6 +149,7 @@ async function persistMetricSamples(
     update: {
       dailyHealthDataId: row.dailyHealthDataId,
       date: row.date,
+      source: row.source,
       value: row.value,
     },
   })));
@@ -211,6 +218,37 @@ async function reconcileDayWorkouts(
         activeEnergyKcal: update.fields.activeEnergyKcal,
       },
     });
+    const linked = await transaction.strengthDiarySession.findFirst({
+      where: { matchedWorkoutId: update.id },
+      select: { id: true, effectiveAccountingAt: true, accountingTimeZone: true, accountingTimeZoneProvenance: true, webStartedAt: true, createdAt: true },
+    });
+    if (linked) {
+      const previousEffectiveAt = linked.effectiveAccountingAt ?? linked.webStartedAt ?? linked.createdAt;
+      if (previousEffectiveAt.getTime() === update.fields.startAt.getTime()) continue;
+      const timeZone = linked.accountingTimeZone ?? DEFAULT_TIME_ZONE;
+      const timeZoneProvenance = linked.accountingTimeZoneProvenance ?? "legacy-default";
+      const previousLocalDate = instantToLocalDateTime(previousEffectiveAt, timeZone).date;
+      const nextLocalDate = instantToLocalDateTime(update.fields.startAt, timeZone).date;
+      await transaction.strengthDiarySession.update({
+        where: { id: linked.id },
+        data: {
+          effectiveAccountingAt: update.fields.startAt,
+          ...(previousLocalDate === nextLocalDate ? {} : {
+            accountingInputRevision: { increment: 1 },
+            currentSnapshotRevision: null,
+          }),
+        },
+      });
+      if (previousLocalDate === nextLocalDate) {
+        await rebaseCurrentAccountingSnapshotTimestamp(transaction, {
+          sessionId: linked.id,
+          effectiveAccountingAt: update.fields.startAt,
+          effectiveLocalDate: nextLocalDate,
+          timeZone,
+          timeZoneProvenance,
+        });
+      }
+    }
   }
 
   // Use the composite unique identity for creates so concurrent retries

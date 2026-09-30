@@ -1,4 +1,4 @@
-import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
+import { canonicalizeWorkoutType } from "@/model/activity/workout-type";
 import type { TrainingDayFact } from "./training-day-fact";
 
 export type DayWorkoutPresentation = {

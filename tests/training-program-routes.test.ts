@@ -55,7 +55,7 @@ describe("/api/v1/training/programs", () => {
 
   it("lists programs", async () => {
     trainingService.listPrograms.mockResolvedValue([{ id: 7, name: "Моє тренування" }]);
-    const response = await LIST();
+    const response = await LIST(new Request(base));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
       programs: [{ id: 7, name: "Моє тренування" }],

@@ -4,7 +4,7 @@ import { DashboardQuerySchema } from "@/modules/days/day.schema";
 import type { DashboardDto } from "@/modules/days/dashboard.types";
 import { sleepRepository } from "@/modules/health/sleep.repository";
 import { addCalendarDays, todayInCalendarTimeZone } from "@/modules/days/calendar-range";
-import { emptyTrainingDayFact } from "@/modules/days/training-day-fact";
+import { emptyTrainingDayFact } from "@/modules/days/training-day-fact-empty";
 import { isLocalDemoMode } from "@/modules/demo/local-demo-mode";
 import { localDemoDashboard } from "@/modules/demo/local-demo-data";
 

@@ -50,6 +50,7 @@ function buildDb() {
     strengthDiaryProgramChange: { create: vi.fn() },
     strengthSessionExercise: {
       findFirst: vi.fn(),
+      findUnique: vi.fn().mockResolvedValue({ sessionId: 50 }),
       create: vi.fn(),
       update: vi.fn(),
       delete: vi.fn(),
@@ -72,7 +73,7 @@ function buildDb() {
   db.strengthSessionExercise.create.mockResolvedValue({ id: 999 });
   db.strengthSessionExercise.delete.mockResolvedValue({});
   db.strengthDiaryProgramChange.create.mockResolvedValue({ id: 1 });
-  db.strengthDiarySession.update.mockResolvedValue({ revision: 2 });
+  db.strengthDiarySession.update.mockResolvedValue({ revision: 2, accountingInputRevision: 2 });
   db.strengthDiarySession.delete.mockResolvedValue({});
   db.strengthSet.updateMany.mockResolvedValue({ count: 0 });
   return db;
@@ -628,7 +629,7 @@ describe("session-level exercise edits", () => {
     expect(db.trainingProgramVersion.create).not.toHaveBeenCalled();
     expect(db.trainingProgram.update).not.toHaveBeenCalled();
     expect(db.strengthDiarySession.update).toHaveBeenCalledWith(expect.objectContaining({
-      data: { revision: { increment: 1 } },
+      data: expect.objectContaining({ revision: { increment: 1 } }),
     }));
   });
 
@@ -854,7 +855,15 @@ describe("set edits on a completed retrospective session", () => {
     });
 
     await service.createSet(50, 501, { reps: 12, weightKg: 30 });
-    expect(db.strengthDiarySession.update).not.toHaveBeenCalled();
+    expect(db.strengthDiarySession.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        accountingInputRevision: { increment: 1 },
+        currentSnapshotRevision: null,
+      }),
+    }));
+    expect(db.strengthDiarySession.update).not.toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ revision: expect.anything() }),
+    }));
   });
 
   it("keeps bodyweight semantics: no load columns allowed", async () => {

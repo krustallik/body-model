@@ -12,6 +12,10 @@ import {
 import type { StrengthSessionDto } from "@/modules/training/training.types";
 import { ENTRY_MODE, MATCH_STATUS, RESISTANCE, SESSION_STATUS, EXERCISE_ORIGIN } from "@/modules/training/training.constants";
 
+// Preserve the original import path for callers while keeping client components
+// on the dedicated client-safe empty-fact module.
+export { emptyTrainingDayFact } from "./training-day-fact-empty";
+
 export type ExerciseDetailAvailability = "logged-sets" | "no-logged-sets" | "unavailable";
 export type TrainingEventExecutionStatus = "in-progress" | "completed" | "partial" | "unknown";
 
@@ -338,11 +342,6 @@ function makeFact(date: string, events: TrainingDayEventFact[], hiddenEventCount
       ? null
       : events.reduce((sum, event) => sum + (event.durationMinutes ?? 0), 0);
   return { date, eventCount, durationMinutes, hiddenEventCount, events };
-}
-
-/** Empty facts are explicit zeros for event occurrence, not biometric measurements. */
-export function emptyTrainingDayFact(date: string): TrainingDayFact {
-  return makeFact(date, [], 0);
 }
 
 /**

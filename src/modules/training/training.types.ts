@@ -7,6 +7,7 @@ import type {
   ResistanceType,
   SessionStatus,
 } from "./training.constants";
+import type { LoadAccountingBreakdownV1, LoadAccountingOutputV1 } from "./load-accounting-v1";
 
 export type ExerciseCatalogDto = {
   id: number;
@@ -16,6 +17,7 @@ export type ExerciseCatalogDto = {
   isActive: boolean;
   archivedAt: string | null;
   muscleMapping: unknown | null;
+  loadAccountingConfig?: unknown | null;
 };
 
 export type ProgramExerciseDto = {
@@ -25,6 +27,7 @@ export type ProgramExerciseDto = {
   order: number;
   plannedSets: number;
   resistanceType: ResistanceType;
+  loadAccountingConfigSnapshot?: unknown | null;
 };
 
 export type TrainingProgramDto = {
@@ -70,6 +73,7 @@ export type StrengthSetDto = {
   completedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  loadAccountingOverride?: unknown | null;
 };
 
 export type ExerciseHistorySetDto = {
@@ -102,6 +106,7 @@ export type StrengthSessionExerciseDto = {
   resistanceType: ResistanceType;
   origin: ExerciseOrigin;
   muscleMappingSnapshot: unknown | null;
+  loadAccountingConfigSnapshot?: unknown | null;
   sets: StrengthSetDto[];
 };
 
@@ -133,6 +138,9 @@ export type StrengthSessionDto = {
   /** Null for RETROSPECTIVE — no live web Start Workout occurred. */
   webStartedAt: string | null;
   webEndedAt: string | null;
+  effectiveAccountingAt?: string | null;
+  accountingTimeZone?: string | null;
+  accountingTimeZoneProvenance?: string | null;
   matchStatus: MatchStatus;
   matchMethod: MatchMethod | null;
   matchedAt: string | null;
@@ -142,6 +150,13 @@ export type StrengthSessionDto = {
   selectedActiveEnergy?: SelectedActiveEnergyDto;
   exercises: StrengthSessionExerciseDto[];
   ordinaryTonnageKg: number | null;
+  /** Whether the persisted Stage 02 result matches the current accounting inputs. */
+  materializationState?: "current" | "missing" | "pending" | "stale";
+  loadAccountingV1?: LoadAccountingOutputV1;
+  /** Persisted Stage 02 rows; legacy aggregate snapshots report an explicit unavailable state. */
+  loadAccountingBreakdown?:
+    | { status: "available"; value: LoadAccountingBreakdownV1 }
+    | { status: "unavailable"; reason: "legacy-snapshot-no-breakdown" };
   autoAdvanceExercises?: boolean;
   loggedSets?: number;
   plannedSets?: number;

@@ -3112,23 +3112,26 @@ a.editMenuItem + .editMenuDanger {
 .accountingBreakdown summary:hover { color: var(--training-primary-strong); }
 .accountingBreakdown summary:focus-visible { outline: 2px solid var(--training-focus); outline-offset: 3px; border-radius: 0.25rem; }
 .accountingBreakdownCount { display: grid; place-items: center; min-width: 1.55rem; height: 1.55rem; padding: 0 0.25rem; border-radius: 999px; color: var(--training-text-secondary); background: var(--training-elevated); font-size: 0.7rem; }
-.accountingBreakdownList { display: grid; gap: 0.45rem; margin-top: 0.45rem; }
-.accountingBreakdownRow { min-width: 0; border: 1px solid var(--training-border); border-radius: 0.68rem; padding: 0.7rem 0.78rem; background: color-mix(in srgb, var(--training-elevated) 72%, transparent); transition: border-color var(--training-ease), background var(--training-ease); }
+.accountingBreakdownList { display: grid; gap: 0.72rem; margin-top: 0.45rem; }
+.accountingBreakdownExercise { min-width: 0; }
+.accountingBreakdownExercise h3 { margin: 0 0 0.28rem; color: var(--training-text-secondary); font-size: 0.78rem; font-weight: 680; overflow-wrap: anywhere; }
+.accountingBreakdownSetGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; gap: 0.38rem; }
+.accountingBreakdownRow { min-width: 0; border: 1px solid var(--training-border); border-radius: 0.58rem; padding: 0.42rem 0.5rem; background: color-mix(in srgb, var(--training-elevated) 72%, transparent); transition: border-color var(--training-ease), background var(--training-ease), transform var(--training-ease); }
 .accountingBreakdownRow:hover { border-color: var(--training-border-strong); background: var(--training-elevated); }
-.accountingBreakdownTitle { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.3rem 0.8rem; }
-.accountingBreakdownTitle strong { min-width: 0; font-size: 0.84rem; overflow-wrap: anywhere; }
-.accountingBreakdownTitle span { color: var(--training-text-muted); font-size: 0.75rem; }
-.accountingBreakdownFacts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.6rem; margin: 0.55rem 0 0.35rem; }
-.accountingBreakdownFacts div { min-width: 0; }
-.accountingBreakdownFacts dt { color: var(--training-text-muted); font-size: 0.66rem; }
-.accountingBreakdownFacts dd { margin: 0.12rem 0 0; color: var(--training-text); font-size: 0.79rem; overflow-wrap: anywhere; }
-.accountingBreakdownMechanics { margin: 0.3rem 0 0.48rem; color: var(--training-text-muted); font-size: 0.7rem; overflow-wrap: anywhere; }
+.accountingBreakdownSetLine { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.08rem 0.4rem; margin: 0; color: var(--training-text-muted); font-size: 0.66rem; line-height: 1.3; }
+.accountingBreakdownSetLine strong { color: var(--training-text); font-size: 0.75rem; font-weight: 680; overflow-wrap: anywhere; }
 .accountingContributionList { list-style: none; display: grid; gap: 0.32rem; margin: 0; padding: 0; }
-.accountingContributionList li { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.7rem; padding-top: 0.42rem; border-top: 1px solid var(--training-border); font-size: 0.76rem; }
-.accountingContributionList li > span { min-width: 0; }
-.accountingContributionList small { display: block; margin-top: 0.13rem; color: var(--training-text-muted); font-size: 0.67rem; line-height: 1.38; overflow-wrap: anywhere; }
-.accountingContributionValue { text-align: right; overflow-wrap: anywhere; }
-.accountingContributionValue strong { font-size: 0.78rem; font-weight: 680; }
+.accountingBreakdownContribution { min-width: 0; padding-top: 0.22rem; border-top: 1px solid var(--training-border); }
+.accountingBreakdownContributionLine { display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto; align-items: baseline; gap: 0.12rem 0.35rem; font-size: 0.68rem; }
+.accountingBreakdownContributionLine > strong { color: var(--training-text-secondary); font-size: 0.66rem; font-weight: 650; }
+.accountingBreakdownContributionLine .accountingContributionValue { min-width: 0; color: var(--training-text); font-size: 0.69rem; text-align: right; overflow-wrap: anywhere; }
+.accountingBreakdownContributionLine .accountingAvailability { margin-left: 0; font-size: 0.58rem; }
+.accountingBreakdownUnavailableReason { display: block; margin-top: 0.1rem; color: var(--training-warning-strong); font-size: 0.62rem; line-height: 1.25; overflow-wrap: anywhere; }
+.accountingBreakdownMeta { margin-top: 0.13rem; color: var(--training-text-muted); font-size: 0.61rem; line-height: 1.3; }
+.accountingBreakdownMeta summary { width: max-content; max-width: 100%; min-height: 0; justify-content: flex-start; gap: 0.2rem; font-size: inherit; font-weight: 520; color: var(--training-text-muted); }
+.accountingBreakdownMeta summary:hover { color: var(--training-text-secondary); }
+.accountingBreakdownMeta summary:focus-visible { outline: 2px solid var(--training-focus); outline-offset: 2px; border-radius: 0.2rem; }
+.accountingBreakdownMeta > div { display: grid; gap: 0.1rem; padding: 0.2rem 0 0 0.6rem; overflow-wrap: anywhere; }
 .accountingRefreshRow { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 0.85rem; margin-top: 0.85rem; }
 .accountingRefreshRow > span { color: var(--training-text-muted); font-size: 0.72rem; line-height: 1.4; }
 .asymmetricEntry { grid-column: 1 / -1; min-width: 0; }
@@ -3148,6 +3151,7 @@ a.editMenuItem + .editMenuDanger {
 .loadConfigBody .formActions { flex-wrap: wrap; }
 @media (max-width: 780px) {
   .accountingMetricGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .accountingBreakdownSetGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .accountingMetric + .accountingMetric { border-left: 0; }
   .accountingMetric:nth-child(even) { border-left: 1px solid var(--training-border); }
   .accountingMetric:nth-child(n + 3) { border-top: 1px solid var(--training-border); }
@@ -3157,8 +3161,9 @@ a.editMenuItem + .editMenuDanger {
   .accountingMetricGrid { grid-template-columns: minmax(0, 1fr); }
   .accountingMetric + .accountingMetric { border-left: 0; border-top: 1px solid var(--training-border); }
   .accountingMetricHead { align-items: flex-start; }
-  .accountingBreakdownFacts { grid-template-columns: minmax(0, 1fr); }
-  .accountingContributionList li { gap: 0.45rem; }
+  .accountingBreakdownSetGrid { grid-template-columns: minmax(0, 1fr); gap: 0.26rem; }
+  .accountingBreakdownRow { border-radius: 0.5rem; padding: 0.36rem 0.45rem; }
+  .accountingBreakdownContributionLine { grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto; gap: 0.1rem 0.3rem; }
   .asymmetricFields,
   .loadConfigFields { grid-template-columns: minmax(0, 1fr); }
 }

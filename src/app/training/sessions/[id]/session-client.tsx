@@ -626,14 +626,6 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
       {error && <div className={styles.errorBanner} role="alert">{error}</div>}
 
       <div className={`${styles.stack} ${styles.sessionDetailStack}`}>
-        <SessionAccountingPanel
-          session={session}
-          uk={uk}
-          onMaterialize={() => void runAccountingAction("materialize")}
-          onRefresh={() => void runAccountingAction("refresh")}
-          refreshing={refreshingAccounting}
-          error={accountingError}
-        />
         <section className={`${styles.panel} ${styles.panelInfo}`}>
           <div className={styles.panelHeader}>
             <div>
@@ -841,6 +833,14 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
           </div>
         </section>
         </div>
+        <SessionAccountingPanel
+          session={session}
+          uk={uk}
+          onMaterialize={() => void runAccountingAction("materialize")}
+          onRefresh={() => void runAccountingAction("refresh")}
+          refreshing={refreshingAccounting}
+          error={accountingError}
+        />
       </div>
     </main>
   );

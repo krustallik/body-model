@@ -105,21 +105,6 @@ function bodyweightDescription(accounting: LoadAccountingOutputV1, uk: boolean):
     : `As-of estimate for ${ref.localDate} · ${numberText(ref.valueKg, uk)} kg.`;
 }
 
-function categoryLabel(category: LoadAccountingBreakdownContributionV1["category"], uk: boolean): string {
-  const labels: Record<LoadAccountingBreakdownContributionV1["category"], [string, string]> = {
-    externalLoadVolume: ["Зовнішнє навантаження", "External load"],
-    bandNominalPerLoggedSide: ["Обсяг резинок", "Band nominal volume"],
-    bandNominalLeftSide: ["Обсяг резинок", "Band nominal volume"],
-    bandNominalRightSide: ["Обсяг резинок", "Band nominal volume"],
-    bodyweightSets: ["Підходи з власною вагою", "Bodyweight sets"],
-    bodyweightRepetitions: ["Повторення з власною вагою", "Bodyweight repetitions"],
-    bodyweightReferenceVolume: ["Навантаження власною вагою", "Bodyweight load"],
-    additionalLoad: ["Додаткова вага", "Added load"],
-    assistanceLoad: ["Допоміжне навантаження", "Assistance load"],
-  };
-  return labels[category][uk ? 0 : 1];
-}
-
 function basisLabel(basis: LoadAccountingBreakdownContributionV1["basis"], uk: boolean): string {
   const labels: Record<LoadAccountingBreakdownContributionV1["basis"], [string, string]> = {
     "per-implement-kg": ["кг на снаряд", "kg per implement"],
@@ -216,6 +201,41 @@ function contributionValue(contribution: DisplayContribution, uk: boolean): stri
   return `${numberText(contribution.value, uk)} ${unit}`;
 }
 
+function compactCategoryLabel(category: LoadAccountingBreakdownContributionV1["category"], uk: boolean): string {
+  const labels: Record<LoadAccountingBreakdownContributionV1["category"], [string, string]> = {
+    externalLoadVolume: ["Зовнішнє", "External"],
+    bandNominalPerLoggedSide: ["Резинки", "Bands"],
+    bandNominalLeftSide: ["Резинки", "Bands"],
+    bandNominalRightSide: ["Резинки", "Bands"],
+    bodyweightSets: ["Власна вага", "Bodyweight"],
+    bodyweightRepetitions: ["Власна вага", "Bodyweight"],
+    bodyweightReferenceVolume: ["Власна вага", "Bodyweight"],
+    additionalLoad: ["Додаткове", "Added"],
+    assistanceLoad: ["Допоміжне", "Assistance"],
+  };
+  return labels[category][uk ? 0 : 1];
+}
+
+function mechanicsLabel(row: LoadAccountingBreakdownRowV1, uk: boolean): string | null {
+  const config = row.config.effective;
+  if (config?.resistanceType === "bodyweight" && config.bodyweightFraction < 1) {
+    return uk
+      ? "Приблизна частка маси · " + numberText(config.bodyweightFraction * 100, uk) + "%"
+      : "Approximate bodyweight share · " + numberText(config.bodyweightFraction * 100, uk) + "%";
+  }
+  if (config?.resistanceType === "external"
+      && config.accountingKind === "external-per-implement-per-movement"
+      && config.implementsPerMovement > 1) {
+    return uk ? "Снарядів на рух · " + config.implementsPerMovement : "Implements per movement · " + config.implementsPerMovement;
+  }
+  if (row.mechanics && row.mechanics.effectiveMultiplier !== 1) {
+    return uk
+      ? "Множник ×" + numberText(row.mechanics.effectiveMultiplier, uk)
+      : "Multiplier ×" + numberText(row.mechanics.effectiveMultiplier, uk);
+  }
+  return null;
+}
+
 function BreakdownRow({
   row,
   reference,
@@ -268,48 +288,65 @@ function BreakdownRow({
     provenance: [...provenanceByKey.values()],
   } : null;
   const contributions: DisplayContribution[] = bandContribution ? [...other, bandContribution] : other;
-  const mechanicsText = bodyweightConfig && bodyweightConfig.bodyweightFraction < 1
-    ? (uk ? "Приблизна частка маси для цього руху · " : "Approximate bodyweight share · ")
-      + numberText(bodyweightConfig.bodyweightFraction * 100, uk) + "%"
-    : row.config.effective?.resistanceType === "external"
-      && row.config.effective.accountingKind === "external-per-implement-per-movement"
-      && row.config.effective.implementsPerMovement > 1
-      ? (uk ? "Снарядів на рух · " : "Implements per movement · ") + row.config.effective.implementsPerMovement
-      : row.config.effective?.resistanceType === "external"
-        && row.config.effective.accountingKind === "external-per-implement-per-side"
-        && row.config.effective.loadedSides > 1
-        ? (uk ? "Враховано навантаження на обох сторонах" : "Both loaded sides counted")
-        : null;
+  const mechanicsText = mechanicsLabel(row, uk);
+  const setLoad = loadParts.length ? loadParts.join(" + ") : (uk ? "вага не вказана" : "load not entered");
 
   return (
     <article className={styles.accountingBreakdownRow}>
-      <div className={styles.accountingBreakdownTitle}>
-        <strong>{row.exerciseName}</strong>
+      <p className={styles.accountingBreakdownSetLine}>
         <span>{uk ? "Підхід " + row.setNumber : "Set " + row.setNumber}</span>
-      </div>
-      <dl className={styles.accountingBreakdownFacts}>
-        <div><dt>{uk ? "Повтори" : "Reps"}</dt><dd>{row.scalarReps ?? (uk ? "н/д" : "n/a")}</dd></div>
-        <div><dt>{uk ? "Навантаження / референс" : "Load / reference"}</dt><dd>{loadParts.length ? loadParts.join(" + ") : (uk ? "не вказане" : "not entered")}</dd></div>
-      </dl>
-      {mechanicsText && <p className={styles.accountingBreakdownMechanics}>{mechanicsText}</p>}
+        <strong>{row.scalarReps ?? (uk ? "н/д" : "n/a")} × {setLoad}</strong>
+      </p>
       <ul className={styles.accountingContributionList}>
         {contributions.map((contribution, index) => (
-          <li key={contribution.category + "-" + index}>
-            <span><strong>{categoryLabel(contribution.category, uk)}</strong><small>{basisLabel(contribution.basis, uk)}</small></span>
-            <span className={styles.accountingContributionValue}>
-              {contributionValue(contribution, uk)}
-              <small>{availabilityLabel(contribution.availability, uk)}
-                {contribution.availability === "unavailable" && unavailableReasonLabel(contribution.unavailableReason, uk)
-                  ? " · " + unavailableReasonLabel(contribution.unavailableReason, uk)
-                  : ""}
+          <li className={styles.accountingBreakdownContribution} key={contribution.category + "-" + index}>
+            <div className={styles.accountingBreakdownContributionLine}>
+              <strong>{compactCategoryLabel(contribution.category, uk)}</strong>
+              <span className={styles.accountingContributionValue}>
+                {contribution.value === null ? "—" : contributionValue(contribution, uk)}
+              </span>
+              <span className={styles.accountingAvailability} data-state={contribution.availability}>
+                {availabilityLabel(contribution.availability, uk)}
+              </span>
+            </div>
+            {contribution.availability !== "available" && unavailableReasonLabel(contribution.unavailableReason, uk) && (
+              <small className={styles.accountingBreakdownUnavailableReason}>
+                {unavailableReasonLabel(contribution.unavailableReason, uk)}
               </small>
-              <small>{uk ? "Джерело внеску" : "Contribution source"}: {contributionProvenanceLabel(contribution, uk, row)}</small>
-            </span>
+            )}
+            <details className={styles.accountingBreakdownMeta}>
+              <summary>{uk ? "База й походження" : "Basis and source"}</summary>
+              <div>
+                <span>{basisLabel(contribution.basis, uk)}</span>
+                {mechanicsText && <span>{mechanicsText}</span>}
+                <span>{(uk ? "Джерело внеску: " : "Contribution source: ") + contributionProvenanceLabel(contribution, uk, row)}</span>
+              </div>
+            </details>
           </li>
         ))}
       </ul>
     </article>
   );
+}
+
+function groupBreakdownRows(rows: LoadAccountingBreakdownRowV1[]) {
+  const groups = new Map<number, { exerciseOrder: number; exerciseName: string; rows: LoadAccountingBreakdownRowV1[] }>();
+  for (const row of rows) {
+    const group = groups.get(row.sessionExerciseId) ?? {
+      exerciseOrder: row.exerciseOrder,
+      exerciseName: row.exerciseName,
+      rows: [],
+    };
+    group.rows.push(row);
+    groups.set(row.sessionExerciseId, group);
+  }
+  return [...groups.entries()]
+    .sort(([, left], [, right]) => left.exerciseOrder - right.exerciseOrder)
+    .map(([sessionExerciseId, group]) => ({
+      sessionExerciseId,
+      ...group,
+      rows: group.rows.slice().sort((left, right) => left.setNumber - right.setNumber),
+    }));
 }
 export function SessionAccountingPanel({ session, uk, onMaterialize, onRefresh, refreshing = false, error = null }: Props) {
   const reportedState = session.materializationState ?? (session.loadAccountingV1 ? "current" : "missing");
@@ -372,11 +409,20 @@ export function SessionAccountingPanel({ session, uk, onMaterialize, onRefresh, 
               {breakdown?.status === "available" ? (
                 <details>
                   <summary>{uk ? `Деталі за вправами й підходами (${breakdown.value.rows.length})` : `Exercise and set details (${breakdown.value.rows.length})`}</summary>
-                  <div className={styles.accountingBreakdownList}>
-                    {breakdown.value.rows.length === 0
-                      ? <p className={styles.accountingStateHint}>{uk ? "У знімку немає рядків." : "No rows in this snapshot."}</p>
-                      : breakdown.value.rows.map((row) => <BreakdownRow key={row.strengthSetId} row={row} reference={accounting.bodyweight.reference} uk={uk} />)}
-                  </div>
+                  {breakdown.value.rows.length === 0
+                    ? <p className={styles.accountingStateHint}>{uk ? "У знімку немає рядків." : "No rows in this snapshot."}</p>
+                    : <div className={styles.accountingBreakdownList}>
+                      {groupBreakdownRows(breakdown.value.rows).map((group) => (
+                        <section className={styles.accountingBreakdownExercise} key={group.sessionExerciseId}>
+                          <h3>{group.exerciseName}</h3>
+                          <div className={styles.accountingBreakdownSetGrid}>
+                            {group.rows.map((row) => (
+                              <BreakdownRow key={row.strengthSetId} row={row} reference={accounting.bodyweight.reference} uk={uk} />
+                            ))}
+                          </div>
+                        </section>
+                      ))}
+                    </div>}
                 </details>
               ) : breakdown?.status === "unavailable" ? (
                 <p className={styles.accountingLegacyNote}>{uk ? "Підсумки цього старого знімка збережені, але деталі за підходами недоступні." : "This older snapshot keeps its totals, but set-level details are unavailable."}</p>

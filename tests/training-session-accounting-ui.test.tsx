@@ -196,11 +196,19 @@ describe("persisted session accounting UI", () => {
     expect(screen.queryByText(/Додаткова вага|Допоміжне навантаження|Added load|Assistance load/i)).toBeNull();
     expect(screen.queryByText(/Загальний обсяг|Mixed total/i)).toBeNull();
     expect(screen.getByText(/Точне вимірювання 2026-09-10/)).toBeTruthy();
-    await user.click(screen.getByText(/Деталі за вправами/));
+    const breakdownSummary = screen.getByText(/Деталі за вправами/);
+    expect(breakdownSummary.closest("details")?.open).toBe(false);
+    await user.click(breakdownSummary);
+    expect(breakdownSummary.closest("details")?.open).toBe(true);
     expect(screen.getByText("Pull-up")).toBeTruthy();
-    expect(screen.getAllByText("12")).toHaveLength(2);
+    expect(screen.getByText(/12 × 10 кг/)).toBeTruthy();
     expect(screen.queryByText(/ліворуч|праворуч|left|right/i)).toBeNull();
     expect(screen.getByText("220 kg × reps")).toBeTruthy();
+    const basisDetails = screen.getAllByText("База й походження");
+    expect(basisDetails).toHaveLength(2);
+    expect(basisDetails[1]?.closest("details")?.open).toBe(false);
+    await user.click(basisDetails[1]!);
+    expect(basisDetails[1]?.closest("details")?.open).toBe(true);
     expect(screen.getByText(/Точне вимірювання маси · дата вимірювання 2026-09-10/)).toBeTruthy();
     expect(screen.queryByText(/No eligible historical measurement or estimate/)).toBeNull();
     expect(screen.queryByText("private-v")).toBeNull();
@@ -246,7 +254,8 @@ describe("persisted session accounting UI", () => {
     })} />);
     await ensureBreakdownOpen();
     expect(screen.getByText(/No eligible historical measurement or estimate/)).toBeTruthy();
-    expect(screen.getByText("Unavailable · bodyweight reference is unavailable")).toBeTruthy();
+    expect(screen.getByText("Unavailable")).toBeTruthy();
+    expect(screen.getByText("bodyweight reference is unavailable")).toBeTruthy();
   });
 
   it("shows approximate observation date and never formats unavailable mass as zero", () => {

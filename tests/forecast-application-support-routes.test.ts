@@ -91,6 +91,25 @@ describe("forecast context route", () => {
     expect(localizedBody.provenance.latestDay.nutrition.label).toBe("Харчування спостережене");
   });
 
+  it("exposes the goal-date boundary using the model timezone's completed local day", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-29T22:00:00.000Z"));
+    try {
+      modelServices.getModelStatus.mockResolvedValue({
+        latestModeledDate: "2026-06-10",
+        timezone: "Europe/Bratislava",
+      });
+      modelServices.getModelHistory.mockResolvedValue({ days: [], unknownIntervals: [] });
+      const response = await GET();
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        latestCompletedLocalDate: "2026-09-29",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("maps a missing active model and unexpected failures", async () => {
     modelServices.getModelStatus.mockRejectedValueOnce(new NoActiveModelEpisodeError());
     expect((await GET()).status).toBe(404);

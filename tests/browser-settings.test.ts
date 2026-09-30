@@ -21,7 +21,7 @@ class MemoryStorage {
   removeItem(key: string) { this.values.delete(key); }
 }
 
-const form = defaultGoalForm("2026-08-24", 80);
+const form = defaultGoalForm("2026-08-24", 80, "2026-08-24");
 const goalSettings = goalSettingsFromForm(form, null);
 const forecastSettings = { horizon: 90 as const, mode: "fixed" as const, plan: { ...DEFAULT_PLAN, workCategory: "manualModerate" as const, plannedWork: true } };
 

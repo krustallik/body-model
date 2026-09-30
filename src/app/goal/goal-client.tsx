@@ -28,6 +28,7 @@ import {
   type GoalFormValues,
 } from "@/modules/model-goal-planning/goal-planning-ui";
 import type { GoalPlanningResponse } from "@/modules/model-goal-planning/goal-planning.types";
+import { minimumGoalDate } from "@/modules/model-target-solver/goal-date";
 import styles from "./goal.module.css";
 import { goalSettingsFromForm, isGoalBrowserSettings } from "@/modules/browser-settings/planning-settings";
 import { GOAL_SETTINGS_KEY, readBrowserSettings, resetBrowserSettings, writeBrowserSettings } from "@/modules/browser-settings/versioned-settings";
@@ -35,14 +36,14 @@ import { GOAL_SETTINGS_KEY, readBrowserSettings, resetBrowserSettings, writeBrow
 type HistoricalDay = { date: string; modeledWeightKg: number | null; filteredWeightKg: number | null; fatMassKg: number | null; leanTissueKg: number | null; glycogenAssociatedMassKg: number | null; dataQuality: string };
 type ObservedWeight = { date: string; weightKg: number; bodyFatPercent?: number | null };
 type GoalProfileAttributes = Pick<ProfileDto, "sex" | "dateOfBirth" | "heightCm">;
-type Context = { status: ModelStatusDto; history: HistoricalDay[]; observedWeights?: ObservedWeight[]; profile?: GoalProfileAttributes | null };
+type Context = { status: ModelStatusDto; latestCompletedLocalDate: string; history: HistoricalDay[]; observedWeights?: ObservedWeight[]; profile?: GoalProfileAttributes | null };
 
 async function responseError(response: Response, locale: Locale): Promise<string> {
   const uk = locale === "uk";
   try {
     const body = await response.json() as { error?: string; message?: string; details?: Array<{ path?: Array<string | number>; message?: string }> };
     if (body.error === "no_active_episode") return uk ? "Немає активної моделі. Спочатку додайте історичні дані й розрахуйте модель." : "There is no active model. Add history and calculate the model first.";
-    if (body.error === "invalid_goal_date") return uk ? "Дата цілі має бути пізнішою за останню змодельовану дату." : "The goal date must be after the latest modeled date.";
+    if (body.error === "invalid_goal_date") return uk ? "Дата цілі має бути пізнішою за останній завершений день у часовому поясі моделі." : "The goal date must be after the latest completed day in the model timezone.";
     if (body.error === "validation_error") return body.details?.map((issue) => `${issue.path?.join(".") || "request"}: ${issue.message}`).join("; ") || (uk ? "Перевірте введені значення." : "Check the submitted values.");
     return body.message ?? (uk ? "Не вдалося розрахувати сценарій цілі." : "Could not calculate the goal scenario.");
   } catch {
@@ -143,7 +144,7 @@ export function GoalClient() {
         }
         : null;
       setContext({ ...next, profile });
-      const initial = initialGoalFormWithRecommendation(next.status.latestModeledDate, next.status, profile);
+      const initial = initialGoalFormWithRecommendation(next.status.latestModeledDate, next.status, next.latestCompletedLocalDate, profile);
       const persisted = readBrowserSettings(GOAL_SETTINGS_KEY, isGoalBrowserSettings);
       if (persisted) {
         const restored: GoalFormValues = {
@@ -186,7 +187,7 @@ export function GoalClient() {
   function resetSettings() {
     if (!context) return;
     resetBrowserSettings(GOAL_SETTINGS_KEY);
-    const initial = initialGoalFormWithRecommendation(context.status.latestModeledDate, context.status, context.profile ?? null);
+    const initial = initialGoalFormWithRecommendation(context.status.latestModeledDate, context.status, context.latestCompletedLocalDate, context.profile ?? null);
     skipSettingsWrite.current = true;
     setForm(initial.form);
     setResult(null); setError(null); setFormErrors({});
@@ -194,7 +195,7 @@ export function GoalClient() {
 
   async function submit(event?: FormEvent) {
     event?.preventDefault();
-    if (!context?.status.latestModeledDate) { setError(uk ? "Останній змодельований стан недоступний." : "The latest modeled state is unavailable."); return; }
+    if (!context?.status.latestModeledDate || !context.latestCompletedLocalDate) { setError(uk ? "Останній змодельований стан недоступний." : "The latest modeled state is unavailable."); return; }
     const referenceNutrition = recommendGoalFormNutrition(
       form,
       context.status.latestModeledDate,
@@ -204,7 +205,7 @@ export function GoalClient() {
     const built = buildGoalPlanningRequest({
       ...form,
       plan: { ...form.plan, ...referenceNutrition },
-    }, context.status.latestModeledDate);
+    }, context.status.latestModeledDate, context.latestCompletedLocalDate);
     setFormErrors(built.errors);
     if (!built.request) { setError(uk ? "Перевірте виділені поля." : "Check the highlighted fields."); return; }
     controllerRef.current?.abort();
@@ -254,7 +255,7 @@ export function GoalClient() {
       <div className={styles.formUtilityRow}><span>{uk ? "Параметри сценарію" : "Scenario inputs"}</span><button className={styles.resetButton} type="button" disabled={solving} onClick={resetSettings}>{uk ? "Скинути налаштування" : "Reset settings"}</button></div>
       <section className={styles.formSection}><div className={styles.sectionHeading}><div><span>01</span><h2>{uk ? "Ціль і дата" : "Target and date"}</h2></div><p>{uk ? `Останній змодельований день: ${formatDate(latestModeledDate, { year: "numeric" }, locale)}` : `Latest modeled day: ${formatDate(latestModeledDate, { year: "numeric" }, locale)}`}</p></div><div className={styles.formGrid}>
         <TextNumberField id="targetWeightKg" label={uk ? "Цільова вага" : "Target weight"} unit={uk ? "кг" : "kg"} helpLabel={uk ? "Пояснення цільової ваги" : "Explain target weight"} help={uk ? "Вага, до якої solver підбирає сценарій у заданих межах планування." : "The weight the solver uses to search for a scenario within your planning bounds."} value={form.targetWeightKg} min={0.1} max={1000} step={0.1} error={formErrors.targetWeightKg} onChange={(value) => updateForm("targetWeightKg", value)} />
-        <label className={styles.field} htmlFor="goalDate"><span>{uk ? "Дата цілі" : "Goal date"}<HelpTip label={uk ? "Пояснення дати цілі" : "Explain goal date"}>{uk ? "Дата задає горизонт планувальника, але не гарантує, що ціль фізіологічно досяжна." : "The date sets the planner horizon; it does not guarantee the goal is physiologically reachable."}</HelpTip></span><input id="goalDate" name="goalDate" type="date" value={form.goalDate} required aria-invalid={Boolean(formErrors.goalDate)} aria-describedby={formErrors.goalDate ? "goalDate-error" : undefined} onChange={(event) => updateForm("goalDate", event.currentTarget.value)} /><FieldError id="goalDate-error" message={formErrors.goalDate} /></label>
+        <label className={styles.field} htmlFor="goalDate"><span>{uk ? "Дата цілі" : "Goal date"}<HelpTip label={uk ? "Пояснення дати цілі" : "Explain goal date"}>{uk ? "Дата задає горизонт планувальника, але не гарантує, що ціль фізіологічно досяжна." : "The date sets the planner horizon; it does not guarantee the goal is physiologically reachable."}</HelpTip></span><input id="goalDate" name="goalDate" type="date" min={context?.latestCompletedLocalDate ? minimumGoalDate(context.latestCompletedLocalDate) : undefined} value={form.goalDate} required aria-invalid={Boolean(formErrors.goalDate)} aria-describedby={formErrors.goalDate ? "goalDate-error" : undefined} onChange={(event) => updateForm("goalDate", event.currentTarget.value)} /><FieldError id="goalDate-error" message={formErrors.goalDate === "Goal date must be after the latest completed local day" ? (uk ? "Дата має бути пізнішою за останній завершений день у часовому поясі моделі." : formErrors.goalDate) : formErrors.goalDate} /></label>
       </div></section>
 
       <section className={styles.formSection}><div className={styles.sectionHeading}><div><span>02</span><h2>{uk ? "Межі планування" : "Planning bounds"}<HelpTip label={uk ? "Пояснення меж планування" : "Explain planning bounds"}>{uk ? "Це діапазон, у якому планувальник шукає рішення. Мінімум і максимум — не рекомендація з’їдати саме стільки." : "This is the range the planner searches. The minimum and maximum are not recommendations to eat those amounts."}</HelpTip></h2></div><p>{uk ? "Умови пошуку, не фізіологічні чи медичні межі." : "Search settings, not physiological or medical limits."}</p></div><div className={styles.formGrid}>

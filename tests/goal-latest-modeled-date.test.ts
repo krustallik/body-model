@@ -16,7 +16,7 @@ describe("goal planner readiness", () => {
 
   it("allows planner rendering for valid modeled dates (v5/v6 episodes with state)", () => {
     expect(canOpenGoalPlanner("2026-09-16")).toBe(true);
-    const form = defaultGoalForm("2026-09-16", 89.4);
+    const form = defaultGoalForm("2026-09-16", 89.4, "2026-09-16");
     expect(form.goalDate).toBe("2026-12-15");
     expect(form.targetWeightKg).toBe("86.4");
     const labeled = formatDate("2026-09-16", { year: "numeric" }, "en");

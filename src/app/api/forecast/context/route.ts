@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { getModelHistory, getModelStatus } from "@/modules/model-episodes/model-episode.service";
 import type { ModelDaySourceQuality } from "@/modules/model-episodes/model-episode.types";
 import { addCalendarDays, latestCompletedLocalDate } from "@/modules/model-episodes/model-calendar";
+import { minimumGoalDate } from "@/modules/model-target-solver/goal-date";
 import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import { calculateGlycogenAssociatedMassKg } from "@/model/body-composition/state";
@@ -40,10 +41,11 @@ export async function GET(request?: Request): Promise<Response> {
       offset: 0,
     });
     const days = history.days as HistoryDayRow[];
-    const forecastStartDate = addCalendarDays(
-      latestCompletedLocalDate(new Date(), status.timezone ?? DEFAULT_TIME_ZONE),
-      1,
+    const latestCompletedDate = latestCompletedLocalDate(
+      new Date(),
+      status.timezone ?? DEFAULT_TIME_ZONE,
     );
+    const forecastStartDate = minimumGoalDate(latestCompletedDate);
     const observedWeights = await prisma.dailyHealthData.findMany({
       where: status.latestModeledDate
         ? { date: { gte: addCalendarDays(status.latestModeledDate, -59), lte: forecastStartDate } }
@@ -62,6 +64,7 @@ export async function GET(request?: Request): Promise<Response> {
     const v7Result = v7?.result ?? null;
     return Response.json({
       status,
+      latestCompletedLocalDate: latestCompletedDate,
       history: days.map((day) => ({
         date: day.date,
         modeledWeightKg: day.endWeightKg,

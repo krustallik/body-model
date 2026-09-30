@@ -189,14 +189,14 @@ describe("GoalClient interaction", () => {
 
   it("restores scenario inputs but ignores legacy manual nutrition and keeps its template internal", async () => {
     const form = {
-      ...defaultGoalForm("2026-08-24", 80),
+      ...defaultGoalForm("2026-08-24", 80, "2026-08-24"),
       targetWeightKg: "77.4",
       goalDate: "2026-11-22",
       minCaloriesKcal: "1650",
       maxCaloriesKcal: "2550",
       mode: "fixed" as const,
       plan: {
-        ...defaultGoalForm("2026-08-24", 80).plan,
+        ...defaultGoalForm("2026-08-24", 80, "2026-08-24").plan,
         averageStepsPerDay: 9100,
         strengthDaysPerWeek: 4,
         strengthTrainingMinutes: 55,
@@ -213,7 +213,7 @@ describe("GoalClient interaction", () => {
     localStorage.setItem(GOAL_SETTINGS_KEY, JSON.stringify({ version: 1, settings }));
     let posted: Record<string, unknown> | null = null;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input).includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), history: [] });
+      if (String(input).includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] });
       if (String(input).includes("/api/goal") && init?.method === "POST") {
         posted = JSON.parse(String(init.body)) as Record<string, unknown>;
         return jsonResponse(solvedGoal());
@@ -247,7 +247,7 @@ describe("GoalClient interaction", () => {
   it("reset restores scenario defaults and removes only the goal settings key", async () => {
     localStorage.setItem("bodycast.forecast.settings.v1", "keep");
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).includes("/api/forecast/context")
-      ? jsonResponse({ status: modelStatus(), history: [] })
+      ? jsonResponse({ status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] })
       : jsonResponse({ error: "optional profile unavailable" }, 404)));
     const user = userEvent.setup();
     render(<GoalClient />);
@@ -267,6 +267,7 @@ describe("GoalClient interaction", () => {
       if (url.includes("/api/forecast/context")) {
         return jsonResponse({
           status: modelStatus({ latestModeledDate: null }),
+          latestCompletedLocalDate: "2026-08-24",
           history: [],
         });
       }
@@ -286,7 +287,7 @@ describe("GoalClient interaction", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("/api/forecast/context")) {
-        return jsonResponse({ status: modelStatus(), history: [] });
+        return jsonResponse({ status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] });
       }
       if (url.includes("/api/goal") && init?.method === "POST") {
         return jsonResponse(solvedGoal());
@@ -315,10 +316,46 @@ describe("GoalClient interaction", () => {
     expect(screen.queryByText("target-centered")).toBeNull();
   });
 
+  it("uses the completed-local-day boundary for defaults and rejects early dates before POST", async () => {
+    const postBodies: unknown[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/forecast/context")) {
+        return jsonResponse({
+          status: modelStatus({ latestModeledDate: "2026-06-10" }),
+          latestCompletedLocalDate: "2026-09-29",
+          history: [],
+        });
+      }
+      if (url.includes("/api/goal") && init?.method === "POST") {
+        postBodies.push(JSON.parse(String(init.body)));
+        return jsonResponse(solvedGoal());
+      }
+      return jsonResponse({ error: "optional profile unavailable" }, 404);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const user = userEvent.setup();
+    render(<GoalClient />);
+    const dateInput = await screen.findByLabelText(/Goal date/) as HTMLInputElement;
+    expect(dateInput.value).toBe("2026-12-28");
+    expect(dateInput.min).toBe("2026-09-30");
+
+    fireEvent.change(dateInput, { target: { value: "2026-09-29" } });
+    await user.click(screen.getByRole("button", { name: "Calculate scenario" }));
+    expect(await screen.findByText(/latest completed local day/i)).toBeTruthy();
+    expect(postBodies).toHaveLength(0);
+
+    fireEvent.change(dateInput, { target: { value: "2026-09-30" } });
+    await user.click(screen.getByRole("button", { name: "Calculate scenario" }));
+    await waitFor(() => expect(postBodies).toHaveLength(1));
+    expect((postBodies[0] as { goal: { goalDate: string } }).goal.goalDate).toBe("2026-09-30");
+  });
+
   it("explains an unreliable current state without exposing solver text or inventing result values", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), history: [] });
+      if (url.includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] });
       if (url.includes("/api/goal") && init?.method === "POST") return jsonResponse(unreliableGoal());
       return jsonResponse({ error: "unexpected" }, 500);
     }));
@@ -344,6 +381,7 @@ describe("GoalClient interaction", () => {
       const url = String(input);
       if (url.includes("/api/forecast/context")) return jsonResponse({
         status: modelStatus(),
+        latestCompletedLocalDate: "2026-08-24",
         history: [
           { date: "2026-08-23", modeledWeightKg: 80.4, filteredWeightKg: 80.1, fatMassKg: 16, leanTissueKg: 45, glycogenAssociatedMassKg: 1, dataQuality: "complete" },
           { date: "2026-08-24", modeledWeightKg: 80.2, filteredWeightKg: null, fatMassKg: 16, leanTissueKg: 45, glycogenAssociatedMassKg: 1, dataQuality: "complete" },
@@ -405,7 +443,7 @@ describe("GoalClient interaction", () => {
         targetWeightKg: 51, targetDate: "2030-01-01", autoAdvanceExercises: false,
         createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
       } });
-      if (url.includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), history: [] });
+      if (url.includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] });
       if (url.includes("/api/goal") && init?.method === "POST") {
         posted = JSON.parse(String(init.body)) as Record<string, unknown>;
         return jsonResponse(solvedGoal());
@@ -442,7 +480,7 @@ describe("GoalClient interaction", () => {
         targetWeightKg: 80, targetDate: "2030-01-01", autoAdvanceExercises: false,
         createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
       } });
-      if (url.includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), history: [] });
+      if (url.includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] });
       if (url.includes("/api/goal") && init?.method === "POST") return jsonResponse(solvedGoal());
       return jsonResponse({ error: "optional profile unavailable" }, 404);
     }));
@@ -469,7 +507,7 @@ describe("GoalClient interaction", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("/api/forecast/context")) {
-        return jsonResponse({ status: modelStatus(), history: [] });
+        return jsonResponse({ status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] });
       }
       if (url.includes("/api/goal") && init?.method === "POST") {
         return jsonResponse(limited);
@@ -491,7 +529,7 @@ describe("GoalClient interaction", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("/api/forecast/context")) {
-        return jsonResponse({ status: modelStatus(), history: [] });
+        return jsonResponse({ status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] });
       }
       if (url.includes("/api/goal") && init?.method === "POST") {
         return jsonResponse({ error: "no_active_episode" }, 404);
@@ -514,7 +552,7 @@ describe("GoalClient interaction", () => {
     let posted: Record<string, unknown> | null = null;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), history: [] });
+      if (url.includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] });
       if (url.includes("/api/goal") && init?.method === "POST") {
         posted = JSON.parse(String(init.body)) as Record<string, unknown>;
         return jsonResponse(solvedGoal());
@@ -557,7 +595,7 @@ describe("GoalClient interaction", () => {
         targetWeightKg: null, targetDate: null, autoAdvanceExercises: false,
         createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
       } });
-      if (url.includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), history: [] });
+      if (url.includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] });
       if (url.includes("/api/goal") && init?.method === "POST") return jsonResponse(solvedGoal());
       return jsonResponse({ error: "unexpected" }, 500);
     }));
@@ -572,7 +610,7 @@ describe("GoalClient interaction", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("/api/forecast/context")) {
-        return jsonResponse({ status: modelStatus({ currentModeledTdeeKcalPerDay: null }), history: [] });
+        return jsonResponse({ status: modelStatus({ currentModeledTdeeKcalPerDay: null }), latestCompletedLocalDate: "2026-08-24", history: [] });
       }
       if (url.includes("/api/goal") && init?.method === "POST") return jsonResponse(solvedGoal());
       return jsonResponse({ error: "optional profile unavailable" }, 404);

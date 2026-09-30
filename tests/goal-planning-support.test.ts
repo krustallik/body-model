@@ -6,7 +6,7 @@ import type { GoalPlanningRequest } from "@/modules/model-goal-planning/goal-pla
 import type { TargetSolverBlockedResult, TargetSolverResult } from "@/modules/model-target-solver/target-solver.types";
 
 function request(): GoalPlanningRequest {
-  const built = buildGoalPlanningRequest(defaultGoalForm("2026-10-19", 82), "2026-10-19");
+  const built = buildGoalPlanningRequest(defaultGoalForm("2026-10-19", 82, "2026-10-19"), "2026-10-19", "2026-10-19");
   if (!built.request) throw new Error("expected valid request");
   return built.request;
 }
@@ -76,16 +76,16 @@ describe("goal planning application support", () => {
 
   it("derives editable convenience defaults without inventing a state", () => {
     expect(defaultGoalForm()).toMatchObject({ targetWeightKg: "", goalDate: "", minCaloriesKcal: "1500", maxCaloriesKcal: "3300" });
-    expect(defaultGoalForm("2026-10-19", 82)).toMatchObject({ targetWeightKg: "79", goalDate: "2027-01-17" });
+    expect(defaultGoalForm("2026-10-19", 82, "2026-10-19")).toMatchObject({ targetWeightKg: "79", goalDate: "2027-01-17" });
   });
 
   it("builds an explicit solver scenario and preserves zero separately from missing", () => {
-    const values = defaultGoalForm("2026-10-19", 82);
+    const values = defaultGoalForm("2026-10-19", 82, "2026-10-19");
     values.minProteinG = "0";
     values.maxProteinG = "";
     values.plan.strengthDaysPerWeek = 0;
     values.plan.strengthTrainingMinutes = 0;
-    const built = buildGoalPlanningRequest(values, "2026-10-19");
+    const built = buildGoalPlanningRequest(values, "2026-10-19", "2026-10-19");
     expect(built.errors).toEqual({});
     expect(built.request?.constraints).toMatchObject({ minProteinG: 0 });
     expect(built.request?.constraints.maxProteinG).toBeUndefined();
@@ -93,7 +93,7 @@ describe("goal planning application support", () => {
   });
 
   it("maps simple activity inputs to one step average and separate weekly training schedules", () => {
-    const values = defaultGoalForm("2026-10-19", 82);
+    const values = defaultGoalForm("2026-10-19", 82, "2026-10-19");
     values.plan.averageStepsPerDay = 10_000;
     values.plan.strengthDaysPerWeek = 3;
     values.plan.strengthTrainingMinutes = 45;
@@ -101,7 +101,7 @@ describe("goal planning application support", () => {
     values.plan.otherTrainingMinutes = 30;
     values.plan.plannedWork = true;
     values.plan.workDaysPerWeek = 2;
-    const built = buildGoalPlanningRequest(values, "2026-10-19");
+    const built = buildGoalPlanningRequest(values, "2026-10-19", "2026-10-19");
     expect(built.errors).toEqual({});
     expect(built.request?.scenarioTemplate.schedule.defaultDay).toMatchObject({
       outsideWorkWalkingDistanceKm: 7.5,
@@ -135,36 +135,36 @@ describe("goal planning application support", () => {
   });
 
   it("accepts the zero-step boundary and converts the maximum allowed step value", () => {
-    const zero = defaultGoalForm("2026-10-19", 82);
+    const zero = defaultGoalForm("2026-10-19", 82, "2026-10-19");
     zero.plan.averageStepsPerDay = 0;
-    expect(buildGoalPlanningRequest(zero, "2026-10-19").request?.scenarioTemplate.schedule.defaultDay)
+    expect(buildGoalPlanningRequest(zero, "2026-10-19", "2026-10-19").request?.scenarioTemplate.schedule.defaultDay)
       .toMatchObject({ outsideWorkWalkingDistanceKm: 0, averageWalkingSpeedKmh: 5 });
 
-    const maximum = defaultGoalForm("2026-10-19", 82);
+    const maximum = defaultGoalForm("2026-10-19", 82, "2026-10-19");
     maximum.plan.averageStepsPerDay = 100_000;
-    expect(buildGoalPlanningRequest(maximum, "2026-10-19").request?.scenarioTemplate.schedule.defaultDay)
+    expect(buildGoalPlanningRequest(maximum, "2026-10-19", "2026-10-19").request?.scenarioTemplate.schedule.defaultDay)
       .toMatchObject({ outsideWorkWalkingDistanceKm: 75, averageWalkingSpeedKmh: 5 });
   });
 
   it("rejects missing/non-finite values, invalid bounds, and non-future dates", () => {
-    const missing = defaultGoalForm("2026-10-19", null);
+    const missing = defaultGoalForm("2026-10-19", null, "2026-10-19");
     missing.maxCaloriesKcal = "Infinity";
     missing.goalDate = "2026-10-19";
-    const invalid = buildGoalPlanningRequest(missing, "2026-10-19");
+    const invalid = buildGoalPlanningRequest(missing, "2026-10-19", "2026-10-19");
     expect(invalid.request).toBeNull();
     expect(invalid.errors).toMatchObject({ targetWeightKg: expect.any(String), maxCaloriesKcal: expect.any(String), goalDate: expect.any(String) });
-    const impossibleDate = defaultGoalForm("2026-01-31", 82);
+    const impossibleDate = defaultGoalForm("2026-01-31", 82, "2026-01-31");
     impossibleDate.goalDate = "2026-02-31";
-    expect(buildGoalPlanningRequest(impossibleDate, "2026-01-31").errors.goalDate)
+    expect(buildGoalPlanningRequest(impossibleDate, "2026-01-31", "2026-01-31").errors.goalDate)
       .toBe("Enter a valid calendar date");
-    const reversed = defaultGoalForm("2026-10-19", 82);
+    const reversed = defaultGoalForm("2026-10-19", 82, "2026-10-19");
     reversed.minCaloriesKcal = "3300"; reversed.maxCaloriesKcal = "1500";
     reversed.minFatG = "100"; reversed.maxFatG = "50";
-    expect(buildGoalPlanningRequest(reversed, "2026-10-19").errors).toMatchObject({ minCaloriesKcal: expect.any(String), minFatG: expect.any(String) });
-    const equalBounds = defaultGoalForm("2026-10-19", 82);
+    expect(buildGoalPlanningRequest(reversed, "2026-10-19", "2026-10-19").errors).toMatchObject({ minCaloriesKcal: expect.any(String), minFatG: expect.any(String) });
+    const equalBounds = defaultGoalForm("2026-10-19", 82, "2026-10-19");
     equalBounds.minCaloriesKcal = "2000";
     equalBounds.maxCaloriesKcal = "2000";
-    expect(buildGoalPlanningRequest(equalBounds, "2026-10-19")).toMatchObject({ request: null, errors: { minCaloriesKcal: expect.any(String) } });
+    expect(buildGoalPlanningRequest(equalBounds, "2026-10-19", "2026-10-19")).toMatchObject({ request: null, errors: { minCaloriesKcal: expect.any(String) } });
   });
 
   it("keeps calendar dates consecutive across the late-October DST transition", () => {

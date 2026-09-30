@@ -11,6 +11,53 @@ import {
 } from "@/modules/training/persisted-load-accounting-v1";
 import { BODYWEIGHT_RESOLUTION_METHOD_V2 } from "@/modules/training/bodyweight-reference-v2";
 
+function makeExternalPayload() {
+  const localDate = "2026-09-24";
+  const massReference = {
+    status: "unavailable" as const,
+    valueKg: null,
+    localDate,
+    source: null,
+    sourceId: null,
+  };
+  const calculated = calculateLoadAccountingWithBreakdownV1({
+    sessionId: 91,
+    localDate,
+    bodyweightReference: massReference,
+    exercises: [{
+      sessionExerciseId: 101,
+      exerciseOrder: 0,
+      exerciseName: "Hyperextension",
+      identity: { status: "known-legacy", stableKey: "hyperextension" },
+      resistanceHint: "external",
+      configSnapshot: LEGACY_LOAD_CONFIGS_V1.hyperextension,
+      sets: [{ strengthSetId: 201, setNumber: 1, reps: 2, weightKg: 5, bandNominalResistanceKg: null }],
+    }],
+  });
+  return {
+    schemaVersion: PERSISTED_LOAD_ACCOUNTING_PAYLOAD_V2,
+    sessionId: 91,
+    snapshotRevision: 1,
+    accountingInputRevision: 1,
+    effectiveAccountingAt: "2026-09-24T10:00:00.000Z",
+    effectiveLocalDate: localDate,
+    timeZone: "Europe/Bratislava",
+    timeZoneProvenance: "user-selected",
+    inputFingerprint: "a".repeat(64),
+    accountingMethodVersion: calculated.result.methodVersion,
+    massResolutionMethodVersion: BODYWEIGHT_RESOLUTION_METHOD_V2,
+    massResolutionIdentity: buildMassResolutionIdentity({
+      localDate,
+      timeZone: "Europe/Bratislava",
+      methodVersion: BODYWEIGHT_RESOLUTION_METHOD_V2,
+      reference: massReference,
+    }),
+    massReference,
+    result: calculated.result,
+    breakdown: calculated.breakdown,
+  };
+}
+
 describe("versioned persisted load-accounting breakdown", () => {
   it("captures per-set category facts and keeps legacy aggregate payloads readable", () => {
     const localDate = "2026-09-24";
@@ -179,5 +226,24 @@ describe("versioned persisted load-accounting breakdown", () => {
       schemaVersion: PERSISTED_LOAD_ACCOUNTING_PAYLOAD_V1,
     });
     expect(persistedPayloadFromUnknown(payload)).not.toBeNull();
+  });
+
+  it.each([
+    { name: "category and basis mismatch", patch: { basis: "sets", unit: "sets" } },
+    { name: "category and unit mismatch", patch: { unit: "sets" } },
+    { name: "basis and unit mismatch", patch: { basis: "bodyweight-reference" } },
+    { name: "unknown category", patch: { category: "mixedTotal" } },
+    { name: "unknown basis", patch: { basis: "ordinaryTonnageKg" } },
+    { name: "unknown unit", patch: { unit: "kilograms" } },
+  ])("rejects V2 $name", ({ patch }) => {
+    const candidate = structuredClone(makeExternalPayload()) as unknown as {
+      breakdown: { rows: Array<{ contributions: Array<{ category: string; basis: string; unit: string }> }> };
+    };
+    const external = candidate.breakdown.rows[0]!.contributions.find(({ category }) =>
+      category === "externalLoadVolume");
+    if (!external) throw new Error("parser fixture is missing its external contribution");
+    Object.assign(external, patch);
+
+    expect(persistedPayloadFromUnknown(candidate)).toBeNull();
   });
 });

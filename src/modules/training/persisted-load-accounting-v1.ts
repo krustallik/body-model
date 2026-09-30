@@ -6,6 +6,8 @@ import {
   loadConfigV1Schema,
   setExecutionOverrideV1Schema,
   type LoadAccountingBreakdownCategoryV1,
+  type LoadAccountingBreakdownBasisV1,
+  type LoadAccountingBreakdownUnitV1,
 } from "./load-accounting-v1";
 
 export const PERSISTED_LOAD_ACCOUNTING_PAYLOAD_V1 = "bodycast-persisted-load-accounting-v1" as const;
@@ -39,6 +41,50 @@ const bodyweightSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("model-estimated"), valueKg: z.number().positive().finite(), localDate: z.string(), source: z.literal("bodycast-as-of-model"), sourceId: z.string().min(1), modelVersion: z.string().min(1), uncertainty: z.unknown().nullable() }).strict(),
   z.object({ status: z.literal("unavailable"), valueKg: z.null(), localDate: z.string(), source: z.null(), sourceId: z.null() }).strict(),
 ]);
+
+const breakdownSemanticCombinations: Record<LoadAccountingBreakdownCategoryV1, {
+  bases: readonly LoadAccountingBreakdownBasisV1[];
+  unit: LoadAccountingBreakdownUnitV1;
+}> = {
+  externalLoadVolume: {
+    bases: ["per-implement-kg", "complete-setup-kg"],
+    unit: "kg-repetitions",
+  },
+  bandNominalPerLoggedSide: {
+    bases: ["nominal-kg-per-logged-side"],
+    unit: "nominal-kg-repetitions-per-logged-side",
+  },
+  bandNominalLeftSide: {
+    bases: ["nominal-kg-per-logged-side"],
+    unit: "nominal-kg-repetitions-per-side",
+  },
+  bandNominalRightSide: {
+    bases: ["nominal-kg-per-logged-side"],
+    unit: "nominal-kg-repetitions-per-side",
+  },
+  bodyweightSets: { bases: ["sets"], unit: "sets" },
+  bodyweightRepetitions: { bases: ["repetitions"], unit: "repetitions" },
+  bodyweightReferenceVolume: {
+    bases: ["bodyweight-reference"],
+    unit: "bodyweight-reference-kg-repetitions",
+  },
+  additionalLoad: { bases: ["additional-load-kg"], unit: "kg-repetitions" },
+  assistanceLoad: { bases: ["assistance-load-kg"], unit: "kg-repetitions" },
+};
+
+const breakdownBasisUnits: Record<LoadAccountingBreakdownBasisV1, readonly LoadAccountingBreakdownUnitV1[]> = {
+  "per-implement-kg": ["kg-repetitions"],
+  "complete-setup-kg": ["kg-repetitions"],
+  "nominal-kg-per-logged-side": [
+    "nominal-kg-repetitions-per-logged-side",
+    "nominal-kg-repetitions-per-side",
+  ],
+  "bodyweight-reference": ["bodyweight-reference-kg-repetitions"],
+  sets: ["sets"],
+  repetitions: ["repetitions"],
+  "additional-load-kg": ["kg-repetitions"],
+  "assistance-load-kg": ["kg-repetitions"],
+};
 
 const metricRecord = z.object({
   methodVersion: z.literal(LOAD_ACCOUNTING_METHOD_V1),
@@ -133,6 +179,28 @@ const breakdownContributionSchema = z.object({
     uncertaintyStatus: z.enum(["reported", "not-reported"]).optional(),
   }).strict()),
 }).strict().superRefine((contribution, context) => {
+  const categorySemantics = breakdownSemanticCombinations[contribution.category];
+  if (!categorySemantics.bases.includes(contribution.basis)) {
+    context.addIssue({
+      code: "custom",
+      path: ["basis"],
+      message: "contribution basis is not valid for its accounting category",
+    });
+  }
+  if (categorySemantics.unit !== contribution.unit) {
+    context.addIssue({
+      code: "custom",
+      path: ["unit"],
+      message: "contribution unit is not valid for its accounting category",
+    });
+  }
+  if (!breakdownBasisUnits[contribution.basis].includes(contribution.unit)) {
+    context.addIssue({
+      code: "custom",
+      path: ["unit"],
+      message: "contribution unit is not valid for its accounting basis",
+    });
+  }
   if (contribution.availability === "available"
       && (contribution.value === null || contribution.unavailableReason !== null)) {
     context.addIssue({ code: "custom", message: "available contribution requires a value and no reason" });

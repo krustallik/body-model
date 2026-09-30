@@ -329,7 +329,14 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       recalculateModelEpisode({ now }, prisma),
       recalculateModelEpisode({ now: new Date(now.getTime() + 1_000) }, prisma),
     ]);
+    expect(outcomes).toHaveLength(2);
     expect(outcomes.some((outcome) => outcome.status === "fulfilled")).toBe(true);
+    for (const outcome of outcomes) {
+      if (outcome.status === "rejected") {
+        // No automatic retry: a losing SERIALIZABLE transaction fails closed.
+        expect(outcome.reason).toMatchObject({ code: "P2034" });
+      }
+    }
     expect(await prisma.modelEpisode.count({ where: { active: true } })).toBe(1);
     expect(await prisma.modelEpisode.count({ where: { startDate: { gte: testRangeStart, lte: finalDate } } }))
       .toBeLessThanOrEqual(2);

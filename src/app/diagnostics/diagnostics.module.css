@@ -136,11 +136,15 @@
 }
 @media (max-width: 620px) {
   .overview { grid-template-columns: minmax(0, 1fr); }
+  .gates { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .modelWorkspace, .readinessGrid { gap: .75rem; }
   .limitations { grid-template-columns: minmax(0, 1fr); }
   .limitations li { grid-template-columns: minmax(0, 1fr); gap: .25rem; }
   .readinessTitle { flex-direction: column; }
   .actions > * { flex: 1 1 auto; }
+}
+@media (max-width: 390px) {
+  .gates { grid-template-columns: minmax(0, 1fr); }
 }
 @media (prefers-reduced-motion: reduce) {
   .currentWeight, .energyMetrics > div, .coverageFacts > div { transition-duration: 0s; }

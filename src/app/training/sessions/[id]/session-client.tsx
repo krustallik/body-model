@@ -11,6 +11,7 @@ import {
   SESSION_STATUS,
 } from "@/modules/training/training.constants";
 import { parseTrainingDecimal } from "@/modules/training/parse-training-decimal";
+import { setExecutionOverrideV1Schema } from "@/modules/training/load-accounting-v1";
 import { sessionPlanCompletion } from "@/modules/training/session-plan-completion";
 import { shouldAutoAdvanceAfterSet } from "@/modules/training/auto-advance";
 import type {
@@ -42,6 +43,7 @@ import {
   emptySetDraft,
   TrainingExerciseWorkspace,
 } from "../../training-exercise-workspace";
+import { SessionAccountingPanel } from "../../session-accounting-panel";
 import styles from "../../training.module.css";
 
 export function SessionClient({ sessionId }: { sessionId: number }) {
@@ -57,6 +59,8 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
   const [candidates, setCandidates] = useState<MatchCandidateDto[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [refreshingAccounting, setRefreshingAccounting] = useState(false);
+  const [accountingError, setAccountingError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
   const [finishOffer, setFinishOffer] = useState(false);
@@ -152,11 +156,38 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
       setError(uk ? "Вкажіть кількість повторень." : "Enter reps.");
       return;
     }
-    const payload: Record<string, number | string | null> = {
+    const payload: Record<string, unknown> = {
       reps,
       comment: draft.comment.trim() ? draft.comment.trim() : null,
       rir: draft.rir.trim() === "" ? null : Number(draft.rir),
     };
+    if (draft.asymmetricRepsEnabled) {
+      const left = Number(draft.leftReps);
+      const right = Number(draft.rightReps);
+      if (!Number.isInteger(left) || left < 0 || !Number.isInteger(right) || right < 0 || left + right === 0) {
+        setError(uk ? "Вкажіть цілі повтори для обох сторін." : "Enter whole-number reps for each side.");
+        return;
+      }
+    }
+    const editingSet = current.sets.find((set) => set.id === editingSetId);
+    const parsedExistingOverride = setExecutionOverrideV1Schema.safeParse(editingSet?.loadAccountingOverride);
+    if (draft.asymmetricRepsEnabled && editingSet && editingSet.loadAccountingOverride != null && !parsedExistingOverride.success) {
+      setError(uk ? "Не вдалося безпечно зберегти попередні налаштування цього підходу." : "Could not safely preserve this set's existing accounting settings.");
+      return;
+    }
+    if ((editingSetId !== null && parsedExistingOverride.success) || draft.asymmetricRepsEnabled) {
+      const override = parsedExistingOverride.success ? { ...parsedExistingOverride.data } : {};
+      if (draft.asymmetricRepsEnabled) {
+        override.reps = {
+          kind: "asymmetric-per-side",
+          left: Number(draft.leftReps),
+          right: Number(draft.rightReps),
+        };
+      } else {
+        delete override.reps;
+      }
+      payload.loadAccountingOverride = Object.keys(override).length > 0 ? override : null;
+    }
     if (payload.rir !== null) {
       if (!Number.isInteger(payload.rir) || (payload.rir as number) < 0 || (payload.rir as number) > 10) {
         setError(uk ? "RIR має бути цілим числом від 0 до 10." : "RIR must be an integer from 0 to 10.");
@@ -245,9 +276,14 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
   }
 
   function beginEdit(set: StrengthSetDto) {
+    const parsedOverride = setExecutionOverrideV1Schema.safeParse(set.loadAccountingOverride);
+    const asymmetricReps = parsedOverride.success ? parsedOverride.data.reps : undefined;
     setEditingSetId(set.id);
     setDraft({
       reps: String(set.reps),
+      asymmetricRepsEnabled: asymmetricReps !== undefined,
+      leftReps: asymmetricReps ? String(asymmetricReps.left) : "",
+      rightReps: asymmetricReps ? String(asymmetricReps.right) : "",
       weightKg: set.weightKg === null ? "" : String(set.weightKg),
       bandNominalResistanceKg: set.bandNominalResistanceKg === null
         ? ""
@@ -274,6 +310,30 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
       setError(uk ? "Не вдалося завершити сесію." : "Could not finish the session.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function refreshAccounting() {
+    if (!session) return;
+    setRefreshingAccounting(true);
+    setAccountingError(null);
+    try {
+      const response = await fetch(`/api/v1/training/sessions/${session.id}/accounting/refresh`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ idempotencyKey: `ui-refresh-${session.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }),
+      });
+      if (!response.ok) {
+        setAccountingError(await readApiError(response, uk));
+        return;
+      }
+      const body = await response.json() as { session: StrengthSessionDto };
+      setSession(body.session);
+      setError(null);
+    } catch {
+      setAccountingError(uk ? "Не вдалося оновити облік." : "Could not refresh accounting.");
+    } finally {
+      setRefreshingAccounting(false);
     }
   }
 
@@ -496,6 +556,15 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
             </div>
           </div>
         ) : null}
+        footerContent={(
+          <SessionAccountingPanel
+            session={session}
+            uk={uk}
+            onRefresh={() => void refreshAccounting()}
+            refreshing={refreshingAccounting}
+            error={accountingError}
+          />
+        )}
       />
     );
   }
@@ -554,6 +623,13 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
       {error && <div className={styles.errorBanner} role="alert">{error}</div>}
 
       <div className={`${styles.stack} ${styles.sessionDetailStack}`}>
+        <SessionAccountingPanel
+          session={session}
+          uk={uk}
+          onRefresh={() => void refreshAccounting()}
+          refreshing={refreshingAccounting}
+          error={accountingError}
+        />
         <section className={`${styles.panel} ${styles.panelInfo}`}>
           <div className={styles.panelHeader}>
             <div>

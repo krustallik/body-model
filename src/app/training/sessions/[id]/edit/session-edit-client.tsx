@@ -11,6 +11,7 @@ import {
   type ResistanceType,
 } from "@/modules/training/training.constants";
 import { parseTrainingDecimal } from "@/modules/training/parse-training-decimal";
+import { setExecutionOverrideV1Schema } from "@/modules/training/load-accounting-v1";
 import type {
   ExerciseCatalogDto,
   StrengthSessionDto,
@@ -287,6 +288,32 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
       comment: draft.comment.trim() ? draft.comment.trim() : null,
       rir: draft.rir.trim() === "" ? null : Number(draft.rir),
     };
+    if (draft.asymmetricRepsEnabled) {
+      const left = Number(draft.leftReps);
+      const right = Number(draft.rightReps);
+      if (!Number.isInteger(left) || left < 0 || !Number.isInteger(right) || right < 0 || left + right === 0) {
+        setError(uk ? "Вкажіть цілі повтори для обох сторін." : "Enter whole-number reps for each side.");
+        return;
+      }
+    }
+    const parsedExistingOverride = setExecutionOverrideV1Schema.safeParse(editingSet?.loadAccountingOverride);
+    if (draft.asymmetricRepsEnabled && editingSet && editingSet.loadAccountingOverride != null && !parsedExistingOverride.success) {
+      setError(uk ? "Не вдалося безпечно зберегти попередні налаштування цього підходу." : "Could not safely preserve this set's existing accounting settings.");
+      return;
+    }
+    if ((editingSet !== null && parsedExistingOverride.success) || draft.asymmetricRepsEnabled) {
+      const override = parsedExistingOverride.success ? { ...parsedExistingOverride.data } : {};
+      if (draft.asymmetricRepsEnabled) {
+        override.reps = {
+          kind: "asymmetric-per-side",
+          left: Number(draft.leftReps),
+          right: Number(draft.rightReps),
+        };
+      } else {
+        delete override.reps;
+      }
+      payload.loadAccountingOverride = Object.keys(override).length > 0 ? override : null;
+    }
     if (payload.rir !== null) {
       if (!Number.isInteger(payload.rir) || (payload.rir as number) < 0 || (payload.rir as number) > 10) {
         setError(uk ? "RIR має бути цілим числом від 0 до 10." : "RIR must be an integer from 0 to 10.");
@@ -632,9 +659,14 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
       onDraftChange={setDraft}
       onSaveSet={() => void saveSet()}
       onBeginEditSet={(set) => {
+        const parsedOverride = setExecutionOverrideV1Schema.safeParse(set.loadAccountingOverride);
+        const asymmetricReps = parsedOverride.success ? parsedOverride.data.reps : undefined;
         setEditingSet(set);
         setDraft({
           reps: String(set.reps),
+          asymmetricRepsEnabled: asymmetricReps !== undefined,
+          leftReps: asymmetricReps ? String(asymmetricReps.left) : "",
+          rightReps: asymmetricReps ? String(asymmetricReps.right) : "",
           weightKg: set.weightKg == null ? "" : String(set.weightKg),
           bandNominalResistanceKg: set.bandNominalResistanceKg == null
             ? ""

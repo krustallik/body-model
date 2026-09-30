@@ -25,6 +25,9 @@ import styles from "./training.module.css";
 
 export type SetDraft = {
   reps: string;
+  asymmetricRepsEnabled: boolean;
+  leftReps: string;
+  rightReps: string;
   weightKg: string;
   bandNominalResistanceKg: string;
   rir: string;
@@ -72,6 +75,8 @@ type TrainingExerciseWorkspaceProps = {
   desktopPrimaryActions?: ReactNode;
   /** Destructive / rare actions shown inline (or compact group) on desktop. */
   desktopDangerActions?: ReactNode;
+  /** Persisted session information rendered below the live/edit exercise carousel. */
+  footerContent?: ReactNode;
   onPrev: () => void;
   onNext: () => void;
   onDraftChange: (next: SetDraft) => void;
@@ -85,7 +90,16 @@ type TrainingExerciseWorkspaceProps = {
 };
 
 export function emptySetDraft(): SetDraft {
-  return { reps: "", weightKg: "", bandNominalResistanceKg: "", rir: "", comment: "" };
+  return {
+    reps: "",
+    asymmetricRepsEnabled: false,
+    leftReps: "",
+    rightReps: "",
+    weightKg: "",
+    bandNominalResistanceKg: "",
+    rir: "",
+    comment: "",
+  };
 }
 
 function elapsedMs(startedAt: string | null | undefined, endedAt: string | null | undefined, now: number): number | null {
@@ -121,6 +135,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
     menuContent,
     desktopPrimaryActions,
     desktopDangerActions,
+    footerContent,
     onPrev,
     onNext,
     onDraftChange,
@@ -366,6 +381,9 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
       bandNominalResistanceKg: set.bandNominalResistanceKg == null
         ? draft.bandNominalResistanceKg
         : String(set.bandNominalResistanceKg),
+      asymmetricRepsEnabled: false,
+      leftReps: "",
+      rightReps: "",
       rir: set.rir == null ? "" : String(set.rir),
     });
     setCopiedHint(true);
@@ -530,6 +548,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
           </button>
         </div>
       </div>
+      {footerContent}
       {finishDialog}
     </main>
   );

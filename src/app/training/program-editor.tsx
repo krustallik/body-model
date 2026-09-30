@@ -11,6 +11,7 @@ import {
   type ResistanceType,
 } from "@/modules/training/training.constants";
 import type { ExerciseCatalogDto, TrainingProgramDto } from "@/modules/training/training.types";
+import { ExerciseLoadConfigEditor } from "./exercise-load-config-editor";
 import { readApiError, resistanceLabel } from "./training-labels";
 import styles from "./training.module.css";
 
@@ -294,6 +295,18 @@ export function ProgramEditorClient({
                       </select>
                     </label>
                   </div>
+                  <ExerciseLoadConfigEditor
+                    key={`${exercise.key}-${exercise.resistanceType}`}
+                    catalogId={exercise.catalogId}
+                    configuration={catalog.find((item) => item.id === exercise.catalogId)?.loadAccountingConfig}
+                    resistanceType={exercise.resistanceType}
+                    uk={uk}
+                    onSaved={(configuration) => {
+                      setCatalog((items) => items.map((item) => item.id === exercise.catalogId
+                        ? { ...item, loadAccountingConfig: configuration }
+                        : item));
+                    }}
+                  />
                 </article>
               ))}
 

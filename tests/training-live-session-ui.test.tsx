@@ -416,7 +416,98 @@ describe("Live training session mobile UI", () => {
     await user.click(screen.getByRole("button", { name: "Додати підхід" }));
     await waitFor(() => {
       expect(posted[0]).toEqual(expect.objectContaining({ weightKg: 33.5, reps: 8 }));
+      expect(posted[0]).not.toHaveProperty("loadAccountingOverride");
     });
+  });
+
+  it("saves asymmetric side reps as an override while keeping scalar reps unchanged", async () => {
+    const user = userEvent.setup();
+    const posted: Record<string, unknown>[] = [];
+    const configured = buildSession({
+      exercises: buildSession().exercises.map((exercise, index) => index === 0
+        ? {
+          ...exercise,
+          loadAccountingConfigSnapshot: {
+            schemaVersion: 1,
+            configVersion: "test-dumbbell",
+            inventoryCount: 2,
+            loadedSides: 2,
+            execution: "simultaneous",
+            equipment: { equipmentId: "dumbbell", setupId: "pair" },
+            accountingKind: "external-per-implement-per-side",
+            resistanceType: "external",
+            loadInput: "per-implement-kg",
+            repsMeaning: "per-side",
+          },
+        }
+        : exercise),
+    });
+    stubSessionFetch(configured, (url, init) => {
+      if (init?.method === "POST" && url.includes("/sets")) {
+        posted.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+        return Response.json({ set: { id: 99 } }, { status: 201 });
+      }
+      return null;
+    });
+    render(<SessionClient sessionId={42} />);
+    await waitFor(() => expect(activePane().getByLabelText("Вага, кг")).toBeTruthy());
+    await user.type(activePane().getByLabelText("Вага, кг"), "10");
+    await user.type(activePane().getByLabelText("Повтори"), "12");
+    await user.click(activePane().getByText("Різні повтори для сторін (опційно)"));
+    await user.type(activePane().getByLabelText("Ліва сторона"), "12");
+    await user.type(activePane().getByLabelText("Права сторона"), "10");
+    await user.click(screen.getByRole("button", { name: "Додати підхід" }));
+    await waitFor(() => expect(posted).toHaveLength(1));
+    expect(posted[0]).toMatchObject({
+      reps: 12,
+      weightKg: 10,
+      loadAccountingOverride: { reps: { kind: "asymmetric-per-side", left: 12, right: 10 } },
+    });
+  });
+
+  it("loads accounting from session GET and refreshes only through the explicit endpoint", async () => {
+    const user = userEvent.setup();
+    const initial = buildSession({ materializationState: "missing" });
+    const current = buildSession({
+      materializationState: "current",
+      loadAccountingV1: {
+        methodVersion: "bodycast-load-accounting-v1",
+        externalLoadVolume: { value: 4667, unit: "kg-repetitions", availability: "available", coverage: { eligibleRows: 4, accountedRows: 4, omittedRows: 0, omittedReasons: {} }, provenance: [] },
+        bandNominalIndex: {
+          perLoggedSide: { value: null, unit: "nominal-kg-repetitions-per-logged-side", availability: "unavailable", coverage: { eligibleRows: 0, accountedRows: 0, omittedRows: 0, omittedReasons: {} }, provenance: [] },
+          leftSide: { value: null, unit: "nominal-kg-repetitions-per-side", availability: "unavailable", coverage: { eligibleRows: 0, accountedRows: 0, omittedRows: 0, omittedReasons: {} }, provenance: [] },
+          rightSide: { value: null, unit: "nominal-kg-repetitions-per-side", availability: "unavailable", coverage: { eligibleRows: 0, accountedRows: 0, omittedRows: 0, omittedReasons: {} }, provenance: [] },
+        },
+        bodyweight: {
+          sets: { value: null, unit: "sets", availability: "unavailable", coverage: { eligibleRows: 0, accountedRows: 0, omittedRows: 0, omittedReasons: {} }, provenance: [] },
+          repetitions: { value: null, unit: "repetitions", availability: "unavailable", coverage: { eligibleRows: 0, accountedRows: 0, omittedRows: 0, omittedReasons: {} }, provenance: [] },
+          referenceVolume: { value: null, unit: "bodyweight-reference-kg-repetitions", availability: "unavailable", coverage: { eligibleRows: 0, accountedRows: 0, omittedRows: 0, omittedReasons: {} }, provenance: [] },
+          reference: { status: "unavailable", valueKg: null, localDate: "2026-09-17", source: null, sourceId: null },
+        },
+        additionalLoad: { value: null, unit: "kg-repetitions", availability: "unavailable", coverage: { eligibleRows: 0, accountedRows: 0, omittedRows: 0, omittedReasons: {} }, provenance: [] },
+        assistanceLoad: { value: null, unit: "kg-repetitions", availability: "unavailable", coverage: { eligibleRows: 0, accountedRows: 0, omittedRows: 0, omittedReasons: {} }, provenance: [] },
+        identityCoverage: { customExercises: 0, ambiguousExercises: 0, unverifiedExercises: 0 },
+      },
+    });
+    const calls: Array<{ url: string; method?: string }> = [];
+    stubSessionFetch(initial, (url, init) => {
+      calls.push({ url, method: init?.method });
+      if (url.endsWith("/accounting/refresh") && init?.method === "POST") {
+        return Response.json({ session: current });
+      }
+      if (url === "/api/v1/training/sessions/42" && !init?.method) {
+        return Response.json({ session: calls.some((call) => call.url.endsWith("/accounting/refresh")) ? current : initial });
+      }
+      return null;
+    });
+    const { unmount } = render(<SessionClient sessionId={42} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Створити знімок обліку" })).toBeTruthy());
+    await user.click(screen.getByRole("button", { name: "Створити знімок обліку" }));
+    await waitFor(() => expect(screen.getByText(/4\s?667/)).toBeTruthy());
+    expect(calls.some((call) => call.url.endsWith("/accounting/refresh") && call.method === "POST")).toBe(true);
+    unmount();
+    render(<SessionClient sessionId={42} />);
+    await waitFor(() => expect(screen.getByText(/4\s?667/)).toBeTruthy());
   });
 
   it("offers to finish after filling the last planned set of the last exercise", async () => {

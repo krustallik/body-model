@@ -4,7 +4,10 @@ const dependencies = vi.hoisted(() => ({ getActive: vi.fn(), status: vi.fn(), ev
 vi.mock("@/modules/model-episodes/model-episode.repository", () => ({ ModelEpisodeRepository: class { getActive = dependencies.getActive; status = dependencies.status; } }));
 vi.mock("@/modules/model-diagnostics/model-diagnostics.repository", () => ({ ModelDiagnosticsRepository: class { loadEvidence = dependencies.evidence; } }));
 vi.mock("@/modules/model-recovery/model-recovery.repository", () => ({ ModelRecoveryRepository: class { latestStatus = dependencies.recovery; } }));
-vi.mock("@/modules/model-diagnostics/model-diagnostics", () => ({ buildDiagnosticsDto: dependencies.build }));
+vi.mock("@/modules/model-diagnostics/model-diagnostics", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/modules/model-diagnostics/model-diagnostics")>();
+  return { ...actual, buildDiagnosticsDto: dependencies.build };
+});
 
 import { getModelDiagnostics } from "@/modules/model-diagnostics/model-diagnostics.service";
 import { NoActiveModelEpisodeError } from "@/modules/model-episodes/model-episode.errors";

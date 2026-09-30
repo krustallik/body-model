@@ -10,6 +10,7 @@ import {
   formatValue,
   forecastReadiness,
   initializationFailureMessage,
+  diagnosticsRecalculateTitle,
   localCalendarDate,
   isCurrentForecastRequest,
   modelNeedsRecalculation,
@@ -240,5 +241,28 @@ describe("forecast application helpers", () => {
     expect(modelNeedsRecalculation(null)).toBe(false);
     expect(modelNeedsRecalculation(modelStatus({ daysModeled: 0, latestModeledDate: null, currentPredictedWeightKg: null }))).toBe(true);
     expect(modelNeedsRecalculation(modelStatus())).toBe(false);
+  });
+
+  it("uses accurate Diagnostics banner copy for zero-day and stale modeled states", () => {
+    expect(diagnosticsRecalculateTitle({
+      noActiveModel: false,
+      needsRecalculation: true,
+      daysModeled: 0,
+    }, "uk")).toBe("Порахованих днів ще немає");
+    expect(diagnosticsRecalculateTitle({
+      noActiveModel: false,
+      needsRecalculation: true,
+      daysModeled: 4,
+    }, "uk")).toBe("Є пораховані дні, але поточна оцінка потребує оновлення");
+    expect(diagnosticsRecalculateTitle({
+      noActiveModel: false,
+      needsRecalculation: true,
+      daysModeled: 4,
+    }, "en")).toBe("Modeled days exist, but the current estimate needs refreshing");
+    expect(diagnosticsRecalculateTitle({
+      noActiveModel: false,
+      needsRecalculation: false,
+      daysModeled: 28,
+    }, "uk")).toBe("Оновити пораховану історію");
   });
 });

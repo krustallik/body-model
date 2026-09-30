@@ -207,6 +207,19 @@ export function modelNeedsRecalculation(status: Pick<ModelStatusDto, "daysModele
   return status.daysModeled === 0 || status.latestModeledDate === null || status.currentPredictedWeightKg === null;
 }
 
+export function diagnosticsRecalculateTitle(
+  state: { noActiveModel: boolean; needsRecalculation: boolean; daysModeled: number },
+  locale: Locale = "en",
+): string {
+  const uk = locale === "uk";
+  if (state.noActiveModel) return uk ? "Активної моделі ще немає" : "There is no active model yet";
+  if (!state.needsRecalculation) return uk ? "Оновити пораховану історію" : "Refresh calculated history";
+  if (state.daysModeled === 0) return uk ? "Порахованих днів ще немає" : "No calculated days yet";
+  return uk
+    ? "Є пораховані дні, але поточна оцінка потребує оновлення"
+    : "Modeled days exist, but the current estimate needs refreshing";
+}
+
 export function initializationFailureMessage(
   reason: string | null | undefined,
   locale: Locale = "en",

@@ -84,6 +84,11 @@ describe("forecast context route", () => {
       },
     });
     expect(JSON.stringify(body)).not.toMatch(/fatWeightShadow|shadowFat|FatWeightShadow/i);
+
+    const localized = await GET(new Request("http://localhost/api/forecast/context?locale=uk"));
+    const localizedBody = await localized.json();
+    expect(localizedBody.provenance.latestDay.dataQuality.label).toBe("Спостережено");
+    expect(localizedBody.provenance.latestDay.nutrition.label).toBe("Харчування спостережене");
   });
 
   it("maps a missing active model and unexpected failures", async () => {

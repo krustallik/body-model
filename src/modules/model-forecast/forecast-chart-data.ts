@@ -10,11 +10,12 @@ export type ForecastChartHistoryDay = {
   glycogenAssociatedMassKg?: number | null;
 };
 
-export type ForecastChartObservedDay = { date: string; weightKg: number };
+export type ForecastChartObservedDay = { date: string; weightKg: number; bodyFatPercent?: number | null };
 
 export type ForecastChartRow = {
   date: string;
   measuredWeightKg: number | null;
+  measuredFatMassKg: number | null;
   modelEstimateKg: number | null;
   historicalCompartmentKg: number | null;
   futureMedianKg: number | null;
@@ -27,9 +28,10 @@ export function forecastChartLabels(locale: "en" | "uk", metric: ForecastMetric,
   const uk = locale === "uk";
   return {
     measuredWeight: uk ? "Вага з вагів" : "Measured weight",
+    measuredFatMass: uk ? "Жирова маса з вимірювань" : "Observed fat mass",
     modelEstimate: uk ? "Оцінка моделі" : "Model estimate",
     historicalEstimate: metric === "fatMassKg"
-      ? (uk ? "Історична оцінка жиру" : "Historical fat estimate")
+      ? (uk ? "Оцінка моделі · жирова маса" : "Model-estimated fat mass")
       : metric === "leanTissueKg"
         ? (uk ? "Історична оцінка безжирової тканини" : "Historical lean-tissue estimate")
         : (uk ? "Історична оцінка глікогену й води" : "Historical glycogen-and-water estimate"),
@@ -78,6 +80,7 @@ function emptyRow(date: string): ForecastChartRow {
   return {
     date,
     measuredWeightKg: null,
+    measuredFatMassKg: null,
     modelEstimateKg: null,
     historicalCompartmentKg: null,
     futureMedianKg: null,
@@ -111,10 +114,12 @@ export function buildForecastChartRows(input: {
     else row.historicalCompartmentKg = value;
   }
 
-  if (input.metric === "physiologicalBodyWeightKg") {
-    for (const day of input.observedWeights ?? []) {
-      if (!finite(day.weightKg) || day.weightKg <= 0) continue;
-      getRow(day.date).measuredWeightKg = day.weightKg;
+  for (const day of input.observedWeights ?? []) {
+    if (!finite(day.weightKg) || day.weightKg <= 0) continue;
+    const row = getRow(day.date);
+    if (input.metric === "physiologicalBodyWeightKg") row.measuredWeightKg = day.weightKg;
+    if (input.metric === "fatMassKg" && finite(day.bodyFatPercent) && day.bodyFatPercent >= 0 && day.bodyFatPercent <= 100) {
+      row.measuredFatMassKg = day.weightKg * day.bodyFatPercent / 100;
     }
   }
 

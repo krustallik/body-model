@@ -37,8 +37,8 @@ vi.mock("@/components/model-state-source", () => ({
 }));
 
 vi.mock("@/app/forecast/forecast-chart", () => ({
-  ForecastChart: ({ history, observedWeights }: { history?: Array<{ filteredWeightKg?: number | null }>; observedWeights?: unknown[] }) => (
-    <div data-testid="goal-forecast-chart" data-model-count={history?.filter((day) => day.filteredWeightKg != null).length ?? 0} data-observed-count={observedWeights?.length ?? 0} />
+  ForecastChart: ({ history, observedWeights, historyWindowDays, metric, target }: { history?: Array<{ filteredWeightKg?: number | null }>; observedWeights?: Array<{ bodyFatPercent?: number | null }>; historyWindowDays?: number | null; metric?: string; target?: unknown }) => (
+    <div data-testid="goal-forecast-chart" data-history-window={historyWindowDays ?? "full"} data-model-count={history?.filter((day) => day.filteredWeightKg != null).length ?? 0} data-observed-count={observedWeights?.length ?? 0} data-observed-fat-count={observedWeights?.filter((day) => day.bodyFatPercent != null).length ?? 0} data-metric={metric} data-has-target={target ? "true" : "false"} />
   ),
 }));
 
@@ -143,6 +143,30 @@ function solvedGoal(): GoalPlanningResponse {
       forecastStatus: "ok",
     },
     warnings: [],
+    forecast: null,
+  };
+}
+
+function unreliableGoal(): GoalPlanningResponse {
+  const result = solvedGoal();
+  return {
+    ...result,
+    status: "initial-state-unreliable",
+    solverStatus: "initial-state-unreliable",
+    reason: "current-state-uncertainty-exceeds-supported-limit",
+    control: { solvedCaloriesKcal: null, constraintBoundary: null, boundaryReason: null },
+    terminal: null,
+    numerical: {
+      solverToleranceKg: result.numerical.solverToleranceKg,
+      goalToleranceKg: result.numerical.goalToleranceKg,
+      practicalResolutionKcal: null,
+      localSensitivityKgPer100Kcal: null,
+      robustnessClassification: null,
+      forecastQuality: null,
+      predictiveSpread90Kg: null,
+    },
+    provenance: { initialStateQuality: "degenerate", forecastStatus: null },
+    warnings: ["initial-state-unreliable"],
     forecast: null,
   };
 }
@@ -287,11 +311,36 @@ describe("GoalClient interaction", () => {
     expect(screen.getByText(/not account for body composition or clinical context/i)).toBeTruthy();
     expect(screen.getByText("2,100")).toBeTruthy();
     expect(screen.getByText("128")).toBeTruthy();
+    expect(screen.getAllByText("Flexible scenario")).toHaveLength(2);
+    expect(screen.queryByText("target-centered")).toBeNull();
+  });
+
+  it("explains an unreliable current state without exposing solver text or inventing result values", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), history: [] });
+      if (url.includes("/api/goal") && init?.method === "POST") return jsonResponse(unreliableGoal());
+      return jsonResponse({ error: "unexpected" }, 500);
+    }));
+
+    const user = userEvent.setup();
+    render(<GoalClient />);
+    await screen.findByText(/Latest modeled day:/i);
+    await user.click(screen.getByRole("button", { name: "Calculate scenario" }));
+
+    expect(await screen.findByText("Current state is not reliable enough")).toBeTruthy();
+    expect(screen.getByText(/BodyCast does not show forecast values when the current model state is not reliable enough/i)).toBeTruthy();
+    expect(screen.getByText(/The current model state is not reliable enough for forecasting\./i)).toBeTruthy();
+    expect(screen.queryByText("current-state-uncertainty-exceeds-supported-limit")).toBeNull();
+    expect(screen.queryByText("initial-state-unreliable")).toBeNull();
+    expect(screen.queryByText("target-centered")).toBeNull();
+    expect(screen.queryByTestId("goal-forecast-chart")).toBeNull();
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
   });
 
   it("passes measured scale readings and filtered historical model estimates to the shared forecast chart", async () => {
     const chartResult = { ...solvedGoal(), forecast: {} as NonNullable<GoalPlanningResponse["forecast"]> };
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("/api/forecast/context")) return jsonResponse({
         status: modelStatus(),
@@ -304,9 +353,14 @@ describe("GoalClient interaction", () => {
           { date: "2026-08-24", weightKg: 80.3 },
         ],
       });
+      if (url.includes("/api/v1/days?")) return jsonResponse({ days: [
+        { date: "2026-08-23", weightKg: 80.8, bodyFatPercent: 22.1 },
+        { date: "2026-08-24", weightKg: 80.3, bodyFatPercent: null },
+      ] });
       if (url.includes("/api/goal") && init?.method === "POST") return jsonResponse(chartResult);
       return jsonResponse({ error: "optional profile unavailable" }, 404);
-    }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
 
     const user = userEvent.setup();
     render(<GoalClient />);
@@ -314,6 +368,32 @@ describe("GoalClient interaction", () => {
     const chart = await screen.findByTestId("goal-forecast-chart");
     expect(chart.getAttribute("data-model-count")).toBe("1");
     expect(chart.getAttribute("data-observed-count")).toBe("2");
+    expect(chart.getAttribute("data-observed-fat-count")).toBe("1");
+    expect(chart.getAttribute("data-history-window")).toBe("21");
+    expect(chart.getAttribute("data-metric")).toBe("physiologicalBodyWeightKg");
+    expect(chart.getAttribute("data-has-target")).toBe("true");
+    const goalPosts = () => fetchMock.mock.calls.filter(([url, init]) => String(url).includes("/api/goal") && init?.method === "POST").length;
+    expect(goalPosts()).toBe(1);
+    await user.click(screen.getByRole("button", { name: "Fat mass" }));
+    expect(chart.getAttribute("data-metric")).toBe("fatMassKg");
+    expect(chart.getAttribute("data-has-target")).toBe("false");
+    expect(goalPosts()).toBe(1);
+    await user.click(screen.getByRole("button", { name: "Full history" }));
+    expect(chart.getAttribute("data-history-window")).toBe("full");
+    await user.click(screen.getByRole("button", { name: "Recent history" }));
+    expect(chart.getAttribute("data-history-window")).toBe("21");
+    expect(goalPosts()).toBe(1);
+
+    const explanations = screen.getAllByText("How to read");
+    expect(explanations).toHaveLength(4);
+    await user.click(explanations[0]);
+    expect(explanations[0].parentElement).toHaveProperty("open", true);
+    expect(screen.getByText(/not a guarantee or the probability that the model itself is correct/i)).toBeTruthy();
+
+    const probabilityExplanation = screen.getByText("Why there is an interval");
+    await user.click(probabilityExplanation);
+    expect(probabilityExplanation.parentElement).toHaveProperty("open", true);
+    expect(screen.getByText(/describes this sampling error in the estimated share, not weight/i)).toBeTruthy();
   });
 
   it("keeps reference nutrition internal and refreshes it from current context and activity inputs", async () => {

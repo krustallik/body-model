@@ -13,7 +13,7 @@ import {
   YAxis,
 } from "recharts";
 import type { ForecastMetric } from "@/modules/model-forecast/forecast-ui";
-import { formatDate } from "@/modules/model-forecast/forecast-ui";
+import { addCalendarDays, formatDate } from "@/modules/model-forecast/forecast-ui";
 import {
   buildForecastChartRows,
   formatForecastChartValue,
@@ -58,22 +58,36 @@ function Tick({ x, y, payload, locale }: { x?: number; y?: number; payload?: { v
   return <text x={x} y={(y ?? 0) + 14} textAnchor="middle" fill="currentColor" fontSize="11">{payload ? formatDate(payload.value, undefined, locale) : ""}</text>;
 }
 
-export function ForecastChart({ result, metric, history, observedWeights = [], locale, target }: {
+export function ForecastChart({ result, metric, history, observedWeights = [], locale, target, historyWindowDays }: {
   result: ForecastResult;
   metric: ForecastMetric;
   history: ForecastChartHistoryDay[];
   observedWeights?: ForecastChartObservedDay[];
   locale: Locale;
   target?: { date: string; weightKg: number };
+  /** Optional visible history window. Forecast rows and results remain unchanged. */
+  historyWindowDays?: number | null;
 }) {
   const uk = locale === "uk";
-  const rows = buildForecastChartRows({ result, metric, history, observedWeights });
+  const latestHistoryDate = [...history.map((day) => day.date), ...observedWeights.map((day) => day.date)]
+    .reduce<string | null>((latest, date) => latest === null || date > latest ? date : latest, null);
+  const windowStartDate = historyWindowDays && latestHistoryDate
+    ? addCalendarDays(latestHistoryDate, -(historyWindowDays - 1))
+    : null;
+  const visibleHistory = windowStartDate ? history.filter((day) => day.date >= windowStartDate) : history;
+  const visibleObservedWeights = windowStartDate
+    ? observedWeights.filter((day) => day.date >= windowStartDate)
+    : observedWeights;
+  const rows = buildForecastChartRows({ result, metric, history: visibleHistory, observedWeights: visibleObservedWeights });
   const bodyWeight = metric === "physiologicalBodyWeightKg";
+  const fatMass = metric === "fatMassKg";
   const engineeringRange = result.forecastVersion === "experimental-forecast-v1";
   const labels = forecastChartLabels(locale, metric, engineeringRange);
   const accessibleDescription = bodyWeight
     ? `${labels.measuredWeight}, ${labels.modelEstimate}, ${uk ? "майбутній прогноз" : "future forecast"}${target ? (uk ? ", введена ціль" : ", submitted target") : ""}`
-    : `${labels.historicalEstimate}, ${uk ? "майбутній прогноз" : "future forecast"}${target ? (uk ? ", введена ціль" : ", submitted target") : ""}`;
+    : fatMass
+      ? `${labels.measuredFatMass}, ${labels.historicalEstimate}, ${uk ? "майбутній прогноз" : "future forecast"}`
+      : `${labels.historicalEstimate}, ${uk ? "майбутній прогноз" : "future forecast"}`;
 
   return (
     <div className={styles.chartViewport} role="img" aria-label={accessibleDescription}>
@@ -91,15 +105,20 @@ export function ForecastChart({ result, metric, history, observedWeights = [], l
             </>}
           {bodyWeight
             ? <>
-              <Line type="monotone" dataKey="modelEstimateKg" name={labels.modelEstimate} stroke="var(--history-line)" strokeWidth={2} dot={false} connectNulls={false} />
-              <Line type="monotone" dataKey="measuredWeightKg" name={labels.measuredWeight} stroke="var(--accent)" strokeWidth={2} dot={{ r: 3 }} connectNulls={false} />
+              <Line type="monotone" dataKey="modelEstimateKg" name={labels.modelEstimate} stroke="var(--history-line)" strokeWidth={2} strokeDasharray="4 4" dot={false} connectNulls={false} />
+              <Line type="monotone" dataKey="measuredWeightKg" name={labels.measuredWeight} stroke="var(--info)" strokeWidth={2.5} dot={{ r: 3.5, fill: "var(--info)", stroke: "var(--surface)", strokeWidth: 1.5 }} connectNulls={false} />
             </>
-            : <Line type="monotone" dataKey="historicalCompartmentKg" name={labels.historicalEstimate} stroke="var(--history-line)" strokeWidth={2} dot={false} connectNulls={false} />}
+            : fatMass
+              ? <>
+                <Line type="monotone" dataKey="historicalCompartmentKg" name={labels.historicalEstimate} stroke="var(--history-line)" strokeWidth={2} strokeDasharray="4 4" dot={false} connectNulls={false} />
+                <Line type="monotone" dataKey="measuredFatMassKg" name={labels.measuredFatMass} stroke="var(--info)" strokeWidth={2.5} dot={{ r: 3.5, fill: "var(--info)", stroke: "var(--surface)", strokeWidth: 1.5 }} connectNulls={false} />
+              </>
+              : <Line type="monotone" dataKey="historicalCompartmentKg" name={labels.historicalEstimate} stroke="var(--history-line)" strokeWidth={2} dot={false} connectNulls={false} />}
           <Line type="monotone" dataKey="futureMedianKg" name={labels.futureMedian} stroke="var(--forecast-line)" strokeWidth={3} dot={false} connectNulls={false} />
           {result.dates[0]?.date && <ReferenceLine x={result.dates[0].date} stroke="var(--boundary)" strokeDasharray="4 4" label={{ value: uk ? "Прогноз" : "Forecast", position: "insideTopRight", fill: "var(--muted)", fontSize: 11 }} />}
-          {target && <ReferenceLine y={target.weightKg} stroke="var(--target, #b35b36)" strokeDasharray="6 4" />}
-          {target && <ReferenceLine x={target.date} stroke="var(--target, #b35b36)" strokeDasharray="6 4" />}
-          {target && <ReferenceDot x={target.date} y={target.weightKg} r={5} fill="var(--surface)" stroke="var(--target, #b35b36)" strokeWidth={3} label={{ value: uk ? "Ціль" : "Target", position: "top", fill: "var(--target, #b35b36)", fontSize: 11 }} />}
+          {target && bodyWeight && <ReferenceLine y={target.weightKg} stroke="var(--target, #b35b36)" strokeDasharray="6 4" />}
+          {target && bodyWeight && <ReferenceLine x={target.date} stroke="var(--target, #b35b36)" strokeDasharray="6 4" />}
+          {target && bodyWeight && <ReferenceDot x={target.date} y={target.weightKg} r={5} fill="var(--surface)" stroke="var(--target, #b35b36)" strokeWidth={3} label={{ value: uk ? "Ціль" : "Target", position: "top", fill: "var(--target, #b35b36)", fontSize: 11 }} />}
         </ComposedChart>
       </ResponsiveContainer>
     </div>

@@ -77,6 +77,26 @@ describe("forecast chart data", () => {
     expect(rows[2]?.modelEstimateKg).toBeNull();
   });
 
+  it("derives observed fat mass only when same-day weight and body-fat percentage are available", () => {
+    const rows = buildForecastChartRows({
+      metric: "fatMassKg",
+      history: [
+        { date: "2026-03-27", fatMassKg: 17.1 },
+        { date: "2026-03-28", fatMassKg: 17.0 },
+      ],
+      observedWeights: [
+        { date: "2026-03-27", weightKg: 80, bodyFatPercent: 22 },
+        { date: "2026-03-28", weightKg: 79.5, bodyFatPercent: null },
+        { date: "2026-03-29", weightKg: 79, bodyFatPercent: 101 },
+      ],
+      result: result([day("2026-03-29")]),
+    });
+
+    expect(rows[0]).toMatchObject({ measuredFatMassKg: 17.6, historicalCompartmentKg: 17.1 });
+    expect(rows[1]).toMatchObject({ measuredFatMassKg: null, historicalCompartmentKg: 17 });
+    expect(rows[2]).toMatchObject({ measuredFatMassKg: null, historicalCompartmentKg: null, futureMedianKg: 80 });
+  });
+
   it("uses engineering bounds without claiming p25–p75 or p05–p95 semantics", () => {
     const labels = forecastChartLabels("en", "physiologicalBodyWeightKg", true);
     const rows = buildForecastChartRows({
@@ -123,6 +143,9 @@ describe("forecast chart data", () => {
     expect(forecastChartLabels("en", "physiologicalBodyWeightKg", false)).toMatchObject({
       measuredWeight: "Measured weight", modelEstimate: "Model estimate", futureMedian: "Future forecast · median",
       innerInterval: "Forecast interval 25–75%", outerInterval: "Forecast interval 5–95%",
+    });
+    expect(forecastChartLabels("uk", "fatMassKg", false)).toMatchObject({
+      measuredFatMass: "Жирова маса з вимірювань", historicalEstimate: "Оцінка моделі · жирова маса",
     });
   });
 });

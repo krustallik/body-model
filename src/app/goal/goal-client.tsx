@@ -1,12 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useRef, useState, type ReactNode } from "react";
 import { AppNav } from "@/components/app-nav";
 import { HelpTip } from "@/components/help-tip";
 import { ModelStateSource } from "@/components/model-state-source";
 import { useI18n, type Locale } from "@/i18n/i18n-provider";
 import { ForecastChart } from "@/app/forecast/forecast-chart";
+import { attachObservedBodyFatPercent } from "@/app/forecast/forecast-chart-measurements";
 import { beginForecastRequest, formatDate, formatValue, isCurrentForecastRequest, type PlanValues } from "@/modules/model-forecast/forecast-ui";
 import { forecastChartLabels } from "@/modules/model-forecast/forecast-chart-data";
 import type { ModelStatusDto } from "@/modules/model-episodes/model-episode.types";
@@ -20,6 +21,8 @@ import {
   recommendGoalFormNutrition,
   recommendGoalNutritionAtCalories,
   goalStatusPresentation,
+  goalScenarioModeLabel,
+  goalWarningLabel,
   probabilityDefinition,
   type GoalFormErrors,
   type GoalFormValues,
@@ -30,7 +33,7 @@ import { goalSettingsFromForm, isGoalBrowserSettings } from "@/modules/browser-s
 import { GOAL_SETTINGS_KEY, readBrowserSettings, resetBrowserSettings, writeBrowserSettings } from "@/modules/browser-settings/versioned-settings";
 
 type HistoricalDay = { date: string; modeledWeightKg: number | null; filteredWeightKg: number | null; fatMassKg: number | null; leanTissueKg: number | null; glycogenAssociatedMassKg: number | null; dataQuality: string };
-type ObservedWeight = { date: string; weightKg: number };
+type ObservedWeight = { date: string; weightKg: number; bodyFatPercent?: number | null };
 type GoalProfileAttributes = Pick<ProfileDto, "sex" | "dateOfBirth" | "heightCm">;
 type Context = { status: ModelStatusDto; history: HistoricalDay[]; observedWeights?: ObservedWeight[]; profile?: GoalProfileAttributes | null };
 
@@ -49,6 +52,13 @@ async function responseError(response: Response, locale: Locale): Promise<string
 
 function FieldError({ id, message }: { id: string; message?: string }) {
   return message ? <small id={id} className={styles.fieldError}>{message}</small> : null;
+}
+
+function MetricExplanation({ children, locale }: { children: ReactNode; locale: Locale }) {
+  return <details className={styles.metricExplanation}>
+    <summary>{locale === "uk" ? "Як читати" : "How to read"}</summary>
+    <p>{children}</p>
+  </details>;
 }
 
 function TextNumberField({ id, label, value, onChange, error, unit, min, max, step = "any", optional = false, help, helpLabel }: {
@@ -101,6 +111,8 @@ export function GoalClient() {
   const [workInputMode, setWorkInputMode] = useState<"direct" | "guided">("direct");
   const [guidedWorkStep, setGuidedWorkStep] = useState(1);
   const [result, setResult] = useState<GoalPlanningResponse | null>(null);
+  const [chartHistoryRange, setChartHistoryRange] = useState<"recent" | "full">("recent");
+  const [chartMetric, setChartMetric] = useState<"physiologicalBodyWeightKg" | "fatMassKg">("physiologicalBodyWeightKg");
   const [loadingContext, setLoadingContext] = useState(true);
   const [solving, setSolving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -118,7 +130,11 @@ export function GoalClient() {
       profileRequest,
     ]).then(async ([response, profileResult]) => {
       if (!response.ok) throw new Error(await responseError(response, locale));
-      const next = await response.json() as Context;
+      const contextResponse = await response.json() as Context;
+      const next = {
+        ...contextResponse,
+        observedWeights: await attachObservedBodyFatPercent(contextResponse.observedWeights ?? [], controller.signal),
+      };
       const profile = profileResult.profile
         ? {
           sex: profileResult.profile.sex,
@@ -222,17 +238,20 @@ export function GoalClient() {
     : null;
   const nutritionLimitations = nutritionRecommendation?.limitations ?? [];
   const chartLabels = result?.forecast
-    ? forecastChartLabels(locale, "physiologicalBodyWeightKg", result.forecast.forecastVersion === "experimental-forecast-v1")
+    ? forecastChartLabels(locale, chartMetric, result.forecast.forecastVersion === "experimental-forecast-v1")
     : null;
 
   return <main className={styles.page}>
     <div className={styles.topbar}><Link className={styles.brand} href="/dashboard">BodyCast<span>{uk ? "Планувальник цілі" : "Goal planner"}</span></Link><AppNav active="goal" /></div>
-    <header className={styles.hero}><div><p className={styles.eyebrow}>{uk ? "Сценарій · не припис" : "Scenario · not a prescription"}</p><h1>{uk ? "Побудуйте шлях до цілі — разом із невизначеністю." : "Plan toward a target—with uncertainty visible."}</h1><p>{uk ? "BodyCast шукає такий центр харчування, за якого медіанна траєкторія моделі наближається до вашої цілі за введених умов." : "BodyCast searches for a nutrition center whose modeled median trajectory approaches your target under the assumptions you enter."}</p></div><div className={styles.statePill}><span className={solving ? styles.pulse : undefined} />{solving ? (uk ? "Розраховуємо…" : "Solving…") : (uk ? "Гіпотетичний план" : "Hypothetical plan")}</div></header>
+    <header className={styles.hero}><div><p className={styles.eyebrow}>{uk ? "Сценарій · не припис" : "Scenario · not a prescription"}</p><h1>{uk ? "Перевірте шлях до цілі" : "Explore a path to your goal"}</h1><p>{uk ? "Порівняйте бажану вагу з розрахованою траєкторією, імовірністю та межами прогнозу." : "Compare your target weight with the modeled trajectory, attainment estimate, and forecast limits."}</p></div><div className={styles.statePill}><span className={solving ? styles.pulse : undefined} />{solving ? (uk ? "Розраховуємо…" : "Solving…") : (uk ? "Гіпотетичний план" : "Hypothetical plan")}</div></header>
 
     {loadingContext && <section className={styles.loadingCard} aria-live="polite"><div className={styles.spinner} /><strong>{uk ? "Завантажуємо поточний стан моделі" : "Loading current model state"}</strong></section>}
     {!loadingContext && initialized && !canPlan && <section className={styles.errorCard} role="status"><strong>{uk ? "Немає змодельованого стану" : "No modeled state yet"}</strong><p>{uk ? "Активна модель є, але останній змодельований день ще недоступний. Додайте історію й розрахуйте модель, перш ніж будувати ціль." : "There is an active model, but the latest modeled day is not available yet. Add history and calculate the model before planning a goal."}</p><p><Link href="/forecast">{uk ? "Перейти до прогнозу / запуску моделі" : "Go to forecast / start model"}</Link> · <Link href="/history">{uk ? "Історія" : "History"}</Link></p></section>}
+    {!loadingContext && initialized && canPlan && latestModeledDate && <div className={`${styles.workspace} ${result ? styles.hasResult : ""}`}>
+      <section className={styles.formColumn} aria-labelledby="goal-plan-heading">
+        <div className={styles.formIntro}><div><p className={styles.eyebrow}>{uk ? "Умови розрахунку" : "Calculation inputs"}</p><h2 id="goal-plan-heading">{uk ? "Ваш сценарій" : "Your scenario"}</h2></div></div>
     {!loadingContext && initialized && canPlan && latestModeledDate && <form className={styles.planner} onSubmit={(event) => void submit(event)} noValidate>
-      <div className={styles.sectionHeading}><span /> <button className={styles.resetButton} type="button" disabled={solving} onClick={resetSettings}>{uk ? "Скинути налаштування" : "Reset settings"}</button></div>
+      <div className={styles.formUtilityRow}><span>{uk ? "Параметри сценарію" : "Scenario inputs"}</span><button className={styles.resetButton} type="button" disabled={solving} onClick={resetSettings}>{uk ? "Скинути налаштування" : "Reset settings"}</button></div>
       <section className={styles.formSection}><div className={styles.sectionHeading}><div><span>01</span><h2>{uk ? "Ціль і дата" : "Target and date"}</h2></div><p>{uk ? `Останній змодельований день: ${formatDate(latestModeledDate, { year: "numeric" }, locale)}` : `Latest modeled day: ${formatDate(latestModeledDate, { year: "numeric" }, locale)}`}</p></div><div className={styles.formGrid}>
         <TextNumberField id="targetWeightKg" label={uk ? "Цільова вага" : "Target weight"} unit={uk ? "кг" : "kg"} helpLabel={uk ? "Пояснення цільової ваги" : "Explain target weight"} help={uk ? "Вага, до якої solver підбирає сценарій у заданих межах планування." : "The weight the solver uses to search for a scenario within your planning bounds."} value={form.targetWeightKg} min={0.1} max={1000} step={0.1} error={formErrors.targetWeightKg} onChange={(value) => updateForm("targetWeightKg", value)} />
         <label className={styles.field} htmlFor="goalDate"><span>{uk ? "Дата цілі" : "Goal date"}<HelpTip label={uk ? "Пояснення дати цілі" : "Explain goal date"}>{uk ? "Дата задає горизонт планувальника, але не гарантує, що ціль фізіологічно досяжна." : "The date sets the planner horizon; it does not guarantee the goal is physiologically reachable."}</HelpTip></span><input id="goalDate" name="goalDate" type="date" value={form.goalDate} required aria-invalid={Boolean(formErrors.goalDate)} aria-describedby={formErrors.goalDate ? "goalDate-error" : undefined} onChange={(event) => updateForm("goalDate", event.currentTarget.value)} /><FieldError id="goalDate-error" message={formErrors.goalDate} /></label>
@@ -283,19 +302,95 @@ export function GoalClient() {
 
       <div className={styles.submitRow}><div><strong>{uk ? "Розрахунок може тривати кілька секунд." : "The solve may take several seconds."}</strong><span>{uk ? "Новий запит скасовує попередній; показується лише останній результат." : "A new request cancels the previous one; only the latest result is shown."}</span></div><button type="submit" aria-busy={solving}>{solving ? (uk ? "Скасувати попередній і перерахувати" : "Cancel previous and recalculate") : (uk ? "Розрахувати сценарій" : "Calculate scenario")}</button></div>
     </form>}
-
     {error && <section className={styles.errorCard} role="alert"><strong>{uk ? "План не розраховано" : "Plan was not calculated"}</strong><p>{error}</p></section>}
     {solving && <section className={styles.loadingCard} aria-live="polite"><div className={styles.spinner} /><strong>{uk ? "Перевіряємо межі, траєкторії та фінальну числову якість" : "Checking bounds, trajectories, and final numerical quality"}</strong><span>{uk ? "Ми не послаблюємо 128/512 траєкторій заради швидшого інтерфейсу." : "The 128/512 path verification is not weakened for UI speed."}</span></section>}
-
-    {result && statusCopy && <section className={`${styles.statusCard} ${styles[statusCopy.tone]}`}><p className={styles.eyebrow}>{uk ? "Результат планування" : "Planning result"}</p><h2>{statusCopy.title}</h2><p>{statusCopy.detail}</p>{result.reason && <small>{result.reason}</small>}</section>}
-
-    {result && <>
-      <section className={styles.summaryGrid}>
-        <article><span>{uk ? "Калорійність, яку обрав solver" : "Calories selected by the solver"}<HelpTip label={uk ? "Пояснення калорійності solver-а" : "Explain solver calories"}>{uk ? "Solver підібрав цей центр у межах, які ви задали. Окрема рекомендація Б/Ж/В нижче використовує саме це значення." : "The solver chose this calorie center within your bounds. The separate macro recommendation below uses this value."}</HelpTip></span><strong>{showPlanCenter ? `${displayPlanValue(displayCalories!, locale)} ${uk ? "ккал/день" : "kcal/day"}` : "—"}</strong><small>{showPlanCenter ? (uk ? `Практична роздільність пошуку: ≈${result.numerical.practicalResolutionKcal} ккал` : `Practical search resolution: ≈${result.numerical.practicalResolutionKcal} kcal`) : (uk ? "Центр не підтримується цим статусом" : "A plan center is not available for this status")}</small></article>
-        <article><span>{uk ? `Медіана на ${formatDate(result.goal.goalDate, { year: "numeric" }, locale)}` : `Median on ${formatDate(result.goal.goalDate, { year: "numeric" }, locale)}`}</span><strong>{result.terminal ? formatValue(result.terminal.median, "kg", locale) : "—"}</strong><small>{result.terminal ? `${uk ? "Відхилення" : "Residual"}: ${result.terminal.targetErrorKg >= 0 ? "+" : ""}${result.terminal.targetErrorKg.toFixed(2)} kg` : (uk ? "Фінальний Forecast недоступний" : "Final Forecast unavailable")}</small></article>
-        <article><span>{uk ? "Прогнозний діапазон 5–95%" : "Predictive 5–95% range"}</span><strong>{result.terminal ? `${formatValue(result.terminal.p05, "kg", locale)}–${formatValue(result.terminal.p95, "kg", locale)}` : "—"}</strong><small>{uk ? "Варіативність змодельованих фізіологічних результатів" : "Variation in modeled physiological outcomes"}</small></article>
-        <article><span>{uk ? "Досягнення цілі" : "Target attainment"}</span><strong>{result.terminal ? percent(result.terminal.attainment.probability, locale) : "—"}</strong><small>{probabilityCopy ?? (uk ? "Емпірична частка фінальних траєкторій" : "Empirical share of final paths")}</small></article>
       </section>
+      <section className={styles.resultColumn} aria-label={uk ? "Результат цілі" : "Goal result"}>
+        {!result && !solving && <section className={styles.emptyResult}><span>{uk ? "Що покаже розрахунок" : "What the result shows"}</span><strong>{uk ? "Ціль, траєкторія та ймовірність" : "Target, trajectory, and attainment"}</strong><p>{uk ? "Після розрахунку тут з’являться медіанний результат, інтервали невизначеності та графік із цільовою датою." : "After calculation, the median outcome, uncertainty ranges, and target-date chart appear here."}</p></section>}
+    {result && statusCopy && <section className={`${styles.statusCard} ${styles[statusCopy.tone]}`}><p className={styles.eyebrow}>{uk ? "Результат планування" : "Planning result"}</p><h2>{statusCopy.title}</h2><p>{statusCopy.detail}</p></section>}
+    {result && <>
+      <section className={styles.summaryGrid} aria-label={uk ? "Основний результат" : "Goal result summary"}>
+        <article className={styles.attainmentMetric}>
+          <span>{uk ? "Досягнення цілі" : "Target attainment"}</span>
+          <strong>{result.terminal ? percent(result.terminal.attainment.probability, locale) : "—"}</strong>
+          <small>{probabilityCopy ?? (uk ? "Частка фінальних симуляцій, що відповідають вашій цілі." : "Share of final simulations that meet your target.")}</small>
+          <MetricExplanation locale={locale}>{uk
+            ? "Це частка змодельованих фінальних результатів, які відповідають напрямку цілі: для зниження ваги — ціль або нижче, для набору — ціль або вище, для підтримки — у межах заданого допуску. Це результат сценарію, а не гарантія і не шанс того, що сама модель правильна."
+            : "This is the share of modeled final outcomes that meet the target direction: for weight loss, at or below the target; for gain, at or above it; for maintenance, within the set tolerance. It describes this scenario, not a guarantee or the probability that the model itself is correct."}</MetricExplanation>
+        </article>
+        <article className={styles.medianMetric}>
+          <span>{uk ? `Медіана на ${formatDate(result.goal.goalDate, { year: "numeric" }, locale)}` : `Median on ${formatDate(result.goal.goalDate, { year: "numeric" }, locale)}`}</span>
+          <strong>{result.terminal ? formatValue(result.terminal.median, "kg", locale) : "—"}</strong>
+          <small>{result.terminal ? `${uk ? "Відхилення" : "Residual"}: ${result.terminal.targetErrorKg >= 0 ? "+" : ""}${result.terminal.targetErrorKg.toFixed(2)} kg` : (uk ? "Фінальний Forecast недоступний" : "Final Forecast unavailable")}</small>
+          <MetricExplanation locale={locale}>{uk
+            ? "Медіана — середина змодельованих результатів на дату цілі: приблизно половина симуляцій дала нижче значення, половина — вище. Це не середнє арифметичне, не обіцянка точного ранкового зважування і не окрема виміряна вага."
+            : "The median is the midpoint of modeled outcomes on the goal date: about half of the simulations are lower and half are higher. It is not the arithmetic average, a promise about a morning weigh-in, or a measured weight."}</MetricExplanation>
+        </article>
+        <article className={styles.rangeMetric}>
+          <span>{uk ? "Прогнозний діапазон 5–95%" : "Predictive 5–95% range"}</span>
+          <strong>{result.terminal ? `${formatValue(result.terminal.p05, "kg", locale)}–${formatValue(result.terminal.p95, "kg", locale)}` : "—"}</strong>
+          <small>{uk ? "Центральні 90% змодельованих результатів." : "Central 90% of modeled outcomes."}</small>
+          <MetricExplanation locale={locale}>{uk
+            ? "Межі 5-го і 95-го перцентилів показують розкид центральної частини змодельованих фінальних значень. Це не гарантійний коридор: частина симуляцій може бути за його межами. Діапазон не враховує всі можливі похибки моделі чи звичайний шум вагів."
+            : "The 5th and 95th percentile bounds show the spread of the central part of modeled final values. This is not a guaranteed corridor; some simulations can fall outside it. The range does not capture every possible model error or ordinary scale noise."}</MetricExplanation>
+        </article>
+        <article className={styles.caloriesMetric}>
+          <span>{uk ? "Калорійність, яку обрав solver" : "Calories selected by the solver"}</span>
+          <strong>{showPlanCenter ? `${displayPlanValue(displayCalories!, locale)} ${uk ? "ккал/день" : "kcal/day"}` : "—"}</strong>
+          <small>{showPlanCenter ? (uk ? `Центр у заданих межах · крок пошуку ≈${result.numerical.practicalResolutionKcal} ккал` : `Center within your bounds · search step ≈${result.numerical.practicalResolutionKcal} kcal`) : (uk ? "Центр не підтримується цим статусом" : "A plan center is not available for this status")}</small>
+          <MetricExplanation locale={locale}>{uk
+            ? "Це підібране добове значення енергії, за якого медіанна траєкторія наближається до цілі в заданих вами умовах. Пошук має практичний крок, показаний під значенням, а межі задаєте ви. Це не медичний припис і не гарантія результату. Окрема рекомендація білків, жирів і вуглеводів нижче використовує цей центр."
+            : "This is the selected daily energy value at which the median trajectory approaches the target under your assumptions. The search has the practical step shown below, and you set its bounds. This is not medical advice or a guarantee. The separate protein, fat, and carbohydrate recommendation below uses this center."}</MetricExplanation>
+        </article>
+      </section>
+      {result.terminal && interval && <section className={styles.uncertaintyCard} aria-labelledby="goal-probability-uncertainty-heading">
+        <div className={styles.uncertaintyMain}>
+          <p className={styles.eyebrow}>{uk ? "Точність оцінки" : "Estimate precision"}</p>
+          <strong id="goal-probability-uncertainty-heading">{uk ? "Скільки симуляцій досягли цілі" : "How many simulations met the target"}</strong>
+          <span className={styles.simulationCount}>{uk
+            ? `${result.terminal.attainment.successes} із ${result.terminal.attainment.sampleCount} симуляцій · ${percent(result.terminal.attainment.probability, locale)}`
+            : `${result.terminal.attainment.successes} of ${result.terminal.attainment.sampleCount} simulations · ${percent(result.terminal.attainment.probability, locale)}`}</span>
+        </div>
+        <div className={styles.uncertaintyDetail}>
+          <p>{uk
+            ? `Змодельована частка — ${percent(result.terminal.attainment.probability, locale)}. Через скінченну кількість симуляцій оцінка має 95% числовий інтервал: ${percent(interval.lower, locale)}–${percent(interval.upper, locale)}.`
+            : `The modeled share is ${percent(result.terminal.attainment.probability, locale)}. Because the simulation count is finite, its 95% numerical interval is ${percent(interval.lower, locale)}–${percent(interval.upper, locale)}.`}</p>
+          <details className={styles.metricExplanation}>
+            <summary>{uk ? "Чому є інтервал" : "Why there is an interval"}</summary>
+            <p>{uk
+              ? "Якби ми знову виконали скінченну кількість симуляцій, отримана частка могла б трохи відрізнятися. Wilson Monte Carlo interval описує цю похибку оцінювання частки (а не ваги). Він не показує ймовірність правильності моделі й не охоплює всі її припущення та обмеження."
+              : "If we ran a finite set of simulations again, the share could differ slightly. The Wilson Monte Carlo interval describes this sampling error in the estimated share, not weight. It is not the probability that the model is correct and does not cover all model assumptions and limitations."}</p>
+          </details>
+          <span className={styles.intervalValue}>{uk ? "95% інтервал Monte Carlo" : "95% Monte Carlo interval"}: {percent(interval.lower, locale)}–{percent(interval.upper, locale)}</span>
+        </div>
+      </section>}
+      {result.forecast && chartLabels && <section className={`${styles.chartPanel} ${styles.goalChart}`} aria-labelledby="goal-trajectory-heading">
+        <div className={styles.chartHeading}>
+          <div><p className={styles.eyebrow}>{uk ? "Історія → сценарій → ціль" : "History → scenario → target"}</p><h2 id="goal-trajectory-heading">{chartMetric === "physiologicalBodyWeightKg" ? (uk ? "Траєкторія ваги" : "Weight trajectory") : (uk ? "Траєкторія жирової маси" : "Fat-mass trajectory")}</h2></div>
+          <div className={styles.chartTools}>
+            <div className={`${styles.historyRange} ${styles.chartMetricRange}`} role="group" aria-label={uk ? "Показник графіка цілі" : "Goal chart metric"}>
+              <button type="button" aria-pressed={chartMetric === "physiologicalBodyWeightKg"} onClick={() => setChartMetric("physiologicalBodyWeightKg")}>{uk ? "Вага" : "Weight"}</button>
+              <button type="button" aria-pressed={chartMetric === "fatMassKg"} onClick={() => setChartMetric("fatMassKg")}>{uk ? "Жирова маса" : "Fat mass"}</button>
+            </div>
+            <div className={styles.historyRange} role="group" aria-label={uk ? "Вікно історії на графіку" : "Chart history window"}>
+              <button type="button" aria-pressed={chartHistoryRange === "recent"} onClick={() => setChartHistoryRange("recent")}>{uk ? "Остання історія" : "Recent history"}</button>
+              <button type="button" aria-pressed={chartHistoryRange === "full"} onClick={() => setChartHistoryRange("full")}>{uk ? "Повна історія" : "Full history"}</button>
+            </div>
+            <div className={styles.legend} aria-label={uk ? "Легенда траєкторії" : "Trajectory legend"}>
+              {chartMetric === "physiologicalBodyWeightKg"
+                ? <><span><i className={styles.measuredKey} />{chartLabels.measuredWeight}</span><span><i className={styles.historyKey} />{chartLabels.modelEstimate}</span></>
+                : <><span><i className={styles.measuredKey} />{chartLabels.measuredFatMass}</span><span><i className={styles.historyKey} />{chartLabels.historicalEstimate}</span></>}
+              <span><i className={styles.medianKey} />{chartLabels.futureMedian}</span>
+              {chartLabels.hasQuantileBands ? <><span><i className={styles.innerKey} />{chartLabels.innerInterval}</span><span><i className={styles.outerKey} />{chartLabels.outerInterval}</span></> : <span><i className={styles.outerKey} />{chartLabels.engineeringRange}</span>}
+              {chartMetric === "physiologicalBodyWeightKg" && <span><i className={styles.targetKey} />{uk ? "Ціль" : "Target"}</span>}
+            </div>
+          </div>
+        </div>
+        <ForecastChart result={result.forecast} metric={chartMetric} history={context?.history ?? []} observedWeights={context?.observedWeights ?? []} locale={locale} historyWindowDays={chartHistoryRange === "recent" ? 21 : null} target={chartMetric === "physiologicalBodyWeightKg" ? { date: result.goal.goalDate, weightKg: result.goal.targetValueKg } : undefined} />
+        <p className={styles.chartNote}>{chartMetric === "fatMassKg"
+          ? (uk ? "Фактична серія жирової маси розрахована з ваги та записаного відсотка жиру; пунктир — історична оцінка моделі. Ціль задана для ваги, тому на цьому графіку її немає." : "Observed fat mass is derived from recorded weight and body-fat percentage; the dashed line is the historical model estimate. The goal is defined for body weight, so it is not shown on this chart.")
+          : (uk ? "Вага з вагів — вимірювання; пунктирна оцінка моделі — історична. Маркер цілі є майбутнім припущенням. Смуги показують невизначеність прогнозу." : "Scale readings are measurements; the dashed model estimate is historical. The goal marker is a future assumption. Shaded bands show forecast uncertainty.")}</p>
+      </section>}
       {showPlanCenter && nutritionRecommendation && <section className={`${styles.chartPanel} ${styles.nutritionResult}`} aria-labelledby="goal-nutrition-result-heading">
         <div className={styles.chartHeading}><div><p className={styles.eyebrow}>{uk ? "Результат solver-а" : "Solver result"}</p><h2 id="goal-nutrition-result-heading">{uk ? "Рекомендоване харчування" : "Recommended nutrition"}</h2></div></div>
         <div className={styles.recommendedMacros} aria-label={uk ? "Планова калорійність і рекомендація БЖВ" : "Planned calories and macro recommendation"}>
@@ -309,9 +404,9 @@ export function GoalClient() {
           : "Protein uses current weight and planned training; fat and carbohydrate split the remaining energy within general adult reference ranges. The optional gram limits above constrain the solver search but do not change this separate recommendation. This is not a medical prescription."}</p>
         {nutritionLimitations.length > 0 && <ul className={styles.nutritionLimitations}>{nutritionLimitations.map((code) => <li key={code}>{nutritionLimitationText(code, uk)}</li>)}</ul>}
       </section>}
-      {result.terminal && interval && <section className={styles.uncertaintyCard}><div><strong>{uk ? "Числова невизначеність імовірності" : "Probability numerical uncertainty"}</strong><span>{uk ? `95% Wilson Monte Carlo interval: ${percent(interval.lower, locale)}–${percent(interval.upper, locale)} (${result.terminal.attainment.successes}/${result.terminal.attainment.sampleCount} траєкторій).` : `95% Wilson Monte Carlo interval: ${percent(interval.lower, locale)}–${percent(interval.upper, locale)} (${result.terminal.attainment.successes}/${result.terminal.attainment.sampleCount} paths).`}</span></div><p>{uk ? "Це невизначеність оцінки ймовірності через скінченну кількість Monte Carlo траєкторій — не діапазон ваги й не ймовірність правильності моделі." : "This is uncertainty in the probability estimate from finite Monte Carlo paths—not a weight range or the probability that the model is correct."}</p></section>}
-      {result.forecast && chartLabels && <section className={styles.chartPanel}><div className={styles.chartHeading}><div><p className={styles.eyebrow}>{uk ? "Історія → сценарій → ціль" : "History → scenario → target"}</p><h2>{uk ? "Траєкторія ваги" : "Weight trajectory"}</h2></div><div className={styles.legend}><span><i className={styles.measuredKey} />{chartLabels.measuredWeight}</span><span><i className={styles.historyKey} />{chartLabels.modelEstimate}</span><span><i className={styles.medianKey} />{chartLabels.futureMedian}</span>{chartLabels.hasQuantileBands ? <><span><i className={styles.innerKey} />{chartLabels.innerInterval}</span><span><i className={styles.outerKey} />{chartLabels.outerInterval}</span></> : <span><i className={styles.outerKey} />{chartLabels.engineeringRange}</span>}<span><i className={styles.targetKey} />{uk ? "Ціль" : "Target"}</span></div></div><ForecastChart result={result.forecast} metric="physiologicalBodyWeightKg" history={context?.history ?? []} observedWeights={context?.observedWeights ?? []} locale={locale} target={{ date: result.goal.goalDate, weightKg: result.goal.targetValueKg }} /><p className={styles.chartNote}>{uk ? "Вага з вагів — вимірювання; оцінка моделі — історична. Маркер цілі є майбутнім припущенням. Смуги показують невизначеність прогнозу." : "Scale readings are measurements; model estimates are historical. The target marker is a future assumption. Shaded bands show forecast uncertainty."}</p></section>}
-      <section className={styles.detailGrid}><article><h2>{uk ? "Введені припущення" : "Submitted assumptions"}</h2><dl><div><dt>{uk ? "Ціль" : "Target"}</dt><dd>{result.goal.targetValueKg} kg · {result.goal.goalDate}</dd></div><div><dt>{uk ? "Межі калорій" : "Calorie bounds"}</dt><dd>{result.assumptions.constraints.minCaloriesKcal}–{result.assumptions.constraints.maxCaloriesKcal} kcal</dd></div><div><dt>{uk ? "Сценарій" : "Scenario"}</dt><dd>{result.assumptions.scenarioMode}</dd></div><div><dt>{uk ? "Середні кроки" : "Average steps"}</dt><dd>{new Intl.NumberFormat(uk ? "uk-UA" : "en-US").format(form.plan.averageStepsPerDay)} / {uk ? "день" : "day"}</dd></div><div><dt>{uk ? "Тренування" : "Training"}</dt><dd>{form.plan.strengthDaysPerWeek} × {form.plan.strengthTrainingMinutes} {uk ? "хв силових" : "min strength"} · {form.plan.otherTrainingDaysPerWeek} × {form.plan.otherTrainingMinutes} {uk ? "хв інших" : "min other"}</dd></div><div><dt>{uk ? "Робочі дні" : "Work days"}</dt><dd>{form.plan.plannedWork ? `${form.plan.workDaysPerWeek} / ${uk ? "тиждень" : "week"}` : "—"}</dd></div></dl></article><article><h2>{uk ? "Якість і обмеження" : "Quality and limitations"}</h2><ul><li>{uk ? "Як модель отримала поточний стан" : "How the model obtained the current state"}: {result.provenance.initialStateQuality ? <ModelStateSource value={result.provenance.initialStateQuality} uk={uk} /> : "—"}</li><li>{uk ? "Якість Forecast" : "Forecast quality"}: {result.numerical.forecastQuality ?? "—"}</li><li>{uk ? "Числова похибка solver-а" : "Solver tolerance"}: {result.numerical.solverToleranceKg} kg</li><li>{uk ? "Смуга ймовірності поблизу цілі" : "Near-target probability band"}: ±{result.numerical.goalToleranceKg} kg ({uk ? "технічне налаштування" : "engineering setting"})</li><li>{uk ? "Локальна чутливість" : "Local sensitivity"}: {result.numerical.localSensitivityKgPer100Kcal === null ? "—" : `${result.numerical.localSensitivityKgPer100Kcal.toFixed(2)} kg / 100 kcal`}</li>{result.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></article></section>
+      <section className={styles.detailGrid}><article><h2>{uk ? "Введені припущення" : "Submitted assumptions"}</h2><dl><div><dt>{uk ? "Ціль" : "Target"}</dt><dd>{result.goal.targetValueKg} kg · {result.goal.goalDate}</dd></div><div><dt>{uk ? "Межі калорій" : "Calorie bounds"}</dt><dd>{result.assumptions.constraints.minCaloriesKcal}–{result.assumptions.constraints.maxCaloriesKcal} kcal</dd></div><div><dt>{uk ? "Сценарій" : "Scenario"}</dt><dd>{goalScenarioModeLabel(result.assumptions.scenarioMode, locale)}</dd></div><div><dt>{uk ? "Середні кроки" : "Average steps"}</dt><dd>{new Intl.NumberFormat(uk ? "uk-UA" : "en-US").format(form.plan.averageStepsPerDay)} / {uk ? "день" : "day"}</dd></div><div><dt>{uk ? "Тренування" : "Training"}</dt><dd>{form.plan.strengthDaysPerWeek} × {form.plan.strengthTrainingMinutes} {uk ? "хв силових" : "min strength"} · {form.plan.otherTrainingDaysPerWeek} × {form.plan.otherTrainingMinutes} {uk ? "хв інших" : "min other"}</dd></div><div><dt>{uk ? "Робочі дні" : "Work days"}</dt><dd>{form.plan.plannedWork ? `${form.plan.workDaysPerWeek} / ${uk ? "тиждень" : "week"}` : "—"}</dd></div></dl></article><article><h2>{uk ? "Якість і обмеження" : "Quality and limitations"}</h2><ul><li>{uk ? "Як модель отримала поточний стан" : "How the model obtained the current state"}: {result.provenance.initialStateQuality ? <ModelStateSource value={result.provenance.initialStateQuality} uk={uk} /> : "—"}</li><li>{uk ? "Якість Forecast" : "Forecast quality"}: {result.numerical.forecastQuality ?? "—"}</li><li>{uk ? "Числова похибка solver-а" : "Solver tolerance"}: {result.numerical.solverToleranceKg} kg</li><li>{uk ? "Смуга ймовірності поблизу цілі" : "Near-target probability band"}: ±{result.numerical.goalToleranceKg} kg ({uk ? "технічне налаштування" : "engineering setting"})</li><li>{uk ? "Локальна чутливість" : "Local sensitivity"}: {result.numerical.localSensitivityKgPer100Kcal === null ? "—" : `${result.numerical.localSensitivityKgPer100Kcal.toFixed(2)} kg / 100 kcal`}</li>{result.warnings.map((warning) => <li key={warning}>{goalWarningLabel(warning, locale)}</li>)}</ul></article></section>
     </>}
+      </section>
+    </div>}
   </main>;
 }

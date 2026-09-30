@@ -289,3 +289,26 @@
     border-inline-start-color: var(--section-accent);
   }
 }
+
+/* Expanded controls use the full planner width so neighboring cards do not leave dead space. */
+@media (min-width: 621px) {
+  .planner:has(> .formSection:nth-of-type(2) .optional[open]) > .formSection:nth-of-type(1),
+  .planner:has(> .formSection:nth-of-type(2) .optional[open]) > .formSection:nth-of-type(2) {
+    grid-column: 1 / -1;
+  }
+
+  .planner:has(> .formSection:nth-of-type(4) input[type="checkbox"]:checked) > .formSection:nth-of-type(4),
+  .planner:has(> .formSection:nth-of-type(4) input[type="checkbox"]:checked) > .submitRow {
+    grid-column: 1 / -1;
+  }
+
+  .planner:has(> .formSection:nth-of-type(4) input[type="checkbox"]:checked) > .submitRow {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(16rem, auto);
+    align-items: center;
+  }
+
+  .planner:has(> .formSection:nth-of-type(4) input[type="checkbox"]:checked) > .submitRow button {
+    width: auto;
+  }
+}

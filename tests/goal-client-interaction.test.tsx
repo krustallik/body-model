@@ -147,6 +147,30 @@ function solvedGoal(): GoalPlanningResponse {
   };
 }
 
+function unreliableGoal(): GoalPlanningResponse {
+  const result = solvedGoal();
+  return {
+    ...result,
+    status: "initial-state-unreliable",
+    solverStatus: "initial-state-unreliable",
+    reason: "current-state-uncertainty-exceeds-supported-limit",
+    control: { solvedCaloriesKcal: null, constraintBoundary: null, boundaryReason: null },
+    terminal: null,
+    numerical: {
+      solverToleranceKg: result.numerical.solverToleranceKg,
+      goalToleranceKg: result.numerical.goalToleranceKg,
+      practicalResolutionKcal: null,
+      localSensitivityKgPer100Kcal: null,
+      robustnessClassification: null,
+      forecastQuality: null,
+      predictiveSpread90Kg: null,
+    },
+    provenance: { initialStateQuality: "degenerate", forecastStatus: null },
+    warnings: ["initial-state-unreliable"],
+    forecast: null,
+  };
+}
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -287,6 +311,31 @@ describe("GoalClient interaction", () => {
     expect(screen.getByText(/not account for body composition or clinical context/i)).toBeTruthy();
     expect(screen.getByText("2,100")).toBeTruthy();
     expect(screen.getByText("128")).toBeTruthy();
+    expect(screen.getAllByText("Flexible scenario")).toHaveLength(2);
+    expect(screen.queryByText("target-centered")).toBeNull();
+  });
+
+  it("explains an unreliable current state without exposing solver text or inventing result values", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), history: [] });
+      if (url.includes("/api/goal") && init?.method === "POST") return jsonResponse(unreliableGoal());
+      return jsonResponse({ error: "unexpected" }, 500);
+    }));
+
+    const user = userEvent.setup();
+    render(<GoalClient />);
+    await screen.findByText(/Latest modeled day:/i);
+    await user.click(screen.getByRole("button", { name: "Calculate scenario" }));
+
+    expect(await screen.findByText("Current state is not reliable enough")).toBeTruthy();
+    expect(screen.getByText(/BodyCast does not show forecast values when the current model state is not reliable enough/i)).toBeTruthy();
+    expect(screen.getByText(/The current model state is not reliable enough for forecasting\./i)).toBeTruthy();
+    expect(screen.queryByText("current-state-uncertainty-exceeds-supported-limit")).toBeNull();
+    expect(screen.queryByText("initial-state-unreliable")).toBeNull();
+    expect(screen.queryByText("target-centered")).toBeNull();
+    expect(screen.queryByTestId("goal-forecast-chart")).toBeNull();
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
   });
 
   it("passes measured scale readings and filtered historical model estimates to the shared forecast chart", async () => {

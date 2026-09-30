@@ -9,7 +9,7 @@ import {
   type NutritionRecommendationInput,
 } from "@/modules/nutrition-recommender/nutrition-recommender";
 import type { GoalPlanningRequest } from "./goal-planning.schema";
-import type { GoalPlanningResponse, GoalPlanningStatus } from "./goal-planning.types";
+import type { GoalPlanningAssumptions, GoalPlanningResponse, GoalPlanningStatus, GoalPlanningWarning } from "./goal-planning.types";
 
 export type GoalFormValues = {
   targetWeightKg: string;
@@ -228,6 +228,32 @@ export function roundedPlanCalories(value: number, practicalResolutionKcal: numb
 
 export type GoalStatusPresentation = { tone: "success" | "info" | "warning" | "blocked"; title: string; detail: string };
 
+export function goalScenarioModeLabel(mode: GoalPlanningAssumptions["scenarioMode"], locale: Locale = "en"): string {
+  const uk = locale === "uk";
+  return mode === "fixed"
+    ? uk ? "Точний сценарій" : "Fixed scenario"
+    : uk ? "Гнучкий сценарій" : "Flexible scenario";
+}
+
+export function goalWarningLabel(warning: string, locale: Locale = "en"): string {
+  const uk = locale === "uk";
+  const labels: Record<GoalPlanningWarning, { uk: string; en: string }> = {
+    "caller-boundary": { uk: "Розв’язок досяг межі калорій, заданої вами.", en: "The solution reached a calorie boundary you set." },
+    "numerically-limited": { uk: "Числова точність обмежена; оцінюйте траєкторію разом із діапазонами.", en: "Numerical precision is limited; consider the trajectory together with its ranges." },
+    "not-bracketed": { uk: "У заданих межах калорій не знайдено сценарію, що перетинає ціль.", en: "No scenario crossing the target was found within the calorie bounds you set." },
+    "constraint-limited": { uk: "Введені обмеження харчування не залишили допустимого варіанта.", en: "The nutrition limits you entered leave no valid option." },
+    "forecast-unreliable": { uk: "Якість прогнозних траєкторій недостатня, щоб підтвердити результат.", en: "Forecast trajectories are not reliable enough to confirm a result." },
+    "non-monotonic": { uk: "Відгук моделі змінювався нерівномірно в перевіреному діапазоні.", en: "The model response varied non-monotonically across the evaluated range." },
+    "degraded-initial-state": { uk: "Початковий стан моделі має обмеження якості.", en: "The model’s starting state has quality limitations." },
+    "recovered-initial-state": { uk: "Для розрахунку використано відновлений початковий стан моделі.", en: "The calculation used a recovered model starting state." },
+    "limited-long-horizon": { uk: "На довгому горизонті точність траєкторій може бути нижчою.", en: "Trajectory precision may be lower over a long horizon." },
+    "initial-state-unavailable": { uk: "Поточний стан моделі недоступний для прогнозування.", en: "The current model state is unavailable for forecasting." },
+    "initial-state-unreliable": { uk: "Поточний стан моделі недостатньо надійний для прогнозування.", en: "The current model state is not reliable enough for forecasting." },
+  };
+  const known = labels[warning as GoalPlanningWarning];
+  return known ? (uk ? known.uk : known.en) : uk ? "Є додаткове обмеження сценарію." : "There is an additional scenario limitation.";
+}
+
 export function goalStatusPresentation(status: GoalPlanningStatus, locale: Locale = "en"): GoalStatusPresentation {
   const uk = locale === "uk";
   const copy: Record<GoalPlanningStatus, GoalStatusPresentation> = {
@@ -236,11 +262,11 @@ export function goalStatusPresentation(status: GoalPlanningStatus, locale: Local
     "numerically-limited": { tone: "warning", title: uk ? "Числова точність обмежена" : "Numerical precision is limited", detail: uk ? "Forecast і Monte Carlo не підтримують точний центр плану. Орієнтуйтеся на траєкторію та діапазони, а не на точне число калорій." : "Forecast and Monte Carlo resolution do not support a precise plan center. Use the trajectory and ranges, not an exact calorie number." },
     "not-bracketed": { tone: "info", title: uk ? "Ціль не перетнута в заданих межах" : "Target not crossed within these bounds", detail: uk ? "У цьому сценарії ціль не була перетнута між вашими мінімальною та максимальною калорійністю. Це не означає біологічну неможливість." : "In this scenario, the target was not crossed between your calorie bounds. This does not mean biological impossibility." },
     "constraint-limited": { tone: "blocked", title: uk ? "Умови не залишили валідного варіанта" : "Constraints leave no valid candidate", detail: uk ? "Пропорційне масштабування макрошаблону порушує одну або кілька введених вами меж." : "Proportional scaling of the macro template violates one or more bounds you supplied." },
-    "forecast-unreliable": { tone: "blocked", title: uk ? "Якість Forecast недостатня" : "Forecast quality is insufficient", detail: uk ? "Це не обмеження харчування: валідний розв’язок не можна підтвердити через якість прогнозних траєкторій." : "This is not a nutrition constraint: a valid solution cannot be verified because of forecast quality." },
+    "forecast-unreliable": { tone: "blocked", title: uk ? "Якість прогнозу недостатня" : "Forecast quality is insufficient", detail: uk ? "BodyCast не показує прогнозні значення, якщо якості траєкторій недостатньо для надійного результату." : "BodyCast does not show forecast values when the trajectories are not reliable enough to support a result." },
     "non-monotonic": { tone: "warning", title: uk ? "Відгук моделі не є монотонним" : "Modeled response is non-monotonic", detail: uk ? "У перевіреній області відгук не підтримує звичайне припущення монотонного пошуку. Це числова властивість сценарію, не медичне попередження." : "The evaluated response does not support the usual monotonic search assumption. This is a numerical scenario property, not a health warning." },
     "search-failed": { tone: "blocked", title: uk ? "Пошук не завершився" : "Search did not complete", detail: uk ? "Солвер не зміг сформувати надійний результат у межах поточного бюджету обчислень." : "The solver could not form a reliable result within its computation budget." },
-    "initial-state-unavailable": { tone: "blocked", title: uk ? "Поточний стан ще недоступний" : "Current state is not available", detail: uk ? "Планування заблоковано, доки модель не матиме достатнього поточного стану. Фіктивний центр калорій не створюється." : "Planning is blocked until the model has a sufficient current state. No fallback calorie center is fabricated." },
-    "initial-state-unreliable": { tone: "blocked", title: uk ? "Поточний стан недостатньо надійний" : "Current state is not reliable enough", detail: uk ? "Невизначеність відновлення надто велика для надійного плану. Додайте спостереження або оновіть модель." : "Recovery uncertainty is too large for a trustworthy plan. Add observations or update the model." },
+    "initial-state-unavailable": { tone: "blocked", title: uk ? "Поточний стан ще недоступний" : "Current state is not available", detail: uk ? "BodyCast не показує прогнозні значення, доки модель не має придатного поточного стану. Додайте історичні дані й оновіть модель." : "BodyCast does not show forecast values until the model has a usable current state. Add history and update the model." },
+    "initial-state-unreliable": { tone: "blocked", title: uk ? "Поточний стан недостатньо надійний" : "Current state is not reliable enough", detail: uk ? "BodyCast не показує прогнозні значення, коли поточний стан моделі недостатньо надійний. Додайте зважування або оновіть модель." : "BodyCast does not show forecast values when the current model state is not reliable enough. Add weigh-ins or update the model." },
   };
   return copy[status];
 }

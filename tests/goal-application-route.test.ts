@@ -11,7 +11,7 @@ vi.mock("@/modules/model-goal-planning/goal-planning", async (original) => {
 
 import { POST } from "@/app/api/goal/route";
 
-const built = buildGoalPlanningRequest(defaultGoalForm("2026-10-19", 82), "2026-10-19");
+const built = buildGoalPlanningRequest(defaultGoalForm("2026-10-19", 82, "2026-10-19"), "2026-10-19", "2026-10-19");
 if (!built.request) throw new Error("expected request");
 const validBody = built.request;
 function request(body: unknown) { return new Request("http://localhost/api/goal", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }); }

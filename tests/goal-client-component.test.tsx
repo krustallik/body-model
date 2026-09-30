@@ -13,7 +13,7 @@ import { formatDate } from "@/modules/model-forecast/forecast-ui";
 describe("GoalClient", () => {
   it("renders an honest initial loading state and Goal navigation", () => {
     const html = renderToStaticMarkup(<GoalClient />);
-    expect(html).toContain("Plan toward a target—with uncertainty visible.");
+    expect(html).toContain("Explore a path to your goal");
     expect(html).toContain("Loading current model state");
     expect(html).toContain("href=\"/goal\"");
     expect(html).toContain("Scenario · not a prescription");
@@ -29,7 +29,7 @@ describe("GoalClient", () => {
 
   it("prepares planner labels for a valid latest modeled date", () => {
     expect(canOpenGoalPlanner("2026-09-16")).toBe(true);
-    const form = defaultGoalForm("2026-09-16", 89.4);
+    const form = defaultGoalForm("2026-09-16", 89.4, "2026-09-16");
     expect(form.goalDate).toBe("2026-12-15");
     expect(form.targetWeightKg).toBe("86.4");
     expect(formatDate("2026-09-16", { year: "numeric" }, "en")).toMatch(/2026/);

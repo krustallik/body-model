@@ -35,7 +35,7 @@ vi.mock("@/components/help-tip", () => ({
 const localeMock = vi.hoisted(() => ({ value: "en" as "en" | "uk" }));
 
 vi.mock("@/app/forecast/forecast-chart", () => ({
-  ForecastChart: () => <div data-testid="forecast-chart" />,
+  ForecastChart: ({ historyWindowDays }: { historyWindowDays?: number | null }) => <div data-testid="forecast-chart" data-history-window={historyWindowDays ?? "full"} />,
 }));
 
 vi.mock("@/i18n/i18n-provider", () => ({
@@ -210,6 +210,20 @@ describe("ForecastClient interaction", () => {
     expect(screen.getByText("25–75% forecast interval")).toBeTruthy();
     expect(screen.getByText("5–95% forecast interval")).toBeTruthy();
     expect(screen.getByText(/historical model estimate uses measurements available/i)).toBeTruthy();
+    expect(screen.getByText(/The forecast updates after you change the horizon, mode, or a number/)).toBeTruthy();
+    expect(screen.queryByText(/After changing the horizon, mode, or a number/)).toBeNull();
+    expect(requests).toHaveLength(1);
+    expect(screen.getByTestId("forecast-chart").getAttribute("data-history-window")).toBe("21");
+    await user.click(screen.getByRole("button", { name: "Full history" }));
+    expect(screen.getByTestId("forecast-chart").getAttribute("data-history-window")).toBe("full");
+    expect(requests).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: "Recent history" }));
+    expect(screen.getByTestId("forecast-chart").getAttribute("data-history-window")).toBe("21");
+    expect(requests).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: "Fat" }));
+    expect(screen.getByText("Observed fat mass")).toBeTruthy();
+    expect(screen.getByText("Model-estimated fat mass")).toBeTruthy();
+    expect(screen.getByText(/Observed fat mass is derived from recorded weight and body-fat percentage/)).toBeTruthy();
     expect(requests).toHaveLength(1);
     expect(requests[0]?.horizonDays).toBe(90);
     expect(requests[0]?.scenario.mode).toBe("fixed");
@@ -636,7 +650,9 @@ describe("ForecastClient interaction", () => {
     await waitFor(() => {
       expect(screen.getByTestId("forecast-chart")).toBeTruthy();
     });
-    expect(screen.getByText("Quality and provenance")).toBeTruthy();
+    const provenanceDisclosure = screen.getByText("Data quality and provenance").closest("details");
+    expect(provenanceDisclosure).toBeTruthy();
+    expect(provenanceDisclosure?.open).toBe(false);
     expect(screen.getByText("v7: stale")).toBeTruthy();
     expect(screen.getByText("Skeletal muscle: unavailable")).toBeTruthy();
     expect(screen.getByText("Workout feed missing")).toBeTruthy();

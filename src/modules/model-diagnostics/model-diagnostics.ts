@@ -80,6 +80,18 @@ export function personalizationDiagnostics(input: {
   };
 }
 
+export const MODEL_DIAGNOSTICS_RECENT_WINDOW_DAYS = 28;
+
+export function hasDiagnosticsCurrentEstimate(input: {
+  recoveryUsable: boolean;
+  predictedWeightKg: number | null;
+  latestModeledDate: string | null;
+}): boolean {
+  return input.recoveryUsable
+    && input.predictedWeightKg !== null
+    && input.latestModeledDate !== null;
+}
+
 function recoveryDiagnostics(value: unknown): { validParticleFraction: number | null; qualityReasons: string[]; supportWarnings: string[] } {
   if (!value || typeof value !== "object" || Array.isArray(value)) return { validParticleFraction: null, qualityReasons: [], supportWarnings: [] };
   const d = value as Record<string, unknown>;
@@ -123,7 +135,11 @@ export function buildDiagnosticsDto(input: {
     : source === "recovered" || source === "degraded" ? recoveredState.fatMassKg : null;
   const currentLeanTissueKg = source === "deterministic" ? status.currentLeanTissueKg
     : source === "recovered" || source === "degraded" ? recoveredState.leanTissueKg : null;
-  const hasCurrentState = usable && currentWeightKg !== null && status.latestModeledDate !== null;
+  const hasCurrentState = hasDiagnosticsCurrentEstimate({
+    recoveryUsable: usable,
+    predictedWeightKg: currentWeightKg,
+    latestModeledDate: status.latestModeledDate,
+  });
   const currentStatus = !hasCurrentState ? "unavailable" : usable ? "available" : "awaiting-recovery";
   const glycogenAndExtracellularFluidMassKg = hasCurrentState
     && currentWeightKg !== null
@@ -154,7 +170,7 @@ export function buildDiagnosticsDto(input: {
     },
     dataContinuity: {
       level: status.unknownIntervalCount > 0 || evidence.unresolvedNutritionDayCount > 0 || evidence.incompleteDayCount > 0 ? "limited" : "good",
-      recentWindowDays: 28, windowStartDate: input.windowStartDate, windowEndDate: episode.latestModeledDate,
+      recentWindowDays: MODEL_DIAGNOSTICS_RECENT_WINDOW_DAYS, windowStartDate: input.windowStartDate, windowEndDate: episode.latestModeledDate,
       modeledDayCount: evidence.modeledDayCount, completeDayCount: evidence.completeDayCount, incompleteDayCount: evidence.incompleteDayCount,
       nutrition: { observedDayCount: evidence.observedNutritionDayCount, imputedDayCount: evidence.imputedNutritionDayCount, unresolvedDayCount: evidence.unresolvedNutritionDayCount },
       weightObservationCount: evidence.weightObservationCount,

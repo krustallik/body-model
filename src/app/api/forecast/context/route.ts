@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { getModelHistory, getModelStatus } from "@/modules/model-episodes/model-episode.service";
 import type { ModelDaySourceQuality } from "@/modules/model-episodes/model-episode.types";
 import { addCalendarDays, latestCompletedLocalDate } from "@/modules/model-episodes/model-calendar";
+import { minimumGoalDate } from "@/modules/model-target-solver/goal-date";
 import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import { calculateGlycogenAssociatedMassKg } from "@/model/body-composition/state";
@@ -29,8 +30,9 @@ type HistoryDayRow = {
   missingFields: string[];
 };
 
-export async function GET(): Promise<Response> {
+export async function GET(request?: Request): Promise<Response> {
   try {
+    const locale = new URL(request?.url ?? "http://localhost").searchParams.get("locale") === "uk" ? "uk" : "en";
     const status = await getModelStatus();
     const history = await getModelHistory({
       from: status.latestModeledDate ? addCalendarDays(status.latestModeledDate, -59) : undefined,
@@ -39,10 +41,11 @@ export async function GET(): Promise<Response> {
       offset: 0,
     });
     const days = history.days as HistoryDayRow[];
-    const forecastStartDate = addCalendarDays(
-      latestCompletedLocalDate(new Date(), status.timezone ?? DEFAULT_TIME_ZONE),
-      1,
+    const latestCompletedDate = latestCompletedLocalDate(
+      new Date(),
+      status.timezone ?? DEFAULT_TIME_ZONE,
     );
+    const forecastStartDate = minimumGoalDate(latestCompletedDate);
     const observedWeights = await prisma.dailyHealthData.findMany({
       where: status.latestModeledDate
         ? { date: { gte: addCalendarDays(status.latestModeledDate, -59), lte: forecastStartDate } }
@@ -61,6 +64,7 @@ export async function GET(): Promise<Response> {
     const v7Result = v7?.result ?? null;
     return Response.json({
       status,
+      latestCompletedLocalDate: latestCompletedDate,
       history: days.map((day) => ({
         date: day.date,
         modeledWeightKg: day.endWeightKg,
@@ -80,14 +84,15 @@ export async function GET(): Promise<Response> {
         .map((day) => ({ date: day.date, weightKg: day.weightKg })),
       unknownIntervals: history.unknownIntervals,
       provenance: {
-        v7Cache: physiologyV7CacheChip(v7Status),
-        v7Compartments: physiologyV7CompartmentChips(v7Result),
+        v7Cache: physiologyV7CacheChip(v7Status, locale),
+        v7Compartments: physiologyV7CompartmentChips(v7Result, locale),
         latestDay: latestDay === null ? null : {
           date: latestDay.date,
-          dataQuality: dataQualityChip(latestDay.dataQuality),
-          nutrition: nutritionSourceChip(latestDay.nutritionSource),
+          dataQuality: dataQualityChip(latestDay.dataQuality, locale),
+          nutrition: nutritionSourceChip(latestDay.nutritionSource, locale),
           workoutFeed: workoutFeedProvenanceChip(
             latestDay.sourceQuality?.workoutFeedObserved ?? null,
+            locale,
           ),
         },
       },

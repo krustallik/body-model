@@ -72,3 +72,243 @@
   .recommendedMacros article, .optional, .modeGrid button, .guidedControls button,
   .guidedChoices button, .backButton, .actions a, .actions button { transition-duration: 0s; }
 }
+
+/* Goal workspace: inputs stay compact while solver outcomes sit beside them. */
+.workspace { display: grid; grid-template-columns: minmax(18rem, .78fr) minmax(0, 1.42fr); align-items: start; gap: 1rem; min-width: 0; }
+.formColumn, .resultColumn { display: grid; align-content: start; gap: .8rem; min-width: 0; }
+.formIntro { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .35rem .15rem .2rem; }
+.formIntro .eyebrow { margin-bottom: .25rem; color: var(--info-strong); }
+.formIntro h2 { margin: 0; font-size: 1.2rem; letter-spacing: -.025em; }
+.formUtilityRow { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
+.formUtilityRow > span { color: var(--muted); font-size: .72rem; font-weight: 750; }
+.planner { gap: .7rem; }
+.formSection { padding: 1rem; border-radius: .8rem; background: var(--surface-1); box-shadow: none; }
+.formSection .sectionHeading { margin-bottom: .75rem; }
+.formSection .sectionHeading > div { min-width: 0; }
+.formSection .sectionHeading p { max-width: 14rem; text-align: right; }
+.formSection .formGrid { gap: .65rem; }
+.formSection .field { font-size: .7rem; }
+.formSection .field input, .formSection .field select { min-height: 2.7rem; }
+.optional { margin-top: .8rem; padding: .8rem; }
+.modeGrid { gap: .5rem; margin-bottom: .8rem; }
+.modeGrid button { min-height: 4rem; padding: .7rem; background: var(--surface-2); }
+.submitRow { align-items: stretch; flex-direction: column; gap: .75rem; padding: 1rem; background: var(--elevated); border: 1px solid var(--line); }
+.submitRow > div { gap: .3rem; }
+.submitRow > div strong { font-size: .82rem; }
+.submitRow > div span { font-size: .7rem; line-height: 1.4; }
+.submitRow button { min-height: 2.9rem; width: 100%; }
+.resultColumn { gap: .75rem; }
+.resultColumn > .statusCard { margin: 0; padding: 1rem 1.1rem; background: var(--surface-1); border: 1px solid var(--line); border-inline-start: .25rem solid var(--accent); border-radius: .85rem; box-shadow: none; }
+.statusCard.success { border-inline-start-color: var(--success); }
+.statusCard.info { border-inline-start-color: var(--info); }
+.statusCard.warning { border-inline-start-color: var(--warning); }
+.statusCard.blocked { border-inline-start-color: var(--danger); }
+.statusCard .eyebrow { margin-bottom: .35rem; }
+.statusCard h2 { font-size: 1.03rem; }
+.statusCard > p:not(.eyebrow) { font-size: .78rem; }
+.statusCard small { overflow-wrap: anywhere; line-height: 1.45; }
+.emptyResult { display: grid; gap: .65rem; min-height: 13rem; align-content: center; padding: 1.5rem; background: var(--surface-1); border: 1px dashed var(--border-strong); border-radius: .9rem; }
+.emptyResult > span { color: var(--info-strong); font-size: .72rem; font-weight: 780; }
+.emptyResult strong { max-width: 24rem; font-size: clamp(1.45rem, 2.4vw, 2rem); line-height: 1.1; letter-spacing: -.035em; }
+.emptyResult p { max-width: 35rem; margin: 0; color: var(--muted); font-size: .8rem; line-height: 1.55; }
+.summaryGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; margin: 0; }
+.summaryGrid article { display: flex; min-width: 0; flex-direction: column; justify-content: space-between; gap: .3rem; padding: .9rem; background: var(--surface-1); border-color: var(--line); border-radius: .8rem; }
+.summaryGrid article span { min-height: 0; font-size: .68rem; line-height: 1.35; }
+.summaryGrid article strong { margin: .3rem 0 0; font-size: clamp(1.3rem, 2.2vw, 1.8rem); letter-spacing: -.035em; line-height: 1.1; overflow-wrap: anywhere; }
+.summaryGrid article small { margin-top: 0; font-size: .66rem; line-height: 1.4; }
+.summaryGrid .attainmentMetric { grid-column: 1 / -1; min-height: 8rem; padding: 1rem 1.15rem; background: var(--surface-2); border-inline-start: .25rem solid var(--info); }
+.summaryGrid .attainmentMetric span { color: var(--info-strong); font-size: .74rem; }
+.summaryGrid .attainmentMetric strong { margin-top: 0; font-size: clamp(2.6rem, 5vw, 4rem); font-variant-numeric: tabular-nums; }
+.summaryGrid .attainmentMetric small { max-width: 50rem; }
+.summaryGrid .medianMetric strong { color: var(--forecast-line); }
+.summaryGrid .rangeMetric strong { color: var(--ink); font-size: clamp(1.15rem, 1.8vw, 1.55rem); }
+.summaryGrid .caloriesMetric strong { color: var(--info-strong); }
+.uncertaintyCard { margin: 0; padding: .85rem 1rem; background: var(--inset); border-color: var(--line); box-shadow: none; }
+.uncertaintyCard strong { color: var(--info-strong); font-size: .78rem; }
+.uncertaintyCard span, .uncertaintyCard p { font-size: .7rem; line-height: 1.5; }
+.chartPanel { margin: 0; padding: 1rem; border-radius: .9rem; box-shadow: 0 .35rem 1rem var(--shadow); }
+.goalChart { border-top: 2px solid var(--forecast-line); }
+.chartHeading { display: grid; grid-template-columns: minmax(0, 1fr) minmax(15rem, 1.15fr); align-items: start; gap: .9rem; }
+.chartHeading h2 { font-size: 1.25rem; letter-spacing: -.025em; }
+.chartHeading .eyebrow { margin-bottom: .35rem; color: var(--info-strong); }
+.chartTools { display: grid; justify-items: end; gap: .6rem; min-width: 0; }
+.historyRange { display: flex; gap: .15rem; padding: .2rem; background: var(--inset); border: 1px solid var(--line); border-radius: .65rem; }
+.historyRange button { min-height: 2.75rem; padding: .5rem .75rem; color: var(--muted); background: transparent; border: 0; border-radius: .45rem; font: inherit; font-size: .7rem; font-weight: 760; cursor: pointer; }
+.historyRange button[aria-pressed="true"] { color: var(--ink); background: var(--elevated); box-shadow: inset 0 0 0 1px var(--border-strong); }
+.historyRange button:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.legend { display: flex; min-width: 0; flex-wrap: wrap; justify-content: flex-end; gap: .4rem .65rem; font-size: .64rem; }
+.measuredKey { background: var(--info); }
+.chartNote { margin-top: .65rem; font-size: .7rem; }
+.nutritionResult { padding: 1rem; }
+.nutritionResult .chartHeading { display: block; }
+.nutritionResult .recommendedMacros { margin-top: .4rem; }
+.detailGrid { gap: .75rem; margin-top: 0; }
+.detailGrid article { padding: 1rem; background: var(--surface-1); border-radius: .85rem; box-shadow: none; }
+.detailGrid h2 { margin-bottom: .75rem; font-size: .95rem; }
+.detailGrid dl { gap: .6rem; }
+.detailGrid dd, .detailGrid ul { font-size: .72rem; line-height: 1.45; }
+.errorCard { margin: 0; padding: 1rem; background: color-mix(in srgb, var(--danger-soft) 25%, var(--surface-1)); border-radius: .85rem; }
+.loadingCard { margin: 0; min-height: 8rem; padding: 1rem; border-radius: .85rem; }
+.page :is(button, a, input, select, summary):focus-visible { outline: none; box-shadow: var(--focus-ring); }
+@media (max-width: 980px) {
+  .workspace { grid-template-columns: minmax(0, 1fr); }
+  .formColumn { grid-template-columns: 1fr 1fr; align-items: start; }
+  .formIntro, .planner { grid-column: 1 / -1; }
+  .planner { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+  .planner > .formUtilityRow, .planner > .submitRow { grid-column: 1 / -1; }
+  .planner > .formSection:nth-of-type(3) { grid-row: span 2; }
+  .resultColumn { grid-template-columns: 1fr; }
+  .chartHeading { grid-template-columns: 1fr; }
+  .chartTools { justify-items: start; }
+  .legend { justify-content: flex-start; }
+}
+@media (max-width: 620px) {
+  .page { padding-block: 1rem 2.5rem; }
+  .hero { align-items: flex-start; gap: 1rem; padding: 2.2rem 0 1.25rem; }
+  .hero h1 { max-width: 38rem; font-size: clamp(2.2rem, 10vw, 3.4rem); line-height: .98; }
+  .hero > div > p:last-child { max-width: 34rem; margin-top: .75rem; font-size: .9rem; }
+  .statePill { align-self: flex-start; }
+  .formColumn { grid-template-columns: 1fr; }
+  .formIntro, .planner { grid-column: 1; }
+  .planner { grid-template-columns: 1fr; }
+  .planner > .formUtilityRow, .planner > .submitRow { grid-column: 1; }
+  .planner > .formSection:nth-of-type(3) { grid-row: auto; }
+  .formSection .sectionHeading { flex-direction: column; }
+  .formSection .sectionHeading p { max-width: none; text-align: left; }
+  .summaryGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .summaryGrid .attainmentMetric { min-height: 7rem; }
+  .summaryGrid article strong { font-size: 1.35rem; }
+  .summaryGrid .rangeMetric strong { font-size: 1.1rem; }
+  .summaryGrid .attainmentMetric strong { font-size: 2.7rem; }
+  .historyRange { display: grid; width: 100%; grid-template-columns: 1fr 1fr; }
+  .historyRange button { min-height: 2.75rem; padding-inline: .4rem; }
+  .chartTools { width: 100%; }
+  .legend { gap: .45rem .7rem; }
+  .detailGrid { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .formSection, .chartPanel, .summaryGrid article, .statusCard, .uncertaintyCard,
+  .detailGrid article, .historyRange button, .modeGrid button, .submitRow button { transition-duration: 0s; }
+}
+
+/* Result explanations stay visible as summaries and open without hover. */
+.summaryGrid article { border-inline-start: 3px solid var(--border-strong); }
+.summaryGrid .attainmentMetric { border-inline-start-color: var(--info); }
+.summaryGrid .medianMetric { border-inline-start-color: var(--success); }
+.summaryGrid .rangeMetric { border-inline-start-color: var(--warning); }
+.summaryGrid .rangeMetric strong { color: var(--warning-strong); }
+.summaryGrid .caloriesMetric { border-inline-start-color: var(--info); }
+.metricExplanation { min-width: 0; margin-top: .2rem; border-top: 1px solid var(--line); }
+.metricExplanation summary {
+  display: flex;
+  min-height: 2.75rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem;
+  color: var(--info-strong);
+  font-size: .7rem;
+  font-weight: 780;
+  list-style: none;
+  cursor: pointer;
+}
+.metricExplanation summary::-webkit-details-marker { display: none; }
+.metricExplanation summary::after { content: "+"; color: var(--info-strong); font-size: 1rem; }
+.metricExplanation[open] summary::after { content: "−"; }
+.metricExplanation > p { margin: 0 0 .6rem; color: var(--muted); font-size: .7rem; line-height: 1.5; }
+.uncertaintyCard { grid-template-columns: minmax(12rem, .8fr) minmax(0, 1.2fr); align-items: start; border-inline-start: 3px solid var(--warning); }
+.uncertaintyMain { display: grid; gap: .4rem; }
+.uncertaintyMain .eyebrow { margin: 0; color: var(--warning-strong); }
+.uncertaintyMain strong { color: var(--ink); font-size: .95rem; line-height: 1.35; }
+.simulationCount { color: var(--info-strong); font-size: .8rem !important; font-weight: 800; font-variant-numeric: tabular-nums; }
+.uncertaintyDetail { display: grid; gap: .25rem; }
+.uncertaintyDetail > p { margin: 0; color: var(--muted); font-size: .72rem; line-height: 1.5; }
+.uncertaintyDetail .metricExplanation { margin-top: .25rem; }
+.intervalValue { color: var(--warning-strong); font-size: .68rem !important; font-weight: 760; font-variant-numeric: tabular-nums; }
+@media (max-width: 620px) {
+  .uncertaintyCard { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Goal setup and results read as successive workspaces instead of competing columns. */
+@media (min-width: 621px) {
+  .workspace { grid-template-columns: minmax(0, 1fr); gap: 1.25rem; }
+  .planner { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+  .planner > .formUtilityRow { grid-column: 1 / -1; }
+  .planner > .formSection:nth-of-type(1) { grid-column: 1; }
+  .planner > .formSection:nth-of-type(2) { grid-column: 2; }
+  .planner > .formSection:nth-of-type(3) { grid-column: 1 / -1; grid-row: auto; }
+  .planner > .formSection:nth-of-type(4) { grid-column: 1; }
+  .planner > .submitRow { grid-column: 2; }
+  .planner > .formSection:nth-of-type(3) .formGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .resultColumn { margin-top: .25rem; padding-top: 1.25rem; border-top: 1px solid var(--line); }
+  .emptyResult {
+    grid-template-columns: minmax(10rem, .7fr) minmax(12rem, 1fr) minmax(0, 1.5fr);
+    align-items: center;
+    min-height: 0;
+    padding: 1.15rem 1.35rem;
+  }
+  .emptyResult strong, .emptyResult p { max-width: none; }
+}
+@media (min-width: 1100px) {
+  .planner > .formSection:nth-of-type(3) .formGrid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (min-width: 621px) and (max-width: 980px) {
+  .formColumn > .errorCard, .formColumn > .loadingCard { grid-column: 1 / -1; }
+  .emptyResult { grid-template-columns: minmax(10rem, .7fr) minmax(0, 1fr); }
+  .emptyResult p { grid-column: 2; }
+}
+@media (max-width: 620px) {
+  .workspace { gap: 1rem; }
+  .planner > .formSection:nth-of-type(1), .planner > .formSection:nth-of-type(2),
+  .planner > .formSection:nth-of-type(3), .planner > .formSection:nth-of-type(4),
+  .planner > .submitRow { grid-column: 1; }
+  .emptyResult { grid-template-columns: 1fr; }
+  .emptyResult p { grid-column: 1; }
+}
+
+.chartMetricRange button[aria-pressed="true"] {
+  color: var(--info-strong);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--info) 55%, transparent);
+}
+
+/* Goal setup uses restrained semantic rails over the shared neutral surfaces. */
+.formSection {
+  --section-accent: var(--border-strong);
+  border-inline-start: 2px solid color-mix(in srgb, var(--section-accent) 58%, var(--line));
+}
+.formSection:nth-of-type(1) { --section-accent: var(--info); }
+.formSection:nth-of-type(2) { --section-accent: var(--warning); }
+.formSection:nth-of-type(3) { --section-accent: var(--primary); }
+.formSection:nth-of-type(4):has(input[type="checkbox"]:checked) { --section-accent: var(--info); }
+.sectionHeading > div > span {
+  color: var(--section-accent);
+  background: color-mix(in srgb, var(--section-accent) 13%, var(--surface-2));
+}
+@media (hover: hover) and (pointer: fine) {
+  .formSection:hover {
+    border-color: color-mix(in srgb, var(--section-accent) 28%, var(--line));
+    border-inline-start-color: var(--section-accent);
+  }
+}
+
+/* Expanded controls use the full planner width so neighboring cards do not leave dead space. */
+@media (min-width: 621px) {
+  .planner:has(> .formSection:nth-of-type(2) .optional[open]) > .formSection:nth-of-type(1),
+  .planner:has(> .formSection:nth-of-type(2) .optional[open]) > .formSection:nth-of-type(2) {
+    grid-column: 1 / -1;
+  }
+
+  .planner:has(> .formSection:nth-of-type(4) input[type="checkbox"]:checked) > .formSection:nth-of-type(4),
+  .planner:has(> .formSection:nth-of-type(4) input[type="checkbox"]:checked) > .submitRow {
+    grid-column: 1 / -1;
+  }
+
+  .planner:has(> .formSection:nth-of-type(4) input[type="checkbox"]:checked) > .submitRow {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(16rem, auto);
+    align-items: center;
+  }
+
+  .planner:has(> .formSection:nth-of-type(4) input[type="checkbox"]:checked) > .submitRow button {
+    width: auto;
+  }
+}

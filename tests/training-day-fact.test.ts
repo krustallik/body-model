@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { resolveTrainingDayFacts, type DiaryFactSource, type WorkoutFactSource } from "@/modules/days/training-day-fact";
-import { emptyTrainingDayFact } from "@/modules/days/training-day-fact-empty";
+import {
+  emptyTrainingDayFact as legacyEmptyTrainingDayFact,
+  resolveTrainingDayFacts,
+  type DiaryFactSource,
+  type WorkoutFactSource,
+} from "@/modules/days/training-day-fact";
+import { emptyTrainingDayFact as clientSafeEmptyTrainingDayFact } from "@/modules/days/training-day-fact-empty";
 import {
   strengthInputFingerprintV1,
   strengthSetFingerprintV1,
@@ -32,8 +37,12 @@ const diary = (overrides: Partial<DiaryFactSource> = {}): DiaryFactSource => ({
 });
 
 describe("TrainingDayFact resolver", () => {
+  it("keeps the legacy empty-fact export as an alias of the client-safe helper", () => {
+    expect(legacyEmptyTrainingDayFact).toBe(clientSafeEmptyTrainingDayFact);
+  });
+
   it("returns explicit zero event count and duration for an empty day", () => {
-    expect(emptyTrainingDayFact("2026-09-24")).toEqual({
+    expect(legacyEmptyTrainingDayFact("2026-09-24")).toEqual({
       date: "2026-09-24",
       eventCount: 0,
       durationMinutes: 0,

@@ -12,6 +12,10 @@ import {
 import type { StrengthSessionDto } from "@/modules/training/training.types";
 import { ENTRY_MODE, MATCH_STATUS, RESISTANCE, SESSION_STATUS, EXERCISE_ORIGIN } from "@/modules/training/training.constants";
 
+// Preserve the original import path for callers while keeping client components
+// on the dedicated client-safe empty-fact module.
+export { emptyTrainingDayFact } from "./training-day-fact-empty";
+
 export type ExerciseDetailAvailability = "logged-sets" | "no-logged-sets" | "unavailable";
 export type TrainingEventExecutionStatus = "in-progress" | "completed" | "partial" | "unknown";
 

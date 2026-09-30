@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { EXPECTED_MS100_V1, EXPECTED_GOLDEN_V1 } from "../fixtures/training-history-stage01/expected-v1";
 import {
   STAGE01_GOLDEN_TOTALS_V1,
@@ -20,6 +21,61 @@ const SENTINEL_SESSION_EXERCISE_ID = 15_000_004;
 const SENTINEL_PROGRAM_VERSION_ID = 15_000_005;
 const SENTINEL_PROGRAM_CHANGE_ID = 15_000_006;
 const SENTINEL_SUPERSEDED_WORKOUT_ID = 15_000_007;
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+function observeTransactionBackendPid(db: PrismaClient, onPid: (pid: number) => void): PrismaClient {
+  return new Proxy(db, {
+    get(target, property, receiver) {
+      if (property !== "$transaction") {
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+      const transaction = Reflect.get(target, property, target) as (...args: unknown[]) => unknown;
+      return (callback: unknown, ...options: unknown[]) => transaction.call(
+        target,
+        async (tx: Prisma.TransactionClient) => {
+          const observedTx = new Proxy(tx, {
+            get(transactionTarget, transactionProperty, transactionReceiver) {
+              if (transactionProperty !== "$queryRaw") {
+                const value = Reflect.get(transactionTarget, transactionProperty, transactionReceiver);
+                return typeof value === "function" ? value.bind(transactionTarget) : value;
+              }
+              const queryRaw = Reflect.get(transactionTarget, transactionProperty, transactionTarget) as (...args: unknown[]) => Promise<unknown>;
+              return async (...args: unknown[]) => {
+                const rows = await transactionTarget.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+                onPid(rows[0]!.pid);
+                return queryRaw.apply(transactionTarget, args);
+              };
+            },
+          }) as Prisma.TransactionClient;
+          return (callback as (client: Prisma.TransactionClient) => Promise<unknown>)(observedTx);
+        },
+        ...options,
+      );
+    },
+  }) as PrismaClient;
+}
+
+async function waitForPostgresLockWait(db: PrismaClient, pid: number, blockerPids: readonly number[]): Promise<void> {
+  for (let attempt = 0; attempt < 1_000; attempt += 1) {
+    const rows = await db.$queryRaw<Array<{
+      waitEventType: string | null;
+      blockingPids: number[];
+    }>>`
+      SELECT wait_event_type AS "waitEventType", pg_blocking_pids(pid) AS "blockingPids"
+      FROM pg_stat_activity
+      WHERE pid = ${pid}
+    `;
+    if (rows[0]?.waitEventType === "Lock" && rows[0].blockingPids.some((blockingPid) => blockerPids.includes(blockingPid))) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error(`PostgreSQL backend ${pid} did not enter the expected row-lock wait behind ${blockerPids.join(", ")}`);
+}
 
 describe("Training History Stage 01 PostgreSQL persistence", () => {
   let prisma: import("@prisma/client").PrismaClient | undefined;
@@ -494,6 +550,173 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
     }
   });
 
+  it("serializes a stale refresh candidate behind a timestamp rebase at the PostgreSQL row lock", async () => {
+    const db = prisma!;
+    let programId: number | null = null;
+    let sessionId: number | null = null;
+    let sampleId: number | null = null;
+    const candidateCaptured = deferred();
+    const resumeCandidate = deferred();
+    const gateReady = deferred<number>();
+    const releaseGate = deferred();
+    const correctionPidReady = deferred<number>();
+    const candidatePidReady = deferred<number>();
+    let gateTransaction: Promise<unknown> | null = null;
+    let correctionPromise: Promise<void> | null = null;
+    let candidatePromise: Promise<number> | null = null;
+    try {
+      const { TrainingRepository, StaleAccountingCandidateError } = await import("../../src/modules/training/training.repository");
+      const { TrainingService } = await import("../../src/modules/training/training.service");
+      const service = new TrainingService(db);
+      const catalog = await db.exerciseCatalog.findUniqueOrThrow({
+        where: { profileId_stableKey: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID, stableKey: "pull_up" } },
+        select: { id: true },
+      });
+      const program = await service.createProgram({
+        name: `stage02-row-lock-rebase-${Date.now()}`,
+        exercises: [{ catalogId: catalog.id, plannedSets: 1, resistanceType: "BODYWEIGHT" }],
+      }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      programId = program.id;
+      const session = await service.startSession(program.id, TRAINING_HISTORY_STAGE01_PROFILE_ID, "Europe/Bratislava");
+      sessionId = session.id;
+      await service.updateSessionAccountingContext(
+        session.id,
+        { effectiveAccountingAt: "2045-01-01T10:00:00.000Z" },
+        TRAINING_HISTORY_STAGE01_PROFILE_ID,
+      );
+      await service.createSet(session.id, session.exercises[0]!.id, { reps: 8 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      const sample = await db.healthMetricSample.create({
+        data: {
+          date: "2045-01-01",
+          metric: "weight-kg",
+          source: "apple-health-shortcut",
+          timestamp: new Date("2045-01-01T11:00:00.000Z"),
+          value: 80,
+        },
+        select: { id: true },
+      });
+      sampleId = sample.id;
+      const initial = await service.materializeSessionAccounting(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      const initialSnapshot = await db.strengthSessionAccountingSnapshot.findUniqueOrThrow({
+        where: {
+          sessionId_snapshotRevision: { sessionId: session.id, snapshotRevision: initial.snapshotRevision },
+        },
+      });
+      const correctionAt = new Date("2045-01-01T10:01:00.000Z");
+
+      gateTransaction = db.$transaction(async (tx) => {
+        await tx.$queryRaw<Array<{ id: number }>>`
+          SELECT "id" FROM "StrengthDiarySession" WHERE "id" = ${session.id} FOR UPDATE
+        `;
+        const rows = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+        gateReady.resolve(rows[0]!.pid);
+        await releaseGate.promise;
+      });
+      const gatePid = await gateReady.promise;
+
+      const pausedMassClient = new Proxy(db, {
+        get(target, property, receiver) {
+          const value = Reflect.get(target, property, receiver);
+          if (property !== "healthMetricSample" || !value) return typeof value === "function" ? value.bind(target) : value;
+          return new Proxy(value, {
+            get(model, modelProperty, modelReceiver) {
+              const method = Reflect.get(model, modelProperty, modelReceiver);
+              if (modelProperty !== "findMany") return typeof method === "function" ? method.bind(model) : method;
+              return async (...args: unknown[]) => {
+                const samples = await (method as (...queryArgs: unknown[]) => Promise<unknown>).apply(model, args);
+                candidateCaptured.resolve();
+                await resumeCandidate.promise;
+                return samples;
+              };
+            },
+          });
+        },
+      }) as PrismaClient;
+      const candidateDb = observeTransactionBackendPid(pausedMassClient, (pid) => candidatePidReady.resolve(pid));
+      const candidateRepository = new TrainingRepository(candidateDb);
+      candidatePromise = candidateRepository.materializeAccounting({
+        sessionId: session.id,
+        profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID,
+        mode: "refresh",
+        idempotencyKey: "stage02-row-lock-timestamp-candidate",
+      });
+      await candidateCaptured.promise;
+
+      const correctionDb = observeTransactionBackendPid(db, (pid) => correctionPidReady.resolve(pid));
+      correctionPromise = new TrainingRepository(correctionDb).updateAccountingContext({
+        sessionId: session.id,
+        profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID,
+        effectiveAccountingAt: correctionAt,
+      });
+      const correctionPid = await correctionPidReady.promise;
+      await waitForPostgresLockWait(db, correctionPid, [gatePid]);
+
+      resumeCandidate.resolve();
+      const candidatePid = await candidatePidReady.promise;
+      await waitForPostgresLockWait(db, candidatePid, [gatePid, correctionPid]);
+
+      releaseGate.resolve();
+      await gateTransaction;
+      await correctionPromise;
+      await expect(candidatePromise).rejects.toBeInstanceOf(StaleAccountingCandidateError);
+
+      const persisted = await db.strengthDiarySession.findUniqueOrThrow({
+        where: { id: session.id },
+        select: {
+          effectiveAccountingAt: true,
+          accountingInputRevision: true,
+          currentSnapshotRevision: true,
+          currentAccountingSnapshot: { select: { snapshotRevision: true, payload: true } },
+        },
+      });
+      const snapshots = await db.strengthSessionAccountingSnapshot.findMany({
+        where: { sessionId: session.id },
+        orderBy: { snapshotRevision: "asc" },
+      });
+      expect(persisted.effectiveAccountingAt?.toISOString()).toBe(correctionAt.toISOString());
+      expect(persisted.accountingInputRevision).toBe(initialSnapshot.accountingInputRevision);
+      expect(snapshots).toHaveLength(2);
+      expect(snapshots.map((snapshot) => snapshot.snapshotRevision)).toEqual([
+        initial.snapshotRevision,
+        initial.snapshotRevision + 1,
+      ]);
+      expect(snapshots[0]).toEqual(initialSnapshot);
+      const rebased = snapshots[1]!;
+      expect(rebased.accountingInputRevision).toBe(initialSnapshot.accountingInputRevision);
+      expect(rebased.inputFingerprint).toBe(initialSnapshot.inputFingerprint);
+      expect(rebased.snapshotRevision).toBe(persisted.currentSnapshotRevision);
+      expect(persisted.currentAccountingSnapshot?.snapshotRevision).toBe(rebased.snapshotRevision);
+      expect((rebased.payload as { effectiveAccountingAt: string }).effectiveAccountingAt)
+        .toBe(persisted.effectiveAccountingAt?.toISOString());
+      const calculationPayload = (value: unknown) => {
+        const payload = { ...(value as Record<string, unknown>) };
+        delete payload.snapshotRevision;
+        delete payload.effectiveAccountingAt;
+        return payload;
+      };
+      expect(calculationPayload(rebased.payload)).toEqual(calculationPayload(initialSnapshot.payload));
+      expect(await db.strengthSessionAccountingOperation.findUnique({
+        where: {
+          sessionId_idempotencyKey: {
+            sessionId: session.id,
+            idempotencyKey: "stage02-row-lock-timestamp-candidate",
+          },
+        },
+      })).toBeNull();
+    } finally {
+      resumeCandidate.resolve();
+      releaseGate.resolve();
+      await Promise.allSettled([
+        ...(gateTransaction ? [gateTransaction] : []),
+        ...(correctionPromise ? [correctionPromise] : []),
+        ...(candidatePromise ? [candidatePromise] : []),
+      ]);
+      if (sessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: sessionId } });
+      if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });
+      if (sampleId !== null) await db.healthMetricSample.deleteMany({ where: { id: sampleId } });
+    }
+  });
+
   it("persists the asymmetric 12/10 override as 220 while leaving scalar reps at 12", async () => {
     const db = prisma!;
     let programId: number | null = null;
@@ -754,6 +977,14 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       expect((afterSameDateMatch.currentAccountingSnapshot?.payload as { effectiveAccountingAt: string }).effectiveAccountingAt)
         .toBe(afterSameDateMatch.effectiveAccountingAt?.toISOString());
       expect(await db.strengthSessionAccountingSnapshot.count({ where: { sessionId: sameDate.id } })).toBe(2);
+      const snapshotBeforeTimestampCorrection = await db.strengthSessionAccountingSnapshot.findUniqueOrThrow({
+        where: {
+          sessionId_snapshotRevision: {
+            sessionId: sameDate.id,
+            snapshotRevision: afterSameDateMatch.currentSnapshotRevision!,
+          },
+        },
+      });
 
       await syncWorkout(dates[0]!, "2045-01-01T10:30:00.000Z", "stage02-refreshable-linked-workout");
       const afterSameDateHealthCorrection = await db.strengthDiarySession.findUniqueOrThrow({
@@ -772,6 +1003,47 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       expect((afterSameDateHealthCorrection.currentAccountingSnapshot?.payload as { effectiveAccountingAt: string }).effectiveAccountingAt)
         .toBe(afterSameDateHealthCorrection.effectiveAccountingAt?.toISOString());
       expect(await db.strengthSessionAccountingSnapshot.count({ where: { sessionId: sameDate.id } })).toBe(3);
+      const oldSnapshotAfterCorrection = await db.strengthSessionAccountingSnapshot.findUniqueOrThrow({
+        where: {
+          sessionId_snapshotRevision: {
+            sessionId: sameDate.id,
+            snapshotRevision: snapshotBeforeTimestampCorrection.snapshotRevision,
+          },
+        },
+      });
+      const rebasedSnapshot = await db.strengthSessionAccountingSnapshot.findUniqueOrThrow({
+        where: {
+          sessionId_snapshotRevision: {
+            sessionId: sameDate.id,
+            snapshotRevision: afterSameDateHealthCorrection.currentSnapshotRevision!,
+          },
+        },
+      });
+      expect(oldSnapshotAfterCorrection).toEqual(snapshotBeforeTimestampCorrection);
+      expect(rebasedSnapshot.snapshotRevision).toBe(snapshotBeforeTimestampCorrection.snapshotRevision + 1);
+      expect(rebasedSnapshot.accountingInputRevision).toBe(snapshotBeforeTimestampCorrection.accountingInputRevision);
+      expect(rebasedSnapshot.inputFingerprint).toBe(snapshotBeforeTimestampCorrection.inputFingerprint);
+      expect(rebasedSnapshot).toMatchObject({
+        effectiveLocalDate: snapshotBeforeTimestampCorrection.effectiveLocalDate,
+        timeZone: snapshotBeforeTimestampCorrection.timeZone,
+        timeZoneProvenance: snapshotBeforeTimestampCorrection.timeZoneProvenance,
+        accountingMethodVersion: snapshotBeforeTimestampCorrection.accountingMethodVersion,
+        massResolutionMethodVersion: snapshotBeforeTimestampCorrection.massResolutionMethodVersion,
+        massResolutionIdentity: snapshotBeforeTimestampCorrection.massResolutionIdentity,
+        payloadVersion: snapshotBeforeTimestampCorrection.payloadVersion,
+      });
+      const snapshotCalculation = (value: unknown) => {
+        const payload = { ...(value as Record<string, unknown>) };
+        delete payload.snapshotRevision;
+        delete payload.effectiveAccountingAt;
+        return payload;
+      };
+      expect(snapshotCalculation(rebasedSnapshot.payload)).toEqual(snapshotCalculation(snapshotBeforeTimestampCorrection.payload));
+      expect((rebasedSnapshot.payload as { effectiveAccountingAt: string }).effectiveAccountingAt)
+        .toBe(afterSameDateHealthCorrection.effectiveAccountingAt?.toISOString());
+      expect((rebasedSnapshot.payload as { snapshotRevision: number }).snapshotRevision)
+        .toBe(afterSameDateHealthCorrection.currentSnapshotRevision);
+      expect(afterSameDateHealthCorrection.currentSnapshotRevision).toBe(rebasedSnapshot.snapshotRevision);
 
       await syncWorkout(dates[0]!, "2045-01-01T23:00:00.000Z", "stage02-refreshable-linked-workout");
       const afterHealthCorrection = await db.strengthDiarySession.findUniqueOrThrow({ where: { id: sameDate.id }, select: { effectiveAccountingAt: true, accountingInputRevision: true, currentSnapshotRevision: true } });

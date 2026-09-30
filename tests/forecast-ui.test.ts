@@ -122,9 +122,9 @@ describe("forecast application helpers", () => {
       otherTrainingDaysPerWeek: 1,
     };
     const forecast = buildForecastRequest("target-centered", 90, plan, "2026-10-19");
-    const values = defaultGoalForm("2026-10-19", 82);
+    const values = defaultGoalForm("2026-10-19", 82, "2026-10-19");
     values.plan = plan;
-    const goal = buildGoalPlanningRequest(values, "2026-10-19");
+    const goal = buildGoalPlanningRequest(values, "2026-10-19", "2026-10-19");
     expect(goal.errors).toEqual({});
     expect(goal.request?.scenarioTemplate).toEqual(forecast.scenario);
   });

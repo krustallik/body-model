@@ -10,6 +10,7 @@ import {
 } from "@/modules/nutrition-recommender/nutrition-recommender";
 import type { GoalPlanningRequest } from "./goal-planning.schema";
 import type { GoalPlanningAssumptions, GoalPlanningResponse, GoalPlanningStatus, GoalPlanningWarning } from "./goal-planning.types";
+import { isGoalDateAfterLatestCompletedLocalDate } from "@/modules/model-target-solver/goal-date";
 
 export type GoalFormValues = {
   targetWeightKg: string;
@@ -38,11 +39,18 @@ export function guidedWorkCategory(description: GuidedWorkDescription): PlanValu
   return "standingLight";
 }
 
-export function defaultGoalForm(latestModeledDate?: string | null, currentWeightKg?: number | null): GoalFormValues {
+export function defaultGoalForm(
+  latestModeledDate?: string | null,
+  currentWeightKg?: number | null,
+  latestCompletedLocalDate?: string | null,
+): GoalFormValues {
+  const goalDateBase = latestModeledDate && latestCompletedLocalDate
+    ? latestModeledDate > latestCompletedLocalDate ? latestModeledDate : latestCompletedLocalDate
+    : null;
   return {
     targetWeightKg: currentWeightKg === null || currentWeightKg === undefined
       ? "" : (Math.round((currentWeightKg - 3) * 10) / 10).toString(),
-    goalDate: latestModeledDate ? addCalendarDays(latestModeledDate, 90) : "",
+    goalDate: goalDateBase ? addCalendarDays(goalDateBase, 90) : "",
     minCaloriesKcal: "1500",
     maxCaloriesKcal: "3300",
     minProteinG: "",
@@ -60,10 +68,11 @@ export function defaultGoalForm(latestModeledDate?: string | null, currentWeight
 export function initialGoalFormWithRecommendation(
   latestModeledDate: string | null,
   status: ModelStatusDto,
+  latestCompletedLocalDate: string,
   profile: Pick<ProfileDto, "sex" | "dateOfBirth" | "heightCm"> | null = null,
 ): { form: GoalFormValues; recommendation: NutritionRecommendation } {
   const currentWeightKg = status.currentPredictedWeightKg ?? status.currentFilteredWeightKg;
-  const form = defaultGoalForm(latestModeledDate, currentWeightKg);
+  const form = defaultGoalForm(latestModeledDate, currentWeightKg, latestCompletedLocalDate);
   const recommendation = recommendGoalFormNutrition(form, latestModeledDate, status, profile);
   return {
     form: { ...form, plan: { ...form.plan, ...recommendation.nutrition } },
@@ -165,7 +174,11 @@ function optionalNumber(value: string, label: string, errors: GoalFormErrors, ke
   return parsed;
 }
 
-export function buildGoalPlanningRequest(values: GoalFormValues, latestModeledDate: string): {
+export function buildGoalPlanningRequest(
+  values: GoalFormValues,
+  latestModeledDate: string,
+  latestCompletedLocalDate: string,
+): {
   request: GoalPlanningRequest | null;
   errors: GoalFormErrors;
 } {
@@ -175,6 +188,9 @@ export function buildGoalPlanningRequest(values: GoalFormValues, latestModeledDa
   const maxCaloriesKcal = requiredNumber(values.maxCaloriesKcal, "Maximum calories", errors, "maxCaloriesKcal");
   const horizonDays = calendarDaysBetween(latestModeledDate, values.goalDate);
   if (!isCalendarDate(values.goalDate) || !Number.isInteger(horizonDays)) errors.goalDate = "Enter a valid calendar date";
+  else if (!isGoalDateAfterLatestCompletedLocalDate(values.goalDate, latestCompletedLocalDate)) {
+    errors.goalDate = "Goal date must be after the latest completed local day";
+  }
   else if (horizonDays <= 0) errors.goalDate = "Goal date must be after the latest modeled date";
   if (targetValueKg !== null && targetValueKg <= 0) errors.targetWeightKg = "Target weight must be positive";
   if (minCaloriesKcal !== null && minCaloriesKcal <= 0) errors.minCaloriesKcal = "Minimum calories must be positive";

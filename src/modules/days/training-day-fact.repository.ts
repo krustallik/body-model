@@ -3,13 +3,13 @@ import { prisma } from "@/lib/db/prisma";
 import { DEFAULT_TIME_ZONE, instantToLocalDateTime } from "@/model/time-zone";
 import { localCalendarRangeInstants } from "./calendar-range";
 import {
-  emptyTrainingDayFact,
   resolveTrainingDayFacts,
   type DiaryFactSource,
   type StrengthSetFactRow,
   type TrainingDayFact,
   type WorkoutFactSource,
 } from "./training-day-fact";
+import { emptyTrainingDayFact } from "./training-day-fact-empty";
 
 export type TrainingDayFactRange = { from?: string; to?: string };
 

@@ -38,6 +38,7 @@ import { historicalExerciseStableKey } from "./exercise-mapping-snapshot";
 import { calculateLoadAccountingV1, LOAD_ACCOUNTING_METHOD_V1, LEGACY_LOAD_INTERPRETATION_V1, classifyPersistedExerciseIdentityV1, loadConfigV1Schema, type BodyweightReferenceV1, type IdentityStatusV1, type LoadAccountingOutputV1 } from "./load-accounting-v1";
 import { resolveBodyweightReferenceV2, BODYWEIGHT_RESOLUTION_METHOD_V2 } from "./bodyweight-reference-v2";
 import { buildMassResolutionIdentity, PERSISTED_LOAD_ACCOUNTING_PAYLOAD_V1, persistedPayloadFromUnknown, sha256Canonical } from "./persisted-load-accounting-v1";
+import { rebaseCurrentAccountingSnapshotTimestamp } from "./rebase-current-accounting-snapshot";
 import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
 import { sessionPlanCompletion } from "./session-plan-completion";
 import { evaluateSessionInactivity } from "./session-inactivity";
@@ -254,6 +255,7 @@ function currentSnapshotForRecord(record: SessionDetailRecord): {
     && payload.sessionId === record.id
     && payload.snapshotRevision === snapshot.snapshotRevision
     && payload.accountingInputRevision === record.accountingInputRevision
+    && payload.effectiveAccountingAt === effectiveAccountingInstant(record).toISOString()
     && payload.effectiveLocalDate === localDate
     && payload.timeZone === timeZone
     && payload.timeZoneProvenance === timeZoneProvenance
@@ -1169,16 +1171,31 @@ export class TrainingRepository {
       const oldProvenance = session.accountingTimeZoneProvenance ?? "legacy-default";
       if (effectiveAt.getTime() === oldEffectiveAt.getTime()
           && timeZone === oldTimeZone && timeZoneProvenance === oldProvenance) return;
+      const effectiveLocalDate = instantToLocalDateTime(effectiveAt, timeZone).date;
+      const sameAccountingDay = timeZone === oldTimeZone
+        && timeZoneProvenance === oldProvenance
+        && effectiveLocalDate === instantToLocalDateTime(oldEffectiveAt, oldTimeZone).date;
       await tx.strengthDiarySession.update({
         where: { id: input.sessionId },
         data: {
           effectiveAccountingAt: effectiveAt,
           accountingTimeZone: timeZone,
           accountingTimeZoneProvenance: timeZoneProvenance,
-          accountingInputRevision: { increment: 1 },
-          currentSnapshotRevision: null,
+          ...(sameAccountingDay ? {} : {
+            accountingInputRevision: { increment: 1 },
+            currentSnapshotRevision: null,
+          }),
         },
       });
+      if (sameAccountingDay && effectiveAt.getTime() !== oldEffectiveAt.getTime()) {
+        await rebaseCurrentAccountingSnapshotTimestamp(tx, {
+          sessionId: input.sessionId,
+          effectiveAccountingAt: effectiveAt,
+          effectiveLocalDate,
+          timeZone,
+          timeZoneProvenance,
+        });
+      }
     });
   }
 
@@ -2179,6 +2196,7 @@ export class TrainingRepository {
         select: {
           effectiveAccountingAt: true,
           accountingTimeZone: true,
+          accountingTimeZoneProvenance: true,
           webStartedAt: true,
           createdAt: true,
         },
@@ -2190,6 +2208,7 @@ export class TrainingRepository {
       const nextEffectiveAt = workout?.startAt ?? session.webStartedAt ?? session.createdAt;
       const previousEffectiveAt = session.effectiveAccountingAt ?? session.webStartedAt ?? session.createdAt;
       const accountingTimeZone = session.accountingTimeZone ?? DEFAULT_TIME_ZONE;
+      const accountingTimeZoneProvenance = session.accountingTimeZoneProvenance ?? "legacy-default";
       const previousLocalDate = instantToLocalDateTime(previousEffectiveAt, accountingTimeZone).date;
       const nextLocalDate = instantToLocalDateTime(nextEffectiveAt, accountingTimeZone).date;
       const accountingDateChanged = previousLocalDate !== nextLocalDate;
@@ -2209,6 +2228,15 @@ export class TrainingRepository {
           }),
         },
       });
+      if (previousEffectiveAt.getTime() !== nextEffectiveAt.getTime() && !accountingDateChanged) {
+        await rebaseCurrentAccountingSnapshotTimestamp(tx, {
+          sessionId: input.sessionId,
+          effectiveAccountingAt: nextEffectiveAt,
+          effectiveLocalDate: nextLocalDate,
+          timeZone: accountingTimeZone,
+          timeZoneProvenance: accountingTimeZoneProvenance,
+        });
+      }
     });
   }
 

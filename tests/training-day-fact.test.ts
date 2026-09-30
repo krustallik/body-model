@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { emptyTrainingDayFact, resolveTrainingDayFacts, type DiaryFactSource, type WorkoutFactSource } from "@/modules/days/training-day-fact";
+import { resolveTrainingDayFacts, type DiaryFactSource, type WorkoutFactSource } from "@/modules/days/training-day-fact";
+import { emptyTrainingDayFact } from "@/modules/days/training-day-fact-empty";
 import {
   strengthInputFingerprintV1,
   strengthSetFingerprintV1,

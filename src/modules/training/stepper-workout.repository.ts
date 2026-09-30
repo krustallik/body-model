@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db/prisma";
 import { DEFAULT_TIME_ZONE, instantToLocalDateTime } from "@/model/time-zone";
 import { MANUAL_STEPPER_SOURCE_PREFIX } from "@/modules/health/workout-source-identity";
 import type { StepperWorkoutInput } from "./stepper-workout.schema";
+import { rebaseCurrentAccountingSnapshotTimestamp } from "./rebase-current-accounting-snapshot";
 import { resolveEventEnergyV1 } from "@/model/activity/canonical-activity-policy-v1";
 import { adaptManualStepperEnergyV1 } from "./manual-stepper-fields-v1";
 import { persistStepperReconciliationV1 } from "./stepper-reconciliation.service";
@@ -263,12 +264,13 @@ export class StepperWorkoutRepository {
       });
       const linked = await transaction.strengthDiarySession.findFirst({
         where: { matchedWorkoutId: id },
-        select: { id: true, effectiveAccountingAt: true, accountingTimeZone: true, webStartedAt: true, createdAt: true },
+        select: { id: true, effectiveAccountingAt: true, accountingTimeZone: true, accountingTimeZoneProvenance: true, webStartedAt: true, createdAt: true },
       });
       if (linked) {
         const previousEffectiveAt = linked.effectiveAccountingAt ?? linked.webStartedAt ?? linked.createdAt;
         if (previousEffectiveAt.getTime() !== startAt.getTime()) {
           const timeZone = linked.accountingTimeZone ?? DEFAULT_TIME_ZONE;
+          const timeZoneProvenance = linked.accountingTimeZoneProvenance ?? "legacy-default";
           const previousLocalDate = instantToLocalDateTime(previousEffectiveAt, timeZone).date;
           const nextLocalDate = instantToLocalDateTime(startAt, timeZone).date;
           await transaction.strengthDiarySession.update({
@@ -281,6 +283,15 @@ export class StepperWorkoutRepository {
               }),
             },
           });
+          if (previousLocalDate === nextLocalDate) {
+            await rebaseCurrentAccountingSnapshotTimestamp(transaction, {
+              sessionId: linked.id,
+              effectiveAccountingAt: startAt,
+              effectiveLocalDate: nextLocalDate,
+              timeZone,
+              timeZoneProvenance,
+            });
+          }
         }
       }
       await persistStepperReconciliationV1(transaction, { from: date, to: date });

@@ -340,11 +340,6 @@ function makeFact(date: string, events: TrainingDayEventFact[], hiddenEventCount
   return { date, eventCount, durationMinutes, hiddenEventCount, events };
 }
 
-/** Empty facts are explicit zeros for event occurrence, not biometric measurements. */
-export function emptyTrainingDayFact(date: string): TrainingDayFact {
-  return makeFact(date, [], 0);
-}
-
 /**
  * Resolve recorded Workout and LIVE diary rows into local-day events.
  * Matching uses the persisted Workout/session relation; timestamps are never

@@ -5,8 +5,8 @@ import { trainingService } from "@/modules/training/training.service";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(request?: Request): Promise<Response> {
-  const url = new URL(request?.url ?? "http://localhost/api/v1/training/programs");
+export async function GET(request: Request): Promise<Response> {
+  const url = new URL(request.url);
   const parsed = ProgramListQuerySchema.safeParse({
     includeArchived: url.searchParams.get("includeArchived") ?? undefined,
   });

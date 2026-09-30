@@ -6,9 +6,11 @@ import {
   type KnownEnergyCoverageV1,
 } from "./canonical-activity-policy-v1";
 import {
-  STAIR_CLIMBING_TYPE,
-  TRADITIONAL_STRENGTH_TRAINING_TYPE,
-} from "@/modules/health/expand-training-workouts";
+  type CanonicalWorkoutType,
+  type WorkoutActivityClassification,
+} from "./workout-type";
+export { canonicalizeWorkoutType, classifyWorkoutType } from "./workout-type";
+export type { CanonicalWorkoutType, WorkoutActivityClassification } from "./workout-type";
 import type { WorkoutStepperEvidenceV7 } from "./workout-stepper-v7";
 import { estimateExperimentalStepperActiveEnergyV1 } from "./experimental-stepper-active-energy-v1";
 import { FIXED_STEPPER_EQUIPMENT_V7 } from "./personal-stepper-reference-v7";
@@ -26,15 +28,6 @@ export {
   WORKOUT_RECOVERY_ENERGY_SCIENTIFIC_DECISION,
   type WorkoutRecoveryEnergyScientificDecision,
 } from "./workout-recovery-energy";
-
-export type WorkoutActivityClassification =
-  | "traditional-strength-training"
-  | "stair-climbing"
-  | "other";
-
-export type CanonicalWorkoutType =
-  | typeof TRADITIONAL_STRENGTH_TRAINING_TYPE
-  | typeof STAIR_CLIMBING_TYPE;
 
 export type ExplicitWorkoutActivityEvent = {
   workoutId?: number;
@@ -84,42 +77,6 @@ export type WorkoutEnergyResolutionSummaryV1 = {
     stepperEnergy?: StepperHrAwareActiveEnergyResultV1;
   }>;
 };
-
-/**
- * Normalize workout type values (not payload keys): trim + case-insensitive
- * match against canonical Garmin/CIRQA labels.
- */
-export function canonicalizeWorkoutType(rawType: string): {
-  rawType: string;
-  canonicalType: CanonicalWorkoutType | null;
-  classification: WorkoutActivityClassification;
-} {
-  const rawTypePreserved = rawType;
-  const normalized = rawType.trim().toLowerCase();
-  if (normalized === TRADITIONAL_STRENGTH_TRAINING_TYPE.toLowerCase()) {
-    return {
-      rawType: rawTypePreserved,
-      canonicalType: TRADITIONAL_STRENGTH_TRAINING_TYPE,
-      classification: "traditional-strength-training",
-    };
-  }
-  if (normalized === STAIR_CLIMBING_TYPE.toLowerCase()) {
-    return {
-      rawType: rawTypePreserved,
-      canonicalType: STAIR_CLIMBING_TYPE,
-      classification: "stair-climbing",
-    };
-  }
-  return {
-    rawType: rawTypePreserved,
-    canonicalType: null,
-    classification: "other",
-  };
-}
-
-export function classifyWorkoutType(type: string): WorkoutActivityClassification {
-  return canonicalizeWorkoutType(type).classification;
-}
 
 function selectionProvenance(
   source: EnergySourceKind,

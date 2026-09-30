@@ -1,7 +1,8 @@
 import { normalizeDailyMeasurements, prepareDailyMeasurementsForWrite } from "@/modules/days/measurement-policy";
 import { summarizeDayWorkouts } from "@/modules/days/day-workout-presentation";
 import { TrainingDayFactRepository } from "@/modules/days/training-day-fact.repository";
-import { emptyTrainingDayFact, type TrainingDayFact } from "@/modules/days/training-day-fact";
+import type { TrainingDayFact } from "@/modules/days/training-day-fact";
+import { emptyTrainingDayFact } from "@/modules/days/training-day-fact-empty";
 import { workoutSourceIdentity } from "@/modules/health/workout-source-identity";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";

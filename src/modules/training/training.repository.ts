@@ -35,9 +35,9 @@ import {
 import type { ProgramReconcilePlan } from "./training.program-reconcile";
 import { ordinaryExternalWeightTonnageKg } from "./training.tonnage";
 import { historicalExerciseStableKey } from "./exercise-mapping-snapshot";
-import { calculateLoadAccountingV1, LOAD_ACCOUNTING_METHOD_V1, LEGACY_LOAD_INTERPRETATION_V1, classifyPersistedExerciseIdentityV1, loadConfigV1Schema, type BodyweightReferenceV1, type IdentityStatusV1, type LoadAccountingOutputV1 } from "./load-accounting-v1";
+import { calculateLoadAccountingWithBreakdownV1, LOAD_ACCOUNTING_METHOD_V1, LEGACY_LOAD_INTERPRETATION_V1, classifyPersistedExerciseIdentityV1, loadConfigV1Schema, type BodyweightReferenceV1, type IdentityStatusV1, type LoadAccountingOutputV1 } from "./load-accounting-v1";
 import { resolveBodyweightReferenceV2, BODYWEIGHT_RESOLUTION_METHOD_V2 } from "./bodyweight-reference-v2";
-import { buildMassResolutionIdentity, PERSISTED_LOAD_ACCOUNTING_PAYLOAD_V1, persistedPayloadFromUnknown, sha256Canonical } from "./persisted-load-accounting-v1";
+import { buildMassResolutionIdentity, isPersistedLoadAccountingPayloadVersion, PERSISTED_LOAD_ACCOUNTING_PAYLOAD_V2, persistedPayloadFromUnknown, sha256Canonical } from "./persisted-load-accounting-v1";
 import { rebaseCurrentAccountingSnapshotTimestamp } from "./rebase-current-accounting-snapshot";
 import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
 import { sessionPlanCompletion } from "./session-plan-completion";
@@ -238,9 +238,9 @@ function currentSnapshotForRecord(record: SessionDetailRecord): {
   if (!snapshot || snapshot.snapshotRevision !== record.currentSnapshotRevision) {
     return { state: "stale", payload: null };
   }
-  const payload = snapshot.payloadVersion === PERSISTED_LOAD_ACCOUNTING_PAYLOAD_V1
+  const payload = isPersistedLoadAccountingPayloadVersion(snapshot.payloadVersion)
     ? persistedPayloadFromUnknown(snapshot.payload) : null;
-  if (!payload) return { state: "stale", payload: null };
+  if (!payload || payload.schemaVersion !== snapshot.payloadVersion) return { state: "stale", payload: null };
   const timeZone = record.accountingTimeZone ?? DEFAULT_TIME_ZONE;
   const timeZoneProvenance = record.accountingTimeZoneProvenance ?? "legacy-default";
   if (!isValidTimeZone(timeZone)) return { state: "stale", payload: null };
@@ -537,7 +537,8 @@ function calculateSessionLoadAccounting(
   localDate: string,
   bodyweightReference: BodyweightReferenceV1,
 ) {
-  return calculateLoadAccountingV1({
+  return calculateLoadAccountingWithBreakdownV1({
+    sessionId: record.id,
     localDate,
     bodyweightReference,
     exercises: record.exercises.map((exercise) => {
@@ -566,6 +567,9 @@ function calculateSessionLoadAccounting(
         }
         : undefined;
       return {
+        sessionExerciseId: exercise.id,
+        exerciseOrder: exercise.sortOrder,
+        exerciseName: exercise.snapshotExerciseName,
         identity: { status: identity, stableKey },
         resistanceHint: exercise.resistanceType === "RESISTANCE_BAND" ? "band-nominal" as const
           : exercise.resistanceType === "BODYWEIGHT" ? "bodyweight" as const
@@ -573,6 +577,8 @@ function calculateSessionLoadAccounting(
         configSnapshot: configValue,
         configProvenance: provenance,
         sets: exercise.sets.map((set) => ({
+          strengthSetId: set.id,
+          setNumber: set.setNumber,
           reps: set.reps,
           weightKg: decimalToNumber(set.weightKg),
           bandNominalResistanceKg: decimalToNumber(set.bandNominalResistanceKg),
@@ -591,6 +597,7 @@ export function toSessionDto(
   },
   loadAccountingV1?: LoadAccountingOutputV1,
   materializationState: "current" | "missing" | "pending" | "stale" = "missing",
+  loadAccountingBreakdown?: StrengthSessionDto["loadAccountingBreakdown"],
 ): StrengthSessionDto {
   const exercises = record.exercises.map(toSessionExerciseDto);
   const tonnageSets = exercises.flatMap((exercise) =>
@@ -624,6 +631,7 @@ export function toSessionDto(
     exercises,
     ordinaryTonnageKg: ordinaryExternalWeightTonnageKg(tonnageSets),
     loadAccountingV1,
+    ...(loadAccountingBreakdown ? { loadAccountingBreakdown } : {}),
     materializationState,
     autoAdvanceExercises: record.profile?.autoAdvanceExercises ?? false,
     ...planCompletionFields(exercises),
@@ -646,11 +654,18 @@ async function toSessionDtoWithHistoricalMass(
 ): Promise<StrengthSessionDto> {
   const massContext = await loadHistoricalMassContext(db, record);
   const snapshot = currentSnapshotForRecord(record);
+  const payload = snapshot.state === "current" ? snapshot.payload : null;
+  const breakdown = payload && "breakdown" in payload
+    ? { status: "available" as const, value: payload.breakdown }
+    : payload
+      ? { status: "unavailable" as const, reason: "legacy-snapshot-no-breakdown" as const }
+      : undefined;
   return toSessionDto(
     record,
     massContext,
-    snapshot.state === "current" ? snapshot.payload?.result : undefined,
+    payload?.result,
     snapshot.state,
+    breakdown,
   );
 }
 
@@ -1278,9 +1293,10 @@ export class TrainingRepository {
         select: { payloadVersion: true, payload: true },
       });
       for (const candidate of previous) {
-        if (candidate.payloadVersion !== PERSISTED_LOAD_ACCOUNTING_PAYLOAD_V1) continue;
+        if (!isPersistedLoadAccountingPayloadVersion(candidate.payloadVersion)) continue;
         const parsed = persistedPayloadFromUnknown(candidate.payload);
-        if (parsed && parsed.massReference.status !== "unavailable") {
+        if (parsed && parsed.schemaVersion === candidate.payloadVersion
+            && parsed.massReference.status !== "unavailable") {
           massReference = parsed.massReference;
           break;
         }
@@ -1295,7 +1311,9 @@ export class TrainingRepository {
       );
     }
 
-    const result = calculateSessionLoadAccounting(record, localDate, massReference);
+    const accounting = calculateSessionLoadAccounting(record, localDate, massReference);
+    const result = accounting.result;
+    const breakdown = accounting.breakdown;
     const massResolutionIdentity = buildMassResolutionIdentity({
       localDate,
       timeZone,
@@ -1428,7 +1446,7 @@ export class TrainingRepository {
       });
       const snapshotRevision = (aggregate._max.snapshotRevision ?? 0) + 1;
       const payload = {
-        schemaVersion: PERSISTED_LOAD_ACCOUNTING_PAYLOAD_V1,
+        schemaVersion: PERSISTED_LOAD_ACCOUNTING_PAYLOAD_V2,
         sessionId: record.id,
         snapshotRevision,
         accountingInputRevision: record.accountingInputRevision,
@@ -1442,6 +1460,7 @@ export class TrainingRepository {
         massResolutionIdentity,
         massReference,
         result,
+        breakdown,
       };
       const parsedPayload = persistedPayloadFromUnknown(payload);
       if (!parsedPayload) throw new Error("generated Stage 02 payload failed strict validation");
@@ -1458,7 +1477,7 @@ export class TrainingRepository {
           accountingMethodVersion: LOAD_ACCOUNTING_METHOD_V1,
           massResolutionMethodVersion: BODYWEIGHT_RESOLUTION_METHOD_V2,
           massResolutionIdentity,
-          payloadVersion: PERSISTED_LOAD_ACCOUNTING_PAYLOAD_V1,
+          payloadVersion: PERSISTED_LOAD_ACCOUNTING_PAYLOAD_V2,
           payload: JSON.parse(JSON.stringify(parsedPayload)) as Prisma.InputJsonValue,
         },
       });

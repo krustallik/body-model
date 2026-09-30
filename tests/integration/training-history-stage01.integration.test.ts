@@ -296,11 +296,11 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
         where: { sessionId: synthetic.id, snapshotRevision: persistedResult.snapshotRevision },
         select: { payload: true, payloadVersion: true },
       });
-      expect(persistedSnapshot.payloadVersion).toBe("bodycast-persisted-load-accounting-v1");
-      const payload = persistedSnapshot.payload as {
-        result: typeof persistedResult.loadAccountingV1;
-        massReference: { status: string; valueKg: number | null; source: string | null };
-      };
+      const { persistedPayloadFromUnknown, PERSISTED_LOAD_ACCOUNTING_PAYLOAD_V2 } =
+        await import("../../src/modules/training/persisted-load-accounting-v1");
+      expect(persistedSnapshot.payloadVersion).toBe(PERSISTED_LOAD_ACCOUNTING_PAYLOAD_V2);
+      const payload = persistedPayloadFromUnknown(persistedSnapshot.payload);
+      if (!payload || !("breakdown" in payload)) throw new Error("persisted golden snapshot is missing strict V2 breakdown");
       expect(payload.result?.externalLoadVolume.value).toBe(expectedSession.side === "pull"
         ? STAGE01_GOLDEN_TOTALS_V1.pullExternalKgReps : STAGE01_GOLDEN_TOTALS_V1.pushExternalKgReps);
       expect(payload.result?.externalLoadVolume.availability).toBe("available");
@@ -332,7 +332,98 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
           kind: "bodyweight-observation", version: "apple-health-shortcut", localDate: "2026-09-24",
         }));
       }
+      const persistedExercises = await db.strengthSessionExercise.findMany({
+        where: { sessionId: synthetic.id },
+        select: {
+          id: true, sortOrder: true, snapshotExerciseName: true,
+          sets: { select: { id: true, setNumber: true, reps: true } },
+        },
+      });
+      expect(payload.breakdown.rows).toHaveLength(persistedExercises.reduce((total, exercise) => total + exercise.sets.length, 0));
+      for (const row of payload.breakdown.rows) {
+        const exercise = persistedExercises.find(({ id }) => id === row.sessionExerciseId);
+        const set = exercise?.sets.find(({ id }) => id === row.strengthSetId);
+        if (!exercise || !set) throw new Error("breakdown row does not point to persisted exercise/set");
+        const fixtureRow = expectedSession.rows.find((candidate) =>
+          candidate[1] === exercise.sortOrder && candidate[2] === set.setNumber);
+        expect(fixtureRow).toBeDefined();
+        expect([row.exerciseOrder, row.exerciseName, row.setNumber, row.scalarReps])
+          .toEqual([exercise.sortOrder, exercise.snapshotExerciseName, set.setNumber, set.reps]);
+        expect(row.stableKey).toBe(fixtureRow?.[0] ?? null);
+        expect(row.accountingMethodVersion).toBe(payload.accountingMethodVersion);
+        expect(row.config.resolved).not.toBeNull();
+        expect(row.config.provenance).toMatchObject({
+          kind: "legacy-interpretation",
+          version: "bodycast-historical-load-entry-v1",
+          stableKey: fixtureRow?.[0],
+        });
+        const expectedCategory = fixtureRow?.[6] === "band-nominal-per-logged-side"
+          ? "bandNominalPerLoggedSide"
+          : fixtureRow?.[6] === "bodyweight-reference-separate"
+            ? "bodyweightReferenceVolume" : "externalLoadVolume";
+        const contribution = row.contributions.find(({ category }) => category === expectedCategory);
+        expect(contribution).toBeDefined();
+        expect(contribution?.availability).toBe(expectedCategory === "bodyweightReferenceVolume"
+          && payload.result.bodyweight.referenceVolume.availability === "unavailable"
+          ? "unavailable" : "available");
+        expect(contribution?.basis).toBe(row.config.resolved?.loadInput);
+        expect(contribution?.provenance).toContainEqual(expect.objectContaining({
+          kind: "legacy-interpretation",
+          version: "bodycast-historical-load-entry-v1",
+        }));
+      }
+      const categoryTotal = (category: string) => payload.breakdown.rows
+        .flatMap((row) => row.contributions)
+        .filter((contribution) => contribution.category === category && contribution.availability === "available")
+        .reduce((total, contribution) => total + (contribution.value ?? 0), 0);
+      expect(categoryTotal("externalLoadVolume")).toBe(expectedSession.side === "pull"
+        ? STAGE01_GOLDEN_TOTALS_V1.pullExternalKgReps : STAGE01_GOLDEN_TOTALS_V1.pushExternalKgReps);
+      expect(categoryTotal("bandNominalPerLoggedSide")).toBeCloseTo(expectedSession.side === "pull"
+        ? STAGE01_GOLDEN_TOTALS_V1.pullBandNominalPerLoggedSideKgReps
+        : STAGE01_GOLDEN_TOTALS_V1.pushBandNominalPerLoggedSideKgReps, 10);
+      if (expectedSession.side === "pull") {
+        const hyperRows = payload.breakdown.rows.filter(({ stableKey }) => stableKey === "hyperextension");
+        expect(hyperRows.reduce((sum, row) => sum + (row.contributions.find(({ category }) =>
+          category === "externalLoadVolume")?.value ?? 0), 0)).toBe(STAGE01_GOLDEN_TOTALS_V1.hyperextensionKgReps);
+        for (const row of hyperRows) {
+          expect(row.config.effective).toMatchObject({
+            repsMeaning: "per-movement",
+            implementsPerMovement: 1,
+            configVersion: "bodycast-historical-load-entry-v1",
+          });
+          expect(row.mechanics).toMatchObject({ implementsPerMovement: 1, effectiveMultiplier: 1 });
+          expect(row.contributions).toContainEqual(expect.objectContaining({
+            category: "externalLoadVolume",
+            basis: "per-implement-kg",
+            effectiveMultiplier: 1,
+            availability: "available",
+          }));
+        }
+        const pullUpRows = payload.breakdown.rows.filter(({ stableKey }) => stableKey === "pull_up");
+        expect(pullUpRows.reduce((sum, row) => sum + (row.contributions.find(({ category }) =>
+          category === "bodyweightReferenceVolume")?.value ?? 0), 0))
+          .toBe(STAGE01_GOLDEN_TOTALS_V1.pullUpReferenceKgReps);
+        if (payload.massReference.status !== "observed") throw new Error("golden pull snapshot mass is not observed");
+        expect(payload.massReference).toMatchObject({ status: "observed", valueKg: 87, source: "apple-health-shortcut" });
+        for (const row of pullUpRows) {
+          expect(row.contributions).toContainEqual(expect.objectContaining({
+            category: "bodyweightReferenceVolume",
+            basis: "bodyweight-reference",
+            unit: "bodyweight-reference-kg-repetitions",
+            availability: "available",
+            provenance: expect.arrayContaining([expect.objectContaining({
+              kind: "bodyweight-observation",
+              sourceId: payload.massReference.sourceId,
+              localDate: "2026-09-24",
+            })]),
+          }));
+        }
+      }
       const reread = await service.getSession(synthetic.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      expect(reread?.loadAccountingBreakdown).toMatchObject({
+        status: "available",
+        value: { schemaVersion: "bodycast-load-accounting-breakdown-v1" },
+      });
       expect(reread?.loadAccountingV1?.externalLoadVolume.value).toBe(payload.result?.externalLoadVolume.value);
       expect(reread?.loadAccountingV1?.bandNominalIndex.perLoggedSide.value).toBe(payload.result?.bandNominalIndex.perLoggedSide.value);
       await service.finishSession(synthetic.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
@@ -341,6 +432,90 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       if (syntheticSessionIds.length > 0) await db.strengthDiarySession.deleteMany({ where: { id: { in: syntheticSessionIds } } });
       if (syntheticProgramIds.length > 0) await db.trainingProgram.deleteMany({ where: { id: { in: syntheticProgramIds } } });
       if (pullObservationId !== null) await db.healthMetricSample.deleteMany({ where: { id: pullObservationId } });
+    }
+  });
+
+  it("reads a legacy V1 current snapshot without inventing a breakdown", async () => {
+    const db = prisma!;
+    let programId: number | null = null;
+    let sessionId: number | null = null;
+    try {
+      const { TrainingService } = await import("../../src/modules/training/training.service");
+      const { PERSISTED_LOAD_ACCOUNTING_PAYLOAD_V1 } = await import("../../src/modules/training/persisted-load-accounting-v1");
+      const service = new TrainingService(db);
+      const catalog = await db.exerciseCatalog.findUniqueOrThrow({
+        where: { profileId_stableKey: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID, stableKey: "flat_dumbbell_fly" } },
+        select: { id: true },
+      });
+      const program = await service.createProgram({
+        name: "stage02-legacy-breakdown-read",
+        exercises: [{ catalogId: catalog.id, plannedSets: 1, resistanceType: "EXTERNAL_WEIGHT" }],
+      }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      programId = program.id;
+      const session = await service.startSession(program.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      sessionId = session.id;
+      await service.createSet(session.id, session.exercises[0]!.id, { reps: 8, weightKg: 10 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      const materialized = await service.materializeSessionAccounting(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      const snapshot = await db.strengthSessionAccountingSnapshot.findFirstOrThrow({
+        where: { sessionId: session.id, snapshotRevision: materialized.snapshotRevision },
+        select: {
+          snapshotRevision: true,
+          accountingInputRevision: true,
+          inputFingerprint: true,
+          effectiveLocalDate: true,
+          timeZone: true,
+          timeZoneProvenance: true,
+          accountingMethodVersion: true,
+          massResolutionMethodVersion: true,
+          massResolutionIdentity: true,
+          payloadVersion: true,
+          payload: true,
+        },
+      });
+      const rawPayload = snapshot.payload as Record<string, unknown>;
+      const legacyRevision = snapshot.snapshotRevision + 1;
+      const legacyPayload: Record<string, unknown> = Object.fromEntries(
+        Object.entries(rawPayload).filter(([key]) => key !== "breakdown"),
+      );
+      legacyPayload.schemaVersion = PERSISTED_LOAD_ACCOUNTING_PAYLOAD_V1;
+      legacyPayload.snapshotRevision = legacyRevision;
+      await db.strengthSessionAccountingSnapshot.create({
+        data: {
+          sessionId: session.id,
+          snapshotRevision: legacyRevision,
+          accountingInputRevision: snapshot.accountingInputRevision,
+          inputFingerprint: snapshot.inputFingerprint,
+          effectiveLocalDate: snapshot.effectiveLocalDate,
+          timeZone: snapshot.timeZone,
+          timeZoneProvenance: snapshot.timeZoneProvenance,
+          accountingMethodVersion: snapshot.accountingMethodVersion,
+          massResolutionMethodVersion: snapshot.massResolutionMethodVersion,
+          massResolutionIdentity: snapshot.massResolutionIdentity,
+          payloadVersion: PERSISTED_LOAD_ACCOUNTING_PAYLOAD_V1,
+          payload: legacyPayload as Prisma.InputJsonValue,
+        },
+      });
+      await db.strengthDiarySession.update({
+        where: { id: session.id },
+        data: { currentSnapshotRevision: legacyRevision },
+      });
+      const originalSnapshot = await db.strengthSessionAccountingSnapshot.findUniqueOrThrow({
+        where: { sessionId_snapshotRevision: { sessionId: session.id, snapshotRevision: snapshot.snapshotRevision } },
+        select: { payloadVersion: true, payload: true },
+      });
+      expect(originalSnapshot.payloadVersion).toBe("bodycast-persisted-load-accounting-v2");
+      expect(originalSnapshot.payload).toEqual(rawPayload);
+
+      const read = await service.getSession(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      expect(read?.materializationState).toBe("current");
+      expect(read?.loadAccountingV1?.externalLoadVolume.value).toBe(160);
+      expect(read?.loadAccountingBreakdown).toEqual({
+        status: "unavailable",
+        reason: "legacy-snapshot-no-breakdown",
+      });
+    } finally {
+      if (sessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: sessionId } });
+      if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });
     }
   });
 
@@ -754,7 +929,26 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
         select: { payload: true },
       });
       expect((snapshot.payload as { result: { externalLoadVolume: { value: number } } }).result.externalLoadVolume.value).toBe(220);
+      const { persistedPayloadFromUnknown } = await import("../../src/modules/training/persisted-load-accounting-v1");
+      const parsedSnapshot = persistedPayloadFromUnknown(snapshot.payload);
+      if (!parsedSnapshot || !("breakdown" in parsedSnapshot)) throw new Error("asymmetric snapshot is missing breakdown");
+      const breakdownRow = parsedSnapshot.breakdown.rows.find(({ strengthSetId }) => strengthSetId === set.id);
+      expect(breakdownRow).toMatchObject({
+        scalarReps: 12,
+        effectiveReps: 22,
+        asymmetricReps: { left: 12, right: 10 },
+        enteredLoad: { externalKg: 10 },
+        contributions: [expect.objectContaining({
+          category: "externalLoadVolume",
+          basis: "per-implement-kg",
+          value: 220,
+          effectiveMultiplier: 1,
+          availability: "available",
+          provenance: [expect.objectContaining({ kind: "set-override" })],
+        })],
+      });
       expect((await service.getSession(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID))?.exercises[0]?.sets[0]?.reps).toBe(12);
+      expect((await service.getSession(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID))?.loadAccountingBreakdown?.status).toBe("available");
     } finally {
       if (sessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: sessionId } });
       if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });

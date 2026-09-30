@@ -3,7 +3,7 @@ import { BODYWEIGHT_RESOLUTION_METHOD_V2 } from "./bodyweight-reference-v2";
 import { LOAD_ACCOUNTING_METHOD_V1 } from "./load-accounting-v1";
 import {
   buildMassResolutionIdentity,
-  PERSISTED_LOAD_ACCOUNTING_PAYLOAD_V1,
+  isPersistedLoadAccountingPayloadVersion,
   persistedPayloadFromUnknown,
 } from "./persisted-load-accounting-v1";
 
@@ -44,17 +44,20 @@ export async function rebaseCurrentAccountingSnapshotTimestamp(
       },
     },
   });
-  const payload = current?.payloadVersion === PERSISTED_LOAD_ACCOUNTING_PAYLOAD_V1
+  const payload = current && isPersistedLoadAccountingPayloadVersion(current.payloadVersion)
     ? persistedPayloadFromUnknown(current.payload)
     : null;
-  const currentMassIdentity = payload ? buildMassResolutionIdentity({
-    localDate: input.effectiveLocalDate,
-    timeZone: input.timeZone,
-    methodVersion: BODYWEIGHT_RESOLUTION_METHOD_V2,
-    reference: payload.massReference,
-  }) : null;
+  const currentMassIdentity = payload && current?.payloadVersion === payload.schemaVersion
+    ? buildMassResolutionIdentity({
+      localDate: input.effectiveLocalDate,
+      timeZone: input.timeZone,
+      methodVersion: BODYWEIGHT_RESOLUTION_METHOD_V2,
+      reference: payload.massReference,
+    })
+    : null;
   const isCurrent = current !== null
     && payload !== null
+    && current.payloadVersion === payload.schemaVersion
     && current.snapshotRevision === session.currentSnapshotRevision
     && current.accountingInputRevision === session.accountingInputRevision
     && payload.sessionId === input.sessionId

@@ -7,7 +7,7 @@ import type {
   ResistanceType,
   SessionStatus,
 } from "./training.constants";
-import type { LoadAccountingOutputV1 } from "./load-accounting-v1";
+import type { LoadAccountingBreakdownV1, LoadAccountingOutputV1 } from "./load-accounting-v1";
 
 export type ExerciseCatalogDto = {
   id: number;
@@ -153,6 +153,10 @@ export type StrengthSessionDto = {
   /** Whether the persisted Stage 02 result matches the current accounting inputs. */
   materializationState?: "current" | "missing" | "pending" | "stale";
   loadAccountingV1?: LoadAccountingOutputV1;
+  /** Persisted Stage 02 rows; legacy aggregate snapshots report an explicit unavailable state. */
+  loadAccountingBreakdown?:
+    | { status: "available"; value: LoadAccountingBreakdownV1 }
+    | { status: "unavailable"; reason: "legacy-snapshot-no-breakdown" };
   autoAdvanceExercises?: boolean;
   loggedSets?: number;
   plannedSets?: number;

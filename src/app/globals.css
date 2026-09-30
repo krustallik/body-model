@@ -59,7 +59,6 @@
   --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--focus);
   --shadow: rgb(0 0 0 / 28%);
   --bodycast-cursor: url("/bodycast-cursor.png") 3 2, auto;
-  --bodycast-cursor-interactive: pointer;
 
   /* Shared page shell for the main data and planning screens. */
   --app-page-max-width: 110rem;
@@ -128,33 +127,14 @@ textarea {
   font: inherit;
 }
 
-/* Semantic controls keep a pointer fallback until fine-pointer devices opt into the branded interactive cursor below. */
+/* Use the same luminous pointer throughout the app, including interactive controls. */
+html body,
+html body * {
+  cursor: var(--bodycast-cursor) !important;
+}
+
+/* Keep the native text-entry affordance and meaningful unavailable/loading states. */
 html body :is(
-  a[href], area[href], button, summary, select,
-  input[type="button"], input[type="submit"], input[type="reset"],
-  input[type="checkbox"], input[type="radio"], input[type="range"],
-  input[type="color"], input[type="file"], input[type="image"],
-  [role="button"], [role="link"], [role="tab"], [role="menuitem"],
-  [role="menuitemcheckbox"], [role="menuitemradio"], [role="option"],
-  [role="checkbox"], [role="radio"], [role="switch"], [role="treeitem"],
-  [role="combobox"], [role="slider"]
-):not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]) {
-  cursor: var(--bodycast-cursor-interactive) !important;
-}
-
-/* Keep the branded cursor on desktop information surfaces only. Touch has no desktop cursor artwork. */
-@media (hover: hover) and (pointer: fine) {
-  :root {
-    --bodycast-cursor-interactive: url("/bodycast-cursor-interactive.svg") 3 2, pointer;
-  }
-  html body,
-  html body * {
-    cursor: var(--bodycast-cursor) !important;
-  }
-}
-
-/* Preserve text entry and let disabled/busy states override even text inputs. */
-html body :where(
   input:not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]):not([type="image"]),
   textarea,
   [contenteditable]:not([contenteditable="false"]),

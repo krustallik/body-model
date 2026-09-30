@@ -420,29 +420,10 @@ describe("Live training session mobile UI", () => {
     });
   });
 
-  it("saves asymmetric side reps as an override while keeping scalar reps unchanged", async () => {
+  it("keeps ordinary set entry scalar and hides asymmetric side controls", async () => {
     const user = userEvent.setup();
     const posted: Record<string, unknown>[] = [];
-    const configured = buildSession({
-      exercises: buildSession().exercises.map((exercise, index) => index === 0
-        ? {
-          ...exercise,
-          loadAccountingConfigSnapshot: {
-            schemaVersion: 1,
-            configVersion: "test-dumbbell",
-            inventoryCount: 2,
-            loadedSides: 2,
-            execution: "simultaneous",
-            equipment: { equipmentId: "dumbbell", setupId: "pair" },
-            accountingKind: "external-per-implement-per-side",
-            resistanceType: "external",
-            loadInput: "per-implement-kg",
-            repsMeaning: "per-side",
-          },
-        }
-        : exercise),
-    });
-    stubSessionFetch(configured, (url, init) => {
+    stubSessionFetch(buildSession(), (url, init) => {
       if (init?.method === "POST" && url.includes("/sets")) {
         posted.push(JSON.parse(String(init.body)) as Record<string, unknown>);
         return Response.json({ set: { id: 99 } }, { status: 201 });
@@ -453,16 +434,15 @@ describe("Live training session mobile UI", () => {
     await waitFor(() => expect(activePane().getByLabelText("Вага, кг")).toBeTruthy());
     await user.type(activePane().getByLabelText("Вага, кг"), "10");
     await user.type(activePane().getByLabelText("Повтори"), "12");
-    await user.click(activePane().getByText("Різні повтори для сторін (опційно)"));
-    await user.type(activePane().getByLabelText("Ліва сторона"), "12");
-    await user.type(activePane().getByLabelText("Права сторона"), "10");
+    expect(activePane().queryByLabelText(/Ліва сторона|Права сторона/)).toBeNull();
+    expect(activePane().queryByText(/Різні повтори для сторін|asymmetric reps/i)).toBeNull();
     await user.click(screen.getByRole("button", { name: "Додати підхід" }));
     await waitFor(() => expect(posted).toHaveLength(1));
     expect(posted[0]).toMatchObject({
       reps: 12,
       weightKg: 10,
-      loadAccountingOverride: { reps: { kind: "asymmetric-per-side", left: 12, right: 10 } },
     });
+    expect(posted[0]).not.toHaveProperty("loadAccountingOverride");
   });
 
   it("loads accounting from session GET, materializes missing snapshots ordinarily, and refreshes explicitly", async () => {

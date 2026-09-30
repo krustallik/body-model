@@ -28,43 +28,63 @@ function availabilityLabel(value: "available" | "partial" | "unavailable", uk: b
   return uk ? "Недоступно" : "Unavailable";
 }
 
-function MetricCard<Unit extends string>({
+type SummaryMetric = Pick<LoadMetricV1<string>, "value" | "availability" | "coverage">;
+type DisplayContribution = Omit<LoadAccountingBreakdownContributionV1, "availability"> & {
+  availability: "available" | "partial" | "unavailable";
+};
+
+function combinedBandMetric(accounting: LoadAccountingOutputV1): SummaryMetric {
+  const logged = accounting.bandNominalIndex.perLoggedSide;
+  const left = accounting.bandNominalIndex.leftSide;
+  const right = accounting.bandNominalIndex.rightSide;
+  const streams = [logged, left, right];
+  const eligibleRows = Math.max(...streams.map((metric) => metric.coverage.eligibleRows));
+  const accountedRows = Math.min(
+    eligibleRows,
+    logged.coverage.accountedRows + Math.max(left.coverage.accountedRows, right.coverage.accountedRows),
+  );
+  const values = streams.flatMap((metric) => metric.value === null ? [] : [metric.value]);
+  const value = values.length ? values.reduce((total, part) => total + part, 0) : null;
+  const omittedRows = Math.max(0, eligibleRows - accountedRows);
+  return {
+    value,
+    availability: accountedRows === 0 ? "unavailable" : omittedRows > 0 ? "partial" : "available",
+    coverage: { eligibleRows, accountedRows, omittedRows, omittedReasons: {} },
+  };
+}
+
+function MetricCard({
   label,
   metric,
+  unit,
+  tone,
   uk,
 }: {
   label: string;
-  metric: LoadMetricV1<Unit>;
+  metric: SummaryMetric;
+  unit: string;
+  tone: "external" | "bands" | "bodyweight";
   uk: boolean;
 }) {
-  const unitText = metric.unit === "kg-repetitions" ? (uk ? "кг × повтори" : "kg × reps")
-    : metric.unit === "nominal-kg-repetitions-per-logged-side" ? (uk ? "номінальні кг × повтори на записану сторону" : "nominal kg × reps per logged side")
-      : metric.unit === "nominal-kg-repetitions-per-side" ? (uk ? "номінальні кг × повтори на сторону" : "nominal kg × reps per side")
-        : metric.unit === "bodyweight-reference-kg-repetitions" ? (uk ? "кг референсу × повтори" : "reference kg × reps")
-          : metric.unit === "sets" ? (uk ? "підходів" : "sets")
-            : metric.unit === "repetitions" ? (uk ? "повторень" : "reps") : metric.unit;
   return (
-    <article className={styles.accountingMetric}>
+    <article className={styles.accountingMetric} data-tone={tone}>
       <div className={styles.accountingMetricHead}>
+        <span className={styles.accountingMetricMark} aria-hidden="true" />
         <h3>{label}</h3>
         <span className={styles.accountingAvailability} data-state={metric.availability}>
           {availabilityLabel(metric.availability, uk)}
         </span>
       </div>
-      <p className={styles.accountingMetricValue}>
-        {metric.value === null ? (uk ? "Немає значення" : "No value") : numberText(metric.value, uk)}
-      </p>
-      <p className={styles.accountingMetricUnit}>{unitText}</p>
+      <div className={styles.accountingMetricValue}>
+        <strong>{metric.value === null ? (uk ? "Немає значення" : "No value") : numberText(metric.value, uk)}</strong>
+        <span>{unit}</span>
+      </div>
       <p className={styles.accountingMetricCoverage}>
-        {uk ? "Покриття" : "Coverage"}: {metric.coverage.accountedRows}/{metric.coverage.eligibleRows}
-        {metric.coverage.omittedRows > 0
-          ? ` · ${uk ? "пропущено" : "omitted"} ${metric.coverage.omittedRows}`
-          : ""}
+        {uk ? "Враховано підходів" : "Sets counted"}: {metric.coverage.accountedRows}/{metric.coverage.eligibleRows}
       </p>
     </article>
   );
 }
-
 function bodyweightDescription(accounting: LoadAccountingOutputV1, uk: boolean): string {
   const ref = accounting.bodyweight.reference;
   if (ref.status === "unavailable") {
@@ -88,12 +108,12 @@ function bodyweightDescription(accounting: LoadAccountingOutputV1, uk: boolean):
 function categoryLabel(category: LoadAccountingBreakdownContributionV1["category"], uk: boolean): string {
   const labels: Record<LoadAccountingBreakdownContributionV1["category"], [string, string]> = {
     externalLoadVolume: ["Зовнішнє навантаження", "External load"],
-    bandNominalPerLoggedSide: ["Резинка · записана сторона", "Band · logged side"],
-    bandNominalLeftSide: ["Резинка · ліва сторона", "Band · left side"],
-    bandNominalRightSide: ["Резинка · права сторона", "Band · right side"],
+    bandNominalPerLoggedSide: ["Обсяг резинок", "Band nominal volume"],
+    bandNominalLeftSide: ["Обсяг резинок", "Band nominal volume"],
+    bandNominalRightSide: ["Обсяг резинок", "Band nominal volume"],
     bodyweightSets: ["Підходи з власною вагою", "Bodyweight sets"],
     bodyweightRepetitions: ["Повторення з власною вагою", "Bodyweight repetitions"],
-    bodyweightReferenceVolume: ["Обсяг за референсом маси", "Bodyweight reference volume"],
+    bodyweightReferenceVolume: ["Навантаження власною вагою", "Bodyweight load"],
     additionalLoad: ["Додаткова вага", "Added load"],
     assistanceLoad: ["Допоміжне навантаження", "Assistance load"],
   };
@@ -104,7 +124,7 @@ function basisLabel(basis: LoadAccountingBreakdownContributionV1["basis"], uk: b
   const labels: Record<LoadAccountingBreakdownContributionV1["basis"], [string, string]> = {
     "per-implement-kg": ["кг на снаряд", "kg per implement"],
     "complete-setup-kg": ["кг на всю систему", "kg for complete setup"],
-    "nominal-kg-per-logged-side": ["номінальні кг на записану сторону", "nominal kg per logged side"],
+    "nominal-kg-per-logged-side": ["номінальний опір резинки", "nominal band resistance"],
     "bodyweight-reference": ["референс маси тіла", "bodyweight reference"],
     sets: ["підходи", "sets"],
     repetitions: ["повторення", "repetitions"],
@@ -141,29 +161,31 @@ function provenanceKindLabel(
         : (uk ? "Налаштування підходу" : "Set-specific settings");
 }
 
-function configProvenanceLabel(row: LoadAccountingBreakdownRowV1, uk: boolean): string {
-  const provenance = row.config.provenance;
-  if (!provenance) return uk ? "Походження конфігурації не вказане" : "Configuration provenance not reported";
-  return provenanceKindLabel(provenance, uk);
-}
-
 function contributionProvenanceLabel(
-  contribution: LoadAccountingBreakdownContributionV1,
+  contribution: DisplayContribution,
   uk: boolean,
+  row: LoadAccountingBreakdownRowV1,
 ): string {
   if (contribution.category === "bodyweightReferenceVolume"
       && contribution.availability === "unavailable"
       && contribution.unavailableReason === "missing-bodyweight-reference") {
     return uk
       ? "Немає доступного історичного вимірювання чи оцінки маси"
-      : "No eligible historical bodyweight measurement or estimate";
+      : "No eligible historical measurement or estimate";
   }
   const labels = contribution.provenance.map((entry) => provenanceKindLabel(entry, uk));
+  const config = row.config.effective;
+  if (contribution.category === "bodyweightReferenceVolume"
+      && config?.resistanceType === "bodyweight"
+      && config.bodyweightFraction < 1) {
+    labels.push(uk
+      ? "приблизний коефіцієнт вправи ≈" + numberText(config.bodyweightFraction * 100, uk) + "%"
+      : "approximate exercise share ≈" + numberText(config.bodyweightFraction * 100, uk) + "%");
+  }
   return labels.length
     ? [...new Set(labels)].join(" · ")
     : (uk ? "Джерело внеску не вказане" : "Contribution source not reported");
 }
-
 function unavailableReasonLabel(
   reason: LoadAccountingBreakdownContributionV1["unavailableReason"],
   uk: boolean,
@@ -184,51 +206,104 @@ function unavailableReasonLabel(
   return labels[reason][uk ? 0 : 1];
 }
 
-function contributionValue(contribution: LoadAccountingBreakdownContributionV1, uk: boolean): string {
+function contributionValue(contribution: DisplayContribution, uk: boolean): string {
   if (contribution.value === null) return uk ? "Недоступно" : "Unavailable";
   const unit = contribution.unit === "kg-repetitions" ? "kg × reps"
-    : contribution.unit === "nominal-kg-repetitions-per-logged-side" ? (uk ? "ном. кг × повтори/сторона" : "nom. kg × reps/side")
-      : contribution.unit === "nominal-kg-repetitions-per-side" ? (uk ? "ном. кг × повтори/сторона" : "nom. kg × reps/side")
-        : contribution.unit === "bodyweight-reference-kg-repetitions" ? (uk ? "кг референсу × повтори" : "reference kg × reps")
+    : contribution.unit === "nominal-kg-repetitions-per-logged-side" ? (uk ? "ном. кг × повтори" : "nominal kg × reps")
+      : contribution.unit === "nominal-kg-repetitions-per-side" ? (uk ? "ном. кг × повтори" : "nominal kg × reps")
+        : contribution.unit === "bodyweight-reference-kg-repetitions" ? (uk ? "кг × повтори" : "kg × reps")
           : contribution.unit;
   return `${numberText(contribution.value, uk)} ${unit}`;
 }
 
-function BreakdownRow({ row, uk }: { row: LoadAccountingBreakdownRowV1; uk: boolean }) {
+function BreakdownRow({
+  row,
+  reference,
+  uk,
+}: {
+  row: LoadAccountingBreakdownRowV1;
+  reference: LoadAccountingOutputV1["bodyweight"]["reference"];
+  uk: boolean;
+}) {
+  const bodyweightConfig = row.config.effective?.resistanceType === "bodyweight"
+    ? row.config.effective
+    : null;
   const loadParts = [
-    row.enteredLoad.externalKg !== null ? `${numberText(row.enteredLoad.externalKg, uk)} ${uk ? "кг" : "kg"}` : null,
-    row.enteredLoad.bandNominalKg !== null ? `${numberText(row.enteredLoad.bandNominalKg, uk)} ${uk ? "кг резинки" : "kg band"}` : null,
+    row.enteredLoad.externalKg !== null ? numberText(row.enteredLoad.externalKg, uk) + (uk ? " кг" : " kg") : null,
+    row.enteredLoad.bandNominalKg !== null ? numberText(row.enteredLoad.bandNominalKg, uk) + (uk ? " кг резинки" : " kg band") : null,
+    bodyweightConfig
+      ? reference.status === "unavailable"
+        ? (uk ? "референс маси недоступний" : "bodyweight reference unavailable")
+        : (uk ? "історичний референс " : "historical reference ") + numberText(reference.valueKg, uk) + (uk ? " кг" : " kg")
+      : null,
   ].filter(Boolean);
-  const asymmetricText = row.asymmetricReps
-    ? `${uk ? "ліворуч" : "left"} ${row.asymmetricReps.left} · ${uk ? "праворуч" : "right"} ${row.asymmetricReps.right}`
-    : null;
-  const mechanicsText = row.mechanics
-    ? `${row.mechanics.loadedSides} ${uk ? "стор." : "sides"} · ×${numberText(row.mechanics.effectiveMultiplier, uk)}`
-    : null;
+
+  const band = row.contributions.filter((item) =>
+    item.category === "bandNominalPerLoggedSide"
+    || item.category === "bandNominalLeftSide"
+    || item.category === "bandNominalRightSide");
+  const other = row.contributions.filter((item) =>
+    item.category !== "bandNominalPerLoggedSide"
+    && item.category !== "bandNominalLeftSide"
+    && item.category !== "bandNominalRightSide"
+    && item.category !== "bodyweightSets"
+    && item.category !== "bodyweightRepetitions"
+    && !((item.category === "additionalLoad" || item.category === "assistanceLoad") && item.value === 0));
+  const applicableBand = band.filter((item) => item.unavailableReason !== "asymmetric-side-breakdown");
+  const availableBand = applicableBand.filter((item) => item.availability === "available" && item.value !== null);
+  const unavailableBand = applicableBand.filter((item) => item.availability === "unavailable");
+  const provenanceByKey = new Map<string, LoadAccountingBreakdownContributionV1["provenance"][number]>();
+  for (const item of band) for (const provenance of item.provenance) {
+    provenanceByKey.set(JSON.stringify(provenance), provenance);
+  }
+  const bandContribution = band.length > 0 ? {
+    ...band[0]!,
+    category: "bandNominalPerLoggedSide" as const,
+    basis: "nominal-kg-per-logged-side" as const,
+    unit: "nominal-kg-repetitions-per-logged-side" as const,
+    value: availableBand.length ? availableBand.reduce((total, item) => total + (item.value ?? 0), 0) : null,
+    availability: availableBand.length === 0 ? "unavailable" as const
+      : unavailableBand.length > 0 ? "partial" as const : "available" as const,
+    unavailableReason: unavailableBand[0]?.unavailableReason ?? null,
+    provenance: [...provenanceByKey.values()],
+  } : null;
+  const contributions: DisplayContribution[] = bandContribution ? [...other, bandContribution] : other;
+  const mechanicsText = bodyweightConfig && bodyweightConfig.bodyweightFraction < 1
+    ? (uk ? "Приблизна частка маси для цього руху · " : "Approximate bodyweight share · ")
+      + numberText(bodyweightConfig.bodyweightFraction * 100, uk) + "%"
+    : row.config.effective?.resistanceType === "external"
+      && row.config.effective.accountingKind === "external-per-implement-per-movement"
+      && row.config.effective.implementsPerMovement > 1
+      ? (uk ? "Снарядів на рух · " : "Implements per movement · ") + row.config.effective.implementsPerMovement
+      : row.config.effective?.resistanceType === "external"
+        && row.config.effective.accountingKind === "external-per-implement-per-side"
+        && row.config.effective.loadedSides > 1
+        ? (uk ? "Враховано навантаження на обох сторонах" : "Both loaded sides counted")
+        : null;
+
   return (
     <article className={styles.accountingBreakdownRow}>
       <div className={styles.accountingBreakdownTitle}>
         <strong>{row.exerciseName}</strong>
-        <span>{uk ? `Підхід ${row.setNumber}` : `Set ${row.setNumber}`}</span>
+        <span>{uk ? "Підхід " + row.setNumber : "Set " + row.setNumber}</span>
       </div>
       <dl className={styles.accountingBreakdownFacts}>
-        <div><dt>{uk ? "Повтори" : "Reps"}</dt><dd>{row.scalarReps ?? (uk ? "н/д" : "n/a")}{asymmetricText ? ` · ${asymmetricText}` : ""}</dd></div>
-        <div><dt>{uk ? "Введене навантаження" : "Entered load"}</dt><dd>{loadParts.length ? loadParts.join(" + ") : (uk ? "не вказане" : "not entered")}</dd></div>
-        {mechanicsText && <div><dt>{uk ? "Сторони / множник" : "Sides / multiplier"}</dt><dd>{mechanicsText}</dd></div>}
-        <div><dt>{uk ? "Джерело налаштування" : "Configuration source"}</dt><dd>{configProvenanceLabel(row, uk)}</dd></div>
+        <div><dt>{uk ? "Повтори" : "Reps"}</dt><dd>{row.scalarReps ?? (uk ? "н/д" : "n/a")}</dd></div>
+        <div><dt>{uk ? "Навантаження / референс" : "Load / reference"}</dt><dd>{loadParts.length ? loadParts.join(" + ") : (uk ? "не вказане" : "not entered")}</dd></div>
       </dl>
+      {mechanicsText && <p className={styles.accountingBreakdownMechanics}>{mechanicsText}</p>}
       <ul className={styles.accountingContributionList}>
-        {row.contributions.map((contribution, index) => (
-          <li key={`${contribution.category}-${index}`}>
+        {contributions.map((contribution, index) => (
+          <li key={contribution.category + "-" + index}>
             <span><strong>{categoryLabel(contribution.category, uk)}</strong><small>{basisLabel(contribution.basis, uk)}</small></span>
             <span className={styles.accountingContributionValue}>
               {contributionValue(contribution, uk)}
               <small>{availabilityLabel(contribution.availability, uk)}
                 {contribution.availability === "unavailable" && unavailableReasonLabel(contribution.unavailableReason, uk)
-                  ? ` · ${unavailableReasonLabel(contribution.unavailableReason, uk)}`
+                  ? " · " + unavailableReasonLabel(contribution.unavailableReason, uk)
                   : ""}
               </small>
-              <small>{uk ? "Джерело внеску" : "Contribution source"}: {contributionProvenanceLabel(contribution, uk)}</small>
+              <small>{uk ? "Джерело внеску" : "Contribution source"}: {contributionProvenanceLabel(contribution, uk, row)}</small>
             </span>
           </li>
         ))}
@@ -236,7 +311,6 @@ function BreakdownRow({ row, uk }: { row: LoadAccountingBreakdownRowV1; uk: bool
     </article>
   );
 }
-
 export function SessionAccountingPanel({ session, uk, onMaterialize, onRefresh, refreshing = false, error = null }: Props) {
   const reportedState = session.materializationState ?? (session.loadAccountingV1 ? "current" : "missing");
   const state = reportedState === "current" && !session.loadAccountingV1 ? "error" : reportedState;
@@ -270,16 +344,28 @@ export function SessionAccountingPanel({ session, uk, onMaterialize, onRefresh, 
         {state === "pending" && <p className={styles.accountingStateHint}>{uk ? "Зачекайте на завершення обробки, потім оновіть дані сесії." : "Wait for processing to finish, then reload the session."}</p>}
         {accounting && (
           <>
-            <div className={styles.accountingMetricGrid}>
-              <MetricCard label={uk ? "Зовнішнє навантаження" : "External-load volume"} metric={accounting.externalLoadVolume} uk={uk} />
-              <MetricCard label={uk ? "Резинка · записана сторона" : "Band nominal · logged side"} metric={accounting.bandNominalIndex.perLoggedSide} uk={uk} />
-              <MetricCard label={uk ? "Резинка · ліва сторона" : "Band nominal · left side"} metric={accounting.bandNominalIndex.leftSide} uk={uk} />
-              <MetricCard label={uk ? "Резинка · права сторона" : "Band nominal · right side"} metric={accounting.bandNominalIndex.rightSide} uk={uk} />
-              <MetricCard label={uk ? "Підходи з власною вагою" : "Bodyweight sets"} metric={accounting.bodyweight.sets} uk={uk} />
-              <MetricCard label={uk ? "Повторення з власною вагою" : "Bodyweight repetitions"} metric={accounting.bodyweight.repetitions} uk={uk} />
-              <MetricCard label={uk ? "Обсяг за референсом маси" : "Bodyweight reference volume"} metric={accounting.bodyweight.referenceVolume} uk={uk} />
-              <MetricCard label={uk ? "Додаткове навантаження" : "Added load"} metric={accounting.additionalLoad} uk={uk} />
-              <MetricCard label={uk ? "Допоміжне навантаження" : "Assistance load"} metric={accounting.assistanceLoad} uk={uk} />
+            <div className={styles.accountingMetricGrid} aria-label={uk ? "Підсумки навантаження" : "Load summary"}>
+              <MetricCard
+                label={uk ? "Зовнішнє навантаження" : "External load"}
+                metric={accounting.externalLoadVolume}
+                unit={uk ? "кг × повтори" : "kg × reps"}
+                tone="external"
+                uk={uk}
+              />
+              <MetricCard
+                label={uk ? "Резинки" : "Bands"}
+                metric={combinedBandMetric(accounting)}
+                unit={uk ? "ном. кг × повтори" : "nominal kg × reps"}
+                tone="bands"
+                uk={uk}
+              />
+              <MetricCard
+                label={uk ? "Власна вага" : "Bodyweight"}
+                metric={accounting.bodyweight.referenceVolume}
+                unit={uk ? "кг × повтори" : "kg × reps"}
+                tone="bodyweight"
+                uk={uk}
+              />
             </div>
             <p className={styles.accountingBodyweightNote}>{bodyweightDescription(accounting, uk)}</p>
             <div className={styles.accountingBreakdown}>
@@ -289,7 +375,7 @@ export function SessionAccountingPanel({ session, uk, onMaterialize, onRefresh, 
                   <div className={styles.accountingBreakdownList}>
                     {breakdown.value.rows.length === 0
                       ? <p className={styles.accountingStateHint}>{uk ? "У знімку немає рядків." : "No rows in this snapshot."}</p>
-                      : breakdown.value.rows.map((row) => <BreakdownRow key={row.strengthSetId} row={row} uk={uk} />)}
+                      : breakdown.value.rows.map((row) => <BreakdownRow key={row.strengthSetId} row={row} reference={accounting.bodyweight.reference} uk={uk} />)}
                   </div>
                 </details>
               ) : breakdown?.status === "unavailable" ? (

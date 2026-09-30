@@ -3075,49 +3075,69 @@ a.editMenuItem + .editMenuDanger {
 .accountingBodyweightNote,
 .accountingError { margin: 0; color: var(--training-text-muted); line-height: 1.5; overflow-wrap: anywhere; }
 .accountingError { color: #ffaaa5; margin-bottom: 0.75rem; }
-.accountingMetricGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.7rem; }
-.accountingMetric {
-  min-width: 0;
+.accountingMetricGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   border: 1px solid var(--training-border);
-  border-radius: 0.9rem;
-  background: color-mix(in srgb, var(--training-elevated) 72%, transparent);
-  padding: 0.85rem;
+  border-radius: 0.85rem;
+  background: var(--training-inset);
+  overflow: hidden;
 }
-.accountingMetric:nth-child(3n + 1) { border-top-color: color-mix(in srgb, #70a9ee 65%, var(--training-border)); }
-.accountingMetric:nth-child(3n + 2) { border-top-color: color-mix(in srgb, #e7b566 65%, var(--training-border)); }
-.accountingMetric:nth-child(3n) { border-top-color: color-mix(in srgb, #b69be8 65%, var(--training-border)); }
-.accountingMetricHead { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.5rem; }
-.accountingMetricHead h3 { margin: 0; font-size: 0.84rem; line-height: 1.35; }
-.accountingAvailability { flex: 0 0 auto; color: var(--training-text-muted); font-size: 0.67rem; font-weight: 700; }
-.accountingAvailability[data-state="partial"] { color: #ffca88; }
-.accountingAvailability[data-state="unavailable"] { color: #b9bfd0; }
-.accountingMetricValue { margin: 0.8rem 0 0; font-size: clamp(1.18rem, 2vw, 1.5rem); font-weight: 750; overflow-wrap: anywhere; }
-.accountingMetricUnit,
-.accountingMetricCoverage { margin: 0.22rem 0 0; color: var(--training-text-muted); font-size: 0.72rem; line-height: 1.4; overflow-wrap: anywhere; }
-.accountingBodyweightNote { margin-top: 0.85rem; border-left: 2px solid #b69be8; padding: 0.15rem 0 0.15rem 0.7rem; }
-.accountingBreakdown { margin-top: 1rem; min-width: 0; }
-.accountingBreakdown details { border-top: 1px solid var(--training-border); padding-top: 0.8rem; }
-.accountingBreakdown summary { cursor: pointer; font-weight: 700; min-height: 2.5rem; display: flex; align-items: center; }
-.accountingBreakdownList { display: grid; gap: 0.65rem; margin-top: 0.7rem; }
-.accountingBreakdownRow { min-width: 0; border: 1px solid var(--training-border); border-radius: 0.8rem; padding: 0.8rem; background: var(--training-elevated); }
-.accountingBreakdownTitle { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.35rem 0.8rem; }
-.accountingBreakdownTitle span { color: var(--training-text-muted); font-size: 0.78rem; }
-.accountingBreakdownFacts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.65rem; margin: 0.7rem 0; }
+.accountingMetric {
+  --accounting-tone: var(--training-primary);
+  min-width: 0;
+  padding: 0.82rem 0.9rem;
+  background: transparent;
+  transition: background var(--training-ease), border-color var(--training-ease);
+}
+.accountingMetric + .accountingMetric { border-left: 1px solid var(--training-border); }
+.accountingMetric[data-tone="external"] { --accounting-tone: var(--training-info-strong); }
+.accountingMetric[data-tone="bands"] { --accounting-tone: #d4a07a; }
+.accountingMetric[data-tone="bodyweight"] { --accounting-tone: var(--training-primary-strong); }
+.accountingMetric:hover { background: color-mix(in srgb, var(--accounting-tone) 8%, transparent); }
+.accountingMetricHead { display: flex; align-items: center; gap: 0.45rem; min-width: 0; }
+.accountingMetricMark { width: 0.5rem; height: 0.5rem; flex: 0 0 auto; border-radius: 50%; background: var(--accounting-tone); }
+.accountingMetricHead h3 { margin: 0; color: var(--training-text-secondary); font-size: 0.8rem; font-weight: 650; line-height: 1.35; }
+.accountingAvailability { margin-left: auto; flex: 0 0 auto; color: var(--training-text-muted); font-size: 0.66rem; font-weight: 700; }
+.accountingAvailability[data-state="partial"] { color: var(--training-warning-strong); }
+.accountingAvailability[data-state="unavailable"] { color: var(--training-text-muted); }
+.accountingMetricValue { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.55rem; margin: 0.48rem 0 0; }
+.accountingMetricValue strong { color: var(--training-text); font-size: clamp(1.3rem, 2.1vw, 1.72rem); font-weight: 720; letter-spacing: -0.035em; line-height: 1.05; overflow-wrap: anywhere; }
+.accountingMetricValue span { color: var(--training-text-muted); font-size: 0.72rem; }
+.accountingMetricCoverage { margin: 0.36rem 0 0; color: var(--training-text-muted); font-size: 0.69rem; line-height: 1.35; }
+.accountingBodyweightNote { margin-top: 0.65rem; border-left: 2px solid #d4a07a; padding: 0.35rem 0.65rem; color: var(--training-text-secondary); background: color-mix(in srgb, #d4a07a 5%, transparent); font-size: 0.75rem; line-height: 1.4; overflow-wrap: anywhere; }
+.accountingBreakdown { margin-top: 0.8rem; min-width: 0; }
+.accountingBreakdown details { border-top: 1px solid var(--training-border); padding-top: 0.55rem; }
+.accountingBreakdown summary { display: flex; align-items: center; justify-content: space-between; gap: 0.65rem; min-height: 2.65rem; cursor: pointer; color: var(--training-text); font-size: 0.86rem; font-weight: 680; transition: color var(--training-ease); }
+.accountingBreakdown summary:hover { color: var(--training-primary-strong); }
+.accountingBreakdown summary:focus-visible { outline: 2px solid var(--training-focus); outline-offset: 3px; border-radius: 0.25rem; }
+.accountingBreakdownCount { display: grid; place-items: center; min-width: 1.55rem; height: 1.55rem; padding: 0 0.25rem; border-radius: 999px; color: var(--training-text-secondary); background: var(--training-elevated); font-size: 0.7rem; }
+.accountingBreakdownList { display: grid; gap: 0.45rem; margin-top: 0.45rem; }
+.accountingBreakdownRow { min-width: 0; border: 1px solid var(--training-border); border-radius: 0.68rem; padding: 0.7rem 0.78rem; background: color-mix(in srgb, var(--training-elevated) 72%, transparent); transition: border-color var(--training-ease), background var(--training-ease); }
+.accountingBreakdownRow:hover { border-color: var(--training-border-strong); background: var(--training-elevated); }
+.accountingBreakdownTitle { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.3rem 0.8rem; }
+.accountingBreakdownTitle strong { min-width: 0; font-size: 0.84rem; overflow-wrap: anywhere; }
+.accountingBreakdownTitle span { color: var(--training-text-muted); font-size: 0.75rem; }
+.accountingBreakdownFacts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.6rem; margin: 0.55rem 0 0.35rem; }
 .accountingBreakdownFacts div { min-width: 0; }
-.accountingBreakdownFacts dt { color: var(--training-text-muted); font-size: 0.69rem; }
-.accountingBreakdownFacts dd { margin: 0.14rem 0 0; overflow-wrap: anywhere; font-size: 0.82rem; }
-.accountingContributionList { list-style: none; display: grid; gap: 0.35rem; margin: 0; padding: 0; }
-.accountingContributionList li { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.8rem; padding-top: 0.45rem; border-top: 1px solid var(--training-border); font-size: 0.78rem; }
+.accountingBreakdownFacts dt { color: var(--training-text-muted); font-size: 0.66rem; }
+.accountingBreakdownFacts dd { margin: 0.12rem 0 0; color: var(--training-text); font-size: 0.79rem; overflow-wrap: anywhere; }
+.accountingBreakdownMechanics { margin: 0.3rem 0 0.48rem; color: var(--training-text-muted); font-size: 0.7rem; overflow-wrap: anywhere; }
+.accountingContributionList { list-style: none; display: grid; gap: 0.32rem; margin: 0; padding: 0; }
+.accountingContributionList li { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.7rem; padding-top: 0.42rem; border-top: 1px solid var(--training-border); font-size: 0.76rem; }
 .accountingContributionList li > span { min-width: 0; }
-.accountingContributionList small { display: block; margin-top: 0.12rem; color: var(--training-text-muted); font-size: 0.68rem; line-height: 1.35; }
+.accountingContributionList small { display: block; margin-top: 0.13rem; color: var(--training-text-muted); font-size: 0.67rem; line-height: 1.38; overflow-wrap: anywhere; }
 .accountingContributionValue { text-align: right; overflow-wrap: anywhere; }
-.accountingRefreshRow { display: flex; flex-wrap: wrap; align-items: center; gap: 0.65rem 0.9rem; margin-top: 1rem; }
-.accountingRefreshRow > span { color: var(--training-text-muted); font-size: 0.74rem; line-height: 1.4; }
+.accountingContributionValue strong { font-size: 0.78rem; font-weight: 680; }
+.accountingRefreshRow { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 0.85rem; margin-top: 0.85rem; }
+.accountingRefreshRow > span { color: var(--training-text-muted); font-size: 0.72rem; line-height: 1.4; }
 .asymmetricEntry { grid-column: 1 / -1; min-width: 0; }
 .asymmetricEntry summary { min-height: 2.5rem; display: flex; align-items: center; cursor: pointer; color: var(--training-text-muted); font-size: 0.82rem; }
 .asymmetricFields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.6rem; }
 .loadConfigEditor { min-width: 0; border-top: 1px solid var(--training-border); padding-top: 0.65rem; }
 .loadConfigToggle { min-height: 2.65rem; padding: 0.4rem 0; border: 0; background: transparent; color: var(--training-primary); text-align: left; font: inherit; font-size: 0.82rem; font-weight: 700; cursor: pointer; }
+.loadConfigToggle:hover { color: var(--training-primary-strong); }
+.loadConfigToggle:focus-visible { outline: 2px solid var(--training-focus); outline-offset: 3px; border-radius: 0.25rem; }
 .loadConfigBody { display: grid; gap: 0.75rem; min-width: 0; padding: 0.15rem 0 0.5rem; }
 .loadConfigFields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.65rem; }
 .loadConfigNote,
@@ -3128,10 +3148,14 @@ a.editMenuItem + .editMenuDanger {
 .loadConfigBody .formActions { flex-wrap: wrap; }
 @media (max-width: 780px) {
   .accountingMetricGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .accountingMetric + .accountingMetric { border-left: 0; }
+  .accountingMetric:nth-child(even) { border-left: 1px solid var(--training-border); }
+  .accountingMetric:nth-child(n + 3) { border-top: 1px solid var(--training-border); }
   .accountingPanel .panelHeader { align-items: flex-start; }
 }
 @media (max-width: 480px) {
   .accountingMetricGrid { grid-template-columns: minmax(0, 1fr); }
+  .accountingMetric + .accountingMetric { border-left: 0; border-top: 1px solid var(--training-border); }
   .accountingMetricHead { align-items: flex-start; }
   .accountingBreakdownFacts { grid-template-columns: minmax(0, 1fr); }
   .accountingContributionList li { gap: 0.45rem; }

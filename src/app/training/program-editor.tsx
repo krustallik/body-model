@@ -299,6 +299,7 @@ export function ProgramEditorClient({
                     key={`${exercise.key}-${exercise.resistanceType}`}
                     catalogId={exercise.catalogId}
                     configuration={catalog.find((item) => item.id === exercise.catalogId)?.loadAccountingConfig}
+                    stableKey={catalog.find((item) => item.id === exercise.catalogId)?.stableKey}
                     resistanceType={exercise.resistanceType}
                     uk={uk}
                     onSaved={(configuration) => {

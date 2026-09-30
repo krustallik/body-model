@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1,
+  CANONICAL_PUSH_UP_CONFIG_VERSION_V1,
   calculateLoadAccountingV1,
   LEGACY_LOAD_CONFIGS_V1,
   loadConfigV1Schema,
@@ -48,6 +50,29 @@ function valueForExercise(rows: readonly Stage01GoldenRowV1[], stableKey: string
 }
 
 describe("Stage 01 literal load accounting golden", () => {
+  it("uses a stable approximate 70% bodyweight assumption for canonical handle push-ups", () => {
+    expect(LEGACY_LOAD_CONFIGS_V1.pushup_handles).toMatchObject({
+      configVersion: CANONICAL_PUSH_UP_CONFIG_VERSION_V1,
+      bodyweightFraction: CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1,
+    });
+    expect(LEGACY_LOAD_CONFIGS_V1.pull_up).toMatchObject({ bodyweightFraction: 1 });
+    const result = calculateLoadAccountingV1({
+      localDate: "2026-09-24",
+      bodyweightReference: {
+        status: "observed", valueKg: 80, localDate: "2026-09-24",
+        source: "apple-health-shortcut", sourceId: "push-up-reference",
+      },
+      exercises: [{
+        identity: identity("pushup_handles"),
+        resistanceHint: "bodyweight",
+        sets: [{ reps: 10, weightKg: null, bandNominalResistanceKg: null }],
+      }],
+    });
+    expect(result.bodyweight.referenceVolume.value).toBe(560);
+    expect(result.bodyweight.referenceVolume.availability).toBe("available");
+    expect(result.bodyweight.referenceVolume.unit).toBe("bodyweight-reference-kg-repetitions");
+  });
+
   it("preserves exact fixture rows and per-exercise external values", () => {
     expect(STAGE01_PULL_ROWS_V1).toHaveLength(21);
     expect(STAGE01_PUSH_ROWS_V1).toHaveLength(20);

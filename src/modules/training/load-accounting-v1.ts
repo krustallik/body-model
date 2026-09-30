@@ -4,6 +4,8 @@ import { CANONICAL_EXERCISE_IDENTITIES } from "./canonical-exercise-identity";
 
 export const LOAD_ACCOUNTING_METHOD_V1 = "bodycast-load-accounting-v1" as const;
 export const LEGACY_LOAD_INTERPRETATION_V1 = "bodycast-historical-load-entry-v1" as const;
+export const CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1 = 0.7 as const;
+export const CANONICAL_PUSH_UP_CONFIG_VERSION_V1 = "bodycast-push-up-load-approx-v1" as const;
 
 const baseShape = {
   schemaVersion: z.literal(1),
@@ -253,14 +255,19 @@ function legacyBand(setupId: string): LoadConfigV1 {
   };
 }
 
-function legacyBodyweight(equipmentId: string, setupId: string): LoadConfigV1 {
+function legacyBodyweight(
+  equipmentId: string,
+  setupId: string,
+  assumption?: { bodyweightFraction: number; configVersion: string },
+): LoadConfigV1 {
   return {
     ...common(1, 2, "simultaneous", equipmentId, setupId),
+    ...(assumption ? { configVersion: assumption.configVersion } : {}),
     accountingKind: "bodyweight-reference-per-movement",
     resistanceType: "bodyweight",
     loadInput: "bodyweight-reference",
     repsMeaning: "per-movement",
-    bodyweightFraction: 1,
+    bodyweightFraction: assumption?.bodyweightFraction ?? 1,
   };
 }
 
@@ -276,7 +283,10 @@ export const LEGACY_LOAD_CONFIGS_V1: Readonly<Record<
 >> = Object.freeze({
   incline_dumbbell_press_30deg: immutableConfig(legacyDumbbellPair()),
   flat_dumbbell_fly: immutableConfig(legacyDumbbellPair()),
-  pushup_handles: immutableConfig(legacyBodyweight("push-up-handles", "pair")),
+  pushup_handles: immutableConfig(legacyBodyweight("push-up-handles", "pair", {
+    bodyweightFraction: CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1,
+    configVersion: CANONICAL_PUSH_UP_CONFIG_VERSION_V1,
+  })),
   seated_dumbbell_press: immutableConfig(legacyDumbbellPair()),
   one_arm_lateral_raise: immutableConfig(legacyPerSide()),
   one_arm_cable_triceps_extension: immutableConfig(legacyBand("one-arm-cable-extension")),

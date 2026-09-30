@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import {
+  CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1,
   loadConfigV1Schema,
   type LoadConfigV1,
 } from "@/modules/training/load-accounting-v1";
@@ -127,12 +128,14 @@ export function ExerciseLoadConfigEditor({
   catalogId,
   configuration,
   resistanceType,
+  stableKey,
   uk,
   onSaved,
 }: {
   catalogId: number;
   configuration: unknown | null | undefined;
   resistanceType: ResistanceType;
+  stableKey?: string | null;
   uk: boolean;
   onSaved: (configuration: LoadConfigV1 | null) => void;
 }) {
@@ -146,18 +149,19 @@ export function ExerciseLoadConfigEditor({
     current && "implementsPerMovement" in current ? current.implementsPerMovement : 1,
   );
   const [bodyweightFraction, setBodyweightFraction] = useState(String(
-    current && "bodyweightFraction" in current ? current.bodyweightFraction : 1,
+    current && "bodyweightFraction" in current ? current.bodyweightFraction
+      : stableKey === "pushup_handles" ? CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1 : 1,
   ));
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const modeLabels: Record<ConfigMode, [string, string]> = {
-    "external-per-side": ["Вага кожного снаряда на сторону", "Weight of each implement per side"],
+    "external-per-side": ["Вага снаряда на навантажену сторону", "Weight per loaded implement"],
     "external-per-movement": ["Вага снарядів на одне повторення", "Implement weight for each movement"],
     "external-whole-setup": ["Загальна вага всієї системи", "Total weight of the complete setup"],
-    "band-logged-side": ["Номінальний опір на записану сторону", "Nominal band resistance per logged side"],
-    "band-each-side": ["Номінальний опір окремо для кожної сторони", "Nominal band resistance for each side"],
+    "band-logged-side": ["Номінальний опір для записаного підходу", "Nominal resistance entered for the set"],
+    "band-each-side": ["Номінальний опір кожної резинки", "Nominal resistance per band"],
     "bodyweight-per-movement": ["Референс маси на одне повторення", "Bodyweight reference for each movement"],
     "bodyweight-per-side": ["Референс маси окремо на сторону", "Bodyweight reference per side"],
   };
@@ -227,7 +231,7 @@ export function ExerciseLoadConfigEditor({
               ).map((value) => <option key={value} value={value}>{modeLabels[value][uk ? 0 : 1]}</option>)}
             </select>
           </label>
-          {(mode.startsWith("external-") || mode.startsWith("band-") || mode.startsWith("bodyweight-")) && (
+          {(mode.startsWith("external-") || mode.startsWith("band-")) && (
             <div className={styles.loadConfigFields}>
               <label className={styles.field}>
                 <span>{uk ? "Снарядів у наборі" : "Implements in the setup"}</span>
@@ -260,13 +264,23 @@ export function ExerciseLoadConfigEditor({
                   </select>
                 </label>
               )}
-              {mode.startsWith("bodyweight-") && (
-                <label className={styles.field}>
-                  <span>{uk ? "Частка маси тіла у русі" : "Bodyweight fraction used by the movement"}</span>
-                  <input inputMode="decimal" value={bodyweightFraction} onChange={(event) => setBodyweightFraction(event.target.value)} />
-                </label>
-              )}
+
             </div>
+          )}
+          {mode.startsWith("bodyweight-") && (
+            <div className={styles.loadConfigFields}>
+              <label className={styles.field}>
+                <span>{uk ? "Частка маси для цього руху" : "Bodyweight share for this movement"}</span>
+                <input inputMode="decimal" value={bodyweightFraction} onChange={(event) => setBodyweightFraction(event.target.value)} />
+              </label>
+            </div>
+          )}
+          {stableKey === "pushup_handles" && (
+            <p className={styles.loadConfigNote}>
+              {uk
+                ? "Для віджимань від ручок початкове правило приблизне: 70% маси тіла. Збережені тренування залишають власне правило."
+                : "The starting rule for handle push-ups is an approximate 70% of body mass. Saved workouts keep their captured rule."}
+            </p>
           )}
           <p className={styles.loadConfigNote}>
             {uk

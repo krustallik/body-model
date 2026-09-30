@@ -53,8 +53,8 @@ function session(overrides: Partial<StrengthSessionDto> = {}): StrengthSessionDt
       externalLoadVolume: metric(4667),
       bandNominalIndex: {
         perLoggedSide: metric(2770.2, "nominal-kg-repetitions-per-logged-side"),
-        leftSide: metric(2770.2, "nominal-kg-repetitions-per-side"),
-        rightSide: metric(1746, "nominal-kg-repetitions-per-side"),
+        leftSide: metric(null, "nominal-kg-repetitions-per-side"),
+        rightSide: metric(null, "nominal-kg-repetitions-per-side"),
       },
       bodyweight: {
         sets: metric(4, "sets"),
@@ -183,26 +183,31 @@ describe("persisted session accounting UI", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders persisted categories separately and V2 set rows without internal ids", async () => {
+  it("renders only the three persisted load categories and hides side-specific UI", async () => {
     const user = userEvent.setup();
     render(<SessionAccountingPanel session={session()} uk onRefresh={() => undefined} />);
     expect(screen.getByText("4 667")).toBeTruthy();
-    expect(screen.getAllByText(/2\s770,2/)).toHaveLength(2);
-    expect(screen.getAllByText("Обсяг за референсом маси")).toHaveLength(2);
+    expect(screen.getByText(/2\s770,2/)).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Зовнішнє навантаження" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Резинки" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Власна вага" })).toBeTruthy();
+    expect(screen.queryByText(/ліва сторона|права сторона|left side|right side|logged side/i)).toBeNull();
+    expect(screen.queryByText(/Підходи з власною вагою|Повторення з власною вагою|Bodyweight sets|Bodyweight repetitions/i)).toBeNull();
+    expect(screen.queryByText(/Додаткова вага|Допоміжне навантаження|Added load|Assistance load/i)).toBeNull();
     expect(screen.queryByText(/Загальний обсяг|Mixed total/i)).toBeNull();
     expect(screen.getByText(/Точне вимірювання 2026-09-10/)).toBeTruthy();
     await user.click(screen.getByText(/Деталі за вправами/));
     expect(screen.getByText("Pull-up")).toBeTruthy();
-    expect(screen.getByText("12 · ліворуч 12 · праворуч 10")).toBeTruthy();
+    expect(screen.getAllByText("12")).toHaveLength(2);
+    expect(screen.queryByText(/ліворуч|праворуч|left|right/i)).toBeNull();
     expect(screen.getByText("220 kg × reps")).toBeTruthy();
     expect(screen.getByText(/Точне вимірювання маси · дата вимірювання 2026-09-10/)).toBeTruthy();
-    expect(screen.queryByText(/No eligible historical bodyweight measurement or estimate/)).toBeNull();
+    expect(screen.queryByText(/No eligible historical measurement or estimate/)).toBeNull();
     expect(screen.queryByText("private-v")).toBeNull();
     expect(screen.queryByText("internal-sample-id")).toBeNull();
     expect(screen.queryByText("private-weight-sample-id")).toBeNull();
     expect(screen.queryByText("legacy-rule-private")).toBeNull();
   });
-
   it("shows bodyweight contribution provenance for exact, nearest, as-of, and unavailable values", async () => {
     const user = userEvent.setup();
     const { rerender } = render(<SessionAccountingPanel session={session()} uk={false} />);
@@ -240,7 +245,7 @@ describe("persisted session accounting UI", () => {
       provenance: [{ kind: "legacy-interpretation", version: "private-config-v", stableKey: "bodyweight_squat" }],
     })} />);
     await ensureBreakdownOpen();
-    expect(screen.getByText(/No eligible historical bodyweight measurement or estimate/)).toBeTruthy();
+    expect(screen.getByText(/No eligible historical measurement or estimate/)).toBeTruthy();
     expect(screen.getByText("Unavailable · bodyweight reference is unavailable")).toBeTruthy();
   });
 
@@ -356,11 +361,11 @@ describe("persisted session accounting UI", () => {
     });
 
     unmount();
-    render(<ExerciseLoadConfigEditor catalogId={17} configuration={null} resistanceType={RESISTANCE.BODYWEIGHT} uk onSaved={() => undefined} />);
+    const { unmount: unmountBodyweight } = render(<ExerciseLoadConfigEditor catalogId={17} configuration={null} resistanceType={RESISTANCE.BODYWEIGHT} uk onSaved={() => undefined} />);
     await user.click(screen.getByRole("button", { name: "Як враховувати навантаження" }));
     await user.selectOptions(screen.getByLabelText("Як введена вага відповідає руху"), "bodyweight-per-side");
-    await user.clear(screen.getByLabelText("Частка маси тіла у русі"));
-    await user.type(screen.getByLabelText("Частка маси тіла у русі"), "0.7");
+    await user.clear(screen.getByLabelText("Частка маси для цього руху"));
+    await user.type(screen.getByLabelText("Частка маси для цього руху"), "0.7");
     await user.click(screen.getByRole("button", { name: "Зберегти правило" }));
     expect(JSON.parse(requests[1]!).loadAccountingConfig).toMatchObject({
       accountingKind: "bodyweight-reference-per-side",
@@ -370,5 +375,11 @@ describe("persisted session accounting UI", () => {
       bodyweightFraction: 0.7,
     });
     expect(screen.queryByText(/band-nominal|bodyweight-reference|per-side/)).toBeNull();
+
+    unmountBodyweight();
+    render(<ExerciseLoadConfigEditor catalogId={18} configuration={null} resistanceType={RESISTANCE.BODYWEIGHT} stableKey="pushup_handles" uk onSaved={() => undefined} />);
+    await user.click(screen.getByRole("button", { name: "Як враховувати навантаження" }));
+    expect(screen.getByLabelText("Частка маси для цього руху")).toHaveProperty("value", "0.7");
+    expect(screen.getByText(/початкове правило приблизне: 70% маси тіла/)).toBeTruthy();
   });
 });

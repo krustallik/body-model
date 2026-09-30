@@ -14,7 +14,7 @@ import type {
   StrengthSessionExerciseDto,
   StrengthSetDto,
 } from "@/modules/training/training.types";
-import { loadConfigV1Schema, setExecutionOverrideV1Schema } from "@/modules/training/load-accounting-v1";
+import { setExecutionOverrideV1Schema } from "@/modules/training/load-accounting-v1";
 import { resolveExerciseImageSrc } from "./exercise-images";
 import { resolveExerciseInfo } from "./exercise-info";
 import { formatSetCompletionClock, resistanceLabel, setCompletionTimestampIso } from "./training-labels";
@@ -137,15 +137,7 @@ export function ExercisePane(props: ExercisePaneProps) {
     || (Number.isFinite(weightValue) && weightValue > 0);
   const bandOk = exercise.resistanceType !== RESISTANCE.RESISTANCE_BAND
     || (Number.isFinite(bandValue) && bandValue > 0);
-  const asymmetricLeft = Number(paneDraft.leftReps);
-  const asymmetricRight = Number(paneDraft.rightReps);
-  const asymmetricOk = !paneDraft.asymmetricRepsEnabled
-    || (Number.isInteger(asymmetricLeft) && asymmetricLeft >= 0
-      && Number.isInteger(asymmetricRight) && asymmetricRight >= 0
-      && asymmetricLeft + asymmetricRight > 0);
-  const parsedConfig = loadConfigV1Schema.safeParse(exercise.loadAccountingConfigSnapshot);
-  const supportsAsymmetric = parsedConfig.success && parsedConfig.data.repsMeaning === "per-side";
-  const canSave = interactive && !busy && repsOk && weightOk && bandOk && asymmetricOk;
+  const canSave = interactive && !busy && repsOk && weightOk && bandOk;
   const progressLabel = uk
     ? `${completedSets} / ${plannedSets} підходів`
     : `${completedSets} / ${plannedSets} sets`;
@@ -283,45 +275,6 @@ export function ExercisePane(props: ExercisePaneProps) {
                 onChange={(event) => onDraftChange({ ...paneDraft, reps: event.target.value })}
               />
             </label>
-            {interactive && (supportsAsymmetric || paneDraft.asymmetricRepsEnabled) && (
-              <details
-                className={styles.asymmetricEntry}
-                open={paneDraft.asymmetricRepsEnabled}
-                onToggle={(event) => {
-                  const open = event.currentTarget.open;
-                  if (open !== paneDraft.asymmetricRepsEnabled) {
-                    onDraftChange({ ...paneDraft, asymmetricRepsEnabled: open });
-                  }
-                }}
-              >
-                <summary>{uk ? "Різні повтори для сторін (опційно)" : "Different reps per side (optional)"}</summary>
-                <div className={styles.asymmetricFields}>
-                  <label className={styles.liveField}>
-                    <span>{uk ? "Ліва сторона" : "Left side"}</span>
-                    <input
-                      inputMode="numeric"
-                      autoComplete="off"
-                      min={0}
-                      value={paneDraft.leftReps}
-                      onChange={(event) => onDraftChange({ ...paneDraft, asymmetricRepsEnabled: true, leftReps: event.target.value })}
-                    />
-                  </label>
-                  <label className={styles.liveField}>
-                    <span>{uk ? "Права сторона" : "Right side"}</span>
-                    <input
-                      inputMode="numeric"
-                      autoComplete="off"
-                      min={0}
-                      value={paneDraft.rightReps}
-                      onChange={(event) => onDraftChange({ ...paneDraft, asymmetricRepsEnabled: true, rightReps: event.target.value })}
-                    />
-                  </label>
-                </div>
-                <p className={styles.workoutInfoLine}>
-                  {uk ? "Загальне поле «Повтори» лишається без змін; облік використає окремі числа сторін." : "The main Reps value stays unchanged; accounting uses these side-specific counts."}
-                </p>
-              </details>
-            )}
             <label className={styles.liveField}>
               <span>RIR</span>
               <input

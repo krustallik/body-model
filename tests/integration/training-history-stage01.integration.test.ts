@@ -7,6 +7,7 @@ import {
   STAGE01_PUSH_ROWS_V1,
 } from "../fixtures/training-load-accounting-stage01-golden-v1";
 import { requireIsolatedStage01Database } from "../../src/modules/training/testing/require-isolated-database";
+import { CANONICAL_PUSH_UP_CONFIG_VERSION_V1 } from "../../src/modules/training/load-accounting-v1";
 import {
   createTrainingHistoryStage01FixtureV1,
   TRAINING_HISTORY_STAGE01_CREATED_AT,
@@ -352,11 +353,13 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
         expect(row.stableKey).toBe(fixtureRow?.[0] ?? null);
         expect(row.accountingMethodVersion).toBe(payload.accountingMethodVersion);
         expect(row.config.resolved).not.toBeNull();
-        expect(row.config.provenance).toMatchObject({
-          kind: "legacy-interpretation",
-          version: "bodycast-historical-load-entry-v1",
+        const isVersionedPushUp = fixtureRow?.[0] === "pushup_handles";
+        const expectedConfigProvenance = {
+          kind: isVersionedPushUp ? "session-snapshot" : "legacy-interpretation",
+          version: isVersionedPushUp ? CANONICAL_PUSH_UP_CONFIG_VERSION_V1 : "bodycast-historical-load-entry-v1",
           stableKey: fixtureRow?.[0],
-        });
+        };
+        expect(row.config.provenance).toMatchObject(expectedConfigProvenance);
         const expectedCategory = fixtureRow?.[6] === "band-nominal-per-logged-side"
           ? "bandNominalPerLoggedSide"
           : fixtureRow?.[6] === "bodyweight-reference-separate"
@@ -367,10 +370,7 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
           && payload.result.bodyweight.referenceVolume.availability === "unavailable"
           ? "unavailable" : "available");
         expect(contribution?.basis).toBe(row.config.resolved?.loadInput);
-        expect(contribution?.provenance).toContainEqual(expect.objectContaining({
-          kind: "legacy-interpretation",
-          version: "bodycast-historical-load-entry-v1",
-        }));
+        expect(contribution?.provenance).toContainEqual(expect.objectContaining(expectedConfigProvenance));
       }
       const categoryTotal = (category: string) => payload.breakdown.rows
         .flatMap((row) => row.contributions)
@@ -1545,6 +1545,108 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
           await tx.exerciseLoadConfiguration.deleteMany({ where: { id: mutatedConfigId! } });
         });
       }
+    }
+  });
+
+  it("persists and applies the versioned approximate push-up bodyweight share", async () => {
+    const db = prisma!;
+    let programId: number | null = null;
+    let sessionId: number | null = null;
+    let sourceId: number | null = null;
+    try {
+      const { TrainingService } = await import("../../src/modules/training/training.service");
+      const { instantToLocalDateTime, localDateTimeToInstant } = await import("../../src/model/time-zone");
+      const { CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1, CANONICAL_PUSH_UP_CONFIG_VERSION_V1 } =
+        await import("../../src/modules/training/load-accounting-v1");
+      const service = new TrainingService(db);
+      const catalog = await db.exerciseCatalog.findUniqueOrThrow({
+        where: { profileId_stableKey: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID, stableKey: "pushup_handles" } },
+        select: { id: true, currentLoadAccountingConfigId: true },
+      });
+      expect(catalog.currentLoadAccountingConfigId).toBeNull();
+      const program = await service.createProgram({
+        name: `stage02-pushup-approx-${Date.now()}`,
+        exercises: [{ catalogId: catalog.id, plannedSets: 1, resistanceType: "BODYWEIGHT" }],
+      }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      programId = program.id;
+      const version = await db.trainingProgramVersion.findFirstOrThrow({
+        where: { programId: program.id, versionNumber: 1 }, select: { id: true },
+      });
+      const programExercise = await db.programExercise.findFirstOrThrow({
+        where: { programVersionId: version.id, exerciseCatalogId: catalog.id },
+        select: { loadAccountingConfigSnapshot: true },
+      });
+      expect(programExercise.loadAccountingConfigSnapshot).toMatchObject({
+        configVersion: CANONICAL_PUSH_UP_CONFIG_VERSION_V1,
+        bodyweightFraction: CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1,
+      });
+
+      const session = await service.startSession(program.id, TRAINING_HISTORY_STAGE01_PROFILE_ID, "Europe/Bratislava");
+      sessionId = session.id;
+      const localDate = instantToLocalDateTime(new Date(session.webStartedAt!), "Europe/Bratislava").date;
+      const sample = await db.healthMetricSample.create({
+        data: {
+          date: localDate,
+          metric: "weight-kg",
+          source: "apple-health-shortcut",
+          timestamp: localDateTimeToInstant(localDate, "12:00", "Europe/Bratislava"),
+          value: 80,
+        },
+        select: { id: true },
+      });
+      sourceId = sample.id;
+      const exercise = session.exercises[0]!;
+      expect(exercise.loadAccountingConfigSnapshot).toMatchObject({
+        configVersion: CANONICAL_PUSH_UP_CONFIG_VERSION_V1,
+        bodyweightFraction: CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1,
+      });
+      const set = await service.createSet(session.id, exercise.id, { reps: 10 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      const materialized = await service.materializeSessionAccounting(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      expect(materialized.loadAccountingV1?.bodyweight.reference).toMatchObject({
+        status: "observed", valueKg: 80, source: "apple-health-shortcut",
+      });
+      expect(materialized.loadAccountingV1?.bodyweight.referenceVolume).toMatchObject({
+        value: 560,
+        unit: "bodyweight-reference-kg-repetitions",
+        availability: "available",
+      });
+
+      const persistedSnapshot = await db.strengthSessionAccountingSnapshot.findFirstOrThrow({
+        where: { sessionId: session.id, snapshotRevision: materialized.snapshotRevision },
+        select: { payload: true },
+      });
+      const { persistedPayloadFromUnknown } = await import("../../src/modules/training/persisted-load-accounting-v1");
+      const payload = persistedPayloadFromUnknown(persistedSnapshot.payload);
+      if (!payload || !("breakdown" in payload)) throw new Error("push-up approximation snapshot is missing V2 breakdown");
+      const row = payload.breakdown.rows.find(({ strengthSetId }) => strengthSetId === set.id);
+      if (!row) throw new Error("push-up approximation snapshot is missing its persisted set row");
+      expect(row).toMatchObject({ stableKey: "pushup_handles", scalarReps: 10, effectiveReps: 10 });
+      expect(row.config.resolved).toMatchObject({
+        configVersion: CANONICAL_PUSH_UP_CONFIG_VERSION_V1,
+        bodyweightFraction: CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1,
+      });
+      expect(row.config.effective).toMatchObject({
+        configVersion: CANONICAL_PUSH_UP_CONFIG_VERSION_V1,
+        bodyweightFraction: CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1,
+      });
+      expect(row.mechanics?.effectiveMultiplier).toBe(CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1);
+      expect(row.contributions).toContainEqual(expect.objectContaining({
+        category: "bodyweightReferenceVolume",
+        basis: "bodyweight-reference",
+        value: 560,
+        effectiveMultiplier: CANONICAL_PUSH_UP_BODYWEIGHT_FRACTION_V1,
+        availability: "available",
+        provenance: expect.arrayContaining([expect.objectContaining({
+          kind: "bodyweight-observation",
+          sourceId: String(sample.id),
+          localDate,
+        })]),
+      }));
+      expect(await db.strengthSessionAccountingSnapshot.count({ where: { sessionId: session.id } })).toBe(1);
+    } finally {
+      if (sourceId !== null) await db.healthMetricSample.deleteMany({ where: { id: sourceId } });
+      if (sessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: sessionId } });
+      if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });
     }
   });
 

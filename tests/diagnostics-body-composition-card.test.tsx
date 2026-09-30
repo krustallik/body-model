@@ -154,4 +154,31 @@ describe("DiagnosticsClient body-composition card", () => {
     expect(screen.getByText("20.3 kg")).toBeTruthy();
     expect(screen.getByText("3053 kcal")).toBeTruthy();
   });
+
+  it("says modeled days need refreshing when the current estimate is unavailable", async () => {
+    const stale = diagnosticsDto();
+    stale.episode.latestModeledDate = "2026-06-10";
+    stale.dataContinuity.modeledDayCount = 4;
+    stale.dataContinuity.completeDayCount = 4;
+    stale.currentState.status = "unavailable";
+    stale.currentState.predictedWeightKg = null;
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => stale })));
+
+    render(<DiagnosticsClient />);
+    expect(await screen.findByText("Є пораховані дні, але поточна оцінка потребує оновлення")).toBeTruthy();
+    expect(screen.queryByText("Порахованих днів ще немає")).toBeNull();
+  });
+
+  it("keeps the no-modeled-days message when coverage is zero", async () => {
+    const empty = diagnosticsDto();
+    empty.episode.latestModeledDate = null;
+    empty.dataContinuity.modeledDayCount = 0;
+    empty.dataContinuity.completeDayCount = 0;
+    empty.currentState.status = "unavailable";
+    empty.currentState.predictedWeightKg = null;
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => empty })));
+
+    render(<DiagnosticsClient />);
+    expect(await screen.findByText("Порахованих днів ще немає")).toBeTruthy();
+  });
 });

@@ -165,19 +165,25 @@
 @media (hover: hover) and (pointer: fine) {
   .gates > div:hover, .metrics > div:hover, .energyMetrics > div:hover,
   .provenance span:hover, .coverageFacts > div:hover, .gapList li:hover,
-  .limitations li:hover, .technical dl > div:hover,
-  .gates > div:focus-within, .metrics > div:focus-within,
-  .energyMetrics > div:focus-within, .provenance span:focus-within,
-  .coverageFacts > div:focus-within, .gapList li:focus-within,
-  .limitations li:focus-within, .technical dl > div:focus-within {
+  .limitations li:hover, .technical dl > div:hover {
     background-color: color-mix(in srgb, var(--item-hover-accent, var(--info)) 12%, var(--surface-2));
     box-shadow: inset 2px 0 0 color-mix(in srgb, var(--item-hover-accent, var(--info)) 72%, transparent);
   }
-  .gates > div[data-met="false"]:hover,
-  .gates > div[data-met="false"]:focus-within {
+  .gates > div[data-met="false"]:hover {
     background-color: color-mix(in srgb, var(--warning) 12%, var(--warning-soft));
     box-shadow: inset 2px 0 0 var(--warning);
   }
+}
+.gates > div:focus-within, .metrics > div:focus-within,
+.energyMetrics > div:focus-within, .provenance span:focus-within,
+.coverageFacts > div:focus-within, .gapList li:focus-within,
+.limitations li:focus-within, .technical dl > div:focus-within {
+  background-color: color-mix(in srgb, var(--item-hover-accent, var(--info)) 12%, var(--surface-2));
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--item-hover-accent, var(--info)) 72%, transparent);
+}
+.gates > div[data-met="false"]:focus-within {
+  background-color: color-mix(in srgb, var(--warning) 12%, var(--warning-soft));
+  box-shadow: inset 2px 0 0 var(--warning);
 }
 @media (prefers-reduced-motion: reduce) {
   .coverageFacts > div, .energyMetrics > div, .limitations li, .technical dl > div {

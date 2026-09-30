@@ -53,7 +53,7 @@ function calibrationHistory(days: readonly BuiltSimulationDay[]): CalibrationDay
 
 /** Runs robust calibration, then one coherent retrospective personalized pass. */
 export function calculateEpisodeHistory(input: {
-  episode: PersistedEpisode;
+  episode: Pick<PersistedEpisode, "ecfPolicy" | "initialState" | "simulatorParameters" | "personalOffsetKcalPerDay" | "modelVersion">;
   days: readonly BuiltSimulationDay[];
 }): EpisodeCalculation {
   const continuity = analyzeStateContinuity(input.days, input.episode.ecfPolicy);

@@ -2,7 +2,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { missingPhysiologicalTransitionFields } from "@/model/physiological-simulator";
 import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
-import { calculateEpisodeHistory } from "./episode-calculation";
+import { calculateEpisodeHistory, type EpisodeCalculation } from "./episode-calculation";
 import { prepareBootstrapEpisodeInitialization, prepareEpisodeInitialization } from "./episode-initialization";
 import {
   EpisodeInitializationError,
@@ -16,6 +16,12 @@ import type {
   PreparedEpisodeInitialization,
 } from "./model-episode.types";
 import { ModelEpisodeRepository } from "./model-episode.repository";
+import { getModelDiagnostics } from "@/modules/model-diagnostics/model-diagnostics.service";
+import {
+  episodeReadinessFromCalculation,
+  episodeReadinessFromDiagnostics,
+  shouldSwitchModelEpisode,
+} from "./episode-switch-policy";
 import { addCalendarDays, latestCompletedLocalDate } from "./model-calendar";
 import { CURRENT_MODEL_VERSION } from "./model-version";
 import { buildSimulationDays } from "./simulation-input-builder";
@@ -247,6 +253,32 @@ export async function initializeNewModelEpisode(
   }, TRANSACTION_OPTIONS);
 }
 
+function unchangedActiveEpisodeResult(
+  episode: PersistedEpisode,
+  current: NonNullable<Awaited<ReturnType<ModelEpisodeRepository["status"]>>>,
+) {
+  return {
+    status: "ok" as const,
+    episodeId: episode.id,
+    modelVersion: episode.modelVersion,
+    calibrationStatus: episode.calibrationStatus,
+    personalOffsetKcalPerDay: episode.personalOffsetKcalPerDay,
+    activityCalibration: episode.activityCalibration,
+    daysPersisted: current.daysModeled + current.incompleteDays,
+    completeDays: current.daysModeled,
+    incompleteDays: current.incompleteDays,
+    observedNutritionDays: current.observedNutritionDays,
+    imputedNutritionDays: current.imputedNutritionDays,
+    unbridgeableNutritionDays: current.unbridgeableNutritionDays,
+    latestModeledDate: current.latestModeledDate,
+    resolvedUntil: current.latestModeledDate,
+    continuityStatus: current.continuityStatus,
+    recoveryRequired: current.recoveryRequired,
+    unknownIntervals: current.unknownIntervals,
+    current,
+  };
+}
+
 /** Full deterministic rebuild; reads, calculation, and replacement share one DB snapshot. */
 export async function recalculateModelEpisode(
   input: { episodeId?: number; now?: Date } = {},
@@ -274,6 +306,7 @@ export async function recalculateModelEpisode(
       ? await repository.loadSources(sourceStart, latestCompletedDate)
       : { days: [], snapshots: [], workIntervals: [], workouts: [] };
 
+    let candidateCalculation: EpisodeCalculation | null = null;
     if (input.episodeId === undefined && sourceStart <= latestCompletedDate) {
       // Restart eligibility must use current semantics. Otherwise a legacy
       // episode can never see a modern rest day (observed workout feed + no
@@ -308,6 +341,48 @@ export async function recalculateModelEpisode(
               || error.reason !== "insufficient-baseline-data") throw error;
           prepared = prepareRestartFromFrozenEpisode({ episode, sources, startDate: restartDate });
         }
+
+        // Calculate the proposed episode without creating a row or touching
+        // the active episode. Its current-state availability and 28-day
+        // coverage use the same Diagnostics rules as the active episode.
+        const candidateBuiltDays = buildSimulationDays({
+          from: prepared.startDate,
+          to: latestCompletedDate,
+          sources,
+          baselineNutritionFallback: prepared.baseline.fallbackNutrition,
+          nutritionGapPolicy: { maxBridgeDays: prepared.nutritionMaxBridgeDays },
+          modelVersion: prepared.modelVersion,
+        });
+        candidateCalculation = calculateEpisodeHistory({
+          episode: {
+            ecfPolicy: prepared.ecfPolicy,
+            initialState: prepared.initialState,
+            simulatorParameters: prepared.simulatorParameters,
+            personalOffsetKcalPerDay: prepared.appliedPersonalOffsetKcalPerDay ?? 0,
+            modelVersion: prepared.modelVersion,
+          },
+          days: candidateBuiltDays,
+        });
+        const [currentDiagnostics, currentStatus] = await Promise.all([
+          getModelDiagnostics(transaction),
+          repository.status(episode.id),
+        ]);
+        if (!currentStatus) throw new NoActiveModelEpisodeError();
+
+        const currentReadiness = episodeReadinessFromDiagnostics(currentDiagnostics);
+        const candidateReadiness = episodeReadinessFromCalculation({
+          calculation: candidateCalculation,
+          startDate: prepared.startDate,
+        });
+        if (!shouldSwitchModelEpisode(currentReadiness, candidateReadiness)) {
+          // Rejection is read-only: do not stale recoveries, persist states,
+          // rewrite the active episode, or consume an episode ID.
+          return unchangedActiveEpisodeResult(episode, currentStatus);
+        }
+
+        // Both changes and the candidate calculation are committed atomically.
+        // PostgreSQL SERIALIZABLE plus the one-active partial unique index make
+        // concurrent switches fail closed rather than publish two active rows.
         await repository.deactivateActive(input.now ?? new Date());
         episode = await repository.createPrepared(prepared);
       }
@@ -325,7 +400,7 @@ export async function recalculateModelEpisode(
       });
     // Scientific initialization semantics are frozen per episode. Legacy v4
     // episodes must be explicitly reinitialized rather than silently relabeled v5.
-    const calculation = calculateEpisodeHistory({ episode, days: builtDays });
+    const calculation = candidateCalculation ?? calculateEpisodeHistory({ episode, days: builtDays });
     await repository.persistCalculation(episode.id, calculation, episode.modelVersion);
     // Recalculation follows all source mutations; stale conservatively until an
     // identical source/config/seed recovery resets the fingerprinted upsert.

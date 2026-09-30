@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 
+const diagnostics = vi.hoisted(() => ({ getModelDiagnostics: vi.fn() }));
+vi.mock("@/modules/model-diagnostics/model-diagnostics.service", () => diagnostics);
+
 const repository = vi.hoisted(() => ({
   getProfile: vi.fn(),
   getActive: vi.fn(),
@@ -40,6 +43,11 @@ const client = clientMock as unknown as PrismaClient;
 describe("model episode application service", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    diagnostics.getModelDiagnostics.mockResolvedValue({
+      episode: { latestModeledDate: null },
+      currentState: { status: "unavailable" },
+      dataContinuity: { completeDayCount: 0 },
+    });
     repository.getProfile.mockResolvedValue(modelProfile);
     repository.loadSources.mockResolvedValue({
       days: stableSourceDays(), snapshots: [], workIntervals: [],

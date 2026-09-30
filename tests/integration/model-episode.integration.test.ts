@@ -226,6 +226,115 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     })).rejects.toThrow();
   });
 
+  it("rejects a 4-day restart candidate and preserves the active 28-day available state", async () => {
+    const baselineNow = new Date("2041-03-30T10:00:00.000Z");
+    const candidateNow = new Date("2041-03-31T10:00:00.000Z");
+    await prisma.modelEpisode.update({ where: { id: episodeId }, data: { startDate: "2041-03-02" } });
+    const baseline = await recalculateModelEpisode({ episodeId, now: baselineNow }, prisma);
+    expect(baseline).toMatchObject({ latestModeledDate: "2041-03-29", completeDays: 28 });
+    const baselineDiagnostics = await getModelDiagnostics(prisma);
+    expect(baselineDiagnostics.currentState.status).toBe("available");
+    expect(baselineDiagnostics.dataContinuity.completeDayCount).toBe(28);
+
+    await prisma.dailyHealthData.updateMany({
+      where: { date: { gte: "2041-03-02", lte: "2041-03-25" } },
+      data: { steps: null, walkingDistanceKm: null },
+    });
+    await prisma.dailyHealthData.update({
+      where: { date: "2041-03-26" }, data: { bodyFatPercent: 20 },
+    });
+    await prisma.dailyHealthData.update({
+      where: { date: "2041-03-30" }, data: { steps: null, walkingDistanceKm: null },
+    });
+
+    const before = {
+      episode: await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } }),
+      states: await prisma.dailyModelState.findMany({ where: { episodeId }, orderBy: { date: "asc" } }),
+      intervals: await prisma.modelUnknownInterval.findMany({ where: { episodeId }, orderBy: { startDate: "asc" } }),
+      episodes: await prisma.modelEpisode.count({ where: { startDate: { gte: testRangeStart, lte: finalDate } } }),
+    };
+
+    const first = await recalculateModelEpisode({ now: candidateNow }, prisma);
+    expect(first.episodeId).toBe(episodeId);
+    expect(first.current).toMatchObject({ latestModeledDate: "2041-03-29", daysModeled: 28 });
+    const afterFirst = {
+      episode: await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } }),
+      states: await prisma.dailyModelState.findMany({ where: { episodeId }, orderBy: { date: "asc" } }),
+      intervals: await prisma.modelUnknownInterval.findMany({ where: { episodeId }, orderBy: { startDate: "asc" } }),
+      episodes: await prisma.modelEpisode.count({ where: { startDate: { gte: testRangeStart, lte: finalDate } } }),
+    };
+    expect(afterFirst).toEqual(before);
+    const afterDiagnostics = await getModelDiagnostics(prisma);
+    expect(afterDiagnostics.currentState.status).toBe("available");
+    expect(afterDiagnostics.dataContinuity.completeDayCount).toBe(28);
+
+    const repeated = await recalculateModelEpisode({ now: candidateNow }, prisma);
+    expect(repeated.episodeId).toBe(episodeId);
+    expect(await prisma.modelEpisode.count({ where: { startDate: { gte: testRangeStart, lte: finalDate } } }))
+      .toBe(before.episodes);
+    expect(await prisma.dailyModelState.findMany({ where: { episodeId }, orderBy: { date: "asc" } }))
+      .toEqual(before.states);
+  });
+
+  it("switches only to a strictly improved candidate and does not churn on the next recalculate", async () => {
+    const switched = await recalculateModelEpisode({ now }, prisma);
+    expect(switched.episodeId).not.toBe(episodeId);
+    expect(await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } })).toMatchObject({
+      active: false,
+    });
+    expect(await prisma.modelEpisode.findUniqueOrThrow({ where: { id: switched.episodeId } })).toMatchObject({
+      active: true,
+      modelVersion: "bodycast-physiology-v7",
+    });
+    const countAfterSwitch = await prisma.modelEpisode.count({
+      where: { startDate: { gte: testRangeStart, lte: finalDate } },
+    });
+    const repeated = await recalculateModelEpisode({
+      now: new Date(now.getTime() + 5 * 60_000),
+    }, prisma);
+    expect(repeated.episodeId).toBe(switched.episodeId);
+    expect(await prisma.modelEpisode.count({
+      where: { startDate: { gte: testRangeStart, lte: finalDate } },
+    })).toBe(countAfterSwitch);
+    expect(await prisma.modelEpisode.count({ where: { active: true } })).toBe(1);
+  });
+
+  it("does not switch on a readiness tie, including repeated recalculation", async () => {
+    await prisma.modelEpisode.update({ where: { id: episodeId }, data: { startDate: "2041-03-14" } });
+    const current = await recalculateModelEpisode({ episodeId, now }, prisma);
+    expect(current).toMatchObject({ latestModeledDate: finalDate, completeDays: 17 });
+    await prisma.modelEpisode.update({
+      where: { id: episodeId }, data: { modelVersion: "bodycast-physiology-v6" },
+    });
+    const before = {
+      episode: await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } }),
+      states: await prisma.dailyModelState.findMany({ where: { episodeId }, orderBy: { date: "asc" } }),
+      episodes: await prisma.modelEpisode.count({ where: { startDate: { gte: testRangeStart, lte: finalDate } } }),
+    };
+
+    const first = await recalculateModelEpisode({ now }, prisma);
+    const repeated = await recalculateModelEpisode({ now }, prisma);
+    expect(first.episodeId).toBe(episodeId);
+    expect(repeated.episodeId).toBe(episodeId);
+    expect(await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } })).toEqual(before.episode);
+    expect(await prisma.dailyModelState.findMany({ where: { episodeId }, orderBy: { date: "asc" } }))
+      .toEqual(before.states);
+    expect(await prisma.modelEpisode.count({ where: { startDate: { gte: testRangeStart, lte: finalDate } } }))
+      .toBe(before.episodes);
+    expect(await prisma.modelEpisode.count({ where: { active: true } })).toBe(1);
+  });
+
+  it("keeps one active episode during concurrent automatic recalculations", async () => {
+    const outcomes = await Promise.allSettled([
+      recalculateModelEpisode({ now }, prisma),
+      recalculateModelEpisode({ now: new Date(now.getTime() + 1_000) }, prisma),
+    ]);
+    expect(outcomes.some((outcome) => outcome.status === "fulfilled")).toBe(true);
+    expect(await prisma.modelEpisode.count({ where: { active: true } })).toBe(1);
+    expect(await prisma.modelEpisode.count({ where: { startDate: { gte: testRangeStart, lte: finalDate } } }))
+      .toBeLessThanOrEqual(2);
+  });
+
   it("treats missing strength records as rest days instead of stopping the model prefix", async () => {
     const restDates = ["2041-03-25", "2041-03-27"];
     await prisma.dailyHealthData.updateMany({

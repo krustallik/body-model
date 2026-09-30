@@ -4,7 +4,7 @@ import { ModelEpisodeRepository } from "@/modules/model-episodes/model-episode.r
 import { NoActiveModelEpisodeError } from "@/modules/model-episodes/model-episode.errors";
 import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
 import { ModelRecoveryRepository } from "@/modules/model-recovery/model-recovery.repository";
-import { buildDiagnosticsDto } from "./model-diagnostics";
+import { buildDiagnosticsDto, MODEL_DIAGNOSTICS_RECENT_WINDOW_DAYS } from "./model-diagnostics";
 import { ModelDiagnosticsRepository } from "./model-diagnostics.repository";
 
 export async function getModelDiagnostics(client: ModelDatabaseClient = prisma) {
@@ -13,7 +13,7 @@ export async function getModelDiagnostics(client: ModelDatabaseClient = prisma) 
   if (!episode) throw new NoActiveModelEpisodeError();
   const status = await episodes.status(episode.id);
   if (!status) throw new NoActiveModelEpisodeError();
-  const candidateWindowStart = episode.latestModeledDate ? addCalendarDays(episode.latestModeledDate, -27) : null;
+  const candidateWindowStart = episode.latestModeledDate ? addCalendarDays(episode.latestModeledDate, -(MODEL_DIAGNOSTICS_RECENT_WINDOW_DAYS - 1)) : null;
   const windowStartDate = candidateWindowStart
     ? (candidateWindowStart < episode.startDate ? episode.startDate : candidateWindowStart)
     : null;

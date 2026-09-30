@@ -6,7 +6,11 @@ import { SessionAccountingPanel } from "@/app/training/session-accounting-panel"
 import { ExerciseLoadConfigEditor } from "@/app/training/exercise-load-config-editor";
 import { RESISTANCE, SESSION_STATUS } from "@/modules/training/training.constants";
 import type { StrengthSessionDto } from "@/modules/training/training.types";
-import type { LoadMetricV1 } from "@/modules/training/load-accounting-v1";
+import type {
+  ConfigProvenanceV1,
+  LoadAccountingBreakdownContributionV1,
+  LoadMetricV1,
+} from "@/modules/training/load-accounting-v1";
 
 type MetricUnit = "kg-repetitions" | "nominal-kg-repetitions-per-logged-side" | "nominal-kg-repetitions-per-side" | "sets" | "repetitions" | "bodyweight-reference-kg-repetitions";
 function metric<Unit extends MetricUnit = "kg-repetitions">(
@@ -101,10 +105,75 @@ function session(overrides: Partial<StrengthSessionDto> = {}): StrengthSessionDt
             unavailableReason: null,
             provenance: [{ kind: "session-snapshot", version: "private-v", stableKey: "pull_up" }],
           }],
+        }, {
+          accountingMethodVersion: "bodycast-load-accounting-v1",
+          sessionId: 42,
+          sessionExerciseId: 3,
+          exerciseOrder: 1,
+          exerciseName: "Bodyweight squat",
+          stableKey: "bodyweight_squat",
+          identityStatus: "canonical-snapshot",
+          strengthSetId: 9,
+          setNumber: 1,
+          scalarReps: 12,
+          effectiveReps: 12,
+          asymmetricReps: null,
+          enteredLoad: { externalKg: null, bandNominalKg: null },
+          config: {
+            sourceSnapshot: null,
+            resolved: null,
+            effective: null,
+            provenance: { kind: "legacy-interpretation", version: "legacy-rule-private", stableKey: "bodyweight_squat" },
+            resolution: "resolved",
+            unavailableReason: null,
+          },
+          override: { snapshot: null, status: "absent" },
+          mechanics: { inventoryCount: 1, loadedSides: 1, execution: "unilateral", implementsPerMovement: null, effectiveMultiplier: 1 },
+          contributions: [{
+            category: "bodyweightReferenceVolume",
+            basis: "bodyweight-reference",
+            unit: "bodyweight-reference-kg-repetitions",
+            value: 960,
+            effectiveMultiplier: 1,
+            availability: "available",
+            unavailableReason: null,
+            provenance: [
+              { kind: "legacy-interpretation", version: "legacy-rule-private", stableKey: "bodyweight_squat" },
+              { kind: "bodyweight-observation", version: "apple-health-shortcut", sourceId: "private-weight-sample-id", localDate: "2026-09-10" },
+            ],
+          }],
         }],
       },
     },
     ...overrides,
+  };
+}
+
+function sessionWithMassContribution(input: {
+  provenance: ConfigProvenanceV1[];
+  availability?: "available" | "unavailable";
+  unavailableReason?: LoadAccountingBreakdownContributionV1["unavailableReason"];
+  value?: number | null;
+}): StrengthSessionDto {
+  const base = session();
+  const breakdown = base.loadAccountingBreakdown;
+  if (!breakdown || breakdown.status !== "available") throw new Error("expected V2 test breakdown");
+  const contribution: LoadAccountingBreakdownContributionV1 = {
+    category: "bodyweightReferenceVolume",
+    basis: "bodyweight-reference",
+    unit: "bodyweight-reference-kg-repetitions",
+    value: input.value === undefined ? 960 : input.value,
+    effectiveMultiplier: 1,
+    availability: input.availability ?? "available",
+    unavailableReason: input.unavailableReason ?? null,
+    provenance: input.provenance,
+  };
+  const rows = breakdown.value.rows.map((row) => row.strengthSetId === 9
+    ? { ...row, contributions: [contribution] }
+    : row);
+  return {
+    ...base,
+    loadAccountingBreakdown: { status: "available", value: { ...breakdown.value, rows } },
   };
 }
 
@@ -119,15 +188,60 @@ describe("persisted session accounting UI", () => {
     render(<SessionAccountingPanel session={session()} uk onRefresh={() => undefined} />);
     expect(screen.getByText("4 667")).toBeTruthy();
     expect(screen.getAllByText(/2\s770,2/)).toHaveLength(2);
-    expect(screen.getByText("Обсяг за референсом маси")).toBeTruthy();
+    expect(screen.getAllByText("Обсяг за референсом маси")).toHaveLength(2);
     expect(screen.queryByText(/Загальний обсяг|Mixed total/i)).toBeNull();
     expect(screen.getByText(/Точне вимірювання 2026-09-10/)).toBeTruthy();
     await user.click(screen.getByText(/Деталі за вправами/));
     expect(screen.getByText("Pull-up")).toBeTruthy();
     expect(screen.getByText("12 · ліворуч 12 · праворуч 10")).toBeTruthy();
     expect(screen.getByText("220 kg × reps")).toBeTruthy();
+    expect(screen.getByText(/Точне вимірювання маси · дата вимірювання 2026-09-10/)).toBeTruthy();
+    expect(screen.queryByText(/No eligible historical bodyweight measurement or estimate/)).toBeNull();
     expect(screen.queryByText("private-v")).toBeNull();
     expect(screen.queryByText("internal-sample-id")).toBeNull();
+    expect(screen.queryByText("private-weight-sample-id")).toBeNull();
+    expect(screen.queryByText("legacy-rule-private")).toBeNull();
+  });
+
+  it("shows bodyweight contribution provenance for exact, nearest, as-of, and unavailable values", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<SessionAccountingPanel session={session()} uk={false} />);
+    const ensureBreakdownOpen = async () => {
+      const summary = screen.getByText(/Exercise and set details/);
+      if (!summary.closest("details")?.open) await user.click(summary);
+    };
+    await ensureBreakdownOpen();
+    expect(screen.getByText(/Exact bodyweight measurement · measured 2026-09-10/)).toBeTruthy();
+
+    rerender(<SessionAccountingPanel uk={false} session={sessionWithMassContribution({
+      provenance: [
+        { kind: "legacy-interpretation", version: "private-config-v", stableKey: "bodyweight_squat" },
+        { kind: "bodyweight-observation", version: "apple-health-shortcut-nearest-v2", sourceId: "private-sample-id", localDate: "2026-09-08" },
+      ],
+    })} />);
+    await ensureBreakdownOpen();
+    expect(screen.getByText(/Approximate bodyweight measurement · measured 2026-09-08/)).toBeTruthy();
+
+    rerender(<SessionAccountingPanel uk={false} session={sessionWithMassContribution({
+      provenance: [
+        { kind: "legacy-interpretation", version: "private-config-v", stableKey: "bodyweight_squat" },
+        { kind: "bodycast-as-of-model", version: "private-model-v", sourceId: "private-episode-id", localDate: "2026-09-10", uncertaintyStatus: "reported" },
+      ],
+    })} />);
+    await ensureBreakdownOpen();
+    expect(screen.getByText(/Model estimate as of 2026-09-10 · uncertainty reported/)).toBeTruthy();
+    expect(screen.queryByText("private-model-v")).toBeNull();
+    expect(screen.queryByText("private-episode-id")).toBeNull();
+
+    rerender(<SessionAccountingPanel uk={false} session={sessionWithMassContribution({
+      availability: "unavailable",
+      unavailableReason: "missing-bodyweight-reference",
+      value: null,
+      provenance: [{ kind: "legacy-interpretation", version: "private-config-v", stableKey: "bodyweight_squat" }],
+    })} />);
+    await ensureBreakdownOpen();
+    expect(screen.getByText(/No eligible historical bodyweight measurement or estimate/)).toBeTruthy();
+    expect(screen.getByText("Unavailable · bodyweight reference is unavailable")).toBeTruthy();
   });
 
   it("shows approximate observation date and never formats unavailable mass as zero", () => {

@@ -114,17 +114,54 @@ function basisLabel(basis: LoadAccountingBreakdownContributionV1["basis"], uk: b
   return labels[basis][uk ? 0 : 1];
 }
 
-function provenanceLabel(row: LoadAccountingBreakdownRowV1, uk: boolean): string {
-  const provenance = row.config.provenance ?? row.contributions.flatMap((entry) => entry.provenance)[0];
-  if (!provenance) return uk ? "Походження конфігурації не вказане" : "Configuration provenance not reported";
-  const kind = provenance.kind === "exercise-config" ? (uk ? "Налаштування вправи" : "Exercise settings")
+function provenanceKindLabel(
+  provenance: LoadAccountingBreakdownContributionV1["provenance"][number],
+  uk: boolean,
+): string {
+  if (provenance.kind === "bodyweight-observation") {
+    const approximation = provenance.version.includes("nearest");
+    const label = approximation
+      ? (uk ? "Наближене вимірювання маси" : "Approximate bodyweight measurement")
+      : (uk ? "Точне вимірювання маси" : "Exact bodyweight measurement");
+    return provenance.localDate
+      ? `${label} · ${uk ? "дата вимірювання" : "measured"} ${provenance.localDate}`
+      : label;
+  }
+  if (provenance.kind === "bodycast-as-of-model") {
+    const estimate = uk ? "Оцінка моделі на дату" : "Model estimate as of";
+    const uncertainty = provenance.uncertaintyStatus === "reported"
+      ? (uk ? " · невизначеність вказана" : " · uncertainty reported")
+      : "";
+    return `${estimate}${provenance.localDate ? ` ${provenance.localDate}` : ""}${uncertainty}`;
+  }
+  return provenance.kind === "exercise-config" ? (uk ? "Налаштування вправи" : "Exercise settings")
     : provenance.kind === "program-snapshot" ? (uk ? "Знімок програми" : "Program snapshot")
       : provenance.kind === "session-snapshot" ? (uk ? "Знімок сесії" : "Session snapshot")
         : provenance.kind === "legacy-interpretation" ? (uk ? "Стандартне трактування вправи" : "Built-in exercise interpretation")
-          : provenance.kind === "set-override" ? (uk ? "Налаштування підходу" : "Set-specific settings")
-            : provenance.kind === "bodyweight-observation" ? (uk ? "Вимірювання маси" : "Bodyweight observation")
-              : (uk ? "Оцінка на дату" : "As-of estimate");
-  return provenance.localDate ? `${kind} · ${provenance.localDate}` : kind;
+        : (uk ? "Налаштування підходу" : "Set-specific settings");
+}
+
+function configProvenanceLabel(row: LoadAccountingBreakdownRowV1, uk: boolean): string {
+  const provenance = row.config.provenance;
+  if (!provenance) return uk ? "Походження конфігурації не вказане" : "Configuration provenance not reported";
+  return provenanceKindLabel(provenance, uk);
+}
+
+function contributionProvenanceLabel(
+  contribution: LoadAccountingBreakdownContributionV1,
+  uk: boolean,
+): string {
+  if (contribution.category === "bodyweightReferenceVolume"
+      && contribution.availability === "unavailable"
+      && contribution.unavailableReason === "missing-bodyweight-reference") {
+    return uk
+      ? "Немає доступного історичного вимірювання чи оцінки маси"
+      : "No eligible historical bodyweight measurement or estimate";
+  }
+  const labels = contribution.provenance.map((entry) => provenanceKindLabel(entry, uk));
+  return labels.length
+    ? [...new Set(labels)].join(" · ")
+    : (uk ? "Джерело внеску не вказане" : "Contribution source not reported");
 }
 
 function unavailableReasonLabel(
@@ -178,7 +215,7 @@ function BreakdownRow({ row, uk }: { row: LoadAccountingBreakdownRowV1; uk: bool
         <div><dt>{uk ? "Повтори" : "Reps"}</dt><dd>{row.scalarReps ?? (uk ? "н/д" : "n/a")}{asymmetricText ? ` · ${asymmetricText}` : ""}</dd></div>
         <div><dt>{uk ? "Введене навантаження" : "Entered load"}</dt><dd>{loadParts.length ? loadParts.join(" + ") : (uk ? "не вказане" : "not entered")}</dd></div>
         {mechanicsText && <div><dt>{uk ? "Сторони / множник" : "Sides / multiplier"}</dt><dd>{mechanicsText}</dd></div>}
-        <div><dt>{uk ? "Походження" : "Provenance"}</dt><dd>{provenanceLabel(row, uk)}</dd></div>
+        <div><dt>{uk ? "Джерело налаштування" : "Configuration source"}</dt><dd>{configProvenanceLabel(row, uk)}</dd></div>
       </dl>
       <ul className={styles.accountingContributionList}>
         {row.contributions.map((contribution, index) => (
@@ -191,6 +228,7 @@ function BreakdownRow({ row, uk }: { row: LoadAccountingBreakdownRowV1; uk: bool
                   ? ` · ${unavailableReasonLabel(contribution.unavailableReason, uk)}`
                   : ""}
               </small>
+              <small>{uk ? "Джерело внеску" : "Contribution source"}: {contributionProvenanceLabel(contribution, uk)}</small>
             </span>
           </li>
         ))}

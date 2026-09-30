@@ -17,6 +17,7 @@ import type { GoalPlanningRequest } from "@/modules/model-goal-planning/goal-pla
 import { solveModelEpisodeTarget } from "@/modules/model-target-solver/model-target-solver.service";
 import { getModelDiagnostics } from "@/modules/model-diagnostics/model-diagnostics.service";
 import { calculateStrengthActivity } from "@/model/activity/strength";
+import { POST as postForecastAction } from "@/app/api/forecast/action/route";
 
 const prisma = new PrismaClient();
 const episodeStart = "2041-03-20";
@@ -274,6 +275,52 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       .toBe(before.episodes);
     expect(await prisma.dailyModelState.findMany({ where: { episodeId }, orderBy: { date: "asc" } }))
       .toEqual(before.states);
+  });
+
+  it("continues route recovery on the existing active episode after rejecting a replacement", async () => {
+    const candidateNow = new Date("2041-03-31T10:00:00.000Z");
+    await prisma.modelEpisode.update({ where: { id: episodeId }, data: { startDate: "2041-03-02" } });
+    await recalculateModelEpisode({ episodeId, now: candidateNow }, prisma);
+    await prisma.dailyHealthData.update({
+      where: { date: "2041-03-30" }, data: { steps: null, walkingDistanceKm: null },
+    });
+    const current = await recalculateModelEpisode({ episodeId, now: candidateNow }, prisma);
+    expect(current).toMatchObject({ episodeId, recoveryRequired: true });
+
+    const before = await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } });
+    const episodeCount = await prisma.modelEpisode.count({
+      where: { startDate: { gte: testRangeStart, lte: finalDate } },
+    });
+    const previousQaMode = process.env.BODYCAST_QA_MODE;
+    const previousQaNow = process.env.BODYCAST_QA_NOW;
+    process.env.BODYCAST_QA_MODE = "1";
+    process.env.BODYCAST_QA_NOW = candidateNow.toISOString();
+
+    let response: Response;
+    try {
+      response = await postForecastAction(new Request("http://localhost/api/forecast/action", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "recalculate" }),
+      }));
+    } finally {
+      if (previousQaMode === undefined) delete process.env.BODYCAST_QA_MODE;
+      else process.env.BODYCAST_QA_MODE = previousQaMode;
+      if (previousQaNow === undefined) delete process.env.BODYCAST_QA_NOW;
+      else process.env.BODYCAST_QA_NOW = previousQaNow;
+    }
+
+    expect(response.status).toBe(200);
+    const payload = await response.json();
+    expect(payload).toMatchObject({ episodeId, recoveryRequired: true });
+    expect(payload).toHaveProperty("recovery");
+
+    const after = await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } });
+    expect(after).toMatchObject({ id: before.id, startDate: before.startDate, active: true });
+    expect(await prisma.modelEpisode.count({ where: { active: true } })).toBe(1);
+    expect(await prisma.modelEpisode.count({
+      where: { startDate: { gte: testRangeStart, lte: finalDate } },
+    })).toBe(episodeCount);
   });
 
   it("switches only to a strictly improved candidate and does not churn on the next recalculate", async () => {

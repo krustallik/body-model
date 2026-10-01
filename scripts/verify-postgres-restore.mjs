@@ -25,9 +25,13 @@ function runDocker(args) {
 
 export function isDisposableNonProductionTarget({ container, environment, disposable }) {
   return typeof container === "string"
-    && !/(^|[-_/])prod(uction)?($|[-_/])/i.test(container)
+    && !isProductionLikeName(container)
     && environment === "nonproduction"
     && disposable === "true";
+}
+
+export function isProductionLikeName(name) {
+  return typeof name === "string" && /(^|[-_/])prod(uction)?($|[-_/])/i.test(name);
 }
 
 export function isLocalDockerEndpoint(endpoint) {
@@ -37,10 +41,16 @@ export function isLocalDockerEndpoint(endpoint) {
 }
 
 function inspectRestoreTarget(container, dockerHostOverride) {
+  if (isProductionLikeName(container)) {
+    throw new Error("Restore target rejected: production-like container names are forbidden.");
+  }
+  const context = runDocker(["context", "show"]);
+  if (!context) throw new Error("Cannot identify the Docker context; restore target was not changed.");
+  if (isProductionLikeName(context)) {
+    throw new Error("Restore refused: production-like Docker contexts are forbidden.");
+  }
   let endpoint = dockerHostOverride;
   if (!endpoint) {
-    const context = runDocker(["context", "show"]);
-    if (!context) throw new Error("Cannot identify the Docker context; restore target was not changed.");
     endpoint = runDocker(["context", "inspect", context, "--format", '{{ (index .Endpoints "docker").Host }}']);
   }
   if (!isLocalDockerEndpoint(endpoint)) {
@@ -120,6 +130,9 @@ export async function verifyEncryptedBackupOnDisposableTarget(options, environme
   const { container, user, backup, confirmation } = options;
   if (!container || !user || !backup || confirmation !== "nonproduction-disposable") {
     throw new Error("Explicit container/user/backup and nonproduction-disposable confirmation are required.");
+  }
+  if (isProductionLikeName(container)) {
+    throw new Error("Restore target rejected: production-like container names are forbidden.");
   }
   if (!path.resolve(backup).endsWith(".pgdump.enc")) throw new Error("Restore verifier accepts encrypted .pgdump.enc backups only.");
   const key = decodeBackupKey(environment.PRODUCTION_BACKUP_ENCRYPTION_KEY);

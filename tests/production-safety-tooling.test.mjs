@@ -18,6 +18,7 @@ import {
 import {
   isDisposableNonProductionTarget,
   isLocalDockerEndpoint,
+  isProductionLikeName,
   verifyEncryptedBackupOnDisposableTarget,
 } from "../scripts/verify-postgres-restore.mjs";
 
@@ -133,6 +134,9 @@ describe("disposable restore safety gate", () => {
     expect(isDisposableNonProductionTarget({ container: "bodycast-db-prod", environment: "nonproduction", disposable: "true" })).toBe(false);
     expect(isDisposableNonProductionTarget({ container: "bodycast-test-pg", environment: "production", disposable: "true" })).toBe(false);
     expect(isDisposableNonProductionTarget({ container: "bodycast-test-pg", environment: "nonproduction", disposable: "false" })).toBe(false);
+    expect(isProductionLikeName("prod")).toBe(true);
+    expect(isProductionLikeName("production-context")).toBe(true);
+    expect(isProductionLikeName("bodycast-test-pg")).toBe(false);
     expect(isLocalDockerEndpoint("npipe:////./pipe/docker_engine")).toBe(true);
     expect(isLocalDockerEndpoint("unix:///var/run/docker.sock")).toBe(true);
     expect(isLocalDockerEndpoint("ssh://production.example/docker.sock")).toBe(false);
@@ -146,6 +150,15 @@ describe("disposable restore safety gate", () => {
       backup: "bodycast.pgdump.enc",
       confirmation: "",
     }, {})).rejects.toThrow("Explicit container/user/backup");
+  });
+
+  it("rejects production-like restore container names before inspecting Docker or reading a key", async () => {
+    await expect(verifyEncryptedBackupOnDisposableTarget({
+      container: "bodycast-db-prod",
+      user: "bodycast",
+      backup: "not-present.pgdump.enc",
+      confirmation: "nonproduction-disposable",
+    }, {})).rejects.toThrow("production-like container names are forbidden");
   });
 
   it("refuses an implicit or unconfirmed backup source before contacting Docker", async () => {

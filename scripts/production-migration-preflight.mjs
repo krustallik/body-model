@@ -137,6 +137,7 @@ export function evaluateProductionPreflight(report, migrationDirectories) {
     identity: report?.identity ?? null,
     tables: report?.tables ?? {},
     longTransactions,
+    preparedTransactions: Array.isArray(report?.preparedTransactions) ? report.preparedTransactions : [],
     relevantLocks,
   };
 }

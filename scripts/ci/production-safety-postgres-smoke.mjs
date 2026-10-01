@@ -110,9 +110,9 @@ async function withPreparedLockPostgres(work) {
 async function withPreparedTransactionRelationLock(db, tableName, work) {
   const alterTargets = new Set([
     "ExerciseCatalog", "ProgramExercise", "StrengthSessionExercise", "StrengthSet",
-    "HealthMetricSample", "StrengthDiarySession",
+    "HealthMetricSample", "StrengthDiarySession", "BodycastUnrelatedLockProbe",
   ]);
-  if (!alterTargets.has(tableName)) throw new Error("Refusing to prepare a lock on an unreviewed relation target.");
+  if (!alterTargets.has(tableName)) throw new Error("Refusing to prepare a lock outside the reviewed Stage 02 targets and explicit unrelated-lock probe.");
 
   const gid = `bodycast-ci-prepared-lock-${randomBytes(6).toString("hex")}`;
   try {
@@ -292,12 +292,28 @@ async function main() {
 
     let preparedLockRejected = false;
     let preparedLockCleanupRestoredReadiness = false;
+    let unrelatedPreparedLockIgnored = false;
     await withPreparedLockPostgres(async (preparedDb) => {
       const preparedMigrations = await createSourceFixture(preparedDb);
       const cleanReport = readSourceReport(preparedDb);
       if (!evaluateProductionPreflight(cleanReport, preparedMigrations).readyForOwnerAuthorization) {
         throw new Error("Prepared-lock PostgreSQL baseline was not ready before the prepared transaction test.");
       }
+      sql(preparedDb, 'CREATE TABLE public."BodycastUnrelatedLockProbe" (id integer);');
+
+      await withPreparedTransactionRelationLock(preparedDb, "BodycastUnrelatedLockProbe", async (gid) => {
+        const report = readSourceReport(preparedDb);
+        if (!report.preparedTransactions.some((item) => item.gid === gid && item.transaction && item.preparedAt)) {
+          throw new Error("The unrelated prepared transaction was not visible in separate prepared-transaction diagnostics.");
+        }
+        if (report.relevantLocks.some((item) => item.relation === "BodycastUnrelatedLockProbe")) {
+          throw new Error("An unrelated prepared relation lock was incorrectly treated as a Stage 02 DDL blocker.");
+        }
+        if (!evaluateProductionPreflight(report, preparedMigrations).readyForOwnerAuthorization) {
+          throw new Error("An unrelated prepared transaction incorrectly blocked production preflight readiness.");
+        }
+        unrelatedPreparedLockIgnored = true;
+      });
 
       await withPreparedTransactionRelationLock(preparedDb, "ExerciseCatalog", async (gid) => {
         if (sql(preparedDb, `SELECT EXISTS (SELECT 1 FROM pg_prepared_xacts WHERE gid = '${gid}');`) !== "t") {
@@ -312,11 +328,13 @@ async function main() {
           && item.granted === true
         ));
         if (!lock) {
-          const diagnostic = sql(preparedDb, `SELECT jsonb_build_object(
-            'preparedTransactions', (SELECT jsonb_agg(jsonb_build_object('gid', gid, 'transaction', transaction, 'database', database)) FROM pg_prepared_xacts),
-            'exerciseCatalogLocks', (SELECT jsonb_agg(jsonb_build_object('pid', l.pid, 'database', l.database, 'virtualtransaction', l.virtualtransaction, 'mode', l.mode, 'granted', l.granted)) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation WHERE c.relname = 'ExerciseCatalog' AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database()))
-          )::text;`);
-          throw new Error(`Preflight lost the prepared transaction's granted ExerciseCatalog relation lock. Diagnostic: ${diagnostic}`);
+          throw new Error(`Preflight lost the prepared transaction's granted ExerciseCatalog relation lock. Diagnostic: ${JSON.stringify({ preparedTransactions: report.preparedTransactions, relevantLocks: report.relevantLocks })}`);
+        }
+        if (Object.hasOwn(lock, "preparedTransactionId") || lock.xactAgeSeconds !== null) {
+          throw new Error("Preflight made an unverified per-lock prepared GID or age attribution.");
+        }
+        if (!report.preparedTransactions.some((item) => item.gid === gid && item.transaction && item.preparedAt)) {
+          throw new Error("Preflight did not report prepared transaction metadata separately from per-lock attribution.");
         }
         const decision = evaluateProductionPreflight(report, preparedMigrations);
         if (decision.readyForOwnerAuthorization
@@ -330,11 +348,17 @@ async function main() {
       if (afterCleanup.relevantLocks.some((item) => item.blockerType === "prepared-transaction")) {
         throw new Error("The prepared transaction lock remained after ROLLBACK PREPARED cleanup.");
       }
+      if (afterCleanup.preparedTransactions.some((item) => item.gid.startsWith("bodycast-ci-prepared-lock-"))) {
+        throw new Error("A smoke prepared transaction remained after its guaranteed ROLLBACK PREPARED cleanup.");
+      }
       if (!evaluateProductionPreflight(afterCleanup, preparedMigrations).readyForOwnerAuthorization) {
         throw new Error("Preflight did not return to ready after prepared transaction cleanup.");
       }
       preparedLockCleanupRestoredReadiness = true;
     });
+    if (!preparedLockRejected || !preparedLockCleanupRestoredReadiness || !unrelatedPreparedLockIgnored) {
+      throw new Error("Prepared-transaction lock smoke did not prove blocker detection, unrelated-lock handling, and cleanup/readiness restoration.");
+    }
 
     const dump = captureDump(source);
     const encrypted = await encryptBackupStream(dump.stream, archive, key);
@@ -442,6 +466,7 @@ async function main() {
       shortGrantedAlterTableLockRejected: true,
       preparedTransactionRelationLockRejected: preparedLockRejected,
       preparedTransactionCleanupRestoredReadiness: preparedLockCleanupRestoredReadiness,
+      unrelatedPreparedLockIgnored,
       mixedSshKeysFiltered,
       blockersChecked: ["partial object", "failed migration", "long transaction", "short granted DDL-conflicting relation lock", "prepared transaction DDL-conflicting relation lock"],
     }, null, 2) + "\n");

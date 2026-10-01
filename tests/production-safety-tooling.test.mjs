@@ -142,14 +142,27 @@ describe("production migration preflight evaluator", () => {
     expect(result.blockers.join(" ")).toContain("relevant DDL-conflicting relation lock(s)");
   });
 
-  it("reports backend and prepared-transaction lock sources without dropping pid-less locks", async () => {
+  it("reports backend and pid-less prepared lock blockers without unverified per-lock attribution", async () => {
     const sql = await readFile(new URL("../scripts/production-db-preflight.sql", import.meta.url), "utf8");
     expect(sql).toContain("LEFT JOIN pg_stat_activity a ON a.pid = l.pid");
-    expect(sql).toContain("LEFT JOIN pg_prepared_xacts prepared ON l.virtualtransaction = '-1/' || prepared.transaction");
+    expect(sql).not.toContain("prepared.gid AS \"preparedTransactionId\"");
+    expect(sql).not.toContain("l.virtualtransaction = '-1/' || prepared.transaction");
+    expect(sql).toContain("'preparedTransactions'");
+    expect(sql).toContain("'preparedAt', p.prepared");
+    expect(sql).toContain("'transaction', p.transaction");
     expect(sql).toContain("OR l.pid IS NULL");
     expect(sql).toContain("CASE WHEN l.pid IS NULL THEN 'prepared-transaction'");
     expect(sql).toContain("a.pid <> pg_backend_pid()");
     expect(sql).toContain("l.virtualtransaction AS \"virtualTransaction\"");
+    expect(sql).toContain("CASE WHEN l.pid IS NULL THEN NULL");
+
+    const preparedTransactions = [{ gid: "diagnostic-only", transaction: "42", preparedAt: "2026-09-01T00:00:00Z", database: "bodycast" }];
+    const report = evaluateProductionPreflight({
+      ...preflightFixture(EXPECTED_PENDING_MIGRATIONS),
+      preparedTransactions,
+    }, EXPECTED_PENDING_MIGRATIONS);
+    expect(report.readyForOwnerAuthorization).toBe(true);
+    expect(report.preparedTransactions).toEqual(preparedTransactions);
   });
 
   it("requires restored migration history and baseline tables to match the source report", () => {

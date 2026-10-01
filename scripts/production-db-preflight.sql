@@ -64,18 +64,14 @@ WITH object_inventory(name, present) AS (
   SELECT a.pid, c.relname AS relation, l.mode, l.granted,
     CASE WHEN l.pid IS NULL THEN 'prepared-transaction' ELSE 'backend' END AS "blockerType",
     CASE WHEN l.pid IS NULL THEN 'prepared' ELSE a.state END AS state,
-    prepared.gid AS "preparedTransactionId",
     l.virtualtransaction AS "virtualTransaction",
-    CASE WHEN l.pid IS NULL AND prepared.transaction IS NOT NULL
-      THEN floor(extract(epoch FROM (clock_timestamp() - prepared.prepared)))::bigint
-      WHEN l.pid IS NULL THEN NULL
+    CASE WHEN l.pid IS NULL THEN NULL
       ELSE floor(extract(epoch FROM (clock_timestamp() - a.xact_start)))::bigint
     END AS "xactAgeSeconds",
     CASE WHEN l.pid IS NULL THEN NULL ELSE cardinality(pg_blocking_pids(a.pid)) END AS "blockerCount",
     a.wait_event_type AS "waitEventType", a.wait_event AS "waitEvent"
   FROM pg_locks l
   LEFT JOIN pg_stat_activity a ON a.pid = l.pid
-  LEFT JOIN pg_prepared_xacts prepared ON l.virtualtransaction = '-1/' || prepared.transaction
   JOIN pg_class c ON c.oid = l.relation
   JOIN pg_namespace n ON n.oid = c.relnamespace
   JOIN alter_table_targets target ON target.table_name = c.relname
@@ -87,9 +83,8 @@ WITH object_inventory(name, present) AS (
     )
     -- Stage 02 ALTER TABLE statements acquire ACCESS EXCLUSIVE, which conflicts
     -- with every granted relation lock mode. Awaiting relation locks also block readiness.
-    -- Prepared relation lock rows have NULL pid; classify them directly because their
-    -- virtualtransaction can retain the originating backend ID after PREPARE TRANSACTION.
-    -- The pg_prepared_xacts join enriches rows when PostgreSQL exposes the -1/xid mapping.
+    -- Prepared relation lock rows have NULL pid. PostgreSQL may retain the originating
+    -- backend virtualtransaction there, so do not attribute a prepared GID or age per lock.
 )
 SELECT jsonb_build_object(
   'identity', jsonb_build_object(
@@ -112,6 +107,16 @@ SELECT jsonb_build_object(
     LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
   ), '{}'::jsonb),
   'longTransactions', COALESCE((SELECT jsonb_agg(to_jsonb(t) ORDER BY t."xactAgeSeconds" DESC) FROM long_transactions t), '[]'::jsonb),
+  'preparedTransactions', COALESCE((
+    SELECT jsonb_agg(jsonb_build_object(
+      'gid', p.gid,
+      'transaction', p.transaction,
+      'preparedAt', p.prepared,
+      'database', p.database
+    ) ORDER BY p.prepared, p.gid)
+    FROM pg_prepared_xacts p
+    WHERE p.database = current_database()
+  ), '[]'::jsonb),
   'relevantLocks', COALESCE((SELECT jsonb_agg(to_jsonb(l) ORDER BY l."blockerCount" DESC, l."xactAgeSeconds" DESC NULLS LAST, l.pid)
     FROM (SELECT * FROM relevant_locks ORDER BY "blockerCount" DESC, "xactAgeSeconds" DESC NULLS LAST, pid LIMIT 100) l), '[]'::jsonb)
 )::text;

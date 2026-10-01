@@ -1357,6 +1357,85 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
     }
   });
 
+  it("persists one scalar band rep count as equal contributions on both sides", async () => {
+    const db = prisma!;
+    const catalog = await db.exerciseCatalog.create({
+      data: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID, name: `stage02-band-pair-${Date.now()}` },
+      select: { id: true },
+    });
+    let programId: number | null = null;
+    let sessionId: number | null = null;
+    try {
+      const { TrainingService } = await import("../../src/modules/training/training.service");
+      const { persistedPayloadFromUnknown } = await import("../../src/modules/training/persisted-load-accounting-v1");
+      const service = new TrainingService(db);
+      await service.updateCatalogLoadAccountingConfig(catalog.id, {
+        loadAccountingConfig: {
+          schemaVersion: 1,
+          configVersion: "integration-band-both-sides-v1",
+          inventoryCount: 1,
+          loadedSides: 2,
+          execution: "unilateral",
+          equipment: { equipmentId: "resistance-band", setupId: "both-sides" },
+          accountingKind: "band-nominal-per-side",
+          resistanceType: "band-nominal",
+          loadInput: "nominal-kg-per-logged-side",
+          repsMeaning: "per-side",
+        },
+      });
+      const program = await service.createProgram({
+        name: `stage02-band-pair-program-${Date.now()}`,
+        exercises: [{ catalogId: catalog.id, plannedSets: 1, resistanceType: "RESISTANCE_BAND" }],
+      });
+      programId = program.id;
+      const active = await service.startSession(program.id);
+      sessionId = active.id;
+      const exerciseId = active.exercises[0]!.id;
+
+      // This is the old scalar set-entry shape: reps is entered once, without side fields.
+      const set = await service.createSet(active.id, exerciseId, {
+        reps: 12,
+        bandNominalResistanceKg: 20,
+      });
+      expect(set).toMatchObject({ reps: 12, loadAccountingOverride: null });
+      const finished = await service.finishSession(active.id);
+      expect(finished.loadAccountingV1?.bandNominalIndex.leftSide.value).toBe(240);
+      expect(finished.loadAccountingV1?.bandNominalIndex.rightSide.value).toBe(240);
+      expect(finished.loadAccountingV1?.bandNominalIndex.perLoggedSide.value).toBe(0);
+
+      const current = await db.strengthDiarySession.findUniqueOrThrow({
+        where: { id: active.id },
+        select: { currentSnapshotRevision: true },
+      });
+      const snapshot = await db.strengthSessionAccountingSnapshot.findFirstOrThrow({
+        where: { sessionId: active.id, snapshotRevision: current.currentSnapshotRevision! },
+        select: { payload: true },
+      });
+      const payload = persistedPayloadFromUnknown(snapshot.payload);
+      if (!payload || !("breakdown" in payload)) {
+        throw new Error("persisted band-pair snapshot is missing its V2 breakdown");
+      }
+      const row = payload.breakdown.rows[0]!;
+      expect(row.scalarReps).toBe(12);
+      expect(row.effectiveReps).toBe(24);
+      expect(row.asymmetricReps).toBeNull();
+      expect(row.contributions).toEqual(expect.arrayContaining([
+        expect.objectContaining({ category: "bandNominalLeftSide", value: 240, availability: "available" }),
+        expect.objectContaining({ category: "bandNominalRightSide", value: 240, availability: "available" }),
+      ]));
+      expect(row.contributions.some(({ category }) => category === "bandNominalPerLoggedSide")).toBe(false);
+      const reloaded = await service.getSession(active.id);
+      expect(reloaded?.loadAccountingV1?.bandNominalIndex.leftSide.value).toBe(240);
+      expect(reloaded?.loadAccountingV1?.bandNominalIndex.rightSide.value).toBe(240);
+      expect((reloaded?.loadAccountingV1?.bandNominalIndex.leftSide.value ?? 0)
+        + (reloaded?.loadAccountingV1?.bandNominalIndex.rightSide.value ?? 0)).toBe(480);
+    } finally {
+      if (sessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: sessionId } });
+      if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });
+      await db.exerciseCatalog.deleteMany({ where: { id: catalog.id } });
+    }
+  });
+
   it("preserves a legacy client's active workout across catalog changes, reload, and finish", async () => {
     const db = prisma!;
     const catalog = await db.exerciseCatalog.findUniqueOrThrow({

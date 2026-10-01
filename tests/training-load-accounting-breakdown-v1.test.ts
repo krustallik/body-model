@@ -228,6 +228,40 @@ describe("versioned persisted load-accounting breakdown", () => {
     expect(persistedPayloadFromUnknown(payload)).not.toBeNull();
   });
 
+  it("persists symmetric band reps as separate left and right contributions", () => {
+    const localDate = "2026-09-24";
+    const config = {
+      ...LEGACY_LOAD_CONFIGS_V1.one_arm_seated_cable_row,
+      configVersion: "band-per-side-symmetric-reps-v1",
+      accountingKind: "band-nominal-per-side" as const,
+      repsMeaning: "per-side" as const,
+    };
+    const calculated = calculateLoadAccountingWithBreakdownV1({
+      sessionId: 92,
+      localDate,
+      exercises: [{
+        sessionExerciseId: 102,
+        exerciseOrder: 0,
+        exerciseName: "One Arm Seated Cable Row",
+        identity: { status: "known-legacy", stableKey: "one_arm_seated_cable_row" },
+        resistanceHint: "band-nominal",
+        configSnapshot: config,
+        sets: [{ strengthSetId: 202, setNumber: 1, reps: 12, weightKg: null, bandNominalResistanceKg: 20 }],
+      }],
+    });
+    const row = calculated.breakdown.rows[0]!;
+    expect(row.scalarReps).toBe(12);
+    expect(row.effectiveReps).toBe(24);
+    expect(row.asymmetricReps).toBeNull();
+    expect(row.contributions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ category: "bandNominalLeftSide", value: 240, availability: "available" }),
+      expect.objectContaining({ category: "bandNominalRightSide", value: 240, availability: "available" }),
+    ]));
+    expect(row.contributions.some(({ category }) => category === "bandNominalPerLoggedSide")).toBe(false);
+    expect(calculated.result.bandNominalIndex.leftSide.value! + calculated.result.bandNominalIndex.rightSide.value!)
+      .toBe(480);
+  });
+
   it.each([
     { name: "category and basis mismatch", patch: { basis: "sets", unit: "sets" } },
     { name: "category and unit mismatch", patch: { unit: "sets" } },

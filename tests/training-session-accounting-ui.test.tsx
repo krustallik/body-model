@@ -4,6 +4,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SessionAccountingPanel } from "@/app/training/session-accounting-panel";
 import { ExerciseLoadConfigEditor } from "@/app/training/exercise-load-config-editor";
+import { calculateLoadAccountingV1, LEGACY_LOAD_CONFIGS_V1 } from "@/modules/training/load-accounting-v1";
 import { RESISTANCE, SESSION_STATUS } from "@/modules/training/training.constants";
 import type { StrengthSessionDto } from "@/modules/training/training.types";
 import type {
@@ -13,6 +14,18 @@ import type {
 } from "@/modules/training/load-accounting-v1";
 
 type MetricUnit = "kg-repetitions" | "nominal-kg-repetitions-per-logged-side" | "nominal-kg-repetitions-per-side" | "sets" | "repetitions" | "bodyweight-reference-kg-repetitions";
+
+function calculateExternalExample(config: unknown, reps = 12, weightKg = 20, override?: unknown) {
+  return calculateLoadAccountingV1({
+    localDate: "2026-10-01",
+    exercises: [{
+      identity: { status: "unverified", stableKey: null },
+      configSnapshot: config,
+      sets: [{ reps, weightKg, bandNominalResistanceKg: null, override }],
+    }],
+  }).externalLoadVolume.value;
+}
+
 function metric<Unit extends MetricUnit = "kg-repetitions">(
   value: number | null,
   unit: Unit = "kg-repetitions" as Unit,
@@ -315,80 +328,192 @@ describe("persisted session accounting UI", () => {
     expect(screen.queryByText(/Підходи з власною вагою/)).toBeNull();
   });
 
-  it("offers plain-language catalog load configuration and calls the existing PATCH contract", async () => {
+  it("uses the real calculator for a compact full-load ×1 example and the existing catalog PATCH", async () => {
     const user = userEvent.setup();
     const onSaved = vi.fn();
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ ok: true }));
     vi.stubGlobal("fetch", fetchMock);
     render(<ExerciseLoadConfigEditor catalogId={15} configuration={null} resistanceType={RESISTANCE.EXTERNAL_WEIGHT} uk onSaved={onSaved} />);
     await user.click(screen.getByRole("button", { name: "Як враховувати навантаження" }));
-    expect(screen.getByLabelText("Як введена вага відповідає руху")).toBeTruthy();
-    expect(screen.getByText(/Збережені тренування зберігають власні історичні налаштування/)).toBeTruthy();
+
+    expect(screen.getByLabelText("Що означає введена вага?")).toBeTruthy();
+    expect(screen.getByText("20 кг повної ваги × 12 повторів → 240 кг·повторів")).toBeTruthy();
+    expect(screen.queryByLabelText("Скільки боків враховувати однаково?")).toBeNull();
+    expect(screen.getByText(/Завершені тренування зберігають правило/)).toBeTruthy();
+
     await user.click(screen.getByRole("button", { name: "Зберегти правило" }));
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/training/exercises/15/load-accounting", expect.objectContaining({ method: "PATCH" }));
-    const firstCall = fetchMock.mock.calls[0];
-    if (!firstCall) throw new Error("PATCH request was not recorded");
-    const init = firstCall[1];
-    if (!init) throw new Error("PATCH request was missing options");
-    expect(JSON.parse(String(init.body)).loadAccountingConfig).toMatchObject({
-      accountingKind: "external-per-implement-per-side",
-      resistanceType: "external",
-      loadInput: "per-implement-kg",
-      repsMeaning: "per-side",
-    });
-    expect(onSaved).toHaveBeenCalledTimes(1);
-    await user.click(screen.getByRole("button", { name: "Як враховувати навантаження" }));
-    await user.selectOptions(screen.getByLabelText("Як введена вага відповідає руху"), "external-whole-setup");
-    await user.click(screen.getByRole("button", { name: "Зберегти правило" }));
-    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)).loadAccountingConfig).toMatchObject({
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const config = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).loadAccountingConfig;
+    expect(config).toMatchObject({
       accountingKind: "external-complete-setup-per-movement",
       resistanceType: "external",
       loadInput: "complete-setup-kg",
       repsMeaning: "per-movement",
+      inventoryCount: 1,
     });
+    expect(calculateExternalExample(config)).toBe(240);
+    expect(onSaved).toHaveBeenCalledTimes(1);
   });
 
-  it("offers band nominal and bodyweight reference setups with user-readable choices", async () => {
+  it("keeps legacy one-implement movement rules at ×1 without offering a duplicate side rule", async () => {
     const user = userEvent.setup();
     const requests: string[] = [];
-    const fetchMock = vi.fn<typeof fetch>(async (...args) => {
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (...args) => {
       requests.push(String(args[1]?.body));
       return Response.json({ ok: true });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    const { unmount } = render(<ExerciseLoadConfigEditor catalogId={16} configuration={null} resistanceType={RESISTANCE.RESISTANCE_BAND} uk onSaved={() => undefined} />);
+    }));
+    const legacyConfig = LEGACY_LOAD_CONFIGS_V1.hyperextension;
+    render(<ExerciseLoadConfigEditor catalogId={151} configuration={legacyConfig} stableKey="hyperextension" resistanceType={RESISTANCE.EXTERNAL_WEIGHT} uk onSaved={() => undefined} />);
     await user.click(screen.getByRole("button", { name: "Як враховувати навантаження" }));
-    expect(screen.getByLabelText("Як введена вага відповідає руху")).toBeTruthy();
-    await user.selectOptions(screen.getByLabelText("Як введена вага відповідає руху"), "band-each-side");
+
+    const rule = screen.getByLabelText("Що означає введена вага?");
+    expect(rule).toHaveProperty("value", "external-per-side");
+    expect(Array.from(rule.querySelectorAll("option")).map((option) => option.value)).toEqual([
+      "external-whole-setup", "external-per-side",
+    ]);
+    expect(screen.getByLabelText("Скільки боків враховувати однаково?")).toHaveProperty("value", "1");
+    expect(screen.getByText("20 кг за снаряд × 12 однакових повторів × 1 бік → 240 кг·повторів")).toBeTruthy();
+
     await user.click(screen.getByRole("button", { name: "Зберегти правило" }));
-    await screen.findByRole("button", { name: "Як враховувати навантаження" });
+    const savedConfig = JSON.parse(requests[0]!).loadAccountingConfig;
+    expect(savedConfig).toMatchObject({
+      accountingKind: "external-per-implement-per-side",
+      repsMeaning: "per-side",
+      loadedSides: 1,
+      inventoryCount: 1,
+    });
+    expect(calculateExternalExample(savedConfig)).toBe(240);
+  });
+
+  it("uses one weight-per-implement choice for symmetric work without a duplicate per-side option", async () => {
+    const user = userEvent.setup();
+    const requests: string[] = [];
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (...args) => {
+      requests.push(String(args[1]?.body));
+      return Response.json({ ok: true });
+    }));
+    render(<ExerciseLoadConfigEditor catalogId={16} configuration={null} resistanceType={RESISTANCE.EXTERNAL_WEIGHT} uk onSaved={() => undefined} />);
+    await user.click(screen.getByRole("button", { name: "Як враховувати навантаження" }));
+    const rule = screen.getByLabelText("Що означає введена вага?");
+    expect(Array.from(rule.querySelectorAll("option")).map((option) => option.value)).toEqual([
+      "external-whole-setup", "external-per-side",
+    ]);
+    await user.selectOptions(rule, "external-per-side");
+    await user.selectOptions(screen.getByLabelText("Скільки боків враховувати однаково?"), "2");
+
+    expect(screen.getByText("Введіть вагу одного снаряда (наприклад, однієї гантелі). Одне число повторів застосовується однаково до обох боків.")).toBeTruthy();
+    expect(screen.getByText("20 кг за снаряд × 12 однакових повторів × 2 боки → 480 кг·повторів")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Зберегти правило" }));
+    const config = JSON.parse(requests[0]!).loadAccountingConfig;
+    expect(config).toMatchObject({
+      accountingKind: "external-per-implement-per-side",
+      inventoryCount: 2,
+      loadedSides: 2,
+      execution: "simultaneous",
+      repsMeaning: "per-side",
+    });
+    expect(calculateExternalExample(config)).toBe(480);
+    expect(calculateExternalExample(config)).not.toBe(960);
+  });
+
+  it("applies the same scalar reps to each loaded side and supports unilateral work", async () => {
+    const user = userEvent.setup();
+    const requests: string[] = [];
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (...args) => {
+      requests.push(String(args[1]?.body));
+      return Response.json({ ok: true });
+    }));
+    render(<ExerciseLoadConfigEditor catalogId={17} configuration={null} resistanceType={RESISTANCE.EXTERNAL_WEIGHT} uk onSaved={() => undefined} />);
+    await user.click(screen.getByRole("button", { name: "Як враховувати навантаження" }));
+    await user.selectOptions(screen.getByLabelText("Що означає введена вага?"), "external-per-side");
+    expect(screen.getByText("Введіть вагу одного снаряда (наприклад, однієї гантелі). Одне число повторів застосовується однаково до обох боків.")).toBeTruthy();
+    const sides = screen.getByLabelText("Скільки боків враховувати однаково?");
+    await user.selectOptions(sides, "1");
+    expect(screen.getByText("Введіть вагу одного снаряда (наприклад, однієї гантелі). Одне число повторів застосовується однаково до одного боку.")).toBeTruthy();
+    expect(screen.getByText("20 кг за снаряд × 12 однакових повторів × 1 бік → 240 кг·повторів")).toBeTruthy();
+    await user.selectOptions(sides, "2");
+    expect(screen.getByText("20 кг за снаряд × 12 однакових повторів × 2 боки → 480 кг·повторів")).toBeTruthy();
+    await user.selectOptions(sides, "1");
+    await user.click(screen.getByRole("button", { name: "Зберегти правило" }));
+    const config = JSON.parse(requests[0]!).loadAccountingConfig;
+    expect(config).toMatchObject({ accountingKind: "external-per-implement-per-side", repsMeaning: "per-side", loadedSides: 1 });
+    expect(calculateExternalExample(config)).toBe(240);
+  });
+
+  it("preserves legacy per-side and asymmetric calculator semantics while changing the visible rule", async () => {
+    const user = userEvent.setup();
+    const requests: string[] = [];
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (...args) => {
+      requests.push(String(args[1]?.body));
+      return Response.json({ ok: true });
+    }));
+    const legacyConfig = { ...LEGACY_LOAD_CONFIGS_V1.incline_dumbbell_press_30deg, execution: "alternating" as const };
+    render(<ExerciseLoadConfigEditor catalogId={18} configuration={legacyConfig} stableKey="incline_dumbbell_press_30deg" resistanceType={RESISTANCE.EXTERNAL_WEIGHT} uk onSaved={() => undefined} />);
+    await user.click(screen.getByRole("button", { name: "Як враховувати навантаження" }));
+    expect(screen.getByLabelText("Скільки боків враховувати однаково?")).toHaveProperty("value", "2");
+    expect(screen.getByText("20 кг за снаряд × 12 однакових повторів × 2 боки → 480 кг·повторів")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Зберегти правило" }));
+    const savedConfig = JSON.parse(requests[0]!).loadAccountingConfig;
+    expect(savedConfig).toMatchObject({
+      accountingKind: "external-per-implement-per-side",
+      repsMeaning: "per-side",
+      execution: "alternating",
+      loadedSides: 2,
+    });
+    expect(calculateExternalExample(savedConfig)).toBe(480);
+
+    const asymmetricSet = { reps: 12, weightKg: 10, bandNominalResistanceKg: null,
+      override: { reps: { kind: "asymmetric-per-side", left: 12, right: 10 } } };
+    const asymmetricResult = calculateLoadAccountingV1({
+      localDate: "2026-10-01",
+      exercises: [{ identity: { status: "unverified", stableKey: null }, configSnapshot: legacyConfig, sets: [asymmetricSet] }],
+    });
+    expect(asymmetricResult.externalLoadVolume.value).toBe(220);
+    expect(asymmetricSet.reps).toBe(12);
+    expect(asymmetricSet.override.reps.left + asymmetricSet.override.reps.right).toBe(22);
+  });
+
+  it("keeps band-side values separate and renders bodyweight shares as familiar percentages", async () => {
+    const user = userEvent.setup();
+    const requests: string[] = [];
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (...args) => {
+      requests.push(String(args[1]?.body));
+      return Response.json({ ok: true });
+    }));
+    const { unmount } = render(<ExerciseLoadConfigEditor catalogId={19} configuration={null} resistanceType={RESISTANCE.RESISTANCE_BAND} uk onSaved={() => undefined} />);
+    await user.click(screen.getByRole("button", { name: "Як враховувати навантаження" }));
+    expect(screen.getByText("20 кг номінального опору × 12 повторів → 240 номінальних кг·повторів")).toBeTruthy();
+    await user.selectOptions(screen.getByLabelText("Що означає введена вага?"), "band-each-side");
+    expect(screen.getByText("20 кг на сторону × (12 зліва + 12 справа) → по 240 номінальних кг·повторів на сторону")).toBeTruthy();
+    expect(screen.getByText("Одне введене число повторів застосовується однаково ліворуч і праворуч; приклад показує внесок кожної сторони окремо.")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Зберегти правило" }));
     expect(JSON.parse(requests[0]!).loadAccountingConfig).toMatchObject({
       accountingKind: "band-nominal-per-side",
       resistanceType: "band-nominal",
-      loadInput: "nominal-kg-per-logged-side",
       repsMeaning: "per-side",
     });
 
     unmount();
-    const { unmount: unmountBodyweight } = render(<ExerciseLoadConfigEditor catalogId={17} configuration={null} resistanceType={RESISTANCE.BODYWEIGHT} uk onSaved={() => undefined} />);
+    const { unmount: unmountBodyweight } = render(<ExerciseLoadConfigEditor catalogId={20} configuration={null} resistanceType={RESISTANCE.BODYWEIGHT} uk onSaved={() => undefined} />);
     await user.click(screen.getByRole("button", { name: "Як враховувати навантаження" }));
-    await user.selectOptions(screen.getByLabelText("Як введена вага відповідає руху"), "bodyweight-per-side");
-    await user.clear(screen.getByLabelText("Частка маси для цього руху"));
-    await user.type(screen.getByLabelText("Частка маси для цього руху"), "0.7");
+    await user.selectOptions(screen.getByLabelText("Що означає введена вага?"), "bodyweight-per-side");
+    await user.clear(screen.getByLabelText("Частка маси у відсотках"));
+    await user.type(screen.getByLabelText("Частка маси у відсотках"), "70");
+    expect(screen.getByText(/80 кг × 70% маси × 12 однакових повторів × 2 стор\. → 1.344 референсних кг·повторів/)).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Зберегти правило" }));
-    expect(JSON.parse(requests[1]!).loadAccountingConfig).toMatchObject({
+    const bodyweightConfig = JSON.parse(requests[1]!).loadAccountingConfig;
+    expect(bodyweightConfig).toMatchObject({
       accountingKind: "bodyweight-reference-per-side",
       resistanceType: "bodyweight",
-      loadInput: "bodyweight-reference",
       repsMeaning: "per-side",
       bodyweightFraction: 0.7,
     });
-    expect(screen.queryByText(/band-nominal|bodyweight-reference|per-side/)).toBeNull();
 
     unmountBodyweight();
-    render(<ExerciseLoadConfigEditor catalogId={18} configuration={null} resistanceType={RESISTANCE.BODYWEIGHT} stableKey="pushup_handles" uk onSaved={() => undefined} />);
+    render(<ExerciseLoadConfigEditor catalogId={21} configuration={null} resistanceType={RESISTANCE.BODYWEIGHT} stableKey="pushup_handles" uk onSaved={() => undefined} />);
     await user.click(screen.getByRole("button", { name: "Як враховувати навантаження" }));
-    expect(screen.getByLabelText("Частка маси для цього руху")).toHaveProperty("value", "0.7");
-    expect(screen.getByText(/початкове правило приблизне: 70% маси тіла/)).toBeTruthy();
+    expect(screen.getByLabelText("Частка маси у відсотках")).toHaveProperty("value", "70");
+    expect(screen.getByText(/70% — приблизна частка для віджимань від ручок/)).toBeTruthy();
   });
 });

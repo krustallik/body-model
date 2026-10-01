@@ -3145,6 +3145,11 @@ a.editMenuItem + .editMenuDanger {
 .loadConfigFields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.65rem; }
 .loadConfigNote,
 .loadConfigCurrent { margin: 0; color: var(--training-text-muted); font-size: 0.75rem; line-height: 1.45; overflow-wrap: anywhere; }
+.loadConfigPercentField { display: flex; align-items: center; gap: 0.55rem; max-width: 12rem; }
+.loadConfigPercentField input { flex: 1; min-width: 0; }
+.loadConfigPercentField > span { color: var(--training-text-muted); font-size: 0.85rem; }
+.loadConfigExplanation { margin: 0; color: var(--training-text-secondary); font-size: 0.78rem; line-height: 1.45; }
+.loadConfigPreview { margin: 0; padding: 0.6rem 0.7rem; border: 1px solid var(--training-border); border-radius: 0.55rem; background: var(--training-surface); color: var(--training-text); font-size: 0.82rem; line-height: 1.45; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .loadConfigCurrent { color: #9de5cd; }
 .loadConfigBody select,
 .loadConfigBody input { box-sizing: border-box; max-width: 100%; }

@@ -337,7 +337,7 @@ describe("persisted session accounting UI", () => {
     await user.click(screen.getByRole("button", { name: "Як враховувати навантаження" }));
 
     expect(screen.getByLabelText("Що означає введена вага?")).toBeTruthy();
-    expect(screen.getByText("20 кг повної ваги × 12 повторів → 240 кг·повторів")).toBeTruthy();
+    expect(screen.getByText("20 кг сумарної ваги × 12 повторів → 240 кг·повторів")).toBeTruthy();
     expect(screen.queryByLabelText("Скільки боків враховувати однаково?")).toBeNull();
     expect(screen.getByText(/Завершені тренування зберігають правило/)).toBeTruthy();
 
@@ -372,18 +372,55 @@ describe("persisted session accounting UI", () => {
     expect(Array.from(rule.querySelectorAll("option")).map((option) => option.value)).toEqual([
       "external-whole-setup", "external-per-side",
     ]);
-    expect(screen.getByLabelText("Скільки боків враховувати однаково?")).toHaveProperty("value", "1");
-    expect(screen.getByText("20 кг за снаряд × 12 однакових повторів × 1 бік → 240 кг·повторів")).toBeTruthy();
+    expect(screen.queryByLabelText("Скільки боків враховувати однаково?")).toBeNull();
+    expect(screen.getByLabelText("Скільки снарядів у русі?")).toHaveProperty("value", "1");
+    expect(screen.getByText("20 кг за снаряд × 12 повторів → 240 кг·повторів")).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "Зберегти правило" }));
     const savedConfig = JSON.parse(requests[0]!).loadAccountingConfig;
     expect(savedConfig).toMatchObject({
-      accountingKind: "external-per-implement-per-side",
-      repsMeaning: "per-side",
-      loadedSides: 1,
+      accountingKind: "external-per-implement-per-movement",
+      repsMeaning: "per-movement",
+      implementsPerMovement: 1,
+      loadedSides: 2,
       inventoryCount: 1,
     });
     expect(calculateExternalExample(savedConfig)).toBe(240);
+  });
+
+  it("preserves the existing movement-based encoding for a symmetric pair when its count is unchanged", async () => {
+    const user = userEvent.setup();
+    const requests: string[] = [];
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (...args) => {
+      requests.push(String(args[1]?.body));
+      return Response.json({ ok: true });
+    }));
+    const movementPair = {
+      ...LEGACY_LOAD_CONFIGS_V1.incline_dumbbell_press_30deg,
+      accountingKind: "external-per-implement-per-movement",
+      repsMeaning: "per-movement",
+      implementsPerMovement: 2,
+    } as const;
+    render(<ExerciseLoadConfigEditor catalogId={152} configuration={movementPair} stableKey="incline_dumbbell_press_30deg" resistanceType={RESISTANCE.EXTERNAL_WEIGHT} uk onSaved={() => undefined} />);
+    await user.click(screen.getByRole("button", { name: "Як враховувати навантаження" }));
+
+    expect(screen.getByLabelText("Що означає введена вага?")).toHaveProperty("value", "external-per-side");
+    expect(screen.queryByLabelText("Скільки боків враховувати однаково?")).toBeNull();
+    expect(screen.getByLabelText("Скільки снарядів у русі?")).toHaveProperty("value", "2");
+    expect(screen.getByText(/20 кг.*12.*480/)).toBeTruthy();
+    expect(screen.getByText("Введіть вагу одного снаряда з пари. Облік автоматично врахує обидва снаряди; повтори вводяться один раз за весь підхід.")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Зберегти правило" }));
+
+    const savedConfig = JSON.parse(requests[0]!).loadAccountingConfig;
+    expect(savedConfig).toMatchObject({
+      accountingKind: "external-per-implement-per-movement",
+      repsMeaning: "per-movement",
+      implementsPerMovement: 2,
+      loadedSides: 2,
+      inventoryCount: 2,
+      execution: "simultaneous",
+    });
+    expect(calculateExternalExample(savedConfig)).toBe(480);
   });
 
   it("uses one weight-per-implement choice for symmetric work without a duplicate per-side option", async () => {
@@ -400,45 +437,42 @@ describe("persisted session accounting UI", () => {
       "external-whole-setup", "external-per-side",
     ]);
     await user.selectOptions(rule, "external-per-side");
-    await user.selectOptions(screen.getByLabelText("Скільки боків враховувати однаково?"), "2");
-
-    expect(screen.getByText("Введіть вагу одного снаряда (наприклад, однієї гантелі). Одне число повторів застосовується однаково до обох боків.")).toBeTruthy();
-    expect(screen.getByText("20 кг за снаряд × 12 однакових повторів × 2 боки → 480 кг·повторів")).toBeTruthy();
+    expect(screen.queryByLabelText("Скільки боків враховувати однаково?")).toBeNull();
+    const implementCount = screen.getByLabelText("Скільки снарядів у русі?");
+    expect(implementCount).toHaveProperty("value", "2");
+    await user.selectOptions(implementCount, "1");
+    expect(screen.getByText("20 кг за снаряд × 12 повторів → 240 кг·повторів")).toBeTruthy();
+    await user.selectOptions(implementCount, "2");
+    expect(screen.getByText("Пара снарядів по 20 кг × 12 повторів → 480 кг·повторів")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Зберегти правило" }));
     const config = JSON.parse(requests[0]!).loadAccountingConfig;
     expect(config).toMatchObject({
-      accountingKind: "external-per-implement-per-side",
+      accountingKind: "external-per-implement-per-movement",
+      implementsPerMovement: 2,
       inventoryCount: 2,
       loadedSides: 2,
       execution: "simultaneous",
-      repsMeaning: "per-side",
+      repsMeaning: "per-movement",
     });
     expect(calculateExternalExample(config)).toBe(480);
     expect(calculateExternalExample(config)).not.toBe(960);
   });
 
-  it("applies the same scalar reps to each loaded side and supports unilateral work", async () => {
+  it("keeps unilateral exercise multiplier in its saved rule without asking for separate side reps", async () => {
     const user = userEvent.setup();
     const requests: string[] = [];
     vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (...args) => {
       requests.push(String(args[1]?.body));
       return Response.json({ ok: true });
     }));
-    render(<ExerciseLoadConfigEditor catalogId={17} configuration={null} resistanceType={RESISTANCE.EXTERNAL_WEIGHT} uk onSaved={() => undefined} />);
+    render(<ExerciseLoadConfigEditor catalogId={17} configuration={LEGACY_LOAD_CONFIGS_V1.one_arm_lateral_raise} stableKey="one_arm_lateral_raise" resistanceType={RESISTANCE.EXTERNAL_WEIGHT} uk onSaved={() => undefined} />);
     await user.click(screen.getByRole("button", { name: "Як враховувати навантаження" }));
-    await user.selectOptions(screen.getByLabelText("Що означає введена вага?"), "external-per-side");
-    expect(screen.getByText("Введіть вагу одного снаряда (наприклад, однієї гантелі). Одне число повторів застосовується однаково до обох боків.")).toBeTruthy();
-    const sides = screen.getByLabelText("Скільки боків враховувати однаково?");
-    await user.selectOptions(sides, "1");
-    expect(screen.getByText("Введіть вагу одного снаряда (наприклад, однієї гантелі). Одне число повторів застосовується однаково до одного боку.")).toBeTruthy();
-    expect(screen.getByText("20 кг за снаряд × 12 однакових повторів × 1 бік → 240 кг·повторів")).toBeTruthy();
-    await user.selectOptions(sides, "2");
-    expect(screen.getByText("20 кг за снаряд × 12 однакових повторів × 2 боки → 480 кг·повторів")).toBeTruthy();
-    await user.selectOptions(sides, "1");
+    expect(screen.queryByLabelText("Скільки боків враховувати однаково?")).toBeNull();
+    expect(screen.getByText(/за весь рух.*480/)).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Зберегти правило" }));
     const config = JSON.parse(requests[0]!).loadAccountingConfig;
-    expect(config).toMatchObject({ accountingKind: "external-per-implement-per-side", repsMeaning: "per-side", loadedSides: 1 });
-    expect(calculateExternalExample(config)).toBe(240);
+    expect(config).toMatchObject({ accountingKind: "external-per-implement-per-side", repsMeaning: "per-side", loadedSides: 2 });
+    expect(calculateExternalExample(config)).toBe(480);
   });
 
   it("preserves legacy per-side and asymmetric calculator semantics while changing the visible rule", async () => {
@@ -451,8 +485,7 @@ describe("persisted session accounting UI", () => {
     const legacyConfig = { ...LEGACY_LOAD_CONFIGS_V1.incline_dumbbell_press_30deg, execution: "alternating" as const };
     render(<ExerciseLoadConfigEditor catalogId={18} configuration={legacyConfig} stableKey="incline_dumbbell_press_30deg" resistanceType={RESISTANCE.EXTERNAL_WEIGHT} uk onSaved={() => undefined} />);
     await user.click(screen.getByRole("button", { name: "Як враховувати навантаження" }));
-    expect(screen.getByLabelText("Скільки боків враховувати однаково?")).toHaveProperty("value", "2");
-    expect(screen.getByText("20 кг за снаряд × 12 однакових повторів × 2 боки → 480 кг·повторів")).toBeTruthy();
+    expect(screen.getByText(/20 кг.*12.*480 кг·повторів/)).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Зберегти правило" }));
     const savedConfig = JSON.parse(requests[0]!).loadAccountingConfig;
     expect(savedConfig).toMatchObject({

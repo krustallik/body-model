@@ -84,13 +84,23 @@ function makeConfig(input: {
     execution: input.execution,
     equipment: { equipmentId: input.equipmentId, setupId: input.setupId },
   };
-  if (input.mode === "external-per-side") return {
-    ...common,
-    accountingKind: "external-per-implement-per-side",
-    resistanceType: "external",
-    loadInput: "per-implement-kg",
-    repsMeaning: "per-side",
-  };
+  if (input.mode === "external-per-side") {
+    if (input.execution === "simultaneous") return {
+      ...common,
+      accountingKind: "external-per-implement-per-movement",
+      resistanceType: "external",
+      loadInput: "per-implement-kg",
+      repsMeaning: "per-movement",
+      implementsPerMovement: input.loadedSides,
+    };
+    return {
+      ...common,
+      accountingKind: "external-per-implement-per-side",
+      resistanceType: "external",
+      loadInput: "per-implement-kg",
+      repsMeaning: "per-side",
+    };
+  }
   if (input.mode === "external-whole-setup") return {
     ...common,
     accountingKind: "external-complete-setup-per-movement",
@@ -206,7 +216,7 @@ export function ExerciseLoadConfigEditor({
 
   const modeLabels: Record<ConfigMode, [string, string]> = {
     "external-per-side": ["Вага одного снаряда", "Weight of one implement"],
-    "external-whole-setup": ["Повна вага руху", "Full movement load"],
+    "external-whole-setup": ["Сумарна вага за рух", "Combined load for the movement"],
     "band-logged-side": ["Опір на сторону підходу", "Resistance for the logged side"],
     "band-each-side": ["Опір кожної сторони", "Resistance on each side"],
     "bodyweight-per-movement": ["Маса на один рух", "Body mass per movement"],
@@ -223,16 +233,24 @@ export function ExerciseLoadConfigEditor({
     const equipmentSetup = matchesResistance(displayedConfig, resistanceType)
       ? displayedConfig!.equipment
       : { equipmentId: defaultEquipment(resistanceType), setupId: mode };
-    const candidate = makeConfig({
-      mode,
-      configVersion,
-      inventoryCount: derivedInventory,
-      loadedSides,
-      execution: effectiveExecution,
-      bodyweightFraction: parsedPercent / 100,
-      equipmentId: equipmentSetup.equipmentId,
-      setupId: equipmentSetup.setupId,
-    });
+    const preserveMovementConfig = mode === "external-per-side"
+      && displayedConfig?.accountingKind === "external-per-implement-per-movement"
+      && loadedSides === initialLoadedSides(displayedConfig, resistanceType);
+    const preserveLegacySideConfig = mode === "external-per-side"
+      && displayedConfig?.accountingKind === "external-per-implement-per-side"
+      && loadedSides === displayedConfig.loadedSides;
+    const candidate = preserveMovementConfig || preserveLegacySideConfig
+      ? { ...displayedConfig, configVersion }
+      : makeConfig({
+        mode,
+        configVersion,
+        inventoryCount: derivedInventory,
+        loadedSides,
+        execution: effectiveExecution,
+        bodyweightFraction: parsedPercent / 100,
+        equipmentId: equipmentSetup.equipmentId,
+        setupId: equipmentSetup.setupId,
+      });
     const parsed = loadConfigV1Schema.safeParse(candidate);
     return parsed.success ? parsed.data : null;
   }
@@ -242,15 +260,26 @@ export function ExerciseLoadConfigEditor({
   const previewBodyweightFraction = previewConfig && "bodyweightFraction" in previewConfig
     ? previewConfig.bodyweightFraction : 1;
   const number = (value: number | null) => value === null ? null : formatNumber(value, uk);
+  const pairLabel = previewConfig?.equipment.equipmentId === "dumbbell"
+    ? uk ? "2 гантелі по 20 кг" : "2 dumbbells at 20 kg"
+    : uk ? "Пара снарядів по 20 кг" : "Pair of implements at 20 kg";
   const previewLine = preview && previewConfig
     ? preview.kind === "external"
       ? uk
         ? mode === "external-per-side"
-          ? `20 кг за снаряд × 12 однакових повторів × ${loadedSides} ${loadedSides === 1 ? "бік" : "боки"} → ${number(preview.value)} кг·повторів`
-          : `20 кг повної ваги × 12 повторів → ${number(preview.value)} кг·повторів`
+          ? loadedSides === 2 && execution === "simultaneous"
+            ? pairLabel + " × 12 повторів → " + number(preview.value) + " кг·повторів"
+            : displayedConfig?.execution === "unilateral" || displayedConfig?.execution === "alternating"
+              ? "20 кг за снаряд × 12 повторів за весь рух → " + number(preview.value) + " кг·повторів"
+              : "20 кг за снаряд × 12 повторів → " + number(preview.value) + " кг·повторів"
+          : `20 кг сумарної ваги × 12 повторів → ${number(preview.value)} кг·повторів`
         : mode === "external-per-side"
-          ? `20 kg per implement × 12 equal reps × ${loadedSides} sides → ${number(preview.value)} kg·reps`
-          : `20 kg full movement load × 12 reps → ${number(preview.value)} kg·reps`
+          ? loadedSides === 2 && execution === "simultaneous"
+            ? pairLabel + " × 12 reps → " + number(preview.value) + " kg·reps"
+            : displayedConfig?.execution === "unilateral" || displayedConfig?.execution === "alternating"
+              ? "20 kg per implement × 12 reps for the whole movement → " + number(preview.value) + " kg·reps"
+              : "20 kg per implement × 12 reps → " + number(preview.value) + " kg·reps"
+          : `20 kg combined load × 12 reps → ${number(preview.value)} kg·reps`
       : preview.kind === "band"
         ? uk ? `20 кг номінального опору × 12 повторів → ${number(preview.value)} номінальних кг·повторів` : `20 kg nominal resistance × 12 reps → ${number(preview.value)} nominal kg·reps`
         : preview.kind === "band-sides"
@@ -261,18 +290,24 @@ export function ExerciseLoadConfigEditor({
     : null;
 
   const explanation = mode === "external-whole-setup"
-    ? uk ? "Введіть повну зовнішню вагу на один рух. BodyCast врахує її один раз." : "Enter the full external load for one movement. BodyCast counts it once."
+    ? uk
+      ? "Введіть сумарну вагу снарядів за один повтор. Наприклад, пара гантелей по 20 кг = 40 кг. Повтори вводяться один раз за весь підхід."
+      : "Enter the combined implement weight for one rep. For example, two 20 kg dumbbells = 40 kg. Enter reps once for the whole set."
     : mode === "external-per-side"
       ? uk
-        ? `Введіть вагу одного снаряда (наприклад, однієї гантелі). Одне число повторів застосовується однаково до ${loadedSides === 1 ? "одного боку" : "обох боків"}.`
-        : `Enter the weight of one implement (for example, one dumbbell). The same entered rep count applies equally to ${loadedSides === 1 ? "one side" : "both sides"}.`
-        : mode === "band-logged-side"
-          ? uk ? "Номінальний опір рахується окремо від зовнішньої ваги: значення для підходу × записані повтори." : "Nominal band resistance stays separate from external load: the set value × entered repetitions."
-          : mode === "band-each-side"
-            ? uk ? "Одне введене число повторів застосовується однаково ліворуч і праворуч; приклад показує внесок кожної сторони окремо." : "The entered rep count applies equally to the left and right; the example shows each side's contribution separately."
-            : mode === "bodyweight-per-side"
-              ? uk ? "Одне число повторів застосовується однаково до кожної навантаженої сторони; частка маси враховується для обох." : "The same entered rep count applies to each loaded side; the selected share of body mass is counted for both."
-              : uk ? "Вибрана частка референсної маси застосовується один раз до кожного завершеного руху." : "The selected share of reference body mass applies once to each completed movement.";
+        ? loadedSides === 2 && execution === "simultaneous"
+          ? "Введіть вагу одного снаряда з пари. Облік автоматично врахує обидва снаряди; повтори вводяться один раз за весь підхід."
+          : "Введіть вагу одного снаряда. Повтори вводяться один раз за весь підхід; правило вправи врахує її налаштування."
+        : loadedSides === 2 && execution === "simultaneous"
+          ? "Enter the weight of one implement from a pair. Both implements are counted automatically; enter reps once for the whole set."
+          : "Enter the weight of one implement. Enter reps once for the whole set; the exercise rule accounts for its setup."
+      : mode === "band-logged-side"
+        ? uk ? "Номінальний опір рахується окремо від зовнішньої ваги: значення для підходу × записані повтори." : "Nominal band resistance stays separate from external load: the set value × entered repetitions."
+        : mode === "band-each-side"
+          ? uk ? "Одне введене число повторів застосовується однаково ліворуч і праворуч; приклад показує внесок кожної сторони окремо." : "The entered rep count applies equally to the left and right; the example shows each side contribution separately."
+          : mode === "bodyweight-per-side"
+            ? uk ? "Одне число повторів застосовується однаково до кожної навантаженої сторони; частка маси враховується для обох." : "The same entered rep count applies to each loaded side; the selected share of body mass is counted for both."
+            : uk ? "Вибрана частка референсної маси застосовується один раз до кожного завершеного руху." : "The selected share of reference body mass applies once to each completed movement.";
 
   async function save(next: unknown | null) {
     setBusy(true);
@@ -325,7 +360,16 @@ export function ExerciseLoadConfigEditor({
             </select>
           </label>
 
-          {(mode === "external-per-side" || mode === "bodyweight-per-side") && (
+          {mode === "external-per-side" && execution === "simultaneous" && (
+            <label className={styles.field}>
+              <span>{uk ? "Скільки снарядів у русі?" : "How many implements are used?"}</span>
+              <select value={loadedSides} onChange={(event) => setLoadedSides(Number(event.target.value) as 1 | 2)}>
+                <option value={1}>{uk ? "1 снаряд" : "1 implement"}</option>
+                <option value={2}>{uk ? "Пара — 2 снаряди" : "Pair — 2 implements"}</option>
+              </select>
+            </label>
+          )}
+          {mode === "bodyweight-per-side" && (
             <label className={styles.field}>
               <span>{uk ? "Скільки боків враховувати однаково?" : "How many sides count equally?"}</span>
               <select value={loadedSides} onChange={(event) => setLoadedSides(Number(event.target.value) as 1 | 2)}>

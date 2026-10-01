@@ -33,24 +33,48 @@ collected with retention and alerting at the platform layer.
 
 ## Backup and restore
 
-Create a custom-format backup without ownership or ACL data:
+Production readiness uses the manual `Production migration preflight and encrypted backup`
+workflow documented in `docs/development/production-deploy.md`. It pins the SSH host key,
+streams a custom-format `pg_dump` through authenticated AES-256-GCM encryption, uploads only
+ciphertext to repository artifact storage, and restores into an ephemeral nonproduction
+PostgreSQL service. It checks the restored migration history and baseline tables. Do not use the
+production container as a restore target.
+
+The local backup helper also writes only encrypted custom-format archives and requires explicit
+source parameters, a confirmation phrase, and `PRODUCTION_BACKUP_ENCRYPTION_KEY` from a protected
+secret store in the invoking environment:
 
 ```powershell
-npm run backup:postgres -- -Output .\backups\bodycast-2026-08-26.dump
+npm run backup:postgres -- -Container bodycast-db-prod -Database bodycast -User bodycast `
+  -ConfirmProductionBackup read-only-production-snapshot -OutputDirectory .\backups
 ```
 
-Verify it by restoring into a uniquely named disposable database; the script checks completed
-Prisma migrations and always drops the disposable database:
+The restore helper requires an explicit disposable container carrying immutable Docker labels
+`bodycast.environment=nonproduction` and `bodycast.disposable=true`. It rejects production-like
+container names and remote Docker contexts, creates a unique temporary database only inside
+that labelled target, streams decryption directly to `pg_restore`, checks migration-history and
+baseline table readability, and drops the temporary database there. A local test target can be
+started as follows, then wait for `pg_isready` before running verification:
 
 ```powershell
-npm run verify:postgres-restore -- -Backup .\backups\bodycast-2026-08-26.dump
+docker run --detach --rm --name bodycast-restore-test `
+  --label bodycast.environment=nonproduction --label bodycast.disposable=true `
+  --env POSTGRES_USER=bodycast --env POSTGRES_PASSWORD=disposable-only `
+  --env POSTGRES_DB=bodycast postgres:17-alpine
+
+npm run verify:postgres-restore -- -Container bodycast-restore-test -User bodycast `
+  -Backup .\backups\bodycast-bodycast-20261001T120000Z.pgdump.enc `
+  -ConfirmDisposableTarget nonproduction-disposable
 ```
 
-If either command fails, retain the dump and command output, resolve storage/container issues,
-and retry. Never restore over the active database. For disaster recovery, stop writes, restore
-to a new database, run `prisma migrate status`, point a canary application at it, verify
-readiness and representative records, then switch traffic. Encrypt backups, restrict access,
-copy them off-host, define retention, and periodically repeat the disposable restore test.
+Never omit the explicit restore target, remove its nonproduction/disposable labels, or run a
+restore command against `bodycast-db-prod`. Preserve encrypted backups and command output on
+failure; do not delete a production backup after restore verification. The GitHub artifact is
+retained for 90 days, so preserve it in the already-approved owner-controlled encrypted archive
+before expiry. Keep the encryption key separately in the protected secret vault. For disaster
+recovery, stop writes only under a separately approved recovery plan, restore to a new isolated
+database, run `prisma migrate status`, point a canary application at it, and verify readiness and
+representative records before any traffic switch.
 
 ## Migration safety
 

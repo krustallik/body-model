@@ -56,6 +56,17 @@ describe("history chart data transformations", () => {
     ]);
   });
 
+  it("anchors the 30-day chart window at the inclusive month-boundary cutoff", () => {
+    const input = [day("2026-09-01"), day("2026-09-02"), day("2026-09-03")];
+    const model = movementTrainingChartModel(input, { range: 30, today: "2026-10-01" });
+
+    expect(rangeStartDate(30, "2026-10-01")).toBe("2026-09-02");
+    expect(model.points).toHaveLength(30);
+    expect(model.points[0]?.date).toBe("2026-09-02");
+    expect(model.points.some((point) => point.date === "2026-09-01")).toBe(false);
+    expect(model.points.at(-1)?.date).toBe("2026-10-01");
+  });
+
   it("keeps null values missing instead of converting them to zero", () => {
     const input = [day("2026-08-22", null)];
     const result = filterDaysByRange(input, 30, "2026-08-22");

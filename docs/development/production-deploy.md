@@ -52,7 +52,8 @@ must contain the existing `SSH_HOST`, `SSH_USER`, `SSH_PORT`, and `SSH_PRIVATE_K
 
 - `SSH_HOST_FINGERPRINT`: the production host's verified `SHA256:` OpenSSH fingerprint. Obtain
   and verify this through the trusted host administration channel; the workflow rejects an
-  unpinned or mismatched host key.
+  unpinned host and writes only scanned key records whose individual fingerprints exactly match
+  this pin. Unmatched scanned keys are never placed in `known_hosts`.
 - `PRODUCTION_BACKUP_ENCRYPTION_KEY`: canonical base64 for a randomly generated 32-byte key.
   Store it only as a protected production-environment secret and separately in the approved
   owner-controlled secret vault. Never put it in the repository, workflow input, logs, or backup
@@ -60,7 +61,11 @@ must contain the existing `SSH_HOST`, `SSH_USER`, `SSH_PORT`, and `SSH_PRIVATE_K
 
 The workflow opens only read-only PostgreSQL transactions for live inspection, checks the
 production DB/container identity, migration rows and partial Stage 02 objects, approximate row
-counts and relation sizes, long transactions, and relevant locks. It only proceeds when the
+counts and relation sizes, long transactions, and every granted or awaiting relation lock on
+existing tables altered by the Stage 02 migrations. Those `ALTER TABLE` statements require
+`ACCESS EXCLUSIVE`, which conflicts with every other relation lock mode. The preflight excludes
+its own backend and blocks even a short lock rather than filtering only for long transactions or
+already-blocked sessions. It only proceeds when the
 pending migration set is exactly `20260929170000_training_load_accounting_v1` and
 `20260929190000_persist_strength_accounting_v1`, with no failed/incomplete rows or pre-existing
 objects from those migrations. It then streams `pg_dump --format=custom` over the verified SSH
@@ -70,6 +75,16 @@ for 90 days, then decrypted only as a stream into the workflow-owned disposable 
 service. The restore check compares migration-history rows to the live preflight report and
 reads the restored `StrengthDiarySession` and `ExerciseCatalog` tables. The job never invokes
 `prisma migrate deploy`, DDL, DML, a production backfill, or a manual migration-table edit.
+
+The disposable service image is pinned to OCI index digest
+`postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24`.
+This is the Docker Official Image `postgres:17-alpine` index digest listed on [Docker Hub](https://hub.docker.com/_/postgres/tags?name=17-alpine)
+and mapped by [docker-library/official-images](https://github.com/docker-library/official-images/blob/master/library/postgres)
+to the official Postgres source build (`17.11-alpine3.24`, source commit
+`2603e26e245e558218728ee14e0a42dcb020dc7f`). To update the pin, submit a separate reviewed
+change that resolves the new full OCI index digest from Docker Hub, verifies its tag and
+architecture manifests against the official-images mapping and source commit, and records that
+provenance beside the pin. Never refresh the workflow image from a mutable tag automatically.
 
 Download and preserve the encrypted artifact in the already-approved owner-controlled backup
 archive before its artifact retention expires. The decryption key must be available from the

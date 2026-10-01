@@ -88,7 +88,9 @@ jobs:
     environment: production
     services:
       isolated-postgres:
-        image: postgres:17-alpine
+        # Docker Official Image postgres:17-alpine; OCI index digest verified against Docker Hub
+        # and docker-library/official-images/library/postgres (17.11-alpine3.24, GitCommit 2603e26e245e558218728ee14e0a42dcb020dc7f).
+        image: postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
         env:
           POSTGRES_DB: bodycast_restore
           POSTGRES_USER: bodycast_restore
@@ -159,10 +161,11 @@ jobs:
           SSH_HOST_FINGERPRINT: ${{ secrets.SSH_HOST_FINGERPRINT }}
         run: |
           set -Eeuo pipefail
-          ssh-keyscan -T 10 -p "$SSH_PORT" "$SSH_HOST" > "$BODYCAST_KNOWN_HOSTS" 2>/dev/null
-          test -s "$BODYCAST_KNOWN_HOSTS"
-          if ! ssh-keygen -lf "$BODYCAST_KNOWN_HOSTS" -E sha256 | awk '{print $2}' | grep -Fxq "$SSH_HOST_FINGERPRINT"; then
-            echo "::error::SSH host key does not match the pinned fingerprint; no production command was sent."
+          CANDIDATE_HOST_KEYS="$RUNNER_TEMP/bodycast-ssh/candidate_known_hosts"
+          ssh-keyscan -T 10 -p "$SSH_PORT" "$SSH_HOST" > "$CANDIDATE_HOST_KEYS" 2>/dev/null
+          test -s "$CANDIDATE_HOST_KEYS"
+          if ! node scripts/filter-ssh-known-hosts.mjs "$CANDIDATE_HOST_KEYS" "$BODYCAST_KNOWN_HOSTS"; then
+            echo "::error::No scanned SSH host key matched the pinned fingerprint; no production command was sent."
             exit 1
           fi
           chmod 600 "$BODYCAST_KNOWN_HOSTS"

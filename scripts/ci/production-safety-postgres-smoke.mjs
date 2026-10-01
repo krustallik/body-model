@@ -71,6 +71,77 @@ function readSourceReport() {
   return JSON.parse(report);
 }
 
+async function withShortGrantedRelationLock(tableName, work) {
+  const alterTargets = new Set([
+    "ExerciseCatalog", "ProgramExercise", "StrengthSessionExercise", "StrengthSet",
+    "HealthMetricSample", "StrengthDiarySession",
+  ]);
+  if (!alterTargets.has(tableName)) throw new Error("Refusing to test an unreviewed relation lock target.");
+
+  const child = spawn("docker", [
+    ...clientArgs(source, "psql"), "--no-psqlrc", "--quiet", "--tuples-only", "--no-align", "--set=ON_ERROR_STOP=1",
+  ], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+  let readyResolve;
+  let readyReject;
+  let output = "";
+  let readyReached = false;
+  const ready = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
+  const exited = new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code) => resolve(code));
+  });
+  exited.catch(() => {});
+  child.stdout.on("data", (chunk) => {
+    output += chunk.toString("utf8");
+    if (!readyReached && output.includes("BODYCAST_SHORT_LOCK_HELD")) {
+      readyReached = true;
+      readyResolve();
+    }
+  });
+  child.once("error", readyReject);
+  child.once("close", (code) => {
+    if (!readyReached) readyReject(new Error(`Short-lock PostgreSQL session exited before acquiring its lock (${code}).`));
+  });
+  child.stdin.write(`BEGIN;\nSELECT count(*) FROM public."${tableName}";\n\\echo BODYCAST_SHORT_LOCK_HELD\n`);
+  await ready;
+  try {
+    return await work();
+  } finally {
+    child.stdin.write("COMMIT;\n\\q\n");
+    child.stdin.end();
+    const exitCode = await exited;
+    if (exitCode !== 0) throw new Error(`Short-lock PostgreSQL session failed to release cleanly (${exitCode}).`);
+  }
+}
+
+function verifyMixedSshKeyFiltering(scratch) {
+  const correctKey = path.join(scratch, "pinned-host");
+  const unmatchedKey = path.join(scratch, "unmatched-host");
+  for (const keyPath of [correctKey, unmatchedKey]) {
+    run("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", keyPath]);
+  }
+  const correctPublicKey = readFileSync(`${correctKey}.pub`, "utf8").trim();
+  const unmatchedPublicKey = readFileSync(`${unmatchedKey}.pub`, "utf8").trim();
+  const fingerprint = run("ssh-keygen", ["-lf", `${correctKey}.pub`, "-E", "sha256"]).split(/\s+/)[1];
+  if (!fingerprint) throw new Error("Could not obtain the disposable test SSH key fingerprint.");
+
+  const candidatePath = path.join(scratch, "mixed-known-hosts");
+  const trustedPath = path.join(scratch, "trusted-known-hosts");
+  writeFileSync(candidatePath, [
+    `production.example ${correctPublicKey}`,
+    `production.example ${unmatchedPublicKey}`,
+  ].join("\n") + "\n", { mode: 0o600 });
+  const filtered = spawnSync(process.execPath, ["scripts/filter-ssh-known-hosts.mjs", candidatePath, trustedPath], {
+    encoding: "utf8", env: { ...process.env, SSH_HOST_FINGERPRINT: fingerprint }, windowsHide: true,
+  });
+  if (filtered.status !== 0) throw new Error(`Mixed-key SSH fingerprint filtering failed: ${filtered.stderr || filtered.stdout}`);
+  const trusted = readFileSync(trustedPath, "utf8");
+  if (trusted !== `production.example ${correctPublicKey}\n` || trusted.includes(unmatchedPublicKey)) {
+    throw new Error("The trusted known_hosts output retained an unmatched SSH key.");
+  }
+  return true;
+}
+
 function requireSql(file) {
   return readFileSync(file, "utf8");
 }
@@ -123,6 +194,7 @@ async function main() {
   const scratch = await mkdtemp(path.join(os.tmpdir(), "bodycast-safety-ci-"));
   const archive = path.join(scratch, "synthetic.pgdump.enc");
   try {
+    const mixedSshKeysFiltered = verifyMixedSshKeyFiltering(scratch);
     const migrationDirectories = await createSourceFixture();
     const sourceReport = readSourceReport();
     const evaluated = evaluateProductionPreflight(sourceReport, migrationDirectories);
@@ -138,7 +210,28 @@ async function main() {
     assertBlocked(sourceReport, migrationDirectories,
       (report) => { report.longTransactions.push({ pid: 123, xactAgeSeconds: 400 }); }, "transaction(s)");
     assertBlocked(sourceReport, migrationDirectories,
-      (report) => { report.relevantLocks.push({ pid: 123, relation: "StrengthDiarySession", blockerCount: 1 }); }, "relevant blocking/long lock(s)");
+      (report) => { report.relevantLocks.push({ pid: 123, relation: "StrengthDiarySession", blockerCount: 1 }); }, "relevant DDL-conflicting relation lock(s)");
+
+    let shortLockReport;
+    await withShortGrantedRelationLock("ExerciseCatalog", () => {
+      shortLockReport = readSourceReport();
+      const observed = shortLockReport.relevantLocks.some((lock) => (
+        lock.relation === "ExerciseCatalog" && lock.mode === "AccessShareLock" && lock.granted === true
+      ));
+      if (!observed) throw new Error("Preflight missed the actively held short ACCESS SHARE relation lock.");
+      const lockDecision = evaluateProductionPreflight(shortLockReport, migrationDirectories);
+      if (lockDecision.readyForOwnerAuthorization
+        || !lockDecision.blockers.some((blocker) => blocker.includes("relevant DDL-conflicting relation lock(s)"))) {
+        throw new Error("Preflight did not block a short granted lock conflicting with Stage 02 ALTER TABLE.");
+      }
+    });
+    const releasedLockReport = readSourceReport();
+    if (releasedLockReport.relevantLocks.some((lock) => lock.relation === "ExerciseCatalog" && lock.mode === "AccessShareLock")) {
+      throw new Error("The short relation lock was not released after its deterministic lock test.");
+    }
+    if (!evaluateProductionPreflight(releasedLockReport, migrationDirectories).readyForOwnerAuthorization) {
+      throw new Error("Preflight did not return to ready after the short granted lock was released.");
+    }
 
     const dump = captureDump(source);
     const encrypted = await encryptBackupStream(dump.stream, archive, key);
@@ -214,6 +307,18 @@ async function main() {
       throw new Error("Restore script did not fail closed for a remote/production Docker endpoint.");
     }
 
+    const conflictingDockerTarget = spawnSync(process.execPath, ["scripts/verify-postgres-restore.mjs", "--container", "bodycast-ci-restore", "--user", target.user, "--backup", archive, "--confirm-disposable-target", "nonproduction-disposable"], {
+      encoding: "utf8", env: {
+        ...process.env,
+        DOCKER_CONTEXT: "remote-context",
+        DOCKER_HOST: "unix:///var/run/docker.sock",
+        PRODUCTION_BACKUP_ENCRYPTION_KEY: encodedKey,
+      }, windowsHide: true,
+    });
+    if (conflictingDockerTarget.status === 0 || !conflictingDockerTarget.stderr.includes("DOCKER_CONTEXT and DOCKER_HOST conflict")) {
+      throw new Error("Restore script accepted a remote Docker context combined with a local-looking Docker host.");
+    }
+
     process.stdout.write(JSON.stringify({
       result: "passed",
       postgres: "17-alpine",
@@ -230,7 +335,10 @@ async function main() {
       productionDockerContextRejected: true,
       missingDisposableMarkerRejected: true,
       remoteDockerEndpointRejected: true,
-      blockersChecked: ["partial object", "failed migration", "long transaction", "relevant lock"],
+      dockerContextHostConflictRejected: true,
+      shortGrantedAlterTableLockRejected: true,
+      mixedSshKeysFiltered,
+      blockersChecked: ["partial object", "failed migration", "long transaction", "short granted DDL-conflicting relation lock"],
     }, null, 2) + "\n");
   } finally {
     await rm(scratch, { recursive: true, force: true });

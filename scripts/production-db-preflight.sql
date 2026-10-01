@@ -52,6 +52,14 @@ WITH object_inventory(name, present) AS (
   FROM pg_stat_activity
   WHERE datname = current_database() AND pid <> pg_backend_pid()
     AND xact_start IS NOT NULL AND xact_start < clock_timestamp() - interval '5 minutes'
+), alter_table_targets(table_name) AS (
+  VALUES
+    ('ExerciseCatalog'),
+    ('ProgramExercise'),
+    ('StrengthSessionExercise'),
+    ('StrengthSet'),
+    ('HealthMetricSample'),
+    ('StrengthDiarySession')
 ), relevant_locks AS (
   SELECT a.pid, c.relname AS relation, l.mode, l.granted, a.state,
     floor(extract(epoch FROM (clock_timestamp() - a.xact_start)))::bigint AS "xactAgeSeconds",
@@ -61,16 +69,13 @@ WITH object_inventory(name, present) AS (
   JOIN pg_stat_activity a ON a.pid = l.pid
   JOIN pg_class c ON c.oid = l.relation
   JOIN pg_namespace n ON n.oid = c.relnamespace
+  JOIN alter_table_targets target ON target.table_name = c.relname
   WHERE n.nspname = 'public'
-    AND c.relname IN (
-      'ExerciseCatalog', 'ExerciseLoadConfiguration', 'ProgramExercise',
-      'StrengthSessionExercise', 'StrengthSet', 'HealthMetricSample',
-      'StrengthDiarySession', 'StrengthSessionAccountingSnapshot',
-      'StrengthSessionAccountingOperation'
-    )
-    AND a.datname = current_database() AND a.pid <> pg_backend_pid()
-    AND (NOT l.granted OR cardinality(pg_blocking_pids(a.pid)) > 0
-      OR (a.xact_start IS NOT NULL AND a.xact_start < clock_timestamp() - interval '5 minutes'))
+    AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+    AND a.datname = current_database()
+    AND a.pid <> pg_backend_pid()
+    -- Stage 02 ALTER TABLE statements acquire ACCESS EXCLUSIVE, which conflicts
+    -- with every granted relation lock mode. Awaiting relation locks also block readiness.
 )
 SELECT jsonb_build_object(
   'identity', jsonb_build_object(

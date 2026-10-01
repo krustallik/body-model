@@ -17,10 +17,60 @@ function parseArguments(args) {
   return parsed;
 }
 
-function runDocker(args) {
-  const result = spawnSync("docker", args, { encoding: "utf8", windowsHide: true });
+function runDocker(args, environment = process.env) {
+  const result = spawnSync("docker", args, { encoding: "utf8", env: environment, windowsHide: true });
   if (result.error || result.status !== 0) return null;
   return result.stdout.trim();
+}
+
+export function dockerTargetSelection(environment = process.env) {
+  const context = typeof environment.DOCKER_CONTEXT === "string" ? environment.DOCKER_CONTEXT.trim() : "";
+  const host = typeof environment.DOCKER_HOST === "string" ? environment.DOCKER_HOST.trim() : "";
+  if (context && host) {
+    throw new Error("Restore refused: DOCKER_CONTEXT and DOCKER_HOST conflict; choose one explicit Docker target.");
+  }
+  if (context) return { kind: "context", value: context };
+  if (host) return { kind: "host", value: host };
+  return { kind: "current-context", value: null };
+}
+
+function cleanDockerEnvironment(environment) {
+  const result = { ...environment };
+  delete result.DOCKER_CONTEXT;
+  delete result.DOCKER_HOST;
+  return Object.freeze(result);
+}
+
+function dockerArgs(target, args) {
+  return [...target.globalArgs, ...args];
+}
+
+function runTargetDocker(target, args) {
+  return runDocker(dockerArgs(target, args), target.environment);
+}
+
+function resolveDockerTarget(environment = process.env) {
+  const selection = dockerTargetSelection(environment);
+  const cleanEnvironment = cleanDockerEnvironment(environment);
+  if (selection.kind === "host") {
+    if (!isLocalDockerEndpoint(selection.value)) {
+      throw new Error("Restore refused: Docker must target a local daemon, not a remote production host/context.");
+    }
+    return Object.freeze({
+      globalArgs: Object.freeze(["--host", selection.value]),
+      environment: cleanEnvironment,
+      endpoint: selection.value,
+    });
+  }
+
+  const context = selection.kind === "context" ? selection.value : runDocker(["context", "show"], cleanEnvironment);
+  if (!context) throw new Error("Cannot identify the Docker context; restore target was not changed.");
+  if (isProductionLikeName(context)) throw new Error("Restore refused: production-like Docker contexts are forbidden.");
+  return Object.freeze({
+    globalArgs: Object.freeze(["--context", context]),
+    environment: cleanEnvironment,
+    context,
+  });
 }
 
 export function isDisposableNonProductionTarget({ container, environment, disposable }) {
@@ -40,52 +90,50 @@ export function isLocalDockerEndpoint(endpoint) {
       || /^tcp:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(endpoint));
 }
 
-function inspectRestoreTarget(container, dockerHostOverride) {
+function inspectRestoreTarget(container, environmentValues) {
   if (isProductionLikeName(container)) {
     throw new Error("Restore target rejected: production-like container names are forbidden.");
   }
-  const context = runDocker(["context", "show"]);
-  if (!context) throw new Error("Cannot identify the Docker context; restore target was not changed.");
-  if (isProductionLikeName(context)) {
-    throw new Error("Restore refused: production-like Docker contexts are forbidden.");
-  }
-  let endpoint = dockerHostOverride;
-  if (!endpoint) {
-    endpoint = runDocker(["context", "inspect", context, "--format", '{{ (index .Endpoints "docker").Host }}']);
-  }
+  const target = resolveDockerTarget(environmentValues);
+  const endpoint = target.endpoint ?? runTargetDocker(target, [
+    "context", "inspect", target.context, "--format", '{{ (index .Endpoints "docker").Host }}',
+  ]);
   if (!isLocalDockerEndpoint(endpoint)) {
     throw new Error("Restore refused: Docker must target a local daemon, not a remote production host/context.");
   }
 
-  const result = runDocker([
+  const result = runTargetDocker(target, [
     "inspect", "--format",
     '{{ index .Config.Labels "bodycast.environment" }}|{{ index .Config.Labels "bodycast.disposable" }}',
     container,
   ]);
   if (!result) throw new Error("Cannot inspect the explicitly named restore container.");
-  const [environment, disposable] = result.split("|");
-  if (!isDisposableNonProductionTarget({ container, environment, disposable })) {
+  const [targetEnvironment, disposable] = result.split("|");
+  if (!isDisposableNonProductionTarget({ container, environment: targetEnvironment, disposable })) {
     throw new Error("Restore target rejected: require a non-production container labelled bodycast.environment=nonproduction and bodycast.disposable=true; production-like names are forbidden.");
   }
+  return target;
 }
 
-function runDockerChecked(args, input) {
-  const result = spawnSync("docker", args, { encoding: "utf8", input, windowsHide: true, maxBuffer: 1024 * 1024 });
+function runDockerChecked(target, args, input) {
+  const result = spawnSync("docker", dockerArgs(target, args), {
+    encoding: "utf8", env: target.environment, input, windowsHide: true, maxBuffer: 1024 * 1024,
+  });
   if (result.error || result.status !== 0) throw new Error("Disposable PostgreSQL command failed; restore verification stopped.");
   return result.stdout.trim();
 }
 
-async function restoreEncryptedBackup({ container, user, backup, key }) {
+async function restoreEncryptedBackup({ container, user, backup, key, dockerTarget }) {
   const restoreDatabase = `bodycast_restore_${randomBytes(8).toString("hex")}`;
   let created = false;
   try {
-    runDockerChecked(["exec", container, "createdb", "--username", user, restoreDatabase]);
+    runDockerChecked(dockerTarget, ["exec", container, "createdb", "--username", user, restoreDatabase]);
     created = true;
 
-    const restore = spawn("docker", [
+    const restore = spawn("docker", dockerArgs(dockerTarget, [
       "exec", "-i", container, "pg_restore", "--exit-on-error", "--no-owner", "--no-privileges",
       "--username", user, "--dbname", restoreDatabase,
-    ], { stdio: ["pipe", "ignore", "ignore"], windowsHide: true });
+    ]), { env: dockerTarget.environment, stdio: ["pipe", "ignore", "ignore"], windowsHide: true });
     const exited = new Promise((resolve, reject) => {
       restore.once("error", reject);
       restore.once("close", (code) => resolve(code));
@@ -96,7 +144,7 @@ async function restoreEncryptedBackup({ container, user, backup, key }) {
     const exitCode = await exited;
     if (exitCode !== 0) throw new Error("pg_restore failed in the disposable PostgreSQL target.");
 
-    const restoreSummaryText = runDockerChecked([
+    const restoreSummaryText = runDockerChecked(dockerTarget, [
       "exec", container, "psql", "--username", user, "--dbname", restoreDatabase,
       "--tuples-only", "--no-align", "--command",
       `SELECT jsonb_build_object(
@@ -118,8 +166,8 @@ async function restoreEncryptedBackup({ container, user, backup, key }) {
     };
   } finally {
     if (created) {
-      const dropped = spawnSync("docker", ["exec", container, "dropdb", "--if-exists", "--force", "--username", user, restoreDatabase], {
-        encoding: "utf8", windowsHide: true, maxBuffer: 1024 * 1024,
+      const dropped = spawnSync("docker", dockerArgs(dockerTarget, ["exec", container, "dropdb", "--if-exists", "--force", "--username", user, restoreDatabase]), {
+        encoding: "utf8", env: dockerTarget.environment, windowsHide: true, maxBuffer: 1024 * 1024,
       });
       if (dropped.error || dropped.status !== 0) throw new Error("Could not remove the temporary database from the explicitly disposable target.");
     }
@@ -138,8 +186,8 @@ export async function verifyEncryptedBackupOnDisposableTarget(options, environme
   const key = decodeBackupKey(environment.PRODUCTION_BACKUP_ENCRYPTION_KEY);
   const backupMetadata = await stat(path.resolve(backup)).catch(() => null);
   if (!backupMetadata || backupMetadata.size <= 36) throw new Error("Encrypted backup is missing, empty, or truncated.");
-  inspectRestoreTarget(container, environment.DOCKER_HOST);
-  return restoreEncryptedBackup({ container, user, backup: path.resolve(backup), key });
+  const dockerTarget = inspectRestoreTarget(container, environment);
+  return restoreEncryptedBackup({ container, user, backup: path.resolve(backup), key, dockerTarget });
 }
 
 async function main() {

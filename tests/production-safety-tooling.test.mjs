@@ -19,8 +19,10 @@ import {
   isDisposableNonProductionTarget,
   isLocalDockerEndpoint,
   isProductionLikeName,
+  dockerTargetSelection,
   verifyEncryptedBackupOnDisposableTarget,
 } from "../scripts/verify-postgres-restore.mjs";
+import { filterKnownHostRecords } from "../scripts/filter-ssh-known-hosts.mjs";
 
 function preflightFixture(migrationDirectories) {
   const appliedMigrations = migrationDirectories.filter((name) => !EXPECTED_PENDING_MIGRATIONS.includes(name));
@@ -42,6 +44,31 @@ function preflightFixture(migrationDirectories) {
     relevantLocks: [],
   };
 }
+
+describe("pinned SSH known_hosts filtering", () => {
+  it("keeps only exact fingerprint matches from a mixed scanned key set", () => {
+    const fingerprint = `SHA256:${"A".repeat(43)}`;
+    const candidates = [
+      "release.example ssh-ed25519 AAAA-correct-key",
+      "release.example ecdsa-sha2-nistp256 AAAA-unmatched-key",
+    ].join("\n");
+
+    const trusted = filterKnownHostRecords(candidates, fingerprint, (_keyType, keyData) => (
+      keyData === "AAAA-correct-key" ? fingerprint : `SHA256:${"B".repeat(43)}`
+    ));
+
+    expect(trusted).toBe("release.example ssh-ed25519 AAAA-correct-key\n");
+    expect(trusted).not.toContain("AAAA-unmatched-key");
+  });
+
+  it("fails closed when no scanned record matches the exact fingerprint", () => {
+    expect(() => filterKnownHostRecords(
+      "release.example ssh-ed25519 AAAA-unmatched-key\n",
+      `SHA256:${"A".repeat(43)}`,
+      () => `SHA256:${"B".repeat(43)}`,
+    )).toThrow("No scanned SSH host key matched");
+  });
+});
 
 describe("production backup envelope", () => {
   it("encrypts to a restrictive custom envelope and authenticates the complete archive", async () => {
@@ -112,7 +139,7 @@ describe("production migration preflight evaluator", () => {
     expect(result.blockers.join(" ")).toContain("Incomplete/failed migration");
     expect(result.blockers.join(" ")).toContain("already exist");
     expect(result.blockers.join(" ")).toContain("transaction(s)");
-    expect(result.blockers.join(" ")).toContain("relevant blocking/long lock(s)");
+    expect(result.blockers.join(" ")).toContain("relevant DDL-conflicting relation lock(s)");
   });
 
   it("requires restored migration history and baseline tables to match the source report", () => {
@@ -178,18 +205,32 @@ describe("disposable restore safety gate", () => {
       confirmation: "read-only-production-snapshot",
     }, { PRODUCTION_BACKUP_ENCRYPTION_KEY: Buffer.alloc(32, 1).toString("base64") })).rejects.toThrow("UTC timestamp");
   });
+
+  it("rejects a remote DOCKER_CONTEXT combined with a local-looking DOCKER_HOST", () => {
+    expect(() => dockerTargetSelection({
+      DOCKER_CONTEXT: "remote-context",
+      DOCKER_HOST: "unix:///var/run/docker.sock",
+    })).toThrow("DOCKER_CONTEXT and DOCKER_HOST conflict");
+  });
 });
 
 describe("workflow mutation boundary", () => {
   it("only defines a manually dispatched read-only preflight and never runs migrate deploy", async () => {
     const workflow = await readFile(new URL("../.github/workflows/production-migration-preflight.yml", import.meta.url), "utf8");
+    const safetyWorkflow = await readFile(new URL("../.github/workflows/production-migration-safety-ci.yml", import.meta.url), "utf8");
     const sql = await readFile(new URL("../scripts/production-db-preflight.sql", import.meta.url), "utf8");
     expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).toContain("pg_dump --format=custom");
     expect(workflow).toContain("production-backup-envelope.mjs encrypt");
     expect(workflow).toContain("isolated-postgres:");
+    expect(workflow).toContain("postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24");
+    expect(workflow).not.toMatch(/image:\s+postgres:17-alpine\s*$/m);
+    expect(workflow).toContain("scripts/filter-ssh-known-hosts.mjs");
+    expect(safetyWorkflow).toContain('"scripts/filter-ssh-known-hosts.mjs"');
     expect(workflow).not.toMatch(/^\s*(?:npx|npm|pnpm|yarn)\s+(?:prisma\s+migrate|exec\s+prisma\s+migrate)\s+deploy\b/m);
     expect(sql).toMatch(/^BEGIN READ ONLY;/);
+    expect(sql).toContain("JOIN alter_table_targets target ON target.table_name = c.relname");
+    expect(sql).toContain("AND a.pid <> pg_backend_pid()");
     expect(sql).not.toMatch(/^\s*(ALTER|CREATE|DROP|INSERT|UPDATE|DELETE|TRUNCATE)\b/im);
   });
 });

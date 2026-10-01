@@ -110,7 +110,7 @@ export function evaluateProductionPreflight(report, migrationDirectories) {
   const longTransactions = Array.isArray(report?.longTransactions) ? report.longTransactions : [];
   const relevantLocks = Array.isArray(report?.relevantLocks) ? report.relevantLocks : [];
   if (longTransactions.length) blockers.push(`${longTransactions.length} transaction(s) have been open for more than five minutes.`);
-  if (relevantLocks.length) blockers.push(`${relevantLocks.length} relevant blocking/long lock(s) were observed.`);
+  if (relevantLocks.length) blockers.push(`${relevantLocks.length} relevant DDL-conflicting relation lock(s) were observed.`);
 
   return {
     readyForOwnerAuthorization: blockers.length === 0,

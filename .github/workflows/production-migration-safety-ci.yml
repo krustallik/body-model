@@ -10,6 +10,7 @@ on:
       - "scripts/production-backup-envelope.mjs"
       - "scripts/production-db-preflight.sql"
       - "scripts/production-migration-preflight.mjs"
+      - "scripts/postgres-client-versions.mjs"
       - "scripts/filter-ssh-known-hosts.mjs"
       - "scripts/verify-postgres-restore.mjs"
       - "scripts/verify-postgres-restore.ps1"

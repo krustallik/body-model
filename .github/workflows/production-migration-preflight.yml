@@ -170,6 +170,34 @@ jobs:
           fi
           chmod 600 "$BODYCAST_KNOWN_HOSTS"
 
+      - name: Verify PostgreSQL dump and restore client versions
+        id: pg_clients
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+        run: |
+          set -Eeuo pipefail
+          SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
+          PRODUCTION_CONTAINER_ID="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" \
+            'docker inspect --format "{{.Id}}" bodycast-db-prod')"
+          PG_DUMP_VERSION="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" \
+            'docker exec bodycast-db-prod pg_dump --version')"
+          PG_RESTORE_VERSION="$(docker run --rm --network host --entrypoint pg_restore \
+            postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24 --version)"
+          printf 'pg_dump --version: %s\npg_restore --version: %s\n' "$PG_DUMP_VERSION" "$PG_RESTORE_VERSION"
+          node --input-type=module - "$PG_DUMP_VERSION" "$PG_RESTORE_VERSION" <<'NODE'
+          import { assertPostgresClientCompatibility } from "./scripts/postgres-client-versions.mjs";
+          assertPostgresClientCompatibility(process.argv[2], process.argv[3]);
+          NODE
+          echo "container_id=${PRODUCTION_CONTAINER_ID}" >> "$GITHUB_OUTPUT"
+          {
+            echo "## PostgreSQL client versions"
+            echo ""
+            printf -- '- pg_dump: `%s`\n- pg_restore: `%s`\n' "$PG_DUMP_VERSION" "$PG_RESTORE_VERSION"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Read-only database identity, migration state, schema inventory, sizes, and locks
         id: preflight
         env:
@@ -219,6 +247,7 @@ jobs:
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
           PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY }}
+          EXPECTED_PRODUCTION_CONTAINER_ID: ${{ steps.pg_clients.outputs.container_id }}
         run: |
           set -Eeuo pipefail
           STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -227,6 +256,12 @@ jobs:
           BACKUP_FILE="$BACKUP_DIR/bodycast-production-${STAMP}.pgdump.enc"
           SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
+          CURRENT_PRODUCTION_CONTAINER_ID="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" \
+            'docker inspect --format "{{.Id}}" bodycast-db-prod')"
+          if [[ "$CURRENT_PRODUCTION_CONTAINER_ID" != "$EXPECTED_PRODUCTION_CONTAINER_ID" ]]; then
+            echo "::error::Production PostgreSQL container changed after client-version verification; refusing to create a backup with an unverified dump client."
+            exit 1
+          fi
           "${SSH[@]}" "$SSH_USER@$SSH_HOST" \
             'docker exec bodycast-db-prod pg_dump --format=custom --no-owner --no-privileges --username=bodycast --dbname=bodycast' \
             | node scripts/production-backup-envelope.mjs encrypt --output "$BACKUP_FILE"
@@ -262,11 +297,15 @@ jobs:
           DATABASE_URL: postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_restore
         run: |
           set -Eeuo pipefail
+          POSTGRES_IMAGE='postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24'
           node scripts/production-backup-envelope.mjs decrypt --input "$BACKUP_FILE" \
-            | pg_restore --list --file="$RUNNER_TEMP/bodycast-archive-list.txt"
+            | docker run --rm --interactive --network host --entrypoint pg_restore "$POSTGRES_IMAGE" --list \
+            > "$RUNNER_TEMP/bodycast-archive-list.txt"
           test -s "$RUNNER_TEMP/bodycast-archive-list.txt"
           node scripts/production-backup-envelope.mjs decrypt --input "$BACKUP_FILE" \
-            | pg_restore --exit-on-error --no-owner --no-privileges --single-transaction --dbname="$DATABASE_URL" \
+            | docker run --rm --interactive --network host --env "PGPASSWORD=$PGPASSWORD" \
+                --entrypoint pg_restore "$POSTGRES_IMAGE" --exit-on-error --no-owner --no-privileges \
+                --single-transaction --dbname="$DATABASE_URL" \
             > "$RUNNER_TEMP/bodycast-restore.stdout" 2> "$RUNNER_TEMP/bodycast-restore.stderr"
           psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 \
             --file=scripts/verify-restored-backup.sql > "$RUNNER_TEMP/bodycast-restored-history.json"

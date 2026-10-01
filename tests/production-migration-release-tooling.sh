@@ -6,7 +6,8 @@ source "$ROOT/scripts/production-migration-readiness.sh"
 source "$ROOT/scripts/production-migration-summary.sh"
 grep -Fq '"Prisma migrate status" "$STATUS_LOG" "$STATUS_STDERR" /dev/null docker compose' "$ROOT/.github/workflows/production-migrate.yml"
 grep -Fq '"build read-only migration status image" "$STEP_STDOUT" "$STEP_STDERR" /dev/null docker compose' "$ROOT/.github/workflows/production-migrate.yml"
-grep -Fq 'run --interactive=false --no-tty --rm --entrypoint npx migrate prisma migrate status' "$ROOT/.github/workflows/production-migrate.yml"
+grep -Fq 'run --interactive=false -T --rm --entrypoint npx migrate prisma migrate status' "$ROOT/.github/workflows/production-migrate.yml"
+! grep -Fq -- '--no-tty' "$ROOT/.github/workflows/production-migrate.yml"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT

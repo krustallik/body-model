@@ -227,7 +227,7 @@ jobs:
           PREFLIGHT_REPORT="$(mktemp)"
           trap 'rm -f "$STEP_STDOUT" "$STEP_STDERR" "$STATUS_LOG" "$STATUS_STDERR" "$PREFLIGHT_REPORT"' EXIT
           if bodycast_capture_subcommand "build read-only migration status image" "$STEP_STDOUT" "$STEP_STDERR" /dev/null docker compose -f docker-compose.prod.yml --profile tools build migrate; then :; else STEP_STATUS=$?; exit "$STEP_STATUS"; fi
-          if bodycast_capture_subcommand "Prisma migrate status" "$STATUS_LOG" "$STATUS_STDERR" /dev/null docker compose -f docker-compose.prod.yml --profile tools run --interactive=false --no-tty --rm --entrypoint npx migrate prisma migrate status; then
+          if bodycast_capture_subcommand "Prisma migrate status" "$STATUS_LOG" "$STATUS_STDERR" /dev/null docker compose -f docker-compose.prod.yml --profile tools run --interactive=false -T --rm --entrypoint npx migrate prisma migrate status; then
             STATUS_CODE=0
           else
             STATUS_CODE=$?

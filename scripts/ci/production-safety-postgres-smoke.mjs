@@ -7,6 +7,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { Writable } from "node:stream";
 import { decryptBackupToWritable, encryptBackupStream } from "../production-backup-envelope.mjs";
+import { restoreEncryptedPostgresBackup } from "../restore-encrypted-postgres-backup.mjs";
 import {
   evaluateProductionPreflight,
   EXPECTED_MIGRATION_OBJECTS,
@@ -225,20 +226,17 @@ function captureDump(db) {
 }
 
 async function restoreDump(db, archive, key) {
-  const child = spawn("docker", [
-    "run", "--rm", "--interactive", "--network", "host", "--env", `PGPASSWORD=${db.password}`, POSTGRES_IMAGE, "pg_restore",
-    "--host", db.host, "--port", String(db.port), "--username", db.user, "--dbname", db.database,
-    "--exit-on-error", "--no-owner", "--no-privileges", "--single-transaction",
-  ], { stdio: ["pipe", "ignore", "pipe"], windowsHide: true });
-  const stderr = [];
-  child.stderr.on("data", (chunk) => stderr.push(chunk));
-  const exited = new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", (code) => code === 0 ? resolve() : reject(new Error(`pg_restore failed (${code}): ${Buffer.concat(stderr).toString("utf8")}`)));
+  await restoreEncryptedPostgresBackup({
+    inputPath: archive,
+    key,
+    args: [
+      "run", "--rm", "--interactive", "--network", "host", "--env", `PGPASSWORD=${db.password}`,
+      "--entrypoint", "pg_restore", POSTGRES_IMAGE,
+      "--host", db.host, "--port", String(db.port), "--username", db.user, "--dbname", db.database,
+      "--exit-on-error", "--no-owner", "--no-privileges", "--single-transaction",
+    ],
+    redactValues: [db.password],
   });
-  exited.catch(() => {});
-  await decryptBackupToWritable(archive, child.stdin, key);
-  await exited;
 }
 
 function assertBlocked(report, migrations, mutate, expected) {

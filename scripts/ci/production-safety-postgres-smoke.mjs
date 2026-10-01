@@ -26,7 +26,7 @@ function run(command, args, { input, env = process.env } = {}) {
 }
 
 function clientArgs(db, tool) {
-  return ["run", "--rm", "--network", "host", "--env", `PGPASSWORD=${db.password}`, "postgres:17-alpine", tool,
+  return ["run", "--rm", "--interactive", "--network", "host", "--env", `PGPASSWORD=${db.password}`, "postgres:17-alpine", tool,
     "--host", db.host, "--port", String(db.port), "--username", db.user, "--dbname", db.database];
 }
 

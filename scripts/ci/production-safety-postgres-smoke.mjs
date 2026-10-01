@@ -13,6 +13,7 @@ import {
   EXPECTED_PENDING_MIGRATIONS,
   verifyRestoredBackup,
 } from "../production-migration-preflight.mjs";
+import { assertPostgresClientCompatibility } from "../postgres-client-versions.mjs";
 
 const source = { host: "127.0.0.1", port: Number(process.env.BODYCAST_SOURCE_PORT ?? 5432), database: "bodycast", user: "bodycast", password: "bodycast_ci_only" };
 const target = { host: "127.0.0.1", port: Number(process.env.BODYCAST_RESTORE_PORT ?? 5433), database: "bodycast_restore", user: "bodycast_restore", password: "restore_ci_only" };
@@ -70,6 +71,14 @@ async function createSourceFixture(db = source) {
 function readSourceReport(db = source) {
   const report = sql(db, requireSql("scripts/production-db-preflight.sql"));
   return JSON.parse(report);
+}
+
+function verifyPinnedPostgresClientVersions() {
+  const pgDumpVersion = run("docker", ["run", "--rm", POSTGRES_IMAGE, "pg_dump", "--version"]);
+  const pgRestoreVersion = run("docker", ["run", "--rm", POSTGRES_IMAGE, "pg_restore", "--version"]);
+  assertPostgresClientCompatibility(pgDumpVersion, pgRestoreVersion);
+  console.log(`pg_dump --version: ${pgDumpVersion}`);
+  console.log(`pg_restore --version: ${pgRestoreVersion}`);
 }
 
 async function waitForPostgres(db) {
@@ -247,6 +256,7 @@ async function main() {
   const scratch = await mkdtemp(path.join(os.tmpdir(), "bodycast-safety-ci-"));
   const archive = path.join(scratch, "synthetic.pgdump.enc");
   try {
+    verifyPinnedPostgresClientVersions();
     const mixedSshKeysFiltered = verifyMixedSshKeyFiltering(scratch);
     const migrationDirectories = await createSourceFixture();
     const sourceReport = readSourceReport();

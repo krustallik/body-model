@@ -23,6 +23,28 @@ import {
   verifyEncryptedBackupOnDisposableTarget,
 } from "../scripts/verify-postgres-restore.mjs";
 import { filterKnownHostRecords } from "../scripts/filter-ssh-known-hosts.mjs";
+import { assertPostgresClientCompatibility } from "../scripts/postgres-client-versions.mjs";
+
+describe("PostgreSQL backup client compatibility", () => {
+  it("accepts matching majors even when patch versions differ", () => {
+    expect(assertPostgresClientCompatibility(
+      "pg_dump (PostgreSQL) 17.5",
+      "pg_restore (PostgreSQL) 17.11",
+    )).toEqual({ pgDumpMajor: 17, pgRestoreMajor: 17 });
+  });
+
+  it("rejects an older restore client before attempting restore", () => {
+    expect(() => assertPostgresClientCompatibility(
+      "pg_dump (PostgreSQL) 17.11",
+      "pg_restore (PostgreSQL) 16.10",
+    )).toThrow("pg_restore major 16 is older than pg_dump major 17");
+  });
+
+  it("rejects missing or unparseable client versions", () => {
+    expect(() => assertPostgresClientCompatibility("unknown", "pg_restore (PostgreSQL) 17.11"))
+      .toThrow("Could not parse pg_dump PostgreSQL version");
+  });
+});
 
 function preflightFixture(migrationDirectories) {
   const appliedMigrations = migrationDirectories.filter((name) => !EXPECTED_PENDING_MIGRATIONS.includes(name));

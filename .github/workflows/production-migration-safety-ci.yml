@@ -8,6 +8,7 @@ on:
       - "scripts/backup-postgres.mjs"
       - "scripts/backup-postgres.ps1"
       - "scripts/production-backup-envelope.mjs"
+      - "scripts/restore-encrypted-postgres-backup.mjs"
       - "scripts/production-db-preflight.sql"
       - "scripts/production-migration-preflight.mjs"
       - "scripts/postgres-client-versions.mjs"

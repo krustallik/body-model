@@ -24,6 +24,42 @@ import {
 } from "../scripts/verify-postgres-restore.mjs";
 import { filterKnownHostRecords } from "../scripts/filter-ssh-known-hosts.mjs";
 import { assertPostgresClientCompatibility } from "../scripts/postgres-client-versions.mjs";
+import { restoreEncryptedPostgresBackup } from "../scripts/restore-encrypted-postgres-backup.mjs";
+
+describe("encrypted PostgreSQL restore diagnostics", () => {
+  it("reports pg_restore stderr and exit code when it closes stdin (EPIPE is secondary)", async () => {
+    const scratch = await mkdtemp(path.join(os.tmpdir(), "bodycast-restore-diagnostics-"));
+    const archive = path.join(scratch, "synthetic.pgdump.enc");
+    const key = Buffer.alloc(32, 19);
+    try {
+      await encryptBackupStream(Readable.from([Buffer.alloc(256 * 1024, 7)]), archive, key);
+      const childScript = [
+        "process.stdin.once('data', () => {",
+        "  process.stderr.write('pg_restore: error: deliberate restore diagnostic\\n');",
+        "  process.stdin.destroy();",
+        "  process.exitCode = 7;",
+        "});",
+      ].join("\n");
+      const logged = [];
+      await expect(restoreEncryptedPostgresBackup({
+        inputPath: archive,
+        key,
+        command: process.execPath,
+        args: ["-e", childScript],
+        env: { ...process.env, DATABASE_URL: "postgresql://user:password@host/db", PGPASSWORD: "password" },
+        redactValues: ["password", "postgresql://user:password@host/db"],
+        log: (message) => logged.push(message),
+      })).rejects.toMatchObject({ exitCode: 7 });
+      expect(logged.join("\n")).toContain("pg_restore failed with exit code 7");
+      expect(logged.join("\n")).toContain("pg_restore: error: deliberate restore diagnostic");
+      expect(logged.join("\n")).toContain("EPIPE");
+      expect(logged.join("\n")).not.toContain("postgresql://user:password@host/db");
+      expect(logged.join("\n")).not.toContain("password");
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("PostgreSQL backup client compatibility", () => {
   it("accepts matching majors even when patch versions differ", () => {
@@ -283,6 +319,8 @@ describe("workflow mutation boundary", () => {
     expect(safetyWorkflow.match(/image:\s+postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24/g)).toHaveLength(2);
     expect(safetyWorkflow).not.toMatch(/image:\s+postgres:17-alpine\s*$/m);
     const smoke = await readFile(new URL("../scripts/ci/production-safety-postgres-smoke.mjs", import.meta.url), "utf8");
+    expect(workflow).toContain("node scripts/restore-encrypted-postgres-backup.mjs");
+    expect(smoke).toContain("restoreEncryptedPostgresBackup");
     expect(smoke).toContain('const POSTGRES_IMAGE = "postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24"');
     expect(smoke).not.toContain('"postgres:17-alpine"');
   });

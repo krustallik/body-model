@@ -84,7 +84,7 @@ async function restoreEncryptedBackup({ container, user, backup, key }) {
 
     const restore = spawn("docker", [
       "exec", "-i", container, "pg_restore", "--exit-on-error", "--no-owner", "--no-privileges",
-      "--username", user, "--dbname", restoreDatabase, "-",
+      "--username", user, "--dbname", restoreDatabase,
     ], { stdio: ["pipe", "ignore", "ignore"], windowsHide: true });
     const exited = new Promise((resolve, reject) => {
       restore.once("error", reject);

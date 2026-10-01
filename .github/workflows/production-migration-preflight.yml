@@ -260,10 +260,10 @@ jobs:
         run: |
           set -Eeuo pipefail
           node scripts/production-backup-envelope.mjs decrypt --input "$BACKUP_FILE" \
-            | pg_restore --list --file="$RUNNER_TEMP/bodycast-archive-list.txt" -
+            | pg_restore --list --file="$RUNNER_TEMP/bodycast-archive-list.txt"
           test -s "$RUNNER_TEMP/bodycast-archive-list.txt"
           node scripts/production-backup-envelope.mjs decrypt --input "$BACKUP_FILE" \
-            | pg_restore --exit-on-error --no-owner --no-privileges --single-transaction --dbname="$DATABASE_URL" - \
+            | pg_restore --exit-on-error --no-owner --no-privileges --single-transaction --dbname="$DATABASE_URL" \
             > "$RUNNER_TEMP/bodycast-restore.stdout" 2> "$RUNNER_TEMP/bodycast-restore.stderr"
           psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 \
             --file=scripts/verify-restored-backup.sql > "$RUNNER_TEMP/bodycast-restored-history.json"

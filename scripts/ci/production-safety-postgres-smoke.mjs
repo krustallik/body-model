@@ -95,7 +95,7 @@ async function restoreDump(db, archive, key) {
   const child = spawn("docker", [
     "run", "--rm", "--interactive", "--network", "host", "--env", `PGPASSWORD=${db.password}`, "postgres:17-alpine", "pg_restore",
     "--host", db.host, "--port", String(db.port), "--username", db.user, "--dbname", db.database,
-    "--exit-on-error", "--no-owner", "--no-privileges", "--single-transaction", "-",
+    "--exit-on-error", "--no-owner", "--no-privileges", "--single-transaction",
   ], { stdio: ["pipe", "ignore", "pipe"], windowsHide: true });
   const stderr = [];
   child.stderr.on("data", (chunk) => stderr.push(chunk));
@@ -147,6 +147,17 @@ async function main() {
     if (metadata.size <= 36 || encrypted.inputBytes === 0 || (metadata.mode & 0o777) !== 0o600) {
       throw new Error("Synthetic encrypted custom-format backup is empty or lacks restrictive permissions.");
     }
+
+    const disposableContainer = run("docker", ["ps", "--quiet", "--filter", "label=bodycast.environment=nonproduction", "--filter", "label=bodycast.disposable=true"])
+      .split("\n")[0];
+    if (!disposableContainer) throw new Error("Could not identify the explicitly labelled disposable PostgreSQL target service.");
+    const verifiedRestore = spawnSync(process.execPath, ["scripts/verify-postgres-restore.mjs", "--container", disposableContainer, "--user", target.user, "--backup", archive, "--confirm-disposable-target", "nonproduction-disposable"], {
+      encoding: "utf8", env: { ...process.env, PRODUCTION_BACKUP_ENCRYPTION_KEY: encodedKey }, windowsHide: true,
+    });
+    if (verifiedRestore.status !== 0 || !verifiedRestore.stdout.includes("Disposable restore verified: ")) {
+      throw new Error(`The restore verifier's labeled disposable-target path failed: ${verifiedRestore.stderr || verifiedRestore.stdout}`);
+    }
+
     await restoreDump(target, archive, key);
     const restoredReport = JSON.parse(sql(target, requireSql("scripts/verify-restored-backup.sql")));
     const restored = verifyRestoredBackup(sourceReport, restoredReport);
@@ -184,6 +195,18 @@ async function main() {
       run("docker", ["rm", "--force", "bodycast-ci-unmarked-target"]);
     }
 
+    run("docker", ["context", "create", "bodycast-production-ci", "--docker", "host=unix:///var/run/docker.sock"]);
+    try {
+      const productionContext = spawnSync(process.execPath, ["scripts/verify-postgres-restore.mjs", "--container", disposableContainer, "--user", target.user, "--backup", archive, "--confirm-disposable-target", "nonproduction-disposable"], {
+        encoding: "utf8", env: { ...process.env, DOCKER_CONTEXT: "bodycast-production-ci", PRODUCTION_BACKUP_ENCRYPTION_KEY: encodedKey }, windowsHide: true,
+      });
+      if (productionContext.status === 0 || !productionContext.stderr.includes("production-like Docker contexts are forbidden")) {
+        throw new Error("Restore script did not fail closed for a production-like Docker context.");
+      }
+    } finally {
+      run("docker", ["context", "rm", "--force", "bodycast-production-ci"]);
+    }
+
     const remoteDocker = spawnSync(process.execPath, ["scripts/verify-postgres-restore.mjs", "--container", "bodycast-ci-restore", "--user", target.user, "--backup", archive, "--confirm-disposable-target", "nonproduction-disposable"], {
       encoding: "utf8", env: { ...process.env, DOCKER_HOST: "ssh://production.example/docker.sock", PRODUCTION_BACKUP_ENCRYPTION_KEY: encodedKey }, windowsHide: true,
     });
@@ -198,11 +221,13 @@ async function main() {
       exactPending: evaluated.pending,
       backupFormat: "custom-format pg_dump encrypted with authenticated AES-256-GCM",
       encryptedBytes: metadata.size,
+      verifierPositivePath: true,
       restoredMigrationRows: restored.migrationCount,
       restoredStrengthDiarySessionRows: restoredReport.readability.StrengthDiarySession.rowCount,
       restoredExerciseCatalogRows: restoredReport.readability.ExerciseCatalog.rowCount,
       tamperRejected,
       productionContainerNameRejected: true,
+      productionDockerContextRejected: true,
       missingDisposableMarkerRejected: true,
       remoteDockerEndpointRejected: true,
       blockersChecked: ["partial object", "failed migration", "long transaction", "relevant lock"],

@@ -57,6 +57,8 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12
+          --label bodycast.environment=nonproduction
+          --label bodycast.disposable=true
     steps:
       - name: Checkout PR source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

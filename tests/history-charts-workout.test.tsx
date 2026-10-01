@@ -132,38 +132,45 @@ describe("HistoryCharts workout series", () => {
     ]);
   });
   it("shows zero event days and keeps event duration unknown when an event has no duration", () => {
-    const html = renderToStaticMarkup(
-      <HistoryCharts
-        days={[
-          day("2026-09-01", { walkingDistanceKm: 4, totalWorkoutMinutes: 60, workoutSource: "workouts" }),
-          day("2026-09-02", { walkingDistanceKm: 3, totalWorkoutMinutes: null, workoutSource: "workouts" }),
-          day("2026-09-03", { walkingDistanceKm: 5, totalWorkoutMinutes: 70, workoutSource: "workouts" }),
-        ]}
-      />,
-    );
-    expect(html).toContain("Рух і тренування");
-    expect(html).toContain('data-line="totalWorkoutMinutes"');
-    expect(html).toContain('data-name="Тренування"');
-    expect(html).toContain('data-connect-nulls="true"');
-    expect(html).toContain('data-line="walkingDistanceKm"');
-    expect(html).not.toContain('data-connect-nulls="false"');
-    expect(html).not.toContain("Рух і силові");
-    expect(html).not.toContain("Силове");
+    // Keep the fixed September fixture inside HistoryCharts' default 30-day range.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-03T12:00:00.000Z"));
+    try {
+      const html = renderToStaticMarkup(
+        <HistoryCharts
+          days={[
+            day("2026-09-01", { walkingDistanceKm: 4, totalWorkoutMinutes: 60, workoutSource: "workouts" }),
+            day("2026-09-02", { walkingDistanceKm: 3, totalWorkoutMinutes: null, workoutSource: "workouts" }),
+            day("2026-09-03", { walkingDistanceKm: 5, totalWorkoutMinutes: 70, workoutSource: "workouts" }),
+          ]}
+        />,
+      );
+      expect(html).toContain("Рух і тренування");
+      expect(html).toContain('data-line="totalWorkoutMinutes"');
+      expect(html).toContain('data-name="Тренування"');
+      expect(html).toContain('data-connect-nulls="true"');
+      expect(html).toContain('data-line="walkingDistanceKm"');
+      expect(html).not.toContain('data-connect-nulls="false"');
+      expect(html).not.toContain("Рух і силові");
+      expect(html).not.toContain("Силове");
 
-    const chartPayloads = [...html.matchAll(/data-chart="([^"]*)"/g)].map((match) => (
-      JSON.parse(match[1].replace(/&quot;/g, '"')) as Array<{
-        date: string;
-        totalWorkoutMinutes: number | null;
-      }>
-    ));
-    expect(chartPayloads.length).toBeGreaterThan(0);
-    const movementRows = chartPayloads.find((rows) => rows.some((row) => (
-      Object.prototype.hasOwnProperty.call(row, "totalWorkoutMinutes")
-    )));
-    expect(movementRows).toBeDefined();
-    expect(movementRows!.some((row) => row.totalWorkoutMinutes === null)).toBe(true);
-    expect(movementRows!.some((row) => row.totalWorkoutMinutes === 60)).toBe(true);
-    expect(movementRows!.some((row) => row.totalWorkoutMinutes === 0)).toBe(true);
+      const chartPayloads = [...html.matchAll(/data-chart="([^"]*)"/g)].map((match) => (
+        JSON.parse(match[1].replace(/&quot;/g, '"')) as Array<{
+          date: string;
+          totalWorkoutMinutes: number | null;
+        }>
+      ));
+      expect(chartPayloads.length).toBeGreaterThan(0);
+      const movementRows = chartPayloads.find((rows) => rows.some((row) => (
+        Object.prototype.hasOwnProperty.call(row, "totalWorkoutMinutes")
+      )));
+      expect(movementRows).toBeDefined();
+      expect(movementRows!.some((row) => row.totalWorkoutMinutes === null)).toBe(true);
+      expect(movementRows!.some((row) => row.totalWorkoutMinutes === 60)).toBe(true);
+      expect(movementRows!.some((row) => row.totalWorkoutMinutes === 0)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("plots a zero workout line when the selected period has no recorded events", () => {

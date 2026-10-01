@@ -188,21 +188,26 @@ jobs:
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
         run: |
           set -Eeuo pipefail
+          source scripts/production-migration-readiness.sh
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
           SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
           set +e
           timeout 20m "${SSH[@]}" "$SSH_USER@$SSH_HOST" bash -s -- "$RELEASE_SHA" "$DEPLOY_PATH_B64" \
-            > "$RUNNER_TEMP/bodycast-migrate-preflight.log" <<'REMOTE'
+            > "$RUNNER_TEMP/bodycast-migrate-preflight.log" 2> "$RUNNER_TEMP/bodycast-migrate-preflight.stderr" <<'REMOTE'
           set -Eeuo pipefail
           RELEASE_SHA="$1"
           DEPLOY_PATH_B64="$2"
           DEPLOY_PATH="$(printf '%s' "$DEPLOY_PATH_B64" | base64 --decode)"
           [[ "$DEPLOY_PATH" == /* ]] || { echo "DEPLOY_PATH must be absolute." >&2; exit 1; }
           cd "$DEPLOY_PATH"
-          git fetch --no-tags origin "$RELEASE_SHA"
-          git fetch --no-tags origin main:refs/remotes/origin/main
-          git checkout --detach --force "$RELEASE_SHA"
+          STEP_STDOUT="$(mktemp)"
+          STEP_STDERR="$(mktemp)"
+          trap 'rm -f "$STEP_STDOUT" "$STEP_STDERR"' EXIT
+          if GIT_TERMINAL_PROMPT=0 git fetch --no-tags origin "$RELEASE_SHA" </dev/null; then :; else STEP_STATUS=$?; echo "Production readiness substep failed: fetch authorized release SHA (exit code $STEP_STATUS)." >&2; exit "$STEP_STATUS"; fi
+          if GIT_TERMINAL_PROMPT=0 git fetch --no-tags origin main:refs/remotes/origin/main </dev/null; then :; else STEP_STATUS=$?; echo "Production readiness substep failed: fetch current main tip (exit code $STEP_STATUS)." >&2; exit "$STEP_STATUS"; fi
+          if git checkout --detach --force "$RELEASE_SHA" </dev/null; then :; else STEP_STATUS=$?; echo "Production readiness substep failed: checkout authorized release SHA (exit code $STEP_STATUS)." >&2; exit "$STEP_STATUS"; fi
+          source scripts/production-migration-readiness.sh
           ACTUAL_HEAD="$(git rev-parse HEAD)"
           MAIN_TIP="$(git rev-parse origin/main)"
           printf 'Production checkout SHA: %s\n' "$ACTUAL_HEAD"
@@ -210,41 +215,42 @@ jobs:
             echo "Production checkout or origin/main does not equal the authorized SHA." >&2
             exit 1
           fi
-          CONTAINER_META="$(docker inspect --format '{{.Name}}|{{.Config.Image}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' bodycast-db-prod)"
+          if bodycast_capture_subcommand "inspect production database container identity and health" "$STEP_STDOUT" "$STEP_STDERR" /dev/null docker inspect --format '{{.Name}}|{{.Config.Image}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' bodycast-db-prod; then :; else STEP_STATUS=$?; exit "$STEP_STATUS"; fi
+          CONTAINER_META="$(cat "$STEP_STDOUT")"
           IFS='|' read -r CONTAINER_NAME CONTAINER_IMAGE CONTAINER_STATE CONTAINER_HEALTH <<< "$CONTAINER_META"
           if [[ "$CONTAINER_NAME" != "/bodycast-db-prod" || "$CONTAINER_IMAGE" != "postgres:17-alpine" || "$CONTAINER_STATE" != "running" || "$CONTAINER_HEALTH" != "healthy" ]]; then
-            echo "Production database container identity/state is not the expected healthy target." >&2
+            echo "Production readiness substep failed: verify production database container identity and health (exit code 1)." >&2
             exit 1
           fi
-          docker compose -f docker-compose.prod.yml --profile tools build migrate
           STATUS_LOG="$(mktemp)"
+          STATUS_STDERR="$(mktemp)"
           PREFLIGHT_REPORT="$(mktemp)"
-          trap 'rm -f "$STATUS_LOG" "$PREFLIGHT_REPORT"' EXIT
-          set +e
-          docker compose -f docker-compose.prod.yml --profile tools run --rm --entrypoint npx migrate prisma migrate status > "$STATUS_LOG" 2>&1
-          STATUS_CODE=$?
-          set -e
-          cat "$STATUS_LOG"
-          if (( STATUS_CODE > 1 )) || ! grep -Eqi 'Following migration|have not yet been applied' "$STATUS_LOG" \
-            || grep -Eqi 'failed migration|migration.*failed|drift detected|error P[0-9]+' "$STATUS_LOG" \
-            || ! grep -Fq '20260929170000_training_load_accounting_v1' "$STATUS_LOG" \
-            || ! grep -Fq '20260929190000_persist_strength_accounting_v1' "$STATUS_LOG"; then
-            echo "Prisma migration status was not exactly the expected pending Stage 02 pair." >&2
+          trap 'rm -f "$STEP_STDOUT" "$STEP_STDERR" "$STATUS_LOG" "$STATUS_STDERR" "$PREFLIGHT_REPORT"' EXIT
+          if bodycast_capture_subcommand "build read-only migration status image" "$STEP_STDOUT" "$STEP_STDERR" /dev/null docker compose -f docker-compose.prod.yml --profile tools build migrate; then :; else STEP_STATUS=$?; exit "$STEP_STATUS"; fi
+          if bodycast_capture_subcommand "Prisma migrate status" "$STATUS_LOG" "$STATUS_STDERR" /dev/null docker compose -f docker-compose.prod.yml --profile tools run --interactive=false --no-tty --rm --entrypoint npx migrate prisma migrate status; then
+            STATUS_CODE=0
+          else
+            STATUS_CODE=$?
+          fi
+          if ! bodycast_validate_expected_pending_prisma_status "$STATUS_CODE" "$STATUS_LOG" "$STATUS_STDERR"; then
             exit 1
           fi
-          cat scripts/production-db-preflight.sql | docker exec -i \
+          if bodycast_capture_subcommand "read-only production database preflight SQL" "$PREFLIGHT_REPORT" "$STEP_STDERR" scripts/production-db-preflight.sql docker exec -i \
             --env 'PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=3000' \
-            bodycast-db-prod psql --username=bodycast --dbname=bodycast --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 \
-            > "$PREFLIGHT_REPORT"
+            bodycast-db-prod psql --username=bodycast --dbname=bodycast --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1; then :; else STEP_STATUS=$?; exit "$STEP_STATUS"; fi
           printf '\nBODYCAST_PREFLIGHT_JSON_BEGIN\n'
           cat "$PREFLIGHT_REPORT"
           printf '\nBODYCAST_PREFLIGHT_JSON_END\n'
           REMOTE
           SSH_STATUS=$?
           set -e
-          cat "$RUNNER_TEMP/bodycast-migrate-preflight.log"
-          if (( SSH_STATUS != 0 )); then exit "$SSH_STATUS"; fi
-          node --input-type=module - "$RUNNER_TEMP/bodycast-migrate-preflight.log" "$RUNNER_TEMP/bodycast-production-preflight.json" <<'NODE'
+          if (( SSH_STATUS != 0 )); then
+            bodycast_report_readiness_failure "SSH production readiness script" "$SSH_STATUS" "$RUNNER_TEMP/bodycast-migrate-preflight.log" "$RUNNER_TEMP/bodycast-migrate-preflight.stderr" "Remote command did not return a complete preflight report."
+            exit "$SSH_STATUS"
+          fi
+          bodycast_sanitize_readiness_output < "$RUNNER_TEMP/bodycast-migrate-preflight.log"
+          bodycast_sanitize_readiness_output < "$RUNNER_TEMP/bodycast-migrate-preflight.stderr" >&2
+          if node --input-type=module - "$RUNNER_TEMP/bodycast-migrate-preflight.log" "$RUNNER_TEMP/bodycast-production-preflight.json" <<'NODE'
           import { readFileSync, writeFileSync, readdirSync } from "node:fs";
           import { evaluateProductionPreflight, EXPECTED_PENDING_MIGRATIONS } from "./scripts/production-migration-preflight.mjs";
           const log = readFileSync(process.argv[2], "utf8");
@@ -261,6 +267,13 @@ jobs:
           if (!result.readyForOwnerAuthorization
               || JSON.stringify(result.pending) !== JSON.stringify(EXPECTED_PENDING_MIGRATIONS)) process.exitCode = 1;
           NODE
+          then
+            :
+          else
+            PARSER_STATUS=$?
+            bodycast_report_readiness_failure "parse and evaluate read-only production readiness report" "$PARSER_STATUS" "$RUNNER_TEMP/bodycast-migrate-preflight.log" "$RUNNER_TEMP/bodycast-migrate-preflight.stderr" "The returned report was malformed or the production evaluator found a blocker."
+            exit "$PARSER_STATUS"
+          fi
           {
             echo "## Pre-migration production gate"
             echo ""

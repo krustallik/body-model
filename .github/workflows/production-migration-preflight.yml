@@ -270,15 +270,8 @@ jobs:
           echo "backup_file=$BACKUP_FILE" >> "$GITHUB_OUTPUT"
           echo "artifact_name=bodycast-production-${STAMP}" >> "$GITHUB_OUTPUT"
           echo "encrypted_bytes=$(stat -c %s "$BACKUP_FILE")" >> "$GITHUB_OUTPUT"
-          {
-            echo "## Encrypted off-host backup"
-            echo ""
-            echo "- artifact: `bodycast-production-${STAMP}`"
-            echo "- format: PostgreSQL custom archive inside authenticated AES-256-GCM envelope"
-            echo "- size: $(stat -c %s "$BACKUP_FILE") bytes"
-            echo "- local mode: 0600"
-            echo "- plaintext file on runner/production host: none"
-          } >> "$GITHUB_STEP_SUMMARY"
+          source scripts/production-migration-summary.sh
+          bodycast_append_encrypted_backup_summary "$GITHUB_STEP_SUMMARY" "bodycast-production-${STAMP}" "$(stat -c %s "$BACKUP_FILE")"
 
       - name: Copy encrypted backup to repository artifact storage
         id: artifact
@@ -323,12 +316,6 @@ jobs:
           BACKUP_BYTES: ${{ steps.backup.outputs.encrypted_bytes }}
           ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
         run: |
-          {
-            echo "## Production migration readiness"
-            echo ""
-            echo "- result: READY FOR OWNER AUTHORIZATION"
-            echo "- release SHA: `${RELEASE_SHA}`"
-            echo "- backup artifact: [`${ARTIFACT_NAME}`](${ARTIFACT_URL}) (${BACKUP_BYTES} encrypted bytes; 90-day repository artifact retention)"
-            echo "- disposable restore: verified against source migration history and baseline tables"
-            echo "- `prisma migrate deploy`: NOT EXECUTED"
-          } >> "$GITHUB_STEP_SUMMARY"
+          set -Eeuo pipefail
+          source scripts/production-migration-summary.sh
+          bodycast_append_production_readiness_summary "$GITHUB_STEP_SUMMARY" "$RELEASE_SHA" "$ARTIFACT_NAME" "$ARTIFACT_URL" "$BACKUP_BYTES"

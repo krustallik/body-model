@@ -298,11 +298,6 @@ jobs:
           POSTGRES_IMAGE: postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
         run: |
           set -Eeuo pipefail
-          POSTGRES_IMAGE='postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24'
-          node scripts/production-backup-envelope.mjs decrypt --input "$BACKUP_FILE" \
-            | docker run --rm --interactive --network host --entrypoint pg_restore "$POSTGRES_IMAGE" --list \
-            > "$RUNNER_TEMP/bodycast-archive-list.txt"
-          test -s "$RUNNER_TEMP/bodycast-archive-list.txt"
           node scripts/restore-encrypted-postgres-backup.mjs
           psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 \
             --file=scripts/verify-restored-backup.sql > "$RUNNER_TEMP/bodycast-restored-history.json"

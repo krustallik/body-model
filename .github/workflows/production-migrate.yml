@@ -1,0 +1,447 @@
+name: Manual production migration
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: Full SHA to migrate; must equal the current main tip
+        required: true
+        type: string
+      confirmation:
+        description: Type MIGRATE_PRODUCTION to authorize the expected production migration
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: bodycast-production
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Authorize exact production migration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      release_sha: ${{ steps.gate.outputs.release_sha }}
+    steps:
+      - name: Checkout main workflow revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require exact confirmation, current main, green CI, and fresh preflight
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_SHA: ${{ inputs.release_sha }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -Eeuo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::Run this workflow from main only."
+            exit 1
+          fi
+          if [[ "$CONFIRMATION" != "MIGRATE_PRODUCTION" ]]; then
+            echo "::error::Exact MIGRATE_PRODUCTION confirmation is required."
+            exit 1
+          fi
+          if [[ ! "$DISPATCH_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::release_sha must be a full lowercase 40-character commit SHA."
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          MAIN_TIP="$(git rev-parse origin/main)"
+          if [[ "$DISPATCH_SHA" != "$MAIN_TIP" || "$GITHUB_SHA" != "$MAIN_TIP" ]]; then
+            echo "::error::Stale migration request; input SHA, workflow SHA, and current main must match."
+            exit 1
+          fi
+          CI_RUNS="$(gh run list --repo "$GITHUB_REPOSITORY" --branch main --commit "$MAIN_TIP" --workflow "BodyCast CI/CD" --limit 100 --json conclusion,createdAt,event,headBranch,headSha,status,url)"
+          PREFLIGHT_RUNS="$(gh run list --repo "$GITHUB_REPOSITORY" --branch main --commit "$MAIN_TIP" --workflow "Production migration preflight and encrypted backup" --limit 100 --json conclusion,createdAt,event,headBranch,headSha,status,url)"
+          RUN_RESULTS="$(printf '%s\n%s' "$CI_RUNS" "$PREFLIGHT_RUNS" | MAIN_TIP="$MAIN_TIP" node --input-type=module -e '
+            const input = await new Response(process.stdin).text();
+            const split = input.indexOf("\n[");
+            if (split < 0) throw new Error("Could not read required workflow runs.");
+            const ciRuns = JSON.parse(input.slice(0, split));
+            const preflightRuns = JSON.parse(input.slice(split + 1));
+            const sha = process.env.MAIN_TIP;
+            const newest = (runs, event) => runs
+              .filter((run) => run.headSha === sha && run.headBranch === "main" && run.event === event)
+              .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
+            const ci = newest(ciRuns, "push");
+            if (!ci || ci.status !== "completed" || ci.conclusion !== "success") {
+              throw new Error("The latest BodyCast CI/CD main-push run for this SHA is not successful.");
+            }
+            const preflight = newest(preflightRuns, "workflow_dispatch");
+            if (!preflight || preflight.status !== "completed" || preflight.conclusion !== "success") {
+              throw new Error("The latest manual production migration preflight for this SHA is not successful.");
+            }
+            console.log(JSON.stringify({ ciUrl: ci.url, preflightUrl: preflight.url }));
+          ')"
+          CI_URL="$(printf '%s' "$RUN_RESULTS" | node --input-type=module -e 'const v=JSON.parse(await new Response(process.stdin).text()); console.log(v.ciUrl)')"
+          PREFLIGHT_URL="$(printf '%s' "$RUN_RESULTS" | node --input-type=module -e 'const v=JSON.parse(await new Response(process.stdin).text()); console.log(v.preflightUrl)')"
+          echo "release_sha=$MAIN_TIP" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Production migration authorization"
+            echo ""
+            echo "- release SHA: $MAIN_TIP"
+            echo "- successful main CI: $CI_URL"
+            echo "- latest successful exact-SHA production preflight: $PREFLIGHT_URL"
+            echo "- requested migrations: 20260929170000_training_load_accounting_v1, 20260929190000_persist_strength_accounting_v1"
+            echo "- migration command: NOT EXECUTED in this authorization job"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  migrate:
+    name: Verify readiness and migrate production
+    needs: authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production
+    steps:
+      - name: Checkout exact authorized main SHA
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.authorize.outputs.release_sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+
+      - name: Validate protected SSH configuration and pin host key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_HOST_FINGERPRINT: ${{ secrets.SSH_HOST_FINGERPRINT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          set -Eeuo pipefail
+          if [[ -z "$SSH_PRIVATE_KEY" || -z "$DEPLOY_PATH" ]]; then
+            echo "::error::Required production SSH secrets are missing."
+            exit 1
+          fi
+          if [[ ! "$SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]]; then
+            echo "::error::SSH_HOST must be a valid DNS name or IPv4 address."
+            exit 1
+          fi
+          if [[ ! "$SSH_USER" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::SSH_USER contains unsupported characters."
+            exit 1
+          fi
+          if [[ ! "$SSH_PORT" =~ ^[0-9]{1,5}$ ]] || (( SSH_PORT < 1 || SSH_PORT > 65535 )); then
+            echo "::error::SSH_PORT must be a valid TCP port."
+            exit 1
+          fi
+          if [[ ! "$SSH_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]]; then
+            echo "::error::SSH_HOST_FINGERPRINT must be a pinned SHA256 fingerprint."
+            exit 1
+          fi
+          install -d -m 700 "$RUNNER_TEMP/bodycast-migrate-ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/bodycast-migrate-ssh/id"
+          chmod 600 "$RUNNER_TEMP/bodycast-migrate-ssh/id"
+          echo "BODYCAST_SSH_KEY=$RUNNER_TEMP/bodycast-migrate-ssh/id" >> "$GITHUB_ENV"
+          echo "BODYCAST_KNOWN_HOSTS=$RUNNER_TEMP/bodycast-migrate-ssh/known_hosts" >> "$GITHUB_ENV"
+
+      - name: Trust only the host key matching the pinned fingerprint
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_HOST_FINGERPRINT: ${{ secrets.SSH_HOST_FINGERPRINT }}
+        run: |
+          set -Eeuo pipefail
+          CANDIDATE_HOST_KEYS="$RUNNER_TEMP/bodycast-migrate-ssh/candidate_known_hosts"
+          ssh-keyscan -T 10 -p "$SSH_PORT" "$SSH_HOST" > "$CANDIDATE_HOST_KEYS" 2>/dev/null
+          test -s "$CANDIDATE_HOST_KEYS"
+          if ! node scripts/filter-ssh-known-hosts.mjs "$CANDIDATE_HOST_KEYS" "$BODYCAST_KNOWN_HOSTS"; then
+            echo "::error::No scanned SSH host key matched the pinned fingerprint; no production command was sent."
+            exit 1
+          fi
+          chmod 600 "$BODYCAST_KNOWN_HOSTS"
+
+      - name: Recheck current main tip before production SSH
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+        run: |
+          set -Eeuo pipefail
+          TIP="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+          if [[ "$TIP" != "$RELEASE_SHA" || "$(git rev-parse HEAD)" != "$RELEASE_SHA" ]]; then
+            echo "::error::Main moved or checked-out SHA differs; no production SSH command was sent."
+            exit 1
+          fi
+
+      - name: Read-only production status and migration readiness gate
+        id: preflight
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+        run: |
+          set -Eeuo pipefail
+          DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
+          SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
+          set +e
+          timeout 20m "${SSH[@]}" "$SSH_USER@$SSH_HOST" bash -s -- "$RELEASE_SHA" "$DEPLOY_PATH_B64" \
+            > "$RUNNER_TEMP/bodycast-migrate-preflight.log" <<'REMOTE'
+          set -Eeuo pipefail
+          RELEASE_SHA="$1"
+          DEPLOY_PATH_B64="$2"
+          DEPLOY_PATH="$(printf '%s' "$DEPLOY_PATH_B64" | base64 --decode)"
+          [[ "$DEPLOY_PATH" == /* ]] || { echo "DEPLOY_PATH must be absolute." >&2; exit 1; }
+          cd "$DEPLOY_PATH"
+          git fetch --no-tags origin "$RELEASE_SHA"
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git checkout --detach --force "$RELEASE_SHA"
+          ACTUAL_HEAD="$(git rev-parse HEAD)"
+          MAIN_TIP="$(git rev-parse origin/main)"
+          printf 'Production checkout SHA: %s\n' "$ACTUAL_HEAD"
+          if [[ "$ACTUAL_HEAD" != "$RELEASE_SHA" || "$MAIN_TIP" != "$RELEASE_SHA" ]]; then
+            echo "Production checkout or origin/main does not equal the authorized SHA." >&2
+            exit 1
+          fi
+          CONTAINER_META="$(docker inspect --format '{{.Name}}|{{.Config.Image}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' bodycast-db-prod)"
+          IFS='|' read -r CONTAINER_NAME CONTAINER_IMAGE CONTAINER_STATE CONTAINER_HEALTH <<< "$CONTAINER_META"
+          if [[ "$CONTAINER_NAME" != "/bodycast-db-prod" || "$CONTAINER_IMAGE" != "postgres:17-alpine" || "$CONTAINER_STATE" != "running" || "$CONTAINER_HEALTH" != "healthy" ]]; then
+            echo "Production database container identity/state is not the expected healthy target." >&2
+            exit 1
+          fi
+          docker compose -f docker-compose.prod.yml --profile tools build migrate
+          STATUS_LOG="$(mktemp)"
+          PREFLIGHT_REPORT="$(mktemp)"
+          trap 'rm -f "$STATUS_LOG" "$PREFLIGHT_REPORT"' EXIT
+          set +e
+          docker compose -f docker-compose.prod.yml --profile tools run --rm --entrypoint npx migrate prisma migrate status > "$STATUS_LOG" 2>&1
+          STATUS_CODE=$?
+          set -e
+          cat "$STATUS_LOG"
+          if (( STATUS_CODE > 1 )) || ! grep -Eqi 'Following migration|have not yet been applied' "$STATUS_LOG" \
+            || grep -Eqi 'failed migration|migration.*failed|drift detected|error P[0-9]+' "$STATUS_LOG" \
+            || ! grep -Fq '20260929170000_training_load_accounting_v1' "$STATUS_LOG" \
+            || ! grep -Fq '20260929190000_persist_strength_accounting_v1' "$STATUS_LOG"; then
+            echo "Prisma migration status was not exactly the expected pending Stage 02 pair." >&2
+            exit 1
+          fi
+          cat scripts/production-db-preflight.sql | docker exec -i \
+            --env 'PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=3000' \
+            bodycast-db-prod psql --username=bodycast --dbname=bodycast --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+            > "$PREFLIGHT_REPORT"
+          printf '\nBODYCAST_PREFLIGHT_JSON_BEGIN\n'
+          cat "$PREFLIGHT_REPORT"
+          printf '\nBODYCAST_PREFLIGHT_JSON_END\n'
+          REMOTE
+          SSH_STATUS=$?
+          set -e
+          cat "$RUNNER_TEMP/bodycast-migrate-preflight.log"
+          if (( SSH_STATUS != 0 )); then exit "$SSH_STATUS"; fi
+          node --input-type=module - "$RUNNER_TEMP/bodycast-migrate-preflight.log" "$RUNNER_TEMP/bodycast-production-preflight.json" <<'NODE'
+          import { readFileSync, writeFileSync, readdirSync } from "node:fs";
+          import { evaluateProductionPreflight, EXPECTED_PENDING_MIGRATIONS } from "./scripts/production-migration-preflight.mjs";
+          const log = readFileSync(process.argv[2], "utf8");
+          const start = log.indexOf("BODYCAST_PREFLIGHT_JSON_BEGIN\n");
+          const end = log.indexOf("\nBODYCAST_PREFLIGHT_JSON_END", start);
+          if (start < 0 || end < 0) throw new Error("Read-only production preflight report was not returned.");
+          const reportText = log.slice(start + "BODYCAST_PREFLIGHT_JSON_BEGIN\n".length, end).trim();
+          writeFileSync(process.argv[3], reportText + "\n", { mode: 0o600 });
+          const report = JSON.parse(reportText);
+          const migrations = readdirSync("prisma/migrations", { withFileTypes: true })
+            .filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+          const result = evaluateProductionPreflight(report, migrations);
+          console.log(JSON.stringify(result, null, 2));
+          if (!result.readyForOwnerAuthorization
+              || JSON.stringify(result.pending) !== JSON.stringify(EXPECTED_PENDING_MIGRATIONS)) process.exitCode = 1;
+          NODE
+          {
+            echo "## Pre-migration production gate"
+            echo ""
+            echo "- checked release SHA: $RELEASE_SHA"
+            echo "- Prisma status: exact expected pending pair only"
+            echo "- identity, partial objects, failed/rolled-back rows, table sizes, long transactions, and DDL-conflicting locks: checked by the read-only Stage 02 evaluator"
+            echo "- migration command: NOT EXECUTED in this step"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply only the authorized pending migrations
+        id: migration
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+        run: |
+          set -Eeuo pipefail
+          TIP="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+          if [[ "$TIP" != "$RELEASE_SHA" || "$(git rev-parse HEAD)" != "$RELEASE_SHA" ]]; then
+            echo "::error::Main moved before migration; production was not mutated."
+            exit 1
+          fi
+          DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
+          SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
+          timeout 45m "${SSH[@]}" "$SSH_USER@$SSH_HOST" bash -s -- "$RELEASE_SHA" "$DEPLOY_PATH_B64" <<'REMOTE'
+          set -Eeuo pipefail
+          RELEASE_SHA="$1"
+          DEPLOY_PATH_B64="$2"
+          DEPLOY_PATH="$(printf '%s' "$DEPLOY_PATH_B64" | base64 --decode)"
+          [[ "$DEPLOY_PATH" == /* ]] || { echo "DEPLOY_PATH must be absolute." >&2; exit 1; }
+          cd "$DEPLOY_PATH"
+          git fetch --no-tags origin "$RELEASE_SHA"
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git checkout --detach --force "$RELEASE_SHA"
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          test "$(git rev-parse origin/main)" = "$RELEASE_SHA"
+          printf 'Running the authorized migration for %s\n' "$RELEASE_SHA"
+          CONFIRM_PRODUCTION_MIGRATE=migrate bash scripts/deploy-migrate.sh
+          REMOTE
+          {
+            echo "## Production migration command"
+            echo ""
+            echo "- release SHA: $RELEASE_SHA"
+            echo "- command: CONFIRM_PRODUCTION_MIGRATE=migrate bash scripts/deploy-migrate.sh"
+            echo "- backfill, manual SQL, app deploy/cutover: NOT EXECUTED"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify applied records and schema compatibility
+        id: postflight
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+        run: |
+          set -Eeuo pipefail
+          TIP="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+          if [[ "$TIP" != "$RELEASE_SHA" || "$(git rev-parse HEAD)" != "$RELEASE_SHA" ]]; then
+            echo "::error::Main moved before post-migration verification; deployment must remain blocked."
+            exit 1
+          fi
+          DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
+          SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
+          timeout 25m "${SSH[@]}" "$SSH_USER@$SSH_HOST" bash -s -- "$RELEASE_SHA" "$DEPLOY_PATH_B64" \
+            > "$RUNNER_TEMP/bodycast-migrate-postflight.log" <<'REMOTE'
+          set -Eeuo pipefail
+          RELEASE_SHA="$1"
+          DEPLOY_PATH_B64="$2"
+          DEPLOY_PATH="$(printf '%s' "$DEPLOY_PATH_B64" | base64 --decode)"
+          [[ "$DEPLOY_PATH" == /* ]] || { echo "DEPLOY_PATH must be absolute." >&2; exit 1; }
+          cd "$DEPLOY_PATH"
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          bash scripts/deploy-preflight-schema.sh
+          POSTFLIGHT_REPORT="$(mktemp)"
+          trap 'rm -f "$POSTFLIGHT_REPORT"' EXIT
+          cat scripts/production-db-preflight.sql | docker exec -i \
+            --env 'PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=3000' \
+            bodycast-db-prod psql --username=bodycast --dbname=bodycast --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+            > "$POSTFLIGHT_REPORT"
+          printf '\nBODYCAST_POSTFLIGHT_JSON_BEGIN\n'
+          cat "$POSTFLIGHT_REPORT"
+          printf '\nBODYCAST_POSTFLIGHT_JSON_END\n'
+          REMOTE
+          cat "$RUNNER_TEMP/bodycast-migrate-postflight.log"
+          node --input-type=module - "$RUNNER_TEMP/bodycast-migrate-postflight.log" <<'NODE'
+          import { readFileSync, readdirSync } from "node:fs";
+          import { EXPECTED_MIGRATION_OBJECTS, EXPECTED_PENDING_MIGRATIONS } from "./scripts/production-migration-preflight.mjs";
+          const log = readFileSync(process.argv[2], "utf8");
+          const start = log.indexOf("BODYCAST_POSTFLIGHT_JSON_BEGIN\n");
+          const end = log.indexOf("\nBODYCAST_POSTFLIGHT_JSON_END", start);
+          if (start < 0 || end < 0) throw new Error("Read-only post-migration report was not returned.");
+          const report = JSON.parse(log.slice(start + "BODYCAST_POSTFLIGHT_JSON_BEGIN\n".length, end).trim());
+          const rows = Array.isArray(report.migrations) ? report.migrations : [];
+          const directories = readdirSync("prisma/migrations", { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+          const applied = new Set(rows.filter((row) => row.finishedAt && !row.rolledBackAt).map((row) => row.name));
+          const pending = directories.filter((name) => !applied.has(name)).sort();
+          const failed = rows.filter((row) => row.startedAt && !row.finishedAt && !row.rolledBackAt).map((row) => row.name);
+          const rolledBack = rows.filter((row) => row.rolledBackAt).map((row) => row.name);
+          const blockers = [];
+          if (pending.length) blockers.push("Pending migrations remain: " + pending.join(", "));
+          if (failed.length) blockers.push("Incomplete/failed migration rows remain: " + failed.join(", "));
+          if (rolledBack.length) blockers.push("Rolled-back migration rows require review: " + rolledBack.join(", "));
+          for (const name of EXPECTED_PENDING_MIGRATIONS) {
+            const matches = rows.filter((row) => row.name === name);
+            if (matches.length !== 1 || !matches[0].finishedAt || matches[0].rolledBackAt) {
+              blockers.push("Expected migration " + name + " does not have exactly one successful finished record.");
+            }
+          }
+          const objectMap = new Map((report.objects ?? []).map((object) => [object.name, object.present === true]));
+          const missingObjects = EXPECTED_MIGRATION_OBJECTS.filter((name) => objectMap.get(name) !== true);
+          if (missingObjects.length) blockers.push("Post-migration schema objects are missing: " + missingObjects.join(", "));
+          if (report.identity?.database !== "bodycast" || report.identity?.role !== "bodycast" || !String(report.identity?.serverVersion ?? "").startsWith("17.")) {
+            blockers.push("Post-migration database identity differs from the verified production target.");
+          }
+          if ((report.longTransactions ?? []).length || (report.relevantLocks ?? []).length) {
+            blockers.push("Post-migration report contains a long transaction or DDL-conflicting relation lock.");
+          }
+          console.log(JSON.stringify({
+            ready: blockers.length === 0,
+            expectedMigrations: EXPECTED_PENDING_MIGRATIONS,
+            pending,
+            failed,
+            rolledBack,
+            missingObjects,
+            identity: report.identity,
+            tables: report.tables,
+            longTransactionCount: (report.longTransactions ?? []).length,
+            relevantLockCount: (report.relevantLocks ?? []).length,
+            blockers,
+          }, null, 2));
+          if (blockers.length) process.exitCode = 1;
+          NODE
+          {
+            echo "## Post-migration production verification"
+            echo ""
+            echo "- pending migrations: 0"
+            echo "- failed migrations: 0"
+            echo "- both expected migrations: successful finished records verified"
+            echo "- production schema preflight: PASS"
+            echo "- application deploy/cutover: NOT EXECUTED by this workflow"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Collect read-only state if migration verification fails
+        if: failure() && (steps.migration.outcome == 'failure' || steps.postflight.outcome == 'failure')
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+        run: |
+          set -Eeuo pipefail
+          DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
+          SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
+          set +e
+          timeout 20m "${SSH[@]}" "$SSH_USER@$SSH_HOST" bash -s -- "$RELEASE_SHA" "$DEPLOY_PATH_B64" <<'REMOTE'
+          set -Eeuo pipefail
+          RELEASE_SHA="$1"
+          DEPLOY_PATH_B64="$2"
+          DEPLOY_PATH="$(printf '%s' "$DEPLOY_PATH_B64" | base64 --decode)"
+          cd "$DEPLOY_PATH"
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          docker compose -f docker-compose.prod.yml --profile tools run --rm --entrypoint npx migrate prisma migrate status || true
+          cat scripts/production-db-preflight.sql | docker exec -i \
+            --env 'PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=3000' \
+            bodycast-db-prod psql --username=bodycast --dbname=bodycast --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 || true
+          REMOTE
+          INSPECTION_STATUS=$?
+          set -e
+          echo "Migration was not retried. Read-only post-failure inspection exit code: $INSPECTION_STATUS."
+          echo "Migration failure requires owner review; no application deployment was run."
+
+      - name: Remove temporary SSH credentials
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/bodycast-migrate-ssh"

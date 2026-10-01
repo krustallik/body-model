@@ -354,7 +354,7 @@ jobs:
           [[ "$DEPLOY_PATH" == /* ]] || { echo "DEPLOY_PATH must be absolute." >&2; exit 1; }
           cd "$DEPLOY_PATH"
           test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
-          bash scripts/deploy-preflight-schema.sh
+          bash scripts/deploy-preflight-schema.sh </dev/null
           POSTFLIGHT_REPORT="$(mktemp)"
           trap 'rm -f "$POSTFLIGHT_REPORT"' EXIT
           cat scripts/production-db-preflight.sql | docker exec -i \
@@ -445,7 +445,7 @@ jobs:
           DEPLOY_PATH="$(printf '%s' "$DEPLOY_PATH_B64" | base64 --decode)"
           cd "$DEPLOY_PATH"
           test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
-          docker compose -f docker-compose.prod.yml --profile tools run --rm --entrypoint npx migrate prisma migrate status || true
+          docker compose -f docker-compose.prod.yml --profile tools run --interactive=false -T --rm --entrypoint npx migrate prisma migrate status </dev/null || true
           cat scripts/production-db-preflight.sql | docker exec -i \
             --env 'PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=3000' \
             bodycast-db-prod psql --username=bodycast --dbname=bodycast --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 || true

@@ -146,9 +146,10 @@ describe("production migration preflight evaluator", () => {
     const sql = await readFile(new URL("../scripts/production-db-preflight.sql", import.meta.url), "utf8");
     expect(sql).toContain("LEFT JOIN pg_stat_activity a ON a.pid = l.pid");
     expect(sql).toContain("LEFT JOIN pg_prepared_xacts prepared ON l.virtualtransaction = '-1/' || prepared.transaction");
+    expect(sql).toContain("OR l.pid IS NULL");
+    expect(sql).toContain("CASE WHEN l.pid IS NULL THEN 'prepared-transaction'");
     expect(sql).toContain("a.pid <> pg_backend_pid()");
-    expect(sql).toContain("prepared.database = current_database()");
-    expect(sql).toContain("'prepared-transaction'");
+    expect(sql).toContain("l.virtualtransaction AS \"virtualTransaction\"");
   });
 
   it("requires restored migration history and baseline tables to match the source report", () => {

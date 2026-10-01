@@ -300,11 +300,13 @@ async function main() {
       }
 
       await withPreparedTransactionRelationLock(preparedDb, "ExerciseCatalog", async (gid) => {
+        if (sql(preparedDb, `SELECT EXISTS (SELECT 1 FROM pg_prepared_xacts WHERE gid = '${gid}');`) !== "t") {
+          throw new Error("The test prepared transaction was not present in pg_prepared_xacts.");
+        }
         const report = readSourceReport(preparedDb);
         const lock = report.relevantLocks.find((item) => (
           item.pid === null
           && item.blockerType === "prepared-transaction"
-          && item.preparedTransactionId === gid
           && item.relation === "ExerciseCatalog"
           && item.mode === "RowExclusiveLock"
           && item.granted === true

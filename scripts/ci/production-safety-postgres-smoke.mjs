@@ -116,7 +116,7 @@ async function withPreparedTransactionRelationLock(db, tableName, work) {
 
   const gid = `bodycast-ci-prepared-lock-${randomBytes(6).toString("hex")}`;
   try {
-    sql(db, `BEGIN; LOCK TABLE public."${tableName}" IN ACCESS SHARE MODE; PREPARE TRANSACTION '${gid}';`);
+    sql(db, `BEGIN; LOCK TABLE public."${tableName}" IN ROW EXCLUSIVE MODE; PREPARE TRANSACTION '${gid}';`);
     return await work(gid);
   } finally {
     const exists = sql(db, `SELECT EXISTS (SELECT 1 FROM pg_prepared_xacts WHERE gid = '${gid}');`);
@@ -306,10 +306,16 @@ async function main() {
           && item.blockerType === "prepared-transaction"
           && item.preparedTransactionId === gid
           && item.relation === "ExerciseCatalog"
-          && item.mode === "AccessShareLock"
+          && item.mode === "RowExclusiveLock"
           && item.granted === true
         ));
-        if (!lock) throw new Error("Preflight lost the prepared transaction's granted ExerciseCatalog relation lock.");
+        if (!lock) {
+          const diagnostic = sql(preparedDb, `SELECT jsonb_build_object(
+            'preparedTransactions', (SELECT jsonb_agg(jsonb_build_object('gid', gid, 'transaction', transaction, 'database', database)) FROM pg_prepared_xacts),
+            'exerciseCatalogLocks', (SELECT jsonb_agg(jsonb_build_object('pid', l.pid, 'database', l.database, 'virtualtransaction', l.virtualtransaction, 'mode', l.mode, 'granted', l.granted)) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation WHERE c.relname = 'ExerciseCatalog' AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database()))
+          )::text;`);
+          throw new Error(`Preflight lost the prepared transaction's granted ExerciseCatalog relation lock. Diagnostic: ${diagnostic}`);
+        }
         const decision = evaluateProductionPreflight(report, preparedMigrations);
         if (decision.readyForOwnerAuthorization
           || !decision.blockers.some((blocker) => blocker.includes("relevant DDL-conflicting relation lock(s)"))) {

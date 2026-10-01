@@ -468,7 +468,8 @@ describe("persisted session accounting UI", () => {
     render(<ExerciseLoadConfigEditor catalogId={17} configuration={LEGACY_LOAD_CONFIGS_V1.one_arm_lateral_raise} stableKey="one_arm_lateral_raise" resistanceType={RESISTANCE.EXTERNAL_WEIGHT} uk onSaved={() => undefined} />);
     await user.click(screen.getByRole("button", { name: "Як враховувати навантаження" }));
     expect(screen.queryByLabelText("Скільки боків враховувати однаково?")).toBeNull();
-    expect(screen.getByText(/за весь рух.*480/)).toBeTruthy();
+    expect(screen.getByText("20 кг за снаряд × 12 повторів → 480 кг·повторів")).toBeTruthy();
+    expect(screen.queryByText(/за весь рух/)).toBeNull();
     await user.click(screen.getByRole("button", { name: "Зберегти правило" }));
     const config = JSON.parse(requests[0]!).loadAccountingConfig;
     expect(config).toMatchObject({ accountingKind: "external-per-implement-per-side", repsMeaning: "per-side", loadedSides: 2 });

@@ -269,16 +269,12 @@ export function ExerciseLoadConfigEditor({
         ? mode === "external-per-side"
           ? loadedSides === 2 && execution === "simultaneous"
             ? pairLabel + " × 12 повторів → " + number(preview.value) + " кг·повторів"
-            : displayedConfig?.execution === "unilateral" || displayedConfig?.execution === "alternating"
-              ? "20 кг за снаряд × 12 повторів за весь рух → " + number(preview.value) + " кг·повторів"
-              : "20 кг за снаряд × 12 повторів → " + number(preview.value) + " кг·повторів"
+            : "20 кг за снаряд × 12 повторів → " + number(preview.value) + " кг·повторів"
           : `20 кг сумарної ваги × 12 повторів → ${number(preview.value)} кг·повторів`
         : mode === "external-per-side"
           ? loadedSides === 2 && execution === "simultaneous"
             ? pairLabel + " × 12 reps → " + number(preview.value) + " kg·reps"
-            : displayedConfig?.execution === "unilateral" || displayedConfig?.execution === "alternating"
-              ? "20 kg per implement × 12 reps for the whole movement → " + number(preview.value) + " kg·reps"
-              : "20 kg per implement × 12 reps → " + number(preview.value) + " kg·reps"
+            : "20 kg per implement × 12 reps → " + number(preview.value) + " kg·reps"
           : `20 kg combined load × 12 reps → ${number(preview.value)} kg·reps`
       : preview.kind === "band"
         ? uk ? `20 кг номінального опору × 12 повторів → ${number(preview.value)} номінальних кг·повторів` : `20 kg nominal resistance × 12 reps → ${number(preview.value)} nominal kg·reps`

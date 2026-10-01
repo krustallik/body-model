@@ -320,6 +320,7 @@ describe("workflow mutation boundary", () => {
     expect(safetyWorkflow).not.toMatch(/image:\s+postgres:17-alpine\s*$/m);
     const smoke = await readFile(new URL("../scripts/ci/production-safety-postgres-smoke.mjs", import.meta.url), "utf8");
     expect(workflow).toContain("node scripts/restore-encrypted-postgres-backup.mjs");
+    expect(workflow).not.toContain("bodycast-archive-list.txt");
     expect(smoke).toContain("restoreEncryptedPostgresBackup");
     expect(smoke).toContain('const POSTGRES_IMAGE = "postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24"');
     expect(smoke).not.toContain('"postgres:17-alpine"');

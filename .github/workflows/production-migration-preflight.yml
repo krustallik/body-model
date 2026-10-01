@@ -227,13 +227,13 @@ jobs:
           {
             echo "## Live production schema preflight (read-only)"
             echo ""
-            echo "- container: `${CONTAINER_META}`"
+            echo "- container: \`${CONTAINER_META}\`"
             echo "- database identity, migration rows, object inventory, table sizes and lock summary:"
             echo '```json'
             cat "$RUNNER_TEMP/bodycast-production-preflight-result.json"
             echo '```'
             echo "- DDL/data writes: none"
-            echo "- `prisma migrate deploy`: NOT EXECUTED"
+            echo "- \`prisma migrate deploy\`: NOT EXECUTED"
           } >> "$GITHUB_STEP_SUMMARY"
           if [[ "$PREFLIGHT_STATUS" -ne 0 ]]; then
             echo "::error::Production migration readiness preflight found blockers; no backup was created and no migration was executed."

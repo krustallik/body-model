@@ -142,6 +142,15 @@ describe("production migration preflight evaluator", () => {
     expect(result.blockers.join(" ")).toContain("relevant DDL-conflicting relation lock(s)");
   });
 
+  it("reports backend and prepared-transaction lock sources without dropping pid-less locks", async () => {
+    const sql = await readFile(new URL("../scripts/production-db-preflight.sql", import.meta.url), "utf8");
+    expect(sql).toContain("LEFT JOIN pg_stat_activity a ON a.pid = l.pid");
+    expect(sql).toContain("LEFT JOIN pg_prepared_xacts prepared ON l.virtualtransaction = '-1/' || prepared.transaction");
+    expect(sql).toContain("a.pid <> pg_backend_pid()");
+    expect(sql).toContain("prepared.database = current_database()");
+    expect(sql).toContain("'prepared-transaction'");
+  });
+
   it("requires restored migration history and baseline tables to match the source report", () => {
     const history = [{ name: "baseline", startedAt: "t1", finishedAt: "t2", rolledBackAt: null, hasLogs: false }];
     expect(verifyRestoredBackup(
@@ -165,6 +174,9 @@ describe("disposable restore safety gate", () => {
     expect(isProductionLikeName("production-context")).toBe(true);
     expect(isProductionLikeName("bodycast-test-pg")).toBe(false);
     expect(isLocalDockerEndpoint("npipe:////./pipe/docker_engine")).toBe(true);
+    expect(isLocalDockerEndpoint("npipe:////prod-host/pipe/docker_engine")).toBe(false);
+    expect(isLocalDockerEndpoint("npipe:////./pipe/docker_engine/extra")).toBe(false);
+    expect(isLocalDockerEndpoint("npipe:///./pipe/docker_engine")).toBe(false);
     expect(isLocalDockerEndpoint("unix:///var/run/docker.sock")).toBe(true);
     expect(isLocalDockerEndpoint("ssh://production.example/docker.sock")).toBe(false);
     expect(isLocalDockerEndpoint("tcp://10.0.0.3:2376")).toBe(false);
@@ -232,5 +244,10 @@ describe("workflow mutation boundary", () => {
     expect(sql).toContain("JOIN alter_table_targets target ON target.table_name = c.relname");
     expect(sql).toContain("AND a.pid <> pg_backend_pid()");
     expect(sql).not.toMatch(/^\s*(ALTER|CREATE|DROP|INSERT|UPDATE|DELETE|TRUNCATE)\b/im);
+    expect(safetyWorkflow.match(/image:\s+postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24/g)).toHaveLength(2);
+    expect(safetyWorkflow).not.toMatch(/image:\s+postgres:17-alpine\s*$/m);
+    const smoke = await readFile(new URL("../scripts/ci/production-safety-postgres-smoke.mjs", import.meta.url), "utf8");
+    expect(smoke).toContain('const POSTGRES_IMAGE = "postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24"');
+    expect(smoke).not.toContain('"postgres:17-alpine"');
   });
 });

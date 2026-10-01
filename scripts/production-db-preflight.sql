@@ -61,21 +61,31 @@ WITH object_inventory(name, present) AS (
     ('HealthMetricSample'),
     ('StrengthDiarySession')
 ), relevant_locks AS (
-  SELECT a.pid, c.relname AS relation, l.mode, l.granted, a.state,
-    floor(extract(epoch FROM (clock_timestamp() - a.xact_start)))::bigint AS "xactAgeSeconds",
-    cardinality(pg_blocking_pids(a.pid)) AS "blockerCount",
+  SELECT a.pid, c.relname AS relation, l.mode, l.granted,
+    CASE WHEN prepared.transaction IS NULL THEN 'backend' ELSE 'prepared-transaction' END AS "blockerType",
+    CASE WHEN prepared.transaction IS NULL THEN a.state ELSE 'prepared' END AS state,
+    prepared.gid AS "preparedTransactionId",
+    CASE WHEN prepared.transaction IS NOT NULL
+      THEN floor(extract(epoch FROM (clock_timestamp() - prepared.prepared)))::bigint
+      ELSE floor(extract(epoch FROM (clock_timestamp() - a.xact_start)))::bigint
+    END AS "xactAgeSeconds",
+    CASE WHEN a.pid IS NULL THEN NULL ELSE cardinality(pg_blocking_pids(a.pid)) END AS "blockerCount",
     a.wait_event_type AS "waitEventType", a.wait_event AS "waitEvent"
   FROM pg_locks l
-  JOIN pg_stat_activity a ON a.pid = l.pid
+  LEFT JOIN pg_stat_activity a ON a.pid = l.pid
+  LEFT JOIN pg_prepared_xacts prepared ON l.virtualtransaction = '-1/' || prepared.transaction
   JOIN pg_class c ON c.oid = l.relation
   JOIN pg_namespace n ON n.oid = c.relnamespace
   JOIN alter_table_targets target ON target.table_name = c.relname
   WHERE n.nspname = 'public'
     AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
-    AND a.datname = current_database()
-    AND a.pid <> pg_backend_pid()
+    AND (
+      (a.pid IS NOT NULL AND a.datname = current_database() AND a.pid <> pg_backend_pid())
+      OR (prepared.transaction IS NOT NULL AND prepared.database = current_database())
+    )
     -- Stage 02 ALTER TABLE statements acquire ACCESS EXCLUSIVE, which conflicts
     -- with every granted relation lock mode. Awaiting relation locks also block readiness.
+    -- Prepared transactions have no backend pid; their virtualtransaction maps to pg_prepared_xacts.
 )
 SELECT jsonb_build_object(
   'identity', jsonb_build_object(

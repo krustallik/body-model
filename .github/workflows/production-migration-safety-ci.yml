@@ -33,7 +33,7 @@ jobs:
     timeout-minutes: 20
     services:
       source-postgres:
-        image: postgres:17-alpine
+        image: postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
         env:
           POSTGRES_DB: bodycast
           POSTGRES_USER: bodycast
@@ -46,7 +46,7 @@ jobs:
           --health-timeout 5s
           --health-retries 12
       restore-postgres:
-        image: postgres:17-alpine
+        image: postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
         env:
           POSTGRES_DB: bodycast_restore
           POSTGRES_USER: bodycast_restore

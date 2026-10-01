@@ -16,6 +16,7 @@ import {
 
 const source = { host: "127.0.0.1", port: Number(process.env.BODYCAST_SOURCE_PORT ?? 5432), database: "bodycast", user: "bodycast", password: "bodycast_ci_only" };
 const target = { host: "127.0.0.1", port: Number(process.env.BODYCAST_RESTORE_PORT ?? 5433), database: "bodycast_restore", user: "bodycast_restore", password: "restore_ci_only" };
+const POSTGRES_IMAGE = "postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24";
 
 function run(command, args, { input, env = process.env } = {}) {
   const result = spawnSync(command, args, { input, encoding: "utf8", env, windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
@@ -26,7 +27,7 @@ function run(command, args, { input, env = process.env } = {}) {
 }
 
 function clientArgs(db, tool) {
-  return ["run", "--rm", "--interactive", "--network", "host", "--env", `PGPASSWORD=${db.password}`, "postgres:17-alpine", tool,
+  return ["run", "--rm", "--interactive", "--network", "host", "--env", `PGPASSWORD=${db.password}`, POSTGRES_IMAGE, tool,
     "--host", db.host, "--port", String(db.port), "--username", db.user, "--dbname", db.database];
 }
 
@@ -34,7 +35,7 @@ function sql(db, content) {
   return run("docker", [...clientArgs(db, "psql"), "--no-psqlrc", "--quiet", "--tuples-only", "--no-align", "--set=ON_ERROR_STOP=1", "--file=-"], { input: content });
 }
 
-async function createSourceFixture() {
+async function createSourceFixture(db = source) {
   const migrationDirectories = (await readdir("prisma/migrations", { withFileTypes: true }))
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
@@ -62,13 +63,65 @@ async function createSourceFixture() {
     INSERT INTO public."StrengthDiarySession" VALUES ('session-ci-1'), ('session-ci-2');
     INSERT INTO public."ExerciseCatalog" VALUES ('exercise-ci-1'), ('exercise-ci-2'), ('exercise-ci-3');
   `;
-  sql(source, createSql);
+  sql(db, createSql);
   return migrationDirectories;
 }
 
-function readSourceReport() {
-  const report = sql(source, requireSql("scripts/production-db-preflight.sql"));
+function readSourceReport(db = source) {
+  const report = sql(db, requireSql("scripts/production-db-preflight.sql"));
   return JSON.parse(report);
+}
+
+async function waitForPostgres(db) {
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const result = spawnSync("docker", clientArgs(db, "pg_isready"), { encoding: "utf8", env: process.env, windowsHide: true });
+    if (!result.error && result.status === 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  throw new Error("Prepared-lock disposable PostgreSQL did not become ready.");
+}
+
+async function withPreparedLockPostgres(work) {
+  const containerName = `bodycast-ci-prepared-lock-${randomBytes(6).toString("hex")}`;
+  let created = false;
+  try {
+    run("docker", [
+      "create", "--name", containerName, "--publish", "127.0.0.1::5432",
+      "--env", "POSTGRES_DB=bodycast", "--env", "POSTGRES_USER=bodycast", "--env", "POSTGRES_PASSWORD=prepared_lock_ci_only",
+      "--label", "bodycast.safety-test=prepared-lock", POSTGRES_IMAGE,
+      "postgres", "-c", "max_prepared_transactions=10",
+    ]);
+    created = true;
+    run("docker", ["start", containerName]);
+    const publishedPort = run("docker", ["port", containerName, "5432/tcp"]);
+    const match = publishedPort.match(/:(\d+)\s*$/);
+    if (!match) throw new Error("Could not identify the host port for prepared-lock disposable PostgreSQL.");
+    const db = {
+      host: "127.0.0.1", port: Number(match[1]), database: "bodycast",
+      user: "bodycast", password: "prepared_lock_ci_only",
+    };
+    await waitForPostgres(db);
+    return await work(db);
+  } finally {
+    if (created) run("docker", ["rm", "--force", containerName]);
+  }
+}
+
+async function withPreparedTransactionRelationLock(db, tableName, work) {
+  const alterTargets = new Set([
+    "ExerciseCatalog", "ProgramExercise", "StrengthSessionExercise", "StrengthSet",
+    "HealthMetricSample", "StrengthDiarySession",
+  ]);
+  if (!alterTargets.has(tableName)) throw new Error("Refusing to prepare a lock on an unreviewed relation target.");
+
+  const gid = `bodycast-ci-prepared-lock-${randomBytes(6).toString("hex")}`;
+  try {
+    sql(db, `BEGIN; LOCK TABLE public."${tableName}" IN ACCESS SHARE MODE; PREPARE TRANSACTION '${gid}';`);
+    return await work(gid);
+  } finally {
+    const exists = sql(db, `SELECT EXISTS (SELECT 1 FROM pg_prepared_xacts WHERE gid = '${gid}');`);
+    if (exists === "t") sql(db, `ROLLBACK PREPARED '${gid}';`);
+  }
 }
 
 async function withShortGrantedRelationLock(tableName, work) {
@@ -148,7 +201,7 @@ function requireSql(file) {
 
 function captureDump(db) {
   const child = spawn("docker", [
-    "run", "--rm", "--network", "host", "--env", `PGPASSWORD=${db.password}`, "postgres:17-alpine", "pg_dump",
+    "run", "--rm", "--network", "host", "--env", `PGPASSWORD=${db.password}`, POSTGRES_IMAGE, "pg_dump",
     "--host", db.host, "--port", String(db.port), "--username", db.user, "--dbname", db.database,
     "--format=custom", "--no-owner", "--no-privileges",
   ], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
@@ -164,7 +217,7 @@ function captureDump(db) {
 
 async function restoreDump(db, archive, key) {
   const child = spawn("docker", [
-    "run", "--rm", "--interactive", "--network", "host", "--env", `PGPASSWORD=${db.password}`, "postgres:17-alpine", "pg_restore",
+    "run", "--rm", "--interactive", "--network", "host", "--env", `PGPASSWORD=${db.password}`, POSTGRES_IMAGE, "pg_restore",
     "--host", db.host, "--port", String(db.port), "--username", db.user, "--dbname", db.database,
     "--exit-on-error", "--no-owner", "--no-privileges", "--single-transaction",
   ], { stdio: ["pipe", "ignore", "pipe"], windowsHide: true });
@@ -216,7 +269,11 @@ async function main() {
     await withShortGrantedRelationLock("ExerciseCatalog", () => {
       shortLockReport = readSourceReport();
       const observed = shortLockReport.relevantLocks.some((lock) => (
-        lock.relation === "ExerciseCatalog" && lock.mode === "AccessShareLock" && lock.granted === true
+        Number.isInteger(lock.pid)
+        && lock.blockerType === "backend"
+        && lock.relation === "ExerciseCatalog"
+        && lock.mode === "AccessShareLock"
+        && lock.granted === true
       ));
       if (!observed) throw new Error("Preflight missed the actively held short ACCESS SHARE relation lock.");
       const lockDecision = evaluateProductionPreflight(shortLockReport, migrationDirectories);
@@ -232,6 +289,44 @@ async function main() {
     if (!evaluateProductionPreflight(releasedLockReport, migrationDirectories).readyForOwnerAuthorization) {
       throw new Error("Preflight did not return to ready after the short granted lock was released.");
     }
+
+    let preparedLockRejected = false;
+    let preparedLockCleanupRestoredReadiness = false;
+    await withPreparedLockPostgres(async (preparedDb) => {
+      const preparedMigrations = await createSourceFixture(preparedDb);
+      const cleanReport = readSourceReport(preparedDb);
+      if (!evaluateProductionPreflight(cleanReport, preparedMigrations).readyForOwnerAuthorization) {
+        throw new Error("Prepared-lock PostgreSQL baseline was not ready before the prepared transaction test.");
+      }
+
+      await withPreparedTransactionRelationLock(preparedDb, "ExerciseCatalog", async (gid) => {
+        const report = readSourceReport(preparedDb);
+        const lock = report.relevantLocks.find((item) => (
+          item.pid === null
+          && item.blockerType === "prepared-transaction"
+          && item.preparedTransactionId === gid
+          && item.relation === "ExerciseCatalog"
+          && item.mode === "AccessShareLock"
+          && item.granted === true
+        ));
+        if (!lock) throw new Error("Preflight lost the prepared transaction's granted ExerciseCatalog relation lock.");
+        const decision = evaluateProductionPreflight(report, preparedMigrations);
+        if (decision.readyForOwnerAuthorization
+          || !decision.blockers.some((blocker) => blocker.includes("relevant DDL-conflicting relation lock(s)"))) {
+          throw new Error("Preflight did not block the prepared transaction relation lock conflicting with Stage 02 ALTER TABLE.");
+        }
+        preparedLockRejected = true;
+      });
+
+      const afterCleanup = readSourceReport(preparedDb);
+      if (afterCleanup.relevantLocks.some((item) => item.blockerType === "prepared-transaction")) {
+        throw new Error("The prepared transaction lock remained after ROLLBACK PREPARED cleanup.");
+      }
+      if (!evaluateProductionPreflight(afterCleanup, preparedMigrations).readyForOwnerAuthorization) {
+        throw new Error("Preflight did not return to ready after prepared transaction cleanup.");
+      }
+      preparedLockCleanupRestoredReadiness = true;
+    });
 
     const dump = captureDump(source);
     const encrypted = await encryptBackupStream(dump.stream, archive, key);
@@ -276,7 +371,7 @@ async function main() {
       throw new Error("Restore script did not fail closed for a production-like target name.");
     }
 
-    run("docker", ["create", "--name", "bodycast-ci-unmarked-target", "postgres:17-alpine"]);
+    run("docker", ["create", "--name", "bodycast-ci-unmarked-target", POSTGRES_IMAGE]);
     try {
       const unmarked = spawnSync(process.execPath, ["scripts/verify-postgres-restore.mjs", "--container", "bodycast-ci-unmarked-target", "--user", target.user, "--backup", archive, "--confirm-disposable-target", "nonproduction-disposable"], {
         encoding: "utf8", env: { ...process.env, PRODUCTION_BACKUP_ENCRYPTION_KEY: encodedKey }, windowsHide: true,
@@ -321,7 +416,7 @@ async function main() {
 
     process.stdout.write(JSON.stringify({
       result: "passed",
-      postgres: "17-alpine",
+      postgresImage: POSTGRES_IMAGE,
       syntheticMigrations: migrationDirectories.length,
       exactPending: evaluated.pending,
       backupFormat: "custom-format pg_dump encrypted with authenticated AES-256-GCM",
@@ -337,8 +432,10 @@ async function main() {
       remoteDockerEndpointRejected: true,
       dockerContextHostConflictRejected: true,
       shortGrantedAlterTableLockRejected: true,
+      preparedTransactionRelationLockRejected: preparedLockRejected,
+      preparedTransactionCleanupRestoredReadiness: preparedLockCleanupRestoredReadiness,
       mixedSshKeysFiltered,
-      blockersChecked: ["partial object", "failed migration", "long transaction", "short granted DDL-conflicting relation lock"],
+      blockersChecked: ["partial object", "failed migration", "long transaction", "short granted DDL-conflicting relation lock", "prepared transaction DDL-conflicting relation lock"],
     }, null, 2) + "\n");
   } finally {
     await rm(scratch, { recursive: true, force: true });

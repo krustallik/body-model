@@ -85,7 +85,7 @@ model HealthMetricSample {
   dailyHealthDataId Int?
   date              String          @db.VarChar(10)
   metric            String          @db.VarChar(64)
-  /** Set only by the authenticated Apple Shortcut range ingestion; old rows remain unproven. */
+  /** Set by authenticated Apple Shortcut ingestion or an explicitly approved legacy provenance correction. */
   source            String?         @db.VarChar(40)
   timestamp         DateTime        @db.Timestamptz(3)
   value             Decimal         @db.Decimal(18, 10)

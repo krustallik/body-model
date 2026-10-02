@@ -3,6 +3,15 @@ import { calendarDayIndex } from "@/modules/model-episodes/model-calendar";
 
 export const STEPPER_HISTORICAL_MASS_POLICY_V1 = "stepper-observed-nearest-seven-calendar-days-v1" as const;
 
+/** Model fallback for workout date D reads D-1, so replay from D can affect only later days. */
+export function stepperMassCandidateDependsOnReplayV1(input: {
+  workoutDate: string;
+  replayFromDate: string;
+  massStatus: StepperMassProvenanceV1["status"];
+}): boolean {
+  return input.workoutDate > input.replayFromDate && input.massStatus !== "observed";
+}
+
 export type StepperObservedMassInputV1 = {
   sourceType: "health-metric-sample" | "daily-health-data";
   sourceId: string;

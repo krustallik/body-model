@@ -37,6 +37,7 @@ import {
   type ForecastWorkoutActivity,
 } from "@/modules/model-forecast/forecast-workout-scenario";
 import { runExperimentalForecast, type ExperimentalForecastBehavior } from "./engine";
+import { isUnifiedGenerationCurrentV1 } from "@/modules/model-episodes/publication-generation-v1";
 import {
   DEFAULT_EXPERIMENTAL_FORECAST_CONFIG,
   EXPERIMENTAL_FORECAST_V1_REVISION,
@@ -505,6 +506,17 @@ export async function experimentalForecastModelEpisode(
   }
   const now = request.now ?? new Date();
   const latestDate = latestCompletedLocalDate(now, episode.timezone);
+  const lifecycle = await client.physiologyV7Lifecycle.findUnique({
+    where: { profileId: episode.profileId },
+    select: {
+      invalidationGeneration: true,
+      productionStaleFromDate: true,
+      productionPublishedGeneration: true,
+      unifiedPublishedGeneration: true,
+    },
+  });
+  if (!isUnifiedGenerationCurrentV1(lifecycle)) return null;
+  const expectedGeneration = lifecycle.invalidationGeneration;
   const unifiedRow = await client.unifiedExperimentalPhysiologyState.findFirst({
     where: { profileId: episode.profileId, date: { lte: latestDate }, modelRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V1_REVISION },
     orderBy: { date: "desc" },
@@ -573,5 +585,18 @@ export async function experimentalForecastModelEpisode(
     horizonDays: request.horizonDays,
     seed: request.seed,
   });
+  const finalLifecycle = await client.physiologyV7Lifecycle.findUnique({
+    where: { profileId: episode.profileId },
+    select: {
+      invalidationGeneration: true,
+      productionStaleFromDate: true,
+      productionPublishedGeneration: true,
+      unifiedPublishedGeneration: true,
+    },
+  });
+  if (!isUnifiedGenerationCurrentV1(finalLifecycle)
+      || finalLifecycle.invalidationGeneration !== expectedGeneration
+      || finalLifecycle.productionPublishedGeneration !== expectedGeneration
+      || finalLifecycle.unifiedPublishedGeneration !== expectedGeneration) return null;
   return mapExperimentalForecastToLegacy(experimental, episode.modelVersion);
 }

@@ -640,6 +640,31 @@ async function toSessionDtoWithHistoricalMass(
   );
 }
 
+export async function readActiveEnergyMassReferencesV1(
+  db: PrismaClient,
+  input: { sessionIds: readonly number[]; profileId?: number },
+): Promise<Map<number, NonNullable<StrengthSessionDto["activeEnergyMassReference"]>>> {
+  const sessionIds = [...new Set(input.sessionIds)];
+  if (sessionIds.length === 0) return new Map();
+  const rows = await db.strengthDiarySession.findMany({
+    where: { profileId: input.profileId ?? DEFAULT_TRAINING_PROFILE_ID, id: { in: sessionIds } },
+    select: sessionDetailSelect,
+  });
+  const references = new Map<number, NonNullable<StrengthSessionDto["activeEnergyMassReference"]>>();
+  for (const row of rows) {
+    const snapshot = currentSnapshotForRecord(row);
+    const payload = snapshot.state === "current" ? snapshot.payload : null;
+    if (payload === null) continue;
+    references.set(row.id, {
+      reference: payload.massReference,
+      snapshotRevision: payload.snapshotRevision,
+      inputFingerprint: payload.inputFingerprint,
+      massResolutionIdentity: payload.massResolutionIdentity,
+    });
+  }
+  return references;
+}
+
 function planCompletionFields(
   exercises: ReadonlyArray<{
     snapshotExerciseName: string;
@@ -1143,6 +1168,8 @@ export class TrainingRepository {
         select: {
           effectiveAccountingAt: true, webStartedAt: true, createdAt: true,
           accountingTimeZone: true, accountingTimeZoneProvenance: true,
+          matchedWorkoutId: true,
+          matchedWorkout: { select: { startAt: true, endAt: true } },
         },
       });
       if (!session) throw new Error("session not found for accounting context update");
@@ -1182,6 +1209,23 @@ export class TrainingRepository {
           timeZoneProvenance,
         });
       }
+      await invalidateActiveEnergySourcesInTransactionV1({
+        tx,
+        profileId,
+        aliases: [
+          { sourceType: "strength-session", sourceId: String(input.sessionId) },
+          ...(session.matchedWorkoutId === null ? [] : [{
+            sourceType: "workout" as const,
+            sourceId: String(session.matchedWorkoutId),
+          }]),
+        ],
+        affectedInstants: [
+          oldEffectiveAt,
+          effectiveAt,
+          session.matchedWorkout?.startAt ?? oldEffectiveAt,
+          session.matchedWorkout?.endAt,
+        ],
+      });
     });
   }
 

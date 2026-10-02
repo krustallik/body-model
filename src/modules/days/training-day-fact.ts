@@ -29,6 +29,7 @@ export type TrainingDayEventFact = {
   source: "workout" | "diary" | "matched";
   type: string;
   occurrenceAt: string;
+  modelDate?: string;
   endAt: string | null;
   durationMinutes: number | null;
   activeEnergyKcal: number | null;
@@ -55,6 +56,8 @@ export type TrainingDayFact = {
 
 export type StrengthSetFactRow = {
   id: number;
+  sessionExerciseId?: number;
+  completedAt?: string | null;
   reps: number;
   weightKg: number | null;
   bandNominalResistanceKg?: number | null;
@@ -67,6 +70,7 @@ export type StrengthFreshnessContext = {
   revision: number | null | undefined;
   status: string | null | undefined;
   energyShadow: unknown;
+  activeEnergyMassReference?: StrengthSessionDto["activeEnergyMassReference"];
   sets: readonly StrengthSetFactRow[];
   /** Preserves per-exercise resistance for on-demand recompute. */
   exercises?: readonly {
@@ -93,6 +97,7 @@ export type WorkoutFactSource = {
   type: string;
   startAt: Date;
   endAt: Date;
+  modelDate?: string;
   durationMinutes: number | null;
   activeEnergyKcal: number | null;
   manualStepCount?: number | null;
@@ -110,6 +115,7 @@ export type WorkoutFactSource = {
     programName: string | null;
     loggedSetCount: number;
     energyShadow: unknown;
+    activeEnergyMassReference?: StrengthSessionDto["activeEnergyMassReference"];
     sets?: readonly StrengthSetFactRow[];
     exercises?: readonly { resistanceType: string; sets: readonly StrengthSetFactRow[] }[];
     sameDayMassKg?: number | null;
@@ -125,11 +131,13 @@ export type DiaryFactSource = {
   entryMode: string;
   revision?: number | null;
   webStartedAt: Date | null;
+  modelDate?: string | null;
   webEndedAt: Date | null;
   matchedWorkoutId?: number | null;
   loggedSetCount: number;
   programName: string | null;
   energyShadow: unknown;
+  activeEnergyMassReference?: StrengthSessionDto["activeEnergyMassReference"];
   sets?: readonly StrengthSetFactRow[];
   exercises?: readonly { resistanceType: string; sets: readonly StrengthSetFactRow[] }[];
   sameDayMassKg?: number | null;
@@ -187,6 +195,8 @@ export function strengthEstimateFreshForDay(input: StrengthFreshnessContext & {
     sets: input.sets,
     sameDayMassKg: input.sameDayMassKg ?? null,
     startOfDayMassKg: input.startOfDayMassKg ?? null,
+    stage02MassReference: input.activeEnergyMassReference,
+    estimatorInputs: historicalEstimatorInputs(input),
     estimatorVersion: input.estimatorVersion ?? EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
   });
   return strengthEstimateFreshV1({
@@ -196,6 +206,19 @@ export function strengthEstimateFreshForDay(input: StrengthFreshnessContext & {
     storedInputFingerprint: shadowInputFingerprint(input.energyShadow),
     currentInputFingerprint,
   });
+}
+
+function historicalEstimatorInputs(input: StrengthFreshnessContext) {
+  return {
+    entryMode: input.entryMode ?? null,
+    startAt: input.matchedWorkout?.startAt ?? input.webStartedAt ?? null,
+    endAt: input.matchedWorkout?.endAt ?? input.webEndedAt ?? null,
+    durationMinutes: input.matchedWorkout?.durationMinutes ?? null,
+    stage02MassReference: input.activeEnergyMassReference?.reference ?? null,
+    stage02SnapshotRevision: input.activeEnergyMassReference?.snapshotRevision ?? null,
+    stage02InputFingerprint: input.activeEnergyMassReference?.inputFingerprint ?? null,
+    stage02MassResolutionIdentity: input.activeEnergyMassReference?.massResolutionIdentity ?? null,
+  };
 }
 
 function stubSessionForHistoricalEstimate(input: StrengthFreshnessContext): StrengthSessionDto {
@@ -260,7 +283,7 @@ function stubSessionForHistoricalEstimate(input: StrengthFreshnessContext): Stre
         bandNominalResistanceKg: set.bandNominalResistanceKg ?? null,
         rir: set.rir ?? null,
         comment: null,
-        completedAt: null,
+        completedAt: set.completedAt ?? null,
         createdAt,
         updatedAt: createdAt,
       })),
@@ -282,6 +305,7 @@ function resolveStrengthFactEnergy(input: StrengthFreshnessContext & {
       session: stubSessionForHistoricalEstimate(input),
       sameDayMassKg: input.sameDayMassKg ?? null,
       startOfDayMassKg: input.startOfDayMassKg ?? null,
+      stage02MassReference: input.activeEnergyMassReference,
     })
     : null;
   const selected = selectHistoricalStrengthEnergyV1({
@@ -292,6 +316,8 @@ function resolveStrengthFactEnergy(input: StrengthFreshnessContext & {
     sets: input.sets,
     sameDayMassKg: input.sameDayMassKg ?? null,
     startOfDayMassKg: input.startOfDayMassKg ?? null,
+    stage02MassReference: input.activeEnergyMassReference,
+    estimatorInputs: historicalEstimatorInputs(input),
     estimatorVersion: input.estimatorVersion,
     onDemandEstimateKcal,
     manualKcal: input.manualKcal ?? null,
@@ -378,7 +404,7 @@ export function resolveTrainingDayFacts(input: {
 
   const byDate = new Map<string, { events: TrainingDayEventFact[]; hiddenEventCount: number }>();
   const add = (event: TrainingDayEventFact, hidden: boolean) => {
-    const date = instantToLocalDateTime(new Date(event.occurrenceAt), timeZone).date;
+    const date = event.modelDate ?? instantToLocalDateTime(new Date(event.occurrenceAt), timeZone).date;
     const day = byDate.get(date) ?? { events: [], hiddenEventCount: 0 };
     if (hidden) day.hiddenEventCount += 1;
     else day.events.push(event);
@@ -406,6 +432,7 @@ export function resolveTrainingDayFacts(input: {
         status: matched.status,
         revision: matched.revision,
         energyShadow: matched.energyShadow,
+        activeEnergyMassReference: matched.activeEnergyMassReference,
         sets: matched.sets ?? [],
         exercises: matched.exercises,
         sameDayMassKg: matched.sameDayMassKg ?? null,
@@ -433,6 +460,7 @@ export function resolveTrainingDayFacts(input: {
             status: matched.status,
             revision: matched.revision,
             energyShadow: matched.energyShadow,
+            activeEnergyMassReference: matched.activeEnergyMassReference,
             diaryKcal,
             sets: matched.sets ?? [],
             sameDayMassKg: matched.sameDayMassKg ?? null,
@@ -450,6 +478,7 @@ export function resolveTrainingDayFacts(input: {
       source: matched ? "matched" : "workout",
       type: workout.type,
       occurrenceAt: workout.startAt.toISOString(),
+      ...(workout.modelDate ? { modelDate: workout.modelDate } : {}),
       endAt: workout.endAt.toISOString(),
       durationMinutes,
       activeEnergyKcal: selected.kcal,
@@ -478,6 +507,7 @@ export function resolveTrainingDayFacts(input: {
       status: session.status,
       revision: session.revision,
       energyShadow: session.energyShadow,
+      activeEnergyMassReference: session.activeEnergyMassReference,
       sets: session.sets ?? [],
       exercises: session.exercises,
       sameDayMassKg: session.sameDayMassKg ?? null,
@@ -496,6 +526,7 @@ export function resolveTrainingDayFacts(input: {
       source: "diary",
       type: "Traditional Strength Training",
       occurrenceAt: session.webStartedAt.toISOString(),
+      ...(session.modelDate ? { modelDate: session.modelDate } : {}),
       endAt: session.webEndedAt?.toISOString() ?? null,
       durationMinutes: elapsedDuration(session.webStartedAt, session.webEndedAt),
       activeEnergyKcal: selected.kcal,

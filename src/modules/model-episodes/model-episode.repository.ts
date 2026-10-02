@@ -7,6 +7,7 @@ import { addCalendarDays } from "./model-calendar";
 import { createGlycogenParameters } from "@/model/body-composition/glycogen";
 import type { EpisodeCalculation } from "./episode-calculation";
 import type { ModelHistoryQuery } from "./model-episode.schema";
+import { isProductionGenerationCurrentV1 } from "./publication-generation-v1";
 import type {
   HistoricalModelSources,
   ModelProfileSource,
@@ -48,14 +49,20 @@ function strengthShadowInputFingerprint(result: unknown): string | null {
 function toSetFingerprintRows(
   sets: readonly {
     id?: number;
+    sessionExerciseId?: number;
+    resistanceType?: string;
+    completedAt?: Date | string | null;
     reps: number;
     weightKg: number | { toNumber(): number } | null;
     bandNominalResistanceKg?: number | { toNumber(): number } | null;
     rir?: number | null;
   }[],
-): Array<{ id?: number; reps: number; weightKg: number | null; bandNominalResistanceKg?: number | null; rir?: number | null }> {
+): Array<{ id?: number; sessionExerciseId?: number; resistanceType?: string; completedAt?: string | null; reps: number; weightKg: number | null; bandNominalResistanceKg?: number | null; rir?: number | null }> {
   return sets.map((set) => ({
     id: set.id,
+    sessionExerciseId: set.sessionExerciseId,
+    resistanceType: set.resistanceType,
+    completedAt: set.completedAt instanceof Date ? set.completedAt.toISOString() : set.completedAt ?? null,
     reps: set.reps,
     weightKg: set.weightKg === null || set.weightKg === undefined
       ? null
@@ -81,6 +88,9 @@ function strengthEstimateFresh(input: {
   startOfDayMassKg?: number | null;
   sets: readonly {
     id?: number;
+    sessionExerciseId?: number;
+    resistanceType?: string;
+    completedAt?: Date | string | null;
     reps: number;
     weightKg: number | { toNumber(): number } | null;
     bandNominalResistanceKg?: number | { toNumber(): number } | null;
@@ -425,9 +435,12 @@ export class ModelEpisodeRepository {
               },
               exercises: {
                 select: {
+                  resistanceType: true,
                   sets: {
                     select: {
                       id: true,
+                      sessionExerciseId: true,
+                      completedAt: true,
                       reps: true,
                       weightKg: true,
                       bandNominalResistanceKg: true,
@@ -468,9 +481,12 @@ export class ModelEpisodeRepository {
           },
           exercises: {
             select: {
+              resistanceType: true,
               sets: {
                 select: {
                   id: true,
+                  sessionExerciseId: true,
+                  completedAt: true,
                   reps: true,
                   weightKg: true,
                   bandNominalResistanceKg: true,
@@ -550,10 +566,16 @@ export class ModelEpisodeRepository {
           ? strengthShadowKcal(session.experimentalStrengthEnergyShadow?.result)
           : null;
         const sameDayMassKg = workout.dailyHealthData.weightKg;
-        const sets = session?.exercises.flatMap((exercise) => exercise.sets) ?? [];
+        const sets = session?.exercises.flatMap((exercise) => exercise.sets.map((set) => ({
+          ...set,
+          resistanceType: exercise.resistanceType,
+        }))) ?? [];
         return {
           id: workout.id,
-          date: workout.dailyHealthData.date,
+          // Workout occurrence belongs to the episode-local day; the related
+          // health sync row's date is date-only source metadata and may use a
+          // different timezone boundary.
+          date: instantToLocalDateTime(workout.startAt, timeZone).date,
           externalId: workout.externalId,
           type: workout.type,
           startAt: workout.startAt,
@@ -589,7 +611,10 @@ export class ModelEpisodeRepository {
           ? strengthShadowKcal(session.experimentalStrengthEnergyShadow?.result)
           : null;
         const dayMass = days.find((day) => day.date === date)?.weightKg ?? null;
-        const sets = session.exercises.flatMap((exercise) => exercise.sets);
+        const sets = session.exercises.flatMap((exercise) => exercise.sets.map((set) => ({
+          ...set,
+          resistanceType: exercise.resistanceType,
+        })));
         return [{
           sessionId: session.id,
           date,
@@ -728,22 +753,36 @@ export class ModelEpisodeRepository {
     episodeId: number,
     calculation: EpisodeCalculation,
     modelVersion?: string,
+    preserveBeforeDate?: string,
   ): Promise<void> {
     const dates = calculation.dailyStates.map(({ date }) => date);
     await this.client.dailyModelState.deleteMany({
       where: {
         episodeId,
-        ...(dates.length > 0 ? { date: { notIn: dates } } : {}),
+        ...(preserveBeforeDate !== undefined || dates.length > 0 ? {
+          date: {
+            ...(preserveBeforeDate === undefined ? {} : { gte: preserveBeforeDate }),
+            ...(dates.length === 0 ? {} : { notIn: dates }),
+          },
+        } : {}),
       },
     });
-    const intervalStarts = calculation.unknownIntervals.map(({ startDate }) => startDate);
+    const persistedIntervals = preserveBeforeDate === undefined
+      ? calculation.unknownIntervals
+      : calculation.unknownIntervals.filter(({ startDate }) => startDate >= preserveBeforeDate);
+    const intervalStarts = persistedIntervals.map(({ startDate }) => startDate);
     await this.client.modelUnknownInterval.deleteMany({
       where: {
         episodeId,
-        ...(intervalStarts.length > 0 ? { startDate: { notIn: intervalStarts } } : {}),
+        ...(preserveBeforeDate !== undefined || intervalStarts.length > 0 ? {
+          startDate: {
+            ...(preserveBeforeDate === undefined ? {} : { gte: preserveBeforeDate }),
+            ...(intervalStarts.length === 0 ? {} : { notIn: intervalStarts }),
+          },
+        } : {}),
       },
     });
-    for (const interval of calculation.unknownIntervals) {
+    for (const interval of persistedIntervals) {
       const data = {
         lastUnknownDate: interval.lastUnknownDate,
         endDate: interval.endDate,
@@ -799,6 +838,7 @@ export class ModelEpisodeRepository {
         deltaLeanTissueKg: state.deltaLeanTissueKg,
         deltaGlycogenKg: state.deltaGlycogenKg,
         filteredWeightKg: state.filteredWeightKg,
+        weightFilterVarianceKg2: state.weightFilterVarianceKg2,
       };
       await this.client.dailyModelState.upsert({
         where: { episodeId_date: { episodeId, date: state.date } },
@@ -818,6 +858,7 @@ export class ModelEpisodeRepository {
         calibrationDiagnostics: jsonValue({
           scientificCalibration: calculation.calibration.diagnostics,
           nutritionProvenance: calculation.calibrationNutritionDiagnostics,
+          calibrationInputFingerprint: calculation.calibrationInputFingerprint,
         }),
         latestModeledDate: calculation.latestModeledDate,
       },
@@ -834,6 +875,19 @@ export class ModelEpisodeRepository {
   async status(id?: number): Promise<ModelStatusDto | null> {
     const episode = id === undefined ? await this.getActive() : await this.getById(id);
     if (!episode) return null;
+    const lifecycle = await this.client.physiologyV7Lifecycle.findUnique({
+      where: { profileId: episode.profileId },
+      select: {
+        invalidationGeneration: true,
+        productionPublishedGeneration: true,
+        productionStaleFromDate: true,
+      },
+    });
+    const productionCurrent = isProductionGenerationCurrentV1(lifecycle);
+    const currentPrefixWhere = !productionCurrent
+      ? { date: { lt: lifecycle?.productionStaleFromDate ?? episode.startDate } }
+      : {};
+    const modeledWhere = { episodeId: episode.id, ...currentPrefixWhere };
     const [
       daysModeled,
       incompleteDays,
@@ -843,21 +897,22 @@ export class ModelEpisodeRepository {
       latest,
       unknownIntervals,
     ] = await Promise.all([
-      this.client.dailyModelState.count({ where: { episodeId: episode.id, status: "complete" } }),
-      this.client.dailyModelState.count({ where: { episodeId: episode.id, status: { not: "complete" } } }),
+      this.client.dailyModelState.count({ where: { ...modeledWhere, status: "complete" } }),
+      this.client.dailyModelState.count({ where: { ...modeledWhere, status: { not: "complete" } } }),
       this.client.dailyModelState.count({
-        where: { episodeId: episode.id, nutritionSource: "observed" },
+        where: { ...modeledWhere, nutritionSource: "observed" },
       }),
       this.client.dailyModelState.count({
-        where: { episodeId: episode.id, nutritionSource: { in: ["imputed-local", "imputed-fallback"] } },
+        where: { ...modeledWhere, nutritionSource: { in: ["imputed-local", "imputed-fallback"] } },
       }),
       this.client.dailyModelState.count({
-        where: { episodeId: episode.id, nutritionSource: "missing" },
+        where: { ...modeledWhere, nutritionSource: "missing" },
       }),
       this.client.dailyModelState.findFirst({
-        where: { episodeId: episode.id, status: "complete" },
+        where: { ...modeledWhere, status: "complete" },
         orderBy: { date: "desc" },
         select: {
+          date: true,
           endWeightKg: true,
           filteredWeightKg: true,
           fatMassKg: true,
@@ -877,7 +932,9 @@ export class ModelEpisodeRepository {
       episodeId: episode.id,
       episodeStartDate: episode.startDate,
       timezone: episode.timezone,
-      latestModeledDate: episode.latestModeledDate,
+      productionCurrent,
+      productionDirtyFromDate: lifecycle?.productionStaleFromDate ?? null,
+      latestModeledDate: productionCurrent ? episode.latestModeledDate : latest?.date ?? null,
       modelVersion: episode.modelVersion,
       calibrationStatus: episode.calibrationStatus,
       personalOffsetKcalPerDay: episode.personalOffsetKcalPerDay,
@@ -887,12 +944,12 @@ export class ModelEpisodeRepository {
       observedNutritionDays,
       imputedNutritionDays,
       unbridgeableNutritionDays,
-      currentPredictedWeightKg: latest?.endWeightKg ?? null,
-      currentFilteredWeightKg: latest?.filteredWeightKg ?? null,
-      currentFatMassKg: latest?.fatMassKg ?? null,
-      currentLeanTissueKg: latest?.leanTissueKg ?? null,
-      currentDynamicRmrKcalPerDay: latest?.dynamicRmrKcalPerDay ?? null,
-      currentModeledTdeeKcalPerDay: latest?.energyExpenditureKcal ?? null,
+      currentPredictedWeightKg: productionCurrent ? latest?.endWeightKg ?? null : null,
+      currentFilteredWeightKg: productionCurrent ? latest?.filteredWeightKg ?? null : null,
+      currentFatMassKg: productionCurrent ? latest?.fatMassKg ?? null : null,
+      currentLeanTissueKg: productionCurrent ? latest?.leanTissueKg ?? null : null,
+      currentDynamicRmrKcalPerDay: productionCurrent ? latest?.dynamicRmrKcalPerDay ?? null : null,
+      currentModeledTdeeKcalPerDay: productionCurrent ? latest?.energyExpenditureKcal ?? null : null,
       continuityStatus: intervalDtos.length === 0 ? "resolved" : "awaiting-recovery",
       lastResolvedDate: episode.latestModeledDate,
       recoveryRequired: intervalDtos.length > 0,
@@ -919,14 +976,21 @@ export class ModelEpisodeRepository {
       ? await this.getActive()
       : await this.getById(query.episodeId);
     if (!episode) return null;
+    const lifecycle = await this.client.physiologyV7Lifecycle.findUnique({
+      where: { profileId: episode.profileId },
+      select: { invalidationGeneration: true, productionPublishedGeneration: true, productionStaleFromDate: true },
+    });
+    const productionCurrent = isProductionGenerationCurrentV1(lifecycle);
+    const dateFilter: { gte?: string; lte?: string; lt?: string } = {
+      ...(query.from ? { gte: query.from } : {}),
+      ...(query.to ? { lte: query.to } : {}),
+    };
+    if (!productionCurrent) dateFilter.lt = lifecycle?.productionStaleFromDate ?? episode.startDate;
     const [rows, intervals] = await Promise.all([
       this.client.dailyModelState.findMany({
       where: {
         episodeId: episode.id,
-        date: {
-          ...(query.from ? { gte: query.from } : {}),
-          ...(query.to ? { lte: query.to } : {}),
-        },
+        date: dateFilter,
       },
       orderBy: { date: "asc" },
       take: query.limit,

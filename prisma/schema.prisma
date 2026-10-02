@@ -822,6 +822,7 @@ model DailyModelState {
   deltaLeanTissueKg                 Float?
   deltaGlycogenKg                   Float?
   filteredWeightKg                  Float?
+  weightFilterVarianceKg2           Float?
   createdAt                         DateTime     @default(now()) @db.Timestamptz(3)
   updatedAt                         DateTime     @updatedAt @db.Timestamptz(3)
   episode                           ModelEpisode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
@@ -862,6 +863,9 @@ model PhysiologyV7Lifecycle {
   staleFromDate              String?  @db.VarChar(10)
   invalidationGeneration     Int      @default(0)
   currentThroughDate         String?  @db.VarChar(10)
+  productionStaleFromDate    String?  @db.VarChar(10)
+  productionPublishedGeneration Int?
+  unifiedPublishedGeneration   Int?
   stateVersion               String   @db.VarChar(100)
   sourceNormalizationVersion String   @db.VarChar(100)
   dailyRuntimeVersion        String   @db.VarChar(100)
@@ -871,6 +875,7 @@ model PhysiologyV7Lifecycle {
   updatedAt                  DateTime @updatedAt @db.Timestamptz(3)
 
   @@index([staleFromDate])
+  @@index([productionStaleFromDate])
 }
 
 /// Operational shadow-only comparison. It is derived from persisted v7 and

@@ -13,7 +13,7 @@ export async function publishActiveEnergyChangesV1(): Promise<void> {
   }
   await recalculateModelEpisode({ episodeId: status.episodeId });
   const current = await getModelStatus(status.episodeId);
-  if (current.latestModeledDate === null) return;
+  if (!current.productionCurrent || current.latestModeledDate === null) return;
   await rebuildUnifiedExperimentalPhysiologyStateV1({
     profileId: 1,
     fromDate: current.episodeStartDate,

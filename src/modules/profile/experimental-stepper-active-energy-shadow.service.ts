@@ -29,11 +29,19 @@ type ModelMassEpisodeV1 = {
   latestModeledDate: string | null;
   initialFilteredWeightKg: number;
   updatedAt: Date;
+  createdAt?: Date;
 };
 
 function stableReconciliationPairs<T extends { manualWorkoutId: number; garminWorkoutId: number }>(pairs: readonly T[]): T[] {
   return [...pairs].sort((left, right) => left.manualWorkoutId - right.manualWorkoutId
     || left.garminWorkoutId - right.garminWorkoutId);
+}
+
+function stableMassProvenance(provenance: ReturnType<typeof resolveStepperHistoricalMassV1>["provenance"]) {
+  if (provenance.status !== "model-estimated") return provenance;
+  const stable = { ...provenance };
+  delete stable.modelGeneration;
+  return stable;
 }
 
 async function loadStepperModelMassContextV1(
@@ -57,7 +65,7 @@ async function loadStepperModelMassContextV1(
         sourceKind: "episode-initial" as const,
         sourceId: `episode:${episode.id}:initial-mass`,
         sourceDate: episode.startDate,
-        stateUpdatedAt: episode.updatedAt,
+        stateUpdatedAt: episode.createdAt ?? episode.updatedAt,
       } : null,
     };
   }
@@ -66,17 +74,16 @@ async function loadStepperModelMassContextV1(
   const [modelState, lifecycle] = await Promise.all([
     client.dailyModelState.findUnique({
       where: { episodeId_date: { episodeId: episode.id, date: predecessorDate } },
-      select: { id: true, date: true, status: true, endWeightKg: true, filteredWeightKg: true, modelVersion: true, updatedAt: true },
+      select: { id: true, date: true, status: true, endWeightKg: true, filteredWeightKg: true, modelVersion: true, createdAt: true },
     }),
     client.physiologyV7Lifecycle.findUnique({
       where: { profileId: input.profileId },
-      select: { invalidationGeneration: true, staleFromDate: true, currentThroughDate: true },
+      select: { invalidationGeneration: true, productionPublishedGeneration: true, productionStaleFromDate: true },
     }),
   ]);
   const lifecycleCurrent = lifecycle !== null
-    && lifecycle.currentThroughDate !== null
-    && lifecycle.currentThroughDate >= predecessorDate
-    && (lifecycle.staleFromDate === null || lifecycle.staleFromDate > predecessorDate);
+    && lifecycle.productionPublishedGeneration !== null
+    && (lifecycle.productionStaleFromDate === null || lifecycle.productionStaleFromDate > predecessorDate);
   const valueKg = modelState?.filteredWeightKg ?? modelState?.endWeightKg ?? null;
   const compatible = lifecycleCurrent
     && modelState !== null
@@ -94,7 +101,7 @@ async function loadStepperModelMassContextV1(
       sourceKind: "predecessor-model" as const,
       sourceId: `daily-model-state:${modelState.id}`,
       sourceDate: predecessorDate,
-      stateUpdatedAt: modelState.updatedAt,
+      stateUpdatedAt: modelState.createdAt,
       generation: lifecycle.invalidationGeneration,
     } : null,
   };
@@ -184,7 +191,7 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
     where: { profileId },
     select: {
       id: true, timezone: true, modelVersion: true, startDate: true, latestModeledDate: true,
-      initialFilteredWeightKg: true, updatedAt: true, active: true,
+      initialFilteredWeightKg: true, updatedAt: true, createdAt: true, active: true,
     },
     orderBy: { startDate: "asc" },
   });
@@ -317,17 +324,16 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
       sourceRevision: group.sourceRevision, provisionalWorkoutId: group.provisionalWorkoutId,
       members: groupWorkouts.map((row) => [row.id, row.type, row.sourceIdentity, row.startAt.toISOString(), row.endAt.toISOString(), row.durationMinutes, row.activeEnergyKcal, row.manualActiveEnergyKcal, row.manualStepCount, row.updatedAt.toISOString()]),
     },
-    massProvenance: mass.provenance,
+    massProvenance: stableMassProvenance(mass.provenance),
     snapshots: snapshots.map((row) => [row.id, row.receivedAt.toISOString(), row.syncedAt?.toISOString() ?? null, row.steps]),
     stepIntervals: stepIntervals.map((row) => [row.id, row.startAt.toISOString(), row.endAt.toISOString(), row.value.toString()]),
     heartRate: heartRateSamples.map((row) => [row.timestamp.toISOString(), row.bpm, row.source]),
     weightSamples: timestampedWeights.map((row) => [row.id, row.timestamp.toISOString(), row.value.toString(), row.createdAt.toISOString()]),
     dailyWeights: dailyWeights.map((row) => [row.date, row.weightKg, row.updatedAt.toISOString()]),
     modelMassContext: {
-      modelState: modelMassContext.modelState ? [modelMassContext.modelState.id, modelMassContext.modelState.date, modelMassContext.modelState.status, modelMassContext.modelState.updatedAt.toISOString(), modelMassContext.modelState.modelVersion, modelMassContext.modelState.filteredWeightKg, modelMassContext.modelState.endWeightKg] : null,
-      lifecycle: modelMassContext.lifecycle ? [modelMassContext.lifecycle.invalidationGeneration, modelMassContext.lifecycle.staleFromDate, modelMassContext.lifecycle.currentThroughDate] : null,
+      modelState: modelMassContext.modelState ? [modelMassContext.modelState.id, modelMassContext.modelState.date, modelMassContext.modelState.status, modelMassContext.modelState.modelVersion, modelMassContext.modelState.filteredWeightKg, modelMassContext.modelState.endWeightKg] : null,
+      lifecycle: modelMassContext.lifecycle ? [modelMassContext.lifecycle.productionPublishedGeneration !== null, modelMassContext.lifecycle.productionStaleFromDate] : null,
       initialMassKg: episode?.initialFilteredWeightKg ?? null,
-      episodeUpdatedAt: episode?.updatedAt.toISOString() ?? null,
     },
   };
   const rawCandidateFingerprint = stableSha256(JSON.stringify(fingerprintInputs));
@@ -343,10 +349,10 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
     : adaptManualStepperEnergyV1({ manualStepCount: manualSource.manualStepCount, manualActiveEnergyKcal: null, bodyMassKg: mass.massKg }).mechanicalKcal;
   const candidates = group?.status === "ambiguous" ? [] : [
     ...(result.availability === "available" && result.estimatedActiveKcal !== null && mass.massKg !== null
-      ? [{ source: "bodycast-stepper-mechanical" as const, sourceIdentity: `stepper-shadow:${workout.id}`, sourceFingerprint, valueKcal: result.estimatedActiveKcal, provenance: { revision: EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION, massReference: mass.provenance } }]
+      ? [{ source: "bodycast-stepper-mechanical" as const, sourceIdentity: `stepper-shadow:${workout.id}`, sourceFingerprint, valueKcal: result.estimatedActiveKcal, provenance: { revision: EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION, massReference: stableMassProvenance(mass.provenance) } }]
       : []),
     ...(result.availability !== "available" && manualMechanical !== null && Number.isFinite(manualMechanical)
-      ? [{ source: "bodycast-stepper-mechanical" as const, sourceIdentity: `stepper-manual-steps:${manualSource!.id}`, sourceFingerprint: stableSha256(`${inputFingerprint}|manual-steps|${manualMechanical}`), valueKcal: manualMechanical, provenance: { source: "bodycast-manual-step-mechanical", workoutId: manualSource!.id, massReference: mass.provenance } }]
+      ? [{ source: "bodycast-stepper-mechanical" as const, sourceIdentity: `stepper-manual-steps:${manualSource!.id}`, sourceFingerprint: stableSha256(`${inputFingerprint}|manual-steps|${manualMechanical}`), valueKcal: manualMechanical, provenance: { source: "bodycast-manual-step-mechanical", workoutId: manualSource!.id, massReference: stableMassProvenance(mass.provenance) } }]
       : []),
     ...(manualSource?.manualActiveEnergyKcal !== null && manualSource?.manualActiveEnergyKcal !== undefined
       ? [{ source: "manual-kcal" as const, sourceIdentity: `workout:${manualSource.id}:manual`, sourceFingerprint: stableSha256(`manual|${manualSource.id}|${manualSource.manualActiveEnergyKcal}|${manualSource.updatedAt.toISOString()}`), valueKcal: manualSource.manualActiveEnergyKcal, provenance: { source: "user-entered-workout", workoutId: manualSource.id } }]
@@ -439,7 +445,7 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
           where: { profileId },
           select: {
             id: true, timezone: true, modelVersion: true, active: true, startDate: true, latestModeledDate: true,
-            initialFilteredWeightKg: true, updatedAt: true,
+            initialFilteredWeightKg: true, updatedAt: true, createdAt: true,
           },
           orderBy: { startDate: "asc" },
         }),
@@ -449,8 +455,7 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
       if (episode !== null && (!currentEpisode || currentEpisode.timezone !== episode.timezone
           || currentEpisode.id !== episode.id || currentEpisode.modelVersion !== episode.modelVersion || currentEpisode.startDate !== episode.startDate
           || currentEpisode.latestModeledDate !== episode.latestModeledDate
-          || currentEpisode.initialFilteredWeightKg !== episode.initialFilteredWeightKg
-          || currentEpisode.updatedAt.getTime() !== episode.updatedAt.getTime())) return false;
+          || currentEpisode.initialFilteredWeightKg !== episode.initialFilteredWeightKg)) return false;
       const currentModelMassContext = await loadStepperModelMassContextV1(tx, {
         profileId,
         episode: currentEpisode === null ? null : {
@@ -463,20 +468,20 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
         workout: { id: currentWorkout.id, type: currentWorkout.type, sourceIdentity: currentWorkout.sourceIdentity, startAt: currentWorkout.startAt.toISOString(), endAt: currentWorkout.endAt.toISOString(), durationMinutes: currentWorkout.durationMinutes, activeEnergyKcal: currentWorkout.activeEnergyKcal, manualActiveEnergyKcal: currentWorkout.manualActiveEnergyKcal, manualStepCount: currentWorkout.manualStepCount, updatedAt: currentWorkout.updatedAt.toISOString() },
         modelContext: { episodeId: currentEpisode?.id ?? null, modelVersion: currentEpisode?.modelVersion ?? null, modelDate: workoutDate, modelTimeZone },
         reconciliation: currentReconciliation,
-        massProvenance: mass.provenance,
+        massProvenance: stableMassProvenance(mass.provenance),
         snapshots: currentSnapshots.map((row) => [row.id, row.receivedAt.toISOString(), row.syncedAt?.toISOString() ?? null, row.steps]),
         stepIntervals: currentIntervals.map((row) => [row.id, row.startAt.toISOString(), row.endAt.toISOString(), row.value.toString()]),
         heartRate: currentHr.map((row) => [row.timestamp.toISOString(), row.bpm, row.source]),
         weightSamples: currentTimestampedWeights.map((row) => [row.id, row.timestamp.toISOString(), row.value.toString(), row.createdAt.toISOString()]),
         dailyWeights: currentDailyWeights.map((row) => [row.date, row.weightKg, row.updatedAt.toISOString()]),
         modelMassContext: {
-          modelState: currentModelMassContext.modelState ? [currentModelMassContext.modelState.id, currentModelMassContext.modelState.date, currentModelMassContext.modelState.status, currentModelMassContext.modelState.updatedAt.toISOString(), currentModelMassContext.modelState.modelVersion, currentModelMassContext.modelState.filteredWeightKg, currentModelMassContext.modelState.endWeightKg] : null,
-          lifecycle: currentModelMassContext.lifecycle ? [currentModelMassContext.lifecycle.invalidationGeneration, currentModelMassContext.lifecycle.staleFromDate, currentModelMassContext.lifecycle.currentThroughDate] : null,
+          modelState: currentModelMassContext.modelState ? [currentModelMassContext.modelState.id, currentModelMassContext.modelState.date, currentModelMassContext.modelState.status, currentModelMassContext.modelState.modelVersion, currentModelMassContext.modelState.filteredWeightKg, currentModelMassContext.modelState.endWeightKg] : null,
+          lifecycle: currentModelMassContext.lifecycle ? [currentModelMassContext.lifecycle.productionPublishedGeneration !== null, currentModelMassContext.lifecycle.productionStaleFromDate] : null,
           initialMassKg: currentEpisode?.initialFilteredWeightKg ?? null,
-          episodeUpdatedAt: currentEpisode?.updatedAt.toISOString() ?? null,
         },
       }));
-      return currentFingerprint === inputFingerprint;
+      return currentFingerprint === inputFingerprint
+        && currentModelMassContext.lifecycle?.invalidationGeneration === modelMassContext.lifecycle?.invalidationGeneration;
     },
   });
     if (!resolution.current) throw new Error("stepper source changed before canonical active-energy publication");
@@ -521,7 +526,7 @@ export async function recordExperimentalStepperActiveEnergyShadowsForMassWindow(
     where: { profileId },
     select: {
       id: true, timezone: true, modelVersion: true, startDate: true, latestModeledDate: true,
-      initialFilteredWeightKg: true, updatedAt: true, active: true,
+      initialFilteredWeightKg: true, updatedAt: true, createdAt: true, active: true,
     },
     orderBy: { startDate: "asc" },
   });

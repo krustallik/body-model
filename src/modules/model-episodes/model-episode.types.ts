@@ -347,6 +347,7 @@ export type DailyModelStateWrite = {
   deltaLeanTissueKg: number | null;
   deltaGlycogenKg: number | null;
   filteredWeightKg: number | null;
+  weightFilterVarianceKg2: number | null;
 };
 
 export type ModelStatusDto = {
@@ -354,6 +355,8 @@ export type ModelStatusDto = {
   episodeStartDate: string;
   /** Episode timezone used to decide whether a new local day is complete. */
   timezone?: string;
+  productionCurrent: boolean;
+  productionDirtyFromDate: string | null;
   latestModeledDate: string | null;
   modelVersion: string;
   calibrationStatus: PersonalizationCalibrationStatus;

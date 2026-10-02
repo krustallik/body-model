@@ -12,6 +12,19 @@ import {
 import { addCalendarDays } from "./model-calendar";
 
 type DbClient = PrismaClient | Prisma.TransactionClient;
+type LifecycleInvalidationState = {
+  profileId: number;
+  staleFromDate: string | null;
+  invalidationGeneration: number;
+  currentThroughDate: string | null;
+  productionStaleFromDate: string | null;
+  productionPublishedGeneration: number | null;
+  unifiedPublishedGeneration: number | null;
+};
+
+function isPrismaClient(client: DbClient): client is PrismaClient {
+  return "$transaction" in client;
+}
 
 export class PhysiologyV7ConcurrentSourceChangeError extends Error {
   constructor() {
@@ -29,7 +42,12 @@ export class PhysiologyV7PersistenceRepository {
   async ensureLifecycle(profileId: number, requestedFromDate: string) {
     const current = await this.client.physiologyV7Lifecycle.upsert({
       where: { profileId },
-      create: { profileId, staleFromDate: requestedFromDate, ...currentPhysiologyV7Versions },
+      create: {
+        profileId,
+        staleFromDate: requestedFromDate,
+        productionStaleFromDate: requestedFromDate,
+        ...currentPhysiologyV7Versions,
+      },
       update: {},
     });
     if (versionsAreCurrent(current)) return current;
@@ -46,20 +64,67 @@ export class PhysiologyV7PersistenceRepository {
     });
   }
 
-  async invalidate(profileId: number, affectedDate: string) {
-    const lifecycle = await this.ensureLifecycle(profileId, affectedDate);
-    return this.client.physiologyV7Lifecycle.update({
-      where: { profileId },
+  async invalidate(profileId: number, affectedDate: string): Promise<LifecycleInvalidationState> {
+    if (isPrismaClient(this.client)) {
+      return this.client.$transaction((transaction) =>
+        new PhysiologyV7PersistenceRepository(transaction).invalidate(profileId, affectedDate));
+    }
+
+    // The lifecycle bootstrap/version check and the invalidation update share
+    // the caller's source transaction. The profile lock also serializes that
+    // bootstrap with concurrent rebuild preparation; the date merge itself is
+    // still performed atomically by PostgreSQL below.
+    await this.lockProfile(profileId);
+    await this.ensureLifecycle(profileId, affectedDate);
+
+    const earliestDirtyDate = Prisma.sql`
+      CASE
+        WHEN "staleFromDate" IS NULL THEN ${affectedDate}
+        ELSE LEAST("staleFromDate", ${affectedDate})
+      END
+    `;
+    const earliestProductionDirtyDate = Prisma.sql`
+      CASE
+        WHEN "productionStaleFromDate" IS NULL THEN ${affectedDate}
+        ELSE LEAST("productionStaleFromDate", ${affectedDate})
+      END
+    `;
+    const updated = await this.client.$queryRaw<LifecycleInvalidationState[]>`
+      UPDATE "PhysiologyV7Lifecycle"
+      SET
+        "staleFromDate" = ${earliestDirtyDate},
+        "productionStaleFromDate" = ${earliestProductionDirtyDate},
+        "currentThroughDate" = CASE
+          WHEN "currentThroughDate" IS NOT NULL
+            AND "currentThroughDate" >= ${earliestDirtyDate}
+          THEN TO_CHAR((${earliestDirtyDate})::date - 1, 'YYYY-MM-DD')
+          ELSE "currentThroughDate"
+        END,
+        "invalidationGeneration" = "invalidationGeneration" + 1,
+        "updatedAt" = CURRENT_TIMESTAMP
+      WHERE "profileId" = ${profileId}
+      RETURNING "profileId", "staleFromDate", "invalidationGeneration", "currentThroughDate",
+        "productionStaleFromDate", "productionPublishedGeneration", "unifiedPublishedGeneration"
+    `;
+    const lifecycle = updated[0];
+    if (lifecycle === undefined) {
+      throw new Error(`physiology lifecycle missing for profile ${profileId} during invalidation`);
+    }
+    return lifecycle;
+  }
+
+  async publishProduction(input: {
+    profileId: number;
+    expectedGeneration: number;
+  }): Promise<void> {
+    const result = await this.client.physiologyV7Lifecycle.updateMany({
+      where: { profileId: input.profileId, invalidationGeneration: input.expectedGeneration },
       data: {
-        staleFromDate: mergeEarliestStaleDate(lifecycle.staleFromDate, affectedDate),
-        // A watermark after the invalidated source would falsely claim that
-        // dependent rows are fresh until their suffix has actually replayed.
-        currentThroughDate: lifecycle.currentThroughDate !== null && lifecycle.currentThroughDate >= affectedDate
-          ? addCalendarDays(affectedDate, -1)
-          : lifecycle.currentThroughDate,
-        invalidationGeneration: { increment: 1 },
+        productionStaleFromDate: null,
+        productionPublishedGeneration: input.expectedGeneration,
       },
     });
+    if (result.count !== 1) throw new PhysiologyV7ConcurrentSourceChangeError();
   }
 
   async readRange(profileId: number, fromDate: string, toDate: string) {

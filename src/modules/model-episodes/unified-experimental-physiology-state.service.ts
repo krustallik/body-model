@@ -12,6 +12,14 @@ import {
   type UnifiedUncertaintyV1,
 } from "@/model/unified-experimental-physiology-v1/contracts";
 import type { Prisma } from "@prisma/client";
+import { PhysiologyV7ConcurrentSourceChangeError, PhysiologyV7PersistenceRepository } from "./physiology-v7-persistence.repository";
+import { isProductionGenerationCurrentV1 } from "./publication-generation-v1";
+
+export class ProductionPublicationUnavailableError extends Error {
+  constructor() {
+    super("Unified physiology requires a current production model generation");
+  }
+}
 
 const envelope = (point: number | null, lower = point, upper = point): UnifiedNumericEnvelopeV1 => ({ point, lower, upper, representation: "engineering-range" });
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
@@ -151,6 +159,14 @@ function toPersisted(result: UnifiedExperimentalPhysiologyDayResultV1) {
 export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: { profileId?: number; fromDate: string; toDate: string }): Promise<void> {
   if (input.toDate < input.fromDate) throw new RangeError("toDate must not precede fromDate");
   const profileId = input.profileId ?? 1;
+  const publicationState = await prisma.physiologyV7Lifecycle.findUnique({
+    where: { profileId },
+    select: { invalidationGeneration: true, productionStaleFromDate: true, productionPublishedGeneration: true },
+  });
+  if (!isProductionGenerationCurrentV1(publicationState)) {
+    throw new ProductionPublicationUnavailableError();
+  }
+  const expectedGeneration = publicationState.invalidationGeneration;
   const sourceLoader = new UnifiedExperimentalPhysiologySourceLoaderV1(prisma);
   const [latestDurable, predecessor, priorObservation] = await Promise.all([
     prisma.dailyHealthData.findFirst({ orderBy: { date: "desc" }, select: { date: true } }),
@@ -165,6 +181,7 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: { profi
   let previousDate: string | null = null;
   let previousObservedWeight: number | null = priorObservation?.weightKg ?? null;
   let gapRun = 0;
+  const serializedDays: ReturnType<typeof serializeUnifiedExperimentalPhysiologyV1>[] = [];
   for (const day of range.days) {
     const gapDays = day.dailyHealthData === null ? ++gapRun : gapRun;
     const children = childTransitions(day, priorState);
@@ -193,7 +210,7 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: { profi
     const selectionNote = selectionCoverageNote(day);
     const result = transitionUnifiedExperimentalPhysiologyV1({ profileId, date: day.date, priorState, priorStateFingerprint: priorFingerprint, children, energyLedger: ledger, quality: quality(day, gapDays), uncertainty: uncertainty(priorUncertainty, day, unknownEnergyCount), reconciliation: { anchorDate: previousDate, anchorWeightKg: anchorWeight, observedWeightKg: observedWeight, reason: anchorWeight === null ? "no-prior-observed-weight" : null }, sourceLineage: sourceLineage(day), diagnostics: { notes: ["Unified V1 is shadow-only; production state is read-only input", `transient-output-count:${day.childOutputs.transientWater.length}`, `energy-coverage:unknown=${unknownEnergyCount}`, ...(selectionNote !== null ? [selectionNote] : [])] } });
     const serialized = serializeUnifiedExperimentalPhysiologyV1(result);
-    await prisma.unifiedExperimentalPhysiologyState.upsert({ where: { profileId_date: { profileId, date: day.date } }, create: toPersisted(serialized), update: toPersisted(serialized) });
+    serializedDays.push(serialized);
     priorState = serialized.state;
     priorFingerprint = serialized.resultFingerprint;
     priorUncertainty = serialized.uncertainty;
@@ -203,6 +220,35 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: { profi
       gapRun = 0;
     }
   }
+  await prisma.$transaction(async (tx) => {
+    const lifecycle = new PhysiologyV7PersistenceRepository(tx);
+    await lifecycle.lockProfile(profileId);
+    const current = await tx.physiologyV7Lifecycle.findUnique({
+      where: { profileId },
+      select: { invalidationGeneration: true, productionStaleFromDate: true, productionPublishedGeneration: true },
+    });
+    if (!isProductionGenerationCurrentV1(current) || current.invalidationGeneration !== expectedGeneration
+        || current.productionPublishedGeneration !== expectedGeneration) {
+      throw new PhysiologyV7ConcurrentSourceChangeError();
+    }
+    for (const result of serializedDays) {
+      await tx.unifiedExperimentalPhysiologyState.upsert({
+        where: { profileId_date: { profileId, date: result.date } },
+        create: toPersisted(result),
+        update: toPersisted(result),
+      });
+    }
+    const published = await tx.physiologyV7Lifecycle.updateMany({
+      where: {
+        profileId,
+        invalidationGeneration: expectedGeneration,
+        productionPublishedGeneration: expectedGeneration,
+        productionStaleFromDate: null,
+      },
+      data: { unifiedPublishedGeneration: expectedGeneration },
+    });
+    if (published.count !== 1) throw new PhysiologyV7ConcurrentSourceChangeError();
+  });
 }
 
 export const rebuildUnifiedExperimentalPhysiologyState = rebuildUnifiedExperimentalPhysiologyStateV1;

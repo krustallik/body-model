@@ -28,6 +28,12 @@ import { buildSimulationDays } from "./simulation-input-builder";
 import { physiologyV7ShadowService } from "./physiology-v7-shadow.service";
 import { rebuildFatWeightShadowV1 } from "./fat-weight-shadow-v1.service";
 import { rebuildExperimentalFatWeightUncertaintyV1 } from "./experimental-fat-weight-uncertainty-shadow.service";
+import { PhysiologyV7PersistenceRepository } from "./physiology-v7-persistence.repository";
+import {
+  invalidateActiveEnergyResolutionDatesV1,
+  materializeActiveEnergyCandidatesV1,
+  refreshCandidatesAfterProductionV1,
+} from "@/modules/activity/active-energy-materialization";
 
 const MINIMUM_AUTOMATIC_RESTART_DAYS = 3;
 
@@ -280,7 +286,7 @@ function unchangedActiveEpisodeResult(
 }
 
 /** Full deterministic rebuild; reads, calculation, and replacement share one DB snapshot. */
-export async function recalculateModelEpisode(
+async function recalculateModelEpisodeProduction(
   input: { episodeId?: number; now?: Date } = {},
   client: PrismaClient = prisma,
 ) {
@@ -294,6 +300,10 @@ export async function recalculateModelEpisode(
       if (input.episodeId === undefined) throw new NoActiveModelEpisodeError();
       throw new ModelEpisodeNotFoundError();
     }
+    const lifecycle = new PhysiologyV7PersistenceRepository(transaction);
+    await lifecycle.lockProfile(episode.profileId);
+    const publicationState = await lifecycle.ensureLifecycle(episode.profileId, episode.startDate);
+    const expectedGeneration = publicationState.invalidationGeneration;
     const latestCompletedDate = latestCompletedLocalDate(
       input.now ?? new Date(),
       episode.timezone,
@@ -361,6 +371,7 @@ export async function recalculateModelEpisode(
             initialState: prepared.initialState,
             simulatorParameters: prepared.simulatorParameters,
             personalOffsetKcalPerDay: prepared.appliedPersonalOffsetKcalPerDay ?? 0,
+            initialPersonalOffsetKcalPerDay: prepared.initialPersonalOffsetKcalPerDay ?? 0,
             modelVersion: prepared.modelVersion,
           },
           days: candidateBuiltDays,
@@ -401,10 +412,65 @@ export async function recalculateModelEpisode(
         modelVersion: episode.modelVersion,
         timeZone: episode.timezone,
       });
+    let resume: Parameters<typeof calculateEpisodeHistory>[0]["resume"];
+    const dirtyFromDate = publicationState.productionStaleFromDate;
+    if (dirtyFromDate !== null && dirtyFromDate > episode.startDate && dirtyFromDate <= latestCompletedDate) {
+      const predecessorDate = addCalendarDays(dirtyFromDate, -1);
+      const predecessor = await transaction.dailyModelState.findUnique({
+        where: { episodeId_date: { episodeId: episode.id, date: predecessorDate } },
+        select: {
+          id: true, date: true, status: true, modelVersion: true,
+          fatMassKg: true, leanTissueKg: true, glycogenKg: true,
+          extracellularFluidDeviationLiters: true,
+          adaptiveThermogenesisKcalPerDay: true,
+          filteredWeightKg: true, weightFilterVarianceKg2: true,
+        },
+      });
+      const priorCalibrationFingerprint = episode.calibrationDiagnostics
+        && typeof episode.calibrationDiagnostics === "object"
+        && !Array.isArray(episode.calibrationDiagnostics)
+        && typeof (episode.calibrationDiagnostics as { calibrationInputFingerprint?: unknown }).calibrationInputFingerprint === "string"
+        ? (episode.calibrationDiagnostics as { calibrationInputFingerprint: string }).calibrationInputFingerprint
+        : null;
+      if (predecessor !== null && predecessor.status === "complete"
+          && predecessor.modelVersion === episode.modelVersion
+          && predecessor.date === predecessorDate
+          && predecessor.fatMassKg !== null && predecessor.leanTissueKg !== null
+          && predecessor.glycogenKg !== null && predecessor.extracellularFluidDeviationLiters !== null
+          && predecessor.adaptiveThermogenesisKcalPerDay !== null
+          && predecessor.filteredWeightKg !== null && predecessor.weightFilterVarianceKg2 !== null
+          && [predecessor.fatMassKg, predecessor.leanTissueKg, predecessor.glycogenKg,
+            predecessor.extracellularFluidDeviationLiters, predecessor.adaptiveThermogenesisKcalPerDay,
+            predecessor.filteredWeightKg, predecessor.weightFilterVarianceKg2].every(Number.isFinite)) {
+        resume = {
+          fromDate: dirtyFromDate,
+          predecessorDate,
+          predecessorState: {
+            fatMassKg: predecessor.fatMassKg,
+            leanTissueKg: predecessor.leanTissueKg,
+            glycogenKg: predecessor.glycogenKg,
+            baselineExtracellularFluidLiters: episode.initialState.baselineExtracellularFluidLiters,
+            extracellularFluidDeviationLiters: predecessor.extracellularFluidDeviationLiters,
+            adaptiveThermogenesisKcalPerDay: predecessor.adaptiveThermogenesisKcalPerDay,
+            weightFilterState: {
+              estimatedWeightKg: predecessor.filteredWeightKg,
+              varianceKg2: predecessor.weightFilterVarianceKg2,
+            },
+          },
+          persistedCalibrationInputFingerprint: priorCalibrationFingerprint,
+        };
+      }
+    }
     // Scientific initialization semantics are frozen per episode. Legacy v4
     // episodes must be explicitly reinitialized rather than silently relabeled v5.
-    const calculation = candidateCalculation ?? calculateEpisodeHistory({ episode, days: builtDays });
-    await repository.persistCalculation(episode.id, calculation, episode.modelVersion);
+    const calculation = candidateCalculation ?? calculateEpisodeHistory({ episode, days: builtDays, resume });
+    await repository.persistCalculation(
+      episode.id,
+      calculation,
+      episode.modelVersion,
+      calculation.replayMode === "suffix" ? resume?.fromDate : undefined,
+    );
+    await lifecycle.publishProduction({ profileId: episode.profileId, expectedGeneration });
     // Recalculation follows all source mutations; stale conservatively until an
     // identical source/config/seed recovery resets the fingerprinted upsert.
     await repository.markRecoveryRunsStale(episode.id);
@@ -455,6 +521,37 @@ export async function recalculateModelEpisode(
     await rebuildExperimentalFatWeightUncertaintyV1(committedShadowInput).catch(() => {});
   }
   return production;
+}
+
+/**
+ * Rebuild production history after deterministic Active Energy materialization.
+ * Stepper estimates that need newly current D-1 mass are refreshed and replayed
+ * until their canonical resolutions remain stable across a production pass.
+ */
+export async function recalculateModelEpisode(
+  input: { episodeId?: number; now?: Date } = {},
+  client: PrismaClient = prisma,
+) {
+  if (client !== prisma) return recalculateModelEpisodeProduction(input, client);
+  const status = await getModelStatus(input.episodeId, client);
+  const profileId = 1;
+  const materialized = await materializeActiveEnergyCandidatesV1(profileId);
+  await invalidateActiveEnergyResolutionDatesV1(profileId, materialized.changedDates);
+  const eligibleRefreshes = materialized.stepperWorkoutIds.length
+    + materialized.strengthSessionIds.length + materialized.strengthWorkoutIds.length;
+  const maxRefreshPasses = Math.max(2, eligibleRefreshes + 2);
+  for (let pass = 0; pass < maxRefreshPasses; pass += 1) {
+    const lifecycle = await prisma.physiologyV7Lifecycle.findUnique({
+      where: { profileId },
+      select: { productionStaleFromDate: true },
+    });
+    const replayFromDate = lifecycle?.productionStaleFromDate ?? status.episodeStartDate;
+    const result = await recalculateModelEpisodeProduction({ ...input, episodeId: status.episodeId }, client);
+    const changedDates = await refreshCandidatesAfterProductionV1(profileId, replayFromDate);
+    if (changedDates.length === 0) return result;
+    await invalidateActiveEnergyResolutionDatesV1(profileId, changedDates);
+  }
+  throw new Error("Stepper historical mass candidates did not converge after production replay");
 }
 
 export async function getModelStatus(

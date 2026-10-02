@@ -124,4 +124,3 @@ export async function invalidateStepperMassDependenciesInTransactionV1(input: {
     affectedModelDates: dependent.map((workout) => workout.modelDate),
   });
 }
-

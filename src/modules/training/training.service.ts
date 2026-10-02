@@ -93,6 +93,7 @@ import {
   recordExperimentalFfmRetentionShadowForSession,
 } from "@/modules/model-episodes/experimental-ffm-retention-shadow.service";
 import { rebuildUnifiedExperimentalPhysiologyStateV1 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
+import { publishActiveEnergyChangesV1 } from "@/modules/activity/active-energy-publication";
 import type {
   HistoricalStrengthWorkoutDto,
   MatchCandidateDto,
@@ -121,6 +122,7 @@ async function recordExperimentalStrengthShadows(input: {
     ?? input.session.webStartedAt
     ?? input.session.createdAt).slice(0, 10);
   await recordExperimentalStrengthEnergyShadow(input);
+  await publishActiveEnergyChangesV1();
   await recordExperimentalStrengthGlycogenDemandShadow(input);
   // State is replayed from the edited session's calendar date through the
   // durable suffix, so a historical diary/workout correction cannot leave

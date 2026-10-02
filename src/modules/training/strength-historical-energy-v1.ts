@@ -183,6 +183,7 @@ export function selectHistoricalStrengthEnergyV1(input: {
   startOfDayMassKg: number | null;
   estimatorVersion?: string | null;
   onDemandEstimateKcal: number | null;
+  manualKcal?: number | null;
   garminKcal: number | null;
 }): SelectedEnergyV1 & { bodyCastOrigin: HistoricalStrengthBodyCastOrigin } {
   const bodyCast = resolveHistoricalStrengthBodyCastV1(input);
@@ -190,6 +191,8 @@ export function selectHistoricalStrengthEnergyV1(input: {
     bodyCastKcal: bodyCast.bodyCastKcal,
     bodyCastFresh: bodyCast.bodyCastFresh,
     sessionCompleted: input.sessionCompleted,
+    manualKcal: input.manualKcal ?? null,
+    manualKcalPresent: input.manualKcal !== undefined && input.manualKcal !== null,
     garminKcal: input.garminKcal,
   });
   return { ...selected, bodyCastOrigin: bodyCast.origin };

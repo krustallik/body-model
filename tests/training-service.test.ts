@@ -15,6 +15,7 @@ import {
 } from "@/modules/training/training.errors";
 import { TrainingRepository } from "@/modules/training/training.repository";
 import { TrainingService } from "@/modules/training/training.service";
+import { currentPhysiologyV7Versions } from "@/modules/model-episodes/physiology-v7-persistence";
 
 type MockDb = {
   exerciseCatalog: {
@@ -50,6 +51,12 @@ type MockDb = {
     findMany: ReturnType<typeof vi.fn>;
     findUnique: ReturnType<typeof vi.fn>;
   };
+  modelEpisode: { findMany: ReturnType<typeof vi.fn> };
+  activeEnergyCanonicalEvent: { updateMany: ReturnType<typeof vi.fn>; findMany: ReturnType<typeof vi.fn> };
+  activeEnergyEventAlias: { findMany: ReturnType<typeof vi.fn> };
+  physiologyV7Lifecycle: { upsert: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
+  physiologyV7DailyResult: { findFirst: ReturnType<typeof vi.fn> };
+  $executeRaw: ReturnType<typeof vi.fn>;
   $transaction: ReturnType<typeof vi.fn>;
   $queryRaw: ReturnType<typeof vi.fn>;
 };
@@ -86,6 +93,24 @@ function buildDb(): MockDb {
       findMany: vi.fn(),
       findUnique: vi.fn(),
     },
+    modelEpisode: { findMany: vi.fn().mockResolvedValue([]) },
+    activeEnergyCanonicalEvent: {
+      updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+      findMany: vi.fn().mockResolvedValue([]),
+    },
+    activeEnergyEventAlias: { findMany: vi.fn().mockResolvedValue([]) },
+    physiologyV7Lifecycle: {
+      upsert: vi.fn().mockResolvedValue({
+        profileId: 1,
+        staleFromDate: null,
+        currentThroughDate: null,
+        invalidationGeneration: 0,
+        ...currentPhysiologyV7Versions,
+      }),
+      update: vi.fn().mockResolvedValue({}),
+    },
+    physiologyV7DailyResult: { findFirst: vi.fn().mockResolvedValue(null) },
+    $executeRaw: vi.fn().mockResolvedValue(1),
     $transaction: vi.fn(),
     $queryRaw: vi.fn().mockResolvedValue([]),
   };
@@ -161,6 +186,7 @@ function programRecord(versionNumber: number, exercises: Array<{
 function sessionDetail(overrides: Record<string, unknown> = {}) {
   return {
     id: 50,
+    profileId: 1,
     status: SESSION_STATUS.ACTIVE,
     entryMode: ENTRY_MODE.LIVE,
     revision: 1,
@@ -218,6 +244,41 @@ function sessionDetail(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+describe("canonical Strength active-energy reads", () => {
+  it("uses the persisted canonical source and revision in Training session history", async () => {
+    const db = buildDb();
+    db.strengthDiarySession.findFirst.mockResolvedValue(sessionDetail({
+      status: SESSION_STATUS.COMPLETED,
+      currentSnapshotRevision: null,
+      accountingOperations: [],
+    }));
+    db.activeEnergyEventAlias.findMany.mockResolvedValue([{
+      sourceType: "strength-session",
+      event: {
+        currentKcal: 273,
+        currentSource: "bodycast-strength-met-fallback",
+        resolutionRevision: 7,
+        isStale: false,
+      },
+    }]);
+
+    const session = await new TrainingRepository(db as never).getSession(50);
+
+    expect(db.activeEnergyEventAlias.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        profileId: 1,
+        OR: expect.arrayContaining([{ sourceType: "strength-session", sourceId: "50" }]),
+      }),
+    }));
+    expect(session?.selectedActiveEnergy).toEqual({
+      kcal: 273,
+      source: "bodycast-strength-met-fallback",
+      fullCoverage: true,
+      resolutionRevision: 7,
+    });
+  });
+});
 
 describe("TrainingService programs", () => {
   let db: MockDb;

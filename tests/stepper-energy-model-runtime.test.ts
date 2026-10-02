@@ -74,6 +74,96 @@ describe("versioned stepper energy in historical model runtime", () => {
     expect(perEvent.stepperEnergy?.heartRate.decisionReason).toBe("no-personal-ms100-calibration");
   });
 
+  it("counts one persisted BodyCast resolution for a pending reconciliation group on ordinary v7", () => {
+    const input = sources();
+    const resolution = {
+      currentKcal: 250,
+      currentSource: "bodycast-stepper-mechanical",
+      resolutionRevision: 4,
+      isStale: false,
+    };
+    input.workouts = [
+      { ...input.workouts![0]!, id: 91, sourceIdentity: "manual:91", manualStepCount: 1_000, canonicalEnergyResolution: resolution },
+      { ...input.workouts![0]!, id: 92, sourceIdentity: "ext:garmin-92", manualStepCount: null, canonicalEnergyResolution: resolution },
+    ];
+    input.reconciliationLinks = [{
+      groupId: 5,
+      status: "pending",
+      evaluationRevision: 2,
+      policyVersion: "stepper-reconciliation-v1",
+      sourceRevision: "source-rev",
+      provisionalWorkoutId: 91,
+      manualWorkoutId: 91,
+      garminWorkoutId: 92,
+      suppressGarminEnergy: true,
+      suppressManualEnergy: false,
+    }];
+
+    const [day] = buildSimulationDays({ from: date, to: date, sources: input, modelVersion: CURRENT_MODEL_VERSION });
+    const events = day!.input.workoutActivity!.events;
+    const result = resolveExplicitWorkoutActivityKcal({ events, weightKg: 75, rmrKcalPerDay: 1_800 });
+
+    expect(events.map((event) => event.workoutId)).toEqual([91]);
+    expect(result.workoutActivityKcal).toBe(250);
+    expect(result.bodyCastStepperActiveEnergyKcal).toBe(250);
+  });
+
+  it("assigns Workout and web Strength events to the episode timezone date", () => {
+    const boundaryStart = new Date("2026-10-01T22:30:00.000Z");
+    const boundaryEnd = new Date("2026-10-01T23:00:00.000Z");
+    const input = sources();
+    input.days = [
+      sourceDay("2026-10-01", { weightKg: 75, walkingDistanceKm: 0, strengthTrainingMinutes: 0 }),
+      sourceDay("2026-10-02", { weightKg: 75, walkingDistanceKm: 0, strengthTrainingMinutes: 0 }),
+    ];
+    input.workouts = [{
+      ...input.workouts![0]!,
+      id: 101,
+      date: "2026-10-01", // transport/source date differs from Bratislava model date
+      startAt: boundaryStart,
+      endAt: boundaryEnd,
+      canonicalEnergyResolution: {
+        currentKcal: 180,
+        currentSource: "bodycast-stepper-mechanical",
+        resolutionRevision: 1,
+        isStale: false,
+      },
+    }];
+    input.webOnlyStrengthSessions = [{
+      sessionId: 201,
+      date: "2026-10-02",
+      status: "COMPLETED",
+      revision: 1,
+      startAt: boundaryStart,
+      endAt: boundaryEnd,
+      bodyCastEstimateKcal: 220,
+      bodyCastEstimateFresh: true,
+      inputFingerprint: "fingerprint",
+      canonicalEnergyResolution: {
+        currentKcal: 220,
+        currentSource: "bodycast-strength-estimate",
+        resolutionRevision: 1,
+        isStale: false,
+      },
+    }];
+
+    const days = buildSimulationDays({
+      from: "2026-10-01",
+      to: "2026-10-02",
+      sources: input,
+      modelVersion: CURRENT_MODEL_VERSION,
+      timeZone: "Europe/Bratislava",
+    });
+
+    expect(days[0]!.input.workoutActivity?.events).toEqual([]);
+    expect(days[1]!.input.workoutActivity?.events.map((event) => event.workoutId ?? null)).toEqual([101, null]);
+    expect(resolveExplicitWorkoutActivityKcal({
+      events: days[1]!.input.workoutActivity!.events,
+      weightKg: 75,
+      rmrKcalPerDay: 1_800,
+    }).workoutActivityKcal).toBe(400);
+  });
+
   it("deduplicates stair-time walking distance when BodyCast has steps but Garmin kcal is absent", () => {
     const input = sources();
     input.days = [sourceDay(date, { weightKg: 75, walkingDistanceKm: 0.8, averageWalkingSpeedKmh: 5, strengthTrainingMinutes: 0 })];

@@ -7,7 +7,7 @@ import type {
   ResistanceType,
   SessionStatus,
 } from "./training.constants";
-import type { LoadAccountingBreakdownV1, LoadAccountingOutputV1 } from "./load-accounting-v1";
+import type { BodyweightReferenceV1, LoadAccountingBreakdownV1, LoadAccountingOutputV1 } from "./load-accounting-v1";
 
 export type ExerciseCatalogDto = {
   id: number;
@@ -114,6 +114,7 @@ export type SelectedActiveEnergyDto = {
   kcal: number | null;
   source: string;
   fullCoverage: boolean;
+  resolutionRevision?: number | null;
 };
 
 export type MatchedWorkoutDto = {
@@ -123,6 +124,7 @@ export type MatchedWorkoutDto = {
   endAt: string;
   durationMinutes: number | null;
   activeEnergyKcal: number | null;
+  manualActiveEnergyKcal?: number | null;
   externalId: string | null;
 };
 
@@ -152,6 +154,13 @@ export type StrengthSessionDto = {
   ordinaryTonnageKg: number | null;
   /** Whether the persisted Stage 02 result matches the current accounting inputs. */
   materializationState?: "current" | "missing" | "pending" | "stale";
+  /** Authoritative persisted Stage 02 mass snapshot for active-energy calculation. */
+  activeEnergyMassReference?: {
+    reference: BodyweightReferenceV1;
+    snapshotRevision: number;
+    inputFingerprint: string;
+    massResolutionIdentity: string;
+  } | null;
   loadAccountingV1?: LoadAccountingOutputV1;
   /** Persisted Stage 02 rows; legacy aggregate snapshots report an explicit unavailable state. */
   loadAccountingBreakdown?:

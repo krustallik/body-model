@@ -5,6 +5,9 @@ const {
   healthSyncRepository,
   rebuildAuthoritativeRelativeMuscleTrajectory,
   recordExperimentalStepperActiveEnergyShadowsForLocalDate,
+  recordExperimentalStepperActiveEnergyShadowsForMassWindow,
+  recordExperimentalStrengthEnergyShadowsForWeightDate,
+  persistStepperReconciliationV1,
   recordExperimentalStepperGlycogenDemandShadowsForLocalDate,
   recordExperimentalGlycogenStateShadow,
   recordExperimentalSkeletalMuscleDeltaShadow,
@@ -12,6 +15,7 @@ const {
   recordExperimentalFfmRetentionShadow,
   recordExperimentalLocalHypertrophyResponseShadow,
   rebuildUnifiedExperimentalPhysiologyStateV1,
+  publishActiveEnergyChangesV1,
 } = vi.hoisted(() => {
   const healthSyncRepository = {
     syncDay: vi.fn(),
@@ -22,6 +26,9 @@ const {
     healthSyncRepository,
     rebuildAuthoritativeRelativeMuscleTrajectory: vi.fn().mockResolvedValue(undefined),
     recordExperimentalStepperActiveEnergyShadowsForLocalDate: vi.fn().mockResolvedValue(undefined),
+    recordExperimentalStepperActiveEnergyShadowsForMassWindow: vi.fn().mockResolvedValue(undefined),
+    recordExperimentalStrengthEnergyShadowsForWeightDate: vi.fn().mockResolvedValue(undefined),
+    persistStepperReconciliationV1: vi.fn().mockResolvedValue({ groupIds: [], displayedSteps: null, potentialDuplication: false }),
     recordExperimentalStepperGlycogenDemandShadowsForLocalDate: vi.fn().mockResolvedValue(undefined),
     recordExperimentalGlycogenStateShadow: vi.fn().mockResolvedValue(undefined),
     recordExperimentalSkeletalMuscleDeltaShadow: vi.fn().mockResolvedValue(undefined),
@@ -29,6 +36,7 @@ const {
     recordExperimentalFfmRetentionShadow: vi.fn().mockResolvedValue(undefined),
     recordExperimentalLocalHypertrophyResponseShadow: vi.fn().mockResolvedValue(undefined),
     rebuildUnifiedExperimentalPhysiologyStateV1: vi.fn().mockResolvedValue(undefined),
+    publishActiveEnergyChangesV1: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -38,7 +46,12 @@ vi.mock("@/modules/training/training.service", () => ({
 vi.mock("@/modules/health/health.repository", () => ({ healthSyncRepository }));
 vi.mock("@/modules/profile/experimental-stepper-active-energy-shadow.service", () => ({
   recordExperimentalStepperActiveEnergyShadowsForLocalDate,
+  recordExperimentalStepperActiveEnergyShadowsForMassWindow,
 }));
+vi.mock("@/modules/training/experimental-strength-energy-shadow.service", () => ({
+  recordExperimentalStrengthEnergyShadowsForWeightDate,
+}));
+vi.mock("@/modules/training/stepper-reconciliation.service", () => ({ persistStepperReconciliationV1 }));
 vi.mock("@/modules/profile/experimental-stepper-glycogen-demand-shadow.service", () => ({
   recordExperimentalStepperGlycogenDemandShadowsForLocalDate,
 }));
@@ -61,6 +74,7 @@ vi.mock("@/modules/model-episodes/experimental-local-hypertrophy-response-shadow
 vi.mock("@/modules/model-episodes/unified-experimental-physiology-state.service", () => ({
   rebuildUnifiedExperimentalPhysiologyStateV1,
 }));
+vi.mock("@/modules/activity/active-energy-publication", () => ({ publishActiveEnergyChangesV1 }));
 
 import { syncHealthData } from "@/modules/health/health.service";
 
@@ -93,7 +107,7 @@ describe("health sync authoritative muscle suffix rebuild", () => {
     // stepper/depletion source shadows have been written.
     expect(recordExperimentalGlycogenStateShadow).toHaveBeenCalledTimes(1);
     expect(recordExperimentalGlycogenStateShadow).toHaveBeenCalledWith({ date: "2026-09-21" });
-    expect(rebuildUnifiedExperimentalPhysiologyStateV1).toHaveBeenCalledTimes(1);
-    expect(rebuildUnifiedExperimentalPhysiologyStateV1).toHaveBeenCalledWith({ fromDate: "2026-09-21", toDate: "2026-09-23" });
+    expect(publishActiveEnergyChangesV1).toHaveBeenCalledTimes(1);
+    expect(rebuildUnifiedExperimentalPhysiologyStateV1).not.toHaveBeenCalled();
   });
 });

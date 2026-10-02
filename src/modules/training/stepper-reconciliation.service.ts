@@ -3,6 +3,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { DEFAULT_TIME_ZONE, localDateTimeToInstant } from "@/model/time-zone";
 import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
 import { MANUAL_STEPPER_SOURCE_PREFIX } from "@/modules/health/workout-source-identity";
+import { invalidateWorkoutEnergyInTransactionV1 } from "@/modules/activity/active-energy-invalidation";
 import {
   displayedDailyStepsV1,
   RECONCILIATION_POLICY_V1,
@@ -30,6 +31,31 @@ type StairRow = {
   manualStepCount: number | null;
   dailyHealthData: { date: string; steps: number | null };
 };
+
+async function invalidateReconciliationGroupEnergyInTransactionV1(
+  transaction: Prisma.TransactionClient,
+  groupId: number,
+): Promise<void> {
+  const group = await transaction.stepperReconciliationGroup.findUnique({
+    where: { id: groupId },
+    select: {
+      profileId: true,
+      candidates: { select: { manualWorkoutId: true, garminWorkoutId: true } },
+    },
+  });
+  if (group === null) return;
+  const workoutIds = [...new Set(group.candidates.flatMap((candidate) => [candidate.manualWorkoutId, candidate.garminWorkoutId]))];
+  const workouts = workoutIds.length === 0 ? [] : await transaction.workout.findMany({
+    where: { id: { in: workoutIds } },
+    select: { startAt: true, endAt: true },
+  });
+  await invalidateWorkoutEnergyInTransactionV1({
+    tx: transaction,
+    profileId: group.profileId,
+    workoutIds,
+    affectedInstants: workouts.flatMap((workout) => [workout.startAt, workout.endAt]),
+  });
+}
 
 function isClient(value: QueryClient): value is PrismaClient {
   return "$connect" in value;
@@ -76,6 +102,14 @@ async function writeWindow(client: QueryClient, input: {
 }): Promise<PersistedReconciliationV1> {
   const start = localDateTimeToInstant(input.from, "00:00", input.timezone);
   const end = localDateTimeToInstant(addCalendarDays(input.to, 1), "00:00", input.timezone);
+  const profileId = 1;
+  const beforeGroups = await client.stepperReconciliationGroup.findMany({
+    where: { profileId, localDate: { gte: input.from, lte: input.to } },
+    select: {
+      id: true, status: true, evaluationRevision: true, provisionalWorkoutId: true, sourceRevision: true,
+      candidates: { select: { manualWorkoutId: true, garminWorkoutId: true, candidateStatus: true, manualCoverage: true, garminCoverage: true, stepEvidenceStatus: true } },
+    },
+  });
   const rows = await client.workout.findMany({
     where: {
       hiddenFromHistory: false,
@@ -244,10 +278,41 @@ async function writeWindow(client: QueryClient, input: {
     });
     await client.stepperReconciliationGroup.updateMany({
       where: { id: { in: staleGroupIds } },
-      data: { status: "rejected", provisionalWorkoutId: null },
+      data: {
+        status: "rejected",
+        provisionalWorkoutId: null,
+        evaluationRevision: { increment: 1 },
+      },
     });
   }
 
+  const afterGroups = await client.stepperReconciliationGroup.findMany({
+    where: { profileId, localDate: { gte: input.from, lte: input.to } },
+    select: {
+      id: true, status: true, evaluationRevision: true, provisionalWorkoutId: true, sourceRevision: true,
+      candidates: { select: { manualWorkoutId: true, garminWorkoutId: true, candidateStatus: true, manualCoverage: true, garminCoverage: true, stepEvidenceStatus: true } },
+    },
+  });
+  const signature = (groups: typeof beforeGroups) => JSON.stringify(groups.map((group) => ({
+    ...group,
+    candidates: [...group.candidates].sort((left, right) => left.manualWorkoutId - right.manualWorkoutId || left.garminWorkoutId - right.garminWorkoutId),
+  })).sort((left, right) => left.id - right.id));
+  if (signature(beforeGroups) !== signature(afterGroups) && !isClient(client)) {
+    const memberIds = new Set<number>(rows.map((row) => row.id));
+    for (const group of [...beforeGroups, ...afterGroups]) for (const candidate of group.candidates) {
+      memberIds.add(candidate.manualWorkoutId);
+      memberIds.add(candidate.garminWorkoutId);
+    }
+    const members = memberIds.size === 0 ? [] : await client.workout.findMany({
+      where: { id: { in: [...memberIds] } }, select: { id: true, startAt: true, endAt: true },
+    });
+    await invalidateWorkoutEnergyInTransactionV1({
+      tx: client,
+      profileId,
+      workoutIds: [...memberIds],
+      affectedInstants: members.flatMap((row) => [row.startAt, row.endAt]),
+    });
+  }
   return {
     groupIds,
     displayedSteps: evaluated.displayedSteps,
@@ -325,6 +390,7 @@ export async function confirmStepperReconciliationV1(
         evaluationRevision: { increment: 1 },
       },
     });
+    await invalidateReconciliationGroupEnergyInTransactionV1(transaction, candidate.groupId);
   });
 }
 
@@ -333,6 +399,11 @@ export async function rejectStepperReconciliationV1(
   input: { groupId: number },
 ): Promise<void> {
   await client.$transaction(async (transaction) => {
+    const group = await transaction.stepperReconciliationGroup.findUnique({
+      where: { id: input.groupId },
+      select: { id: true },
+    });
+    if (group === null) throw new Error("stepper reconciliation group not found");
     await transaction.stepperReconciliationCandidate.updateMany({
       where: { groupId: input.groupId },
       data: { candidateStatus: "rejected" },
@@ -341,6 +412,7 @@ export async function rejectStepperReconciliationV1(
       where: { id: input.groupId },
       data: { status: "rejected", provisionalWorkoutId: null, evaluationRevision: { increment: 1 } },
     });
+    await invalidateReconciliationGroupEnergyInTransactionV1(transaction, input.groupId);
   });
 }
 

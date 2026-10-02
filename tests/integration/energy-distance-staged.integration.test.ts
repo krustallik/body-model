@@ -131,6 +131,13 @@ async function clean() {
   await deleteDailyHealthRows(prisma, dates);
 }
 
+async function lifecycleFreshness() {
+  return prisma.physiologyV7Lifecycle.findUnique({
+    where: { profileId: 1 },
+    select: { invalidationGeneration: true, staleFromDate: true },
+  });
+}
+
 describe("staged energy and distance PostgreSQL integration", () => {
   let programId = 0;
   let versionId = 0;
@@ -671,7 +678,7 @@ describe("staged energy and distance PostgreSQL integration", () => {
 });
 
 describe("reconciliation confirm/reject PostgreSQL", () => {
-  const reconDates = ["2091-05-01"];
+  const reconDates = ["2091-05-01", "2091-05-02"];
 
   async function cleanRecon() {
     await prisma.activationRollbackEntry.deleteMany({ where: { generationId: { startsWith: "recon-e2e-" } } });
@@ -735,10 +742,33 @@ describe("reconciliation confirm/reject PostgreSQL", () => {
       where: { manualWorkoutId: manual.id, garminWorkoutId: garmin.id },
     });
     expect(["pending", "ambiguous"]).toContain(candidate.candidateStatus);
+
+    // An evaluation/source revision is a persisted source mutation in its own
+    // transaction. It must stale the old V7 generation before any refresh.
+    await prisma.workout.update({
+      where: { id: garmin.id },
+      data: { endAt: new Date("2091-05-01T07:50:00.000Z"), durationMinutes: 50 },
+    });
+    const beforeReevaluation = await lifecycleFreshness();
+    await persistStepperReconciliationV1(prisma, {
+      from: "2091-05-01",
+      to: "2091-05-01",
+      synchronizedSteps: 10_000,
+    });
+    const afterReevaluation = await lifecycleFreshness();
+    expect(afterReevaluation?.invalidationGeneration ?? 0)
+      .toBeGreaterThan(beforeReevaluation?.invalidationGeneration ?? 0);
+    expect(afterReevaluation?.staleFromDate).not.toBeNull();
+
+    const beforeConfirm = await lifecycleFreshness();
     await confirmStepperReconciliationV1(prisma, {
       manualWorkoutId: manual.id,
       garminWorkoutId: garmin.id,
     });
+    const afterConfirm = await lifecycleFreshness();
+    expect(afterConfirm?.invalidationGeneration ?? 0)
+      .toBeGreaterThan(beforeConfirm?.invalidationGeneration ?? 0);
+    expect(afterConfirm?.staleFromDate).not.toBeNull();
     const confirmed = await prisma.stepperReconciliationCandidate.findUniqueOrThrow({
       where: { id: candidate.id },
     });
@@ -799,7 +829,12 @@ describe("reconciliation confirm/reject PostgreSQL", () => {
     const other = await prisma.stepperReconciliationCandidate.findFirstOrThrow({
       where: { manualWorkoutId: otherManual.id, garminWorkoutId: otherGarmin.id },
     });
+    const beforeReject = await lifecycleFreshness();
     await rejectStepperReconciliationV1(prisma, { groupId: other.groupId });
+    const afterReject = await lifecycleFreshness();
+    expect(afterReject?.invalidationGeneration ?? 0)
+      .toBeGreaterThan(beforeReject?.invalidationGeneration ?? 0);
+    expect(afterReject?.staleFromDate).not.toBeNull();
     const rejected = await prisma.stepperReconciliationGroup.findUniqueOrThrow({
       where: { id: other.groupId },
     });
@@ -808,5 +843,36 @@ describe("reconciliation confirm/reject PostgreSQL", () => {
       where: { groupId: other.groupId },
     });
     expect(rejectedCandidates.every((row) => row.candidateStatus === "rejected")).toBe(true);
+
+    // The reconciliation writer may be composed into a wider source
+    // transaction. Its group write and generation invalidation must roll back
+    // together if the caller aborts that transaction.
+    const rollbackDate = "2091-05-02";
+    const rollbackDay = await day(rollbackDate, 80, 10_000);
+    await steppers.create({
+      startAt: "2091-05-02T09:00:00.000+02:00",
+      durationMinutes: 60,
+      manualStepCount: 2_000,
+    });
+    await prisma.workout.create({
+      data: {
+        dailyHealthDataId: rollbackDay.id,
+        sourceIdentity: "ext:recon-e2e-rollback-garmin",
+        externalId: "recon-e2e-rollback-garmin",
+        type: STAIR_CLIMBING_TYPE,
+        startAt: new Date("2091-05-02T07:00:00.000Z"),
+        endAt: new Date("2091-05-02T08:00:00.000Z"),
+        durationMinutes: 60,
+        activeEnergyKcal: 250,
+      },
+    });
+    const beforeRollback = await lifecycleFreshness();
+    await expect(prisma.$transaction(async (transaction) => {
+      await persistStepperReconciliationV1(transaction, { from: rollbackDate, to: rollbackDate });
+      throw new Error("rollback reconciliation write");
+    })).rejects.toThrow("rollback reconciliation write");
+    const afterRollback = await lifecycleFreshness();
+    expect(afterRollback?.invalidationGeneration).toBe(beforeRollback?.invalidationGeneration);
+    expect(await prisma.stepperReconciliationGroup.count({ where: { localDate: rollbackDate } })).toBe(0);
   }, 60_000);
 });

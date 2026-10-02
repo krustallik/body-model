@@ -6,13 +6,8 @@ import { calculateHistoricalBodyweightAsOfV1, MAX_HISTORICAL_BODYWEIGHT_REPLAY_D
 import { calendarDayIndex } from "@/modules/model-episodes/model-calendar";
 import { DEFAULT_TIME_ZONE, instantToLocalDateTime, isValidTimeZone, localDateTimeToInstant } from "@/model/time-zone";
 import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
+import { selectPersistedEnergyResolutionV1 } from "@/model/activity/canonical-activity-policy-v1";
 import { TRADITIONAL_STRENGTH_TRAINING_TYPE } from "@/modules/health/expand-training-workouts";
-import { EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION } from "./experimental-strength-active-energy-v1";
-import {
-  recomputeHistoricalStrengthEstimateKcalV1,
-  selectHistoricalStrengthEnergyV1,
-  strengthWorkoutAsOfDateV1,
-} from "./strength-historical-energy-v1";
 import { CANONICAL_EXERCISE_IDENTITIES } from "./canonical-exercise-identity";
 import {
   DEFAULT_TRAINING_PROFILE_ID,
@@ -41,6 +36,7 @@ import { buildMassResolutionIdentity, isPersistedLoadAccountingPayloadVersion, P
 import { rebaseCurrentAccountingSnapshotTimestamp } from "./rebase-current-accounting-snapshot";
 import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
 import { sessionPlanCompletion } from "./session-plan-completion";
+import { invalidateActiveEnergySourcesInTransactionV1 } from "@/modules/activity/active-energy-invalidation";
 import { evaluateSessionInactivity } from "./session-inactivity";
 import type {
   ExerciseCatalogDto,
@@ -77,7 +73,34 @@ async function bumpAccountingInputRevision(
     },
     select: { accountingInputRevision: true },
   });
+  await invalidateStrengthSessionActiveEnergyInTransaction(tx, sessionId);
   return updated.accountingInputRevision;
+}
+
+async function invalidateStrengthSessionActiveEnergyInTransaction(
+  tx: Prisma.TransactionClient,
+  sessionId: number,
+): Promise<void> {
+  const session = await tx.strengthDiarySession.findUnique({
+    where: { id: sessionId },
+    select: {
+      id: true, profileId: true, matchedWorkoutId: true, effectiveAccountingAt: true,
+      accountingTimeZone: true, webStartedAt: true, createdAt: true,
+      matchedWorkout: { select: { id: true, startAt: true, endAt: true } },
+    },
+  });
+  if (!session) return;
+  const eventInstant = session.matchedWorkout?.startAt
+    ?? session.effectiveAccountingAt ?? session.webStartedAt ?? session.createdAt;
+  await invalidateActiveEnergySourcesInTransactionV1({
+    tx,
+    profileId: session.profileId,
+    aliases: [
+      { sourceType: "strength-session", sourceId: String(session.id) },
+      ...(session.matchedWorkoutId === null ? [] : [{ sourceType: "workout", sourceId: String(session.matchedWorkoutId) }]),
+    ],
+    affectedInstants: [eventInstant, session.matchedWorkout?.endAt],
+  });
 }
 
 const catalogSelect = {
@@ -136,12 +159,16 @@ const matchedWorkoutSelect = {
   endAt: true,
   durationMinutes: true,
   activeEnergyKcal: true,
+  manualActiveEnergyKcal: true,
+  sourceIdentity: true,
+  updatedAt: true,
   externalId: true,
   dailyHealthData: { select: { date: true, weightKg: true } },
 } satisfies Prisma.WorkoutSelect;
 
 const sessionDetailSelect = {
   id: true,
+  profileId: true,
   status: true,
   entryMode: true,
   revision: true,
@@ -164,7 +191,6 @@ const sessionDetailSelect = {
   profile: { select: { autoAdvanceExercises: true } },
   programVersion: { select: { id: true, versionNumber: true } },
   matchedWorkout: { select: matchedWorkoutSelect },
-  experimentalStrengthEnergyShadow: { select: { result: true, modelRevision: true } },
   currentAccountingSnapshot: { select: {
     snapshotRevision: true,
     accountingInputRevision: true,
@@ -341,94 +367,6 @@ function toSessionExerciseDto(record: SessionExerciseRecord): StrengthSessionExe
   };
 }
 
-async function loadHistoricalMassContext(
-  db: PrismaClient,
-  record: {
-    matchedWorkout: {
-      startAt: Date;
-      dailyHealthData?: { date: string; weightKg: number | null } | null;
-    } | null;
-    webStartedAt: Date | null;
-    createdAt: Date;
-  },
-): Promise<{ sameDayMassKg: number | null; startOfDayMassKg: number | null }> {
-  const asOfDate = strengthWorkoutAsOfDateV1({
-    matchedWorkoutStartAt: record.matchedWorkout?.startAt.toISOString() ?? null,
-    webStartedAt: record.webStartedAt?.toISOString() ?? null,
-    createdAt: record.createdAt.toISOString(),
-  });
-  let sameDayMassKg: number | null = null;
-  const workoutDay = record.matchedWorkout?.dailyHealthData ?? null;
-  if (workoutDay?.date === asOfDate && workoutDay.weightKg != null) {
-    sameDayMassKg = workoutDay.weightKg;
-  }
-  const health = (db as {
-    dailyHealthData?: {
-      findUnique?: (args: unknown) => Promise<{ weightKg: number | null } | null>;
-      findFirst?: (args: unknown) => Promise<{ weightKg: number | null } | null>;
-    };
-  }).dailyHealthData;
-  if (sameDayMassKg === null && typeof health?.findUnique === "function") {
-    const sameDay = await health.findUnique({
-      where: { date: asOfDate },
-      select: { weightKg: true },
-    });
-    sameDayMassKg = sameDay?.weightKg ?? null;
-  }
-  let startOfDayMassKg: number | null = null;
-  if (typeof health?.findFirst === "function") {
-    const prior = await health.findFirst({
-      where: { weightKg: { not: null }, date: { lt: asOfDate } },
-      orderBy: { date: "desc" },
-      select: { weightKg: true },
-    });
-    startOfDayMassKg = prior?.weightKg ?? null;
-  }
-  return {
-    sameDayMassKg,
-    startOfDayMassKg,
-  };
-}
-
-function selectedStrengthEnergy(
-  session: StrengthSessionDto,
-  massContext: { sameDayMassKg: number | null; startOfDayMassKg: number | null },
-  energyShadow: { result: unknown; modelRevision?: string } | null,
-) {
-  const setRows = session.exercises.flatMap((exercise) => exercise.sets).map((set) => ({
-    id: set.id,
-    reps: set.reps,
-    weightKg: set.weightKg,
-    bandNominalResistanceKg: set.bandNominalResistanceKg,
-    rir: set.rir,
-  }));
-  const onDemandEstimateKcal = session.status === "COMPLETED"
-    ? recomputeHistoricalStrengthEstimateKcalV1({
-      session,
-      sameDayMassKg: massContext.sameDayMassKg,
-      startOfDayMassKg: massContext.startOfDayMassKg,
-    })
-    : null;
-  const selected = selectHistoricalStrengthEnergyV1({
-    sessionCompleted: session.status === "COMPLETED",
-    sessionId: session.id,
-    sessionRevision: session.revision,
-    energyShadow: energyShadow?.result ?? null,
-    sets: setRows,
-    sameDayMassKg: massContext.sameDayMassKg,
-    startOfDayMassKg: massContext.startOfDayMassKg,
-    estimatorVersion: energyShadow?.modelRevision
-      ?? EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
-    onDemandEstimateKcal,
-    garminKcal: session.matchedWorkout?.activeEnergyKcal ?? null,
-  });
-  return {
-    kcal: selected.selectedKcal,
-    source: selected.source,
-    fullCoverage: selected.fullCoverage,
-  };
-}
-
 function toMatchedWorkoutDto(record: MatchedWorkoutRecord | null): MatchedWorkoutDto | null {
   if (!record) return null;
   return {
@@ -438,6 +376,7 @@ function toMatchedWorkoutDto(record: MatchedWorkoutRecord | null): MatchedWorkou
     endAt: record.endAt.toISOString(),
     durationMinutes: record.durationMinutes,
     activeEnergyKcal: record.activeEnergyKcal,
+    manualActiveEnergyKcal: record.manualActiveEnergyKcal,
     externalId: record.externalId,
   };
 }
@@ -591,13 +530,16 @@ function calculateSessionLoadAccounting(
 
 export function toSessionDto(
   record: SessionDetailRecord,
-  massContext: { sameDayMassKg: number | null; startOfDayMassKg: number | null } = {
-    sameDayMassKg: null,
-    startOfDayMassKg: null,
-  },
   loadAccountingV1?: LoadAccountingOutputV1,
   materializationState: "current" | "missing" | "pending" | "stale" = "missing",
   loadAccountingBreakdown?: StrengthSessionDto["loadAccountingBreakdown"],
+  activeEnergyMassReference?: StrengthSessionDto["activeEnergyMassReference"],
+  canonicalActiveEnergy?: {
+    currentKcal: number | null;
+    currentSource: string | null;
+    resolutionRevision: number;
+    isStale: boolean;
+  } | null,
 ): StrengthSessionDto {
   const exercises = record.exercises.map(toSessionExerciseDto);
   const tonnageSets = exercises.flatMap((exercise) =>
@@ -633,6 +575,7 @@ export function toSessionDto(
     loadAccountingV1,
     ...(loadAccountingBreakdown ? { loadAccountingBreakdown } : {}),
     materializationState,
+    activeEnergyMassReference: activeEnergyMassReference ?? null,
     autoAdvanceExercises: record.profile?.autoAdvanceExercises ?? false,
     ...planCompletionFields(exercises),
     createdAt: record.createdAt.toISOString(),
@@ -640,11 +583,20 @@ export function toSessionDto(
   };
   return {
     ...sessionWithoutEnergy,
-    selectedActiveEnergy: selectedStrengthEnergy(
-      sessionWithoutEnergy,
-      massContext,
-      record.experimentalStrengthEnergyShadow,
-    ),
+    selectedActiveEnergy: (() => {
+      const selected = selectPersistedEnergyResolutionV1({
+        resolution: canonicalActiveEnergy ?? {
+          currentKcal: null, currentSource: null, resolutionRevision: 0, isStale: true,
+        },
+        classification: "traditional-strength-training",
+      });
+      return {
+        kcal: selected.selectedKcal,
+        source: selected.source,
+        fullCoverage: selected.fullCoverage,
+        resolutionRevision: canonicalActiveEnergy?.resolutionRevision ?? null,
+      };
+    })(),
   };
 }
 
@@ -652,7 +604,20 @@ async function toSessionDtoWithHistoricalMass(
   db: PrismaClient,
   record: SessionDetailRecord,
 ): Promise<StrengthSessionDto> {
-  const massContext = await loadHistoricalMassContext(db, record);
+  const aliases = await db.activeEnergyEventAlias.findMany({
+    where: {
+      profileId: record.profileId,
+      OR: [
+        { sourceType: "strength-session", sourceId: String(record.id) },
+        ...(record.matchedWorkoutId === null ? [] : [{ sourceType: "workout", sourceId: String(record.matchedWorkoutId) }]),
+      ],
+    },
+    select: {
+      sourceType: true,
+      event: { select: { currentKcal: true, currentSource: true, resolutionRevision: true, isStale: true } },
+    },
+  });
+  const canonicalAlias = aliases.find((alias) => alias.sourceType === "strength-session") ?? aliases[0] ?? null;
   const snapshot = currentSnapshotForRecord(record);
   const payload = snapshot.state === "current" ? snapshot.payload : null;
   const breakdown = payload && "breakdown" in payload
@@ -662,10 +627,16 @@ async function toSessionDtoWithHistoricalMass(
       : undefined;
   return toSessionDto(
     record,
-    massContext,
     payload?.result,
     snapshot.state,
     breakdown,
+    payload ? {
+      reference: payload.massReference,
+      snapshotRevision: payload.snapshotRevision,
+      inputFingerprint: payload.inputFingerprint,
+      massResolutionIdentity: payload.massResolutionIdentity,
+    } : null,
+    canonicalAlias?.event ?? null,
   );
 }
 
@@ -1402,7 +1373,6 @@ export class TrainingRepository {
           program: { select: { id: true, name: true } },
           profile: { select: { autoAdvanceExercises: true } },
           programVersion: { select: { id: true, versionNumber: true } },
-          experimentalStrengthEnergyShadow: { select: { result: true, modelRevision: true } },
           exercises: { select: sessionExerciseSelect, orderBy: { sortOrder: "asc" } },
         },
       });
@@ -1493,6 +1463,16 @@ export class TrainingRepository {
             webEndedAt: input.finalizeAt,
           } : {}),
         },
+      });
+      const stage02EventInstant = locked.matchedWorkout?.startAt ?? locked.effectiveAccountingAt ?? effectiveAt;
+      await invalidateActiveEnergySourcesInTransactionV1({
+        tx,
+        profileId: locked.profileId,
+        aliases: [
+          { sourceType: "strength-session", sourceId: String(record.id) },
+          ...(locked.matchedWorkoutId === null ? [] : [{ sourceType: "workout", sourceId: String(locked.matchedWorkoutId) }]),
+        ],
+        affectedInstants: [stage02EventInstant],
       });
       await tx.strengthSessionAccountingOperation.create({
         data: {
@@ -1774,6 +1754,7 @@ export class TrainingRepository {
         },
         select: { revision: true },
       });
+      await invalidateStrengthSessionActiveEnergyInTransaction(tx, input.sessionId);
       return session.revision;
     });
   }
@@ -1833,6 +1814,7 @@ export class TrainingRepository {
         },
         select: { revision: true },
       });
+      await invalidateStrengthSessionActiveEnergyInTransaction(tx, input.sessionId);
       return { exerciseId: created.id, revision: session.revision };
     });
   }
@@ -1885,6 +1867,7 @@ export class TrainingRepository {
         },
         select: { revision: true },
       });
+      await invalidateStrengthSessionActiveEnergyInTransaction(tx, input.sessionId);
       return session.revision;
     });
   }
@@ -1908,6 +1891,7 @@ export class TrainingRepository {
         },
         select: { revision: true },
       });
+      await invalidateStrengthSessionActiveEnergyInTransaction(tx, input.sessionId);
       return session.revision;
     });
   }
@@ -1924,6 +1908,7 @@ export class TrainingRepository {
         data: { revision: { increment: 1 } },
         select: { revision: true },
       });
+      await invalidateStrengthSessionActiveEnergyInTransaction(tx, input.sessionId);
       return session.revision;
     });
   }
@@ -1986,7 +1971,7 @@ export class TrainingRepository {
         },
         select: {
           id: true, reps: true, weightKg: true, bandNominalResistanceKg: true,
-          loadAccountingOverride: true, sessionExercise: { select: { sessionId: true } },
+          completedAt: true, loadAccountingOverride: true, sessionExercise: { select: { sessionId: true } },
         },
       });
       if (!existing) return null;
@@ -1997,6 +1982,8 @@ export class TrainingRepository {
           && !(input.bandNominalResistanceKg === null && existing.bandNominalResistanceKg === null))
         || (input.loadAccountingOverride !== undefined
           && JSON.stringify(input.loadAccountingOverride) !== JSON.stringify(existing.loadAccountingOverride));
+      const activeEnergyChanged = input.completedAt !== undefined
+        && (input.completedAt?.getTime() ?? null) !== (existing.completedAt?.getTime() ?? null);
       const row = await tx.strengthSet.update({
         where: { id: input.setId },
         data: {
@@ -2017,6 +2004,7 @@ export class TrainingRepository {
         select: setSelect,
       });
       if (accountingChanged) await bumpAccountingInputRevision(tx, existing.sessionExercise.sessionId);
+      else if (activeEnergyChanged) await invalidateStrengthSessionActiveEnergyInTransaction(tx, existing.sessionExercise.sessionId);
       return toSetDto(row);
     });
   }
@@ -2169,16 +2157,22 @@ export class TrainingRepository {
   }
 
   async markSessionCancelled(sessionId: number, webEndedAt: Date): Promise<void> {
-    await this.db.strengthDiarySession.update({
-      where: { id: sessionId },
-      data: {
-        status: SESSION_STATUS.CANCELLED,
-        webEndedAt,
-        matchStatus: MATCH_STATUS.UNMATCHED,
-        matchMethod: null,
-        matchedWorkoutId: null,
-        matchedAt: null,
-      },
+    await this.db.$transaction(async (tx) => {
+      // Capture and invalidate the matched Workout alias before clearing the
+      // relationship; otherwise the old Workout identity is no longer
+      // discoverable from the session row in this transaction.
+      await invalidateStrengthSessionActiveEnergyInTransaction(tx, sessionId);
+      await tx.strengthDiarySession.update({
+        where: { id: sessionId },
+        data: {
+          status: SESSION_STATUS.CANCELLED,
+          webEndedAt,
+          matchStatus: MATCH_STATUS.UNMATCHED,
+          matchMethod: null,
+          matchedWorkoutId: null,
+          matchedAt: null,
+        },
+      });
     });
   }
 
@@ -2198,7 +2192,24 @@ export class TrainingRepository {
       return { deleted: true, matchedWorkoutId: null };
     }
     const matchedWorkoutId = existing.matchedWorkoutId;
-    await this.db.strengthDiarySession.delete({ where: { id: sessionId } });
+    await this.db.$transaction(async (tx) => {
+      const session = await tx.strengthDiarySession.findUnique({
+        where: { id: sessionId },
+        select: { profileId: true, effectiveAccountingAt: true, accountingTimeZone: true, webStartedAt: true, createdAt: true, matchedWorkout: { select: { startAt: true, endAt: true } } },
+      });
+      if (session) {
+        await invalidateActiveEnergySourcesInTransactionV1({
+          tx,
+          profileId: session.profileId,
+          aliases: [
+            { sourceType: "strength-session", sourceId: String(sessionId) },
+            ...(matchedWorkoutId === null ? [] : [{ sourceType: "workout", sourceId: String(matchedWorkoutId) }]),
+          ],
+          affectedInstants: [session.matchedWorkout?.startAt ?? session.effectiveAccountingAt ?? session.webStartedAt ?? session.createdAt, session.matchedWorkout?.endAt],
+        });
+      }
+      await tx.strengthDiarySession.delete({ where: { id: sessionId } });
+    });
     return { deleted: true, matchedWorkoutId };
   }
 
@@ -2213,17 +2224,28 @@ export class TrainingRepository {
       const session = await tx.strengthDiarySession.findUnique({
         where: { id: input.sessionId },
         select: {
+          id: true,
+          profileId: true,
           effectiveAccountingAt: true,
           accountingTimeZone: true,
           accountingTimeZoneProvenance: true,
           webStartedAt: true,
           createdAt: true,
+          matchedWorkoutId: true,
+          matchStatus: true,
+          matchMethod: true,
+          matchedAt: true,
         },
       });
       if (!session) return;
-      const workout = input.matchedWorkoutId === null ? null : await tx.workout.findUnique({
-        where: { id: input.matchedWorkoutId }, select: { startAt: true },
-      });
+      const [previousWorkout, workout] = await Promise.all([
+        session.matchedWorkoutId === null ? Promise.resolve(null) : tx.workout.findUnique({
+          where: { id: session.matchedWorkoutId }, select: { id: true, startAt: true, endAt: true },
+        }),
+        input.matchedWorkoutId === null ? Promise.resolve(null) : tx.workout.findUnique({
+          where: { id: input.matchedWorkoutId }, select: { id: true, startAt: true, endAt: true },
+        }),
+      ]);
       const nextEffectiveAt = workout?.startAt ?? session.webStartedAt ?? session.createdAt;
       const previousEffectiveAt = session.effectiveAccountingAt ?? session.webStartedAt ?? session.createdAt;
       const accountingTimeZone = session.accountingTimeZone ?? DEFAULT_TIME_ZONE;
@@ -2254,6 +2276,28 @@ export class TrainingRepository {
           effectiveLocalDate: nextLocalDate,
           timeZone: accountingTimeZone,
           timeZoneProvenance: accountingTimeZoneProvenance,
+        });
+      }
+      const matchChanged = session.matchedWorkoutId !== input.matchedWorkoutId
+        || session.matchStatus !== input.matchStatus
+        || session.matchMethod !== input.matchMethod
+        || session.matchedAt?.getTime() !== input.matchedAt?.getTime();
+      if (matchChanged || previousEffectiveAt.getTime() !== nextEffectiveAt.getTime()) {
+        const workoutIds = [...new Set([session.matchedWorkoutId, input.matchedWorkoutId]
+          .filter((id): id is number => id !== null))];
+        await invalidateActiveEnergySourcesInTransactionV1({
+          tx,
+          profileId: session.profileId,
+          aliases: [
+            { sourceType: "strength-session", sourceId: String(session.id) },
+            ...workoutIds.map((id) => ({ sourceType: "workout", sourceId: String(id) })),
+          ],
+          affectedInstants: [
+            previousWorkout?.startAt ?? previousEffectiveAt,
+            previousWorkout?.endAt,
+            workout?.startAt ?? nextEffectiveAt,
+            workout?.endAt,
+          ],
         });
       }
     });

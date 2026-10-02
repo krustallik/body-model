@@ -1154,7 +1154,18 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       await service.createSet(sameDate.id, sameDate.exercises[0]!.id, { reps: 8, weightKg: 10 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
       await service.finishSession(sameDate.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
       const beforeMatch = await db.strengthDiarySession.findUniqueOrThrow({ where: { id: sameDate.id }, select: { accountingInputRevision: true, currentSnapshotRevision: true } });
+      const generationBeforeSameDateMatch = await db.physiologyV7Lifecycle.findUnique({
+        where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
+        select: { invalidationGeneration: true },
+      });
       const matched = await service.manualMatch(sameDate.id, { workoutId: firstWorkout.id }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      const generationAfterSameDateMatch = await db.physiologyV7Lifecycle.findUniqueOrThrow({
+        where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
+        select: { invalidationGeneration: true, staleFromDate: true },
+      });
+      expect(generationAfterSameDateMatch.invalidationGeneration)
+        .toBeGreaterThan(generationBeforeSameDateMatch?.invalidationGeneration ?? 0);
+      expect(generationAfterSameDateMatch.staleFromDate).not.toBeNull();
       expect(matched.effectiveAccountingAt).toBe(firstWorkout.startAt.toISOString());
       const afterSameDateMatch = await db.strengthDiarySession.findUniqueOrThrow({
         where: { id: sameDate.id },
@@ -1255,12 +1266,30 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       await service.createSet(changedDate.id, changedDate.exercises[0]!.id, { reps: 8, weightKg: 10 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
       await service.finishSession(changedDate.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
       const beforeLateMatch = await db.strengthDiarySession.findUniqueOrThrow({ where: { id: changedDate.id }, select: { accountingInputRevision: true, currentSnapshotRevision: true } });
+      const generationBeforeLateMatch = await db.physiologyV7Lifecycle.findUnique({
+        where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
+        select: { invalidationGeneration: true },
+      });
       const lateMatched = await service.manualMatch(changedDate.id, { workoutId: nextDayWorkout.id }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      const generationAfterLateMatch = await db.physiologyV7Lifecycle.findUniqueOrThrow({
+        where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
+        select: { invalidationGeneration: true, staleFromDate: true },
+      });
+      expect(generationAfterLateMatch.invalidationGeneration)
+        .toBeGreaterThan(generationBeforeLateMatch?.invalidationGeneration ?? 0);
+      expect(generationAfterLateMatch.staleFromDate).not.toBeNull();
       expect(lateMatched.effectiveAccountingAt).toBe(nextDayWorkout.startAt.toISOString());
       const afterLateMatch = await db.strengthDiarySession.findUniqueOrThrow({ where: { id: changedDate.id }, select: { accountingInputRevision: true, currentSnapshotRevision: true } });
       expect(afterLateMatch.accountingInputRevision).toBe(beforeLateMatch.accountingInputRevision + 1);
       expect(await db.strengthSessionAccountingSnapshot.count({ where: { sessionId: changedDate.id } })).toBe(2);
+      const generationBeforeUnmatch = generationAfterLateMatch.invalidationGeneration;
       const unmatched = await service.manualMatch(changedDate.id, { workoutId: null }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      const generationAfterUnmatch = await db.physiologyV7Lifecycle.findUniqueOrThrow({
+        where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
+        select: { invalidationGeneration: true, staleFromDate: true },
+      });
+      expect(generationAfterUnmatch.invalidationGeneration).toBeGreaterThan(generationBeforeUnmatch);
+      expect(generationAfterUnmatch.staleFromDate).not.toBeNull();
       expect(unmatched.matchedWorkoutId).toBeNull();
       expect(await db.strengthSessionAccountingSnapshot.count({ where: { sessionId: changedDate.id } })).toBe(3);
 
@@ -1275,7 +1304,18 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
         data: { webStartedAt: new Date("2045-01-02T23:30:00.000Z"), webEndedAt: new Date("2045-01-03T01:00:00.000Z") },
       });
       const lateWorkout = await syncWorkout(dates[2]!, "2045-01-03T00:00:00.000Z", "stage02-late-auto-match", 60);
+      const generationBeforeAutoMatch = await db.physiologyV7Lifecycle.findUnique({
+        where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
+        select: { invalidationGeneration: true },
+      });
       await service.afterHealthSyncMatch(dates[2]!, { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID, timezone: "UTC" });
+      const generationAfterAutoMatch = await db.physiologyV7Lifecycle.findUniqueOrThrow({
+        where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
+        select: { invalidationGeneration: true, staleFromDate: true },
+      });
+      expect(generationAfterAutoMatch.invalidationGeneration)
+        .toBeGreaterThan(generationBeforeAutoMatch?.invalidationGeneration ?? 0);
+      expect(generationAfterAutoMatch.staleFromDate).not.toBeNull();
       const autoMatched = await db.strengthDiarySession.findUniqueOrThrow({
         where: { id: lateAuto.id },
         select: { matchedWorkoutId: true, effectiveAccountingAt: true, currentSnapshotRevision: true, accountingInputRevision: true },

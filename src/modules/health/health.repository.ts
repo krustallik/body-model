@@ -11,6 +11,10 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { instantToLocalDateTime } from "@/model/time-zone";
 import { rebaseCurrentAccountingSnapshotTimestamp } from "@/modules/training/rebase-current-accounting-snapshot";
+import {
+  invalidateStepperMassDependenciesInTransactionV1,
+  invalidateWorkoutEnergyInTransactionV1,
+} from "@/modules/activity/active-energy-invalidation";
 import type {
   HealthDayInput,
   HealthMetricSampleInput,
@@ -310,7 +314,7 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
     return this.client.$transaction(async (transaction) => {
       const existing = await transaction.dailyHealthData.findUnique({
         where: { date: day.date },
-        select: { date: true },
+        select: { date: true, weightKg: true },
       });
 
       const daily = await transaction.dailyHealthData.upsert({
@@ -347,8 +351,17 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
           workoutFeedObserved: workoutFeedPresent ? workoutFeedObserved : undefined,
           rawPayload: jsonValue(rawDay),
         },
-        select: { id: true },
+        select: { id: true, weightKg: true },
       });
+      const metricWeightsBefore = await transaction.healthMetricSample.findMany({
+        where: { date: day.date, metric: "weight-kg", source: APPLE_HEALTH_SHORTCUT_SOURCE },
+        select: { id: true, timestamp: true, value: true },
+        orderBy: [{ timestamp: "asc" }, { id: "asc" }],
+      });
+      const workoutsBefore = workoutFeedObserved ? await transaction.workout.findMany({
+        where: { dailyHealthDataId: daily.id },
+        select: { id: true, startAt: true, endAt: true },
+      }) : [];
 
       await transaction.healthSyncSnapshot.create({
         data: {
@@ -374,6 +387,19 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
 
       await persistMetricSamples(transaction, daily.id, day.date, metricSamples);
 
+      const metricWeightsAfter = await transaction.healthMetricSample.findMany({
+        where: { date: day.date, metric: "weight-kg", source: APPLE_HEALTH_SHORTCUT_SOURCE },
+        select: { id: true, timestamp: true, value: true },
+        orderBy: [{ timestamp: "asc" }, { id: "asc" }],
+      });
+      const beforeWeightById = new Map(metricWeightsBefore.map((row) => [row.id, `${row.timestamp.toISOString()}|${row.value.toString()}`]));
+      const afterWeightById = new Map(metricWeightsAfter.map((row) => [row.id, `${row.timestamp.toISOString()}|${row.value.toString()}`]));
+      const changedWeightRows = [
+        ...metricWeightsBefore.filter((row) => beforeWeightById.get(row.id) !== afterWeightById.get(row.id)),
+        ...metricWeightsAfter.filter((row) => beforeWeightById.get(row.id) !== afterWeightById.get(row.id)),
+      ];
+      const dailyWeightChanged = existing?.weightKg !== daily.weightKg;
+
       await persistActivityIntervals(transaction, day, metadata.timezone);
 
       // Reconciliation deletes workouts absent from the incoming feed, so it is
@@ -386,6 +412,26 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
           metadata.timezone,
         );
         await reconcileDayWorkouts(transaction, daily.id, workouts);
+      }
+      const workoutsAfter = workoutFeedObserved ? await transaction.workout.findMany({
+        where: { dailyHealthDataId: daily.id },
+        select: { id: true, startAt: true, endAt: true },
+      }) : [];
+      const affectedIds = [...new Set([...workoutsBefore, ...workoutsAfter].map((row) => row.id))];
+      await invalidateWorkoutEnergyInTransactionV1({
+        tx: transaction,
+        profileId: 1,
+        workoutIds: affectedIds,
+        affectedInstants: [...workoutsBefore, ...workoutsAfter].flatMap((row) => [row.startAt, row.endAt]),
+        affectedModelDates: [day.date],
+      });
+      if (dailyWeightChanged || changedWeightRows.length > 0) {
+        await invalidateStepperMassDependenciesInTransactionV1({
+          tx: transaction,
+          profileId: 1,
+          measurementDates: dailyWeightChanged ? [day.date] : [],
+          measurementInstants: changedWeightRows.map((row) => row.timestamp),
+        });
       }
 
       const heartRateSamples = sampleRows(daily.id, day.date, day.bpm);

@@ -112,9 +112,20 @@ function buildDb(): MockDb {
     physiologyV7DailyResult: { findFirst: vi.fn().mockResolvedValue(null) },
     $executeRaw: vi.fn().mockResolvedValue(1),
     $transaction: vi.fn(),
-    $queryRaw: vi.fn().mockResolvedValue([]),
+    $queryRaw: vi.fn().mockResolvedValue([{
+      profileId: 1,
+      staleFromDate: "2026-09-17",
+      invalidationGeneration: 1,
+      currentThroughDate: null,
+      productionStaleFromDate: "2026-09-17",
+      productionPublishedGeneration: null,
+      unifiedPublishedGeneration: null,
+    }]),
   };
-  db.$transaction.mockImplementation(async (callback: (tx: MockDb) => unknown) => callback(db));
+  const transactionClient = { ...db } as Partial<MockDb>;
+  delete transactionClient.$transaction;
+  db.$transaction.mockImplementation(async (callback: (tx: MockDb) => unknown) =>
+    callback(transactionClient as MockDb));
   db.strengthDiarySession.findUnique = vi.fn().mockResolvedValue({
     effectiveAccountingAt: null,
     webStartedAt: new Date("2026-09-17T16:00:00Z"),

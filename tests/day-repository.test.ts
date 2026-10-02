@@ -94,7 +94,7 @@ describe("DailyMetricRepository", () => {
     }));
   });
 
-  it("adds an unmatched diary session to History with its shadow energy, without creating a device workout", async () => {
+  it("uses the persisted canonical resolution for an unmatched diary session", async () => {
     const { repository, client } = fixture();
     const sets = [{ id: 91, reps: 8, weightKg: 60, bandNominalResistanceKg: null, rir: 2 }];
     const { strengthInputFingerprintV1, strengthSetFingerprintV1 } = await import(
@@ -131,7 +131,21 @@ describe("DailyMetricRepository", () => {
         },
       }]),
     };
-    Object.assign(client as object, { strengthDiarySession });
+    Object.assign(client as object, {
+      strengthDiarySession,
+      activeEnergyEventAlias: {
+        findMany: vi.fn().mockResolvedValue([{
+          sourceType: "strength-session",
+          sourceId: "4",
+          event: {
+            currentKcal: 311,
+            currentSource: "bodycast-strength-estimate",
+            resolutionRevision: 2,
+            isStale: false,
+          },
+        }]),
+      },
+    });
 
     const [day] = await repository.list({ from: "2026-08-22", to: "2026-08-22", limit: 30, offset: 0, includeTrainingDays: true });
 
@@ -146,7 +160,7 @@ describe("DailyMetricRepository", () => {
         endAt: "2026-08-22T09:46:00.000Z",
         durationMinutes: 62,
         activeEnergyKcal: 311,
-        energySource: "shadow-diary-estimate",
+        energySource: "bodycast-strength-estimate",
         diaryOnly: true,
         linkedTrainingSessionId: 4,
         linkedTrainingProgramName: "Push A",
@@ -259,7 +273,7 @@ describe("DailyMetricRepository", () => {
 
     expect(workout.findMany).toHaveBeenCalledTimes(1);
     expect(workout.findMany.mock.calls[0]?.[0]).toMatchObject({
-      where: { startAt: { gte: new Date("2026-08-21T22:00:00.000Z"), lt: new Date("2026-08-22T22:00:00.000Z") } },
+      where: { startAt: { gte: new Date("2026-08-20T00:00:00.000Z"), lt: new Date("2026-08-25T00:00:00.000Z") } },
     });
     expect(page.trainingDays).toEqual([]);
 

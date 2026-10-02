@@ -53,6 +53,9 @@ function modelStatus(overrides: Partial<ModelStatusDto> = {}): ModelStatusDto {
   return {
     episodeId: 1,
     episodeStartDate: "2026-07-01",
+    timezone: "Europe/Bratislava",
+    productionCurrent: true,
+    productionDirtyFromDate: null,
     latestModeledDate: "2026-08-24",
     modelVersion: "bodycast-physiology-v6",
     calibrationStatus: "fully-calibrated",

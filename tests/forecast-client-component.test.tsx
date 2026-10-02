@@ -14,7 +14,8 @@ import type { ModelStatusDto } from "@/modules/model-episodes/model-episode.type
 
 function modelStatus(overrides: Partial<ModelStatusDto> = {}): ModelStatusDto {
   return {
-    episodeId: 1, episodeStartDate: "2026-07-01", latestModeledDate: "2026-08-24", modelVersion: "test",
+    episodeId: 1, episodeStartDate: "2026-07-01", timezone: "Europe/Bratislava", productionCurrent: true,
+    productionDirtyFromDate: null, latestModeledDate: "2026-08-24", modelVersion: "test",
     calibrationStatus: "fully-calibrated", personalOffsetKcalPerDay: 0, activityCalibration: 1,
     daysModeled: 55, incompleteDays: 0, observedNutritionDays: 50, imputedNutritionDays: 5,
     unbridgeableNutritionDays: 0, currentPredictedWeightKg: 80, currentFilteredWeightKg: 80,

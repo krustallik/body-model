@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveStepperHistoricalMassV1, STEPPER_HISTORICAL_MASS_POLICY_V1 } from "@/model/activity/stepper-historical-mass-v1";
+import { resolveStepperHistoricalMassV1, stepperMassCandidateDependsOnReplayV1, STEPPER_HISTORICAL_MASS_POLICY_V1 } from "@/model/activity/stepper-historical-mass-v1";
 
 const workoutAt = new Date("2026-03-29T12:00:00.000Z");
 const workoutDate = "2026-03-29";
@@ -97,5 +97,20 @@ describe("Stepper historical mass policy v1", () => {
     const result = resolveStepperHistoricalMassV1({ workoutAt, workoutDate, timeZone: "Europe/Bratislava", observations: [] });
     expect(result.massKg).toBeNull();
     expect(result.provenance.status).toBe("unavailable");
+  });
+
+  it("refreshes only later model-dependent masses after replay", () => {
+    expect(stepperMassCandidateDependsOnReplayV1({
+      workoutDate: "2026-03-29", replayFromDate: "2026-03-29", massStatus: "model-estimated",
+    })).toBe(false);
+    expect(stepperMassCandidateDependsOnReplayV1({
+      workoutDate: "2026-03-30", replayFromDate: "2026-03-29", massStatus: "observed",
+    })).toBe(false);
+    expect(stepperMassCandidateDependsOnReplayV1({
+      workoutDate: "2026-03-30", replayFromDate: "2026-03-29", massStatus: "model-estimated",
+    })).toBe(true);
+    expect(stepperMassCandidateDependsOnReplayV1({
+      workoutDate: "2026-03-30", replayFromDate: "2026-03-29", massStatus: "unavailable",
+    })).toBe(true);
   });
 });

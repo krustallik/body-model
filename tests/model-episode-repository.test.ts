@@ -26,6 +26,7 @@ const db = {
     deleteMany: vi.fn(), upsert: vi.fn(), findMany: vi.fn(),
   },
   modelRecoveryRun: { updateMany: vi.fn() },
+  physiologyV7Lifecycle: { findUnique: vi.fn() },
 };
 
 const client = db as unknown as PrismaClient;
@@ -109,6 +110,11 @@ describe("model episode repository mapping", () => {
     db.modelUnknownInterval.findMany.mockResolvedValue([]);
     db.modelEpisode.update.mockResolvedValue({});
     db.modelRecoveryRun.updateMany.mockResolvedValue({ count: 0 });
+    db.physiologyV7Lifecycle.findUnique.mockResolvedValue({
+      invalidationGeneration: 1,
+      productionPublishedGeneration: 1,
+      productionStaleFromDate: null,
+    });
   });
 
   it("maps profile, active episode, explicit episode, and absence", async () => {
@@ -229,6 +235,8 @@ describe("model episode repository mapping", () => {
       latestModeledDate: "2026-08-22",
       unknownIntervals: [],
       continuityStatus: "resolved",
+      calibrationInputFingerprint: "test-calibration-fingerprint",
+      replayMode: "full",
       dailyStates: [{
         date: "2026-08-22",
         status: "complete",
@@ -259,6 +267,7 @@ describe("model episode repository mapping", () => {
         deltaLeanTissueKg: 0.005,
         deltaGlycogenKg: 0,
         filteredWeightKg: 79.95,
+        weightFilterVarianceKg2: 0.25,
       }],
     };
     const repository = new ModelEpisodeRepository(client);
@@ -295,6 +304,8 @@ describe("model episode repository mapping", () => {
       dailyStates: [],
       latestModeledDate: "2026-08-22",
       continuityStatus: "awaiting-recovery",
+      calibrationInputFingerprint: "test-calibration-fingerprint",
+      replayMode: "full",
       unknownIntervals: [{
         startDate: "2026-08-23", lastUnknownDate: "2026-08-29", endDate: null,
         anchorDate: "2026-08-22", firstPostGapObservationDate: null,

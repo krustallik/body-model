@@ -41,4 +41,19 @@ describe("Unified V1 energy ledger", () => {
     expect(ledger.quality).toBe("partial");
     expect(ledger.entries.find((entry) => entry.kind === "epoc-context")?.valueKcal).toBeNull();
   });
+
+  it("records one diagnostic resolution when multiple workout aliases share a canonical event", () => {
+    const resolution = { kcal: 275, source: "bodycast-stepper-mechanical", revision: 8, stale: false };
+    const ledger = buildUnifiedEnergyLedgerV1({
+      production,
+      activities: [
+        { doseKey: "workout:manual", canonicalEventKey: "canonical:7", kind: "stepper", garminActiveKcal: null, bodyCastEstimateKcal: null, canonicalResolution: resolution },
+        { doseKey: "workout:device", canonicalEventKey: "canonical:7", kind: "stepper", garminActiveKcal: 410, bodyCastEstimateKcal: null, canonicalResolution: resolution },
+      ],
+    });
+    expect(ledger.selectedDoseKeys).toEqual(["workout:manual"]);
+    expect(ledger.entries.filter((entry) => entry.kind === "canonical-active-energy")).toHaveLength(1);
+    expect(ledger.entries.find((entry) => entry.kind === "canonical-active-energy")?.source)
+      .toBe("canonical-bodycast-stepper-mechanical-revision-8");
+  });
 });

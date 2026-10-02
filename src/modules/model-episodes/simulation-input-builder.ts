@@ -15,7 +15,7 @@ import { canonicalizeWorkoutStepperEvidenceV7 } from "@/model/activity/workout-s
 import { enumerateCalendarDates } from "./model-calendar";
 import { bridgeNutritionGaps, type NutritionGapPolicy } from "./nutrition-gap-bridge";
 import { usesBodyCastStepperEnergy, usesSelectionV1, usesWorkoutAwareActivity } from "./model-version";
-import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
+import { DEFAULT_TIME_ZONE, instantToLocalDateTime } from "@/model/time-zone";
 import { selectCanonicalBodyMassV1, occupationalEnergyDurationHours } from "@/model/activity/canonical-activity-policy-v1";
 import { allocateDistanceLedgerV1, dayBoundsAroundV1 } from "@/model/activity/distance-ledger-v1";
 import { adaptManualStepperEnergyV1 } from "@/modules/training/manual-stepper-fields-v1";
@@ -100,6 +100,7 @@ function toWorkoutEvents(input: {
         manualActiveKcal: workout.manualActiveEnergyKcal ?? null,
         manualActiveKcalPresent: workout.manualActiveEnergyKcal !== undefined
           && workout.manualActiveEnergyKcal !== null,
+        canonicalEnergyResolution: workout.canonicalEnergyResolution ?? null,
         bodyCastEstimateKcal: workout.bodyCastEstimateKcal ?? null,
         bodyCastEstimateFresh: workout.bodyCastEstimateFresh === true,
         strengthSessionCompleted: workout.strengthSessionCompleted === true,
@@ -178,6 +179,8 @@ export function buildSimulationDays(input: {
   baselineNutritionFallback?: NutritionVector | null;
   /** Episode physiology version; defaults to legacy v5 walking/strength path. */
   modelVersion?: string;
+  /** Event instants are assigned to model days using this episode timezone. */
+  timeZone?: string;
   /** Staged selection v1 only. Same-day scale weight still wins when present. */
   unifiedStartOfDayMassKgByDate?: Readonly<Record<string, number | null>>;
 }): BuiltSimulationDay[] {
@@ -187,8 +190,16 @@ export function buildSimulationDays(input: {
   const snapshots = groupByDate(input.sources.snapshots);
   const activityIntervals = groupByDate(input.sources.activityIntervals ?? []);
   const workIntervals = groupByDate(input.sources.workIntervals);
-  const workouts = groupByDate(input.sources.workouts ?? []);
   const allWorkouts = input.sources.workouts ?? [];
+  const workouts = new Map<string, typeof allWorkouts>();
+  for (const workout of allWorkouts) {
+    const modelDate = input.timeZone === undefined
+      ? workout.date
+      : instantToLocalDateTime(workout.startAt, input.timeZone).date;
+    const rows = workouts.get(modelDate) ?? [];
+    rows.push(workout);
+    workouts.set(modelDate, rows);
+  }
   const allStepIntervals = (input.sources.activityIntervals ?? [])
     .filter((sample) => sample.metric === "steps")
     .map((sample) => ({
@@ -356,6 +367,18 @@ export function buildSimulationDays(input: {
       }
     }
 
+    // Reconciliation chooses one logical activity event for every model
+    // version. Applying this before the energy ledger prevents a shared
+    // canonical resolution from being counted once per workout alias.
+    const suppressedWorkoutIds = new Set<number>();
+    for (const link of input.sources.reconciliationLinks ?? []) {
+      if (link.suppressGarminEnergy) suppressedWorkoutIds.add(link.garminWorkoutId);
+      if (link.suppressManualEnergy) suppressedWorkoutIds.add(link.manualWorkoutId);
+    }
+    if (workoutEvents !== undefined && suppressedWorkoutIds.size > 0) {
+      workoutEvents = workoutEvents.filter((event) => event.workoutId === undefined || !suppressedWorkoutIds.has(event.workoutId));
+    }
+
     let selectionLedger: ReturnType<typeof allocateDistanceLedgerV1> | null = null;
     let selectionUsable = false;
     const canonicalMass = selectionV1
@@ -364,8 +387,8 @@ export function buildSimulationDays(input: {
         unifiedStartOfDayKg: input.unifiedStartOfDayMassKgByDate?.[date] ?? null,
       })
       : { massKg: day.weightKg, source: "same-day-observed" as const };
-    if (selectionV1 && workoutEvents !== undefined) {
-      workoutEvents = workoutEvents.map((event) => {
+    if (workoutEvents !== undefined) {
+      if (selectionV1) workoutEvents = workoutEvents.map((event) => {
         const source = allWorkouts.find((workout) => workout.id === event.workoutId);
         if (source?.manualStepCount === undefined && source?.manualActiveEnergyKcal === undefined) return event;
         const adapted = adaptManualStepperEnergyV1({
@@ -380,11 +403,6 @@ export function buildSimulationDays(input: {
           mechanicalStepperKcal: adapted.mechanicalKcal ?? event.mechanicalStepperKcal ?? null,
         };
       });
-      const suppressedWorkoutIds = new Set<number>();
-      for (const link of input.sources.reconciliationLinks ?? []) {
-        if (link.suppressGarminEnergy) suppressedWorkoutIds.add(link.garminWorkoutId);
-        if (link.suppressManualEnergy) suppressedWorkoutIds.add(link.manualWorkoutId);
-      }
       const webEvents: ExplicitWorkoutActivityEvent[] = (input.sources.webOnlyStrengthSessions ?? [])
         .filter((session) => session.date === date)
         .map((session) => {
@@ -401,12 +419,10 @@ export function buildSimulationDays(input: {
             bodyCastEstimateKcal: session.bodyCastEstimateKcal,
             bodyCastEstimateFresh: session.bodyCastEstimateFresh === true,
             strengthSessionCompleted: session.status === "COMPLETED",
+            canonicalEnergyResolution: session.canonicalEnergyResolution ?? null,
           };
         });
-      workoutEvents = [
-        ...workoutEvents.filter((event) => event.workoutId === undefined || !suppressedWorkoutIds.has(event.workoutId)),
-        ...webEvents,
-      ];
+      workoutEvents = [...workoutEvents, ...webEvents];
     }
     if (selectionV1) {
       const bounds = dayBoundsAroundV1(date, DEFAULT_TIME_ZONE);

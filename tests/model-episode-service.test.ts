@@ -62,7 +62,7 @@ describe("model episode application service", () => {
     const result = await initializeNewModelEpisode({
       now: new Date("2026-08-23T10:00:00.000Z"),
     }, client);
-    expect(repository.loadSources).toHaveBeenCalledWith("2026-04-19", "2026-08-22");
+    expect(repository.loadSources).toHaveBeenCalledWith("2026-04-19", "2026-08-22", "Europe/Bratislava");
     expect(repository.deactivateActive).toHaveBeenCalledWith(
       new Date("2026-08-23T10:00:00.000Z"),
     );
@@ -113,7 +113,7 @@ describe("model episode application service", () => {
     const result = await recalculateModelEpisode({
       now: new Date("2026-08-22T10:00:00.000Z"),
     }, client);
-    expect(repository.loadSources).toHaveBeenCalledWith("2026-04-18", "2026-08-21");
+    expect(repository.loadSources).toHaveBeenCalledWith("2026-04-18", "2026-08-21", "Europe/Bratislava");
     expect(repository.persistCalculation).toHaveBeenCalledOnce();
     expect(repository.persistCalculation.mock.calls[0]?.[1].dailyStates.every(
       ({ nutrition }: { nutrition: { source: string } }) => nutrition.source === "observed",

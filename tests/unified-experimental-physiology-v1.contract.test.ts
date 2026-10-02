@@ -8,7 +8,7 @@ import {
 function fixture(): UnifiedExperimentalPhysiologyDayResultV1 {
   const unavailable = { availability: "unavailable" as const, point: null, lower: null, upper: null, representation: "engineering-range" as const };
   const result = {
-    contractVersion: "unified-experimental-physiology-state-v1" as const,
+    contractVersion: "unified-experimental-physiology-state-v1-active-energy-canonical" as const,
     profileId: 1,
     date: "2065-01-01",
     priorStateFingerprint: "prior",

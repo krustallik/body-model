@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { calculateEpisodeHistory } from "./episode-calculation";
 import type { HistoricalModelSources, PersistedEpisode } from "./model-episode.types";
 import { ModelEpisodeRepository } from "./model-episode.repository";
@@ -76,7 +76,7 @@ export async function reconstructSelectionHistoryV1(input: {
   expectedSourceRevision?: string | null;
   unifiedStartOfDayMassKgByDate?: Readonly<Record<string, number | null>>;
 }): Promise<SelectionReconstructionV1> {
-  const sources = await input.repository.loadSources(input.from, input.to);
+  const sources = await input.repository.loadSources(input.from, input.to, input.episode.timezone);
   const sourceRevision = fingerprintHistoricalSourcesV1(sources);
   if (input.expectedSourceRevision != null && input.expectedSourceRevision !== sourceRevision) {
     return {
@@ -92,6 +92,7 @@ export async function reconstructSelectionHistoryV1(input: {
     to: input.to,
     sources,
     modelVersion: SELECTION_V1_MODEL_VERSION,
+    timeZone: input.episode.timezone,
     unifiedStartOfDayMassKgByDate: input.unifiedStartOfDayMassKgByDate,
     baselineNutritionFallback: input.episode.baselineNutritionFallback,
   });
@@ -146,7 +147,7 @@ export async function persistSelectionEpisodeHistoryV1(input: {
   activated: boolean;
   previousModelVersion: string | null;
 }> {
-  const sources = await input.repository.loadSources(input.from, input.to);
+  const sources = await input.repository.loadSources(input.from, input.to, input.episode.timezone);
   const sourceRevision = fingerprintHistoricalSourcesV1(sources);
   if (input.expectedSourceRevision != null && input.expectedSourceRevision !== sourceRevision) {
     return {
@@ -165,6 +166,7 @@ export async function persistSelectionEpisodeHistoryV1(input: {
     to: input.to,
     sources,
     modelVersion: SELECTION_V1_MODEL_VERSION,
+    timeZone: input.episode.timezone,
     unifiedStartOfDayMassKgByDate: input.unifiedStartOfDayMassKgByDate,
     baselineNutritionFallback: input.episode.baselineNutritionFallback,
   });
@@ -266,12 +268,13 @@ export async function rollbackSelectionEpisodeActivationV1(input: {
     return { restoredModelVersion: input.episode.modelVersion, conflicts: true };
   }
 
-  const sources = await input.repository.loadSources(input.from, input.to);
+  const sources = await input.repository.loadSources(input.from, input.to, input.episode.timezone);
   const days = buildSimulationDays({
     from: input.from,
     to: input.to,
     sources,
     modelVersion: restoredModelVersion,
+    timeZone: input.episode.timezone,
     unifiedStartOfDayMassKgByDate: input.unifiedStartOfDayMassKgByDate,
     baselineNutritionFallback: input.episode.baselineNutritionFallback,
   });
@@ -288,7 +291,7 @@ export async function rollbackSelectionEpisodeActivationV1(input: {
  * Does not run on ordinary confirm — only when activation is explicitly authorized.
  */
 export async function activateConfirmedReconciliationVisibilityV1(input: {
-  client: PrismaClient;
+  client: PrismaClient | Prisma.TransactionClient;
   generationId: string;
   manualWorkoutId: number;
   garminWorkoutId: number;

@@ -9,7 +9,12 @@ import { prisma } from "@/lib/db/prisma";
 import { SleepRepository } from "@/modules/health/sleep.repository";
 import { recordExperimentalGlycogenStateShadow } from "@/modules/model-episodes/experimental-glycogen-state-shadow.service";
 import { rebuildAuthoritativeRelativeMuscleTrajectory } from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
-import { rebuildUnifiedExperimentalPhysiologyStateV1 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
+import { recordExperimentalStepperActiveEnergyShadowsForMassWindow } from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
+import { publishActiveEnergyChangesV1 } from "@/modules/activity/active-energy-publication";
+import {
+  invalidateStepperMassDependenciesInTransactionV1,
+  invalidateWorkoutEnergyInTransactionV1,
+} from "@/modules/activity/active-energy-invalidation";
 import { DuplicateDayError } from "./day.errors";
 import {
   addCalendarDays,
@@ -68,10 +73,10 @@ type DailyMetricShadowReplayer = {
 
 const productionShadowReplayer: DailyMetricShadowReplayer = {
   async replayFrom(date) {
+    await recordExperimentalStepperActiveEnergyShadowsForMassWindow({ measurementDates: [date] });
     await recordExperimentalGlycogenStateShadow({ date });
     await rebuildAuthoritativeRelativeMuscleTrajectory({ fromDate: date });
-    const latest = await prisma.dailyHealthData.findFirst({ orderBy: { date: "desc" }, select: { date: true } });
-    if (latest !== null) await rebuildUnifiedExperimentalPhysiologyStateV1({ fromDate: date, toDate: latest.date });
+    await publishActiveEnergyChangesV1();
   },
 };
 
@@ -326,18 +331,33 @@ export class DailyMetricRepository {
   async create(input: CreateDailyMetricInput): Promise<DailyMetricDto> {
     try {
       const { workouts, ...metrics } = input;
-      const record = await this.client.dailyHealthData.create({
-        data: {
-          ...prepareDailyMeasurementsForWrite(metrics),
-          ...(workouts !== undefined ? {
-            workouts: { create: workoutCreateData(workouts) },
-            strengthTrainingMinutes: null,
-            activeEnergyKcal: null,
-          } : {}),
-          rawPayload: { source: "manual" },
-        },
-        select: dailyMetricSelect,
+      const record = await this.client.$transaction(async (tx) => {
+        const created = await tx.dailyHealthData.create({
+          data: {
+            ...prepareDailyMeasurementsForWrite(metrics),
+            ...(workouts !== undefined ? {
+              workouts: { create: workoutCreateData(workouts) },
+              strengthTrainingMinutes: null,
+              activeEnergyKcal: null,
+            } : {}),
+            rawPayload: { source: "manual" },
+          },
+          select: dailyMetricSelect,
+        });
+        await invalidateWorkoutEnergyInTransactionV1({
+          tx, profileId: 1,
+          workoutIds: created.workouts.map((workout) => workout.id),
+          affectedInstants: created.workouts.flatMap((workout) => [workout.startAt, workout.endAt]),
+          affectedModelDates: [created.date],
+        });
+        if (created.weightKg !== null) {
+          await invalidateStepperMassDependenciesInTransactionV1({
+            tx, profileId: 1, measurementDates: [created.date],
+          });
+        }
+        return created;
       });
+      await this.shadowReplayer?.replayFrom(record.date);
       return await this.dtoForRecord(record);
     } catch (error) {
       if (isPrismaError(error, "P2002")) throw new DuplicateDayError();
@@ -348,17 +368,36 @@ export class DailyMetricRepository {
   async update(date: string, input: UpdateDailyMetricInput): Promise<DailyMetricDto | null> {
     try {
       const { workouts, ...metrics } = input;
-      const record = await this.client.dailyHealthData.update({
-        where: { date },
-        data: {
-          ...prepareDailyMeasurementsForWrite(metrics),
-          ...(workouts !== undefined ? {
-            workouts: { deleteMany: { hiddenFromHistory: false }, create: workoutCreateData(workouts) },
-            strengthTrainingMinutes: null,
-            activeEnergyKcal: null,
-          } : {}),
-        },
-        select: dailyMetricSelect,
+      const record = await this.client.$transaction(async (tx) => {
+        const before = await tx.dailyHealthData.findUniqueOrThrow({
+          where: { date },
+          select: { weightKg: true, workouts: { where: { hiddenFromHistory: false }, select: { id: true, startAt: true, endAt: true } } },
+        });
+        const updated = await tx.dailyHealthData.update({
+          where: { date },
+          data: {
+            ...prepareDailyMeasurementsForWrite(metrics),
+            ...(workouts !== undefined ? {
+              workouts: { deleteMany: { hiddenFromHistory: false }, create: workoutCreateData(workouts) },
+              strengthTrainingMinutes: null,
+              activeEnergyKcal: null,
+            } : {}),
+          },
+          select: dailyMetricSelect,
+        });
+        const affected = [...before.workouts, ...updated.workouts];
+        await invalidateWorkoutEnergyInTransactionV1({
+          tx, profileId: 1,
+          workoutIds: affected.map((workout) => workout.id),
+          affectedInstants: affected.flatMap((workout) => [workout.startAt, workout.endAt]),
+          affectedModelDates: [date],
+        });
+        if (before.weightKg !== updated.weightKg) {
+          await invalidateStepperMassDependenciesInTransactionV1({
+            tx, profileId: 1, measurementDates: [date],
+          });
+        }
+        return updated;
       });
       await this.shadowReplayer?.replayFrom(date);
       return await this.dtoForRecord(record);
@@ -374,9 +413,20 @@ export class DailyMetricRepository {
     const deleted = await this.client.$transaction(async (transaction) => {
       const day = await transaction.dailyHealthData.findUnique({
         where: { date },
-        select: { id: true },
+        select: { id: true, weightKg: true, workouts: { where: { hiddenFromHistory: false }, select: { id: true, startAt: true, endAt: true } } },
       });
       if (!day) return false;
+      await invalidateWorkoutEnergyInTransactionV1({
+        tx: transaction, profileId: 1,
+        workoutIds: day.workouts.map((workout) => workout.id),
+        affectedInstants: day.workouts.flatMap((workout) => [workout.startAt, workout.endAt]),
+        affectedModelDates: [date],
+      });
+      if (day.weightKg !== null) {
+        await invalidateStepperMassDependenciesInTransactionV1({
+          tx: transaction, profileId: 1, measurementDates: [date],
+        });
+      }
       await transaction.workout.deleteMany({ where: { dailyHealthDataId: day.id } });
       await transaction.dailyHealthData.delete({ where: { id: day.id } });
       return true;

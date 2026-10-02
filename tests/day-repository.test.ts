@@ -3,6 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import { DuplicateDayError } from "@/modules/days/day.errors";
 import { DailyMetricRepository } from "@/modules/days/day.repository";
 
+vi.mock("@/modules/activity/active-energy-invalidation", () => ({
+  invalidateWorkoutEnergyInTransactionV1: vi.fn().mockResolvedValue(null),
+  invalidateStepperMassDependenciesInTransactionV1: vi.fn().mockResolvedValue(null),
+}));
+
 const record = {
   date: "2026-08-22",
   weightKg: 89.4,
@@ -24,7 +29,8 @@ function fixture() {
   const dailyHealthData = {
     findMany: vi.fn().mockResolvedValue([record]),
     findFirst: vi.fn().mockResolvedValue({ updatedAt: record.updatedAt }),
-    findUnique: vi.fn().mockResolvedValue({ id: 42 }),
+    findUnique: vi.fn().mockResolvedValue({ ...record, id: 42 }),
+    findUniqueOrThrow: vi.fn().mockResolvedValue({ ...record, id: 42 }),
     create: vi.fn().mockResolvedValue(record),
     update: vi.fn().mockResolvedValue(record),
     delete: vi.fn().mockResolvedValue(record),
@@ -37,13 +43,16 @@ function fixture() {
   const strengthDiarySession = {
     findMany: vi.fn().mockResolvedValue([]),
   };
+  const activeEnergyEventAlias = { findMany: vi.fn().mockResolvedValue([]) };
   const client = {
     dailyHealthData,
     workout,
     strengthDiarySession,
+    activeEnergyEventAlias,
     $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => callback({
       dailyHealthData,
       workout,
+      activeEnergyEventAlias,
     })),
   } as unknown as PrismaClient;
   const shadowReplayer = { replayFrom: vi.fn().mockResolvedValue(undefined) };

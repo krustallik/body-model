@@ -98,6 +98,7 @@ export type WorkoutFactSource = {
   manualStepCount?: number | null;
   manualActiveEnergyKcal?: number | null;
   mechanicalStepperKcal?: number | null;
+  canonicalEnergyResolution?: { kcal: number | null; source: string; revision: number } | null;
   hiddenFromHistory: boolean;
   matchedDiarySession: {
     id: number;
@@ -114,6 +115,7 @@ export type WorkoutFactSource = {
     sameDayMassKg?: number | null;
     startOfDayMassKg?: number | null;
     estimatorVersion?: string | null;
+    canonicalEnergyResolution?: { kcal: number | null; source: string; revision: number } | null;
   } | null;
 };
 
@@ -133,6 +135,7 @@ export type DiaryFactSource = {
   sameDayMassKg?: number | null;
   startOfDayMassKg?: number | null;
   estimatorVersion?: string | null;
+  canonicalEnergyResolution?: { kcal: number | null; source: string; revision: number } | null;
 };
 
 function validDuration(value: number | null): number | null {
@@ -270,6 +273,7 @@ function stubSessionForHistoricalEstimate(input: StrengthFreshnessContext): Stre
 
 function resolveStrengthFactEnergy(input: StrengthFreshnessContext & {
   deviceKcal: number | null;
+  manualKcal?: number | null;
   diaryOnly?: boolean;
 }): { kcal: number | null; energySource: TrainingDayEnergySource } {
   const sessionCompleted = input.status === "COMPLETED";
@@ -290,6 +294,7 @@ function resolveStrengthFactEnergy(input: StrengthFreshnessContext & {
     startOfDayMassKg: input.startOfDayMassKg ?? null,
     estimatorVersion: input.estimatorVersion,
     onDemandEstimateKcal,
+    manualKcal: input.manualKcal ?? null,
     garminKcal: input.deviceKcal,
   });
   const energySource: TrainingDayEnergySource = input.diaryOnly === true
@@ -325,6 +330,11 @@ function selectedDayEnergy(input: {
     ? "shadow-diary-estimate"
     : selected.source;
   return { kcal: selected.selectedKcal, energySource };
+}
+
+function canonicalEnergySelection(input: { kcal: number | null; source: string }): { kcal: number | null; energySource: TrainingDayEnergySource } {
+  const source = input.source === "device-kcal" ? "garmin-fallback" : input.source;
+  return { kcal: input.kcal, energySource: source as TrainingDayEnergySource };
 }
 
 function executionStatus(status: string | null | undefined, loggedSetCount: number): TrainingEventExecutionStatus {
@@ -388,7 +398,9 @@ export function resolveTrainingDayFacts(input: {
       : workout.type.trim().toLowerCase() === "traditional strength training"
         ? "traditional-strength-training" as const
         : "other" as const;
-    const selected = classification === "traditional-strength-training" && matched
+    const selected = workout.canonicalEnergyResolution
+      ? canonicalEnergySelection(workout.canonicalEnergyResolution)
+      : classification === "traditional-strength-training" && matched
       ? resolveStrengthFactEnergy({
         sessionId: matched.id,
         status: matched.status,
@@ -409,6 +421,7 @@ export function resolveTrainingDayFacts(input: {
           activeEnergyKcal: workout.activeEnergyKcal,
         },
         deviceKcal,
+        manualKcal: workout.manualActiveEnergyKcal ?? null,
       })
       : selectedDayEnergy({
         classification,
@@ -458,7 +471,9 @@ export function resolveTrainingDayFacts(input: {
     const eligible = session.status === "ACTIVE" || session.status === "COMPLETED"
       || (session.status === "CANCELLED" && session.loggedSetCount > 0);
     if (!eligible) continue;
-    const selected = resolveStrengthFactEnergy({
+    const selected = session.canonicalEnergyResolution
+      ? canonicalEnergySelection(session.canonicalEnergyResolution)
+      : resolveStrengthFactEnergy({
       sessionId: session.id,
       status: session.status,
       revision: session.revision,
@@ -473,6 +488,7 @@ export function resolveTrainingDayFacts(input: {
       webEndedAt: session.webEndedAt?.toISOString() ?? null,
       matchedWorkout: null,
       deviceKcal: null,
+      manualKcal: null,
       diaryOnly: true,
     });
     add({

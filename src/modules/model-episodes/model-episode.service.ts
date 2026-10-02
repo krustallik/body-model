@@ -220,7 +220,7 @@ export async function initializeNewModelEpisode(
     const repository = new ModelEpisodeRepository(transaction);
     const [profile, sources] = await Promise.all([
       repository.getProfile(),
-      repository.loadSources(addCalendarDays(startDate, -125), startDate),
+      repository.loadSources(addCalendarDays(startDate, -125), startDate, timezone),
     ]);
     let prepared: PreparedEpisodeInitialization;
     try {
@@ -303,7 +303,7 @@ export async function recalculateModelEpisode(
       : episode.startDate;
     const sourceStart = historyStart < episode.startDate ? historyStart : episode.startDate;
     const sources = sourceStart <= latestCompletedDate
-      ? await repository.loadSources(sourceStart, latestCompletedDate)
+      ? await repository.loadSources(sourceStart, latestCompletedDate, episode.timezone)
       : { days: [], snapshots: [], workIntervals: [], workouts: [] };
 
     let candidateCalculation: EpisodeCalculation | null = null;
@@ -319,6 +319,7 @@ export async function recalculateModelEpisode(
         baselineNutritionFallback: episode.baselineNutritionFallback,
         nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
         modelVersion: CURRENT_MODEL_VERSION,
+        timeZone: episode.timezone,
       });
       const restartDate = preferredModelableRunStart(
         candidateDays,
@@ -352,6 +353,7 @@ export async function recalculateModelEpisode(
           baselineNutritionFallback: prepared.baseline.fallbackNutrition,
           nutritionGapPolicy: { maxBridgeDays: prepared.nutritionMaxBridgeDays },
           modelVersion: prepared.modelVersion,
+          timeZone: prepared.timezone,
         });
         candidateCalculation = calculateEpisodeHistory({
           episode: {
@@ -397,6 +399,7 @@ export async function recalculateModelEpisode(
         baselineNutritionFallback: episode.baselineNutritionFallback,
         nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
         modelVersion: episode.modelVersion,
+        timeZone: episode.timezone,
       });
     // Scientific initialization semantics are frozen per episode. Legacy v4
     // episodes must be explicitly reinitialized rather than silently relabeled v5.

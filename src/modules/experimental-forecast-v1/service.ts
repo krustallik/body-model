@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V1_REVISION } from "@/model/unified-experimental-physiology-v1/contracts";
 import { latestCompletedLocalDate, addCalendarDays } from "@/modules/model-episodes/model-calendar";
 import { ModelEpisodeRepository } from "@/modules/model-episodes/model-episode.repository";
 import type { ModelHealthDaySource } from "@/modules/model-episodes/model-episode.types";
@@ -505,7 +506,7 @@ export async function experimentalForecastModelEpisode(
   const now = request.now ?? new Date();
   const latestDate = latestCompletedLocalDate(now, episode.timezone);
   const unifiedRow = await client.unifiedExperimentalPhysiologyState.findFirst({
-    where: { profileId: episode.profileId, date: { lte: latestDate }, modelRevision: "unified-experimental-physiology-state-v1" },
+    where: { profileId: episode.profileId, date: { lte: latestDate }, modelRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V1_REVISION },
     orderBy: { date: "desc" },
   });
   // Existing production episodes without a rebuilt Unified row continue
@@ -522,7 +523,7 @@ export async function experimentalForecastModelEpisode(
   const currentObservedWeightKg = latestObservedWeightKg(currentSources.days);
   const validDays = sources.days.filter((day) => day.caloriesKcal !== null && day.proteinG !== null && day.fatG !== null && day.carbsG !== null);
   const ledgers = (await client.unifiedExperimentalPhysiologyState.findMany({
-    where: { profileId: episode.profileId, date: { gte: windowFrom, lte: latest.date }, modelRevision: "unified-experimental-physiology-state-v1" },
+    where: { profileId: episode.profileId, date: { gte: windowFrom, lte: latest.date }, modelRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V1_REVISION },
     select: { energyLedger: true }, orderBy: { date: "asc" },
   })).map((row) => object(row.energyLedger));
   const maintenanceValues = ledgers.map((ledger) => numberValue(ledger.productionTdeeKcal)).filter((value): value is number => value !== null);

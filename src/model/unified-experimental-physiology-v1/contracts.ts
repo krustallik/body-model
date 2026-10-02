@@ -1,7 +1,7 @@
 import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 
 export const UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V1_REVISION =
-  "unified-experimental-physiology-state-v1" as const;
+  "unified-experimental-physiology-state-v1-active-energy-canonical" as const;
 
 export type UnifiedAvailabilityV1 = "available" | "partial" | "unavailable";
 export type UnifiedGapSeverityV1 = "none" | "short-gap" | "large-gap" | "extended-gap";
@@ -58,7 +58,7 @@ export type UnifiedEcfContextV1 = {
 export type UnifiedEnergyLedgerEntryV1 = {
   kind: "dynamic-rmr" | "tef" | "walking" | "occupational" | "workout" | "stepper"
     | "adaptive-thermogenesis" | "personal-offset" | "garmin-device" | "strength-shadow"
-    | "stepper-shadow" | "epoc-context";
+    | "stepper-shadow" | "canonical-active-energy" | "epoc-context";
   status: "selected" | "reference" | "diagnostic" | "unavailable";
   valueKcal: number | null;
   source: string;

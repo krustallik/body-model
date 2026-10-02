@@ -20,6 +20,14 @@ export type UnifiedDurableWorkoutV1 = {
   durationMinutes: number | null;
   activeEnergyKcal: number | null;
   manualActiveEnergyKcal?: number | null;
+  canonicalEnergyResolution?: {
+    eventId: number;
+    logicalEventKey: string;
+    currentKcal: number | null;
+    currentSource: string | null;
+    resolutionRevision: number;
+    isStale: boolean;
+  } | null;
   matchedDiarySession?: {
     status: string;
     experimentalStrengthEnergyShadow: { result: unknown } | null;
@@ -138,6 +146,12 @@ export class UnifiedExperimentalPhysiologySourceLoaderV1 {
         select: {
           id: true, type: true, startAt: true, endAt: true, durationMinutes: true,
           activeEnergyKcal: true, manualActiveEnergyKcal: true, updatedAt: true, sourceIdentity: true,
+          activeEnergyAliases: {
+            where: { profileId, sourceType: "workout" },
+            select: {
+              event: { select: { id: true, logicalEventKey: true, currentKcal: true, currentSource: true, resolutionRevision: true, isStale: true } },
+            },
+          },
           dailyHealthData: { select: { date: true } },
           matchedDiarySession: {
             select: { status: true, experimentalStrengthEnergyShadow: { select: { result: true } } },
@@ -206,6 +220,16 @@ export class UnifiedExperimentalPhysiologySourceLoaderV1 {
             id: row.id, date, type: row.type, startAt: row.startAt.toISOString(), endAt: row.endAt.toISOString(),
             durationMinutes: row.durationMinutes, activeEnergyKcal: row.activeEnergyKcal,
             manualActiveEnergyKcal: row.manualActiveEnergyKcal,
+            canonicalEnergyResolution: row.activeEnergyAliases[0]?.event
+              ? {
+                  eventId: row.activeEnergyAliases[0].event.id,
+                  logicalEventKey: row.activeEnergyAliases[0].event.logicalEventKey,
+                  currentKcal: row.activeEnergyAliases[0].event.currentKcal,
+                  currentSource: row.activeEnergyAliases[0].event.currentSource,
+                  resolutionRevision: row.activeEnergyAliases[0].event.resolutionRevision,
+                  isStale: row.activeEnergyAliases[0].event.isStale,
+                }
+              : null,
             matchedDiarySession: row.matchedDiarySession,
             updatedAt: row.updatedAt.toISOString(), sourceIdentity: row.sourceIdentity,
           })),

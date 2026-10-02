@@ -150,7 +150,7 @@ describe("GET /api/v1/dashboard", () => {
   it("keeps the normal production dashboard DTO identical with Unified rows OFF versus ON", async () => {
     const today = day("2026-08-22", { bodyFatPercent: 19.8, activeEnergyKcal: 620 });
     const unifiedRowsOff: readonly unknown[] = [];
-    const unifiedRowsOn = [{ profileId: 1, date: today.date, modelRevision: "unified-experimental-physiology-state-v1" }];
+    const unifiedRowsOn = [{ profileId: 1, date: today.date, modelRevision: "unified-experimental-physiology-state-v1-active-energy-canonical" }];
     const read = async (unifiedRows: readonly unknown[]) => {
       void unifiedRows;
       Object.values(dailyMetricRepository).forEach((mock) => mock.mockReset());

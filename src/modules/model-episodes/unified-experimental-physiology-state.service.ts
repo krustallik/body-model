@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db/prisma";
 import { carryUnifiedUncertaintyV1, transitionUnifiedExperimentalPhysiologyV1, type UnifiedChildTransitionsV1 } from "@/model/unified-experimental-physiology-v1/transition";
 import { buildUnifiedEnergyLedgerV1 } from "@/model/unified-experimental-physiology-v1/energy-ledger";
-import { UnifiedExperimentalPhysiologySourceLoaderV1, type UnifiedDurableDayEvidenceV1, type UnifiedDurableWorkoutV1 } from "@/model/unified-experimental-physiology-v1/source-loader";
+import { UnifiedExperimentalPhysiologySourceLoaderV1, type UnifiedDurableDayEvidenceV1 } from "@/model/unified-experimental-physiology-v1/source-loader";
 import {
   UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V1_REVISION,
   serializeUnifiedExperimentalPhysiologyV1,
@@ -93,18 +93,6 @@ function quality(day: UnifiedDurableDayEvidenceV1, gapDays: number): UnifiedQual
   return { availability, gapSeverity, sourceQuality: gapDays > 0 ? "modeled-gap-bridge" : availability === "available" ? "observed" : "missing", missingFields, reasons: missingFields.map((field) => `missing-${field}`), modeledGapBridge: gapDays > 0 };
 }
 
-function unifiedBodyCastKcal(workout: UnifiedDurableWorkoutV1): number | null {
-  if (typeof workout.manualActiveEnergyKcal === "number" && workout.manualActiveEnergyKcal >= 0) {
-    return workout.manualActiveEnergyKcal;
-  }
-  const session = workout.matchedDiarySession;
-  if (session?.status !== "COMPLETED") return null;
-  const result = session.experimentalStrengthEnergyShadow?.result;
-  if (result === null || typeof result !== "object" || Array.isArray(result)) return null;
-  const kcal = (result as { estimatedActiveKcal?: unknown }).estimatedActiveKcal;
-  return typeof kcal === "number" && Number.isFinite(kcal) && kcal >= 0 ? kcal : null;
-}
-
 function selectionCoverageNote(day: UnifiedDurableDayEvidenceV1): string | null {
   const quality = day.productionDailyState?.sourceQuality;
   if (quality === null || typeof quality !== "object" || Array.isArray(quality)) return null;
@@ -137,7 +125,17 @@ function sourceLineage(day: UnifiedDurableDayEvidenceV1) {
   return {
     dailyHealthData: day.dailyHealthData ? { id: day.dailyHealthData.id, updatedAt: day.dailyHealthData.updatedAt } : null,
     productionDailyState: day.productionDailyState ? { id: day.productionDailyState.id, updatedAt: day.productionDailyState.updatedAt, modelVersion: day.productionDailyState.modelVersion } : null,
-    workouts: day.workouts.map((row) => ({ id: row.id, updatedAt: row.updatedAt, sourceFingerprint: row.sourceIdentity })),
+    workouts: day.workouts.map((row) => ({
+      id: row.id,
+      updatedAt: row.updatedAt,
+      sourceFingerprint: [
+        row.sourceIdentity,
+        row.canonicalEnergyResolution?.resolutionRevision ?? "no-canonical-resolution",
+        row.canonicalEnergyResolution?.currentSource ?? "no-source",
+        row.canonicalEnergyResolution?.currentKcal ?? "no-kcal",
+        row.canonicalEnergyResolution?.isStale ?? false,
+      ].join("|"),
+    })),
     diarySessions: day.diarySessions.map((row) => ({ id: row.id, revision: row.revision, updatedAt: row.updatedAt })),
     childModelRevisions: day.childModelRevisions,
     childOutputs,
@@ -173,11 +171,22 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: { profi
     const production = day.productionDailyState;
     const activities = day.workouts.map((workout) => ({
       doseKey: `workout:${workout.id}`,
+      ...(workout.canonicalEnergyResolution === null || workout.canonicalEnergyResolution === undefined
+        ? {}
+        : { canonicalEventKey: `canonical-active-energy:${workout.canonicalEnergyResolution.eventId}` }),
       kind: "workout" as const,
       garminActiveKcal: workout.activeEnergyKcal,
-      bodyCastEstimateKcal: unifiedBodyCastKcal(workout),
+      bodyCastEstimateKcal: null,
+      canonicalResolution: workout.canonicalEnergyResolution ? {
+        kcal: workout.canonicalEnergyResolution.currentKcal,
+        source: workout.canonicalEnergyResolution.currentSource,
+        revision: workout.canonicalEnergyResolution.resolutionRevision,
+        stale: workout.canonicalEnergyResolution.isStale,
+      } : null,
     }));
-    const unknownEnergyCount = activities.filter((activity) => activity.garminActiveKcal === null && activity.bodyCastEstimateKcal === null).length;
+    const unknownEnergyCount = activities.filter((activity) => activity.canonicalResolution
+      ? activity.canonicalResolution.stale || activity.canonicalResolution.kcal === null
+      : activity.garminActiveKcal === null).length;
     const ledger = buildUnifiedEnergyLedgerV1({ production: { dynamicRmrKcalPerDay: production?.dynamicRmrKcalPerDay ?? null, tefKcalPerDay: production?.tefKcalPerDay ?? null, walkingKcalPerDay: null, occupationalKcalPerDay: null, workoutKcalPerDay: null, stepperKcalPerDay: null, activityKcalPerDay: production?.activityKcalPerDay ?? null, adaptiveThermogenesisKcalPerDay: production?.adaptiveThermogenesisKcalPerDay ?? null, personalOffsetKcalPerDay: null, productionTdeeKcalPerDay: production?.energyExpenditureKcal ?? null }, activities });
     const observedWeight = day.dailyHealthData?.weightKg ?? null;
     const anchorWeight = previousObservedWeight;

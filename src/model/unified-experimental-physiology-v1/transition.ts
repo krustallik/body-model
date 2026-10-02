@@ -10,6 +10,7 @@ import type {
   UnifiedSourceLineageV1,
   UnifiedUncertaintyV1,
 } from "./contracts";
+import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V1_REVISION } from "./contracts";
 import { addEnvelopes, envelope } from "./mass-composition";
 
 export type UnifiedChildTransitionsV1 = {
@@ -90,7 +91,7 @@ export function transitionUnifiedExperimentalPhysiologyV1(input: UnifiedTransiti
     modeledChangeSinceAnchorKg,
   };
   const withoutFingerprint = {
-    contractVersion: "unified-experimental-physiology-state-v1" as const,
+    contractVersion: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V1_REVISION,
     profileId: input.profileId,
     date: input.date,
     priorStateFingerprint: input.priorStateFingerprint ?? "initial-state",

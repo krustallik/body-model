@@ -2,7 +2,8 @@ import { normalizeDailyMeasurements } from "@/modules/days/measurement-policy";
 import { resolveWorkoutFeedObserved } from "@/modules/health/workout-feed-coverage";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
-import { DEFAULT_TIME_ZONE, instantToLocalDateTime } from "@/model/time-zone";
+import { DEFAULT_TIME_ZONE, instantToLocalDateTime, localDateTimeToInstant } from "@/model/time-zone";
+import { addCalendarDays } from "./model-calendar";
 import { createGlycogenParameters } from "@/model/body-composition/glycogen";
 import type { EpisodeCalculation } from "./episode-calculation";
 import type { ModelHistoryQuery } from "./model-episode.schema";
@@ -325,11 +326,13 @@ export class ModelEpisodeRepository {
     return record ? toEpisode(record) : null;
   }
 
-  async loadSources(from: string, to: string): Promise<HistoricalModelSources> {
-    const webWindowStart = new Date(`${from}T00:00:00.000Z`);
-    webWindowStart.setUTCDate(webWindowStart.getUTCDate() - 2);
-    const webWindowEnd = new Date(`${to}T00:00:00.000Z`);
-    webWindowEnd.setUTCDate(webWindowEnd.getUTCDate() + 3);
+  async loadSources(from: string, to: string, timeZone = DEFAULT_TIME_ZONE): Promise<HistoricalModelSources> {
+    const contextFrom = addCalendarDays(from, -2);
+    const contextTo = addCalendarDays(to, 2);
+    const workoutWindowStart = localDateTimeToInstant(from, "00:00", timeZone);
+    const workoutWindowEnd = localDateTimeToInstant(addCalendarDays(to, 1), "00:00", timeZone);
+    const webWindowStart = localDateTimeToInstant(addCalendarDays(from, -2), "00:00", timeZone);
+    const webWindowEnd = localDateTimeToInstant(addCalendarDays(to, 3), "00:00", timeZone);
     const [days, snapshots, activityIntervals, workIntervals, workoutRows, heartRateSamples, webSessions, reconciliationRows] = await Promise.all([
       this.client.dailyHealthData.findMany({
         where: { date: { gte: from, lte: to } },
@@ -350,7 +353,7 @@ export class ModelEpisodeRepository {
         },
       }),
       this.client.healthSyncSnapshot.findMany({
-        where: { date: { gte: from, lte: to } },
+        where: { date: { gte: contextFrom, lte: contextTo } },
         orderBy: [{ date: "asc" }, { receivedAt: "asc" }, { id: "asc" }],
         select: {
           id: true,
@@ -362,12 +365,17 @@ export class ModelEpisodeRepository {
         },
       }),
       this.client.healthActivityInterval.findMany({
-        where: { date: { gte: from, lte: to } },
+        where: {
+          OR: [
+            { date: { gte: contextFrom, lte: contextTo } },
+            { startAt: { lt: workoutWindowEnd }, endAt: { gt: workoutWindowStart } },
+          ],
+        },
         orderBy: [{ date: "asc" }, { startAt: "asc" }, { id: "asc" }],
         select: { id: true, date: true, metric: true, startAt: true, endAt: true, value: true },
       }),
       this.client.workInterval.findMany({
-        where: { date: { gte: from, lte: to } },
+        where: { date: { gte: contextFrom, lte: contextTo } },
         orderBy: [{ date: "asc" }, { startAt: "asc" }, { id: "asc" }],
         select: {
           id: true,
@@ -382,7 +390,10 @@ export class ModelEpisodeRepository {
       this.client.workout.findMany({
         where: {
           hiddenFromHistory: false,
-          dailyHealthData: { date: { gte: from, lte: to } },
+          OR: [
+            { dailyHealthData: { date: { gte: from, lte: to } } },
+            { startAt: { gte: workoutWindowStart, lt: workoutWindowEnd } },
+          ],
         },
         orderBy: [{ startAt: "asc" }, { id: "asc" }],
         select: {
@@ -397,6 +408,12 @@ export class ModelEpisodeRepository {
           activeEnergyKcal: true,
           manualStepCount: true,
           manualActiveEnergyKcal: true,
+          activeEnergyAliases: {
+            where: { profileId: 1, sourceType: "workout" },
+            select: {
+              event: { select: { currentKcal: true, currentSource: true, resolutionRevision: true, isStale: true } },
+            },
+          },
           dailyHealthData: { select: { date: true, weightKg: true } },
           matchedDiarySession: {
             select: {
@@ -424,7 +441,12 @@ export class ModelEpisodeRepository {
         },
       }),
       this.client.heartRateSample.findMany({
-        where: { date: { gte: from, lte: to } },
+        where: {
+          OR: [
+            { date: { gte: contextFrom, lte: contextTo } },
+            { timestamp: { gte: workoutWindowStart, lt: workoutWindowEnd } },
+          ],
+        },
         orderBy: [{ timestamp: "asc" }, { id: "asc" }],
         select: { date: true, timestamp: true, bpm: true, source: true },
       }),
@@ -463,8 +485,10 @@ export class ModelEpisodeRepository {
         where: {
           group: { status: { in: ["pending", "ambiguous", "confirmed"] } },
           OR: [
-            { manualWorkout: { dailyHealthData: { date: { gte: from, lte: to } } } },
-            { garminWorkout: { dailyHealthData: { date: { gte: from, lte: to } } } },
+            { manualWorkout: { dailyHealthData: { date: { gte: contextFrom, lte: contextTo } } } },
+            { garminWorkout: { dailyHealthData: { date: { gte: contextFrom, lte: contextTo } } } },
+            { manualWorkout: { startAt: { gte: workoutWindowStart, lt: workoutWindowEnd } } },
+            { garminWorkout: { startAt: { gte: workoutWindowStart, lt: workoutWindowEnd } } },
           ],
         },
         select: {
@@ -483,6 +507,23 @@ export class ModelEpisodeRepository {
         },
       }),
     ]);
+    const webSessionEnergyAliases = webSessions.length === 0 ? [] : await this.client.activeEnergyEventAlias.findMany({
+      where: {
+        profileId: 1,
+        sourceType: "strength-session",
+        sourceId: { in: webSessions.map((session) => String(session.id)) },
+      },
+      select: {
+        sourceId: true,
+        event: { select: { currentKcal: true, currentSource: true, resolutionRevision: true, isStale: true } },
+      },
+    });
+    const webSessionEnergyById = new Map(webSessionEnergyAliases.map((alias) => [alias.sourceId, {
+      currentKcal: alias.event.currentKcal,
+      currentSource: alias.event.currentSource,
+      resolutionRevision: alias.event.resolutionRevision,
+      isStale: alias.event.isStale,
+    }]));
     return {
       days: days.map(normalizeDailyMeasurements).map((day) => ({
         ...day,
@@ -522,6 +563,7 @@ export class ModelEpisodeRepository {
           activeEnergyKcal: workout.activeEnergyKcal,
           manualStepCount: workout.manualStepCount,
           manualActiveEnergyKcal: workout.manualActiveEnergyKcal,
+          canonicalEnergyResolution: workout.activeEnergyAliases[0]?.event ?? null,
           bodyCastEstimateKcal: estimate,
           bodyCastEstimateFresh: session !== null && session !== undefined
             && strengthEstimateFresh({
@@ -541,7 +583,7 @@ export class ModelEpisodeRepository {
       heartRateSamples,
       webOnlyStrengthSessions: webSessions.flatMap((session) => {
         if (session.webStartedAt === null || session.webEndedAt === null) return [];
-        const date = instantToLocalDateTime(session.webStartedAt, DEFAULT_TIME_ZONE).date;
+        const date = instantToLocalDateTime(session.webStartedAt, timeZone).date;
         if (date < from || date > to) return [];
         const estimate = session.status === "COMPLETED"
           ? strengthShadowKcal(session.experimentalStrengthEnergyShadow?.result)
@@ -569,6 +611,7 @@ export class ModelEpisodeRepository {
           inputFingerprint: strengthShadowInputFingerprint(session.experimentalStrengthEnergyShadow?.result)
             ?? session.experimentalStrengthEnergyShadow?.sourceFingerprint
             ?? null,
+          canonicalEnergyResolution: webSessionEnergyById.get(String(session.id)) ?? null,
         }];
       }),
       reconciliationLinks: reconciliationRows.flatMap((row) => {

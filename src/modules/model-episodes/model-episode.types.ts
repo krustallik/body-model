@@ -1,4 +1,5 @@
 import type { PersonalizationCalibrationStatus } from "@/model/personalization-calibration";
+import type { PersistedEnergyResolutionV1 } from "@/model/activity/canonical-activity-policy-v1";
 import type {
   EcfSimulationPolicy,
   PhysiologicalSimulatorParameters,
@@ -85,6 +86,7 @@ export type ModelWorkoutSource = {
   bodyCastEstimateFresh?: boolean;
   strengthSessionCompleted?: boolean;
   mechanicalStepperKcal?: number | null;
+  canonicalEnergyResolution?: PersistedEnergyResolutionV1 | null;
 };
 
 export type HistoricalModelSources = {
@@ -113,6 +115,7 @@ export type WebOnlyStrengthSource = {
   bodyCastEstimateKcal: number | null;
   bodyCastEstimateFresh?: boolean;
   inputFingerprint: string | null;
+  canonicalEnergyResolution?: PersistedEnergyResolutionV1 | null;
 };
 
 export type ReconciliationLinkSource = {

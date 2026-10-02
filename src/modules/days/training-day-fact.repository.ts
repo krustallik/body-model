@@ -64,6 +64,7 @@ function workoutSource(
     durationMinutes: number | null;
     activeEnergyKcal: number | null;
     hiddenFromHistory: boolean;
+    canonicalEnergyResolution?: { kcal: number | null; source: string; revision: number } | null;
     dailyHealthData?: { date: string; weightKg: number | null } | null;
     matchedDiarySession: null | {
       id: number;
@@ -75,6 +76,7 @@ function workoutSource(
       program: { name: string } | null;
       exercises: Array<{ resistanceType: string; sets: SetRow[] }>;
       experimentalStrengthEnergyShadow: { result: Prisma.JsonValue; modelRevision: string } | null;
+      canonicalEnergyResolution?: { kcal: number | null; source: string; revision: number } | null;
     };
   },
   weightsByDate: ReadonlyMap<string, number | null>,
@@ -101,6 +103,7 @@ function workoutSource(
     durationMinutes: row.durationMinutes,
     activeEnergyKcal: row.activeEnergyKcal,
     hiddenFromHistory: row.hiddenFromHistory,
+    canonicalEnergyResolution: row.canonicalEnergyResolution ?? null,
     matchedDiarySession: row.matchedDiarySession === null ? null : {
       id: row.matchedDiarySession.id,
       status: row.matchedDiarySession.status,
@@ -116,6 +119,7 @@ function workoutSource(
       sameDayMassKg,
       startOfDayMassKg,
       estimatorVersion: row.matchedDiarySession.experimentalStrengthEnergyShadow?.modelRevision ?? null,
+      canonicalEnergyResolution: row.matchedDiarySession.canonicalEnergyResolution ?? null,
     },
   };
 }
@@ -131,6 +135,7 @@ function diarySource(
     program: { name: string } | null;
     exercises: Array<{ resistanceType: string; sets: SetRow[] }>;
     experimentalStrengthEnergyShadow: { result: Prisma.JsonValue; modelRevision: string } | null;
+    canonicalEnergyResolution?: { kcal: number | null; source: string; revision: number } | null;
   },
   weightsByDate: ReadonlyMap<string, number | null>,
   sortedWeightDates: readonly string[],
@@ -163,6 +168,7 @@ function diarySource(
     sameDayMassKg,
     startOfDayMassKg,
     estimatorVersion: row.experimentalStrengthEnergyShadow?.modelRevision ?? null,
+    canonicalEnergyResolution: row.canonicalEnergyResolution ?? null,
   };
 }
 
@@ -262,6 +268,25 @@ export class TrainingDayFactRepository {
       }) : Promise.resolve([]),
     ]);
 
+    const energyAliases = workouts.length + diarySessions.length === 0 ? [] : await this.client.activeEnergyEventAlias.findMany({
+      where: {
+        profileId: 1,
+        OR: [
+          ...(workouts.length === 0 ? [] : [{ sourceType: "workout", sourceId: { in: workouts.map((row) => String(row.id)) } }]),
+          ...(diarySessions.length === 0 ? [] : [{ sourceType: "strength-session", sourceId: { in: diarySessions.map((row) => String(row.id)) } }]),
+        ],
+      },
+      select: {
+        sourceType: true, sourceId: true,
+        event: { select: { currentKcal: true, currentSource: true, resolutionRevision: true, isStale: true } },
+      },
+    });
+    const activeEnergyByAlias = new Map(energyAliases.map((row) => [`${row.sourceType}:${row.sourceId}`, {
+      kcal: row.event.isStale ? null : row.event.currentKcal,
+      source: row.event.isStale ? "unavailable" : row.event.currentSource ?? "unavailable",
+      revision: row.event.resolutionRevision,
+    }]));
+
     const dates = new Set<string>();
     for (const row of workouts) {
       const date = row.dailyHealthData?.date
@@ -299,13 +324,20 @@ export class TrainingDayFactRepository {
 
     return resolveTrainingDayFacts({
       workouts: workouts.map((row) => workoutSource(
-        row as Parameters<typeof workoutSource>[0],
+        {
+          ...(row as Parameters<typeof workoutSource>[0]),
+          canonicalEnergyResolution: activeEnergyByAlias.get(`workout:${row.id}`) ?? null,
+          matchedDiarySession: row.matchedDiarySession === null ? null : {
+            ...row.matchedDiarySession,
+            canonicalEnergyResolution: activeEnergyByAlias.get(`strength-session:${row.matchedDiarySession.id}`) ?? null,
+          },
+        },
         weightsByDate,
         sortedWeightDates,
         DEFAULT_TIME_ZONE,
       )),
       diarySessions: diarySessions.map((row) => diarySource(
-        row as Parameters<typeof diarySource>[0],
+        { ...(row as Parameters<typeof diarySource>[0]), canonicalEnergyResolution: activeEnergyByAlias.get(`strength-session:${row.id}`) ?? null },
         weightsByDate,
         sortedWeightDates,
         DEFAULT_TIME_ZONE,

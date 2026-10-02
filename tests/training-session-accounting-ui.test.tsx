@@ -229,6 +229,22 @@ describe("persisted session accounting UI", () => {
     expect(screen.queryByText("private-weight-sample-id")).toBeNull();
     expect(screen.queryByText("legacy-rule-private")).toBeNull();
   });
+
+  it("shows the persisted sum of both band sides as the combined nominal total", () => {
+    const accounting = session().loadAccountingV1!;
+    render(<SessionAccountingPanel session={session({
+      loadAccountingV1: {
+        ...accounting,
+        bandNominalIndex: {
+          perLoggedSide: metric(0, "nominal-kg-repetitions-per-logged-side"),
+          leftSide: metric(240, "nominal-kg-repetitions-per-side"),
+          rightSide: metric(240, "nominal-kg-repetitions-per-side"),
+        },
+      },
+    })} uk />);
+    const bands = screen.getByRole("heading", { name: "Резинки" }).closest("article");
+    expect(bands?.textContent).toContain("480");
+  });
   it("shows bodyweight contribution provenance for exact, nearest, as-of, and unavailable values", async () => {
     const user = userEvent.setup();
     const { rerender } = render(<SessionAccountingPanel session={session()} uk={false} />);
@@ -519,8 +535,8 @@ describe("persisted session accounting UI", () => {
     await user.click(screen.getByRole("button", { name: "Як враховувати навантаження" }));
     expect(screen.getByText("20 кг номінального опору × 12 повторів → 240 номінальних кг·повторів")).toBeTruthy();
     await user.selectOptions(screen.getByLabelText("Що означає введена вага?"), "band-each-side");
-    expect(screen.getByText("20 кг на сторону × (12 зліва + 12 справа) → по 240 номінальних кг·повторів на сторону")).toBeTruthy();
-    expect(screen.getByText("Одне введене число повторів застосовується однаково ліворуч і праворуч; приклад показує внесок кожної сторони окремо.")).toBeTruthy();
+    expect(screen.getByText("20 кг опору на кожну сторону × 12 повторів → 480 номінальних кг·повторів сумарно (по 240 на сторону)")).toBeTruthy();
+    expect(screen.getByText("Одне введене число повторів застосовується однаково ліворуч і праворуч; приклад показує сумарний внесок обох сторін.")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Зберегти правило" }));
     expect(JSON.parse(requests[0]!).loadAccountingConfig).toMatchObject({
       accountingKind: "band-nominal-per-side",

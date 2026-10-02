@@ -145,7 +145,7 @@ function formatNumber(value: number, uk: boolean): string {
 }
 
 function exampleResult(config: LoadConfigV1) {
-  const asymmetricBand = config.accountingKind === "band-nominal-per-side";
+  const bandPerSide = config.accountingKind === "band-nominal-per-side";
   const result = calculateLoadAccountingV1({
     localDate: EXAMPLE_LOCAL_DATE,
     exercises: [{
@@ -156,10 +156,7 @@ function exampleResult(config: LoadConfigV1) {
         reps: EXAMPLE_REPS,
         weightKg: EXAMPLE_LOAD_KG,
         bandNominalResistanceKg: EXAMPLE_LOAD_KG,
-        override: asymmetricBand ? {
-          repsMeaning: "per-side",
-          reps: { kind: "asymmetric-per-side", left: EXAMPLE_REPS, right: EXAMPLE_REPS },
-        } : null,
+        override: null,
       }],
     }],
     bodyweightReference: config.resistanceType === "bodyweight" ? {
@@ -175,7 +172,7 @@ function exampleResult(config: LoadConfigV1) {
     return { kind: "external" as const, value: result.externalLoadVolume.value };
   }
   if (config.resistanceType === "band-nominal") {
-    return asymmetricBand
+    return bandPerSide
       ? { kind: "band-sides" as const, left: result.bandNominalIndex.leftSide.value, right: result.bandNominalIndex.rightSide.value }
       : { kind: "band" as const, value: result.bandNominalIndex.perLoggedSide.value };
   }
@@ -279,7 +276,7 @@ export function ExerciseLoadConfigEditor({
       : preview.kind === "band"
         ? uk ? `20 кг номінального опору × 12 повторів → ${number(preview.value)} номінальних кг·повторів` : `20 kg nominal resistance × 12 reps → ${number(preview.value)} nominal kg·reps`
         : preview.kind === "band-sides"
-          ? uk ? `20 кг на сторону × (12 зліва + 12 справа) → по ${number(preview.left)} номінальних кг·повторів на сторону` : `20 kg per side × (12 left + 12 right) → ${number(preview.left)} nominal kg·reps per side`
+          ? uk ? `20 кг опору на кожну сторону × 12 повторів → ${number((preview.left ?? 0) + (preview.right ?? 0))} номінальних кг·повторів сумарно (по ${number(preview.left)} на сторону)` : `20 kg resistance on each side × 12 reps → ${number((preview.left ?? 0) + (preview.right ?? 0))} nominal kg·reps total (${number(preview.left)} per side)`
           : uk
             ? `Умовний приклад: 80 кг × ${formatNumber(previewBodyweightFraction * 100, true)}% маси × 12${mode === "bodyweight-per-side" ? ` однакових повторів × ${loadedSides} стор.` : " рухів"} → ${number(preview.value)} референсних кг·повторів`
             : `Example: 80 kg × ${formatNumber(previewBodyweightFraction * 100, false)}% body mass × 12${mode === "bodyweight-per-side" ? ` equal reps × ${loadedSides} sides` : " movements"} → ${number(preview.value)} reference kg·reps`
@@ -300,7 +297,7 @@ export function ExerciseLoadConfigEditor({
       : mode === "band-logged-side"
         ? uk ? "Номінальний опір рахується окремо від зовнішньої ваги: значення для підходу × записані повтори." : "Nominal band resistance stays separate from external load: the set value × entered repetitions."
         : mode === "band-each-side"
-          ? uk ? "Одне введене число повторів застосовується однаково ліворуч і праворуч; приклад показує внесок кожної сторони окремо." : "The entered rep count applies equally to the left and right; the example shows each side contribution separately."
+          ? uk ? "Одне введене число повторів застосовується однаково ліворуч і праворуч; приклад показує сумарний внесок обох сторін." : "The entered rep count applies equally to the left and right; the example shows their combined contribution."
           : mode === "bodyweight-per-side"
             ? uk ? "Одне число повторів застосовується однаково до кожної навантаженої сторони; частка маси враховується для обох." : "The same entered rep count applies to each loaded side; the selected share of body mass is counted for both."
             : uk ? "Вибрана частка референсної маси застосовується один раз до кожного завершеного руху." : "The selected share of reference body mass applies once to each completed movement.";

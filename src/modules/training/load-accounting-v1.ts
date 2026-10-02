@@ -1014,13 +1014,20 @@ function calculateLoadAccountingCoreV1(
           implementsPerMovement: implementsPerMovementForBreakdown(config),
           effectiveMultiplier: 1,
         };
+        const bandLoadTargets = config.repsMeaning === "per-side"
+          ? [bandLeft, bandRight]
+          : [bandLoggedSide];
         if (set.bandNominalResistanceKg === null
             || !Number.isFinite(set.bandNominalResistanceKg)) {
-          omitWithBreakdown(bandLoggedSide, "missing-load", row, config, provenance);
+          for (const target of bandLoadTargets) {
+            omitWithBreakdown(target, "missing-load", row, config, provenance);
+          }
           continue;
         }
         if (set.bandNominalResistanceKg < 0) {
-          omitWithBreakdown(bandLoggedSide, "invalid-load", row, config, provenance);
+          for (const target of bandLoadTargets) {
+            omitWithBreakdown(target, "invalid-load", row, config, provenance);
+          }
           continue;
         }
         if (override?.reps) {
@@ -1038,15 +1045,29 @@ function calculateLoadAccountingCoreV1(
             provenance, row, config, 1,
           );
         } else {
-          omitWithBreakdown(bandLeft, "asymmetric-side-breakdown", row, config, provenance);
-          omitWithBreakdown(bandRight, "asymmetric-side-breakdown", row, config, provenance);
           if (set.reps === null || !Number.isInteger(set.reps) || set.reps < 0) {
-            omitWithBreakdown(bandLoggedSide, "missing-repetitions", row, config, provenance);
+            for (const target of bandLoadTargets) {
+              omitWithBreakdown(target, "missing-repetitions", row, config, provenance);
+            }
             continue;
           }
-          contributeWithBreakdown(
-            bandLoggedSide, set.bandNominalResistanceKg * set.reps, provenance, row, config, 1,
-          );
+          if (config.repsMeaning === "per-side") {
+            // Scalar reps mean the same count on both loaded sides. Keep each
+            // side as a separate nominal-band category, while the session UI
+            // may display their sum as the two-sided total.
+            contributeWithBreakdown(
+              bandLeft, set.bandNominalResistanceKg * set.reps, provenance, row, config, 1,
+            );
+            contributeWithBreakdown(
+              bandRight, set.bandNominalResistanceKg * set.reps, provenance, row, config, 1,
+            );
+          } else {
+            omitWithBreakdown(bandLeft, "asymmetric-side-breakdown", row, config, provenance);
+            omitWithBreakdown(bandRight, "asymmetric-side-breakdown", row, config, provenance);
+            contributeWithBreakdown(
+              bandLoggedSide, set.bandNominalResistanceKg * set.reps, provenance, row, config, 1,
+            );
+          }
         }
       } else {
         const referenceMultiplier = config.bodyweightFraction;

@@ -229,6 +229,28 @@ describe("versioned config and execution semantics", () => {
     expect(asymmetric.bandNominalIndex.rightSide.value).toBe(100);
   });
 
+  it("applies one scalar rep count to both sides for a per-side band rule", () => {
+    const config = {
+      ...LEGACY_LOAD_CONFIGS_V1.one_arm_seated_cable_row,
+      configVersion: "band-per-side-symmetric-reps-v1",
+      accountingKind: "band-nominal-per-side" as const,
+      repsMeaning: "per-side" as const,
+    };
+    const result = calculateLoadAccountingV1({
+      localDate: "2026-09-24",
+      exercises: [{
+        identity: identity("one_arm_seated_cable_row"),
+        configSnapshot: config,
+        sets: [{ reps: 12, weightKg: null, bandNominalResistanceKg: 20 }],
+      }],
+    });
+    expect(result.bandNominalIndex.perLoggedSide.value).toBe(0);
+    expect(result.bandNominalIndex.leftSide.value).toBe(240);
+    expect(result.bandNominalIndex.rightSide.value).toBe(240);
+    expect(result.bandNominalIndex.leftSide.value! + result.bandNominalIndex.rightSide.value!)
+      .toBe(480);
+  });
+
   it("classifies by persisted IDs, keeps unknown identities unavailable, and reports coverage", () => {
     expect(summarizePersistedExerciseIdentityV1([
       { sourceExerciseCatalogId: 1, snapshotStableKey: "pull_up", catalogStableKey: "pull_up" },

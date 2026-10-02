@@ -34,6 +34,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
+    "health:backfill-legacy-weight-provenance": "tsx scripts/backfill-legacy-apple-weight-provenance.ts",
     "env:check": "tsx scripts/validate-env.ts",
     "body-map:manifest:v2": "tsx scripts/body-map/generate-bodyparts3d-local-manifest.ts --v2",
     "body-map:manifest:v3": "tsx scripts/body-map/generate-bodyparts3d-local-manifest.ts --v3",

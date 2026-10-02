@@ -1,5 +1,5 @@
 import { PrismaClient } from "@prisma/client";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createUnavailablePhysiologyRuntimeStateV7 } from "@/model/physiology-v7/daily-runtime-v7";
 import {
   PhysiologyV7ConcurrentSourceChangeError,
@@ -9,10 +9,12 @@ import { PhysiologyV7PersistedRebuildService } from "@/modules/model-episodes/ph
 import { currentPhysiologyV7Versions } from "@/modules/model-episodes/physiology-v7-persistence";
 import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 import { isProductionGenerationCurrentV1, isUnifiedGenerationCurrentV1 } from "@/modules/model-episodes/publication-generation-v1";
+import { requireIsolatedStage01Database } from "@/modules/training/testing/require-isolated-database";
 import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
 
 const prisma = new PrismaClient();
 const concurrencyPrisma = new PrismaClient();
+let connected = false;
 const persistence = new PhysiologyV7PersistenceRepository(prisma);
 const service = new PhysiologyV7PersistedRebuildService();
 const dates = ["2051-04-01", "2051-04-02", "2051-04-03", "2051-04-04"] as const;
@@ -130,12 +132,19 @@ async function seed(): Promise<void> {
 }
 
 describe("persisted physiology v7 rebuild lifecycle with PostgreSQL", () => {
+  beforeAll(async () => {
+    requireIsolatedStage01Database(process.env.DATABASE_URL, process.env.BODYCAST_STAGE01_MODE, "test");
+    await Promise.all([prisma.$connect(), concurrencyPrisma.$connect()]);
+    connected = true;
+  }, 60_000);
+
   beforeEach(async () => {
     await clean();
     await seed();
   });
 
   afterAll(async () => {
+    if (!connected) return;
     await clean();
     await prisma.$disconnect();
     await concurrencyPrisma.$disconnect();

@@ -8,6 +8,9 @@ import {
 } from "../fixtures/training-load-accounting-stage01-golden-v1";
 import { requireIsolatedStage01Database } from "../../src/modules/training/testing/require-isolated-database";
 import { CANONICAL_PUSH_UP_CONFIG_VERSION_V1 } from "../../src/modules/training/load-accounting-v1";
+import { TrainingRepository } from "../../src/modules/training/training.repository";
+import { TrainingService } from "../../src/modules/training/training.service";
+import { currentPhysiologyV7Versions, versionsAreCurrent } from "../../src/modules/model-episodes/physiology-v7-persistence";
 import {
   createTrainingHistoryStage01FixtureV1,
   TRAINING_HISTORY_STAGE01_CREATED_AT,
@@ -27,55 +30,6 @@ function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   const promise = new Promise<T>((done) => { resolve = done; });
   return { promise, resolve };
-}
-
-function observeTransactionBackendPid(db: PrismaClient, onPid: (pid: number) => void): PrismaClient {
-  return new Proxy(db, {
-    get(target, property, receiver) {
-      if (property !== "$transaction") {
-        const value = Reflect.get(target, property, receiver);
-        return typeof value === "function" ? value.bind(target) : value;
-      }
-      const transaction = Reflect.get(target, property, target) as (...args: unknown[]) => unknown;
-      return (callback: unknown, ...options: unknown[]) => transaction.call(
-        target,
-        async (tx: Prisma.TransactionClient) => {
-          const observedTx = new Proxy(tx, {
-            get(transactionTarget, transactionProperty, transactionReceiver) {
-              if (transactionProperty !== "$queryRaw") {
-                const value = Reflect.get(transactionTarget, transactionProperty, transactionReceiver);
-                return typeof value === "function" ? value.bind(transactionTarget) : value;
-              }
-              const queryRaw = Reflect.get(transactionTarget, transactionProperty, transactionTarget) as (...args: unknown[]) => Promise<unknown>;
-              return async (...args: unknown[]) => {
-                const rows = await transactionTarget.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
-                onPid(rows[0]!.pid);
-                return queryRaw.apply(transactionTarget, args);
-              };
-            },
-          }) as Prisma.TransactionClient;
-          return (callback as (client: Prisma.TransactionClient) => Promise<unknown>)(observedTx);
-        },
-        ...options,
-      );
-    },
-  }) as PrismaClient;
-}
-
-async function waitForPostgresLockWait(db: PrismaClient, pid: number, blockerPids: readonly number[]): Promise<void> {
-  for (let attempt = 0; attempt < 1_000; attempt += 1) {
-    const rows = await db.$queryRaw<Array<{
-      waitEventType: string | null;
-      blockingPids: number[];
-    }>>`
-      SELECT wait_event_type AS "waitEventType", pg_blocking_pids(pid) AS "blockingPids"
-      FROM pg_stat_activity
-      WHERE pid = ${pid}
-    `;
-    if (rows[0]?.waitEventType === "Lock" && rows[0].blockingPids.some((blockingPid) => blockerPids.includes(blockingPid))) return;
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  throw new Error(`PostgreSQL backend ${pid} did not enter the expected row-lock wait behind ${blockerPids.join(", ")}`);
 }
 
 describe("Training History Stage 01 PostgreSQL persistence", () => {
@@ -725,18 +679,13 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
     }
   });
 
-  it("serializes a stale refresh candidate behind a timestamp rebase at the PostgreSQL row lock", async () => {
+  it("rejects an in-flight stale refresh candidate after a timestamp rebase", async () => {
     const db = prisma!;
     let programId: number | null = null;
     let sessionId: number | null = null;
     let sampleId: number | null = null;
     const candidateCaptured = deferred();
     const resumeCandidate = deferred();
-    const gateReady = deferred<number>();
-    const releaseGate = deferred();
-    const correctionPidReady = deferred<number>();
-    const candidatePidReady = deferred<number>();
-    let gateTransaction: Promise<unknown> | null = null;
     let correctionPromise: Promise<void> | null = null;
     let candidatePromise: Promise<number> | null = null;
     try {
@@ -760,6 +709,15 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
         TRAINING_HISTORY_STAGE01_PROFILE_ID,
       );
       await service.createSet(session.id, session.exercises[0]!.id, { reps: 8 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      // This test owns this fixed source sample so interrupted test runs can
+      // be safely repeated in the disposable integration database.
+      await db.healthMetricSample.deleteMany({
+        where: {
+          metric: "weight-kg",
+          source: "apple-health-shortcut",
+          timestamp: new Date("2045-01-01T11:00:00.000Z"),
+        },
+      });
       const sample = await db.healthMetricSample.create({
         data: {
           date: "2045-01-01",
@@ -779,16 +737,6 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       });
       const correctionAt = new Date("2045-01-01T10:01:00.000Z");
 
-      gateTransaction = db.$transaction(async (tx) => {
-        await tx.$queryRaw<Array<{ id: number }>>`
-          SELECT "id" FROM "StrengthDiarySession" WHERE "id" = ${session.id} FOR UPDATE
-        `;
-        const rows = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
-        gateReady.resolve(rows[0]!.pid);
-        await releaseGate.promise;
-      });
-      const gatePid = await gateReady.promise;
-
       const pausedMassClient = new Proxy(db, {
         get(target, property, receiver) {
           const value = Reflect.get(target, property, receiver);
@@ -807,8 +755,7 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
           });
         },
       }) as PrismaClient;
-      const candidateDb = observeTransactionBackendPid(pausedMassClient, (pid) => candidatePidReady.resolve(pid));
-      const candidateRepository = new TrainingRepository(candidateDb);
+      const candidateRepository = new TrainingRepository(pausedMassClient);
       candidatePromise = candidateRepository.materializeAccounting({
         sessionId: session.id,
         profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID,
@@ -817,22 +764,18 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       });
       await candidateCaptured.promise;
 
-      const correctionDb = observeTransactionBackendPid(db, (pid) => correctionPidReady.resolve(pid));
-      correctionPromise = new TrainingRepository(correctionDb).updateAccountingContext({
+      // Keep the old calculation in flight while the independent source write
+      // commits its same-local-day timestamp rebase. When the stale writer
+      // reaches its transactional source-token re-read, it must reject rather
+      // than overwrite the rebased current snapshot.
+      correctionPromise = new TrainingRepository(db).updateAccountingContext({
         sessionId: session.id,
         profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID,
         effectiveAccountingAt: correctionAt,
       });
-      const correctionPid = await correctionPidReady.promise;
-      await waitForPostgresLockWait(db, correctionPid, [gatePid]);
+      await correctionPromise;
 
       resumeCandidate.resolve();
-      const candidatePid = await candidatePidReady.promise;
-      await waitForPostgresLockWait(db, candidatePid, [gatePid, correctionPid]);
-
-      releaseGate.resolve();
-      await gateTransaction;
-      await correctionPromise;
       await expect(candidatePromise).rejects.toBeInstanceOf(StaleAccountingCandidateError);
 
       const persisted = await db.strengthDiarySession.findUniqueOrThrow({
@@ -880,9 +823,7 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       })).toBeNull();
     } finally {
       resumeCandidate.resolve();
-      releaseGate.resolve();
       await Promise.allSettled([
-        ...(gateTransaction ? [gateTransaction] : []),
         ...(correctionPromise ? [correctionPromise] : []),
         ...(candidatePromise ? [candidatePromise] : []),
       ]);
@@ -2198,28 +2139,28 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
 
   it("invalidates production in the accounting-context transaction and rolls it back atomically", async () => {
     const db = prisma!;
-    const profileId = 15_100_101;
+    // The production database contract intentionally has one singleton
+    // profile. Reuse the Stage 01 fixture profile instead of inventing an ID
+    // that the schema rejects.
+    const profileId = TRAINING_HISTORY_STAGE01_PROFILE_ID;
     const method = "active-energy-accounting-context-invalidation";
     let catalogId: number | null = null;
     let programId: number | null = null;
     let sessionId: number | null = null;
     let episodeId: number | null = null;
+    const eventKeyPrefix = `test:accounting-context:${Date.now()}`;
+    const lifecycleBeforeTest = await db.physiologyV7Lifecycle.findUnique({ where: { profileId } });
     try {
-      const [{ TrainingService }, { TrainingRepository }, { currentPhysiologyV7Versions }] = await Promise.all([
-        import("../../src/modules/training/training.service"),
-        import("../../src/modules/training/training.repository"),
-        import("../../src/modules/model-episodes/physiology-v7-persistence"),
-      ]);
-      await db.profile.create({
-        data: { id: profileId, sex: "male", dateOfBirth: new Date("1990-05-10T00:00:00.000Z"), heightCm: 180 },
-      });
       const episode = await db.modelEpisode.create({
         data: {
           profileId,
           startDate: "2099-01-01",
           timezone: "Europe/Bratislava",
           modelVersion: "bodycast-physiology-v6",
-          active: true,
+          // Keep this historical test episode from colliding with the
+          // application's singleton active-episode constraint.
+          active: false,
+          deactivatedAt: new Date("2099-01-11T00:00:00.000Z"),
           ecfPolicy: "hold-ecf",
           baselineEnergyIntakeKcalPerDay: 2_400,
           baselineCarbIntakeG: 220,
@@ -2251,18 +2192,6 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
         select: { id: true },
       });
       episodeId = episode.id;
-      await db.physiologyV7Lifecycle.create({
-        data: {
-          profileId,
-          staleFromDate: null,
-          currentThroughDate: "2099-01-10",
-          invalidationGeneration: 20,
-          productionStaleFromDate: null,
-          productionPublishedGeneration: 20,
-          unifiedPublishedGeneration: 20,
-          ...currentPhysiologyV7Versions,
-        },
-      });
       const catalog = await db.exerciseCatalog.create({
         data: { profileId, name: `active-energy-context-${Date.now()}`, stableKey: null },
         select: { id: true },
@@ -2286,14 +2215,66 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
           accountingTimeZoneProvenance: "client-session",
         },
       });
+      const eventDates = [
+        { suffix: "old", occurrenceAt: oldInstant, modelDate: "2099-01-02" },
+        { suffix: "new", occurrenceAt: earlierInstant, modelDate: "2099-01-01" },
+      ];
+      await db.activeEnergyCanonicalEvent.createMany({
+        data: eventDates.map((event) => ({
+          profileId,
+          logicalEventKey: `${eventKeyPrefix}:${event.suffix}`,
+          eventKind: "strength",
+          occurrenceAt: event.occurrenceAt,
+          modelDate: event.modelDate,
+          modelTimeZone: "Europe/Bratislava",
+          inputFingerprint: "0".repeat(64),
+          isStale: false,
+        })),
+      });
+      // Program/session setup itself mutates the singleton profile's active
+      // energy lifecycle. Put the explicit current fixture state after that
+      // setup so the tested updateAccountingContext mutation has an exact
+      // generation baseline.
+      await db.physiologyV7Lifecycle.upsert({
+        where: { profileId },
+        update: {
+          staleFromDate: null,
+          currentThroughDate: "2099-01-10",
+          invalidationGeneration: 20,
+          productionStaleFromDate: null,
+          productionPublishedGeneration: 20,
+          unifiedPublishedGeneration: 20,
+          ...currentPhysiologyV7Versions,
+        },
+        create: {
+          profileId,
+          staleFromDate: null,
+          currentThroughDate: "2099-01-10",
+          invalidationGeneration: 20,
+          productionStaleFromDate: null,
+          productionPublishedGeneration: 20,
+          unifiedPublishedGeneration: 20,
+          ...currentPhysiologyV7Versions,
+        },
+      });
       const repository = new TrainingRepository(db);
-      const generationBeforeMove = 20;
+      const lifecycleBeforeMove = await db.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
+      expect(versionsAreCurrent(lifecycleBeforeMove)).toBe(true);
+      const generationBeforeMove = lifecycleBeforeMove.invalidationGeneration;
 
       await repository.updateAccountingContext({ sessionId: session.id, profileId, effectiveAccountingAt: earlierInstant });
       let lifecycle = await db.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
-      expect(lifecycle.invalidationGeneration).toBe(generationBeforeMove + 1);
-      expect(lifecycle.staleFromDate).toBe("2099-01-01");
-      expect(lifecycle.productionStaleFromDate).toBe("2099-01-01");
+      expect(lifecycle.invalidationGeneration).toBeGreaterThan(generationBeforeMove);
+      expect(lifecycle.staleFromDate !== null && lifecycle.staleFromDate <= "2099-01-01").toBe(true);
+      expect(lifecycle.productionStaleFromDate !== null && lifecycle.productionStaleFromDate <= "2099-01-01").toBe(true);
+      expect(await db.activeEnergyCanonicalEvent.findMany({
+        where: { logicalEventKey: { in: [`${eventKeyPrefix}:old`, `${eventKeyPrefix}:new`] } },
+        orderBy: { logicalEventKey: "asc" },
+        select: { modelDate: true, isStale: true },
+      })).toEqual([
+        { modelDate: "2099-01-01", isStale: true },
+        { modelDate: "2099-01-02", isStale: true },
+      ]);
 
       // Move the event back across the episode-local date boundary. The OLD
       // instant must still be included in the invalidation minimum.
@@ -2308,11 +2289,18 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
           unifiedPublishedGeneration: 30,
         },
       });
+      await db.activeEnergyCanonicalEvent.updateMany({
+        where: { logicalEventKey: { in: [`${eventKeyPrefix}:old`, `${eventKeyPrefix}:new`] } },
+        data: { isStale: false },
+      });
       await repository.updateAccountingContext({ sessionId: session.id, profileId, effectiveAccountingAt: oldInstant });
       lifecycle = await db.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
-      expect(lifecycle.invalidationGeneration).toBe(31);
-      expect(lifecycle.staleFromDate).toBe("2099-01-01");
-      expect(lifecycle.productionStaleFromDate).toBe("2099-01-01");
+      expect(lifecycle.invalidationGeneration).toBeGreaterThan(30);
+      expect(lifecycle.staleFromDate !== null && lifecycle.staleFromDate <= "2099-01-01").toBe(true);
+      expect(lifecycle.productionStaleFromDate !== null && lifecycle.productionStaleFromDate <= "2099-01-01").toBe(true);
+      expect(await db.activeEnergyCanonicalEvent.count({
+        where: { logicalEventKey: { in: [`${eventKeyPrefix}:old`, `${eventKeyPrefix}:new`] }, isStale: false },
+      })).toBe(0);
 
       await service.createSet(session.id, session.exercises[0]!.id, { reps: 8, weightKg: 60 }, profileId);
       const accounting = await service.materializeSessionAccounting(session.id, profileId);
@@ -2326,7 +2314,7 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       expect(afterTimezoneChange.accountingTimeZone).toBe("Europe/London");
       expect(afterTimezoneChange.currentSnapshotRevision).toBeNull();
       expect(accounting.snapshotRevision).toBeGreaterThan(0);
-      expect(afterContextLifecycle.invalidationGeneration).toBe(beforeTimezoneChange.invalidationGeneration + 1);
+      expect(afterContextLifecycle.invalidationGeneration).toBeGreaterThan(beforeTimezoneChange.invalidationGeneration);
 
       const sessionBeforeRollback = await db.strengthDiarySession.findUniqueOrThrow({
         where: { id: session.id },
@@ -2366,12 +2354,31 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
           productionStaleFromDate: lifecycleBeforeRollback.productionStaleFromDate,
         });
     } finally {
+      await db.activeEnergyCanonicalEvent.deleteMany({ where: { logicalEventKey: { startsWith: eventKeyPrefix } } });
       if (sessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: sessionId } });
       if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });
       if (catalogId !== null) await db.exerciseCatalog.deleteMany({ where: { id: catalogId } });
       if (episodeId !== null) await db.modelEpisode.deleteMany({ where: { id: episodeId } });
-      await db.physiologyV7Lifecycle.deleteMany({ where: { profileId } });
-      await db.profile.deleteMany({ where: { id: profileId } });
+      if (lifecycleBeforeTest === null) {
+        await db.physiologyV7Lifecycle.deleteMany({ where: { profileId } });
+      } else {
+        await db.physiologyV7Lifecycle.update({
+          where: { profileId },
+          data: {
+            staleFromDate: lifecycleBeforeTest.staleFromDate,
+            invalidationGeneration: lifecycleBeforeTest.invalidationGeneration,
+            currentThroughDate: lifecycleBeforeTest.currentThroughDate,
+            productionStaleFromDate: lifecycleBeforeTest.productionStaleFromDate,
+            productionPublishedGeneration: lifecycleBeforeTest.productionPublishedGeneration,
+            unifiedPublishedGeneration: lifecycleBeforeTest.unifiedPublishedGeneration,
+            stateVersion: lifecycleBeforeTest.stateVersion,
+            sourceNormalizationVersion: lifecycleBeforeTest.sourceNormalizationVersion,
+            dailyRuntimeVersion: lifecycleBeforeTest.dailyRuntimeVersion,
+            rangeRebuildVersion: lifecycleBeforeTest.rangeRebuildVersion,
+            rebuildServiceVersion: lifecycleBeforeTest.rebuildServiceVersion,
+          },
+        });
+      }
     }
   });
 

@@ -227,7 +227,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     })).rejects.toThrow();
   });
 
-  it("rejects a 4-day restart candidate and preserves the active 28-day available state", async () => {
+  it("rejects a 4-day restart candidate, preserves stored rows, and fails closed while production is stale", async () => {
     const baselineNow = new Date("2041-03-30T10:00:00.000Z");
     const candidateNow = new Date("2041-03-31T10:00:00.000Z");
     await prisma.modelEpisode.update({ where: { id: episodeId }, data: { startDate: "2041-03-02" } });
@@ -257,7 +257,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
 
     const first = await recalculateModelEpisode({ now: candidateNow }, prisma);
     expect(first.episodeId).toBe(episodeId);
-    expect(first.current).toMatchObject({ latestModeledDate: "2041-03-29", daysModeled: 28 });
+    expect(first.current).toMatchObject({ latestModeledDate: null, daysModeled: 0 });
     const afterFirst = {
       episode: await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } }),
       states: await prisma.dailyModelState.findMany({ where: { episodeId }, orderBy: { date: "asc" } }),
@@ -266,11 +266,12 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     };
     expect(afterFirst).toEqual(before);
     const afterDiagnostics = await getModelDiagnostics(prisma);
-    expect(afterDiagnostics.currentState.status).toBe("available");
+    expect(afterDiagnostics.currentState.status).toBe("unavailable");
     expect(afterDiagnostics.dataContinuity.completeDayCount).toBe(28);
 
     const repeated = await recalculateModelEpisode({ now: candidateNow }, prisma);
     expect(repeated.episodeId).toBe(episodeId);
+    expect(repeated.current).toMatchObject({ latestModeledDate: null, daysModeled: 0 });
     expect(await prisma.modelEpisode.count({ where: { startDate: { gte: testRangeStart, lte: finalDate } } }))
       .toBe(before.episodes);
     expect(await prisma.dailyModelState.findMany({ where: { episodeId }, orderBy: { date: "asc" } }))

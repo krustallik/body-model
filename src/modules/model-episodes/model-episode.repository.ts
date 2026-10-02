@@ -25,6 +25,8 @@ import {
   strengthSetFingerprintV1,
 } from "@/modules/training/strength-publication-v1";
 import { EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION } from "@/modules/training/experimental-strength-active-energy-v1";
+import { persistedPayloadFromUnknown } from "@/modules/training/persisted-load-accounting-v1";
+import { episodeTimeContextForInstantV1 } from "./episode-time-context-v1";
 
 export type ModelDatabaseClient = PrismaClient | Prisma.TransactionClient;
 
@@ -97,6 +99,7 @@ function strengthEstimateFresh(input: {
     rir?: number | null;
   }[];
   estimatorVersion?: string | null;
+  estimatorInputs?: unknown;
 }): boolean {
   const currentInputFingerprint = strengthInputFingerprintV1({
     sessionId: input.sessionId,
@@ -106,6 +109,7 @@ function strengthEstimateFresh(input: {
     startOfDayMassKg: input.startOfDayMassKg ?? null,
     setFingerprint: strengthSetFingerprintV1(toSetFingerprintRows(input.sets)),
     estimatorVersion: input.estimatorVersion ?? EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
+    estimatorInputs: input.estimatorInputs ?? null,
   });
   return strengthEstimateFreshV1({
     estimateKcal: input.estimateKcal,
@@ -114,6 +118,113 @@ function strengthEstimateFresh(input: {
     storedInputFingerprint: strengthShadowInputFingerprint(input.shadowResult),
     currentInputFingerprint,
   });
+}
+
+function strengthStage02MassSnapshot(session: {
+  currentSnapshotRevision: number | null;
+  accountingInputRevision: number;
+  currentAccountingSnapshot: {
+    snapshotRevision: number;
+    accountingInputRevision: number;
+    inputFingerprint: string;
+    massResolutionIdentity: string;
+    payloadVersion: string;
+    payload: unknown;
+  } | null;
+}) {
+  const snapshot = session.currentAccountingSnapshot;
+  if (!snapshot || snapshot.snapshotRevision !== session.currentSnapshotRevision
+    || snapshot.accountingInputRevision !== session.accountingInputRevision) return null;
+  const payload = persistedPayloadFromUnknown(snapshot.payload);
+  if (!payload || payload.snapshotRevision !== snapshot.snapshotRevision
+    || payload.accountingInputRevision !== session.accountingInputRevision
+    || payload.inputFingerprint !== snapshot.inputFingerprint
+    || payload.massResolutionIdentity !== snapshot.massResolutionIdentity
+    || payload.schemaVersion !== snapshot.payloadVersion) return null;
+  return {
+    reference: payload.massReference,
+    snapshotRevision: payload.snapshotRevision,
+    inputFingerprint: payload.inputFingerprint,
+    massResolutionIdentity: payload.massResolutionIdentity,
+  };
+}
+
+function strengthEstimatorInputs(input: {
+  session: {
+    id: number;
+    entryMode: string;
+    webStartedAt: Date | null;
+    webEndedAt: Date | null;
+    effectiveAccountingAt: Date | null;
+    createdAt: Date;
+    currentSnapshotRevision: number | null;
+    accountingInputRevision: number;
+    currentAccountingSnapshot: {
+      snapshotRevision: number;
+      accountingInputRevision: number;
+      inputFingerprint: string;
+      massResolutionIdentity: string;
+      payloadVersion: string;
+      payload: unknown;
+    } | null;
+    matchedWorkout?: { startAt: Date; endAt: Date; durationMinutes: number | null } | null;
+  };
+  episodes: readonly {
+    id: number;
+    timezone: string;
+    modelVersion: string;
+    startDate: string;
+    latestModeledDate: string | null;
+    active: boolean;
+    updatedAt: Date;
+  }[];
+  modelDays: readonly {
+    episodeId: number;
+    date: string;
+    status: string;
+    dynamicRmrKcalPerDay: unknown;
+    updatedAt: Date;
+  }[];
+}) {
+  const stage02Mass = strengthStage02MassSnapshot(input.session);
+  const occurrenceAt = input.session.matchedWorkout?.startAt
+    ?? input.session.effectiveAccountingAt
+    ?? input.session.webStartedAt
+    ?? input.session.createdAt;
+  const context = episodeTimeContextForInstantV1(input.episodes, occurrenceAt);
+  const episode = context.episode;
+  const modelDate = context.date;
+  const modelDay = episode !== null && modelDate >= episode.startDate
+      && (episode.latestModeledDate === null || modelDate <= episode.latestModeledDate)
+    ? input.modelDays.find((candidate) => candidate.episodeId === episode.id && candidate.date === modelDate) ?? null
+    : null;
+  return {
+    entryMode: input.session.entryMode,
+    startAt: input.session.matchedWorkout?.startAt.toISOString() ?? input.session.webStartedAt?.toISOString() ?? null,
+    endAt: input.session.matchedWorkout?.endAt.toISOString() ?? input.session.webEndedAt?.toISOString() ?? null,
+    durationMinutes: input.session.matchedWorkout?.durationMinutes ?? null,
+    stage02MassReference: stage02Mass?.reference ?? null,
+    stage02SnapshotRevision: stage02Mass?.snapshotRevision ?? null,
+    stage02InputFingerprint: stage02Mass?.inputFingerprint ?? null,
+    stage02MassResolutionIdentity: stage02Mass?.massResolutionIdentity ?? null,
+    modelEpisodeId: episode?.id ?? null,
+    modelEpisodeVersion: episode?.modelVersion ?? null,
+    modelEpisodeStartDate: episode?.startDate ?? null,
+    modelEpisodeLatestModeledDate: episode?.latestModeledDate ?? null,
+    modelEpisodeUpdatedAt: episode?.updatedAt.toISOString() ?? null,
+    modelTimeZone: context.timeZone,
+    modelDate,
+    modelDayRmrKcalPerDay: modelDay?.status === "complete" ? modelDay.dynamicRmrKcalPerDay : null,
+    modelDayUpdatedAt: modelDay?.status === "complete" ? modelDay.updatedAt.toISOString() : null,
+  };
+}
+
+function strengthStage02MassKg(session: Parameters<typeof strengthStage02MassSnapshot>[0]): number | null {
+  const reference = strengthStage02MassSnapshot(session)?.reference;
+  return reference && reference.status !== "unavailable"
+    && Number.isFinite(reference.valueKg) && reference.valueKg > 0
+    ? reference.valueKg
+    : null;
 }
 
 const episodeSelect = {
@@ -430,6 +541,21 @@ export class ModelEpisodeRepository {
               id: true,
               status: true,
               revision: true,
+              entryMode: true,
+              webStartedAt: true,
+              webEndedAt: true,
+              effectiveAccountingAt: true,
+              createdAt: true,
+              currentSnapshotRevision: true,
+              accountingInputRevision: true,
+              currentAccountingSnapshot: { select: {
+                snapshotRevision: true,
+                accountingInputRevision: true,
+                inputFingerprint: true,
+                massResolutionIdentity: true,
+                payloadVersion: true,
+                payload: true,
+              } },
               experimentalStrengthEnergyShadow: {
                 select: { result: true, sourceFingerprint: true, modelRevision: true },
               },
@@ -474,8 +600,21 @@ export class ModelEpisodeRepository {
           id: true,
           status: true,
           revision: true,
+          entryMode: true,
           webStartedAt: true,
           webEndedAt: true,
+          effectiveAccountingAt: true,
+          createdAt: true,
+          currentSnapshotRevision: true,
+          accountingInputRevision: true,
+          currentAccountingSnapshot: { select: {
+            snapshotRevision: true,
+            accountingInputRevision: true,
+            inputFingerprint: true,
+            massResolutionIdentity: true,
+            payloadVersion: true,
+            payload: true,
+          } },
           experimentalStrengthEnergyShadow: {
             select: { result: true, sourceFingerprint: true, modelRevision: true },
           },
@@ -523,6 +662,30 @@ export class ModelEpisodeRepository {
         },
       }),
     ]);
+    const strengthSessions = [
+      ...webSessions,
+      ...workoutRows.flatMap((workout) => workout.matchedDiarySession ? [workout.matchedDiarySession] : []),
+    ];
+    const modelEpisodes = strengthSessions.length > 0 ? await this.client.modelEpisode.findMany({
+      where: { profileId: 1 },
+      select: {
+        id: true,
+        timezone: true,
+        modelVersion: true,
+        startDate: true,
+        latestModeledDate: true,
+        active: true,
+        updatedAt: true,
+      },
+      orderBy: { startDate: "asc" },
+    }) : [];
+    const modelDays = modelEpisodes.length > 0 ? await this.client.dailyModelState.findMany({
+      where: {
+        episodeId: { in: modelEpisodes.map((episode) => episode.id) },
+        date: { gte: contextFrom, lte: contextTo },
+      },
+      select: { episodeId: true, date: true, status: true, dynamicRmrKcalPerDay: true, updatedAt: true },
+    }) : [];
     const webSessionEnergyAliases = webSessions.length === 0 ? [] : await this.client.activeEnergyEventAlias.findMany({
       where: {
         profileId: 1,
@@ -565,7 +728,7 @@ export class ModelEpisodeRepository {
         const estimate = session?.status === "COMPLETED"
           ? strengthShadowKcal(session.experimentalStrengthEnergyShadow?.result)
           : null;
-        const sameDayMassKg = workout.dailyHealthData.weightKg;
+        const stage02MassKg = session ? strengthStage02MassKg(session) : null;
         const sets = session?.exercises.flatMap((exercise) => exercise.sets.map((set) => ({
           ...set,
           resistanceType: exercise.resistanceType,
@@ -593,10 +756,15 @@ export class ModelEpisodeRepository {
               sessionId: session.id,
               sessionRevision: session.revision,
               shadowResult: session.experimentalStrengthEnergyShadow?.result ?? null,
-              massKg: sameDayMassKg,
-              sameDayMassKg,
+              massKg: stage02MassKg,
+              sameDayMassKg: null,
               sets,
               estimatorVersion: session.experimentalStrengthEnergyShadow?.modelRevision ?? null,
+              estimatorInputs: strengthEstimatorInputs({
+                session: { ...session, matchedWorkout: workout },
+                episodes: modelEpisodes,
+                modelDays,
+              }),
             }),
           strengthSessionCompleted: session?.status === "COMPLETED",
           sourceIdentity: workout.sourceIdentity,
@@ -610,7 +778,7 @@ export class ModelEpisodeRepository {
         const estimate = session.status === "COMPLETED"
           ? strengthShadowKcal(session.experimentalStrengthEnergyShadow?.result)
           : null;
-        const dayMass = days.find((day) => day.date === date)?.weightKg ?? null;
+        const stage02MassKg = strengthStage02MassKg(session);
         const sets = session.exercises.flatMap((exercise) => exercise.sets.map((set) => ({
           ...set,
           resistanceType: exercise.resistanceType,
@@ -628,10 +796,15 @@ export class ModelEpisodeRepository {
             sessionId: session.id,
             sessionRevision: session.revision,
             shadowResult: session.experimentalStrengthEnergyShadow?.result ?? null,
-            massKg: dayMass,
-            sameDayMassKg: dayMass,
+            massKg: stage02MassKg,
+            sameDayMassKg: null,
             sets,
             estimatorVersion: session.experimentalStrengthEnergyShadow?.modelRevision ?? null,
+            estimatorInputs: strengthEstimatorInputs({
+              session,
+              episodes: modelEpisodes,
+              modelDays,
+            }),
           }),
           inputFingerprint: strengthShadowInputFingerprint(session.experimentalStrengthEnergyShadow?.result)
             ?? session.experimentalStrengthEnergyShadow?.sourceFingerprint

@@ -14,6 +14,33 @@ const garminSourcePrefix = "stage00-training-day-fact:";
 const healthRowMarker = "stage00-training-day-fact-garmin-fixture";
 
 async function clean(): Promise<void> {
+  await prisma.healthMetricSample.deleteMany({
+    where: { metric: "weight-kg", timestamp: new Date("2046-02-10T08:30:00.000Z") },
+  });
+  for (const [date, marker] of [
+    ["2046-02-09", "day-fact-freshness-prior"],
+    ["2046-02-10", "day-fact-freshness-same-day"],
+  ] as const) {
+    const row = await prisma.dailyHealthData.findUnique({ where: { date } });
+    if (row && typeof row.rawPayload === "object" && row.rawPayload !== null
+      && !Array.isArray(row.rawPayload)
+      && (row.rawPayload as { marker?: unknown }).marker === marker) {
+      await prisma.dailyHealthData.delete({ where: { date } });
+    }
+  }
+  const sessions = await prisma.strengthDiarySession.findMany({
+    where: { program: { name: programName } },
+    select: { id: true },
+  });
+  const aliases = sessions.length === 0 ? [] : await prisma.activeEnergyEventAlias.findMany({
+    where: { profileId: 1, sourceType: "strength-session", sourceId: { in: sessions.map(({ id }) => String(id)) } },
+    select: { eventId: true },
+  });
+  if (aliases.length > 0) {
+    await prisma.activeEnergyCanonicalEvent.deleteMany({
+      where: { id: { in: [...new Set(aliases.map(({ eventId }) => eventId))] } },
+    });
+  }
   await prisma.strengthDiarySession.deleteMany({ where: { program: { name: programName } } });
   const healthRow = await prisma.dailyHealthData.findUnique({ where: { date: garminLocalDate } });
   if (healthRow && typeof healthRow.rawPayload === "object" && healthRow.rawPayload !== null
@@ -206,14 +233,24 @@ describe("TrainingDayFact PostgreSQL repository", () => {
     expect(hidden.events[0]?.source).toBe("workout");
   });
 
-  it("invalidates diary shadow energy when same-day mass changes without a session revision bump", async () => {
+  it("recomputes canonical diary energy from refreshed Stage 02 mass without a session revision bump", async () => {
     const freshDate = "2046-02-10";
-    await prisma.dailyHealthData.deleteMany({ where: { date: { in: [freshDate, "2046-02-09"] } } });
+    await clean();
     await prisma.dailyHealthData.create({
       data: { date: "2046-02-09", weightKg: 79.5, rawPayload: { marker: "day-fact-freshness-prior" } },
     });
     await prisma.dailyHealthData.create({
       data: { date: freshDate, weightKg: 80, rawPayload: { marker: "day-fact-freshness-same-day" } },
+    });
+    const massSample = await prisma.healthMetricSample.create({
+      data: {
+        date: freshDate,
+        metric: "weight-kg",
+        source: "apple-health-shortcut",
+        timestamp: new Date("2046-02-10T08:30:00.000Z"),
+        value: 80,
+      },
+      select: { id: true },
     });
     const program = await prisma.trainingProgram.findFirst({
       where: { name: programName },
@@ -229,9 +266,6 @@ describe("TrainingDayFact PostgreSQL repository", () => {
       ?? (await prisma.trainingProgramVersion.create({
         data: { programId: program.id, versionNumber: 1 },
       })).id;
-    const { strengthInputFingerprintV1, strengthSetFingerprintV1 } = await import(
-      "@/modules/training/strength-publication-v1"
-    );
     const session = await prisma.strengthDiarySession.create({
       data: {
         programId: program.id,
@@ -241,72 +275,72 @@ describe("TrainingDayFact PostgreSQL repository", () => {
         revision: 1,
         webStartedAt: new Date("2046-02-10T08:00:00.000Z"),
         webEndedAt: new Date("2046-02-10T09:00:00.000Z"),
+        effectiveAccountingAt: new Date("2046-02-10T08:00:00.000Z"),
+        accountingTimeZone: "Europe/Bratislava",
+        accountingTimeZoneProvenance: "client-session",
         matchStatus: "UNMATCHED",
         exercises: {
           create: [{
             sortOrder: 0,
             snapshotExerciseName: exerciseName,
             plannedSets: 1,
-            resistanceType: "EXTERNAL_WEIGHT",
+            resistanceType: "BODYWEIGHT",
             sets: {
-              create: [{ setNumber: 1, reps: 8, weightKg: 60, rir: null }],
+              create: [{
+                setNumber: 1,
+                reps: 8,
+                weightKg: 60,
+                rir: null,
+                completedAt: new Date("2046-02-10T08:30:00.000Z"),
+              }],
             },
           }],
         },
       },
       include: { exercises: { include: { sets: true } } },
     });
-    const setRows = session.exercises.flatMap((exercise) => exercise.sets).map((set) => ({
-      id: set.id,
-      reps: set.reps,
-      weightKg: set.weightKg?.toNumber() ?? null,
-      bandNominalResistanceKg: set.bandNominalResistanceKg?.toNumber() ?? null,
-      rir: set.rir,
-    }));
-    const fingerprint = strengthInputFingerprintV1({
-      sessionId: session.id,
-      sessionRevision: 1,
-      massKg: 80,
-      sameDayMassKg: 80,
-      startOfDayMassKg: 79.5,
-      setFingerprint: strengthSetFingerprintV1(setRows),
-    });
-    await prisma.experimentalStrengthEnergyShadow.create({
-      data: {
-        sessionId: session.id,
-        profileId: 1,
-        sourceFingerprint: fingerprint,
-        modelRevision: "experimental-strength-active-energy-v1",
-        features: {},
-        result: {
-          estimatedActiveKcal: 270,
-          sessionRevision: 1,
-          inputFingerprint: fingerprint,
-        },
-      },
-    });
+    const { TrainingService } = await import("@/modules/training/training.service");
+    const { recordExperimentalStrengthEnergyShadowBySessionId } = await import(
+      "@/modules/training/experimental-strength-energy-shadow.service"
+    );
+    const service = new TrainingService(prisma);
+    const initialAccounting = await service.refreshSessionAccounting(
+      session.id,
+      1,
+      `day-fact-stage02-initial-${session.id}`,
+    );
+    expect(initialAccounting.activeEnergyMassReference?.reference).toMatchObject({ status: "observed", valueKg: 80 });
+    await recordExperimentalStrengthEnergyShadowBySessionId({ sessionId: session.id, profileId: 1 });
+    const initialShadow = await prisma.experimentalStrengthEnergyShadow.findUniqueOrThrow({ where: { sessionId: session.id } });
+    const initialKcal = (initialShadow.result as { estimatedActiveKcal: number }).estimatedActiveKcal;
+    expect(initialKcal).toBeGreaterThan(0);
 
     const fresh = await facts.forDate(freshDate);
     expect(fresh.events[0]).toMatchObject({
       diaryOnly: true,
-      activeEnergyKcal: 270,
-      energySource: "shadow-diary-estimate",
+      activeEnergyKcal: initialKcal,
+      energySource: "bodycast-strength-estimate",
     });
 
     await prisma.dailyHealthData.update({
       where: { date: freshDate },
       data: { weightKg: 81.4 },
     });
+    await prisma.healthMetricSample.update({ where: { id: massSample.id }, data: { value: 81.4 } });
+    const refreshedAccounting = await service.refreshSessionAccounting(
+      session.id,
+      1,
+      `day-fact-stage02-refreshed-${session.id}`,
+    );
+    expect(refreshedAccounting.activeEnergyMassReference?.reference).toMatchObject({ status: "observed", valueKg: 81.4 });
+    await recordExperimentalStrengthEnergyShadowBySessionId({ sessionId: session.id, profileId: 1 });
     const stale = await facts.forDate(freshDate);
-    // Stored shadow is stale after historical same-day mass correction; read path
-    // recomputes as-of-date BodyCast instead of showing the old shadow or inventing
-    // today's mass. Original shadow row remains untouched.
-    expect(stale.events[0]?.energySource).toBe("shadow-diary-estimate");
+    // The source edit is incorporated by refreshing the persisted Stage 02
+    // mass snapshot and regenerating its shadow candidate.
+    expect(stale.events[0]?.energySource).toBe("bodycast-strength-estimate");
     expect(stale.events[0]?.activeEnergyKcal).not.toBeNull();
-    expect(stale.events[0]?.activeEnergyKcal).not.toBe(270);
+    expect(stale.events[0]?.activeEnergyKcal).not.toBe(initialKcal);
 
-    await prisma.experimentalStrengthEnergyShadow.deleteMany({ where: { sessionId: session.id } });
-    await prisma.strengthDiarySession.delete({ where: { id: session.id } });
-    await prisma.dailyHealthData.deleteMany({ where: { date: { in: [freshDate, "2046-02-09"] } } });
+    await clean();
   });
 });

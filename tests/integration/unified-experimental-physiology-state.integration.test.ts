@@ -1,6 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V1_REVISION } from "@/model/unified-experimental-physiology-v1";
+import { currentPhysiologyV7Versions } from "@/modules/model-episodes/physiology-v7-persistence";
 import { rebuildUnifiedExperimentalPhysiologyStateV1 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
 import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
 
@@ -9,6 +10,8 @@ const profileId = 1;
 const fixtureMethod = "unified-state-v1-verification";
 const dates = ["2071-01-01", "2071-01-02", "2071-01-03"];
 const futureDate = "2071-01-04";
+let lifecycleBeforeSuite: Awaited<ReturnType<typeof prisma.physiologyV7Lifecycle.findUnique>> | null = null;
+let lifecycleSnapshotCaptured = false;
 
 const episodeData = {
   profileId,
@@ -56,6 +59,36 @@ async function clean(): Promise<void> {
   await prisma.dailyModelState.deleteMany({ where: { date: { in: allDates }, episode: { baselineDerivationMethod: fixtureMethod } } });
   await prisma.modelEpisode.deleteMany({ where: { profileId, baselineDerivationMethod: fixtureMethod } });
   await deleteDailyHealthRows(prisma, allDates);
+}
+
+/** Mark the deliberately hand-seeded production rows as an explicit current fixture generation. */
+async function publishSeededProductionFixture(): Promise<void> {
+  const lifecycle = await prisma.physiologyV7Lifecycle.findUnique({ where: { profileId } });
+  if (lifecycle === null) {
+    await prisma.physiologyV7Lifecycle.create({
+      data: {
+        profileId,
+        staleFromDate: null,
+        currentThroughDate: dates[dates.length - 1],
+        invalidationGeneration: 1,
+        productionStaleFromDate: null,
+        productionPublishedGeneration: 1,
+        unifiedPublishedGeneration: null,
+        ...currentPhysiologyV7Versions,
+      },
+    });
+    return;
+  }
+  await prisma.physiologyV7Lifecycle.update({
+    where: { profileId },
+    data: {
+      productionStaleFromDate: null,
+      productionPublishedGeneration: lifecycle.invalidationGeneration,
+      unifiedPublishedGeneration: null,
+      currentThroughDate: dates[dates.length - 1],
+      ...currentPhysiologyV7Versions,
+    },
+  });
 }
 
 async function seed(input: { order?: readonly string[]; withWorkouts?: boolean } = {}): Promise<void> {
@@ -126,6 +159,7 @@ async function seed(input: { order?: readonly string[]; withWorkouts?: boolean }
       });
     }
   }
+  await publishSeededProductionFixture();
 }
 
 async function addFutureDay(): Promise<void> {
@@ -161,6 +195,7 @@ async function addFutureDay(): Promise<void> {
       energyBalanceKcal: -500,
     },
   });
+  await publishSeededProductionFixture();
   expect(health.id).toBeTypeOf("number");
 }
 
@@ -177,11 +212,35 @@ async function rows(fromDate = dates[0], toDate = dates[dates.length - 1]) {
 
 describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
   beforeEach(async () => {
+    if (!lifecycleSnapshotCaptured) {
+      lifecycleBeforeSuite = await prisma.physiologyV7Lifecycle.findUnique({ where: { profileId } });
+      lifecycleSnapshotCaptured = true;
+    }
     await clean();
   });
 
   afterAll(async () => {
     await clean();
+    if (lifecycleBeforeSuite === null) {
+      await prisma.physiologyV7Lifecycle.deleteMany({ where: { profileId } });
+    } else {
+      await prisma.physiologyV7Lifecycle.update({
+        where: { profileId },
+        data: {
+          staleFromDate: lifecycleBeforeSuite.staleFromDate,
+          invalidationGeneration: lifecycleBeforeSuite.invalidationGeneration,
+          currentThroughDate: lifecycleBeforeSuite.currentThroughDate,
+          productionStaleFromDate: lifecycleBeforeSuite.productionStaleFromDate,
+          productionPublishedGeneration: lifecycleBeforeSuite.productionPublishedGeneration,
+          unifiedPublishedGeneration: lifecycleBeforeSuite.unifiedPublishedGeneration,
+          stateVersion: lifecycleBeforeSuite.stateVersion,
+          sourceNormalizationVersion: lifecycleBeforeSuite.sourceNormalizationVersion,
+          dailyRuntimeVersion: lifecycleBeforeSuite.dailyRuntimeVersion,
+          rangeRebuildVersion: lifecycleBeforeSuite.rangeRebuildVersion,
+          rebuildServiceVersion: lifecycleBeforeSuite.rebuildServiceVersion,
+        },
+      });
+    }
     await prisma.$disconnect();
   });
 
@@ -218,12 +277,14 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     await seed();
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[0], toDate: dates[2] });
     await prisma.dailyHealthData.update({ where: { date: dates[1] }, data: { carbsG: 310 } });
+    await publishSeededProductionFixture();
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[1], toDate: dates[2] });
     const suffix = trajectory(await rows(dates[1], dates[2]));
 
     await clean();
     await seed();
     await prisma.dailyHealthData.update({ where: { date: dates[1] }, data: { carbsG: 310 } });
+    await publishSeededProductionFixture();
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[0], toDate: dates[2] });
     expect(trajectory(await rows(dates[1], dates[2]))).toEqual(suffix);
   });
@@ -232,12 +293,14 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     await seed();
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[0], toDate: dates[2] });
     await prisma.dailyHealthData.delete({ where: { date: dates[1] } });
+    await publishSeededProductionFixture();
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[1], toDate: dates[2] });
     const suffix = trajectory(await rows(dates[1], dates[2]));
 
     await clean();
     await seed();
     await prisma.dailyHealthData.delete({ where: { date: dates[1] } });
+    await publishSeededProductionFixture();
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[0], toDate: dates[2] });
     expect(trajectory(await rows(dates[1], dates[2]))).toEqual(suffix);
   });

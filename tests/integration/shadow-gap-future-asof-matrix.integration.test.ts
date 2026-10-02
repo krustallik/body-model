@@ -121,6 +121,9 @@ async function cleanTraining(): Promise<void> {
 }
 
 async function cleanHealth(): Promise<void> {
+  await prisma.healthMetricSample.deleteMany({
+    where: { metric: "weight-kg", timestamp: new Date("2061-02-28T12:00:00.000Z") },
+  });
   await prisma.healthSyncSnapshot.deleteMany({ where: { date: { in: [...DATES] } } });
   await prisma.dailyModelState.deleteMany({
     where: { date: { in: [...DATES] }, episode: { profileId, baselineDerivationMethod: "gap-matrix-ai" } },
@@ -196,7 +199,7 @@ async function ensureProgram() {
 
 async function createFinishedTrainingDay(date: string, setCount = 3, health: {
   weightKg?: number | null;
-} = { weightKg: 80 }): Promise<number> {
+} = { weightKg: 80 }, resistanceType: string = RESISTANCE.EXTERNAL_WEIGHT): Promise<number> {
   await ensureHealth(date, {
     workoutFeedObserved: true,
     weightKg: health.weightKg === undefined ? 80 : health.weightKg,
@@ -212,6 +215,9 @@ async function createFinishedTrainingDay(date: string, setCount = 3, health: {
     data: {
       webStartedAt: new Date(`${date}T17:00:00.000Z`),
       webEndedAt: new Date(`${date}T18:00:00.000Z`),
+      effectiveAccountingAt: new Date(`${date}T17:00:00.000Z`),
+      accountingTimeZone: "Europe/Bratislava",
+      accountingTimeZoneProvenance: "client-session",
     },
   });
   const refreshed = await training.getSession(session.id, profileId);
@@ -219,10 +225,11 @@ async function createFinishedTrainingDay(date: string, setCount = 3, health: {
   for (let index = 0; index < setCount; index += 1) {
     await training.createSet(session.id, exerciseId, {
       reps: 8 + index,
-      weightKg: 40 + index,
+      ...(resistanceType === RESISTANCE.BODYWEIGHT ? {} : { weightKg: 40 + index }),
     }, profileId);
   }
   await training.finishSession(session.id, profileId);
+  await training.refreshSessionAccounting(session.id, profileId, `gap-matrix-stage02-${date}-${session.id}`);
   const completed = await training.getSession(session.id, profileId);
   // finishSession isolates shadow failures; fixtures assert persistence explicitly.
   await recordExperimentalStrengthEnergyShadow({ session: completed!, profileId });
@@ -429,7 +436,25 @@ describe("PostgreSQL shadow gap future-asof matrix A–K", () => {
       create: { date: "2061-02-28", weightKg: 78, rawPayload: {}, workoutFeedObserved: true },
       update: { weightKg: 78 },
     });
-    const sessionId = await createFinishedTrainingDay(D1, 3, { weightKg: null });
+    await prisma.healthMetricSample.create({
+      data: {
+        date: "2061-02-28",
+        metric: "weight-kg",
+        source: "apple-health-shortcut",
+        timestamp: new Date("2061-02-28T12:00:00.000Z"),
+        value: 78,
+      },
+    });
+    const { programId } = await ensureProgram();
+    await prisma.programExercise.updateMany({
+      where: { programVersion: { programId } },
+      data: { resistanceType: RESISTANCE.BODYWEIGHT },
+    });
+    const sessionId = await createFinishedTrainingDay(D1, 3, { weightKg: null }, RESISTANCE.BODYWEIGHT);
+    await prisma.programExercise.updateMany({
+      where: { programVersion: { programId } },
+      data: { resistanceType: RESISTANCE.EXTERNAL_WEIGHT },
+    });
     const before = await prisma.experimentalStrengthEnergyShadow.findUniqueOrThrow({
       where: { sessionId },
     });

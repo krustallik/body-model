@@ -18,6 +18,8 @@ import { runSyntheticReplayV1 } from "@/modules/model-episodes/staged-replay-v1"
 import { reconstructSelectionHistoryV1, persistSelectionEpisodeHistoryV1, rollbackSelectionEpisodeActivationV1 } from "@/modules/model-episodes/selection-v1-episode-ops";
 import { persistStepperReconciliationV1, confirmStepperReconciliationV1, rejectStepperReconciliationV1 } from "@/modules/training/stepper-reconciliation.service";
 import { StepperWorkoutRepository } from "@/modules/training/stepper-workout.repository";
+import { TrainingService } from "@/modules/training/training.service";
+import { recordExperimentalStrengthEnergyShadowBySessionId } from "@/modules/training/experimental-strength-energy-shadow.service";
 import {
   strengthInputFingerprintV1,
   strengthSetFingerprintV1,
@@ -127,6 +129,16 @@ async function clean() {
   await prisma.trainingProgram.deleteMany({ where: { name: programName } });
   await prisma.exerciseCatalog.deleteMany({ where: { name: exerciseName } });
   await prisma.healthActivityInterval.deleteMany({ where: { date: { in: dates } } });
+  await prisma.healthMetricSample.deleteMany({
+    where: {
+      metric: "weight-kg",
+      timestamp: { in: [
+        new Date("2091-04-01T06:30:00.000Z"),
+        new Date("2091-04-03T06:30:00.000Z"),
+        new Date("2091-04-07T06:30:00.000Z"),
+      ] },
+    },
+  });
   await prisma.workInterval.deleteMany({ where: { date: { in: dates } } });
   await deleteDailyHealthRows(prisma, dates);
 }
@@ -173,6 +185,15 @@ describe("staged energy and distance PostgreSQL integration", () => {
 
   it("carries saved web, matched, manual, distance, and mass records into staged expenditure", async () => {
     await day("2091-04-01", 81);
+    await prisma.healthMetricSample.create({
+      data: {
+        date: "2091-04-01",
+        metric: "weight-kg",
+        source: "apple-health-shortcut",
+        timestamp: new Date("2091-04-01T06:30:00.000Z"),
+        value: 81,
+      },
+    });
     const web = await prisma.strengthDiarySession.create({
       data: {
         programId,
@@ -181,17 +202,32 @@ describe("staged energy and distance PostgreSQL integration", () => {
         entryMode: "LIVE",
         webStartedAt: new Date("2091-04-01T07:00:00.000Z"),
         webEndedAt: new Date("2091-04-01T08:00:00.000Z"),
+        effectiveAccountingAt: new Date("2091-04-01T07:00:00.000Z"),
+        accountingTimeZone: "Europe/Bratislava",
+        accountingTimeZoneProvenance: "client-session",
+        exercises: {
+          create: [{
+            sortOrder: 0,
+            snapshotExerciseName: exerciseName,
+            plannedSets: 1,
+            resistanceType: "BODYWEIGHT",
+            sets: { create: [{
+              setNumber: 1,
+              reps: 8,
+              weightKg: 60,
+              completedAt: new Date("2091-04-01T07:30:00.000Z"),
+            }] },
+          }],
+        },
       },
     });
-    await prisma.experimentalStrengthEnergyShadow.create({
-      data: {
-        sessionId: web.id,
-        sourceFingerprint: "e2e-web",
-        modelRevision: EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
-        features: {},
-        result: strengthShadowResult({ sessionId: web.id, kcal: 250, massKg: 81 }),
-      },
-    });
+    const training = new TrainingService(prisma);
+    const webAccounting = await training.refreshSessionAccounting(web.id, 1, `energy-distance-stage02-${web.id}`);
+    expect(webAccounting.activeEnergyMassReference?.reference).toMatchObject({ status: "observed", valueKg: 81 });
+    await recordExperimentalStrengthEnergyShadowBySessionId({ sessionId: web.id, profileId: 1 });
+    const webShadow = await prisma.experimentalStrengthEnergyShadow.findUniqueOrThrow({ where: { sessionId: web.id } });
+    const webKcal = (webShadow.result as { estimatedActiveKcal: number | null }).estimatedActiveKcal;
+    expect(webKcal).toBeGreaterThan(0);
 
     await day("2091-04-02", 81);
     const active = await prisma.strengthDiarySession.create({
@@ -215,6 +251,15 @@ describe("staged energy and distance PostgreSQL integration", () => {
     });
 
     const matchedDay = await day("2091-04-03", 81);
+    await prisma.healthMetricSample.create({
+      data: {
+        date: "2091-04-03",
+        metric: "weight-kg",
+        source: "apple-health-shortcut",
+        timestamp: new Date("2091-04-03T06:30:00.000Z"),
+        value: 81,
+      },
+    });
     const garmin = await prisma.workout.create({
       data: {
         dailyHealthDataId: matchedDay.id,
@@ -237,17 +282,31 @@ describe("staged energy and distance PostgreSQL integration", () => {
         matchStatus: "MATCHED",
         webStartedAt: new Date("2091-04-03T07:00:00.000Z"),
         webEndedAt: new Date("2091-04-03T08:00:00.000Z"),
+        effectiveAccountingAt: new Date("2091-04-03T07:00:00.000Z"),
+        accountingTimeZone: "Europe/Bratislava",
+        accountingTimeZoneProvenance: "client-session",
+        exercises: {
+          create: [{
+            sortOrder: 0,
+            snapshotExerciseName: exerciseName,
+            plannedSets: 1,
+            resistanceType: "BODYWEIGHT",
+            sets: { create: [{
+              setNumber: 1,
+              reps: 8,
+              weightKg: 60,
+              completedAt: new Date("2091-04-03T07:30:00.000Z"),
+            }] },
+          }],
+        },
       },
     });
-    await prisma.experimentalStrengthEnergyShadow.create({
-      data: {
-        sessionId: matched.id,
-        sourceFingerprint: "e2e-matched",
-        modelRevision: EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
-        features: {},
-        result: strengthShadowResult({ sessionId: matched.id, kcal: 250, massKg: 81 }),
-      },
-    });
+    const matchedAccounting = await training.refreshSessionAccounting(matched.id, 1, `energy-distance-stage02-${matched.id}`);
+    expect(matchedAccounting.activeEnergyMassReference?.reference).toMatchObject({ status: "observed", valueKg: 81 });
+    await recordExperimentalStrengthEnergyShadowBySessionId({ sessionId: matched.id, profileId: 1 });
+    const matchedShadow = await prisma.experimentalStrengthEnergyShadow.findUniqueOrThrow({ where: { sessionId: matched.id } });
+    const matchedKcal = (matchedShadow.result as { estimatedActiveKcal: number | null }).estimatedActiveKcal;
+    expect(matchedKcal).toBeGreaterThan(0);
 
     const manual = await steppers.create({
       startAt: "2091-04-04T09:00:00.000+02:00",
@@ -276,6 +335,13 @@ describe("staged energy and distance PostgreSQL integration", () => {
         }],
       }],
     });
+    const refreshedWebAccounting = await training.refreshSessionAccounting(
+      web.id,
+      1,
+      `energy-distance-stage02-after-sync-${web.id}`,
+    );
+    expect(refreshedWebAccounting.activeEnergyMassReference?.reference).toMatchObject({ status: "observed", valueKg: 81 });
+    await recordExperimentalStrengthEnergyShadowBySessionId({ sessionId: web.id, profileId: 1 });
     const persisted = await persistStepperReconciliationV1(prisma, {
       from: "2091-04-04",
       to: "2091-04-04",
@@ -338,22 +404,46 @@ describe("staged energy and distance PostgreSQL integration", () => {
     });
 
     await day("2091-04-07", 81);
+    await prisma.healthMetricSample.create({
+      data: {
+        date: "2091-04-07",
+        metric: "weight-kg",
+        source: "apple-health-shortcut",
+        timestamp: new Date("2091-04-07T06:30:00.000Z"),
+        value: 81,
+      },
+    });
     const known = await prisma.strengthDiarySession.create({
       data: {
         programId, programVersionId: versionId, status: "COMPLETED", entryMode: "LIVE",
         webStartedAt: new Date("2091-04-07T07:00:00.000Z"),
         webEndedAt: new Date("2091-04-07T08:00:00.000Z"),
+        effectiveAccountingAt: new Date("2091-04-07T07:00:00.000Z"),
+        accountingTimeZone: "Europe/Bratislava",
+        accountingTimeZoneProvenance: "client-session",
+        exercises: {
+          create: [{
+            sortOrder: 0,
+            snapshotExerciseName: exerciseName,
+            plannedSets: 1,
+            resistanceType: "BODYWEIGHT",
+            sets: { create: [{
+              setNumber: 1,
+              reps: 8,
+              weightKg: 60,
+              completedAt: new Date("2091-04-07T07:30:00.000Z"),
+            }] },
+          }],
+        },
       },
     });
-    await prisma.experimentalStrengthEnergyShadow.create({
-      data: {
-        sessionId: known.id,
-        sourceFingerprint: "e2e-partial",
-        modelRevision: EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
-        features: {},
-        result: strengthShadowResult({ sessionId: known.id, kcal: 200, massKg: 81 }),
-      },
-    });
+    const knownAccounting = await training.refreshSessionAccounting(known.id, 1, `energy-distance-stage02-${known.id}`);
+    expect(knownAccounting.activeEnergyMassReference?.reference).toMatchObject({ status: "observed", valueKg: 81 });
+    await recordExperimentalStrengthEnergyShadowBySessionId({ sessionId: known.id, profileId: 1 });
+    const knownShadow = await prisma.experimentalStrengthEnergyShadow.findUniqueOrThrow({ where: { sessionId: known.id } });
+    const knownKcal = (knownShadow.result as { estimatedActiveKcal: number | null }).estimatedActiveKcal;
+    expect(knownKcal).toBeGreaterThan(0);
+    const knownKcalValue = knownKcal as number;
     await prisma.strengthDiarySession.create({
       data: {
         programId, programVersionId: versionId, status: "COMPLETED", entryMode: "LIVE",
@@ -363,10 +453,10 @@ describe("staged energy and distance PostgreSQL integration", () => {
     });
 
     const sources = await repository.loadSources("2091-04-01", "2091-04-07");
-    expect(sources.webOnlyStrengthSessions?.some((session) => session.sessionId === web.id && session.bodyCastEstimateKcal === 250 && session.bodyCastEstimateFresh === true)).toBe(true);
+    expect(sources.webOnlyStrengthSessions?.some((session) => session.sessionId === web.id && session.bodyCastEstimateKcal === webKcal && session.bodyCastEstimateFresh === true)).toBe(true);
     expect(sources.workouts?.find((workout) => workout.id === garmin.id)).toMatchObject({
       activeEnergyKcal: 400,
-      bodyCastEstimateKcal: 250,
+      bodyCastEstimateKcal: matchedKcal,
       strengthSessionCompleted: true,
     });
     expect(sources.workouts?.find((workout) => workout.id === manual.id)).toMatchObject({
@@ -387,26 +477,30 @@ describe("staged energy and distance PostgreSQL integration", () => {
     const webDay = byDate.get("2091-04-01")!;
     expect(webDay.input.measuredWeightKg).toBe(81);
     expect(webDay.input.workoutActivity?.events).toHaveLength(1);
-    expect(spend(webDay.input.workoutActivity?.events).workoutActivityKcalPerDay).toBe(250);
+    expect(spend(webDay.input.workoutActivity?.events).workoutActivityKcalPerDay).toBe(webKcal);
     const episode = { ...persistedEpisodeFixture("2091-04-01"), modelVersion: version };
     const history = calculateEpisodeHistory({ episode, days: [webDay] });
-    expect(history.dailyStates[0]?.sourceQuality.workoutEnergyResolution?.workoutActivityKcal).toBe(250);
+    expect(history.dailyStates[0]?.sourceQuality.workoutEnergyResolution?.workoutActivityKcal).toBe(webKcal);
     expect(history.dailyStates[0]?.sourceQuality.selectionV1?.energyCoverage).toMatchObject({
-      knownSubtotalKcal: 250,
+      knownSubtotalKcal: webKcal,
       fullCoverage: true,
     });
 
     const activeDay = byDate.get("2091-04-02")!;
-    expect(spend(activeDay.input.workoutActivity?.events).workoutActivityKcalPerDay).toBe(0);
-    expect(spend(activeDay.input.workoutActivity?.events).workoutEnergyResolution?.energyCoverage?.unknownEventCount).toBe(1);
+    const activeSpend = spend(activeDay.input.workoutActivity?.events);
+    expect(activeSpend.workoutActivityKcalPerDay).toBeGreaterThan(0);
+    expect(activeSpend.workoutEnergyResolution?.perEvent[0]?.source).toBe("bodycast-strength-met-fallback");
+    expect(activeSpend.workoutEnergyResolution?.perEvent[0]?.kcal).not.toBe(999);
 
     const matchedBuilt = byDate.get("2091-04-03")!;
     expect(matchedBuilt.input.workoutActivity?.events).toHaveLength(1);
-    expect(spend(matchedBuilt.input.workoutActivity?.events).workoutActivityKcalPerDay).toBe(250);
+    expect(spend(matchedBuilt.input.workoutActivity?.events).workoutActivityKcalPerDay).toBe(matchedKcal);
 
     const pendingDay = byDate.get("2091-04-04")!;
     expect(pendingDay.input.workoutActivity?.events).toHaveLength(1);
-    expect(spend(pendingDay.input.workoutActivity?.events).workoutActivityKcalPerDay).toBe(150);
+    const pendingSpend = spend(pendingDay.input.workoutActivity?.events);
+    expect(pendingSpend.workoutEnergyResolution?.perEvent[0]?.source).toBe("mechanical-stepper");
+    expect(pendingSpend.workoutActivityKcalPerDay).toBeGreaterThan(0);
 
     const conflict = byDate.get("2091-04-05")!;
     expect(conflict.input.outsideWorkWalkingDistanceKm).toBeNull();
@@ -421,11 +515,10 @@ describe("staged energy and distance PostgreSQL integration", () => {
 
     const partial = byDate.get("2091-04-07")!;
     const partialSpend = spend(partial.input.workoutActivity?.events);
-    expect(partialSpend.workoutActivityKcalPerDay).toBe(200);
+    expect(partialSpend.workoutActivityKcalPerDay).toBeGreaterThan(knownKcalValue);
     expect(partialSpend.workoutEnergyResolution?.energyCoverage).toMatchObject({
-      knownSubtotalKcal: 200,
-      unknownEventCount: 1,
-      fullCoverage: false,
+      fullCoverage: true,
+      unknownEventCount: 0,
     });
     expect(eligibleHistoricalDonors(version, [partial])).toEqual([]);
 
@@ -436,13 +529,19 @@ describe("staged energy and distance PostgreSQL integration", () => {
       modelVersion: CURRENT_MODEL_VERSION,
     })[0]!;
     expect(legacy.input.workoutActivity?.selectionPolicy).toBeUndefined();
-    expect(legacy.input.workoutActivity?.events ?? []).toHaveLength(0);
+    expect(legacy.input.workoutActivity?.events ?? []).toHaveLength(1);
+    expect(legacy.input.workoutActivity?.events?.[0]).toMatchObject({
+      classification: "traditional-strength-training",
+      bodyCastEstimateKcal: webKcal,
+      bodyCastEstimateFresh: true,
+    });
     expect(legacy.sourceQuality.selectionV1).toBeUndefined();
     const unified = await prisma.unifiedExperimentalPhysiologyState.findUnique({
       where: { profileId_date: { profileId: 1, date: "2091-04-04" } },
     });
-    expect(JSON.stringify(unified?.diagnostics)).toContain("energy-coverage:unknown=");
-    expect(JSON.stringify(unified?.energyLedger)).toContain("150");
+    // This simulator fixture does not publish a production generation; the
+    // generation-aware consumer must therefore fail closed without Unified.
+    expect(unified).toBeNull();
   }, 60_000);
 
   it("replays loaded source days and rolls visibility back exactly", async () => {

@@ -24,6 +24,30 @@ export function strengthSetFingerprintV1(
   })))).digest("hex").slice(0, 32);
 }
 
+/**
+ * Canonical model-day inputs shared by the Strength candidate writer and its
+ * production freshness reader. MET fallback is permitted only for complete
+ * days, so incomplete/blocked rows are represented as no model-day input.
+ */
+export function strengthModelDayFingerprintInputsV1(modelDay: {
+  status: string;
+  dynamicRmrKcalPerDay: number | null;
+  updatedAt: Date | string;
+} | null): {
+  modelDayRmrKcalPerDay: number | null;
+  modelDayUpdatedAt: string | null;
+} {
+  if (!modelDay || modelDay.status !== "complete") {
+    return { modelDayRmrKcalPerDay: null, modelDayUpdatedAt: null };
+  }
+  return {
+    modelDayRmrKcalPerDay: modelDay.dynamicRmrKcalPerDay,
+    modelDayUpdatedAt: modelDay.updatedAt instanceof Date
+      ? modelDay.updatedAt.toISOString()
+      : new Date(modelDay.updatedAt).toISOString(),
+  };
+}
+
 export function strengthInputFingerprintV1(input: {
   sessionId: number;
   sessionRevision: number;

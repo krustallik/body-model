@@ -16,6 +16,7 @@ import {
 } from "./experimental-strength-active-energy-v1";
 import {
   strengthInputFingerprintV1,
+  strengthModelDayFingerprintInputsV1,
   strengthPublicationDecisionV1,
   strengthSetFingerprintV1,
 } from "./strength-publication-v1";
@@ -74,6 +75,7 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
       select: { status: true, dynamicRmrKcalPerDay: true, updatedAt: true, modelVersion: true },
     })
     : null;
+  const modelDayFingerprintInputs = strengthModelDayFingerprintInputsV1(modelDay);
   const metFallbackKcal = bodyMassKg !== null && modelDay?.status === "complete"
       && modelDay.dynamicRmrKcalPerDay !== null && durationMinutes !== null && durationMinutes > 0
     ? calculateStrengthActivity({ weightKg: bodyMassKg, rmrKcalPerDay: modelDay.dynamicRmrKcalPerDay, durationMinutes })
@@ -109,8 +111,7 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
     modelEpisodeUpdatedAt: episode?.updatedAt.toISOString() ?? null,
     modelTimeZone,
     modelDate,
-    modelDayRmrKcalPerDay: modelDay?.dynamicRmrKcalPerDay ?? null,
-    modelDayUpdatedAt: modelDay?.updatedAt.toISOString() ?? null,
+    ...modelDayFingerprintInputs,
   };
   const inputFingerprint = strengthInputFingerprintV1({
     sessionId: input.session.id,

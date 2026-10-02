@@ -26,7 +26,10 @@ import {
 } from "@/modules/training/strength-publication-v1";
 import { EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION } from "@/modules/training/experimental-strength-active-energy-v1";
 import { persistedEpisodeFixture } from "../model-episode-fixtures";
+import { modelProfile, stableSourceDays } from "../model-episode-fixtures";
+import { prepareEpisodeInitialization } from "@/modules/model-episodes/episode-initialization";
 import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
+import { materializeActiveEnergyCandidatesV1 } from "@/modules/activity/active-energy-materialization";
 
 const prisma = new PrismaClient();
 const repository = new ModelEpisodeRepository(prisma);
@@ -59,6 +62,7 @@ function strengthShadowResult(input: {
 const dates = [
   "2091-04-01", "2091-04-02", "2091-04-03", "2091-04-04",
   "2091-04-05", "2091-04-06", "2091-04-07", "2091-04-08", "2091-04-09",
+  "2091-04-10", "2091-04-11",
 ];
 
 const body: BodyCompositionState = {
@@ -113,6 +117,7 @@ async function day(date: string, weightKg: number | null, steps: number | null =
 }
 
 async function clean() {
+  await prisma.activeEnergyCanonicalEvent.deleteMany({ where: { profileId: 1, modelDate: { in: dates } } });
   await prisma.unifiedExperimentalPhysiologyState.deleteMany({ where: { date: { in: dates } } });
   await prisma.activationRollbackEntry.deleteMany({ where: { generationId: { startsWith: "e2e-" } } });
   await prisma.stepperReconciliationCandidate.deleteMany({
@@ -129,16 +134,7 @@ async function clean() {
   await prisma.trainingProgram.deleteMany({ where: { name: programName } });
   await prisma.exerciseCatalog.deleteMany({ where: { name: exerciseName } });
   await prisma.healthActivityInterval.deleteMany({ where: { date: { in: dates } } });
-  await prisma.healthMetricSample.deleteMany({
-    where: {
-      metric: "weight-kg",
-      timestamp: { in: [
-        new Date("2091-04-01T06:30:00.000Z"),
-        new Date("2091-04-03T06:30:00.000Z"),
-        new Date("2091-04-07T06:30:00.000Z"),
-      ] },
-    },
-  });
+  await prisma.healthMetricSample.deleteMany({ where: { metric: "weight-kg", date: { in: dates } } });
   await prisma.workInterval.deleteMany({ where: { date: { in: dates } } });
   await deleteDailyHealthRows(prisma, dates);
 }
@@ -542,6 +538,340 @@ describe("staged energy and distance PostgreSQL integration", () => {
     // This simulator fixture does not publish a production generation; the
     // generation-aware consumer must therefore fail closed without Unified.
     expect(unified).toBeNull();
+  }, 60_000);
+
+  it("materializes populated legacy Strength and reconciled Stepper rows idempotently for consumers", async () => {
+    const strengthDate = "2091-04-10";
+    const stepperDate = "2091-04-11";
+    const strengthStart = new Date("2091-04-10T07:00:00.000Z");
+    const strengthEnd = new Date("2091-04-10T08:00:00.000Z");
+    const stepperStart = new Date("2091-04-11T08:00:00.000Z");
+    const stepperEnd = new Date("2091-04-11T08:20:00.000Z");
+    await day(strengthDate, 81);
+    await day(stepperDate, 81, 8_000);
+    await prisma.healthMetricSample.create({
+      data: {
+        date: strengthDate,
+        metric: "weight-kg",
+        source: "apple-health-shortcut",
+        timestamp: new Date("2091-04-10T06:30:00.000Z"),
+        value: 81,
+      },
+    });
+    const strengthHealth = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: strengthDate } });
+    const strengthWorkout = await prisma.workout.create({
+      data: {
+        dailyHealthDataId: strengthHealth.id,
+        sourceIdentity: "ext:e2e-materialize-strength",
+        externalId: "e2e-materialize-strength",
+        type: TRADITIONAL_STRENGTH_TRAINING_TYPE,
+        startAt: strengthStart,
+        endAt: strengthEnd,
+        durationMinutes: 60,
+        activeEnergyKcal: 420,
+        manualActiveEnergyKcal: 390,
+      },
+    });
+    const strengthSession = await prisma.strengthDiarySession.create({
+      data: {
+        programId,
+        programVersionId: versionId,
+        status: "COMPLETED",
+        entryMode: "LIVE",
+        matchedWorkoutId: strengthWorkout.id,
+        matchStatus: "MATCHED",
+        effectiveAccountingAt: strengthStart,
+        accountingTimeZone: "Europe/Bratislava",
+        accountingTimeZoneProvenance: "integration-test",
+        webStartedAt: strengthStart,
+        webEndedAt: strengthEnd,
+        exercises: {
+          create: [{
+            sortOrder: 0,
+            snapshotExerciseName: exerciseName,
+            plannedSets: 2,
+            resistanceType: "BODYWEIGHT",
+            sets: { create: [1, 2].map((setNumber) => ({
+              setNumber,
+              reps: 8,
+              weightKg: 50 + setNumber * 5,
+              completedAt: new Date(strengthStart.getTime() + setNumber * 20 * 60_000),
+            })) },
+          }],
+        },
+      },
+    });
+    await new TrainingService(prisma).refreshSessionAccounting(
+      strengthSession.id,
+      1,
+      `legacy-materialization-strength-${strengthSession.id}`,
+    );
+
+    const stepperHealth = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: stepperDate } });
+    const manualWorkout = await prisma.workout.create({
+      data: {
+        dailyHealthDataId: stepperHealth.id,
+        sourceIdentity: "manual:stepper:e2e-materialize-stepper",
+        type: STAIR_CLIMBING_TYPE,
+        startAt: stepperStart,
+        endAt: stepperEnd,
+        durationMinutes: 20,
+        manualStepCount: 1_600,
+        manualActiveEnergyKcal: 70,
+      },
+    });
+    const deviceWorkout = await prisma.workout.create({
+      data: {
+        dailyHealthDataId: stepperHealth.id,
+        sourceIdentity: "ext:e2e-materialize-stepper",
+        externalId: "e2e-materialize-stepper",
+        type: STAIR_CLIMBING_TYPE,
+        startAt: stepperStart,
+        endAt: stepperEnd,
+        durationMinutes: 20,
+        activeEnergyKcal: 140,
+      },
+    });
+    const reconciliation = await prisma.stepperReconciliationGroup.create({
+      data: {
+        profileId: 1,
+        status: "confirmed",
+        evaluationRevision: 1,
+        policyVersion: "stepper-reconciliation-v1",
+        localDate: stepperDate,
+        sourceRevision: "e2e-materialize-stepper-v1",
+        candidates: {
+          create: [{
+            manualWorkoutId: manualWorkout.id,
+            garminWorkoutId: deviceWorkout.id,
+            candidateStatus: "confirmed",
+            manualCoverage: 1,
+            garminCoverage: 1,
+            stepEvidenceStatus: "bracketed",
+          }],
+        },
+      },
+    });
+    await prisma.healthActivityInterval.createMany({
+      data: [400, 350, 450, 400].map((value, index) => ({
+        date: stepperDate,
+        metric: "steps",
+        startAt: new Date(stepperStart.getTime() + index * 5 * 60_000),
+        endAt: new Date(stepperStart.getTime() + (index + 1) * 5 * 60_000),
+        value,
+        sourceFingerprint: `e2e-materialize-stepper-${index}`,
+      })),
+    });
+
+    const strengthAliases = [
+      { sourceType: "strength-session", sourceId: String(strengthSession.id) },
+      { sourceType: "workout", sourceId: String(strengthWorkout.id) },
+    ];
+    const stepperAliases = [manualWorkout.id, deviceWorkout.id].map((id) => ({
+      sourceType: "workout",
+      sourceId: String(id),
+    }));
+    expect(await prisma.activeEnergyCanonicalEvent.count({
+      where: { profileId: 1, aliases: { some: { OR: [...strengthAliases, ...stepperAliases] } } },
+    })).toBe(0);
+
+    const first = await materializeActiveEnergyCandidatesV1(1);
+    expect(first.strengthSessionIds).toContain(strengthSession.id);
+    expect(first.stepperWorkoutIds).toEqual(expect.arrayContaining([manualWorkout.id, deviceWorkout.id]));
+    const strengthEvent = await prisma.activeEnergyCanonicalEvent.findFirstOrThrow({
+      where: { profileId: 1, aliases: { some: { sourceType: "strength-session", sourceId: String(strengthSession.id) } } },
+      include: { aliases: true, candidates: true, resolutions: true },
+    });
+    expect(strengthEvent.logicalEventKey).toBe(`workout:${strengthWorkout.id}`);
+    expect(strengthEvent.aliases.map(({ sourceType, sourceId }) => [sourceType, sourceId]).sort()).toEqual([
+      ["strength-session", String(strengthSession.id)],
+      ["workout", String(strengthWorkout.id)],
+    ].sort());
+    expect(strengthEvent.currentSource).toBe("bodycast-strength-estimate");
+    expect(strengthEvent.currentKcal).toBeGreaterThan(0);
+    expect(strengthEvent.resolutions).toHaveLength(1);
+
+    const stepperEvent = await prisma.activeEnergyCanonicalEvent.findFirstOrThrow({
+      where: { profileId: 1, logicalEventKey: `stepper-reconciliation:${reconciliation.id}` },
+      include: { aliases: true, candidates: true, resolutions: true },
+    });
+    expect(stepperEvent.aliases.map(({ sourceId }) => sourceId).sort()).toEqual(
+      [String(manualWorkout.id), String(deviceWorkout.id)].sort(),
+    );
+    expect(stepperEvent.currentSource).toBe("bodycast-stepper-mechanical");
+    expect(stepperEvent.currentKcal).toBeGreaterThan(0);
+    const firstMaterializedCounts = {
+      aliases: stepperEvent.aliases.length,
+      candidates: stepperEvent.candidates.length,
+      resolutions: stepperEvent.resolutions.length,
+      revision: stepperEvent.resolutionRevision,
+    };
+
+    const readBuiltDay = async (date: string) => {
+      const sources = await repository.loadSources(date, date, "Europe/Bratislava");
+      return buildSimulationDays({
+        from: date,
+        to: date,
+        sources,
+        modelVersion: version,
+        timeZone: "Europe/Bratislava",
+      })[0]!;
+    };
+    const strengthBuilt = await readBuiltDay(strengthDate);
+    expect(strengthBuilt.input.workoutActivity?.events).toHaveLength(1);
+    const strengthConsumption = spend(strengthBuilt.input.workoutActivity?.events);
+    expect(strengthConsumption.workoutActivityKcalPerDay).toBe(strengthEvent.currentKcal);
+    expect(strengthConsumption.workoutEnergyResolution?.perEvent).toMatchObject([
+      { source: "bodycast-strength-estimate", kcal: strengthEvent.currentKcal },
+    ]);
+
+    const stepperBuilt = await readBuiltDay(stepperDate);
+    expect(stepperBuilt.input.workoutActivity?.events).toHaveLength(1);
+    const stepperConsumption = spend(stepperBuilt.input.workoutActivity?.events);
+    expect(stepperConsumption.workoutActivityKcalPerDay).toBe(stepperEvent.currentKcal);
+    expect(stepperConsumption.workoutEnergyResolution?.perEvent).toMatchObject([
+      { source: "mechanical-stepper", kcal: stepperEvent.currentKcal },
+    ]);
+
+    await materializeActiveEnergyCandidatesV1(1);
+    const repeatedStepperEvent = await prisma.activeEnergyCanonicalEvent.findUniqueOrThrow({
+      where: { id: stepperEvent.id },
+      include: { aliases: true, candidates: true, resolutions: true },
+    });
+    expect({
+      aliases: repeatedStepperEvent.aliases.length,
+      candidates: repeatedStepperEvent.candidates.length,
+      resolutions: repeatedStepperEvent.resolutions.length,
+      revision: repeatedStepperEvent.resolutionRevision,
+    }).toEqual(firstMaterializedCounts);
+    const eventsForBothStepperAliases = await prisma.activeEnergyCanonicalEvent.findMany({
+      where: { profileId: 1, aliases: { some: { OR: stepperAliases } }, supersededByEventId: null },
+    });
+    expect(eventsForBothStepperAliases).toHaveLength(1);
+  }, 120_000);
+
+  it("keeps Strength freshness symmetric for absent, incomplete, blocked, and complete model days", async () => {
+    const date = "2091-04-08";
+    const sampleAt = new Date("2091-04-08T06:30:00.000Z");
+    await day(date, 81);
+    await prisma.healthMetricSample.create({
+      data: { date, metric: "weight-kg", source: "apple-health-shortcut", timestamp: sampleAt, value: 81 },
+    });
+    const prepared = prepareEpisodeInitialization({
+      profile: modelProfile,
+      days: stableSourceDays({ count: 90, endDate: date }),
+      startDate: date,
+      timezone: "Europe/Bratislava",
+    });
+    const freshnessEpisode = await repository.createPrepared(prepared);
+    await prisma.modelEpisode.update({ where: { id: freshnessEpisode.id }, data: { latestModeledDate: date } });
+    let sessionId: number | null = null;
+
+    const readFreshness = async () => {
+      const sources = await repository.loadSources(date, date);
+      const session = sources.webOnlyStrengthSessions?.find((candidate) => candidate.sessionId === sessionId);
+      return session?.bodyCastEstimateFresh ?? false;
+    };
+    const readFingerprint = async () => {
+      if (sessionId === null) throw new Error("Strength session fixture was not created");
+      const row = await prisma.experimentalStrengthEnergyShadow.findUniqueOrThrow({ where: { sessionId } });
+      return (row.result as { inputFingerprint: string }).inputFingerprint;
+    };
+    const recordAndAssertFresh = async () => {
+      if (sessionId === null) throw new Error("Strength session fixture was not created");
+      await recordExperimentalStrengthEnergyShadowBySessionId({ sessionId, profileId: 1 });
+      expect(await readFreshness()).toBe(true);
+      return readFingerprint();
+    };
+
+    try {
+      const session = await prisma.strengthDiarySession.create({
+        data: {
+          programId,
+          programVersionId: versionId,
+          status: "COMPLETED",
+          entryMode: "LIVE",
+          webStartedAt: new Date("2091-04-08T07:00:00.000Z"),
+          webEndedAt: new Date("2091-04-08T08:00:00.000Z"),
+          effectiveAccountingAt: new Date("2091-04-08T07:00:00.000Z"),
+          accountingTimeZone: "Europe/Bratislava",
+          accountingTimeZoneProvenance: "client-session",
+          exercises: {
+            create: [{
+              sortOrder: 0,
+              snapshotExerciseName: exerciseName,
+              plannedSets: 1,
+              resistanceType: "BODYWEIGHT",
+              sets: { create: [{
+                setNumber: 1,
+                reps: 8,
+                weightKg: 60,
+                completedAt: new Date("2091-04-08T07:30:00.000Z"),
+              }] },
+            }],
+          },
+        },
+      });
+      sessionId = session.id;
+      const training = new TrainingService(prisma);
+      const accounting = await training.refreshSessionAccounting(session.id, 1, `strength-model-day-freshness-${session.id}`);
+      expect(accounting.activeEnergyMassReference?.reference).toMatchObject({ status: "observed", valueKg: 81 });
+
+      // No DailyModelState is an explicit null dependency and remains deterministic.
+      const absentFingerprint = await recordAndAssertFresh();
+      expect(await recordAndAssertFresh()).toBe(absentFingerprint);
+
+      for (const status of ["incomplete", "blocked"] as const) {
+        await prisma.dailyModelState.upsert({
+          where: { episodeId_date: { episodeId: freshnessEpisode.id, date } },
+          create: {
+            episodeId: freshnessEpisode.id,
+            date,
+            status,
+            sourceQuality: {},
+            missingFields: [],
+            modelVersion: freshnessEpisode.modelVersion,
+            dynamicRmrKcalPerDay: 1_420,
+          },
+          update: { status, dynamicRmrKcalPerDay: 1_420 },
+        });
+        const firstFingerprint = await recordAndAssertFresh();
+        expect(await recordAndAssertFresh()).toBe(firstFingerprint);
+        await prisma.dailyModelState.update({
+          where: { episodeId_date: { episodeId: freshnessEpisode.id, date } },
+          data: { dynamicRmrKcalPerDay: 1_610 },
+        });
+        // RMR from non-complete model days is not used by the MET fallback.
+        expect(await readFreshness()).toBe(true);
+        expect(await recordAndAssertFresh()).toBe(firstFingerprint);
+      }
+
+      await prisma.dailyModelState.update({
+        where: { episodeId_date: { episodeId: freshnessEpisode.id, date } },
+        data: { status: "complete", dynamicRmrKcalPerDay: 1_610 },
+      });
+      const completeFingerprint = await recordAndAssertFresh();
+      await prisma.dailyModelState.update({
+        where: { episodeId_date: { episodeId: freshnessEpisode.id, date } },
+        data: { dynamicRmrKcalPerDay: 1_720 },
+      });
+      // A complete-day RMR change affects the persisted MET fallback fingerprint.
+      expect(await readFreshness()).toBe(false);
+      const refreshedFingerprint = await recordAndAssertFresh();
+      expect(refreshedFingerprint).not.toBe(completeFingerprint);
+      expect(await recordAndAssertFresh()).toBe(refreshedFingerprint);
+    } finally {
+      if (sessionId !== null) {
+        await prisma.activeEnergyCanonicalEvent.deleteMany({
+          where: { profileId: 1, aliases: { some: { sourceType: "strength-session", sourceId: String(sessionId) } } },
+        });
+        await prisma.experimentalStrengthEnergyShadow.deleteMany({ where: { sessionId } });
+        await prisma.strengthDiarySession.deleteMany({ where: { id: sessionId } });
+      }
+      await prisma.modelEpisode.deleteMany({ where: { id: freshnessEpisode.id } });
+      await prisma.healthMetricSample.deleteMany({ where: { metric: "weight-kg", timestamp: sampleAt } });
+      await deleteDailyHealthRows(prisma, [date]);
+    }
   }, 60_000);
 
   it("replays loaded source days and rolls visibility back exactly", async () => {

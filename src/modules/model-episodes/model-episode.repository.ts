@@ -22,6 +22,7 @@ import { unknownIntervalDurationDays } from "./unknown-intervals";
 import {
   strengthEstimateFreshV1,
   strengthInputFingerprintV1,
+  strengthModelDayFingerprintInputsV1,
   strengthSetFingerprintV1,
 } from "@/modules/training/strength-publication-v1";
 import { EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION } from "@/modules/training/experimental-strength-active-energy-v1";
@@ -198,6 +199,14 @@ function strengthEstimatorInputs(input: {
       && (episode.latestModeledDate === null || modelDate <= episode.latestModeledDate)
     ? input.modelDays.find((candidate) => candidate.episodeId === episode.id && candidate.date === modelDate) ?? null
     : null;
+  const modelDayFingerprintInputs = strengthModelDayFingerprintInputsV1(modelDay
+    ? {
+      status: modelDay.status,
+      dynamicRmrKcalPerDay: typeof modelDay.dynamicRmrKcalPerDay === "number"
+        ? modelDay.dynamicRmrKcalPerDay : null,
+      updatedAt: modelDay.updatedAt,
+    }
+    : null);
   return {
     entryMode: input.session.entryMode,
     startAt: input.session.matchedWorkout?.startAt.toISOString() ?? input.session.webStartedAt?.toISOString() ?? null,
@@ -214,8 +223,7 @@ function strengthEstimatorInputs(input: {
     modelEpisodeUpdatedAt: episode?.updatedAt.toISOString() ?? null,
     modelTimeZone: context.timeZone,
     modelDate,
-    modelDayRmrKcalPerDay: modelDay?.status === "complete" ? modelDay.dynamicRmrKcalPerDay : null,
-    modelDayUpdatedAt: modelDay?.status === "complete" ? modelDay.updatedAt.toISOString() : null,
+    ...modelDayFingerprintInputs,
   };
 }
 

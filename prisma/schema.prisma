@@ -274,6 +274,7 @@ model Workout {
   provisionalForGroups StepperReconciliationGroup[] @relation("ReconciliationProvisional")
   experimentalStepperActiveEnergyShadow ExperimentalStepperActiveEnergyShadow?
   experimentalStepperGlycogenDemandShadow ExperimentalStepperGlycogenDemandShadow?
+  activeEnergyAliases ActiveEnergyEventAlias[]
 
   @@unique([dailyHealthDataId, sourceIdentity])
   @@index([dailyHealthDataId])
@@ -1142,4 +1143,85 @@ model ActivationRollbackEntry {
   createdAt      DateTime @default(now()) @db.Timestamptz(3)
 
   @@index([generationId])
+}
+
+/// Canonical logical activity event. Evidence rows are kept separately from
+/// the selected revision so changing precedence never destroys source data.
+model ActiveEnergyCanonicalEvent {
+  id                           Int                              @id @default(autoincrement())
+  profileId                    Int                              @default(1)
+  logicalEventKey              String                           @db.VarChar(180)
+  eventKind                    String                           @db.VarChar(32)
+  occurrenceAt                 DateTime                         @db.Timestamptz(3)
+  modelDate                    String                           @db.VarChar(10)
+  modelTimeZone                String                           @db.VarChar(100)
+  inputFingerprint             String                           @db.VarChar(64)
+  resolutionRevision           Int                              @default(0)
+  isStale                      Boolean                          @default(true)
+  supersededByEventId          Int?
+  currentResolutionFingerprint String?                          @db.VarChar(64)
+  currentSource                String?                          @db.VarChar(40)
+  currentKcal                  Float?
+  currentProvenance            Json?
+  createdAt                    DateTime                         @default(now()) @db.Timestamptz(3)
+  updatedAt                    DateTime                         @updatedAt @db.Timestamptz(3)
+  aliases                      ActiveEnergyEventAlias[]
+  candidates                   ActiveEnergyCandidate[]
+  resolutions                  ActiveEnergyResolutionRevision[]
+  supersededBy                 ActiveEnergyCanonicalEvent?      @relation("ActiveEnergyEventSupersession", fields: [supersededByEventId], references: [id], onDelete: SetNull)
+  supersededEvents             ActiveEnergyCanonicalEvent[]     @relation("ActiveEnergyEventSupersession")
+
+  @@unique([profileId, logicalEventKey])
+  @@index([profileId, modelDate])
+  @@index([profileId, occurrenceAt])
+  @@index([supersededByEventId])
+}
+
+/// Stable source aliases make a matched Strength session + Workout one event.
+model ActiveEnergyEventAlias {
+  id         Int                        @id @default(autoincrement())
+  profileId  Int
+  sourceType String                     @db.VarChar(32)
+  sourceId   String                     @db.VarChar(120)
+  eventId    Int
+  createdAt  DateTime                   @default(now()) @db.Timestamptz(3)
+  event      ActiveEnergyCanonicalEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  workout    Workout?                   @relation(fields: [workoutId], references: [id], onDelete: Cascade)
+  workoutId  Int?
+
+  @@unique([profileId, sourceType, sourceId])
+  @@index([eventId])
+}
+
+/// Raw/model candidate evidence. It does not itself define canonical kcal.
+model ActiveEnergyCandidate {
+  id                Int                        @id @default(autoincrement())
+  eventId           Int
+  source            String                     @db.VarChar(40)
+  sourceIdentity    String                     @db.VarChar(180)
+  sourceFingerprint String                     @db.VarChar(64)
+  availability      String                     @db.VarChar(20)
+  valueKcal         Float?
+  provenance        Json
+  createdAt         DateTime                   @default(now()) @db.Timestamptz(3)
+  event             ActiveEnergyCanonicalEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, source, sourceIdentity, sourceFingerprint])
+  @@index([eventId, createdAt])
+}
+
+/// Append-only canonical source selection history (one row per CAS revision).
+model ActiveEnergyResolutionRevision {
+  id                    Int                        @id @default(autoincrement())
+  eventId               Int
+  revision              Int
+  resolutionFingerprint String                     @db.VarChar(64)
+  source                String                     @db.VarChar(40)
+  valueKcal             Float?
+  provenance            Json
+  createdAt             DateTime                   @default(now()) @db.Timestamptz(3)
+  event                 ActiveEnergyCanonicalEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, revision])
+  @@index([eventId, resolutionFingerprint])
 }

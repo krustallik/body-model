@@ -74,8 +74,29 @@ describe("canonical activity policy v1", () => {
       manualKcalPresent: true,
       mechanicalKcal: 400,
     });
+    expect(selected.source).toBe("bodycast-stepper-mechanical");
+    expect(selected.selectedKcal).toBe(400);
+  });
+
+  it("uses manual kcal before device only when the BodyCast estimate is unavailable", async () => {
+    const { resolveEventEnergyV1 } = await import("@/model/activity/canonical-activity-policy-v1");
+    const selected = resolveEventEnergyV1({
+      classification: "stair-climbing", activeEnergyKcal: 260,
+      manualActiveKcal: 180, manualActiveKcalPresent: true,
+      mechanicalStepperKcal: null,
+    });
     expect(selected.source).toBe("manual-kcal");
     expect(selected.selectedKcal).toBe(180);
+  });
+
+  it("uses the Strength MET fallback before manual and device values", async () => {
+    const { selectStrengthEnergyV1 } = await import("@/model/activity/canonical-activity-policy-v1");
+    const selected = selectStrengthEnergyV1({
+      bodyCastKcal: null, bodyCastFresh: false, sessionCompleted: true,
+      bodyCastMetKcal: 210, manualKcal: 180, manualKcalPresent: true, garminKcal: 260,
+    });
+    expect(selected.source).toBe("bodycast-strength-met-fallback");
+    expect(selected.selectedKcal).toBe(210);
   });
 
   it("treats 200 plus unavailable as a known subtotal, not full coverage", () => {

@@ -21,7 +21,6 @@ async function modelDateForInstant(
   // session-accounting timezones never define a replay date boundary.
   return episodeTimeContextForInstantV1(episodes, instant).date;
 }
-
 /** Must be called in the source writer's transaction, before that transaction commits. */
 export async function invalidateActiveEnergySourcesInTransactionV1(input: {
   tx: DbTransaction;

@@ -200,36 +200,43 @@ describe("history workout detail eligibility", () => {
 
 describe("HistoryCharts workout gaps", () => {
   it("shows zero training on days with no event and preserves unknown duration for events", () => {
-    const html = renderToStaticMarkup(
-      <HistoryCharts
-        days={[
-          day("2026-09-01", {
-            walkingDistanceKm: 4,
-            totalWorkoutMinutes: 60,
-            workoutSource: "workouts",
-          }),
-          day("2026-09-02", {
-            walkingDistanceKm: 3,
-            totalWorkoutMinutes: null,
-            workoutSource: "workouts",
-          }),
-          day("2026-09-03", {
-            walkingDistanceKm: 5,
-            totalWorkoutMinutes: 70,
-            workoutSource: "workouts",
-          }),
-        ]}
-      />,
-    );
-    expect(html).toContain('data-line="totalWorkoutMinutes"');
-    expect(html).toContain('data-connect-nulls="true"');
-    const charts = [...html.matchAll(/data-chart="([^"]*)"/g)].map((match) => (
-      JSON.parse(match[1]!.replace(/&quot;/g, '"')) as Array<{ totalWorkoutMinutes: number | null }>
-    ));
-    const movement = charts.find((rows) => rows.some((row) => (
-      Object.prototype.hasOwnProperty.call(row, "totalWorkoutMinutes")
-    )));
-    expect(movement?.some((row) => row.totalWorkoutMinutes === null)).toBe(true);
-    expect(movement?.some((row) => row.totalWorkoutMinutes === 0)).toBe(true);
+    // Keep the fixed September fixture inside HistoryCharts' default 30-day range.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-03T12:00:00.000Z"));
+    try {
+      const html = renderToStaticMarkup(
+        <HistoryCharts
+          days={[
+            day("2026-09-01", {
+              walkingDistanceKm: 4,
+              totalWorkoutMinutes: 60,
+              workoutSource: "workouts",
+            }),
+            day("2026-09-02", {
+              walkingDistanceKm: 3,
+              totalWorkoutMinutes: null,
+              workoutSource: "workouts",
+            }),
+            day("2026-09-03", {
+              walkingDistanceKm: 5,
+              totalWorkoutMinutes: 70,
+              workoutSource: "workouts",
+            }),
+          ]}
+        />,
+      );
+      expect(html).toContain('data-line="totalWorkoutMinutes"');
+      expect(html).toContain('data-connect-nulls="true"');
+      const charts = [...html.matchAll(/data-chart="([^"]*)"/g)].map((match) => (
+        JSON.parse(match[1]!.replace(/&quot;/g, '"')) as Array<{ totalWorkoutMinutes: number | null }>
+      ));
+      const movement = charts.find((rows) => rows.some((row) => (
+        Object.prototype.hasOwnProperty.call(row, "totalWorkoutMinutes")
+      )));
+      expect(movement?.some((row) => row.totalWorkoutMinutes === null)).toBe(true);
+      expect(movement?.some((row) => row.totalWorkoutMinutes === 0)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

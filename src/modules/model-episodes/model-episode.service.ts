@@ -281,6 +281,9 @@ function unchangedActiveEpisodeResult(
     continuityStatus: current.continuityStatus,
     recoveryRequired: current.recoveryRequired,
     unknownIntervals: current.unknownIntervals,
+    // An unchanged active episode has no replay; use its persisted start as
+    // the conservative boundary for post-replay candidate dependencies.
+    effectiveReplayFromDate: episode.startDate,
     current,
   };
 }
@@ -508,6 +511,12 @@ async function recalculateModelEpisodeProduction(
       continuityStatus: calculation.continuityStatus,
       recoveryRequired: calculation.unknownIntervals.length > 0,
       unknownIntervals: calculation.unknownIntervals,
+      // Candidate refresh dependency must use the effective replay boundary.
+      // An invalid D-1 predecessor forces a full replay from episode.startDate,
+      // which can create the mass consumed by a Stepper workout on D.
+      effectiveReplayFromDate: calculation.replayMode === "suffix"
+        ? resume?.fromDate ?? episode.startDate
+        : episode.startDate,
       current: status,
     };
   }, TRANSACTION_OPTIONS);
@@ -532,7 +541,12 @@ export async function recalculateModelEpisode(
   input: { episodeId?: number; now?: Date } = {},
   client: PrismaClient = prisma,
 ) {
-  if (client !== prisma) return recalculateModelEpisodeProduction(input, client);
+  if (client !== prisma) {
+    const production = await recalculateModelEpisodeProduction(input, client);
+    const { effectiveReplayFromDate: _effectiveReplayFromDate, ...result } = production;
+    void _effectiveReplayFromDate;
+    return result;
+  }
   const status = await getModelStatus(input.episodeId, client);
   const profileId = 1;
   const materialized = await materializeActiveEnergyCandidatesV1(profileId);
@@ -541,14 +555,13 @@ export async function recalculateModelEpisode(
     + materialized.strengthSessionIds.length + materialized.strengthWorkoutIds.length;
   const maxRefreshPasses = Math.max(2, eligibleRefreshes + 2);
   for (let pass = 0; pass < maxRefreshPasses; pass += 1) {
-    const lifecycle = await prisma.physiologyV7Lifecycle.findUnique({
-      where: { profileId },
-      select: { productionStaleFromDate: true },
-    });
-    const replayFromDate = lifecycle?.productionStaleFromDate ?? status.episodeStartDate;
-    const result = await recalculateModelEpisodeProduction({ ...input, episodeId: status.episodeId }, client);
-    const changedDates = await refreshCandidatesAfterProductionV1(profileId, replayFromDate);
-    if (changedDates.length === 0) return result;
+    const production = await recalculateModelEpisodeProduction({ ...input, episodeId: status.episodeId }, client);
+    const changedDates = await refreshCandidatesAfterProductionV1(profileId, production.effectiveReplayFromDate);
+    if (changedDates.length === 0) {
+      const { effectiveReplayFromDate: _effectiveReplayFromDate, ...result } = production;
+      void _effectiveReplayFromDate;
+      return result;
+    }
     await invalidateActiveEnergyResolutionDatesV1(profileId, changedDates);
   }
   throw new Error("Stepper historical mass candidates did not converge after production replay");

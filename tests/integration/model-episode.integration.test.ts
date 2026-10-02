@@ -18,6 +18,11 @@ import { solveModelEpisodeTarget } from "@/modules/model-target-solver/model-tar
 import { getModelDiagnostics } from "@/modules/model-diagnostics/model-diagnostics.service";
 import { calculateStrengthActivity } from "@/model/activity/strength";
 import { POST as postForecastAction } from "@/app/api/forecast/action/route";
+import { experimentalForecastModelEpisode } from "@/modules/experimental-forecast-v1/service";
+import { rebuildUnifiedExperimentalPhysiologyStateV1 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
+import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
+import { STAIR_CLIMBING_TYPE } from "@/modules/health/expand-training-workouts";
+import { recordExperimentalStepperActiveEnergyShadow } from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
 
 const prisma = new PrismaClient();
 const episodeStart = "2041-03-20";
@@ -65,6 +70,11 @@ function goalPlanningRequest(targetValueKg: number, goalDate: string): GoalPlann
 }
 
 async function removeTestData(): Promise<void> {
+  await prisma.activeEnergyCanonicalEvent.deleteMany({
+    where: { profileId: 1, modelDate: { gte: testRangeStart, lte: finalDate } },
+  });
+  await prisma.healthActivityInterval.deleteMany({ where: { date: { gte: testRangeStart, lte: finalDate } } });
+  await prisma.healthMetricSample.deleteMany({ where: { date: { gte: testRangeStart, lte: finalDate } } });
   await prisma.modelEpisode.deleteMany({
     where: { startDate: { gte: testRangeStart, lte: finalDate } },
   });
@@ -458,6 +468,246 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     })).toEqual(beforeStates);
     expect(await prisma.modelRecoveryRun.count({ where: { episodeId } })).toBe(0);
   });
+
+  it("uses only current production and Unified generations for the Forecast V1 historical anchor", async () => {
+    const currentProduction = await recalculateModelEpisode({ episodeId, now });
+    expect(currentProduction.episodeId).toBe(episodeId);
+    const productionLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
+    expect(productionLifecycle.productionPublishedGeneration).toBe(productionLifecycle.invalidationGeneration);
+    expect(productionLifecycle.productionStaleFromDate).toBeNull();
+
+    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1, fromDate: episodeStart, toDate: finalDate });
+    const request = { episodeId, horizonDays: 7, seed: 443, scenario: fixedForecastScenario, now };
+    const currentAnchor = await experimentalForecastModelEpisode(request, prisma);
+    expect(currentAnchor).not.toBeNull();
+    expect(currentAnchor && "dates" in currentAnchor && currentAnchor.dates[0]?.date).toBe("2041-03-31");
+    const unifiedLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
+    expect(unifiedLifecycle.unifiedPublishedGeneration).toBe(unifiedLifecycle.invalidationGeneration);
+
+    await prisma.$transaction(async (tx) => {
+      await new PhysiologyV7PersistenceRepository(tx).invalidate(1, finalDate);
+    });
+    const invalidatedAnchor = await experimentalForecastModelEpisode(request, prisma);
+    expect(invalidatedAnchor).toBeNull();
+
+    await recalculateModelEpisode({ episodeId, now });
+    const productionOnly = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
+    expect(productionOnly.productionPublishedGeneration).toBe(productionOnly.invalidationGeneration);
+    expect(productionOnly.productionStaleFromDate).toBeNull();
+    expect(productionOnly.unifiedPublishedGeneration).not.toBe(productionOnly.invalidationGeneration);
+    expect(await experimentalForecastModelEpisode(request, prisma)).toBeNull();
+
+    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1, fromDate: finalDate, toDate: finalDate });
+    const republishedAnchor = await experimentalForecastModelEpisode(request, prisma);
+    expect(republishedAnchor).not.toBeNull();
+    expect(republishedAnchor && "dates" in republishedAnchor && republishedAnchor.dates[0]?.date).toBe("2041-03-31");
+  }, 60_000);
+
+  it("refreshes an unavailable Stepper candidate after replay creates its D-1 model mass", async () => {
+    const workoutDate = finalDate;
+    const predecessorDate = addCalendarDays(workoutDate, -1);
+    const workoutStart = new Date("2041-03-30T08:00:00.000Z");
+    const workoutEnd = new Date("2041-03-30T08:20:00.000Z");
+    const massWindowStart = addCalendarDays(workoutDate, -7);
+    await prisma.dailyHealthData.updateMany({
+      where: { date: { gte: massWindowStart, lte: workoutDate } },
+      data: { weightKg: null },
+    });
+    expect(await prisma.healthMetricSample.count({
+      where: { metric: "weight-kg", date: { gte: massWindowStart, lte: addCalendarDays(workoutDate, 7) } },
+    })).toBe(0);
+    await prisma.workout.deleteMany({ where: { sourceIdentity: "active-energy-stepper-post-replay" } });
+    const health = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: workoutDate } });
+    const workout = await prisma.workout.create({
+      data: {
+        dailyHealthDataId: health.id,
+        sourceIdentity: "active-energy-stepper-post-replay",
+        type: STAIR_CLIMBING_TYPE,
+        startAt: workoutStart,
+        endAt: workoutEnd,
+        durationMinutes: 20,
+        activeEnergyKcal: 90,
+      },
+    });
+    await prisma.healthActivityInterval.createMany({
+      data: [400, 350, 450, 400].map((value, index) => ({
+        date: workoutDate,
+        metric: "steps",
+        startAt: new Date(workoutStart.getTime() + index * 5 * 60_000),
+        endAt: new Date(workoutStart.getTime() + (index + 1) * 5 * 60_000),
+        value,
+        sourceFingerprint: `active-energy-post-replay-${index}`,
+      })),
+    });
+    const lifecycle = await prisma.$transaction(async (tx) => {
+      const repository = new PhysiologyV7PersistenceRepository(tx);
+      await repository.ensureLifecycle(1, workoutDate);
+      return tx.physiologyV7Lifecycle.update({
+        where: { profileId: 1 },
+        data: {
+          staleFromDate: workoutDate,
+          productionStaleFromDate: workoutDate,
+          currentThroughDate: predecessorDate,
+          productionPublishedGeneration: null,
+          unifiedPublishedGeneration: null,
+          invalidationGeneration: { increment: 1 },
+        },
+      });
+    });
+    const initialGeneration = lifecycle.invalidationGeneration;
+
+    await recordExperimentalStepperActiveEnergyShadow({ workoutId: workout.id, profileId: 1 });
+    const initialShadow = await prisma.experimentalStepperActiveEnergyShadow.findUniqueOrThrow({ where: { workoutId: workout.id } });
+    expect(initialShadow.result).toMatchObject({
+      availability: "unavailable",
+      unavailableReason: "missing-body-mass",
+      massReference: { status: "unavailable" },
+    });
+    const beforeResolution = await prisma.activeEnergyCanonicalEvent.findFirstOrThrow({
+      where: { profileId: 1, aliases: { some: { sourceType: "workout", sourceId: String(workout.id) } } },
+    });
+    expect(beforeResolution.currentSource).toBe("device-kcal");
+
+    const result = await recalculateModelEpisode({ episodeId, now });
+    expect(result.episodeId).toBe(episodeId);
+    expect(result.latestModeledDate).toBe(finalDate);
+    const predecessor = await prisma.dailyModelState.findUniqueOrThrow({
+      where: { episodeId_date: { episodeId, date: predecessorDate } },
+    });
+    expect(predecessor.status).toBe("complete");
+    expect(predecessor.filteredWeightKg).not.toBeNull();
+    const refreshedShadow = await prisma.experimentalStepperActiveEnergyShadow.findUniqueOrThrow({ where: { workoutId: workout.id } });
+    const initialResult = initialShadow.result as { inputFingerprint: string };
+    const refreshedResult = refreshedShadow.result as {
+      availability: string;
+      estimatedActiveKcal: number | null;
+      inputFingerprint: string;
+      massReference: { status: string; sourceDate: string | null; sourceId: string | null };
+    };
+    expect(refreshedResult.availability).toBe("available");
+    expect(refreshedResult.estimatedActiveKcal).toBeGreaterThan(0);
+    expect(refreshedResult.inputFingerprint).not.toBe(initialResult.inputFingerprint);
+    expect(refreshedResult.massReference).toMatchObject({ status: "model-estimated", sourceDate: predecessorDate });
+    expect(refreshedResult.massReference.sourceId).toContain("daily-model-state:");
+
+    const finalEvent = await prisma.activeEnergyCanonicalEvent.findFirstOrThrow({
+      where: { profileId: 1, aliases: { some: { sourceType: "workout", sourceId: String(workout.id) } } },
+      include: { resolutions: { orderBy: { revision: "asc" } } },
+    });
+    expect(finalEvent.currentSource).toBe("bodycast-stepper-mechanical");
+    expect(finalEvent.currentKcal).toBe(refreshedResult.estimatedActiveKcal);
+    expect(finalEvent.resolutions.at(-1)?.provenance).toMatchObject({
+      evidence: { massReference: { status: "model-estimated", sourceDate: predecessorDate } },
+    });
+    const finalLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
+    expect(finalLifecycle.productionPublishedGeneration).toBe(finalLifecycle.invalidationGeneration);
+    expect(finalLifecycle.productionStaleFromDate).toBeNull();
+    expect(finalLifecycle.invalidationGeneration - initialGeneration).toBeLessThanOrEqual(4);
+
+    await prisma.activeEnergyCanonicalEvent.deleteMany({ where: { id: finalEvent.id } });
+    await prisma.workout.delete({ where: { id: workout.id } });
+    await prisma.healthActivityInterval.deleteMany({ where: { sourceFingerprint: { startsWith: "active-energy-post-replay-" } } });
+  }, 60_000);
+
+  it("persists a compatible production suffix without touching its prefix and falls back to full replay when incompatible", async () => {
+    const dirtyDate = "2041-03-27";
+    const predecessorDate = addCalendarDays(dirtyDate, -1);
+    await recalculateModelEpisode({ episodeId, now });
+
+    const readStates = () => prisma.dailyModelState.findMany({
+      where: { episodeId }, orderBy: { date: "asc" },
+    });
+    const prefixProjection = (rows: Awaited<ReturnType<typeof readStates>>) => rows
+      .filter((row) => row.date < dirtyDate)
+      .map((row) => ({
+        id: row.id,
+        date: row.date,
+        status: row.status,
+        sourceQuality: row.sourceQuality,
+        filteredWeightKg: row.filteredWeightKg,
+        weightFilterVarianceKg2: row.weightFilterVarianceKg2,
+        fatMassKg: row.fatMassKg,
+        leanTissueKg: row.leanTissueKg,
+        glycogenKg: row.glycogenKg,
+        dynamicRmrKcalPerDay: row.dynamicRmrKcalPerDay,
+        updatedAt: row.updatedAt,
+      }));
+    const outputProjection = (rows: Awaited<ReturnType<typeof readStates>>) => rows
+      .filter((row) => row.date >= dirtyDate)
+      .map((row) => Object.fromEntries(Object.entries({
+          id: row.id,
+          date: row.date,
+          status: row.status,
+          modelVersion: row.modelVersion,
+          sourceQuality: row.sourceQuality,
+          startWeightKg: row.startWeightKg,
+          endWeightKg: row.endWeightKg,
+          filteredWeightKg: row.filteredWeightKg,
+          weightFilterVarianceKg2: row.weightFilterVarianceKg2,
+          fatMassKg: row.fatMassKg,
+          leanTissueKg: row.leanTissueKg,
+          glycogenKg: row.glycogenKg,
+          extracellularFluidDeviationLiters: row.extracellularFluidDeviationLiters,
+          adaptiveThermogenesisKcalPerDay: row.adaptiveThermogenesisKcalPerDay,
+          dynamicRmrKcalPerDay: row.dynamicRmrKcalPerDay,
+          tefKcalPerDay: row.tefKcalPerDay,
+          activityKcalPerDay: row.activityKcalPerDay,
+          energyIntakeKcal: row.energyIntakeKcal,
+          energyExpenditureKcal: row.energyExpenditureKcal,
+          energyBalanceKcal: row.energyBalanceKcal,
+          deltaFatKg: row.deltaFatKg,
+          deltaLeanTissueKg: row.deltaLeanTissueKg,
+          deltaGlycogenKg: row.deltaGlycogenKg,
+        }).map(([key, value]) => [key, typeof value === "number" ? Number(value.toFixed(9)) : value])));
+    const invalidate = async (date: string) => prisma.$transaction(async (tx) => {
+      await new PhysiologyV7PersistenceRepository(tx).invalidate(1, date);
+    });
+
+    const fullRows = await readStates();
+    expect(fullRows.find((row) => row.date === predecessorDate)?.weightFilterVarianceKg2).not.toBeNull();
+    const prefixBeforeSuffix = prefixProjection(fullRows);
+    await invalidate(dirtyDate);
+    await recalculateModelEpisode({ episodeId, now });
+    const suffixRows = await readStates();
+    expect(prefixProjection(suffixRows)).toEqual(prefixBeforeSuffix);
+
+    const suffixOutput = outputProjection(suffixRows);
+    await invalidate(episodeStart);
+    await recalculateModelEpisode({ episodeId, now });
+    const equivalentFullRows = await readStates();
+    expect(outputProjection(equivalentFullRows)).toEqual(suffixOutput);
+
+    const predecessorBeforeNullVariance = equivalentFullRows.find((row) => row.date === predecessorDate)!;
+    await prisma.dailyModelState.update({
+      where: { episodeId_date: { episodeId, date: predecessorDate } },
+      data: { weightFilterVarianceKg2: null },
+    });
+    await invalidate(dirtyDate);
+    await recalculateModelEpisode({ episodeId, now });
+    const nullVarianceFallback = await readStates();
+    expect(nullVarianceFallback.find((row) => row.date === predecessorDate)?.weightFilterVarianceKg2).not.toBeNull();
+    expect(nullVarianceFallback.find((row) => row.date === predecessorDate)?.updatedAt.getTime())
+      .toBeGreaterThan(predecessorBeforeNullVariance.updatedAt.getTime());
+
+    const beforeCalibrationFallback = await readStates();
+    await prisma.modelEpisode.update({
+      where: { id: episodeId }, data: { calibrationDiagnostics: { calibrationInputFingerprint: "incompatible-calibration-fixture" } },
+    });
+    await invalidate(dirtyDate);
+    await recalculateModelEpisode({ episodeId, now });
+    const calibrationFallback = await readStates();
+    expect(calibrationFallback.find((row) => row.date === predecessorDate)?.updatedAt.getTime())
+      .toBeGreaterThan(beforeCalibrationFallback.find((row) => row.date === predecessorDate)!.updatedAt.getTime());
+
+    const beforeModelVersionFallback = await readStates();
+    await prisma.modelEpisode.update({ where: { id: episodeId }, data: { modelVersion: "bodycast-physiology-v6" } });
+    await invalidate(dirtyDate);
+    await recalculateModelEpisode({ episodeId, now });
+    const modelVersionFallback = await readStates();
+    expect(modelVersionFallback.find((row) => row.date === predecessorDate)?.modelVersion).toBe("bodycast-physiology-v6");
+    expect(modelVersionFallback.find((row) => row.date === predecessorDate)?.updatedAt.getTime())
+      .toBeGreaterThan(beforeModelVersionFallback.find((row) => row.date === predecessorDate)!.updatedAt.getTime());
+  }, 120_000);
 
   it("solves a target read-only against PostgreSQL application state", async () => {
     const before = {

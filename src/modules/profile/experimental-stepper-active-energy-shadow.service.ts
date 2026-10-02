@@ -15,7 +15,13 @@ import {
 import { canonicalizeWorkoutStepperEvidenceV7 } from "@/model/activity/workout-stepper-v7";
 import { addCalendarDays, calendarDayIndex } from "@/modules/model-episodes/model-calendar";
 import { episodeTimeContextForInstantV1 } from "@/modules/model-episodes/episode-time-context-v1";
-import { resolveStepperHistoricalMassV1, type StepperObservedMassInputV1 } from "@/model/activity/stepper-historical-mass-v1";
+import {
+  resolveStepperHistoricalMassV1,
+  stableStepperMassProvenanceV1,
+  stepperActiveEnergyCandidateFingerprintV1,
+  stepperActiveEnergyInputFingerprintV1,
+  type StepperObservedMassInputV1,
+} from "@/model/activity/stepper-historical-mass-v1";
 import { persistActiveEnergyCanonicalResolutionV1 } from "@/model/activity/active-energy-canonical.repository";
 import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 import { adaptManualStepperEnergyV1 } from "@/modules/training/manual-stepper-fields-v1";
@@ -35,13 +41,6 @@ type ModelMassEpisodeV1 = {
 function stableReconciliationPairs<T extends { manualWorkoutId: number; garminWorkoutId: number }>(pairs: readonly T[]): T[] {
   return [...pairs].sort((left, right) => left.manualWorkoutId - right.manualWorkoutId
     || left.garminWorkoutId - right.garminWorkoutId);
-}
-
-function stableMassProvenance(provenance: ReturnType<typeof resolveStepperHistoricalMassV1>["provenance"]) {
-  if (provenance.status !== "model-estimated") return provenance;
-  const stable = { ...provenance };
-  delete stable.modelGeneration;
-  return stable;
 }
 
 async function loadStepperModelMassContextV1(
@@ -324,7 +323,7 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
       sourceRevision: group.sourceRevision, provisionalWorkoutId: group.provisionalWorkoutId,
       members: groupWorkouts.map((row) => [row.id, row.type, row.sourceIdentity, row.startAt.toISOString(), row.endAt.toISOString(), row.durationMinutes, row.activeEnergyKcal, row.manualActiveEnergyKcal, row.manualStepCount, row.updatedAt.toISOString()]),
     },
-    massProvenance: stableMassProvenance(mass.provenance),
+    massProvenance: stableStepperMassProvenanceV1(mass.provenance),
     snapshots: snapshots.map((row) => [row.id, row.receivedAt.toISOString(), row.syncedAt?.toISOString() ?? null, row.steps]),
     stepIntervals: stepIntervals.map((row) => [row.id, row.startAt.toISOString(), row.endAt.toISOString(), row.value.toString()]),
     heartRate: heartRateSamples.map((row) => [row.timestamp.toISOString(), row.bpm, row.source]),
@@ -336,9 +335,11 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
       initialMassKg: episode?.initialFilteredWeightKg ?? null,
     },
   };
-  const rawCandidateFingerprint = stableSha256(JSON.stringify(fingerprintInputs));
+  const rawCandidateFingerprint = stepperActiveEnergyInputFingerprintV1(fingerprintInputs);
   const inputFingerprint = rawCandidateFingerprint;
-  const sourceFingerprint = stableSha256(`${experimentalStepperActiveEnergyV1Fingerprint(result)}|${inputFingerprint}`);
+  const sourceFingerprint = stepperActiveEnergyCandidateFingerprintV1(
+    experimentalStepperActiveEnergyV1Fingerprint(result), inputFingerprint,
+  );
   const persisted = { ...result, massReference: mass.provenance, inputFingerprint };
   const manualSource = groupWorkouts.find((row) => row.sourceIdentity.startsWith(MANUAL_STEPPER_SOURCE_PREFIX)) ?? null;
   const deviceSource = group?.status === "pending" || group?.status === "ambiguous"
@@ -349,10 +350,10 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
     : adaptManualStepperEnergyV1({ manualStepCount: manualSource.manualStepCount, manualActiveEnergyKcal: null, bodyMassKg: mass.massKg }).mechanicalKcal;
   const candidates = group?.status === "ambiguous" ? [] : [
     ...(result.availability === "available" && result.estimatedActiveKcal !== null && mass.massKg !== null
-      ? [{ source: "bodycast-stepper-mechanical" as const, sourceIdentity: `stepper-shadow:${workout.id}`, sourceFingerprint, valueKcal: result.estimatedActiveKcal, provenance: { revision: EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION, massReference: stableMassProvenance(mass.provenance) } }]
+      ? [{ source: "bodycast-stepper-mechanical" as const, sourceIdentity: `stepper-shadow:${workout.id}`, sourceFingerprint, valueKcal: result.estimatedActiveKcal, provenance: { revision: EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION, massReference: stableStepperMassProvenanceV1(mass.provenance) } }]
       : []),
     ...(result.availability !== "available" && manualMechanical !== null && Number.isFinite(manualMechanical)
-      ? [{ source: "bodycast-stepper-mechanical" as const, sourceIdentity: `stepper-manual-steps:${manualSource!.id}`, sourceFingerprint: stableSha256(`${inputFingerprint}|manual-steps|${manualMechanical}`), valueKcal: manualMechanical, provenance: { source: "bodycast-manual-step-mechanical", workoutId: manualSource!.id, massReference: stableMassProvenance(mass.provenance) } }]
+      ? [{ source: "bodycast-stepper-mechanical" as const, sourceIdentity: `stepper-manual-steps:${manualSource!.id}`, sourceFingerprint: stableSha256(`${inputFingerprint}|manual-steps|${manualMechanical}`), valueKcal: manualMechanical, provenance: { source: "bodycast-manual-step-mechanical", workoutId: manualSource!.id, massReference: stableStepperMassProvenanceV1(mass.provenance) } }]
       : []),
     ...(manualSource?.manualActiveEnergyKcal !== null && manualSource?.manualActiveEnergyKcal !== undefined
       ? [{ source: "manual-kcal" as const, sourceIdentity: `workout:${manualSource.id}:manual`, sourceFingerprint: stableSha256(`manual|${manualSource.id}|${manualSource.manualActiveEnergyKcal}|${manualSource.updatedAt.toISOString()}`), valueKcal: manualSource.manualActiveEnergyKcal, provenance: { source: "user-entered-workout", workoutId: manualSource.id } }]
@@ -468,7 +469,7 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
         workout: { id: currentWorkout.id, type: currentWorkout.type, sourceIdentity: currentWorkout.sourceIdentity, startAt: currentWorkout.startAt.toISOString(), endAt: currentWorkout.endAt.toISOString(), durationMinutes: currentWorkout.durationMinutes, activeEnergyKcal: currentWorkout.activeEnergyKcal, manualActiveEnergyKcal: currentWorkout.manualActiveEnergyKcal, manualStepCount: currentWorkout.manualStepCount, updatedAt: currentWorkout.updatedAt.toISOString() },
         modelContext: { episodeId: currentEpisode?.id ?? null, modelVersion: currentEpisode?.modelVersion ?? null, modelDate: workoutDate, modelTimeZone },
         reconciliation: currentReconciliation,
-        massProvenance: stableMassProvenance(mass.provenance),
+        massProvenance: stableStepperMassProvenanceV1(mass.provenance),
         snapshots: currentSnapshots.map((row) => [row.id, row.receivedAt.toISOString(), row.syncedAt?.toISOString() ?? null, row.steps]),
         stepIntervals: currentIntervals.map((row) => [row.id, row.startAt.toISOString(), row.endAt.toISOString(), row.value.toString()]),
         heartRate: currentHr.map((row) => [row.timestamp.toISOString(), row.bpm, row.source]),

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { resolveStepperHistoricalMassV1, stepperMassCandidateDependsOnReplayV1, STEPPER_HISTORICAL_MASS_POLICY_V1 } from "@/model/activity/stepper-historical-mass-v1";
+import {
+  resolveStepperHistoricalMassV1,
+  stableStepperMassProvenanceV1,
+  stepperActiveEnergyCandidateFingerprintV1,
+  stepperActiveEnergyInputFingerprintV1,
+  stepperMassCandidateDependsOnReplayV1,
+  STEPPER_HISTORICAL_MASS_POLICY_V1,
+} from "@/model/activity/stepper-historical-mass-v1";
 
 const workoutAt = new Date("2026-03-29T12:00:00.000Z");
 const workoutDate = "2026-03-29";
@@ -112,5 +119,70 @@ describe("Stepper historical mass policy v1", () => {
     expect(stepperMassCandidateDependsOnReplayV1({
       workoutDate: "2026-03-30", replayFromDate: "2026-03-29", massStatus: "unavailable",
     })).toBe(true);
+  });
+
+  it("refreshes an unavailable candidate from newly published D-1 mass and changes its fingerprint", () => {
+    const beforeReplay = resolveStepperHistoricalMassV1({
+      workoutAt,
+      workoutDate,
+      timeZone: "Europe/Bratislava",
+      observations: [],
+      // An invalidated production prefix is deliberately not supplied as mass evidence.
+      modelEstimate: null,
+    });
+    expect(beforeReplay.provenance.status).toBe("unavailable");
+    expect(stepperMassCandidateDependsOnReplayV1({
+      workoutDate,
+      replayFromDate: "2026-03-28",
+      massStatus: beforeReplay.provenance.status,
+    })).toBe(true);
+
+    const afterReplay = resolveStepperHistoricalMassV1({
+      workoutAt,
+      workoutDate,
+      timeZone: "Europe/Bratislava",
+      observations: [],
+      modelEstimate: {
+        valueKg: 72.5,
+        episodeId: 9,
+        modelVersion: "v7",
+        sourceKind: "predecessor-model",
+        sourceId: "daily-model-state:42",
+        sourceDate: "2026-03-28",
+        stateUpdatedAt: new Date("2026-03-29T23:00:00Z"),
+        generation: 8,
+      },
+    });
+    expect(afterReplay).toMatchObject({ massKg: 72.5, provenance: { status: "model-estimated", sourceDate: "2026-03-28" } });
+
+    const beforeInputs = stepperActiveEnergyInputFingerprintV1({
+      workoutDate,
+      massProvenance: stableStepperMassProvenanceV1(beforeReplay.provenance),
+    });
+    const afterInputs = stepperActiveEnergyInputFingerprintV1({
+      workoutDate,
+      massProvenance: stableStepperMassProvenanceV1(afterReplay.provenance),
+    });
+    expect(afterInputs).not.toBe(beforeInputs);
+    expect(stepperActiveEnergyCandidateFingerprintV1("stepper-result-v1|estimated-kcal:245", afterInputs))
+      .not.toBe(stepperActiveEnergyCandidateFingerprintV1("stepper-result-v1|estimated-kcal:245", beforeInputs));
+  });
+
+  it("keeps publication generation out of the stable mass fingerprint while retaining mass provenance", () => {
+    const mass = resolveStepperHistoricalMassV1({
+      workoutAt,
+      workoutDate,
+      timeZone: "Europe/Bratislava",
+      observations: [],
+      modelEstimate: {
+        valueKg: 72.5, episodeId: 9, modelVersion: "v7", sourceKind: "predecessor-model",
+        sourceId: "daily-model-state:42", sourceDate: "2026-03-28",
+        stateUpdatedAt: new Date("2026-03-29T23:00:00Z"), generation: 8,
+      },
+    }).provenance;
+    const first = stepperActiveEnergyInputFingerprintV1(stableStepperMassProvenanceV1(mass));
+    const replayed = stepperActiveEnergyInputFingerprintV1(stableStepperMassProvenanceV1({ ...mass, modelGeneration: 9 }));
+    expect(replayed).toBe(first);
+    expect(stepperActiveEnergyInputFingerprintV1(stableStepperMassProvenanceV1({ ...mass, valueKg: 73 }))).not.toBe(first);
   });
 });

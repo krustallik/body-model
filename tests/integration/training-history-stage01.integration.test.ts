@@ -2196,6 +2196,185 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
     await persistence!.seedStage01Namespace(db);
   });
 
+  it("invalidates production in the accounting-context transaction and rolls it back atomically", async () => {
+    const db = prisma!;
+    const profileId = 15_100_101;
+    const method = "active-energy-accounting-context-invalidation";
+    let catalogId: number | null = null;
+    let programId: number | null = null;
+    let sessionId: number | null = null;
+    let episodeId: number | null = null;
+    try {
+      const [{ TrainingService }, { TrainingRepository }, { currentPhysiologyV7Versions }] = await Promise.all([
+        import("../../src/modules/training/training.service"),
+        import("../../src/modules/training/training.repository"),
+        import("../../src/modules/model-episodes/physiology-v7-persistence"),
+      ]);
+      await db.profile.create({
+        data: { id: profileId, sex: "male", dateOfBirth: new Date("1990-05-10T00:00:00.000Z"), heightCm: 180 },
+      });
+      const episode = await db.modelEpisode.create({
+        data: {
+          profileId,
+          startDate: "2099-01-01",
+          timezone: "Europe/Bratislava",
+          modelVersion: "bodycast-physiology-v6",
+          active: true,
+          ecfPolicy: "hold-ecf",
+          baselineEnergyIntakeKcalPerDay: 2_400,
+          baselineCarbIntakeG: 220,
+          baselineWindowStartDate: "2099-01-01",
+          baselineWindowEndDate: "2099-01-01",
+          baselineNutritionDayCount: 1,
+          baselineWeightObservationCount: 1,
+          baselineWeightTrendKgPerWeek: 0,
+          baselineWeightTrendPercentPerWeek: 0,
+          baselineDerivationMethod: method,
+          initialFatMassKg: 16,
+          initialLeanTissueKg: 55,
+          initialGlycogenKg: 0.5,
+          baselineExtracellularFluidLiters: 18,
+          initialExtracellularFluidDeviationLiters: 0,
+          initialAdaptiveThermogenesisKcalPerDay: 0,
+          initialFilteredWeightKg: 80,
+          initialWeightFilterVarianceKg2: 1,
+          initialRmrKcalPerDay: 1_700,
+          dynamicRmrFatCoefficient: 3.2,
+          dynamicRmrLeanCoefficient: 22,
+          dynamicRmrCalibrationOffsetKcalPerDay: 0,
+          adaptiveThermogenesisBeta: 0.14,
+          adaptiveThermogenesisTimeConstantDays: 14,
+          weightProcessNoiseVarianceKg2PerDay: 0.01,
+          weightMeasurementNoiseVarianceKg2: 0.25,
+          calibrationDiagnostics: {},
+        },
+        select: { id: true },
+      });
+      episodeId = episode.id;
+      await db.physiologyV7Lifecycle.create({
+        data: {
+          profileId,
+          staleFromDate: null,
+          currentThroughDate: "2099-01-10",
+          invalidationGeneration: 20,
+          productionStaleFromDate: null,
+          productionPublishedGeneration: 20,
+          unifiedPublishedGeneration: 20,
+          ...currentPhysiologyV7Versions,
+        },
+      });
+      const catalog = await db.exerciseCatalog.create({
+        data: { profileId, name: `active-energy-context-${Date.now()}`, stableKey: null },
+        select: { id: true },
+      });
+      catalogId = catalog.id;
+      const service = new TrainingService(db);
+      const program = await service.createProgram({
+        name: `active-energy-context-${Date.now()}`,
+        exercises: [{ catalogId: catalog.id, plannedSets: 1, resistanceType: "EXTERNAL_WEIGHT" }],
+      }, profileId);
+      programId = program.id;
+      const session = await service.startSession(program.id, profileId, "Asia/Kolkata");
+      sessionId = session.id;
+      const oldInstant = new Date("2099-01-02T00:30:00.000Z"); // Jan 2 in Bratislava.
+      const earlierInstant = new Date("2099-01-01T22:30:00.000Z"); // Jan 1 in Bratislava.
+      await db.strengthDiarySession.update({
+        where: { id: session.id },
+        data: {
+          effectiveAccountingAt: oldInstant,
+          accountingTimeZone: "Asia/Kolkata",
+          accountingTimeZoneProvenance: "client-session",
+        },
+      });
+      const repository = new TrainingRepository(db);
+      const generationBeforeMove = 20;
+
+      await repository.updateAccountingContext({ sessionId: session.id, profileId, effectiveAccountingAt: earlierInstant });
+      let lifecycle = await db.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
+      expect(lifecycle.invalidationGeneration).toBe(generationBeforeMove + 1);
+      expect(lifecycle.staleFromDate).toBe("2099-01-01");
+      expect(lifecycle.productionStaleFromDate).toBe("2099-01-01");
+
+      // Move the event back across the episode-local date boundary. The OLD
+      // instant must still be included in the invalidation minimum.
+      await db.physiologyV7Lifecycle.update({
+        where: { profileId },
+        data: {
+          staleFromDate: null,
+          productionStaleFromDate: null,
+          currentThroughDate: "2099-01-10",
+          invalidationGeneration: 30,
+          productionPublishedGeneration: 30,
+          unifiedPublishedGeneration: 30,
+        },
+      });
+      await repository.updateAccountingContext({ sessionId: session.id, profileId, effectiveAccountingAt: oldInstant });
+      lifecycle = await db.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
+      expect(lifecycle.invalidationGeneration).toBe(31);
+      expect(lifecycle.staleFromDate).toBe("2099-01-01");
+      expect(lifecycle.productionStaleFromDate).toBe("2099-01-01");
+
+      await service.createSet(session.id, session.exercises[0]!.id, { reps: 8, weightKg: 60 }, profileId);
+      const accounting = await service.materializeSessionAccounting(session.id, profileId);
+      const beforeTimezoneChange = await db.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
+      await repository.updateAccountingContext({ sessionId: session.id, profileId, timeZone: "Europe/London" });
+      const afterTimezoneChange = await db.strengthDiarySession.findUniqueOrThrow({
+        where: { id: session.id },
+        select: { accountingTimeZone: true, currentSnapshotRevision: true },
+      });
+      const afterContextLifecycle = await db.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
+      expect(afterTimezoneChange.accountingTimeZone).toBe("Europe/London");
+      expect(afterTimezoneChange.currentSnapshotRevision).toBeNull();
+      expect(accounting.snapshotRevision).toBeGreaterThan(0);
+      expect(afterContextLifecycle.invalidationGeneration).toBe(beforeTimezoneChange.invalidationGeneration + 1);
+
+      const sessionBeforeRollback = await db.strengthDiarySession.findUniqueOrThrow({
+        where: { id: session.id },
+        select: { effectiveAccountingAt: true, accountingTimeZone: true },
+      });
+      const lifecycleBeforeRollback = await db.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
+      const rollbackDb = new Proxy(db, {
+        get(target, property, receiver) {
+          if (property === "$transaction") {
+            const transaction = Reflect.get(target, property, target) as (...args: unknown[]) => Promise<unknown>;
+            return (callback: unknown, ...options: unknown[]) => transaction.call(
+              target,
+              async (tx: Prisma.TransactionClient) => {
+                await (callback as (client: Prisma.TransactionClient) => Promise<unknown>)(tx);
+                throw new Error("force rollback after context invalidation");
+              },
+              ...options,
+            );
+          }
+          const value = Reflect.get(target, property, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      }) as PrismaClient;
+      await expect(new TrainingRepository(rollbackDb).updateAccountingContext({
+        sessionId: session.id,
+        profileId,
+        effectiveAccountingAt: new Date("2099-01-03T00:30:00.000Z"),
+      })).rejects.toThrow("force rollback after context invalidation");
+      expect(await db.strengthDiarySession.findUniqueOrThrow({
+        where: { id: session.id },
+        select: { effectiveAccountingAt: true, accountingTimeZone: true },
+      })).toEqual(sessionBeforeRollback);
+      expect(await db.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } }))
+        .toMatchObject({
+          invalidationGeneration: lifecycleBeforeRollback.invalidationGeneration,
+          staleFromDate: lifecycleBeforeRollback.staleFromDate,
+          productionStaleFromDate: lifecycleBeforeRollback.productionStaleFromDate,
+        });
+    } finally {
+      if (sessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: sessionId } });
+      if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });
+      if (catalogId !== null) await db.exerciseCatalog.deleteMany({ where: { id: catalogId } });
+      if (episodeId !== null) await db.modelEpisode.deleteMany({ where: { id: episodeId } });
+      await db.physiologyV7Lifecycle.deleteMany({ where: { profileId } });
+      await db.profile.deleteMany({ where: { id: profileId } });
+    }
+  });
+
   it("cleans only the fixture namespace and preserves an unrelated sentinel", async () => {
     const db = prisma!;
     const fixture = createTrainingHistoryStage01FixtureV1();

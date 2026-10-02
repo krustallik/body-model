@@ -1,5 +1,6 @@
 import { instantToLocalDateTime } from "@/model/time-zone";
 import { calendarDayIndex } from "@/modules/model-episodes/model-calendar";
+import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 
 export const STEPPER_HISTORICAL_MASS_POLICY_V1 = "stepper-observed-nearest-seven-calendar-days-v1" as const;
 
@@ -36,6 +37,22 @@ export type StepperMassProvenanceV1 = {
   modelStateUpdatedAt?: string;
   modelGeneration?: number;
 };
+
+/** Exclude volatile publication generation while retaining the as-of mass identity and value. */
+export function stableStepperMassProvenanceV1(provenance: StepperMassProvenanceV1): StepperMassProvenanceV1 {
+  if (provenance.status !== "model-estimated") return provenance;
+  const stable = { ...provenance };
+  delete stable.modelGeneration;
+  return stable;
+}
+
+export function stepperActiveEnergyInputFingerprintV1(inputs: unknown): string {
+  return stableSha256(JSON.stringify(inputs));
+}
+
+export function stepperActiveEnergyCandidateFingerprintV1(resultFingerprint: string, inputFingerprint: string): string {
+  return stableSha256(`${resultFingerprint}|${inputFingerprint}`);
+}
 
 export function resolveStepperHistoricalMassV1(input: {
   workoutAt: Date;

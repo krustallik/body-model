@@ -131,11 +131,15 @@ function shiftDate(date: string, days: number): string {
 describe("HistoryClient workout cell interaction", () => {
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
   it("makes workout minutes clickable only when details exist, opens dialog, and closes it", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-05T12:00:00.000Z"));
+
     HTMLDialogElement.prototype.showModal = function showModal() {
       this.setAttribute("open", "");
     };

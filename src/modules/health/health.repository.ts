@@ -11,6 +11,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { instantToLocalDateTime } from "@/model/time-zone";
 import { rebaseCurrentAccountingSnapshotTimestamp } from "@/modules/training/rebase-current-accounting-snapshot";
+import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import {
   invalidateStepperMassDependenciesInTransactionV1,
   invalidateWorkoutEnergyInTransactionV1,
@@ -224,9 +225,12 @@ async function reconcileDayWorkouts(
     });
     const linked = await transaction.strengthDiarySession.findFirst({
       where: { matchedWorkoutId: update.id },
-      select: { id: true, effectiveAccountingAt: true, accountingTimeZone: true, accountingTimeZoneProvenance: true, webStartedAt: true, createdAt: true },
+      select: { id: true, profileId: true, status: true, effectiveAccountingAt: true, accountingTimeZone: true, accountingTimeZoneProvenance: true, webStartedAt: true, createdAt: true },
     });
     if (linked) {
+      if (linked.status === "COMPLETED") {
+        await new PhysiologyV7PersistenceRepository(transaction).invalidateUnifiedPublication(linked.profileId);
+      }
       const previousEffectiveAt = linked.effectiveAccountingAt ?? linked.webStartedAt ?? linked.createdAt;
       if (previousEffectiveAt.getTime() === update.fields.startAt.getTime()) continue;
       const timeZone = linked.accountingTimeZone ?? DEFAULT_TIME_ZONE;
@@ -287,6 +291,13 @@ async function reconcileDayWorkouts(
   })));
 
   if (plan.deletes.length > 0) {
+    const linkedSessions = await transaction.strengthDiarySession.findMany({
+      where: { matchedWorkoutId: { in: plan.deletes }, status: "COMPLETED" },
+      select: { id: true, profileId: true },
+    });
+    for (const session of linkedSessions) {
+      await new PhysiologyV7PersistenceRepository(transaction).invalidateUnifiedPublication(session.profileId);
+    }
     await transaction.workout.deleteMany({
       where: { id: { in: plan.deletes } },
     });

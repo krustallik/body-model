@@ -39,6 +39,23 @@ export class PhysiologyV7PersistenceRepository {
     await this.client.$executeRaw`SELECT pg_advisory_xact_lock(927001, CAST(${profileId} AS integer))`;
   }
 
+  /**
+   * Water-only derived-state inputs do not stale production TDEE, but they do
+   * make the published Unified snapshot unusable. Keep this publication gate
+   * in the source mutation transaction and under the same profile lock used by
+   * Unified readers/writers; updatedAt is the existing row's CAS marker.
+   */
+  async invalidateUnifiedPublication(profileId: number): Promise<void> {
+    if (!this.client.physiologyV7Lifecycle || typeof this.client.$executeRaw !== "function") return;
+    await this.lockProfile(profileId);
+    await this.client.$executeRaw`
+      UPDATE "PhysiologyV7Lifecycle"
+      SET "unifiedPublishedGeneration" = NULL,
+          "updatedAt" = GREATEST("updatedAt" + INTERVAL '1 millisecond', CURRENT_TIMESTAMP)
+      WHERE "profileId" = ${profileId}
+    `;
+  }
+
   async ensureLifecycle(profileId: number, requestedFromDate: string) {
     const current = await this.client.physiologyV7Lifecycle.upsert({
       where: { profileId },

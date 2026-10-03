@@ -1,159 +1,265 @@
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import {
-  estimateExperimentalTransientExerciseWaterV1,
-  EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V1_REVISION,
-  experimentalTransientExerciseWaterV1Fingerprint,
-  type ExperimentalExposureContextV1,
-} from "@/model/physiology-v7/experimental-transient-exercise-water-v1";
-import { buildQualifiedResistanceTrainingDoseV7 } from "@/model/physiology-v7/qualified-resistance-training-dose-v7";
+  buildTransientExerciseWaterImpulseV2,
+  EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V2_REVISION,
+  EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V2_REPLAY_REVISION,
+  resolveTransientWaterV2Exposure,
+  transientExerciseWaterV2Fingerprint,
+  type TransientExerciseWaterImpulseV2,
+} from "@/model/physiology-v7/experimental-transient-exercise-water-v2";
+import {
+  buildQualifiedResistanceTrainingDoseV7,
+  qualifiedResistanceTrainingDoseV7Fingerprint,
+} from "@/model/physiology-v7/qualified-resistance-training-dose-v7";
 import { buildCanonicalStrengthTrainingInputV7 } from "@/modules/model-episodes/strength-training-input-v7";
-import type { StrengthSessionDto } from "./training.types";
+import {
+  buildTransientEpisodePartitionsV2,
+  transientEpisodeTimeForInstantV2,
+  type TransientEpisodePartitionV2,
+  type TransientEpisodeTimeRowV2,
+} from "@/modules/model-episodes/transient-exercise-water-episode-time-v2";
+import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import { TrainingRepository } from "./training.repository";
-import { calendarDayIndex } from "@/modules/model-episodes/model-calendar";
 
-/**
- * ENGINEERING exposure-context prior for V1 shadow only.
- * ≥2 other completed sessions in the prior 14 days → accustomed domain;
- * otherwise novel-or-unknown. Affects resolution horizon only — not amplitude.
- */
-const EXPOSURE_LOOKBACK_MS = 14 * 24 * 60 * 60 * 1000;
-const ACCUSTOMED_PRIOR_SESSION_FLOOR = 2;
-
-function localSessionDate(session: StrengthSessionDto): string | null {
-  const value = session.matchedWorkout?.startAt ?? session.webStartedAt ?? session.createdAt;
-  const date = new Date(value);
-  return Number.isFinite(date.getTime()) ? date.toISOString().slice(0, 10) : null;
-}
-
-function transientWaterFromResult(result: unknown): number | null {
-  const point = result && typeof result === "object"
-    ? (result as { resultingTransientWaterKg?: { point?: number | null } }).resultingTransientWaterKg?.point
-    : null;
-  return typeof point === "number" && Number.isFinite(point) && point >= 0 ? point : null;
-}
-
-async function resolveExposureContext(input: {
-  session: StrengthSessionDto;
+type DbClient = PrismaClient | Prisma.TransactionClient;
+type CompletedSource = Awaited<ReturnType<typeof TrainingRepository.listCompletedTransientWaterSourcesV2FromClient>>[number];
+type Episode = TransientEpisodeTimeRowV2 & {
   profileId: number;
-}): Promise<Exclude<ExperimentalExposureContextV1, "unavailable">> {
-  const anchor = input.session.matchedWorkout?.startAt
-    ?? input.session.webStartedAt
-    ?? input.session.createdAt;
-  const anchorMs = Date.parse(anchor);
-  if (!Number.isFinite(anchorMs)) return "novel-or-unknown";
-  const priorCount = await prisma.strengthDiarySession.count({
-    where: {
-      profileId: input.profileId,
-      status: "COMPLETED",
-      id: { not: input.session.id },
-      OR: [
-        {
-          matchedWorkout: {
-            startAt: {
-              gte: new Date(anchorMs - EXPOSURE_LOOKBACK_MS),
-              lt: new Date(anchorMs),
-            },
-          },
-        },
-        {
-          matchedWorkoutId: null,
-          webStartedAt: {
-            gte: new Date(anchorMs - EXPOSURE_LOOKBACK_MS),
-            lt: new Date(anchorMs),
-          },
-        },
-        {
-          matchedWorkoutId: null,
-          webStartedAt: null,
-          createdAt: {
-            gte: new Date(anchorMs - EXPOSURE_LOOKBACK_MS),
-            lt: new Date(anchorMs),
-          },
-        },
-      ],
-    },
-  });
-  return priorCount >= ACCUSTOMED_PRIOR_SESSION_FLOOR
-    ? "accustomed"
-    : "novel-or-unknown";
+  updatedAt: Date;
+  modelVersion: string;
+};
+
+export class TransientExerciseWaterSourceUnavailableError extends Error {
+  constructor(reason: string) {
+    super(`transient exercise-water source unavailable: ${reason}`);
+  }
 }
 
-/**
- * Isolated experimental/shadow output for resistance transient water.
- * Never an input to TDEE, production physiology, forecast, or GREEN contracts.
- */
-export async function recordExperimentalTransientExerciseWaterShadow(input: {
-  session: StrengthSessionDto;
-  profileId: number;
-}): Promise<void> {
-  const targetDate = localSessionDate(input.session);
-  const dose = buildQualifiedResistanceTrainingDoseV7(
-    buildCanonicalStrengthTrainingInputV7({
-      session: input.session,
-      heartRateSamples: null,
-    }),
-  );
-  const [priorRows, exposureContext] = await Promise.all([
-    prisma.experimentalTransientExerciseWaterShadow.findMany({
-      where: { profileId: input.profileId, sessionId: { not: input.session.id } },
+export class TransientExerciseWaterConcurrentSourceChangeError extends Error {
+  constructor() {
+    super("Strength or ModelEpisode sources changed during transient-water rebuild");
+  }
+}
+
+type SourceSnapshot = {
+  episodes: Episode[];
+  partitions: TransientEpisodePartitionV2<Episode>[];
+  sources: CompletedSource[];
+  token: string;
+};
+
+async function readSourceSnapshot(db: DbClient, profileId: number): Promise<SourceSnapshot> {
+  const [episodes, sources] = await Promise.all([
+    db.modelEpisode.findMany({
+      where: { profileId },
+      orderBy: [{ startDate: "asc" }, { id: "asc" }],
       select: {
-        result: true,
-        session: { select: { webStartedAt: true, createdAt: true, matchedWorkout: { select: { startAt: true } } } },
+        id: true,
+        profileId: true,
+        startDate: true,
+        timezone: true,
+        active: true,
+        deactivatedAt: true,
+        updatedAt: true,
+        modelVersion: true,
       },
     }),
-    resolveExposureContext(input),
+    TrainingRepository.listCompletedTransientWaterSourcesV2FromClient(db, profileId),
   ]);
-  // Select a predecessor only as-of the target workout.  A later V7 row or
-  // future diary session must never alter historical transient-water output.
-  const predecessor = targetDate === null ? null : priorRows
-    .map((row) => ({ row, date: row.session.matchedWorkout?.startAt ?? row.session.webStartedAt ?? row.session.createdAt }))
-    .map(({ row, date }) => ({ row, date: date.toISOString().slice(0, 10) }))
-    .filter((item) => item.date < targetDate)
-    .sort((left, right) => right.date.localeCompare(left.date))[0] ?? null;
-  const priorTransient = transientWaterFromResult(predecessor?.row.result);
-  const daysElapsed = predecessor === null || targetDate === null
-    ? 0
-    : Math.max(0, calendarDayIndex(targetDate) - calendarDayIndex(predecessor.date));
-  const result = estimateExperimentalTransientExerciseWaterV1({
-    priorTransientWaterKg: priorTransient ?? 0,
-    daysElapsed,
-    resistanceSession: dose.availability === "available"
-      ? {
-        qualifiedHardSetCount: dose.qualifiedHardSetCount,
-        exposureContext,
-      }
-      : null,
-    skeletalMuscleKg: null,
+  const partitions = buildTransientEpisodePartitionsV2(episodes);
+  const resolved = sources.map((source) => {
+    const eventInstant = source.canonicalEventInstant;
+    const resolvedTime = transientEpisodeTimeForInstantV2(partitions, eventInstant);
+    if (resolvedTime === null) {
+      throw new TransientExerciseWaterSourceUnavailableError(`session ${source.session.id} has no unambiguous episode partition`);
+    }
+    return {
+      id: source.session.id,
+      instant: eventInstant.toISOString(),
+      episodeId: resolvedTime.episode.id,
+      modelDate: resolvedTime.modelDate,
+      source: source.sourceDependencyFingerprint,
+    };
   });
-  const sourceFingerprint = experimentalTransientExerciseWaterV1Fingerprint(result);
-  await prisma.experimentalTransientExerciseWaterShadow.upsert({
-    where: { sessionId: input.session.id },
-    create: {
-      sessionId: input.session.id,
-      profileId: input.profileId,
+  return {
+    episodes,
+    partitions,
+    sources,
+    token: transientExerciseWaterV2Fingerprint({
+      profileId,
+      revision: EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V2_REVISION,
+      replayRevision: EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V2_REPLAY_REVISION,
+      partitionContract: "instant-half-open-episode-local-midnight-v2",
+      episodes: episodes.map((episode) => ({
+        id: episode.id,
+        profileId: episode.profileId,
+        startDate: episode.startDate,
+        timezone: episode.timezone,
+        active: episode.active,
+        deactivatedAt: episode.deactivatedAt?.toISOString() ?? null,
+        updatedAt: episode.updatedAt.toISOString(),
+        modelVersion: episode.modelVersion,
+      })),
+      completedStrengthSources: resolved,
+    }),
+  };
+}
+
+/** Complete source-token read used by Unified's late-writer CAS. */
+export async function readTransientExerciseWaterSourceTokenV2(
+  db: DbClient,
+  profileId: number,
+): Promise<string> {
+  return (await readSourceSnapshot(db, profileId)).token;
+}
+
+function candidateImpulses(snapshot: SourceSnapshot): TransientExerciseWaterImpulseV2[] {
+  const resolvedSources = snapshot.sources.map((source) => {
+    const time = transientEpisodeTimeForInstantV2(snapshot.partitions, source.canonicalEventInstant);
+    if (time === null) throw new TransientExerciseWaterSourceUnavailableError(`session ${source.session.id} lost its episode mapping`);
+    return { ...source, episode: time.episode, modelDate: time.modelDate };
+  });
+  const sessionEvents = resolvedSources.map((source) => ({
+    strengthDiarySessionId: source.session.id,
+    eventInstant: source.canonicalEventInstant,
+    sourceFingerprint: source.sourceDependencyFingerprint,
+  }));
+  return resolvedSources.map((source) => {
+    const exposure = resolveTransientWaterV2Exposure({
+      event: sessionEvents.find((event) => event.strengthDiarySessionId === source.session.id)!,
+      completedEvents: sessionEvents,
+    });
+    const { exposureClass } = exposure;
+    const canonicalInput = buildCanonicalStrengthTrainingInputV7({ session: source.session, heartRateSamples: null });
+    const dose = buildQualifiedResistanceTrainingDoseV7(canonicalInput);
+    const doseFingerprint = qualifiedResistanceTrainingDoseV7Fingerprint(dose);
+    const doseInputFingerprint = transientExerciseWaterV2Fingerprint({ canonicalInput, doseFingerprint });
+    const doseAvailable = dose.availability === "available";
+    const doseCount = doseAvailable ? dose.qualifiedHardSetCount : 0;
+    const dependencyFingerprint = exposure.dependencyFingerprint;
+    const sourceFingerprint = transientExerciseWaterV2Fingerprint({
+      sessionSource: source.sourceDependencyFingerprint,
+      canonicalEventInstant: source.canonicalEventInstant.toISOString(),
+      episode: {
+        id: source.episode.id,
+        startDate: source.episode.startDate,
+        timezone: source.episode.timezone,
+        updatedAt: source.episode.updatedAt.toISOString(),
+      },
+      canonicalInput,
+      dose,
+      dependencyFingerprint,
+      exposureClass,
+    });
+    return buildTransientExerciseWaterImpulseV2({
+      strengthDiarySessionId: source.session.id,
+      canonicalEventInstant: source.canonicalEventInstant,
+      modelEpisodeId: source.episode.id,
+      modelDate: source.modelDate,
+      sessionRevision: source.session.revision,
+      doseInputFingerprint,
+      doseAvailability: doseAvailable ? "available" : "unavailable",
+      doseProvenance: doseAvailable
+        ? `qualified-hard-sets:${dose.qualifiedHardSetCount};fingerprint:${doseFingerprint}`
+        : `unavailable:${dose.reason ?? "unknown-dose"};recordedSets:${dose.recordedSetCount}`,
+      qualifiedHardSetCount: doseCount,
+      exposureClass,
+      exposureDependencyFingerprint: dependencyFingerprint,
+      exposureDependencies: exposure.dependencies.map((dependency) => ({
+        strengthDiarySessionId: dependency.strengthDiarySessionId,
+        eventInstant: dependency.eventInstant.toISOString(),
+        sourceFingerprint: dependency.sourceFingerprint,
+      })),
       sourceFingerprint,
-      modelRevision: EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V1_REVISION,
-      features: result.features,
-      result,
-    },
-    update: {
-      sourceFingerprint,
-      modelRevision: EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V1_REVISION,
-      features: result.features,
-      result,
-    },
+    });
   });
 }
 
-export async function recordExperimentalTransientExerciseWaterShadowBySessionId(input: {
-  sessionId: number;
-  profileId: number;
-}): Promise<void> {
-  const session = await new TrainingRepository(prisma).getSession(input.sessionId, input.profileId);
-  if (session !== null) {
-    await recordExperimentalTransientExerciseWaterShadow({
-      session,
-      profileId: input.profileId,
+function json(value: unknown): Prisma.InputJsonValue {
+  return value as Prisma.InputJsonValue;
+}
+
+function sourceRow(impulse: TransientExerciseWaterImpulseV2, profileId: number) {
+  const result = {
+    contractVersion: EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V2_REVISION,
+    replayRevision: EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V2_REPLAY_REVISION,
+    impulse,
+    sourceFingerprint: impulse.sourceFingerprint,
+    coverage: "complete-profile-completed-strength-scan-v2",
+  };
+  return {
+    sessionId: impulse.strengthDiarySessionId,
+    profileId,
+    sourceFingerprint: impulse.sourceFingerprint,
+    modelRevision: EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V2_REVISION,
+    features: json(impulse),
+    result: json(result),
+  };
+}
+
+export async function rebuildExperimentalTransientExerciseWaterV2(input: {
+  profileId?: number;
+  client?: PrismaClient;
+  onCandidateComputed?: () => Promise<void>;
+} = {}): Promise<{ earliestModelDate: string | null; sourceToken: string; impulseCount: number }> {
+  const profileId = input.profileId ?? 1;
+  const client = input.client ?? prisma;
+  const before = await readSourceSnapshot(client, profileId);
+  const impulses = candidateImpulses(before);
+  await input.onCandidateComputed?.();
+
+  let affectedDates: string[] = [];
+  await client.$transaction(async (tx) => {
+    const lifecycle = new PhysiologyV7PersistenceRepository(tx);
+    await lifecycle.lockProfile(profileId);
+    const current = await readSourceSnapshot(tx, profileId);
+    if (current.token !== before.token) throw new TransientExerciseWaterConcurrentSourceChangeError();
+    const sessionIds = impulses.map((impulse) => impulse.strengthDiarySessionId);
+    const existingRows = await tx.experimentalTransientExerciseWaterShadow.findMany({
+      where: { profileId, modelRevision: EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V2_REVISION },
+      select: { sessionId: true, sourceFingerprint: true, result: true },
     });
-  }
+    const existingBySession = new Map(existingRows.map((row) => [row.sessionId, row]));
+    const currentSessionIds = new Set(impulses.map((impulse) => impulse.strengthDiarySessionId));
+    const changedDates: string[] = [];
+    const addPreviousDate = (value: unknown) => {
+      const result = value && typeof value === "object" ? value as { impulse?: { modelDate?: unknown } } : null;
+      const date = result?.impulse?.modelDate;
+      if (typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date)) changedDates.push(date);
+    };
+    for (const impulse of impulses) {
+      const existing = existingBySession.get(impulse.strengthDiarySessionId);
+      if (existing?.sourceFingerprint === impulse.sourceFingerprint) continue;
+      changedDates.push(impulse.modelDate);
+      addPreviousDate(existing?.result);
+      const row = sourceRow(impulse, profileId);
+      await tx.experimentalTransientExerciseWaterShadow.upsert({
+        where: { sessionId: impulse.strengthDiarySessionId },
+        create: row,
+        update: {
+          profileId,
+          sourceFingerprint: row.sourceFingerprint,
+          modelRevision: row.modelRevision,
+          features: row.features,
+          result: row.result,
+        },
+      });
+    }
+    for (const existing of existingRows) {
+      if (!currentSessionIds.has(existing.sessionId)) {
+        addPreviousDate(existing.result);
+      }
+    }
+    await tx.experimentalTransientExerciseWaterShadow.deleteMany({
+      where: {
+        profileId,
+        modelRevision: EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V2_REVISION,
+        ...(sessionIds.length > 0 ? { sessionId: { notIn: sessionIds } } : {}),
+      },
+    });
+    affectedDates = changedDates;
+  });
+  const earliestModelDate = affectedDates.sort()[0] ?? null;
+  return { earliestModelDate, sourceToken: before.token, impulseCount: impulses.length };
 }

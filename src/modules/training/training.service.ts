@@ -75,10 +75,6 @@ import {
   recordExperimentalStrengthGlycogenDemandShadowBySessionId,
 } from "./experimental-strength-glycogen-demand-shadow.service";
 import {
-  recordExperimentalTransientExerciseWaterShadow,
-  recordExperimentalTransientExerciseWaterShadowBySessionId,
-} from "./experimental-transient-exercise-water-shadow.service";
-import {
   recordExperimentalSkeletalMuscleDeltaShadowForSession,
 } from "@/modules/model-episodes/experimental-skeletal-muscle-delta-shadow.service";
 import { recordExperimentalGlycogenStateShadow } from "@/modules/model-episodes/experimental-glycogen-state-shadow.service";
@@ -128,7 +124,6 @@ async function recordExperimentalStrengthShadows(input: {
   // durable suffix, so a historical diary/workout correction cannot leave
   // dependent glycogen rows current-looking but stale.
   await recordExperimentalGlycogenStateShadow({ date: sourceDate, profileId: input.profileId });
-  await recordExperimentalTransientExerciseWaterShadow(input);
   await recordExperimentalSkeletalMuscleDeltaShadowForSession({
     sessionId: input.session.id,
     profileId: input.profileId,
@@ -146,7 +141,7 @@ async function recordExperimentalStrengthShadows(input: {
     sessionId: input.session.id,
     profileId: input.profileId,
   });
-  await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: input.profileId, fromDate: sourceDate, toDate: sourceDate });
+  await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: input.profileId });
 }
 
 async function recordExperimentalStrengthShadowsBySessionId(input: {
@@ -160,7 +155,6 @@ async function recordExperimentalStrengthShadowsBySessionId(input: {
     const sourceDate = (session.matchedWorkout?.startAt ?? session.webStartedAt ?? session.createdAt).slice(0, 10);
     await recordExperimentalGlycogenStateShadow({ date: sourceDate, profileId: input.profileId });
   }
-  await recordExperimentalTransientExerciseWaterShadowBySessionId(input);
   await recordExperimentalSkeletalMuscleDeltaShadowForSession(input);
   await recordExperimentalCessationDetrainingShadowForSession(input);
   if (session !== null) {
@@ -169,10 +163,7 @@ async function recordExperimentalStrengthShadowsBySessionId(input: {
   }
   await recordExperimentalFfmRetentionShadowForSession(input);
   await recordExperimentalLocalHypertrophyResponseShadowForSession(input);
-  if (session !== null) {
-    const sourceDate = (session.matchedWorkout?.startAt ?? session.webStartedAt ?? session.createdAt).slice(0, 10);
-    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: input.profileId, fromDate: sourceDate, toDate: sourceDate });
-  }
+  await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: input.profileId });
 }
 
 function isStrengthWorkout(type: string): boolean {
@@ -612,6 +603,9 @@ export class TrainingService {
         workoutLocalDate: workoutLocalDate(workout.startAt),
         reason: "retrospective_create",
       });
+      if (this.db === prisma) {
+        await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId }).catch(() => {});
+      }
       return { session: created, created: true };
     } catch (error) {
       if (isUniqueViolation(error)) throw new WorkoutAlreadyMatchedError();
@@ -685,6 +679,7 @@ export class TrainingService {
       workoutLocalDate: workoutLocalDate(session.matchedWorkout?.startAt),
       reason: "program_change",
     });
+    await this.refreshTransientWaterAfterMutation(profileId).catch(() => {});
 
     return this.requireSession(sessionId, profileId);
   }
@@ -726,7 +721,7 @@ export class TrainingService {
       orderedExerciseIds: session.exercises.map((exercise) => exercise.id),
     });
 
-    this.noteExerciseMutation(sessionId, revision, session.matchedWorkout?.startAt);
+    await this.noteExerciseMutation(sessionId, revision, session.matchedWorkout?.startAt, session.status, profileId);
     return this.requireSession(sessionId, profileId);
   }
 
@@ -765,7 +760,7 @@ export class TrainingService {
       orderedExerciseIds: session.exercises.map((item) => item.id),
     });
 
-    this.noteExerciseMutation(sessionId, revision, session.matchedWorkout?.startAt);
+    await this.noteExerciseMutation(sessionId, revision, session.matchedWorkout?.startAt, session.status, profileId);
     return this.requireSession(sessionId, profileId);
   }
 
@@ -790,7 +785,7 @@ export class TrainingService {
       orderedExerciseIds: session.exercises.map((item) => item.id),
     });
 
-    this.noteExerciseMutation(sessionId, revision, session.matchedWorkout?.startAt);
+    await this.noteExerciseMutation(sessionId, revision, session.matchedWorkout?.startAt, session.status, profileId);
     return this.requireSession(sessionId, profileId);
   }
 
@@ -816,7 +811,7 @@ export class TrainingService {
       orderedExerciseIds: requested,
     });
 
-    this.noteExerciseMutation(sessionId, revision, session.matchedWorkout?.startAt);
+    await this.noteExerciseMutation(sessionId, revision, session.matchedWorkout?.startAt, session.status, profileId);
     return this.requireSession(sessionId, profileId);
   }
 
@@ -864,7 +859,7 @@ export class TrainingService {
         completedAt: input.completedAt ? new Date(input.completedAt) : new Date(),
         loadAccountingOverride: override === null ? null : JSON.parse(JSON.stringify(override.data)) as Prisma.InputJsonValue,
       });
-      await this.noteSetMutation(exercise.session);
+      await this.noteSetMutation(exercise.session, profileId);
       return created;
     } catch (error) {
       if (isUniqueViolation(error)) {
@@ -944,7 +939,7 @@ export class TrainingService {
         : JSON.parse(JSON.stringify(override.data)) as Prisma.InputJsonValue,
     });
     if (!updated) throw new SetNotFoundError();
-    await this.noteSetMutation(existing.sessionExercise.session);
+    await this.noteSetMutation(existing.sessionExercise.session, profileId);
     return updated;
   }
 
@@ -963,7 +958,7 @@ export class TrainingService {
       throw new SessionNotFoundError();
     }
     await this.repo.deleteSet(setId, sessionId, profileId);
-    await this.noteSetMutation(existing.sessionExercise.session);
+    await this.noteSetMutation(existing.sessionExercise.session, profileId);
   }
 
   async getExerciseHistory(
@@ -1037,6 +1032,7 @@ export class TrainingService {
       throw new SessionNotFoundError();
     }
     await this.repo.markSessionCancelled(sessionId, new Date());
+    await this.refreshTransientWaterAfterMutation(profileId).catch(() => {});
     const refreshed = await this.repo.getSession(sessionId, profileId);
     if (!refreshed) throw new SessionNotFoundError();
     return refreshed;
@@ -1057,6 +1053,7 @@ export class TrainingService {
     }
     const matchedWorkoutId = session.matchedWorkoutId;
     await this.repo.deleteDiarySession(sessionId, profileId);
+    await this.refreshTransientWaterAfterMutation(profileId).catch(() => {});
     return { matchedWorkoutId };
   }
 
@@ -1289,17 +1286,22 @@ export class TrainingService {
     return session;
   }
 
-  private noteExerciseMutation(
+  private async noteExerciseMutation(
     sessionId: number,
     revision: number,
     workoutStartAt: Date | null | undefined,
-  ): void {
+    status: string,
+    profileId: number,
+  ): Promise<void> {
     noteTrainingSourceChange({
       sessionId,
       revision,
       workoutLocalDate: workoutLocalDate(workoutStartAt),
       reason: "exercise_mutation",
     });
+    if (status === SESSION_STATUS.COMPLETED) {
+      await this.refreshTransientWaterAfterMutation(profileId).catch(() => {});
+    }
   }
 
   /**
@@ -1310,7 +1312,7 @@ export class TrainingService {
     id: number;
     status: string;
     matchedWorkout?: { startAt: Date } | null;
-  }): Promise<void> {
+  }, profileId: number): Promise<void> {
     if (
       session.status !== SESSION_STATUS.COMPLETED
       && session.status !== SESSION_STATUS.CANCELLED
@@ -1322,6 +1324,14 @@ export class TrainingService {
       workoutLocalDate: workoutLocalDate(session.matchedWorkout?.startAt),
       reason: "set_mutation",
     });
+    if (session.status === SESSION_STATUS.COMPLETED) {
+      await this.refreshTransientWaterAfterMutation(profileId).catch(() => {});
+    }
+  }
+
+  private async refreshTransientWaterAfterMutation(profileId: number): Promise<void> {
+    if (this.db !== prisma) return;
+    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId });
   }
 
   private async snapshotProgramExerciseConfigs(

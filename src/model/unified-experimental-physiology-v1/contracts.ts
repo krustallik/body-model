@@ -3,6 +3,9 @@ import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 export const UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V1_REVISION =
   "unified-experimental-physiology-state-v1-active-energy-canonical" as const;
 
+export const UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION =
+  "unified-experimental-physiology-state-v2-episode-boundary-transient-water-impulse-ledger" as const;
+
 export type UnifiedAvailabilityV1 = "available" | "partial" | "unavailable";
 export type UnifiedGapSeverityV1 = "none" | "short-gap" | "large-gap" | "extended-gap";
 export type UnifiedSourceQualityV1 = "observed" | "estimated" | "modeled-gap-bridge" | "missing";
@@ -36,8 +39,16 @@ export type UnifiedGlycogenWaterStateV1 = {
 
 export type UnifiedTransientWaterStateV1 = {
   availability: UnifiedAvailabilityV1;
+  /** Absolute end-of-model-day point and coherent branch levels (kg). */
+  levelKg?: UnifiedNumericEnvelopeV1 | null;
+  /** Active per-session impulse ledger, including each impulse's own age and horizons. */
+  activeImpulses?: unknown[];
+  episodeId?: number | null;
+  modelDate?: string | null;
+  boundaryInstant?: string | null;
+  /** Legacy-shaped property retained for payload compatibility; V2 means daily delta only. */
   relativeKg: UnifiedNumericEnvelopeV1 | null;
-  provenance: "experimental-transient-exercise-water-v1" | "unavailable";
+  provenance: "experimental-transient-exercise-water-v1" | "experimental-transient-exercise-water-v2-impulse-ledger" | "unavailable";
 };
 
 export type UnifiedRelativeMuscleDiagnosticV1 = {
@@ -104,12 +115,17 @@ export type UnifiedReconciliationV1 = {
 };
 
 export type UnifiedSourceLineageV1 = {
+  modelEpisodeId: number;
+  modelDate: string;
+  boundaryAt: string;
+  episodePartitionRevision: string;
   dailyHealthData: { id: number; updatedAt: string } | null;
   productionDailyState: { id: number; updatedAt: string; modelVersion: string } | null;
   workouts: Array<{ id: number; updatedAt: string; sourceFingerprint: string | null }>;
   diarySessions: Array<{ id: number; revision: number; updatedAt: string }>;
   childModelRevisions: Record<string, string>;
   childOutputs?: Array<{ kind: string; id: number; updatedAt: string; sourceFingerprint: string }>;
+  transientWaterBoundaries?: Array<{ episodeId: number; modelDate: string; boundaryInstant: string }>;
   sourceDate: string;
 };
 
@@ -137,9 +153,11 @@ export type UnifiedDailyDeltasV1 = {
 };
 
 export type UnifiedExperimentalPhysiologyDayResultV1 = {
-  contractVersion: typeof UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V1_REVISION;
+  contractVersion: typeof UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION;
   profileId: number;
+  modelEpisodeId: number;
   date: string;
+  boundaryAt: string;
   priorStateFingerprint: string;
   sourceFingerprint: string;
   state: UnifiedExperimentalPhysiologyStateV1;

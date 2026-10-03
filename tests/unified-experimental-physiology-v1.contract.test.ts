@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assertFiniteUnifiedNumbers,
+  UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION,
   serializeUnifiedExperimentalPhysiologyV1,
   type UnifiedExperimentalPhysiologyDayResultV1,
 } from "@/model/unified-experimental-physiology-v1";
@@ -8,9 +9,11 @@ import {
 function fixture(): UnifiedExperimentalPhysiologyDayResultV1 {
   const unavailable = { availability: "unavailable" as const, point: null, lower: null, upper: null, representation: "engineering-range" as const };
   const result = {
-    contractVersion: "unified-experimental-physiology-state-v1-active-energy-canonical" as const,
+    contractVersion: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION,
     profileId: 1,
+    modelEpisodeId: 1,
     date: "2065-01-01",
+    boundaryAt: "2065-01-01T00:00:00.000Z",
     priorStateFingerprint: "prior",
     sourceFingerprint: "source",
     state: {
@@ -26,7 +29,7 @@ function fixture(): UnifiedExperimentalPhysiologyDayResultV1 {
     quality: { availability: "unavailable" as const, gapSeverity: "extended-gap" as const, sourceQuality: "missing" as const, missingFields: ["nutrition"], reasons: ["missing"], modeledGapBridge: false },
     uncertainty: { state: {}, transition: {}, observation: { scaleKg: null, bodyComposition: [] }, model: [], gap: ["missing"], dependencyNotes: [] },
     reconciliation: { anchorDate: null, anchorWeightKg: null, observedWeightKg: null, observedChangeKg: null, modeledChangeSinceAnchorKg: null, unexplainedResidualKg: null, handling: "no-anchor" as const, reason: "missing" },
-    sourceLineage: { dailyHealthData: null, productionDailyState: null, workouts: [], diarySessions: [], childModelRevisions: {}, sourceDate: "2065-01-01" },
+    sourceLineage: { modelEpisodeId: 1, modelDate: "2065-01-01", boundaryAt: "2065-01-01T00:00:00.000Z", episodePartitionRevision: "transient-water-v2-absolute-episode-partition", dailyHealthData: null, productionDailyState: null, workouts: [], diarySessions: [], childModelRevisions: {}, sourceDate: "2065-01-01" },
     diagnostics: { componentComparisons: {}, rejectedConversions: [], notes: [] },
     resultFingerprint: "result",
   };

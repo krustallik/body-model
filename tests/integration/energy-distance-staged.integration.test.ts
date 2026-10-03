@@ -118,6 +118,7 @@ async function day(date: string, weightKg: number | null, steps: number | null =
 
 async function clean() {
   await prisma.activeEnergyCanonicalEvent.deleteMany({ where: { profileId: 1, modelDate: { in: dates } } });
+  await prisma.unifiedExperimentalPhysiologyStateV2.deleteMany({ where: { profileId: 1, date: { in: dates } } });
   await prisma.unifiedExperimentalPhysiologyState.deleteMany({ where: { date: { in: dates } } });
   await prisma.activationRollbackEntry.deleteMany({ where: { generationId: { startsWith: "e2e-" } } });
   await prisma.stepperReconciliationCandidate.deleteMany({
@@ -532,8 +533,9 @@ describe("staged energy and distance PostgreSQL integration", () => {
       bodyCastEstimateFresh: true,
     });
     expect(legacy.sourceQuality.selectionV1).toBeUndefined();
-    const unified = await prisma.unifiedExperimentalPhysiologyState.findUnique({
-      where: { profileId_date: { profileId: 1, date: "2091-04-04" } },
+    const unified = await prisma.unifiedExperimentalPhysiologyStateV2.findFirst({
+      where: { profileId: 1, date: "2091-04-04" },
+      orderBy: { boundaryAt: "asc" },
     });
     // This simulator fixture does not publish a production generation; the
     // generation-aware consumer must therefore fail closed without Unified.

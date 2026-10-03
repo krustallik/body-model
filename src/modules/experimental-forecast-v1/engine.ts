@@ -1,7 +1,10 @@
 import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
 import { GLYCOGEN_WATER_KG_PER_KG } from "@/model/body-composition/constants";
-import { hasExplicitStrengthWorkouts } from "@/model/activity/workout-energy";
-import { estimateExperimentalTransientExerciseWaterV1 } from "@/model/physiology-v7/experimental-transient-exercise-water-v1";
+import {
+  replayTransientExerciseWaterV2,
+  type ActiveTransientExerciseWaterImpulseV2,
+} from "@/model/physiology-v7/experimental-transient-exercise-water-v2";
+import { localDateTimeToInstant } from "@/model/time-zone";
 import {
   simulateOneDay,
   type PhysiologicalDailyInput,
@@ -50,6 +53,8 @@ export type ExperimentalForecastEngineInput = {
   baseline: ExperimentalForecastBehavior;
   scenario: ExperimentalForecastScenario;
   startDate: string;
+  timeZone?: string;
+  episodeId?: number;
   horizonDays: number;
   seed: number;
   config?: Partial<ExperimentalForecastConfig>;
@@ -178,6 +183,8 @@ export function runExperimentalForecast(input: ExperimentalForecastEngineInput):
   const dates: ExperimentalForecastDate[] = [];
   let state = input.simulatorState;
   let transientWaterPoint = input.initial.transientWaterKg?.point ?? null;
+  let transientActiveImpulses: ActiveTransientExerciseWaterImpulseV2[] | null =
+    input.initial.transientWaterActiveImpulses ?? null;
   const latentAnchorWeightKg = reconstructBodyWeightKg(input.simulatorState);
   const initialFat = input.initial.fatMassKg;
   const initialSlowNonFat = input.initial.slowNonFatKg;
@@ -199,16 +206,28 @@ export function runExperimentalForecast(input: ExperimentalForecastEngineInput):
       throw new Error(`experimental forecast incomplete: ${result.missingFields.join(",")}`);
     }
     state = result.endState;
-    const transient = estimateExperimentalTransientExerciseWaterV1({
-      priorTransientWaterKg: transientWaterPoint,
-      daysElapsed: 1,
-      resistanceSession: dayScenario.behavior.strengthTrainingMinutes > 0
-        || (dayScenario.behavior.workoutActivity !== undefined
-          && hasExplicitStrengthWorkouts(dayScenario.behavior.workoutActivity.events))
-        ? { qualifiedHardSetCount: 0, exposureContext: "novel-or-unknown" }
-        : null,
-    });
-    transientWaterPoint = transient.resultingTransientWaterKg.point;
+    let transientWaterLower: number | null = null;
+    let transientWaterUpper: number | null = null;
+    if (transientActiveImpulses !== null && input.timeZone && input.episodeId) {
+      const replayState = replayTransientExerciseWaterV2({
+        initialActiveImpulses: transientActiveImpulses,
+        days: [{
+          episodeId: input.episodeId,
+          modelDate: date,
+          boundaryInstant: localDateTimeToInstant(date, "00:00", input.timeZone).toISOString(),
+          // Unknown future dose creates no acute impulse; old impulses still decay.
+          impulses: [],
+        }],
+      });
+      const replayed = replayState.days[0]!;
+      transientActiveImpulses = replayState.activeImpulses;
+      transientWaterPoint = replayed.endOfDayLevelKg.point;
+      transientWaterLower = Math.min(replayed.endOfDayLevelKg.lower, replayed.endOfDayLevelKg.point, replayed.endOfDayLevelKg.upper);
+      transientWaterUpper = Math.max(replayed.endOfDayLevelKg.lower, replayed.endOfDayLevelKg.point, replayed.endOfDayLevelKg.upper);
+    } else {
+      if (transientActiveImpulses !== null) transientActiveImpulses = null;
+      transientWaterPoint = null;
+    }
     const transientChange = transientWaterPoint === null || input.initial.transientWaterKg?.point === null
       ? 0
       : transientWaterPoint - (input.initial.transientWaterKg?.point ?? 0);
@@ -223,9 +242,9 @@ export function runExperimentalForecast(input: ExperimentalForecastEngineInput):
     const slowNonFat = range(state.leanTissueKg, uncertainty * 0.2);
     const glycogen = range(state.glycogenKg, uncertainty * 0.2);
     const glycogenWater = range(state.glycogenKg * GLYCOGEN_WATER_KG_PER_KG, uncertainty * 0.25);
-    const transientWater = transient.resultingTransientWaterKg.point === null
+    const transientWater = transientWaterPoint === null || transientWaterLower === null || transientWaterUpper === null
       ? null
-      : range(transient.resultingTransientWaterKg.point, uncertainty * 0.35);
+      : { median: transientWaterPoint, lower: transientWaterLower, upper: transientWaterUpper, representation: "engineering-range" as const };
     const weight = input.initial.anchorWeightKg === null ? null : range(expectedWeight, uncertainty);
     dates.push({
       date,

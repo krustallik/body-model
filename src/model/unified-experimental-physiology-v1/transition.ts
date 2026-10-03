@@ -10,7 +10,7 @@ import type {
   UnifiedSourceLineageV1,
   UnifiedUncertaintyV1,
 } from "./contracts";
-import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V1_REVISION } from "./contracts";
+import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION } from "./contracts";
 import { addEnvelopes, envelope } from "./mass-composition";
 
 export type UnifiedChildTransitionsV1 = {
@@ -27,7 +27,9 @@ export type UnifiedChildTransitionsV1 = {
 
 export type UnifiedTransitionInputV1 = {
   profileId: number;
+  modelEpisodeId: number;
   date: string;
+  boundaryAt: string;
   priorState: UnifiedExperimentalPhysiologyStateV1 | null;
   priorStateFingerprint: string | null;
   children: UnifiedChildTransitionsV1;
@@ -91,11 +93,13 @@ export function transitionUnifiedExperimentalPhysiologyV1(input: UnifiedTransiti
     modeledChangeSinceAnchorKg,
   };
   const withoutFingerprint = {
-    contractVersion: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V1_REVISION,
+    contractVersion: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION,
     profileId: input.profileId,
+    modelEpisodeId: input.modelEpisodeId,
     date: input.date,
+    boundaryAt: input.boundaryAt,
     priorStateFingerprint: input.priorStateFingerprint ?? "initial-state",
-    sourceFingerprint: stableSha256({ date: input.date, sourceLineage: input.sourceLineage, energyLedger: input.energyLedger, quality: input.quality }),
+    sourceFingerprint: stableSha256({ modelEpisodeId: input.modelEpisodeId, date: input.date, boundaryAt: input.boundaryAt, sourceLineage: input.sourceLineage, energyLedger: input.energyLedger, quality: input.quality }),
     state,
     deltas,
     energyLedger: input.energyLedger,

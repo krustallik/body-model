@@ -1,6 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
-import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V1_REVISION } from "@/model/unified-experimental-physiology-v1/contracts";
+import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION } from "@/model/unified-experimental-physiology-v1/contracts";
 import { latestCompletedLocalDate, addCalendarDays } from "@/modules/model-episodes/model-calendar";
 import { ModelEpisodeRepository } from "@/modules/model-episodes/model-episode.repository";
 import type { ModelHealthDaySource } from "@/modules/model-episodes/model-episode.types";
@@ -76,7 +76,9 @@ function rangeFrom(value: number, spread = 0) {
 
 function unifiedResult(row: {
   profileId: number;
+  modelEpisodeId: number;
   date: string;
+  boundaryAt: Date;
   modelRevision: string;
   sourceFingerprint: string;
   priorStateFingerprint: string | null;
@@ -94,7 +96,9 @@ function unifiedResult(row: {
   return {
     contractVersion: row.modelRevision as UnifiedExperimentalPhysiologyDayResultV1["contractVersion"],
     profileId: row.profileId,
+    modelEpisodeId: row.modelEpisodeId,
     date: row.date,
+    boundaryAt: row.boundaryAt.toISOString(),
     priorStateFingerprint: row.priorStateFingerprint ?? "initial-state",
     sourceFingerprint: row.sourceFingerprint,
     state: row.state as UnifiedExperimentalPhysiologyDayResultV1["state"],
@@ -237,7 +241,11 @@ function initialStateFrom(input: {
     slowNonFatKg,
     glycogenRelativeKg: state.glycogen.relativeDeviationKg,
     glycogenWaterKg: state.glycogenWater.deltaKg,
-    transientWaterKg: state.transientWater.relativeKg,
+    transientWaterKg: state.transientWater.levelKg ?? null,
+    transientWaterActiveImpulses: numberValue(state.transientWater.levelKg?.point) !== null
+      && Array.isArray(state.transientWater.activeImpulses)
+      ? state.transientWater.activeImpulses as unknown as NonNullable<ExperimentalForecastInitialState["transientWaterActiveImpulses"]>
+      : null,
     restingRmrKcalPerDay: input.latestRmr,
     typicalMaintenanceKcalPerDay: input.typicalMaintenance,
     latestExpenditureKcalPerDay: input.latestExpenditure,
@@ -491,7 +499,7 @@ export async function experimentalForecastModelEpisode(
   request: ForecastModelRequest & { now?: Date },
   client: PrismaClient = prisma,
 ): Promise<ForecastResult | null> {
-  if (!client || typeof (client as unknown as { unifiedExperimentalPhysiologyState?: unknown }).unifiedExperimentalPhysiologyState !== "object") {
+  if (!client || typeof (client as unknown as { unifiedExperimentalPhysiologyStateV2?: unknown }).unifiedExperimentalPhysiologyStateV2 !== "object") {
     return null;
   }
   const episodes = new ModelEpisodeRepository(client);
@@ -517,15 +525,19 @@ export async function experimentalForecastModelEpisode(
   });
   if (!isUnifiedGenerationCurrentV1(lifecycle)) return null;
   const expectedGeneration = lifecycle.invalidationGeneration;
-  const unifiedRow = await client.unifiedExperimentalPhysiologyState.findFirst({
-    where: { profileId: episode.profileId, date: { lte: latestDate }, modelRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V1_REVISION },
-    orderBy: { date: "desc" },
+  const unifiedRow = await readLatestUnifiedExperimentalPhysiologyV2ForEpisode(client, {
+    profileId: episode.profileId,
+    modelEpisodeId: episode.id,
+    throughDate: latestDate,
   });
   // Existing production episodes without a rebuilt Unified row continue
   // through the frozen production engine. The API orchestration rebuilds the
   // Unified state before normal requests; direct read-only callers must not
   // mutate history merely to obtain a forecast.
   if (!unifiedRow) return null;
+  if (unifiedRow.modelEpisodeId !== episode.id
+      || !Number.isFinite(unifiedRow.boundaryAt.getTime())
+      || unifiedRow.date > latestDate) return null;
   const latest = unifiedResult(unifiedRow);
   const requestedWindowDays = DEFAULT_EXPERIMENTAL_FORECAST_CONFIG.limitedHistoryRequestedWindowDays;
   const windowFrom = addCalendarDays(latest.date, -(requestedWindowDays - 1));
@@ -534,9 +546,9 @@ export async function experimentalForecastModelEpisode(
   const currentSources = await episodes.loadSources(currentObservedDate, currentObservedDate);
   const currentObservedWeightKg = latestObservedWeightKg(currentSources.days);
   const validDays = sources.days.filter((day) => day.caloriesKcal !== null && day.proteinG !== null && day.fatG !== null && day.carbsG !== null);
-  const ledgers = (await client.unifiedExperimentalPhysiologyState.findMany({
-    where: { profileId: episode.profileId, date: { gte: windowFrom, lte: latest.date }, modelRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V1_REVISION },
-    select: { energyLedger: true }, orderBy: { date: "asc" },
+  const ledgers = (await client.unifiedExperimentalPhysiologyStateV2.findMany({
+    where: { profileId: episode.profileId, modelEpisodeId: episode.id, date: { gte: windowFrom, lte: latest.date }, modelRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION },
+    select: { energyLedger: true }, orderBy: { boundaryAt: "asc" },
   })).map((row) => object(row.energyLedger));
   const maintenanceValues = ledgers.map((ledger) => numberValue(ledger.productionTdeeKcal)).filter((value): value is number => value !== null);
   const latestLedger = object(latest.energyLedger);
@@ -582,6 +594,8 @@ export async function experimentalForecastModelEpisode(
       ? undefined
       : (date) => behaviorFromSchedule(date, scenarioSchedule),
     startDate: addCalendarDays(latest.date, 1),
+    timeZone: episode.timezone,
+    episodeId: episode.id,
     horizonDays: request.horizonDays,
     seed: request.seed,
   });
@@ -599,4 +613,20 @@ export async function experimentalForecastModelEpisode(
       || finalLifecycle.productionPublishedGeneration !== expectedGeneration
       || finalLifecycle.unifiedPublishedGeneration !== expectedGeneration) return null;
   return mapExperimentalForecastToLegacy(experimental, episode.modelVersion);
+}
+
+/** The Forecast V1 donor is episode-local and latest by absolute model boundary. */
+export function readLatestUnifiedExperimentalPhysiologyV2ForEpisode(
+  client: PrismaClient,
+  input: { profileId: number; modelEpisodeId: number; throughDate: string },
+) {
+  return client.unifiedExperimentalPhysiologyStateV2.findFirst({
+    where: {
+      profileId: input.profileId,
+      modelEpisodeId: input.modelEpisodeId,
+      date: { lte: input.throughDate },
+      modelRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION,
+    },
+    orderBy: { boundaryAt: "desc" },
+  });
 }

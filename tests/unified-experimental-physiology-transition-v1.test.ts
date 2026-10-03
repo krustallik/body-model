@@ -18,12 +18,12 @@ function children(): UnifiedChildTransitionsV1 {
 const ledger = { selectedActivityKcal: 500, productionTdeeKcal: 2_900, entries: [], selectedDoseKeys: [], quality: "available" as const };
 const quality = { availability: "available" as const, gapSeverity: "none" as const, sourceQuality: "observed" as const, missingFields: [], reasons: [], modeledGapBridge: false };
 const uncertainty = { state: {}, transition: {}, observation: { scaleKg: null, bodyComposition: [] }, model: [], gap: [], dependencyNotes: [] };
-const lineage = { dailyHealthData: null, productionDailyState: null, workouts: [], diarySessions: [], childModelRevisions: {}, sourceDate: "2065-01-01" };
+const lineage = { modelEpisodeId: 1, modelDate: "2065-01-01", boundaryAt: "2065-01-01T00:00:00.000Z", episodePartitionRevision: "transient-water-v2-absolute-episode-partition", dailyHealthData: null, productionDailyState: null, workouts: [], diarySessions: [], childModelRevisions: {}, sourceDate: "2065-01-01" };
 
-describe("Unified V1 pure transition", () => {
+describe("Unified V2 pure transition", () => {
   it("composes slow and fast change without adding relative muscle", () => {
     const result = transitionUnifiedExperimentalPhysiologyV1({
-      profileId: 1, date: "2065-01-01", priorState: null, priorStateFingerprint: null,
+      profileId: 1, modelEpisodeId: 1, date: "2065-01-01", boundaryAt: "2065-01-01T00:00:00.000Z", priorState: null, priorStateFingerprint: null,
       children: children(), energyLedger: ledger, quality, uncertainty,
       reconciliation: { anchorDate: "2064-12-31", anchorWeightKg: 80, observedWeightKg: 79.8, reason: null },
       sourceLineage: lineage,
@@ -36,7 +36,7 @@ describe("Unified V1 pure transition", () => {
   it("does not invent total change when a required component is unavailable", () => {
     const input = children();
     input.glycogen.dailyDeltaKg = unavailableEnvelope;
-    const result = transitionUnifiedExperimentalPhysiologyV1({ profileId: 1, date: "2065-01-01", priorState: null, priorStateFingerprint: null, children: input, energyLedger: ledger, quality, uncertainty, reconciliation: { anchorDate: null, anchorWeightKg: null, observedWeightKg: null, reason: null }, sourceLineage: lineage });
+    const result = transitionUnifiedExperimentalPhysiologyV1({ profileId: 1, modelEpisodeId: 1, date: "2065-01-01", boundaryAt: "2065-01-01T00:00:00.000Z", priorState: null, priorStateFingerprint: null, children: input, energyLedger: ledger, quality, uncertainty, reconciliation: { anchorDate: null, anchorWeightKg: null, observedWeightKg: null, reason: null }, sourceLineage: lineage });
     expect(result.deltas.modeledChangeSinceAnchorKg).toBeNull();
     expect(result.reconciliation.unexplainedResidualKg).toBeNull();
   });

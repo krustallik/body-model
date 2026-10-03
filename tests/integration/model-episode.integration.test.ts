@@ -21,6 +21,7 @@ import { POST as postForecastAction } from "@/app/api/forecast/action/route";
 import { experimentalForecastModelEpisode } from "@/modules/experimental-forecast-v1/service";
 import { rebuildUnifiedExperimentalPhysiologyStateV1 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
+import { isProductionGenerationCurrentV1, isUnifiedGenerationCurrentV1 } from "@/modules/model-episodes/publication-generation-v1";
 import { STAIR_CLIMBING_TYPE } from "@/modules/health/expand-training-workouts";
 import { recordExperimentalStepperActiveEnergyShadow } from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
 
@@ -70,6 +71,12 @@ function goalPlanningRequest(targetValueKg: number, goalDate: string): GoalPlann
 }
 
 async function removeTestData(): Promise<void> {
+  const fixtureEpisodes = await prisma.modelEpisode.findMany({
+    where: { startDate: { gte: testRangeStart, lte: finalDate } }, select: { id: true },
+  });
+  await prisma.unifiedExperimentalPhysiologyStateV2.deleteMany({
+    where: { modelEpisodeId: { in: fixtureEpisodes.map(({ id }) => id) } },
+  });
   await prisma.activeEnergyCanonicalEvent.deleteMany({
     where: { profileId: 1, modelDate: { gte: testRangeStart, lte: finalDate } },
   });
@@ -187,6 +194,8 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
   afterAll(async () => {
     await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS "model_episode_test_failure" ON "DailyModelState"');
     await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS "model_episode_test_failure"()');
+    await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS "transient_partition_test_failure" ON "ModelEpisode"');
+    await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS "transient_partition_test_failure"()');
     await removeTestData();
     if (originalProfile) {
       await prisma.profile.update({
@@ -236,6 +245,99 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
       where: { id: episodeId }, data: { active: true, deactivatedAt: null },
     })).rejects.toThrow();
   });
+
+  it("invalidates only Unified currentness when initializeNewModelEpisode changes the partition", async () => {
+    await recalculateModelEpisode({ episodeId, now }, prisma);
+    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1, fromDate: episodeStart, toDate: finalDate });
+    const request = { episodeId, horizonDays: 7, seed: 443, scenario: fixedForecastScenario, now };
+    expect(await experimentalForecastModelEpisode(request, prisma)).not.toBeNull();
+    const beforeLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({
+      where: { profileId: 1 },
+      select: {
+        invalidationGeneration: true, currentThroughDate: true, productionStaleFromDate: true,
+        productionPublishedGeneration: true, unifiedPublishedGeneration: true,
+      },
+    });
+    expect(isUnifiedGenerationCurrentV1(beforeLifecycle)).toBe(true);
+    const beforeProductionRows = await prisma.physiologyV7DailyResult.findMany({
+      where: { profileId: 1 }, orderBy: { date: "asc" }, select: { date: true, resultFingerprint: true, updatedAt: true },
+    });
+
+    const replacement = await initializeNewModelEpisode({ startDate: finalDate, now });
+
+    const afterLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({
+      where: { profileId: 1 },
+      select: {
+        invalidationGeneration: true, currentThroughDate: true, productionStaleFromDate: true,
+        productionPublishedGeneration: true, unifiedPublishedGeneration: true,
+      },
+    });
+    expect(afterLifecycle).toEqual({ ...beforeLifecycle, unifiedPublishedGeneration: null });
+    expect(isProductionGenerationCurrentV1(afterLifecycle)).toBe(true);
+    expect(isUnifiedGenerationCurrentV1(afterLifecycle)).toBe(false);
+    expect(await prisma.physiologyV7DailyResult.findMany({
+      where: { profileId: 1 }, orderBy: { date: "asc" }, select: { date: true, resultFingerprint: true, updatedAt: true },
+    })).toEqual(beforeProductionRows);
+    expect(await experimentalForecastModelEpisode(request, prisma)).toBeNull();
+
+    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1, fromDate: episodeStart, toDate: finalDate });
+    const republished = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
+    expect(isUnifiedGenerationCurrentV1(republished)).toBe(true);
+    expect(await experimentalForecastModelEpisode({ ...request, episodeId: replacement.id }, prisma)).not.toBeNull();
+  }, 60_000);
+
+  it("rolls back Unified invalidation when initializeNewModelEpisode partition mutation fails", async () => {
+    await recalculateModelEpisode({ episodeId, now }, prisma);
+    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1, fromDate: episodeStart, toDate: finalDate });
+    const request = { episodeId, horizonDays: 7, seed: 443, scenario: fixedForecastScenario, now };
+    expect(await experimentalForecastModelEpisode(request, prisma)).not.toBeNull();
+    const beforeLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
+
+    await prisma.$executeRawUnsafe(`
+      CREATE OR REPLACE FUNCTION "transient_partition_test_failure"() RETURNS trigger AS $$
+      BEGIN RAISE EXCEPTION 'forced ModelEpisode partition mutation rollback'; END;
+      $$ LANGUAGE plpgsql
+    `);
+    await prisma.$executeRawUnsafe(`
+      CREATE TRIGGER "transient_partition_test_failure"
+      BEFORE UPDATE OF "active" ON "ModelEpisode"
+      FOR EACH ROW WHEN (OLD."active" IS TRUE AND NEW."active" IS FALSE)
+      EXECUTE FUNCTION "transient_partition_test_failure"()
+    `);
+    try {
+      await expect(initializeNewModelEpisode({ startDate: finalDate, now })).rejects.toThrow(/forced ModelEpisode partition mutation rollback/);
+    } finally {
+      await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS "transient_partition_test_failure" ON "ModelEpisode"');
+      await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS "transient_partition_test_failure"()');
+    }
+
+    expect(await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } })).toEqual(beforeLifecycle);
+    expect(isUnifiedGenerationCurrentV1(beforeLifecycle)).toBe(true);
+    expect(await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } })).toMatchObject({ active: true });
+    expect(await experimentalForecastModelEpisode(request, prisma)).not.toBeNull();
+  }, 60_000);
+
+  it("invalidates Unified currentness on the automatic restart path without staling production", async () => {
+    await recalculateModelEpisode({ episodeId, now }, prisma);
+    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1, fromDate: episodeStart, toDate: finalDate });
+    const beforeLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
+    expect(isUnifiedGenerationCurrentV1(beforeLifecycle)).toBe(true);
+    const request = { episodeId, horizonDays: 7, seed: 443, scenario: fixedForecastScenario, now };
+    expect(await experimentalForecastModelEpisode(request, prisma)).not.toBeNull();
+
+    const result = await recalculateModelEpisode({ now }, prisma);
+
+    expect(result.episodeId).not.toBe(episodeId);
+    const afterLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
+    expect(afterLifecycle.invalidationGeneration).toBe(beforeLifecycle.invalidationGeneration);
+    expect(afterLifecycle.productionStaleFromDate).toBe(beforeLifecycle.productionStaleFromDate);
+    expect(afterLifecycle.productionPublishedGeneration).toBe(afterLifecycle.invalidationGeneration);
+    expect(afterLifecycle.unifiedPublishedGeneration).toBeNull();
+    expect(isProductionGenerationCurrentV1(afterLifecycle)).toBe(true);
+    expect(isUnifiedGenerationCurrentV1(afterLifecycle)).toBe(false);
+    expect(await experimentalForecastModelEpisode(request, prisma)).toBeNull();
+
+  }, 60_000);
 
   it("rejects a 4-day restart candidate, preserves stored rows, and fails closed while production is stale", async () => {
     const baselineNow = new Date("2041-03-30T10:00:00.000Z");
@@ -392,7 +494,11 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     for (const outcome of outcomes) {
       if (outcome.status === "rejected") {
         // No automatic retry: a losing SERIALIZABLE transaction fails closed.
-        expect(outcome.reason).toMatchObject({ code: "P2034" });
+        const reason = outcome.reason as { code?: unknown; meta?: unknown };
+        expect(["P2034", "P2010"]).toContain(reason.code);
+        if (reason.code === "P2010") {
+          expect(reason.meta).toMatchObject({ code: "40001" });
+        }
       }
     }
     expect(await prisma.modelEpisode.count({ where: { active: true } })).toBe(1);
@@ -1325,6 +1431,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
   it("cascades persisted daily state with its auditable episode relation", async () => {
     await recalculateModelEpisode({ episodeId, now });
     expect(await prisma.dailyModelState.count({ where: { episodeId } })).toBeGreaterThan(0);
+    await prisma.unifiedExperimentalPhysiologyStateV2.deleteMany({ where: { modelEpisodeId: episodeId } });
     await prisma.modelEpisode.delete({ where: { id: episodeId } });
     expect(await prisma.dailyModelState.count({ where: { episodeId } })).toBe(0);
   });

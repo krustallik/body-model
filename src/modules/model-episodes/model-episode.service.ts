@@ -254,6 +254,7 @@ export async function initializeNewModelEpisode(
         timezone,
       });
     }
+    await new PhysiologyV7PersistenceRepository(transaction).invalidateUnifiedPublication(prepared.profileId);
     await repository.deactivateActive(now);
     return repository.createPrepared(prepared);
   }, TRANSACTION_OPTIONS);
@@ -399,6 +400,7 @@ async function recalculateModelEpisodeProduction(
         // Both changes and the candidate calculation are committed atomically.
         // PostgreSQL SERIALIZABLE plus the one-active partial unique index make
         // concurrent switches fail closed rather than publish two active rows.
+        await lifecycle.invalidateUnifiedPublication(episode.profileId);
         await repository.deactivateActive(input.now ?? new Date());
         episode = await repository.createPrepared(prepared);
       }

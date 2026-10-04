@@ -247,7 +247,9 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
   });
 
   it("invalidates only Unified currentness when initializeNewModelEpisode changes the partition", async () => {
-    await recalculateModelEpisode({ episodeId, now }, prisma);
+    // Use the same post-commit orchestration as production so the persisted
+    // FatWeight child output exists before Unified/Forecast read it.
+    await recalculateModelEpisode({ episodeId, now });
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1, fromDate: episodeStart, toDate: finalDate });
     const request = { episodeId, horizonDays: 7, seed: 443, scenario: fixedForecastScenario, now };
     expect(await experimentalForecastModelEpisode(request, prisma)).not.toBeNull();
@@ -287,11 +289,18 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
   }, 60_000);
 
   it("rolls back Unified invalidation when initializeNewModelEpisode partition mutation fails", async () => {
-    await recalculateModelEpisode({ episodeId, now }, prisma);
+    await recalculateModelEpisode({ episodeId, now });
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1, fromDate: episodeStart, toDate: finalDate });
     const request = { episodeId, horizonDays: 7, seed: 443, scenario: fixedForecastScenario, now };
     expect(await experimentalForecastModelEpisode(request, prisma)).not.toBeNull();
     const beforeLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
+    const beforePartition = await prisma.modelEpisode.findMany({
+      where: { profileId: 1, startDate: { gte: testRangeStart, lte: finalDate } },
+      orderBy: [{ startDate: "asc" }, { id: "asc" }],
+    });
+    const beforeProductionRows = await prisma.physiologyV7DailyResult.findMany({
+      where: { profileId: 1 }, orderBy: { date: "asc" },
+    });
 
     await prisma.$executeRawUnsafe(`
       CREATE OR REPLACE FUNCTION "transient_partition_test_failure"() RETURNS trigger AS $$
@@ -313,18 +322,44 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
 
     expect(await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } })).toEqual(beforeLifecycle);
     expect(isUnifiedGenerationCurrentV1(beforeLifecycle)).toBe(true);
-    expect(await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } })).toMatchObject({ active: true });
+    expect(await prisma.modelEpisode.findMany({
+      where: { profileId: 1, startDate: { gte: testRangeStart, lte: finalDate } },
+      orderBy: [{ startDate: "asc" }, { id: "asc" }],
+    })).toEqual(beforePartition);
+    expect(await prisma.physiologyV7DailyResult.findMany({
+      where: { profileId: 1 }, orderBy: { date: "asc" },
+    })).toEqual(beforeProductionRows);
     expect(await experimentalForecastModelEpisode(request, prisma)).not.toBeNull();
   }, 60_000);
 
   it("invalidates Unified currentness on the automatic restart path without staling production", async () => {
-    await recalculateModelEpisode({ episodeId, now }, prisma);
-    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1, fromDate: episodeStart, toDate: finalDate });
+    // The first publication ends before the later BIA-backed run. Advancing
+    // the model horizon then gives the real automatic restart a later boundary
+    // while keeping the resulting episode partition chronological.
+    const initialNow = new Date("2041-03-25T10:00:00.000Z");
+    const initialThroughDate = "2041-03-24";
+    await prisma.dailyHealthData.updateMany({
+      where: { date: { gte: "2041-03-14", lte: episodeStart } },
+      data: { bodyFatPercent: null },
+    });
+    await prisma.dailyHealthData.updateMany({
+      where: { date: { gte: "2041-03-25", lte: finalDate } },
+      data: { bodyFatPercent: 20 },
+    });
+
+    await recalculateModelEpisode({ episodeId, now: initialNow });
+    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1, fromDate: episodeStart, toDate: initialThroughDate });
     const beforeLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
     expect(isUnifiedGenerationCurrentV1(beforeLifecycle)).toBe(true);
-    const request = { episodeId, horizonDays: 7, seed: 443, scenario: fixedForecastScenario, now };
+    const request = { episodeId, horizonDays: 7, seed: 443, scenario: fixedForecastScenario, now: initialNow };
     expect(await experimentalForecastModelEpisode(request, prisma)).not.toBeNull();
+    const beforeProductionPrefix = await prisma.physiologyV7DailyResult.findMany({
+      where: { profileId: 1, date: { lte: initialThroughDate } }, orderBy: { date: "asc" },
+    });
 
+    // The optional client deliberately exercises the production service's
+    // automatic-restart branch directly; the standard wrapper uses an
+    // explicit active episode id while coordinating Active Energy refreshes.
     const result = await recalculateModelEpisode({ now }, prisma);
 
     expect(result.episodeId).not.toBe(episodeId);
@@ -335,8 +370,27 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(afterLifecycle.unifiedPublishedGeneration).toBeNull();
     expect(isProductionGenerationCurrentV1(afterLifecycle)).toBe(true);
     expect(isUnifiedGenerationCurrentV1(afterLifecycle)).toBe(false);
+    expect(await prisma.physiologyV7DailyResult.findMany({
+      where: { profileId: 1, date: { lte: initialThroughDate } }, orderBy: { date: "asc" },
+    })).toEqual(beforeProductionPrefix);
     expect(await experimentalForecastModelEpisode(request, prisma)).toBeNull();
+    const restartedRequest = { ...request, episodeId: result.episodeId, now };
+    expect(await experimentalForecastModelEpisode(restartedRequest, prisma)).toBeNull();
 
+    // Re-run the restarted episode through normal orchestration to materialize
+    // its post-commit child shadows before Unified V2 consumes them.
+    await recalculateModelEpisode({ episodeId: result.episodeId, now });
+    const productionRepublished = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
+    expect(isProductionGenerationCurrentV1(productionRepublished)).toBe(true);
+    expect(isUnifiedGenerationCurrentV1(productionRepublished)).toBe(false);
+    expect(await experimentalForecastModelEpisode(restartedRequest, prisma)).toBeNull();
+
+    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1, fromDate: episodeStart, toDate: finalDate });
+    const republished = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
+    expect(isProductionGenerationCurrentV1(republished)).toBe(true);
+    expect(isUnifiedGenerationCurrentV1(republished)).toBe(true);
+    expect(republished.unifiedPublishedGeneration).toBe(republished.invalidationGeneration);
+    expect(await experimentalForecastModelEpisode(restartedRequest, prisma)).not.toBeNull();
   }, 60_000);
 
   it("rejects a 4-day restart candidate, preserves stored rows, and fails closed while production is stale", async () => {

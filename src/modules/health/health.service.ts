@@ -12,9 +12,7 @@ import {
 import { recordExperimentalStrengthEnergyShadowsForWeightDate } from "@/modules/training/experimental-strength-energy-shadow.service";
 import { recordExperimentalStepperGlycogenDemandShadowsForLocalDate } from "@/modules/profile/experimental-stepper-glycogen-demand-shadow.service";
 import { recordExperimentalGlycogenStateShadow } from "@/modules/model-episodes/experimental-glycogen-state-shadow.service";
-import { recordExperimentalSkeletalMuscleDeltaShadow } from "@/modules/model-episodes/experimental-skeletal-muscle-delta-shadow.service";
 import { recordExperimentalLocalHypertrophyResponseShadow } from "@/modules/model-episodes/experimental-local-hypertrophy-response-shadow.service";
-import { recordExperimentalCessationDetrainingShadow } from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
 import { rebuildAuthoritativeRelativeMuscleTrajectory } from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
 import { recordExperimentalFfmRetentionShadow } from "@/modules/model-episodes/experimental-ffm-retention-shadow.service";
 import { publishActiveEnergyChangesV1 } from "@/modules/activity/active-energy-publication";
@@ -99,26 +97,6 @@ export async function syncHealthData(
   }
 
   try {
-    // Shadow-only relative skeletal-muscle delta; never feeds TDEE/forecast.
-    await recordExperimentalSkeletalMuscleDeltaShadow({ date: date.date });
-  } catch (error) {
-    logEvent("warn", "experimental_skeletal_muscle_delta_shadow_failed", {
-      date: date.date,
-      errorType: errorKind(error),
-    });
-  }
-
-  try {
-    // Shadow-only cessation/detraining; never feeds TDEE/forecast.
-    await recordExperimentalCessationDetrainingShadow({ date: date.date });
-  } catch (error) {
-    logEvent("warn", "experimental_cessation_detraining_shadow_failed", {
-      date: date.date,
-      errorType: errorKind(error),
-    });
-  }
-
-  try {
     // Shadow-only FFM/slow-nonfat retention; never feeds TDEE/forecast/Hall mean.
     await recordExperimentalFfmRetentionShadow({ date: date.date });
   } catch (error) {
@@ -154,8 +132,7 @@ export async function syncHealthData(
   }
 
   // A health backfill can change exposure/coverage on an earlier date. Replay
-  // the one authoritative relative-muscle suffix once, after the entire
-  // chronological batch, rather than doing redundant request-order replays.
+  // the episode-local Relative Muscle trajectory once after the full batch.
   if (repository === healthSyncRepository && chronologicalDates.length > 0) {
     try {
       await rebuildAuthoritativeRelativeMuscleTrajectory({ fromDate: chronologicalDates[0]!.date });

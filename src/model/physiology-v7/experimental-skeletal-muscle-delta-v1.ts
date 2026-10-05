@@ -323,19 +323,19 @@ export function estimateExperimentalSkeletalMuscleDeltaV1(input: {
   if (input.trainingExposureKind === "unresolved-missing-training"
       || (input.qualifiedHardSetCount === null
         && input.trainingExposureKind !== "verified-no-exposure")) {
-    return unavailable("missing-training-exposure", baseFeatures, reasons, priorCumulative);
+    return unavailable("missing-training-exposure", baseFeatures, reasons);
   }
   if (input.proteinGPerKg === null) {
     return unavailable("missing-protein", baseFeatures, [
       ...reasons,
       "missing-protein-is-not-zero",
-    ], priorCumulative);
+    ]);
   }
   if (input.energyBalanceKcal === null) {
     return unavailable("missing-energy-balance", baseFeatures, [
       ...reasons,
       "missing-energy-balance-is-not-zero-or-neutral",
-    ], priorCumulative);
+    ]);
   }
 
   if (input.qualifiedHardSetCount !== null
@@ -364,7 +364,7 @@ export function estimateExperimentalSkeletalMuscleDeltaV1(input: {
   if (input.trainingExposureKind === "verified-no-exposure"
       || (input.qualifiedHardSetCount ?? 0) <= 0) {
     const zero = 0;
-    const cumulative = (priorCumulative ?? 0) + zero;
+    const cumulative = priorCumulative === null ? null : priorCumulative + zero;
     reasons.push("verified-no-exposure-zero-delta-not-same-day-atrophy");
     reasons.push("training-status-shifts-prior-without-exact-kg-rate");
     const result: ExperimentalSkeletalMuscleDeltaResultV1 = {
@@ -421,7 +421,8 @@ export function estimateExperimentalSkeletalMuscleDeltaV1(input: {
   const orderedUpper = Math.max(lower, point, upper);
   const orderedPoint = Math.min(Math.max(point, orderedLower), orderedUpper);
 
-  const cumulative = (priorCumulative ?? 0) + orderedPoint;
+  const cumulative = priorCumulative === null ? null : priorCumulative + orderedPoint;
+  if (cumulative === null) reasons.push("cumulative-state-unavailable-after-unknown-predecessor");
   reasons.push("dose-saturating-monthly-rate-daily-transition");
   reasons.push("training-status-shifts-prior-without-exact-kg-rate");
   reasons.push("protein-scale-non-worsening-with-intake");
@@ -462,7 +463,6 @@ function unavailable(
   reason: ExperimentalSkeletalMuscleDeltaUnavailableReasonV1,
   features: ExperimentalSkeletalMuscleDeltaFeaturesV1,
   reasons: string[],
-  priorCumulative: number | null,
 ): ExperimentalSkeletalMuscleDeltaResultV1 {
   const result: ExperimentalSkeletalMuscleDeltaResultV1 = {
     contractVersion: EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION,
@@ -476,11 +476,13 @@ function unavailable(
     unavailableReason: reason,
     state: {
       absoluteSkeletalMuscleKg: null,
-      relativeCumulativeDeltaKg: priorCumulative,
+      // An unobserved day may contain a nonzero contribution. Carrying the
+      // previous point forward would silently treat that day as zero.
+      relativeCumulativeDeltaKg: null,
     },
     features: {
       ...features,
-      relativeCumulativeDeltaKg: priorCumulative,
+      relativeCumulativeDeltaKg: null,
     },
     reasons: [...reasons, `${reason}-is-not-zero-delta`],
     fingerprint: "",
@@ -503,7 +505,9 @@ export function rebuildExperimentalSkeletalMuscleDeltaTrajectoryV1(input: {
     bodyMassKg?: number | null;
   }[];
 }): ExperimentalSkeletalMuscleDeltaResultV1[] {
-  let cumulative = input.priorRelativeCumulativeDeltaKg ?? 0;
+  let cumulative: number | null = input.priorRelativeCumulativeDeltaKg === undefined
+    ? 0
+    : input.priorRelativeCumulativeDeltaKg;
   const out: ExperimentalSkeletalMuscleDeltaResultV1[] = [];
   for (const day of input.days) {
     const step = estimateExperimentalSkeletalMuscleDeltaV1({
@@ -511,9 +515,7 @@ export function rebuildExperimentalSkeletalMuscleDeltaTrajectoryV1(input: {
       priorRelativeCumulativeDeltaKg: cumulative,
     });
     out.push(step);
-    if (step.availability === "available" && step.state.relativeCumulativeDeltaKg !== null) {
-      cumulative = step.state.relativeCumulativeDeltaKg;
-    }
+    cumulative = step.state.relativeCumulativeDeltaKg;
   }
   return out;
 }

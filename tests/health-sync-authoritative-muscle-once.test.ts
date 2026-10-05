@@ -10,8 +10,6 @@ const {
   persistStepperReconciliationV1,
   recordExperimentalStepperGlycogenDemandShadowsForLocalDate,
   recordExperimentalGlycogenStateShadow,
-  recordExperimentalSkeletalMuscleDeltaShadow,
-  recordExperimentalCessationDetrainingShadow,
   recordExperimentalFfmRetentionShadow,
   recordExperimentalLocalHypertrophyResponseShadow,
   rebuildUnifiedExperimentalPhysiologyStateV1,
@@ -31,8 +29,6 @@ const {
     persistStepperReconciliationV1: vi.fn().mockResolvedValue({ groupIds: [], displayedSteps: null, potentialDuplication: false }),
     recordExperimentalStepperGlycogenDemandShadowsForLocalDate: vi.fn().mockResolvedValue(undefined),
     recordExperimentalGlycogenStateShadow: vi.fn().mockResolvedValue(undefined),
-    recordExperimentalSkeletalMuscleDeltaShadow: vi.fn().mockResolvedValue(undefined),
-    recordExperimentalCessationDetrainingShadow: vi.fn().mockResolvedValue(undefined),
     recordExperimentalFfmRetentionShadow: vi.fn().mockResolvedValue(undefined),
     recordExperimentalLocalHypertrophyResponseShadow: vi.fn().mockResolvedValue(undefined),
     rebuildUnifiedExperimentalPhysiologyStateV1: vi.fn().mockResolvedValue(undefined),
@@ -58,11 +54,7 @@ vi.mock("@/modules/profile/experimental-stepper-glycogen-demand-shadow.service",
 vi.mock("@/modules/model-episodes/experimental-glycogen-state-shadow.service", () => ({
   recordExperimentalGlycogenStateShadow,
 }));
-vi.mock("@/modules/model-episodes/experimental-skeletal-muscle-delta-shadow.service", () => ({
-  recordExperimentalSkeletalMuscleDeltaShadow,
-}));
 vi.mock("@/modules/model-episodes/experimental-cessation-detraining-shadow.service", () => ({
-  recordExperimentalCessationDetrainingShadow,
   rebuildAuthoritativeRelativeMuscleTrajectory,
 }));
 vi.mock("@/modules/model-episodes/experimental-ffm-retention-shadow.service", () => ({
@@ -97,8 +89,6 @@ describe("health sync authoritative muscle suffix rebuild", () => {
       ],
     }, healthSyncRepository as never);
 
-    expect(recordExperimentalSkeletalMuscleDeltaShadow).toHaveBeenCalledTimes(3);
-    expect(recordExperimentalCessationDetrainingShadow).toHaveBeenCalledTimes(3);
     expect(rebuildAuthoritativeRelativeMuscleTrajectory).toHaveBeenCalledTimes(1);
     expect(rebuildAuthoritativeRelativeMuscleTrajectory).toHaveBeenCalledWith({
       fromDate: "2026-09-21",

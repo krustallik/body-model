@@ -214,7 +214,7 @@ export class UnifiedExperimentalPhysiologySourceLoaderV1 {
       optional("experimentalGlycogenStateShadow", () => this.client.experimentalGlycogenStateShadow.findMany({ where: { profileId, date: { gte: fromDate, lte: toDate } }, orderBy: [{ date: "asc" }, { id: "asc" }], select: { id: true, date: true, updatedAt: true, sourceFingerprint: true, result: true } })),
       optional("experimentalGlycogenAssociatedWaterShadow", () => this.client.experimentalGlycogenAssociatedWaterShadow.findMany({ where: { profileId, date: { gte: fromDate, lte: toDate } }, orderBy: [{ date: "asc" }, { id: "asc" }], select: { id: true, date: true, updatedAt: true, sourceFingerprint: true, result: true } })),
       optional("experimentalTransientExerciseWaterShadow", () => this.client.experimentalTransientExerciseWaterShadow.findMany({ where: { profileId }, orderBy: [{ id: "asc" }], select: { id: true, sessionId: true, updatedAt: true, sourceFingerprint: true, modelRevision: true, result: true } })),
-      optional("experimentalSkeletalMuscleDeltaShadow", () => this.client.experimentalSkeletalMuscleDeltaShadow.findMany({ where: { profileId, date: { gte: fromDate, lte: toDate } }, orderBy: [{ date: "asc" }, { id: "asc" }], select: { id: true, date: true, updatedAt: true, sourceFingerprint: true, result: true } })),
+      optional("experimentalSkeletalMuscleDeltaShadow", () => this.client.experimentalSkeletalMuscleDeltaShadow.findMany({ where: { profileId, modelEpisodeId: { not: null }, isStale: false, date: { gte: fromDate, lte: toDate } }, orderBy: [{ modelEpisodeId: "asc" }, { date: "asc" }, { id: "asc" }], select: { id: true, modelEpisodeId: true, date: true, isStale: true, updatedAt: true, sourceFingerprint: true, result: true } })),
       this.client.strengthDiarySession.findMany({ where: { profileId, status: "COMPLETED" }, orderBy: [{ id: "asc" }], select: { id: true } }),
     ]);
     const dailyByDate = new Map(dailyRows.map((row) => [row.date, row] as const));
@@ -228,7 +228,12 @@ export class UnifiedExperimentalPhysiologySourceLoaderV1 {
     const slowTissueByDate = oneByDate(slowTissueRows);
     const glycogenByDate = oneByDate(glycogenRows);
     const glycogenWaterByDate = oneByDate(glycogenWaterRows);
-    const relativeMuscleByDate = oneByDate(relativeMuscleRows);
+    const relativeMuscleByEpisodeDate = new Map<string, typeof relativeMuscleRows[number]>();
+    for (const row of relativeMuscleRows) {
+      if (row.modelEpisodeId === null || row.isStale) continue;
+      const key = `${row.modelEpisodeId}|${row.date}`;
+      if (!relativeMuscleByEpisodeDate.has(key)) relativeMuscleByEpisodeDate.set(key, row);
+    }
     const transientByEpisodeDate = new Map<string, typeof transientWaterRows>();
     const v2SessionIds = new Set<number>();
     for (const row of transientWaterRows) {
@@ -344,7 +349,7 @@ export class UnifiedExperimentalPhysiologySourceLoaderV1 {
             glycogen: (() => { const row = glycogenByDate.get(date); return row ? { id: row.id, updatedAt: row.updatedAt.toISOString(), sourceFingerprint: row.sourceFingerprint, result: row.result } : null; })(),
             glycogenWater: (() => { const row = glycogenWaterByDate.get(date); return row ? { id: row.id, updatedAt: row.updatedAt.toISOString(), sourceFingerprint: row.sourceFingerprint, result: row.result } : null; })(),
             transientWater: (transientByEpisodeDate.get(identity) ?? []).map((row) => ({ id: row.id, sessionId: row.sessionId, updatedAt: row.updatedAt.toISOString(), sourceFingerprint: row.sourceFingerprint, modelRevision: row.modelRevision, result: row.result })),
-            relativeMuscle: (() => { const row = relativeMuscleByDate.get(date); return row ? { id: row.id, updatedAt: row.updatedAt.toISOString(), sourceFingerprint: row.sourceFingerprint, result: row.result } : null; })(),
+            relativeMuscle: (() => { const row = relativeMuscleByEpisodeDate.get(identity); return row ? { id: row.id, updatedAt: row.updatedAt.toISOString(), sourceFingerprint: row.sourceFingerprint, result: row.result } : null; })(),
           },
           transientWaterBoundaries: [boundary],
           childModelRevisions: { ...CHILD_MODEL_REVISIONS },

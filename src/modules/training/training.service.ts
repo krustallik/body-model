@@ -74,17 +74,11 @@ import {
   recordExperimentalStrengthGlycogenDemandShadow,
   recordExperimentalStrengthGlycogenDemandShadowBySessionId,
 } from "./experimental-strength-glycogen-demand-shadow.service";
-import {
-  recordExperimentalSkeletalMuscleDeltaShadowForSession,
-} from "@/modules/model-episodes/experimental-skeletal-muscle-delta-shadow.service";
 import { recordExperimentalGlycogenStateShadow } from "@/modules/model-episodes/experimental-glycogen-state-shadow.service";
 import {
   recordExperimentalLocalHypertrophyResponseShadowForSession,
 } from "@/modules/model-episodes/experimental-local-hypertrophy-response-shadow.service";
-import {
-  recordExperimentalCessationDetrainingShadowForSession,
-  rebuildAuthoritativeRelativeMuscleTrajectory,
-} from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
+import { rebuildAuthoritativeRelativeMuscleTrajectory } from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
 import {
   recordExperimentalFfmRetentionShadowForSession,
 } from "@/modules/model-episodes/experimental-ffm-retention-shadow.service";
@@ -124,15 +118,13 @@ async function recordExperimentalStrengthShadows(input: {
   // durable suffix, so a historical diary/workout correction cannot leave
   // dependent glycogen rows current-looking but stale.
   await recordExperimentalGlycogenStateShadow({ date: sourceDate, profileId: input.profileId });
-  await recordExperimentalSkeletalMuscleDeltaShadowForSession({
-    sessionId: input.session.id,
-    profileId: input.profileId,
-  });
-  await recordExperimentalCessationDetrainingShadowForSession({
-    sessionId: input.session.id,
-    profileId: input.profileId,
-  });
-  await rebuildAuthoritativeRelativeMuscleTrajectory({ fromDate: sourceDate, profileId: input.profileId });
+  const relativeMuscleEventAt = input.session.matchedWorkout?.startAt ?? input.session.webStartedAt;
+  if (relativeMuscleEventAt) {
+    await rebuildAuthoritativeRelativeMuscleTrajectory({
+      fromInstant: new Date(relativeMuscleEventAt),
+      profileId: input.profileId,
+    });
+  }
   await recordExperimentalFfmRetentionShadowForSession({
     sessionId: input.session.id,
     profileId: input.profileId,
@@ -155,11 +147,12 @@ async function recordExperimentalStrengthShadowsBySessionId(input: {
     const sourceDate = (session.matchedWorkout?.startAt ?? session.webStartedAt ?? session.createdAt).slice(0, 10);
     await recordExperimentalGlycogenStateShadow({ date: sourceDate, profileId: input.profileId });
   }
-  await recordExperimentalSkeletalMuscleDeltaShadowForSession(input);
-  await recordExperimentalCessationDetrainingShadowForSession(input);
-  if (session !== null) {
-    const sourceDate = (session.matchedWorkout?.startAt ?? session.webStartedAt ?? session.createdAt).slice(0, 10);
-    await rebuildAuthoritativeRelativeMuscleTrajectory({ fromDate: sourceDate, profileId: input.profileId });
+  const relativeMuscleEventAt = session?.matchedWorkout?.startAt ?? session?.webStartedAt ?? null;
+  if (relativeMuscleEventAt) {
+    await rebuildAuthoritativeRelativeMuscleTrajectory({
+      fromInstant: new Date(relativeMuscleEventAt),
+      profileId: input.profileId,
+    });
   }
   await recordExperimentalFfmRetentionShadowForSession(input);
   await recordExperimentalLocalHypertrophyResponseShadowForSession(input);
@@ -604,6 +597,10 @@ export class TrainingService {
         reason: "retrospective_create",
       });
       if (this.db === prisma) {
+        await rebuildAuthoritativeRelativeMuscleTrajectory({
+          fromInstant: new Date(workout.startAt),
+          profileId,
+        }).catch(() => {});
         await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId }).catch(() => {});
       }
       return { session: created, created: true };
@@ -679,6 +676,9 @@ export class TrainingService {
       workoutLocalDate: workoutLocalDate(session.matchedWorkout?.startAt),
       reason: "program_change",
     });
+    if (session.status === SESSION_STATUS.COMPLETED) {
+      await this.refreshRelativeMuscleAfterSessionMutation(sessionId, profileId).catch(() => {});
+    }
     await this.refreshTransientWaterAfterMutation(profileId).catch(() => {});
 
     return this.requireSession(sessionId, profileId);
@@ -984,6 +984,7 @@ export class TrainingService {
     if (!session) throw new SessionNotFoundError();
 
     if (session.status === SESSION_STATUS.COMPLETED) {
+      const previousRelativeMuscleEventAt = session.matchedWorkout?.startAt ?? session.webStartedAt;
       // Idempotent finish: re-run matcher only while still PENDING/AUTO-eligible.
       // Retrospective sessions are already linked and never re-matched.
       if (
@@ -999,6 +1000,11 @@ export class TrainingService {
       // Keep the shadow dependency chain ordered; its failure remains isolated
       // from the completed-session result.
       await this.recordExperimentalShadow({ session: refreshed, profileId }).catch(() => {});
+      await this.refreshRelativeMuscleAfterEventChange(
+        sessionId,
+        profileId,
+        previousRelativeMuscleEventAt,
+      ).catch(() => {});
       return refreshed;
     }
 
@@ -1052,7 +1058,14 @@ export class TrainingService {
       throw new SessionNotEditableError();
     }
     const matchedWorkoutId = session.matchedWorkoutId;
+    const relativeMuscleEventAt = session.matchedWorkout?.startAt ?? session.webStartedAt;
     await this.repo.deleteDiarySession(sessionId, profileId);
+    if (this.db === prisma && relativeMuscleEventAt) {
+      await rebuildAuthoritativeRelativeMuscleTrajectory({
+        fromInstant: new Date(relativeMuscleEventAt),
+        profileId,
+      }).catch(() => {});
+    }
     await this.refreshTransientWaterAfterMutation(profileId).catch(() => {});
     return { matchedWorkoutId };
   }
@@ -1116,6 +1129,7 @@ export class TrainingService {
     if (session.status !== SESSION_STATUS.COMPLETED) {
       throw new SessionNotFoundError();
     }
+    const previousRelativeMuscleEventAt = session.matchedWorkout?.startAt ?? session.webStartedAt;
 
     if (input.workoutId === null) {
       await this.repo.applyMatchResult({
@@ -1156,6 +1170,11 @@ export class TrainingService {
     if (!refreshed) throw new SessionNotFoundError();
     // A manual link can add Garmin diagnostic context after completion.
     await this.recordExperimentalShadow({ session: refreshed, profileId }).catch(() => {});
+    await this.refreshRelativeMuscleAfterEventChange(
+      sessionId,
+      profileId,
+      previousRelativeMuscleEventAt,
+    ).catch(() => {});
     return refreshed;
   }
 
@@ -1190,6 +1209,11 @@ export class TrainingService {
       if (this.db === prisma) {
         // A delayed sync may add Garmin diagnostic context after finishSession.
         await recordExperimentalStrengthShadowsBySessionId({ sessionId: session.id, profileId }).catch(() => {});
+        await this.refreshRelativeMuscleAfterEventChange(
+          session.id,
+          profileId,
+          session.webStartedAt,
+        ).catch(() => {});
       }
     }
   }
@@ -1300,6 +1324,9 @@ export class TrainingService {
       reason: "exercise_mutation",
     });
     if (status === SESSION_STATUS.COMPLETED) {
+      await this.refreshRelativeMuscleAfterSessionMutation(sessionId, profileId).catch(() => {});
+    }
+    if (status === SESSION_STATUS.COMPLETED) {
       await this.refreshTransientWaterAfterMutation(profileId).catch(() => {});
     }
   }
@@ -1324,6 +1351,9 @@ export class TrainingService {
       workoutLocalDate: workoutLocalDate(session.matchedWorkout?.startAt),
       reason: "set_mutation",
     });
+    if (this.db === prisma) {
+      await this.refreshRelativeMuscleAfterSessionMutation(session.id, profileId).catch(() => {});
+    }
     if (session.status === SESSION_STATUS.COMPLETED) {
       await this.refreshTransientWaterAfterMutation(profileId).catch(() => {});
     }
@@ -1332,6 +1362,34 @@ export class TrainingService {
   private async refreshTransientWaterAfterMutation(profileId: number): Promise<void> {
     if (this.db !== prisma) return;
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId });
+  }
+
+  private async refreshRelativeMuscleAfterSessionMutation(sessionId: number, profileId: number): Promise<void> {
+    if (this.db !== prisma) return;
+    const session = await this.repo.getSession(sessionId, profileId);
+    const eventAt = session?.matchedWorkout?.startAt ?? session?.webStartedAt ?? null;
+    if (!eventAt) return;
+    await rebuildAuthoritativeRelativeMuscleTrajectory({
+      fromInstant: new Date(eventAt),
+      profileId,
+    });
+  }
+
+  private async refreshRelativeMuscleAfterEventChange(
+    sessionId: number,
+    profileId: number,
+    previousEventAt: Date | string | null,
+  ): Promise<void> {
+    if (this.db !== prisma || previousEventAt === null) return;
+    const session = await this.repo.getSession(sessionId, profileId);
+    const currentEventAt = session?.matchedWorkout?.startAt ?? session?.webStartedAt ?? null;
+    const previousInstant = new Date(previousEventAt);
+    if (!Number.isFinite(previousInstant.getTime())
+        || (currentEventAt !== null && new Date(currentEventAt).getTime() === previousInstant.getTime())) return;
+    await rebuildAuthoritativeRelativeMuscleTrajectory({
+      fromInstant: previousInstant,
+      profileId,
+    });
   }
 
   private async snapshotProgramExerciseConfigs(

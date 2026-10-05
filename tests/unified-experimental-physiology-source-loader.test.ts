@@ -2,7 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 import { EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V2_REVISION } from "@/model/physiology-v7/experimental-transient-exercise-water-v2";
 import { UnifiedExperimentalPhysiologySourceLoaderV1 } from "@/model/unified-experimental-physiology-v1/source-loader";
 
-function fakeClient(input: { completedIds?: number[]; transientRows?: unknown[]; episodes?: unknown[]; workouts?: unknown[] } = {}) {
+function fakeClient(input: {
+  completedIds?: number[];
+  transientRows?: unknown[];
+  relativeRows?: unknown[];
+  episodes?: unknown[];
+  workouts?: unknown[];
+} = {}) {
   const daily = {
     id: 1, date: "2065-01-01", updatedAt: new Date("2065-01-01T12:00:00Z"), weightKg: 80,
     bodyFatPercent: null, caloriesKcal: 2_400, proteinG: 150, fatG: 70, carbsG: 250,
@@ -20,6 +26,7 @@ function fakeClient(input: { completedIds?: number[]; transientRows?: unknown[];
     sleepSegment: { findMany: vi.fn().mockResolvedValue([]) },
     dailyModelState: { findMany: vi.fn().mockResolvedValue([]) },
     experimentalTransientExerciseWaterShadow: { findMany: vi.fn().mockResolvedValue(input.transientRows ?? []) },
+    experimentalSkeletalMuscleDeltaShadow: { findMany: vi.fn().mockResolvedValue(input.relativeRows ?? []) },
     modelEpisode: { findMany: vi.fn().mockResolvedValue(input.episodes ?? [
       { id: 1, startDate: "2065-01-01", timezone: "UTC", active: true, deactivatedAt: null },
     ]) },
@@ -133,6 +140,41 @@ describe("Unified V1 durable source loader", () => {
     ]);
     expect(range.days[1]?.childOutputs.transientWater.map(({ sessionId }) => sessionId)).toEqual([11]);
     expect(range.days[2]?.childOutputs.transientWater).toEqual([]);
+  });
+
+  it("loads Relative Muscle by episode identity and excludes legacy or stale rows", async () => {
+    const date = "2088-01-01";
+    const activeEpisodeBoundary = new Date("2088-01-01T10:00:00.000Z");
+    const client = fakeClient({
+      episodes: [
+        { id: 1, startDate: date, timezone: "Pacific/Kiritimati", active: false, deactivatedAt: activeEpisodeBoundary },
+        { id: 2, startDate: date, timezone: "America/Adak", active: true, deactivatedAt: null },
+      ],
+      relativeRows: [
+        { id: 11, modelEpisodeId: 1, date, isStale: false, updatedAt: utc(date), sourceFingerprint: "episode-a", result: { marker: "episode-a" } },
+        { id: 12, modelEpisodeId: 2, date, isStale: false, updatedAt: utc(date), sourceFingerprint: "episode-b", result: { marker: "episode-b" } },
+        { id: 13, modelEpisodeId: 2, date, isStale: true, updatedAt: utc(date), sourceFingerprint: "stale", result: { marker: "stale" } },
+        { id: 14, modelEpisodeId: null, date, isStale: false, updatedAt: utc(date), sourceFingerprint: "legacy", result: { marker: "legacy" } },
+      ],
+    });
+    const loader = new UnifiedExperimentalPhysiologySourceLoaderV1(client as never);
+    const range = await loader.loadRange({
+      profileId: 1,
+      fromInstant: new Date("2087-12-31T10:00:00.000Z"),
+      throughInstant: new Date("2088-01-02T00:00:00.000Z"),
+    });
+
+    const relativeByEpisode = new Map(range.days
+      .filter(({ date: modelDate }) => modelDate === date)
+      .map(({ modelEpisodeId, childOutputs }) => [
+        modelEpisodeId,
+        childOutputs.relativeMuscle?.result as { marker?: string } | undefined,
+      ]));
+    expect(relativeByEpisode.get(1)?.marker).toBe("episode-a");
+    expect(relativeByEpisode.get(2)?.marker).toBe("episode-b");
+    expect(client.experimentalSkeletalMuscleDeltaShadow.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ modelEpisodeId: { not: null }, isStale: false }),
+    }));
   });
 
   it("fails closed when an eligible impulse has no boundary in a partial-day interval", async () => {

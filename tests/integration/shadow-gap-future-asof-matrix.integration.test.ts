@@ -148,7 +148,7 @@ async function ensureHealth(date: string, overrides: {
   activeEnergyKcal?: number | null;
   workoutFeedObserved?: boolean | null;
 } = {}): Promise<void> {
-  await prisma.dailyHealthData.upsert({
+  const health = await prisma.dailyHealthData.upsert({
     where: { date },
     create: {
       date,
@@ -167,6 +167,16 @@ async function ensureHealth(date: string, overrides: {
       proteinG: overrides.proteinG === undefined ? undefined : overrides.proteinG,
       activeEnergyKcal: overrides.activeEnergyKcal === undefined ? undefined : overrides.activeEnergyKcal,
       workoutFeedObserved: overrides.workoutFeedObserved === undefined ? undefined : overrides.workoutFeedObserved,
+    },
+  });
+  // Relative Muscle accepts this date-only feed/coverage evidence only when
+  // the durable sync snapshot proves its ModelEpisode timezone.
+  await prisma.healthSyncSnapshot.create({
+    data: {
+      dailyHealthDataId: health.id,
+      date,
+      timezone: "Europe/Bratislava",
+      rawPayload: {},
     },
   });
 }

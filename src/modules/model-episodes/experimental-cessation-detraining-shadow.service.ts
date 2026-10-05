@@ -1,168 +1,35 @@
 import { prisma } from "@/lib/db/prisma";
-import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
-import {
-  EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION,
-  initialExperimentalCessationStateV1,
-  transitionExperimentalCessationDetrainingV1,
-  type ExperimentalCessationStateV1,
-} from "@/model/physiology-v7/experimental-cessation-detraining-v1";
-import {
-  EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION,
-  type ExperimentalTrainingExposureKindV1,
-} from "@/model/physiology-v7/experimental-skeletal-muscle-delta-v1";
-import { addCalendarDays } from "./model-calendar";
-import { recordExperimentalSkeletalMuscleDeltaShadow } from "./experimental-skeletal-muscle-delta-shadow.service";
-import {
-  transitionExperimentalDataGapContextV1,
-  type ExperimentalDataGapContextV1,
-} from "@/model/physiology-v7/experimental-data-gap-context-v1";
+import { rebuildRelativeMuscleEpisodeTrajectories } from "./relative-muscle-shadow-core.service";
 
-/**
- * Isolated experimental/shadow cessation-detraining transition.
- * Never an input to TDEE, production physiology, forecast, or GREEN contracts.
- */
+/** Rebuilds both coordinated Relative Muscle trajectory rows for this date. */
 export async function recordExperimentalCessationDetrainingShadow(input: {
   date: string;
   profileId?: number;
 }): Promise<void> {
-  const profileId = input.profileId ?? 1;
-  const [smShadow, priorCessation, priorSm] = await Promise.all([
-    prisma.experimentalSkeletalMuscleDeltaShadow.findUnique({
-      where: { profileId_date: { profileId, date: input.date } },
-      select: { result: true },
-    }),
-    prisma.experimentalCessationDetrainingShadow.findFirst({
-      where: { profileId, date: { lt: input.date } },
-      orderBy: { date: "desc" },
-      select: { result: true },
-    }),
-    prisma.experimentalSkeletalMuscleDeltaShadow.findFirst({
-      where: { profileId, date: { lt: input.date } },
-      orderBy: { date: "desc" },
-      select: { result: true },
-    }),
-  ]);
-
-  const sm = smShadow?.result as {
-    features?: { trainingExposureKind?: ExperimentalTrainingExposureKindV1 };
-    estimatedSkeletalMuscleDeltaKg?: number | null;
-    state?: { relativeCumulativeDeltaKg?: number | null };
-  } | null;
-
-  const exposureKind = sm?.features?.trainingExposureKind;
-  if (
-    exposureKind !== "qualified-mapped-training"
-    && exposureKind !== "verified-no-exposure"
-    && exposureKind !== "unresolved-missing-training"
-  ) {
-    return;
-  }
-
-  const priorSmCumulative = (
-    priorSm?.result as { state?: { relativeCumulativeDeltaKg?: number | null } } | null
-  )?.state?.relativeCumulativeDeltaKg;
-
-  const priorState = (priorCessation?.result as { state?: ExperimentalCessationStateV1 } | null)?.state
-    ?? initialExperimentalCessationStateV1(
-      typeof priorSmCumulative === "number" ? priorSmCumulative : 0,
-    );
-  const priorGapContext = (priorCessation?.result as { gapContext?: ExperimentalDataGapContextV1 } | null)?.gapContext ?? null;
-
-  const trainingDelta = exposureKind === "qualified-mapped-training"
-    ? (sm?.estimatedSkeletalMuscleDeltaKg ?? 0)
-    : null;
-
-  const transition = transitionExperimentalCessationDetrainingV1({
-    exposureKind,
-    prior: priorState,
-    trainingSkeletalMuscleDeltaKg: trainingDelta,
-  });
-  const gapContext = transitionExperimentalDataGapContextV1({
-    date: input.date,
-    sources: {
-      training: exposureKind === "unresolved-missing-training" ? "unresolved" : "observed",
-    },
-    prior: priorGapContext,
-  });
-  const result = { ...transition, gapContext };
-  const sourceFingerprint = stableSha256(result);
-  await prisma.experimentalCessationDetrainingShadow.upsert({
-    where: { profileId_date: { profileId, date: input.date } },
-    create: {
-      profileId,
-      date: input.date,
-      sourceFingerprint,
-      modelRevision: EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION,
-      features: { ...result.features, gapContext },
-      result,
-    },
-    update: {
-      sourceFingerprint,
-      modelRevision: EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION,
-      features: { ...result.features, gapContext },
-      result,
-    },
-  });
+  await rebuildRelativeMuscleEpisodeTrajectories({ profileId: input.profileId, fromDate: input.date });
 }
 
 export async function recordExperimentalCessationDetrainingShadowForSession(input: {
   sessionId: number;
   profileId: number;
 }): Promise<void> {
-  const row = await prisma.strengthDiarySession.findFirst({
+  const session = await prisma.strengthDiarySession.findFirst({
     where: { id: input.sessionId, profileId: input.profileId },
     select: {
-      matchedWorkout: { select: { dailyHealthData: { select: { date: true } }, startAt: true } },
+      matchedWorkout: { select: { startAt: true } },
       webStartedAt: true,
     },
   });
-  const date = row?.matchedWorkout?.dailyHealthData?.date
-    ?? (row?.matchedWorkout?.startAt instanceof Date
-      ? row.matchedWorkout.startAt.toISOString().slice(0, 10)
-      : null)
-    ?? (row?.webStartedAt instanceof Date
-      ? row.webStartedAt.toISOString().slice(0, 10)
-      : null);
-  if (date === null) return;
-  await recordExperimentalCessationDetrainingShadow({
-    date,
-    profileId: input.profileId,
-  });
+  const instant = session?.matchedWorkout?.startAt ?? session?.webStartedAt ?? null;
+  if (instant === null) return;
+  await rebuildRelativeMuscleEpisodeTrajectories({ profileId: input.profileId, fromInstant: instant });
 }
 
-/**
- * Replays the one authoritative relative-muscle trajectory in calendar order.
- * A historical diary correction therefore replaces every dependent suffix,
- * rather than leaving a mixed training-only/cessation history behind.
- */
+/** Historical edits resume only from a proven exact episode-local suffix. */
 export async function rebuildAuthoritativeRelativeMuscleTrajectory(input: {
-  fromDate: string;
+  fromDate?: string;
+  fromInstant?: Date;
   profileId?: number;
 }): Promise<void> {
-  const profileId = input.profileId ?? 1;
-  // A corrected skeletal-muscle result contract invalidates every successor
-  // that used its cumulative state. Start at the earliest durable source once
-  // instead of allowing an old-revision predecessor to seed a new suffix.
-  const staleDelta = await prisma.experimentalSkeletalMuscleDeltaShadow.findFirst({
-    where: {
-      profileId,
-      modelRevision: { not: EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION },
-    },
-    orderBy: { date: "asc" },
-    select: { date: true },
-  });
-  const earliestSource = staleDelta === null ? null : await prisma.dailyHealthData.findFirst({
-    orderBy: { date: "asc" }, select: { date: true },
-  });
-  const fromDate = earliestSource?.date && earliestSource.date < input.fromDate
-    ? earliestSource.date
-    : input.fromDate;
-  const last = await prisma.dailyHealthData.findFirst({
-    where: { date: { gte: fromDate } }, orderBy: { date: "desc" }, select: { date: true },
-  });
-  if (last === null) return;
-  for (let date = fromDate; date <= last.date; date = addCalendarDays(date, 1)) {
-    await recordExperimentalSkeletalMuscleDeltaShadow({ date, profileId });
-    await recordExperimentalCessationDetrainingShadow({ date, profileId });
-  }
+  await rebuildRelativeMuscleEpisodeTrajectories(input);
 }

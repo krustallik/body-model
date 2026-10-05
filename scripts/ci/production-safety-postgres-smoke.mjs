@@ -154,7 +154,8 @@ async function withPreparedTransactionRelationLock(db, tableName, work) {
 async function withShortGrantedRelationLock(tableName, work) {
   const alterTargets = new Set([
     "ExerciseCatalog", "ProgramExercise", "StrengthSessionExercise", "StrengthSet",
-    "HealthMetricSample", "StrengthDiarySession", "DailyModelState", "Workout", "Profile", "ModelEpisode", "BodycastUnrelatedLockProbe",
+    "HealthMetricSample", "StrengthDiarySession", "DailyModelState", "PhysiologyV7Lifecycle",
+    "Workout", "Profile", "ModelEpisode", "BodycastUnrelatedLockProbe",
   ]);
   if (!alterTargets.has(tableName)) throw new Error("Refusing to test an unreviewed relation lock target.");
 

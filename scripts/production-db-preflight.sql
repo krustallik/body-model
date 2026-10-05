@@ -119,7 +119,7 @@ WITH expected(name) AS (
 SELECT json_build_object(
   'identity', json_build_object(
     'database', current_database(),
-    'databaseOid', (SELECT oid FROM pg_database WHERE datname = current_database()),
+    'databaseOid', (SELECT oid::bigint FROM pg_database WHERE datname = current_database()),
     'role', current_user,
     'serverVersion', current_setting('server_version'),
     'serverAddress', inet_server_addr()::text,

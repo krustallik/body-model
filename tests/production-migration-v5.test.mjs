@@ -291,7 +291,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     for (const relation of ["Workout", "Profile", "ModelEpisode"]) expect(sql).toContain(`('${relation}')`);
     expect(sql).toContain("inet_server_addr()::text");
     expect(sql).toContain("inet_server_port()");
-    expect(sql).toContain("'databaseOid'");
+    expect(sql).toContain("'databaseOid', (SELECT oid::bigint FROM pg_database WHERE datname = current_database())");
     expect(sql).toContain("ORDER BY dep.refobjid, dep.refobjsubid\n            LIMIT 1");
     expect(sql).not.toContain("LEFT JOIN pg_depend dep ON dep.classid = 'pg_class'::regclass AND dep.objid = cl.oid");
     expect(sql).not.toMatch(/^\s*(ALTER|CREATE|DROP|INSERT|UPDATE|DELETE|TRUNCATE)\b/im);

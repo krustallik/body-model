@@ -397,6 +397,9 @@ async function main() {
     const mixedSshKeysFiltered = verifyMixedSshKeyFiltering(scratch);
     const migrationDirectories = await createSourceFixture();
     const sourceReport = readSourceReport();
+    if (typeof sourceReport.identity?.databaseOid !== "number" || typeof sourceReport.identity?.serverPort !== "number") {
+      throw new Error("Production preflight identity JSON must preserve numeric database OID and server port values for Prisma target binding.");
+    }
     const prismaTargetResult = await verifyPrismaTargetBinding({
       sourceUrl: databaseUrl(source),
       alternateUrl: databaseUrl(target),

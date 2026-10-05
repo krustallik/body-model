@@ -12,6 +12,8 @@ on:
       - "scripts/production-migration-verification-keys.json"
       - "scripts/production-db-preflight.mjs"
       - "scripts/production-db-preflight.sql"
+      - "scripts/production-db-target-url.mjs"
+      - "scripts/production-db-target.sh"
       - "scripts/deploy-migrate.sh"
       - "scripts/run-prisma-migrate-with-lock-timeout.mjs"
       - "scripts/ci/production-migration-prisma-checksum.integration.mjs"

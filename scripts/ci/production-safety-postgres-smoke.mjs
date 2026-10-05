@@ -10,6 +10,7 @@ import { decryptBackupToWritable, encryptBackupStream } from "../production-back
 import { restoreEncryptedPostgresBackup } from "../restore-encrypted-postgres-backup.mjs";
 import {
   evaluateProductionPreflight,
+  assertProductionDatabaseIdentityMatches,
   EXPECTED_MIGRATION_OBJECTS,
   EXPECTED_PENDING_MIGRATIONS,
   verifyRestoredBackup,
@@ -71,6 +72,7 @@ async function createSourceFixture(db = source) {
     CREATE TABLE public."StrengthSessionExercise" (id integer PRIMARY KEY);
     CREATE TABLE public."StrengthSet" (id integer PRIMARY KEY);
     CREATE TABLE public."HealthMetricSample" (id integer PRIMARY KEY);
+    CREATE TABLE public."BodycastUnrelatedLockProbe" (id integer PRIMARY KEY);
     INSERT INTO public."_prisma_migrations" (id, checksum, started_at, finished_at, migration_name, logs, applied_steps_count)
     VALUES ${rows.join(",\n")};
     INSERT INTO public."StrengthDiarySession" VALUES (1), (2);
@@ -134,7 +136,7 @@ async function withPreparedLockPostgres(work) {
 async function withPreparedTransactionRelationLock(db, tableName, work) {
   const alterTargets = new Set([
     "ExerciseCatalog", "ProgramExercise", "StrengthSessionExercise", "StrengthSet",
-    "HealthMetricSample", "StrengthDiarySession", "DailyModelState", "BodycastUnrelatedLockProbe",
+    "HealthMetricSample", "StrengthDiarySession", "DailyModelState", "Workout", "Profile", "ModelEpisode", "BodycastUnrelatedLockProbe",
   ]);
   if (!alterTargets.has(tableName)) throw new Error("Refusing to prepare a lock outside the reviewed Stage 02 targets and explicit unrelated-lock probe.");
 
@@ -151,7 +153,7 @@ async function withPreparedTransactionRelationLock(db, tableName, work) {
 async function withShortGrantedRelationLock(tableName, work) {
   const alterTargets = new Set([
     "ExerciseCatalog", "ProgramExercise", "StrengthSessionExercise", "StrengthSet",
-    "HealthMetricSample", "StrengthDiarySession", "DailyModelState",
+    "HealthMetricSample", "StrengthDiarySession", "DailyModelState", "Workout", "Profile", "ModelEpisode", "BodycastUnrelatedLockProbe",
   ]);
   if (!alterTargets.has(tableName)) throw new Error("Refusing to test an unreviewed relation lock target.");
 
@@ -265,6 +267,7 @@ function assertBlocked(report, migrations, mutate, expected) {
 async function main() {
   const key = randomBytes(32);
   const encodedKey = key.toString("base64");
+  let alternateDatabaseBlocked = false;
   const scratch = await mkdtemp(path.join(os.tmpdir(), "bodycast-safety-ci-"));
   const archive = path.join(scratch, "synthetic.pgdump.enc");
   try {
@@ -295,29 +298,44 @@ async function main() {
     assertBlocked(sourceReport, migrationDirectories,
       (report) => { report.conflictingLocks.push({ pid: 123, relation: "StrengthDiarySession", blockerCount: 1 }); }, "lock(s) conflict with the exact migration DDL operations");
 
-    let shortLockReport;
-    await withShortGrantedRelationLock("DailyModelState", () => {
-      shortLockReport = readSourceReport();
-      const observed = shortLockReport.conflictingLocks.some((lock) => (
-        Number.isInteger(lock.pid)
-        && lock.blockerType === "backend"
-        && lock.relation === "DailyModelState"
-        && lock.mode === "AccessShareLock"
-        && lock.granted === true
-      ));
-      if (!observed) throw new Error("Preflight missed the actively held short ACCESS SHARE relation lock.");
-      const lockDecision = evaluateProductionPreflight(shortLockReport, migrationDirectories);
-      if (lockDecision.readyForOwnerAuthorization
-        || !lockDecision.blockers.some((blocker) => blocker.includes("lock(s) conflict with the exact migration DDL operations"))) {
-        throw new Error("Preflight did not block a short granted lock conflicting with Stage 02 ALTER TABLE.");
+    const ddlLockTargets = ["Workout", "Profile", "ModelEpisode", "PhysiologyV7Lifecycle", "DailyModelState"];
+    const shortGrantedLocksRejected = [];
+    for (const tableName of ddlLockTargets) {
+      await withShortGrantedRelationLock(tableName, () => {
+        const report = readSourceReport();
+        const observed = report.conflictingLocks.some((lock) => (
+          Number.isInteger(lock.pid)
+          && lock.blockerType === "backend"
+          && lock.relation === tableName
+          && lock.mode === "AccessShareLock"
+          && lock.granted === true
+        ));
+        if (!observed) throw new Error(`Preflight missed the actively held short ACCESS SHARE relation lock on ${tableName}.`);
+        const decision = evaluateProductionPreflight(report, migrationDirectories);
+        if (decision.readyForOwnerAuthorization
+          || !decision.blockers.some((blocker) => blocker.includes("lock(s) conflict with the exact migration DDL operations"))) {
+          throw new Error(`Preflight did not block the short granted ${tableName} lock referenced by migration DDL.`);
+        }
+      });
+      shortGrantedLocksRejected.push(tableName);
+    }
+    let unrelatedShortLockIgnored = false;
+    await withShortGrantedRelationLock("BodycastUnrelatedLockProbe", () => {
+      const report = readSourceReport();
+      if (report.conflictingLocks.some((lock) => lock.relation === "BodycastUnrelatedLockProbe")) {
+        throw new Error("An unrelated granted relation lock was incorrectly added to the DDL blocker inventory.");
       }
+      if (!evaluateProductionPreflight(report, migrationDirectories).readyForOwnerAuthorization) {
+        throw new Error("An unrelated granted relation lock incorrectly blocked production preflight.");
+      }
+      unrelatedShortLockIgnored = true;
     });
     const releasedLockReport = readSourceReport();
-    if (releasedLockReport.conflictingLocks.some((lock) => lock.relation === "DailyModelState" && lock.mode === "AccessShareLock")) {
-      throw new Error("The short relation lock was not released after its deterministic lock test.");
+    if (releasedLockReport.conflictingLocks.some((lock) => ddlLockTargets.includes(lock.relation) && lock.mode === "AccessShareLock")) {
+      throw new Error("A short relation lock was not released after its deterministic lock test.");
     }
     if (!evaluateProductionPreflight(releasedLockReport, migrationDirectories).readyForOwnerAuthorization) {
-      throw new Error("Preflight did not return to ready after the short granted lock was released.");
+      throw new Error("Preflight did not return to ready after short granted locks were released.");
     }
 
     let preparedLockRejected = false;
@@ -329,8 +347,6 @@ async function main() {
       if (!evaluateProductionPreflight(cleanReport, preparedMigrations).readyForOwnerAuthorization) {
         throw new Error("Prepared-lock PostgreSQL baseline was not ready before the prepared transaction test.");
       }
-      sql(preparedDb, 'CREATE TABLE public."BodycastUnrelatedLockProbe" (id integer);');
-
       await withPreparedTransactionRelationLock(preparedDb, "BodycastUnrelatedLockProbe", async (gid) => {
         const report = readSourceReport(preparedDb);
         if (!report.preparedTransactions.some((item) => item.gid === gid && item.transaction && item.preparedAt)) {
@@ -410,6 +426,19 @@ async function main() {
 
     await restoreDump(target, archive, key);
     const restoredReport = JSON.parse(sql(target, requireSql("scripts/verify-restored-backup.sql")));
+    const alternateDatabasePreflight = readSourceReport(target);
+    try {
+      assertProductionDatabaseIdentityMatches(sourceReport.identity, alternateDatabasePreflight.identity);
+    } catch (error) {
+      if (!String(error?.message ?? error).includes("differs from the signed preflight target")) throw error;
+      alternateDatabaseBlocked = true;
+    }
+    if (!alternateDatabaseBlocked) throw new Error("Signed preflight identity accepted a different isolated PostgreSQL database endpoint.");
+    const alternateDatabaseDecision = evaluateProductionPreflight(alternateDatabasePreflight, migrationDirectories);
+    if (alternateDatabaseDecision.readyForOwnerAuthorization
+      || !alternateDatabaseDecision.blockers.some((blocker) => blocker.includes("Connected database/role identity differs"))) {
+      throw new Error("Production preflight did not block the alternate isolated PostgreSQL endpoint.");
+    }
     const restored = verifyRestoredBackup(sourceReport, restoredReport);
     if (!restored.verified) throw new Error(`Restored database verification failed: ${restored.blockers.join(" ")}`);
     if (restoredReport.readability.StrengthDiarySession.rowCount !== 2 || restoredReport.readability.ExerciseCatalog.rowCount !== 3) {
@@ -493,12 +522,19 @@ async function main() {
       missingDisposableMarkerRejected: true,
       remoteDockerEndpointRejected: true,
       dockerContextHostConflictRejected: true,
-      shortGrantedAlterTableLockRejected: true,
+      shortGrantedDdlLockTargetsRejected: shortGrantedLocksRejected,
       preparedTransactionRelationLockRejected: preparedLockRejected,
       preparedTransactionCleanupRestoredReadiness: preparedLockCleanupRestoredReadiness,
       unrelatedPreparedLockIgnored,
+      unrelatedShortLockIgnored,
+      shortGrantedLocksRejected,
+      alternateDatabaseBlocked,
       mixedSshKeysFiltered,
-      blockersChecked: ["partial object", "failed migration", "long transaction diagnostic", "short granted DDL-conflicting relation lock", "prepared transaction DDL-conflicting relation lock"],
+      blockersChecked: [
+        "partial object", "failed migration", "long transaction diagnostic",
+        ...shortGrantedLocksRejected.map((tableName) => `short granted DDL lock: ${tableName}`),
+        "unrelated short lock ignored", "prepared transaction DDL-conflicting relation lock", "alternate database endpoint blocked",
+      ],
     }, null, 2) + "\n");
   } finally {
     await rm(scratch, { recursive: true, force: true });

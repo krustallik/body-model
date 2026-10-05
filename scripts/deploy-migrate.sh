@@ -69,10 +69,9 @@ IMAGE_RESULT="$(compose --profile tools run --rm --no-deps --entrypoint node mig
 printf '%s\n' "$IMAGE_RESULT"
 
 # Refresh a read-only report only after canonical fetch and image byte verification.
-compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-db-preflight.mjs \
-  | docker exec -i --env 'PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000' \
-    "$DB_CONTAINER" psql --username=bodycast --dbname=bodycast --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 \
-    > "$CONTEXT_DIR/live-report.json"
+bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" \
+  < <(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-db-preflight.mjs) \
+  > "$CONTEXT_DIR/live-report.json"
 
 # Re-evaluate the live full pending set and signed provenance immediately before DDL.
 GUARD_RECEIPT="$CONTEXT_DIR/final-guard-receipt.json"
@@ -117,10 +116,9 @@ compose --profile tools run --rm --no-deps \
 
 # Verify full migration history and compare exact PostgreSQL object signatures with
 # the disposable, restored-and-migrated schema signed in the authorization envelope.
-compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-db-preflight.mjs \
-  | docker exec -i --env 'PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000' \
-    "$DB_CONTAINER" psql --username=bodycast --dbname=bodycast --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 \
-    > "$CONTEXT_DIR/postflight-report.json"
+bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" \
+  < <(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-db-preflight.mjs) \
+  > "$CONTEXT_DIR/postflight-report.json"
 compose --profile tools run --rm --no-deps \
   --user "$(id -u):$(id -g)" \
   --volume "$CONTEXT_DIR:/run/bodycast:ro" \

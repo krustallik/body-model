@@ -3,9 +3,9 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { canonicalJson } from "../scripts/production-migration-manifests.mjs";
-import { EXPECTED_MIGRATION_OBJECTS, evaluateProductionPreflight, evaluateProductionPostflight, verifyRestoredBackup, schemaInventoryDigest } from "../scripts/production-migration-preflight.mjs";
+import { EXPECTED_MIGRATION_OBJECTS, assertProductionDatabaseIdentityMatches, evaluateProductionPreflight, evaluateProductionPostflight, verifyRestoredBackup, schemaInventoryDigest } from "../scripts/production-migration-preflight.mjs";
 import { ACTIVE_ENERGY_UNIFIED_MANIFEST, STAGE_02_MANIFEST } from "../scripts/production-migration-manifests.mjs";
 import { createAuthorizationEnvelope, verifyAuthorizationEnvelope, assertSignedAuthorizationRequired, canonicalSha256 } from "../scripts/production-migration-authorization.mjs";
 import { selectLatestApplicablePreflight, verifyPreflightArtifactMetadata, isBackupFresh, withPrismaLockTimeout } from "../scripts/production-migration-release.mjs";
@@ -15,7 +15,8 @@ import { verifyBaseRestore, verifyDisposablePostflight } from "../scripts/produc
 import { verifyPostflightMatchesRestore } from "../scripts/production-migration-preflight.mjs";
 import { verifyFinalMigrationAuthorization, verifyFinalGuardReceipt } from "../scripts/production-migration-final-guard.mjs";
 import { normalizeWorkflowRuns, selectAndVerifyArtifact } from "../scripts/production-migration-select-preflight.mjs";
-import { assertPrismaMigrationAuthorized } from "../scripts/run-prisma-migrate-with-lock-timeout.mjs";
+import { assertBackupFreshAtDdlStart, assertPrismaMigrationAuthorized, startPrismaMigrationAtDdlBoundary } from "../scripts/run-prisma-migrate-with-lock-timeout.mjs";
+import { psqlCompatibleDatabaseUrl } from "../scripts/production-db-target-url.mjs";
 
 const now = Date.parse("2026-10-05T10:00:00.000Z");
 const dirs = [
@@ -35,7 +36,7 @@ function schemaObjects(postflight = false) {
 
 function validPreflightReport() {
   return {
-    identity: { database: "bodycast", role: "bodycast", serverVersion: "17.11" },
+    identity: { database: "bodycast", databaseOid: 16384, role: "bodycast", serverVersion: "17.11", serverAddress: "172.20.0.2", serverPort: 5432 },
     migrations: [
       migrationRow({ name: dirs[0], sha256: "a".repeat(64) }),
       ...STAGE_02_MANIFEST.migrations.map((migration) => migrationRow(migration)),
@@ -124,13 +125,29 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(smoke).not.toContain('sql(db, requireSql("scripts/production-db-preflight.sql"))');
   });
 
+  it("runs production preflight and postflight against the effective Compose Prisma DATABASE_URL", async () => {
+    const deploy = await readFile(new URL("../scripts/deploy-migrate.sh", import.meta.url), "utf8");
+    const target = await readFile(new URL("../scripts/production-db-target.sh", import.meta.url), "utf8");
+    const preflight = await readFile(new URL("../.github/workflows/production-migration-preflight.yml", import.meta.url), "utf8");
+    expect(deploy).toContain('production-db-target.sh" --preflight "$DB_CONTAINER"');
+    expect(target).toContain("docker compose -f \"$COMPOSE_FILE\" --profile tools run --rm --no-deps");
+    expect(target).toContain("production-db-target-url.mjs");
+    expect(target).toContain('psql "$BODYCAST_PSQL_DATABASE_URL"');
+    expect(preflight).toContain('production-db-target.sh\\" --preflight bodycast-db-prod');
+    expect(preflight).not.toContain("psql --username=bodycast --dbname=bodycast");
+    expect(deploy).not.toContain('psql --username=bodycast --dbname=bodycast');
+  });
+
   it("uses the canonical preflight lock field and blocker wording in PostgreSQL smoke assertions", async () => {
     const smoke = await readFile(new URL("../scripts/ci/production-safety-postgres-smoke.mjs", import.meta.url), "utf8");
     expect(smoke).toContain("report.conflictingLocks.push(");
     expect(smoke).toContain('"lock(s) conflict with the exact migration DDL operations"');
     expect(smoke).toContain('"HealthMetricSample", "StrengthDiarySession", "DailyModelState"');
-    expect(smoke).toContain('withShortGrantedRelationLock("DailyModelState"');
+    expect(smoke).toContain('const ddlLockTargets = ["Workout", "Profile", "ModelEpisode", "PhysiologyV7Lifecycle", "DailyModelState"]');
     expect(smoke).toContain('withPreparedTransactionRelationLock(preparedDb, "DailyModelState"');
+    expect(smoke).toContain('"HealthMetricSample", "StrengthDiarySession", "DailyModelState", "Workout", "Profile", "ModelEpisode", "BodycastUnrelatedLockProbe"');
+    expect(smoke).toContain("withShortGrantedRelationLock(tableName");
+    expect(smoke).toContain('withShortGrantedRelationLock("BodycastUnrelatedLockProbe"');
     expect(smoke).not.toContain("relevantLocks");
     expect(smoke).not.toContain("relevant DDL-conflicting relation lock(s)");
   });
@@ -184,7 +201,7 @@ describe("V5 closed migration manifest and full pending set", () => {
 
   it("requires exact target checksums and schema-object signatures after disposable migration rehearsal", () => {
     const post = validPreflightReport();
-    post.identity = { database: "bodycast_restore", role: "bodycast_restore", serverVersion: "17.11" };
+    post.identity = { database: "bodycast_restore", databaseOid: 16385, role: "bodycast_restore", serverVersion: "17.11", serverAddress: "172.20.0.3", serverPort: 5432 };
     post.migrations.push(...ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations.map((migration) => migrationRow(migration)));
     post.objects = schemaObjects(true);
     const result = evaluateProductionPostflight(post, dirs, ACTIVE_ENERGY_UNIFIED_MANIFEST.id, { expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore" });
@@ -201,9 +218,13 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(sql).not.toContain("__EXPECTED_SCHEMA_OBJECTS_JSON__");
     expect(sql).toContain("BEGIN READ ONLY;");
     expect(await readFile(new URL("../scripts/run-prisma-migrate-with-lock-timeout.mjs", import.meta.url), "utf8")).toContain("withPrismaLockTimeout(databaseUrl, 5000)");
-    expect(await readFile(new URL("../scripts/deploy-migrate.sh", import.meta.url), "utf8")).toContain("default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000");
+    expect(await readFile(new URL("../scripts/production-db-target.sh", import.meta.url), "utf8")).toContain("default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000");
     expect(sql).toContain("PhysiologyV7Lifecycle");
     expect(sql).toContain("DailyModelState");
+    for (const relation of ["Workout", "Profile", "ModelEpisode"]) expect(sql).toContain(`('${relation}')`);
+    expect(sql).toContain("inet_server_addr()::text");
+    expect(sql).toContain("inet_server_port()");
+    expect(sql).toContain("'databaseOid'");
     expect(sql).toContain("ORDER BY dep.refobjid, dep.refobjsubid\n            LIMIT 1");
     expect(sql).not.toContain("LEFT JOIN pg_depend dep ON dep.classid = 'pg_class'::regclass AND dep.objid = cl.oid");
     expect(sql).not.toMatch(/^\s*(ALTER|CREATE|DROP|INSERT|UPDATE|DELETE|TRUNCATE)\b/im);
@@ -218,6 +239,55 @@ describe("V5 closed migration manifest and full pending set", () => {
     report.conflictingLocks = [];
     report.longTransactions.push({ pid: 123, xactAgeSeconds: 900 });
     expect(evaluateProductionPreflight(report, dirs).readyForOwnerAuthorization).toBe(true);
+  });
+
+  it("binds signed target identity to the concrete PostgreSQL endpoint", () => {
+    const expected = validPreflightReport().identity;
+    expect(assertProductionDatabaseIdentityMatches(expected, { ...expected })).toBe(true);
+    expect(() => assertProductionDatabaseIdentityMatches(expected, { ...expected, serverAddress: "172.20.0.99" })).toThrow("differs from the signed preflight target");
+    expect(() => assertProductionDatabaseIdentityMatches(expected, { ...expected, database: "bodycast_restore" })).toThrow("differs from the signed preflight target");
+    const incomplete = validPreflightReport();
+    delete incomplete.identity.serverAddress;
+    expect(evaluateProductionPreflight(incomplete, dirs).blockers.join(" ")).toContain("endpoint identity is incomplete");
+  });
+
+  it("derives the psql target from Prisma DATABASE_URL while removing only Prisma-only parameters", () => {
+    const result = new URL(psqlCompatibleDatabaseUrl("postgresql://bodycast:p%40ss@db-primary:5433/bodycast?schema=public&connection_limit=8&sslmode=require"));
+    expect(result.hostname).toBe("db-primary");
+    expect(result.port).toBe("5433");
+    expect(result.pathname).toBe("/bodycast");
+    expect(result.username).toBe("bodycast");
+    expect(result.password).toBe("p%40ss");
+    expect(result.searchParams.get("schema")).toBeNull();
+    expect(result.searchParams.get("connection_limit")).toBeNull();
+    expect(result.searchParams.get("sslmode")).toBe("require");
+    expect(() => psqlCompatibleDatabaseUrl("postgresql://u:p@db/bodycast?sslidentity=client" )).toThrow("cannot faithfully preserve");
+    expect(() => psqlCompatibleDatabaseUrl("postgresql://u:p@db/bodycast?schema=tenant" )).toThrow("public Prisma schema target");
+    expect(() => psqlCompatibleDatabaseUrl("postgresql://u:p@db/bodycast?host=other-db" )).toThrow("target overrides");
+  });
+
+  it("uses the actual post-verification clock at the Prisma spawn boundary", async () => {
+    const snapshot = Date.parse("2026-10-05T09:00:00.000Z");
+    let current = snapshot + 60 * 60 * 1000 - 1;
+    const authorized = { databaseUrl: "postgresql://bodycast:secret@db/bodycast", receipt: { backupSnapshotAt: new Date(snapshot).toISOString() } };
+    const spawn = vi.fn(() => ({ status: 0 }));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    current += 2;
+    expect(() => startPrismaMigrationAtDdlBoundary({ authorized, now: () => current, spawn })).toThrow("not fresh at DDL start");
+    expect(spawn).not.toHaveBeenCalled();
+    expect(() => assertBackupFreshAtDdlStart(authorized.receipt, snapshot + 60 * 60 * 1000)).not.toThrow();
+  });
+
+  it("uses one non-cancelling GitHub concurrency group and performs a final latest-preflight selection", async () => {
+    const preflight = await readFile(new URL("../.github/workflows/production-migration-preflight.yml", import.meta.url), "utf8");
+    const migrate = await readFile(new URL("../.github/workflows/production-migrate.yml", import.meta.url), "utf8");
+    const group = (workflow) => workflow.match(/^concurrency:\r?\n  group: ([^\r\n]+)\r?\n  cancel-in-progress: false/m)?.[1];
+    expect(group(preflight)).toBe("bodycast-production-migration");
+    expect(group(migrate)).toBe(group(preflight));
+    const finalGate = migrate.indexOf("Final exact preflight supersession gate before remote DDL process");
+    expect(finalGate).toBeGreaterThan(migrate.indexOf("Stream signed evidence files to private remote temporary context"));
+    expect(finalGate).toBeLessThan(migrate.indexOf("Run canonical fetch, final signed readiness guard, Prisma migration"));
+    expect(migrate.slice(finalGate)).toContain("--select-run");
   });
 });
 
@@ -381,6 +451,10 @@ describe("Ed25519 authorization envelope and provenance matrix", () => {
         now,
       })).toThrow("workflowRunId");
       expect(() => verifyFinalMigrationAuthorization({ ...args, currentWorkflowRunId: "1502" })).toThrow("workflowRunId");
+      expect(() => verifyFinalMigrationAuthorization({
+        ...args,
+        liveReport: { ...liveReport, identity: { ...liveReport.identity, serverAddress: "172.20.0.99" } },
+      })).toThrow("differs from the signed preflight target");
 
       const applied = {
         ...liveReport,
@@ -560,7 +634,7 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
     expect(verifyRestoredBackup(source, restored).verified).toBe(false);
 
     const post = validPreflightReport();
-    post.identity = { database: "bodycast_restore", role: "bodycast_restore", serverVersion: "17.11" };
+    post.identity = { database: "bodycast_restore", databaseOid: 16385, role: "bodycast_restore", serverVersion: "17.11", serverAddress: "172.20.0.3", serverPort: 5432 };
     post.migrations.push(...ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations.map((migration) => migrationRow(migration)));
     post.objects = schemaObjects(true);
     const verified = verifyDisposablePostflight(post, dirs);

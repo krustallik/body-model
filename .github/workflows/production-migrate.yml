@@ -349,6 +349,26 @@ jobs:
           tar -xOzf "$TAR_FILE" >/dev/null
           cat "$TAR_FILE" | "${SSH[@]}" "$SSH_USER@$SSH_HOST" \
             "set -Eeuo pipefail; umask 077; mkdir -m 700 '$REMOTE_CONTEXT'; tar -xzf - --no-same-owner -C '$REMOTE_CONTEXT'"
+      - name: Final exact preflight supersession gate before remote DDL process
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+          MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
+          EXPECTED_PREFLIGHT_RUN_ID: ${{ needs.authorize.outputs.preflight_run_id }}
+          EXPECTED_PREFLIGHT_ATTEMPT: ${{ needs.authorize.outputs.preflight_run_attempt }}
+        run: |
+          set -Eeuo pipefail
+          PREFLIGHT_WORKFLOW_ID="$(gh api repos/krustallik/body-model/actions/workflows/production-migration-preflight.yml --jq .id)"
+          gh api --paginate --jq '.workflow_runs[] | @json' \
+            "repos/krustallik/body-model/actions/workflows/$PREFLIGHT_WORKFLOW_ID/runs?per_page=100" \
+            > "$RUNNER_TEMP/final-preflight-runs.ndjson"
+          SELECTED="$(node scripts/production-migration-select-preflight.mjs --select-run \
+            "$RUNNER_TEMP/final-preflight-runs.ndjson" "$PREFLIGHT_WORKFLOW_ID" "$RELEASE_SHA" "$MANIFEST_ID")"
+          SELECTED_ID="$(printf '%s' "$SELECTED" | jq -r '.id')"
+          SELECTED_ATTEMPT="$(printf '%s' "$SELECTED" | jq -r '.runAttempt')"
+          [[ "$SELECTED_ID" == "$EXPECTED_PREFLIGHT_RUN_ID" && "$SELECTED_ATTEMPT" == "$EXPECTED_PREFLIGHT_ATTEMPT" ]] || {
+            echo "::error::A newer successful preflight attempt superseded the signed request."; exit 1;
+          }
       - name: Run canonical fetch, final signed readiness guard, Prisma migration, and postflight in one remote process
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}

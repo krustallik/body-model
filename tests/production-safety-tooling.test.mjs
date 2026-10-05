@@ -88,7 +88,7 @@ function preflightFixture(migrationDirectories) {
   const stage02Checksums = new Map(STAGE_02_MANIFEST.migrations.map(({ name, sha256 }) => [name, sha256]));
   const appliedMigrations = migrationDirectories.filter((name) => !EXPECTED_PENDING_MIGRATIONS.includes(name));
   return {
-    identity: { database: "bodycast", role: "bodycast", serverVersion: "17.0" },
+    identity: { database: "bodycast", databaseOid: 16384, role: "bodycast", serverVersion: "17.0", serverAddress: "172.20.0.2", serverPort: 5432 },
     migrations: appliedMigrations.map((name) => ({
       name,
       checksum: stage02Checksums.get(name) ?? "a".repeat(64),

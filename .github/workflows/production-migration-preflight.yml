@@ -24,7 +24,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: bodycast-preflight-${{ inputs.release_sha }}-${{ inputs.manifest_id }}
+  group: bodycast-production-migration
   cancel-in-progress: false
 
 jobs:
@@ -135,10 +135,12 @@ jobs:
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
           SSH_HOST_FINGERPRINT: ${{ secrets.SSH_HOST_FINGERPRINT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY }}
         run: |
           set -Eeuo pipefail
-          : "$SSH_PRIVATE_KEY"; : "$SSH_HOST"; : "$SSH_USER"; : "$SSH_PORT"; : "$SSH_HOST_FINGERPRINT"
+          : "$SSH_PRIVATE_KEY"; : "$SSH_HOST"; : "$SSH_USER"; : "$SSH_PORT"; : "$SSH_HOST_FINGERPRINT"; : "$DEPLOY_PATH"
+          [[ "$DEPLOY_PATH" == /* && "$DEPLOY_PATH" != *$'\n'* ]] || { echo "::error::DEPLOY_PATH must be an absolute single-line path."; exit 1; }
           node --input-type=module -e 'import { decodeBackupKey } from "./scripts/production-backup-envelope.mjs"; decodeBackupKey(process.env.PRODUCTION_BACKUP_ENCRYPTION_KEY);'
           [[ "$SSH_PORT" =~ ^[0-9]{1,5}$ ]] && (( SSH_PORT > 0 && SSH_PORT <= 65535 )) || { echo "::error::Invalid SSH_PORT."; exit 1; }
           [[ "$SSH_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || { echo "::error::Pinned SSH fingerprint is invalid."; exit 1; }
@@ -181,13 +183,15 @@ jobs:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
           MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
         run: |
           set -Eeuo pipefail
           SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
-          node scripts/production-db-preflight.mjs | "${SSH[@]}" "$SSH_USER@$SSH_HOST" \
-            "docker exec -i --env 'PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000' bodycast-db-prod psql --username=bodycast --dbname=bodycast --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1" \
+          DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
+          REMOTE_COMMAND="bash -c 'set -Eeuo pipefail; deploy_path=\$(printf %s $DEPLOY_PATH_B64 | base64 --decode); exec bash \"\$deploy_path/scripts/production-db-target.sh\" --preflight bodycast-db-prod'"
+          node scripts/production-db-preflight.mjs | "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND" \
             > "$RUNNER_TEMP/preflight-report.json"
           node scripts/production-migration-preflight.mjs --preflight --manifest "$MANIFEST_ID" --release-sha "$RELEASE_SHA" --repository "$GITHUB_WORKSPACE" --report "$RUNNER_TEMP/preflight-report.json" \
             > "$RUNNER_TEMP/preflight-result.json"

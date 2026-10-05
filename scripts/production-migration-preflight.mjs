@@ -51,6 +51,23 @@ export function schemaInventoryDigest(objects) {
   return canonicalSha256(normalized);
 }
 
+export function assertProductionDatabaseIdentityMatches(expectedIdentity, actualIdentity) {
+  if (!expectedIdentity || typeof expectedIdentity !== "object" || !actualIdentity || typeof actualIdentity !== "object"
+    || canonicalSha256(expectedIdentity) !== canonicalSha256(actualIdentity)) {
+    throw new Error("Migration blocked: production database identity differs from the signed preflight target.");
+  }
+  return true;
+}
+
+function hasConcretePostgresEndpoint(identity) {
+  return identity && typeof identity.database === "string" && identity.database.length > 0
+    && typeof identity.role === "string" && identity.role.length > 0
+    && typeof identity.serverVersion === "string" && identity.serverVersion.length > 0
+    && Number.isSafeInteger(Number(identity.databaseOid)) && Number(identity.databaseOid) > 0
+    && typeof identity.serverAddress === "string" && identity.serverAddress.length > 0
+    && Number.isInteger(Number(identity.serverPort)) && Number(identity.serverPort) > 0 && Number(identity.serverPort) <= 65535;
+}
+
 function migrationState(report, migrationDirectories) {
   const blockers = [];
   const rows = Array.isArray(report?.migrations) ? report.migrations : [];
@@ -119,6 +136,7 @@ export function evaluateProductionPreflight(report, migrationDirectories, manife
   }
   if (report?.identity?.database !== "bodycast" || report?.identity?.role !== "bodycast") blockers.push("Connected database/role identity differs from the reviewed production target.");
   if (!String(report?.identity?.serverVersion ?? "").startsWith("17.")) blockers.push("Production PostgreSQL version differs from the reviewed major version 17.");
+  if (!hasConcretePostgresEndpoint(report?.identity)) blockers.push("Production database endpoint identity is incomplete.");
 
   const conflictingLocks = Array.isArray(report?.conflictingLocks) ? report.conflictingLocks : [];
   if (conflictingLocks.length) blockers.push(`${conflictingLocks.length} lock(s) conflict with the exact migration DDL operations.`);
@@ -164,7 +182,8 @@ export function evaluateProductionPostflight(report, migrationDirectories, manif
   if (missingStage02.length) blockers.push(`Stage 02 schema objects are missing after migration: ${missingStage02.join(", ")}.`);
   const expectedDatabase = options.expectedDatabase ?? "bodycast";
   const expectedRole = options.expectedRole ?? "bodycast";
-  if (report?.identity?.database !== expectedDatabase || report?.identity?.role !== expectedRole || !String(report?.identity?.serverVersion ?? "").startsWith("17.")) {
+  if (report?.identity?.database !== expectedDatabase || report?.identity?.role !== expectedRole || !String(report?.identity?.serverVersion ?? "").startsWith("17.")
+    || !hasConcretePostgresEndpoint(report?.identity)) {
     blockers.push("Postflight database identity differs from the expected target.");
   }
   if (objectRows.some((entry) => entry?.present === true && (typeof entry.signature !== "string" || !entry.signature))) {

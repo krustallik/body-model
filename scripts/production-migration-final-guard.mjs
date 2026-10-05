@@ -3,7 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { ACTIVE_ENERGY_UNIFIED_MANIFEST, getProductionMigrationManifest } from "./production-migration-manifests.mjs";
 import { canonicalSha256, assertSignedAuthorizationRequired, verifyAuthorizationEnvelope } from "./production-migration-authorization.mjs";
-import { evaluateProductionPreflight, verifyPostflightMatchesRestore } from "./production-migration-preflight.mjs";
+import { assertProductionDatabaseIdentityMatches, evaluateProductionPreflight, verifyPostflightMatchesRestore } from "./production-migration-preflight.mjs";
 
 async function readJson(filePath) { return JSON.parse(await readFile(filePath, "utf8")); }
 
@@ -22,6 +22,8 @@ export function verifyFinalMigrationAuthorization({ envelope, preflightResult, e
   if (canonicalSha256(restoreResult) !== evidence.restoreResultDigest || restoreResult?.verified !== true || restoreResult?.postflightReady !== true) {
     throw new Error("Migration blocked: isolated restore or disposable migration rehearsal is not verified.");
   }
+  assertProductionDatabaseIdentityMatches(preflightResult?.identity, liveReport?.identity);
+  if (canonicalSha256(preflightResult.identity) !== evidence.productionIdentityDigest) throw new Error("Migration blocked: signed preflight identity digest is inconsistent.");
   if (canonicalSha256(liveReport?.identity) !== evidence.productionIdentityDigest) throw new Error("Migration blocked: production identity changed after preflight.");
   const directories = manifestTreeNames(manifest);
   const readiness = evaluateProductionPreflight(liveReport, directories, manifest.id);

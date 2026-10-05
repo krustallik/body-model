@@ -77,7 +77,7 @@ WITH expected(name) AS (
     COALESCE(pg_total_relation_size(c.oid), 0) AS "totalBytes"
   FROM baseline_targets b LEFT JOIN pg_class c ON c.oid = to_regclass(format('public.%I', b.table_name))
 ), ddl_targets(table_name) AS (
-  VALUES ('PhysiologyV7Lifecycle'), ('DailyModelState')
+  VALUES ('Workout'), ('Profile'), ('ModelEpisode'), ('PhysiologyV7Lifecycle'), ('DailyModelState')
 ), conflicting_locks AS (
   SELECT a.pid, c.relname AS relation, l.mode, l.granted,
     CASE WHEN l.pid IS NULL THEN 'prepared-transaction' ELSE 'backend' END AS "blockerType",
@@ -99,7 +99,14 @@ WITH expected(name) AS (
     AND xact_start < clock_timestamp() - interval '5 minutes'
 )
 SELECT json_build_object(
-  'identity', json_build_object('database', current_database(), 'role', current_user, 'serverVersion', current_setting('server_version')),
+  'identity', json_build_object(
+    'database', current_database(),
+    'databaseOid', (SELECT oid FROM pg_database WHERE datname = current_database()),
+    'role', current_user,
+    'serverVersion', current_setting('server_version'),
+    'serverAddress', inet_server_addr()::text,
+    'serverPort', inet_server_port()
+  ),
   'migrations', COALESCE((SELECT json_agg(to_jsonb(m) ORDER BY m.name, m."startedAt") FROM migration_rows m), '[]'::json),
   'objects', COALESCE((SELECT json_agg(to_jsonb(o) ORDER BY o.name) FROM object_inventory o), '[]'::json),
   'tables', COALESCE((SELECT json_object_agg(t.table_name, json_build_object('exists', t.exists, 'estimatedRows', t."estimatedRows", 'totalBytes', t."totalBytes")) FROM target_tables t), '{}'::json),

@@ -32,17 +32,31 @@ export async function assertPrismaMigrationAuthorized(environment = process.env,
     releaseSha: environment.BODYCAST_RELEASE_SHA,
     now,
   });
+  return { databaseUrl: withPrismaLockTimeout(databaseUrl, 5000), receipt };
+}
+
+export function assertBackupFreshAtDdlStart(receipt, now = Date.now()) {
   const ddlStartedAt = new Date(now).toISOString();
-  if (!isBackupFresh(receipt.backupSnapshotAt, ddlStartedAt)) {
+  if (!isBackupFresh(receipt?.backupSnapshotAt, ddlStartedAt)) {
     throw new Error("Refusing Prisma DDL: the production backup snapshot is not fresh at DDL start (maximum 60 minutes).");
   }
-  return { databaseUrl: withPrismaLockTimeout(databaseUrl, 5000), receipt };
+  return ddlStartedAt;
+}
+
+export function startPrismaMigrationAtDdlBoundary({ authorized, environment = process.env, now = Date.now, spawn = spawnSync } = {}) {
+  if (!authorized?.receipt || !authorized?.databaseUrl) throw new Error("Refusing Prisma DDL without verified migration authorization.");
+  assertBackupFreshAtDdlStart(authorized.receipt, now());
+  return spawn("npx", ["prisma", "migrate", "deploy"], {
+    stdio: "inherit",
+    env: { ...environment, DATABASE_URL: authorized.databaseUrl },
+    shell: false,
+    cwd: path.resolve("/app"),
+  });
 }
 
 async function main() {
   const authorized = await assertPrismaMigrationAuthorized();
-  const environment = { ...process.env, DATABASE_URL: authorized.databaseUrl };
-  const result = spawnSync("npx", ["prisma", "migrate", "deploy"], { stdio: "inherit", env: environment, shell: false, cwd: path.resolve("/app") });
+  const result = startPrismaMigrationAtDdlBoundary({ authorized });
   if (result.error) throw result.error;
   if (result.signal) throw new Error("Prisma migrate deploy terminated by " + result.signal + ".");
   process.exitCode = result.status ?? 1;

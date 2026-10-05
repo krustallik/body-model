@@ -14,6 +14,7 @@ import {
   EXPECTED_PENDING_MIGRATIONS,
   verifyRestoredBackup,
 } from "../production-migration-preflight.mjs";
+import { ACTIVE_ENERGY_UNIFIED_MANIFEST, STAGE_02_MANIFEST } from "../production-migration-manifests.mjs";
 import { renderProductionDbPreflightSql } from "../production-db-preflight.mjs";
 import { assertPostgresClientCompatibility } from "../postgres-client-versions.mjs";
 
@@ -59,14 +60,26 @@ async function createSourceFixture(db = source) {
       finished_at timestamp, migration_name text NOT NULL, logs text,
       rolled_back_at timestamp, applied_steps_count integer NOT NULL DEFAULT 0
     );
-    CREATE TABLE public."StrengthDiarySession" (id text PRIMARY KEY);
-    CREATE TABLE public."ExerciseCatalog" (id text PRIMARY KEY);
+    CREATE TABLE public."Workout" (id text PRIMARY KEY);
+    CREATE TABLE public."Profile" (id text PRIMARY KEY);
+    CREATE TABLE public."ModelEpisode" (id text PRIMARY KEY);
+    CREATE TABLE public."PhysiologyV7Lifecycle" (id text PRIMARY KEY);
+    CREATE TABLE public."DailyModelState" (id text PRIMARY KEY);
+    CREATE TABLE public."StrengthDiarySession" (id integer PRIMARY KEY);
+    CREATE TABLE public."ExerciseCatalog" (id integer PRIMARY KEY);
+    CREATE TABLE public."ProgramExercise" (id integer PRIMARY KEY);
+    CREATE TABLE public."StrengthSessionExercise" (id integer PRIMARY KEY);
+    CREATE TABLE public."StrengthSet" (id integer PRIMARY KEY);
+    CREATE TABLE public."HealthMetricSample" (id integer PRIMARY KEY);
     INSERT INTO public."_prisma_migrations" (id, checksum, started_at, finished_at, migration_name, logs, applied_steps_count)
     VALUES ${rows.join(",\n")};
-    INSERT INTO public."StrengthDiarySession" VALUES ('session-ci-1'), ('session-ci-2');
-    INSERT INTO public."ExerciseCatalog" VALUES ('exercise-ci-1'), ('exercise-ci-2'), ('exercise-ci-3');
+    INSERT INTO public."StrengthDiarySession" VALUES (1), (2);
+    INSERT INTO public."ExerciseCatalog" VALUES (1), (2), (3);
   `;
   sql(db, createSql);
+  for (const { name } of STAGE_02_MANIFEST.migrations) {
+    sql(db, await readFile(path.join("prisma/migrations", name, "migration.sql"), "utf8"));
+  }
   return migrationDirectories;
 }
 
@@ -263,10 +276,13 @@ async function main() {
     if (!evaluated.readyForOwnerAuthorization || JSON.stringify(evaluated.pending) !== JSON.stringify([...EXPECTED_PENDING_MIGRATIONS].sort())) {
       throw new Error(`Synthetic preflight did not recognize the exact pending pair: ${JSON.stringify(evaluated.blockers)}`);
     }
-    if (sourceReport.objects.some((object) => object.present)) throw new Error("Synthetic Stage 02 object inventory was unexpectedly nonempty.");
+    const missingStage02Objects = EXPECTED_MIGRATION_OBJECTS.filter((name) => (
+      !sourceReport.objects.some((object) => object.name === name && object.present)
+    ));
+    if (missingStage02Objects.length) throw new Error(`Synthetic baseline is missing applied Stage 02 objects: ${missingStage02Objects.join(", " )}.`);
 
     assertBlocked(sourceReport, migrationDirectories,
-      (report) => { report.objects.find((object) => object.name === EXPECTED_MIGRATION_OBJECTS[0]).present = true; }, "already exist");
+      (report) => { report.objects.find((object) => object.name === ACTIVE_ENERGY_UNIFIED_MANIFEST.postflightObjects[0]).present = true; }, "already exist");
     assertBlocked(sourceReport, migrationDirectories,
       (report) => { report.migrations.push({ name: migrationDirectories[0], startedAt: "2026-01-02T00:00:00Z", finishedAt: null, rolledBackAt: null }); }, "Incomplete/failed migration");
     assertBlocked(sourceReport, migrationDirectories,

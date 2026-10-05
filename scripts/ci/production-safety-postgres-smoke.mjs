@@ -293,12 +293,12 @@ async function main() {
       throw new Error("Preflight did not preserve the long-transaction diagnostic without treating it as a readiness blocker.");
     }
     assertBlocked(sourceReport, migrationDirectories,
-      (report) => { report.relevantLocks.push({ pid: 123, relation: "StrengthDiarySession", blockerCount: 1 }); }, "relevant DDL-conflicting relation lock(s)");
+      (report) => { report.conflictingLocks.push({ pid: 123, relation: "StrengthDiarySession", blockerCount: 1 }); }, "lock(s) conflict with the exact migration DDL operations");
 
     let shortLockReport;
     await withShortGrantedRelationLock("ExerciseCatalog", () => {
       shortLockReport = readSourceReport();
-      const observed = shortLockReport.relevantLocks.some((lock) => (
+      const observed = shortLockReport.conflictingLocks.some((lock) => (
         Number.isInteger(lock.pid)
         && lock.blockerType === "backend"
         && lock.relation === "ExerciseCatalog"
@@ -313,7 +313,7 @@ async function main() {
       }
     });
     const releasedLockReport = readSourceReport();
-    if (releasedLockReport.relevantLocks.some((lock) => lock.relation === "ExerciseCatalog" && lock.mode === "AccessShareLock")) {
+    if (releasedLockReport.conflictingLocks.some((lock) => lock.relation === "ExerciseCatalog" && lock.mode === "AccessShareLock")) {
       throw new Error("The short relation lock was not released after its deterministic lock test.");
     }
     if (!evaluateProductionPreflight(releasedLockReport, migrationDirectories).readyForOwnerAuthorization) {
@@ -336,7 +336,7 @@ async function main() {
         if (!report.preparedTransactions.some((item) => item.gid === gid && item.transaction && item.preparedAt)) {
           throw new Error("The unrelated prepared transaction was not visible in separate prepared-transaction diagnostics.");
         }
-        if (report.relevantLocks.some((item) => item.relation === "BodycastUnrelatedLockProbe")) {
+        if (report.conflictingLocks.some((item) => item.relation === "BodycastUnrelatedLockProbe")) {
           throw new Error("An unrelated prepared relation lock was incorrectly treated as a Stage 02 DDL blocker.");
         }
         if (!evaluateProductionPreflight(report, preparedMigrations).readyForOwnerAuthorization) {
@@ -350,7 +350,7 @@ async function main() {
           throw new Error("The test prepared transaction was not present in pg_prepared_xacts.");
         }
         const report = readSourceReport(preparedDb);
-        const lock = report.relevantLocks.find((item) => (
+        const lock = report.conflictingLocks.find((item) => (
           item.pid === null
           && item.blockerType === "prepared-transaction"
           && item.relation === "ExerciseCatalog"
@@ -358,7 +358,7 @@ async function main() {
           && item.granted === true
         ));
         if (!lock) {
-          throw new Error(`Preflight lost the prepared transaction's granted ExerciseCatalog relation lock. Diagnostic: ${JSON.stringify({ preparedTransactions: report.preparedTransactions, relevantLocks: report.relevantLocks })}`);
+          throw new Error(`Preflight lost the prepared transaction's granted ExerciseCatalog relation lock. Diagnostic: ${JSON.stringify({ preparedTransactions: report.preparedTransactions, conflictingLocks: report.conflictingLocks })}`);
         }
         if (Object.hasOwn(lock, "preparedTransactionId") || lock.xactAgeSeconds !== null) {
           throw new Error("Preflight made an unverified per-lock prepared GID or age attribution.");
@@ -375,7 +375,7 @@ async function main() {
       });
 
       const afterCleanup = readSourceReport(preparedDb);
-      if (afterCleanup.relevantLocks.some((item) => item.blockerType === "prepared-transaction")) {
+      if (afterCleanup.conflictingLocks.some((item) => item.blockerType === "prepared-transaction")) {
         throw new Error("The prepared transaction lock remained after ROLLBACK PREPARED cleanup.");
       }
       if (afterCleanup.preparedTransactions.some((item) => item.gid.startsWith("bodycast-ci-prepared-lock-"))) {

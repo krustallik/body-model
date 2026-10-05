@@ -124,6 +124,13 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(smoke).not.toContain('sql(db, requireSql("scripts/production-db-preflight.sql"))');
   });
 
+  it("uses the canonical preflight lock field and blocker wording in PostgreSQL smoke assertions", async () => {
+    const smoke = await readFile(new URL("../scripts/ci/production-safety-postgres-smoke.mjs", import.meta.url), "utf8");
+    expect(smoke).toContain("report.conflictingLocks.push(");
+    expect(smoke).toContain('"lock(s) conflict with the exact migration DDL operations"');
+    expect(smoke).not.toContain("relevantLocks");
+  });
+
   it("matches all five reviewed manifest hashes to exact blobs at the release commit", async () => {
     const releaseSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim();
     for (const migration of [...STAGE_02_MANIFEST.migrations, ...ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations]) {

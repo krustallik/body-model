@@ -308,7 +308,7 @@ async function main() {
       if (!observed) throw new Error("Preflight missed the actively held short ACCESS SHARE relation lock.");
       const lockDecision = evaluateProductionPreflight(shortLockReport, migrationDirectories);
       if (lockDecision.readyForOwnerAuthorization
-        || !lockDecision.blockers.some((blocker) => blocker.includes("relevant DDL-conflicting relation lock(s)"))) {
+        || !lockDecision.blockers.some((blocker) => blocker.includes("lock(s) conflict with the exact migration DDL operations"))) {
         throw new Error("Preflight did not block a short granted lock conflicting with Stage 02 ALTER TABLE.");
       }
     });
@@ -368,7 +368,7 @@ async function main() {
         }
         const decision = evaluateProductionPreflight(report, preparedMigrations);
         if (decision.readyForOwnerAuthorization
-          || !decision.blockers.some((blocker) => blocker.includes("relevant DDL-conflicting relation lock(s)"))) {
+          || !decision.blockers.some((blocker) => blocker.includes("lock(s) conflict with the exact migration DDL operations"))) {
           throw new Error("Preflight did not block the prepared transaction relation lock conflicting with Stage 02 ALTER TABLE.");
         }
         preparedLockRejected = true;

@@ -132,6 +132,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(smoke).toContain('withShortGrantedRelationLock("DailyModelState"');
     expect(smoke).toContain('withPreparedTransactionRelationLock(preparedDb, "DailyModelState"');
     expect(smoke).not.toContain("relevantLocks");
+    expect(smoke).not.toContain("relevant DDL-conflicting relation lock(s)");
   });
 
   it("matches all five reviewed manifest hashes to exact blobs at the release commit", async () => {

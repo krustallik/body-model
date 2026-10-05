@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 const deploySh = readFileSync(resolve("scripts/deploy.sh"), "utf8");
 const preflightSh = readFileSync(resolve("scripts/deploy-preflight-schema.sh"), "utf8");
 const migrateSh = readFileSync(resolve("scripts/deploy-migrate.sh"), "utf8");
+const migrateGuard = readFileSync(resolve("scripts/run-prisma-migrate-with-lock-timeout.mjs"), "utf8");
 
 describe("production deploy script safety contracts", () => {
   it("runs schema preflight before app cutover", () => {
@@ -37,9 +38,13 @@ describe("production deploy script safety contracts", () => {
     expect(preflightSh).not.toMatch(/entrypoint npx migrate prisma migrate deploy/);
   });
 
-  it("keeps production migrate behind an explicit confirmation gate", () => {
-    expect(migrateSh).toContain('CONFIRM_PRODUCTION_MIGRATE');
-    expect(migrateSh).toContain('!= "migrate"');
-    expect(migrateSh).toMatch(/prisma migrate deploy|run --rm migrate/);
+  it("keeps production migrate behind signed final authorization with no confirmation-variable bypass", () => {
+    expect(migrateSh).toContain("authorization-envelope.json");
+    expect(migrateSh).toContain("--before-ddl");
+    expect(migrateSh).toContain("final-guard-receipt.json");
+    expect(migrateGuard).toContain("verifyFinalGuardReceipt");
+    expect(migrateGuard).not.toContain("BODYCAST_FINAL_GUARD_READY");
+    expect(migrateGuard).not.toContain("CONFIRM_PRODUCTION_MIGRATE");
+    expect(migrateSh).toMatch(/compose --profile tools run --rm --no-deps[\s\S]*\bmigrate\b/);
   });
 });

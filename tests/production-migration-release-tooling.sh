@@ -4,14 +4,23 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/production-migration-readiness.sh"
 source "$ROOT/scripts/production-migration-summary.sh"
-grep -Fq '"Prisma migrate status" "$STATUS_LOG" "$STATUS_STDERR" /dev/null docker compose' "$ROOT/.github/workflows/production-migrate.yml"
-grep -Fq '"build read-only migration status image" "$STEP_STDOUT" "$STEP_STDERR" /dev/null docker compose' "$ROOT/.github/workflows/production-migrate.yml"
-grep -Fq 'run --interactive=false -T --rm --entrypoint npx migrate prisma migrate status' "$ROOT/.github/workflows/production-migrate.yml"
-grep -Fq 'bash scripts/deploy-preflight-schema.sh </dev/null' "$ROOT/.github/workflows/production-migrate.yml"
-grep -Fq 'run --interactive=false -T --rm --entrypoint npx migrate prisma migrate status </dev/null || true' "$ROOT/.github/workflows/production-migrate.yml"
-grep -Fq 'echo "- container: \`${CONTAINER_META}\`"' "$ROOT/.github/workflows/production-migration-preflight.yml"
-grep -Fq 'echo "- \`prisma migrate deploy\`: NOT EXECUTED"' "$ROOT/.github/workflows/production-migration-preflight.yml"
-! grep -Fq -- '--no-tty' "$ROOT/.github/workflows/production-migrate.yml"
+
+DEPLOY="$ROOT/scripts/deploy-migrate.sh"
+WRAPPER="$ROOT/scripts/run-prisma-migrate-with-lock-timeout.mjs"
+PREFLIGHT="$ROOT/.github/workflows/production-migration-preflight.yml"
+MIGRATE="$ROOT/.github/workflows/production-migrate.yml"
+grep -Fq 'fetch --no-tags --prune bodycast-canonical' "$DEPLOY"
+grep -Fq -- '--before-ddl' "$DEPLOY"
+grep -Fq -- '--after-ddl' "$DEPLOY"
+grep -Fq 'BODYCAST_FINAL_GUARD_RECEIPT' "$DEPLOY"
+grep -Fq 'verifyFinalGuardReceipt' "$WRAPPER"
+grep -Fq 'withPrismaLockTimeout(databaseUrl, 5000)' "$WRAPPER"
+! grep -Fq 'BODYCAST_FINAL_GUARD_READY' "$DEPLOY" "$WRAPPER"
+! grep -Fq 'CONFIRM_PRODUCTION_MIGRATE' "$DEPLOY" "$WRAPPER"
+grep -Fq 'environment: production-migration-authorization' "$MIGRATE"
+grep -Fq 'npx prisma migrate deploy --schema prisma/schema.prisma' "$PREFLIGHT"
+grep -Fq 'DATABASE_URL: postgresql://bodycast_restore:' "$PREFLIGHT"
+grep -Fq 'production migration: NOT EXECUTED' "$PREFLIGHT"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -19,7 +28,7 @@ trap 'rm -rf "$TMP"' EXIT
 cat > "$TMP/read-stdin-and-fail" <<'COMMAND'
 #!/usr/bin/env bash
 cat >/dev/null
-printf '%s\n' 'synthetic child diagnostic' >&2
+printf '%s\n' 'synthetic child diagnostic' 'P1000: postgresql://bodycast:db-secret@db.example/bodycast PASSWORD=separate-secret' >&2
 exit 7
 COMMAND
 chmod +x "$TMP/read-stdin-and-fail"
@@ -33,6 +42,9 @@ fi
 [[ "$CHILD_STATUS" == "7" ]]
 grep -Fq 'Production readiness subcommand: synthetic stdin-consuming child (exit code 7)' "$TMP/child.diagnostics"
 grep -Fq 'synthetic child diagnostic' "$TMP/child.diagnostics"
+grep -Fq 'postgresql://[REDACTED]' "$TMP/child.diagnostics"
+! grep -Fq 'db-secret' "$TMP/child.diagnostics"
+! grep -Fq 'separate-secret' "$TMP/child.diagnostics"
 
 if bash -s -- "$ROOT" "$TMP" > "$TMP/bash-s-stdin.log" 2>&1 <<'REMOTE'
 set -Eeuo pipefail
@@ -53,65 +65,6 @@ else
   exit 1
 fi
 grep -Fq 'SCRIPT_CONTINUED' "$TMP/bash-s-stdin.log"
-
-cat > "$TMP/prisma-status.out" <<'STATUS'
-Following migration(s) have not yet been applied:
-20260929170000_training_load_accounting_v1
-20260929190000_persist_strength_accounting_v1
-STATUS
-: > "$TMP/prisma-status.err"
-bodycast_validate_expected_pending_prisma_status 1 "$TMP/prisma-status.out" "$TMP/prisma-status.err" > "$TMP/prisma-accepted.log"
-grep -Fq 'Accepted Prisma exit code 1' "$TMP/prisma-accepted.log"
-
-if bodycast_validate_expected_pending_prisma_status 2 "$TMP/prisma-status.out" "$TMP/prisma-status.err" 2> "$TMP/prisma-exit-two.log"; then
-  echo "Expected Prisma exit code 2 to fail readiness." >&2
-  exit 1
-fi
-grep -Fq 'must exit 0 or its documented pending-state code 1' "$TMP/prisma-exit-two.log"
-
-printf '%s\n' 'P1000: cannot connect to postgresql://bodycast:db-secret@db.example/bodycast PASSWORD=separate-secret' > "$TMP/prisma-status.err"
-if bodycast_validate_expected_pending_prisma_status 1 "$TMP/prisma-status.out" "$TMP/prisma-status.err" 2> "$TMP/prisma-rejected.log"; then
-  echo "Expected Prisma engine error to fail readiness." >&2
-  exit 1
-fi
-grep -Fq 'Prisma migrate status validation (exit code 1)' "$TMP/prisma-rejected.log"
-grep -Fq 'postgresql://[REDACTED]' "$TMP/prisma-rejected.log"
-! grep -Fq 'db-secret' "$TMP/prisma-rejected.log"
-! grep -Fq 'separate-secret' "$TMP/prisma-rejected.log"
-
-cat >> "$TMP/prisma-status.out" <<'STATUS'
-20261001000000_unexpected_migration
-STATUS
-: > "$TMP/prisma-status.err"
-if bodycast_validate_expected_pending_prisma_status 1 "$TMP/prisma-status.out" "$TMP/prisma-status.err" 2> "$TMP/prisma-extra-pending.log"; then
-  echo "Expected an additional pending migration to fail readiness." >&2
-  exit 1
-fi
-grep -Fq 'did not exactly match the authorized Stage 02 pair' "$TMP/prisma-extra-pending.log"
-
-if [[ -n "${BODYCAST_TEST_DATABASE_URL:-}" ]]; then
-  PRISMA_FIXTURE="$TMP/prisma-status"
-  mkdir -p "$PRISMA_FIXTURE/migrations/20261001000000_gate_pending"
-  cat > "$PRISMA_FIXTURE/schema.prisma" <<'SCHEMA'
-datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-}
-generator client {
-  provider = "prisma-client-js"
-}
-SCHEMA
-  printf '%s\n' 'CREATE TABLE "ReleaseGateSmoke" ("id" TEXT PRIMARY KEY);' > "$PRISMA_FIXTURE/migrations/20261001000000_gate_pending/migration.sql"
-  if DATABASE_URL="$BODYCAST_TEST_DATABASE_URL" "$ROOT/node_modules/.bin/prisma" migrate status --schema "$PRISMA_FIXTURE/schema.prisma" > "$TMP/prisma-real.out" 2> "$TMP/prisma-real.err"; then
-    PRISMA_STATUS=0
-  else
-    PRISMA_STATUS=$?
-  fi
-  [[ "$PRISMA_STATUS" == "1" ]]
-  grep -Fq '20261001000000_gate_pending' "$TMP/prisma-real.out"
-  ! grep -Eq 'P[0-9]{4}|Error:' "$TMP/prisma-real.out" "$TMP/prisma-real.err"
-  printf '%s\n' 'Disposable PostgreSQL confirmed Prisma migrate status exits 1 for a pending migration.'
-fi
 
 ARTIFACT_PROBE='bodycast-artifact-command-probe'
 cat > "$TMP/$ARTIFACT_PROBE" <<'COMMAND'

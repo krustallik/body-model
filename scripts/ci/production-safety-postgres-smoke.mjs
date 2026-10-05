@@ -36,7 +36,7 @@ function clientArgs(db, tool) {
 }
 
 function sql(db, content) {
-  return run("docker", [...clientArgs(db, "psql"), "--no-psqlrc", "--quiet", "--tuples-only", "--no-align", "--set=ON_ERROR_STOP=1", "--file=-"], { input: content });
+  return run("docker", [...clientArgs(db, "psql"), "--no-psqlrc", "--quiet", "--tuples-only", "--no-align", "--set=ON_ERROR_STOP=1", "--set=VERBOSITY=verbose", "--file=-"], { input: content });
 }
 
 async function createSourceFixture(db = source) {

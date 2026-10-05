@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -18,6 +18,10 @@ import {
 import { ACTIVE_ENERGY_UNIFIED_MANIFEST, STAGE_02_MANIFEST } from "../production-migration-manifests.mjs";
 import { renderProductionDbPreflightSql } from "../production-db-preflight.mjs";
 import { assertPostgresClientCompatibility } from "../postgres-client-versions.mjs";
+import { canonicalSha256, createAuthorizationEnvelope } from "../production-migration-authorization.mjs";
+import { createExecutionAttestation, createExecutionAttestationDelegation } from "../production-migration-execution-attestation.mjs";
+import { readPrismaDatabaseIdentity, startPrismaMigrationAtDdlBoundary } from "../run-prisma-migrate-with-lock-timeout.mjs";
+import { withPrismaLockTimeout } from "../production-migration-release.mjs";
 
 const source = { host: "127.0.0.1", port: Number(process.env.BODYCAST_SOURCE_PORT ?? 5432), database: "bodycast", user: "bodycast", password: "bodycast_ci_only" };
 const target = { host: "127.0.0.1", port: Number(process.env.BODYCAST_RESTORE_PORT ?? 5433), database: "bodycast_restore", user: "bodycast_restore", password: "restore_ci_only" };
@@ -151,13 +155,14 @@ async function withPreparedTransactionRelationLock(db, tableName, work) {
   }
 }
 
-async function withShortGrantedRelationLock(tableName, work) {
+async function withShortGrantedRelationLock(tableName, lockMode, work) {
   const alterTargets = new Set([
     "ExerciseCatalog", "ProgramExercise", "StrengthSessionExercise", "StrengthSet",
     "HealthMetricSample", "StrengthDiarySession", "DailyModelState", "PhysiologyV7Lifecycle",
     "Workout", "Profile", "ModelEpisode", "BodycastUnrelatedLockProbe",
   ]);
   if (!alterTargets.has(tableName)) throw new Error("Refusing to test an unreviewed relation lock target.");
+  if (!["ACCESS SHARE", "ROW EXCLUSIVE"].includes(lockMode)) throw new Error("Refusing to test an unreviewed PostgreSQL lock mode.");
 
   const child = spawn("docker", [
     ...clientArgs(source, "psql"), "--no-psqlrc", "--quiet", "--tuples-only", "--no-align", "--set=ON_ERROR_STOP=1",
@@ -183,7 +188,7 @@ async function withShortGrantedRelationLock(tableName, work) {
   child.once("close", (code) => {
     if (!readyReached) readyReject(new Error(`Short-lock PostgreSQL session exited before acquiring its lock (${code}).`));
   });
-  child.stdin.write(`BEGIN;\nSELECT count(*) FROM public."${tableName}";\n\\echo BODYCAST_SHORT_LOCK_HELD\n`);
+  child.stdin.write(`BEGIN;\nLOCK TABLE public."${tableName}" IN ${lockMode} MODE;\n\\echo BODYCAST_SHORT_LOCK_HELD\n`);
   await ready;
   try {
     return await work();
@@ -266,6 +271,121 @@ function assertBlocked(report, migrations, mutate, expected) {
   }
 }
 
+function createTargetBindingAuthorization(identity, now = Date.now()) {
+  const keyPair = generateKeyPairSync("ed25519");
+  const keyId = "disposable-target-binding-test";
+  const publicKeyPem = keyPair.publicKey.export({ type: "spki", format: "pem" }).toString();
+  const privateKeyPem = keyPair.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  const allowlist = { schemaVersion: 1, keys: [{ keyId, status: "active", publicKeyPem }] };
+  const releaseSha = "a".repeat(40);
+  const pendingMigrationNames = ["20261002100000_active_energy_canonical_resolution"];
+  const claims = {
+    repository: "krustallik/body-model",
+    workflowId: "77",
+    workflowPath: ".github/workflows/production-migrate.yml",
+    workflowRunId: "99001",
+    workflowRunAttempt: 1,
+    releaseSha,
+    currentMainSha: releaseSha,
+    manifestId: "active-energy-unified-v1",
+    pendingMigrationNames,
+    pendingSetDigest: canonicalSha256(pendingMigrationNames),
+    preflightRunId: "88001",
+    preflightRunAttempt: 2,
+    preflightResultDigest: "b".repeat(64),
+    backupArtifactId: "77001",
+    backupArtifactDigest: "c".repeat(64),
+    backupSnapshotAt: new Date(now - 10_000).toISOString(),
+    restoreResultDigest: "d".repeat(64),
+    productionIdentityDigest: canonicalSha256(identity),
+    issuedAt: new Date(now - 5_000).toISOString(),
+    expiresAt: new Date(now + 55 * 60_000).toISOString(),
+    authorizationId: randomUUID(),
+    nonce: randomUUID(),
+  };
+  const authorizationEnvelope = createAuthorizationEnvelope(claims, { keyId, privateKeyPem, allowlist });
+  const latestPreflight = {
+    repository: "krustallik/body-model",
+    workflowPath: ".github/workflows/production-migration-preflight.yml",
+    workflowId: "88",
+    event: "workflow_dispatch",
+    headBranch: "main",
+    headSha: releaseSha,
+    displayTitle: `Preflight ${releaseSha} ${claims.manifestId}`,
+    id: claims.preflightRunId,
+    runAttempt: claims.preflightRunAttempt,
+    createdAt: new Date(now - 60_000).toISOString(),
+    status: "completed",
+    conclusion: "success",
+  };
+  const executionChallenge = randomBytes(32).toString("hex");
+  const delegation = createExecutionAttestationDelegation({ authorizationEnvelope, allowlist, keyId, privateKeyPem, now: now - 1000 });
+  const attestation = createExecutionAttestation({
+    authorizationEnvelope, latestPreflight, allowlist,
+    delegationCertificate: delegation.certificate,
+    executionPrivateKeyPem: delegation.executionPrivateKeyPem,
+    executionChallenge,
+    now,
+  });
+  return { allowlist, authorizationEnvelope, latestPreflight, delegation, attestation, executionChallenge, claims };
+}
+
+function databaseUrl(db) {
+  return `postgresql://${encodeURIComponent(db.user)}:${encodeURIComponent(db.password)}@${db.host}:${db.port}/${db.database}?schema=public`;
+}
+
+async function verifyPrismaTargetBinding({ sourceUrl, alternateUrl, signedIdentity, scratch }) {
+  const now = Date.now();
+  const fixture = createTargetBindingAuthorization(signedIdentity, now);
+  const nonceDirectory = path.join(scratch, "consumed-execution-attestations");
+  const makeAuthorized = (targetUrl) => ({
+    databaseUrl: withPrismaLockTimeout(targetUrl, 5000),
+    receipt: { productionIdentityDigest: canonicalSha256(signedIdentity), backupSnapshotAt: new Date(now - 10_000).toISOString() },
+    envelope: fixture.authorizationEnvelope,
+    delegationCertificate: fixture.delegation.certificate,
+    executionAttestation: fixture.attestation.serialized,
+    verifiedAttestation: fixture.attestation.payload,
+    executionChallenge: fixture.executionChallenge,
+    allowlist: fixture.allowlist,
+  });
+  let spawnCount = 0;
+  const spawn = (_command, _args, options) => {
+    spawnCount += 1;
+    if (options.env.DATABASE_URL !== makeAuthorized(sourceUrl).databaseUrl) {
+      throw new Error("Prisma spawn did not receive the exact target URL that the identity probe checked.");
+    }
+    return { status: 0 };
+  };
+  let mismatchBlocked = false;
+  try {
+    await startPrismaMigrationAtDdlBoundary({
+      authorized: makeAuthorized(alternateUrl),
+      environment: { BODYCAST_DDL_ATTESTATION_NONCE_DIR: nonceDirectory },
+      identityProbe: readPrismaDatabaseIdentity,
+      latestPreflightProbe: async () => fixture.latestPreflight,
+      spawn,
+      now: () => Date.now(),
+      nonceDirectory,
+    });
+  } catch (error) {
+    mismatchBlocked = String(error?.message).includes("differs from the signed production identity");
+  }
+  if (!mismatchBlocked || spawnCount !== 0) {
+    throw new Error("Final Prisma URL for another database was not blocked before spawn.");
+  }
+  await startPrismaMigrationAtDdlBoundary({
+    authorized: makeAuthorized(sourceUrl),
+    environment: { BODYCAST_DDL_ATTESTATION_NONCE_DIR: nonceDirectory },
+    identityProbe: readPrismaDatabaseIdentity,
+    latestPreflightProbe: async () => fixture.latestPreflight,
+    spawn,
+    now: () => Date.now(),
+    nonceDirectory,
+  });
+  if (spawnCount !== 1) throw new Error("Matching final Prisma target did not reach the spawn boundary exactly once.");
+  return { alternateDatabaseBlocked: mismatchBlocked, matchingTargetReachedSpawnBoundary: spawnCount === 1 };
+}
+
 async function main() {
   const key = randomBytes(32);
   const encodedKey = key.toString("base64");
@@ -277,6 +397,12 @@ async function main() {
     const mixedSshKeysFiltered = verifyMixedSshKeyFiltering(scratch);
     const migrationDirectories = await createSourceFixture();
     const sourceReport = readSourceReport();
+    const prismaTargetResult = await verifyPrismaTargetBinding({
+      sourceUrl: databaseUrl(source),
+      alternateUrl: databaseUrl(target),
+      signedIdentity: sourceReport.identity,
+      scratch,
+    });
     const evaluated = evaluateProductionPreflight(sourceReport, migrationDirectories);
     if (!evaluated.readyForOwnerAuthorization || JSON.stringify(evaluated.pending) !== JSON.stringify([...EXPECTED_PENDING_MIGRATIONS].sort())) {
       throw new Error(`Synthetic preflight did not recognize the exact pending pair: ${JSON.stringify(evaluated.blockers)}`);
@@ -300,29 +426,49 @@ async function main() {
     assertBlocked(sourceReport, migrationDirectories,
       (report) => { report.conflictingLocks.push({ pid: 123, relation: "StrengthDiarySession", blockerCount: 1 }); }, "lock(s) conflict with the exact migration DDL operations");
 
-    const ddlLockTargets = ["Workout", "Profile", "ModelEpisode", "PhysiologyV7Lifecycle", "DailyModelState"];
+    const ddlLockCases = [
+      { tableName: "Workout", lockMode: "ROW EXCLUSIVE", pgMode: "RowExclusiveLock" },
+      { tableName: "Profile", lockMode: "ROW EXCLUSIVE", pgMode: "RowExclusiveLock" },
+      { tableName: "ModelEpisode", lockMode: "ROW EXCLUSIVE", pgMode: "RowExclusiveLock" },
+      { tableName: "PhysiologyV7Lifecycle", lockMode: "ACCESS SHARE", pgMode: "AccessShareLock" },
+      { tableName: "DailyModelState", lockMode: "ACCESS SHARE", pgMode: "AccessShareLock" },
+    ];
+    const ddlLockTargets = ddlLockCases.map((item) => item.tableName);
     const shortGrantedLocksRejected = [];
-    for (const tableName of ddlLockTargets) {
-      await withShortGrantedRelationLock(tableName, () => {
+    for (const { tableName, lockMode, pgMode } of ddlLockCases) {
+      await withShortGrantedRelationLock(tableName, lockMode, () => {
         const report = readSourceReport();
         const observed = report.conflictingLocks.some((lock) => (
           Number.isInteger(lock.pid)
           && lock.blockerType === "backend"
           && lock.relation === tableName
-          && lock.mode === "AccessShareLock"
+          && lock.mode === pgMode
           && lock.granted === true
         ));
-        if (!observed) throw new Error(`Preflight missed the actively held short ACCESS SHARE relation lock on ${tableName}.`);
+        if (!observed) throw new Error(`Preflight missed the actively held short ${lockMode} relation lock on ${tableName}.`);
         const decision = evaluateProductionPreflight(report, migrationDirectories);
         if (decision.readyForOwnerAuthorization
           || !decision.blockers.some((blocker) => blocker.includes("lock(s) conflict with the exact migration DDL operations"))) {
-          throw new Error(`Preflight did not block the short granted ${tableName} lock referenced by migration DDL.`);
+          throw new Error(`Preflight did not block the conflicting ${lockMode} lock on ${tableName}.`);
         }
       });
-      shortGrantedLocksRejected.push(tableName);
+      shortGrantedLocksRejected.push(`${tableName}:${pgMode}`);
+    }
+    const compatibleLockIgnored = [];
+    for (const tableName of ["Workout", "Profile", "ModelEpisode"]) {
+      await withShortGrantedRelationLock(tableName, "ACCESS SHARE", () => {
+        const report = readSourceReport();
+        if (report.conflictingLocks.some((lock) => lock.relation === tableName && lock.mode === "AccessShareLock")) {
+          throw new Error(`A compatible ACCESS SHARE lock on FK-only parent ${tableName} was reported as a DDL blocker.`);
+        }
+        if (!evaluateProductionPreflight(report, migrationDirectories).readyForOwnerAuthorization) {
+          throw new Error(`A compatible ACCESS SHARE lock on FK-only parent ${tableName} blocked preflight.`);
+        }
+      });
+      compatibleLockIgnored.push(`${tableName}:AccessShareLock`);
     }
     let unrelatedShortLockIgnored = false;
-    await withShortGrantedRelationLock("BodycastUnrelatedLockProbe", () => {
+    await withShortGrantedRelationLock("BodycastUnrelatedLockProbe", "ACCESS SHARE", () => {
       const report = readSourceReport();
       if (report.conflictingLocks.some((lock) => lock.relation === "BodycastUnrelatedLockProbe")) {
         throw new Error("An unrelated granted relation lock was incorrectly added to the DDL blocker inventory.");
@@ -530,12 +676,16 @@ async function main() {
       unrelatedPreparedLockIgnored,
       unrelatedShortLockIgnored,
       shortGrantedLocksRejected,
+      compatibleLockIgnored,
       alternateDatabaseBlocked,
+      finalPrismaTarget: prismaTargetResult,
       mixedSshKeysFiltered,
       blockersChecked: [
         "partial object", "failed migration", "long transaction diagnostic",
         ...shortGrantedLocksRejected.map((tableName) => `short granted DDL lock: ${tableName}`),
-        "unrelated short lock ignored", "prepared transaction DDL-conflicting relation lock", "alternate database endpoint blocked",
+        ...compatibleLockIgnored.map((relation) => `compatible lock ignored: ${relation}`),
+        "unrelated short lock ignored", "prepared transaction DDL-conflicting relation lock",
+        "alternate database endpoint blocked", "matching final Prisma endpoint reached spawn boundary",
       ],
     }, null, 2) + "\n");
   } finally {

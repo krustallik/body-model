@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { createPrivateKey, generateKeyPairSync, sign } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -15,8 +15,9 @@ import { verifyBaseRestore, verifyDisposablePostflight } from "../scripts/produc
 import { verifyPostflightMatchesRestore } from "../scripts/production-migration-preflight.mjs";
 import { verifyFinalMigrationAuthorization, verifyFinalGuardReceipt } from "../scripts/production-migration-final-guard.mjs";
 import { normalizeWorkflowRuns, selectAndVerifyArtifact } from "../scripts/production-migration-select-preflight.mjs";
-import { assertBackupFreshAtDdlStart, assertPrismaMigrationAuthorized, startPrismaMigrationAtDdlBoundary } from "../scripts/run-prisma-migrate-with-lock-timeout.mjs";
+import { assertBackupFreshAtDdlStart, assertPrismaMigrationAuthorized, assertPrismaTargetMatchesSignedIdentity, readLatestApplicablePreflightForDdl, startPrismaMigrationAtDdlBoundary } from "../scripts/run-prisma-migrate-with-lock-timeout.mjs";
 import { psqlCompatibleDatabaseUrl } from "../scripts/production-db-target-url.mjs";
+import { createExecutionAttestation, createExecutionAttestationDelegation, EXECUTION_ATTESTATION_MAX_AGE_MS } from "../scripts/production-migration-execution-attestation.mjs";
 
 const now = Date.parse("2026-10-05T10:00:00.000Z");
 const dirs = [
@@ -117,6 +118,65 @@ function signClaims(value, id = keyId, key = privateKey) {
   });
 }
 
+function executionBoundaryFixture(identity = validPreflightReport().identity, checkedAt = now) {
+  const backupSnapshotAt = new Date(checkedAt - 30 * 60_000).toISOString();
+  const authorizationClaims = claims({
+    productionIdentityDigest: canonicalSha256(identity),
+    backupSnapshotAt,
+    issuedAt: new Date(checkedAt - 60_000).toISOString(),
+    expiresAt: new Date(checkedAt + 50 * 60_000).toISOString(),
+  });
+  const authorizationEnvelope = createAuthorizationEnvelope(authorizationClaims, { keyId, privateKeyPem, allowlist });
+  const latestPreflight = {
+    repository: "krustallik/body-model",
+    workflowPath: ".github/workflows/production-migration-preflight.yml",
+    workflowId: "88",
+    event: "workflow_dispatch",
+    headBranch: "main",
+    headSha: authorizationClaims.releaseSha,
+    displayTitle: `Preflight ${authorizationClaims.releaseSha} ${authorizationClaims.manifestId}`,
+    id: authorizationClaims.preflightRunId,
+    runAttempt: authorizationClaims.preflightRunAttempt,
+    createdAt: new Date(checkedAt - 5 * 60_000).toISOString(),
+    status: "completed",
+    conclusion: "success",
+  };
+  const delegation = createExecutionAttestationDelegation({
+    authorizationEnvelope,
+    allowlist,
+    keyId,
+    privateKeyPem,
+    now: checkedAt - 30_000,
+  });
+  const executionChallenge = "ab".repeat(32);
+  const attestation = createExecutionAttestation({
+    authorizationEnvelope,
+    latestPreflight,
+    allowlist,
+    delegationCertificate: delegation.certificate,
+    executionPrivateKeyPem: delegation.executionPrivateKeyPem,
+    executionChallenge,
+    now: checkedAt,
+  });
+  return { authorizationClaims, authorizationEnvelope, latestPreflight, delegation, attestation, executionChallenge, identity };
+}
+
+function authorizedBoundary(fixture, databaseUrl = "postgresql://bodycast:secret@db/bodycast") {
+  return {
+    databaseUrl,
+    receipt: {
+      productionIdentityDigest: canonicalSha256(fixture.identity),
+      backupSnapshotAt: fixture.authorizationClaims.backupSnapshotAt,
+    },
+    envelope: fixture.authorizationEnvelope,
+    delegationCertificate: fixture.delegation.certificate,
+    executionAttestation: fixture.attestation.serialized,
+    verifiedAttestation: fixture.attestation.payload,
+    executionChallenge: fixture.executionChallenge,
+    allowlist,
+  };
+}
+
 describe("V5 closed migration manifest and full pending set", () => {
   it("renders the canonical preflight SQL template before the PostgreSQL backup/restore smoke executes it", async () => {
     const smoke = await readFile(new URL("../scripts/ci/production-safety-postgres-smoke.mjs", import.meta.url), "utf8");
@@ -140,14 +200,20 @@ describe("V5 closed migration manifest and full pending set", () => {
 
   it("uses the canonical preflight lock field and blocker wording in PostgreSQL smoke assertions", async () => {
     const smoke = await readFile(new URL("../scripts/ci/production-safety-postgres-smoke.mjs", import.meta.url), "utf8");
+    const sql = await readFile(new URL("../scripts/production-db-preflight.sql", import.meta.url), "utf8");
     expect(smoke).toContain("report.conflictingLocks.push(");
     expect(smoke).toContain('"lock(s) conflict with the exact migration DDL operations"');
     expect(smoke).toContain('"HealthMetricSample", "StrengthDiarySession", "DailyModelState"');
-    expect(smoke).toContain('const ddlLockTargets = ["Workout", "Profile", "ModelEpisode", "PhysiologyV7Lifecycle", "DailyModelState"]');
+    expect(smoke).toContain('const ddlLockCases = [');
+    expect(smoke).toContain('{ tableName: "Workout", lockMode: "ROW EXCLUSIVE", pgMode: "RowExclusiveLock" }');
+    expect(smoke).toContain('for (const tableName of ["Workout", "Profile", "ModelEpisode"])');
+    expect(sql).toContain("ddl_targets(table_name, required_lock_mode)");
+    expect(sql).toContain("('Workout', 'ShareRowExclusiveLock')");
+    expect(sql).toContain("('PhysiologyV7Lifecycle', 'AccessExclusiveLock')");
     expect(smoke).toContain('withPreparedTransactionRelationLock(preparedDb, "DailyModelState"');
     expect(smoke).toContain('"HealthMetricSample", "StrengthDiarySession", "DailyModelState", "PhysiologyV7Lifecycle",');
     expect(smoke).toContain('"Workout", "Profile", "ModelEpisode", "BodycastUnrelatedLockProbe"');
-    expect(smoke).toContain("withShortGrantedRelationLock(tableName");
+    expect(smoke).toContain("withShortGrantedRelationLock(tableName, lockMode");
     expect(smoke).toContain('withShortGrantedRelationLock("BodycastUnrelatedLockProbe"');
     expect(smoke).not.toContain("relevantLocks");
     expect(smoke).not.toContain("relevant DDL-conflicting relation lock(s)");
@@ -270,13 +336,167 @@ describe("V5 closed migration manifest and full pending set", () => {
   it("uses the actual post-verification clock at the Prisma spawn boundary", async () => {
     const snapshot = Date.parse("2026-10-05T09:00:00.000Z");
     let current = snapshot + 60 * 60 * 1000 - 1;
-    const authorized = { databaseUrl: "postgresql://bodycast:secret@db/bodycast", receipt: { backupSnapshotAt: new Date(snapshot).toISOString() } };
+    const identity = validPreflightReport().identity;
+    const fixture = executionBoundaryFixture(identity, current);
+    const authorized = authorizedBoundary(fixture);
+    authorized.receipt.backupSnapshotAt = new Date(snapshot).toISOString();
     const spawn = vi.fn(() => ({ status: 0 }));
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    current += 2;
-    expect(() => startPrismaMigrationAtDdlBoundary({ authorized, now: () => current, spawn })).toThrow("not fresh at DDL start");
-    expect(spawn).not.toHaveBeenCalled();
-    expect(() => assertBackupFreshAtDdlStart(authorized.receipt, snapshot + 60 * 60 * 1000)).not.toThrow();
+    const nonceDirectory = await mkdtemp(path.join(os.tmpdir(), "bodycast-v5-ddl-boundary-"));
+    try {
+      await expect(startPrismaMigrationAtDdlBoundary({
+        authorized,
+        now: () => current,
+        spawn,
+        nonceDirectory,
+        latestPreflightProbe: async () => fixture.latestPreflight,
+        identityProbe: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          current += 2;
+          return identity;
+        },
+      })).rejects.toThrow("not fresh at DDL start");
+      expect(spawn).not.toHaveBeenCalled();
+      expect(() => assertBackupFreshAtDdlStart(authorized.receipt, snapshot + 60 * 60 * 1000)).not.toThrow();
+    } finally {
+      await rm(nonceDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks superseded direct DDL execution, binds the final Prisma target, and consumes execution attestations once", async () => {
+    const identity = validPreflightReport().identity;
+    const fixture = executionBoundaryFixture(identity);
+    const nonceDirectory = await mkdtemp(path.join(os.tmpdir(), "bodycast-v5-ddl-attestation-"));
+    const spawn = vi.fn(() => ({ status: 0 }));
+    const identityProbe = vi.fn(async () => identity);
+    expect(EXECUTION_ATTESTATION_MAX_AGE_MS).toBe(5 * 60 * 1000);
+    try {
+      const supersededPayload = { ...fixture.attestation.payload, preflightRunId: "1202", preflightRunAttempt: 1 };
+      const supersededEnvelope = canonicalJson({
+        algorithm: "Ed25519",
+        keyId: fixture.delegation.payload.executionKeyId,
+        payload: supersededPayload,
+        signature: sign(null, Buffer.from(canonicalJson(supersededPayload)), createPrivateKey(fixture.delegation.executionPrivateKeyPem)).toString("base64url"),
+      });
+      const superseded = {
+        ...authorizedBoundary(fixture),
+        executionAttestation: supersededEnvelope,
+        verifiedAttestation: supersededPayload,
+      };
+      expect(() => createExecutionAttestation({
+        authorizationEnvelope: fixture.authorizationEnvelope,
+        latestPreflight: { ...fixture.latestPreflight, id: "1202", status: "queued", conclusion: null },
+        allowlist,
+        delegationCertificate: fixture.delegation.certificate,
+        executionPrivateKeyPem: fixture.delegation.executionPrivateKeyPem,
+        executionChallenge: fixture.executionChallenge,
+        now,
+      })).toThrow("latest exact applicable preflight is not the signed successful attempt");
+      await expect(startPrismaMigrationAtDdlBoundary({
+        authorized: superseded,
+        spawn,
+        identityProbe,
+        nonceDirectory,
+        now: () => now,
+      })).rejects.toThrow("not bound to the current authorization and exact successful preflight provenance");
+      expect(spawn).not.toHaveBeenCalled();
+
+      const wrongChallenge = { ...authorizedBoundary(fixture), executionChallenge: "cd".repeat(32) };
+      await expect(startPrismaMigrationAtDdlBoundary({
+        authorized: wrongChallenge,
+        spawn,
+        identityProbe,
+        latestPreflightProbe: async () => fixture.latestPreflight,
+        nonceDirectory,
+        now: () => now,
+      })).rejects.toThrow("not bound to its authorized delegated signing key");
+      expect(spawn).not.toHaveBeenCalled();
+
+      const supersededNonceDirectory = await mkdtemp(path.join(os.tmpdir(), "bodycast-v5-ddl-superseded-preflight-"));
+      try {
+        await expect(startPrismaMigrationAtDdlBoundary({
+          authorized: authorizedBoundary(fixture),
+          spawn,
+          identityProbe,
+          latestPreflightProbe: async () => ({ ...fixture.latestPreflight, id: "1202", status: "queued", conclusion: null }),
+          nonceDirectory: supersededNonceDirectory,
+          now: () => now,
+        })).rejects.toThrow("newer or changed preflight attempt superseded");
+        expect(spawn).not.toHaveBeenCalled();
+      } finally {
+        await rm(supersededNonceDirectory, { recursive: true, force: true });
+      }
+
+      const expectedUrl = withPrismaLockTimeout("postgresql://bodycast:secret@db/bodycast", 5000);
+      const authorized = authorizedBoundary(fixture, expectedUrl);
+      await startPrismaMigrationAtDdlBoundary({
+        authorized,
+        environment: { BODYCAST_DDL_ATTESTATION_NONCE_DIR: nonceDirectory },
+        spawn,
+        identityProbe,
+        latestPreflightProbe: async () => fixture.latestPreflight,
+        nonceDirectory,
+        now: () => now,
+      });
+      expect(identityProbe).toHaveBeenLastCalledWith(expectedUrl);
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(spawn.mock.calls[0][2].env.DATABASE_URL).toBe(expectedUrl);
+
+      await expect(startPrismaMigrationAtDdlBoundary({
+        authorized,
+        spawn,
+        identityProbe,
+        latestPreflightProbe: async () => fixture.latestPreflight,
+        nonceDirectory,
+        now: () => now,
+      })).rejects.toThrow("nonce was already consumed");
+      expect(spawn).toHaveBeenCalledTimes(1);
+    } finally {
+      await rm(nonceDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("reselects live GitHub preflight state at the protected DDL boundary and blocks queued supersession", async () => {
+    const fixture = executionBoundaryFixture(validPreflightReport().identity);
+    const toApiRun = (run) => ({
+      workflow_id: Number(run.workflowId), path: run.workflowPath, event: run.event,
+      head_branch: run.headBranch, head_sha: run.headSha, display_title: run.displayTitle,
+      id: Number(run.id), run_attempt: run.runAttempt, created_at: run.createdAt,
+      status: run.status, conclusion: run.conclusion, html_url: "https://example.invalid/run",
+    });
+    const queued = { ...fixture.latestPreflight, id: "1202", createdAt: "2026-10-05T10:01:00.000Z", status: "queued", conclusion: null };
+    const fetchImpl = vi.fn(async (url) => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      json: async () => ({ workflow_runs: [toApiRun(queued), toApiRun(fixture.latestPreflight)] }),
+      requestedUrl: String(url),
+    }));
+    await expect(readLatestApplicablePreflightForDdl(fixture.attestation.payload, fetchImpl))
+      .rejects.toThrow("Latest matching preflight attempt is queued");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(String(fetchImpl.mock.calls[0][0])).toContain("/actions/workflows/88/runs");
+  });
+
+  it("blocks when the final Prisma URL resolves to an endpoint different from signed identity", async () => {
+    const signedIdentity = validPreflightReport().identity;
+    const fixture = executionBoundaryFixture(signedIdentity);
+    const nonceDirectory = await mkdtemp(path.join(os.tmpdir(), "bodycast-v5-ddl-target-"));
+    const spawn = vi.fn(() => ({ status: 0 }));
+    try {
+      await expect(startPrismaMigrationAtDdlBoundary({
+        authorized: authorizedBoundary(fixture),
+        spawn,
+        nonceDirectory,
+        identityProbe: async () => ({ ...signedIdentity, database: "bodycast_restore", databaseOid: 20001, role: "restore_user", serverPort: 5433 }),
+        latestPreflightProbe: async () => fixture.latestPreflight,
+        now: () => now,
+      })).rejects.toThrow("final Prisma DATABASE_URL target differs from the signed production identity");
+      expect(spawn).not.toHaveBeenCalled();
+      expect(assertPrismaTargetMatchesSignedIdentity({ productionIdentityDigest: canonicalSha256(signedIdentity) }, signedIdentity)).toBe(true);
+      expect(() => assertPrismaTargetMatchesSignedIdentity({ productionIdentityDigest: canonicalSha256(signedIdentity) }, { ...signedIdentity, serverAddress: "127.0.0.2" })).toThrow("differs from the signed production identity");
+    } finally {
+      await rm(nonceDirectory, { recursive: true, force: true });
+    }
   });
 
   it("uses one non-cancelling GitHub concurrency group and performs a final latest-preflight selection", async () => {
@@ -285,10 +505,20 @@ describe("V5 closed migration manifest and full pending set", () => {
     const group = (workflow) => workflow.match(/^concurrency:\r?\n  group: ([^\r\n]+)\r?\n  cancel-in-progress: false/m)?.[1];
     expect(group(preflight)).toBe("bodycast-production-migration");
     expect(group(migrate)).toBe(group(preflight));
-    const finalGate = migrate.indexOf("Final exact preflight supersession gate before remote DDL process");
-    expect(finalGate).toBeGreaterThan(migrate.indexOf("Stream signed evidence files to private remote temporary context"));
-    expect(finalGate).toBeLessThan(migrate.indexOf("Run canonical fetch, final signed readiness guard, Prisma migration"));
-    expect(migrate.slice(finalGate)).toContain("--select-run");
+    const ddlStep = migrate.indexOf("Run canonical fetch, final signed readiness guard, Prisma migration, and postflight in one remote process");
+    const attest = migrate.indexOf("--attest");
+    expect(ddlStep).toBeGreaterThan(migrate.indexOf("Stream signed evidence files to private remote temporary context"));
+    expect(attest).toBeGreaterThan(ddlStep);
+    expect(migrate.slice(ddlStep)).toContain("coproc MIGRATION_REMOTE");
+    expect(migrate.slice(ddlStep)).toContain("BODYCAST_DDL_CHALLENGE:");
+    expect(migrate.slice(ddlStep).indexOf("BODYCAST_DDL_CHALLENGE:")).toBeLessThan(migrate.slice(ddlStep).indexOf("--select-run"));
+    expect(migrate.slice(ddlStep).indexOf("--select-run")).toBeLessThan(migrate.slice(ddlStep).indexOf("--attest"));
+    expect(migrate.slice(ddlStep)).toContain("cat \"$RUNNER_TEMP/execution-attestation.json\" >&\"$REMOTE_IN\"");
+    expect(migrate).toContain("execution-key-certificate.json");
+    expect(migrate).toContain("Upload short-lived delegated execution signer for this workflow run");
+    expect(migrate).not.toMatch(/FILES=\([^\n]*execution-signer\.json/);
+    expect(migrate).toContain("--delegate");
+    expect(migrate.indexOf("--attest")).toBeGreaterThan(migrate.indexOf("SELECTED_ATTEMPT"));
   });
 });
 
@@ -473,7 +703,7 @@ describe("Ed25519 authorization envelope and provenance matrix", () => {
     await expect(assertPrismaMigrationAuthorized({
       DATABASE_URL: "postgresql://bodycast:placeholder@127.0.0.1:5432/bodycast",
       BODYCAST_FINAL_GUARD_READY: "true",
-    })).rejects.toThrow("signed final-guard evidence");
+    })).rejects.toThrow("signed final-guard, current-preflight execution evidence, and one-time challenge");
   });
 });
 

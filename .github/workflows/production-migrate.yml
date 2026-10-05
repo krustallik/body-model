@@ -238,12 +238,23 @@ jobs:
             "$RUNNER_TEMP/trusted-backup-artifact.json" \
             "$RUNNER_TEMP/signed-migration-context/authorization-envelope.json" \
             > "$RUNNER_TEMP/authorization-signature-summary.json"
+          mkdir -m 700 "$RUNNER_TEMP/execution-signer"
+          node scripts/production-migration-execution-attestation.mjs --delegate \
+            "$RUNNER_TEMP/signed-migration-context/authorization-envelope.json" \
+            "$RUNNER_TEMP/execution-signer/delegation.json" \
+            > "$RUNNER_TEMP/execution-key-delegation-summary.json"
+          node --input-type=module - "$RUNNER_TEMP/execution-signer/delegation.json" "$RUNNER_TEMP/signed-migration-context/execution-key-certificate.json" <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const delegation = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          writeFileSync(process.argv[3], JSON.stringify({ certificate: delegation.certificate }) + "\n", { mode: 0o600, flag: "wx" });
+          NODE
           cp "$EVIDENCE_BUNDLE/preflight-evidence.json" "$RUNNER_TEMP/signed-migration-context/preflight-evidence.json"
           cp "$EVIDENCE_BUNDLE/preflight-result.json" "$RUNNER_TEMP/signed-migration-context/preflight-result.json"
           cp "$EVIDENCE_BUNDLE/restore-result.json" "$RUNNER_TEMP/signed-migration-context/restore-result.json"
           cp "$RUNNER_TEMP/trusted-backup-artifact.json" "$RUNNER_TEMP/signed-migration-context/artifact-metadata.json"
           chmod 600 "$RUNNER_TEMP/signed-migration-context/"*
           cat "$RUNNER_TEMP/authorization-signature-summary.json" >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/execution-key-delegation-summary.json" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload signed authorization bundle for protected execution job
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -251,6 +262,13 @@ jobs:
           path: ${{ runner.temp }}/signed-migration-context/*
           if-no-files-found: error
           retention-days: 7
+      - name: Upload short-lived delegated execution signer for this workflow run
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bodycast-migration-execution-signer-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/execution-signer/delegation.json
+          if-no-files-found: error
+          retention-days: 1
 
   execute:
     name: Final live guard and authorized migration
@@ -291,10 +309,16 @@ jobs:
           BUNDLE_NAME="bodycast-migration-auth-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           mkdir -m 700 "$RUNNER_TEMP/signed-migration-context"
           gh run download "$GITHUB_RUN_ID" --repo krustallik/body-model --name "$BUNDLE_NAME" --dir "$RUNNER_TEMP/signed-migration-context"
-          for name in authorization-envelope.json preflight-result.json preflight-evidence.json restore-result.json artifact-metadata.json; do
+          for name in authorization-envelope.json preflight-result.json preflight-evidence.json restore-result.json artifact-metadata.json execution-key-certificate.json; do
             test -f "$RUNNER_TEMP/signed-migration-context/$name"
             test ! -L "$RUNNER_TEMP/signed-migration-context/$name"
           done
+          mkdir -m 700 "$RUNNER_TEMP/execution-signer"
+          gh run download "$GITHUB_RUN_ID" --repo krustallik/body-model \
+            --name "bodycast-migration-execution-signer-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --dir "$RUNNER_TEMP/execution-signer"
+          test -f "$RUNNER_TEMP/execution-signer/delegation.json"
+          test ! -L "$RUNNER_TEMP/execution-signer/delegation.json"
       - name: Validate protected production SSH and pin host key
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -335,7 +359,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           BUNDLE="$RUNNER_TEMP/signed-migration-context"
-          FILES=(authorization-envelope.json preflight-result.json preflight-evidence.json restore-result.json artifact-metadata.json)
+          FILES=(authorization-envelope.json preflight-result.json preflight-evidence.json restore-result.json artifact-metadata.json execution-key-certificate.json)
           for name in "${FILES[@]}"; do
             test -f "$BUNDLE/$name" && test ! -L "$BUNDLE/$name"
           done
@@ -349,28 +373,9 @@ jobs:
           tar -xOzf "$TAR_FILE" >/dev/null
           cat "$TAR_FILE" | "${SSH[@]}" "$SSH_USER@$SSH_HOST" \
             "set -Eeuo pipefail; umask 077; mkdir -m 700 '$REMOTE_CONTEXT'; tar -xzf - --no-same-owner -C '$REMOTE_CONTEXT'"
-      - name: Final exact preflight supersession gate before remote DDL process
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
-          MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
-          EXPECTED_PREFLIGHT_RUN_ID: ${{ needs.authorize.outputs.preflight_run_id }}
-          EXPECTED_PREFLIGHT_ATTEMPT: ${{ needs.authorize.outputs.preflight_run_attempt }}
-        run: |
-          set -Eeuo pipefail
-          PREFLIGHT_WORKFLOW_ID="$(gh api repos/krustallik/body-model/actions/workflows/production-migration-preflight.yml --jq .id)"
-          gh api --paginate --jq '.workflow_runs[] | @json' \
-            "repos/krustallik/body-model/actions/workflows/$PREFLIGHT_WORKFLOW_ID/runs?per_page=100" \
-            > "$RUNNER_TEMP/final-preflight-runs.ndjson"
-          SELECTED="$(node scripts/production-migration-select-preflight.mjs --select-run \
-            "$RUNNER_TEMP/final-preflight-runs.ndjson" "$PREFLIGHT_WORKFLOW_ID" "$RELEASE_SHA" "$MANIFEST_ID")"
-          SELECTED_ID="$(printf '%s' "$SELECTED" | jq -r '.id')"
-          SELECTED_ATTEMPT="$(printf '%s' "$SELECTED" | jq -r '.runAttempt')"
-          [[ "$SELECTED_ID" == "$EXPECTED_PREFLIGHT_RUN_ID" && "$SELECTED_ATTEMPT" == "$EXPECTED_PREFLIGHT_ATTEMPT" ]] || {
-            echo "::error::A newer successful preflight attempt superseded the signed request."; exit 1;
-          }
       - name: Run canonical fetch, final signed readiness guard, Prisma migration, and postflight in one remote process
         env:
+          GH_TOKEN: ${{ github.token }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
@@ -378,14 +383,15 @@ jobs:
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
           MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
           AUTHORIZATION_WORKFLOW_ID: ${{ needs.authorize.outputs.workflow_id }}
+          EXPECTED_PREFLIGHT_RUN_ID: ${{ needs.authorize.outputs.preflight_run_id }}
+          EXPECTED_PREFLIGHT_ATTEMPT: ${{ needs.authorize.outputs.preflight_run_attempt }}
           REMOTE_CONTEXT: /tmp/bodycast-migration-context-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -Eeuo pipefail
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
+          REMOTE_CONTEXT="/tmp/bodycast-migration-context-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
-          timeout 60m "${SSH[@]}" "$SSH_USER@$SSH_HOST" bash -s -- \
-            "$RELEASE_SHA" "$MANIFEST_ID" "$DEPLOY_PATH_B64" "$REMOTE_CONTEXT" \
-            "$AUTHORIZATION_WORKFLOW_ID" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" <<'REMOTE'
+          REMOTE_SCRIPT="$(cat <<'REMOTE'
           set -Eeuo pipefail
           RELEASE_SHA="$1"
           MANIFEST_ID="$2"
@@ -402,7 +408,7 @@ jobs:
           [[ "$DEPLOY_PATH" == /* && -d "$DEPLOY_PATH" ]] || { echo "Deployment path is not an existing absolute directory." >&2; exit 1; }
           [[ "$CONTEXT_DIR" =~ ^/tmp/bodycast-migration-context-[0-9]+-[0-9]+$ && -d "$CONTEXT_DIR" && ! -L "$CONTEXT_DIR" ]] || { echo "Invalid remote context path." >&2; exit 1; }
           trap 'rm -rf "$CONTEXT_DIR"' EXIT
-          for name in authorization-envelope.json preflight-result.json preflight-evidence.json restore-result.json artifact-metadata.json; do
+          for name in authorization-envelope.json preflight-result.json preflight-evidence.json restore-result.json artifact-metadata.json execution-key-certificate.json; do
             [[ -f "$CONTEXT_DIR/$name" && ! -L "$CONTEXT_DIR/$name" ]] || { echo "Signed migration context is incomplete." >&2; exit 1; }
           done
           cd "$DEPLOY_PATH"
@@ -420,8 +426,63 @@ jobs:
           export BODYCAST_AUTHORIZATION_WORKFLOW_ID="$AUTHORIZATION_WORKFLOW_ID"
           export BODYCAST_AUTHORIZATION_RUN_ID="$AUTHORIZATION_RUN_ID"
           export BODYCAST_AUTHORIZATION_RUN_ATTEMPT="$AUTHORIZATION_RUN_ATTEMPT"
+          export BODYCAST_EXECUTION_ATTESTATION_HANDOFF=true
           bash scripts/deploy-migrate.sh
           REMOTE
+          )"
+          REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
+          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$RELEASE_SHA' '$MANIFEST_ID' '$DEPLOY_PATH_B64' '$REMOTE_CONTEXT' '$AUTHORIZATION_WORKFLOW_ID' '$GITHUB_RUN_ID' '$GITHUB_RUN_ATTEMPT'"
+          REMOTE_PID=""
+          cleanup_remote() {
+            if [[ -n "$REMOTE_PID" ]]; then
+              exec {REMOTE_IN}>&- 2>/dev/null || true
+              wait "$REMOTE_PID" 2>/dev/null || true
+            fi
+          }
+          trap cleanup_remote EXIT
+          coproc MIGRATION_REMOTE { timeout 60m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND"; }
+          REMOTE_PID="$MIGRATION_REMOTE_PID"
+          REMOTE_OUT="${MIGRATION_REMOTE[0]}"
+          REMOTE_IN="${MIGRATION_REMOTE[1]}"
+          CHALLENGE=""
+          while IFS= read -r -u "$REMOTE_OUT" line; do
+            if [[ "$line" =~ ^BODYCAST_DDL_CHALLENGE:([a-f0-9]{64})$ ]]; then
+              CHALLENGE="${BASH_REMATCH[1]}"
+              break
+            fi
+            printf '%s\n' "$line"
+          done
+          [[ "$CHALLENGE" =~ ^[a-f0-9]{64}$ ]] || {
+            echo "::error::Protected DDL process exited before requesting a one-time current-preflight attestation." >&2
+            exit 1
+          }
+          PREFLIGHT_WORKFLOW_ID="$(gh api repos/krustallik/body-model/actions/workflows/production-migration-preflight.yml --jq .id)"
+          gh api --paginate --jq '.workflow_runs[] | @json' \
+            "repos/krustallik/body-model/actions/workflows/$PREFLIGHT_WORKFLOW_ID/runs?per_page=100" \
+            > "$RUNNER_TEMP/final-preflight-runs.ndjson"
+          SELECTED="$(node scripts/production-migration-select-preflight.mjs --select-run \
+            "$RUNNER_TEMP/final-preflight-runs.ndjson" "$PREFLIGHT_WORKFLOW_ID" "$RELEASE_SHA" "$MANIFEST_ID")"
+          SELECTED_ID="$(printf '%s' "$SELECTED" | jq -r '.id')"
+          SELECTED_ATTEMPT="$(printf '%s' "$SELECTED" | jq -r '.runAttempt')"
+          [[ "$SELECTED_ID" == "$EXPECTED_PREFLIGHT_RUN_ID" && "$SELECTED_ATTEMPT" == "$EXPECTED_PREFLIGHT_ATTEMPT" ]] || {
+            echo "::error::A newer successful, failed, cancelled, queued, pending, or in-progress preflight superseded the signed request." >&2
+            exit 1
+          }
+          printf '%s\n' "$SELECTED" > "$RUNNER_TEMP/final-latest-preflight.json"
+          node scripts/production-migration-execution-attestation.mjs --attest \
+            "$RUNNER_TEMP/signed-migration-context/authorization-envelope.json" \
+            "$RUNNER_TEMP/final-latest-preflight.json" \
+            "$RUNNER_TEMP/execution-signer/delegation.json" \
+            "$CHALLENGE" \
+            "$RUNNER_TEMP/execution-attestation.json" \
+            > "$RUNNER_TEMP/execution-attestation-summary.json"
+          rm -f "$RUNNER_TEMP/execution-signer/delegation.json"
+          cat "$RUNNER_TEMP/execution-attestation-summary.json" >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/execution-attestation.json" >&"$REMOTE_IN"
+          exec {REMOTE_IN}>&-
+          while IFS= read -r -u "$REMOTE_OUT" line; do printf '%s\n' "$line"; done
+          wait "$REMOTE_PID"
+          REMOTE_PID=""
       - name: Remove temporary runner credentials
         if: always()
         run: rm -rf "$RUNNER_TEMP/bodycast-migrate-ssh"

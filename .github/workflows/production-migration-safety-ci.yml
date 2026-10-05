@@ -95,6 +95,11 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
+      - name: Generate Prisma client for final-target identity smoke
+        env:
+          DATABASE_URL: postgresql://build:build@127.0.0.1:5432/build
+        run: npx prisma generate --schema prisma/schema.prisma
+
       - name: Run targeted safety-tooling tests
         run: npm run test:unit -- tests/production-migration-v5.test.mjs tests/production-safety-tooling.test.mjs
 

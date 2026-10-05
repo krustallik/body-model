@@ -20,7 +20,7 @@ fail() { echo "Production migration blocked: $*" >&2; exit 1; }
   && "$BODYCAST_AUTHORIZATION_RUN_ID" =~ ^[1-9][0-9]*$ \
   && "$BODYCAST_AUTHORIZATION_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || fail "current authorization workflow identity is required."
 [[ "$CONTEXT_DIR" == /* && -d "$CONTEXT_DIR" && ! -L "$CONTEXT_DIR" ]] || fail "a private absolute migration context directory is required."
-for name in authorization-envelope.json preflight-result.json preflight-evidence.json restore-result.json artifact-metadata.json; do
+for name in authorization-envelope.json preflight-result.json preflight-evidence.json restore-result.json artifact-metadata.json execution-key-certificate.json; do
   [[ -f "$CONTEXT_DIR/$name" && ! -L "$CONTEXT_DIR/$name" ]] || fail "required signed context file is missing or a symlink: $name"
 done
 
@@ -98,14 +98,43 @@ compose --profile tools run --rm --no-deps \
   > "$GUARD_RECEIPT"
 chmod 600 "$GUARD_RECEIPT"
 
+# The one-time challenge is created only after the live production guard. The
+# GitHub runner reselects the latest applicable preflight and signs this exact
+# challenge; a previously issued attestation cannot be replayed into this DDL.
+[[ "${BODYCAST_EXECUTION_ATTESTATION_HANDOFF:-}" == "true" ]] || fail "protected DDL requires a live execution-attestation handoff."
+[[ ! -e "$CONTEXT_DIR/execution-attestation.json" && ! -L "$CONTEXT_DIR/execution-attestation.json" ]] || fail "execution attestation must be created after the live guard."
+DDL_CHALLENGE="$(head -c 32 /dev/urandom | od -An -vtx1 | tr -d ' \n')"
+[[ "$DDL_CHALLENGE" =~ ^[a-f0-9]{64}$ ]] || fail "could not create a one-time DDL challenge."
+printf 'BODYCAST_DDL_CHALLENGE:%s\n' "$DDL_CHALLENGE"
+IFS= read -r EXECUTION_ATTESTATION || fail "workflow runner did not return a current execution attestation."
+[[ -n "$EXECUTION_ATTESTATION" && ${#EXECUTION_ATTESTATION} -le 32768 ]] || fail "execution attestation is empty or oversized."
+printf '%s\n' "$EXECUTION_ATTESTATION" > "$CONTEXT_DIR/execution-attestation.json"
+chmod 600 "$CONTEXT_DIR/execution-attestation.json"
+export BODYCAST_DDL_EXECUTION_CHALLENGE="$DDL_CHALLENGE"
+
+# Keep a host-persistent one-use nonce ledger. The container receives only this
+# directory and public verification material; no signing secret crosses the SSH boundary.
+ATTESTATION_NONCE_DIR="$GIT_DIR/bodycast-production-migration-attestation-nonces"
+if [[ -e "$ATTESTATION_NONCE_DIR" || -L "$ATTESTATION_NONCE_DIR" ]]; then
+  [[ -d "$ATTESTATION_NONCE_DIR" && ! -L "$ATTESTATION_NONCE_DIR" ]] || fail "execution-attestation replay ledger is not a regular directory."
+else
+  mkdir -m 700 "$ATTESTATION_NONCE_DIR"
+fi
+chmod 700 "$ATTESTATION_NONCE_DIR"
+
 # The command process checks backup freshness at the actual Prisma DDL start and
 # independently verifies the signed guard receipt and adds lock_timeout to Prisma's
 # PostgreSQL startup options. No retries or boolean authorization switches exist.
 compose --profile tools run --rm --no-deps \
   --user "$(id -u):$(id -g)" \
   --volume "$CONTEXT_DIR:/run/bodycast:ro" \
+  --volume "$ATTESTATION_NONCE_DIR:/run/bodycast-attestation-nonces:rw" \
   -e BODYCAST_FINAL_GUARD_RECEIPT=/run/bodycast/final-guard-receipt.json \
   -e BODYCAST_AUTHORIZATION_ENVELOPE=/run/bodycast/authorization-envelope.json \
+  -e BODYCAST_EXECUTION_KEY_CERTIFICATE=/run/bodycast/execution-key-certificate.json \
+  -e BODYCAST_EXECUTION_ATTESTATION=/run/bodycast/execution-attestation.json \
+  -e "BODYCAST_DDL_EXECUTION_CHALLENGE=$BODYCAST_DDL_EXECUTION_CHALLENGE" \
+  -e BODYCAST_DDL_ATTESTATION_NONCE_DIR=/run/bodycast-attestation-nonces \
   -e BODYCAST_VERIFICATION_KEYS=/app/scripts/production-migration-verification-keys.json \
   -e "BODYCAST_RELEASE_SHA=$RELEASE_SHA" \
   -e "BODYCAST_CANONICAL_MAIN_SHA=$CANONICAL_MAIN_SHA" \

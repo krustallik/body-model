@@ -76,10 +76,18 @@ WITH expected(name) AS (
     COALESCE(c.reltuples::bigint, 0) AS "estimatedRows",
     COALESCE(pg_total_relation_size(c.oid), 0) AS "totalBytes"
   FROM baseline_targets b LEFT JOIN pg_class c ON c.oid = to_regclass(format('public.%I', b.table_name))
-), ddl_targets(table_name) AS (
-  VALUES ('Workout'), ('Profile'), ('ModelEpisode'), ('PhysiologyV7Lifecycle'), ('DailyModelState')
+), ddl_targets(table_name, required_lock_mode) AS (
+  VALUES
+    -- CREATE TABLE ... FOREIGN KEY requires SHARE ROW EXCLUSIVE on each referenced parent.
+    ('Workout', 'ShareRowExclusiveLock'),
+    ('Profile', 'ShareRowExclusiveLock'),
+    ('ModelEpisode', 'ShareRowExclusiveLock'),
+    -- Existing migration SQL adds columns to these relations; ALTER TABLE takes ACCESS EXCLUSIVE.
+    ('PhysiologyV7Lifecycle', 'AccessExclusiveLock'),
+    ('DailyModelState', 'AccessExclusiveLock')
 ), conflicting_locks AS (
   SELECT a.pid, c.relname AS relation, l.mode, l.granted,
+    t.required_lock_mode AS "requiredLockMode",
     CASE WHEN l.pid IS NULL THEN 'prepared-transaction' ELSE 'backend' END AS "blockerType",
     a.state, a.wait_event_type AS "waitEventType", a.wait_event AS "waitEvent",
     floor(extract(epoch FROM (clock_timestamp() - a.xact_start)))::bigint AS "xactAgeSeconds"
@@ -89,6 +97,16 @@ WITH expected(name) AS (
   JOIN ddl_targets t ON t.table_name = c.relname
   WHERE l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
     AND (l.pid IS NULL OR l.pid <> pg_backend_pid())
+    AND (
+      (t.required_lock_mode = 'ShareRowExclusiveLock' AND l.mode IN (
+        'RowExclusiveLock', 'ShareUpdateExclusiveLock', 'ShareLock',
+        'ShareRowExclusiveLock', 'ExclusiveLock', 'AccessExclusiveLock'
+      ))
+      OR (t.required_lock_mode = 'AccessExclusiveLock' AND l.mode IN (
+        'AccessShareLock', 'RowShareLock', 'RowExclusiveLock', 'ShareUpdateExclusiveLock',
+        'ShareLock', 'ShareRowExclusiveLock', 'ExclusiveLock', 'AccessExclusiveLock'
+      ))
+    )
 ), prepared_transactions AS (
   SELECT gid, transaction::text AS transaction, prepared AS "preparedAt", database
   FROM pg_prepared_xacts

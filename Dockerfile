@@ -26,6 +26,7 @@ FROM dependencies AS migrator
 WORKDIR /app
 ENV NODE_ENV=production
 COPY prisma ./prisma
+RUN DATABASE_URL=postgresql://build:build@localhost:5432/build npx prisma generate --schema prisma/schema.prisma
 COPY scripts/production-migration-*.mjs ./scripts/
 COPY scripts/production-migration-verification-keys.json ./scripts/
 COPY scripts/production-migration-preflight.mjs ./scripts/

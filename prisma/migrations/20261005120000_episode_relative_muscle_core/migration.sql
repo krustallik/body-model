@@ -24,25 +24,25 @@ CREATE UNIQUE INDEX "ModelEpisode_id_profileId_key"
   ON "ModelEpisode"("id", "profileId");
 
 ALTER TABLE "ExperimentalSkeletalMuscleDeltaShadow"
-  ADD CONSTRAINT "ExperimentalSkeletalMuscleDeltaShadow_modelEpisodeId_profileId_fkey"
+  ADD CONSTRAINT "RelMuscleDelta_episode_profile_fkey"
   FOREIGN KEY ("modelEpisodeId", "profileId") REFERENCES "ModelEpisode"("id", "profileId")
   ON DELETE RESTRICT ON UPDATE CASCADE;
 
 ALTER TABLE "ExperimentalCessationDetrainingShadow"
-  ADD CONSTRAINT "ExperimentalCessationDetrainingShadow_modelEpisodeId_profileId_fkey"
+  ADD CONSTRAINT "RelMuscleCessation_episode_profile_fkey"
   FOREIGN KEY ("modelEpisodeId", "profileId") REFERENCES "ModelEpisode"("id", "profileId")
   ON DELETE RESTRICT ON UPDATE CASCADE;
 
-CREATE UNIQUE INDEX "ExperimentalSkeletalMuscleDeltaShadow_profileId_modelEpisodeId_date_key"
+CREATE UNIQUE INDEX "RelMuscleDelta_episode_date_key"
   ON "ExperimentalSkeletalMuscleDeltaShadow"("profileId", "modelEpisodeId", "date");
-CREATE INDEX "ExperimentalSkeletalMuscleDeltaShadow_profileId_modelEpisodeId_isStale_date_idx"
+CREATE INDEX "RelMuscleDelta_episode_stale_date_idx"
   ON "ExperimentalSkeletalMuscleDeltaShadow"("profileId", "modelEpisodeId", "isStale", "date");
-CREATE INDEX "ExperimentalSkeletalMuscleDeltaShadow_modelEpisodeId_profileId_idx"
+CREATE INDEX "RelMuscleDelta_episode_profile_idx"
   ON "ExperimentalSkeletalMuscleDeltaShadow"("modelEpisodeId", "profileId");
 
-CREATE UNIQUE INDEX "ExperimentalCessationDetrainingShadow_profileId_modelEpisodeId_date_key"
+CREATE UNIQUE INDEX "RelMuscleCessation_episode_date_key"
   ON "ExperimentalCessationDetrainingShadow"("profileId", "modelEpisodeId", "date");
-CREATE INDEX "ExperimentalCessationDetrainingShadow_profileId_modelEpisodeId_isStale_date_idx"
+CREATE INDEX "RelMuscleCessation_episode_stale_date_idx"
   ON "ExperimentalCessationDetrainingShadow"("profileId", "modelEpisodeId", "isStale", "date");
-CREATE INDEX "ExperimentalCessationDetrainingShadow_modelEpisodeId_profileId_idx"
+CREATE INDEX "RelMuscleCessation_episode_profile_idx"
   ON "ExperimentalCessationDetrainingShadow"("modelEpisodeId", "profileId");

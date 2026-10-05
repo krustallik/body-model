@@ -1014,11 +1014,11 @@ model ExperimentalSkeletalMuscleDeltaShadow {
   isStale           Boolean  @default(false)
   createdAt         DateTime @default(now()) @db.Timestamptz(3)
   updatedAt         DateTime @updatedAt @db.Timestamptz(3)
-  modelEpisode      ModelEpisode? @relation(fields: [modelEpisodeId, profileId], references: [id, profileId], onDelete: Restrict)
+  modelEpisode      ModelEpisode? @relation(fields: [modelEpisodeId, profileId], references: [id, profileId], onDelete: Restrict, map: "RelMuscleDelta_episode_profile_fkey")
 
-  @@unique([profileId, modelEpisodeId, date])
-  @@index([profileId, modelEpisodeId, isStale, date])
-  @@index([modelEpisodeId, profileId])
+  @@unique([profileId, modelEpisodeId, date], map: "RelMuscleDelta_episode_date_key")
+  @@index([profileId, modelEpisodeId, isStale, date], map: "RelMuscleDelta_episode_stale_date_idx")
+  @@index([modelEpisodeId, profileId], map: "RelMuscleDelta_episode_profile_idx")
   @@index([profileId, updatedAt])
 }
 
@@ -1057,11 +1057,11 @@ model ExperimentalCessationDetrainingShadow {
   isStale           Boolean  @default(false)
   createdAt         DateTime @default(now()) @db.Timestamptz(3)
   updatedAt         DateTime @updatedAt @db.Timestamptz(3)
-  modelEpisode      ModelEpisode? @relation(fields: [modelEpisodeId, profileId], references: [id, profileId], onDelete: Restrict)
+  modelEpisode      ModelEpisode? @relation(fields: [modelEpisodeId, profileId], references: [id, profileId], onDelete: Restrict, map: "RelMuscleCessation_episode_profile_fkey")
 
-  @@unique([profileId, modelEpisodeId, date])
-  @@index([profileId, modelEpisodeId, isStale, date])
-  @@index([modelEpisodeId, profileId])
+  @@unique([profileId, modelEpisodeId, date], map: "RelMuscleCessation_episode_date_key")
+  @@index([profileId, modelEpisodeId, isStale, date], map: "RelMuscleCessation_episode_stale_date_idx")
+  @@index([modelEpisodeId, profileId], map: "RelMuscleCessation_episode_profile_idx")
   @@index([profileId, updatedAt])
 }
 

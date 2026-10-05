@@ -125,10 +125,10 @@ describe("Relative Muscle episode migration on populated isolated PostgreSQL", (
       `SELECT indexname FROM pg_indexes WHERE schemaname = '${schemaName}'`,
     );
     expect(indexes.map(({ indexname }) => indexname)).toContain(
-      "ExperimentalSkeletalMuscleDeltaShadow_profileId_modelEpisodeId_date_key",
+      "RelMuscleDelta_episode_date_key",
     );
     expect(indexes.map(({ indexname }) => indexname)).toContain(
-      "ExperimentalCessationDetrainingShadow_profileId_modelEpisodeId_date_key",
+      "RelMuscleCessation_episode_date_key",
     );
     expect(indexes.map(({ indexname }) => indexname)).not.toContain(
       "ExperimentalSkeletalMuscleDeltaShadow_profileId_date_key",
@@ -144,10 +144,10 @@ describe("Relative Muscle episode migration on populated isolated PostgreSQL", (
       `SELECT conname FROM pg_constraint WHERE connamespace = (SELECT oid FROM pg_namespace WHERE nspname = '${schemaName}')`,
     );
     expect(constraints.map(({ conname }) => conname)).toContain(
-      "ExperimentalSkeletalMuscleDeltaShadow_modelEpisodeId_profileId_fkey",
+      "RelMuscleDelta_episode_profile_fkey",
     );
     expect(constraints.map(({ conname }) => conname)).toContain(
-      "ExperimentalCessationDetrainingShadow_modelEpisodeId_profileId_fkey",
+      "RelMuscleCessation_episode_profile_fkey",
     );
   });
 });

@@ -8,7 +8,9 @@ function parseNdjson(text) { return text.split(/\r?\n/).filter(Boolean).map((lin
 export function normalizeWorkflowRuns(records) {
   return records.map((run) => ({
     repository: "krustallik/body-model",
-    workflowPath: run.path,
+    // The REST API includes the workflow ref after `@`; the release selector
+    // compares the repository-relative workflow file path.
+    workflowPath: typeof run.path === "string" ? run.path.split("@")[0] : run.path,
     workflowId: String(run.workflow_id),
     event: run.event,
     headBranch: run.head_branch,

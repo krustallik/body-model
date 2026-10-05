@@ -40,18 +40,17 @@ describe("production deploy script safety contracts", () => {
 
   it("keeps production migrate behind signed final authorization with no confirmation-variable bypass", () => {
     expect(migrateSh).toContain("authorization-envelope.json");
-    expect(migrateSh).toContain("execution-attestation.json");
-    expect(migrateSh).toContain("execution-key-certificate.json");
+    expect(migrateSh).toContain("execution-proof.jwt");
     expect(migrateSh).toContain("BODYCAST_DDL_ATTESTATION_NONCE_DIR");
-    expect(migrateSh).toContain("BODYCAST_EXECUTION_KEY_CERTIFICATE");
-    expect(migrateSh).toContain("BODYCAST_EXECUTION_ATTESTATION_HANDOFF");
+    expect(migrateSh).toContain("BODYCAST_EXECUTION_PROOF");
+    expect(migrateSh).toContain("BODYCAST_EXECUTION_PROOF_HANDOFF");
     expect(migrateSh).toContain("BODYCAST_DDL_CHALLENGE:");
     expect(migrateSh).toContain("BODYCAST_DDL_EXECUTION_CHALLENGE");
     expect(migrateSh).toContain("--before-ddl");
     expect(migrateSh).toContain("final-guard-receipt.json");
     expect(migrateGuard).toContain("verifyFinalGuardReceipt");
-    expect(migrateGuard).toContain("verifyExecutionAttestation");
-    expect(migrateGuard).toContain("verifyExecutionKeyDelegation");
+    expect(migrateGuard).toContain("verifyGitHubExecutionProof");
+    expect(migrateGuard).toContain("assertCurrentMigrationRunMatchesProof");
     expect(migrateGuard).toContain("assertPrismaTargetMatchesSignedIdentity");
     expect(migrateGuard).not.toContain("BODYCAST_FINAL_GUARD_READY");
     expect(migrateGuard).not.toContain("CONFIRM_PRODUCTION_MIGRATE");

@@ -1,4 +1,4 @@
-import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -19,7 +19,7 @@ import { ACTIVE_ENERGY_UNIFIED_MANIFEST, STAGE_02_MANIFEST } from "../production
 import { renderProductionDbPreflightSql } from "../production-db-preflight.mjs";
 import { assertPostgresClientCompatibility } from "../postgres-client-versions.mjs";
 import { canonicalSha256, createAuthorizationEnvelope } from "../production-migration-authorization.mjs";
-import { createExecutionAttestation, createExecutionAttestationDelegation } from "../production-migration-execution-attestation.mjs";
+import { executionProofAudience, verifyGitHubExecutionProof } from "../production-migration-execution-attestation.mjs";
 import { readPrismaDatabaseIdentity, startPrismaMigrationAtDdlBoundary } from "../run-prisma-migrate-with-lock-timeout.mjs";
 import { withPrismaLockTimeout } from "../production-migration-release.mjs";
 
@@ -271,7 +271,7 @@ function assertBlocked(report, migrations, mutate, expected) {
   }
 }
 
-function createTargetBindingAuthorization(identity, now = Date.now()) {
+async function createTargetBindingAuthorization(identity, now = Date.now()) {
   const keyPair = generateKeyPairSync("ed25519");
   const keyId = "disposable-target-binding-test";
   const publicKeyPem = keyPair.publicKey.export({ type: "spki", format: "pem" }).toString();
@@ -333,15 +333,37 @@ function createTargetBindingAuthorization(identity, now = Date.now()) {
     status: "in_progress",
   };
   const executionChallenge = randomBytes(32).toString("hex");
-  const delegation = createExecutionAttestationDelegation({ authorizationEnvelope, allowlist, keyId, privateKeyPem, now: now - 1000 });
-  const attestation = createExecutionAttestation({
-    authorizationEnvelope, latestPreflight, migrationRun, allowlist,
-    delegationCertificate: delegation.certificate,
-    executionPrivateKeyPem: delegation.executionPrivateKeyPem,
-    executionChallenge,
-    now,
+  const oidcPair = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const oidcJwk = { ...oidcPair.publicKey.export({ format: "jwk" }), kid: "fixture-github-oidc-key", use: "sig", alg: "RS256" };
+  const header = Buffer.from(JSON.stringify({ alg: "RS256", kid: oidcJwk.kid, typ: "JWT" })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({
+    iss: "https://token.actions.githubusercontent.com",
+    aud: executionProofAudience(authorizationEnvelope, executionChallenge, allowlist, now),
+    jti: randomUUID(), iat: Math.floor(now / 1000), nbf: Math.floor(now / 1000), exp: Math.floor((now + 4 * 60_000) / 1000),
+    repository: "krustallik/body-model",
+    sub: "repo:krustallik/body-model:environment:production",
+    environment: "production",
+    workflow_ref: "krustallik/body-model/.github/workflows/production-migrate.yml@refs/heads/main",
+    workflow_sha: releaseSha,
+    ref: "refs/heads/main",
+    sha: releaseSha,
+    event_name: "workflow_dispatch",
+    run_id: claims.workflowRunId,
+    run_attempt: claims.workflowRunAttempt,
+  })).toString("base64url");
+  const signingInput = header + "." + payload;
+  const executionProof = signingInput + "." + sign("RSA-SHA256", Buffer.from(signingInput), oidcPair.privateKey).toString("base64url");
+  const verifiedExecutionProof = await verifyGitHubExecutionProof(executionProof, {
+    authorizationEnvelope, allowlist, expectedChallenge: executionChallenge, now, jwks: [oidcJwk],
   });
-  return { allowlist, authorizationEnvelope, latestPreflight, delegation, attestation, executionChallenge, claims };
+  const currentRun = {
+    repository: { full_name: "krustallik/body-model" },
+    path: ".github/workflows/production-migrate.yml@refs/heads/main",
+    workflow_id: Number(claims.workflowId), event: "workflow_dispatch", head_branch: "main", head_sha: releaseSha,
+    id: Number(claims.workflowRunId), run_attempt: claims.workflowRunAttempt,
+    run_started_at: migrationRun.runStartedAt, status: "in_progress", conclusion: null,
+  };
+  return { allowlist, authorizationEnvelope, latestPreflight, executionProof, verifiedExecutionProof, oidcJwk, currentRun, executionChallenge, claims };
 }
 
 function databaseUrl(db) {
@@ -350,15 +372,14 @@ function databaseUrl(db) {
 
 async function verifyPrismaTargetBinding({ sourceUrl, alternateUrl, signedIdentity, scratch }) {
   const now = Date.now();
-  const fixture = createTargetBindingAuthorization(signedIdentity, now);
+  const fixture = await createTargetBindingAuthorization(signedIdentity, now);
   const nonceDirectory = path.join(scratch, "consumed-execution-attestations");
   const makeAuthorized = (targetUrl, authorizationFixture = fixture) => ({
     databaseUrl: withPrismaLockTimeout(targetUrl, 5000),
     receipt: { productionIdentityDigest: canonicalSha256(signedIdentity), backupSnapshotAt: new Date(now - 10_000).toISOString() },
     envelope: authorizationFixture.authorizationEnvelope,
-    delegationCertificate: authorizationFixture.delegation.certificate,
-    executionAttestation: authorizationFixture.attestation.serialized,
-    verifiedAttestation: authorizationFixture.attestation.payload,
+    executionProof: authorizationFixture.executionProof,
+    verifiedExecutionProof: authorizationFixture.verifiedExecutionProof,
     executionChallenge: authorizationFixture.executionChallenge,
     allowlist: authorizationFixture.allowlist,
   });
@@ -377,6 +398,8 @@ async function verifyPrismaTargetBinding({ sourceUrl, alternateUrl, signedIdenti
       environment: { BODYCAST_DDL_ATTESTATION_NONCE_DIR: nonceDirectory },
       identityProbe: readPrismaDatabaseIdentity,
       latestPreflightProbe: async () => fixture.latestPreflight,
+      currentMigrationRunProbe: async () => fixture.currentRun,
+      executionProofVerifier: (proof, options) => verifyGitHubExecutionProof(proof, { ...options, jwks: [fixture.oidcJwk] }),
       spawn,
       now: () => Date.now(),
       nonceDirectory,
@@ -388,13 +411,15 @@ async function verifyPrismaTargetBinding({ sourceUrl, alternateUrl, signedIdenti
     throw new Error("Final Prisma URL for another database was not blocked before spawn.");
   }
   // The failed target probe correctly consumes its one-time nonce; use a fresh
-  // authorization/attestation for the independent matching-target assertion.
-  const matchingFixture = createTargetBindingAuthorization(signedIdentity, Date.now());
+  // authorization/OIDC proof for the independent matching-target assertion.
+  const matchingFixture = await createTargetBindingAuthorization(signedIdentity, Date.now());
   await startPrismaMigrationAtDdlBoundary({
     authorized: makeAuthorized(sourceUrl, matchingFixture),
     environment: { BODYCAST_DDL_ATTESTATION_NONCE_DIR: nonceDirectory },
     identityProbe: readPrismaDatabaseIdentity,
     latestPreflightProbe: async () => matchingFixture.latestPreflight,
+    currentMigrationRunProbe: async () => matchingFixture.currentRun,
+    executionProofVerifier: (proof, options) => verifyGitHubExecutionProof(proof, { ...options, jwks: [matchingFixture.oidcJwk] }),
     spawn,
     now: () => Date.now(),
     nonceDirectory,

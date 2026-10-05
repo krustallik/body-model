@@ -94,4 +94,3 @@ try {
   run("psql", [psqlUrl(dropUrl), "--no-psqlrc", "--quiet", "--set=ON_ERROR_STOP=1", "--command", 'DROP SCHEMA IF EXISTS "' + schemaName + '" CASCADE'], process.env);
   await rm(scratch, { recursive: true, force: true });
 }
-

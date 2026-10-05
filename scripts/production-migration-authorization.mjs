@@ -156,4 +156,3 @@ export function createClaimsFromPreflight({
     restoreResultDigest, productionIdentityDigest, issuedAt, expiresAt, authorizationId, nonce,
   };
 }
-

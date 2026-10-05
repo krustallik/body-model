@@ -83,4 +83,3 @@ export function fetchCanonicalMain({ repositoryPath }) {
   if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error("Canonical main fetch returned an invalid commit SHA.");
   return sha;
 }
-

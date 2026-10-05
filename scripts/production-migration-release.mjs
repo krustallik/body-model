@@ -82,4 +82,3 @@ export function withPrismaLockTimeout(databaseUrl, lockTimeoutMs = 5000) {
   url.searchParams.set("options", options);
   return url.toString();
 }
-

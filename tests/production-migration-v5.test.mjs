@@ -552,4 +552,3 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
     expect(schemaInventoryDigest(post.objects)).not.toBe(verified.postSchemaDigest);
   });
 });
-

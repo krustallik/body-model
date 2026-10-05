@@ -90,7 +90,7 @@ jobs:
             "repos/krustallik/body-model/actions/workflows/$PREFLIGHT_WORKFLOW_ID/runs?per_page=100" \
             > "$RUNNER_TEMP/preflight-runs.ndjson"
           PRE_RUN_ID="$(node scripts/production-migration-select-preflight.mjs --select-run "$RUNNER_TEMP/preflight-runs.ndjson" "$PREFLIGHT_WORKFLOW_ID" "$MAIN_TIP" "$MANIFEST_ID" | jq -r '.id')" || {
-            echo "::error::No latest successful matching preflight run; a newer failed/cancelled/pending attempt blocks older success."
+            echo "::error::No latest successful admitted matching preflight run; a newer admitted failed/cancelled/in-progress attempt blocks older success."
             exit 1
           }
           gh api --paginate --jq '.artifacts[] | @json' "repos/krustallik/body-model/actions/runs/$PRE_RUN_ID/artifacts?per_page=100" \
@@ -185,7 +185,7 @@ jobs:
             || s.backupArtifact.digest !== process.env.EXPECTED_BACKUP_ARTIFACT_DIGEST
             || String(s.evidenceArtifact.id) !== process.env.EXPECTED_EVIDENCE_ARTIFACT_ID
             || s.evidenceArtifact.digest !== process.env.EXPECTED_EVIDENCE_ARTIFACT_DIGEST) {
-            throw new Error("A newer preflight attempt or changed artifact superseded the authorization request.");
+            throw new Error("A newer admitted preflight attempt or changed artifact superseded the authorization request.");
           }
           NODE
           BUNDLE="$RUNNER_TEMP/preflight-evidence"
@@ -465,14 +465,16 @@ jobs:
           SELECTED_ID="$(printf '%s' "$SELECTED" | jq -r '.id')"
           SELECTED_ATTEMPT="$(printf '%s' "$SELECTED" | jq -r '.runAttempt')"
           [[ "$SELECTED_ID" == "$EXPECTED_PREFLIGHT_RUN_ID" && "$SELECTED_ATTEMPT" == "$EXPECTED_PREFLIGHT_ATTEMPT" ]] || {
-            echo "::error::A newer successful, failed, cancelled, queued, pending, or in-progress preflight superseded the signed request." >&2
+            echo "::error::A newer admitted preflight superseded the signed request." >&2
             exit 1
           }
           printf '%s\n' "$SELECTED" > "$RUNNER_TEMP/final-latest-preflight.json"
+          gh api "repos/krustallik/body-model/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/current-migration-run.json"
           node scripts/production-migration-execution-attestation.mjs --attest \
             "$RUNNER_TEMP/signed-migration-context/authorization-envelope.json" \
             "$RUNNER_TEMP/final-latest-preflight.json" \
             "$RUNNER_TEMP/execution-signer/delegation.json" \
+            "$RUNNER_TEMP/current-migration-run.json" \
             "$CHALLENGE" \
             "$RUNNER_TEMP/execution-attestation.json" \
             > "$RUNNER_TEMP/execution-attestation-summary.json"

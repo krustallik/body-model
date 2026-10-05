@@ -17,6 +17,7 @@ export function normalizeWorkflowRuns(records) {
     id: String(run.id),
     runAttempt: Number(run.run_attempt),
     createdAt: run.created_at,
+    runStartedAt: run.run_started_at,
     status: run.status,
     conclusion: run.conclusion,
     htmlUrl: run.html_url,

@@ -62,6 +62,7 @@ function selectionBinding(run) {
     id: String(run.id),
     runAttempt: Number(run.runAttempt),
     createdAt: run.createdAt,
+    runStartedAt: run.runStartedAt,
     status: run.status,
     conclusion: run.conclusion,
   };
@@ -198,8 +199,6 @@ export async function startPrismaMigrationAtDdlBoundary({
   if (canonicalSha256(initialAttestation) !== canonicalSha256(authorized.verifiedAttestation)) {
     throw new Error("Refusing Prisma DDL: verified execution attestation payload does not match its signed bytes.");
   }
-  const actualIdentity = await identityProbe(authorized.databaseUrl);
-  assertPrismaTargetMatchesSignedIdentity(authorized.receipt, actualIdentity);
   const ddlStartedAt = now();
   const boundaryAttestation = verifyExecutionAttestation(authorized.executionAttestation, {
     authorizationEnvelope: authorized.envelope,
@@ -216,14 +215,30 @@ export async function startPrismaMigrationAtDdlBoundary({
   const latestPreflight = await latestPreflightProbe(boundaryAttestation);
   assertLatestPreflightMatchesExecutionAttestation(boundaryAttestation, latestPreflight);
   const spawnBoundaryNow = now();
-  verifyExecutionAttestation(authorized.executionAttestation, {
+  const finalAttestation = verifyExecutionAttestation(authorized.executionAttestation, {
     authorizationEnvelope: authorized.envelope,
     allowlist: authorized.allowlist,
     delegationCertificate: authorized.delegationCertificate,
     expectedChallenge: authorized.executionChallenge,
     now: spawnBoundaryNow,
   });
+  if (canonicalSha256(finalAttestation) !== canonicalSha256(boundaryAttestation)) {
+    throw new Error("Refusing Prisma DDL: execution attestation changed during final pre-spawn checks.");
+  }
   assertBackupFreshAtDdlStart(authorized.receipt, spawnBoundaryNow);
+  // This is deliberately the last awaited I/O before Prisma spawn. Probe the exact
+  // URL passed to the child only after the live admission/supersession fence checks.
+  const actualIdentity = await identityProbe(authorized.databaseUrl);
+  const finalDdlBoundaryNow = now();
+  verifyExecutionAttestation(authorized.executionAttestation, {
+    authorizationEnvelope: authorized.envelope,
+    allowlist: authorized.allowlist,
+    delegationCertificate: authorized.delegationCertificate,
+    expectedChallenge: authorized.executionChallenge,
+    now: finalDdlBoundaryNow,
+  });
+  assertBackupFreshAtDdlStart(authorized.receipt, finalDdlBoundaryNow);
+  assertPrismaTargetMatchesSignedIdentity(authorized.receipt, actualIdentity);
   return spawn("npx", ["prisma", "migrate", "deploy"], {
     stdio: "inherit",
     env: { ...environment, DATABASE_URL: authorized.databaseUrl },

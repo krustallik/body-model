@@ -3,6 +3,7 @@ import { canonicalJson } from "./production-migration-manifests.mjs";
 
 export const PREFLIGHT_WORKFLOW_PATH = ".github/workflows/production-migration-preflight.yml";
 export const PREFLIGHT_WORKFLOW_IDENTITY = "production-migration-preflight";
+export const PRODUCTION_MIGRATION_CONCURRENCY_GROUP = "bodycast-production-migration";
 
 export function canonicalDigest(value) {
   return createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
@@ -23,26 +24,40 @@ function matchesRun(run, { repository, releaseSha, manifestId, workflowId = PREF
 }
 
 function compareTrustedRunMetadata(left, right) {
-  const leftCreatedAt = Date.parse(left.createdAt);
-  const rightCreatedAt = Date.parse(right.createdAt);
-  if (!Number.isFinite(leftCreatedAt) || !Number.isFinite(rightCreatedAt)) throw new Error("Matching preflight run has an invalid createdAt timestamp.");
-  const byDate = leftCreatedAt - rightCreatedAt;
-  if (byDate) return byDate;
+  const leftStartedAt = Date.parse(left.runStartedAt);
+  const rightStartedAt = Date.parse(right.runStartedAt);
+  if (!Number.isFinite(leftStartedAt) || !Number.isFinite(rightStartedAt)) throw new Error("Admitted preflight run has an invalid runStartedAt timestamp.");
+  const byAdmission = leftStartedAt - rightStartedAt;
+  if (byAdmission) return byAdmission;
   const byId = BigInt(left.id) - BigInt(right.id);
   if (byId) return byId < 0n ? -1 : 1;
   return Number(left.runAttempt) - Number(right.runAttempt);
 }
 
+function isAdmittedRun(run) {
+  if (run.runStartedAt === null) {
+    if (["queued", "pending", "requested", "waiting"].includes(run.status)
+      || (run.status === "completed" && run.conclusion === "cancelled")) return false;
+    throw new Error("Matching preflight run is missing the trusted admission timestamp.");
+  }
+  if (typeof run.runStartedAt !== "string" || !Number.isFinite(Date.parse(run.runStartedAt))) {
+    throw new Error("Matching preflight run has an invalid trusted admission timestamp.");
+  }
+  return true;
+}
+
 export function selectLatestApplicablePreflight(runs, selection) {
   if (selection.selectedRunId) throw new Error("Preflight run is selected from trusted GitHub metadata; operator-selected older runs are forbidden.");
-  const matching = (Array.isArray(runs) ? runs : []).filter((run) => matchesRun(run, selection));
-  if (!matching.length) throw new Error("No matching production preflight run exists for this release SHA and manifest.");
-  for (const run of matching) {
+  const matchingRequests = (Array.isArray(runs) ? runs : []).filter((run) => matchesRun(run, selection));
+  if (!matchingRequests.length) throw new Error("No matching production preflight run exists for this release SHA and manifest.");
+  for (const run of matchingRequests) {
     if (!/^[1-9][0-9]*$/.test(String(run.id)) || !Number.isSafeInteger(Number(run.runAttempt)) || Number(run.runAttempt) < 1
       || !Number.isFinite(Date.parse(run.createdAt))) {
       throw new Error("Matching preflight run has invalid trusted ordering metadata.");
     }
   }
+  const matching = matchingRequests.filter(isAdmittedRun);
+  if (!matching.length) throw new Error("No admitted matching production preflight run exists for this release SHA and manifest.");
   matching.sort(compareTrustedRunMetadata);
   const latest = matching.at(-1);
   if (latest.status !== "completed") throw new Error(`Latest matching preflight attempt is ${latest.status}; fail-closed selection blocks older successful runs.`);

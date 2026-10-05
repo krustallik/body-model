@@ -17,7 +17,7 @@ import { verifyFinalMigrationAuthorization, verifyFinalGuardReceipt } from "../s
 import { normalizeWorkflowRuns, selectAndVerifyArtifact } from "../scripts/production-migration-select-preflight.mjs";
 import { assertBackupFreshAtDdlStart, assertPrismaMigrationAuthorized, assertPrismaTargetMatchesSignedIdentity, readLatestApplicablePreflightForDdl, startPrismaMigrationAtDdlBoundary } from "../scripts/run-prisma-migrate-with-lock-timeout.mjs";
 import { psqlCompatibleDatabaseUrl } from "../scripts/production-db-target-url.mjs";
-import { createExecutionAttestation, createExecutionAttestationDelegation, EXECUTION_ATTESTATION_MAX_AGE_MS } from "../scripts/production-migration-execution-attestation.mjs";
+import { createExecutionAttestation, createExecutionAttestationDelegation, EXECUTION_ATTESTATION_MAX_AGE_MS, normalizeMigrationWorkflowRun } from "../scripts/production-migration-execution-attestation.mjs";
 
 const now = Date.parse("2026-10-05T10:00:00.000Z");
 const dirs = [
@@ -71,6 +71,7 @@ function claims(overrides = {}) {
     pendingSetDigest: canonicalSha256(names),
     preflightRunId: "1201",
     preflightRunAttempt: 2,
+    preflightRunStartedAt: "2026-10-05T09:00:00.000Z",
     preflightResultDigest: "b".repeat(64),
     backupArtifactId: "121212",
     backupArtifactDigest: "c".repeat(64),
@@ -99,6 +100,7 @@ function liveContext(overrides = {}) {
     pendingSetDigest: canonicalSha256(names),
     preflightRunId: "1201",
     preflightRunAttempt: 2,
+    preflightRunStartedAt: "2026-10-05T09:00:00.000Z",
     preflightResultDigest: "b".repeat(64),
     backupArtifactId: "121212",
     backupArtifactDigest: "c".repeat(64),
@@ -138,8 +140,21 @@ function executionBoundaryFixture(identity = validPreflightReport().identity, ch
     id: authorizationClaims.preflightRunId,
     runAttempt: authorizationClaims.preflightRunAttempt,
     createdAt: new Date(checkedAt - 5 * 60_000).toISOString(),
+    runStartedAt: authorizationClaims.preflightRunStartedAt,
     status: "completed",
     conclusion: "success",
+  };
+  const migrationRun = {
+    repository: authorizationClaims.repository,
+    workflowPath: authorizationClaims.workflowPath,
+    workflowId: authorizationClaims.workflowId,
+    event: "workflow_dispatch",
+    headBranch: "main",
+    headSha: authorizationClaims.releaseSha,
+    id: authorizationClaims.workflowRunId,
+    runAttempt: authorizationClaims.workflowRunAttempt,
+    runStartedAt: new Date(checkedAt - 10_000).toISOString(),
+    status: "in_progress",
   };
   const delegation = createExecutionAttestationDelegation({
     authorizationEnvelope,
@@ -152,13 +167,14 @@ function executionBoundaryFixture(identity = validPreflightReport().identity, ch
   const attestation = createExecutionAttestation({
     authorizationEnvelope,
     latestPreflight,
+    migrationRun,
     allowlist,
     delegationCertificate: delegation.certificate,
     executionPrivateKeyPem: delegation.executionPrivateKeyPem,
     executionChallenge,
     now: checkedAt,
   });
-  return { authorizationClaims, authorizationEnvelope, latestPreflight, delegation, attestation, executionChallenge, identity };
+  return { authorizationClaims, authorizationEnvelope, latestPreflight, migrationRun, delegation, attestation, executionChallenge, identity };
 }
 
 function authorizedBoundary(fixture, databaseUrl = "postgresql://bodycast:secret@db/bodycast") {
@@ -384,7 +400,7 @@ describe("V5 closed migration manifest and full pending set", () => {
       };
       expect(() => createExecutionAttestation({
         authorizationEnvelope: fixture.authorizationEnvelope,
-        latestPreflight: { ...fixture.latestPreflight, id: "1202", status: "queued", conclusion: null },
+        latestPreflight: { ...fixture.latestPreflight, id: "1202", runStartedAt: null, status: "queued", conclusion: null },
         allowlist,
         delegationCertificate: fixture.delegation.certificate,
         executionPrivateKeyPem: fixture.delegation.executionPrivateKeyPem,
@@ -417,7 +433,7 @@ describe("V5 closed migration manifest and full pending set", () => {
           authorized: authorizedBoundary(fixture),
           spawn,
           identityProbe,
-          latestPreflightProbe: async () => ({ ...fixture.latestPreflight, id: "1202", status: "queued", conclusion: null }),
+          latestPreflightProbe: async () => ({ ...fixture.latestPreflight, id: "1202", status: "in_progress", conclusion: null }),
           nonceDirectory: supersededNonceDirectory,
           now: () => now,
         })).rejects.toThrow("newer or changed preflight attempt superseded");
@@ -455,15 +471,16 @@ describe("V5 closed migration manifest and full pending set", () => {
     }
   });
 
-  it("reselects live GitHub preflight state at the protected DDL boundary and blocks queued supersession", async () => {
+  it("ignores unadmitted queued runs and supersedes only after trusted admission", async () => {
     const fixture = executionBoundaryFixture(validPreflightReport().identity);
     const toApiRun = (run) => ({
       workflow_id: Number(run.workflowId), path: run.workflowPath, event: run.event,
       head_branch: run.headBranch, head_sha: run.headSha, display_title: run.displayTitle,
       id: Number(run.id), run_attempt: run.runAttempt, created_at: run.createdAt,
+      run_started_at: run.runStartedAt,
       status: run.status, conclusion: run.conclusion, html_url: "https://example.invalid/run",
     });
-    const queued = { ...fixture.latestPreflight, id: "1202", createdAt: "2026-10-05T10:01:00.000Z", status: "queued", conclusion: null };
+    const queued = { ...fixture.latestPreflight, id: "1202", createdAt: "2026-10-05T10:01:00.000Z", runStartedAt: null, status: "queued", conclusion: null };
     const fetchImpl = vi.fn(async (url) => ({
       ok: true,
       status: 200,
@@ -472,9 +489,19 @@ describe("V5 closed migration manifest and full pending set", () => {
       requestedUrl: String(url),
     }));
     await expect(readLatestApplicablePreflightForDdl(fixture.attestation.payload, fetchImpl))
-      .rejects.toThrow("Latest matching preflight attempt is queued");
+      .resolves.toMatchObject(fixture.latestPreflight);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(String(fetchImpl.mock.calls[0][0])).toContain("/actions/workflows/88/runs");
+
+    const admitted = { ...queued, runStartedAt: "2026-10-05T10:02:00.000Z", status: "in_progress" };
+    const admittedFetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      json: async () => ({ workflow_runs: [toApiRun(admitted), toApiRun(fixture.latestPreflight)] }),
+    }));
+    await expect(readLatestApplicablePreflightForDdl(fixture.attestation.payload, admittedFetch))
+      .rejects.toThrow("Latest matching preflight attempt is in_progress");
   });
 
   it("blocks when the final Prisma URL resolves to an endpoint different from signed identity", async () => {
@@ -482,18 +509,62 @@ describe("V5 closed migration manifest and full pending set", () => {
     const fixture = executionBoundaryFixture(signedIdentity);
     const nonceDirectory = await mkdtemp(path.join(os.tmpdir(), "bodycast-v5-ddl-target-"));
     const spawn = vi.fn(() => ({ status: 0 }));
+    const ioOrder = [];
     try {
       await expect(startPrismaMigrationAtDdlBoundary({
         authorized: authorizedBoundary(fixture),
         spawn,
         nonceDirectory,
-        identityProbe: async () => ({ ...signedIdentity, database: "bodycast_restore", databaseOid: 20001, role: "restore_user", serverPort: 5433 }),
-        latestPreflightProbe: async () => fixture.latestPreflight,
+        identityProbe: async (url) => {
+          ioOrder.push(["final-identity", url]);
+          return { ...signedIdentity, database: "bodycast_restore", databaseOid: 20001, role: "restore_user", serverPort: 5433 };
+        },
+        latestPreflightProbe: async () => { ioOrder.push(["latest-admission"]); return fixture.latestPreflight; },
         now: () => now,
       })).rejects.toThrow("final Prisma DATABASE_URL target differs from the signed production identity");
       expect(spawn).not.toHaveBeenCalled();
+      expect(ioOrder.map(([name]) => name)).toEqual(["latest-admission", "final-identity"]);
+      expect(ioOrder[1][1]).toBe(authorizedBoundary(fixture).databaseUrl);
       expect(assertPrismaTargetMatchesSignedIdentity({ productionIdentityDigest: canonicalSha256(signedIdentity) }, signedIdentity)).toBe(true);
       expect(() => assertPrismaTargetMatchesSignedIdentity({ productionIdentityDigest: canonicalSha256(signedIdentity) }, { ...signedIdentity, serverAddress: "127.0.0.2" })).toThrow("differs from the signed production identity");
+    } finally {
+      await rm(nonceDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps an unadmitted request queued across the migration critical section and blocks it after admission", async () => {
+    const fixture = executionBoundaryFixture(validPreflightReport().identity);
+    const nonceDirectory = await mkdtemp(path.join(os.tmpdir(), "bodycast-v5-admission-fence-"));
+    const selection = { repository: "krustallik/body-model", workflowId: "88", releaseSha: fixture.authorizationClaims.releaseSha, manifestId: fixture.authorizationClaims.manifestId };
+    let migrationFenceHeld = true;
+    const ioOrder = [];
+    let newer = { ...fixture.latestPreflight, id: "1202", createdAt: new Date(now + 1_000).toISOString(), runStartedAt: null, status: "queued", conclusion: null };
+    const selected = () => selectLatestApplicablePreflight([newer, fixture.latestPreflight], selection);
+    const spawn = vi.fn(() => {
+      ioOrder.push("spawn");
+      expect(migrationFenceHeld).toBe(true);
+      expect(newer.runStartedAt).toBeNull();
+      return { status: 0 };
+    });
+    try {
+      await startPrismaMigrationAtDdlBoundary({
+        authorized: authorizedBoundary(fixture),
+        nonceDirectory,
+        now: () => now,
+        latestPreflightProbe: async () => { ioOrder.push("latest-admission"); return selected(); },
+        identityProbe: async () => {
+          ioOrder.push("final-identity");
+          expect(migrationFenceHeld).toBe(true);
+          expect(newer.runStartedAt).toBeNull();
+          return fixture.identity;
+        },
+        spawn,
+      });
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(ioOrder).toEqual(["latest-admission", "final-identity", "spawn"]);
+      migrationFenceHeld = false;
+      newer = { ...newer, runStartedAt: new Date(now + 2_000).toISOString(), status: "in_progress" };
+      expect(() => selected()).toThrow("Latest matching preflight attempt is in_progress");
     } finally {
       await rm(nonceDirectory, { recursive: true, force: true });
     }
@@ -505,6 +576,8 @@ describe("V5 closed migration manifest and full pending set", () => {
     const group = (workflow) => workflow.match(/^concurrency:\r?\n  group: ([^\r\n]+)\r?\n  cancel-in-progress: false/m)?.[1];
     expect(group(preflight)).toBe("bodycast-production-migration");
     expect(group(migrate)).toBe(group(preflight));
+    expect(preflight).not.toContain("cancel-in-progress: true");
+    expect(migrate).not.toContain("cancel-in-progress: true");
     const ddlStep = migrate.indexOf("Run canonical fetch, final signed readiness guard, Prisma migration, and postflight in one remote process");
     const attest = migrate.indexOf("--attest");
     expect(ddlStep).toBeGreaterThan(migrate.indexOf("Stream signed evidence files to private remote temporary context"));
@@ -519,6 +592,27 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(migrate).not.toMatch(/FILES=\([^\n]*execution-signer\.json/);
     expect(migrate).toContain("--delegate");
     expect(migrate.indexOf("--attest")).toBeGreaterThan(migrate.indexOf("SELECTED_ATTEMPT"));
+    expect(migrate).toContain("current-migration-run.json");
+    const deployScript = await readFile(new URL("../scripts/deploy-migrate.sh", import.meta.url), "utf8");
+    expect(deployScript).toContain('BODYCAST_EXECUTION_ATTESTATION_HANDOFF:-');
+    expect(deployScript).toContain("BODYCAST_DDL_CHALLENGE:");
+    expect(deployScript).toContain("execution-attestation.json");
+  });
+
+  it("normalizes trusted GitHub migration admission metadata into the attestation binding", () => {
+    const fixture = executionBoundaryFixture(validPreflightReport().identity);
+    expect(normalizeMigrationWorkflowRun({
+      repository: { full_name: "krustallik/body-model" },
+      path: fixture.authorizationClaims.workflowPath,
+      workflow_id: 150,
+      event: "workflow_dispatch",
+      head_branch: "main",
+      head_sha: fixture.authorizationClaims.releaseSha,
+      id: 1501,
+      run_attempt: 1,
+      run_started_at: fixture.migrationRun.runStartedAt,
+      status: "in_progress",
+    })).toMatchObject({ ...fixture.migrationRun, workflowId: "150" });
   });
 });
 
@@ -541,6 +635,7 @@ describe("Ed25519 authorization envelope and provenance matrix", () => {
     ["wrong pending-set digest", { pendingSetDigest: "0".repeat(64) }, { pendingSetDigest: canonicalSha256(names) }],
     ["wrong preflight run id", { preflightRunId: "1202" }, { preflightRunId: "1201" }],
     ["wrong preflight attempt", { preflightRunAttempt: 3 }, { preflightRunAttempt: 2 }],
+    ["wrong preflight admission time", { preflightRunStartedAt: "2026-10-05T09:01:00.000Z" }, { preflightRunStartedAt: "2026-10-05T09:00:00.000Z" }],
     ["wrong preflight digest", { preflightResultDigest: "0".repeat(64) }, { preflightResultDigest: "b".repeat(64) }],
     ["wrong backup artifact id", { backupArtifactId: "131313" }, { backupArtifactId: "121212" }],
     ["wrong backup digest", { backupArtifactDigest: "0".repeat(64) }, { backupArtifactDigest: "c".repeat(64) }],
@@ -717,21 +812,30 @@ describe("preflight supersession and artifact provenance", () => {
     headSha: "a".repeat(40),
     displayTitle: "Preflight " + "a".repeat(40) + " " + ACTIVE_ENERGY_UNIFIED_MANIFEST.id,
   };
-  const success = { ...base, id: 120, runAttempt: 1, createdAt: "2026-10-05T08:00:00Z", status: "completed", conclusion: "success" };
-  const failedNew = { ...base, id: 121, runAttempt: 1, createdAt: "2026-10-05T09:00:00Z", status: "completed", conclusion: "failure" };
+  const success = { ...base, id: 120, runAttempt: 1, createdAt: "2026-10-05T08:00:00Z", runStartedAt: "2026-10-05T08:01:00Z", status: "completed", conclusion: "success" };
+  const failedNew = { ...base, id: 121, runAttempt: 1, createdAt: "2026-10-05T09:00:00Z", runStartedAt: "2026-10-05T09:01:00Z", status: "completed", conclusion: "failure" };
 
-  it("accepts latest exact successful attempt and blocks older success superseded by newer failed, cancelled, pending, or in-progress attempt", () => {
+  it("blocks supersession only after trusted preflight admission", () => {
     expect(selectLatestApplicablePreflight([success], { repository: base.repository, releaseSha: base.headSha, manifestId: ACTIVE_ENERGY_UNIFIED_MANIFEST.id })).toEqual(success);
     for (const newer of [
       failedNew,
       { ...failedNew, conclusion: "cancelled" },
-      { ...failedNew, status: "queued", conclusion: null },
       { ...failedNew, status: "in_progress", conclusion: null },
-      { ...failedNew, status: "waiting", conclusion: null },
-      { ...failedNew, status: "requested", conclusion: null },
-      { ...failedNew, status: "pending", conclusion: null },
     ]) {
       expect(() => selectLatestApplicablePreflight([success, newer], { repository: base.repository, releaseSha: base.headSha, manifestId: ACTIVE_ENERGY_UNIFIED_MANIFEST.id })).toThrow();
+    }
+    for (const unadmitted of ["queued", "pending", "waiting", "requested"]) {
+      expect(selectLatestApplicablePreflight([success, { ...failedNew, runStartedAt: null, status: unadmitted, conclusion: null }], {
+        repository: base.repository, releaseSha: base.headSha, manifestId: ACTIVE_ENERGY_UNIFIED_MANIFEST.id,
+      })).toEqual(success);
+    }
+  });
+
+  it("treats an admitted failed or cancelled run as superseding even when no successful artifact exists", () => {
+    for (const conclusion of ["failure", "cancelled"]) {
+      expect(() => selectLatestApplicablePreflight([success, { ...failedNew, conclusion }], {
+        repository: base.repository, releaseSha: base.headSha, manifestId: ACTIVE_ENERGY_UNIFIED_MANIFEST.id,
+      })).toThrow("older success is superseded");
     }
   });
 
@@ -758,7 +862,7 @@ describe("preflight supersession and artifact provenance", () => {
     const run = {
       id: 120, workflow_id: 99, path: base.workflowPath, event: base.event, head_branch: "main",
       head_sha: base.headSha, display_title: base.displayTitle, run_attempt: 1,
-      created_at: "2026-10-05T08:00:00Z", status: "completed", conclusion: "success", html_url: "https://example.invalid/run/120",
+      created_at: "2026-10-05T08:00:00Z", run_started_at: "2026-10-05T08:01:00Z", status: "completed", conclusion: "success", html_url: "https://example.invalid/run/120",
     };
     expect(normalizeWorkflowRuns([run])[0].workflowId).toBe("99");
     expect(() => selectAndVerifyArtifact({

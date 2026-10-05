@@ -4,6 +4,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { canonicalJson } from "./production-migration-manifests.mjs";
 import { canonicalSha256 } from "./production-migration-authorization.mjs";
+import { PRODUCTION_MIGRATION_CONCURRENCY_GROUP } from "./production-migration-release.mjs";
 
 export const EXECUTION_ATTESTATION_MAX_AGE_MS = 5 * 60 * 1000;
 export const EXECUTION_KEY_MAX_AGE_MS = 2 * 60 * 60 * 1000;
@@ -16,8 +17,9 @@ const ATTESTATION_FIELDS = Object.freeze([
   "schemaVersion", "kind", "repository", "authorizationId", "authorizationEnvelopeDigest",
   "workflowId", "workflowRunId", "workflowRunAttempt", "releaseSha", "currentMainSha", "manifestId",
   "executionKeyId", "executionKeyCertificateDigest", "executionChallenge", "preflightWorkflowId", "preflightRunId",
-  "preflightRunAttempt", "preflightHeadSha", "preflightEvent", "preflightBranch", "preflightDisplayTitle",
-  "preflightStatus", "preflightConclusion", "preflightCreatedAt", "latestSelectionDigest", "checkedAt",
+  "preflightRunAttempt", "preflightRunStartedAt", "preflightHeadSha", "preflightEvent", "preflightBranch", "preflightDisplayTitle",
+  "preflightStatus", "preflightConclusion", "preflightCreatedAt", "migrationRunStartedAt", "migrationConcurrencyGroup",
+  "latestSelectionDigest", "checkedAt",
   "issuedAt", "expiresAt", "attestationId", "nonce",
 ]);
 
@@ -35,6 +37,7 @@ function selectionBinding(run) {
     id: String(run.id),
     runAttempt: Number(run.runAttempt),
     createdAt: run.createdAt,
+    runStartedAt: run.runStartedAt,
     status: run.status,
     conclusion: run.conclusion,
   };
@@ -81,10 +84,42 @@ function assertLatestSelectionMatchesAuthorization(latest, claims) {
     || latest.displayTitle !== `Preflight ${claims.releaseSha} ${claims.manifestId}`
     || String(latest.id) !== String(claims.preflightRunId)
     || Number(latest.runAttempt) !== Number(claims.preflightRunAttempt)
+    || latest.runStartedAt !== claims.preflightRunStartedAt
     || latest.status !== "completed" || latest.conclusion !== "success"
-    || !Number.isFinite(Date.parse(latest.createdAt))) {
+    || !Number.isFinite(Date.parse(latest.createdAt)) || !Number.isFinite(Date.parse(latest.runStartedAt))) {
     reject("latest exact applicable preflight is not the signed successful attempt.");
   }
+}
+
+export function normalizeMigrationWorkflowRun(run) {
+  return {
+    repository: run?.repository?.full_name,
+    workflowPath: run?.path,
+    workflowId: String(run?.workflow_id ?? ""),
+    event: run?.event,
+    headBranch: run?.head_branch,
+    headSha: run?.head_sha,
+    id: String(run?.id ?? ""),
+    runAttempt: Number(run?.run_attempt),
+    runStartedAt: run?.run_started_at,
+    status: run?.status,
+  };
+}
+
+function assertMigrationRunAdmitted(run, claims, now) {
+  if (!run || run.repository !== claims.repository
+    || run.workflowPath !== claims.workflowPath
+    || String(run.workflowId) !== String(claims.workflowId)
+    || run.event !== "workflow_dispatch" || run.headBranch !== "main"
+    || run.headSha !== claims.releaseSha
+    || String(run.id) !== String(claims.workflowRunId)
+    || Number(run.runAttempt) !== Number(claims.workflowRunAttempt)
+    || run.status !== "in_progress"
+    || typeof run.runStartedAt !== "string" || !Number.isFinite(Date.parse(run.runStartedAt))
+    || Date.parse(run.runStartedAt) > now + 30_000) {
+    reject("protected migration run lacks trusted admission metadata for the signed workflow execution.");
+  }
+  return run.runStartedAt;
 }
 
 function assertDelegationBinding(delegation, authorization) {
@@ -161,7 +196,7 @@ export function verifyExecutionKeyDelegation(serialized, { authorizationEnvelope
   return certificate.payload;
 }
 
-export function createExecutionAttestation({ authorizationEnvelope, latestPreflight, allowlist, delegationCertificate, executionPrivateKeyPem, executionChallenge, now = Date.now() }) {
+export function createExecutionAttestation({ authorizationEnvelope, latestPreflight, migrationRun, allowlist, delegationCertificate, executionPrivateKeyPem, executionChallenge, now = Date.now() }) {
   if (!executionPrivateKeyPem || !delegationCertificate) reject("fresh delegated execution key is unavailable.");
   if (!/^[a-f0-9]{64}$/.test(String(executionChallenge ?? ""))) reject("one-time remote DDL challenge is missing or malformed.");
   const authorization = parseAuthorization(authorizationEnvelope, allowlist);
@@ -169,10 +204,12 @@ export function createExecutionAttestation({ authorizationEnvelope, latestPrefli
   const delegation = verifyExecutionKeyDelegation(delegationCertificate, { authorizationEnvelope, allowlist, now });
   const checkedAt = new Date(now).toISOString();
   assertLatestSelectionMatchesAuthorization(latestPreflight, claims);
+  const migrationRunStartedAt = assertMigrationRunAdmitted(migrationRun, claims, now);
   if (Date.parse(latestPreflight.createdAt) > now) reject("latest preflight metadata is from the future.");
+  if (Date.parse(latestPreflight.runStartedAt) > now) reject("latest preflight admission metadata is from the future.");
   const expiresAt = Math.min(now + EXECUTION_ATTESTATION_MAX_AGE_MS, Date.parse(delegation.expiresAt));
   const payload = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind: "bodycast-production-ddl-execution",
     repository: claims.repository,
     authorizationId: claims.authorizationId,
@@ -189,6 +226,7 @@ export function createExecutionAttestation({ authorizationEnvelope, latestPrefli
     preflightWorkflowId: String(latestPreflight.workflowId),
     preflightRunId: String(latestPreflight.id),
     preflightRunAttempt: Number(latestPreflight.runAttempt),
+    preflightRunStartedAt: latestPreflight.runStartedAt,
     preflightHeadSha: latestPreflight.headSha,
     preflightEvent: latestPreflight.event,
     preflightBranch: latestPreflight.headBranch,
@@ -196,6 +234,8 @@ export function createExecutionAttestation({ authorizationEnvelope, latestPrefli
     preflightStatus: latestPreflight.status,
     preflightConclusion: latestPreflight.conclusion,
     preflightCreatedAt: latestPreflight.createdAt,
+    migrationRunStartedAt,
+    migrationConcurrencyGroup: PRODUCTION_MIGRATION_CONCURRENCY_GROUP,
     latestSelectionDigest: canonicalSha256(selectionBinding(latestPreflight)),
     checkedAt,
     issuedAt: checkedAt,
@@ -231,7 +271,7 @@ export function verifyExecutionAttestation(serialized, { authorizationEnvelope, 
   }
   const authorization = parseAuthorization(authorizationEnvelope, allowlist);
   const claims = assertMigrationAuthorization(authorization);
-  if (payload.schemaVersion !== 1 || payload.kind !== "bodycast-production-ddl-execution"
+  if (payload.schemaVersion !== 2 || payload.kind !== "bodycast-production-ddl-execution"
     || payload.repository !== claims.repository || payload.authorizationId !== claims.authorizationId
     || payload.authorizationEnvelopeDigest !== canonicalSha256(authorization)
     || payload.workflowId !== claims.workflowId || payload.workflowRunId !== claims.workflowRunId
@@ -239,11 +279,15 @@ export function verifyExecutionAttestation(serialized, { authorizationEnvelope, 
     || payload.releaseSha !== claims.releaseSha || payload.currentMainSha !== claims.currentMainSha
     || payload.manifestId !== claims.manifestId || payload.preflightRunId !== String(claims.preflightRunId)
     || Number(payload.preflightRunAttempt) !== Number(claims.preflightRunAttempt)
+    || payload.preflightRunStartedAt !== claims.preflightRunStartedAt
     || payload.preflightHeadSha !== claims.releaseSha || payload.preflightEvent !== "workflow_dispatch"
     || payload.preflightBranch !== "main" || payload.preflightStatus !== "completed"
     || payload.preflightConclusion !== "success"
     || payload.preflightDisplayTitle !== `Preflight ${claims.releaseSha} ${claims.manifestId}`
     || !Number.isFinite(Date.parse(payload.preflightCreatedAt))
+    || !Number.isFinite(Date.parse(payload.preflightRunStartedAt))
+    || !Number.isFinite(Date.parse(payload.migrationRunStartedAt))
+    || payload.migrationConcurrencyGroup !== PRODUCTION_MIGRATION_CONCURRENCY_GROUP
     || canonicalSha256(selectionBinding({
       repository: payload.repository,
       workflowPath: ".github/workflows/production-migration-preflight.yml",
@@ -255,6 +299,7 @@ export function verifyExecutionAttestation(serialized, { authorizationEnvelope, 
       id: payload.preflightRunId,
       runAttempt: payload.preflightRunAttempt,
       createdAt: payload.preflightCreatedAt,
+      runStartedAt: payload.preflightRunStartedAt,
       status: payload.preflightStatus,
       conclusion: payload.preflightConclusion,
     })) !== payload.latestSelectionDigest) {
@@ -266,7 +311,9 @@ export function verifyExecutionAttestation(serialized, { authorizationEnvelope, 
   if (!Number.isFinite(issuedAt) || !Number.isFinite(checkedAt) || !Number.isFinite(expiresAt)
     || checkedAt !== issuedAt || issuedAt > now + 30_000 || expiresAt <= now
     || expiresAt <= issuedAt || expiresAt - issuedAt > EXECUTION_ATTESTATION_MAX_AGE_MS
-    || expiresAt > Date.parse(delegation.expiresAt)) {
+    || expiresAt > Date.parse(delegation.expiresAt)
+    || Date.parse(payload.preflightRunStartedAt) > checkedAt + 30_000
+    || Date.parse(payload.migrationRunStartedAt) > checkedAt + 30_000) {
     reject("attestation is expired or has an invalid freshness window.");
   }
   if (!/^[0-9a-f-]{36}$/i.test(payload.nonce) || !/^[0-9a-f-]{36}$/i.test(payload.attestationId)) {
@@ -283,6 +330,7 @@ export function verifyExecutionAttestation(serialized, { authorizationEnvelope, 
     id: payload.preflightRunId,
     runAttempt: payload.preflightRunAttempt,
     createdAt: payload.preflightCreatedAt,
+    runStartedAt: payload.preflightRunStartedAt,
     status: payload.preflightStatus,
     conclusion: payload.preflightConclusion,
   }, claims);
@@ -317,11 +365,12 @@ async function main() {
     process.stdout.write(JSON.stringify({ executionKeyId: result.payload.executionKeyId, expiresAt: result.payload.expiresAt }) + "\n");
     return;
   }
-  if (mode === "--attest" && args.length === 5) {
-    const [authorizationPath, latestPath, delegationPath, executionChallenge, outputPath] = args;
-    const [authorizationEnvelope, latestSelection, delegation] = await Promise.all([
+  if (mode === "--attest" && args.length === 6) {
+    const [authorizationPath, latestPath, delegationPath, migrationRunPath, executionChallenge, outputPath] = args;
+    const [authorizationEnvelope, latestSelection, delegation, migrationRunRecord] = await Promise.all([
       readFile(authorizationPath, "utf8"), readFile(latestPath, "utf8").then(JSON.parse),
       readFile(delegationPath, "utf8").then(JSON.parse),
+      readFile(migrationRunPath, "utf8").then(JSON.parse),
     ]);
     const latestPreflight = latestSelection?.run ?? latestSelection;
     if (!latestPreflight || typeof latestPreflight !== "object" || Array.isArray(latestPreflight)) {
@@ -330,6 +379,7 @@ async function main() {
     const result = createExecutionAttestation({
       authorizationEnvelope,
       latestPreflight,
+      migrationRun: normalizeMigrationWorkflowRun(migrationRunRecord),
       allowlist,
       delegationCertificate: delegation.certificate,
       executionPrivateKeyPem: delegation.executionPrivateKeyPem,
@@ -339,7 +389,7 @@ async function main() {
     process.stdout.write(JSON.stringify({ attestationId: result.payload.attestationId, expiresAt: result.payload.expiresAt }) + "\n");
     return;
   }
-  throw new Error("Usage: production-migration-execution-attestation.mjs --delegate <authorization-envelope.json> <delegation.json> | --attest <authorization-envelope.json> <latest-preflight.json> <delegation.json> <challenge-hex> <output.json>");
+  throw new Error("Usage: production-migration-execution-attestation.mjs --delegate <authorization-envelope.json> <delegation.json> | --attest <authorization-envelope.json> <latest-preflight.json> <delegation.json> <migration-run.json> <challenge-hex> <output.json>");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

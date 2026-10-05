@@ -6,7 +6,7 @@ export const AUTHORIZATION_MAX_FUTURE_SKEW_MS = 60 * 1000;
 export const REQUIRED_AUTHORIZATION_CLAIMS = Object.freeze([
   "repository", "workflowId", "workflowPath", "workflowRunId", "workflowRunAttempt",
   "releaseSha", "currentMainSha", "manifestId", "pendingMigrationNames", "pendingSetDigest",
-  "preflightRunId", "preflightRunAttempt", "preflightResultDigest", "backupArtifactId",
+  "preflightRunId", "preflightRunAttempt", "preflightRunStartedAt", "preflightResultDigest", "backupArtifactId",
   "backupArtifactDigest", "backupSnapshotAt", "restoreResultDigest", "productionIdentityDigest",
   "issuedAt", "expiresAt", "authorizationId", "nonce",
 ]);
@@ -70,7 +70,7 @@ function validateClaimsShape(claims) {
   for (const key of ["pendingSetDigest", "preflightResultDigest", "backupArtifactDigest", "restoreResultDigest", "productionIdentityDigest"]) {
     if (!/^[a-f0-9]{64}$/.test(claims[key])) reject(`${key} must be a lowercase SHA-256 digest.`);
   }
-  for (const key of ["issuedAt", "expiresAt", "backupSnapshotAt"]) {
+  for (const key of ["issuedAt", "expiresAt", "backupSnapshotAt", "preflightRunStartedAt"]) {
     if (typeof claims[key] !== "string" || !Number.isFinite(Date.parse(claims[key]))) reject(`${key} must be an ISO timestamp.`);
   }
   if (typeof claims.nonce !== "string" || !/^[0-9a-f-]{36}$/i.test(claims.nonce)) reject("nonce must be a UUID.");
@@ -81,7 +81,7 @@ function compareLiveClaims(claims, live) {
   const fields = [
     "repository", "workflowId", "workflowPath", "workflowRunId", "workflowRunAttempt", "releaseSha",
     "currentMainSha", "manifestId", "pendingMigrationNames", "pendingSetDigest", "preflightRunId",
-    "preflightRunAttempt", "preflightResultDigest", "backupArtifactId", "backupArtifactDigest",
+    "preflightRunAttempt", "preflightRunStartedAt", "preflightResultDigest", "backupArtifactId", "backupArtifactDigest",
     "backupSnapshotAt", "restoreResultDigest", "productionIdentityDigest",
   ];
   for (const field of fields) {
@@ -132,10 +132,14 @@ export function verifyAuthorizationEnvelope(serialized, { allowlist, live, now =
   const issuedAt = Date.parse(claims.issuedAt);
   const expiresAt = Date.parse(claims.expiresAt);
   const snapshotAt = Date.parse(claims.backupSnapshotAt);
+  const preflightRunStartedAt = Date.parse(claims.preflightRunStartedAt);
   if (issuedAt > now + AUTHORIZATION_MAX_FUTURE_SKEW_MS) reject("issuedAt is too far in the future.");
   if (expiresAt <= now) reject("authorization envelope has expired.");
   if (expiresAt <= issuedAt || expiresAt - issuedAt > AUTHORIZATION_MAX_AGE_MS) reject("authorization lifetime is invalid or exceeds 60 minutes.");
   if (snapshotAt > now + AUTHORIZATION_MAX_FUTURE_SKEW_MS) reject("backup snapshot timestamp is in the future.");
+  if (preflightRunStartedAt > now + AUTHORIZATION_MAX_FUTURE_SKEW_MS || preflightRunStartedAt > issuedAt + AUTHORIZATION_MAX_FUTURE_SKEW_MS) {
+    reject("preflight admission timestamp is from the future or after authorization issuance.");
+  }
   if (now - snapshotAt > AUTHORIZATION_MAX_AGE_MS) reject("backup snapshot is older than 60 minutes at DDL time.");
 
   compareLiveClaims(claims, live ?? {});
@@ -144,7 +148,7 @@ export function verifyAuthorizationEnvelope(serialized, { allowlist, live, now =
 
 export function createClaimsFromPreflight({
   repository, workflowId, workflowPath, workflowRunId, workflowRunAttempt, releaseSha, currentMainSha,
-  manifestId, pendingMigrationNames, preflightRunId, preflightRunAttempt, preflightResultDigest,
+  manifestId, pendingMigrationNames, preflightRunId, preflightRunAttempt, preflightRunStartedAt, preflightResultDigest,
   backupArtifactId, backupArtifactDigest, backupSnapshotAt, restoreResultDigest, productionIdentityDigest,
   issuedAt, expiresAt, authorizationId, nonce,
 }) {
@@ -152,7 +156,7 @@ export function createClaimsFromPreflight({
   return {
     repository, workflowId, workflowPath, workflowRunId, workflowRunAttempt, releaseSha, currentMainSha,
     manifestId, pendingMigrationNames: names, pendingSetDigest: canonicalSha256(names), preflightRunId,
-    preflightRunAttempt, preflightResultDigest, backupArtifactId, backupArtifactDigest, backupSnapshotAt,
+    preflightRunAttempt, preflightRunStartedAt, preflightResultDigest, backupArtifactId, backupArtifactDigest, backupSnapshotAt,
     restoreResultDigest, productionIdentityDigest, issuedAt, expiresAt, authorizationId, nonce,
   };
 }

@@ -292,6 +292,7 @@ function createTargetBindingAuthorization(identity, now = Date.now()) {
     pendingSetDigest: canonicalSha256(pendingMigrationNames),
     preflightRunId: "88001",
     preflightRunAttempt: 2,
+    preflightRunStartedAt: new Date(now - 120_000).toISOString(),
     preflightResultDigest: "b".repeat(64),
     backupArtifactId: "77001",
     backupArtifactDigest: "c".repeat(64),
@@ -315,13 +316,26 @@ function createTargetBindingAuthorization(identity, now = Date.now()) {
     id: claims.preflightRunId,
     runAttempt: claims.preflightRunAttempt,
     createdAt: new Date(now - 60_000).toISOString(),
+    runStartedAt: claims.preflightRunStartedAt,
     status: "completed",
     conclusion: "success",
+  };
+  const migrationRun = {
+    repository: claims.repository,
+    workflowPath: claims.workflowPath,
+    workflowId: claims.workflowId,
+    event: "workflow_dispatch",
+    headBranch: "main",
+    headSha: claims.releaseSha,
+    id: claims.workflowRunId,
+    runAttempt: claims.workflowRunAttempt,
+    runStartedAt: new Date(now - 30_000).toISOString(),
+    status: "in_progress",
   };
   const executionChallenge = randomBytes(32).toString("hex");
   const delegation = createExecutionAttestationDelegation({ authorizationEnvelope, allowlist, keyId, privateKeyPem, now: now - 1000 });
   const attestation = createExecutionAttestation({
-    authorizationEnvelope, latestPreflight, allowlist,
+    authorizationEnvelope, latestPreflight, migrationRun, allowlist,
     delegationCertificate: delegation.certificate,
     executionPrivateKeyPem: delegation.executionPrivateKeyPem,
     executionChallenge,

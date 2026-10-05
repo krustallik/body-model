@@ -22,6 +22,10 @@ export async function createSignedAuthorization({ evidence, report, restore, run
     || String(run.displayTitle) !== "Preflight " + evidence.releaseSha + " " + evidence.manifestId) {
     throw new Error("Selected preflight run is not the latest successful exact-SHA workflow attempt.");
   }
+  if (typeof run.runStartedAt !== "string" || !Number.isFinite(Date.parse(run.runStartedAt))
+    || Date.parse(run.runStartedAt) > now + 60_000) {
+    throw new Error("Selected preflight run lacks trusted admission metadata.");
+  }
   if (canonicalSha256(report) !== evidence.preflightResultDigest) throw new Error("Preflight report digest differs from the attested digest.");
   if (canonicalSha256(restore) !== evidence.restoreResultDigest || restore?.verified !== true) throw new Error("Restore result digest or verified status is invalid.");
   if (canonicalSha256(report.identity) !== evidence.productionIdentityDigest) throw new Error("Production identity digest differs from the verified preflight report.");
@@ -45,6 +49,7 @@ export async function createSignedAuthorization({ evidence, report, restore, run
     pendingMigrationNames: report.pending,
     preflightRunId: String(run.id),
     preflightRunAttempt: Number(run.runAttempt),
+    preflightRunStartedAt: run.runStartedAt,
     preflightResultDigest: evidence.preflightResultDigest,
     backupArtifactId: String(artifact.id),
     backupArtifactDigest: artifact.digest.replace(/^sha256:/, ""),

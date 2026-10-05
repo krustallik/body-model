@@ -657,6 +657,9 @@ describe("PostgreSQL shadow gap future-asof matrix A–K", () => {
 
   it("K — History day edits and deletes replay dependent shadow suffixes", async () => {
     await cleanAll();
+    // Relative Muscle trajectories are episode-owned; seed the owning episode
+    // and complete model days before exercising the History replay hook.
+    await seedEnergyBalance([D1, D2, D3]);
     for (const date of [D1, D2, D3]) {
       await ensureHealth(date, {
         carbsG: 180,

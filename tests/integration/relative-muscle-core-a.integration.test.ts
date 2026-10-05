@@ -8,7 +8,7 @@ import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
 const databaseUrl = process.env.DATABASE_URL;
 requireIsolatedStage01Database(databaseUrl, process.env.BODYCAST_STAGE01_MODE, "test");
 const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
-const profileId = 881_037;
+const profileId = 1;
 const fixtureMethod = "relative-muscle-core-a-integration";
 const episodeDate = "2088-01-01";
 const timezoneDate = "2089-03-27";

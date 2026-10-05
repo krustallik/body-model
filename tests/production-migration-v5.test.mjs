@@ -193,6 +193,8 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(await readFile(new URL("../scripts/deploy-migrate.sh", import.meta.url), "utf8")).toContain("default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000");
     expect(sql).toContain("PhysiologyV7Lifecycle");
     expect(sql).toContain("DailyModelState");
+    expect(sql).toContain("ORDER BY dep.refobjid, dep.refobjsubid\n            LIMIT 1");
+    expect(sql).not.toContain("LEFT JOIN pg_depend dep ON dep.classid = 'pg_class'::regclass AND dep.objid = cl.oid");
     expect(sql).not.toMatch(/^\s*(ALTER|CREATE|DROP|INSERT|UPDATE|DELETE|TRUNCATE)\b/im);
   });
 

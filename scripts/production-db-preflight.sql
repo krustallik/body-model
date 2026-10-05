@@ -40,15 +40,21 @@ WITH expected(name) AS (
       WHEN to_regclass(format('public.%I', e.name)) IS NOT NULL THEN (
         SELECT CASE
           WHEN cl.relkind IN ('i', 'I') THEN 'unique=' || i.indisunique::text || '|valid=' || i.indisvalid::text || '|definition=' || pg_get_indexdef(cl.oid)
-          WHEN cl.relkind = 'S' THEN 'sequence=' || format_type(s.seqtypid, NULL) || '|start=' || s.seqstart::text || '|increment=' || s.seqincrement::text || '|min=' || s.seqmin::text || '|max=' || s.seqmax::text || '|ownedBy=' || COALESCE(owner.relname || '.' || att.attname, '')
+          WHEN cl.relkind = 'S' THEN 'sequence=' || format_type(s.seqtypid, NULL) || '|start=' || s.seqstart::text || '|increment=' || s.seqincrement::text || '|min=' || s.seqmin::text || '|max=' || s.seqmax::text || '|ownedBy=' || COALESCE((
+            SELECT owner.relname || '.' || att.attname
+            FROM pg_depend dep
+            LEFT JOIN pg_class owner ON owner.oid = dep.refobjid
+            LEFT JOIN pg_attribute att ON att.attrelid = dep.refobjid AND att.attnum = dep.refobjsubid
+            WHERE dep.classid = 'pg_class'::regclass AND dep.objid = cl.oid
+              AND dep.refclassid = 'pg_class'::regclass AND dep.deptype IN ('a','i')
+            ORDER BY dep.refobjid, dep.refobjsubid
+            LIMIT 1
+          ), '')
           ELSE 'relkind=' || cl.relkind::text
         END
         FROM pg_class cl
         LEFT JOIN pg_index i ON i.indexrelid = cl.oid
         LEFT JOIN pg_sequence s ON s.seqrelid = cl.oid
-        LEFT JOIN pg_depend dep ON dep.classid = 'pg_class'::regclass AND dep.objid = cl.oid AND dep.refclassid = 'pg_class'::regclass AND dep.deptype IN ('a','i')
-        LEFT JOIN pg_class owner ON owner.oid = dep.refobjid
-        LEFT JOIN pg_attribute att ON att.attrelid = dep.refobjid AND att.attnum = dep.refobjsubid
         WHERE cl.oid = to_regclass(format('public.%I', e.name))
       )
       WHEN EXISTS (SELECT 1 FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE n.nspname = 'public' AND t.typname = e.name) THEN (

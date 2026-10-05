@@ -28,6 +28,7 @@ import { buildSimulationDays } from "./simulation-input-builder";
 import { physiologyV7ShadowService } from "./physiology-v7-shadow.service";
 import { rebuildFatWeightShadowV1 } from "./fat-weight-shadow-v1.service";
 import { rebuildExperimentalFatWeightUncertaintyV1 } from "./experimental-fat-weight-uncertainty-shadow.service";
+import { rebuildRelativeMuscleEpisodeTrajectories } from "./relative-muscle-shadow-core.service";
 import { PhysiologyV7PersistenceRepository } from "./physiology-v7-persistence.repository";
 import {
   invalidateActiveEnergyResolutionDatesV1,
@@ -222,7 +223,7 @@ export async function initializeNewModelEpisode(
     throw new EpisodeInitializationError("start-date-not-complete");
   }
 
-  return client.$transaction(async (transaction) => {
+  const episode = await client.$transaction(async (transaction) => {
     const repository = new ModelEpisodeRepository(transaction);
     const [profile, sources] = await Promise.all([
       repository.getProfile(),
@@ -258,6 +259,13 @@ export async function initializeNewModelEpisode(
     await repository.deactivateActive(now);
     return repository.createPrepared(prepared);
   }, TRANSACTION_OPTIONS);
+  if (client === prisma) {
+    await rebuildRelativeMuscleEpisodeTrajectories({
+      profileId: episode.profileId,
+      fromDate: episode.startDate,
+    }).catch(() => {});
+  }
+  return episode;
 }
 
 function unchangedActiveEpisodeResult(
@@ -294,7 +302,7 @@ async function recalculateModelEpisodeProduction(
   input: { episodeId?: number; now?: Date } = {},
   client: PrismaClient = prisma,
 ) {
-  let shadowInput: { profileId: number; fromDate: string; toDate: string; timeZone: string; productionEpisodeId: number; productionModelVersion: string } | null = null;
+  let shadowInput: { profileId: number; fromDate: string; toDate: string; timeZone: string; productionEpisodeId: number; productionModelVersion: string; relativeMuscleFromDate: string } | null = null;
   const production = await client.$transaction(async (transaction) => {
     const repository = new ModelEpisodeRepository(transaction);
     let episode = input.episodeId === undefined
@@ -487,6 +495,9 @@ async function recalculateModelEpisodeProduction(
       timeZone: episode.timezone,
       productionEpisodeId: episode.id,
       productionModelVersion: episode.modelVersion,
+      relativeMuscleFromDate: calculation.replayMode === "suffix"
+        ? resume?.fromDate ?? episode.startDate
+        : episode.startDate,
     };
     return {
       status: "ok" as const,
@@ -525,11 +536,15 @@ async function recalculateModelEpisodeProduction(
   // Post-commit shadow rebuild: preserve the legacy result on failure, but do
   // not publish a response while dependency-relevant rebuilds are still
   // running in the background.
-  const committedShadowInput = shadowInput as { profileId: number; fromDate: string; toDate: string; timeZone: string; productionEpisodeId: number; productionModelVersion: string } | null;
+  const committedShadowInput = shadowInput as { profileId: number; fromDate: string; toDate: string; timeZone: string; productionEpisodeId: number; productionModelVersion: string; relativeMuscleFromDate: string } | null;
   if (client === prisma && committedShadowInput !== null && committedShadowInput.fromDate <= committedShadowInput.toDate) {
     await physiologyV7ShadowService.run(committedShadowInput).catch(() => {});
     await rebuildFatWeightShadowV1(committedShadowInput).catch(() => {});
     await rebuildExperimentalFatWeightUncertaintyV1(committedShadowInput).catch(() => {});
+    await rebuildRelativeMuscleEpisodeTrajectories({
+      profileId: committedShadowInput.profileId,
+      fromDate: committedShadowInput.relativeMuscleFromDate,
+    }).catch(() => {});
   }
   return production;
 }

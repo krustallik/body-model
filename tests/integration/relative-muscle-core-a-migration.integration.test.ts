@@ -9,10 +9,10 @@ const databaseUrl = process.env.DATABASE_URL;
 requireIsolatedStage01Database(databaseUrl, process.env.BODYCAST_STAGE01_MODE, "test");
 const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
 const schemaName = `relative_muscle_migration_${randomBytes(8).toString("hex")}`;
-const migrationPath = resolve(
-  process.cwd(),
-  "prisma/migrations/20261005120000_episode_relative_muscle_core/migration.sql",
-);
+const migrationPaths = [
+  "20261005120000_episode_relative_muscle_core",
+  "20261006110000_relative_muscle_legacy_identity",
+].map((migration) => resolve(process.cwd(), `prisma/migrations/${migration}/migration.sql`));
 
 describe("Relative Muscle episode migration on populated isolated PostgreSQL", () => {
   beforeAll(async () => {
@@ -59,9 +59,11 @@ describe("Relative Muscle episode migration on populated isolated PostgreSQL", (
         VALUES (77, '2088-01-01', 'legacy-cessation', 'old-cessation', '{"legacy":true}', '{"kg":0.25}')
       `);
 
-      const migration = await readFile(migrationPath, "utf8");
-      for (const statement of migration.split(";").map((part) => part.trim()).filter(Boolean)) {
-        await tx.$executeRawUnsafe(statement);
+      for (const migrationPath of migrationPaths) {
+        const migration = await readFile(migrationPath, "utf8");
+        for (const statement of migration.split(";").map((part) => part.trim()).filter(Boolean)) {
+          await tx.$executeRawUnsafe(statement);
+        }
       }
     });
   });
@@ -117,6 +119,11 @@ describe("Relative Muscle episode migration on populated isolated PostgreSQL", (
     `)).rejects.toThrow();
     await expect(prisma.$executeRawUnsafe(`
       INSERT INTO ${qualifiedDelta}
+        ("profileId", "date", "sourceFingerprint", "modelRevision", "features", "result")
+      VALUES (77, '2088-01-01', 'duplicate-legacy', 'v2', '{}', '{}')
+    `)).rejects.toThrow();
+    await expect(prisma.$executeRawUnsafe(`
+      INSERT INTO ${qualifiedDelta}
         ("profileId", "modelEpisodeId", "date", "sourceFingerprint", "modelRevision", "features", "result")
       VALUES (88, 2, '2088-01-02', 'wrong-owner', 'v2', '{}', '{}')
     `)).rejects.toThrow();
@@ -130,6 +137,11 @@ describe("Relative Muscle episode migration on populated isolated PostgreSQL", (
     expect(indexes.map(({ indexname }) => indexname)).toContain(
       "RelMuscleCessation_episode_date_key",
     );
+    const nullIdentity = await prisma.$queryRawUnsafe<Array<{ indexname: string; indnullsnotdistinct: boolean }>>(
+      `SELECT indexname, indnullsnotdistinct FROM pg_indexes JOIN pg_index ON indexrelid = (quote_ident(schemaname) || '.' || quote_ident(indexname))::regclass WHERE schemaname = '${schemaName}' AND indexname IN ('RelMuscleDelta_episode_date_key', 'RelMuscleCessation_episode_date_key')`,
+    );
+    expect(nullIdentity).toHaveLength(2);
+    expect(nullIdentity.every(({ indnullsnotdistinct }) => indnullsnotdistinct)).toBe(true);
     expect(indexes.map(({ indexname }) => indexname)).not.toContain(
       "ExperimentalSkeletalMuscleDeltaShadow_profileId_date_key",
     );

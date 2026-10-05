@@ -26,7 +26,7 @@ function fakeClient(input: {
     sleepSegment: { findMany: vi.fn().mockResolvedValue([]) },
     dailyModelState: { findMany: vi.fn().mockResolvedValue([]) },
     experimentalTransientExerciseWaterShadow: { findMany: vi.fn().mockResolvedValue(input.transientRows ?? []) },
-    experimentalSkeletalMuscleDeltaShadow: { findMany: vi.fn().mockResolvedValue(input.relativeRows ?? []) },
+    experimentalCessationDetrainingShadow: { findMany: vi.fn().mockResolvedValue(input.relativeRows ?? []) },
     modelEpisode: { findMany: vi.fn().mockResolvedValue(input.episodes ?? [
       { id: 1, startDate: "2065-01-01", timezone: "UTC", active: true, deactivatedAt: null },
     ]) },
@@ -172,7 +172,7 @@ describe("Unified V1 durable source loader", () => {
       ]));
     expect(relativeByEpisode.get(1)?.marker).toBe("episode-a");
     expect(relativeByEpisode.get(2)?.marker).toBe("episode-b");
-    expect(client.experimentalSkeletalMuscleDeltaShadow.findMany).toHaveBeenCalledWith(expect.objectContaining({
+    expect(client.experimentalCessationDetrainingShadow.findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({ modelEpisodeId: { not: null }, isStale: false }),
     }));
   });

@@ -91,10 +91,6 @@ function createClient(input: {
 
   const delta = makeShadowDelegate(deltaRows, deltaUpsertDates);
   const cessation = makeShadowDelegate(cessationRows, cessationUpsertDates);
-  const tx = {
-    experimentalSkeletalMuscleDeltaShadow: delta,
-    experimentalCessationDetrainingShadow: cessation,
-  };
   const client = {
     modelEpisode: { findMany: vi.fn(async () => input.episodes) },
     dailyHealthData: { findMany: vi.fn(async () => input.healthRows) },
@@ -106,7 +102,18 @@ function createClient(input: {
     experimentalCessationDetrainingShadow: cessation,
     $transaction: vi.fn(async (operation: unknown) => {
       if (Array.isArray(operation)) return Promise.all(operation);
-      if (typeof operation === "function") return operation(tx);
+      if (typeof operation === "function") return operation({
+        modelEpisode: client.modelEpisode,
+        dailyHealthData: client.dailyHealthData,
+        healthSyncSnapshot: client.healthSyncSnapshot,
+        dailyModelState: client.dailyModelState,
+        workout: client.workout,
+        strengthDiarySession: client.strengthDiarySession,
+        experimentalSkeletalMuscleDeltaShadow: delta,
+        experimentalCessationDetrainingShadow: cessation,
+        $queryRaw: vi.fn().mockResolvedValue([]),
+        $executeRaw: vi.fn().mockResolvedValue(1),
+      });
       throw new TypeError("unsupported transaction operation");
     }),
   } as unknown as PrismaClient;

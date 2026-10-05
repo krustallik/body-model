@@ -80,6 +80,12 @@ async function removeTestData(): Promise<void> {
   await prisma.activeEnergyCanonicalEvent.deleteMany({
     where: { profileId: 1, modelDate: { gte: testRangeStart, lte: finalDate } },
   });
+  await prisma.experimentalSkeletalMuscleDeltaShadow.deleteMany({
+    where: { profileId: 1, date: { gte: testRangeStart, lte: finalDate } },
+  });
+  await prisma.experimentalCessationDetrainingShadow.deleteMany({
+    where: { profileId: 1, date: { gte: testRangeStart, lte: finalDate } },
+  });
   await prisma.healthActivityInterval.deleteMany({ where: { date: { gte: testRangeStart, lte: finalDate } } });
   await prisma.healthMetricSample.deleteMany({ where: { date: { gte: testRangeStart, lte: finalDate } } });
   await prisma.modelEpisode.deleteMany({
@@ -239,6 +245,12 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
 
     const replacement = await initializeNewModelEpisode({ startDate: episodeStart, now });
     expect(replacement.id).not.toBe(episodeId);
+    const episodeLocalDiagnostic = await prisma.experimentalCessationDetrainingShadow.findUnique({
+      where: { profileId_modelEpisodeId_date: { profileId: 1, modelEpisodeId: replacement.id, date: episodeStart } },
+    });
+    expect(episodeLocalDiagnostic?.isStale).toBe(false);
+    expect((episodeLocalDiagnostic?.result as { state?: { relativeCumulativeDeltaKg?: unknown } } | undefined)
+      ?.state?.relativeCumulativeDeltaKg).toBe(0);
     expect((await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } })).active)
       .toBe(false);
     await expect(prisma.modelEpisode.update({
@@ -250,6 +262,14 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     // Use the same post-commit orchestration as production so the persisted
     // FatWeight child output exists before Unified/Forecast read it.
     await recalculateModelEpisode({ episodeId, now });
+    const currentRelativeState = await prisma.experimentalCessationDetrainingShadow.findFirst({
+      where: { profileId: 1, modelEpisodeId: episodeId, isStale: false },
+      orderBy: { date: "desc" },
+    });
+    expect(currentRelativeState).not.toBeNull();
+    expect(currentRelativeState?.modelEpisodeId).toBe(episodeId);
+    expect((currentRelativeState?.result as { state?: { relativeCumulativeDeltaKg?: unknown } } | undefined)
+      ?.state?.relativeCumulativeDeltaKg).not.toBeUndefined();
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1, fromDate: episodeStart, toDate: finalDate });
     const request = { episodeId, horizonDays: 7, seed: 443, scenario: fixedForecastScenario, now };
     expect(await experimentalForecastModelEpisode(request, prisma)).not.toBeNull();

@@ -1,7 +1,10 @@
 import { Prisma, PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
-import { rebuildRelativeMuscleEpisodeTrajectories } from "@/modules/model-episodes/relative-muscle-shadow-core.service";
+import {
+  rebuildRelativeMuscleEpisodeTrajectories,
+  RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE,
+} from "@/modules/model-episodes/relative-muscle-shadow-core.service";
 import { requireIsolatedStage01Database } from "@/modules/training/testing/require-isolated-database";
 import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
 
@@ -14,7 +17,8 @@ const episodeDate = "2088-01-01";
 const timezoneDate = "2089-03-27";
 const timezoneNextDate = addCalendarDays(timezoneDate, 1);
 const timezoneThirdDate = addCalendarDays(timezoneDate, 2);
-const fixtureDates = [episodeDate, timezoneDate, timezoneNextDate, timezoneThirdDate];
+const raceDate = "2090-01-01";
+const fixtureDates = [episodeDate, timezoneDate, timezoneNextDate, timezoneThirdDate, raceDate];
 
 async function clean(): Promise<void> {
   const episodes = await prisma.modelEpisode.findMany({
@@ -302,4 +306,82 @@ describe("Relative Muscle episode core", () => {
       .toEqual(baseline.map(({ result }) => result));
     expect(repaired.every(({ isStale }) => !isStale)).toBe(true);
   });
+
+  it("serializes concurrent rebuilds so a delayed stale candidate cannot overwrite newer source state", async () => {
+    const episode = await createEpisode({ startDate: raceDate, timezone: "UTC", active: true });
+    await createHealthDay(raceDate, "UTC", true);
+    await createCompleteModelDay(episode.id, raceDate);
+
+    const barrierNamespace = 1_886_417_001;
+    const functionName = "relative_muscle_rebuild_race_gate";
+    const triggerName = "relative_muscle_rebuild_race_gate_trigger";
+    await prisma.$executeRawUnsafe(`
+      CREATE OR REPLACE FUNCTION "${functionName}"() RETURNS trigger AS $$
+      BEGIN
+        IF NEW."profileId" = ${profileId}
+          AND NEW."date" = '${raceDate}'
+          AND NEW."features"->>'energyBalanceKcal' = '-100' THEN
+          PERFORM pg_advisory_xact_lock(${barrierNamespace}, ${profileId});
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql
+    `);
+    await prisma.$executeRawUnsafe(`
+      CREATE TRIGGER "${triggerName}"
+      BEFORE INSERT OR UPDATE ON "ExperimentalSkeletalMuscleDeltaShadow"
+      FOR EACH ROW EXECUTE FUNCTION "${functionName}"()
+    `);
+
+    let releaseBarrier!: () => void;
+    let acquiredBarrier!: () => void;
+    const barrierReleased = new Promise<void>((resolve) => { releaseBarrier = resolve; });
+    const barrierAcquired = new Promise<void>((resolve) => { acquiredBarrier = resolve; });
+    const waitForBlockedLock = async (namespace: number) => {
+      for (let attempt = 0; attempt < 150; attempt += 1) {
+        const rows = await prisma.$queryRaw<Array<{ count: number }>>`
+          SELECT count(*)::int AS count
+          FROM pg_locks
+          WHERE locktype = 'advisory' AND granted = false
+            AND classid = ${namespace}::oid AND objid = ${profileId}::oid AND objsubid = 2
+        `;
+        if ((rows[0]?.count ?? 0) > 0) return;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      throw new Error(`Timed out waiting for Relative Muscle advisory lock ${namespace}`);
+    };
+
+    const barrierTransaction = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(${barrierNamespace}::integer, ${profileId}::integer)`;
+      acquiredBarrier();
+      await barrierReleased;
+    }, { timeout: 30_000 });
+    await barrierAcquired;
+    const candidates: Promise<void>[] = [];
+    try {
+      const staleCandidate = rebuildRelativeMuscleEpisodeTrajectories({ profileId, fromDate: raceDate });
+      candidates.push(staleCandidate);
+      await waitForBlockedLock(barrierNamespace);
+      await prisma.dailyModelState.update({
+        where: { episodeId_date: { episodeId: episode.id, date: raceDate } },
+        data: { energyBalanceKcal: -500 },
+      });
+      const freshCandidate = rebuildRelativeMuscleEpisodeTrajectories({ profileId, fromDate: raceDate });
+      candidates.push(freshCandidate);
+      await waitForBlockedLock(RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE);
+      releaseBarrier();
+      await Promise.all([barrierTransaction, staleCandidate, freshCandidate]);
+
+      const finalRow = await prisma.experimentalSkeletalMuscleDeltaShadow.findUniqueOrThrow({
+        where: { profileId_modelEpisodeId_date: { profileId, modelEpisodeId: episode.id, date: raceDate } },
+      });
+      expect(finalRow.isStale).toBe(false);
+      expect((finalRow.features as { energyBalanceKcal?: number }).energyBalanceKcal).toBe(-500);
+    } finally {
+      releaseBarrier();
+      await Promise.allSettled([barrierTransaction, ...candidates]);
+      await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS "${triggerName}" ON "ExperimentalSkeletalMuscleDeltaShadow"`);
+      await prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS "${functionName}"()`);
+    }
+  }, 30_000);
 });

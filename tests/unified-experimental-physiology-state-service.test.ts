@@ -40,6 +40,7 @@ vi.mock("@/modules/model-episodes/physiology-v7-persistence.repository", () => (
 
 import {
   ProductionPublicationUnavailableError,
+  childTransitions,
   rebuildUnifiedExperimentalPhysiologyStateV1,
 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
 import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION } from "@/model/unified-experimental-physiology-v1/contracts";
@@ -107,6 +108,49 @@ function prepare() {
 
 describe("Unified V2 rebuild publication", () => {
   beforeEach(prepare);
+
+  it("maps the episode-local cumulative Relative Muscle state, preserves unknown, and avoids singleton bounds", () => {
+    const day = sourceDay({
+      childOutputs: {
+        slowTissue: null,
+        glycogen: null,
+        glycogenWater: null,
+        transientWater: [],
+        relativeMuscle: {
+          id: 42,
+          updatedAt: boundaryAt,
+          sourceFingerprint: "relative-muscle-current",
+          result: {
+            availability: "available",
+            estimatedSkeletalMuscleDeltaKg: 0.025,
+            state: { absoluteSkeletalMuscleKg: null, relativeCumulativeDeltaKg: 0.18 },
+          },
+        },
+      },
+    });
+
+    const relativeMuscle = childTransitions(day, null).relativeMuscle;
+    expect(relativeMuscle).toEqual({
+      availability: "partial",
+      cumulativeDeltaKg: { point: 0.18, lower: null, upper: null, representation: "engineering-range" },
+      supportStatus: "degraded",
+      authoritativeUse: "forbidden",
+      reason: "relative diagnostic only; never added to body mass",
+      provenance: "experimental-cessation-detraining-v1",
+    });
+
+    const unavailable = childTransitions(sourceDay({
+      childOutputs: {
+        slowTissue: null, glycogen: null, glycogenWater: null, transientWater: [],
+        relativeMuscle: { id: 43, updatedAt: boundaryAt, sourceFingerprint: "missing", result: {
+          estimatedSkeletalMuscleDeltaKg: 0.025,
+          state: { absoluteSkeletalMuscleKg: null, relativeCumulativeDeltaKg: null },
+        } },
+      },
+    }), null).relativeMuscle;
+    expect(unavailable.availability).toBe("unavailable");
+    expect(unavailable.cumulativeDeltaKg).toBeNull();
+  });
 
   it("replays a current production-backed range and publishes its durable candidate", async () => {
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 4 });

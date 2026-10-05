@@ -163,11 +163,11 @@ export function childTransitions(day: UnifiedDurableDayEvidenceV1, prior: Unifie
   }
 
   const muscle = object(day.childOutputs.relativeMuscle?.result);
-  const musclePoint = numberValue(muscle.estimatedSkeletalMuscleDeltaKg);
+  const musclePoint = numberValue(object(muscle.state).relativeCumulativeDeltaKg);
   const relativeMuscle: UnifiedChildTransitionsV1["relativeMuscle"] = {
-    availability: musclePoint === null ? "unavailable" : "available",
-    cumulativeDeltaKg: musclePoint === null ? null : envelope(musclePoint),
-    supportStatus: object(muscle.support).status === "supported" ? "supported" : musclePoint === null ? "outside-supported-domain" : "degraded",
+    availability: musclePoint === null ? "unavailable" : "partial",
+    cumulativeDeltaKg: musclePoint === null ? null : envelope(musclePoint, null, null),
+    supportStatus: musclePoint === null ? "outside-supported-domain" : "degraded",
     authoritativeUse: "forbidden",
     reason: "relative diagnostic only; never added to body mass",
     provenance: musclePoint === null ? "unavailable" : "experimental-cessation-detraining-v1",

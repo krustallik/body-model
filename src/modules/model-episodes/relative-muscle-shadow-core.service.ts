@@ -26,6 +26,9 @@ import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
 import { addCalendarDays } from "./model-calendar";
 
 const CORE_FINGERPRINT_VERSION = "relative-muscle-episode-core-input-v1" as const;
+export const RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE = 1_886_417_000;
+
+type RelativeMuscleDatabaseClient = PrismaClient | Prisma.TransactionClient;
 
 type Episode = {
   id: number;
@@ -131,6 +134,53 @@ export async function rebuildRelativeMuscleEpisodeTrajectories(input: {
 }): Promise<void> {
   const client = input.client ?? prisma;
   const profileId = input.profileId ?? 1;
+  try {
+    await client.$transaction(async (transaction) => {
+      await transaction.$executeRaw`
+        SELECT pg_advisory_xact_lock(${RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE}, CAST(${profileId} AS integer))
+      `;
+      await rebuildRelativeMuscleEpisodeTrajectoriesInTransaction({
+        ...input,
+        profileId,
+        client: transaction,
+      });
+    }, { maxWait: 10_000, timeout: 120_000 });
+  } catch (rebuildError) {
+    // The rebuild transaction also contains the stale markers. If it aborts,
+    // those markers roll back too, so invalidate under the same profile lock
+    // before returning the failure to the caller.
+    try {
+      await client.$transaction(async (transaction) => {
+        await transaction.$executeRaw`
+          SELECT pg_advisory_xact_lock(${RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE}, CAST(${profileId} AS integer))
+        `;
+        await Promise.all([
+          transaction.experimentalSkeletalMuscleDeltaShadow.updateMany({
+            where: { profileId }, data: { isStale: true },
+          }),
+          transaction.experimentalCessationDetrainingShadow.updateMany({
+            where: { profileId }, data: { isStale: true },
+          }),
+        ]);
+      }, { maxWait: 10_000, timeout: 30_000 });
+    } catch (invalidationError) {
+      throw new AggregateError(
+        [rebuildError, invalidationError],
+        "Relative Muscle rebuild failed and its persisted candidates could not be invalidated",
+      );
+    }
+    throw rebuildError;
+  }
+}
+
+async function rebuildRelativeMuscleEpisodeTrajectoriesInTransaction(input: {
+  profileId: number;
+  fromDate?: string;
+  fromInstant?: Date;
+  client: RelativeMuscleDatabaseClient;
+}): Promise<void> {
+  const client = input.client;
+  const profileId = input.profileId;
   const episodes = await client.modelEpisode.findMany({
     where: { profileId },
     orderBy: [{ startDate: "asc" }, { id: "asc" }],
@@ -149,16 +199,16 @@ export async function rebuildRelativeMuscleEpisodeTrajectories(input: {
     }
   }
   if (requestedByEpisode.size > 0) {
-    await client.$transaction([
-      ...[...requestedByEpisode].flatMap(([modelEpisodeId, date]) => [
+    for (const [modelEpisodeId, date] of requestedByEpisode) {
+      await Promise.all([
         client.experimentalSkeletalMuscleDeltaShadow.updateMany({
           where: { profileId, modelEpisodeId, date: { gte: date } }, data: { isStale: true },
         }),
         client.experimentalCessationDetrainingShadow.updateMany({
           where: { profileId, modelEpisodeId, date: { gte: date } }, data: { isStale: true },
         }),
-      ]),
-    ]);
+      ]);
+    }
   }
   const eventRowsStart = partitions[0]!.startAt;
   const [healthRows, snapshots, dailyStates, workouts, sessions] = await Promise.all([
@@ -212,7 +262,7 @@ export async function rebuildRelativeMuscleEpisodeTrajectories(input: {
     sessionsByEpisodeDate.set(key, [...(sessionsByEpisodeDate.get(key) ?? []), session]);
   }
 
-  const trainingRepository = new TrainingRepository(client);
+  const trainingRepository = new TrainingRepository(client as PrismaClient);
   const formulaFingerprint = currentFormulaFingerprint();
   for (const partition of partitions) {
     const { episode } = partition;
@@ -420,7 +470,7 @@ export async function rebuildRelativeMuscleEpisodeTrajectories(input: {
 
     // Fail closed before writing candidates: if replay is interrupted, every
     // unrecomputed row in the affected suffix remains explicitly stale.
-    await client.$transaction([
+    await Promise.all([
       client.experimentalSkeletalMuscleDeltaShadow.updateMany({
         where: { profileId, modelEpisodeId: episode.id, date: { gte: effectiveStartDate } },
         data: { isStale: true },
@@ -504,8 +554,7 @@ export async function rebuildRelativeMuscleEpisodeTrajectories(input: {
         },
       };
 
-      await client.$transaction(async (tx) => {
-        await tx.experimentalSkeletalMuscleDeltaShadow.upsert({
+      await client.experimentalSkeletalMuscleDeltaShadow.upsert({
           where: { profileId_modelEpisodeId_date: { profileId, modelEpisodeId: episode.id, date: source.date } },
           create: {
             profileId, modelEpisodeId: episode.id, date: source.date, sourceFingerprint: deltaSourceFingerprint,
@@ -517,7 +566,7 @@ export async function rebuildRelativeMuscleEpisodeTrajectories(input: {
             isStale: false, features: json(deltaFeatures), result: json(delta),
           },
         });
-        await tx.experimentalCessationDetrainingShadow.upsert({
+      await client.experimentalCessationDetrainingShadow.upsert({
           where: { profileId_modelEpisodeId_date: { profileId, modelEpisodeId: episode.id, date: source.date } },
           create: {
             profileId, modelEpisodeId: episode.id, date: source.date, sourceFingerprint: cessationSourceFingerprint,
@@ -529,7 +578,6 @@ export async function rebuildRelativeMuscleEpisodeTrajectories(input: {
             isStale: false, features: json(cessationFeatures), result: json(cessation),
           },
         });
-      });
       deltaCumulative = delta.state.relativeCumulativeDeltaKg;
       cessationState = cessation.state;
       previousDeltaSourceFingerprint = deltaSourceFingerprint;
@@ -567,20 +615,20 @@ function readCessationState(row: { result: Prisma.JsonValue } | null): Experimen
   return candidate;
 }
 
-async function getDeltaSourceFingerprint(client: PrismaClient, profileId: number, modelEpisodeId: number, date: string) {
+async function getDeltaSourceFingerprint(client: RelativeMuscleDatabaseClient, profileId: number, modelEpisodeId: number, date: string) {
   return (await client.experimentalSkeletalMuscleDeltaShadow.findUnique({
     where: { profileId_modelEpisodeId_date: { profileId, modelEpisodeId, date } }, select: { sourceFingerprint: true },
   }))?.sourceFingerprint ?? null;
 }
 
-async function getCessationSourceFingerprint(client: PrismaClient, profileId: number, modelEpisodeId: number, date: string) {
+async function getCessationSourceFingerprint(client: RelativeMuscleDatabaseClient, profileId: number, modelEpisodeId: number, date: string) {
   return (await client.experimentalCessationDetrainingShadow.findUnique({
     where: { profileId_modelEpisodeId_date: { profileId, modelEpisodeId, date } }, select: { sourceFingerprint: true },
   }))?.sourceFingerprint ?? null;
 }
 
 async function isExactCompatiblePrefix(input: {
-  client: PrismaClient;
+  client: RelativeMuscleDatabaseClient;
   profileId: number;
   episode: Episode;
   dayInputs: Array<{ date: string; sourceFingerprint: string }>;

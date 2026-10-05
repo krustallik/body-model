@@ -51,8 +51,14 @@ try {
   databaseUrl.searchParams.set("schema", schemaName);
   const fixtureUrl = databaseUrl.toString();
   await writeFile(schemaPath, [
-    'generator client { provider = "prisma-client-js" }',
-    'datasource db { provider = "postgresql" url = env("DATABASE_URL") }',
+    "generator client {",
+    '  provider = "prisma-client-js"',
+    "}",
+    "",
+    "datasource db {",
+    '  provider = "postgresql"',
+    '  url = env("DATABASE_URL")',
+    "}",
     "",
   ].join("\n"));
   await mkdir(path.join(migrationsPath, fixtureMigration), { recursive: true });

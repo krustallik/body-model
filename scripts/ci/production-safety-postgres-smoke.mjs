@@ -285,8 +285,13 @@ async function main() {
       (report) => { report.objects.find((object) => object.name === ACTIVE_ENERGY_UNIFIED_MANIFEST.postflightObjects[0]).present = true; }, "already exist");
     assertBlocked(sourceReport, migrationDirectories,
       (report) => { report.migrations.push({ name: migrationDirectories[0], startedAt: "2026-01-02T00:00:00Z", finishedAt: null, rolledBackAt: null }); }, "Incomplete/failed migration");
-    assertBlocked(sourceReport, migrationDirectories,
-      (report) => { report.longTransactions.push({ pid: 123, xactAgeSeconds: 400 }); }, "transaction(s)");
+    const longTransactionReport = structuredClone(sourceReport);
+    longTransactionReport.longTransactions.push({ pid: 123, xactAgeSeconds: 400 });
+    const longTransactionDecision = evaluateProductionPreflight(longTransactionReport, migrationDirectories);
+    if (!longTransactionDecision.readyForOwnerAuthorization
+      || !longTransactionDecision.diagnostics.longTransactions.some((item) => item.pid === 123 && item.xactAgeSeconds === 400)) {
+      throw new Error("Preflight did not preserve the long-transaction diagnostic without treating it as a readiness blocker.");
+    }
     assertBlocked(sourceReport, migrationDirectories,
       (report) => { report.relevantLocks.push({ pid: 123, relation: "StrengthDiarySession", blockerCount: 1 }); }, "relevant DDL-conflicting relation lock(s)");
 
@@ -493,7 +498,7 @@ async function main() {
       preparedTransactionCleanupRestoredReadiness: preparedLockCleanupRestoredReadiness,
       unrelatedPreparedLockIgnored,
       mixedSshKeysFiltered,
-      blockersChecked: ["partial object", "failed migration", "long transaction", "short granted DDL-conflicting relation lock", "prepared transaction DDL-conflicting relation lock"],
+      blockersChecked: ["partial object", "failed migration", "long transaction diagnostic", "short granted DDL-conflicting relation lock", "prepared transaction DDL-conflicting relation lock"],
     }, null, 2) + "\n");
   } finally {
     await rm(scratch, { recursive: true, force: true });

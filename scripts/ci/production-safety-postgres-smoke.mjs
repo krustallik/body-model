@@ -352,15 +352,15 @@ async function verifyPrismaTargetBinding({ sourceUrl, alternateUrl, signedIdenti
   const now = Date.now();
   const fixture = createTargetBindingAuthorization(signedIdentity, now);
   const nonceDirectory = path.join(scratch, "consumed-execution-attestations");
-  const makeAuthorized = (targetUrl) => ({
+  const makeAuthorized = (targetUrl, authorizationFixture = fixture) => ({
     databaseUrl: withPrismaLockTimeout(targetUrl, 5000),
     receipt: { productionIdentityDigest: canonicalSha256(signedIdentity), backupSnapshotAt: new Date(now - 10_000).toISOString() },
-    envelope: fixture.authorizationEnvelope,
-    delegationCertificate: fixture.delegation.certificate,
-    executionAttestation: fixture.attestation.serialized,
-    verifiedAttestation: fixture.attestation.payload,
-    executionChallenge: fixture.executionChallenge,
-    allowlist: fixture.allowlist,
+    envelope: authorizationFixture.authorizationEnvelope,
+    delegationCertificate: authorizationFixture.delegation.certificate,
+    executionAttestation: authorizationFixture.attestation.serialized,
+    verifiedAttestation: authorizationFixture.attestation.payload,
+    executionChallenge: authorizationFixture.executionChallenge,
+    allowlist: authorizationFixture.allowlist,
   });
   let spawnCount = 0;
   const spawn = (_command, _args, options) => {
@@ -387,11 +387,14 @@ async function verifyPrismaTargetBinding({ sourceUrl, alternateUrl, signedIdenti
   if (!mismatchBlocked || spawnCount !== 0) {
     throw new Error("Final Prisma URL for another database was not blocked before spawn.");
   }
+  // The failed target probe correctly consumes its one-time nonce; use a fresh
+  // authorization/attestation for the independent matching-target assertion.
+  const matchingFixture = createTargetBindingAuthorization(signedIdentity, Date.now());
   await startPrismaMigrationAtDdlBoundary({
-    authorized: makeAuthorized(sourceUrl),
+    authorized: makeAuthorized(sourceUrl, matchingFixture),
     environment: { BODYCAST_DDL_ATTESTATION_NONCE_DIR: nonceDirectory },
     identityProbe: readPrismaDatabaseIdentity,
-    latestPreflightProbe: async () => fixture.latestPreflight,
+    latestPreflightProbe: async () => matchingFixture.latestPreflight,
     spawn,
     now: () => Date.now(),
     nonceDirectory,

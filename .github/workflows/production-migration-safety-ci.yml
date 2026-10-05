@@ -6,6 +6,16 @@ on:
       - ".github/workflows/production-migration-safety-ci.yml"
       - ".github/workflows/production-migration-preflight.yml"
       - ".github/workflows/production-migrate.yml"
+      - "Dockerfile"
+      - "prisma/migrations/**"
+      - "scripts/production-migration-*.mjs"
+      - "scripts/production-migration-verification-keys.json"
+      - "scripts/production-db-preflight.mjs"
+      - "scripts/production-db-preflight.sql"
+      - "scripts/deploy-migrate.sh"
+      - "scripts/run-prisma-migrate-with-lock-timeout.mjs"
+      - "scripts/ci/production-migration-prisma-checksum.integration.mjs"
+      - "docs/development/production-migration-v5-runbook.md"
       - "scripts/backup-postgres.mjs"
       - "scripts/backup-postgres.ps1"
       - "scripts/production-backup-envelope.mjs"
@@ -21,6 +31,8 @@ on:
       - "scripts/verify-restored-backup.sql"
       - "scripts/ci/production-safety-postgres-smoke.mjs"
       - "tests/production-safety-tooling.test.mjs"
+      - "tests/production-migration-v5.test.mjs"
+      - "tests/deploy-script-ordering.test.ts"
       - "tests/production-migration-release-tooling.sh"
       - "package.json"
       - "package-lock.json"
@@ -82,7 +94,20 @@ jobs:
         run: npm ci
 
       - name: Run targeted safety-tooling tests
-        run: npm run test:unit -- tests/production-safety-tooling.test.mjs
+        run: npm run test:unit -- tests/production-migration-v5.test.mjs tests/production-safety-tooling.test.mjs
+
+      - name: Check production migration shell syntax
+        run: bash -n scripts/deploy-migrate.sh scripts/production-migration-readiness.sh scripts/production-migration-summary.sh tests/production-migration-release-tooling.sh
+
+      - name: Build migrator image and verify in-image migration bytes
+        run: |
+          docker build --target migrator --tag bodycast-migrator-safety-ci .
+          docker run --rm --entrypoint node bodycast-migrator-safety-ci /app/scripts/production-migration-image-check.mjs /app
+
+      - name: Verify Prisma checksum and 5-second lock timeout against isolated PostgreSQL
+        env:
+          BODYCAST_TEST_DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast
+        run: node scripts/ci/production-migration-prisma-checksum.integration.mjs
 
       - name: Run production migration release-tooling shell regressions
         env:

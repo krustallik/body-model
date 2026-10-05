@@ -1,14 +1,21 @@
 name: Production migration preflight and encrypted backup
+run-name: Preflight ${{ inputs.release_sha }} ${{ inputs.manifest_id }}
 
 on:
   workflow_dispatch:
     inputs:
       release_sha:
-        description: Full SHA to inspect; must equal the current main tip with successful main CI
+        description: Full SHA to inspect; must be current canonical main with successful CI
         required: true
         type: string
+      manifest_id:
+        description: Closed reviewed migration set
+        required: true
+        type: choice
+        options:
+          - active-energy-unified-v1
       confirm_production_preflight:
-        description: Type inspect-backup-restore to authorize read-only inspection and encrypted backup only
+        description: Type inspect-backup-restore to authorize read-only inspection, encrypted backup, and disposable rehearsal
         required: true
         type: string
 
@@ -17,7 +24,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: bodycast-production-migration-preflight
+  group: bodycast-preflight-${{ inputs.release_sha }}-${{ inputs.manifest_id }}
   cancel-in-progress: false
 
 jobs:
@@ -27,69 +34,65 @@ jobs:
     timeout-minutes: 10
     outputs:
       release_sha: ${{ steps.gate.outputs.release_sha }}
+      manifest_id: ${{ steps.gate.outputs.manifest_id }}
     steps:
-      - name: Checkout preflight tools from main
+      - name: Checkout current main tooling
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: main
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Validate dispatch source, current main tip, and green main CI
+      - name: Validate canonical repository, exact main, and successful CI
         id: gate
         env:
           GH_TOKEN: ${{ github.token }}
           DISPATCH_SHA: ${{ inputs.release_sha }}
+          MANIFEST_ID: ${{ inputs.manifest_id }}
           CONFIRMATION: ${{ inputs.confirm_production_preflight }}
         run: |
           set -Eeuo pipefail
-          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
-            echo "::error::Run this workflow from main only."
-            exit 1
-          fi
-          if [[ "$CONFIRMATION" != "inspect-backup-restore" ]]; then
-            echo "::error::Explicit inspect-backup-restore confirmation is required."
-            exit 1
-          fi
-          if [[ ! "$DISPATCH_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::release_sha must be a full 40-character commit SHA."
-            exit 1
-          fi
+          [[ "$GITHUB_REPOSITORY" == "krustallik/body-model" ]] || { echo "::error::Canonical repository only."; exit 1; }
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::Dispatch this workflow from main."; exit 1; }
+          [[ "$CONFIRMATION" == "inspect-backup-restore" ]] || { echo "::error::Exact read-only preflight confirmation is required."; exit 1; }
+          [[ "$MANIFEST_ID" == "active-energy-unified-v1" ]] || { echo "::error::Manifest is not in the closed allowlist."; exit 1; }
+          [[ "$DISPATCH_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::release_sha must be a full lowercase commit SHA."; exit 1; }
           git fetch --no-tags origin main
-          MAIN_TIP="$(git rev-parse origin/main)"
-          if [[ "$DISPATCH_SHA" != "$MAIN_TIP" || "$GITHUB_SHA" != "$MAIN_TIP" ]]; then
-            echo "::error::Stale or non-main preflight request; requested=${DISPATCH_SHA}, current-main=${MAIN_TIP}, workflow=${GITHUB_SHA}."
-            exit 1
-          fi
-          RUN_JSON="$(gh run list --repo "$GITHUB_REPOSITORY" --branch main --commit "$MAIN_TIP" --workflow "BodyCast CI/CD" --limit 20 --json conclusion,event,status,headSha,url)"
-          CI_URL="$(printf '%s' "$RUN_JSON" | MAIN_TIP="$MAIN_TIP" node --input-type=module -e '
-            const runs = JSON.parse(await new Response(process.stdin).text());
-            const success = runs.find((run) => run.event === "push" && run.status === "completed" && run.conclusion === "success" && run.headSha === process.env.MAIN_TIP);
-            if (!success) process.exit(1);
-            console.log(success.url);
-          ')" || {
-            echo "::error::No successful main-push BodyCast CI/CD run was found for current main."
-            exit 1
+          MAIN_TIP="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
+          [[ "$MAIN_TIP" == "$(git rev-parse origin/main)" && "$MAIN_TIP" == "$GITHUB_SHA" && "$MAIN_TIP" == "$DISPATCH_SHA" ]] || {
+            echo "::error::Requested SHA, checked out main and canonical main do not match."; exit 1;
           }
-          echo "release_sha=${MAIN_TIP}" >> "$GITHUB_OUTPUT"
+          gh api --paginate --jq '.workflow_runs[] | @json' \
+            "repos/krustallik/body-model/actions/workflows/ci.yml/runs?branch=main&event=push&per_page=100" \
+            > "$RUNNER_TEMP/bodycast-ci-runs.ndjson"
+          CI_URL="$(node --input-type=module - "$RUNNER_TEMP/bodycast-ci-runs.ndjson" "$MAIN_TIP" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const runs = readFileSync(process.argv[2], "utf8").trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
+          const matching = runs.filter((run) => run.head_sha === process.argv[3] && run.head_branch === "main" && run.event === "push");
+          matching.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+          const latest = matching[0];
+          if (!latest || latest.status !== "completed" || latest.conclusion !== "success") throw new Error("Current main has no latest successful push CI run.");
+          console.log(latest.html_url);
+          NODE
+          )"
+          echo "release_sha=$MAIN_TIP" >> "$GITHUB_OUTPUT"
+          echo "manifest_id=$MANIFEST_ID" >> "$GITHUB_OUTPUT"
           {
-            echo "## Read-only production preflight authorization"
+            echo "## Read-only production preflight"
             echo ""
-            echo "- release SHA: `${MAIN_TIP}`"
-            echo "- successful main CI: ${CI_URL}"
-            echo "- production migration: NOT EXECUTED"
+            echo "- release SHA: $MAIN_TIP"
+            echo "- manifest: $MANIFEST_ID"
+            echo "- successful current-main CI: $CI_URL"
+            echo "- production DDL: NOT EXECUTED"
           } >> "$GITHUB_STEP_SUMMARY"
 
   inspect_backup_restore:
-    name: Inspect production, create encrypted backup, and restore in isolation
+    name: Inspect, back up, restore, and rehearse on disposable PostgreSQL
     needs: authorize
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     environment: production
     services:
       isolated-postgres:
-        # Docker Official Image postgres:17-alpine; OCI index digest verified against Docker Hub
-        # and docker-library/official-images/library/postgres (17.11-alpine3.24, GitCommit 2603e26e245e558218728ee14e0a42dcb020dc7f).
         image: postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
         env:
           POSTGRES_DB: bodycast_restore
@@ -103,30 +106,29 @@ jobs:
           --health-timeout 5s
           --health-retries 12
     steps:
-      - name: Checkout exact authorized main SHA
+      - name: Checkout exact release SHA
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ needs.authorize.outputs.release_sha }}
+          fetch-depth: 0
           persist-credentials: false
-
-      - name: Set up Node.js
+      - name: Set up pinned Node runtime
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
-
-      - name: Recheck current main SHA before reading production
+      - name: Install locked Prisma and project tooling
+        run: npm ci
+      - name: Recheck canonical main before production access
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
         run: |
           set -Eeuo pipefail
-          MAIN_TIP="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
-          if [[ "$MAIN_TIP" != "$RELEASE_SHA" || "$(git rev-parse HEAD)" != "$RELEASE_SHA" ]]; then
-            echo "::error::Main moved after authorization; no production connection was opened."
-            exit 1
-          fi
-
-      - name: Validate protected SSH and encryption secrets
+          TIP="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
+          [[ "$TIP" == "$RELEASE_SHA" && "$(git rev-parse HEAD)" == "$RELEASE_SHA" ]] || {
+            echo "::error::Canonical main moved; no production connection was opened."; exit 1;
+          }
+      - name: Validate production-only SSH and backup secrets
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -136,186 +138,159 @@ jobs:
           PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY }}
         run: |
           set -Eeuo pipefail
-          : "${SSH_PRIVATE_KEY:?SSH_PRIVATE_KEY environment secret is required}"
-          : "${SSH_HOST:?SSH_HOST environment secret is required}"
-          : "${SSH_USER:?SSH_USER environment secret is required}"
-          : "${SSH_PORT:?SSH_PORT environment secret is required}"
-          : "${SSH_HOST_FINGERPRINT:?Set the pinned SHA256 SSH_HOST_FINGERPRINT environment secret}"
-          node --input-type=module -e 'import { decodeBackupKey } from "./scripts/production-backup-envelope.mjs"; decodeBackupKey(process.env.PRODUCTION_BACKUP_ENCRYPTION_KEY);' \
-            || { echo "::error::Set PRODUCTION_BACKUP_ENCRYPTION_KEY to canonical base64 for a random 32-byte key."; exit 1; }
-          if [[ ! "$SSH_PORT" =~ ^[0-9]{1,5}$ ]] || (( SSH_PORT < 1 || SSH_PORT > 65535 )); then
-            echo "::error::SSH_PORT must be a valid TCP port."
-            exit 1
-          fi
-          case "$SSH_HOST_FINGERPRINT" in SHA256:*) ;; *) echo "::error::SSH_HOST_FINGERPRINT must be a SHA256 fingerprint."; exit 1 ;; esac
+          : "$SSH_PRIVATE_KEY"; : "$SSH_HOST"; : "$SSH_USER"; : "$SSH_PORT"; : "$SSH_HOST_FINGERPRINT"
+          node --input-type=module -e 'import { decodeBackupKey } from "./scripts/production-backup-envelope.mjs"; decodeBackupKey(process.env.PRODUCTION_BACKUP_ENCRYPTION_KEY);'
+          [[ "$SSH_PORT" =~ ^[0-9]{1,5}$ ]] && (( SSH_PORT > 0 && SSH_PORT <= 65535 )) || { echo "::error::Invalid SSH_PORT."; exit 1; }
+          [[ "$SSH_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || { echo "::error::Pinned SSH fingerprint is invalid."; exit 1; }
           install -d -m 700 "$RUNNER_TEMP/bodycast-ssh"
           printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/bodycast-ssh/id"
           chmod 600 "$RUNNER_TEMP/bodycast-ssh/id"
           echo "BODYCAST_SSH_KEY=$RUNNER_TEMP/bodycast-ssh/id" >> "$GITHUB_ENV"
           echo "BODYCAST_KNOWN_HOSTS=$RUNNER_TEMP/bodycast-ssh/known_hosts" >> "$GITHUB_ENV"
-
-      - name: Pin and verify production SSH host key
+      - name: Pin production SSH host key
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
           SSH_HOST_FINGERPRINT: ${{ secrets.SSH_HOST_FINGERPRINT }}
         run: |
           set -Eeuo pipefail
-          CANDIDATE_HOST_KEYS="$RUNNER_TEMP/bodycast-ssh/candidate_known_hosts"
-          ssh-keyscan -T 10 -p "$SSH_PORT" "$SSH_HOST" > "$CANDIDATE_HOST_KEYS" 2>/dev/null
-          test -s "$CANDIDATE_HOST_KEYS"
-          if ! node scripts/filter-ssh-known-hosts.mjs "$CANDIDATE_HOST_KEYS" "$BODYCAST_KNOWN_HOSTS"; then
-            echo "::error::No scanned SSH host key matched the pinned fingerprint; no production command was sent."
-            exit 1
-          fi
+          ssh-keyscan -T 10 -p "$SSH_PORT" "$SSH_HOST" > "$RUNNER_TEMP/bodycast-ssh/candidate" 2>/dev/null
+          test -s "$RUNNER_TEMP/bodycast-ssh/candidate"
+          node scripts/filter-ssh-known-hosts.mjs "$RUNNER_TEMP/bodycast-ssh/candidate" "$BODYCAST_KNOWN_HOSTS"
           chmod 600 "$BODYCAST_KNOWN_HOSTS"
-
-      - name: Verify PostgreSQL dump and restore client versions
-        id: pg_clients
+      - name: Verify production container and PostgreSQL client versions
+        id: target
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
         run: |
           set -Eeuo pipefail
-          SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
-          PRODUCTION_CONTAINER_ID="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" \
-            'docker inspect --format "{{.Id}}" bodycast-db-prod')"
-          PG_DUMP_VERSION="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" \
-            'docker exec bodycast-db-prod pg_dump --version')"
-          PG_RESTORE_VERSION="$(docker run --rm --network host --entrypoint pg_restore \
-            postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24 --version)"
-          printf 'pg_dump --version: %s\npg_restore --version: %s\n' "$PG_DUMP_VERSION" "$PG_RESTORE_VERSION"
+          SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
+          META="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" 'docker inspect --format "{{.Id}}|{{.Name}}|{{.Config.Image}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}" bodycast-db-prod')"
+          [[ "$META" == *"|/bodycast-db-prod|postgres:17-alpine|running|healthy" ]] || { echo "::error::Unexpected production PostgreSQL target."; exit 1; }
+          PG_DUMP_VERSION="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" 'docker exec bodycast-db-prod pg_dump --version')"
+          PG_RESTORE_VERSION="$(docker run --rm --network host --entrypoint pg_restore postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24 --version)"
           node --input-type=module - "$PG_DUMP_VERSION" "$PG_RESTORE_VERSION" <<'NODE'
           import { assertPostgresClientCompatibility } from "./scripts/postgres-client-versions.mjs";
           assertPostgresClientCompatibility(process.argv[2], process.argv[3]);
           NODE
-          echo "container_id=${PRODUCTION_CONTAINER_ID}" >> "$GITHUB_OUTPUT"
-          {
-            echo "## PostgreSQL client versions"
-            echo ""
-            printf -- '- pg_dump: `%s`\n- pg_restore: `%s`\n' "$PG_DUMP_VERSION" "$PG_RESTORE_VERSION"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Read-only database identity, migration state, schema inventory, sizes, and locks
-        id: preflight
+          echo "container_id=$(printf '%s' "$META" | cut -d'|' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Read-only production identity, full migration set, schema signatures, and locks
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
-          SSH_HOST_FINGERPRINT: ${{ secrets.SSH_HOST_FINGERPRINT }}
+          RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+          MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
         run: |
           set -Eeuo pipefail
-          SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
-          CONTAINER_META="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" 'docker inspect --format "{{.Name}}|{{.Config.Image}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}" bodycast-db-prod')"
-          IFS='|' read -r CONTAINER_NAME CONTAINER_IMAGE CONTAINER_STATE CONTAINER_HEALTH <<< "$CONTAINER_META"
-          if [[ "$CONTAINER_NAME" != "/bodycast-db-prod" || "$CONTAINER_IMAGE" != "postgres:17-alpine" || "$CONTAINER_STATE" != "running" || "$CONTAINER_HEALTH" != "healthy" ]]; then
-            echo "::error::Expected the healthy bodycast-db-prod PostgreSQL container; observed state is not safe for preflight."
-            exit 1
-          fi
-          printf '%s\n' "$CONTAINER_META" > "$RUNNER_TEMP/bodycast-container-meta.txt"
-          { cat scripts/production-db-preflight.sql; } | "${SSH[@]}" "$SSH_USER@$SSH_HOST" \
-            "docker exec -i --env 'PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=3000' bodycast-db-prod psql --username=bodycast --dbname=bodycast --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1" \
-            > "$RUNNER_TEMP/bodycast-production-preflight.json"
-          set +e
-          node scripts/production-migration-preflight.mjs --preflight "$RUNNER_TEMP/bodycast-production-preflight.json" \
-            > "$RUNNER_TEMP/bodycast-production-preflight-result.json"
-          PREFLIGHT_STATUS=$?
-          set -e
-          {
-            echo "## Live production schema preflight (read-only)"
-            echo ""
-            echo "- container: \`${CONTAINER_META}\`"
-            echo "- database identity, migration rows, object inventory, table sizes and lock summary:"
-            echo '```json'
-            cat "$RUNNER_TEMP/bodycast-production-preflight-result.json"
-            echo '```'
-            echo "- DDL/data writes: none"
-            echo "- \`prisma migrate deploy\`: NOT EXECUTED"
-          } >> "$GITHUB_STEP_SUMMARY"
-          if [[ "$PREFLIGHT_STATUS" -ne 0 ]]; then
-            echo "::error::Production migration readiness preflight found blockers; no backup was created and no migration was executed."
-            exit "$PREFLIGHT_STATUS"
-          fi
-
-      - name: Create timestamped encrypted custom-format production backup
+          SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
+          node scripts/production-db-preflight.mjs | "${SSH[@]}" "$SSH_USER@$SSH_HOST" \
+            "docker exec -i --env 'PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000' bodycast-db-prod psql --username=bodycast --dbname=bodycast --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1" \
+            > "$RUNNER_TEMP/preflight-report.json"
+          node scripts/production-migration-preflight.mjs --preflight --manifest "$MANIFEST_ID" --release-sha "$RELEASE_SHA" --repository "$GITHUB_WORKSPACE" --report "$RUNNER_TEMP/preflight-report.json" \
+            > "$RUNNER_TEMP/preflight-result.json"
+          node scripts/production-migration-preflight.mjs --execution-integrity --manifest "$MANIFEST_ID" --release-sha "$RELEASE_SHA" --repository "$GITHUB_WORKSPACE" \
+            > "$RUNNER_TEMP/execution-integrity.json"
+          cat "$RUNNER_TEMP/preflight-result.json" >> "$GITHUB_STEP_SUMMARY"
+      - name: Capture pg_dump start on production host and create encrypted backup
         id: backup
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
           PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY }}
-          EXPECTED_PRODUCTION_CONTAINER_ID: ${{ steps.pg_clients.outputs.container_id }}
+          EXPECTED_CONTAINER_ID: ${{ steps.target.outputs.container_id }}
         run: |
           set -Eeuo pipefail
-          STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-          BACKUP_DIR="$RUNNER_TEMP/bodycast-encrypted-backup"
-          install -d -m 700 "$BACKUP_DIR"
-          BACKUP_FILE="$BACKUP_DIR/bodycast-production-${STAMP}.pgdump.enc"
-          SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
-          CURRENT_PRODUCTION_CONTAINER_ID="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" \
-            'docker inspect --format "{{.Id}}" bodycast-db-prod')"
-          if [[ "$CURRENT_PRODUCTION_CONTAINER_ID" != "$EXPECTED_PRODUCTION_CONTAINER_ID" ]]; then
-            echo "::error::Production PostgreSQL container changed after client-version verification; refusing to create a backup with an unverified dump client."
-            exit 1
-          fi
+          install -d -m 700 "$RUNNER_TEMP/bodycast-backup-artifact"
+          BACKUP_FILE="$RUNNER_TEMP/bodycast-backup-artifact/production-backup.pgdump.enc"
+          SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
+          CURRENT_ID="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" 'docker inspect --format "{{.Id}}" bodycast-db-prod')"
+          [[ "$CURRENT_ID" == "$EXPECTED_CONTAINER_ID" ]] || { echo "::error::Production DB container changed after inspection."; exit 1; }
           "${SSH[@]}" "$SSH_USER@$SSH_HOST" \
-            'docker exec bodycast-db-prod pg_dump --format=custom --no-owner --no-privileges --username=bodycast --dbname=bodycast' \
+            'docker exec bodycast-db-prod sh -c '\''printf "BODYCAST_BACKUP_STARTED_AT=%s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2; exec pg_dump --format=custom --no-owner --no-privileges --username=bodycast --dbname=bodycast'\''' \
+            2> "$RUNNER_TEMP/pgdump-start.log" \
             | node scripts/production-backup-envelope.mjs encrypt --output "$BACKUP_FILE"
-          test -s "$BACKUP_FILE"
+          SNAPSHOT_AT="$(sed -n 's/^BODYCAST_BACKUP_STARTED_AT=//p' "$RUNNER_TEMP/pgdump-start.log" | tail -n1)"
+          [[ "$SNAPSHOT_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || { echo "::error::Could not prove pg_dump start timestamp."; exit 1; }
+          printf '%s\n' "$SNAPSHOT_AT" > "$RUNNER_TEMP/backup-snapshot-start.txt"
           chmod 600 "$BACKUP_FILE"
-          echo "backup_file=$BACKUP_FILE" >> "$GITHUB_OUTPUT"
-          echo "artifact_name=bodycast-production-${STAMP}" >> "$GITHUB_OUTPUT"
-          echo "encrypted_bytes=$(stat -c %s "$BACKUP_FILE")" >> "$GITHUB_OUTPUT"
-          source scripts/production-migration-summary.sh
-          bodycast_append_encrypted_backup_summary "$GITHUB_STEP_SUMMARY" "bodycast-production-${STAMP}" "$(stat -c %s "$BACKUP_FILE")"
-
-      - name: Copy encrypted backup to repository artifact storage
-        id: artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ${{ steps.backup.outputs.artifact_name }}
-          path: ${{ steps.backup.outputs.backup_file }}
-          if-no-files-found: error
-          retention-days: 90
-
-      - name: Verify archive and restore only to isolated ephemeral PostgreSQL
+          echo "file=$BACKUP_FILE" >> "$GITHUB_OUTPUT"
+          echo "snapshot_at=$SNAPSHOT_AT" >> "$GITHUB_OUTPUT"
+      - name: Restore snapshot, compare source state, and rehearse exact migrations
         env:
-          BACKUP_FILE: ${{ steps.backup.outputs.backup_file }}
+          BACKUP_FILE: ${{ steps.backup.outputs.file }}
           PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY }}
           PGPASSWORD: isolated_restore_test_password
-          DATABASE_URL: postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_restore
+          DATABASE_URL: postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_restore?schema=public
           POSTGRES_IMAGE: postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
         run: |
           set -Eeuo pipefail
           node scripts/restore-encrypted-postgres-backup.mjs
-          psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 \
-            --file=scripts/verify-restored-backup.sql > "$RUNNER_TEMP/bodycast-restored-history.json"
-          node scripts/production-migration-preflight.mjs --verify-restore \
-            "$RUNNER_TEMP/bodycast-production-preflight.json" "$RUNNER_TEMP/bodycast-restored-history.json" \
-            > "$RUNNER_TEMP/bodycast-restore-verification.json"
-          {
-            echo "## Isolated restore verification"
-            echo ""
-            echo '```json'
-            cat "$RUNNER_TEMP/bodycast-restore-verification.json"
-            echo '```'
-            echo "- target: workflow-owned ephemeral PostgreSQL 17 service"
-            echo "- source database/container: read only"
-            echo "- migration executed: no"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Final readiness summary
-        if: success()
+          node scripts/production-db-preflight.mjs | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 > "$RUNNER_TEMP/restored-base-report.json"
+          psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 --file=scripts/verify-restored-backup.sql > "$RUNNER_TEMP/restored-readability.json"
+          node scripts/production-migration-restore-check.mjs --base \
+            --source "$RUNNER_TEMP/preflight-report.json" --restored "$RUNNER_TEMP/restored-base-report.json" \
+            --readability "$RUNNER_TEMP/restored-readability.json" --repository "$GITHUB_WORKSPACE" \
+            > "$RUNNER_TEMP/restore-base-result.json"
+          node scripts/production-migration-preflight.mjs --execution-integrity --manifest active-energy-unified-v1 --release-sha "$GITHUB_SHA" --repository "$GITHUB_WORKSPACE" \
+            > "$RUNNER_TEMP/execution-integrity.json"
+          DATABASE_URL="$(node --input-type=module -e 'import { withPrismaLockTimeout } from "./scripts/production-migration-release.mjs"; process.stdout.write(withPrismaLockTimeout(process.env.DATABASE_URL,5000))')"
+          export DATABASE_URL
+          npx prisma migrate deploy --schema prisma/schema.prisma
+          node scripts/production-db-preflight.mjs | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 > "$RUNNER_TEMP/restored-postflight-report.json"
+          node scripts/production-migration-restore-check.mjs --postflight --manifest active-energy-unified-v1 --repository "$GITHUB_WORKSPACE" \
+            --report "$RUNNER_TEMP/restored-postflight-report.json" > "$RUNNER_TEMP/restore-postflight-result.json"
+          node scripts/production-migration-restore-check.mjs --combine \
+            --base "$RUNNER_TEMP/restore-base-result.json" --postflight "$RUNNER_TEMP/restore-postflight-result.json" \
+            > "$RUNNER_TEMP/restore-result.json"
+          cat "$RUNNER_TEMP/restore-result.json" >> "$GITHUB_STEP_SUMMARY"
+      - name: Create preflight evidence bundle
         env:
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
-          ARTIFACT_NAME: ${{ steps.backup.outputs.artifact_name }}
-          BACKUP_BYTES: ${{ steps.backup.outputs.encrypted_bytes }}
-          ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
+          MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
         run: |
           set -Eeuo pipefail
-          source scripts/production-migration-summary.sh
-          bodycast_append_production_readiness_summary "$GITHUB_STEP_SUMMARY" "$RELEASE_SHA" "$ARTIFACT_NAME" "$ARTIFACT_URL" "$BACKUP_BYTES"
+          install -d -m 700 "$RUNNER_TEMP/bodycast-evidence-artifact"
+          node scripts/production-migration-evidence.mjs \
+            "$RUNNER_TEMP/preflight-report.json" "$RUNNER_TEMP/preflight-result.json" "$RUNNER_TEMP/restore-result.json" \
+            "$RUNNER_TEMP/backup-snapshot-start.txt" "$RUNNER_TEMP/bodycast-backup-artifact/production-backup.pgdump.enc" \
+            "$RUNNER_TEMP/bodycast-evidence-artifact/preflight-evidence.json"
+          cp "$RUNNER_TEMP/preflight-result.json" "$RUNNER_TEMP/bodycast-evidence-artifact/preflight-result.json"
+          cp "$RUNNER_TEMP/restore-result.json" "$RUNNER_TEMP/bodycast-evidence-artifact/restore-result.json"
+          cp "$RUNNER_TEMP/preflight-report.json" "$RUNNER_TEMP/bodycast-evidence-artifact/preflight-report.json"
+          cp "$RUNNER_TEMP/execution-integrity.json" "$RUNNER_TEMP/bodycast-evidence-artifact/execution-integrity.json"
+          chmod 600 "$RUNNER_TEMP/bodycast-evidence-artifact/"*
+      - name: Upload encrypted production backup artifact
+        id: backup_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bodycast-backup-${{ needs.authorize.outputs.release_sha }}-${{ needs.authorize.outputs.manifest_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bodycast-backup-artifact/production-backup.pgdump.enc
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload immutable preflight and restore evidence artifact
+        id: evidence_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bodycast-preflight-evidence-${{ needs.authorize.outputs.release_sha }}-${{ needs.authorize.outputs.manifest_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bodycast-evidence-artifact/*
+          if-no-files-found: error
+          retention-days: 90
+      - name: Report read-only completion
+        if: success()
+        run: |
+          {
+            echo ""
+            echo "- Backup artifact id: ${{ steps.backup_artifact.outputs.artifact-id }}"
+            echo "- Backup artifact SHA-256: ${{ steps.backup_artifact.outputs.artifact-digest }}"
+            echo "- Evidence artifact id: ${{ steps.evidence_artifact.outputs.artifact-id }}"
+            echo "- Snapshot time: production host immediately before pg_dump"
+            echo "- disposable restored schema rehearsal: PASS"
+            echo "- production migration: NOT EXECUTED"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove temporary SSH credentials
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/bodycast-ssh"

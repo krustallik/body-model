@@ -14,6 +14,7 @@ import {
   EXPECTED_PENDING_MIGRATIONS,
   verifyRestoredBackup,
 } from "../production-migration-preflight.mjs";
+import { renderProductionDbPreflightSql } from "../production-db-preflight.mjs";
 import { assertPostgresClientCompatibility } from "../postgres-client-versions.mjs";
 
 const source = { host: "127.0.0.1", port: Number(process.env.BODYCAST_SOURCE_PORT ?? 5432), database: "bodycast", user: "bodycast", password: "bodycast_ci_only" };
@@ -70,7 +71,7 @@ async function createSourceFixture(db = source) {
 }
 
 function readSourceReport(db = source) {
-  const report = sql(db, requireSql("scripts/production-db-preflight.sql"));
+  const report = sql(db, renderProductionDbPreflightSql(requireSql("scripts/production-db-preflight.sql")));
   return JSON.parse(report);
 }
 

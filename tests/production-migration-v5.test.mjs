@@ -117,6 +117,13 @@ function signClaims(value, id = keyId, key = privateKey) {
 }
 
 describe("V5 closed migration manifest and full pending set", () => {
+  it("renders the canonical preflight SQL template before the PostgreSQL backup/restore smoke executes it", async () => {
+    const smoke = await readFile(new URL("../scripts/ci/production-safety-postgres-smoke.mjs", import.meta.url), "utf8");
+    expect(smoke).toContain('import { renderProductionDbPreflightSql } from "../production-db-preflight.mjs";');
+    expect(smoke).toContain('sql(db, renderProductionDbPreflightSql(requireSql("scripts/production-db-preflight.sql")))');
+    expect(smoke).not.toContain('sql(db, requireSql("scripts/production-db-preflight.sql"))');
+  });
+
   it("matches all five reviewed manifest hashes to exact blobs at the release commit", async () => {
     const releaseSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim();
     for (const migration of [...STAGE_02_MANIFEST.migrations, ...ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations]) {

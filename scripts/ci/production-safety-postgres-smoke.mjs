@@ -134,7 +134,7 @@ async function withPreparedLockPostgres(work) {
 async function withPreparedTransactionRelationLock(db, tableName, work) {
   const alterTargets = new Set([
     "ExerciseCatalog", "ProgramExercise", "StrengthSessionExercise", "StrengthSet",
-    "HealthMetricSample", "StrengthDiarySession", "BodycastUnrelatedLockProbe",
+    "HealthMetricSample", "StrengthDiarySession", "DailyModelState", "BodycastUnrelatedLockProbe",
   ]);
   if (!alterTargets.has(tableName)) throw new Error("Refusing to prepare a lock outside the reviewed Stage 02 targets and explicit unrelated-lock probe.");
 
@@ -151,7 +151,7 @@ async function withPreparedTransactionRelationLock(db, tableName, work) {
 async function withShortGrantedRelationLock(tableName, work) {
   const alterTargets = new Set([
     "ExerciseCatalog", "ProgramExercise", "StrengthSessionExercise", "StrengthSet",
-    "HealthMetricSample", "StrengthDiarySession",
+    "HealthMetricSample", "StrengthDiarySession", "DailyModelState",
   ]);
   if (!alterTargets.has(tableName)) throw new Error("Refusing to test an unreviewed relation lock target.");
 

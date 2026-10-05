@@ -128,6 +128,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     const smoke = await readFile(new URL("../scripts/ci/production-safety-postgres-smoke.mjs", import.meta.url), "utf8");
     expect(smoke).toContain("report.conflictingLocks.push(");
     expect(smoke).toContain('"lock(s) conflict with the exact migration DDL operations"');
+    expect(smoke).toContain('"HealthMetricSample", "StrengthDiarySession", "DailyModelState"');
     expect(smoke).toContain('withShortGrantedRelationLock("DailyModelState"');
     expect(smoke).toContain('withPreparedTransactionRelationLock(preparedDb, "DailyModelState"');
     expect(smoke).not.toContain("relevantLocks");

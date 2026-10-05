@@ -481,6 +481,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     const spawn = vi.fn(() => ({ status: 0 }));
     for (const override of [
       { repository: "someone/else" }, { ref: "refs/heads/feature/other" }, { event_name: "push" },
+      { sub: "repo:krustallik/body-model:environment:staging" }, { environment: "staging" },
       { run_id: "1502" }, { run_attempt: 2 }, { sha: "b".repeat(40) },
       { workflow_sha: "b".repeat(40) },
       { workflow_ref: "krustallik/body-model/.github/workflows/other.yml@refs/heads/main" },
@@ -496,6 +497,22 @@ describe("V5 closed migration manifest and full pending set", () => {
         now: () => now,
         ...boundaryOptions(fixture),
       })).rejects.toThrow("not from the exact authorized repository");
+    }
+    for (const override of [
+      { iss: "https://example.invalid" },
+      { aud: "bodycast-wrong-execution-audience" },
+    ]) {
+      const token = createOidcProof(fixture.authorizationEnvelope, fixture.executionChallenge, override, now);
+      await expect(verifyFixtureProof(token, fixture)).rejects.toThrow("audience, issuer, replay id, or freshness");
+      await expect(startPrismaMigrationAtDdlBoundary({
+        authorized: { ...authorizedBoundary(fixture), executionProof: token },
+        latestPreflightProbe: async () => fixture.latestPreflight,
+        identityProbe: async () => fixture.identity,
+        nonceDirectory,
+        spawn,
+        now: () => now,
+        ...boundaryOptions(fixture),
+      })).rejects.toThrow("audience, issuer, replay id, or freshness");
     }
     await expect(verifyGitHubExecutionProof(fixture.executionProof, {
       authorizationEnvelope: fixture.authorizationEnvelope, allowlist,

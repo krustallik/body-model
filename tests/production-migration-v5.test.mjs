@@ -145,7 +145,8 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(smoke).toContain('"HealthMetricSample", "StrengthDiarySession", "DailyModelState"');
     expect(smoke).toContain('const ddlLockTargets = ["Workout", "Profile", "ModelEpisode", "PhysiologyV7Lifecycle", "DailyModelState"]');
     expect(smoke).toContain('withPreparedTransactionRelationLock(preparedDb, "DailyModelState"');
-    expect(smoke).toContain('"HealthMetricSample", "StrengthDiarySession", "DailyModelState", "Workout", "Profile", "ModelEpisode", "BodycastUnrelatedLockProbe"');
+    expect(smoke).toContain('"HealthMetricSample", "StrengthDiarySession", "DailyModelState", "PhysiologyV7Lifecycle",');
+    expect(smoke).toContain('"Workout", "Profile", "ModelEpisode", "BodycastUnrelatedLockProbe"');
     expect(smoke).toContain("withShortGrantedRelationLock(tableName");
     expect(smoke).toContain('withShortGrantedRelationLock("BodycastUnrelatedLockProbe"');
     expect(smoke).not.toContain("relevantLocks");

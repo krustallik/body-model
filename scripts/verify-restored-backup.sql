@@ -13,12 +13,13 @@ SELECT jsonb_build_object(
     FROM public."_prisma_migrations"
   ), '[]'::jsonb),
   'readability', jsonb_build_object(
-    'StrengthDiarySession', jsonb_build_object(
-      'rowCount', (SELECT count(*) FROM public."StrengthDiarySession")
-    ),
-    'ExerciseCatalog', jsonb_build_object(
-      'rowCount', (SELECT count(*) FROM public."ExerciseCatalog")
-    )
+    'Workout', jsonb_build_object('rowCount', (SELECT count(*) FROM public."Workout")),
+    'Profile', jsonb_build_object('rowCount', (SELECT count(*) FROM public."Profile")),
+    'ModelEpisode', jsonb_build_object('rowCount', (SELECT count(*) FROM public."ModelEpisode")),
+    'PhysiologyV7Lifecycle', jsonb_build_object('rowCount', (SELECT count(*) FROM public."PhysiologyV7Lifecycle")),
+    'DailyModelState', jsonb_build_object('rowCount', (SELECT count(*) FROM public."DailyModelState")),
+    'StrengthDiarySession', jsonb_build_object('rowCount', (SELECT count(*) FROM public."StrengthDiarySession")),
+    'ExerciseCatalog', jsonb_build_object('rowCount', (SELECT count(*) FROM public."ExerciseCatalog"))
   )
 )::text;
 COMMIT;

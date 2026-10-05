@@ -26,8 +26,18 @@ FROM dependencies AS migrator
 WORKDIR /app
 ENV NODE_ENV=production
 COPY prisma ./prisma
+COPY scripts/production-migration-*.mjs ./scripts/
+COPY scripts/production-migration-verification-keys.json ./scripts/
+COPY scripts/production-migration-preflight.mjs ./scripts/
+COPY scripts/production-migration-manifests.mjs ./scripts/
+COPY scripts/production-migration-integrity.mjs ./scripts/
+COPY scripts/production-migration-authorization.mjs ./scripts/
+COPY scripts/production-migration-release.mjs ./scripts/
+COPY scripts/production-db-preflight.mjs ./scripts/
+COPY scripts/production-db-preflight.sql ./scripts/
+COPY scripts/run-prisma-migrate-with-lock-timeout.mjs ./scripts/
 USER node
-CMD ["npx", "prisma", "migrate", "deploy"]
+CMD ["node", "scripts/run-prisma-migrate-with-lock-timeout.mjs"]
 
 FROM node:24-alpine AS production
 WORKDIR /app

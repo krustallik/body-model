@@ -11,6 +11,7 @@ import { recordExperimentalGlycogenStateShadow } from "@/modules/model-episodes/
 import { rebuildAuthoritativeRelativeMuscleTrajectory } from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
 import { recordExperimentalStepperActiveEnergyShadowsForMassWindow } from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
 import { publishActiveEnergyChangesV1 } from "@/modules/activity/active-energy-publication";
+import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import {
   invalidateStepperMassDependenciesInTransactionV1,
   invalidateWorkoutEnergyInTransactionV1,
@@ -332,6 +333,7 @@ export class DailyMetricRepository {
     try {
       const { workouts, ...metrics } = input;
       const record = await this.client.$transaction(async (tx) => {
+        await new PhysiologyV7PersistenceRepository(tx).lockProfile(1);
         const created = await tx.dailyHealthData.create({
           data: {
             ...prepareDailyMeasurementsForWrite(metrics),
@@ -369,6 +371,7 @@ export class DailyMetricRepository {
     try {
       const { workouts, ...metrics } = input;
       const record = await this.client.$transaction(async (tx) => {
+        await new PhysiologyV7PersistenceRepository(tx).lockProfile(1);
         const before = await tx.dailyHealthData.findUniqueOrThrow({
           where: { date },
           select: { weightKg: true, workouts: { where: { hiddenFromHistory: false }, select: { id: true, startAt: true, endAt: true } } },
@@ -411,6 +414,7 @@ export class DailyMetricRepository {
     // Explicit application delete: remove workouts first so Restrict FK cannot
     // leave orphan intent — accidental raw day deletes without this path fail.
     const deleted = await this.client.$transaction(async (transaction) => {
+      await new PhysiologyV7PersistenceRepository(transaction).lockProfile(1);
       const day = await transaction.dailyHealthData.findUnique({
         where: { date },
         select: { id: true, weightKg: true, workouts: { where: { hiddenFromHistory: false }, select: { id: true, startAt: true, endAt: true } } },

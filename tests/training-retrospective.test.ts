@@ -28,6 +28,7 @@ function decimal(value: number | null) {
 
 function buildDb() {
   const db = {
+    $executeRaw: vi.fn().mockResolvedValue(0),
     exerciseCatalog: { findMany: vi.fn() },
     trainingProgram: {
       findMany: vi.fn(),

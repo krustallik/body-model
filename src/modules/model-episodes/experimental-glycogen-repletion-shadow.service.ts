@@ -1,5 +1,9 @@
 import { prisma } from "@/lib/db/prisma";
 import {
+  persistUnifiedShadowCandidateV1,
+  readUnifiedSourceFenceV1,
+} from "./physiology-v7-persistence.repository";
+import {
   estimateExperimentalGlycogenRepletionV1,
   EXPERIMENTAL_GLYCOGEN_REPLETION_V1_REVISION,
   experimentalGlycogenRepletionV1Fingerprint,
@@ -29,6 +33,7 @@ export async function recordExperimentalGlycogenRepletionShadow(input: {
   profileId?: number;
 }): Promise<void> {
   const profileId = input.profileId ?? 1;
+  const sourceFence = await readUnifiedSourceFenceV1(prisma, profileId);
 
   const [health, latestGlycogen, strengthShadows, stepperShadows] = await Promise.all([
     prisma.dailyHealthData.findUnique({
@@ -75,21 +80,23 @@ export async function recordExperimentalGlycogenRepletionShadow(input: {
     activeEnergyKcal: health?.activeEnergyKcal ?? null,
   });
   const sourceFingerprint = experimentalGlycogenRepletionV1Fingerprint(result);
-  await prisma.experimentalGlycogenRepletionShadow.upsert({
-    where: { profileId_date: { profileId, date: input.date } },
-    create: {
-      profileId,
-      date: input.date,
-      sourceFingerprint,
-      modelRevision: EXPERIMENTAL_GLYCOGEN_REPLETION_V1_REVISION,
-      features: result.features,
-      result,
-    },
-    update: {
-      sourceFingerprint,
-      modelRevision: EXPERIMENTAL_GLYCOGEN_REPLETION_V1_REVISION,
-      features: result.features,
-      result,
+  await persistUnifiedShadowCandidateV1({
+    client: prisma,
+    profileId,
+    expectedFence: sourceFence,
+    persist: async (tx) => {
+      const existing = await tx.experimentalGlycogenRepletionShadow.findUnique({
+        where: { profileId_date: { profileId, date: input.date } },
+        select: { sourceFingerprint: true, modelRevision: true },
+      });
+      if (existing?.sourceFingerprint === sourceFingerprint
+          && existing.modelRevision === EXPERIMENTAL_GLYCOGEN_REPLETION_V1_REVISION) return false;
+      await tx.experimentalGlycogenRepletionShadow.upsert({
+        where: { profileId_date: { profileId, date: input.date } },
+        create: { profileId, date: input.date, sourceFingerprint, modelRevision: EXPERIMENTAL_GLYCOGEN_REPLETION_V1_REVISION, features: result.features, result },
+        update: { sourceFingerprint, modelRevision: EXPERIMENTAL_GLYCOGEN_REPLETION_V1_REVISION, features: result.features, result },
+      });
+      return true;
     },
   });
 }

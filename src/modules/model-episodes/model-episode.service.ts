@@ -255,6 +255,7 @@ export async function initializeNewModelEpisode(
         timezone,
       });
     }
+    await new PhysiologyV7PersistenceRepository(transaction).lockProfile(prepared.profileId);
     await new PhysiologyV7PersistenceRepository(transaction).invalidateUnifiedPublication(prepared.profileId);
     await repository.deactivateActive(now);
     return repository.createPrepared(prepared);

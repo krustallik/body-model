@@ -3,7 +3,6 @@ import { prisma } from "@/lib/db/prisma";
 import { readJson, validationResponse } from "@/modules/days/day.http";
 import { confirmStepperReconciliationV1 } from "@/modules/training/stepper-reconciliation.service";
 import { activateConfirmedReconciliationVisibilityV1 } from "@/modules/model-episodes/selection-v1-episode-ops";
-import { invalidateWorkoutEnergyInTransactionV1 } from "@/modules/activity/active-energy-invalidation";
 import { recordExperimentalStepperActiveEnergyShadowsForWorkouts } from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
 import { publishActiveEnergyChangesV1 } from "@/modules/activity/active-energy-publication";
 
@@ -30,23 +29,11 @@ export async function POST(request: Request): Promise<Response> {
     if (parsed.data.activateVisibility === true) {
       const generationId = parsed.data.generationId
         ?? `recon-${parsed.data.manualWorkoutId}-${parsed.data.garminWorkoutId}`;
-      await prisma.$transaction(async (tx) => {
-        const affected = await tx.workout.findMany({
-          where: { id: { in: [parsed.data.manualWorkoutId, parsed.data.garminWorkoutId] } },
-          select: { id: true, startAt: true, endAt: true },
-        });
-        await activateConfirmedReconciliationVisibilityV1({
-          client: tx,
-          generationId,
-          manualWorkoutId: parsed.data.manualWorkoutId,
-          garminWorkoutId: parsed.data.garminWorkoutId,
-        });
-        await invalidateWorkoutEnergyInTransactionV1({
-          tx,
-          profileId: 1,
-          workoutIds: [parsed.data.manualWorkoutId, parsed.data.garminWorkoutId],
-          affectedInstants: affected.flatMap((row) => [row.startAt, row.endAt]),
-        });
+      await activateConfirmedReconciliationVisibilityV1({
+        client: prisma,
+        generationId,
+        manualWorkoutId: parsed.data.manualWorkoutId,
+        garminWorkoutId: parsed.data.garminWorkoutId,
       });
     }
     await recordExperimentalStepperActiveEnergyShadowsForWorkouts({

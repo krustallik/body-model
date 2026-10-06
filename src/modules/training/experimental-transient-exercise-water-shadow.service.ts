@@ -251,7 +251,7 @@ export async function rebuildExperimentalTransientExerciseWaterV2(input: {
         addPreviousDate(existing.result);
       }
     }
-    await tx.experimentalTransientExerciseWaterShadow.deleteMany({
+    const deleted = await tx.experimentalTransientExerciseWaterShadow.deleteMany({
       where: {
         profileId,
         modelRevision: EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V2_REVISION,
@@ -259,6 +259,9 @@ export async function rebuildExperimentalTransientExerciseWaterV2(input: {
       },
     });
     affectedDates = changedDates;
+    if (changedDates.length > 0 || deleted.count > 0) {
+      await lifecycle.invalidateUnifiedPublication(profileId);
+    }
   });
   const earliestModelDate = affectedDates.sort()[0] ?? null;
   return { earliestModelDate, sourceToken: before.token, impulseCount: impulses.length };

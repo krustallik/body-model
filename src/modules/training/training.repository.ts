@@ -1255,6 +1255,7 @@ export class TrainingRepository {
   }): Promise<void> {
     const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
     await this.db.$transaction(async (tx) => {
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
       await tx.$queryRaw<Array<{ id: number }>>`
         SELECT "id" FROM "StrengthDiarySession"
         WHERE "id" = ${input.sessionId} AND "profileId" = ${profileId}
@@ -1358,6 +1359,7 @@ export class TrainingRepository {
     // Fast ordinary no-op: take the session lock and verify the persisted
     // pointer before returning, so GET/reopen paths never replay physiology.
     const alreadyCurrent = mode === "ordinary" ? await this.db.$transaction(async (tx) => {
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
       await tx.$queryRaw<Array<{ id: number }>>`
         SELECT "id" FROM "StrengthDiarySession"
         WHERE "id" = ${record.id} AND "profileId" = ${profileId}
@@ -1470,6 +1472,7 @@ export class TrainingRepository {
       })),
     });
     return this.db.$transaction(async (tx) => {
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
       await tx.$queryRaw<Array<{ id: number }>>`
         SELECT "id" FROM "StrengthDiarySession"
         WHERE "id" = ${record.id} AND "profileId" = ${profileId}
@@ -1677,6 +1680,7 @@ export class TrainingRepository {
     const accountingTimeZone = input.accountingTimeZone ?? DEFAULT_TIME_ZONE;
     const accountingTimeZoneProvenance = input.accountingTimeZoneProvenance ?? "legacy-default";
     const created = await this.db.$transaction(async (tx) => {
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
       const row = await tx.strengthDiarySession.create({
       data: {
         profileId,
@@ -1763,12 +1767,16 @@ export class TrainingRepository {
   }
 
   async incrementSessionRevision(sessionId: number): Promise<number> {
-    const row = await this.db.strengthDiarySession.update({
-      where: { id: sessionId },
-      data: { revision: { increment: 1 } },
-      select: { revision: true },
+    return this.db.$transaction(async (tx) => {
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(DEFAULT_TRAINING_PROFILE_ID);
+      const row = await tx.strengthDiarySession.update({
+        where: { id: sessionId },
+        data: { revision: { increment: 1 } },
+        select: { revision: true },
+      });
+      await invalidateStrengthSessionActiveEnergyInTransaction(tx, sessionId);
+      return row.revision;
     });
-    return row.revision;
   }
 
   async findSessionExercise(sessionId: number, exerciseId: number, profileId = DEFAULT_TRAINING_PROFILE_ID) {
@@ -1864,6 +1872,7 @@ export class TrainingRepository {
     plan: ProgramReconcilePlan;
   }): Promise<number> {
     return this.db.$transaction(async (tx) => {
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(DEFAULT_TRAINING_PROFILE_ID);
       await parkExerciseOrder(tx, input.plan.keep.map((keep) => keep.exerciseId));
 
       for (const added of input.plan.add) {
@@ -1934,6 +1943,7 @@ export class TrainingRepository {
     orderedExerciseIds: readonly number[];
   }): Promise<{ exerciseId: number; revision: number }> {
     return this.db.$transaction(async (tx) => {
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(DEFAULT_TRAINING_PROFILE_ID);
       const existing = [...input.orderedExerciseIds];
       const position = input.order === undefined
         ? existing.length
@@ -1991,6 +2001,7 @@ export class TrainingRepository {
     orderedExerciseIds: readonly number[];
   }): Promise<number> {
     return this.db.$transaction(async (tx) => {
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(DEFAULT_TRAINING_PROFILE_ID);
       if (input.plannedSets !== undefined || input.resistanceType !== undefined) {
         await tx.strengthSessionExercise.update({
           where: { id: input.exerciseId },
@@ -2038,6 +2049,7 @@ export class TrainingRepository {
     orderedExerciseIds: readonly number[];
   }): Promise<number> {
     return this.db.$transaction(async (tx) => {
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(DEFAULT_TRAINING_PROFILE_ID);
       await tx.strengthSessionExercise.delete({ where: { id: input.exerciseId } });
       const remaining = input.orderedExerciseIds.filter((id) => id !== input.exerciseId);
       await parkExerciseOrder(tx, remaining);
@@ -2061,6 +2073,7 @@ export class TrainingRepository {
     orderedExerciseIds: readonly number[];
   }): Promise<number> {
     return this.db.$transaction(async (tx) => {
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(DEFAULT_TRAINING_PROFILE_ID);
       await parkExerciseOrder(tx, input.orderedExerciseIds);
       await writeExerciseOrder(tx, input.orderedExerciseIds);
       const session = await tx.strengthDiarySession.update({
@@ -2085,6 +2098,7 @@ export class TrainingRepository {
     loadAccountingOverride?: Prisma.InputJsonValue | null;
   }): Promise<StrengthSetDto> {
     return this.db.$transaction(async (tx) => {
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(DEFAULT_TRAINING_PROFILE_ID);
       const exercise = await tx.strengthSessionExercise.findUnique({
         where: { id: input.sessionExerciseId }, select: { sessionId: true },
       });
@@ -2124,6 +2138,7 @@ export class TrainingRepository {
   }): Promise<StrengthSetDto | null> {
     const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
     return this.db.$transaction(async (tx) => {
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
       const existing = await tx.strengthSet.findFirst({
         where: {
           id: input.setId,
@@ -2176,6 +2191,7 @@ export class TrainingRepository {
     profileId = DEFAULT_TRAINING_PROFILE_ID,
   ): Promise<boolean> {
     return this.db.$transaction(async (tx) => {
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
       const existing = await tx.strengthSet.findFirst({
         where: { id: setId, sessionExercise: { sessionId, session: { profileId } } },
         select: { id: true },
@@ -2313,6 +2329,7 @@ export class TrainingRepository {
     profileId = DEFAULT_TRAINING_PROFILE_ID,
   ): Promise<void> {
     await this.db.$transaction(async (tx) => {
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
       await tx.strengthDiarySession.update({
         where: { id: sessionId },
         data: { status: SESSION_STATUS.COMPLETED, webEndedAt },
@@ -2323,6 +2340,7 @@ export class TrainingRepository {
 
   async markSessionCancelled(sessionId: number, webEndedAt: Date): Promise<void> {
     await this.db.$transaction(async (tx) => {
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(DEFAULT_TRAINING_PROFILE_ID);
       // Capture and invalidate the matched Workout alias before clearing the
       // relationship; otherwise the old Workout identity is no longer
       // discoverable from the session row in this transaction.
@@ -2365,6 +2383,7 @@ export class TrainingRepository {
     }
     const matchedWorkoutId = existing.matchedWorkoutId;
     await this.db.$transaction(async (tx) => {
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
       const session = await tx.strengthDiarySession.findUnique({
         where: { id: sessionId },
         select: { profileId: true, status: true, effectiveAccountingAt: true, accountingTimeZone: true, webStartedAt: true, createdAt: true, matchedWorkout: { select: { startAt: true, endAt: true } } },
@@ -2396,6 +2415,7 @@ export class TrainingRepository {
     matchedAt: Date | null;
   }): Promise<void> {
     await this.db.$transaction(async (tx) => {
+      await new PhysiologyV7PersistenceRepository(tx).lockProfile(DEFAULT_TRAINING_PROFILE_ID);
       const session = await tx.strengthDiarySession.findUnique({
         where: { id: input.sessionId },
         select: {

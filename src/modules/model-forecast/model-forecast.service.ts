@@ -24,9 +24,11 @@ import type { RecoveryParticle, RecoveryQuality } from "@/modules/model-recovery
 import { forecastScenarioFingerprint, forecastSourceFingerprint } from "./forecast-fingerprint";
 import { runForecastWithInternalArtifacts, type ForecastInternalArtifacts } from "./forecast-engine";
 import type { ForecastModelRequest } from "./model-forecast.schema";
+import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION } from "@/model/unified-experimental-physiology-v1/contracts";
+import { calculateGlycogenAssociatedWaterKg } from "@/model/body-composition/state";
 import {
   DEFAULT_FORECAST_CONFIG,
-  FORECAST_ALGORITHM_VERSION,
+  EXPERIMENTAL_FORECAST_V2_VERSION,
   type ForecastBehaviorDay,
   type ForecastBlockedResult,
   type ForecastConfig,
@@ -35,7 +37,11 @@ import {
   type ForecastScenario,
   type ForecastVariabilityEvidence,
 } from "./forecast.types";
-import { experimentalForecastModelEpisode } from "@/modules/experimental-forecast-v1/service";
+
+const finiteNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+const recordValue = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value)
+  ? value as Record<string, unknown>
+  : {};
 
 function resolvedForecastConfig(config?: Partial<ForecastConfig>): ForecastConfig {
   return { ...DEFAULT_FORECAST_CONFIG, ...config };
@@ -219,10 +225,26 @@ function blocked(input: {
 }): ForecastBlockedResult {
   return {
     status: input.quality === "degenerate" ? "initial-state-unreliable" : "initial-state-unavailable",
-    forecastVersion: FORECAST_ALGORITHM_VERSION,
+    forecastVersion: EXPERIMENTAL_FORECAST_V2_VERSION,
     modelVersion: input.episode.modelVersion,
     recoveryVersion: input.recoveryVersion,
     initialStateQuality: input.quality,
+    reason: input.reason,
+  };
+}
+
+function blockedV2(input: {
+  episode: PersistedEpisode;
+  reasonCode: NonNullable<ForecastBlockedResult["reasonCode"]>;
+  reason: string;
+}): ForecastBlockedResult {
+  return {
+    status: "initial-state-unavailable",
+    forecastVersion: EXPERIMENTAL_FORECAST_V2_VERSION,
+    modelVersion: input.episode.modelVersion,
+    recoveryVersion: null,
+    initialStateQuality: "awaiting",
+    reasonCode: input.reasonCode,
     reason: input.reason,
   };
 }
@@ -233,18 +255,6 @@ export async function forecastModelEpisodeWithInternalArtifacts(
   request: ForecastModelRequest & { now?: Date },
   client: PrismaClient = prisma,
 ): Promise<ForecastModelEpisodeInternalResult> {
-  const experimental = await experimentalForecastModelEpisode(request, client);
-  if (experimental) {
-    const initial = experimental.experimentalCurrent?.modeledWeightKg
-      ?? experimental.dates[0]?.physiologicalBodyWeightKg.median
-      ?? 0;
-    const terminal = experimental.dates.at(-1)?.physiologicalBodyWeightKg.median ?? initial;
-    return {
-      result: experimental,
-      initialPhysiologicalBodyWeightKg: initial,
-      terminalPhysiologicalBodyWeightSamplesKg: [terminal],
-    };
-  }
   const episodes = new ModelEpisodeRepository(client);
   const recoveryRepository = new ModelRecoveryRepository(client);
   const episode = request.episodeId === undefined
@@ -255,6 +265,62 @@ export async function forecastModelEpisodeWithInternalArtifacts(
   }
   const now = request.now ?? new Date();
   const latestCompletedDate = latestCompletedLocalDate(now, episode.timezone);
+  const lifecycle = await client.physiologyV7Lifecycle.findUnique({
+    where: { profileId: episode.profileId },
+    select: {
+      invalidationGeneration: true,
+      staleFromDate: true,
+      productionStaleFromDate: true,
+      productionPublishedGeneration: true,
+      unifiedPublishedGeneration: true,
+      unifiedTargetRevision: true,
+      unifiedRolloutEpoch: true,
+      unifiedPublishedRolloutEpoch: true,
+    },
+  });
+  const v4IsCurrent = lifecycle !== null
+    && lifecycle.unifiedTargetRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION
+    && lifecycle.unifiedRolloutEpoch > 0
+    && lifecycle.unifiedPublishedRolloutEpoch === lifecycle.unifiedRolloutEpoch
+    && lifecycle.productionStaleFromDate === null
+    && lifecycle.productionPublishedGeneration === lifecycle.invalidationGeneration
+    && lifecycle.unifiedPublishedGeneration === lifecycle.invalidationGeneration
+    && (lifecycle.staleFromDate === null
+      || lifecycle.staleFromDate < episode.startDate
+      || lifecycle.staleFromDate > latestCompletedDate);
+  if (!v4IsCurrent) return blockedV2({
+    episode,
+    reasonCode: "unified-v4-not-current",
+    reason: "Unified V4 is not current for the production generation and rollout epoch.",
+  });
+  const latestUnifiedRow = await client.unifiedExperimentalPhysiologyStateV2.findUnique({
+    where: { profileId_modelEpisodeId_date: { profileId: episode.profileId, modelEpisodeId: episode.id, date: latestCompletedDate } },
+    select: { modelRevision: true, resultFingerprint: true, state: true },
+  });
+  if (latestUnifiedRow?.modelRevision !== UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION) return blockedV2({
+    episode,
+    reasonCode: "unified-v4-not-current",
+    reason: "The active episode has no exact V4 row at the latest completed model boundary.",
+  });
+  const physicalGlycogen = recordValue(recordValue(latestUnifiedRow.state).glycogen);
+  const physicalWater = recordValue(recordValue(latestUnifiedRow.state).glycogenWater);
+  const physicalGlycogenKg = physicalGlycogen.physicalKg;
+  const physicalGlycogenWaterKg = physicalWater.physicalKg;
+  if (physicalGlycogen.physicalAvailability === "blocked") return blockedV2({
+    episode,
+    reasonCode: "production-glycogen-null",
+    reason: "The current production row explicitly has null physical glycogen; episode initial state cannot replace it.",
+  });
+  if (physicalGlycogen.physicalAvailability !== "available"
+      || !finiteNumber(physicalGlycogenKg) || physicalGlycogenKg < 0
+      || !finiteNumber(physicalGlycogenWaterKg)
+      || Math.abs(physicalGlycogenWaterKg - calculateGlycogenAssociatedWaterKg(physicalGlycogenKg)) > 1e-9) {
+    return blockedV2({
+      episode,
+      reasonCode: "physical-glycogen-unavailable",
+      reason: "Unified V4 does not contain valid physical glycogen and matching canonical 2.7x associated water.",
+    });
+  }
   const historyTo = episode.startDate > latestCompletedDate ? episode.startDate : latestCompletedDate;
   const sources = await episodes.loadSources(episode.startDate, historyTo);
   const builtDays = episode.startDate > latestCompletedDate ? [] : buildSimulationDays({
@@ -289,6 +355,27 @@ export async function forecastModelEpisodeWithInternalArtifacts(
   const reliableDonors = eligibleHistoricalDonors(episode.modelVersion, behaviorDonorDays)
     .map(behaviorFromReliableDay).filter((day): day is ForecastBehaviorDay => day !== null);
   const evidence = variabilityEvidence({ scenario, donors: reliableDonors, config });
+  const fallbackNutrition = episode.baselineNutritionFallback;
+  const engineeringFallbackDay: ForecastBehaviorDay | null = fallbackNutrition === null ? null : {
+    nutrition: {
+      caloriesKcal: fallbackNutrition.caloriesKcal,
+      proteinG: fallbackNutrition.proteinG,
+      fatG: fallbackNutrition.fatG,
+      carbsG: fallbackNutrition.carbsG,
+    },
+    outsideWorkWalkingDistanceKm: 0,
+    averageWalkingSpeedKmh: 5,
+    strengthTrainingMinutes: 0,
+    occupation: [],
+    workoutFeedObserved: null,
+  };
+  if (scenario.mode === "recent-behavior" && reliableDonors.length === 0 && engineeringFallbackDay === null) {
+    return blockedV2({
+      episode,
+      reasonCode: "nutrition-evidence-unavailable",
+      reason: "No complete recent nutrition donor or existing episode engineering fallback is available.",
+    });
+  }
 
   let initialParticles: ForecastInitialParticle[];
   let initialStateQuality: "deterministic" | "recovered" | "degraded";
@@ -297,11 +384,11 @@ export async function forecastModelEpisodeWithInternalArtifacts(
   let startDate: string;
   let currentStateSource: unknown;
   if (continuity.unknownIntervals.length === 0) {
-    const state = replayResolvedState(episode, continuity.resolvedDays);
+    const state = { ...replayResolvedState(episode, continuity.resolvedDays), glycogenKg: physicalGlycogenKg };
     initialParticles = [{ state, weight: 1 }];
     initialStateQuality = "deterministic";
     startDate = addCalendarDays(latestCompletedDate, 1);
-    currentStateSource = { latestCompletedDate, observedAnchorWeightKg, builtDays, state };
+    currentStateSource = { latestCompletedDate, observedAnchorWeightKg, builtDays, state, unifiedResultFingerprint: latestUnifiedRow.resultFingerprint, fallbackNutrition };
   } else {
     const recovery = await recoveryRepository.loadCurrentEnsemble(episode.id);
     if (!recovery) return blocked({
@@ -341,11 +428,14 @@ export async function forecastModelEpisodeWithInternalArtifacts(
       episode, recoveryVersion, quality: "awaiting",
       reason: "The persisted recovery ensemble is unavailable or invalid.",
     });
-    initialParticles = particles;
+    initialParticles = particles.map((particle) => ({
+      ...particle,
+      state: { ...particle.state, glycogenKg: physicalGlycogenKg },
+    }));
     initialStateQuality = recovery.status as Extract<RecoveryQuality, "recovered" | "degraded">;
     recoveryFingerprint = recovery.sourceFingerprint;
     startDate = addCalendarDays(recovery.latestRecoveredDate, 1);
-    currentStateSource = { recoveryId: recovery.id, recoveryFingerprint, observedAnchorWeightKg, particleCount: particles.length };
+    currentStateSource = { recoveryId: recovery.id, recoveryFingerprint, observedAnchorWeightKg, particleCount: particles.length, unifiedResultFingerprint: latestUnifiedRow.resultFingerprint, physicalGlycogenKg, fallbackNutrition };
   }
   const personalization = {
     personalOffsetKcalPerDay: episode.personalOffsetKcalPerDay,
@@ -362,7 +452,7 @@ export async function forecastModelEpisodeWithInternalArtifacts(
     personalization,
     parameters: episode.simulatorParameters,
   });
-  return runForecastWithInternalArtifacts({
+  const artifacts = runForecastWithInternalArtifacts({
     seed: request.seed,
     startDate,
     horizonDays: request.horizonDays,
@@ -378,9 +468,74 @@ export async function forecastModelEpisodeWithInternalArtifacts(
     ecfPolicy: episode.ecfPolicy,
     scenario,
     reliableDonorDays: reliableDonors,
+    engineeringFallbackDay,
     variabilityEvidence: evidence,
     config,
   });
+  const finalLifecycle = await client.physiologyV7Lifecycle.findUnique({
+    where: { profileId: episode.profileId },
+    select: {
+      invalidationGeneration: true,
+      staleFromDate: true,
+      productionStaleFromDate: true,
+      productionPublishedGeneration: true,
+      unifiedPublishedGeneration: true,
+      unifiedTargetRevision: true,
+      unifiedRolloutEpoch: true,
+      unifiedPublishedRolloutEpoch: true,
+    },
+  });
+  if (!finalLifecycle || finalLifecycle.invalidationGeneration !== lifecycle.invalidationGeneration
+      || finalLifecycle.unifiedPublishedGeneration !== lifecycle.unifiedPublishedGeneration
+      || finalLifecycle.unifiedPublishedRolloutEpoch !== lifecycle.unifiedPublishedRolloutEpoch
+      || finalLifecycle.unifiedRolloutEpoch !== lifecycle.unifiedRolloutEpoch
+      || finalLifecycle.unifiedTargetRevision !== UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION
+      || finalLifecycle.productionStaleFromDate !== null
+      || finalLifecycle.productionPublishedGeneration !== finalLifecycle.invalidationGeneration
+      || (finalLifecycle.staleFromDate !== null
+        && finalLifecycle.staleFromDate >= episode.startDate
+        && finalLifecycle.staleFromDate <= latestCompletedDate)) {
+    return blockedV2({ episode, reasonCode: "unified-v4-not-current", reason: "Unified V4 became stale while the forecast was being computed." });
+  }
+  artifacts.result.forecastVersion = EXPERIMENTAL_FORECAST_V2_VERSION;
+  artifacts.result.experimentalQuality = reliableDonors.length >= config.minimumReliableDonorDays ? "standard" : "limited-history";
+  const nutritionSource = scenario.mode !== "recent-behavior"
+    ? "explicit-scenario" as const
+    : reliableDonors.length > 0 ? "complete-recent-donor" as const : "episode-engineering-fallback" as const;
+  const transientWaterEnvelope = recordValue(recordValue(latestUnifiedRow.state).transientWater).levelKg;
+  const transientWaterPoint = transientWaterEnvelope === null || transientWaterEnvelope === undefined
+    ? null
+    : recordValue(transientWaterEnvelope).point;
+  artifacts.result.experimentalProvenance = {
+    source: reliableDonors.length > 0 ? "observed-history" : "engineering-fallback",
+    nutritionSource,
+    nutritionFallback: nutritionSource === "episode-engineering-fallback" ? fallbackNutrition : null,
+    nutritionUncertainty: {
+      nutritionLogStandardDeviation: evidence.nutritionLogStandardDeviation,
+      macroCompositionLogStandardDeviation: evidence.macroCompositionLogStandardDeviation,
+    },
+    anchor: observedAnchorWeightKg === null ? "none" : "observed-weight",
+    reasons: [
+      ...(reliableDonors.length === 0 ? ["no-complete-valid-recent-nutrition-donor; explicit engineering fallback retained"] : []),
+      `physical-glycogen:${String(physicalGlycogen.physicalProvenance)}`,
+    ],
+    improvements: ["Add complete recent nutrition days to replace the explicit engineering nutrition fallback."],
+  };
+  artifacts.result.experimentalCurrent = {
+    modeledWeightKg: observedAnchorWeightKg ?? artifacts.initialPhysiologicalBodyWeightKg,
+    glycogenKg: physicalGlycogenKg,
+    fatMassKg: initialParticles[0]?.state.fatMassKg ?? null,
+    slowNonFatKg: initialParticles[0]?.state.leanTissueKg ?? null,
+    glycogenWaterKg: physicalGlycogenWaterKg,
+    transientWaterKg: finiteNumber(transientWaterPoint) ? transientWaterPoint : null,
+    restingRmrKcalPerDay: null,
+    typicalMaintenanceKcalPerDay: episode.baselineEnergyIntakeKcalPerDay,
+    latestExpenditureKcalPerDay: null,
+    eligibleDays: reliableDonors.length,
+    requestedWindowDays: donorLookback,
+    physicalGlycogenProvenance: physicalGlycogen.physicalProvenance as "production-daily-model-state" | "episode-initial-state",
+  };
+  return artifacts;
 }
 
 export async function forecastModelEpisode(

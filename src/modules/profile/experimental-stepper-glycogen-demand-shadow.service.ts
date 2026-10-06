@@ -12,6 +12,7 @@ import {
   FIXED_STEPPER_EQUIPMENT_V7,
 } from "@/model/activity/personal-stepper-reference-v7";
 import { canonicalizeWorkoutStepperEvidenceV7 } from "@/model/activity/workout-stepper-v7";
+import { persistUnifiedShadowCandidateV1, readUnifiedSourceFenceV1 } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 
 /**
  * Isolated experimental/shadow output for MS100 stepper glycogen demand.
@@ -22,6 +23,7 @@ export async function recordExperimentalStepperGlycogenDemandShadow(input: {
   profileId?: number;
 }): Promise<void> {
   const profileId = input.profileId ?? 1;
+  const sourceFence = await readUnifiedSourceFenceV1(prisma, profileId);
   const workout = await prisma.workout.findUnique({
     where: { id: input.workoutId, hiddenFromHistory: false },
     select: {
@@ -130,21 +132,31 @@ export async function recordExperimentalStepperGlycogenDemandShadow(input: {
     activeEnergyKcal: ignoredActiveEnergyKcal,
   });
   const sourceFingerprint = experimentalStepperGlycogenDemandV1Fingerprint(result);
-  await prisma.experimentalStepperGlycogenDemandShadow.upsert({
-    where: { workoutId: workout.id },
-    create: {
-      workoutId: workout.id,
-      profileId,
-      sourceFingerprint,
-      modelRevision: EXPERIMENTAL_STEPPER_GLYCOGEN_DEMAND_V1_REVISION,
-      features: result.features,
-      result,
-    },
-    update: {
-      sourceFingerprint,
-      modelRevision: EXPERIMENTAL_STEPPER_GLYCOGEN_DEMAND_V1_REVISION,
-      features: result.features,
-      result,
+  await persistUnifiedShadowCandidateV1({
+    client: prisma,
+    profileId,
+    expectedFence: sourceFence,
+    persist: async (tx) => {
+      const current = await tx.workout.findFirst({
+        where: { id: workout.id, hiddenFromHistory: false },
+        select: { id: true, type: true, startAt: true, endAt: true, durationMinutes: true, activeEnergyKcal: true, dailyHealthData: { select: { weightKg: true } } },
+      });
+      if (!current || current.startAt.toISOString() !== startAt || current.endAt.toISOString() !== endAt
+          || current.type !== workout.type || current.durationMinutes !== workout.durationMinutes
+          || current.activeEnergyKcal !== workout.activeEnergyKcal) {
+        throw new Error("stepper glycogen candidate sources changed before persistence");
+      }
+      const existing = await tx.experimentalStepperGlycogenDemandShadow.findUnique({
+        where: { workoutId: workout.id }, select: { sourceFingerprint: true, modelRevision: true },
+      });
+      if (existing?.sourceFingerprint === sourceFingerprint
+          && existing.modelRevision === EXPERIMENTAL_STEPPER_GLYCOGEN_DEMAND_V1_REVISION) return false;
+      await tx.experimentalStepperGlycogenDemandShadow.upsert({
+        where: { workoutId: workout.id },
+        create: { workoutId: workout.id, profileId, sourceFingerprint, modelRevision: EXPERIMENTAL_STEPPER_GLYCOGEN_DEMAND_V1_REVISION, features: result.features, result },
+        update: { sourceFingerprint, modelRevision: EXPERIMENTAL_STEPPER_GLYCOGEN_DEMAND_V1_REVISION, features: result.features, result },
+      });
+      return true;
     },
   });
 }

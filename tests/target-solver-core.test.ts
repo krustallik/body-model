@@ -111,7 +111,7 @@ describe("target solver core with the Phase 14B forward model", () => {
       .not.toBe(episode.initialState.adaptiveThermogenesisKcalPerDay);
     expect(result.forecast!.dates.at(-1)!.fatMassKg.median)
       .not.toBe(episode.initialState.fatMassKg);
-    expect(result.forecast!.dates.at(-1)!.glycogenKg.median)
+    expect(result.forecast!.dates.at(-1)!.glycogenKg!.median)
       .not.toBe(episode.initialState.glycogenKg);
   });
 

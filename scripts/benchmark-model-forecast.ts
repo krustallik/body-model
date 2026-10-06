@@ -23,7 +23,7 @@ for (const pathCount of pathCounts) {
       weightP05Kg: final.physiologicalBodyWeightKg.p05,
       weightP95Kg: final.physiologicalBodyWeightKg.p95,
       fatMassMedianKg: final.fatMassKg.median,
-      glycogenMedianKg: final.glycogenKg.median,
+      glycogenMedianKg: final.glycogenKg?.median ?? null,
     });
   }
 }

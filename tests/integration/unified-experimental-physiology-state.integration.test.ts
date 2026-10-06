@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION,
   UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
+  UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
 } from "@/model/unified-experimental-physiology-v1";
 import { EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION } from "@/model/physiology-v7/experimental-cessation-detraining-v1";
 import { EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION } from "@/model/physiology-v7/experimental-skeletal-muscle-delta-v1";
@@ -13,6 +14,7 @@ import { PhysiologyV7ConcurrentSourceChangeError, PhysiologyV7PersistenceReposit
 import { isProductionGenerationCurrentV1, isUnifiedGenerationCurrentV1 } from "@/modules/model-episodes/publication-generation-v1";
 import { buildExerciseMuscleMappingSnapshotV7 } from "@/model/physiology-v7/exercise-muscle-mapping-v7";
 import { readLatestUnifiedExperimentalPhysiologyV2ForEpisode } from "@/modules/experimental-forecast-v1/service";
+import { activateAndReplayUnifiedV4, verifyAndPublishUnifiedV3Postflight } from "@/modules/model-episodes/unified-rollout-v4.service";
 import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -107,6 +109,9 @@ async function publishSeededProductionFixture(): Promise<void> {
         productionStaleFromDate: null,
         productionPublishedGeneration: 1,
         unifiedPublishedGeneration: null,
+        unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
+        unifiedRolloutEpoch: 0,
+        unifiedPublishedRolloutEpoch: null,
         ...currentPhysiologyV7Versions,
       },
     });
@@ -118,13 +123,20 @@ async function publishSeededProductionFixture(): Promise<void> {
       productionStaleFromDate: null,
       productionPublishedGeneration: lifecycle.invalidationGeneration,
       unifiedPublishedGeneration: null,
+      unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
+      unifiedRolloutEpoch: 0,
+      unifiedPublishedRolloutEpoch: null,
       currentThroughDate: dates[dates.length - 1],
       ...currentPhysiologyV7Versions,
     },
   });
 }
 
-async function seed(input: { order?: readonly string[]; withWorkouts?: boolean } = {}): Promise<void> {
+async function seed(input: {
+  order?: readonly string[];
+  withWorkouts?: boolean;
+  productionGlycogenKg?: readonly (number | null)[];
+} = {}): Promise<void> {
   await prisma.profile.upsert({
     where: { id: profileId },
     create: { id: profileId, sex: "male", dateOfBirth: new Date("1990-05-10T00:00:00.000Z"), heightCm: 180 },
@@ -164,6 +176,14 @@ async function seed(input: { order?: readonly string[]; withWorkouts?: boolean }
         energyIntakeKcal: 2_200,
         energyExpenditureKcal: 2_700,
         energyBalanceKcal: -500,
+        ...(input.productionGlycogenKg === undefined ? {} : {
+          glycogenKg: input.productionGlycogenKg[index] ?? null,
+          deltaGlycogenKg: index === 0
+            ? input.productionGlycogenKg[index] ?? null
+            : input.productionGlycogenKg[index] === null || input.productionGlycogenKg[index - 1] === null
+              ? null
+              : (input.productionGlycogenKg[index] ?? 0) - (input.productionGlycogenKg[index - 1] ?? 0),
+        }),
       },
     });
     if (input.withWorkouts && index === 0) {
@@ -289,6 +309,9 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
           productionStaleFromDate: lifecycleBeforeSuite.productionStaleFromDate,
           productionPublishedGeneration: lifecycleBeforeSuite.productionPublishedGeneration,
           unifiedPublishedGeneration: lifecycleBeforeSuite.unifiedPublishedGeneration,
+          unifiedTargetRevision: lifecycleBeforeSuite.unifiedTargetRevision,
+          unifiedRolloutEpoch: lifecycleBeforeSuite.unifiedRolloutEpoch,
+          unifiedPublishedRolloutEpoch: lifecycleBeforeSuite.unifiedPublishedRolloutEpoch,
           stateVersion: lifecycleBeforeSuite.stateVersion,
           sourceNormalizationVersion: lifecycleBeforeSuite.sourceNormalizationVersion,
           dailyRuntimeVersion: lifecycleBeforeSuite.dailyRuntimeVersion,
@@ -328,6 +351,35 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     expect(deltas.slowTissueKg?.slowNonFat).toBeNull();
     expect("glycogenWaterKg" in deltas).toBe(true);
     expect("transientWaterKg" in deltas).toBe(true);
+  });
+
+  it("publishes exact V3 postflight epoch 0 before explicitly replaying current V4", async () => {
+    await seed({ productionGlycogenKg: [0.5, 0.6, 0] });
+    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[0], toDate: dates[2] });
+    const v3 = await verifyAndPublishUnifiedV3Postflight({ profileId });
+    expect(v3.dayCount).toBe(3);
+    expect((await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } })).unifiedPublishedRolloutEpoch).toBe(0);
+
+    const v4 = await activateAndReplayUnifiedV4({ profileId });
+    expect(v4).toMatchObject({ profileId, rolloutEpoch: 1, dayCount: 3 });
+    const lifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
+    expect(lifecycle).toMatchObject({
+      unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
+      unifiedRolloutEpoch: 1,
+      unifiedPublishedRolloutEpoch: 1,
+      unifiedPublishedGeneration: lifecycle.invalidationGeneration,
+      productionPublishedGeneration: lifecycle.invalidationGeneration,
+      productionStaleFromDate: null,
+    });
+    const stored = await rows();
+    const glycogen = stored.map((row) => (row.state as { glycogen: { physicalKg: number } }).glycogen.physicalKg);
+    const water = stored.map((row) => (row.state as { glycogenWater: { physicalKg: number } }).glycogenWater.physicalKg);
+    expect(stored.every((row) => row.modelRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION)).toBe(true);
+    expect(glycogen).toEqual([0.5, 0.6, 0]);
+    expect(water).toEqual([1.35, 1.62, 0]);
+    const updatedAt = stored.map((row) => row.updatedAt.toISOString());
+    await expect(activateAndReplayUnifiedV4({ profileId })).resolves.toMatchObject(v4);
+    expect((await rows()).map((row) => row.updatedAt.toISOString())).toEqual(updatedAt);
   });
 
   it("keeps daily and cumulative Relative Muscle diagnostics separate, invalidates the episode suffix, and rebuilds without numeric effects", async () => {

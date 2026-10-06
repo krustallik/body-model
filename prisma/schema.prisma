@@ -871,6 +871,9 @@ model PhysiologyV7Lifecycle {
   productionStaleFromDate    String?  @db.VarChar(10)
   productionPublishedGeneration Int?
   unifiedPublishedGeneration   Int?
+  unifiedTargetRevision        String   @default("unified-experimental-physiology-state-v3-relative-muscle-daily-cumulative-diagnostics") @db.VarChar(100)
+  unifiedRolloutEpoch           Int      @default(0)
+  unifiedPublishedRolloutEpoch  Int?
   stateVersion               String   @db.VarChar(100)
   sourceNormalizationVersion String   @db.VarChar(100)
   dailyRuntimeVersion        String   @db.VarChar(100)

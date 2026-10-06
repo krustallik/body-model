@@ -10,7 +10,10 @@ import type {
   UnifiedSourceLineageV1,
   UnifiedUncertaintyV1,
 } from "./contracts";
-import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION } from "./contracts";
+import {
+  UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
+  UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
+} from "./contracts";
 import { addEnvelopes, envelope } from "./mass-composition";
 
 export type UnifiedChildTransitionsV1 = {
@@ -26,6 +29,7 @@ export type UnifiedChildTransitionsV1 = {
 };
 
 export type UnifiedTransitionInputV1 = {
+  contractVersion?: typeof UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION | typeof UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION;
   profileId: number;
   modelEpisodeId: number;
   date: string;
@@ -58,6 +62,8 @@ export function transitionUnifiedExperimentalPhysiologyV1(input: UnifiedTransiti
   const glycogenDelta = input.children.glycogen.dailyDeltaKg;
   const glycogenWaterDelta = input.children.glycogenWater.deltaKg;
   const transientWaterDelta = input.children.transientWater.relativeKg;
+  // addEnvelopes fails closed: V4 cannot publish a partial mass reconciliation
+  // when any canonical physical compartment (including glycogen water) is null.
   const modeledChangeSinceAnchorKg = addEnvelopes([
     slowTissueKg.fat === null || slowTissueKg.slowNonFat === null ? null : envelope(slowTissueKg.fat + slowTissueKg.slowNonFat),
     glycogenDelta,
@@ -93,7 +99,7 @@ export function transitionUnifiedExperimentalPhysiologyV1(input: UnifiedTransiti
     modeledChangeSinceAnchorKg,
   };
   const withoutFingerprint = {
-    contractVersion: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
+    contractVersion: input.contractVersion ?? UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
     profileId: input.profileId,
     modelEpisodeId: input.modelEpisodeId,
     date: input.date,

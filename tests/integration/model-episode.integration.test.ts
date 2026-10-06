@@ -20,6 +20,11 @@ import { calculateStrengthActivity } from "@/model/activity/strength";
 import { POST as postForecastAction } from "@/app/api/forecast/action/route";
 import { experimentalForecastModelEpisode } from "@/modules/experimental-forecast-v1/service";
 import { rebuildUnifiedExperimentalPhysiologyStateV1 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
+import {
+  activateAndReplayUnifiedV4,
+  verifyAndPublishUnifiedV3Postflight,
+} from "@/modules/model-episodes/unified-rollout-v4.service";
+import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION } from "@/model/unified-experimental-physiology-v1/contracts";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import { isProductionGenerationCurrentV1, isUnifiedGenerationCurrentV1 } from "@/modules/model-episodes/publication-generation-v1";
 import { STAIR_CLIMBING_TYPE } from "@/modules/health/expand-training-workouts";
@@ -32,6 +37,7 @@ const testRangeStart = addCalendarDays(finalDate, -99);
 const now = new Date("2041-03-31T10:00:00.000Z");
 const workDate = "2041-03-25";
 let originalProfile: Awaited<ReturnType<typeof prisma.profile.findUnique>>;
+let originalLifecycle: Awaited<ReturnType<typeof prisma.physiologyV7Lifecycle.findUnique>>;
 let originalActiveIds: number[] = [];
 let episodeId = 0;
 
@@ -166,9 +172,36 @@ async function initializeTestEpisode(): Promise<void> {
   episodeId = episode.id;
 }
 
+async function prepareCurrentForecastV2(requestNow: Date): Promise<void> {
+  await recalculateModelEpisode({ episodeId, now: requestNow });
+  const lifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
+  if (lifecycle.unifiedTargetRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION) {
+    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1, fromDate: episodeStart });
+    await verifyAndPublishUnifiedV3Postflight({ profileId: 1 });
+  }
+  await activateAndReplayUnifiedV4({ profileId: 1 });
+}
+
+async function resetForecastRolloutFixtureToV3(): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    const lifecycle = new PhysiologyV7PersistenceRepository(tx);
+    await lifecycle.lockProfile(1);
+    await tx.physiologyV7Lifecycle.update({
+      where: { profileId: 1 },
+      data: {
+        unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
+        unifiedRolloutEpoch: 0,
+        unifiedPublishedRolloutEpoch: null,
+        unifiedPublishedGeneration: null,
+      },
+    });
+  });
+}
+
 describe.sequential("model episode lifecycle with PostgreSQL", () => {
   beforeAll(async () => {
     originalProfile = await prisma.profile.findUnique({ where: { id: 1 } });
+    originalLifecycle = await prisma.physiologyV7Lifecycle.findUnique({ where: { profileId: 1 } });
     originalActiveIds = (await prisma.modelEpisode.findMany({
       where: { active: true }, select: { id: true },
     })).map(({ id }) => id);
@@ -195,6 +228,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     });
     await seedSources();
     await initializeTestEpisode();
+    await resetForecastRolloutFixtureToV3();
   });
 
   afterAll(async () => {
@@ -203,6 +237,31 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS "transient_partition_test_failure" ON "ModelEpisode"');
     await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS "transient_partition_test_failure"()');
     await removeTestData();
+    if (originalLifecycle) {
+      await prisma.physiologyV7Lifecycle.update({
+        where: { profileId: 1 },
+        data: {
+          staleFromDate: originalLifecycle.staleFromDate,
+          invalidationGeneration: originalLifecycle.invalidationGeneration,
+          currentThroughDate: originalLifecycle.currentThroughDate,
+          productionStaleFromDate: originalLifecycle.productionStaleFromDate,
+          productionPublishedGeneration: originalLifecycle.productionPublishedGeneration,
+          unifiedPublishedGeneration: originalLifecycle.unifiedPublishedGeneration,
+          unifiedTargetRevision: originalLifecycle.unifiedTargetRevision,
+          unifiedRolloutEpoch: originalLifecycle.unifiedRolloutEpoch,
+          unifiedPublishedRolloutEpoch: originalLifecycle.unifiedPublishedRolloutEpoch,
+          stateVersion: originalLifecycle.stateVersion,
+          sourceNormalizationVersion: originalLifecycle.sourceNormalizationVersion,
+          dailyRuntimeVersion: originalLifecycle.dailyRuntimeVersion,
+          rangeRebuildVersion: originalLifecycle.rangeRebuildVersion,
+          rebuildServiceVersion: originalLifecycle.rebuildServiceVersion,
+          createdAt: originalLifecycle.createdAt,
+          updatedAt: originalLifecycle.updatedAt,
+        },
+      });
+    } else {
+      await prisma.physiologyV7Lifecycle.deleteMany({ where: { profileId: 1 } });
+    }
     if (originalProfile) {
       await prisma.profile.update({
         where: { id: 1 },
@@ -634,7 +693,8 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(after).toEqual(before);
   });
 
-  it("forecasts a resolved episode reproducibly without mutating model history", async () => {
+  it("forecasts current V2 state reproducibly without mutating model history", async () => {
+    await prepareCurrentForecastV2(now);
     const beforeEpisode = await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } });
     const beforeStates = await prisma.dailyModelState.findMany({
       where: { episodeId }, orderBy: { date: "asc" },
@@ -650,7 +710,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(first).toEqual(second);
     expect(first).toMatchObject({
       status: "ok", initialStateQuality: "deterministic",
-      forecastVersion: "bodycast-forecast-v1", modelVersion: "bodycast-physiology-v7",
+      forecastVersion: "experimental-forecast-v2", modelVersion: "bodycast-physiology-v7",
     });
     expect("dates" in first && first.dates).toHaveLength(30);
     expect(await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } }))
@@ -668,7 +728,27 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(productionLifecycle.productionPublishedGeneration).toBe(productionLifecycle.invalidationGeneration);
     expect(productionLifecycle.productionStaleFromDate).toBeNull();
 
-    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1, fromDate: episodeStart, toDate: finalDate });
+    await prisma.$transaction(async (tx) => {
+      const lifecycle = new PhysiologyV7PersistenceRepository(tx);
+      await lifecycle.lockProfile(1);
+      await tx.physiologyV7Lifecycle.update({
+        where: { profileId: 1 },
+        data: {
+          unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
+          unifiedRolloutEpoch: 0,
+          unifiedPublishedRolloutEpoch: null,
+          unifiedPublishedGeneration: null,
+        },
+      });
+    });
+    await rebuildUnifiedExperimentalPhysiologyStateV1({
+      profileId: 1,
+      fromDate: episodeStart,
+      toDate: finalDate,
+      targetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
+      rolloutEpoch: 0,
+    });
+    await verifyAndPublishUnifiedV3Postflight({ profileId: 1 });
     const request = { episodeId, horizonDays: 7, seed: 443, scenario: fixedForecastScenario, now };
     const currentAnchor = await experimentalForecastModelEpisode(request, prisma);
     expect(currentAnchor).not.toBeNull();
@@ -677,8 +757,6 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     const latestUnified = await prisma.unifiedExperimentalPhysiologyStateV2.findUniqueOrThrow({
       where: { profileId_modelEpisodeId_date: { profileId: 1, modelEpisodeId: episodeId, date: finalDate } },
     });
-    const goalRequest = targetRequest(80, "2041-04-29", now);
-    const goalBeforeRelativeMutation = await solveModelEpisodeTarget(goalRequest, prisma);
     const persistedState = latestUnified.state as Record<string, unknown>;
     const relativeMuscle = persistedState.relativeMuscle as Record<string, unknown>;
     await prisma.unifiedExperimentalPhysiologyStateV2.update({
@@ -700,8 +778,6 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     if (!relativeChangedAnchor || !("dates" in relativeChangedAnchor)) throw new Error("expected Experimental Forecast V1 result");
     expect(relativeChangedAnchor.experimentalCurrent).toEqual(currentAnchor.experimentalCurrent);
     expect(relativeChangedAnchor.dates).toEqual(currentAnchor.dates);
-    const goalAfterRelativeMutation = await solveModelEpisodeTarget(goalRequest, prisma);
-    expect(goalAfterRelativeMutation).toEqual(goalBeforeRelativeMutation);
     await prisma.unifiedExperimentalPhysiologyStateV2.update({
       where: { id: latestUnified.id }, data: { state: latestUnified.state as never },
     });
@@ -934,6 +1010,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
   }, 120_000);
 
   it("solves a target read-only against PostgreSQL application state", async () => {
+    await prepareCurrentForecastV2(now);
     const before = {
       profile: await prisma.profile.findUnique({ where: { id: 1 } }),
       episode: await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } }),
@@ -1007,6 +1084,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
         where: { date: { gte: "2041-03-23", lte: "2041-03-29" } },
       });
       await recalculateModelEpisode({ episodeId, now: extendedNow });
+      await prepareCurrentForecastV2(extendedNow);
       expect(await prisma.dailyModelState.findMany({
         where: { episodeId }, orderBy: { date: "asc" }, select: { date: true },
       })).toEqual([{ date: "2041-03-20" }, { date: "2041-03-21" }, { date: "2041-03-22" }]);

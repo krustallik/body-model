@@ -323,6 +323,7 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
     const workoutFeedPresent = hasWorkoutFeedPayload(rawDay);
     // Latest state, immutable snapshot, and workout reconciliation are one atomic sync.
     return this.client.$transaction(async (transaction) => {
+      await new PhysiologyV7PersistenceRepository(transaction).lockProfile(1);
       const existing = await transaction.dailyHealthData.findUnique({
         where: { date: day.date },
         select: { date: true, weightKg: true },

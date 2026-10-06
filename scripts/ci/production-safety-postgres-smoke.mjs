@@ -450,7 +450,7 @@ async function main() {
     });
     const evaluated = evaluateProductionPreflight(sourceReport, migrationDirectories);
     if (!evaluated.readyForOwnerAuthorization || JSON.stringify(evaluated.pending) !== JSON.stringify([...EXPECTED_PENDING_MIGRATIONS].sort())) {
-      throw new Error(`Synthetic preflight did not recognize the exact pending pair: ${JSON.stringify(evaluated.blockers)}`);
+      throw new Error(`Synthetic preflight did not recognize the exact reviewed pending set: ${JSON.stringify(evaluated.blockers)}`);
     }
     const missingStage02Objects = EXPECTED_MIGRATION_OBJECTS.filter((name) => (
       !sourceReport.objects.some((object) => object.name === name && object.present)

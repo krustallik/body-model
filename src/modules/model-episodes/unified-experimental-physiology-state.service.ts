@@ -4,6 +4,7 @@ import { buildUnifiedEnergyLedgerV1 } from "@/model/unified-experimental-physiol
 import { UnifiedExperimentalPhysiologySourceLoaderV1, type UnifiedDurableDayEvidenceV1 } from "@/model/unified-experimental-physiology-v1/source-loader";
 import {
   UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
+  UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
   serializeUnifiedExperimentalPhysiologyV1,
   type UnifiedExperimentalPhysiologyDayResultV1,
   type UnifiedExperimentalPhysiologyStateV1,
@@ -11,7 +12,8 @@ import {
   type UnifiedQualityV1,
   type UnifiedUncertaintyV1,
 } from "@/model/unified-experimental-physiology-v1/contracts";
-import type { Prisma } from "@prisma/client";
+import { physicalGlycogenWaterDeltaV4, resolvePhysicalGlycogenWaterV4 } from "@/model/body-composition/physical-glycogen-water-v4";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { PhysiologyV7ConcurrentSourceChangeError, PhysiologyV7PersistenceRepository } from "./physiology-v7-persistence.repository";
 import { isProductionGenerationCurrentV1 } from "./publication-generation-v1";
 import { replayTransientExerciseWaterV2, transientWaterV2ContributionKg, type ActiveTransientExerciseWaterImpulseV2, type TransientExerciseWaterImpulseV2, type TransientWaterV2Branch } from "@/model/physiology-v7/experimental-transient-exercise-water-v2";
@@ -35,7 +37,11 @@ const finite = (value: unknown): value is number => typeof value === "number" &&
 const numberValue = (value: unknown): number | null => finite(value) ? value : null;
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" ? value as Record<string, unknown> : {};
 
-export function childTransitions(day: UnifiedDurableDayEvidenceV1, prior: UnifiedExperimentalPhysiologyStateV1 | null): UnifiedChildTransitionsV1 {
+export function childTransitions(
+  day: UnifiedDurableDayEvidenceV1,
+  prior: UnifiedExperimentalPhysiologyStateV1 | null,
+  revision: typeof UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION | typeof UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION = UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
+): UnifiedChildTransitionsV1 {
   const slow = object(day.childOutputs.slowTissue?.result);
   const slowState = object(slow.state);
   const previousSlow = object(prior?.slowTissue);
@@ -51,7 +57,7 @@ export function childTransitions(day: UnifiedDurableDayEvidenceV1, prior: Unifie
   const glycogenAvailable = glycogenRelative !== null;
   const glycogenDeltaPoint = numberValue(glycogen.netGlycogenDeltaKg);
   const glycogenDelta = glycogenDeltaPoint === null ? null : envelope(glycogenDeltaPoint, numberValue(glycogen.netGlycogenDeltaLowerKg) ?? glycogenDeltaPoint, numberValue(glycogen.netGlycogenDeltaUpperKg) ?? glycogenDeltaPoint);
-  const glycogenChild: UnifiedChildTransitionsV1["glycogen"] = {
+  let glycogenChild: UnifiedChildTransitionsV1["glycogen"] = {
     availability: glycogenAvailable ? "available" : "unavailable",
     relativeDeviationKg: glycogenAvailable ? envelope(glycogenRelative, numberValue(glycogenState.relativeDeviationLowerKg), numberValue(glycogenState.relativeDeviationUpperKg)) : null,
     dailyDeltaKg: glycogenDelta,
@@ -60,11 +66,51 @@ export function childTransitions(day: UnifiedDurableDayEvidenceV1, prior: Unifie
 
   const water = object(day.childOutputs.glycogenWater?.result);
   const waterPoint = numberValue(water.estimatedGlycogenWaterDeltaKg);
-  const glycogenWater: UnifiedChildTransitionsV1["glycogenWater"] = {
+  let glycogenWater: UnifiedChildTransitionsV1["glycogenWater"] = {
     availability: waterPoint === null ? "unavailable" : "available",
     deltaKg: waterPoint === null ? null : envelope(waterPoint, numberValue(water.lowerBoundKg), numberValue(water.upperBoundKg)),
     provenance: waterPoint === null ? "unavailable" : "experimental-glycogen-associated-water-v1",
   };
+
+  if (revision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION) {
+    const physical = resolvePhysicalGlycogenWaterV4({
+      productionRow: day.productionDailyState === null ? null : {
+        status: day.productionDailyState.status ?? "complete",
+        glycogenKg: day.productionDailyState.glycogenKg ?? null,
+      },
+      episodeInitialGlycogenKg: day.episodeInitialGlycogenKg,
+      episodeBaselineCarbIntakeG: day.episodeBaselineCarbIntakeG,
+    });
+    const priorPhysical = numberValue(prior?.glycogen.physicalKg);
+    const physicalDelta = physical.availability !== "available"
+      ? null
+      : priorPhysical !== null
+        ? physical.glycogenKg - priorPhysical
+        : physical.provenance === "episode-initial-state" ? 0
+          : numberValue(day.productionDailyState?.deltaGlycogenKg);
+    const physicalDeltaProvenance = physicalDelta === null ? "unavailable"
+      : priorPhysical !== null ? "production-daily-model-state"
+        : physical.provenance === "episode-initial-state" ? "episode-initial-state"
+          : "production-daily-model-state";
+    glycogenChild = {
+      ...glycogenChild,
+      availability: physical.availability === "available" ? "available" : "unavailable",
+      dailyDeltaKg: physicalDelta === null ? null : envelope(physicalDelta),
+      physicalKg: physical.availability === "available" ? physical.glycogenKg : null,
+      physicalAvailability: physical.availability,
+      physicalProvenance: physical.provenance,
+      explicitPhysicalZero: physical.availability === "available" && physical.explicitZero,
+      physicalDeltaProvenance,
+    };
+    const waterDelta = physicalGlycogenWaterDeltaV4(physicalDelta);
+    glycogenWater = {
+      availability: physical.availability === "available" ? "available" : "unavailable",
+      deltaKg: waterDelta === null ? null : envelope(waterDelta),
+      provenance: physical.availability === "available" ? "physical-glycogen-water-v4-2p7" : "unavailable",
+      physicalKg: physical.availability === "available" ? physical.glycogenWaterKg : null,
+      physicalProvenance: physical.provenance,
+    };
+  }
 
   const transientRows = day.childOutputs.transientWater;
   const transientBoundaries = day.transientWaterBoundaries;
@@ -244,7 +290,109 @@ function uncertainty(prior: UnifiedUncertaintyV1 | null, day: UnifiedDurableDayE
   return carryUnifiedUncertaintyV1(prior, reasons.join("; "));
 }
 
-function sourceLineage(day: UnifiedDurableDayEvidenceV1) {
+/** Pure shared candidate builder used by both publication and read-only postflight verification. */
+export function buildUnifiedRangeCandidatesV1(input: {
+  profileId: number;
+  days: readonly UnifiedDurableDayEvidenceV1[];
+  targetRevision: typeof UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION | typeof UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION;
+  priorState?: UnifiedExperimentalPhysiologyStateV1 | null;
+  priorFingerprint?: string | null;
+  priorUncertainty?: UnifiedUncertaintyV1 | null;
+  previousDate?: string | null;
+  previousObservedWeightKg?: number | null;
+  initialGapRun?: number;
+}): ReturnType<typeof serializeUnifiedExperimentalPhysiologyV1>[] {
+  let priorState = input.priorState ?? null;
+  let priorFingerprint = input.priorFingerprint ?? null;
+  let priorUncertainty = input.priorUncertainty ?? null;
+  let previousDate = input.previousDate ?? null;
+  let previousObservedWeight = input.previousObservedWeightKg ?? null;
+  let gapRun = input.initialGapRun ?? 0;
+  const results: ReturnType<typeof serializeUnifiedExperimentalPhysiologyV1>[] = [];
+  for (const day of input.days) {
+    const gapDays = day.dailyHealthData === null ? ++gapRun : gapRun;
+    const children = childTransitions(day, priorState, input.targetRevision);
+    const production = day.productionDailyState;
+    const activities = day.workouts.map((workout) => ({
+      doseKey: "workout:" + workout.id,
+      ...(workout.canonicalEnergyResolution === null || workout.canonicalEnergyResolution === undefined
+        ? {}
+        : { canonicalEventKey: "canonical-active-energy:" + workout.canonicalEnergyResolution.eventId }),
+      kind: "workout" as const,
+      garminActiveKcal: workout.activeEnergyKcal,
+      bodyCastEstimateKcal: null,
+      canonicalResolution: workout.canonicalEnergyResolution ? {
+        kcal: workout.canonicalEnergyResolution.currentKcal,
+        source: workout.canonicalEnergyResolution.currentSource,
+        revision: workout.canonicalEnergyResolution.resolutionRevision,
+        stale: workout.canonicalEnergyResolution.isStale,
+      } : null,
+    }));
+    const unknownEnergyCount = activities.filter((activity) => activity.canonicalResolution
+      ? activity.canonicalResolution.stale || activity.canonicalResolution.kcal === null
+      : activity.garminActiveKcal === null).length;
+    const ledger = buildUnifiedEnergyLedgerV1({
+      production: {
+        dynamicRmrKcalPerDay: production?.dynamicRmrKcalPerDay ?? null,
+        tefKcalPerDay: production?.tefKcalPerDay ?? null,
+        walkingKcalPerDay: null,
+        occupationalKcalPerDay: null,
+        workoutKcalPerDay: null,
+        stepperKcalPerDay: null,
+        activityKcalPerDay: production?.activityKcalPerDay ?? null,
+        adaptiveThermogenesisKcalPerDay: production?.adaptiveThermogenesisKcalPerDay ?? null,
+        personalOffsetKcalPerDay: null,
+        productionTdeeKcalPerDay: production?.energyExpenditureKcal ?? null,
+      },
+      activities,
+    });
+    const observedWeight = day.dailyHealthData?.weightKg ?? null;
+    const selectionNote = selectionCoverageNote(day);
+    const result = transitionUnifiedExperimentalPhysiologyV1({
+      contractVersion: input.targetRevision,
+      profileId: input.profileId,
+      modelEpisodeId: day.modelEpisodeId,
+      date: day.date,
+      boundaryAt: day.boundaryAt,
+      priorState,
+      priorStateFingerprint: priorFingerprint,
+      children,
+      energyLedger: ledger,
+      quality: quality(day, gapDays),
+      uncertainty: uncertainty(priorUncertainty, day, unknownEnergyCount),
+      reconciliation: {
+        anchorDate: previousDate,
+        anchorWeightKg: previousObservedWeight,
+        observedWeightKg: observedWeight,
+        reason: previousObservedWeight === null ? "no-prior-observed-weight" : null,
+      },
+      sourceLineage: sourceLineage(day),
+      diagnostics: {
+        notes: [
+          input.targetRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION
+            ? "Unified V4 physical glycogen water uses production glycogen only; relative shadow is diagnostic"
+            : "Unified V3 is shadow-only; production state is read-only input",
+          "transient-output-count:" + day.childOutputs.transientWater.length,
+          "energy-coverage:unknown=" + unknownEnergyCount,
+          ...(selectionNote !== null ? [selectionNote] : []),
+        ],
+      },
+    });
+    const serialized = serializeUnifiedExperimentalPhysiologyV1(result);
+    results.push(serialized);
+    priorState = serialized.state;
+    priorFingerprint = serialized.resultFingerprint;
+    priorUncertainty = serialized.uncertainty;
+    previousDate = day.date;
+    if (observedWeight !== null) {
+      previousObservedWeight = observedWeight;
+      gapRun = 0;
+    }
+  }
+  return results;
+}
+
+export function sourceLineage(day: UnifiedDurableDayEvidenceV1) {
   const childOutputs: Array<{ kind: string; id: number; updatedAt: string; sourceFingerprint: string }> = [];
   for (const [kind, row] of [["slowTissue", day.childOutputs.slowTissue], ["glycogen", day.childOutputs.glycogen], ["glycogenWater", day.childOutputs.glycogenWater]] as const) {
     if (row) childOutputs.push({ kind, id: row.id, updatedAt: row.updatedAt, sourceFingerprint: row.sourceFingerprint });
@@ -281,7 +429,8 @@ function sourceLineage(day: UnifiedDurableDayEvidenceV1) {
 
 function toPersisted(result: UnifiedExperimentalPhysiologyDayResultV1) {
   const json = (value: unknown) => value as Prisma.InputJsonValue;
-  return { profileId: result.profileId, modelEpisodeId: result.modelEpisodeId, date: result.date, boundaryAt: new Date(result.boundaryAt), modelRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION, sourceFingerprint: result.sourceFingerprint, priorStateFingerprint: result.priorStateFingerprint, resultFingerprint: result.resultFingerprint, qualityStatus: result.quality.availability, gapSeverity: result.quality.gapSeverity, state: json(result.state), deltas: json(result.deltas), uncertainty: json(result.uncertainty), reconciliation: json(result.reconciliation), energyLedger: json(result.energyLedger), sourceLineage: json(result.sourceLineage), diagnostics: json(result.diagnostics) };
+  const modelRevision = result.contractVersion;
+  return { profileId: result.profileId, modelEpisodeId: result.modelEpisodeId, date: result.date, boundaryAt: new Date(result.boundaryAt), modelRevision, sourceFingerprint: result.sourceFingerprint, priorStateFingerprint: result.priorStateFingerprint, resultFingerprint: result.resultFingerprint, qualityStatus: result.quality.availability, gapSeverity: result.quality.gapSeverity, state: json(result.state), deltas: json(result.deltas), uncertainty: json(result.uncertainty), reconciliation: json(result.reconciliation), energyLedger: json(result.energyLedger), sourceLineage: json(result.sourceLineage), diagnostics: json(result.diagnostics) };
 }
 
 function compatiblePredecessorLedger(value: unknown): ActiveTransientExerciseWaterImpulseV2[] | null {
@@ -313,21 +462,26 @@ function compatiblePredecessorLedger(value: unknown): ActiveTransientExerciseWat
   }
 }
 
-function unifiedRangeToken(profileId: number, fromInstant: string, throughInstant: string, days: UnifiedDurableDayEvidenceV1[]): string {
+export function unifiedRangeToken(profileId: number, fromInstant: string, throughInstant: string, days: UnifiedDurableDayEvidenceV1[]): string {
   return stableSha256({ profileId, fromInstant, throughInstant, days });
 }
 
 export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
   profileId?: number;
+  client?: PrismaClient;
   fromDate?: string;
   toDate?: string;
+  targetRevision?: typeof UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION | typeof UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION;
+  rolloutEpoch?: number;
   onCandidateComputed?: () => Promise<void>;
 }): Promise<void> {
   if (input.fromDate && input.toDate && input.toDate < input.fromDate) {
     throw new RangeError("toDate must not precede fromDate");
   }
   const profileId = input.profileId ?? 1;
-  const episodeRows = await prisma.modelEpisode.findMany({
+  const client = input.client ?? prisma;
+  const targetRevision = input.targetRevision ?? UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION;
+  const episodeRows = await client.modelEpisode.findMany({
     where: { profileId },
     orderBy: [{ startDate: "asc" }, { id: "asc" }],
     select: { id: true, startDate: true, timezone: true, active: true, deactivatedAt: true },
@@ -336,16 +490,22 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
   const earliestPartition = episodePartitions[0];
   if (!earliestPartition) throw new ProductionPublicationUnavailableError();
   const latestPartition = episodePartitions.at(-1)!;
-  const initialPublicationState = await prisma.physiologyV7Lifecycle.findUnique({
+  const initialPublicationState = await client.physiologyV7Lifecycle.findUnique({
     where: { profileId },
-    select: { invalidationGeneration: true, productionStaleFromDate: true, productionPublishedGeneration: true },
+    select: { invalidationGeneration: true, productionStaleFromDate: true, productionPublishedGeneration: true, unifiedTargetRevision: true, unifiedRolloutEpoch: true },
   });
   if (!isProductionGenerationCurrentV1(initialPublicationState)) {
     throw new ProductionPublicationUnavailableError();
   }
   const expectedGeneration = initialPublicationState.invalidationGeneration;
-  const transientRebuild = await rebuildExperimentalTransientExerciseWaterV2({ profileId });
-  const publicationState = await prisma.physiologyV7Lifecycle.findUnique({
+  const expectedRolloutEpoch = initialPublicationState.unifiedRolloutEpoch;
+  if (initialPublicationState.unifiedTargetRevision !== targetRevision
+      || (input.rolloutEpoch !== undefined && input.rolloutEpoch !== expectedRolloutEpoch)
+      || (targetRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION && expectedRolloutEpoch < 1)) {
+    throw new ProductionPublicationUnavailableError();
+  }
+  const transientRebuild = await rebuildExperimentalTransientExerciseWaterV2({ profileId, client });
+  const publicationState = await client.physiologyV7Lifecycle.findUnique({
     where: { profileId },
     select: { invalidationGeneration: true, productionStaleFromDate: true, productionPublishedGeneration: true, updatedAt: true },
   });
@@ -354,7 +514,7 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
     throw new PhysiologyV7ConcurrentSourceChangeError();
   }
   const expectedLifecycleUpdatedAt = publicationState.updatedAt.toISOString();
-  const latestDurable = await prisma.dailyHealthData.findFirst({ orderBy: { date: "desc" }, select: { date: true } });
+  const latestDurable = await client.dailyHealthData.findFirst({ orderBy: { date: "desc" }, select: { date: true } });
   const requestedToDate = [input.toDate, latestDurable?.date, transientRebuild.earliestModelDate]
     .filter((date): date is string => date !== null && date !== undefined)
     .sort()
@@ -378,7 +538,7 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
     throw new RangeError("Unified absolute replay interval does not include an episode model day");
   }
 
-  const sourceLoader = new UnifiedExperimentalPhysiologySourceLoaderV1(prisma);
+  const sourceLoader = new UnifiedExperimentalPhysiologySourceLoaderV1(client);
   const fullRange = await sourceLoader.loadRange({ profileId, fromInstant: replayFromInstant, throughInstant: replayThroughInstant });
   if (fullRange.days.length === 0) throw new ProductionPublicationUnavailableError();
   for (let index = 1; index < fullRange.days.length; index += 1) {
@@ -409,7 +569,7 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
   let priorLedger: ActiveTransientExerciseWaterImpulseV2[] | null = null;
   if (requestedStartIndex > 0) {
     const previousDay = fullRange.days[requestedStartIndex - 1]!;
-    const persistedPrefix = await prisma.unifiedExperimentalPhysiologyStateV2.findMany({
+    const persistedPrefix = await client.unifiedExperimentalPhysiologyStateV2.findMany({
       where: { profileId, boundaryAt: { lte: new Date(previousDay.boundaryAt) } },
       orderBy: { boundaryAt: "asc" },
       select: { modelEpisodeId: true, date: true, boundaryAt: true, modelRevision: true, sourceLineage: true },
@@ -418,13 +578,13 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
       && persistedPrefix.every((row, index) => {
         const expected = fullRange.days[index];
         return expected !== undefined
-          && row.modelRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION
+          && row.modelRevision === targetRevision
           && row.modelEpisodeId === expected.modelEpisodeId
           && row.date === expected.date
           && row.boundaryAt.toISOString() === new Date(expected.boundaryAt).toISOString()
           && stableSha256(row.sourceLineage) === stableSha256(sourceLineage(expected));
       });
-    const candidate = await prisma.unifiedExperimentalPhysiologyStateV2.findUnique({
+    const candidate = await client.unifiedExperimentalPhysiologyStateV2.findUnique({
       where: {
         profileId_modelEpisodeId_date: {
           profileId,
@@ -438,7 +598,7 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
         sourceLineage: true,
       },
     });
-    const candidateLedger = candidate?.modelRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION
+    const candidateLedger = candidate?.modelRevision === targetRevision
       ? compatiblePredecessorLedger(candidate.state)
       : null;
     const lineage = object(candidate?.sourceLineage);
@@ -452,7 +612,7 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
       && stableSha256(candidate.sourceLineage) === stableSha256(sourceLineage(previousDay));
     if (candidate && exactPredecessor && prefixCoverageMatches && candidateLedger !== null) {
       const ids = candidateLedger.map((entry) => entry.impulse.strengthDiarySessionId);
-      const impulseRows = ids.length === 0 ? [] : await prisma.experimentalTransientExerciseWaterShadow.findMany({
+      const impulseRows = ids.length === 0 ? [] : await client.experimentalTransientExerciseWaterShadow.findMany({
         where: {
           profileId,
           modelRevision: "experimental-transient-exercise-water-v2-impulse-ledger",
@@ -483,97 +643,28 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
       transientWater: { ...priorState.transientWater, activeImpulses: priorLedger },
     };
   }
-  let priorFingerprint = predecessor?.resultFingerprint ?? null;
-  let priorUncertainty = predecessor?.uncertainty as UnifiedUncertaintyV1 | null ?? null;
-  let previousDate: string | null = predecessor?.date ?? null;
-  let previousObservedWeight: number | null = [...prefixDays]
+  const priorFingerprint = predecessor?.resultFingerprint ?? null;
+  const priorUncertainty = predecessor?.uncertainty as UnifiedUncertaintyV1 | null ?? null;
+  const previousDate: string | null = predecessor?.date ?? null;
+  const previousObservedWeight: number | null = [...prefixDays]
     .reverse()
     .find((day) => day.dailyHealthData?.weightKg !== null && day.dailyHealthData?.weightKg !== undefined)
     ?.dailyHealthData?.weightKg ?? null;
   let gapRun = 0;
   for (const day of prefixDays) gapRun = day.dailyHealthData === null ? gapRun + 1 : 0;
-
-  const serializedDays: ReturnType<typeof serializeUnifiedExperimentalPhysiologyV1>[] = [];
-  for (const day of replayDays) {
-    const gapDays = day.dailyHealthData === null ? ++gapRun : gapRun;
-    const children = childTransitions(day, priorState);
-    const production = day.productionDailyState;
-    const activities = day.workouts.map((workout) => ({
-      doseKey: "workout:" + workout.id,
-      ...(workout.canonicalEnergyResolution === null || workout.canonicalEnergyResolution === undefined
-        ? {}
-        : { canonicalEventKey: "canonical-active-energy:" + workout.canonicalEnergyResolution.eventId }),
-      kind: "workout" as const,
-      garminActiveKcal: workout.activeEnergyKcal,
-      bodyCastEstimateKcal: null,
-      canonicalResolution: workout.canonicalEnergyResolution ? {
-        kcal: workout.canonicalEnergyResolution.currentKcal,
-        source: workout.canonicalEnergyResolution.currentSource,
-        revision: workout.canonicalEnergyResolution.resolutionRevision,
-        stale: workout.canonicalEnergyResolution.isStale,
-      } : null,
-    }));
-    const unknownEnergyCount = activities.filter((activity) => activity.canonicalResolution
-      ? activity.canonicalResolution.stale || activity.canonicalResolution.kcal === null
-      : activity.garminActiveKcal === null).length;
-    const ledger = buildUnifiedEnergyLedgerV1({
-      production: {
-        dynamicRmrKcalPerDay: production?.dynamicRmrKcalPerDay ?? null,
-        tefKcalPerDay: production?.tefKcalPerDay ?? null,
-        walkingKcalPerDay: null,
-        occupationalKcalPerDay: null,
-        workoutKcalPerDay: null,
-        stepperKcalPerDay: null,
-        activityKcalPerDay: production?.activityKcalPerDay ?? null,
-        adaptiveThermogenesisKcalPerDay: production?.adaptiveThermogenesisKcalPerDay ?? null,
-        personalOffsetKcalPerDay: null,
-        productionTdeeKcalPerDay: production?.energyExpenditureKcal ?? null,
-      },
-      activities,
-    });
-    const observedWeight = day.dailyHealthData?.weightKg ?? null;
-    const anchorWeight = previousObservedWeight;
-    const selectionNote = selectionCoverageNote(day);
-    const result = transitionUnifiedExperimentalPhysiologyV1({
-      profileId,
-      modelEpisodeId: day.modelEpisodeId,
-      date: day.date,
-      boundaryAt: day.boundaryAt,
-      priorState,
-      priorStateFingerprint: priorFingerprint,
-      children,
-      energyLedger: ledger,
-      quality: quality(day, gapDays),
-      uncertainty: uncertainty(priorUncertainty, day, unknownEnergyCount),
-      reconciliation: {
-        anchorDate: previousDate,
-        anchorWeightKg: anchorWeight,
-        observedWeightKg: observedWeight,
-        reason: anchorWeight === null ? "no-prior-observed-weight" : null,
-      },
-      sourceLineage: sourceLineage(day),
-      diagnostics: {
-        notes: [
-          "Unified V2 is shadow-only; production state is read-only input",
-          "transient-output-count:" + day.childOutputs.transientWater.length,
-          "energy-coverage:unknown=" + unknownEnergyCount,
-          ...(selectionNote !== null ? [selectionNote] : []),
-        ],
-      },
-    });
-    const serialized = serializeUnifiedExperimentalPhysiologyV1(result);
-    serializedDays.push(serialized);
-    priorState = serialized.state;
-    priorFingerprint = serialized.resultFingerprint;
-    priorUncertainty = serialized.uncertainty;
-    previousDate = day.date;
-    if (observedWeight !== null) {
-      previousObservedWeight = observedWeight;
-      gapRun = 0;
-    }
-  }
+  const serializedDays = buildUnifiedRangeCandidatesV1({
+    profileId,
+    days: replayDays,
+    targetRevision,
+    priorState,
+    priorFingerprint,
+    priorUncertainty,
+    previousDate,
+    previousObservedWeightKg: previousObservedWeight,
+    initialGapRun: gapRun,
+  });
   await input.onCandidateComputed?.();
-  await prisma.$transaction(async (tx) => {
+  await client.$transaction(async (tx) => {
     const lifecycle = new PhysiologyV7PersistenceRepository(tx);
     await lifecycle.lockProfile(profileId);
     const current = await tx.physiologyV7Lifecycle.findUnique({
@@ -581,10 +672,13 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
       select: {
         invalidationGeneration: true, productionStaleFromDate: true,
         productionPublishedGeneration: true, updatedAt: true,
+        unifiedTargetRevision: true, unifiedRolloutEpoch: true,
       },
     });
     if (!isProductionGenerationCurrentV1(current) || current.invalidationGeneration !== expectedGeneration
         || current.productionPublishedGeneration !== expectedGeneration
+        || current.unifiedTargetRevision !== targetRevision
+        || current.unifiedRolloutEpoch !== expectedRolloutEpoch
         || current.updatedAt.toISOString() !== expectedLifecycleUpdatedAt) {
       throw new PhysiologyV7ConcurrentSourceChangeError();
     }
@@ -616,8 +710,15 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
         invalidationGeneration: expectedGeneration,
         productionPublishedGeneration: expectedGeneration,
         productionStaleFromDate: null,
+        unifiedTargetRevision: targetRevision,
+        unifiedRolloutEpoch: expectedRolloutEpoch,
       },
-      data: { unifiedPublishedGeneration: expectedGeneration },
+      data: {
+        unifiedPublishedGeneration: expectedGeneration,
+        ...(targetRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION
+          ? { unifiedPublishedRolloutEpoch: expectedRolloutEpoch }
+          : {}),
+      },
     });
     if (published.count !== 1) throw new PhysiologyV7ConcurrentSourceChangeError();
   });

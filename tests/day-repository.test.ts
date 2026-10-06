@@ -53,6 +53,7 @@ function fixture() {
       dailyHealthData,
       workout,
       activeEnergyEventAlias,
+      $executeRaw: vi.fn().mockResolvedValue(0),
     })),
   } as unknown as PrismaClient;
   const shadowReplayer = { replayFrom: vi.fn().mockResolvedValue(undefined) };

@@ -10,6 +10,7 @@ describe("sleep segment persistence", () => {
   it("creates sleep segments with skipDuplicates and ignores outer sync date for attribution", async () => {
     const createMany = vi.fn(async () => ({ count: 2 }));
     const transaction = {
+      $executeRaw: vi.fn(async () => 0),
       dailyHealthData: {
         findUnique: vi.fn(async () => null),
         upsert: vi.fn(async () => ({ id: 11 })),

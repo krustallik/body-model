@@ -4,6 +4,7 @@ import { DEFAULT_TIME_ZONE, localDateTimeToInstant } from "@/model/time-zone";
 import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
 import { MANUAL_STEPPER_SOURCE_PREFIX } from "@/modules/health/workout-source-identity";
 import { invalidateWorkoutEnergyInTransactionV1 } from "@/modules/activity/active-energy-invalidation";
+import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import {
   displayedDailyStepsV1,
   RECONCILIATION_POLICY_V1,
@@ -351,6 +352,7 @@ export async function confirmStepperReconciliationV1(
   input: { manualWorkoutId: number; garminWorkoutId: number },
 ): Promise<void> {
   await client.$transaction(async (transaction) => {
+    await new PhysiologyV7PersistenceRepository(transaction).lockProfile(1);
     const candidate = await transaction.stepperReconciliationCandidate.findUnique({
       where: {
         manualWorkoutId_garminWorkoutId: {
@@ -399,6 +401,7 @@ export async function rejectStepperReconciliationV1(
   input: { groupId: number },
 ): Promise<void> {
   await client.$transaction(async (transaction) => {
+    await new PhysiologyV7PersistenceRepository(transaction).lockProfile(1);
     const group = await transaction.stepperReconciliationGroup.findUnique({
       where: { id: input.groupId },
       select: { id: true },

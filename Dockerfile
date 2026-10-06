@@ -22,6 +22,16 @@ RUN DATABASE_URL=postgresql://build:build@localhost:5432/build \
     npm run prisma:generate && \
     npx next build
 
+FROM dependencies AS unified-rollout-tooling
+WORKDIR /app
+COPY src ./src
+COPY scripts/unified-v3-postflight.ts scripts/unified-v4-activate-replay.ts scripts/unified-v4-traffic-check.ts ./scripts/
+COPY tsconfig.json ./tsconfig.json
+RUN mkdir -p /app/dist && \
+    ./node_modules/.bin/esbuild scripts/unified-v3-postflight.ts --bundle --platform=node --format=esm --packages=external --tsconfig=tsconfig.json --outfile=/app/dist/unified-v3-postflight.mjs && \
+    ./node_modules/.bin/esbuild scripts/unified-v4-activate-replay.ts --bundle --platform=node --format=esm --packages=external --tsconfig=tsconfig.json --outfile=/app/dist/unified-v4-activate-replay.mjs && \
+    ./node_modules/.bin/esbuild scripts/unified-v4-traffic-check.ts --bundle --platform=node --format=esm --packages=external --tsconfig=tsconfig.json --outfile=/app/dist/unified-v4-traffic-check.mjs
+
 FROM dependencies AS migrator
 WORKDIR /app
 ENV NODE_ENV=production
@@ -37,6 +47,9 @@ COPY scripts/production-migration-release.mjs ./scripts/
 COPY scripts/production-db-preflight.mjs ./scripts/
 COPY scripts/production-db-preflight.sql ./scripts/
 COPY scripts/run-prisma-migrate-with-lock-timeout.mjs ./scripts/
+COPY --from=unified-rollout-tooling /app/dist/unified-v3-postflight.mjs ./scripts/
+COPY --from=unified-rollout-tooling /app/dist/unified-v4-activate-replay.mjs ./scripts/
+COPY --from=unified-rollout-tooling /app/dist/unified-v4-traffic-check.mjs ./scripts/
 USER node
 CMD ["node", "scripts/run-prisma-migrate-with-lock-timeout.mjs"]
 

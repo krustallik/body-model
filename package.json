@@ -34,6 +34,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
+    "rollout:unified-v3-postflight": "tsx scripts/unified-v3-postflight.ts",
+    "rollout:unified-v4-activate-replay": "tsx scripts/unified-v4-activate-replay.ts",
     "health:backfill-legacy-weight-provenance": "tsx scripts/backfill-legacy-apple-weight-provenance.ts",
     "env:check": "tsx scripts/validate-env.ts",
     "body-map:manifest:v2": "tsx scripts/body-map/generate-bodyparts3d-local-manifest.ts --v2",

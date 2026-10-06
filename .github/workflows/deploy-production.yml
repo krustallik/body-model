@@ -20,6 +20,11 @@ on:
         description: Full 40-char main SHA (must equal current origin/main tip)
         required: true
         type: string
+      non_serving_deploy:
+        description: Deploy and keep Caddy in maintenance until Unified V4 currentness is verified
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -212,26 +217,28 @@ jobs:
           APP_HOST: ${{ secrets.APP_HOST }}
           CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
           DEPLOY_SHA: ${{ needs.authorize.outputs.candidate_sha }}
+          BODYCAST_NON_SERVING_DEPLOY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.non_serving_deploy == 'true' && '1' || '0' }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT }}
           command_timeout: 25m
-          envs: DEPLOY_PATH,APP_HOST,CADDY_ROUTES_PATH,DEPLOY_SHA
+          envs: DEPLOY_PATH,APP_HOST,CADDY_ROUTES_PATH,DEPLOY_SHA,BODYCAST_NON_SERVING_DEPLOY
           script: |
             set -Eeuo pipefail
             : "${DEPLOY_PATH:?}"
             : "${APP_HOST:?}"
             : "${CADDY_ROUTES_PATH:?}"
             : "${DEPLOY_SHA:?}"
+            : "${BODYCAST_NON_SERVING_DEPLOY:?}"
             cd "$DEPLOY_PATH"
             # Server tree may predate new scripts — checkout exact SHA before chmod/run.
             git fetch --no-tags origin "$DEPLOY_SHA"
             git checkout --detach --force "$DEPLOY_SHA"
             test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
             chmod +x scripts/deploy.sh scripts/deploy-preflight-schema.sh
-            APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" DEPLOY_SHA="$DEPLOY_SHA" \
+            APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" DEPLOY_SHA="$DEPLOY_SHA" BODYCAST_NON_SERVING_DEPLOY="$BODYCAST_NON_SERVING_DEPLOY" \
               bash scripts/deploy.sh
 
       - name: Mark deployment success

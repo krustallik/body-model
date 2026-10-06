@@ -11,6 +11,7 @@ import { persistStepperReconciliationV1 } from "./stepper-reconciliation.service
 import { invalidateWorkoutEnergyInTransactionV1 } from "@/modules/activity/active-energy-invalidation";
 import { recordExperimentalStepperActiveEnergyShadowsForLocalDate } from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
 import { publishActiveEnergyChangesV1 } from "@/modules/activity/active-energy-publication";
+import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 
 const STEPPER_TYPE = "Stair Climbing";
 
@@ -184,6 +185,7 @@ export class StepperWorkoutRepository {
   async create(input: StepperWorkoutInput): Promise<StepperWorkoutDto> {
     const { startAt, endAt, date } = workoutDates(input);
     const row = await this.client.$transaction(async (transaction) => {
+      await new PhysiologyV7PersistenceRepository(transaction).lockProfile(1);
       const day = await transaction.dailyHealthData.upsert({
         where: { date },
         create: { date, rawPayload: { source: "manual-stepper-training" } },
@@ -224,6 +226,7 @@ export class StepperWorkoutRepository {
     const { startAt, endAt, date } = workoutDates(input);
     const affectedDates = new Set<string>([date]);
     const updatedId = await this.client.$transaction(async (transaction) => {
+      await new PhysiologyV7PersistenceRepository(transaction).lockProfile(1);
       const existing = await transaction.workout.findFirst({
         where: { id, type: { equals: STEPPER_TYPE, mode: "insensitive" }, hiddenFromHistory: false },
         select: {
@@ -335,6 +338,7 @@ export class StepperWorkoutRepository {
   async delete(id: number): Promise<boolean> {
     let affectedDate: string | null = null;
     const deleted = await this.client.$transaction(async (transaction) => {
+      await new PhysiologyV7PersistenceRepository(transaction).lockProfile(1);
       const existing = await transaction.workout.findFirst({
         where: { id, type: { equals: STEPPER_TYPE, mode: "insensitive" }, matchedDiarySession: { is: null }, hiddenFromHistory: false },
         select: { id: true, sourceIdentity: true, startAt: true, endAt: true, dailyHealthData: { select: { date: true } } },

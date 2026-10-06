@@ -15,6 +15,7 @@ import {
 import { canonicalizeWorkoutStepperEvidenceV7 } from "@/model/activity/workout-stepper-v7";
 import { addCalendarDays, calendarDayIndex } from "@/modules/model-episodes/model-calendar";
 import { episodeTimeContextForInstantV1 } from "@/modules/model-episodes/episode-time-context-v1";
+import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import {
   resolveStepperHistoricalMassV1,
   stableStepperMassProvenanceV1,
@@ -363,22 +364,17 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
       : []),
   ];
   await prisma.$transaction(async (tx) => {
-    await tx.experimentalStepperActiveEnergyShadow.upsert({
+    const lifecycle = new PhysiologyV7PersistenceRepository(tx);
+    await lifecycle.lockProfile(profileId);
+    const existingShadow = await tx.experimentalStepperActiveEnergyShadow.findUnique({
+      where: { workoutId: workout.id }, select: { sourceFingerprint: true, modelRevision: true },
+    });
+    const shadowChanged = existingShadow?.sourceFingerprint !== sourceFingerprint
+      || existingShadow.modelRevision !== EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION;
+    if (shadowChanged) await tx.experimentalStepperActiveEnergyShadow.upsert({
       where: { workoutId: workout.id },
-      create: {
-        workoutId: workout.id,
-        profileId,
-        sourceFingerprint,
-        modelRevision: EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION,
-        features: result.features,
-        result: persisted as unknown as Prisma.InputJsonValue,
-      },
-      update: {
-        sourceFingerprint,
-        modelRevision: EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION,
-        features: result.features,
-        result: persisted as unknown as Prisma.InputJsonValue,
-      },
+      create: { workoutId: workout.id, profileId, sourceFingerprint, modelRevision: EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION, features: result.features, result: persisted as unknown as Prisma.InputJsonValue },
+      update: { sourceFingerprint, modelRevision: EXPERIMENTAL_STEPPER_ACTIVE_ENERGY_V1_REVISION, features: result.features, result: persisted as unknown as Prisma.InputJsonValue },
     });
     const resolution = await persistActiveEnergyCanonicalResolutionV1(tx, {
     profileId,
@@ -486,6 +482,7 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
     },
   });
     if (!resolution.current) throw new Error("stepper source changed before canonical active-energy publication");
+    if (shadowChanged) await lifecycle.invalidateUnifiedPublication(profileId);
   });
 }
 

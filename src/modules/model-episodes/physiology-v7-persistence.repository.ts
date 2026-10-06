@@ -32,6 +32,80 @@ export class PhysiologyV7ConcurrentSourceChangeError extends Error {
   }
 }
 
+export type UnifiedSourceFenceV1 = {
+  invalidationGeneration: number;
+  unifiedPublishedGeneration: number | null;
+  unifiedTargetRevision: string;
+  unifiedRolloutEpoch: number;
+  unifiedPublishedRolloutEpoch: number | null;
+  updatedAt: string;
+};
+
+/** Capture a lifecycle CAS token before computing any persisted Unified child. */
+export async function readUnifiedSourceFenceV1(
+  client: DbClient,
+  profileId: number,
+): Promise<UnifiedSourceFenceV1 | null> {
+  const row = await client.physiologyV7Lifecycle.findUnique({
+    where: { profileId },
+    select: {
+      invalidationGeneration: true,
+      unifiedPublishedGeneration: true,
+      unifiedTargetRevision: true,
+      unifiedRolloutEpoch: true,
+      unifiedPublishedRolloutEpoch: true,
+      updatedAt: true,
+    },
+  });
+  return row === null ? null : {
+    invalidationGeneration: row.invalidationGeneration,
+    unifiedPublishedGeneration: row.unifiedPublishedGeneration,
+    unifiedTargetRevision: row.unifiedTargetRevision,
+    unifiedRolloutEpoch: row.unifiedRolloutEpoch,
+    unifiedPublishedRolloutEpoch: row.unifiedPublishedRolloutEpoch,
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+/** Must run after lockProfile in the final candidate transaction. */
+export async function assertUnifiedSourceFenceV1(
+  client: DbClient,
+  profileId: number,
+  expected: UnifiedSourceFenceV1 | null,
+): Promise<void> {
+  const current = await readUnifiedSourceFenceV1(client, profileId);
+  if (stableFence(current) !== stableFence(expected)) throw new PhysiologyV7ConcurrentSourceChangeError();
+}
+
+/** Persist one derived child under the shared source fence and invalidate only Unified. */
+export async function persistUnifiedShadowCandidateV1(input: {
+  client: PrismaClient;
+  profileId: number;
+  expectedFence: UnifiedSourceFenceV1 | null;
+  persist: (tx: Prisma.TransactionClient) => Promise<boolean>;
+}): Promise<boolean> {
+  return input.client.$transaction(async (tx) => {
+    const lifecycle = new PhysiologyV7PersistenceRepository(tx);
+    await lifecycle.lockProfile(input.profileId);
+    await assertUnifiedSourceFenceV1(tx, input.profileId, input.expectedFence);
+    const changed = await input.persist(tx);
+    if (changed) await lifecycle.invalidateUnifiedPublication(input.profileId);
+    return changed;
+  });
+}
+
+function stableFence(value: UnifiedSourceFenceV1 | null): string {
+  if (value === null) return "null";
+  return JSON.stringify([
+    value.invalidationGeneration,
+    value.unifiedPublishedGeneration,
+    value.unifiedTargetRevision,
+    value.unifiedRolloutEpoch,
+    value.unifiedPublishedRolloutEpoch,
+    value.updatedAt,
+  ]);
+}
+
 export class PhysiologyV7PersistenceRepository {
   constructor(private readonly client: DbClient = prisma) {}
 
@@ -51,6 +125,7 @@ export class PhysiologyV7PersistenceRepository {
     await this.client.$executeRaw`
       UPDATE "PhysiologyV7Lifecycle"
       SET "unifiedPublishedGeneration" = NULL,
+          "unifiedPublishedRolloutEpoch" = NULL,
           "updatedAt" = GREATEST("updatedAt" + INTERVAL '1 millisecond', CURRENT_TIMESTAMP)
       WHERE "profileId" = ${profileId}
     `;
@@ -118,6 +193,8 @@ export class PhysiologyV7PersistenceRepository {
           ELSE "currentThroughDate"
         END,
         "invalidationGeneration" = "invalidationGeneration" + 1,
+        "unifiedPublishedGeneration" = NULL,
+        "unifiedPublishedRolloutEpoch" = NULL,
         "updatedAt" = CURRENT_TIMESTAMP
       WHERE "profileId" = ${profileId}
       RETURNING "profileId", "staleFromDate", "invalidationGeneration", "currentThroughDate",

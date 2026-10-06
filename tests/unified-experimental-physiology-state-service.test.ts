@@ -43,7 +43,10 @@ import {
   childTransitions,
   rebuildUnifiedExperimentalPhysiologyStateV1,
 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
-import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION } from "@/model/unified-experimental-physiology-v1/contracts";
+import {
+  UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
+  UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
+} from "@/model/unified-experimental-physiology-v1/contracts";
 
 const boundaryAt = "2026-10-01T00:00:00.000Z";
 const throughInstant = "2026-10-02T00:00:00.000Z";
@@ -51,6 +54,9 @@ const publication = {
   invalidationGeneration: 5,
   productionPublishedGeneration: 5,
   productionStaleFromDate: null,
+  unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
+  unifiedRolloutEpoch: 0,
+  unifiedPublishedRolloutEpoch: null,
   updatedAt: new Date("2026-10-01T01:00:00.000Z"),
 };
 
@@ -108,6 +114,54 @@ function prepare() {
 
 describe("Unified V2 rebuild publication", () => {
   beforeEach(prepare);
+
+  it("uses only production physical glycogen for V4, keeps relative state diagnostic, and derives water at 2.7x", () => {
+    const day = sourceDay({
+      productionDailyState: { status: "complete", glycogenKg: 0.4, deltaGlycogenKg: 0.2 },
+      episodeInitialGlycogenKg: 0.9,
+      episodeBaselineCarbIntakeG: 220,
+      childOutputs: {
+        slowTissue: null,
+        glycogen: { result: { state: { relativeDeviationKg: -17 }, netGlycogenDeltaKg: -0.4 } },
+        glycogenWater: { result: { estimatedGlycogenWaterDeltaKg: 3.9, lowerBoundKg: 3, upperBoundKg: 4 } },
+        transientWater: [],
+        relativeMuscle: { daily: null, cumulative: null },
+      },
+    });
+    const child = childTransitions(day, null, UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION);
+    expect(child.glycogen).toMatchObject({
+      availability: "available", relativeDeviationKg: { point: -17 },
+      dailyDeltaKg: { point: 0.2 }, physicalKg: 0.4,
+      physicalProvenance: "production-daily-model-state",
+    });
+    expect(child.glycogenWater).toMatchObject({
+      availability: "available", deltaKg: { point: 0.54 },
+      physicalKg: 1.08, provenance: "physical-glycogen-water-v4-2p7",
+    });
+
+    const explicitZero = childTransitions(sourceDay({
+      productionDailyState: { status: "complete", glycogenKg: 0, deltaGlycogenKg: -0.4 },
+      episodeInitialGlycogenKg: 0.9,
+      episodeBaselineCarbIntakeG: 220,
+    }), null, UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION);
+    expect(explicitZero.glycogen).toMatchObject({
+      physicalAvailability: "available", physicalKg: 0, explicitPhysicalZero: true,
+    });
+    expect(explicitZero.glycogenWater).toMatchObject({ physicalKg: 0, deltaKg: { point: -1.08 } });
+  });
+
+  it("blocks episode fallback when current production glycogen is null", () => {
+    const child = childTransitions(sourceDay({
+      productionDailyState: { status: "complete", glycogenKg: null, deltaGlycogenKg: null },
+      episodeInitialGlycogenKg: 0.9,
+      episodeBaselineCarbIntakeG: 220,
+    }), null, UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION);
+    expect(child.glycogen).toMatchObject({
+      availability: "unavailable", physicalAvailability: "blocked", physicalKg: null,
+      physicalProvenance: "current-production-null",
+    });
+    expect(child.glycogenWater).toMatchObject({ availability: "unavailable", physicalKg: null, deltaKg: null });
+  });
 
   it("maps distinct daily and episode-cumulative diagnostics with source-specific provenance", () => {
     const day = sourceDay({
@@ -183,7 +237,7 @@ describe("Unified V2 rebuild publication", () => {
       where: { profileId: 4 },
       orderBy: [{ startDate: "asc" }, { id: "asc" }],
     }));
-    expect(mocks.rebuildTransient).toHaveBeenCalledWith({ profileId: 4 });
+    expect(mocks.rebuildTransient).toHaveBeenCalledWith(expect.objectContaining({ profileId: 4, client: mocks.prisma }));
     expect(mocks.loadRange).toHaveBeenCalledTimes(2);
     expect(mocks.tx.unifiedExperimentalPhysiologyStateV2.upsert).toHaveBeenCalledOnce();
     const persisted = mocks.tx.unifiedExperimentalPhysiologyStateV2.upsert.mock.calls[0]![0].create;

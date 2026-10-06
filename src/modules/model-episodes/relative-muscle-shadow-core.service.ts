@@ -22,6 +22,7 @@ import { buildQualifiedResistanceTrainingDoseV7 } from "@/model/physiology-v7/qu
 import { buildCanonicalStrengthTrainingInputV7 } from "@/modules/model-episodes/strength-training-input-v7";
 import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 import { TrainingRepository } from "@/modules/training/training.repository";
+import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
 import { addCalendarDays } from "./model-calendar";
 
@@ -143,6 +144,7 @@ export async function rebuildRelativeMuscleEpisodeTrajectories(input: {
   const profileId = input.profileId ?? 1;
   try {
     await client.$transaction(async (transaction) => {
+      await new PhysiologyV7PersistenceRepository(transaction).lockProfile(profileId);
       await transaction.$executeRaw`
         SELECT pg_advisory_xact_lock(CAST(${RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE} AS integer), CAST(${profileId} AS integer))
       `;
@@ -151,6 +153,7 @@ export async function rebuildRelativeMuscleEpisodeTrajectories(input: {
         profileId,
         client: transaction,
       });
+      await new PhysiologyV7PersistenceRepository(transaction).invalidateUnifiedPublication(profileId);
     }, { maxWait: 10_000, timeout: 120_000 });
   } catch (rebuildError) {
     // The rebuild transaction also contains the stale markers. If it aborts,
@@ -158,6 +161,7 @@ export async function rebuildRelativeMuscleEpisodeTrajectories(input: {
     // before returning the failure to the caller.
     try {
       await client.$transaction(async (transaction) => {
+        await new PhysiologyV7PersistenceRepository(transaction).lockProfile(profileId);
         await transaction.$executeRaw`
           SELECT pg_advisory_xact_lock(CAST(${RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE} AS integer), CAST(${profileId} AS integer))
         `;
@@ -169,6 +173,7 @@ export async function rebuildRelativeMuscleEpisodeTrajectories(input: {
             where: { profileId }, data: { isStale: true },
           }),
         ]);
+        await new PhysiologyV7PersistenceRepository(transaction).invalidateUnifiedPublication(profileId);
       }, { maxWait: 10_000, timeout: 30_000 });
     } catch (invalidationError) {
       throw new AggregateError(

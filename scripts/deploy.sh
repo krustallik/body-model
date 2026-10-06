@@ -6,8 +6,9 @@
 # 1) verify exact SHA
 # 2) verify compose config + DB readiness
 # 3) schema preflight (non-destructive)
-# 4) build release image
-# 5) only then recreate the running app
+# 4) require current V4 before serving, or switch to maintenance first
+# 5) build release image
+# 6) only then recreate the running app
 # A failed preflight must leave the running application container unchanged.
 set -Eeuo pipefail
 
@@ -24,9 +25,14 @@ readonly ROLLBACK_IMAGE="bodycast-app:rollback"
 readonly APP_HOST="${APP_HOST:?APP_HOST is required}"
 readonly CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:?CADDY_ROUTES_PATH is required}"
 readonly DEPLOY_SHA="${DEPLOY_SHA:?DEPLOY_SHA is required}"
+readonly BODYCAST_NON_SERVING_DEPLOY="${BODYCAST_NON_SERVING_DEPLOY:-0}"
 
 if [[ ! "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   echo "DEPLOY_SHA must be a full 40-character commit SHA (got: ${DEPLOY_SHA})." >&2
+  exit 1
+fi
+if [[ "$BODYCAST_NON_SERVING_DEPLOY" != "0" && "$BODYCAST_NON_SERVING_DEPLOY" != "1" ]]; then
+  echo "BODYCAST_NON_SERVING_DEPLOY must be 0 or 1." >&2
   exit 1
 fi
 
@@ -39,7 +45,7 @@ if [[ "$deployed_sha" != "$DEPLOY_SHA" ]]; then
   echo "Checked-out SHA ${deployed_sha} does not match DEPLOY_SHA ${DEPLOY_SHA}." >&2
   exit 1
 fi
-chmod +x "${ROOT_DIR}/scripts/deploy.sh" "${ROOT_DIR}/scripts/deploy-preflight-schema.sh"
+chmod +x "${ROOT_DIR}/scripts/deploy.sh" "${ROOT_DIR}/scripts/deploy-preflight-schema.sh" "${ROOT_DIR}/scripts/production-traffic-cutover.sh"
 
 compose() {
   docker compose -f "$COMPOSE_FILE" "$@"
@@ -93,6 +99,16 @@ done
 # Preflight runs before build/cutover so pending migrations never bounce the live app.
 bash "${ROOT_DIR}/scripts/deploy-preflight-schema.sh"
 
+# A rollout deploy is explicitly non-serving. A normal app cutover first checks
+# that Forecast V2's required physical Unified V4 snapshot is already current.
+if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" ]]; then
+  APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" \
+    bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance
+else
+  APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" \
+    bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" check
+fi
+
 compose build "$APP_SERVICE"
 
 # Cutover boundary: only recreate the running app after successful preflight + build.
@@ -113,35 +129,12 @@ done
 docker exec "$APP_CONTAINER" wget --quiet --tries=1 --output-document=- \
   http://127.0.0.1:3000/api/health | grep -q '"status":"ok"'
 
-route_file="${CADDY_ROUTES_PATH}/bodycast.caddy"
-temporary_route="${route_file}.new"
-mkdir -p "$CADDY_ROUTES_PATH"
-
-cat >"$temporary_route" <<EOF
-http://${APP_HOST} {
-    redir https://${APP_HOST}{uri} permanent
-}
-
-${APP_HOST} {
-    encode zstd gzip
-    header {
-        -Server
-        X-Content-Type-Options "nosniff"
-        Referrer-Policy "no-referrer"
-        Strict-Transport-Security "max-age=31536000; includeSubDomains"
-    }
-    reverse_proxy ${APP_CONTAINER}:3000
-}
-EOF
-
-mv -f "$temporary_route" "$route_file"
-docker exec gymbeam-caddy caddy validate --config /etc/caddy/Caddyfile
-docker exec gymbeam-caddy caddy reload \
-  --address unix//run/caddy-admin/admin.sock \
-  --config /etc/caddy/Caddyfile
-
-curl --fail --silent --show-error --retry 12 --retry-delay 5 \
-  "https://${APP_HOST}/api/health" | grep -q '"status":"ok"'
+if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" ]]; then
+  echo "Exact SHA is deployed in non-serving maintenance mode; explicit V4 activation/replay and traffic check remain required."
+else
+  APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" \
+    bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" serve
+fi
 
 trap - ERR
 docker image rm "$ROLLBACK_IMAGE" >/dev/null 2>&1 || true

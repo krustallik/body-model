@@ -9,6 +9,7 @@ import { resolveEventEnergyV1 } from "@/model/activity/canonical-activity-policy
 import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 import type { StrengthSessionDto } from "./training.types";
 import { TrainingRepository } from "./training.repository";
+import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import {
   estimateExperimentalStrengthActiveEnergyV1,
   EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
@@ -244,25 +245,20 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
       : []),
   ];
   await prisma.$transaction(async (tx) => {
+    const lifecycle = new PhysiologyV7PersistenceRepository(tx);
+    await lifecycle.lockProfile(input.profileId);
     if (!(await validateSource(tx))) return;
-    await tx.experimentalStrengthEnergyShadow.upsert({
-      where: { sessionId: input.session.id },
-      create: {
-        sessionId: input.session.id,
-        profileId: input.profileId,
-        sourceFingerprint,
-        modelRevision: EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
-        features: result.features,
-        result: persistedResult as unknown as Prisma.InputJsonValue,
-      },
-      update: {
-        sourceFingerprint,
-        modelRevision: EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
-        features: result.features,
-        result: persistedResult as unknown as Prisma.InputJsonValue,
-      },
+    const existingShadow = await tx.experimentalStrengthEnergyShadow.findUnique({
+      where: { sessionId: input.session.id }, select: { sourceFingerprint: true, modelRevision: true },
     });
-    await persistActiveEnergyCanonicalResolutionV1(tx, {
+    const shadowChanged = existingShadow?.sourceFingerprint !== sourceFingerprint
+      || existingShadow.modelRevision !== EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION;
+    if (shadowChanged) await tx.experimentalStrengthEnergyShadow.upsert({
+      where: { sessionId: input.session.id },
+      create: { sessionId: input.session.id, profileId: input.profileId, sourceFingerprint, modelRevision: EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION, features: result.features, result: persistedResult as unknown as Prisma.InputJsonValue },
+      update: { sourceFingerprint, modelRevision: EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION, features: result.features, result: persistedResult as unknown as Prisma.InputJsonValue },
+    });
+    const resolution = await persistActiveEnergyCanonicalResolutionV1(tx, {
     profileId: input.profileId,
     logicalEventKey: input.session.matchedWorkoutId === null
       ? `strength-session:${input.session.id}`
@@ -279,6 +275,8 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
     candidates,
       validateSource,
     });
+    if (!resolution.current) throw new Error("strength source changed before canonical active-energy publication");
+    if (shadowChanged) await lifecycle.invalidateUnifiedPublication(input.profileId);
   });
 }
 

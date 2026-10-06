@@ -1,5 +1,9 @@
 import { prisma } from "@/lib/db/prisma";
 import {
+  persistUnifiedShadowCandidateV1,
+  readUnifiedSourceFenceV1,
+} from "./physiology-v7-persistence.repository";
+import {
   estimateExperimentalGlycogenAssociatedWaterV1,
   EXPERIMENTAL_GLYCOGEN_ASSOCIATED_WATER_V1_REVISION,
   experimentalGlycogenAssociatedWaterV1Fingerprint,
@@ -42,6 +46,7 @@ export async function recordExperimentalGlycogenAssociatedWaterShadow(input: {
   profileId?: number;
 }): Promise<void> {
   const profileId = input.profileId ?? 1;
+  const sourceFence = await readUnifiedSourceFenceV1(prisma, profileId);
 
   const [
     latestV7,
@@ -115,21 +120,23 @@ export async function recordExperimentalGlycogenAssociatedWaterShadow(input: {
     currentGlycogenWaterKg,
   });
   const sourceFingerprint = experimentalGlycogenAssociatedWaterV1Fingerprint(result);
-  await prisma.experimentalGlycogenAssociatedWaterShadow.upsert({
-    where: { profileId_date: { profileId, date: input.date } },
-    create: {
-      profileId,
-      date: input.date,
-      sourceFingerprint,
-      modelRevision: EXPERIMENTAL_GLYCOGEN_ASSOCIATED_WATER_V1_REVISION,
-      features: result.features,
-      result,
-    },
-    update: {
-      sourceFingerprint,
-      modelRevision: EXPERIMENTAL_GLYCOGEN_ASSOCIATED_WATER_V1_REVISION,
-      features: result.features,
-      result,
+  await persistUnifiedShadowCandidateV1({
+    client: prisma,
+    profileId,
+    expectedFence: sourceFence,
+    persist: async (tx) => {
+      const existing = await tx.experimentalGlycogenAssociatedWaterShadow.findUnique({
+        where: { profileId_date: { profileId, date: input.date } },
+        select: { sourceFingerprint: true, modelRevision: true },
+      });
+      if (existing?.sourceFingerprint === sourceFingerprint
+          && existing.modelRevision === EXPERIMENTAL_GLYCOGEN_ASSOCIATED_WATER_V1_REVISION) return false;
+      await tx.experimentalGlycogenAssociatedWaterShadow.upsert({
+        where: { profileId_date: { profileId, date: input.date } },
+        create: { profileId, date: input.date, sourceFingerprint, modelRevision: EXPERIMENTAL_GLYCOGEN_ASSOCIATED_WATER_V1_REVISION, features: result.features, result },
+        update: { sourceFingerprint, modelRevision: EXPERIMENTAL_GLYCOGEN_ASSOCIATED_WATER_V1_REVISION, features: result.features, result },
+      });
+      return true;
     },
   });
 }

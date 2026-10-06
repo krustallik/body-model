@@ -9,6 +9,9 @@ export const UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION =
 export const UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION =
   "unified-experimental-physiology-state-v3-relative-muscle-daily-cumulative-diagnostics" as const;
 
+export const UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION =
+  "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once" as const;
+
 export type UnifiedAvailabilityV1 = "available" | "partial" | "unavailable";
 export type UnifiedGapSeverityV1 = "none" | "short-gap" | "large-gap" | "extended-gap";
 export type UnifiedSourceQualityV1 = "observed" | "estimated" | "modeled-gap-bridge" | "missing";
@@ -32,12 +35,21 @@ export type UnifiedGlycogenStateV1 = {
   relativeDeviationKg: UnifiedNumericEnvelopeV1 | null;
   dailyDeltaKg: UnifiedNumericEnvelopeV1 | null;
   provenance: "experimental-glycogen-state-v2" | "unavailable";
+  /** V4-only physical authority; relativeDeviationKg remains diagnostic. */
+  physicalKg?: number | null;
+  physicalAvailability?: "available" | "blocked" | "unavailable";
+  physicalProvenance?: "production-daily-model-state" | "episode-initial-state" | "current-production-null" | "unavailable";
+  explicitPhysicalZero?: boolean;
+  physicalDeltaProvenance?: "production-daily-model-state" | "episode-initial-state" | "unavailable";
 };
 
 export type UnifiedGlycogenWaterStateV1 = {
   availability: UnifiedAvailabilityV1;
   deltaKg: UnifiedNumericEnvelopeV1 | null;
-  provenance: "experimental-glycogen-associated-water-v1" | "unavailable";
+  provenance: "experimental-glycogen-associated-water-v1" | "physical-glycogen-water-v4-2p7" | "unavailable";
+  /** V4-only canonical absolute water derived from physical glycogen. */
+  physicalKg?: number | null;
+  physicalProvenance?: "production-daily-model-state" | "episode-initial-state" | "current-production-null" | "unavailable";
 };
 
 export type UnifiedTransientWaterStateV1 = {
@@ -160,7 +172,7 @@ export type UnifiedDailyDeltasV1 = {
 };
 
 export type UnifiedExperimentalPhysiologyDayResultV1 = {
-  contractVersion: typeof UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION;
+  contractVersion: typeof UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION | typeof UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION;
   profileId: number;
   modelEpisodeId: number;
   date: string;

@@ -84,7 +84,10 @@ export type UnifiedDurableDayEvidenceV1 = {
   productionDailyState: {
     id: number;
     updatedAt: string;
+    status?: string;
     modelVersion: string;
+    glycogenKg?: number | null;
+    deltaGlycogenKg?: number | null;
     energyExpenditureKcal: number | null;
     energyBalanceKcal: number | null;
     dynamicRmrKcalPerDay: number | null;
@@ -93,6 +96,8 @@ export type UnifiedDurableDayEvidenceV1 = {
     adaptiveThermogenesisKcalPerDay: number | null;
     sourceQuality: unknown;
   } | null;
+  episodeInitialGlycogenKg: unknown;
+  episodeBaselineCarbIntakeG: unknown;
   childOutputs: {
     slowTissue: { id: number; updatedAt: string; sourceFingerprint: string; result: unknown } | null;
     glycogen: { id: number; updatedAt: string; sourceFingerprint: string; result: unknown } | null;
@@ -148,7 +153,7 @@ export class UnifiedExperimentalPhysiologySourceLoaderV1 {
     const episodeRows = await this.client.modelEpisode.findMany({
       where: { profileId },
       orderBy: [{ startDate: "asc" }, { id: "asc" }],
-      select: { id: true, startDate: true, timezone: true, active: true, deactivatedAt: true },
+      select: { id: true, startDate: true, timezone: true, active: true, deactivatedAt: true, initialGlycogenKg: true, baselineCarbIntakeG: true },
     });
     const episodePartitions = buildTransientEpisodePartitionsV2(episodeRows);
     const modelDayBoundaries = transientModelDayBoundariesV2({
@@ -212,7 +217,7 @@ export class UnifiedExperimentalPhysiologySourceLoaderV1 {
       this.client.heartRateSample.findMany({ where: { profileId, date: { gte: fromDate, lte: toDate } }, select: { date: true } }),
       this.client.restingHeartRateSample.findMany({ where: { profileId, date: { gte: fromDate, lte: toDate } }, select: { date: true } }),
       this.client.sleepSegment.findMany({ where: { profileId }, select: { endAt: true } }),
-      this.client.dailyModelState.findMany({ where: { date: { gte: fromDate, lte: toDate }, episode: { profileId } }, orderBy: [{ date: "asc" }, { id: "asc" }], select: { id: true, episodeId: true, date: true, updatedAt: true, modelVersion: true, energyExpenditureKcal: true, energyBalanceKcal: true, dynamicRmrKcalPerDay: true, tefKcalPerDay: true, activityKcalPerDay: true, adaptiveThermogenesisKcalPerDay: true, sourceQuality: true } }),
+      this.client.dailyModelState.findMany({ where: { date: { gte: fromDate, lte: toDate }, episode: { profileId } }, orderBy: [{ date: "asc" }, { id: "asc" }], select: { id: true, episodeId: true, date: true, updatedAt: true, status: true, modelVersion: true, glycogenKg: true, deltaGlycogenKg: true, energyExpenditureKcal: true, energyBalanceKcal: true, dynamicRmrKcalPerDay: true, tefKcalPerDay: true, activityKcalPerDay: true, adaptiveThermogenesisKcalPerDay: true, sourceQuality: true } }),
       optional("fatWeightShadowV1Result", () => this.client.fatWeightShadowV1Result.findMany({ where: { profileId, date: { gte: fromDate, lte: toDate } }, orderBy: [{ date: "asc" }, { id: "asc" }], select: { id: true, date: true, updatedAt: true, sourceFingerprint: true, result: true } })),
       optional("experimentalGlycogenStateShadow", () => this.client.experimentalGlycogenStateShadow.findMany({ where: { profileId, date: { gte: fromDate, lte: toDate } }, orderBy: [{ date: "asc" }, { id: "asc" }], select: { id: true, date: true, updatedAt: true, sourceFingerprint: true, result: true } })),
       optional("experimentalGlycogenAssociatedWaterShadow", () => this.client.experimentalGlycogenAssociatedWaterShadow.findMany({ where: { profileId, date: { gte: fromDate, lte: toDate } }, orderBy: [{ date: "asc" }, { id: "asc" }], select: { id: true, date: true, updatedAt: true, sourceFingerprint: true, result: true } })),
@@ -337,6 +342,8 @@ export class UnifiedExperimentalPhysiologySourceLoaderV1 {
           modelEpisodeId: boundary.episodeId,
           date,
           boundaryAt: boundary.boundaryInstant,
+          episodeInitialGlycogenKg: episodeRows.find((episode) => episode.id === boundary.episodeId)?.initialGlycogenKg ?? null,
+          episodeBaselineCarbIntakeG: episodeRows.find((episode) => episode.id === boundary.episodeId)?.baselineCarbIntakeG ?? null,
           dailyHealthData: daily ? {
             id: daily.id, updatedAt: daily.updatedAt.toISOString(), weightKg: daily.weightKg,
             bodyFatPercent: decimal(daily.bodyFatPercent), caloriesKcal: daily.caloriesKcal,
@@ -363,7 +370,7 @@ export class UnifiedExperimentalPhysiologySourceLoaderV1 {
           diarySessions: (diaryByEpisodeDate.get(identity) ?? []).map((row) => ({ id: row.id, date, status: row.status, entryMode: row.entryMode, revision: row.revision, webStartedAt: row.webStartedAt?.toISOString() ?? null, webEndedAt: row.webEndedAt?.toISOString() ?? null, matchedWorkoutId: row.matchedWorkoutId, updatedAt: row.updatedAt.toISOString() })),
           activity: { stepIntervals: activityRows.filter((row) => row.date === date).map((row) => ({ id: row.id, startAt: row.startAt.toISOString(), endAt: row.endAt.toISOString(), value: row.value.toNumber() })), snapshotIds: snapshots.filter((row) => row.date === date).map((row) => row.id) },
           context: { heartRateSampleCount: hr.filter((row) => row.date === date).length, restingHeartRateSampleCount: restingHr.filter((row) => row.date === date).length, sleepSegmentCount: sleep.filter((row) => row.endAt.toISOString().slice(0, 10) === date).length },
-          productionDailyState: productionRow ? { id: productionRow.id, updatedAt: productionRow.updatedAt.toISOString(), modelVersion: productionRow.modelVersion, energyExpenditureKcal: productionRow.energyExpenditureKcal, energyBalanceKcal: productionRow.energyBalanceKcal, dynamicRmrKcalPerDay: productionRow.dynamicRmrKcalPerDay, tefKcalPerDay: productionRow.tefKcalPerDay, activityKcalPerDay: productionRow.activityKcalPerDay, adaptiveThermogenesisKcalPerDay: productionRow.adaptiveThermogenesisKcalPerDay, sourceQuality: productionRow.sourceQuality } : null,
+          productionDailyState: productionRow ? { id: productionRow.id, updatedAt: productionRow.updatedAt.toISOString(), status: productionRow.status, modelVersion: productionRow.modelVersion, glycogenKg: productionRow.glycogenKg, deltaGlycogenKg: productionRow.deltaGlycogenKg, energyExpenditureKcal: productionRow.energyExpenditureKcal, energyBalanceKcal: productionRow.energyBalanceKcal, dynamicRmrKcalPerDay: productionRow.dynamicRmrKcalPerDay, tefKcalPerDay: productionRow.tefKcalPerDay, activityKcalPerDay: productionRow.activityKcalPerDay, adaptiveThermogenesisKcalPerDay: productionRow.adaptiveThermogenesisKcalPerDay, sourceQuality: productionRow.sourceQuality } : null,
           childOutputs: {
             slowTissue: (() => { const row = slowTissueByDate.get(date); return row ? { id: row.id, updatedAt: row.updatedAt.toISOString(), sourceFingerprint: row.sourceFingerprint, result: row.result } : null; })(),
             glycogen: (() => { const row = glycogenByDate.get(date); return row ? { id: row.id, updatedAt: row.updatedAt.toISOString(), sourceFingerprint: row.sourceFingerprint, result: row.result } : null; })(),

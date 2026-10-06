@@ -265,7 +265,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(smoke).not.toContain("relevant DDL-conflicting relation lock(s)");
   });
 
-  it("matches all five reviewed manifest hashes to exact blobs at the release commit", async () => {
+  it("matches every reviewed manifest hash to its exact blob at the release commit", async () => {
     const releaseSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim();
     for (const migration of [...STAGE_02_MANIFEST.migrations, ...ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations]) {
       const result = await verifyManifestBlob({ repositoryPath: process.cwd(), releaseSha, migration });
@@ -326,6 +326,7 @@ describe("V5 closed migration manifest and full pending set", () => {
   it("keeps the complete object inventory synchronized with the SQL renderer", async () => {
     const template = await readFile(new URL("../scripts/production-db-preflight.sql", import.meta.url), "utf8");
     const sql = renderProductionDbPreflightSql(template);
+    const normalizedSql = sql.replaceAll("\r\n", "\n");
     const expected = getExpectedSchemaObjectNames();
     expect(expected).toEqual([...new Set([...EXPECTED_MIGRATION_OBJECTS, ...ACTIVE_ENERGY_UNIFIED_MANIFEST.postflightObjects])].sort());
     expect(sql).not.toContain("__EXPECTED_SCHEMA_OBJECTS_JSON__");
@@ -338,7 +339,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(sql).toContain("inet_server_addr()::text");
     expect(sql).toContain("inet_server_port()");
     expect(sql).toContain("'databaseOid', (SELECT oid::bigint FROM pg_database WHERE datname = current_database())");
-    expect(sql).toContain("ORDER BY dep.refobjid, dep.refobjsubid\n            LIMIT 1");
+    expect(normalizedSql).toContain("ORDER BY dep.refobjid, dep.refobjsubid\n            LIMIT 1");
     expect(sql).not.toContain("LEFT JOIN pg_depend dep ON dep.classid = 'pg_class'::regclass AND dep.objid = cl.oid");
     expect(sql).not.toMatch(/^\s*(ALTER|CREATE|DROP|INSERT|UPDATE|DELETE|TRUNCATE)\b/im);
   });

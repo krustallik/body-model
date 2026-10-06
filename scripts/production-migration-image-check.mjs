@@ -14,7 +14,14 @@ export async function verifyMigrationImageFiles(repositoryPath) {
   }
   const failed = results.filter((entry) => !entry.matches);
   if (failed.length) throw new Error("Migrator image migration bytes differ from reviewed Git-blob hashes: " + failed.map((item) => item.name).join(", "));
-  return results;
+  const rolloutTools = [];
+  for (const name of ["unified-v3-postflight.mjs", "unified-v4-activate-replay.mjs", "unified-v4-traffic-check.mjs"]) {
+    const filename = path.join(repositoryPath, "scripts", name);
+    const bytes = await readFile(filename);
+    if (bytes.length < 256) throw new Error(`Migrator image rollout tool is missing or unexpectedly empty: ${name}`);
+    rolloutTools.push({ name, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
+  }
+  return { migrations: results, rolloutTools };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

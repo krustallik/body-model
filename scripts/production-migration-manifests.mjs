@@ -12,6 +12,7 @@ export const ACTIVE_ENERGY_UNIFIED_MANIFEST = Object.freeze({
     Object.freeze({ name: "20261002100000_active_energy_canonical_resolution", sha256: "45711a527d809775a5ce66d3d9e529954158dcb65ed0065f70a0f948a4693a0b" }),
     Object.freeze({ name: "20261002150000_add_production_publication_generation", sha256: "9f1e38182dc3ec2449da5297786b603d8c0370498ed68db97059f640220bbbd7" }),
     Object.freeze({ name: "20261003120000_add_episode_aware_unified_experimental_physiology_v2", sha256: "0bb495d988ead0c1729f8e657b85f85bc4c20673fdedd5b61a7644cb0dcaf9b6" }),
+    Object.freeze({ name: "20261006130000_unified_v4_glycogen_water_rollout", sha256: "9e50a8f33ec93e5f7d74681a611bd7272038f7e5e25563054f4a4dbb093b5408" }),
   ]),
   requiredTablesBefore: Object.freeze([
     "Workout", "Profile", "ModelEpisode", "PhysiologyV7Lifecycle", "DailyModelState", "_prisma_migrations",
@@ -33,6 +34,9 @@ export const ACTIVE_ENERGY_UNIFIED_MANIFEST = Object.freeze({
     "ActiveEnergyCandidate_id_seq", "ActiveEnergyResolutionRevision_id_seq",
     "PhysiologyV7Lifecycle.productionStaleFromDate", "PhysiologyV7Lifecycle.productionPublishedGeneration",
     "PhysiologyV7Lifecycle.unifiedPublishedGeneration", "PhysiologyV7Lifecycle_productionStaleFromDate_idx",
+    "PhysiologyV7Lifecycle.unifiedTargetRevision", "PhysiologyV7Lifecycle.unifiedRolloutEpoch",
+    "PhysiologyV7Lifecycle.unifiedPublishedRolloutEpoch",
+    "PhysiologyV7Lifecycle_unifiedTargetRevision_supported", "PhysiologyV7Lifecycle_unifiedRolloutEpoch_nonnegative",
     "DailyModelState.weightFilterVarianceKg2", "UnifiedExperimentalPhysiologyStateV2",
     "UnifiedExperimentalPhysiologyStateV2_pkey", "UnifiedExperimentalPhysiologyStateV2_profileId_fkey",
     "UnifiedExperimentalPhysiologyStateV2_modelEpisodeId_fkey",

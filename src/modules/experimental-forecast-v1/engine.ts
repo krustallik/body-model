@@ -1,5 +1,5 @@
 import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
-import { GLYCOGEN_WATER_KG_PER_KG } from "@/model/body-composition/constants";
+import { calculateGlycogenAssociatedWaterKg } from "@/model/body-composition/state";
 import {
   replayTransientExerciseWaterV2,
   type ActiveTransientExerciseWaterImpulseV2,
@@ -241,7 +241,12 @@ export function runExperimentalForecast(input: ExperimentalForecastEngineInput):
     const fat = range(state.fatMassKg, uncertainty * 0.3);
     const slowNonFat = range(state.leanTissueKg, uncertainty * 0.2);
     const glycogen = range(state.glycogenKg, uncertainty * 0.2);
-    const glycogenWater = range(state.glycogenKg * GLYCOGEN_WATER_KG_PER_KG, uncertainty * 0.25);
+    const glycogenWater = {
+      median: calculateGlycogenAssociatedWaterKg(glycogen.median),
+      lower: calculateGlycogenAssociatedWaterKg(Math.max(0, glycogen.lower)),
+      upper: calculateGlycogenAssociatedWaterKg(Math.max(0, glycogen.upper)),
+      representation: "engineering-range" as const,
+    };
     const transientWater = transientWaterPoint === null || transientWaterLower === null || transientWaterUpper === null
       ? null
       : { median: transientWaterPoint, lower: transientWaterLower, upper: transientWaterUpper, representation: "engineering-range" as const };

@@ -125,8 +125,12 @@ export function buildForecastChartRows(input: {
 
   const engineeringRange = input.result.forecastVersion === "experimental-forecast-v1";
   for (const day of input.result.dates) {
-    for (const key of summaryMetricKeys) assertOrdered(day[key], day.date, key);
+    for (const key of summaryMetricKeys) {
+      const summary = day[key];
+      if (summary !== null) assertOrdered(summary, day.date, key);
+    }
     const summary = day[input.metric];
+    if (summary === null) continue;
     const row = getRow(day.date);
     if (finite(summary.median)) row.futureMedianKg = summary.median;
     if (engineeringRange) {

@@ -46,6 +46,26 @@ describe("physical glycogen and associated water V4", () => {
     });
   });
 
+  it("rejects incomplete and invalid production rows without falling back to episode initial state", () => {
+    for (const productionRow of [
+      { status: "stale", glycogenKg: 0.6 },
+      { status: "complete", glycogenKg: -0.1 },
+      { status: "complete", glycogenKg: Number.NaN },
+      { status: "complete", glycogenKg: Number.POSITIVE_INFINITY },
+    ]) {
+      expect(resolvePhysicalGlycogenWaterV4({
+        productionRow,
+        episodeInitialGlycogenKg: 0.5,
+        episodeBaselineCarbIntakeG: 240,
+      })).toMatchObject({
+        availability: "unavailable",
+        glycogenKg: null,
+        glycogenWaterKg: null,
+        reason: "production-state-incomplete",
+      });
+    }
+  });
+
   it("uses only a finite, strictly positive episode initial fallback when no row exists", () => {
     expect(resolvePhysicalGlycogenWaterV4({
       productionRow: null,
@@ -67,10 +87,26 @@ describe("physical glycogen and associated water V4", () => {
     }
   });
 
+  it("does not bootstrap physical glycogen from missing or invalid baseline nutrition", () => {
+    for (const baselineCarbIntakeG of [null, undefined, "240", 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(resolvePhysicalGlycogenWaterV4({
+        productionRow: null,
+        episodeInitialGlycogenKg: 0.4,
+        episodeBaselineCarbIntakeG: baselineCarbIntakeG,
+      })).toMatchObject({
+        availability: "unavailable",
+        glycogenKg: null,
+        glycogenWaterKg: null,
+        reason: "no-valid-production-or-initial-glycogen",
+      });
+    }
+  });
+
   it("keeps missing deltas unavailable and preserves signed physical changes", () => {
     expect(physicalGlycogenWaterDeltaV4(null)).toBeNull();
     expect(physicalGlycogenWaterDeltaV4(0)).toBe(0);
     expect(physicalGlycogenWaterDeltaV4(0.2)).toBeCloseTo(0.54);
     expect(physicalGlycogenWaterDeltaV4(-0.2)).toBeCloseTo(-0.54);
+    expect(() => physicalGlycogenWaterDeltaV4(Number.POSITIVE_INFINITY)).toThrow("glycogen delta must be finite");
   });
 });

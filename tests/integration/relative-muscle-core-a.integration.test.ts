@@ -352,7 +352,7 @@ describe("Relative Muscle episode core", () => {
     };
 
     const barrierTransaction = prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(${barrierNamespace}::integer, ${profileId}::integer)`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${barrierNamespace}::integer, ${profileId}::integer)`;
       acquiredBarrier();
       await barrierReleased;
     }, { timeout: 30_000 });

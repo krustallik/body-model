@@ -245,6 +245,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
 
     const replacement = await initializeNewModelEpisode({ startDate: episodeStart, now });
     expect(replacement.id).not.toBe(episodeId);
+    await recalculateModelEpisode({ episodeId: replacement.id, now });
     const episodeLocalDiagnostic = await prisma.experimentalCessationDetrainingShadow.findUnique({
       where: { profileId_modelEpisodeId_date: { profileId: 1, modelEpisodeId: replacement.id, date: episodeStart } },
     });
@@ -1506,6 +1507,8 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     await recalculateModelEpisode({ episodeId, now });
     expect(await prisma.dailyModelState.count({ where: { episodeId } })).toBeGreaterThan(0);
     await prisma.unifiedExperimentalPhysiologyStateV2.deleteMany({ where: { modelEpisodeId: episodeId } });
+    await prisma.experimentalSkeletalMuscleDeltaShadow.deleteMany({ where: { modelEpisodeId: episodeId } });
+    await prisma.experimentalCessationDetrainingShadow.deleteMany({ where: { modelEpisodeId: episodeId } });
     await prisma.modelEpisode.delete({ where: { id: episodeId } });
     expect(await prisma.dailyModelState.count({ where: { episodeId } })).toBe(0);
   });

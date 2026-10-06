@@ -68,9 +68,16 @@ function buildPartitions(episodes: readonly Episode[]): EpisodePartition[] {
   for (let index = 1; index < partitions.length; index += 1) {
     const previous = partitions[index - 1]!;
     const next = partitions[index]!;
-    if (next.startAt.getTime() <= previous.startAt.getTime()) {
-      throw new RangeError("Relative Muscle ModelEpisode boundaries must be unique and increasing");
+    if (next.startAt.getTime() < previous.startAt.getTime()) {
+      throw new RangeError("Relative Muscle ModelEpisode boundaries must be increasing");
     }
+    if (next.startAt.getTime() === previous.startAt.getTime() && next.episode.id <= previous.episode.id) {
+      throw new RangeError("Relative Muscle ModelEpisode boundaries with equal instants must be ordered by episode id");
+    }
+    // Equal episode-local start instants are deterministic: the earlier
+    // episode id has an empty interval at this boundary, and the later id owns
+    // dates beginning at that instant. This lets diagnostic baselines reset
+    // without carrying state across same-date episode replacement.
     previous.endAt = previous.episode.active
       ? next.startAt
       : previous.episode.deactivatedAt && previous.episode.deactivatedAt < next.startAt

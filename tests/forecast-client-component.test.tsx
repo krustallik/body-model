@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("next/link", () => ({ default: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => <a href={String(href)} {...props}>{children}</a> }));
 
+import { ForecastChart } from "@/app/forecast/forecast-chart";
 import { ForecastClient } from "@/app/forecast/forecast-client";
 import {
   forecastReadiness,
@@ -61,6 +62,29 @@ function forecastResult(overrides: Partial<ForecastResult> = {}): ForecastResult
 }
 
 describe("ForecastClient", () => {
+  it("describes measured weight and a submitted target without mislabeling glycogen mass", () => {
+    const target = { date: "2026-04-30", weightKg: 75 };
+    const bodyWeight = renderToStaticMarkup(<ForecastChart
+      result={forecastResult()}
+      metric="physiologicalBodyWeightKg"
+      history={[]}
+      observedWeights={[{ date: "2026-03-29", weightKg: 80 }]}
+      locale="en"
+      target={target}
+    />);
+    const glycogenMass = renderToStaticMarkup(<ForecastChart
+      result={forecastResult()}
+      metric="glycogenAssociatedMassKg"
+      history={[]}
+      locale="en"
+      target={target}
+    />);
+
+    expect(bodyWeight).toContain('role="img" aria-label="Measured weight, Model estimate, future forecast, submitted target"');
+    expect(glycogenMass).toContain('role="img" aria-label="Historical glycogen-and-water estimate, future forecast"');
+    expect(glycogenMass).not.toContain("submitted target");
+  });
+
   it("renders the complete initial control surface and honest loading state", () => {
     const html = renderToStaticMarkup(<ForecastClient />);
     expect(html).toContain("See the range, not just a line.");

@@ -282,7 +282,11 @@ describe("persisted physiology v7 rebuild lifecycle with PostgreSQL", () => {
     });
     await prisma.physiologyV7Lifecycle.update({
       where: { profileId },
-      data: { productionPublishedGeneration: 10, unifiedPublishedGeneration: 10 },
+      data: {
+        productionPublishedGeneration: 10,
+        unifiedPublishedGeneration: 10,
+        unifiedPublishedRolloutEpoch: 0,
+      },
     });
     const current = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
     expect(isUnifiedGenerationCurrentV1(current)).toBe(true);
@@ -293,7 +297,8 @@ describe("persisted physiology v7 rebuild lifecycle with PostgreSQL", () => {
       invalidationGeneration: 11,
       productionStaleFromDate: dates[1],
       productionPublishedGeneration: 10,
-      unifiedPublishedGeneration: 10,
+      unifiedPublishedGeneration: null,
+      unifiedPublishedRolloutEpoch: null,
     });
     expect(isProductionGenerationCurrentV1(invalidated)).toBe(false);
     expect(isUnifiedGenerationCurrentV1(invalidated)).toBe(false);
@@ -305,7 +310,8 @@ describe("persisted physiology v7 rebuild lifecycle with PostgreSQL", () => {
       invalidationGeneration: 11,
       productionStaleFromDate: dates[1],
       productionPublishedGeneration: 10,
-      unifiedPublishedGeneration: 10,
+      unifiedPublishedGeneration: null,
+      unifiedPublishedRolloutEpoch: null,
     });
 
     await persistence.publishProduction({ profileId, expectedGeneration: 11 });
@@ -314,7 +320,8 @@ describe("persisted physiology v7 rebuild lifecycle with PostgreSQL", () => {
       invalidationGeneration: 11,
       productionStaleFromDate: null,
       productionPublishedGeneration: 11,
-      unifiedPublishedGeneration: 10,
+      unifiedPublishedGeneration: null,
+      unifiedPublishedRolloutEpoch: null,
     });
     expect(isProductionGenerationCurrentV1(productionOnly)).toBe(true);
     expect(isUnifiedGenerationCurrentV1(productionOnly)).toBe(false);

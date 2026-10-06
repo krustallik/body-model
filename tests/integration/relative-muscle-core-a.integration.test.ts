@@ -12,6 +12,7 @@ const databaseUrl = process.env.DATABASE_URL;
 requireIsolatedStage01Database(databaseUrl, process.env.BODYCAST_STAGE01_MODE, "test");
 const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
 const profileId = 1;
+const profileAdvisoryLockNamespace = 927_001;
 const fixtureMethod = "relative-muscle-core-a-integration";
 const episodeDate = "2088-01-01";
 const timezoneDate = "2089-03-27";
@@ -307,21 +308,31 @@ describe("Relative Muscle episode core", () => {
     expect(repaired.every(({ isStale }) => !isStale)).toBe(true);
   });
 
-  it("serializes concurrent rebuilds so a delayed stale candidate cannot overwrite newer source state", async () => {
-    const episode = await createEpisode({ startDate: raceDate, timezone: "UTC", active: true });
+  it("serializes overlapping rebuilds profile-first so a delayed stale candidate cannot overwrite newer source state", async () => {
+    const targetProfileId = profileId;
+    const episode = await createEpisode({
+      startDate: raceDate,
+      timezone: "UTC",
+      active: true,
+    });
     await createHealthDay(raceDate, "UTC", true);
     await createCompleteModelDay(episode.id, raceDate);
 
-    const barrierNamespace = 1_886_417_001;
+    const firstBarrierNamespace = 1_886_417_001;
+    const secondBarrierNamespace = 1_886_417_002;
     const functionName = "relative_muscle_rebuild_race_gate";
     const triggerName = "relative_muscle_rebuild_race_gate_trigger";
     await prisma.$executeRawUnsafe(`
       CREATE OR REPLACE FUNCTION "${functionName}"() RETURNS trigger AS $$
       BEGIN
-        IF NEW."profileId" = ${profileId}
+        IF NEW."profileId" = ${targetProfileId}
           AND NEW."date" = '${raceDate}'
           AND NEW."features"->>'energyBalanceKcal' = '-100' THEN
-          PERFORM pg_advisory_xact_lock(${barrierNamespace}, ${profileId});
+          PERFORM pg_advisory_xact_lock(${firstBarrierNamespace}, ${targetProfileId});
+        ELSIF NEW."profileId" = ${targetProfileId}
+          AND NEW."date" = '${raceDate}'
+          AND NEW."features"->>'energyBalanceKcal' = '-500' THEN
+          PERFORM pg_advisory_xact_lock(${secondBarrierNamespace}, ${targetProfileId});
         END IF;
         RETURN NEW;
       END;
@@ -333,53 +344,226 @@ describe("Relative Muscle episode core", () => {
       FOR EACH ROW EXECUTE FUNCTION "${functionName}"()
     `);
 
-    let releaseBarrier!: () => void;
-    let acquiredBarrier!: () => void;
-    const barrierReleased = new Promise<void>((resolve) => { releaseBarrier = resolve; });
-    const barrierAcquired = new Promise<void>((resolve) => { acquiredBarrier = resolve; });
-    const waitForBlockedLock = async (namespace: number) => {
+    type AdvisoryLockRow = {
+      namespace: number;
+      profileId: number;
+      pid: number;
+      granted: boolean;
+    };
+    type LockBarrier = {
+      pid: number;
+      transaction: Promise<void>;
+      release: () => void;
+    };
+    const readLocks = () => prisma.$queryRaw<AdvisoryLockRow[]>`
+      SELECT classid::integer AS namespace, objid::integer AS "profileId", pid, granted
+      FROM pg_locks
+      WHERE locktype = 'advisory'
+        AND objsubid = 2
+        AND objid = ${targetProfileId}::oid
+        AND classid IN (
+          ${profileAdvisoryLockNamespace}::oid,
+          ${RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE}::oid,
+          ${firstBarrierNamespace}::oid,
+          ${secondBarrierNamespace}::oid
+        )
+    `;
+    const waitForLocks = async (
+      predicate: (rows: AdvisoryLockRow[]) => boolean,
+      description: string,
+    ): Promise<AdvisoryLockRow[]> => {
       for (let attempt = 0; attempt < 150; attempt += 1) {
-        const rows = await prisma.$queryRaw<Array<{ count: number }>>`
-          SELECT count(*)::int AS count
-          FROM pg_locks
-          WHERE locktype = 'advisory' AND granted = false
-            AND classid = ${namespace}::oid AND objid = ${profileId}::oid AND objsubid = 2
-        `;
-        if ((rows[0]?.count ?? 0) > 0) return;
+        const rows = await readLocks();
+        if (predicate(rows)) return rows;
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
-      throw new Error(`Timed out waiting for Relative Muscle advisory lock ${namespace}`);
+      throw new Error(`Timed out waiting for PostgreSQL lock state: ${description}`);
+    };
+    const holdBarrier = async (namespace: number): Promise<LockBarrier> => {
+      let release!: () => void;
+      let acquired!: (pid: number) => void;
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      const acquiredPromise = new Promise<number>((resolve) => { acquired = resolve; });
+      const transaction = prisma.$transaction(async (tx) => {
+        const [backend] = await tx.$queryRaw<Array<{ pid: number }>>`
+          SELECT pg_backend_pid()::integer AS pid
+        `;
+        await tx.$executeRaw`
+          SELECT pg_advisory_xact_lock(${namespace}::integer, ${targetProfileId}::integer)
+        `;
+        acquired(backend!.pid);
+        await released;
+      }, { timeout: 30_000 });
+      return { pid: await acquiredPromise, transaction, release };
     };
 
-    const barrierTransaction = prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${barrierNamespace}::integer, ${profileId}::integer)`;
-      acquiredBarrier();
-      await barrierReleased;
-    }, { timeout: 30_000 });
-    await barrierAcquired;
     const candidates: Promise<void>[] = [];
+    let firstBarrier: LockBarrier | undefined;
+    let secondBarrier: LockBarrier | undefined;
     try {
-      const staleCandidate = rebuildRelativeMuscleEpisodeTrajectories({ profileId, fromDate: raceDate });
+      firstBarrier = await holdBarrier(firstBarrierNamespace);
+      secondBarrier = await holdBarrier(secondBarrierNamespace);
+
+      const staleCandidate = rebuildRelativeMuscleEpisodeTrajectories({
+        profileId: targetProfileId,
+        fromDate: raceDate,
+      });
       candidates.push(staleCandidate);
-      await waitForBlockedLock(barrierNamespace);
+      const staleWaitState = await waitForLocks(
+        (locks) => locks.some((lock) => lock.namespace === firstBarrierNamespace && !lock.granted),
+        "first rebuild to reach its deterministic write barrier",
+      );
+      const staleWriterPid = staleWaitState.find(
+        (lock) => lock.namespace === firstBarrierNamespace && !lock.granted,
+      )!.pid;
+      expect(staleWaitState).toContainEqual(expect.objectContaining({
+        namespace: firstBarrierNamespace,
+        profileId: targetProfileId,
+        pid: firstBarrier.pid,
+        granted: true,
+      }));
+      expect(staleWaitState).toContainEqual(expect.objectContaining({
+        namespace: profileAdvisoryLockNamespace,
+        profileId: targetProfileId,
+        pid: staleWriterPid,
+        granted: true,
+      }));
+      expect(staleWaitState).toContainEqual(expect.objectContaining({
+        namespace: RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE,
+        profileId: targetProfileId,
+        pid: staleWriterPid,
+        granted: true,
+      }));
+
       await prisma.dailyModelState.update({
         where: { episodeId_date: { episodeId: episode.id, date: raceDate } },
         data: { energyBalanceKcal: -500 },
       });
-      const freshCandidate = rebuildRelativeMuscleEpisodeTrajectories({ profileId, fromDate: raceDate });
+      const locksBeforeFreshWriter = await readLocks();
+      const profileWaiterPidsBefore = new Set(locksBeforeFreshWriter
+        .filter((lock) => lock.namespace === profileAdvisoryLockNamespace && !lock.granted)
+        .map((lock) => lock.pid));
+      const relativeWaiterPidsBefore = new Set(locksBeforeFreshWriter
+        .filter((lock) => lock.namespace === RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE && !lock.granted)
+        .map((lock) => lock.pid));
+      const freshCandidate = rebuildRelativeMuscleEpisodeTrajectories({
+        profileId: targetProfileId,
+        fromDate: raceDate,
+      });
       candidates.push(freshCandidate);
-      await waitForBlockedLock(RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE);
-      releaseBarrier();
-      await Promise.all([barrierTransaction, staleCandidate, freshCandidate]);
+
+      const overlapState = await waitForLocks((locks) => {
+        const staleAtWriteBarrier = locks.some(
+          (lock) => lock.namespace === firstBarrierNamespace && lock.pid === staleWriterPid && !lock.granted,
+        );
+        const newProfileWaiter = locks.some((lock) => lock.namespace === profileAdvisoryLockNamespace
+          && lock.profileId === targetProfileId
+          && lock.pid !== staleWriterPid
+          && !profileWaiterPidsBefore.has(lock.pid)
+          && !lock.granted);
+        const newRelativeWaiter = locks.some((lock) => lock.namespace === RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE
+          && lock.profileId === targetProfileId
+          && !relativeWaiterPidsBefore.has(lock.pid)
+          && !lock.granted);
+        return staleAtWriteBarrier && (newProfileWaiter || newRelativeWaiter);
+      }, "overlapping writers with the second writer queued on a profile or Relative Muscle lock");
+      const newProfileWaiterPids = overlapState
+        .filter((lock) => lock.namespace === profileAdvisoryLockNamespace
+          && lock.profileId === targetProfileId
+          && lock.pid !== staleWriterPid
+          && !profileWaiterPidsBefore.has(lock.pid)
+          && !lock.granted)
+        .map((lock) => lock.pid);
+      const newRelativeWaiterPids = overlapState
+        .filter((lock) => lock.namespace === RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE
+          && lock.profileId === targetProfileId
+          && !relativeWaiterPidsBefore.has(lock.pid)
+          && !lock.granted)
+        .map((lock) => lock.pid);
+      expect(newProfileWaiterPids.length).toBeGreaterThan(0);
+      expect(newRelativeWaiterPids).toEqual([]);
+      expect(newProfileWaiterPids).not.toContain(staleWriterPid);
+      expect(overlapState).toContainEqual(expect.objectContaining({
+        namespace: profileAdvisoryLockNamespace,
+        profileId: targetProfileId,
+        pid: staleWriterPid,
+        granted: true,
+      }));
+      expect(overlapState).toContainEqual(expect.objectContaining({
+        namespace: RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE,
+        profileId: targetProfileId,
+        pid: staleWriterPid,
+        granted: true,
+      }));
+      expect(overlapState).toContainEqual(expect.objectContaining({
+        namespace: firstBarrierNamespace,
+        pid: staleWriterPid,
+        granted: false,
+      }));
+
+      // Release the stale transaction only after PostgreSQL proves the fresh
+      // writer is queued at the first lock in the approved global lock order.
+      firstBarrier.release();
+      await Promise.all([firstBarrier.transaction, staleCandidate]);
+
+      const freshWaitState = await waitForLocks(
+        (locks) => locks.some(
+          (lock) => lock.namespace === secondBarrierNamespace && !lock.granted,
+        ),
+        "fresh rebuild to reach its write barrier after profile serialization",
+      );
+      const freshWriterPid = freshWaitState.find(
+        (lock) => lock.namespace === secondBarrierNamespace && !lock.granted,
+      )!.pid;
+      expect(newProfileWaiterPids).toContain(freshWriterPid);
+      expect(newRelativeWaiterPids).not.toContain(freshWriterPid);
+      expect(freshWaitState).toContainEqual(expect.objectContaining({
+        namespace: secondBarrierNamespace,
+        profileId: targetProfileId,
+        pid: secondBarrier.pid,
+        granted: true,
+      }));
+      expect(freshWaitState).toContainEqual(expect.objectContaining({
+        namespace: profileAdvisoryLockNamespace,
+        profileId: targetProfileId,
+        pid: freshWriterPid,
+        granted: true,
+      }));
+      expect(freshWaitState).toContainEqual(expect.objectContaining({
+        namespace: RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE,
+        profileId: targetProfileId,
+        pid: freshWriterPid,
+        granted: true,
+      }));
+      expect(freshWaitState.some(
+        (lock) => lock.namespace === profileAdvisoryLockNamespace
+          && lock.profileId === targetProfileId
+          && lock.pid === staleWriterPid
+          && lock.granted,
+      )).toBe(false);
+
+      secondBarrier.release();
+      await Promise.all([secondBarrier.transaction, freshCandidate]);
 
       const finalRow = await prisma.experimentalSkeletalMuscleDeltaShadow.findUniqueOrThrow({
-        where: { profileId_modelEpisodeId_date: { profileId, modelEpisodeId: episode.id, date: raceDate } },
+        where: {
+          profileId_modelEpisodeId_date: {
+            profileId: targetProfileId,
+            modelEpisodeId: episode.id,
+            date: raceDate,
+          },
+        },
       });
       expect(finalRow.isStale).toBe(false);
       expect((finalRow.features as { energyBalanceKcal?: number }).energyBalanceKcal).toBe(-500);
     } finally {
-      releaseBarrier();
-      await Promise.allSettled([barrierTransaction, ...candidates]);
+      firstBarrier?.release();
+      secondBarrier?.release();
+      await Promise.allSettled([
+        ...(firstBarrier ? [firstBarrier.transaction] : []),
+        ...(secondBarrier ? [secondBarrier.transaction] : []),
+        ...candidates,
+      ]);
       await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS "${triggerName}" ON "ExperimentalSkeletalMuscleDeltaShadow"`);
       await prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS "${functionName}"()`);
     }

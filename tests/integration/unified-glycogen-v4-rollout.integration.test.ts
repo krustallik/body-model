@@ -93,8 +93,10 @@ function runRolloutTool(script: string, args: string[]): Record<string, unknown>
 }
 
 function compileMigratorTool(input: { source: string; output: string }): void {
-  execFileSync(process.execPath, [
-    path.resolve("node_modules/esbuild/bin/esbuild"),
+  const esbuildBin = path.resolve("node_modules/esbuild/bin/esbuild");
+  const compiler = process.platform === "win32" ? process.execPath : esbuildBin;
+  const compilerArgs = [
+    ...(process.platform === "win32" ? [esbuildBin] : []),
     path.resolve(input.source),
     "--bundle",
     "--platform=node",
@@ -102,7 +104,8 @@ function compileMigratorTool(input: { source: string; output: string }): void {
     "--packages=external",
     `--tsconfig=${path.resolve("tsconfig.json")}`,
     `--outfile=${path.join(migratorArtifactRoot, "scripts", input.output)}`,
-  ], { cwd: process.cwd(), encoding: "utf8", env: process.env });
+  ];
+  execFileSync(compiler, compilerArgs, { cwd: process.cwd(), encoding: "utf8", env: process.env });
 }
 
 async function waitForAdvisoryLockWait(): Promise<void> {

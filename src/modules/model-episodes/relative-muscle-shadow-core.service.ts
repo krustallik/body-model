@@ -137,7 +137,7 @@ export async function rebuildRelativeMuscleEpisodeTrajectories(input: {
   try {
     await client.$transaction(async (transaction) => {
       await transaction.$executeRaw`
-        SELECT pg_advisory_xact_lock(${RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE}, CAST(${profileId} AS integer))
+        SELECT pg_advisory_xact_lock(CAST(${RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE} AS integer), CAST(${profileId} AS integer))
       `;
       await rebuildRelativeMuscleEpisodeTrajectoriesInTransaction({
         ...input,
@@ -152,7 +152,7 @@ export async function rebuildRelativeMuscleEpisodeTrajectories(input: {
     try {
       await client.$transaction(async (transaction) => {
         await transaction.$executeRaw`
-          SELECT pg_advisory_xact_lock(${RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE}, CAST(${profileId} AS integer))
+          SELECT pg_advisory_xact_lock(CAST(${RELATIVE_MUSCLE_REBUILD_LOCK_NAMESPACE} AS integer), CAST(${profileId} AS integer))
         `;
         await Promise.all([
           transaction.experimentalSkeletalMuscleDeltaShadow.updateMany({

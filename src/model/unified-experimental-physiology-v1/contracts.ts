@@ -6,6 +6,9 @@ export const UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V1_REVISION =
 export const UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION =
   "unified-experimental-physiology-state-v2-episode-boundary-transient-water-impulse-ledger" as const;
 
+export const UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION =
+  "unified-experimental-physiology-state-v3-relative-muscle-daily-cumulative-diagnostics" as const;
+
 export type UnifiedAvailabilityV1 = "available" | "partial" | "unavailable";
 export type UnifiedGapSeverityV1 = "none" | "short-gap" | "large-gap" | "extended-gap";
 export type UnifiedSourceQualityV1 = "observed" | "estimated" | "modeled-gap-bridge" | "missing";
@@ -53,11 +56,15 @@ export type UnifiedTransientWaterStateV1 = {
 
 export type UnifiedRelativeMuscleDiagnosticV1 = {
   availability: UnifiedAvailabilityV1;
-  cumulativeDeltaKg: UnifiedNumericEnvelopeV1 | null;
+  /** Daily training-response diagnostic, kg per episode model day. */
+  dailyTrainingSignalKg: number | null;
+  /** Episode-local cumulative diagnostic; not a physical tissue mass. */
+  cumulativeDiagnosticKg: number | null;
   supportStatus: "supported" | "degraded" | "outside-supported-domain";
   authoritativeUse: "forbidden";
   reason: string;
-  provenance: "experimental-cessation-detraining-v1" | "unavailable";
+  dailySignalProvenance: "experimental-skeletal-muscle-delta-v2" | "unavailable";
+  cumulativeProvenance: "experimental-cessation-detraining-v2" | "unavailable";
 };
 
 export type UnifiedEcfContextV1 = {
@@ -153,7 +160,7 @@ export type UnifiedDailyDeltasV1 = {
 };
 
 export type UnifiedExperimentalPhysiologyDayResultV1 = {
-  contractVersion: typeof UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION;
+  contractVersion: typeof UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION;
   profileId: number;
   modelEpisodeId: number;
   date: string;

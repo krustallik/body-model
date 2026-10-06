@@ -1,9 +1,14 @@
 import { Prisma, PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION } from "@/model/unified-experimental-physiology-v1";
+import {
+  UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION,
+  UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
+} from "@/model/unified-experimental-physiology-v1";
+import { EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION } from "@/model/physiology-v7/experimental-cessation-detraining-v1";
+import { EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION } from "@/model/physiology-v7/experimental-skeletal-muscle-delta-v1";
 import { requireIsolatedStage01Database } from "@/modules/training/testing/require-isolated-database";
 import { currentPhysiologyV7Versions } from "@/modules/model-episodes/physiology-v7-persistence";
-import { rebuildUnifiedExperimentalPhysiologyStateV1 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
+import { invalidateUnifiedRelativeMuscleSuffixV1, rebuildUnifiedExperimentalPhysiologyStateV1 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
 import { PhysiologyV7ConcurrentSourceChangeError, PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import { isProductionGenerationCurrentV1, isUnifiedGenerationCurrentV1 } from "@/modules/model-episodes/publication-generation-v1";
 import { buildExerciseMuscleMappingSnapshotV7 } from "@/model/physiology-v7/exercise-muscle-mapping-v7";
@@ -78,6 +83,7 @@ async function clean(): Promise<void> {
   await prisma.experimentalGlycogenStateShadow.deleteMany({ where: { profileId, date: { in: allDates } } });
   await prisma.experimentalGlycogenAssociatedWaterShadow.deleteMany({ where: { profileId, date: { in: allDates } } });
   await prisma.experimentalSkeletalMuscleDeltaShadow.deleteMany({ where: { profileId, date: { in: allDates } } });
+  await prisma.experimentalCessationDetrainingShadow.deleteMany({ where: { profileId, date: { in: allDates } } });
   await prisma.experimentalFfmRetentionShadow.deleteMany({ where: { profileId, date: { in: allDates } } });
   await prisma.fatWeightShadowV1Result.deleteMany({ where: { profileId, date: { in: allDates } } });
   await prisma.dailyModelState.deleteMany({ where: { date: { in: allDates }, episode: { baselineDerivationMethod: fixtureMethod } } });
@@ -302,7 +308,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     expect(stored).toHaveLength(3);
     expect(new Set(stored.map((row) => row.date)).size).toBe(3);
     expect(stored.every((row) => row.modelEpisodeId === episodeId && row.boundaryAt instanceof Date)).toBe(true);
-    expect(stored.every((row) => row.modelRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION)).toBe(true);
+    expect(stored.every((row) => row.modelRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION)).toBe(true);
     expect(stored.every((row) => row.sourceFingerprint.length > 0 && row.resultFingerprint.length > 0)).toBe(true);
     expect(stored.every((row) => (row.sourceLineage as { sourceDate?: string }).sourceDate === row.date)).toBe(true);
     expect(stored.every((row) => row.qualityStatus === "partial" && row.gapSeverity === "none")).toBe(true);
@@ -323,6 +329,126 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     expect("glycogenWaterKg" in deltas).toBe(true);
     expect("transientWaterKg" in deltas).toBe(true);
   });
+
+  it("keeps daily and cumulative Relative Muscle diagnostics separate, invalidates the episode suffix, and rebuilds without numeric effects", async () => {
+    await seed();
+    const deltaFingerprint = "a".repeat(64);
+    const cumulativeFingerprint = "b".repeat(64);
+    await prisma.experimentalSkeletalMuscleDeltaShadow.create({
+      data: {
+        profileId, modelEpisodeId: episodeId!, date: dates[0]!,
+        sourceFingerprint: deltaFingerprint,
+        modelRevision: EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION,
+        features: {},
+        result: {
+          contractVersion: EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION,
+          availability: "available", estimatedSkeletalMuscleDeltaKg: 0.021,
+          support: { status: "outside-supported-domain" },
+          state: { absoluteSkeletalMuscleKg: null, relativeCumulativeDeltaKg: 19.9 },
+        },
+      },
+    });
+    await prisma.experimentalCessationDetrainingShadow.create({
+      data: {
+        profileId, modelEpisodeId: episodeId!, date: dates[0]!,
+        sourceFingerprint: cumulativeFingerprint,
+        modelRevision: EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION,
+        features: {},
+        result: {
+          contractVersion: EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION,
+          availability: "available", estimatedSkeletalMuscleDeltaKg: -0.002,
+          state: { absoluteSkeletalMuscleKg: null, relativeCumulativeDeltaKg: 0.71 },
+        },
+      },
+    });
+
+    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[0], toDate: dates[2] });
+    const first = await prisma.unifiedExperimentalPhysiologyStateV2.findUniqueOrThrow({
+      where: { profileId_modelEpisodeId_date: { profileId, modelEpisodeId: episodeId!, date: dates[0]! } },
+    });
+    const firstState = first.state as { relativeMuscle: Record<string, unknown>; slowTissue: unknown; glycogen: unknown; glycogenWater: unknown; transientWater: unknown };
+    expect(firstState.relativeMuscle).toEqual({
+      availability: "available",
+      dailyTrainingSignalKg: 0.021,
+      cumulativeDiagnosticKg: 0.71,
+      supportStatus: "outside-supported-domain",
+      authoritativeUse: "forbidden",
+      reason: "relative diagnostic only; never added to body mass",
+      dailySignalProvenance: EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION,
+      cumulativeProvenance: EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION,
+    });
+    expect(JSON.stringify(firstState.relativeMuscle)).not.toMatch(/lower|upper|point/);
+    expect((first.sourceLineage as { childOutputs: Array<{ kind: string; sourceFingerprint: string }> }).childOutputs)
+      .toEqual(expect.arrayContaining([
+        { kind: "relativeMuscleDaily", id: expect.any(Number), updatedAt: expect.any(String), sourceFingerprint: deltaFingerprint },
+        { kind: "relativeMuscleCumulative", id: expect.any(Number), updatedAt: expect.any(String), sourceFingerprint: cumulativeFingerprint },
+      ]));
+    const firstProduction = await prisma.dailyModelState.findFirstOrThrow({
+      where: { episodeId: episodeId!, date: dates[0]! }, select: { energyExpenditureKcal: true, energyBalanceKcal: true, dynamicRmrKcalPerDay: true, activityKcalPerDay: true },
+    });
+    const beforeSuffix = await prisma.unifiedExperimentalPhysiologyStateV2.findUniqueOrThrow({
+      where: { profileId_modelEpisodeId_date: { profileId, modelEpisodeId: episodeId!, date: dates[1]! } },
+    });
+    const beforeSuffixState = beforeSuffix.state as { slowTissue: unknown; glycogen: unknown; glycogenWater: unknown; transientWater: unknown };
+
+    const dirty = await invalidateUnifiedRelativeMuscleSuffixV1({
+      profileId,
+      fromInstant: new Date(`${dates[1]}T12:00:00.000Z`),
+    });
+    expect(dirty).toEqual({ modelEpisodeId: episodeId, modelDate: dates[1] });
+    const invalidatedLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
+    expect(isProductionGenerationCurrentV1(invalidatedLifecycle)).toBe(true);
+    expect(isUnifiedGenerationCurrentV1(invalidatedLifecycle)).toBe(false);
+
+    const changedResult = {
+      contractVersion: EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION,
+      availability: "available", estimatedSkeletalMuscleDeltaKg: 0.034,
+      state: { absoluteSkeletalMuscleKg: null, relativeCumulativeDeltaKg: 88 },
+    };
+    await prisma.experimentalSkeletalMuscleDeltaShadow.create({
+      data: {
+        profileId, modelEpisodeId: episodeId!, date: dates[1]!, sourceFingerprint: "c".repeat(64),
+        modelRevision: EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION, features: {}, result: changedResult,
+      },
+    });
+    await prisma.experimentalCessationDetrainingShadow.create({
+      data: {
+        profileId, modelEpisodeId: episodeId!, date: dates[1]!, sourceFingerprint: "d".repeat(64),
+        modelRevision: EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION, features: {},
+        result: {
+          contractVersion: EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION, availability: "available",
+          estimatedSkeletalMuscleDeltaKg: 0.034,
+          state: { absoluteSkeletalMuscleKg: null, relativeCumulativeDeltaKg: 0.744 },
+        },
+      },
+    });
+    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[1], toDate: dates[2] });
+    const suffix = await prisma.unifiedExperimentalPhysiologyStateV2.findUniqueOrThrow({
+      where: { profileId_modelEpisodeId_date: { profileId, modelEpisodeId: episodeId!, date: dates[1]! } },
+    });
+    const suffixState = suffix.state as { relativeMuscle: Record<string, unknown>; slowTissue: unknown; glycogen: unknown; glycogenWater: unknown; transientWater: unknown };
+    expect(suffixState.relativeMuscle).toMatchObject({ dailyTrainingSignalKg: 0.034, cumulativeDiagnosticKg: 0.744 });
+    expect(suffixState.relativeMuscle).not.toHaveProperty("absoluteSkeletalMuscleKg");
+    expect(suffixState.slowTissue).toEqual(beforeSuffixState.slowTissue);
+    expect(suffixState.glycogen).toEqual(beforeSuffixState.glycogen);
+    expect(suffixState.glycogenWater).toEqual(beforeSuffixState.glycogenWater);
+    expect(suffixState.transientWater).toEqual(beforeSuffixState.transientWater);
+    expect(suffix.energyLedger).toEqual(beforeSuffix.energyLedger);
+    expect(suffix.deltas).toEqual(beforeSuffix.deltas);
+    expect(await prisma.dailyModelState.findFirstOrThrow({
+      where: { episodeId: episodeId!, date: dates[0]! }, select: { energyExpenditureKcal: true, energyBalanceKcal: true, dynamicRmrKcalPerDay: true, activityKcalPerDay: true },
+    })).toEqual(firstProduction);
+    expect((await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } }).then(isUnifiedGenerationCurrentV1))).toBe(true);
+
+    await prisma.unifiedExperimentalPhysiologyStateV2.updateMany({
+      where: { profileId, modelEpisodeId: episodeId! }, data: { modelRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION },
+    });
+    expect(await readLatestUnifiedExperimentalPhysiologyV2ForEpisode(prisma, {
+      profileId, modelEpisodeId: episodeId!, throughDate: dates[2]!,
+    })).toBeNull();
+    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[0], toDate: dates[2] });
+    expect((await rows()).every((row) => row.modelRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION)).toBe(true);
+  }, 60_000);
 
   it("keeps the old V1 profile/date upsert usable beside separate V2 rows", async () => {
     const legacy = {
@@ -646,7 +772,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     await prisma.unifiedExperimentalPhysiologyStateV2.update({ where: { profileId_modelEpisodeId_date: { profileId, modelEpisodeId: episodeId!, date: dates[0] } }, data: { modelRevision: "old-unified-revision" } });
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[1], toDate: dates[2] });
     const afterOldRevision = await rows();
-    expect(afterOldRevision[0]!.modelRevision).toBe(UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION);
+    expect(afterOldRevision[0]!.modelRevision).toBe(UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION);
     expect(afterOldRevision[1]!.priorStateFingerprint).toBe(afterOldRevision[0]!.resultFingerprint);
 
     await prisma.experimentalGlycogenStateShadow.update({ where: { profileId_date: { profileId, date: dates[1] } }, data: { sourceFingerprint: "child-fingerprint-b" } });
@@ -656,7 +782,7 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     expect(afterChildChange[1]!.sourceFingerprint).not.toBe(first[1]!.sourceFingerprint);
     expect(afterChildChange[1]!.resultFingerprint).not.toBe(first[1]!.resultFingerprint);
     expect(afterChildChange[2]!.priorStateFingerprint).toBe(afterChildChange[1]!.resultFingerprint);
-    expect(afterChildChange[0]!.modelRevision).toBe(UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION);
+    expect(afterChildChange[0]!.modelRevision).toBe(UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION);
   });
 
   it("invalidates only Unified currentness atomically without staling production TDEE", async () => {

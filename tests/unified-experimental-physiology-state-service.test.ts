@@ -43,7 +43,7 @@ import {
   childTransitions,
   rebuildUnifiedExperimentalPhysiologyStateV1,
 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
-import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION } from "@/model/unified-experimental-physiology-v1/contracts";
+import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION } from "@/model/unified-experimental-physiology-v1/contracts";
 
 const boundaryAt = "2026-10-01T00:00:00.000Z";
 const throughInstant = "2026-10-02T00:00:00.000Z";
@@ -69,7 +69,7 @@ function sourceDay(overrides: Record<string, unknown> = {}) {
       glycogen: null,
       glycogenWater: null,
       transientWater: [],
-      relativeMuscle: null,
+      relativeMuscle: { daily: null, cumulative: null },
     },
     transientWaterBoundaries: [{ episodeId: 9, modelDate: "2026-10-01", boundaryInstant: boundaryAt }],
     ...overrides,
@@ -109,7 +109,7 @@ function prepare() {
 describe("Unified V2 rebuild publication", () => {
   beforeEach(prepare);
 
-  it("maps the episode-local cumulative Relative Muscle state, preserves unknown, and avoids singleton bounds", () => {
+  it("maps distinct daily and episode-cumulative diagnostics with source-specific provenance", () => {
     const day = sourceDay({
       childOutputs: {
         slowTissue: null,
@@ -117,39 +117,63 @@ describe("Unified V2 rebuild publication", () => {
         glycogenWater: null,
         transientWater: [],
         relativeMuscle: {
-          id: 42,
-          updatedAt: boundaryAt,
-          sourceFingerprint: "relative-muscle-current",
-          result: {
-            availability: "available",
-            estimatedSkeletalMuscleDeltaKg: 0.025,
-            state: { absoluteSkeletalMuscleKg: null, relativeCumulativeDeltaKg: 0.18 },
-          },
+          daily: { id: 41, updatedAt: boundaryAt, sourceFingerprint: "daily-source", modelRevision: "experimental-skeletal-muscle-delta-v2", result: {
+            contractVersion: "experimental-skeletal-muscle-delta-v2", availability: "available", estimatedSkeletalMuscleDeltaKg: 0.025,
+            support: { status: "outside-supported-domain" },
+          } },
+          cumulative: { id: 42, updatedAt: boundaryAt, sourceFingerprint: "cumulative-source", modelRevision: "experimental-cessation-detraining-v2", result: {
+            contractVersion: "experimental-cessation-detraining-v2", availability: "available", state: { absoluteSkeletalMuscleKg: null, relativeCumulativeDeltaKg: 0.18 },
+          } },
         },
       },
     });
 
     const relativeMuscle = childTransitions(day, null).relativeMuscle;
     expect(relativeMuscle).toEqual({
-      availability: "partial",
-      cumulativeDeltaKg: { point: 0.18, lower: null, upper: null, representation: "engineering-range" },
-      supportStatus: "degraded",
+      availability: "available",
+      dailyTrainingSignalKg: 0.025,
+      cumulativeDiagnosticKg: 0.18,
+      supportStatus: "outside-supported-domain",
       authoritativeUse: "forbidden",
       reason: "relative diagnostic only; never added to body mass",
-      provenance: "experimental-cessation-detraining-v1",
+      dailySignalProvenance: "experimental-skeletal-muscle-delta-v2",
+      cumulativeProvenance: "experimental-cessation-detraining-v2",
     });
 
     const unavailable = childTransitions(sourceDay({
       childOutputs: {
         slowTissue: null, glycogen: null, glycogenWater: null, transientWater: [],
-        relativeMuscle: { id: 43, updatedAt: boundaryAt, sourceFingerprint: "missing", result: {
-          estimatedSkeletalMuscleDeltaKg: 0.025,
+        relativeMuscle: { daily: null, cumulative: { id: 43, updatedAt: boundaryAt, sourceFingerprint: "missing", modelRevision: "experimental-cessation-detraining-v2", result: {
+          contractVersion: "experimental-cessation-detraining-v2", availability: "unavailable",
           state: { absoluteSkeletalMuscleKg: null, relativeCumulativeDeltaKg: null },
-        } },
+        } } },
       },
     }), null).relativeMuscle;
     expect(unavailable.availability).toBe("unavailable");
-    expect(unavailable.cumulativeDeltaKg).toBeNull();
+    expect(unavailable.cumulativeDiagnosticKg).toBeNull();
+    expect(unavailable.dailyTrainingSignalKg).toBeNull();
+    expect(unavailable.dailySignalProvenance).toBe("unavailable");
+    expect(unavailable.cumulativeProvenance).toBe("unavailable");
+  });
+
+  it("preserves a known daily signal when the cumulative trajectory is unavailable across a gap", () => {
+    const relativeMuscle = childTransitions(sourceDay({
+      childOutputs: {
+        slowTissue: null, glycogen: null, glycogenWater: null, transientWater: [],
+        relativeMuscle: {
+          daily: { id: 44, updatedAt: boundaryAt, sourceFingerprint: "daily-known", modelRevision: "experimental-skeletal-muscle-delta-v2", result: {
+            contractVersion: "experimental-skeletal-muscle-delta-v2", availability: "available", estimatedSkeletalMuscleDeltaKg: 0,
+          } },
+          cumulative: { id: 45, updatedAt: boundaryAt, sourceFingerprint: "cumulative-gap", modelRevision: "experimental-cessation-detraining-v2", result: {
+            contractVersion: "experimental-cessation-detraining-v2", availability: "unavailable", state: { relativeCumulativeDeltaKg: null },
+          } },
+        },
+      },
+    }), null).relativeMuscle;
+    expect(relativeMuscle).toMatchObject({
+      availability: "partial", dailyTrainingSignalKg: 0, cumulativeDiagnosticKg: null,
+      dailySignalProvenance: "experimental-skeletal-muscle-delta-v2", cumulativeProvenance: "unavailable",
+    });
   });
 
   it("replays a current production-backed range and publishes its durable candidate", async () => {
@@ -167,7 +191,7 @@ describe("Unified V2 rebuild publication", () => {
       profileId: 4,
       modelEpisodeId: 9,
       date: "2026-10-01",
-      modelRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION,
+      modelRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
       qualityStatus: "unavailable",
       energyLedger: { quality: "partial" },
     });

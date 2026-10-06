@@ -1055,6 +1055,26 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       expect(snapshots).toHaveLength(2);
       expect((snapshots[0]!.payload as { massReference: { status: string } }).massReference.status).toBe("unavailable");
       expect((snapshots[1]!.payload as { massReference: { valueKg: number } }).massReference.valueKg).toBe(80);
+
+      await service.finishSession(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      const lifecycleBeforeCompletedSetEdit = await db.physiologyV7Lifecycle.findUnique({
+        where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
+        select: { invalidationGeneration: true },
+      });
+      if (lifecycleBeforeCompletedSetEdit) {
+        await db.physiologyV7Lifecycle.update({
+          where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
+          data: { unifiedPublishedGeneration: lifecycleBeforeCompletedSetEdit.invalidationGeneration },
+        });
+      }
+      await service.updateSet(session.id, set.id, { reps: 12 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      if (lifecycleBeforeCompletedSetEdit) {
+        const lifecycleAfterCompletedSetEdit = await db.physiologyV7Lifecycle.findUniqueOrThrow({
+          where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
+          select: { unifiedPublishedGeneration: true },
+        });
+        expect(lifecycleAfterCompletedSetEdit.unifiedPublishedGeneration).toBeNull();
+      }
     } finally {
       if (sampleId !== null) await db.healthMetricSample.deleteMany({ where: { id: sampleId } });
       if (sessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: sessionId } });
@@ -1072,6 +1092,18 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       const { PrismaHealthSyncRepository } = await import("../../src/modules/health/health.repository");
       const service = new TrainingService(db);
       const sync = new PrismaHealthSyncRepository(db);
+      const primeUnifiedPublicationMarker = async () => {
+        const lifecycle = await db.physiologyV7Lifecycle.findUnique({
+          where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
+          select: { invalidationGeneration: true },
+        });
+        if (!lifecycle) return false;
+        await db.physiologyV7Lifecycle.update({
+          where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
+          data: { unifiedPublishedGeneration: lifecycle.invalidationGeneration },
+        });
+        return true;
+      };
       const syncWorkout = async (date: string, startAt: string, externalId: string, durationMinutes = 30) => {
         const day = { date, workouts: [{ externalId, type: "Traditional Strength Training", startAt, endAt: new Date(Date.parse(startAt) + durationMinutes * 60_000).toISOString() }] };
         await sync.syncDay(day, day, { timezone: "UTC", receivedAt: new Date(), syncedAt: null });
@@ -1099,14 +1131,16 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
         where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
         select: { invalidationGeneration: true },
       });
+      const unifiedMarkerPrimedForSameDateMatch = await primeUnifiedPublicationMarker();
       const matched = await service.manualMatch(sameDate.id, { workoutId: firstWorkout.id }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
       const generationAfterSameDateMatch = await db.physiologyV7Lifecycle.findUniqueOrThrow({
         where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
-        select: { invalidationGeneration: true, staleFromDate: true },
+        select: { invalidationGeneration: true, staleFromDate: true, unifiedPublishedGeneration: true },
       });
       expect(generationAfterSameDateMatch.invalidationGeneration)
         .toBeGreaterThan(generationBeforeSameDateMatch?.invalidationGeneration ?? 0);
       expect(generationAfterSameDateMatch.staleFromDate).not.toBeNull();
+      if (unifiedMarkerPrimedForSameDateMatch) expect(generationAfterSameDateMatch.unifiedPublishedGeneration).toBeNull();
       expect(matched.effectiveAccountingAt).toBe(firstWorkout.startAt.toISOString());
       const afterSameDateMatch = await db.strengthDiarySession.findUniqueOrThrow({
         where: { id: sameDate.id },
@@ -1224,13 +1258,15 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       expect(afterLateMatch.accountingInputRevision).toBe(beforeLateMatch.accountingInputRevision + 1);
       expect(await db.strengthSessionAccountingSnapshot.count({ where: { sessionId: changedDate.id } })).toBe(2);
       const generationBeforeUnmatch = generationAfterLateMatch.invalidationGeneration;
+      const unifiedMarkerPrimedForUnmatch = await primeUnifiedPublicationMarker();
       const unmatched = await service.manualMatch(changedDate.id, { workoutId: null }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
       const generationAfterUnmatch = await db.physiologyV7Lifecycle.findUniqueOrThrow({
         where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
-        select: { invalidationGeneration: true, staleFromDate: true },
+        select: { invalidationGeneration: true, staleFromDate: true, unifiedPublishedGeneration: true },
       });
       expect(generationAfterUnmatch.invalidationGeneration).toBeGreaterThan(generationBeforeUnmatch);
       expect(generationAfterUnmatch.staleFromDate).not.toBeNull();
+      if (unifiedMarkerPrimedForUnmatch) expect(generationAfterUnmatch.unifiedPublishedGeneration).toBeNull();
       expect(unmatched.matchedWorkoutId).toBeNull();
       expect(await db.strengthSessionAccountingSnapshot.count({ where: { sessionId: changedDate.id } })).toBe(3);
 
@@ -1249,14 +1285,16 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
         where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
         select: { invalidationGeneration: true },
       });
+      const unifiedMarkerPrimedForAutoMatch = await primeUnifiedPublicationMarker();
       await service.afterHealthSyncMatch(dates[2]!, { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID, timezone: "UTC" });
       const generationAfterAutoMatch = await db.physiologyV7Lifecycle.findUniqueOrThrow({
         where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
-        select: { invalidationGeneration: true, staleFromDate: true },
+        select: { invalidationGeneration: true, staleFromDate: true, unifiedPublishedGeneration: true },
       });
       expect(generationAfterAutoMatch.invalidationGeneration)
         .toBeGreaterThan(generationBeforeAutoMatch?.invalidationGeneration ?? 0);
       expect(generationAfterAutoMatch.staleFromDate).not.toBeNull();
+      if (unifiedMarkerPrimedForAutoMatch) expect(generationAfterAutoMatch.unifiedPublishedGeneration).toBeNull();
       const autoMatched = await db.strengthDiarySession.findUniqueOrThrow({
         where: { id: lateAuto.id },
         select: { matchedWorkoutId: true, effectiveAccountingAt: true, currentSnapshotRevision: true, accountingInputRevision: true },

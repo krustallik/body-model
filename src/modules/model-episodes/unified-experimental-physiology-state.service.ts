@@ -3,7 +3,7 @@ import { carryUnifiedUncertaintyV1, transitionUnifiedExperimentalPhysiologyV1, t
 import { buildUnifiedEnergyLedgerV1 } from "@/model/unified-experimental-physiology-v1/energy-ledger";
 import { UnifiedExperimentalPhysiologySourceLoaderV1, type UnifiedDurableDayEvidenceV1 } from "@/model/unified-experimental-physiology-v1/source-loader";
 import {
-  UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION,
+  UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
   serializeUnifiedExperimentalPhysiologyV1,
   type UnifiedExperimentalPhysiologyDayResultV1,
   type UnifiedExperimentalPhysiologyStateV1,
@@ -18,7 +18,9 @@ import { replayTransientExerciseWaterV2, transientWaterV2ContributionKg, type Ac
 import { rebuildExperimentalTransientExerciseWaterV2 } from "@/modules/training/experimental-transient-exercise-water-shadow.service";
 import { readTransientExerciseWaterSourceTokenV2 } from "@/modules/training/experimental-transient-exercise-water-shadow.service";
 import { addCalendarDays } from "./model-calendar";
-import { buildTransientEpisodePartitionsV2 } from "@/modules/model-episodes/transient-exercise-water-episode-time-v2";
+import { buildTransientEpisodePartitionsV2, transientEpisodeTimeForInstantV2 } from "@/modules/model-episodes/transient-exercise-water-episode-time-v2";
+import { EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION } from "@/model/physiology-v7/experimental-cessation-detraining-v1";
+import { EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION } from "@/model/physiology-v7/experimental-skeletal-muscle-delta-v1";
 import { localDateTimeToInstant } from "@/model/time-zone";
 import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 
@@ -162,15 +164,40 @@ export function childTransitions(day: UnifiedDurableDayEvidenceV1, prior: Unifie
     };
   }
 
-  const muscle = object(day.childOutputs.relativeMuscle?.result);
-  const musclePoint = numberValue(object(muscle.state).relativeCumulativeDeltaKg);
+  const dailyMuscle = object(day.childOutputs.relativeMuscle.daily?.result);
+  const cumulativeMuscle = object(day.childOutputs.relativeMuscle.cumulative?.result);
+  const dailySignal = dailyMuscle.contractVersion === EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION
+    && dailyMuscle.availability === "available"
+    ? numberValue(dailyMuscle.estimatedSkeletalMuscleDeltaKg)
+    : null;
+  const dailySupport = object(dailyMuscle.support).status;
+  const cumulativeDiagnostic = cumulativeMuscle.contractVersion === EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION
+    && cumulativeMuscle.availability === "available"
+    ? numberValue(object(cumulativeMuscle.state).relativeCumulativeDeltaKg)
+    : null;
+  const relativeAvailability = dailySignal !== null && cumulativeDiagnostic !== null
+    ? "available"
+    : dailySignal !== null || cumulativeDiagnostic !== null
+      ? "partial"
+      : "unavailable";
+  const reasons = [
+    ...[dailyMuscle.reasons, cumulativeMuscle.reasons]
+      .filter(Array.isArray)
+      .flatMap((items) => items.filter((item): item is string => typeof item === "string")),
+    ...(dailySignal === null ? ["daily-relative-muscle-signal-unavailable"] : []),
+    ...(cumulativeDiagnostic === null ? ["episode-cumulative-relative-muscle-diagnostic-unavailable"] : []),
+  ];
   const relativeMuscle: UnifiedChildTransitionsV1["relativeMuscle"] = {
-    availability: musclePoint === null ? "unavailable" : "partial",
-    cumulativeDeltaKg: musclePoint === null ? null : envelope(musclePoint, null, null),
-    supportStatus: musclePoint === null ? "outside-supported-domain" : "degraded",
+    availability: relativeAvailability,
+    dailyTrainingSignalKg: dailySignal,
+    cumulativeDiagnosticKg: cumulativeDiagnostic,
+    supportStatus: dailySupport === "supported" || dailySupport === "degraded" || dailySupport === "outside-supported-domain"
+      ? dailySupport
+      : "outside-supported-domain",
     authoritativeUse: "forbidden",
-    reason: "relative diagnostic only; never added to body mass",
-    provenance: musclePoint === null ? "unavailable" : "experimental-cessation-detraining-v1",
+    reason: ["relative diagnostic only; never added to body mass", ...reasons].join("; "),
+    dailySignalProvenance: dailySignal === null ? "unavailable" : EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION,
+    cumulativeProvenance: cumulativeDiagnostic === null ? "unavailable" : EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION,
   };
 
   return {
@@ -219,7 +246,10 @@ function uncertainty(prior: UnifiedUncertaintyV1 | null, day: UnifiedDurableDayE
 
 function sourceLineage(day: UnifiedDurableDayEvidenceV1) {
   const childOutputs: Array<{ kind: string; id: number; updatedAt: string; sourceFingerprint: string }> = [];
-  for (const [kind, row] of [["slowTissue", day.childOutputs.slowTissue], ["glycogen", day.childOutputs.glycogen], ["glycogenWater", day.childOutputs.glycogenWater], ["relativeMuscle", day.childOutputs.relativeMuscle]] as const) {
+  for (const [kind, row] of [["slowTissue", day.childOutputs.slowTissue], ["glycogen", day.childOutputs.glycogen], ["glycogenWater", day.childOutputs.glycogenWater]] as const) {
+    if (row) childOutputs.push({ kind, id: row.id, updatedAt: row.updatedAt, sourceFingerprint: row.sourceFingerprint });
+  }
+  for (const [kind, row] of [["relativeMuscleDaily", day.childOutputs.relativeMuscle.daily], ["relativeMuscleCumulative", day.childOutputs.relativeMuscle.cumulative]] as const) {
     if (row) childOutputs.push({ kind, id: row.id, updatedAt: row.updatedAt, sourceFingerprint: row.sourceFingerprint });
   }
   for (const row of day.childOutputs.transientWater) childOutputs.push({ kind: "transientWater", id: row.id, updatedAt: row.updatedAt, sourceFingerprint: row.sourceFingerprint });
@@ -251,7 +281,7 @@ function sourceLineage(day: UnifiedDurableDayEvidenceV1) {
 
 function toPersisted(result: UnifiedExperimentalPhysiologyDayResultV1) {
   const json = (value: unknown) => value as Prisma.InputJsonValue;
-  return { profileId: result.profileId, modelEpisodeId: result.modelEpisodeId, date: result.date, boundaryAt: new Date(result.boundaryAt), modelRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION, sourceFingerprint: result.sourceFingerprint, priorStateFingerprint: result.priorStateFingerprint, resultFingerprint: result.resultFingerprint, qualityStatus: result.quality.availability, gapSeverity: result.quality.gapSeverity, state: json(result.state), deltas: json(result.deltas), uncertainty: json(result.uncertainty), reconciliation: json(result.reconciliation), energyLedger: json(result.energyLedger), sourceLineage: json(result.sourceLineage), diagnostics: json(result.diagnostics) };
+  return { profileId: result.profileId, modelEpisodeId: result.modelEpisodeId, date: result.date, boundaryAt: new Date(result.boundaryAt), modelRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION, sourceFingerprint: result.sourceFingerprint, priorStateFingerprint: result.priorStateFingerprint, resultFingerprint: result.resultFingerprint, qualityStatus: result.quality.availability, gapSeverity: result.quality.gapSeverity, state: json(result.state), deltas: json(result.deltas), uncertainty: json(result.uncertainty), reconciliation: json(result.reconciliation), energyLedger: json(result.energyLedger), sourceLineage: json(result.sourceLineage), diagnostics: json(result.diagnostics) };
 }
 
 function compatiblePredecessorLedger(value: unknown): ActiveTransientExerciseWaterImpulseV2[] | null {
@@ -388,7 +418,7 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
       && persistedPrefix.every((row, index) => {
         const expected = fullRange.days[index];
         return expected !== undefined
-          && row.modelRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION
+          && row.modelRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION
           && row.modelEpisodeId === expected.modelEpisodeId
           && row.date === expected.date
           && row.boundaryAt.toISOString() === new Date(expected.boundaryAt).toISOString()
@@ -408,7 +438,7 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
         sourceLineage: true,
       },
     });
-    const candidateLedger = candidate?.modelRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION
+    const candidateLedger = candidate?.modelRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION
       ? compatiblePredecessorLedger(candidate.state)
       : null;
     const lineage = object(candidate?.sourceLineage);
@@ -592,4 +622,27 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
     if (published.count !== 1) throw new PhysiologyV7ConcurrentSourceChangeError();
   });
 }
+
+/** Invalidate the published Unified snapshot for a Relative Muscle source edit. */
+export async function invalidateUnifiedRelativeMuscleSuffixV1(input: {
+  profileId: number;
+  fromInstant: Date;
+}): Promise<{ modelEpisodeId: number; modelDate: string } | null> {
+  if (!Number.isFinite(input.fromInstant.getTime())) throw new RangeError("Relative Muscle invalidation instant is invalid");
+  const episodes = await prisma.modelEpisode.findMany({
+    where: { profileId: input.profileId },
+    orderBy: [{ startDate: "asc" }, { id: "asc" }],
+    select: { id: true, startDate: true, timezone: true, active: true, deactivatedAt: true },
+  });
+  const event = transientEpisodeTimeForInstantV2(
+    buildTransientEpisodePartitionsV2(episodes),
+    input.fromInstant,
+  );
+  if (event === null) return null;
+  await prisma.$transaction(async (tx) => {
+    await new PhysiologyV7PersistenceRepository(tx).invalidateUnifiedPublication(input.profileId);
+  });
+  return { modelEpisodeId: event.episode.id, modelDate: event.modelDate };
+}
+
 export const rebuildUnifiedExperimentalPhysiologyState = rebuildUnifiedExperimentalPhysiologyStateV1;

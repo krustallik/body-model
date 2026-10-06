@@ -10,7 +10,7 @@ function children(): UnifiedChildTransitionsV1 {
     glycogen: { availability: "available", relativeDeviationKg: availableEnvelope(-0.2), dailyDeltaKg: availableEnvelope(-0.1), provenance: "experimental-glycogen-state-v2" },
     glycogenWater: { availability: "available", deltaKg: availableEnvelope(-0.3), provenance: "experimental-glycogen-associated-water-v1" },
     transientWater: { availability: "available", relativeKg: availableEnvelope(0.2), provenance: "experimental-transient-exercise-water-v1" },
-    relativeMuscle: { availability: "partial", cumulativeDeltaKg: { point: 0.37, lower: null, upper: null, representation: "engineering-range" }, supportStatus: "degraded", authoritativeUse: "forbidden", reason: "no-defensible-personal-quantitative-supported-domain", provenance: "experimental-cessation-detraining-v1" },
+    relativeMuscle: { availability: "available", dailyTrainingSignalKg: 0.012, cumulativeDiagnosticKg: 0.37, supportStatus: "outside-supported-domain", authoritativeUse: "forbidden", reason: "relative diagnostic only", dailySignalProvenance: "experimental-skeletal-muscle-delta-v2", cumulativeProvenance: "experimental-cessation-detraining-v2" },
     ecfContext: { availability: "unavailable", deviationKg: null, provenance: "unavailable" },
   };
 }
@@ -29,9 +29,9 @@ describe("Unified V2 pure transition", () => {
       sourceLineage: lineage,
     });
     expect(result.deltas.modeledChangeSinceAnchorKg?.point).toBeCloseTo(-0.21);
-    expect(result.state.relativeMuscle.cumulativeDeltaKg?.point).toBe(0.37);
-    expect(result.state.relativeMuscle.cumulativeDeltaKg?.lower).toBeNull();
-    expect(result.state.relativeMuscle.cumulativeDeltaKg?.upper).toBeNull();
+    expect(result.state.relativeMuscle.dailyTrainingSignalKg).toBe(0.012);
+    expect(result.state.relativeMuscle.cumulativeDiagnosticKg).toBe(0.37);
+    expect(typeof result.state.relativeMuscle.dailyTrainingSignalKg).toBe("number");
     expect(result.state.relativeMuscle.authoritativeUse).toBe("forbidden");
     expect(JSON.stringify(result)).not.toContain("skeletalMuscleKg");
   });

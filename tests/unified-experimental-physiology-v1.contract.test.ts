@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assertFiniteUnifiedNumbers,
-  UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION,
+  UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
   serializeUnifiedExperimentalPhysiologyV1,
   type UnifiedExperimentalPhysiologyDayResultV1,
 } from "@/model/unified-experimental-physiology-v1";
@@ -9,7 +9,7 @@ import {
 function fixture(): UnifiedExperimentalPhysiologyDayResultV1 {
   const unavailable = { availability: "unavailable" as const, point: null, lower: null, upper: null, representation: "engineering-range" as const };
   const result = {
-    contractVersion: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION,
+    contractVersion: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
     profileId: 1,
     modelEpisodeId: 1,
     date: "2065-01-01",
@@ -21,7 +21,7 @@ function fixture(): UnifiedExperimentalPhysiologyDayResultV1 {
       glycogen: { availability: "unavailable" as const, relativeDeviationKg: null, dailyDeltaKg: null, provenance: "unavailable" as const },
       glycogenWater: { availability: "unavailable" as const, deltaKg: null, provenance: "unavailable" as const },
       transientWater: { availability: "unavailable" as const, relativeKg: null, provenance: "unavailable" as const },
-      relativeMuscle: { availability: "unavailable" as const, cumulativeDeltaKg: null, supportStatus: "degraded" as const, authoritativeUse: "forbidden" as const, reason: "missing", provenance: "unavailable" as const },
+      relativeMuscle: { availability: "unavailable" as const, dailyTrainingSignalKg: null, cumulativeDiagnosticKg: null, supportStatus: "outside-supported-domain" as const, authoritativeUse: "forbidden" as const, reason: "missing", dailySignalProvenance: "unavailable" as const, cumulativeProvenance: "unavailable" as const },
       ecfContext: { availability: "unavailable" as const, deviationKg: null, provenance: "unavailable" as const },
     },
     deltas: { slowTissueKg: { fat: null, slowNonFat: null }, glycogenKg: unavailable, glycogenWaterKg: unavailable, transientWaterKg: unavailable, modeledChangeSinceAnchorKg: null },

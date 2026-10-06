@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V2_REVISION } from "@/model/physiology-v7/experimental-transient-exercise-water-v2";
+import { EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION } from "@/model/physiology-v7/experimental-cessation-detraining-v1";
+import { EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION } from "@/model/physiology-v7/experimental-skeletal-muscle-delta-v1";
 import { UnifiedExperimentalPhysiologySourceLoaderV1 } from "@/model/unified-experimental-physiology-v1/source-loader";
 
 function fakeClient(input: {
   completedIds?: number[];
   transientRows?: unknown[];
   relativeRows?: unknown[];
+  relativeDeltaRows?: unknown[];
   episodes?: unknown[];
   workouts?: unknown[];
 } = {}) {
@@ -26,6 +29,7 @@ function fakeClient(input: {
     sleepSegment: { findMany: vi.fn().mockResolvedValue([]) },
     dailyModelState: { findMany: vi.fn().mockResolvedValue([]) },
     experimentalTransientExerciseWaterShadow: { findMany: vi.fn().mockResolvedValue(input.transientRows ?? []) },
+    experimentalSkeletalMuscleDeltaShadow: { findMany: vi.fn().mockResolvedValue(input.relativeDeltaRows ?? []) },
     experimentalCessationDetrainingShadow: { findMany: vi.fn().mockResolvedValue(input.relativeRows ?? []) },
     modelEpisode: { findMany: vi.fn().mockResolvedValue(input.episodes ?? [
       { id: 1, startDate: "2065-01-01", timezone: "UTC", active: true, deactivatedAt: null },
@@ -150,11 +154,17 @@ describe("Unified V1 durable source loader", () => {
         { id: 1, startDate: date, timezone: "Pacific/Kiritimati", active: false, deactivatedAt: activeEpisodeBoundary },
         { id: 2, startDate: date, timezone: "America/Adak", active: true, deactivatedAt: null },
       ],
+      relativeDeltaRows: [
+        { id: 21, modelEpisodeId: 1, date, isStale: false, modelRevision: EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION, updatedAt: utc(date), sourceFingerprint: "delta-a", result: { contractVersion: EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION, marker: "delta-a" } },
+        { id: 22, modelEpisodeId: 2, date, isStale: false, modelRevision: EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION, updatedAt: utc(date), sourceFingerprint: "delta-b", result: { contractVersion: EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION, marker: "delta-b" } },
+        { id: 23, modelEpisodeId: 2, date, isStale: true, modelRevision: EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION, updatedAt: utc(date), sourceFingerprint: "stale", result: { contractVersion: EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION, marker: "stale" } },
+        { id: 24, modelEpisodeId: null, date, isStale: false, modelRevision: EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION, updatedAt: utc(date), sourceFingerprint: "legacy", result: { contractVersion: EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION, marker: "legacy" } },
+      ],
       relativeRows: [
-        { id: 11, modelEpisodeId: 1, date, isStale: false, updatedAt: utc(date), sourceFingerprint: "episode-a", result: { marker: "episode-a" } },
-        { id: 12, modelEpisodeId: 2, date, isStale: false, updatedAt: utc(date), sourceFingerprint: "episode-b", result: { marker: "episode-b" } },
-        { id: 13, modelEpisodeId: 2, date, isStale: true, updatedAt: utc(date), sourceFingerprint: "stale", result: { marker: "stale" } },
-        { id: 14, modelEpisodeId: null, date, isStale: false, updatedAt: utc(date), sourceFingerprint: "legacy", result: { marker: "legacy" } },
+        { id: 11, modelEpisodeId: 1, date, isStale: false, modelRevision: EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION, updatedAt: utc(date), sourceFingerprint: "episode-a", result: { contractVersion: EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION, marker: "episode-a" } },
+        { id: 12, modelEpisodeId: 2, date, isStale: false, modelRevision: EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION, updatedAt: utc(date), sourceFingerprint: "episode-b", result: { contractVersion: EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION, marker: "episode-b" } },
+        { id: 13, modelEpisodeId: 2, date, isStale: true, modelRevision: EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION, updatedAt: utc(date), sourceFingerprint: "stale", result: { contractVersion: EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION, marker: "stale" } },
+        { id: 14, modelEpisodeId: null, date, isStale: false, modelRevision: EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION, updatedAt: utc(date), sourceFingerprint: "legacy", result: { contractVersion: EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION, marker: "legacy" } },
       ],
     });
     const loader = new UnifiedExperimentalPhysiologySourceLoaderV1(client as never);
@@ -168,11 +178,18 @@ describe("Unified V1 durable source loader", () => {
       .filter(({ date: modelDate }) => modelDate === date)
       .map(({ modelEpisodeId, childOutputs }) => [
         modelEpisodeId,
-        childOutputs.relativeMuscle?.result as { marker?: string } | undefined,
+        childOutputs.relativeMuscle.cumulative?.result as { marker?: string } | undefined,
       ]));
     expect(relativeByEpisode.get(1)?.marker).toBe("episode-a");
     expect(relativeByEpisode.get(2)?.marker).toBe("episode-b");
+    const dailyByEpisode = new Map(range.days.filter(({ date: modelDate }) => modelDate === date)
+      .map(({ modelEpisodeId, childOutputs }) => [modelEpisodeId, childOutputs.relativeMuscle.daily?.result as { marker?: string } | undefined]));
+    expect(dailyByEpisode.get(1)?.marker).toBe("delta-a");
+    expect(dailyByEpisode.get(2)?.marker).toBe("delta-b");
     expect(client.experimentalCessationDetrainingShadow.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ modelEpisodeId: { not: null }, isStale: false }),
+    }));
+    expect(client.experimentalSkeletalMuscleDeltaShadow.findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({ modelEpisodeId: { not: null }, isStale: false }),
     }));
   });

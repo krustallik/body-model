@@ -40,7 +40,7 @@ describe("Unified transient-water daily composition", () => {
           modelRevision: item.contractVersion,
           result: { impulse: item },
         })),
-        relativeMuscle: null,
+          relativeMuscle: { daily: null, cumulative: null },
       },
       transientWaterBoundaries: [{ episodeId, modelDate, boundaryInstant }],
     }) as never;
@@ -102,7 +102,7 @@ describe("Unified transient-water daily composition", () => {
     } } as never;
     const dayWithoutBoundary = {
       date: "2026-01-02",
-      childOutputs: { slowTissue: null, glycogen: null, glycogenWater: null, transientWater: [], relativeMuscle: null },
+      childOutputs: { slowTissue: null, glycogen: null, glycogenWater: null, transientWater: [], relativeMuscle: { daily: null, cumulative: null } },
       transientWaterBoundaries: [],
     } as never;
     const carried = childTransitions(dayWithoutBoundary, prior).transientWater;

@@ -673,6 +673,38 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     const currentAnchor = await experimentalForecastModelEpisode(request, prisma);
     expect(currentAnchor).not.toBeNull();
     expect(currentAnchor && "dates" in currentAnchor && currentAnchor.dates[0]?.date).toBe("2041-03-31");
+    if (!currentAnchor || !("dates" in currentAnchor)) throw new Error("expected Experimental Forecast V1 result");
+    const latestUnified = await prisma.unifiedExperimentalPhysiologyStateV2.findUniqueOrThrow({
+      where: { profileId_modelEpisodeId_date: { profileId: 1, modelEpisodeId: episodeId, date: finalDate } },
+    });
+    const goalRequest = targetRequest(80, "2041-04-29", now);
+    const goalBeforeRelativeMutation = await solveModelEpisodeTarget(goalRequest, prisma);
+    const persistedState = latestUnified.state as Record<string, unknown>;
+    const relativeMuscle = persistedState.relativeMuscle as Record<string, unknown>;
+    await prisma.unifiedExperimentalPhysiologyStateV2.update({
+      where: { id: latestUnified.id },
+      data: { state: {
+        ...persistedState,
+        relativeMuscle: {
+          ...relativeMuscle,
+          dailyTrainingSignalKg: -0.039,
+          cumulativeDiagnosticKg: 123.456,
+          dailySignalProvenance: "experimental-skeletal-muscle-delta-v2",
+          cumulativeProvenance: "experimental-cessation-detraining-v2",
+          authoritativeUse: "forbidden",
+        },
+      } as never },
+    });
+    const relativeChangedAnchor = await experimentalForecastModelEpisode(request, prisma);
+    expect(relativeChangedAnchor).not.toBeNull();
+    if (!relativeChangedAnchor || !("dates" in relativeChangedAnchor)) throw new Error("expected Experimental Forecast V1 result");
+    expect(relativeChangedAnchor.experimentalCurrent).toEqual(currentAnchor.experimentalCurrent);
+    expect(relativeChangedAnchor.dates).toEqual(currentAnchor.dates);
+    const goalAfterRelativeMutation = await solveModelEpisodeTarget(goalRequest, prisma);
+    expect(goalAfterRelativeMutation).toEqual(goalBeforeRelativeMutation);
+    await prisma.unifiedExperimentalPhysiologyStateV2.update({
+      where: { id: latestUnified.id }, data: { state: latestUnified.state as never },
+    });
     const unifiedLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
     expect(unifiedLifecycle.unifiedPublishedGeneration).toBe(unifiedLifecycle.invalidationGeneration);
 

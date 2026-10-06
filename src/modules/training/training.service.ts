@@ -82,7 +82,10 @@ import { rebuildAuthoritativeRelativeMuscleTrajectory } from "@/modules/model-ep
 import {
   recordExperimentalFfmRetentionShadowForSession,
 } from "@/modules/model-episodes/experimental-ffm-retention-shadow.service";
-import { rebuildUnifiedExperimentalPhysiologyStateV1 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
+import {
+  invalidateUnifiedRelativeMuscleSuffixV1,
+  rebuildUnifiedExperimentalPhysiologyStateV1,
+} from "@/modules/model-episodes/unified-experimental-physiology-state.service";
 import { publishActiveEnergyChangesV1 } from "@/modules/activity/active-energy-publication";
 import type {
   HistoricalStrengthWorkoutDto,
@@ -119,7 +122,10 @@ async function recordExperimentalStrengthShadows(input: {
   // dependent glycogen rows current-looking but stale.
   await recordExperimentalGlycogenStateShadow({ date: sourceDate, profileId: input.profileId });
   const relativeMuscleEventAt = input.session.matchedWorkout?.startAt ?? input.session.webStartedAt;
+  let relativeMuscleModelDate: string | undefined;
   if (relativeMuscleEventAt) {
+    const dirty = await invalidateUnifiedRelativeMuscleSuffixV1({ profileId: input.profileId, fromInstant: new Date(relativeMuscleEventAt) });
+    relativeMuscleModelDate = dirty?.modelDate;
     await rebuildAuthoritativeRelativeMuscleTrajectory({
       fromInstant: new Date(relativeMuscleEventAt),
       profileId: input.profileId,
@@ -133,7 +139,7 @@ async function recordExperimentalStrengthShadows(input: {
     sessionId: input.session.id,
     profileId: input.profileId,
   });
-  await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: input.profileId });
+  await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: input.profileId, fromDate: relativeMuscleModelDate });
 }
 
 async function recordExperimentalStrengthShadowsBySessionId(input: {
@@ -148,7 +154,10 @@ async function recordExperimentalStrengthShadowsBySessionId(input: {
     await recordExperimentalGlycogenStateShadow({ date: sourceDate, profileId: input.profileId });
   }
   const relativeMuscleEventAt = session?.matchedWorkout?.startAt ?? session?.webStartedAt ?? null;
+  let relativeMuscleModelDate: string | undefined;
   if (relativeMuscleEventAt) {
+    const dirty = await invalidateUnifiedRelativeMuscleSuffixV1({ profileId: input.profileId, fromInstant: new Date(relativeMuscleEventAt) });
+    relativeMuscleModelDate = dirty?.modelDate;
     await rebuildAuthoritativeRelativeMuscleTrajectory({
       fromInstant: new Date(relativeMuscleEventAt),
       profileId: input.profileId,
@@ -156,7 +165,7 @@ async function recordExperimentalStrengthShadowsBySessionId(input: {
   }
   await recordExperimentalFfmRetentionShadowForSession(input);
   await recordExperimentalLocalHypertrophyResponseShadowForSession(input);
-  await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: input.profileId });
+  await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: input.profileId, fromDate: relativeMuscleModelDate });
 }
 
 function isStrengthWorkout(type: string): boolean {
@@ -676,10 +685,11 @@ export class TrainingService {
       workoutLocalDate: workoutLocalDate(session.matchedWorkout?.startAt),
       reason: "program_change",
     });
+    let relativeMuscleModelDate: string | undefined;
     if (session.status === SESSION_STATUS.COMPLETED) {
-      await this.refreshRelativeMuscleAfterSessionMutation(sessionId, profileId).catch(() => {});
+      relativeMuscleModelDate = await this.refreshRelativeMuscleAfterSessionMutation(sessionId, profileId).catch(() => undefined) ?? undefined;
     }
-    await this.refreshTransientWaterAfterMutation(profileId).catch(() => {});
+    await this.refreshTransientWaterAfterMutation(profileId, relativeMuscleModelDate).catch(() => {});
 
     return this.requireSession(sessionId, profileId);
   }
@@ -1061,12 +1071,11 @@ export class TrainingService {
     const relativeMuscleEventAt = session.matchedWorkout?.startAt ?? session.webStartedAt;
     await this.repo.deleteDiarySession(sessionId, profileId);
     if (this.db === prisma && relativeMuscleEventAt) {
-      await rebuildAuthoritativeRelativeMuscleTrajectory({
-        fromInstant: new Date(relativeMuscleEventAt),
-        profileId,
-      }).catch(() => {});
+      const dirty = await this.invalidateAndRebuildRelativeMuscle(profileId, new Date(relativeMuscleEventAt)).catch(() => null);
+      if (dirty !== null) await this.refreshTransientWaterAfterMutation(profileId, dirty.modelDate).catch(() => {});
+    } else {
+      await this.refreshTransientWaterAfterMutation(profileId).catch(() => {});
     }
-    await this.refreshTransientWaterAfterMutation(profileId).catch(() => {});
     return { matchedWorkoutId };
   }
 
@@ -1323,11 +1332,12 @@ export class TrainingService {
       workoutLocalDate: workoutLocalDate(workoutStartAt),
       reason: "exercise_mutation",
     });
+    let relativeMuscleModelDate: string | undefined;
     if (status === SESSION_STATUS.COMPLETED) {
-      await this.refreshRelativeMuscleAfterSessionMutation(sessionId, profileId).catch(() => {});
+      relativeMuscleModelDate = await this.refreshRelativeMuscleAfterSessionMutation(sessionId, profileId).catch(() => undefined) ?? undefined;
     }
     if (status === SESSION_STATUS.COMPLETED) {
-      await this.refreshTransientWaterAfterMutation(profileId).catch(() => {});
+      await this.refreshTransientWaterAfterMutation(profileId, relativeMuscleModelDate).catch(() => {});
     }
   }
 
@@ -1351,28 +1361,32 @@ export class TrainingService {
       workoutLocalDate: workoutLocalDate(session.matchedWorkout?.startAt),
       reason: "set_mutation",
     });
-    if (this.db === prisma) {
-      await this.refreshRelativeMuscleAfterSessionMutation(session.id, profileId).catch(() => {});
+    let relativeMuscleModelDate: string | undefined;
+    if (this.db === prisma && session.status === SESSION_STATUS.COMPLETED) {
+      relativeMuscleModelDate = await this.refreshRelativeMuscleAfterSessionMutation(session.id, profileId).catch(() => undefined) ?? undefined;
     }
     if (session.status === SESSION_STATUS.COMPLETED) {
-      await this.refreshTransientWaterAfterMutation(profileId).catch(() => {});
+      await this.refreshTransientWaterAfterMutation(profileId, relativeMuscleModelDate).catch(() => {});
     }
   }
 
-  private async refreshTransientWaterAfterMutation(profileId: number): Promise<void> {
+  private async refreshTransientWaterAfterMutation(profileId: number, fromDate?: string): Promise<void> {
     if (this.db !== prisma) return;
-    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId });
+    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate });
   }
 
-  private async refreshRelativeMuscleAfterSessionMutation(sessionId: number, profileId: number): Promise<void> {
-    if (this.db !== prisma) return;
+  private async refreshRelativeMuscleAfterSessionMutation(sessionId: number, profileId: number): Promise<string | null> {
+    if (this.db !== prisma) return null;
     const session = await this.repo.getSession(sessionId, profileId);
     const eventAt = session?.matchedWorkout?.startAt ?? session?.webStartedAt ?? null;
-    if (!eventAt) return;
-    await rebuildAuthoritativeRelativeMuscleTrajectory({
-      fromInstant: new Date(eventAt),
-      profileId,
-    });
+    if (!eventAt) return null;
+    return (await this.invalidateAndRebuildRelativeMuscle(profileId, new Date(eventAt)))?.modelDate ?? null;
+  }
+
+  private async invalidateAndRebuildRelativeMuscle(profileId: number, fromInstant: Date) {
+    const dirty = await invalidateUnifiedRelativeMuscleSuffixV1({ profileId, fromInstant });
+    await rebuildAuthoritativeRelativeMuscleTrajectory({ fromInstant, profileId });
+    return dirty;
   }
 
   private async refreshRelativeMuscleAfterEventChange(
@@ -1386,10 +1400,8 @@ export class TrainingService {
     const previousInstant = new Date(previousEventAt);
     if (!Number.isFinite(previousInstant.getTime())
         || (currentEventAt !== null && new Date(currentEventAt).getTime() === previousInstant.getTime())) return;
-    await rebuildAuthoritativeRelativeMuscleTrajectory({
-      fromInstant: previousInstant,
-      profileId,
-    });
+    const dirty = await this.invalidateAndRebuildRelativeMuscle(profileId, previousInstant);
+    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dirty?.modelDate });
   }
 
   private async snapshotProgramExerciseConfigs(

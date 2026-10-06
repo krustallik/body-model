@@ -1,6 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
-import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION } from "@/model/unified-experimental-physiology-v1/contracts";
+import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION } from "@/model/unified-experimental-physiology-v1/contracts";
 import { latestCompletedLocalDate, addCalendarDays } from "@/modules/model-episodes/model-calendar";
 import { ModelEpisodeRepository } from "@/modules/model-episodes/model-episode.repository";
 import type { ModelHealthDaySource } from "@/modules/model-episodes/model-episode.types";
@@ -525,7 +525,7 @@ export async function experimentalForecastModelEpisode(
   });
   if (!isUnifiedGenerationCurrentV1(lifecycle)) return null;
   const expectedGeneration = lifecycle.invalidationGeneration;
-  const unifiedRow = await readLatestUnifiedExperimentalPhysiologyV2ForEpisode(client, {
+  const unifiedRow = await readLatestUnifiedExperimentalPhysiologyV3ForEpisode(client, {
     profileId: episode.profileId,
     modelEpisodeId: episode.id,
     throughDate: latestDate,
@@ -547,7 +547,7 @@ export async function experimentalForecastModelEpisode(
   const currentObservedWeightKg = latestObservedWeightKg(currentSources.days);
   const validDays = sources.days.filter((day) => day.caloriesKcal !== null && day.proteinG !== null && day.fatG !== null && day.carbsG !== null);
   const ledgers = (await client.unifiedExperimentalPhysiologyStateV2.findMany({
-    where: { profileId: episode.profileId, modelEpisodeId: episode.id, date: { gte: windowFrom, lte: latest.date }, modelRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION },
+    where: { profileId: episode.profileId, modelEpisodeId: episode.id, date: { gte: windowFrom, lte: latest.date }, modelRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION },
     select: { energyLedger: true }, orderBy: { boundaryAt: "asc" },
   })).map((row) => object(row.energyLedger));
   const maintenanceValues = ledgers.map((ledger) => numberValue(ledger.productionTdeeKcal)).filter((value): value is number => value !== null);
@@ -616,7 +616,7 @@ export async function experimentalForecastModelEpisode(
 }
 
 /** The Forecast V1 donor is episode-local and latest by absolute model boundary. */
-export function readLatestUnifiedExperimentalPhysiologyV2ForEpisode(
+export function readLatestUnifiedExperimentalPhysiologyV3ForEpisode(
   client: PrismaClient,
   input: { profileId: number; modelEpisodeId: number; throughDate: string },
 ) {
@@ -625,8 +625,11 @@ export function readLatestUnifiedExperimentalPhysiologyV2ForEpisode(
       profileId: input.profileId,
       modelEpisodeId: input.modelEpisodeId,
       date: { lte: input.throughDate },
-      modelRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V2_REVISION,
+      modelRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
     },
     orderBy: { boundaryAt: "desc" },
   });
 }
+
+/** @deprecated V2 rows are no longer current; retained as a source-compatible alias. */
+export const readLatestUnifiedExperimentalPhysiologyV2ForEpisode = readLatestUnifiedExperimentalPhysiologyV3ForEpisode;

@@ -245,6 +245,17 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
 
     const replacement = await initializeNewModelEpisode({ startDate: episodeStart, now });
     expect(replacement.id).not.toBe(episodeId);
+    await prisma.dailyHealthData.update({
+      where: { date: episodeStart }, data: { workoutFeedObserved: true },
+    });
+    await prisma.healthSyncSnapshot.create({
+      data: {
+        date: episodeStart,
+        receivedAt: new Date(`${episodeStart}T12:00:00.000Z`),
+        timezone: "Europe/Bratislava",
+        rawPayload: { source: "verified-relative-muscle-rest-day" },
+      },
+    });
     await recalculateModelEpisode({ episodeId: replacement.id, now });
     const episodeLocalDiagnostic = await prisma.experimentalCessationDetrainingShadow.findUnique({
       where: { profileId_modelEpisodeId_date: { profileId: 1, modelEpisodeId: replacement.id, date: episodeStart } },

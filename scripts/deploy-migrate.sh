@@ -28,6 +28,21 @@ for name in authorization-envelope.json preflight-result.json preflight-evidence
   [[ -f "$CONTEXT_DIR/$name" && ! -L "$CONTEXT_DIR/$name" ]] || fail "required signed context file is missing or a symlink: $name"
 done
 
+# Once host recovery preparation is installed, all production migration work is
+# performed by the fixed typed host service. The service resolves this opaque run
+# context from its private store and independently verifies every signed proof.
+# This path never passes a shell command, filesystem path, or Docker argument.
+HOST_OPERATION_CLIENT="/usr/local/bin/bodycast-production-operation"
+if [[ -x "$HOST_OPERATION_CLIENT" && "${BODYCAST_AUTHORITY_EXECUTION:-0}" != "1" ]]; then
+  authorization_context_id="migration-${BODYCAST_AUTHORIZATION_WORKFLOW_ID}-${BODYCAST_AUTHORIZATION_RUN_ID}-${BODYCAST_AUTHORIZATION_RUN_ATTEMPT}"
+  exec "$HOST_OPERATION_CLIENT" forward-migration \
+    --request-id "${authorization_context_id}-request" \
+    --release-sha "$RELEASE_SHA" \
+    --canonical-main-sha "$RELEASE_SHA" \
+    --migration-manifest-id "$MANIFEST_ID" \
+    --authorization-context-id "$authorization_context_id"
+fi
+
 [[ "$(git rev-parse --show-toplevel)" == "$ROOT_DIR" ]] || fail "repository root does not match the deployment checkout."
 [[ "$(git rev-parse HEAD)" == "$RELEASE_SHA" ]] || fail "deployment checkout does not equal the authorized release SHA."
 [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || fail "deployment checkout is not clean."

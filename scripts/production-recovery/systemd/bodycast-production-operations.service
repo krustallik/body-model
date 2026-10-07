@@ -1,0 +1,28 @@
+[Unit]
+Description=BodyCast root production operation and recovery authority
+Requires=bodycast-production-operations.socket
+After=local-fs.target docker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/local/sbin/bodycast-production-recovery-authority --serve
+Restart=no
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictSUIDSGID=true
+ReadWritePaths=/var/lib/bodycast/recovery /var/lib/bodycast/production-operations /etc/caddy
+ReadOnlyPaths=/usr/local/lib/bodycast/production-recovery /srv/bodycast
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

@@ -82,6 +82,7 @@ jobs:
         env:
           BODYCAST_STAGE01_MODE: test
           BODYCAST_GLYCOGEN_TEST_DATABASE_URL: postgresql://bodycast_stage01_test:integration_test_password@localhost:5432/bodycast_training_history_stage01_test
+          BODYCAST_RECOVERY_TEST_DATABASE_URL: postgresql://bodycast_stage01_test:integration_test_password@localhost:5432/bodycast_training_history_stage01_test
         run: npm run test:integration
 
       - name: Next.js production build

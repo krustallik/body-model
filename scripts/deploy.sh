@@ -38,6 +38,21 @@ if [[ "$BODYCAST_NON_SERVING_DEPLOY" != "0" && "$BODYCAST_NON_SERVING_DEPLOY" !=
   exit 1
 fi
 
+# After the separate host-preparation checkpoint, the release principal has no
+# Docker/Caddy privileges. A fixed systemd-broker client executes the reviewed
+# release operation; its request has no caller-supplied command or path. Before
+# that checkpoint the absent client preserves today's ordinary deployment path.
+HOST_OPERATION_CLIENT="/usr/local/bin/bodycast-production-operation"
+if [[ -x "$HOST_OPERATION_CLIENT" && "${BODYCAST_AUTHORITY_EXECUTION:-0}" != "1" ]]; then
+  release_mode="serving"
+  [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" ]] && release_mode="non-serving"
+  exec "$HOST_OPERATION_CLIENT" ordinary-release \
+    --request-id "deploy-${DEPLOY_SHA}-$$" \
+    --release-sha "$DEPLOY_SHA" \
+    --canonical-main-sha "$DEPLOY_SHA" \
+    --release-mode "$release_mode"
+fi
+
 echo "Deploying exact commit ${DEPLOY_SHA} (app recreate only; migrate/replay/activation not run)."
 
 git fetch --no-tags origin "$DEPLOY_SHA"

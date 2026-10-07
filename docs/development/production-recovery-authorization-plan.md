@@ -2,9 +2,9 @@
 
 ## 1. Status, purpose, and safety boundary
 
-This document is the single source of truth for the proposed production recovery authorization design. Future planning and implementation reviews should update or reference this document rather than reproduce the design in chat.
+This document is the single source of truth for the production recovery authorization design. Future planning and implementation reviews should update or reference this document rather than reproduce the design in chat.
 
-**Planning is not approved.** The latest independent audit returned **PLAN FIXES REQUIRED**. The three latest P1 corrections—authority installation provenance, a host-enforced production mutation boundary, and independent owner approval for the policy signer—are incorporated here. The next checkpoint is an independent final plan audit of this exact document and commit. **Implementation is not authorized.**
+**Plan audit: PASS** on the implementation baseline `7053873ef386bbbae81896890c6a6b5ab36aeab4`. The latest user order authorizes code implementation of this plan only. It does not authorize production preparation or operations.
 
 This document authorizes no production activity. Do not access production, provision roles or secrets, install or activate the recovery authority, create a production marker, run migration/restore/replay/backfill/activation/deploy, open traffic, push, or merge as part of planning.
 
@@ -53,7 +53,7 @@ Skipping a repository advisory lock does not grant write permission. Only the au
 
 ## 5. Authority installation/update provenance and anti-rollback
 
-Build and review the authority binary/package and configuration outside the mutable production checkout. Pin their exact digests. A separate privileged, owner-authorized checkpoint installs or updates them. The installer verifies signed provenance before installation and records:
+Build and review the authority binary/package and configuration outside the mutable production checkout. `scripts/production-recovery/build-authority-package.mjs` emits a bundled authority executable and a separate non-privileged typed client. The authority bundle statically includes the independently reviewed host-adapter module; the adapter must satisfy the closed callbacks required by `createRecoveryHostRuntime`. Pin the authority and configuration digests. Install the authority under its private mode-0700 root and install only the public socket client in the separate root-owned, non-writable client path. A separate privileged, owner-authorized checkpoint performs that installation. The installer verifies signed provenance before installation and records:
 
 - authorityVersion;
 - binaryDigest;
@@ -387,8 +387,7 @@ All database tests use isolated localhost *_test databases. Never use production
 
 ## 22. Current audit status
 
-- Planning is **NOT yet approved**.
-- Latest audit returned **PLAN FIXES REQUIRED**.
-- The three latest P1 corrections are incorporated: immutable authority installation provenance/anti-rollback; host-enforced Docker/Caddy/production mutation boundary; independent authenticated owner approval for the policy signer.
-- Next checkpoint: independent final plan audit of this exact document/commit.
-- Implementation is **NOT authorized yet**.
+- The canonical implementation plan passed its independent plan audit on the baseline identified in Section 1.
+- Code implementation is authorized by the current user order, subject to the code-only scope and invariants in this document.
+- Production migration, restore, replay, backfill, activation, deploy, role/secret provisioning, host authority installation/activation, traffic changes, push, and merge remain unauthorized in this implementation task.
+- The completed code and validation are for independent implementation audit before any separate production-preparation checkpoint.

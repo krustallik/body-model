@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/production-migration-safety-ci.yml"
+      - ".github/workflows/production-recovery-*.yml"
       - ".github/workflows/production-migration-preflight.yml"
       - ".github/workflows/production-migrate.yml"
       - "Dockerfile"
@@ -13,8 +14,10 @@ on:
       - "scripts/production-writer-drain.sh"
       - "scripts/production-writer-drain.mjs"
       - "scripts/production-release-marker.sh"
+      - "scripts/production-recovery/**"
       - "scripts/deploy.sh"
       - "docker-compose.prod.yml"
+      - "docker-compose.recovery.yml"
       - "scripts/unified-*-postflight.ts"
       - "scripts/unified-v4-*.ts"
       - "scripts/production-migration-verification-keys.json"
@@ -48,6 +51,9 @@ on:
       - "tests/production-writer-drain.test.mjs"
       - "tests/deploy-script-ordering.test.ts"
       - "tests/production-migration-release-tooling.sh"
+      - "tests/production-recovery-*.test.mjs"
+      - "tests/production-recovery-marker-reader.sh"
+      - "tests/integration/production-recovery-*.test.ts"
       - "package.json"
       - "package-lock.json"
 
@@ -115,13 +121,42 @@ jobs:
       - name: Run targeted safety-tooling tests
         run: npm run test:unit -- tests/production-migration-v5.test.mjs tests/production-safety-tooling.test.mjs tests/production-writer-drain.test.mjs
 
+      - name: Run production recovery authority and workflow protocol tests
+        run: npm run test:unit -- tests/production-recovery-authority.test.mjs tests/production-recovery-authorization.test.mjs tests/production-recovery-boundary.test.mjs tests/production-recovery-flow.test.mjs tests/production-recovery-client.test.mjs tests/production-recovery-package.test.mjs
+
       - name: Check production migration shell syntax
-        run: bash -n scripts/deploy-migrate.sh scripts/production-migration-readiness.sh scripts/production-migration-summary.sh scripts/production-writer-drain.sh scripts/production-release-marker.sh scripts/production-traffic-cutover.sh scripts/deploy.sh tests/production-migration-release-tooling.sh
+        run: bash -n scripts/deploy-migrate.sh scripts/production-migration-readiness.sh scripts/production-migration-summary.sh scripts/production-writer-drain.sh scripts/production-release-marker.sh scripts/production-traffic-cutover.sh scripts/deploy.sh scripts/production-recovery/production-authority-launcher.sh scripts/production-recovery/production-operation-client-launcher.sh tests/production-migration-release-tooling.sh tests/production-recovery-marker-reader.sh
+
+      - name: Run V1/V2 marker reader fail-closed compatibility matrix
+        run: bash tests/production-recovery-marker-reader.sh
+
+      - name: Create isolated recovery test database
+        env:
+          PGPASSWORD: bodycast_ci_only
+        run: psql --host=127.0.0.1 --username=bodycast --dbname=bodycast --command='CREATE DATABASE bodycast_recovery_test'
+
+      - name: Apply the reviewed Prisma schema to the isolated recovery test database
+        env:
+          DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_recovery_test
+        run: npx prisma migrate deploy --schema prisma/schema.prisma
+
+      - name: Run PostgreSQL recovery read-only-role and lifecycle integration tests
+        env:
+          BODYCAST_RECOVERY_TEST_DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_recovery_test
+        run: npm run test:integration -- tests/integration/production-recovery-readonly-role.integration.test.ts tests/integration/production-recovery-flow.integration.test.ts
 
       - name: Build migrator image and verify in-image migration bytes
         run: |
           docker build --target migrator --tag bodycast-migrator-safety-ci .
           docker run --rm --entrypoint node bodycast-migrator-safety-ci /app/scripts/production-migration-image-check.mjs /app
+
+      - name: Validate isolated recovery Compose topology
+        env:
+          BODYCAST_ROLLBACK_IMAGE: ghcr.io/bodycast/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          BODYCAST_PRODUCTION_ENV_FILE: .env.production.example
+          BODYCAST_RECOVERY_DATABASE_URL_FILE: /dev/null
+          BODYCAST_PRODUCTION_DATABASE_URL_FILE: /dev/null
+        run: docker compose -f docker-compose.recovery.yml config --quiet
 
       - name: Verify Prisma checksum and 5-second lock timeout against isolated PostgreSQL
         env:

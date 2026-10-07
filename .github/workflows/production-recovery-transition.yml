@@ -1,0 +1,144 @@
+name: Production recovery typed transition
+
+on:
+  workflow_dispatch:
+    inputs:
+      recovery_case_id:
+        description: Existing host-created recovery case ID
+        required: true
+        type: string
+      transition:
+        description: One enumerated recovery state transition
+        required: true
+        type: choice
+        options:
+          - begin-restore
+          - verify-restore
+          - mark-rollback-app-ready
+          - enable-writers
+          - complete-recovery
+          - open-traffic
+          - finalize-recovery
+      evidence_id:
+        description: Opaque evidence ID already pinned by the host recovery case
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bodycast-recovery-transition-${{ inputs.recovery_case_id }}
+  cancel-in-progress: false
+
+jobs:
+  apply-transition:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production-recovery
+    steps:
+      - name: Checkout current main tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Require current canonical main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$REPOSITORY" == "krustallik/body-model" ]] || { echo "::error::Unexpected recovery repository."; exit 1; }
+          [[ "$(git rev-parse HEAD)" == "$DISPATCH_SHA" ]] || { echo "::error::Workflow checkout differs from dispatch SHA."; exit 1; }
+          MAIN_SHA="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
+          [[ "$MAIN_SHA" == "$DISPATCH_SHA" ]] || { echo "::error::Recovery workflow must run at current main."; exit 1; }
+
+      - name: Validate and pin SSH host identity
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_HOST_FINGERPRINT: ${{ secrets.SSH_HOST_FINGERPRINT }}
+        run: |
+          set -Eeuo pipefail
+          : "$SSH_PRIVATE_KEY"; : "$SSH_HOST"; : "$SSH_USER"; : "$SSH_PORT"; : "$SSH_HOST_FINGERPRINT"
+          [[ "$SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || { echo "::error::Invalid SSH host."; exit 1; }
+          [[ "$SSH_USER" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::Invalid SSH user."; exit 1; }
+          [[ "$SSH_PORT" =~ ^[0-9]{1,5}$ ]] && (( SSH_PORT > 0 && SSH_PORT <= 65535 )) || { echo "::error::Invalid SSH port."; exit 1; }
+          [[ "$SSH_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || { echo "::error::Invalid pinned SSH fingerprint."; exit 1; }
+          install -d -m 700 "$RUNNER_TEMP/bodycast-recovery-ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/bodycast-recovery-ssh/id"
+          chmod 600 "$RUNNER_TEMP/bodycast-recovery-ssh/id"
+          ssh-keyscan -T 10 -p "$SSH_PORT" "$SSH_HOST" > "$RUNNER_TEMP/bodycast-recovery-ssh/candidate" 2>/dev/null
+          test -s "$RUNNER_TEMP/bodycast-recovery-ssh/candidate"
+          node scripts/filter-ssh-known-hosts.mjs "$RUNNER_TEMP/bodycast-recovery-ssh/candidate" "$RUNNER_TEMP/bodycast-recovery-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/bodycast-recovery-ssh/known_hosts"
+          echo "BODYCAST_SSH_KEY=$RUNNER_TEMP/bodycast-recovery-ssh/id" >> "$GITHUB_ENV"
+          echo "BODYCAST_KNOWN_HOSTS=$RUNNER_TEMP/bodycast-recovery-ssh/known_hosts" >> "$GITHUB_ENV"
+
+      - name: Apply only the selected state-machine transition through the root authority
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          RECOVERY_CASE_ID: ${{ inputs.recovery_case_id }}
+          TRANSITION: ${{ inputs.transition }}
+          EVIDENCE_ID: ${{ inputs.evidence_id }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$RECOVERY_CASE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]] || { echo "::error::Invalid recovery case selector."; exit 1; }
+          [[ "$EVIDENCE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]] || { echo "::error::Invalid opaque host evidence selector."; exit 1; }
+          case "$TRANSITION" in
+            begin-restore) EXPECTED_STATE=restore-authorized ;;
+            verify-restore) EXPECTED_STATE=restore-in-progress ;;
+            mark-rollback-app-ready) EXPECTED_STATE=recovery-authorized ;;
+            enable-writers) EXPECTED_STATE=rollback-app-ready ;;
+            complete-recovery) EXPECTED_STATE=writers-enabled ;;
+            open-traffic) EXPECTED_STATE=recovery-complete ;;
+            finalize-recovery) EXPECTED_STATE=traffic-open ;;
+            *) echo "::error::Transition is not on the fixed allowlist."; exit 1 ;;
+          esac
+          SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
+          STATE_JSON="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "/usr/local/bin/bodycast-production-operation recovery-state --request-id transition-state-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT")"
+          STATE_VALUES="$(STATE_JSON="$STATE_JSON" EXPECTED_STATE="$EXPECTED_STATE" node --input-type=module -e '
+            const state = JSON.parse(process.env.STATE_JSON);
+            const value = state?.result;
+            if (!value?.blocking || !value?.activeRecovery || value.state !== process.env.EXPECTED_STATE
+              || !Number.isSafeInteger(value.generation) || typeof value.recordDigest !== "string" || !/^[a-f0-9]{64}$/.test(value.recordDigest)) {
+              console.error("Authority state does not match the selected transition predecessor."); process.exit(1);
+            }
+            process.stdout.write(`${value.generation} ${value.recordDigest}`);
+          ')"
+          read -r GENERATION RECORD_DIGEST <<< "$STATE_VALUES"
+          if [[ "$TRANSITION" == "finalize-recovery" ]]; then
+            RESULT="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "/usr/local/bin/bodycast-production-operation recovery-finalize --request-id finalize-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT --expected-generation $GENERATION --expected-record-digest $RECORD_DIGEST --evidence-id $EVIDENCE_ID")"
+            EXPECTED_RESULT_STATE=recovery-finalized
+          else
+            RESULT="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "/usr/local/bin/bodycast-production-operation recovery-transition --request-id transition-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT --transition $TRANSITION --expected-generation $GENERATION --expected-record-digest $RECORD_DIGEST --evidence-id $EVIDENCE_ID --authorization-envelope-b64 bnVsbA== --policy-attestation-b64 bnVsbA== --rollout-receipt-id rollout-current")"
+            case "$TRANSITION" in
+              begin-restore) EXPECTED_RESULT_STATE=restore-in-progress ;;
+              verify-restore) EXPECTED_RESULT_STATE=restore-verified ;;
+              mark-rollback-app-ready) EXPECTED_RESULT_STATE=rollback-app-ready ;;
+              enable-writers) EXPECTED_RESULT_STATE=writers-enabled ;;
+              complete-recovery) EXPECTED_RESULT_STATE=recovery-complete ;;
+              open-traffic) EXPECTED_RESULT_STATE=traffic-open ;;
+            esac
+          fi
+          RESULT_JSON="$RESULT" EXPECTED_RESULT_STATE="$EXPECTED_RESULT_STATE" node --input-type=module -e '
+            const response = JSON.parse(process.env.RESULT_JSON);
+            if (response?.ok !== true || response?.result?.record?.nextState !== process.env.EXPECTED_RESULT_STATE) {
+              console.error("Host authority did not commit the requested recovery transition."); process.exit(1);
+            }
+          '
+          echo "Typed recovery transition $TRANSITION completed through the root authority."
+
+      - name: Remove temporary SSH material
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/bodycast-recovery-ssh"

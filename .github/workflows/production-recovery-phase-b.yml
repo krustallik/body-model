@@ -1,0 +1,121 @@
+name: Production recovery authorization — Phase B
+
+on:
+  workflow_dispatch:
+    inputs:
+      recovery_case_id:
+        description: Existing host-created recovery case ID after verified in-place restore
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: bodycast-recovery-phase-b-${{ inputs.recovery_case_id }}
+  cancel-in-progress: false
+
+jobs:
+  authorize-post-restore-recovery:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production-recovery
+    steps:
+      - name: Checkout current main tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Require current canonical main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$REPOSITORY" == "krustallik/body-model" ]] || { echo "::error::Unexpected recovery repository."; exit 1; }
+          [[ "$(git rev-parse HEAD)" == "$DISPATCH_SHA" ]] || { echo "::error::Workflow checkout differs from dispatch SHA."; exit 1; }
+          MAIN_SHA="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
+          [[ "$MAIN_SHA" == "$DISPATCH_SHA" ]] || { echo "::error::Recovery workflow must run at current main."; exit 1; }
+
+      - name: Request independently approved Phase B envelope
+        env:
+          BODYCAST_RECOVERY_POLICY_SIGNER_URL: ${{ vars.BODYCAST_RECOVERY_POLICY_SIGNER_URL }}
+          BODYCAST_RECOVERY_AUTHORIZATION_ISSUER_URL: ${{ vars.BODYCAST_RECOVERY_AUTHORIZATION_ISSUER_URL }}
+          RECOVERY_CASE_ID: ${{ inputs.recovery_case_id }}
+        run: |
+          set -Eeuo pipefail
+          node scripts/production-recovery/request-phase-authorization.mjs --phase B --recovery-case-id "$RECOVERY_CASE_ID" \
+            > "$RUNNER_TEMP/bodycast-recovery-phase-b.json"
+          chmod 600 "$RUNNER_TEMP/bodycast-recovery-phase-b.json"
+          test -s "$RUNNER_TEMP/bodycast-recovery-phase-b.json"
+
+      - name: Validate pinned SSH identity and host key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_HOST_FINGERPRINT: ${{ secrets.SSH_HOST_FINGERPRINT }}
+        run: |
+          set -Eeuo pipefail
+          : "$SSH_PRIVATE_KEY"; : "$SSH_HOST"; : "$SSH_USER"; : "$SSH_PORT"; : "$SSH_HOST_FINGERPRINT"
+          [[ "$SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || { echo "::error::Invalid SSH host."; exit 1; }
+          [[ "$SSH_USER" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::Invalid SSH user."; exit 1; }
+          [[ "$SSH_PORT" =~ ^[0-9]{1,5}$ ]] && (( SSH_PORT > 0 && SSH_PORT <= 65535 )) || { echo "::error::Invalid SSH port."; exit 1; }
+          [[ "$SSH_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || { echo "::error::Invalid pinned SSH fingerprint."; exit 1; }
+          install -d -m 700 "$RUNNER_TEMP/bodycast-recovery-ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/bodycast-recovery-ssh/id"
+          chmod 600 "$RUNNER_TEMP/bodycast-recovery-ssh/id"
+          ssh-keyscan -T 10 -p "$SSH_PORT" "$SSH_HOST" > "$RUNNER_TEMP/bodycast-recovery-ssh/candidate" 2>/dev/null
+          test -s "$RUNNER_TEMP/bodycast-recovery-ssh/candidate"
+          node scripts/filter-ssh-known-hosts.mjs "$RUNNER_TEMP/bodycast-recovery-ssh/candidate" "$RUNNER_TEMP/bodycast-recovery-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/bodycast-recovery-ssh/known_hosts"
+          echo "BODYCAST_SSH_KEY=$RUNNER_TEMP/bodycast-recovery-ssh/id" >> "$GITHUB_ENV"
+          echo "BODYCAST_KNOWN_HOSTS=$RUNNER_TEMP/bodycast-recovery-ssh/known_hosts" >> "$GITHUB_ENV"
+
+      - name: Commit distinct post-restore recovery authorization through the root authority
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          RECOVERY_CASE_ID: ${{ inputs.recovery_case_id }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$RECOVERY_CASE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]] || { echo "::error::Invalid recovery case selector."; exit 1; }
+          SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
+          STATE_JSON="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "/usr/local/bin/bodycast-production-operation recovery-state --request-id phase-b-state-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT")"
+          STATE_VALUES="$(STATE_JSON="$STATE_JSON" node --input-type=module -e '
+            const state = JSON.parse(process.env.STATE_JSON);
+            const value = state?.result;
+            if (!value?.blocking || !value?.activeRecovery || value.state !== "restore-verified"
+              || !Number.isSafeInteger(value.generation) || typeof value.recordDigest !== "string" || !/^[a-f0-9]{64}$/.test(value.recordDigest)) {
+              console.error("Authority state is not at the post-restore verification boundary."); process.exit(1);
+            }
+            process.stdout.write(`${value.generation} ${value.recordDigest}`);
+          ')"
+          read -r GENERATION RECORD_DIGEST <<< "$STATE_VALUES"
+          ENVELOPE_B64="$(jq -er '.envelope | @base64' "$RUNNER_TEMP/bodycast-recovery-phase-b.json" | tr -d '\n')"
+          POLICY_B64="$(jq -er '.policyAttestation | @base64' "$RUNNER_TEMP/bodycast-recovery-phase-b.json" | tr -d '\n')"
+          EVIDENCE_ID="$(jq -er '.evidenceId' "$RUNNER_TEMP/bodycast-recovery-phase-b.json")"
+          ROLLOUT_ID="$(jq -er '.rolloutReceiptId' "$RUNNER_TEMP/bodycast-recovery-phase-b.json")"
+          [[ "$EVIDENCE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ && "$ROLLOUT_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]] || { echo "::error::Issuer returned invalid host evidence IDs."; exit 1; }
+          (( ${#ENVELOPE_B64} < 120000 && ${#POLICY_B64} < 30000 )) || { echo "::error::Signed recovery authorization exceeds the transport bound."; exit 1; }
+          RESULT="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "/usr/local/bin/bodycast-production-operation recovery-transition --request-id phase-b-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT --transition authorize-recovery --expected-generation $GENERATION --expected-record-digest $RECORD_DIGEST --evidence-id $EVIDENCE_ID --authorization-envelope-b64 $ENVELOPE_B64 --policy-attestation-b64 $POLICY_B64 --rollout-receipt-id $ROLLOUT_ID")"
+          RESULT_JSON="$RESULT" node --input-type=module -e '
+            const response = JSON.parse(process.env.RESULT_JSON);
+            if (response?.ok !== true || response?.result?.record?.nextState !== "recovery-authorized") {
+              console.error("Host authority did not commit the distinct Phase B recovery authorization."); process.exit(1);
+            }
+          '
+          echo "Phase B recovery authorization committed after restore verification. No app or traffic operation was run by this workflow."
+
+      - name: Remove temporary runner authorization and SSH material
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/bodycast-recovery-phase-b.json" "$RUNNER_TEMP/bodycast-recovery-ssh"

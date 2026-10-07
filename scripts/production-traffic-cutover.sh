@@ -25,7 +25,7 @@ source "${ROOT_DIR}/scripts/production-release-marker.sh"
 # fixed root broker. This prevents bypassing deploy.sh by calling Caddy/Docker
 # operations from a stale or manually checked-out release tree.
 HOST_OPERATION_CLIENT="/usr/local/bin/bodycast-production-operation"
-if [[ -x "$HOST_OPERATION_CLIENT" && "${BODYCAST_AUTHORITY_EXECUTION:-0}" != "1" ]]; then
+if [[ -x "$HOST_OPERATION_CLIENT" ]]; then
   RELEASE_SHA="${BODYCAST_DEPLOY_SHA:-${DEPLOY_SHA:-${RELEASE_SHA:-}}}"
   CANONICAL_MAIN_SHA="${BODYCAST_CANONICAL_MAIN_SHA:-$RELEASE_SHA}"
   [[ "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ && "$CANONICAL_MAIN_SHA" =~ ^[a-f0-9]{40}$ ]] || {

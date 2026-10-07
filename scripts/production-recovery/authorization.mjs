@@ -90,10 +90,11 @@ function validateOwnerApproval(approval, expected, allowedReviewerIds) {
   for (const key of [
     "recoveryCaseId", "phase", "repository", "canonicalMainSha", "environment", "workflowPath", "workflowId",
     "workflowRunId", "workflowRunAttempt", "reviewedConfigurationDigest", "approvalId", "approvalTimestamp",
-    "singleUseRequestId", "singleUseNonce", "keyId", "signature",
+    "singleUseRequestId", "singleUseNonce", "challengeId", "challengeDigest", "keyId", "signature",
   ]) assertNonEmptyString(approval[key], "ownerApproval." + key);
   assertGitSha(approval.canonicalMainSha, "ownerApproval.canonicalMainSha");
   assertSha256(approval.reviewedConfigurationDigest, "ownerApproval.reviewedConfigurationDigest");
+  assertSha256(approval.challengeDigest, "ownerApproval.challengeDigest");
   assertUtcTimestamp(approval.approvalTimestamp, "ownerApproval.approvalTimestamp");
   if (approval.environment !== "production-recovery") throw new Error("Owner approval environment is invalid.");
   for (const [key, value] of Object.entries(expected)) {
@@ -110,6 +111,7 @@ export async function issuePolicyAttestation({
   assertExactKeys(policy, [
     "recoveryCaseId", "phase", "repository", "canonicalMainSha", "workflowPath", "workflowId", "workflowRunId",
     "workflowRunAttempt", "reviewedConfigurationDigest", "singleUseRequestId", "singleUseNonce",
+    "challengeId", "challengeDigest",
   ], "Policy signing request");
   const {
     ownerApprovalPublicKeys,
@@ -145,6 +147,8 @@ export async function issuePolicyAttestation({
     reviewedConfigurationDigest: policy.reviewedConfigurationDigest,
     singleUseRequestId: policy.singleUseRequestId,
     singleUseNonce: policy.singleUseNonce,
+    challengeId: policy.challengeId,
+    challengeDigest: policy.challengeDigest,
   };
   validateOwnerApproval(ownerApproval, expected, allowedReviewerIds);
   const ownerKey = ownerApprovalPublicKeys?.[ownerApproval.keyId];
@@ -190,6 +194,8 @@ export async function issuePolicyAttestation({
     expiresAt: new Date(now + 30 * 60 * 1000).toISOString(),
     singleUseRequestId: policy.singleUseRequestId,
     singleUseNonce: policy.singleUseNonce,
+    challengeId: policy.challengeId,
+    challengeDigest: policy.challengeDigest,
     policyVersion,
     signer: signerName,
     keyId: policyKeyId,

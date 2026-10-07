@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { assertExactKeys, assertGitSha, assertNonEmptyString, assertUtcTimestamp, canonicalDigest, omitFields, verifyCanonical } from "./canonical.mjs";
+import { assertExactKeys, assertGitSha, assertNonEmptyString, assertSha256, assertUtcTimestamp, canonicalDigest, omitFields, verifyCanonical } from "./canonical.mjs";
 import { createAuthorizationEnvelope } from "./authorization.mjs";
 import {
   PHASE_A_CLAIM_KEYS,
@@ -11,11 +11,11 @@ import {
 } from "./schemas.mjs";
 
 const REQUEST_KEYS = Object.freeze([
-  "schemaVersion", "purpose", "oidcToken", "recoveryCaseId", "phase", "policyAttestation",
+  "schemaVersion", "purpose", "oidcToken", "recoveryCaseId", "phase", "challengeId", "challengeDigest", "policyAttestation",
 ]);
 const CLAIM_KEYS = Object.freeze({ A: validatePhaseAClaims, B: validatePhaseBClaims });
 
-function assertTrustedPolicy(policy, { phase, recoveryCase, workflow, policyPublicKeys, now }) {
+function assertTrustedPolicy(policy, { phase, recoveryCase, workflow, policyPublicKeys, now, challengeId, challengeDigest }) {
   validatePolicyAttestation(policy);
   const key = policyPublicKeys?.[policy.keyId];
   if (!key || !verifyCanonical(omitFields(policy, ["signature"]), policy.signature, key)) {
@@ -31,6 +31,8 @@ function assertTrustedPolicy(policy, { phase, recoveryCase, workflow, policyPubl
     workflowRunId: workflow.workflowRunId,
     workflowRunAttempt: workflow.workflowRunAttempt,
     environment: "production-recovery",
+    challengeId,
+    challengeDigest,
   };
   for (const [keyName, value] of Object.entries(expected)) {
     if (policy[keyName] !== value) throw new Error("Policy attestation binding mismatch: " + keyName + ".");
@@ -75,8 +77,10 @@ export function createRecoveryAuthorizationIssuer({
         throw new Error("Recovery authorization issuer request schema or purpose is invalid.");
       }
       if (rawRequest.phase !== "A" && rawRequest.phase !== "B") throw new Error("Recovery authorization phase is invalid.");
-      for (const key of ["oidcToken", "recoveryCaseId"]) assertNonEmptyString(rawRequest[key], "request." + key);
-      if (rawRequest.oidcToken.length > 32_768 || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(rawRequest.recoveryCaseId)) {
+      for (const key of ["oidcToken", "recoveryCaseId", "challengeId"]) assertNonEmptyString(rawRequest[key], "request." + key);
+      assertSha256(rawRequest.challengeDigest, "request.challengeDigest");
+      if (rawRequest.oidcToken.length > 32_768 || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(rawRequest.recoveryCaseId)
+        || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(rawRequest.challengeId)) {
         throw new Error("Recovery authorization issuer request exceeds protocol bounds.");
       }
 
@@ -101,19 +105,25 @@ export function createRecoveryAuthorizationIssuer({
       assertUtcTimestamp(recoveryCase.expiresAt, "recoveryCase.expiresAt");
       if (Date.parse(recoveryCase.expiresAt) <= now()) throw new Error("Recovery case has expired.");
       const policy = rawRequest.policyAttestation;
-      assertTrustedPolicy(policy, { phase, recoveryCase, workflow, policyPublicKeys, now: now() });
-      const approval = await loadAuthenticatedOwnerApproval({ workflow, recoveryCase, policy, phase });
+      assertTrustedPolicy(policy, { phase, recoveryCase, workflow, policyPublicKeys, now: now(),
+        challengeId: rawRequest.challengeId, challengeDigest: rawRequest.challengeDigest });
+      const approval = await loadAuthenticatedOwnerApproval({ workflow, recoveryCase, policy, phase,
+        challenge: { challengeId: rawRequest.challengeId, challengeDigest: rawRequest.challengeDigest, singleUseNonce: policy.singleUseNonce } });
       if (!approval || String(approval.reviewerGithubUserId) !== policy.reviewedReviewerGithubUserId
         || String(approval.reviewerGithubUserId) === String(workflow.actorGithubUserId)
         || approval.approvalId !== policy.ownerApprovalId || approval.approvalTimestamp !== policy.ownerApprovalTimestamp
+        || approval.challengeId !== policy.challengeId || approval.challengeDigest !== policy.challengeDigest
+        || approval.singleUseNonce !== policy.singleUseNonce
         || !allowedReviewerIds.map(String).includes(String(approval.reviewerGithubUserId))) {
         throw new Error("Independent owner approval is missing, self-reviewed, or not allowlisted.");
       }
-      if (await verifyAuthenticatedOwnerApproval({ approval, workflow, recoveryCase, policy }) !== true) {
+      if (await verifyAuthenticatedOwnerApproval({ approval, workflow, recoveryCase, policy,
+        challenge: { challengeId: policy.challengeId, challengeDigest: policy.challengeDigest, singleUseNonce: policy.singleUseNonce } }) !== true) {
         throw new Error("Owner approval does not match the independently authenticated policy review.");
       }
 
-      const facts = await loadPhaseFacts({ recoveryCase, phase, workflow, policy, approval });
+      const facts = await loadPhaseFacts({ recoveryCase, phase, workflow, policy, approval,
+        challenge: { challengeId: policy.challengeId, challengeDigest: policy.challengeDigest, singleUseNonce: policy.singleUseNonce } });
       const evidenceId = phase === "A" ? recoveryCase.phaseAAuthorizationEvidenceId : recoveryCase.phaseBAuthorizationEvidenceId;
       const rolloutReceiptId = recoveryCase.markerReaderRolloutReceiptId;
       for (const [label, value] of [["authorization evidence", evidenceId], ["reader rollout receipt", rolloutReceiptId]]) {
@@ -122,8 +132,8 @@ export function createRecoveryAuthorizationIssuer({
       }
       const validator = CLAIM_KEYS[phase];
       const allowed = phase === "A"
-        ? new Set(["schemaVersion", "purpose", "capability", "repository", "workflowPath", "workflowId", "workflowRunId", "workflowRunAttempt", "workflowRef", "canonicalMainSha", "recoveryEnvironment", "ownerApproval", "phaseAPolicyAttestationDigest", "phaseAPolicyAttestationNonce", "phaseAPolicyReviewedAt", "phaseAPolicyExpiresAt", "phaseAPolicyVersion", "hostRecoveryAuthorityIdentity", "hostRecoveryAuthorityKeyId", "issuedAt", "expiresAt", "authorizationId", "nonce"])
-        : new Set(["schemaVersion", "purpose", "capabilitySet", "repository", "workflowPath", "workflowId", "workflowRunId", "workflowRunAttempt", "workflowRef", "canonicalMainSha", "recoveryEnvironment", "ownerApproval", "phaseBPolicyAttestationDigest", "phaseBPolicyAttestationNonce", "phaseBPolicyReviewedAt", "phaseBPolicyExpiresAt", "phaseBPolicyVersion", "hostRecoveryAuthorityIdentity", "hostRecoveryAuthorityKeyId", "issuedAt", "expiresAt", "authorizationId", "nonce"]);
+        ? new Set(["schemaVersion", "purpose", "capability", "repository", "workflowPath", "workflowId", "workflowRunId", "workflowRunAttempt", "workflowRef", "canonicalMainSha", "recoveryEnvironment", "ownerApproval", "phaseAPolicyAttestationDigest", "phaseAPolicyAttestationNonce", "phaseAPolicyChallengeId", "phaseAPolicyChallengeDigest", "phaseAPolicyReviewedAt", "phaseAPolicyExpiresAt", "phaseAPolicyVersion", "hostRecoveryAuthorityIdentity", "hostRecoveryAuthorityKeyId", "issuedAt", "expiresAt", "authorizationId", "nonce"])
+        : new Set(["schemaVersion", "purpose", "capabilitySet", "repository", "workflowPath", "workflowId", "workflowRunId", "workflowRunAttempt", "workflowRef", "canonicalMainSha", "recoveryEnvironment", "ownerApproval", "phaseBPolicyAttestationDigest", "phaseBPolicyAttestationNonce", "phaseBPolicyChallengeId", "phaseBPolicyChallengeDigest", "phaseBPolicyReviewedAt", "phaseBPolicyExpiresAt", "phaseBPolicyVersion", "hostRecoveryAuthorityIdentity", "hostRecoveryAuthorityKeyId", "issuedAt", "expiresAt", "authorizationId", "nonce"]);
       const expectedFactKeys = phase === "A" ? PHASE_A_CLAIM_KEYS : PHASE_B_CLAIM_KEYS;
       const factKeys = expectedFactKeys.filter((key) => !allowed.has(key));
       assertExactKeys(facts, factKeys, "Trusted phase " + phase + " recovery facts");
@@ -151,9 +161,14 @@ export function createRecoveryAuthorizationIssuer({
           approvalTime: approval.approvalTimestamp,
           runId: workflow.workflowRunId,
           runAttempt: workflow.workflowRunAttempt,
+          challengeId: policy.challengeId,
+          challengeDigest: policy.challengeDigest,
+          singleUseNonce: policy.singleUseNonce,
         },
         [policyPrefix + "AttestationDigest"]: canonicalDigest(policy),
         [policyPrefix + "AttestationNonce"]: policy.singleUseNonce,
+        [policyPrefix + "ChallengeId"]: policy.challengeId,
+        [policyPrefix + "ChallengeDigest"]: policy.challengeDigest,
         [policyPrefix + "ReviewedAt"]: policy.reviewedAt,
         [policyPrefix + "ExpiresAt"]: policy.expiresAt,
         [policyPrefix + "Version"]: policy.policyVersion,

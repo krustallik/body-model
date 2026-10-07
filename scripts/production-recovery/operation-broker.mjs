@@ -1,4 +1,4 @@
-import { assertExactKeys, assertGitSha, assertNonEmptyString, assertSha256 } from "./canonical.mjs";
+import { assertExactKeys, assertGitSha, assertNonEmptyString, assertSha256, canonicalDigest } from "./canonical.mjs";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const RECOVERY_EXECUTION_STEPS = Object.freeze({
@@ -7,6 +7,13 @@ const RECOVERY_EXECUTION_STEPS = Object.freeze({
   "enable-writers": "recovery-drain-and-enable-writers",
   "complete-recovery": "recovery-verify-completion-gates",
   "open-traffic": "recovery-open-traffic",
+});
+const RECOVERY_OPERATION_REPLAY_POLICIES = Object.freeze({
+  "recovery-restore-in-place": "reconcile-same-logical-database-to-same-bound-backup",
+  "recovery-start-readonly-app": "ensure-same-captured-image-with-read-only-database-role",
+  "recovery-drain-and-enable-writers": "observe-drain-and-image-state-before-ensuring-writer-mode",
+  "recovery-verify-completion-gates": "recompute-completion-from-current-host-and-database-state",
+  "recovery-open-traffic": "ensure-only-the-bound-rollback-target-receives-traffic",
 });
 const OPERATION_KEYS = Object.freeze({
   "ordinary-release": ["schemaVersion", "operation", "requestId", "releaseSha", "canonicalMainSha", "releaseMode"],
@@ -19,8 +26,9 @@ const OPERATION_KEYS = Object.freeze({
   "recovery-state": ["schemaVersion", "operation", "requestId"],
   "recovery-bootstrap": ["schemaVersion", "operation", "requestId", "failedState", "evidenceId", "rolloutReceiptId"],
   "recovery-rebuild-projection": ["schemaVersion", "operation", "requestId"],
-  "recovery-transition": ["schemaVersion", "operation", "requestId", "transition", "expectedGeneration", "expectedRecordDigest", "evidenceId", "authorizationEnvelope", "policyAttestation", "rolloutReceiptId"],
-  "recovery-finalize": ["schemaVersion", "operation", "requestId", "expectedGeneration", "expectedRecordDigest", "evidenceId"],
+  "recovery-transition": ["schemaVersion", "operation", "requestId", "recoveryCaseId", "transition", "expectedGeneration", "expectedRecordDigest", "evidenceId", "authorizationEnvelope", "policyAttestation", "rolloutReceiptId"],
+  "recovery-finalize": ["schemaVersion", "operation", "requestId", "recoveryCaseId", "expectedGeneration", "expectedRecordDigest", "evidenceId"],
+  "recovery-operation-replay": ["schemaVersion", "operation", "requestId", "recoveryCaseId", "expectedGeneration", "expectedRecordDigest", "operationId"],
   "readiness": ["schemaVersion", "operation", "requestId"],
 });
 
@@ -52,7 +60,8 @@ function validateRequest(request) {
     throw new Error("expectedGeneration must be a non-negative safe integer.");
   }
   for (const key of ["expectedRecordDigest"]) if (request[key] !== undefined) assertSha256(request[key], key);
-  for (const key of ["migrationManifestId", "authorizationContextId", "transition", "evidenceId", "rolloutReceiptId"]) {
+  if (request.operation === "recovery-operation-replay") assertSha256(request.operationId, "operationId");
+  for (const key of ["migrationManifestId", "authorizationContextId", "recoveryCaseId", "transition", "evidenceId", "rolloutReceiptId"]) {
     if (request[key] !== undefined && (!SAFE_ID.test(request[key]) || typeof request[key] !== "string")) {
       throw new Error(key + " must be an opaque fixed-format identifier.");
     }
@@ -201,27 +210,84 @@ export function createProductionOperationBroker({
         const policyAttestation = request.policyAttestation;
         const result = await authority.applyTransition({
           transition: request.transition,
+          recoveryCaseId: request.recoveryCaseId,
           expectedGeneration: request.expectedGeneration,
           expectedRecordDigest: request.expectedRecordDigest,
           evidence,
+          operationEvidenceId: request.evidenceId,
           envelope,
           policyAttestation,
           rolloutReceipt,
         });
         const executionStep = RECOVERY_EXECUTION_STEPS[request.transition];
         if (executionStep) {
-          await executeFixedOperation(executionStep, {
+          if (result.record.operationIntent?.operationType !== executionStep
+            || !RECOVERY_OPERATION_REPLAY_POLICIES[result.record.operationIntent?.operationType]
+            || typeof authority.executePendingOperation !== "function") {
+            throw new Error("Committed recovery operation intent does not match the fixed host operation or receipt executor.");
+          }
+          const completion = await authority.executePendingOperation({
             recoveryCaseId: result.record.recoveryCaseId,
             generation: result.record.generation,
             recordDigest: result.record.recordDigest,
+            operationId: result.record.operationIntent.operationId,
+          }, ({ record, intent }) => executeFixedOperation(intent.operationType, {
+            operationId: intent.operationId,
+            idempotencyKey: intent.operationId,
+            operationInputDigest: intent.operationInputDigest,
+            replayPolicy: RECOVERY_OPERATION_REPLAY_POLICIES[intent.operationType],
+            recoveryCaseId: record.recoveryCaseId,
+            generation: record.generation,
+            recordDigest: record.recordDigest,
+            immutableRollbackArtifact: record.immutableRollbackArtifact,
+            logicalProductionDbIdentityDigest: record.logicalProductionDbIdentityDigest,
             evidenceId: request.evidenceId,
-          });
+            evidence,
+          }));
+          result.operationReceipt = completion.receipt;
         }
         return result;
+      }
+      if (request.operation === "recovery-operation-replay") {
+        if (typeof authority.readPendingOperation !== "function" || typeof authority.executePendingOperation !== "function") {
+          throw new Error("Recovery authority does not support durable operation replay receipts.");
+        }
+        const pending = await authority.readPendingOperation();
+        if (!pending || pending.record.recoveryCaseId !== request.recoveryCaseId
+          || pending.record.generation !== request.expectedGeneration || pending.record.recordDigest !== request.expectedRecordDigest
+          || pending.intent.operationId !== request.operationId) {
+          throw new Error("Operation replay request does not match the exact pending journal generation and operation ID.");
+        }
+        if (pending.receipt) return { ok: true, record: pending.record, operationReceipt: pending.receipt, replayed: false };
+        const evidence = pending.operationEvidenceId ? await loadEvidenceById(pending.operationEvidenceId) : null;
+        if (!evidence || canonicalDigest(evidence) !== pending.record.sourceEvidenceDigest) {
+          throw new Error("Operation replay cannot load the exact evidence bound to the committed intent.");
+        }
+        const completion = await authority.executePendingOperation({
+          recoveryCaseId: pending.record.recoveryCaseId,
+          generation: pending.record.generation,
+          recordDigest: pending.record.recordDigest,
+          operationId: pending.intent.operationId,
+        }, ({ record, intent }) => executeFixedOperation(intent.operationType, {
+          operationId: intent.operationId,
+          idempotencyKey: intent.operationId,
+          operationInputDigest: intent.operationInputDigest,
+          replayPolicy: RECOVERY_OPERATION_REPLAY_POLICIES[intent.operationType],
+          recoveryCaseId: record.recoveryCaseId,
+          generation: record.generation,
+          recordDigest: record.recordDigest,
+          immutableRollbackArtifact: record.immutableRollbackArtifact,
+          logicalProductionDbIdentityDigest: record.logicalProductionDbIdentityDigest,
+          evidenceId: pending.operationEvidenceId,
+          evidence,
+          idempotentReplay: true,
+        }));
+        return { ok: true, record: pending.record, operationReceipt: completion.receipt, replayed: completion.executed };
       }
       if (request.operation === "recovery-finalize") {
         const evidence = await loadEvidenceById(request.evidenceId);
         return authority.finalizeRecovery({
+          recoveryCaseId: request.recoveryCaseId,
           expectedGeneration: request.expectedGeneration,
           expectedRecordDigest: request.expectedRecordDigest,
           evidence,

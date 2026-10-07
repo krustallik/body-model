@@ -10,6 +10,13 @@ export interface RecoveryFlowFixtureOptions {
   restoredSchemaDigest?: string | null;
   migrationHistoryDigest?: string | null;
   afterRestoreBegins?: (boundary: { logicalDatabaseIdentityDigest: string; authorityState: { state: string } }) => void | Promise<void>;
+  beforeRestoreVerified?: (boundary: RecoveryFlowBoundary) => Promise<{
+    schemaCompatible: boolean;
+    readOnly: boolean;
+    logicalProductionDbIdentityDigest: string;
+    actualSchemaDigest: string;
+    actualMigrationHistoryDigest: string;
+  }>;
   afterRestoreVerified?: (boundary: RecoveryFlowBoundary) => void | Promise<void>;
 }
 

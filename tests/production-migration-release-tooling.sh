@@ -122,6 +122,10 @@ export FAKE_GIT_LOG="$TMP/recovery-git.log"
 cp "$ROOT/scripts/deploy.sh" "$RECOVERY_ROOT/scripts/deploy.sh"
 cp "$ROOT/scripts/deploy-migrate.sh" "$RECOVERY_ROOT/scripts/deploy-migrate.sh"
 cp "$ROOT/scripts/production-release-marker.sh" "$RECOVERY_ROOT/scripts/production-release-marker.sh"
+# Redirect only the disposable script copy to a temp host-client path. The real
+# production entrypoint remains pinned to /usr/local/bin.
+sed -i "s|/usr/local/bin/bodycast-production-operation|$RECOVERY_BIN/bodycast-production-operation|g" \
+  "$RECOVERY_ROOT/scripts/deploy-migrate.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$RECOVERY_ROOT/scripts/deploy-preflight-schema.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$RECOVERY_ROOT/scripts/production-traffic-cutover.sh"
 printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "{}\\n"\n' > "$RECOVERY_ROOT/scripts/production-db-target.sh"
@@ -211,33 +215,60 @@ run_fixture_deploy "$OLD_RELEASE_SHA"
 grep -Fq 'compose -f docker-compose.prod.yml config --quiet' "$RECOVERY_DOCKER_LOG"
 test ! -e "$RECOVERY_GIT_DIR/bodycast-production-schema-cutover"
 
-# Run the actual migrator script through its final guard, then make the nonce
-# ledger invalid so it fails after writing `ddl-started` but before Prisma spawn.
-touch "$RECOVERY_GIT_DIR/bodycast-production-migration-attestation-nonces"
+# Migration must fail closed when authority is absent; caller-controlled env
+# cannot enable the old in-checkout migration implementation.
+AUTHORITY_LOG="$TMP/migration-authority.log"
 : > "$RECOVERY_DOCKER_LOG"
-if printf 'fixture-oidc-proof\n' | env PATH="$RECOVERY_BIN:$PATH" \
+if env PATH="$RECOVERY_BIN:$PATH" \
   RECOVERY_ROOT="$RECOVERY_ROOT" RECOVERY_GIT_DIR="$RECOVERY_GIT_DIR" \
   FAKE_DEPLOY_SHA="$NEW_RELEASE_SHA" REAL_GIT="$REAL_GIT" SOURCE_ROOT="$ROOT" \
   FAKE_DOCKER_LOG="$RECOVERY_DOCKER_LOG" FAKE_GIT_LOG="$TMP/recovery-git.log" \
+  FAKE_AUTHORITY_LOG="$AUTHORITY_LOG" BODYCAST_AUTHORITY_EXECUTION=1 \
   BODYCAST_MIGRATION_MANIFEST_ID=active-energy-unified-v2 RELEASE_SHA="$NEW_RELEASE_SHA" \
   BODYCAST_MIGRATION_CONTEXT_DIR="$RECOVERY_CONTEXT" APP_HOST=bodycast.example \
-  CADDY_ROUTES_PATH="$TMP/recovery-caddy" BODYCAST_EXECUTION_PROOF_HANDOFF=true \
+  CADDY_ROUTES_PATH="$TMP/recovery-caddy" \
   BODYCAST_AUTHORIZATION_WORKFLOW_ID=1 BODYCAST_AUTHORIZATION_RUN_ID=2 \
   BODYCAST_AUTHORIZATION_RUN_ATTEMPT=1 \
   bash "$RECOVERY_ROOT/scripts/deploy-migrate.sh" > "$TMP/recovery-migrate.log" 2>&1; then
-  echo "Expected the fixture migrator to stop at the deliberately invalid nonce ledger." >&2
+  echo "Expected production migration to fail closed without the host authority." >&2
   exit 1
-else
-  MIGRATION_STATUS=$?
 fi
-[[ "$MIGRATION_STATUS" -ne 0 ]]
-grep -Fq 'challenge-bound execution proof replay ledger is not a regular directory' "$TMP/recovery-migrate.log" || {
-  cat "$TMP/recovery-migrate.log" >&2
-  cat "$TMP/recovery-git.log" >&2
-  exit 1
-}
-grep -Fq 'state=ddl-started' "$RECOVERY_GIT_DIR/bodycast-production-schema-cutover"
-! grep -Eq 'compose .* run .* migrate$' "$RECOVERY_DOCKER_LOG"
+grep -Fq 'recovery-aware host authority is unavailable' "$TMP/recovery-migrate.log"
+test ! -s "$AUTHORITY_LOG"
+test ! -e "$RECOVERY_GIT_DIR/bodycast-production-schema-cutover"
+test ! -s "$RECOVERY_DOCKER_LOG"
+
+# With the fixed host client present the script sends only the typed operation.
+# The host broker owns readiness and invokes its immutable fixed adapter; this
+# release-side process has no internal bypass even when the old env flag is set.
+cat > "$RECOVERY_BIN/bodycast-production-operation" <<'COMMAND'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_AUTHORITY_LOG"
+COMMAND
+chmod +x "$RECOVERY_BIN/bodycast-production-operation"
+: > "$AUTHORITY_LOG"
+env PATH="$RECOVERY_BIN:$PATH" \
+  RECOVERY_ROOT="$RECOVERY_ROOT" RECOVERY_GIT_DIR="$RECOVERY_GIT_DIR" \
+  FAKE_DEPLOY_SHA="$NEW_RELEASE_SHA" REAL_GIT="$REAL_GIT" SOURCE_ROOT="$ROOT" \
+  FAKE_DOCKER_LOG="$RECOVERY_DOCKER_LOG" FAKE_GIT_LOG="$TMP/recovery-git.log" \
+  FAKE_AUTHORITY_LOG="$AUTHORITY_LOG" BODYCAST_AUTHORITY_EXECUTION=1 \
+  BODYCAST_MIGRATION_MANIFEST_ID=active-energy-unified-v2 RELEASE_SHA="$NEW_RELEASE_SHA" \
+  BODYCAST_MIGRATION_CONTEXT_DIR="$RECOVERY_CONTEXT" APP_HOST=bodycast.example \
+  CADDY_ROUTES_PATH="$TMP/recovery-caddy" \
+  BODYCAST_AUTHORIZATION_WORKFLOW_ID=1 BODYCAST_AUTHORIZATION_RUN_ID=2 \
+  BODYCAST_AUTHORIZATION_RUN_ATTEMPT=1 \
+  bash "$RECOVERY_ROOT/scripts/deploy-migrate.sh" > "$TMP/recovery-migrate.log" 2>&1
+grep -Fq "forward-migration --request-id migration-1-2-1-request --release-sha $NEW_RELEASE_SHA --canonical-main-sha $NEW_RELEASE_SHA --migration-manifest-id active-energy-unified-v2 --authorization-context-id migration-1-2-1" "$AUTHORITY_LOG"
+test ! -e "$RECOVERY_GIT_DIR/bodycast-production-schema-cutover"
+test ! -s "$RECOVERY_DOCKER_LOG"
+
+# An active marker blocks the old binary. The authority-mediated migration
+# readiness test covers the corresponding host-side block.
+(
+  cd "$RECOVERY_ROOT"
+  PATH="$RECOVERY_BIN:$PATH" RECOVERY_GIT_DIR="$RECOVERY_GIT_DIR" FAKE_GIT_LOG="$TMP/recovery-git.log" \
+    bash -c 'source scripts/production-release-marker.sh; write_bodycast_release_marker "$1" ddl-started' _ "$NEW_RELEASE_SHA"
+)
 run_fixture_deploy "$OLD_RELEASE_SHA"
 grep -Fq 'Deployment SHA/state does not match' "$TMP/recovery-deploy.log" || {
   cat "$TMP/recovery-deploy.log" >&2
@@ -246,26 +277,6 @@ grep -Fq 'Deployment SHA/state does not match' "$TMP/recovery-deploy.log" || {
   (cd "$RECOVERY_ROOT" && PATH="$RECOVERY_BIN:$PATH" RECOVERY_GIT_DIR="$RECOVERY_GIT_DIR" FAKE_GIT_LOG="$TMP/recovery-git.log" bash -c 'source scripts/production-release-marker.sh; printf "path=%s\n" "$BODYCAST_RELEASE_MARKER_PATH"; read_bodycast_release_marker; printf "state=%s sha=%s\n" "$BODYCAST_MARKER_STATE" "$BODYCAST_MARKER_RELEASE_SHA"') >&2
   exit 1
 }
-test ! -s "$RECOVERY_DOCKER_LOG"
-
-# The migration runner itself also refuses to reuse a marker after failure.
-: > "$RECOVERY_DOCKER_LOG"
-if env PATH="$RECOVERY_BIN:$PATH" RECOVERY_ROOT="$RECOVERY_ROOT" \
-  RECOVERY_GIT_DIR="$RECOVERY_GIT_DIR" FAKE_DEPLOY_SHA="$NEW_RELEASE_SHA" \
-  FAKE_DOCKER_LOG="$RECOVERY_DOCKER_LOG" FAKE_GIT_LOG="$TMP/recovery-git.log" \
-  BODYCAST_MIGRATION_MANIFEST_ID=active-energy-unified-v2 RELEASE_SHA="$NEW_RELEASE_SHA" \
-  BODYCAST_MIGRATION_CONTEXT_DIR="$RECOVERY_CONTEXT" APP_HOST=bodycast.example \
-  CADDY_ROUTES_PATH="$TMP/recovery-caddy" BODYCAST_EXECUTION_PROOF_HANDOFF=true \
-  BODYCAST_AUTHORIZATION_WORKFLOW_ID=1 BODYCAST_AUTHORIZATION_RUN_ID=2 \
-  BODYCAST_AUTHORIZATION_RUN_ATTEMPT=1 \
-  bash "$RECOVERY_ROOT/scripts/deploy-migrate.sh" > "$TMP/recovery-migrate-reuse.log" 2>&1; then
-  echo "Expected the migrator to refuse marker reuse." >&2
-  exit 1
-else
-  MIGRATION_REUSE_STATUS=$?
-fi
-[[ "$MIGRATION_REUSE_STATUS" -ne 0 ]]
-grep -Fq 'existing schema-cutover marker requires explicit recovery' "$TMP/recovery-migrate-reuse.log"
 test ! -s "$RECOVERY_DOCKER_LOG"
 
 # Only an explicit operator recovery step after verified restore removes the

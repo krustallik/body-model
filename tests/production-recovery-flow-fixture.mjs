@@ -40,6 +40,8 @@ function makePolicy(phase, workflowRunId, workflowPath, keyId, ownerKey, policyK
     reviewedConfigurationDigest: "b".repeat(64),
     singleUseRequestId: "policy-request-" + phase,
     singleUseNonce: "policy-nonce-" + phase,
+    challengeId: "challenge-phase-" + phase,
+    challengeDigest: (phase === "A" ? "a" : "b").repeat(64),
   };
   const approvalBody = {
     schemaVersion: 1,
@@ -88,6 +90,9 @@ function makeClaims(phase, attestation, policyRequest, bindings) {
       approvalTime: nowIso,
       runId: policyRequest.workflowRunId,
       runAttempt: policyRequest.workflowRunAttempt,
+      challengeId: attestation.challengeId,
+      challengeDigest: attestation.challengeDigest,
+      singleUseNonce: attestation.singleUseNonce,
     };
     else if (key === "capabilitySet") claims[key] = [...PHASE_B_CAPABILITIES];
     else if (key === "priorMarkerSchemaVersion") claims[key] = 2;
@@ -109,6 +114,8 @@ function makeClaims(phase, attestation, policyRequest, bindings) {
     else if (key.endsWith("PolicyReviewedAt")) claims[key] = attestation.reviewedAt;
     else if (key.endsWith("PolicyExpiresAt")) claims[key] = attestation.expiresAt;
     else if (key.endsWith("PolicyAttestationNonce")) claims[key] = attestation.singleUseNonce;
+    else if (key.endsWith("PolicyChallengeId")) claims[key] = attestation.challengeId;
+    else if (key.endsWith("PolicyChallengeDigest")) claims[key] = attestation.challengeDigest;
     else if (key.endsWith("PolicyVersion")) claims[key] = attestation.policyVersion;
     else if (key.endsWith("PolicyAttestationDigest")) claims[key] = canonicalDigest(attestation);
     else if (key === "issuedAt" || key === "backupSnapshotTimestamp" || key === "observedAt"
@@ -125,6 +132,7 @@ function makeClaims(phase, attestation, policyRequest, bindings) {
 function nextRequest(authority, transition, evidence, extra = {}) {
   return authority.readAuthoritativeState().then((state) => ({
     transition,
+    recoveryCaseId: state.recoveryCaseId ?? "recovery-case-001",
     expectedGeneration: state.generation,
     expectedRecordDigest: state.recordDigest,
     evidence,
@@ -137,6 +145,13 @@ export async function runProductionRecoveryFlowFixture({
   restoredSchemaDigest = null,
   migrationHistoryDigest = null,
   afterRestoreBegins = async () => {},
+  beforeRestoreVerified = async ({ expectedSchemaDigest, expectedMigrationHistoryDigest, logicalDatabaseIdentityDigest }) => ({
+    schemaCompatible: true,
+    readOnly: true,
+    logicalProductionDbIdentityDigest: logicalDatabaseIdentityDigest,
+    actualSchemaDigest: expectedSchemaDigest,
+    actualMigrationHistoryDigest: expectedMigrationHistoryDigest,
+  }),
   afterRestoreVerified = async () => {},
 } = {}) {
     const root = await tempRoot();
@@ -242,6 +257,15 @@ export async function runProductionRecoveryFlowFixture({
         if (transition === "verify-restore" && supplied.actualRestoredLogicalDbIdentityDigest !== databaseIdentityDigest) {
           throw new Error("Restore evidence changes the logical database identity.");
         }
+        if (transition === "verify-restore") {
+          const proof = supplied.compatibilityProof;
+          if (!proof?.schemaCompatible || proof.readOnly !== true
+            || proof.logicalProductionDbIdentityDigest !== databaseIdentityDigest
+            || proof.actualSchemaDigest !== expectedRestoredSchemaDigest
+            || proof.actualMigrationHistoryDigest !== expectedMigrationHistoryDigest) {
+            throw new Error("Restore verification requires a matching read-only identity, schema, and migration-history proof.");
+          }
+        }
         return true;
       },
       verifyRolloutReceipt: async (receipt, sourceEvidence) => {
@@ -256,6 +280,17 @@ export async function runProductionRecoveryFlowFixture({
       syncDirectory: syncFixtureDirectory,
       now: () => fixedNow,
     });
+
+    const applyFixtureTransition = async (request) => {
+      const result = await authority.applyTransition({ recoveryCaseId: "recovery-case-001", ...request });
+      if (result.record.operationIntent) await authority.executePendingOperation({
+        recoveryCaseId: result.record.recoveryCaseId,
+        generation: result.record.generation,
+        recordDigest: result.record.recordDigest,
+        operationId: result.record.operationIntent.operationId,
+      }, async ({ intent }) => ({ ok: true, fixtureOperationId: intent.operationId }));
+      return result;
+    };
 
     const boot = await authority.bootstrapFailedRelease({ failedState: "ddl-started", evidence: bootEvidence, rolloutReceipt: rollout.receipt });
     expect(boot.record.generation).toBe(1);
@@ -304,32 +339,39 @@ export async function runProductionRecoveryFlowFixture({
       recoveryCaseId: "recovery-case-001",
       markerReaderRolloutReceiptDigest: verifiedRolloutDigest,
     });
-    await expect(authority.applyTransition(await nextRequest(authority, "authorize-restore", authorizeEvidence, {
+    await expect(applyFixtureTransition(await nextRequest(authority, "authorize-restore", authorizeEvidence, {
       envelope: badPhaseAEnvelope, policyAttestation: phaseAPolicy, rolloutReceipt: rollout.receipt,
     }))).rejects.toThrow(/priorMarkerDigest/);
     expect((await authority.readAuthoritativeState()).generation).toBe(1);
 
-    const phaseARecord = await authority.applyTransition(await nextRequest(authority, "authorize-restore", authorizeEvidence, {
+    const phaseARecord = await applyFixtureTransition(await nextRequest(authority, "authorize-restore", authorizeEvidence, {
       envelope: phaseAEnvelope, policyAttestation: phaseAPolicy, rolloutReceipt: rollout.receipt,
     }));
     expect(phaseARecord.record.nextState).toBe("restore-authorized");
     expect(phaseARecord.record.nonceConsumption.items).toHaveLength(2);
     const restoreInProgressEvidence = evidence("begin-restore", { recoveryCaseId: "recovery-case-001" });
-    const restoreInProgress = await authority.applyTransition(await nextRequest(authority, "begin-restore", restoreInProgressEvidence));
+    const restoreInProgress = await applyFixtureTransition(await nextRequest(authority, "begin-restore", restoreInProgressEvidence));
     expect(restoreInProgress.record.nextState).toBe("restore-in-progress");
     await afterRestoreBegins({
       logicalDatabaseIdentityDigest: databaseIdentityDigest,
+      authorityState: await authority.readAuthoritativeState(),
+    });
+    const compatibilityProof = await beforeRestoreVerified({
+      logicalDatabaseIdentityDigest: databaseIdentityDigest,
+      expectedSchemaDigest: expectedRestoredSchemaDigest,
+      expectedMigrationHistoryDigest,
       authorityState: await authority.readAuthoritativeState(),
     });
     const restoreVerifiedEvidence = evidence("verify-restore", {
       recoveryCaseId: "recovery-case-001",
       actualRestoredLogicalDbIdentityDigest: databaseIdentityDigest,
       expectedRestoredSchemaDigest,
-      actualRestoredSchemaDigest: expectedRestoredSchemaDigest,
+      actualRestoredSchemaDigest: compatibilityProof.actualSchemaDigest,
       expectedMigrationHistoryDigest,
-      actualMigrationHistoryDigest: expectedMigrationHistoryDigest,
+      actualMigrationHistoryDigest: compatibilityProof.actualMigrationHistoryDigest,
+      compatibilityProof,
     });
-    const restoreVerified = await authority.applyTransition(await nextRequest(authority, "verify-restore", restoreVerifiedEvidence));
+    const restoreVerified = await applyFixtureTransition(await nextRequest(authority, "verify-restore", restoreVerifiedEvidence));
     expect(restoreVerified.record.nextState).toBe("restore-verified");
     await afterRestoreVerified({
       logicalDatabaseIdentityDigest: databaseIdentityDigest,
@@ -386,7 +428,7 @@ export async function runProductionRecoveryFlowFixture({
       recoveryCaseId: "recovery-case-001",
       markerReaderRolloutReceiptDigest: verifiedRolloutDigest,
     });
-    const recoveryAuthorized = await authority.applyTransition(await nextRequest(authority, "authorize-recovery", recoveryAuthorizationEvidence, {
+    const recoveryAuthorized = await applyFixtureTransition(await nextRequest(authority, "authorize-recovery", recoveryAuthorizationEvidence, {
       envelope: phaseBEnvelope, policyAttestation: phaseBPolicy, rolloutReceipt: rollout.receipt,
     }));
     expect(recoveryAuthorized.record.nextState).toBe("recovery-authorized");
@@ -400,18 +442,18 @@ export async function runProductionRecoveryFlowFixture({
       readOnlySchemaCompatibilityDigest: "a1".repeat(32),
       publicRoute: false,
     });
-    const rollbackReady = await authority.applyTransition(await nextRequest(authority, "mark-rollback-app-ready", rollbackReadyEvidence));
+    const rollbackReady = await applyFixtureTransition(await nextRequest(authority, "mark-rollback-app-ready", rollbackReadyEvidence));
     const writerEvidence = evidence("enable-writers", {
       rollbackImageDigest: artifact.rollbackImageDigest,
       readOnlyAppStopped: true,
       writerDrainDigest: "b1".repeat(32),
       existingWriterRole: true,
     });
-    const writersEnabled = await authority.applyTransition(await nextRequest(authority, "enable-writers", writerEvidence));
+    const writersEnabled = await applyFixtureTransition(await nextRequest(authority, "enable-writers", writerEvidence));
     const completeEvidence = evidence("complete-recovery", { appHealth: "healthy", integrityDigest: "c1".repeat(32) });
-    const recoveryComplete = await authority.applyTransition(await nextRequest(authority, "complete-recovery", completeEvidence));
+    const recoveryComplete = await applyFixtureTransition(await nextRequest(authority, "complete-recovery", completeEvidence));
     const trafficEvidence = evidence("open-traffic", { trafficTarget: "bodycast-app-prod", topologyDigest: "6".repeat(64) });
-    const trafficOpen = await authority.applyTransition(await nextRequest(authority, "open-traffic", trafficEvidence));
+    const trafficOpen = await applyFixtureTransition(await nextRequest(authority, "open-traffic", trafficEvidence));
     expect([rollbackReady.record.nextState, writersEnabled.record.nextState, recoveryComplete.record.nextState, trafficOpen.record.nextState])
       .toEqual(["rollback-app-ready", "writers-enabled", "recovery-complete", "traffic-open"]);
 

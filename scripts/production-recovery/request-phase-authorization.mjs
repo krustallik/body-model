@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { canonicalJson } from "./canonical.mjs";
@@ -7,19 +6,25 @@ import { canonicalJson } from "./canonical.mjs";
 const SIGNER_AUDIENCE = "bodycast-production-recovery-policy";
 const ISSUER_AUDIENCE = "bodycast-production-recovery-authorization";
 const MAX_RESPONSE_BYTES = 256 * 1024;
+const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 function parseArguments(argv) {
   const values = {};
   for (let index = 0; index < argv.length; index += 1) {
     const key = argv[index];
-    if (!new Set(["--phase", "--recovery-case-id", "--output"]).has(key)
-      || values[key] !== undefined || index + 1 >= argv.length) throw new Error("Only --phase, --recovery-case-id, and --output are accepted.");
+    if (!new Set(["--phase", "--recovery-case-id", "--mode", "--challenge-id", "--challenge-digest", "--output"]).has(key)
+      || values[key] !== undefined || index + 1 >= argv.length) throw new Error("Only fixed phase challenge/authorization arguments are accepted.");
     values[key] = argv[++index];
   }
   if (!values["--phase"] || !["A", "B"].includes(values["--phase"])) throw new Error("Recovery phase must be A or B.");
-  const caseId = values["--recovery-case-id"];
-  if (!caseId || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(caseId)) throw new Error("Recovery case ID is not a valid opaque selector.");
-  return { phase: values["--phase"], recoveryCaseId: caseId, output: values["--output"] };
+  if (!values["--mode"] || !["challenge", "authorize"].includes(values["--mode"])) throw new Error("Mode must be challenge or authorize.");
+  if (!ID_PATTERN.test(values["--recovery-case-id"] ?? "")) throw new Error("Recovery case ID is invalid.");
+  if (values["--mode"] === "authorize" && (!ID_PATTERN.test(values["--challenge-id"] ?? "")
+    || !/^[a-f0-9]{64}$/.test(values["--challenge-digest"] ?? ""))) throw new Error("Authorization requires the exact published challenge ID and digest.");
+  return {
+    phase: values["--phase"], recoveryCaseId: values["--recovery-case-id"], mode: values["--mode"],
+    challengeId: values["--challenge-id"], challengeDigest: values["--challenge-digest"], output: values["--output"],
+  };
 }
 
 function endpoint(value, label) {
@@ -38,8 +43,7 @@ async function getOidcToken(env, audience, fetchImpl) {
   url.searchParams.set("audience", audience);
   const response = await fetchImpl(url, {
     headers: { authorization: "Bearer " + env.ACTIONS_ID_TOKEN_REQUEST_TOKEN, accept: "application/json" },
-    redirect: "error",
-    signal: AbortSignal.timeout(10_000),
+    redirect: "error", signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) throw new Error("GitHub Actions OIDC token request failed with status " + response.status + ".");
   const result = await response.json();
@@ -51,11 +55,8 @@ async function getOidcToken(env, audience, fetchImpl) {
 
 async function postJson(url, payload, fetchImpl) {
   const response = await fetchImpl(url, {
-    method: "POST",
-    headers: { "content-type": "application/json", accept: "application/json" },
-    body: canonicalJson(payload),
-    redirect: "error",
-    signal: AbortSignal.timeout(15_000),
+    method: "POST", headers: { "content-type": "application/json", accept: "application/json" },
+    body: canonicalJson(payload), redirect: "error", signal: AbortSignal.timeout(15_000),
   });
   const text = await response.text();
   if (Buffer.byteLength(text, "utf8") > MAX_RESPONSE_BYTES) throw new Error("Recovery signer response exceeds the protocol limit.");
@@ -66,24 +67,48 @@ async function postJson(url, payload, fetchImpl) {
   return result;
 }
 
-export async function requestPhaseAuthorization({ phase, recoveryCaseId, env = process.env, fetchImpl = fetch, createNonce = randomUUID }) {
-  if (phase !== "A" && phase !== "B") throw new Error("Recovery phase must be A or B.");
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(recoveryCaseId)) throw new Error("Recovery case ID is invalid.");
+export async function requestPhaseChallenge({ phase, recoveryCaseId, env = process.env, fetchImpl = fetch }) {
+  if (phase !== "A" && phase !== "B" || !ID_PATTERN.test(recoveryCaseId ?? "")) throw new Error("Recovery phase or case ID is invalid.");
   const policyUrl = endpoint(env.BODYCAST_RECOVERY_POLICY_SIGNER_URL, "Policy signer");
+  policyUrl.pathname = "/v1/phase-challenges";
+  policyUrl.search = "";
+  const oidcToken = await getOidcToken(env, SIGNER_AUDIENCE, fetchImpl);
+  const response = await postJson(policyUrl, {
+    schemaVersion: 1, purpose: "create-recovery-phase-challenge", oidcToken, recoveryCaseId, phase,
+  }, fetchImpl);
+  if (!response.challenge || !ID_PATTERN.test(response.challenge.challengeId ?? "")
+    || !/^[a-f0-9]{64}$/.test(response.challengeDigest ?? "")
+    || response.challenge.phase !== phase || response.challenge.recoveryCaseId !== recoveryCaseId) {
+    throw new Error("Policy signer returned an incomplete or cross-bound challenge.");
+  }
+  return response;
+}
+
+export async function requestPhaseAuthorization({
+  phase, recoveryCaseId, challengeId, challengeDigest, env = process.env, fetchImpl = fetch,
+}) {
+  if (phase !== "A" && phase !== "B" || !ID_PATTERN.test(recoveryCaseId ?? "") || !ID_PATTERN.test(challengeId ?? "")
+    || !/^[a-f0-9]{64}$/.test(challengeDigest ?? "")) throw new Error("Recovery authorization requires a valid case and published challenge.");
+  const policyUrl = endpoint(env.BODYCAST_RECOVERY_POLICY_SIGNER_URL, "Policy signer");
+  policyUrl.pathname = "/v1/policy-attestations";
+  policyUrl.search = "";
   const issuerUrl = endpoint(env.BODYCAST_RECOVERY_AUTHORIZATION_ISSUER_URL, "Authorization issuer");
+  issuerUrl.pathname = "/v1/phase-authorizations";
+  issuerUrl.search = "";
   const policyOidc = await getOidcToken(env, SIGNER_AUDIENCE, fetchImpl);
-  const requestId = "policy-request-" + createNonce();
   const policyResponse = await postJson(policyUrl, {
     schemaVersion: 1,
     purpose: "request-recovery-environment-policy",
     oidcToken: policyOidc,
     recoveryCaseId,
     phase,
-    singleUseRequestId: requestId,
-    singleUseNonce: createNonce().replaceAll("-", ""),
+    challengeId,
+    challengeDigest,
   }, fetchImpl);
-  if (!policyResponse.policyAttestation) throw new Error("Policy signer response omitted the attestation.");
-
+  const policyAttestation = policyResponse.policyAttestation;
+  if (!policyAttestation || policyAttestation.challengeId !== challengeId || policyAttestation.challengeDigest !== challengeDigest) {
+    throw new Error("Policy signer did not attest the exact previously published challenge.");
+  }
   const authorizationOidc = await getOidcToken(env, ISSUER_AUDIENCE, fetchImpl);
   const authorizationResponse = await postJson(issuerUrl, {
     schemaVersion: 1,
@@ -91,16 +116,20 @@ export async function requestPhaseAuthorization({ phase, recoveryCaseId, env = p
     oidcToken: authorizationOidc,
     recoveryCaseId,
     phase,
-    policyAttestation: policyResponse.policyAttestation,
+    challengeId,
+    challengeDigest,
+    policyAttestation,
   }, fetchImpl);
   if (authorizationResponse.phase !== phase || authorizationResponse.recoveryCaseId !== recoveryCaseId
     || !authorizationResponse.envelope || !authorizationResponse.policyAttestation
     || authorizationResponse.authorizationId !== authorizationResponse.envelope.claims?.authorizationId
-    || canonicalJson(authorizationResponse.policyAttestation) !== canonicalJson(policyResponse.policyAttestation)) {
-    throw new Error("Authorization issuer response is incomplete or cross-bound to another phase/case.");
+    || authorizationResponse.policyAttestation.challengeId !== challengeId
+    || authorizationResponse.policyAttestation.challengeDigest !== challengeDigest
+    || canonicalJson(authorizationResponse.policyAttestation) !== canonicalJson(policyAttestation)) {
+    throw new Error("Authorization issuer response is incomplete or cross-bound to another phase/case/challenge.");
   }
   for (const key of ["evidenceId", "rolloutReceiptId"]) {
-    if (typeof authorizationResponse[key] !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(authorizationResponse[key])) {
+    if (typeof authorizationResponse[key] !== "string" || !ID_PATTERN.test(authorizationResponse[key])) {
       throw new Error("Authorization issuer omitted a valid host evidence identifier: " + key + ".");
     }
   }
@@ -110,8 +139,10 @@ export async function requestPhaseAuthorization({ phase, recoveryCaseId, env = p
 async function main() {
   try {
     const args = parseArguments(process.argv.slice(2));
-    const bundle = await requestPhaseAuthorization(args);
-    const text = canonicalJson(bundle) + "\n";
+    const result = args.mode === "challenge"
+      ? await requestPhaseChallenge(args)
+      : await requestPhaseAuthorization(args);
+    const text = canonicalJson(result) + "\n";
     if (args.output) {
       if (!pathIsRunnerTemp(args.output, process.env.RUNNER_TEMP)) throw new Error("Output must be inside RUNNER_TEMP.");
       await fs.writeFile(args.output, text, { flag: "wx", mode: 0o600 });

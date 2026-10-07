@@ -44,6 +44,8 @@ async function makePolicyFixture(phase) {
     reviewedConfigurationDigest: digest,
     singleUseRequestId: "approval-request-" + phase,
     singleUseNonce: "policy-nonce-" + phase,
+    challengeId: "challenge-phase-" + phase,
+    challengeDigest: (phase === "A" ? "a" : "b").repeat(64),
   };
   const ownerApprovalBody = {
     schemaVersion: 1,
@@ -97,11 +99,16 @@ function claimsFor(phase, attestation, policyRequest) {
       approvalTime: time,
       runId: policyRequest.workflowRunId,
       runAttempt: policyRequest.workflowRunAttempt,
+      challengeId: policyRequest.challengeId,
+      challengeDigest: policyRequest.challengeDigest,
+      singleUseNonce: policyRequest.singleUseNonce,
     };
     else if (key === "capabilitySet") claims[key] = [...PHASE_B_CAPABILITIES];
     else if (key === "phaseAPolicyExpiresAt" || key === "phaseBPolicyExpiresAt") claims[key] = attestation.expiresAt;
     else if (key === "phaseAPolicyReviewedAt" || key === "phaseBPolicyReviewedAt") claims[key] = attestation.reviewedAt;
     else if (key === "phaseAPolicyAttestationNonce" || key === "phaseBPolicyAttestationNonce") claims[key] = attestation.singleUseNonce;
+    else if (key === "phaseAPolicyChallengeId" || key === "phaseBPolicyChallengeId") claims[key] = attestation.challengeId;
+    else if (key === "phaseAPolicyChallengeDigest" || key === "phaseBPolicyChallengeDigest") claims[key] = attestation.challengeDigest;
     else if (key === "phaseAPolicyVersion" || key === "phaseBPolicyVersion") claims[key] = attestation.policyVersion;
     else if (key === "phaseAPolicyAttestationDigest" || key === "phaseBPolicyAttestationDigest") claims[key] = canonicalDigest(attestation);
     else if (key === "priorJournalGeneration") claims[key] = 4;
@@ -137,6 +144,7 @@ describe("production recovery authorization", () => {
       "schemaVersion", "purpose", "capability", "repository", "workflowPath", "workflowId", "workflowRunId",
       "workflowRunAttempt", "workflowRef", "canonicalMainSha", "recoveryEnvironment", "ownerApproval",
       "phaseAPolicyAttestationDigest", "phaseAPolicyAttestationNonce", "phaseAPolicyReviewedAt",
+      "phaseAPolicyChallengeId", "phaseAPolicyChallengeDigest",
       "phaseAPolicyExpiresAt", "phaseAPolicyVersion", "hostRecoveryAuthorityIdentity", "hostRecoveryAuthorityKeyId",
       "issuedAt", "expiresAt", "authorizationId", "nonce",
     ]);
@@ -162,9 +170,10 @@ describe("production recovery authorization", () => {
         expiresAt: expiry, phaseAAuthorizationEvidenceId: "phase-a-evidence", markerReaderRolloutReceiptId: "rollout-1",
       }),
       loadPhaseFacts: async () => facts,
-      loadAuthenticatedOwnerApproval: async () => ({
+      loadAuthenticatedOwnerApproval: async ({ policy }) => ({
         reviewerGithubUserId: "12345", reviewerLogin: "owner-reviewer", approvalId: fixture.ownerApproval.approvalId,
         approvalTimestamp: time,
+        challengeId: policy.challengeId, challengeDigest: policy.challengeDigest, singleUseNonce: policy.singleUseNonce,
       }),
       verifyAuthenticatedOwnerApproval: async ({ approval }) => approval.reviewerGithubUserId === "12345",
       policyPublicKeys: { "policy-key": fixture.policy.publicKey },
@@ -182,6 +191,8 @@ describe("production recovery authorization", () => {
       oidcToken: "verified-oidc",
       recoveryCaseId: fixture.policyRequest.recoveryCaseId,
       phase: "A",
+      challengeId: fixture.attestation.challengeId,
+      challengeDigest: fixture.attestation.challengeDigest,
       policyAttestation: fixture.attestation,
     });
     const verified = verifyAuthorizationEnvelope(issued.envelope, {
@@ -198,11 +209,13 @@ describe("production recovery authorization", () => {
     await expect(issuer.issue({
       schemaVersion: 1, purpose: "issue-recovery-phase-authorization", oidcToken: "caller-claims",
       recoveryCaseId: fixture.policyRequest.recoveryCaseId, phase: "A", policyAttestation: fixture.attestation,
+      challengeId: fixture.attestation.challengeId, challengeDigest: fixture.attestation.challengeDigest,
       claims: allClaims,
     })).rejects.toThrow(/closed schema/);
     await expect(issuer.issue({
       schemaVersion: 1, purpose: "issue-recovery-phase-authorization", oidcToken: "invalid",
       recoveryCaseId: fixture.policyRequest.recoveryCaseId, phase: "A", policyAttestation: fixture.attestation,
+      challengeId: fixture.attestation.challengeId, challengeDigest: fixture.attestation.challengeDigest,
     })).rejects.toThrow(/protected recovery phase/);
   });
 

@@ -3,14 +3,15 @@ import { createHash, generateKeyPairSync } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { canonicalDigest, signCanonical, verifyCanonical } from "../scripts/production-recovery/canonical.mjs";
+import { canonicalDigest, canonicalJson, signCanonical, verifyCanonical } from "../scripts/production-recovery/canonical.mjs";
 import { createProductionOperationBroker, validateProductionOperationRequest } from "../scripts/production-recovery/operation-broker.mjs";
 import { parseOperationArguments } from "../scripts/production-recovery/host-operation-client.mjs";
 import { createReaderRolloutReceipt, createReaderRolloutVerifier, REQUIRED_READER_ROLLOUT_FIXTURES } from "../scripts/production-recovery/rollout.mjs";
 import { writeImmutableReceipt } from "../scripts/production-recovery/journal.mjs";
 import {
   compareAuthorityVersions,
-  installVerifiedAuthorityPackage,
+  installAuthorityPackageFixture,
+  installAuthorityPackageFromRaw,
   verifyAuthorityInstallArtifact,
   verifyAuthorityInstallationReceipt,
   verifyInstalledAuthorityPackage,
@@ -63,7 +64,7 @@ describe("production recovery install, rollout, and operation boundaries", () =>
       "--canonical-main-sha", "b".repeat(40), "--command", "docker"])).toThrow(/argument set/);
     const envelope = { claims: { purpose: "recovery Phase A restore-only" }, signature: "signature" };
     const parsed = parseOperationArguments([
-      "recovery-transition", "--request-id", "phase-a", "--transition", "authorize-restore",
+      "recovery-transition", "--request-id", "phase-a", "--recovery-case-id", "case-1", "--transition", "authorize-restore",
       "--expected-generation", "1", "--expected-record-digest", "a".repeat(64), "--evidence-id", "evidence-1",
       "--authorization-envelope-b64", Buffer.from(JSON.stringify(envelope)).toString("base64"),
       "--policy-attestation-b64", Buffer.from("null").toString("base64"), "--rollout-receipt-id", "receipt-1",
@@ -71,7 +72,7 @@ describe("production recovery install, rollout, and operation boundaries", () =>
     expect(parsed.authorizationEnvelope).toEqual(envelope);
     expect(parsed.policyAttestation).toBeNull();
     expect(() => parseOperationArguments([
-      "recovery-transition", "--request-id", "phase-a", "--transition", "authorize-restore",
+      "recovery-transition", "--request-id", "phase-a", "--recovery-case-id", "case-1", "--transition", "authorize-restore",
       "--expected-generation", "1", "--expected-record-digest", "a".repeat(64), "--evidence-id", "evidence-1",
       "--authorization-envelope-b64", Buffer.from('{"z":1,"a":2}').toString("base64"),
       "--policy-attestation-b64", Buffer.from("null").toString("base64"), "--rollout-receipt-id", "receipt-1",
@@ -139,7 +140,7 @@ describe("production recovery install, rollout, and operation boundaries", () =>
       executeFixedOperation: async () => { throw new Error("not used"); },
     });
     const request = {
-      schemaVersion: 1, operation: "recovery-transition", requestId: "restore-1", transition: "authorize-restore",
+      schemaVersion: 1, operation: "recovery-transition", requestId: "restore-1", recoveryCaseId: "case-1", transition: "authorize-restore",
       expectedGeneration: 1, expectedRecordDigest: "b".repeat(64), evidenceId: "evidence-1",
       authorizationEnvelope: { id: "envelope-1" }, policyAttestation: { id: "policy-1" }, rolloutReceiptId: "receipt-1",
     };
@@ -159,9 +160,21 @@ describe("production recovery install, rollout, and operation boundaries", () =>
     const broker = createProductionOperationBroker({
       authority: {
         readAuthoritativeState: async () => ({ blocking: true, activeRecovery: true }),
-        applyTransition: async () => ({ record: {
-          recoveryCaseId: "case-1", generation: 3, recordDigest: "f".repeat(64), nextState: "restore-in-progress",
+        applyTransition: async (request) => ({ record: {
+          recoveryCaseId: request.recoveryCaseId, generation: 3, recordDigest: "f".repeat(64), nextState: "restore-in-progress",
+          immutableRollbackArtifact: { rollbackArtifactId: "fixture-rollback-artifact" }, logicalProductionDbIdentityDigest: "c".repeat(64),
+          operationIntent: { operationId: "a".repeat(64), operationInputDigest: "b".repeat(64), operationType: "recovery-restore-in-place" },
         } }),
+        executePendingOperation: async (request, execute) => {
+          const outcome = await execute({
+            record: { recoveryCaseId: request.recoveryCaseId, generation: request.generation,
+              recordDigest: request.recordDigest, operationEvidenceId: "begin-evidence",
+              immutableRollbackArtifact: { rollbackArtifactId: "fixture-rollback-artifact" },
+              logicalProductionDbIdentityDigest: "c".repeat(64) },
+            intent: { operationId: request.operationId, operationInputDigest: "b".repeat(64), operationType: "recovery-restore-in-place" },
+          });
+          return { receipt: { operationId: request.operationId, outcomeDigest: canonicalDigest(outcome) }, executed: true };
+        },
       },
       verifyReviewedRelease: async () => true,
       verifyCurrentReaderRollout: async () => ({ current: true }),
@@ -173,22 +186,86 @@ describe("production recovery install, rollout, and operation boundaries", () =>
       executeFixedOperation: async (operation, payload) => { calls.push({ operation, payload }); return { started: true }; },
     });
     const result = await broker.dispatch({
-      schemaVersion: 1, operation: "recovery-transition", requestId: "restore-1", transition: "begin-restore",
+      schemaVersion: 1, operation: "recovery-transition", requestId: "restore-1", recoveryCaseId: "case-1", transition: "begin-restore",
       expectedGeneration: 2, expectedRecordDigest: "d".repeat(64), evidenceId: "begin-evidence",
       authorizationEnvelope: null, policyAttestation: null, rolloutReceiptId: "rollout-1",
     });
     expect(result.record.nextState).toBe("restore-in-progress");
     expect(calls).toEqual([{
       operation: "recovery-restore-in-place",
-      payload: { recoveryCaseId: "case-1", generation: 3, recordDigest: "f".repeat(64), evidenceId: "begin-evidence" },
+      payload: { operationId: "a".repeat(64), idempotencyKey: "a".repeat(64), operationInputDigest: "b".repeat(64),
+        replayPolicy: "reconcile-same-logical-database-to-same-bound-backup", recoveryCaseId: "case-1",
+        generation: 3, recordDigest: "f".repeat(64), immutableRollbackArtifact: { rollbackArtifactId: "fixture-rollback-artifact" },
+        logicalProductionDbIdentityDigest: "c".repeat(64), evidenceId: "begin-evidence", evidence: { type: "begin-restore" } },
     }]);
     calls.length = 0;
     await expect(broker.dispatch({
-      schemaVersion: 1, operation: "recovery-transition", requestId: "restore-2", transition: "begin-restore",
+      schemaVersion: 1, operation: "recovery-transition", requestId: "restore-2", recoveryCaseId: "case-1", transition: "begin-restore",
       expectedGeneration: 2, expectedRecordDigest: "d".repeat(64), evidenceId: "../../etc/passwd",
       authorizationEnvelope: null, policyAttestation: null, rolloutReceiptId: "rollout-1",
     })).rejects.toThrow(/opaque fixed-format/);
     expect(calls).toHaveLength(0);
+  });
+
+  it("replays only the exact pending journal operation and reuses its idempotency key", async () => {
+    const evidence = { type: "begin-restore", backupArtifactId: "backup-fixture-1" };
+    const operationId = "a".repeat(64);
+    const operationInputDigest = "b".repeat(64);
+    let receipt = null;
+    let evidenceMutated = false;
+    const executionCalls = [];
+    const record = {
+      recoveryCaseId: "case-1", generation: 3, recordDigest: "f".repeat(64),
+      sourceEvidenceDigest: canonicalDigest(evidence),
+      immutableRollbackArtifact: { rollbackArtifactId: "fixture-rollback-artifact" },
+      logicalProductionDbIdentityDigest: "c".repeat(64),
+      operationIntent: { schemaVersion: 1, operationId, operationInputDigest, operationType: "recovery-restore-in-place" },
+    };
+    const authority = {
+      readAuthoritativeState: async () => ({ blocking: true, activeRecovery: true }),
+      readPendingOperation: async () => ({ record, intent: record.operationIntent, operationEvidenceId: "evidence-1", receipt }),
+      executePendingOperation: async (identity, execute) => {
+        const outcome = await execute({ record, intent: record.operationIntent });
+        receipt = { operationId: identity.operationId, outcomeDigest: canonicalDigest(outcome) };
+        return { receipt, executed: true };
+      },
+    };
+    const broker = createProductionOperationBroker({
+      authority,
+      verifyReviewedRelease: async () => true,
+      verifyCurrentReaderRollout: async () => ({ current: true }),
+      verifyRecoveryPreparation: async () => ({ ready: true }),
+      verifyForwardMigrationAuthorization: async () => true,
+      loadEvidenceById: async () => evidenceMutated ? { ...evidence, backupArtifactId: "different-backup" } : evidence,
+      loadAuthorizationById: async () => null,
+      loadRolloutReceiptById: async () => null,
+      executeFixedOperation: async (operation, payload) => {
+        executionCalls.push({ operation, payload });
+        return { operationId: payload.operationId, state: "reconciled" };
+      },
+    });
+    const request = {
+      schemaVersion: 1, operation: "recovery-operation-replay", requestId: "replay-1", recoveryCaseId: "case-1",
+      expectedGeneration: 3, expectedRecordDigest: record.recordDigest, operationId,
+    };
+    await expect(broker.dispatch({ ...request, operationId: "c".repeat(64) })).rejects.toThrow(/exact pending journal generation/);
+    evidenceMutated = true;
+    await expect(broker.dispatch({ ...request, requestId: "replay-mutated-evidence" })).rejects.toThrow(/exact evidence bound/);
+    expect(executionCalls).toHaveLength(0);
+    evidenceMutated = false;
+    const replayed = await broker.dispatch(request);
+    expect(replayed.replayed).toBe(true);
+    expect(executionCalls).toHaveLength(1);
+    expect(executionCalls[0]).toMatchObject({
+      operation: "recovery-restore-in-place",
+      payload: { operationId, idempotencyKey: operationId, operationInputDigest,
+        replayPolicy: "reconcile-same-logical-database-to-same-bound-backup", recoveryCaseId: "case-1",
+        generation: 3, recordDigest: record.recordDigest, immutableRollbackArtifact: record.immutableRollbackArtifact,
+        logicalProductionDbIdentityDigest: record.logicalProductionDbIdentityDigest, evidenceId: "evidence-1", evidence },
+    });
+    const duplicate = await broker.dispatch({ ...request, requestId: "replay-duplicate" });
+    expect(duplicate.replayed).toBe(false);
+    expect(executionCalls).toHaveLength(1);
   });
 
   it("requires root-only authority state, the fixed socket, and a complete signed host adapter", () => {
@@ -204,8 +281,16 @@ describe("production recovery install, rollout, and operation boundaries", () =>
 
   it("verifies immutable authority package digests, signer, allowlist, and monotonic version", async () => {
     const signer = generateKeyPairSync("ed25519");
+    const authoritySigner = generateKeyPairSync("ed25519");
     const binary = Buffer.from("signed authority executable");
-    const config = Buffer.from('{"protocol":2}');
+    const authorityConfig = Object.fromEntries(AUTHORITY_CONFIG_KEYS.map((key) => [key,
+      key === "requireRoot" ? true
+        : key === "signing" ? { privateKey: authoritySigner.privateKey.export({ type: "pkcs8", format: "pem" }), authorityVersion: "1.2.0",
+          authorityKeyId: "root-key-1", authorityInstanceId: "fixture-authority" }
+          : key === "journalPublicKeys" ? { "root-key-1": authoritySigner.publicKey.export({ type: "spki", format: "pem" }) }
+          : {}]));
+    const packageConfig = { authority: authorityConfig, host: { releaseGroupGid: 1001, adapter: { id: "reviewed-fixture-adapter" } } };
+    const config = Buffer.from(canonicalJson(packageConfig));
     const unsigned = {
       schemaVersion: 1,
       purpose: "bodycast-production-recovery-authority-package",
@@ -243,6 +328,33 @@ describe("production recovery install, rollout, and operation boundaries", () =>
       minimumAllowedVersion: "1.0.0", currentInstallation: { authorityVersion: "1.3.0" },
       now: Date.parse("2026-10-07T12:30:00.000Z"),
     })).toThrow(/downgrade/);
+    expect(() => verifyAuthorityInstallArtifact({
+      provenance, binaryBytes: binary, configBytes: config,
+      trustedProvenanceKeys: { "different-key": signer.publicKey }, allowedAuthorityVersions: ["1.2.0"],
+      minimumAllowedVersion: "1.0.0", now: Date.parse("2026-10-07T12:30:00.000Z"),
+    })).toThrow(/not trusted/);
+    const mismatchedVersionConfig = Buffer.from(canonicalJson({
+      ...packageConfig,
+      authority: { ...authorityConfig, signing: { ...authorityConfig.signing, authorityVersion: "1.2.1" } },
+    }));
+    const mismatchedVersionUnsigned = { ...unsigned, configDigest: sha256(mismatchedVersionConfig) };
+    const mismatchedVersionProvenance = { ...mismatchedVersionUnsigned, signature: signCanonical(mismatchedVersionUnsigned, signer.privateKey) };
+    expect(() => verifyAuthorityInstallArtifact({
+      provenance: mismatchedVersionProvenance, binaryBytes: binary, configBytes: mismatchedVersionConfig,
+      trustedProvenanceKeys: { "provenance-key": signer.publicKey }, allowedAuthorityVersions: ["1.2.0"],
+      minimumAllowedVersion: "1.0.0", now: Date.parse("2026-10-07T12:30:00.000Z"),
+    })).toThrow(/version or key ID/);
+    const mismatchedKeyConfig = Buffer.from(canonicalJson({
+      ...packageConfig,
+      authority: { ...authorityConfig, signing: { ...authorityConfig.signing, authorityKeyId: "other-root-key" } },
+    }));
+    const mismatchedKeyUnsigned = { ...unsigned, configDigest: sha256(mismatchedKeyConfig) };
+    const mismatchedKeyProvenance = { ...mismatchedKeyUnsigned, signature: signCanonical(mismatchedKeyUnsigned, signer.privateKey) };
+    expect(() => verifyAuthorityInstallArtifact({
+      provenance: mismatchedKeyProvenance, binaryBytes: binary, configBytes: mismatchedKeyConfig,
+      trustedProvenanceKeys: { "provenance-key": signer.publicKey }, allowedAuthorityVersions: ["1.2.0"],
+      minimumAllowedVersion: "1.0.0", now: Date.parse("2026-10-07T12:30:00.000Z"),
+    })).toThrow(/version or key ID/);
     expect(compareAuthorityVersions("1.10.0", "1.9.9")).toBeGreaterThan(0);
 
     const receiptKey = generateKeyPairSync("ed25519");
@@ -266,15 +378,32 @@ describe("production recovery install, rollout, and operation boundaries", () =>
     })).toBe(true);
 
     const installationRoot = path.join(await tempRoot(), "authority-install");
-    await installVerifiedAuthorityPackage({
-      verifiedArtifact: verified,
+    const rejectedInstallRoot = path.join(await tempRoot(), "authority-install-rejected");
+    await expect(installAuthorityPackageFixture({
+      provenance: { ...provenance, signature: "forged-signature" },
+      binaryBytes: binary,
+      configBytes: config,
+      installationRoot: rejectedInstallRoot,
+      trustedProvenanceKeys: { "provenance-key": signer.publicKey },
+      minimumAllowedVersion: "1.0.0",
+      now: Date.parse("2026-10-07T12:30:00.000Z"),
+      receiptSigner: { keyId: "installer-key", privateKey: receiptKey.privateKey, publicKey: receiptKey.publicKey },
+      trustedInstallationKeys: { "installer-key": receiptKey.publicKey },
+      allowedAuthorityVersions: ["1.2.0"],
+      syncDirectory: async () => {},
+    })).rejects.toThrow(/signature/);
+    await expect(fs.stat(rejectedInstallRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    await installAuthorityPackageFixture({
+      provenance,
       binaryBytes: binary,
       configBytes: config,
       installationRoot,
+      trustedProvenanceKeys: { "provenance-key": signer.publicKey },
       minimumAllowedVersion: "1.0.0",
+      now: Date.parse("2026-10-07T12:30:00.000Z"),
       receiptSigner: { keyId: "installer-key", privateKey: receiptKey.privateKey, publicKey: receiptKey.publicKey },
+      trustedInstallationKeys: { "installer-key": receiptKey.publicKey },
       allowedAuthorityVersions: ["1.2.0"],
-      requireRoot: false,
       syncDirectory: async () => {},
     });
     const installed = await verifyInstalledAuthorityPackage({
@@ -285,23 +414,34 @@ describe("production recovery install, rollout, and operation boundaries", () =>
       requireRoot: false,
     });
     expect(installed).toMatchObject({ authorityVersion: "1.2.0", binaryDigest: verified.binaryDigest, configDigest: verified.configDigest });
-    const olderUnsigned = { ...unsigned, authorityVersion: "1.1.9" };
+    expect(installed.receipt.provenanceDigest).toBe(verified.provenanceDigest);
+    await expect(installAuthorityPackageFromRaw({
+      provenance: {}, binaryBytes: Buffer.from("untrusted"), configBytes: Buffer.from("{}"),
+      verifiedArtifact: verified,
+    })).rejects.toThrow(/closed schema/);
+    const olderConfig = Buffer.from(canonicalJson({
+      ...packageConfig,
+      authority: { ...authorityConfig, signing: { ...authorityConfig.signing, authorityVersion: "1.1.9" } },
+    }));
+    const olderUnsigned = { ...unsigned, authorityVersion: "1.1.9", configDigest: sha256(olderConfig) };
     const olderProvenance = { ...olderUnsigned, signature: signCanonical(olderUnsigned, signer.privateKey) };
     const olderVerified = verifyAuthorityInstallArtifact({
-      provenance: olderProvenance, binaryBytes: binary, configBytes: config,
+      provenance: olderProvenance, binaryBytes: binary, configBytes: olderConfig,
       trustedProvenanceKeys: { "provenance-key": signer.publicKey },
       allowedAuthorityVersions: ["1.1.9", "1.2.0"], minimumAllowedVersion: "1.0.0",
     });
-    await expect(installVerifiedAuthorityPackage({
-      verifiedArtifact: olderVerified,
+    expect(olderVerified.authorityVersion).toBe("1.1.9");
+    await expect(installAuthorityPackageFixture({
+      provenance: olderProvenance,
       binaryBytes: binary,
-      configBytes: config,
+      configBytes: olderConfig,
       installationRoot,
+      trustedProvenanceKeys: { "provenance-key": signer.publicKey },
+      trustedInstallationKeys: { "installer-key": receiptKey.publicKey },
       minimumAllowedVersion: "1.0.0",
       receiptSigner: { keyId: "installer-key", privateKey: receiptKey.privateKey, publicKey: receiptKey.publicKey },
-      trustedInstallationKeys: { "installer-key": receiptKey.publicKey },
       allowedAuthorityVersions: ["1.1.9", "1.2.0"],
-      requireRoot: false,
+      now: Date.parse("2026-10-07T12:30:00.000Z"),
       syncDirectory: async () => {},
     })).rejects.toThrow(/downgrade/);
     await fs.writeFile(path.join(installationRoot, "v1.2.0", "bodycast-recovery-authority"), "tampered");
@@ -442,31 +582,35 @@ describe("production recovery install, rollout, and operation boundaries", () =>
       environment: "production-recovery", workflowPath: ".github/workflows/production-recovery-phase-a.yml",
       workflowId: "901", workflowRunId: "902", workflowRunAttempt: "1", actorGithubUserId: "777",
     };
+    const challengeWorkflow = { ...workflow, environment: undefined };
     const environment = {
       environment: "production-recovery", branchPolicy: "main-only", preventSelfReview: true,
       adminBypassDisabled: true, allowlistedReviewerGithubUserIds: ["12345"], configurationSnapshot,
     };
     const expectedDigest = canonicalDigest(configurationSnapshot);
-    const policyRequest = {
-      schemaVersion: 1, purpose: "request-recovery-environment-policy", oidcToken: "valid-github-oidc-token",
-      recoveryCaseId: "case-001", phase: "A", singleUseRequestId: "request-1", singleUseNonce: "nonce-1",
-    };
-    const approvalBody = {
-      schemaVersion: 1, purpose: "recovery-policy-owner-approval", recoveryCaseId: "case-001", phase: "A",
-      repository: workflow.repository, canonicalMainSha: workflow.canonicalMainSha, environment: workflow.environment,
-      workflowPath: workflow.workflowPath, workflowId: workflow.workflowId, workflowRunId: workflow.workflowRunId,
-      workflowRunAttempt: workflow.workflowRunAttempt, reviewedConfigurationDigest: expectedDigest,
-      reviewerGithubUserId: "12345", approvalState: "approved", approvalId: "deployment-approval-71",
-      approvalTimestamp: timestamp, singleUseRequestId: "request-1", singleUseNonce: "nonce-1", keyId: "owner-key",
-    };
-    const approval = { ...approvalBody, signature: signCanonical(approvalBody, owner.privateKey) };
+    const challenges = new Map();
     const consumed = new Set();
     const service = createRecoveryPolicySignerService({
-      verifyWorkflowOidc: async (token, options) => token === "valid-github-oidc-token" && options.audience === "bodycast-production-recovery-policy" ? workflow : null,
+      verifyWorkflowOidc: async (token, options) => options.audience === "bodycast-production-recovery-policy"
+        ? token === "valid-github-oidc-token" ? workflow : token === "challenge-github-oidc-token" ? challengeWorkflow : null : null,
       loadRecoveryCase: async (id) => ({ recoveryCaseId: id, phase: "A", canonicalMainSha: workflow.canonicalMainSha,
         repository: workflow.repository, status: "awaiting-owner-policy-review" }),
       readProtectedEnvironmentConfiguration: async () => environment,
-      loadAuthenticatedOwnerApproval: async () => approval,
+      createPhaseChallenge: async (challenge, challengeDigest) => { challenges.set(challenge.challengeId, { challenge, challengeDigest }); return true; },
+      loadPhaseChallenge: async (id) => challenges.get(id),
+      loadAuthenticatedOwnerApproval: async ({ challenge }) => {
+        const approvalBody = {
+          schemaVersion: 1, purpose: "recovery-policy-owner-approval", recoveryCaseId: "case-001", phase: "A",
+          repository: workflow.repository, canonicalMainSha: workflow.canonicalMainSha, environment: workflow.environment,
+          workflowPath: workflow.workflowPath, workflowId: workflow.workflowId, workflowRunId: workflow.workflowRunId,
+          workflowRunAttempt: workflow.workflowRunAttempt, reviewedConfigurationDigest: expectedDigest,
+          reviewerGithubUserId: "12345", approvalState: "approved", approvalId: "deployment-approval-71",
+          approvalTimestamp: timestamp, singleUseRequestId: challenge.singleUseRequestId,
+          singleUseNonce: challenge.singleUseNonce, challengeId: challenge.challengeId,
+          challengeDigest: challenge.challengeDigest, keyId: "owner-key",
+        };
+        return { ...approvalBody, signature: signCanonical(approvalBody, owner.privateKey) };
+      },
       verifyAuthenticatedOwnerApproval: async ({ candidate }) => verifyCanonical(
         Object.fromEntries(Object.entries(candidate).filter(([key]) => key !== "signature")), candidate.signature, owner.publicKey,
       ),
@@ -483,7 +627,18 @@ describe("production recovery install, rollout, and operation boundaries", () =>
       phaseWorkflowBindings: { A: { workflowPath: workflow.workflowPath, workflowId: workflow.workflowId },
         B: { workflowPath: ".github/workflows/production-recovery-phase-b.yml", workflowId: "902" } },
       now: () => Date.parse(timestamp),
+      createNonce: () => "c".repeat(64),
+      createId: () => "challenge-unique-001",
     });
+    const challengeResult = await service.createChallenge({
+      schemaVersion: 1, purpose: "create-recovery-phase-challenge", oidcToken: "challenge-github-oidc-token",
+      recoveryCaseId: "case-001", phase: "A",
+    });
+    const policyRequest = {
+      schemaVersion: 1, purpose: "request-recovery-environment-policy", oidcToken: "valid-github-oidc-token",
+      recoveryCaseId: "case-001", phase: "A", challengeId: challengeResult.challenge.challengeId,
+      challengeDigest: challengeResult.challengeDigest,
+    };
     const attestation = await service.issue(policyRequest);
     expect(attestation.phase).toBe("A");
     expect(attestation.reviewedConfigurationDigest).toBe(expectedDigest);
@@ -491,9 +646,12 @@ describe("production recovery install, rollout, and operation boundaries", () =>
     expect(verifyCanonical(Object.fromEntries(Object.entries(attestation).filter(([key]) => key !== "signature")),
       attestation.signature, policy.publicKey)).toBe(true);
 
-    await expect(service.issue({ ...policyRequest, ownerApproval: approval })).rejects.toThrow(/closed schema/);
-    await expect(service.issue({ ...policyRequest, oidcToken: "caller-made-approval-flag" })).rejects.toThrow(/protected canonical-main/);
+    await expect(service.issue({ ...policyRequest, ownerApproval: { approved: true } })).rejects.toThrow(/closed schema/);
+    await expect(service.issue({ ...policyRequest, oidcToken: "caller-made-approval-flag" })).rejects.toThrow(/canonical recovery phase/);
     expect(consumed.size).toBe(1);
+    expect(attestation.singleUseNonce).toBe("c".repeat(64));
+    expect(attestation.challengeDigest).toBe(challengeResult.challengeDigest);
+    await expect(service.issue({ ...policyRequest, phase: "B" })).rejects.toThrow(/workflow|phase|case/i);
   });
 
   it("captures only the exact currently serving immutable rollback image and rejects rebuilds or retention gaps", () => {

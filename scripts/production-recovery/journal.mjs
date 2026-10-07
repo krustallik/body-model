@@ -26,7 +26,7 @@ const JOURNAL_RECORD_KEYS = Object.freeze([
   "logicalProductionDbIdentityDigest", "composeProjectServiceIdentityDigest", "deployHostTopologyDigest",
   "markerReaderRolloutReceiptDigest", "legacyMarkerDigest", "legacyMarkerState", "transition", "phase",
   "authorizationId", "authorizationEnvelopeDigest", "policyAttestationDigest", "nonceConsumption", "restoreGrant",
-  "sourceEvidenceDigest", "workflowProvenance", "timestamp", "authorityVersion", "authorityKeyId",
+  "sourceEvidenceDigest", "operationIntent", "operationEvidenceId", "workflowProvenance", "timestamp", "authorityVersion", "authorityKeyId",
   "authorityInstanceId", "recordDigest", "authoritySignature",
 ]);
 const ARTIFACT_KEYS = Object.freeze([
@@ -160,6 +160,14 @@ function verifyRecord(record, publicKeys) {
   for (const key of ["authorizationEnvelopeDigest", "policyAttestationDigest"]) {
     if (record[key] !== null) assertSha256(record[key], "journal." + key);
   }
+  if (record.operationIntent !== null) {
+    assertExactKeys(record.operationIntent, ["schemaVersion", "operationId", "operationType", "operationInputDigest"], "Journal operation intent");
+    if (record.operationIntent.schemaVersion !== 1) throw new Error("Journal operation intent schema is unsupported.");
+    assertSha256(record.operationIntent.operationId, "journal.operationIntent.operationId");
+    assertNonEmptyString(record.operationIntent.operationType, "journal.operationIntent.operationType");
+    assertSha256(record.operationIntent.operationInputDigest, "journal.operationIntent.operationInputDigest");
+    if (record.operationEvidenceId !== null) assertNonEmptyString(record.operationEvidenceId, "journal.operationEvidenceId");
+  } else if (record.operationEvidenceId !== null) throw new Error("Journal operation evidence cannot exist without an operation intent.");
   for (const key of ["recoveryCaseId", "manifestId", "legacyMarkerState", "transition", "authorityVersion", "authorityKeyId", "authorityInstanceId", "authoritySignature"]) {
     assertNonEmptyString(record[key], "journal." + key);
   }
@@ -343,6 +351,8 @@ export function createSignedJournalRecord(fields, {
   authorityInstanceId,
 }) {
   const record = {
+    operationIntent: null,
+    operationEvidenceId: null,
     ...fields,
     authorityVersion,
     authorityKeyId,

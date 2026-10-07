@@ -17,7 +17,51 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  create-phase-challenge:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      challenge_id: ${{ steps.challenge.outputs.challenge_id }}
+      challenge_digest: ${{ steps.challenge.outputs.challenge_digest }}
+    steps:
+      - name: Checkout current main tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Require current canonical main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$REPOSITORY" == "krustallik/body-model" && "$(git rev-parse HEAD)" == "$DISPATCH_SHA" ]]
+          [[ "$(gh api repos/krustallik/body-model/commits/main --jq .sha)" == "$DISPATCH_SHA" ]]
+      - name: Create and publish the single-use challenge before environment approval
+        id: challenge
+        env:
+          BODYCAST_RECOVERY_POLICY_SIGNER_URL: ${{ vars.BODYCAST_RECOVERY_POLICY_SIGNER_URL }}
+          RECOVERY_CASE_ID: ${{ inputs.recovery_case_id }}
+        run: |
+          set -Eeuo pipefail
+          node scripts/production-recovery/request-phase-authorization.mjs --mode challenge --phase B --recovery-case-id "$RECOVERY_CASE_ID" --output "$RUNNER_TEMP/recovery-challenge.json"
+          read -r CHALLENGE_ID CHALLENGE_DIGEST NONCE <<< "$(CHALLENGE_FILE="$RUNNER_TEMP/recovery-challenge.json" node --input-type=module -e 'import fs from "node:fs"; const {challenge,challengeDigest}=JSON.parse(fs.readFileSync(process.env.CHALLENGE_FILE,"utf8")); process.stdout.write(`${challenge.challengeId} ${challengeDigest} ${challenge.singleUseNonce}`)')"
+          echo "challenge_id=$CHALLENGE_ID" >> "$GITHUB_OUTPUT"
+          echo "challenge_digest=$CHALLENGE_DIGEST" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Production recovery Phase B owner/security approval challenge"
+            echo "- Case: `$RECOVERY_CASE_ID`"
+            echo "- Challenge ID: `$CHALLENGE_ID`"
+            echo "- Challenge digest: `$CHALLENGE_DIGEST`"
+            echo "- Single-use nonce: `$NONCE`"
+            echo "Approve only by creating the independent signed owner approval over this exact challenge digest, ID, nonce, workflow run, and configuration snapshot."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   authorize-post-restore-recovery:
+    needs: create-phase-challenge
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -47,9 +91,12 @@ jobs:
           BODYCAST_RECOVERY_POLICY_SIGNER_URL: ${{ vars.BODYCAST_RECOVERY_POLICY_SIGNER_URL }}
           BODYCAST_RECOVERY_AUTHORIZATION_ISSUER_URL: ${{ vars.BODYCAST_RECOVERY_AUTHORIZATION_ISSUER_URL }}
           RECOVERY_CASE_ID: ${{ inputs.recovery_case_id }}
+          RECOVERY_CHALLENGE_ID: ${{ needs.create-phase-challenge.outputs.challenge_id }}
+          RECOVERY_CHALLENGE_DIGEST: ${{ needs.create-phase-challenge.outputs.challenge_digest }}
         run: |
           set -Eeuo pipefail
-          node scripts/production-recovery/request-phase-authorization.mjs --phase B --recovery-case-id "$RECOVERY_CASE_ID" \
+          node scripts/production-recovery/request-phase-authorization.mjs --mode authorize --phase B --recovery-case-id "$RECOVERY_CASE_ID" \
+            --challenge-id "$RECOVERY_CHALLENGE_ID" --challenge-digest "$RECOVERY_CHALLENGE_DIGEST" \
             > "$RUNNER_TEMP/bodycast-recovery-phase-b.json"
           chmod 600 "$RUNNER_TEMP/bodycast-recovery-phase-b.json"
           test -s "$RUNNER_TEMP/bodycast-recovery-phase-b.json"
@@ -91,10 +138,11 @@ jobs:
           [[ "$RECOVERY_CASE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]] || { echo "::error::Invalid recovery case selector."; exit 1; }
           SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
           STATE_JSON="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "/usr/local/bin/bodycast-production-operation recovery-state --request-id phase-b-state-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT")"
-          STATE_VALUES="$(STATE_JSON="$STATE_JSON" node --input-type=module -e '
+          STATE_VALUES="$(STATE_JSON="$STATE_JSON" REQUESTED_CASE_ID="$RECOVERY_CASE_ID" node --input-type=module -e '
             const state = JSON.parse(process.env.STATE_JSON);
             const value = state?.result;
             if (!value?.blocking || !value?.activeRecovery || value.state !== "restore-verified"
+              || value.recoveryCaseId !== process.env.REQUESTED_CASE_ID
               || !Number.isSafeInteger(value.generation) || typeof value.recordDigest !== "string" || !/^[a-f0-9]{64}$/.test(value.recordDigest)) {
               console.error("Authority state is not at the post-restore verification boundary."); process.exit(1);
             }
@@ -107,7 +155,7 @@ jobs:
           ROLLOUT_ID="$(jq -er '.rolloutReceiptId' "$RUNNER_TEMP/bodycast-recovery-phase-b.json")"
           [[ "$EVIDENCE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ && "$ROLLOUT_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]] || { echo "::error::Issuer returned invalid host evidence IDs."; exit 1; }
           (( ${#ENVELOPE_B64} < 120000 && ${#POLICY_B64} < 30000 )) || { echo "::error::Signed recovery authorization exceeds the transport bound."; exit 1; }
-          RESULT="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "/usr/local/bin/bodycast-production-operation recovery-transition --request-id phase-b-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT --transition authorize-recovery --expected-generation $GENERATION --expected-record-digest $RECORD_DIGEST --evidence-id $EVIDENCE_ID --authorization-envelope-b64 $ENVELOPE_B64 --policy-attestation-b64 $POLICY_B64 --rollout-receipt-id $ROLLOUT_ID")"
+          RESULT="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "/usr/local/bin/bodycast-production-operation recovery-transition --request-id phase-b-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT --recovery-case-id $RECOVERY_CASE_ID --transition authorize-recovery --expected-generation $GENERATION --expected-record-digest $RECORD_DIGEST --evidence-id $EVIDENCE_ID --authorization-envelope-b64 $ENVELOPE_B64 --policy-attestation-b64 $POLICY_B64 --rollout-receipt-id $ROLLOUT_ID")"
           RESULT_JSON="$RESULT" node --input-type=module -e '
             const response = JSON.parse(process.env.RESULT_JSON);
             if (response?.ok !== true || response?.result?.record?.nextState !== "recovery-authorized") {

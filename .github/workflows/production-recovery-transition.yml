@@ -19,6 +19,7 @@ on:
           - complete-recovery
           - open-traffic
           - finalize-recovery
+          - resume-operation
       evidence_id:
         description: Opaque evidence ID already pinned by the host recovery case
         required: true
@@ -103,25 +104,40 @@ jobs:
             complete-recovery) EXPECTED_STATE=writers-enabled ;;
             open-traffic) EXPECTED_STATE=recovery-complete ;;
             finalize-recovery) EXPECTED_STATE=traffic-open ;;
+            resume-operation) EXPECTED_STATE=resume-operation ;;
             *) echo "::error::Transition is not on the fixed allowlist."; exit 1 ;;
           esac
           SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
           STATE_JSON="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "/usr/local/bin/bodycast-production-operation recovery-state --request-id transition-state-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT")"
-          STATE_VALUES="$(STATE_JSON="$STATE_JSON" EXPECTED_STATE="$EXPECTED_STATE" node --input-type=module -e '
+          STATE_VALUES="$(STATE_JSON="$STATE_JSON" EXPECTED_STATE="$EXPECTED_STATE" REQUESTED_CASE_ID="$RECOVERY_CASE_ID" node --input-type=module -e '
             const state = JSON.parse(process.env.STATE_JSON);
             const value = state?.result;
-            if (!value?.blocking || !value?.activeRecovery || value.state !== process.env.EXPECTED_STATE
+            const resume = process.env.EXPECTED_STATE === "resume-operation";
+            if (!value?.blocking || !value?.activeRecovery || (!resume && value.state !== process.env.EXPECTED_STATE)
+              || (resume && (!value.operationPending || !/^[a-f0-9]{64}$/.test(value.pendingOperationId ?? "")))
+              || value.recoveryCaseId !== process.env.REQUESTED_CASE_ID
               || !Number.isSafeInteger(value.generation) || typeof value.recordDigest !== "string" || !/^[a-f0-9]{64}$/.test(value.recordDigest)) {
               console.error("Authority state does not match the selected transition predecessor."); process.exit(1);
             }
-            process.stdout.write(`${value.generation} ${value.recordDigest}`);
+            process.stdout.write(`${value.generation} ${value.recordDigest} ${value.pendingOperationId ?? "-"}`);
           ')"
-          read -r GENERATION RECORD_DIGEST <<< "$STATE_VALUES"
+          read -r GENERATION RECORD_DIGEST PENDING_OPERATION_ID <<< "$STATE_VALUES"
+          if [[ "$TRANSITION" == "resume-operation" ]]; then
+            RESULT="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "/usr/local/bin/bodycast-production-operation recovery-operation-replay --request-id replay-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT --recovery-case-id $RECOVERY_CASE_ID --expected-generation $GENERATION --expected-record-digest $RECORD_DIGEST --operation-id $PENDING_OPERATION_ID")"
+            RESULT_JSON="$RESULT" OPERATION_ID="$PENDING_OPERATION_ID" node --input-type=module -e '
+              const response = JSON.parse(process.env.RESULT_JSON);
+              if (response?.ok !== true || response?.result?.operationReceipt?.operationId !== process.env.OPERATION_ID) {
+                console.error("Host authority did not acknowledge the exact pending operation receipt."); process.exit(1);
+              }
+            '
+            echo "The existing committed host operation was replayed without a new recovery transition."
+            exit 0
+          fi
           if [[ "$TRANSITION" == "finalize-recovery" ]]; then
-            RESULT="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "/usr/local/bin/bodycast-production-operation recovery-finalize --request-id finalize-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT --expected-generation $GENERATION --expected-record-digest $RECORD_DIGEST --evidence-id $EVIDENCE_ID")"
+            RESULT="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "/usr/local/bin/bodycast-production-operation recovery-finalize --request-id finalize-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT --recovery-case-id $RECOVERY_CASE_ID --expected-generation $GENERATION --expected-record-digest $RECORD_DIGEST --evidence-id $EVIDENCE_ID")"
             EXPECTED_RESULT_STATE=recovery-finalized
           else
-            RESULT="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "/usr/local/bin/bodycast-production-operation recovery-transition --request-id transition-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT --transition $TRANSITION --expected-generation $GENERATION --expected-record-digest $RECORD_DIGEST --evidence-id $EVIDENCE_ID --authorization-envelope-b64 bnVsbA== --policy-attestation-b64 bnVsbA== --rollout-receipt-id rollout-current")"
+            RESULT="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "/usr/local/bin/bodycast-production-operation recovery-transition --request-id transition-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT --recovery-case-id $RECOVERY_CASE_ID --transition $TRANSITION --expected-generation $GENERATION --expected-record-digest $RECORD_DIGEST --evidence-id $EVIDENCE_ID --authorization-envelope-b64 bnVsbA== --policy-attestation-b64 bnVsbA== --rollout-receipt-id rollout-current")"
             case "$TRANSITION" in
               begin-restore) EXPECTED_RESULT_STATE=restore-in-progress ;;
               verify-restore) EXPECTED_RESULT_STATE=restore-verified ;;

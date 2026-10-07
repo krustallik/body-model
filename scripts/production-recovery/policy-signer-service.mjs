@@ -1,18 +1,51 @@
-import { assertExactKeys, assertGitSha, assertNonEmptyString, canonicalDigest } from "./canonical.mjs";
+import { randomBytes, randomUUID } from "node:crypto";
+import { assertExactKeys, assertGitSha, assertNonEmptyString, assertSha256, canonicalDigest } from "./canonical.mjs";
 import { issuePolicyAttestation } from "./authorization.mjs";
 
-const REQUEST_KEYS = Object.freeze([
-  "schemaVersion", "purpose", "oidcToken", "recoveryCaseId", "phase", "singleUseRequestId", "singleUseNonce",
+const CHALLENGE_REQUEST_KEYS = Object.freeze([
+  "schemaVersion", "purpose", "oidcToken", "recoveryCaseId", "phase",
 ]);
+const POLICY_REQUEST_KEYS = Object.freeze([
+  "schemaVersion", "purpose", "oidcToken", "recoveryCaseId", "phase", "challengeId", "challengeDigest",
+]);
+const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+function assertPhaseWorkflow(workflow, phase, binding, repository, { requireEnvironment }) {
+  if (!workflow || workflow.repository !== repository || workflow.ref !== "refs/heads/main"
+    || workflow.workflowPath !== binding.workflowPath || workflow.workflowId !== binding.workflowId
+    || (requireEnvironment ? workflow.environment !== "production-recovery" : Boolean(workflow.environment))) {
+    throw new Error("Workflow OIDC is not from the exact canonical recovery phase and required approval boundary.");
+  }
+  assertGitSha(workflow.canonicalMainSha, "workflow.canonicalMainSha");
+  for (const key of ["workflowRunId", "workflowRunAttempt", "actorGithubUserId"]) {
+    assertNonEmptyString(workflow[key], "workflow." + key);
+  }
+}
+
+function assertEnvironmentPolicy(environment, allowedReviewerIds) {
+  if (!environment || environment.environment !== "production-recovery" || environment.branchPolicy !== "main-only"
+    || environment.preventSelfReview !== true || environment.adminBypassDisabled !== true
+    || !Array.isArray(environment.allowlistedReviewerGithubUserIds) || !environment.configurationSnapshot) {
+    throw new Error("Protected environment configuration does not meet the independently reviewed recovery policy.");
+  }
+  const reviewerAllowlist = [...environment.allowlistedReviewerGithubUserIds].map(String).sort();
+  const configuredAllowlist = [...allowedReviewerIds].map(String).sort();
+  if (canonicalDigest(reviewerAllowlist) !== canonicalDigest(configuredAllowlist)) {
+    throw new Error("Protected environment reviewer allowlist differs from the trusted signer policy.");
+  }
+  return canonicalDigest(environment.configurationSnapshot);
+}
 
 /**
- * Server-side policy issuer. Workflow credentials can present a GitHub OIDC
- * token, but cannot submit approval/configuration claims or a signing key.
+ * Trusted server-side challenge issuer and policy signer. The nonce is generated
+ * here, persisted before approval is requested, and never accepted from workflow input.
  */
 export function createRecoveryPolicySignerService({
   verifyWorkflowOidc,
   loadRecoveryCase,
   readProtectedEnvironmentConfiguration,
+  createPhaseChallenge,
+  loadPhaseChallenge,
   loadAuthenticatedOwnerApproval,
   verifyAuthenticatedOwnerApproval,
   consumeSingleUseRequest,
@@ -25,15 +58,13 @@ export function createRecoveryPolicySignerService({
   repository,
   phaseWorkflowBindings,
   now = () => Date.now(),
+  createNonce = () => randomBytes(32).toString("hex"),
+  createId = () => randomUUID(),
 }) {
   const required = {
-    verifyWorkflowOidc,
-    loadRecoveryCase,
-    readProtectedEnvironmentConfiguration,
-    loadAuthenticatedOwnerApproval,
-    verifyAuthenticatedOwnerApproval,
-    consumeSingleUseRequest,
-    policySigner,
+    verifyWorkflowOidc, loadRecoveryCase, readProtectedEnvironmentConfiguration, createPhaseChallenge,
+    loadPhaseChallenge, loadAuthenticatedOwnerApproval, verifyAuthenticatedOwnerApproval,
+    consumeSingleUseRequest, policySigner,
   };
   for (const [name, value] of Object.entries(required)) if (typeof value !== "function") {
     throw new Error("Trusted recovery policy service dependency is missing: " + name + ".");
@@ -44,62 +75,103 @@ export function createRecoveryPolicySignerService({
   }
 
   return Object.freeze({
-    async issue(rawRequest) {
-      assertExactKeys(rawRequest, REQUEST_KEYS, "Policy signer service request");
-      if (rawRequest.schemaVersion !== 1 || rawRequest.purpose !== "request-recovery-environment-policy") {
-        throw new Error("Policy signer request schema or purpose is invalid.");
+    async createChallenge(rawRequest) {
+      assertExactKeys(rawRequest, CHALLENGE_REQUEST_KEYS, "Recovery challenge request");
+      if (rawRequest.schemaVersion !== 1 || rawRequest.purpose !== "create-recovery-phase-challenge"
+        || !["A", "B"].includes(rawRequest.phase)) throw new Error("Recovery challenge request schema is invalid.");
+      assertNonEmptyString(rawRequest.oidcToken, "request.oidcToken");
+      assertNonEmptyString(rawRequest.recoveryCaseId, "request.recoveryCaseId");
+      if (rawRequest.oidcToken.length > 32_768 || !ID_PATTERN.test(rawRequest.recoveryCaseId)) {
+        throw new Error("Recovery challenge request exceeds protocol bounds.");
       }
-      if (rawRequest.phase !== "A" && rawRequest.phase !== "B") throw new Error("Policy signer phase is invalid.");
-      for (const key of ["oidcToken", "recoveryCaseId", "singleUseRequestId", "singleUseNonce"]) {
-        assertNonEmptyString(rawRequest[key], "request." + key);
-      }
-      if (rawRequest.oidcToken.length > 32_768 || [rawRequest.recoveryCaseId, rawRequest.singleUseRequestId, rawRequest.singleUseNonce]
-        .some((value) => !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value))) {
-        throw new Error("Policy signer request identifiers or OIDC token exceed their protocol bounds.");
-      }
+      const phase = rawRequest.phase;
       const workflow = await verifyWorkflowOidc(rawRequest.oidcToken, { audience: "bodycast-production-recovery-policy" });
-      if (!workflow || workflow.repository !== repository || workflow.ref !== "refs/heads/main"
-        || workflow.environment !== "production-recovery") {
-        throw new Error("Workflow OIDC token is not from the protected canonical-main recovery environment.");
-      }
-      assertGitSha(workflow.canonicalMainSha, "workflow.canonicalMainSha");
-      const binding = phaseWorkflowBindings[rawRequest.phase];
-      if (workflow.workflowPath !== binding.workflowPath || workflow.workflowId !== binding.workflowId) {
-        throw new Error("Workflow path or ID is not authorized for this recovery phase.");
-      }
-      for (const key of ["workflowRunId", "workflowRunAttempt", "actorGithubUserId"]) assertNonEmptyString(workflow[key], "workflow." + key);
-
+      assertPhaseWorkflow(workflow, phase, phaseWorkflowBindings[phase], repository, { requireEnvironment: false });
       const recoveryCase = await loadRecoveryCase(rawRequest.recoveryCaseId);
-      if (!recoveryCase || recoveryCase.recoveryCaseId !== rawRequest.recoveryCaseId
-        || recoveryCase.phase !== rawRequest.phase || recoveryCase.canonicalMainSha !== workflow.canonicalMainSha
-        || recoveryCase.repository !== repository || recoveryCase.status !== "awaiting-owner-policy-review") {
+      if (!recoveryCase || recoveryCase.recoveryCaseId !== rawRequest.recoveryCaseId || recoveryCase.phase !== phase
+        || recoveryCase.canonicalMainSha !== workflow.canonicalMainSha || recoveryCase.repository !== repository
+        || recoveryCase.status !== "awaiting-owner-policy-review") {
         throw new Error("Recovery case is absent, stale, or not awaiting this phase's owner review.");
       }
-
       const environment = await readProtectedEnvironmentConfiguration("production-recovery");
-      if (!environment || environment.environment !== "production-recovery" || environment.branchPolicy !== "main-only"
-        || environment.preventSelfReview !== true || environment.adminBypassDisabled !== true
-        || !Array.isArray(environment.allowlistedReviewerGithubUserIds) || !environment.configurationSnapshot) {
-        throw new Error("Protected environment configuration does not meet the independently reviewed recovery policy.");
-      }
-      const reviewerAllowlist = [...environment.allowlistedReviewerGithubUserIds].map(String).sort();
-      const configuredAllowlist = [...allowedReviewerIds].map(String).sort();
-      if (canonicalDigest(reviewerAllowlist) !== canonicalDigest(configuredAllowlist)) {
-        throw new Error("Protected environment reviewer allowlist differs from the trusted signer policy.");
-      }
-      const configurationDigest = canonicalDigest(environment.configurationSnapshot);
-      const approval = await loadAuthenticatedOwnerApproval({
-        workflow,
-        recoveryCase,
-        environment,
-        phase: rawRequest.phase,
+      const reviewedConfigurationDigest = assertEnvironmentPolicy(environment, allowedReviewerIds);
+      const createdAt = new Date(now()).toISOString();
+      const expiresAt = new Date(now() + 30 * 60 * 1000).toISOString();
+      const nonce = createNonce();
+      if (typeof nonce !== "string" || !/^[a-f0-9]{64,128}$/.test(nonce)) throw new Error("Trusted challenge nonce generator returned an invalid nonce.");
+      const challenge = Object.freeze({
+        schemaVersion: 1,
+        purpose: "bodycast-production-recovery-owner-approval-challenge",
+        challengeId: "challenge-" + createId(),
+        recoveryCaseId: rawRequest.recoveryCaseId,
+        phase,
+        repository,
+        canonicalMainSha: workflow.canonicalMainSha,
+        workflowPath: workflow.workflowPath,
+        workflowId: workflow.workflowId,
+        workflowRunId: workflow.workflowRunId,
+        workflowRunAttempt: workflow.workflowRunAttempt,
+        workflowRef: workflow.ref,
+        singleUseRequestId: "policy-request-" + createId(),
+        singleUseNonce: nonce,
+        recoveryCaseSnapshotDigest: canonicalDigest(recoveryCase),
+        reviewedConfigurationDigest,
+        createdAt,
+        expiresAt,
       });
+      const challengeDigest = canonicalDigest(challenge);
+      if (await createPhaseChallenge(challenge, challengeDigest) !== true) {
+        throw new Error("Durable recovery challenge persistence rejected the new challenge.");
+      }
+      return Object.freeze({ challenge, challengeDigest });
+    },
+
+    async issue(rawRequest) {
+      assertExactKeys(rawRequest, POLICY_REQUEST_KEYS, "Policy signer service request");
+      if (rawRequest.schemaVersion !== 1 || rawRequest.purpose !== "request-recovery-environment-policy"
+        || !["A", "B"].includes(rawRequest.phase)) throw new Error("Policy signer request schema or purpose is invalid.");
+      for (const key of ["oidcToken", "recoveryCaseId", "challengeId"]) assertNonEmptyString(rawRequest[key], "request." + key);
+      assertSha256(rawRequest.challengeDigest, "request.challengeDigest");
+      if (rawRequest.oidcToken.length > 32_768 || !ID_PATTERN.test(rawRequest.recoveryCaseId) || !ID_PATTERN.test(rawRequest.challengeId)) {
+        throw new Error("Policy signer request identifiers or OIDC token exceed their protocol bounds.");
+      }
+      const phase = rawRequest.phase;
+      const workflow = await verifyWorkflowOidc(rawRequest.oidcToken, { audience: "bodycast-production-recovery-policy" });
+      assertPhaseWorkflow(workflow, phase, phaseWorkflowBindings[phase], repository, { requireEnvironment: true });
+      const recoveryCase = await loadRecoveryCase(rawRequest.recoveryCaseId);
+      if (!recoveryCase || recoveryCase.recoveryCaseId !== rawRequest.recoveryCaseId || recoveryCase.phase !== phase
+        || recoveryCase.canonicalMainSha !== workflow.canonicalMainSha || recoveryCase.repository !== repository
+        || recoveryCase.status !== "awaiting-owner-policy-review") {
+        throw new Error("Recovery case is absent, stale, or not awaiting this phase's owner review.");
+      }
+      const challenge = await loadPhaseChallenge(rawRequest.challengeId);
+      if (!challenge || challenge.challenge.challengeId !== rawRequest.challengeId
+        || canonicalDigest(challenge.challenge) !== challenge.challengeDigest
+        || challenge.challengeDigest !== rawRequest.challengeDigest
+        || challenge.challenge.recoveryCaseId !== rawRequest.recoveryCaseId || challenge.challenge.phase !== phase
+        || challenge.challenge.repository !== repository || challenge.challenge.canonicalMainSha !== workflow.canonicalMainSha
+        || challenge.challenge.workflowPath !== workflow.workflowPath || challenge.challenge.workflowId !== workflow.workflowId
+        || challenge.challenge.workflowRunId !== workflow.workflowRunId
+        || challenge.challenge.workflowRunAttempt !== workflow.workflowRunAttempt
+        || challenge.challenge.recoveryCaseSnapshotDigest !== canonicalDigest(recoveryCase)) {
+        throw new Error("Persisted challenge is stale, altered, cross-run, cross-case, or cross-phase.");
+      }
+      if (Date.parse(challenge.challenge.expiresAt) <= now() || Date.parse(challenge.challenge.createdAt) > now()) {
+        throw new Error("Persisted recovery challenge is expired or future-dated.");
+      }
+      const environment = await readProtectedEnvironmentConfiguration("production-recovery");
+      const configurationDigest = assertEnvironmentPolicy(environment, allowedReviewerIds);
+      if (configurationDigest !== challenge.challenge.reviewedConfigurationDigest) {
+        throw new Error("Protected environment configuration changed after challenge publication.");
+      }
+      const approvedChallenge = { ...challenge.challenge, challengeDigest: challenge.challengeDigest };
+      const approval = await loadAuthenticatedOwnerApproval({ workflow, recoveryCase, environment, phase, challenge: approvedChallenge });
       if (!approval || approval.reviewerGithubUserId === workflow.actorGithubUserId) {
-        throw new Error("The protected-environment reviewer must be distinct from the workflow actor.");
+        throw new Error("The independent owner/security approval must be distinct from the workflow actor.");
       }
       const policy = {
         recoveryCaseId: rawRequest.recoveryCaseId,
-        phase: rawRequest.phase,
+        phase,
         repository,
         canonicalMainSha: workflow.canonicalMainSha,
         workflowPath: workflow.workflowPath,
@@ -107,21 +179,23 @@ export function createRecoveryPolicySignerService({
         workflowRunId: workflow.workflowRunId,
         workflowRunAttempt: workflow.workflowRunAttempt,
         reviewedConfigurationDigest: configurationDigest,
-        singleUseRequestId: rawRequest.singleUseRequestId,
-        singleUseNonce: rawRequest.singleUseNonce,
+        singleUseRequestId: challenge.challenge.singleUseRequestId,
+        singleUseNonce: challenge.challenge.singleUseNonce,
+        challengeId: challenge.challenge.challengeId,
+        challengeDigest: challenge.challengeDigest,
       };
       return issuePolicyAttestation({
         policy,
         ownerApproval: approval,
         signerConfig: {
           ownerApprovalPublicKeys,
-          allowedReviewerIds: configuredAllowlist,
+          allowedReviewerIds: [...environment.allowlistedReviewerGithubUserIds].map(String),
           policySigner,
           consumeSingleUseRequest,
           policyKeyId,
           signerName,
           policyVersion,
-          independentApprovalVerifier: (candidate) => verifyAuthenticatedOwnerApproval({ candidate, workflow, recoveryCase, environment }),
+          independentApprovalVerifier: (candidate) => verifyAuthenticatedOwnerApproval({ candidate, workflow, recoveryCase, environment, challenge: approvedChallenge }),
         },
         now: now(),
       });
@@ -129,4 +203,4 @@ export function createRecoveryPolicySignerService({
   });
 }
 
-export { REQUEST_KEYS as POLICY_SIGNER_SERVICE_REQUEST_KEYS };
+export { POLICY_REQUEST_KEYS as POLICY_SIGNER_SERVICE_REQUEST_KEYS, CHALLENGE_REQUEST_KEYS as RECOVERY_CHALLENGE_REQUEST_KEYS };

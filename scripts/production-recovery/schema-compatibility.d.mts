@@ -19,6 +19,11 @@ export interface CompatibilityExpected {
   expectedMigrationHistoryDigest: string;
 }
 
+export interface MigrationHistoryRelation {
+  schema: string;
+  table: string;
+}
+
 export function normalizeColumns(columns: Array<Record<string, unknown>>): Array<{
   name: string;
   dataType: string;
@@ -31,6 +36,7 @@ export function verifyReadOnlySchemaCompatibility(options: {
   withReadOnlyTransaction: <T>(work: (query: ReadOnlyQuery) => Promise<T>) => Promise<T>;
   resolveLogicalDatabaseIdentity: (query: ReadOnlyQuery) => Promise<{ identityDigest: string; observationsDigest: string }>;
   expected: CompatibilityExpected;
+  migrationHistoryRelation?: MigrationHistoryRelation;
 }): Promise<{
   schemaCompatible: true;
   logicalProductionDbIdentityDigest: string;

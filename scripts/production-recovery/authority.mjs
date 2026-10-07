@@ -1,6 +1,6 @@
 import path from "node:path";
 import fs from "node:fs/promises";
-import { assertExactKeys, canonicalDigest, sha256Hex } from "./canonical.mjs";
+import { assertExactKeys, assertSha256, canonicalDigest, sha256Hex } from "./canonical.mjs";
 import {
   commitJournalRecord,
   createSignedJournalRecord,
@@ -29,6 +29,13 @@ const TRANSITIONS = Object.freeze({
   "complete-recovery": { from: new Set(["writers-enabled"]), to: "recovery-complete" },
   "open-traffic": { from: new Set(["recovery-complete"]), to: "traffic-open" },
   "finalize-recovery": { from: new Set(["traffic-open"]), to: "recovery-finalized" },
+});
+const RECOVERY_OPERATION_TYPES = Object.freeze({
+  "begin-restore": "recovery-restore-in-place",
+  "mark-rollback-app-ready": "recovery-start-readonly-app",
+  "enable-writers": "recovery-drain-and-enable-writers",
+  "complete-recovery": "recovery-verify-completion-gates",
+  "open-traffic": "recovery-open-traffic",
 });
 
 const BASE_BINDINGS = Object.freeze([
@@ -142,6 +149,8 @@ function makeRecord({
   grant = null,
   nonceConsumption = null,
   evidence,
+  operationIntent = null,
+  operationEvidenceId = null,
   workflowProvenance = null,
   now,
   signing,
@@ -177,6 +186,8 @@ function makeRecord({
     nonceConsumption,
     restoreGrant: previousGrant,
     sourceEvidenceDigest: canonicalDigest(evidence),
+    operationIntent,
+    operationEvidenceId,
     workflowProvenance,
     timestamp: timestamp(now),
   };
@@ -316,6 +327,87 @@ export function createRecoveryAuthority(config) {
     return readJournal(journalDirectory, { publicKeys: journalPublicKeys, requireRoot });
   }
 
+  async function readOperationReceipt(record) {
+    if (!record.operationIntent) return null;
+    const receiptPath = path.join(receiptDirectory, "operation-" + record.operationIntent.operationId + ".json");
+    let receipt;
+    try { receipt = JSON.parse(await fs.readFile(receiptPath, "utf8")); }
+    catch (error) { if (error?.code === "ENOENT") return null; throw error; }
+    assertExactKeys(receipt, ["receiptSchemaVersion", "purpose", "recoveryCaseId", "journalGeneration", "journalRecordDigest",
+      "operationId", "operationType", "operationInputDigest", "outcomeDigest", "timestamp", "authorityVersion",
+      "authorityKeyId", "authorityInstanceId", "receiptDigest", "authoritySignature"], "Host operation receipt");
+    verifyImmutableReceipt(receipt, journalPublicKeys);
+    const intent = record.operationIntent;
+    if (receipt.receiptSchemaVersion !== 1 || receipt.purpose !== "bodycast-production-recovery-operation-completion"
+      || receipt.recoveryCaseId !== record.recoveryCaseId || receipt.journalGeneration !== record.generation
+      || receipt.journalRecordDigest !== record.recordDigest || receipt.operationId !== intent.operationId
+      || receipt.operationType !== intent.operationType || receipt.operationInputDigest !== intent.operationInputDigest) {
+      throw new Error("Host operation receipt does not bind the exact committed operation intent.");
+    }
+    assertSha256(receipt.outcomeDigest, "operationReceipt.outcomeDigest");
+    return receipt;
+  }
+
+  async function writeOperationReceipt(record, outcome) {
+    const operationId = record.operationIntent.operationId;
+    const outcomeDigest = canonicalDigest(outcome ?? { ok: true });
+    const existing = await readOperationReceipt(record);
+    if (existing) {
+      if (existing.outcomeDigest !== outcomeDigest) throw new Error("Operation replay returned a different completion result.");
+      return existing;
+    }
+    const receipt = {
+      receiptSchemaVersion: 1,
+      purpose: "bodycast-production-recovery-operation-completion",
+      recoveryCaseId: record.recoveryCaseId,
+      journalGeneration: record.generation,
+      journalRecordDigest: record.recordDigest,
+      operationId,
+      operationType: record.operationIntent.operationType,
+      operationInputDigest: record.operationIntent.operationInputDigest,
+      outcomeDigest,
+      timestamp: timestamp(now()),
+      authorityVersion: signing.authorityVersion,
+      authorityKeyId: signing.authorityKeyId,
+      authorityInstanceId: signing.authorityInstanceId,
+    };
+    const stored = await writeImmutableReceipt(receiptDirectory, "operation-" + operationId + ".json", receipt,
+      { ...storageOptions, privateKey: signing.privateKey, publicKeys: journalPublicKeys });
+    await readOperationReceipt(record);
+    return stored.receipt;
+  }
+
+  async function executePendingOperation({ recoveryCaseId, generation, recordDigest, operationId }, execute) {
+    if (typeof execute !== "function") throw new Error("A fixed host operation executor is required.");
+    return withExclusiveRecoveryLock(lockPath, async () => {
+      const journal = await readValidatedJournal();
+      const record = journal.tail;
+      if (!record || record.recoveryCaseId !== recoveryCaseId || record.generation !== generation
+        || record.recordDigest !== recordDigest || record.operationIntent?.operationId !== operationId) {
+        throw new Error("Host executor does not match the exact current journal operation intent.");
+      }
+      const existing = await readOperationReceipt(record);
+      if (existing) return { receipt: existing, outcome: null, executed: false };
+      // The journal lock serializes first execution and every retry. After a crash,
+      // the fixed adapter receives the same operation ID and must first observe the
+      // exact target state; it may repeat only the operation-specific idempotent
+      // ensure/reconcile step, never blindly replay a destructive command.
+      const outcome = await execute({ record, intent: record.operationIntent });
+      const receipt = await writeOperationReceipt(record, outcome ?? { ok: true });
+      return { receipt, outcome: outcome ?? { ok: true }, executed: true };
+    }, lockOptions);
+  }
+
+  async function readPendingOperation() {
+    return withExclusiveRecoveryLock(lockPath, async () => {
+      const journal = await readValidatedJournal();
+      const record = journal.tail;
+      if (!record?.operationIntent) return null;
+      const receipt = await readOperationReceipt(record);
+      return { record, intent: record.operationIntent, operationEvidenceId: record.operationEvidenceId, receipt };
+    }, lockOptions);
+  }
+
   async function bootstrapFailedRelease(request) {
     return withExclusiveRecoveryLock(lockPath, async () => {
       const journal = await readValidatedJournal();
@@ -370,7 +462,11 @@ export function createRecoveryAuthority(config) {
       const journal = await readValidatedJournal();
       const tail = journal.tail;
       if (!tail) throw new Error("Recovery journal is not initialized.");
+      if (request.recoveryCaseId !== tail.recoveryCaseId) throw new Error("Recovery case selector does not match the authoritative journal case.");
       assertExpectedHead(request, tail);
+      if (tail.operationIntent && !(await readOperationReceipt(tail))) {
+        throw new Error("The prior committed host operation has no authenticated completion receipt; replay it before another transition.");
+      }
       const currentProjection = await readMarkerProjection(markerPath, tail, { requireRoot });
       if (currentProjection.absent) throw new Error("Active marker projection is missing; rebuild it before a transition.");
       const transition = request.transition;
@@ -486,6 +582,23 @@ export function createRecoveryAuthority(config) {
         }
       }
 
+      const operationType = RECOVERY_OPERATION_TYPES[transition] ?? null;
+      const operationInputDigest = operationType ? canonicalDigest({
+        schemaVersion: 1,
+        recoveryCaseId: tail.recoveryCaseId,
+        transition,
+        operationType,
+        sourceEvidenceDigest: canonicalDigest(evidence),
+        immutableRollbackArtifact: tail.immutableRollbackArtifact,
+        logicalProductionDbIdentityDigest: tail.logicalProductionDbIdentityDigest,
+      }) : null;
+      const operationIntent = operationType ? {
+        schemaVersion: 1,
+        operationType,
+        operationInputDigest,
+        operationId: canonicalDigest({ recoveryCaseId: tail.recoveryCaseId, generation: tail.generation + 1,
+          transition, operationType, operationInputDigest }),
+      } : null;
       const record = makeRecord({
         tail,
         nextState: definition.to,
@@ -497,6 +610,8 @@ export function createRecoveryAuthority(config) {
         grant,
         nonceConsumption,
         evidence,
+        operationIntent,
+        operationEvidenceId: operationIntent ? (request.operationEvidenceId ?? null) : null,
         workflowProvenance,
         now: now(),
         signing,
@@ -512,7 +627,11 @@ export function createRecoveryAuthority(config) {
       const journal = await readValidatedJournal();
       const tail = journal.tail;
       if (!tail) throw new Error("Recovery journal is not initialized.");
+      if (request.recoveryCaseId !== tail.recoveryCaseId) throw new Error("Recovery case selector does not match the authoritative journal case.");
       assertExpectedHead(request, tail);
+      if (tail.operationIntent && !(await readOperationReceipt(tail))) {
+        throw new Error("The prior committed host operation has no authenticated completion receipt; replay it before finalization.");
+      }
       assertEvidenceType(request.evidence, "finalize-recovery");
       await validateEvidence("finalize-recovery", request.evidence, tail);
       if (tail.nextState === "traffic-open") {
@@ -645,6 +764,9 @@ export function createRecoveryAuthority(config) {
         generation: journal.tail?.generation ?? 0,
         recordDigest: journal.tail?.recordDigest ?? JOURNAL_GENESIS_DIGEST,
         state: journal.tail?.nextState ?? null,
+        recoveryCaseId: journal.tail?.recoveryCaseId ?? null,
+        operationPending: journal.tail?.operationIntent ? !(await readOperationReceipt(journal.tail)) : false,
+        pendingOperationId: journal.tail?.operationIntent?.operationId ?? null,
         projection,
         receiptVerified,
         legacyMarker,
@@ -692,6 +814,8 @@ export function createRecoveryAuthority(config) {
   return Object.freeze({
     bootstrapFailedRelease,
     applyTransition,
+    readPendingOperation,
+    executePendingOperation,
     finalizeRecovery,
     readAuthoritativeState,
     rebuildMarkerProjection,

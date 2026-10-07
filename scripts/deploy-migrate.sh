@@ -33,15 +33,14 @@ done
 # context from its private store and independently verifies every signed proof.
 # This path never passes a shell command, filesystem path, or Docker argument.
 HOST_OPERATION_CLIENT="/usr/local/bin/bodycast-production-operation"
-if [[ -x "$HOST_OPERATION_CLIENT" && "${BODYCAST_AUTHORITY_EXECUTION:-0}" != "1" ]]; then
-  authorization_context_id="migration-${BODYCAST_AUTHORIZATION_WORKFLOW_ID}-${BODYCAST_AUTHORIZATION_RUN_ID}-${BODYCAST_AUTHORIZATION_RUN_ATTEMPT}"
-  exec "$HOST_OPERATION_CLIENT" forward-migration \
-    --request-id "${authorization_context_id}-request" \
-    --release-sha "$RELEASE_SHA" \
-    --canonical-main-sha "$RELEASE_SHA" \
-    --migration-manifest-id "$MANIFEST_ID" \
-    --authorization-context-id "$authorization_context_id"
-fi
+[[ -x "$HOST_OPERATION_CLIENT" ]] || fail "the recovery-aware host authority is unavailable; production migration is fail-closed."
+authorization_context_id="migration-${BODYCAST_AUTHORIZATION_WORKFLOW_ID}-${BODYCAST_AUTHORIZATION_RUN_ID}-${BODYCAST_AUTHORIZATION_RUN_ATTEMPT}"
+exec "$HOST_OPERATION_CLIENT" forward-migration \
+  --request-id "${authorization_context_id}-request" \
+  --release-sha "$RELEASE_SHA" \
+  --canonical-main-sha "$RELEASE_SHA" \
+  --migration-manifest-id "$MANIFEST_ID" \
+  --authorization-context-id "$authorization_context_id"
 
 [[ "$(git rev-parse --show-toplevel)" == "$ROOT_DIR" ]] || fail "repository root does not match the deployment checkout."
 [[ "$(git rev-parse HEAD)" == "$RELEASE_SHA" ]] || fail "deployment checkout does not equal the authorized release SHA."

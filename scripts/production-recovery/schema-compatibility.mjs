@@ -25,6 +25,7 @@ export async function verifyReadOnlySchemaCompatibility({
   withReadOnlyTransaction,
   resolveLogicalDatabaseIdentity,
   expected,
+  migrationHistoryRelation = { schema: "public", table: "_prisma_migrations" },
 }) {
   if (typeof withReadOnlyTransaction !== "function" || typeof resolveLogicalDatabaseIdentity !== "function") {
     throw new Error("Read-only PostgreSQL transaction and logical database identity adapters are required.");
@@ -69,8 +70,10 @@ export async function verifyReadOnlySchemaCompatibility({
     const actualSchemaDigest = canonicalDigest(schemaSnapshot);
     if (actualSchemaDigest !== expected.expectedSchemaDigest) throw new Error("Rollback schema digest does not match the captured compatibility manifest.");
 
+    const historySchema = quoteIdentifier(migrationHistoryRelation.schema, "migration history schema");
+    const historyTable = quoteIdentifier(migrationHistoryRelation.table, "migration history table");
     const migrations = await query(
-      'SELECT migration_name, checksum, finished_at, rolled_back_at FROM "_prisma_migrations" '
+      "SELECT migration_name, checksum, finished_at, rolled_back_at FROM " + historySchema + "." + historyTable + " "
         + "WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL ORDER BY migration_name",
       [],
     );

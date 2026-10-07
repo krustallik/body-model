@@ -16,8 +16,9 @@ const REQUIRED = Object.freeze({
   "recovery-state": ["request-id"],
   "recovery-bootstrap": ["request-id", "failed-state", "evidence-id", "rollout-receipt-id"],
   "recovery-rebuild-projection": ["request-id"],
-  "recovery-transition": ["request-id", "transition", "expected-generation", "expected-record-digest", "evidence-id", "authorization-envelope-b64", "policy-attestation-b64", "rollout-receipt-id"],
-  "recovery-finalize": ["request-id", "expected-generation", "expected-record-digest", "evidence-id"],
+  "recovery-transition": ["request-id", "recovery-case-id", "transition", "expected-generation", "expected-record-digest", "evidence-id", "authorization-envelope-b64", "policy-attestation-b64", "rollout-receipt-id"],
+  "recovery-finalize": ["request-id", "recovery-case-id", "expected-generation", "expected-record-digest", "evidence-id"],
+  "recovery-operation-replay": ["request-id", "recovery-case-id", "expected-generation", "expected-record-digest", "operation-id"],
   readiness: ["request-id"],
 });
 
@@ -38,6 +39,7 @@ export function parseOperationArguments(argv) {
   }
   const map = {
     "request-id": "requestId",
+    "recovery-case-id": "recoveryCaseId",
     "release-sha": "releaseSha",
     "canonical-main-sha": "canonicalMainSha",
     "release-mode": "releaseMode",
@@ -46,6 +48,7 @@ export function parseOperationArguments(argv) {
     "authorization-context-id": "authorizationContextId",
     "expected-generation": "expectedGeneration",
     "expected-record-digest": "expectedRecordDigest",
+    "operation-id": "operationId",
     "evidence-id": "evidenceId",
     "rollout-receipt-id": "rolloutReceiptId",
     transition: "transition",

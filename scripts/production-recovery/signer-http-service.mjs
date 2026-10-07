@@ -2,6 +2,7 @@ import https from "node:https";
 import { canonicalJson } from "./canonical.mjs";
 
 const ROUTES = Object.freeze({
+  "/v1/phase-challenges": "challenge",
   "/v1/policy-attestations": "policy",
   "/v1/phase-authorizations": "authorization",
 });
@@ -18,7 +19,7 @@ function send(response, status, body) {
 }
 
 export function createRecoverySignerHttpHandler({ policySigner, authorizationIssuer, maxRequestBytes = MAX_REQUEST_BYTES }) {
-  if (!policySigner || typeof policySigner.issue !== "function"
+  if (!policySigner || typeof policySigner.issue !== "function" || typeof policySigner.createChallenge !== "function"
     || !authorizationIssuer || typeof authorizationIssuer.issue !== "function") {
     throw new Error("Independent policy signer and phase authorization issuer are required.");
   }
@@ -43,9 +44,10 @@ export function createRecoverySignerHttpHandler({ policySigner, authorizationIss
       const text = Buffer.concat(chunks).toString("utf8");
       const body = JSON.parse(text);
       if (canonicalJson(body) !== text) return send(response, 400, { ok: false, error: "non-canonical-json" });
-      const result = route === "policy"
-        ? { policyAttestation: await policySigner.issue(body) }
-        : await authorizationIssuer.issue(body);
+      const result = route === "challenge"
+        ? await policySigner.createChallenge(body)
+        : route === "policy" ? { policyAttestation: await policySigner.issue(body) }
+          : await authorizationIssuer.issue(body);
       return send(response, 200, result);
     } catch {
       return send(response, 403, { ok: false, error: "recovery-authorization-rejected" });

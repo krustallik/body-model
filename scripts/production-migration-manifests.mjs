@@ -7,16 +7,46 @@ export const STAGE_02_MANIFEST = Object.freeze({
 });
 
 export const ACTIVE_ENERGY_UNIFIED_MANIFEST = Object.freeze({
-  id: "active-energy-unified-v1",
+  id: "active-energy-unified-v2",
   migrations: Object.freeze([
     Object.freeze({ name: "20261002100000_active_energy_canonical_resolution", sha256: "45711a527d809775a5ce66d3d9e529954158dcb65ed0065f70a0f948a4693a0b" }),
     Object.freeze({ name: "20261002150000_add_production_publication_generation", sha256: "9f1e38182dc3ec2449da5297786b603d8c0370498ed68db97059f640220bbbd7" }),
     Object.freeze({ name: "20261003120000_add_episode_aware_unified_experimental_physiology_v2", sha256: "0bb495d988ead0c1729f8e657b85f85bc4c20673fdedd5b61a7644cb0dcaf9b6" }),
+    Object.freeze({ name: "20261005120000_episode_relative_muscle_core", sha256: "afef76464e4e77e6fd13a6ed6f8b04a6972d98229e3c5fc12a7e7dd8e3fd6588" }),
+    Object.freeze({ name: "20261006110000_relative_muscle_legacy_identity", sha256: "56d8a64d4c966428835a96058783d01c4eac5984f8ed51928d26b13d6290208e" }),
     Object.freeze({ name: "20261006130000_unified_v4_glycogen_water_rollout", sha256: "9e50a8f33ec93e5f7d74681a611bd7272038f7e5e25563054f4a4dbb093b5408" }),
   ]),
   requiredTablesBefore: Object.freeze([
     "Workout", "Profile", "ModelEpisode", "PhysiologyV7Lifecycle", "DailyModelState", "_prisma_migrations",
+    "ExperimentalSkeletalMuscleDeltaShadow", "ExperimentalCessationDetrainingShadow",
   ]),
+  requiredObjectsBefore: Object.freeze([
+    "ExperimentalSkeletalMuscleDeltaShadow_profileId_date_key",
+    "ExperimentalCessationDetrainingShadow_profileId_date_key",
+  ]),
+  requiredObjectSignatureIncludes: Object.freeze({
+    "ExperimentalSkeletalMuscleDeltaShadow_profileId_date_key": "unique=true|valid=true|definition=CREATE UNIQUE INDEX \"ExperimentalSkeletalMuscleDeltaShadow_profileId_date_key\" ON public.\"ExperimentalSkeletalMuscleDeltaShadow\" USING btree (\"profileId\", date)",
+    "ExperimentalCessationDetrainingShadow_profileId_date_key": "unique=true|valid=true|definition=CREATE UNIQUE INDEX \"ExperimentalCessationDetrainingShadow_profileId_date_key\" ON public.\"ExperimentalCessationDetrainingShadow\" USING btree (\"profileId\", date)",
+  }),
+  postflightAbsentObjects: Object.freeze([
+    "ExperimentalSkeletalMuscleDeltaShadow_profileId_date_key",
+    "ExperimentalCessationDetrainingShadow_profileId_date_key",
+  ]),
+  postflightSignatureIncludes: Object.freeze({
+    "ExperimentalSkeletalMuscleDeltaShadow.modelEpisodeId": "integer|nullable=true|default=",
+    "ExperimentalSkeletalMuscleDeltaShadow.isStale": "boolean|nullable=false|default=false",
+    "ExperimentalCessationDetrainingShadow.modelEpisodeId": "integer|nullable=true|default=",
+    "ExperimentalCessationDetrainingShadow.isStale": "boolean|nullable=false|default=false",
+    "ModelEpisode_id_profileId_key": "CREATE UNIQUE INDEX \"ModelEpisode_id_profileId_key\" ON public.\"ModelEpisode\" USING btree (id, \"profileId\")",
+    "RelMuscleDelta_episode_profile_fkey": "FOREIGN KEY (\"modelEpisodeId\", \"profileId\") REFERENCES \"ModelEpisode\"(id, \"profileId\") ON UPDATE CASCADE ON DELETE RESTRICT",
+    "RelMuscleCessation_episode_profile_fkey": "FOREIGN KEY (\"modelEpisodeId\", \"profileId\") REFERENCES \"ModelEpisode\"(id, \"profileId\") ON UPDATE CASCADE ON DELETE RESTRICT",
+    "RelMuscleDelta_episode_date_key": "CREATE UNIQUE INDEX \"RelMuscleDelta_episode_date_key\" ON public.\"ExperimentalSkeletalMuscleDeltaShadow\" USING btree (\"profileId\", \"modelEpisodeId\", date) NULLS NOT DISTINCT",
+    "RelMuscleDelta_episode_stale_date_idx": "CREATE INDEX \"RelMuscleDelta_episode_stale_date_idx\" ON public.\"ExperimentalSkeletalMuscleDeltaShadow\" USING btree (\"profileId\", \"modelEpisodeId\", \"isStale\", date)",
+    "RelMuscleDelta_episode_profile_idx": "CREATE INDEX \"RelMuscleDelta_episode_profile_idx\" ON public.\"ExperimentalSkeletalMuscleDeltaShadow\" USING btree (\"modelEpisodeId\", \"profileId\")",
+    "RelMuscleCessation_episode_date_key": "CREATE UNIQUE INDEX \"RelMuscleCessation_episode_date_key\" ON public.\"ExperimentalCessationDetrainingShadow\" USING btree (\"profileId\", \"modelEpisodeId\", date) NULLS NOT DISTINCT",
+    "RelMuscleCessation_episode_stale_date_idx": "CREATE INDEX \"RelMuscleCessation_episode_stale_date_idx\" ON public.\"ExperimentalCessationDetrainingShadow\" USING btree (\"profileId\", \"modelEpisodeId\", \"isStale\", date)",
+    "RelMuscleCessation_episode_profile_idx": "CREATE INDEX \"RelMuscleCessation_episode_profile_idx\" ON public.\"ExperimentalCessationDetrainingShadow\" USING btree (\"modelEpisodeId\", \"profileId\")",
+  }),
   postflightObjects: Object.freeze([
     "ActiveEnergyCanonicalEvent", "ActiveEnergyCanonicalEvent_pkey", "ActiveEnergyCanonicalEvent_profile_key_key",
     "ActiveEnergyCanonicalEvent_superseded_by_fkey", "ActiveEnergyCanonicalEvent_revisions_nonnegative",
@@ -47,6 +77,11 @@ export const ACTIVE_ENERGY_UNIFIED_MANIFEST = Object.freeze({
     "UnifiedExperimentalPhysiologyStateV2_profileId_qualityStatus_boundaryAt_idx",
     "UnifiedExperimentalPhysiologyStateV2_profileId_resultFingerprint_idx",
     "UnifiedExperimentalPhysiologyStateV2_id_seq",
+    "ExperimentalSkeletalMuscleDeltaShadow.modelEpisodeId", "ExperimentalSkeletalMuscleDeltaShadow.isStale",
+    "ExperimentalCessationDetrainingShadow.modelEpisodeId", "ExperimentalCessationDetrainingShadow.isStale",
+    "ModelEpisode_id_profileId_key", "RelMuscleDelta_episode_profile_fkey", "RelMuscleCessation_episode_profile_fkey",
+    "RelMuscleDelta_episode_date_key", "RelMuscleDelta_episode_stale_date_idx", "RelMuscleDelta_episode_profile_idx",
+    "RelMuscleCessation_episode_date_key", "RelMuscleCessation_episode_stale_date_idx", "RelMuscleCessation_episode_profile_idx",
   ]),
 });
 

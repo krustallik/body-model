@@ -8,6 +8,7 @@ export const REQUIRED_AUTHORIZATION_CLAIMS = Object.freeze([
   "releaseSha", "currentMainSha", "manifestId", "pendingMigrationNames", "pendingSetDigest",
   "preflightRunId", "preflightRunAttempt", "preflightRunStartedAt", "preflightResultDigest", "backupArtifactId",
   "backupArtifactDigest", "backupSnapshotAt", "restoreResultDigest", "productionIdentityDigest",
+  "writerDrainDigest", "writerTopologyDigest",
   "issuedAt", "expiresAt", "authorizationId", "nonce",
 ]);
 
@@ -67,7 +68,7 @@ function validateClaimsShape(claims) {
   for (const key of ["releaseSha", "currentMainSha"]) {
     if (!/^[a-f0-9]{40}$/.test(claims[key])) reject(`${key} must be a full lowercase commit SHA.`);
   }
-  for (const key of ["pendingSetDigest", "preflightResultDigest", "backupArtifactDigest", "restoreResultDigest", "productionIdentityDigest"]) {
+  for (const key of ["pendingSetDigest", "preflightResultDigest", "backupArtifactDigest", "restoreResultDigest", "productionIdentityDigest", "writerDrainDigest", "writerTopologyDigest"]) {
     if (!/^[a-f0-9]{64}$/.test(claims[key])) reject(`${key} must be a lowercase SHA-256 digest.`);
   }
   for (const key of ["issuedAt", "expiresAt", "backupSnapshotAt", "preflightRunStartedAt"]) {
@@ -82,7 +83,7 @@ function compareLiveClaims(claims, live) {
     "repository", "workflowId", "workflowPath", "workflowRunId", "workflowRunAttempt", "releaseSha",
     "currentMainSha", "manifestId", "pendingMigrationNames", "pendingSetDigest", "preflightRunId",
     "preflightRunAttempt", "preflightRunStartedAt", "preflightResultDigest", "backupArtifactId", "backupArtifactDigest",
-    "backupSnapshotAt", "restoreResultDigest", "productionIdentityDigest",
+    "backupSnapshotAt", "restoreResultDigest", "productionIdentityDigest", "writerDrainDigest", "writerTopologyDigest",
   ];
   for (const field of fields) {
     if (!(field in live)) continue;
@@ -150,6 +151,7 @@ export function createClaimsFromPreflight({
   repository, workflowId, workflowPath, workflowRunId, workflowRunAttempt, releaseSha, currentMainSha,
   manifestId, pendingMigrationNames, preflightRunId, preflightRunAttempt, preflightRunStartedAt, preflightResultDigest,
   backupArtifactId, backupArtifactDigest, backupSnapshotAt, restoreResultDigest, productionIdentityDigest,
+  writerDrainDigest, writerTopologyDigest,
   issuedAt, expiresAt, authorizationId, nonce,
 }) {
   const names = [...pendingMigrationNames].sort();
@@ -157,6 +159,6 @@ export function createClaimsFromPreflight({
     repository, workflowId, workflowPath, workflowRunId, workflowRunAttempt, releaseSha, currentMainSha,
     manifestId, pendingMigrationNames: names, pendingSetDigest: canonicalSha256(names), preflightRunId,
     preflightRunAttempt, preflightRunStartedAt, preflightResultDigest, backupArtifactId, backupArtifactDigest, backupSnapshotAt,
-    restoreResultDigest, productionIdentityDigest, issuedAt, expiresAt, authorizationId, nonce,
+    restoreResultDigest, productionIdentityDigest, writerDrainDigest, writerTopologyDigest, issuedAt, expiresAt, authorizationId, nonce,
   };
 }

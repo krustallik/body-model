@@ -10,6 +10,11 @@ on:
       - "prisma/migrations/**"
       - "scripts/production-migration-*.mjs"
       - "scripts/production-traffic-cutover.sh"
+      - "scripts/production-writer-drain.sh"
+      - "scripts/production-writer-drain.mjs"
+      - "scripts/production-release-marker.sh"
+      - "scripts/deploy.sh"
+      - "docker-compose.prod.yml"
       - "scripts/unified-*-postflight.ts"
       - "scripts/unified-v4-*.ts"
       - "scripts/production-migration-verification-keys.json"
@@ -40,6 +45,7 @@ on:
       - "scripts/ci/production-safety-postgres-smoke.mjs"
       - "tests/production-safety-tooling.test.mjs"
       - "tests/production-migration-v5.test.mjs"
+      - "tests/production-writer-drain.test.mjs"
       - "tests/deploy-script-ordering.test.ts"
       - "tests/production-migration-release-tooling.sh"
       - "package.json"
@@ -107,10 +113,10 @@ jobs:
         run: npx prisma generate --schema prisma/schema.prisma
 
       - name: Run targeted safety-tooling tests
-        run: npm run test:unit -- tests/production-migration-v5.test.mjs tests/production-safety-tooling.test.mjs
+        run: npm run test:unit -- tests/production-migration-v5.test.mjs tests/production-safety-tooling.test.mjs tests/production-writer-drain.test.mjs
 
       - name: Check production migration shell syntax
-        run: bash -n scripts/deploy-migrate.sh scripts/production-migration-readiness.sh scripts/production-migration-summary.sh tests/production-migration-release-tooling.sh
+        run: bash -n scripts/deploy-migrate.sh scripts/production-migration-readiness.sh scripts/production-migration-summary.sh scripts/production-writer-drain.sh scripts/production-release-marker.sh scripts/production-traffic-cutover.sh scripts/deploy.sh tests/production-migration-release-tooling.sh
 
       - name: Build migrator image and verify in-image migration bytes
         run: |
@@ -126,7 +132,7 @@ jobs:
         env:
           BODYCAST_TEST_DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast
         run: |
-          bash -n scripts/production-migration-readiness.sh scripts/production-migration-summary.sh tests/production-migration-release-tooling.sh
+          bash -n scripts/production-migration-readiness.sh scripts/production-migration-summary.sh scripts/production-writer-drain.sh scripts/production-release-marker.sh scripts/production-traffic-cutover.sh scripts/deploy.sh tests/production-migration-release-tooling.sh
           bash tests/production-migration-release-tooling.sh
 
       - name: Run real PostgreSQL encrypted backup, restore, and fail-closed smoke

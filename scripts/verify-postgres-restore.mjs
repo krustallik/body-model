@@ -87,7 +87,7 @@ export function isProductionLikeName(name) {
 export function isLocalDockerEndpoint(endpoint) {
   return typeof endpoint === "string"
     && (/^unix:\/\//i.test(endpoint)
-      || /^npipe:\/{4}\.\/pipe\/docker_engine$/i.test(endpoint)
+      || /^npipe:\/{4}\.\/pipe\/(?:docker_engine|dockerDesktopLinuxEngine)$/i.test(endpoint)
       || /^tcp:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(endpoint));
 }
 

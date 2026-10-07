@@ -14,6 +14,7 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+source "$ROOT_DIR/scripts/production-release-marker.sh"
 
 readonly COMPOSE_FILE="docker-compose.prod.yml"
 readonly APP_SERVICE="app"
@@ -45,6 +46,25 @@ if [[ "$deployed_sha" != "$DEPLOY_SHA" ]]; then
   echo "Checked-out SHA ${deployed_sha} does not match DEPLOY_SHA ${DEPLOY_SHA}." >&2
   exit 1
 fi
+marker_status=1
+read_bodycast_release_marker || marker_status=$?
+active_schema_cutover=false
+if [[ "$marker_status" -eq 0 ]]; then
+  [[ "$BODYCAST_MARKER_RELEASE_SHA" == "$DEPLOY_SHA" \
+    && ( "$BODYCAST_MARKER_STATE" == "schema-applied" || "$BODYCAST_MARKER_STATE" == "app-ready" ) ]] || {
+    echo "Deployment SHA/state does not match the pending production schema-cutover marker; refusing app start." >&2
+    exit 1
+  }
+  [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" ]] || {
+    echo "A schema-cutover marker requires an exact-SHA non-serving deployment first." >&2
+    exit 1
+  }
+  active_schema_cutover=true
+elif [[ "$marker_status" -ne 1 ]]; then
+  echo "Invalid production release marker; refusing deployment." >&2
+  exit 1
+fi
+export BODYCAST_DEPLOY_SHA="$DEPLOY_SHA"
 chmod +x "${ROOT_DIR}/scripts/deploy.sh" "${ROOT_DIR}/scripts/deploy-preflight-schema.sh" "${ROOT_DIR}/scripts/production-traffic-cutover.sh"
 
 compose() {
@@ -63,10 +83,23 @@ rollback() {
   exit_code=$?
   if [[ "$app_cut_over" != "true" ]]; then
     echo "Deployment failed before app cutover; leaving the running application unchanged." >&2
-    if [[ "$previous_image_exists" == "true" ]] && docker image inspect "$ROLLBACK_IMAGE" >/dev/null 2>&1; then
+    if [[ "$active_schema_cutover" == "true" || "$BODYCAST_NON_SERVING_DEPLOY" == "1" ]]; then
+      APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" \
+        bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance || true
+    elif [[ "$previous_image_exists" == "true" ]] && docker image inspect "$ROLLBACK_IMAGE" >/dev/null 2>&1; then
       # Restore :latest tag for cleanliness without recreating the container.
       docker image tag "$ROLLBACK_IMAGE" "$CURRENT_IMAGE" || true
     fi
+    compose logs --tail=100 "$APP_SERVICE" || true
+    exit "$exit_code"
+  fi
+
+  if [[ "$active_schema_cutover" == "true" || "$BODYCAST_NON_SERVING_DEPLOY" == "1" ]]; then
+    echo "Non-serving/schema-cutover deployment failed; keeping maintenance active and refusing to restart the prior binary." >&2
+    APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" \
+      bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance || true
+    docker update --restart=no "$APP_CONTAINER" >/dev/null 2>&1 || true
+    compose stop "$APP_SERVICE" >/dev/null 2>&1 || true
     compose logs --tail=100 "$APP_SERVICE" || true
     exit "$exit_code"
   fi
@@ -129,7 +162,16 @@ done
 docker exec "$APP_CONTAINER" wget --quiet --tries=1 --output-document=- \
   http://127.0.0.1:3000/api/health | grep -q '"status":"ok"'
 
+deployed_container_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER")"
+[[ "$deployed_container_sha" == "$DEPLOY_SHA" ]] || {
+  echo "Running app container release label does not match the authorized exact SHA." >&2
+  exit 1
+}
+
 if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" ]]; then
+  if [[ "$active_schema_cutover" == "true" ]]; then
+    write_bodycast_release_marker "$DEPLOY_SHA" app-ready
+  fi
   echo "Exact SHA is deployed in non-serving maintenance mode; explicit V4 activation/replay and traffic check remain required."
 else
   APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" \

@@ -29,6 +29,10 @@ export async function createSignedAuthorization({ evidence, report, restore, run
   if (canonicalSha256(report) !== evidence.preflightResultDigest) throw new Error("Preflight report digest differs from the attested digest.");
   if (canonicalSha256(restore) !== evidence.restoreResultDigest || restore?.verified !== true) throw new Error("Restore result digest or verified status is invalid.");
   if (canonicalSha256(report.identity) !== evidence.productionIdentityDigest) throw new Error("Production identity digest differs from the verified preflight report.");
+  if (canonicalSha256(report.writerDrain) !== evidence.writerDrainDigest
+    || canonicalSha256(report.writerDrain?.topology) !== evidence.writerTopologyDigest) {
+    throw new Error("Writer-drain or topology digest differs from the verified preflight report.");
+  }
   if (canonicalSha256([...report.pending].sort()) !== report.pendingSetDigest) throw new Error("Preflight pending-set digest is invalid.");
   if (report.readyForOwnerAuthorization !== true || report.manifestId !== evidence.manifestId) throw new Error("Preflight did not produce an owner-authorization-ready result.");
   verifyPreflightArtifactMetadata(artifact, run);
@@ -56,6 +60,8 @@ export async function createSignedAuthorization({ evidence, report, restore, run
     backupSnapshotAt: evidence.backupSnapshotAt,
     restoreResultDigest: evidence.restoreResultDigest,
     productionIdentityDigest: evidence.productionIdentityDigest,
+    writerDrainDigest: evidence.writerDrainDigest,
+    writerTopologyDigest: evidence.writerTopologyDigest,
     issuedAt: new Date(issuedMs).toISOString(),
     expiresAt: new Date(expiresMs).toISOString(),
     authorizationId: randomUUID(),

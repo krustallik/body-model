@@ -13,7 +13,7 @@ on:
         required: true
         type: choice
         options:
-          - active-energy-unified-v1
+          - active-energy-unified-v2
       confirm_production_preflight:
         description: Type inspect-backup-restore to authorize read-only inspection, encrypted backup, and disposable rehearsal
         required: true
@@ -54,7 +54,7 @@ jobs:
           [[ "$GITHUB_REPOSITORY" == "krustallik/body-model" ]] || { echo "::error::Canonical repository only."; exit 1; }
           [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::Dispatch this workflow from main."; exit 1; }
           [[ "$CONFIRMATION" == "inspect-backup-restore" ]] || { echo "::error::Exact read-only preflight confirmation is required."; exit 1; }
-          [[ "$MANIFEST_ID" == "active-energy-unified-v1" ]] || { echo "::error::Manifest is not in the closed allowlist."; exit 1; }
+          [[ "$MANIFEST_ID" == "active-energy-unified-v2" ]] || { echo "::error::Manifest is not in the closed allowlist."; exit 1; }
           [[ "$DISPATCH_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::release_sha must be a full lowercase commit SHA."; exit 1; }
           git fetch --no-tags origin main
           MAIN_TIP="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
@@ -184,13 +184,17 @@ jobs:
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          APP_HOST: ${{ secrets.APP_HOST }}
+          CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
           MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
         run: |
           set -Eeuo pipefail
           SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
-          REMOTE_COMMAND="bash -c 'set -Eeuo pipefail; deploy_path=\$(printf %s $DEPLOY_PATH_B64 | base64 --decode); exec bash \"\$deploy_path/scripts/production-db-target.sh\" --preflight bodycast-db-prod'"
+          APP_HOST_B64="$(printf '%s' "$APP_HOST" | base64 -w0)"
+          CADDY_ROUTES_PATH_B64="$(printf '%s' "$CADDY_ROUTES_PATH" | base64 -w0)"
+          REMOTE_COMMAND="bash -c 'set -Eeuo pipefail; deploy_path=\$(printf %s $DEPLOY_PATH_B64 | base64 --decode); app_host=\$(printf %s $APP_HOST_B64 | base64 --decode); routes_path=\$(printf %s $CADDY_ROUTES_PATH_B64 | base64 --decode); APP_HOST=\"\$app_host\" CADDY_ROUTES_PATH=\"\$routes_path\" exec bash \"\$deploy_path/scripts/production-db-target.sh\" --preflight bodycast-db-prod'"
           node scripts/production-db-preflight.mjs | "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND" \
             > "$RUNNER_TEMP/preflight-report.json"
           node scripts/production-migration-preflight.mjs --preflight --manifest "$MANIFEST_ID" --release-sha "$RELEASE_SHA" --repository "$GITHUB_WORKSPACE" --report "$RUNNER_TEMP/preflight-report.json" \
@@ -239,13 +243,13 @@ jobs:
             --source "$RUNNER_TEMP/preflight-report.json" --restored "$RUNNER_TEMP/restored-base-report.json" \
             --readability "$RUNNER_TEMP/restored-readability.json" --repository "$GITHUB_WORKSPACE" \
             > "$RUNNER_TEMP/restore-base-result.json"
-          node scripts/production-migration-preflight.mjs --execution-integrity --manifest active-energy-unified-v1 --release-sha "$GITHUB_SHA" --repository "$GITHUB_WORKSPACE" \
+          node scripts/production-migration-preflight.mjs --execution-integrity --manifest active-energy-unified-v2 --release-sha "$GITHUB_SHA" --repository "$GITHUB_WORKSPACE" \
             > "$RUNNER_TEMP/execution-integrity.json"
           DATABASE_URL="$(node --input-type=module -e 'import { withPrismaLockTimeout } from "./scripts/production-migration-release.mjs"; process.stdout.write(withPrismaLockTimeout(process.env.DATABASE_URL,5000))')"
           export DATABASE_URL
           npx prisma migrate deploy --schema prisma/schema.prisma
           node scripts/production-db-preflight.mjs | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 > "$RUNNER_TEMP/restored-postflight-report.json"
-          node scripts/production-migration-restore-check.mjs --postflight --manifest active-energy-unified-v1 --repository "$GITHUB_WORKSPACE" \
+          node scripts/production-migration-restore-check.mjs --postflight --manifest active-energy-unified-v2 --repository "$GITHUB_WORKSPACE" \
             --report "$RUNNER_TEMP/restored-postflight-report.json" > "$RUNNER_TEMP/restore-postflight-result.json"
           node scripts/production-migration-restore-check.mjs --combine \
             --base "$RUNNER_TEMP/restore-base-result.json" --postflight "$RUNNER_TEMP/restore-postflight-result.json" \

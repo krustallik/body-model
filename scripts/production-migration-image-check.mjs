@@ -21,7 +21,24 @@ export async function verifyMigrationImageFiles(repositoryPath) {
     if (bytes.length < 256) throw new Error(`Migrator image rollout tool is missing or unexpectedly empty: ${name}`);
     rolloutTools.push({ name, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
   }
-  return { migrations: results, rolloutTools };
+  const writerDrainPath = path.join(repositoryPath, "scripts", "production-writer-drain.mjs");
+  const writerDrainBytes = await readFile(writerDrainPath);
+  const writerDrain = await import(pathToFileURL(writerDrainPath).href);
+  if (writerDrainBytes.length < 256
+    || writerDrain.PRODUCTION_WRITER_TOPOLOGY_CONTRACT !== "bodycast-compose-internal-db-single-writer-v1"
+    || typeof writerDrain.evaluateProductionWriterDrain !== "function") {
+    throw new Error("Migrator image writer-drain safety module is missing, incomplete, or has an unexpected contract.");
+  }
+  return {
+    migrations: results,
+    rolloutTools,
+    writerDrainModule: {
+      name: "production-writer-drain.mjs",
+      bytes: writerDrainBytes.length,
+      sha256: createHash("sha256").update(writerDrainBytes).digest("hex"),
+      contract: writerDrain.PRODUCTION_WRITER_TOPOLOGY_CONTRACT,
+    },
+  };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

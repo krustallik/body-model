@@ -16,6 +16,7 @@ import {
   verifyRestoredBackup,
 } from "../scripts/production-migration-preflight.mjs";
 import { ACTIVE_ENERGY_UNIFIED_MANIFEST, STAGE_02_MANIFEST } from "../scripts/production-migration-manifests.mjs";
+import { PRODUCTION_WRITER_TOPOLOGY_CONTRACT } from "../scripts/production-writer-drain.mjs";
 import { getExpectedSchemaObjectNames, renderProductionDbPreflightSql } from "../scripts/production-db-preflight.mjs";
 import {
   isDisposableNonProductionTarget,
@@ -87,6 +88,7 @@ describe("PostgreSQL backup client compatibility", () => {
 function preflightFixture(migrationDirectories) {
   const stage02Checksums = new Map(STAGE_02_MANIFEST.migrations.map(({ name, sha256 }) => [name, sha256]));
   const appliedMigrations = migrationDirectories.filter((name) => !EXPECTED_PENDING_MIGRATIONS.includes(name));
+  const now = new Date().toISOString();
   return {
     identity: { database: "bodycast", databaseOid: 16384, role: "bodycast", serverVersion: "17.0", serverAddress: "172.20.0.2", serverPort: 5432 },
     migrations: appliedMigrations.map((name) => ({
@@ -99,14 +101,18 @@ function preflightFixture(migrationDirectories) {
     })),
     objects: getExpectedSchemaObjectNames().map((name) => ({
       name,
-      present: EXPECTED_MIGRATION_OBJECTS.includes(name),
+      present: EXPECTED_MIGRATION_OBJECTS.includes(name) || ACTIVE_ENERGY_UNIFIED_MANIFEST.requiredObjectsBefore.includes(name),
       kind: name.includes(".") ? "column" : "constraint",
-      signature: EXPECTED_MIGRATION_OBJECTS.includes(name) ? "reviewed-object-signature" : null,
+      signature: EXPECTED_MIGRATION_OBJECTS.includes(name)
+        ? "reviewed-object-signature"
+        : ACTIVE_ENERGY_UNIFIED_MANIFEST.requiredObjectSignatureIncludes[name] ?? null,
     })),
     tables: {
       Workout: { exists: true, estimatedRows: 1, totalBytes: 4096 },
       Profile: { exists: true, estimatedRows: 1, totalBytes: 4096 },
       ModelEpisode: { exists: true, estimatedRows: 1, totalBytes: 4096 },
+      ExperimentalSkeletalMuscleDeltaShadow: { exists: true, estimatedRows: 1, totalBytes: 4096 },
+      ExperimentalCessationDetrainingShadow: { exists: true, estimatedRows: 1, totalBytes: 4096 },
       PhysiologyV7Lifecycle: { exists: true, estimatedRows: 1, totalBytes: 4096 },
       DailyModelState: { exists: true, estimatedRows: 1, totalBytes: 4096 },
       StrengthDiarySession: { exists: true, estimatedRows: 22, totalBytes: 4096 },
@@ -116,6 +122,26 @@ function preflightFixture(migrationDirectories) {
     longTransactions: [],
     conflictingLocks: [],
     preparedTransactions: [],
+    writerDrain: {
+      schemaVersion: 1,
+      observerPid: 123,
+      observerApplicationName: "bodycast-production-preflight",
+      identityPolicy: "no-other-client-backends",
+      activeClientBackends: [],
+      observedAt: now,
+      topology: {
+        schemaVersion: 1,
+        contract: PRODUCTION_WRITER_TOPOLOGY_CONTRACT,
+        ready: true,
+        blockers: [],
+        observedAt: now,
+        app: { name: "bodycast-app-prod", state: "absent", restartPolicy: null },
+        database: { name: "bodycast-db-prod", state: "running", health: "healthy", publishedPostgresPort: false, networks: ["bodycast-backend-prod"] },
+        backendNetwork: { name: "bodycast-backend-prod", containers: ["bodycast-db-prod"] },
+        caddy: { name: "gymbeam-caddy", state: "running", configValidated: true },
+        routeFile: { verified: true, maintenanceResponse: true, containsReverseProxy: false, sha256: "a".repeat(64) },
+      },
+    },
   };
 }
 
@@ -194,6 +220,7 @@ describe("production migration preflight evaluator", () => {
     expect(rendered).not.toContain("__EXPECTED_SCHEMA_OBJECTS_JSON__");
     expect(getExpectedSchemaObjectNames()).toEqual([...new Set([
       ...EXPECTED_MIGRATION_OBJECTS,
+      ...ACTIVE_ENERGY_UNIFIED_MANIFEST.requiredObjectsBefore,
       ...ACTIVE_ENERGY_UNIFIED_MANIFEST.postflightObjects,
     ])].sort());
   });
@@ -263,6 +290,7 @@ describe("disposable restore safety gate", () => {
     expect(isProductionLikeName("production-context")).toBe(true);
     expect(isProductionLikeName("bodycast-test-pg")).toBe(false);
     expect(isLocalDockerEndpoint("npipe:////./pipe/docker_engine")).toBe(true);
+    expect(isLocalDockerEndpoint("npipe:////./pipe/dockerDesktopLinuxEngine")).toBe(true);
     expect(isLocalDockerEndpoint("npipe:////prod-host/pipe/docker_engine")).toBe(false);
     expect(isLocalDockerEndpoint("npipe:////./pipe/docker_engine/extra")).toBe(false);
     expect(isLocalDockerEndpoint("npipe:///./pipe/docker_engine")).toBe(false);

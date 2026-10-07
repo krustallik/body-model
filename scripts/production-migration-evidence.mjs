@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { canonicalSha256 } from "./production-migration-authorization.mjs";
+import { evaluateProductionWriterDrain } from "./production-writer-drain.mjs";
 
 async function readJson(filePath) { return JSON.parse(await readFile(filePath, "utf8")); }
 
@@ -10,6 +11,11 @@ export function createPreflightEvidence({ rawReport, preflightResult, restoreRes
   if (restoreResult?.verified !== true || restoreResult?.postflightReady !== true) throw new Error("Cannot attest an unverified disposable restore or migration rehearsal.");
   if (preflightResult.manifestId !== context.manifestId || preflightResult.identity?.database !== "bodycast") {
     throw new Error("Preflight report does not match the released manifest or expected production database.");
+  }
+  const writerDrain = evaluateProductionWriterDrain(rawReport);
+  if (!writerDrain.ready || preflightResult.writerDrainReady !== true
+    || canonicalSha256(rawReport.writerDrain) !== preflightResult.writerDrainDigest) {
+    throw new Error("Preflight writer-drain/topology evidence is missing, blocked, or differs from the evaluated result.");
   }
   const backupSnapshot = Date.parse(snapshotStartedAt);
   if (!Number.isFinite(backupSnapshot) || backupSnapshot > Date.now() + 60_000) throw new Error("Production pg_dump start timestamp is invalid.");
@@ -30,6 +36,8 @@ export function createPreflightEvidence({ rawReport, preflightResult, restoreRes
     backupSnapshotAt: new Date(backupSnapshot).toISOString(),
     restoreResultDigest: canonicalSha256(restoreResult),
     productionIdentityDigest: canonicalSha256(rawReport.identity),
+    writerDrainDigest: canonicalSha256(rawReport.writerDrain),
+    writerTopologyDigest: canonicalSha256(rawReport.writerDrain.topology),
     postSchemaDigest: restoreResult.postSchemaDigest,
     createdAt: new Date().toISOString(),
   };

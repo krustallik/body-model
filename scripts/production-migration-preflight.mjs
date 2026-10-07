@@ -4,6 +4,7 @@ import path from "node:path";
 import { STAGE_02_MANIFEST, ACTIVE_ENERGY_UNIFIED_MANIFEST, getProductionMigrationManifest } from "./production-migration-manifests.mjs";
 import { verifyManifestBlob, verifyExecutionFileMatchesBlob } from "./production-migration-integrity.mjs";
 import { canonicalSha256, verifyAuthorizationEnvelope } from "./production-migration-authorization.mjs";
+import { evaluateProductionWriterDrain } from "./production-writer-drain.mjs";
 
 export const EXPECTED_PENDING_MIGRATIONS = ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations.map(({ name }) => name);
 export const EXPECTED_MIGRATION_OBJECTS = Object.freeze([
@@ -24,7 +25,11 @@ export const EXPECTED_MIGRATION_OBJECTS = Object.freeze([
 ]);
 
 export const ALL_REVIEWED_MIGRATIONS = [...STAGE_02_MANIFEST.migrations, ...ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations];
-const ALL_REVIEWED_OBJECTS = [...EXPECTED_MIGRATION_OBJECTS, ...ACTIVE_ENERGY_UNIFIED_MANIFEST.postflightObjects];
+const ALL_REVIEWED_OBJECTS = [...new Set([
+  ...EXPECTED_MIGRATION_OBJECTS,
+  ...ACTIVE_ENERGY_UNIFIED_MANIFEST.requiredObjectsBefore,
+  ...ACTIVE_ENERGY_UNIFIED_MANIFEST.postflightObjects,
+])];
 
 function sorted(values) { return [...values].sort(); }
 function sameArray(left, right) { return JSON.stringify(sorted(left)) === JSON.stringify(sorted(right)); }
@@ -115,6 +120,8 @@ function migrationState(report, migrationDirectories) {
 export function evaluateProductionPreflight(report, migrationDirectories, manifestId = ACTIVE_ENERGY_UNIFIED_MANIFEST.id) {
   const manifest = getProductionMigrationManifest(manifestId);
   const { blockers, rows, pending, failed, rolledBack, duplicate, unexpected } = migrationState(report, migrationDirectories);
+  const missingManifestDirectories = manifest.migrations.map(({ name }) => name).filter((name) => !migrationDirectories.includes(name));
+  if (missingManifestDirectories.length) blockers.push(`Reviewed manifest migrations are missing from the release tree: ${missingManifestDirectories.join(", ")}.`);
   const expectedPending = sorted(manifest.migrations.map(({ name }) => name));
   if (!sameArray(migrationDirectories, [...new Set(migrationDirectories)])) blockers.push("Release tree contains duplicate migration directory names.");
   if (!sameArray(pending, expectedPending)) blockers.push(`Full release-tree pending set differs from manifest ${manifest.id}: ${sorted(pending).join(", ") || "none"}.`);
@@ -130,6 +137,13 @@ export function evaluateProductionPreflight(report, migrationDirectories, manife
   if (partialObjects.length) blockers.push(`Active Energy migration objects already exist while the migration set is pending: ${partialObjects.join(", ")}.`);
   const missingStage02Objects = EXPECTED_MIGRATION_OBJECTS.filter((name) => objectMap.get(name)?.present !== true);
   if (missingStage02Objects.length) blockers.push(`Required Stage 02 schema objects are missing: ${missingStage02Objects.join(", ")}.`);
+  const missingObjectsBefore = manifest.requiredObjectsBefore.filter((name) => objectMap.get(name)?.present !== true);
+  if (missingObjectsBefore.length) blockers.push(`Required pre-migration schema objects are missing: ${missingObjectsBefore.join(", ")}.`);
+  const wrongObjectsBefore = Object.entries(manifest.requiredObjectSignatureIncludes ?? {}).filter(([name, fragment]) => {
+    const object = objectMap.get(name);
+    return object?.present !== true || typeof object.signature !== "string" || !object.signature.includes(fragment);
+  }).map(([name]) => name);
+  if (wrongObjectsBefore.length) blockers.push(`Required pre-migration schema signatures differ from the reviewed baseline: ${wrongObjectsBefore.join(", ")}.`);
 
   for (const tableName of manifest.requiredTablesBefore) {
     if (report?.tables?.[tableName]?.exists !== true) blockers.push(`Required production baseline table ${tableName} is missing.`);
@@ -143,6 +157,8 @@ export function evaluateProductionPreflight(report, migrationDirectories, manife
   if (Array.isArray(report?.preparedTransactions) && report.preparedTransactions.some((transaction) => transaction?.blocksMigration === true)) {
     blockers.push("A prepared transaction blocks a migration DDL target.");
   }
+  const writerDrain = evaluateProductionWriterDrain(report);
+  blockers.push(...writerDrain.blockers);
 
   return {
     readyForOwnerAuthorization: blockers.length === 0,
@@ -163,6 +179,9 @@ export function evaluateProductionPreflight(report, migrationDirectories, manife
     tables: report?.tables ?? {},
     conflictingLocks,
     preparedTransactions: Array.isArray(report?.preparedTransactions) ? report.preparedTransactions : [],
+    writerDrain: report?.writerDrain ?? null,
+    writerDrainReady: writerDrain.ready,
+    writerDrainDigest: report?.writerDrain ? canonicalSha256(report.writerDrain) : null,
     diagnostics: { longTransactions: Array.isArray(report?.longTransactions) ? report.longTransactions : [] },
   };
 }
@@ -180,6 +199,15 @@ export function evaluateProductionPostflight(report, migrationDirectories, manif
   if (missing.length) blockers.push(`Postflight schema objects are missing: ${missing.join(", ")}.`);
   const missingStage02 = EXPECTED_MIGRATION_OBJECTS.filter((name) => byName.get(name)?.present !== true);
   if (missingStage02.length) blockers.push(`Stage 02 schema objects are missing after migration: ${missingStage02.join(", ")}.`);
+  const missingManifestDirectories = manifest.migrations.map(({ name }) => name).filter((name) => !migrationDirectories.includes(name));
+  if (missingManifestDirectories.length) blockers.push(`Reviewed manifest migrations are missing from the release tree: ${missingManifestDirectories.join(", ")}.`);
+  const unexpectedLegacyIndexes = manifest.postflightAbsentObjects.filter((name) => byName.get(name)?.present === true);
+  if (unexpectedLegacyIndexes.length) blockers.push(`Legacy Relative Muscle indexes remain after migration: ${unexpectedLegacyIndexes.join(", ")}.`);
+  const wrongRelativeMuscleSignatures = Object.entries(manifest.postflightSignatureIncludes).filter(([name, fragment]) => {
+    const object = byName.get(name);
+    return object?.present !== true || typeof object.signature !== "string" || !object.signature.includes(fragment);
+  }).map(([name]) => name);
+  if (wrongRelativeMuscleSignatures.length) blockers.push(`Relative Muscle postflight schema signatures differ from the reviewed contract: ${wrongRelativeMuscleSignatures.join(", ")}.`);
   const expectedDatabase = options.expectedDatabase ?? "bodycast";
   const expectedRole = options.expectedRole ?? "bodycast";
   if (report?.identity?.database !== expectedDatabase || report?.identity?.role !== expectedRole || !String(report?.identity?.serverVersion ?? "").startsWith("17.")

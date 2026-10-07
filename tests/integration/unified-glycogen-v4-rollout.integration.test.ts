@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { PrismaClient } from "@prisma/client";
@@ -36,6 +36,8 @@ const reviewedMigrations = [
   "20261002100000_active_energy_canonical_resolution",
   "20261002150000_add_production_publication_generation",
   "20261003120000_add_episode_aware_unified_experimental_physiology_v2",
+  "20261005120000_episode_relative_muscle_core",
+  "20261006110000_relative_muscle_legacy_identity",
   migration,
 ];
 const modelDate = "2071-01-01";
@@ -164,12 +166,21 @@ describe("Unified V4 rollout on isolated PostgreSQL", () => {
   beforeAll(async () => {
     migratorArtifactRoot = await mkdtemp(path.join(process.cwd(), "node_modules", ".glycogen-migrator-stage-"));
     await mkdir(path.join(migratorArtifactRoot, "scripts"), { recursive: true });
+    const releaseSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim();
     for (const name of reviewedMigrations) {
-      const source = path.join(process.cwd(), "prisma", "migrations", name, "migration.sql");
       const destination = path.join(migratorArtifactRoot, "prisma", "migrations", name, "migration.sql");
       await mkdir(path.dirname(destination), { recursive: true });
-      await writeFile(destination, await readFile(source));
+      const relativePath = `prisma/migrations/${name}/migration.sql`;
+      const migrationBytes = execFileSync("git", ["cat-file", "blob", `${releaseSha}:${relativePath}`], {
+        cwd: process.cwd(),
+        encoding: "buffer",
+      });
+      await writeFile(destination, migrationBytes);
     }
+    await copyFile(
+      path.join(process.cwd(), "scripts", "production-writer-drain.mjs"),
+      path.join(migratorArtifactRoot, "scripts", "production-writer-drain.mjs"),
+    );
     compileMigratorTool({ source: "scripts/unified-v3-postflight.ts", output: "unified-v3-postflight.mjs" });
     compileMigratorTool({ source: "scripts/unified-v4-activate-replay.ts", output: "unified-v4-activate-replay.mjs" });
     compileMigratorTool({ source: "scripts/unified-v4-traffic-check.ts", output: "unified-v4-traffic-check.mjs" });

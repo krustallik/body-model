@@ -18,6 +18,7 @@ import { normalizeWorkflowRuns, selectAndVerifyArtifact } from "../scripts/produ
 import { assertBackupFreshAtDdlStart, assertPrismaMigrationAuthorized, assertPrismaTargetMatchesSignedIdentity, readLatestApplicablePreflightForDdl, startPrismaMigrationAtDdlBoundary } from "../scripts/run-prisma-migrate-with-lock-timeout.mjs";
 import { psqlCompatibleDatabaseUrl } from "../scripts/production-db-target-url.mjs";
 import { assertCurrentMigrationRunMatchesProof, executionProofAudience, readCurrentMigrationRunForDdl, requestGitHubOidcExecutionProof, verifyGitHubExecutionProof } from "../scripts/production-migration-execution-attestation.mjs";
+import { PRODUCTION_WRITER_TOPOLOGY_CONTRACT } from "../scripts/production-writer-drain.mjs";
 
 const now = Date.parse("2026-10-05T10:00:00.000Z");
 const dirs = [
@@ -32,7 +33,56 @@ function migrationRow(migration, checksum = migration.sha256) {
 
 function schemaObjects(postflight = false) {
   return [...EXPECTED_MIGRATION_OBJECTS.map((name) => ({ name, present: true, kind: "constraint", signature: "reviewed-stage02-signature" })),
-    ...ACTIVE_ENERGY_UNIFIED_MANIFEST.postflightObjects.map((name) => ({ name, present: postflight, kind: "table", signature: postflight ? "reviewed-active-signature" : null }))];
+    ...ACTIVE_ENERGY_UNIFIED_MANIFEST.requiredObjectsBefore.map((name) => ({
+      name, present: !postflight, kind: "index",
+      signature: postflight ? null : ACTIVE_ENERGY_UNIFIED_MANIFEST.requiredObjectSignatureIncludes[name],
+    })),
+    ...ACTIVE_ENERGY_UNIFIED_MANIFEST.postflightObjects.map((name) => ({
+      name,
+      present: postflight,
+      kind: "table",
+      signature: postflight ? ACTIVE_ENERGY_UNIFIED_MANIFEST.postflightSignatureIncludes[name] ?? "reviewed-active-signature" : null,
+    }))];
+}
+
+function readyWriterDrain(overrides = {}) {
+  const observedAt = "2026-10-05T10:00:00.000Z";
+  return {
+    schemaVersion: 1,
+    observerPid: 111,
+    observerApplicationName: "bodycast-production-preflight",
+    observedAt,
+    identityPolicy: "no-other-client-backends",
+    activeClientBackends: [],
+    topology: {
+      schemaVersion: 1,
+      contract: PRODUCTION_WRITER_TOPOLOGY_CONTRACT,
+      ready: true,
+      blockers: [],
+      observedAt,
+      app: { name: "bodycast-app-prod", state: "absent", restartPolicy: null },
+      database: { name: "bodycast-db-prod", state: "running", health: "healthy", publishedPostgresPort: false, networks: ["bodycast-backend-prod"] },
+      backendNetwork: { name: "bodycast-backend-prod", containers: ["bodycast-db-prod"] },
+      caddy: { name: "gymbeam-caddy", state: "running", configValidated: true },
+      routeFile: { verified: true, maintenanceResponse: true, containsReverseProxy: false, sha256: "a".repeat(64) },
+    },
+    ...overrides,
+  };
+}
+
+function validPrismaTargetState(identity, at = now, overrides = {}) {
+  return {
+    identity,
+    writerDrain: {
+      schemaVersion: 1,
+      observerPid: 222,
+      observerApplicationName: "bodycast-prisma-ddl-guard",
+      identityPolicy: "no-other-client-backends",
+      observedAt: new Date(at).toISOString(),
+      activeClientBackends: [],
+      ...overrides,
+    },
+  };
 }
 
 function validPreflightReport() {
@@ -47,6 +97,7 @@ function validPreflightReport() {
     conflictingLocks: [],
     preparedTransactions: [],
     longTransactions: [],
+    writerDrain: readyWriterDrain(),
   };
 }
 
@@ -80,6 +131,8 @@ function claims(overrides = {}) {
     backupSnapshotAt: "2026-10-05T09:30:00.000Z",
     restoreResultDigest: "d".repeat(64),
     productionIdentityDigest: "e".repeat(64),
+    writerDrainDigest: "1".repeat(64),
+    writerTopologyDigest: "2".repeat(64),
     issuedAt: "2026-10-05T09:50:00.000Z",
     expiresAt: "2026-10-05T10:50:00.000Z",
     authorizationId: "authorization-identifier-12345",
@@ -109,6 +162,8 @@ function liveContext(overrides = {}) {
     backupSnapshotAt: "2026-10-05T09:30:00.000Z",
     restoreResultDigest: "d".repeat(64),
     productionIdentityDigest: "e".repeat(64),
+    writerDrainDigest: "1".repeat(64),
+    writerTopologyDigest: "2".repeat(64),
     ...overrides,
   };
 }
@@ -167,6 +222,8 @@ async function executionBoundaryFixture(identity = validPreflightReport().identi
   const authorizationClaims = claims({
     workflowId: "150",
     productionIdentityDigest: canonicalSha256(identity),
+    writerDrainDigest: "1".repeat(64),
+    writerTopologyDigest: "2".repeat(64),
     backupSnapshotAt,
     issuedAt: new Date(checkedAt - 60_000).toISOString(),
     expiresAt: new Date(checkedAt + 50 * 60_000).toISOString(),
@@ -310,6 +367,10 @@ describe("V5 closed migration manifest and full pending set", () => {
     const partial = validPreflightReport();
     partial.objects.find((object) => object.name === ACTIVE_ENERGY_UNIFIED_MANIFEST.postflightObjects[0]).present = true;
     expect(evaluateProductionPreflight(partial, dirs).blockers.join(" ")).toContain("already exist");
+
+    const wrongLegacyIndex = validPreflightReport();
+    wrongLegacyIndex.objects.find((object) => object.name === ACTIVE_ENERGY_UNIFIED_MANIFEST.requiredObjectsBefore[0]).signature = "unique=false|valid=false";
+    expect(evaluateProductionPreflight(wrongLegacyIndex, dirs).blockers.join(" ")).toContain("pre-migration schema signatures differ");
   });
 
   it("requires exact target checksums and schema-object signatures after disposable migration rehearsal", () => {
@@ -319,6 +380,9 @@ describe("V5 closed migration manifest and full pending set", () => {
     post.objects = schemaObjects(true);
     const result = evaluateProductionPostflight(post, dirs, ACTIVE_ENERGY_UNIFIED_MANIFEST.id, { expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore" });
     expect(result.ready).toBe(true);
+    post.objects.find((object) => object.name === "RelMuscleDelta_episode_date_key").signature = "unique=false|wrong-columns";
+    expect(evaluateProductionPostflight(post, dirs, ACTIVE_ENERGY_UNIFIED_MANIFEST.id, { expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore" }).blockers.join(" ")).toContain("Relative Muscle postflight schema signatures differ");
+    post.objects = schemaObjects(true);
     post.migrations.find((row) => row.name === ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations[0].name).checksum = "0".repeat(64);
     expect(evaluateProductionPostflight(post, dirs, ACTIVE_ENERGY_UNIFIED_MANIFEST.id, { expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore" }).blockers.join(" ")).toContain("checksum differs");
   });
@@ -328,7 +392,11 @@ describe("V5 closed migration manifest and full pending set", () => {
     const sql = renderProductionDbPreflightSql(template);
     const normalizedSql = sql.replaceAll("\r\n", "\n");
     const expected = getExpectedSchemaObjectNames();
-    expect(expected).toEqual([...new Set([...EXPECTED_MIGRATION_OBJECTS, ...ACTIVE_ENERGY_UNIFIED_MANIFEST.postflightObjects])].sort());
+    expect(expected).toEqual([...new Set([
+      ...EXPECTED_MIGRATION_OBJECTS,
+      ...ACTIVE_ENERGY_UNIFIED_MANIFEST.requiredObjectsBefore,
+      ...ACTIVE_ENERGY_UNIFIED_MANIFEST.postflightObjects,
+    ])].sort());
     expect(sql).not.toContain("__EXPECTED_SCHEMA_OBJECTS_JSON__");
     expect(sql).toContain("BEGIN READ ONLY;");
     expect(await readFile(new URL("../scripts/run-prisma-migrate-with-lock-timeout.mjs", import.meta.url), "utf8")).toContain("withPrismaLockTimeout(databaseUrl, 5000)");
@@ -415,7 +483,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     const fixture = await executionBoundaryFixture(identity);
     const nonceDirectory = await mkdtemp(path.join(os.tmpdir(), "bodycast-v5-ddl-oidc-proof-"));
     const spawn = vi.fn(() => ({ status: 0 }));
-    const identityProbe = vi.fn(async () => identity);
+    const identityProbe = vi.fn(async () => validPrismaTargetState(identity, now));
     try {
       const expectedUrl = withPrismaLockTimeout("postgresql://bodycast:secret@db/bodycast", 5000);
       const authorized = authorizedBoundary(fixture, expectedUrl);
@@ -674,8 +742,14 @@ describe("V5 closed migration manifest and full pending set", () => {
       expect(spawn).not.toHaveBeenCalled();
       expect(ioOrder.map(([name]) => name)).toEqual(["latest-admission", "current-run", "final-identity"]);
       expect(ioOrder[2][1]).toBe(authorizedBoundary(fixture).databaseUrl);
-      expect(assertPrismaTargetMatchesSignedIdentity({ productionIdentityDigest: canonicalSha256(signedIdentity) }, signedIdentity)).toBe(true);
-      expect(() => assertPrismaTargetMatchesSignedIdentity({ productionIdentityDigest: canonicalSha256(signedIdentity) }, { ...signedIdentity, serverAddress: "127.0.0.2" })).toThrow("differs from the signed production identity");
+      const targetState = validPrismaTargetState(signedIdentity, now);
+      expect(assertPrismaTargetMatchesSignedIdentity({ productionIdentityDigest: canonicalSha256(signedIdentity) }, targetState, now)).toBe(true);
+      expect(() => assertPrismaTargetMatchesSignedIdentity({ productionIdentityDigest: canonicalSha256(signedIdentity) }, {
+        ...targetState, identity: { ...signedIdentity, serverAddress: "127.0.0.2" },
+      }, now)).toThrow("differs from the signed production identity");
+      expect(() => assertPrismaTargetMatchesSignedIdentity({ productionIdentityDigest: canonicalSha256(signedIdentity) }, validPrismaTargetState(signedIdentity, now, {
+        activeClientBackends: [{ pid: 501, applicationName: "bodycast-reconnected-writer", clientAddress: null }],
+      }), now)).toThrow("final Prisma writer-drain observation");
     } finally {
       await rm(nonceDirectory, { recursive: true, force: true });
     }
@@ -706,7 +780,7 @@ describe("V5 closed migration manifest and full pending set", () => {
           ioOrder.push("final-identity");
           expect(migrationFenceHeld).toBe(true);
           expect(newer.runStartedAt).toBeNull();
-          return fixture.identity;
+          return validPrismaTargetState(fixture.identity, now);
         },
         spawn,
       });
@@ -875,6 +949,8 @@ describe("Ed25519 authorization envelope and provenance matrix", () => {
       preflightResultDigest: canonicalSha256(preflightResult),
       restoreResultDigest: canonicalSha256(restoreResult),
       productionIdentityDigest: canonicalSha256(liveReport.identity),
+      writerDrainDigest: canonicalSha256(liveReport.writerDrain),
+      writerTopologyDigest: canonicalSha256(liveReport.writerDrain.topology),
       backupSnapshotAt: "2026-10-05T09:30:00.000Z",
     };
     const signedClaims = claims({
@@ -882,6 +958,8 @@ describe("Ed25519 authorization envelope and provenance matrix", () => {
       preflightResultDigest: evidence.preflightResultDigest,
       restoreResultDigest: evidence.restoreResultDigest,
       productionIdentityDigest: evidence.productionIdentityDigest,
+      writerDrainDigest: evidence.writerDrainDigest,
+      writerTopologyDigest: evidence.writerTopologyDigest,
     });
     const artifactMetadata = {
       id: "121212",
@@ -930,6 +1008,14 @@ describe("Ed25519 authorization envelope and provenance matrix", () => {
         ...args,
         liveReport: { ...liveReport, identity: { ...liveReport.identity, serverAddress: "172.20.0.99" } },
       })).toThrow("differs from the signed preflight target");
+      expect(() => verifyFinalMigrationAuthorization({
+        ...args,
+        liveReport: { ...liveReport, writerDrain: {
+          ...liveReport.writerDrain,
+          observedAt: new Date(now).toISOString(),
+          activeClientBackends: [{ pid: 504, applicationName: "bodycast-reconnected-writer", clientAddress: null }],
+        } },
+      })).toThrow("final live readiness");
 
       const applied = {
         ...liveReport,

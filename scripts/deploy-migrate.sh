@@ -11,10 +11,13 @@ readonly CANONICAL_URL="https://github.com/krustallik/body-model.git"
 readonly MANIFEST_ID="$BODYCAST_MIGRATION_MANIFEST_ID"
 readonly RELEASE_SHA="$RELEASE_SHA"
 readonly CONTEXT_DIR="$BODYCAST_MIGRATION_CONTEXT_DIR"
+readonly APP_HOST="${APP_HOST:?APP_HOST is required for the maintenance topology gate}"
+readonly CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:?CADDY_ROUTES_PATH is required for the maintenance topology gate}"
+source "$ROOT_DIR/scripts/production-release-marker.sh"
 
 fail() { echo "Production migration blocked: $*" >&2; exit 1; }
 
-[[ "$MANIFEST_ID" == "active-energy-unified-v1" ]] || fail "a closed reviewed manifest id is required."
+[[ "$MANIFEST_ID" == "active-energy-unified-v2" ]] || fail "a closed reviewed manifest id is required."
 [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "RELEASE_SHA must be a full lowercase commit SHA."
 [[ "$BODYCAST_AUTHORIZATION_WORKFLOW_ID" =~ ^[1-9][0-9]*$ \
   && "$BODYCAST_AUTHORIZATION_RUN_ID" =~ ^[1-9][0-9]*$ \
@@ -27,6 +30,9 @@ done
 [[ "$(git rev-parse --show-toplevel)" == "$ROOT_DIR" ]] || fail "repository root does not match the deployment checkout."
 [[ "$(git rev-parse HEAD)" == "$RELEASE_SHA" ]] || fail "deployment checkout does not equal the authorized release SHA."
 [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || fail "deployment checkout is not clean."
+marker_status=1
+read_bodycast_release_marker || marker_status=$?
+[[ "$marker_status" -eq 1 ]] || fail "an existing schema-cutover marker requires explicit recovery; this migration run cannot reuse it."
 
 GIT_DIR="$(git rev-parse --absolute-git-dir)"
 command -v flock >/dev/null 2>&1 || fail "flock is unavailable; migration serialization cannot be guaranteed."
@@ -53,6 +59,8 @@ done <<'MIGRATIONS'
 20261002100000_active_energy_canonical_resolution|45711a527d809775a5ce66d3d9e529954158dcb65ed0065f70a0f948a4693a0b
 20261002150000_add_production_publication_generation|9f1e38182dc3ec2449da5297786b603d8c0370498ed68db97059f640220bbbd7
 20261003120000_add_episode_aware_unified_experimental_physiology_v2|0bb495d988ead0c1729f8e657b85f85bc4c20673fdedd5b61a7644cb0dcaf9b6
+20261005120000_episode_relative_muscle_core|afef76464e4e77e6fd13a6ed6f8b04a6972d98229e3c5fc12a7e7dd8e3fd6588
+20261006110000_relative_muscle_legacy_identity|56d8a64d4c966428835a96058783d01c4eac5984f8ed51928d26b13d6290208e
 20261006130000_unified_v4_glycogen_water_rollout|9e50a8f33ec93e5f7d74681a611bd7272038f7e5e25563054f4a4dbb093b5408
 MIGRATIONS
 
@@ -75,8 +83,10 @@ bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" \
   > "$CONTEXT_DIR/live-report.json"
 
 # Re-evaluate the live full pending set and signed provenance immediately before DDL.
+CHALLENGE_GUARD_RECEIPT="$CONTEXT_DIR/challenge-guard-receipt.json"
 GUARD_RECEIPT="$CONTEXT_DIR/final-guard-receipt.json"
-[[ ! -e "$GUARD_RECEIPT" && ! -L "$GUARD_RECEIPT" ]] || fail "final guard receipt already exists in the private context."
+[[ ! -e "$CHALLENGE_GUARD_RECEIPT" && ! -L "$CHALLENGE_GUARD_RECEIPT" \
+  && ! -e "$GUARD_RECEIPT" && ! -L "$GUARD_RECEIPT" ]] || fail "a guard receipt already exists in the private context."
 compose --profile tools run --rm --no-deps \
   --user "$(id -u):$(id -g)" \
   --volume "$CONTEXT_DIR:/run/bodycast:ro" \
@@ -96,8 +106,8 @@ compose --profile tools run --rm --no-deps \
   --current-workflow-run-attempt "$BODYCAST_AUTHORIZATION_RUN_ATTEMPT" \
   --keys /app/scripts/production-migration-verification-keys.json \
   --repository /app \
-  > "$GUARD_RECEIPT"
-chmod 600 "$GUARD_RECEIPT"
+  > "$CHALLENGE_GUARD_RECEIPT"
+chmod 600 "$CHALLENGE_GUARD_RECEIPT"
 
 # The one-time challenge is created only after the live production guard. The
 # current GitHub runner reselects the latest admitted preflight and requests a
@@ -112,6 +122,35 @@ IFS= read -r EXECUTION_PROOF || fail "workflow runner did not return a current G
 printf '%s\n' "$EXECUTION_PROOF" > "$CONTEXT_DIR/execution-proof.jwt"
 chmod 600 "$CONTEXT_DIR/execution-proof.jwt"
 export BODYCAST_DDL_EXECUTION_CHALLENGE="$DDL_CHALLENGE"
+
+# Re-sample PostgreSQL sessions and host topology after the OIDC round trip. The
+# signed preflight is still verified, but never reused as the final drain result.
+bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" \
+  < <(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-db-preflight.mjs) \
+  > "$CONTEXT_DIR/live-report-final.json"
+APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
+compose --profile tools run --rm --no-deps \
+  --user "$(id -u):$(id -g)" \
+  --volume "$CONTEXT_DIR:/run/bodycast:ro" \
+  --entrypoint node migrate /app/scripts/production-migration-final-guard.mjs \
+  --before-ddl \
+  --envelope /run/bodycast/authorization-envelope.json \
+  --preflight /run/bodycast/preflight-result.json \
+  --evidence /run/bodycast/preflight-evidence.json \
+  --restore /run/bodycast/restore-result.json \
+  --artifact /run/bodycast/artifact-metadata.json \
+  --live-report /run/bodycast/live-report-final.json \
+  --main-sha "$CANONICAL_MAIN_SHA" \
+  --release-sha "$RELEASE_SHA" \
+  --manifest "$MANIFEST_ID" \
+  --current-workflow-id "$BODYCAST_AUTHORIZATION_WORKFLOW_ID" \
+  --current-workflow-run-id "$BODYCAST_AUTHORIZATION_RUN_ID" \
+  --current-workflow-run-attempt "$BODYCAST_AUTHORIZATION_RUN_ATTEMPT" \
+  --keys /app/scripts/production-migration-verification-keys.json \
+  --repository /app \
+  > "$GUARD_RECEIPT"
+chmod 600 "$GUARD_RECEIPT"
+write_bodycast_release_marker "$RELEASE_SHA" ddl-started
 
 # Keep a host-persistent one-use nonce ledger. The container receives only this
 # directory and public verification material; no private signing key crosses the SSH boundary.
@@ -154,5 +193,7 @@ compose --profile tools run --rm --no-deps \
   --entrypoint node migrate /app/scripts/production-migration-final-guard.mjs \
   --after-ddl --report /run/bodycast/postflight-report.json --restore /run/bodycast/restore-result.json \
   --manifest "$MANIFEST_ID" --repository /app
+
+write_bodycast_release_marker "$RELEASE_SHA" schema-applied
 
 echo "Authorized production Prisma migrations completed and postflight schema/history matched the disposable rehearsal. No replay, activation, or application cutover ran."

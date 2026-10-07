@@ -44,6 +44,7 @@ COPY scripts/production-migration-manifests.mjs ./scripts/
 COPY scripts/production-migration-integrity.mjs ./scripts/
 COPY scripts/production-migration-authorization.mjs ./scripts/
 COPY scripts/production-migration-release.mjs ./scripts/
+COPY scripts/production-writer-drain.mjs ./scripts/
 COPY scripts/production-db-preflight.mjs ./scripts/
 COPY scripts/production-db-preflight.sql ./scripts/
 COPY scripts/run-prisma-migrate-with-lock-timeout.mjs ./scripts/

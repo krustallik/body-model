@@ -1,5 +1,10 @@
 BEGIN READ ONLY;
 
+\if :{?BODYCAST_WRITER_TOPOLOGY_JSON}
+\else
+\set BODYCAST_WRITER_TOPOLOGY_JSON null
+\endif
+
 WITH expected(name) AS (
   SELECT jsonb_array_elements_text('__EXPECTED_SCHEMA_OBJECTS_JSON__'::jsonb)
 ), object_inventory AS (
@@ -70,7 +75,8 @@ WITH expected(name) AS (
     rolled_back_at AS "rolledBackAt", logs IS NOT NULL AS "hasLogs", md5(COALESCE(logs, '')) AS "logsFingerprint"
   FROM public."_prisma_migrations"
 ), baseline_targets(table_name) AS (
-  VALUES ('Workout'), ('Profile'), ('ModelEpisode'), ('PhysiologyV7Lifecycle'), ('DailyModelState'), ('StrengthDiarySession'), ('ExerciseCatalog'), ('_prisma_migrations')
+  VALUES ('Workout'), ('Profile'), ('ModelEpisode'), ('PhysiologyV7Lifecycle'), ('DailyModelState'), ('StrengthDiarySession'), ('ExerciseCatalog'),
+    ('ExperimentalSkeletalMuscleDeltaShadow'), ('ExperimentalCessationDetrainingShadow'), ('_prisma_migrations')
 ), target_tables AS (
   SELECT b.table_name, to_regclass(format('public.%I', b.table_name)) IS NOT NULL AS exists,
     COALESCE(c.reltuples::bigint, 0) AS "estimatedRows",
@@ -82,6 +88,8 @@ WITH expected(name) AS (
     ('Workout', 'ShareRowExclusiveLock'),
     ('Profile', 'ShareRowExclusiveLock'),
     ('ModelEpisode', 'ShareRowExclusiveLock'),
+    ('ExperimentalSkeletalMuscleDeltaShadow', 'AccessExclusiveLock'),
+    ('ExperimentalCessationDetrainingShadow', 'AccessExclusiveLock'),
     -- Existing migration SQL adds columns to these relations; ALTER TABLE takes ACCESS EXCLUSIVE.
     ('PhysiologyV7Lifecycle', 'AccessExclusiveLock'),
     ('DailyModelState', 'AccessExclusiveLock')
@@ -115,6 +123,15 @@ WITH expected(name) AS (
     wait_event_type AS "waitEventType", wait_event AS "waitEvent"
   FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND xact_start IS NOT NULL
     AND xact_start < clock_timestamp() - interval '5 minutes'
+), other_client_backends AS (
+  -- The observer pid is the one explicitly identified preflight/migration
+  -- connection. Every other client backend blocks, regardless of claimed
+  -- application_name or client_addr; proxy/NAT identity is never inferred.
+  SELECT pid, usename, application_name AS "applicationName", client_addr::text AS "clientAddress",
+    client_port AS "clientPort", backend_type AS "backendType", state,
+    backend_start AS "backendStart", xact_start AS "transactionStart"
+  FROM pg_stat_activity
+  WHERE datname = current_database() AND backend_type = 'client backend' AND pid <> pg_backend_pid()
 )
 SELECT json_build_object(
   'identity', json_build_object(
@@ -124,6 +141,15 @@ SELECT json_build_object(
     'serverVersion', current_setting('server_version'),
     'serverAddress', inet_server_addr()::text,
     'serverPort', inet_server_port()
+  ),
+  'writerDrain', json_build_object(
+    'schemaVersion', 1,
+    'observerPid', pg_backend_pid(),
+    'observerApplicationName', current_setting('application_name'),
+    'observedAt', clock_timestamp(),
+    'identityPolicy', 'no-other-client-backends',
+    'topology', :'BODYCAST_WRITER_TOPOLOGY_JSON'::json,
+    'activeClientBackends', COALESCE((SELECT json_agg(to_jsonb(c) ORDER BY c.pid) FROM other_client_backends c), '[]'::json)
   ),
   'migrations', COALESCE((SELECT json_agg(to_jsonb(m) ORDER BY m.name, m."startedAt") FROM migration_rows m), '[]'::json),
   'objects', COALESCE((SELECT json_agg(to_jsonb(o) ORDER BY o.name) FROM object_inventory o), '[]'::json),

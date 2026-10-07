@@ -18,9 +18,13 @@ case "${1:-}" in
     DB_CONTAINER="${2:-}"
     [[ "$DB_CONTAINER" == "bodycast-db-prod" ]] || { echo "Refusing preflight against an unreviewed PostgreSQL container." >&2; exit 1; }
     TARGET_URL="$(effective_psql_url)"
+    TOPOLOGY_REPORT="$(APP_HOST="${APP_HOST:-}" CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:-}" \
+      bash "$ROOT_DIR/scripts/production-writer-drain.sh" --report)"
     docker exec -i --env "BODYCAST_PSQL_DATABASE_URL=$TARGET_URL" \
+      --env "BODYCAST_WRITER_TOPOLOGY_JSON=$TOPOLOGY_REPORT" \
+      --env 'PGAPPNAME=bodycast-production-preflight' \
       --env 'PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000' \
-      "$DB_CONTAINER" sh -c 'exec psql "$BODYCAST_PSQL_DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1'
+      "$DB_CONTAINER" sh -c 'exec psql "$BODYCAST_PSQL_DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 --set="BODYCAST_WRITER_TOPOLOGY_JSON=$BODYCAST_WRITER_TOPOLOGY_JSON"'
     ;;
   *)
     echo "Usage: production-db-target.sh --psql-url|--preflight bodycast-db-prod" >&2

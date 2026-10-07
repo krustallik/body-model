@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import { ACTIVE_ENERGY_UNIFIED_MANIFEST, getProductionMigrationManifest } from "./production-migration-manifests.mjs";
 import { canonicalSha256, assertSignedAuthorizationRequired, verifyAuthorizationEnvelope } from "./production-migration-authorization.mjs";
 import { assertProductionDatabaseIdentityMatches, evaluateProductionPreflight, verifyPostflightMatchesRestore } from "./production-migration-preflight.mjs";
+import { assertFreshWriterDrain } from "./production-writer-drain.mjs";
 
 async function readJson(filePath) { return JSON.parse(await readFile(filePath, "utf8")); }
 
@@ -19,6 +20,11 @@ export function verifyFinalMigrationAuthorization({ envelope, preflightResult, e
     throw new Error("Migration blocked: signed preflight result is missing or not ready.");
   }
   if (canonicalSha256(preflightResult) !== evidence.preflightResultDigest) throw new Error("Migration blocked: preflight result digest differs from verified evidence.");
+  if (canonicalSha256(preflightResult?.writerDrain) !== evidence.writerDrainDigest
+    || canonicalSha256(preflightResult?.writerDrain?.topology) !== evidence.writerTopologyDigest
+    || preflightResult?.writerDrainReady !== true) {
+    throw new Error("Migration blocked: signed preflight writer-drain/topology evidence is inconsistent.");
+  }
   if (canonicalSha256(restoreResult) !== evidence.restoreResultDigest || restoreResult?.verified !== true || restoreResult?.postflightReady !== true) {
     throw new Error("Migration blocked: isolated restore or disposable migration rehearsal is not verified.");
   }
@@ -28,6 +34,7 @@ export function verifyFinalMigrationAuthorization({ envelope, preflightResult, e
   const directories = manifestTreeNames(manifest);
   const readiness = evaluateProductionPreflight(liveReport, directories, manifest.id);
   if (!readiness.readyForOwnerAuthorization) throw new Error("Migration blocked by final live readiness: " + readiness.blockers.join(" "));
+  assertFreshWriterDrain(liveReport, { now, maxAgeMs: 30_000 });
   const pending = [...readiness.pending].sort();
   const verified = verifyAuthorizationEnvelope(envelope, {
     allowlist,
@@ -49,6 +56,8 @@ export function verifyFinalMigrationAuthorization({ envelope, preflightResult, e
       backupSnapshotAt: evidence.backupSnapshotAt,
       restoreResultDigest: canonicalSha256(restoreResult),
       productionIdentityDigest: canonicalSha256(liveReport.identity),
+      writerDrainDigest: evidence.writerDrainDigest,
+      writerTopologyDigest: evidence.writerTopologyDigest,
     },
   });
   if (String(artifactMetadata?.id) !== verified.payload.backupArtifactId
@@ -85,6 +94,12 @@ export function verifyFinalMigrationAuthorization({ envelope, preflightResult, e
     backupSnapshotAt: verified.payload.backupSnapshotAt,
     restoreResultDigest: verified.payload.restoreResultDigest,
     productionIdentityDigest: verified.payload.productionIdentityDigest,
+    preflightWriterDrainDigest: verified.payload.writerDrainDigest,
+    preflightWriterTopologyDigest: verified.payload.writerTopologyDigest,
+    finalWriterDrainDigest: canonicalSha256(liveReport.writerDrain),
+    finalWriterTopologyDigest: canonicalSha256(liveReport.writerDrain.topology),
+    finalWriterDrainObservedAt: liveReport.writerDrain.observedAt,
+    finalTopologyObservedAt: liveReport.writerDrain.topology.observedAt,
     postSchemaDigest: restoreResult.postSchemaDigest,
     verifiedAt: new Date(now).toISOString(),
   };
@@ -95,7 +110,9 @@ export function verifyFinalGuardReceipt({ receipt, envelope, allowlist, currentW
     "schemaVersion", "ready", "authorizationId", "manifestId", "releaseSha", "currentMainSha", "workflowId",
     "workflowRunId", "workflowRunAttempt", "pending", "pendingSetDigest", "preflightRunId", "preflightRunAttempt",
     "preflightResultDigest", "backupArtifactId", "backupArtifactDigest", "backupSnapshotAt", "restoreResultDigest",
-    "productionIdentityDigest", "postSchemaDigest", "verifiedAt",
+    "productionIdentityDigest", "preflightWriterDrainDigest", "preflightWriterTopologyDigest",
+    "finalWriterDrainDigest", "finalWriterTopologyDigest", "finalWriterDrainObservedAt", "finalTopologyObservedAt",
+    "postSchemaDigest", "verifiedAt",
   ].sort();
   if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)
     || JSON.stringify(Object.keys(receipt).sort()) !== JSON.stringify(fields)) {
@@ -103,8 +120,18 @@ export function verifyFinalGuardReceipt({ receipt, envelope, allowlist, currentW
   }
   if (receipt.schemaVersion !== 1 || receipt.ready !== true || !Array.isArray(receipt.pending)
     || [...receipt.pending].sort().join("\0") !== receipt.pending.join("\0")
-    || !/^[a-f0-9]{64}$/.test(String(receipt.postSchemaDigest ?? ""))) {
+    || !/^[a-f0-9]{64}$/.test(String(receipt.postSchemaDigest ?? ""))
+    || !/^[a-f0-9]{64}$/.test(String(receipt.preflightWriterDrainDigest ?? ""))
+    || !/^[a-f0-9]{64}$/.test(String(receipt.preflightWriterTopologyDigest ?? ""))
+    || !/^[a-f0-9]{64}$/.test(String(receipt.finalWriterDrainDigest ?? ""))
+    || !/^[a-f0-9]{64}$/.test(String(receipt.finalWriterTopologyDigest ?? ""))) {
     throw new Error("Migration blocked: final guard receipt is incomplete or not ready.");
+  }
+  for (const [label, value] of [["writer-drain", receipt.finalWriterDrainObservedAt], ["topology", receipt.finalTopologyObservedAt]]) {
+    const ageMs = now - Date.parse(value);
+    if (!Number.isFinite(ageMs) || ageMs < -60_000 || ageMs > 5 * 60_000) {
+      throw new Error(`Migration blocked: final ${label} evidence is stale or from the future.`);
+    }
   }
   const verified = verifyAuthorizationEnvelope(envelope, {
     allowlist,
@@ -128,6 +155,8 @@ export function verifyFinalGuardReceipt({ receipt, envelope, allowlist, currentW
       backupSnapshotAt: receipt.backupSnapshotAt,
       restoreResultDigest: receipt.restoreResultDigest,
       productionIdentityDigest: receipt.productionIdentityDigest,
+      writerDrainDigest: receipt.preflightWriterDrainDigest,
+      writerTopologyDigest: receipt.preflightWriterTopologyDigest,
     },
   });
   const payload = verified.payload;
@@ -149,6 +178,8 @@ export function verifyFinalGuardReceipt({ receipt, envelope, allowlist, currentW
     backupSnapshotAt: payload.backupSnapshotAt,
     restoreResultDigest: payload.restoreResultDigest,
     productionIdentityDigest: payload.productionIdentityDigest,
+    preflightWriterDrainDigest: payload.writerDrainDigest,
+    preflightWriterTopologyDigest: payload.writerTopologyDigest,
   };
   for (const [field, expected] of Object.entries(receiptClaims)) {
     if (JSON.stringify(receipt[field]) !== JSON.stringify(expected)) throw new Error("Migration blocked: final guard receipt differs from signed claim " + field + ".");

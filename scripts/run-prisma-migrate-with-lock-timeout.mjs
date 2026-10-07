@@ -16,16 +16,40 @@ export async function readPrismaDatabaseIdentity(databaseUrl) {
   const { PrismaClient } = await import("@prisma/client");
   const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
   try {
-    const rows = await prisma.$queryRawUnsafe(`
+    const rows = await prisma.$transaction(async (transaction) => {
+      await transaction.$queryRawUnsafe("SELECT set_config('application_name', 'bodycast-prisma-ddl-guard', false)");
+      return transaction.$queryRawUnsafe(`
       SELECT current_database() AS "database",
         (SELECT oid::text FROM pg_database WHERE datname = current_database()) AS "databaseOid",
         current_user AS "role",
         current_setting('server_version') AS "serverVersion",
         inet_server_addr()::text AS "serverAddress",
-        inet_server_port() AS "serverPort"
-    `);
+        inet_server_port() AS "serverPort",
+        pg_backend_pid() AS "observerPid",
+        current_setting('application_name') AS "observerApplicationName",
+        clock_timestamp() AS "observedAt",
+        COALESCE((
+          SELECT json_agg(json_build_object(
+            'pid', a.pid, 'user', a.usename, 'applicationName', a.application_name,
+            'clientAddress', a.client_addr::text, 'clientPort', a.client_port,
+            'backendType', a.backend_type, 'state', a.state,
+            'backendStart', a.backend_start, 'transactionStart', a.xact_start
+          ) ORDER BY a.pid)
+          FROM pg_stat_activity a
+          WHERE a.datname = current_database() AND a.backend_type = 'client backend' AND a.pid <> pg_backend_pid()
+        ), '[]'::json) AS "activeClientBackends"
+      `);
+    });
     if (!Array.isArray(rows) || rows.length !== 1) throw new Error("identity query returned an unexpected row count.");
-    const identity = { ...rows[0], databaseOid: Number(rows[0].databaseOid), serverPort: Number(rows[0].serverPort) };
+    const row = rows[0];
+    const identity = {
+      database: row.database,
+      databaseOid: Number(row.databaseOid),
+      role: row.role,
+      serverVersion: row.serverVersion,
+      serverAddress: row.serverAddress,
+      serverPort: Number(row.serverPort),
+    };
     if (Object.keys(identity).sort().join("\0") !== [...DATABASE_IDENTITY_FIELDS].sort().join("\0")
       || typeof identity.database !== "string" || !identity.database
       || !Number.isSafeInteger(identity.databaseOid) || identity.databaseOid < 1
@@ -35,17 +59,36 @@ export async function readPrismaDatabaseIdentity(databaseUrl) {
       || !Number.isInteger(identity.serverPort) || identity.serverPort < 1 || identity.serverPort > 65535) {
       throw new Error("identity query returned an incomplete PostgreSQL endpoint.");
     }
-    return identity;
+    const writerDrain = {
+      schemaVersion: 1,
+      observerPid: Number(row.observerPid),
+      observerApplicationName: row.observerApplicationName,
+      identityPolicy: "no-other-client-backends",
+      observedAt: row.observedAt instanceof Date ? row.observedAt.toISOString() : String(row.observedAt),
+      activeClientBackends: row.activeClientBackends,
+    };
+    return { identity, writerDrain };
   } finally {
     await prisma.$disconnect();
   }
 }
 
-export function assertPrismaTargetMatchesSignedIdentity(receipt, identity) {
+export function assertPrismaTargetMatchesSignedIdentity(receipt, targetState, now = Date.now()) {
+  const identity = targetState?.identity;
+  const writerDrain = targetState?.writerDrain;
   if (!/^[a-f0-9]{64}$/.test(String(receipt?.productionIdentityDigest ?? ""))
     || !identity || Object.keys(identity).sort().join("\0") !== [...DATABASE_IDENTITY_FIELDS].sort().join("\0")
     || canonicalSha256(identity) !== receipt.productionIdentityDigest) {
     throw new Error("Migration blocked: final Prisma DATABASE_URL target differs from the signed production identity.");
+  }
+  const observedAt = Date.parse(writerDrain?.observedAt);
+  const ageMs = now - observedAt;
+  if (writerDrain?.schemaVersion !== 1 || !Number.isSafeInteger(writerDrain.observerPid) || writerDrain.observerPid < 1
+    || writerDrain.observerApplicationName !== "bodycast-prisma-ddl-guard"
+    || writerDrain.identityPolicy !== "no-other-client-backends"
+    || !Array.isArray(writerDrain.activeClientBackends) || writerDrain.activeClientBackends.length > 0
+    || !Number.isFinite(ageMs) || ageMs < -60_000 || ageMs > 30_000) {
+    throw new Error("Migration blocked: final Prisma writer-drain observation is missing, stale, or has active/unknown client backends.");
   }
   return true;
 }
@@ -216,7 +259,7 @@ export async function startPrismaMigrationAtDdlBoundary({
     throw new Error("Refusing Prisma DDL: challenge-bound GitHub OIDC proof expired during final target probe.");
   }
   assertBackupFreshAtDdlStart(authorized.receipt, finalDdlBoundaryNow);
-  assertPrismaTargetMatchesSignedIdentity(authorized.receipt, actualIdentity);
+  assertPrismaTargetMatchesSignedIdentity(authorized.receipt, actualIdentity, finalDdlBoundaryNow);
   return spawn("npx", ["prisma", "migrate", "deploy"], {
     stdio: "inherit",
     env: { ...environment, DATABASE_URL: authorized.databaseUrl },

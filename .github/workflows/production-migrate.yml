@@ -12,7 +12,7 @@ on:
         required: true
         type: choice
         options:
-          - active-energy-unified-v1
+          - active-energy-unified-v2
       confirmation:
         description: Type MIGRATE_PRODUCTION to request a signed, current-state authorization
         required: true
@@ -64,7 +64,7 @@ jobs:
           [[ "$GITHUB_REPOSITORY" == "krustallik/body-model" ]] || { echo "::error::Canonical repository only."; exit 1; }
           [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::Dispatch this workflow from main."; exit 1; }
           [[ "$CONFIRMATION" == "MIGRATE_PRODUCTION" ]] || { echo "::error::Exact migration request confirmation is required."; exit 1; }
-          [[ "$MANIFEST_ID" == "active-energy-unified-v1" ]] || { echo "::error::Manifest is not in the closed allowlist."; exit 1; }
+          [[ "$MANIFEST_ID" == "active-energy-unified-v2" ]] || { echo "::error::Manifest is not in the closed allowlist."; exit 1; }
           [[ "$DISPATCH_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::release_sha must be a full lowercase SHA."; exit 1; }
           git fetch --no-tags origin main
           git -c remote.bodycast-canonical.url=https://github.com/krustallik/body-model.git fetch --no-tags bodycast-canonical +refs/heads/main:refs/remotes/bodycast-canonical/main
@@ -369,6 +369,8 @@ jobs:
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          APP_HOST: ${{ secrets.APP_HOST }}
+          CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
           MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
           AUTHORIZATION_WORKFLOW_ID: ${{ needs.authorize.outputs.workflow_id }}
@@ -378,6 +380,8 @@ jobs:
         run: |
           set -Eeuo pipefail
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
+          APP_HOST_B64="$(printf '%s' "$APP_HOST" | base64 -w0)"
+          CADDY_ROUTES_PATH_B64="$(printf '%s' "$CADDY_ROUTES_PATH" | base64 -w0)"
           REMOTE_CONTEXT="/tmp/bodycast-migration-context-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
           REMOTE_SCRIPT="$(cat <<'REMOTE'
@@ -389,12 +393,15 @@ jobs:
           AUTHORIZATION_WORKFLOW_ID="$5"
           AUTHORIZATION_RUN_ID="$6"
           AUTHORIZATION_RUN_ATTEMPT="$7"
+          APP_HOST="$(printf '%s' "$8" | base64 --decode)"
+          CADDY_ROUTES_PATH="$(printf '%s' "$9" | base64 --decode)"
           [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid release SHA." >&2; exit 1; }
-          [[ "$MANIFEST_ID" == "active-energy-unified-v1" ]] || { echo "Unreviewed manifest." >&2; exit 1; }
+          [[ "$MANIFEST_ID" == "active-energy-unified-v2" ]] || { echo "Unreviewed manifest." >&2; exit 1; }
           [[ "$AUTHORIZATION_WORKFLOW_ID" =~ ^[1-9][0-9]*$ && "$AUTHORIZATION_RUN_ID" =~ ^[1-9][0-9]*$ && "$AUTHORIZATION_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || {
             echo "Invalid authorization workflow identity." >&2; exit 1;
           }
           [[ "$DEPLOY_PATH" == /* && -d "$DEPLOY_PATH" ]] || { echo "Deployment path is not an existing absolute directory." >&2; exit 1; }
+          [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* ]] || { echo "Production traffic topology inputs are invalid." >&2; exit 1; }
           [[ "$CONTEXT_DIR" =~ ^/tmp/bodycast-migration-context-[0-9]+-[0-9]+$ && -d "$CONTEXT_DIR" && ! -L "$CONTEXT_DIR" ]] || { echo "Invalid remote context path." >&2; exit 1; }
           trap 'rm -rf "$CONTEXT_DIR"' EXIT
           for name in authorization-envelope.json preflight-result.json preflight-evidence.json restore-result.json artifact-metadata.json; do
@@ -415,12 +422,13 @@ jobs:
           export BODYCAST_AUTHORIZATION_WORKFLOW_ID="$AUTHORIZATION_WORKFLOW_ID"
           export BODYCAST_AUTHORIZATION_RUN_ID="$AUTHORIZATION_RUN_ID"
           export BODYCAST_AUTHORIZATION_RUN_ATTEMPT="$AUTHORIZATION_RUN_ATTEMPT"
+          export APP_HOST CADDY_ROUTES_PATH
           export BODYCAST_EXECUTION_PROOF_HANDOFF=true
           bash scripts/deploy-migrate.sh
           REMOTE
           )"
           REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
-          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$RELEASE_SHA' '$MANIFEST_ID' '$DEPLOY_PATH_B64' '$REMOTE_CONTEXT' '$AUTHORIZATION_WORKFLOW_ID' '$GITHUB_RUN_ID' '$GITHUB_RUN_ATTEMPT'"
+          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$RELEASE_SHA' '$MANIFEST_ID' '$DEPLOY_PATH_B64' '$REMOTE_CONTEXT' '$AUTHORIZATION_WORKFLOW_ID' '$GITHUB_RUN_ID' '$GITHUB_RUN_ATTEMPT' '$APP_HOST_B64' '$CADDY_ROUTES_PATH_B64'"
           REMOTE_PID=""
           cleanup_remote() {
             if [[ -n "$REMOTE_PID" ]]; then

@@ -25,6 +25,7 @@ readonly CURRENT_IMAGE="bodycast-app:latest"
 readonly ROLLBACK_IMAGE="bodycast-app:rollback"
 readonly APP_HOST="${APP_HOST:?APP_HOST is required}"
 readonly CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:?CADDY_ROUTES_PATH is required}"
+export APP_HOST CADDY_ROUTES_PATH
 readonly DEPLOY_SHA="${DEPLOY_SHA:?DEPLOY_SHA is required}"
 readonly BODYCAST_NON_SERVING_DEPLOY="${BODYCAST_NON_SERVING_DEPLOY:-0}"
 
@@ -47,7 +48,11 @@ if [[ "$deployed_sha" != "$DEPLOY_SHA" ]]; then
   exit 1
 fi
 marker_status=1
-read_bodycast_release_marker || marker_status=$?
+if read_bodycast_release_marker; then
+  marker_status=0
+else
+  marker_status=$?
+fi
 active_schema_cutover=false
 if [[ "$marker_status" -eq 0 ]]; then
   [[ "$BODYCAST_MARKER_RELEASE_SHA" == "$DEPLOY_SHA" \
@@ -84,8 +89,7 @@ rollback() {
   if [[ "$app_cut_over" != "true" ]]; then
     echo "Deployment failed before app cutover; leaving the running application unchanged." >&2
     if [[ "$active_schema_cutover" == "true" || "$BODYCAST_NON_SERVING_DEPLOY" == "1" ]]; then
-      APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" \
-        bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance || true
+      bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance || true
     elif [[ "$previous_image_exists" == "true" ]] && docker image inspect "$ROLLBACK_IMAGE" >/dev/null 2>&1; then
       # Restore :latest tag for cleanliness without recreating the container.
       docker image tag "$ROLLBACK_IMAGE" "$CURRENT_IMAGE" || true
@@ -96,8 +100,7 @@ rollback() {
 
   if [[ "$active_schema_cutover" == "true" || "$BODYCAST_NON_SERVING_DEPLOY" == "1" ]]; then
     echo "Non-serving/schema-cutover deployment failed; keeping maintenance active and refusing to restart the prior binary." >&2
-    APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" \
-      bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance || true
+    bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance || true
     docker update --restart=no "$APP_CONTAINER" >/dev/null 2>&1 || true
     compose stop "$APP_SERVICE" >/dev/null 2>&1 || true
     compose logs --tail=100 "$APP_SERVICE" || true
@@ -135,11 +138,9 @@ bash "${ROOT_DIR}/scripts/deploy-preflight-schema.sh"
 # A rollout deploy is explicitly non-serving. A normal app cutover first checks
 # that Forecast V2's required physical Unified V4 snapshot is already current.
 if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" ]]; then
-  APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" \
-    bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance
+  bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance
 else
-  APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" \
-    bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" check
+  bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" check
 fi
 
 compose build "$APP_SERVICE"
@@ -174,8 +175,7 @@ if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" ]]; then
   fi
   echo "Exact SHA is deployed in non-serving maintenance mode; explicit V4 activation/replay and traffic check remain required."
 else
-  APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" \
-    bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" serve
+  bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" serve
 fi
 
 trap - ERR

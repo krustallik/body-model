@@ -13,6 +13,7 @@ readonly RELEASE_SHA="$RELEASE_SHA"
 readonly CONTEXT_DIR="$BODYCAST_MIGRATION_CONTEXT_DIR"
 readonly APP_HOST="${APP_HOST:?APP_HOST is required for the maintenance topology gate}"
 readonly CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:?CADDY_ROUTES_PATH is required for the maintenance topology gate}"
+export APP_HOST CADDY_ROUTES_PATH
 source "$ROOT_DIR/scripts/production-release-marker.sh"
 
 fail() { echo "Production migration blocked: $*" >&2; exit 1; }
@@ -31,7 +32,11 @@ done
 [[ "$(git rev-parse HEAD)" == "$RELEASE_SHA" ]] || fail "deployment checkout does not equal the authorized release SHA."
 [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || fail "deployment checkout is not clean."
 marker_status=1
-read_bodycast_release_marker || marker_status=$?
+if read_bodycast_release_marker; then
+  marker_status=0
+else
+  marker_status=$?
+fi
 [[ "$marker_status" -eq 1 ]] || fail "an existing schema-cutover marker requires explicit recovery; this migration run cannot reuse it."
 
 GIT_DIR="$(git rev-parse --absolute-git-dir)"
@@ -128,7 +133,7 @@ export BODYCAST_DDL_EXECUTION_CHALLENGE="$DDL_CHALLENGE"
 bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" \
   < <(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-db-preflight.mjs) \
   > "$CONTEXT_DIR/live-report-final.json"
-APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
+bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
 compose --profile tools run --rm --no-deps \
   --user "$(id -u):$(id -g)" \
   --volume "$CONTEXT_DIR:/run/bodycast:ro" \
@@ -150,6 +155,9 @@ compose --profile tools run --rm --no-deps \
   --repository /app \
   > "$GUARD_RECEIPT"
 chmod 600 "$GUARD_RECEIPT"
+# Irreversible recovery boundary: this marker is written before the Prisma
+# container is spawned. From here on, assume schema state may have changed even
+# if spawning Prisma or its first PostgreSQL statement fails. No exit path clears it.
 write_bodycast_release_marker "$RELEASE_SHA" ddl-started
 
 # Keep a host-persistent one-use nonce ledger. The container receives only this

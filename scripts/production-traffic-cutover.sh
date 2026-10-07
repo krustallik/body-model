@@ -10,6 +10,7 @@ readonly COMPOSE_FILE="docker-compose.prod.yml"
 readonly APP_CONTAINER="bodycast-app-prod"
 readonly APP_HOST="${APP_HOST:?APP_HOST is required}"
 readonly CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:?CADDY_ROUTES_PATH is required}"
+export APP_HOST CADDY_ROUTES_PATH
 readonly ROUTE_FILE="${CADDY_ROUTES_PATH}/bodycast.caddy"
 source "${ROOT_DIR}/scripts/production-release-marker.sh"
 
@@ -50,8 +51,12 @@ EOF
 }
 
 require_ready_release_marker() {
-  local marker_status=1 app_release_sha
-  read_bodycast_release_marker || marker_status=$?
+  local marker_status app_release_sha
+  if read_bodycast_release_marker; then
+    marker_status=0
+  else
+    marker_status=$?
+  fi
   [[ "$marker_status" -eq 0 && "$BODYCAST_MARKER_STATE" == "app-ready" ]] || {
     echo "The exact-SHA app-ready marker is required for this rollout step." >&2
     return 1
@@ -124,7 +129,7 @@ EOF
 
 if [[ "$MODE" == "maintenance" ]]; then
   enter_maintenance
-  APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
+  bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
   echo "Traffic is in maintenance mode; the old app container is removed and PostgreSQL writers are drained."
   exit 0
 fi
@@ -151,7 +156,11 @@ app_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Statu
 app_release_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER")"
 [[ "$app_release_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "App container does not declare an exact release SHA." >&2; exit 1; }
 marker_status=1
-read_bodycast_release_marker || marker_status=$?
+if read_bodycast_release_marker; then
+  marker_status=0
+else
+  marker_status=$?
+fi
 if [[ "$marker_status" -eq 0 ]]; then
   [[ "$BODYCAST_MARKER_RELEASE_SHA" == "$app_release_sha" \
     && "$BODYCAST_MARKER_STATE" == "app-ready" ]] || {

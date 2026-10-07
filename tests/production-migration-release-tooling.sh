@@ -34,6 +34,17 @@ grep -Fq 'DATABASE_URL: postgresql://bodycast_restore:' "$PREFLIGHT"
 grep -Fq 'production migration: NOT EXECUTED' "$PREFLIGHT"
 grep -Fq 'compose rm --force app' "$CUTOVER"
 grep -Fq 'state !== "absent"' "$WRITER_DRAIN"
+grep -Fq 'Irreversible recovery boundary' "$DEPLOY"
+MARKER_LINE="$(grep -nF 'write_bodycast_release_marker "$RELEASE_SHA" ddl-started' "$DEPLOY" | cut -d: -f1)"
+PRISMA_SPAWN_LINE="$(grep -nF '  migrate' "$DEPLOY" | tail -n1 | cut -d: -f1)"
+AFTER_DDL_LINE="$(grep -nF -- '--after-ddl' "$DEPLOY" | cut -d: -f1)"
+SCHEMA_APPLIED_LINE="$(grep -nF 'write_bodycast_release_marker "$RELEASE_SHA" schema-applied' "$DEPLOY" | cut -d: -f1)"
+APP_READY_LINE="$(grep -nF 'write_bodycast_release_marker "$DEPLOY_SHA" app-ready' "$ROOT/scripts/deploy.sh" | cut -d: -f1)"
+APP_SHA_CHECK_LINE="$(grep -nF 'deployed_container_sha=' "$ROOT/scripts/deploy.sh" | cut -d: -f1)"
+[[ -n "$MARKER_LINE" && -n "$PRISMA_SPAWN_LINE" && -n "$AFTER_DDL_LINE" && -n "$SCHEMA_APPLIED_LINE" ]]
+[[ "$MARKER_LINE" -lt "$PRISMA_SPAWN_LINE" && "$PRISMA_SPAWN_LINE" -lt "$AFTER_DDL_LINE" && "$AFTER_DDL_LINE" -lt "$SCHEMA_APPLIED_LINE" ]]
+[[ -n "$APP_READY_LINE" && -n "$APP_SHA_CHECK_LINE" && "$APP_SHA_CHECK_LINE" -lt "$APP_READY_LINE" ]]
+! grep -Eq 'trap .*clear_bodycast_release_marker|clear_bodycast_release_marker' "$DEPLOY"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -95,5 +106,177 @@ EXPECTED_BACKUP_LINE='- artifact: `'"$ARTIFACT_PROBE"'`'
 EXPECTED_FINAL_LINE='- backup artifact: [`'"$ARTIFACT_PROBE"'`](https://github.com/example/artifact)'
 grep -Fq -- "$EXPECTED_BACKUP_LINE" "$SUMMARY_FILE"
 grep -Fq -- "$EXPECTED_FINAL_LINE" "$SUMMARY_FILE"
+
+# Exercise the real deploy gate with a disposable fixture and command stubs. A
+# missing marker permits the prior SHA to reach the ordinary guarded deploy path;
+# a post-marker process failure must leave the marker in place and block that SHA.
+RECOVERY_ROOT="$TMP/release-marker-deploy-fixture"
+RECOVERY_GIT_DIR="$RECOVERY_ROOT/.git"
+RECOVERY_BIN="$TMP/release-marker-command-stubs"
+RECOVERY_DOCKER_LOG="$TMP/release-marker-docker.log"
+OLD_RELEASE_SHA="1111111111111111111111111111111111111111"
+NEW_RELEASE_SHA="6d7582fd63e8b96ac843e172bcccbfb941999a07"
+REAL_GIT="$(command -v git)"
+mkdir -p "$RECOVERY_ROOT/scripts" "$RECOVERY_GIT_DIR" "$RECOVERY_BIN"
+export FAKE_GIT_LOG="$TMP/recovery-git.log"
+cp "$ROOT/scripts/deploy.sh" "$RECOVERY_ROOT/scripts/deploy.sh"
+cp "$ROOT/scripts/deploy-migrate.sh" "$RECOVERY_ROOT/scripts/deploy-migrate.sh"
+cp "$ROOT/scripts/production-release-marker.sh" "$RECOVERY_ROOT/scripts/production-release-marker.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$RECOVERY_ROOT/scripts/deploy-preflight-schema.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$RECOVERY_ROOT/scripts/production-traffic-cutover.sh"
+printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "{}\\n"\n' > "$RECOVERY_ROOT/scripts/production-db-target.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$RECOVERY_ROOT/scripts/production-writer-drain.sh"
+printf 'services: {}\n' > "$RECOVERY_ROOT/docker-compose.prod.yml"
+RECOVERY_CONTEXT="$TMP/release-marker-context"
+mkdir -p "$RECOVERY_CONTEXT"
+for context_file in authorization-envelope.json preflight-result.json preflight-evidence.json restore-result.json artifact-metadata.json; do
+  : > "$RECOVERY_CONTEXT/$context_file"
+done
+for migration_name in \
+  20261002100000_active_energy_canonical_resolution \
+  20261002150000_add_production_publication_generation \
+  20261003120000_add_episode_aware_unified_experimental_physiology_v2 \
+  20261005120000_episode_relative_muscle_core \
+  20261006110000_relative_muscle_legacy_identity \
+  20261006130000_unified_v4_glycogen_water_rollout; do
+  migration_path="prisma/migrations/$migration_name/migration.sql"
+  mkdir -p "$RECOVERY_ROOT/$(dirname "$migration_path")"
+  "$REAL_GIT" -C "$ROOT" cat-file blob "$NEW_RELEASE_SHA:$migration_path" > "$RECOVERY_ROOT/$migration_path"
+done
+cat > "$RECOVERY_BIN/git" <<'COMMAND'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s | gitdir=%s\n' "$*" "${RECOVERY_GIT_DIR:-unset}" >> "$FAKE_GIT_LOG"
+if [[ "$1" == "rev-parse" && "$2" == "--absolute-git-dir" ]]; then
+  printf '%s\n' "$RECOVERY_GIT_DIR"
+elif [[ "$1" == "rev-parse" && "$2" == "--show-toplevel" ]]; then
+  printf '%s\n' "$RECOVERY_ROOT"
+elif [[ "$1" == "rev-parse" && "$2" == "HEAD" ]]; then
+  printf '%s\n' "$FAKE_DEPLOY_SHA"
+elif [[ "$1" == "rev-parse" && "$2" == "--verify" ]]; then
+  printf '%s\n' "$FAKE_DEPLOY_SHA"
+elif [[ "$1" == "cat-file" ]]; then
+  "$REAL_GIT" -C "$SOURCE_ROOT" "$@"
+elif [[ "$1" == "-c" && "$3" == "fetch" ]]; then
+  exit 0
+elif [[ "$1" == "fetch" || "$1" == "checkout" ]]; then
+  exit 0
+elif [[ "$1" == "status" ]]; then
+  exit 0
+else
+  echo "Unexpected fixture git command: $*" >&2
+  exit 90
+fi
+COMMAND
+cat > "$RECOVERY_BIN/docker" <<'COMMAND'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"
+if [[ "$1" == "image" && "$2" == "inspect" ]]; then exit 1; fi
+if [[ "$1" == "inspect" ]]; then printf 'healthy\n'; exit 0; fi
+if [[ "$1" == "compose" && "$*" == *"config --quiet"* ]]; then exit 47; fi
+if [[ "$1" == "compose" && "$*" == *"production-db-preflight.mjs"* ]]; then printf '{}\n'; exit 0; fi
+if [[ "$1" == "compose" && "$*" == *"--before-ddl"* ]]; then printf '{}\n'; exit 0; fi
+if [[ "$1" == "compose" && "$*" == *"production-migration-image-check.mjs"* ]]; then printf 'fixture image checked\n'; exit 0; fi
+if [[ "$1" == "compose" && "$*" == *"run"* && "$*" == *" migrate" ]]; then
+  echo "Unexpected Prisma migration spawn in marker failure test." >&2
+  exit 99
+fi
+exit 0
+COMMAND
+cat > "$RECOVERY_BIN/flock" <<'COMMAND'
+#!/usr/bin/env bash
+exit 0
+COMMAND
+chmod +x "$RECOVERY_BIN/git" "$RECOVERY_BIN/docker" "$RECOVERY_BIN/flock"
+
+run_fixture_deploy() {
+  local sha="$1"
+  : > "$RECOVERY_DOCKER_LOG"
+  if env PATH="$RECOVERY_BIN:$PATH" \
+    RECOVERY_ROOT="$RECOVERY_ROOT" RECOVERY_GIT_DIR="$RECOVERY_GIT_DIR" FAKE_DEPLOY_SHA="$sha" \
+    FAKE_DOCKER_LOG="$RECOVERY_DOCKER_LOG" FAKE_GIT_LOG="$TMP/recovery-git.log" DEPLOY_SHA="$sha" \
+    APP_HOST=bodycast.example CADDY_ROUTES_PATH="$TMP/recovery-caddy" \
+    bash "$RECOVERY_ROOT/scripts/deploy.sh" > "$TMP/recovery-deploy.log" 2>&1; then
+    echo "Expected fixture deployment to stop at its deliberate pre-cutover failure." >&2
+    return 1
+  else
+    local status=$?
+    [[ "$status" -ne 0 ]]
+  fi
+}
+
+# Before the irreversible marker, the prior SHA can reach the guarded deploy path.
+run_fixture_deploy "$OLD_RELEASE_SHA"
+grep -Fq 'compose -f docker-compose.prod.yml config --quiet' "$RECOVERY_DOCKER_LOG"
+test ! -e "$RECOVERY_GIT_DIR/bodycast-production-schema-cutover"
+
+# Run the actual migrator script through its final guard, then make the nonce
+# ledger invalid so it fails after writing `ddl-started` but before Prisma spawn.
+touch "$RECOVERY_GIT_DIR/bodycast-production-migration-attestation-nonces"
+: > "$RECOVERY_DOCKER_LOG"
+if printf 'fixture-oidc-proof\n' | env PATH="$RECOVERY_BIN:$PATH" \
+  RECOVERY_ROOT="$RECOVERY_ROOT" RECOVERY_GIT_DIR="$RECOVERY_GIT_DIR" \
+  FAKE_DEPLOY_SHA="$NEW_RELEASE_SHA" REAL_GIT="$REAL_GIT" SOURCE_ROOT="$ROOT" \
+  FAKE_DOCKER_LOG="$RECOVERY_DOCKER_LOG" FAKE_GIT_LOG="$TMP/recovery-git.log" \
+  BODYCAST_MIGRATION_MANIFEST_ID=active-energy-unified-v2 RELEASE_SHA="$NEW_RELEASE_SHA" \
+  BODYCAST_MIGRATION_CONTEXT_DIR="$RECOVERY_CONTEXT" APP_HOST=bodycast.example \
+  CADDY_ROUTES_PATH="$TMP/recovery-caddy" BODYCAST_EXECUTION_PROOF_HANDOFF=true \
+  BODYCAST_AUTHORIZATION_WORKFLOW_ID=1 BODYCAST_AUTHORIZATION_RUN_ID=2 \
+  BODYCAST_AUTHORIZATION_RUN_ATTEMPT=1 \
+  bash "$RECOVERY_ROOT/scripts/deploy-migrate.sh" > "$TMP/recovery-migrate.log" 2>&1; then
+  echo "Expected the fixture migrator to stop at the deliberately invalid nonce ledger." >&2
+  exit 1
+else
+  MIGRATION_STATUS=$?
+fi
+[[ "$MIGRATION_STATUS" -ne 0 ]]
+grep -Fq 'challenge-bound execution proof replay ledger is not a regular directory' "$TMP/recovery-migrate.log" || {
+  cat "$TMP/recovery-migrate.log" >&2
+  cat "$TMP/recovery-git.log" >&2
+  exit 1
+}
+grep -Fq 'state=ddl-started' "$RECOVERY_GIT_DIR/bodycast-production-schema-cutover"
+! grep -Eq 'compose .* run .* migrate$' "$RECOVERY_DOCKER_LOG"
+run_fixture_deploy "$OLD_RELEASE_SHA"
+grep -Fq 'Deployment SHA/state does not match' "$TMP/recovery-deploy.log" || {
+  cat "$TMP/recovery-deploy.log" >&2
+  cat "$TMP/recovery-git.log" >&2
+  cat "$RECOVERY_GIT_DIR/bodycast-production-schema-cutover" >&2
+  (cd "$RECOVERY_ROOT" && PATH="$RECOVERY_BIN:$PATH" RECOVERY_GIT_DIR="$RECOVERY_GIT_DIR" FAKE_GIT_LOG="$TMP/recovery-git.log" bash -c 'source scripts/production-release-marker.sh; printf "path=%s\n" "$BODYCAST_RELEASE_MARKER_PATH"; read_bodycast_release_marker; printf "state=%s sha=%s\n" "$BODYCAST_MARKER_STATE" "$BODYCAST_MARKER_RELEASE_SHA"') >&2
+  exit 1
+}
+test ! -s "$RECOVERY_DOCKER_LOG"
+
+# The migration runner itself also refuses to reuse a marker after failure.
+: > "$RECOVERY_DOCKER_LOG"
+if env PATH="$RECOVERY_BIN:$PATH" RECOVERY_ROOT="$RECOVERY_ROOT" \
+  RECOVERY_GIT_DIR="$RECOVERY_GIT_DIR" FAKE_DEPLOY_SHA="$NEW_RELEASE_SHA" \
+  FAKE_DOCKER_LOG="$RECOVERY_DOCKER_LOG" FAKE_GIT_LOG="$TMP/recovery-git.log" \
+  BODYCAST_MIGRATION_MANIFEST_ID=active-energy-unified-v2 RELEASE_SHA="$NEW_RELEASE_SHA" \
+  BODYCAST_MIGRATION_CONTEXT_DIR="$RECOVERY_CONTEXT" APP_HOST=bodycast.example \
+  CADDY_ROUTES_PATH="$TMP/recovery-caddy" BODYCAST_EXECUTION_PROOF_HANDOFF=true \
+  BODYCAST_AUTHORIZATION_WORKFLOW_ID=1 BODYCAST_AUTHORIZATION_RUN_ID=2 \
+  BODYCAST_AUTHORIZATION_RUN_ATTEMPT=1 \
+  bash "$RECOVERY_ROOT/scripts/deploy-migrate.sh" > "$TMP/recovery-migrate-reuse.log" 2>&1; then
+  echo "Expected the migrator to refuse marker reuse." >&2
+  exit 1
+else
+  MIGRATION_REUSE_STATUS=$?
+fi
+[[ "$MIGRATION_REUSE_STATUS" -ne 0 ]]
+grep -Fq 'existing schema-cutover marker requires explicit recovery' "$TMP/recovery-migrate-reuse.log"
+test ! -s "$RECOVERY_DOCKER_LOG"
+
+# Only an explicit operator recovery step after verified restore removes the
+# marker; the same prior-SHA deploy then reaches the ordinary guarded path.
+(
+  cd "$RECOVERY_ROOT"
+  PATH="$RECOVERY_BIN:$PATH" RECOVERY_GIT_DIR="$RECOVERY_GIT_DIR" RESTORE_VERIFIED=1 FAKE_GIT_LOG="$TMP/recovery-git.log" \
+    bash -c 'test "$RESTORE_VERIFIED" = 1; source scripts/production-release-marker.sh; clear_bodycast_release_marker'
+)
+test ! -e "$RECOVERY_GIT_DIR/bodycast-production-schema-cutover"
+run_fixture_deploy "$OLD_RELEASE_SHA"
+grep -Fq 'compose -f docker-compose.prod.yml config --quiet' "$RECOVERY_DOCKER_LOG"
 
 printf '%s\n' 'Production migration release-tooling shell regressions passed.'

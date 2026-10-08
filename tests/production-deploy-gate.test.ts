@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluateProductionDeployGate } from "../scripts/ci/production-deploy-gate";
+import { evaluateProductionDeployGate, isCurrentMainSha } from "../scripts/ci/production-deploy-gate";
 
 const tip = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const older = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -87,6 +87,33 @@ describe("evaluateProductionDeployGate", () => {
     });
     expect(result.decision).toBe("skip");
     expect(result.reason).toMatch(/Stale CI SHA/);
+  });
+
+  it("blocks SSH when main advances after authorization and deployment creation", () => {
+    const authorizedSha = tip;
+    expect(isCurrentMainSha(authorizedSha, tip)).toBe(true);
+
+    let sshMutationCount = 0;
+    const currentTipAfterDeploymentWasCreated = "cccccccccccccccccccccccccccccccccccccccc";
+    if (isCurrentMainSha(authorizedSha, currentTipAfterDeploymentWasCreated)) sshMutationCount += 1;
+
+    expect(sshMutationCount).toBe(0);
+  });
+
+  it("blocks a stale explicit manual-dispatch SHA", () => {
+    const result = evaluateProductionDeployGate({
+      eventName: "workflow_dispatch",
+      repositoryFullName: "krustallik/body-model",
+      workflowRepositoryFullName: "krustallik/body-model",
+      workflowName: "BodyCast CI/CD",
+      expectedWorkflowName: "BodyCast CI/CD",
+      workflowRun: null,
+      mainTipSha: tip,
+      candidateSha: older,
+      dispatchConfirm: "deploy",
+    });
+    expect(result.decision).toBe("skip");
+    expect(result.reason).toMatch(/not current origin\/main tip/);
   });
 
   it("blocks foreign repository workflow_run", () => {

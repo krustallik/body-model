@@ -57,7 +57,8 @@ const OPERATION_DEFINITIONS = Object.freeze({
     preState: "release-not-serving",
     postState: "exact-release-healthy",
     replayPolicy: "inspect-exact-release-before-ensure-deployed",
-    preconditionKeys: ["releaseSha", "canonicalMainSha", "currentImageDigest"],
+    boundary: "re-read-canonical-main-tip-immediately-before-fixed-release-effect",
+    preconditionKeys: ["releaseSha", "canonicalMainSha", "canonicalMainFence", "currentImageDigest"],
     postconditionKeys: ["releaseSha", "imageDigest", "containerId", "healthStatus"],
   }),
   "traffic-maintenance": Object.freeze({
@@ -82,7 +83,7 @@ const CONFORMANCE_KEYS = Object.freeze([
   "testRunId", "testedOperationTypes", "result", "issuedAt", "expiresAt", "signerKeyId", "signature",
 ]);
 
-export const OPERATION_CONTRACT_VERSION = 2;
+export const OPERATION_CONTRACT_VERSION = 3;
 const OPERATION_EVIDENCE_SCHEMA_VERSION = 1;
 export const OPERATION_CONTRACTS = OPERATION_DEFINITIONS;
 export const OPERATION_ADAPTER_CONTRACT_DIGEST = canonicalDigest({

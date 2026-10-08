@@ -11,7 +11,9 @@ const AUTHORITY_CONFIG_KEYS = Object.freeze([
 ]);
 
 const ADAPTER_FUNCTIONS = Object.freeze([
-  "verifyReviewedRelease", "verifyCurrentReaderRollout", "verifyRecoveryPreparation",
+  // Must freshly resolve the GitHub canonical refs/heads/main SHA on every call;
+  // a process-cached or local-only branch value is not an acceptable source.
+  "verifyReviewedRelease", "readCanonicalMainTipSha", "verifyCurrentReaderRollout", "verifyRecoveryPreparation",
   "verifyForwardMigrationAuthorization", "loadEvidenceById", "loadAuthorizationById",
   "loadRolloutReceiptById", "loadOperationAdapterConformanceReceipt", "executeFixedOperation", "validateEvidence", "verifyRolloutReceipt",
   "verifyRestoreGrant", "captureMigrationExecutionState", "verifyMigrationExecutionProof",
@@ -57,6 +59,7 @@ export function createRecoveryHostRuntime({
   const broker = createProductionOperationBroker({
     authority,
     verifyReviewedRelease: trustedHostAdapter.verifyReviewedRelease,
+    readCanonicalMainTipSha: trustedHostAdapter.readCanonicalMainTipSha,
     verifyCurrentReaderRollout: trustedHostAdapter.verifyCurrentReaderRollout,
     verifyRecoveryPreparation: trustedHostAdapter.verifyRecoveryPreparation,
     verifyForwardMigrationAuthorization: trustedHostAdapter.verifyForwardMigrationAuthorization,

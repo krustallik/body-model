@@ -15,6 +15,7 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 source "$ROOT_DIR/scripts/production-release-marker.sh"
+source "$ROOT_DIR/scripts/deploy-main-freshness.sh"
 
 readonly COMPOSE_FILE="docker-compose.prod.yml"
 readonly APP_SERVICE="app"
@@ -28,6 +29,14 @@ readonly CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:?CADDY_ROUTES_PATH is required}"
 export APP_HOST CADDY_ROUTES_PATH
 readonly DEPLOY_SHA="${DEPLOY_SHA:?DEPLOY_SHA is required}"
 readonly BODYCAST_NON_SERVING_DEPLOY="${BODYCAST_NON_SERVING_DEPLOY:-0}"
+freshness_blocked=false
+
+assert_current_main_sha() {
+  if ! bodycast_assert_current_main_sha "$DEPLOY_SHA"; then
+    freshness_blocked=true
+    return 1
+  fi
+}
 
 if [[ ! "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   echo "DEPLOY_SHA must be a full 40-character commit SHA (got: ${DEPLOY_SHA})." >&2
@@ -37,6 +46,10 @@ if [[ "$BODYCAST_NON_SERVING_DEPLOY" != "0" && "$BODYCAST_NON_SERVING_DEPLOY" !=
   echo "BODYCAST_NON_SERVING_DEPLOY must be 0 or 1." >&2
   exit 1
 fi
+
+# Both the host-authority and fallback paths independently read canonical
+# origin/main before any release operation begins.
+assert_current_main_sha
 
 # After the separate host-preparation checkpoint, the release principal has no
 # Docker/Caddy privileges. A fixed systemd-broker client executes the reviewed
@@ -50,6 +63,7 @@ if [[ -x "$HOST_OPERATION_CLIENT" ]]; then
     --request-id "deploy-${DEPLOY_SHA}-$$" \
     --release-sha "$DEPLOY_SHA" \
     --canonical-main-sha "$DEPLOY_SHA" \
+    --canonical-main-fence fresh-current-main-v1 \
     --release-mode "$release_mode"
 fi
 
@@ -102,6 +116,11 @@ fi
 rollback() {
   exit_code=$?
   if [[ "$app_cut_over" != "true" ]]; then
+    if [[ "$freshness_blocked" == "true" ]]; then
+      echo "Release candidate was superseded before app cutover; leaving the application and route unchanged." >&2
+      compose logs --tail=100 "$APP_SERVICE" || true
+      exit "$exit_code"
+    fi
     echo "Deployment failed before app cutover; leaving the running application unchanged." >&2
     if [[ "$active_schema_cutover" == "true" || "$BODYCAST_NON_SERVING_DEPLOY" == "1" ]]; then
       bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance || true
@@ -133,6 +152,7 @@ rollback() {
 trap rollback ERR
 
 compose config --quiet
+assert_current_main_sha
 compose up -d "$DB_SERVICE"
 
 for attempt in $(seq 1 30); do
@@ -153,6 +173,7 @@ bash "${ROOT_DIR}/scripts/deploy-preflight-schema.sh"
 # A rollout deploy is explicitly non-serving. A normal app cutover first checks
 # that Forecast V2's required physical Unified V4 snapshot is already current.
 if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" ]]; then
+  assert_current_main_sha
   bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance
 else
   bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" check
@@ -161,6 +182,7 @@ fi
 compose build "$APP_SERVICE"
 
 # Cutover boundary: only recreate the running app after successful preflight + build.
+assert_current_main_sha
 app_cut_over=true
 compose up -d --no-deps --force-recreate "$APP_SERVICE"
 
@@ -186,10 +208,12 @@ deployed_container_sha="$(docker inspect --format '{{index .Config.Labels "org.b
 
 if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" ]]; then
   if [[ "$active_schema_cutover" == "true" ]]; then
+    assert_current_main_sha
     write_bodycast_release_marker "$DEPLOY_SHA" app-ready
   fi
   echo "Exact SHA is deployed in non-serving maintenance mode; explicit V4 activation/replay and traffic check remain required."
 else
+  assert_current_main_sha
   bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" serve
 fi
 

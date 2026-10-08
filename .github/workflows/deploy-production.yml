@@ -209,6 +209,24 @@ jobs:
             -f description="Preflight + app recreate (no migrate)" \
             -F auto_inactive=true >/dev/null
 
+      - name: Recheck canonical main immediately before SSH deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE: ${{ needs.authorize.outputs.candidate_sha }}
+        run: |
+          set -Eeuo pipefail
+          MAIN_TIP="$(gh api "repos/${{ github.repository }}/commits/main" --jq .sha)"
+          CANDIDATE="$CANDIDATE" MAIN_TIP="$MAIN_TIP" node --experimental-strip-types --input-type=module <<'EOF'
+          import { isCurrentMainSha } from "./scripts/ci/production-deploy-gate.ts";
+
+          const { CANDIDATE, MAIN_TIP } = process.env;
+          if (!isCurrentMainSha(CANDIDATE ?? "", MAIN_TIP ?? "")) {
+            console.error(`Refusing stale production deployment: candidate ${CANDIDATE ?? "<missing>"}, current main ${MAIN_TIP ?? "<missing>"}.`);
+            process.exit(1);
+          }
+          console.log(`Freshness fence passed for current main ${MAIN_TIP}.`);
+          EOF
+
       - name: Deploy over SSH (exact SHA, no migrate)
         id: ssh_deploy
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5

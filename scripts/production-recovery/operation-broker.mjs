@@ -11,7 +11,7 @@ const RECOVERY_EXECUTION_STEPS = Object.freeze({
   "open-traffic": "recovery-open-traffic",
 });
 const OPERATION_KEYS = Object.freeze({
-  "ordinary-release": ["schemaVersion", "operation", "requestId", "releaseSha", "canonicalMainSha", "releaseMode"],
+  "ordinary-release": ["schemaVersion", "operation", "requestId", "releaseSha", "canonicalMainSha", "releaseMode", "canonicalMainFence"],
   "traffic-check": ["schemaVersion", "operation", "requestId", "releaseSha", "canonicalMainSha", "authorizationContextId"],
   "v3-postflight": ["schemaVersion", "operation", "requestId", "releaseSha", "canonicalMainSha", "authorizationContextId"],
   "migration-challenge": ["schemaVersion", "operation", "requestId", "releaseSha", "canonicalMainSha", "migrationManifestId", "authorizationContextId"],
@@ -40,6 +40,9 @@ function validateRequest(request) {
   if (request.canonicalMainSha !== undefined) assertGitSha(request.canonicalMainSha, "canonicalMainSha");
   if (request.releaseMode !== undefined && !["serving", "non-serving"].includes(request.releaseMode)) {
     throw new Error("releaseMode must be serving or non-serving.");
+  }
+  if (request.operation === "ordinary-release" && request.canonicalMainFence !== "fresh-current-main-v1") {
+    throw new Error("Ordinary release requires the fresh-current-main-v1 protocol fence.");
   }
   if (request.operation === "recovery-bootstrap" && !["ddl-started", "schema-applied", "app-ready"].includes(request.failedState)) {
     throw new Error("Recovery bootstrap failed state is unsupported.");
@@ -84,6 +87,7 @@ function validateRequest(request) {
 export function createProductionOperationBroker({
   authority,
   verifyReviewedRelease,
+  readCanonicalMainTipSha,
   verifyCurrentReaderRollout,
   verifyRecoveryPreparation,
   verifyForwardMigrationAuthorization,
@@ -102,6 +106,7 @@ export function createProductionOperationBroker({
 }) {
   for (const [name, fn] of Object.entries({
     verifyReviewedRelease,
+    readCanonicalMainTipSha,
     verifyCurrentReaderRollout,
     verifyRecoveryPreparation,
     verifyForwardMigrationAuthorization,
@@ -122,6 +127,19 @@ export function createProductionOperationBroker({
   async function requireReviewedRelease(releaseSha, canonicalMainSha) {
     if (await verifyReviewedRelease(releaseSha, canonicalMainSha) !== true) {
       throw new Error("Release tooling or target SHA is stale, unreviewed, or not canonical main.");
+    }
+  }
+
+  async function requireCurrentCanonicalMainTip(releaseSha, canonicalMainSha) {
+    if (releaseSha !== canonicalMainSha) {
+      throw new Error("Ordinary release SHA must equal the authorized canonical main SHA.");
+    }
+    // This callback is a live read of GitHub refs/heads/main, not a cached
+    // repository ref. It is repeated at the fixed host effect boundary.
+    const currentMainSha = await readCanonicalMainTipSha();
+    assertGitSha(currentMainSha, "observed canonical origin/main tip");
+    if (currentMainSha !== releaseSha) {
+      throw new Error(`Refusing stale ordinary release ${releaseSha}; canonical origin/main is ${currentMainSha}.`);
     }
   }
 
@@ -363,6 +381,7 @@ export function createProductionOperationBroker({
       }
       if (request.operation === "recovery-rebuild-projection") return authority.rebuildMarkerProjection();
       if (request.operation === "ordinary-release") {
+        await requireCurrentCanonicalMainTip(request.releaseSha, request.canonicalMainSha);
         await requireReviewedRelease(request.releaseSha, request.canonicalMainSha);
         if (state.activeRecovery || state.blocking && !state.legacyMarker) {
           throw new Error("Active, malformed, or unreconciled V2 recovery state blocks ordinary deployment.");
@@ -376,7 +395,7 @@ export function createProductionOperationBroker({
         if (rollout && rollout.current !== true) throw new Error("Installed recovery authority reports stale reader tooling.");
         await requireAdapterConformance();
         const operationBindings = { releaseSha: request.releaseSha, canonicalMainSha: request.canonicalMainSha,
-          releaseMode: request.releaseMode };
+          releaseMode: request.releaseMode, canonicalMainFence: request.canonicalMainFence };
         const operationId = canonicalDigest({ operation: request.operation, ...operationBindings });
         return executeReconciledHostOperation({ operationType: request.operation, operationId,
           operationInputDigest: canonicalDigest(operationBindings), bindings: operationBindings, inspectFixedOperationState,
@@ -388,9 +407,11 @@ export function createProductionOperationBroker({
               throw new Error("Reader rollout changed before the ordinary release effect.");
             }
             await requireAdapterConformance();
+            await requireCurrentCanonicalMainTip(request.releaseSha, request.canonicalMainSha);
           },
           executeFixedOperation: (operationType, operation) => executeFixedOperation(operationType, {
-            releaseSha: request.releaseSha, canonicalMainSha: request.canonicalMainSha, releaseMode: request.releaseMode, ...operation,
+            releaseSha: request.releaseSha, canonicalMainSha: request.canonicalMainSha,
+            releaseMode: request.releaseMode, canonicalMainFence: request.canonicalMainFence, ...operation,
           }),
         });
       }

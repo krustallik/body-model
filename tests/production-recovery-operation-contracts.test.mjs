@@ -13,9 +13,10 @@ import {
 const OPERATION_TYPE = "ordinary-release";
 const OPERATION_ID = "a".repeat(64);
 const INPUT_DIGEST = "b".repeat(64);
-const BINDINGS = { releaseSha: "c".repeat(40), canonicalMainSha: "c".repeat(40), releaseMode: "serving" };
+const BINDINGS = { releaseSha: "c".repeat(40), canonicalMainSha: "c".repeat(40), releaseMode: "serving",
+  canonicalMainFence: "fresh-current-main-v1" };
 const PRECONDITION = { releaseSha: BINDINGS.releaseSha, canonicalMainSha: BINDINGS.canonicalMainSha,
-  currentImageDigest: "d".repeat(64) };
+  canonicalMainFence: BINDINGS.canonicalMainFence, currentImageDigest: "d".repeat(64) };
 const POSTCONDITION = { releaseSha: BINDINGS.releaseSha, imageDigest: "e".repeat(64),
   containerId: "container-current", healthStatus: "healthy" };
 

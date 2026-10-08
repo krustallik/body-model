@@ -32,6 +32,11 @@ export type DeployGateResult = {
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
 
+/** Compare a candidate against a freshly observed refs/heads/main commit. */
+export function isCurrentMainSha(candidateSha: string, observedMainSha: string): boolean {
+  return FULL_SHA.test(candidateSha) && FULL_SHA.test(observedMainSha) && candidateSha === observedMainSha;
+}
+
 export function evaluateProductionDeployGate(input: DeployGateInput): DeployGateResult {
   if (input.repositoryFullName !== input.workflowRepositoryFullName) {
     return {
@@ -56,7 +61,7 @@ export function evaluateProductionDeployGate(input: DeployGateInput): DeployGate
         candidateSha: null,
       };
     }
-    if (input.candidateSha !== input.mainTipSha) {
+    if (!isCurrentMainSha(input.candidateSha, input.mainTipSha)) {
       return {
         decision: "skip",
         reason: `Candidate ${input.candidateSha} is not current origin/main tip ${input.mainTipSha}.`,
@@ -114,7 +119,7 @@ export function evaluateProductionDeployGate(input: DeployGateInput): DeployGate
       candidateSha: null,
     };
   }
-  if (run.head_sha !== input.mainTipSha) {
+  if (!isCurrentMainSha(run.head_sha, input.mainTipSha)) {
     return {
       decision: "skip",
       reason: `Stale CI SHA ${run.head_sha} superseded by origin/main tip ${input.mainTipSha}.`,

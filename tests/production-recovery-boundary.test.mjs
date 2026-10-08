@@ -37,6 +37,7 @@ const FIXTURE_ADAPTER = Object.freeze({ current: true, adapterDigest: "a".repeat
   contractDigest: OPERATION_ADAPTER_CONTRACT_DIGEST, expiresAt: "2999-01-01T00:00:00.000Z" });
 const UNUSED_ADAPTER_CALLBACKS = Object.freeze({
   verifyReviewedRelease: async () => true,
+  readCanonicalMainTipSha: async () => "a".repeat(40),
   verifyCurrentReaderRollout: async () => ({ current: true }),
   verifyRecoveryPreparation: async () => ({ ready: true, operationAdapterDigest: FIXTURE_ADAPTER.adapterDigest,
     operationAdapterConformanceDigest: FIXTURE_ADAPTER.receiptDigest }),
@@ -81,6 +82,7 @@ function recoveryOperationIntent(evidence, artifact, { generation = 3, recoveryC
 }
 
 function brokerFixture({ blocking = false, prepared = true, rolloutCurrent = true, releaseValid = true,
+  canonicalMainTipShaProvider = async () => "a".repeat(40),
   v4Evidence, now = () => Date.now(), proofResultOverride, adapterConformance = FIXTURE_ADAPTER,
   onMigrationFinalGuard, onAtomicMigrationConsumption, onAfterMigrationConsumption, onOperationCompletion,
   operationState = null, operationPostconditionOverride = null } = {}) {
@@ -141,6 +143,7 @@ function brokerFixture({ blocking = false, prepared = true, rolloutCurrent = tru
     const precondition = operationType === "ordinary-release" ? {
       releaseSha: input.bindings.releaseSha,
       canonicalMainSha: input.bindings.canonicalMainSha,
+      canonicalMainFence: input.bindings.canonicalMainFence,
       currentImageDigest: "f".repeat(64),
     } : operationType === "forward-migration" ? {
       releaseSha: input.bindings.releaseSha, manifestId: input.bindings.manifestId,
@@ -178,6 +181,7 @@ function brokerFixture({ blocking = false, prepared = true, rolloutCurrent = tru
   const broker = createProductionOperationBroker({
     authority,
     verifyReviewedRelease: async () => releaseValid,
+    readCanonicalMainTipSha: canonicalMainTipShaProvider,
     verifyCurrentReaderRollout: async ({ allowAbsent }) => allowAbsent && !rolloutCurrent ? null : { current: rolloutCurrent },
     verifyRecoveryPreparation: async ({ allowAbsent }) => {
       if (allowAbsent && !prepared) return null;
@@ -308,6 +312,9 @@ describe("production recovery install, rollout, and operation boundaries", () =>
     })).toThrow(/closed schema/);
     expect(() => parseOperationArguments(["ordinary-release", "--request-id", "x", "--release-sha", "a".repeat(40),
       "--canonical-main-sha", "b".repeat(40), "--command", "docker"])).toThrow(/argument set/);
+    expect(() => parseOperationArguments(["ordinary-release", "--request-id", "old-client",
+      "--release-sha", "a".repeat(40), "--canonical-main-sha", "a".repeat(40),
+      "--release-mode", "serving"])).toThrow(/incomplete|unknown fields/);
     const envelope = { claims: { purpose: "recovery Phase A restore-only" }, signature: "signature" };
     const parsed = parseOperationArguments([
       "recovery-transition", "--request-id", "phase-a", "--recovery-case-id", "case-1", "--transition", "authorize-restore",
@@ -329,7 +336,7 @@ describe("production recovery install, rollout, and operation boundaries", () =>
     const fixture = brokerFixture({ prepared: false, rolloutCurrent: false });
     const result = await fixture.broker.dispatch({
       schemaVersion: 1, operation: "ordinary-release", requestId: "deploy-1", releaseSha: "a".repeat(40), canonicalMainSha: "a".repeat(40),
-      releaseMode: "serving",
+      releaseMode: "serving", canonicalMainFence: "fresh-current-main-v1",
     });
     expect(result).toMatchObject({ purpose: "bodycast-host-operation-success", operationType: "ordinary-release",
       operationId: expect.any(String), result: "executed", postcondition: { healthStatus: "healthy" } });
@@ -353,9 +360,37 @@ describe("production recovery install, rollout, and operation boundaries", () =>
     const blocked = brokerFixture({ blocking: true });
     await expect(blocked.broker.dispatch({
       schemaVersion: 1, operation: "ordinary-release", requestId: "deploy-2", releaseSha: "a".repeat(40), canonicalMainSha: "a".repeat(40),
-      releaseMode: "serving",
+      releaseMode: "serving", canonicalMainFence: "fresh-current-main-v1",
     })).rejects.toThrow(/recovery state blocks/);
     expect(blocked.calls).toHaveLength(0);
+  });
+
+  it("rechecks live canonical main at the host effect boundary and blocks a superseded release", async () => {
+    let reads = 0;
+    const fixture = brokerFixture({ canonicalMainTipShaProvider: async () => {
+      reads += 1;
+      return reads === 1 ? "a".repeat(40) : "b".repeat(40);
+    } });
+
+    await expect(fixture.broker.dispatch({
+      schemaVersion: 1, operation: "ordinary-release", requestId: "deploy-main-advanced",
+      releaseSha: "a".repeat(40), canonicalMainSha: "a".repeat(40), releaseMode: "serving",
+      canonicalMainFence: "fresh-current-main-v1",
+    })).rejects.toThrow(/Refusing stale ordinary release/);
+
+    expect(reads).toBe(2);
+    expect(fixture.ordinaryReleaseEffects).toHaveLength(0);
+  });
+
+  it("fails closed before host operation inspection when canonical main is already newer", async () => {
+    const fixture = brokerFixture({ canonicalMainTipShaProvider: async () => "b".repeat(40) });
+    await expect(fixture.broker.dispatch({
+      schemaVersion: 1, operation: "ordinary-release", requestId: "deploy-already-stale",
+      releaseSha: "a".repeat(40), canonicalMainSha: "a".repeat(40), releaseMode: "serving",
+      canonicalMainFence: "fresh-current-main-v1",
+    })).rejects.toThrow(/Refusing stale ordinary release/);
+    expect(fixture.calls).toHaveLength(0);
+    expect(fixture.ordinaryReleaseEffects).toHaveLength(0);
   });
 
   it("revalidates adapter conformance at readiness, mutation, and the final effect boundary", async () => {
@@ -368,7 +403,8 @@ describe("production recovery install, rollout, and operation boundaries", () =>
     const expiredReadiness = await refreshed.broker.dispatch({ schemaVersion: 1, operation: "readiness", requestId: "ready-expired-adapter" });
     expect(expiredReadiness).toMatchObject({ operationAdapterConformanceCurrent: false, recoveryPrepared: false });
     await expect(refreshed.broker.dispatch({ schemaVersion: 1, operation: "ordinary-release", requestId: "expired-adapter-deploy",
-      releaseSha: "a".repeat(40), canonicalMainSha: "a".repeat(40), releaseMode: "serving" }))
+      releaseSha: "a".repeat(40), canonicalMainSha: "a".repeat(40), releaseMode: "serving",
+      canonicalMainFence: "fresh-current-main-v1" }))
       .rejects.toThrow(/no current verified operation-conformance evidence/);
     expect(refreshed.ordinaryReleaseEffects).toHaveLength(0);
 
@@ -382,7 +418,8 @@ describe("production recovery install, rollout, and operation boundaries", () =>
       return { ...FIXTURE_ADAPTER, expiresAt: new Date(conformanceReads === 1 ? Date.now() + 60_000 : Date.now() - 1).toISOString() };
     } });
     await expect(finalBoundary.broker.dispatch({ schemaVersion: 1, operation: "ordinary-release", requestId: "expires-at-effect",
-      releaseSha: "a".repeat(40), canonicalMainSha: "a".repeat(40), releaseMode: "serving" }))
+      releaseSha: "a".repeat(40), canonicalMainSha: "a".repeat(40), releaseMode: "serving",
+      canonicalMainFence: "fresh-current-main-v1" }))
       .rejects.toThrow(/no current verified operation-conformance evidence/);
     expect(conformanceReads).toBe(2);
     expect(finalBoundary.ordinaryReleaseEffects).toHaveLength(0);

@@ -128,6 +128,7 @@ fi
 mkdir -p "$RECOVERY_ROOT/scripts" "$RECOVERY_GIT_DIR" "$RECOVERY_BIN"
 export FAKE_GIT_LOG="$TMP/recovery-git.log"
 cp "$ROOT/scripts/deploy.sh" "$RECOVERY_ROOT/scripts/deploy.sh"
+cp "$ROOT/scripts/deploy-main-freshness.sh" "$RECOVERY_ROOT/scripts/deploy-main-freshness.sh"
 cp "$ROOT/scripts/deploy-migrate.sh" "$RECOVERY_ROOT/scripts/deploy-migrate.sh"
 cp "$ROOT/scripts/production-release-marker.sh" "$RECOVERY_ROOT/scripts/production-release-marker.sh"
 # Redirect only the disposable script copy to a temp host-client path. The real

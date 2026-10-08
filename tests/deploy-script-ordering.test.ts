@@ -2,7 +2,9 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const deploySh = readFileSync(resolve("scripts/deploy.sh"), "utf8");
+const deploySh = readFileSync(resolve("scripts/deploy.sh"), "utf8").replace(/\r\n/g, "\n");
+const mainFreshnessSh = readFileSync(resolve("scripts/deploy-main-freshness.sh"), "utf8").replace(/\r\n/g, "\n");
+const deployWorkflow = readFileSync(resolve(".github/workflows/deploy-production.yml"), "utf8").replace(/\r\n/g, "\n");
 const preflightSh = readFileSync(resolve("scripts/deploy-preflight-schema.sh"), "utf8");
 const migrateSh = readFileSync(resolve("scripts/deploy-migrate.sh"), "utf8");
 const migrateGuard = readFileSync(resolve("scripts/run-prisma-migrate-with-lock-timeout.mjs"), "utf8");
@@ -11,6 +13,44 @@ const releaseMarkerSh = readFileSync(resolve("scripts/production-release-marker.
 const composeYaml = readFileSync(resolve("docker-compose.prod.yml"), "utf8");
 
 describe("production deploy script safety contracts", () => {
+  it("keeps automatic workflow_run deploy and rechecks main after deployment creation immediately before SSH", () => {
+    expect(deployWorkflow).toContain("workflow_run:");
+    expect(deployWorkflow).toContain("workflows:\n      - BodyCast CI/CD");
+    const deploymentObjectAt = deployWorkflow.indexOf("- name: Create GitHub deployment");
+    const sshFenceAt = deployWorkflow.indexOf("- name: Recheck canonical main immediately before SSH deploy");
+    const sshAt = deployWorkflow.indexOf("- name: Deploy over SSH (exact SHA, no migrate)");
+    expect(deploymentObjectAt).toBeGreaterThan(-1);
+    expect(sshFenceAt).toBeGreaterThan(deploymentObjectAt);
+    expect(sshAt).toBeGreaterThan(sshFenceAt);
+    expect(deployWorkflow.slice(sshFenceAt, sshAt)).toContain('gh api "repos/${{ github.repository }}/commits/main" --jq .sha');
+    expect(deployWorkflow.slice(sshFenceAt, sshAt)).toContain("isCurrentMainSha(CANDIDATE");
+  });
+
+  it("fetches canonical origin/main and fences each fallback serving mutation", () => {
+    expect(mainFreshnessSh).toContain("git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main");
+    expect(mainFreshnessSh).toContain("git rev-parse --verify 'refs/remotes/origin/main^{commit}'");
+    expect(mainFreshnessSh).toMatch(/\[\[ "\$candidate_sha" == "\$canonical_main_sha" \]\]/);
+
+    const hostClientAt = deploySh.indexOf('if [[ -x "$HOST_OPERATION_CLIENT" ]]');
+    expect(deploySh.indexOf("assert_current_main_sha")).toBeGreaterThan(-1);
+    expect(deploySh.indexOf("assert_current_main_sha")).toBeLessThan(hostClientAt);
+    expect(deploySh).toContain("--canonical-main-fence fresh-current-main-v1");
+    expect(deploySh.indexOf("assert_current_main_sha\ncompose up -d \"$DB_SERVICE\""))
+      .toBeGreaterThan(-1);
+    expect(deploySh.indexOf('assert_current_main_sha\n  bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance'))
+      .toBeGreaterThan(-1);
+    const buildAt = deploySh.indexOf('compose build "$APP_SERVICE"');
+    const appRecreateFenceAt = deploySh.indexOf("assert_current_main_sha\napp_cut_over=true");
+    const appRecreateAt = deploySh.indexOf('compose up -d --no-deps --force-recreate "$APP_SERVICE"', appRecreateFenceAt);
+    const serveFenceAt = deploySh.lastIndexOf("assert_current_main_sha\n  bash \"${ROOT_DIR}/scripts/production-traffic-cutover.sh\" serve");
+    const serveAt = deploySh.lastIndexOf('bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" serve');
+    expect(appRecreateFenceAt).toBeGreaterThan(buildAt);
+    expect(appRecreateAt).toBeGreaterThan(appRecreateFenceAt);
+    expect(serveFenceAt).toBeGreaterThan(appRecreateAt);
+    expect(serveAt).toBeGreaterThan(serveFenceAt);
+    expect(deploySh).toContain("leaving the application and route unchanged");
+  });
+
   it("runs schema preflight before app cutover", () => {
     const preflightAt = deploySh.indexOf("deploy-preflight-schema.sh");
     const cutOverAt = deploySh.indexOf("app_cut_over=true");

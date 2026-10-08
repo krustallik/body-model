@@ -7,7 +7,7 @@ import { validateProductionOperationRequest } from "./operation-broker.mjs";
 export const PRODUCTION_OPERATION_SOCKET = "/run/bodycast/production-operations.sock";
 
 const REQUIRED = Object.freeze({
-  "ordinary-release": ["request-id", "release-sha", "canonical-main-sha", "release-mode"],
+  "ordinary-release": ["request-id", "release-sha", "canonical-main-sha", "release-mode", "canonical-main-fence"],
   "traffic-check": ["request-id", "release-sha", "canonical-main-sha", "authorization-context-id"],
   "v3-postflight": ["request-id", "release-sha", "canonical-main-sha", "authorization-context-id"],
   "migration-challenge": ["request-id", "release-sha", "canonical-main-sha", "migration-manifest-id", "authorization-context-id"],
@@ -50,6 +50,7 @@ export function parseOperationArguments(argv) {
     "recovery-case-id": "recoveryCaseId",
     "release-sha": "releaseSha",
     "canonical-main-sha": "canonicalMainSha",
+    "canonical-main-fence": "canonicalMainFence",
     "release-mode": "releaseMode",
     "failed-state": "failedState",
     "migration-manifest-id": "migrationManifestId",

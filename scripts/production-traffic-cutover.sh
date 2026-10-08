@@ -8,6 +8,7 @@ cd "$ROOT_DIR"
 
 readonly COMPOSE_FILE="docker-compose.prod.yml"
 readonly APP_CONTAINER="bodycast-app-prod"
+readonly ROLLBACK_IMAGE="bodycast-app:rollback"
 readonly APP_HOST="${APP_HOST:?APP_HOST is required}"
 readonly CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:?CADDY_ROUTES_PATH is required}"
 export APP_HOST CADDY_ROUTES_PATH
@@ -139,15 +140,27 @@ enter_maintenance() {
 write_route() {
   local body="$1"
   local freshness_sha="${2:-}"
-  local temporary backup
+  local route_parent route_mount stage_mount route_canonical temporary
   mkdir -p "$CADDY_ROUTES_PATH"
-  temporary="$(mktemp "${ROUTE_FILE}.new.XXXXXX")"
-  backup="$(mktemp "${ROUTE_FILE}.previous.XXXXXX")"
-  if [[ -f "$ROUTE_FILE" && ! -L "$ROUTE_FILE" ]]; then
-    cp -- "$ROUTE_FILE" "$backup"
-  else
-    : > "$backup"
-  fi
+  [[ -d "$CADDY_ROUTES_PATH" && ! -L "$CADDY_ROUTES_PATH" ]] || {
+    echo "CADDY_ROUTES_PATH must be an existing non-symlink directory." >&2
+    return 1
+  }
+  route_canonical="$(realpath -e "$CADDY_ROUTES_PATH")"
+  [[ "$route_canonical" == "$CADDY_ROUTES_PATH" ]] || {
+    echo "CADDY_ROUTES_PATH must be canonical so staging is outside the live route directory." >&2
+    return 1
+  }
+  route_parent="$(dirname "$CADDY_ROUTES_PATH")"
+  route_mount="$(stat -c '%d:%m' "$CADDY_ROUTES_PATH")"
+  stage_mount="$(stat -c '%d:%m' "$route_parent")"
+  [[ "$route_mount" == "$stage_mount" ]] || {
+    echo "Cannot stage the route outside the watched directory on the same filesystem; refusing a non-atomic cutover." >&2
+    return 1
+  }
+  # Stage beside, but outside, the live routes directory. No candidate bytes
+  # touch a path imported from the production route directory before publish.
+  temporary="$(mktemp "${route_parent}/.bodycast-route-stage.XXXXXX")"
   cat >"$temporary" <<EOF
 http://${APP_HOST} {
     redir https://${APP_HOST}{uri} permanent
@@ -164,49 +177,34 @@ ${APP_HOST} {
     ${body}
 }
 EOF
-  # Stage all route content before reading canonical main at the route boundary.
-  if [[ -n "$freshness_sha" ]] && ! bodycast_assert_current_main_sha "$freshness_sha"; then
-    rm -f "$backup" "$temporary"
+  chmod 0644 "$temporary"
+  # Validate the exact staged route bytes through Caddy's adapter while the
+  # live watched route remains unchanged.
+  if ! docker exec -i gymbeam-caddy caddy validate --adapter caddyfile --config - < "$temporary"; then
+    rm -f -- "$temporary"
+    echo "Caddy rejected the staged route; the live route was not changed." >&2
     return 1
   fi
-  mv -f "$temporary" "$ROUTE_FILE"
-  # Caddy has not loaded the staged route yet. If main advanced while the file
-  # was being prepared, restore the prior bytes and leave its live config alone.
+
+  # Candidate health, exact SHA, and Unified V4 checks are completed by the
+  # caller. This is the final canonical-main fence immediately before publish.
   if [[ -n "$freshness_sha" ]] && ! bodycast_assert_current_main_sha "$freshness_sha"; then
-    mv -f "$backup" "$ROUTE_FILE"
-    rm -f "$temporary"
-    echo "Canonical main advanced before Caddy could load the candidate route; serving remains unchanged." >&2
+    rm -f -- "$temporary"
     return 1
   fi
-  if ! docker exec gymbeam-caddy caddy validate --config /etc/caddy/Caddyfile; then
-    mv -f "$backup" "$ROUTE_FILE"
-    rm -f "$temporary"
-    echo "Caddy rejected the staged route; the prior route file was restored." >&2
-    return 1
-  fi
-  # Fence again immediately before the serving-config reload. No stale staged
-  # candidate is loaded when canonical main changes after the atomic file write.
-  if [[ -n "$freshness_sha" ]] && ! bodycast_assert_current_main_sha "$freshness_sha"; then
-    mv -f "$backup" "$ROUTE_FILE"
-    rm -f "$temporary"
-    echo "Canonical main advanced before the serving configuration reload; candidate was not activated." >&2
+  # Atomic replacement of the live route is itself the serving effect. Caddy
+  # may watch this path, so no stale-after-write rollback is used as a fence.
+  if ! mv -f -- "$temporary" "$ROUTE_FILE"; then
+    rm -f -- "$temporary"
+    echo "Atomic live-route replacement failed; the previous route remains in place." >&2
     return 1
   fi
   if ! docker exec gymbeam-caddy caddy reload \
     --address unix//run/caddy-admin/admin.sock \
     --config /etc/caddy/Caddyfile; then
-    mv -f "$backup" "$ROUTE_FILE"
-    if ! docker exec gymbeam-caddy caddy reload \
-      --address unix//run/caddy-admin/admin.sock \
-      --config /etc/caddy/Caddyfile; then
-      echo "CRITICAL: Caddy rejected serving reload and could not confirm restoration of the prior route." >&2
-      return 1
-    fi
-    rm -f "$temporary"
-    echo "Caddy serving reload failed; prior route was restored." >&2
+    echo "Caddy reload failed after the atomic route effect; caller must retain or restore maintenance." >&2
     return 1
   fi
-  rm -f "$backup" "$temporary"
 }
 
 if [[ "$MODE" == "maintenance" ]]; then
@@ -234,15 +232,18 @@ if [[ "$MODE" == "v3-postflight" ]]; then
 fi
 
 if [[ "$MODE" == "rollback-previous" ]]; then
-  expected_candidate_sha="${BODYCAST_DEPLOY_SHA:-${DEPLOY_SHA:-}}"
   rollback_sha="${BODYCAST_ROLLBACK_SHA:-}"
-  [[ "$expected_candidate_sha" =~ ^[a-f0-9]{40}$ && "$rollback_sha" =~ ^[a-f0-9]{40}$ ]] || {
-    echo "A full candidate SHA and prior app SHA are required for safe fallback." >&2; exit 1;
+  rollback_image_id="${BODYCAST_ROLLBACK_IMAGE_ID:-}"
+  [[ "$rollback_sha" =~ ^[a-f0-9]{40}$ && "$rollback_image_id" =~ ^sha256:[a-f0-9]{64}$ ]] || {
+    echo "A full prior app SHA and immutable image ID are required for safe fallback." >&2; exit 1;
   }
   app_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$APP_CONTAINER")"
   app_release_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER")"
-  [[ "$app_status" == "healthy" && "$app_release_sha" == "$rollback_sha" ]] || {
-    echo "Prior-release fallback requires the exact healthy previously serving app." >&2; exit 1;
+  app_image_id="$(docker inspect --format '{{.Image}}' "$APP_CONTAINER")"
+  pinned_image_id="$(docker image inspect --format '{{.Id}}' "$ROLLBACK_IMAGE")"
+  [[ "$app_status" == "healthy" && "$app_release_sha" == "$rollback_sha" \
+    && "$app_image_id" == "$rollback_image_id" && "$pinned_image_id" == "$rollback_image_id" ]] || {
+    echo "Prior-release fallback requires the exact healthy app SHA and pinned immutable image ID." >&2; exit 1;
   }
   verify_exact_maintenance_route
   marker_status=1
@@ -251,7 +252,10 @@ if [[ "$MODE" == "rollback-previous" ]]; then
   compose --profile tools build migrate
   compose --profile tools run --rm --no-deps --entrypoint node migrate \
     /app/scripts/unified-v4-traffic-check.mjs --profile-id 1
-  write_route "reverse_proxy ${APP_CONTAINER}:3000" "$expected_candidate_sha"
+  # This restores the exact pre-deploy release after verifying its immutable
+  # image, SHA, health, marker state, maintenance route, and current V4 state.
+  # It is not a candidate publish and does not depend on candidate freshness.
+  write_route "reverse_proxy ${APP_CONTAINER}:3000"
   if ! curl --fail --silent --show-error --retry 12 --retry-delay 5 "https://${APP_HOST}/api/health" | grep -q '"status":"ok"'; then
     enter_maintenance
     echo "Prior app failed the post-cutover health check; traffic returned to maintenance." >&2

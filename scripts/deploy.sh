@@ -109,19 +109,27 @@ previous_image_exists=false
 maintenance_started=false
 previous_app_healthy=false
 previous_app_sha=""
+previous_app_image_id=""
 
 existing_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}')"
 if [[ "$existing_app" == "$APP_CONTAINER" ]]; then
   previous_app_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER")"
+  previous_app_image_id="$(docker inspect --format '{{.Image}}' "$APP_CONTAINER")"
   previous_app_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$APP_CONTAINER")"
-  if [[ "$previous_app_sha" =~ ^[0-9a-f]{40}$ && "$previous_app_status" == "healthy" ]]; then
+  if [[ "$previous_app_sha" =~ ^[0-9a-f]{40}$ \
+      && "$previous_app_image_id" =~ ^sha256:[0-9a-f]{64}$ \
+      && "$previous_app_status" == "healthy" ]]; then
     previous_app_healthy=true
+    # Pin the exact immutable image backing the running healthy container.
+    # The mutable :latest tag is not evidence of the previous release image.
+    docker image tag "$previous_app_image_id" "$ROLLBACK_IMAGE"
+    pinned_rollback_image_id="$(docker image inspect --format '{{.Id}}' "$ROLLBACK_IMAGE")"
+    [[ "$pinned_rollback_image_id" == "$previous_app_image_id" ]] || {
+      echo "Rollback image reference does not resolve to the running app's immutable image ID." >&2
+      exit 1
+    }
+    previous_image_exists=true
   fi
-fi
-
-if docker image inspect "$CURRENT_IMAGE" >/dev/null 2>&1; then
-  docker image tag "$CURRENT_IMAGE" "$ROLLBACK_IMAGE"
-  previous_image_exists=true
 fi
 
 rollback() {
@@ -161,9 +169,22 @@ rollback() {
     echo "Maintenance command reported failure; route restoration will proceed only if the traffic gate verifies maintenance." >&2
   fi
   if [[ "$previous_image_exists" == "true" && "$previous_app_healthy" == "true" \
-      && "$previous_app_sha" =~ ^[0-9a-f]{40}$ ]]; then
+      && "$previous_app_sha" =~ ^[0-9a-f]{40}$ \
+      && "$previous_app_image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    pinned_rollback_image_id="$(docker image inspect --format '{{.Id}}' "$ROLLBACK_IMAGE")"
+    if [[ "$pinned_rollback_image_id" != "$previous_app_image_id" ]]; then
+      echo "Pinned rollback image changed identity; traffic remains in maintenance." >&2
+      compose logs --tail=100 "$APP_SERVICE"
+      exit "$exit_code"
+    fi
     if ! docker image tag "$ROLLBACK_IMAGE" "$CURRENT_IMAGE"; then
       echo "Previous image tag could not be restored; traffic remains in maintenance." >&2
+      compose logs --tail=100 "$APP_SERVICE"
+      exit "$exit_code"
+    fi
+    restored_latest_image_id="$(docker image inspect --format '{{.Id}}' "$CURRENT_IMAGE")"
+    if [[ "$restored_latest_image_id" != "$previous_app_image_id" ]]; then
+      echo "The app image tag does not resolve to the captured previous image; traffic remains in maintenance." >&2
       compose logs --tail=100 "$APP_SERVICE"
       exit "$exit_code"
     fi
@@ -177,23 +198,25 @@ rollback() {
       restored_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$APP_CONTAINER")"
       if [[ "$restored_status" == "healthy" ]]; then
         restored_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER")"
-        if [[ "$restored_sha" == "$previous_app_sha" ]]; then
+        restored_image_id="$(docker inspect --format '{{.Image}}' "$APP_CONTAINER")"
+        if [[ "$restored_sha" == "$previous_app_sha" \
+            && "$restored_image_id" == "$previous_app_image_id" ]]; then
           previous_restored=true
-          break
         fi
+        break
       fi
       if [[ "$restored_status" == "unhealthy" || "$restored_status" == "exited" ]]; then break; fi
       sleep 5
     done
     if [[ "$previous_restored" == "true" ]]; then
-      if BODYCAST_DEPLOY_SHA="$DEPLOY_SHA" BODYCAST_ROLLBACK_SHA="$previous_app_sha" \
+      if BODYCAST_ROLLBACK_SHA="$previous_app_sha" BODYCAST_ROLLBACK_IMAGE_ID="$previous_app_image_id" \
         bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" rollback-previous; then
-        echo "Previously serving app ${previous_app_sha} was restored and passed the current-release/V4 traffic gate." >&2
+        echo "Previously serving app ${previous_app_sha} was restored from immutable image ${previous_app_image_id} and passed the V4 traffic gate." >&2
       else
-        echo "Previous app is healthy, but freshness/V4/maintenance checks blocked reopening traffic; maintenance remains active." >&2
+        echo "Previous app is healthy, but image/marker/V4/maintenance checks blocked reopening traffic; maintenance remains active." >&2
       fi
     else
-      echo "Previous app did not return healthy with its exact release label; traffic remains in maintenance." >&2
+      echo "Previous app did not return healthy with its exact image ID and release label; traffic remains in maintenance." >&2
     fi
   else
     echo "No previously healthy exact-SHA app is available; traffic remains in maintenance." >&2

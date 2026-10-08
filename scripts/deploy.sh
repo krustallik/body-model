@@ -16,7 +16,6 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 source "$ROOT_DIR/scripts/production-release-marker.sh"
 source "$ROOT_DIR/scripts/deploy-main-freshness.sh"
-source "$ROOT_DIR/scripts/production-route-operations.sh"
 
 readonly COMPOSE_FILE="docker-compose.prod.yml"
 readonly APP_SERVICE="app"
@@ -31,6 +30,9 @@ export APP_HOST CADDY_ROUTES_PATH
 readonly DEPLOY_SHA="${DEPLOY_SHA:?DEPLOY_SHA is required}"
 readonly BODYCAST_NON_SERVING_DEPLOY="${BODYCAST_NON_SERVING_DEPLOY:-0}"
 freshness_blocked=false
+
+[[ "$CADDY_ROUTES_PATH" == /* ]] || { echo "CADDY_ROUTES_PATH must be absolute." >&2; exit 1; }
+[[ "$CADDY_ROUTES_PATH" != "/" ]] || { echo "CADDY_ROUTES_PATH may not be the filesystem root." >&2; exit 1; }
 
 assert_current_main_sha() {
   if ! bodycast_assert_current_main_sha "$DEPLOY_SHA"; then
@@ -67,6 +69,8 @@ if [[ -x "$HOST_OPERATION_CLIENT" ]]; then
     --canonical-main-fence fresh-current-main-v1 \
     --release-mode "$release_mode"
 fi
+
+source "$ROOT_DIR/scripts/production-route-primitives.sh"
 
 echo "Deploying exact commit ${DEPLOY_SHA} (app recreate only; migrate/replay/activation not run)."
 
@@ -106,6 +110,66 @@ compose() {
   docker compose -f "$COMPOSE_FILE" "$@"
 }
 
+stop_current_app_fail_closed() {
+  local existing_app remaining_app stop_failed=0
+  existing_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}' 2>/dev/null || true)"
+  if [[ -n "$existing_app" ]]; then
+    if [[ "$existing_app" != "$APP_CONTAINER" ]]; then
+      echo "App container identity is ambiguous; cannot confirm fail-closed stop." >&2
+      return 1
+    fi
+    docker update --restart=no "$APP_CONTAINER" >/dev/null 2>&1 || stop_failed=1
+    compose stop "$APP_SERVICE" >/dev/null 2>&1 || stop_failed=1
+    docker stop --time 0 "$APP_CONTAINER" >/dev/null 2>&1 || stop_failed=1
+    compose rm --force "$APP_SERVICE" >/dev/null 2>&1 || stop_failed=1
+  fi
+  remaining_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}' 2>/dev/null || true)"
+  if [[ -n "$remaining_app" ]]; then
+    echo "Candidate app container remains after fail-closed stop attempts." >&2
+    stop_failed=1
+  fi
+  [[ "$stop_failed" -eq 0 ]]
+}
+
+# Same-attempt rollback only: this function has no caller-supplied route text
+# or SHA. It is reached only after the trap has reverified the captured prior
+# image/SHA, marker absence, maintenance route, health, and Unified V4 state.
+publish_captured_previous_route() {
+  local route_file="${CADDY_ROUTES_PATH%/}/bodycast.caddy" temporary
+  bodycast_stage_route_config "reverse_proxy ${APP_CONTAINER}:3000" || return 1
+  temporary="$BODYCAST_ROUTE_STAGE_PATH"
+  local restored_status restored_sha restored_image_id pinned_image_id rollback_marker_status
+  restored_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$APP_CONTAINER" 2>/dev/null || true)"
+  restored_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER" 2>/dev/null || true)"
+  restored_image_id="$(docker inspect --format '{{.Image}}' "$APP_CONTAINER" 2>/dev/null || true)"
+  pinned_image_id="$(docker image inspect --format '{{.Id}}' "$ROLLBACK_IMAGE" 2>/dev/null || true)"
+  rollback_marker_status=1
+  if read_bodycast_release_marker; then rollback_marker_status=0; else rollback_marker_status=$?; fi
+  if [[ "$restored_status" != "healthy" || "$restored_sha" != "$previous_app_sha" \
+      || "$restored_image_id" != "$previous_app_image_id" \
+      || "$pinned_image_id" != "$previous_app_image_id" \
+      || "$rollback_marker_status" -ne 1 ]] || ! bodycast_verify_exact_maintenance_route; then
+    rm -f -- "$temporary"
+    echo "Captured prior release or maintenance authorization changed before publication." >&2
+    return 1
+  fi
+  if ! bodycast_assert_safe_routes_location; then
+    rm -f -- "$temporary"
+    return 1
+  fi
+  if ! mv -f -- "$temporary" "$route_file"; then
+    rm -f -- "$temporary"
+    echo "Atomic captured-prior route replacement failed; the previous Caddy config remains active." >&2
+    return 1
+  fi
+  if ! docker exec gymbeam-caddy caddy reload \
+    --address unix//run/caddy-admin/admin.sock \
+    --config /etc/caddy/Caddyfile; then
+    echo "Caddy did not confirm the captured-prior route; the previous active config remains in force." >&2
+    return 1
+  fi
+}
+
 previous_image_exists=false
 maintenance_started=false
 previous_app_healthy=false
@@ -138,15 +202,12 @@ rollback() {
   trap - ERR
   set +e
   if [[ "$active_schema_cutover" == "true" || "$BODYCAST_NON_SERVING_DEPLOY" == "1" ]]; then
-    echo "Non-serving/schema-cutover deployment failed; keeping maintenance active and refusing to restart the prior binary." >&2
+    echo "Non-serving/schema-cutover deployment failed; prior binary restart is refused." >&2
     if ! bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance; then
-      echo "Maintenance could not be re-verified after non-serving failure; operator intervention is required." >&2
+      echo "Maintenance activation failed; the prior Caddy config may still be active." >&2
     fi
-    if ! docker update --restart=no "$APP_CONTAINER" >/dev/null 2>&1; then
-      echo "Could not disable automatic app restart after non-serving failure." >&2
-    fi
-    if ! compose stop "$APP_SERVICE" >/dev/null 2>&1; then
-      echo "Could not stop the app after non-serving failure." >&2
+    if ! stop_current_app_fail_closed; then
+      echo "Fail-closed app removal could not be confirmed after non-serving failure; operator intervention is required." >&2
     fi
     compose logs --tail=100 "$APP_SERVICE"
     exit "$exit_code"
@@ -167,12 +228,18 @@ rollback() {
 
   echo "Deployment failed after maintenance began; restoring only the previously healthy app." >&2
   if ! bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance; then
-    echo "Maintenance command failed; prior-release restoration is blocked and traffic must remain in maintenance." >&2
+    echo "Maintenance activation failed; no replacement will be started behind an unproven route." >&2
+    if ! stop_current_app_fail_closed; then
+      echo "Fail-closed app removal could not be confirmed; operator intervention is required." >&2
+    fi
     compose logs --tail=100 "$APP_SERVICE"
     exit "$exit_code"
   fi
   if ! bodycast_verify_exact_maintenance_route; then
     echo "The exact maintenance route is not active; prior-release restoration is blocked." >&2
+    if ! stop_current_app_fail_closed; then
+      echo "Fail-closed app removal could not be confirmed; operator intervention is required." >&2
+    fi
     compose logs --tail=100 "$APP_SERVICE"
     exit "$exit_code"
   fi
@@ -245,11 +312,11 @@ rollback() {
           echo "The captured prior release or marker state changed before route publication; traffic remains in maintenance." >&2
         elif ! bodycast_verify_exact_maintenance_route; then
           echo "Maintenance changed before prior-release route publication; traffic remains in maintenance." >&2
-        elif ! bodycast_write_route "reverse_proxy ${APP_CONTAINER}:3000"; then
+        elif ! publish_captured_previous_route; then
           echo "The captured prior release could not be published safely; traffic remains in maintenance." >&2
         elif ! curl --fail --silent --show-error --retry 12 --retry-delay 5 "https://${APP_HOST}/api/health" | grep -q '"status":"ok"'; then
-          if ! bodycast_write_route 'respond "BodyCast is temporarily unavailable while the model is updated." 503'; then
-            echo "Prior app health failed and maintenance could not be restored; operator intervention is required." >&2
+          if ! bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance; then
+            echo "Prior app health failed and maintenance activation could not be confirmed; candidate app removal was attempted." >&2
           fi
           echo "Prior app failed its post-cutover health check; traffic returned to maintenance." >&2
         else

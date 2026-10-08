@@ -13,10 +13,10 @@ readonly CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:?CADDY_ROUTES_PATH is required}"
 export APP_HOST CADDY_ROUTES_PATH
 source "${ROOT_DIR}/scripts/production-release-marker.sh"
 source "${ROOT_DIR}/scripts/deploy-main-freshness.sh"
-source "${ROOT_DIR}/scripts/production-route-operations.sh"
 
 [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "APP_HOST is invalid." >&2; exit 1; }
 [[ "$CADDY_ROUTES_PATH" == /* ]] || { echo "CADDY_ROUTES_PATH must be absolute." >&2; exit 1; }
+[[ "$CADDY_ROUTES_PATH" != "/" ]] || { echo "CADDY_ROUTES_PATH may not be the filesystem root." >&2; exit 1; }
 [[ "$MODE" == "maintenance" || "$MODE" == "check" || "$MODE" == "v3-postflight" || "$MODE" == "serve" ]] || {
   echo "Usage: APP_HOST=... CADDY_ROUTES_PATH=... bash scripts/production-traffic-cutover.sh maintenance|check|v3-postflight|serve" >&2
   exit 1
@@ -53,6 +53,8 @@ if [[ -x "$HOST_OPERATION_CLIENT" ]]; then
     --authorization-context-id "$AUTHORIZATION_CONTEXT_ID"
 fi
 
+source "${ROOT_DIR}/scripts/production-route-primitives.sh"
+
 compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
 
 require_ready_release_marker() {
@@ -78,30 +80,87 @@ require_ready_release_marker() {
 }
 
 stop_old_app() {
-  local existing_app app_state app_restart remaining_app
-  existing_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}')"
+  local existing_app app_state app_restart remaining_app stop_failed=0
+  existing_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}' 2>/dev/null || true)"
   if [[ -n "$existing_app" ]]; then
     [[ "$existing_app" == "$APP_CONTAINER" ]] || { echo "App container identity is ambiguous." >&2; return 1; }
-    docker update --restart=no "$APP_CONTAINER" >/dev/null
-    compose stop app
-    app_state="$(docker inspect --format '{{.State.Status}}' "$APP_CONTAINER")"
-    app_restart="$(docker inspect --format '{{.HostConfig.RestartPolicy.Name}}' "$APP_CONTAINER")"
-    [[ "$app_state" == "exited" && "$app_restart" == "no" ]] || {
+    docker update --restart=no "$APP_CONTAINER" >/dev/null || stop_failed=1
+    compose stop app >/dev/null 2>&1 || stop_failed=1
+    # Attempt a direct stop even if the Compose operation failed. This path is
+    # also used when Caddy reload failed and may still serve the old config.
+    docker stop --time 0 "$APP_CONTAINER" >/dev/null 2>&1 || stop_failed=1
+    app_state="$(docker inspect --format '{{.State.Status}}' "$APP_CONTAINER" 2>/dev/null || true)"
+    app_restart="$(docker inspect --format '{{.HostConfig.RestartPolicy.Name}}' "$APP_CONTAINER" 2>/dev/null || true)"
+    if [[ "$app_state" != "exited" || "$app_restart" != "no" ]]; then
       echo "Old BodyCast app did not stop with automatic restart disabled." >&2
-      return 1
-    }
-    compose rm --force app >/dev/null
+      stop_failed=1
+    fi
+    compose rm --force app >/dev/null 2>&1 || stop_failed=1
   fi
-  docker info >/dev/null
-  remaining_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}')"
+  docker info >/dev/null 2>&1 || stop_failed=1
+  remaining_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}' 2>/dev/null || true)"
   if [[ -n "$remaining_app" ]]; then
     echo "Old BodyCast app container still exists and could be manually restarted." >&2
+    stop_failed=1
+  fi
+  [[ "$stop_failed" -eq 0 ]]
+}
+
+publish_maintenance_route() {
+  local route_file="${CADDY_ROUTES_PATH%/}/bodycast.caddy" temporary
+  bodycast_stage_route_config 'respond "BodyCast is temporarily unavailable while the model is updated." 503' || return 1
+  temporary="$BODYCAST_ROUTE_STAGE_PATH"
+  if ! bodycast_assert_safe_routes_location; then
+    rm -f -- "$temporary"
+    return 1
+  fi
+  if ! mv -f -- "$temporary" "$route_file"; then
+    rm -f -- "$temporary"
+    echo "Atomic maintenance-route replacement failed; active Caddy configuration was not confirmed." >&2
+    return 1
+  fi
+  if ! docker exec gymbeam-caddy caddy reload \
+    --address unix//run/caddy-admin/admin.sock \
+    --config /etc/caddy/Caddyfile; then
+    echo "Caddy maintenance reload failed; its previous active configuration may still serve traffic." >&2
+    return 1
+  fi
+}
+
+publish_candidate_route() {
+  local route_file="${CADDY_ROUTES_PATH%/}/bodycast.caddy" temporary
+  bodycast_stage_route_config "reverse_proxy ${APP_CONTAINER}:3000" || return 1
+  temporary="$BODYCAST_ROUTE_STAGE_PATH"
+  # Staged bytes are validated before the final canonical-main fence. No route
+  # mutation occurs unless this mode's required exact SHA remains current.
+  if ! bodycast_assert_current_main_sha "$expected_release_sha"; then
+    rm -f -- "$temporary"
+    return 1
+  fi
+  if ! bodycast_assert_safe_routes_location; then
+    rm -f -- "$temporary"
+    return 1
+  fi
+  if ! mv -f -- "$temporary" "$route_file"; then
+    rm -f -- "$temporary"
+    echo "Atomic serving-route replacement failed; the prior route bytes remain active." >&2
+    return 1
+  fi
+  if ! docker exec gymbeam-caddy caddy reload \
+    --address unix//run/caddy-admin/admin.sock \
+    --config /etc/caddy/Caddyfile; then
+    echo "Caddy serving reload failed; independently stopping the candidate app." >&2
+    stop_old_app || echo "Candidate app could not be fully removed after serving reload failure." >&2
     return 1
   fi
 }
 
 enter_maintenance() {
-  bodycast_write_route 'respond "BodyCast is temporarily unavailable while the model is updated." 503'
+  if ! publish_maintenance_route; then
+    echo "Maintenance was not confirmed active; independently removing the app that the prior Caddy config may still serve." >&2
+    stop_old_app || echo "Fail-closed app removal was incomplete; operator intervention is required." >&2
+    return 1
+  fi
   stop_old_app
 }
 
@@ -156,7 +215,7 @@ fi
 compose --profile tools build migrate
 compose --profile tools run --rm --no-deps --entrypoint node migrate \
   /app/scripts/unified-v4-traffic-check.mjs --profile-id 1
-bodycast_write_route "reverse_proxy ${APP_CONTAINER}:3000" "$expected_release_sha"
+publish_candidate_route
 if ! curl --fail --silent --show-error --retry 12 --retry-delay 5 "https://${APP_HOST}/api/health" | grep -q '"status":"ok"'; then
   enter_maintenance
   echo "Health check failed after serving cutover; traffic returned to maintenance." >&2

@@ -163,10 +163,12 @@ if [[ "$1" == "compose" ]]; then
     exit 0
   fi
   if [[ "$joined" == *" stop app "* ]]; then
+    event "compose-stop-app"
     printf '%s\n' exited > "$APP_STATUS_FILE"
     exit 0
   fi
   if [[ "$joined" == *" rm --force app "* ]]; then
+    event "compose-remove-app"
     printf '%s\n' false > "$APP_PRESENT_FILE"
     exit 0
   fi
@@ -197,6 +199,12 @@ if [[ "$1" == "ps" ]]; then
 fi
 if [[ "$1" == "update" ]]; then
   printf '%s\n' no > "$APP_RESTART_FILE"
+  event "restart-disabled"
+  exit 0
+fi
+if [[ "$1" == "stop" && "$2" == "--time" && "$4" == "bodycast-app-prod" ]]; then
+  printf '%s\n' exited > "$APP_STATUS_FILE"
+  event "direct-app-stop"
   exit 0
 fi
 if [[ "$1" == "info" || "$1" == "port" ]]; then exit 0; fi
@@ -228,9 +236,16 @@ if [[ "$1" == "exec" && ( "$2" == "gymbeam-caddy" || ( "$2" == "-i" && "$3" == "
     exit 0
   fi
   if [[ "$*" == *" reload "* ]]; then
-    event "caddy-reload"
-    if [[ "\${FAIL_CADDY_RELOAD:-0}" == "1" ]]; then exit 43; fi
-    if grep -q reverse_proxy "$ROUTE_FILE"; then printf '%s\n' serving > "$ACTIVE_ROUTE_FILE"; else printf '%s\n' maintenance > "$ACTIVE_ROUTE_FILE"; fi
+    route_kind=maintenance
+    grep -q reverse_proxy "$ROUTE_FILE" && route_kind=serving
+    event "caddy-reload:$route_kind"
+    if [[ "\${FAIL_CADDY_RELOAD:-0}" == "1" \
+        || ( "$route_kind" == "maintenance" && "\${FAIL_MAINTENANCE_RELOAD:-0}" == "1" ) ]]; then
+      event "caddy-reload-failed:$route_kind"
+      exit 43
+    fi
+    if [[ "$route_kind" == "serving" ]]; then printf '%s\n' serving > "$ACTIVE_ROUTE_FILE"; else printf '%s\n' maintenance > "$ACTIVE_ROUTE_FILE"; fi
+    event "caddy-active-config:$route_kind"
     exit 0
   fi
 fi
@@ -245,7 +260,9 @@ exit 92
 const fakeCurl = shellScript`#!/usr/bin/env bash
 set -Eeuo pipefail
 [[ "\${FAIL_ROLLBACK_HEALTH:-0}" == "1" ]] && exit 22
-if [[ "$(cat "$ACTIVE_ROUTE_FILE" 2>/dev/null || true)" == "serving" ]]; then
+if [[ "$(cat "$ACTIVE_ROUTE_FILE" 2>/dev/null || true)" == "serving" \
+    && "$(cat "$APP_PRESENT_FILE" 2>/dev/null || true)" == "true" \
+    && "$(cat "$APP_STATUS_FILE" 2>/dev/null || true)" == "healthy" ]]; then
   printf '%s\n' '{"status":"ok"}'
   exit 0
 fi
@@ -267,10 +284,8 @@ exec "$REAL_GIT" "$@"
 `;
 
 const fakeMv = shellScript`mv() {
-  local destination source_index source
+  local destination
   destination="\${!#}"
-  source_index=$(( $# - 1 ))
-  source="\${!source_index}"
   command mv "$@"
   case "$destination" in
     "$CADDY_ROUTES_PATH"/*)
@@ -278,11 +293,8 @@ const fakeMv = shellScript`mv() {
       printf '%s\n' "atomic-live-route-replacement:$event_path" >> "$EVENT_LOG"
       printf '%s\n' "watch-live-file-change:$event_path" >> "$EVENT_LOG"
       if grep -q reverse_proxy "$destination"; then
-        printf '%s\n' serving > "$ACTIVE_ROUTE_FILE"
-        printf '%s\n' "watch-serving-effect:$event_path" >> "$EVENT_LOG"
         printf '%s\n' live-route-mutation:serving >> "$EVENT_LOG"
-      elif [[ "$destination" == "$ROUTE_FILE" ]]; then
-        printf '%s\n' maintenance > "$ACTIVE_ROUTE_FILE"
+      else
         printf '%s\n' live-route-mutation:maintenance >> "$EVENT_LOG"
       fi
       ;;
@@ -333,7 +345,7 @@ export function createFixture(): Fixture {
     "deploy-main-freshness.sh",
     "deploy-preflight-schema.sh",
     "production-release-marker.sh",
-    "production-route-operations.sh",
+    "production-route-primitives.sh",
     "production-traffic-cutover.sh",
     "production-writer-drain.sh",
   ]) {

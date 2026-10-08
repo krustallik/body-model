@@ -49,12 +49,13 @@ describe("fail-closed deploy rollback checks", () => {
     });
 
     expect(result.status).not.toBe(0);
-    expect(appState(fixture)).toEqual({ sha: PREVIOUS_SHA, imageId: PREVIOUS_IMAGE_ID, status: "healthy", present: "true" });
+    expect(appState(fixture)).toEqual({ sha: PREVIOUS_SHA, imageId: PREVIOUS_IMAGE_ID, status: "exited", present: "false" });
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
     expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).not.toContain("reverse_proxy");
     const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
     expect(events).toContain("live-route-mutation:serving");
     expect(events).toContain("live-route-mutation:maintenance");
+    expect(events).toContain("caddy-active-config:maintenance");
   }, 30_000);
 
   it.skipIf(!bashAvailable)("does not recreate the prior app unless maintenance cutover succeeds", () => {
@@ -66,11 +67,14 @@ describe("fail-closed deploy rollback checks", () => {
     });
 
     expect(result.status).not.toBe(0);
-    expect(appState(fixture)).toEqual({ sha: PREVIOUS_SHA, imageId: PREVIOUS_IMAGE_ID, status: "healthy", present: "true" });
-    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    expect(appState(fixture)).toEqual({ sha: PREVIOUS_SHA, imageId: PREVIOUS_IMAGE_ID, status: "exited", present: "false" });
+    // Filesystem route bytes were written, but a failed Caddy reload leaves the
+    // previous serving config active; the app itself is removed fail-closed.
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
     expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).not.toContain("reverse_proxy");
     const dockerLog = readFileSync(path.join(fixture.root, "docker.log"), "utf8");
     expect(dockerLog).not.toContain("up -d --no-deps --force-recreate app");
+    expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).toContain("caddy-reload-failed:maintenance");
   }, 30_000);
 
 

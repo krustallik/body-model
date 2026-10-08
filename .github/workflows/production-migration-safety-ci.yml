@@ -16,6 +16,7 @@ on:
       - "scripts/production-release-marker.sh"
       - "scripts/production-recovery/**"
       - "scripts/deploy.sh"
+      - "scripts/production-route-operations.sh"
       - "docker-compose.prod.yml"
       - "docker-compose.recovery.yml"
       - "scripts/unified-*-postflight.ts"
@@ -125,7 +126,7 @@ jobs:
         run: npm run test:unit -- tests/production-recovery-authority.test.mjs tests/production-recovery-authorization.test.mjs tests/production-recovery-boundary.test.mjs tests/production-recovery-flow.test.mjs tests/production-recovery-client.test.mjs tests/production-recovery-package.test.mjs
 
       - name: Check production migration shell syntax
-        run: bash -n scripts/deploy-migrate.sh scripts/production-migration-readiness.sh scripts/production-migration-summary.sh scripts/production-writer-drain.sh scripts/production-release-marker.sh scripts/deploy-main-freshness.sh scripts/production-traffic-cutover.sh scripts/deploy.sh scripts/production-recovery/production-authority-launcher.sh scripts/production-recovery/production-operation-client-launcher.sh tests/production-migration-release-tooling.sh tests/production-recovery-marker-reader.sh
+        run: bash -n scripts/deploy-migrate.sh scripts/production-migration-readiness.sh scripts/production-migration-summary.sh scripts/production-writer-drain.sh scripts/production-release-marker.sh scripts/deploy-main-freshness.sh scripts/production-route-operations.sh scripts/production-traffic-cutover.sh scripts/deploy.sh scripts/production-recovery/production-authority-launcher.sh scripts/production-recovery/production-operation-client-launcher.sh tests/production-migration-release-tooling.sh tests/production-recovery-marker-reader.sh
 
       - name: Run V1/V2 marker reader fail-closed compatibility matrix
         run: bash tests/production-recovery-marker-reader.sh
@@ -167,7 +168,7 @@ jobs:
         env:
           BODYCAST_TEST_DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast
         run: |
-          bash -n scripts/production-migration-readiness.sh scripts/production-migration-summary.sh scripts/production-writer-drain.sh scripts/production-release-marker.sh scripts/deploy-main-freshness.sh scripts/production-traffic-cutover.sh scripts/deploy.sh tests/production-migration-release-tooling.sh
+          bash -n scripts/production-migration-readiness.sh scripts/production-migration-summary.sh scripts/production-writer-drain.sh scripts/production-release-marker.sh scripts/deploy-main-freshness.sh scripts/production-route-operations.sh scripts/production-traffic-cutover.sh scripts/deploy.sh tests/production-migration-release-tooling.sh
           bash tests/production-migration-release-tooling.sh
 
       - name: Run real PostgreSQL encrypted backup, restore, and fail-closed smoke

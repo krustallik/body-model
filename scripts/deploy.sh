@@ -16,6 +16,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 source "$ROOT_DIR/scripts/production-release-marker.sh"
 source "$ROOT_DIR/scripts/deploy-main-freshness.sh"
+source "$ROOT_DIR/scripts/production-route-operations.sh"
 
 readonly COMPOSE_FILE="docker-compose.prod.yml"
 readonly APP_SERVICE="app"
@@ -166,7 +167,14 @@ rollback() {
 
   echo "Deployment failed after maintenance began; restoring only the previously healthy app." >&2
   if ! bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance; then
-    echo "Maintenance command reported failure; route restoration will proceed only if the traffic gate verifies maintenance." >&2
+    echo "Maintenance command failed; prior-release restoration is blocked and traffic must remain in maintenance." >&2
+    compose logs --tail=100 "$APP_SERVICE"
+    exit "$exit_code"
+  fi
+  if ! bodycast_verify_exact_maintenance_route; then
+    echo "The exact maintenance route is not active; prior-release restoration is blocked." >&2
+    compose logs --tail=100 "$APP_SERVICE"
+    exit "$exit_code"
   fi
   if [[ "$previous_image_exists" == "true" && "$previous_app_healthy" == "true" \
       && "$previous_app_sha" =~ ^[0-9a-f]{40}$ \
@@ -209,11 +217,44 @@ rollback() {
       sleep 5
     done
     if [[ "$previous_restored" == "true" ]]; then
-      if BODYCAST_ROLLBACK_SHA="$previous_app_sha" BODYCAST_ROLLBACK_IMAGE_ID="$previous_app_image_id" \
-        bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" rollback-previous; then
-        echo "Previously serving app ${previous_app_sha} was restored from immutable image ${previous_app_image_id} and passed the V4 traffic gate." >&2
+      rollback_marker_status=1
+      if read_bodycast_release_marker; then rollback_marker_status=0; else rollback_marker_status=$?; fi
+      if [[ "$rollback_marker_status" -ne 1 ]]; then
+        echo "A release/recovery marker blocks prior-release restoration; traffic remains in maintenance." >&2
+      elif ! bodycast_verify_exact_maintenance_route; then
+        echo "The exact maintenance route could not be verified; traffic remains in maintenance." >&2
+      elif ! compose --profile tools build migrate; then
+        echo "The Unified V4 verifier image could not be prepared; traffic remains in maintenance." >&2
+      elif ! compose --profile tools run --rm --no-deps --entrypoint node migrate \
+        /app/scripts/unified-v4-traffic-check.mjs --profile-id 1; then
+        echo "Unified V4 currentness blocks prior-release restoration; traffic remains in maintenance." >&2
       else
-        echo "Previous app is healthy, but image/marker/V4/maintenance checks blocked reopening traffic; maintenance remains active." >&2
+        # The only rollback target is the exact healthy SHA/image captured and
+        # pinned by this deploy process before it replaced the old container.
+        # Do not use candidate-main freshness to restore that pre-deploy state.
+        restored_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$APP_CONTAINER")"
+        restored_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER")"
+        restored_image_id="$(docker inspect --format '{{.Image}}' "$APP_CONTAINER")"
+        pinned_rollback_image_id="$(docker image inspect --format '{{.Id}}' "$ROLLBACK_IMAGE")"
+        rollback_marker_status=1
+        if read_bodycast_release_marker; then rollback_marker_status=0; else rollback_marker_status=$?; fi
+        if [[ "$restored_status" != "healthy" || "$restored_sha" != "$previous_app_sha" \
+            || "$restored_image_id" != "$previous_app_image_id" \
+            || "$pinned_rollback_image_id" != "$previous_app_image_id" \
+            || "$rollback_marker_status" -ne 1 ]]; then
+          echo "The captured prior release or marker state changed before route publication; traffic remains in maintenance." >&2
+        elif ! bodycast_verify_exact_maintenance_route; then
+          echo "Maintenance changed before prior-release route publication; traffic remains in maintenance." >&2
+        elif ! bodycast_write_route "reverse_proxy ${APP_CONTAINER}:3000"; then
+          echo "The captured prior release could not be published safely; traffic remains in maintenance." >&2
+        elif ! curl --fail --silent --show-error --retry 12 --retry-delay 5 "https://${APP_HOST}/api/health" | grep -q '"status":"ok"'; then
+          if ! bodycast_write_route 'respond "BodyCast is temporarily unavailable while the model is updated." 503'; then
+            echo "Prior app health failed and maintenance could not be restored; operator intervention is required." >&2
+          fi
+          echo "Prior app failed its post-cutover health check; traffic returned to maintenance." >&2
+        else
+          echo "Previously serving app ${previous_app_sha} was restored from immutable image ${previous_app_image_id} and passed the V4 traffic gate." >&2
+        fi
       fi
     else
       echo "Previous app did not return healthy with its exact image ID and release label; traffic remains in maintenance." >&2

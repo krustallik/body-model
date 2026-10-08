@@ -9,6 +9,7 @@ const preflightSh = readFileSync(resolve("scripts/deploy-preflight-schema.sh"), 
 const migrateSh = readFileSync(resolve("scripts/deploy-migrate.sh"), "utf8");
 const migrateGuard = readFileSync(resolve("scripts/run-prisma-migrate-with-lock-timeout.mjs"), "utf8");
 const cutoverSh = readFileSync(resolve("scripts/production-traffic-cutover.sh"), "utf8");
+const routeOperationsSh = readFileSync(resolve("scripts/production-route-operations.sh"), "utf8");
 const releaseMarkerSh = readFileSync(resolve("scripts/production-release-marker.sh"), "utf8");
 const composeYaml = readFileSync(resolve("docker-compose.prod.yml"), "utf8");
 
@@ -43,10 +44,10 @@ describe("production deploy script safety contracts", () => {
     const appRecreateAt = deploySh.indexOf('compose up -d --no-deps --force-recreate "$APP_SERVICE"', appRecreateFenceAt);
     const serveFenceAt = deploySh.lastIndexOf("assert_current_main_sha\n  bash \"${ROOT_DIR}/scripts/production-traffic-cutover.sh\" serve");
     const serveAt = deploySh.lastIndexOf('bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" serve');
-    const stageValidationAt = cutoverSh.indexOf('caddy validate --adapter caddyfile --config -');
-    const routeFenceAt = cutoverSh.indexOf('bodycast_assert_current_main_sha "$freshness_sha"');
-    const routeWriteAt = cutoverSh.indexOf('mv -f -- "$temporary" "$ROUTE_FILE"');
-    const caddyReloadAt = cutoverSh.indexOf('if ! docker exec gymbeam-caddy caddy reload');
+    const stageValidationAt = routeOperationsSh.indexOf('caddy validate --adapter caddyfile --config -');
+    const routeFenceAt = routeOperationsSh.indexOf('bodycast_assert_current_main_sha "$freshness_sha"');
+    const routeWriteAt = routeOperationsSh.indexOf('mv -f -- "$temporary" "$route_file"');
+    const caddyReloadAt = routeOperationsSh.indexOf('if ! docker exec gymbeam-caddy caddy reload');
     expect(maintenanceBoundaryAt).toBeGreaterThan(buildAt);
     expect(appRecreateFenceAt).toBeGreaterThan(maintenanceBoundaryAt);
     expect(appRecreateAt).toBeGreaterThan(appRecreateFenceAt);
@@ -58,11 +59,47 @@ describe("production deploy script safety contracts", () => {
     expect(routeFenceAt).toBeGreaterThan(-1);
     expect(routeFenceAt).toBeLessThan(routeWriteAt);
     expect(routeWriteAt).toBeLessThan(caddyReloadAt);
-    expect(cutoverSh).toContain('write_route "reverse_proxy ${APP_CONTAINER}:3000" "$expected_release_sha"');
-    expect(cutoverSh).toContain('verify_exact_maintenance_route');
-    expect(cutoverSh.slice(routeWriteAt)).not.toContain('bodycast_assert_current_main_sha "$freshness_sha"');
-    expect(cutoverSh).toContain('Stage beside, but outside, the live routes directory');
+    expect(cutoverSh).toContain('bodycast_write_route "reverse_proxy ${APP_CONTAINER}:3000" "$expected_release_sha"');
+    expect(cutoverSh).toContain('bodycast_verify_exact_maintenance_route');
+    expect(routeOperationsSh.slice(routeWriteAt)).not.toContain('bodycast_assert_current_main_sha "$freshness_sha"');
+    expect(routeOperationsSh).toContain('Stage beside, but outside, the live routes directory');
     expect(deploySh).toContain("previous app and route remain unchanged");
+    expect(cutoverSh).not.toContain("rollback-previous");
+    expect(deploySh).not.toContain("rollback-previous");
+    expect(deploySh).not.toContain("BODYCAST_ROLLBACK_SHA");
+    expect(deploySh).not.toContain("BODYCAST_ROLLBACK_IMAGE_ID");
+    const rollbackHandlerAt = deploySh.indexOf("rollback() {");
+    const rollbackMarkerAt = deploySh.indexOf('rollback_marker_status=1', rollbackHandlerAt);
+    const rollbackV4At = deploySh.indexOf('unified-v4-traffic-check.mjs --profile-id 1', rollbackHandlerAt);
+    const rollbackRouteAt = deploySh.indexOf('bodycast_write_route "reverse_proxy ${APP_CONTAINER}:3000"', rollbackHandlerAt);
+    expect(rollbackHandlerAt).toBeGreaterThan(-1);
+    expect(rollbackMarkerAt).toBeGreaterThan(rollbackHandlerAt);
+    expect(rollbackV4At).toBeGreaterThan(rollbackMarkerAt);
+    expect(rollbackRouteAt).toBeGreaterThan(rollbackV4At);
+    expect(deploySh.slice(rollbackRouteAt, rollbackRouteAt + 100)).not.toContain("DEPLOY_SHA");
+  });
+
+  it("keeps attempt-bound rollback internal to the deploy trap and gates it on captured identity", () => {
+    const rollbackAt = deploySh.indexOf("rollback() {");
+    const rollbackBody = deploySh.slice(rollbackAt, deploySh.indexOf("trap rollback ERR", rollbackAt));
+    expect(rollbackBody).toContain('previous_app_healthy" == "true"');
+    expect(rollbackBody).toContain('previous_app_sha" =~ ^[0-9a-f]{40}$');
+    expect(rollbackBody).toContain('previous_app_image_id" =~ ^sha256:[0-9a-f]{64}$');
+    expect(rollbackBody).toContain('pinned_rollback_image_id" != "$previous_app_image_id"');
+    expect(rollbackBody).toContain('restored_sha" != "$previous_app_sha"');
+    expect(rollbackBody).toContain('restored_image_id" != "$previous_app_image_id"');
+    expect(rollbackBody).toContain('restored_status" != "healthy"');
+    expect(rollbackBody).toContain("bodycast_verify_exact_maintenance_route");
+    expect(rollbackBody).toContain("Unified V4 currentness blocks prior-release restoration");
+    expect(rollbackBody).toContain('bodycast_write_route "reverse_proxy ${APP_CONTAINER}:3000"');
+    expect(rollbackBody).not.toContain("bodycast_assert_current_main_sha");
+    expect(rollbackBody).not.toContain("production-traffic-cutover.sh\" rollback-previous");
+    const maintenanceFailureAt = rollbackBody.indexOf("Maintenance command failed; prior-release restoration is blocked");
+    const maintenanceVerificationAt = rollbackBody.indexOf("bodycast_verify_exact_maintenance_route");
+    const priorContainerRecreateAt = rollbackBody.indexOf('BODYCAST_DEPLOY_SHA="$previous_app_sha" compose up');
+    expect(maintenanceFailureAt).toBeGreaterThan(-1);
+    expect(maintenanceVerificationAt).toBeGreaterThan(maintenanceFailureAt);
+    expect(priorContainerRecreateAt).toBeGreaterThan(maintenanceVerificationAt);
   });
 
   it("runs schema preflight before app cutover", () => {

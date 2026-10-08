@@ -1,11 +1,15 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import {
+  accessSync,
   copyFileSync,
+  constants as fsConstants,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -36,11 +40,32 @@ function findBash(): string | null {
 }
 
 function findGitExecutable(): string {
-  if (process.platform !== "win32") return "git";
-  const where = spawnSync("where.exe", ["git"], { encoding: "utf8" });
-  const gitExe = where.stdout.split(/\r?\n/).find((entry) => entry.toLowerCase().endsWith("\\git.exe"));
-  if (!gitExe) throw new Error("Git executable is required for the release-cutover fixture.");
-  return gitExe;
+  let executable: string | undefined;
+  if (process.platform === "win32") {
+    const where = spawnSync("where.exe", ["git"], { encoding: "utf8" });
+    executable = where.stdout?.split(/\r?\n/).find((entry) => entry.toLowerCase().endsWith("\\git.exe"));
+  } else {
+    for (const entry of process.env.PATH?.split(path.delimiter) ?? []) {
+      const candidate = path.resolve(entry || process.cwd(), "git");
+      try {
+        if (!statSync(candidate).isFile()) continue;
+        accessSync(candidate, fsConstants.X_OK);
+        executable = realpathSync(candidate);
+        break;
+      } catch {
+        // Keep searching PATH; the final error explains that Git is required.
+      }
+    }
+  }
+
+  if (!executable) {
+    throw new Error("Unable to resolve the real Git executable for the release-cutover fixture.");
+  }
+  const absoluteExecutable = path.resolve(executable);
+  if (!path.isAbsolute(absoluteExecutable)) {
+    throw new Error("Resolved Git executable path must be absolute for the release-cutover fixture.");
+  }
+  return absoluteExecutable;
 }
 
 export function toBashPath(value: string): string {
@@ -475,6 +500,8 @@ export type Fixture = {
 };
 
 export function createFixture(): Fixture {
+  // Capture Git before this fixture prepends its own shim to the child PATH.
+  const realGit = findGitExecutable();
   const root = mkdtempSync(path.join(os.tmpdir(), "bodycast-release-freshness-"));
   temporaryRoots.push(root);
   const repo = path.join(root, "repo");
@@ -553,14 +580,14 @@ export function createFixture(): Fixture {
     candidateSha,
     advanceSha,
     bash: findBash() ?? "bash",
-    realGit: findGitExecutable(),
+    realGit,
     env: {
       ...process.env,
       ...Object.fromEntries(Object.entries(paths).map(([key, value]) => [key, toBashPath(value)])),
       PATH: `${path.join(root, "bin")}${path.delimiter}${process.env.PATH ?? ""}`,
       FIXTURE_BIN: toBashPath(bin),
       FIXTURE_REPO: toBashPath(repo),
-      REAL_GIT: toBashPath(findGitExecutable()),
+      REAL_GIT: toBashPath(realGit),
       ROUTE_FILE: toBashPath(path.join(routes, "bodycast.caddy")),
       APP_HOST: "bodycast.example.test",
       CADDY_ROUTES_PATH: toBashPath(routes),

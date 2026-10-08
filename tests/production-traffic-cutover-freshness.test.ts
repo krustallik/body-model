@@ -4,6 +4,18 @@ import { describe, expect, it } from "vitest";
 import { PREVIOUS_SHA, PREVIOUS_IMAGE_ID, WRONG_IMAGE_ID, bashAvailable, toBashPath, maintenanceRoute, createFixture, runFixture, appState } from "./helpers/production-release-cutover-fixture";
 
 describe("fallback production traffic cutover freshness and recovery", () => {
+  it.skipIf(!bashAvailable)("uses an absolute real Git binary for fixture shim passthrough", () => {
+    const fixture = createFixture();
+    const fixtureGitShim = path.join(fixture.root, "bin", process.platform === "win32" ? "git.exe" : "git");
+
+    expect(path.isAbsolute(fixture.realGit)).toBe(true);
+    expect(path.resolve(fixture.realGit).toLowerCase()).not.toBe(path.resolve(fixtureGitShim).toLowerCase());
+
+    const result = runFixture(fixture, "git --version");
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toMatch(/^git version /m);
+  });
+
   it.skipIf(!bashAvailable)("rejects the filesystem root as the live routes directory before Docker access", () => {
     const fixture = createFixture();
     const before = readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8");

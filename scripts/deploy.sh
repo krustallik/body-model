@@ -14,8 +14,6 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
-source "$ROOT_DIR/scripts/production-release-marker.sh"
-source "$ROOT_DIR/scripts/deploy-main-freshness.sh"
 
 readonly COMPOSE_FILE="docker-compose.prod.yml"
 readonly APP_SERVICE="app"
@@ -25,14 +23,16 @@ readonly DB_CONTAINER="bodycast-db-prod"
 readonly CURRENT_IMAGE="bodycast-app:latest"
 readonly ROLLBACK_IMAGE="bodycast-app:rollback"
 readonly APP_HOST="${APP_HOST:?APP_HOST is required}"
-readonly CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:?CADDY_ROUTES_PATH is required}"
+CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:?CADDY_ROUTES_PATH is required}"
+source "$ROOT_DIR/scripts/production-route-path.sh"
+bodycast_canonicalize_routes_path || exit 1
+readonly CADDY_ROUTES_PATH
 export APP_HOST CADDY_ROUTES_PATH
+source "$ROOT_DIR/scripts/production-release-marker.sh"
+source "$ROOT_DIR/scripts/deploy-main-freshness.sh"
 readonly DEPLOY_SHA="${DEPLOY_SHA:?DEPLOY_SHA is required}"
 readonly BODYCAST_NON_SERVING_DEPLOY="${BODYCAST_NON_SERVING_DEPLOY:-0}"
 freshness_blocked=false
-
-[[ "$CADDY_ROUTES_PATH" == /* ]] || { echo "CADDY_ROUTES_PATH must be absolute." >&2; exit 1; }
-[[ "$CADDY_ROUTES_PATH" != "/" ]] || { echo "CADDY_ROUTES_PATH may not be the filesystem root." >&2; exit 1; }
 
 assert_current_main_sha() {
   if ! bodycast_assert_current_main_sha "$DEPLOY_SHA"; then
@@ -112,18 +112,40 @@ compose() {
 
 stop_current_app_fail_closed() {
   local existing_app remaining_app stop_failed=0
-  existing_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}' 2>/dev/null || true)"
+  if ! existing_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}')"; then
+    echo "Docker app listing failed; app presence is UNKNOWN, not absent." >&2
+    return 1
+  fi
   if [[ -n "$existing_app" ]]; then
     if [[ "$existing_app" != "$APP_CONTAINER" ]]; then
       echo "App container identity is ambiguous; cannot confirm fail-closed stop." >&2
       return 1
     fi
-    docker update --restart=no "$APP_CONTAINER" >/dev/null 2>&1 || stop_failed=1
-    compose stop "$APP_SERVICE" >/dev/null 2>&1 || stop_failed=1
-    docker stop --time 0 "$APP_CONTAINER" >/dev/null 2>&1 || stop_failed=1
-    compose rm --force "$APP_SERVICE" >/dev/null 2>&1 || stop_failed=1
+    if ! docker update --restart=no "$APP_CONTAINER" >/dev/null 2>&1; then stop_failed=1; fi
+    if ! compose stop "$APP_SERVICE" >/dev/null 2>&1; then stop_failed=1; fi
+    if ! docker stop --time 0 "$APP_CONTAINER" >/dev/null 2>&1; then stop_failed=1; fi
+    local app_state app_restart
+    if ! app_state="$(docker inspect --format '{{.State.Status}}' "$APP_CONTAINER")"; then
+      app_state="UNKNOWN"
+      echo "Docker app state inspection failed; app state is UNKNOWN." >&2
+      stop_failed=1
+    fi
+    if ! app_restart="$(docker inspect --format '{{.HostConfig.RestartPolicy.Name}}' "$APP_CONTAINER")"; then
+      app_restart="UNKNOWN"
+      echo "Docker restart-policy inspection failed; restart policy is UNKNOWN." >&2
+      stop_failed=1
+    fi
+    if [[ "$app_state" == "exited" && "$app_restart" == "no" ]]; then
+      if ! compose rm --force "$APP_SERVICE" >/dev/null 2>&1; then stop_failed=1; fi
+    else
+      echo "App is not confirmed stopped with restart disabled; refusing removal." >&2
+      stop_failed=1
+    fi
   fi
-  remaining_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}' 2>/dev/null || true)"
+  if ! remaining_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}')"; then
+    echo "Final Docker app listing failed; app presence is UNKNOWN, not absent." >&2
+    return 1
+  fi
   if [[ -n "$remaining_app" ]]; then
     echo "Candidate app container remains after fail-closed stop attempts." >&2
     stop_failed=1
@@ -139,10 +161,14 @@ publish_captured_previous_route() {
   bodycast_stage_route_config "reverse_proxy ${APP_CONTAINER}:3000" || return 1
   temporary="$BODYCAST_ROUTE_STAGE_PATH"
   local restored_status restored_sha restored_image_id pinned_image_id rollback_marker_status
-  restored_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$APP_CONTAINER" 2>/dev/null || true)"
-  restored_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER" 2>/dev/null || true)"
-  restored_image_id="$(docker inspect --format '{{.Image}}' "$APP_CONTAINER" 2>/dev/null || true)"
-  pinned_image_id="$(docker image inspect --format '{{.Id}}' "$ROLLBACK_IMAGE" 2>/dev/null || true)"
+  if ! restored_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$APP_CONTAINER")" \
+      || ! restored_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER")" \
+      || ! restored_image_id="$(docker inspect --format '{{.Image}}' "$APP_CONTAINER")" \
+      || ! pinned_image_id="$(docker image inspect --format '{{.Id}}' "$ROLLBACK_IMAGE")"; then
+    rm -f -- "$temporary"
+    echo "Docker identity inspection failed; prior-release state is UNKNOWN." >&2
+    return 1
+  fi
   rollback_marker_status=1
   if read_bodycast_release_marker; then rollback_marker_status=0; else rollback_marker_status=$?; fi
   if [[ "$restored_status" != "healthy" || "$restored_sha" != "$previous_app_sha" \
@@ -175,8 +201,12 @@ maintenance_started=false
 previous_app_healthy=false
 previous_app_sha=""
 previous_app_image_id=""
+candidate_image_id=""
 
-existing_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}')"
+if ! existing_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}')"; then
+  echo "Docker app listing failed; app presence is UNKNOWN, not absent; deployment stopped before cutover." >&2
+  exit 1
+fi
 if [[ "$existing_app" == "$APP_CONTAINER" ]]; then
   previous_app_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER")"
   previous_app_image_id="$(docker inspect --format '{{.Image}}' "$APP_CONTAINER")"
@@ -208,6 +238,18 @@ rollback() {
     fi
     if ! stop_current_app_fail_closed; then
       echo "Fail-closed app removal could not be confirmed after non-serving failure; operator intervention is required." >&2
+    fi
+    compose logs --tail=100 "$APP_SERVICE"
+    exit "$exit_code"
+  fi
+
+  if [[ "$exit_code" -eq 75 && "$maintenance_started" == "true" ]]; then
+    echo "Candidate Caddy serving load failed; the previously active maintenance config remains authoritative; same-attempt prior-release serving is not attempted." >&2
+    if ! bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance; then
+      echo "Maintenance route refresh failed; Caddy retained its last confirmed active config." >&2
+    fi
+    if ! stop_current_app_fail_closed; then
+      echo "Candidate app cleanup could not be confirmed; active maintenance still prevents external candidate traffic." >&2
     fi
     compose logs --tail=100 "$APP_SERVICE"
     exit "$exit_code"
@@ -312,13 +354,11 @@ rollback() {
           echo "The captured prior release or marker state changed before route publication; traffic remains in maintenance." >&2
         elif ! bodycast_verify_exact_maintenance_route; then
           echo "Maintenance changed before prior-release route publication; traffic remains in maintenance." >&2
+        elif ! docker exec "$APP_CONTAINER" wget --quiet --tries=1 --output-document=- \
+          http://127.0.0.1:3000/api/health | grep -q '"status":"ok"'; then
+          echo "Captured prior app failed its pre-publication local health check; traffic remains in maintenance." >&2
         elif ! publish_captured_previous_route; then
           echo "The captured prior release could not be published safely; traffic remains in maintenance." >&2
-        elif ! curl --fail --silent --show-error --retry 12 --retry-delay 5 "https://${APP_HOST}/api/health" | grep -q '"status":"ok"'; then
-          if ! bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance; then
-            echo "Prior app health failed and maintenance activation could not be confirmed; candidate app removal was attempted." >&2
-          fi
-          echo "Prior app failed its post-cutover health check; traffic returned to maintenance." >&2
         else
           echo "Previously serving app ${previous_app_sha} was restored from immutable image ${previous_app_image_id} and passed the V4 traffic gate." >&2
         fi
@@ -364,6 +404,11 @@ else
 fi
 
 compose build "$APP_SERVICE"
+candidate_image_id="$(docker image inspect --format '{{.Id}}' "$CURRENT_IMAGE")"
+[[ "$candidate_image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+  echo "Built candidate image does not have an immutable image ID." >&2
+  exit 1
+}
 
 # Do not put ordinary releases into maintenance during the expensive image build.
 # Once the image is ready, hold traffic at 503 until replacement, health, exact
@@ -397,6 +442,11 @@ deployed_container_sha="$(docker inspect --format '{{index .Config.Labels "org.b
   echo "Running app container release label does not match the authorized exact SHA." >&2
   exit 1
 }
+deployed_container_image_id="$(docker inspect --format '{{.Image}}' "$APP_CONTAINER")"
+[[ "$deployed_container_image_id" == "$candidate_image_id" ]] || {
+  echo "Running app container image ID does not match the immutable built candidate image." >&2
+  exit 1
+}
 
 if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" ]]; then
   if [[ "$active_schema_cutover" == "true" ]]; then
@@ -407,9 +457,14 @@ if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" ]]; then
 else
   assert_current_main_sha
   bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" serve
+  # The serving child returns success only after its terminal Caddy load.
+  # Disable rollback immediately; all remaining work is non-fatal reporting or cleanup.
+  trap - ERR
 fi
 
 trap - ERR
-docker image rm "$ROLLBACK_IMAGE" >/dev/null 2>&1 || true
+if ! docker image rm "$ROLLBACK_IMAGE" >/dev/null 2>&1; then
+  echo "Non-fatal rollback image cleanup failed; the verified serving release remains committed." >&2
+fi
 echo "BodyCast deployment completed successfully for ${DEPLOY_SHA}."
 echo "DEPLOYED_SHA=${DEPLOY_SHA}"

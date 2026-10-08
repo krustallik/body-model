@@ -10,6 +10,7 @@ const migrateSh = readFileSync(resolve("scripts/deploy-migrate.sh"), "utf8");
 const migrateGuard = readFileSync(resolve("scripts/run-prisma-migrate-with-lock-timeout.mjs"), "utf8");
 const cutoverSh = readFileSync(resolve("scripts/production-traffic-cutover.sh"), "utf8");
 const routePrimitivesSh = readFileSync(resolve("scripts/production-route-primitives.sh"), "utf8");
+const routePathSh = readFileSync(resolve("scripts/production-route-path.sh"), "utf8");
 const releaseMarkerSh = readFileSync(resolve("scripts/production-release-marker.sh"), "utf8");
 const composeYaml = readFileSync(resolve("docker-compose.prod.yml"), "utf8");
 
@@ -33,8 +34,18 @@ describe("production deploy script safety contracts", () => {
     expect(mainFreshnessSh).toMatch(/\[\[ "\$candidate_sha" == "\$canonical_main_sha" \]\]/);
 
     const hostClientAt = deploySh.indexOf('if [[ -x "$HOST_OPERATION_CLIENT" ]]');
-    expect(deploySh.indexOf("assert_current_main_sha")).toBeGreaterThan(-1);
-    expect(deploySh.indexOf("assert_current_main_sha")).toBeLessThan(hostClientAt);
+    const deployPathGateAt = deploySh.indexOf("bodycast_canonicalize_routes_path || exit 1");
+    const deployMainFenceAt = deploySh.indexOf("\nassert_current_main_sha\n", deployPathGateAt);
+    const trafficPathGateAt = cutoverSh.indexOf("bodycast_canonicalize_routes_path || exit 1");
+    const trafficHostClientAt = cutoverSh.indexOf('if [[ -x "$HOST_OPERATION_CLIENT" ]]');
+    expect(deployPathGateAt).toBeGreaterThan(-1);
+    expect(deployPathGateAt).toBeLessThan(hostClientAt);
+    expect(deployPathGateAt).toBeLessThan(deployMainFenceAt);
+    expect(trafficPathGateAt).toBeGreaterThan(-1);
+    expect(trafficPathGateAt).toBeLessThan(trafficHostClientAt);
+    expect(routePathSh).toContain('realpath -e -- "$requested_path"');
+    expect(routePathSh).toContain('[[ -n "$slashless_path" ]]');
+    expect(routePathSh).toContain('CADDY_ROUTES_PATH="$canonical_path"');
     expect(deploySh).toContain("--canonical-main-fence fresh-current-main-v1");
     expect(deploySh.indexOf("assert_current_main_sha\ncompose up -d \"$DB_SERVICE\""))
       .toBeGreaterThan(-1);
@@ -62,6 +73,10 @@ describe("production deploy script safety contracts", () => {
     expect(candidateStageAt).toBeLessThan(routeFenceAt);
     expect(routeFenceAt).toBeLessThan(routeWriteAt);
     expect(routeWriteAt).toBeLessThan(caddyReloadAt);
+    expect(cutoverSh.indexOf("clear_bodycast_release_marker", candidatePublisherAt)).toBeLessThan(routeWriteAt);
+    expect(cutoverSh.slice(caddyReloadAt)).not.toContain("clear_bodycast_release_marker");
+    expect(cutoverSh.slice(caddyReloadAt)).not.toContain("curl ");
+    expect(cutoverSh.slice(caddyReloadAt)).toContain("publish_candidate_route\nexit 0");
     expect(cutoverSh).toContain('bodycast_stage_route_config "reverse_proxy ${APP_CONTAINER}:3000"');
     expect(cutoverSh).toContain('bodycast_verify_exact_maintenance_route');
     expect(routePrimitivesSh).toContain('mktemp "${route_parent}/.bodycast-route-stage.XXXXXX"');
@@ -101,6 +116,8 @@ describe("production deploy script safety contracts", () => {
     expect(rollbackBody).toContain("bodycast_verify_exact_maintenance_route");
     expect(rollbackBody).toContain("Unified V4 currentness blocks prior-release restoration");
     expect(rollbackBody).toContain('publish_captured_previous_route');
+    expect(rollbackBody.indexOf('docker exec "$APP_CONTAINER" wget')).toBeLessThan(rollbackBody.indexOf("publish_captured_previous_route"));
+    expect(rollbackBody).not.toContain('curl --fail --silent --show-error --retry');
     expect(rollbackBody).not.toContain("bodycast_assert_current_main_sha");
     expect(rollbackBody).not.toContain("production-traffic-cutover.sh\" rollback-previous");
     const maintenanceFailureAt = rollbackBody.indexOf("Maintenance activation failed; no replacement will be started behind an unproven route.");
@@ -176,6 +193,17 @@ describe("production deploy script safety contracts", () => {
     expect(preflightSh).toMatch(/prisma migrate status/);
     expect(preflightSh).not.toMatch(/run --rm migrate(?!\s)/);
     expect(preflightSh).not.toMatch(/entrypoint npx migrate prisma migrate deploy/);
+  });
+
+  it("disarms the rollback trap immediately after the terminal candidate Caddy load", () => {
+    const serveAt = deploySh.lastIndexOf('bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" serve');
+    const trapDisarmAt = deploySh.indexOf("trap - ERR", serveAt);
+    const cleanupAt = deploySh.indexOf('if ! docker image rm "$ROLLBACK_IMAGE"', trapDisarmAt);
+    expect(serveAt).toBeGreaterThan(-1);
+    expect(trapDisarmAt).toBeGreaterThan(serveAt);
+    expect(cleanupAt).toBeGreaterThan(trapDisarmAt);
+    expect(deploySh.slice(trapDisarmAt, cleanupAt)).not.toContain("assert_current_main_sha");
+    expect(deploySh.slice(cleanupAt)).not.toContain("|| true");
   });
 
   it("keeps production migration behind the host challenge and stdin proof handoff", () => {

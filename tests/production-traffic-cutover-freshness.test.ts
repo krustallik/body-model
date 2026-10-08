@@ -70,7 +70,7 @@ describe("fallback production traffic cutover freshness and recovery", () => {
     });
 
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("CADDY_ROUTES_PATH may not be the filesystem root.");
+    expect(result.stderr).toContain("CADDY_ROUTES_PATH may not resolve to the filesystem root.");
     expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).toBe(before);
     expect(existsSync(path.join(fixture.root, "docker.log"))).toBe(false);
   }, 30_000);

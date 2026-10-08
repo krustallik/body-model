@@ -118,6 +118,10 @@ if [[ "$1" == "image" && "$2" == "tag" ]]; then
   exit 0
 fi
 if [[ "$1" == "image" && "$2" == "rm" ]]; then
+  if [[ "\${FAIL_IMAGE_RM:-0}" == "1" ]]; then
+    event "image-rm-failed"
+    exit 55
+  fi
   rm -f "$IMAGE_ROLLBACK"
   exit 0
 fi
@@ -151,6 +155,10 @@ if [[ "$1" == "compose" ]]; then
       exit 31
     fi
     restored_image_id="$(cat "$IMAGE_LATEST")"
+    if [[ "\${CANDIDATE_CONTAINER_IMAGE_MISMATCH:-0}" == "1" \
+        && "\${BODYCAST_DEPLOY_SHA:-}" == "\${CANDIDATE_SHA:-}" ]]; then
+      restored_image_id="$WRONG_IMAGE_ID"
+    fi
     if [[ "\${ROLLBACK_CONTAINER_IMAGE_MISMATCH:-0}" == "1" \
         && "\${BODYCAST_DEPLOY_SHA:-}" == "\${PREVIOUS_SHA:-}" ]]; then
       restored_image_id="$WRONG_IMAGE_ID"
@@ -164,11 +172,19 @@ if [[ "$1" == "compose" ]]; then
   fi
   if [[ "$joined" == *" stop app "* ]]; then
     event "compose-stop-app"
+    if [[ "\${FAIL_COMPOSE_STOP:-0}" == "1" ]]; then
+      event "compose-stop-app-failed"
+      exit 56
+    fi
     printf '%s\n' exited > "$APP_STATUS_FILE"
     exit 0
   fi
   if [[ "$joined" == *" rm --force app "* ]]; then
     event "compose-remove-app"
+    if [[ "\${FAIL_COMPOSE_RM:-0}" == "1" ]]; then
+      event "compose-remove-app-failed"
+      exit 57
+    fi
     printf '%s\n' false > "$APP_PRESENT_FILE"
     exit 0
   fi
@@ -178,6 +194,10 @@ fi
 if [[ "$1" == "inspect" ]]; then
   format="$3"
   target="$4"
+  if [[ "$target" == "bodycast-app-prod" && "\${FAIL_DOCKER_APP_INSPECT:-0}" == "1" ]]; then
+    event "docker-app-inspect-failed:$format"
+    exit 58
+  fi
   case "$target:$format" in
     bodycast-db-prod:*State.Status*Health*) printf '%s\n' 'running|healthy' ;;
     bodycast-db-prod:*Health.Status*|bodycast-db-prod:*State.Health*) printf '%s\n' healthy ;;
@@ -194,6 +214,10 @@ if [[ "$1" == "inspect" ]]; then
   exit 0
 fi
 if [[ "$1" == "ps" ]]; then
+  if [[ "\${FAIL_DOCKER_PS:-0}" == "1" ]]; then
+    event "docker-ps-failed"
+    exit 59
+  fi
   if [[ "$(cat "$APP_PRESENT_FILE" 2>/dev/null || true)" == "true" ]]; then printf '%s\n' bodycast-app-prod; fi
   exit 0
 fi
@@ -203,6 +227,10 @@ if [[ "$1" == "update" ]]; then
   exit 0
 fi
 if [[ "$1" == "stop" && "$2" == "--time" && "$4" == "bodycast-app-prod" ]]; then
+  if [[ "\${FAIL_DOCKER_STOP:-0}" == "1" ]]; then
+    event "direct-app-stop-failed"
+    exit 60
+  fi
   printf '%s\n' exited > "$APP_STATUS_FILE"
   event "direct-app-stop"
   exit 0
@@ -240,16 +268,27 @@ if [[ "$1" == "exec" && ( "$2" == "gymbeam-caddy" || ( "$2" == "-i" && "$3" == "
     grep -q reverse_proxy "$ROUTE_FILE" && route_kind=serving
     event "caddy-reload:$route_kind"
     if [[ "\${FAIL_CADDY_RELOAD:-0}" == "1" \
-        || ( "$route_kind" == "maintenance" && "\${FAIL_MAINTENANCE_RELOAD:-0}" == "1" ) ]]; then
+        || ( "$route_kind" == "maintenance" && "\${FAIL_MAINTENANCE_RELOAD:-0}" == "1" ) \
+        || ( "$route_kind" == "serving" && "\${FAIL_SERVING_RELOAD:-0}" == "1" ) ]]; then
       event "caddy-reload-failed:$route_kind"
       exit 43
     fi
-    if [[ "$route_kind" == "serving" ]]; then printf '%s\n' serving > "$ACTIVE_ROUTE_FILE"; else printf '%s\n' maintenance > "$ACTIVE_ROUTE_FILE"; fi
+    if [[ "$route_kind" == "serving" ]]; then
+      printf '%s\n' serving > "$ACTIVE_ROUTE_FILE"
+      event "caddy-serving-sha:$(cat "$APP_SHA_FILE")"
+    else
+      printf '%s\n' maintenance > "$ACTIVE_ROUTE_FILE"
+    fi
     event "caddy-active-config:$route_kind"
     exit 0
   fi
 fi
 if [[ "$1" == "exec" && "$2" == "bodycast-app-prod" ]]; then
+  if [[ "\${FAIL_ROLLBACK_HEALTH:-0}" == "1" \
+      && "$(cat "$APP_SHA_FILE" 2>/dev/null || true)" == "\${PREVIOUS_SHA:-}" ]]; then
+    event "prior-local-health-failed"
+    exit 22
+  fi
   printf '%s\n' '{"status":"ok"}'
   exit 0
 fi
@@ -345,6 +384,7 @@ export function createFixture(): Fixture {
     "deploy-main-freshness.sh",
     "deploy-preflight-schema.sh",
     "production-release-marker.sh",
+    "production-route-path.sh",
     "production-route-primitives.sh",
     "production-traffic-cutover.sh",
     "production-writer-drain.sh",

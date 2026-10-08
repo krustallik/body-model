@@ -125,10 +125,11 @@ if [[ ! "$NEW_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   echo "Expected current fixture source to resolve to a full commit SHA." >&2
   exit 1
 fi
-mkdir -p "$RECOVERY_ROOT/scripts" "$RECOVERY_GIT_DIR" "$RECOVERY_BIN"
+mkdir -p "$RECOVERY_ROOT/scripts" "$RECOVERY_GIT_DIR" "$RECOVERY_BIN" "$TMP/recovery-caddy"
 export FAKE_GIT_LOG="$TMP/recovery-git.log"
 cp "$ROOT/scripts/deploy.sh" "$RECOVERY_ROOT/scripts/deploy.sh"
 cp "$ROOT/scripts/deploy-main-freshness.sh" "$RECOVERY_ROOT/scripts/deploy-main-freshness.sh"
+cp "$ROOT/scripts/production-route-path.sh" "$RECOVERY_ROOT/scripts/production-route-path.sh"
 cp "$ROOT/scripts/production-route-primitives.sh" "$RECOVERY_ROOT/scripts/production-route-primitives.sh"
 cp "$ROOT/scripts/deploy-migrate.sh" "$RECOVERY_ROOT/scripts/deploy-migrate.sh"
 cp "$ROOT/scripts/production-release-marker.sh" "$RECOVERY_ROOT/scripts/production-release-marker.sh"

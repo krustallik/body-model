@@ -9,14 +9,15 @@ cd "$ROOT_DIR"
 readonly COMPOSE_FILE="docker-compose.prod.yml"
 readonly APP_CONTAINER="bodycast-app-prod"
 readonly APP_HOST="${APP_HOST:?APP_HOST is required}"
-readonly CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:?CADDY_ROUTES_PATH is required}"
+CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:?CADDY_ROUTES_PATH is required}"
+source "${ROOT_DIR}/scripts/production-route-path.sh"
+bodycast_canonicalize_routes_path || exit 1
+readonly CADDY_ROUTES_PATH
 export APP_HOST CADDY_ROUTES_PATH
 source "${ROOT_DIR}/scripts/production-release-marker.sh"
 source "${ROOT_DIR}/scripts/deploy-main-freshness.sh"
 
 [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "APP_HOST is invalid." >&2; exit 1; }
-[[ "$CADDY_ROUTES_PATH" == /* ]] || { echo "CADDY_ROUTES_PATH must be absolute." >&2; exit 1; }
-[[ "$CADDY_ROUTES_PATH" != "/" ]] || { echo "CADDY_ROUTES_PATH may not be the filesystem root." >&2; exit 1; }
 [[ "$MODE" == "maintenance" || "$MODE" == "check" || "$MODE" == "v3-postflight" || "$MODE" == "serve" ]] || {
   echo "Usage: APP_HOST=... CADDY_ROUTES_PATH=... bash scripts/production-traffic-cutover.sh maintenance|check|v3-postflight|serve" >&2
   exit 1
@@ -81,24 +82,39 @@ require_ready_release_marker() {
 
 stop_old_app() {
   local existing_app app_state app_restart remaining_app stop_failed=0
-  existing_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}' 2>/dev/null || true)"
+  if ! existing_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}')"; then
+    echo "Docker app listing failed; app presence is UNKNOWN, not absent." >&2
+    return 1
+  fi
   if [[ -n "$existing_app" ]]; then
     [[ "$existing_app" == "$APP_CONTAINER" ]] || { echo "App container identity is ambiguous." >&2; return 1; }
-    docker update --restart=no "$APP_CONTAINER" >/dev/null || stop_failed=1
-    compose stop app >/dev/null 2>&1 || stop_failed=1
+    if ! docker update --restart=no "$APP_CONTAINER" >/dev/null; then stop_failed=1; fi
+    if ! compose stop app >/dev/null 2>&1; then stop_failed=1; fi
     # Attempt a direct stop even if the Compose operation failed. This path is
-    # also used when Caddy reload failed and may still serve the old config.
-    docker stop --time 0 "$APP_CONTAINER" >/dev/null 2>&1 || stop_failed=1
-    app_state="$(docker inspect --format '{{.State.Status}}' "$APP_CONTAINER" 2>/dev/null || true)"
-    app_restart="$(docker inspect --format '{{.HostConfig.RestartPolicy.Name}}' "$APP_CONTAINER" 2>/dev/null || true)"
-    if [[ "$app_state" != "exited" || "$app_restart" != "no" ]]; then
+    # also be used if Caddy retained its prior active config.
+    if ! docker stop --time 0 "$APP_CONTAINER" >/dev/null 2>&1; then stop_failed=1; fi
+    if ! app_state="$(docker inspect --format '{{.State.Status}}' "$APP_CONTAINER")"; then
+      app_state="UNKNOWN"
+      echo "Docker app state inspection failed; app state is UNKNOWN." >&2
+      stop_failed=1
+    fi
+    if ! app_restart="$(docker inspect --format '{{.HostConfig.RestartPolicy.Name}}' "$APP_CONTAINER")"; then
+      app_restart="UNKNOWN"
+      echo "Docker restart-policy inspection failed; restart policy is UNKNOWN." >&2
+      stop_failed=1
+    fi
+    if [[ "$app_state" == "exited" && "$app_restart" == "no" ]]; then
+      if ! compose rm --force app >/dev/null 2>&1; then stop_failed=1; fi
+    else
       echo "Old BodyCast app did not stop with automatic restart disabled." >&2
       stop_failed=1
     fi
-    compose rm --force app >/dev/null 2>&1 || stop_failed=1
   fi
-  docker info >/dev/null 2>&1 || stop_failed=1
-  remaining_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}' 2>/dev/null || true)"
+  if ! docker info >/dev/null 2>&1; then stop_failed=1; fi
+  if ! remaining_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}')"; then
+    echo "Final Docker app listing failed; app presence is UNKNOWN, not absent." >&2
+    return 1
+  fi
   if [[ -n "$remaining_app" ]]; then
     echo "Old BodyCast app container still exists and could be manually restarted." >&2
     stop_failed=1
@@ -141,6 +157,22 @@ publish_candidate_route() {
     rm -f -- "$temporary"
     return 1
   fi
+  # Marker removal is a fatal pre-cutover requirement, not post-serving
+  # bookkeeping. A failure leaves the active maintenance config untouched.
+  if [[ "$marker_status" -eq 0 ]] && ! clear_bodycast_release_marker; then
+    rm -f -- "$temporary"
+    return 1
+  fi
+  # Recheck after marker mutation so the only live route effect follows a fresh
+  # canonical-main fence and safe-path verification.
+  if ! bodycast_assert_current_main_sha "$expected_release_sha"; then
+    rm -f -- "$temporary"
+    return 1
+  fi
+  if ! bodycast_assert_safe_routes_location; then
+    rm -f -- "$temporary"
+    return 1
+  fi
   if ! mv -f -- "$temporary" "$route_file"; then
     rm -f -- "$temporary"
     echo "Atomic serving-route replacement failed; the prior route bytes remain active." >&2
@@ -149,9 +181,8 @@ publish_candidate_route() {
   if ! docker exec gymbeam-caddy caddy reload \
     --address unix//run/caddy-admin/admin.sock \
     --config /etc/caddy/Caddyfile; then
-    echo "Caddy serving reload failed; independently stopping the candidate app." >&2
-    stop_old_app || echo "Candidate app could not be fully removed after serving reload failure." >&2
-    return 1
+    echo "Caddy serving reload failed; the previously active maintenance config remains in force." >&2
+    return 75
   fi
 }
 
@@ -216,12 +247,4 @@ compose --profile tools build migrate
 compose --profile tools run --rm --no-deps --entrypoint node migrate \
   /app/scripts/unified-v4-traffic-check.mjs --profile-id 1
 publish_candidate_route
-if ! curl --fail --silent --show-error --retry 12 --retry-delay 5 "https://${APP_HOST}/api/health" | grep -q '"status":"ok"'; then
-  enter_maintenance
-  echo "Health check failed after serving cutover; traffic returned to maintenance." >&2
-  exit 1
-fi
-if [[ "$marker_status" -eq 0 ]]; then
-  clear_bodycast_release_marker
-fi
-echo "Forecast V2 serving enabled after exact Unified V4 currentness verification."
+exit 0

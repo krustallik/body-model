@@ -97,7 +97,7 @@ export function createProductionOperationBroker({
   loadAuthorizationById,
   loadRolloutReceiptById,
   executeFixedOperation,
-  adapterConformance = null,
+  assertAdapterConformanceCurrent,
   now = () => Date.now(),
 }) {
   for (const [name, fn] of Object.entries({
@@ -115,6 +115,7 @@ export function createProductionOperationBroker({
     loadAuthorizationById,
     loadRolloutReceiptById,
     executeFixedOperation,
+    assertAdapterConformanceCurrent,
   })) if (typeof fn !== "function") throw new Error("Trusted host operation dependency is missing: " + name + ".");
   if (!authority || typeof authority.readAuthoritativeState !== "function") throw new Error("Root recovery authority is required.");
 
@@ -128,11 +129,21 @@ export function createProductionOperationBroker({
     return authority.readAuthoritativeState();
   }
 
-  function requireAdapterConformance(preparation = null) {
+  async function requireAdapterConformance(preparation = null) {
+    let adapterConformance;
+    try {
+      adapterConformance = await assertAdapterConformanceCurrent({ preparation });
+    } catch (error) {
+      throw new Error("Installed host adapter has no current verified operation-conformance evidence.", { cause: error });
+    }
+    const expiresAt = Date.parse(adapterConformance?.expiresAt);
     if (!adapterConformance || adapterConformance.current !== true
-      || adapterConformance.contractDigest !== OPERATION_ADAPTER_CONTRACT_DIGEST) {
+      || adapterConformance.contractDigest !== OPERATION_ADAPTER_CONTRACT_DIGEST
+      || !Number.isFinite(expiresAt) || expiresAt <= now()) {
       throw new Error("Installed host adapter has no current verified operation-conformance evidence.");
     }
+    assertSha256(adapterConformance.adapterDigest, "adapterConformance.adapterDigest");
+    assertSha256(adapterConformance.receiptDigest, "adapterConformance.receiptDigest");
     if (preparation && (preparation.operationAdapterDigest !== adapterConformance.adapterDigest
       || preparation.operationAdapterConformanceDigest !== adapterConformance.receiptDigest)) {
       throw new Error("Recovery preparation does not bind the installed adapter's current conformance receipt.");
@@ -143,7 +154,7 @@ export function createProductionOperationBroker({
   async function requireMigrationPreparation() {
     const preparation = await verifyRecoveryPreparation({ allowAbsent: false });
     if (!preparation?.ready) throw new Error("Forward migration is blocked until recovery preparation is verified.");
-    requireAdapterConformance(preparation);
+    await requireAdapterConformance(preparation);
     return preparation;
   }
 
@@ -218,18 +229,28 @@ export function createProductionOperationBroker({
       || result.canonicalMainSha !== request.canonicalMainSha || result.migrationManifestId !== request.migrationManifestId
       || result.authorizationContextId !== request.authorizationContextId
       || result.workflowId !== challenge.workflowId || result.workflowRunId !== challenge.workflowRunId
-      || result.workflowRunAttempt !== challenge.workflowRunAttempt) {
+      || result.workflowRunAttempt !== challenge.workflowRunAttempt
+      || result.tokenDigest !== sha256Hex(request.executionProof)) {
       throw new Error("Execution proof verifier did not bind the exact challenge, release, manifest, and workflow attempt.");
     }
     assertSha256(result.tokenDigest, "executionProof.tokenDigest");
     assertUtcTimestamp(result.issuedAt, "executionProof.issuedAt");
     assertUtcTimestamp(result.expiresAt, "executionProof.expiresAt");
+    const currentTime = now();
     const issuedAt = Date.parse(result.issuedAt);
     const expiresAt = Date.parse(result.expiresAt);
-    if (issuedAt > now() || now() - issuedAt > 2 * 60_000 || expiresAt <= now() || expiresAt - issuedAt > 10 * 60_000) {
+    if (issuedAt < Date.parse(challenge.issuedAt) || issuedAt > currentTime
+      || currentTime - issuedAt > 2 * 60_000 || expiresAt <= currentTime || expiresAt - issuedAt > 10 * 60_000) {
       throw new Error("Migration execution proof is stale, expired, or excessively long-lived.");
     }
     return result;
+  }
+
+  function assertMigrationAuthorizationUnexpired(challenge, proof, checkedAt = now()) {
+    if (!proof || Date.parse(challenge.issuedAt) > checkedAt || Date.parse(challenge.expiresAt) <= checkedAt
+      || Date.parse(proof.issuedAt) > checkedAt || Date.parse(proof.expiresAt) <= checkedAt) {
+      throw new Error("Migration challenge or execution proof expired at the migration effect boundary.");
+    }
   }
 
   function validateUnifiedV4Currentness(result, request) {
@@ -264,7 +285,7 @@ export function createProductionOperationBroker({
     return canonicalDigest(stableEvidence);
   }
 
-  async function executeRecoveryOperation({ result, request, evidence, replay = false }) {
+  async function executeRecoveryOperation({ result, request, evidence, preparation, replay = false }) {
     const record = result.record;
     const intent = record.operationIntent;
     const bindings = {
@@ -279,6 +300,7 @@ export function createProductionOperationBroker({
     if (canonicalDigest(bindings) !== intent.operationInputDigest) {
       throw new Error("Committed recovery operation intent does not match its immutable operation inputs.");
     }
+    await requireAdapterConformance(preparation);
     const execute = async ({ record: exactRecord, intent: exactIntent }) => executeReconciledHostOperation({
       operationType: exactIntent.operationType,
       operationId: exactIntent.operationId,
@@ -293,6 +315,7 @@ export function createProductionOperationBroker({
           intent: exactIntent, evidence, replay }) !== true) {
           throw new Error("Recovery operation final host-state guard did not pass immediately before the effect.");
         }
+        await requireAdapterConformance(preparation);
       },
       executeFixedOperation: (operationType, operation) => executeFixedOperation(operationType, {
         ...operation,
@@ -321,10 +344,11 @@ export function createProductionOperationBroker({
       if (request.operation === "readiness") {
         const rollout = await verifyCurrentReaderRollout({ allowAbsent: true });
         const preparation = await verifyRecoveryPreparation({ allowAbsent: true });
-        const conformanceCurrent = adapterConformance?.current === true
-          && adapterConformance.contractDigest === OPERATION_ADAPTER_CONTRACT_DIGEST
-          && (!preparation?.ready || preparation.operationAdapterDigest === adapterConformance.adapterDigest
-            && preparation.operationAdapterConformanceDigest === adapterConformance.receiptDigest);
+        let conformanceCurrent = false;
+        try {
+          await requireAdapterConformance(preparation?.ready ? preparation : null);
+          conformanceCurrent = true;
+        } catch { /* Readiness reports stale or invalid conformance as fail-closed state. */ }
         return { ok: true, operation: "readiness", recoveryBlocking: state.blocking,
           activeRecovery: Boolean(state.activeRecovery), rolloutCurrent: rollout?.current === true,
           operationAdapterConformanceCurrent: conformanceCurrent,
@@ -350,7 +374,7 @@ export function createProductionOperationBroker({
         }
         const rollout = await verifyCurrentReaderRollout({ allowAbsent: true });
         if (rollout && rollout.current !== true) throw new Error("Installed recovery authority reports stale reader tooling.");
-        requireAdapterConformance();
+        await requireAdapterConformance();
         const operationBindings = { releaseSha: request.releaseSha, canonicalMainSha: request.canonicalMainSha,
           releaseMode: request.releaseMode };
         const operationId = canonicalDigest({ operation: request.operation, ...operationBindings });
@@ -363,6 +387,7 @@ export function createProductionOperationBroker({
             if (await verifyCurrentReaderRollout({ allowAbsent: true }).then((value) => value && value.current !== true)) {
               throw new Error("Reader rollout changed before the ordinary release effect.");
             }
+            await requireAdapterConformance();
           },
           executeFixedOperation: (operationType, operation) => executeFixedOperation(operationType, {
             releaseSha: request.releaseSha, canonicalMainSha: request.canonicalMainSha, releaseMode: request.releaseMode, ...operation,
@@ -440,23 +465,29 @@ export function createProductionOperationBroker({
         if (!rollout?.current || !preparation?.ready) {
           throw new Error("Forward migration readiness is blocked until authority, current reader rollout, and the read-only recovery role are prepared.");
         }
-        requireAdapterConformance(preparation);
+        await requireAdapterConformance(preparation);
         return { ok: true, migrationManifestId: request.migrationManifestId, recoveryPrepared: true };
       }
       if (request.operation === "forward-migration") {
-        await requireReviewedRelease(request.releaseSha, request.canonicalMainSha);
-        if (state.blocking || state.activeRecovery || state.legacyMarker) throw new Error("Active recovery state blocks forward migration.");
-        const rollout = await verifyCurrentReaderRollout({ allowAbsent: false });
-        const preparation = await requireMigrationPreparation();
-        if (!rollout?.current || !preparation?.ready) throw new Error("Forward migration is blocked until recovery preparation is verified.");
-        const authorization = await loadAuthorizationById(request.authorizationContextId);
-        if (await verifyForwardMigrationAuthorization(authorization, request) !== true) {
-          throw new Error("Existing forward migration authorization is invalid or cross-used recovery authorization.");
+        const markerBlocks = state.blocking || state.activeRecovery || Boolean(state.legacyMarker);
+        let preparation = null;
+        let authorization = null;
+        if (!markerBlocks) {
+          await requireReviewedRelease(request.releaseSha, request.canonicalMainSha);
+          const rollout = await verifyCurrentReaderRollout({ allowAbsent: false });
+          preparation = await requireMigrationPreparation();
+          if (!rollout?.current || !preparation?.ready) throw new Error("Forward migration is blocked until recovery preparation is verified.");
+          authorization = await loadAuthorizationById(request.authorizationContextId);
+          if (await verifyForwardMigrationAuthorization(authorization, request) !== true) {
+            throw new Error("Existing forward migration authorization is invalid or cross-used recovery authorization.");
+          }
         }
         if (typeof authority.readMigrationChallenge !== "function"
           || typeof authority.readMigrationChallengeConsumption !== "function"
-          || typeof authority.consumeMigrationChallenge !== "function") {
-          throw new Error("Root authority cannot verify and consume a durable one-time migration challenge.");
+          || typeof authority.consumeMigrationChallenge !== "function"
+          || typeof authority.readMigrationCompletion !== "function"
+          || typeof authority.completeMigrationChallenge !== "function") {
+          throw new Error("Root authority cannot verify, consume, and reconcile a durable one-time migration challenge.");
         }
         const challenge = await authority.readMigrationChallenge(request.challengeId);
         if (!challenge || challenge.challengeDigest !== request.challengeDigest) {
@@ -484,26 +515,82 @@ export function createProductionOperationBroker({
         const operationInputDigest = canonicalDigest(bindings);
         const priorConsumption = await authority.readMigrationChallengeConsumption(request.challengeId);
         const tokenDigest = sha256Hex(request.executionProof);
-        if (priorConsumption && (priorConsumption.challengeDigest !== challenge.challengeDigest
-          || priorConsumption.operationId !== operationId || priorConsumption.tokenDigest !== tokenDigest)) {
-          throw new Error("Consumed migration challenge cannot authorize another operation or proof.");
+        const authorizationContextId = `migration-${challenge.workflowId}-${challenge.workflowRunId}-${challenge.workflowRunAttempt}`;
+        const consumptionMatches = priorConsumption && priorConsumption.challengeDigest === challenge.challengeDigest
+          && priorConsumption.operationId === operationId && priorConsumption.operationInputDigest === operationInputDigest
+          && priorConsumption.recoveryCaseId === null && priorConsumption.tokenDigest === tokenDigest
+          && priorConsumption.releaseSha === request.releaseSha && priorConsumption.canonicalMainSha === request.canonicalMainSha
+          && priorConsumption.migrationManifestId === request.migrationManifestId
+          && priorConsumption.authorizationContextId === authorizationContextId
+          && priorConsumption.logicalProductionDbIdentityDigest === challenge.logicalProductionDbIdentityDigest
+          && priorConsumption.pendingMigrationSetDigest === challenge.pendingMigrationSetDigest;
+        if (priorConsumption && !consumptionMatches) {
+          throw new Error("Consumed migration challenge cannot reconcile another operation, release, database, or proof.");
         }
-        if (!priorConsumption && (challenge.expiresAt === undefined || Date.parse(challenge.expiresAt) <= now())) {
+
+        if (markerBlocks) {
+          if (state.activeRecovery || !state.legacyMarker
+            || !["ddl-started", "schema-applied"].includes(state.legacyMarker.state)
+            || state.legacyMarker.releaseSha !== request.releaseSha
+            || state.legacyMarker.manifestId !== request.migrationManifestId) {
+            throw new Error("Active or mismatched recovery state blocks migration reconciliation.");
+          }
+          if (!priorConsumption) {
+            throw new Error("An expired or unconsumed migration challenge cannot execute or reconcile through an active marker.");
+          }
+          const preparation = await verifyRecoveryPreparation({ allowAbsent: false });
+          if (!preparation?.ready) throw new Error("Read-only migration reconciliation requires verified recovery preparation.");
+          await requireAdapterConformance(preparation);
+          const existingReceipt = await authority.readMigrationCompletion(request.challengeId);
+          const observedCompletion = await executeReconciledHostOperation({
+            operationType: "forward-migration", operationId, operationInputDigest, bindings,
+            inspectFixedOperationState,
+            authorizeImmediatelyBeforeEffect: async () => {
+              throw new Error("Migration reconciliation is read-only and cannot authorize DDL.");
+            },
+            executeFixedOperation: async () => {
+              throw new Error("Migration reconciliation must never invoke the migration effect.");
+            },
+          });
+          if (observedCompletion.result !== "already-satisfied") {
+            throw new Error("Active-marker migration reconciliation did not prove the exact completed post-state.");
+          }
+          let receipt = existingReceipt;
+          if (existingReceipt) {
+            if (existingReceipt.operationId !== operationId || existingReceipt.operationInputDigest !== operationInputDigest
+              || existingReceipt.tokenDigest !== tokenDigest
+              || canonicalDigest(existingReceipt.operationSuccess.postcondition)
+                !== canonicalDigest(observedCompletion.postcondition)) {
+              throw new Error("Persisted migration completion receipt differs from current exact post-state.");
+            }
+          } else {
+            receipt = await authority.completeMigrationChallenge({ challengeId: request.challengeId,
+              challengeDigest: challenge.challengeDigest, operationId, operationInputDigest, tokenDigest,
+              operationSuccess: observedCompletion });
+          }
+          return { ok: true, operation: "forward-migration", challengeId: challenge.challengeId,
+            challengeDigest: challenge.challengeDigest, completion: receipt.operationSuccess,
+            completionReceipt: receipt, reconciled: true };
+        }
+
+        if (state.blocking || state.activeRecovery || state.legacyMarker) throw new Error("Active recovery state blocks forward migration.");
+        if (priorConsumption) throw new Error("A consumed migration challenge cannot authorize a new migration execution.");
+        if (!preparation || !authorization) throw new Error("Forward migration is blocked until recovery preparation and authorization pass.");
+        if (challenge.expiresAt === undefined || Date.parse(challenge.expiresAt) <= now()) {
           throw new Error("Forward migration challenge is stale or expired.");
         }
         let proof = null;
         let live = null;
-        if (!priorConsumption) {
-          proof = validateMigrationProofVerification(await verifyMigrationExecutionProof(request.executionProof, {
-            challenge, request, authorization,
-          }), challenge, request);
-          live = await captureMigrationSnapshot(request);
-          if (migrationStateDigest(live.snapshot) !== challenge.liveStateDigest) {
-            throw new Error("Live database, marker, release, or migration state changed after the challenge was issued.");
-          }
-          if (await verifyMigrationFinalGuards({ request, authorization, challenge, proof, liveState: live.snapshot }) !== true) {
-            throw new Error("Existing forward-migration final authorization/live guard did not pass after proof receipt.");
-          }
+        proof = validateMigrationProofVerification(await verifyMigrationExecutionProof(request.executionProof, {
+          challenge, request, authorization,
+        }), challenge, request);
+        assertMigrationAuthorizationUnexpired(challenge, proof);
+        live = await captureMigrationSnapshot(request);
+        if (migrationStateDigest(live.snapshot) !== challenge.liveStateDigest) {
+          throw new Error("Live database, marker, release, or migration state changed after the challenge was issued.");
+        }
+        if (await verifyMigrationFinalGuards({ request, authorization, challenge, proof, liveState: live.snapshot }) !== true) {
+          throw new Error("Existing forward-migration final authorization/live guard did not pass after proof receipt.");
         }
         const operation = await executeReconciledHostOperation({
           operationType: "forward-migration", operationId, operationInputDigest, bindings,
@@ -517,9 +604,18 @@ export function createProductionOperationBroker({
             }
             if (await verifyMigrationFinalGuards({ request, authorization, challenge, proof,
               liveState: boundary.snapshot }) !== true) throw new Error("Final migration guards no longer pass at the durable DDL boundary.");
+            await requireAdapterConformance(preparation);
+            assertMigrationAuthorizationUnexpired(challenge, proof, now());
             const consumed = await authority.consumeMigrationChallenge({ challengeId: request.challengeId,
-              challengeDigest: challenge.challengeDigest, operationId, tokenDigest });
+              challengeDigest: challenge.challengeDigest, operationId, operationInputDigest, recoveryCaseId: null,
+              tokenDigest, proofIssuedAt: proof.issuedAt, proofExpiresAt: proof.expiresAt,
+              releaseSha: request.releaseSha, canonicalMainSha: request.canonicalMainSha,
+              migrationManifestId: request.migrationManifestId, authorizationContextId: request.authorizationContextId,
+              logicalProductionDbIdentityDigest: challenge.logicalProductionDbIdentityDigest,
+              pendingMigrationSetDigest: challenge.pendingMigrationSetDigest });
             if (!consumed.consumed) throw new Error("Migration challenge was concurrently consumed; duplicate DDL is blocked.");
+            await requireAdapterConformance(preparation);
+            assertMigrationAuthorizationUnexpired(challenge, proof, now());
           },
           executeFixedOperation: (operationType, action) => executeFixedOperation(operationType, {
             releaseSha: request.releaseSha, canonicalMainSha: request.canonicalMainSha,
@@ -528,8 +624,14 @@ export function createProductionOperationBroker({
             liveState: live?.snapshot ?? challenge, authorization, ...action,
           }),
         });
+        if (operation.result !== "executed") {
+          throw new Error("A new migration execution did not cross the single-use authorization boundary and cannot be receipted.");
+        }
+        const completionReceipt = await authority.completeMigrationChallenge({ challengeId: request.challengeId,
+          challengeDigest: challenge.challengeDigest, operationId, operationInputDigest, tokenDigest,
+          operationSuccess: operation });
         return { ok: true, operation: "forward-migration", challengeId: challenge.challengeId,
-          challengeDigest: challenge.challengeDigest, completion: operation };
+          challengeDigest: challenge.challengeDigest, completion: operation, completionReceipt };
       }
       if (request.operation === "traffic-maintenance" || request.operation === "traffic-serve") {
         await requireReviewedRelease(request.releaseSha, request.canonicalMainSha);
@@ -542,7 +644,7 @@ export function createProductionOperationBroker({
         if (await verifyForwardMigrationAuthorization(authorization, request) !== true) {
           throw new Error("Traffic operation lacks current forward-release authorization.");
         }
-        requireAdapterConformance();
+        await requireAdapterConformance();
         let currentness = null;
         let currentnessDigest = null;
         if (request.operation === "traffic-serve") {
@@ -587,6 +689,7 @@ export function createProductionOperationBroker({
                 throw new Error("Unified V4 currentness changed before the authoritative serving boundary.");
               }
             }
+            await requireAdapterConformance();
           },
           executeFixedOperation: (operationType, operation) => executeFixedOperation(operationType, {
             releaseSha: request.releaseSha, canonicalMainSha: request.canonicalMainSha,
@@ -597,9 +700,10 @@ export function createProductionOperationBroker({
         return { ok: true, operation: request.operation, completion };
       }
       if (request.operation === "recovery-transition") {
+        let preparation = null;
         if (RECOVERY_EXECUTION_STEPS[request.transition]) {
-          const preparation = await verifyRecoveryPreparation({ allowAbsent: false });
-          requireAdapterConformance(preparation);
+          preparation = await verifyRecoveryPreparation({ allowAbsent: false });
+          await requireAdapterConformance(preparation);
         }
         const rolloutReceipt = await loadRolloutReceiptById(request.rolloutReceiptId);
         const evidence = await loadEvidenceById(request.evidenceId);
@@ -623,7 +727,7 @@ export function createProductionOperationBroker({
             || typeof authority.executePendingOperation !== "function") {
             throw new Error("Committed recovery operation intent does not match the fixed host operation or receipt executor.");
           }
-          const completion = await executeRecoveryOperation({ result, request, evidence });
+          const completion = await executeRecoveryOperation({ result, request, evidence, preparation });
           result.operationReceipt = completion.receipt;
           result.operationCompletion = completion.outcome;
         }
@@ -631,7 +735,7 @@ export function createProductionOperationBroker({
       }
       if (request.operation === "recovery-operation-replay") {
         const preparation = await verifyRecoveryPreparation({ allowAbsent: false });
-        requireAdapterConformance(preparation);
+        await requireAdapterConformance(preparation);
         if (typeof authority.readPendingOperation !== "function" || typeof authority.executePendingOperation !== "function") {
           throw new Error("Recovery authority does not support durable operation replay receipts.");
         }
@@ -650,6 +754,7 @@ export function createProductionOperationBroker({
           result: { record: pending.record },
           request: { ...request, transition: pending.record.transition, evidenceId: pending.operationEvidenceId },
           evidence,
+          preparation,
           replay: true,
         });
         return { ok: true, record: pending.record, operationReceipt: completion.receipt,

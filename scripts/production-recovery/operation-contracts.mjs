@@ -343,7 +343,25 @@ export function verifyOperationAdapterConformance(receipt, { adapterDigest, trus
   const unsigned = Object.fromEntries(Object.entries(receipt).filter(([name]) => name !== "signature"));
   if (!verifyCanonical(unsigned, receipt.signature, key)) throw new Error("Host adapter conformance signature is invalid.");
   return Object.freeze({ current: true, adapterDigest: receipt.adapterDigest,
-    contractDigest: receipt.contractDigest, receiptDigest: canonicalDigest(receipt) });
+    contractDigest: receipt.contractDigest, receiptDigest: canonicalDigest(receipt),
+    issuedAt: receipt.issuedAt, expiresAt: receipt.expiresAt, signerKeyId: receipt.signerKeyId, receipt });
+}
+
+export function createAdapterConformanceVerifier({ loadReceipt, adapterDigest, trustedPublicKeys, now = () => Date.now() } = {}) {
+  if (typeof loadReceipt !== "function" || typeof now !== "function") {
+    throw new Error("A live adapter-conformance receipt loader and clock are required.");
+  }
+  return async function assertAdapterConformanceCurrent({ preparation = null } = {}) {
+    const receipt = await loadReceipt();
+    const verified = verifyOperationAdapterConformance(receipt, {
+      adapterDigest, trustedPublicKeys, now: now(),
+    });
+    if (preparation && (preparation.operationAdapterDigest !== verified.adapterDigest
+      || preparation.operationAdapterConformanceDigest !== verified.receiptDigest)) {
+      throw new Error("Recovery preparation does not bind the currently verified adapter conformance receipt.");
+    }
+    return verified;
+  };
 }
 
 export function operationContract(operationType) {

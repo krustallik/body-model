@@ -199,7 +199,7 @@ describe("production recovery canonical and journal authority", () => {
     await Promise.all([journalDirectory, receiptDirectory, markerDirectory, legacyDirectory]
       .map((directory) => fs.mkdir(directory, { recursive: true, mode: 0o700 })));
     const keys = signingFixture();
-    const fixedNow = Date.parse("2026-10-08T12:00:00.000Z");
+    let fixedNow = Date.parse("2026-10-08T12:00:00.000Z");
     const authorityOptions = {
       journalDirectory,
       receiptDirectory,
@@ -252,9 +252,24 @@ describe("production recovery canonical and journal authority", () => {
     expect(verifyImmutableReceipt(issued, keys.publicKeys)).toBe(true);
     expect(await authorityAfterRestart.readMigrationChallenge(challengeId)).toEqual(challenge);
 
-    const operationId = "d".repeat(64);
+    const authorizationContextId = `migration-${challenge.workflowId}-${challenge.workflowRunId}-${challenge.workflowRunAttempt}`;
+    const bindings = { releaseSha: challenge.releaseSha, manifestId: challenge.migrationManifestId,
+      logicalProductionDbIdentityDigest: challenge.logicalProductionDbIdentityDigest,
+      pendingMigrationSetDigest: challenge.pendingMigrationSetDigest, markerState: "none",
+      challengeId, challengeDigest: challenge.challengeDigest, authorizationContextId };
+    const operationId = canonicalDigest({ operationType: "forward-migration", challengeId,
+      challengeDigest: challenge.challengeDigest, releaseSha: challenge.releaseSha, manifestId: challenge.migrationManifestId });
+    const operationInputDigest = canonicalDigest(bindings);
     const tokenDigest = "e".repeat(64);
-    const consume = { challengeId, challengeDigest: challenge.challengeDigest, operationId, tokenDigest };
+    fixedNow += 1_000;
+    const proofIssuedAt = new Date(fixedNow).toISOString();
+    const proofExpiresAt = new Date(fixedNow + 30_000).toISOString();
+    const consume = { challengeId, challengeDigest: challenge.challengeDigest, operationId, operationInputDigest,
+      recoveryCaseId: null, tokenDigest, proofIssuedAt, proofExpiresAt,
+      releaseSha: challenge.releaseSha, canonicalMainSha: challenge.canonicalMainSha,
+      migrationManifestId: challenge.migrationManifestId, authorizationContextId,
+      logicalProductionDbIdentityDigest: challenge.logicalProductionDbIdentityDigest,
+      pendingMigrationSetDigest: challenge.pendingMigrationSetDigest };
     const concurrent = await Promise.all([
       authority.consumeMigrationChallenge(consume),
       authorityAfterRestart.consumeMigrationChallenge(consume),
@@ -263,11 +278,63 @@ describe("production recovery canonical and journal authority", () => {
     expect(concurrent.filter(({ consumed }) => !consumed)).toHaveLength(1);
     const consumption = await authorityAfterRestart.readMigrationChallengeConsumption(challengeId);
     expect(verifyImmutableReceipt(consumption, keys.publicKeys)).toBe(true);
-    expect(consumption).toMatchObject({ challengeId, challengeDigest: challenge.challengeDigest, operationId, tokenDigest });
+    expect(consumption).toMatchObject({ receiptSchemaVersion: 2, challengeId,
+      challengeDigest: challenge.challengeDigest, operationId, operationInputDigest, tokenDigest, proofIssuedAt, proofExpiresAt });
+
+    const postcondition = { releaseSha: challenge.releaseSha, manifestId: challenge.migrationManifestId,
+      logicalProductionDbIdentityDigest: challenge.logicalProductionDbIdentityDigest,
+      pendingMigrationSetDigest: challenge.pendingMigrationSetDigest, schemaDigest: "1".repeat(64),
+      migrationHistoryDigest: "2".repeat(64), finalGuardReceiptDigest: "3".repeat(64), markerState: "schema-applied" };
+    const operationSuccess = { schemaVersion: 1, purpose: "bodycast-host-operation-success",
+      operationType: "forward-migration", recoveryCaseId: null, journalGeneration: null, journalRecordDigest: null,
+      operationId, idempotencyKey: operationId, operationInputDigest, result: "executed", postcondition,
+      postconditionDigest: canonicalDigest(postcondition) };
+    const completionRequest = { challengeId, challengeDigest: challenge.challengeDigest, operationId,
+      operationInputDigest, tokenDigest, operationSuccess };
+    const completed = await Promise.all([
+      authority.completeMigrationChallenge(completionRequest),
+      authorityAfterRestart.completeMigrationChallenge(completionRequest),
+    ]);
+    expect(completed[0]).toEqual(completed[1]);
+    expect(verifyImmutableReceipt(completed[0], keys.publicKeys)).toBe(true);
+    expect(await authorityAfterRestart.readMigrationCompletion(challengeId)).toEqual(completed[0]);
+
     await expect(authority.consumeMigrationChallenge({ ...consume, operationId: "f".repeat(64) }))
-      .rejects.toThrow(/cannot authorize another operation or proof/);
+      .rejects.toThrow(/exact immutable operation intent|cannot authorize another operation or proof/);
     await expect(authority.consumeMigrationChallenge({ ...consume, tokenDigest: "9".repeat(64) }))
       .rejects.toThrow(/cannot authorize another operation or proof/);
+
+    fixedNow = Date.parse(challenge.expiresAt) + 1;
+    expect(await authorityAfterRestart.readMigrationChallengeConsumption(challengeId)).toMatchObject({ challengeId, tokenDigest });
+    expect(await authorityAfterRestart.readMigrationCompletion(challengeId)).toEqual(completed[0]);
+
+    const expiringNonce = "4".repeat(64);
+    const expiringId = canonicalDigest({ purpose: "migration-challenge-expiry-test", nonce: expiringNonce });
+    const expiringBody = { ...unsignedChallenge, challengeId: expiringId, nonce: expiringNonce,
+      issuedAt: new Date(fixedNow).toISOString(), expiresAt: new Date(fixedNow + 2_000).toISOString() };
+    const expiringChallenge = { ...expiringBody, challengeDigest: canonicalDigest(expiringBody) };
+    await authority.issueMigrationChallenge(expiringChallenge);
+    const expiringContext = `migration-${expiringChallenge.workflowId}-${expiringChallenge.workflowRunId}-${expiringChallenge.workflowRunAttempt}`;
+    const expiringBindings = { releaseSha: expiringChallenge.releaseSha, manifestId: expiringChallenge.migrationManifestId,
+      logicalProductionDbIdentityDigest: expiringChallenge.logicalProductionDbIdentityDigest,
+      pendingMigrationSetDigest: expiringChallenge.pendingMigrationSetDigest, markerState: "none",
+      challengeId: expiringId, challengeDigest: expiringChallenge.challengeDigest, authorizationContextId: expiringContext };
+    const expiringOperationId = canonicalDigest({ operationType: "forward-migration", challengeId: expiringId,
+      challengeDigest: expiringChallenge.challengeDigest, releaseSha: expiringChallenge.releaseSha,
+      manifestId: expiringChallenge.migrationManifestId });
+    fixedNow += 2_001;
+    await expect(authority.consumeMigrationChallenge({ ...consume, challengeId: expiringId,
+      challengeDigest: expiringChallenge.challengeDigest, operationId: expiringOperationId,
+      operationInputDigest: canonicalDigest(expiringBindings), proofIssuedAt: new Date(fixedNow - 1_000).toISOString(),
+      proofExpiresAt: new Date(fixedNow + 30_000).toISOString(), authorizationContextId: expiringContext }))
+      .rejects.toThrow(/expired before atomic authorization consumption/);
+
+    const consumptionPath = path.join(receiptDirectory, `migration-challenge-consumed-${challengeId}.json`);
+    await fs.writeFile(consumptionPath, canonicalJson({ ...consumption, receiptSchemaVersion: 2,
+      purpose: "bodycast-production-migration-challenge-consumed", consumedAt: new Date(fixedNow - 3_000).toISOString(),
+      authorityKeyId: keys.signing.authorityKeyId, authorityInstanceId: keys.signing.authorityInstanceId,
+      receiptDigest: "f".repeat(64), authoritySignature: "forged" }));
+    await expect(authorityAfterRestart.readMigrationChallengeConsumption(challengeId)).rejects.toThrow(/digest is invalid|signature is invalid/);
   });
 
   it("verifies exact journal v1 and v2 schemas and rejects mixed or mutated version chains", async () => {

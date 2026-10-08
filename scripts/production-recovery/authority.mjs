@@ -880,14 +880,42 @@ export function createRecoveryAuthority(config) {
     try { receipt = JSON.parse(await fs.readFile(receiptPath, "utf8")); }
     catch (error) { if (error?.code === "ENOENT") return null; throw error; }
     assertExactKeys(receipt, ["receiptSchemaVersion", "purpose", "challengeId", "challengeDigest", "operationId",
-      "tokenDigest", "consumedAt", "receiptDigest", "authorityKeyId", "authorityInstanceId", "authoritySignature"],
+      "operationInputDigest", "recoveryCaseId", "tokenDigest", "proofIssuedAt", "proofExpiresAt", "releaseSha",
+      "canonicalMainSha", "migrationManifestId", "authorizationContextId", "logicalProductionDbIdentityDigest",
+      "pendingMigrationSetDigest", "consumedAt", "receiptDigest", "authorityKeyId", "authorityInstanceId", "authoritySignature"],
     "Signed migration challenge consumption receipt");
     verifyImmutableReceipt(receipt, journalPublicKeys);
-    if (receipt.receiptSchemaVersion !== 1 || receipt.purpose !== "bodycast-production-migration-challenge-consumed"
+    if (receipt.receiptSchemaVersion !== 2 || receipt.purpose !== "bodycast-production-migration-challenge-consumed"
       || receipt.challengeId !== challengeId) throw new Error("Migration challenge consumption receipt is malformed.");
     assertSha256(receipt.challengeDigest, "migrationChallengeConsumption.challengeDigest");
     assertSha256(receipt.operationId, "migrationChallengeConsumption.operationId");
+    assertSha256(receipt.operationInputDigest, "migrationChallengeConsumption.operationInputDigest");
     assertSha256(receipt.tokenDigest, "migrationChallengeConsumption.tokenDigest");
+    assertUtcTimestamp(receipt.proofIssuedAt, "migrationChallengeConsumption.proofIssuedAt");
+    assertUtcTimestamp(receipt.proofExpiresAt, "migrationChallengeConsumption.proofExpiresAt");
+    assertGitSha(receipt.releaseSha, "migrationChallengeConsumption.releaseSha");
+    assertGitSha(receipt.canonicalMainSha, "migrationChallengeConsumption.canonicalMainSha");
+    assertNonEmptyString(receipt.migrationManifestId, "migrationChallengeConsumption.migrationManifestId");
+    assertNonEmptyString(receipt.authorizationContextId, "migrationChallengeConsumption.authorizationContextId");
+    assertSha256(receipt.logicalProductionDbIdentityDigest, "migrationChallengeConsumption.logicalProductionDbIdentityDigest");
+    assertSha256(receipt.pendingMigrationSetDigest, "migrationChallengeConsumption.pendingMigrationSetDigest");
+    if (receipt.recoveryCaseId !== null) throw new Error("Forward migration consumption cannot bind a recovery case.");
+    assertUtcTimestamp(receipt.consumedAt, "migrationChallengeConsumption.consumedAt");
+    const challenge = await readMigrationChallengeUnlocked(challengeId);
+    if (!challenge || receipt.challengeDigest !== challenge.challengeDigest
+      || receipt.releaseSha !== challenge.releaseSha || receipt.canonicalMainSha !== challenge.canonicalMainSha
+      || receipt.migrationManifestId !== challenge.migrationManifestId
+      || receipt.logicalProductionDbIdentityDigest !== challenge.logicalProductionDbIdentityDigest
+      || receipt.pendingMigrationSetDigest !== challenge.pendingMigrationSetDigest
+      || receipt.authorizationContextId !== `migration-${challenge.workflowId}-${challenge.workflowRunId}-${challenge.workflowRunAttempt}`
+      || Date.parse(receipt.proofIssuedAt) < Date.parse(challenge.issuedAt)
+      || Date.parse(receipt.proofIssuedAt) > Date.parse(receipt.consumedAt)
+      || Date.parse(receipt.proofExpiresAt) <= Date.parse(receipt.proofIssuedAt)
+      || Date.parse(receipt.consumedAt) < Date.parse(challenge.issuedAt)
+      || Date.parse(receipt.consumedAt) >= Date.parse(challenge.expiresAt)
+      || Date.parse(receipt.consumedAt) >= Date.parse(receipt.proofExpiresAt)) {
+      throw new Error("Migration challenge consumption does not prove an exact, timely challenge/proof binding.");
+    }
     return receipt;
   }
 
@@ -915,27 +943,169 @@ export function createRecoveryAuthority(config) {
     return readMigrationChallengeConsumptionUnlocked(challengeId);
   }
 
-  async function consumeMigrationChallenge({ challengeId, challengeDigest, operationId, tokenDigest }) {
+  async function consumeMigrationChallenge(request) {
+    assertExactKeys(request, ["challengeId", "challengeDigest", "operationId", "operationInputDigest", "recoveryCaseId",
+      "tokenDigest", "proofIssuedAt", "proofExpiresAt", "releaseSha", "canonicalMainSha", "migrationManifestId",
+      "authorizationContextId", "logicalProductionDbIdentityDigest", "pendingMigrationSetDigest"],
+    "Migration challenge consumption request");
+    const { challengeId, challengeDigest, operationId, operationInputDigest, recoveryCaseId, tokenDigest,
+      proofIssuedAt, proofExpiresAt, releaseSha, canonicalMainSha, migrationManifestId, authorizationContextId,
+      logicalProductionDbIdentityDigest, pendingMigrationSetDigest } = request;
     assertSha256(challengeId, "migrationChallenge.challengeId");
     assertSha256(challengeDigest, "migrationChallenge.challengeDigest");
     assertSha256(operationId, "migrationOperation.operationId");
+    assertSha256(operationInputDigest, "migrationOperation.operationInputDigest");
     assertSha256(tokenDigest, "migrationOperation.tokenDigest");
+    assertUtcTimestamp(proofIssuedAt, "migrationOperation.proofIssuedAt");
+    assertUtcTimestamp(proofExpiresAt, "migrationOperation.proofExpiresAt");
+    assertGitSha(releaseSha, "migrationOperation.releaseSha");
+    assertGitSha(canonicalMainSha, "migrationOperation.canonicalMainSha");
+    assertNonEmptyString(migrationManifestId, "migrationOperation.migrationManifestId");
+    assertNonEmptyString(authorizationContextId, "migrationOperation.authorizationContextId");
+    assertSha256(logicalProductionDbIdentityDigest, "migrationOperation.logicalProductionDbIdentityDigest");
+    assertSha256(pendingMigrationSetDigest, "migrationOperation.pendingMigrationSetDigest");
+    if (recoveryCaseId !== null) throw new Error("Forward migration cannot consume a recovery-case authorization.");
     return withExclusiveRecoveryLock(lockPath, async () => {
       const challenge = await readMigrationChallengeUnlocked(challengeId);
       if (!challenge || challenge.challengeDigest !== challengeDigest) throw new Error("Migration challenge is absent or has changed.");
+      const expectedContext = `migration-${challenge.workflowId}-${challenge.workflowRunId}-${challenge.workflowRunAttempt}`;
+      const bindings = { releaseSha, manifestId: migrationManifestId,
+        logicalProductionDbIdentityDigest, pendingMigrationSetDigest, markerState: "none",
+        challengeId, challengeDigest, authorizationContextId };
+      if (releaseSha !== challenge.releaseSha || canonicalMainSha !== challenge.canonicalMainSha
+        || migrationManifestId !== challenge.migrationManifestId || authorizationContextId !== expectedContext
+        || logicalProductionDbIdentityDigest !== challenge.logicalProductionDbIdentityDigest
+        || pendingMigrationSetDigest !== challenge.pendingMigrationSetDigest
+        || operationId !== canonicalDigest({ operationType: "forward-migration", challengeId,
+          challengeDigest, releaseSha, manifestId: migrationManifestId })
+        || operationInputDigest !== canonicalDigest(bindings)) {
+        throw new Error("Migration challenge consumption does not match the exact immutable operation intent.");
+      }
+      const issuedAt = Date.parse(proofIssuedAt);
+      const proofExpires = Date.parse(proofExpiresAt);
+      const initialCheckAt = now();
+      if (Date.parse(challenge.issuedAt) > initialCheckAt || Date.parse(challenge.expiresAt) <= initialCheckAt
+        || issuedAt < Date.parse(challenge.issuedAt) || issuedAt > initialCheckAt
+        || proofExpires <= initialCheckAt || proofExpires <= issuedAt || proofExpires - issuedAt > 10 * 60_000) {
+        throw new Error("Migration challenge or execution proof expired before atomic authorization consumption.");
+      }
       const prior = await readMigrationChallengeConsumptionUnlocked(challengeId);
       if (prior) {
-        if (prior.challengeDigest !== challengeDigest || prior.operationId !== operationId || prior.tokenDigest !== tokenDigest) {
+        if (prior.challengeDigest !== challengeDigest || prior.operationId !== operationId
+          || prior.operationInputDigest !== operationInputDigest || prior.tokenDigest !== tokenDigest
+          || prior.proofIssuedAt !== proofIssuedAt || prior.proofExpiresAt !== proofExpiresAt
+          || prior.releaseSha !== releaseSha || prior.canonicalMainSha !== canonicalMainSha
+          || prior.migrationManifestId !== migrationManifestId || prior.authorizationContextId !== authorizationContextId
+          || prior.logicalProductionDbIdentityDigest !== logicalProductionDbIdentityDigest
+          || prior.pendingMigrationSetDigest !== pendingMigrationSetDigest) {
           throw new Error("Consumed migration challenge cannot authorize another operation or proof.");
         }
         return { consumed: false, receipt: prior };
       }
-      const receipt = { receiptSchemaVersion: 1, purpose: "bodycast-production-migration-challenge-consumed", challengeId,
-        challengeDigest, operationId, tokenDigest, consumedAt: timestamp(now()),
+      const consumedAt = now();
+      if (Date.parse(challenge.issuedAt) > consumedAt || Date.parse(challenge.expiresAt) <= consumedAt
+        || issuedAt > consumedAt || proofExpires <= consumedAt) {
+        throw new Error("Migration challenge or execution proof expired before durable atomic consumption.");
+      }
+      const receipt = { receiptSchemaVersion: 2, purpose: "bodycast-production-migration-challenge-consumed", challengeId,
+        challengeDigest, operationId, operationInputDigest, recoveryCaseId, tokenDigest, proofIssuedAt, proofExpiresAt,
+        releaseSha, canonicalMainSha, migrationManifestId, authorizationContextId,
+        logicalProductionDbIdentityDigest, pendingMigrationSetDigest, consumedAt: timestamp(consumedAt),
         authorityKeyId: signing.authorityKeyId, authorityInstanceId: signing.authorityInstanceId };
       const stored = await writeImmutableReceipt(receiptDirectory, "migration-challenge-consumed-" + challengeId + ".json", receipt,
         { ...storageOptions, privateKey: signing.privateKey, publicKeys: journalPublicKeys });
       return { consumed: !stored.existing, receipt: stored.receipt };
+    }, lockOptions);
+  }
+
+  async function readMigrationCompletionUnlocked(challengeId) {
+    assertSha256(challengeId, "migrationCompletion.challengeId");
+    const receiptPath = path.join(receiptDirectory, "migration-completion-" + challengeId + ".json");
+    let receipt;
+    try { receipt = JSON.parse(await fs.readFile(receiptPath, "utf8")); }
+    catch (error) { if (error?.code === "ENOENT") return null; throw error; }
+    assertExactKeys(receipt, ["receiptSchemaVersion", "purpose", "challengeId", "challengeDigest", "operationId",
+      "operationInputDigest", "recoveryCaseId", "tokenDigest", "releaseSha", "canonicalMainSha", "migrationManifestId",
+      "authorizationContextId", "logicalProductionDbIdentityDigest", "pendingMigrationSetDigest", "operationSuccess",
+      "outcomeDigest", "completedAt", "authorityKeyId", "authorityInstanceId", "receiptDigest", "authoritySignature"],
+    "Signed production migration completion receipt");
+    verifyImmutableReceipt(receipt, journalPublicKeys);
+    const challenge = await readMigrationChallengeUnlocked(challengeId);
+    const consumption = await readMigrationChallengeConsumptionUnlocked(challengeId);
+    if (receipt.receiptSchemaVersion !== 1 || receipt.purpose !== "bodycast-production-migration-completion"
+      || !challenge || !consumption || receipt.challengeId !== challengeId
+      || receipt.challengeDigest !== challenge.challengeDigest || receipt.operationId !== consumption.operationId
+      || receipt.operationInputDigest !== consumption.operationInputDigest || receipt.recoveryCaseId !== null
+      || receipt.tokenDigest !== consumption.tokenDigest || receipt.releaseSha !== challenge.releaseSha
+      || receipt.canonicalMainSha !== challenge.canonicalMainSha || receipt.migrationManifestId !== challenge.migrationManifestId
+      || receipt.authorizationContextId !== consumption.authorizationContextId
+      || receipt.logicalProductionDbIdentityDigest !== challenge.logicalProductionDbIdentityDigest
+      || receipt.pendingMigrationSetDigest !== challenge.pendingMigrationSetDigest) {
+      throw new Error("Migration completion receipt does not bind the exact consumed challenge and operation.");
+    }
+    assertUtcTimestamp(receipt.completedAt, "migrationCompletion.completedAt");
+    assertSha256(receipt.outcomeDigest, "migrationCompletion.outcomeDigest");
+    const bindings = { releaseSha: receipt.releaseSha, manifestId: receipt.migrationManifestId,
+      logicalProductionDbIdentityDigest: receipt.logicalProductionDbIdentityDigest,
+      pendingMigrationSetDigest: receipt.pendingMigrationSetDigest };
+    validateOperationSuccess(receipt.operationSuccess, { operationType: "forward-migration",
+      operationId: receipt.operationId, operationInputDigest: receipt.operationInputDigest,
+      recoveryCaseId: null, journalGeneration: null, journalRecordDigest: null, bindings });
+    if (receipt.operationSuccess.result !== "executed" && receipt.operationSuccess.result !== "already-satisfied"
+      || receipt.outcomeDigest !== canonicalDigest(receipt.operationSuccess)) {
+      throw new Error("Migration completion receipt lacks an exact authenticated success outcome.");
+    }
+    return receipt;
+  }
+
+  async function readMigrationCompletion(challengeId) {
+    return readMigrationCompletionUnlocked(challengeId);
+  }
+
+  async function completeMigrationChallenge(request) {
+    assertExactKeys(request, ["challengeId", "challengeDigest", "operationId", "operationInputDigest", "tokenDigest", "operationSuccess"],
+      "Migration completion request");
+    const { challengeId, challengeDigest, operationId, operationInputDigest, tokenDigest, operationSuccess } = request;
+    assertSha256(challengeId, "migrationCompletion.challengeId");
+    assertSha256(challengeDigest, "migrationCompletion.challengeDigest");
+    assertSha256(operationId, "migrationCompletion.operationId");
+    assertSha256(operationInputDigest, "migrationCompletion.operationInputDigest");
+    assertSha256(tokenDigest, "migrationCompletion.tokenDigest");
+    return withExclusiveRecoveryLock(lockPath, async () => {
+      const challenge = await readMigrationChallengeUnlocked(challengeId);
+      const consumption = await readMigrationChallengeConsumptionUnlocked(challengeId);
+      if (!challenge || !consumption || challenge.challengeDigest !== challengeDigest
+        || consumption.challengeDigest !== challengeDigest || consumption.operationId !== operationId
+        || consumption.operationInputDigest !== operationInputDigest || consumption.tokenDigest !== tokenDigest) {
+        throw new Error("Migration completion requires the exact durable challenge and consumed proof receipt.");
+      }
+      const bindings = { releaseSha: challenge.releaseSha, manifestId: challenge.migrationManifestId,
+        logicalProductionDbIdentityDigest: challenge.logicalProductionDbIdentityDigest,
+        pendingMigrationSetDigest: challenge.pendingMigrationSetDigest };
+      validateOperationSuccess(operationSuccess, { operationType: "forward-migration", operationId,
+        operationInputDigest, recoveryCaseId: null, journalGeneration: null, journalRecordDigest: null, bindings });
+      if (operationSuccess.result !== "executed" && operationSuccess.result !== "already-satisfied") {
+        throw new Error("Migration completion requires an exact typed success result.");
+      }
+      const outcomeDigest = canonicalDigest(operationSuccess);
+      const existing = await readMigrationCompletionUnlocked(challengeId);
+      if (existing) {
+        if (existing.outcomeDigest !== outcomeDigest) throw new Error("Migration challenge already has a different completion receipt.");
+        return existing;
+      }
+      const receipt = { receiptSchemaVersion: 1, purpose: "bodycast-production-migration-completion", challengeId,
+        challengeDigest, operationId, operationInputDigest, recoveryCaseId: null, tokenDigest,
+        releaseSha: challenge.releaseSha, canonicalMainSha: challenge.canonicalMainSha,
+        migrationManifestId: challenge.migrationManifestId, authorizationContextId: consumption.authorizationContextId,
+        logicalProductionDbIdentityDigest: challenge.logicalProductionDbIdentityDigest,
+        pendingMigrationSetDigest: challenge.pendingMigrationSetDigest, operationSuccess, outcomeDigest,
+        completedAt: timestamp(now()), authorityKeyId: signing.authorityKeyId,
+        authorityInstanceId: signing.authorityInstanceId };
+      const stored = await writeImmutableReceipt(receiptDirectory, "migration-completion-" + challengeId + ".json", receipt,
+        { ...storageOptions, privateKey: signing.privateKey, publicKeys: journalPublicKeys });
+      const verified = await readMigrationCompletionUnlocked(challengeId);
+      if (verified.outcomeDigest !== outcomeDigest) throw new Error("Persisted migration completion receipt differs from the reconciled outcome.");
+      return stored.receipt;
     }, lockOptions);
   }
 
@@ -983,6 +1153,8 @@ export function createRecoveryAuthority(config) {
     readMigrationChallenge,
     readMigrationChallengeConsumption,
     consumeMigrationChallenge,
+    readMigrationCompletion,
+    completeMigrationChallenge,
     finalizeRecovery,
     readAuthoritativeState,
     rebuildMarkerProjection,

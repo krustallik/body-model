@@ -3,6 +3,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { canonicalDigest, signCanonical } from "../scripts/production-recovery/canonical.mjs";
 import {
   executeReconciledHostOperation,
+  createAdapterConformanceVerifier,
   OPERATION_ADAPTER_CONTRACT_DIGEST,
   OPERATION_CONTRACTS,
   OPERATION_CONTRACT_VERSION,
@@ -155,5 +156,34 @@ describe("fixed host operation replay and success contract", () => {
     const incomplete = { ...receipt, testedOperationTypes: ["ordinary-release"] };
     expect(() => verifyOperationAdapterConformance(incomplete, { adapterDigest: unsigned.adapterDigest,
       trustedPublicKeys: { "adapter-test-key": trustedKey } })).toThrow(/does not cover/);
+  });
+
+  it("re-reads and re-verifies the signed conformance receipt against an injected clock", async () => {
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const trustedKey = publicKey.export({ type: "spki", format: "pem" });
+    let currentTime = Date.parse("2026-10-08T12:00:00.000Z");
+    let loads = 0;
+    let receipt = null;
+    const issueReceipt = (issuedAt, expiresAt, adapterDigest = "d".repeat(64)) => {
+      const unsigned = { schemaVersion: 1, purpose: "bodycast-production-host-adapter-conformance",
+        contractVersion: OPERATION_CONTRACT_VERSION, contractDigest: OPERATION_ADAPTER_CONTRACT_DIGEST,
+        adapterDigest, testSuiteDigest: "e".repeat(64), testRunId: "adapter-run-freshness",
+        testedOperationTypes: Object.keys(OPERATION_CONTRACTS).sort(), result: "passed", issuedAt, expiresAt,
+        signerKeyId: "adapter-test-key" };
+      return { ...unsigned, signature: signCanonical(unsigned, privateKey) };
+    };
+    receipt = issueReceipt(new Date(currentTime - 1).toISOString(), new Date(currentTime + 1_000).toISOString());
+    const assertCurrent = createAdapterConformanceVerifier({ loadReceipt: async () => { loads += 1; return receipt; },
+      adapterDigest: "d".repeat(64), trustedPublicKeys: { "adapter-test-key": trustedKey }, now: () => currentTime });
+
+    const startup = await assertCurrent();
+    expect(startup).toMatchObject({ current: true, adapterDigest: "d".repeat(64), expiresAt: receipt.expiresAt });
+    currentTime += 1_001;
+    await expect(assertCurrent()).rejects.toThrow(/stale, future-dated, or excessively long-lived/);
+    receipt = issueReceipt(new Date(currentTime - 1).toISOString(), new Date(currentTime + 60_000).toISOString());
+    expect((await assertCurrent()).current).toBe(true);
+    expect(loads).toBe(3);
+    receipt = issueReceipt(new Date(currentTime - 1).toISOString(), new Date(currentTime + 60_000).toISOString(), "f".repeat(64));
+    await expect(assertCurrent()).rejects.toThrow(/does not cover this exact adapter/);
   });
 });

@@ -2,7 +2,7 @@ import { createRecoveryAuthority } from "./authority.mjs";
 import { createProductionOperationBroker } from "./operation-broker.mjs";
 import { createHostOperationServer, HOST_OPERATION_SOCKET_PATH } from "./host-service.mjs";
 import { assertExactKeys } from "./canonical.mjs";
-import { OPERATION_ADAPTER_CONTRACT_DIGEST, verifyOperationAdapterConformance } from "./operation-contracts.mjs";
+import { createAdapterConformanceVerifier } from "./operation-contracts.mjs";
 
 const AUTHORITY_CONFIG_KEYS = Object.freeze([
   "journalDirectory", "lockPath", "markerPath", "legacyMarkerPath", "receiptDirectory", "signing",
@@ -13,7 +13,7 @@ const AUTHORITY_CONFIG_KEYS = Object.freeze([
 const ADAPTER_FUNCTIONS = Object.freeze([
   "verifyReviewedRelease", "verifyCurrentReaderRollout", "verifyRecoveryPreparation",
   "verifyForwardMigrationAuthorization", "loadEvidenceById", "loadAuthorizationById",
-  "loadRolloutReceiptById", "executeFixedOperation", "validateEvidence", "verifyRolloutReceipt",
+  "loadRolloutReceiptById", "loadOperationAdapterConformanceReceipt", "executeFixedOperation", "validateEvidence", "verifyRolloutReceipt",
   "verifyRestoreGrant", "captureMigrationExecutionState", "verifyMigrationExecutionProof",
   "verifyMigrationFinalGuards", "verifyUnifiedV4Currentness", "inspectFixedOperationState",
   "verifyRecoveryOperationFinalGuards",
@@ -42,16 +42,12 @@ export function createRecoveryHostRuntime({
   if (!trustedHostAdapter || ADAPTER_FUNCTIONS.some((key) => typeof trustedHostAdapter[key] !== "function")) {
     throw new Error("Signed, fixed production host adapter is incomplete.");
   }
-  let adapterConformance;
-  try {
-    adapterConformance = verifyOperationAdapterConformance(trustedHostAdapter.operationAdapterConformance, {
-      adapterDigest: authorityConfig.authority.operationAdapterDigest,
-      trustedPublicKeys: authorityConfig.authority.operationAdapterConformancePublicKeys,
-      now: trustedHostAdapter.now?.() ?? Date.now(),
-    });
-  } catch {
-    adapterConformance = { current: false, contractDigest: OPERATION_ADAPTER_CONTRACT_DIGEST };
-  }
+  const assertAdapterConformanceCurrent = createAdapterConformanceVerifier({
+    loadReceipt: () => trustedHostAdapter.loadOperationAdapterConformanceReceipt(),
+    adapterDigest: authorityConfig.authority.operationAdapterDigest,
+    trustedPublicKeys: authorityConfig.authority.operationAdapterConformancePublicKeys,
+    now: () => typeof trustedHostAdapter.now === "function" ? trustedHostAdapter.now() : Date.now(),
+  });
   const authority = createRecoveryAuthority({
     ...authorityConfig.authority,
     validateEvidence: trustedHostAdapter.validateEvidence,
@@ -74,7 +70,7 @@ export function createRecoveryHostRuntime({
     loadAuthorizationById: trustedHostAdapter.loadAuthorizationById,
     loadRolloutReceiptById: trustedHostAdapter.loadRolloutReceiptById,
     executeFixedOperation: trustedHostAdapter.executeFixedOperation,
-    adapterConformance,
+    assertAdapterConformanceCurrent,
     now: trustedHostAdapter.now,
   });
   const server = createServer(broker, { socketPath, releaseGroupGid });

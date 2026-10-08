@@ -34,7 +34,7 @@ async function tempRoot() {
 afterEach(async () => Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true }))));
 
 const FIXTURE_ADAPTER = Object.freeze({ current: true, adapterDigest: "a".repeat(64), receiptDigest: "b".repeat(64),
-  contractDigest: OPERATION_ADAPTER_CONTRACT_DIGEST });
+  contractDigest: OPERATION_ADAPTER_CONTRACT_DIGEST, expiresAt: "2999-01-01T00:00:00.000Z" });
 const UNUSED_ADAPTER_CALLBACKS = Object.freeze({
   verifyReviewedRelease: async () => true,
   verifyCurrentReaderRollout: async () => ({ current: true }),
@@ -51,7 +51,7 @@ const UNUSED_ADAPTER_CALLBACKS = Object.freeze({
   loadAuthorizationById: async () => null,
   loadRolloutReceiptById: async (id) => ({ id, receiptDigest: "e".repeat(64) }),
   executeFixedOperation: async () => { throw new Error("not used"); },
-  adapterConformance: FIXTURE_ADAPTER,
+  assertAdapterConformanceCurrent: async () => FIXTURE_ADAPTER,
 });
 const RESTORE_PRECONDITION = Object.freeze({ logicalProductionDbIdentityDigest: "c".repeat(64),
   backupArtifactDigest: "e".repeat(64), observedSchemaDigest: "8".repeat(64), observedMigrationHistoryDigest: "9".repeat(64) });
@@ -81,16 +81,22 @@ function recoveryOperationIntent(evidence, artifact, { generation = 3, recoveryC
 }
 
 function brokerFixture({ blocking = false, prepared = true, rolloutCurrent = true, releaseValid = true,
-  v4Evidence, now = () => Date.now(), proofResultOverride, adapterConformance = FIXTURE_ADAPTER } = {}) {
+  v4Evidence, now = () => Date.now(), proofResultOverride, adapterConformance = FIXTURE_ADAPTER,
+  onMigrationFinalGuard, onAtomicMigrationConsumption, onAfterMigrationConsumption, onOperationCompletion,
+  operationState = null, operationPostconditionOverride = null } = {}) {
   const calls = [];
   const states = new Map();
   const migrationGuardCalls = [];
   const migrationEvents = [];
   const routeEffects = [];
+  const ordinaryReleaseEffects = [];
   let liveMarker = null;
   let pendingMigrationSetDigest = "f".repeat(64);
   const challenges = new Map();
   const consumedChallenges = new Map();
+  const migrationCompletions = new Map();
+  let migrationPostconditionOverride = operationPostconditionOverride;
+  let operationStateOverride = operationState;
   const authority = {
     readAuthoritativeState: async () => ({ blocking: blocking || Boolean(liveMarker), activeRecovery: false,
       generation: 0, recordDigest: "0".repeat(64), legacyMarker: liveMarker }),
@@ -98,13 +104,36 @@ function brokerFixture({ blocking = false, prepared = true, rolloutCurrent = tru
     readMigrationChallenge: async (id) => challenges.get(id) ?? null,
     readMigrationChallengeConsumption: async (id) => consumedChallenges.get(id) ?? null,
     consumeMigrationChallenge: async (value) => {
+      await onAtomicMigrationConsumption?.(value);
+      const challenge = challenges.get(value.challengeId);
+      const atomicTime = now();
+      if (!challenge || challenge.challengeDigest !== value.challengeDigest
+        || Date.parse(challenge.expiresAt) <= atomicTime || Date.parse(value.proofExpiresAt) <= atomicTime) {
+        throw new Error("Migration challenge or proof expired at atomic consumption.");
+      }
       if (consumedChallenges.has(value.challengeId)) {
         const existing = consumedChallenges.get(value.challengeId);
-        if (canonicalDigest(existing) !== canonicalDigest(value)) throw new Error("Consumed migration challenge mismatch.");
+        if (Object.entries(value).some(([key, item]) => existing[key] !== item)) throw new Error("Consumed migration challenge mismatch.");
         return { consumed: false, receipt: existing };
       }
-      consumedChallenges.set(value.challengeId, value);
-      return { consumed: true, receipt: value };
+      const receipt = { ...value, consumedAt: new Date(atomicTime).toISOString() };
+      consumedChallenges.set(value.challengeId, receipt);
+      await onAfterMigrationConsumption?.(receipt);
+      return { consumed: true, receipt };
+    },
+    readMigrationCompletion: async (id) => migrationCompletions.get(id) ?? null,
+    completeMigrationChallenge: async (value) => {
+      await onOperationCompletion?.(value);
+      const existing = migrationCompletions.get(value.challengeId);
+      if (existing) {
+        if (canonicalDigest(existing.operationSuccess) !== canonicalDigest(value.operationSuccess)) {
+          throw new Error("Migration completion outcome mismatch.");
+        }
+        return existing;
+      }
+      const receipt = { purpose: "bodycast-production-migration-completion", ...value };
+      migrationCompletions.set(value.challengeId, receipt);
+      return receipt;
     },
   };
   function operationObservation(operationType, input, state) {
@@ -135,9 +164,11 @@ function brokerFixture({ blocking = false, prepared = true, rolloutCurrent = tru
       releaseSha: input.bindings.releaseSha, imageDigest: "c".repeat(64), routeDigest: "f".repeat(64),
       unifiedV4CurrentnessDigest: input.bindings.unifiedV4CurrentnessDigest, healthStatus: "healthy", markerState: "app-ready",
     } : null;
+    const actualPostcondition = operationType === "forward-migration" && migrationPostconditionOverride
+      ? { ...postcondition, ...migrationPostconditionOverride } : postcondition;
     const normalizedState = state === "pre" ? definition.preState : state === "post" ? definition.postState : "other";
     const selectedPre = state === "pre" ? precondition : null;
-    const selectedPost = state === "post" ? postcondition : null;
+    const selectedPost = state === "post" ? actualPostcondition : null;
     return { schemaVersion: 1, purpose: "bodycast-host-operation-state", operationType,
       operationId: input.operationId, idempotencyKey: input.operationId, operationInputDigest: input.operationInputDigest,
       state, observedAt: new Date(now()).toISOString(),
@@ -148,8 +179,12 @@ function brokerFixture({ blocking = false, prepared = true, rolloutCurrent = tru
     authority,
     verifyReviewedRelease: async () => releaseValid,
     verifyCurrentReaderRollout: async ({ allowAbsent }) => allowAbsent && !rolloutCurrent ? null : { current: rolloutCurrent },
-    verifyRecoveryPreparation: async ({ allowAbsent }) => allowAbsent && !prepared ? null : { ready: prepared,
-      operationAdapterDigest: FIXTURE_ADAPTER.adapterDigest, operationAdapterConformanceDigest: FIXTURE_ADAPTER.receiptDigest },
+    verifyRecoveryPreparation: async ({ allowAbsent }) => {
+      if (allowAbsent && !prepared) return null;
+      const current = typeof adapterConformance === "function" ? adapterConformance() : adapterConformance;
+      return { ready: prepared, operationAdapterDigest: current?.adapterDigest ?? FIXTURE_ADAPTER.adapterDigest,
+        operationAdapterConformanceDigest: current?.receiptDigest ?? FIXTURE_ADAPTER.receiptDigest };
+    },
     verifyForwardMigrationAuthorization: async (authorization) => authorization?.purpose === "forward-migration",
     captureMigrationExecutionState: async ({ releaseSha, canonicalMainSha, migrationManifestId, authorizationContextId,
       expectedMarkerState = null }) => {
@@ -175,6 +210,7 @@ function brokerFixture({ blocking = false, prepared = true, rolloutCurrent = tru
     verifyMigrationFinalGuards: async (evidence) => {
       migrationGuardCalls.push(evidence);
       if (evidence.liveState?.markerState === "ddl-started") migrationEvents.push("boundary-guard-passed");
+      await onMigrationFinalGuard?.(evidence);
       return true;
     },
     verifyRecoveryOperationFinalGuards: async () => true,
@@ -188,9 +224,23 @@ function brokerFixture({ blocking = false, prepared = true, rolloutCurrent = tru
         observedAt: new Date(now()).toISOString() });
     },
     now,
-    inspectFixedOperationState: async (operationType, input) => operationObservation(operationType, input,
-      states.get(input.operationId) ?? "pre"),
-    adapterConformance,
+    inspectFixedOperationState: async (operationType, input) => {
+      const selectedState = typeof operationStateOverride === "function"
+        ? operationStateOverride(operationType, input) : operationStateOverride;
+      return operationObservation(operationType, input, selectedState ?? states.get(input.operationId) ?? "pre");
+    },
+    assertAdapterConformanceCurrent: async ({ preparation } = {}) => {
+      const current = typeof adapterConformance === "function" ? adapterConformance() : adapterConformance;
+      if (!current?.current || current.contractDigest !== OPERATION_ADAPTER_CONTRACT_DIGEST
+        || current.adapterDigest !== FIXTURE_ADAPTER.adapterDigest || Date.parse(current.expiresAt) <= now()) {
+        throw new Error("Adapter conformance is stale or invalid.");
+      }
+      if (preparation && (preparation.operationAdapterDigest !== current.adapterDigest
+        || preparation.operationAdapterConformanceDigest !== current.receiptDigest)) {
+        throw new Error("Preparation conformance binding is stale.");
+      }
+      return current;
+    },
     loadEvidenceById: async (id) => ({ type: "evidence-fixture", id }),
     loadAuthorizationById: async (id) => id === "auth-1" || String(id).startsWith("migration-")
       ? { purpose: "forward-migration" } : { id },
@@ -199,6 +249,7 @@ function brokerFixture({ blocking = false, prepared = true, rolloutCurrent = tru
       calls.push({ operation, payload });
       if (operation === "ordinary-release") {
         await payload.authorizeImmediatelyBeforeEffect();
+        ordinaryReleaseEffects.push(payload.operationId);
         const postcondition = { releaseSha: payload.releaseSha, imageDigest: "c".repeat(64),
           containerId: "container-fixture", healthStatus: "healthy" };
         states.set(payload.operationId, "post");
@@ -238,9 +289,13 @@ function brokerFixture({ blocking = false, prepared = true, rolloutCurrent = tru
       return { operation, accepted: true };
     },
   });
-  return { broker, calls, authority, migrationGuardCalls, migrationEvents, routeEffects,
+  return { broker, calls, authority, migrationGuardCalls, migrationEvents, routeEffects, ordinaryReleaseEffects,
     setPendingMigrationSetDigest(value) { pendingMigrationSetDigest = value; },
-    setLiveMarker(value) { liveMarker = value; } };
+    setLiveMarker(value) { liveMarker = value; },
+    setOperationState(value) { operationStateOverride = value; },
+    setMigrationPostconditionOverride(value) { migrationPostconditionOverride = value; },
+    getMigrationCompletion(id) { return migrationCompletions.get(id) ?? null; },
+    getMigrationConsumption(id) { return [...consumedChallenges.values()].find((value) => value.challengeId === id) ?? null; } };
 }
 
 describe("production recovery install, rollout, and operation boundaries", () => {
@@ -303,6 +358,45 @@ describe("production recovery install, rollout, and operation boundaries", () =>
     expect(blocked.calls).toHaveLength(0);
   });
 
+  it("revalidates adapter conformance at readiness, mutation, and the final effect boundary", async () => {
+    let clockNow = Date.now();
+    let currentReceipt = { ...FIXTURE_ADAPTER, expiresAt: new Date(clockNow + 1_000).toISOString() };
+    const refreshed = brokerFixture({ now: () => clockNow, adapterConformance: () => currentReceipt });
+    const initiallyReady = await refreshed.broker.dispatch({ schemaVersion: 1, operation: "readiness", requestId: "ready-current-adapter" });
+    expect(initiallyReady.operationAdapterConformanceCurrent).toBe(true);
+    clockNow += 1_001;
+    const expiredReadiness = await refreshed.broker.dispatch({ schemaVersion: 1, operation: "readiness", requestId: "ready-expired-adapter" });
+    expect(expiredReadiness).toMatchObject({ operationAdapterConformanceCurrent: false, recoveryPrepared: false });
+    await expect(refreshed.broker.dispatch({ schemaVersion: 1, operation: "ordinary-release", requestId: "expired-adapter-deploy",
+      releaseSha: "a".repeat(40), canonicalMainSha: "a".repeat(40), releaseMode: "serving" }))
+      .rejects.toThrow(/no current verified operation-conformance evidence/);
+    expect(refreshed.ordinaryReleaseEffects).toHaveLength(0);
+
+    currentReceipt = { ...FIXTURE_ADAPTER, receiptDigest: "c".repeat(64), expiresAt: new Date(clockNow + 60_000).toISOString() };
+    const restoredReadiness = await refreshed.broker.dispatch({ schemaVersion: 1, operation: "readiness", requestId: "ready-refreshed-adapter" });
+    expect(restoredReadiness.operationAdapterConformanceCurrent).toBe(true);
+
+    let conformanceReads = 0;
+    const finalBoundary = brokerFixture({ adapterConformance: () => {
+      conformanceReads += 1;
+      return { ...FIXTURE_ADAPTER, expiresAt: new Date(conformanceReads === 1 ? Date.now() + 60_000 : Date.now() - 1).toISOString() };
+    } });
+    await expect(finalBoundary.broker.dispatch({ schemaVersion: 1, operation: "ordinary-release", requestId: "expires-at-effect",
+      releaseSha: "a".repeat(40), canonicalMainSha: "a".repeat(40), releaseMode: "serving" }))
+      .rejects.toThrow(/no current verified operation-conformance evidence/);
+    expect(conformanceReads).toBe(2);
+    expect(finalBoundary.ordinaryReleaseEffects).toHaveLength(0);
+
+    for (const invalid of [
+      { ...FIXTURE_ADAPTER, adapterDigest: "f".repeat(64) },
+      { ...FIXTURE_ADAPTER, contractDigest: "f".repeat(64) },
+    ]) {
+      const wrongIdentity = brokerFixture({ adapterConformance: invalid });
+      const readiness = await wrongIdentity.broker.dispatch({ schemaVersion: 1, operation: "readiness", requestId: "ready-wrong-adapter" });
+      expect(readiness.operationAdapterConformanceCurrent).toBe(false);
+    }
+  });
+
   it("blocks forward migration until recovery prerequisites and forward-only authorization pass", async () => {
     const request = {
       schemaVersion: 1, operation: "forward-migration", requestId: "migration-1", releaseSha: "a".repeat(40),
@@ -349,6 +443,7 @@ describe("production recovery install, rollout, and operation boundaries", () =>
     clockNow += 2 * 60_000 + 1;
     await expect(expired.broker.dispatch(makeForward(expiredChallenge))).rejects.toThrow(/stale or expired/);
     expect(expired.calls).toHaveLength(0);
+    expect(expired.migrationGuardCalls).toHaveLength(0);
 
     const wrongProof = brokerFixture();
     const wrongProofChallenge = (await issue(wrongProof)).challenge;
@@ -361,6 +456,12 @@ describe("production recovery install, rollout, and operation boundaries", () =>
     await expect(otherChallengeProof.broker.dispatch(makeForward(otherChallenge)))
       .rejects.toThrow(/proof verifier did not bind/);
     expect(otherChallengeProof.calls).toHaveLength(0);
+
+    const wrongTokenDigest = brokerFixture({ proofResultOverride: { tokenDigest: "9".repeat(64) } });
+    const wrongTokenDigestChallenge = (await issue(wrongTokenDigest)).challenge;
+    await expect(wrongTokenDigest.broker.dispatch(makeForward(wrongTokenDigestChallenge)))
+      .rejects.toThrow(/proof verifier did not bind/);
+    expect(wrongTokenDigest.calls).toHaveLength(0);
 
     const changedDb = brokerFixture();
     const changedDbChallenge = (await issue(changedDb)).challenge;
@@ -385,11 +486,173 @@ describe("production recovery install, rollout, and operation boundaries", () =>
     expect(valid.migrationGuardCalls.at(-1).liveState.markerState).toBe("ddl-started");
     expect(valid.calls.filter((call) => call.operation === "forward-migration")).toHaveLength(1);
 
-    await expect(valid.broker.dispatch({ ...forward, requestId: "migration-forward-retry" }))
-      .rejects.toThrow(/Active recovery state blocks forward migration/);
+    const reconciled = await valid.broker.dispatch({ ...forward, requestId: "migration-forward-retry" });
+    expect(reconciled).toMatchObject({ reconciled: true, completion: { result: "executed" },
+      completionReceipt: result.completionReceipt });
     await expect(valid.broker.dispatch({ ...forward, executionProof: "another.payload.proof" }))
-      .rejects.toThrow(/Active recovery state blocks forward migration/);
+      .rejects.toThrow(/cannot reconcile another operation, release, database, or proof/);
+    valid.setLiveMarker(null);
+    await expect(valid.broker.dispatch({ ...forward, requestId: "migration-forward-consumed-without-marker" }))
+      .rejects.toThrow(/consumed migration challenge cannot authorize a new migration execution/);
     expect(valid.calls.filter((call) => call.operation === "forward-migration")).toHaveLength(1);
+  });
+
+  it("rechecks challenge and proof expiry through final guards, atomic consumption, and the final effect boundary", async () => {
+    const releaseSha = "a".repeat(40);
+    const challengeRequest = { schemaVersion: 1, operation: "migration-challenge", requestId: "expiry-boundary-challenge",
+      releaseSha, canonicalMainSha: releaseSha, migrationManifestId: "manifest-v6", authorizationContextId: "migration-1-2-1" };
+    const makeForward = (challenge, requestId) => ({ schemaVersion: 1, operation: "forward-migration", requestId,
+      releaseSha, canonicalMainSha: releaseSha, migrationManifestId: "manifest-v6", authorizationContextId: "migration-1-2-1",
+      challengeId: challenge.challengeId, challengeDigest: challenge.challengeDigest, executionProof: "header.payload.signature" });
+    const runFinalGuardExpiry = async (advance) => {
+      let clockNow = Date.now();
+      const fixture = brokerFixture({ now: () => clockNow, onMigrationFinalGuard: async (evidence) => {
+        if (evidence.liveState?.markerState === "ddl-started") advance({ set: (value) => { clockNow = value; }, ...evidence });
+      } });
+      const challenge = (await fixture.broker.dispatch(challengeRequest)).challenge;
+      const request = makeForward(challenge, "expiry-final-guard-forward");
+      await expect(fixture.broker.dispatch(request)).rejects.toThrow(/expired/);
+      expect(fixture.calls.filter((call) => call.operation === "forward-migration")).toHaveLength(1);
+      expect(fixture.migrationEvents).toEqual(["ddl-started-marker-written", "boundary-guard-passed"]);
+      expect(fixture.getMigrationConsumption(challenge.challengeId)).toBeNull();
+    };
+
+    await runFinalGuardExpiry(({ set, challenge }) => set(Date.parse(challenge.expiresAt) + 1));
+    await runFinalGuardExpiry(({ set, proof }) => set(Date.parse(proof.expiresAt) + 1));
+
+    let atomicClock = Date.now();
+    const expiryAtAtomicConsume = brokerFixture({ now: () => atomicClock,
+      onAtomicMigrationConsumption: async ({ challengeId }) => {
+        // The signed verifier has returned and the final live guards passed; the authority lock observes this later time.
+        const issued = expiryAtAtomicConsumeChallenge;
+        if (issued?.challengeId === challengeId) atomicClock = Date.parse(issued.expiresAt) + 1;
+      } });
+    let expiryAtAtomicConsumeChallenge = null;
+    expiryAtAtomicConsumeChallenge = (await expiryAtAtomicConsume.broker.dispatch(challengeRequest)).challenge;
+    await expect(expiryAtAtomicConsume.broker.dispatch(makeForward(expiryAtAtomicConsumeChallenge, "expiry-atomic-forward")))
+      .rejects.toThrow(/expired at atomic consumption/);
+    expect(expiryAtAtomicConsume.getMigrationConsumption(expiryAtAtomicConsumeChallenge.challengeId)).toBeNull();
+    expect(expiryAtAtomicConsume.migrationEvents).toEqual(["ddl-started-marker-written", "boundary-guard-passed"]);
+
+    let postConsumeClock = Date.now();
+    let postConsumeChallenge = null;
+    const expiryAfterConsume = brokerFixture({ now: () => postConsumeClock,
+      onAfterMigrationConsumption: async () => { postConsumeClock = Date.parse(postConsumeChallenge.expiresAt) + 1; } });
+    postConsumeChallenge = (await expiryAfterConsume.broker.dispatch(challengeRequest)).challenge;
+    await expect(expiryAfterConsume.broker.dispatch(makeForward(postConsumeChallenge, "expiry-after-consume-forward")))
+      .rejects.toThrow(/expired at the migration effect boundary/);
+    expect(expiryAfterConsume.getMigrationConsumption(postConsumeChallenge.challengeId)).toBeTruthy();
+    expect(expiryAfterConsume.migrationEvents).toEqual(["ddl-started-marker-written", "boundary-guard-passed"]);
+  });
+
+  it("reconciles a completed migration after the response is lost without issuing DDL again", async () => {
+    let loseFirstReceipt = true;
+    const releaseSha = "a".repeat(40);
+    const fixture = brokerFixture({ onOperationCompletion: async () => {
+      if (loseFirstReceipt) {
+        loseFirstReceipt = false;
+        throw new Error("simulated lost completion response");
+      }
+    } });
+    const challengeRequest = { schemaVersion: 1, operation: "migration-challenge", requestId: "lost-challenge",
+      releaseSha, canonicalMainSha: releaseSha, migrationManifestId: "manifest-v6", authorizationContextId: "migration-1-2-1" };
+    const challenge = (await fixture.broker.dispatch(challengeRequest)).challenge;
+    const forward = { schemaVersion: 1, operation: "forward-migration", requestId: "lost-forward", releaseSha,
+      canonicalMainSha: releaseSha, migrationManifestId: "manifest-v6", authorizationContextId: "migration-1-2-1",
+      challengeId: challenge.challengeId, challengeDigest: challenge.challengeDigest, executionProof: "header.payload.signature" };
+    await expect(fixture.broker.dispatch(forward)).rejects.toThrow(/simulated lost completion response/);
+    expect(fixture.getMigrationConsumption(challenge.challengeId)).toBeTruthy();
+    expect(fixture.getMigrationCompletion(challenge.challengeId)).toBeNull();
+    expect(fixture.calls.filter((call) => call.operation === "forward-migration")).toHaveLength(1);
+
+    const [reconciled, concurrentReconciliation] = await Promise.all([
+      fixture.broker.dispatch({ ...forward, requestId: "lost-forward-reconcile" }),
+      fixture.broker.dispatch({ ...forward, requestId: "lost-forward-reconcile-concurrent" }),
+    ]);
+    expect(reconciled).toMatchObject({ reconciled: true, completion: { result: "already-satisfied" },
+      completionReceipt: { purpose: "bodycast-production-migration-completion" } });
+    expect(concurrentReconciliation.completionReceipt).toEqual(reconciled.completionReceipt);
+    expect(fixture.getMigrationCompletion(challenge.challengeId)).toBe(reconciled.completionReceipt);
+    expect(fixture.calls.filter((call) => call.operation === "forward-migration")).toHaveLength(1);
+    expect(fixture.migrationEvents.filter((event) => event === "prisma-spawn-authorized")).toHaveLength(1);
+  });
+
+  it("rejects migration reconciliation for a different binding or an incomplete post-state", async () => {
+    const releaseSha = "a".repeat(40);
+    const fixture = brokerFixture();
+    const challenge = (await fixture.broker.dispatch({ schemaVersion: 1, operation: "migration-challenge",
+      requestId: "binding-challenge", releaseSha, canonicalMainSha: releaseSha,
+      migrationManifestId: "manifest-v6", authorizationContextId: "migration-1-2-1" })).challenge;
+    const forward = { schemaVersion: 1, operation: "forward-migration", requestId: "binding-forward", releaseSha,
+      canonicalMainSha: releaseSha, migrationManifestId: "manifest-v6", authorizationContextId: "migration-1-2-1",
+      challengeId: challenge.challengeId, challengeDigest: challenge.challengeDigest, executionProof: "header.payload.signature" };
+    await fixture.broker.dispatch(forward);
+
+    await expect(fixture.broker.dispatch({ ...forward, requestId: "binding-other-proof", executionProof: "other.payload.proof" }))
+      .rejects.toThrow(/cannot reconcile another operation, release, database, or proof/);
+    await expect(fixture.broker.dispatch({ ...forward, requestId: "binding-other-release", releaseSha: "b".repeat(40),
+      canonicalMainSha: "b".repeat(40) })).rejects.toThrow(/bound to another release, manifest, or workflow attempt/);
+    await expect(fixture.broker.dispatch({ ...forward, requestId: "binding-other-manifest", migrationManifestId: "manifest-v7" }))
+      .rejects.toThrow(/bound to another release, manifest, or workflow attempt/);
+    await expect(fixture.broker.dispatch({ ...forward, requestId: "binding-other-challenge", challengeId: "f".repeat(64),
+      challengeDigest: "f".repeat(64) })).rejects.toThrow(/exact broker-issued durable challenge/);
+
+    fixture.setMigrationPostconditionOverride({ logicalProductionDbIdentityDigest: "9".repeat(64) });
+    await expect(fixture.broker.dispatch({ ...forward, requestId: "binding-other-database" })).rejects.toThrow(/immutable logicalProductionDbIdentityDigest/);
+    fixture.setMigrationPostconditionOverride(null);
+    fixture.setOperationState("other");
+    await expect(fixture.broker.dispatch({ ...forward, requestId: "binding-incomplete-state" }))
+      .rejects.toThrow(/neither the exact precondition nor postcondition/);
+    expect(fixture.calls.filter((call) => call.operation === "forward-migration")).toHaveLength(1);
+    expect(fixture.migrationEvents.filter((event) => event === "prisma-spawn-authorized")).toHaveLength(1);
+  });
+
+  it("allows expired consumed proof only for exact read-only reconciliation and blocks expired unconsumed challenges", async () => {
+    let clockNow = Date.now();
+    const fixture = brokerFixture({ now: () => clockNow });
+    const releaseSha = "a".repeat(40);
+    const challengeRequest = { schemaVersion: 1, operation: "migration-challenge", requestId: "expiry-reconcile-challenge",
+      releaseSha, canonicalMainSha: releaseSha, migrationManifestId: "manifest-v6", authorizationContextId: "migration-1-2-1" };
+    const challenge = (await fixture.broker.dispatch(challengeRequest)).challenge;
+    const forward = { schemaVersion: 1, operation: "forward-migration", requestId: "expiry-reconcile-forward", releaseSha,
+      canonicalMainSha: releaseSha, migrationManifestId: "manifest-v6", authorizationContextId: "migration-1-2-1",
+      challengeId: challenge.challengeId, challengeDigest: challenge.challengeDigest, executionProof: "header.payload.signature" };
+    await fixture.broker.dispatch(forward);
+    clockNow = Date.parse(challenge.expiresAt) + 1;
+    const reconciled = await fixture.broker.dispatch({ ...forward, requestId: "expiry-reconcile-retry" });
+    expect(reconciled.reconciled).toBe(true);
+    expect(fixture.calls.filter((call) => call.operation === "forward-migration")).toHaveLength(1);
+
+    let unconsumedNow = Date.now();
+    const unconsumed = brokerFixture({ now: () => unconsumedNow });
+    const unconsumedChallenge = (await unconsumed.broker.dispatch({ ...challengeRequest, requestId: "unconsumed-challenge" })).challenge;
+    unconsumedNow = Date.parse(unconsumedChallenge.expiresAt) + 1;
+    const unconsumedForward = { ...forward, requestId: "unconsumed-forward", challengeId: unconsumedChallenge.challengeId,
+      challengeDigest: unconsumedChallenge.challengeDigest };
+    await expect(unconsumed.broker.dispatch(unconsumedForward)).rejects.toThrow(/stale or expired/);
+    unconsumed.setLiveMarker({ state: "ddl-started", releaseSha, manifestId: "manifest-v6", digest: "e".repeat(64) });
+    await expect(unconsumed.broker.dispatch({ ...unconsumedForward, requestId: "unconsumed-reconcile" }))
+      .rejects.toThrow(/expired or unconsumed/);
+    expect(unconsumed.calls.filter((call) => call.operation === "forward-migration")).toHaveLength(0);
+  });
+
+  it("requires current adapter conformance for read-only lost-response inspection", async () => {
+    let clockNow = Date.now();
+    const conformance = { ...FIXTURE_ADAPTER, expiresAt: new Date(clockNow + 5_000).toISOString() };
+    const fixture = brokerFixture({ now: () => clockNow, adapterConformance: () => conformance });
+    const releaseSha = "a".repeat(40);
+    const challenge = (await fixture.broker.dispatch({ schemaVersion: 1, operation: "migration-challenge",
+      requestId: "inspect-conformance-challenge", releaseSha, canonicalMainSha: releaseSha,
+      migrationManifestId: "manifest-v6", authorizationContextId: "migration-1-2-1" })).challenge;
+    const forward = { schemaVersion: 1, operation: "forward-migration", requestId: "inspect-conformance-forward", releaseSha,
+      canonicalMainSha: releaseSha, migrationManifestId: "manifest-v6", authorizationContextId: "migration-1-2-1",
+      challengeId: challenge.challengeId, challengeDigest: challenge.challengeDigest, executionProof: "header.payload.signature" };
+    await fixture.broker.dispatch(forward);
+    clockNow += 5_001;
+    await expect(fixture.broker.dispatch({ ...forward, requestId: "inspect-conformance-retry" }))
+      .rejects.toThrow(/no current verified operation-conformance evidence/);
+    expect(fixture.calls.filter((call) => call.operation === "forward-migration")).toHaveLength(1);
+    expect(fixture.migrationEvents.filter((event) => event === "prisma-spawn-authorized")).toHaveLength(1);
   });
 
   it("gates the authoritative traffic-serve boundary on current Unified V4 state", async () => {

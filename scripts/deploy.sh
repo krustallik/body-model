@@ -6,9 +6,9 @@
 # 1) verify exact SHA
 # 2) verify compose config + DB readiness
 # 3) schema preflight (non-destructive)
-# 4) require current V4 before serving, or switch to maintenance first
-# 5) build release image
-# 6) only then recreate the running app
+# 4) require current V4 before serving
+# 5) build release image while the previous app remains serving
+# 6) enter maintenance, then replace and verify the app before serving
 # A failed preflight must leave the running application container unchanged.
 set -Eeuo pipefail
 
@@ -106,7 +106,18 @@ compose() {
 }
 
 previous_image_exists=false
-app_cut_over=false
+maintenance_started=false
+previous_app_healthy=false
+previous_app_sha=""
+
+existing_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}')"
+if [[ "$existing_app" == "$APP_CONTAINER" ]]; then
+  previous_app_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER")"
+  previous_app_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$APP_CONTAINER")"
+  if [[ "$previous_app_sha" =~ ^[0-9a-f]{40}$ && "$previous_app_status" == "healthy" ]]; then
+    previous_app_healthy=true
+  fi
+fi
 
 if docker image inspect "$CURRENT_IMAGE" >/dev/null 2>&1; then
   docker image tag "$CURRENT_IMAGE" "$ROLLBACK_IMAGE"
@@ -115,38 +126,79 @@ fi
 
 rollback() {
   exit_code=$?
-  if [[ "$app_cut_over" != "true" ]]; then
-    if [[ "$freshness_blocked" == "true" ]]; then
-      echo "Release candidate was superseded before app cutover; leaving the application and route unchanged." >&2
-      compose logs --tail=100 "$APP_SERVICE" || true
-      exit "$exit_code"
-    fi
-    echo "Deployment failed before app cutover; leaving the running application unchanged." >&2
-    if [[ "$active_schema_cutover" == "true" || "$BODYCAST_NON_SERVING_DEPLOY" == "1" ]]; then
-      bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance || true
-    elif [[ "$previous_image_exists" == "true" ]] && docker image inspect "$ROLLBACK_IMAGE" >/dev/null 2>&1; then
-      # Restore :latest tag for cleanliness without recreating the container.
-      docker image tag "$ROLLBACK_IMAGE" "$CURRENT_IMAGE" || true
-    fi
-    compose logs --tail=100 "$APP_SERVICE" || true
-    exit "$exit_code"
-  fi
-
+  trap - ERR
+  set +e
   if [[ "$active_schema_cutover" == "true" || "$BODYCAST_NON_SERVING_DEPLOY" == "1" ]]; then
     echo "Non-serving/schema-cutover deployment failed; keeping maintenance active and refusing to restart the prior binary." >&2
-    bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance || true
-    docker update --restart=no "$APP_CONTAINER" >/dev/null 2>&1 || true
-    compose stop "$APP_SERVICE" >/dev/null 2>&1 || true
-    compose logs --tail=100 "$APP_SERVICE" || true
+    if ! bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance; then
+      echo "Maintenance could not be re-verified after non-serving failure; operator intervention is required." >&2
+    fi
+    if ! docker update --restart=no "$APP_CONTAINER" >/dev/null 2>&1; then
+      echo "Could not disable automatic app restart after non-serving failure." >&2
+    fi
+    if ! compose stop "$APP_SERVICE" >/dev/null 2>&1; then
+      echo "Could not stop the app after non-serving failure." >&2
+    fi
+    compose logs --tail=100 "$APP_SERVICE"
     exit "$exit_code"
   fi
 
-  echo "Deployment failed after app cutover; restoring the previous application image." >&2
-  if [[ "$previous_image_exists" == "true" ]] && docker image inspect "$ROLLBACK_IMAGE" >/dev/null 2>&1; then
-    docker image tag "$ROLLBACK_IMAGE" "$CURRENT_IMAGE"
-    compose up -d --no-deps --force-recreate "$APP_SERVICE" || true
+  if [[ "$maintenance_started" != "true" ]]; then
+    if [[ "$freshness_blocked" == "true" ]]; then
+      echo "Release candidate was superseded before maintenance; previous app and route remain unchanged." >&2
+    else
+      echo "Deployment failed before maintenance; previous app and route remain serving." >&2
+    fi
+    if [[ "$previous_image_exists" == "true" ]] && ! docker image tag "$ROLLBACK_IMAGE" "$CURRENT_IMAGE"; then
+      echo "Could not restore the previous image tag; the running container remains unchanged." >&2
+    fi
+    compose logs --tail=100 "$APP_SERVICE"
+    exit "$exit_code"
   fi
-  compose logs --tail=100 "$APP_SERVICE" || true
+
+  echo "Deployment failed after maintenance began; restoring only the previously healthy app." >&2
+  if ! bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance; then
+    echo "Maintenance command reported failure; route restoration will proceed only if the traffic gate verifies maintenance." >&2
+  fi
+  if [[ "$previous_image_exists" == "true" && "$previous_app_healthy" == "true" \
+      && "$previous_app_sha" =~ ^[0-9a-f]{40}$ ]]; then
+    if ! docker image tag "$ROLLBACK_IMAGE" "$CURRENT_IMAGE"; then
+      echo "Previous image tag could not be restored; traffic remains in maintenance." >&2
+      compose logs --tail=100 "$APP_SERVICE"
+      exit "$exit_code"
+    fi
+    if ! BODYCAST_DEPLOY_SHA="$previous_app_sha" compose up -d --no-deps --force-recreate "$APP_SERVICE"; then
+      echo "Previous app could not be recreated; traffic remains in maintenance." >&2
+      compose logs --tail=100 "$APP_SERVICE"
+      exit "$exit_code"
+    fi
+    previous_restored=false
+    for attempt in $(seq 1 30); do
+      restored_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$APP_CONTAINER")"
+      if [[ "$restored_status" == "healthy" ]]; then
+        restored_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER")"
+        if [[ "$restored_sha" == "$previous_app_sha" ]]; then
+          previous_restored=true
+          break
+        fi
+      fi
+      if [[ "$restored_status" == "unhealthy" || "$restored_status" == "exited" ]]; then break; fi
+      sleep 5
+    done
+    if [[ "$previous_restored" == "true" ]]; then
+      if BODYCAST_DEPLOY_SHA="$DEPLOY_SHA" BODYCAST_ROLLBACK_SHA="$previous_app_sha" \
+        bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" rollback-previous; then
+        echo "Previously serving app ${previous_app_sha} was restored and passed the current-release/V4 traffic gate." >&2
+      else
+        echo "Previous app is healthy, but freshness/V4/maintenance checks blocked reopening traffic; maintenance remains active." >&2
+      fi
+    else
+      echo "Previous app did not return healthy with its exact release label; traffic remains in maintenance." >&2
+    fi
+  else
+    echo "No previously healthy exact-SHA app is available; traffic remains in maintenance." >&2
+  fi
+  compose logs --tail=100 "$APP_SERVICE"
   exit "$exit_code"
 }
 trap rollback ERR
@@ -174,6 +226,7 @@ bash "${ROOT_DIR}/scripts/deploy-preflight-schema.sh"
 # that Forecast V2's required physical Unified V4 snapshot is already current.
 if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" ]]; then
   assert_current_main_sha
+  maintenance_started=true
   bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance
 else
   bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" check
@@ -181,9 +234,17 @@ fi
 
 compose build "$APP_SERVICE"
 
-# Cutover boundary: only recreate the running app after successful preflight + build.
+# Do not put ordinary releases into maintenance during the expensive image build.
+# Once the image is ready, hold traffic at 503 until replacement, health, exact
+# SHA, V4 currentness, and final canonical-main checks all pass.
+if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "0" ]]; then
+  assert_current_main_sha
+  maintenance_started=true
+  bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance
+fi
+
+# Cutover boundary: only recreate the app after maintenance is active.
 assert_current_main_sha
-app_cut_over=true
 compose up -d --no-deps --force-recreate "$APP_SERVICE"
 
 for attempt in $(seq 1 30); do

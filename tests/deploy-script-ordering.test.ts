@@ -26,7 +26,7 @@ describe("production deploy script safety contracts", () => {
     expect(deployWorkflow.slice(sshFenceAt, sshAt)).toContain("isCurrentMainSha(CANDIDATE");
   });
 
-  it("fetches canonical origin/main and fences each fallback serving mutation", () => {
+  it("fetches canonical origin/main and fences both fallback route and Caddy serving mutations", () => {
     expect(mainFreshnessSh).toContain("git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main");
     expect(mainFreshnessSh).toContain("git rev-parse --verify 'refs/remotes/origin/main^{commit}'");
     expect(mainFreshnessSh).toMatch(/\[\[ "\$candidate_sha" == "\$canonical_main_sha" \]\]/);
@@ -37,33 +37,48 @@ describe("production deploy script safety contracts", () => {
     expect(deploySh).toContain("--canonical-main-fence fresh-current-main-v1");
     expect(deploySh.indexOf("assert_current_main_sha\ncompose up -d \"$DB_SERVICE\""))
       .toBeGreaterThan(-1);
-    expect(deploySh.indexOf('assert_current_main_sha\n  bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance'))
-      .toBeGreaterThan(-1);
     const buildAt = deploySh.indexOf('compose build "$APP_SERVICE"');
-    const appRecreateFenceAt = deploySh.indexOf("assert_current_main_sha\napp_cut_over=true");
+    const maintenanceBoundaryAt = deploySh.indexOf('maintenance_started=true\n  bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance', buildAt);
+    const appRecreateFenceAt = deploySh.indexOf("assert_current_main_sha\ncompose up -d --no-deps --force-recreate", buildAt);
     const appRecreateAt = deploySh.indexOf('compose up -d --no-deps --force-recreate "$APP_SERVICE"', appRecreateFenceAt);
     const serveFenceAt = deploySh.lastIndexOf("assert_current_main_sha\n  bash \"${ROOT_DIR}/scripts/production-traffic-cutover.sh\" serve");
     const serveAt = deploySh.lastIndexOf('bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" serve');
-    expect(appRecreateFenceAt).toBeGreaterThan(buildAt);
+    const routeFenceAt = cutoverSh.indexOf('bodycast_assert_current_main_sha "$freshness_sha"');
+    const routeWriteAt = cutoverSh.indexOf('mv -f "$temporary" "$ROUTE_FILE"');
+    const caddyReloadAt = cutoverSh.indexOf('if ! docker exec gymbeam-caddy caddy reload');
+    const reloadFenceAt = cutoverSh.lastIndexOf('bodycast_assert_current_main_sha "$freshness_sha"', caddyReloadAt);
+    expect(maintenanceBoundaryAt).toBeGreaterThan(buildAt);
+    expect(appRecreateFenceAt).toBeGreaterThan(maintenanceBoundaryAt);
     expect(appRecreateAt).toBeGreaterThan(appRecreateFenceAt);
     expect(serveFenceAt).toBeGreaterThan(appRecreateAt);
     expect(serveAt).toBeGreaterThan(serveFenceAt);
-    expect(deploySh).toContain("leaving the application and route unchanged");
+    expect(cutoverSh).toContain('source "${ROOT_DIR}/scripts/deploy-main-freshness.sh"');
+    expect(routeFenceAt).toBeGreaterThan(-1);
+    expect(routeFenceAt).toBeLessThan(routeWriteAt);
+    expect(reloadFenceAt).toBeGreaterThan(routeWriteAt);
+    expect(reloadFenceAt).toBeLessThan(caddyReloadAt);
+    expect(cutoverSh).toContain('write_route "reverse_proxy ${APP_CONTAINER}:3000" "$expected_release_sha"');
+    expect(cutoverSh).toContain('verify_exact_maintenance_route');
+    expect(deploySh).toContain("previous app and route remain unchanged");
   });
 
   it("runs schema preflight before app cutover", () => {
     const preflightAt = deploySh.indexOf("deploy-preflight-schema.sh");
-    const cutOverAt = deploySh.indexOf("app_cut_over=true");
+    const cutOverAt = deploySh.indexOf('compose up -d --no-deps --force-recreate "$APP_SERVICE"');
     expect(preflightAt).toBeGreaterThan(-1);
     expect(cutOverAt).toBeGreaterThan(preflightAt);
     expect(deploySh.slice(cutOverAt)).toContain('force-recreate "$APP_SERVICE"');
     expect(deploySh.indexOf("compose build \"$APP_SERVICE\"")).toBeGreaterThan(preflightAt);
+    expect(deploySh.lastIndexOf('maintenance_started=true\n  bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance'))
+      .toBeGreaterThan(deploySh.indexOf('compose build "$APP_SERVICE"'));
   });
 
   it("does not recreate the running app on pre-cutover failure", () => {
-    expect(deploySh).toContain('app_cut_over=false');
-    expect(deploySh).toContain("leaving the running application unchanged");
-    expect(deploySh).toMatch(/if \[\[ "\$app_cut_over" != "true" \]\]/);
+    expect(deploySh).toContain('maintenance_started=false');
+    expect(deploySh).toContain("previous app and route remain serving");
+    expect(deploySh).toContain("Release candidate was superseded before maintenance");
+    expect(deploySh).toContain("Previously serving app");
+    expect(deploySh).toContain("traffic remains in maintenance");
   });
 
   it("requires exact 40-character DEPLOY_SHA", () => {

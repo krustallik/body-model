@@ -1146,6 +1146,7 @@ describe("production recovery install, rollout, and operation boundaries", () =>
       provenance: olderProvenance, binaryBytes: binary, configBytes: olderConfig,
       trustedProvenanceKeys: { "provenance-key": signer.publicKey },
       allowedAuthorityVersions: ["1.1.9", "1.2.0"], minimumAllowedVersion: "1.0.0",
+      now: Date.parse("2026-10-07T12:30:00.000Z"),
     });
     expect(olderVerified.authorityVersion).toBe("1.1.9");
     const incompleteDowngradeRoot = path.join(await tempRoot(), "authority-install-incomplete-downgrade");
@@ -1224,6 +1225,7 @@ describe("production recovery install, rollout, and operation boundaries", () =>
     await expect(createReaderRolloutVerifier({
       publicKeys: { "root-key": authority.publicKey }, expected,
       loadInstalledEntrypoints: async () => [...installed, { path: "changed", gitBlobSha: "1".repeat(40), contentSha256: "2".repeat(64) }],
+      now: () => Date.parse("2026-10-07T13:00:00.000Z"),
     })(saved.receipt)).rejects.toThrow(/drifted/);
     expect(() => createReaderRolloutReceipt({
       repository: body.repository, canonicalMainSha: body.canonicalMainSha,

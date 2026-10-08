@@ -119,8 +119,12 @@ RECOVERY_GIT_DIR="$RECOVERY_ROOT/.git"
 RECOVERY_BIN="$TMP/release-marker-command-stubs"
 RECOVERY_DOCKER_LOG="$TMP/release-marker-docker.log"
 OLD_RELEASE_SHA="1111111111111111111111111111111111111111"
-NEW_RELEASE_SHA="6d7582fd63e8b96ac843e172bcccbfb941999a07"
 REAL_GIT="$(command -v git)"
+NEW_RELEASE_SHA="$("$REAL_GIT" -C "$ROOT" rev-parse --verify 'HEAD^{commit}')"
+if [[ ! "$NEW_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "Expected current fixture source to resolve to a full commit SHA." >&2
+  exit 1
+fi
 mkdir -p "$RECOVERY_ROOT/scripts" "$RECOVERY_GIT_DIR" "$RECOVERY_BIN"
 export FAKE_GIT_LOG="$TMP/recovery-git.log"
 cp "$ROOT/scripts/deploy.sh" "$RECOVERY_ROOT/scripts/deploy.sh"

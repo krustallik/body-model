@@ -123,29 +123,35 @@ stop_old_app() {
 }
 
 publish_maintenance_route() {
-  local route_file="${CADDY_ROUTES_PATH%/}/bodycast.caddy" temporary
-  bodycast_stage_route_config 'respond "BodyCast is temporarily unavailable while the model is updated." 503' || return 1
+  local temporary marker reload_failed=false
+  marker="$(bodycast_new_maintenance_marker)"
+  bodycast_stage_maintenance_route_config "$marker" || return 1
   temporary="$BODYCAST_ROUTE_STAGE_PATH"
-  if ! bodycast_assert_safe_routes_location; then
+  if ! bodycast_publish_staged_route "$temporary"; then
     rm -f -- "$temporary"
-    return 1
-  fi
-  if ! mv -f -- "$temporary" "$route_file"; then
-    rm -f -- "$temporary"
-    echo "Atomic maintenance-route replacement failed; active Caddy configuration was not confirmed." >&2
+    echo "Maintenance route replacement failed." >&2
     return 1
   fi
   if ! docker exec gymbeam-caddy caddy reload \
     --address unix//run/caddy-admin/admin.sock \
     --config /etc/caddy/Caddyfile; then
-    echo "Caddy maintenance reload failed; its previous active configuration may still serve traffic." >&2
+    reload_failed=true
+  fi
+  if ! bodycast_probe_public_maintenance "$marker"; then
+    echo "Maintenance was not externally confirmed; the app was not stopped." >&2
     return 1
+  fi
+  if [[ "$reload_failed" == "true" ]]; then
+    echo "Caddy reload failed, but the exact public maintenance response confirms traffic is closed." >&2
   fi
 }
 
 publish_candidate_route() {
-  local route_file="${CADDY_ROUTES_PATH%/}/bodycast.caddy" temporary
-  bodycast_stage_route_config "reverse_proxy ${APP_CONTAINER}:3000" || return 1
+  local temporary marker reload_failed=false
+  marker="$(bodycast_maintenance_marker_from_route)" || return 1
+  bodycast_verify_exact_maintenance_route || return 1
+  bodycast_probe_public_maintenance "$marker" || return 1
+  bodycast_stage_serving_route_config || return 1
   temporary="$BODYCAST_ROUTE_STAGE_PATH"
   # Staged bytes are validated before the final canonical-main fence. No route
   # mutation occurs unless this mode's required exact SHA remains current.
@@ -173,23 +179,31 @@ publish_candidate_route() {
     rm -f -- "$temporary"
     return 1
   fi
-  if ! mv -f -- "$temporary" "$route_file"; then
+  if ! bodycast_publish_staged_route "$temporary"; then
     rm -f -- "$temporary"
-    echo "Atomic serving-route replacement failed; the prior route bytes remain active." >&2
+    echo "Serving-route replacement failed before serving commit." >&2
     return 1
   fi
+  # The live rename is the first possible serving effect. Treat success as the
+  # commit immediately; subsequent reload/probe failures are observational.
+  SERVING_COMMIT_OCCURRED=true
+  set +e
   if ! docker exec gymbeam-caddy caddy reload \
     --address unix//run/caddy-admin/admin.sock \
     --config /etc/caddy/Caddyfile; then
-    echo "Caddy serving reload failed; the previously active maintenance config remains in force." >&2
-    return 75
+    reload_failed=true
+    echo "POST-COMMIT VERIFICATION WARNING: Caddy serving reload failed; route state was not rolled back." >&2
+  fi
+  if ! bodycast_probe_public_candidate_observational; then
+    echo "POST-COMMIT VERIFICATION WARNING: public candidate probe failed; route state was not changed." >&2
+  fi
+  if [[ "$reload_failed" == "true" ]]; then
+    echo "Serving commit remains complete despite the explicit reload error." >&2
   fi
 }
 
 enter_maintenance() {
   if ! publish_maintenance_route; then
-    echo "Maintenance was not confirmed active; independently removing the app that the prior Caddy config may still serve." >&2
-    stop_old_app || echo "Fail-closed app removal was incomplete; operator intervention is required." >&2
     return 1
   fi
   stop_old_app

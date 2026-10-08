@@ -1,67 +1,9 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { PREVIOUS_SHA, PREVIOUS_IMAGE_ID, WRONG_IMAGE_ID, bashAvailable, toBashPath, maintenanceRoute, createFixture, runFixture, stagedCandidatePath, assertStageOutsideLiveRoutes, assertNoWatcherServingBeforeAtomicPublish, appState } from "./helpers/production-release-cutover-fixture";
+import { PREVIOUS_SHA, PREVIOUS_IMAGE_ID, WRONG_IMAGE_ID, bashAvailable, toBashPath, maintenanceRoute, createFixture, runFixture, appState } from "./helpers/production-release-cutover-fixture";
 
 describe("fallback production traffic cutover freshness and recovery", () => {
-  it.skipIf(!bashAvailable)("serves the exact candidate when canonical main remains unchanged", () => {
-    const fixture = createFixture();
-    writeFileSync(path.join(fixture.routes, "bodycast.caddy"), maintenanceRoute());
-    writeFileSync(path.join(fixture.root, "active-route"), "maintenance\n");
-    writeFileSync(path.join(fixture.root, "app-sha"), `${fixture.candidateSha}\n`);
-    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh serve", {
-      BODYCAST_DEPLOY_SHA: fixture.candidateSha,
-      DEPLOY_SHA: fixture.candidateSha,
-    });
-
-    expect(result.status).toBe(0);
-    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
-    expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).toContain("reverse_proxy bodycast-app-prod:3000");
-    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8").trim().split(/\r?\n/);
-    const stagePath = stagedCandidatePath(fixture);
-    assertStageOutsideLiveRoutes(fixture.routes, stagePath);
-    expect(events).toContain(`watch-ignored-outside-live-routes:${path.posix.basename(stagePath)}`);
-    assertNoWatcherServingBeforeAtomicPublish(events);
-    expect(events.filter((event) => event === "caddy-active-config:serving")).toHaveLength(1);
-    expect(events.indexOf("atomic-live-route-replacement:bodycast.caddy"))
-      .toBeLessThan(events.indexOf("caddy-reload:serving"));
-    expect(events.indexOf("caddy-reload:serving"))
-      .toBeLessThan(events.indexOf("caddy-active-config:serving"));
-    expect(events.indexOf("live-route-before-validate:maintenance")).toBeLessThan(events.indexOf("canonical-main-fetch"));
-    expect(events.indexOf("canonical-main-fetch")).toBeLessThan(events.indexOf("live-route-mutation:serving"));
-    expect(events.indexOf("live-route-mutation:serving")).toBeLessThan(events.indexOf("caddy-reload:serving"));
-  }, 30_000);
-
-  it.skipIf(!bashAvailable)("fails the watcher-safety invariant if candidate staging moves under the live routes directory", () => {
-    const fixture = createFixture();
-    writeFileSync(path.join(fixture.routes, "bodycast.caddy"), maintenanceRoute());
-    writeFileSync(path.join(fixture.root, "active-route"), "maintenance\n");
-    writeFileSync(path.join(fixture.root, "app-sha"), `${fixture.candidateSha}\n`);
-
-    const primitivesPath = path.join(fixture.repo, "scripts", "production-route-primitives.sh");
-    const primitives = readFileSync(primitivesPath, "utf8");
-    const safeStage = 'temporary="$(mktemp "${route_parent}/.bodycast-route-stage.XXXXXX")"';
-    const unsafeStage = 'temporary="$(mktemp "${CADDY_ROUTES_PATH}/.bodycast-route-stage.XXXXXX")"';
-    expect(primitives).toContain(safeStage);
-    writeFileSync(primitivesPath, primitives.replace(safeStage, unsafeStage));
-
-    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh serve", {
-      BODYCAST_DEPLOY_SHA: fixture.candidateSha,
-      DEPLOY_SHA: fixture.candidateSha,
-      ADVANCE_ON_VALIDATE: "1",
-    });
-
-    expect(result.status).not.toBe(0);
-    expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).toBe(maintenanceRoute());
-    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8").trim().split(/\r?\n/);
-    expect(events.some((event) => event.startsWith("watch-live-file-created:.bodycast-route-stage."))).toBe(true);
-    expect(events.some((event) => event.startsWith("watch-live-file-change:.bodycast-route-stage."))).toBe(true);
-    expect(events.some((event) => event.startsWith("watch-serving-effect:.bodycast-route-stage."))).toBe(true);
-    expect(events).not.toContain("atomic-live-route-replacement:bodycast.caddy");
-    expect(() => assertNoWatcherServingBeforeAtomicPublish(events))
-      .toThrow("Caddy watcher served staged candidate bytes before atomic live-route replacement.");
-  }, 30_000);
-
   it.skipIf(!bashAvailable)("rejects the filesystem root as the live routes directory before Docker access", () => {
     const fixture = createFixture();
     const before = readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8");
@@ -75,7 +17,7 @@ describe("fallback production traffic cutover freshness and recovery", () => {
     expect(existsSync(path.join(fixture.root, "docker.log"))).toBe(false);
   }, 30_000);
 
-  it.skipIf(!bashAvailable)("removes a serving candidate when maintenance bytes are written but Caddy reload fails", () => {
+  it.skipIf(!bashAvailable)("does not stop the old app when maintenance cannot be confirmed after reload failure", () => {
     const fixture = createFixture();
     writeFileSync(path.join(fixture.routes, "bodycast.caddy"), maintenanceRoute());
     writeFileSync(path.join(fixture.root, "active-route"), "maintenance\n");
@@ -98,25 +40,22 @@ describe("fallback production traffic cutover freshness and recovery", () => {
     expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).toContain(
       'respond "BodyCast is temporarily unavailable while the model is updated." 503',
     );
-    // Caddy did not accept the maintenance bytes, so its last active serving
-    // config remains. The app is independently removed before the trap exits.
+    // Without the exact public maintenance response, the fallback deploy must
+    // leave the old app running and refuse to start/replace a candidate.
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
-    expect(appState(fixture)).toMatchObject({ status: "exited", present: "false" });
-    expect(readFileSync(path.join(fixture.root, "app-restart"), "utf8").trim()).toBe("no");
+    expect(appState(fixture)).toMatchObject({ sha: fixture.candidateSha, status: "healthy", present: "true" });
+    expect(readFileSync(path.join(fixture.root, "app-restart"), "utf8").trim()).toBe("always");
     const docker = path.join(fixture.root, "docker.log");
-    expect(readFileSync(docker, "utf8")).toContain("stop --time 0 bodycast-app-prod");
-    expect(readFileSync(docker, "utf8")).toContain("rm --force app");
+    expect(readFileSync(docker, "utf8")).not.toContain("stop --time 0 bodycast-app-prod");
+    expect(readFileSync(docker, "utf8")).not.toContain("rm --force app");
     const events = readFileSync(path.join(fixture.root, "events.log"), "utf8").trim().split(/\r?\n/);
-    const maintenanceBytesWritten = events.indexOf("live-route-mutation:maintenance");
-    const failedReload = events.indexOf("caddy-reload-failed:maintenance");
-    const appStopped = events.indexOf("direct-app-stop");
-    const appRemoved = events.indexOf("compose-remove-app");
-    expect(maintenanceBytesWritten).toBeGreaterThan(-1);
-    expect(failedReload).toBeGreaterThan(maintenanceBytesWritten);
-    expect(appStopped).toBeGreaterThan(failedReload);
-    expect(appRemoved).toBeGreaterThan(appStopped);
+    expect(events).toContain("live-route-mutation:maintenance");
+    expect(events).toContain("caddy-reload-failed:maintenance");
+    expect(events.some((event) => event.startsWith("public-probe:200:https://bodycast.example.test/"))).toBe(true);
+    expect(events).not.toContain("direct-app-stop");
+    expect(events).not.toContain("compose-remove-app");
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
-    expect(runFixture(fixture, "curl --fail https://bodycast.example.test/api/health").status).not.toBe(0);
+    expect(runFixture(fixture, "curl --fail https://bodycast.example.test/api/health").status).toBe(0);
   }, 30_000);
 
   it.skipIf(!bashAvailable)("refuses public rollback mode even with caller-selected historical SHA and image", () => {

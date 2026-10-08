@@ -87,6 +87,30 @@ ${APP_HOST} {
 }
 EOF
   if cmp -s "$expected_file" "$route_file"; then route_verified=true; fi
+  if [[ "$route_verified" != true ]]; then
+    marker="$(sed -n 's/^[[:space:]]*X-BodyCast-Deploy-Maintenance "\([A-Za-z0-9][A-Za-z0-9._-]*\)"[[:space:]]*$/\1/p' "$route_file")"
+    if [[ "$marker" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
+      cat > "$expected_file" <<EOF
+http://${APP_HOST} {
+    redir https://${APP_HOST}{uri} permanent
+}
+
+${APP_HOST} {
+    encode zstd gzip
+    header {
+        -Server
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        Cache-Control "no-store"
+        X-BodyCast-Deploy-Maintenance "${marker}"
+    }
+    ${ROUTE_RESPONSE}
+}
+EOF
+      cmp -s "$expected_file" "$route_file" && route_verified=true
+    fi
+  fi
   rm -f "$expected_file"
   route_sha="$(sha256sum "$route_file" 2>/dev/null | awk '{print $1}')"
 fi

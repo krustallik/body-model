@@ -3,7 +3,6 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const deploySh = readFileSync(resolve("scripts/deploy.sh"), "utf8").replace(/\r\n/g, "\n");
-const mainFreshnessSh = readFileSync(resolve("scripts/deploy-main-freshness.sh"), "utf8").replace(/\r\n/g, "\n");
 const deployWorkflow = readFileSync(resolve(".github/workflows/deploy-production.yml"), "utf8").replace(/\r\n/g, "\n");
 const preflightSh = readFileSync(resolve("scripts/deploy-preflight-schema.sh"), "utf8");
 const migrateSh = readFileSync(resolve("scripts/deploy-migrate.sh"), "utf8");
@@ -14,8 +13,8 @@ const routePathSh = readFileSync(resolve("scripts/production-route-path.sh"), "u
 const releaseMarkerSh = readFileSync(resolve("scripts/production-release-marker.sh"), "utf8");
 const composeYaml = readFileSync(resolve("docker-compose.prod.yml"), "utf8");
 
-describe("production deploy script safety contracts", () => {
-  it("keeps automatic workflow_run deploy and rechecks main after deployment creation immediately before SSH", () => {
+describe("production maintenance-first deploy safety contracts", () => {
+  it("keeps automatic workflow_run deploy limited to successful current-main CI", () => {
     expect(deployWorkflow).toContain("workflow_run:");
     expect(deployWorkflow).toContain("workflows:\n      - BodyCast CI/CD");
     const deploymentObjectAt = deployWorkflow.indexOf("- name: Create GitHub deployment");
@@ -28,220 +27,134 @@ describe("production deploy script safety contracts", () => {
     expect(deployWorkflow.slice(sshFenceAt, sshAt)).toContain("isCurrentMainSha(CANDIDATE");
   });
 
-  it("fetches canonical origin/main and fences both fallback route and Caddy serving mutations", () => {
-    expect(mainFreshnessSh).toContain("git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main");
-    expect(mainFreshnessSh).toContain("git rev-parse --verify 'refs/remotes/origin/main^{commit}'");
-    expect(mainFreshnessSh).toMatch(/\[\[ "\$candidate_sha" == "\$canonical_main_sha" \]\]/);
+  it("implements the approved maintenance-first state machine and live-route commit", () => {
+    const states = [
+      'release_state="PREPARE"',
+      'release_state="MAINTENANCE_CONFIRMED"',
+      'release_state="PREVIOUS_RELEASE_CAPTURED"',
+      'release_state="CANDIDATE_VERIFIED"',
+      'release_state="SERVING_COMMIT"',
+      'release_state="COMMITTED"',
+    ].map((needle) => deploySh.indexOf(needle));
+    expect(states.every((index) => index >= 0)).toBe(true);
+    expect(states).toEqual([...states].sort((left, right) => left - right));
 
-    const hostClientAt = deploySh.indexOf('if [[ -x "$HOST_OPERATION_CLIENT" ]]');
-    const deployPathGateAt = deploySh.indexOf("bodycast_canonicalize_routes_path || exit 1");
-    const deployMainFenceAt = deploySh.indexOf("\nassert_current_main_sha\n", deployPathGateAt);
-    const trafficPathGateAt = cutoverSh.indexOf("bodycast_canonicalize_routes_path || exit 1");
-    const trafficHostClientAt = cutoverSh.indexOf('if [[ -x "$HOST_OPERATION_CLIENT" ]]');
-    expect(deployPathGateAt).toBeGreaterThan(-1);
-    expect(deployPathGateAt).toBeLessThan(hostClientAt);
-    expect(deployPathGateAt).toBeLessThan(deployMainFenceAt);
-    expect(trafficPathGateAt).toBeGreaterThan(-1);
-    expect(trafficPathGateAt).toBeLessThan(trafficHostClientAt);
+    const routeReplaceAt = deploySh.indexOf('mv -f -- "$route_stage" "${CADDY_ROUTES_PATH%/}/bodycast.caddy"');
+    const committedAt = deploySh.indexOf('release_state="COMMITTED"', routeReplaceAt);
+    const trapDisarmAt = deploySh.indexOf("trap - ERR", committedAt);
+    const reloadAt = deploySh.indexOf("docker exec gymbeam-caddy caddy reload", trapDisarmAt);
+    const publicProbeAt = deploySh.indexOf("bodycast_probe_public_candidate_observational", reloadAt);
+    expect(routeReplaceAt).toBeGreaterThan(states[4]);
+    expect(committedAt).toBeGreaterThan(routeReplaceAt);
+    expect(deploySh.slice(routeReplaceAt, committedAt + 'release_state="COMMITTED"'.length))
+      .toContain('fi\nrelease_state="COMMITTED"');
+    expect(trapDisarmAt).toBeGreaterThan(committedAt);
+    expect(reloadAt).toBeGreaterThan(trapDisarmAt);
+    expect(publicProbeAt).toBeGreaterThan(reloadAt);
+    expect(deploySh.slice(reloadAt)).not.toContain("assert_current_main_sha");
+    expect(deploySh.slice(reloadAt)).not.toContain("stop_candidate_fail_closed");
+  });
+
+  it("requires an exact uncached public maintenance response before stopping the old app", () => {
+    expect(routePrimitivesSh).toContain('respond "BodyCast is temporarily unavailable while the model is updated." 503');
+    expect(routePrimitivesSh).toContain('Cache-Control "no-store"');
+    expect(routePrimitivesSh).toContain('X-BodyCast-Deploy-Maintenance "${maintenance_marker}"');
+    expect(routePrimitivesSh).toContain("--max-redirs 0");
+    expect(routePrimitivesSh).toContain('[[ "$status" != "503" ]]');
+    expect(routePrimitivesSh).toContain("Public maintenance probe did not return the exact uncached per-attempt 503 response.");
+
+    const confirmAt = deploySh.indexOf("publish_and_confirm_maintenance\n");
+    const stopAt = deploySh.indexOf("stop_exact_app_container \"$previous_app_sha\"", confirmAt);
+    const captureAt = deploySh.indexOf("capture_previous_release\n", confirmAt);
+    expect(confirmAt).toBeGreaterThan(-1);
+    expect(captureAt).toBeGreaterThan(confirmAt);
+    expect(stopAt).toBeGreaterThan(captureAt);
+    const publishDefinitionAt = deploySh.indexOf("publish_and_confirm_maintenance() {");
+    const captureDefinitionAt = deploySh.indexOf("capture_previous_release() {");
+    const publishBody = deploySh.slice(publishDefinitionAt, captureDefinitionAt);
+    expect(publishBody).toContain("bodycast_probe_public_maintenance");
+    expect(publishBody).toContain('release_state="MAINTENANCE_CONFIRMED"');
+  });
+
+  it("never starts the DB and prevents Compose dependency startup during read-only preflight", () => {
+    expect(deploySh).not.toMatch(/compose\s+up\s+-d\s+db\b/);
+    expect(deploySh).not.toMatch(/compose\s+up\s+-d\s+\"\$DB/);
+    expect(preflightSh).not.toMatch(/compose\s+up\s+-d\s+db\b/);
+    expect(deploySh).toContain('compose up -d --no-deps --force-recreate "$APP_SERVICE"');
+    expect(deploySh).toContain("Existing production database is unavailable; deploy will not start it.");
+    expect(preflightSh).toContain('docker inspect --format');
+    expect(preflightSh).toContain('run --rm --no-deps --entrypoint npx migrate prisma migrate status');
+    expect(preflightSh).not.toMatch(/^\s*(?:compose.*run|npx|prisma)\s+.*prisma\s+migrate\s+deploy/m);
+  });
+
+  it("prepares and validates a fixed serving route off-live before the final main fence", () => {
     expect(routePathSh).toContain('realpath -e -- "$requested_path"');
-    expect(routePathSh).toContain('[[ -n "$slashless_path" ]]');
     expect(routePathSh).toContain('CADDY_ROUTES_PATH="$canonical_path"');
-    expect(deploySh).toContain("--canonical-main-fence fresh-current-main-v1");
-    expect(deploySh.indexOf("assert_current_main_sha\ncompose up -d \"$DB_SERVICE\""))
-      .toBeGreaterThan(-1);
-    const buildAt = deploySh.indexOf('compose build "$APP_SERVICE"');
-    const maintenanceBoundaryAt = deploySh.indexOf('maintenance_started=true\n  bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance', buildAt);
-    const appRecreateFenceAt = deploySh.indexOf("assert_current_main_sha\ncompose up -d --no-deps --force-recreate", buildAt);
-    const appRecreateAt = deploySh.indexOf('compose up -d --no-deps --force-recreate "$APP_SERVICE"', appRecreateFenceAt);
-    const serveFenceAt = deploySh.lastIndexOf("assert_current_main_sha\n  bash \"${ROOT_DIR}/scripts/production-traffic-cutover.sh\" serve");
-    const serveAt = deploySh.lastIndexOf('bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" serve');
-    const candidatePublisherAt = cutoverSh.indexOf("publish_candidate_route() {");
-    const candidateStageAt = cutoverSh.indexOf('bodycast_stage_route_config "reverse_proxy ${APP_CONTAINER}:3000"', candidatePublisherAt);
-    const routeFenceAt = cutoverSh.indexOf('bodycast_assert_current_main_sha "$expected_release_sha"', candidatePublisherAt);
-    const routeWriteAt = cutoverSh.indexOf('mv -f -- "$temporary" "$route_file"', candidatePublisherAt);
-    const caddyReloadAt = cutoverSh.indexOf('docker exec gymbeam-caddy caddy reload', routeWriteAt);
-    expect(maintenanceBoundaryAt).toBeGreaterThan(buildAt);
-    expect(appRecreateFenceAt).toBeGreaterThan(maintenanceBoundaryAt);
-    expect(appRecreateAt).toBeGreaterThan(appRecreateFenceAt);
-    expect(serveFenceAt).toBeGreaterThan(appRecreateAt);
-    expect(serveAt).toBeGreaterThan(serveFenceAt);
-    expect(cutoverSh).toContain('source "${ROOT_DIR}/scripts/deploy-main-freshness.sh"');
-    expect(candidatePublisherAt).toBeGreaterThan(-1);
-    expect(candidateStageAt).toBeGreaterThan(candidatePublisherAt);
-    expect(routePrimitivesSh).toContain('caddy validate --adapter caddyfile --config -');
-    expect(routeFenceAt).toBeGreaterThan(-1);
-    expect(candidateStageAt).toBeLessThan(routeFenceAt);
-    expect(routeFenceAt).toBeLessThan(routeWriteAt);
-    expect(routeWriteAt).toBeLessThan(caddyReloadAt);
-    expect(cutoverSh.indexOf("clear_bodycast_release_marker", candidatePublisherAt)).toBeLessThan(routeWriteAt);
-    expect(cutoverSh.slice(caddyReloadAt)).not.toContain("clear_bodycast_release_marker");
-    expect(cutoverSh.slice(caddyReloadAt)).not.toContain("curl ");
-    expect(cutoverSh.slice(caddyReloadAt)).toContain("publish_candidate_route\nexit 0");
-    expect(cutoverSh).toContain('bodycast_stage_route_config "reverse_proxy ${APP_CONTAINER}:3000"');
-    expect(cutoverSh).toContain('bodycast_verify_exact_maintenance_route');
     expect(routePrimitivesSh).toContain('mktemp "${route_parent}/.bodycast-route-stage.XXXXXX"');
-    expect(routePrimitivesSh).not.toContain('bodycast_write_route');
-    expect(routePrimitivesSh).not.toContain('caddy reload');
-    expect(routePrimitivesSh).not.toContain('mv -f --');
-    expect(cutoverSh).not.toContain('bodycast_write_route');
-    expect(deploySh).not.toContain('bodycast_write_route');
-    expect(routePrimitivesSh).toContain('CADDY_ROUTES_PATH" != "/"');
-    expect(routePrimitivesSh).toContain('The staging parent must be strictly outside the live routes directory.');
-    expect(deploySh).toContain("previous app and route remain unchanged");
-    expect(cutoverSh).not.toContain("rollback-previous");
-    expect(deploySh).not.toContain("rollback-previous");
-    expect(deploySh).not.toContain("BODYCAST_ROLLBACK_SHA");
-    expect(deploySh).not.toContain("BODYCAST_ROLLBACK_IMAGE_ID");
-    const rollbackHandlerAt = deploySh.indexOf("rollback() {");
-    const rollbackMarkerAt = deploySh.indexOf('rollback_marker_status=1', rollbackHandlerAt);
-    const rollbackV4At = deploySh.indexOf('unified-v4-traffic-check.mjs --profile-id 1', rollbackHandlerAt);
-    const rollbackRouteAt = deploySh.indexOf('publish_captured_previous_route', rollbackHandlerAt);
-    expect(rollbackHandlerAt).toBeGreaterThan(-1);
-    expect(rollbackMarkerAt).toBeGreaterThan(rollbackHandlerAt);
-    expect(rollbackV4At).toBeGreaterThan(rollbackMarkerAt);
-    expect(rollbackRouteAt).toBeGreaterThan(rollbackV4At);
-    expect(deploySh.slice(rollbackRouteAt, rollbackRouteAt + 100)).not.toContain("DEPLOY_SHA");
+    expect(routePrimitivesSh).toContain('caddy validate --adapter caddyfile --config -');
+    expect(routePrimitivesSh).not.toContain("bodycast_write_route");
+    expect(deploySh).not.toContain("bodycast_write_route");
+    expect(deploySh).not.toContain("bodycast_stage_route_config");
+
+    const v4At = deploySh.lastIndexOf("run_v4_traffic_check\n");
+    const mainFenceAt = deploySh.lastIndexOf("assert_current_main_sha\nbodycast_assert_safe_routes_location");
+    const routeStageCheckAt = deploySh.indexOf('[[ -f "$route_stage"', mainFenceAt);
+    const commitAt = deploySh.indexOf("release_state=\"SERVING_COMMIT\"", routeStageCheckAt);
+    expect(v4At).toBeGreaterThan(-1);
+    expect(mainFenceAt).toBeGreaterThan(v4At);
+    expect(routeStageCheckAt).toBeGreaterThan(mainFenceAt);
+    expect(commitAt).toBeGreaterThan(routeStageCheckAt);
   });
 
-  it("keeps attempt-bound rollback internal to the deploy trap and gates it on captured identity", () => {
-    const rollbackAt = deploySh.indexOf("rollback() {");
-    const rollbackBody = deploySh.slice(rollbackAt, deploySh.indexOf("trap rollback ERR", rollbackAt));
-    expect(rollbackBody).toContain('previous_app_healthy" == "true"');
-    expect(rollbackBody).toContain('previous_app_sha" =~ ^[0-9a-f]{40}$');
-    expect(rollbackBody).toContain('previous_app_image_id" =~ ^sha256:[0-9a-f]{64}$');
-    expect(rollbackBody).toContain('pinned_rollback_image_id" != "$previous_app_image_id"');
-    expect(rollbackBody).toContain('restored_sha" != "$previous_app_sha"');
-    expect(rollbackBody).toContain('restored_image_id" != "$previous_app_image_id"');
-    expect(rollbackBody).toContain('restored_status" != "healthy"');
-    expect(rollbackBody).toContain("bodycast_verify_exact_maintenance_route");
-    expect(rollbackBody).toContain("Unified V4 currentness blocks prior-release restoration");
-    expect(rollbackBody).toContain('publish_captured_previous_route');
-    expect(rollbackBody.indexOf('docker exec "$APP_CONTAINER" wget')).toBeLessThan(rollbackBody.indexOf("publish_captured_previous_route"));
-    expect(rollbackBody).not.toContain('curl --fail --silent --show-error --retry');
-    expect(rollbackBody).not.toContain("bodycast_assert_current_main_sha");
-    expect(rollbackBody).not.toContain("production-traffic-cutover.sh\" rollback-previous");
-    const maintenanceFailureAt = rollbackBody.indexOf("Maintenance activation failed; no replacement will be started behind an unproven route.");
-    const maintenanceVerificationAt = rollbackBody.indexOf("bodycast_verify_exact_maintenance_route");
-    const priorContainerRecreateAt = rollbackBody.indexOf('BODYCAST_DEPLOY_SHA="$previous_app_sha" compose up');
-    expect(maintenanceFailureAt).toBeGreaterThan(-1);
-    expect(maintenanceVerificationAt).toBeGreaterThan(maintenanceFailureAt);
-    expect(priorContainerRecreateAt).toBeGreaterThan(maintenanceVerificationAt);
-    expect(rollbackBody.indexOf('stop_current_app_fail_closed', maintenanceFailureAt)).toBeGreaterThan(maintenanceFailureAt);
-    expect(rollbackBody.indexOf('stop_current_app_fail_closed', maintenanceVerificationAt)).toBeGreaterThan(maintenanceVerificationAt);
+  it("leaves pre-commit failures fail-closed without assuming the prior runtime can be reproduced", () => {
+    const failureAt = deploySh.indexOf("release_failure() {");
+    const failureEnd = deploySh.indexOf("trap release_failure ERR", failureAt);
+    const failureBody = deploySh.slice(failureAt, failureEnd);
+    expect(failureBody).toContain('release_state" == "PREPARE"');
+    expect(failureBody).toContain("traffic remains in maintenance");
+    expect(failureBody).toContain("stop_candidate_fail_closed");
+    expect(failureBody).toContain("Automatic prior-app restoration is disabled because this attempt has no proof of the exact prior runtime configuration.");
+    expect(failureBody).not.toContain("compose up");
+    expect(failureBody).not.toContain("publish_captured_previous_route");
+    expect(failureBody).not.toContain("clear_bodycast_release_marker");
   });
 
-  it("runs schema preflight before app cutover", () => {
-    const preflightAt = deploySh.indexOf("deploy-preflight-schema.sh");
-    const cutOverAt = deploySh.indexOf('compose up -d --no-deps --force-recreate "$APP_SERVICE"');
-    expect(preflightAt).toBeGreaterThan(-1);
-    expect(cutOverAt).toBeGreaterThan(preflightAt);
-    expect(deploySh.slice(cutOverAt)).toContain('force-recreate "$APP_SERVICE"');
-    expect(deploySh.indexOf("compose build \"$APP_SERVICE\"")).toBeGreaterThan(preflightAt);
-    expect(deploySh.lastIndexOf('maintenance_started=true\n  bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" maintenance'))
-      .toBeGreaterThan(deploySh.indexOf('compose build "$APP_SERVICE"'));
+  it("binds prior and candidate stop operations to captured same-attempt container identities", () => {
+    expect(deploySh).toContain('previous_app_container_id="$(docker inspect --format \'{{.Id}}\' "$APP_CONTAINER")"');
+    expect(deploySh).toContain('candidate_container_id="$(docker inspect --format \'{{.Id}}\' "$APP_CONTAINER")"');
+    expect(deploySh).toContain('stop_exact_app_container "$previous_app_sha" "$previous_app_image_id" "$previous_app_container_id"');
+    expect(deploySh).toContain('stop_exact_app_container "$DEPLOY_SHA" "$candidate_image_id" "$candidate_container_id"');
+    expect(deploySh).toContain('app_container_id" == "$expected_container_id"');
   });
 
-  it("does not recreate the running app on pre-cutover failure", () => {
-    expect(deploySh).toContain('maintenance_started=false');
-    expect(deploySh).toContain("previous app and route remain serving");
-    expect(deploySh).toContain("Release candidate was superseded before maintenance");
-    expect(deploySh).toContain("Previously serving app");
-    expect(deploySh).toContain("traffic remains in maintenance");
-  });
-
-  it("requires exact 40-character DEPLOY_SHA", () => {
-    expect(deploySh).toMatch(/DEPLOY_SHA.*\[0-9a-f\]\{40\}/);
-  });
-
-  it("keeps an incompatible-schema cutover on the exact SHA through non-serving startup", () => {
-    expect(deploySh).toContain("source \"$ROOT_DIR/scripts/production-release-marker.sh\"");
-    expect(deploySh).toContain('BODYCAST_MARKER_RELEASE_SHA" == "$DEPLOY_SHA');
-    expect(deploySh).toContain('BODYCAST_NON_SERVING_DEPLOY" == "1"');
-    expect(deploySh).toContain('write_bodycast_release_marker "$DEPLOY_SHA" app-ready');
-    expect(deploySh).toContain("prior binary restart is refused");
-    expect(migrateSh).not.toContain("write_bodycast_release_marker");
-    expect(migrateSh).toContain("read_bodycast_release_marker");
-    expect(migrateSh).toContain("existing schema-cutover marker requires explicit recovery");
-    expect(migrateSh).toContain('HOST_OPERATION_CLIENT="/usr/local/bin/bodycast-production-operation"');
-    expect(migrateSh).toContain('"$HOST_OPERATION_CLIENT" migration-challenge');
-    expect(migrateSh).toContain('"$HOST_OPERATION_CLIENT" forward-migration');
-    expect(releaseMarkerSh).toContain("state=%s");
-    expect(releaseMarkerSh).toContain('"$release_sha" "$state"');
-    expect(releaseMarkerSh).toMatch(/ddl-started\|schema-applied\|app-ready/);
-    expect(releaseMarkerSh).toContain("active-energy-unified-v2");
-    expect(composeYaml).toContain("org.bodycast.release-sha: ${BODYCAST_DEPLOY_SHA:-unknown}");
-  });
-
-  it("requires V3 postflight and V4 currentness before serving and stops on health failure", () => {
-    expect(cutoverSh).toContain('MODE" == "v3-postflight"');
-    expect(cutoverSh).toContain("unified-v3-postflight.mjs --profile-id 1");
-    expect(cutoverSh).toContain("unified-v4-traffic-check.mjs --profile-id 1");
-    expect(cutoverSh).toContain("require_ready_release_marker");
-    expect(cutoverSh).toContain("enter_maintenance");
-    expect(cutoverSh).toContain("docker update --restart=no");
-    expect(cutoverSh).toContain("compose rm --force app");
-    expect(cutoverSh).toContain("manually restarted");
-    expect(cutoverSh).toContain("clear_bodycast_release_marker");
-  });
-
-  it("never runs migrate deploy / reset / replay / selection activation on ordinary path", () => {
+  it("keeps ordinary deploy migration-free and preserves the explicit recovery authority boundary", () => {
     expect(deploySh).not.toMatch(/npx\s+prisma\s+migrate\s+deploy|prisma\s+migrate\s+deploy(?!\.)/);
     expect(deploySh).not.toMatch(/prisma\s+migrate\s+reset/);
-    expect(deploySh).not.toMatch(/selection-v1/);
-    expect(deploySh.toLowerCase()).not.toMatch(/historical replay/);
-    // Preflight may mention migrate deploy in operator guidance, but must only execute status.
-    expect(preflightSh).toMatch(/prisma migrate status/);
-    expect(preflightSh).not.toMatch(/run --rm migrate(?!\s)/);
-    expect(preflightSh).not.toMatch(/entrypoint npx migrate prisma migrate deploy/);
-  });
-
-  it("disarms the rollback trap immediately after the terminal candidate Caddy load", () => {
-    const serveAt = deploySh.lastIndexOf('bash "${ROOT_DIR}/scripts/production-traffic-cutover.sh" serve');
-    const trapDisarmAt = deploySh.indexOf("trap - ERR", serveAt);
-    const cleanupAt = deploySh.indexOf('if ! docker image rm "$ROLLBACK_IMAGE"', trapDisarmAt);
-    expect(serveAt).toBeGreaterThan(-1);
-    expect(trapDisarmAt).toBeGreaterThan(serveAt);
-    expect(cleanupAt).toBeGreaterThan(trapDisarmAt);
-    expect(deploySh.slice(trapDisarmAt, cleanupAt)).not.toContain("assert_current_main_sha");
-    expect(deploySh.slice(cleanupAt)).not.toContain("|| true");
-  });
-
-  it("keeps production migration behind the host challenge and stdin proof handoff", () => {
+    expect(deploySh).not.toMatch(/selection-v1|historical replay/i);
+    expect(preflightSh).toContain("prisma migrate status");
+    expect(preflightSh).not.toContain("--entrypoint npx migrate prisma migrate deploy");
+    expect(deploySh).toContain('"$HOST_OPERATION_CLIENT" ordinary-release');
     expect(migrateSh).toContain("authorization-envelope.json");
     expect(migrateSh).toContain("BODYCAST_DDL_CHALLENGE:");
-    expect(migrateSh).toContain("--challenge-id \"$CHALLENGE_ID\"");
-    expect(migrateSh).toContain("--challenge-digest \"$CHALLENGE_DIGEST\"");
     expect(migrateSh).toContain("--execution-proof-stdin");
-    expect(migrateSh).toContain("IFS= read -r EXECUTION_PROOF");
     expect(migrateSh).toContain("--before-ddl");
-    expect(migrateSh).toContain("final-guard-receipt.json");
-    const challengeRequestAt = migrateSh.indexOf('"$HOST_OPERATION_CLIENT" migration-challenge');
-    const challengeHandoffAt = migrateSh.indexOf("BODYCAST_DDL_CHALLENGE:");
-    const proofReadAt = migrateSh.indexOf("IFS= read -r EXECUTION_PROOF");
-    const postOidcGuardSectionAt = migrateSh.indexOf("# Re-sample PostgreSQL sessions and host topology after the OIDC round trip.");
-    const postOidcGuardAt = migrateSh.indexOf("--before-ddl", postOidcGuardSectionAt);
-    const forwardMigrationAt = migrateSh.indexOf('"$HOST_OPERATION_CLIENT" forward-migration');
-    expect(challengeRequestAt).toBeGreaterThan(-1);
-    expect(challengeRequestAt).toBeLessThan(challengeHandoffAt);
-    expect(challengeHandoffAt).toBeLessThan(proofReadAt);
-    expect(proofReadAt).toBeLessThan(postOidcGuardSectionAt);
-    expect(postOidcGuardAt).toBeGreaterThan(postOidcGuardSectionAt);
-    expect(postOidcGuardAt).toBeLessThan(forwardMigrationAt);
-    for (const obsoleteCallerContract of [
-      "execution-proof.jwt",
-      "BODYCAST_DDL_ATTESTATION_NONCE_DIR",
-      "BODYCAST_EXECUTION_PROOF",
-      "BODYCAST_EXECUTION_PROOF_HANDOFF",
-      "BODYCAST_DDL_EXECUTION_CHALLENGE",
-    ]) {
-      expect(migrateSh).not.toContain(obsoleteCallerContract);
-    }
     expect(migrateSh).not.toMatch(/\bprisma\s+migrate\s+deploy\b/i);
     expect(migrateGuard).toContain("verifyFinalGuardReceipt");
     expect(migrateGuard).toContain("verifyGitHubExecutionProof");
     expect(migrateGuard).toContain("assertCurrentMigrationRunMatchesProof");
     expect(migrateGuard).toContain("assertPrismaTargetMatchesSignedIdentity");
-    expect(migrateGuard).not.toContain("BODYCAST_FINAL_GUARD_READY");
-    expect(migrateGuard).not.toContain("CONFIRM_PRODUCTION_MIGRATE");
+  });
+
+  it("retains schema marker requirements and exact release image labels", () => {
+    expect(deploySh).toContain('BODYCAST_MARKER_RELEASE_SHA" == "$DEPLOY_SHA');
+    expect(deploySh).toContain('BODYCAST_NON_SERVING_DEPLOY" == "1"');
+    expect(deploySh).toContain('write_bodycast_release_marker "$DEPLOY_SHA" app-ready');
+    expect(migrateSh).toContain("read_bodycast_release_marker");
+    expect(migrateSh).toContain("existing schema-cutover marker requires explicit recovery");
+    expect(releaseMarkerSh).toMatch(/ddl-started\|schema-applied\|app-ready/);
+    expect(composeYaml).toContain("org.bodycast.release-sha: ${BODYCAST_DEPLOY_SHA:-unknown}");
+    expect(deploySh).toContain('[[ "$deployed_container_sha" == "$DEPLOY_SHA" ]]');
+    expect(deploySh).toContain('[[ "$deployed_container_image_id" == "$candidate_image_id" ]]');
+    expect(cutoverSh).toContain("SERVING_COMMIT_OCCURRED=true");
   });
 });

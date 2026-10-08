@@ -7,9 +7,14 @@
 - Runtime: Docker Compose (`docker-compose.prod.yml`) — `app` + Postgres.
 - Edge: Caddy (`gymbeam-caddy`) reverse proxy to `bodycast-app-prod:3000`.
 - Ordinary release script: `scripts/deploy.sh` (exact `DEPLOY_SHA`, **no migrate**).
-- Schema preflight: `scripts/deploy-preflight-schema.sh` (`prisma migrate status` only).
+- Schema preflight: `scripts/deploy-preflight-schema.sh` (existing DB health inspection and `prisma migrate status` only; Compose dependency startup disabled).
 - Separate migrate script: `scripts/deploy-migrate.sh` (requires `CONFIRM_PRODUCTION_MIGRATE=migrate`; **not** wired to automatic deploy).
 - Production migration readiness: manual `Production migration preflight and encrypted backup` workflow; inspection and backup only, never migration.
+
+Ordinary deploy never starts, creates, recreates, or restarts PostgreSQL. It inspects the
+existing DB and runs read-only schema compatibility checks. The Prisma status container uses
+`docker compose run --no-deps`; the app replacement also uses `up --no-deps`. If the existing
+DB is unavailable or incompatible, deployment stops without changing DB schema or data.
 
 There are no Vercel/Netlify auto-deploy hooks for this app.
 
@@ -24,10 +29,31 @@ There are no Vercel/Netlify auto-deploy hooks for this app.
    - event `push`;
    - branch `main`;
    - CI `head_sha` equals current `origin/main` tip (rejects stale runs).
-4. Deploy checks out that exact SHA on the server.
-5. Schema preflight runs **before** app cutover. If production schema has pending migrations, deploy **blocks** (exit 2) and leaves the running app container unchanged. Ordinary deploy never runs `prisma migrate deploy`.
-6. Only after preflight succeeds does deploy build/recreate the app container.
-7. Health: container readiness + `https://$APP_HOST/api/health`.
+4. The server checks out that exact SHA and repeats the current-main freshness fence.
+5. Before maintenance, deploy checks marker state, the existing DB, read-only schema compatibility,
+   and Unified V4 currentness, then builds and validates the exact candidate.
+6. Deploy publishes a fixed maintenance route and confirms the public HTTPS endpoint returns the
+   exact attempt-marked 503 with `Cache-Control: no-store` and no redirect. The old app is not
+   stopped or replaced until this confirmation succeeds.
+7. Under maintenance, deploy captures the prior container/SHA/immutable image identity, stops and
+   removes the app container, then starts only the exact candidate app with `--no-deps`. It checks
+   candidate readiness, local health, SHA/image identity, DB compatibility, marker state, Unified
+   V4 currentness, route validity, and current-main freshness before serving.
+8. The atomic live serving-route replacement is `SERVING_COMMIT`. Caddy reload and public
+   `https://$APP_HOST/api/health` verification happen after commit and are observational; their
+   failure never triggers rollback or removes the candidate.
+
+Failure before maintenance confirmation leaves the prior app running. Failure after confirmation
+and before `SERVING_COMMIT` leaves traffic in maintenance. The exact prior image is pinned for
+operator recovery, but automatic prior-app restoration is disabled because the deploy does not
+prove the prior runtime configuration can be reproduced. An unverified candidate is stopped only
+when its same-attempt SHA, image, and container identity are known; otherwise maintenance remains
+active for operator intervention. Availability is secondary to correctness during this short
+single-user maintenance window.
+
+Ordinary deploy never runs `prisma migrate deploy`, historical replay, backfill, recovery, or model
+activation. Production migrations remain a separate controlled procedure with backup and explicit
+authorization; app rollback does not roll back database changes.
 
 PR CI success never deploys. Feature pushes without PR never deploy.
 

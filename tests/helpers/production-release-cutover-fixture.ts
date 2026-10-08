@@ -14,6 +14,7 @@ import { afterEach, expect } from "vitest";
 
 const temporaryRoots: string[] = [];
 export const PREVIOUS_SHA = "1".repeat(40);
+export const PREVIOUS_CONTAINER_ID = "e".repeat(64);
 export const PREVIOUS_IMAGE_ID = `sha256:${"a".repeat(64)}`;
 export const LATEST_IMAGE_ID = `sha256:${"b".repeat(64)}`;
 export const CANDIDATE_IMAGE_ID = `sha256:${"c".repeat(64)}`;
@@ -49,7 +50,27 @@ export function toBashPath(value: string): string {
   return `/${match[1].toLowerCase()}/${match[2].replace(/\\/g, "/")}`;
 }
 
-export function maintenanceRoute(): string {
+export function maintenanceRoute(marker = "fixture-attempt"): string {
+  return `http://bodycast.example.test {
+    redir https://bodycast.example.test{uri} permanent
+}
+
+bodycast.example.test {
+    encode zstd gzip
+    header {
+        -Server
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        Cache-Control "no-store"
+        X-BodyCast-Deploy-Maintenance "${marker}"
+    }
+    respond "BodyCast is temporarily unavailable while the model is updated." 503
+}
+`;
+}
+
+function servingRoute(): string {
   return `http://bodycast.example.test {
     redir https://bodycast.example.test{uri} permanent
 }
@@ -62,16 +83,9 @@ bodycast.example.test {
         Referrer-Policy "no-referrer"
         Strict-Transport-Security "max-age=31536000; includeSubDomains"
     }
-    respond "BodyCast is temporarily unavailable while the model is updated." 503
+    reverse_proxy bodycast-app-prod:3000
 }
 `;
-}
-
-function servingRoute(): string {
-  return maintenanceRoute().replace(
-    'respond "BodyCast is temporarily unavailable while the model is updated." 503',
-    "reverse_proxy bodycast-app-prod:3000",
-  );
 }
 
 function shellScript(strings: TemplateStringsArray): string {
@@ -126,12 +140,29 @@ if [[ "$1" == "image" && "$2" == "rm" ]]; then
   exit 0
 fi
 if [[ "$1" == "compose" ]]; then
-  if [[ "$joined" == *" config --quiet "* || "$joined" == *" up -d db "* \
-      || "$joined" == *" build migrate "* || "$joined" == *" logs --tail=100 "* ]]; then exit 0; fi
+  if [[ "$joined" == *" up -d db "* ]]; then
+    event "forbidden-db-start"
+    exit 80
+  fi
+  if [[ "$joined" == *" config --quiet "* || "$joined" == *" build migrate "* || "$joined" == *" logs --tail=100 "* ]]; then exit 0; fi
+  if [[ "$joined" == *" run --rm --no-deps --entrypoint npx migrate prisma migrate status "* ]]; then
+    event "schema-preflight-no-deps"
+    schema_count="$(cat "$SCHEMA_PREFLIGHT_COUNT_FILE" 2>/dev/null || printf '0')"
+    schema_count=$((schema_count + 1))
+    printf '%s\n' "$schema_count" > "$SCHEMA_PREFLIGHT_COUNT_FILE"
+    if [[ "\${FAIL_SCHEMA_PREFLIGHT:-0}" == "1" \
+        || ( "\${FAIL_SECOND_SCHEMA_PREFLIGHT:-0}" == "1" && "$schema_count" -ge 2 ) ]]; then exit 41; fi
+    printf '%s\n' 'Database schema is up to date!'
+    exit 0
+  fi
   if [[ "$joined" == *" run --rm --no-deps --entrypoint node migrate "* ]]; then
     if [[ "$joined" == *"unified-v4-traffic-check.mjs"* ]]; then event "unified-v4-check"; fi
     if [[ "$joined" == *"unified-v4-traffic-check.mjs"* \
         && "\${FAIL_ROLLBACK_V4:-0}" == "1" && -e "$FAIL_CANDIDATE_MARKER" ]]; then exit 42; fi
+    if [[ "$joined" == *"unified-v4-traffic-check.mjs"* \
+        && "\${FAIL_FINAL_V4_CHECK:-0}" == "1" \
+        && "$(cat "$APP_SHA_FILE" 2>/dev/null || true)" == "\${CANDIDATE_SHA:-}" \
+        && "$(cat "$ACTIVE_ROUTE_FILE" 2>/dev/null || true)" == "maintenance" ]]; then exit 42; fi
     if [[ "$joined" == *"unified-v4-traffic-check.mjs"* \
         && "$(cat "$APP_SHA_FILE" 2>/dev/null || true)" == "\${CANDIDATE_SHA:-}" \
         && "$(cat "$ACTIVE_ROUTE_FILE" 2>/dev/null || true)" == "maintenance" ]]; then
@@ -164,10 +195,21 @@ if [[ "$1" == "compose" ]]; then
       restored_image_id="$WRONG_IMAGE_ID"
     fi
     printf '%s\n' "$restored_image_id" > "$APP_IMAGE_ID_FILE"
-    printf '%s\n' "\${BODYCAST_DEPLOY_SHA:?}" > "$APP_SHA_FILE"
+    if [[ "\${CANDIDATE_CONTAINER_SHA_MISMATCH:-0}" == "1" \
+        && "\${BODYCAST_DEPLOY_SHA:-}" == "\${CANDIDATE_SHA:-}" ]]; then
+      printf '%s\n' "$PREVIOUS_SHA" > "$APP_SHA_FILE"
+    else
+      printf '%s\n' "\${BODYCAST_DEPLOY_SHA:?}" > "$APP_SHA_FILE"
+    fi
     printf '%s\n' healthy > "$APP_STATUS_FILE"
+    printf '%s\n' "\${CANDIDATE_CONTAINER_ID:-ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff}" > "$APP_CONTAINER_ID_FILE"
     printf '%s\n' true > "$APP_PRESENT_FILE"
     printf '%s\n' always > "$APP_RESTART_FILE"
+    if [[ "\${ADD_MARKER_AFTER_CANDIDATE_START:-0}" == "1" \
+        && "\${BODYCAST_DEPLOY_SHA:-}" == "\${CANDIDATE_SHA:-}" ]]; then
+      marker_path="$("$REAL_GIT" -C "$FIXTURE_REPO" rev-parse --absolute-git-dir)/bodycast-production-schema-cutover"
+      printf 'schemaVersion=1\nmanifestId=active-energy-unified-v2\nreleaseSha=%s\nstate=ddl-started\n' "$BODYCAST_DEPLOY_SHA" > "$marker_path"
+    fi
     exit 0
   fi
   if [[ "$joined" == *" stop app "* ]]; then
@@ -194,9 +236,18 @@ fi
 if [[ "$1" == "inspect" ]]; then
   format="$3"
   target="$4"
+  if [[ "$target" == "bodycast-db-prod" && "\${FAIL_DB_INSPECT:-0}" == "1" ]]; then
+    event "docker-db-inspect-failed"
+    exit 62
+  fi
   if [[ "$target" == "bodycast-app-prod" && "\${FAIL_DOCKER_APP_INSPECT:-0}" == "1" ]]; then
     event "docker-app-inspect-failed:$format"
     exit 58
+  fi
+  if [[ "$target" == "bodycast-app-prod" && "$format" == *".Id"* ]]; then
+    event "capture-app-container-id"
+    cat "$APP_CONTAINER_ID_FILE"
+    exit 0
   fi
   case "$target:$format" in
     bodycast-db-prod:*State.Status*Health*) printf '%s\n' 'running|healthy' ;;
@@ -284,9 +335,9 @@ if [[ "$1" == "exec" && ( "$2" == "gymbeam-caddy" || ( "$2" == "-i" && "$3" == "
   fi
 fi
 if [[ "$1" == "exec" && "$2" == "bodycast-app-prod" ]]; then
-  if [[ "\${FAIL_ROLLBACK_HEALTH:-0}" == "1" \
-      && "$(cat "$APP_SHA_FILE" 2>/dev/null || true)" == "\${PREVIOUS_SHA:-}" ]]; then
-    event "prior-local-health-failed"
+  if [[ "\${FAIL_CANDIDATE_LOCAL_HEALTH:-0}" == "1" \
+      && "$(cat "$APP_SHA_FILE" 2>/dev/null || true)" == "\${CANDIDATE_SHA:-}" ]]; then
+    event "candidate-local-health-failed"
     exit 22
   fi
   printf '%s\n' '{"status":"ok"}'
@@ -298,14 +349,61 @@ exit 92
 
 const fakeCurl = shellScript`#!/usr/bin/env bash
 set -Eeuo pipefail
-[[ "\${FAIL_ROLLBACK_HEALTH:-0}" == "1" ]] && exit 22
-if [[ "$(cat "$ACTIVE_ROUTE_FILE" 2>/dev/null || true)" == "serving" \
+headers=""
+body=""
+write_out=""
+url=""
+fail_on_error=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --fail|--fail-with-body) fail_on_error=true; shift ;;
+    --dump-header) headers="$2"; shift 2 ;;
+    --output) body="$2"; shift 2 ;;
+    --write-out) write_out="$2"; shift 2 ;;
+    --silent|--show-error|--max-redirs|--connect-timeout|--max-time) shift; [[ $# -eq 0 || "$1" == -* ]] || shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+status=503
+route_marker=""
+response_body='BodyCast is temporarily unavailable while the model is updated.'
+response_headers=$'HTTP/1.1 503 Service Unavailable\r\nCache-Control: no-store\r\n'
+if [[ "$(cat "$ACTIVE_ROUTE_FILE" 2>/dev/null || true)" == "maintenance" ]]; then
+  route_marker="$(sed -n 's/^[[:space:]]*X-BodyCast-Deploy-Maintenance "\([A-Za-z0-9][A-Za-z0-9._-]*\)"[[:space:]]*$/\1/p' "$ROUTE_FILE" | head -n 1)"
+  response_headers+="X-BodyCast-Deploy-Maintenance: $route_marker"$'\r\n'
+elif [[ "$(cat "$ACTIVE_ROUTE_FILE" 2>/dev/null || true)" == "serving" \
     && "$(cat "$APP_PRESENT_FILE" 2>/dev/null || true)" == "true" \
     && "$(cat "$APP_STATUS_FILE" 2>/dev/null || true)" == "healthy" ]]; then
-  printf '%s\n' '{"status":"ok"}'
-  exit 0
+  status=200
+  response_body='{"status":"ok"}'
+  response_headers=$'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n'
+else
+  status=502
+  response_body='unavailable'
+  response_headers=$'HTTP/1.1 502 Bad Gateway\r\n'
 fi
-exit 22
+if [[ "$url" == *"/" && "\${CURL_REDIRECT:-0}" == "1" ]]; then
+  status=302
+  response_headers=$'HTTP/1.1 302 Found\r\nLocation: /redirected\r\n'
+fi
+if [[ "\${FAIL_MAINTENANCE_PROBE:-0}" == "1" && "$url" == *"/" ]]; then status=200; fi
+if [[ "\${FAIL_CANDIDATE_PUBLIC_PROBE:-0}" == "1" && "$url" == *"/api/health" ]]; then
+  status=502
+  response_body='unavailable'
+  response_headers=$'HTTP/1.1 502 Bad Gateway\r\n'
+fi
+if [[ "\${CURL_WRONG_MARKER:-0}" == "1" && "$route_marker" != "" ]]; then
+  response_headers="\${response_headers/X-BodyCast-Deploy-Maintenance: $route_marker/X-BodyCast-Deploy-Maintenance: wrong-marker}"
+fi
+if [[ "\${CURL_NO_STORE_MISSING:-0}" == "1" ]]; then
+  response_headers=$'HTTP/1.1 503 Service Unavailable\\r\\nX-BodyCast-Deploy-Maintenance: '"$route_marker"$'\\r\\n'
+fi
+[[ -z "$headers" ]] || printf '%s' "$response_headers" > "$headers"
+[[ -z "$body" ]] || printf '%s\n' "$response_body" > "$body"
+if [[ "$write_out" == '%{http_code}' ]]; then printf '%s' "$status"; fi
+printf '%s\n' "public-probe:$status:$url" >> "$EVENT_LOG"
+if [[ "$fail_on_error" == "true" && "$status" -ge 400 ]]; then exit 22; fi
+exit 0
 `;
 
 const fakeGit = shellScript`#!/usr/bin/env bash
@@ -333,8 +431,16 @@ const fakeMv = shellScript`mv() {
       printf '%s\n' "watch-live-file-change:$event_path" >> "$EVENT_LOG"
       if grep -q reverse_proxy "$destination"; then
         printf '%s\n' live-route-mutation:serving >> "$EVENT_LOG"
+        if [[ "\${CADDY_AUTO_WATCH:-0}" == "1" ]]; then
+          printf '%s\n' serving > "$ACTIVE_ROUTE_FILE"
+          printf '%s\n' auto-watch-serving-effect >> "$EVENT_LOG"
+        fi
       else
         printf '%s\n' live-route-mutation:maintenance >> "$EVENT_LOG"
+        if [[ "\${CADDY_AUTO_WATCH:-0}" == "1" ]]; then
+          printf '%s\n' maintenance > "$ACTIVE_ROUTE_FILE"
+          printf '%s\n' auto-watch-maintenance-effect >> "$EVENT_LOG"
+        fi
       fi
       ;;
   esac
@@ -391,7 +497,6 @@ export function createFixture(): Fixture {
   ]) {
     copyFileSync(path.resolve("scripts", file), path.join(repo, "scripts", file));
   }
-  writeFileSync(path.join(repo, "scripts", "deploy-preflight-schema.sh"), "#!/usr/bin/env bash\nset -Eeuo pipefail\nexit 0\n");
   writeFileSync(path.join(repo, "docker-compose.prod.yml"), "services: {}\n");
   writeFileSync(path.join(bin, "docker"), fakeDocker, { mode: 0o755 });
   writeFileSync(path.join(bin, "curl"), fakeCurl, { mode: 0o755 });
@@ -417,6 +522,7 @@ export function createFixture(): Fixture {
   const paths = {
     APP_SHA_FILE: path.join(root, "app-sha"),
     APP_IMAGE_ID_FILE: path.join(root, "app-image-id"),
+    APP_CONTAINER_ID_FILE: path.join(root, "app-container-id"),
     APP_STATUS_FILE: path.join(root, "app-status"),
     APP_PRESENT_FILE: path.join(root, "app-present"),
     APP_RESTART_FILE: path.join(root, "app-restart"),
@@ -427,11 +533,13 @@ export function createFixture(): Fixture {
     EVENT_LOG: path.join(root, "events.log"),
     STAGE_PATH_LOG: path.join(root, "stage-paths.log"),
     CANDIDATE_STAGE_PATH_LOG: path.join(root, "candidate-stage-paths.log"),
+    SCHEMA_PREFLIGHT_COUNT_FILE: path.join(root, "schema-preflight-count"),
     ADVANCE_MARKER: path.join(root, "advance-once"),
     FAIL_CANDIDATE_MARKER: path.join(root, "fail-candidate-once"),
   };
   writeFileSync(paths.APP_SHA_FILE, `${PREVIOUS_SHA}\n`);
   writeFileSync(paths.APP_IMAGE_ID_FILE, `${PREVIOUS_IMAGE_ID}\n`);
+  writeFileSync(paths.APP_CONTAINER_ID_FILE, `${PREVIOUS_CONTAINER_ID}\n`);
   writeFileSync(paths.APP_STATUS_FILE, "healthy\n");
   writeFileSync(paths.APP_PRESENT_FILE, "true\n");
   writeFileSync(paths.APP_RESTART_FILE, "always\n");
@@ -459,6 +567,7 @@ export function createFixture(): Fixture {
       CANDIDATE_SHA: candidateSha,
       ADVANCE_SHA: advanceSha,
       PREVIOUS_SHA,
+      PREVIOUS_CONTAINER_ID,
       PREVIOUS_IMAGE_ID,
       LATEST_IMAGE_ID,
       CANDIDATE_IMAGE_ID,

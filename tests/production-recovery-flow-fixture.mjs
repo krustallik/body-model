@@ -11,6 +11,7 @@ import { createRecoveryAuthority } from "../scripts/production-recovery/authorit
 import { canonicalDigest, signCanonical, verifyCanonical } from "../scripts/production-recovery/canonical.mjs";
 import { writeImmutableReceipt, verifyImmutableReceipt } from "../scripts/production-recovery/journal.mjs";
 import { createIndependentPolicySigner } from "../scripts/production-recovery/policy-signer.mjs";
+import { OPERATION_CONTRACTS } from "../scripts/production-recovery/operation-contracts.mjs";
 import { PHASE_A_CLAIM_KEYS, PHASE_B_CLAIM_KEYS, PHASE_B_CAPABILITIES } from "../scripts/production-recovery/schemas.mjs";
 
 const roots = [];
@@ -281,6 +282,42 @@ export async function runProductionRecoveryFlowFixture({
       now: () => fixedNow,
     });
 
+    const fixtureOperationSuccess = (record, intent) => {
+      const artifact = record.immutableRollbackArtifact;
+      const postcondition = Object.fromEntries(OPERATION_CONTRACTS[intent.operationType].postconditionKeys.map((key) => {
+        if (key === "releaseSha") return [key, record.rollbackAppSha];
+        if (key === "imageDigest" || key === "trafficTargetImageDigest") return [key, artifact.rollbackImageDigest];
+        if (key === "backupArtifactDigest") return [key, artifact.rollbackArtifactDigest];
+        if (key === "logicalProductionDbIdentityDigest") return [key, record.logicalProductionDbIdentityDigest];
+        if (key === "recoveryCaseId") return [key, record.recoveryCaseId];
+        if (key === "journalGeneration") return [key, record.generation];
+        if (key === "journalRecordDigest") return [key, record.recordDigest];
+        if (key === "healthStatus") return [key, "healthy"];
+        if (key === "databaseRoleMode") return [key, "read-only"];
+        if (key === "writerMode") return [key, "enabled"];
+        if (key === "activeWriterCount") return [key, 0];
+        if (key === "containerId") return [key, artifact.rollbackContainerId];
+        if (key === "topologyDigest") return [key, artifact.deployHostTopologyDigest];
+        if (key.endsWith("Digest")) return [key, canonicalDigest({ key, recordDigest: record.recordDigest })];
+        if (key.endsWith("Sha")) return [key, record.rollbackAppSha];
+        return [key, "fixture-" + key];
+      }));
+      return {
+        schemaVersion: 1,
+        purpose: "bodycast-host-operation-success",
+        operationType: intent.operationType,
+        recoveryCaseId: record.recoveryCaseId,
+        journalGeneration: record.generation,
+        journalRecordDigest: record.recordDigest,
+        operationId: intent.operationId,
+        idempotencyKey: intent.operationId,
+        operationInputDigest: intent.operationInputDigest,
+        result: "executed",
+        postcondition,
+        postconditionDigest: canonicalDigest(postcondition),
+      };
+    };
+
     const applyFixtureTransition = async (request) => {
       const result = await authority.applyTransition({ recoveryCaseId: "recovery-case-001", ...request });
       if (result.record.operationIntent) await authority.executePendingOperation({
@@ -288,7 +325,7 @@ export async function runProductionRecoveryFlowFixture({
         generation: result.record.generation,
         recordDigest: result.record.recordDigest,
         operationId: result.record.operationIntent.operationId,
-      }, async ({ intent }) => ({ ok: true, fixtureOperationId: intent.operationId }));
+      }, async ({ record, intent }) => fixtureOperationSuccess(record, intent));
       return result;
     };
 
@@ -483,5 +520,13 @@ export async function runProductionRecoveryFlowFixture({
     expect(verifyImmutableReceipt(finalized.receipt, authorityPublicKeys)).toBe(true);
     expect(await fs.lstat(v2MarkerPath).catch(() => null)).toBeNull();
     expect(await fs.lstat(legacyMarkerPath).catch(() => null)).toBeNull();
+    const finalizedAgain = await authority.finalizeRecovery(await nextRequest(authority, "finalize-recovery", finalEvidence));
+    expect(finalizedAgain.record.generation).toBe(finalized.record.generation);
+    expect(finalizedAgain.receipt.receiptDigest).toBe(finalized.receipt.receiptDigest);
+    expect(finalizedAgain.markerRemoved).toBe(true);
+    const changedFinalEvidence = { ...finalEvidence, healthResult: "different-health-result" };
+    evidenceByType.set(changedFinalEvidence.type, changedFinalEvidence);
+    await expect(authority.finalizeRecovery(await nextRequest(authority, "finalize-recovery", changedFinalEvidence)))
+      .rejects.toThrow(/retry evidence differs/);
     expect((await authority.readAuthoritativeState()).blocking).toBe(false);
 }

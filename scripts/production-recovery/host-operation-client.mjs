@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import net from "node:net";
+import { readFile } from "node:fs/promises";
 import { canonicalJson } from "./canonical.mjs";
 import { validateProductionOperationRequest } from "./operation-broker.mjs";
 
@@ -9,8 +10,9 @@ const REQUIRED = Object.freeze({
   "ordinary-release": ["request-id", "release-sha", "canonical-main-sha", "release-mode"],
   "traffic-check": ["request-id", "release-sha", "canonical-main-sha", "authorization-context-id"],
   "v3-postflight": ["request-id", "release-sha", "canonical-main-sha", "authorization-context-id"],
+  "migration-challenge": ["request-id", "release-sha", "canonical-main-sha", "migration-manifest-id", "authorization-context-id"],
   "migration-readiness": ["request-id", "release-sha", "canonical-main-sha", "migration-manifest-id"],
-  "forward-migration": ["request-id", "release-sha", "canonical-main-sha", "migration-manifest-id", "authorization-context-id"],
+  "forward-migration": ["request-id", "release-sha", "canonical-main-sha", "migration-manifest-id", "authorization-context-id", "challenge-id", "challenge-digest", "execution-proof-stdin"],
   "traffic-maintenance": ["request-id", "release-sha", "canonical-main-sha", "authorization-context-id"],
   "traffic-serve": ["request-id", "release-sha", "canonical-main-sha", "authorization-context-id"],
   "recovery-state": ["request-id"],
@@ -21,6 +23,7 @@ const REQUIRED = Object.freeze({
   "recovery-operation-replay": ["request-id", "recovery-case-id", "expected-generation", "expected-record-digest", "operation-id"],
   readiness: ["request-id"],
 });
+export const EXECUTION_PROOF_FROM_STDIN = Symbol("execution-proof-from-stdin");
 
 export function parseOperationArguments(argv) {
   const [operation, ...args] = argv;
@@ -28,6 +31,11 @@ export function parseOperationArguments(argv) {
   const values = {};
   for (let index = 0; index < args.length; index += 1) {
     const flag = args[index];
+    if (flag === "--execution-proof-stdin") {
+      if (values["execution-proof-stdin"] !== undefined) throw new Error("Operation flags must be unique.");
+      values["execution-proof-stdin"] = true;
+      continue;
+    }
     if (!flag.startsWith("--") || values[flag.slice(2)] !== undefined || index + 1 >= args.length) {
       throw new Error("Operation arguments must be unique --name value pairs.");
     }
@@ -46,6 +54,8 @@ export function parseOperationArguments(argv) {
     "failed-state": "failedState",
     "migration-manifest-id": "migrationManifestId",
     "authorization-context-id": "authorizationContextId",
+    "challenge-id": "challengeId",
+    "challenge-digest": "challengeDigest",
     "expected-generation": "expectedGeneration",
     "expected-record-digest": "expectedRecordDigest",
     "operation-id": "operationId",
@@ -55,6 +65,7 @@ export function parseOperationArguments(argv) {
   };
   const request = { schemaVersion: 1, operation };
   for (const [key, value] of Object.entries(values)) {
+    if (key === "execution-proof-stdin") continue;
     if (["authorization-envelope-b64", "policy-attestation-b64"].includes(key)) {
       if (value.length > 128 * 1024 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
         throw new Error("Signed authorization input must be canonical bounded base64.");
@@ -67,10 +78,23 @@ export function parseOperationArguments(argv) {
       request[key === "authorization-envelope-b64" ? "authorizationEnvelope" : "policyAttestation"] = parsed;
     } else request[map[key]] = ["expected-generation"].includes(key) ? Number(value) : value;
   }
+  if (operation === "forward-migration") {
+    if (values["execution-proof-stdin"] !== true) throw new Error("Forward migration execution proof must be read from standard input.");
+    validateProductionOperationRequest({ ...request, executionProof: "header.payload.signature" });
+    Object.defineProperty(request, EXECUTION_PROOF_FROM_STDIN, { value: true });
+    return request;
+  }
   return validateProductionOperationRequest(request);
 }
 
-export function sendProductionOperation(request, { socketPath = PRODUCTION_OPERATION_SOCKET, timeoutMs = 15_000 } = {}) {
+export async function sendProductionOperation(request, { socketPath = PRODUCTION_OPERATION_SOCKET, timeoutMs } = {}) {
+  if (request?.[EXECUTION_PROOF_FROM_STDIN]) {
+    const proofText = await readFile(0, "utf8");
+    const proof = proofText.trim();
+    if (!proof || proof.length > 32_768 || /\s/.test(proof)) throw new Error("Execution proof input must be one bounded JWT line.");
+    request = { ...request, executionProof: proof };
+  }
+  timeoutMs ??= request?.operation === "forward-migration" ? 60 * 60_000 : 15_000;
   validateProductionOperationRequest(request);
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(socketPath);

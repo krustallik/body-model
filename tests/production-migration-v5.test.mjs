@@ -819,9 +819,17 @@ describe("V5 closed migration manifest and full pending set", () => {
       expect(migrate).not.toContain(forbidden);
     }
     const deployScript = await readFile(new URL("../scripts/deploy-migrate.sh", import.meta.url), "utf8");
-    expect(deployScript).toContain('BODYCAST_EXECUTION_PROOF_HANDOFF:-');
+    expect(deployScript).not.toContain("BODYCAST_EXECUTION_PROOF_HANDOFF");
+    expect(deployScript).toContain("migration-challenge");
     expect(deployScript).toContain("BODYCAST_DDL_CHALLENGE:");
-    expect(deployScript).toContain("execution-proof.jwt");
+    expect(deployScript.indexOf("migration-challenge")).toBeLessThan(deployScript.indexOf("BODYCAST_DDL_CHALLENGE:"));
+    expect(deployScript.indexOf("BODYCAST_DDL_CHALLENGE:")).toBeLessThan(deployScript.indexOf("IFS= read -r EXECUTION_PROOF"));
+    expect(deployScript.indexOf("IFS= read -r EXECUTION_PROOF")).toBeLessThan(deployScript.indexOf('> "$GUARD_RECEIPT"'));
+    expect(deployScript.indexOf('> "$GUARD_RECEIPT"')).toBeLessThan(deployScript.indexOf("forward-migration"));
+    expect(deployScript).toContain("--challenge-id");
+    expect(deployScript).toContain("--challenge-digest");
+    expect(deployScript).toContain("--execution-proof-stdin");
+    expect(deployScript).not.toContain("execution-proof.jwt");
     expect(deployScript).not.toContain("ACTIONS_ID_TOKEN_REQUEST_TOKEN");
     expect(deployScript).not.toContain("migration-run.json");
     const guard = await readFile(new URL("../scripts/run-prisma-migrate-with-lock-timeout.mjs", import.meta.url), "utf8");

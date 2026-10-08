@@ -1,8 +1,9 @@
 import path from "node:path";
 import fs from "node:fs/promises";
-import { assertExactKeys, assertSha256, canonicalDigest, sha256Hex } from "./canonical.mjs";
+import { assertExactKeys, assertGitSha, assertNonEmptyString, assertSha256, assertUtcTimestamp, canonicalDigest, sha256Hex } from "./canonical.mjs";
 import {
   commitJournalRecord,
+  CURRENT_JOURNAL_SCHEMA_VERSION,
   createSignedJournalRecord,
   readJournal,
   readMarkerProjection,
@@ -17,6 +18,7 @@ import {
   JOURNAL_GENESIS_DIGEST,
 } from "./schemas.mjs";
 import { verifyAuthorizationEnvelope } from "./authorization.mjs";
+import { OPERATION_CONTRACTS, validateOperationSuccess } from "./operation-contracts.mjs";
 
 const FAILED_NORMAL_STATES = new Set(["ddl-started", "schema-applied", "app-ready"]);
 const TRANSITIONS = Object.freeze({
@@ -171,7 +173,7 @@ function makeRecord({
   } : stableBindings(fields);
   const previousGrant = grant ?? tail?.restoreGrant ?? null;
   const body = {
-    journalSchemaVersion: 1,
+    journalSchemaVersion: CURRENT_JOURNAL_SCHEMA_VERSION,
     generation: (tail?.generation ?? 0) + 1,
     priorGeneration: tail?.generation ?? 0,
     priorRecordDigest: tail?.recordDigest ?? JOURNAL_GENESIS_DIGEST,
@@ -334,7 +336,7 @@ export function createRecoveryAuthority(config) {
     try { receipt = JSON.parse(await fs.readFile(receiptPath, "utf8")); }
     catch (error) { if (error?.code === "ENOENT") return null; throw error; }
     assertExactKeys(receipt, ["receiptSchemaVersion", "purpose", "recoveryCaseId", "journalGeneration", "journalRecordDigest",
-      "operationId", "operationType", "operationInputDigest", "outcomeDigest", "timestamp", "authorityVersion",
+      "operationId", "operationType", "operationInputDigest", "operationSuccess", "outcomeDigest", "timestamp", "authorityVersion",
       "authorityKeyId", "authorityInstanceId", "receiptDigest", "authoritySignature"], "Host operation receipt");
     verifyImmutableReceipt(receipt, journalPublicKeys);
     const intent = record.operationIntent;
@@ -345,12 +347,47 @@ export function createRecoveryAuthority(config) {
       throw new Error("Host operation receipt does not bind the exact committed operation intent.");
     }
     assertSha256(receipt.outcomeDigest, "operationReceipt.outcomeDigest");
+    const operationBindings = {
+      recoveryCaseId: record.recoveryCaseId,
+      manifestId: record.manifestId,
+      releaseSha: record.rollbackAppSha,
+      logicalProductionDbIdentityDigest: record.logicalProductionDbIdentityDigest,
+      immutableRollbackArtifact: record.immutableRollbackArtifact,
+    };
+    validateOperationSuccess(receipt.operationSuccess, {
+      operationType: intent.operationType,
+      operationId: intent.operationId,
+      operationInputDigest: intent.operationInputDigest,
+      recoveryCaseId: record.recoveryCaseId,
+      journalGeneration: record.generation,
+      journalRecordDigest: record.recordDigest,
+      bindings: operationBindings,
+    });
+    if (receipt.outcomeDigest !== canonicalDigest(receipt.operationSuccess)) {
+      throw new Error("Host operation receipt digest does not cover its validated success and postcondition evidence.");
+    }
     return receipt;
   }
 
-  async function writeOperationReceipt(record, outcome) {
+  async function writeOperationReceipt(record, success) {
     const operationId = record.operationIntent.operationId;
-    const outcomeDigest = canonicalDigest(outcome ?? { ok: true });
+    const operationBindings = {
+      recoveryCaseId: record.recoveryCaseId,
+      manifestId: record.manifestId,
+      releaseSha: record.rollbackAppSha,
+      logicalProductionDbIdentityDigest: record.logicalProductionDbIdentityDigest,
+      immutableRollbackArtifact: record.immutableRollbackArtifact,
+    };
+    validateOperationSuccess(success, {
+      operationType: record.operationIntent.operationType,
+      operationId,
+      operationInputDigest: record.operationIntent.operationInputDigest,
+      recoveryCaseId: record.recoveryCaseId,
+      journalGeneration: record.generation,
+      journalRecordDigest: record.recordDigest,
+      bindings: operationBindings,
+    });
+    const outcomeDigest = canonicalDigest(success);
     const existing = await readOperationReceipt(record);
     if (existing) {
       if (existing.outcomeDigest !== outcomeDigest) throw new Error("Operation replay returned a different completion result.");
@@ -365,6 +402,7 @@ export function createRecoveryAuthority(config) {
       operationId,
       operationType: record.operationIntent.operationType,
       operationInputDigest: record.operationIntent.operationInputDigest,
+      operationSuccess: success,
       outcomeDigest,
       timestamp: timestamp(now()),
       authorityVersion: signing.authorityVersion,
@@ -392,9 +430,12 @@ export function createRecoveryAuthority(config) {
       // the fixed adapter receives the same operation ID and must first observe the
       // exact target state; it may repeat only the operation-specific idempotent
       // ensure/reconcile step, never blindly replay a destructive command.
+      if (!OPERATION_CONTRACTS[record.operationIntent?.operationType]) {
+        throw new Error("Journal operation intent has no reviewed operation-specific success and replay contract.");
+      }
       const outcome = await execute({ record, intent: record.operationIntent });
-      const receipt = await writeOperationReceipt(record, outcome ?? { ok: true });
-      return { receipt, outcome: outcome ?? { ok: true }, executed: true };
+      const receipt = await writeOperationReceipt(record, outcome);
+      return { receipt, outcome, executed: true };
     }, lockOptions);
   }
 
@@ -462,6 +503,9 @@ export function createRecoveryAuthority(config) {
       const journal = await readValidatedJournal();
       const tail = journal.tail;
       if (!tail) throw new Error("Recovery journal is not initialized.");
+      if (tail.journalSchemaVersion !== CURRENT_JOURNAL_SCHEMA_VERSION) {
+        throw new Error("Legacy journal schema is read-only; mutation requires an explicitly reviewed migration, never an implicit mixed-schema append.");
+      }
       if (request.recoveryCaseId !== tail.recoveryCaseId) throw new Error("Recovery case selector does not match the authoritative journal case.");
       assertExpectedHead(request, tail);
       if (tail.operationIntent && !(await readOperationReceipt(tail))) {
@@ -627,6 +671,9 @@ export function createRecoveryAuthority(config) {
       const journal = await readValidatedJournal();
       const tail = journal.tail;
       if (!tail) throw new Error("Recovery journal is not initialized.");
+      if (tail.journalSchemaVersion !== CURRENT_JOURNAL_SCHEMA_VERSION) {
+        throw new Error("Legacy journal schema is read-only; finalization is blocked until an explicitly reviewed migration.");
+      }
       if (request.recoveryCaseId !== tail.recoveryCaseId) throw new Error("Recovery case selector does not match the authoritative journal case.");
       assertExpectedHead(request, tail);
       if (tail.operationIntent && !(await readOperationReceipt(tail))) {
@@ -776,6 +823,122 @@ export function createRecoveryAuthority(config) {
     }, lockOptions);
   }
 
+  const MIGRATION_CHALLENGE_KEYS = ["schemaVersion", "purpose", "challengeId", "nonce", "releaseSha", "canonicalMainSha",
+    "migrationManifestId", "logicalProductionDbIdentityDigest", "markerState", "markerDigest", "recoveryGeneration",
+    "recoveryRecordDigest", "workflowId", "workflowRunId", "workflowRunAttempt", "pendingMigrationSetDigest",
+    "pendingMigrationCount", "liveStateDigest", "issuedAt", "expiresAt", "challengeDigest"];
+
+  function validateMigrationChallenge(challenge, challengeId) {
+    assertExactKeys(challenge, MIGRATION_CHALLENGE_KEYS, "Production migration challenge");
+    const unsigned = Object.fromEntries(Object.entries(challenge).filter(([key]) => key !== "challengeDigest"));
+    if (challenge.schemaVersion !== 1 || challenge.purpose !== "bodycast-production-migration-challenge"
+      || challenge.challengeId !== challengeId || !/^[a-f0-9]{64}$/.test(challenge.nonce)
+      || challenge.markerState !== null || challenge.markerDigest !== null
+      || !Number.isSafeInteger(challenge.pendingMigrationCount) || challenge.pendingMigrationCount < 1
+      || canonicalDigest(unsigned) !== challenge.challengeDigest) {
+      throw new Error("Production migration challenge has invalid immutable bindings.");
+    }
+    assertGitSha(challenge.releaseSha, "migrationChallenge.releaseSha");
+    assertGitSha(challenge.canonicalMainSha, "migrationChallenge.canonicalMainSha");
+    for (const key of ["challengeId", "challengeDigest", "logicalProductionDbIdentityDigest", "recoveryRecordDigest",
+      "pendingMigrationSetDigest", "liveStateDigest"]) assertSha256(challenge[key], "migrationChallenge." + key);
+    assertNonEmptyString(challenge.migrationManifestId, "migrationChallenge.migrationManifestId");
+    assertNonEmptyString(challenge.workflowId, "migrationChallenge.workflowId");
+    assertNonEmptyString(challenge.workflowRunId, "migrationChallenge.workflowRunId");
+    if (!Number.isSafeInteger(challenge.workflowRunAttempt) || challenge.workflowRunAttempt < 1
+      || !Number.isSafeInteger(challenge.recoveryGeneration) || challenge.recoveryGeneration < 0) {
+      throw new Error("Production migration challenge workflow or recovery generation is invalid.");
+    }
+    assertUtcTimestamp(challenge.issuedAt, "migrationChallenge.issuedAt");
+    assertUtcTimestamp(challenge.expiresAt, "migrationChallenge.expiresAt");
+    if (Date.parse(challenge.expiresAt) <= Date.parse(challenge.issuedAt)
+      || Date.parse(challenge.expiresAt) - Date.parse(challenge.issuedAt) > 2 * 60_000) {
+      throw new Error("Production migration challenge expiry is invalid.");
+    }
+    return challenge;
+  }
+
+  async function readMigrationChallengeUnlocked(challengeId) {
+    assertSha256(challengeId, "migrationChallengeId");
+    const receiptPath = path.join(receiptDirectory, "migration-challenge-" + challengeId + ".json");
+    let receipt;
+    try { receipt = JSON.parse(await fs.readFile(receiptPath, "utf8")); }
+    catch (error) { if (error?.code === "ENOENT") return null; throw error; }
+    assertExactKeys(receipt, ["receiptSchemaVersion", "purpose", "challenge", "receiptDigest", "authorityKeyId",
+      "authorityInstanceId", "authoritySignature"], "Signed migration challenge receipt");
+    verifyImmutableReceipt(receipt, journalPublicKeys);
+    if (receipt.receiptSchemaVersion !== 1 || receipt.purpose !== "bodycast-production-migration-challenge-receipt") {
+      throw new Error("Migration challenge receipt schema is unsupported.");
+    }
+    return validateMigrationChallenge(receipt.challenge, challengeId);
+  }
+
+  async function readMigrationChallengeConsumptionUnlocked(challengeId) {
+    assertSha256(challengeId, "migrationChallengeId");
+    const receiptPath = path.join(receiptDirectory, "migration-challenge-consumed-" + challengeId + ".json");
+    let receipt;
+    try { receipt = JSON.parse(await fs.readFile(receiptPath, "utf8")); }
+    catch (error) { if (error?.code === "ENOENT") return null; throw error; }
+    assertExactKeys(receipt, ["receiptSchemaVersion", "purpose", "challengeId", "challengeDigest", "operationId",
+      "tokenDigest", "consumedAt", "receiptDigest", "authorityKeyId", "authorityInstanceId", "authoritySignature"],
+    "Signed migration challenge consumption receipt");
+    verifyImmutableReceipt(receipt, journalPublicKeys);
+    if (receipt.receiptSchemaVersion !== 1 || receipt.purpose !== "bodycast-production-migration-challenge-consumed"
+      || receipt.challengeId !== challengeId) throw new Error("Migration challenge consumption receipt is malformed.");
+    assertSha256(receipt.challengeDigest, "migrationChallengeConsumption.challengeDigest");
+    assertSha256(receipt.operationId, "migrationChallengeConsumption.operationId");
+    assertSha256(receipt.tokenDigest, "migrationChallengeConsumption.tokenDigest");
+    return receipt;
+  }
+
+  async function issueMigrationChallenge(challenge) {
+    validateMigrationChallenge(challenge, challenge?.challengeId);
+    return withExclusiveRecoveryLock(lockPath, async () => {
+      const journal = await readValidatedJournal();
+      const projection = await readMarkerProjection(markerPath, journal.tail ?? null, { requireRoot });
+      const legacyExists = await legacyMarkerExists(legacyMarkerPath);
+      if (journal.tail && journal.tail.nextState !== "recovery-finalized" || !projection.absent || legacyExists) {
+        throw new Error("An active recovery or release marker blocks migration challenge issuance.");
+      }
+      const receipt = { receiptSchemaVersion: 1, purpose: "bodycast-production-migration-challenge-receipt", challenge,
+        authorityKeyId: signing.authorityKeyId, authorityInstanceId: signing.authorityInstanceId };
+      return (await writeImmutableReceipt(receiptDirectory, "migration-challenge-" + challenge.challengeId + ".json", receipt,
+        { ...storageOptions, privateKey: signing.privateKey, publicKeys: journalPublicKeys })).receipt;
+    }, lockOptions);
+  }
+
+  async function readMigrationChallenge(challengeId) {
+    return readMigrationChallengeUnlocked(challengeId);
+  }
+
+  async function readMigrationChallengeConsumption(challengeId) {
+    return readMigrationChallengeConsumptionUnlocked(challengeId);
+  }
+
+  async function consumeMigrationChallenge({ challengeId, challengeDigest, operationId, tokenDigest }) {
+    assertSha256(challengeId, "migrationChallenge.challengeId");
+    assertSha256(challengeDigest, "migrationChallenge.challengeDigest");
+    assertSha256(operationId, "migrationOperation.operationId");
+    assertSha256(tokenDigest, "migrationOperation.tokenDigest");
+    return withExclusiveRecoveryLock(lockPath, async () => {
+      const challenge = await readMigrationChallengeUnlocked(challengeId);
+      if (!challenge || challenge.challengeDigest !== challengeDigest) throw new Error("Migration challenge is absent or has changed.");
+      const prior = await readMigrationChallengeConsumptionUnlocked(challengeId);
+      if (prior) {
+        if (prior.challengeDigest !== challengeDigest || prior.operationId !== operationId || prior.tokenDigest !== tokenDigest) {
+          throw new Error("Consumed migration challenge cannot authorize another operation or proof.");
+        }
+        return { consumed: false, receipt: prior };
+      }
+      const receipt = { receiptSchemaVersion: 1, purpose: "bodycast-production-migration-challenge-consumed", challengeId,
+        challengeDigest, operationId, tokenDigest, consumedAt: timestamp(now()),
+        authorityKeyId: signing.authorityKeyId, authorityInstanceId: signing.authorityInstanceId };
+      const stored = await writeImmutableReceipt(receiptDirectory, "migration-challenge-consumed-" + challengeId + ".json", receipt,
+        { ...storageOptions, privateKey: signing.privateKey, publicKeys: journalPublicKeys });
+      return { consumed: !stored.existing, receipt: stored.receipt };
+    }, lockOptions);
+  }
+
   async function rebuildMarkerProjection() {
     return withExclusiveRecoveryLock(lockPath, async () => {
       const journal = await readValidatedJournal();
@@ -816,6 +979,10 @@ export function createRecoveryAuthority(config) {
     applyTransition,
     readPendingOperation,
     executePendingOperation,
+    issueMigrationChallenge,
+    readMigrationChallenge,
+    readMigrationChallengeConsumption,
+    consumeMigrationChallenge,
     finalizeRecovery,
     readAuthoritativeState,
     rebuildMarkerProjection,

@@ -20,7 +20,16 @@ import { isAllowedJournalTransition, JOURNAL_GENESIS_DIGEST, RECOVERY_STATES } f
 const RECORD_NAME = /^generation-(\d{20})\.json$/;
 const DIRECTORY_MUTEXES = new Map();
 const LOCK_KEYS = Object.freeze(["schemaVersion", "pid", "token"]);
-const JOURNAL_RECORD_KEYS = Object.freeze([
+const JOURNAL_RECORD_KEYS_V1 = Object.freeze([
+  "journalSchemaVersion", "generation", "priorGeneration", "priorRecordDigest", "priorState", "nextState",
+  "canonicalMainSha", "recoveryCaseId", "manifestId", "failedReleaseSha", "rollbackAppSha", "immutableRollbackArtifact",
+  "logicalProductionDbIdentityDigest", "composeProjectServiceIdentityDigest", "deployHostTopologyDigest",
+  "markerReaderRolloutReceiptDigest", "legacyMarkerDigest", "legacyMarkerState", "transition", "phase",
+  "authorizationId", "authorizationEnvelopeDigest", "policyAttestationDigest", "nonceConsumption", "restoreGrant",
+  "sourceEvidenceDigest", "workflowProvenance", "timestamp", "authorityVersion", "authorityKeyId",
+  "authorityInstanceId", "recordDigest", "authoritySignature",
+]);
+const JOURNAL_RECORD_KEYS_V2 = Object.freeze([
   "journalSchemaVersion", "generation", "priorGeneration", "priorRecordDigest", "priorState", "nextState",
   "canonicalMainSha", "recoveryCaseId", "manifestId", "failedReleaseSha", "rollbackAppSha", "immutableRollbackArtifact",
   "logicalProductionDbIdentityDigest", "composeProjectServiceIdentityDigest", "deployHostTopologyDigest",
@@ -29,6 +38,7 @@ const JOURNAL_RECORD_KEYS = Object.freeze([
   "sourceEvidenceDigest", "operationIntent", "operationEvidenceId", "workflowProvenance", "timestamp", "authorityVersion", "authorityKeyId",
   "authorityInstanceId", "recordDigest", "authoritySignature",
 ]);
+export const CURRENT_JOURNAL_SCHEMA_VERSION = 2;
 const ARTIFACT_KEYS = Object.freeze([
   "failedReleaseSha", "rollbackAppSha", "rollbackContainerId", "rollbackImageId", "rollbackImageDigest",
   "rollbackArtifactId", "rollbackArtifactDigest", "rollbackCaptureAttestationDigest",
@@ -116,8 +126,11 @@ function recordSignaturePayload(record) {
 
 function verifyRecord(record, publicKeys) {
   if (!record || typeof record !== "object" || Array.isArray(record)) throw new Error("Journal record must be an object.");
-  assertExactKeys(record, JOURNAL_RECORD_KEYS, "Journal record");
-  if (record.journalSchemaVersion !== 1 || !Number.isSafeInteger(record.generation) || record.generation < 1
+  const recordKeys = record.journalSchemaVersion === 1 ? JOURNAL_RECORD_KEYS_V1
+    : record.journalSchemaVersion === CURRENT_JOURNAL_SCHEMA_VERSION ? JOURNAL_RECORD_KEYS_V2 : null;
+  if (!recordKeys) throw new Error("Journal schema version is unsupported.");
+  assertExactKeys(record, recordKeys, "Journal record schema v" + record.journalSchemaVersion);
+  if (!Number.isSafeInteger(record.generation) || record.generation < 1
     || !Number.isSafeInteger(record.priorGeneration) || record.priorGeneration < 0) throw new Error("Journal schema or generation is invalid.");
   assertGitSha(record.failedReleaseSha, "journal.failedReleaseSha");
   assertGitSha(record.rollbackAppSha, "journal.rollbackAppSha");
@@ -160,14 +173,16 @@ function verifyRecord(record, publicKeys) {
   for (const key of ["authorizationEnvelopeDigest", "policyAttestationDigest"]) {
     if (record[key] !== null) assertSha256(record[key], "journal." + key);
   }
-  if (record.operationIntent !== null) {
-    assertExactKeys(record.operationIntent, ["schemaVersion", "operationId", "operationType", "operationInputDigest"], "Journal operation intent");
-    if (record.operationIntent.schemaVersion !== 1) throw new Error("Journal operation intent schema is unsupported.");
-    assertSha256(record.operationIntent.operationId, "journal.operationIntent.operationId");
-    assertNonEmptyString(record.operationIntent.operationType, "journal.operationIntent.operationType");
-    assertSha256(record.operationIntent.operationInputDigest, "journal.operationIntent.operationInputDigest");
-    if (record.operationEvidenceId !== null) assertNonEmptyString(record.operationEvidenceId, "journal.operationEvidenceId");
-  } else if (record.operationEvidenceId !== null) throw new Error("Journal operation evidence cannot exist without an operation intent.");
+  if (record.journalSchemaVersion === CURRENT_JOURNAL_SCHEMA_VERSION) {
+    if (record.operationIntent !== null) {
+      assertExactKeys(record.operationIntent, ["schemaVersion", "operationId", "operationType", "operationInputDigest"], "Journal operation intent");
+      if (record.operationIntent.schemaVersion !== 1) throw new Error("Journal operation intent schema is unsupported.");
+      assertSha256(record.operationIntent.operationId, "journal.operationIntent.operationId");
+      assertNonEmptyString(record.operationIntent.operationType, "journal.operationIntent.operationType");
+      assertSha256(record.operationIntent.operationInputDigest, "journal.operationIntent.operationInputDigest");
+      if (record.operationEvidenceId !== null) assertNonEmptyString(record.operationEvidenceId, "journal.operationEvidenceId");
+    } else if (record.operationEvidenceId !== null) throw new Error("Journal operation evidence cannot exist without an operation intent.");
+  }
   for (const key of ["recoveryCaseId", "manifestId", "legacyMarkerState", "transition", "authorityVersion", "authorityKeyId", "authorityInstanceId", "authoritySignature"]) {
     assertNonEmptyString(record[key], "journal." + key);
   }
@@ -215,6 +230,9 @@ export async function readJournal(journalDirectory, { publicKeys, requireRoot = 
     const record = JSON.parse(bytes.toString("utf8"));
     if (canonicalJson(record) !== bytes.toString("utf8")) throw new Error("Journal generation is not canonically encoded.");
     verifyRecord(record, publicKeys);
+    if (previous && previous.journalSchemaVersion !== record.journalSchemaVersion) {
+      throw new Error("Journal chain mixes schema versions and is unsupported.");
+    }
     if (record.generation !== expectedGeneration) throw new Error("Journal filename and generation disagree.");
     const priorGeneration = previous?.generation ?? 0;
     const priorDigest = previous?.recordDigest ?? JOURNAL_GENESIS_DIGEST;
@@ -351,8 +369,6 @@ export function createSignedJournalRecord(fields, {
   authorityInstanceId,
 }) {
   const record = {
-    operationIntent: null,
-    operationEvidenceId: null,
     ...fields,
     authorityVersion,
     authorityKeyId,
@@ -362,6 +378,8 @@ export function createSignedJournalRecord(fields, {
   record.authoritySignature = signCanonical(recordSignaturePayload(record), privateKey);
   return record;
 }
+
+export { JOURNAL_RECORD_KEYS_V1, JOURNAL_RECORD_KEYS_V2 };
 
 export async function commitJournalRecord(journalDirectory, record, { publicKeys, requireRoot = false, syncDirectory = fsyncDirectory } = {}) {
   const directory = await assertSafePath(journalDirectory, { requireRoot, privateMode: requireRoot });

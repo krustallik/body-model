@@ -37,6 +37,9 @@ async function verifyCurrentPackage(installationPolicy) {
   if (!Number.isSafeInteger(config.host.releaseGroupGid) || config.host.releaseGroupGid < 1) {
     throw new Error("Installed release group identity is invalid.");
   }
+  if (config.authority.operationAdapterDigest !== installed.binaryDigest) {
+    throw new Error("Installed adapter conformance digest does not bind the exact signed authority binary.");
+  }
   return { installed, config };
 }
 

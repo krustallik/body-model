@@ -44,6 +44,14 @@ function verifyPackageConfigMetadata(configBytes, provenance) {
     || config.authority.signing.authorityKeyId !== provenance.authorityKeyId) {
     throw new Error("Authority package configuration version or key ID does not match signed provenance.");
   }
+  assertSha256(config.authority.operationAdapterDigest, "authority.operationAdapterDigest");
+  if (config.authority.operationAdapterDigest !== provenance.binaryDigest
+    || !config.authority.operationAdapterConformancePublicKeys
+    || typeof config.authority.operationAdapterConformancePublicKeys !== "object"
+    || Array.isArray(config.authority.operationAdapterConformancePublicKeys)
+    || Object.keys(config.authority.operationAdapterConformancePublicKeys).length === 0) {
+    throw new Error("Authority adapter digest must bind the signed installed binary and conformance verifier keys must be pinned.");
+  }
   if (typeof config.authority.signing.privateKey !== "string" || config.authority.signing.privateKey.length === 0
     || typeof config.authority.signing.authorityInstanceId !== "string" || config.authority.signing.authorityInstanceId.trim() === ""
     || !Number.isSafeInteger(config.host.releaseGroupGid) || config.host.releaseGroupGid < 1
@@ -215,21 +223,13 @@ async function installAuthorityPackageInternal({
   }
   const installationKeys = trustedInstallationKeys ?? { [receiptSigner.keyId]: receiptSigner.publicKey };
   const versionAllowlist = allowedAuthorityVersions ?? [verifiedArtifact.authorityVersion];
-  const currentPointerPath = path.join(root, "current-version");
-  let actualCurrentInstallation = null;
-  try {
-    await fs.lstat(currentPointerPath);
-    const installedCurrent = await verifyInstalledAuthorityPackage({
-      installationRoot: root,
-      trustedInstallationKeys: installationKeys,
-      allowedAuthorityVersions: versionAllowlist,
-      minimumAllowedVersion,
-      requireRoot,
-    });
-    actualCurrentInstallation = { authorityVersion: installedCurrent.authorityVersion };
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-  }
+  const actualCurrentInstallation = await inspectAuthorityInstallationRoot({
+    installationRoot: root,
+    trustedInstallationKeys: installationKeys,
+    allowedAuthorityVersions: versionAllowlist,
+    minimumAllowedVersion,
+    requireRoot,
+  });
   if (currentInstallation?.authorityVersion !== undefined
     && currentInstallation.authorityVersion !== actualCurrentInstallation?.authorityVersion) {
     throw new Error("Caller-provided current authority version differs from the authenticated installed version.");
@@ -340,19 +340,13 @@ export async function installAuthorityPackageFromRaw(rawInput) {
     allowedAuthorityVersions: policy.allowedAuthorityVersions,
     minimumAllowedVersion: policy.minimumAllowedVersion,
   });
-  let currentInstallation = null;
-  try {
-    const installed = await verifyInstalledAuthorityPackage({
-      installationRoot: FIXED_INSTALLATION_ROOT,
-      trustedInstallationKeys: policy.trustedInstallationKeys,
-      allowedAuthorityVersions: policy.allowedAuthorityVersions,
-      minimumAllowedVersion: policy.minimumAllowedVersion,
-      requireRoot: true,
-    });
-    currentInstallation = { authorityVersion: installed.authorityVersion };
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-  }
+  const currentInstallation = await inspectAuthorityInstallationRoot({
+    installationRoot: FIXED_INSTALLATION_ROOT,
+    trustedInstallationKeys: policy.trustedInstallationKeys,
+    allowedAuthorityVersions: policy.allowedAuthorityVersions,
+    minimumAllowedVersion: policy.minimumAllowedVersion,
+    requireRoot: true,
+  });
   const reverified = verifyAuthorityInstallArtifact({
     provenance, binaryBytes, configBytes,
     trustedProvenanceKeys: policy.trustedProvenanceKeys,
@@ -378,13 +372,9 @@ export async function installAuthorityPackageFixture({
   verifyAuthorityInstallArtifact({
     provenance, binaryBytes, configBytes, trustedProvenanceKeys, allowedAuthorityVersions, minimumAllowedVersion, now,
   });
-  let currentInstallation = null;
-  try {
-    const installed = await verifyInstalledAuthorityPackage({
-      installationRoot, trustedInstallationKeys, allowedAuthorityVersions, minimumAllowedVersion, requireRoot: false,
-    });
-    currentInstallation = { authorityVersion: installed.authorityVersion };
-  } catch (error) { if (error?.code !== "ENOENT") throw error; }
+  const currentInstallation = await inspectAuthorityInstallationRoot({
+    installationRoot, trustedInstallationKeys, allowedAuthorityVersions, minimumAllowedVersion, requireRoot: false,
+  });
   const reverified = verifyAuthorityInstallArtifact({
     provenance, binaryBytes, configBytes, trustedProvenanceKeys, allowedAuthorityVersions, minimumAllowedVersion,
     currentInstallation, now,
@@ -480,6 +470,12 @@ export async function verifyInstalledAuthorityPackage({
   const match = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\n$/.exec(pointerText);
   if (!match) throw new Error("Authority version pointer is malformed.");
   const authorityVersion = match[1] + "." + match[2] + "." + match[3];
+  return verifyInstalledAuthorityVersion({ root, authorityVersion, trustedInstallationKeys, allowedAuthorityVersions,
+    minimumAllowedVersion, requireRoot });
+}
+
+async function verifyInstalledAuthorityVersion({ root, authorityVersion, trustedInstallationKeys, allowedAuthorityVersions,
+  minimumAllowedVersion, requireRoot }) {
   const versionDirectory = path.join(root, "v" + authorityVersion);
   const directory = await fs.lstat(versionDirectory);
   if (!directory.isDirectory() || directory.isSymbolicLink()
@@ -502,6 +498,48 @@ export async function verifyInstalledAuthorityPackage({
     throw new Error("Installed authority bytes or version pointer do not match the authenticated receipt.");
   }
   return Object.freeze({ authorityVersion, binaryDigest, configDigest, receipt, configBytes: config.bytes });
+}
+
+/**
+ * Only an absent or verified-empty root is a first installation. Any pointer,
+ * version directory, staging path, or other residue requires a fully verifiable
+ * current install; incomplete state never resets the downgrade floor.
+ */
+async function inspectAuthorityInstallationRoot({ installationRoot, trustedInstallationKeys, allowedAuthorityVersions,
+  minimumAllowedVersion, requireRoot }) {
+  const root = path.resolve(installationRoot);
+  let rootStat;
+  try { rootStat = await fs.lstat(root); }
+  catch (error) { if (error?.code === "ENOENT") return null; throw error; }
+  await assertSafePath(root, { requireRoot, privateMode: true });
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()
+    || process.platform !== "win32" && ((rootStat.mode & 0o077) !== 0 || requireRoot && rootStat.uid !== 0)) {
+    throw new Error("Existing authority installation root is unsafe.");
+  }
+  const entries = await fs.readdir(root, { withFileTypes: true });
+  if (entries.length === 0) return null;
+  const pointer = entries.find((entry) => entry.name === "current-version");
+  if (!pointer || !pointer.isFile() || pointer.isSymbolicLink()) {
+    throw new Error("Authority installation root is non-empty but has no verifiable current-version pointer; refusing first-install reset.");
+  }
+  const pointerBytes = await readInstalledFile(path.join(root, "current-version"), 64);
+  const pointerMatch = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\n$/.exec(pointerBytes.bytes.toString("utf8"));
+  if (!pointerMatch) throw new Error("Existing authority installation has a malformed version pointer.");
+  const currentVersion = pointerMatch.slice(1).join(".");
+  const versionEntries = entries.filter((entry) => entry.name !== "current-version");
+  for (const entry of versionEntries) {
+    if (!/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(entry.name)
+      || !entry.isDirectory() || entry.isSymbolicLink()) {
+      throw new Error("Authority installation root contains incomplete or unsupported state: " + entry.name + ".");
+    }
+    const version = entry.name.slice(1);
+    await verifyInstalledAuthorityVersion({ root, authorityVersion: version, trustedInstallationKeys,
+      allowedAuthorityVersions: version === currentVersion ? allowedAuthorityVersions : [version],
+      minimumAllowedVersion: version === currentVersion ? minimumAllowedVersion : "0.0.0", requireRoot });
+  }
+  const current = await verifyInstalledAuthorityPackage({ installationRoot: root, trustedInstallationKeys,
+    allowedAuthorityVersions, minimumAllowedVersion, requireRoot });
+  return { authorityVersion: current.authorityVersion };
 }
 
 export { PROVENANCE_KEYS, INSTALL_RECEIPT_KEYS };

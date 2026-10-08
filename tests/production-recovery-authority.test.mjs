@@ -18,8 +18,10 @@ import {
   verifyJournalFilesystemCapabilities,
   writeImmutableReceipt,
   writeMarkerProjection,
+  verifyImmutableReceipt,
 } from "../scripts/production-recovery/journal.mjs";
 import { createRecoveryAuthority } from "../scripts/production-recovery/authority.mjs";
+import { executeReconciledHostOperation } from "../scripts/production-recovery/operation-contracts.mjs";
 
 const tempRoots = [];
 const noDirectorySync = async () => {};
@@ -59,7 +61,7 @@ function makeRecord(signing, { legacyMarkerDigest = "6".repeat(64) } = {}) {
     deployHostTopologyDigest: "2".repeat(64),
   };
   return createSignedJournalRecord({
-    journalSchemaVersion: 1,
+    journalSchemaVersion: 2,
     generation: 1,
     priorGeneration: 0,
     priorRecordDigest: "0".repeat(64),
@@ -85,9 +87,21 @@ function makeRecord(signing, { legacyMarkerDigest = "6".repeat(64) } = {}) {
     nonceConsumption: null,
     restoreGrant: null,
     sourceEvidenceDigest: "5".repeat(64),
+    operationIntent: null,
+    operationEvidenceId: null,
     workflowProvenance: { repository: "krustallik/body-model" },
     timestamp: "2026-10-07T00:00:00.000Z",
   }, signing);
+}
+
+function makeLegacyRecord(signing) {
+  const record = makeRecord(signing);
+  const fields = { ...record, journalSchemaVersion: 1 };
+  delete fields.operationIntent;
+  delete fields.operationEvidenceId;
+  delete fields.recordDigest;
+  delete fields.authoritySignature;
+  return createSignedJournalRecord(fields, signing);
 }
 
 async function makePendingOperationAuthority() {
@@ -176,6 +190,142 @@ afterEach(async () => {
 });
 
 describe("production recovery canonical and journal authority", () => {
+  it("persists migration challenges and consumes each nonce for one exact operation and proof", async () => {
+    const root = await makeTempRoot();
+    const journalDirectory = path.join(root, "journal");
+    const receiptDirectory = path.join(root, "receipts");
+    const markerDirectory = path.join(root, "projection");
+    const legacyDirectory = path.join(root, "legacy");
+    await Promise.all([journalDirectory, receiptDirectory, markerDirectory, legacyDirectory]
+      .map((directory) => fs.mkdir(directory, { recursive: true, mode: 0o700 })));
+    const keys = signingFixture();
+    const fixedNow = Date.parse("2026-10-08T12:00:00.000Z");
+    const authorityOptions = {
+      journalDirectory,
+      receiptDirectory,
+      markerPath: path.join(markerDirectory, "marker-v2.json"),
+      legacyMarkerPath: path.join(legacyDirectory, "marker-v1"),
+      lockPath: path.join(root, "recovery.lock"),
+      signing: keys.signing,
+      journalPublicKeys: keys.publicKeys,
+      phaseAPublicKeys: keys.publicKeys,
+      phaseBPublicKeys: keys.publicKeys,
+      policyPublicKeys: keys.publicKeys,
+      phaseWorkflowBindings: {
+        A: { repository: "krustallik/body-model", workflowPath: "phase-a.yml", workflowId: "1" },
+        B: { repository: "krustallik/body-model", workflowPath: "phase-b.yml", workflowId: "2" },
+      },
+      validateEvidence: async () => true,
+      verifyRolloutReceipt: async () => true,
+      verifyRestoreGrant: async () => true,
+      requireRoot: false,
+      syncDirectory: noDirectorySync,
+      now: () => fixedNow,
+    };
+    const authority = createRecoveryAuthority(authorityOptions);
+    const authorityAfterRestart = createRecoveryAuthority(authorityOptions);
+    const challengeId = canonicalDigest({ purpose: "migration-challenge-test", nonce: "1".repeat(64) });
+    const unsignedChallenge = {
+      schemaVersion: 1,
+      purpose: "bodycast-production-migration-challenge",
+      challengeId,
+      nonce: "1".repeat(64),
+      releaseSha: "a".repeat(40),
+      canonicalMainSha: "a".repeat(40),
+      migrationManifestId: "active-energy-unified-v2",
+      logicalProductionDbIdentityDigest: "b".repeat(64),
+      markerState: null,
+      markerDigest: null,
+      recoveryGeneration: 0,
+      recoveryRecordDigest: "0".repeat(64),
+      workflowId: "901",
+      workflowRunId: "902",
+      workflowRunAttempt: 1,
+      pendingMigrationSetDigest: "c".repeat(64),
+      pendingMigrationCount: 2,
+      liveStateDigest: canonicalDigest({ releaseSha: "a".repeat(40), pending: 2 }),
+      issuedAt: new Date(fixedNow).toISOString(),
+      expiresAt: new Date(fixedNow + 60_000).toISOString(),
+    };
+    const challenge = { ...unsignedChallenge, challengeDigest: canonicalDigest(unsignedChallenge) };
+    const issued = await authority.issueMigrationChallenge(challenge);
+    expect(verifyImmutableReceipt(issued, keys.publicKeys)).toBe(true);
+    expect(await authorityAfterRestart.readMigrationChallenge(challengeId)).toEqual(challenge);
+
+    const operationId = "d".repeat(64);
+    const tokenDigest = "e".repeat(64);
+    const consume = { challengeId, challengeDigest: challenge.challengeDigest, operationId, tokenDigest };
+    const concurrent = await Promise.all([
+      authority.consumeMigrationChallenge(consume),
+      authorityAfterRestart.consumeMigrationChallenge(consume),
+    ]);
+    expect(concurrent.filter(({ consumed }) => consumed)).toHaveLength(1);
+    expect(concurrent.filter(({ consumed }) => !consumed)).toHaveLength(1);
+    const consumption = await authorityAfterRestart.readMigrationChallengeConsumption(challengeId);
+    expect(verifyImmutableReceipt(consumption, keys.publicKeys)).toBe(true);
+    expect(consumption).toMatchObject({ challengeId, challengeDigest: challenge.challengeDigest, operationId, tokenDigest });
+    await expect(authority.consumeMigrationChallenge({ ...consume, operationId: "f".repeat(64) }))
+      .rejects.toThrow(/cannot authorize another operation or proof/);
+    await expect(authority.consumeMigrationChallenge({ ...consume, tokenDigest: "9".repeat(64) }))
+      .rejects.toThrow(/cannot authorize another operation or proof/);
+  });
+
+  it("verifies exact journal v1 and v2 schemas and rejects mixed or mutated version chains", async () => {
+    const root = await makeTempRoot();
+    const keys = signingFixture();
+    const legacyDirectory = path.join(root, "legacy-journal");
+    const v2Directory = path.join(root, "v2-journal");
+    const mixedDirectory = path.join(root, "mixed-journal");
+    const legacyExtraDirectory = path.join(root, "legacy-extra");
+    const v2MissingDirectory = path.join(root, "v2-missing");
+    await Promise.all([legacyDirectory, v2Directory, mixedDirectory, legacyExtraDirectory, v2MissingDirectory]
+      .map((directory) => fs.mkdir(directory)));
+    const legacy = makeLegacyRecord(keys.signing);
+    await commitJournalRecord(legacyDirectory, legacy, { publicKeys: keys.publicKeys, syncDirectory: noDirectorySync });
+    expect((await readJournal(legacyDirectory, { publicKeys: keys.publicKeys })).tail.journalSchemaVersion).toBe(1);
+
+    const v2 = makeRecord(keys.signing);
+    await commitJournalRecord(v2Directory, v2, { publicKeys: keys.publicKeys, syncDirectory: noDirectorySync });
+    expect((await readJournal(v2Directory, { publicKeys: keys.publicKeys })).tail.journalSchemaVersion).toBe(2);
+
+    const legacyWithV2Fields = { ...legacy, operationIntent: null, operationEvidenceId: null };
+    await expect(commitJournalRecord(legacyExtraDirectory, legacyWithV2Fields,
+      { publicKeys: keys.publicKeys, syncDirectory: noDirectorySync })).rejects.toThrow(/closed schema/);
+    const v2MissingEvidence = { ...v2 };
+    delete v2MissingEvidence.operationEvidenceId;
+    await expect(commitJournalRecord(v2MissingDirectory, v2MissingEvidence,
+      { publicKeys: keys.publicKeys, syncDirectory: noDirectorySync })).rejects.toThrow(/closed schema/);
+
+    await fs.writeFile(path.join(mixedDirectory, "generation-00000000000000000001.json"), canonicalJson(legacy));
+    await fs.writeFile(path.join(mixedDirectory, "generation-00000000000000000002.json"), canonicalJson(v2));
+    await expect(readJournal(mixedDirectory, { publicKeys: keys.publicKeys })).rejects.toThrow(/mixes schema versions/);
+  });
+
+  it("keeps supported journal v1 readable but read-only for authority mutations", async () => {
+    const root = await makeTempRoot();
+    const journalDirectory = path.join(root, "journal");
+    const receiptDirectory = path.join(root, "receipts");
+    const markerPath = path.join(root, "marker.json");
+    const legacyMarkerPath = path.join(root, "legacy-marker");
+    await Promise.all([journalDirectory, receiptDirectory].map((directory) => fs.mkdir(directory, { mode: 0o700 })));
+    const keys = signingFixture();
+    const legacy = makeLegacyRecord(keys.signing);
+    await commitJournalRecord(journalDirectory, legacy, { publicKeys: keys.publicKeys, syncDirectory: noDirectorySync });
+    const authority = createRecoveryAuthority({
+      journalDirectory, lockPath: path.join(root, "authority.lock"), markerPath, legacyMarkerPath, receiptDirectory,
+      signing: keys.signing, journalPublicKeys: keys.publicKeys, phaseAPublicKeys: keys.publicKeys,
+      phaseBPublicKeys: keys.publicKeys, policyPublicKeys: keys.publicKeys,
+      phaseWorkflowBindings: { A: { repository: "krustallik/body-model", workflowPath: "phase-a.yml", workflowId: "1" },
+        B: { repository: "krustallik/body-model", workflowPath: "phase-b.yml", workflowId: "2" } },
+      validateEvidence: async () => true, verifyRolloutReceipt: async () => true, verifyRestoreGrant: async () => true,
+      requireRoot: false, syncDirectory: noDirectorySync,
+    });
+    await expect(authority.applyTransition({ recoveryCaseId: legacy.recoveryCaseId, transition: "begin-restore",
+      expectedGeneration: legacy.generation, expectedRecordDigest: legacy.recordDigest, evidence: { type: "begin-restore" } }))
+      .rejects.toThrow(/Legacy journal schema is read-only/);
+    expect((await authority.readAuthoritativeState()).generation).toBe(legacy.generation);
+  });
+
   it("keeps an unreceipted operation blocking, retries the same intent, and does not duplicate completed effects", async () => {
     const { authority, record } = await makePendingOperationAuthority();
     const identity = { recoveryCaseId: "case-001", generation: record.generation, recordDigest: record.recordDigest,
@@ -191,16 +341,43 @@ describe("production recovery canonical and journal authority", () => {
     let externallyAppliedOperationId = null;
     let destructiveEffectCount = 0;
     const observedOperationIds = [];
-    const reconcileSameOperation = async ({ intent }) => {
-      observedOperationIds.push(intent.operationId);
-      if (externallyAppliedOperationId === null) {
-        externallyAppliedOperationId = intent.operationId;
+    const artifact = record.immutableRollbackArtifact;
+    const postcondition = { logicalProductionDbIdentityDigest: record.logicalProductionDbIdentityDigest,
+      backupArtifactDigest: artifact.rollbackArtifactDigest, schemaDigest: "1".repeat(64),
+      migrationHistoryDigest: "2".repeat(64), readOnlyCompatibilityDigest: "3".repeat(64) };
+    const precondition = { logicalProductionDbIdentityDigest: record.logicalProductionDbIdentityDigest,
+      backupArtifactDigest: artifact.rollbackArtifactDigest, observedSchemaDigest: "8".repeat(64),
+      observedMigrationHistoryDigest: "9".repeat(64) };
+    const reconcileSameOperation = async ({ record: exactRecord, intent }) => executeReconciledHostOperation({
+      operationType: intent.operationType, operationId: intent.operationId, operationInputDigest: intent.operationInputDigest,
+      recoveryCaseId: exactRecord.recoveryCaseId, journalGeneration: exactRecord.generation,
+      journalRecordDigest: exactRecord.recordDigest,
+      bindings: { recoveryCaseId: exactRecord.recoveryCaseId, manifestId: exactRecord.manifestId,
+        releaseSha: exactRecord.rollbackAppSha, logicalProductionDbIdentityDigest: exactRecord.logicalProductionDbIdentityDigest,
+        immutableRollbackArtifact: exactRecord.immutableRollbackArtifact },
+      inspectFixedOperationState: async (_operationType, operation) => {
+        const state = externallyAppliedOperationId === operation.operationId ? "post" : "pre";
+        const selectedPrecondition = state === "pre" ? precondition : null;
+        const selectedPostcondition = state === "post" ? postcondition : null;
+        return { schemaVersion: 1, purpose: "bodycast-host-operation-state", operationType: intent.operationType,
+          operationId: operation.operationId, idempotencyKey: operation.operationId,
+          operationInputDigest: operation.operationInputDigest, state, observedAt: "2026-10-07T00:00:03.000Z",
+          stateDigest: canonicalDigest({ state: state === "pre" ? "restore-required" : "exact-backup-restored",
+            precondition: selectedPrecondition, postcondition: selectedPostcondition }),
+          precondition: selectedPrecondition, postcondition: selectedPostcondition };
+      },
+      authorizeImmediatelyBeforeEffect: async () => {},
+      executeFixedOperation: async (operationType, operation) => {
+        observedOperationIds.push(operation.operationId);
+        if (externallyAppliedOperationId !== null && externallyAppliedOperationId !== operation.operationId) {
+          throw new Error("cannot reconcile a different destructive operation");
+        }
+        await operation.authorizeImmediatelyBeforeEffect();
+        externallyAppliedOperationId = operation.operationId;
         destructiveEffectCount += 1;
         throw new Error("simulated process crash after external restore succeeds but before receipt acknowledgement");
-      }
-      if (externallyAppliedOperationId !== intent.operationId) throw new Error("cannot reconcile a different destructive operation");
-      return { operationId: intent.operationId, state: "already-completed" };
-    };
+      },
+    });
     await expect(authority.executePendingOperation(identity, reconcileSameOperation)).rejects.toThrow(/process crash/);
     await expect(authority.applyTransition({
       recoveryCaseId: "case-001", transition: "verify-restore", expectedGeneration: record.generation,
@@ -219,7 +396,7 @@ describe("production recovery canonical and journal authority", () => {
       throw new Error("a completed operation must never execute a second time");
     });
     expect(duplicate.executed).toBe(false);
-    expect(observedOperationIds).toEqual([record.operationIntent.operationId, record.operationIntent.operationId]);
+    expect(observedOperationIds).toEqual([record.operationIntent.operationId]);
     expect(destructiveEffectCount).toBe(1);
     const next = await authority.applyTransition({
       recoveryCaseId: "case-001", transition: "verify-restore", expectedGeneration: record.generation,
@@ -230,6 +407,15 @@ describe("production recovery canonical and journal authority", () => {
 
   it("rejects an operation receipt signed for a different journal record", async () => {
     const { authority, record, root, keys } = await makePendingOperationAuthority();
+    const postcondition = { logicalProductionDbIdentityDigest: record.logicalProductionDbIdentityDigest,
+      backupArtifactDigest: record.immutableRollbackArtifact.rollbackArtifactDigest, schemaDigest: "1".repeat(64),
+      migrationHistoryDigest: "2".repeat(64), readOnlyCompatibilityDigest: "3".repeat(64) };
+    const operationSuccess = { schemaVersion: 1, purpose: "bodycast-host-operation-success",
+      operationType: record.operationIntent.operationType, recoveryCaseId: record.recoveryCaseId,
+      journalGeneration: record.generation, journalRecordDigest: record.recordDigest,
+      operationId: record.operationIntent.operationId, idempotencyKey: record.operationIntent.operationId,
+      operationInputDigest: record.operationIntent.operationInputDigest, result: "already-satisfied", postcondition,
+      postconditionDigest: canonicalDigest(postcondition) };
     const body = {
       receiptSchemaVersion: 1,
       purpose: "bodycast-production-recovery-operation-completion",
@@ -239,7 +425,8 @@ describe("production recovery canonical and journal authority", () => {
       operationId: record.operationIntent.operationId,
       operationType: record.operationIntent.operationType,
       operationInputDigest: record.operationIntent.operationInputDigest,
-      outcomeDigest: "e".repeat(64),
+      operationSuccess,
+      outcomeDigest: canonicalDigest(operationSuccess),
       timestamp: "2026-10-07T00:00:03.000Z",
       authorityVersion: keys.signing.authorityVersion,
       authorityKeyId: keys.signing.authorityKeyId,

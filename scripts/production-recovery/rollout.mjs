@@ -55,6 +55,7 @@ export const REVIEWED_ENTRYPOINTS = Object.freeze([
   "scripts/production-recovery/journal.mjs",
   "scripts/production-recovery/migration-context-store.mjs",
   "scripts/production-recovery/operation-broker.mjs",
+  "scripts/production-recovery/operation-contracts.mjs",
   "scripts/production-recovery/policy-nonce-store.mjs",
   "scripts/production-recovery/policy-signer-service.mjs",
   "scripts/production-recovery/request-phase-authorization.mjs",

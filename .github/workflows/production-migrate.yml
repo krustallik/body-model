@@ -423,7 +423,6 @@ jobs:
           export BODYCAST_AUTHORIZATION_RUN_ID="$AUTHORIZATION_RUN_ID"
           export BODYCAST_AUTHORIZATION_RUN_ATTEMPT="$AUTHORIZATION_RUN_ATTEMPT"
           export APP_HOST CADDY_ROUTES_PATH
-          export BODYCAST_EXECUTION_PROOF_HANDOFF=true
           bash scripts/deploy-migrate.sh
           REMOTE
           )"

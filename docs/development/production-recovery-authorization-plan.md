@@ -102,6 +102,12 @@ Each record binds at least:
 - source evidence digest and workflow/run provenance;
 - host authority instance/version/key ID and timestamp.
 
+Every externally visible host operation uses a reviewed operation-specific contract with a stable operation ID, immutable input digest, exact expected pre-state and post-state, and a fixed actual-state inspector. The sequence is: commit intent, inspect host state, skip the effect only when the exact post-state already exists, otherwise execute the fixed idempotent/deduplicated operation, reconcile the exact post-state, validate the typed operation-specific success, then write the durable authenticated receipt. A resolved callback or truthy response is not success. Undefined, false, malformed, wrong-ID, mismatched-input, and missing-postcondition results do not produce receipts. Same-ID concurrent execution is serialized; retries after a process crash inspect host state before any effect and fail closed on any state other than the exact pre-state or post-state.
+
+The installed host adapter must implement operation contract version 2 and carry a current signed conformance receipt bound to its installed binary digest and the exact contract digest. Conformance covers migration, restore, application replacement/start/stop, writer enablement (including healthy writer-mode postcondition), traffic changes, and any external finalization effect. Authority readiness and mutation remain blocked until all operation classes pass the conformance suite. Authority-owned journal finalization is not an adapter callback: it has its own exact journal, receipt, marker, and retry-evidence checks under the authority lock.
+
+The journal record schema is versioned independently from the marker schema. Version 1 is verified only against its original exact key set and is read-only; version 2 is verified against the new exact key set including operation intent/evidence. A chain may not mix versions. Unsupported versions or records with fields from another schema fail closed. No authority mutation implicitly upgrades or appends to a legacy chain.
+
 The first record establishes the failed release and initial failed normal state. Every later state transition creates one new generation. No backward state transitions are allowed. A missing generation, duplicate/conflicting generation, invalid digest chain, or malformed committed record blocks recovery.
 
 ## 8. Canonical records, no-overwrite commit, and crash semantics
@@ -219,6 +225,16 @@ Reject any missing or unknown claim. Claims are:
 
 Phase B rejects any rollback artifact mismatch against Phase A and pre-maintenance capture.
 
+### Forward migration live challenge and proof
+
+Forward migration is a two-call broker flow. After the existing signed live guard, the challenge request captures fresh release SHA, migration manifest, logical database identity, absent marker state, authoritative recovery generation/digest, pending migration-set digest/count, and exact workflow/run/attempt. The root authority durably records the random nonce, challenge ID, challenge digest, issue time, and short expiry in an immutable signed receipt. The workflow obtains fresh OIDC execution proof for that broker challenge and submits the exact challenge ID/digest with the proof; caller environment flags cannot create authorization. After the OIDC round trip, the release script resamples PostgreSQL/writer state and repeats the signed live guard before forwarding the proof.
+
+The broker verifies proof issuer, audience, challenge/nonce digest, release, manifest, database identity, workflow/run/attempt, and expiry. Before the irreversible boundary it rechecks the live database, pending migration set, and final guards. The fixed adapter durably writes the exact `ddl-started` marker first, then invokes the broker's one-time pre-effect guard immediately before Prisma spawn. That guard rechecks release/main, marker digest/state, database and pending set, recovery state, proof, and existing final migration guards, then durably consumes the challenge. Missing, expired, consumed, replayed, or drifted challenges cannot authorize another DDL attempt. A repeat with the same consumed challenge/proof can only reconcile an exact completed post-state without repeating the effect; a different operation/proof or unfinished/unknown state stays blocked for reviewed recovery.
+
+### Traffic serving and Unified V4
+
+`traffic-serve` checks production Unified V4 currentness at the authority boundary immediately before the fixed adapter mutates the authoritative route. The check must bind the exact release and canonical main SHA, V4 model revision, current and published generation, rollout epoch, and equal current/published source digests. It is repeated at the adapter's pre-effect callback. Missing, stale, mismatched, failed, or changed V4 evidence blocks route mutation. Caller-side preflight is not sufficient.
+
 ## 12. Per-phase environment-policy attestation and independent signer
 
 Use a fresh single-use owner-reviewed policy attestation for each phase, created after the recovery case exists and immediately before that phase authorization. Maximum lifetime is 30 minutes. It cannot be reused for another case, phase, run/attempt, main SHA, reviewer, environment configuration, or nonce. Consumption is recorded in the corresponding authoritative journal transition.
@@ -301,7 +317,7 @@ After read-only validation, stop the recovery app, drain its sessions, and verif
 
 The authority writes and authenticates an immutable completion receipt binding final journal generation/digest, full lineage, failed release, rollback SHA/image/artifact, backup, Phase A/B authorization IDs, restored DB identity, schema/history verification, writer/topology evidence, traffic target, health result, and timestamp/provenance.
 
-Under the host lock, finalization rechecks the exact active marker and predecessor, traffic-open state, actual serving rollback artifact, database identity, and final health/topology. The authority durably writes and verifies the receipt before removing only the exact active marker projection. A crash after receipt creation but before marker removal is safely retryable for that exact journal generation/receipt. Receipt remains audit evidence, not an active blocker for future releases.
+Under the host lock, finalization rechecks the exact active marker and predecessor, traffic-open state, actual serving rollback artifact, database identity, and final health/topology. The authority durably writes and verifies the receipt before removing only the exact active marker projection. A crash after receipt creation but before marker removal is safely retryable for that exact journal generation and evidence; retry returns the same immutable receipt, while different evidence is rejected. Receipt remains audit evidence, not an active blocker for future releases.
 
 No generic/manual marker clear is allowed.
 
@@ -331,6 +347,10 @@ All database tests use isolated localhost *_test databases. Never use production
 - Release user cannot access Docker socket/daemon, run Compose/migration/app replacement, mutate/reload Caddy, deploy rollback, or reopen traffic except through fixed authorized wrappers.
 - Unauthorized operation, arbitrary path, symlink, wrong image/state, and unavailable authority are rejected; safe read-only diagnostics remain available.
 - Authority verifies exact predecessor, state machine, signed envelope, provenance, and root-issued receipts; forged same-shape receipts fail.
+- Every host operation rejects false/undefined/malformed/wrong-ID results and reconciles exact operation-specific post-state before its receipt is persisted.
+- Adapter conformance fixtures cover success, failure, crash before receipt, completed-state replay without duplicate effect, wrong post-state, wrong idempotency binding, and concurrent duplicate replay.
+- Migration tests cover missing/stale/replayed challenge, wrong or cross-challenge proof, changed database/marker/release, and the durable marker-before-Prisma guard.
+- Traffic tests prove missing/stale/changed Unified V4 currentness prevents the authoritative route mutation.
 
 **Authority installation and rollout**
 
@@ -349,6 +369,7 @@ All database tests use isolated localhost *_test databases. Never use production
 - Crash after link before directory fsync, after journal commit before marker update, marker temp before rename, rename before directory fsync, and temp cleanup are recoverable from authoritative generation.
 - Missing/stale projection is reconstructed from journal; malformed committed record or broken chain blocks.
 - Same nonce cannot produce two committed transitions; nonce and grant are in the same journal record.
+- Version 1 records use the original exact schema and remain read-only; version 2 records require intent/evidence keys; missing, mixed, or unsupported schema chains fail closed.
 
 **Authorization and policy**
 
@@ -389,5 +410,6 @@ All database tests use isolated localhost *_test databases. Never use production
 
 - The canonical implementation plan passed its independent plan audit on the baseline identified in Section 1.
 - Code implementation is authorized by the current user order, subject to the code-only scope and invariants in this document.
+- Round-2 recovery safety changes are implemented against the audited code base and are pending independent re-audit; the host adapter is not installed, and readiness remains fail-closed until its signed exact-binary conformance receipt is present.
 - Production migration, restore, replay, backfill, activation, deploy, role/secret provisioning, host authority installation/activation, traffic changes, push, and merge remain unauthorized in this implementation task.
-- The completed code and validation are for independent implementation audit before any separate production-preparation checkpoint.
+- This implementation and its local validation are for independent implementation audit before any separate production-preparation checkpoint.

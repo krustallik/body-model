@@ -28,19 +28,11 @@ for name in authorization-envelope.json preflight-result.json preflight-evidence
   [[ -f "$CONTEXT_DIR/$name" && ! -L "$CONTEXT_DIR/$name" ]] || fail "required signed context file is missing or a symlink: $name"
 done
 
-# Once host recovery preparation is installed, all production migration work is
-# performed by the fixed typed host service. The service resolves this opaque run
-# context from its private store and independently verifies every signed proof.
-# This path never passes a shell command, filesystem path, or Docker argument.
+# The trusted host authority owns the challenge and DDL execution. The workflow
+# supplies only a one-time proof over stdin after receiving the broker challenge.
 HOST_OPERATION_CLIENT="/usr/local/bin/bodycast-production-operation"
 [[ -x "$HOST_OPERATION_CLIENT" ]] || fail "the recovery-aware host authority is unavailable; production migration is fail-closed."
 authorization_context_id="migration-${BODYCAST_AUTHORIZATION_WORKFLOW_ID}-${BODYCAST_AUTHORIZATION_RUN_ID}-${BODYCAST_AUTHORIZATION_RUN_ATTEMPT}"
-exec "$HOST_OPERATION_CLIENT" forward-migration \
-  --request-id "${authorization_context_id}-request" \
-  --release-sha "$RELEASE_SHA" \
-  --canonical-main-sha "$RELEASE_SHA" \
-  --migration-manifest-id "$MANIFEST_ID" \
-  --authorization-context-id "$authorization_context_id"
 
 [[ "$(git rev-parse --show-toplevel)" == "$ROOT_DIR" ]] || fail "repository root does not match the deployment checkout."
 [[ "$(git rev-parse HEAD)" == "$RELEASE_SHA" ]] || fail "deployment checkout does not equal the authorized release SHA."
@@ -128,19 +120,28 @@ compose --profile tools run --rm --no-deps \
   > "$CHALLENGE_GUARD_RECEIPT"
 chmod 600 "$CHALLENGE_GUARD_RECEIPT"
 
-# The one-time challenge is created only after the live production guard. The
-# current GitHub runner reselects the latest admitted preflight and requests a
-# short-lived OIDC JWT for this exact audience; the host accepts no caller-made proof.
-[[ "${BODYCAST_EXECUTION_PROOF_HANDOFF:-}" == "true" ]] || fail "protected DDL requires a live GitHub OIDC proof handoff."
-[[ ! -e "$CONTEXT_DIR/execution-proof.jwt" && ! -L "$CONTEXT_DIR/execution-proof.jwt" ]] || fail "OIDC proof must be created after the live guard."
-DDL_CHALLENGE="$(head -c 32 /dev/urandom | od -An -vtx1 | tr -d ' \n')"
-[[ "$DDL_CHALLENGE" =~ ^[a-f0-9]{64}$ ]] || fail "could not create a one-time DDL challenge."
-printf 'BODYCAST_DDL_CHALLENGE:%s\n' "$DDL_CHALLENGE"
-IFS= read -r EXECUTION_PROOF || fail "workflow runner did not return a current GitHub OIDC proof."
-[[ -n "$EXECUTION_PROOF" && ${#EXECUTION_PROOF} -le 32768 ]] || fail "GitHub OIDC proof is empty or oversized."
-printf '%s\n' "$EXECUTION_PROOF" > "$CONTEXT_DIR/execution-proof.jwt"
-chmod 600 "$CONTEXT_DIR/execution-proof.jwt"
-export BODYCAST_DDL_EXECUTION_CHALLENGE="$DDL_CHALLENGE"
+# The broker challenge is derived from a fresh authoritative migration snapshot
+# after the existing signed live guard. The workflow requests OIDC proof for this
+# exact broker nonce; no caller-generated nonce can authorize migration.
+CHALLENGE_REQUEST_ID="$authorization_context_id-challenge"
+CHALLENGE_RESPONSE="$("$HOST_OPERATION_CLIENT" migration-challenge \
+  --request-id "$CHALLENGE_REQUEST_ID" \
+  --release-sha "$RELEASE_SHA" \
+  --canonical-main-sha "$CANONICAL_MAIN_SHA" \
+  --migration-manifest-id "$MANIFEST_ID" \
+  --authorization-context-id "$authorization_context_id")" || fail "the host authority did not issue a live migration challenge."
+CHALLENGE_FIELDS="$(node -e 'const value=JSON.parse(process.argv[1])?.result?.challenge; if (!value) process.exit(2); process.stdout.write([value.nonce,value.challengeId,value.challengeDigest].join("\n"));' "$CHALLENGE_RESPONSE")" \
+  || fail "the host authority returned a malformed migration challenge."
+CHALLENGE_NONCE="$(printf '%s\n' "$CHALLENGE_FIELDS" | sed -n '1p')"
+CHALLENGE_ID="$(printf '%s\n' "$CHALLENGE_FIELDS" | sed -n '2p')"
+CHALLENGE_DIGEST="$(printf '%s\n' "$CHALLENGE_FIELDS" | sed -n '3p')"
+[[ "$CHALLENGE_NONCE" =~ ^[a-f0-9]{64}$ && "$CHALLENGE_ID" =~ ^[a-f0-9]{64}$ \
+  && "$CHALLENGE_DIGEST" =~ ^[a-f0-9]{64}$ ]] || fail "the host authority returned invalid challenge bindings."
+printf 'BODYCAST_DDL_CHALLENGE:%s\n' "$CHALLENGE_NONCE"
+IFS= read -r EXECUTION_PROOF || fail "workflow runner did not return a current challenge-bound GitHub OIDC proof."
+PROOF_LENGTH="$(printf '%s' "$EXECUTION_PROOF" | wc -c | tr -d ' ')"
+[[ "$EXECUTION_PROOF" =~ ^[^[:space:]]+\.[^[:space:]]+\.[^[:space:]]+$ && "$PROOF_LENGTH" -le 32768 ]] \
+  || fail "GitHub OIDC proof is empty, malformed, or oversized."
 
 # Re-sample PostgreSQL sessions and host topology after the OIDC round trip. The
 # signed preflight is still verified, but never reused as the final drain result.
@@ -169,53 +170,15 @@ compose --profile tools run --rm --no-deps \
   --repository /app \
   > "$GUARD_RECEIPT"
 chmod 600 "$GUARD_RECEIPT"
-# Irreversible recovery boundary: this marker is written before the Prisma
-# container is spawned. From here on, assume schema state may have changed even
-# if spawning Prisma or its first PostgreSQL statement fails. No exit path clears it.
-write_bodycast_release_marker "$RELEASE_SHA" ddl-started
-
-# Keep a host-persistent one-use nonce ledger. The container receives only this
-# directory and public verification material; no private signing key crosses the SSH boundary.
-ATTESTATION_NONCE_DIR="$GIT_DIR/bodycast-production-migration-attestation-nonces"
-if [[ -e "$ATTESTATION_NONCE_DIR" || -L "$ATTESTATION_NONCE_DIR" ]]; then
-  [[ -d "$ATTESTATION_NONCE_DIR" && ! -L "$ATTESTATION_NONCE_DIR" ]] || fail "challenge-bound execution proof replay ledger is not a regular directory."
-else
-  mkdir -m 700 "$ATTESTATION_NONCE_DIR"
-fi
-chmod 700 "$ATTESTATION_NONCE_DIR"
-
-# The command process checks backup freshness at the actual Prisma DDL start and
-# independently verifies the signed guard receipt and adds lock_timeout to Prisma's
-# PostgreSQL startup options. No retries or boolean authorization switches exist.
-compose --profile tools run --rm --no-deps \
-  --user "$(id -u):$(id -g)" \
-  --volume "$CONTEXT_DIR:/run/bodycast:ro" \
-  --volume "$ATTESTATION_NONCE_DIR:/run/bodycast-attestation-nonces:rw" \
-  -e BODYCAST_FINAL_GUARD_RECEIPT=/run/bodycast/final-guard-receipt.json \
-  -e BODYCAST_AUTHORIZATION_ENVELOPE=/run/bodycast/authorization-envelope.json \
-  -e BODYCAST_EXECUTION_PROOF=/run/bodycast/execution-proof.jwt \
-  -e "BODYCAST_DDL_EXECUTION_CHALLENGE=$BODYCAST_DDL_EXECUTION_CHALLENGE" \
-  -e BODYCAST_DDL_ATTESTATION_NONCE_DIR=/run/bodycast-attestation-nonces \
-  -e BODYCAST_VERIFICATION_KEYS=/app/scripts/production-migration-verification-keys.json \
-  -e "BODYCAST_RELEASE_SHA=$RELEASE_SHA" \
-  -e "BODYCAST_CANONICAL_MAIN_SHA=$CANONICAL_MAIN_SHA" \
-  -e "BODYCAST_AUTHORIZATION_WORKFLOW_ID=$BODYCAST_AUTHORIZATION_WORKFLOW_ID" \
-  -e "BODYCAST_AUTHORIZATION_RUN_ID=$BODYCAST_AUTHORIZATION_RUN_ID" \
-  -e "BODYCAST_AUTHORIZATION_RUN_ATTEMPT=$BODYCAST_AUTHORIZATION_RUN_ATTEMPT" \
-  migrate
-
-# Verify full migration history and compare exact PostgreSQL object signatures with
-# the disposable, restored-and-migrated schema signed in the authorization envelope.
-bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" \
-  < <(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-db-preflight.mjs) \
-  > "$CONTEXT_DIR/postflight-report.json"
-compose --profile tools run --rm --no-deps \
-  --user "$(id -u):$(id -g)" \
-  --volume "$CONTEXT_DIR:/run/bodycast:ro" \
-  --entrypoint node migrate /app/scripts/production-migration-final-guard.mjs \
-  --after-ddl --report /run/bodycast/postflight-report.json --restore /run/bodycast/restore-result.json \
-  --manifest "$MANIFEST_ID" --repository /app
-
-write_bodycast_release_marker "$RELEASE_SHA" schema-applied
-
-echo "Authorized production Prisma migrations completed and postflight schema/history matched the disposable rehearsal. No replay, activation, or application cutover ran."
+# The final local live guard above closes the workflow round trip. The broker
+# independently rechecks its challenge-bound state immediately before execution;
+# the fixed adapter writes the irreversible marker before Prisma and postflights.
+printf '%s\n' "$EXECUTION_PROOF" | "$HOST_OPERATION_CLIENT" forward-migration \
+  --request-id "${authorization_context_id}-execute" \
+  --release-sha "$RELEASE_SHA" \
+  --canonical-main-sha "$CANONICAL_MAIN_SHA" \
+  --migration-manifest-id "$MANIFEST_ID" \
+  --authorization-context-id "$authorization_context_id" \
+  --challenge-id "$CHALLENGE_ID" \
+  --challenge-digest "$CHALLENGE_DIGEST" \
+  --execution-proof-stdin

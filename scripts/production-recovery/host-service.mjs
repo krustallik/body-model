@@ -25,7 +25,6 @@ export function createHostOperationServer(broker, {
   if (!Number.isSafeInteger(releaseGroupGid) || releaseGroupGid < 1) throw new Error("Fixed release group GID is required.");
   let dispatchTail = Promise.resolve();
   const server = net.createServer((socket) => {
-    socket.setTimeout(15_000, () => socket.destroy());
     let input = "";
     let handled = false;
     socket.on("data", (chunk) => {
@@ -52,6 +51,7 @@ export function createHostOperationServer(broker, {
         socket.end(canonicalJson({ ok: false, error: "Malformed production operation request: " + error.message }) + "\n");
         return;
       }
+      socket.setTimeout(request.operation === "forward-migration" ? 60 * 60_000 : 15_000, () => socket.destroy());
       const result = dispatchTail.then(() => broker.dispatch(request));
       dispatchTail = result.catch(() => {});
       result.then((response) => socket.end(canonicalJson({ ok: true, result: response }) + "\n"))

@@ -13,13 +13,14 @@ CUTOVER="$ROOT/scripts/production-traffic-cutover.sh"
 WRITER_DRAIN="$ROOT/scripts/production-writer-drain.mjs"
 grep -Fq 'fetch --no-tags --prune bodycast-canonical' "$DEPLOY"
 grep -Fq -- '--before-ddl' "$DEPLOY"
-grep -Fq -- '--after-ddl' "$DEPLOY"
-grep -Fq 'BODYCAST_FINAL_GUARD_RECEIPT' "$DEPLOY"
-grep -Fq 'execution-proof.jwt' "$DEPLOY"
-grep -Fq 'BODYCAST_EXECUTION_PROOF' "$DEPLOY"
-grep -Fq 'BODYCAST_DDL_ATTESTATION_NONCE_DIR' "$DEPLOY"
-grep -Fq 'BODYCAST_EXECUTION_PROOF_HANDOFF' "$DEPLOY"
-grep -Fq 'BODYCAST_DDL_EXECUTION_CHALLENGE' "$DEPLOY"
+grep -Fq 'migration-challenge' "$DEPLOY"
+grep -Fq -- '--challenge-id' "$DEPLOY"
+grep -Fq -- '--challenge-digest' "$DEPLOY"
+grep -Fq -- '--execution-proof-stdin' "$DEPLOY"
+grep -Fq 'BODYCAST_DDL_CHALLENGE:' "$DEPLOY"
+! grep -Fq 'BODYCAST_EXECUTION_PROOF_HANDOFF' "$DEPLOY"
+! grep -Fq -- '--after-ddl' "$DEPLOY"
+! grep -Fq 'prisma migrate deploy' "$DEPLOY"
 grep -Fq 'verifyFinalGuardReceipt' "$WRAPPER"
 grep -Fq 'verifyGitHubExecutionProof' "$WRAPPER"
 grep -Fq 'assertPrismaTargetMatchesSignedIdentity' "$WRAPPER"
@@ -34,15 +35,18 @@ grep -Fq 'DATABASE_URL: postgresql://bodycast_restore:' "$PREFLIGHT"
 grep -Fq 'production migration: NOT EXECUTED' "$PREFLIGHT"
 grep -Fq 'compose rm --force app' "$CUTOVER"
 grep -Fq 'state !== "absent"' "$WRITER_DRAIN"
-grep -Fq 'Irreversible recovery boundary' "$DEPLOY"
-MARKER_LINE="$(grep -nF 'write_bodycast_release_marker "$RELEASE_SHA" ddl-started' "$DEPLOY" | cut -d: -f1)"
-PRISMA_SPAWN_LINE="$(grep -nF '  migrate' "$DEPLOY" | tail -n1 | cut -d: -f1)"
-AFTER_DDL_LINE="$(grep -nF -- '--after-ddl' "$DEPLOY" | cut -d: -f1)"
-SCHEMA_APPLIED_LINE="$(grep -nF 'write_bodycast_release_marker "$RELEASE_SHA" schema-applied' "$DEPLOY" | cut -d: -f1)"
+grep -Fq 'schema-cutover marker' "$ROOT/scripts/deploy.sh"
+INITIAL_GUARD_LINE="$(grep -nF '  > "$CHALLENGE_GUARD_RECEIPT"' "$DEPLOY" | cut -d: -f1)"
+CHALLENGE_LINE="$(grep -nF ' migration-challenge' "$DEPLOY" | cut -d: -f1)"
+CHALLENGE_OUTPUT_LINE="$(grep -nF 'BODYCAST_DDL_CHALLENGE:%s' "$DEPLOY" | cut -d: -f1)"
+PROOF_READ_LINE="$(grep -nF 'IFS= read -r EXECUTION_PROOF' "$DEPLOY" | cut -d: -f1)"
+FINAL_GUARD_LINE="$(grep -nF '  > "$GUARD_RECEIPT"' "$DEPLOY" | cut -d: -f1)"
+FORWARD_LINE="$(grep -nF ' forward-migration' "$DEPLOY" | cut -d: -f1)"
 APP_READY_LINE="$(grep -nF 'write_bodycast_release_marker "$DEPLOY_SHA" app-ready' "$ROOT/scripts/deploy.sh" | cut -d: -f1)"
 APP_SHA_CHECK_LINE="$(grep -nF 'deployed_container_sha=' "$ROOT/scripts/deploy.sh" | cut -d: -f1)"
-[[ -n "$MARKER_LINE" && -n "$PRISMA_SPAWN_LINE" && -n "$AFTER_DDL_LINE" && -n "$SCHEMA_APPLIED_LINE" ]]
-[[ "$MARKER_LINE" -lt "$PRISMA_SPAWN_LINE" && "$PRISMA_SPAWN_LINE" -lt "$AFTER_DDL_LINE" && "$AFTER_DDL_LINE" -lt "$SCHEMA_APPLIED_LINE" ]]
+[[ -n "$INITIAL_GUARD_LINE" && -n "$CHALLENGE_LINE" && -n "$CHALLENGE_OUTPUT_LINE" && -n "$PROOF_READ_LINE" && -n "$FINAL_GUARD_LINE" && -n "$FORWARD_LINE" ]]
+[[ "$INITIAL_GUARD_LINE" -lt "$CHALLENGE_LINE" && "$CHALLENGE_LINE" -lt "$CHALLENGE_OUTPUT_LINE" && "$CHALLENGE_OUTPUT_LINE" -lt "$PROOF_READ_LINE" ]]
+[[ "$PROOF_READ_LINE" -lt "$FINAL_GUARD_LINE" && "$FINAL_GUARD_LINE" -lt "$FORWARD_LINE" ]]
 [[ -n "$APP_READY_LINE" && -n "$APP_SHA_CHECK_LINE" && "$APP_SHA_CHECK_LINE" -lt "$APP_READY_LINE" ]]
 ! grep -Eq 'trap .*clear_bodycast_release_marker|clear_bodycast_release_marker' "$DEPLOY"
 
@@ -238,16 +242,24 @@ test ! -s "$AUTHORITY_LOG"
 test ! -e "$RECOVERY_GIT_DIR/bodycast-production-schema-cutover"
 test ! -s "$RECOVERY_DOCKER_LOG"
 
-# With the fixed host client present the script sends only the typed operation.
-# The host broker owns readiness and invokes its immutable fixed adapter; this
-# release-side process has no internal bypass even when the old env flag is set.
+# With the fixed host client present, the script obtains a one-time challenge,
+# returns the challenge nonce to the workflow, then sends the fresh proof over
+# stdin with the exact challenge bindings. The host broker owns readiness and
+# invokes its immutable fixed adapter.
 cat > "$RECOVERY_BIN/bodycast-production-operation" <<'COMMAND'
 #!/usr/bin/env bash
+set -Eeuo pipefail
 printf '%s\n' "$*" >> "$FAKE_AUTHORITY_LOG"
+if [[ "$1" == "migration-challenge" ]]; then
+  printf '%s\n' '{"ok":true,"result":{"challenge":{"nonce":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","challengeId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","challengeDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}}}'
+else
+  cat >/dev/null
+  printf '%s\n' '{"ok":true,"result":{"accepted":true}}'
+fi
 COMMAND
 chmod +x "$RECOVERY_BIN/bodycast-production-operation"
 : > "$AUTHORITY_LOG"
-env PATH="$RECOVERY_BIN:$PATH" \
+printf '%s\n' 'header.payload.signature' | env PATH="$RECOVERY_BIN:$PATH" \
   RECOVERY_ROOT="$RECOVERY_ROOT" RECOVERY_GIT_DIR="$RECOVERY_GIT_DIR" \
   FAKE_DEPLOY_SHA="$NEW_RELEASE_SHA" REAL_GIT="$REAL_GIT" SOURCE_ROOT="$ROOT" \
   FAKE_DOCKER_LOG="$RECOVERY_DOCKER_LOG" FAKE_GIT_LOG="$TMP/recovery-git.log" \
@@ -258,9 +270,11 @@ env PATH="$RECOVERY_BIN:$PATH" \
   BODYCAST_AUTHORIZATION_WORKFLOW_ID=1 BODYCAST_AUTHORIZATION_RUN_ID=2 \
   BODYCAST_AUTHORIZATION_RUN_ATTEMPT=1 \
   bash "$RECOVERY_ROOT/scripts/deploy-migrate.sh" > "$TMP/recovery-migrate.log" 2>&1
-grep -Fq "forward-migration --request-id migration-1-2-1-request --release-sha $NEW_RELEASE_SHA --canonical-main-sha $NEW_RELEASE_SHA --migration-manifest-id active-energy-unified-v2 --authorization-context-id migration-1-2-1" "$AUTHORITY_LOG"
+grep -Fq "migration-challenge --request-id migration-1-2-1-challenge --release-sha $NEW_RELEASE_SHA --canonical-main-sha $NEW_RELEASE_SHA --migration-manifest-id active-energy-unified-v2 --authorization-context-id migration-1-2-1" "$AUTHORITY_LOG"
+grep -Fq "forward-migration --request-id migration-1-2-1-execute --release-sha $NEW_RELEASE_SHA --canonical-main-sha $NEW_RELEASE_SHA --migration-manifest-id active-energy-unified-v2 --authorization-context-id migration-1-2-1 --challenge-id bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --challenge-digest cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc --execution-proof-stdin" "$AUTHORITY_LOG"
 test ! -e "$RECOVERY_GIT_DIR/bodycast-production-schema-cutover"
-test ! -s "$RECOVERY_DOCKER_LOG"
+grep -Fq 'BODYCAST_DDL_CHALLENGE:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$TMP/recovery-migrate.log"
+! grep -Fq 'prisma migrate deploy' "$RECOVERY_DOCKER_LOG"
 
 # An active marker blocks the old binary. The authority-mediated migration
 # readiness test covers the corresponding host-side block.

@@ -3,7 +3,7 @@ import { createHash, generateKeyPairSync } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { canonicalDigest, canonicalJson, signCanonical, verifyCanonical } from "../scripts/production-recovery/canonical.mjs";
+import { canonicalDigest, canonicalJson, sha256Hex, signCanonical, verifyCanonical } from "../scripts/production-recovery/canonical.mjs";
 import { createProductionOperationBroker, validateProductionOperationRequest } from "../scripts/production-recovery/operation-broker.mjs";
 import { parseOperationArguments } from "../scripts/production-recovery/host-operation-client.mjs";
 import { createReaderRolloutReceipt, createReaderRolloutVerifier, REQUIRED_READER_ROLLOUT_FIXTURES } from "../scripts/production-recovery/rollout.mjs";
@@ -23,6 +23,7 @@ import { captureImmutableRollbackArtifact, assertExactRollbackArtifact } from ".
 import { createLogicalDatabaseIdentity, verifySameLogicalDatabaseIdentity } from "../scripts/production-recovery/database-identity.mjs";
 import { createWriterDrainVerifier, verifyWriterDrainEvidence } from "../scripts/production-recovery/writer-drain.mjs";
 import { createRecoveryHostRuntime, AUTHORITY_CONFIG_KEYS } from "../scripts/production-recovery/host-runtime.mjs";
+import { OPERATION_ADAPTER_CONTRACT_DIGEST, OPERATION_CONTRACTS } from "../scripts/production-recovery/operation-contracts.mjs";
 
 const roots = [];
 async function tempRoot() {
@@ -32,24 +33,214 @@ async function tempRoot() {
 }
 afterEach(async () => Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true }))));
 
-function brokerFixture({ blocking = false, prepared = true, rolloutCurrent = true, releaseValid = true } = {}) {
+const FIXTURE_ADAPTER = Object.freeze({ current: true, adapterDigest: "a".repeat(64), receiptDigest: "b".repeat(64),
+  contractDigest: OPERATION_ADAPTER_CONTRACT_DIGEST });
+const UNUSED_ADAPTER_CALLBACKS = Object.freeze({
+  verifyReviewedRelease: async () => true,
+  verifyCurrentReaderRollout: async () => ({ current: true }),
+  verifyRecoveryPreparation: async () => ({ ready: true, operationAdapterDigest: FIXTURE_ADAPTER.adapterDigest,
+    operationAdapterConformanceDigest: FIXTURE_ADAPTER.receiptDigest }),
+  verifyForwardMigrationAuthorization: async () => false,
+  captureMigrationExecutionState: async () => { throw new Error("not used"); },
+  verifyMigrationExecutionProof: async () => null,
+  verifyMigrationFinalGuards: async () => false,
+  verifyRecoveryOperationFinalGuards: async () => true,
+  verifyUnifiedV4Currentness: async () => null,
+  inspectFixedOperationState: async () => { throw new Error("not used"); },
+  loadEvidenceById: async (id) => ({ type: "evidence-fixture", id }),
+  loadAuthorizationById: async () => null,
+  loadRolloutReceiptById: async (id) => ({ id, receiptDigest: "e".repeat(64) }),
+  executeFixedOperation: async () => { throw new Error("not used"); },
+  adapterConformance: FIXTURE_ADAPTER,
+});
+const RESTORE_PRECONDITION = Object.freeze({ logicalProductionDbIdentityDigest: "c".repeat(64),
+  backupArtifactDigest: "e".repeat(64), observedSchemaDigest: "8".repeat(64), observedMigrationHistoryDigest: "9".repeat(64) });
+const RESTORE_POSTCONDITION = Object.freeze({ logicalProductionDbIdentityDigest: "c".repeat(64),
+  backupArtifactDigest: "e".repeat(64), schemaDigest: "1".repeat(64), migrationHistoryDigest: "2".repeat(64),
+  readOnlyCompatibilityDigest: "3".repeat(64) });
+
+function restoreObservation(input, state) {
+  const definition = OPERATION_CONTRACTS["recovery-restore-in-place"];
+  const precondition = state === "pre" ? RESTORE_PRECONDITION : null;
+  const postcondition = state === "post" ? RESTORE_POSTCONDITION : null;
+  return { schemaVersion: 1, purpose: "bodycast-host-operation-state", operationType: "recovery-restore-in-place",
+    operationId: input.operationId, idempotencyKey: input.operationId, operationInputDigest: input.operationInputDigest,
+    state, observedAt: new Date().toISOString(),
+    stateDigest: canonicalDigest({ state: state === "pre" ? definition.preState : definition.postState, precondition, postcondition }),
+    precondition, postcondition };
+}
+
+function recoveryOperationIntent(evidence, artifact, { generation = 3, recoveryCaseId = "case-1" } = {}) {
+  const transition = "begin-restore";
+  const operationType = "recovery-restore-in-place";
+  const sourceEvidenceDigest = canonicalDigest(evidence);
+  const operationInputDigest = canonicalDigest({ schemaVersion: 1, recoveryCaseId, transition, operationType,
+    sourceEvidenceDigest, immutableRollbackArtifact: artifact, logicalProductionDbIdentityDigest: "c".repeat(64) });
+  const operationId = canonicalDigest({ recoveryCaseId, generation, transition, operationType, operationInputDigest });
+  return { transition, operationType, sourceEvidenceDigest, operationInputDigest, operationId };
+}
+
+function brokerFixture({ blocking = false, prepared = true, rolloutCurrent = true, releaseValid = true,
+  v4Evidence, now = () => Date.now(), proofResultOverride, adapterConformance = FIXTURE_ADAPTER } = {}) {
   const calls = [];
-  const authority = { readAuthoritativeState: async () => ({ blocking, generation: 0 }) };
+  const states = new Map();
+  const migrationGuardCalls = [];
+  const migrationEvents = [];
+  const routeEffects = [];
+  let liveMarker = null;
+  let pendingMigrationSetDigest = "f".repeat(64);
+  const challenges = new Map();
+  const consumedChallenges = new Map();
+  const authority = {
+    readAuthoritativeState: async () => ({ blocking: blocking || Boolean(liveMarker), activeRecovery: false,
+      generation: 0, recordDigest: "0".repeat(64), legacyMarker: liveMarker }),
+    issueMigrationChallenge: async (challenge) => { challenges.set(challenge.challengeId, challenge); },
+    readMigrationChallenge: async (id) => challenges.get(id) ?? null,
+    readMigrationChallengeConsumption: async (id) => consumedChallenges.get(id) ?? null,
+    consumeMigrationChallenge: async (value) => {
+      if (consumedChallenges.has(value.challengeId)) {
+        const existing = consumedChallenges.get(value.challengeId);
+        if (canonicalDigest(existing) !== canonicalDigest(value)) throw new Error("Consumed migration challenge mismatch.");
+        return { consumed: false, receipt: existing };
+      }
+      consumedChallenges.set(value.challengeId, value);
+      return { consumed: true, receipt: value };
+    },
+  };
+  function operationObservation(operationType, input, state) {
+    const definition = OPERATION_CONTRACTS[operationType];
+    const precondition = operationType === "ordinary-release" ? {
+      releaseSha: input.bindings.releaseSha,
+      canonicalMainSha: input.bindings.canonicalMainSha,
+      currentImageDigest: "f".repeat(64),
+    } : operationType === "forward-migration" ? {
+      releaseSha: input.bindings.releaseSha, manifestId: input.bindings.manifestId,
+      logicalProductionDbIdentityDigest: input.bindings.logicalProductionDbIdentityDigest,
+      pendingMigrationSetDigest: input.bindings.pendingMigrationSetDigest, markerState: "none",
+    } : operationType === "traffic-serve" ? {
+      releaseSha: input.bindings.releaseSha, imageDigest: "c".repeat(64), routeDigest: "f".repeat(64),
+      unifiedV4CurrentnessDigest: input.bindings.unifiedV4CurrentnessDigest, markerState: input.bindings.markerState,
+    } : null;
+    const postcondition = operationType === "ordinary-release" ? {
+      releaseSha: input.bindings.releaseSha,
+      imageDigest: "c".repeat(64),
+      containerId: "container-fixture",
+      healthStatus: "healthy",
+    } : operationType === "forward-migration" ? {
+      releaseSha: input.bindings.releaseSha, manifestId: input.bindings.manifestId,
+      logicalProductionDbIdentityDigest: input.bindings.logicalProductionDbIdentityDigest,
+      pendingMigrationSetDigest: input.bindings.pendingMigrationSetDigest, schemaDigest: "1".repeat(64),
+      migrationHistoryDigest: "2".repeat(64), finalGuardReceiptDigest: "3".repeat(64), markerState: "schema-applied",
+    } : operationType === "traffic-serve" ? {
+      releaseSha: input.bindings.releaseSha, imageDigest: "c".repeat(64), routeDigest: "f".repeat(64),
+      unifiedV4CurrentnessDigest: input.bindings.unifiedV4CurrentnessDigest, healthStatus: "healthy", markerState: "app-ready",
+    } : null;
+    const normalizedState = state === "pre" ? definition.preState : state === "post" ? definition.postState : "other";
+    const selectedPre = state === "pre" ? precondition : null;
+    const selectedPost = state === "post" ? postcondition : null;
+    return { schemaVersion: 1, purpose: "bodycast-host-operation-state", operationType,
+      operationId: input.operationId, idempotencyKey: input.operationId, operationInputDigest: input.operationInputDigest,
+      state, observedAt: new Date(now()).toISOString(),
+      stateDigest: canonicalDigest({ state: normalizedState, precondition: selectedPre, postcondition: selectedPost }),
+      precondition: selectedPre, postcondition: selectedPost };
+  }
   const broker = createProductionOperationBroker({
     authority,
     verifyReviewedRelease: async () => releaseValid,
     verifyCurrentReaderRollout: async ({ allowAbsent }) => allowAbsent && !rolloutCurrent ? null : { current: rolloutCurrent },
-    verifyRecoveryPreparation: async ({ allowAbsent }) => allowAbsent && !prepared ? null : { ready: prepared },
+    verifyRecoveryPreparation: async ({ allowAbsent }) => allowAbsent && !prepared ? null : { ready: prepared,
+      operationAdapterDigest: FIXTURE_ADAPTER.adapterDigest, operationAdapterConformanceDigest: FIXTURE_ADAPTER.receiptDigest },
     verifyForwardMigrationAuthorization: async (authorization) => authorization?.purpose === "forward-migration",
+    captureMigrationExecutionState: async ({ releaseSha, canonicalMainSha, migrationManifestId, authorizationContextId,
+      expectedMarkerState = null }) => {
+      const match = /^migration-([1-9][0-9]*)-([1-9][0-9]*)-([1-9][0-9]*)$/.exec(authorizationContextId ?? "");
+      return { schemaVersion: 1, purpose: "bodycast-production-migration-live-state", releaseSha, canonicalMainSha,
+        migrationManifestId, logicalProductionDbIdentityDigest: "d".repeat(64), markerState: expectedMarkerState,
+        markerDigest: expectedMarkerState ? liveMarker?.digest ?? "e".repeat(64) : null, recoveryGeneration: 0,
+        recoveryRecordDigest: "0".repeat(64), workflowId: match?.[1] ?? "1", workflowRunId: match?.[2] ?? "2",
+        workflowRunAttempt: Number(match?.[3] ?? 1), pendingMigrationSetDigest, pendingMigrationCount: 2,
+        observedAt: new Date().toISOString() };
+    },
+    verifyMigrationExecutionProof: async (token, { challenge, request }) => {
+      const verified = { schemaVersion: 1, purpose: "bodycast-production-migration-execution-proof",
+        verified: token === "header.payload.signature", challengeId: challenge.challengeId,
+        challengeDigest: challenge.challengeDigest, nonceDigest: sha256Hex(challenge.nonce),
+        releaseSha: request.releaseSha, canonicalMainSha: request.canonicalMainSha,
+        migrationManifestId: request.migrationManifestId, authorizationContextId: request.authorizationContextId,
+        workflowId: challenge.workflowId, workflowRunId: challenge.workflowRunId,
+        workflowRunAttempt: challenge.workflowRunAttempt, tokenDigest: sha256Hex(token),
+        issuedAt: new Date(now()).toISOString(), expiresAt: new Date(now() + 60_000).toISOString() };
+      return typeof proofResultOverride === "function" ? proofResultOverride(verified) : { ...verified, ...proofResultOverride };
+    },
+    verifyMigrationFinalGuards: async (evidence) => {
+      migrationGuardCalls.push(evidence);
+      if (evidence.liveState?.markerState === "ddl-started") migrationEvents.push("boundary-guard-passed");
+      return true;
+    },
+    verifyRecoveryOperationFinalGuards: async () => true,
+    verifyUnifiedV4Currentness: async ({ releaseSha, canonicalMainSha }) => {
+      if (v4Evidence === null) return null;
+      if (typeof v4Evidence === "function") return v4Evidence({ releaseSha, canonicalMainSha });
+      return v4Evidence ?? ({ schemaVersion: 1, purpose: "bodycast-unified-v4-production-currentness", profileId: 1,
+        releaseSha, canonicalMainSha, modelRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
+        rolloutEpoch: 2, currentGeneration: 7, publishedGeneration: 7, publishedRolloutEpoch: 2,
+        publishedSourceDigest: "d".repeat(64), currentSourceDigest: "d".repeat(64), current: true,
+        observedAt: new Date(now()).toISOString() });
+    },
+    now,
+    inspectFixedOperationState: async (operationType, input) => operationObservation(operationType, input,
+      states.get(input.operationId) ?? "pre"),
+    adapterConformance,
     loadEvidenceById: async (id) => ({ type: "evidence-fixture", id }),
-    loadAuthorizationById: async (id) => id === "auth-1" ? { purpose: "forward-migration" } : { id },
+    loadAuthorizationById: async (id) => id === "auth-1" || String(id).startsWith("migration-")
+      ? { purpose: "forward-migration" } : { id },
     loadRolloutReceiptById: async (id) => ({ id }),
     executeFixedOperation: async (operation, payload) => {
       calls.push({ operation, payload });
+      if (operation === "ordinary-release") {
+        await payload.authorizeImmediatelyBeforeEffect();
+        const postcondition = { releaseSha: payload.releaseSha, imageDigest: "c".repeat(64),
+          containerId: "container-fixture", healthStatus: "healthy" };
+        states.set(payload.operationId, "post");
+        return { schemaVersion: 1, purpose: "bodycast-host-operation-success", operationType: operation,
+          operationId: payload.operationId, idempotencyKey: payload.operationId,
+          operationInputDigest: payload.operationInputDigest, result: "executed", postcondition };
+      }
+      if (operation === "forward-migration") {
+        const challenge = payload.challenge;
+        liveMarker = { state: "ddl-started", releaseSha: payload.releaseSha, manifestId: payload.migrationManifestId,
+          digest: "e".repeat(64) };
+        migrationEvents.push("ddl-started-marker-written");
+        await payload.authorizeImmediatelyBeforeEffect();
+        migrationEvents.push("prisma-spawn-authorized");
+        const postcondition = { releaseSha: payload.releaseSha, manifestId: payload.migrationManifestId,
+          logicalProductionDbIdentityDigest: challenge.logicalProductionDbIdentityDigest,
+          pendingMigrationSetDigest: challenge.pendingMigrationSetDigest, schemaDigest: "1".repeat(64),
+          migrationHistoryDigest: "2".repeat(64), finalGuardReceiptDigest: "3".repeat(64), markerState: "schema-applied" };
+        liveMarker = { ...liveMarker, state: "schema-applied" };
+        states.set(payload.operationId, "post");
+        return { schemaVersion: 1, purpose: "bodycast-host-operation-success", operationType: operation,
+          operationId: payload.operationId, idempotencyKey: payload.operationId,
+          operationInputDigest: payload.operationInputDigest, result: "executed", postcondition };
+      }
+      if (operation === "traffic-serve") {
+        await payload.authorizeImmediatelyBeforeEffect();
+        routeEffects.push({ operationId: payload.operationId, releaseSha: payload.releaseSha,
+          currentnessDigest: payload.unifiedV4CurrentnessDigest });
+        const postcondition = { releaseSha: payload.releaseSha, imageDigest: "c".repeat(64), routeDigest: "f".repeat(64),
+          unifiedV4CurrentnessDigest: payload.unifiedV4CurrentnessDigest, healthStatus: "healthy",
+          markerState: payload.bindings.markerState };
+        states.set(payload.operationId, "post");
+        return { schemaVersion: 1, purpose: "bodycast-host-operation-success", operationType: operation,
+          operationId: payload.operationId, idempotencyKey: payload.operationId,
+          operationInputDigest: payload.operationInputDigest, result: "executed", postcondition };
+      }
       return { operation, accepted: true };
     },
   });
-  return { broker, calls };
+  return { broker, calls, authority, migrationGuardCalls, migrationEvents, routeEffects,
+    setPendingMigrationSetDigest(value) { pendingMigrationSetDigest = value; },
+    setLiveMarker(value) { liveMarker = value; } };
 }
 
 describe("production recovery install, rollout, and operation boundaries", () => {
@@ -85,7 +276,8 @@ describe("production recovery install, rollout, and operation boundaries", () =>
       schemaVersion: 1, operation: "ordinary-release", requestId: "deploy-1", releaseSha: "a".repeat(40), canonicalMainSha: "a".repeat(40),
       releaseMode: "serving",
     });
-    expect(result).toEqual({ operation: "ordinary-release", accepted: true });
+    expect(result).toMatchObject({ purpose: "bodycast-host-operation-success", operationType: "ordinary-release",
+      operationId: expect.any(String), result: "executed", postcondition: { healthStatus: "healthy" } });
     expect(fixture.calls).toHaveLength(1);
 
     const readiness = await fixture.broker.dispatch({ schemaVersion: 1, operation: "readiness", requestId: "ready-1" });
@@ -94,6 +286,14 @@ describe("production recovery install, rollout, and operation boundaries", () =>
       schemaVersion: 1, operation: "migration-readiness", requestId: "migrate-ready-1",
       releaseSha: "a".repeat(40), canonicalMainSha: "a".repeat(40), migrationManifestId: "manifest-v6",
     })).rejects.toThrow(/Forward migration readiness is blocked/);
+
+    const missingConformance = brokerFixture({ adapterConformance: null });
+    const unprepared = await missingConformance.broker.dispatch({ schemaVersion: 1, operation: "readiness", requestId: "ready-no-adapter-proof" });
+    expect(unprepared.recoveryPrepared).toBe(false);
+    await expect(missingConformance.broker.dispatch({
+      schemaVersion: 1, operation: "migration-readiness", requestId: "migrate-ready-no-adapter-proof",
+      releaseSha: "a".repeat(40), canonicalMainSha: "a".repeat(40), migrationManifestId: "manifest-v6",
+    })).rejects.toThrow(/no current verified operation-conformance evidence/);
 
     const blocked = brokerFixture({ blocking: true });
     await expect(blocked.broker.dispatch({
@@ -106,21 +306,131 @@ describe("production recovery install, rollout, and operation boundaries", () =>
   it("blocks forward migration until recovery prerequisites and forward-only authorization pass", async () => {
     const request = {
       schemaVersion: 1, operation: "forward-migration", requestId: "migration-1", releaseSha: "a".repeat(40),
-      canonicalMainSha: "a".repeat(40), migrationManifestId: "manifest-v6", authorizationContextId: "auth-1",
+      canonicalMainSha: "a".repeat(40), migrationManifestId: "manifest-v6", authorizationContextId: "migration-1-2-1",
+      challengeId: "a".repeat(64), challengeDigest: "b".repeat(64), executionProof: "header.payload.signature",
     };
     const missing = brokerFixture({ prepared: false });
     await expect(missing.broker.dispatch(request)).rejects.toThrow(/recovery preparation/);
     expect(missing.calls).toHaveLength(0);
 
     const ready = brokerFixture();
-    expect(await ready.broker.dispatch(request)).toMatchObject({ accepted: true, operation: "forward-migration" });
-    expect(ready.calls[0]).toEqual({ operation: "forward-migration", payload: {
-      releaseSha: "a".repeat(40), canonicalMainSha: "a".repeat(40), migrationManifestId: "manifest-v6", authorizationContextId: "auth-1",
-    } });
+    const missingChallenge = { ...request };
+    delete missingChallenge.challengeId;
+    await expect(ready.broker.dispatch(missingChallenge)).rejects.toThrow(/closed schema|challengeId/);
+    expect(ready.calls).toHaveLength(0);
 
     const stale = brokerFixture({ releaseValid: false });
     await expect(stale.broker.dispatch(request)).rejects.toThrow(/stale, unreviewed/);
     expect(stale.calls).toHaveLength(0);
+  });
+
+  it("requires a fresh migration challenge, exact proof, unchanged state, and a durable marker boundary before Prisma", async () => {
+    const releaseSha = "a".repeat(40);
+    const challengeRequest = { schemaVersion: 1, operation: "migration-challenge", requestId: "migration-challenge-1",
+      releaseSha, canonicalMainSha: releaseSha, migrationManifestId: "manifest-v6", authorizationContextId: "migration-1-2-1" };
+    const issue = async (fixture) => fixture.broker.dispatch(challengeRequest);
+    const makeForward = (challenge, proof = "header.payload.signature") => ({ schemaVersion: 1,
+      operation: "forward-migration", requestId: "migration-forward-1", releaseSha, canonicalMainSha: releaseSha,
+      migrationManifestId: "manifest-v6", authorizationContextId: "migration-1-2-1",
+      challengeId: challenge.challengeId, challengeDigest: challenge.challengeDigest, executionProof: proof });
+
+    const absent = brokerFixture();
+    const absentRequest = { ...challengeRequest, operation: "forward-migration", challengeId: undefined,
+      challengeDigest: undefined, executionProof: undefined };
+    delete absentRequest.challengeId;
+    delete absentRequest.challengeDigest;
+    delete absentRequest.executionProof;
+    await expect(absent.broker.dispatch(absentRequest)).rejects.toThrow(/closed schema|challengeId/);
+    expect(absent.calls).toHaveLength(0);
+
+    let clockNow = Date.now();
+    const expired = brokerFixture({ now: () => clockNow });
+    const expiredChallenge = (await issue(expired)).challenge;
+    clockNow += 2 * 60_000 + 1;
+    await expect(expired.broker.dispatch(makeForward(expiredChallenge))).rejects.toThrow(/stale or expired/);
+    expect(expired.calls).toHaveLength(0);
+
+    const wrongProof = brokerFixture();
+    const wrongProofChallenge = (await issue(wrongProof)).challenge;
+    await expect(wrongProof.broker.dispatch(makeForward(wrongProofChallenge, "wrong.payload.signature")))
+      .rejects.toThrow(/proof verifier did not bind|execution proof/);
+    expect(wrongProof.calls).toHaveLength(0);
+
+    const otherChallengeProof = brokerFixture({ proofResultOverride: { challengeId: "f".repeat(64) } });
+    const otherChallenge = (await issue(otherChallengeProof)).challenge;
+    await expect(otherChallengeProof.broker.dispatch(makeForward(otherChallenge)))
+      .rejects.toThrow(/proof verifier did not bind/);
+    expect(otherChallengeProof.calls).toHaveLength(0);
+
+    const changedDb = brokerFixture();
+    const changedDbChallenge = (await issue(changedDb)).challenge;
+    changedDb.setPendingMigrationSetDigest("9".repeat(64));
+    await expect(changedDb.broker.dispatch(makeForward(changedDbChallenge))).rejects.toThrow(/state changed after the challenge/);
+    expect(changedDb.calls).toHaveLength(0);
+
+    const changedMarker = brokerFixture();
+    const changedMarkerChallenge = (await issue(changedMarker)).challenge;
+    changedMarker.setLiveMarker({ state: "ddl-started", releaseSha, manifestId: "manifest-v6", digest: "e".repeat(64) });
+    await expect(changedMarker.broker.dispatch(makeForward(changedMarkerChallenge))).rejects.toThrow(/recovery state|marker/);
+    expect(changedMarker.calls).toHaveLength(0);
+
+    const valid = brokerFixture();
+    const challenge = (await issue(valid)).challenge;
+    const forward = makeForward(challenge);
+    const result = await valid.broker.dispatch(forward);
+    expect(result.completion).toMatchObject({ result: "executed", operationType: "forward-migration",
+      operationId: expect.any(String), postcondition: { markerState: "schema-applied" } });
+    expect(valid.migrationEvents).toEqual(["ddl-started-marker-written", "boundary-guard-passed", "prisma-spawn-authorized"]);
+    expect(valid.migrationGuardCalls).toHaveLength(2);
+    expect(valid.migrationGuardCalls.at(-1).liveState.markerState).toBe("ddl-started");
+    expect(valid.calls.filter((call) => call.operation === "forward-migration")).toHaveLength(1);
+
+    await expect(valid.broker.dispatch({ ...forward, requestId: "migration-forward-retry" }))
+      .rejects.toThrow(/Active recovery state blocks forward migration/);
+    await expect(valid.broker.dispatch({ ...forward, executionProof: "another.payload.proof" }))
+      .rejects.toThrow(/Active recovery state blocks forward migration/);
+    expect(valid.calls.filter((call) => call.operation === "forward-migration")).toHaveLength(1);
+  });
+
+  it("gates the authoritative traffic-serve boundary on current Unified V4 state", async () => {
+    const releaseSha = "a".repeat(40);
+    const request = { schemaVersion: 1, operation: "traffic-serve", requestId: "serve-1", releaseSha,
+      canonicalMainSha: releaseSha, authorizationContextId: "migration-1-2-1" };
+    const marker = { state: "app-ready", releaseSha, manifestId: "manifest-v6", digest: "e".repeat(64) };
+
+    const allowed = brokerFixture();
+    allowed.setLiveMarker(marker);
+    const served = await allowed.broker.dispatch(request);
+    expect(served.completion).toMatchObject({ result: "executed", operationType: "traffic-serve",
+      postcondition: { markerState: "app-ready", healthStatus: "healthy" } });
+    expect(allowed.routeEffects).toHaveLength(1);
+
+    for (const v4Evidence of [null,
+      { schemaVersion: 1, purpose: "bodycast-unified-v4-production-currentness", profileId: 1,
+        releaseSha, canonicalMainSha: releaseSha, modelRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
+        rolloutEpoch: 2, currentGeneration: 7, publishedGeneration: 6, publishedRolloutEpoch: 2,
+        publishedSourceDigest: "d".repeat(64), currentSourceDigest: "d".repeat(64), current: true,
+        observedAt: new Date().toISOString() },
+    ]) {
+      const blocked = brokerFixture({ v4Evidence });
+      blocked.setLiveMarker(marker);
+      await expect(blocked.broker.dispatch(request)).rejects.toThrow();
+      expect(blocked.routeEffects).toHaveLength(0);
+    }
+
+    let checks = 0;
+    const baseEvidence = { schemaVersion: 1, purpose: "bodycast-unified-v4-production-currentness", profileId: 1,
+      releaseSha, canonicalMainSha: releaseSha, modelRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
+      rolloutEpoch: 2, currentGeneration: 7, publishedGeneration: 7, publishedRolloutEpoch: 2,
+      publishedSourceDigest: "d".repeat(64), currentSourceDigest: "d".repeat(64), current: true,
+      observedAt: new Date().toISOString() };
+    const changed = brokerFixture({ v4Evidence: () => {
+      checks += 1;
+      return checks === 1 ? baseEvidence : { ...baseEvidence, currentGeneration: 8, publishedGeneration: 8 };
+    } });
+    changed.setLiveMarker(marker);
+    await expect(changed.broker.dispatch(request)).rejects.toThrow(/currentness changed/);
+    expect(changed.routeEffects).toHaveLength(0);
   });
 
   it("passes only evidence identifiers through the fixed recovery transition interface", async () => {
@@ -130,10 +440,19 @@ describe("production recovery install, rollout, and operation boundaries", () =>
         readAuthoritativeState: async () => ({ blocking: true }),
         applyTransition: async (request) => { calls.push(request); return { record: { generation: 2 } }; },
       },
+      ...UNUSED_ADAPTER_CALLBACKS,
       verifyReviewedRelease: async () => true,
       verifyCurrentReaderRollout: async () => ({ current: true }),
-      verifyRecoveryPreparation: async () => ({ ready: true }),
+      verifyRecoveryPreparation: async () => ({ ready: true, operationAdapterDigest: FIXTURE_ADAPTER.adapterDigest,
+        operationAdapterConformanceDigest: FIXTURE_ADAPTER.receiptDigest }),
       verifyForwardMigrationAuthorization: async () => false,
+      captureMigrationExecutionState: async () => { throw new Error("not used"); },
+      verifyMigrationExecutionProof: async () => null,
+      verifyMigrationFinalGuards: async () => false,
+      verifyRecoveryOperationFinalGuards: async () => true,
+      verifyUnifiedV4Currentness: async () => null,
+      inspectFixedOperationState: async () => { throw new Error("not used"); },
+      adapterConformance: FIXTURE_ADAPTER,
       loadEvidenceById: async (id) => ({ type: "authorize-restore", id }),
       loadAuthorizationById: async (id) => ({ id }),
       loadRolloutReceiptById: async (id) => ({ id, receiptDigest: "c".repeat(64) }),
@@ -157,33 +476,41 @@ describe("production recovery install, rollout, and operation boundaries", () =>
 
   it("runs post-authorization mutations only through fixed host execution steps", async () => {
     const calls = [];
+    const evidence = { type: "begin-restore" };
+    const artifact = { rollbackArtifactId: "fixture-rollback-artifact", rollbackArtifactDigest: "e".repeat(64),
+      rollbackImageDigest: "d".repeat(64) };
+    const intent = recoveryOperationIntent(evidence, artifact);
+    let applied = false;
+    const record = { recoveryCaseId: "case-1", generation: 3, recordDigest: "f".repeat(64), nextState: "restore-in-progress",
+      transition: intent.transition, sourceEvidenceDigest: intent.sourceEvidenceDigest, operationEvidenceId: "begin-evidence",
+      manifestId: "case-1", rollbackAppSha: "a".repeat(40), immutableRollbackArtifact: artifact,
+      logicalProductionDbIdentityDigest: "c".repeat(64), operationIntent: { schemaVersion: 1,
+        operationType: intent.operationType, operationInputDigest: intent.operationInputDigest, operationId: intent.operationId } };
     const broker = createProductionOperationBroker({
       authority: {
         readAuthoritativeState: async () => ({ blocking: true, activeRecovery: true }),
-        applyTransition: async (request) => ({ record: {
-          recoveryCaseId: request.recoveryCaseId, generation: 3, recordDigest: "f".repeat(64), nextState: "restore-in-progress",
-          immutableRollbackArtifact: { rollbackArtifactId: "fixture-rollback-artifact" }, logicalProductionDbIdentityDigest: "c".repeat(64),
-          operationIntent: { operationId: "a".repeat(64), operationInputDigest: "b".repeat(64), operationType: "recovery-restore-in-place" },
-        } }),
+        applyTransition: async () => ({ record }),
         executePendingOperation: async (request, execute) => {
-          const outcome = await execute({
-            record: { recoveryCaseId: request.recoveryCaseId, generation: request.generation,
-              recordDigest: request.recordDigest, operationEvidenceId: "begin-evidence",
-              immutableRollbackArtifact: { rollbackArtifactId: "fixture-rollback-artifact" },
-              logicalProductionDbIdentityDigest: "c".repeat(64) },
-            intent: { operationId: request.operationId, operationInputDigest: "b".repeat(64), operationType: "recovery-restore-in-place" },
-          });
-          return { receipt: { operationId: request.operationId, outcomeDigest: canonicalDigest(outcome) }, executed: true };
+          const outcome = await execute({ record, intent: record.operationIntent });
+          return { receipt: { operationId: request.operationId, outcomeDigest: canonicalDigest(outcome) }, outcome, executed: true };
         },
       },
-      verifyReviewedRelease: async () => true,
+      ...UNUSED_ADAPTER_CALLBACKS,
       verifyCurrentReaderRollout: async () => ({ current: true }),
-      verifyRecoveryPreparation: async () => ({ ready: true }),
-      verifyForwardMigrationAuthorization: async () => false,
-      loadEvidenceById: async () => ({ type: "begin-restore" }),
+      verifyRecoveryPreparation: async () => ({ ready: true, operationAdapterDigest: FIXTURE_ADAPTER.adapterDigest,
+        operationAdapterConformanceDigest: FIXTURE_ADAPTER.receiptDigest }),
+      loadEvidenceById: async () => evidence,
       loadAuthorizationById: async () => null,
       loadRolloutReceiptById: async () => ({ receiptDigest: "e".repeat(64) }),
-      executeFixedOperation: async (operation, payload) => { calls.push({ operation, payload }); return { started: true }; },
+      inspectFixedOperationState: async (_operation, input) => restoreObservation(input, applied ? "post" : "pre"),
+      executeFixedOperation: async (operation, payload) => {
+        calls.push({ operation, payload });
+        await payload.authorizeImmediatelyBeforeEffect();
+        applied = true;
+        return { schemaVersion: 1, purpose: "bodycast-host-operation-success", operationType: operation,
+          operationId: payload.operationId, idempotencyKey: payload.operationId, operationInputDigest: payload.operationInputDigest,
+          result: "executed", postcondition: RESTORE_POSTCONDITION };
+      },
     });
     const result = await broker.dispatch({
       schemaVersion: 1, operation: "recovery-transition", requestId: "restore-1", recoveryCaseId: "case-1", transition: "begin-restore",
@@ -191,13 +518,12 @@ describe("production recovery install, rollout, and operation boundaries", () =>
       authorizationEnvelope: null, policyAttestation: null, rolloutReceiptId: "rollout-1",
     });
     expect(result.record.nextState).toBe("restore-in-progress");
-    expect(calls).toEqual([{
-      operation: "recovery-restore-in-place",
-      payload: { operationId: "a".repeat(64), idempotencyKey: "a".repeat(64), operationInputDigest: "b".repeat(64),
-        replayPolicy: "reconcile-same-logical-database-to-same-bound-backup", recoveryCaseId: "case-1",
-        generation: 3, recordDigest: "f".repeat(64), immutableRollbackArtifact: { rollbackArtifactId: "fixture-rollback-artifact" },
-        logicalProductionDbIdentityDigest: "c".repeat(64), evidenceId: "begin-evidence", evidence: { type: "begin-restore" } },
-    }]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ operation: intent.operationType, payload: { operationId: intent.operationId,
+      idempotencyKey: intent.operationId, operationInputDigest: intent.operationInputDigest,
+      replayPolicy: OPERATION_CONTRACTS[intent.operationType].replayPolicy, recoveryCaseId: "case-1",
+      journalGeneration: 3, journalRecordDigest: "f".repeat(64), immutableRollbackArtifact: artifact,
+      logicalProductionDbIdentityDigest: "c".repeat(64), evidenceId: "begin-evidence", evidence } });
     calls.length = 0;
     await expect(broker.dispatch({
       schemaVersion: 1, operation: "recovery-transition", requestId: "restore-2", recoveryCaseId: "case-1", transition: "begin-restore",
@@ -209,17 +535,19 @@ describe("production recovery install, rollout, and operation boundaries", () =>
 
   it("replays only the exact pending journal operation and reuses its idempotency key", async () => {
     const evidence = { type: "begin-restore", backupArtifactId: "backup-fixture-1" };
-    const operationId = "a".repeat(64);
-    const operationInputDigest = "b".repeat(64);
+    const artifact = { rollbackArtifactId: "fixture-rollback-artifact", rollbackArtifactDigest: "e".repeat(64),
+      rollbackImageDigest: "d".repeat(64) };
+    const intentFields = recoveryOperationIntent(evidence, artifact);
+    const { operationId, operationInputDigest, operationType, transition, sourceEvidenceDigest } = intentFields;
     let receipt = null;
     let evidenceMutated = false;
     const executionCalls = [];
     const record = {
       recoveryCaseId: "case-1", generation: 3, recordDigest: "f".repeat(64),
-      sourceEvidenceDigest: canonicalDigest(evidence),
-      immutableRollbackArtifact: { rollbackArtifactId: "fixture-rollback-artifact" },
+      transition, manifestId: "case-1", rollbackAppSha: "a".repeat(40), sourceEvidenceDigest,
+      immutableRollbackArtifact: artifact,
       logicalProductionDbIdentityDigest: "c".repeat(64),
-      operationIntent: { schemaVersion: 1, operationId, operationInputDigest, operationType: "recovery-restore-in-place" },
+      operationIntent: { schemaVersion: 1, operationId, operationInputDigest, operationType },
     };
     const authority = {
       readAuthoritativeState: async () => ({ blocking: true, activeRecovery: true }),
@@ -227,22 +555,23 @@ describe("production recovery install, rollout, and operation boundaries", () =>
       executePendingOperation: async (identity, execute) => {
         const outcome = await execute({ record, intent: record.operationIntent });
         receipt = { operationId: identity.operationId, outcomeDigest: canonicalDigest(outcome) };
-        return { receipt, executed: true };
+        return { receipt, outcome, executed: true };
       },
     };
     const broker = createProductionOperationBroker({
       authority,
+      ...UNUSED_ADAPTER_CALLBACKS,
       verifyReviewedRelease: async () => true,
       verifyCurrentReaderRollout: async () => ({ current: true }),
-      verifyRecoveryPreparation: async () => ({ ready: true }),
+      verifyRecoveryPreparation: async () => ({ ready: true, operationAdapterDigest: FIXTURE_ADAPTER.adapterDigest,
+        operationAdapterConformanceDigest: FIXTURE_ADAPTER.receiptDigest }),
       verifyForwardMigrationAuthorization: async () => true,
       loadEvidenceById: async () => evidenceMutated ? { ...evidence, backupArtifactId: "different-backup" } : evidence,
       loadAuthorizationById: async () => null,
       loadRolloutReceiptById: async () => null,
-      executeFixedOperation: async (operation, payload) => {
-        executionCalls.push({ operation, payload });
-        return { operationId: payload.operationId, state: "reconciled" };
-      },
+      inspectFixedOperationState: async (_operation, input) => restoreObservation(input, "post"),
+      executeFixedOperation: async (operation, payload) => { executionCalls.push({ operation, payload });
+        throw new Error("Completed restore state must be receipted without a duplicate destructive effect"); },
     });
     const request = {
       schemaVersion: 1, operation: "recovery-operation-replay", requestId: "replay-1", recoveryCaseId: "case-1",
@@ -255,17 +584,10 @@ describe("production recovery install, rollout, and operation boundaries", () =>
     evidenceMutated = false;
     const replayed = await broker.dispatch(request);
     expect(replayed.replayed).toBe(true);
-    expect(executionCalls).toHaveLength(1);
-    expect(executionCalls[0]).toMatchObject({
-      operation: "recovery-restore-in-place",
-      payload: { operationId, idempotencyKey: operationId, operationInputDigest,
-        replayPolicy: "reconcile-same-logical-database-to-same-bound-backup", recoveryCaseId: "case-1",
-        generation: 3, recordDigest: record.recordDigest, immutableRollbackArtifact: record.immutableRollbackArtifact,
-        logicalProductionDbIdentityDigest: record.logicalProductionDbIdentityDigest, evidenceId: "evidence-1", evidence },
-    });
+    expect(executionCalls).toHaveLength(0);
     const duplicate = await broker.dispatch({ ...request, requestId: "replay-duplicate" });
     expect(duplicate.replayed).toBe(false);
-    expect(executionCalls).toHaveLength(1);
+    expect(executionCalls).toHaveLength(0);
   });
 
   it("requires root-only authority state, the fixed socket, and a complete signed host adapter", () => {
@@ -289,6 +611,10 @@ describe("production recovery install, rollout, and operation boundaries", () =>
           authorityKeyId: "root-key-1", authorityInstanceId: "fixture-authority" }
           : key === "journalPublicKeys" ? { "root-key-1": authoritySigner.publicKey.export({ type: "spki", format: "pem" }) }
           : {}]));
+    authorityConfig.operationAdapterDigest = sha256(binary);
+    authorityConfig.operationAdapterConformancePublicKeys = {
+      "adapter-conformance-key": signer.publicKey.export({ type: "spki", format: "pem" }),
+    };
     const packageConfig = { authority: authorityConfig, host: { releaseGroupGid: 1001, adapter: { id: "reviewed-fixture-adapter" } } };
     const config = Buffer.from(canonicalJson(packageConfig));
     const unsigned = {
@@ -379,6 +705,46 @@ describe("production recovery install, rollout, and operation boundaries", () =>
 
     const installationRoot = path.join(await tempRoot(), "authority-install");
     const rejectedInstallRoot = path.join(await tempRoot(), "authority-install-rejected");
+    const emptyExistingRoot = path.join(await tempRoot(), "authority-install-empty");
+    await fs.mkdir(emptyExistingRoot, { recursive: true, mode: 0o700 });
+    await installAuthorityPackageFixture({
+      provenance, binaryBytes: binary, configBytes: config, installationRoot: emptyExistingRoot,
+      trustedProvenanceKeys: { "provenance-key": signer.publicKey }, trustedInstallationKeys: { "installer-key": receiptKey.publicKey },
+      allowedAuthorityVersions: ["1.2.0"], minimumAllowedVersion: "1.0.0",
+      receiptSigner: { keyId: "installer-key", privateKey: receiptKey.privateKey, publicKey: receiptKey.publicKey },
+      now: Date.parse("2026-10-07T12:30:00.000Z"), syncDirectory: async () => {},
+    });
+    expect((await verifyInstalledAuthorityPackage({
+      installationRoot: emptyExistingRoot, trustedInstallationKeys: { "installer-key": receiptKey.publicKey },
+      allowedAuthorityVersions: ["1.2.0"], minimumAllowedVersion: "1.0.0", requireRoot: false,
+    })).authorityVersion).toBe("1.2.0");
+
+    const pointerOnlyRoot = path.join(await tempRoot(), "authority-install-pointer-only");
+    await fs.mkdir(pointerOnlyRoot, { recursive: true, mode: 0o700 });
+    await fs.writeFile(path.join(pointerOnlyRoot, "current-version"), "v1.2.0\n", { mode: 0o600 });
+    await expect(installAuthorityPackageFixture({
+      provenance, binaryBytes: binary, configBytes: config, installationRoot: pointerOnlyRoot,
+      trustedProvenanceKeys: { "provenance-key": signer.publicKey }, trustedInstallationKeys: { "installer-key": receiptKey.publicKey },
+      allowedAuthorityVersions: ["1.2.0"], minimumAllowedVersion: "1.0.0",
+      receiptSigner: { keyId: "installer-key", privateKey: receiptKey.privateKey, publicKey: receiptKey.publicKey },
+      now: Date.parse("2026-10-07T12:30:00.000Z"), syncDirectory: async () => {},
+    })).rejects.toThrow();
+    await expect(fs.stat(path.join(pointerOnlyRoot, "v1.2.0"))).rejects.toMatchObject({ code: "ENOENT" });
+
+    const receiptOnlyRoot = path.join(await tempRoot(), "authority-install-receipt-only");
+    const receiptOnlyVersion = path.join(receiptOnlyRoot, "v1.2.0");
+    await fs.mkdir(receiptOnlyVersion, { recursive: true, mode: 0o700 });
+    await fs.writeFile(path.join(receiptOnlyRoot, "current-version"), "v1.2.0\n", { mode: 0o600 });
+    await fs.writeFile(path.join(receiptOnlyVersion, "installation-receipt.json"), canonicalJson(signedReceipt), { mode: 0o600 });
+    await expect(installAuthorityPackageFixture({
+      provenance, binaryBytes: binary, configBytes: config, installationRoot: receiptOnlyRoot,
+      trustedProvenanceKeys: { "provenance-key": signer.publicKey }, trustedInstallationKeys: { "installer-key": receiptKey.publicKey },
+      allowedAuthorityVersions: ["1.2.0"], minimumAllowedVersion: "1.0.0",
+      receiptSigner: { keyId: "installer-key", privateKey: receiptKey.privateKey, publicKey: receiptKey.publicKey },
+      now: Date.parse("2026-10-07T12:30:00.000Z"), syncDirectory: async () => {},
+    })).rejects.toThrow();
+    await expect(fs.stat(path.join(receiptOnlyVersion, "bodycast-recovery-authority"))).rejects.toMatchObject({ code: "ENOENT" });
+
     await expect(installAuthorityPackageFixture({
       provenance: { ...provenance, signature: "forged-signature" },
       binaryBytes: binary,
@@ -431,6 +797,17 @@ describe("production recovery install, rollout, and operation boundaries", () =>
       allowedAuthorityVersions: ["1.1.9", "1.2.0"], minimumAllowedVersion: "1.0.0",
     });
     expect(olderVerified.authorityVersion).toBe("1.1.9");
+    const incompleteDowngradeRoot = path.join(await tempRoot(), "authority-install-incomplete-downgrade");
+    await fs.mkdir(incompleteDowngradeRoot, { recursive: true, mode: 0o700 });
+    await fs.writeFile(path.join(incompleteDowngradeRoot, "current-version"), "v1.2.0\n", { mode: 0o600 });
+    await expect(installAuthorityPackageFixture({
+      provenance: olderProvenance, binaryBytes: binary, configBytes: olderConfig, installationRoot: incompleteDowngradeRoot,
+      trustedProvenanceKeys: { "provenance-key": signer.publicKey }, trustedInstallationKeys: { "installer-key": receiptKey.publicKey },
+      minimumAllowedVersion: "1.0.0", allowedAuthorityVersions: ["1.1.9", "1.2.0"],
+      receiptSigner: { keyId: "installer-key", privateKey: receiptKey.privateKey, publicKey: receiptKey.publicKey },
+      now: Date.parse("2026-10-07T12:30:00.000Z"), syncDirectory: async () => {},
+    })).rejects.toThrow();
+    await expect(fs.stat(path.join(incompleteDowngradeRoot, "v1.1.9"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(installAuthorityPackageFixture({
       provenance: olderProvenance,
       binaryBytes: binary,

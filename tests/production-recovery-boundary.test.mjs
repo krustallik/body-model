@@ -864,6 +864,21 @@ describe("production recovery install, rollout, and operation boundaries", () =>
     })).toThrow(/fixed operation socket/);
   });
 
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "requires root for the fixed production installer when called by a non-root POSIX user",
+    async () => {
+      await expect(installAuthorityPackageFromRaw({
+        provenance: {}, binaryBytes: Buffer.from("untrusted"), configBytes: Buffer.from("{}"),
+      })).rejects.toThrow("Authority package installation requires root.");
+    },
+  );
+
+  it("does not let callers override fixed installer root policy or destination", async () => {
+    const rawInput = { provenance: {}, binaryBytes: Buffer.from("untrusted"), configBytes: Buffer.from("{}") };
+    await expect(installAuthorityPackageFromRaw({ ...rawInput, requireRoot: false })).rejects.toThrow(/closed schema/);
+    await expect(installAuthorityPackageFromRaw({ ...rawInput, installationRoot: await tempRoot() })).rejects.toThrow(/closed schema/);
+  });
+
   it("verifies immutable authority package digests, signer, allowlist, and monotonic version", async () => {
     const signer = generateKeyPairSync("ed25519");
     const authoritySigner = generateKeyPairSync("ed25519");
@@ -970,17 +985,53 @@ describe("production recovery install, rollout, and operation boundaries", () =>
     const rejectedInstallRoot = path.join(await tempRoot(), "authority-install-rejected");
     const emptyExistingRoot = path.join(await tempRoot(), "authority-install-empty");
     await fs.mkdir(emptyExistingRoot, { recursive: true, mode: 0o700 });
-    await installAuthorityPackageFixture({
-      provenance, binaryBytes: binary, configBytes: config, installationRoot: emptyExistingRoot,
+    const emptyExistingRootStat = await fs.lstat(emptyExistingRoot);
+    expect(emptyExistingRootStat.isDirectory()).toBe(true);
+    expect(emptyExistingRootStat.isSymbolicLink()).toBe(false);
+    if (process.platform !== "win32") {
+      expect(emptyExistingRootStat.uid).toBe(process.getuid());
+      expect(emptyExistingRootStat.mode & 0o077).toBe(0);
+    }
+    const installFixtureAt = (root) => installAuthorityPackageFixture({
+      provenance, binaryBytes: binary, configBytes: config, installationRoot: root,
       trustedProvenanceKeys: { "provenance-key": signer.publicKey }, trustedInstallationKeys: { "installer-key": receiptKey.publicKey },
       allowedAuthorityVersions: ["1.2.0"], minimumAllowedVersion: "1.0.0",
       receiptSigner: { keyId: "installer-key", privateKey: receiptKey.privateKey, publicKey: receiptKey.publicKey },
       now: Date.parse("2026-10-07T12:30:00.000Z"), syncDirectory: async () => {},
     });
+    await installFixtureAt(emptyExistingRoot);
     expect((await verifyInstalledAuthorityPackage({
       installationRoot: emptyExistingRoot, trustedInstallationKeys: { "installer-key": receiptKey.publicKey },
       allowedAuthorityVersions: ["1.2.0"], minimumAllowedVersion: "1.0.0", requireRoot: false,
     })).authorityVersion).toBe("1.2.0");
+    if (process.platform !== "win32") {
+      const installedRootStat = await fs.lstat(emptyExistingRoot);
+      expect(installedRootStat.uid).toBe(process.getuid());
+      expect(installedRootStat.mode & 0o077).toBe(0);
+
+      const permissiveRoot = path.join(await tempRoot(), "authority-install-permissive");
+      await fs.mkdir(permissiveRoot, { recursive: true, mode: 0o700 });
+      await fs.chmod(permissiveRoot, 0o755);
+      await expect(installFixtureAt(permissiveRoot))
+        .rejects.toThrow(/Private state path must not grant group\/other access/);
+      expect(await fs.readdir(permissiveRoot)).toEqual([]);
+
+      const symlinkTarget = path.join(await tempRoot(), "authority-install-symlink-target");
+      await fs.mkdir(symlinkTarget, { recursive: true, mode: 0o700 });
+      const symlinkRoot = path.join(await tempRoot(), "authority-install-symlink");
+      await fs.symlink(symlinkTarget, symlinkRoot, "dir");
+      await expect(installFixtureAt(symlinkRoot)).rejects.toThrow(/Symlink path is not allowed/);
+      expect(await fs.readdir(symlinkTarget)).toEqual([]);
+
+      const unsafeParentTarget = await tempRoot();
+      const unsafeTargetRoot = path.join(unsafeParentTarget, "authority-install");
+      await fs.mkdir(unsafeTargetRoot, { recursive: true, mode: 0o700 });
+      const unsafeParentLink = path.join(await tempRoot(), "authority-install-parent-link");
+      await fs.symlink(unsafeParentTarget, unsafeParentLink, "dir");
+      await expect(installFixtureAt(path.join(unsafeParentLink, "authority-install")))
+        .rejects.toThrow(/Symlink path is not allowed/);
+      expect(await fs.readdir(unsafeTargetRoot)).toEqual([]);
+    }
 
     const pointerOnlyRoot = path.join(await tempRoot(), "authority-install-pointer-only");
     await fs.mkdir(pointerOnlyRoot, { recursive: true, mode: 0o700 });

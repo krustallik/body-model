@@ -218,7 +218,8 @@ async function installAuthorityPackageInternal({
   await fs.mkdir(root, { recursive: true, mode: 0o700 });
   await assertSafePath(root, { requireRoot, privateMode: true });
   const rootStat = await fs.lstat(root);
-  if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || (process.platform !== "win32" && (rootStat.uid !== 0 || (rootStat.mode & 0o077) !== 0))) {
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()
+    || (process.platform !== "win32" && ((requireRoot && rootStat.uid !== 0) || (rootStat.mode & 0o077) !== 0))) {
     throw new Error("Authority installation root must be root-owned mode 0700.");
   }
   const installationKeys = trustedInstallationKeys ?? { [receiptSigner.keyId]: receiptSigner.publicKey };

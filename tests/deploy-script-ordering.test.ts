@@ -36,8 +36,12 @@ describe("production deploy script safety contracts", () => {
     expect(deploySh).toContain('BODYCAST_NON_SERVING_DEPLOY" == "1"');
     expect(deploySh).toContain('write_bodycast_release_marker "$DEPLOY_SHA" app-ready');
     expect(deploySh).toContain("refusing to restart the prior binary");
-    expect(migrateSh).toContain("write_bodycast_release_marker \"$RELEASE_SHA\" ddl-started");
-    expect(migrateSh).toContain("write_bodycast_release_marker \"$RELEASE_SHA\" schema-applied");
+    expect(migrateSh).not.toContain("write_bodycast_release_marker");
+    expect(migrateSh).toContain("read_bodycast_release_marker");
+    expect(migrateSh).toContain("existing schema-cutover marker requires explicit recovery");
+    expect(migrateSh).toContain('HOST_OPERATION_CLIENT="/usr/local/bin/bodycast-production-operation"');
+    expect(migrateSh).toContain('"$HOST_OPERATION_CLIENT" migration-challenge');
+    expect(migrateSh).toContain('"$HOST_OPERATION_CLIENT" forward-migration');
     expect(releaseMarkerSh).toContain("state=%s");
     expect(releaseMarkerSh).toContain('"$release_sha" "$state"');
     expect(releaseMarkerSh).toMatch(/ddl-started\|schema-applied\|app-ready/);
@@ -68,22 +72,42 @@ describe("production deploy script safety contracts", () => {
     expect(preflightSh).not.toMatch(/entrypoint npx migrate prisma migrate deploy/);
   });
 
-  it("keeps production migrate behind signed final authorization with no confirmation-variable bypass", () => {
+  it("keeps production migration behind the host challenge and stdin proof handoff", () => {
     expect(migrateSh).toContain("authorization-envelope.json");
-    expect(migrateSh).toContain("execution-proof.jwt");
-    expect(migrateSh).toContain("BODYCAST_DDL_ATTESTATION_NONCE_DIR");
-    expect(migrateSh).toContain("BODYCAST_EXECUTION_PROOF");
-    expect(migrateSh).toContain("BODYCAST_EXECUTION_PROOF_HANDOFF");
     expect(migrateSh).toContain("BODYCAST_DDL_CHALLENGE:");
-    expect(migrateSh).toContain("BODYCAST_DDL_EXECUTION_CHALLENGE");
+    expect(migrateSh).toContain("--challenge-id \"$CHALLENGE_ID\"");
+    expect(migrateSh).toContain("--challenge-digest \"$CHALLENGE_DIGEST\"");
+    expect(migrateSh).toContain("--execution-proof-stdin");
+    expect(migrateSh).toContain("IFS= read -r EXECUTION_PROOF");
     expect(migrateSh).toContain("--before-ddl");
     expect(migrateSh).toContain("final-guard-receipt.json");
+    const challengeRequestAt = migrateSh.indexOf('"$HOST_OPERATION_CLIENT" migration-challenge');
+    const challengeHandoffAt = migrateSh.indexOf("BODYCAST_DDL_CHALLENGE:");
+    const proofReadAt = migrateSh.indexOf("IFS= read -r EXECUTION_PROOF");
+    const postOidcGuardSectionAt = migrateSh.indexOf("# Re-sample PostgreSQL sessions and host topology after the OIDC round trip.");
+    const postOidcGuardAt = migrateSh.indexOf("--before-ddl", postOidcGuardSectionAt);
+    const forwardMigrationAt = migrateSh.indexOf('"$HOST_OPERATION_CLIENT" forward-migration');
+    expect(challengeRequestAt).toBeGreaterThan(-1);
+    expect(challengeRequestAt).toBeLessThan(challengeHandoffAt);
+    expect(challengeHandoffAt).toBeLessThan(proofReadAt);
+    expect(proofReadAt).toBeLessThan(postOidcGuardSectionAt);
+    expect(postOidcGuardAt).toBeGreaterThan(postOidcGuardSectionAt);
+    expect(postOidcGuardAt).toBeLessThan(forwardMigrationAt);
+    for (const obsoleteCallerContract of [
+      "execution-proof.jwt",
+      "BODYCAST_DDL_ATTESTATION_NONCE_DIR",
+      "BODYCAST_EXECUTION_PROOF",
+      "BODYCAST_EXECUTION_PROOF_HANDOFF",
+      "BODYCAST_DDL_EXECUTION_CHALLENGE",
+    ]) {
+      expect(migrateSh).not.toContain(obsoleteCallerContract);
+    }
+    expect(migrateSh).not.toMatch(/\bprisma\s+migrate\s+deploy\b/i);
     expect(migrateGuard).toContain("verifyFinalGuardReceipt");
     expect(migrateGuard).toContain("verifyGitHubExecutionProof");
     expect(migrateGuard).toContain("assertCurrentMigrationRunMatchesProof");
     expect(migrateGuard).toContain("assertPrismaTargetMatchesSignedIdentity");
     expect(migrateGuard).not.toContain("BODYCAST_FINAL_GUARD_READY");
     expect(migrateGuard).not.toContain("CONFIRM_PRODUCTION_MIGRATE");
-    expect(migrateSh).toMatch(/compose --profile tools run --rm --no-deps[\s\S]*\bmigrate\b/);
   });
 });

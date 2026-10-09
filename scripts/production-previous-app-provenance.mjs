@@ -6,6 +6,7 @@ import { canonicalSha256 } from "./production-migration-authorization.mjs";
 import { isCanonicalPostgresDatabaseIdentity } from "./postgres-database-identity.mjs";
 import { schemaInventoryDigest, verifyRestoredBackup } from "./production-migration-preflight.mjs";
 import { productionAppRuntimeDigest } from "./production-app-runtime-digest.mjs";
+import { renderProductionDbPreflightSql } from "./production-db-preflight.mjs";
 
 export const PREVIOUS_APP_PROVENANCE_SCHEMA_VERSION = 2;
 export const LEGACY_PREVIOUS_APP_PROVENANCE = "legacy-unlabeled-v1";
@@ -276,8 +277,9 @@ async function main() {
     });
     const containers = JSON.parse(containerJson);
     if (!Array.isArray(containers) || containers.length !== 1) throw new Error("Previous-app Docker inspection did not return one container.");
+    const preflightSql = renderProductionDbPreflightSql(await readFile(path.join(rootDir, "scripts/production-db-preflight.sql"), "utf8"));
     const databaseJson = execFileSync("bash", [path.join(rootDir, "scripts/production-db-target.sh"), "--previous-app-compatibility-snapshot", "bodycast-db-prod"], {
-      encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 8 * 1024 * 1024, env: process.env,
+      encoding: "utf8", input: preflightSql, maxBuffer: 8 * 1024 * 1024, env: process.env,
     });
     const databaseReport = JSON.parse(databaseJson);
     assertPreviousAppCompatibilitySnapshot(databaseReport);

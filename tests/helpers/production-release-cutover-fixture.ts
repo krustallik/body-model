@@ -328,6 +328,13 @@ if [[ "$1" == "inspect" ]]; then
   exit 0
 fi
 if [[ "$1" == "exec" && "$*" == *"BODYCAST_WRITER_TOPOLOGY_JSON="* && "$*" == *"bodycast-db-prod"* ]]; then
+  input="$(cat)"
+  if [[ "$input" != *"BEGIN READ ONLY;"* || "$input" != *"SELECT json_build_object("* ]]; then
+    event "previous-app-compatibility-snapshot-missing-read-only-sql"
+    echo "previous-app compatibility snapshot did not receive the rendered read-only SQL" >&2
+    exit 86
+  fi
+  event "previous-app-compatibility-sql-validated"
   if [[ "\${FAIL_PREVIOUS_DB_SNAPSHOT:-0}" == "1" ]]; then
     event "previous-app-compatibility-snapshot-failed"
     echo "synthetic read-only compatibility snapshot failure" >&2
@@ -589,6 +596,8 @@ export function createFixture(): Fixture {
     "production-previous-app-provenance.mjs",
     "production-db-target.sh",
     "production-db-target-url.mjs",
+    "production-db-preflight.mjs",
+    "production-db-preflight.sql",
     "production-app-runtime-digest.mjs",
     "production-migration-authorization.mjs",
     "github-owner-identity.mjs",

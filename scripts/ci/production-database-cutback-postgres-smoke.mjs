@@ -89,7 +89,8 @@ try {
   psql(staging, "CREATE TABLE cutback_probe(id integer PRIMARY KEY, value text NOT NULL);");
   assert(!attemptRestore(staging, dump), "A conflicting staging schema should reject the restore transaction.");
   assert(queryRows(target).includes("partially-migrated"), "A failed staging restore changed the migration target.");
-  psql("postgres", `DROP DATABASE ${staging}; CREATE DATABASE ${staging} OWNER ${user};`);
+  psql("postgres", `DROP DATABASE ${staging};`);
+  psql("postgres", `CREATE DATABASE ${staging} OWNER ${user};`);
   await decryptBackupToWritable(encryptedPath, createWriteStream(plainPath, { mode: 0o600, flags: "wx" }), key);
   const archive = readFileSync(plainPath);
   assert(attemptRestore(staging, archive), "The authenticated pre-DDL archive failed to restore into isolated staging PostgreSQL.");

@@ -84,6 +84,22 @@ describe("fallback production traffic cutover freshness and recovery", () => {
     expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).not.toContain("live-route-mutation:serving");
   }, 30_000);
 
+  it.skipIf(!bashAvailable)("preserves the V4 marker and maintenance when atomic serving-route replacement fails", () => {
+    const fixture = createFixture();
+    prepareV4ActivationFixture(fixture);
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh activate-v4-and-serve", {
+      BODYCAST_DEPLOY_SHA: fixture.candidateSha,
+      FAIL_SERVING_ROUTE_PUBLISH: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    expect(appState(fixture)).toMatchObject({ sha: fixture.candidateSha, status: "healthy", present: "true" });
+    const gitDir = execFileSync(fixture.realGit, ["-C", fixture.repo, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).trim();
+    expect(readFileSync(path.join(gitDir, "bodycast-production-schema-cutover"), "utf8")).toContain("state=v4-ready");
+    expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).toContain("serving-route-publish-failed");
+  }, 30_000);
+
   it.skipIf(!bashAvailable)("uses an absolute real Git binary for fixture shim passthrough", () => {
     const fixture = createFixture();
     const fixtureGitShim = path.join(fixture.root, "bin", process.platform === "win32" ? "git.exe" : "git");

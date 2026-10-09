@@ -52,6 +52,13 @@ describe("active production release entrypoints", () => {
     expect(cutover).toContain("production-writer-drain.sh\" --assert");
     expect(cutover).toContain("deploy-preflight-schema.sh");
     expect(cutover).toContain('write_bodycast_release_marker "$expected_release_sha" v4-ready');
+    const routePublish = cutover.indexOf('bodycast_publish_staged_route "$temporary"');
+    const servingCommit = cutover.indexOf("SERVING_COMMIT_OCCURRED=true", routePublish);
+    const markerCleanup = cutover.indexOf("clear_bodycast_release_marker", routePublish);
+    expect(routePublish).toBeGreaterThan(-1);
+    expect(servingCommit).toBeGreaterThan(routePublish);
+    expect(markerCleanup).toBeGreaterThan(servingCommit);
+    expect(cutover).toContain('marker_status" -eq 1 && -f "$recovery_record"');
   });
 
   it("uses immutable previous image plus a runtime-config digest for manual cutback only", () => {

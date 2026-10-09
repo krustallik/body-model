@@ -457,8 +457,15 @@ exec "$REAL_GIT" "$@"
 `;
 
 const fakeMv = shellScript`mv() {
-  local destination
+  local destination source
   destination="\${!#}"
+  if [[ "$#" -ge 4 && "$1" == "-f" && "$2" == "--" ]]; then source="$3"; fi
+  if [[ "\${FAIL_SERVING_ROUTE_PUBLISH:-0}" == "1" \
+    && "$destination" == "$CADDY_ROUTES_PATH/bodycast.caddy" \
+    && -n "$source" && -f "$source" ]] && grep -q reverse_proxy "$source"; then
+    printf '%s\n' serving-route-publish-failed >> "$EVENT_LOG"
+    return 1
+  fi
   command mv "$@"
   case "$destination" in
     "$CADDY_ROUTES_PATH"/*)

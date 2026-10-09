@@ -179,23 +179,6 @@ publish_candidate_route() {
     rm -f -- "$temporary"
     return 1
   fi
-  # Marker removal is a fatal pre-cutover requirement, not post-serving
-  # bookkeeping. The V4 path reaches this function only after its activation
-  # and currentness gates have passed while holding the same production lock.
-  if [[ "$marker_status" -eq 0 ]] && ! clear_bodycast_release_marker; then
-    rm -f -- "$temporary"
-    return 1
-  fi
-  # Recheck after marker mutation so the only live route effect follows a fresh
-  # canonical-main fence and safe-path verification.
-  if ! bodycast_assert_current_main_sha "$expected_release_sha"; then
-    rm -f -- "$temporary"
-    return 1
-  fi
-  if ! bodycast_assert_safe_routes_location; then
-    rm -f -- "$temporary"
-    return 1
-  fi
   if ! bodycast_publish_staged_route "$temporary"; then
     rm -f -- "$temporary"
     echo "Serving-route replacement failed before serving commit." >&2
@@ -205,6 +188,9 @@ publish_candidate_route() {
   # commit immediately; subsequent reload/probe failures are observational.
   SERVING_COMMIT_OCCURRED=true
   set +e
+  if [[ "$marker_status" -eq 0 ]] && ! clear_bodycast_release_marker; then
+    echo "POST-COMMIT CLEANUP WARNING: serving is committed but the release marker remains fail-closed." >&2
+  fi
   if ! docker exec gymbeam-caddy caddy reload \
     --address unix//run/caddy-admin/admin.sock \
     --config /etc/caddy/Caddyfile; then
@@ -346,7 +332,9 @@ activate_v4_and_serve() {
   publish_candidate_route
   if [[ "$SERVING_COMMIT_OCCURRED" == "true" ]]; then
     local recovery_record="$(git rev-parse --absolute-git-dir)/bodycast-production-pre-ddl-release"
-    if [[ -f "$recovery_record" && ! -L "$recovery_record" ]] \
+    marker_status=1
+    if read_bodycast_release_marker; then marker_status=0; else marker_status=$?; fi
+    if [[ "$marker_status" -eq 1 && -f "$recovery_record" && ! -L "$recovery_record" ]] \
       && grep -Fqx "targetSha=$expected_release_sha" "$recovery_record"; then
       recovery_image_id="$(sed -n 's/^previousImageId=//p' "$recovery_record")"
       if [[ "$recovery_image_id" =~ ^sha256:[a-f0-9]{64}$ \
@@ -358,6 +346,8 @@ activate_v4_and_serve() {
         echo "POST-COMMIT CLEANUP WARNING: prior-app recovery pin remains after successful serving commit." >&2
       fi
       fi
+    elif [[ "$marker_status" -ne 1 ]]; then
+      echo "POST-COMMIT CLEANUP WARNING: keeping the pre-DDL image pin because the release marker remains present or invalid." >&2
     fi
   fi
 }

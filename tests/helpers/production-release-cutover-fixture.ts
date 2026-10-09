@@ -172,6 +172,11 @@ if [[ "$1" == "compose" ]]; then
     event "forbidden-db-start"
     exit 80
   fi
+  if [[ "$joined" == *"production-db-target-url.mjs"* ]]; then
+    event "previous-app-db-url-resolved"
+    printf '%s\n' 'postgresql://bodycast:fixture@bodycast-db-prod:5432/bodycast'
+    exit 0
+  fi
   if [[ "$joined" == *" config --quiet "* || "$joined" == *" build migrate "* || "$joined" == *" logs --tail=100 "* ]]; then exit 0; fi
   if [[ "$joined" == *" run --rm --no-deps --entrypoint npx migrate prisma migrate status "* ]]; then
     event "schema-preflight-no-deps"
@@ -322,6 +327,16 @@ if [[ "$1" == "inspect" ]]; then
   esac
   exit 0
 fi
+if [[ "$1" == "exec" && "$*" == *"BODYCAST_WRITER_TOPOLOGY_JSON="* && "$*" == *"bodycast-db-prod"* ]]; then
+  if [[ "\${FAIL_PREVIOUS_DB_SNAPSHOT:-0}" == "1" ]]; then
+    event "previous-app-compatibility-snapshot-failed"
+    echo "synthetic read-only compatibility snapshot failure" >&2
+    exit 87
+  fi
+  event "previous-app-compatibility-snapshot"
+  cat "$PREVIOUS_DB_REPORT_FILE"
+  exit 0
+fi
 if [[ "$1" == "ps" ]]; then
   if [[ "\${FAIL_DOCKER_PS:-0}" == "1" ]]; then
     event "docker-ps-failed"
@@ -345,7 +360,12 @@ if [[ "$1" == "stop" && "$2" == "--time" && "$4" == "bodycast-app-prod" ]]; then
   exit 0
 fi
 if [[ "$1" == "info" || "$1" == "port" ]]; then exit 0; fi
-if [[ "$1" == "network" && "$2" == "inspect" ]]; then printf '%s\n' bodycast-db-prod; exit 0; fi
+if [[ "$1" == "network" && "$2" == "inspect" ]]; then
+  event "writer-drain-topology-check"
+  printf '%s\n' bodycast-db-prod
+  if [[ "\${FAIL_UNKNOWN_NETWORK_CLIENT:-0}" == "1" ]]; then printf '%s\n' unapproved-client; fi
+  exit 0
+fi
 if [[ "$1" == "exec" && ( "$2" == "gymbeam-caddy" || ( "$2" == "-i" && "$3" == "gymbeam-caddy" ) ) ]]; then
   if [[ "$*" == *" validate "* ]]; then
     if [[ "$*" == *"--config -"* ]]; then
@@ -567,11 +587,15 @@ export function createFixture(): Fixture {
     "production-traffic-cutover.sh",
     "production-writer-drain.sh",
     "production-previous-app-provenance.mjs",
+    "production-db-target.sh",
+    "production-db-target-url.mjs",
     "production-app-runtime-digest.mjs",
     "production-migration-authorization.mjs",
+    "github-owner-identity.mjs",
     "production-migration-manifests.mjs",
     "production-migration-integrity.mjs",
     "production-migration-preflight.mjs",
+    "production-writer-drain.mjs",
     "postgres-database-identity.mjs",
   ]) {
     copyFileSync(path.resolve("scripts", file), path.join(repo, "scripts", file));
@@ -622,6 +646,7 @@ printf '%s\n' lock-acquired >> "$EVENT_LOG"
     STAGE_PATH_LOG: path.join(root, "stage-paths.log"),
     CANDIDATE_STAGE_PATH_LOG: path.join(root, "candidate-stage-paths.log"),
     SCHEMA_PREFLIGHT_COUNT_FILE: path.join(root, "schema-preflight-count"),
+    PREVIOUS_DB_REPORT_FILE: path.join(root, "previous-db-report.json"),
     V3_POSTFLIGHT_COUNT_FILE: path.join(root, "v3-postflight-count"),
     ADVANCE_MARKER: path.join(root, "advance-once"),
     MAIN_FETCH_FAILURE_MARKER: path.join(root, "fail-main-fetch-after-v3"),
@@ -640,6 +665,17 @@ printf '%s\n' lock-acquired >> "$EVENT_LOG"
     HostConfig: { Binds: [], Mounts: [], PortBindings: {}, RestartPolicy: { Name: "unless-stopped" } },
     Mounts: [], NetworkSettings: { Networks: { "bodycast-backend-prod": {} } }, State: { Health: { Status: "healthy" } },
   }]) + "\n");
+  writeFileSync(paths.PREVIOUS_DB_REPORT_FILE, JSON.stringify({
+    identity: { database: "bodycast", databaseOid: 16384, clusterSystemIdentifier: "7419276301947620311",
+      role: "bodycast", serverVersion: "17.5", serverAddress: "172.20.0.2", serverPort: 5432 },
+    migrations: [{ name: "20261001_baseline", checksum: "b".repeat(64), startedAt: "2026-10-01T00:00:00.000Z",
+      finishedAt: "2026-10-01T00:01:00.000Z", rolledBackAt: null, logsFingerprint: "c".repeat(32) }],
+    objects: [{ name: "DailyModelState", present: true, kind: "table", signature: "typed baseline schema" }],
+    writerDrain: { schemaVersion: 1, observerPid: 1, observerApplicationName: "bodycast-production-preflight",
+      identityPolicy: "no-other-client-backends", observedAt: "2026-10-09T20:00:00.000Z", activeClientBackends: [],
+      topology: { schemaVersion: 1, contract: "bodycast-previous-app-compatibility-snapshot-v1", ready: false,
+        blockers: ["writer drain is not asserted by a previous-app compatibility snapshot"] } },
+  }) + "\n");
   writeFileSync(paths.APP_PRESENT_FILE, "true\n");
   writeFileSync(paths.APP_RESTART_FILE, "always\n");
   writeFileSync(paths.IMAGE_LATEST, `${LATEST_IMAGE_ID}\n`);

@@ -10,6 +10,7 @@ import { productionAppRuntimeDigest } from "./production-app-runtime-digest.mjs"
 export const PREVIOUS_APP_PROVENANCE_SCHEMA_VERSION = 2;
 export const LEGACY_PREVIOUS_APP_PROVENANCE = "legacy-unlabeled-v1";
 export const SHA_PREVIOUS_APP_PROVENANCE = "release-sha-v1";
+export const PREVIOUS_APP_COMPATIBILITY_SNAPSHOT_CONTRACT = "bodycast-previous-app-compatibility-snapshot-v1";
 export const LEGACY_UNKNOWN_RELEASE_LABEL = "unknown";
 
 const RELEASE_SHA_LABEL = "org.bodycast.release-sha";
@@ -50,6 +51,22 @@ export function previousAppDatabaseCompatibilityDigests(report) {
   const schemaDigest = schemaInventoryDigest(objects);
   const compatibilityDigest = canonicalSha256({ identity, migrations, objects });
   return { databaseIdentityDigest, migrationHistoryDigest, schemaDigest, compatibilityDigest };
+}
+
+export function assertPreviousAppCompatibilitySnapshot(report) {
+  const drain = report?.writerDrain;
+  const topology = drain?.topology;
+  const expectedBlocker = "writer drain is not asserted by a previous-app compatibility snapshot";
+  if (!drain || drain.schemaVersion !== 1 || !Number.isSafeInteger(drain.observerPid) || drain.observerPid < 1
+    || typeof drain.observedAt !== "string" || !Number.isFinite(Date.parse(drain.observedAt))
+    || drain.observerApplicationName !== "bodycast-production-preflight"
+    || drain.identityPolicy !== "no-other-client-backends" || !Array.isArray(drain.activeClientBackends)
+    || topology?.schemaVersion !== 1 || topology.contract !== PREVIOUS_APP_COMPATIBILITY_SNAPSHOT_CONTRACT
+    || topology.ready !== false || !Array.isArray(topology.blockers)
+    || topology.blockers.length !== 1 || topology.blockers[0] !== expectedBlocker) {
+    throw new Error("Previous-app provenance requires the explicit non-admission compatibility snapshot contract.");
+  }
+  return true;
 }
 
 export function capturePreviousAppProvenance({ container, databaseReport, targetSha }) {
@@ -254,13 +271,17 @@ async function main() {
   if (mode === "capture") {
     const [targetSha] = args;
     const rootDir = process.cwd();
-    const containerJson = execFileSync("docker", ["inspect", "bodycast-app-prod"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 4 * 1024 * 1024 });
+    const containerJson = execFileSync("bash", ["--noprofile", "--norc", "-c", "exec docker inspect bodycast-app-prod"], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 4 * 1024 * 1024,
+    });
     const containers = JSON.parse(containerJson);
     if (!Array.isArray(containers) || containers.length !== 1) throw new Error("Previous-app Docker inspection did not return one container.");
-    const databaseJson = execFileSync("bash", [path.join(rootDir, "scripts/production-db-target.sh"), "--preflight", "bodycast-db-prod"], {
+    const databaseJson = execFileSync("bash", [path.join(rootDir, "scripts/production-db-target.sh"), "--previous-app-compatibility-snapshot", "bodycast-db-prod"], {
       encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 8 * 1024 * 1024, env: process.env,
     });
-    const record = capturePreviousAppProvenance({ container: containers[0], databaseReport: JSON.parse(databaseJson), targetSha });
+    const databaseReport = JSON.parse(databaseJson);
+    assertPreviousAppCompatibilitySnapshot(databaseReport);
+    const record = capturePreviousAppProvenance({ container: containers[0], databaseReport, targetSha });
     process.stdout.write(serializePreviousAppProvenance(record));
     return;
   }

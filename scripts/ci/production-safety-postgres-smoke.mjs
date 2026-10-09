@@ -25,6 +25,12 @@ import { executionProofAudience, verifyGitHubExecutionProof } from "../productio
 import { readPrismaDatabaseIdentity, startPrismaMigrationAtDdlBoundary } from "../run-prisma-migrate-with-lock-timeout.mjs";
 import { withPrismaLockTimeout } from "../production-migration-release.mjs";
 import { readCommittedGitBlob } from "../production-migration-integrity.mjs";
+import {
+  assertPreviousAppCompatibilitySnapshot,
+  capturePreviousAppProvenance,
+  PREVIOUS_APP_COMPATIBILITY_SNAPSHOT_CONTRACT,
+  verifyPreviousAppCaptureMatchesPreflight,
+} from "../production-previous-app-provenance.mjs";
 
 const source = { host: "127.0.0.1", port: Number(process.env.BODYCAST_SOURCE_PORT ?? 5432), database: "bodycast", user: "bodycast", password: "bodycast_ci_only" };
 const target = { host: "127.0.0.1", port: Number(process.env.BODYCAST_RESTORE_PORT ?? 5433), database: "bodycast_restore", user: "bodycast_restore", password: "restore_ci_only" };
@@ -43,8 +49,11 @@ function clientArgs(db, tool) {
     "--host", db.host, "--port", String(db.port), "--username", db.user, "--dbname", db.database];
 }
 
-function sql(db, content) {
-  return run("docker", [...clientArgs(db, "psql"), "--no-psqlrc", "--quiet", "--tuples-only", "--no-align", "--set=ON_ERROR_STOP=1", "--set=VERBOSITY=verbose", "--file=-"], { input: content });
+function sql(db, content, { writerTopology } = {}) {
+  const args = [...clientArgs(db, "psql"), "--no-psqlrc", "--quiet", "--tuples-only", "--no-align", "--set=ON_ERROR_STOP=1", "--set=VERBOSITY=verbose"];
+  if (writerTopology !== undefined) args.push(`--set=BODYCAST_WRITER_TOPOLOGY_JSON=${JSON.stringify(writerTopology)}`);
+  args.push("--file=-");
+  return run("docker", args, { input: content });
 }
 
 async function createSourceFixture(db = source) {
@@ -644,6 +653,37 @@ async function main() {
     if (!evaluated.readyForOwnerAuthorization || JSON.stringify(evaluated.pending) !== JSON.stringify([...EXPECTED_PENDING_MIGRATIONS].sort())) {
       throw new Error(`Synthetic preflight did not recognize the exact reviewed pending set: ${JSON.stringify(evaluated.blockers)}`);
     }
+    const compatibilityOnlyTopology = {
+      schemaVersion: 1,
+      contract: PREVIOUS_APP_COMPATIBILITY_SNAPSHOT_CONTRACT,
+      ready: false,
+      blockers: ["writer drain is not asserted by a previous-app compatibility snapshot"],
+    };
+    const previousAppSnapshot = JSON.parse(sql(source,
+      renderProductionDbPreflightSql(requireSql("scripts/production-db-preflight.sql")),
+      { writerTopology: compatibilityOnlyTopology }));
+    assertPreviousAppCompatibilitySnapshot(previousAppSnapshot);
+    const snapshotAdmission = evaluateProductionPreflight(previousAppSnapshot, migrationDirectories);
+    if (snapshotAdmission.readyForOwnerAuthorization || snapshotAdmission.writerDrainReady) {
+      throw new Error("The pre-stop compatibility snapshot was incorrectly admitted as migration-ready writer-drain evidence.");
+    }
+    const previousAppContainer = {
+      Id: "d".repeat(64), Image: `sha256:${"e".repeat(64)}`,
+      Config: { Labels: {}, Env: ["NODE_ENV=production", "DATABASE_URL=postgresql://bodycast:fixture@db/bodycast"],
+        Entrypoint: ["node"], Cmd: ["server.js"], User: "node", WorkingDir: "/app",
+        Healthcheck: { Test: ["CMD", "true"] }, ExposedPorts: { "3000/tcp": {} } },
+      HostConfig: { Binds: [], Mounts: [], PortBindings: {}, RestartPolicy: { Name: "unless-stopped" } },
+      Mounts: [], NetworkSettings: { Networks: { "bodycast-backend-prod": {} } }, State: { Health: { Status: "healthy" } },
+    };
+    const previousAppRecord = capturePreviousAppProvenance({
+      container: previousAppContainer,
+      databaseReport: previousAppSnapshot,
+      targetSha: "a".repeat(40),
+    });
+    const previousAppBinding = verifyPreviousAppCaptureMatchesPreflight(previousAppRecord, evaluated, "a".repeat(40));
+    if (!previousAppBinding.verified || previousAppBinding.provenanceKind !== "legacy-unlabeled-v1") {
+      throw new Error("Read-only previous-app schema/history snapshot did not bind to the later drained preflight.");
+    }
     if (sourceReport.writerDrain?.observerApplicationName !== "bodycast-production-preflight"
       || sourceReport.writerDrain?.activeClientBackends?.length !== 0) {
       throw new Error("Expected the isolated preflight observer to be the only PostgreSQL client backend.");
@@ -947,6 +987,8 @@ async function main() {
       syntheticMigrations: migrationDirectories.length,
       exactPending: evaluated.pending,
       allowedSinglePreflightConnection: true,
+      previousAppCompatibilitySnapshotNonAdmission: !snapshotAdmission.readyForOwnerAuthorization,
+      previousAppCompatibilityBoundToDrainedPreflight: previousAppBinding.verified,
       oldWriterBlocked,
       unknownClientBlocked: true,
       ambiguousPostgresTopologyBlocked: true,

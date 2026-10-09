@@ -90,4 +90,67 @@ describe("maintenance-first deploy fail-closed checks", () => {
     expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).not.toContain("image tag");
   }, 30_000);
 
+  it.skipIf(!bashAvailable)("keeps the app running behind maintenance when the read-only compatibility query fails", () => {
+    const fixture = createFixture();
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh maintenance", {
+      BODYCAST_DEPLOY_SHA: fixture.candidateSha,
+      BODYCAST_CAPTURE_PRE_DDL_RELEASE: "1",
+      FAIL_PREVIOUS_DB_SNAPSHOT: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("synthetic read-only compatibility snapshot failure");
+    expect(appState(fixture)).toEqual({ sha: PREVIOUS_SHA, imageId: PREVIOUS_IMAGE_ID, status: "healthy", present: "true" });
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events).toContain("previous-app-compatibility-snapshot-failed");
+    expect(events).not.toContain("compose-stop-app");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("captures previous-app schema provenance without admitting migration, then stops the app before full writer drain", () => {
+    const fixture = createFixture();
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh maintenance", {
+      BODYCAST_DEPLOY_SHA: fixture.candidateSha,
+      BODYCAST_CAPTURE_PRE_DDL_RELEASE: "1",
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8").trim().split(/\r?\n/);
+    const maintenanceProbeAt = events.findIndex((event) => event.startsWith("public-probe:503:"));
+    const compatibilitySnapshotAt = events.indexOf("previous-app-compatibility-snapshot");
+    const stopAt = events.indexOf("compose-stop-app");
+    const removeAt = events.indexOf("compose-remove-app");
+    const writerDrainAt = events.lastIndexOf("writer-drain-topology-check");
+    expect(maintenanceProbeAt).toBeGreaterThan(-1);
+    expect(compatibilitySnapshotAt).toBeGreaterThan(maintenanceProbeAt);
+    expect(stopAt).toBeGreaterThan(compatibilitySnapshotAt);
+    expect(removeAt).toBeGreaterThan(stopAt);
+    expect(writerDrainAt).toBeGreaterThan(removeAt);
+    expect(appState(fixture)).toMatchObject({ status: "exited", present: "false" });
+    const dockerLog = readFileSync(path.join(fixture.root, "docker.log"), "utf8");
+    expect(dockerLog).toContain("production-db-target-url.mjs");
+    expect(dockerLog).toContain("PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000");
+    const provenanceSource = readFileSync(path.resolve("scripts/production-previous-app-provenance.mjs"), "utf8");
+    expect(provenanceSource).toContain('"--previous-app-compatibility-snapshot", "bodycast-db-prod"');
+    expect(provenanceSource).not.toContain('"--preflight", "bodycast-db-prod"');
+    expect(readFileSync(path.join(fixture.repo, ".git", "bodycast-production-pre-ddl-release"), "utf8"))
+      .toContain(`targetSha=${fixture.candidateSha}`);
+    expect(result.stdout).toContain("PostgreSQL writers are drained");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("keeps maintenance and fails closed when another DB-network client remains after stopping the old app", () => {
+    const fixture = createFixture();
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh maintenance", {
+      BODYCAST_DEPLOY_SHA: fixture.candidateSha,
+      BODYCAST_CAPTURE_PRE_DDL_RELEASE: "1",
+      FAIL_UNKNOWN_NETWORK_CLIENT: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("internal database network contains an unknown or unapproved client container");
+    expect(appState(fixture)).toMatchObject({ status: "exited", present: "false" });
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).not.toContain("reverse_proxy");
+  }, 30_000);
+
 });

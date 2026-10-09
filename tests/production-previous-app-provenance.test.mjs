@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { canonicalSha256 } from "../scripts/production-migration-authorization.mjs";
 import { createPreflightEvidence } from "../scripts/production-migration-evidence.mjs";
-import { PRODUCTION_WRITER_TOPOLOGY_CONTRACT } from "../scripts/production-writer-drain.mjs";
+import { evaluateProductionWriterDrain, PRODUCTION_WRITER_TOPOLOGY_CONTRACT } from "../scripts/production-writer-drain.mjs";
 import { verifyPreviousAppMigrationCompatibility, verifyRecreatedPreviousAppRuntime } from "../scripts/production-database-cutback.mjs";
 import {
   LEGACY_PREVIOUS_APP_PROVENANCE,
+  PREVIOUS_APP_COMPATIBILITY_SNAPSHOT_CONTRACT,
   SHA_PREVIOUS_APP_PROVENANCE,
+  assertPreviousAppCompatibilitySnapshot,
   assertPreviousAppProvenanceBoundToPreflight,
   capturePreviousAppProvenance,
   parsePreviousAppProvenance,
@@ -50,6 +52,37 @@ function container(labels = {}) {
 }
 
 describe("versioned previous-app provenance", () => {
+  it("accepts only an explicit read-only compatibility snapshot that cannot satisfy writer drain", () => {
+    const snapshot = {
+      ...databaseReport,
+      writerDrain: {
+        schemaVersion: 1,
+        observerPid: 1,
+        observerApplicationName: "bodycast-production-preflight",
+        identityPolicy: "no-other-client-backends",
+        observedAt: "2026-10-09T20:00:00.000Z",
+        activeClientBackends: [],
+        topology: {
+          schemaVersion: 1,
+          contract: PREVIOUS_APP_COMPATIBILITY_SNAPSHOT_CONTRACT,
+          ready: false,
+          blockers: ["writer drain is not asserted by a previous-app compatibility snapshot"],
+        },
+      },
+    };
+    expect(assertPreviousAppCompatibilitySnapshot(snapshot)).toBe(true);
+    expect(evaluateProductionWriterDrain(snapshot).ready).toBe(false);
+    expect(() => assertPreviousAppCompatibilitySnapshot({
+      ...snapshot,
+      writerDrain: { ...snapshot.writerDrain, topology: { ...snapshot.writerDrain.topology, ready: true } },
+    })).toThrow(/explicit non-admission compatibility snapshot contract/);
+    expect(() => assertPreviousAppCompatibilitySnapshot({
+      ...snapshot,
+      writerDrain: { ...snapshot.writerDrain, topology: { ...snapshot.writerDrain.topology, blockers: [] } },
+    })).toThrow(/explicit non-admission compatibility snapshot contract/);
+    expect(() => assertPreviousAppCompatibilitySnapshot({ ...databaseReport })).toThrow(/explicit non-admission compatibility snapshot contract/);
+  });
+
   it("preserves strict exact-SHA provenance for labeled releases", () => {
     const record = capturePreviousAppProvenance({
       container: container({ "org.bodycast.release-sha": "1".repeat(40) }), databaseReport, targetSha,

@@ -1,4 +1,10 @@
 {
   "schemaVersion": 1,
-  "keys": []
+  "keys": [
+    {
+      "keyId": "bodycast-owner-migration-ed25519-20261009",
+      "status": "active",
+      "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEANkFQl7AthERLG8/wc7wbBtN/Ttd9puaQw8pZ6taRVFI=\n-----END PUBLIC KEY-----\n"
+    }
+  ]
 }

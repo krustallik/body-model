@@ -19,8 +19,8 @@ source "${ROOT_DIR}/scripts/deploy-main-freshness.sh"
 source "${ROOT_DIR}/scripts/production-release-lock.sh"
 
 [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "APP_HOST is invalid." >&2; exit 1; }
-[[ "$MODE" == "maintenance" || "$MODE" == "check" || "$MODE" == "v3-postflight" || "$MODE" == "serve" ]] || {
-  echo "Usage: APP_HOST=... CADDY_ROUTES_PATH=... bash scripts/production-traffic-cutover.sh maintenance|check|v3-postflight|serve" >&2
+[[ "$MODE" == "maintenance" || "$MODE" == "check" || "$MODE" == "v3-postflight" || "$MODE" == "serve" || "$MODE" == "activate-v4-and-serve" ]] || {
+  echo "Usage: APP_HOST=... CADDY_ROUTES_PATH=... bash scripts/production-traffic-cutover.sh maintenance|check|v3-postflight|serve|activate-v4-and-serve" >&2
   exit 1
 }
 
@@ -117,6 +117,51 @@ publish_maintenance_route() {
   fi
 }
 
+capture_pre_ddl_previous_release() {
+  [[ "${BODYCAST_CAPTURE_PRE_DDL_RELEASE:-0}" == "1" ]] || return 0
+  local target_sha existing_app previous_sha previous_image_id previous_container_id previous_health previous_runtime_digest pinned_id
+  local record_path record_tmp git_dir
+  target_sha="${BODYCAST_DEPLOY_SHA:-${DEPLOY_SHA:-}}"
+  [[ "$target_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Pre-DDL recovery capture requires the exact target SHA." >&2; return 1; }
+  git_dir="$(git rev-parse --absolute-git-dir)"
+  record_path="$git_dir/bodycast-production-pre-ddl-release"
+  [[ ! -e "$record_path" && ! -L "$record_path" ]] || {
+    echo "An earlier pre-DDL release capture exists; operator review is required before another migration attempt." >&2
+    return 1
+  }
+  existing_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}')"
+  [[ "$existing_app" == "$APP_CONTAINER" ]] || { echo "A healthy prior app is required for recoverable migration preflight." >&2; return 1; }
+  previous_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER")"
+  previous_image_id="$(docker inspect --format '{{.Image}}' "$APP_CONTAINER")"
+  previous_container_id="$(docker inspect --format '{{.Id}}' "$APP_CONTAINER")"
+  previous_health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$APP_CONTAINER")"
+  [[ "$previous_sha" =~ ^[a-f0-9]{40}$ && "$previous_image_id" =~ ^sha256:[a-f0-9]{64}$ \
+    && "$previous_container_id" =~ ^[a-f0-9]{64}$ && "$previous_health" == "healthy" ]] || {
+    echo "The prior app SHA, immutable image, container, or health is not verifiable." >&2
+    return 1
+  }
+  previous_runtime_digest="$(docker inspect "$APP_CONTAINER" | node "$ROOT_DIR/scripts/production-app-runtime-digest.mjs")"
+  [[ "$previous_runtime_digest" =~ ^[a-f0-9]{64}$ ]] || { echo "Prior app runtime configuration digest is unavailable." >&2; return 1; }
+  if docker image inspect --format '{{.Id}}' bodycast-app:rollback >/dev/null 2>&1; then
+    echo "A previous-app image pin already exists and will not be overwritten." >&2
+    return 1
+  fi
+  docker image tag "$previous_image_id" bodycast-app:rollback
+  pinned_id="$(docker image inspect --format '{{.Id}}' bodycast-app:rollback)"
+  [[ "$pinned_id" == "$previous_image_id" ]] || { echo "Prior-app image pin does not match the captured immutable image." >&2; return 1; }
+  record_tmp="$(mktemp "$git_dir/bodycast-production-pre-ddl-release.new.XXXXXX")"
+  trap 'rm -f -- "$record_tmp"' RETURN
+  chmod 600 "$record_tmp"
+  printf 'schemaVersion=1\ntargetSha=%s\npreviousSha=%s\npreviousImageId=%s\npreviousContainerId=%s\npreviousRuntimeConfigDigest=%s\n' \
+    "$target_sha" "$previous_sha" "$previous_image_id" "$previous_container_id" "$previous_runtime_digest" > "$record_tmp"
+  sync -f "$record_tmp"
+  ln -- "$record_tmp" "$record_path"
+  rm -- "$record_tmp"
+  sync -f "$git_dir"
+  trap - RETURN
+  echo "Captured exact prior app SHA/image/container for manual post-DDL database cutback."
+}
+
 publish_candidate_route() {
   local temporary marker reload_failed=false
   marker="$(bodycast_maintenance_marker_from_route)" || return 1
@@ -135,7 +180,8 @@ publish_candidate_route() {
     return 1
   fi
   # Marker removal is a fatal pre-cutover requirement, not post-serving
-  # bookkeeping. A failure leaves the active maintenance config untouched.
+  # bookkeeping. The V4 path reaches this function only after its activation
+  # and currentness gates have passed while holding the same production lock.
   if [[ "$marker_status" -eq 0 ]] && ! clear_bodycast_release_marker; then
     rm -f -- "$temporary"
     return 1
@@ -177,6 +223,7 @@ enter_maintenance() {
   if ! publish_maintenance_route; then
     return 1
   fi
+  capture_pre_ddl_previous_release
   stop_old_app
 }
 
@@ -204,6 +251,123 @@ if [[ "$MODE" == "v3-postflight" ]]; then
   exit 0
 fi
 
+activate_v4_and_serve() {
+  local expected_release_sha app_release_sha candidate_image_id candidate_image_after marker_status recovery_image_id
+  expected_release_sha="${BODYCAST_DEPLOY_SHA:-${DEPLOY_SHA:-}}"
+  [[ "$expected_release_sha" =~ ^[a-f0-9]{40}$ ]] || {
+    echo "Owner-authorized V4 activation requires a full exact release SHA." >&2
+    return 1
+  }
+
+  require_ready_release_marker
+  [[ "$BODYCAST_MARKER_RELEASE_SHA" == "$expected_release_sha" ]] || {
+    echo "V4 activation is blocked because the app-ready marker belongs to another SHA." >&2
+    return 1
+  }
+  bodycast_assert_current_main_sha "$expected_release_sha"
+  bodycast_verify_exact_maintenance_route
+  local maintenance_marker
+  maintenance_marker="$(bodycast_maintenance_marker_from_route)"
+  bodycast_probe_public_maintenance "$maintenance_marker"
+
+  # Capture the exact immutable app image before removing its container. It is
+  # restarted only from that same image after V4 passes, still behind maintenance.
+  candidate_image_id="$(docker inspect --format '{{.Image}}' "$APP_CONTAINER")"
+  [[ "$candidate_image_id" =~ ^sha256:[a-f0-9]{64}$ ]] || {
+    echo "The candidate app image identity is not an immutable image digest." >&2
+    return 1
+  }
+
+  compose --profile tools build migrate
+  compose --profile tools run --rm --no-deps --entrypoint node migrate \
+    /app/scripts/unified-v3-postflight.mjs --profile-id 1
+
+  # Stop/remove the app so the fixed topology can prove there are no persistent
+  # database writers while activation/replay runs. Any failure remains under
+  # maintenance with the release marker intact.
+  stop_old_app
+  bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
+  bash "$ROOT_DIR/scripts/deploy-preflight-schema.sh"
+
+  # Recheck all mutable release/database predicates immediately before V4 DML.
+  bodycast_assert_current_main_sha "$expected_release_sha"
+  if read_bodycast_release_marker; then
+    marker_status=0
+  else
+    marker_status=$?
+  fi
+  [[ "$marker_status" -eq 0 \
+    && "$BODYCAST_MARKER_RELEASE_SHA" == "$expected_release_sha" \
+    && "$BODYCAST_MARKER_STATE" == "app-ready" ]] || {
+    echo "V4 activation is blocked by a missing, conflicting, or changed migration/recovery marker." >&2
+    return 1
+  }
+  [[ "$(git rev-parse HEAD)" == "$expected_release_sha" ]] || {
+    echo "The checked-out deployed revision differs from the exact V4 release SHA." >&2
+    return 1
+  }
+  candidate_image_after="$(docker image inspect --format '{{.Id}}' bodycast-app:latest)"
+  [[ "$candidate_image_after" == "$candidate_image_id" ]] || {
+    echo "The immutable deployed app image changed before V4 activation." >&2
+    return 1
+  }
+  bodycast_verify_exact_maintenance_route
+  bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
+  bash "$ROOT_DIR/scripts/deploy-preflight-schema.sh"
+  compose --profile tools run --rm --no-deps --entrypoint node migrate \
+    /app/scripts/unified-v3-postflight.mjs --profile-id 1
+
+  # This fixed owner-authorized execution path holds the global flock from the
+  # first V3 check through activation, postflight, app restart, and serving.
+  compose --profile tools run --rm --no-deps --entrypoint node migrate \
+    /app/scripts/unified-v4-activate-replay.mjs --activate-v4 --owner-authorized --profile-id 1
+  compose --profile tools run --rm --no-deps --entrypoint node migrate \
+    /app/scripts/unified-v4-traffic-check.mjs --profile-id 1
+
+  bodycast_assert_current_main_sha "$expected_release_sha"
+  [[ "$(docker image inspect --format '{{.Id}}' bodycast-app:latest)" == "$candidate_image_id" ]] || {
+    echo "The immutable candidate image changed after V4 activation." >&2
+    return 1
+  }
+  BODYCAST_DEPLOY_SHA="$expected_release_sha" compose up -d --no-deps --no-build app
+  app_release_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER")"
+  [[ "$app_release_sha" == "$expected_release_sha" \
+    && "$(docker inspect --format '{{.Image}}' "$APP_CONTAINER")" == "$candidate_image_id" \
+    && "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$APP_CONTAINER")" == "healthy" ]] || {
+    echo "Exact candidate image did not return healthy after V4 activation; traffic remains in maintenance." >&2
+    return 1
+  }
+  compose --profile tools run --rm --no-deps --entrypoint node migrate \
+    /app/scripts/unified-v4-traffic-check.mjs --profile-id 1
+  bodycast_assert_current_main_sha "$expected_release_sha"
+  write_bodycast_release_marker "$expected_release_sha" v4-ready
+  marker_status=0
+  SERVING_COMMIT_OCCURRED=false
+  publish_candidate_route
+  if [[ "$SERVING_COMMIT_OCCURRED" == "true" ]]; then
+    local recovery_record="$(git rev-parse --absolute-git-dir)/bodycast-production-pre-ddl-release"
+    if [[ -f "$recovery_record" && ! -L "$recovery_record" ]] \
+      && grep -Fqx "targetSha=$expected_release_sha" "$recovery_record"; then
+      recovery_image_id="$(sed -n 's/^previousImageId=//p' "$recovery_record")"
+      if [[ "$recovery_image_id" =~ ^sha256:[a-f0-9]{64}$ \
+        && "$(docker image inspect --format '{{.Id}}' bodycast-app:rollback 2>/dev/null || true)" == "$recovery_image_id" ]]; then
+      if docker image rm bodycast-app:rollback >/dev/null 2>&1; then
+        rm -f -- "$recovery_record"
+        sync -f "$(dirname "$recovery_record")"
+      else
+        echo "POST-COMMIT CLEANUP WARNING: prior-app recovery pin remains after successful serving commit." >&2
+      fi
+      fi
+    fi
+  fi
+}
+
+if [[ "$MODE" == "activate-v4-and-serve" ]]; then
+  activate_v4_and_serve
+  echo "Unified V4 activation/replay, currentness gates, and exact-SHA serve completed under one production lock."
+  exit 0
+fi
+
 app_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$APP_CONTAINER")"
 [[ "$app_status" == "healthy" ]] || { echo "Forecast V2 serving requires a healthy app container." >&2; exit 1; }
 app_release_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER")"
@@ -220,7 +384,7 @@ else
 fi
 if [[ "$marker_status" -eq 0 ]]; then
   [[ "$BODYCAST_MARKER_RELEASE_SHA" == "$app_release_sha" \
-    && "$BODYCAST_MARKER_STATE" == "app-ready" ]] || {
+    && "$BODYCAST_MARKER_STATE" == "v4-ready" ]] || {
     echo "Serving is blocked: the running exact-SHA app does not satisfy the pending schema-cutover marker." >&2
     exit 1
   }

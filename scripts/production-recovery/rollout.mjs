@@ -69,9 +69,6 @@ export const REVIEWED_ENTRYPOINTS = Object.freeze([
   "scripts/production-recovery/production-authority-launcher.sh",
   "scripts/production-recovery/production-operation-client-launcher.sh",
   "docker-compose.recovery.yml",
-  ".github/workflows/production-recovery-phase-a.yml",
-  ".github/workflows/production-recovery-phase-b.yml",
-  ".github/workflows/production-recovery-transition.yml",
   "tests/production-recovery-marker-reader.sh",
 ]);
 

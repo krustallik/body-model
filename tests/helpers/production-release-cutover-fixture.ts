@@ -125,6 +125,7 @@ advance_main() {
   local trigger="\${1:-v4}"
   case "$trigger" in
     v4) [[ "\${ADVANCE_ONCE:-}" == "1" ]] || return 0 ;;
+    v3) [[ "\${ADVANCE_ON_V3:-}" == "1" ]] || return 0 ;;
     validate) [[ "\${ADVANCE_ON_VALIDATE:-}" == "1" ]] || return 0 ;;
   esac
   [[ ! -e "$ADVANCE_MARKER" ]] || return 0
@@ -181,6 +182,16 @@ if [[ "$1" == "compose" ]]; then
     exit 0
   fi
   if [[ "$joined" == *" run --rm --no-deps --entrypoint node migrate "* ]]; then
+    if [[ "$joined" == *"unified-v3-postflight.mjs"* ]]; then
+      event "unified-v3-postflight"
+      advance_main v3
+      exit 0
+    fi
+    if [[ "$joined" == *"unified-v4-activate-replay.mjs"* ]]; then
+      event "unified-v4-activation"
+      if [[ "\${FAIL_V4_ACTIVATION:-0}" == "1" ]]; then exit 44; fi
+      exit 0
+    fi
     if [[ "$joined" == *"unified-v4-traffic-check.mjs"* ]]; then event "unified-v4-check"; fi
     if [[ "$joined" == *"unified-v4-traffic-check.mjs"* \
         && "\${FAIL_ROLLBACK_V4:-0}" == "1" && -e "$FAIL_CANDIDATE_MARKER" ]]; then exit 42; fi
@@ -199,7 +210,7 @@ if [[ "$1" == "compose" ]]; then
     printf '%s\n' "$CANDIDATE_IMAGE_ID" > "$IMAGE_LATEST"
     exit 0
   fi
-  if [[ "$joined" == *" up -d --no-deps --force-recreate app "* ]]; then
+  if [[ "$joined" == *" up -d --no-deps --force-recreate app "* || "$joined" == *" up -d --no-deps --no-build app "* ]]; then
     if [[ "\${FAIL_CANDIDATE_UP:-0}" == "1" \
         && "\${BODYCAST_DEPLOY_SHA:-}" == "\${CANDIDATE_SHA:-}" \
         && ! -e "$FAIL_CANDIDATE_MARKER" ]]; then
@@ -529,7 +540,14 @@ export function createFixture(): Fixture {
   writeFileSync(path.join(bin, "docker"), fakeDocker, { mode: 0o755 });
   writeFileSync(path.join(bin, "curl"), fakeCurl, { mode: 0o755 });
   writeFileSync(path.join(bin, "git"), fakeGit, { mode: 0o755 });
-  writeFileSync(path.join(bin, "flock"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
+  writeFileSync(path.join(bin, "flock"), shellScript`#!/usr/bin/env bash
+set -Eeuo pipefail
+count="$(cat "$LOCK_COUNT_FILE" 2>/dev/null || printf '0')"
+count=$((count + 1))
+printf '%s\n' "$count" > "$LOCK_COUNT_FILE"
+printf '%s\n' lock-acquired >> "$EVENT_LOG"
+[[ "\${LOCK_BUSY:-0}" != "1" ]]
+`, { mode: 0o755 });
   writeFileSync(path.join(routes, "bodycast.caddy"), servingRoute());
 
   execFileSync("git", ["init", "--bare", "--initial-branch=main", remote], { stdio: "ignore" });
@@ -565,6 +583,7 @@ export function createFixture(): Fixture {
     SCHEMA_PREFLIGHT_COUNT_FILE: path.join(root, "schema-preflight-count"),
     ADVANCE_MARKER: path.join(root, "advance-once"),
     FAIL_CANDIDATE_MARKER: path.join(root, "fail-candidate-once"),
+    LOCK_COUNT_FILE: path.join(root, "lock-count"),
   };
   writeFileSync(paths.APP_SHA_FILE, `${PREVIOUS_SHA}\n`);
   writeFileSync(paths.APP_IMAGE_ID_FILE, `${PREVIOUS_IMAGE_ID}\n`);

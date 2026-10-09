@@ -34,7 +34,7 @@ read_bodycast_release_marker() {
   BODYCAST_MARKER_STATE="${lines[3]#state=}"
   [[ "$BODYCAST_MARKER_MANIFEST_ID" == "active-energy-unified-v2" \
     && "$BODYCAST_MARKER_RELEASE_SHA" =~ ^[a-f0-9]{40}$ \
-    && "$BODYCAST_MARKER_STATE" =~ ^(ddl-started|schema-applied|app-ready)$ ]] || {
+    && "$BODYCAST_MARKER_STATE" =~ ^(ddl-started|schema-applied|app-ready|v4-ready|database-restored|rollback-app-ready)$ ]] || {
     echo "Production release marker values are not recognized." >&2; return 2;
   }
   return 0
@@ -46,7 +46,7 @@ write_bodycast_release_marker() {
     return 2
   fi
   local release_sha="$1" state="$2"
-  [[ "$release_sha" =~ ^[a-f0-9]{40}$ && "$state" =~ ^(ddl-started|schema-applied|app-ready)$ ]] || {
+  [[ "$release_sha" =~ ^[a-f0-9]{40}$ && "$state" =~ ^(ddl-started|schema-applied|app-ready|v4-ready|database-restored|rollback-app-ready)$ ]] || {
     echo "Refusing invalid production release marker values." >&2; return 2;
   }
   [[ -d "$(dirname "$BODYCAST_RELEASE_MARKER_PATH")" && ! -L "$(dirname "$BODYCAST_RELEASE_MARKER_PATH")" ]] || {
@@ -70,7 +70,10 @@ write_bodycast_release_marker() {
     echo "Existing production release marker is invalid; refusing to replace it." >&2; return 2
   elif [[ ! ( "$current_state" == "ddl-started" && "$state" == "schema-applied" ) \
     && ! ( "$current_state" == "schema-applied" && "$state" == "app-ready" ) \
-    && ! ( "$current_state" == "app-ready" && "$state" == "app-ready" ) ]]; then
+    && ! ( "$current_state" == "app-ready" && ( "$state" == "app-ready" || "$state" == "v4-ready" ) ) \
+    && ! ( "$current_state" == "v4-ready" && "$state" == "v4-ready" ) \
+    && ! ( ( "$current_state" == "ddl-started" || "$current_state" == "schema-applied" || "$current_state" == "app-ready" || "$current_state" == "v4-ready" ) && "$state" == "database-restored" ) \
+    && ! ( "$current_state" == "database-restored" && "$state" == "rollback-app-ready" ) ]]; then
     echo "Production release marker transition is invalid: ${current_state} -> ${state}." >&2; return 2
   fi
   local temporary

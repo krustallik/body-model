@@ -148,7 +148,7 @@ jobs:
           chmod 600 "$RUNNER_TEMP/bodycast-activation-ssh/known_hosts"
           echo "BODYCAST_SSH_KEY=$RUNNER_TEMP/bodycast-activation-ssh/id" >> "$GITHUB_ENV"
           echo "BODYCAST_KNOWN_HOSTS=$RUNNER_TEMP/bodycast-activation-ssh/known_hosts" >> "$GITHUB_ENV"
-      - name: Verify V3, explicitly activate and replay V4, then serve exact SHA
+      - name: Verify V3, activate and replay V4, then serve exact SHA under one host lock
         env:
           GH_TOKEN: ${{ github.token }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -187,11 +187,7 @@ jobs:
           APP_HEALTH="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' bodycast-app-prod)"
           [[ "$APP_SHA" == "$RELEASE_SHA" && "$APP_HEALTH" == "healthy" ]] || { echo "Exact-SHA app is absent or unhealthy." >&2; exit 1; }
           APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" BODYCAST_DEPLOY_SHA="$RELEASE_SHA" \
-            bash scripts/production-traffic-cutover.sh v3-postflight
-          docker compose -f docker-compose.prod.yml --profile tools run --rm --no-deps --entrypoint node migrate \
-            /app/scripts/unified-v4-activate-replay.mjs --activate-v4 --owner-authorized --profile-id 1
-          APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" BODYCAST_DEPLOY_SHA="$RELEASE_SHA" \
-            exec bash scripts/production-traffic-cutover.sh serve
+            exec bash scripts/production-traffic-cutover.sh activate-v4-and-serve
           REMOTE
           )"
           REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"

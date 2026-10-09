@@ -1,9 +1,89 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { PREVIOUS_SHA, PREVIOUS_IMAGE_ID, WRONG_IMAGE_ID, bashAvailable, toBashPath, maintenanceRoute, createFixture, runFixture, appState } from "./helpers/production-release-cutover-fixture";
+import { PREVIOUS_SHA, PREVIOUS_IMAGE_ID, CANDIDATE_IMAGE_ID, WRONG_IMAGE_ID, bashAvailable, toBashPath, maintenanceRoute, createFixture, runFixture, appState } from "./helpers/production-release-cutover-fixture";
+
+function prepareV4ActivationFixture(fixture: ReturnType<typeof createFixture>) {
+  writeFileSync(path.join(fixture.routes, "bodycast.caddy"), maintenanceRoute());
+  writeFileSync(path.join(fixture.root, "active-route"), "maintenance\n");
+  writeFileSync(path.join(fixture.root, "app-sha"), `${fixture.candidateSha}\n`);
+  writeFileSync(path.join(fixture.root, "app-image-id"), `${CANDIDATE_IMAGE_ID}\n`);
+  writeFileSync(path.join(fixture.root, "image-latest"), `${CANDIDATE_IMAGE_ID}\n`);
+  writeFileSync(path.join(fixture.root, "app-status"), "healthy\n");
+  const gitDir = execFileSync(fixture.realGit, ["-C", fixture.repo, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).trim();
+  writeFileSync(path.join(gitDir, "bodycast-production-schema-cutover"),
+    `schemaVersion=1\nmanifestId=active-energy-unified-v2\nreleaseSha=${fixture.candidateSha}\nstate=app-ready\n`);
+}
 
 describe("fallback production traffic cutover freshness and recovery", () => {
+  it.skipIf(!bashAvailable)("holds one production lock through V3, V4 activation, postflight, and serving", () => {
+    const fixture = createFixture();
+    prepareV4ActivationFixture(fixture);
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh activate-v4-and-serve", {
+      BODYCAST_DEPLOY_SHA: fixture.candidateSha,
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(readFileSync(path.join(fixture.root, "lock-count"), "utf8").trim()).toBe("1");
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8").trim().split(/\r?\n/);
+    const v3 = events.indexOf("unified-v3-postflight");
+    const activation = events.indexOf("unified-v4-activation");
+    const checks = events.map((event, index) => event === "unified-v4-check" ? index : -1).filter((index) => index >= 0);
+    const serving = events.indexOf("live-route-mutation:serving");
+    expect(v3).toBeGreaterThan(-1);
+    expect(activation).toBeGreaterThan(v3);
+    expect(checks.length).toBeGreaterThanOrEqual(2);
+    expect(checks.at(-1)).toBeLessThan(serving);
+    expect(serving).toBeGreaterThan(activation);
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("blocks V4 mutation when canonical main advances after V3", () => {
+    const fixture = createFixture();
+    prepareV4ActivationFixture(fixture);
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh activate-v4-and-serve", {
+      BODYCAST_DEPLOY_SHA: fixture.candidateSha,
+      ADVANCE_ON_V3: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events).toContain("unified-v3-postflight");
+    expect(events).toContain("main-advanced");
+    expect(events).not.toContain("unified-v4-activation");
+    expect(events).not.toContain("live-route-mutation:serving");
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("does no Docker or traffic mutation when the shared production lock is contended", () => {
+    const fixture = createFixture();
+    prepareV4ActivationFixture(fixture);
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh activate-v4-and-serve", {
+      BODYCAST_DEPLOY_SHA: fixture.candidateSha,
+      LOCK_BUSY: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(existsSync(path.join(fixture.root, "docker.log"))).toBe(false);
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("keeps maintenance and the migration marker after failed V4 activation", () => {
+    const fixture = createFixture();
+    prepareV4ActivationFixture(fixture);
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh activate-v4-and-serve", {
+      BODYCAST_DEPLOY_SHA: fixture.candidateSha,
+      FAIL_V4_ACTIVATION: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    const gitDir = execFileSync(fixture.realGit, ["-C", fixture.repo, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).trim();
+    expect(readFileSync(path.join(gitDir, "bodycast-production-schema-cutover"), "utf8")).toContain("state=app-ready");
+    expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).not.toContain("live-route-mutation:serving");
+  }, 30_000);
+
   it.skipIf(!bashAvailable)("uses an absolute real Git binary for fixture shim passthrough", () => {
     const fixture = createFixture();
     const fixtureGitShim = path.join(fixture.root, "bin", process.platform === "win32" ? "git.exe" : "git");

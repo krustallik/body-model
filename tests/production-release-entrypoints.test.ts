@@ -15,6 +15,7 @@ const legacyWorkflows = [
   "production-recovery-phase-b.yml",
   "production-recovery-transition.yml",
 ];
+const readOnlyDiagnosticWorkflows = ["production-checkout-diagnostic.yml"];
 
 describe("active production release entrypoints", () => {
   it("removes the legacy authority recovery dispatch paths while preserving unrelated workflow history", () => {
@@ -22,9 +23,29 @@ describe("active production release entrypoints", () => {
     const all = readdirSync(workflowDir).filter((name) => name.endsWith(".yml"));
     const productionDispatches = all.filter((name) => {
       const source = readFileSync(resolve(workflowDir, name), "utf8");
-      return /production|unified-v4/i.test(name) && source.includes("workflow_dispatch:");
+      return /production|unified-v4/i.test(name) && source.includes("workflow_dispatch:")
+        && !readOnlyDiagnosticWorkflows.includes(name);
     }).sort();
     expect(productionDispatches).toEqual([...releaseWorkflows].sort());
+  });
+
+  it("keeps the production checkout diagnostic owner-only, exact-main, and read-only", () => {
+    const workflow = readFileSync(resolve(workflowDir, "production-checkout-diagnostic.yml"), "utf8");
+    const inspector = readFileSync(resolve("scripts/production-checkout-diagnostic.sh"), "utf8");
+    expect(workflow).toContain("workflow_dispatch:");
+    expect(workflow).toContain("diagnose-production-checkout-read-only");
+    expect(workflow).toContain("126446430");
+    expect(workflow).toContain("refs/heads/main");
+    expect(workflow).toContain("assertTrustedOwnerWorkflowRun");
+    expect(workflow).toContain("bodycast-production-release");
+    expect(workflow).toContain("environment: production");
+    expect(workflow).toContain("StrictHostKeyChecking=yes");
+    expect(workflow).toContain("Inspect checkout metadata read-only");
+    expect(inspector).toContain("GIT_OPTIONAL_LOCKS=0");
+    expect(inspector).toContain("status --porcelain=v1 --untracked-files=all");
+    expect(inspector).toContain("rev-parse --show-toplevel");
+    expect(inspector).not.toMatch(/\bgit\s+(?:fetch|checkout|reset|clean|add|commit)\b/);
+    expect(inspector).not.toMatch(/\b(?:docker|psql|caddy|prisma)\b/);
   });
 
   it("requires pinned owner, exact current main, and shared serialization on every production dispatch", () => {

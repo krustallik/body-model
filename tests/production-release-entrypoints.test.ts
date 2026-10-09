@@ -160,6 +160,22 @@ describe("active production release entrypoints", () => {
     expect(capture).toContain("bodycast_assert_current_main_sha \"$target_sha\"");
   });
 
+  it("keeps Prisma-only lock-timeout URL options out of libpq postflight probes", () => {
+    const workflow = readFileSync(resolve(workflowDir, "production-migration-preflight.yml"), "utf8");
+    const restoreStart = workflow.indexOf("name: Restore snapshot, compare source state, and rehearse exact migrations");
+    const restoreEnd = workflow.indexOf("      - name: Create preflight evidence bundle", restoreStart);
+    const restoreStep = workflow.slice(restoreStart, restoreEnd);
+    const prismaDeploy = restoreStep.indexOf('DATABASE_URL="$PRISMA_DATABASE_URL" npx prisma migrate deploy --schema prisma/schema.prisma');
+    const postflightProbe = restoreStep.indexOf('node scripts/production-db-preflight.mjs | psql "$DATABASE_URL"', prismaDeploy);
+
+    expect(restoreStart).toBeGreaterThanOrEqual(0);
+    expect(restoreEnd).toBeGreaterThan(restoreStart);
+    expect(restoreStep).toContain("PRISMA_DATABASE_URL=\"$(node --input-type=module -e");
+    expect(prismaDeploy).toBeGreaterThanOrEqual(0);
+    expect(postflightProbe).toBeGreaterThan(prismaDeploy);
+    expect(restoreStep).not.toContain("export DATABASE_URL");
+  });
+
   it("keeps the destructive DB swap behind owner context, maintenance, restore, history, and compatibility gates", () => {
     const cutback = readFileSync(resolve("scripts/production-database-cutback.sh"), "utf8");
     const ordered = [

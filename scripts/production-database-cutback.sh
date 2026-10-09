@@ -57,17 +57,29 @@ node "$ROOT_DIR/scripts/production-database-cutback.mjs" --verify-context \
 record_path="$(git rev-parse --absolute-git-dir)/bodycast-production-pre-ddl-release"
 [[ -f "$record_path" && ! -L "$record_path" ]] || fail "the immutable pre-DDL previous-app capture is missing."
 record_lines="$(wc -l < "$record_path" | tr -d ' ')"
-[[ "$record_lines" == "6" ]] || fail "the previous-app capture has an unsupported schema."
+[[ "$record_lines" == "12" ]] || fail "the previous-app capture has an unsupported provenance schema."
 mapfile -t record= < "$record_path"
-[[ "${record[0]}" == "schemaVersion=1" && "${record[1]}" == "targetSha=$FAILED_RELEASE_SHA" ]] || fail "previous-app capture is bound to a different migration."
-PREVIOUS_SHA="${record[2]#previousSha=}"
-PREVIOUS_IMAGE_ID="${record[3]#previousImageId=}"
-PREVIOUS_CONTAINER_ID="${record[4]#previousContainerId=}"
-PREVIOUS_RUNTIME_CONFIG_DIGEST="${record[5]#previousRuntimeConfigDigest=}"
-[[ "${record[2]}" == previousSha=* && "$PREVIOUS_SHA" =~ ^[a-f0-9]{40}$ \
-  && "${record[3]}" == previousImageId=* && "$PREVIOUS_IMAGE_ID" =~ ^sha256:[a-f0-9]{64}$ \
-  && "${record[4]}" == previousContainerId=* && "$PREVIOUS_CONTAINER_ID" =~ ^[a-f0-9]{64}$ \
-  && "${record[5]}" == previousRuntimeConfigDigest=* && "$PREVIOUS_RUNTIME_CONFIG_DIGEST" =~ ^[a-f0-9]{64}$ ]] || fail "previous app identity/runtime capture is malformed."
+PREVIOUS_PROVENANCE_KIND="${record[2]#provenanceKind=}"
+PREVIOUS_SHA="${record[3]#previousSha=}"
+PREVIOUS_IMAGE_ID="${record[4]#previousImageId=}"
+PREVIOUS_CONTAINER_ID="${record[5]#previousContainerId=}"
+PREVIOUS_HEALTH="${record[6]#previousHealth=}"
+PREVIOUS_RUNTIME_CONFIG_DIGEST="${record[7]#previousRuntimeConfigDigest=}"
+PREVIOUS_DB_COMPATIBILITY_DIGEST="${record[11]#preDdlDatabaseCompatibilityDigest=}"
+[[ "${record[0]}" == "schemaVersion=2" && "${record[1]}" == "targetSha=$FAILED_RELEASE_SHA" \
+  && "${record[2]}" == provenanceKind=* \
+  && ( ( "$PREVIOUS_PROVENANCE_KIND" == "release-sha-v1" && "$PREVIOUS_SHA" =~ ^[a-f0-9]{40}$ ) \
+    || ( "$PREVIOUS_PROVENANCE_KIND" == "legacy-unlabeled-v1" && "$PREVIOUS_SHA" == "unavailable" ) ) \
+  && "${record[3]}" == previousSha=* \
+  && "${record[4]}" == previousImageId=* && "$PREVIOUS_IMAGE_ID" =~ ^sha256:[a-f0-9]{64}$ \
+  && "${record[5]}" == previousContainerId=* && "$PREVIOUS_CONTAINER_ID" =~ ^[a-f0-9]{64}$ \
+  && "${record[6]}" == previousHealth=* && "$PREVIOUS_HEALTH" == "healthy" \
+  && "${record[7]}" == previousRuntimeConfigDigest=* && "$PREVIOUS_RUNTIME_CONFIG_DIGEST" =~ ^[a-f0-9]{64}$ \
+  && "${record[8]}" == preDdlDatabaseIdentityDigest=* && "${record[8]#*=}" =~ ^[a-f0-9]{64}$ \
+  && "${record[9]}" == preDdlMigrationHistoryDigest=* && "${record[9]#*=}" =~ ^[a-f0-9]{64}$ \
+  && "${record[10]}" == preDdlSchemaInventoryDigest=* && "${record[10]#*=}" =~ ^[a-f0-9]{64}$ \
+  && "${record[11]}" == preDdlDatabaseCompatibilityDigest=* && "$PREVIOUS_DB_COMPATIBILITY_DIGEST" =~ ^[a-f0-9]{64}$ ]] \
+  || fail "previous app identity/runtime/database provenance is malformed."
 [[ "$(docker image inspect --format '{{.Id}}' bodycast-app:rollback 2>/dev/null || true)" == "$PREVIOUS_IMAGE_ID" ]] || fail "the pinned previous app image differs from the captured immutable image ID."
 
 marker_status=1
@@ -94,9 +106,21 @@ stage_created=false
 database_swapped=false
 route_committed=false
 app_started=false
+app_started_container_id=""
+
+expected_previous_app_label() {
+  if [[ "$PREVIOUS_PROVENANCE_KIND" == "release-sha-v1" ]]; then
+    printf '%s' "$PREVIOUS_SHA"
+  else
+    # The compose contract uses this explicit non-SHA value when no provenance
+    # label is supplied; it never represents a source commit.
+    printf '%s' "unknown"
+  fi
+}
 
 cleanup_cutback() {
   local status=$?
+  local running_id running_image running_label
   trap - ERR EXIT
   set +e
   if [[ "$database_swapped" == "false" && "$stage_created" == "true" ]]; then
@@ -104,8 +128,12 @@ cleanup_cutback() {
     admin_sql "DROP DATABASE IF EXISTS ${stage_db};" >/dev/null 2>&1
   fi
   if [[ "$app_started" == "true" && "$route_committed" == "false" ]]; then
-    if [[ "$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER" 2>/dev/null || true)" == "$PREVIOUS_SHA" \
-      && "$(docker inspect --format '{{.Image}}' "$APP_CONTAINER" 2>/dev/null || true)" == "$PREVIOUS_IMAGE_ID" ]]; then
+    running_id="$(docker inspect --format '{{.Id}}' "$APP_CONTAINER" 2>/dev/null || true)"
+    running_image="$(docker inspect --format '{{.Image}}' "$APP_CONTAINER" 2>/dev/null || true)"
+    running_label="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER" 2>/dev/null || true)"
+    if [[ "$running_id" =~ ^[a-f0-9]{64}$ && "$running_image" == "$PREVIOUS_IMAGE_ID" \
+      && "$running_label" == "$(expected_previous_app_label)" \
+      && ( -z "$app_started_container_id" || "$running_id" == "$app_started_container_id" ) ]]; then
       docker update --restart=no "$APP_CONTAINER" >/dev/null 2>&1
       docker stop --time 0 "$APP_CONTAINER" >/dev/null 2>&1
       compose rm --force app >/dev/null 2>&1
@@ -152,8 +180,9 @@ docker exec -i "$DB_CONTAINER" sh -c \
   _ "$stage_db" < "$ROOT_DIR/scripts/verify-restored-backup.sql" > "$STAGING_READABILITY"
 node "$ROOT_DIR/scripts/production-database-cutback.mjs" --verify-restored \
   "$CONTEXT_DIR" "$STAGING_REPORT" "$STAGING_READABILITY" > "$TMP_DIR/restore-verification.json"
-node "$ROOT_DIR/scripts/production-database-cutback.mjs" --verify-previous-release \
-  "$PREVIOUS_SHA" "$STAGING_READABILITY" > "$TMP_DIR/previous-release-verification.json"
+node "$ROOT_DIR/scripts/production-database-cutback.mjs" --verify-previous-app \
+  "$CONTEXT_DIR" "$FAILED_MIGRATION_RUN_ID" "$FAILED_RELEASE_SHA" "$CONTEXT_DIR/production-backup.pgdump.enc" \
+  "$record_path" "$STAGING_REPORT" "$STAGING_READABILITY" > "$TMP_DIR/previous-app-compatibility-verification.json"
 node "$ROOT_DIR/scripts/production-database-cutback.mjs" --verify-restored-identity \
   "$CONTEXT_DIR" "$STAGING_REPORT" "$stage_db" > "$TMP_DIR/staging-identity-verification.json"
 
@@ -183,28 +212,44 @@ APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" \
   bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" > "$LIVE_REPORT"
 node "$ROOT_DIR/scripts/production-database-cutback.mjs" --verify-restored-identity \
   "$CONTEXT_DIR" "$LIVE_REPORT" > "$TMP_DIR/restored-target-identity.json"
+LIVE_DB_URL="$(bash "$ROOT_DIR/scripts/production-db-target.sh" --psql-url)"
+docker exec -i --env "BODYCAST_PSQL_DATABASE_URL=$LIVE_DB_URL" "$DB_CONTAINER" sh -c \
+  'exec psql "$BODYCAST_PSQL_DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1' \
+  < "$ROOT_DIR/scripts/verify-restored-backup.sql" > "$TMP_DIR/live-readability.json"
+node "$ROOT_DIR/scripts/production-database-cutback.mjs" --verify-previous-app \
+  "$CONTEXT_DIR" "$FAILED_MIGRATION_RUN_ID" "$FAILED_RELEASE_SHA" "$CONTEXT_DIR/production-backup.pgdump.enc" \
+  "$record_path" "$LIVE_REPORT" "$TMP_DIR/live-readability.json" > "$TMP_DIR/promoted-previous-app-compatibility.json"
 write_bodycast_release_marker "$FAILED_RELEASE_SHA" database-restored
 
 # Only the exact captured previous image may start, and only after the restored
 # schema/history/data checks and database identity checks above succeeded.
 docker image tag bodycast-app:rollback bodycast-app:latest
 [[ "$(docker image inspect --format '{{.Id}}' bodycast-app:latest)" == "$PREVIOUS_IMAGE_ID" ]] || fail "previous image retag differs from the captured immutable image."
-BODYCAST_DEPLOY_SHA="$PREVIOUS_SHA" compose up -d --no-deps --no-build app
 app_started=true
+if [[ "$PREVIOUS_PROVENANCE_KIND" == "legacy-unlabeled-v1" ]]; then
+  BODYCAST_DEPLOY_SHA="unknown" compose up -d --no-deps --no-build app
+else
+  BODYCAST_DEPLOY_SHA="$PREVIOUS_SHA" compose up -d --no-deps --no-build app
+fi
+app_started_container_id="$(docker inspect --format '{{.Id}}' "$APP_CONTAINER")"
+[[ "$app_started_container_id" =~ ^[a-f0-9]{64}$ && "$app_started_container_id" != "$PREVIOUS_CONTAINER_ID" ]] \
+  || fail "previous app was not recreated as a new container from the immutable captured image."
 app_ready=false
 for attempt in $(seq 1 60); do
   app_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER" 2>/dev/null || true)"
   app_image="$(docker inspect --format '{{.Image}}' "$APP_CONTAINER" 2>/dev/null || true)"
+  app_container_id="$(docker inspect --format '{{.Id}}' "$APP_CONTAINER" 2>/dev/null || true)"
   app_health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$APP_CONTAINER" 2>/dev/null || true)"
-  if [[ "$app_sha" == "$PREVIOUS_SHA" && "$app_image" == "$PREVIOUS_IMAGE_ID" && "$app_health" == "healthy" ]]; then
+  if [[ "$app_sha" == "$(expected_previous_app_label)" && "$app_image" == "$PREVIOUS_IMAGE_ID" \
+    && "$app_container_id" == "$app_started_container_id" && "$app_health" == "healthy" ]]; then
     app_ready=true
     break
   fi
   [[ "$attempt" == "60" ]] || sleep 5
 done
 [[ "$app_ready" == "true" ]] || fail "captured previous app did not return healthy on the verified restored schema."
-runtime_digest="$(docker inspect "$APP_CONTAINER" | node "$ROOT_DIR/scripts/production-app-runtime-digest.mjs")"
-[[ "$runtime_digest" == "$PREVIOUS_RUNTIME_CONFIG_DIGEST" ]] || fail "the recreated previous app runtime configuration differs from the exact captured prior runtime."
+docker inspect "$APP_CONTAINER" | node "$ROOT_DIR/scripts/production-database-cutback.mjs" \
+  --verify-previous-app-runtime "$record_path" > /dev/null
 docker exec "$APP_CONTAINER" wget --quiet --tries=1 --output-document=- http://127.0.0.1:3000/api/health | grep -q '"status":"ok"' \
   || fail "captured previous app local health endpoint failed."
 write_bodycast_release_marker "$FAILED_RELEASE_SHA" rollback-app-ready
@@ -215,8 +260,13 @@ bodycast_stage_serving_route_config
 route_stage="$BODYCAST_ROUTE_STAGE_PATH"
 docker exec -i "$CADDY_CONTAINER" caddy validate --adapter caddyfile --config - < "$route_stage"
 bodycast_assert_safe_routes_location
-[[ "$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER")" == "$PREVIOUS_SHA" \
-  && "$(docker inspect --format '{{.Image}}' "$APP_CONTAINER")" == "$PREVIOUS_IMAGE_ID" ]] || fail "previous app identity changed before serving."
+[[ "$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER")" == "$(expected_previous_app_label)" \
+  && "$(docker inspect --format '{{.Image}}' "$APP_CONTAINER")" == "$PREVIOUS_IMAGE_ID" \
+  && "$(docker inspect --format '{{.Id}}' "$APP_CONTAINER")" == "$app_started_container_id" \
+  && "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$APP_CONTAINER")" == "healthy" ]] \
+  || fail "previous app image/runtime/health identity changed before serving."
+docker inspect "$APP_CONTAINER" | node "$ROOT_DIR/scripts/production-database-cutback.mjs" \
+  --verify-previous-app-runtime "$record_path" > /dev/null
 bodycast_assert_current_main_sha "$CURRENT_MAIN_SHA"
 bodycast_assert_safe_routes_location
 [[ -f "$route_stage" && ! -L "$route_stage" ]] || fail "validated serving route stage is missing or unsafe."
@@ -235,5 +285,5 @@ else
   rm -f -- "$record_path"
   sync -f "$(dirname "$record_path")"
 fi
-echo "Production database cutback completed from the verified pre-DDL archive; previous app ${PREVIOUS_SHA} is serving."
+echo "Production database cutback completed from the verified pre-DDL archive; prior app provenance ${PREVIOUS_PROVENANCE_KIND} is serving."
 exit 0

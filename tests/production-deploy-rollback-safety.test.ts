@@ -72,4 +72,25 @@ describe("maintenance-first deploy fail-closed checks", () => {
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
   }, 30_000);
 
+  // The production host and this Node-to-Docker shim contract are Linux-only;
+  // Windows Git Bash cannot launch the fixture shell script via execFileSync.
+  it.skipIf(!bashAvailable || process.platform === "win32")("keeps the app running behind confirmed maintenance when versioned provenance capture fails", () => {
+    const fixture = createFixture();
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh maintenance", {
+      BODYCAST_DEPLOY_SHA: fixture.candidateSha,
+      BODYCAST_CAPTURE_PRE_DDL_RELEASE: "1",
+      FAIL_DOCKER_APP_INSPECT: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("prior app image/runtime or read-only database migration/schema provenance is not verifiable");
+    expect(appState(fixture)).toEqual({ sha: PREVIOUS_SHA, imageId: PREVIOUS_IMAGE_ID, status: "healthy", present: "true" });
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events).toContain("public-probe:503:https://bodycast.example.test/");
+    expect(events).toContain("docker-app-inspect-json-failed");
+    expect(events).not.toContain("compose-stop-app");
+    expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).not.toContain("image tag");
+  }, 30_000);
+
 });

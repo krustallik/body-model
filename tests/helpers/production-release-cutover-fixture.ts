@@ -283,6 +283,15 @@ if [[ "$1" == "compose" ]]; then
   exit 90
 fi
 if [[ "$1" == "inspect" ]]; then
+  if [[ "$2" == "bodycast-app-prod" && "$#" -eq 2 ]]; then
+    if [[ "\${FAIL_DOCKER_APP_INSPECT:-0}" == "1" ]]; then
+      event "docker-app-inspect-json-failed"
+      exit 58
+    fi
+    event "docker-app-inspect-json"
+    cat "$APP_INSPECT_JSON_FILE"
+    exit 0
+  fi
   format="$3"
   target="$4"
   if [[ "$target" == "bodycast-db-prod" && "\${FAIL_DB_INSPECT:-0}" == "1" ]]; then
@@ -557,6 +566,13 @@ export function createFixture(): Fixture {
     "production-release-lock.sh",
     "production-traffic-cutover.sh",
     "production-writer-drain.sh",
+    "production-previous-app-provenance.mjs",
+    "production-app-runtime-digest.mjs",
+    "production-migration-authorization.mjs",
+    "production-migration-manifests.mjs",
+    "production-migration-integrity.mjs",
+    "production-migration-preflight.mjs",
+    "postgres-database-identity.mjs",
   ]) {
     copyFileSync(path.resolve("scripts", file), path.join(repo, "scripts", file));
   }
@@ -597,6 +613,7 @@ printf '%s\n' lock-acquired >> "$EVENT_LOG"
     APP_STATUS_FILE: path.join(root, "app-status"),
     APP_PRESENT_FILE: path.join(root, "app-present"),
     APP_RESTART_FILE: path.join(root, "app-restart"),
+    APP_INSPECT_JSON_FILE: path.join(root, "app-inspect.json"),
     IMAGE_LATEST: path.join(root, "image-latest"),
     IMAGE_ROLLBACK: path.join(root, "image-rollback"),
     ACTIVE_ROUTE_FILE: path.join(root, "active-route"),
@@ -615,6 +632,14 @@ printf '%s\n' lock-acquired >> "$EVENT_LOG"
   writeFileSync(paths.APP_IMAGE_ID_FILE, `${PREVIOUS_IMAGE_ID}\n`);
   writeFileSync(paths.APP_CONTAINER_ID_FILE, `${PREVIOUS_CONTAINER_ID}\n`);
   writeFileSync(paths.APP_STATUS_FILE, "healthy\n");
+  writeFileSync(paths.APP_INSPECT_JSON_FILE, JSON.stringify([{
+    Id: PREVIOUS_CONTAINER_ID,
+    Image: PREVIOUS_IMAGE_ID,
+    Config: { Labels: { "org.bodycast.release-sha": PREVIOUS_SHA }, Env: ["NODE_ENV=production", "DATABASE_URL=fixture"],
+      Entrypoint: ["node"], Cmd: ["server.js"], User: "node", WorkingDir: "/app", Healthcheck: { Test: ["CMD", "true"] }, ExposedPorts: { "3000/tcp": {} } },
+    HostConfig: { Binds: [], Mounts: [], PortBindings: {}, RestartPolicy: { Name: "unless-stopped" } },
+    Mounts: [], NetworkSettings: { Networks: { "bodycast-backend-prod": {} } }, State: { Health: { Status: "healthy" } },
+  }]) + "\n");
   writeFileSync(paths.APP_PRESENT_FILE, "true\n");
   writeFileSync(paths.APP_RESTART_FILE, "always\n");
   writeFileSync(paths.IMAGE_LATEST, `${LATEST_IMAGE_ID}\n`);

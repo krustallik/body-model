@@ -279,6 +279,38 @@ jobs:
             > "$RUNNER_TEMP/preflight-result.json"
           node scripts/production-migration-preflight.mjs --execution-integrity --manifest "$MANIFEST_ID" --release-sha "$RELEASE_SHA" --repository "$GITHUB_WORKSPACE" \
             > "$RUNNER_TEMP/execution-integrity.json"
+          DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
+          REMOTE_CAPTURE_SCRIPT="$(cat <<'REMOTE'
+          set -Eeuo pipefail
+          DEPLOY_PATH="$(printf '%s' "$1" | base64 --decode)"
+          cd -- "$DEPLOY_PATH"
+          git_dir="$(git rev-parse --absolute-git-dir)"
+          [[ -d "$git_dir" && ! -L "$git_dir" ]] || exit 1
+          capture="$git_dir/bodycast-production-pre-ddl-release"
+          [[ -f "$capture" && ! -L "$capture" ]] || exit 1
+          cat -- "$capture"
+          REMOTE
+          )"
+          REMOTE_CAPTURE_B64="$(printf '%s' "$REMOTE_CAPTURE_SCRIPT" | base64 -w0)"
+          REMOTE_CAPTURE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_CAPTURE_B64' | base64 --decode)\" -- '$DEPLOY_PATH_B64'"
+          timeout 2m ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10 "$SSH_USER@$SSH_HOST" "$REMOTE_CAPTURE_COMMAND" \
+            | node scripts/production-previous-app-provenance.mjs --verify-preflight "$RUNNER_TEMP/preflight-result.json" "$RELEASE_SHA" \
+            > "$RUNNER_TEMP/previous-app-provenance-verification.json"
+          node --input-type=module - "$RUNNER_TEMP/preflight-result.json" "$RUNNER_TEMP/previous-app-provenance-verification.json" <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const [resultPath, verificationPath] = process.argv.slice(2);
+          const result = JSON.parse(readFileSync(resultPath, "utf8"));
+          const verification = JSON.parse(readFileSync(verificationPath, "utf8"));
+          const binding = verification.previousAppProvenance;
+          if (verification.verified !== true || !binding || result.previousAppProvenance
+            || binding.schemaVersion !== 2 || !/^[a-f0-9]{64}$/.test(binding.recordDigest)
+            || !["legacy-unlabeled-v1", "release-sha-v1"].includes(binding.provenanceKind)) {
+            throw new Error("Previous-app provenance was not verified or is already present in the preflight result.");
+          }
+          result.previousAppProvenance = binding;
+          writeFileSync(resultPath, `${JSON.stringify(result, null, 2)}\n`, { mode: 0o600 });
+          NODE
           cat "$RUNNER_TEMP/preflight-result.json" >> "$GITHUB_STEP_SUMMARY"
       - name: Capture pg_dump start on production host and create encrypted backup
         id: backup

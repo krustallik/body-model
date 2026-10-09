@@ -28,11 +28,21 @@ describe("production database cutback gates", () => {
     const productionIdentityDigest = canonicalSha256(identity);
     const pendingMigrationNames = ["20261001_baseline"];
     const restoreResult = { verified: true, postflightReady: true, postSchemaDigest: "b".repeat(64) };
-    const preflightResult = { readyForOwnerAuthorization: true, manifestId: "active-energy-unified-v2", pending: pendingMigrationNames, identity };
-    const report = { identity, pending: pendingMigrationNames };
+    const previousAppProvenance = {
+      schemaVersion: 2, provenanceKind: "legacy-unlabeled-v1", recordDigest: "9".repeat(64), previousSha: "unavailable",
+      previousImageId: `sha256:${"8".repeat(64)}`, previousContainerId: "7".repeat(64), previousHealth: "healthy",
+      previousRuntimeConfigDigest: "6".repeat(64),
+    };
+    const sourceObjects = [{ name: "DailyModelState", present: true, kind: "table", signature: "columns-v1" }];
+    const sourceTables = { DailyModelState: { exists: true, estimatedRows: 10, totalBytes: 2048 } };
+    const preflightResult = { readyForOwnerAuthorization: true, blockers: [], pendingExactlyExpected: true,
+      manifestId: "active-energy-unified-v2", pending: pendingMigrationNames, identity, migrations, objects: sourceObjects, tables: sourceTables,
+      previousAppProvenance };
+    const report = { identity, pending: pendingMigrationNames, migrations, objects: sourceObjects, tables: sourceTables };
     const evidence = {
       verified: true, releaseSha: "a".repeat(40), manifestId: "active-energy-unified-v2", workflowRunId: "4001", workflowRunAttempt: 1,
       preflightResultDigest: canonicalSha256(preflightResult), restoreResultDigest: canonicalSha256(restoreResult),
+      previousAppProvenance,
       productionIdentityDigest, backupSnapshotAt: "2026-10-01T00:00:00.000Z", backupFileDigest,
       pendingMigrationNames, pendingSetDigest: canonicalSha256(pendingMigrationNames),
     };
@@ -55,6 +65,10 @@ describe("production database cutback gates", () => {
       expectedFailedRunId: "5001", expectedFailedSha: evidence.releaseSha, backupFileBytes: backup })).toThrow();
     expect(() => verifyCutbackEvidenceBundle({ envelope, artifactMetadata, preflightEvidence: evidence, preflightReport: report,
       preflightResult, restoreResult, allowlist, expectedFailedRunId: "5002", expectedFailedSha: evidence.releaseSha, backupFileBytes: backup })).toThrow();
+    expect(() => verifyCutbackEvidenceBundle({ envelope, artifactMetadata,
+      preflightEvidence: { ...evidence, previousAppProvenance: { ...previousAppProvenance, recordDigest: "5".repeat(64) } },
+      preflightReport: report, preflightResult, restoreResult, allowlist,
+      expectedFailedRunId: "5001", expectedFailedSha: evidence.releaseSha, backupFileBytes: backup })).toThrow(/preflight evidence is unsigned/);
   });
 
   it("requires the exact signed database identity and an empty writer drain", () => {

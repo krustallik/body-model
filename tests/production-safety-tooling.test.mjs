@@ -358,6 +358,7 @@ describe("workflow mutation boundary", () => {
     expect(workflow).toContain("scripts/filter-ssh-known-hosts.mjs");
     expect(safetyWorkflow).toContain('"scripts/filter-ssh-known-hosts.mjs"');
     expect(workflow).toContain("DATABASE_URL: postgresql://bodycast_restore:");
+    expect(workflow).toMatch(/DATABASE_URL:\s+postgresql:\/\/[^@\s]+@127\.0\.0\.1:5432\/bodycast_restore\s*$/m);
     expect(workflow).toContain("npx prisma migrate deploy --schema prisma/schema.prisma");
     expect(workflow.indexOf("node scripts/production-migration-restore-check.mjs --base")).toBeLessThan(workflow.indexOf("npx prisma migrate deploy --schema prisma/schema.prisma"));
     expect(workflow).toContain("production migration: NOT EXECUTED");

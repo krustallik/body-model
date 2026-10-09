@@ -5,6 +5,7 @@ import { STAGE_02_MANIFEST, ACTIVE_ENERGY_UNIFIED_MANIFEST, getProductionMigrati
 import { verifyManifestBlob, verifyExecutionFileMatchesBlob } from "./production-migration-integrity.mjs";
 import { canonicalSha256, verifyAuthorizationEnvelope } from "./production-migration-authorization.mjs";
 import { evaluateProductionWriterDrain } from "./production-writer-drain.mjs";
+import { isCanonicalPostgresDatabaseIdentity } from "./postgres-database-identity.mjs";
 
 export const EXPECTED_PENDING_MIGRATIONS = ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations.map(({ name }) => name);
 export const EXPECTED_MIGRATION_OBJECTS = Object.freeze([
@@ -57,7 +58,7 @@ export function schemaInventoryDigest(objects) {
 }
 
 export function assertProductionDatabaseIdentityMatches(expectedIdentity, actualIdentity) {
-  if (!expectedIdentity || typeof expectedIdentity !== "object" || !actualIdentity || typeof actualIdentity !== "object"
+  if (!isCanonicalPostgresDatabaseIdentity(expectedIdentity) || !isCanonicalPostgresDatabaseIdentity(actualIdentity)
     || canonicalSha256(expectedIdentity) !== canonicalSha256(actualIdentity)) {
     throw new Error("Migration blocked: production database identity differs from the signed preflight target.");
   }
@@ -65,12 +66,7 @@ export function assertProductionDatabaseIdentityMatches(expectedIdentity, actual
 }
 
 function hasConcretePostgresEndpoint(identity) {
-  return identity && typeof identity.database === "string" && identity.database.length > 0
-    && typeof identity.role === "string" && identity.role.length > 0
-    && typeof identity.serverVersion === "string" && identity.serverVersion.length > 0
-    && Number.isSafeInteger(Number(identity.databaseOid)) && Number(identity.databaseOid) > 0
-    && typeof identity.serverAddress === "string" && identity.serverAddress.length > 0
-    && Number.isInteger(Number(identity.serverPort)) && Number(identity.serverPort) > 0 && Number(identity.serverPort) <= 65535;
+  return isCanonicalPostgresDatabaseIdentity(identity);
 }
 
 function migrationState(report, migrationDirectories) {

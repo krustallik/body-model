@@ -16,6 +16,7 @@ import { verifyPostflightMatchesRestore } from "../scripts/production-migration-
 import { verifyFinalMigrationAuthorization, verifyFinalGuardReceipt } from "../scripts/production-migration-final-guard.mjs";
 import { normalizeWorkflowRuns, selectAndVerifyArtifact } from "../scripts/production-migration-select-preflight.mjs";
 import { assertBackupFreshAtDdlStart, assertPrismaMigrationAuthorized, assertPrismaTargetMatchesSignedIdentity, readLatestApplicablePreflightForDdl, startPrismaMigrationAtDdlBoundary } from "../scripts/run-prisma-migrate-with-lock-timeout.mjs";
+import { normalizePostgresDatabaseIdentityRow } from "../scripts/postgres-database-identity.mjs";
 import { psqlCompatibleDatabaseUrl } from "../scripts/production-db-target-url.mjs";
 import { assertCurrentMigrationRunMatchesProof, executionProofAudience, readCurrentMigrationRunForDdl, requestGitHubOidcExecutionProof, verifyGitHubExecutionProof } from "../scripts/production-migration-execution-attestation.mjs";
 import { PRODUCTION_WRITER_TOPOLOGY_CONTRACT } from "../scripts/production-writer-drain.mjs";
@@ -87,7 +88,7 @@ function validPrismaTargetState(identity, at = now, overrides = {}) {
 
 function validPreflightReport() {
   return {
-    identity: { database: "bodycast", databaseOid: 16384, role: "bodycast", serverVersion: "17.11", serverAddress: "172.20.0.2", serverPort: 5432 },
+    identity: { database: "bodycast", databaseOid: 16384, clusterSystemIdentifier: "7419276301947620311", role: "bodycast", serverVersion: "17.11", serverAddress: "172.20.0.2", serverPort: 5432 },
     migrations: [
       migrationRow({ name: dirs[0], sha256: "a".repeat(64) }),
       ...STAGE_02_MANIFEST.migrations.map((migration) => migrationRow(migration)),
@@ -421,7 +422,7 @@ describe("V5 closed migration manifest and full pending set", () => {
 
   it("requires exact target checksums and schema-object signatures after disposable migration rehearsal", () => {
     const post = validPreflightReport();
-    post.identity = { database: "bodycast_restore", databaseOid: 16385, role: "bodycast_restore", serverVersion: "17.11", serverAddress: "172.20.0.3", serverPort: 5432 };
+    post.identity = { ...post.identity, database: "bodycast_restore", databaseOid: 16385, role: "bodycast_restore", serverAddress: "172.20.0.3" };
     post.migrations.push(...ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations.map((migration) => migrationRow(migration)));
     post.objects = schemaObjects(true);
     const result = evaluateProductionPostflight(post, dirs, ACTIVE_ENERGY_UNIFIED_MANIFEST.id, { expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore" });
@@ -453,6 +454,9 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(sql).toContain("inet_server_addr()::text");
     expect(sql).toContain("inet_server_port()");
     expect(sql).toContain("'databaseOid', (SELECT oid::bigint FROM pg_database WHERE datname = current_database())");
+    expect(sql).toContain("'clusterSystemIdentifier', (SELECT system_identifier::text FROM pg_control_system())");
+    const prismaIdentityProbe = await readFile(new URL("../scripts/run-prisma-migrate-with-lock-timeout.mjs", import.meta.url), "utf8");
+    expect(prismaIdentityProbe).toContain('(SELECT system_identifier::text FROM pg_control_system()) AS "clusterSystemIdentifier"');
     expect(normalizedSql).toContain("ORDER BY dep.refobjid, dep.refobjsubid\n            LIMIT 1");
     expect(sql).not.toContain("LEFT JOIN pg_depend dep ON dep.classid = 'pg_class'::regclass AND dep.objid = cl.oid");
     expect(sql).not.toMatch(/^\s*(ALTER|CREATE|DROP|INSERT|UPDATE|DELETE|TRUNCATE)\b/im);
@@ -474,9 +478,50 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(assertProductionDatabaseIdentityMatches(expected, { ...expected })).toBe(true);
     expect(() => assertProductionDatabaseIdentityMatches(expected, { ...expected, serverAddress: "172.20.0.99" })).toThrow("differs from the signed preflight target");
     expect(() => assertProductionDatabaseIdentityMatches(expected, { ...expected, database: "bodycast_restore" })).toThrow("differs from the signed preflight target");
+    expect(() => assertProductionDatabaseIdentityMatches(expected, { ...expected, clusterSystemIdentifier: "7419276301947620312" })).toThrow("differs from the signed preflight target");
     const incomplete = validPreflightReport();
     delete incomplete.identity.serverAddress;
     expect(evaluateProductionPreflight(incomplete, dirs).blockers.join(" ")).toContain("endpoint identity is incomplete");
+    for (const clusterSystemIdentifier of [undefined, "0", "18446744073709551616", 7419276301947620311]) {
+      const invalidCluster = validPreflightReport();
+      invalidCluster.identity.clusterSystemIdentifier = clusterSystemIdentifier;
+      expect(evaluateProductionPreflight(invalidCluster, dirs).blockers.join(" ")).toContain("endpoint identity is incomplete");
+    }
+  });
+
+  it("normalizes PostgreSQL OID and port types without losing the cluster system identifier precision", () => {
+    const identity = normalizePostgresDatabaseIdentityRow({
+      database: "bodycast",
+      databaseOid: "16384",
+      clusterSystemIdentifier: "9223372036854775807",
+      role: "bodycast",
+      serverVersion: "17.11",
+      serverAddress: "172.20.0.2",
+      serverPort: 5432,
+      observerPid: 123,
+    });
+    expect(identity).toEqual({
+      database: "bodycast",
+      databaseOid: 16384,
+      clusterSystemIdentifier: "9223372036854775807",
+      role: "bodycast",
+      serverVersion: "17.11",
+      serverAddress: "172.20.0.2",
+      serverPort: 5432,
+    });
+    expect(typeof identity.clusterSystemIdentifier).toBe("string");
+    expect(normalizePostgresDatabaseIdentityRow({
+      database: "bodycast", databaseOid: "16384", clusterSystemIdentifier: "-9223372036854775808",
+      role: "bodycast", serverVersion: "17.11", serverAddress: "172.20.0.2", serverPort: 5432,
+    }).clusterSystemIdentifier).toBe("-9223372036854775808");
+    expect(() => normalizePostgresDatabaseIdentityRow({
+      database: "bodycast", databaseOid: "16384", clusterSystemIdentifier: "9223372036854775808",
+      role: "bodycast", serverVersion: "17.11", serverAddress: "172.20.0.2", serverPort: 5432,
+    })).toThrow("clusterSystemIdentifier");
+    expect(() => normalizePostgresDatabaseIdentityRow({
+      database: "bodycast", databaseOid: "not-an-oid", clusterSystemIdentifier: "7419276301947620311",
+      role: "bodycast", serverVersion: "17.11", serverAddress: "172.20.0.2", serverPort: 5432,
+    })).toThrow("incomplete or invalid endpoint identity");
   });
 
   it("derives the psql target from Prisma DATABASE_URL while removing only Prisma-only parameters", () => {
@@ -730,9 +775,39 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(() => assertPrismaTargetMatchesSignedIdentity({ productionIdentityDigest: canonicalSha256(signedIdentity) }, {
       ...targetState, identity: { ...signedIdentity, serverAddress: "127.0.0.2" },
     }, now)).toThrow("differs from the verified production identity");
+    expect(() => assertPrismaTargetMatchesSignedIdentity({ productionIdentityDigest: canonicalSha256(signedIdentity) }, {
+      ...targetState, identity: { ...signedIdentity, clusterSystemIdentifier: "7419276301947620312" },
+    }, now)).toThrow("differs from the verified production identity");
+    expect(() => assertPrismaTargetMatchesSignedIdentity({ productionIdentityDigest: canonicalSha256(signedIdentity) }, {
+      ...targetState, identity: { ...signedIdentity, clusterSystemIdentifier: undefined },
+    }, now)).toThrow("differs from the verified production identity");
+    expect(() => assertPrismaTargetMatchesSignedIdentity({ productionIdentityDigest: canonicalSha256(signedIdentity) }, {
+      ...targetState, identity: { ...signedIdentity, clusterSystemIdentifier: "0" },
+    }, now)).toThrow("differs from the verified production identity");
     expect(() => assertPrismaTargetMatchesSignedIdentity({ productionIdentityDigest: canonicalSha256(signedIdentity) }, validPrismaTargetState(signedIdentity, now, {
       activeClientBackends: [{ pid: 501, applicationName: "bodycast-reconnected-writer", clientAddress: null }],
     }), now)).toThrow("final Prisma writer-drain observation");
+  });
+
+  it("blocks Prisma spawn for missing or unreadable cluster identity", async () => {
+    const signedIdentity = validPreflightReport().identity;
+    const fixture = await executionBoundaryFixture(signedIdentity);
+    const spawn = vi.fn(() => ({ status: 0 }));
+    for (const clusterSystemIdentifier of [undefined, "invalid", "0", "7419276301947620312"]) {
+      await expect(startPrismaMigrationAtDdlBoundary({
+        authorized: authorizedBoundary(fixture),
+        spawn,
+        identityProbe: async () => validPrismaTargetState({ ...signedIdentity, clusterSystemIdentifier }, now),
+        now: () => now,
+      })).rejects.toThrow("final Prisma DATABASE_URL target differs from the verified production identity");
+    }
+    await expect(startPrismaMigrationAtDdlBoundary({
+      authorized: authorizedBoundary(fixture),
+      spawn,
+      identityProbe: async () => { throw new Error("permission denied for function pg_control_system"); },
+      now: () => now,
+    })).rejects.toThrow("permission denied for function pg_control_system");
+    expect(spawn).not.toHaveBeenCalled();
   });
 
   it("serializes deploy, migration, and traffic mutations with one host lock", async () => {
@@ -1178,7 +1253,7 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
     expect(verifyRestoredBackup(source, restored).verified).toBe(false);
 
     const post = validPreflightReport();
-    post.identity = { database: "bodycast_restore", databaseOid: 16385, role: "bodycast_restore", serverVersion: "17.11", serverAddress: "172.20.0.3", serverPort: 5432 };
+    post.identity = { database: "bodycast_restore", databaseOid: 16385, clusterSystemIdentifier: source.identity.clusterSystemIdentifier, role: "bodycast_restore", serverVersion: "17.11", serverAddress: "172.20.0.3", serverPort: 5432 };
     post.migrations.push(...ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations.map((migration) => migrationRow(migration)));
     post.objects = schemaObjects(true);
     const verified = verifyDisposablePostflight(post, dirs);

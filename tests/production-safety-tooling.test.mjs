@@ -90,7 +90,7 @@ function preflightFixture(migrationDirectories) {
   const appliedMigrations = migrationDirectories.filter((name) => !EXPECTED_PENDING_MIGRATIONS.includes(name));
   const now = new Date().toISOString();
   return {
-    identity: { database: "bodycast", databaseOid: 16384, role: "bodycast", serverVersion: "17.0", serverAddress: "172.20.0.2", serverPort: 5432 },
+    identity: { database: "bodycast", databaseOid: 16384, clusterSystemIdentifier: "7419276301947620311", role: "bodycast", serverVersion: "17.0", serverAddress: "172.20.0.2", serverPort: 5432 },
     migrations: appliedMigrations.map((name) => ({
       name,
       checksum: stage02Checksums.get(name) ?? "a".repeat(64),

@@ -7,8 +7,7 @@ import { verifyFinalGuardReceipt } from "./production-migration-final-guard.mjs"
 import { canonicalSha256 } from "./production-migration-authorization.mjs";
 import { normalizeWorkflowRuns } from "./production-migration-select-preflight.mjs";
 import { selectLatestApplicablePreflight } from "./production-migration-release.mjs";
-
-const DATABASE_IDENTITY_FIELDS = Object.freeze(["database", "databaseOid", "role", "serverVersion", "serverAddress", "serverPort"]);
+import { isCanonicalPostgresDatabaseIdentity, normalizePostgresDatabaseIdentityRow } from "./postgres-database-identity.mjs";
 
 function reject(message) {
   throw new Error("Refusing Prisma DDL: " + message);
@@ -24,6 +23,7 @@ export async function readPrismaDatabaseIdentity(databaseUrl) {
       return transaction.$queryRawUnsafe(`
       SELECT current_database() AS "database",
         (SELECT oid::text FROM pg_database WHERE datname = current_database()) AS "databaseOid",
+        (SELECT system_identifier::text FROM pg_control_system()) AS "clusterSystemIdentifier",
         current_user AS "role",
         current_setting('server_version') AS "serverVersion",
         inet_server_addr()::text AS "serverAddress",
@@ -45,21 +45,13 @@ export async function readPrismaDatabaseIdentity(databaseUrl) {
     });
     if (!Array.isArray(rows) || rows.length !== 1) reject("identity query returned an unexpected row count.");
     const row = rows[0];
-    const identity = {
-      database: row.database,
-      databaseOid: Number(row.databaseOid),
-      role: row.role,
-      serverVersion: row.serverVersion,
-      serverAddress: row.serverAddress,
-      serverPort: Number(row.serverPort),
-    };
-    if (Object.keys(identity).sort().join("\0") !== [...DATABASE_IDENTITY_FIELDS].sort().join("\0")
-      || typeof identity.database !== "string" || !identity.database
-      || !Number.isSafeInteger(identity.databaseOid) || identity.databaseOid < 1
-      || typeof identity.role !== "string" || !identity.role
-      || typeof identity.serverVersion !== "string" || !identity.serverVersion
-      || typeof identity.serverAddress !== "string" || !identity.serverAddress
-      || !Number.isInteger(identity.serverPort) || identity.serverPort < 1 || identity.serverPort > 65535) {
+    let identity;
+    try {
+      identity = normalizePostgresDatabaseIdentityRow(row);
+    } catch (error) {
+      reject(error?.message ?? "identity query returned an incomplete PostgreSQL endpoint.");
+    }
+    if (!isCanonicalPostgresDatabaseIdentity(identity)) {
       reject("identity query returned an incomplete PostgreSQL endpoint.");
     }
     const writerDrain = {
@@ -80,7 +72,7 @@ export function assertPrismaTargetMatchesSignedIdentity(receipt, targetState, no
   const identity = targetState?.identity;
   const writerDrain = targetState?.writerDrain;
   if (!/^[a-f0-9]{64}$/.test(String(receipt?.productionIdentityDigest ?? ""))
-    || !identity || Object.keys(identity).sort().join("\0") !== [...DATABASE_IDENTITY_FIELDS].sort().join("\0")
+    || !isCanonicalPostgresDatabaseIdentity(identity)
     || canonicalSha256(identity) !== receipt.productionIdentityDigest) {
     reject("final Prisma DATABASE_URL target differs from the verified production identity.");
   }

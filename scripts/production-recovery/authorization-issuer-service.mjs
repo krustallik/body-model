@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { assertExactKeys, assertGitSha, assertNonEmptyString, assertSha256, assertUtcTimestamp, canonicalDigest, omitFields, verifyCanonical } from "./canonical.mjs";
 import { createAuthorizationEnvelope } from "./authorization.mjs";
+import { assertPinnedOwnerId, BODYCAST_OWNER_ID } from "../github-owner-identity.mjs";
 import {
   PHASE_A_CLAIM_KEYS,
   PHASE_B_CLAIM_KEYS,
@@ -8,6 +9,7 @@ import {
   validatePhaseAClaims,
   validatePhaseBClaims,
   validatePolicyAttestation,
+  RECOVERY_AUTHORIZATION_SCHEMA_VERSION,
 } from "./schemas.mjs";
 
 const REQUEST_KEYS = Object.freeze([
@@ -19,7 +21,7 @@ function assertTrustedPolicy(policy, { phase, recoveryCase, workflow, policyPubl
   validatePolicyAttestation(policy);
   const key = policyPublicKeys?.[policy.keyId];
   if (!key || !verifyCanonical(omitFields(policy, ["signature"]), policy.signature, key)) {
-    throw new Error("Independent policy attestation signature is invalid.");
+    throw new Error("Owner-bound machine policy attestation signature is invalid.");
   }
   const expected = {
     phase,
@@ -30,6 +32,7 @@ function assertTrustedPolicy(policy, { phase, recoveryCase, workflow, policyPubl
     workflowId: workflow.workflowId,
     workflowRunId: workflow.workflowRunId,
     workflowRunAttempt: workflow.workflowRunAttempt,
+    authorizedActorGithubUserId: String(workflow.actorGithubUserId),
     environment: "production-recovery",
     challengeId,
     challengeDigest,
@@ -37,35 +40,33 @@ function assertTrustedPolicy(policy, { phase, recoveryCase, workflow, policyPubl
   for (const [keyName, value] of Object.entries(expected)) {
     if (policy[keyName] !== value) throw new Error("Policy attestation binding mismatch: " + keyName + ".");
   }
+  assertPinnedOwnerId(policy.authorizedActorGithubUserId, "Signed recovery authorization actor ID");
   if (Date.parse(policy.reviewedAt) > now || Date.parse(policy.expiresAt) <= now
     || Date.parse(policy.expiresAt) - Date.parse(policy.reviewedAt) > 30 * 60 * 1000) {
-    throw new Error("Independent policy attestation is expired, future-dated, or exceeds 30 minutes.");
+    throw new Error("Owner-bound machine policy attestation is expired, future-dated, or exceeds 30 minutes.");
   }
 }
 
 /**
  * Dedicated phase-envelope issuer. Workflows select only a recovery case and
  * phase. All claims are assembled from trusted host evidence and authenticated
- * workflow/approval records; callers never provide the claim object or a key.
+ * owner workflow context; callers never provide identity claims or a key.
  */
 export function createRecoveryAuthorizationIssuer({
   verifyWorkflowOidc,
   loadRecoveryCase,
   loadPhaseFacts,
-  loadAuthenticatedOwnerApproval,
-  verifyAuthenticatedOwnerApproval,
   policyPublicKeys,
-  allowedReviewerIds,
   phaseWorkflowBindings,
   phaseSigners,
   repository,
   now = () => Date.now(),
   createId = () => randomUUID(),
 }) {
-  for (const [name, fn] of Object.entries({
-    verifyWorkflowOidc, loadRecoveryCase, loadPhaseFacts, loadAuthenticatedOwnerApproval, verifyAuthenticatedOwnerApproval,
-  })) if (typeof fn !== "function") throw new Error("Trusted recovery authorization issuer dependency is missing: " + name + ".");
-  if (!policyPublicKeys || !Array.isArray(allowedReviewerIds) || allowedReviewerIds.length === 0
+  for (const [name, fn] of Object.entries({ verifyWorkflowOidc, loadRecoveryCase, loadPhaseFacts })) {
+    if (typeof fn !== "function") throw new Error("Trusted recovery authorization issuer dependency is missing: " + name + ".");
+  }
+  if (!policyPublicKeys
     || !phaseWorkflowBindings?.A || !phaseWorkflowBindings?.B || !phaseSigners?.A || !phaseSigners?.B || !repository) {
     throw new Error("Trusted recovery authorization issuer configuration is incomplete.");
   }
@@ -93,7 +94,12 @@ export function createRecoveryAuthorizationIssuer({
         throw new Error("Workflow OIDC is not from the exact protected recovery phase on canonical main.");
       }
       assertGitSha(workflow.canonicalMainSha, "workflow.canonicalMainSha");
-      for (const key of ["workflowRunId", "workflowRunAttempt", "actorGithubUserId"]) assertNonEmptyString(workflow[key], "workflow." + key);
+  if (workflow.eventName !== "workflow_dispatch"
+    || String(workflow.repositoryOwnerId) !== String(BODYCAST_OWNER_ID)) {
+    throw new Error("Recovery authorization OIDC context is not the canonical owner workflow_dispatch.");
+  }
+  for (const key of ["workflowRunId", "workflowRunAttempt", "actorGithubUserId"]) assertNonEmptyString(workflow[key], "workflow." + key);
+      assertPinnedOwnerId(workflow.actorGithubUserId, "Authenticated recovery workflow actor ID");
 
       const recoveryCase = await loadRecoveryCase(rawRequest.recoveryCaseId);
       if (!recoveryCase || recoveryCase.recoveryCaseId !== rawRequest.recoveryCaseId
@@ -107,22 +113,7 @@ export function createRecoveryAuthorizationIssuer({
       const policy = rawRequest.policyAttestation;
       assertTrustedPolicy(policy, { phase, recoveryCase, workflow, policyPublicKeys, now: now(),
         challengeId: rawRequest.challengeId, challengeDigest: rawRequest.challengeDigest });
-      const approval = await loadAuthenticatedOwnerApproval({ workflow, recoveryCase, policy, phase,
-        challenge: { challengeId: rawRequest.challengeId, challengeDigest: rawRequest.challengeDigest, singleUseNonce: policy.singleUseNonce } });
-      if (!approval || String(approval.reviewerGithubUserId) !== policy.reviewedReviewerGithubUserId
-        || String(approval.reviewerGithubUserId) === String(workflow.actorGithubUserId)
-        || approval.approvalId !== policy.ownerApprovalId || approval.approvalTimestamp !== policy.ownerApprovalTimestamp
-        || approval.challengeId !== policy.challengeId || approval.challengeDigest !== policy.challengeDigest
-        || approval.singleUseNonce !== policy.singleUseNonce
-        || !allowedReviewerIds.map(String).includes(String(approval.reviewerGithubUserId))) {
-        throw new Error("Independent owner approval is missing, self-reviewed, or not allowlisted.");
-      }
-      if (await verifyAuthenticatedOwnerApproval({ approval, workflow, recoveryCase, policy,
-        challenge: { challengeId: policy.challengeId, challengeDigest: policy.challengeDigest, singleUseNonce: policy.singleUseNonce } }) !== true) {
-        throw new Error("Owner approval does not match the independently authenticated policy review.");
-      }
-
-      const facts = await loadPhaseFacts({ recoveryCase, phase, workflow, policy, approval,
+      const facts = await loadPhaseFacts({ recoveryCase, phase, workflow, policy,
         challenge: { challengeId: policy.challengeId, challengeDigest: policy.challengeDigest, singleUseNonce: policy.singleUseNonce } });
       const evidenceId = phase === "A" ? recoveryCase.phaseAAuthorizationEvidenceId : recoveryCase.phaseBAuthorizationEvidenceId;
       const rolloutReceiptId = recoveryCase.markerReaderRolloutReceiptId;
@@ -132,8 +123,8 @@ export function createRecoveryAuthorizationIssuer({
       }
       const validator = CLAIM_KEYS[phase];
       const allowed = phase === "A"
-        ? new Set(["schemaVersion", "purpose", "capability", "repository", "workflowPath", "workflowId", "workflowRunId", "workflowRunAttempt", "workflowRef", "canonicalMainSha", "recoveryEnvironment", "ownerApproval", "phaseAPolicyAttestationDigest", "phaseAPolicyAttestationNonce", "phaseAPolicyChallengeId", "phaseAPolicyChallengeDigest", "phaseAPolicyReviewedAt", "phaseAPolicyExpiresAt", "phaseAPolicyVersion", "hostRecoveryAuthorityIdentity", "hostRecoveryAuthorityKeyId", "issuedAt", "expiresAt", "authorizationId", "nonce"])
-        : new Set(["schemaVersion", "purpose", "capabilitySet", "repository", "workflowPath", "workflowId", "workflowRunId", "workflowRunAttempt", "workflowRef", "canonicalMainSha", "recoveryEnvironment", "ownerApproval", "phaseBPolicyAttestationDigest", "phaseBPolicyAttestationNonce", "phaseBPolicyChallengeId", "phaseBPolicyChallengeDigest", "phaseBPolicyReviewedAt", "phaseBPolicyExpiresAt", "phaseBPolicyVersion", "hostRecoveryAuthorityIdentity", "hostRecoveryAuthorityKeyId", "issuedAt", "expiresAt", "authorizationId", "nonce"]);
+        ? new Set(["schemaVersion", "purpose", "capability", "repository", "workflowPath", "workflowId", "workflowRunId", "workflowRunAttempt", "workflowRef", "canonicalMainSha", "recoveryEnvironment", "ownerIdentity", "phaseAPolicyAttestationDigest", "phaseAPolicyAttestationNonce", "phaseAPolicyChallengeId", "phaseAPolicyChallengeDigest", "phaseAPolicyReviewedAt", "phaseAPolicyExpiresAt", "phaseAPolicyVersion", "hostRecoveryAuthorityIdentity", "hostRecoveryAuthorityKeyId", "issuedAt", "expiresAt", "authorizationId", "nonce"])
+        : new Set(["schemaVersion", "purpose", "capabilitySet", "repository", "workflowPath", "workflowId", "workflowRunId", "workflowRunAttempt", "workflowRef", "canonicalMainSha", "recoveryEnvironment", "ownerIdentity", "phaseBPolicyAttestationDigest", "phaseBPolicyAttestationNonce", "phaseBPolicyChallengeId", "phaseBPolicyChallengeDigest", "phaseBPolicyReviewedAt", "phaseBPolicyExpiresAt", "phaseBPolicyVersion", "hostRecoveryAuthorityIdentity", "hostRecoveryAuthorityKeyId", "issuedAt", "expiresAt", "authorizationId", "nonce"]);
       const expectedFactKeys = phase === "A" ? PHASE_A_CLAIM_KEYS : PHASE_B_CLAIM_KEYS;
       const factKeys = expectedFactKeys.filter((key) => !allowed.has(key));
       assertExactKeys(facts, factKeys, "Trusted phase " + phase + " recovery facts");
@@ -142,7 +133,7 @@ export function createRecoveryAuthorizationIssuer({
       const signer = phaseSigners[phase];
       const claims = {
         ...facts,
-        schemaVersion: 1,
+        schemaVersion: RECOVERY_AUTHORIZATION_SCHEMA_VERSION,
         purpose: phase === "A" ? "recovery Phase A restore-only" : "post-restore recovery authorization",
         ...(phase === "A" ? { capability: "restore-only" } : { capabilitySet: [...PHASE_B_CAPABILITIES] }),
         repository,
@@ -153,14 +144,11 @@ export function createRecoveryAuthorizationIssuer({
         workflowRef: workflow.ref,
         canonicalMainSha: workflow.canonicalMainSha,
         recoveryEnvironment: "production-recovery",
-        ownerApproval: {
+        ownerIdentity: {
           environment: "production-recovery",
-          reviewerGithubUserId: String(approval.reviewerGithubUserId),
-          reviewerLogin: approval.reviewerLogin,
-          approvalState: "approved",
-          approvalTime: approval.approvalTimestamp,
-          runId: workflow.workflowRunId,
-          runAttempt: workflow.workflowRunAttempt,
+          githubActorId: String(workflow.actorGithubUserId),
+          workflowRunId: String(workflow.workflowRunId),
+          workflowRunAttempt: String(workflow.workflowRunAttempt),
           challengeId: policy.challengeId,
           challengeDigest: policy.challengeDigest,
           singleUseNonce: policy.singleUseNonce,

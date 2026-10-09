@@ -386,6 +386,7 @@ async function createTargetBindingAuthorization(identity, now = Date.now()) {
     workflowPath: ".github/workflows/production-migrate.yml",
     workflowRunId: "99001",
     workflowRunAttempt: 1,
+    actorId: "126446430",
     releaseSha,
     currentMainSha: releaseSha,
     manifestId: "active-energy-unified-v2",
@@ -451,6 +452,8 @@ async function createTargetBindingAuthorization(identity, now = Date.now()) {
     ref: "refs/heads/main",
     sha: releaseSha,
     event_name: "workflow_dispatch",
+    actor_id: claims.actorId,
+    repository_owner_id: claims.actorId,
     run_id: claims.workflowRunId,
     run_attempt: claims.workflowRunAttempt,
   })).toString("base64url");
@@ -464,6 +467,7 @@ async function createTargetBindingAuthorization(identity, now = Date.now()) {
     path: ".github/workflows/production-migrate.yml@refs/heads/main",
     workflow_id: Number(claims.workflowId), event: "workflow_dispatch", head_branch: "main", head_sha: releaseSha,
     id: Number(claims.workflowRunId), run_attempt: claims.workflowRunAttempt,
+    actor: { id: Number(claims.actorId), login: "krustallik" },
     run_started_at: migrationRun.runStartedAt, status: "in_progress", conclusion: null,
   };
   return { allowlist, authorizationEnvelope, latestPreflight, executionProof, verifiedExecutionProof, oidcJwk, currentRun, executionChallenge, claims };

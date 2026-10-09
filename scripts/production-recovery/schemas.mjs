@@ -6,6 +6,7 @@ import {
   assertUtcTimestamp,
   canonicalDigest,
 } from "./canonical.mjs";
+import { assertPinnedOwnerId } from "../github-owner-identity.mjs";
 
 export const RECOVERY_STATES = Object.freeze([
   "ddl-started",
@@ -23,6 +24,7 @@ export const RECOVERY_STATES = Object.freeze([
 ]);
 
 export const JOURNAL_GENESIS_DIGEST = "0".repeat(64);
+export const RECOVERY_AUTHORIZATION_SCHEMA_VERSION = 2;
 export const PHASE_B_CAPABILITIES = Object.freeze([
   "complete-recovery",
   "enable-writers",
@@ -57,7 +59,7 @@ export const PHASE_A_CLAIM_KEYS = Object.freeze([
   "rollbackImageDigest", "rollbackArtifactId", "rollbackArtifactDigest", "rollbackCaptureAttestationDigest",
   "composeProjectServiceIdentityDigest", "deployHostTopologyDigest", "backupArtifactId", "backupArtifactDigest",
   "hostBackupSha256", "backupSnapshotTimestamp", "logicalProductionDbIdentityDigest",
-  "expectedPreDdlSchemaDigest", "expectedPreDdlMigrationHistoryDigest", "preflightEvidenceDigest", "ownerApproval",
+  "expectedPreDdlSchemaDigest", "expectedPreDdlMigrationHistoryDigest", "preflightEvidenceDigest", "ownerIdentity",
   "markerReaderRolloutReceiptDigest", "phaseAPolicyAttestationDigest", "phaseAPolicyAttestationNonce",
   "phaseAPolicyChallengeId", "phaseAPolicyChallengeDigest",
   "phaseAPolicyReviewedAt", "phaseAPolicyExpiresAt", "phaseAPolicyVersion", "hostRecoveryAuthorityIdentity",
@@ -75,7 +77,7 @@ export const PHASE_B_CLAIM_KEYS = Object.freeze([
   "actualRestoredSchemaDigest", "expectedMigrationHistoryDigest", "actualMigrationHistoryDigest",
   "writerDrainDigest", "topologyDigest", "observedAt", "rollbackAppSha", "rollbackContainerId", "rollbackImageId",
   "rollbackImageDigest", "rollbackArtifactId", "rollbackArtifactDigest", "rollbackCaptureAttestationDigest",
-  "composeProjectServiceIdentityDigest", "deployHostTopologyDigest", "ownerApproval", "markerReaderRolloutReceiptDigest",
+  "composeProjectServiceIdentityDigest", "deployHostTopologyDigest", "ownerIdentity", "markerReaderRolloutReceiptDigest",
   "phaseBPolicyAttestationDigest", "phaseBPolicyAttestationNonce", "phaseBPolicyReviewedAt", "phaseBPolicyExpiresAt",
   "phaseBPolicyVersion", "hostRecoveryAuthorityIdentity", "hostRecoveryAuthorityKeyId", "issuedAt", "expiresAt",
   "phaseBPolicyChallengeId", "phaseBPolicyChallengeDigest", "authorizationId", "nonce",
@@ -83,23 +85,13 @@ export const PHASE_B_CLAIM_KEYS = Object.freeze([
 
 export const POLICY_ATTESTATION_KEYS = Object.freeze([
   "schemaVersion", "purpose", "recoveryCaseId", "phase", "repository", "canonicalMainSha", "environment",
-  "workflowPath", "workflowId", "workflowRunId", "workflowRunAttempt", "allowlistedReviewerGithubUserIds",
-  "reviewedReviewerGithubUserId", "ownerApprovalId", "ownerApprovalTimestamp", "preventSelfReviewRequired",
-  "adminBypassRequiredDisabled", "branchPolicy", "reviewedConfigurationDigest", "reviewedAt", "expiresAt",
+  "workflowPath", "workflowId", "workflowRunId", "workflowRunAttempt", "authorizedActorGithubUserId",
+  "branchPolicy", "reviewedConfigurationDigest", "reviewedAt", "expiresAt",
   "singleUseRequestId", "singleUseNonce", "challengeId", "challengeDigest", "policyVersion", "signer", "keyId", "signature",
 ]);
 
-export const OWNER_APPROVAL_KEYS = Object.freeze([
-  "schemaVersion", "purpose", "recoveryCaseId", "phase", "repository", "canonicalMainSha", "environment",
-  "workflowPath", "workflowId", "workflowRunId", "workflowRunAttempt", "reviewedConfigurationDigest",
-  "reviewerGithubUserId", "approvalState", "approvalId", "approvalTimestamp", "singleUseRequestId", "singleUseNonce",
-  "challengeId", "challengeDigest", "keyId",
-  "signature",
-]);
-
-const OWNER_APPROVAL_CLAIM_KEYS = Object.freeze([
-  "environment", "reviewerGithubUserId", "reviewerLogin", "approvalState", "approvalTime", "runId", "runAttempt",
-  "challengeId", "challengeDigest", "singleUseNonce",
+const OWNER_IDENTITY_CLAIM_KEYS = Object.freeze([
+  "environment", "githubActorId", "workflowRunId", "workflowRunAttempt", "challengeId", "challengeDigest", "singleUseNonce",
 ]);
 
 const digestClaimKeys = new Set([
@@ -116,19 +108,21 @@ const digestClaimKeys = new Set([
 
 const gitShaClaimKeys = new Set(["canonicalMainSha", "failedReleaseSha", "rollbackAppSha"]);
 
-function validateOwnerApproval(value, label) {
-  assertExactKeys(value, OWNER_APPROVAL_CLAIM_KEYS, label);
-  for (const key of OWNER_APPROVAL_CLAIM_KEYS) assertNonEmptyString(value[key], label + "." + key);
-  if (value.approvalState !== "approved") throw new Error(label + ".approvalState must be approved.");
+function validateOwnerIdentity(value, label) {
+  assertExactKeys(value, OWNER_IDENTITY_CLAIM_KEYS, label);
+  for (const key of OWNER_IDENTITY_CLAIM_KEYS) assertNonEmptyString(value[key], label + "." + key);
+  assertPinnedOwnerId(value.githubActorId, label + ".githubActorId");
   assertSha256(value.challengeDigest, label + ".challengeDigest");
-  assertUtcTimestamp(value.approvalTime, label + ".approvalTime");
+  if (!Number.isSafeInteger(Number(value.workflowRunAttempt)) || Number(value.workflowRunAttempt) < 1) {
+    throw new Error(label + ".workflowRunAttempt must be a positive integer.");
+  }
 }
 
 function validateClaims(claims, keys, phase) {
   assertExactKeys(claims, keys, "Phase " + phase + " claims");
   for (const [key, value] of Object.entries(claims)) {
-    if (key === "ownerApproval") {
-      validateOwnerApproval(value, "Phase " + phase + " ownerApproval");
+    if (key === "ownerIdentity") {
+      validateOwnerIdentity(value, "Phase " + phase + " ownerIdentity");
     } else if (key === "capabilitySet") {
       if (phase !== "B" || !Array.isArray(value)
         || value.length !== PHASE_B_CAPABILITIES.length
@@ -136,7 +130,7 @@ function validateClaims(claims, keys, phase) {
         throw new Error("Phase B capabilitySet must equal the exact sorted recovery transition set.");
       }
     } else if (key === "schemaVersion") {
-      if (!Number.isSafeInteger(value) || value < 1) throw new Error("schemaVersion must be a positive safe integer.");
+      if (value !== RECOVERY_AUTHORIZATION_SCHEMA_VERSION) throw new Error("Recovery authorization claims schema version is unsupported.");
     } else if (key === "priorMarkerSchemaVersion") {
       if (!Number.isSafeInteger(value) || value < 1) throw new Error("priorMarkerSchemaVersion must be a positive safe integer.");
     } else if (key.endsWith("Generation") || key === "priorJournalGeneration") {
@@ -158,10 +152,10 @@ function validateClaims(claims, keys, phase) {
     throw new Error("Phase B purpose is invalid.");
   }
   if (claims.recoveryEnvironment !== "production-recovery") throw new Error("recoveryEnvironment is invalid.");
-  if (claims.ownerApproval.environment !== claims.recoveryEnvironment
-    || claims.ownerApproval.runId !== claims.workflowRunId
-    || claims.ownerApproval.runAttempt !== claims.workflowRunAttempt) {
-    throw new Error("Owner environment approval does not bind the exact workflow run and attempt.");
+  if (claims.ownerIdentity.environment !== claims.recoveryEnvironment
+    || claims.ownerIdentity.workflowRunId !== claims.workflowRunId
+    || claims.ownerIdentity.workflowRunAttempt !== claims.workflowRunAttempt) {
+    throw new Error("Pinned owner OIDC identity does not bind the exact workflow run and attempt.");
   }
   if (phase === "A" && !["ddl-started", "schema-applied", "app-ready"].includes(claims.priorMarkerState)) {
     throw new Error("Phase A can authorize restore only from a failed normal release state.");
@@ -199,37 +193,24 @@ export function validatePhaseBClaims(claims) {
 
 export function validatePolicyAttestation(attestation) {
   assertExactKeys(attestation, POLICY_ATTESTATION_KEYS, "Recovery environment policy attestation");
-  if (attestation.schemaVersion !== 1 || attestation.purpose !== "recovery-environment-policy-review") {
+  if (attestation.schemaVersion !== 2 || attestation.purpose !== "recovery-owner-authorization-policy") {
     throw new Error("Policy attestation schema or purpose is unsupported.");
   }
   if (attestation.phase !== "A" && attestation.phase !== "B") throw new Error("Policy attestation phase is invalid.");
   if (attestation.environment !== "production-recovery") throw new Error("Policy attestation environment is invalid.");
-  if (attestation.preventSelfReviewRequired !== true || attestation.adminBypassRequiredDisabled !== true) {
-    throw new Error("Policy attestation must require self-review prevention and disabled admin bypass.");
-  }
   if (attestation.branchPolicy !== "main-only") throw new Error("Policy branch policy must be main-only.");
-  if (!Array.isArray(attestation.allowlistedReviewerGithubUserIds) || attestation.allowlistedReviewerGithubUserIds.length === 0
-    || attestation.allowlistedReviewerGithubUserIds.some((id) => typeof id !== "string" || id.length === 0)) {
-    throw new Error("Policy reviewer allowlist is invalid.");
-  }
-  if (new Set(attestation.allowlistedReviewerGithubUserIds).size !== attestation.allowlistedReviewerGithubUserIds.length) {
-    throw new Error("Policy reviewer allowlist must be unique.");
-  }
   for (const key of ["recoveryCaseId", "repository", "workflowPath", "workflowId", "workflowRunId", "workflowRunAttempt",
-    "reviewedReviewerGithubUserId", "ownerApprovalId", "singleUseRequestId", "singleUseNonce", "challengeId", "policyVersion", "signer", "keyId", "signature"]) {
+    "authorizedActorGithubUserId", "singleUseRequestId", "singleUseNonce", "challengeId", "policyVersion", "signer", "keyId", "signature"]) {
     assertNonEmptyString(attestation[key], "policy." + key);
   }
+  assertPinnedOwnerId(attestation.authorizedActorGithubUserId, "Policy authorized actor ID");
   assertGitSha(attestation.canonicalMainSha, "policy.canonicalMainSha");
   assertSha256(attestation.reviewedConfigurationDigest, "policy.reviewedConfigurationDigest");
   assertSha256(attestation.challengeDigest, "policy.challengeDigest");
-  assertUtcTimestamp(attestation.ownerApprovalTimestamp, "policy.ownerApprovalTimestamp");
   assertUtcTimestamp(attestation.reviewedAt, "policy.reviewedAt");
   assertUtcTimestamp(attestation.expiresAt, "policy.expiresAt");
   const lifetime = Date.parse(attestation.expiresAt) - Date.parse(attestation.reviewedAt);
   if (lifetime <= 0 || lifetime > 30 * 60 * 1000) throw new Error("Policy attestation must be valid for at most 30 minutes.");
-  if (!attestation.allowlistedReviewerGithubUserIds.includes(attestation.reviewedReviewerGithubUserId)) {
-    throw new Error("Policy reviewer is not allowlisted.");
-  }
   return attestation;
 }
 
@@ -246,7 +227,7 @@ export function assertPolicyMatchesClaims(attestation, claims, phase, now = Date
     workflowId: claims.workflowId,
     workflowRunId: claims.workflowRunId,
     workflowRunAttempt: claims.workflowRunAttempt,
-    reviewedReviewerGithubUserId: claims.ownerApproval.reviewerGithubUserId,
+    authorizedActorGithubUserId: claims.ownerIdentity.githubActorId,
     reviewedAt: claims[prefix + "PolicyReviewedAt"],
     expiresAt: claims[prefix + "PolicyExpiresAt"],
     singleUseNonce: claims[prefix + "PolicyAttestationNonce"],
@@ -258,22 +239,20 @@ export function assertPolicyMatchesClaims(attestation, claims, phase, now = Date
     if (attestation[key] !== value) throw new Error("Policy attestation binding mismatch: " + key + ".");
   }
   if (attestation.environment !== claims.recoveryEnvironment) throw new Error("Policy environment binding mismatch.");
-  if (claims.ownerApproval.challengeId !== attestation.challengeId
-    || claims.ownerApproval.challengeDigest !== attestation.challengeDigest
-    || claims.ownerApproval.singleUseNonce !== attestation.singleUseNonce) {
-    throw new Error("Owner approval and signed phase envelope do not bind the same nonce challenge.");
+  if (claims.ownerIdentity.challengeId !== attestation.challengeId
+    || claims.ownerIdentity.challengeDigest !== attestation.challengeDigest
+    || claims.ownerIdentity.singleUseNonce !== attestation.singleUseNonce) {
+    throw new Error("Pinned owner identity and signed phase envelope do not bind the same nonce challenge.");
   }
-  if (attestation.ownerApprovalTimestamp !== claims.ownerApproval.approvalTime
-    || attestation.reviewedReviewerGithubUserId !== claims.ownerApproval.reviewerGithubUserId
-    || attestation.workflowRunId !== claims.ownerApproval.runId
-    || attestation.workflowRunAttempt !== claims.ownerApproval.runAttempt) {
-    throw new Error("Policy attestation does not bind the authenticated owner approval claims.");
+  if (attestation.workflowRunId !== claims.ownerIdentity.workflowRunId
+    || attestation.workflowRunAttempt !== claims.ownerIdentity.workflowRunAttempt) {
+    throw new Error("Policy attestation does not bind the authenticated owner workflow run.");
   }
   const digestClaim = claims[prefix + "PolicyAttestationDigest"];
   if (canonicalDigest(attestation) !== digestClaim) throw new Error("Policy attestation digest binding mismatch.");
   if (Date.parse(attestation.expiresAt) <= now) throw new Error("Policy attestation is expired.");
-  if (Date.parse(attestation.reviewedAt) > now || Date.parse(attestation.ownerApprovalTimestamp) > now) {
-    throw new Error("Policy review or owner approval is from the future.");
+  if (Date.parse(attestation.reviewedAt) > now) {
+    throw new Error("Owner authorization timestamp is from the future.");
   }
   return true;
 }

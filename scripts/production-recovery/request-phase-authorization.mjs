@@ -98,7 +98,7 @@ export async function requestPhaseAuthorization({
   const policyOidc = await getOidcToken(env, SIGNER_AUDIENCE, fetchImpl);
   const policyResponse = await postJson(policyUrl, {
     schemaVersion: 1,
-    purpose: "request-recovery-environment-policy",
+    purpose: "request-recovery-owner-policy",
     oidcToken: policyOidc,
     recoveryCaseId,
     phase,

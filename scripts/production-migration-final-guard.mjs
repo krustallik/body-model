@@ -5,6 +5,7 @@ import { ACTIVE_ENERGY_UNIFIED_MANIFEST, getProductionMigrationManifest } from "
 import { canonicalSha256, assertSignedAuthorizationRequired, verifyAuthorizationEnvelope } from "./production-migration-authorization.mjs";
 import { assertProductionDatabaseIdentityMatches, evaluateProductionPreflight, verifyPostflightMatchesRestore } from "./production-migration-preflight.mjs";
 import { assertFreshWriterDrain } from "./production-writer-drain.mjs";
+import { assertPinnedOwnerId } from "./github-owner-identity.mjs";
 
 async function readJson(filePath) { return JSON.parse(await readFile(filePath, "utf8")); }
 
@@ -39,6 +40,7 @@ export function verifyFinalMigrationAuthorization({ envelope, preflightResult, e
   const verified = verifyAuthorizationEnvelope(envelope, {
     allowlist,
     now,
+    requireTrustedActorId: false,
     live: {
       repository: "krustallik/body-model",
       workflowId: String(currentWorkflowId ?? ""),
@@ -60,6 +62,7 @@ export function verifyFinalMigrationAuthorization({ envelope, preflightResult, e
       writerTopologyDigest: evidence.writerTopologyDigest,
     },
   });
+  assertPinnedOwnerId(verified.payload.actorId, "Signed migration owner actor ID");
   if (String(artifactMetadata?.id) !== verified.payload.backupArtifactId
     || String(artifactMetadata?.digest).replace(/^sha256:/, "") !== verified.payload.backupArtifactDigest
     || String(artifactMetadata?.workflowRunId) !== verified.payload.preflightRunId
@@ -84,6 +87,7 @@ export function verifyFinalMigrationAuthorization({ envelope, preflightResult, e
     workflowId: verified.payload.workflowId,
     workflowRunId: verified.payload.workflowRunId,
     workflowRunAttempt: verified.payload.workflowRunAttempt,
+    actorId: verified.payload.actorId,
     pending,
     pendingSetDigest: verified.payload.pendingSetDigest,
     preflightRunId: verified.payload.preflightRunId,
@@ -108,7 +112,7 @@ export function verifyFinalMigrationAuthorization({ envelope, preflightResult, e
 export function verifyFinalGuardReceipt({ receipt, envelope, allowlist, currentWorkflowId, currentWorkflowRunId, currentWorkflowRunAttempt, currentMainSha, releaseSha, now = Date.now() }) {
   const fields = [
     "schemaVersion", "ready", "authorizationId", "manifestId", "releaseSha", "currentMainSha", "workflowId",
-    "workflowRunId", "workflowRunAttempt", "pending", "pendingSetDigest", "preflightRunId", "preflightRunAttempt",
+    "workflowRunId", "workflowRunAttempt", "actorId", "pending", "pendingSetDigest", "preflightRunId", "preflightRunAttempt",
     "preflightResultDigest", "backupArtifactId", "backupArtifactDigest", "backupSnapshotAt", "restoreResultDigest",
     "productionIdentityDigest", "preflightWriterDrainDigest", "preflightWriterTopologyDigest",
     "finalWriterDrainDigest", "finalWriterTopologyDigest", "finalWriterDrainObservedAt", "finalTopologyObservedAt",
@@ -136,6 +140,7 @@ export function verifyFinalGuardReceipt({ receipt, envelope, allowlist, currentW
   const verified = verifyAuthorizationEnvelope(envelope, {
     allowlist,
     now,
+    requireTrustedActorId: false,
     live: {
       repository: "krustallik/body-model",
       workflowId: String(currentWorkflowId ?? ""),
@@ -168,6 +173,7 @@ export function verifyFinalGuardReceipt({ receipt, envelope, allowlist, currentW
     workflowId: payload.workflowId,
     workflowRunId: payload.workflowRunId,
     workflowRunAttempt: payload.workflowRunAttempt,
+    actorId: payload.actorId,
     pending: payload.pendingMigrationNames,
     pendingSetDigest: payload.pendingSetDigest,
     preflightRunId: payload.preflightRunId,

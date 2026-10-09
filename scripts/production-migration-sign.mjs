@@ -4,6 +4,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createClaimsFromPreflight, createAuthorizationEnvelope, canonicalSha256 } from "./production-migration-authorization.mjs";
 import { verifyPreflightArtifactMetadata } from "./production-migration-release.mjs";
+import { assertPinnedOwnerId } from "./github-owner-identity.mjs";
 
 async function json(file) { return JSON.parse(await readFile(file, "utf8")); }
 
@@ -22,6 +23,7 @@ export async function createSignedAuthorization({ evidence, report, restore, run
     || String(run.displayTitle) !== "Preflight " + evidence.releaseSha + " " + evidence.manifestId) {
     throw new Error("Selected preflight run is not the latest successful exact-SHA workflow attempt.");
   }
+  assertPinnedOwnerId(run.actorId, "Migration workflow actor ID");
   if (typeof run.runStartedAt !== "string" || !Number.isFinite(Date.parse(run.runStartedAt))
     || Date.parse(run.runStartedAt) > now + 60_000) {
     throw new Error("Selected preflight run lacks trusted admission metadata.");
@@ -47,6 +49,7 @@ export async function createSignedAuthorization({ evidence, report, restore, run
     workflowPath: ".github/workflows/production-migrate.yml",
     workflowRunId: String(run.authorizationRunId),
     workflowRunAttempt: Number(run.authorizationRunAttempt),
+    actorId: String(run.actorId),
     releaseSha: evidence.releaseSha,
     currentMainSha: run.canonicalMainSha,
     manifestId: evidence.manifestId,

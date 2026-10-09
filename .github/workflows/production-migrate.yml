@@ -29,6 +29,7 @@ concurrency:
 jobs:
   authorize:
     name: Select latest exact preflight evidence
+    if: github.ref == 'refs/heads/main' && github.actor_id == '126446430'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -59,10 +60,22 @@ jobs:
           DISPATCH_SHA: ${{ inputs.release_sha }}
           MANIFEST_ID: ${{ inputs.manifest_id }}
           CONFIRMATION: ${{ inputs.confirmation }}
+          DISPATCH_ACTOR_ID: ${{ github.actor_id }}
         run: |
           set -Eeuo pipefail
           [[ "$GITHUB_REPOSITORY" == "krustallik/body-model" ]] || { echo "::error::Canonical repository only."; exit 1; }
           [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::Dispatch this workflow from main."; exit 1; }
+          [[ "$DISPATCH_ACTOR_ID" == "126446430" ]] || { echo "::error::Only the pinned BodyCast owner may request production migration."; exit 1; }
+          gh api "repos/krustallik/body-model/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/current-authorization-run.json"
+          node --input-type=module - "$RUNNER_TEMP/current-authorization-run.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { assertTrustedOwnerWorkflowRun } from "./scripts/github-owner-identity.mjs";
+          const run = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          assertTrustedOwnerWorkflowRun(run, { actorId: process.env.DISPATCH_ACTOR_ID,
+            workflowPath: ".github/workflows/production-migrate.yml", workflowRunId: process.env.GITHUB_RUN_ID,
+            workflowRunAttempt: process.env.GITHUB_RUN_ATTEMPT, ref: "refs/heads/main", sha: process.env.DISPATCH_SHA,
+            requireInProgress: true });
+          NODE
           [[ "$CONFIRMATION" == "MIGRATE_PRODUCTION" ]] || { echo "::error::Exact migration request confirmation is required."; exit 1; }
           [[ "$MANIFEST_ID" == "active-energy-unified-v2" ]] || { echo "::error::Manifest is not in the closed allowlist."; exit 1; }
           [[ "$DISPATCH_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::release_sha must be a full lowercase SHA."; exit 1; }
@@ -132,6 +145,7 @@ jobs:
 
   sign:
     name: Sign migration authorization envelope
+    if: github.ref == 'refs/heads/main' && github.actor_id == '126446430'
     needs: authorize
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -199,6 +213,7 @@ jobs:
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
           MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
           AUTHORIZATION_WORKFLOW_ID: ${{ needs.authorize.outputs.workflow_id }}
+          DISPATCH_ACTOR_ID: ${{ github.actor_id }}
           PRODUCTION_MIGRATION_SIGNING_KEY_ID: ${{ secrets.PRODUCTION_MIGRATION_SIGNING_KEY_ID }}
           PRODUCTION_MIGRATION_ED25519_PRIVATE_KEY: ${{ secrets.PRODUCTION_MIGRATION_ED25519_PRIVATE_KEY }}
           EVIDENCE_BUNDLE: ${{ steps.evidence.outputs.bundle }}
@@ -206,18 +221,35 @@ jobs:
           set -Eeuo pipefail
           MAIN_TIP="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
           [[ "$MAIN_TIP" == "$RELEASE_SHA" ]] || { echo "::error::Main moved immediately before signing."; exit 1; }
+          gh api "repos/krustallik/body-model/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/current-authorization-run.json"
+          node --input-type=module - "$RUNNER_TEMP/current-authorization-run.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { assertTrustedOwnerWorkflowRun } from "./scripts/github-owner-identity.mjs";
+          const run = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          assertTrustedOwnerWorkflowRun(run, { actorId: process.env.DISPATCH_ACTOR_ID,
+            workflowPath: ".github/workflows/production-migrate.yml", workflowRunId: process.env.GITHUB_RUN_ID,
+            workflowRunAttempt: process.env.GITHUB_RUN_ATTEMPT, ref: "refs/heads/main", sha: process.env.RELEASE_SHA,
+            requireInProgress: true });
+          NODE
           : "$PRODUCTION_MIGRATION_SIGNING_KEY_ID"
           : "$PRODUCTION_MIGRATION_ED25519_PRIVATE_KEY"
-          node --input-type=module - "$RUNNER_TEMP/selected-preflight.json" "$RUNNER_TEMP/trusted-run.json" "$RUNNER_TEMP/trusted-backup-artifact.json" "$MAIN_TIP" <<'NODE'
+          node --input-type=module - "$RUNNER_TEMP/selected-preflight.json" "$RUNNER_TEMP/trusted-run.json" "$RUNNER_TEMP/trusted-backup-artifact.json" "$MAIN_TIP" "$RUNNER_TEMP/current-authorization-run.json" <<'NODE'
           import { readFileSync, writeFileSync } from "node:fs";
+          import { assertTrustedOwnerWorkflowRun } from "./scripts/github-owner-identity.mjs";
           const selected = JSON.parse(readFileSync(process.argv[2], "utf8"));
           const main = process.argv[5];
+          const currentRun = JSON.parse(readFileSync(process.argv[6], "utf8"));
+          assertTrustedOwnerWorkflowRun(currentRun, { actorId: process.env.DISPATCH_ACTOR_ID,
+            workflowPath: ".github/workflows/production-migrate.yml", workflowRunId: process.env.GITHUB_RUN_ID,
+            workflowRunAttempt: process.env.GITHUB_RUN_ATTEMPT, ref: "refs/heads/main", sha: main,
+            requireInProgress: true });
           const run = {
             ...selected.run,
             manifestId: process.env.MANIFEST_ID,
             authorizationWorkflowId: process.env.AUTHORIZATION_WORKFLOW_ID,
             authorizationRunId: process.env.GITHUB_RUN_ID,
             authorizationRunAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+            actorId: String(currentRun.actor.id),
             canonicalMainSha: main,
           };
           const artifact = {
@@ -266,6 +298,7 @@ jobs:
           retention-days: 7
   execute:
     name: Final live guard and authorized migration
+    if: github.ref == 'refs/heads/main' && github.actor_id == '126446430'
     needs: [authorize, sign]
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -289,11 +322,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+          DISPATCH_ACTOR_ID: ${{ github.actor_id }}
         run: |
           set -Eeuo pipefail
           [[ "$GITHUB_REF" == "refs/heads/main" && "$(git rev-parse HEAD)" == "$RELEASE_SHA" ]] || {
             echo "::error::Migration execution must use the exact main workflow SHA."; exit 1;
           }
+          [[ "$DISPATCH_ACTOR_ID" == "126446430" ]] || { echo "::error::Only the pinned BodyCast owner may execute production migration."; exit 1; }
+          gh api "repos/krustallik/body-model/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/current-authorization-run.json"
+          node --input-type=module - "$RUNNER_TEMP/current-authorization-run.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { assertTrustedOwnerWorkflowRun } from "./scripts/github-owner-identity.mjs";
+          const run = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          assertTrustedOwnerWorkflowRun(run, { actorId: process.env.DISPATCH_ACTOR_ID,
+            workflowPath: ".github/workflows/production-migrate.yml", workflowRunId: process.env.GITHUB_RUN_ID,
+            workflowRunAttempt: process.env.GITHUB_RUN_ATTEMPT, ref: "refs/heads/main", sha: process.env.RELEASE_SHA,
+            requireInProgress: true });
+          NODE
           TIP="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
           [[ "$TIP" == "$RELEASE_SHA" ]] || { echo "::error::Canonical main moved after signing."; exit 1; }
       - name: Download only the signed context artifact
@@ -372,6 +417,7 @@ jobs:
           APP_HOST: ${{ secrets.APP_HOST }}
           CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+          DISPATCH_ACTOR_ID: ${{ github.actor_id }}
           MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
           AUTHORIZATION_WORKFLOW_ID: ${{ needs.authorize.outputs.workflow_id }}
           EXPECTED_PREFLIGHT_RUN_ID: ${{ needs.authorize.outputs.preflight_run_id }}

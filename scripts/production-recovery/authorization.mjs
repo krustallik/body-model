@@ -3,19 +3,19 @@ import {
   assertGitSha,
   assertNonEmptyString,
   assertSha256,
-  assertUtcTimestamp,
   canonicalDigest,
   omitFields,
   signCanonical,
   verifyCanonical,
 } from "./canonical.mjs";
 import {
-  OWNER_APPROVAL_KEYS,
   assertPolicyMatchesClaims,
   validatePhaseAClaims,
   validatePhaseBClaims,
   validatePolicyAttestation,
+  RECOVERY_AUTHORIZATION_SCHEMA_VERSION,
 } from "./schemas.mjs";
+import { assertPinnedOwnerId, BODYCAST_OWNER_ID } from "../github-owner-identity.mjs";
 
 const ENVELOPE_KEYS = Object.freeze(["schemaVersion", "phase", "keyId", "claims", "signature"]);
 
@@ -28,7 +28,7 @@ export function createAuthorizationEnvelope(claims, phase, keyId, privateKey) {
   const validator = phase === "A" ? validatePhaseAClaims : phase === "B" ? validatePhaseBClaims : null;
   if (!validator) throw new Error("Recovery authorization phase must be A or B.");
   validator(claims);
-  const unsigned = { schemaVersion: 1, phase, keyId, claims };
+  const unsigned = { schemaVersion: RECOVERY_AUTHORIZATION_SCHEMA_VERSION, phase, keyId, claims };
   return { ...unsigned, signature: signCanonical(unsigned, privateKey) };
 }
 
@@ -41,7 +41,7 @@ export function verifyAuthorizationEnvelope(envelope, {
   expectedBindings = {},
 } = {}) {
   assertExactKeys(envelope, ENVELOPE_KEYS, "Authorization envelope");
-  if (envelope.schemaVersion !== 1 || envelope.phase !== phase || (phase !== "A" && phase !== "B")) {
+  if (envelope.schemaVersion !== RECOVERY_AUTHORIZATION_SCHEMA_VERSION || envelope.phase !== phase || (phase !== "A" && phase !== "B")) {
     throw new Error("Authorization envelope schema or phase is invalid.");
   }
   assertNonEmptyString(envelope.keyId, "envelope.keyId");
@@ -81,85 +81,39 @@ export function verifyAuthorizationEnvelope(envelope, {
   };
 }
 
-function validateOwnerApproval(approval, expected, allowedReviewerIds) {
-  assertExactKeys(approval, OWNER_APPROVAL_KEYS, "Owner policy approval");
-  if (approval.schemaVersion !== 1 || approval.purpose !== "recovery-policy-owner-approval" || approval.approvalState !== "approved") {
-    throw new Error("Owner approval is not an authenticated approval.");
-  }
-  if (!allowedReviewerIds.includes(approval.reviewerGithubUserId)) throw new Error("Owner approver is not allowlisted.");
-  for (const key of [
-    "recoveryCaseId", "phase", "repository", "canonicalMainSha", "environment", "workflowPath", "workflowId",
-    "workflowRunId", "workflowRunAttempt", "reviewedConfigurationDigest", "approvalId", "approvalTimestamp",
-    "singleUseRequestId", "singleUseNonce", "challengeId", "challengeDigest", "keyId", "signature",
-  ]) assertNonEmptyString(approval[key], "ownerApproval." + key);
-  assertGitSha(approval.canonicalMainSha, "ownerApproval.canonicalMainSha");
-  assertSha256(approval.reviewedConfigurationDigest, "ownerApproval.reviewedConfigurationDigest");
-  assertSha256(approval.challengeDigest, "ownerApproval.challengeDigest");
-  assertUtcTimestamp(approval.approvalTimestamp, "ownerApproval.approvalTimestamp");
-  if (approval.environment !== "production-recovery") throw new Error("Owner approval environment is invalid.");
-  for (const [key, value] of Object.entries(expected)) {
-    if (approval[key] !== value) throw new Error("Owner approval binding mismatch: " + key + ".");
-  }
-}
-
 export async function issuePolicyAttestation({
   policy,
-  ownerApproval,
   signerConfig,
   now = Date.now(),
 }) {
   assertExactKeys(policy, [
     "recoveryCaseId", "phase", "repository", "canonicalMainSha", "workflowPath", "workflowId", "workflowRunId",
-    "workflowRunAttempt", "reviewedConfigurationDigest", "singleUseRequestId", "singleUseNonce",
+    "workflowRunAttempt", "actorGithubUserId", "reviewedConfigurationDigest", "singleUseRequestId", "singleUseNonce",
     "challengeId", "challengeDigest",
   ], "Policy signing request");
   const {
-    ownerApprovalPublicKeys,
-    allowedReviewerIds,
     policySigner,
     consumeSingleUseRequest,
     policyKeyId,
     signerName,
     policyVersion,
-    independentApprovalVerifier,
+    ownerGithubActorId = BODYCAST_OWNER_ID,
   } = signerConfig ?? {};
   if (policy.phase !== "A" && policy.phase !== "B") throw new Error("Policy phase is invalid.");
-  if (typeof independentApprovalVerifier !== "function") {
-    throw new Error("An independent authenticated owner-approval verifier is required.");
-  }
+  assertPinnedOwnerId(ownerGithubActorId, "Configured recovery owner ID");
+  assertPinnedOwnerId(policy.actorGithubUserId, "Authenticated recovery workflow actor ID");
+  if (String(policy.actorGithubUserId) !== String(ownerGithubActorId)) throw new Error("Recovery workflow actor is not the pinned owner.");
   if (typeof consumeSingleUseRequest !== "function") {
     throw new Error("A durable single-use policy request consumer is required.");
   }
   if (typeof policySigner !== "function" || typeof policyKeyId !== "string" || typeof signerName !== "string"
-    || typeof policyVersion !== "string" || !Array.isArray(allowedReviewerIds) || allowedReviewerIds.length === 0) {
+    || typeof policyVersion !== "string") {
     throw new Error("Trusted policy signer configuration is incomplete.");
   }
-  const expected = {
-    recoveryCaseId: policy.recoveryCaseId,
-    phase: policy.phase,
-    repository: policy.repository,
-    canonicalMainSha: policy.canonicalMainSha,
-    environment: "production-recovery",
-    workflowPath: policy.workflowPath,
-    workflowId: policy.workflowId,
-    workflowRunId: policy.workflowRunId,
-    workflowRunAttempt: policy.workflowRunAttempt,
-    reviewedConfigurationDigest: policy.reviewedConfigurationDigest,
-    singleUseRequestId: policy.singleUseRequestId,
-    singleUseNonce: policy.singleUseNonce,
-    challengeId: policy.challengeId,
-    challengeDigest: policy.challengeDigest,
-  };
-  validateOwnerApproval(ownerApproval, expected, allowedReviewerIds);
-  const ownerKey = ownerApprovalPublicKeys?.[ownerApproval.keyId];
-  if (!ownerKey || !verifyCanonical(omitFields(ownerApproval, ["signature"]), ownerApproval.signature, ownerKey)) {
-    throw new Error("Independent owner approval signature is invalid.");
-  }
-  if (await independentApprovalVerifier(ownerApproval) !== true) {
-    throw new Error("Independent owner approval could not be authenticated.");
-  }
-  if (Date.parse(ownerApproval.approvalTimestamp) > now || now - Date.parse(ownerApproval.approvalTimestamp) > 30 * 60 * 1000) {
-    throw new Error("Owner approval is stale or from the future.");
+  for (const [key, value] of Object.entries(policy)) {
+    if (key.endsWith("Sha")) assertGitSha(value, "policy." + key);
+    else if (key.endsWith("Digest")) assertSha256(value, "policy." + key);
+    else assertNonEmptyString(value, "policy." + key);
   }
   const consumed = await consumeSingleUseRequest({
     recoveryCaseId: policy.recoveryCaseId,
@@ -171,8 +125,8 @@ export async function issuePolicyAttestation({
   if (consumed !== true) throw new Error("Policy request ID/nonce was already consumed.");
   if (!policySigner || typeof policySigner !== "function") throw new Error("Dedicated policy signer is unavailable.");
   const attestation = {
-    schemaVersion: 1,
-    purpose: "recovery-environment-policy-review",
+    schemaVersion: RECOVERY_AUTHORIZATION_SCHEMA_VERSION,
+    purpose: "recovery-owner-authorization-policy",
     recoveryCaseId: policy.recoveryCaseId,
     phase: policy.phase,
     repository: policy.repository,
@@ -182,12 +136,7 @@ export async function issuePolicyAttestation({
     workflowId: policy.workflowId,
     workflowRunId: policy.workflowRunId,
     workflowRunAttempt: policy.workflowRunAttempt,
-    allowlistedReviewerGithubUserIds: [...allowedReviewerIds].sort(),
-    reviewedReviewerGithubUserId: ownerApproval.reviewerGithubUserId,
-    ownerApprovalId: ownerApproval.approvalId,
-    ownerApprovalTimestamp: ownerApproval.approvalTimestamp,
-    preventSelfReviewRequired: true,
-    adminBypassRequiredDisabled: true,
+    authorizedActorGithubUserId: String(policy.actorGithubUserId),
     branchPolicy: "main-only",
     reviewedConfigurationDigest: policy.reviewedConfigurationDigest,
     reviewedAt: new Date(now).toISOString(),
@@ -202,7 +151,7 @@ export async function issuePolicyAttestation({
   };
   const attestationSignature = await policySigner(omitFields(attestation, ["signature"]));
   if (typeof attestationSignature !== "string" || attestationSignature.length === 0) {
-    throw new Error("Dedicated policy signer did not produce a signature.");
+    throw new Error("Recovery machine signer did not produce a signature.");
   }
   const complete = { ...attestation, signature: attestationSignature };
   validatePolicyAttestation(complete);

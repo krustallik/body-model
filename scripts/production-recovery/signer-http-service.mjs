@@ -21,7 +21,7 @@ function send(response, status, body) {
 export function createRecoverySignerHttpHandler({ policySigner, authorizationIssuer, maxRequestBytes = MAX_REQUEST_BYTES }) {
   if (!policySigner || typeof policySigner.issue !== "function" || typeof policySigner.createChallenge !== "function"
     || !authorizationIssuer || typeof authorizationIssuer.issue !== "function") {
-    throw new Error("Independent policy signer and phase authorization issuer are required.");
+    throw new Error("Owner-bound machine policy signer and phase authorization issuer are required.");
   }
   return async function handleRecoverySignerRequest(request, response) {
     const route = ROUTES[request.url];

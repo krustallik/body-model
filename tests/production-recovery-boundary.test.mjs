@@ -1299,23 +1299,21 @@ describe("production recovery install, rollout, and operation boundaries", () =>
     expect(() => quoteIdentifier('profile"; DROP TABLE profile;--', "table")).toThrow(/identifier/);
   });
 
-  it("lets only a separately authenticated protected-environment review create policy attestations", async () => {
-    const owner = generateKeyPairSync("ed25519");
+  it("lets only the pinned owner workflow create a phase-bound machine-signed policy attestation", async () => {
     const policy = generateKeyPairSync("ed25519");
     const timestamp = "2026-10-07T12:00:00.000Z";
     const configurationSnapshot = {
-      environment: "production-recovery", branchPolicy: "main-only", preventSelfReview: true,
-      adminBypassDisabled: true, reviewers: ["12345"],
+      environment: "production-recovery", branchPolicy: "main-only", reviewers: [],
     };
     const workflow = {
       repository: "krustallik/body-model", ref: "refs/heads/main", canonicalMainSha: "a".repeat(40),
       environment: "production-recovery", workflowPath: ".github/workflows/production-recovery-phase-a.yml",
-      workflowId: "901", workflowRunId: "902", workflowRunAttempt: "1", actorGithubUserId: "777",
+      workflowId: "901", workflowRunId: "902", workflowRunAttempt: "1", actorGithubUserId: "126446430",
+      repositoryOwnerId: "126446430", eventName: "workflow_dispatch",
     };
     const challengeWorkflow = { ...workflow, environment: undefined };
     const environment = {
-      environment: "production-recovery", branchPolicy: "main-only", preventSelfReview: true,
-      adminBypassDisabled: true, allowlistedReviewerGithubUserIds: ["12345"], configurationSnapshot,
+      environment: "production-recovery", branchPolicy: "main-only", requiredReviewers: [], configurationSnapshot,
     };
     const expectedDigest = canonicalDigest(configurationSnapshot);
     const challenges = new Map();
@@ -1328,22 +1326,6 @@ describe("production recovery install, rollout, and operation boundaries", () =>
       readProtectedEnvironmentConfiguration: async () => environment,
       createPhaseChallenge: async (challenge, challengeDigest) => { challenges.set(challenge.challengeId, { challenge, challengeDigest }); return true; },
       loadPhaseChallenge: async (id) => challenges.get(id),
-      loadAuthenticatedOwnerApproval: async ({ challenge }) => {
-        const approvalBody = {
-          schemaVersion: 1, purpose: "recovery-policy-owner-approval", recoveryCaseId: "case-001", phase: "A",
-          repository: workflow.repository, canonicalMainSha: workflow.canonicalMainSha, environment: workflow.environment,
-          workflowPath: workflow.workflowPath, workflowId: workflow.workflowId, workflowRunId: workflow.workflowRunId,
-          workflowRunAttempt: workflow.workflowRunAttempt, reviewedConfigurationDigest: expectedDigest,
-          reviewerGithubUserId: "12345", approvalState: "approved", approvalId: "deployment-approval-71",
-          approvalTimestamp: timestamp, singleUseRequestId: challenge.singleUseRequestId,
-          singleUseNonce: challenge.singleUseNonce, challengeId: challenge.challengeId,
-          challengeDigest: challenge.challengeDigest, keyId: "owner-key",
-        };
-        return { ...approvalBody, signature: signCanonical(approvalBody, owner.privateKey) };
-      },
-      verifyAuthenticatedOwnerApproval: async ({ candidate }) => verifyCanonical(
-        Object.fromEntries(Object.entries(candidate).filter(([key]) => key !== "signature")), candidate.signature, owner.publicKey,
-      ),
       consumeSingleUseRequest: async ({ requestId, nonce }) => {
         const key = requestId + "\0" + nonce;
         if (consumed.has(key)) return false;
@@ -1351,8 +1333,7 @@ describe("production recovery install, rollout, and operation boundaries", () =>
         return true;
       },
       policySigner: (body) => signCanonical(body, policy.privateKey),
-      ownerApprovalPublicKeys: { "owner-key": owner.publicKey }, allowedReviewerIds: ["12345"],
-      policyKeyId: "policy-key", signerName: "independent-policy-service", policyVersion: "1.0.0",
+      ownerGithubActorId: "126446430", policyKeyId: "policy-key", signerName: "bodycast-machine-signer", policyVersion: "1.0.0",
       repository: workflow.repository,
       phaseWorkflowBindings: { A: { workflowPath: workflow.workflowPath, workflowId: workflow.workflowId },
         B: { workflowPath: ".github/workflows/production-recovery-phase-b.yml", workflowId: "902" } },
@@ -1365,19 +1346,32 @@ describe("production recovery install, rollout, and operation boundaries", () =>
       recoveryCaseId: "case-001", phase: "A",
     });
     const policyRequest = {
-      schemaVersion: 1, purpose: "request-recovery-environment-policy", oidcToken: "valid-github-oidc-token",
+      schemaVersion: 1, purpose: "request-recovery-owner-policy", oidcToken: "valid-github-oidc-token",
       recoveryCaseId: "case-001", phase: "A", challengeId: challengeResult.challenge.challengeId,
       challengeDigest: challengeResult.challengeDigest,
     };
     const attestation = await service.issue(policyRequest);
     expect(attestation.phase).toBe("A");
     expect(attestation.reviewedConfigurationDigest).toBe(expectedDigest);
-    expect(attestation.reviewedReviewerGithubUserId).toBe("12345");
+    expect(attestation.authorizedActorGithubUserId).toBe("126446430");
     expect(verifyCanonical(Object.fromEntries(Object.entries(attestation).filter(([key]) => key !== "signature")),
       attestation.signature, policy.publicKey)).toBe(true);
 
     await expect(service.issue({ ...policyRequest, ownerApproval: { approved: true } })).rejects.toThrow(/closed schema/);
-    await expect(service.issue({ ...policyRequest, oidcToken: "caller-made-approval-flag" })).rejects.toThrow(/canonical recovery phase/);
+    await expect(service.issue({ ...policyRequest, oidcToken: "caller-made-approval-flag" })).rejects.toThrow(/canonical owner recovery phase/);
+    const otherActor = { ...challengeWorkflow, actorGithubUserId: "24680" };
+    const otherActorService = createRecoveryPolicySignerService({
+      verifyWorkflowOidc: async () => otherActor,
+      loadRecoveryCase: async (id) => ({ recoveryCaseId: id, phase: "A", canonicalMainSha: workflow.canonicalMainSha,
+        repository: workflow.repository, status: "awaiting-owner-policy-review" }),
+      readProtectedEnvironmentConfiguration: async () => environment,
+      createPhaseChallenge: async () => true, loadPhaseChallenge: async () => null,
+      consumeSingleUseRequest: async () => true, policySigner: (body) => signCanonical(body, policy.privateKey),
+      ownerGithubActorId: "126446430", policyKeyId: "policy-key", signerName: "bodycast-machine-signer", policyVersion: "1.0.0",
+      repository: workflow.repository, phaseWorkflowBindings: { A: { workflowPath: workflow.workflowPath, workflowId: workflow.workflowId }, B: { workflowPath: "b.yml", workflowId: "902" } },
+    });
+    await expect(otherActorService.createChallenge({ schemaVersion: 1, purpose: "create-recovery-phase-challenge",
+      oidcToken: "other-actor", recoveryCaseId: "case-001", phase: "A" })).rejects.toThrow(/pinned BodyCast owner/);
     expect(consumed.size).toBe(1);
     expect(attestation.singleUseNonce).toBe("c".repeat(64));
     expect(attestation.challengeDigest).toBe(challengeResult.challengeDigest);

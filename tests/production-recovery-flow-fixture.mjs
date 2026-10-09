@@ -8,9 +8,9 @@ import {
   createAuthorizationEnvelope,
 } from "../scripts/production-recovery/authorization.mjs";
 import { createRecoveryAuthority } from "../scripts/production-recovery/authority.mjs";
-import { canonicalDigest, signCanonical, verifyCanonical } from "../scripts/production-recovery/canonical.mjs";
+import { canonicalDigest, signCanonical } from "../scripts/production-recovery/canonical.mjs";
 import { writeImmutableReceipt, verifyImmutableReceipt } from "../scripts/production-recovery/journal.mjs";
-import { createIndependentPolicySigner } from "../scripts/production-recovery/policy-signer.mjs";
+import { createOwnerPolicySigner } from "../scripts/production-recovery/policy-signer.mjs";
 import { OPERATION_CONTRACTS } from "../scripts/production-recovery/operation-contracts.mjs";
 import { PHASE_A_CLAIM_KEYS, PHASE_B_CLAIM_KEYS, PHASE_B_CAPABILITIES } from "../scripts/production-recovery/schemas.mjs";
 
@@ -28,7 +28,7 @@ async function tempRoot() {
 
 afterEach(async () => Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true }))));
 
-function makePolicy(phase, workflowRunId, workflowPath, keyId, ownerKey, policyKey, consumed) {
+function makePolicy(phase, workflowRunId, workflowPath, policyKey, consumed) {
   const request = {
     recoveryCaseId: "recovery-case-001",
     phase,
@@ -38,27 +38,14 @@ function makePolicy(phase, workflowRunId, workflowPath, keyId, ownerKey, policyK
     workflowId: phase === "A" ? "901" : "902",
     workflowRunId,
     workflowRunAttempt: "1",
+    actorGithubUserId: "126446430",
     reviewedConfigurationDigest: "b".repeat(64),
     singleUseRequestId: "policy-request-" + phase,
     singleUseNonce: "policy-nonce-" + phase,
     challengeId: "challenge-phase-" + phase,
     challengeDigest: (phase === "A" ? "a" : "b").repeat(64),
   };
-  const approvalBody = {
-    schemaVersion: 1,
-    purpose: "recovery-policy-owner-approval",
-    ...request,
-    environment: "production-recovery",
-    reviewerGithubUserId: "12345",
-    approvalState: "approved",
-    approvalId: "approval-" + phase,
-    approvalTimestamp: nowIso,
-    keyId: "owner-key",
-  };
-  const approval = { ...approvalBody, signature: signCanonical(approvalBody, ownerKey.privateKey) };
-  const signer = createIndependentPolicySigner({
-    ownerApprovalPublicKeys: { "owner-key": ownerKey.publicKey },
-    allowedReviewerIds: ["12345"],
+  const signer = createOwnerPolicySigner({
     policySigner: (body) => signCanonical(body, policyKey.privateKey),
     consumeSingleUseRequest: async ({ requestId, nonce }) => {
       const identity = requestId + "\0" + nonce;
@@ -69,28 +56,20 @@ function makePolicy(phase, workflowRunId, workflowPath, keyId, ownerKey, policyK
     policyKeyId: "policy-key",
     signerName: "isolated-test-policy-signer",
     policyVersion: "1.0.0",
-    independentApprovalVerifier: async (candidate) => verifyCanonical(
-      Object.fromEntries(Object.entries(candidate).filter(([key]) => key !== "signature")),
-      candidate.signature,
-      ownerKey.publicKey,
-    ),
   });
-  return signer.issue({ policy: request, ownerApproval: approval }, { now: fixedNow });
+  return signer.issue({ policy: request }, { now: fixedNow });
 }
 
 function makeClaims(phase, attestation, policyRequest, bindings) {
   const keys = phase === "A" ? PHASE_A_CLAIM_KEYS : PHASE_B_CLAIM_KEYS;
   const claims = {};
   for (const key of keys) {
-    if (key === "schemaVersion") claims[key] = 1;
-    else if (key === "ownerApproval") claims[key] = {
+    if (key === "schemaVersion") claims[key] = 2;
+    else if (key === "ownerIdentity") claims[key] = {
       environment: "production-recovery",
-      reviewerGithubUserId: "12345",
-      reviewerLogin: "recovery-owner",
-      approvalState: "approved",
-      approvalTime: nowIso,
-      runId: policyRequest.workflowRunId,
-      runAttempt: policyRequest.workflowRunAttempt,
+      githubActorId: "126446430",
+      workflowRunId: policyRequest.workflowRunId,
+      workflowRunAttempt: policyRequest.workflowRunAttempt,
       challengeId: attestation.challengeId,
       challengeDigest: attestation.challengeDigest,
       singleUseNonce: attestation.singleUseNonce,
@@ -165,7 +144,6 @@ export async function runProductionRecoveryFlowFixture({
     const phaseAKey = generateKeyPairSync("ed25519");
     const phaseBKey = generateKeyPairSync("ed25519");
     const policyKey = generateKeyPairSync("ed25519");
-    const ownerKey = generateKeyPairSync("ed25519");
     const authorityPublicKeys = { "authority-key": journalKey.publicKey };
     const authoritySigning = {
       privateKey: journalKey.privateKey,
@@ -334,7 +312,7 @@ export async function runProductionRecoveryFlowFixture({
     expect(boot.marker.state).toBe("ddl-started");
     expect((await authority.readAuthoritativeState()).blocking).toBe(true);
 
-    const phaseAPolicy = await makePolicy("A", "run-phase-a", ".github/workflows/production-recovery-phase-a.yml", "a", ownerKey, policyKey, usedPolicy);
+    const phaseAPolicy = await makePolicy("A", "run-phase-a", ".github/workflows/production-recovery-phase-a.yml", policyKey, usedPolicy);
     const phaseAPolicyRequest = {
       recoveryCaseId: "recovery-case-001", workflowPath: ".github/workflows/production-recovery-phase-a.yml",
       workflowId: "901", workflowRunId: "run-phase-a", workflowRunAttempt: "1",
@@ -417,7 +395,7 @@ export async function runProductionRecoveryFlowFixture({
       authorityState: await authority.readAuthoritativeState(),
     });
 
-    const phaseBPolicy = await makePolicy("B", "run-phase-b", ".github/workflows/production-recovery-phase-b.yml", "b", ownerKey, policyKey, usedPolicy);
+    const phaseBPolicy = await makePolicy("B", "run-phase-b", ".github/workflows/production-recovery-phase-b.yml", policyKey, usedPolicy);
     const phaseBPolicyRequest = {
       recoveryCaseId: "recovery-case-001", workflowPath: ".github/workflows/production-recovery-phase-b.yml",
       workflowId: "902", workflowRunId: "run-phase-b", workflowRunAttempt: "1",

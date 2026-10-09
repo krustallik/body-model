@@ -117,6 +117,7 @@ function claims(overrides = {}) {
     workflowPath: ".github/workflows/production-migrate.yml",
     workflowRunId: "1501",
     workflowRunAttempt: 1,
+    actorId: "126446430",
     releaseSha: "a".repeat(40),
     currentMainSha: "a".repeat(40),
     manifestId: ACTIVE_ENERGY_UNIFIED_MANIFEST.id,
@@ -148,6 +149,7 @@ function liveContext(overrides = {}) {
     workflowPath: ".github/workflows/production-migrate.yml",
     workflowRunId: "1501",
     workflowRunAttempt: 1,
+    actorId: "126446430",
     releaseSha: "a".repeat(40),
     currentMainSha: "a".repeat(40),
     manifestId: ACTIVE_ENERGY_UNIFIED_MANIFEST.id,
@@ -188,6 +190,7 @@ function createOidcProof(authorizationEnvelope, challenge, claimsOverride = {}, 
     nbf: Math.floor(issuedAt / 1000),
     exp: Math.floor((issuedAt + 4 * 60_000) / 1000),
     repository: "krustallik/body-model",
+    repository_owner_id: "126446430",
     sub: "repo:krustallik/body-model:environment:production",
     environment: "production",
     workflow_ref: "krustallik/body-model/.github/workflows/production-migrate.yml@refs/heads/main",
@@ -197,6 +200,7 @@ function createOidcProof(authorizationEnvelope, challenge, claimsOverride = {}, 
     event_name: "workflow_dispatch",
     run_id: authorized.workflowRunId,
     run_attempt: authorized.workflowRunAttempt,
+    actor_id: authorized.actorId,
     ...claimsOverride,
   })).toString("base64url");
   const input = header + "." + payload;
@@ -258,6 +262,8 @@ async function executionBoundaryFixture(identity = validPreflightReport().identi
     head_sha: authorizationClaims.releaseSha,
     id: Number(authorizationClaims.workflowRunId),
     run_attempt: authorizationClaims.workflowRunAttempt,
+    actor: { id: Number(authorizationClaims.actorId), login: "krustallik" },
+    triggering_actor: { id: Number(authorizationClaims.actorId), login: "krustallik" },
     run_started_at: new Date(checkedAt - 10_000).toISOString(),
     status: "in_progress",
     conclusion: null,
@@ -690,6 +696,8 @@ describe("V5 closed migration manifest and full pending set", () => {
     const fixture = await executionBoundaryFixture(validPreflightReport().identity);
     const toApiRun = (run) => ({
       workflow_id: Number(run.workflowId), path: run.workflowPath + "@refs/heads/main", event: run.event,
+      actor: { id: Number(run.actorId) },
+      triggering_actor: { id: Number(run.actorId) },
       head_branch: run.headBranch, head_sha: run.headSha, display_title: run.displayTitle,
       id: Number(run.id), run_attempt: run.runAttempt, created_at: run.createdAt,
       run_started_at: run.runStartedAt,
@@ -829,6 +837,8 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(deployScript).toContain("--challenge-id");
     expect(deployScript).toContain("--challenge-digest");
     expect(deployScript).toContain("--execution-proof-stdin");
+    expect(deployScript).not.toContain("--current-workflow-actor-id");
+    expect(deployScript).not.toContain("BODYCAST_AUTHORIZATION_ACTOR_ID");
     expect(deployScript).not.toContain("execution-proof.jwt");
     expect(deployScript).not.toContain("ACTIONS_ID_TOKEN_REQUEST_TOKEN");
     expect(deployScript).not.toContain("migration-run.json");
@@ -841,6 +851,9 @@ describe("V5 closed migration manifest and full pending set", () => {
   it("binds trusted current migration API metadata to the cryptographic OIDC run claims", async () => {
     const fixture = await executionBoundaryFixture(validPreflightReport().identity);
     expect(assertCurrentMigrationRunMatchesProof(fixture.verifiedExecutionProof, fixture.currentRun, now)).toBe(true);
+    expect(() => assertCurrentMigrationRunMatchesProof(fixture.verifiedExecutionProof, {
+      ...fixture.currentRun, triggering_actor: { id: 24680, login: "collaborator" },
+    }, now)).toThrow("no longer reports the exact OIDC-authenticated migration run as current and admitted");
     expect(() => assertCurrentMigrationRunMatchesProof(fixture.verifiedExecutionProof, {
       ...fixture.currentRun, status: "completed", conclusion: "cancelled",
     }, now)).toThrow("no longer reports the exact OIDC-authenticated migration run as current and admitted");
@@ -1012,6 +1025,7 @@ describe("Ed25519 authorization envelope and provenance matrix", () => {
         now,
       })).toThrow("workflowRunId");
       expect(() => verifyFinalMigrationAuthorization({ ...args, currentWorkflowRunId: "1502" })).toThrow("workflowRunId");
+      expect(verifyFinalMigrationAuthorization({ ...args, currentWorkflowActorId: "2468" }).actorId).toBe("126446430");
       expect(() => verifyFinalMigrationAuthorization({
         ...args,
         liveReport: { ...liveReport, identity: { ...liveReport.identity, serverAddress: "172.20.0.99" } },

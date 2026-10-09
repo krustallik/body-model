@@ -1,10 +1,11 @@
 import { createHash, createPrivateKey, sign, verify } from "node:crypto";
 import { canonicalJson } from "./production-migration-manifests.mjs";
+import { assertPinnedOwnerId } from "./github-owner-identity.mjs";
 
 export const AUTHORIZATION_MAX_AGE_MS = 60 * 60 * 1000;
 export const AUTHORIZATION_MAX_FUTURE_SKEW_MS = 60 * 1000;
 export const REQUIRED_AUTHORIZATION_CLAIMS = Object.freeze([
-  "repository", "workflowId", "workflowPath", "workflowRunId", "workflowRunAttempt",
+  "repository", "workflowId", "workflowPath", "workflowRunId", "workflowRunAttempt", "actorId",
   "releaseSha", "currentMainSha", "manifestId", "pendingMigrationNames", "pendingSetDigest",
   "preflightRunId", "preflightRunAttempt", "preflightRunStartedAt", "preflightResultDigest", "backupArtifactId",
   "backupArtifactDigest", "backupSnapshotAt", "restoreResultDigest", "productionIdentityDigest",
@@ -62,6 +63,7 @@ function validateClaimsShape(claims) {
   for (const key of ["workflowRunAttempt", "preflightRunAttempt"]) {
     if (!Number.isSafeInteger(claims[key]) || claims[key] < 1) reject(`${key} must be a positive integer.`);
   }
+  assertPinnedOwnerId(claims.actorId, "Signed migration actor ID");
   for (const key of ["workflowRunId", "preflightRunId", "backupArtifactId"]) {
     if (!/^[1-9][0-9]*$/.test(String(claims[key]))) reject(`${key} must be a positive numeric identifier.`);
   }
@@ -78,9 +80,9 @@ function validateClaimsShape(claims) {
   if (typeof claims.authorizationId !== "string" || claims.authorizationId.length < 16) reject("authorizationId must be a unique opaque identifier.");
 }
 
-function compareLiveClaims(claims, live) {
+function compareLiveClaims(claims, live, { requireTrustedActorId = true } = {}) {
   const fields = [
-    "repository", "workflowId", "workflowPath", "workflowRunId", "workflowRunAttempt", "releaseSha",
+    "repository", "workflowId", "workflowPath", "workflowRunId", "workflowRunAttempt", "actorId", "releaseSha",
     "currentMainSha", "manifestId", "pendingMigrationNames", "pendingSetDigest", "preflightRunId",
     "preflightRunAttempt", "preflightRunStartedAt", "preflightResultDigest", "backupArtifactId", "backupArtifactDigest",
     "backupSnapshotAt", "restoreResultDigest", "productionIdentityDigest", "writerDrainDigest", "writerTopologyDigest",
@@ -92,6 +94,12 @@ function compareLiveClaims(claims, live) {
     if (actual !== signed) reject(`live ${field} does not match the signed claim.`);
   }
   if (!live.currentMainSha || live.currentMainSha !== claims.releaseSha) reject("release SHA is not the current canonical main tip.");
+  if (Object.hasOwn(live, "actorId")) {
+    assertPinnedOwnerId(live.actorId, "Trusted migration workflow actor ID");
+    if (String(live.actorId) !== String(claims.actorId)) reject("trusted current workflow actor does not match the signed owner claim.");
+  } else if (requireTrustedActorId) {
+    reject("trusted current workflow actor identity is unavailable.");
+  }
   if (!Array.isArray(live.pendingMigrationNames)) reject("live full pending migration set is unavailable.");
   const livePending = [...live.pendingMigrationNames].sort();
   if (JSON.stringify(livePending) !== JSON.stringify(claims.pendingMigrationNames)) reject("live full pending migration set changed after authorization.");
@@ -115,7 +123,7 @@ export function createAuthorizationEnvelope(claims, { keyId, privateKeyPem, allo
   return canonicalJson(envelope);
 }
 
-export function verifyAuthorizationEnvelope(serialized, { allowlist, live, now = Date.now() }) {
+export function verifyAuthorizationEnvelope(serialized, { allowlist, live, now = Date.now(), requireTrustedActorId = true }) {
   const envelope = parseCanonicalEnvelope(serialized);
   if (JSON.stringify(Object.keys(envelope).sort()) !== JSON.stringify(["algorithm", "keyId", "payload", "signature"])) {
     reject("envelope fields are missing, duplicated, or unsupported.");
@@ -143,12 +151,12 @@ export function verifyAuthorizationEnvelope(serialized, { allowlist, live, now =
   }
   if (now - snapshotAt > AUTHORIZATION_MAX_AGE_MS) reject("backup snapshot is older than 60 minutes at DDL time.");
 
-  compareLiveClaims(claims, live ?? {});
+  compareLiveClaims(claims, live ?? {}, { requireTrustedActorId });
   return { verified: true, keyId: envelope.keyId, authorizationId: claims.authorizationId, payload: claims };
 }
 
 export function createClaimsFromPreflight({
-  repository, workflowId, workflowPath, workflowRunId, workflowRunAttempt, releaseSha, currentMainSha,
+  repository, workflowId, workflowPath, workflowRunId, workflowRunAttempt, actorId, releaseSha, currentMainSha,
   manifestId, pendingMigrationNames, preflightRunId, preflightRunAttempt, preflightRunStartedAt, preflightResultDigest,
   backupArtifactId, backupArtifactDigest, backupSnapshotAt, restoreResultDigest, productionIdentityDigest,
   writerDrainDigest, writerTopologyDigest,
@@ -156,7 +164,7 @@ export function createClaimsFromPreflight({
 }) {
   const names = [...pendingMigrationNames].sort();
   return {
-    repository, workflowId, workflowPath, workflowRunId, workflowRunAttempt, releaseSha, currentMainSha,
+    repository, workflowId, workflowPath, workflowRunId, workflowRunAttempt, actorId, releaseSha, currentMainSha,
     manifestId, pendingMigrationNames: names, pendingSetDigest: canonicalSha256(names), preflightRunId,
     preflightRunAttempt, preflightRunStartedAt, preflightResultDigest, backupArtifactId, backupArtifactDigest, backupSnapshotAt,
     restoreResultDigest, productionIdentityDigest, writerDrainDigest, writerTopologyDigest, issuedAt, expiresAt, authorizationId, nonce,

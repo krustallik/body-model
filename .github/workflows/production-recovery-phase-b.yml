@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
   id-token: write
 
 concurrency:
@@ -18,7 +19,7 @@ concurrency:
 
 jobs:
   create-phase-challenge:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && github.actor_id == '126446430'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -35,12 +36,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           DISPATCH_SHA: ${{ github.sha }}
+          DISPATCH_ACTOR_ID: ${{ github.actor_id }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -Eeuo pipefail
           [[ "$REPOSITORY" == "krustallik/body-model" && "$(git rev-parse HEAD)" == "$DISPATCH_SHA" ]]
           [[ "$(gh api repos/krustallik/body-model/commits/main --jq .sha)" == "$DISPATCH_SHA" ]]
-      - name: Create and publish the single-use challenge before environment approval
+          gh api "repos/krustallik/body-model/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/current-recovery-run.json"
+          node --input-type=module - "$RUNNER_TEMP/current-recovery-run.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { assertTrustedOwnerWorkflowRun } from "./scripts/github-owner-identity.mjs";
+          assertTrustedOwnerWorkflowRun(JSON.parse(readFileSync(process.argv[2], "utf8")), {
+            actorId: process.env.DISPATCH_ACTOR_ID, workflowPath: ".github/workflows/production-recovery-phase-b.yml",
+            workflowRunId: process.env.GITHUB_RUN_ID, workflowRunAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            ref: "refs/heads/main", sha: process.env.DISPATCH_SHA, requireInProgress: true,
+          });
+          NODE
+      - name: Create and publish the single-use owner challenge
         id: challenge
         env:
           BODYCAST_RECOVERY_POLICY_SIGNER_URL: ${{ vars.BODYCAST_RECOVERY_POLICY_SIGNER_URL }}
@@ -52,17 +64,17 @@ jobs:
           echo "challenge_id=$CHALLENGE_ID" >> "$GITHUB_OUTPUT"
           echo "challenge_digest=$CHALLENGE_DIGEST" >> "$GITHUB_OUTPUT"
           {
-            echo "## Production recovery Phase B owner/security approval challenge"
+            echo "## Production recovery Phase B owner authorization challenge"
             echo "- Case: `$RECOVERY_CASE_ID`"
             echo "- Challenge ID: `$CHALLENGE_ID`"
             echo "- Challenge digest: `$CHALLENGE_DIGEST`"
             echo "- Single-use nonce: `$NONCE`"
-            echo "Approve only by creating the independent signed owner approval over this exact challenge digest, ID, nonce, workflow run, and configuration snapshot."
+            echo "Continue only from the pinned owner account. The machine signer will bind the GitHub-authenticated actor, exact run attempt, main SHA, phase, challenge, and one-time nonce. No second reviewer is required."
           } >> "$GITHUB_STEP_SUMMARY"
 
   authorize-post-restore-recovery:
     needs: create-phase-challenge
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && github.actor_id == '126446430'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: production-recovery
@@ -78,6 +90,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           DISPATCH_SHA: ${{ github.sha }}
+          DISPATCH_ACTOR_ID: ${{ github.actor_id }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -Eeuo pipefail
@@ -85,8 +98,18 @@ jobs:
           [[ "$(git rev-parse HEAD)" == "$DISPATCH_SHA" ]] || { echo "::error::Workflow checkout differs from dispatch SHA."; exit 1; }
           MAIN_SHA="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
           [[ "$MAIN_SHA" == "$DISPATCH_SHA" ]] || { echo "::error::Recovery workflow must run at current main."; exit 1; }
+          gh api "repos/krustallik/body-model/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/current-recovery-run.json"
+          node --input-type=module - "$RUNNER_TEMP/current-recovery-run.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { assertTrustedOwnerWorkflowRun } from "./scripts/github-owner-identity.mjs";
+          assertTrustedOwnerWorkflowRun(JSON.parse(readFileSync(process.argv[2], "utf8")), {
+            actorId: process.env.DISPATCH_ACTOR_ID, workflowPath: ".github/workflows/production-recovery-phase-b.yml",
+            workflowRunId: process.env.GITHUB_RUN_ID, workflowRunAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            ref: "refs/heads/main", sha: process.env.DISPATCH_SHA, requireInProgress: true,
+          });
+          NODE
 
-      - name: Request independently approved Phase B envelope
+      - name: Request owner-bound Phase B envelope
         env:
           BODYCAST_RECOVERY_POLICY_SIGNER_URL: ${{ vars.BODYCAST_RECOVERY_POLICY_SIGNER_URL }}
           BODYCAST_RECOVERY_AUTHORIZATION_ISSUER_URL: ${{ vars.BODYCAST_RECOVERY_AUTHORIZATION_ISSUER_URL }}

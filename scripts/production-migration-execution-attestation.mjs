@@ -3,6 +3,7 @@ import { mkdir, lstat, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { canonicalSha256, verifyAuthorizationEnvelope } from "./production-migration-authorization.mjs";
+import { assertPinnedOwnerId } from "./github-owner-identity.mjs";
 
 export const EXECUTION_PROOF_MAX_AGE_MS = 5 * 60 * 1000;
 export const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
@@ -24,6 +25,7 @@ function authorizationClaims(authorizationEnvelope, allowlist, now) {
   try { untrusted = JSON.parse(authorizationEnvelope)?.payload; } catch { reject("signed authorization envelope is malformed."); }
   const result = verifyAuthorizationEnvelope(authorizationEnvelope, { allowlist, live: untrusted, now });
   const claims = result.payload;
+  assertPinnedOwnerId(claims.actorId, "Signed migration actor ID");
   if (claims.repository !== EXPECTED_REPOSITORY || claims.workflowPath !== EXPECTED_WORKFLOW_PATH
     || !/^[1-9][0-9]*$/.test(String(claims.workflowId))
     || !/^[1-9][0-9]*$/.test(String(claims.workflowRunId))
@@ -93,7 +95,9 @@ export async function verifyGitHubExecutionProof(serialized, {
     reject("OIDC proof audience, issuer, replay id, or freshness is invalid.");
   }
   const expectedWorkflowRef = EXPECTED_REPOSITORY + "/" + EXPECTED_WORKFLOW_PATH + "@refs/heads/main";
-  if (payload.repository !== EXPECTED_REPOSITORY || payload.sub !== EXPECTED_EXECUTION_SUBJECT || payload.environment !== "production"
+  if (payload.repository !== EXPECTED_REPOSITORY || String(payload.repository_owner_id) !== String(authClaims.actorId)
+    || String(payload.actor_id) !== String(authClaims.actorId)
+    || payload.sub !== EXPECTED_EXECUTION_SUBJECT || payload.environment !== "production"
     || payload.workflow_ref !== expectedWorkflowRef
     || payload.ref !== "refs/heads/main" || payload.sha !== authClaims.releaseSha
     || payload.workflow_sha !== authClaims.releaseSha || payload.event_name !== "workflow_dispatch"
@@ -108,6 +112,7 @@ export async function verifyGitHubExecutionProof(serialized, {
     issuedAt: new Date(issuedAt).toISOString(),
     expiresAt: new Date(expiresAt).toISOString(),
     repository: payload.repository,
+    actorId: String(payload.actor_id),
     workflowRef: payload.workflow_ref,
     workflowPath: EXPECTED_WORKFLOW_PATH,
     ref: payload.ref,
@@ -135,6 +140,8 @@ export function assertCurrentMigrationRunMatchesProof(proof, run, now = Date.now
     || runPath !== EXPECTED_WORKFLOW_PATH || String(run.workflow_id) !== proof.workflowId
     || String(run.id) !== proof.runId || Number(run.run_attempt) !== proof.runAttempt
     || run.event !== "workflow_dispatch" || run.head_branch !== "main" || run.head_sha !== proof.releaseSha
+    || String(run.actor?.id) !== String(proof.actorId)
+    || String(run.triggering_actor?.id) !== String(proof.actorId)
     || run.status !== "in_progress" || run.conclusion !== null
     || typeof run.run_started_at !== "string" || !Number.isFinite(runStartedAt)
     || !Number.isFinite(proofIssuedAt) || runStartedAt > proofIssuedAt + 30_000 || runStartedAt > now + 30_000) {

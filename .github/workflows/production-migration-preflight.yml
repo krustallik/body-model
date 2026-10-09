@@ -109,7 +109,7 @@ jobs:
     environment: production
     services:
       isolated-postgres:
-        image: postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        image: public.ecr.aws/docker/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
         env:
           POSTGRES_DB: bodycast_restore
           POSTGRES_USER: bodycast_restore

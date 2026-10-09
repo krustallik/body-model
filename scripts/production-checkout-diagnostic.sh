@@ -25,6 +25,27 @@ count_nul_records() {
   printf '%s' "$count"
 }
 
+safe_path_sample() {
+  local count=0 path='' lower_path='' safe_path=''
+  while IFS= read -r -d '' path; do
+    if (( count < 20 )); then
+      if (( count > 0 )); then printf ';'; fi
+      lower_path="${path,,}"
+      case "$lower_path" in
+        .*|*/.*|*secret*|*credential*|*password*|*token*|*private*|*config*|*runtime*|*backup*|*.pem|*.key|*.crt|*.p12|*.pfx|*.sql|*.dump|*.db|*.sqlite|*.env|*.env.*)
+          safe_path='[redacted]'
+          ;;
+        *)
+          safe_path="${path//[^A-Za-z0-9._\/+@-]/?}"
+          ;;
+      esac
+      printf '%s' "$safe_path"
+    fi
+    count=$((count + 1))
+  done
+  if (( count == 0 )); then printf 'none'; elif (( count > 20 )); then printf ';[additional paths omitted]'; fi
+}
+
 git_ro() {
   GIT_OPTIONAL_LOCKS=0 git -c core.fsmonitor=false -c core.untrackedCache=false "$@"
 }
@@ -157,6 +178,9 @@ emit tracked_unstaged_path_count "$UNSTAGED_TRACKED_COUNT"
 emit tracked_staged_path_count "$STAGED_TRACKED_COUNT"
 emit untracked_path_count "$UNTRACKED_COUNT"
 emit unmerged_index_record_count "$UNMERGED_RECORD_COUNT"
+emit tracked_unstaged_path_sample "$(git_ro -C "$GIT_ROOT" diff --name-only --no-renames -z 2>/dev/null | safe_path_sample)"
+emit tracked_staged_path_sample "$(git_ro -C "$GIT_ROOT" diff --cached --name-only --no-renames -z 2>/dev/null | safe_path_sample)"
+emit untracked_path_sample "$(git_ro -C "$GIT_ROOT" ls-files --others --exclude-standard -z 2>/dev/null | safe_path_sample)"
 emit effective_uid "$EUID_VALUE"
 emit deploy_path_uid "$DEPLOY_UID"
 emit deploy_path_gid "$DEPLOY_GID"

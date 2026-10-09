@@ -469,9 +469,8 @@ jobs:
             > "$RUNNER_TEMP/restore-base-result.json"
           node scripts/production-migration-preflight.mjs --execution-integrity --manifest active-energy-unified-v2 --release-sha "$GITHUB_SHA" --repository "$GITHUB_WORKSPACE" \
             > "$RUNNER_TEMP/execution-integrity.json"
-          DATABASE_URL="$(node --input-type=module -e 'import { withPrismaLockTimeout } from "./scripts/production-migration-release.mjs"; process.stdout.write(withPrismaLockTimeout(process.env.DATABASE_URL,5000))')"
-          export DATABASE_URL
-          npx prisma migrate deploy --schema prisma/schema.prisma
+          PRISMA_DATABASE_URL="$(node --input-type=module -e 'import { withPrismaLockTimeout } from "./scripts/production-migration-release.mjs"; process.stdout.write(withPrismaLockTimeout(process.env.DATABASE_URL,5000))')"
+          DATABASE_URL="$PRISMA_DATABASE_URL" npx prisma migrate deploy --schema prisma/schema.prisma
           node scripts/production-db-preflight.mjs | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 > "$RUNNER_TEMP/restored-postflight-report.json"
           node scripts/production-migration-restore-check.mjs --postflight --manifest active-energy-unified-v2 --repository "$GITHUB_WORKSPACE" \
             --report "$RUNNER_TEMP/restored-postflight-report.json" > "$RUNNER_TEMP/restore-postflight-result.json"

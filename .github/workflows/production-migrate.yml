@@ -23,7 +23,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: bodycast-production-migration
+  group: bodycast-production-release
   cancel-in-progress: false
 
 jobs:
@@ -306,7 +306,6 @@ jobs:
     permissions:
       contents: read
       actions: read
-      id-token: write
     steps:
       - name: Checkout exact authorized release SHA
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -361,13 +360,16 @@ jobs:
           SSH_PORT: ${{ secrets.SSH_PORT }}
           SSH_HOST_FINGERPRINT: ${{ secrets.SSH_HOST_FINGERPRINT }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          APP_HOST: ${{ secrets.APP_HOST }}
+          CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
         run: |
           set -Eeuo pipefail
-          : "$SSH_PRIVATE_KEY"; : "$SSH_HOST"; : "$SSH_USER"; : "$SSH_PORT"; : "$SSH_HOST_FINGERPRINT"; : "$DEPLOY_PATH"
+          : "$SSH_PRIVATE_KEY"; : "$SSH_HOST"; : "$SSH_USER"; : "$SSH_PORT"; : "$SSH_HOST_FINGERPRINT"; : "$DEPLOY_PATH"; : "$APP_HOST"; : "$CADDY_ROUTES_PATH"
           [[ "$SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || { echo "::error::Invalid SSH host."; exit 1; }
           [[ "$SSH_USER" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::Invalid SSH user."; exit 1; }
           [[ "$SSH_PORT" =~ ^[0-9]{1,5}$ ]] && (( SSH_PORT > 0 && SSH_PORT <= 65535 )) || { echo "::error::Invalid SSH port."; exit 1; }
           [[ "$DEPLOY_PATH" == /* && "$DEPLOY_PATH" != *$'\n'* ]] || { echo "::error::DEPLOY_PATH must be an absolute single-line path."; exit 1; }
+          [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* && "$CADDY_ROUTES_PATH" != *$'\n'* ]] || { echo "::error::Production traffic topology inputs are invalid."; exit 1; }
           [[ "$SSH_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || { echo "::error::Invalid pinned host fingerprint."; exit 1; }
           install -d -m 700 "$RUNNER_TEMP/bodycast-migrate-ssh"
           printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/bodycast-migrate-ssh/id"
@@ -407,9 +409,8 @@ jobs:
           tar -xOzf "$TAR_FILE" >/dev/null
           cat "$TAR_FILE" | "${SSH[@]}" "$SSH_USER@$SSH_HOST" \
             "set -Eeuo pipefail; umask 077; mkdir -m 700 '$REMOTE_CONTEXT'; tar -xzf - --no-same-owner -C '$REMOTE_CONTEXT'"
-      - name: Run canonical fetch, final signed readiness guard, Prisma migration, and postflight in one remote process
+      - name: Run the fixed guarded migration script over SSH
         env:
-          GH_TOKEN: ${{ github.token }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
@@ -417,12 +418,8 @@ jobs:
           APP_HOST: ${{ secrets.APP_HOST }}
           CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
-          DISPATCH_ACTOR_ID: ${{ github.actor_id }}
           MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
           AUTHORIZATION_WORKFLOW_ID: ${{ needs.authorize.outputs.workflow_id }}
-          EXPECTED_PREFLIGHT_RUN_ID: ${{ needs.authorize.outputs.preflight_run_id }}
-          EXPECTED_PREFLIGHT_ATTEMPT: ${{ needs.authorize.outputs.preflight_run_attempt }}
-          REMOTE_CONTEXT: /tmp/bodycast-migration-context-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -Eeuo pipefail
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
@@ -474,54 +471,7 @@ jobs:
           )"
           REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
           REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$RELEASE_SHA' '$MANIFEST_ID' '$DEPLOY_PATH_B64' '$REMOTE_CONTEXT' '$AUTHORIZATION_WORKFLOW_ID' '$GITHUB_RUN_ID' '$GITHUB_RUN_ATTEMPT' '$APP_HOST_B64' '$CADDY_ROUTES_PATH_B64'"
-          REMOTE_PID=""
-          cleanup_remote() {
-            if [[ -n "$REMOTE_PID" ]]; then
-              exec {REMOTE_IN}>&- 2>/dev/null || true
-              wait "$REMOTE_PID" 2>/dev/null || true
-            fi
-          }
-          trap cleanup_remote EXIT
-          coproc MIGRATION_REMOTE { timeout 60m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND"; }
-          REMOTE_PID="$MIGRATION_REMOTE_PID"
-          REMOTE_OUT="${MIGRATION_REMOTE[0]}"
-          REMOTE_IN="${MIGRATION_REMOTE[1]}"
-          CHALLENGE=""
-          while IFS= read -r -u "$REMOTE_OUT" line; do
-            if [[ "$line" =~ ^BODYCAST_DDL_CHALLENGE:([a-f0-9]{64})$ ]]; then
-              CHALLENGE="${BASH_REMATCH[1]}"
-              break
-            fi
-            printf '%s\n' "$line"
-          done
-          [[ "$CHALLENGE" =~ ^[a-f0-9]{64}$ ]] || {
-            echo "::error::Protected DDL process exited before requesting a one-time challenge-bound GitHub OIDC proof." >&2
-            exit 1
-          }
-          PREFLIGHT_WORKFLOW_ID="$(gh api repos/krustallik/body-model/actions/workflows/production-migration-preflight.yml --jq .id)"
-          gh api --paginate --jq '.workflow_runs[] | @json' \
-            "repos/krustallik/body-model/actions/workflows/$PREFLIGHT_WORKFLOW_ID/runs?per_page=100" \
-            > "$RUNNER_TEMP/final-preflight-runs.ndjson"
-          SELECTED="$(node scripts/production-migration-select-preflight.mjs --select-run \
-            "$RUNNER_TEMP/final-preflight-runs.ndjson" "$PREFLIGHT_WORKFLOW_ID" "$RELEASE_SHA" "$MANIFEST_ID")"
-          SELECTED_ID="$(printf '%s' "$SELECTED" | jq -r '.id')"
-          SELECTED_ATTEMPT="$(printf '%s' "$SELECTED" | jq -r '.runAttempt')"
-          [[ "$SELECTED_ID" == "$EXPECTED_PREFLIGHT_RUN_ID" && "$SELECTED_ATTEMPT" == "$EXPECTED_PREFLIGHT_ATTEMPT" ]] || {
-            echo "::error::A newer admitted preflight superseded the signed request." >&2
-            exit 1
-          }
-          OIDC_PROOF="$RUNNER_TEMP/bodycast-ddl-execution-proof.jwt"
-          trap 'rm -f "$OIDC_PROOF"' EXIT
-          node scripts/production-migration-execution-attestation.mjs --request-oidc-proof \
-            "$RUNNER_TEMP/signed-migration-context/authorization-envelope.json" \
-            "$CHALLENGE" "$OIDC_PROOF"
-          test -s "$OIDC_PROOF"
-          cat "$OIDC_PROOF" >&"$REMOTE_IN"
-          rm -f "$OIDC_PROOF"
-          exec {REMOTE_IN}>&-
-          while IFS= read -r -u "$REMOTE_OUT" line; do printf '%s\n' "$line"; done
-          wait "$REMOTE_PID"
-          REMOTE_PID=""
+          timeout 60m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND"
       - name: Remove temporary runner credentials
         if: always()
         run: rm -rf "$RUNNER_TEMP/bodycast-migrate-ssh"

@@ -19,6 +19,8 @@ readonly CADDY_ROUTES_PATH
 export APP_HOST CADDY_ROUTES_PATH
 source "$ROOT_DIR/scripts/production-release-marker.sh"
 source "$ROOT_DIR/scripts/deploy-main-freshness.sh"
+source "$ROOT_DIR/scripts/production-release-lock.sh"
+bodycast_acquire_production_release_lock
 readonly DEPLOY_SHA="${DEPLOY_SHA:?DEPLOY_SHA is required}"
 readonly BODYCAST_NON_SERVING_DEPLOY="${BODYCAST_NON_SERVING_DEPLOY:-0}"
 
@@ -32,31 +34,13 @@ if [[ "$BODYCAST_NON_SERVING_DEPLOY" != "0" && "$BODYCAST_NON_SERVING_DEPLOY" !=
 fi
 [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "APP_HOST is invalid." >&2; exit 1; }
 
-# The host-owned operation path remains an isolated, closed typed interface.
-# This fallback runs only when the separately installed client is absent.
 assert_current_main_sha() {
   bodycast_assert_current_main_sha "$DEPLOY_SHA"
 }
 assert_current_main_sha
 
-HOST_OPERATION_CLIENT="/usr/local/bin/bodycast-production-operation"
-if [[ -x "$HOST_OPERATION_CLIENT" ]]; then
-  release_mode="serving"
-  [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" ]] && release_mode="non-serving"
-  exec "$HOST_OPERATION_CLIENT" ordinary-release \
-    --request-id "deploy-${DEPLOY_SHA}-$$" \
-    --release-sha "$DEPLOY_SHA" \
-    --canonical-main-sha "$DEPLOY_SHA" \
-    --canonical-main-fence fresh-current-main-v1 \
-    --release-mode "$release_mode"
-fi
-
-echo "Production deployment blocked: the trusted host-operation authority is unavailable; no Docker, database, or traffic mutation was attempted." >&2
-exit 1
-
 source "$ROOT_DIR/scripts/production-route-primitives.sh"
 export BODYCAST_DEPLOY_SHA="$DEPLOY_SHA"
-chmod +x "${ROOT_DIR}/scripts/deploy.sh" "${ROOT_DIR}/scripts/deploy-preflight-schema.sh" "${ROOT_DIR}/scripts/production-traffic-cutover.sh"
 
 compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
 
@@ -268,6 +252,10 @@ if [[ "$marker_status" -eq 0 ]]; then
   active_schema_cutover=true
 elif [[ "$marker_status" -ne 1 ]]; then
   echo "Invalid production release marker; refusing deployment." >&2
+  release_failure 1
+fi
+if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" && "$marker_status" -ne 0 ]]; then
+  echo "A non-serving app deploy requires the exact-SHA schema-applied marker; the candidate will not start on the old schema." >&2
   release_failure 1
 fi
 

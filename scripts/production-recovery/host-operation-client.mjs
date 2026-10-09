@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 import net from "node:net";
 import { readFile } from "node:fs/promises";
 import { canonicalJson } from "./canonical.mjs";

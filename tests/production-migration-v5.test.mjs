@@ -271,18 +271,58 @@ async function executionBoundaryFixture(identity = validPreflightReport().identi
   return { authorizationClaims, authorizationEnvelope, latestPreflight, currentRun, executionProof, verifiedExecutionProof, executionChallenge, identity, checkedAt };
 }
 
-function authorizedBoundary(fixture, databaseUrl = "postgresql://bodycast:secret@db/bodycast") {
+function authorizedBoundary(fixture, databaseUrl = "postgresql://bodycast:secret@db/bodycast", { backupSnapshotAt = new Date(fixture.checkedAt - 30 * 60_000).toISOString() } = {}) {
+  const workflowId = "production-migrate";
+  const workflowRunId = "1501";
+  const workflowRunAttempt = 1;
+  const signedClaims = claims({
+    productionIdentityDigest: canonicalSha256(fixture.identity),
+    backupSnapshotAt,
+    issuedAt: new Date(fixture.checkedAt - 60_000).toISOString(),
+    expiresAt: new Date(fixture.checkedAt + 50 * 60_000).toISOString(),
+  });
+  const envelope = signClaims(signedClaims);
+  const finalObservedAt = new Date(fixture.checkedAt).toISOString();
+  const receipt = {
+    schemaVersion: 1,
+    ready: true,
+    authorizationId: signedClaims.authorizationId,
+    manifestId: signedClaims.manifestId,
+    releaseSha: signedClaims.releaseSha,
+    currentMainSha: signedClaims.currentMainSha,
+    workflowId: signedClaims.workflowId,
+    workflowRunId: signedClaims.workflowRunId,
+    workflowRunAttempt: signedClaims.workflowRunAttempt,
+    actorId: signedClaims.actorId,
+    pending: signedClaims.pendingMigrationNames,
+    pendingSetDigest: signedClaims.pendingSetDigest,
+    preflightRunId: signedClaims.preflightRunId,
+    preflightRunAttempt: signedClaims.preflightRunAttempt,
+    preflightResultDigest: signedClaims.preflightResultDigest,
+    backupArtifactId: signedClaims.backupArtifactId,
+    backupArtifactDigest: signedClaims.backupArtifactDigest,
+    backupSnapshotAt: signedClaims.backupSnapshotAt,
+    restoreResultDigest: signedClaims.restoreResultDigest,
+    productionIdentityDigest: signedClaims.productionIdentityDigest,
+    preflightWriterDrainDigest: signedClaims.writerDrainDigest,
+    preflightWriterTopologyDigest: signedClaims.writerTopologyDigest,
+    finalWriterDrainDigest: "1".repeat(64),
+    finalWriterTopologyDigest: "2".repeat(64),
+    finalWriterDrainObservedAt: finalObservedAt,
+    finalTopologyObservedAt: finalObservedAt,
+    postSchemaDigest: "9".repeat(64),
+    verifiedAt: finalObservedAt,
+  };
   return {
     databaseUrl,
-    receipt: {
-      productionIdentityDigest: canonicalSha256(fixture.identity),
-      backupSnapshotAt: fixture.authorizationClaims.backupSnapshotAt,
-    },
-    envelope: fixture.authorizationEnvelope,
-    executionProof: fixture.executionProof,
-    verifiedExecutionProof: fixture.verifiedExecutionProof,
-    executionChallenge: fixture.executionChallenge,
+    receipt,
+    envelope,
     allowlist,
+    currentWorkflowId: workflowId,
+    currentWorkflowRunId: workflowRunId,
+    currentWorkflowRunAttempt: workflowRunAttempt,
+    currentMainSha: signedClaims.currentMainSha,
+    releaseSha: signedClaims.releaseSha,
   };
 }
 
@@ -405,7 +445,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     ])].sort());
     expect(sql).not.toContain("__EXPECTED_SCHEMA_OBJECTS_JSON__");
     expect(sql).toContain("BEGIN READ ONLY;");
-    expect(await readFile(new URL("../scripts/run-prisma-migrate-with-lock-timeout.mjs", import.meta.url), "utf8")).toContain("withPrismaLockTimeout(databaseUrl, 5000)");
+    expect(await readFile(new URL("../scripts/run-prisma-migrate-with-lock-timeout.mjs", import.meta.url), "utf8")).toContain("withPrismaLockTimeout(authorized.databaseUrl, 5000)");
     expect(await readFile(new URL("../scripts/production-db-target.sh", import.meta.url), "utf8")).toContain("default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000");
     expect(sql).toContain("PhysiologyV7Lifecycle");
     expect(sql).toContain("DailyModelState");
@@ -459,8 +499,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     let current = snapshot + 60 * 60 * 1000 - 1;
     const identity = validPreflightReport().identity;
     const fixture = await executionBoundaryFixture(identity, current);
-    const authorized = authorizedBoundary(fixture);
-    authorized.receipt.backupSnapshotAt = new Date(snapshot).toISOString();
+    const authorized = authorizedBoundary(fixture, undefined, { backupSnapshotAt: new Date(snapshot).toISOString() });
     const spawn = vi.fn(() => ({ status: 0 }));
     const nonceDirectory = await mkdtemp(path.join(os.tmpdir(), "bodycast-v5-ddl-boundary-"));
     try {
@@ -474,7 +513,7 @@ describe("V5 closed migration manifest and full pending set", () => {
         identityProbe: async () => {
           await new Promise((resolve) => setTimeout(resolve, 5));
           current += 2;
-          return identity;
+          return validPrismaTargetState(identity, current);
         },
       })).rejects.toThrow("not fresh at DDL start");
       expect(spawn).not.toHaveBeenCalled();
@@ -484,44 +523,26 @@ describe("V5 closed migration manifest and full pending set", () => {
     }
   });
 
-  it("accepts only a current challenge-bound GitHub OIDC run at the direct DDL boundary", async () => {
+  it("executes DDL only after a signed final guard, fresh backup, and matching live database identity", async () => {
     const identity = validPreflightReport().identity;
     const fixture = await executionBoundaryFixture(identity);
-    const nonceDirectory = await mkdtemp(path.join(os.tmpdir(), "bodycast-v5-ddl-oidc-proof-"));
     const spawn = vi.fn(() => ({ status: 0 }));
     const identityProbe = vi.fn(async () => validPrismaTargetState(identity, now));
-    try {
-      const expectedUrl = withPrismaLockTimeout("postgresql://bodycast:secret@db/bodycast", 5000);
-      const authorized = authorizedBoundary(fixture, expectedUrl);
-      await startPrismaMigrationAtDdlBoundary({
-        authorized,
-        spawn,
-        identityProbe,
-        latestPreflightProbe: async () => fixture.latestPreflight,
-        nonceDirectory,
-        now: () => now,
-        ...boundaryOptions(fixture),
-      });
-      expect(identityProbe).toHaveBeenLastCalledWith(expectedUrl);
-      expect(spawn).toHaveBeenCalledTimes(1);
-      expect(spawn.mock.calls[0][2].env.DATABASE_URL).toBe(expectedUrl);
-
-      await expect(startPrismaMigrationAtDdlBoundary({
-        authorized,
-        spawn,
-        identityProbe,
-        latestPreflightProbe: async () => fixture.latestPreflight,
-        nonceDirectory,
-        now: () => now,
-        ...boundaryOptions(fixture),
-      })).rejects.toThrow("already consumed");
-      expect(spawn).toHaveBeenCalledTimes(1);
-    } finally { await rm(nonceDirectory, { recursive: true, force: true }); }
+    const expectedUrl = withPrismaLockTimeout("postgresql://bodycast:secret@db/bodycast", 5000);
+    const authorized = authorizedBoundary(fixture);
+    await startPrismaMigrationAtDdlBoundary({
+      authorized,
+      spawn,
+      identityProbe,
+      now: () => now,
+    });
+    expect(identityProbe).toHaveBeenLastCalledWith(expectedUrl);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(spawn.mock.calls[0][2].env.DATABASE_URL).toBe(expectedUrl);
   });
 
-  it("blocks cancelled and non-current migration runs before Prisma spawn", async () => {
+  it("rejects cancelled or non-current GitHub migration-run metadata", async () => {
     const fixture = await executionBoundaryFixture();
-    const spawn = vi.fn(() => ({ status: 0 }));
     const cases = [
       { ...fixture.currentRun, status: "completed", conclusion: "cancelled" },
       { ...fixture.currentRun, id: 999999 },
@@ -532,28 +553,13 @@ describe("V5 closed migration manifest and full pending set", () => {
       { ...fixture.currentRun, event: "push" },
       { ...fixture.currentRun, head_branch: "feature/other" },
     ];
-    for (const currentRun of cases) {
-      const nonceDirectory = await mkdtemp(path.join(os.tmpdir(), "bodycast-v5-current-run-"));
-      try {
-        await expect(startPrismaMigrationAtDdlBoundary({
-          authorized: { ...authorizedBoundary(fixture), forgedMigrationRun: { id: fixture.currentRun.id, status: "in_progress" } },
-          latestPreflightProbe: async () => fixture.latestPreflight,
-          identityProbe: async () => fixture.identity,
-          nonceDirectory,
-          spawn,
-          now: () => now,
-          ...boundaryOptions(fixture),
-          currentMigrationRunProbe: async () => currentRun,
-        })).rejects.toThrow("no longer reports the exact OIDC-authenticated migration run as current and admitted");
-      } finally { await rm(nonceDirectory, { recursive: true, force: true }); }
-    }
-    expect(spawn).not.toHaveBeenCalled();
+    for (const currentRun of cases) expect(() => assertCurrentMigrationRunMatchesProof(
+      fixture.verifiedExecutionProof, currentRun, now,
+    )).toThrow("no longer reports the exact OIDC-authenticated migration run as current and admitted");
   });
 
   it("rejects OIDC proofs with wrong run, attempt, SHA, workflow, challenge, or forged payload", async () => {
     const fixture = await executionBoundaryFixture();
-    const nonceDirectory = path.join(os.tmpdir(), "bodycast-v5-forged-oidc-" + randomUUID());
-    const spawn = vi.fn(() => ({ status: 0 }));
     for (const override of [
       { repository: "someone/else" }, { ref: "refs/heads/feature/other" }, { event_name: "push" },
       { sub: "repo:krustallik/body-model:environment:staging" }, { environment: "staging" },
@@ -563,15 +569,6 @@ describe("V5 closed migration manifest and full pending set", () => {
     ]) {
       const token = createOidcProof(fixture.authorizationEnvelope, fixture.executionChallenge, override, now);
       await expect(verifyFixtureProof(token, fixture)).rejects.toThrow("not from the exact authorized repository");
-      await expect(startPrismaMigrationAtDdlBoundary({
-        authorized: { ...authorizedBoundary(fixture), executionProof: token },
-        latestPreflightProbe: async () => fixture.latestPreflight,
-        identityProbe: async () => fixture.identity,
-        nonceDirectory,
-        spawn,
-        now: () => now,
-        ...boundaryOptions(fixture),
-      })).rejects.toThrow("not from the exact authorized repository");
     }
     for (const override of [
       { iss: "https://example.invalid" },
@@ -579,42 +576,14 @@ describe("V5 closed migration manifest and full pending set", () => {
     ]) {
       const token = createOidcProof(fixture.authorizationEnvelope, fixture.executionChallenge, override, now);
       await expect(verifyFixtureProof(token, fixture)).rejects.toThrow("audience, issuer, replay id, or freshness");
-      await expect(startPrismaMigrationAtDdlBoundary({
-        authorized: { ...authorizedBoundary(fixture), executionProof: token },
-        latestPreflightProbe: async () => fixture.latestPreflight,
-        identityProbe: async () => fixture.identity,
-        nonceDirectory,
-        spawn,
-        now: () => now,
-        ...boundaryOptions(fixture),
-      })).rejects.toThrow("audience, issuer, replay id, or freshness");
     }
     await expect(verifyGitHubExecutionProof(fixture.executionProof, {
       authorizationEnvelope: fixture.authorizationEnvelope, allowlist,
       expectedChallenge: "cd".repeat(32), now, jwks: [oidcJwk],
     })).rejects.toThrow("audience, issuer, replay id, or freshness");
-    await expect(startPrismaMigrationAtDdlBoundary({
-      authorized: { ...authorizedBoundary(fixture), executionChallenge: "cd".repeat(32) },
-      latestPreflightProbe: async () => fixture.latestPreflight,
-      identityProbe: async () => fixture.identity,
-      nonceDirectory,
-      spawn,
-      now: () => now,
-      ...boundaryOptions(fixture),
-    })).rejects.toThrow("audience, issuer, replay id, or freshness");
     const [header, payload, signature] = fixture.executionProof.split(".");
     const changedPayload = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(payload, "base64url").toString("utf8")), run_id: "forged" })).toString("base64url");
     await expect(verifyFixtureProof(header + "." + changedPayload + "." + signature, fixture)).rejects.toThrow("signature is invalid");
-    await expect(startPrismaMigrationAtDdlBoundary({
-      authorized: { ...authorizedBoundary(fixture), executionProof: header + "." + changedPayload + "." + signature },
-      latestPreflightProbe: async () => fixture.latestPreflight,
-      identityProbe: async () => fixture.identity,
-      nonceDirectory,
-      spawn,
-      now: () => now,
-      ...boundaryOptions(fixture),
-    })).rejects.toThrow("signature is invalid");
-    expect(spawn).not.toHaveBeenCalled();
   });
 
   it("loads current migration status by the run ID in verified OIDC claims", async () => {
@@ -659,8 +628,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 
-  it("blocks direct protected execution when a trusted live OIDC proof is absent", async () => {
-    const nonceDirectory = path.join(os.tmpdir(), "bodycast-v5-forged-run-metadata-" + randomUUID());
+  it("requires the real signed final-guard files rather than caller flags", async () => {
     const spawn = vi.fn(() => ({ status: 0 }));
     const forgedLegacyMaterial = {
       receipt: { productionIdentityDigest: "e".repeat(64), backupSnapshotAt: new Date(now - 10_000).toISOString() },
@@ -675,21 +643,34 @@ describe("V5 closed migration manifest and full pending set", () => {
     };
     await expect(startPrismaMigrationAtDdlBoundary({
       authorized: forgedLegacyMaterial,
-      nonceDirectory,
       spawn,
-    })).rejects.toThrow("without verified authorization, current GitHub OIDC proof, and replay ledger");
+    })).rejects.toThrow("final guard receipt is missing, malformed, or has unsupported fields");
     expect(spawn).not.toHaveBeenCalled();
 
+    const context = await mkdtemp(path.join(os.tmpdir(), "bodycast-v5-guard-context-"));
+    const receiptPath = path.join(context, "receipt.json");
+    const envelopePath = path.join(context, "authorization.json");
+    const keysPath = path.join(context, "keys.json");
+    await Promise.all([
+      writeFile(receiptPath, JSON.stringify({ schemaVersion: 1 })),
+      writeFile(envelopePath, "{}\n"),
+      writeFile(keysPath, JSON.stringify(allowlist)),
+    ]);
     const environment = {
       DATABASE_URL: "postgresql://bodycast:secret@db/bodycast",
       BODYCAST_DDL_EXECUTION_CHALLENGE: "ab".repeat(32),
-      BODYCAST_FINAL_GUARD_RECEIPT: "receipt.json",
-      BODYCAST_AUTHORIZATION_ENVELOPE: "authorization.json",
-      BODYCAST_VERIFICATION_KEYS: "keys.json",
+      BODYCAST_FINAL_GUARD_RECEIPT: receiptPath,
+      BODYCAST_AUTHORIZATION_ENVELOPE: envelopePath,
+      BODYCAST_VERIFICATION_KEYS: keysPath,
       BODYCAST_MIGRATION_RUN_JSON: "forged-migration-run.json",
       BODYCAST_EXECUTION_ATTESTATION: "previously-valid-attestation.json",
+      BODYCAST_RELEASE_SHA: "b".repeat(40),
+      BODYCAST_CANONICAL_MAIN_SHA: "a".repeat(40),
     };
-    await expect(assertPrismaMigrationAuthorized(environment)).rejects.toThrow("without signed final-guard, challenge-bound GitHub OIDC proof");
+    try {
+      await expect(assertPrismaMigrationAuthorized(environment)).rejects.toThrow("release SHA is not the freshly checked canonical main tip");
+      expect(spawn).not.toHaveBeenCalled();
+    } finally { await rm(context, { recursive: true, force: true }); }
   });
 
   it("ignores unadmitted queued runs and supersedes only after trusted admission", async () => {
@@ -730,95 +711,66 @@ describe("V5 closed migration manifest and full pending set", () => {
   it("blocks when the final Prisma URL resolves to an endpoint different from signed identity", async () => {
     const signedIdentity = validPreflightReport().identity;
     const fixture = await executionBoundaryFixture(signedIdentity);
-    const nonceDirectory = await mkdtemp(path.join(os.tmpdir(), "bodycast-v5-ddl-target-"));
     const spawn = vi.fn(() => ({ status: 0 }));
     const ioOrder = [];
-    try {
-      await expect(startPrismaMigrationAtDdlBoundary({
-        authorized: authorizedBoundary(fixture),
-        spawn,
-        nonceDirectory,
-        identityProbe: async (url) => {
-          ioOrder.push(["final-identity", url]);
-          return { ...signedIdentity, database: "bodycast_restore", databaseOid: 20001, role: "restore_user", serverPort: 5433 };
-        },
-        latestPreflightProbe: async () => { ioOrder.push(["latest-admission"]); return fixture.latestPreflight; },
-        ...boundaryOptions(fixture),
-        currentMigrationRunProbe: async () => { ioOrder.push(["current-run"]); return fixture.currentRun; },
-        now: () => now,
-      })).rejects.toThrow("final Prisma DATABASE_URL target differs from the signed production identity");
-      expect(spawn).not.toHaveBeenCalled();
-      expect(ioOrder.map(([name]) => name)).toEqual(["latest-admission", "current-run", "final-identity"]);
-      expect(ioOrder[2][1]).toBe(authorizedBoundary(fixture).databaseUrl);
-      const targetState = validPrismaTargetState(signedIdentity, now);
-      expect(assertPrismaTargetMatchesSignedIdentity({ productionIdentityDigest: canonicalSha256(signedIdentity) }, targetState, now)).toBe(true);
-      expect(() => assertPrismaTargetMatchesSignedIdentity({ productionIdentityDigest: canonicalSha256(signedIdentity) }, {
-        ...targetState, identity: { ...signedIdentity, serverAddress: "127.0.0.2" },
-      }, now)).toThrow("differs from the signed production identity");
-      expect(() => assertPrismaTargetMatchesSignedIdentity({ productionIdentityDigest: canonicalSha256(signedIdentity) }, validPrismaTargetState(signedIdentity, now, {
-        activeClientBackends: [{ pid: 501, applicationName: "bodycast-reconnected-writer", clientAddress: null }],
-      }), now)).toThrow("final Prisma writer-drain observation");
-    } finally {
-      await rm(nonceDirectory, { recursive: true, force: true });
-    }
+    await expect(startPrismaMigrationAtDdlBoundary({
+      authorized: authorizedBoundary(fixture),
+      spawn,
+      identityProbe: async (url) => {
+        ioOrder.push(["final-identity", url]);
+        return validPrismaTargetState({ ...signedIdentity, database: "bodycast_restore", databaseOid: 20001, role: "restore_user", serverPort: 5433 }, now);
+      },
+      now: () => now,
+    })).rejects.toThrow("final Prisma DATABASE_URL target differs from the verified production identity");
+    expect(spawn).not.toHaveBeenCalled();
+    expect(ioOrder.map(([name]) => name)).toEqual(["final-identity"]);
+    expect(ioOrder[0][1]).toBe(withPrismaLockTimeout(authorizedBoundary(fixture).databaseUrl, 5000));
+    const targetState = validPrismaTargetState(signedIdentity, now);
+    expect(assertPrismaTargetMatchesSignedIdentity({ productionIdentityDigest: canonicalSha256(signedIdentity) }, targetState, now)).toBe(true);
+    expect(() => assertPrismaTargetMatchesSignedIdentity({ productionIdentityDigest: canonicalSha256(signedIdentity) }, {
+      ...targetState, identity: { ...signedIdentity, serverAddress: "127.0.0.2" },
+    }, now)).toThrow("differs from the verified production identity");
+    expect(() => assertPrismaTargetMatchesSignedIdentity({ productionIdentityDigest: canonicalSha256(signedIdentity) }, validPrismaTargetState(signedIdentity, now, {
+      activeClientBackends: [{ pid: 501, applicationName: "bodycast-reconnected-writer", clientAddress: null }],
+    }), now)).toThrow("final Prisma writer-drain observation");
   });
 
-  it("keeps an unadmitted request queued across the migration critical section and blocks it after admission", async () => {
-    const fixture = await executionBoundaryFixture(validPreflightReport().identity);
-    const nonceDirectory = await mkdtemp(path.join(os.tmpdir(), "bodycast-v5-admission-fence-"));
-    const selection = { repository: "krustallik/body-model", workflowId: "88", releaseSha: fixture.authorizationClaims.releaseSha, manifestId: fixture.authorizationClaims.manifestId };
-    let migrationFenceHeld = true;
-    const ioOrder = [];
-    let newer = { ...fixture.latestPreflight, id: "1202", createdAt: new Date(now + 1_000).toISOString(), runStartedAt: null, status: "queued", conclusion: null };
-    const selected = () => selectLatestApplicablePreflight([newer, fixture.latestPreflight], selection);
-    const spawn = vi.fn(() => {
-      ioOrder.push("spawn");
-      expect(migrationFenceHeld).toBe(true);
-      expect(newer.runStartedAt).toBeNull();
-      return { status: 0 };
-    });
-    try {
-      await startPrismaMigrationAtDdlBoundary({
-        authorized: authorizedBoundary(fixture),
-        nonceDirectory,
-        now: () => now,
-        latestPreflightProbe: async () => { ioOrder.push("latest-admission"); return selected(); },
-        ...boundaryOptions(fixture),
-        identityProbe: async () => {
-          ioOrder.push("final-identity");
-          expect(migrationFenceHeld).toBe(true);
-          expect(newer.runStartedAt).toBeNull();
-          return validPrismaTargetState(fixture.identity, now);
-        },
-        spawn,
-      });
-      expect(spawn).toHaveBeenCalledTimes(1);
-      expect(ioOrder).toEqual(["latest-admission", "final-identity", "spawn"]);
-      migrationFenceHeld = false;
-      newer = { ...newer, runStartedAt: new Date(now + 2_000).toISOString(), status: "in_progress" };
-      expect(() => selected()).toThrow("Latest matching preflight attempt is in_progress");
-    } finally {
-      await rm(nonceDirectory, { recursive: true, force: true });
-    }
+  it("serializes deploy, migration, and traffic mutations with one host lock", async () => {
+    const [lock, deploy, migrate, traffic] = await Promise.all([
+      readFile(new URL("../scripts/production-release-lock.sh", import.meta.url), "utf8"),
+      readFile(new URL("../scripts/deploy.sh", import.meta.url), "utf8"),
+      readFile(new URL("../scripts/deploy-migrate.sh", import.meta.url), "utf8"),
+      readFile(new URL("../scripts/production-traffic-cutover.sh", import.meta.url), "utf8"),
+    ]);
+    for (const script of [deploy, migrate, traffic]) expect(script).toContain("production-release-lock.sh");
+    expect(lock).toContain('exec 9>"$git_dir/bodycast-production-release.lock"');
+    expect(lock).toContain("flock -n 9");
   });
 
-  it("uses one non-cancelling GitHub concurrency group and hands off only challenge-bound OIDC proof", async () => {
+  it("uses owner-only manual workflows and writes the durable marker before the single DDL spawn", async () => {
     const preflight = await readFile(new URL("../.github/workflows/production-migration-preflight.yml", import.meta.url), "utf8");
     const migrate = await readFile(new URL("../.github/workflows/production-migrate.yml", import.meta.url), "utf8");
+    const deployWorkflow = await readFile(new URL("../.github/workflows/deploy-production.yml", import.meta.url), "utf8");
+    const activationWorkflow = await readFile(new URL("../.github/workflows/activate-unified-v4-production.yml", import.meta.url), "utf8");
+    const ciWorkflow = await readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
     const group = (workflow) => workflow.match(/^concurrency:\r?\n  group: ([^\r\n]+)\r?\n  cancel-in-progress: false/m)?.[1];
-    expect(group(preflight)).toBe("bodycast-production-migration");
+    expect(group(preflight)).toBe("bodycast-production-release");
     expect(group(migrate)).toBe(group(preflight));
+    expect(group(deployWorkflow)).toBe(group(preflight));
+    expect(group(activationWorkflow)).toBe(group(preflight));
     expect(preflight).not.toContain("cancel-in-progress: true");
     expect(migrate).not.toContain("cancel-in-progress: true");
-    const ddlStep = migrate.indexOf("Run canonical fetch, final signed readiness guard, Prisma migration, and postflight in one remote process");
-    expect(ddlStep).toBeGreaterThan(migrate.indexOf("Stream signed evidence files to private remote temporary context"));
-    expect(migrate.slice(ddlStep)).toContain("coproc MIGRATION_REMOTE");
-    expect(migrate.slice(ddlStep)).toContain("BODYCAST_DDL_CHALLENGE:");
-    expect(migrate.slice(ddlStep).indexOf("BODYCAST_DDL_CHALLENGE:")).toBeLessThan(migrate.slice(ddlStep).indexOf("--select-run"));
-    expect(migrate.slice(ddlStep).indexOf("--select-run")).toBeLessThan(migrate.slice(ddlStep).indexOf("--request-oidc-proof"));
-    expect(migrate.slice(ddlStep)).toContain("cat \"$OIDC_PROOF\" >&\"$REMOTE_IN\"");
-    expect(migrate).toContain("id-token: write");
-    expect(migrate).toContain("--request-oidc-proof");
+    expect(preflight).toContain('CONFIRMATION: ${{ inputs.confirm_production_preflight }}');
+    expect(preflight).toContain('[[ "$DISPATCH_ACTOR_ID" == "126446430" ]]');
+    expect(migrate).toContain("github.actor_id == '126446430'");
+    expect(migrate).toContain("assertTrustedOwnerWorkflowRun");
+    const ownerIdentity = await readFile(new URL("../scripts/github-owner-identity.mjs", import.meta.url), "utf8");
+    expect(ownerIdentity).toContain("run.triggering_actor?.id");
+    expect(deployWorkflow).toContain("workflow_dispatch:");
+    expect(deployWorkflow).not.toContain("workflow_run:");
+    expect(deployWorkflow).toContain('[[ "$DISPATCH_ACTOR_ID" == "126446430" ]]');
+    expect(deployWorkflow).toContain('[[ "$TIP" == "$DEPLOY_SHA" ]]');
+    expect(ciWorkflow).not.toContain("deploy-production.yml");
     expect(migrate).not.toContain("actions/cache");
     expect(migrate).not.toMatch(/path:\s*\$\{\{ runner\.temp \}\}\/signed-migration-context\/\*/);
     expect(migrate).toContain("expected-sign-bundle-files.txt");
@@ -827,25 +779,19 @@ describe("V5 closed migration manifest and full pending set", () => {
       expect(migrate).not.toContain(forbidden);
     }
     const deployScript = await readFile(new URL("../scripts/deploy-migrate.sh", import.meta.url), "utf8");
-    expect(deployScript).not.toContain("BODYCAST_EXECUTION_PROOF_HANDOFF");
-    expect(deployScript).toContain("migration-challenge");
-    expect(deployScript).toContain("BODYCAST_DDL_CHALLENGE:");
-    expect(deployScript.indexOf("migration-challenge")).toBeLessThan(deployScript.indexOf("BODYCAST_DDL_CHALLENGE:"));
-    expect(deployScript.indexOf("BODYCAST_DDL_CHALLENGE:")).toBeLessThan(deployScript.indexOf("IFS= read -r EXECUTION_PROOF"));
-    expect(deployScript.indexOf("IFS= read -r EXECUTION_PROOF")).toBeLessThan(deployScript.indexOf('> "$GUARD_RECEIPT"'));
-    expect(deployScript.indexOf('> "$GUARD_RECEIPT"')).toBeLessThan(deployScript.indexOf("forward-migration"));
-    expect(deployScript).toContain("--challenge-id");
-    expect(deployScript).toContain("--challenge-digest");
-    expect(deployScript).toContain("--execution-proof-stdin");
-    expect(deployScript).not.toContain("--current-workflow-actor-id");
-    expect(deployScript).not.toContain("BODYCAST_AUTHORIZATION_ACTOR_ID");
-    expect(deployScript).not.toContain("execution-proof.jwt");
-    expect(deployScript).not.toContain("ACTIONS_ID_TOKEN_REQUEST_TOKEN");
-    expect(deployScript).not.toContain("migration-run.json");
+    expect(deployScript).not.toContain("bodycast-production-operation");
+    expect(deployScript).not.toContain("docker compose -f docker-compose.prod.yml up -d db");
+    const markerLine = deployScript.indexOf('write_bodycast_release_marker "$RELEASE_SHA" ddl-started');
+    const migrateLine = deployScript.indexOf("run-prisma-migrate-with-lock-timeout.mjs");
+    expect(markerLine).toBeGreaterThan(-1);
+    expect(migrateLine).toBeGreaterThan(markerLine);
+    expect(deployScript).toContain("--before-ddl");
+    expect(deployScript).toContain("--after-ddl");
     const guard = await readFile(new URL("../scripts/run-prisma-migrate-with-lock-timeout.mjs", import.meta.url), "utf8");
-    expect(guard).toContain("verifyGitHubExecutionProof");
-    expect(guard).toContain("readCurrentMigrationRunForDdl");
-    expect(guard).toContain("assertCurrentMigrationRunMatchesProof");
+    expect(guard).toContain("verifyFinalGuardReceipt");
+    expect(guard).toContain("assertPrismaTargetMatchesSignedIdentity");
+    expect(guard).toContain("assertBackupFreshAtDdlStart");
+    expect(guard).not.toContain("fetch(");
   });
 
   it("binds trusted current migration API metadata to the cryptographic OIDC run claims", async () => {
@@ -1055,7 +1001,7 @@ describe("Ed25519 authorization envelope and provenance matrix", () => {
     await expect(assertPrismaMigrationAuthorized({
       DATABASE_URL: "postgresql://bodycast:placeholder@127.0.0.1:5432/bodycast",
       BODYCAST_FINAL_GUARD_READY: "true",
-    })).rejects.toThrow("signed final-guard, challenge-bound GitHub OIDC proof, and one-time challenge");
+    })).rejects.toThrow("signed final-guard receipt, owner authorization, and verifier keys are required");
   });
 });
 

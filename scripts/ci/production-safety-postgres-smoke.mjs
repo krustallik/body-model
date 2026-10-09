@@ -531,19 +531,55 @@ async function verifyPrismaTargetBinding({ sourceUrl, alternateUrl, signedIdenti
   const now = Date.now();
   const fixture = await createTargetBindingAuthorization(signedIdentity, now);
   const nonceDirectory = path.join(scratch, "consumed-execution-attestations");
-  const makeAuthorized = (targetUrl, authorizationFixture = fixture) => ({
-    databaseUrl: withPrismaLockTimeout(targetUrl, 5000),
-    receipt: { productionIdentityDigest: canonicalSha256(signedIdentity), backupSnapshotAt: new Date(now - 10_000).toISOString() },
-    envelope: authorizationFixture.authorizationEnvelope,
-    executionProof: authorizationFixture.executionProof,
-    verifiedExecutionProof: authorizationFixture.verifiedExecutionProof,
-    executionChallenge: authorizationFixture.executionChallenge,
-    allowlist: authorizationFixture.allowlist,
-  });
+  const makeAuthorized = (targetUrl, authorizationFixture = fixture) => {
+    const claims = authorizationFixture.claims;
+    const observedAt = new Date(now).toISOString();
+    const receipt = {
+      schemaVersion: 1,
+      ready: true,
+      authorizationId: claims.authorizationId,
+      manifestId: claims.manifestId,
+      releaseSha: claims.releaseSha,
+      currentMainSha: claims.currentMainSha,
+      workflowId: claims.workflowId,
+      workflowRunId: claims.workflowRunId,
+      workflowRunAttempt: claims.workflowRunAttempt,
+      actorId: claims.actorId,
+      pending: claims.pendingMigrationNames,
+      pendingSetDigest: claims.pendingSetDigest,
+      preflightRunId: claims.preflightRunId,
+      preflightRunAttempt: claims.preflightRunAttempt,
+      preflightResultDigest: claims.preflightResultDigest,
+      backupArtifactId: claims.backupArtifactId,
+      backupArtifactDigest: claims.backupArtifactDigest,
+      backupSnapshotAt: claims.backupSnapshotAt,
+      restoreResultDigest: claims.restoreResultDigest,
+      productionIdentityDigest: claims.productionIdentityDigest,
+      preflightWriterDrainDigest: claims.writerDrainDigest,
+      preflightWriterTopologyDigest: claims.writerTopologyDigest,
+      finalWriterDrainDigest: "1".repeat(64),
+      finalWriterTopologyDigest: "2".repeat(64),
+      finalWriterDrainObservedAt: observedAt,
+      finalTopologyObservedAt: observedAt,
+      postSchemaDigest: "3".repeat(64),
+      verifiedAt: observedAt,
+    };
+    return {
+      databaseUrl: targetUrl,
+      receipt,
+      envelope: authorizationFixture.authorizationEnvelope,
+      allowlist: authorizationFixture.allowlist,
+      currentWorkflowId: claims.workflowId,
+      currentWorkflowRunId: claims.workflowRunId,
+      currentWorkflowRunAttempt: claims.workflowRunAttempt,
+      currentMainSha: claims.currentMainSha,
+      releaseSha: claims.releaseSha,
+    };
+  };
   let spawnCount = 0;
   const spawn = (_command, _args, options) => {
     spawnCount += 1;
-    if (options.env.DATABASE_URL !== makeAuthorized(sourceUrl).databaseUrl) {
+    if (options.env.DATABASE_URL !== withPrismaLockTimeout(sourceUrl, 5000)) {
       throw new Error("Prisma spawn did not receive the exact target URL that the identity probe checked.");
     }
     return { status: 0 };
@@ -562,13 +598,12 @@ async function verifyPrismaTargetBinding({ sourceUrl, alternateUrl, signedIdenti
       nonceDirectory,
     });
   } catch (error) {
-    mismatchBlocked = String(error?.message).includes("differs from the signed production identity");
+    mismatchBlocked = String(error?.message).includes("differs from the verified production identity");
   }
   if (!mismatchBlocked || spawnCount !== 0) {
     throw new Error("Final Prisma URL for another database was not blocked before spawn.");
   }
-  // The failed target probe correctly consumes its one-time nonce; use a fresh
-  // authorization/OIDC proof for the independent matching-target assertion.
+  // Use a fresh run-bound signature for the independent matching-target assertion.
   const matchingFixture = await createTargetBindingAuthorization(signedIdentity, Date.now());
   await startPrismaMigrationAtDdlBoundary({
     authorized: makeAuthorized(sourceUrl, matchingFixture),

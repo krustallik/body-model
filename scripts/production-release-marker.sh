@@ -52,12 +52,43 @@ write_bodycast_release_marker() {
   [[ -d "$(dirname "$BODYCAST_RELEASE_MARKER_PATH")" && ! -L "$(dirname "$BODYCAST_RELEASE_MARKER_PATH")" ]] || {
     echo "Production Git metadata directory is unavailable or ambiguous." >&2; return 2;
   }
+  local current_state="" marker_status=1
+  if read_bodycast_release_marker; then
+    marker_status=0
+    [[ "$BODYCAST_MARKER_RELEASE_SHA" == "$release_sha" ]] || {
+      echo "Production release marker belongs to another SHA; refusing to replace it." >&2; return 2;
+    }
+    current_state="$BODYCAST_MARKER_STATE"
+  else
+    marker_status=$?
+  fi
+  if [[ "$marker_status" -eq 1 ]]; then
+    [[ "$state" == "ddl-started" ]] || {
+      echo "Only the irreversible ddl-started marker may be created from an absent state." >&2; return 2;
+    }
+  elif [[ "$marker_status" -ne 0 ]]; then
+    echo "Existing production release marker is invalid; refusing to replace it." >&2; return 2
+  elif [[ ! ( "$current_state" == "ddl-started" && "$state" == "schema-applied" ) \
+    && ! ( "$current_state" == "schema-applied" && "$state" == "app-ready" ) \
+    && ! ( "$current_state" == "app-ready" && "$state" == "app-ready" ) ]]; then
+    echo "Production release marker transition is invalid: ${current_state} -> ${state}." >&2; return 2
+  fi
   local temporary
   temporary="$(mktemp "${BODYCAST_RELEASE_MARKER_PATH}.new.XXXXXX")"
+  trap 'rm -f -- "$temporary"' RETURN
   chmod 600 "$temporary"
   printf 'schemaVersion=1\nmanifestId=active-energy-unified-v2\nreleaseSha=%s\nstate=%s\n' \
     "$release_sha" "$state" > "$temporary"
-  mv -f "$temporary" "$BODYCAST_RELEASE_MARKER_PATH"
+  sync -f "$temporary"
+  if [[ "$marker_status" -eq 1 ]]; then
+    # Hard-link publication is atomic and refuses to overwrite a concurrent marker.
+    ln -- "$temporary" "$BODYCAST_RELEASE_MARKER_PATH"
+    rm -- "$temporary"
+  else
+    mv -f -- "$temporary" "$BODYCAST_RELEASE_MARKER_PATH"
+  fi
+  sync -f "$(dirname "$BODYCAST_RELEASE_MARKER_PATH")"
+  trap - RETURN
 }
 
 clear_bodycast_release_marker() {
@@ -69,4 +100,5 @@ clear_bodycast_release_marker() {
     echo "Refusing to clear a missing or invalid production release marker." >&2; return 2;
   }
   rm -- "$BODYCAST_RELEASE_MARKER_PATH"
+  sync -f "$(dirname "$BODYCAST_RELEASE_MARKER_PATH")"
 }

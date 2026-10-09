@@ -16,6 +16,7 @@ readonly CADDY_ROUTES_PATH
 export APP_HOST CADDY_ROUTES_PATH
 source "${ROOT_DIR}/scripts/production-release-marker.sh"
 source "${ROOT_DIR}/scripts/deploy-main-freshness.sh"
+source "${ROOT_DIR}/scripts/production-release-lock.sh"
 
 [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "APP_HOST is invalid." >&2; exit 1; }
 [[ "$MODE" == "maintenance" || "$MODE" == "check" || "$MODE" == "v3-postflight" || "$MODE" == "serve" ]] || {
@@ -23,40 +24,7 @@ source "${ROOT_DIR}/scripts/deploy-main-freshness.sh"
   exit 1
 }
 
-# After host preparation, even direct traffic-script invocations cross the same
-# fixed root broker. This prevents bypassing deploy.sh by calling Caddy/Docker
-# operations from a stale or manually checked-out release tree.
-HOST_OPERATION_CLIENT="/usr/local/bin/bodycast-production-operation"
-if [[ -x "$HOST_OPERATION_CLIENT" ]]; then
-  RELEASE_SHA="${BODYCAST_DEPLOY_SHA:-${DEPLOY_SHA:-${RELEASE_SHA:-}}}"
-  CANONICAL_MAIN_SHA="${BODYCAST_CANONICAL_MAIN_SHA:-$RELEASE_SHA}"
-  [[ "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ && "$CANONICAL_MAIN_SHA" =~ ^[a-f0-9]{40}$ ]] || {
-    echo "A current exact release SHA is required for the production operation authority." >&2
-    exit 1
-  }
-  [[ "${BODYCAST_AUTHORIZATION_WORKFLOW_ID:-}" =~ ^[1-9][0-9]*$ \
-    && "${BODYCAST_AUTHORIZATION_RUN_ID:-}" =~ ^[1-9][0-9]*$ \
-    && "${BODYCAST_AUTHORIZATION_RUN_ATTEMPT:-}" =~ ^[1-9][0-9]*$ ]] || {
-    echo "A signed forward-release authorization context is required for direct traffic operations." >&2
-    exit 1
-  }
-  AUTHORIZATION_CONTEXT_ID="migration-${BODYCAST_AUTHORIZATION_WORKFLOW_ID}-${BODYCAST_AUTHORIZATION_RUN_ID}-${BODYCAST_AUTHORIZATION_RUN_ATTEMPT}"
-  case "$MODE" in
-    check) OPERATION="traffic-check" ;;
-    v3-postflight) OPERATION="v3-postflight" ;;
-    maintenance) OPERATION="traffic-maintenance" ;;
-    serve) OPERATION="traffic-serve" ;;
-  esac
-  exec "$HOST_OPERATION_CLIENT" "$OPERATION" \
-    --request-id "traffic-${MODE}-$(date -u +%s)-$$" \
-    --release-sha "$RELEASE_SHA" \
-    --canonical-main-sha "$CANONICAL_MAIN_SHA" \
-    --authorization-context-id "$AUTHORIZATION_CONTEXT_ID"
-fi
-
-echo "Production traffic operation blocked: the trusted host-operation authority is unavailable; no Docker or Caddy mutation was attempted." >&2
-exit 1
-
+bodycast_acquire_production_release_lock
 source "${ROOT_DIR}/scripts/production-route-primitives.sh"
 
 compose() { docker compose -f "$COMPOSE_FILE" "$@"; }

@@ -14,17 +14,16 @@ const releaseMarkerSh = readFileSync(resolve("scripts/production-release-marker.
 const composeYaml = readFileSync(resolve("docker-compose.prod.yml"), "utf8");
 
 describe("production maintenance-first deploy safety contracts", () => {
-  it("keeps automatic workflow_run deploy limited to successful current-main CI", () => {
-    expect(deployWorkflow).toContain("workflow_run:");
-    expect(deployWorkflow).toContain("workflows:\n      - BodyCast CI/CD");
-    const deploymentObjectAt = deployWorkflow.indexOf("- name: Create GitHub deployment");
-    const sshFenceAt = deployWorkflow.indexOf("- name: Recheck canonical main immediately before SSH deploy");
-    const sshAt = deployWorkflow.indexOf("- name: Deploy over SSH (exact SHA, no migrate)");
-    expect(deploymentObjectAt).toBeGreaterThan(-1);
-    expect(sshFenceAt).toBeGreaterThan(deploymentObjectAt);
-    expect(sshAt).toBeGreaterThan(sshFenceAt);
-    expect(deployWorkflow.slice(sshFenceAt, sshAt)).toContain('gh api "repos/${{ github.repository }}/commits/main" --jq .sha');
-    expect(deployWorkflow.slice(sshFenceAt, sshAt)).toContain("isCurrentMainSha(CANDIDATE");
+  it("requires manual owner authorization and never starts an automatic post-merge deployment", () => {
+    expect(deployWorkflow).toContain("workflow_dispatch:");
+    expect(deployWorkflow).not.toContain("workflow_run:");
+    expect(deployWorkflow).toContain('github.actor_id }}');
+    expect(deployWorkflow).toContain('"126446430"');
+    expect(deployWorkflow).toContain("assertTrustedOwnerWorkflowRun");
+    expect(deployWorkflow).toContain("BODYCAST_NON_SERVING_DEPLOY=1");
+    expect(deployWorkflow).toContain("BodyCast CI/CD");
+    expect(deployWorkflow).not.toContain("git checkout --detach --force");
+    expect(deployWorkflow).toContain('git checkout --detach "$DEPLOY_SHA"');
   });
 
   it("implements the approved maintenance-first state machine and live-route commit", () => {
@@ -127,22 +126,24 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(deploySh).toContain('app_container_id" == "$expected_container_id"');
   });
 
-  it("keeps ordinary deploy migration-free and preserves the explicit recovery authority boundary", () => {
+  it("keeps ordinary deploy migration-free and uses the owner-gated fixed migration script", () => {
     expect(deploySh).not.toMatch(/npx\s+prisma\s+migrate\s+deploy|prisma\s+migrate\s+deploy(?!\.)/);
     expect(deploySh).not.toMatch(/prisma\s+migrate\s+reset/);
     expect(deploySh).not.toMatch(/selection-v1|historical replay/i);
     expect(preflightSh).toContain("prisma migrate status");
     expect(preflightSh).not.toContain("--entrypoint npx migrate prisma migrate deploy");
-    expect(deploySh).toContain('"$HOST_OPERATION_CLIENT" ordinary-release');
+    expect(deploySh).not.toContain("bodycast-production-operation");
+    expect(deploySh).toContain("bodycast_acquire_production_release_lock");
     expect(migrateSh).toContain("authorization-envelope.json");
-    expect(migrateSh).toContain("BODYCAST_DDL_CHALLENGE:");
-    expect(migrateSh).toContain("--execution-proof-stdin");
     expect(migrateSh).toContain("--before-ddl");
-    expect(migrateSh).not.toMatch(/\bprisma\s+migrate\s+deploy\b/i);
+    expect(migrateSh).toContain('write_bodycast_release_marker "$RELEASE_SHA" ddl-started');
+    expect(migrateSh).toContain("run-prisma-migrate-with-lock-timeout.mjs");
+    expect(migrateSh).not.toMatch(/compose\s+up\s+-d\s+db\b/);
+    expect(migrateSh).not.toContain("bodycast-production-operation");
     expect(migrateGuard).toContain("verifyFinalGuardReceipt");
-    expect(migrateGuard).toContain("verifyGitHubExecutionProof");
-    expect(migrateGuard).toContain("assertCurrentMigrationRunMatchesProof");
+    expect(migrateGuard).toContain("readPrismaDatabaseIdentity");
     expect(migrateGuard).toContain("assertPrismaTargetMatchesSignedIdentity");
+    expect(migrateGuard).not.toContain("OIDC");
   });
 
   it("retains schema marker requirements and exact release image labels", () => {
@@ -151,6 +152,7 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(deploySh).toContain('write_bodycast_release_marker "$DEPLOY_SHA" app-ready');
     expect(migrateSh).toContain("read_bodycast_release_marker");
     expect(migrateSh).toContain("existing schema-cutover marker requires explicit recovery");
+    expect(migrateGuard).toContain('["prisma", "migrate", "deploy"]');
     expect(releaseMarkerSh).toMatch(/ddl-started\|schema-applied\|app-ready/);
     expect(composeYaml).toContain("org.bodycast.release-sha: ${BODYCAST_DEPLOY_SHA:-unknown}");
     expect(deploySh).toContain('[[ "$deployed_container_sha" == "$DEPLOY_SHA" ]]');

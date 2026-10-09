@@ -5,14 +5,17 @@ import { pathToFileURL } from "node:url";
 import { isBackupFresh, withPrismaLockTimeout } from "./production-migration-release.mjs";
 import { verifyFinalGuardReceipt } from "./production-migration-final-guard.mjs";
 import { canonicalSha256 } from "./production-migration-authorization.mjs";
-import { assertCurrentMigrationRunMatchesProof, consumeExecutionProofNonce, readCurrentMigrationRunForDdl, verifyGitHubExecutionProof } from "./production-migration-execution-attestation.mjs";
 import { normalizeWorkflowRuns } from "./production-migration-select-preflight.mjs";
 import { selectLatestApplicablePreflight } from "./production-migration-release.mjs";
 
 const DATABASE_IDENTITY_FIELDS = Object.freeze(["database", "databaseOid", "role", "serverVersion", "serverAddress", "serverPort"]);
 
+function reject(message) {
+  throw new Error("Refusing Prisma DDL: " + message);
+}
+
 export async function readPrismaDatabaseIdentity(databaseUrl) {
-  if (typeof databaseUrl !== "string" || !databaseUrl) throw new Error("Refusing Prisma DDL: final DATABASE_URL is missing.");
+  if (typeof databaseUrl !== "string" || !databaseUrl) reject("final DATABASE_URL is missing.");
   const { PrismaClient } = await import("@prisma/client");
   const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
   try {
@@ -40,7 +43,7 @@ export async function readPrismaDatabaseIdentity(databaseUrl) {
         ), '[]'::json) AS "activeClientBackends"
       `);
     });
-    if (!Array.isArray(rows) || rows.length !== 1) throw new Error("identity query returned an unexpected row count.");
+    if (!Array.isArray(rows) || rows.length !== 1) reject("identity query returned an unexpected row count.");
     const row = rows[0];
     const identity = {
       database: row.database,
@@ -57,7 +60,7 @@ export async function readPrismaDatabaseIdentity(databaseUrl) {
       || typeof identity.serverVersion !== "string" || !identity.serverVersion
       || typeof identity.serverAddress !== "string" || !identity.serverAddress
       || !Number.isInteger(identity.serverPort) || identity.serverPort < 1 || identity.serverPort > 65535) {
-      throw new Error("identity query returned an incomplete PostgreSQL endpoint.");
+      reject("identity query returned an incomplete PostgreSQL endpoint.");
     }
     const writerDrain = {
       schemaVersion: 1,
@@ -79,7 +82,7 @@ export function assertPrismaTargetMatchesSignedIdentity(receipt, targetState, no
   if (!/^[a-f0-9]{64}$/.test(String(receipt?.productionIdentityDigest ?? ""))
     || !identity || Object.keys(identity).sort().join("\0") !== [...DATABASE_IDENTITY_FIELDS].sort().join("\0")
     || canonicalSha256(identity) !== receipt.productionIdentityDigest) {
-    throw new Error("Migration blocked: final Prisma DATABASE_URL target differs from the signed production identity.");
+    reject("final Prisma DATABASE_URL target differs from the verified production identity.");
   }
   const observedAt = Date.parse(writerDrain?.observedAt);
   const ageMs = now - observedAt;
@@ -88,7 +91,7 @@ export function assertPrismaTargetMatchesSignedIdentity(receipt, targetState, no
     || writerDrain.identityPolicy !== "no-other-client-backends"
     || !Array.isArray(writerDrain.activeClientBackends) || writerDrain.activeClientBackends.length > 0
     || !Number.isFinite(ageMs) || ageMs < -60_000 || ageMs > 30_000) {
-    throw new Error("Migration blocked: final Prisma writer-drain observation is missing, stale, or has active/unknown client backends.");
+    reject("final Prisma writer-drain observation is missing, stale, or has active/unknown client backends.");
   }
   return true;
 }
@@ -99,15 +102,13 @@ export function assertLatestPreflightMatchesExecutionProof(proof, latest) {
     || latest.runStartedAt !== proof.preflightRunStartedAt
     || latest.repository !== proof.repository || latest.workflowPath !== proof.preflightWorkflowPath
     || latest.headSha !== proof.releaseSha || latest.status !== "completed" || latest.conclusion !== "success") {
-    throw new Error("Refusing Prisma DDL: a newer or changed preflight attempt superseded the challenge-bound execution proof.");
+    reject("latest admitted preflight attempt does not match the verified migration authorization.");
   }
   return true;
 }
 
 export async function readLatestApplicablePreflightForDdl(proof, fetchImpl = fetch) {
-  if (!/^[a-f0-9]{40}$/.test(String(proof?.releaseSha ?? ""))) {
-    throw new Error("Refusing Prisma DDL: OIDC execution proof lacks a valid release SHA.");
-  }
+  if (!/^[a-f0-9]{40}$/.test(String(proof?.releaseSha ?? ""))) reject("verified authorization lacks a valid release SHA.");
   const workflowFile = "production-migration-preflight.yml";
   let nextUrl = "https://api.github.com/repos/krustallik/body-model/actions/workflows/" + workflowFile + "/runs?per_page=100";
   const records = [];
@@ -115,64 +116,57 @@ export async function readLatestApplicablePreflightForDdl(proof, fetchImpl = fet
   while (nextUrl) {
     const url = new URL(nextUrl);
     if (url.origin !== "https://api.github.com" || !url.pathname.endsWith("/actions/workflows/" + workflowFile + "/runs")) {
-      throw new Error("Refusing Prisma DDL: preflight status API returned an unexpected pagination target.");
+      reject("preflight status API returned an unexpected pagination target.");
     }
     const response = await fetchImpl(url, {
       headers: { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "BodyCast-production-migration-guard" },
-      redirect: "error",
-      cache: "no-store",
-      signal: AbortSignal.timeout(15_000),
+      redirect: "error", cache: "no-store", signal: AbortSignal.timeout(15_000),
     });
-    if (!response?.ok) throw new Error("Refusing Prisma DDL: live preflight status lookup failed (" + (response?.status ?? "unknown") + ").");
+    if (!response?.ok) reject("live preflight status lookup failed (" + (response?.status ?? "unknown") + ").");
     const body = await response.json();
-    if (!Array.isArray(body?.workflow_runs)) throw new Error("Refusing Prisma DDL: preflight status response is malformed.");
+    if (!Array.isArray(body?.workflow_runs)) reject("preflight status response is malformed.");
     records.push(...body.workflow_runs);
     const nextLink = response.headers?.get("link")?.split(",").map((part) => part.trim())
       .find((part) => /;\s*rel="?next"?/.test(part));
     nextUrl = nextLink?.match(/^<([^>]+)>/)?.[1] ?? null;
     pages += 1;
-    if (pages > 100) throw new Error("Refusing Prisma DDL: preflight status history exceeds the safe pagination limit.");
+    if (pages > 100) reject("preflight status history exceeds the safe pagination limit.");
   }
   const normalized = normalizeWorkflowRuns(records);
   const workflowIds = [...new Set(normalized.map((run) => String(run.workflowId)))];
-  if (workflowIds.length !== 1 || !/^[1-9][0-9]*$/.test(workflowIds[0])) {
-    throw new Error("Refusing Prisma DDL: preflight workflow identity is missing or ambiguous.");
-  }
+  if (workflowIds.length !== 1 || !/^[1-9][0-9]*$/.test(workflowIds[0])) reject("preflight workflow identity is missing or ambiguous.");
   const selected = selectLatestApplicablePreflight(normalized, {
-    repository: "krustallik/body-model",
-    workflowId: workflowIds[0],
-    releaseSha: proof.releaseSha,
-    manifestId: proof.manifestId,
+    repository: "krustallik/body-model", workflowId: workflowIds[0], releaseSha: proof.releaseSha, manifestId: proof.manifestId,
   });
   assertLatestPreflightMatchesExecutionProof(proof, selected);
   return selected;
 }
+
+export function assertBackupFreshAtDdlStart(receipt, now = Date.now()) {
+  const ddlStartedAt = new Date(now).toISOString();
+  if (!isBackupFresh(receipt?.backupSnapshotAt, ddlStartedAt)) reject("production backup snapshot is not fresh at DDL start (maximum 60 minutes).");
+  return ddlStartedAt;
+}
+
 export async function assertPrismaMigrationAuthorized(environment = process.env, now = Date.now()) {
   const databaseUrl = environment.DATABASE_URL;
-  if (!databaseUrl) throw new Error("DATABASE_URL is required for migrations.");
+  if (!databaseUrl) reject("DATABASE_URL is required for migrations.");
   const receiptPath = environment.BODYCAST_FINAL_GUARD_RECEIPT;
   const envelopePath = environment.BODYCAST_AUTHORIZATION_ENVELOPE;
   const keysPath = environment.BODYCAST_VERIFICATION_KEYS;
-  const proofPath = environment.BODYCAST_EXECUTION_PROOF;
-  const executionChallenge = environment.BODYCAST_DDL_EXECUTION_CHALLENGE;
-  if (!receiptPath || !envelopePath || !keysPath || !proofPath
-    || !/^[a-f0-9]{64}$/.test(String(executionChallenge ?? ""))) {
-    throw new Error("Refusing Prisma DDL without signed final-guard, challenge-bound GitHub OIDC proof, and one-time challenge.");
-  }
-  for (const filePath of [receiptPath, envelopePath, keysPath, proofPath]) {
+  if (!receiptPath || !envelopePath || !keysPath) reject("signed final-guard receipt, owner authorization, and verifier keys are required.");
+  for (const filePath of [receiptPath, envelopePath, keysPath]) {
     const details = await lstat(filePath);
-    if (!details.isFile() || details.isSymbolicLink()) throw new Error("Refusing Prisma DDL: signed final-guard evidence path is not a regular file.");
+    if (!details.isFile() || details.isSymbolicLink()) reject("migration authorization path is not a regular file.");
   }
-  const [receipt, envelope, allowlist, executionProof] = await Promise.all([
+  const [receipt, envelope, allowlist] = await Promise.all([
     readFile(receiptPath, "utf8").then((value) => JSON.parse(value)),
     readFile(envelopePath, "utf8").then((value) => value.trimEnd()),
     readFile(keysPath, "utf8").then((value) => JSON.parse(value)),
-    readFile(proofPath, "utf8").then((value) => value.trimEnd()),
   ]);
-  verifyFinalGuardReceipt({
-    receipt,
-    envelope,
-    allowlist,
+  if (environment.BODYCAST_RELEASE_SHA !== environment.BODYCAST_CANONICAL_MAIN_SHA) reject("release SHA is not the freshly checked canonical main tip.");
+  const verified = verifyFinalGuardReceipt({
+    receipt, envelope, allowlist,
     currentWorkflowId: environment.BODYCAST_AUTHORIZATION_WORKFLOW_ID,
     currentWorkflowRunId: environment.BODYCAST_AUTHORIZATION_RUN_ID,
     currentWorkflowRunAttempt: Number(environment.BODYCAST_AUTHORIZATION_RUN_ATTEMPT),
@@ -180,25 +174,18 @@ export async function assertPrismaMigrationAuthorized(environment = process.env,
     releaseSha: environment.BODYCAST_RELEASE_SHA,
     now,
   });
-  const verifiedExecutionProof = await verifyGitHubExecutionProof(executionProof, {
-    authorizationEnvelope: envelope, allowlist, expectedChallenge: executionChallenge, now,
-  });
+  assertBackupFreshAtDdlStart(verified.receipt, now);
   return {
-    databaseUrl: withPrismaLockTimeout(databaseUrl, 5000),
-    receipt,
+    databaseUrl,
+    receipt: verified.receipt,
     envelope,
     allowlist,
-    executionProof,
-    verifiedExecutionProof,
-    executionChallenge,
+    currentWorkflowId: environment.BODYCAST_AUTHORIZATION_WORKFLOW_ID,
+    currentWorkflowRunId: environment.BODYCAST_AUTHORIZATION_RUN_ID,
+    currentWorkflowRunAttempt: Number(environment.BODYCAST_AUTHORIZATION_RUN_ATTEMPT),
+    currentMainSha: environment.BODYCAST_CANONICAL_MAIN_SHA,
+    releaseSha: environment.BODYCAST_RELEASE_SHA,
   };
-}
-export function assertBackupFreshAtDdlStart(receipt, now = Date.now()) {
-  const ddlStartedAt = new Date(now).toISOString();
-  if (!isBackupFresh(receipt?.backupSnapshotAt, ddlStartedAt)) {
-    throw new Error("Refusing Prisma DDL: the production backup snapshot is not fresh at DDL start (maximum 60 minutes).");
-  }
-  return ddlStartedAt;
 }
 
 export async function startPrismaMigrationAtDdlBoundary({
@@ -207,71 +194,40 @@ export async function startPrismaMigrationAtDdlBoundary({
   now = Date.now,
   spawn = spawnSync,
   identityProbe = readPrismaDatabaseIdentity,
-  latestPreflightProbe = readLatestApplicablePreflightForDdl,
-  currentMigrationRunProbe = readCurrentMigrationRunForDdl,
-  executionProofVerifier = verifyGitHubExecutionProof,
-  nonceDirectory = environment.BODYCAST_DDL_ATTESTATION_NONCE_DIR,
 } = {}) {
-  if (!authorized?.receipt || !authorized?.databaseUrl || !authorized?.envelope || !authorized?.allowlist
-    || !authorized?.executionProof || !authorized?.verifiedExecutionProof
-    || !/^[a-f0-9]{64}$/.test(String(authorized?.executionChallenge ?? "")) || !nonceDirectory) {
-    throw new Error("Refusing Prisma DDL without verified authorization, current GitHub OIDC proof, and replay ledger.");
+  if (!authorized?.receipt || !authorized?.envelope || !authorized?.allowlist || !authorized?.databaseUrl) {
+    reject("verified signed authorization and final live guard are required.");
   }
-  const initialProof = await executionProofVerifier(authorized.executionProof, {
-    authorizationEnvelope: authorized.envelope,
+  const finalGuard = verifyFinalGuardReceipt({
+    receipt: authorized.receipt,
+    envelope: authorized.envelope,
     allowlist: authorized.allowlist,
-    expectedChallenge: authorized.executionChallenge,
+    currentWorkflowId: authorized.currentWorkflowId,
+    currentWorkflowRunId: authorized.currentWorkflowRunId,
+    currentWorkflowRunAttempt: authorized.currentWorkflowRunAttempt,
+    currentMainSha: authorized.currentMainSha,
+    releaseSha: authorized.releaseSha,
     now: now(),
   });
-  if (canonicalSha256(initialProof) !== canonicalSha256(authorized.verifiedExecutionProof)) {
-    throw new Error("Refusing Prisma DDL: verified GitHub OIDC proof claims do not match the signed token.");
-  }
-  const ddlStartedAt = now();
-  const boundaryProof = await executionProofVerifier(authorized.executionProof, {
-    authorizationEnvelope: authorized.envelope,
-    allowlist: authorized.allowlist,
-    expectedChallenge: authorized.executionChallenge,
-    now: ddlStartedAt,
-  });
-  if (canonicalSha256(boundaryProof) !== canonicalSha256(initialProof)) {
-    throw new Error("Refusing Prisma DDL: GitHub OIDC proof claims changed before the DDL boundary.");
-  }
-  assertBackupFreshAtDdlStart(authorized.receipt, ddlStartedAt);
-  await consumeExecutionProofNonce(boundaryProof, nonceDirectory);
-  const latestPreflight = await latestPreflightProbe(boundaryProof);
-  assertLatestPreflightMatchesExecutionProof(boundaryProof, latestPreflight);
-  const currentRun = await currentMigrationRunProbe(boundaryProof);
-  assertCurrentMigrationRunMatchesProof(boundaryProof, currentRun, now());
-  const spawnBoundaryNow = now();
-  const finalProof = await executionProofVerifier(authorized.executionProof, {
-    authorizationEnvelope: authorized.envelope,
-    allowlist: authorized.allowlist,
-    expectedChallenge: authorized.executionChallenge,
-    now: spawnBoundaryNow,
-  });
-  if (canonicalSha256(finalProof) !== canonicalSha256(boundaryProof)) {
-    throw new Error("Refusing Prisma DDL: GitHub OIDC proof changed during final pre-spawn checks.");
-  }
-  assertBackupFreshAtDdlStart(authorized.receipt, spawnBoundaryNow);
-  const actualIdentity = await identityProbe(authorized.databaseUrl);
-  const finalDdlBoundaryNow = now();
-  if (Date.parse(boundaryProof.expiresAt) <= finalDdlBoundaryNow) {
-    throw new Error("Refusing Prisma DDL: challenge-bound GitHub OIDC proof expired during final target probe.");
-  }
-  assertBackupFreshAtDdlStart(authorized.receipt, finalDdlBoundaryNow);
-  assertPrismaTargetMatchesSignedIdentity(authorized.receipt, actualIdentity, finalDdlBoundaryNow);
+  if (finalGuard.verified !== true) reject("signed final live guard could not be verified.");
+  assertBackupFreshAtDdlStart(finalGuard.receipt, now());
+  const databaseUrl = withPrismaLockTimeout(authorized.databaseUrl, 5000);
+  const actualIdentity = await identityProbe(databaseUrl);
+  assertPrismaTargetMatchesSignedIdentity(finalGuard.receipt, actualIdentity, now());
+  assertBackupFreshAtDdlStart(finalGuard.receipt, now());
   return spawn("npx", ["prisma", "migrate", "deploy"], {
     stdio: "inherit",
-    env: { ...environment, DATABASE_URL: authorized.databaseUrl },
+    env: { ...environment, DATABASE_URL: databaseUrl },
     shell: false,
     cwd: path.resolve("/app"),
   });
 }
+
 async function main() {
   const authorized = await assertPrismaMigrationAuthorized();
   const result = await startPrismaMigrationAtDdlBoundary({ authorized });
   if (result.error) throw result.error;
-  if (result.signal) throw new Error("Prisma migrate deploy terminated by " + result.signal + ".");
+  if (result.signal) reject("Prisma migrate deploy terminated by " + result.signal + ".");
   process.exitCode = result.status ?? 1;
 }
 

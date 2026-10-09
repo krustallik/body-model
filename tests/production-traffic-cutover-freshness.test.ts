@@ -85,8 +85,11 @@ describe("fallback production traffic cutover freshness and recovery", () => {
     expect(existsSync(path.join(fixture.root, "docker.log"))).toBe(false);
   }, 30_000);
 
-  it.skipIf(!bashAvailable)("keeps the installed host-operation client boundary for supported traffic operations", () => {
+  it.skipIf(!bashAvailable)("does not invoke a legacy authority shim for the fixed traffic operation", () => {
     const fixture = createFixture();
+    writeFileSync(path.join(fixture.routes, "bodycast.caddy"), maintenanceRoute());
+    writeFileSync(path.join(fixture.root, "active-route"), "maintenance\n");
+    writeFileSync(path.join(fixture.root, "app-sha"), `${fixture.candidateSha}\n`);
     const hostClient = path.join(fixture.root, "bodycast-production-operation");
     const hostClientLog = path.join(fixture.root, "host-operation.log");
     writeFileSync(hostClient, "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$HOST_CLIENT_LOG\"\nexit 47\n", { mode: 0o755 });
@@ -99,15 +102,13 @@ describe("fallback production traffic cutover freshness and recovery", () => {
 
     const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh serve", {
       BODYCAST_DEPLOY_SHA: fixture.candidateSha,
-      BODYCAST_AUTHORIZATION_WORKFLOW_ID: "1",
-      BODYCAST_AUTHORIZATION_RUN_ID: "2",
-      BODYCAST_AUTHORIZATION_RUN_ATTEMPT: "1",
       HOST_CLIENT_LOG: toBashPath(hostClientLog),
     });
 
-    expect(result.status).toBe(47);
-    expect(readFileSync(hostClientLog, "utf8")).toContain("traffic-serve");
-    expect(existsSync(path.join(fixture.root, "docker.log"))).toBe(false);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(existsSync(hostClientLog)).toBe(false);
+    expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).toContain("unified-v4-traffic-check.mjs");
+    expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).toContain("live-route-mutation:serving");
   }, 30_000);
 
   it.skipIf(!bashAvailable)("blocks serving when main advances during the final V4 child check", () => {

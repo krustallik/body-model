@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Protected final migration guard. Confirmation strings alone never authorize DDL.
+# Protected final migration guard. Only the owner-gated workflow invokes this fixed script.
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
@@ -15,6 +15,7 @@ readonly APP_HOST="${APP_HOST:?APP_HOST is required for the maintenance topology
 readonly CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:?CADDY_ROUTES_PATH is required for the maintenance topology gate}"
 export APP_HOST CADDY_ROUTES_PATH
 source "$ROOT_DIR/scripts/production-release-marker.sh"
+source "$ROOT_DIR/scripts/production-release-lock.sh"
 
 fail() { echo "Production migration blocked: $*" >&2; exit 1; }
 
@@ -28,11 +29,7 @@ for name in authorization-envelope.json preflight-result.json preflight-evidence
   [[ -f "$CONTEXT_DIR/$name" && ! -L "$CONTEXT_DIR/$name" ]] || fail "required signed context file is missing or a symlink: $name"
 done
 
-# The trusted host authority owns the challenge and DDL execution. The workflow
-# supplies only a one-time proof over stdin after receiving the broker challenge.
-HOST_OPERATION_CLIENT="/usr/local/bin/bodycast-production-operation"
-[[ -x "$HOST_OPERATION_CLIENT" ]] || fail "the recovery-aware host authority is unavailable; production migration is fail-closed."
-authorization_context_id="migration-${BODYCAST_AUTHORIZATION_WORKFLOW_ID}-${BODYCAST_AUTHORIZATION_RUN_ID}-${BODYCAST_AUTHORIZATION_RUN_ATTEMPT}"
+bodycast_acquire_production_release_lock
 
 [[ "$(git rev-parse --show-toplevel)" == "$ROOT_DIR" ]] || fail "repository root does not match the deployment checkout."
 [[ "$(git rev-parse HEAD)" == "$RELEASE_SHA" ]] || fail "deployment checkout does not equal the authorized release SHA."
@@ -44,11 +41,6 @@ else
   marker_status=$?
 fi
 [[ "$marker_status" -eq 1 ]] || fail "an existing schema-cutover marker requires explicit recovery; this migration run cannot reuse it."
-
-GIT_DIR="$(git rev-parse --absolute-git-dir)"
-command -v flock >/dev/null 2>&1 || fail "flock is unavailable; migration serialization cannot be guaranteed."
-exec 9>"$GIT_DIR/bodycast-production-migration.lock"
-flock -n 9 || fail "another production migration process holds the repository lock."
 
 # Fetch canonical main into a dedicated ref without changing the mutable origin remote.
 GIT_TERMINAL_PROMPT=0 git -c "remote.bodycast-canonical.url=$CANONICAL_URL" \
@@ -76,13 +68,9 @@ done <<'MIGRATIONS'
 MIGRATIONS
 
 compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
-compose up -d db
-for attempt in $(seq 1 30); do
-  db_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$DB_CONTAINER")"
-  [[ "$db_status" == "healthy" ]] && break
-  [[ "$attempt" != "30" ]] || fail "production PostgreSQL did not become healthy."
-  sleep 5
-done
+db_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$DB_CONTAINER")" \
+  || fail "existing production PostgreSQL is unavailable; migration will not start it."
+[[ "$db_status" == "healthy" ]] || fail "existing production PostgreSQL is not healthy; migration will not start it."
 
 compose --profile tools build migrate
 IMAGE_RESULT="$(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-migration-image-check.mjs /app)"
@@ -94,61 +82,14 @@ bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" \
   > "$CONTEXT_DIR/live-report.json"
 
 # Re-evaluate the live full pending set and signed provenance immediately before DDL.
-CHALLENGE_GUARD_RECEIPT="$CONTEXT_DIR/challenge-guard-receipt.json"
 GUARD_RECEIPT="$CONTEXT_DIR/final-guard-receipt.json"
-[[ ! -e "$CHALLENGE_GUARD_RECEIPT" && ! -L "$CHALLENGE_GUARD_RECEIPT" \
-  && ! -e "$GUARD_RECEIPT" && ! -L "$GUARD_RECEIPT" ]] || fail "a guard receipt already exists in the private context."
-compose --profile tools run --rm --no-deps \
-  --user "$(id -u):$(id -g)" \
-  --volume "$CONTEXT_DIR:/run/bodycast:ro" \
-  --entrypoint node migrate /app/scripts/production-migration-final-guard.mjs \
-  --before-ddl \
-  --envelope /run/bodycast/authorization-envelope.json \
-  --preflight /run/bodycast/preflight-result.json \
-  --evidence /run/bodycast/preflight-evidence.json \
-  --restore /run/bodycast/restore-result.json \
-  --artifact /run/bodycast/artifact-metadata.json \
-  --live-report /run/bodycast/live-report.json \
-  --main-sha "$CANONICAL_MAIN_SHA" \
-  --release-sha "$RELEASE_SHA" \
-  --manifest "$MANIFEST_ID" \
-  --current-workflow-id "$BODYCAST_AUTHORIZATION_WORKFLOW_ID" \
-  --current-workflow-run-id "$BODYCAST_AUTHORIZATION_RUN_ID" \
-  --current-workflow-run-attempt "$BODYCAST_AUTHORIZATION_RUN_ATTEMPT" \
-  --keys /app/scripts/production-migration-verification-keys.json \
-  --repository /app \
-  > "$CHALLENGE_GUARD_RECEIPT"
-chmod 600 "$CHALLENGE_GUARD_RECEIPT"
-
-# The broker challenge is derived from a fresh authoritative migration snapshot
-# after the existing signed live guard. The workflow requests OIDC proof for this
-# exact broker nonce; no caller-generated nonce can authorize migration.
-CHALLENGE_REQUEST_ID="$authorization_context_id-challenge"
-CHALLENGE_RESPONSE="$("$HOST_OPERATION_CLIENT" migration-challenge \
-  --request-id "$CHALLENGE_REQUEST_ID" \
-  --release-sha "$RELEASE_SHA" \
-  --canonical-main-sha "$CANONICAL_MAIN_SHA" \
-  --migration-manifest-id "$MANIFEST_ID" \
-  --authorization-context-id "$authorization_context_id")" || fail "the host authority did not issue a live migration challenge."
-CHALLENGE_FIELDS="$(node -e 'const value=JSON.parse(process.argv[1])?.result?.challenge; if (!value) process.exit(2); process.stdout.write([value.nonce,value.challengeId,value.challengeDigest].join("\n"));' "$CHALLENGE_RESPONSE")" \
-  || fail "the host authority returned a malformed migration challenge."
-CHALLENGE_NONCE="$(printf '%s\n' "$CHALLENGE_FIELDS" | sed -n '1p')"
-CHALLENGE_ID="$(printf '%s\n' "$CHALLENGE_FIELDS" | sed -n '2p')"
-CHALLENGE_DIGEST="$(printf '%s\n' "$CHALLENGE_FIELDS" | sed -n '3p')"
-[[ "$CHALLENGE_NONCE" =~ ^[a-f0-9]{64}$ && "$CHALLENGE_ID" =~ ^[a-f0-9]{64}$ \
-  && "$CHALLENGE_DIGEST" =~ ^[a-f0-9]{64}$ ]] || fail "the host authority returned invalid challenge bindings."
-printf 'BODYCAST_DDL_CHALLENGE:%s\n' "$CHALLENGE_NONCE"
-IFS= read -r EXECUTION_PROOF || fail "workflow runner did not return a current challenge-bound GitHub OIDC proof."
-PROOF_LENGTH="$(printf '%s' "$EXECUTION_PROOF" | wc -c | tr -d ' ')"
-[[ "$EXECUTION_PROOF" =~ ^[^[:space:]]+\.[^[:space:]]+\.[^[:space:]]+$ && "$PROOF_LENGTH" -le 32768 ]] \
-  || fail "GitHub OIDC proof is empty, malformed, or oversized."
-
-# Re-sample PostgreSQL sessions and host topology after the OIDC round trip. The
-# signed preflight is still verified, but never reused as the final drain result.
+# Re-sample PostgreSQL sessions and host topology immediately before the DDL
+# boundary. The signed preflight is verified, but never reused as the final drain.
 bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" \
   < <(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-db-preflight.mjs) \
   > "$CONTEXT_DIR/live-report-final.json"
 bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
+[[ ! -e "$GUARD_RECEIPT" && ! -L "$GUARD_RECEIPT" ]] || fail "a final guard receipt already exists in the private context."
 compose --profile tools run --rm --no-deps \
   --user "$(id -u):$(id -g)" \
   --volume "$CONTEXT_DIR:/run/bodycast:ro" \
@@ -170,15 +111,36 @@ compose --profile tools run --rm --no-deps \
   --repository /app \
   > "$GUARD_RECEIPT"
 chmod 600 "$GUARD_RECEIPT"
-# The final local live guard above closes the workflow round trip. The broker
-# independently rechecks its challenge-bound state immediately before execution;
-# the fixed adapter writes the irreversible marker before Prisma and postflights.
-printf '%s\n' "$EXECUTION_PROOF" | "$HOST_OPERATION_CLIENT" forward-migration \
-  --request-id "${authorization_context_id}-execute" \
-  --release-sha "$RELEASE_SHA" \
-  --canonical-main-sha "$CANONICAL_MAIN_SHA" \
-  --migration-manifest-id "$MANIFEST_ID" \
-  --authorization-context-id "$authorization_context_id" \
-  --challenge-id "$CHALLENGE_ID" \
-  --challenge-digest "$CHALLENGE_DIGEST" \
-  --execution-proof-stdin
+
+# This durable marker is the irreversible boundary. From this point onward any
+# error leaves traffic in maintenance and blocks both app deploy and rerunning DDL.
+write_bodycast_release_marker "$RELEASE_SHA" ddl-started
+compose --profile tools run --rm --no-deps \
+  --user "$(id -u):$(id -g)" \
+  --volume "$CONTEXT_DIR:/run/bodycast:ro" \
+  --env "BODYCAST_RELEASE_SHA=$RELEASE_SHA" \
+  --env "BODYCAST_CANONICAL_MAIN_SHA=$CANONICAL_MAIN_SHA" \
+  --env "BODYCAST_AUTHORIZATION_WORKFLOW_ID=$BODYCAST_AUTHORIZATION_WORKFLOW_ID" \
+  --env "BODYCAST_AUTHORIZATION_RUN_ID=$BODYCAST_AUTHORIZATION_RUN_ID" \
+  --env "BODYCAST_AUTHORIZATION_RUN_ATTEMPT=$BODYCAST_AUTHORIZATION_RUN_ATTEMPT" \
+  --env BODYCAST_FINAL_GUARD_RECEIPT=/run/bodycast/final-guard-receipt.json \
+  --env BODYCAST_AUTHORIZATION_ENVELOPE=/run/bodycast/authorization-envelope.json \
+  --env BODYCAST_VERIFICATION_KEYS=/app/scripts/production-migration-verification-keys.json \
+  --entrypoint node migrate /app/scripts/run-prisma-migrate-with-lock-timeout.mjs
+
+# The postflight is read-only and must match the rehearsed encrypted-backup restore.
+bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" \
+  < <(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-db-preflight.mjs) \
+  > "$CONTEXT_DIR/live-report-postflight.json"
+compose --profile tools run --rm --no-deps \
+  --user "$(id -u):$(id -g)" \
+  --volume "$CONTEXT_DIR:/run/bodycast:ro" \
+  --entrypoint node migrate /app/scripts/production-migration-final-guard.mjs \
+  --after-ddl \
+  --report /run/bodycast/live-report-postflight.json \
+  --restore /run/bodycast/restore-result.json \
+  --manifest "$MANIFEST_ID" \
+  --repository /app \
+  > "$CONTEXT_DIR/postflight-result.json"
+write_bodycast_release_marker "$RELEASE_SHA" schema-applied
+echo "Reviewed migrations completed and read-only postflight passed; production remains in maintenance until exact-SHA non-serving deploy and V3/V4 gates pass."

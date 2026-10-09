@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { PREVIOUS_SHA, PREVIOUS_IMAGE_ID, CANDIDATE_IMAGE_ID, WRONG_IMAGE_ID, bashAvailable, createFixture, runFixture, advanceMain, appState } from "./helpers/production-release-cutover-fixture";
@@ -77,6 +77,13 @@ describe("fallback maintenance-first production deploy", () => {
 
   it.skipIf(!bashAvailable)("preserves explicit non-serving deployment without reopening traffic", () => {
     const fixture = createFixture();
+    writeFileSync(path.join(fixture.repo, ".git", "bodycast-production-schema-cutover"), [
+      "schemaVersion=1",
+      "manifestId=active-energy-unified-v2",
+      `releaseSha=${fixture.candidateSha}`,
+      "state=schema-applied",
+      "",
+    ].join("\n"), { mode: 0o600 });
     const result = runFixture(fixture, "bash scripts/deploy.sh", {
       DEPLOY_SHA: fixture.candidateSha,
       BODYCAST_NON_SERVING_DEPLOY: "1",
@@ -86,6 +93,6 @@ describe("fallback maintenance-first production deploy", () => {
     expect(appState(fixture)).toEqual({ sha: fixture.candidateSha, imageId: CANDIDATE_IMAGE_ID, status: "healthy", present: "true" });
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
     expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).not.toContain("reverse_proxy");
-    expect(result.stdout).toContain("serving commit was explicitly skipped");
+    expect(result.stdout).toContain("Exact SHA is deployed in confirmed maintenance");
   }, 30_000);
 });

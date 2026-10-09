@@ -519,6 +519,7 @@ export function createFixture(): Fixture {
     "production-release-marker.sh",
     "production-route-path.sh",
     "production-route-primitives.sh",
+    "production-release-lock.sh",
     "production-traffic-cutover.sh",
     "production-writer-drain.sh",
   ]) {
@@ -528,6 +529,7 @@ export function createFixture(): Fixture {
   writeFileSync(path.join(bin, "docker"), fakeDocker, { mode: 0o755 });
   writeFileSync(path.join(bin, "curl"), fakeCurl, { mode: 0o755 });
   writeFileSync(path.join(bin, "git"), fakeGit, { mode: 0o755 });
+  writeFileSync(path.join(bin, "flock"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
   writeFileSync(path.join(routes, "bodycast.caddy"), servingRoute());
 
   execFileSync("git", ["init", "--bare", "--initial-branch=main", remote], { stdio: "ignore" });

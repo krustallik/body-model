@@ -11,44 +11,66 @@ PREFLIGHT="$ROOT/.github/workflows/production-migration-preflight.yml"
 MIGRATE="$ROOT/.github/workflows/production-migrate.yml"
 CUTOVER="$ROOT/scripts/production-traffic-cutover.sh"
 WRITER_DRAIN="$ROOT/scripts/production-writer-drain.mjs"
+DEPLOY_SCRIPT="$ROOT/scripts/deploy.sh"
+SCHEMA_PREFLIGHT="$ROOT/scripts/deploy-preflight-schema.sh"
+LOCK="$ROOT/scripts/production-release-lock.sh"
+DEPLOY_WORKFLOW="$ROOT/.github/workflows/deploy-production.yml"
+ACTIVATE_WORKFLOW="$ROOT/.github/workflows/activate-unified-v4-production.yml"
 grep -Fq 'fetch --no-tags --prune bodycast-canonical' "$DEPLOY"
+grep -Fq 'active-energy-unified-v2' "$DEPLOY"
 grep -Fq -- '--before-ddl' "$DEPLOY"
-grep -Fq 'migration-challenge' "$DEPLOY"
-grep -Fq -- '--challenge-id' "$DEPLOY"
-grep -Fq -- '--challenge-digest' "$DEPLOY"
-grep -Fq -- '--execution-proof-stdin' "$DEPLOY"
-grep -Fq 'BODYCAST_DDL_CHALLENGE:' "$DEPLOY"
-! grep -Fq 'BODYCAST_EXECUTION_PROOF_HANDOFF' "$DEPLOY"
-! grep -Fq -- '--after-ddl' "$DEPLOY"
+grep -Fq -- '--after-ddl' "$DEPLOY"
 ! grep -Fq 'prisma migrate deploy' "$DEPLOY"
+! grep -Fq 'bodycast-production-operation' "$DEPLOY" "$CUTOVER"
+! grep -Fq 'docker compose -f docker-compose.prod.yml up -d db' "$DEPLOY" "$SCHEMA_PREFLIGHT" "$CUTOVER"
+grep -Fq 'write_bodycast_release_marker "$RELEASE_SHA" ddl-started' "$DEPLOY"
+grep -Fq 'write_bodycast_release_marker "$RELEASE_SHA" schema-applied' "$DEPLOY"
 grep -Fq 'verifyFinalGuardReceipt' "$WRAPPER"
-grep -Fq 'verifyGitHubExecutionProof' "$WRAPPER"
 grep -Fq 'assertPrismaTargetMatchesSignedIdentity' "$WRAPPER"
-grep -Fq 'readLatestApplicablePreflightForDdl' "$WRAPPER"
-grep -Fq 'assertCurrentMigrationRunMatchesProof' "$WRAPPER"
-grep -Fq 'withPrismaLockTimeout(databaseUrl, 5000)' "$WRAPPER"
-! grep -Fq 'BODYCAST_FINAL_GUARD_READY' "$DEPLOY" "$WRAPPER"
+grep -Fq 'assertBackupFreshAtDdlStart' "$WRAPPER"
+grep -Fq 'withPrismaLockTimeout(authorized.databaseUrl, 5000)' "$WRAPPER"
+! grep -Fq 'fetch(' "$WRAPPER"
 ! grep -Fq 'CONFIRM_PRODUCTION_MIGRATE' "$DEPLOY" "$WRAPPER"
-grep -Fq 'environment: production-migration-authorization' "$MIGRATE"
+grep -Fq 'github.actor_id == '\''126446430'\''' "$MIGRATE"
+grep -Fq 'assertTrustedOwnerWorkflowRun' "$MIGRATE"
+grep -Fq 'run.triggering_actor?.id' "$ROOT/scripts/github-owner-identity.mjs"
+grep -Fq 'workflow_dispatch:' "$DEPLOY_WORKFLOW"
+! grep -Fq 'workflow_run:' "$DEPLOY_WORKFLOW"
+grep -Fq '126446430' "$DEPLOY_WORKFLOW" "$PREFLIGHT" "$ACTIVATE_WORKFLOW"
+grep -Fq 'workflow_dispatch:' "$ACTIVATE_WORKFLOW"
+grep -Fq 'ACTIVATE_UNIFIED_V4_AND_SERVE' "$ACTIVATE_WORKFLOW"
+! grep -Fq 'workflow_run:' "$ACTIVATE_WORKFLOW"
+grep -Fq 'production-traffic-cutover.sh v3-postflight' "$ACTIVATE_WORKFLOW"
+grep -Fq 'unified-v4-activate-replay.mjs --activate-v4' "$ACTIVATE_WORKFLOW"
 grep -Fq 'npx prisma migrate deploy --schema prisma/schema.prisma' "$PREFLIGHT"
 grep -Fq 'DATABASE_URL: postgresql://bodycast_restore:' "$PREFLIGHT"
 grep -Fq 'production migration: NOT EXECUTED' "$PREFLIGHT"
 grep -Fq 'compose rm --force app' "$CUTOVER"
 grep -Fq 'state !== "absent"' "$WRITER_DRAIN"
-grep -Fq 'schema-cutover marker' "$ROOT/scripts/deploy.sh"
-INITIAL_GUARD_LINE="$(grep -nF '  > "$CHALLENGE_GUARD_RECEIPT"' "$DEPLOY" | cut -d: -f1)"
-CHALLENGE_LINE="$(grep -nF ' migration-challenge' "$DEPLOY" | cut -d: -f1)"
-CHALLENGE_OUTPUT_LINE="$(grep -nF 'BODYCAST_DDL_CHALLENGE:%s' "$DEPLOY" | cut -d: -f1)"
-PROOF_READ_LINE="$(grep -nF 'IFS= read -r EXECUTION_PROOF' "$DEPLOY" | cut -d: -f1)"
-FINAL_GUARD_LINE="$(grep -nF '  > "$GUARD_RECEIPT"' "$DEPLOY" | cut -d: -f1)"
-FORWARD_LINE="$(grep -nF ' forward-migration' "$DEPLOY" | cut -d: -f1)"
-APP_READY_LINE="$(grep -nF 'write_bodycast_release_marker "$DEPLOY_SHA" app-ready' "$ROOT/scripts/deploy.sh" | cut -d: -f1)"
+grep -Fq 'schema-cutover marker' "$DEPLOY_SCRIPT"
+grep -Fq 'production-release-lock.sh' "$DEPLOY" "$DEPLOY_SCRIPT" "$CUTOVER"
+grep -Fq 'flock -n 9' "$LOCK"
+! grep -Fq 'compose up -d --no-deps --force-recreate db' "$DEPLOY_SCRIPT" "$SCHEMA_PREFLIGHT"
+grep -Fq 'compose up -d --no-deps --force-recreate "$APP_SERVICE"' "$DEPLOY_SCRIPT"
+grep -Fq 'BODYCAST_NON_SERVING_DEPLOY=1' "$DEPLOY_WORKFLOW"
+grep -Fq 'Deployment SHA/state does not match' "$DEPLOY_SCRIPT"
+grep -Fq 'Automatic prior-app restoration is disabled' "$DEPLOY_SCRIPT"
+PREFLIGHT_MAINTENANCE_LINE="$(grep -nF 'Enter maintenance and drain the old app before backup' "$PREFLIGHT" | cut -d: -f1)"
+PREFLIGHT_BACKUP_LINE="$(grep -nF 'Capture pg_dump start on production host and create encrypted backup' "$PREFLIGHT" | cut -d: -f1)"
+PREFLIGHT_RESTORE_LINE="$(grep -nF 'Restore snapshot, compare source state, and rehearse exact migrations' "$PREFLIGHT" | cut -d: -f1)"
+[[ -n "$PREFLIGHT_MAINTENANCE_LINE" && -n "$PREFLIGHT_BACKUP_LINE" && -n "$PREFLIGHT_RESTORE_LINE" ]]
+[[ "$PREFLIGHT_MAINTENANCE_LINE" -lt "$PREFLIGHT_BACKUP_LINE" && "$PREFLIGHT_BACKUP_LINE" -lt "$PREFLIGHT_RESTORE_LINE" ]]
+FINAL_GUARD_LINE="$(grep -nF '  --before-ddl' "$DEPLOY" | cut -d: -f1)"
+MARKER_LINE="$(grep -nF 'write_bodycast_release_marker "$RELEASE_SHA" ddl-started' "$DEPLOY" | cut -d: -f1)"
+MIGRATE_LINE="$(grep -nF 'run-prisma-migrate-with-lock-timeout.mjs' "$DEPLOY" | cut -d: -f1)"
+POSTFLIGHT_LINE="$(grep -nF '  --after-ddl' "$DEPLOY" | cut -d: -f1)"
+SCHEMA_APPLIED_LINE="$(grep -nF 'write_bodycast_release_marker "$RELEASE_SHA" schema-applied' "$DEPLOY" | cut -d: -f1)"
+APP_READY_LINE="$(grep -nF 'write_bodycast_release_marker "$DEPLOY_SHA" app-ready' "$DEPLOY_SCRIPT" | cut -d: -f1)"
 APP_SHA_CHECK_LINE="$(grep -nF 'deployed_container_sha=' "$ROOT/scripts/deploy.sh" | cut -d: -f1)"
-[[ -n "$INITIAL_GUARD_LINE" && -n "$CHALLENGE_LINE" && -n "$CHALLENGE_OUTPUT_LINE" && -n "$PROOF_READ_LINE" && -n "$FINAL_GUARD_LINE" && -n "$FORWARD_LINE" ]]
-[[ "$INITIAL_GUARD_LINE" -lt "$CHALLENGE_LINE" && "$CHALLENGE_LINE" -lt "$CHALLENGE_OUTPUT_LINE" && "$CHALLENGE_OUTPUT_LINE" -lt "$PROOF_READ_LINE" ]]
-[[ "$PROOF_READ_LINE" -lt "$FINAL_GUARD_LINE" && "$FINAL_GUARD_LINE" -lt "$FORWARD_LINE" ]]
+[[ -n "$FINAL_GUARD_LINE" && -n "$MARKER_LINE" && -n "$MIGRATE_LINE" && -n "$POSTFLIGHT_LINE" && -n "$SCHEMA_APPLIED_LINE" ]]
+[[ "$FINAL_GUARD_LINE" -lt "$MARKER_LINE" && "$MARKER_LINE" -lt "$MIGRATE_LINE" && "$MIGRATE_LINE" -lt "$POSTFLIGHT_LINE" && "$POSTFLIGHT_LINE" -lt "$SCHEMA_APPLIED_LINE" ]]
 [[ -n "$APP_READY_LINE" && -n "$APP_SHA_CHECK_LINE" && "$APP_SHA_CHECK_LINE" -lt "$APP_READY_LINE" ]]
-! grep -Eq 'trap .*clear_bodycast_release_marker|clear_bodycast_release_marker' "$DEPLOY"
+! grep -Eq 'trap .*clear_bodycast_release_marker|clear_bodycast_release_marker' "$DEPLOY" "$DEPLOY_SCRIPT"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -111,41 +133,37 @@ EXPECTED_FINAL_LINE='- backup artifact: [`'"$ARTIFACT_PROBE"'`](https://github.c
 grep -Fq -- "$EXPECTED_BACKUP_LINE" "$SUMMARY_FILE"
 grep -Fq -- "$EXPECTED_FINAL_LINE" "$SUMMARY_FILE"
 
-# Exercise the real deploy gate with a disposable fixture and command stubs. A
-# missing marker permits the prior SHA to reach the ordinary guarded deploy path;
-# a post-marker process failure must leave the marker in place and block that SHA.
-RECOVERY_ROOT="$TMP/release-marker-deploy-fixture"
-RECOVERY_GIT_DIR="$RECOVERY_ROOT/.git"
-RECOVERY_BIN="$TMP/release-marker-command-stubs"
-RECOVERY_DOCKER_LOG="$TMP/release-marker-docker.log"
+# Exercise exact script effects with a disposable fake Git/Docker host. The
+# migration guard rejection must happen before the durable marker and DDL; once
+# the marker is written, a failed Prisma process remains one-shot and blocks the
+# prior app without Docker mutations.
+FIXTURE_ROOT="$TMP/release-fixture"
+FIXTURE_GIT_DIR="$FIXTURE_ROOT/.git"
+FIXTURE_BIN="$TMP/release-fixture-bin"
+DOCKER_LOG="$TMP/release-fixture-docker.log"
+MIGRATION_COUNT="$TMP/release-fixture-migration-count"
 OLD_RELEASE_SHA="1111111111111111111111111111111111111111"
 REAL_GIT="$(command -v git)"
 NEW_RELEASE_SHA="$("$REAL_GIT" -C "$ROOT" rev-parse --verify 'HEAD^{commit}')"
-if [[ ! "$NEW_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-  echo "Expected current fixture source to resolve to a full commit SHA." >&2
-  exit 1
-fi
-mkdir -p "$RECOVERY_ROOT/scripts" "$RECOVERY_GIT_DIR" "$RECOVERY_BIN" "$TMP/recovery-caddy"
-export FAKE_GIT_LOG="$TMP/recovery-git.log"
-cp "$ROOT/scripts/deploy.sh" "$RECOVERY_ROOT/scripts/deploy.sh"
-cp "$ROOT/scripts/deploy-main-freshness.sh" "$RECOVERY_ROOT/scripts/deploy-main-freshness.sh"
-cp "$ROOT/scripts/production-route-path.sh" "$RECOVERY_ROOT/scripts/production-route-path.sh"
-cp "$ROOT/scripts/production-route-primitives.sh" "$RECOVERY_ROOT/scripts/production-route-primitives.sh"
-cp "$ROOT/scripts/deploy-migrate.sh" "$RECOVERY_ROOT/scripts/deploy-migrate.sh"
-cp "$ROOT/scripts/production-release-marker.sh" "$RECOVERY_ROOT/scripts/production-release-marker.sh"
-# Redirect only the disposable script copy to a temp host-client path. The real
-# production entrypoint remains pinned to /usr/local/bin.
-sed -i "s|/usr/local/bin/bodycast-production-operation|$RECOVERY_BIN/bodycast-production-operation|g" \
-  "$RECOVERY_ROOT/scripts/deploy-migrate.sh"
-printf '#!/usr/bin/env bash\nexit 0\n' > "$RECOVERY_ROOT/scripts/deploy-preflight-schema.sh"
-printf '#!/usr/bin/env bash\nexit 0\n' > "$RECOVERY_ROOT/scripts/production-traffic-cutover.sh"
-printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "{}\\n"\n' > "$RECOVERY_ROOT/scripts/production-db-target.sh"
-printf '#!/usr/bin/env bash\nexit 0\n' > "$RECOVERY_ROOT/scripts/production-writer-drain.sh"
-printf 'services: {}\n' > "$RECOVERY_ROOT/docker-compose.prod.yml"
-RECOVERY_CONTEXT="$TMP/release-marker-context"
-mkdir -p "$RECOVERY_CONTEXT"
+[[ "$NEW_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Fixture source SHA is invalid." >&2; exit 1; }
+mkdir -p "$FIXTURE_ROOT/scripts" "$FIXTURE_GIT_DIR" "$FIXTURE_BIN" "$TMP/fixture-caddy"
+export FAKE_GIT_LOG="$TMP/release-fixture-git.log"
+cp "$DEPLOY_SCRIPT" "$FIXTURE_ROOT/scripts/deploy.sh"
+cp "$ROOT/scripts/deploy-main-freshness.sh" "$FIXTURE_ROOT/scripts/deploy-main-freshness.sh"
+cp "$ROOT/scripts/production-route-path.sh" "$FIXTURE_ROOT/scripts/production-route-path.sh"
+cp "$ROOT/scripts/production-route-primitives.sh" "$FIXTURE_ROOT/scripts/production-route-primitives.sh"
+cp "$DEPLOY" "$FIXTURE_ROOT/scripts/deploy-migrate.sh"
+cp "$ROOT/scripts/production-release-marker.sh" "$FIXTURE_ROOT/scripts/production-release-marker.sh"
+cp "$LOCK" "$FIXTURE_ROOT/scripts/production-release-lock.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$FIXTURE_ROOT/scripts/deploy-preflight-schema.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$FIXTURE_ROOT/scripts/production-traffic-cutover.sh"
+printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "{}\\n"\n' > "$FIXTURE_ROOT/scripts/production-db-target.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$FIXTURE_ROOT/scripts/production-writer-drain.sh"
+printf 'services: {}\n' > "$FIXTURE_ROOT/docker-compose.prod.yml"
+FIXTURE_CONTEXT="$TMP/release-fixture-context"
+mkdir -p "$FIXTURE_CONTEXT"
 for context_file in authorization-envelope.json preflight-result.json preflight-evidence.json restore-result.json artifact-metadata.json; do
-  : > "$RECOVERY_CONTEXT/$context_file"
+  : > "$FIXTURE_CONTEXT/$context_file"
 done
 for migration_name in \
   20261002100000_active_energy_canonical_resolution \
@@ -155,26 +173,22 @@ for migration_name in \
   20261006110000_relative_muscle_legacy_identity \
   20261006130000_unified_v4_glycogen_water_rollout; do
   migration_path="prisma/migrations/$migration_name/migration.sql"
-  mkdir -p "$RECOVERY_ROOT/$(dirname "$migration_path")"
-  "$REAL_GIT" -C "$ROOT" cat-file blob "$NEW_RELEASE_SHA:$migration_path" > "$RECOVERY_ROOT/$migration_path"
+  mkdir -p "$FIXTURE_ROOT/$(dirname "$migration_path")"
+  "$REAL_GIT" -C "$ROOT" cat-file blob "$NEW_RELEASE_SHA:$migration_path" > "$FIXTURE_ROOT/$migration_path"
 done
-cat > "$RECOVERY_BIN/git" <<'COMMAND'
+cat > "$FIXTURE_BIN/git" <<'COMMAND'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-printf '%s | gitdir=%s\n' "$*" "${RECOVERY_GIT_DIR:-unset}" >> "$FAKE_GIT_LOG"
+printf '%s\n' "$*" >> "$FAKE_GIT_LOG"
 if [[ "$1" == "rev-parse" && "$2" == "--absolute-git-dir" ]]; then
-  printf '%s\n' "$RECOVERY_GIT_DIR"
+  printf '%s\n' "$FIXTURE_GIT_DIR"
 elif [[ "$1" == "rev-parse" && "$2" == "--show-toplevel" ]]; then
-  printf '%s\n' "$RECOVERY_ROOT"
-elif [[ "$1" == "rev-parse" && "$2" == "HEAD" ]]; then
-  printf '%s\n' "$FAKE_DEPLOY_SHA"
-elif [[ "$1" == "rev-parse" && "$2" == "--verify" ]]; then
+  printf '%s\n' "$FIXTURE_ROOT"
+elif [[ "$1" == "rev-parse" && ( "$2" == "HEAD" || "$2" == "--verify" ) ]]; then
   printf '%s\n' "$FAKE_DEPLOY_SHA"
 elif [[ "$1" == "cat-file" ]]; then
   "$REAL_GIT" -C "$SOURCE_ROOT" "$@"
-elif [[ "$1" == "-c" && "$3" == "fetch" ]]; then
-  exit 0
-elif [[ "$1" == "fetch" || "$1" == "checkout" ]]; then
+elif [[ "$1" == "-c" && "$3" == "fetch" || "$1" == "fetch" ]]; then
   exit 0
 elif [[ "$1" == "status" ]]; then
   exit 0
@@ -183,132 +197,102 @@ else
   exit 90
 fi
 COMMAND
-cat > "$RECOVERY_BIN/docker" <<'COMMAND'
+cat > "$FIXTURE_BIN/docker" <<'COMMAND'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"
-if [[ "$1" == "image" && "$2" == "inspect" ]]; then exit 1; fi
 if [[ "$1" == "inspect" ]]; then printf 'healthy\n'; exit 0; fi
 if [[ "$1" == "compose" && "$*" == *"config --quiet"* ]]; then exit 47; fi
 if [[ "$1" == "compose" && "$*" == *"production-db-preflight.mjs"* ]]; then printf '{}\n'; exit 0; fi
-if [[ "$1" == "compose" && "$*" == *"--before-ddl"* ]]; then printf '{}\n'; exit 0; fi
 if [[ "$1" == "compose" && "$*" == *"production-migration-image-check.mjs"* ]]; then printf 'fixture image checked\n'; exit 0; fi
-if [[ "$1" == "compose" && "$*" == *"run"* && "$*" == *" migrate" ]]; then
-  echo "Unexpected Prisma migration spawn in marker failure test." >&2
-  exit 99
+if [[ "$1" == "compose" && "$*" == *"--before-ddl"* ]]; then
+  [[ "${FAKE_GUARD_MODE:-allow}" == "allow" ]] || { echo "final signed backup/restore guard rejected" >&2; exit 41; }
+  printf '{"ready":true}\n'
+  exit 0
+fi
+if [[ "$1" == "compose" && "$*" == *"run-prisma-migrate-with-lock-timeout.mjs"* ]]; then
+  count=0
+  [[ ! -f "$FAKE_MIGRATION_COUNT" ]] || count="$(<"$FAKE_MIGRATION_COUNT")"
+  printf '%s\n' "$((count + 1))" > "$FAKE_MIGRATION_COUNT"
+  [[ "${FAKE_MIGRATION_EXIT:-77}" == "0" ]] && exit 0
+  echo "synthetic Prisma failure after the DDL boundary" >&2
+  exit 77
 fi
 exit 0
 COMMAND
-cat > "$RECOVERY_BIN/flock" <<'COMMAND'
+cat > "$FIXTURE_BIN/flock" <<'COMMAND'
 #!/usr/bin/env bash
 exit 0
 COMMAND
-chmod +x "$RECOVERY_BIN/git" "$RECOVERY_BIN/docker" "$RECOVERY_BIN/flock"
+chmod +x "$FIXTURE_BIN/git" "$FIXTURE_BIN/docker" "$FIXTURE_BIN/flock"
 
-run_fixture_deploy() {
-  local sha="$1"
-  : > "$RECOVERY_DOCKER_LOG"
-  if env PATH="$RECOVERY_BIN:$PATH" \
-    RECOVERY_ROOT="$RECOVERY_ROOT" RECOVERY_GIT_DIR="$RECOVERY_GIT_DIR" FAKE_DEPLOY_SHA="$sha" \
-    FAKE_DOCKER_LOG="$RECOVERY_DOCKER_LOG" FAKE_GIT_LOG="$TMP/recovery-git.log" DEPLOY_SHA="$sha" \
-    APP_HOST=bodycast.example CADDY_ROUTES_PATH="$TMP/recovery-caddy" \
-    bash "$RECOVERY_ROOT/scripts/deploy.sh" > "$TMP/recovery-deploy.log" 2>&1; then
-    echo "Expected fixture deployment to stop at its deliberate pre-cutover failure." >&2
-    return 1
-  else
-    local status=$?
-    [[ "$status" -ne 0 ]]
-  fi
+run_fixture_command() {
+  local mode="$1" sha="$2" output="$3" script="$4"
+  env PATH="$FIXTURE_BIN:$PATH" FIXTURE_ROOT="$FIXTURE_ROOT" FIXTURE_GIT_DIR="$FIXTURE_GIT_DIR" \
+    FAKE_DEPLOY_SHA="$sha" REAL_GIT="$REAL_GIT" SOURCE_ROOT="$ROOT" \
+    FAKE_DOCKER_LOG="$DOCKER_LOG" FAKE_GIT_LOG="$FAKE_GIT_LOG" \
+    FAKE_MIGRATION_COUNT="$MIGRATION_COUNT" FAKE_GUARD_MODE="$mode" \
+    BODYCAST_MIGRATION_MANIFEST_ID=active-energy-unified-v2 RELEASE_SHA="$NEW_RELEASE_SHA" \
+    BODYCAST_MIGRATION_CONTEXT_DIR="$FIXTURE_CONTEXT" \
+    BODYCAST_AUTHORIZATION_WORKFLOW_ID=1 BODYCAST_AUTHORIZATION_RUN_ID=2 BODYCAST_AUTHORIZATION_RUN_ATTEMPT=1 \
+    DEPLOY_SHA="$sha" APP_HOST=bodycast.example CADDY_ROUTES_PATH="$TMP/fixture-caddy" \
+    bash "$script" > "$output" 2>&1
 }
 
-# Before the irreversible marker, the prior SHA can reach the guarded deploy path.
-run_fixture_deploy "$OLD_RELEASE_SHA"
-grep -Fq 'compose -f docker-compose.prod.yml config --quiet' "$RECOVERY_DOCKER_LOG"
-test ! -e "$RECOVERY_GIT_DIR/bodycast-production-schema-cutover"
-
-# Migration must fail closed when authority is absent; caller-controlled env
-# cannot enable the old in-checkout migration implementation.
-AUTHORITY_LOG="$TMP/migration-authority.log"
-: > "$RECOVERY_DOCKER_LOG"
-if env PATH="$RECOVERY_BIN:$PATH" \
-  RECOVERY_ROOT="$RECOVERY_ROOT" RECOVERY_GIT_DIR="$RECOVERY_GIT_DIR" \
-  FAKE_DEPLOY_SHA="$NEW_RELEASE_SHA" REAL_GIT="$REAL_GIT" SOURCE_ROOT="$ROOT" \
-  FAKE_DOCKER_LOG="$RECOVERY_DOCKER_LOG" FAKE_GIT_LOG="$TMP/recovery-git.log" \
-  FAKE_AUTHORITY_LOG="$AUTHORITY_LOG" BODYCAST_AUTHORITY_EXECUTION=1 \
-  BODYCAST_MIGRATION_MANIFEST_ID=active-energy-unified-v2 RELEASE_SHA="$NEW_RELEASE_SHA" \
-  BODYCAST_MIGRATION_CONTEXT_DIR="$RECOVERY_CONTEXT" APP_HOST=bodycast.example \
-  CADDY_ROUTES_PATH="$TMP/recovery-caddy" \
-  BODYCAST_AUTHORIZATION_WORKFLOW_ID=1 BODYCAST_AUTHORIZATION_RUN_ID=2 \
-  BODYCAST_AUTHORIZATION_RUN_ATTEMPT=1 \
-  bash "$RECOVERY_ROOT/scripts/deploy-migrate.sh" > "$TMP/recovery-migrate.log" 2>&1; then
-  echo "Expected production migration to fail closed without the host authority." >&2
+# Before the marker, a rejected signed final guard leaves the database and
+# marker untouched and does not invoke Prisma (covers missing/invalid backup,
+# key, restore rehearsal, or other signed readiness facts as one fail-closed gate).
+: > "$DOCKER_LOG"
+if run_fixture_command reject "$NEW_RELEASE_SHA" "$TMP/guard-rejected.log" "$FIXTURE_ROOT/scripts/deploy-migrate.sh"; then
+  echo "Expected the final migration guard to reject incomplete backup/restore evidence." >&2
   exit 1
 fi
-grep -Fq 'recovery-aware host authority is unavailable' "$TMP/recovery-migrate.log"
-test ! -s "$AUTHORITY_LOG"
-test ! -e "$RECOVERY_GIT_DIR/bodycast-production-schema-cutover"
-test ! -s "$RECOVERY_DOCKER_LOG"
+grep -Fq 'final signed backup/restore guard rejected' "$TMP/guard-rejected.log"
+test ! -e "$FIXTURE_GIT_DIR/bodycast-production-schema-cutover"
+test ! -e "$MIGRATION_COUNT"
+! grep -Fq 'run-prisma-migrate-with-lock-timeout.mjs' "$DOCKER_LOG"
 
-# With the fixed host client present, the script obtains a one-time challenge,
-# returns the challenge nonce to the workflow, then sends the fresh proof over
-# stdin with the exact challenge bindings. The host broker owns readiness and
-# invokes its immutable fixed adapter.
-cat > "$RECOVERY_BIN/bodycast-production-operation" <<'COMMAND'
-#!/usr/bin/env bash
-set -Eeuo pipefail
-printf '%s\n' "$*" >> "$FAKE_AUTHORITY_LOG"
-if [[ "$1" == "migration-challenge" ]]; then
-  printf '%s\n' '{"ok":true,"result":{"challenge":{"nonce":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","challengeId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","challengeDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}}}'
-else
-  cat >/dev/null
-  printf '%s\n' '{"ok":true,"result":{"accepted":true}}'
+# Failure after the durable boundary is not retried and leaves the prior app
+# blocked before any Docker operation.
+rm -f "$FIXTURE_CONTEXT/final-guard-receipt.json"
+: > "$DOCKER_LOG"
+if run_fixture_command allow "$NEW_RELEASE_SHA" "$TMP/migration-failed.log" "$FIXTURE_ROOT/scripts/deploy-migrate.sh"; then
+  echo "Expected the Prisma fixture to fail after the irreversible marker." >&2
+  exit 1
 fi
-COMMAND
-chmod +x "$RECOVERY_BIN/bodycast-production-operation"
-: > "$AUTHORITY_LOG"
-printf '%s\n' 'header.payload.signature' | env PATH="$RECOVERY_BIN:$PATH" \
-  RECOVERY_ROOT="$RECOVERY_ROOT" RECOVERY_GIT_DIR="$RECOVERY_GIT_DIR" \
-  FAKE_DEPLOY_SHA="$NEW_RELEASE_SHA" REAL_GIT="$REAL_GIT" SOURCE_ROOT="$ROOT" \
-  FAKE_DOCKER_LOG="$RECOVERY_DOCKER_LOG" FAKE_GIT_LOG="$TMP/recovery-git.log" \
-  FAKE_AUTHORITY_LOG="$AUTHORITY_LOG" BODYCAST_AUTHORITY_EXECUTION=1 \
-  BODYCAST_MIGRATION_MANIFEST_ID=active-energy-unified-v2 RELEASE_SHA="$NEW_RELEASE_SHA" \
-  BODYCAST_MIGRATION_CONTEXT_DIR="$RECOVERY_CONTEXT" APP_HOST=bodycast.example \
-  CADDY_ROUTES_PATH="$TMP/recovery-caddy" \
-  BODYCAST_AUTHORIZATION_WORKFLOW_ID=1 BODYCAST_AUTHORIZATION_RUN_ID=2 \
-  BODYCAST_AUTHORIZATION_RUN_ATTEMPT=1 \
-  bash "$RECOVERY_ROOT/scripts/deploy-migrate.sh" > "$TMP/recovery-migrate.log" 2>&1
-grep -Fq "migration-challenge --request-id migration-1-2-1-challenge --release-sha $NEW_RELEASE_SHA --canonical-main-sha $NEW_RELEASE_SHA --migration-manifest-id active-energy-unified-v2 --authorization-context-id migration-1-2-1" "$AUTHORITY_LOG"
-grep -Fq "forward-migration --request-id migration-1-2-1-execute --release-sha $NEW_RELEASE_SHA --canonical-main-sha $NEW_RELEASE_SHA --migration-manifest-id active-energy-unified-v2 --authorization-context-id migration-1-2-1 --challenge-id bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --challenge-digest cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc --execution-proof-stdin" "$AUTHORITY_LOG"
-test ! -e "$RECOVERY_GIT_DIR/bodycast-production-schema-cutover"
-grep -Fq 'BODYCAST_DDL_CHALLENGE:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$TMP/recovery-migrate.log"
-! grep -Fq 'prisma migrate deploy' "$RECOVERY_DOCKER_LOG"
-
-# An active marker blocks the old binary. The authority-mediated migration
-# readiness test covers the corresponding host-side block.
-(
-  cd "$RECOVERY_ROOT"
-  PATH="$RECOVERY_BIN:$PATH" RECOVERY_GIT_DIR="$RECOVERY_GIT_DIR" FAKE_GIT_LOG="$TMP/recovery-git.log" \
-    bash -c 'source scripts/production-release-marker.sh; write_bodycast_release_marker "$1" ddl-started' _ "$NEW_RELEASE_SHA"
-)
-run_fixture_deploy "$OLD_RELEASE_SHA"
-grep -Fq 'Deployment SHA/state does not match' "$TMP/recovery-deploy.log" || {
-  cat "$TMP/recovery-deploy.log" >&2
-  cat "$TMP/recovery-git.log" >&2
-  cat "$RECOVERY_GIT_DIR/bodycast-production-schema-cutover" >&2
-  (cd "$RECOVERY_ROOT" && PATH="$RECOVERY_BIN:$PATH" RECOVERY_GIT_DIR="$RECOVERY_GIT_DIR" FAKE_GIT_LOG="$TMP/recovery-git.log" bash -c 'source scripts/production-release-marker.sh; printf "path=%s\n" "$BODYCAST_RELEASE_MARKER_PATH"; read_bodycast_release_marker; printf "state=%s sha=%s\n" "$BODYCAST_MARKER_STATE" "$BODYCAST_MARKER_RELEASE_SHA"') >&2
+grep -Fq 'synthetic Prisma failure after the DDL boundary' "$TMP/migration-failed.log" || {
+  cat "$TMP/migration-failed.log" >&2
   exit 1
 }
-test ! -s "$RECOVERY_DOCKER_LOG"
+grep -Eq '^state=ddl-started$' "$FIXTURE_GIT_DIR/bodycast-production-schema-cutover"
+[[ "$(<"$MIGRATION_COUNT")" == "1" ]]
+test ! -e "$FIXTURE_GIT_DIR/bodycast-production-schema-cutover.new"
 
-# Only an explicit operator recovery step after verified restore removes the
-# marker; the same prior-SHA deploy then reaches the ordinary guarded path.
-(
-  cd "$RECOVERY_ROOT"
-  PATH="$RECOVERY_BIN:$PATH" RECOVERY_GIT_DIR="$RECOVERY_GIT_DIR" RESTORE_VERIFIED=1 FAKE_GIT_LOG="$TMP/recovery-git.log" \
-    bash -c 'test "$RESTORE_VERIFIED" = 1; source scripts/production-release-marker.sh; clear_bodycast_release_marker'
-)
-test ! -e "$RECOVERY_GIT_DIR/bodycast-production-schema-cutover"
-run_fixture_deploy "$OLD_RELEASE_SHA"
-grep -Fq 'compose -f docker-compose.prod.yml config --quiet' "$RECOVERY_DOCKER_LOG"
+: > "$DOCKER_LOG"
+if run_fixture_command allow "$NEW_RELEASE_SHA" "$TMP/migration-rerun-blocked.log" "$FIXTURE_ROOT/scripts/deploy-migrate.sh"; then
+  echo "Expected a second migration attempt to be blocked by the durable marker." >&2
+  exit 1
+fi
+grep -Fq 'existing schema-cutover marker requires explicit recovery' "$TMP/migration-rerun-blocked.log"
+test ! -s "$DOCKER_LOG"
+[[ "$(<"$MIGRATION_COUNT")" == "1" ]]
+
+if run_fixture_command allow "$OLD_RELEASE_SHA" "$TMP/old-app-blocked.log" "$FIXTURE_ROOT/scripts/deploy.sh"; then
+  echo "Expected the previous app SHA to be blocked while the marker exists." >&2
+  exit 1
+fi
+grep -Fq 'Deployment SHA/state does not match' "$TMP/old-app-blocked.log"
+test ! -s "$DOCKER_LOG"
+
+# With no marker, prior-release deploy reaches only the read-only/preflight path;
+# this fixture deliberately stops at config validation before any app mutation.
+rm -f "$FIXTURE_GIT_DIR/bodycast-production-schema-cutover"
+: > "$DOCKER_LOG"
+if run_fixture_command allow "$OLD_RELEASE_SHA" "$TMP/pre-marker-deploy.log" "$FIXTURE_ROOT/scripts/deploy.sh"; then
+  echo "Expected the fixture to stop at its intentional Compose config failure." >&2
+  exit 1
+fi
+grep -Fq 'compose -f docker-compose.prod.yml config --quiet' "$DOCKER_LOG"
+test ! -e "$FIXTURE_GIT_DIR/bodycast-production-schema-cutover"
 
 printf '%s\n' 'Production migration release-tooling shell regressions passed.'

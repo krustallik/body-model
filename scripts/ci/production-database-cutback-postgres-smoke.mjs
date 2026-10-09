@@ -15,7 +15,7 @@ import {
 import { assertCutbackRestoredDatabaseIdentity, verifyPreviousAppMigrationCompatibility,
   verifyRecreatedPreviousAppRuntime } from "../production-database-cutback.mjs";
 
-const IMAGE = "postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24";
+const IMAGE = "public.ecr.aws/docker/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24";
 const databaseUrl = process.env.BODYCAST_CUTBACK_TEST_DATABASE_URL;
 if (!databaseUrl) throw new Error("BODYCAST_CUTBACK_TEST_DATABASE_URL is required for isolated PostgreSQL cutback integration.");
 const url = new URL(databaseUrl);

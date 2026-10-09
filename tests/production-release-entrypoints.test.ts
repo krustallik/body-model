@@ -88,18 +88,42 @@ describe("active production release entrypoints", () => {
     const capture = readFileSync(resolve("scripts/production-traffic-cutover.sh"), "utf8");
     expect(cutback).toContain("RESTORE_PRE_DDL_DATABASE");
     expect(cutback).toContain("production-writer-drain.sh\" --assert");
-    expect(cutback).toContain("production-app-runtime-digest.mjs");
+    expect(cutback).toContain("--verify-previous-app-runtime");
     expect(cutback).toContain("--single-transaction");
     expect(cutback).toContain("database-restored");
     expect(cutback).toContain("rollback-app-ready");
     expect(cutback).toContain("bodycast_failed_${FAILED_MIGRATION_RUN_ID}");
     expect(cutback).toContain("bodycast-production-pre-ddl-release");
-    expect(cutback).toContain('record_lines" == "6"');
+    expect(cutback).toContain('record_lines" == "12"');
     expect(workflow).toContain('echo "current_main_sha=$CURRENT_MAIN_SHA" >> "$GITHUB_OUTPUT"');
     expect(workflow).toContain('flock -n 9');
     expect(workflow).toContain('CUTBACK_RUN_ATTEMPT="$5"');
     expect(workflow).toContain('/tmp/bodycast-cutback-context-$CUTBACK_RUN_ID-$CUTBACK_RUN_ATTEMPT');
     expect(capture).toContain("previousRuntimeConfigDigest");
+    expect(capture).toContain("production-previous-app-provenance.mjs");
+    expect(capture).toContain("legacy-unlabeled-v1");
+    expect(cutback).toContain("PREVIOUS_PROVENANCE_KIND");
+    expect(cutback).toContain('BODYCAST_DEPLOY_SHA="unknown"');
+    expect(cutback).toContain("PREVIOUS_RUNTIME_CONFIG_DIGEST");
+  });
+
+  it("captures versioned previous-app and DB history provenance before stopping the app, then binds it to the checked preflight", () => {
+    const capture = readFileSync(resolve("scripts/production-traffic-cutover.sh"), "utf8");
+    const workflow = readFileSync(resolve(workflowDir, "production-migration-preflight.yml"), "utf8");
+    const captureOrder = [
+      'node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" capture "$target_sha"',
+      'docker image tag "$previous_image_id" bodycast-app:rollback',
+      "stop_old_app",
+    ].map((fragment, index) => index === 2 ? capture.lastIndexOf(fragment) : capture.indexOf(fragment));
+    expect(captureOrder.every((index) => index >= 0)).toBe(true);
+    expect(captureOrder).toEqual([...captureOrder].sort((left, right) => left - right));
+    const preflightOrder = [
+      'node scripts/production-migration-preflight.mjs --preflight',
+      "--verify-preflight",
+      'name: Capture pg_dump start on production host and create encrypted backup',
+    ].map((fragment) => workflow.indexOf(fragment));
+    expect(preflightOrder.every((index) => index >= 0)).toBe(true);
+    expect(preflightOrder).toEqual([...preflightOrder].sort((left, right) => left - right));
   });
 
   it("keeps the destructive DB swap behind owner context, maintenance, restore, history, and compatibility gates", () => {
@@ -112,8 +136,9 @@ describe("active production release entrypoints", () => {
       "--verify-live-identity",
       "CREATE DATABASE ${stage_db}",
       "--verify-restored",
-      "--verify-previous-release",
+      "--verify-previous-app",
       "ALTER DATABASE bodycast RENAME TO ${failed_db}",
+      "promoted-previous-app-compatibility",
       'write_bodycast_release_marker "$FAILED_RELEASE_SHA" database-restored',
       "compose up -d --no-deps --no-build app",
       "bodycast_publish_staged_route",
@@ -124,5 +149,12 @@ describe("active production release entrypoints", () => {
     expect(cutback).toContain("RESTORE_PRE_DDL_DATABASE");
     expect(cutback).toContain("bodycast_failed_${FAILED_MIGRATION_RUN_ID}");
     expect(cutback).not.toContain("prisma migrate deploy");
+    const preflight = readFileSync(resolve(workflowDir, "production-migration-preflight.yml"), "utf8");
+    expect(preflight).toContain("--verify-preflight");
+    expect(preflight).toContain("previous-app-provenance-verification.json");
+    expect(preflight).toContain("result.previousAppProvenance = binding");
+    expect(preflight).toContain("bodycast-production-pre-ddl-release");
+    expect(readFileSync(resolve("scripts/production-database-cutback.mjs"), "utf8"))
+      .toContain("assertPreviousAppProvenanceBoundToPreflight(record, preflightResult)");
   });
 });

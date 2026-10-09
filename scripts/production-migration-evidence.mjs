@@ -12,6 +12,13 @@ export function createPreflightEvidence({ rawReport, preflightResult, restoreRes
   if (preflightResult.manifestId !== context.manifestId || preflightResult.identity?.database !== "bodycast") {
     throw new Error("Preflight report does not match the released manifest or expected production database.");
   }
+  const previousAppProvenance = preflightResult.previousAppProvenance;
+  if (previousAppProvenance?.schemaVersion !== 2
+    || !["legacy-unlabeled-v1", "release-sha-v1"].includes(previousAppProvenance.provenanceKind)
+    || !/^[a-f0-9]{64}$/.test(String(previousAppProvenance.recordDigest ?? ""))
+    || !/^[a-f0-9]{64}$/.test(String(previousAppProvenance.previousRuntimeConfigDigest ?? ""))) {
+    throw new Error("Versioned previous-app identity is missing from the signed preflight result.");
+  }
   const writerDrain = evaluateProductionWriterDrain(rawReport);
   if (!writerDrain.ready || preflightResult.writerDrainReady !== true
     || canonicalSha256(rawReport.writerDrain) !== preflightResult.writerDrainDigest) {
@@ -32,6 +39,7 @@ export function createPreflightEvidence({ rawReport, preflightResult, restoreRes
     pendingMigrationNames: [...preflightResult.pending].sort(),
     pendingSetDigest: canonicalSha256([...preflightResult.pending].sort()),
     preflightResultDigest: canonicalSha256(preflightResult),
+    previousAppProvenance,
     backupFileDigest: createHash("sha256").update(backupBytes).digest("hex"),
     backupSnapshotAt: new Date(backupSnapshot).toISOString(),
     restoreResultDigest: canonicalSha256(restoreResult),

@@ -5,6 +5,16 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { canonicalSha256, verifyHistoricalMigrationAuthorizationEnvelope } from "./production-migration-authorization.mjs";
 import { verifyRestoredBackup } from "./production-migration-preflight.mjs";
+import { productionAppRuntimeDigest } from "./production-app-runtime-digest.mjs";
+import {
+  LEGACY_PREVIOUS_APP_PROVENANCE,
+  assertPreviousAppProvenanceBoundToPreflight,
+  parsePreviousAppProvenance,
+  previousAppDatabaseCompatibilityDigests,
+  validatePreviousAppProvenance,
+  verifyLegacyPreviousAppRestoredCompatibility,
+  verifyPreviousAppCaptureMatchesPreflight,
+} from "./production-previous-app-provenance.mjs";
 
 const BUNDLE_FILES = Object.freeze([
   "authorization-envelope.json", "artifact-metadata.json", "preflight-evidence.json",
@@ -25,7 +35,8 @@ export function verifyCutbackEvidenceBundle({
     expected: { workflowRunId: expectedFailedRunId, releaseSha: expectedFailedSha, currentMainSha: expectedFailedSha },
   });
   const claims = historical.payload;
-  if (preflightResult?.readyForOwnerAuthorization !== true || preflightResult?.manifestId !== claims.manifestId) {
+  if (preflightResult?.readyForOwnerAuthorization !== true || preflightResult?.blockers?.length
+    || preflightResult?.pendingExactlyExpected !== true || preflightResult?.manifestId !== claims.manifestId) {
     fail("signed preflight is not an admitted exact-manifest preflight.");
   }
   if (restoreResult?.verified !== true || restoreResult?.postflightReady !== true) {
@@ -39,11 +50,17 @@ export function verifyCutbackEvidenceBundle({
   if (canonicalSha256(preflightReport?.identity) !== canonicalSha256(preflightResult?.identity)) {
     fail("preflight result identity differs from the original read-only PostgreSQL report.");
   }
+  for (const field of ["migrations", "objects", "tables"]) {
+    if (canonicalSha256(preflightReport?.[field]) !== canonicalSha256(preflightResult?.[field])) {
+      fail(`preflight result ${field} differs from the original read-only PostgreSQL report.`);
+    }
+  }
   if (preflightEvidence?.verified !== true || preflightEvidence.releaseSha !== claims.releaseSha
     || preflightEvidence.manifestId !== claims.manifestId
     || String(preflightEvidence.workflowRunId) !== claims.preflightRunId
     || Number(preflightEvidence.workflowRunAttempt) !== claims.preflightRunAttempt
     || preflightEvidence.preflightResultDigest !== claims.preflightResultDigest
+    || canonicalSha256(preflightEvidence.previousAppProvenance) !== canonicalSha256(preflightResult.previousAppProvenance)
     || preflightEvidence.restoreResultDigest !== claims.restoreResultDigest
     || preflightEvidence.productionIdentityDigest !== claims.productionIdentityDigest
     || preflightEvidence.backupSnapshotAt !== claims.backupSnapshotAt
@@ -65,7 +82,8 @@ export function verifyCutbackEvidenceBundle({
     || canonicalSha256(preflightResult.pending) !== claims.pendingSetDigest) {
     fail("the signed migration pending set is inconsistent.");
   }
-  return { verified: true, claims, backupFileDigest: preflightEvidence.backupFileDigest };
+  return { verified: true, claims, backupFileDigest: preflightEvidence.backupFileDigest,
+    preflightResultDigest: claims.preflightResultDigest };
 }
 
 export function assertCutbackLiveDatabaseIdentity({ claims, liveReport }) {
@@ -151,6 +169,68 @@ export function verifyPreviousReleaseMigrationCompatibility({ repositoryPath, pr
   return { verified: true, migrationCount: rows.length };
 }
 
+export function verifyPreviousAppMigrationCompatibility({
+  recordText, targetSha, contextVerified, preflightResultDigest, preflightResult, restoredReport, restoreResult, readabilityReport,
+  repositoryPath,
+}) {
+  const record = parsePreviousAppProvenance(recordText);
+  validatePreviousAppProvenance(record, targetSha);
+  if (contextVerified !== true || preflightResultDigest !== canonicalSha256(preflightResult)) {
+    fail("previous-app compatibility is not bound to the verified owner-signed preflight.");
+  }
+  try {
+    verifyPreviousAppCaptureMatchesPreflight(record, preflightResult, targetSha);
+    assertPreviousAppProvenanceBoundToPreflight(record, preflightResult);
+  } catch (error) {
+    fail(error.message);
+  }
+
+  if (record.provenanceKind === LEGACY_PREVIOUS_APP_PROVENANCE) {
+    try {
+      return verifyLegacyPreviousAppRestoredCompatibility({ record, targetSha, preflightResult, preflightResultDigest,
+        contextVerified, restoredReport, restoreResult, readabilityReport });
+    } catch (error) {
+      fail(error.message);
+    }
+  }
+
+  const baselineRestore = verifyRestoredBackup(preflightResult, {
+    ...restoredReport,
+    readability: readabilityReport?.readability,
+  });
+  if (!baselineRestore.verified) fail(`Restored previous-release schema or history differs from the signed baseline: ${baselineRestore.blockers.join(" ")}`);
+  const history = readabilityReport?.migrationHistory ?? readabilityReport?.migrations;
+  const sourceDigests = previousAppDatabaseCompatibilityDigests(preflightResult);
+  if (!Array.isArray(history)) fail("Restored previous-release Prisma migration history is unavailable.");
+  const result = verifyPreviousReleaseMigrationCompatibility({ repositoryPath, previousSha: record.previousSha, restoredHistory: history });
+  return { ...result, provenanceKind: record.provenanceKind, schemaDigest: sourceDigests.schemaDigest,
+    migrationHistoryDigest: sourceDigests.migrationHistoryDigest };
+}
+
+export function verifyRecreatedPreviousAppRuntime({ recordText, container }) {
+  const record = parsePreviousAppProvenance(recordText);
+  const labels = container?.Config?.Labels;
+  const expectedReleaseLabel = record.provenanceKind === LEGACY_PREVIOUS_APP_PROVENANCE
+    ? "unknown"
+    : record.previousSha;
+  if (!container || typeof container !== "object" || Array.isArray(container)
+    || !/^[a-f0-9]{64}$/.test(String(container.Id ?? "")) || container.Id === record.previousContainerId
+    || container.Image !== record.previousImageId
+    || container?.State?.Health?.Status !== "healthy"
+    || !labels || typeof labels !== "object" || Array.isArray(labels)
+    || labels["org.bodycast.release-sha"] !== expectedReleaseLabel) {
+    fail("recreated previous app is not the new healthy container from the exact captured image and provenance mode.");
+  }
+  let runtimeDigest;
+  try { runtimeDigest = productionAppRuntimeDigest(container); }
+  catch (error) { fail(`recreated previous app runtime identity is unavailable: ${error.message}`); }
+  if (runtimeDigest !== record.previousRuntimeConfigDigest) {
+    fail("recreated previous app runtime configuration differs from the exact captured runtime.");
+  }
+  return { verified: true, provenanceKind: record.provenanceKind, imageId: record.previousImageId,
+    containerId: container.Id, health: container.State.Health.Status, runtimeConfigDigest: runtimeDigest };
+}
+
 async function readJson(filePath) { return JSON.parse(await readFile(filePath, "utf8")); }
 
 async function main() {
@@ -169,7 +249,8 @@ async function main() {
     process.stdout.write(JSON.stringify({ verified: result.verified, releaseSha: result.claims.releaseSha,
       preflightRunId: result.claims.preflightRunId, preflightRunAttempt: result.claims.preflightRunAttempt,
       backupArtifactId: result.claims.backupArtifactId, backupArtifactDigest: result.claims.backupArtifactDigest,
-      backupFileDigest: result.backupFileDigest, productionIdentityDigest: result.claims.productionIdentityDigest }) + "\n");
+      backupFileDigest: result.backupFileDigest, productionIdentityDigest: result.claims.productionIdentityDigest,
+      preflightResultDigest: result.preflightResultDigest }) + "\n");
     return;
   }
   if (mode === "--verify-live-identity") {
@@ -209,6 +290,42 @@ async function main() {
     const result = verifyPreviousReleaseMigrationCompatibility({ repositoryPath: process.cwd(), previousSha,
       restoredHistory: history.migrationHistory ?? history.migrations });
     process.stdout.write(JSON.stringify(result) + "\n");
+    return;
+  }
+  if (mode === "--verify-previous-app") {
+    const [directory, expectedFailedRunId, expectedFailedSha, backupPath, capturePath, restoredReportPath, readabilityPath] = args;
+    if (!directory || !/^[1-9][0-9]*$/.test(expectedFailedRunId ?? "")
+      || !/^[a-f0-9]{40}$/.test(expectedFailedSha ?? "") || !backupPath || !capturePath || !restoredReportPath || !readabilityPath) {
+      fail("usage: --verify-previous-app <bundle-dir> <failed-run-id> <failed-sha> <encrypted-backup> <capture-record> <restored-report> <readability-report>.");
+    }
+    const values = await Promise.all(BUNDLE_FILES.map((name) => readFile(path.join(directory, name), "utf8")));
+    const [envelope, artifactMetadata, preflightEvidence, preflightReport, preflightResult, restoreResult] = values.map(JSON.parse);
+    const backupFileBytes = await readFile(backupPath);
+    const allowlist = await readJson(path.resolve("scripts/production-migration-verification-keys.json"));
+    const context = verifyCutbackEvidenceBundle({ envelope, artifactMetadata, preflightEvidence, preflightReport,
+      preflightResult, restoreResult, allowlist, expectedFailedRunId, expectedFailedSha, backupFileBytes });
+    const [recordText, restoredReport, readabilityReport] = await Promise.all([
+      readFile(capturePath, "utf8"), readJson(restoredReportPath), readJson(readabilityPath),
+    ]);
+    const result = verifyPreviousAppMigrationCompatibility({ recordText, targetSha: expectedFailedSha, contextVerified: context.verified,
+      preflightResultDigest: context.preflightResultDigest, preflightResult, restoredReport, restoreResult, readabilityReport,
+      repositoryPath: process.cwd() });
+    process.stdout.write(JSON.stringify({ verified: true, provenanceKind: result.provenanceKind,
+      restoredMigrationCount: result.migrationCount ?? result.restoredMigrationCount }) + "\n");
+    return;
+  }
+  if (mode === "--verify-previous-app-runtime") {
+    const [capturePath] = args;
+    if (!capturePath) fail("usage: --verify-previous-app-runtime <capture-record> (Docker inspect JSON on stdin).");
+    let text = "";
+    for await (const chunk of process.stdin) {
+      text += chunk;
+      if (Buffer.byteLength(text, "utf8") > 4 * 1024 * 1024) fail("previous-app Docker inspection exceeds its bound.");
+    }
+    const containers = JSON.parse(text);
+    if (!Array.isArray(containers) || containers.length !== 1) fail("previous-app Docker inspection must contain exactly one container.");
+    const recordText = await readFile(capturePath, "utf8");
+    process.stdout.write(JSON.stringify(verifyRecreatedPreviousAppRuntime({ recordText, container: containers[0] })) + "\n");
     return;
   }
   fail("unsupported fixed verification mode.");

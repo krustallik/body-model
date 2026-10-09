@@ -119,7 +119,7 @@ publish_maintenance_route() {
 
 capture_pre_ddl_previous_release() {
   [[ "${BODYCAST_CAPTURE_PRE_DDL_RELEASE:-0}" == "1" ]] || return 0
-  local target_sha existing_app previous_sha previous_image_id previous_container_id previous_health previous_runtime_digest pinned_id
+  local target_sha existing_app capture_text provenance_kind previous_sha previous_image_id previous_container_id previous_health previous_runtime_digest pinned_id
   local record_path record_tmp git_dir
   target_sha="${BODYCAST_DEPLOY_SHA:-${DEPLOY_SHA:-}}"
   [[ "$target_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Pre-DDL recovery capture requires the exact target SHA." >&2; return 1; }
@@ -131,17 +131,26 @@ capture_pre_ddl_previous_release() {
   }
   existing_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}')"
   [[ "$existing_app" == "$APP_CONTAINER" ]] || { echo "A healthy prior app is required for recoverable migration preflight." >&2; return 1; }
-  previous_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER")"
-  previous_image_id="$(docker inspect --format '{{.Image}}' "$APP_CONTAINER")"
-  previous_container_id="$(docker inspect --format '{{.Id}}' "$APP_CONTAINER")"
-  previous_health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$APP_CONTAINER")"
-  [[ "$previous_sha" =~ ^[a-f0-9]{40}$ && "$previous_image_id" =~ ^sha256:[a-f0-9]{64}$ \
-    && "$previous_container_id" =~ ^[a-f0-9]{64}$ && "$previous_health" == "healthy" ]] || {
-    echo "The prior app SHA, immutable image, container, or health is not verifiable." >&2
+  if ! capture_text="$(node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" capture "$target_sha")"; then
+    echo "The prior app image/runtime or read-only database migration/schema provenance is not verifiable." >&2
+    return 1
+  fi
+  provenance_kind="$(printf '%s\n' "$capture_text" | sed -n 's/^provenanceKind=//p')"
+  previous_sha="$(printf '%s\n' "$capture_text" | sed -n 's/^previousSha=//p')"
+  previous_image_id="$(printf '%s\n' "$capture_text" | sed -n 's/^previousImageId=//p')"
+  previous_container_id="$(printf '%s\n' "$capture_text" | sed -n 's/^previousContainerId=//p')"
+  previous_health="$(printf '%s\n' "$capture_text" | sed -n 's/^previousHealth=//p')"
+  previous_runtime_digest="$(printf '%s\n' "$capture_text" | sed -n 's/^previousRuntimeConfigDigest=//p')"
+  [[ "$provenance_kind" == "release-sha-v1" && "$previous_sha" =~ ^[a-f0-9]{40}$ \
+    || "$provenance_kind" == "legacy-unlabeled-v1" && "$previous_sha" == "unavailable" ]] || {
+    echo "The previous app does not satisfy a supported versioned provenance contract." >&2
     return 1
   }
-  previous_runtime_digest="$(docker inspect "$APP_CONTAINER" | node "$ROOT_DIR/scripts/production-app-runtime-digest.mjs")"
-  [[ "$previous_runtime_digest" =~ ^[a-f0-9]{64}$ ]] || { echo "Prior app runtime configuration digest is unavailable." >&2; return 1; }
+  [[ "$previous_image_id" =~ ^sha256:[a-f0-9]{64}$ && "$previous_container_id" =~ ^[a-f0-9]{64}$ \
+    && "$previous_health" == "healthy" && "$previous_runtime_digest" =~ ^[a-f0-9]{64}$ ]] || {
+    echo "The prior app immutable image/container, health, or runtime identity is invalid." >&2
+    return 1
+  }
   if docker image inspect --format '{{.Id}}' bodycast-app:rollback >/dev/null 2>&1; then
     echo "A previous-app image pin already exists and will not be overwritten." >&2
     return 1
@@ -152,14 +161,13 @@ capture_pre_ddl_previous_release() {
   record_tmp="$(mktemp "$git_dir/bodycast-production-pre-ddl-release.new.XXXXXX")"
   trap 'rm -f -- "$record_tmp"' RETURN
   chmod 600 "$record_tmp"
-  printf 'schemaVersion=1\ntargetSha=%s\npreviousSha=%s\npreviousImageId=%s\npreviousContainerId=%s\npreviousRuntimeConfigDigest=%s\n' \
-    "$target_sha" "$previous_sha" "$previous_image_id" "$previous_container_id" "$previous_runtime_digest" > "$record_tmp"
+  printf '%s\n' "$capture_text" > "$record_tmp"
   sync -f "$record_tmp"
   ln -- "$record_tmp" "$record_path"
   rm -- "$record_tmp"
   sync -f "$git_dir"
   trap - RETURN
-  echo "Captured exact prior app SHA/image/container for manual post-DDL database cutback."
+  echo "Captured versioned prior-app provenance and read-only pre-DDL database compatibility digests for manual cutback."
 }
 
 publish_candidate_route() {

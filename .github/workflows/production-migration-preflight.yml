@@ -134,6 +134,27 @@ jobs:
           node-version: 24
       - name: Install locked Prisma and project tooling
         run: npm ci
+      - name: Recheck owner identity for this job attempt before production secrets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_ACTOR_ID: ${{ github.actor_id }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$DISPATCH_ACTOR_ID" == "126446430" ]] || { echo "::error::Only the pinned owner may access production preflight credentials."; exit 1; }
+          gh api "repos/krustallik/body-model/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/current-preflight-run.json"
+          node --input-type=module - "$RUNNER_TEMP/current-preflight-run.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { assertTrustedOwnerWorkflowRun } from "./scripts/github-owner-identity.mjs";
+          assertTrustedOwnerWorkflowRun(JSON.parse(readFileSync(process.argv[2], "utf8")), {
+            actorId: process.env.DISPATCH_ACTOR_ID,
+            workflowPath: ".github/workflows/production-migration-preflight.yml",
+            workflowRunId: process.env.GITHUB_RUN_ID,
+            workflowRunAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            ref: "refs/heads/main",
+            sha: process.env.GITHUB_SHA,
+            requireInProgress: true,
+          });
+          NODE
       - name: Recheck canonical main before production access
         env:
           GH_TOKEN: ${{ github.token }}

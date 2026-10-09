@@ -762,6 +762,12 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(migrate).not.toContain("cancel-in-progress: true");
     expect(preflight).toContain('CONFIRMATION: ${{ inputs.confirm_production_preflight }}');
     expect(preflight).toContain('[[ "$DISPATCH_ACTOR_ID" == "126446430" ]]');
+    const preflightSecretsJob = preflight.slice(preflight.indexOf("  inspect_backup_restore:"));
+    const rerunOwnerGate = preflightSecretsJob.indexOf("Recheck owner identity for this job attempt before production secrets");
+    const firstSecretStep = preflightSecretsJob.indexOf("Validate production-only SSH and backup secrets");
+    expect(rerunOwnerGate).toBeGreaterThan(-1);
+    expect(rerunOwnerGate).toBeLessThan(firstSecretStep);
+    expect(preflightSecretsJob.slice(rerunOwnerGate, firstSecretStep)).toContain("assertTrustedOwnerWorkflowRun");
     expect(migrate).toContain("github.actor_id == '126446430'");
     expect(migrate).toContain("assertTrustedOwnerWorkflowRun");
     const ownerIdentity = await readFile(new URL("../scripts/github-owner-identity.mjs", import.meta.url), "utf8");

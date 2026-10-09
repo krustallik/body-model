@@ -1,15 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
 import { PrismaHealthSyncRepository } from "@/modules/health/health.repository";
 
+vi.mock("@/modules/activity/active-energy-invalidation", () => ({
+  invalidateWorkoutEnergyInTransactionV1: vi.fn().mockResolvedValue(null),
+  invalidateStepperMassDependenciesInTransactionV1: vi.fn().mockResolvedValue(null),
+}));
+
 describe("sleep segment persistence", () => {
   it("creates sleep segments with skipDuplicates and ignores outer sync date for attribution", async () => {
     const createMany = vi.fn(async () => ({ count: 2 }));
     const transaction = {
+      $executeRaw: vi.fn(async () => 0),
       dailyHealthData: {
         findUnique: vi.fn(async () => null),
         upsert: vi.fn(async () => ({ id: 11 })),
       },
       healthSyncSnapshot: { create: vi.fn(async () => ({})) },
+      healthMetricSample: { findMany: vi.fn(async () => []), upsert: vi.fn(async () => ({})) },
       workout: {
         findMany: vi.fn(async () => []),
         update: vi.fn(async () => ({})),

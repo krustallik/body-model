@@ -146,6 +146,7 @@ export function calculateHistoricalBodyweightAsOfV1(input: {
       baselineNutritionFallback: episode.baselineNutritionFallback,
       nutritionGapPolicy: { maxBridgeDays: episode.nutritionMaxBridgeDays },
       modelVersion: episode.modelVersion,
+      timeZone: episode.timezone,
     });
     const calculation = calculateEpisodeHistory({ episode, days });
     const target = calculation.dailyStates.find((state) => state.date === localDate);

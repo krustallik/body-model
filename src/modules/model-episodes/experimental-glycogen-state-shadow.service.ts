@@ -1,6 +1,13 @@
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
 import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
+import {
+  assertUnifiedSourceFenceV1,
+  PhysiologyV7ConcurrentSourceChangeError,
+  PhysiologyV7PersistenceRepository,
+  readUnifiedSourceFenceV1,
+} from "./physiology-v7-persistence.repository";
 import {
   EXPERIMENTAL_GLYCOGEN_STATE_V1_REVISION,
   initialExperimentalGlycogenStateV1,
@@ -70,7 +77,9 @@ function gapContextFromStoredResult(result: unknown): ExperimentalDataGapContext
   return context?.fingerprint ? context : null;
 }
 
-async function loadDayInputs(profileId: number, date: string): Promise<{
+type DbClient = PrismaClient | Prisma.TransactionClient;
+
+async function loadDayInputs(client: DbClient, profileId: number, date: string): Promise<{
   exerciseDepletionKg: number | null;
   exerciseDepletionLowerKg: number | null;
   exerciseDepletionUpperKg: number | null;
@@ -93,7 +102,7 @@ async function loadDayInputs(profileId: number, date: string): Promise<{
   };
 }> {
   const [health, strengthShadows, stepperShadows] = await Promise.all([
-    prisma.dailyHealthData.findUnique({
+    client.dailyHealthData.findUnique({
       where: { date },
       select: {
         id: true,
@@ -104,7 +113,7 @@ async function loadDayInputs(profileId: number, date: string): Promise<{
         workoutFeedObserved: true,
       },
     }),
-    prisma.experimentalStrengthGlycogenDemandShadow.findMany({
+    client.experimentalStrengthGlycogenDemandShadow.findMany({
       where: {
         profileId,
         session: { matchedWorkout: { dailyHealthData: { date } } },
@@ -112,7 +121,7 @@ async function loadDayInputs(profileId: number, date: string): Promise<{
       orderBy: { sessionId: "asc" },
       select: { sessionId: true, modelRevision: true, sourceFingerprint: true, result: true },
     }),
-    prisma.experimentalStepperGlycogenDemandShadow.findMany({
+    client.experimentalStepperGlycogenDemandShadow.findMany({
       where: {
         profileId,
         workout: { dailyHealthData: { date } },
@@ -204,7 +213,8 @@ export async function rebuildExperimentalGlycogenStateShadows(input: {
   let priorGapContext = gapContextFromStoredResult(priorRow?.result);
 
   for (let date = fromDate; date <= input.toDate; date = addCalendarDays(date, 1)) {
-    const day = await loadDayInputs(profileId, date);
+    const fence = await readUnifiedSourceFenceV1(prisma, profileId);
+    const day = await loadDayInputs(prisma, profileId, date);
     const gapContext = transitionExperimentalDataGapContextV1({
       date,
       sources: glycogenCoverage(day),
@@ -227,22 +237,26 @@ export async function rebuildExperimentalGlycogenStateShadows(input: {
     const result = { ...transition, gapContext, sourceLineage: day.sourceLineage };
     const features = { ...transition.features, gapContext };
     const sourceFingerprint = stableSha256(result);
-    await prisma.experimentalGlycogenStateShadow.upsert({
-      where: { profileId_date: { profileId, date } },
-      create: {
-        profileId,
-        date,
-        sourceFingerprint,
-        modelRevision: EXPERIMENTAL_GLYCOGEN_STATE_V1_REVISION,
-        features,
-        result,
-      },
-      update: {
-        sourceFingerprint,
-        modelRevision: EXPERIMENTAL_GLYCOGEN_STATE_V1_REVISION,
-        features,
-        result,
-      },
+    await prisma.$transaction(async (tx) => {
+      const lifecycle = new PhysiologyV7PersistenceRepository(tx);
+      await lifecycle.lockProfile(profileId);
+      await assertUnifiedSourceFenceV1(tx, profileId, fence);
+      const currentDay = await loadDayInputs(tx, profileId, date);
+      if (stableSha256(currentDay.sourceLineage) !== stableSha256(day.sourceLineage)) {
+        throw new PhysiologyV7ConcurrentSourceChangeError();
+      }
+      const existing = await tx.experimentalGlycogenStateShadow.findUnique({
+        where: { profileId_date: { profileId, date } },
+        select: { sourceFingerprint: true, modelRevision: true },
+      });
+      if (existing?.sourceFingerprint === sourceFingerprint
+          && existing.modelRevision === EXPERIMENTAL_GLYCOGEN_STATE_V1_REVISION) return;
+      await tx.experimentalGlycogenStateShadow.upsert({
+        where: { profileId_date: { profileId, date } },
+        create: { profileId, date, sourceFingerprint, modelRevision: EXPERIMENTAL_GLYCOGEN_STATE_V1_REVISION, features, result },
+        update: { sourceFingerprint, modelRevision: EXPERIMENTAL_GLYCOGEN_STATE_V1_REVISION, features, result },
+      });
+      await lifecycle.invalidateUnifiedPublication(profileId);
     });
     prior = transition.state;
     priorGapContext = gapContext;

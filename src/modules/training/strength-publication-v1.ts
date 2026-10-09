@@ -9,15 +9,43 @@ export type StrengthPublicationDecisionV1 = {
 };
 
 export function strengthSetFingerprintV1(
-  sets: readonly { id?: number; reps: number; weightKg: number | null; bandNominalResistanceKg?: number | null; rir?: number | null }[],
+  sets: readonly { id?: number; sessionExerciseId?: number; resistanceType?: string; reps: number; weightKg: number | null; bandNominalResistanceKg?: number | null; completedAt?: string | null }[],
 ): string {
-  return createHash("sha256").update(JSON.stringify(sets.map((set) => ({
+  const ordered = [...sets].sort((left, right) => (left.sessionExerciseId ?? 0) - (right.sessionExerciseId ?? 0)
+    || (left.id ?? 0) - (right.id ?? 0));
+  return createHash("sha256").update(JSON.stringify(ordered.map((set) => ({
     id: set.id ?? null,
+    sessionExerciseId: set.sessionExerciseId ?? null,
+    resistanceType: set.resistanceType ?? null,
     reps: set.reps,
     weightKg: set.weightKg,
     bandNominalResistanceKg: set.bandNominalResistanceKg ?? null,
-    rir: set.rir ?? null,
+    completedAt: set.completedAt ?? null,
   })))).digest("hex").slice(0, 32);
+}
+
+/**
+ * Canonical model-day inputs shared by the Strength candidate writer and its
+ * production freshness reader. MET fallback is permitted only for complete
+ * days, so incomplete/blocked rows are represented as no model-day input.
+ */
+export function strengthModelDayFingerprintInputsV1(modelDay: {
+  status: string;
+  dynamicRmrKcalPerDay: number | null;
+  updatedAt: Date | string;
+} | null): {
+  modelDayRmrKcalPerDay: number | null;
+  modelDayUpdatedAt: string | null;
+} {
+  if (!modelDay || modelDay.status !== "complete") {
+    return { modelDayRmrKcalPerDay: null, modelDayUpdatedAt: null };
+  }
+  return {
+    modelDayRmrKcalPerDay: modelDay.dynamicRmrKcalPerDay,
+    modelDayUpdatedAt: modelDay.updatedAt instanceof Date
+      ? modelDay.updatedAt.toISOString()
+      : new Date(modelDay.updatedAt).toISOString(),
+  };
 }
 
 export function strengthInputFingerprintV1(input: {
@@ -29,6 +57,8 @@ export function strengthInputFingerprintV1(input: {
   sameDayMassKg?: number | null;
   /** Unified / calculated start-of-day mass used when same-day mass is absent. */
   startOfDayMassKg?: number | null;
+  /** Exact persisted Stage 02 source identity and estimator timing/class inputs. */
+  estimatorInputs?: unknown;
   estimatorVersion?: string;
 }): string {
   return createHash("sha256").update(JSON.stringify({
@@ -38,6 +68,7 @@ export function strengthInputFingerprintV1(input: {
     sameDayMassKg: input.sameDayMassKg ?? null,
     startOfDayMassKg: input.startOfDayMassKg ?? null,
     setFingerprint: input.setFingerprint,
+    estimatorInputs: input.estimatorInputs ?? null,
     estimatorVersion: input.estimatorVersion ?? EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
   })).digest("hex");
 }

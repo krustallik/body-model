@@ -7,7 +7,7 @@ import {
   it,
   vi,
 } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 vi.mock("next/link", () => ({
@@ -57,6 +57,9 @@ function modelStatus(overrides: Partial<ModelStatusDto> = {}): ModelStatusDto {
   return {
     episodeId: 1,
     episodeStartDate: "2026-07-01",
+    timezone: "Europe/Bratislava",
+    productionCurrent: true,
+    productionDirtyFromDate: null,
     latestModeledDate: "2026-08-24",
     modelVersion: "bodycast-physiology-v6",
     calibrationStatus: "fully-calibrated",
@@ -314,6 +317,54 @@ describe("GoalClient interaction", () => {
     expect(screen.getByText("128")).toBeTruthy();
     expect(screen.getAllByText("Flexible scenario")).toHaveLength(2);
     expect(screen.queryByText("target-centered")).toBeNull();
+  });
+
+  it("shows only the latest goal solve when the cancelled request resolves afterward", async () => {
+    let resolveFirst!: (response: Response) => void;
+    let resolveSecond!: (response: Response) => void;
+    const firstResponse = new Promise<Response>((resolve) => { resolveFirst = resolve; });
+    const secondResponse = new Promise<Response>((resolve) => { resolveSecond = resolve; });
+    const postSignals: AbortSignal[] = [];
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/forecast/context")) {
+        return Promise.resolve(jsonResponse({ status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] }));
+      }
+      if (url.includes("/api/goal") && init?.method === "POST") {
+        postSignals.push(init.signal as AbortSignal);
+        return postSignals.length === 1 ? firstResponse : secondResponse;
+      }
+      return Promise.resolve(jsonResponse({ error: "optional profile unavailable" }, 404));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const staleResult = solvedGoal();
+    staleResult.control.solvedCaloriesKcal = 2_500;
+    const user = userEvent.setup();
+    render(<GoalClient />);
+    await user.click(await screen.findByRole("button", { name: "Calculate scenario" }));
+    await waitFor(() => expect(postSignals).toHaveLength(1));
+
+    await user.click(screen.getByRole("button", { name: "Cancel previous and recalculate" }));
+    await waitFor(() => expect(postSignals).toHaveLength(2));
+    expect(postSignals[0]?.aborted).toBe(true);
+
+    await act(async () => {
+      resolveSecond(jsonResponse(solvedGoal()));
+      await secondResponse;
+      await Promise.resolve();
+    });
+    expect(await screen.findByText("Recommended nutrition")).toBeTruthy();
+    expect(screen.getByText("2,100")).toBeTruthy();
+
+    await act(async () => {
+      resolveFirst(jsonResponse(staleResult));
+      await firstResponse;
+      await Promise.resolve();
+    });
+    expect(screen.getByText("2,100")).toBeTruthy();
+    expect(screen.queryByText("2,500")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("uses the completed-local-day boundary for defaults and rejects early dates before POST", async () => {

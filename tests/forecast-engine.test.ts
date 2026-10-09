@@ -83,7 +83,9 @@ describe("future forecast engine", () => {
     for (const day of result.dates) {
       expect(day.physiologicalBodyWeightKg.p05).toBe(day.physiologicalBodyWeightKg.p95);
       expect(day.fatMassKg.p25).toBe(day.fatMassKg.p75);
-      expect(day.glycogenKg.p05).toBe(day.glycogenKg.median);
+      expect(day.glycogenKg!.p05).toBe(day.glycogenKg!.median);
+      expect(day.glycogenWaterKg!.median).toBeCloseTo(day.glycogenKg!.median * 2.7, 12);
+      expect(day.glycogenAssociatedMassKg!.median).toBeCloseTo(day.glycogenKg!.median * 3.7, 12);
     }
     expect(result.dates.at(-1)!.adaptiveThermogenesisKcalPerDay.median)
       .not.toBe(episode.initialState.adaptiveThermogenesisKcalPerDay);
@@ -112,7 +114,7 @@ describe("future forecast engine", () => {
       if (direct.status !== "complete") throw new Error(`incomplete direct day ${index}`);
       expect(forecastDay.fatMassKg.median).toBe(direct.endState.fatMassKg);
       expect(forecastDay.leanTissueKg.median).toBe(direct.endState.leanTissueKg);
-      expect(forecastDay.glycogenKg.median).toBe(direct.endState.glycogenKg);
+      expect(forecastDay.glycogenKg!.median).toBe(direct.endState.glycogenKg);
       expect(forecastDay.extracellularFluidDeviationLiters.median)
         .toBe(direct.endState.extracellularFluidDeviationLiters);
       expect(forecastDay.adaptiveThermogenesisKcalPerDay.median)
@@ -154,7 +156,7 @@ describe("future forecast engine", () => {
     expect(result.diagnostics.uncertaintySources).toMatchObject({ initialState: false, futureBehavior: true });
     expect(result.dates.at(-1)!.physiologicalBodyWeightKg.p95)
       .toBeGreaterThan(result.dates.at(-1)!.physiologicalBodyWeightKg.p05);
-    expect(result.dates.at(-1)!.glycogenKg.p95).toBeGreaterThan(result.dates.at(-1)!.glycogenKg.p05);
+    expect(result.dates.at(-1)!.glycogenKg!.p95).toBeGreaterThan(result.dates.at(-1)!.glycogenKg!.p05);
   });
 
   it("combines both sources and retains degraded recovery provenance", () => {
@@ -187,12 +189,27 @@ describe("future forecast engine", () => {
     expect(longWidth).toBeGreaterThan(shortWidth);
   });
 
-  it("joint-block resamples recent behavior and rejects insufficient donors", () => {
+  it("uses any complete donor before the explicit fallback and blocks only when neither exists", () => {
     const recent: ForecastScenario = { mode: "recent-behavior", minimumDonorDays: 14, blockLengthDays: 7 };
     const result = runForecast(forecastInput({ scenario: recent }));
     expect(result.scenarioProvenance.nutrition).toBe("observed-joint-block-resampling");
-    expect(() => runForecast(forecastInput({ scenario: recent, reliableDonorDays: centralDay ? [centralDay] : [] })))
-      .toThrow(/at least 14 reliable observed donor days/);
+    const oneDonor = runForecast(forecastInput({ scenario: recent, reliableDonorDays: [centralDay] }));
+    expect(oneDonor.scenarioProvenance.nutrition).toBe("observed-joint-block-resampling");
+    expect(() => runForecast(forecastInput({ scenario: recent, reliableDonorDays: [] })))
+      .toThrow(/complete observed donor or explicit engineering fallback/);
+    const fallback = runForecast(forecastInput({
+      scenario: recent, reliableDonorDays: [], engineeringFallbackDay: centralDay,
+      variabilityEvidence: {
+        donorDayCount: 0, source: "engineering-fallback",
+        nutritionLogStandardDeviation: 0.25,
+        macroCompositionLogStandardDeviation: 0.12,
+        walkingLogStandardDeviation: 0.35,
+      },
+    }));
+    expect(fallback.scenarioProvenance).toMatchObject({
+      nutrition: "engineering-fallback", activity: "engineering-fallback",
+      donorEvidence: { source: "engineering-fallback" },
+    });
   });
 
   it("preserves explicit zero strength and occupation and distinct work walking", () => {

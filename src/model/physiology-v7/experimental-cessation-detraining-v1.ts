@@ -16,7 +16,7 @@ import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
  * GREEN / skeletalMuscleKg.
  */
 export const EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION =
-  "experimental-cessation-detraining-v1" as const;
+  "experimental-cessation-detraining-v2" as const;
 
 export const EXPERIMENTAL_CESSATION_DETRAINING_V1_PROVENANCE =
   "experimental-heuristic" as const;
@@ -94,10 +94,10 @@ export type ExperimentalCessationDetrainingResultV1 = {
   contractVersion: typeof EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION;
   provenance: typeof EXPERIMENTAL_CESSATION_DETRAINING_V1_PROVENANCE;
   supportedDomain: "relative-cessation-detraining-delta-shadow-only";
-  availability: "available";
-  estimatedSkeletalMuscleDeltaKg: number;
-  lowerBoundKg: number;
-  upperBoundKg: number;
+  availability: "available" | "unavailable";
+  estimatedSkeletalMuscleDeltaKg: number | null;
+  lowerBoundKg: number | null;
+  upperBoundKg: number | null;
   state: ExperimentalCessationStateV1;
   features: {
     /** This state is the single persisted relative-muscle total. */
@@ -179,6 +179,53 @@ function finish(
   return result;
 }
 
+function unavailable(
+  prior: ExperimentalCessationStateV1,
+  exposureKind: ExperimentalTrainingExposureKindV1,
+  reasons: string[],
+  trainingDelta: number | null,
+): ExperimentalCessationDetrainingResultV1 {
+  const phase = exposureKind === "unresolved-missing-training"
+    ? "unknown-coverage-not-cessation"
+    : "not-in-cessation";
+  const observedNoExposureStreakDays = exposureKind === "unresolved-missing-training"
+    ? prior.observedNoExposureStreakDays
+    : 0;
+  const hadPriorQualifiedTraining = exposureKind === "qualified-mapped-training"
+    ? true
+    : prior.hadPriorQualifiedTraining;
+  return finish({
+    contractVersion: EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION,
+    provenance: EXPERIMENTAL_CESSATION_DETRAINING_V1_PROVENANCE,
+    supportedDomain: "relative-cessation-detraining-delta-shadow-only",
+    availability: "unavailable",
+    estimatedSkeletalMuscleDeltaKg: null,
+    lowerBoundKg: null,
+    upperBoundKg: null,
+    state: {
+      observedNoExposureStreakDays,
+      hadPriorQualifiedTraining,
+      phase,
+      // Unknown day contribution makes the cumulative point unavailable.
+      relativeCumulativeDeltaKg: null,
+      absoluteSkeletalMuscleKg: null,
+    },
+    features: {
+      trajectoryRole: "authoritative-unified-relative-muscle-state",
+      exposureKind,
+      observedNoExposureStreakDays,
+      daysPastGrace: Math.max(0, observedNoExposureStreakDays - ENGINEERING_CESSATION_GRACE_DAYS_V1),
+      hadPriorQualifiedTraining,
+      phase,
+      trainingSkeletalMuscleDeltaKg: trainingDelta,
+      muscleMemoryBonusApplied: false,
+      absoluteSkeletalMuscleKg: null,
+      rejectedConversions: rejectedConversions(),
+    },
+    reasons: [...reasons, "relative-muscle-delta-unavailable-is-not-zero"],
+  });
+}
+
 /**
  * One-day cessation/detraining transition over relative SM cumulative state.
  */
@@ -191,7 +238,7 @@ export function transitionExperimentalCessationDetrainingV1(input: {
   strengthDelta?: number | null;
 }): ExperimentalCessationDetrainingResultV1 {
   const prior = input.prior ?? initialExperimentalCessationStateV1();
-  const priorCumulative = prior.relativeCumulativeDeltaKg ?? 0;
+  const priorCumulative = prior.relativeCumulativeDeltaKg;
   const reasons = [
     "experimental-heuristic-cessation-detraining",
     "absolute-skeletalMuscleKg-intentionally-unavailable",
@@ -206,14 +253,18 @@ export function transitionExperimentalCessationDetrainingV1(input: {
   }
 
   if (input.exposureKind === "qualified-mapped-training") {
-    const trainingDelta = input.trainingSkeletalMuscleDeltaKg ?? 0;
+    const trainingDelta = input.trainingSkeletalMuscleDeltaKg ?? null;
+    if (trainingDelta === null) {
+      reasons.push("qualified-training-delta-unavailable-is-not-zero");
+      return unavailable(prior, input.exposureKind, reasons, null);
+    }
     if (!Number.isFinite(trainingDelta)) {
       throw new RangeError("trainingSkeletalMuscleDeltaKg must be finite when provided");
     }
     const resumed = prior.phase === "detraining" || prior.phase === "verified-rest-or-grace";
     if (resumed) reasons.push("training-resumption-stops-detraining-without-memory-bonus");
     reasons.push("qualified-nonzero-loading-is-not-cessation");
-    const cumulative = priorCumulative + trainingDelta;
+    const cumulative = priorCumulative === null ? null : priorCumulative + trainingDelta;
     return finish({
       contractVersion: EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION,
       provenance: EXPERIMENTAL_CESSATION_DETRAINING_V1_PROVENANCE,
@@ -248,36 +299,7 @@ export function transitionExperimentalCessationDetrainingV1(input: {
   if (input.exposureKind === "unresolved-missing-training") {
     reasons.push("missing-workout-feed-is-not-cessation");
     reasons.push("no-exposure-streak-does-not-increment-on-unknown-coverage");
-    return finish({
-      contractVersion: EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION,
-      provenance: EXPERIMENTAL_CESSATION_DETRAINING_V1_PROVENANCE,
-      supportedDomain: "relative-cessation-detraining-delta-shadow-only",
-      availability: "available",
-      estimatedSkeletalMuscleDeltaKg: 0,
-      lowerBoundKg: 0,
-      upperBoundKg: 0,
-      state: {
-        // Unresolved coverage never advances a verified-rest run.
-        observedNoExposureStreakDays: prior.observedNoExposureStreakDays,
-        hadPriorQualifiedTraining: prior.hadPriorQualifiedTraining,
-        phase: "unknown-coverage-not-cessation",
-        relativeCumulativeDeltaKg: priorCumulative,
-        absoluteSkeletalMuscleKg: null,
-      },
-      features: {
-        trajectoryRole: "authoritative-unified-relative-muscle-state",
-        exposureKind: input.exposureKind,
-        observedNoExposureStreakDays: prior.observedNoExposureStreakDays,
-        daysPastGrace: Math.max(0, prior.observedNoExposureStreakDays - ENGINEERING_CESSATION_GRACE_DAYS_V1),
-        hadPriorQualifiedTraining: prior.hadPriorQualifiedTraining,
-        phase: "unknown-coverage-not-cessation",
-        trainingSkeletalMuscleDeltaKg: null,
-        muscleMemoryBonusApplied: false,
-        absoluteSkeletalMuscleKg: null,
-        rejectedConversions: rejectedConversions(),
-      },
-      reasons,
-    });
+    return unavailable(prior, input.exposureKind, reasons, null);
   }
 
   // verified-no-exposure
@@ -320,7 +342,7 @@ export function transitionExperimentalCessationDetrainingV1(input: {
   if (daysPastGrace <= 0) {
     reasons.push("verified-cessation-day-zero-or-grace-has-no-negative-sm-step");
     reasons.push("ordinary-rest-or-grace-is-not-detraining");
-    const cumulative = priorCumulative + 0;
+    const cumulative = priorCumulative;
     return finish({
       contractVersion: EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION,
       provenance: EXPERIMENTAL_CESSATION_DETRAINING_V1_PROVENANCE,
@@ -361,7 +383,7 @@ export function transitionExperimentalCessationDetrainingV1(input: {
   }
   reasons.push("prolonged-verified-no-exposure-applies-bounded-nonpositive-delta");
   reasons.push("engineering-atrophy-rate-not-universal-scientific-curve");
-  const cumulative = priorCumulative + orderedPoint;
+  const cumulative = priorCumulative === null ? null : priorCumulative + orderedPoint;
   return finish({
     contractVersion: EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION,
     provenance: EXPERIMENTAL_CESSATION_DETRAINING_V1_PROVENANCE,

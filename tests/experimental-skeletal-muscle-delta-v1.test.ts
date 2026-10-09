@@ -138,6 +138,26 @@ describe("experimental skeletal muscle delta v1", () => {
     expect(rest.reasons).toContain("verified-no-exposure-zero-delta-not-same-day-atrophy");
   });
 
+  it("keeps a valid daily signal but never restarts cumulative state after an unknown predecessor", () => {
+    const afterUnknown = estimateExperimentalSkeletalMuscleDeltaV1({
+      ...baseTraining,
+      priorRelativeCumulativeDeltaKg: null,
+    });
+    expect(afterUnknown.availability).toBe("available");
+    expect(afterUnknown.estimatedSkeletalMuscleDeltaKg).not.toBeNull();
+    expect(afterUnknown.state.relativeCumulativeDeltaKg).toBeNull();
+    expect(afterUnknown.reasons).toContain("cumulative-state-unavailable-after-unknown-predecessor");
+
+    const verifiedRestAfterUnknown = estimateExperimentalSkeletalMuscleDeltaV1({
+      ...baseTraining,
+      qualifiedHardSetCount: 0,
+      trainingExposureKind: "verified-no-exposure",
+      priorRelativeCumulativeDeltaKg: null,
+    });
+    expect(verifiedRestAfterUnknown.estimatedSkeletalMuscleDeltaKg).toBe(0);
+    expect(verifiedRestAfterUnknown.state.relativeCumulativeDeltaKg).toBeNull();
+  });
+
   it("protein benefit is non-worsening and bounded (C-D01)", () => {
     const low = estimateExperimentalSkeletalMuscleDeltaV1({
       ...baseTraining,

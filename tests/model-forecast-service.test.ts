@@ -26,6 +26,7 @@ import { forecastModelEpisode } from "@/modules/model-forecast/model-forecast.se
 import { recoverySourceFingerprint } from "@/modules/model-recovery/recovery-fingerprint";
 import { DEFAULT_RECOVERY_CONFIG } from "@/modules/model-recovery/recovery.types";
 import { persistedEpisodeFixture, sourceDay, stableSourceDays } from "./model-episode-fixtures";
+import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION } from "@/model/unified-experimental-physiology-v1/contracts";
 
 const episode = persistedEpisodeFixture("2026-08-22");
 const now = new Date("2026-08-24T12:00:00.000Z");
@@ -47,6 +48,37 @@ const fixedRequest = {
   },
   config: { pathCount: 16 },
 };
+
+function forecastClient(overrides: {
+  lifecycle?: Record<string, unknown>;
+  state?: Record<string, unknown>;
+} = {}) {
+  const lifecycle = {
+    invalidationGeneration: 8,
+    staleFromDate: null,
+    productionStaleFromDate: null,
+    productionPublishedGeneration: 8,
+    unifiedPublishedGeneration: 8,
+    unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
+    unifiedRolloutEpoch: 1,
+    unifiedPublishedRolloutEpoch: 1,
+    ...overrides.lifecycle,
+  };
+  return {
+    physiologyV7Lifecycle: { findUnique: vi.fn().mockResolvedValue(lifecycle) },
+    unifiedExperimentalPhysiologyStateV2: {
+      findUnique: vi.fn().mockResolvedValue({
+        modelRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
+        resultFingerprint: "a".repeat(64),
+        state: overrides.state ?? {
+          glycogen: { physicalAvailability: "available", physicalKg: 0.5, physicalProvenance: "production-daily-model-state" },
+          glycogenWater: { physicalKg: 1.35 },
+          transientWater: { levelKg: { point: 0.4 } },
+        },
+      }),
+    },
+  } as never;
+}
 
 function sources(days: ReturnType<typeof stableSourceDays>) {
   return { days, snapshots: [], workIntervals: [] };
@@ -110,7 +142,7 @@ describe("forecast application service", () => {
     repositories.loadSources.mockResolvedValue(sources([
       sourceDay("2026-08-22"), sourceDay("2026-08-23"),
     ]));
-    const result = await forecastModelEpisode({ ...fixedRequest, now }, {} as never);
+    const result = await forecastModelEpisode({ ...fixedRequest, now }, forecastClient());
     expect(result.status).toBe("ok");
     expect(result.initialStateQuality).toBe("deterministic");
     expect("dates" in result && result.dates).toHaveLength(7);
@@ -118,9 +150,81 @@ describe("forecast application service", () => {
     expect(Object.keys(repositories).filter((key) => key.startsWith("persist"))).toHaveLength(0);
   });
 
+  it("returns a typed V2 block when the current production glycogen row is explicitly null", async () => {
+    repositories.loadSources.mockResolvedValue(sources([sourceDay("2026-08-22"), sourceDay("2026-08-23")]));
+    const result = await forecastModelEpisode({ ...fixedRequest, now }, forecastClient({
+      state: {
+        glycogen: { physicalAvailability: "blocked", physicalKg: null, physicalProvenance: "current-production-null" },
+        glycogenWater: { physicalKg: null },
+      },
+    }));
+    expect(result).toMatchObject({
+      status: "initial-state-unavailable",
+      forecastVersion: "experimental-forecast-v2",
+      reasonCode: "production-glycogen-null",
+    });
+    expect("dates" in result).toBe(false);
+  });
+
+  it("keeps current production glycogen zero and its associated water zero", async () => {
+    repositories.loadSources.mockResolvedValue(sources([sourceDay("2026-08-22"), sourceDay("2026-08-23")]));
+    const result = await forecastModelEpisode({ ...fixedRequest, now }, forecastClient({
+      state: {
+        glycogen: { physicalAvailability: "available", physicalKg: 0, physicalProvenance: "production-daily-model-state" },
+        glycogenWater: { physicalKg: 0 },
+        transientWater: { levelKg: { point: 0.4 } },
+      },
+    }));
+    expect(result).toMatchObject({
+      status: "ok",
+      forecastVersion: "experimental-forecast-v2",
+      experimentalCurrent: { glycogenKg: 0, glycogenWaterKg: 0, transientWaterKg: 0.4 },
+    });
+    expect("dates" in result && result.dates[0]?.glycogenKg?.median).toBeGreaterThanOrEqual(0);
+  });
+
+  it("does not fall through to V1 when V4 is not current", async () => {
+    const result = await forecastModelEpisode({ ...fixedRequest, now }, forecastClient({
+      lifecycle: {
+        unifiedTargetRevision: "unified-experimental-physiology-state-v3-relative-muscle-daily-cumulative-diagnostics",
+        unifiedRolloutEpoch: 0,
+        unifiedPublishedRolloutEpoch: 0,
+      },
+    }));
+    expect(result).toMatchObject({
+      status: "initial-state-unavailable",
+      forecastVersion: "experimental-forecast-v2",
+      reasonCode: "unified-v4-not-current",
+    });
+  });
+
+  it("ignores a stale marker from before the active episode boundary", async () => {
+    repositories.loadSources.mockResolvedValue(sources([
+      sourceDay("2026-08-22"), sourceDay("2026-08-23"),
+    ]));
+    const result = await forecastModelEpisode({ ...fixedRequest, now }, forecastClient({
+      lifecycle: { staleFromDate: "2026-08-21" },
+    }));
+    expect(result).toMatchObject({
+      status: "ok",
+      forecastVersion: "experimental-forecast-v2",
+    });
+  });
+
+  it("blocks when the stale marker intersects the active episode history", async () => {
+    const result = await forecastModelEpisode({ ...fixedRequest, now }, forecastClient({
+      lifecycle: { staleFromDate: episode.startDate },
+    }));
+    expect(result).toMatchObject({
+      status: "initial-state-unavailable",
+      forecastVersion: "experimental-forecast-v2",
+      reasonCode: "unified-v4-not-current",
+    });
+  });
+
   it("returns awaiting explicitly when an unresolved gap has no current recovery", async () => {
     repositories.loadSources.mockResolvedValue(sources([sourceDay("2026-08-22")]));
-    const result = await forecastModelEpisode({ ...fixedRequest, now: gapNow }, {} as never);
+    const result = await forecastModelEpisode({ ...fixedRequest, now: gapNow }, forecastClient());
     expect(result).toMatchObject({
       status: "initial-state-unavailable",
       initialStateQuality: "awaiting",
@@ -132,7 +236,7 @@ describe("forecast application service", () => {
     repositories.loadCurrentEnsemble.mockResolvedValue({
       algorithmVersion: "bodycast-recovery-v3", status: "degenerate", ensemble: [],
     });
-    const result = await forecastModelEpisode({ ...fixedRequest, now: gapNow }, {} as never);
+    const result = await forecastModelEpisode({ ...fixedRequest, now: gapNow }, forecastClient());
     expect(result).toMatchObject({
       status: "initial-state-unreliable",
       initialStateQuality: "degenerate",
@@ -179,7 +283,7 @@ describe("forecast application service", () => {
         } },
       ],
     });
-    const result = await forecastModelEpisode({ ...fixedRequest, now: gapNow }, {} as never);
+    const result = await forecastModelEpisode({ ...fixedRequest, now: gapNow }, forecastClient());
     expect(result.status).toBe("degraded");
     expect(result.initialStateQuality).toBe("degraded");
     expect("diagnostics" in result && result.diagnostics.startingParticleCount).toBe(2);
@@ -187,7 +291,7 @@ describe("forecast application service", () => {
 
   it("accepts a current recovered ensemble without degrading forecast quality", async () => {
     mockConditionedRecovery("recovered");
-    const result = await forecastModelEpisode({ ...fixedRequest, now: gapNow }, {} as never);
+    const result = await forecastModelEpisode({ ...fixedRequest, now: gapNow }, forecastClient());
     expect(result.status).toBe("ok");
     expect(result.initialStateQuality).toBe("recovered");
     expect("diagnostics" in result && result.diagnostics.startingParticleCount).toBe(2);
@@ -195,7 +299,7 @@ describe("forecast application service", () => {
 
   it("blocks a conditioned recovery with a stale source fingerprint", async () => {
     mockConditionedRecovery("recovered", { sourceFingerprint: "stale-source" });
-    expect(await forecastModelEpisode({ ...fixedRequest, now: gapNow }, {} as never))
+    expect(await forecastModelEpisode({ ...fixedRequest, now: gapNow }, forecastClient()))
       .toMatchObject({ status: "initial-state-unavailable", initialStateQuality: "awaiting" });
   });
 
@@ -203,12 +307,12 @@ describe("forecast application service", () => {
     mockConditionedRecovery("recovered", {
       ensemble: [{ particleIndex: 0, normalizedWeight: 0, state: episode.initialState }],
     });
-    expect(await forecastModelEpisode({ ...fixedRequest, now: gapNow }, {} as never))
+    expect(await forecastModelEpisode({ ...fixedRequest, now: gapNow }, forecastClient()))
       .toMatchObject({ status: "initial-state-unavailable", initialStateQuality: "awaiting" });
     mockConditionedRecovery("recovered", {
       ensemble: [{ particleIndex: 0, normalizedWeight: -1, state: episode.initialState }],
     });
-    expect(await forecastModelEpisode({ ...fixedRequest, now: gapNow }, {} as never))
+    expect(await forecastModelEpisode({ ...fixedRequest, now: gapNow }, forecastClient()))
       .toMatchObject({ status: "initial-state-unavailable", initialStateQuality: "awaiting" });
     mockConditionedRecovery("recovered", {
       ensemble: [{ particleIndex: 0, normalizedWeight: 1, state: {
@@ -216,7 +320,7 @@ describe("forecast application service", () => {
         extracellularFluidDeviationLiters: null,
       } }],
     });
-    expect(await forecastModelEpisode({ ...fixedRequest, now: gapNow }, {} as never))
+    expect(await forecastModelEpisode({ ...fixedRequest, now: gapNow }, forecastClient()))
       .toMatchObject({ status: "initial-state-unavailable", initialStateQuality: "awaiting" });
   });
 
@@ -227,7 +331,7 @@ describe("forecast application service", () => {
       latestRecoveredDate: "2026-08-26", config: DEFAULT_RECOVERY_CONFIG,
       sourceFingerprint: "old", ensemble: [],
     });
-    expect(await forecastModelEpisode({ ...fixedRequest, now: gapNow }, {} as never))
+    expect(await forecastModelEpisode({ ...fixedRequest, now: gapNow }, forecastClient()))
       .toMatchObject({ status: "initial-state-unavailable", initialStateQuality: "awaiting" });
   });
 
@@ -239,7 +343,7 @@ describe("forecast application service", () => {
       ...fixedRequest,
       scenario: { ...fixedRequest.scenario, mode: "target-centered" as const },
       now,
-    }, {} as never);
+    }, forecastClient());
     expect(result.status).toBe("degraded");
     expect("scenarioProvenance" in result && result.scenarioProvenance.donorEvidence.source)
       .toBe("engineering-fallback");
@@ -278,7 +382,7 @@ describe("forecast application service", () => {
         minimumDonorDays: 14,
       },
       now,
-    }, {} as never);
+    }, forecastClient());
     expect(result.status).toBe("ok");
     expect("scenarioProvenance" in result && result.scenarioProvenance).toMatchObject({
       mode: "recent-behavior",
@@ -303,28 +407,57 @@ describe("forecast application service", () => {
         },
       },
       now,
-    }, {} as never);
+    }, forecastClient());
     expect("scenarioProvenance" in result && result.scenarioProvenance.donorEvidence.source)
       .toBe("explicit-scenario");
   });
 
-  it("rejects recent-behavior when reliable observed donors are insufficient", async () => {
+  it("uses the explicit engineering fallback when complete recent donors are absent", async () => {
     repositories.loadSources.mockResolvedValue(sources([
-      sourceDay("2026-08-22"), sourceDay("2026-08-23"),
+      sourceDay("2026-08-22", { caloriesKcal: null, proteinG: null, fatG: null, carbsG: null }),
+      sourceDay("2026-08-23", { caloriesKcal: null, proteinG: null, fatG: null, carbsG: null }),
     ]));
-    await expect(forecastModelEpisode({
+    const result = await forecastModelEpisode({
       ...fixedRequest,
       scenario: { mode: "recent-behavior", minimumDonorDays: 14 },
       now,
-    }, {} as never)).rejects.toMatchObject({ name: "ForecastScenarioEvidenceError" });
+    }, forecastClient());
+    expect(result.status).toBe("degraded");
+    expect("scenarioProvenance" in result && result.scenarioProvenance).toMatchObject({
+      nutrition: "engineering-fallback",
+      activity: "engineering-fallback",
+      donorEvidence: { source: "engineering-fallback", donorDayCount: 0 },
+    });
+    expect("experimentalProvenance" in result && result.experimentalProvenance).toMatchObject({
+      nutritionSource: "episode-engineering-fallback",
+      nutritionFallback: episode.baselineNutritionFallback,
+    });
+  });
+
+  it("returns a typed V2 block when neither a valid recent donor nor the existing fallback exists", async () => {
+    repositories.getActive.mockResolvedValue({ ...episode, baselineNutritionFallback: null });
+    repositories.loadSources.mockResolvedValue(sources([
+      sourceDay("2026-08-22", { caloriesKcal: null, proteinG: null, fatG: null, carbsG: null }),
+      sourceDay("2026-08-23", { caloriesKcal: null, proteinG: null, fatG: null, carbsG: null }),
+    ]));
+    const result = await forecastModelEpisode({
+      ...fixedRequest,
+      scenario: { mode: "recent-behavior", minimumDonorDays: 14 },
+      now,
+    }, forecastClient());
+    expect(result).toMatchObject({
+      status: "initial-state-unavailable",
+      forecastVersion: "experimental-forecast-v2",
+      reasonCode: "nutrition-evidence-unavailable",
+    });
   });
 
   it("distinguishes no active episode from a missing requested episode", async () => {
     repositories.getActive.mockResolvedValue(null);
-    await expect(forecastModelEpisode({ ...fixedRequest, now }, {} as never))
+    await expect(forecastModelEpisode({ ...fixedRequest, now }, forecastClient()))
       .rejects.toMatchObject({ name: "NoActiveModelEpisodeError" });
     repositories.getById.mockResolvedValue(null);
-    await expect(forecastModelEpisode({ ...fixedRequest, episodeId: 999, now }, {} as never))
+    await expect(forecastModelEpisode({ ...fixedRequest, episodeId: 999, now }, forecastClient()))
       .rejects.toMatchObject({ name: "ModelEpisodeNotFoundError" });
   });
 });

@@ -114,6 +114,7 @@ export function qualityPresentation(result: ForecastResult, calibrationStatus?: 
 export function chartRows(result: ForecastResult, metric: ForecastMetric) {
   return result.dates.map((day) => {
     const summary = day[metric];
+    if (summary === null) return { date: day.date, median: null, likely: null, possible: null };
     return {
       date: day.date,
       median: summary.median,

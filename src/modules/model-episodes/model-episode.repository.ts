@@ -2,10 +2,12 @@ import { normalizeDailyMeasurements } from "@/modules/days/measurement-policy";
 import { resolveWorkoutFeedObserved } from "@/modules/health/workout-feed-coverage";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
-import { DEFAULT_TIME_ZONE, instantToLocalDateTime } from "@/model/time-zone";
+import { DEFAULT_TIME_ZONE, instantToLocalDateTime, localDateTimeToInstant } from "@/model/time-zone";
+import { addCalendarDays } from "./model-calendar";
 import { createGlycogenParameters } from "@/model/body-composition/glycogen";
 import type { EpisodeCalculation } from "./episode-calculation";
 import type { ModelHistoryQuery } from "./model-episode.schema";
+import { isProductionGenerationCurrentV1 } from "./publication-generation-v1";
 import type {
   HistoricalModelSources,
   ModelProfileSource,
@@ -20,9 +22,12 @@ import { unknownIntervalDurationDays } from "./unknown-intervals";
 import {
   strengthEstimateFreshV1,
   strengthInputFingerprintV1,
+  strengthModelDayFingerprintInputsV1,
   strengthSetFingerprintV1,
 } from "@/modules/training/strength-publication-v1";
 import { EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION } from "@/modules/training/experimental-strength-active-energy-v1";
+import { persistedPayloadFromUnknown } from "@/modules/training/persisted-load-accounting-v1";
+import { episodeTimeContextForInstantV1 } from "./episode-time-context-v1";
 
 export type ModelDatabaseClient = PrismaClient | Prisma.TransactionClient;
 
@@ -47,14 +52,20 @@ function strengthShadowInputFingerprint(result: unknown): string | null {
 function toSetFingerprintRows(
   sets: readonly {
     id?: number;
+    sessionExerciseId?: number;
+    resistanceType?: string;
+    completedAt?: Date | string | null;
     reps: number;
     weightKg: number | { toNumber(): number } | null;
     bandNominalResistanceKg?: number | { toNumber(): number } | null;
     rir?: number | null;
   }[],
-): Array<{ id?: number; reps: number; weightKg: number | null; bandNominalResistanceKg?: number | null; rir?: number | null }> {
+): Array<{ id?: number; sessionExerciseId?: number; resistanceType?: string; completedAt?: string | null; reps: number; weightKg: number | null; bandNominalResistanceKg?: number | null; rir?: number | null }> {
   return sets.map((set) => ({
     id: set.id,
+    sessionExerciseId: set.sessionExerciseId,
+    resistanceType: set.resistanceType,
+    completedAt: set.completedAt instanceof Date ? set.completedAt.toISOString() : set.completedAt ?? null,
     reps: set.reps,
     weightKg: set.weightKg === null || set.weightKg === undefined
       ? null
@@ -80,12 +91,16 @@ function strengthEstimateFresh(input: {
   startOfDayMassKg?: number | null;
   sets: readonly {
     id?: number;
+    sessionExerciseId?: number;
+    resistanceType?: string;
+    completedAt?: Date | string | null;
     reps: number;
     weightKg: number | { toNumber(): number } | null;
     bandNominalResistanceKg?: number | { toNumber(): number } | null;
     rir?: number | null;
   }[];
   estimatorVersion?: string | null;
+  estimatorInputs?: unknown;
 }): boolean {
   const currentInputFingerprint = strengthInputFingerprintV1({
     sessionId: input.sessionId,
@@ -95,6 +110,7 @@ function strengthEstimateFresh(input: {
     startOfDayMassKg: input.startOfDayMassKg ?? null,
     setFingerprint: strengthSetFingerprintV1(toSetFingerprintRows(input.sets)),
     estimatorVersion: input.estimatorVersion ?? EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
+    estimatorInputs: input.estimatorInputs ?? null,
   });
   return strengthEstimateFreshV1({
     estimateKcal: input.estimateKcal,
@@ -103,6 +119,120 @@ function strengthEstimateFresh(input: {
     storedInputFingerprint: strengthShadowInputFingerprint(input.shadowResult),
     currentInputFingerprint,
   });
+}
+
+function strengthStage02MassSnapshot(session: {
+  currentSnapshotRevision: number | null;
+  accountingInputRevision: number;
+  currentAccountingSnapshot: {
+    snapshotRevision: number;
+    accountingInputRevision: number;
+    inputFingerprint: string;
+    massResolutionIdentity: string;
+    payloadVersion: string;
+    payload: unknown;
+  } | null;
+}) {
+  const snapshot = session.currentAccountingSnapshot;
+  if (!snapshot || snapshot.snapshotRevision !== session.currentSnapshotRevision
+    || snapshot.accountingInputRevision !== session.accountingInputRevision) return null;
+  const payload = persistedPayloadFromUnknown(snapshot.payload);
+  if (!payload || payload.snapshotRevision !== snapshot.snapshotRevision
+    || payload.accountingInputRevision !== session.accountingInputRevision
+    || payload.inputFingerprint !== snapshot.inputFingerprint
+    || payload.massResolutionIdentity !== snapshot.massResolutionIdentity
+    || payload.schemaVersion !== snapshot.payloadVersion) return null;
+  return {
+    reference: payload.massReference,
+    snapshotRevision: payload.snapshotRevision,
+    inputFingerprint: payload.inputFingerprint,
+    massResolutionIdentity: payload.massResolutionIdentity,
+  };
+}
+
+function strengthEstimatorInputs(input: {
+  session: {
+    id: number;
+    entryMode: string;
+    webStartedAt: Date | null;
+    webEndedAt: Date | null;
+    effectiveAccountingAt: Date | null;
+    createdAt: Date;
+    currentSnapshotRevision: number | null;
+    accountingInputRevision: number;
+    currentAccountingSnapshot: {
+      snapshotRevision: number;
+      accountingInputRevision: number;
+      inputFingerprint: string;
+      massResolutionIdentity: string;
+      payloadVersion: string;
+      payload: unknown;
+    } | null;
+    matchedWorkout?: { startAt: Date; endAt: Date; durationMinutes: number | null } | null;
+  };
+  episodes: readonly {
+    id: number;
+    timezone: string;
+    modelVersion: string;
+    startDate: string;
+    latestModeledDate: string | null;
+    active: boolean;
+    updatedAt: Date;
+  }[];
+  modelDays: readonly {
+    episodeId: number;
+    date: string;
+    status: string;
+    dynamicRmrKcalPerDay: unknown;
+    updatedAt: Date;
+  }[];
+}) {
+  const stage02Mass = strengthStage02MassSnapshot(input.session);
+  const occurrenceAt = input.session.matchedWorkout?.startAt
+    ?? input.session.effectiveAccountingAt
+    ?? input.session.webStartedAt
+    ?? input.session.createdAt;
+  const context = episodeTimeContextForInstantV1(input.episodes, occurrenceAt);
+  const episode = context.episode;
+  const modelDate = context.date;
+  const modelDay = episode !== null && modelDate >= episode.startDate
+      && (episode.latestModeledDate === null || modelDate <= episode.latestModeledDate)
+    ? input.modelDays.find((candidate) => candidate.episodeId === episode.id && candidate.date === modelDate) ?? null
+    : null;
+  const modelDayFingerprintInputs = strengthModelDayFingerprintInputsV1(modelDay
+    ? {
+      status: modelDay.status,
+      dynamicRmrKcalPerDay: typeof modelDay.dynamicRmrKcalPerDay === "number"
+        ? modelDay.dynamicRmrKcalPerDay : null,
+      updatedAt: modelDay.updatedAt,
+    }
+    : null);
+  return {
+    entryMode: input.session.entryMode,
+    startAt: input.session.matchedWorkout?.startAt.toISOString() ?? input.session.webStartedAt?.toISOString() ?? null,
+    endAt: input.session.matchedWorkout?.endAt.toISOString() ?? input.session.webEndedAt?.toISOString() ?? null,
+    durationMinutes: input.session.matchedWorkout?.durationMinutes ?? null,
+    stage02MassReference: stage02Mass?.reference ?? null,
+    stage02SnapshotRevision: stage02Mass?.snapshotRevision ?? null,
+    stage02InputFingerprint: stage02Mass?.inputFingerprint ?? null,
+    stage02MassResolutionIdentity: stage02Mass?.massResolutionIdentity ?? null,
+    modelEpisodeId: episode?.id ?? null,
+    modelEpisodeVersion: episode?.modelVersion ?? null,
+    modelEpisodeStartDate: episode?.startDate ?? null,
+    modelEpisodeLatestModeledDate: episode?.latestModeledDate ?? null,
+    modelEpisodeUpdatedAt: episode?.updatedAt.toISOString() ?? null,
+    modelTimeZone: context.timeZone,
+    modelDate,
+    ...modelDayFingerprintInputs,
+  };
+}
+
+function strengthStage02MassKg(session: Parameters<typeof strengthStage02MassSnapshot>[0]): number | null {
+  const reference = strengthStage02MassSnapshot(session)?.reference;
+  return reference && reference.status !== "unavailable"
+    && Number.isFinite(reference.valueKg) && reference.valueKg > 0
+    ? reference.valueKg
+    : null;
 }
 
 const episodeSelect = {
@@ -325,11 +455,13 @@ export class ModelEpisodeRepository {
     return record ? toEpisode(record) : null;
   }
 
-  async loadSources(from: string, to: string): Promise<HistoricalModelSources> {
-    const webWindowStart = new Date(`${from}T00:00:00.000Z`);
-    webWindowStart.setUTCDate(webWindowStart.getUTCDate() - 2);
-    const webWindowEnd = new Date(`${to}T00:00:00.000Z`);
-    webWindowEnd.setUTCDate(webWindowEnd.getUTCDate() + 3);
+  async loadSources(from: string, to: string, timeZone = DEFAULT_TIME_ZONE): Promise<HistoricalModelSources> {
+    const contextFrom = addCalendarDays(from, -2);
+    const contextTo = addCalendarDays(to, 2);
+    const workoutWindowStart = localDateTimeToInstant(from, "00:00", timeZone);
+    const workoutWindowEnd = localDateTimeToInstant(addCalendarDays(to, 1), "00:00", timeZone);
+    const webWindowStart = localDateTimeToInstant(addCalendarDays(from, -2), "00:00", timeZone);
+    const webWindowEnd = localDateTimeToInstant(addCalendarDays(to, 3), "00:00", timeZone);
     const [days, snapshots, activityIntervals, workIntervals, workoutRows, heartRateSamples, webSessions, reconciliationRows] = await Promise.all([
       this.client.dailyHealthData.findMany({
         where: { date: { gte: from, lte: to } },
@@ -350,7 +482,7 @@ export class ModelEpisodeRepository {
         },
       }),
       this.client.healthSyncSnapshot.findMany({
-        where: { date: { gte: from, lte: to } },
+        where: { date: { gte: contextFrom, lte: contextTo } },
         orderBy: [{ date: "asc" }, { receivedAt: "asc" }, { id: "asc" }],
         select: {
           id: true,
@@ -362,12 +494,17 @@ export class ModelEpisodeRepository {
         },
       }),
       this.client.healthActivityInterval.findMany({
-        where: { date: { gte: from, lte: to } },
+        where: {
+          OR: [
+            { date: { gte: contextFrom, lte: contextTo } },
+            { startAt: { lt: workoutWindowEnd }, endAt: { gt: workoutWindowStart } },
+          ],
+        },
         orderBy: [{ date: "asc" }, { startAt: "asc" }, { id: "asc" }],
         select: { id: true, date: true, metric: true, startAt: true, endAt: true, value: true },
       }),
       this.client.workInterval.findMany({
-        where: { date: { gte: from, lte: to } },
+        where: { date: { gte: contextFrom, lte: contextTo } },
         orderBy: [{ date: "asc" }, { startAt: "asc" }, { id: "asc" }],
         select: {
           id: true,
@@ -382,7 +519,10 @@ export class ModelEpisodeRepository {
       this.client.workout.findMany({
         where: {
           hiddenFromHistory: false,
-          dailyHealthData: { date: { gte: from, lte: to } },
+          OR: [
+            { dailyHealthData: { date: { gte: from, lte: to } } },
+            { startAt: { gte: workoutWindowStart, lt: workoutWindowEnd } },
+          ],
         },
         orderBy: [{ startAt: "asc" }, { id: "asc" }],
         select: {
@@ -397,20 +537,44 @@ export class ModelEpisodeRepository {
           activeEnergyKcal: true,
           manualStepCount: true,
           manualActiveEnergyKcal: true,
+          activeEnergyAliases: {
+            where: { profileId: 1, sourceType: "workout" },
+            select: {
+              event: { select: { currentKcal: true, currentSource: true, resolutionRevision: true, isStale: true } },
+            },
+          },
           dailyHealthData: { select: { date: true, weightKg: true } },
           matchedDiarySession: {
             select: {
               id: true,
               status: true,
               revision: true,
+              entryMode: true,
+              webStartedAt: true,
+              webEndedAt: true,
+              effectiveAccountingAt: true,
+              createdAt: true,
+              currentSnapshotRevision: true,
+              accountingInputRevision: true,
+              currentAccountingSnapshot: { select: {
+                snapshotRevision: true,
+                accountingInputRevision: true,
+                inputFingerprint: true,
+                massResolutionIdentity: true,
+                payloadVersion: true,
+                payload: true,
+              } },
               experimentalStrengthEnergyShadow: {
                 select: { result: true, sourceFingerprint: true, modelRevision: true },
               },
               exercises: {
                 select: {
+                  resistanceType: true,
                   sets: {
                     select: {
                       id: true,
+                      sessionExerciseId: true,
+                      completedAt: true,
                       reps: true,
                       weightKg: true,
                       bandNominalResistanceKg: true,
@@ -424,7 +588,12 @@ export class ModelEpisodeRepository {
         },
       }),
       this.client.heartRateSample.findMany({
-        where: { date: { gte: from, lte: to } },
+        where: {
+          OR: [
+            { date: { gte: contextFrom, lte: contextTo } },
+            { timestamp: { gte: workoutWindowStart, lt: workoutWindowEnd } },
+          ],
+        },
         orderBy: [{ timestamp: "asc" }, { id: "asc" }],
         select: { date: true, timestamp: true, bpm: true, source: true },
       }),
@@ -439,16 +608,32 @@ export class ModelEpisodeRepository {
           id: true,
           status: true,
           revision: true,
+          entryMode: true,
           webStartedAt: true,
           webEndedAt: true,
+          effectiveAccountingAt: true,
+          createdAt: true,
+          currentSnapshotRevision: true,
+          accountingInputRevision: true,
+          currentAccountingSnapshot: { select: {
+            snapshotRevision: true,
+            accountingInputRevision: true,
+            inputFingerprint: true,
+            massResolutionIdentity: true,
+            payloadVersion: true,
+            payload: true,
+          } },
           experimentalStrengthEnergyShadow: {
             select: { result: true, sourceFingerprint: true, modelRevision: true },
           },
           exercises: {
             select: {
+              resistanceType: true,
               sets: {
                 select: {
                   id: true,
+                  sessionExerciseId: true,
+                  completedAt: true,
                   reps: true,
                   weightKg: true,
                   bandNominalResistanceKg: true,
@@ -463,8 +648,10 @@ export class ModelEpisodeRepository {
         where: {
           group: { status: { in: ["pending", "ambiguous", "confirmed"] } },
           OR: [
-            { manualWorkout: { dailyHealthData: { date: { gte: from, lte: to } } } },
-            { garminWorkout: { dailyHealthData: { date: { gte: from, lte: to } } } },
+            { manualWorkout: { dailyHealthData: { date: { gte: contextFrom, lte: contextTo } } } },
+            { garminWorkout: { dailyHealthData: { date: { gte: contextFrom, lte: contextTo } } } },
+            { manualWorkout: { startAt: { gte: workoutWindowStart, lt: workoutWindowEnd } } },
+            { garminWorkout: { startAt: { gte: workoutWindowStart, lt: workoutWindowEnd } } },
           ],
         },
         select: {
@@ -483,6 +670,47 @@ export class ModelEpisodeRepository {
         },
       }),
     ]);
+    const strengthSessions = [
+      ...webSessions,
+      ...workoutRows.flatMap((workout) => workout.matchedDiarySession ? [workout.matchedDiarySession] : []),
+    ];
+    const modelEpisodes = strengthSessions.length > 0 ? await this.client.modelEpisode.findMany({
+      where: { profileId: 1 },
+      select: {
+        id: true,
+        timezone: true,
+        modelVersion: true,
+        startDate: true,
+        latestModeledDate: true,
+        active: true,
+        updatedAt: true,
+      },
+      orderBy: { startDate: "asc" },
+    }) : [];
+    const modelDays = modelEpisodes.length > 0 ? await this.client.dailyModelState.findMany({
+      where: {
+        episodeId: { in: modelEpisodes.map((episode) => episode.id) },
+        date: { gte: contextFrom, lte: contextTo },
+      },
+      select: { episodeId: true, date: true, status: true, dynamicRmrKcalPerDay: true, updatedAt: true },
+    }) : [];
+    const webSessionEnergyAliases = webSessions.length === 0 ? [] : await this.client.activeEnergyEventAlias.findMany({
+      where: {
+        profileId: 1,
+        sourceType: "strength-session",
+        sourceId: { in: webSessions.map((session) => String(session.id)) },
+      },
+      select: {
+        sourceId: true,
+        event: { select: { currentKcal: true, currentSource: true, resolutionRevision: true, isStale: true } },
+      },
+    });
+    const webSessionEnergyById = new Map(webSessionEnergyAliases.map((alias) => [alias.sourceId, {
+      currentKcal: alias.event.currentKcal,
+      currentSource: alias.event.currentSource,
+      resolutionRevision: alias.event.resolutionRevision,
+      isStale: alias.event.isStale,
+    }]));
     return {
       days: days.map(normalizeDailyMeasurements).map((day) => ({
         ...day,
@@ -508,11 +736,17 @@ export class ModelEpisodeRepository {
         const estimate = session?.status === "COMPLETED"
           ? strengthShadowKcal(session.experimentalStrengthEnergyShadow?.result)
           : null;
-        const sameDayMassKg = workout.dailyHealthData.weightKg;
-        const sets = session?.exercises.flatMap((exercise) => exercise.sets) ?? [];
+        const stage02MassKg = session ? strengthStage02MassKg(session) : null;
+        const sets = session?.exercises.flatMap((exercise) => exercise.sets.map((set) => ({
+          ...set,
+          resistanceType: exercise.resistanceType,
+        }))) ?? [];
         return {
           id: workout.id,
-          date: workout.dailyHealthData.date,
+          // Workout occurrence belongs to the episode-local day; the related
+          // health sync row's date is date-only source metadata and may use a
+          // different timezone boundary.
+          date: instantToLocalDateTime(workout.startAt, timeZone).date,
           externalId: workout.externalId,
           type: workout.type,
           startAt: workout.startAt,
@@ -522,6 +756,7 @@ export class ModelEpisodeRepository {
           activeEnergyKcal: workout.activeEnergyKcal,
           manualStepCount: workout.manualStepCount,
           manualActiveEnergyKcal: workout.manualActiveEnergyKcal,
+          canonicalEnergyResolution: workout.activeEnergyAliases[0]?.event ?? null,
           bodyCastEstimateKcal: estimate,
           bodyCastEstimateFresh: session !== null && session !== undefined
             && strengthEstimateFresh({
@@ -529,10 +764,15 @@ export class ModelEpisodeRepository {
               sessionId: session.id,
               sessionRevision: session.revision,
               shadowResult: session.experimentalStrengthEnergyShadow?.result ?? null,
-              massKg: sameDayMassKg,
-              sameDayMassKg,
+              massKg: stage02MassKg,
+              sameDayMassKg: null,
               sets,
               estimatorVersion: session.experimentalStrengthEnergyShadow?.modelRevision ?? null,
+              estimatorInputs: strengthEstimatorInputs({
+                session: { ...session, matchedWorkout: workout },
+                episodes: modelEpisodes,
+                modelDays,
+              }),
             }),
           strengthSessionCompleted: session?.status === "COMPLETED",
           sourceIdentity: workout.sourceIdentity,
@@ -541,13 +781,16 @@ export class ModelEpisodeRepository {
       heartRateSamples,
       webOnlyStrengthSessions: webSessions.flatMap((session) => {
         if (session.webStartedAt === null || session.webEndedAt === null) return [];
-        const date = instantToLocalDateTime(session.webStartedAt, DEFAULT_TIME_ZONE).date;
+        const date = instantToLocalDateTime(session.webStartedAt, timeZone).date;
         if (date < from || date > to) return [];
         const estimate = session.status === "COMPLETED"
           ? strengthShadowKcal(session.experimentalStrengthEnergyShadow?.result)
           : null;
-        const dayMass = days.find((day) => day.date === date)?.weightKg ?? null;
-        const sets = session.exercises.flatMap((exercise) => exercise.sets);
+        const stage02MassKg = strengthStage02MassKg(session);
+        const sets = session.exercises.flatMap((exercise) => exercise.sets.map((set) => ({
+          ...set,
+          resistanceType: exercise.resistanceType,
+        })));
         return [{
           sessionId: session.id,
           date,
@@ -561,14 +804,20 @@ export class ModelEpisodeRepository {
             sessionId: session.id,
             sessionRevision: session.revision,
             shadowResult: session.experimentalStrengthEnergyShadow?.result ?? null,
-            massKg: dayMass,
-            sameDayMassKg: dayMass,
+            massKg: stage02MassKg,
+            sameDayMassKg: null,
             sets,
             estimatorVersion: session.experimentalStrengthEnergyShadow?.modelRevision ?? null,
+            estimatorInputs: strengthEstimatorInputs({
+              session,
+              episodes: modelEpisodes,
+              modelDays,
+            }),
           }),
           inputFingerprint: strengthShadowInputFingerprint(session.experimentalStrengthEnergyShadow?.result)
             ?? session.experimentalStrengthEnergyShadow?.sourceFingerprint
             ?? null,
+          canonicalEnergyResolution: webSessionEnergyById.get(String(session.id)) ?? null,
         }];
       }),
       reconciliationLinks: reconciliationRows.flatMap((row) => {
@@ -685,22 +934,36 @@ export class ModelEpisodeRepository {
     episodeId: number,
     calculation: EpisodeCalculation,
     modelVersion?: string,
+    preserveBeforeDate?: string,
   ): Promise<void> {
     const dates = calculation.dailyStates.map(({ date }) => date);
     await this.client.dailyModelState.deleteMany({
       where: {
         episodeId,
-        ...(dates.length > 0 ? { date: { notIn: dates } } : {}),
+        ...(preserveBeforeDate !== undefined || dates.length > 0 ? {
+          date: {
+            ...(preserveBeforeDate === undefined ? {} : { gte: preserveBeforeDate }),
+            ...(dates.length === 0 ? {} : { notIn: dates }),
+          },
+        } : {}),
       },
     });
-    const intervalStarts = calculation.unknownIntervals.map(({ startDate }) => startDate);
+    const persistedIntervals = preserveBeforeDate === undefined
+      ? calculation.unknownIntervals
+      : calculation.unknownIntervals.filter(({ startDate }) => startDate >= preserveBeforeDate);
+    const intervalStarts = persistedIntervals.map(({ startDate }) => startDate);
     await this.client.modelUnknownInterval.deleteMany({
       where: {
         episodeId,
-        ...(intervalStarts.length > 0 ? { startDate: { notIn: intervalStarts } } : {}),
+        ...(preserveBeforeDate !== undefined || intervalStarts.length > 0 ? {
+          startDate: {
+            ...(preserveBeforeDate === undefined ? {} : { gte: preserveBeforeDate }),
+            ...(intervalStarts.length === 0 ? {} : { notIn: intervalStarts }),
+          },
+        } : {}),
       },
     });
-    for (const interval of calculation.unknownIntervals) {
+    for (const interval of persistedIntervals) {
       const data = {
         lastUnknownDate: interval.lastUnknownDate,
         endDate: interval.endDate,
@@ -756,6 +1019,7 @@ export class ModelEpisodeRepository {
         deltaLeanTissueKg: state.deltaLeanTissueKg,
         deltaGlycogenKg: state.deltaGlycogenKg,
         filteredWeightKg: state.filteredWeightKg,
+        weightFilterVarianceKg2: state.weightFilterVarianceKg2,
       };
       await this.client.dailyModelState.upsert({
         where: { episodeId_date: { episodeId, date: state.date } },
@@ -775,6 +1039,7 @@ export class ModelEpisodeRepository {
         calibrationDiagnostics: jsonValue({
           scientificCalibration: calculation.calibration.diagnostics,
           nutritionProvenance: calculation.calibrationNutritionDiagnostics,
+          calibrationInputFingerprint: calculation.calibrationInputFingerprint,
         }),
         latestModeledDate: calculation.latestModeledDate,
       },
@@ -791,6 +1056,19 @@ export class ModelEpisodeRepository {
   async status(id?: number): Promise<ModelStatusDto | null> {
     const episode = id === undefined ? await this.getActive() : await this.getById(id);
     if (!episode) return null;
+    const lifecycle = await this.client.physiologyV7Lifecycle.findUnique({
+      where: { profileId: episode.profileId },
+      select: {
+        invalidationGeneration: true,
+        productionPublishedGeneration: true,
+        productionStaleFromDate: true,
+      },
+    });
+    const productionCurrent = isProductionGenerationCurrentV1(lifecycle);
+    const currentPrefixWhere = !productionCurrent
+      ? { date: { lt: lifecycle?.productionStaleFromDate ?? episode.startDate } }
+      : {};
+    const modeledWhere = { episodeId: episode.id, ...currentPrefixWhere };
     const [
       daysModeled,
       incompleteDays,
@@ -800,21 +1078,22 @@ export class ModelEpisodeRepository {
       latest,
       unknownIntervals,
     ] = await Promise.all([
-      this.client.dailyModelState.count({ where: { episodeId: episode.id, status: "complete" } }),
-      this.client.dailyModelState.count({ where: { episodeId: episode.id, status: { not: "complete" } } }),
+      this.client.dailyModelState.count({ where: { ...modeledWhere, status: "complete" } }),
+      this.client.dailyModelState.count({ where: { ...modeledWhere, status: { not: "complete" } } }),
       this.client.dailyModelState.count({
-        where: { episodeId: episode.id, nutritionSource: "observed" },
+        where: { ...modeledWhere, nutritionSource: "observed" },
       }),
       this.client.dailyModelState.count({
-        where: { episodeId: episode.id, nutritionSource: { in: ["imputed-local", "imputed-fallback"] } },
+        where: { ...modeledWhere, nutritionSource: { in: ["imputed-local", "imputed-fallback"] } },
       }),
       this.client.dailyModelState.count({
-        where: { episodeId: episode.id, nutritionSource: "missing" },
+        where: { ...modeledWhere, nutritionSource: "missing" },
       }),
       this.client.dailyModelState.findFirst({
-        where: { episodeId: episode.id, status: "complete" },
+        where: { ...modeledWhere, status: "complete" },
         orderBy: { date: "desc" },
         select: {
+          date: true,
           endWeightKg: true,
           filteredWeightKg: true,
           fatMassKg: true,
@@ -834,7 +1113,9 @@ export class ModelEpisodeRepository {
       episodeId: episode.id,
       episodeStartDate: episode.startDate,
       timezone: episode.timezone,
-      latestModeledDate: episode.latestModeledDate,
+      productionCurrent,
+      productionDirtyFromDate: lifecycle?.productionStaleFromDate ?? null,
+      latestModeledDate: productionCurrent ? episode.latestModeledDate : latest?.date ?? null,
       modelVersion: episode.modelVersion,
       calibrationStatus: episode.calibrationStatus,
       personalOffsetKcalPerDay: episode.personalOffsetKcalPerDay,
@@ -844,12 +1125,12 @@ export class ModelEpisodeRepository {
       observedNutritionDays,
       imputedNutritionDays,
       unbridgeableNutritionDays,
-      currentPredictedWeightKg: latest?.endWeightKg ?? null,
-      currentFilteredWeightKg: latest?.filteredWeightKg ?? null,
-      currentFatMassKg: latest?.fatMassKg ?? null,
-      currentLeanTissueKg: latest?.leanTissueKg ?? null,
-      currentDynamicRmrKcalPerDay: latest?.dynamicRmrKcalPerDay ?? null,
-      currentModeledTdeeKcalPerDay: latest?.energyExpenditureKcal ?? null,
+      currentPredictedWeightKg: productionCurrent ? latest?.endWeightKg ?? null : null,
+      currentFilteredWeightKg: productionCurrent ? latest?.filteredWeightKg ?? null : null,
+      currentFatMassKg: productionCurrent ? latest?.fatMassKg ?? null : null,
+      currentLeanTissueKg: productionCurrent ? latest?.leanTissueKg ?? null : null,
+      currentDynamicRmrKcalPerDay: productionCurrent ? latest?.dynamicRmrKcalPerDay ?? null : null,
+      currentModeledTdeeKcalPerDay: productionCurrent ? latest?.energyExpenditureKcal ?? null : null,
       continuityStatus: intervalDtos.length === 0 ? "resolved" : "awaiting-recovery",
       lastResolvedDate: episode.latestModeledDate,
       recoveryRequired: intervalDtos.length > 0,
@@ -876,14 +1157,21 @@ export class ModelEpisodeRepository {
       ? await this.getActive()
       : await this.getById(query.episodeId);
     if (!episode) return null;
+    const lifecycle = await this.client.physiologyV7Lifecycle.findUnique({
+      where: { profileId: episode.profileId },
+      select: { invalidationGeneration: true, productionPublishedGeneration: true, productionStaleFromDate: true },
+    });
+    const productionCurrent = isProductionGenerationCurrentV1(lifecycle);
+    const dateFilter: { gte?: string; lte?: string; lt?: string } = {
+      ...(query.from ? { gte: query.from } : {}),
+      ...(query.to ? { lte: query.to } : {}),
+    };
+    if (!productionCurrent) dateFilter.lt = lifecycle?.productionStaleFromDate ?? episode.startDate;
     const [rows, intervals] = await Promise.all([
       this.client.dailyModelState.findMany({
       where: {
         episodeId: episode.id,
-        date: {
-          ...(query.from ? { gte: query.from } : {}),
-          ...(query.to ? { lte: query.to } : {}),
-        },
+        date: dateFilter,
       },
       orderBy: { date: "asc" },
       take: query.limit,

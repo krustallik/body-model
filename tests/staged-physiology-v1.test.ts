@@ -150,6 +150,15 @@ describe("staged physiology v1", () => {
     })).toBe(true);
   });
 
+  it("fingerprints completedAt timing and keeps unchanged timing stable", () => {
+    const set = { id: 18, sessionExerciseId: 4, resistanceType: "EXTERNAL_WEIGHT", reps: 8, weightKg: 60, bandNominalResistanceKg: null };
+    const before = strengthSetFingerprintV1([{ ...set, completedAt: "2026-10-01T10:00:00.000Z" }]);
+    const unchanged = strengthSetFingerprintV1([{ ...set, completedAt: "2026-10-01T10:00:00.000Z" }]);
+    const edited = strengthSetFingerprintV1([{ ...set, completedAt: "2026-10-01T10:01:00.000Z" }]);
+    expect(before).toBe(unchanged);
+    expect(before).not.toBe(edited);
+  });
+
   it("replays deterministically, stops on a stale source, and resumes after an interruption", () => {
     const days = [
       { date: "2026-09-23", sourceRevision: "rev", project: () => ({ kcal: 200 }) },

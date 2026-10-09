@@ -22,6 +22,8 @@ export type HistoricalStrengthMassSource =
 
 export type HistoricalStrengthSetInput = {
   id?: number;
+  sessionExerciseId?: number;
+  completedAt?: string | null;
   reps: number;
   weightKg: number | null;
   bandNominalResistanceKg?: number | null;
@@ -49,18 +51,32 @@ export function historicalStrengthInputFingerprintV1(input: {
   sets: readonly HistoricalStrengthSetInput[];
   sameDayMassKg: number | null;
   startOfDayMassKg: number | null;
+  stage02MassReference?: StrengthSessionDto["activeEnergyMassReference"];
+  estimatorInputs?: unknown;
   estimatorVersion?: string | null;
 }): string {
-  const { massKg } = resolveHistoricalStrengthMassV1({
-    sameDayMassKg: input.sameDayMassKg,
-    startOfDayMassKg: input.startOfDayMassKg,
-  });
+  const reference = input.stage02MassReference;
+  const massKg = reference === undefined
+    ? resolveHistoricalStrengthMassV1({
+      sameDayMassKg: input.sameDayMassKg,
+      startOfDayMassKg: input.startOfDayMassKg,
+    }).massKg
+    : reference !== null && reference.reference.status !== "unavailable"
+      && Number.isFinite(reference.reference.valueKg) && reference.reference.valueKg > 0
+      ? reference.reference.valueKg
+      : null;
   return strengthInputFingerprintV1({
     sessionId: input.sessionId,
     sessionRevision: input.sessionRevision,
     massKg,
     sameDayMassKg: input.sameDayMassKg,
     startOfDayMassKg: input.startOfDayMassKg,
+    estimatorInputs: input.estimatorInputs ?? (reference === undefined ? null : {
+      stage02MassReference: reference?.reference ?? null,
+      stage02SnapshotRevision: reference?.snapshotRevision ?? null,
+      stage02InputFingerprint: reference?.inputFingerprint ?? null,
+      stage02MassResolutionIdentity: reference?.massResolutionIdentity ?? null,
+    }),
     setFingerprint: strengthSetFingerprintV1(input.sets),
     estimatorVersion: input.estimatorVersion ?? EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION,
   });
@@ -111,6 +127,8 @@ export function resolveHistoricalStrengthBodyCastV1(input: {
   sets: readonly HistoricalStrengthSetInput[];
   sameDayMassKg: number | null;
   startOfDayMassKg: number | null;
+  stage02MassReference?: StrengthSessionDto["activeEnergyMassReference"];
+  estimatorInputs?: unknown;
   estimatorVersion?: string | null;
   /** Read-only estimator output for as-of-date inputs; null when unavailable. */
   onDemandEstimateKcal: number | null;
@@ -126,6 +144,8 @@ export function resolveHistoricalStrengthBodyCastV1(input: {
     sets: input.sets,
     sameDayMassKg: input.sameDayMassKg,
     startOfDayMassKg: input.startOfDayMassKg,
+    stage02MassReference: input.stage02MassReference,
+    estimatorInputs: input.estimatorInputs,
     estimatorVersion: input.estimatorVersion,
   });
   if (!input.sessionCompleted) {
@@ -181,8 +201,11 @@ export function selectHistoricalStrengthEnergyV1(input: {
   sets: readonly HistoricalStrengthSetInput[];
   sameDayMassKg: number | null;
   startOfDayMassKg: number | null;
+  stage02MassReference?: StrengthSessionDto["activeEnergyMassReference"];
+  estimatorInputs?: unknown;
   estimatorVersion?: string | null;
   onDemandEstimateKcal: number | null;
+  manualKcal?: number | null;
   garminKcal: number | null;
 }): SelectedEnergyV1 & { bodyCastOrigin: HistoricalStrengthBodyCastOrigin } {
   const bodyCast = resolveHistoricalStrengthBodyCastV1(input);
@@ -190,6 +213,8 @@ export function selectHistoricalStrengthEnergyV1(input: {
     bodyCastKcal: bodyCast.bodyCastKcal,
     bodyCastFresh: bodyCast.bodyCastFresh,
     sessionCompleted: input.sessionCompleted,
+    manualKcal: input.manualKcal ?? null,
+    manualKcalPresent: input.manualKcal !== undefined && input.manualKcal !== null,
     garminKcal: input.garminKcal,
   });
   return { ...selected, bodyCastOrigin: bodyCast.origin };
@@ -203,12 +228,19 @@ export function recomputeHistoricalStrengthEstimateKcalV1(input: {
   session: StrengthSessionDto;
   sameDayMassKg: number | null;
   startOfDayMassKg: number | null;
+  stage02MassReference?: StrengthSessionDto["activeEnergyMassReference"];
   heartRateBpms?: readonly number[];
 }): number | null {
-  const { massKg } = resolveHistoricalStrengthMassV1({
-    sameDayMassKg: input.sameDayMassKg,
-    startOfDayMassKg: input.startOfDayMassKg,
-  });
+  const reference = input.stage02MassReference;
+  const massKg = reference === undefined
+    ? resolveHistoricalStrengthMassV1({
+      sameDayMassKg: input.sameDayMassKg,
+      startOfDayMassKg: input.startOfDayMassKg,
+    }).massKg
+    : reference !== null && reference.reference.status !== "unavailable"
+      && Number.isFinite(reference.reference.valueKg) && reference.reference.valueKg > 0
+      ? reference.reference.valueKg
+      : null;
   if (massKg === null) return null;
   const result = estimateExperimentalStrengthActiveEnergyV1({
     session: input.session,

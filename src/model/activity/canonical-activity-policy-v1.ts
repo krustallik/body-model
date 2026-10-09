@@ -19,6 +19,7 @@ export function finiteNonNegative(value: number | null | undefined): FiniteNonNe
 
 export type EnergySourceKind =
   | "bodycast-strength-estimate"
+  | "bodycast-strength-met-fallback"
   | "bodycast-stepper-mechanical"
   | "garmin-fallback"
   | "manual-kcal"
@@ -33,10 +34,53 @@ export type SelectedEnergyV1 = {
   fullCoverage: boolean;
 };
 
+export type PersistedEnergyResolutionV1 = {
+  currentKcal: number | null;
+  currentSource: string | null;
+  resolutionRevision: number;
+  isStale: boolean;
+};
+
+export function selectPersistedEnergyResolutionV1(input: {
+  resolution: PersistedEnergyResolutionV1;
+  classification: "traditional-strength-training" | "stair-climbing" | "other";
+}): SelectedEnergyV1 {
+  const sourceByPersisted: Record<string, EnergySourceKind> = {
+    "bodycast-strength-estimate": "bodycast-strength-estimate",
+    "bodycast-strength-met-fallback": "bodycast-strength-met-fallback",
+    "bodycast-stepper-mechanical": "bodycast-stepper-mechanical",
+    "manual-kcal": "manual-kcal",
+    "device-kcal": "garmin-fallback",
+    unavailable: "unavailable",
+  };
+  const source = input.resolution.currentSource === null
+    ? "unavailable"
+    : sourceByPersisted[input.resolution.currentSource] ?? "unavailable";
+  const expectedClassification = source === "bodycast-strength-estimate" || source === "bodycast-strength-met-fallback"
+    ? input.classification === "traditional-strength-training"
+    : source === "bodycast-stepper-mechanical"
+      ? input.classification === "stair-climbing"
+      : true;
+  const kcal = input.resolution.isStale || !expectedClassification
+    ? null
+    : finiteNonNegative(input.resolution.currentKcal);
+  const selectedSource = kcal === null ? "unavailable" : source;
+  return {
+    policyVersion: ACTIVE_ENERGY_SELECTION_POLICY_V1,
+    selectedKcal: kcal,
+    source: selectedSource,
+    provisional: false,
+    fullCoverage: kcal !== null,
+  };
+}
+
 export function selectStrengthEnergyV1(input: {
   bodyCastKcal: number | null;
   bodyCastFresh: boolean;
   sessionCompleted: boolean;
+  bodyCastMetKcal?: number | null;
+  manualKcal?: number | null;
+  manualKcalPresent?: boolean;
   garminKcal: number | null;
 }): SelectedEnergyV1 {
   const bodyCast = finiteNonNegative(input.bodyCastKcal);
@@ -48,6 +92,28 @@ export function selectStrengthEnergyV1(input: {
       provisional: false,
       fullCoverage: true,
     };
+  }
+  const bodyCastMet = finiteNonNegative(input.bodyCastMetKcal);
+  if (bodyCastMet !== null) {
+    return {
+      policyVersion: ACTIVE_ENERGY_SELECTION_POLICY_V1,
+      selectedKcal: bodyCastMet,
+      source: "bodycast-strength-met-fallback",
+      provisional: false,
+      fullCoverage: true,
+    };
+  }
+  if (input.manualKcalPresent === true) {
+    const manual = finiteNonNegative(input.manualKcal);
+    if (manual !== null) {
+      return {
+        policyVersion: ACTIVE_ENERGY_SELECTION_POLICY_V1,
+        selectedKcal: manual,
+        source: "manual-kcal",
+        provisional: false,
+        fullCoverage: true,
+      };
+    }
   }
   const garmin = finiteNonNegative(input.garminKcal);
   if (garmin !== null) {
@@ -73,6 +139,7 @@ export function resolveEventEnergyV1(input: {
   activeEnergyKcal: number | null;
   bodyCastEstimateKcal?: number | null;
   bodyCastEstimateFresh?: boolean;
+  bodyCastMetFallbackKcal?: number | null;
   strengthSessionCompleted?: boolean;
   manualActiveKcal?: number | null;
   manualActiveKcalPresent?: boolean;
@@ -98,19 +165,63 @@ export function resolveEventEnergyV1(input: {
       fullCoverage: true,
     };
   }
-  if (input.manualActiveKcalPresent === true) {
-    return selectManualStepperEnergyV1({
-      manualKcal: input.manualActiveKcal ?? null,
-      manualKcalPresent: true,
-      mechanicalKcal: input.mechanicalStepperKcal ?? null,
-    });
-  }
   if (input.classification === "traditional-strength-training") {
     return selectStrengthEnergyV1({
       bodyCastKcal: input.bodyCastEstimateKcal ?? null,
       bodyCastFresh: input.bodyCastEstimateFresh === true,
       sessionCompleted: input.strengthSessionCompleted === true,
+      bodyCastMetKcal: input.bodyCastMetFallbackKcal ?? null,
+      manualKcal: input.manualActiveKcal ?? null,
+      manualKcalPresent: input.manualActiveKcalPresent === true,
       garminKcal: input.activeEnergyKcal,
+    });
+  }
+  if (input.classification === "stair-climbing") {
+    const bodyCast = finiteNonNegative(input.mechanicalStepperKcal);
+    if (bodyCast !== null) {
+      return {
+        policyVersion: ACTIVE_ENERGY_SELECTION_POLICY_V1,
+        selectedKcal: bodyCast,
+        source: "bodycast-stepper-mechanical",
+        provisional: false,
+        fullCoverage: true,
+      };
+    }
+    if (input.manualActiveKcalPresent === true) {
+      const manual = finiteNonNegative(input.manualActiveKcal);
+      if (manual !== null) {
+        return {
+          policyVersion: ACTIVE_ENERGY_SELECTION_POLICY_V1,
+          selectedKcal: manual,
+          source: "manual-kcal",
+          provisional: false,
+          fullCoverage: true,
+        };
+      }
+    }
+    const device = finiteNonNegative(input.activeEnergyKcal);
+    if (device !== null) {
+      return {
+        policyVersion: ACTIVE_ENERGY_SELECTION_POLICY_V1,
+        selectedKcal: device,
+        source: "garmin-fallback",
+        provisional: false,
+        fullCoverage: true,
+      };
+    }
+    return {
+      policyVersion: ACTIVE_ENERGY_SELECTION_POLICY_V1,
+      selectedKcal: null,
+      source: "unavailable",
+      provisional: false,
+      fullCoverage: false,
+    };
+  }
+  if (input.manualActiveKcalPresent === true) {
+    return selectManualStepperEnergyV1({
+      manualKcal: input.manualActiveKcal ?? null,
+      manualKcalPresent: true,
+      mechanicalKcal: input.mechanicalStepperKcal ?? null,
     });
   }
   const mechanical = selectManualStepperEnergyV1({
@@ -153,6 +264,16 @@ export function selectManualStepperEnergyV1(input: {
   manualKcalPresent: boolean;
   mechanicalKcal: number | null;
 }): SelectedEnergyV1 {
+  const mechanical = finiteNonNegative(input.mechanicalKcal);
+  if (mechanical !== null) {
+    return {
+      policyVersion: ACTIVE_ENERGY_SELECTION_POLICY_V1,
+      selectedKcal: mechanical,
+      source: "bodycast-stepper-mechanical",
+      provisional: false,
+      fullCoverage: true,
+    };
+  }
   if (input.manualKcalPresent) {
     const manual = finiteNonNegative(input.manualKcal);
     if (manual === null) {
@@ -168,16 +289,6 @@ export function selectManualStepperEnergyV1(input: {
       policyVersion: ACTIVE_ENERGY_SELECTION_POLICY_V1,
       selectedKcal: manual,
       source: "manual-kcal",
-      provisional: false,
-      fullCoverage: true,
-    };
-  }
-  const mechanical = finiteNonNegative(input.mechanicalKcal);
-  if (mechanical !== null) {
-    return {
-      policyVersion: ACTIVE_ENERGY_SELECTION_POLICY_V1,
-      selectedKcal: mechanical,
-      source: "bodycast-stepper-mechanical",
       provisional: false,
       fullCoverage: true,
     };

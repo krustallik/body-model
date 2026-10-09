@@ -8,6 +8,10 @@ import { rebaseCurrentAccountingSnapshotTimestamp } from "./rebase-current-accou
 import { resolveEventEnergyV1 } from "@/model/activity/canonical-activity-policy-v1";
 import { adaptManualStepperEnergyV1 } from "./manual-stepper-fields-v1";
 import { persistStepperReconciliationV1 } from "./stepper-reconciliation.service";
+import { invalidateWorkoutEnergyInTransactionV1 } from "@/modules/activity/active-energy-invalidation";
+import { recordExperimentalStepperActiveEnergyShadowsForLocalDate } from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
+import { publishActiveEnergyChangesV1 } from "@/modules/activity/active-energy-publication";
+import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 
 const STEPPER_TYPE = "Stair Climbing";
 
@@ -44,17 +48,11 @@ const stepperSelect = {
   sourceIdentity: true,
   syncProtected: true,
   matchedDiarySession: { select: { id: true } },
-  dailyHealthData: { select: { weightKg: true } },
-  experimentalStepperActiveEnergyShadow: { select: { result: true } },
+  activeEnergyAliases: {
+    where: { sourceType: "workout" },
+    select: { event: { select: { currentKcal: true, currentSource: true, resolutionRevision: true, isStale: true } } },
+  },
 } as const;
-
-function shadowMechanicalKcal(result: unknown): number | null {
-  if (result === null || typeof result !== "object" || Array.isArray(result)) return null;
-  const availability = (result as { availability?: unknown }).availability;
-  const kcal = (result as { estimatedActiveKcal?: unknown }).estimatedActiveKcal;
-  if (availability !== "available") return null;
-  return typeof kcal === "number" && Number.isFinite(kcal) && kcal >= 0 ? kcal : null;
-}
 
 function toDto(row: {
   id: number;
@@ -68,25 +66,28 @@ function toDto(row: {
   sourceIdentity: string;
   syncProtected: boolean;
   matchedDiarySession: { id: number } | null;
-  dailyHealthData: { weightKg: number | null };
-  experimentalStepperActiveEnergyShadow: { result: unknown } | null;
+  activeEnergyAliases: Array<{ event: { currentKcal: number | null; currentSource: string | null; resolutionRevision: number; isStale: boolean } }>;
 }): StepperWorkoutDto {
   const source = row.sourceIdentity.startsWith(MANUAL_STEPPER_SOURCE_PREFIX) ? "manual" : "health";
   const adapted = adaptManualStepperEnergyV1({
-    manualStepCount: row.manualStepCount,
+    manualStepCount: null,
     manualActiveEnergyKcal: row.manualActiveEnergyKcal,
-    bodyMassKg: row.dailyHealthData.weightKg,
+    bodyMassKg: null,
   });
-  const mechanicalFromShadow = source === "health"
-    ? shadowMechanicalKcal(row.experimentalStepperActiveEnergyShadow?.result ?? null)
-    : null;
   const selected = resolveEventEnergyV1({
     classification: "stair-climbing",
     activeEnergyKcal: row.activeEnergyKcal,
     manualActiveKcalPresent: adapted.manualKcalPresent,
     manualActiveKcal: adapted.manualKcal,
-    mechanicalStepperKcal: adapted.mechanicalKcal ?? mechanicalFromShadow,
+    mechanicalStepperKcal: null,
   });
+  const canonical = row.activeEnergyAliases[0]?.event;
+  const selectedActiveEnergyKcal = canonical
+    ? canonical.isStale ? null : canonical.currentKcal
+    : selected.selectedKcal;
+  const selectedActiveEnergySource = canonical
+    ? canonical.isStale ? "unavailable" : canonical.currentSource === "device-kcal" ? "garmin-fallback" : canonical.currentSource ?? "unavailable"
+    : selected.source;
   return {
     id: row.id,
     type: row.type,
@@ -96,9 +97,11 @@ function toDto(row: {
     activeEnergyKcal: row.activeEnergyKcal,
     manualStepCount: row.manualStepCount,
     manualActiveEnergyKcal: row.manualActiveEnergyKcal,
-    selectedActiveEnergyKcal: selected.selectedKcal,
-    selectedActiveEnergySource: selected.source,
-    selectedActiveEnergyFullCoverage: selected.fullCoverage,
+    selectedActiveEnergyKcal,
+    selectedActiveEnergySource,
+    selectedActiveEnergyFullCoverage: canonical
+      ? !canonical.isStale && selectedActiveEnergyKcal !== null
+      : selected.fullCoverage,
     reconciliationStatus: null,
     reconciliationGroupId: null,
     reconciliationPeerWorkoutId: null,
@@ -182,13 +185,14 @@ export class StepperWorkoutRepository {
   async create(input: StepperWorkoutInput): Promise<StepperWorkoutDto> {
     const { startAt, endAt, date } = workoutDates(input);
     const row = await this.client.$transaction(async (transaction) => {
+      await new PhysiologyV7PersistenceRepository(transaction).lockProfile(1);
       const day = await transaction.dailyHealthData.upsert({
         where: { date },
         create: { date, rawPayload: { source: "manual-stepper-training" } },
         update: {},
         select: { id: true },
       });
-      return transaction.workout.create({
+      const created = await transaction.workout.create({
         data: {
           dailyHealthDataId: day.id,
           sourceIdentity: `${MANUAL_STEPPER_SOURCE_PREFIX}${randomUUID()}`,
@@ -203,25 +207,38 @@ export class StepperWorkoutRepository {
         },
         select: stepperSelect,
       });
+      await invalidateWorkoutEnergyInTransactionV1({
+        tx: transaction, profileId: 1, workoutIds: [created.id], affectedInstants: [startAt, endAt],
+      });
+      await persistStepperReconciliationV1(transaction, { from: date, to: date });
+      return created;
     });
-    await persistStepperReconciliationV1(this.client, { from: date, to: date });
-    const [dto] = await attachReconciliation(this.client, [toDto(row)]);
+    if (this.client === prisma) {
+      await recordExperimentalStepperActiveEnergyShadowsForLocalDate({ date, profileId: 1 });
+      await publishActiveEnergyChangesV1();
+    }
+    const refreshed = await this.client.workout.findUnique({ where: { id: row.id }, select: stepperSelect });
+    const [dto] = await attachReconciliation(this.client, refreshed ? [toDto(refreshed)] : []);
     return dto!;
   }
 
   async update(id: number, input: StepperWorkoutInput): Promise<StepperWorkoutDto | null> {
     const { startAt, endAt, date } = workoutDates(input);
-    return this.client.$transaction(async (transaction) => {
+    const affectedDates = new Set<string>([date]);
+    const updatedId = await this.client.$transaction(async (transaction) => {
+      await new PhysiologyV7PersistenceRepository(transaction).lockProfile(1);
       const existing = await transaction.workout.findFirst({
         where: { id, type: { equals: STEPPER_TYPE, mode: "insensitive" }, hiddenFromHistory: false },
         select: {
           id: true, sourceIdentity: true, dailyHealthDataId: true, externalId: true,
+          dailyHealthData: { select: { date: true } },
           type: true, startAt: true, endAt: true, durationMinutes: true,
           energyKcal: true, activeEnergyKcal: true,
           matchedDiarySession: { select: { id: true } },
         },
       });
       if (existing === null) return null;
+      affectedDates.add(existing.dailyHealthData.date);
       const isManual = existing.sourceIdentity.startsWith(MANUAL_STEPPER_SOURCE_PREFIX);
       if (!isManual && existing.matchedDiarySession !== null) return null;
       const day = await transaction.dailyHealthData.upsert({
@@ -294,34 +311,57 @@ export class StepperWorkoutRepository {
           }
         }
       }
-      await persistStepperReconciliationV1(transaction, { from: date, to: date });
-      const [dto] = await attachReconciliation(transaction, [toDto(updated)]);
-      return dto!;
+      const reconcileFrom = existing.dailyHealthData.date < date ? existing.dailyHealthData.date : date;
+      const reconcileTo = existing.dailyHealthData.date > date ? existing.dailyHealthData.date : date;
+      await persistStepperReconciliationV1(transaction, { from: reconcileFrom, to: reconcileTo });
+      await invalidateWorkoutEnergyInTransactionV1({
+        tx: transaction,
+        profileId: 1,
+        workoutIds: [id],
+        affectedInstants: [existing.startAt, existing.endAt, startAt, endAt],
+      });
+      return updated.id;
     });
+    if (updatedId === null) return null;
+    if (this.client === prisma) {
+      for (const affectedDate of [...affectedDates].sort()) {
+        await recordExperimentalStepperActiveEnergyShadowsForLocalDate({ date: affectedDate, profileId: 1 });
+      }
+      await publishActiveEnergyChangesV1();
+    }
+    const refreshed = await this.client.workout.findUnique({ where: { id: updatedId }, select: stepperSelect });
+    if (!refreshed) return null;
+    const [dto] = await attachReconciliation(this.client, [toDto(refreshed)]);
+    return dto ?? null;
   }
 
   async delete(id: number): Promise<boolean> {
-    const healthRow = await this.client.workout.findFirst({
-      where: { id, type: { equals: STEPPER_TYPE, mode: "insensitive" }, NOT: { sourceIdentity: { startsWith: MANUAL_STEPPER_SOURCE_PREFIX } }, matchedDiarySession: { is: null }, hiddenFromHistory: false },
-      select: { id: true },
-    });
-    if (healthRow) {
-      const result = await this.client.workout.updateMany({
-        where: { id: healthRow.id },
-        data: { syncProtected: true, hiddenFromHistory: true },
+    let affectedDate: string | null = null;
+    const deleted = await this.client.$transaction(async (transaction) => {
+      await new PhysiologyV7PersistenceRepository(transaction).lockProfile(1);
+      const existing = await transaction.workout.findFirst({
+        where: { id, type: { equals: STEPPER_TYPE, mode: "insensitive" }, matchedDiarySession: { is: null }, hiddenFromHistory: false },
+        select: { id: true, sourceIdentity: true, startAt: true, endAt: true, dailyHealthData: { select: { date: true } } },
       });
-      return result.count === 1;
-    }
-    const result = await this.client.workout.deleteMany({
-      where: {
-        id,
-        type: { equals: STEPPER_TYPE, mode: "insensitive" },
-        sourceIdentity: { startsWith: MANUAL_STEPPER_SOURCE_PREFIX },
-        matchedDiarySession: { is: null },
-        hiddenFromHistory: false,
-      },
+      if (!existing) return false;
+      affectedDate = existing.dailyHealthData.date;
+      const isManual = existing.sourceIdentity.startsWith(MANUAL_STEPPER_SOURCE_PREFIX);
+      const changed = isManual
+        ? await transaction.workout.deleteMany({ where: { id } })
+        : await transaction.workout.updateMany({ where: { id }, data: { syncProtected: true, hiddenFromHistory: true } });
+      if (changed.count !== 1) return false;
+      const date = existing.dailyHealthData.date;
+      await invalidateWorkoutEnergyInTransactionV1({
+        tx: transaction, profileId: 1, workoutIds: [id], affectedInstants: [existing.startAt, existing.endAt],
+      });
+      await persistStepperReconciliationV1(transaction, { from: date, to: date });
+      return true;
     });
-    return result.count === 1;
+    if (deleted && affectedDate !== null && this.client === prisma) {
+      await recordExperimentalStepperActiveEnergyShadowsForLocalDate({ date: affectedDate, profileId: 1 });
+      await publishActiveEnergyChangesV1();
+    }
+    return deleted;
   }
 }
 

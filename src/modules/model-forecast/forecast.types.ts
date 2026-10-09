@@ -12,6 +12,7 @@ import type {
 
 export const FORECAST_ALGORITHM_VERSION = "bodycast-forecast-v1";
 export const EXPERIMENTAL_PRODUCTION_FORECAST_VERSION = "experimental-forecast-v1";
+export const EXPERIMENTAL_FORECAST_V2_VERSION = "experimental-forecast-v2" as const;
 
 export type ForecastNutrition = {
   caloriesKcal: number;
@@ -158,9 +159,9 @@ export type ForecastDateSummary = {
   physiologicalBodyWeightKg: PredictiveSummary;
   fatMassKg: PredictiveSummary;
   leanTissueKg: PredictiveSummary;
-  glycogenKg: PredictiveSummary;
-  glycogenWaterKg: PredictiveSummary;
-  glycogenAssociatedMassKg: PredictiveSummary;
+  glycogenKg: PredictiveSummary | null;
+  glycogenWaterKg: PredictiveSummary | null;
+  glycogenAssociatedMassKg: PredictiveSummary | null;
   extracellularFluidDeviationLiters: PredictiveSummary;
   adaptiveThermogenesisKcalPerDay: PredictiveSummary;
   dynamicRmrKcalPerDay: PredictiveSummary;
@@ -171,7 +172,7 @@ export type ForecastDateSummary = {
 
 export type ForecastResult = {
   status: "ok" | "degraded" | "insufficient-scenario-evidence";
-  forecastVersion: typeof FORECAST_ALGORITHM_VERSION | typeof EXPERIMENTAL_PRODUCTION_FORECAST_VERSION;
+  forecastVersion: typeof FORECAST_ALGORITHM_VERSION | typeof EXPERIMENTAL_PRODUCTION_FORECAST_VERSION | typeof EXPERIMENTAL_FORECAST_V2_VERSION;
   modelVersion: string;
   recoveryVersion: string | null;
   sourceFingerprint: string;
@@ -180,12 +181,17 @@ export type ForecastResult = {
   experimentalQuality?: "standard" | "limited-history" | "bootstrap" | "degraded" | "unavailable";
   experimentalProvenance?: {
     source: "observed-history" | "engineering-fallback" | "profile-bootstrap" | "unavailable";
+    nutritionSource?: "complete-recent-donor" | "episode-engineering-fallback" | "explicit-scenario";
+    nutritionFallback?: ForecastNutrition | null;
+    nutritionUncertainty?: Pick<ForecastVariabilityEvidence,
+      "nutritionLogStandardDeviation" | "macroCompositionLogStandardDeviation">;
     anchor: "observed-weight" | "profile-weight" | "none";
     reasons: string[];
     improvements: string[];
   };
   experimentalCurrent?: {
     modeledWeightKg: number | null;
+    glycogenKg?: number | null;
     fatMassKg: number | null;
     slowNonFatKg: number | null;
     glycogenWaterKg: number | null;
@@ -195,12 +201,13 @@ export type ForecastResult = {
     latestExpenditureKcalPerDay: number | null;
     eligibleDays: number;
     requestedWindowDays: number;
+    physicalGlycogenProvenance?: "production-daily-model-state" | "episode-initial-state";
   };
   horizonDays: number;
   scenarioProvenance: {
     mode: ForecastScenario["mode"];
-    nutrition: "fixed" | "joint-target-distribution" | "observed-joint-block-resampling";
-    activity: "fixed-scheduled" | "stochastic-adherence" | "observed-joint-block-resampling";
+    nutrition: "fixed" | "joint-target-distribution" | "observed-joint-block-resampling" | "engineering-fallback";
+    activity: "fixed-scheduled" | "stochastic-adherence" | "observed-joint-block-resampling" | "engineering-fallback";
     donorEvidence: ForecastVariabilityEvidence;
   };
   dates: ForecastDateSummary[];
@@ -237,11 +244,12 @@ export type ForecastResult = {
 
 export type ForecastBlockedResult = {
   status: "initial-state-unreliable" | "initial-state-unavailable";
-  forecastVersion: typeof FORECAST_ALGORITHM_VERSION | typeof EXPERIMENTAL_PRODUCTION_FORECAST_VERSION;
+  forecastVersion: typeof FORECAST_ALGORITHM_VERSION | typeof EXPERIMENTAL_PRODUCTION_FORECAST_VERSION | typeof EXPERIMENTAL_FORECAST_V2_VERSION;
   modelVersion: string;
   recoveryVersion: string | null;
   initialStateQuality: "degenerate" | "awaiting";
   reason: string;
+  reasonCode?: "unified-v4-not-current" | "physical-glycogen-unavailable" | "production-glycogen-null" | "nutrition-evidence-unavailable";
 };
 
 export type RunForecastInput = {
@@ -261,6 +269,7 @@ export type RunForecastInput = {
   ecfPolicy: EcfSimulationPolicy;
   scenario: ForecastScenario;
   reliableDonorDays: readonly ForecastBehaviorDay[];
+  engineeringFallbackDay?: ForecastBehaviorDay | null;
   variabilityEvidence: ForecastVariabilityEvidence;
   config?: Partial<ForecastConfig>;
 };

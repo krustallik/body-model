@@ -19,9 +19,17 @@ export type UnifiedEnergyProductionInputV1 = {
 
 export type UnifiedEnergyActivityEvidenceV1 = {
   doseKey: string;
+  /** All source aliases for one reconciled activity share this key. */
+  canonicalEventKey?: string;
   kind: "workout" | "stepper";
   garminActiveKcal: number | null;
   bodyCastEstimateKcal: number | null;
+  canonicalResolution?: {
+    kcal: number | null;
+    source: string | null;
+    revision: number;
+    stale: boolean;
+  } | null;
 };
 
 function status(value: number | null, preferred: "selected" | "reference" | "diagnostic" = "reference"): UnifiedEnergyLedgerEntryV1["status"] {
@@ -61,8 +69,29 @@ export function buildUnifiedEnergyLedgerV1(input: {
     entry("personal-offset", production.personalOffsetKcalPerDay, "production-personal-offset", true),
   ];
   const selectedDoseKeys: string[] = [];
+  const seenEvents = new Set<string>();
   for (const activity of input.activities) {
+    const eventKey = activity.canonicalEventKey ?? activity.doseKey;
+    if (seenEvents.has(eventKey)) continue;
+    seenEvents.add(eventKey);
     selectedDoseKeys.push(activity.doseKey);
+    if (activity.canonicalResolution !== undefined && activity.canonicalResolution !== null) {
+      const current = !activity.canonicalResolution.stale
+        && activity.canonicalResolution.source !== "unavailable"
+        && activity.canonicalResolution.kcal !== null;
+      entries.push(entry(
+        "canonical-active-energy",
+        current ? activity.canonicalResolution.kcal : null,
+        current
+          ? `canonical-${activity.canonicalResolution.source}-revision-${activity.canonicalResolution.revision}`
+          : "canonical-active-energy-unavailable-or-stale",
+        false,
+        [activity.kind, "garmin-device", "strength-shadow", "stepper-shadow"],
+        activity.canonicalResolution.stale ? "source invalidation is pending canonical recomputation" : null,
+        "diagnostic",
+      ));
+      continue;
+    }
     if (activity.garminActiveKcal !== null) {
       entries.push(entry("garmin-device", activity.garminActiveKcal, "device-active-energy", false, [activity.kind], null, "diagnostic"));
     }

@@ -1,38 +1,34 @@
-name: BodyCast production deploy
+name: Manual production app deploy
+run-name: Non-serving deploy ${{ inputs.commit_sha }}
 
-# Automatic production app deploy AFTER successful main CI only.
-# Never runs on pull_request. Never uses pull_request_target.
-# Ordinary deploy does NOT run prisma migrate deploy, historical replay,
-# or selection-v1 activation. Pending migrations BLOCK the release.
 on:
-  workflow_run:
-    workflows:
-      - BodyCast CI/CD
-    types:
-      - completed
   workflow_dispatch:
     inputs:
       confirm_production_deploy:
-        description: Type deploy to confirm a manual production app release (no migrate)
+        description: Type deploy to authorize an exact-current-main app deploy
         required: true
         type: string
       commit_sha:
-        description: Full 40-char main SHA (must equal current origin/main tip)
+        description: Full 40-character current main SHA
         required: true
         type: string
+      non_serving_deploy:
+        description: Required for the incompatible-schema release; keep traffic in maintenance
+        required: true
+        default: true
+        type: boolean
 
 permissions:
   contents: read
   actions: read
-  deployments: write
 
 concurrency:
-  group: bodycast-production
+  group: bodycast-production-release
   cancel-in-progress: false
 
 jobs:
   authorize:
-    name: Authorize production deploy
+    name: Authorize owner-requested exact-SHA deploy
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -41,268 +37,188 @@ jobs:
       reason: ${{ steps.gate.outputs.reason }}
       ci_run_url: ${{ steps.gate.outputs.ci_run_url }}
     steps:
-      - name: Checkout gate helpers
+      - name: Checkout main gate helpers
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          ref: main
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Resolve candidate and main tip
-        id: resolve
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          DISPATCH_SHA: ${{ github.event.inputs.commit_sha }}
-          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
-          RUN_URL: ${{ github.event.workflow_run.html_url }}
-        run: |
-          set -Eeuo pipefail
-          git fetch --no-tags origin main
-          MAIN_TIP="$(git rev-parse origin/main)"
-          echo "main_tip=${MAIN_TIP}" >> "$GITHUB_OUTPUT"
-          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            CANDIDATE="$DISPATCH_SHA"
-            CI_URL=""
-          else
-            CANDIDATE="$RUN_SHA"
-            CI_URL="$RUN_URL"
-          fi
-          echo "candidate_sha=${CANDIDATE}" >> "$GITHUB_OUTPUT"
-          echo "ci_run_url=${CI_URL}" >> "$GITHUB_OUTPUT"
-
-      - name: Evaluate deploy gate
+      - name: Verify immutable owner identity and exact current-main SHA
         id: gate
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          REPO: ${{ github.repository }}
-          WORKFLOW_REPO: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.repository.full_name || github.repository }}
-          WORKFLOW_NAME: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.name || 'BodyCast CI/CD' }}
-          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-          RUN_EVENT: ${{ github.event.workflow_run.event }}
-          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
-          MAIN_TIP: ${{ steps.resolve.outputs.main_tip }}
-          CANDIDATE: ${{ steps.resolve.outputs.candidate_sha }}
-          DISPATCH_CONFIRM: ${{ github.event.inputs.confirm_production_deploy }}
-          CI_RUN_URL: ${{ steps.resolve.outputs.ci_run_url }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          RUN_SHA: ${{ github.sha }}
+          DISPATCH_SHA: ${{ inputs.commit_sha }}
+          DISPATCH_ACTOR_ID: ${{ github.actor_id }}
+          CONFIRMATION: ${{ inputs.confirm_production_deploy }}
+          NON_SERVING: ${{ inputs.non_serving_deploy }}
         run: |
           set -Eeuo pipefail
-          node --experimental-strip-types --input-type=module <<'EOF'
+          [[ "$REPOSITORY" == "krustallik/body-model" && "$REF" == "refs/heads/main" ]] || {
+            echo "::error::Production deploy must be dispatched from the canonical main branch."; exit 1;
+          }
+          [[ "$DISPATCH_ACTOR_ID" == "126446430" ]] || { echo "::error::Only the pinned BodyCast owner may deploy."; exit 1; }
+          [[ "$CONFIRMATION" == "deploy" && "$NON_SERVING" == "true" ]] || {
+            echo "::error::Exact deploy confirmation and non-serving mode are required."; exit 1;
+          }
+          gh api "repos/krustallik/body-model/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/current-deploy-run.json"
+          node --input-type=module - "$RUNNER_TEMP/current-deploy-run.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { assertTrustedOwnerWorkflowRun } from "./scripts/github-owner-identity.mjs";
+          const run = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          assertTrustedOwnerWorkflowRun(run, {
+            actorId: process.env.DISPATCH_ACTOR_ID,
+            workflowPath: ".github/workflows/deploy-production.yml",
+            workflowRunId: process.env.GITHUB_RUN_ID,
+            workflowRunAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            ref: "refs/heads/main",
+            sha: process.env.RUN_SHA,
+            requireInProgress: true,
+          });
+          NODE
+          [[ "$DISPATCH_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::commit_sha must be a full lowercase SHA."; exit 1; }
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          MAIN_TIP="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
+          [[ "$MAIN_TIP" == "$(git rev-parse refs/remotes/origin/main)" && "$MAIN_TIP" == "$RUN_SHA" ]] || {
+            echo "::error::Workflow checkout is not the current canonical main tip."; exit 1;
+          }
+          REPO="$REPOSITORY" EVENT_NAME="$GITHUB_EVENT_NAME" MAIN_TIP="$MAIN_TIP" CANDIDATE="$DISPATCH_SHA" \
+            CONFIRMATION="$CONFIRMATION" NON_SERVING="$NON_SERVING" node --experimental-strip-types --input-type=module <<'NODE'
           import { appendFileSync } from "node:fs";
           import { evaluateProductionDeployGate } from "./scripts/ci/production-deploy-gate.ts";
-
-          const eventName = process.env.EVENT_NAME;
-          const workflowRun = eventName === "workflow_run"
-            ? {
-                conclusion: process.env.RUN_CONCLUSION || null,
-                event: process.env.RUN_EVENT || "",
-                head_branch: process.env.RUN_BRANCH || null,
-                head_sha: process.env.RUN_SHA || "",
-              }
-            : null;
-
           const result = evaluateProductionDeployGate({
-            eventName,
+            eventName: process.env.EVENT_NAME,
             repositoryFullName: process.env.REPO,
-            workflowRepositoryFullName: process.env.WORKFLOW_REPO || process.env.REPO,
-            workflowName: process.env.WORKFLOW_NAME || "BodyCast CI/CD",
-            expectedWorkflowName: "BodyCast CI/CD",
-            workflowRun,
             mainTipSha: process.env.MAIN_TIP,
             candidateSha: process.env.CANDIDATE,
-            dispatchConfirm: process.env.DISPATCH_CONFIRM || null,
+            dispatchConfirm: process.env.CONFIRMATION,
+            nonServingDeploy: process.env.NON_SERVING === "true",
           });
-
-          const lines = [
-            `decision=${result.decision}`,
-            `candidate_sha=${result.candidateSha ?? ""}`,
-            `reason=${result.reason}`,
-            `ci_run_url=${process.env.CI_RUN_URL || ""}`,
-          ];
-          appendFileSync(process.env.GITHUB_OUTPUT, `${lines.join("\n")}\n`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `decision=${result.decision}\ncandidate_sha=${result.candidateSha ?? ""}\nreason=${result.reason}\n`);
           console.log(JSON.stringify(result, null, 2));
-          EOF
-
-      - name: Require green main CI for manual dispatch tip
-        if: github.event_name == 'workflow_dispatch' && steps.gate.outputs.decision == 'deploy'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CANDIDATE: ${{ steps.gate.outputs.candidate_sha }}
-        run: |
-          set -Eeuo pipefail
-          RUN_JSON="$(gh run list --repo "${{ github.repository }}" --branch main --commit "$CANDIDATE" --workflow "BodyCast CI/CD" --limit 20 --json databaseId,conclusion,event,status,url)"
-          MATCH="$(printf '%s' "$RUN_JSON" | node --input-type=module -e '
-            const runs = JSON.parse(await new Response(process.stdin).text());
-            const ok = runs.find((r) => r.event === "push" && r.status === "completed" && r.conclusion === "success");
-            if (!ok) {
-              console.error("No successful main-push BodyCast CI/CD run found for this SHA.");
-              process.exit(1);
-            }
-            console.log(ok.url);
+          if (result.decision !== "deploy") process.exitCode = 1;
+          NODE
+          CI_RUNS="$(gh api --paginate --jq '.workflow_runs[] | @json' \
+            "repos/krustallik/body-model/actions/workflows/ci.yml/runs?branch=main&event=push&per_page=100")"
+          CI_RUN_URL="$(printf '%s\n' "$CI_RUNS" | EXPECTED_SHA="$DISPATCH_SHA" node --input-type=module -e '
+          import { readFileSync } from "node:fs";
+          const sha = process.env.EXPECTED_SHA;
+          const runs = readFileSync(0, "utf8").trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
+          const matches = runs.filter((run) => run.head_sha === sha && run.head_branch === "main" && run.event === "push");
+          matches.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || Number(b.run_attempt) - Number(a.run_attempt));
+          const run = matches[0];
+          if (!run || run.status !== "completed" || run.conclusion !== "success") throw new Error("Exact current main SHA has no completed successful BodyCast CI/CD run.");
+          console.log(run.html_url);
           ')"
-          echo "Verified green main CI: ${MATCH}"
-          echo "ci_run_url=${MATCH}" >> "$GITHUB_OUTPUT"
-
-      - name: Summarize authorization
-        if: always()
-        env:
-          DECISION: ${{ steps.gate.outputs.decision }}
-          REASON: ${{ steps.gate.outputs.reason }}
-          CANDIDATE: ${{ steps.gate.outputs.candidate_sha }}
-          CI_URL: ${{ steps.gate.outputs.ci_run_url }}
-          MAIN_TIP: ${{ steps.resolve.outputs.main_tip }}
-        run: |
-          {
-            echo "## Production deploy authorization"
-            echo ""
-            echo "- decision: \`${DECISION}\`"
-            echo "- reason: ${REASON}"
-            echo "- candidate SHA: \`${CANDIDATE}\`"
-            echo "- origin/main tip: \`${MAIN_TIP}\`"
-            echo "- triggering CI: ${CI_URL:-n/a}"
-          } >> "$GITHUB_STEP_SUMMARY"
-          if [[ "$DECISION" == "block" ]]; then
-            echo "::error::${REASON}"
-            exit 1
-          fi
+          echo "ci_run_url=$CI_RUN_URL" >> "$GITHUB_OUTPUT"
+          echo "## Owner-authorized non-serving production deploy" >> "$GITHUB_STEP_SUMMARY"
+          echo "- exact SHA: \`$DISPATCH_SHA\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- current-main CI: $CI_RUN_URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "- traffic: remains in maintenance until separate V3/V4 gates pass" >> "$GITHUB_STEP_SUMMARY"
 
   deploy:
-    name: Deploy to production
+    name: Deploy exact SHA in maintenance
     needs: authorize
     if: needs.authorize.outputs.decision == 'deploy'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     environment: production
     steps:
-      - name: Recheck tip before mutating production
-        env:
-          CANDIDATE: ${{ needs.authorize.outputs.candidate_sha }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -Eeuo pipefail
-          TIP="$(gh api "repos/${{ github.repository }}/commits/main" --jq .sha)"
-          if [[ "$TIP" != "$CANDIDATE" ]]; then
-            echo "::error::Stale deploy: candidate ${CANDIDATE} superseded by ${TIP} before release."
-            exit 1
-          fi
-
-      - name: Create GitHub deployment
-        id: deployment
+      - name: Recheck run identity and main tip before production credentials
         env:
           GH_TOKEN: ${{ github.token }}
           CANDIDATE: ${{ needs.authorize.outputs.candidate_sha }}
+          DISPATCH_ACTOR_ID: ${{ github.actor_id }}
         run: |
           set -Eeuo pipefail
-          DEPLOY_ID="$(gh api "repos/${{ github.repository }}/deployments" \
-            -f ref="$CANDIDATE" \
-            -f environment=production \
-            -F auto_merge=false \
-            -f description="BodyCast automatic production app deploy" \
-            -f task=deploy:app \
-            --jq .id)"
-          echo "deployment_id=${DEPLOY_ID}" >> "$GITHUB_OUTPUT"
-          gh api "repos/${{ github.repository }}/deployments/${DEPLOY_ID}/statuses" \
-            -f state=in_progress \
-            -f description="Preflight + app recreate (no migrate)" \
-            -F auto_inactive=true >/dev/null
+          gh api "repos/krustallik/body-model/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/current-deploy-run.json"
+          node --input-type=module - "$RUNNER_TEMP/current-deploy-run.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { assertTrustedOwnerWorkflowRun } from "./scripts/github-owner-identity.mjs";
+          assertTrustedOwnerWorkflowRun(JSON.parse(readFileSync(process.argv[2], "utf8")), {
+            actorId: process.env.DISPATCH_ACTOR_ID,
+            workflowPath: ".github/workflows/deploy-production.yml",
+            workflowRunId: process.env.GITHUB_RUN_ID,
+            workflowRunAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            ref: "refs/heads/main",
+            sha: process.env.GITHUB_SHA,
+            requireInProgress: true,
+          });
+          NODE
+          TIP="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
+          [[ "$TIP" == "$CANDIDATE" ]] || { echo "::error::Canonical main advanced before SSH deployment."; exit 1; }
 
-      - name: Deploy over SSH (exact SHA, no migrate)
-        id: ssh_deploy
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
+      - name: Validate SSH inputs and pin the production host
         env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_HOST_FINGERPRINT: ${{ secrets.SSH_HOST_FINGERPRINT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          APP_HOST: ${{ secrets.APP_HOST }}
+          CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
+        run: |
+          set -Eeuo pipefail
+          : "$SSH_PRIVATE_KEY"; : "$SSH_HOST"; : "$SSH_USER"; : "$SSH_PORT"; : "$SSH_HOST_FINGERPRINT"; : "$DEPLOY_PATH"; : "$APP_HOST"; : "$CADDY_ROUTES_PATH"
+          [[ "$SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ && "$SSH_USER" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::Invalid production SSH host or user."; exit 1; }
+          [[ "$SSH_PORT" =~ ^[0-9]{1,5}$ ]] && (( SSH_PORT > 0 && SSH_PORT <= 65535 )) || { echo "::error::Invalid production SSH port."; exit 1; }
+          [[ "$SSH_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || { echo "::error::Invalid pinned production SSH fingerprint."; exit 1; }
+          [[ "$DEPLOY_PATH" == /* && "$DEPLOY_PATH" != *$'\n'* ]] || { echo "::error::DEPLOY_PATH must be an absolute single-line path."; exit 1; }
+          [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* && "$CADDY_ROUTES_PATH" != *$'\n'* ]] || { echo "::error::Production traffic topology inputs are invalid."; exit 1; }
+          install -d -m 700 "$RUNNER_TEMP/bodycast-deploy-ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/bodycast-deploy-ssh/id"
+          chmod 600 "$RUNNER_TEMP/bodycast-deploy-ssh/id"
+          ssh-keyscan -T 10 -p "$SSH_PORT" "$SSH_HOST" > "$RUNNER_TEMP/bodycast-deploy-ssh/candidate" 2>/dev/null
+          node scripts/filter-ssh-known-hosts.mjs "$RUNNER_TEMP/bodycast-deploy-ssh/candidate" "$RUNNER_TEMP/bodycast-deploy-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/bodycast-deploy-ssh/known_hosts"
+          echo "BODYCAST_SSH_KEY=$RUNNER_TEMP/bodycast-deploy-ssh/id" >> "$GITHUB_ENV"
+          echo "BODYCAST_KNOWN_HOSTS=$RUNNER_TEMP/bodycast-deploy-ssh/known_hosts" >> "$GITHUB_ENV"
+
+      - name: Deploy exact SHA through the fixed production script
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           APP_HOST: ${{ secrets.APP_HOST }}
           CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
           DEPLOY_SHA: ${{ needs.authorize.outputs.candidate_sha }}
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT }}
-          command_timeout: 25m
-          envs: DEPLOY_PATH,APP_HOST,CADDY_ROUTES_PATH,DEPLOY_SHA
-          script: |
-            set -Eeuo pipefail
-            : "${DEPLOY_PATH:?}"
-            : "${APP_HOST:?}"
-            : "${CADDY_ROUTES_PATH:?}"
-            : "${DEPLOY_SHA:?}"
-            cd "$DEPLOY_PATH"
-            # Server tree may predate new scripts — checkout exact SHA before chmod/run.
-            git fetch --no-tags origin "$DEPLOY_SHA"
-            git checkout --detach --force "$DEPLOY_SHA"
-            test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
-            chmod +x scripts/deploy.sh scripts/deploy-preflight-schema.sh
-            APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" DEPLOY_SHA="$DEPLOY_SHA" \
-              bash scripts/deploy.sh
-
-      - name: Mark deployment success
-        if: success()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DEPLOY_ID: ${{ steps.deployment.outputs.deployment_id }}
-          CANDIDATE: ${{ needs.authorize.outputs.candidate_sha }}
-          APP_HOST: ${{ secrets.APP_HOST }}
         run: |
           set -Eeuo pipefail
-          gh api "repos/${{ github.repository }}/deployments/${DEPLOY_ID}/statuses" \
-            -f state=success \
-            -f description="Deployed ${CANDIDATE}" \
-            -f environment_url="https://${APP_HOST}" \
-            -F auto_inactive=true >/dev/null
-          {
-            echo "## Production deploy"
-            echo ""
-            echo "- result: SUCCESS"
-            echo "- deployed SHA: \`${CANDIDATE}\`"
-            echo "- migrate: NOT EXECUTED"
-            echo "- historical replay: NOT EXECUTED"
-            echo "- selection-v1 activation: NOT EXECUTED"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Mark deployment failure
-        if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DEPLOY_ID: ${{ steps.deployment.outputs.deployment_id }}
-          CANDIDATE: ${{ needs.authorize.outputs.candidate_sha }}
-          CI_URL: ${{ needs.authorize.outputs.ci_run_url }}
-          REASON: ${{ needs.authorize.outputs.reason }}
-        run: |
+          TIP="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
+          [[ "$TIP" == "$DEPLOY_SHA" ]] || { echo "::error::Canonical main advanced immediately before SSH."; exit 1; }
+          DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
+          APP_HOST_B64="$(printf '%s' "$APP_HOST" | base64 -w0)"
+          ROUTES_PATH_B64="$(printf '%s' "$CADDY_ROUTES_PATH" | base64 -w0)"
+          REMOTE_SCRIPT="$(cat <<'REMOTE'
           set -Eeuo pipefail
-          if [[ -n "${DEPLOY_ID}" ]]; then
-            gh api "repos/${{ github.repository }}/deployments/${DEPLOY_ID}/statuses" \
-              -f state=failure \
-              -f description="Production deploy failed for ${CANDIDATE}" \
-              -F auto_inactive=true >/dev/null || true
-          fi
-          {
-            echo "## Production deploy"
-            echo ""
-            echo "- result: FAILED or BLOCKED"
-            echo "- intended SHA: \`${CANDIDATE}\`"
-            echo "- triggering CI: ${CI_URL:-n/a}"
-            echo "- gate reason: ${REASON}"
-            echo "- migrate: NOT EXECUTED by this workflow"
-          } >> "$GITHUB_STEP_SUMMARY"
+          DEPLOY_SHA="$1"
+          DEPLOY_PATH="$(printf '%s' "$2" | base64 --decode)"
+          APP_HOST="$(printf '%s' "$3" | base64 --decode)"
+          CADDY_ROUTES_PATH="$(printf '%s' "$4" | base64 --decode)"
+          [[ "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ && "$DEPLOY_PATH" == /* && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* ]] || exit 2
+          cd -- "$DEPLOY_PATH"
+          [[ "$(git rev-parse --show-toplevel)" == "$DEPLOY_PATH" ]] || { echo "Unexpected production checkout." >&2; exit 1; }
+          [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || { echo "Production checkout is dirty; refusing to overwrite files." >&2; exit 1; }
+          git fetch --no-tags origin "$DEPLOY_SHA"
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          [[ "$(git rev-parse refs/remotes/origin/main)" == "$DEPLOY_SHA" ]] || { echo "Production candidate is no longer current origin/main." >&2; exit 1; }
+          git checkout --detach "$DEPLOY_SHA"
+          [[ "$(git rev-parse HEAD)" == "$DEPLOY_SHA" && -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || exit 1
+          APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" DEPLOY_SHA="$DEPLOY_SHA" BODYCAST_NON_SERVING_DEPLOY=1 \
+            exec bash scripts/deploy.sh
+          REMOTE
+          )"
+          REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
+          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$DEPLOY_SHA' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64'"
+          timeout 35m ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10 "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND"
 
-  report-skip:
-    name: Report skipped deploy
-    needs: authorize
-    if: needs.authorize.outputs.decision == 'skip'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Record skip
-        env:
-          REASON: ${{ needs.authorize.outputs.reason }}
-          CANDIDATE: ${{ needs.authorize.outputs.candidate_sha }}
-          CI_URL: ${{ needs.authorize.outputs.ci_run_url }}
-        run: |
-          {
-            echo "## Production deploy"
-            echo ""
-            echo "- result: SKIPPED (not a successful production release)"
-            echo "- reason: ${REASON}"
-            echo "- candidate SHA: \`${CANDIDATE}\`"
-            echo "- triggering CI: ${CI_URL:-n/a}"
-            echo "- production runtime: unchanged by this workflow"
-          } >> "$GITHUB_STEP_SUMMARY"
-          echo "::notice::${REASON}"
+      - name: Remove temporary SSH credentials
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/bodycast-deploy-ssh"

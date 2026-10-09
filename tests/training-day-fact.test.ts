@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   emptyTrainingDayFact as legacyEmptyTrainingDayFact,
   resolveTrainingDayFacts,
+  strengthEstimateFreshForDay,
   type DiaryFactSource,
   type WorkoutFactSource,
 } from "@/modules/days/training-day-fact";
@@ -10,6 +11,7 @@ import {
   strengthInputFingerprintV1,
   strengthSetFingerprintV1,
 } from "@/modules/training/strength-publication-v1";
+import { historicalStrengthInputFingerprintV1 } from "@/modules/training/strength-historical-energy-v1";
 
 const workout = (overrides: Partial<WorkoutFactSource> = {}): WorkoutFactSource => ({
   id: 1,
@@ -131,6 +133,18 @@ describe("TrainingDayFact resolver", () => {
     expect(facts[0]?.durationMinutes).toBe(120);
   });
 
+  it("keeps the persisted episode model date authoritative even when History default timezone differs", () => {
+    const facts = resolveTrainingDayFacts({
+      workouts: [workout({
+        startAt: new Date("2026-09-24T00:30:00.000Z"),
+        modelDate: "2026-09-23",
+      })],
+      diarySessions: [],
+      timeZone: "Asia/Kolkata",
+    });
+    expect(facts[0]?.date).toBe("2026-09-23");
+  });
+
   it("does not turn partial known durations into a complete total", () => {
     const facts = resolveTrainingDayFacts({
       workouts: [
@@ -165,6 +179,119 @@ describe("TrainingDayFact resolver", () => {
       activeEnergyKcal: 275,
       energySource: "bodycast-stepper-mechanical",
     });
+  });
+
+  it("uses Stage 02 mass and persisted set completion timing for History recompute and matches canonical resolution", () => {
+    const activeEnergyMassReference = {
+      reference: {
+        status: "model-estimated" as const,
+        valueKg: 82,
+        localDate: "2026-09-23",
+        source: "bodycast-as-of-model" as const,
+        sourceId: "daily-model-state:91",
+        modelVersion: "bodycast-physiology-v7",
+        uncertainty: null,
+      },
+      snapshotRevision: 3,
+      inputFingerprint: "stage02-current-fingerprint",
+      massResolutionIdentity: "stage02-mass-identity",
+    };
+    const sets = [
+      { id: 21, sessionExerciseId: 8, completedAt: "2026-09-23T15:30:00.000Z", reps: 8, weightKg: 60, bandNominalResistanceKg: null, rir: 2, resistanceType: "EXTERNAL_WEIGHT" },
+      { id: 22, sessionExerciseId: 8, completedAt: "2026-09-23T15:40:00.000Z", reps: 8, weightKg: 60, bandNominalResistanceKg: null, rir: 2, resistanceType: "EXTERNAL_WEIGHT" },
+    ];
+    const source = diary({
+      revision: 1,
+      webStartedAt: new Date("2026-09-23T15:00:00.000Z"),
+      webEndedAt: new Date("2026-09-23T16:15:00.000Z"),
+      loggedSetCount: sets.length,
+      sets,
+      exercises: [{ resistanceType: "EXTERNAL_WEIGHT", sets }],
+      activeEnergyMassReference,
+      sameDayMassKg: 100,
+      startOfDayMassKg: 100,
+    });
+    const provisional = resolveTrainingDayFacts({ workouts: [], diarySessions: [source] })[0]!.events[0]!;
+    const expectedKcal = provisional.activeEnergyKcal;
+    expect(expectedKcal).not.toBeNull();
+    expect(provisional.energySource).toBe("shadow-diary-estimate");
+
+    const canonical = resolveTrainingDayFacts({
+      workouts: [],
+      diarySessions: [{
+        ...source,
+        canonicalEnergyResolution: {
+          kcal: expectedKcal,
+          source: "bodycast-strength-estimate",
+          revision: 1,
+        },
+      }],
+    })[0]!.events[0]!;
+    expect(canonical.activeEnergyKcal).toBe(expectedKcal);
+    expect(canonical.energySource).toBe("bodycast-strength-estimate");
+
+    const editedTiming = resolveTrainingDayFacts({
+      workouts: [],
+      diarySessions: [{
+        ...source,
+        sets: sets.map((set, index) => index === 1
+          ? { ...set, completedAt: "2026-09-23T15:31:00.000Z" }
+          : set),
+        exercises: [{ resistanceType: "EXTERNAL_WEIGHT", sets: sets.map((set, index) => index === 1
+          ? { ...set, completedAt: "2026-09-23T15:31:00.000Z" }
+          : set) }],
+      }],
+    })[0]!.events[0]!;
+    expect(editedTiming.activeEnergyKcal).not.toBe(expectedKcal);
+  });
+
+  it("marks the History shadow stale when only a persisted completedAt timestamp changes", () => {
+    const set = {
+      id: 31,
+      sessionExerciseId: 9,
+      completedAt: "2026-09-23T15:30:00.000Z",
+      reps: 8,
+      weightKg: 60,
+      bandNominalResistanceKg: null,
+      rir: 2,
+      resistanceType: "EXTERNAL_WEIGHT",
+    };
+    const estimatorInputs = {
+      entryMode: "LIVE",
+      startAt: "2026-09-23T15:00:00.000Z",
+      endAt: "2026-09-23T16:00:00.000Z",
+      durationMinutes: null,
+      stage02MassReference: null,
+      stage02SnapshotRevision: null,
+      stage02InputFingerprint: null,
+      stage02MassResolutionIdentity: null,
+    };
+    const fingerprint = historicalStrengthInputFingerprintV1({
+      sessionId: 14,
+      sessionRevision: 4,
+      sets: [set],
+      sameDayMassKg: 80,
+      startOfDayMassKg: 79,
+      estimatorInputs,
+    });
+    const input = {
+      sessionId: 14,
+      status: "COMPLETED",
+      revision: 4,
+      diaryKcal: 250,
+      energyShadow: { estimatedActiveKcal: 250, sessionRevision: 4, inputFingerprint: fingerprint },
+      sets: [set],
+      sameDayMassKg: 80,
+      startOfDayMassKg: 79,
+      entryMode: "LIVE",
+      webStartedAt: estimatorInputs.startAt,
+      webEndedAt: estimatorInputs.endAt,
+    };
+    expect(strengthEstimateFreshForDay(input)).toBe(true);
+    expect(strengthEstimateFreshForDay({
+      ...input,
+      sets: [{ ...set, completedAt: "2026-09-23T15:40:00.000Z" }],
+    })).toBe(false);
   });
 
   it("withholds stale shadow strength estimates when sessionRevision mismatches", () => {
@@ -244,13 +371,22 @@ describe("TrainingDayFact resolver", () => {
 
   it("publishes a fresh diary shadow only when the recomputed fingerprint still matches", () => {
     const sets = [{ id: 3, reps: 8, weightKg: 60, bandNominalResistanceKg: null, rir: null }];
-    const published = strengthInputFingerprintV1({
+    const published = historicalStrengthInputFingerprintV1({
       sessionId: 4,
       sessionRevision: 2,
-      massKg: 80,
+      sets,
       sameDayMassKg: 80,
       startOfDayMassKg: 79,
-      setFingerprint: strengthSetFingerprintV1(sets),
+      estimatorInputs: {
+        entryMode: "LIVE",
+        startAt: "2026-09-23T22:30:00.000Z",
+        endAt: "2026-09-23T23:30:00.000Z",
+        durationMinutes: null,
+        stage02MassReference: null,
+        stage02SnapshotRevision: null,
+        stage02InputFingerprint: null,
+        stage02MassResolutionIdentity: null,
+      },
     });
     const facts = resolveTrainingDayFacts({
       workouts: [],

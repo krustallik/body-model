@@ -8,7 +8,10 @@ import {
   knownEnergyCoverageV1,
   occupationalEnergyDurationHours,
   pendingPairCountsV1,
+  resolveEventEnergyV1,
+  selectCanonicalBodyMassV1,
   selectManualStepperEnergyV1,
+  selectPersistedEnergyResolutionV1,
   selectStrengthEnergyV1,
   splitCrossMidnightDistanceV1,
   walkingEnergyEligibleKm,
@@ -68,14 +71,83 @@ describe("canonical activity policy v1", () => {
     expect(selected.selectedKcal).toBe(320);
   });
 
+  it("accepts only fresh persisted energy from a matching activity class", () => {
+    const read = (currentSource: string | null, currentKcal: number | null, isStale = false, classification: "traditional-strength-training" | "stair-climbing" | "other" = "traditional-strength-training") =>
+      selectPersistedEnergyResolutionV1({
+        classification,
+        resolution: { currentSource, currentKcal, resolutionRevision: 3, isStale },
+      });
+
+    expect(read("bodycast-strength-estimate", 310)).toMatchObject({ source: "bodycast-strength-estimate", selectedKcal: 310, fullCoverage: true });
+    expect(read("bodycast-stepper-mechanical", 75, false, "stair-climbing")).toMatchObject({ source: "bodycast-stepper-mechanical", selectedKcal: 75 });
+    expect(read("bodycast-strength-estimate", 310, true)).toMatchObject({ source: "unavailable", selectedKcal: null, fullCoverage: false });
+    expect(read("bodycast-strength-estimate", 310, false, "other")).toMatchObject({ source: "unavailable", selectedKcal: null });
+    expect(read("device-kcal", 120)).toMatchObject({ source: "garmin-fallback", selectedKcal: 120 });
+  });
+
+  it("routes scenario, manual, BodyCast, and device energy without adding sources", () => {
+    expect(resolveEventEnergyV1({
+      classification: "traditional-strength-training",
+      activeEnergyKcal: 280,
+      forecastScenarioStrengthMet: true,
+    })).toMatchObject({ source: "forecast-scenario-strength-met", selectedKcal: 280 });
+    expect(resolveEventEnergyV1({
+      classification: "stair-climbing",
+      activeEnergyKcal: 280,
+      mechanicalStepperKcal: 75,
+      manualActiveKcal: 120,
+      manualActiveKcalPresent: true,
+    })).toMatchObject({ source: "bodycast-stepper-mechanical", selectedKcal: 75 });
+    expect(resolveEventEnergyV1({
+      classification: "other",
+      activeEnergyKcal: 280,
+      manualActiveKcal: 120,
+      manualActiveKcalPresent: true,
+    })).toMatchObject({ source: "manual-kcal", selectedKcal: 120 });
+    expect(resolveEventEnergyV1({ classification: "other", activeEnergyKcal: 280 }))
+      .toMatchObject({ source: "garmin-fallback", selectedKcal: 280 });
+    expect(resolveEventEnergyV1({ classification: "other", activeEnergyKcal: null }))
+      .toMatchObject({ source: "unavailable", selectedKcal: null });
+  });
+
+  it("uses observed canonical mass before a Unified start-of-day estimate", () => {
+    expect(selectCanonicalBodyMassV1({ sameDayObservedKg: 74, unifiedStartOfDayKg: 76 }))
+      .toEqual({ massKg: 74, source: "same-day-observed" });
+    expect(selectCanonicalBodyMassV1({ sameDayObservedKg: null, unifiedStartOfDayKg: 76 }))
+      .toEqual({ massKg: 76, source: "unified-start-of-day" });
+    expect(selectCanonicalBodyMassV1({ sameDayObservedKg: 0, unifiedStartOfDayKg: -2 }))
+      .toEqual({ massKg: null, source: "unavailable" });
+  });
+
   it("keeps entered manual kcal and does not require a mechanical value", () => {
     const selected = selectManualStepperEnergyV1({
       manualKcal: 180,
       manualKcalPresent: true,
       mechanicalKcal: 400,
     });
+    expect(selected.source).toBe("bodycast-stepper-mechanical");
+    expect(selected.selectedKcal).toBe(400);
+  });
+
+  it("uses manual kcal before device only when the BodyCast estimate is unavailable", async () => {
+    const { resolveEventEnergyV1 } = await import("@/model/activity/canonical-activity-policy-v1");
+    const selected = resolveEventEnergyV1({
+      classification: "stair-climbing", activeEnergyKcal: 260,
+      manualActiveKcal: 180, manualActiveKcalPresent: true,
+      mechanicalStepperKcal: null,
+    });
     expect(selected.source).toBe("manual-kcal");
     expect(selected.selectedKcal).toBe(180);
+  });
+
+  it("uses the Strength MET fallback before manual and device values", async () => {
+    const { selectStrengthEnergyV1 } = await import("@/model/activity/canonical-activity-policy-v1");
+    const selected = selectStrengthEnergyV1({
+      bodyCastKcal: null, bodyCastFresh: false, sessionCompleted: true,
+      bodyCastMetKcal: 210, manualKcal: 180, manualKcalPresent: true, garminKcal: 260,
+    });
+    expect(selected.source).toBe("bodycast-strength-met-fallback");
+    expect(selected.selectedKcal).toBe(210);
   });
 
   it("treats 200 plus unavailable as a known subtotal, not full coverage", () => {

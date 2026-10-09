@@ -5,6 +5,7 @@ import type {
   ForecastResult,
   ForecastScenario,
   RunForecastInput,
+  PredictiveSummary,
 } from "@/modules/model-forecast/forecast.types";
 import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
 import { prepareEpisodeInitialization } from "@/modules/model-episodes/episode-initialization";
@@ -94,6 +95,11 @@ export function validationForecastInput(input: {
 
 type Metric = "physiologicalBodyWeightKg" | "fatMassKg" | "glycogenKg";
 
+function requireMetric(value: PredictiveSummary | null, metric: Metric): PredictiveSummary {
+  if (value === null) throw new Error(`Validation fixture unexpectedly lacks ${metric}`);
+  return value;
+}
+
 function wilson(successes: number, total: number): [number, number] {
   const z = 1.959963984540054;
   const proportion = successes / total;
@@ -131,8 +137,8 @@ export function runForecastGenerativeValidation(input: {
         seed: calibrationSeed(panelIndex, "truth"), horizonDays: horizon, pathCount: 1,
       }));
       for (const metric of metrics) {
-        const interval = forecast.dates.at(-1)![metric];
-        const value = truth.dates.at(-1)![metric].median;
+        const interval = requireMetric(forecast.dates.at(-1)![metric], metric);
+        const value = requireMetric(truth.dates.at(-1)![metric], metric).median;
         if (value >= interval.p25 && value <= interval.p75) counts[horizon][metric].inner += 1;
         if (value >= interval.p05 && value <= interval.p95) counts[horizon][metric].outer += 1;
       }
@@ -229,8 +235,8 @@ function runCalibrationCase(input: {
           pathCount: 1,
         }));
         for (const metric of metrics) {
-          const interval = forecast.dates.at(-1)![metric];
-          const value = truth.dates.at(-1)![metric].median;
+          const interval = requireMetric(forecast.dates.at(-1)![metric], metric);
+          const value = requireMetric(truth.dates.at(-1)![metric], metric).median;
           if (value >= interval.p25 && value <= interval.p75) counts[metric].inner += 1;
           if (value >= interval.p05 && value <= interval.p95) counts[metric].outer += 1;
         }
@@ -301,8 +307,8 @@ export function runForecastScenarioModeValidation(input: {
   }));
   const fixedMetrics: Metric[] = ["physiologicalBodyWeightKg", "fatMassKg", "glycogenKg"];
   const fixedExact = Object.fromEntries(fixedMetrics.map((metric) => {
-    const predicted = fixedForecast.dates.at(-1)![metric];
-    const realized = fixedTruth.dates.at(-1)![metric].median;
+    const predicted = requireMetric(fixedForecast.dates.at(-1)![metric], metric);
+    const realized = requireMetric(fixedTruth.dates.at(-1)![metric], metric).median;
     return [metric, Math.max(
       Math.abs(predicted.p05 - realized),
       Math.abs(predicted.p25 - realized),
@@ -352,8 +358,8 @@ export function runForecastHighPathReference() {
     ordinaryNumericalQuality: ordinary.diagnostics.numericalQuality,
     referenceNumericalQuality: reference.diagnostics.numericalQuality,
     endpointAbsoluteDifferences: Object.fromEntries(metrics.map((metric) => {
-      const left = ordinaryFinal[metric];
-      const right = referenceFinal[metric];
+      const left = requireMetric(ordinaryFinal[metric], metric);
+      const right = requireMetric(referenceFinal[metric], metric);
       return [metric, {
         p05: Math.abs(left.p05 - right.p05),
         p25: Math.abs(left.p25 - right.p25),

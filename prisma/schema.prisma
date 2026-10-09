@@ -24,6 +24,7 @@ model Profile {
   createdAt                   DateTime                     @default(now())
   updatedAt                   DateTime                     @updatedAt
   modelEpisodes               ModelEpisode[]
+  unifiedExperimentalPhysiologyStatesV2 UnifiedExperimentalPhysiologyStateV2[]
   stepperEquipmentAssignments StepperEquipmentAssignment[]
   strengthDiarySessions       StrengthDiarySession[]
 }
@@ -274,6 +275,7 @@ model Workout {
   provisionalForGroups StepperReconciliationGroup[] @relation("ReconciliationProvisional")
   experimentalStepperActiveEnergyShadow ExperimentalStepperActiveEnergyShadow?
   experimentalStepperGlycogenDemandShadow ExperimentalStepperGlycogenDemandShadow?
+  activeEnergyAliases ActiveEnergyEventAlias[]
 
   @@unique([dailyHealthDataId, sourceIdentity])
   @@index([dailyHealthDataId])
@@ -732,7 +734,11 @@ model ModelEpisode {
   dailyStates                              DailyModelState[]
   unknownIntervals                         ModelUnknownInterval[]
   recoveryRuns                             ModelRecoveryRun[]
+  experimentalSkeletalMuscleDeltaShadows   ExperimentalSkeletalMuscleDeltaShadow[]
+  experimentalCessationDetrainingShadows   ExperimentalCessationDetrainingShadow[]
+  unifiedExperimentalPhysiologyStatesV2    UnifiedExperimentalPhysiologyStateV2[]
 
+  @@unique([id, profileId])
   @@index([active])
   @@index([startDate])
   @@index([profileId])
@@ -821,6 +827,7 @@ model DailyModelState {
   deltaLeanTissueKg                 Float?
   deltaGlycogenKg                   Float?
   filteredWeightKg                  Float?
+  weightFilterVarianceKg2           Float?
   createdAt                         DateTime     @default(now()) @db.Timestamptz(3)
   updatedAt                         DateTime     @updatedAt @db.Timestamptz(3)
   episode                           ModelEpisode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
@@ -861,6 +868,12 @@ model PhysiologyV7Lifecycle {
   staleFromDate              String?  @db.VarChar(10)
   invalidationGeneration     Int      @default(0)
   currentThroughDate         String?  @db.VarChar(10)
+  productionStaleFromDate    String?  @db.VarChar(10)
+  productionPublishedGeneration Int?
+  unifiedPublishedGeneration   Int?
+  unifiedTargetRevision        String   @default("unified-experimental-physiology-state-v3-relative-muscle-daily-cumulative-diagnostics") @db.VarChar(100)
+  unifiedRolloutEpoch           Int      @default(0)
+  unifiedPublishedRolloutEpoch  Int?
   stateVersion               String   @db.VarChar(100)
   sourceNormalizationVersion String   @db.VarChar(100)
   dailyRuntimeVersion        String   @db.VarChar(100)
@@ -870,6 +883,7 @@ model PhysiologyV7Lifecycle {
   updatedAt                  DateTime @updatedAt @db.Timestamptz(3)
 
   @@index([staleFromDate])
+  @@index([productionStaleFromDate])
 }
 
 /// Operational shadow-only comparison. It is derived from persisted v7 and
@@ -994,15 +1008,20 @@ model ExperimentalGlycogenStateShadow {
 model ExperimentalSkeletalMuscleDeltaShadow {
   id                Int      @id @default(autoincrement())
   profileId         Int      @default(1)
+  modelEpisodeId    Int?
   date              String   @db.VarChar(10)
   sourceFingerprint String   @db.VarChar(64)
   modelRevision     String   @db.VarChar(100)
   features          Json
   result            Json
+  isStale           Boolean  @default(false)
   createdAt         DateTime @default(now()) @db.Timestamptz(3)
   updatedAt         DateTime @updatedAt @db.Timestamptz(3)
+  modelEpisode      ModelEpisode? @relation(fields: [modelEpisodeId, profileId], references: [id, profileId], onDelete: Restrict, map: "RelMuscleDelta_episode_profile_fkey")
 
-  @@unique([profileId, date])
+  @@unique([profileId, modelEpisodeId, date], map: "RelMuscleDelta_episode_date_key")
+  @@index([profileId, modelEpisodeId, isStale, date], map: "RelMuscleDelta_episode_stale_date_idx")
+  @@index([modelEpisodeId, profileId], map: "RelMuscleDelta_episode_profile_idx")
   @@index([profileId, updatedAt])
 }
 
@@ -1032,15 +1051,20 @@ model ExperimentalLocalHypertrophyResponseShadow {
 model ExperimentalCessationDetrainingShadow {
   id                Int      @id @default(autoincrement())
   profileId         Int      @default(1)
+  modelEpisodeId    Int?
   date              String   @db.VarChar(10)
   sourceFingerprint String   @db.VarChar(64)
   modelRevision     String   @db.VarChar(100)
   features          Json
   result            Json
+  isStale           Boolean  @default(false)
   createdAt         DateTime @default(now()) @db.Timestamptz(3)
   updatedAt         DateTime @updatedAt @db.Timestamptz(3)
+  modelEpisode      ModelEpisode? @relation(fields: [modelEpisodeId, profileId], references: [id, profileId], onDelete: Restrict, map: "RelMuscleCessation_episode_profile_fkey")
 
-  @@unique([profileId, date])
+  @@unique([profileId, modelEpisodeId, date], map: "RelMuscleCessation_episode_date_key")
+  @@index([profileId, modelEpisodeId, isStale, date], map: "RelMuscleCessation_episode_stale_date_idx")
+  @@index([modelEpisodeId, profileId], map: "RelMuscleCessation_episode_profile_idx")
   @@index([profileId, updatedAt])
 }
 
@@ -1089,6 +1113,40 @@ model UnifiedExperimentalPhysiologyState {
   @@index([profileId, date])
   @@index([profileId, modelRevision, updatedAt])
   @@index([profileId, qualityStatus, date])
+  @@index([profileId, resultFingerprint])
+}
+
+/// Episode-aware transient-water V2 publication. Legacy V1 rows remain in
+/// UnifiedExperimentalPhysiologyState and are never treated as V2 state.
+model UnifiedExperimentalPhysiologyStateV2 {
+  id                    Int          @id @default(autoincrement())
+  profileId             Int          @default(1)
+  modelEpisodeId        Int
+  date                  String       @db.VarChar(10)
+  boundaryAt            DateTime     @db.Timestamptz(3)
+  modelRevision         String       @db.VarChar(120)
+  sourceFingerprint     String       @db.VarChar(64)
+  priorStateFingerprint String?      @db.VarChar(64)
+  resultFingerprint     String       @db.VarChar(64)
+  qualityStatus         String       @db.VarChar(30)
+  gapSeverity           String       @db.VarChar(30)
+  state                 Json
+  deltas                Json
+  uncertainty           Json
+  reconciliation        Json
+  energyLedger          Json
+  sourceLineage         Json
+  diagnostics           Json
+  createdAt             DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt             DateTime     @updatedAt @db.Timestamptz(3)
+  profile               Profile      @relation(fields: [profileId], references: [id], onDelete: Restrict)
+  modelEpisode          ModelEpisode @relation(fields: [modelEpisodeId], references: [id], onDelete: Restrict)
+
+  @@unique([profileId, modelEpisodeId, date])
+  @@index([profileId, boundaryAt])
+  @@index([profileId, modelEpisodeId, boundaryAt])
+  @@index([profileId, modelRevision, updatedAt])
+  @@index([profileId, qualityStatus, boundaryAt])
   @@index([profileId, resultFingerprint])
 }
 
@@ -1142,4 +1200,85 @@ model ActivationRollbackEntry {
   createdAt      DateTime @default(now()) @db.Timestamptz(3)
 
   @@index([generationId])
+}
+
+/// Canonical logical activity event. Evidence rows are kept separately from
+/// the selected revision so changing precedence never destroys source data.
+model ActiveEnergyCanonicalEvent {
+  id                           Int                              @id @default(autoincrement())
+  profileId                    Int                              @default(1)
+  logicalEventKey              String                           @db.VarChar(180)
+  eventKind                    String                           @db.VarChar(32)
+  occurrenceAt                 DateTime                         @db.Timestamptz(3)
+  modelDate                    String                           @db.VarChar(10)
+  modelTimeZone                String                           @db.VarChar(100)
+  inputFingerprint             String                           @db.VarChar(64)
+  resolutionRevision           Int                              @default(0)
+  isStale                      Boolean                          @default(true)
+  supersededByEventId          Int?
+  currentResolutionFingerprint String?                          @db.VarChar(64)
+  currentSource                String?                          @db.VarChar(40)
+  currentKcal                  Float?
+  currentProvenance            Json?
+  createdAt                    DateTime                         @default(now()) @db.Timestamptz(3)
+  updatedAt                    DateTime                         @updatedAt @db.Timestamptz(3)
+  aliases                      ActiveEnergyEventAlias[]
+  candidates                   ActiveEnergyCandidate[]
+  resolutions                  ActiveEnergyResolutionRevision[]
+  supersededBy                 ActiveEnergyCanonicalEvent?      @relation("ActiveEnergyEventSupersession", fields: [supersededByEventId], references: [id], onDelete: SetNull)
+  supersededEvents             ActiveEnergyCanonicalEvent[]     @relation("ActiveEnergyEventSupersession")
+
+  @@unique([profileId, logicalEventKey])
+  @@index([profileId, modelDate])
+  @@index([profileId, occurrenceAt])
+  @@index([supersededByEventId])
+}
+
+/// Stable source aliases make a matched Strength session + Workout one event.
+model ActiveEnergyEventAlias {
+  id         Int                        @id @default(autoincrement())
+  profileId  Int
+  sourceType String                     @db.VarChar(32)
+  sourceId   String                     @db.VarChar(120)
+  eventId    Int
+  createdAt  DateTime                   @default(now()) @db.Timestamptz(3)
+  event      ActiveEnergyCanonicalEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  workout    Workout?                   @relation(fields: [workoutId], references: [id], onDelete: Cascade)
+  workoutId  Int?
+
+  @@unique([profileId, sourceType, sourceId])
+  @@index([eventId])
+}
+
+/// Raw/model candidate evidence. It does not itself define canonical kcal.
+model ActiveEnergyCandidate {
+  id                Int                        @id @default(autoincrement())
+  eventId           Int
+  source            String                     @db.VarChar(40)
+  sourceIdentity    String                     @db.VarChar(180)
+  sourceFingerprint String                     @db.VarChar(64)
+  availability      String                     @db.VarChar(20)
+  valueKcal         Float?
+  provenance        Json
+  createdAt         DateTime                   @default(now()) @db.Timestamptz(3)
+  event             ActiveEnergyCanonicalEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, source, sourceIdentity, sourceFingerprint])
+  @@index([eventId, createdAt])
+}
+
+/// Append-only canonical source selection history (one row per CAS revision).
+model ActiveEnergyResolutionRevision {
+  id                    Int                        @id @default(autoincrement())
+  eventId               Int
+  revision              Int
+  resolutionFingerprint String                     @db.VarChar(64)
+  source                String                     @db.VarChar(40)
+  valueKcal             Float?
+  provenance            Json
+  createdAt             DateTime                   @default(now()) @db.Timestamptz(3)
+  event                 ActiveEnergyCanonicalEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, revision])
+  @@index([eventId, resolutionFingerprint])
 }

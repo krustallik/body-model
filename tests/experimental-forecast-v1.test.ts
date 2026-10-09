@@ -3,6 +3,7 @@ import { persistedEpisodeFixture } from "./model-episode-fixtures";
 import type { ExperimentalForecastInitialState } from "@/modules/experimental-forecast-v1/contracts";
 import { runExperimentalForecast, type ExperimentalForecastBehavior } from "@/modules/experimental-forecast-v1/engine";
 import { createForecastWorkoutEvent } from "@/modules/model-forecast/forecast-workout-scenario";
+import { buildTransientExerciseWaterImpulseV2, transientWaterV2ContributionKg } from "@/model/physiology-v7/experimental-transient-exercise-water-v2";
 
 const episode = persistedEpisodeFixture("2026-08-22");
 const initial: ExperimentalForecastInitialState = {
@@ -173,5 +174,70 @@ describe("ExperimentalForecastV1", () => {
     for (const day of result.dates) {
       expect(new Set(day.selectedDoseKeys).size).toBe(day.selectedDoseKeys.length);
     }
+  });
+
+  it("uses absolute V2 ledger decay once in central weight and keeps total weight range independent", () => {
+    const event = buildTransientExerciseWaterImpulseV2({
+      strengthDiarySessionId: 41,
+      canonicalEventInstant: new Date("2026-08-22T14:00:00.000Z"),
+      modelEpisodeId: 1,
+      modelDate: "2026-08-22",
+      sessionRevision: 1,
+      doseInputFingerprint: "dose-input",
+      doseAvailability: "available",
+      doseProvenance: "qualified-hard-sets:8",
+      qualifiedHardSetCount: 8,
+      exposureClass: "novel-or-unknown",
+      exposureDependencyFingerprint: "exposure",
+      exposureDependencies: [],
+      sourceFingerprint: "source",
+    });
+    const absolute = {
+      point: transientWaterV2ContributionKg(event, "point", 0),
+      lower: transientWaterV2ContributionKg(event, "lower", 0),
+      upper: transientWaterV2ContributionKg(event, "upper", 0),
+      representation: "engineering-range" as const,
+    };
+    const run = (initialState: ExperimentalForecastInitialState) => runExperimentalForecast({
+      initial: initialState,
+      simulatorState: episode.initialState,
+      parameters: episode.simulatorParameters,
+      personalization: { personalOffsetKcalPerDay: 0, activityCalibration: 1 },
+      ecfPolicy: "hold-ecf",
+      baseline,
+      scenario: { mode: "maintain-current" },
+      startDate: "2026-08-23",
+      timeZone: "Europe/Bratislava",
+      episodeId: 1,
+      horizonDays: 1,
+      seed: 12,
+    });
+    const withTransient = run({ ...initial, transientWaterKg: absolute, transientWaterActiveImpulses: [{ impulse: event, ageModelDays: 0 }] });
+    const withoutTransient = run({ ...initial, transientWaterKg: null, transientWaterActiveImpulses: null });
+    const futureLevel = transientWaterV2ContributionKg(event, "point", 1);
+    expect(withTransient.dates[0]!.expectedWeightKg! - withoutTransient.dates[0]!.expectedWeightKg!)
+      .toBeCloseTo(futureLevel - absolute.point, 10);
+    expect(withTransient.dates[0]!.transientWaterKg!.median).toBeCloseTo(futureLevel, 10);
+    expect(withTransient.dates[0]!.weightKg!.upper - withTransient.dates[0]!.weightKg!.lower)
+      .toBeCloseTo(withoutTransient.dates[0]!.weightKg!.upper - withoutTransient.dates[0]!.weightKg!.lower, 10);
+  });
+
+  it("does not turn an unavailable absolute transient state into zero", () => {
+    const unavailable = runExperimentalForecast({
+      initial: { ...initial, transientWaterKg: null, transientWaterActiveImpulses: null },
+      simulatorState: episode.initialState,
+      parameters: episode.simulatorParameters,
+      personalization: { personalOffsetKcalPerDay: 0, activityCalibration: 1 },
+      ecfPolicy: "hold-ecf",
+      baseline,
+      scenario: { mode: "maintain-current" },
+      startDate: "2026-08-23",
+      timeZone: "Europe/Bratislava",
+      episodeId: 1,
+      horizonDays: 1,
+      seed: 12,
+    });
+    expect(unavailable.dates[0]!.transientWaterKg).toBeNull();
+    expect(unavailable.current.transientWaterKg).toBeNull();
   });
 });

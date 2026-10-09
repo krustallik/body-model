@@ -4,6 +4,9 @@ import {
   type PersonalizationCalibrationResult,
 } from "@/model/personalization-calibration";
 import { simulateDays } from "@/model/physiological-simulator";
+import type { PhysiologicalSimulatorState } from "@/model/physiological-simulator";
+import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
+import { addCalendarDays } from "./model-calendar";
 import type {
   BuiltSimulationDay,
   DailyModelStateWrite,
@@ -22,6 +25,8 @@ export type EpisodeCalculation = {
     firstImputedNutritionDate: string | null;
   };
   dailyStates: DailyModelStateWrite[];
+  calibrationInputFingerprint: string;
+  replayMode: "full" | "suffix";
   latestModeledDate: string | null;
   unknownIntervals: import("./model-episode.types").UnknownIntervalWrite[];
   continuityStatus: "resolved" | "awaiting-recovery";
@@ -53,8 +58,15 @@ function calibrationHistory(days: readonly BuiltSimulationDay[]): CalibrationDay
 
 /** Runs robust calibration, then one coherent retrospective personalized pass. */
 export function calculateEpisodeHistory(input: {
-  episode: Pick<PersistedEpisode, "ecfPolicy" | "initialState" | "simulatorParameters" | "personalOffsetKcalPerDay" | "modelVersion">;
+  episode: Pick<PersistedEpisode, "ecfPolicy" | "initialState" | "simulatorParameters" | "personalOffsetKcalPerDay" | "modelVersion">
+    & Partial<Pick<PersistedEpisode, "initialPersonalOffsetKcalPerDay">>;
   days: readonly BuiltSimulationDay[];
+  resume?: {
+    fromDate: string;
+    predecessorDate: string;
+    predecessorState: PhysiologicalSimulatorState;
+    persistedCalibrationInputFingerprint: string | null;
+  };
 }): EpisodeCalculation {
   const continuity = analyzeStateContinuity(input.days, input.episode.ecfPolicy);
   const firstDependentIndex = continuity.resolvedDays.findIndex(({ sourceQuality }) => (
@@ -64,21 +76,51 @@ export function calculateEpisodeHistory(input: {
   const calibrationEligibleDays = firstDependentIndex === -1
     ? continuity.resolvedDays
     : continuity.resolvedDays.slice(0, firstDependentIndex);
+  const history = calibrationHistory(calibrationEligibleDays);
+  // The initialization estimate may be intentionally unapplied (for example,
+  // a weak estimate). Calibration must start from the episode's applied
+  // parameter; that value is also part of the suffix compatibility fingerprint.
+  const calibrationDefaultOffset = input.episode.personalOffsetKcalPerDay;
   const calibration = calibratePersonalization({
     initialState: input.episode.initialState,
     simulatorParameters: input.episode.simulatorParameters,
-    history: calibrationHistory(calibrationEligibleDays),
+    history,
     ecfPolicy: input.episode.ecfPolicy,
     defaultParameters: {
-      personalOffsetKcalPerDay: input.episode.personalOffsetKcalPerDay,
+      personalOffsetKcalPerDay: calibrationDefaultOffset,
       activityCalibration: 1,
     },
     fitMode: "offset-and-activity",
   });
-  const results = simulateDays({
+  const calibrationInputFingerprint = stableSha256(JSON.stringify({
+    compatibilityRevision: "episode-calibration-input-v1",
+    modelVersion: input.episode.modelVersion,
+    ecfPolicy: input.episode.ecfPolicy,
     initialState: input.episode.initialState,
+    simulatorParameters: input.episode.simulatorParameters,
+    defaultParameters: {
+      personalOffsetKcalPerDay: calibrationDefaultOffset,
+      activityCalibration: 1,
+    },
+    history,
+  }));
+  const suffixDays = input.resume === undefined
+    ? []
+    : continuity.resolvedDays.filter(({ input: day }) => day.date >= input.resume!.fromDate);
+  const useSuffix = input.resume !== undefined
+    && input.resume.fromDate > (continuity.resolvedDays[0]?.input.date ?? input.resume.fromDate)
+    && input.resume.predecessorDate === addCalendarDays(input.resume.fromDate, -1)
+    && input.resume.persistedCalibrationInputFingerprint === calibrationInputFingerprint
+    && suffixDays.length > 0
+    && !continuity.unknownIntervals.some((interval) => interval.startDate < input.resume!.fromDate
+      && (interval.lastUnknownDate >= input.resume!.fromDate
+        || interval.postGapObservationDates.some((date) => date >= input.resume!.fromDate)))
+    && continuity.resolvedDays.some(({ input: day }) => day.date === input.resume!.predecessorDate);
+  const simulationDays = useSuffix ? suffixDays : continuity.resolvedDays;
+  const results = simulateDays({
+    initialState: useSuffix ? input.resume!.predecessorState : input.episode.initialState,
     parameters: input.episode.simulatorParameters,
-    days: continuity.resolvedDays.map(({ input: day }) => day),
+    days: simulationDays.map(({ input: day }) => day),
     options: { ecfPolicy: input.episode.ecfPolicy },
     personalization: calibration.parameters,
   });
@@ -86,27 +128,27 @@ export function calculateEpisodeHistory(input: {
     if (result.status !== "complete" || result.calculations === null) {
       throw new Error(`resolved-prefix invariant violated on ${result.date}`);
     }
-    const sourceQuality = { ...continuity.resolvedDays[index].sourceQuality,
-      issues: [...continuity.resolvedDays[index].sourceQuality.issues],
+    const sourceQuality = { ...simulationDays[index].sourceQuality,
+      issues: [...simulationDays[index].sourceQuality.issues],
       sourceObservationFields: [
-        ...continuity.resolvedDays[index].sourceQuality.sourceObservationFields,
+        ...simulationDays[index].sourceQuality.sourceObservationFields,
       ],
       nutrition: {
-        ...continuity.resolvedDays[index].sourceQuality.nutrition,
-        referenceDates: [...continuity.resolvedDays[index].sourceQuality.nutrition.referenceDates],
-        observedFields: [...continuity.resolvedDays[index].sourceQuality.nutrition.observedFields],
-        imputedFields: [...continuity.resolvedDays[index].sourceQuality.nutrition.imputedFields],
-        referenceMacroMadG: continuity.resolvedDays[index].sourceQuality.nutrition.referenceMacroMadG
-          ? { ...continuity.resolvedDays[index].sourceQuality.nutrition.referenceMacroMadG }
+        ...simulationDays[index].sourceQuality.nutrition,
+        referenceDates: [...simulationDays[index].sourceQuality.nutrition.referenceDates],
+        observedFields: [...simulationDays[index].sourceQuality.nutrition.observedFields],
+        imputedFields: [...simulationDays[index].sourceQuality.nutrition.imputedFields],
+        referenceMacroMadG: simulationDays[index].sourceQuality.nutrition.referenceMacroMadG
+          ? { ...simulationDays[index].sourceQuality.nutrition.referenceMacroMadG }
           : null,
       },
       ...(result.calculations.expenditure.workoutEnergyResolution === null
         ? {}
         : {
-          selectionV1: continuity.resolvedDays[index].sourceQuality.selectionV1 === undefined
+          selectionV1: simulationDays[index].sourceQuality.selectionV1 === undefined
             ? undefined
             : {
-              ...continuity.resolvedDays[index].sourceQuality.selectionV1,
+              ...simulationDays[index].sourceQuality.selectionV1,
               energyCoverage: result.calculations.expenditure.workoutEnergyResolution.energyCoverage ?? null,
             },
           workoutEnergyResolution: {
@@ -140,7 +182,7 @@ export function calculateEpisodeHistory(input: {
       activityKcalPerDay: result.calculations.expenditure.calibratedActivityKcalPerDay,
       adaptiveThermogenesisKcalPerDay:
         result.endState.adaptiveThermogenesisKcalPerDay,
-      energyIntakeKcal: continuity.resolvedDays[index].input.caloriesKcal ?? null,
+      energyIntakeKcal: simulationDays[index].input.caloriesKcal ?? null,
       energyExpenditureKcal:
         result.calculations.expenditure.personalizedTdeeKcalPerDay,
       energyBalanceKcal: result.calculations.energyBalanceKcal,
@@ -148,6 +190,7 @@ export function calculateEpisodeHistory(input: {
       deltaLeanTissueKg: result.calculations.tissueEnergy.deltaLeanTissueKg,
       deltaGlycogenKg: result.calculations.glycogenTransition.deltaGlycogenKg,
       filteredWeightKg: result.calculations.filteredObservedWeightKg,
+      weightFilterVarianceKg2: result.endState.weightFilterState.varianceKg2,
     };
   });
   return {
@@ -170,6 +213,8 @@ export function calculateEpisodeHistory(input: {
         || sourceQuality.nutrition.source === "imputed-fallback"
       ))?.input.date ?? null,
     },
+    calibrationInputFingerprint,
+    replayMode: useSuffix ? "suffix" : "full",
     dailyStates,
     latestModeledDate: dailyStates.findLast(({ status }) => status === "complete")?.date ?? null,
     unknownIntervals: continuity.unknownIntervals,

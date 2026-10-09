@@ -1,136 +1,51 @@
 import { describe, expect, it } from "vitest";
-import { evaluateProductionDeployGate } from "../scripts/ci/production-deploy-gate";
+import { evaluateProductionDeployGate, isCurrentMainSha } from "../scripts/ci/production-deploy-gate";
 
 const tip = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const older = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const stale = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+function gate(overrides: Record<string, unknown> = {}) {
+  return evaluateProductionDeployGate({
+    eventName: "workflow_dispatch",
+    repositoryFullName: "krustallik/body-model",
+    mainTipSha: tip,
+    candidateSha: tip,
+    dispatchConfirm: "deploy",
+    nonServingDeploy: true,
+    ...overrides,
+  } as Parameters<typeof evaluateProductionDeployGate>[0]);
+}
 
 describe("evaluateProductionDeployGate", () => {
-  it("allows automatic deploy only for successful main push CI on current tip", () => {
-    const result = evaluateProductionDeployGate({
-      eventName: "workflow_run",
-      repositoryFullName: "krustallik/body-model",
-      workflowRepositoryFullName: "krustallik/body-model",
-      workflowName: "BodyCast CI/CD",
-      expectedWorkflowName: "BodyCast CI/CD",
-      workflowRun: {
-        conclusion: "success",
-        event: "push",
-        head_branch: "main",
-        head_sha: tip,
-      },
-      mainTipSha: tip,
-      candidateSha: tip,
-    });
-    expect(result).toEqual({
+  it("allows only an exact current-main manual non-serving deployment", () => {
+    expect(gate()).toEqual({
       decision: "deploy",
-      reason: "Green main push CI for current tip authorizes automatic production app deploy.",
+      reason: "Owner-authorized non-serving deploy is bound to the exact current main SHA.",
       candidateSha: tip,
     });
   });
 
-  it("skips PR CI success", () => {
-    const result = evaluateProductionDeployGate({
-      eventName: "workflow_run",
-      repositoryFullName: "krustallik/body-model",
-      workflowRepositoryFullName: "krustallik/body-model",
-      workflowName: "BodyCast CI/CD",
-      expectedWorkflowName: "BodyCast CI/CD",
-      workflowRun: {
-        conclusion: "success",
-        event: "pull_request",
-        head_branch: "feature/x",
-        head_sha: tip,
-      },
-      mainTipSha: tip,
-      candidateSha: tip,
-    });
-    expect(result.decision).toBe("skip");
-    expect(result.reason).toMatch(/pull_request/);
+  it("rejects automatic workflow-run deployment after merge CI", () => {
+    expect(gate({ eventName: "workflow_run" })).toMatchObject({ decision: "block" });
   });
 
-  it("skips failed and canceled main CI", () => {
-    for (const conclusion of ["failure", "cancelled", "timed_out", "neutral", "skipped"]) {
-      const result = evaluateProductionDeployGate({
-        eventName: "workflow_run",
-        repositoryFullName: "krustallik/body-model",
-        workflowRepositoryFullName: "krustallik/body-model",
-        workflowName: "BodyCast CI/CD",
-        expectedWorkflowName: "BodyCast CI/CD",
-        workflowRun: {
-          conclusion,
-          event: "push",
-          head_branch: "main",
-          head_sha: tip,
-        },
-        mainTipSha: tip,
-        candidateSha: tip,
-      });
-      expect(result.decision).toBe("skip");
-    }
+  it("requires explicit confirmation and non-serving mode", () => {
+    expect(gate({ dispatchConfirm: "nope" })).toMatchObject({ decision: "block" });
+    expect(gate({ nonServingDeploy: false })).toMatchObject({ decision: "block" });
   });
 
-  it("skips stale CI after a newer main tip", () => {
-    const result = evaluateProductionDeployGate({
-      eventName: "workflow_run",
-      repositoryFullName: "krustallik/body-model",
-      workflowRepositoryFullName: "krustallik/body-model",
-      workflowName: "BodyCast CI/CD",
-      expectedWorkflowName: "BodyCast CI/CD",
-      workflowRun: {
-        conclusion: "success",
-        event: "push",
-        head_branch: "main",
-        head_sha: older,
-      },
-      mainTipSha: tip,
-      candidateSha: older,
-    });
-    expect(result.decision).toBe("skip");
-    expect(result.reason).toMatch(/Stale CI SHA/);
+  it("rejects foreign repositories and malformed SHA values", () => {
+    expect(gate({ repositoryFullName: "evil/body-model" })).toMatchObject({ decision: "block" });
+    expect(gate({ candidateSha: "abc" })).toMatchObject({ decision: "block" });
   });
 
-  it("blocks foreign repository workflow_run", () => {
-    const result = evaluateProductionDeployGate({
-      eventName: "workflow_run",
-      repositoryFullName: "krustallik/body-model",
-      workflowRepositoryFullName: "evil/fork",
-      workflowName: "BodyCast CI/CD",
-      expectedWorkflowName: "BodyCast CI/CD",
-      workflowRun: {
-        conclusion: "success",
-        event: "push",
-        head_branch: "main",
-        head_sha: tip,
-      },
-      mainTipSha: tip,
-      candidateSha: tip,
-    });
-    expect(result.decision).toBe("block");
+  it("blocks a stale explicit SHA when main advances", () => {
+    expect(gate({ candidateSha: stale })).toMatchObject({ decision: "skip", candidateSha: stale });
   });
 
-  it("requires deploy confirmation for manual dispatch on tip", () => {
-    expect(evaluateProductionDeployGate({
-      eventName: "workflow_dispatch",
-      repositoryFullName: "krustallik/body-model",
-      workflowRepositoryFullName: "krustallik/body-model",
-      workflowName: "BodyCast CI/CD",
-      expectedWorkflowName: "BodyCast CI/CD",
-      workflowRun: null,
-      mainTipSha: tip,
-      candidateSha: tip,
-      dispatchConfirm: "nope",
-    }).decision).toBe("block");
-
-    expect(evaluateProductionDeployGate({
-      eventName: "workflow_dispatch",
-      repositoryFullName: "krustallik/body-model",
-      workflowRepositoryFullName: "krustallik/body-model",
-      workflowName: "BodyCast CI/CD",
-      expectedWorkflowName: "BodyCast CI/CD",
-      workflowRun: null,
-      mainTipSha: tip,
-      candidateSha: tip,
-      dispatchConfirm: "deploy",
-    }).decision).toBe("deploy");
+  it("uses a strict full-SHA freshness comparison", () => {
+    expect(isCurrentMainSha(tip, tip)).toBe(true);
+    expect(isCurrentMainSha(stale, tip)).toBe(false);
+    expect(isCurrentMainSha("not-a-sha", tip)).toBe(false);
   });
 });

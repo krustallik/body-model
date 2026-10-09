@@ -261,6 +261,7 @@ export function prepareEpisodeInitialization(input: {
         baselineNutritionFallback: null,
         nutritionGapPolicy: { maxBridgeDays: 0 },
         modelVersion: CURRENT_MODEL_VERSION,
+        timeZone: input.timezone ?? DEFAULT_TIME_ZONE,
       });
       // Calibration starts after the pre-roll. Its state must be anchored at
       // the beginning of this historical interval, never at episode start.

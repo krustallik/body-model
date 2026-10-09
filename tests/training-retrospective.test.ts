@@ -28,6 +28,7 @@ function decimal(value: number | null) {
 
 function buildDb() {
   const db = {
+    $executeRaw: vi.fn().mockResolvedValue(0),
     exerciseCatalog: { findMany: vi.fn() },
     trainingProgram: {
       findMany: vi.fn(),
@@ -43,6 +44,7 @@ function buildDb() {
     strengthDiarySession: {
       findFirst: vi.fn(),
       findMany: vi.fn(),
+      findUnique: vi.fn().mockResolvedValue(null),
       create: vi.fn(),
       update: vi.fn(),
       delete: vi.fn(),
@@ -65,6 +67,9 @@ function buildDb() {
     workout: {
       findMany: vi.fn(),
       findUnique: vi.fn(),
+    },
+    activeEnergyEventAlias: {
+      findMany: vi.fn().mockResolvedValue([]),
     },
     $transaction: vi.fn(),
   };

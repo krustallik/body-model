@@ -62,7 +62,8 @@ function episode(): PersistedEpisode {
 
 function status(recoveryRequired: boolean): ModelStatusDto {
   return {
-    episodeId: 1, episodeStartDate: "2026-01-01", latestModeledDate: "2026-08-25", modelVersion: "test",
+    episodeId: 1, episodeStartDate: "2026-01-01", timezone: "Europe/Bratislava", productionCurrent: true,
+    productionDirtyFromDate: null, latestModeledDate: "2026-08-25", modelVersion: "test",
     calibrationStatus: "insufficient-history", personalOffsetKcalPerDay: 0, activityCalibration: 1,
     daysModeled: 28, incompleteDays: 0, observedNutritionDays: 20, imputedNutritionDays: 8, unbridgeableNutritionDays: 0,
     currentPredictedWeightKg: 74, currentFilteredWeightKg: 74.2, currentFatMassKg: 19, currentLeanTissueKg: 54.5,

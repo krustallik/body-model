@@ -2,6 +2,16 @@ import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { PrismaHealthSyncRepository } from "@/modules/health/health.repository";
 
+const invalidation = vi.hoisted(() => ({
+  workout: vi.fn().mockResolvedValue(null),
+  mass: vi.fn().mockResolvedValue(null),
+}));
+
+vi.mock("@/modules/activity/active-energy-invalidation", () => ({
+  invalidateWorkoutEnergyInTransactionV1: invalidation.workout,
+  invalidateStepperMassDependenciesInTransactionV1: invalidation.mass,
+}));
+
 function repositoryFixture(existingDates: string[] = [], existingWorkouts: Array<{
   id: number;
   sourceIdentity: string | null;
@@ -12,12 +22,13 @@ function repositoryFixture(existingDates: string[] = [], existingWorkouts: Array
   matchedDiarySession: { id: number } | null;
 }> = []) {
   const transaction = {
+    $executeRaw: vi.fn().mockResolvedValue(0),
     dailyHealthData: {
       findUnique: vi.fn().mockImplementation(({ where }: { where: { date: string } }) =>
-        Promise.resolve(existingDates.includes(where.date) ? { date: where.date } : null),
+        Promise.resolve(existingDates.includes(where.date) ? { date: where.date, weightKg: null } : null),
       ),
       upsert: vi.fn().mockImplementation(({ where }: { where: { date: string } }) =>
-        Promise.resolve({ id: where.date === "2026-08-21" ? 21 : 22 }),
+        Promise.resolve({ id: where.date === "2026-08-21" ? 21 : 22, weightKg: null }),
       ),
       update: vi.fn().mockResolvedValue({}),
     },
@@ -35,6 +46,7 @@ function repositoryFixture(existingDates: string[] = [], existingWorkouts: Array
       create: vi.fn().mockResolvedValue({ id: 1 }),
     },
     healthMetricSample: {
+      findMany: vi.fn().mockResolvedValue([]),
       upsert: vi.fn().mockResolvedValue({ id: 1 }),
     },
     strengthDiarySession: { findFirst: vi.fn().mockResolvedValue(null) },

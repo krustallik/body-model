@@ -4,6 +4,8 @@ services:
   app:
     image: bodycast-app:latest
     container_name: bodycast-app-prod
+    labels:
+      org.bodycast.release-sha: ${BODYCAST_DEPLOY_SHA:-unknown}
     build:
       context: .
       dockerfile: Dockerfile

@@ -12,6 +12,10 @@ type Row = { id: number; metric: string; source: string | null; date: string; ti
 function memoryClient(initial: Row[]) {
   const rows = structuredClone(initial);
   const healthMetricSample = {
+    async findMany(args: { where: { metric: string; source: null } }) {
+      return rows.filter((row) => row.metric === args.where.metric && row.source === args.where.source)
+        .map(({ timestamp }) => ({ timestamp }));
+    },
     async aggregate() {
       const selected = rows.filter((row) => row.metric === "weight-kg" && row.source === null);
       const dates = selected.map((row) => row.date).sort();

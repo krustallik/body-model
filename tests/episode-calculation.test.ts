@@ -226,6 +226,94 @@ describe("two-pass episode calculation", () => {
       .not.toBe(original.dailyStates.at(-1)?.endWeightKg);
   });
 
+  it("runs an exact suffix from D-1 when calibration inputs remain compatible", () => {
+    const episode = persistedEpisodeFixture("2026-01-01");
+    const days = builtHistory({
+      episode, count: 32, varied: true,
+      personalOffsetKcalPerDay: 0, activityCalibration: 1,
+    });
+    // Global calibration intentionally stops at this first dependent day.
+    days[5]!.sourceQuality = {
+      ...days[5]!.sourceQuality,
+      nutrition: { ...days[5]!.sourceQuality.nutrition, source: "imputed-local", dependency: "imputed-direct" },
+    };
+    const original = calculateEpisodeHistory({ episode, days });
+    const fromDate = days[20]!.input.date;
+    const predecessorDate = days[19]!.input.date;
+    const predecessor = original.dailyStates[19]!;
+    const changedDays = structuredClone(days);
+    changedDays[20]!.input.outsideWorkWalkingDistanceKm! += 3;
+    const fullReplay = calculateEpisodeHistory({ episode, days: changedDays });
+    const suffixReplay = calculateEpisodeHistory({
+      episode,
+      days: changedDays,
+      resume: {
+        fromDate,
+        predecessorDate,
+        predecessorState: {
+          ...episode.initialState,
+          fatMassKg: predecessor.fatMassKg!,
+          leanTissueKg: predecessor.leanTissueKg!,
+          glycogenKg: predecessor.glycogenKg!,
+          extracellularFluidDeviationLiters: predecessor.extracellularFluidDeviationLiters!,
+          adaptiveThermogenesisKcalPerDay: predecessor.adaptiveThermogenesisKcalPerDay!,
+          weightFilterState: {
+            estimatedWeightKg: predecessor.filteredWeightKg!,
+            varianceKg2: predecessor.weightFilterVarianceKg2!,
+          },
+        },
+        persistedCalibrationInputFingerprint: original.calibrationInputFingerprint,
+      },
+    });
+    expect(suffixReplay.replayMode).toBe("suffix");
+    expect(suffixReplay.dailyStates).toEqual(fullReplay.dailyStates.slice(20));
+    expect(suffixReplay.dailyStates[0]?.date).toBe(fromDate);
+    expect(suffixReplay.dailyStates.some(({ date }) => date < fromDate)).toBe(false);
+  });
+
+  it("falls back to full simulation when calibration or predecessor compatibility changes", () => {
+    const episode = persistedEpisodeFixture("2026-01-01");
+    const days = builtHistory({
+      episode, count: 24, varied: true,
+      personalOffsetKcalPerDay: 0, activityCalibration: 1,
+    });
+    days[4]!.sourceQuality = {
+      ...days[4]!.sourceQuality,
+      nutrition: { ...days[4]!.sourceQuality.nutrition, source: "imputed-local", dependency: "imputed-direct" },
+    };
+    const original = calculateEpisodeHistory({ episode, days });
+    const fromDate = days[16]!.input.date;
+    const predecessorDate = days[15]!.input.date;
+    const predecessor = original.dailyStates[15]!;
+    const resume = {
+      fromDate,
+      predecessorDate,
+      predecessorState: {
+        ...episode.initialState,
+        fatMassKg: predecessor.fatMassKg!,
+        leanTissueKg: predecessor.leanTissueKg!,
+        glycogenKg: predecessor.glycogenKg!,
+        extracellularFluidDeviationLiters: predecessor.extracellularFluidDeviationLiters!,
+        adaptiveThermogenesisKcalPerDay: predecessor.adaptiveThermogenesisKcalPerDay!,
+        weightFilterState: { estimatedWeightKg: predecessor.filteredWeightKg!, varianceKg2: predecessor.weightFilterVarianceKg2! },
+      },
+      persistedCalibrationInputFingerprint: original.calibrationInputFingerprint,
+    };
+    const changedCalibrationDays = structuredClone(days);
+    changedCalibrationDays[1]!.input.caloriesKcal! += 100;
+    expect(calculateEpisodeHistory({ episode, days: changedCalibrationDays, resume }).replayMode).toBe("full");
+    expect(calculateEpisodeHistory({
+      episode,
+      days,
+      resume: { ...resume, predecessorDate: addCalendarDays(fromDate, -2) },
+    }).replayMode).toBe("full");
+    expect(calculateEpisodeHistory({
+      episode,
+      days,
+      resume: { ...resume, persistedCalibrationInputFingerprint: "legacy-null-or-incompatible" },
+    }).replayMode).toBe("full");
+  });
+
   it("advances across an imputed gap but excludes the dependent suffix from calibration", () => {
     const episode = persistedEpisodeFixture("2026-01-01");
     const sources = Array.from({ length: 35 }, (_, index) => sourceDay(

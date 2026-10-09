@@ -16,7 +16,7 @@ const day: ForecastBehaviorDay = {
 };
 
 const unifiedRowsOff: readonly unknown[] = [];
-const unifiedRowsOn = [{ profileId: 1, date: "2026-08-22", modelRevision: "unified-experimental-physiology-state-v1" }];
+const unifiedRowsOn = [{ profileId: 1, date: "2026-08-22", modelRevision: "unified-experimental-physiology-state-v1-active-energy-canonical" }];
 
 function forecastInput(overrides: Partial<RunForecastInput> = {}): RunForecastInput {
   return {

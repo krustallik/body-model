@@ -8,6 +8,9 @@ import {
 } from "../fixtures/training-load-accounting-stage01-golden-v1";
 import { requireIsolatedStage01Database } from "../../src/modules/training/testing/require-isolated-database";
 import { CANONICAL_PUSH_UP_CONFIG_VERSION_V1 } from "../../src/modules/training/load-accounting-v1";
+import { TrainingRepository } from "../../src/modules/training/training.repository";
+import { TrainingService } from "../../src/modules/training/training.service";
+import { currentPhysiologyV7Versions, versionsAreCurrent } from "../../src/modules/model-episodes/physiology-v7-persistence";
 import {
   createTrainingHistoryStage01FixtureV1,
   TRAINING_HISTORY_STAGE01_CREATED_AT,
@@ -27,55 +30,6 @@ function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   const promise = new Promise<T>((done) => { resolve = done; });
   return { promise, resolve };
-}
-
-function observeTransactionBackendPid(db: PrismaClient, onPid: (pid: number) => void): PrismaClient {
-  return new Proxy(db, {
-    get(target, property, receiver) {
-      if (property !== "$transaction") {
-        const value = Reflect.get(target, property, receiver);
-        return typeof value === "function" ? value.bind(target) : value;
-      }
-      const transaction = Reflect.get(target, property, target) as (...args: unknown[]) => unknown;
-      return (callback: unknown, ...options: unknown[]) => transaction.call(
-        target,
-        async (tx: Prisma.TransactionClient) => {
-          const observedTx = new Proxy(tx, {
-            get(transactionTarget, transactionProperty, transactionReceiver) {
-              if (transactionProperty !== "$queryRaw") {
-                const value = Reflect.get(transactionTarget, transactionProperty, transactionReceiver);
-                return typeof value === "function" ? value.bind(transactionTarget) : value;
-              }
-              const queryRaw = Reflect.get(transactionTarget, transactionProperty, transactionTarget) as (...args: unknown[]) => Promise<unknown>;
-              return async (...args: unknown[]) => {
-                const rows = await transactionTarget.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
-                onPid(rows[0]!.pid);
-                return queryRaw.apply(transactionTarget, args);
-              };
-            },
-          }) as Prisma.TransactionClient;
-          return (callback as (client: Prisma.TransactionClient) => Promise<unknown>)(observedTx);
-        },
-        ...options,
-      );
-    },
-  }) as PrismaClient;
-}
-
-async function waitForPostgresLockWait(db: PrismaClient, pid: number, blockerPids: readonly number[]): Promise<void> {
-  for (let attempt = 0; attempt < 1_000; attempt += 1) {
-    const rows = await db.$queryRaw<Array<{
-      waitEventType: string | null;
-      blockingPids: number[];
-    }>>`
-      SELECT wait_event_type AS "waitEventType", pg_blocking_pids(pid) AS "blockingPids"
-      FROM pg_stat_activity
-      WHERE pid = ${pid}
-    `;
-    if (rows[0]?.waitEventType === "Lock" && rows[0].blockingPids.some((blockingPid) => blockerPids.includes(blockingPid))) return;
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  throw new Error(`PostgreSQL backend ${pid} did not enter the expected row-lock wait behind ${blockerPids.join(", ")}`);
 }
 
 describe("Training History Stage 01 PostgreSQL persistence", () => {
@@ -725,18 +679,13 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
     }
   });
 
-  it("serializes a stale refresh candidate behind a timestamp rebase at the PostgreSQL row lock", async () => {
+  it("rejects an in-flight stale refresh candidate after a timestamp rebase", async () => {
     const db = prisma!;
     let programId: number | null = null;
     let sessionId: number | null = null;
     let sampleId: number | null = null;
     const candidateCaptured = deferred();
     const resumeCandidate = deferred();
-    const gateReady = deferred<number>();
-    const releaseGate = deferred();
-    const correctionPidReady = deferred<number>();
-    const candidatePidReady = deferred<number>();
-    let gateTransaction: Promise<unknown> | null = null;
     let correctionPromise: Promise<void> | null = null;
     let candidatePromise: Promise<number> | null = null;
     try {
@@ -760,6 +709,15 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
         TRAINING_HISTORY_STAGE01_PROFILE_ID,
       );
       await service.createSet(session.id, session.exercises[0]!.id, { reps: 8 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      // This test owns this fixed source sample so interrupted test runs can
+      // be safely repeated in the disposable integration database.
+      await db.healthMetricSample.deleteMany({
+        where: {
+          metric: "weight-kg",
+          source: "apple-health-shortcut",
+          timestamp: new Date("2045-01-01T11:00:00.000Z"),
+        },
+      });
       const sample = await db.healthMetricSample.create({
         data: {
           date: "2045-01-01",
@@ -779,16 +737,6 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       });
       const correctionAt = new Date("2045-01-01T10:01:00.000Z");
 
-      gateTransaction = db.$transaction(async (tx) => {
-        await tx.$queryRaw<Array<{ id: number }>>`
-          SELECT "id" FROM "StrengthDiarySession" WHERE "id" = ${session.id} FOR UPDATE
-        `;
-        const rows = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
-        gateReady.resolve(rows[0]!.pid);
-        await releaseGate.promise;
-      });
-      const gatePid = await gateReady.promise;
-
       const pausedMassClient = new Proxy(db, {
         get(target, property, receiver) {
           const value = Reflect.get(target, property, receiver);
@@ -807,8 +755,7 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
           });
         },
       }) as PrismaClient;
-      const candidateDb = observeTransactionBackendPid(pausedMassClient, (pid) => candidatePidReady.resolve(pid));
-      const candidateRepository = new TrainingRepository(candidateDb);
+      const candidateRepository = new TrainingRepository(pausedMassClient);
       candidatePromise = candidateRepository.materializeAccounting({
         sessionId: session.id,
         profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID,
@@ -817,22 +764,18 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       });
       await candidateCaptured.promise;
 
-      const correctionDb = observeTransactionBackendPid(db, (pid) => correctionPidReady.resolve(pid));
-      correctionPromise = new TrainingRepository(correctionDb).updateAccountingContext({
+      // Keep the old calculation in flight while the independent source write
+      // commits its same-local-day timestamp rebase. When the stale writer
+      // reaches its transactional source-token re-read, it must reject rather
+      // than overwrite the rebased current snapshot.
+      correctionPromise = new TrainingRepository(db).updateAccountingContext({
         sessionId: session.id,
         profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID,
         effectiveAccountingAt: correctionAt,
       });
-      const correctionPid = await correctionPidReady.promise;
-      await waitForPostgresLockWait(db, correctionPid, [gatePid]);
+      await correctionPromise;
 
       resumeCandidate.resolve();
-      const candidatePid = await candidatePidReady.promise;
-      await waitForPostgresLockWait(db, candidatePid, [gatePid, correctionPid]);
-
-      releaseGate.resolve();
-      await gateTransaction;
-      await correctionPromise;
       await expect(candidatePromise).rejects.toBeInstanceOf(StaleAccountingCandidateError);
 
       const persisted = await db.strengthDiarySession.findUniqueOrThrow({
@@ -880,9 +823,7 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       })).toBeNull();
     } finally {
       resumeCandidate.resolve();
-      releaseGate.resolve();
       await Promise.allSettled([
-        ...(gateTransaction ? [gateTransaction] : []),
         ...(correctionPromise ? [correctionPromise] : []),
         ...(candidatePromise ? [candidatePromise] : []),
       ]);
@@ -1114,6 +1055,26 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       expect(snapshots).toHaveLength(2);
       expect((snapshots[0]!.payload as { massReference: { status: string } }).massReference.status).toBe("unavailable");
       expect((snapshots[1]!.payload as { massReference: { valueKg: number } }).massReference.valueKg).toBe(80);
+
+      await service.finishSession(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      const lifecycleBeforeCompletedSetEdit = await db.physiologyV7Lifecycle.findUnique({
+        where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
+        select: { invalidationGeneration: true },
+      });
+      if (lifecycleBeforeCompletedSetEdit) {
+        await db.physiologyV7Lifecycle.update({
+          where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
+          data: { unifiedPublishedGeneration: lifecycleBeforeCompletedSetEdit.invalidationGeneration },
+        });
+      }
+      await service.updateSet(session.id, set.id, { reps: 12 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      if (lifecycleBeforeCompletedSetEdit) {
+        const lifecycleAfterCompletedSetEdit = await db.physiologyV7Lifecycle.findUniqueOrThrow({
+          where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
+          select: { unifiedPublishedGeneration: true },
+        });
+        expect(lifecycleAfterCompletedSetEdit.unifiedPublishedGeneration).toBeNull();
+      }
     } finally {
       if (sampleId !== null) await db.healthMetricSample.deleteMany({ where: { id: sampleId } });
       if (sessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: sessionId } });
@@ -1131,6 +1092,18 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       const { PrismaHealthSyncRepository } = await import("../../src/modules/health/health.repository");
       const service = new TrainingService(db);
       const sync = new PrismaHealthSyncRepository(db);
+      const primeUnifiedPublicationMarker = async () => {
+        const lifecycle = await db.physiologyV7Lifecycle.findUnique({
+          where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
+          select: { invalidationGeneration: true },
+        });
+        if (!lifecycle) return false;
+        await db.physiologyV7Lifecycle.update({
+          where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
+          data: { unifiedPublishedGeneration: lifecycle.invalidationGeneration },
+        });
+        return true;
+      };
       const syncWorkout = async (date: string, startAt: string, externalId: string, durationMinutes = 30) => {
         const day = { date, workouts: [{ externalId, type: "Traditional Strength Training", startAt, endAt: new Date(Date.parse(startAt) + durationMinutes * 60_000).toISOString() }] };
         await sync.syncDay(day, day, { timezone: "UTC", receivedAt: new Date(), syncedAt: null });
@@ -1154,7 +1127,20 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       await service.createSet(sameDate.id, sameDate.exercises[0]!.id, { reps: 8, weightKg: 10 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
       await service.finishSession(sameDate.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
       const beforeMatch = await db.strengthDiarySession.findUniqueOrThrow({ where: { id: sameDate.id }, select: { accountingInputRevision: true, currentSnapshotRevision: true } });
+      const generationBeforeSameDateMatch = await db.physiologyV7Lifecycle.findUnique({
+        where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
+        select: { invalidationGeneration: true },
+      });
+      const unifiedMarkerPrimedForSameDateMatch = await primeUnifiedPublicationMarker();
       const matched = await service.manualMatch(sameDate.id, { workoutId: firstWorkout.id }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      const generationAfterSameDateMatch = await db.physiologyV7Lifecycle.findUniqueOrThrow({
+        where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
+        select: { invalidationGeneration: true, staleFromDate: true, unifiedPublishedGeneration: true },
+      });
+      expect(generationAfterSameDateMatch.invalidationGeneration)
+        .toBeGreaterThan(generationBeforeSameDateMatch?.invalidationGeneration ?? 0);
+      expect(generationAfterSameDateMatch.staleFromDate).not.toBeNull();
+      if (unifiedMarkerPrimedForSameDateMatch) expect(generationAfterSameDateMatch.unifiedPublishedGeneration).toBeNull();
       expect(matched.effectiveAccountingAt).toBe(firstWorkout.startAt.toISOString());
       const afterSameDateMatch = await db.strengthDiarySession.findUniqueOrThrow({
         where: { id: sameDate.id },
@@ -1255,12 +1241,32 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       await service.createSet(changedDate.id, changedDate.exercises[0]!.id, { reps: 8, weightKg: 10 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
       await service.finishSession(changedDate.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
       const beforeLateMatch = await db.strengthDiarySession.findUniqueOrThrow({ where: { id: changedDate.id }, select: { accountingInputRevision: true, currentSnapshotRevision: true } });
+      const generationBeforeLateMatch = await db.physiologyV7Lifecycle.findUnique({
+        where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
+        select: { invalidationGeneration: true },
+      });
       const lateMatched = await service.manualMatch(changedDate.id, { workoutId: nextDayWorkout.id }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      const generationAfterLateMatch = await db.physiologyV7Lifecycle.findUniqueOrThrow({
+        where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
+        select: { invalidationGeneration: true, staleFromDate: true },
+      });
+      expect(generationAfterLateMatch.invalidationGeneration)
+        .toBeGreaterThan(generationBeforeLateMatch?.invalidationGeneration ?? 0);
+      expect(generationAfterLateMatch.staleFromDate).not.toBeNull();
       expect(lateMatched.effectiveAccountingAt).toBe(nextDayWorkout.startAt.toISOString());
       const afterLateMatch = await db.strengthDiarySession.findUniqueOrThrow({ where: { id: changedDate.id }, select: { accountingInputRevision: true, currentSnapshotRevision: true } });
       expect(afterLateMatch.accountingInputRevision).toBe(beforeLateMatch.accountingInputRevision + 1);
       expect(await db.strengthSessionAccountingSnapshot.count({ where: { sessionId: changedDate.id } })).toBe(2);
+      const generationBeforeUnmatch = generationAfterLateMatch.invalidationGeneration;
+      const unifiedMarkerPrimedForUnmatch = await primeUnifiedPublicationMarker();
       const unmatched = await service.manualMatch(changedDate.id, { workoutId: null }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      const generationAfterUnmatch = await db.physiologyV7Lifecycle.findUniqueOrThrow({
+        where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
+        select: { invalidationGeneration: true, staleFromDate: true, unifiedPublishedGeneration: true },
+      });
+      expect(generationAfterUnmatch.invalidationGeneration).toBeGreaterThan(generationBeforeUnmatch);
+      expect(generationAfterUnmatch.staleFromDate).not.toBeNull();
+      if (unifiedMarkerPrimedForUnmatch) expect(generationAfterUnmatch.unifiedPublishedGeneration).toBeNull();
       expect(unmatched.matchedWorkoutId).toBeNull();
       expect(await db.strengthSessionAccountingSnapshot.count({ where: { sessionId: changedDate.id } })).toBe(3);
 
@@ -1275,7 +1281,20 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
         data: { webStartedAt: new Date("2045-01-02T23:30:00.000Z"), webEndedAt: new Date("2045-01-03T01:00:00.000Z") },
       });
       const lateWorkout = await syncWorkout(dates[2]!, "2045-01-03T00:00:00.000Z", "stage02-late-auto-match", 60);
+      const generationBeforeAutoMatch = await db.physiologyV7Lifecycle.findUnique({
+        where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
+        select: { invalidationGeneration: true },
+      });
+      const unifiedMarkerPrimedForAutoMatch = await primeUnifiedPublicationMarker();
       await service.afterHealthSyncMatch(dates[2]!, { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID, timezone: "UTC" });
+      const generationAfterAutoMatch = await db.physiologyV7Lifecycle.findUniqueOrThrow({
+        where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID },
+        select: { invalidationGeneration: true, staleFromDate: true, unifiedPublishedGeneration: true },
+      });
+      expect(generationAfterAutoMatch.invalidationGeneration)
+        .toBeGreaterThan(generationBeforeAutoMatch?.invalidationGeneration ?? 0);
+      expect(generationAfterAutoMatch.staleFromDate).not.toBeNull();
+      if (unifiedMarkerPrimedForAutoMatch) expect(generationAfterAutoMatch.unifiedPublishedGeneration).toBeNull();
       const autoMatched = await db.strengthDiarySession.findUniqueOrThrow({
         where: { id: lateAuto.id },
         select: { matchedWorkoutId: true, effectiveAccountingAt: true, currentSnapshotRevision: true, accountingInputRevision: true },
@@ -2154,6 +2173,251 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
     await db.workout.delete({ where: { id: SENTINEL_SUPERSEDED_WORKOUT_ID } });
     await persistence!.cleanupStage01Namespace(db);
     await persistence!.seedStage01Namespace(db);
+  });
+
+  it("invalidates production in the accounting-context transaction and rolls it back atomically", async () => {
+    const db = prisma!;
+    // The production database contract intentionally has one singleton
+    // profile. Reuse the Stage 01 fixture profile instead of inventing an ID
+    // that the schema rejects.
+    const profileId = TRAINING_HISTORY_STAGE01_PROFILE_ID;
+    const method = "active-energy-accounting-context-invalidation";
+    let catalogId: number | null = null;
+    let programId: number | null = null;
+    let sessionId: number | null = null;
+    let episodeId: number | null = null;
+    const eventKeyPrefix = `test:accounting-context:${Date.now()}`;
+    const lifecycleBeforeTest = await db.physiologyV7Lifecycle.findUnique({ where: { profileId } });
+    try {
+      const episode = await db.modelEpisode.create({
+        data: {
+          profileId,
+          startDate: "2099-01-01",
+          timezone: "Europe/Bratislava",
+          modelVersion: "bodycast-physiology-v6",
+          // Keep this historical test episode from colliding with the
+          // application's singleton active-episode constraint.
+          active: false,
+          deactivatedAt: new Date("2099-01-11T00:00:00.000Z"),
+          ecfPolicy: "hold-ecf",
+          baselineEnergyIntakeKcalPerDay: 2_400,
+          baselineCarbIntakeG: 220,
+          baselineWindowStartDate: "2099-01-01",
+          baselineWindowEndDate: "2099-01-01",
+          baselineNutritionDayCount: 1,
+          baselineWeightObservationCount: 1,
+          baselineWeightTrendKgPerWeek: 0,
+          baselineWeightTrendPercentPerWeek: 0,
+          baselineDerivationMethod: method,
+          initialFatMassKg: 16,
+          initialLeanTissueKg: 55,
+          initialGlycogenKg: 0.5,
+          baselineExtracellularFluidLiters: 18,
+          initialExtracellularFluidDeviationLiters: 0,
+          initialAdaptiveThermogenesisKcalPerDay: 0,
+          initialFilteredWeightKg: 80,
+          initialWeightFilterVarianceKg2: 1,
+          initialRmrKcalPerDay: 1_700,
+          dynamicRmrFatCoefficient: 3.2,
+          dynamicRmrLeanCoefficient: 22,
+          dynamicRmrCalibrationOffsetKcalPerDay: 0,
+          adaptiveThermogenesisBeta: 0.14,
+          adaptiveThermogenesisTimeConstantDays: 14,
+          weightProcessNoiseVarianceKg2PerDay: 0.01,
+          weightMeasurementNoiseVarianceKg2: 0.25,
+          calibrationDiagnostics: {},
+        },
+        select: { id: true },
+      });
+      episodeId = episode.id;
+      const catalog = await db.exerciseCatalog.create({
+        data: { profileId, name: `active-energy-context-${Date.now()}`, stableKey: null },
+        select: { id: true },
+      });
+      catalogId = catalog.id;
+      const service = new TrainingService(db);
+      const program = await service.createProgram({
+        name: `active-energy-context-${Date.now()}`,
+        exercises: [{ catalogId: catalog.id, plannedSets: 1, resistanceType: "EXTERNAL_WEIGHT" }],
+      }, profileId);
+      programId = program.id;
+      const session = await service.startSession(program.id, profileId, "Asia/Kolkata");
+      sessionId = session.id;
+      const oldInstant = new Date("2099-01-02T00:30:00.000Z"); // Jan 2 in Bratislava.
+      const earlierInstant = new Date("2099-01-01T22:30:00.000Z"); // Jan 1 in Bratislava.
+      await db.strengthDiarySession.update({
+        where: { id: session.id },
+        data: {
+          effectiveAccountingAt: oldInstant,
+          accountingTimeZone: "Asia/Kolkata",
+          accountingTimeZoneProvenance: "client-session",
+        },
+      });
+      const eventDates = [
+        { suffix: "old", occurrenceAt: oldInstant, modelDate: "2099-01-02" },
+        { suffix: "new", occurrenceAt: earlierInstant, modelDate: "2099-01-01" },
+      ];
+      await db.activeEnergyCanonicalEvent.createMany({
+        data: eventDates.map((event) => ({
+          profileId,
+          logicalEventKey: `${eventKeyPrefix}:${event.suffix}`,
+          eventKind: "strength",
+          occurrenceAt: event.occurrenceAt,
+          modelDate: event.modelDate,
+          modelTimeZone: "Europe/Bratislava",
+          inputFingerprint: "0".repeat(64),
+          isStale: false,
+        })),
+      });
+      // Program/session setup itself mutates the singleton profile's active
+      // energy lifecycle. Put the explicit current fixture state after that
+      // setup so the tested updateAccountingContext mutation has an exact
+      // generation baseline.
+      await db.physiologyV7Lifecycle.upsert({
+        where: { profileId },
+        update: {
+          staleFromDate: null,
+          currentThroughDate: "2099-01-10",
+          invalidationGeneration: 20,
+          productionStaleFromDate: null,
+          productionPublishedGeneration: 20,
+          unifiedPublishedGeneration: 20,
+          ...currentPhysiologyV7Versions,
+        },
+        create: {
+          profileId,
+          staleFromDate: null,
+          currentThroughDate: "2099-01-10",
+          invalidationGeneration: 20,
+          productionStaleFromDate: null,
+          productionPublishedGeneration: 20,
+          unifiedPublishedGeneration: 20,
+          ...currentPhysiologyV7Versions,
+        },
+      });
+      const repository = new TrainingRepository(db);
+      const lifecycleBeforeMove = await db.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
+      expect(versionsAreCurrent(lifecycleBeforeMove)).toBe(true);
+      const generationBeforeMove = lifecycleBeforeMove.invalidationGeneration;
+
+      await repository.updateAccountingContext({ sessionId: session.id, profileId, effectiveAccountingAt: earlierInstant });
+      let lifecycle = await db.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
+      expect(lifecycle.invalidationGeneration).toBeGreaterThan(generationBeforeMove);
+      expect(lifecycle.staleFromDate !== null && lifecycle.staleFromDate <= "2099-01-01").toBe(true);
+      expect(lifecycle.productionStaleFromDate !== null && lifecycle.productionStaleFromDate <= "2099-01-01").toBe(true);
+      expect(await db.activeEnergyCanonicalEvent.findMany({
+        where: { logicalEventKey: { in: [`${eventKeyPrefix}:old`, `${eventKeyPrefix}:new`] } },
+        orderBy: { logicalEventKey: "asc" },
+        select: { modelDate: true, isStale: true },
+      })).toEqual([
+        { modelDate: "2099-01-01", isStale: true },
+        { modelDate: "2099-01-02", isStale: true },
+      ]);
+
+      // Move the event back across the episode-local date boundary. The OLD
+      // instant must still be included in the invalidation minimum.
+      await db.physiologyV7Lifecycle.update({
+        where: { profileId },
+        data: {
+          staleFromDate: null,
+          productionStaleFromDate: null,
+          currentThroughDate: "2099-01-10",
+          invalidationGeneration: 30,
+          productionPublishedGeneration: 30,
+          unifiedPublishedGeneration: 30,
+        },
+      });
+      await db.activeEnergyCanonicalEvent.updateMany({
+        where: { logicalEventKey: { in: [`${eventKeyPrefix}:old`, `${eventKeyPrefix}:new`] } },
+        data: { isStale: false },
+      });
+      await repository.updateAccountingContext({ sessionId: session.id, profileId, effectiveAccountingAt: oldInstant });
+      lifecycle = await db.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
+      expect(lifecycle.invalidationGeneration).toBeGreaterThan(30);
+      expect(lifecycle.staleFromDate !== null && lifecycle.staleFromDate <= "2099-01-01").toBe(true);
+      expect(lifecycle.productionStaleFromDate !== null && lifecycle.productionStaleFromDate <= "2099-01-01").toBe(true);
+      expect(await db.activeEnergyCanonicalEvent.count({
+        where: { logicalEventKey: { in: [`${eventKeyPrefix}:old`, `${eventKeyPrefix}:new`] }, isStale: false },
+      })).toBe(0);
+
+      await service.createSet(session.id, session.exercises[0]!.id, { reps: 8, weightKg: 60 }, profileId);
+      const accounting = await service.materializeSessionAccounting(session.id, profileId);
+      const beforeTimezoneChange = await db.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
+      await repository.updateAccountingContext({ sessionId: session.id, profileId, timeZone: "Europe/London" });
+      const afterTimezoneChange = await db.strengthDiarySession.findUniqueOrThrow({
+        where: { id: session.id },
+        select: { accountingTimeZone: true, currentSnapshotRevision: true },
+      });
+      const afterContextLifecycle = await db.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
+      expect(afterTimezoneChange.accountingTimeZone).toBe("Europe/London");
+      expect(afterTimezoneChange.currentSnapshotRevision).toBeNull();
+      expect(accounting.snapshotRevision).toBeGreaterThan(0);
+      expect(afterContextLifecycle.invalidationGeneration).toBeGreaterThan(beforeTimezoneChange.invalidationGeneration);
+
+      const sessionBeforeRollback = await db.strengthDiarySession.findUniqueOrThrow({
+        where: { id: session.id },
+        select: { effectiveAccountingAt: true, accountingTimeZone: true },
+      });
+      const lifecycleBeforeRollback = await db.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
+      const rollbackDb = new Proxy(db, {
+        get(target, property, receiver) {
+          if (property === "$transaction") {
+            const transaction = Reflect.get(target, property, target) as (...args: unknown[]) => Promise<unknown>;
+            return (callback: unknown, ...options: unknown[]) => transaction.call(
+              target,
+              async (tx: Prisma.TransactionClient) => {
+                await (callback as (client: Prisma.TransactionClient) => Promise<unknown>)(tx);
+                throw new Error("force rollback after context invalidation");
+              },
+              ...options,
+            );
+          }
+          const value = Reflect.get(target, property, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      }) as PrismaClient;
+      await expect(new TrainingRepository(rollbackDb).updateAccountingContext({
+        sessionId: session.id,
+        profileId,
+        effectiveAccountingAt: new Date("2099-01-03T00:30:00.000Z"),
+      })).rejects.toThrow("force rollback after context invalidation");
+      expect(await db.strengthDiarySession.findUniqueOrThrow({
+        where: { id: session.id },
+        select: { effectiveAccountingAt: true, accountingTimeZone: true },
+      })).toEqual(sessionBeforeRollback);
+      expect(await db.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } }))
+        .toMatchObject({
+          invalidationGeneration: lifecycleBeforeRollback.invalidationGeneration,
+          staleFromDate: lifecycleBeforeRollback.staleFromDate,
+          productionStaleFromDate: lifecycleBeforeRollback.productionStaleFromDate,
+        });
+    } finally {
+      await db.activeEnergyCanonicalEvent.deleteMany({ where: { logicalEventKey: { startsWith: eventKeyPrefix } } });
+      if (sessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: sessionId } });
+      if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });
+      if (catalogId !== null) await db.exerciseCatalog.deleteMany({ where: { id: catalogId } });
+      if (episodeId !== null) await db.modelEpisode.deleteMany({ where: { id: episodeId } });
+      if (lifecycleBeforeTest === null) {
+        await db.physiologyV7Lifecycle.deleteMany({ where: { profileId } });
+      } else {
+        await db.physiologyV7Lifecycle.update({
+          where: { profileId },
+          data: {
+            staleFromDate: lifecycleBeforeTest.staleFromDate,
+            invalidationGeneration: lifecycleBeforeTest.invalidationGeneration,
+            currentThroughDate: lifecycleBeforeTest.currentThroughDate,
+            productionStaleFromDate: lifecycleBeforeTest.productionStaleFromDate,
+            productionPublishedGeneration: lifecycleBeforeTest.productionPublishedGeneration,
+            unifiedPublishedGeneration: lifecycleBeforeTest.unifiedPublishedGeneration,
+            stateVersion: lifecycleBeforeTest.stateVersion,
+            sourceNormalizationVersion: lifecycleBeforeTest.sourceNormalizationVersion,
+            dailyRuntimeVersion: lifecycleBeforeTest.dailyRuntimeVersion,
+            rangeRebuildVersion: lifecycleBeforeTest.rangeRebuildVersion,
+            rebuildServiceVersion: lifecycleBeforeTest.rebuildServiceVersion,
+          },
+        });
+      }
+    }
   });
 
   it("cleans only the fixture namespace and preserves an unrelated sentinel", async () => {

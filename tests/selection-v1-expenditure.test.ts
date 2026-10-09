@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { resolveExplicitWorkoutActivityKcal, canonicalizeWorkoutType } from "@/model/activity/workout-energy";
+import { calculateStrengthActivity } from "@/model/activity/strength";
 import { STAIR_CLIMBING_TYPE, TRADITIONAL_STRENGTH_TRAINING_TYPE } from "@/modules/health/expand-training-workouts";
 import type { WorkoutStepperEvidenceV7 } from "@/model/activity/workout-stepper-v7";
 
@@ -93,7 +94,7 @@ describe("selection v1 expenditure", () => {
     });
   });
 
-  it("keeps 200 plus an unavailable workout as partial coverage", () => {
+  it("uses valid BodyCast MET fallback before marking a Strength event unavailable", () => {
     const canonical = canonicalizeWorkoutType(TRADITIONAL_STRENGTH_TRAINING_TYPE);
     const result = resolveExplicitWorkoutActivityKcal({
       selectionPolicy: "bodycast-active-energy-selection-v1",
@@ -120,10 +121,11 @@ describe("selection v1 expenditure", () => {
         },
       ],
     });
-    expect(result.workoutActivityKcal).toBe(200);
-    expect(result.strengthMetFallbackKcal).toBe(0);
-    expect(result.energyCoverage?.unknownEventCount).toBe(1);
-    expect(result.energyCoverage?.fullCoverage).toBe(false);
+    const expectedMetFallback = calculateStrengthActivity({ weightKg: 80, rmrKcalPerDay: 1600, durationMinutes: 40 })!;
+    expect(result.workoutActivityKcal).toBe(200 + expectedMetFallback);
+    expect(result.strengthMetFallbackKcal).toBe(expectedMetFallback);
+    expect(result.energyCoverage?.unknownEventCount).toBe(0);
+    expect(result.energyCoverage?.fullCoverage).toBe(true);
   });
 
   it("prefers BodyCast mechanical over Garmin active kcal for stair events", () => {
@@ -149,7 +151,7 @@ describe("selection v1 expenditure", () => {
     expect(result.perEvent[0]?.source).toBe("mechanical-stepper");
   });
 
-  it("rejects a present-but-stale BodyCast strength shadow", () => {
+  it("falls back from a stale session estimate to BodyCast MET before device kcal", () => {
     const result = resolveExplicitWorkoutActivityKcal({
       selectionPolicy: "bodycast-active-energy-selection-v1",
       weightKg: 80,
@@ -161,7 +163,46 @@ describe("selection v1 expenditure", () => {
         strengthSessionCompleted: true,
       })],
     });
-    expect(result.workoutActivityKcal).toBe(400);
-    expect(result.perEvent[0]?.source).toBe("device-active-kcal");
+    const expectedMetFallback = calculateStrengthActivity({ weightKg: 80, rmrKcalPerDay: 1600, durationMinutes: 60 })!;
+    expect(result.workoutActivityKcal).toBe(expectedMetFallback);
+    expect(result.perEvent[0]?.source).toBe("bodycast-strength-met-fallback");
+  });
+
+  it("uses persisted canonical resolution on the production v7 path without adding device calories", () => {
+    const result = resolveExplicitWorkoutActivityKcal({
+      weightKg: 80,
+      rmrKcalPerDay: 1600,
+      events: [{
+        ...strengthEvent({ activeEnergyKcal: 400 }),
+        canonicalEnergyResolution: {
+          currentKcal: 250,
+          currentSource: "bodycast-strength-estimate",
+          resolutionRevision: 3,
+          isStale: false,
+        },
+      }],
+    });
+    expect(result.workoutActivityKcal).toBe(250);
+    expect(result.deviceActiveEnergyKcal).toBe(0);
+    expect(result.perEvent[0]).toMatchObject({ source: "bodycast-strength-estimate", resolutionRevision: 3 });
+  });
+
+  it("does not fall back to device calories while the canonical resolution is stale", () => {
+    const result = resolveExplicitWorkoutActivityKcal({
+      weightKg: 80,
+      rmrKcalPerDay: 1600,
+      events: [{
+        ...strengthEvent({ activeEnergyKcal: 400 }),
+        canonicalEnergyResolution: {
+          currentKcal: 250,
+          currentSource: "bodycast-strength-estimate",
+          resolutionRevision: 3,
+          isStale: true,
+        },
+      }],
+    });
+    expect(result.workoutActivityKcal).toBe(0);
+    expect(result.deviceActiveEnergyKcal).toBe(0);
+    expect(result.perEvent[0]?.source).toBe("none");
   });
 });

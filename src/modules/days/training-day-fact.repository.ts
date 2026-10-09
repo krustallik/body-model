@@ -1,7 +1,9 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { DEFAULT_TIME_ZONE, instantToLocalDateTime } from "@/model/time-zone";
-import { localCalendarRangeInstants } from "./calendar-range";
+import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
+import { episodeTimeContextForInstantV1 } from "@/modules/model-episodes/episode-time-context-v1";
+import { readActiveEnergyMassReferencesV1 } from "@/modules/training/training.repository";
 import {
   resolveTrainingDayFacts,
   type DiaryFactSource,
@@ -9,12 +11,15 @@ import {
   type TrainingDayFact,
   type WorkoutFactSource,
 } from "./training-day-fact";
+import type { StrengthSessionDto } from "@/modules/training/training.types";
 import { emptyTrainingDayFact } from "./training-day-fact-empty";
 
 export type TrainingDayFactRange = { from?: string; to?: string };
 
 type SetRow = {
   id: number;
+  sessionExerciseId: number;
+  completedAt: Date | null;
   reps: number;
   weightKg: Prisma.Decimal | number | null;
   bandNominalResistanceKg: Prisma.Decimal | number | null;
@@ -24,6 +29,8 @@ type SetRow = {
 function toSetRows(sets: readonly SetRow[], resistanceType?: string | null): StrengthSetFactRow[] {
   return sets.map((set) => ({
     id: set.id,
+    sessionExerciseId: set.sessionExerciseId,
+    completedAt: set.completedAt?.toISOString() ?? null,
     reps: set.reps,
     weightKg: typeof set.weightKg === "number"
       ? set.weightKg
@@ -61,9 +68,11 @@ function workoutSource(
     type: string;
     startAt: Date;
     endAt: Date;
+    modelDate?: string;
     durationMinutes: number | null;
     activeEnergyKcal: number | null;
     hiddenFromHistory: boolean;
+    canonicalEnergyResolution?: { kcal: number | null; source: string; revision: number } | null;
     dailyHealthData?: { date: string; weightKg: number | null } | null;
     matchedDiarySession: null | {
       id: number;
@@ -75,6 +84,8 @@ function workoutSource(
       program: { name: string } | null;
       exercises: Array<{ resistanceType: string; sets: SetRow[] }>;
       experimentalStrengthEnergyShadow: { result: Prisma.JsonValue; modelRevision: string } | null;
+      activeEnergyMassReference?: StrengthSessionDto["activeEnergyMassReference"];
+      canonicalEnergyResolution?: { kcal: number | null; source: string; revision: number } | null;
     };
   },
   weightsByDate: ReadonlyMap<string, number | null>,
@@ -88,7 +99,7 @@ function workoutSource(
       sets: toSetRows(exercise.sets, exercise.resistanceType),
     }));
   const sets = exerciseGroups.flatMap((exercise) => exercise.sets);
-  const localDate = row.dailyHealthData?.date
+  const localDate = row.modelDate ?? row.dailyHealthData?.date
     ?? instantToLocalDateTime(row.startAt, timeZone).date;
   const sameDayMassKg = row.dailyHealthData?.weightKg ?? weightsByDate.get(localDate) ?? null;
   const startOfDayMassKg = startOfDayMassFor(localDate, weightsByDate, sortedWeightDates);
@@ -98,9 +109,11 @@ function workoutSource(
     type: row.type,
     startAt: row.startAt,
     endAt: row.endAt,
+    modelDate: row.modelDate,
     durationMinutes: row.durationMinutes,
     activeEnergyKcal: row.activeEnergyKcal,
     hiddenFromHistory: row.hiddenFromHistory,
+    canonicalEnergyResolution: row.canonicalEnergyResolution ?? null,
     matchedDiarySession: row.matchedDiarySession === null ? null : {
       id: row.matchedDiarySession.id,
       status: row.matchedDiarySession.status,
@@ -111,11 +124,13 @@ function workoutSource(
       programName: row.matchedDiarySession.program?.name ?? null,
       loggedSetCount: sets.length,
       energyShadow: row.matchedDiarySession.experimentalStrengthEnergyShadow?.result ?? null,
+      activeEnergyMassReference: row.matchedDiarySession.activeEnergyMassReference ?? null,
       sets,
       exercises: exerciseGroups,
       sameDayMassKg,
       startOfDayMassKg,
       estimatorVersion: row.matchedDiarySession.experimentalStrengthEnergyShadow?.modelRevision ?? null,
+      canonicalEnergyResolution: row.matchedDiarySession.canonicalEnergyResolution ?? null,
     },
   };
 }
@@ -128,9 +143,12 @@ function diarySource(
     revision: number;
     webStartedAt: Date | null;
     webEndedAt: Date | null;
+    modelDate?: string | null;
     program: { name: string } | null;
     exercises: Array<{ resistanceType: string; sets: SetRow[] }>;
     experimentalStrengthEnergyShadow: { result: Prisma.JsonValue; modelRevision: string } | null;
+    activeEnergyMassReference?: StrengthSessionDto["activeEnergyMassReference"];
+    canonicalEnergyResolution?: { kcal: number | null; source: string; revision: number } | null;
   },
   weightsByDate: ReadonlyMap<string, number | null>,
   sortedWeightDates: readonly string[],
@@ -141,9 +159,9 @@ function diarySource(
     sets: toSetRows(exercise.sets, exercise.resistanceType),
   }));
   const sets = exerciseGroups.flatMap((exercise) => exercise.sets);
-  const localDate = row.webStartedAt === null
+  const localDate = row.modelDate ?? (row.webStartedAt === null
     ? null
-    : instantToLocalDateTime(row.webStartedAt, timeZone).date;
+    : instantToLocalDateTime(row.webStartedAt, timeZone).date);
   const sameDayMassKg = localDate === null ? null : weightsByDate.get(localDate) ?? null;
   const startOfDayMassKg = localDate === null
     ? null
@@ -155,14 +173,17 @@ function diarySource(
     revision: row.revision,
     webStartedAt: row.webStartedAt,
     webEndedAt: row.webEndedAt,
+    modelDate: row.modelDate,
     programName: row.program?.name ?? null,
     loggedSetCount: sets.length,
     energyShadow: row.experimentalStrengthEnergyShadow?.result ?? null,
+    activeEnergyMassReference: row.activeEnergyMassReference ?? null,
     sets,
     exercises: exerciseGroups,
     sameDayMassKg,
     startOfDayMassKg,
     estimatorVersion: row.experimentalStrengthEnergyShadow?.modelRevision ?? null,
+    canonicalEnergyResolution: row.canonicalEnergyResolution ?? null,
   };
 }
 
@@ -170,7 +191,14 @@ export class TrainingDayFactRepository {
   constructor(private readonly client: PrismaClient = prisma) {}
 
   async list(range: TrainingDayFactRange = {}): Promise<TrainingDayFact[]> {
-    const instantRange = localCalendarRangeInstants(range);
+    // Episode timezone can differ from the browser/default timezone. Query a
+    // UTC envelope wide enough to include every event whose episode-local
+    // date may fall in the requested date-only range, then filter by that
+    // authoritative model date after loading the episode map.
+    const instantRange = {
+      ...(range.from ? { gte: new Date(`${addCalendarDays(range.from, -2)}T00:00:00.000Z`) } : {}),
+      ...(range.to ? { lt: new Date(`${addCalendarDays(range.to, 3)}T00:00:00.000Z`) } : {}),
+    };
     const timeFilter = Object.keys(instantRange).length > 0 ? { startAt: instantRange } : {};
     const diaryTimeFilter = {
       not: null,
@@ -180,6 +208,7 @@ export class TrainingDayFactRepository {
       workout?: { findMany?: unknown };
       strengthDiarySession?: { findMany?: unknown };
       dailyHealthData?: { findMany?: unknown };
+      modelEpisode?: { findMany?: unknown };
     };
 
     const [workouts, diarySessions] = await Promise.all([
@@ -210,6 +239,8 @@ export class TrainingDayFactRepository {
                   sets: {
                     select: {
                       id: true,
+                      sessionExerciseId: true,
+                      completedAt: true,
                       reps: true,
                       weightKg: true,
                       bandNominalResistanceKg: true,
@@ -248,6 +279,8 @@ export class TrainingDayFactRepository {
               sets: {
                 select: {
                   id: true,
+                  sessionExerciseId: true,
+                  completedAt: true,
                   reps: true,
                   weightKg: true,
                   bandNominalResistanceKg: true,
@@ -262,15 +295,46 @@ export class TrainingDayFactRepository {
       }) : Promise.resolve([]),
     ]);
 
+    const episodes = readClient.modelEpisode?.findMany
+      ? await this.client.modelEpisode.findMany({
+        where: { profileId: 1 },
+        select: { id: true, startDate: true, timezone: true, active: true },
+        orderBy: [{ startDate: "asc" }, { id: "asc" }],
+      })
+      : [];
+
+    const energyAliases = workouts.length + diarySessions.length === 0 ? [] : await this.client.activeEnergyEventAlias.findMany({
+      where: {
+        profileId: 1,
+        OR: [
+          ...(workouts.length === 0 ? [] : [{ sourceType: "workout", sourceId: { in: workouts.map((row) => String(row.id)) } }]),
+          ...(diarySessions.length === 0 ? [] : [{ sourceType: "strength-session", sourceId: { in: diarySessions.map((row) => String(row.id)) } }]),
+        ],
+      },
+      select: {
+        sourceType: true, sourceId: true,
+        event: { select: { currentKcal: true, currentSource: true, resolutionRevision: true, isStale: true } },
+      },
+    });
+    const activeEnergyByAlias = new Map(energyAliases.map((row) => [`${row.sourceType}:${row.sourceId}`, {
+      kcal: row.event.isStale ? null : row.event.currentKcal,
+      source: row.event.isStale ? "unavailable" : row.event.currentSource ?? "unavailable",
+      revision: row.event.resolutionRevision,
+    }]));
+
+    const workoutModelDates = new Map<number, { date: string; timeZone: string }>();
+    const diaryModelDates = new Map<number, { date: string; timeZone: string }>();
     const dates = new Set<string>();
     for (const row of workouts) {
-      const date = row.dailyHealthData?.date
-        ?? instantToLocalDateTime(row.startAt, DEFAULT_TIME_ZONE).date;
-      dates.add(date);
+      const context = episodeTimeContextForInstantV1(episodes, row.startAt);
+      workoutModelDates.set(row.id, { date: context.date, timeZone: context.timeZone });
+      dates.add(context.date);
     }
     for (const row of diarySessions) {
       if (row.webStartedAt === null) continue;
-      dates.add(instantToLocalDateTime(row.webStartedAt, DEFAULT_TIME_ZONE).date);
+      const context = episodeTimeContextForInstantV1(episodes, row.webStartedAt);
+      diaryModelDates.set(row.id, { date: context.date, timeZone: context.timeZone });
+      dates.add(context.date);
     }
     const sortedDates = [...dates].sort();
     const earliest = sortedDates[0];
@@ -297,20 +361,44 @@ export class TrainingDayFactRepository {
     }
     const sortedWeightDates = [...weightsByDate.keys()].sort();
 
-    return resolveTrainingDayFacts({
+    const allSessionIds = [
+      ...diarySessions.map((row) => row.id),
+      ...workouts.flatMap((row) => row.matchedDiarySession ? [row.matchedDiarySession.id] : []),
+    ];
+    const massReferences = await readActiveEnergyMassReferencesV1(this.client, {
+      sessionIds: allSessionIds,
+      profileId: 1,
+    });
+
+    const facts = resolveTrainingDayFacts({
       workouts: workouts.map((row) => workoutSource(
-        row as Parameters<typeof workoutSource>[0],
+        {
+          ...(row as Parameters<typeof workoutSource>[0]),
+          modelDate: workoutModelDates.get(row.id)?.date,
+          canonicalEnergyResolution: activeEnergyByAlias.get(`workout:${row.id}`) ?? null,
+          matchedDiarySession: row.matchedDiarySession === null ? null : {
+            ...row.matchedDiarySession,
+            activeEnergyMassReference: massReferences.get(row.matchedDiarySession.id) ?? null,
+            canonicalEnergyResolution: activeEnergyByAlias.get(`strength-session:${row.matchedDiarySession.id}`) ?? null,
+          },
+        },
         weightsByDate,
         sortedWeightDates,
-        DEFAULT_TIME_ZONE,
+        workoutModelDates.get(row.id)?.timeZone ?? DEFAULT_TIME_ZONE,
       )),
       diarySessions: diarySessions.map((row) => diarySource(
-        row as Parameters<typeof diarySource>[0],
+        {
+          ...(row as Parameters<typeof diarySource>[0]),
+          modelDate: diaryModelDates.get(row.id)?.date ?? null,
+          activeEnergyMassReference: massReferences.get(row.id) ?? null,
+          canonicalEnergyResolution: activeEnergyByAlias.get(`strength-session:${row.id}`) ?? null,
+        },
         weightsByDate,
         sortedWeightDates,
-        DEFAULT_TIME_ZONE,
+        diaryModelDates.get(row.id)?.timeZone ?? DEFAULT_TIME_ZONE,
       )),
     });
+    return facts.filter(({ date }) => (!range.from || date >= range.from) && (!range.to || date <= range.to));
   }
 
   async forDate(date: string): Promise<TrainingDayFact> {

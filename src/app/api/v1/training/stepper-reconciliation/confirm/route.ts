@@ -3,6 +3,8 @@ import { prisma } from "@/lib/db/prisma";
 import { readJson, validationResponse } from "@/modules/days/day.http";
 import { confirmStepperReconciliationV1 } from "@/modules/training/stepper-reconciliation.service";
 import { activateConfirmedReconciliationVisibilityV1 } from "@/modules/model-episodes/selection-v1-episode-ops";
+import { recordExperimentalStepperActiveEnergyShadowsForWorkouts } from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
+import { publishActiveEnergyChangesV1 } from "@/modules/activity/active-energy-publication";
 
 export const dynamic = "force-dynamic";
 
@@ -34,6 +36,10 @@ export async function POST(request: Request): Promise<Response> {
         garminWorkoutId: parsed.data.garminWorkoutId,
       });
     }
+    await recordExperimentalStepperActiveEnergyShadowsForWorkouts({
+      workoutIds: [parsed.data.manualWorkoutId, parsed.data.garminWorkoutId], profileId: 1,
+    });
+    await publishActiveEnergyChangesV1();
     return Response.json({ ok: true, activated: parsed.data.activateVisibility === true });
   } catch (error) {
     const message = error instanceof Error ? error.message : "internal_error";

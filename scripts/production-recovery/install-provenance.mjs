@@ -1,0 +1,546 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { constants as fsConstants } from "node:fs";
+import { createPrivateKey, createPublicKey } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import {
+  assertExactKeys,
+  assertGitSha,
+  assertNonEmptyString,
+  assertSha256,
+  assertUtcTimestamp,
+  canonicalDigest,
+  canonicalJson,
+  signCanonical,
+  sha256Hex,
+  verifyCanonical,
+} from "./canonical.mjs";
+import { assertSafePath } from "./journal.mjs";
+import { AUTHORITY_CONFIG_KEYS } from "./host-runtime.mjs";
+
+const PROVENANCE_KEYS = Object.freeze([
+  "schemaVersion", "purpose", "packageName", "authorityVersion", "authorityKeyId", "binaryDigest",
+  "configDigest", "sourceRepository", "sourceMainSha", "buildWorkflowPath", "buildWorkflowId",
+  "buildWorkflowRunId", "buildWorkflowRunAttempt", "issuedAt", "expiresAt", "signerKeyId", "signature",
+]);
+const INSTALL_RECEIPT_KEYS = Object.freeze([
+  "receiptSchemaVersion", "purpose", "authorityVersion", "binaryDigest", "configDigest", "authorityKeyId",
+  "installationPath", "installedAt", "previousAuthorityVersion", "minimumAllowedVersion", "provenanceDigest",
+  "signerKeyId", "signature",
+]);
+const PACKAGE_CONFIG_KEYS = Object.freeze(["authority", "host"]);
+const HOST_CONFIG_KEYS = Object.freeze(["releaseGroupGid", "adapter"]);
+const AUTHORITY_SIGNING_KEYS = Object.freeze(["privateKey", "authorityVersion", "authorityKeyId", "authorityInstanceId"]);
+
+function verifyPackageConfigMetadata(configBytes, provenance) {
+  const configText = Buffer.from(configBytes).toString("utf8");
+  const config = JSON.parse(configText);
+  if (canonicalJson(config) !== configText) throw new Error("Authority package configuration must be canonical JSON.");
+  assertExactKeys(config, PACKAGE_CONFIG_KEYS, "Authority package configuration");
+  assertExactKeys(config.authority, AUTHORITY_CONFIG_KEYS, "Authority package authority configuration");
+  assertExactKeys(config.host, HOST_CONFIG_KEYS, "Authority package host configuration");
+  assertExactKeys(config.authority.signing, AUTHORITY_SIGNING_KEYS, "Authority package signing configuration");
+  if (config.authority.signing.authorityVersion !== provenance.authorityVersion
+    || config.authority.signing.authorityKeyId !== provenance.authorityKeyId) {
+    throw new Error("Authority package configuration version or key ID does not match signed provenance.");
+  }
+  assertSha256(config.authority.operationAdapterDigest, "authority.operationAdapterDigest");
+  if (config.authority.operationAdapterDigest !== provenance.binaryDigest
+    || !config.authority.operationAdapterConformancePublicKeys
+    || typeof config.authority.operationAdapterConformancePublicKeys !== "object"
+    || Array.isArray(config.authority.operationAdapterConformancePublicKeys)
+    || Object.keys(config.authority.operationAdapterConformancePublicKeys).length === 0) {
+    throw new Error("Authority adapter digest must bind the signed installed binary and conformance verifier keys must be pinned.");
+  }
+  if (typeof config.authority.signing.privateKey !== "string" || config.authority.signing.privateKey.length === 0
+    || typeof config.authority.signing.authorityInstanceId !== "string" || config.authority.signing.authorityInstanceId.trim() === ""
+    || !Number.isSafeInteger(config.host.releaseGroupGid) || config.host.releaseGroupGid < 1
+    || !config.host.adapter || typeof config.host.adapter !== "object" || Array.isArray(config.host.adapter)) {
+    throw new Error("Authority package configuration metadata is incomplete.");
+  }
+  const trustedAuthorityKey = config.authority.journalPublicKeys?.[provenance.authorityKeyId];
+  if (typeof trustedAuthorityKey !== "string") throw new Error("Authority signing key ID is absent from the packaged journal verification keys.");
+  try {
+    const derived = createPublicKey(createPrivateKey(config.authority.signing.privateKey)).export({ type: "spki", format: "der" });
+    const trusted = createPublicKey(trustedAuthorityKey).export({ type: "spki", format: "der" });
+    if (!derived.equals(trusted)) throw new Error("Authority signing private key does not match the packaged public key for its provenance key ID.");
+  } catch (error) {
+    if (/does not match/.test(error?.message ?? "")) throw error;
+    throw new Error("Authority signing key material is invalid or does not match its packaged public key.");
+  }
+}
+
+function parseVersion(value) {
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(value);
+  if (!match) throw new Error("Authority version must be canonical semantic major.minor.patch.");
+  return match.slice(1).map(Number);
+}
+
+export function compareAuthorityVersions(left, right) {
+  const a = parseVersion(left);
+  const b = parseVersion(right);
+  for (let index = 0; index < 3; index += 1) if (a[index] !== b[index]) return Math.sign(a[index] - b[index]);
+  return 0;
+}
+
+export function verifyAuthorityInstallArtifact({
+  provenance,
+  binaryBytes,
+  configBytes,
+  trustedProvenanceKeys,
+  allowedAuthorityVersions,
+  minimumAllowedVersion,
+  currentInstallation = null,
+  now = Date.now(),
+}) {
+  assertExactKeys(provenance, PROVENANCE_KEYS, "Authority installation provenance");
+  if (provenance.schemaVersion !== 1 || provenance.purpose !== "bodycast-production-recovery-authority-package") {
+    throw new Error("Authority package provenance schema or purpose is unsupported.");
+  }
+  for (const key of ["packageName", "authorityVersion", "authorityKeyId", "sourceRepository", "buildWorkflowPath",
+    "buildWorkflowId", "buildWorkflowRunId", "buildWorkflowRunAttempt", "signerKeyId", "signature"]) {
+    assertNonEmptyString(provenance[key], "provenance." + key);
+  }
+  assertGitSha(provenance.sourceMainSha, "provenance.sourceMainSha");
+  assertSha256(provenance.binaryDigest, "provenance.binaryDigest");
+  assertSha256(provenance.configDigest, "provenance.configDigest");
+  assertUtcTimestamp(provenance.issuedAt, "provenance.issuedAt");
+  assertUtcTimestamp(provenance.expiresAt, "provenance.expiresAt");
+  if (Date.parse(provenance.issuedAt) > now || Date.parse(provenance.expiresAt) <= now) {
+    throw new Error("Authority package provenance is not currently valid.");
+  }
+  if (!trustedProvenanceKeys?.[provenance.signerKeyId]
+    || !verifyCanonical(Object.fromEntries(Object.entries(provenance).filter(([key]) => key !== "signature")), provenance.signature,
+      trustedProvenanceKeys[provenance.signerKeyId])) {
+    throw new Error("Authority package provenance signature is not trusted.");
+  }
+  if (provenance.packageName !== "bodycast-production-recovery-authority") throw new Error("Unexpected authority package name.");
+  if (sha256Hex(binaryBytes) !== provenance.binaryDigest || sha256Hex(configBytes) !== provenance.configDigest) {
+    throw new Error("Authority package or configuration digest does not match signed provenance.");
+  }
+  verifyPackageConfigMetadata(configBytes, provenance);
+  if (!Array.isArray(allowedAuthorityVersions) || !allowedAuthorityVersions.includes(provenance.authorityVersion)) {
+    throw new Error("Authority version is not on the reviewed version allowlist.");
+  }
+  const floor = minimumAllowedVersion;
+  if (compareAuthorityVersions(provenance.authorityVersion, floor) < 0) throw new Error("Authority package is below the monotonic minimum version.");
+  if (currentInstallation?.authorityVersion
+    && compareAuthorityVersions(provenance.authorityVersion, currentInstallation.authorityVersion) < 0) {
+    throw new Error("Authority downgrade is prohibited.");
+  }
+  return Object.freeze({
+    authorityVersion: provenance.authorityVersion,
+    authorityKeyId: provenance.authorityKeyId,
+    binaryDigest: provenance.binaryDigest,
+    configDigest: provenance.configDigest,
+    provenanceDigest: canonicalDigest(provenance),
+    sourceRepository: provenance.sourceRepository,
+    sourceMainSha: provenance.sourceMainSha,
+  });
+}
+
+export function createAuthorityInstallationReceipt(verifiedArtifact, {
+  installationPath,
+  previousAuthorityVersion = null,
+  minimumAllowedVersion,
+  installedAt,
+  signerKeyId,
+  privateKey,
+}) {
+  if (!verifiedArtifact?.provenanceDigest || !privateKey) throw new Error("Verified provenance and root installation signer are required.");
+  const unsigned = {
+    receiptSchemaVersion: 1,
+    purpose: "bodycast-production-recovery-authority-installation",
+    authorityVersion: verifiedArtifact.authorityVersion,
+    binaryDigest: verifiedArtifact.binaryDigest,
+    configDigest: verifiedArtifact.configDigest,
+    authorityKeyId: verifiedArtifact.authorityKeyId,
+    installationPath,
+    installedAt,
+    previousAuthorityVersion,
+    minimumAllowedVersion,
+    provenanceDigest: verifiedArtifact.provenanceDigest,
+    signerKeyId,
+  };
+  const receipt = { ...unsigned, signature: signCanonical(unsigned, privateKey) };
+  assertExactKeys(receipt, INSTALL_RECEIPT_KEYS, "Authority installation receipt");
+  return receipt;
+}
+
+export function verifyAuthorityInstallationReceipt(receipt, trustedKeys, {
+  minimumAllowedVersion,
+  allowedAuthorityVersions,
+} = {}) {
+  assertExactKeys(receipt, INSTALL_RECEIPT_KEYS, "Authority installation receipt");
+  if (receipt.receiptSchemaVersion !== 1 || receipt.purpose !== "bodycast-production-recovery-authority-installation") {
+    throw new Error("Authority installation receipt schema or purpose is unsupported.");
+  }
+  if (!trustedKeys?.[receipt.signerKeyId]
+    || !verifyCanonical(Object.fromEntries(Object.entries(receipt).filter(([key]) => key !== "signature")), receipt.signature,
+      trustedKeys[receipt.signerKeyId])) throw new Error("Authority installation receipt signature is invalid.");
+  if (!allowedAuthorityVersions?.includes(receipt.authorityVersion)
+    || compareAuthorityVersions(receipt.authorityVersion, minimumAllowedVersion) < 0) {
+    throw new Error("Installed authority is no longer on the allowed version policy.");
+  }
+  return true;
+}
+
+/**
+ * Installs only a package already verified against a separately pinned trust root.
+ * The caller must be the later root-owned install checkpoint; this function does
+ * not run during ordinary application startup or deploy.
+ */
+async function installAuthorityPackageInternal({
+  verifiedArtifact,
+  binaryBytes,
+  configBytes,
+  installationRoot,
+  currentInstallation,
+  minimumAllowedVersion,
+  receiptSigner,
+  trustedInstallationKeys = null,
+  allowedAuthorityVersions = null,
+  requireRoot = true,
+  syncDirectory = async (directoryPath) => {
+    const handle = await fs.open(directoryPath, fsConstants.O_RDONLY);
+    try { await handle.sync(); } finally { await handle.close(); }
+  },
+}) {
+  if (process.platform !== "win32" && requireRoot && process.getuid?.() !== 0) throw new Error("Authority package installation requires root.");
+  if (!verifiedArtifact?.authorityVersion || !receiptSigner?.privateKey || !receiptSigner?.publicKey || !receiptSigner?.keyId) {
+    throw new Error("Trusted installation inputs are incomplete.");
+  }
+  if (currentInstallation?.authorityVersion
+    && compareAuthorityVersions(verifiedArtifact.authorityVersion, currentInstallation.authorityVersion) < 0) {
+    throw new Error("Authority downgrade is prohibited.");
+  }
+  const root = path.resolve(installationRoot);
+  await fs.mkdir(root, { recursive: true, mode: 0o700 });
+  await assertSafePath(root, { requireRoot, privateMode: true });
+  const rootStat = await fs.lstat(root);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()
+    || (process.platform !== "win32" && ((requireRoot && rootStat.uid !== 0) || (rootStat.mode & 0o077) !== 0))) {
+    throw new Error("Authority installation root must be root-owned mode 0700.");
+  }
+  const installationKeys = trustedInstallationKeys ?? { [receiptSigner.keyId]: receiptSigner.publicKey };
+  const versionAllowlist = allowedAuthorityVersions ?? [verifiedArtifact.authorityVersion];
+  const actualCurrentInstallation = await inspectAuthorityInstallationRoot({
+    installationRoot: root,
+    trustedInstallationKeys: installationKeys,
+    allowedAuthorityVersions: versionAllowlist,
+    minimumAllowedVersion,
+    requireRoot,
+  });
+  if (currentInstallation?.authorityVersion !== undefined
+    && currentInstallation.authorityVersion !== actualCurrentInstallation?.authorityVersion) {
+    throw new Error("Caller-provided current authority version differs from the authenticated installed version.");
+  }
+  if (actualCurrentInstallation
+    && compareAuthorityVersions(verifiedArtifact.authorityVersion, actualCurrentInstallation.authorityVersion) < 0) {
+    throw new Error("Authority downgrade is prohibited by the installed version pointer and receipt.");
+  }
+  const versionPath = path.join(root, "v" + verifiedArtifact.authorityVersion);
+  try {
+    await fs.lstat(versionPath);
+    throw new Error("Authority version installation path already exists; versions are immutable.");
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  const staging = path.join(root, ".install-" + randomUUID());
+  await fs.mkdir(staging, { mode: 0o700 });
+  try {
+    const binaryPath = path.join(staging, "bodycast-recovery-authority");
+    const configPath = path.join(staging, "authority-config.json");
+    const binary = await fs.open(binaryPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o755);
+    try { await binary.writeFile(binaryBytes); await binary.sync(); } finally { await binary.close(); }
+    const config = await fs.open(configPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
+    try { await config.writeFile(configBytes); await config.sync(); } finally { await config.close(); }
+    if (sha256Hex(await fs.readFile(binaryPath)) !== verifiedArtifact.binaryDigest
+      || sha256Hex(await fs.readFile(configPath)) !== verifiedArtifact.configDigest) {
+      throw new Error("Staged authority installation bytes do not match verified provenance.");
+    }
+    await fs.rename(staging, versionPath);
+    await syncDirectory(root);
+    const receipt = createAuthorityInstallationReceipt(verifiedArtifact, {
+      installationPath: versionPath,
+      previousAuthorityVersion: actualCurrentInstallation?.authorityVersion ?? null,
+      minimumAllowedVersion,
+      installedAt: new Date().toISOString(),
+      signerKeyId: receiptSigner.keyId,
+      privateKey: receiptSigner.privateKey,
+    });
+    const receiptPath = path.join(versionPath, "installation-receipt.json");
+    const receiptTempPath = path.join(versionPath, ".installation-receipt-" + randomUUID() + ".tmp");
+    const receiptHandle = await fs.open(receiptTempPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
+    try { await receiptHandle.writeFile(canonicalJson(receipt)); await receiptHandle.sync(); } finally { await receiptHandle.close(); }
+    await fs.link(receiptTempPath, receiptPath);
+    await fs.rm(receiptTempPath, { force: true });
+    await syncDirectory(versionPath);
+    const pointerTemp = path.join(root, ".current-version-" + randomUUID() + ".tmp");
+    const pointer = await fs.open(pointerTemp, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
+    try { await pointer.writeFile("v" + verifiedArtifact.authorityVersion + "\n"); await pointer.sync(); } finally { await pointer.close(); }
+    await fs.rename(pointerTemp, path.join(root, "current-version"));
+    await syncDirectory(root);
+    const installed = await verifyInstalledAuthorityPackage({
+      installationRoot: root,
+      trustedInstallationKeys: { [receiptSigner.keyId]: receiptSigner.publicKey },
+      allowedAuthorityVersions: [verifiedArtifact.authorityVersion],
+      minimumAllowedVersion,
+      requireRoot,
+    });
+    if (installed.binaryDigest !== verifiedArtifact.binaryDigest || installed.configDigest !== verifiedArtifact.configDigest) {
+      throw new Error("Installed authority package verification did not match the verified artifact.");
+    }
+    return receipt;
+  } catch (error) {
+    await fs.rm(staging, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+const FIXED_INSTALLATION_ROOT = "/usr/local/lib/bodycast/production-recovery";
+const FIXED_INSTALL_TRUST_POLICY = "/etc/bodycast/production-recovery/install-trust.json";
+const FIXED_INSTALL_SIGNER_KEY = "/etc/bodycast/production-recovery/installer-signing-key.pem";
+
+async function readRootOwnedPrivateFile(filePath, maxBytes, label) {
+  const absolute = await assertSafePath(filePath, { requireRoot: true });
+  const stat = await fs.lstat(absolute);
+  if (!stat.isFile() || stat.isSymbolicLink() || process.platform !== "win32" && (stat.uid !== 0 || (stat.mode & 0o077) !== 0)
+    || stat.size > maxBytes) throw new Error(label + " must be a bounded root-owned private regular file.");
+  return fs.readFile(absolute);
+}
+
+async function loadFixedInstallerTrust() {
+  if (process.platform !== "win32" && process.getuid?.() !== 0) throw new Error("Authority package installation requires root.");
+  const policyBytes = await readRootOwnedPrivateFile(FIXED_INSTALL_TRUST_POLICY, 1024 * 1024, "Installer trust policy");
+  const policyText = policyBytes.toString("utf8");
+  const policy = JSON.parse(policyText);
+  if (canonicalJson(policy) !== policyText) throw new Error("Installer trust policy must be canonical JSON.");
+  assertExactKeys(policy, ["trustedProvenanceKeys", "trustedInstallationKeys", "allowedAuthorityVersions",
+    "minimumAllowedVersion", "installerKeyId"], "Root installer trust policy");
+  if (!policy.trustedProvenanceKeys || !policy.trustedInstallationKeys || !Array.isArray(policy.allowedAuthorityVersions)
+    || policy.allowedAuthorityVersions.length === 0 || typeof policy.installerKeyId !== "string"
+    || !policy.trustedInstallationKeys[policy.installerKeyId]) throw new Error("Root installer trust policy is incomplete.");
+  const privateBytes = await readRootOwnedPrivateFile(FIXED_INSTALL_SIGNER_KEY, 16 * 1024, "Installer signing key");
+  const privateKey = privateBytes.toString("utf8");
+  const publicKey = policy.trustedInstallationKeys[policy.installerKeyId];
+  const derivedPublic = createPublicKey(privateKey).export({ type: "spki", format: "pem" }).toString();
+  const pinnedPublic = createPublicKey(publicKey).export({ type: "spki", format: "pem" }).toString();
+  if (derivedPublic !== pinnedPublic) throw new Error("Root installer private key does not match its pinned receipt-verification key.");
+  return { policy, receiptSigner: { keyId: policy.installerKeyId, privateKey, publicKey } };
+}
+
+/** Fixed privileged entrypoint. Callers provide raw package bytes only; trust and destination are host-owned. */
+export async function installAuthorityPackageFromRaw(rawInput) {
+  assertExactKeys(rawInput, ["provenance", "binaryBytes", "configBytes"], "Raw authority package input");
+  const { provenance, binaryBytes, configBytes } = rawInput;
+  const { policy, receiptSigner } = await loadFixedInstallerTrust();
+  verifyAuthorityInstallArtifact({
+    provenance, binaryBytes, configBytes,
+    trustedProvenanceKeys: policy.trustedProvenanceKeys,
+    allowedAuthorityVersions: policy.allowedAuthorityVersions,
+    minimumAllowedVersion: policy.minimumAllowedVersion,
+  });
+  const currentInstallation = await inspectAuthorityInstallationRoot({
+    installationRoot: FIXED_INSTALLATION_ROOT,
+    trustedInstallationKeys: policy.trustedInstallationKeys,
+    allowedAuthorityVersions: policy.allowedAuthorityVersions,
+    minimumAllowedVersion: policy.minimumAllowedVersion,
+    requireRoot: true,
+  });
+  const reverified = verifyAuthorityInstallArtifact({
+    provenance, binaryBytes, configBytes,
+    trustedProvenanceKeys: policy.trustedProvenanceKeys,
+    allowedAuthorityVersions: policy.allowedAuthorityVersions,
+    minimumAllowedVersion: policy.minimumAllowedVersion,
+    currentInstallation,
+  });
+  return installAuthorityPackageInternal({
+    verifiedArtifact: reverified, binaryBytes, configBytes, installationRoot: FIXED_INSTALLATION_ROOT,
+    minimumAllowedVersion: policy.minimumAllowedVersion, receiptSigner,
+    trustedInstallationKeys: policy.trustedInstallationKeys,
+    allowedAuthorityVersions: policy.allowedAuthorityVersions,
+    currentInstallation, requireRoot: true,
+  });
+}
+
+/** Test-only fixture path; it runs raw provenance verification inside the installer before staging. */
+export async function installAuthorityPackageFixture({
+  provenance, binaryBytes, configBytes, installationRoot, trustedProvenanceKeys, trustedInstallationKeys,
+  allowedAuthorityVersions, minimumAllowedVersion, receiptSigner, now = Date.now(), syncDirectory = async () => {},
+}) {
+  if (process.env.NODE_ENV !== "test") throw new Error("Authority package fixture installer is available only in test mode.");
+  verifyAuthorityInstallArtifact({
+    provenance, binaryBytes, configBytes, trustedProvenanceKeys, allowedAuthorityVersions, minimumAllowedVersion, now,
+  });
+  const currentInstallation = await inspectAuthorityInstallationRoot({
+    installationRoot, trustedInstallationKeys, allowedAuthorityVersions, minimumAllowedVersion, requireRoot: false,
+  });
+  const reverified = verifyAuthorityInstallArtifact({
+    provenance, binaryBytes, configBytes, trustedProvenanceKeys, allowedAuthorityVersions, minimumAllowedVersion,
+    currentInstallation, now,
+  });
+  return installAuthorityPackageInternal({
+    verifiedArtifact: reverified, binaryBytes, configBytes, installationRoot, minimumAllowedVersion, receiptSigner,
+    trustedInstallationKeys, allowedAuthorityVersions, currentInstallation, requireRoot: false, syncDirectory,
+  });
+}
+
+/** Install the public, non-privileged socket client separately from mode-0700 authority state. */
+export async function installVerifiedAuthorityClient({
+  clientBytes,
+  installationPath = "/usr/local/lib/bodycast/production-recovery-client.mjs",
+  requireRoot = true,
+  syncDirectory = async (directoryPath) => {
+    const directoryHandle = await fs.open(directoryPath, fsConstants.O_RDONLY);
+    try { await directoryHandle.sync(); } finally { await directoryHandle.close(); }
+  },
+}) {
+  if (!Buffer.isBuffer(clientBytes) || clientBytes.length === 0 || clientBytes.length > 16 * 1024 * 1024) {
+    throw new Error("Production operation client bundle is empty or exceeds its package limit.");
+  }
+  if (process.platform !== "win32" && requireRoot && process.getuid?.() !== 0) {
+    throw new Error("Production operation client installation requires root.");
+  }
+  const target = path.resolve(installationPath);
+  const parent = path.dirname(target);
+  await assertSafePath(parent, { requireRoot });
+  const parentStat = await fs.lstat(parent);
+  if (!parentStat.isDirectory() || parentStat.isSymbolicLink()
+    || process.platform !== "win32" && requireRoot && (parentStat.uid !== 0 || (parentStat.mode & 0o022) !== 0)) {
+    throw new Error("Public production operation client directory must be root-owned and not group/other writable.");
+  }
+  try {
+    const existing = await fs.lstat(target);
+    if (!existing.isFile() || existing.isSymbolicLink()
+      || process.platform !== "win32" && requireRoot && existing.uid !== 0) {
+      throw new Error("Existing production operation client is not a root-owned regular file.");
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  const temporary = path.join(parent, ".production-operation-client-" + randomUUID() + ".tmp");
+  const handle = await fs.open(temporary,
+    fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | (fsConstants.O_NOFOLLOW ?? 0), 0o755);
+  try { await handle.writeFile(clientBytes); await handle.sync(); } finally { await handle.close(); }
+  try {
+    await fs.rename(temporary, target);
+    await syncDirectory(parent);
+    const installed = await fs.lstat(target);
+    if (!installed.isFile() || installed.isSymbolicLink()
+      || process.platform !== "win32" && (installed.mode & 0o022) !== 0) {
+      throw new Error("Installed public production operation client permissions are unsafe.");
+    }
+    return Object.freeze({ installationPath: target, clientDigest: sha256Hex(clientBytes) });
+  } catch (error) {
+    await fs.rm(temporary, { force: true });
+    throw error;
+  }
+}
+
+async function readInstalledFile(filePath, maxBytes) {
+  const before = await fs.lstat(filePath);
+  if (!before.isFile() || before.isSymbolicLink() || before.size > maxBytes) throw new Error("Installed authority file is unsafe or oversized.");
+  const handle = await fs.open(filePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  try {
+    const after = await handle.stat();
+    if (!after.isFile() || after.ino !== before.ino || after.size > maxBytes) throw new Error("Installed authority file changed while it was opened.");
+    const bytes = await handle.readFile();
+    if (bytes.length > maxBytes) throw new Error("Installed authority file exceeds its limit.");
+    return { bytes, stat: after };
+  } finally {
+    await handle.close();
+  }
+}
+
+/** Verify the currently selected immutable package from disk before service startup. */
+export async function verifyInstalledAuthorityPackage({
+  installationRoot,
+  trustedInstallationKeys,
+  allowedAuthorityVersions,
+  minimumAllowedVersion,
+  requireRoot = true,
+}) {
+  const root = await assertSafePath(installationRoot, { requireRoot, privateMode: true });
+  const rootStat = await fs.lstat(root);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error("Authority install root is not a private directory.");
+  if (process.platform !== "win32" && (rootStat.mode & 0o077) !== 0) throw new Error("Authority install root grants group/other access.");
+  const pointer = await readInstalledFile(path.join(root, "current-version"), 64);
+  if (process.platform !== "win32" && (pointer.stat.mode & 0o077) !== 0) throw new Error("Authority version pointer is not private.");
+  const pointerText = pointer.bytes.toString("utf8");
+  const match = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\n$/.exec(pointerText);
+  if (!match) throw new Error("Authority version pointer is malformed.");
+  const authorityVersion = match[1] + "." + match[2] + "." + match[3];
+  return verifyInstalledAuthorityVersion({ root, authorityVersion, trustedInstallationKeys, allowedAuthorityVersions,
+    minimumAllowedVersion, requireRoot });
+}
+
+async function verifyInstalledAuthorityVersion({ root, authorityVersion, trustedInstallationKeys, allowedAuthorityVersions,
+  minimumAllowedVersion, requireRoot }) {
+  const versionDirectory = path.join(root, "v" + authorityVersion);
+  const directory = await fs.lstat(versionDirectory);
+  if (!directory.isDirectory() || directory.isSymbolicLink()
+    || process.platform !== "win32" && ((directory.mode & 0o077) !== 0 || requireRoot && directory.uid !== 0)) {
+    throw new Error("Selected authority package directory is not root-owned and private.");
+  }
+  const binary = await readInstalledFile(path.join(versionDirectory, "bodycast-recovery-authority"), 64 * 1024 * 1024);
+  const config = await readInstalledFile(path.join(versionDirectory, "authority-config.json"), 1024 * 1024);
+  const receiptFile = await readInstalledFile(path.join(versionDirectory, "installation-receipt.json"), 64 * 1024);
+  if (process.platform !== "win32" && ((binary.stat.mode & 0o022) !== 0 || (config.stat.mode & 0o077) !== 0
+    || (receiptFile.stat.mode & 0o077) !== 0)) throw new Error("Installed authority package permissions are unsafe.");
+  const receiptText = receiptFile.bytes.toString("utf8");
+  const receipt = JSON.parse(receiptText);
+  if (canonicalJson(receipt) !== receiptText) throw new Error("Installation receipt is not canonically encoded.");
+  verifyAuthorityInstallationReceipt(receipt, trustedInstallationKeys, { minimumAllowedVersion, allowedAuthorityVersions });
+  const binaryDigest = sha256Hex(binary.bytes);
+  const configDigest = sha256Hex(config.bytes);
+  if (receipt.authorityVersion !== authorityVersion || receipt.installationPath !== versionDirectory
+    || receipt.binaryDigest !== binaryDigest || receipt.configDigest !== configDigest) {
+    throw new Error("Installed authority bytes or version pointer do not match the authenticated receipt.");
+  }
+  return Object.freeze({ authorityVersion, binaryDigest, configDigest, receipt, configBytes: config.bytes });
+}
+
+/**
+ * Only an absent or verified-empty root is a first installation. Any pointer,
+ * version directory, staging path, or other residue requires a fully verifiable
+ * current install; incomplete state never resets the downgrade floor.
+ */
+async function inspectAuthorityInstallationRoot({ installationRoot, trustedInstallationKeys, allowedAuthorityVersions,
+  minimumAllowedVersion, requireRoot }) {
+  const root = path.resolve(installationRoot);
+  let rootStat;
+  try { rootStat = await fs.lstat(root); }
+  catch (error) { if (error?.code === "ENOENT") return null; throw error; }
+  await assertSafePath(root, { requireRoot, privateMode: true });
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()
+    || process.platform !== "win32" && ((rootStat.mode & 0o077) !== 0 || requireRoot && rootStat.uid !== 0)) {
+    throw new Error("Existing authority installation root is unsafe.");
+  }
+  const entries = await fs.readdir(root, { withFileTypes: true });
+  if (entries.length === 0) return null;
+  const pointer = entries.find((entry) => entry.name === "current-version");
+  if (!pointer || !pointer.isFile() || pointer.isSymbolicLink()) {
+    throw new Error("Authority installation root is non-empty but has no verifiable current-version pointer; refusing first-install reset.");
+  }
+  const pointerBytes = await readInstalledFile(path.join(root, "current-version"), 64);
+  const pointerMatch = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\n$/.exec(pointerBytes.bytes.toString("utf8"));
+  if (!pointerMatch) throw new Error("Existing authority installation has a malformed version pointer.");
+  const currentVersion = pointerMatch.slice(1).join(".");
+  const versionEntries = entries.filter((entry) => entry.name !== "current-version");
+  for (const entry of versionEntries) {
+    if (!/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(entry.name)
+      || !entry.isDirectory() || entry.isSymbolicLink()) {
+      throw new Error("Authority installation root contains incomplete or unsupported state: " + entry.name + ".");
+    }
+    const version = entry.name.slice(1);
+    await verifyInstalledAuthorityVersion({ root, authorityVersion: version, trustedInstallationKeys,
+      allowedAuthorityVersions: version === currentVersion ? allowedAuthorityVersions : [version],
+      minimumAllowedVersion: version === currentVersion ? minimumAllowedVersion : "0.0.0", requireRoot });
+  }
+  const current = await verifyInstalledAuthorityPackage({ installationRoot: root, trustedInstallationKeys,
+    allowedAuthorityVersions, minimumAllowedVersion, requireRoot });
+  return { authorityVersion: current.authorityVersion };
+}
+
+export { PROVENANCE_KEYS, INSTALL_RECEIPT_KEYS };

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { calculateEpisodeHistory } from "./episode-calculation";
 import type { HistoricalModelSources, PersistedEpisode } from "./model-episode.types";
 import { ModelEpisodeRepository } from "./model-episode.repository";
@@ -10,6 +10,8 @@ import {
   rollbackVisibilityGenerationV1,
 } from "./activation-rollback-v1";
 import { prismaVisibilityStoreV1 } from "./activation-rollback-store";
+import { PhysiologyV7PersistenceRepository } from "./physiology-v7-persistence.repository";
+import { invalidateWorkoutEnergyInTransactionV1 } from "@/modules/activity/active-energy-invalidation";
 import { CURRENT_MODEL_VERSION } from "./model-version";
 
 export const SELECTION_V1_MODEL_VERSION = "bodycast-physiology-v7+selection-v1" as const;
@@ -76,7 +78,7 @@ export async function reconstructSelectionHistoryV1(input: {
   expectedSourceRevision?: string | null;
   unifiedStartOfDayMassKgByDate?: Readonly<Record<string, number | null>>;
 }): Promise<SelectionReconstructionV1> {
-  const sources = await input.repository.loadSources(input.from, input.to);
+  const sources = await input.repository.loadSources(input.from, input.to, input.episode.timezone);
   const sourceRevision = fingerprintHistoricalSourcesV1(sources);
   if (input.expectedSourceRevision != null && input.expectedSourceRevision !== sourceRevision) {
     return {
@@ -92,6 +94,7 @@ export async function reconstructSelectionHistoryV1(input: {
     to: input.to,
     sources,
     modelVersion: SELECTION_V1_MODEL_VERSION,
+    timeZone: input.episode.timezone,
     unifiedStartOfDayMassKgByDate: input.unifiedStartOfDayMassKgByDate,
     baselineNutritionFallback: input.episode.baselineNutritionFallback,
   });
@@ -146,7 +149,7 @@ export async function persistSelectionEpisodeHistoryV1(input: {
   activated: boolean;
   previousModelVersion: string | null;
 }> {
-  const sources = await input.repository.loadSources(input.from, input.to);
+  const sources = await input.repository.loadSources(input.from, input.to, input.episode.timezone);
   const sourceRevision = fingerprintHistoricalSourcesV1(sources);
   if (input.expectedSourceRevision != null && input.expectedSourceRevision !== sourceRevision) {
     return {
@@ -165,6 +168,7 @@ export async function persistSelectionEpisodeHistoryV1(input: {
     to: input.to,
     sources,
     modelVersion: SELECTION_V1_MODEL_VERSION,
+    timeZone: input.episode.timezone,
     unifiedStartOfDayMassKgByDate: input.unifiedStartOfDayMassKgByDate,
     baselineNutritionFallback: input.episode.baselineNutritionFallback,
   });
@@ -266,12 +270,13 @@ export async function rollbackSelectionEpisodeActivationV1(input: {
     return { restoredModelVersion: input.episode.modelVersion, conflicts: true };
   }
 
-  const sources = await input.repository.loadSources(input.from, input.to);
+  const sources = await input.repository.loadSources(input.from, input.to, input.episode.timezone);
   const days = buildSimulationDays({
     from: input.from,
     to: input.to,
     sources,
     modelVersion: restoredModelVersion,
+    timeZone: input.episode.timezone,
     unifiedStartOfDayMassKgByDate: input.unifiedStartOfDayMassKgByDate,
     baselineNutritionFallback: input.episode.baselineNutritionFallback,
   });
@@ -288,30 +293,69 @@ export async function rollbackSelectionEpisodeActivationV1(input: {
  * Does not run on ordinary confirm — only when activation is explicitly authorized.
  */
 export async function activateConfirmedReconciliationVisibilityV1(input: {
-  client: PrismaClient;
+  client: PrismaClient | Prisma.TransactionClient;
   generationId: string;
   manualWorkoutId: number;
   garminWorkoutId: number;
 }): Promise<{ applied: number }> {
-  const store = prismaVisibilityStoreV1(input.client);
-  return activateVisibilityGenerationV1({
-    store,
-    generationId: input.generationId,
-    changes: [{
-      // Manual is superseded by canonical Garmin, not the reverse.
-      recordId: input.manualWorkoutId,
-      supersedingWorkoutId: input.garminWorkoutId,
-    }],
-  });
+  const activate = async (tx: Prisma.TransactionClient) => {
+    await new PhysiologyV7PersistenceRepository(tx).lockProfile(1);
+    const affected = await tx.workout.findMany({
+      where: { id: { in: [input.manualWorkoutId, input.garminWorkoutId] } },
+      select: { id: true, startAt: true, endAt: true },
+    });
+    const result = await activateVisibilityGenerationV1({
+      store: prismaVisibilityStoreV1(tx),
+      generationId: input.generationId,
+      changes: [{
+        // Manual is superseded by canonical Garmin, not the reverse.
+        recordId: input.manualWorkoutId,
+        supersedingWorkoutId: input.garminWorkoutId,
+      }],
+    });
+    if (result.applied > 0 && affected.length > 0) {
+      await invalidateWorkoutEnergyInTransactionV1({
+        tx,
+        profileId: 1,
+        workoutIds: affected.map((row) => row.id),
+        affectedInstants: affected.flatMap((row) => [row.startAt, row.endAt]),
+      });
+    }
+    return result;
+  };
+  if ("$transaction" in input.client) return input.client.$transaction(activate);
+  return activate(input.client);
 }
 
 export async function rollbackActivationGenerationV1(input: {
   client: PrismaClient;
   generationId: string;
 }): Promise<{ restored: number; conflicts: number[] }> {
-  return rollbackVisibilityGenerationV1({
-    store: prismaVisibilityStoreV1(input.client),
-    generationId: input.generationId,
+  return input.client.$transaction(async (tx) => {
+    const lifecycle = new PhysiologyV7PersistenceRepository(tx);
+    await lifecycle.lockProfile(1);
+    const journal = await tx.activationRollbackEntry.findMany({
+      where: { generationId: input.generationId, recordKind: "workout" },
+      select: { recordId: true },
+    });
+    const workoutIds = [...new Set(journal.map((row) => row.recordId))];
+    const before = workoutIds.length === 0 ? [] : await tx.workout.findMany({
+      where: { id: { in: workoutIds } },
+      select: { id: true, startAt: true, endAt: true },
+    });
+    const result = await rollbackVisibilityGenerationV1({
+      store: prismaVisibilityStoreV1(tx),
+      generationId: input.generationId,
+    });
+    if (result.restored > 0 && before.length > 0) {
+      await invalidateWorkoutEnergyInTransactionV1({
+        tx,
+        profileId: 1,
+        workoutIds: before.map((row) => row.id),
+        affectedInstants: before.flatMap((row) => [row.startAt, row.endAt]),
+      });
+    }
+    return result;
   });
 }
 

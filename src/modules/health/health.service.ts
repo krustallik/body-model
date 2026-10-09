@@ -5,15 +5,17 @@ import type { TimestampedHealthMetricSample } from "./normalize-shortcut-range-p
 import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import { errorKind, logEvent } from "@/lib/logger";
 import { trainingService } from "@/modules/training/training.service";
-import { recordExperimentalStepperActiveEnergyShadowsForLocalDate } from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
+import {
+  recordExperimentalStepperActiveEnergyShadowsForLocalDate,
+  recordExperimentalStepperActiveEnergyShadowsForMassWindow,
+} from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
+import { recordExperimentalStrengthEnergyShadowsForWeightDate } from "@/modules/training/experimental-strength-energy-shadow.service";
 import { recordExperimentalStepperGlycogenDemandShadowsForLocalDate } from "@/modules/profile/experimental-stepper-glycogen-demand-shadow.service";
 import { recordExperimentalGlycogenStateShadow } from "@/modules/model-episodes/experimental-glycogen-state-shadow.service";
-import { recordExperimentalSkeletalMuscleDeltaShadow } from "@/modules/model-episodes/experimental-skeletal-muscle-delta-shadow.service";
 import { recordExperimentalLocalHypertrophyResponseShadow } from "@/modules/model-episodes/experimental-local-hypertrophy-response-shadow.service";
-import { recordExperimentalCessationDetrainingShadow } from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
 import { rebuildAuthoritativeRelativeMuscleTrajectory } from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
 import { recordExperimentalFfmRetentionShadow } from "@/modules/model-episodes/experimental-ffm-retention-shadow.service";
-import { rebuildUnifiedExperimentalPhysiologyStateV1 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
+import { publishActiveEnergyChangesV1 } from "@/modules/activity/active-energy-publication";
 import { persistStepperReconciliationV1 } from "@/modules/training/stepper-reconciliation.service";
 import { prisma } from "@/lib/db/prisma";
 
@@ -66,10 +68,19 @@ export async function syncHealthData(
   }
 
   try {
-    // Shadow-only MS100 stepper energy; never feeds TDEE/forecast.
+    // Resolve the BodyCast/device/manual precedence candidates after source reconciliation.
     await recordExperimentalStepperActiveEnergyShadowsForLocalDate({ date: date.date });
   } catch (error) {
     logEvent("warn", "experimental_stepper_active_energy_shadow_failed", {
+      date: date.date,
+      errorType: errorKind(error),
+    });
+  }
+
+  try {
+    await recordExperimentalStrengthEnergyShadowsForWeightDate({ date: date.date });
+  } catch (error) {
+    logEvent("warn", "experimental_strength_active_energy_refresh_failed", {
       date: date.date,
       errorType: errorKind(error),
     });
@@ -80,26 +91,6 @@ export async function syncHealthData(
     await recordExperimentalStepperGlycogenDemandShadowsForLocalDate({ date: date.date });
   } catch (error) {
     logEvent("warn", "experimental_stepper_glycogen_demand_shadow_failed", {
-      date: date.date,
-      errorType: errorKind(error),
-    });
-  }
-
-  try {
-    // Shadow-only relative skeletal-muscle delta; never feeds TDEE/forecast.
-    await recordExperimentalSkeletalMuscleDeltaShadow({ date: date.date });
-  } catch (error) {
-    logEvent("warn", "experimental_skeletal_muscle_delta_shadow_failed", {
-      date: date.date,
-      errorType: errorKind(error),
-    });
-  }
-
-  try {
-    // Shadow-only cessation/detraining; never feeds TDEE/forecast.
-    await recordExperimentalCessationDetrainingShadow({ date: date.date });
-  } catch (error) {
-    logEvent("warn", "experimental_cessation_detraining_shadow_failed", {
       date: date.date,
       errorType: errorKind(error),
     });
@@ -140,17 +131,8 @@ export async function syncHealthData(
     }
   }
 
-  if (repository === healthSyncRepository && chronologicalDates.length > 0) {
-    try {
-      await rebuildUnifiedExperimentalPhysiologyStateV1({ fromDate: chronologicalDates[0]!.date, toDate: referenceDate.date });
-    } catch (error) {
-      logEvent("warn", "unified_experimental_physiology_state_failed", { fromDate: chronologicalDates[0]!.date, toDate: referenceDate.date, errorType: errorKind(error) });
-    }
-  }
-
   // A health backfill can change exposure/coverage on an earlier date. Replay
-  // the one authoritative relative-muscle suffix once, after the entire
-  // chronological batch, rather than doing redundant request-order replays.
+  // the episode-local Relative Muscle trajectory once after the full batch.
   if (repository === healthSyncRepository && chronologicalDates.length > 0) {
     try {
       await rebuildAuthoritativeRelativeMuscleTrajectory({ fromDate: chronologicalDates[0]!.date });
@@ -159,6 +141,30 @@ export async function syncHealthData(
         fromDate: chronologicalDates[0]!.date,
         errorType: errorKind(error),
       });
+    }
+  }
+
+  if (repository === healthSyncRepository && chronologicalDates.length > 0) {
+    try {
+      const measurementDates = request.days
+        .filter((day) => day.weightKg !== undefined && day.weightKg !== null)
+        .map((day) => day.date);
+      const measurementInstants = [...(metricSamplesByDate?.values() ?? [])]
+        .flat()
+        .filter((sample) => sample.metric === "weight-kg")
+        .map((sample) => new Date(sample.timestamp))
+        .filter((instant) => Number.isFinite(instant.getTime()));
+      await recordExperimentalStepperActiveEnergyShadowsForMassWindow({ measurementDates, measurementInstants });
+    } catch (error) {
+      logEvent("warn", "experimental_stepper_mass_window_refresh_failed", { errorType: errorKind(error) });
+    }
+
+    try {
+      // Publish only after all batch mutations, reconciliation, and candidate refreshes;
+      // source transactions have already left the old generation stale.
+      await publishActiveEnergyChangesV1();
+    } catch (error) {
+      logEvent("warn", "active_energy_publication_failed", { errorType: errorKind(error) });
     }
   }
 

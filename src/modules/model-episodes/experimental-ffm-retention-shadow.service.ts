@@ -16,7 +16,7 @@ export async function recordExperimentalFfmRetentionShadow(input: {
   profileId?: number;
 }): Promise<void> {
   const profileId = input.profileId ?? 1;
-  const [health, modelState, smShadow, priorFat] = await Promise.all([
+  const [health, modelState, priorFat] = await Promise.all([
     prisma.dailyHealthData.findUnique({
       where: { date: input.date },
       select: { proteinG: true, weightKg: true },
@@ -27,11 +27,7 @@ export async function recordExperimentalFfmRetentionShadow(input: {
         status: "complete",
         episode: { profileId, active: true },
       },
-      select: { energyBalanceKcal: true },
-    }),
-    prisma.experimentalSkeletalMuscleDeltaShadow.findUnique({
-      where: { profileId_date: { profileId, date: input.date } },
-      select: { result: true },
+      select: { id: true, episodeId: true, energyBalanceKcal: true },
     }),
     prisma.fatWeightShadowV1Result.findFirst({
       where: { profileId, date: { lt: input.date } },
@@ -40,10 +36,15 @@ export async function recordExperimentalFfmRetentionShadow(input: {
     }),
   ]);
 
+  const smShadow = modelState === null ? null : await prisma.experimentalSkeletalMuscleDeltaShadow.findUnique({
+    where: { profileId_modelEpisodeId_date: { profileId, modelEpisodeId: modelState.episodeId, date: input.date } },
+    select: { result: true, isStale: true },
+  });
+
   const sm = smShadow?.result as {
     features?: { trainingExposureKind?: ExperimentalTrainingExposureKindV1 };
   } | null;
-  const exposureKind = sm?.features?.trainingExposureKind ?? null;
+  const exposureKind = smShadow?.isStale === false ? sm?.features?.trainingExposureKind ?? null : null;
   const bodyMassKg = health?.weightKg ?? null;
   const proteinGPerKg = health?.proteinG != null && bodyMassKg != null && bodyMassKg > 0
     ? health.proteinG / bodyMassKg

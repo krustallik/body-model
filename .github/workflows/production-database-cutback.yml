@@ -1,0 +1,418 @@
+name: Owner-authorized production database cutback
+run-name: Restore pre-DDL database for failed migration ${{ inputs.failed_migration_run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      current_main_sha:
+        description: Full current main SHA containing the cutback tooling
+        required: true
+        type: string
+      failed_migration_run_id:
+        description: Failed owner-dispatched production-migrate run whose signed pre-DDL backup is to be restored
+        required: true
+        type: string
+      confirmation:
+        description: Type RESTORE_PRE_DDL_DATABASE to authorize the verified manual cutback
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: bodycast-production-release
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Verify owner, exact current main, failed migration, and signed backup provenance
+    if: github.ref == 'refs/heads/main' && github.actor_id == '126446430'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      current_main_sha: ${{ steps.gate.outputs.current_main_sha }}
+      failed_release_sha: ${{ steps.gate.outputs.failed_release_sha }}
+      failed_attempt: ${{ steps.gate.outputs.failed_attempt }}
+      preflight_run_id: ${{ steps.gate.outputs.preflight_run_id }}
+      preflight_attempt: ${{ steps.gate.outputs.preflight_attempt }}
+      backup_artifact_id: ${{ steps.gate.outputs.backup_artifact_id }}
+      backup_artifact_digest: ${{ steps.gate.outputs.backup_artifact_digest }}
+      backup_artifact_name: ${{ steps.gate.outputs.backup_artifact_name }}
+      backup_file_digest: ${{ steps.gate.outputs.backup_file_digest }}
+    steps:
+      - name: Checkout exact current main verification tools
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify current owner dispatch, exact current main, and green CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_ACTOR_ID: ${{ github.actor_id }}
+          CURRENT_MAIN_SHA: ${{ inputs.current_main_sha }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$GITHUB_REPOSITORY" == "krustallik/body-model" && "$GITHUB_REF" == "refs/heads/main" \
+            && "$DISPATCH_ACTOR_ID" == "126446430" && "$CONFIRMATION" == "RESTORE_PRE_DDL_DATABASE" ]] || {
+            echo "::error::Only the pinned owner may dispatch the explicitly confirmed cutback from canonical main."; exit 1;
+          }
+          [[ "$CURRENT_MAIN_SHA" =~ ^[0-9a-f]{40}$ && "$CURRENT_MAIN_SHA" == "$GITHUB_SHA" ]] || {
+            echo "::error::Cutback tooling SHA must equal this workflow's exact main SHA."; exit 1;
+          }
+          gh api "repos/krustallik/body-model/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/current-cutback-run.json"
+          node --input-type=module - "$RUNNER_TEMP/current-cutback-run.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { assertTrustedOwnerWorkflowRun } from "./scripts/github-owner-identity.mjs";
+          assertTrustedOwnerWorkflowRun(JSON.parse(readFileSync(process.argv[2], "utf8")), {
+            actorId: process.env.DISPATCH_ACTOR_ID, workflowPath: ".github/workflows/production-database-cutback.yml",
+            workflowRunId: process.env.GITHUB_RUN_ID, workflowRunAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            ref: "refs/heads/main", sha: process.env.CURRENT_MAIN_SHA, requireInProgress: true,
+          });
+          NODE
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          [[ "$(git rev-parse refs/remotes/origin/main)" == "$CURRENT_MAIN_SHA" \
+            && "$(gh api repos/krustallik/body-model/commits/main --jq .sha)" == "$CURRENT_MAIN_SHA" ]] || {
+            echo "::error::Canonical main advanced; no cutback credentials have been accessed."; exit 1;
+          }
+          echo "current_main_sha=$CURRENT_MAIN_SHA" >> "$GITHUB_OUTPUT"
+          gh api --paginate --jq '.workflow_runs[] | @json' \
+            "repos/krustallik/body-model/actions/workflows/ci.yml/runs?branch=main&event=push&per_page=100" > "$RUNNER_TEMP/ci-runs.ndjson"
+          CI_URL="$(EXPECTED_SHA="$CURRENT_MAIN_SHA" node --input-type=module -e '
+          import { readFileSync } from "node:fs";
+          const runs = readFileSync(process.argv[1], "utf8").trim().split(/\r?\n/).filter(Boolean).map(JSON.parse)
+            .filter((run) => run.head_sha === process.env.EXPECTED_SHA && run.head_branch === "main" && run.event === "push");
+          runs.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || Number(b.run_attempt) - Number(a.run_attempt));
+          const run = runs[0];
+          if (!run || run.status !== "completed" || run.conclusion !== "success") throw new Error("Exact current-main CI is not complete and successful.");
+          process.stdout.write(run.html_url);
+          ' "$RUNNER_TEMP/ci-runs.ndjson")"
+          echo "current_main_sha=$CURRENT_MAIN_SHA" >> "$GITHUB_OUTPUT"
+          echo "current_main_ci_url=$CI_URL" >> "$GITHUB_OUTPUT"
+      - name: Validate failed migration run identity and resolve its signed preflight artifacts
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_ACTOR_ID: ${{ github.actor_id }}
+          CURRENT_MAIN_SHA: ${{ inputs.current_main_sha }}
+          FAILED_MIGRATION_RUN_ID: ${{ inputs.failed_migration_run_id }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$FAILED_MIGRATION_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Failed migration run ID must be numeric."; exit 1; }
+          gh api "repos/krustallik/body-model/actions/runs/$FAILED_MIGRATION_RUN_ID" > "$RUNNER_TEMP/failed-migration-run.json"
+          node --input-type=module - "$RUNNER_TEMP/failed-migration-run.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { assertTrustedOwnerWorkflowRun } from "./scripts/github-owner-identity.mjs";
+          const run = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          assertTrustedOwnerWorkflowRun(run, { actorId: process.env.DISPATCH_ACTOR_ID,
+            workflowPath: ".github/workflows/production-migrate.yml", workflowRunId: process.env.FAILED_MIGRATION_RUN_ID,
+            workflowRunAttempt: run.run_attempt, ref: "refs/heads/main", sha: run.head_sha });
+          if (run.status !== "completed" || run.conclusion !== "failure") throw new Error("Selected migration run must be a completed failure.");
+          if (!/^[0-9a-f]{40}$/.test(run.head_sha)) throw new Error("Failed migration SHA is invalid.");
+          process.stdout.write(`${run.head_sha}\n${run.run_attempt}\n`);
+          NODE
+          mapfile -t MIGRATION_VALUES < <(node --input-type=module - "$RUNNER_TEMP/failed-migration-run.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const run = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          process.stdout.write(`${run.head_sha}\n${run.run_attempt}\n`);
+          NODE
+          )
+          FAILED_SHA="${MIGRATION_VALUES[0]}"
+          FAILED_ATTEMPT="${MIGRATION_VALUES[1]}"
+          export FAILED_SHA FAILED_ATTEMPT
+          BUNDLE="$RUNNER_TEMP/bodycast-cutback-context"
+          mkdir -m 700 "$BUNDLE"
+          gh run download "$FAILED_MIGRATION_RUN_ID" --repo krustallik/body-model \
+            --name "bodycast-migration-auth-${FAILED_MIGRATION_RUN_ID}-${FAILED_ATTEMPT}" --dir "$BUNDLE"
+          for name in authorization-envelope.json artifact-metadata.json preflight-result.json preflight-evidence.json restore-result.json; do
+            test -f "$BUNDLE/$name" && test ! -L "$BUNDLE/$name"
+          done
+          CLAIMS="$(node --input-type=module - "$BUNDLE/authorization-envelope.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const envelope = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          const claims = envelope?.payload;
+          if (envelope?.algorithm !== "Ed25519" || !claims || claims.releaseSha !== process.env.FAILED_SHA
+            || claims.workflowRunId !== process.env.FAILED_MIGRATION_RUN_ID || claims.workflowRunAttempt !== Number(process.env.FAILED_ATTEMPT)
+            || claims.manifestId !== "active-energy-unified-v2" || !/^[1-9][0-9]*$/.test(claims.preflightRunId)
+            || !Number.isSafeInteger(claims.preflightRunAttempt) || !/^[1-9][0-9]*$/.test(claims.backupArtifactId)) {
+            throw new Error("Migration envelope does not select the failed migration and its fixed reviewed backup context.");
+          }
+          process.stdout.write(JSON.stringify(claims));
+          NODE
+          )"
+          PREFLIGHT_RUN_ID="$(CLAIMS_JSON="$CLAIMS" node --input-type=module -e 'process.stdout.write(JSON.parse(process.env.CLAIMS_JSON).preflightRunId)')"
+          PREFLIGHT_ATTEMPT="$(CLAIMS_JSON="$CLAIMS" node --input-type=module -e 'process.stdout.write(String(JSON.parse(process.env.CLAIMS_JSON).preflightRunAttempt))')"
+          export PREFLIGHT_RUN_ID PREFLIGHT_ATTEMPT
+          BACKUP_NAME="bodycast-backup-${FAILED_SHA}-active-energy-unified-v2-${PREFLIGHT_RUN_ID}-${PREFLIGHT_ATTEMPT}"
+          EVIDENCE_NAME="bodycast-preflight-evidence-${FAILED_SHA}-active-energy-unified-v2-${PREFLIGHT_RUN_ID}-${PREFLIGHT_ATTEMPT}"
+          gh api "repos/krustallik/body-model/actions/runs/$PREFLIGHT_RUN_ID" > "$RUNNER_TEMP/preflight-run.json"
+          node --input-type=module - "$RUNNER_TEMP/preflight-run.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { assertTrustedOwnerWorkflowRun } from "./scripts/github-owner-identity.mjs";
+          const run = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          assertTrustedOwnerWorkflowRun(run, { actorId: process.env.DISPATCH_ACTOR_ID,
+            workflowPath: ".github/workflows/production-migration-preflight.yml", workflowRunId: process.env.PREFLIGHT_RUN_ID,
+            workflowRunAttempt: process.env.PREFLIGHT_ATTEMPT, ref: "refs/heads/main", sha: process.env.FAILED_SHA });
+          if (run.status !== "completed" || run.conclusion !== "success") throw new Error("Signed source preflight run is not successful.");
+          NODE
+          gh run download "$PREFLIGHT_RUN_ID" --repo krustallik/body-model --name "$EVIDENCE_NAME" --dir "$RUNNER_TEMP/preflight-evidence"
+          gh api "repos/krustallik/body-model/actions/runs/$PREFLIGHT_RUN_ID/artifacts?per_page=100" > "$RUNNER_TEMP/preflight-artifacts.json"
+          node --input-type=module - "$RUNNER_TEMP/preflight-artifacts.json" "$BUNDLE/artifact-metadata.json" "$BUNDLE/authorization-envelope.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const artifacts = JSON.parse(readFileSync(process.argv[2], "utf8")).artifacts ?? [];
+          const expected = JSON.parse(readFileSync(process.argv[3], "utf8"));
+          const claims = JSON.parse(readFileSync(process.argv[4], "utf8")).payload;
+          const found = artifacts.filter((a) => String(a.id) === claims.backupArtifactId);
+          if (found.length !== 1 || found[0].name !== expected.name || String(found[0].digest).replace(/^sha256:/, "") !== claims.backupArtifactDigest
+            || String(expected.digest).replace(/^sha256:/, "") !== claims.backupArtifactDigest || found[0].expired === true
+            || String(found[0].workflow_run?.id) !== claims.preflightRunId) throw new Error("Backup artifact ID/digest/run does not match the signed authorization.");
+          NODE
+          gh run download "$PREFLIGHT_RUN_ID" --repo krustallik/body-model --name "$BACKUP_NAME" --dir "$RUNNER_TEMP/preflight-backup"
+          cp "$RUNNER_TEMP/preflight-evidence/preflight-report.json" "$BUNDLE/preflight-report.json"
+          for name in preflight-evidence.json preflight-result.json restore-result.json; do
+            cmp "$BUNDLE/$name" "$RUNNER_TEMP/preflight-evidence/$name"
+          done
+          cp "$RUNNER_TEMP/preflight-backup/production-backup.pgdump.enc" "$BUNDLE/production-backup.pgdump.enc"
+          node scripts/production-database-cutback.mjs --verify-context "$BUNDLE" "$FAILED_MIGRATION_RUN_ID" "$FAILED_SHA" "$BUNDLE/production-backup.pgdump.enc" \
+            > "$RUNNER_TEMP/verified-cutback-context.json"
+          echo "failed_release_sha=$FAILED_SHA" >> "$GITHUB_OUTPUT"
+          echo "failed_attempt=$FAILED_ATTEMPT" >> "$GITHUB_OUTPUT"
+          echo "current_main_sha=$CURRENT_MAIN_SHA" >> "$GITHUB_OUTPUT"
+          echo "preflight_run_id=$PREFLIGHT_RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "preflight_attempt=$PREFLIGHT_ATTEMPT" >> "$GITHUB_OUTPUT"
+          echo "backup_artifact_id=$(jq -r '.backupArtifactId' "$RUNNER_TEMP/verified-cutback-context.json")" >> "$GITHUB_OUTPUT"
+          echo "backup_artifact_digest=$(jq -r '.backupArtifactDigest' "$RUNNER_TEMP/verified-cutback-context.json")" >> "$GITHUB_OUTPUT"
+          echo "backup_artifact_name=$BACKUP_NAME" >> "$GITHUB_OUTPUT"
+          echo "backup_file_digest=$(jq -r '.backupFileDigest' "$RUNNER_TEMP/verified-cutback-context.json")" >> "$GITHUB_OUTPUT"
+
+  restore:
+    name: Restore verified pre-DDL backup and exact previous app under maintenance
+    needs: authorize
+    if: needs.authorize.outputs.current_main_sha != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: production
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout exact current-main cutback tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.authorize.outputs.current_main_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install pinned Node runtime
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+      - name: Recheck current owner run and canonical main before protected inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_ACTOR_ID: ${{ github.actor_id }}
+          CURRENT_MAIN_SHA: ${{ needs.authorize.outputs.current_main_sha }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$DISPATCH_ACTOR_ID" == "126446430" && "$GITHUB_REF" == "refs/heads/main" && "$GITHUB_SHA" == "$CURRENT_MAIN_SHA" ]] || {
+            echo "::error::Cutback owner/run identity or exact SHA changed before execution."; exit 1;
+          }
+          gh api "repos/krustallik/body-model/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/current-cutback-run.json"
+          node --input-type=module - "$RUNNER_TEMP/current-cutback-run.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { assertTrustedOwnerWorkflowRun } from "./scripts/github-owner-identity.mjs";
+          assertTrustedOwnerWorkflowRun(JSON.parse(readFileSync(process.argv[2], "utf8")), {
+            actorId: process.env.DISPATCH_ACTOR_ID, workflowPath: ".github/workflows/production-database-cutback.yml",
+            workflowRunId: process.env.GITHUB_RUN_ID, workflowRunAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            ref: "refs/heads/main", sha: process.env.CURRENT_MAIN_SHA, requireInProgress: true,
+          });
+          NODE
+          [[ "$(gh api repos/krustallik/body-model/commits/main --jq .sha)" == "$CURRENT_MAIN_SHA" ]] || {
+            echo "::error::Canonical main advanced before production credentials."; exit 1;
+          }
+      - name: Re-download and re-verify the exact signed backup and preflight artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_ACTOR_ID: ${{ github.actor_id }}
+          FAILED_MIGRATION_RUN_ID: ${{ inputs.failed_migration_run_id }}
+          FAILED_RELEASE_SHA: ${{ needs.authorize.outputs.failed_release_sha }}
+          FAILED_ATTEMPT: ${{ needs.authorize.outputs.failed_attempt }}
+          PREFLIGHT_RUN_ID: ${{ needs.authorize.outputs.preflight_run_id }}
+          PREFLIGHT_ATTEMPT: ${{ needs.authorize.outputs.preflight_attempt }}
+          EXPECTED_BACKUP_ID: ${{ needs.authorize.outputs.backup_artifact_id }}
+          EXPECTED_BACKUP_DIGEST: ${{ needs.authorize.outputs.backup_artifact_digest }}
+          BACKUP_NAME: ${{ needs.authorize.outputs.backup_artifact_name }}
+        run: |
+          set -Eeuo pipefail
+          BUNDLE="$RUNNER_TEMP/bodycast-cutback-context"
+          mkdir -m 700 "$BUNDLE" "$RUNNER_TEMP/cutback-preflight" "$RUNNER_TEMP/cutback-backup"
+          gh run download "$FAILED_MIGRATION_RUN_ID" --repo krustallik/body-model \
+            --name "bodycast-migration-auth-${FAILED_MIGRATION_RUN_ID}-${FAILED_ATTEMPT}" --dir "$BUNDLE"
+          gh run download "$PREFLIGHT_RUN_ID" --repo krustallik/body-model \
+            --name "bodycast-preflight-evidence-${FAILED_RELEASE_SHA}-active-energy-unified-v2-${PREFLIGHT_RUN_ID}-${PREFLIGHT_ATTEMPT}" \
+            --dir "$RUNNER_TEMP/cutback-preflight"
+          gh run download "$PREFLIGHT_RUN_ID" --repo krustallik/body-model --name "$BACKUP_NAME" --dir "$RUNNER_TEMP/cutback-backup"
+          for name in authorization-envelope.json artifact-metadata.json preflight-result.json preflight-evidence.json restore-result.json; do
+            test -f "$BUNDLE/$name" && test ! -L "$BUNDLE/$name"
+          done
+          for name in preflight-report.json preflight-evidence.json preflight-result.json restore-result.json; do
+            test -f "$RUNNER_TEMP/cutback-preflight/$name" && test ! -L "$RUNNER_TEMP/cutback-preflight/$name"
+          done
+          cmp "$BUNDLE/preflight-evidence.json" "$RUNNER_TEMP/cutback-preflight/preflight-evidence.json"
+          cmp "$BUNDLE/preflight-result.json" "$RUNNER_TEMP/cutback-preflight/preflight-result.json"
+          cmp "$BUNDLE/restore-result.json" "$RUNNER_TEMP/cutback-preflight/restore-result.json"
+          cp "$RUNNER_TEMP/cutback-preflight/preflight-report.json" "$BUNDLE/preflight-report.json"
+          cp "$RUNNER_TEMP/cutback-backup/production-backup.pgdump.enc" "$BUNDLE/production-backup.pgdump.enc"
+          gh api "repos/krustallik/body-model/actions/runs/$PREFLIGHT_RUN_ID/artifacts?per_page=100" > "$RUNNER_TEMP/cutback-artifacts.json"
+          node --input-type=module - "$RUNNER_TEMP/cutback-artifacts.json" "$BUNDLE/artifact-metadata.json" "$EXPECTED_BACKUP_ID" "$EXPECTED_BACKUP_DIGEST" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const artifacts = JSON.parse(readFileSync(process.argv[2], "utf8")).artifacts ?? [];
+          const metadata = JSON.parse(readFileSync(process.argv[3], "utf8"));
+          const matches = artifacts.filter((item) => String(item.id) === process.argv[4]);
+          if (matches.length !== 1 || String(matches[0].digest).replace(/^sha256:/, "") !== process.argv[5]
+            || String(metadata.digest).replace(/^sha256:/, "") !== process.argv[5]
+            || metadata.expired === true || String(matches[0].workflow_run?.id) !== process.env.PREFLIGHT_RUN_ID) {
+            throw new Error("Downloaded backup artifact no longer matches the exact signed artifact identity.");
+          }
+          NODE
+          node scripts/production-database-cutback.mjs --verify-context "$BUNDLE" "$FAILED_MIGRATION_RUN_ID" "$FAILED_RELEASE_SHA" "$BUNDLE/production-backup.pgdump.enc" \
+            > "$RUNNER_TEMP/verified-cutback-context.json"
+          echo "BODYCAST_CUTBACK_BUNDLE=$BUNDLE" >> "$GITHUB_ENV"
+      - name: Validate protected SSH and backup-key inputs
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_HOST_FINGERPRINT: ${{ secrets.SSH_HOST_FINGERPRINT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          APP_HOST: ${{ secrets.APP_HOST }}
+          CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
+          PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY }}
+        run: |
+          set -Eeuo pipefail
+          : "$SSH_PRIVATE_KEY"; : "$SSH_HOST"; : "$SSH_USER"; : "$SSH_PORT"; : "$SSH_HOST_FINGERPRINT"; : "$DEPLOY_PATH"; : "$APP_HOST"; : "$CADDY_ROUTES_PATH"
+          node --input-type=module -e 'import { decodeBackupKey } from "./scripts/production-backup-envelope.mjs"; decodeBackupKey(process.env.PRODUCTION_BACKUP_ENCRYPTION_KEY);'
+          [[ "$SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ && "$SSH_USER" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::Invalid protected SSH host/user."; exit 1; }
+          [[ "$SSH_PORT" =~ ^[0-9]{1,5}$ ]] && (( SSH_PORT > 0 && SSH_PORT <= 65535 )) || { echo "::error::Invalid SSH port."; exit 1; }
+          [[ "$SSH_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]{43}$ && "$DEPLOY_PATH" == /* && "$DEPLOY_PATH" != *$'\n'* ]] || { echo "::error::Invalid pinned production host/path."; exit 1; }
+          [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* && "$CADDY_ROUTES_PATH" != *$'\n'* ]] || { echo "::error::Invalid fixed production traffic topology."; exit 1; }
+          install -d -m 700 "$RUNNER_TEMP/bodycast-cutback-ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/bodycast-cutback-ssh/id"
+          chmod 600 "$RUNNER_TEMP/bodycast-cutback-ssh/id"
+          ssh-keyscan -T 10 -p "$SSH_PORT" "$SSH_HOST" > "$RUNNER_TEMP/bodycast-cutback-ssh/candidate" 2>/dev/null
+          node scripts/filter-ssh-known-hosts.mjs "$RUNNER_TEMP/bodycast-cutback-ssh/candidate" "$RUNNER_TEMP/bodycast-cutback-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/bodycast-cutback-ssh/known_hosts"
+          echo "BODYCAST_CUTBACK_SSH_KEY=$RUNNER_TEMP/bodycast-cutback-ssh/id" >> "$GITHUB_ENV"
+          echo "BODYCAST_CUTBACK_KNOWN_HOSTS=$RUNNER_TEMP/bodycast-cutback-ssh/known_hosts" >> "$GITHUB_ENV"
+      - name: Authenticate encrypted backup before any production database change
+        env:
+          PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 "$RUNNER_TEMP/bodycast-cutback-plaintext"
+          chmod 700 "$RUNNER_TEMP/bodycast-cutback-plaintext"
+          BACKUP="$BODYCAST_CUTBACK_BUNDLE/production-backup.pgdump.enc"
+          PLAIN="$RUNNER_TEMP/bodycast-cutback-plaintext/pre-ddl.pgdump"
+          chmod 600 "$BACKUP"
+          node scripts/production-backup-envelope.mjs decrypt --input "$BACKUP" > "$PLAIN"
+          chmod 600 "$PLAIN"
+          test -s "$PLAIN"
+          docker run --rm -i postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24 pg_restore --list < "$PLAIN" > "$RUNNER_TEMP/pg-restore-list.txt"
+          test -s "$RUNNER_TEMP/pg-restore-list.txt"
+          echo "BODYCAST_CUTBACK_PLAINTEXT=$PLAIN" >> "$GITHUB_ENV"
+          echo "BODYCAST_CUTBACK_PLAINTEXT_SHA256=$(sha256sum "$PLAIN" | awk '{print $1}')" >> "$GITHUB_ENV"
+      - name: Transfer signed evidence to a fixed private host context
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+        run: |
+          set -Eeuo pipefail
+          REMOTE_CONTEXT="/tmp/bodycast-cutback-context-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          FILES=(authorization-envelope.json artifact-metadata.json preflight-evidence.json preflight-report.json preflight-result.json restore-result.json production-backup.pgdump.enc)
+          for name in "${FILES[@]}"; do test -f "$BODYCAST_CUTBACK_BUNDLE/$name" && test ! -L "$BODYCAST_CUTBACK_BUNDLE/$name"; done
+          tar -czf "$RUNNER_TEMP/bodycast-cutback-context.tar.gz" -C "$BODYCAST_CUTBACK_BUNDLE" "${FILES[@]}"
+          printf '%s\n' "${FILES[@]}" | sort > "$RUNNER_TEMP/cutback-expected-files.txt"
+          tar -tzf "$RUNNER_TEMP/bodycast-cutback-context.tar.gz" | sort > "$RUNNER_TEMP/cutback-actual-files.txt"
+          diff -u "$RUNNER_TEMP/cutback-expected-files.txt" "$RUNNER_TEMP/cutback-actual-files.txt"
+          SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_CUTBACK_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_CUTBACK_KNOWN_HOSTS" -o ConnectTimeout=10)
+          cat "$RUNNER_TEMP/bodycast-cutback-context.tar.gz" | "${SSH[@]}" "$SSH_USER@$SSH_HOST" \
+            "set -Eeuo pipefail; umask 077; mkdir -m 700 '$REMOTE_CONTEXT'; tar -xzf - --no-same-owner -C '$REMOTE_CONTEXT'"
+          echo "BODYCAST_CUTBACK_REMOTE_CONTEXT=$REMOTE_CONTEXT" >> "$GITHUB_ENV"
+      - name: Restore the signed pre-DDL snapshot and serve only the verified previous runtime
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          APP_HOST: ${{ secrets.APP_HOST }}
+          CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
+          CURRENT_MAIN_SHA: ${{ needs.authorize.outputs.current_main_sha }}
+          FAILED_RELEASE_SHA: ${{ needs.authorize.outputs.failed_release_sha }}
+          FAILED_MIGRATION_RUN_ID: ${{ inputs.failed_migration_run_id }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY }}
+        run: |
+          set -Eeuo pipefail
+          DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
+          APP_HOST_B64="$(printf '%s' "$APP_HOST" | base64 -w0)"
+          ROUTES_PATH_B64="$(printf '%s' "$CADDY_ROUTES_PATH" | base64 -w0)"
+          CONTEXT_B64="$(printf '%s' "$BODYCAST_CUTBACK_REMOTE_CONTEXT" | base64 -w0)"
+          REMOTE_SCRIPT="$(cat <<'REMOTE'
+          set -Eeuo pipefail
+          CURRENT_MAIN_SHA="$1"; FAILED_RELEASE_SHA="$2"; FAILED_RUN_ID="$3"; CUTBACK_RUN_ID="$4"; CUTBACK_RUN_ATTEMPT="$5"
+          DEPLOY_PATH="$(printf '%s' "$6" | base64 --decode)"
+          APP_HOST="$(printf '%s' "$7" | base64 --decode)"
+          CADDY_ROUTES_PATH="$(printf '%s' "$8" | base64 --decode)"
+          CONTEXT_DIR="$(printf '%s' "$9" | base64 --decode)"
+          CONFIRMATION="${10}"; ARCHIVE_SHA256="${11}"
+          [[ "$CURRENT_MAIN_SHA" =~ ^[a-f0-9]{40}$ && "$FAILED_RELEASE_SHA" =~ ^[a-f0-9]{40}$ \
+            && "$FAILED_RUN_ID" =~ ^[1-9][0-9]*$ && "$CUTBACK_RUN_ID" =~ ^[1-9][0-9]*$ \
+            && "$CUTBACK_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ \
+            && "$DEPLOY_PATH" == /* && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ \
+            && "$CADDY_ROUTES_PATH" == /* && "$CONFIRMATION" == RESTORE_PRE_DDL_DATABASE \
+            && "$ARCHIVE_SHA256" =~ ^[a-f0-9]{64}$ ]] || { echo "Invalid fixed cutback request." >&2; exit 2; }
+          [[ "$CONTEXT_DIR" == "/tmp/bodycast-cutback-context-$CUTBACK_RUN_ID-$CUTBACK_RUN_ATTEMPT" && -d "$CONTEXT_DIR" && ! -L "$CONTEXT_DIR" ]] || exit 2
+          cd -- "$DEPLOY_PATH"
+          [[ "$(git rev-parse --show-toplevel)" == "$DEPLOY_PATH" && -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || {
+            echo "Production checkout is dirty or does not match DEPLOY_PATH." >&2; exit 1;
+          }
+          git_dir="$(git rev-parse --absolute-git-dir)"
+          command -v flock >/dev/null 2>&1 || { echo "flock is unavailable." >&2; exit 1; }
+          exec 9>"$git_dir/bodycast-production-release.lock"
+          flock -n 9 || { echo "Another production release operation is active." >&2; exit 1; }
+          export BODYCAST_PRODUCTION_RELEASE_LOCK_HELD=1
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          [[ "$(git rev-parse refs/remotes/origin/main)" == "$CURRENT_MAIN_SHA" ]] || { echo "Canonical main advanced." >&2; exit 1; }
+          git checkout --detach "$CURRENT_MAIN_SHA"
+          [[ "$(git rev-parse HEAD)" == "$CURRENT_MAIN_SHA" ]] || exit 1
+          trap 'rm -rf -- "$CONTEXT_DIR"' EXIT
+          export BODYCAST_CUTBACK_CURRENT_MAIN_SHA="$CURRENT_MAIN_SHA"
+          export BODYCAST_CUTBACK_FAILED_RELEASE_SHA="$FAILED_RELEASE_SHA"
+          export BODYCAST_CUTBACK_FAILED_RUN_ID="$FAILED_RUN_ID"
+          export BODYCAST_CUTBACK_RUN_ID="$CUTBACK_RUN_ID"
+          export BODYCAST_CUTBACK_CONTEXT_DIR="$CONTEXT_DIR"
+          export BODYCAST_CUTBACK_ARCHIVE_SHA256="$ARCHIVE_SHA256"
+          export BODYCAST_CUTBACK_CONFIRMATION="$CONFIRMATION"
+          export APP_HOST CADDY_ROUTES_PATH
+          bash scripts/production-database-cutback.sh
+          REMOTE
+          )"
+          REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
+          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$CURRENT_MAIN_SHA' '$FAILED_RELEASE_SHA' '$FAILED_MIGRATION_RUN_ID' '$GITHUB_RUN_ID' '$GITHUB_RUN_ATTEMPT' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64' '$CONTEXT_B64' '$CONFIRMATION' '$BODYCAST_CUTBACK_PLAINTEXT_SHA256'"
+          SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_CUTBACK_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_CUTBACK_KNOWN_HOSTS" -o ConnectTimeout=10)
+          node --input-type=module - "$BODYCAST_CUTBACK_BUNDLE/production-backup.pgdump.enc" <<'NODE' | timeout 120m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND"
+          import { decodeBackupKey, decryptBackupToWritable } from "./scripts/production-backup-envelope.mjs";
+          const key = decodeBackupKey(process.env.PRODUCTION_BACKUP_ENCRYPTION_KEY);
+          await decryptBackupToWritable(process.argv[2], process.stdout, key);
+          key.fill(0);
+          NODE
+      - name: Remove temporary plaintext backup and SSH material
+        if: always()
+        run: |
+          set +e
+          [[ -z "${BODYCAST_CUTBACK_PLAINTEXT:-}" ]] || { shred -u "$BODYCAST_CUTBACK_PLAINTEXT" 2>/dev/null || rm -f "$BODYCAST_CUTBACK_PLAINTEXT"; }
+          rm -rf "$RUNNER_TEMP/bodycast-cutback-plaintext" "$RUNNER_TEMP/bodycast-cutback-ssh" "$RUNNER_TEMP/bodycast-cutback-context"

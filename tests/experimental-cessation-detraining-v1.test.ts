@@ -69,7 +69,11 @@ describe("experimental cessation / detraining v1", () => {
     const last = missing[missing.length - 1]!;
     expect(last.state.phase).toBe("unknown-coverage-not-cessation");
     expect(last.state.observedNoExposureStreakDays).toBe(0);
-    expect(last.estimatedSkeletalMuscleDeltaKg).toBe(0);
+    expect(last.availability).toBe("unavailable");
+    expect(last.estimatedSkeletalMuscleDeltaKg).toBeNull();
+    expect(last.lowerBoundKg).toBeNull();
+    expect(last.upperBoundKg).toBeNull();
+    expect(last.state.relativeCumulativeDeltaKg).toBeNull();
     expect(last.features.phase).not.toBe("detraining");
     expect(last.reasons).toContain("missing-workout-feed-is-not-cessation");
     expect(last.reasons).toContain("no-exposure-streak-does-not-increment-on-unknown-coverage");
@@ -84,7 +88,9 @@ describe("experimental cessation / detraining v1", () => {
     });
     expect(paused[10]!.state.observedNoExposureStreakDays).toBe(10);
     expect(paused[11]!.state.observedNoExposureStreakDays).toBe(10);
-    expect(paused[11]!.estimatedSkeletalMuscleDeltaKg).toBe(0);
+    expect(paused[11]!.availability).toBe("unavailable");
+    expect(paused[11]!.estimatedSkeletalMuscleDeltaKg).toBeNull();
+    expect(paused[11]!.state.relativeCumulativeDeltaKg).toBeNull();
     expect(paused[11]!.state.phase).toBe("unknown-coverage-not-cessation");
     expect(paused[12]!.state.observedNoExposureStreakDays).toBe(11);
     expect(paused[12]!.state.phase).toBe("verified-rest-or-grace");
@@ -122,10 +128,10 @@ describe("experimental cessation / detraining v1", () => {
     });
     const firstDetrain = trajectory[ENGINEERING_CESSATION_GRACE_DAYS_V1 + 1]!;
     expect(firstDetrain.state.phase).toBe("detraining");
-    expect(firstDetrain.estimatedSkeletalMuscleDeltaKg).toBeLessThanOrEqual(0);
-    expect(firstDetrain.lowerBoundKg).toBeLessThanOrEqual(firstDetrain.estimatedSkeletalMuscleDeltaKg);
-    expect(firstDetrain.estimatedSkeletalMuscleDeltaKg).toBeLessThanOrEqual(firstDetrain.upperBoundKg);
-    expect(firstDetrain.upperBoundKg).toBeLessThanOrEqual(0);
+    expect(firstDetrain.estimatedSkeletalMuscleDeltaKg!).toBeLessThanOrEqual(0);
+    expect(firstDetrain.lowerBoundKg!).toBeLessThanOrEqual(firstDetrain.estimatedSkeletalMuscleDeltaKg!);
+    expect(firstDetrain.estimatedSkeletalMuscleDeltaKg!).toBeLessThanOrEqual(firstDetrain.upperBoundKg!);
+    expect(firstDetrain.upperBoundKg!).toBeLessThanOrEqual(0);
     expect(firstDetrain.state.absoluteSkeletalMuscleKg).toBeNull();
     expect(firstDetrain.features.absoluteSkeletalMuscleKg).toBeNull();
     expect(firstDetrain.supportedDomain).toBe("relative-cessation-detraining-delta-shadow-only");
@@ -182,6 +188,24 @@ describe("experimental cessation / detraining v1", () => {
       "training-resumption-stops-detraining-without-memory-bonus",
     );
     expect(resume.features.muscleMemoryBonusApplied).toBe(false);
+  });
+
+  it("qualified training with an unavailable daily estimate stays unavailable, not zero", () => {
+    const missing = transitionExperimentalCessationDetrainingV1({
+      exposureKind: "qualified-mapped-training",
+      prior: {
+        observedNoExposureStreakDays: 0,
+        hadPriorQualifiedTraining: true,
+        phase: "not-in-cessation",
+        relativeCumulativeDeltaKg: 0.03,
+        absoluteSkeletalMuscleKg: null,
+      },
+      trainingSkeletalMuscleDeltaKg: null,
+    });
+    expect(missing.availability).toBe("unavailable");
+    expect(missing.estimatedSkeletalMuscleDeltaKg).toBeNull();
+    expect(missing.state.relativeCumulativeDeltaKg).toBeNull();
+    expect(missing.reasons).toContain("qualified-training-delta-unavailable-is-not-zero");
   });
 
   it("does not apply an automatic muscle-memory or retraining bonus", () => {

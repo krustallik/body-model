@@ -8,31 +8,26 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 readonly COMPOSE_FILE="docker-compose.prod.yml"
-readonly DB_SERVICE="db"
 readonly DB_CONTAINER="bodycast-db-prod"
 
 compose() {
   docker compose -f "$COMPOSE_FILE" "$@"
 }
 
-compose up -d "$DB_SERVICE"
-
-for attempt in $(seq 1 30); do
-  db_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$DB_CONTAINER")"
-  [[ "$db_status" == "healthy" ]] && break
-  if [[ "$db_status" == "unhealthy" || "$db_status" == "exited" ]]; then
-    compose logs --tail=100 "$DB_SERVICE"
-    exit 1
-  fi
-  [[ "$attempt" == "30" ]] && { echo "Database healthcheck timed out during schema preflight." >&2; exit 1; }
-  sleep 5
-done
+if ! db_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$DB_CONTAINER")"; then
+  echo "BLOCKED: existing production database container is unavailable; schema preflight will not start it." >&2
+  exit 2
+fi
+[[ "$db_status" == "healthy" ]] || {
+  echo "BLOCKED: existing production database is not healthy (state: ${db_status}); schema preflight will not start it." >&2
+  exit 2
+}
 
 compose --profile tools build migrate
 
 status_log="$(mktemp)"
 set +e
-compose --profile tools run --rm --entrypoint npx migrate prisma migrate status >"$status_log" 2>&1
+compose --profile tools run --rm --no-deps --entrypoint npx migrate prisma migrate status >"$status_log" 2>&1
 status_code=$?
 set -e
 cat "$status_log"

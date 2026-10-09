@@ -1,0 +1,80 @@
+name: bodycast-recovery
+
+# This file is an immutable rollback-artifact runtime template. The authority
+# must verify the captured registry digest and DB identity before selecting one
+# service. It is never built by Compose and has no route to the shared proxy.
+services:
+  rollback-readonly:
+    image: ${BODYCAST_ROLLBACK_IMAGE:?BODYCAST_ROLLBACK_IMAGE must be the captured immutable image digest}
+    container_name: bodycast-recovery-readonly
+    pull_policy: never
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
+      - /app/.next/cache:size=64m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    env_file:
+      - ${BODYCAST_PRODUCTION_ENV_FILE:?BODYCAST_PRODUCTION_ENV_FILE must be the fixed host application environment file}
+    environment:
+      NODE_ENV: production
+      BODYCAST_RECOVERY_READ_ONLY: "1"
+      HOSTNAME: 0.0.0.0
+      PORT: 3000
+    secrets:
+      - recovery_database_url
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        DATABASE_URL="$$(cat /run/secrets/recovery_database_url)";
+        case "$$DATABASE_URL" in *[?&]options=*) echo 'Recovery DATABASE_URL already has an options parameter' >&2; exit 1;; esac;
+        case "$$DATABASE_URL" in *\?*) separator='&';; *) separator='?';; esac;
+        export DATABASE_URL="$${DATABASE_URL}$${separator}options=-c%20default_transaction_read_only%3Don";
+        exec node server.js
+    expose:
+      - "3000"
+    networks:
+      - production_backend
+
+  rollback-writer:
+    image: ${BODYCAST_ROLLBACK_IMAGE:?BODYCAST_ROLLBACK_IMAGE must be the captured immutable image digest}
+    container_name: bodycast-recovery-writer
+    pull_policy: never
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
+      - /app/.next/cache:size=64m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    env_file:
+      - ${BODYCAST_PRODUCTION_ENV_FILE:?BODYCAST_PRODUCTION_ENV_FILE must be the fixed host application environment file}
+    environment:
+      NODE_ENV: production
+      BODYCAST_RECOVERY_READ_ONLY: "0"
+      HOSTNAME: 0.0.0.0
+      PORT: 3000
+    secrets:
+      - production_database_url
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["export DATABASE_URL=\"$$(cat /run/secrets/production_database_url)\"; exec node server.js"]
+    expose:
+      - "3000"
+    networks:
+      - production_backend
+
+secrets:
+  recovery_database_url:
+    file: ${BODYCAST_RECOVERY_DATABASE_URL_FILE:?Use only the separately prepared PostgreSQL read-only role secret}
+  production_database_url:
+    file: ${BODYCAST_PRODUCTION_DATABASE_URL_FILE:?Use the existing canonical production app role secret}
+
+networks:
+  production_backend:
+    external: true
+    name: bodycast-backend-prod

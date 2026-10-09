@@ -34,9 +34,25 @@ import {
   NoActiveModelEpisodeError,
 } from "@/modules/model-episodes/model-episode.errors";
 import { modelProfile, persistedEpisodeFixture, stableSourceDays, sourceDay } from "./model-episode-fixtures";
+import { currentPhysiologyV7Versions } from "@/modules/model-episodes/physiology-v7-persistence";
 
 const clientMock = {
-  $transaction: vi.fn(async (callback: (transaction: object) => unknown) => callback({})),
+  $transaction: vi.fn(async (callback: (transaction: object) => unknown) => callback({
+    $executeRaw: vi.fn().mockResolvedValue(1),
+    physiologyV7Lifecycle: {
+      upsert: vi.fn().mockResolvedValue({
+        profileId: 1,
+        staleFromDate: null,
+        currentThroughDate: null,
+        productionStaleFromDate: null,
+        productionPublishedGeneration: 1,
+        unifiedPublishedGeneration: 1,
+        invalidationGeneration: 1,
+        ...currentPhysiologyV7Versions,
+      }),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+    },
+  })),
 };
 const client = clientMock as unknown as PrismaClient;
 
@@ -62,7 +78,7 @@ describe("model episode application service", () => {
     const result = await initializeNewModelEpisode({
       now: new Date("2026-08-23T10:00:00.000Z"),
     }, client);
-    expect(repository.loadSources).toHaveBeenCalledWith("2026-04-19", "2026-08-22");
+    expect(repository.loadSources).toHaveBeenCalledWith("2026-04-19", "2026-08-22", "Europe/Bratislava");
     expect(repository.deactivateActive).toHaveBeenCalledWith(
       new Date("2026-08-23T10:00:00.000Z"),
     );
@@ -113,7 +129,7 @@ describe("model episode application service", () => {
     const result = await recalculateModelEpisode({
       now: new Date("2026-08-22T10:00:00.000Z"),
     }, client);
-    expect(repository.loadSources).toHaveBeenCalledWith("2026-04-18", "2026-08-21");
+    expect(repository.loadSources).toHaveBeenCalledWith("2026-04-18", "2026-08-21", "Europe/Bratislava");
     expect(repository.persistCalculation).toHaveBeenCalledOnce();
     expect(repository.persistCalculation.mock.calls[0]?.[1].dailyStates.every(
       ({ nutrition }: { nutrition: { source: string } }) => nutrition.source === "observed",
@@ -183,6 +199,7 @@ describe("model episode application service", () => {
         ]),
       }),
       "bodycast-physiology-v7",
+      undefined,
     );
     expect(result).toMatchObject({ episodeId: 8, daysPersisted: 16, completeDays: 16 });
   });
@@ -304,6 +321,7 @@ describe("model episode application service", () => {
         dailyStates: [expect.objectContaining({ modelVersion: "bodycast-physiology-v3" })],
       }),
       "bodycast-physiology-v3",
+      undefined,
     );
   });
 

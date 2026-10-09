@@ -3,6 +3,7 @@ import type {
   UnifiedExperimentalPhysiologyStateV1,
   UnifiedNumericEnvelopeV1,
 } from "@/model/unified-experimental-physiology-v1/contracts";
+import type { ActiveTransientExerciseWaterImpulseV2 } from "@/model/physiology-v7/experimental-transient-exercise-water-v2";
 
 export const EXPERIMENTAL_FORECAST_V1_REVISION = "experimental-forecast-v1" as const;
 
@@ -62,6 +63,7 @@ export type ExperimentalForecastInitialState = {
   glycogenRelativeKg: UnifiedNumericEnvelopeV1 | null;
   glycogenWaterKg: UnifiedNumericEnvelopeV1 | null;
   transientWaterKg: UnifiedNumericEnvelopeV1 | null;
+  transientWaterActiveImpulses?: ActiveTransientExerciseWaterImpulseV2[] | null;
   restingRmrKcalPerDay: number | null;
   typicalMaintenanceKcalPerDay: number | null;
   latestExpenditureKcalPerDay: number | null;

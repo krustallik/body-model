@@ -6,7 +6,7 @@ import {
   it,
   vi,
 } from "vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 vi.mock("next/link", () => ({
@@ -131,11 +131,15 @@ function shiftDate(date: string, days: number): string {
 describe("HistoryClient workout cell interaction", () => {
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
   it("makes workout minutes clickable only when details exist, opens dialog, and closes it", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-05T12:00:00.000Z"));
+
     HTMLDialogElement.prototype.showModal = function showModal() {
       this.setAttribute("open", "");
     };
@@ -320,5 +324,68 @@ describe("HistoryClient workout cell interaction", () => {
     expect(healthDates[0]).toBe("2025-01-01");
     expect(Date.parse(`${healthDates[0]}T00:00:00Z`) - Date.parse(`${healthDates.at(-1)}T00:00:00Z`))
       .toBeGreaterThan(366 * 86_400_000);
+  });
+
+  it("keeps the selected range when the earlier history request resolves later", async () => {
+    const staleDate = new Date(Date.now() - 10 * 86_400_000).toISOString().slice(0, 10);
+    const selectedDate = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    let resolveInitial!: (response: Response) => void;
+    const initialDaysResponse = new Promise<Response>((resolve) => { resolveInitial = resolve; });
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname === "/api/v1/days") {
+        if (url.searchParams.has("from")) return initialDaysResponse;
+        return Promise.resolve(jsonResponse({ days: [day(selectedDate, { weightKg: 80 })], trainingDays: [] }));
+      }
+      if (url.pathname === "/api/v1/work-intervals") return Promise.resolve(jsonResponse({ intervals: [] }));
+      return Promise.resolve(jsonResponse({ error: "unexpected" }, 500));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const user = userEvent.setup();
+    render(<HistoryClient />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await user.click(screen.getByRole("button", { name: "All" }));
+
+    const table = within(screen.getByTestId("desktop-history-table"));
+    await waitFor(() => expect(table.getByText(selectedDate)).toBeTruthy());
+    expect(screen.getByRole("button", { name: "All" }).getAttribute("aria-pressed")).toBe("true");
+
+    await act(async () => {
+      resolveInitial(jsonResponse({ days: [day(staleDate, { weightKg: 79 })], trainingDays: [] }));
+      await initialDaysResponse;
+      await Promise.resolve();
+    });
+
+    expect(table.getByText(selectedDate)).toBeTruthy();
+    expect(table.queryByText(staleDate)).toBeNull();
+  });
+
+  it("renders an unavailable measurement as a dash while retaining an observed value", async () => {
+    const unavailableDate = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    const measuredDate = new Date(Date.now() - 2 * 86_400_000).toISOString().slice(0, 10);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname === "/api/v1/days") return jsonResponse({
+        days: [day(unavailableDate, { weightKg: null }), day(measuredDate, { weightKg: 80 })],
+        trainingDays: [],
+      });
+      if (url.pathname === "/api/v1/work-intervals") return jsonResponse({ intervals: [] });
+      return jsonResponse({ error: "unexpected" }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<HistoryClient />);
+    const table = within(screen.getByTestId("desktop-history-table"));
+    await waitFor(() => expect(table.getByText(unavailableDate)).toBeTruthy());
+
+    const weightColumn = table.getAllByRole("columnheader")
+      .findIndex((header) => header.textContent?.includes("Weight"));
+    expect(weightColumn).toBeGreaterThan(0);
+    const unavailableRow = table.getByRole("row", { name: new RegExp(unavailableDate) });
+    const measuredRow = table.getByRole("row", { name: new RegExp(measuredDate) });
+
+    expect(within(unavailableRow).getAllByRole("cell")[weightColumn]?.textContent).toBe("—");
+    expect(within(measuredRow).getAllByRole("cell")[weightColumn]?.textContent).toBe("80");
   });
 });

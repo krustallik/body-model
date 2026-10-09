@@ -4,7 +4,6 @@ import { getModelStatus, recalculateModelEpisode } from "@/modules/model-episode
 import { EpisodeInitializationError } from "@/modules/model-episodes/model-episode.errors";
 import { ModelRecoveryEvidenceError } from "@/modules/model-recovery/model-recovery.errors";
 import { recoverModelEpisode } from "@/modules/model-recovery/model-recovery.service";
-import { rebuildUnifiedExperimentalPhysiologyStateV1 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
 import { ForecastScenarioEvidenceError, ForecastUnavailableError } from "@/modules/model-forecast/model-forecast.errors";
 import { ForecastModelRequestSchema } from "@/modules/model-forecast/model-forecast.schema";
 import { forecastModelEpisode } from "@/modules/model-forecast/model-forecast.service";
@@ -46,12 +45,6 @@ async function ensurePersistedModelDays(now?: Date): Promise<void> {
         // a forecast that can run from an observed or bootstrap anchor.
         if (!(error instanceof ModelRecoveryEvidenceError)) throw error;
       }
-    }
-    if (status.latestModeledDate !== null && typeof status.episodeStartDate === "string") {
-      await rebuildUnifiedExperimentalPhysiologyStateV1({
-        fromDate: status.episodeStartDate,
-        toDate: status.latestModeledDate,
-      }).catch(() => {});
     }
   } catch (error) {
     if (error instanceof NoActiveModelEpisodeError) return;

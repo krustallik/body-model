@@ -1,5 +1,4 @@
-import { GLYCOGEN_WATER_KG_PER_KG } from "@/model/body-composition/constants";
-import { reconstructBodyWeightKg } from "@/model/body-composition/state";
+import { calculateGlycogenAssociatedMassKg, calculateGlycogenAssociatedWaterKg, reconstructBodyWeightKg } from "@/model/body-composition/state";
 import { simulateOneDay, type PhysiologicalDailyInput } from "@/model/physiological-simulator";
 import { addCalendarDays, calendarDayIndex } from "@/modules/model-episodes/model-calendar";
 import { SeededRandom, weightedQuantile } from "@/modules/model-recovery/recovery-math";
@@ -215,6 +214,7 @@ type BehaviorPathSampler = (date: string, dayIndex: number) => ForecastBehaviorD
 function behaviorSampler(input: {
   scenario: ForecastScenario;
   reliableDonorDays: readonly ForecastBehaviorDay[];
+  engineeringFallbackDay?: ForecastBehaviorDay | null;
   evidence: RunForecastInput["variabilityEvidence"];
   config: ForecastConfig;
   random: SeededRandom;
@@ -224,21 +224,19 @@ function behaviorSampler(input: {
     return (date) => scheduledDay(scenario.schedule, date);
   }
   if (input.scenario.mode === "recent-behavior") {
-    const minimum = input.scenario.minimumDonorDays ?? input.config.minimumReliableDonorDays;
-    if (input.reliableDonorDays.length < minimum) {
-      throw new ForecastScenarioEvidenceError(
-        `recent-behavior requires at least ${minimum} reliable observed donor days; received ${input.reliableDonorDays.length}`,
-      );
-    }
+    const donors = input.reliableDonorDays.length > 0
+      ? input.reliableDonorDays
+      : input.engineeringFallbackDay ? [input.engineeringFallbackDay] : [];
+    if (donors.length === 0) throw new ForecastScenarioEvidenceError(
+      "recent-behavior requires a complete observed donor or explicit engineering fallback",
+    );
     const blockLength = input.scenario.blockLengthDays ?? input.config.blockLengthDays;
     let blockStart = 0;
     return (_date, dayIndex) => {
       if (dayIndex % blockLength === 0) {
-        blockStart = Math.floor(input.random.next() * input.reliableDonorDays.length);
+        blockStart = Math.floor(input.random.next() * donors.length);
       }
-      const donor = input.reliableDonorDays[
-        (blockStart + (dayIndex % blockLength)) % input.reliableDonorDays.length
-      ];
+      const donor = donors[(blockStart + (dayIndex % blockLength)) % donors.length];
       return mergeBehavior(donor);
     };
   }
@@ -262,6 +260,7 @@ export function sampleForecastBehaviorPath(input: {
   startDate: string;
   horizonDays: number;
   reliableDonorDays: readonly ForecastBehaviorDay[];
+  engineeringFallbackDay?: ForecastBehaviorDay | null;
   evidence: RunForecastInput["variabilityEvidence"];
   config?: Partial<ForecastConfig>;
   random: SeededRandom;
@@ -270,6 +269,7 @@ export function sampleForecastBehaviorPath(input: {
   const sampler = behaviorSampler({
     scenario: input.scenario,
     reliableDonorDays: input.reliableDonorDays,
+    engineeringFallbackDay: input.engineeringFallbackDay,
     evidence: input.evidence,
     config,
     random: input.random,
@@ -359,6 +359,7 @@ export function runForecastWithInternalArtifacts(input: RunForecastInput): Forec
       startDate: input.startDate,
       horizonDays: input.horizonDays,
       reliableDonorDays: input.reliableDonorDays,
+      engineeringFallbackDay: input.engineeringFallbackDay,
       evidence: input.variabilityEvidence,
       config,
       random,
@@ -387,14 +388,14 @@ export function runForecastWithInternalArtifacts(input: RunForecastInput): Forec
         // weight when one is available. Apply one constant offset to the
         // physiological trajectory instead of changing energy/composition
         // calculations or pretending the observation was a full-day state.
-        const glycogenWaterKg = result.endState.glycogenKg * GLYCOGEN_WATER_KG_PER_KG;
+        const glycogenWaterKg = calculateGlycogenAssociatedWaterKg(result.endState.glycogenKg);
         path.push({
           physiologicalBodyWeightKg: result.calculations.endWeightKg + observedAnchorOffsetKg,
           fatMassKg: result.endState.fatMassKg,
           leanTissueKg: result.endState.leanTissueKg,
           glycogenKg: result.endState.glycogenKg,
           glycogenWaterKg,
-          glycogenAssociatedMassKg: result.endState.glycogenKg + glycogenWaterKg,
+          glycogenAssociatedMassKg: calculateGlycogenAssociatedMassKg(result.endState.glycogenKg),
           extracellularFluidDeviationLiters: result.endState.extracellularFluidDeviationLiters,
           adaptiveThermogenesisKcalPerDay: result.endState.adaptiveThermogenesisKcalPerDay,
           dynamicRmrKcalPerDay: result.calculations.expenditure.dynamicRmrKcalPerDay,
@@ -432,10 +433,12 @@ export function runForecastWithInternalArtifacts(input: RunForecastInput): Forec
     scenarioProvenance: {
       mode: input.scenario.mode,
       nutrition: input.scenario.mode === "fixed" ? "fixed"
-        : input.scenario.mode === "recent-behavior" ? "observed-joint-block-resampling"
+        : input.scenario.mode === "recent-behavior" && input.reliableDonorDays.length === 0 ? "engineering-fallback"
+          : input.scenario.mode === "recent-behavior" ? "observed-joint-block-resampling"
           : "joint-target-distribution",
       activity: input.scenario.mode === "fixed" ? "fixed-scheduled"
-        : input.scenario.mode === "recent-behavior" ? "observed-joint-block-resampling"
+        : input.scenario.mode === "recent-behavior" && input.reliableDonorDays.length === 0 ? "engineering-fallback"
+          : input.scenario.mode === "recent-behavior" ? "observed-joint-block-resampling"
           : "stochastic-adherence",
       donorEvidence: input.variabilityEvidence,
     },

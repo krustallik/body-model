@@ -2,8 +2,10 @@ import { calculateStrengthActivity } from "./strength";
 import {
   knownEnergyCoverageV1,
   resolveEventEnergyV1,
+  selectPersistedEnergyResolutionV1,
   type EnergySourceKind,
   type KnownEnergyCoverageV1,
+  type PersistedEnergyResolutionV1,
 } from "./canonical-activity-policy-v1";
 import {
   type CanonicalWorkoutType,
@@ -51,6 +53,8 @@ export type ExplicitWorkoutActivityEvent = {
   manualActiveKcal?: number | null;
   manualActiveKcalPresent?: boolean;
   mechanicalStepperKcal?: number | null;
+  /** Current persisted canonical event resolution; stale rows are explicit blockers. */
+  canonicalEnergyResolution?: PersistedEnergyResolutionV1 | null;
   /** Future forecast only. Historical events leave this unset. */
   forecastScenarioStrengthMet?: boolean;
 };
@@ -72,15 +76,16 @@ export type WorkoutEnergyResolutionSummaryV1 = {
   perEvent: Array<{
     workoutId?: number;
     classification: WorkoutActivityClassification;
-    source: "hr-calibrated-stepper" | "mechanical-stepper" | "device-active-kcal" | "strength-met-fallback" | "bodycast-strength-estimate" | "manual-kcal" | "forecast-scenario-strength-met" | "none";
+    source: "hr-calibrated-stepper" | "mechanical-stepper" | "device-active-kcal" | "strength-met-fallback" | "bodycast-strength-estimate" | "bodycast-strength-met-fallback" | "manual-kcal" | "forecast-scenario-strength-met" | "none";
     kcal: number;
+    resolutionRevision?: number;
     stepperEnergy?: StepperHrAwareActiveEnergyResultV1;
   }>;
 };
 
 function selectionProvenance(
   source: EnergySourceKind,
-): "device-active-kcal" | "mechanical-stepper" | "bodycast-strength-estimate" | "manual-kcal" | "forecast-scenario-strength-met" | "none" {
+): "device-active-kcal" | "mechanical-stepper" | "bodycast-strength-estimate" | "bodycast-strength-met-fallback" | "manual-kcal" | "forecast-scenario-strength-met" | "none" {
   switch (source) {
     case "garmin-fallback":
       return "device-active-kcal";
@@ -88,6 +93,8 @@ function selectionProvenance(
       return "mechanical-stepper";
     case "bodycast-strength-estimate":
       return "bodycast-strength-estimate";
+    case "bodycast-strength-met-fallback":
+      return "bodycast-strength-met-fallback";
     case "manual-kcal":
       return "manual-kcal";
     case "forecast-scenario-strength-met":
@@ -138,8 +145,9 @@ export function resolveExplicitWorkoutActivityKcal(input: {
   const perEvent: Array<{
     workoutId?: number;
     classification: WorkoutActivityClassification;
-    source: "hr-calibrated-stepper" | "mechanical-stepper" | "device-active-kcal" | "strength-met-fallback" | "bodycast-strength-estimate" | "manual-kcal" | "forecast-scenario-strength-met" | "none";
+    source: "hr-calibrated-stepper" | "mechanical-stepper" | "device-active-kcal" | "strength-met-fallback" | "bodycast-strength-estimate" | "bodycast-strength-met-fallback" | "manual-kcal" | "forecast-scenario-strength-met" | "none";
     kcal: number;
+    resolutionRevision?: number;
     stepperEnergy?: StepperHrAwareActiveEnergyResultV1;
   }> = [];
 
@@ -167,6 +175,36 @@ export function resolveExplicitWorkoutActivityKcal(input: {
       }
       continue;
     }
+    // Persisted canonical Active Energy is authoritative in both the staged
+    // selection-v1 episode and the ordinary production v7 episode. A stale
+    // row intentionally resolves to unavailable until its writer recomputes it.
+    if (event.canonicalEnergyResolution !== undefined && event.canonicalEnergyResolution !== null) {
+      const selected = selectPersistedEnergyResolutionV1({
+        resolution: event.canonicalEnergyResolution,
+        classification: event.classification === "traditional-strength-training" || event.classification === "stair-climbing"
+          ? event.classification
+          : "other",
+      });
+      const provenance = selectionProvenance(selected.source);
+      if (selected.selectedKcal === null || provenance === "none") {
+        selectedValues.push(null);
+      } else {
+        selectedValues.push(selected.selectedKcal);
+        if (selected.source === "garmin-fallback") deviceActiveEnergyKcal += selected.selectedKcal;
+        else if (selected.source === "bodycast-strength-met-fallback") strengthMetFallbackKcal += selected.selectedKcal;
+        else if (selected.source === "bodycast-strength-estimate" || selected.source === "forecast-scenario-strength-met") {
+          publishedStrengthEstimateKcal += selected.selectedKcal;
+        } else bodyCastStepperActiveEnergyKcal += selected.selectedKcal;
+      }
+      perEvent.push({
+        ...(event.workoutId === undefined ? {} : { workoutId: event.workoutId }),
+        classification: event.classification,
+        source: provenance,
+        kcal: selected.selectedKcal ?? 0,
+        resolutionRevision: event.canonicalEnergyResolution.resolutionRevision,
+      });
+      continue;
+    }
     if (selectionV1) {
       let mechanicalStepperKcal = event.mechanicalStepperKcal ?? null;
       if (
@@ -183,9 +221,20 @@ export function resolveExplicitWorkoutActivityKcal(input: {
           mechanicalStepperKcal = mechanical.estimatedActiveKcal;
         }
       }
+      const bodyCastMetFallbackKcal = event.classification === "traditional-strength-training"
+        && !(event.strengthSessionCompleted === true && event.bodyCastEstimateFresh === true
+          && event.bodyCastEstimateKcal !== null && event.bodyCastEstimateKcal !== undefined)
+        && event.durationMinutes !== null && event.durationMinutes > 0
+        ? calculateStrengthActivity({
+          weightKg: input.weightKg,
+          rmrKcalPerDay: input.rmrKcalPerDay,
+          durationMinutes: event.durationMinutes,
+        })
+        : null;
       const selected = resolveEventEnergyV1({
         ...event,
         mechanicalStepperKcal,
+        bodyCastMetFallbackKcal,
       });
       const provenance = selectionProvenance(selected.source);
       if (selected.selectedKcal === null || provenance === "none") {
@@ -193,6 +242,7 @@ export function resolveExplicitWorkoutActivityKcal(input: {
       } else {
         selectedValues.push(selected.selectedKcal);
         if (selected.source === "garmin-fallback") deviceActiveEnergyKcal += selected.selectedKcal;
+        else if (selected.source === "bodycast-strength-met-fallback") strengthMetFallbackKcal += selected.selectedKcal;
         else if (selected.source === "bodycast-strength-estimate" || selected.source === "forecast-scenario-strength-met") {
           publishedStrengthEstimateKcal += selected.selectedKcal;
         } else bodyCastStepperActiveEnergyKcal += selected.selectedKcal;

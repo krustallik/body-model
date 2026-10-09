@@ -1,5 +1,5 @@
-import { createHash, randomBytes } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -10,11 +10,21 @@ import { decryptBackupToWritable, encryptBackupStream } from "../production-back
 import { restoreEncryptedPostgresBackup } from "../restore-encrypted-postgres-backup.mjs";
 import {
   evaluateProductionPreflight,
+  assertProductionDatabaseIdentityMatches,
   EXPECTED_MIGRATION_OBJECTS,
   EXPECTED_PENDING_MIGRATIONS,
+  evaluateProductionPostflight,
   verifyRestoredBackup,
 } from "../production-migration-preflight.mjs";
+import { ACTIVE_ENERGY_UNIFIED_MANIFEST, STAGE_02_MANIFEST } from "../production-migration-manifests.mjs";
+import { renderProductionDbPreflightSql } from "../production-db-preflight.mjs";
+import { PRODUCTION_WRITER_TOPOLOGY_CONTRACT } from "../production-writer-drain.mjs";
 import { assertPostgresClientCompatibility } from "../postgres-client-versions.mjs";
+import { canonicalSha256, createAuthorizationEnvelope } from "../production-migration-authorization.mjs";
+import { executionProofAudience, verifyGitHubExecutionProof } from "../production-migration-execution-attestation.mjs";
+import { readPrismaDatabaseIdentity, startPrismaMigrationAtDdlBoundary } from "../run-prisma-migrate-with-lock-timeout.mjs";
+import { withPrismaLockTimeout } from "../production-migration-release.mjs";
+import { readCommittedGitBlob } from "../production-migration-integrity.mjs";
 
 const source = { host: "127.0.0.1", port: Number(process.env.BODYCAST_SOURCE_PORT ?? 5432), database: "bodycast", user: "bodycast", password: "bodycast_ci_only" };
 const target = { host: "127.0.0.1", port: Number(process.env.BODYCAST_RESTORE_PORT ?? 5433), database: "bodycast_restore", user: "bodycast_restore", password: "restore_ci_only" };
@@ -29,12 +39,12 @@ function run(command, args, { input, env = process.env } = {}) {
 }
 
 function clientArgs(db, tool) {
-  return ["run", "--rm", "--interactive", "--network", "host", "--env", `PGPASSWORD=${db.password}`, POSTGRES_IMAGE, tool,
+  return ["run", "--rm", "--interactive", "--network", "host", "--env", `PGPASSWORD=${db.password}`, "--env", "PGAPPNAME=bodycast-production-preflight", POSTGRES_IMAGE, tool,
     "--host", db.host, "--port", String(db.port), "--username", db.user, "--dbname", db.database];
 }
 
 function sql(db, content) {
-  return run("docker", [...clientArgs(db, "psql"), "--no-psqlrc", "--quiet", "--tuples-only", "--no-align", "--set=ON_ERROR_STOP=1", "--file=-"], { input: content });
+  return run("docker", [...clientArgs(db, "psql"), "--no-psqlrc", "--quiet", "--tuples-only", "--no-align", "--set=ON_ERROR_STOP=1", "--set=VERBOSITY=verbose", "--file=-"], { input: content });
 }
 
 async function createSourceFixture(db = source) {
@@ -42,15 +52,19 @@ async function createSourceFixture(db = source) {
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
     .sort();
+  const releaseSha = run("git", ["rev-parse", "HEAD"]);
   const applied = migrationDirectories.filter((name) => !EXPECTED_PENDING_MIGRATIONS.includes(name));
-  const rows = await Promise.all(applied.map(async (name, index) => {
-    const migrationSql = await readFile(path.join("prisma/migrations", name, "migration.sql"));
-    const checksum = createHash("sha256").update(migrationSql).digest("hex");
+  const stage02Checksums = new Map(STAGE_02_MANIFEST.migrations.map(({ name, sha256 }) => [name, sha256]));
+  const rows = applied.map((name, index) => {
+    const migrationSql = readCommittedGitBlob({
+      repositoryPath: process.cwd(), releaseSha, relativePath: `prisma/migrations/${name}/migration.sql`,
+    });
+    const checksum = stage02Checksums.get(name) ?? createHash("sha256").update(migrationSql).digest("hex");
     const started = new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString();
     const finished = new Date(Date.UTC(2026, 0, 1, 0, 0, index + 1)).toISOString();
     const quote = (value) => `'${String(value).replaceAll("'", "''")}'`;
     return `(${quote(`ci-migration-${index}`)}, ${quote(checksum)}, ${quote(started)}, ${quote(finished)}, ${quote(name)}, ${quote("CI synthetic applied migration")}, 1)`;
-  }));
+  });
 
   const createSql = `
     CREATE TABLE public."_prisma_migrations" (
@@ -58,20 +72,77 @@ async function createSourceFixture(db = source) {
       finished_at timestamp, migration_name text NOT NULL, logs text,
       rolled_back_at timestamp, applied_steps_count integer NOT NULL DEFAULT 0
     );
-    CREATE TABLE public."StrengthDiarySession" (id text PRIMARY KEY);
-    CREATE TABLE public."ExerciseCatalog" (id text PRIMARY KEY);
+    CREATE TABLE public."Workout" (id integer PRIMARY KEY);
+    CREATE TABLE public."Profile" (id integer PRIMARY KEY);
+    CREATE TABLE public."ModelEpisode" (id integer PRIMARY KEY, "profileId" integer NOT NULL);
+    CREATE TABLE public."PhysiologyV7Lifecycle" (id text PRIMARY KEY);
+    CREATE TABLE public."DailyModelState" (id text PRIMARY KEY);
+    CREATE TABLE public."ExperimentalSkeletalMuscleDeltaShadow" (
+      id serial PRIMARY KEY, "profileId" integer NOT NULL, date varchar(10) NOT NULL,
+      "sourceFingerprint" varchar(64) NOT NULL, "modelRevision" varchar(100) NOT NULL,
+      features jsonb NOT NULL, result jsonb NOT NULL,
+      "createdAt" timestamptz(3) NOT NULL DEFAULT now(), "updatedAt" timestamptz(3) NOT NULL DEFAULT now()
+    );
+    CREATE UNIQUE INDEX "ExperimentalSkeletalMuscleDeltaShadow_profileId_date_key"
+      ON public."ExperimentalSkeletalMuscleDeltaShadow" ("profileId", date);
+    CREATE TABLE public."ExperimentalCessationDetrainingShadow" (
+      id serial PRIMARY KEY, "profileId" integer NOT NULL, date varchar(10) NOT NULL,
+      "sourceFingerprint" varchar(64) NOT NULL, "modelRevision" varchar(100) NOT NULL,
+      features jsonb NOT NULL, result jsonb NOT NULL,
+      "createdAt" timestamptz(3) NOT NULL DEFAULT now(), "updatedAt" timestamptz(3) NOT NULL DEFAULT now()
+    );
+    CREATE UNIQUE INDEX "ExperimentalCessationDetrainingShadow_profileId_date_key"
+      ON public."ExperimentalCessationDetrainingShadow" ("profileId", date);
+    CREATE TABLE public."StrengthDiarySession" (id integer PRIMARY KEY);
+    CREATE TABLE public."ExerciseCatalog" (id integer PRIMARY KEY);
+    CREATE TABLE public."ProgramExercise" (id integer PRIMARY KEY);
+    CREATE TABLE public."StrengthSessionExercise" (id integer PRIMARY KEY);
+    CREATE TABLE public."StrengthSet" (id integer PRIMARY KEY);
+    CREATE TABLE public."HealthMetricSample" (id integer PRIMARY KEY);
+    CREATE TABLE public."BodycastUnrelatedLockProbe" (id integer PRIMARY KEY);
     INSERT INTO public."_prisma_migrations" (id, checksum, started_at, finished_at, migration_name, logs, applied_steps_count)
     VALUES ${rows.join(",\n")};
-    INSERT INTO public."StrengthDiarySession" VALUES ('session-ci-1'), ('session-ci-2');
-    INSERT INTO public."ExerciseCatalog" VALUES ('exercise-ci-1'), ('exercise-ci-2'), ('exercise-ci-3');
+    INSERT INTO public."StrengthDiarySession" VALUES (1), (2);
+    INSERT INTO public."ExerciseCatalog" VALUES (1), (2), (3);
+    INSERT INTO public."Profile" VALUES (1);
+    INSERT INTO public."ExperimentalSkeletalMuscleDeltaShadow"
+      ("profileId", date, "sourceFingerprint", "modelRevision", features, result) VALUES
+      (1, '2026-01-01', repeat('a', 64), 'relative-muscle-v3', '{}'::jsonb, '{"legacy":"delta"}'::jsonb);
+    INSERT INTO public."ExperimentalCessationDetrainingShadow"
+      ("profileId", date, "sourceFingerprint", "modelRevision", features, result) VALUES
+      (1, '2026-01-01', repeat('b', 64), 'relative-muscle-v3', '{}'::jsonb, '{"legacy":"cessation"}'::jsonb);
   `;
   sql(db, createSql);
+  for (const { name } of STAGE_02_MANIFEST.migrations) {
+    sql(db, await readFile(path.join("prisma/migrations", name, "migration.sql"), "utf8"));
+  }
+  for (const tableName of ["ExperimentalSkeletalMuscleDeltaShadow", "ExperimentalCessationDetrainingShadow"]) {
+    sql(db, `INSERT INTO public."${tableName}" ("profileId", date, "sourceFingerprint", "modelRevision", features, result)
+      VALUES (1, '2026-01-01', repeat('f', 64), 'relative-muscle-v3', '{}'::jsonb, '{"legacy":"updated"}'::jsonb)
+      ON CONFLICT ("profileId", date) DO UPDATE SET result = EXCLUDED.result;`);
+  }
   return migrationDirectories;
 }
 
 function readSourceReport(db = source) {
-  const report = sql(db, requireSql("scripts/production-db-preflight.sql"));
-  return JSON.parse(report);
+  const report = sql(db, renderProductionDbPreflightSql(requireSql("scripts/production-db-preflight.sql")));
+  const parsed = JSON.parse(report);
+  const observedAt = new Date().toISOString();
+  parsed.writerDrain.observerApplicationName = "bodycast-production-preflight";
+  parsed.writerDrain.identityPolicy = "no-other-client-backends";
+  parsed.writerDrain.topology = {
+    schemaVersion: 1,
+    contract: PRODUCTION_WRITER_TOPOLOGY_CONTRACT,
+    ready: true,
+    blockers: [],
+    observedAt,
+    app: { name: "bodycast-app-prod", state: "absent", restartPolicy: null },
+    database: { name: "bodycast-db-prod", state: "running", health: "healthy", publishedPostgresPort: false, networks: ["bodycast-backend-prod"] },
+    backendNetwork: { name: "bodycast-backend-prod", containers: ["bodycast-db-prod"] },
+    caddy: { name: "gymbeam-caddy", state: "running", configValidated: true },
+    routeFile: { verified: true, maintenanceResponse: true, containsReverseProxy: false, sha256: "a".repeat(64) },
+  };
+  return parsed;
 }
 
 function verifyPinnedPostgresClientVersions() {
@@ -91,23 +162,73 @@ async function waitForPostgres(db) {
   throw new Error("Prepared-lock disposable PostgreSQL did not become ready.");
 }
 
+async function withClientBackend(db, applicationName, work) {
+  const containerName = `bodycast-ci-client-${randomBytes(6).toString("hex")}`;
+  const pgArgs = [
+    "run", "--detach", "--name", containerName, "--network", "host",
+    "--env", `PGPASSWORD=${db.password}`, "--env", `PGAPPNAME=${applicationName}`,
+    POSTGRES_IMAGE, "psql", "--no-psqlrc", "--quiet", "--tuples-only", "--no-align", "--set=ON_ERROR_STOP=1",
+    "--host", db.host, "--port", String(db.port), "--username", db.user, "--dbname", db.database,
+    "--command", "SELECT pg_sleep(45);",
+  ];
+  try {
+    run("docker", pgArgs);
+    const deadline = Date.now() + 10_000;
+    let report = null;
+    while (Date.now() < deadline) {
+      const state = run("docker", ["inspect", "--format", "{{.State.Status}}", containerName]);
+      if (state !== "running") throw new Error(`Isolated PostgreSQL writer fixture exited before registration (${state}).`);
+      report = readSourceReport(db);
+      if (report.writerDrain.activeClientBackends.some((client) => client.applicationName === applicationName)) {
+        return await work(report);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(`PostgreSQL did not report the ${applicationName || "unknown"} client backend before the deterministic barrier expired.`);
+  } finally {
+    const removed = spawnSync("docker", ["rm", "--force", containerName], { encoding: "utf8", windowsHide: true });
+    if (removed.error || (removed.status !== 0 && !String(removed.stderr ?? "").includes("No such container"))) {
+      throw new Error(`Could not remove isolated PostgreSQL client fixture: ${removed.stderr || removed.error?.message || removed.status}`);
+    }
+    const escapedApplicationName = applicationName.replaceAll("'", "''");
+    sql(db, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+      WHERE datname = current_database() AND application_name = '${escapedApplicationName}' AND pid <> pg_backend_pid();`);
+    const deadline = Date.now() + 5_000;
+    let writerDisconnected = false;
+    while (Date.now() < deadline) {
+      const remaining = sql(db, `SELECT count(*) FROM pg_stat_activity
+        WHERE datname = current_database() AND application_name = '${escapedApplicationName}' AND pid <> pg_backend_pid();`);
+      if (remaining === "0") { writerDisconnected = true; break; }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (!writerDisconnected) throw new Error(`Isolated PostgreSQL writer fixture ${applicationName} remained connected after cleanup.`);
+  }
+}
+
 async function withPreparedLockPostgres(work) {
   const containerName = `bodycast-ci-prepared-lock-${randomBytes(6).toString("hex")}`;
+  const requestedPort = process.env.BODYCAST_PREPARED_PORT ? Number(process.env.BODYCAST_PREPARED_PORT) : null;
+  if (requestedPort !== null && (!Number.isInteger(requestedPort) || requestedPort < 1024 || requestedPort > 65535)) {
+    throw new Error("BODYCAST_PREPARED_PORT must be an available TCP port between 1024 and 65535.");
+  }
   let created = false;
   try {
+    const publishArgs = requestedPort === null
+      ? ["--publish", "127.0.0.1::5432"]
+      : ["--publish", `127.0.0.1:${requestedPort}:5432`];
     run("docker", [
-      "create", "--name", containerName, "--publish", "127.0.0.1::5432",
+      "create", "--name", containerName, ...publishArgs,
       "--env", "POSTGRES_DB=bodycast", "--env", "POSTGRES_USER=bodycast", "--env", "POSTGRES_PASSWORD=prepared_lock_ci_only",
       "--label", "bodycast.safety-test=prepared-lock", POSTGRES_IMAGE,
       "postgres", "-c", "max_prepared_transactions=10",
     ]);
     created = true;
     run("docker", ["start", containerName]);
-    const publishedPort = run("docker", ["port", containerName, "5432/tcp"]);
+    const publishedPort = requestedPort === null ? run("docker", ["port", containerName, "5432/tcp"]) : "";
     const match = publishedPort.match(/:(\d+)\s*$/);
-    if (!match) throw new Error("Could not identify the host port for prepared-lock disposable PostgreSQL.");
+    if (requestedPort === null && !match) throw new Error("Could not identify the host port for prepared-lock disposable PostgreSQL.");
     const db = {
-      host: "127.0.0.1", port: Number(match[1]), database: "bodycast",
+      host: "127.0.0.1", port: requestedPort ?? Number(match[1]), database: "bodycast",
       user: "bodycast", password: "prepared_lock_ci_only",
     };
     await waitForPostgres(db);
@@ -120,7 +241,8 @@ async function withPreparedLockPostgres(work) {
 async function withPreparedTransactionRelationLock(db, tableName, work) {
   const alterTargets = new Set([
     "ExerciseCatalog", "ProgramExercise", "StrengthSessionExercise", "StrengthSet",
-    "HealthMetricSample", "StrengthDiarySession", "BodycastUnrelatedLockProbe",
+    "HealthMetricSample", "StrengthDiarySession", "DailyModelState", "PhysiologyV7Lifecycle",
+    "Workout", "Profile", "ModelEpisode", "BodycastUnrelatedLockProbe",
   ]);
   if (!alterTargets.has(tableName)) throw new Error("Refusing to prepare a lock outside the reviewed Stage 02 targets and explicit unrelated-lock probe.");
 
@@ -134,12 +256,14 @@ async function withPreparedTransactionRelationLock(db, tableName, work) {
   }
 }
 
-async function withShortGrantedRelationLock(tableName, work) {
+async function withShortGrantedRelationLock(tableName, lockMode, work) {
   const alterTargets = new Set([
     "ExerciseCatalog", "ProgramExercise", "StrengthSessionExercise", "StrengthSet",
-    "HealthMetricSample", "StrengthDiarySession",
+    "HealthMetricSample", "StrengthDiarySession", "DailyModelState", "PhysiologyV7Lifecycle",
+    "Workout", "Profile", "ModelEpisode", "BodycastUnrelatedLockProbe",
   ]);
   if (!alterTargets.has(tableName)) throw new Error("Refusing to test an unreviewed relation lock target.");
+  if (!["ACCESS SHARE", "ROW EXCLUSIVE"].includes(lockMode)) throw new Error("Refusing to test an unreviewed PostgreSQL lock mode.");
 
   const child = spawn("docker", [
     ...clientArgs(source, "psql"), "--no-psqlrc", "--quiet", "--tuples-only", "--no-align", "--set=ON_ERROR_STOP=1",
@@ -165,7 +289,7 @@ async function withShortGrantedRelationLock(tableName, work) {
   child.once("close", (code) => {
     if (!readyReached) readyReject(new Error(`Short-lock PostgreSQL session exited before acquiring its lock (${code}).`));
   });
-  child.stdin.write(`BEGIN;\nSELECT count(*) FROM public."${tableName}";\n\\echo BODYCAST_SHORT_LOCK_HELD\n`);
+  child.stdin.write(`BEGIN;\nLOCK TABLE public."${tableName}" IN ${lockMode} MODE;\n\\echo BODYCAST_SHORT_LOCK_HELD\n`);
   await ready;
   try {
     return await work();
@@ -248,9 +372,258 @@ function assertBlocked(report, migrations, mutate, expected) {
   }
 }
 
+async function createTargetBindingAuthorization(identity, now = Date.now()) {
+  const keyPair = generateKeyPairSync("ed25519");
+  const keyId = "disposable-target-binding-test";
+  const publicKeyPem = keyPair.publicKey.export({ type: "spki", format: "pem" }).toString();
+  const privateKeyPem = keyPair.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  const allowlist = { schemaVersion: 1, keys: [{ keyId, status: "active", publicKeyPem }] };
+  const releaseSha = "a".repeat(40);
+  const pendingMigrationNames = ["20261002100000_active_energy_canonical_resolution"];
+  const claims = {
+    repository: "krustallik/body-model",
+    workflowId: "77",
+    workflowPath: ".github/workflows/production-migrate.yml",
+    workflowRunId: "99001",
+    workflowRunAttempt: 1,
+    actorId: "126446430",
+    releaseSha,
+    currentMainSha: releaseSha,
+    manifestId: "active-energy-unified-v2",
+    pendingMigrationNames,
+    pendingSetDigest: canonicalSha256(pendingMigrationNames),
+    preflightRunId: "88001",
+    preflightRunAttempt: 2,
+    preflightRunStartedAt: new Date(now - 120_000).toISOString(),
+    preflightResultDigest: "b".repeat(64),
+    backupArtifactId: "77001",
+    backupArtifactDigest: "c".repeat(64),
+    backupSnapshotAt: new Date(now - 10_000).toISOString(),
+    restoreResultDigest: "d".repeat(64),
+    productionIdentityDigest: canonicalSha256(identity),
+    writerDrainDigest: "1".repeat(64),
+    writerTopologyDigest: "2".repeat(64),
+    issuedAt: new Date(now - 5_000).toISOString(),
+    expiresAt: new Date(now + 55 * 60_000).toISOString(),
+    authorizationId: randomUUID(),
+    nonce: randomUUID(),
+  };
+  const authorizationEnvelope = createAuthorizationEnvelope(claims, { keyId, privateKeyPem, allowlist });
+  const latestPreflight = {
+    repository: "krustallik/body-model",
+    workflowPath: ".github/workflows/production-migration-preflight.yml",
+    workflowId: "88",
+    event: "workflow_dispatch",
+    headBranch: "main",
+    headSha: releaseSha,
+    displayTitle: `Preflight ${releaseSha} ${claims.manifestId}`,
+    id: claims.preflightRunId,
+    runAttempt: claims.preflightRunAttempt,
+    createdAt: new Date(now - 60_000).toISOString(),
+    runStartedAt: claims.preflightRunStartedAt,
+    status: "completed",
+    conclusion: "success",
+  };
+  const migrationRun = {
+    repository: claims.repository,
+    workflowPath: claims.workflowPath,
+    workflowId: claims.workflowId,
+    event: "workflow_dispatch",
+    headBranch: "main",
+    headSha: claims.releaseSha,
+    id: claims.workflowRunId,
+    runAttempt: claims.workflowRunAttempt,
+    runStartedAt: new Date(now - 30_000).toISOString(),
+    status: "in_progress",
+  };
+  const executionChallenge = randomBytes(32).toString("hex");
+  const oidcPair = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const oidcJwk = { ...oidcPair.publicKey.export({ format: "jwk" }), kid: "fixture-github-oidc-key", use: "sig", alg: "RS256" };
+  const header = Buffer.from(JSON.stringify({ alg: "RS256", kid: oidcJwk.kid, typ: "JWT" })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({
+    iss: "https://token.actions.githubusercontent.com",
+    aud: executionProofAudience(authorizationEnvelope, executionChallenge, allowlist, now),
+    jti: randomUUID(), iat: Math.floor(now / 1000), nbf: Math.floor(now / 1000), exp: Math.floor((now + 4 * 60_000) / 1000),
+    repository: "krustallik/body-model",
+    sub: "repo:krustallik/body-model:environment:production",
+    environment: "production",
+    workflow_ref: "krustallik/body-model/.github/workflows/production-migrate.yml@refs/heads/main",
+    workflow_sha: releaseSha,
+    ref: "refs/heads/main",
+    sha: releaseSha,
+    event_name: "workflow_dispatch",
+    actor_id: claims.actorId,
+    repository_owner_id: claims.actorId,
+    run_id: claims.workflowRunId,
+    run_attempt: claims.workflowRunAttempt,
+  })).toString("base64url");
+  const signingInput = header + "." + payload;
+  const executionProof = signingInput + "." + sign("RSA-SHA256", Buffer.from(signingInput), oidcPair.privateKey).toString("base64url");
+  const verifiedExecutionProof = await verifyGitHubExecutionProof(executionProof, {
+    authorizationEnvelope, allowlist, expectedChallenge: executionChallenge, now, jwks: [oidcJwk],
+  });
+  const currentRun = {
+    repository: { full_name: "krustallik/body-model" },
+    path: ".github/workflows/production-migrate.yml@refs/heads/main",
+    workflow_id: Number(claims.workflowId), event: "workflow_dispatch", head_branch: "main", head_sha: releaseSha,
+    id: Number(claims.workflowRunId), run_attempt: claims.workflowRunAttempt,
+    actor: { id: Number(claims.actorId), login: "krustallik" },
+    run_started_at: migrationRun.runStartedAt, status: "in_progress", conclusion: null,
+  };
+  return { allowlist, authorizationEnvelope, latestPreflight, executionProof, verifiedExecutionProof, oidcJwk, currentRun, executionChallenge, claims };
+}
+
+function databaseUrl(db) {
+  return `postgresql://${encodeURIComponent(db.user)}:${encodeURIComponent(db.password)}@${db.host}:${db.port}/${db.database}?schema=public`;
+}
+
+async function deployPendingPrismaMigrations(db, scratch) {
+  const cli = path.join(process.cwd(), "node_modules", "prisma", "build", "index.js");
+  const schemaRoot = path.join(scratch, "prisma");
+  const migrationsRoot = path.join(schemaRoot, "migrations");
+  await mkdir(migrationsRoot, { recursive: true });
+  await writeFile(path.join(schemaRoot, "schema.prisma"), await readFile("prisma/schema.prisma"));
+  await writeFile(path.join(migrationsRoot, "migration_lock.toml"), await readFile("prisma/migrations/migration_lock.toml"));
+  const releaseSha = run("git", ["rev-parse", "HEAD"]);
+  const directories = (await readdir("prisma/migrations", { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  for (const name of directories) {
+    const targetDirectory = path.join(migrationsRoot, name);
+    await mkdir(targetDirectory, { recursive: true });
+    const sqlBytes = readCommittedGitBlob({
+      repositoryPath: process.cwd(), releaseSha, relativePath: `prisma/migrations/${name}/migration.sql`,
+    });
+    await writeFile(path.join(targetDirectory, "migration.sql"), sqlBytes);
+  }
+  const result = spawnSync(process.execPath, [cli, "migrate", "deploy", "--schema", "prisma/schema.prisma"], {
+    cwd: scratch,
+    env: { ...process.env, DATABASE_URL: withPrismaLockTimeout(databaseUrl(db), 5000) },
+    encoding: "utf8",
+    windowsHide: true,
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  if (result.error || result.status !== 0) {
+    throw new Error(`Full isolated PostgreSQL migration sequence failed: ${result.stderr || result.stdout || result.error?.message || result.status}`);
+  }
+  return result.stdout;
+}
+
+function assertLegacyRelativeMuscleUpsertsRejected(db) {
+  const tables = ["ExperimentalSkeletalMuscleDeltaShadow", "ExperimentalCessationDetrainingShadow"];
+  for (const tableName of tables) {
+    const oldClientUpsert = `INSERT INTO public."${tableName}" ("profileId", date, "sourceFingerprint", "modelRevision", features, result)
+      VALUES (1, '2026-01-01', repeat('e', 64), 'old-profile-date-client', '{}'::jsonb, '{}'::jsonb)
+      ON CONFLICT ("profileId", date) DO UPDATE SET result = EXCLUDED.result;`;
+    const result = spawnSync("docker", [...clientArgs(db, "psql"), "--no-psqlrc", "--quiet", "--set=ON_ERROR_STOP=1", "--command", oldClientUpsert], {
+      encoding: "utf8", windowsHide: true, maxBuffer: 1024 * 1024,
+    });
+    const output = String(result.stdout ?? "") + String(result.stderr ?? "");
+    if (result.status === 0 || !/no unique or exclusion constraint matching the ON CONFLICT specification/i.test(output)) {
+      throw new Error(`Migrated PostgreSQL schema did not reject the old ${tableName} profileId_date upsert target.`);
+    }
+    const legacyRow = sql(db, `SELECT count(*) = 1 AND bool_and("modelEpisodeId" IS NULL AND "isStale" = TRUE)
+      FROM public."${tableName}" WHERE "profileId" = 1 AND date = '2026-01-01';`);
+    if (legacyRow !== "t") throw new Error(`The populated legacy ${tableName} row was not retained as stale/unassigned evidence.`);
+  }
+}
+
+async function verifyPrismaTargetBinding({ sourceUrl, alternateUrl, signedIdentity, scratch }) {
+  const now = Date.now();
+  const fixture = await createTargetBindingAuthorization(signedIdentity, now);
+  const nonceDirectory = path.join(scratch, "consumed-execution-attestations");
+  const makeAuthorized = (targetUrl, authorizationFixture = fixture) => {
+    const claims = authorizationFixture.claims;
+    const observedAt = new Date(now).toISOString();
+    const receipt = {
+      schemaVersion: 1,
+      ready: true,
+      authorizationId: claims.authorizationId,
+      manifestId: claims.manifestId,
+      releaseSha: claims.releaseSha,
+      currentMainSha: claims.currentMainSha,
+      workflowId: claims.workflowId,
+      workflowRunId: claims.workflowRunId,
+      workflowRunAttempt: claims.workflowRunAttempt,
+      actorId: claims.actorId,
+      pending: claims.pendingMigrationNames,
+      pendingSetDigest: claims.pendingSetDigest,
+      preflightRunId: claims.preflightRunId,
+      preflightRunAttempt: claims.preflightRunAttempt,
+      preflightResultDigest: claims.preflightResultDigest,
+      backupArtifactId: claims.backupArtifactId,
+      backupArtifactDigest: claims.backupArtifactDigest,
+      backupSnapshotAt: claims.backupSnapshotAt,
+      restoreResultDigest: claims.restoreResultDigest,
+      productionIdentityDigest: claims.productionIdentityDigest,
+      preflightWriterDrainDigest: claims.writerDrainDigest,
+      preflightWriterTopologyDigest: claims.writerTopologyDigest,
+      finalWriterDrainDigest: "1".repeat(64),
+      finalWriterTopologyDigest: "2".repeat(64),
+      finalWriterDrainObservedAt: observedAt,
+      finalTopologyObservedAt: observedAt,
+      postSchemaDigest: "3".repeat(64),
+      verifiedAt: observedAt,
+    };
+    return {
+      databaseUrl: targetUrl,
+      receipt,
+      envelope: authorizationFixture.authorizationEnvelope,
+      allowlist: authorizationFixture.allowlist,
+      currentWorkflowId: claims.workflowId,
+      currentWorkflowRunId: claims.workflowRunId,
+      currentWorkflowRunAttempt: claims.workflowRunAttempt,
+      currentMainSha: claims.currentMainSha,
+      releaseSha: claims.releaseSha,
+    };
+  };
+  let spawnCount = 0;
+  const spawn = (_command, _args, options) => {
+    spawnCount += 1;
+    if (options.env.DATABASE_URL !== withPrismaLockTimeout(sourceUrl, 5000)) {
+      throw new Error("Prisma spawn did not receive the exact target URL that the identity probe checked.");
+    }
+    return { status: 0 };
+  };
+  let mismatchBlocked = false;
+  try {
+    await startPrismaMigrationAtDdlBoundary({
+      authorized: makeAuthorized(alternateUrl),
+      environment: { BODYCAST_DDL_ATTESTATION_NONCE_DIR: nonceDirectory },
+      identityProbe: readPrismaDatabaseIdentity,
+      latestPreflightProbe: async () => fixture.latestPreflight,
+      currentMigrationRunProbe: async () => fixture.currentRun,
+      executionProofVerifier: (proof, options) => verifyGitHubExecutionProof(proof, { ...options, jwks: [fixture.oidcJwk] }),
+      spawn,
+      now: () => Date.now(),
+      nonceDirectory,
+    });
+  } catch (error) {
+    mismatchBlocked = String(error?.message).includes("differs from the verified production identity");
+  }
+  if (!mismatchBlocked || spawnCount !== 0) {
+    throw new Error("Final Prisma URL for another database was not blocked before spawn.");
+  }
+  // Use a fresh run-bound signature for the independent matching-target assertion.
+  const matchingFixture = await createTargetBindingAuthorization(signedIdentity, Date.now());
+  await startPrismaMigrationAtDdlBoundary({
+    authorized: makeAuthorized(sourceUrl, matchingFixture),
+    environment: { BODYCAST_DDL_ATTESTATION_NONCE_DIR: nonceDirectory },
+    identityProbe: readPrismaDatabaseIdentity,
+    latestPreflightProbe: async () => matchingFixture.latestPreflight,
+    currentMigrationRunProbe: async () => matchingFixture.currentRun,
+    executionProofVerifier: (proof, options) => verifyGitHubExecutionProof(proof, { ...options, jwks: [matchingFixture.oidcJwk] }),
+    spawn,
+    now: () => Date.now(),
+    nonceDirectory,
+  });
+  if (spawnCount !== 1) throw new Error("Matching final Prisma target did not reach the spawn boundary exactly once.");
+  return { alternateDatabaseBlocked: mismatchBlocked, matchingTargetReachedSpawnBoundary: spawnCount === 1 };
+}
+
 async function main() {
   const key = randomBytes(32);
   const encodedKey = key.toString("base64");
+  let alternateDatabaseBlocked = false;
   const scratch = await mkdtemp(path.join(os.tmpdir(), "bodycast-safety-ci-"));
   const archive = path.join(scratch, "synthetic.pgdump.enc");
   try {
@@ -258,44 +631,136 @@ async function main() {
     const mixedSshKeysFiltered = verifyMixedSshKeyFiltering(scratch);
     const migrationDirectories = await createSourceFixture();
     const sourceReport = readSourceReport();
+    if (typeof sourceReport.identity?.databaseOid !== "number" || typeof sourceReport.identity?.serverPort !== "number") {
+      throw new Error("Production preflight identity JSON must preserve numeric database OID and server port values for Prisma target binding.");
+    }
+    const prismaTargetResult = await verifyPrismaTargetBinding({
+      sourceUrl: databaseUrl(source),
+      alternateUrl: databaseUrl(target),
+      signedIdentity: sourceReport.identity,
+      scratch,
+    });
     const evaluated = evaluateProductionPreflight(sourceReport, migrationDirectories);
     if (!evaluated.readyForOwnerAuthorization || JSON.stringify(evaluated.pending) !== JSON.stringify([...EXPECTED_PENDING_MIGRATIONS].sort())) {
-      throw new Error(`Synthetic preflight did not recognize the exact pending pair: ${JSON.stringify(evaluated.blockers)}`);
+      throw new Error(`Synthetic preflight did not recognize the exact reviewed pending set: ${JSON.stringify(evaluated.blockers)}`);
     }
-    if (sourceReport.objects.some((object) => object.present)) throw new Error("Synthetic Stage 02 object inventory was unexpectedly nonempty.");
+    if (sourceReport.writerDrain?.observerApplicationName !== "bodycast-production-preflight"
+      || sourceReport.writerDrain?.activeClientBackends?.length !== 0) {
+      throw new Error("Expected the isolated preflight observer to be the only PostgreSQL client backend.");
+    }
+    const signedWriterDrainDigest = canonicalSha256(sourceReport.writerDrain);
+    let oldWriterBlocked = false;
+    let reconnectBetweenPreflightAndFinalGuardBlocked = false;
+    await withClientBackend(source, "bodycast-old-relative-muscle-writer", async (reconnectedReport) => {
+      const active = reconnectedReport.writerDrain.activeClientBackends.find((client) => client.applicationName === "bodycast-old-relative-muscle-writer");
+      if (!active || !Number.isSafeInteger(active.pid)) throw new Error("The old application writer was not identified as a separate live PostgreSQL backend.");
+      const finalDecision = evaluateProductionPreflight(reconnectedReport, migrationDirectories);
+      if (finalDecision.readyForOwnerAuthorization || !finalDecision.blockers.some((blocker) => blocker.includes("client backend(s)"))) {
+        throw new Error("A reconnected old Relative Muscle writer did not block the final pre-DDL readiness check.");
+      }
+      if (canonicalSha256(reconnectedReport.writerDrain) === signedWriterDrainDigest) {
+        throw new Error("A writer reconnect did not change the signed-versus-final writer-drain observation.");
+      }
+      oldWriterBlocked = true;
+      reconnectBetweenPreflightAndFinalGuardBlocked = true;
+    });
+    const unknownClientReport = structuredClone(sourceReport);
+    unknownClientReport.writerDrain.activeClientBackends = [{ pid: 90210, applicationName: null, clientAddress: null, backendType: "client backend" }];
+    const unknownClientDecision = evaluateProductionPreflight(unknownClientReport, migrationDirectories);
+    if (unknownClientDecision.readyForOwnerAuthorization || !unknownClientDecision.blockers.some((blocker) => blocker.includes("client backend(s)"))) {
+      throw new Error("An unknown/proxied PostgreSQL client identity was not blocked.");
+    }
+    const ambiguousTopologyReport = structuredClone(sourceReport);
+    ambiguousTopologyReport.writerDrain.topology.database.publishedPostgresPort = true;
+    const ambiguousTopologyDecision = evaluateProductionPreflight(ambiguousTopologyReport, migrationDirectories);
+    if (ambiguousTopologyDecision.readyForOwnerAuthorization || !ambiguousTopologyDecision.blockers.some((blocker) => blocker.includes("topology drain evidence"))) {
+      throw new Error("A published/NAT-ambiguous PostgreSQL topology was not blocked.");
+    }
+    const missingStage02Objects = EXPECTED_MIGRATION_OBJECTS.filter((name) => (
+      !sourceReport.objects.some((object) => object.name === name && object.present)
+    ));
+    if (missingStage02Objects.length) throw new Error(`Synthetic baseline is missing applied Stage 02 objects: ${missingStage02Objects.join(", " )}.`);
 
     assertBlocked(sourceReport, migrationDirectories,
-      (report) => { report.objects.find((object) => object.name === EXPECTED_MIGRATION_OBJECTS[0]).present = true; }, "already exist");
+      (report) => { report.objects.find((object) => object.name === ACTIVE_ENERGY_UNIFIED_MANIFEST.postflightObjects[0]).present = true; }, "already exist");
     assertBlocked(sourceReport, migrationDirectories,
       (report) => { report.migrations.push({ name: migrationDirectories[0], startedAt: "2026-01-02T00:00:00Z", finishedAt: null, rolledBackAt: null }); }, "Incomplete/failed migration");
+    const longTransactionReport = structuredClone(sourceReport);
+    longTransactionReport.longTransactions.push({ pid: 123, xactAgeSeconds: 400 });
+    const longTransactionDecision = evaluateProductionPreflight(longTransactionReport, migrationDirectories);
+    if (!longTransactionDecision.readyForOwnerAuthorization
+      || !longTransactionDecision.diagnostics.longTransactions.some((item) => item.pid === 123 && item.xactAgeSeconds === 400)) {
+      throw new Error("Preflight did not preserve the long-transaction diagnostic without treating it as a readiness blocker.");
+    }
     assertBlocked(sourceReport, migrationDirectories,
-      (report) => { report.longTransactions.push({ pid: 123, xactAgeSeconds: 400 }); }, "transaction(s)");
-    assertBlocked(sourceReport, migrationDirectories,
-      (report) => { report.relevantLocks.push({ pid: 123, relation: "StrengthDiarySession", blockerCount: 1 }); }, "relevant DDL-conflicting relation lock(s)");
+      (report) => { report.conflictingLocks.push({ pid: 123, relation: "StrengthDiarySession", blockerCount: 1 }); }, "lock(s) conflict with the exact migration DDL operations");
 
-    let shortLockReport;
-    await withShortGrantedRelationLock("ExerciseCatalog", () => {
-      shortLockReport = readSourceReport();
-      const observed = shortLockReport.relevantLocks.some((lock) => (
-        Number.isInteger(lock.pid)
-        && lock.blockerType === "backend"
-        && lock.relation === "ExerciseCatalog"
-        && lock.mode === "AccessShareLock"
-        && lock.granted === true
-      ));
-      if (!observed) throw new Error("Preflight missed the actively held short ACCESS SHARE relation lock.");
-      const lockDecision = evaluateProductionPreflight(shortLockReport, migrationDirectories);
-      if (lockDecision.readyForOwnerAuthorization
-        || !lockDecision.blockers.some((blocker) => blocker.includes("relevant DDL-conflicting relation lock(s)"))) {
-        throw new Error("Preflight did not block a short granted lock conflicting with Stage 02 ALTER TABLE.");
+    const ddlLockCases = [
+      { tableName: "Workout", lockMode: "ROW EXCLUSIVE", pgMode: "RowExclusiveLock" },
+      { tableName: "Profile", lockMode: "ROW EXCLUSIVE", pgMode: "RowExclusiveLock" },
+      { tableName: "ModelEpisode", lockMode: "ROW EXCLUSIVE", pgMode: "RowExclusiveLock" },
+      { tableName: "PhysiologyV7Lifecycle", lockMode: "ACCESS SHARE", pgMode: "AccessShareLock" },
+      { tableName: "DailyModelState", lockMode: "ACCESS SHARE", pgMode: "AccessShareLock" },
+    ];
+    const ddlLockTargets = ddlLockCases.map((item) => item.tableName);
+    const shortGrantedLocksRejected = [];
+    for (const { tableName, lockMode, pgMode } of ddlLockCases) {
+      await withShortGrantedRelationLock(tableName, lockMode, () => {
+        const report = readSourceReport();
+        const observed = report.conflictingLocks.some((lock) => (
+          Number.isInteger(lock.pid)
+          && lock.blockerType === "backend"
+          && lock.relation === tableName
+          && lock.mode === pgMode
+          && lock.granted === true
+        ));
+        if (!observed) throw new Error(`Preflight missed the actively held short ${lockMode} relation lock on ${tableName}.`);
+        const decision = evaluateProductionPreflight(report, migrationDirectories);
+        if (decision.readyForOwnerAuthorization
+          || !decision.blockers.some((blocker) => blocker.includes("lock(s) conflict with the exact migration DDL operations"))) {
+          throw new Error(`Preflight did not block the conflicting ${lockMode} lock on ${tableName}.`);
+        }
+      });
+      shortGrantedLocksRejected.push(`${tableName}:${pgMode}`);
+    }
+    const compatibleLockIgnored = [];
+    for (const tableName of ["Workout", "Profile", "ModelEpisode"]) {
+      await withShortGrantedRelationLock(tableName, "ACCESS SHARE", () => {
+        const report = readSourceReport();
+        if (report.conflictingLocks.some((lock) => lock.relation === tableName && lock.mode === "AccessShareLock")) {
+          throw new Error(`A compatible ACCESS SHARE lock on FK-only parent ${tableName} was reported as a DDL blocker.`);
+        }
+        const decision = evaluateProductionPreflight(report, migrationDirectories);
+        if (decision.blockers.some((blocker) => blocker.includes("lock(s) conflict with the exact migration DDL operations"))) {
+          throw new Error(`A compatible ACCESS SHARE lock on FK-only parent ${tableName} became a DDL lock blocker.`);
+        }
+        if (decision.blockers.length !== 1 || !decision.blockers[0].includes("client backend(s)")) {
+          throw new Error(`Compatible-lock observation had an unexpected blocker set: ${decision.blockers.join(" ")}`);
+        }
+      });
+      compatibleLockIgnored.push(`${tableName}:AccessShareLock`);
+    }
+    let unrelatedShortLockIgnored = false;
+    await withShortGrantedRelationLock("BodycastUnrelatedLockProbe", "ACCESS SHARE", () => {
+      const report = readSourceReport();
+      if (report.conflictingLocks.some((lock) => lock.relation === "BodycastUnrelatedLockProbe")) {
+        throw new Error("An unrelated granted relation lock was incorrectly added to the DDL blocker inventory.");
       }
+      const decision = evaluateProductionPreflight(report, migrationDirectories);
+      if (decision.blockers.some((blocker) => blocker.includes("lock(s) conflict with the exact migration DDL operations"))) {
+        throw new Error("An unrelated granted relation lock incorrectly became a DDL blocker.");
+      }
+      if (decision.blockers.length !== 1 || !decision.blockers[0].includes("client backend(s)")) {
+        throw new Error(`Unrelated-lock observation had an unexpected blocker set: ${decision.blockers.join(" ")}`);
+      }
+      unrelatedShortLockIgnored = true;
     });
     const releasedLockReport = readSourceReport();
-    if (releasedLockReport.relevantLocks.some((lock) => lock.relation === "ExerciseCatalog" && lock.mode === "AccessShareLock")) {
-      throw new Error("The short relation lock was not released after its deterministic lock test.");
+    if (releasedLockReport.conflictingLocks.some((lock) => ddlLockTargets.includes(lock.relation) && lock.mode === "AccessShareLock")) {
+      throw new Error("A short relation lock was not released after its deterministic lock test.");
     }
     if (!evaluateProductionPreflight(releasedLockReport, migrationDirectories).readyForOwnerAuthorization) {
-      throw new Error("Preflight did not return to ready after the short granted lock was released.");
+      throw new Error("Preflight did not return to ready after short granted locks were released.");
     }
 
     let preparedLockRejected = false;
@@ -307,14 +772,12 @@ async function main() {
       if (!evaluateProductionPreflight(cleanReport, preparedMigrations).readyForOwnerAuthorization) {
         throw new Error("Prepared-lock PostgreSQL baseline was not ready before the prepared transaction test.");
       }
-      sql(preparedDb, 'CREATE TABLE public."BodycastUnrelatedLockProbe" (id integer);');
-
       await withPreparedTransactionRelationLock(preparedDb, "BodycastUnrelatedLockProbe", async (gid) => {
         const report = readSourceReport(preparedDb);
         if (!report.preparedTransactions.some((item) => item.gid === gid && item.transaction && item.preparedAt)) {
           throw new Error("The unrelated prepared transaction was not visible in separate prepared-transaction diagnostics.");
         }
-        if (report.relevantLocks.some((item) => item.relation === "BodycastUnrelatedLockProbe")) {
+        if (report.conflictingLocks.some((item) => item.relation === "BodycastUnrelatedLockProbe")) {
           throw new Error("An unrelated prepared relation lock was incorrectly treated as a Stage 02 DDL blocker.");
         }
         if (!evaluateProductionPreflight(report, preparedMigrations).readyForOwnerAuthorization) {
@@ -323,20 +786,20 @@ async function main() {
         unrelatedPreparedLockIgnored = true;
       });
 
-      await withPreparedTransactionRelationLock(preparedDb, "ExerciseCatalog", async (gid) => {
+      await withPreparedTransactionRelationLock(preparedDb, "DailyModelState", async (gid) => {
         if (sql(preparedDb, `SELECT EXISTS (SELECT 1 FROM pg_prepared_xacts WHERE gid = '${gid}');`) !== "t") {
           throw new Error("The test prepared transaction was not present in pg_prepared_xacts.");
         }
         const report = readSourceReport(preparedDb);
-        const lock = report.relevantLocks.find((item) => (
+        const lock = report.conflictingLocks.find((item) => (
           item.pid === null
           && item.blockerType === "prepared-transaction"
-          && item.relation === "ExerciseCatalog"
+          && item.relation === "DailyModelState"
           && item.mode === "RowExclusiveLock"
           && item.granted === true
         ));
         if (!lock) {
-          throw new Error(`Preflight lost the prepared transaction's granted ExerciseCatalog relation lock. Diagnostic: ${JSON.stringify({ preparedTransactions: report.preparedTransactions, relevantLocks: report.relevantLocks })}`);
+          throw new Error(`Preflight lost the prepared transaction's granted DailyModelState relation lock. Diagnostic: ${JSON.stringify({ preparedTransactions: report.preparedTransactions, conflictingLocks: report.conflictingLocks })}`);
         }
         if (Object.hasOwn(lock, "preparedTransactionId") || lock.xactAgeSeconds !== null) {
           throw new Error("Preflight made an unverified per-lock prepared GID or age attribution.");
@@ -346,14 +809,14 @@ async function main() {
         }
         const decision = evaluateProductionPreflight(report, preparedMigrations);
         if (decision.readyForOwnerAuthorization
-          || !decision.blockers.some((blocker) => blocker.includes("relevant DDL-conflicting relation lock(s)"))) {
+          || !decision.blockers.some((blocker) => blocker.includes("lock(s) conflict with the exact migration DDL operations"))) {
           throw new Error("Preflight did not block the prepared transaction relation lock conflicting with Stage 02 ALTER TABLE.");
         }
         preparedLockRejected = true;
       });
 
       const afterCleanup = readSourceReport(preparedDb);
-      if (afterCleanup.relevantLocks.some((item) => item.blockerType === "prepared-transaction")) {
+      if (afterCleanup.conflictingLocks.some((item) => item.blockerType === "prepared-transaction")) {
         throw new Error("The prepared transaction lock remained after ROLLBACK PREPARED cleanup.");
       }
       if (afterCleanup.preparedTransactions.some((item) => item.gid.startsWith("bodycast-ci-prepared-lock-"))) {
@@ -372,7 +835,7 @@ async function main() {
     const encrypted = await encryptBackupStream(dump.stream, archive, key);
     await dump.exited;
     const metadata = await stat(archive);
-    if (metadata.size <= 36 || encrypted.inputBytes === 0 || (metadata.mode & 0o777) !== 0o600) {
+    if (metadata.size <= 36 || encrypted.inputBytes === 0 || (process.platform !== "win32" && (metadata.mode & 0o777) !== 0o600)) {
       throw new Error("Synthetic encrypted custom-format backup is empty or lacks restrictive permissions.");
     }
 
@@ -388,11 +851,35 @@ async function main() {
 
     await restoreDump(target, archive, key);
     const restoredReport = JSON.parse(sql(target, requireSql("scripts/verify-restored-backup.sql")));
+    const alternateDatabasePreflight = readSourceReport(target);
+    try {
+      assertProductionDatabaseIdentityMatches(sourceReport.identity, alternateDatabasePreflight.identity);
+    } catch (error) {
+      if (!String(error?.message ?? error).includes("differs from the signed preflight target")) throw error;
+      alternateDatabaseBlocked = true;
+    }
+    if (!alternateDatabaseBlocked) throw new Error("Signed preflight identity accepted a different isolated PostgreSQL database endpoint.");
+    const alternateDatabaseDecision = evaluateProductionPreflight(alternateDatabasePreflight, migrationDirectories);
+    if (alternateDatabaseDecision.readyForOwnerAuthorization
+      || !alternateDatabaseDecision.blockers.some((blocker) => blocker.includes("Connected database/role identity differs"))) {
+      throw new Error("Production preflight did not block the alternate isolated PostgreSQL endpoint.");
+    }
     const restored = verifyRestoredBackup(sourceReport, restoredReport);
     if (!restored.verified) throw new Error(`Restored database verification failed: ${restored.blockers.join(" ")}`);
     if (restoredReport.readability.StrengthDiarySession.rowCount !== 2 || restoredReport.readability.ExerciseCatalog.rowCount !== 3) {
       throw new Error("Restored fixture tables did not return the expected rows.");
     }
+
+    await deployPendingPrismaMigrations(target, scratch);
+    const migratedReport = readSourceReport(target);
+    const migratedDecision = evaluateProductionPostflight(migratedReport, migrationDirectories, ACTIVE_ENERGY_UNIFIED_MANIFEST.id, {
+      expectedDatabase: target.database,
+      expectedRole: target.user,
+    });
+    if (!migratedDecision.ready) {
+      throw new Error(`Full populated Relative Muscle + glycogen migration postflight failed: ${migratedDecision.blockers.join(" ")}`);
+    }
+    assertLegacyRelativeMuscleUpsertsRejected(target);
 
     const corruptedArchive = await readFile(archive);
     corruptedArchive[corruptedArchive.length - 17] ^= 0x20;
@@ -459,24 +946,42 @@ async function main() {
       postgresImage: POSTGRES_IMAGE,
       syntheticMigrations: migrationDirectories.length,
       exactPending: evaluated.pending,
+      allowedSinglePreflightConnection: true,
+      oldWriterBlocked,
+      unknownClientBlocked: true,
+      ambiguousPostgresTopologyBlocked: true,
+      reconnectBetweenPreflightAndFinalGuardBlocked,
       backupFormat: "custom-format pg_dump encrypted with authenticated AES-256-GCM",
       encryptedBytes: metadata.size,
       verifierPositivePath: true,
       restoredMigrationRows: restored.migrationCount,
       restoredStrengthDiarySessionRows: restoredReport.readability.StrengthDiarySession.rowCount,
       restoredExerciseCatalogRows: restoredReport.readability.ExerciseCatalog.rowCount,
+      populatedSixMigrationSequence: true,
+      relativeMuscleOldClientUpsertsRejected: ["ExperimentalSkeletalMuscleDeltaShadow", "ExperimentalCessationDetrainingShadow"],
       tamperRejected,
       productionContainerNameRejected: true,
       productionDockerContextRejected: true,
       missingDisposableMarkerRejected: true,
       remoteDockerEndpointRejected: true,
       dockerContextHostConflictRejected: true,
-      shortGrantedAlterTableLockRejected: true,
+      shortGrantedDdlLockTargetsRejected: shortGrantedLocksRejected,
       preparedTransactionRelationLockRejected: preparedLockRejected,
       preparedTransactionCleanupRestoredReadiness: preparedLockCleanupRestoredReadiness,
       unrelatedPreparedLockIgnored,
+      unrelatedShortLockIgnored,
+      shortGrantedLocksRejected,
+      compatibleLockIgnored,
+      alternateDatabaseBlocked,
+      finalPrismaTarget: prismaTargetResult,
       mixedSshKeysFiltered,
-      blockersChecked: ["partial object", "failed migration", "long transaction", "short granted DDL-conflicting relation lock", "prepared transaction DDL-conflicting relation lock"],
+      blockersChecked: [
+        "partial object", "failed migration", "long transaction diagnostic",
+        ...shortGrantedLocksRejected.map((tableName) => `short granted DDL lock: ${tableName}`),
+        ...compatibleLockIgnored.map((relation) => `compatible lock ignored: ${relation}`),
+        "unrelated short lock ignored", "prepared transaction DDL-conflicting relation lock",
+        "alternate database endpoint blocked", "matching final Prisma endpoint reached spawn boundary",
+      ],
     }, null, 2) + "\n");
   } finally {
     await rm(scratch, { recursive: true, force: true });

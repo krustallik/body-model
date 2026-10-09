@@ -16,6 +16,7 @@ export type WorkoutEnergyProvenanceKind =
   | "shadow-diary-estimate"
   | "bodycast-mechanical-estimate"
   | "bodycast-strength-estimate"
+  | "bodycast-strength-met-fallback"
   | "bodycast-cardio-estimate"
   | "bodycast-stepper-mechanical"
   | "garmin-fallback"

@@ -3,6 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import { DuplicateDayError } from "@/modules/days/day.errors";
 import { DailyMetricRepository } from "@/modules/days/day.repository";
 
+vi.mock("@/modules/activity/active-energy-invalidation", () => ({
+  invalidateWorkoutEnergyInTransactionV1: vi.fn().mockResolvedValue(null),
+  invalidateStepperMassDependenciesInTransactionV1: vi.fn().mockResolvedValue(null),
+}));
+
 const record = {
   date: "2026-08-22",
   weightKg: 89.4,
@@ -24,7 +29,8 @@ function fixture() {
   const dailyHealthData = {
     findMany: vi.fn().mockResolvedValue([record]),
     findFirst: vi.fn().mockResolvedValue({ updatedAt: record.updatedAt }),
-    findUnique: vi.fn().mockResolvedValue({ id: 42 }),
+    findUnique: vi.fn().mockResolvedValue({ ...record, id: 42 }),
+    findUniqueOrThrow: vi.fn().mockResolvedValue({ ...record, id: 42 }),
     create: vi.fn().mockResolvedValue(record),
     update: vi.fn().mockResolvedValue(record),
     delete: vi.fn().mockResolvedValue(record),
@@ -37,13 +43,17 @@ function fixture() {
   const strengthDiarySession = {
     findMany: vi.fn().mockResolvedValue([]),
   };
+  const activeEnergyEventAlias = { findMany: vi.fn().mockResolvedValue([]) };
   const client = {
     dailyHealthData,
     workout,
     strengthDiarySession,
+    activeEnergyEventAlias,
     $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => callback({
       dailyHealthData,
       workout,
+      activeEnergyEventAlias,
+      $executeRaw: vi.fn().mockResolvedValue(0),
     })),
   } as unknown as PrismaClient;
   const shadowReplayer = { replayFrom: vi.fn().mockResolvedValue(undefined) };
@@ -85,7 +95,7 @@ describe("DailyMetricRepository", () => {
     }));
   });
 
-  it("adds an unmatched diary session to History with its shadow energy, without creating a device workout", async () => {
+  it("uses the persisted canonical resolution for an unmatched diary session", async () => {
     const { repository, client } = fixture();
     const sets = [{ id: 91, reps: 8, weightKg: 60, bandNominalResistanceKg: null, rir: 2 }];
     const { strengthInputFingerprintV1, strengthSetFingerprintV1 } = await import(
@@ -122,7 +132,21 @@ describe("DailyMetricRepository", () => {
         },
       }]),
     };
-    Object.assign(client as object, { strengthDiarySession });
+    Object.assign(client as object, {
+      strengthDiarySession,
+      activeEnergyEventAlias: {
+        findMany: vi.fn().mockResolvedValue([{
+          sourceType: "strength-session",
+          sourceId: "4",
+          event: {
+            currentKcal: 311,
+            currentSource: "bodycast-strength-estimate",
+            resolutionRevision: 2,
+            isStale: false,
+          },
+        }]),
+      },
+    });
 
     const [day] = await repository.list({ from: "2026-08-22", to: "2026-08-22", limit: 30, offset: 0, includeTrainingDays: true });
 
@@ -137,7 +161,7 @@ describe("DailyMetricRepository", () => {
         endAt: "2026-08-22T09:46:00.000Z",
         durationMinutes: 62,
         activeEnergyKcal: 311,
-        energySource: "shadow-diary-estimate",
+        energySource: "bodycast-strength-estimate",
         diaryOnly: true,
         linkedTrainingSessionId: 4,
         linkedTrainingProgramName: "Push A",
@@ -250,7 +274,7 @@ describe("DailyMetricRepository", () => {
 
     expect(workout.findMany).toHaveBeenCalledTimes(1);
     expect(workout.findMany.mock.calls[0]?.[0]).toMatchObject({
-      where: { startAt: { gte: new Date("2026-08-21T22:00:00.000Z"), lt: new Date("2026-08-22T22:00:00.000Z") } },
+      where: { startAt: { gte: new Date("2026-08-20T00:00:00.000Z"), lt: new Date("2026-08-25T00:00:00.000Z") } },
     });
     expect(page.trainingDays).toEqual([]);
 

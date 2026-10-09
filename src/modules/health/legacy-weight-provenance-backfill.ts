@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import { invalidateStepperMassDependenciesInTransactionV1 } from "@/modules/activity/active-energy-invalidation";
 
 export const LEGACY_WEIGHT_PROVENANCE_BACKFILL_WHERE = {
   metric: "weight-kg",
@@ -51,6 +52,12 @@ export async function backfillLegacyWeightProvenance(
   }
   if (before.count === 0) return { before, updatedCount: 0, remaining: before };
 
+  const measurements = await transaction.healthMetricSample.findMany({
+    where: LEGACY_WEIGHT_PROVENANCE_BACKFILL_WHERE,
+    select: { timestamp: true },
+    orderBy: [{ timestamp: "asc" }, { id: "asc" }],
+  });
+
   const updated = await transaction.healthMetricSample.updateMany({
     where: LEGACY_WEIGHT_PROVENANCE_BACKFILL_WHERE,
     data: { source: LEGACY_WEIGHT_PROVENANCE_BACKFILL_SOURCE },
@@ -58,6 +65,15 @@ export async function backfillLegacyWeightProvenance(
   const remaining = await summarizeLegacyWeightProvenanceBackfill(transaction);
   if (updated.count !== expected.count || remaining.count !== 0) {
     throw new Error("Legacy weight provenance correction did not match its reviewed scope; transaction must roll back.");
+  }
+  if ("workout" in transaction && "modelEpisode" in transaction
+      && "activeEnergyCanonicalEvent" in transaction && "physiologyV7Lifecycle" in transaction) {
+    await invalidateStepperMassDependenciesInTransactionV1({
+      tx: transaction as Prisma.TransactionClient,
+      profileId: 1,
+      measurementDates: [],
+      measurementInstants: measurements.map((row) => row.timestamp),
+    });
   }
   return { before, updatedCount: updated.count, remaining };
 }

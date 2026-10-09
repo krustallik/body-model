@@ -39,7 +39,7 @@ export type ExperimentalRetrainingIdentificationResultV1 = {
   retrainingStatus: ExperimentalRetrainingStatusV1;
   qualifyingCessationDays: number | null;
   retrainingLabelApplied: boolean;
-  skeletalMuscleDeltaKgUnchanged: number;
+  skeletalMuscleDeltaKgUnchanged: number | null;
   skeletalMuscleDeltaModificationKg: 0;
   quantitativeMemoryBonus: null;
   acceleratedGrowthCoefficient: null;
@@ -80,6 +80,18 @@ export function identifyExperimentalRetrainingV1(input: {
     trainingStatusMathChanged: false as const,
     proteinEnergyMathChanged: false as const,
   };
+  if (input.currentCessation.availability === "unavailable" || unchangedDelta === null) {
+    return finish({
+      ...base,
+      availability: "unavailable",
+      retrainingStatus: "insufficient-evidence",
+      qualifyingCessationDays: null,
+      reasons: [
+        "unavailable-relative-muscle-delta-does-not-establish-retraining",
+        "retraining-label-does-not-modify-skeletal-muscle-delta",
+      ],
+    });
+  }
   if (currentExposure !== "qualified-mapped-training") {
     return finish({
       ...base,

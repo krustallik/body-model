@@ -123,6 +123,7 @@ describe("maintenance-first deploy fail-closed checks", () => {
     const writerDrainAt = events.lastIndexOf("writer-drain-topology-check");
     expect(maintenanceProbeAt).toBeGreaterThan(-1);
     expect(compatibilitySnapshotAt).toBeGreaterThan(maintenanceProbeAt);
+    expect(events).toContain("previous-app-compatibility-sql-validated");
     expect(stopAt).toBeGreaterThan(compatibilitySnapshotAt);
     expect(removeAt).toBeGreaterThan(stopAt);
     expect(writerDrainAt).toBeGreaterThan(removeAt);

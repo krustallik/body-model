@@ -250,7 +250,7 @@ jobs:
           META="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" 'docker inspect --format "{{.Id}}|{{.Name}}|{{.Config.Image}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}" bodycast-db-prod')"
           [[ "$META" == *"|/bodycast-db-prod|postgres:17-alpine|running|healthy" ]] || { echo "::error::Unexpected production PostgreSQL target."; exit 1; }
           PG_DUMP_VERSION="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" 'docker exec bodycast-db-prod pg_dump --version')"
-          PG_RESTORE_VERSION="$(docker run --rm --network host --entrypoint pg_restore postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24 --version)"
+          PG_RESTORE_VERSION="$(docker run --rm --network host --entrypoint pg_restore public.ecr.aws/docker/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24 --version)"
           node --input-type=module - "$PG_DUMP_VERSION" "$PG_RESTORE_VERSION" <<'NODE'
           import { assertPostgresClientCompatibility } from "./scripts/postgres-client-versions.mjs";
           assertPostgresClientCompatibility(process.argv[2], process.argv[3]);
@@ -343,7 +343,7 @@ jobs:
           PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY }}
           PGPASSWORD: isolated_restore_test_password
           DATABASE_URL: postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_restore?schema=public
-          POSTGRES_IMAGE: postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+          POSTGRES_IMAGE: public.ecr.aws/docker/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
         run: |
           set -Eeuo pipefail
           node scripts/restore-encrypted-postgres-backup.mjs

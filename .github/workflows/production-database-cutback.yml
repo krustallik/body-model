@@ -320,7 +320,7 @@ jobs:
           node scripts/production-backup-envelope.mjs decrypt --input "$BACKUP" > "$PLAIN"
           chmod 600 "$PLAIN"
           test -s "$PLAIN"
-          docker run --rm -i postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24 pg_restore --list < "$PLAIN" > "$RUNNER_TEMP/pg-restore-list.txt"
+          docker run --rm -i public.ecr.aws/docker/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24 pg_restore --list < "$PLAIN" > "$RUNNER_TEMP/pg-restore-list.txt"
           test -s "$RUNNER_TEMP/pg-restore-list.txt"
           echo "BODYCAST_CUTBACK_PLAINTEXT=$PLAIN" >> "$GITHUB_ENV"
           echo "BODYCAST_CUTBACK_PLAINTEXT_SHA256=$(sha256sum "$PLAIN" | awk '{print $1}')" >> "$GITHUB_ENV"

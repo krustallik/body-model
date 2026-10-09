@@ -92,7 +92,7 @@ async function main() {
   const password = process.env.PGPASSWORD;
   if (!inputPath || !databaseUrl || !password) throw new Error("BACKUP_FILE, DATABASE_URL, and PGPASSWORD are required.");
   const image = process.env.POSTGRES_IMAGE;
-  if (!image || !/^postgres@sha256:[a-f0-9]{64}$/.test(image)) throw new Error("POSTGRES_IMAGE must be a pinned PostgreSQL image digest.");
+  if (!image || !/^public\.ecr\.aws\/docker\/library\/postgres@sha256:[a-f0-9]{64}$/.test(image)) throw new Error("POSTGRES_IMAGE must be the pinned ECR public PostgreSQL image digest.");
   const key = decodeBackupKey(encodedKey);
   await restoreEncryptedPostgresBackup({
     inputPath,

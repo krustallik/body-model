@@ -126,6 +126,40 @@ describe("active production release entrypoints", () => {
     expect(preflightOrder).toEqual([...preflightOrder].sort((left, right) => left - right));
   });
 
+  it("resumes a prior pre-DDL capture only after owner-run, maintenance, marker, image, drain, and live-DB checks", () => {
+    const capture = readFileSync(resolve("scripts/production-traffic-cutover.sh"), "utf8");
+    const workflow = readFileSync(resolve(workflowDir, "production-migration-preflight.yml"), "utf8");
+    const resumeVerifier = readFileSync(resolve("scripts/production-preflight-resume.mjs"), "utf8");
+    expect(workflow).toContain("resume_previous_preflight_run_id:");
+    expect(workflow).toContain("production-preflight-resume.mjs --verify-source");
+    expect(workflow).toContain("sourceRunAttempt");
+    expect(workflow).toContain("RESUME_RECEIPT_B64");
+    expect(workflow).toContain("result.previousAppCaptureResume = {");
+    expect(resumeVerifier).toContain("assertTrustedOwnerWorkflowRun(sourceRun");
+    expect(resumeVerifier).toContain('"Restore snapshot, compare source state, and rehearse exact migrations": "failure"');
+    expect(resumeVerifier).toContain("sourceArtifacts?.total_count");
+    expect(resumeVerifier).toContain("another release or preflight workflow exists");
+
+    const resumeStart = capture.indexOf("resume_pre_ddl_previous_release() {");
+    const markerCheck = capture.indexOf("read_bodycast_release_marker", resumeStart);
+    const appCheck = capture.indexOf("docker ps --all", resumeStart);
+    const writerDrain = capture.indexOf('production-writer-drain.sh" --assert', resumeStart);
+    const imagePinCheck = capture.indexOf("docker image inspect --format '{{.Id}}' bodycast-app:rollback", resumeStart);
+    const freshDbCheck = capture.indexOf("--resume-capture", resumeStart);
+    const archive = capture.indexOf("bodycast-production-pre-ddl-release-before-", resumeStart);
+    const recordReplace = capture.indexOf('mv -f -- "$record_tmp" "$record_path"', resumeStart);
+    expect([resumeStart, markerCheck, appCheck, writerDrain, imagePinCheck, freshDbCheck, archive, recordReplace]
+      .every((index) => index >= 0)).toBe(true);
+    expect(markerCheck).toBeLessThan(appCheck);
+    expect(appCheck).toBeLessThan(writerDrain);
+    expect(writerDrain).toBeLessThan(imagePinCheck);
+    expect(imagePinCheck).toBeLessThan(freshDbCheck);
+    expect(freshDbCheck).toBeLessThan(recordReplace);
+    expect(recordReplace).toBeLessThan(capture.indexOf("BODYCAST_PRE_DDL_RESUME_RECEIPT=", resumeStart));
+    expect(capture).toContain("git merge-base --is-ancestor");
+    expect(capture).toContain("bodycast_assert_current_main_sha \"$target_sha\"");
+  });
+
   it("keeps the destructive DB swap behind owner context, maintenance, restore, history, and compatibility gates", () => {
     const cutback = readFileSync(resolve("scripts/production-database-cutback.sh"), "utf8");
     const ordered = [

@@ -51,6 +51,9 @@ if [[ -x "$HOST_OPERATION_CLIENT" ]]; then
     --release-mode "$release_mode"
 fi
 
+echo "Production deployment blocked: the trusted host-operation authority is unavailable; no Docker, database, or traffic mutation was attempted." >&2
+exit 1
+
 source "$ROOT_DIR/scripts/production-route-primitives.sh"
 export BODYCAST_DEPLOY_SHA="$DEPLOY_SHA"
 chmod +x "${ROOT_DIR}/scripts/deploy.sh" "${ROOT_DIR}/scripts/deploy-preflight-schema.sh" "${ROOT_DIR}/scripts/production-traffic-cutover.sh"

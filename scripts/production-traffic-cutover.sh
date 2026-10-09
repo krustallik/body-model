@@ -54,6 +54,9 @@ if [[ -x "$HOST_OPERATION_CLIENT" ]]; then
     --authorization-context-id "$AUTHORIZATION_CONTEXT_ID"
 fi
 
+echo "Production traffic operation blocked: the trusted host-operation authority is unavailable; no Docker or Caddy mutation was attempted." >&2
+exit 1
+
 source "${ROOT_DIR}/scripts/production-route-primitives.sh"
 
 compose() { docker compose -f "$COMPOSE_FILE" "$@"; }

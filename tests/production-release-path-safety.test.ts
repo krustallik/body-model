@@ -31,16 +31,21 @@ describe("production release route path safety", () => {
     }
   }, 30_000);
 
-  it.skipIf(!bashAvailable)("allows a dedicated canonical routes directory through the deploy entrypoint", () => {
+  it.skipIf(!bashAvailable)("fails closed before any deploy mutation when host authority is absent", () => {
     const fixture = createFixture();
     const result = runFixture(fixture, "bash scripts/deploy.sh", {
       DEPLOY_SHA: fixture.candidateSha,
       BODYCAST_NON_SERVING_DEPLOY: "0",
     });
 
-    expect(result.status).toBe(0);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("trusted host-operation authority is unavailable");
+    expect(existsSync(path.join(fixture.root, "docker.log"))).toBe(false);
+    if (existsSync(path.join(fixture.root, "events.log"))) {
+      const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+      expect(events).not.toMatch(/live-route-mutation|caddy-reload|direct-app-stop|compose-remove-app/);
+    }
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
-    expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).toContain(`caddy-serving-sha:${fixture.candidateSha}`);
   }, 30_000);
 
   it.skipIf(!bashAvailable)("rejects canonical-root aliases at the direct traffic entrypoint before host or Docker access", () => {
@@ -66,5 +71,21 @@ describe("production release route path safety", () => {
       expect(existsSync(path.join(fixture.root, "docker.log")), `Docker for ${invalidPath}`).toBe(false);
       expect(existsSync(hostClientLog), `host broker for ${invalidPath}`).toBe(false);
     }
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("fails closed before traffic mutation when host authority is absent", () => {
+    const fixture = createFixture();
+    const routePath = path.join(fixture.routes, "bodycast.caddy");
+    const originalRoute = readFileSync(routePath, "utf8");
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh maintenance", {
+      BODYCAST_DEPLOY_SHA: fixture.candidateSha,
+      DEPLOY_SHA: fixture.candidateSha,
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("trusted host-operation authority is unavailable");
+    expect(existsSync(path.join(fixture.root, "docker.log"))).toBe(false);
+    expect(readFileSync(routePath, "utf8")).toBe(originalRoute);
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
   }, 30_000);
 });

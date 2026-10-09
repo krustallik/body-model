@@ -18,6 +18,10 @@ on:
         description: Type maintenance-backup-restore to authorize maintenance, encrypted backup, and disposable rehearsal
         required: true
         type: string
+      resume_previous_preflight_run_id:
+        description: Optional original failed owner preflight run whose pre-DDL capture may be reused after live-state verification
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -35,6 +39,9 @@ jobs:
     outputs:
       release_sha: ${{ steps.gate.outputs.release_sha }}
       manifest_id: ${{ steps.gate.outputs.manifest_id }}
+      resume_source_sha: ${{ steps.gate.outputs.resume_source_sha }}
+      resume_source_run_id: ${{ steps.gate.outputs.resume_source_run_id }}
+      resume_source_run_attempt: ${{ steps.gate.outputs.resume_source_run_attempt }}
     steps:
       - name: Checkout current main tooling
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -50,6 +57,7 @@ jobs:
           MANIFEST_ID: ${{ inputs.manifest_id }}
           CONFIRMATION: ${{ inputs.confirm_production_preflight }}
           DISPATCH_ACTOR_ID: ${{ github.actor_id }}
+          RESUME_SOURCE_RUN_ID: ${{ inputs.resume_previous_preflight_run_id }}
         run: |
           set -Eeuo pipefail
           [[ "$GITHUB_REPOSITORY" == "krustallik/body-model" ]] || { echo "::error::Canonical repository only."; exit 1; }
@@ -90,8 +98,38 @@ jobs:
           console.log(latest.html_url);
           NODE
           )"
+          RESUME_SOURCE_SHA=""
+          RESUME_SOURCE_ATTEMPT=""
+          if [[ -n "$RESUME_SOURCE_RUN_ID" ]]; then
+            [[ "$RESUME_SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Resume source run ID must be a positive numeric identifier."; exit 1; }
+            PREFLIGHT_WORKFLOW_ID="$(gh api repos/krustallik/body-model/actions/workflows/production-migration-preflight.yml --jq .id)"
+            gh api "repos/krustallik/body-model/actions/runs/$RESUME_SOURCE_RUN_ID" > "$RUNNER_TEMP/resume-source-run.json"
+            gh api "repos/krustallik/body-model/actions/runs/$RESUME_SOURCE_RUN_ID/jobs" > "$RUNNER_TEMP/resume-source-jobs.json"
+            gh api "repos/krustallik/body-model/actions/runs/$RESUME_SOURCE_RUN_ID/artifacts" > "$RUNNER_TEMP/resume-source-artifacts.json"
+            : > "$RUNNER_TEMP/resume-later-runs.ndjson"
+            for workflow_file in production-migration-preflight.yml production-migrate.yml production-database-cutback.yml activate-unified-v4-production.yml deploy-production.yml; do
+              workflow_id="$(gh api "repos/krustallik/body-model/actions/workflows/$workflow_file" --jq .id)"
+              gh api --paginate --jq '.workflow_runs[] | @json' \
+                "repos/krustallik/body-model/actions/workflows/$workflow_id/runs?per_page=100" \
+                >> "$RUNNER_TEMP/resume-later-runs.ndjson"
+            done
+            node scripts/production-preflight-resume.mjs --verify-source \
+              "$RUNNER_TEMP/resume-source-run.json" "$RUNNER_TEMP/resume-source-jobs.json" \
+              "$RUNNER_TEMP/resume-source-artifacts.json" "$RUNNER_TEMP/resume-later-runs.ndjson" \
+              "$RESUME_SOURCE_RUN_ID" "$GITHUB_RUN_ID" "$MAIN_TIP" "$PREFLIGHT_WORKFLOW_ID" \
+              > "$RUNNER_TEMP/preflight-resume-proof.json"
+            RESUME_SOURCE_SHA="$(jq -r .sourceSha "$RUNNER_TEMP/preflight-resume-proof.json")"
+            RESUME_SOURCE_ATTEMPT="$(jq -r .sourceRunAttempt "$RUNNER_TEMP/preflight-resume-proof.json")"
+            {
+              echo "- previous failed preflight run: $RESUME_SOURCE_RUN_ID attempt $RESUME_SOURCE_ATTEMPT at $RESUME_SOURCE_SHA"
+              echo "- resume admitted only for the verified failed disposable restore/rehearsal step; no backup artifact or later production mutation exists"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "release_sha=$MAIN_TIP" >> "$GITHUB_OUTPUT"
           echo "manifest_id=$MANIFEST_ID" >> "$GITHUB_OUTPUT"
+          echo "resume_source_sha=$RESUME_SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "resume_source_run_id=$RESUME_SOURCE_RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "resume_source_run_attempt=$RESUME_SOURCE_ATTEMPT" >> "$GITHUB_OUTPUT"
           {
             echo "## Read-only production preflight"
             echo ""
@@ -201,6 +239,7 @@ jobs:
           node scripts/filter-ssh-known-hosts.mjs "$RUNNER_TEMP/bodycast-ssh/candidate" "$BODYCAST_KNOWN_HOSTS"
           chmod 600 "$BODYCAST_KNOWN_HOSTS"
       - name: Enter maintenance and drain the old app before backup
+        id: maintenance
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
@@ -209,18 +248,38 @@ jobs:
           APP_HOST: ${{ secrets.APP_HOST }}
           CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+          RESUME_SOURCE_SHA: ${{ needs.authorize.outputs.resume_source_sha }}
+          RESUME_SOURCE_RUN_ID: ${{ needs.authorize.outputs.resume_source_run_id }}
+          RESUME_SOURCE_RUN_ATTEMPT: ${{ needs.authorize.outputs.resume_source_run_attempt }}
         run: |
           set -Eeuo pipefail
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
           APP_HOST_B64="$(printf '%s' "$APP_HOST" | base64 -w0)"
           ROUTES_PATH_B64="$(printf '%s' "$CADDY_ROUTES_PATH" | base64 -w0)"
+          RESUME_SOURCE_SHA_B64="$(printf '%s' "$RESUME_SOURCE_SHA" | base64 -w0)"
+          RESUME_SOURCE_RUN_ID_B64="$(printf '%s' "$RESUME_SOURCE_RUN_ID" | base64 -w0)"
+          RESUME_SOURCE_RUN_ATTEMPT_B64="$(printf '%s' "$RESUME_SOURCE_RUN_ATTEMPT" | base64 -w0)"
+          CURRENT_RUN_ID_B64="$(printf '%s' "$GITHUB_RUN_ID" | base64 -w0)"
+          CURRENT_RUN_ATTEMPT_B64="$(printf '%s' "$GITHUB_RUN_ATTEMPT" | base64 -w0)"
           REMOTE_SCRIPT="$(cat <<'REMOTE'
           set -Eeuo pipefail
           RELEASE_SHA="$1"
           DEPLOY_PATH="$(printf '%s' "$2" | base64 --decode)"
           APP_HOST="$(printf '%s' "$3" | base64 --decode)"
           CADDY_ROUTES_PATH="$(printf '%s' "$4" | base64 --decode)"
+          RESUME_SOURCE_SHA="$(printf '%s' "$5" | base64 --decode)"
+          RESUME_SOURCE_RUN_ID="$(printf '%s' "$6" | base64 --decode)"
+          RESUME_SOURCE_RUN_ATTEMPT="$(printf '%s' "$7" | base64 --decode)"
+          CURRENT_RUN_ID="$(printf '%s' "$8" | base64 --decode)"
+          CURRENT_RUN_ATTEMPT="$(printf '%s' "$9" | base64 --decode)"
           [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ && "$DEPLOY_PATH" == /* && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* ]] || exit 2
+          if [[ -n "$RESUME_SOURCE_SHA" ]]; then
+            [[ "$RESUME_SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$RESUME_SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ \
+              && "$RESUME_SOURCE_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ && "$CURRENT_RUN_ID" =~ ^[1-9][0-9]*$ \
+              && "$CURRENT_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || exit 2
+          else
+            [[ -z "$RESUME_SOURCE_RUN_ID" && -z "$RESUME_SOURCE_RUN_ATTEMPT" ]] || exit 2
+          fi
           cd -- "$DEPLOY_PATH"
           [[ "$(git rev-parse --show-toplevel)" == "$DEPLOY_PATH" && -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || {
             echo "Production checkout is not clean or does not match DEPLOY_PATH." >&2; exit 1;
@@ -230,14 +289,32 @@ jobs:
           [[ "$(git rev-parse refs/remotes/origin/main)" == "$RELEASE_SHA" ]] || { echo "Release SHA is no longer current origin/main." >&2; exit 1; }
           git checkout --detach "$RELEASE_SHA"
           [[ "$(git rev-parse HEAD)" == "$RELEASE_SHA" && -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || exit 1
+          if [[ -n "$RESUME_SOURCE_SHA" ]]; then
+            APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" BODYCAST_DEPLOY_SHA="$RELEASE_SHA" \
+              BODYCAST_CAPTURE_PRE_DDL_RELEASE=1 BODYCAST_RESUME_PRE_DDL_CAPTURE=1 \
+              BODYCAST_PRE_DDL_CAPTURE_SOURCE_SHA="$RESUME_SOURCE_SHA" \
+              BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ID="$RESUME_SOURCE_RUN_ID" \
+              BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ATTEMPT="$RESUME_SOURCE_RUN_ATTEMPT" \
+              BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID="$CURRENT_RUN_ID" \
+              BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ATTEMPT="$CURRENT_RUN_ATTEMPT" \
+              exec bash scripts/production-traffic-cutover.sh maintenance
+          fi
           APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" BODYCAST_DEPLOY_SHA="$RELEASE_SHA" BODYCAST_CAPTURE_PRE_DDL_RELEASE=1 \
             exec bash scripts/production-traffic-cutover.sh maintenance
           REMOTE
           )"
           REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
-          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$RELEASE_SHA' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64'"
+          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$RELEASE_SHA' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64' '$RESUME_SOURCE_SHA_B64' '$RESUME_SOURCE_RUN_ID_B64' '$RESUME_SOURCE_RUN_ATTEMPT_B64' '$CURRENT_RUN_ID_B64' '$CURRENT_RUN_ATTEMPT_B64'"
+          REMOTE_OUTPUT_FILE="$RUNNER_TEMP/production-maintenance-output.txt"
           timeout 20m ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-            -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10 "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND"
+            -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10 "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND" | tee "$REMOTE_OUTPUT_FILE"
+          if [[ -n "$RESUME_SOURCE_SHA" ]]; then
+            mapfile -t RECEIPT_LINES < <(sed -n 's/^BODYCAST_PRE_DDL_RESUME_RECEIPT=//p' "$REMOTE_OUTPUT_FILE")
+            [[ "${#RECEIPT_LINES[@]}" -eq 1 && "${RECEIPT_LINES[0]}" =~ ^[A-Za-z0-9+/]+=*$ ]] || {
+              echo "::error::Resumed pre-DDL capture did not return exactly one validated receipt."; exit 1;
+            }
+            echo "resume_receipt_b64=${RECEIPT_LINES[0]}" >> "$GITHUB_OUTPUT"
+          fi
       - name: Verify production container and PostgreSQL client versions
         id: target
         env:
@@ -266,6 +343,10 @@ jobs:
           CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
           MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
+          RESUME_SOURCE_SHA: ${{ needs.authorize.outputs.resume_source_sha }}
+          RESUME_SOURCE_RUN_ID: ${{ needs.authorize.outputs.resume_source_run_id }}
+          RESUME_SOURCE_RUN_ATTEMPT: ${{ needs.authorize.outputs.resume_source_run_attempt }}
+          RESUME_RECEIPT_B64: ${{ steps.maintenance.outputs.resume_receipt_b64 }}
         run: |
           set -Eeuo pipefail
           SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
@@ -297,9 +378,10 @@ jobs:
             -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10 "$SSH_USER@$SSH_HOST" "$REMOTE_CAPTURE_COMMAND" \
             | node scripts/production-previous-app-provenance.mjs --verify-preflight "$RUNNER_TEMP/preflight-result.json" "$RELEASE_SHA" \
             > "$RUNNER_TEMP/previous-app-provenance-verification.json"
-          node --input-type=module - "$RUNNER_TEMP/preflight-result.json" "$RUNNER_TEMP/previous-app-provenance-verification.json" <<'NODE'
+          node --input-type=module - "$RUNNER_TEMP/preflight-result.json" "$RUNNER_TEMP/previous-app-provenance-verification.json" "$RUNNER_TEMP/preflight-report.json" <<'NODE'
           import { readFileSync, writeFileSync } from "node:fs";
-          const [resultPath, verificationPath] = process.argv.slice(2);
+          import { previousAppDatabaseCompatibilityDigests } from "./scripts/production-previous-app-provenance.mjs";
+          const [resultPath, verificationPath, reportPath] = process.argv.slice(2);
           const result = JSON.parse(readFileSync(resultPath, "utf8"));
           const verification = JSON.parse(readFileSync(verificationPath, "utf8"));
           const binding = verification.previousAppProvenance;
@@ -309,6 +391,38 @@ jobs:
             throw new Error("Previous-app provenance was not verified or is already present in the preflight result.");
           }
           result.previousAppProvenance = binding;
+          if (process.env.RESUME_SOURCE_SHA) {
+            if (!process.env.RESUME_RECEIPT_B64 || !/^[A-Za-z0-9+/]+=*$/.test(process.env.RESUME_RECEIPT_B64)) {
+              throw new Error("Validated preflight capture resume receipt is missing or malformed.");
+            }
+            const receipt = JSON.parse(Buffer.from(process.env.RESUME_RECEIPT_B64, "base64").toString("utf8"));
+            const receiptFields = ["schemaVersion", "sourceRunId", "sourceRunAttempt", "sourceSha", "targetSha",
+              "sourceRecordDigest", "currentRecordDigest", "compatibilityDigest"].sort();
+            if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)
+              || JSON.stringify(Object.keys(receipt).sort()) !== JSON.stringify(receiptFields)
+              || receipt.schemaVersion !== 1
+              || receipt.sourceRunId !== process.env.RESUME_SOURCE_RUN_ID
+              || receipt.sourceRunAttempt !== Number(process.env.RESUME_SOURCE_RUN_ATTEMPT)
+              || receipt.sourceSha !== process.env.RESUME_SOURCE_SHA
+              || receipt.targetSha !== process.env.RELEASE_SHA
+              || receipt.currentRecordDigest !== binding.recordDigest
+              || !/^[a-f0-9]{64}$/.test(receipt.sourceRecordDigest)
+              || !/^[a-f0-9]{64}$/.test(receipt.compatibilityDigest)) {
+              throw new Error("Previous-app resume receipt is not bound to the verified owner run and exact release capture.");
+            }
+            const rawReport = JSON.parse(readFileSync(reportPath, "utf8"));
+            const { compatibilityDigest } = previousAppDatabaseCompatibilityDigests(rawReport);
+            if (compatibilityDigest !== receipt.compatibilityDigest) {
+              throw new Error("Fresh production DB compatibility differs from the durable resumed app capture.");
+            }
+            result.previousAppCaptureResume = {
+              ...receipt,
+              verifiedByRunId: process.env.GITHUB_RUN_ID,
+              verifiedByRunAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+            };
+          } else if (process.env.RESUME_RECEIPT_B64) {
+            throw new Error("A resume receipt was supplied without a verified owner-approved source run.");
+          }
           writeFileSync(resultPath, `${JSON.stringify(result, null, 2)}\n`, { mode: 0o600 });
           NODE
           cat "$RUNNER_TEMP/preflight-result.json" >> "$GITHUB_STEP_SUMMARY"

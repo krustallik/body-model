@@ -213,6 +213,37 @@ export function verifyPreviousAppCaptureMatchesPreflight(record, preflightResult
     previousAppProvenance: previousAppProvenanceBinding(record) };
 }
 
+export function rebindPreviousAppProvenanceForPreflightResume({
+  record, sourceSha, targetSha, sourceRunId, sourceRunAttempt, databaseReport,
+}) {
+  validatePreviousAppProvenance(record, sourceSha);
+  if (!RELEASE_SHA.test(String(targetSha ?? ""))
+    || !/^[1-9][0-9]*$/.test(String(sourceRunId ?? ""))
+    || !Number.isSafeInteger(sourceRunAttempt) || sourceRunAttempt < 1) {
+    throw new Error("Preflight resume identity is malformed.");
+  }
+  const digests = previousAppDatabaseCompatibilityDigests(databaseReport);
+  if (digests.databaseIdentityDigest !== record.preDdlDatabaseIdentityDigest
+    || digests.migrationHistoryDigest !== record.preDdlMigrationHistoryDigest
+    || digests.schemaDigest !== record.preDdlSchemaInventoryDigest
+    || digests.compatibilityDigest !== record.preDdlDatabaseCompatibilityDigest) {
+    throw new Error("The current production DB identity, migration history, or schema differs from the durable pre-DDL app capture.");
+  }
+  const reboundRecord = Object.freeze({ ...record, targetSha });
+  validatePreviousAppProvenance(reboundRecord, targetSha);
+  const receipt = Object.freeze({
+    schemaVersion: 1,
+    sourceRunId: String(sourceRunId),
+    sourceRunAttempt,
+    sourceSha,
+    targetSha,
+    sourceRecordDigest: canonicalSha256(record),
+    currentRecordDigest: canonicalSha256(reboundRecord),
+    compatibilityDigest: digests.compatibilityDigest,
+  });
+  return Object.freeze({ record: reboundRecord, recordText: serializePreviousAppProvenance(reboundRecord), receipt });
+}
+
 export function verifyLegacyPreviousAppRestoredCompatibility({
   record, targetSha, preflightResult, preflightResultDigest, contextVerified, restoredReport, restoreResult, readabilityReport,
 }) {
@@ -267,6 +298,16 @@ function readBoundedStdin(maxBytes = 64 * 1024) {
   });
 }
 
+async function readCurrentPreviousAppDatabaseReport(rootDir) {
+  const preflightSql = renderProductionDbPreflightSql(await readFile(path.join(rootDir, "scripts/production-db-preflight.sql"), "utf8"));
+  const databaseJson = execFileSync("bash", [path.join(rootDir, "scripts/production-db-target.sh"), "--previous-app-compatibility-snapshot", "bodycast-db-prod"], {
+    encoding: "utf8", input: preflightSql, maxBuffer: 8 * 1024 * 1024, env: process.env,
+  });
+  const databaseReport = JSON.parse(databaseJson);
+  assertPreviousAppCompatibilitySnapshot(databaseReport);
+  return databaseReport;
+}
+
 async function main() {
   const [mode, ...args] = process.argv.slice(2);
   if (mode === "capture") {
@@ -277,14 +318,21 @@ async function main() {
     });
     const containers = JSON.parse(containerJson);
     if (!Array.isArray(containers) || containers.length !== 1) throw new Error("Previous-app Docker inspection did not return one container.");
-    const preflightSql = renderProductionDbPreflightSql(await readFile(path.join(rootDir, "scripts/production-db-preflight.sql"), "utf8"));
-    const databaseJson = execFileSync("bash", [path.join(rootDir, "scripts/production-db-target.sh"), "--previous-app-compatibility-snapshot", "bodycast-db-prod"], {
-      encoding: "utf8", input: preflightSql, maxBuffer: 8 * 1024 * 1024, env: process.env,
-    });
-    const databaseReport = JSON.parse(databaseJson);
-    assertPreviousAppCompatibilitySnapshot(databaseReport);
+    const databaseReport = await readCurrentPreviousAppDatabaseReport(rootDir);
     const record = capturePreviousAppProvenance({ container: containers[0], databaseReport, targetSha });
     process.stdout.write(serializePreviousAppProvenance(record));
+    return;
+  }
+  if (mode === "--resume-capture") {
+    if (args.length !== 4) throw new Error("Usage: --resume-capture <source-sha> <target-sha> <source-run-id> <source-run-attempt> (capture record on stdin)");
+    const [sourceSha, targetSha, sourceRunId, sourceAttemptText] = args;
+    if (!/^[1-9][0-9]*$/.test(sourceAttemptText)) throw new Error("Preflight resume source attempt is invalid.");
+    const record = parsePreviousAppProvenance(await readBoundedStdin());
+    const databaseReport = await readCurrentPreviousAppDatabaseReport(process.cwd());
+    const result = rebindPreviousAppProvenanceForPreflightResume({
+      record, sourceSha, targetSha, sourceRunId, sourceRunAttempt: Number(sourceAttemptText), databaseReport,
+    });
+    process.stdout.write(`${JSON.stringify(result)}\n`);
     return;
   }
   if (mode === "--verify-preflight") {
@@ -296,7 +344,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ verified: true, previousAppProvenance: result.previousAppProvenance })}\n`);
     return;
   }
-  throw new Error("Usage: production-previous-app-provenance.mjs capture <target-sha>|--verify-preflight <preflight-result.json>");
+  throw new Error("Usage: production-previous-app-provenance.mjs capture <target-sha>|--resume-capture <source-sha> <target-sha> <source-run-id> <source-run-attempt>|--verify-preflight <preflight-result.json>");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

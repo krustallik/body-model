@@ -1,7 +1,24 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { PREVIOUS_SHA, PREVIOUS_IMAGE_ID, bashAvailable, createFixture, runFixture, appState } from "./helpers/production-release-cutover-fixture";
+import { PREVIOUS_SHA, PREVIOUS_IMAGE_ID, bashAvailable, createFixture, runFixture, appState, toBashPath } from "./helpers/production-release-cutover-fixture";
+import { capturePreviousAppProvenance, serializePreviousAppProvenance } from "../scripts/production-previous-app-provenance.mjs";
+
+function seedCapturedPreviousRelease(fixture: ReturnType<typeof createFixture>) {
+  const report = JSON.parse(readFileSync(path.join(fixture.root, "previous-db-report.json"), "utf8"));
+  const [container] = JSON.parse(readFileSync(path.join(fixture.root, "app-inspect.json"), "utf8"));
+  const record = capturePreviousAppProvenance({ container, databaseReport: report, targetSha: fixture.candidateSha });
+  const recordPath = path.join(fixture.repo, ".git", "bodycast-production-pre-ddl-release");
+  writeFileSync(recordPath, serializePreviousAppProvenance(record), { mode: 0o600 });
+  execFileSync(fixture.bash, ["--noprofile", "--norc", "-c", `chmod 600 "${toBashPath(recordPath)}"`], { env: fixture.env, stdio: "ignore" });
+  writeFileSync(path.join(fixture.root, "app-present"), "false\n");
+  writeFileSync(path.join(fixture.root, "active-route"), "maintenance\n");
+  writeFileSync(path.join(fixture.root, "image-rollback"), `${PREVIOUS_IMAGE_ID}\n`);
+  execFileSync("git", ["push", "origin", `${fixture.advanceSha}:refs/heads/main`], { cwd: fixture.repo, stdio: "ignore" });
+  execFileSync("git", ["checkout", "--detach", "--force", fixture.advanceSha], { cwd: fixture.repo, stdio: "ignore" });
+  return { record, recordPath };
+}
 
 describe("maintenance-first deploy fail-closed checks", () => {
   it.skipIf(!bashAvailable)("confirms the attempt-marked 503 before capturing and stopping the previous app", () => {
@@ -152,6 +169,66 @@ describe("maintenance-first deploy fail-closed checks", () => {
     expect(appState(fixture)).toMatchObject({ status: "exited", present: "false" });
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
     expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).not.toContain("reverse_proxy");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("rebinds a captured release only after matching fresh DB state and preserves the original capture", () => {
+    const fixture = createFixture();
+    const { record, recordPath } = seedCapturedPreviousRelease(fixture);
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh maintenance", {
+      BODYCAST_DEPLOY_SHA: fixture.advanceSha,
+      BODYCAST_CAPTURE_PRE_DDL_RELEASE: "1",
+      BODYCAST_RESUME_PRE_DDL_CAPTURE: "1",
+      BODYCAST_PRE_DDL_CAPTURE_SOURCE_SHA: fixture.candidateSha,
+      BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ID: "38000669126",
+      BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ATTEMPT: "1",
+      BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID: "38002000000",
+      BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ATTEMPT: "1",
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const rebound = readFileSync(recordPath, "utf8");
+    expect(rebound).toContain(`targetSha=${fixture.advanceSha}`);
+    expect(rebound).toContain(`previousImageId=${record.previousImageId}`);
+    expect(rebound).toContain(`preDdlDatabaseCompatibilityDigest=${record.preDdlDatabaseCompatibilityDigest}`);
+    const archived = readFileSync(path.join(fixture.repo, ".git", `bodycast-production-pre-ddl-release-before-${fixture.advanceSha}`), "utf8");
+    expect(archived).toBe(serializePreviousAppProvenance(record));
+    const receipt = JSON.parse(readFileSync(path.join(fixture.repo, ".git", "bodycast-production-pre-ddl-release-resume-38002000000-1"), "utf8"));
+    expect(receipt).toMatchObject({
+      sourceRunId: "38000669126", sourceRunAttempt: 1, sourceSha: fixture.candidateSha, targetSha: fixture.advanceSha,
+    });
+    expect(receipt.currentRecordDigest).not.toBe(receipt.sourceRecordDigest);
+    expect(appState(fixture)).toMatchObject({ present: "false" });
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    expect(result.stdout).toContain("BODYCAST_PRE_DDL_RESUME_RECEIPT=");
+    expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).toContain("previous-app-compatibility-snapshot");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("does not rebind the previous capture when a fresh read-only DB snapshot fails", () => {
+    const fixture = createFixture();
+    const { record, recordPath } = seedCapturedPreviousRelease(fixture);
+    const before = readFileSync(recordPath, "utf8");
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh maintenance", {
+      BODYCAST_DEPLOY_SHA: fixture.advanceSha,
+      BODYCAST_CAPTURE_PRE_DDL_RELEASE: "1",
+      BODYCAST_RESUME_PRE_DDL_CAPTURE: "1",
+      BODYCAST_PRE_DDL_CAPTURE_SOURCE_SHA: fixture.candidateSha,
+      BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ID: "38000669126",
+      BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ATTEMPT: "1",
+      BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID: "38002000001",
+      BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ATTEMPT: "1",
+      FAIL_PREVIOUS_DB_SNAPSHOT: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Fresh production DB compatibility does not match the durable previous-app capture");
+    expect(readFileSync(recordPath, "utf8")).toBe(before);
+    expect(existsSync(path.join(fixture.repo, ".git", `bodycast-production-pre-ddl-release-before-${fixture.advanceSha}`))).toBe(false);
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    expect(appState(fixture)).toMatchObject({ present: "false" });
+    expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).toContain("previous-app-compatibility-snapshot-failed");
+    expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).not.toContain("image tag");
+    expect(existsSync(path.join(fixture.repo, ".git", "bodycast-production-pre-ddl-release-resume-38002000001-1"))).toBe(false);
+    expect(record.targetSha).toBe(fixture.candidateSha);
   }, 30_000);
 
 });

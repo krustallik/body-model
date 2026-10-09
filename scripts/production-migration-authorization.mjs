@@ -155,6 +155,40 @@ export function verifyAuthorizationEnvelope(serialized, { allowlist, live, now =
   return { verified: true, keyId: envelope.keyId, authorizationId: claims.authorizationId, payload: claims };
 }
 
+// A cutback may occur after the forward migration authorization expires. This
+// verifies the historical signature and provenance only; it is not a fresh
+// authorization to mutate production. The separate owner-dispatched cutback
+// workflow supplies current-main/actor/confirmation checks.
+export function verifyHistoricalMigrationAuthorizationEnvelope(serialized, { allowlist, expected = {} }) {
+  const envelope = parseCanonicalEnvelope(serialized);
+  if (JSON.stringify(Object.keys(envelope).sort()) !== JSON.stringify(["algorithm", "keyId", "payload", "signature"])) {
+    reject("historical envelope fields are missing, duplicated, or unsupported.");
+  }
+  if (envelope.algorithm !== "Ed25519") reject("historical envelope uses an unsupported signature algorithm.");
+  const key = keyRecordFor(envelope.keyId, allowlist);
+  validateClaimsShape(envelope.payload);
+  if (typeof envelope.signature !== "string" || !/^[A-Za-z0-9_-]+$/.test(envelope.signature)) reject("historical signature encoding is malformed.");
+  const signature = Buffer.from(envelope.signature, "base64url");
+  if (signature.length !== 64 || !verify(null, Buffer.from(canonicalJson(envelope.payload), "utf8"), key.publicKeyPem, signature)) {
+    reject("historical migration signature is invalid.");
+  }
+  const claims = envelope.payload;
+  const issuedAt = Date.parse(claims.issuedAt);
+  const expiresAt = Date.parse(claims.expiresAt);
+  if (!Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) || expiresAt <= issuedAt
+    || expiresAt - issuedAt > AUTHORIZATION_MAX_AGE_MS || Date.parse(claims.backupSnapshotAt) > issuedAt
+    || Date.parse(claims.preflightRunStartedAt) > issuedAt + AUTHORIZATION_MAX_FUTURE_SKEW_MS) {
+    reject("historical migration authorization timestamps are invalid.");
+  }
+  assertPinnedOwnerId(claims.actorId, "Historical migration owner ID");
+  if (claims.repository !== "krustallik/body-model" || claims.workflowPath !== ".github/workflows/production-migrate.yml"
+    || claims.currentMainSha !== claims.releaseSha) reject("historical envelope is not from the reviewed owner migration workflow.");
+  for (const [field, value] of Object.entries(expected)) {
+    if (value !== undefined && String(claims[field]) !== String(value)) reject(`historical ${field} does not match the selected failed migration.`);
+  }
+  return { verified: true, keyId: envelope.keyId, authorizationId: claims.authorizationId, payload: claims };
+}
+
 export function createClaimsFromPreflight({
   repository, workflowId, workflowPath, workflowRunId, workflowRunAttempt, actorId, releaseSha, currentMainSha,
   manifestId, pendingMigrationNames, preflightRunId, preflightRunAttempt, preflightRunStartedAt, preflightResultDigest,

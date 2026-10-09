@@ -9,10 +9,14 @@ on:
       - ".github/workflows/production-migrate.yml"
       - ".github/workflows/deploy-production.yml"
       - ".github/workflows/activate-unified-v4-production.yml"
+      - ".github/workflows/production-database-cutback.yml"
       - "Dockerfile"
       - "prisma/migrations/**"
       - "scripts/production-migration-*.mjs"
       - "scripts/production-traffic-cutover.sh"
+      - "scripts/production-database-cutback.sh"
+      - "scripts/production-database-cutback.mjs"
+      - "scripts/production-app-runtime-digest.mjs"
       - "scripts/production-writer-drain.sh"
       - "scripts/production-writer-drain.mjs"
       - "scripts/production-release-marker.sh"
@@ -57,6 +61,9 @@ on:
       - "tests/deploy-script-ordering.test.ts"
       - "tests/production-deploy-rollback-safety.test.ts"
       - "tests/production-traffic-cutover-freshness.test.ts"
+      - "tests/production-release-entrypoints.test.ts"
+      - "tests/production-database-cutback.test.mjs"
+      - "scripts/ci/production-database-cutback-postgres-smoke.mjs"
       - "tests/production-release-terminal-safety.test.ts"
       - "tests/production-deploy-rollback.test.ts"
       - "tests/deploy-main-freshness.test.ts"
@@ -133,13 +140,13 @@ jobs:
         run: npm run test:unit -- tests/production-migration-v5.test.mjs tests/production-safety-tooling.test.mjs tests/production-writer-drain.test.mjs
 
       - name: Run production release boundary regressions
-        run: npm run test:unit -- tests/deploy-script-ordering.test.ts tests/production-deploy-rollback.test.ts tests/production-deploy-rollback-safety.test.ts tests/production-traffic-cutover-freshness.test.ts tests/production-release-terminal-safety.test.ts tests/deploy-main-freshness.test.ts tests/production-deploy-gate.test.ts tests/production-recovery-boundary.test.mjs
+        run: npm run test:unit -- tests/deploy-script-ordering.test.ts tests/production-deploy-rollback.test.ts tests/production-deploy-rollback-safety.test.ts tests/production-traffic-cutover-freshness.test.ts tests/production-release-entrypoints.test.ts tests/production-database-cutback.test.mjs tests/production-release-terminal-safety.test.ts tests/deploy-main-freshness.test.ts tests/production-deploy-gate.test.ts tests/production-recovery-boundary.test.mjs
 
       - name: Run production recovery workflow protocol tests
         run: npm run test:unit -- tests/production-recovery-authority.test.mjs tests/production-recovery-authorization.test.mjs tests/production-recovery-boundary.test.mjs tests/production-recovery-flow.test.mjs tests/production-recovery-client.test.mjs tests/production-recovery-package.test.mjs
 
       - name: Check production migration shell syntax
-        run: bash -n scripts/deploy-migrate.sh scripts/production-migration-readiness.sh scripts/production-migration-summary.sh scripts/production-writer-drain.sh scripts/production-release-marker.sh scripts/production-release-lock.sh scripts/deploy-main-freshness.sh scripts/production-route-path.sh scripts/production-route-primitives.sh scripts/production-traffic-cutover.sh scripts/deploy.sh scripts/production-recovery/production-authority-launcher.sh scripts/production-recovery/production-operation-client-launcher.sh tests/production-migration-release-tooling.sh tests/production-recovery-marker-reader.sh
+        run: bash -n scripts/deploy-migrate.sh scripts/production-migration-readiness.sh scripts/production-migration-summary.sh scripts/production-writer-drain.sh scripts/production-release-marker.sh scripts/production-release-lock.sh scripts/deploy-main-freshness.sh scripts/production-route-path.sh scripts/production-route-primitives.sh scripts/production-traffic-cutover.sh scripts/production-database-cutback.sh scripts/deploy.sh scripts/production-recovery/production-authority-launcher.sh scripts/production-recovery/production-operation-client-launcher.sh tests/production-migration-release-tooling.sh tests/production-recovery-marker-reader.sh
 
       - name: Run V1/V2 marker reader fail-closed compatibility matrix
         run: bash tests/production-recovery-marker-reader.sh
@@ -181,7 +188,7 @@ jobs:
         env:
           BODYCAST_TEST_DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast
         run: |
-          bash -n scripts/production-migration-readiness.sh scripts/production-migration-summary.sh scripts/production-writer-drain.sh scripts/production-release-marker.sh scripts/production-release-lock.sh scripts/deploy-main-freshness.sh scripts/production-route-path.sh scripts/production-route-primitives.sh scripts/production-traffic-cutover.sh scripts/deploy.sh tests/production-migration-release-tooling.sh
+          bash -n scripts/production-migration-readiness.sh scripts/production-migration-summary.sh scripts/production-writer-drain.sh scripts/production-release-marker.sh scripts/production-release-lock.sh scripts/deploy-main-freshness.sh scripts/production-route-path.sh scripts/production-route-primitives.sh scripts/production-traffic-cutover.sh scripts/production-database-cutback.sh scripts/deploy.sh tests/production-migration-release-tooling.sh
           bash tests/production-migration-release-tooling.sh
 
       - name: Run real PostgreSQL encrypted backup, restore, and fail-closed smoke
@@ -189,3 +196,8 @@ jobs:
           BODYCAST_SOURCE_PORT: 5432
           BODYCAST_RESTORE_PORT: 5433
         run: node scripts/ci/production-safety-postgres-smoke.mjs
+
+      - name: Run isolated PostgreSQL production cutback and failure cases
+        env:
+          BODYCAST_CUTBACK_TEST_DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_cutback_test
+        run: node scripts/ci/production-database-cutback-postgres-smoke.mjs

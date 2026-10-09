@@ -170,6 +170,7 @@ bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
 APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" \
   bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" > "$LIVE_REPORT"
 node "$ROOT_DIR/scripts/production-database-cutback.mjs" --verify-live-identity "$CONTEXT_DIR" "$LIVE_REPORT" >/dev/null
+bodycast_assert_current_main_sha "$CURRENT_MAIN_SHA"
 
 admin_sql "ALTER DATABASE bodycast RENAME TO ${failed_db};" >/dev/null
 if ! admin_sql "ALTER DATABASE ${stage_db} RENAME TO bodycast;" >/dev/null; then

@@ -303,6 +303,10 @@ activate_v4_and_serve() {
   compose --profile tools run --rm --no-deps --entrypoint node migrate \
     /app/scripts/unified-v3-postflight.mjs --profile-id 1
 
+  # V3/schema checks are read-only but can take long enough for canonical main
+  # to advance. Refresh it as the final gate immediately before V4 DML.
+  bodycast_assert_current_main_sha "$expected_release_sha"
+
   # This fixed owner-authorized execution path holds the global flock from the
   # first V3 check through activation, postflight, app restart, and serving.
   compose --profile tools run --rm --no-deps --entrypoint node migrate \

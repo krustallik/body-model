@@ -126,6 +126,8 @@ advance_main() {
   case "$trigger" in
     v4) [[ "\${ADVANCE_ONCE:-}" == "1" ]] || return 0 ;;
     v3) [[ "\${ADVANCE_ON_V3:-}" == "1" ]] || return 0 ;;
+    final-v3) [[ "\${ADVANCE_ON_FINAL_V3:-}" == "1" ]] || return 0 ;;
+    final-schema) [[ "\${ADVANCE_ON_FINAL_SCHEMA_PREFLIGHT:-}" == "1" ]] || return 0 ;;
     validate) [[ "\${ADVANCE_ON_VALIDATE:-}" == "1" ]] || return 0 ;;
   esac
   [[ ! -e "$ADVANCE_MARKER" ]] || return 0
@@ -179,12 +181,23 @@ if [[ "$1" == "compose" ]]; then
     if [[ "\${FAIL_SCHEMA_PREFLIGHT:-0}" == "1" \
         || ( "\${FAIL_SECOND_SCHEMA_PREFLIGHT:-0}" == "1" && "$schema_count" -ge 2 ) ]]; then exit 41; fi
     printf '%s\n' 'Database schema is up to date!'
+    if [[ "$schema_count" -ge 2 ]]; then advance_main final-schema; fi
     exit 0
   fi
   if [[ "$joined" == *" run --rm --no-deps --entrypoint node migrate "* ]]; then
     if [[ "$joined" == *"unified-v3-postflight.mjs"* ]]; then
       event "unified-v3-postflight"
-      advance_main v3
+      v3_count="$(cat "$V3_POSTFLIGHT_COUNT_FILE" 2>/dev/null || printf '0')"
+      v3_count=$((v3_count + 1))
+      printf '%s\n' "$v3_count" > "$V3_POSTFLIGHT_COUNT_FILE"
+      if [[ "$v3_count" -ge 2 ]]; then
+        event "v3-postflight:final"
+        advance_main final-v3
+        if [[ "\${FAIL_CANONICAL_FETCH_AFTER_V3:-0}" == "1" ]]; then : > "$MAIN_FETCH_FAILURE_MARKER"; fi
+      else
+        event "v3-postflight:initial"
+        advance_main v3
+      fi
       exit 0
     fi
     if [[ "$joined" == *"unified-v4-activate-replay.mjs"* ]]; then
@@ -451,6 +464,10 @@ if [[ "$1" == "fetch" && "$*" == *"refs/heads/main:refs/remotes/origin/main"* \
   printf '%s\n' main-advanced >> "$EVENT_LOG"
 fi
 if [[ "$1" == "fetch" && "$*" == *"refs/heads/main:refs/remotes/origin/main"* ]]; then
+  if [[ "\${FAIL_CANONICAL_FETCH_AFTER_V3:-0}" == "1" && -e "$MAIN_FETCH_FAILURE_MARKER" ]]; then
+    printf '%s\n' canonical-main-fetch-failed >> "$EVENT_LOG"
+    exit 88
+  fi
   printf '%s\n' canonical-main-fetch >> "$EVENT_LOG"
 fi
 exec "$REAL_GIT" "$@"
@@ -588,7 +605,9 @@ printf '%s\n' lock-acquired >> "$EVENT_LOG"
     STAGE_PATH_LOG: path.join(root, "stage-paths.log"),
     CANDIDATE_STAGE_PATH_LOG: path.join(root, "candidate-stage-paths.log"),
     SCHEMA_PREFLIGHT_COUNT_FILE: path.join(root, "schema-preflight-count"),
+    V3_POSTFLIGHT_COUNT_FILE: path.join(root, "v3-postflight-count"),
     ADVANCE_MARKER: path.join(root, "advance-once"),
+    MAIN_FETCH_FAILURE_MARKER: path.join(root, "fail-main-fetch-after-v3"),
     FAIL_CANDIDATE_MARKER: path.join(root, "fail-candidate-once"),
     LOCK_COUNT_FILE: path.join(root, "lock-count"),
   };

@@ -190,6 +190,11 @@ if [[ "$1" == "compose" ]]; then
     exit 0
   fi
   if [[ "$joined" == *" run --rm --no-deps --entrypoint node migrate "* ]]; then
+    if [[ "$joined" == *"production-full-history-recalculate.mjs"* ]]; then
+      event "full-history-recalculate"
+      if [[ "\${FAIL_FULL_HISTORY_RECALCULATE:-0}" == "1" ]]; then exit 45; fi
+      exit 0
+    fi
     if [[ "$joined" == *"unified-v3-postflight.mjs"* ]]; then
       event "unified-v3-postflight"
       v3_count="$(cat "$V3_POSTFLIGHT_COUNT_FILE" 2>/dev/null || printf '0')"

@@ -7,6 +7,7 @@ const releaseWorkflows = [
   "deploy-production.yml",
   "production-migration-preflight.yml",
   "production-migrate.yml",
+  "production-full-history-recalculate.yml",
   "activate-unified-v4-production.yml",
   "production-database-cutback.yml",
 ];
@@ -80,6 +81,29 @@ describe("active production release entrypoints", () => {
     expect(servingCommit).toBeGreaterThan(routePublish);
     expect(markerCleanup).toBeGreaterThan(servingCommit);
     expect(cutover).toContain('marker_status" -eq 1 && -f "$recovery_record"');
+  });
+
+  it("keeps owner-authorized full-history recalculation fail-closed before V4 activation", () => {
+    const workflow = readFileSync(resolve(workflowDir, "production-full-history-recalculate.yml"), "utf8");
+    const cutover = readFileSync(resolve("scripts/production-traffic-cutover.sh"), "utf8");
+    const dockerfile = readFileSync(resolve("Dockerfile"), "utf8");
+    const script = readFileSync(resolve("scripts/production-full-history-recalculate.ts"), "utf8");
+    expect(workflow).toContain("RECALCULATE_FULL_HISTORY_PROFILE_1");
+    expect(workflow).toContain("production-traffic-cutover.sh full-history-recalculate");
+    expect(workflow).toContain("production-full-history-recalculate.mjs");
+    expect(workflow).toContain("restore-encrypted-postgres-backup.mjs");
+    expect(workflow).toContain("docker build");
+    expect(workflow).toContain("--target migrator");
+    expect(cutover).toContain('MODE" == "full-history-recalculate"');
+    expect(cutover).toContain("production-full-history-recalculate.mjs");
+    expect(cutover).toContain("--full-history-recalculate --owner-authorized --profile-id 1");
+    expect(cutover).toContain("unified-v3-postflight.mjs");
+    expect(cutover).not.toContain("full-history-recalculate.mjs --activate-v4");
+    expect(dockerfile).toContain("production-full-history-recalculate.ts");
+    expect(dockerfile).toContain("production-full-history-recalculate.mjs");
+    expect(script).toContain("--full-history-recalculate");
+    expect(script).toContain("--owner-authorized");
+    expect(script).toContain("runOwnerAuthorizedFullHistoryRecalculation");
   });
 
   it("uses immutable previous image plus a runtime-config digest for manual cutback only", () => {

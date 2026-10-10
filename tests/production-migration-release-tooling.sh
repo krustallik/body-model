@@ -219,6 +219,25 @@ if [[ "$1" == "compose" && "$*" == *"--before-ddl"* ]]; then
   exit 0
 fi
 if [[ "$1" == "compose" && "$*" == *"run-prisma-migrate-with-lock-timeout.mjs"* ]]; then
+  node --input-type=module - "$SOURCE_ROOT/scripts/production-release-marker.mjs" \
+    "$FIXTURE_GIT_DIR/bodycast-production-release-marker" "$RELEASE_SHA" <<'NODE'
+import { pathToFileURL } from "node:url";
+const markerModule = await import(pathToFileURL(process.argv[2]));
+const markerDirectory = process.argv[3];
+const releaseSha = process.argv[4];
+const starting = await markerModule.writeDdlStartingMarker({
+  markerDirectory,
+  releaseSha,
+  workflowRunId: "2",
+  workflowRunAttempt: 1,
+  authorizationId: "fixture-authorization-0001",
+  lineageDigest: "a".repeat(64),
+});
+await markerModule.acknowledgePrismaSpawn({
+  markerPath: starting.markerPath,
+  expectedDigest: starting.digest,
+});
+NODE
   count=0
   [[ ! -f "$FAKE_MIGRATION_COUNT" ]] || count="$(<"$FAKE_MIGRATION_COUNT")"
   printf '%s\n' "$((count + 1))" > "$FAKE_MIGRATION_COUNT"
@@ -256,7 +275,7 @@ if run_fixture_command reject "$NEW_RELEASE_SHA" "$TMP/guard-rejected.log" "$FIX
   exit 1
 fi
 grep -Fq 'final signed backup/restore guard rejected' "$TMP/guard-rejected.log"
-test ! -e "$FIXTURE_GIT_DIR/bodycast-production-schema-cutover"
+test ! -e "$FIXTURE_GIT_DIR/bodycast-production-release-marker/marker"
 test ! -e "$MIGRATION_COUNT"
 ! grep -Fq 'run-prisma-migrate-with-lock-timeout.mjs' "$DOCKER_LOG"
 
@@ -272,9 +291,12 @@ grep -Fq 'synthetic Prisma failure after the DDL boundary' "$TMP/migration-faile
   cat "$TMP/migration-failed.log" >&2
   exit 1
 }
-grep -Eq '^state=ddl-started$' "$FIXTURE_GIT_DIR/bodycast-production-schema-cutover"
+grep -Fxq 'schemaVersion=2' "$FIXTURE_GIT_DIR/bodycast-production-release-marker/marker"
+grep -Fxq 'state=ddl-started' "$FIXTURE_GIT_DIR/bodycast-production-release-marker/marker"
+grep -Fxq 'spawnState=started' "$FIXTURE_GIT_DIR/bodycast-production-release-marker/marker"
 [[ "$(<"$MIGRATION_COUNT")" == "1" ]]
-test ! -e "$FIXTURE_GIT_DIR/bodycast-production-schema-cutover.new"
+test -z "$(find "$FIXTURE_GIT_DIR/bodycast-production-release-marker" -mindepth 1 -maxdepth 1 -type f ! -name marker -print -quit)"
+MARKER_DIGEST="$(sha256sum "$FIXTURE_GIT_DIR/bodycast-production-release-marker/marker" | awk '{print $1}')"
 
 : > "$DOCKER_LOG"
 if run_fixture_command allow "$NEW_RELEASE_SHA" "$TMP/migration-rerun-blocked.log" "$FIXTURE_ROOT/scripts/deploy-migrate.sh"; then
@@ -284,6 +306,7 @@ fi
 grep -Fq 'existing schema-cutover marker requires explicit recovery' "$TMP/migration-rerun-blocked.log"
 test ! -s "$DOCKER_LOG"
 [[ "$(<"$MIGRATION_COUNT")" == "1" ]]
+[[ "$(sha256sum "$FIXTURE_GIT_DIR/bodycast-production-release-marker/marker" | awk '{print $1}')" == "$MARKER_DIGEST" ]]
 
 if run_fixture_command allow "$OLD_RELEASE_SHA" "$TMP/old-app-blocked.log" "$FIXTURE_ROOT/scripts/deploy.sh"; then
   echo "Expected the previous app SHA to be blocked while the marker exists." >&2
@@ -294,13 +317,13 @@ test ! -s "$DOCKER_LOG"
 
 # With no marker, prior-release deploy reaches only the read-only/preflight path;
 # this fixture deliberately stops at config validation before any app mutation.
-rm -f "$FIXTURE_GIT_DIR/bodycast-production-schema-cutover"
+rm -f "$FIXTURE_GIT_DIR/bodycast-production-release-marker/marker"
 : > "$DOCKER_LOG"
 if run_fixture_command allow "$OLD_RELEASE_SHA" "$TMP/pre-marker-deploy.log" "$FIXTURE_ROOT/scripts/deploy.sh"; then
   echo "Expected the fixture to stop at its intentional Compose config failure." >&2
   exit 1
 fi
 grep -Fq 'compose -f docker-compose.prod.yml config --quiet' "$DOCKER_LOG"
-test ! -e "$FIXTURE_GIT_DIR/bodycast-production-schema-cutover"
+test ! -e "$FIXTURE_GIT_DIR/bodycast-production-release-marker/marker"
 
 printf '%s\n' 'Production migration release-tooling shell regressions passed.'

@@ -160,6 +160,25 @@ describe("active production release entrypoints", () => {
     expect(capture).toContain("bodycast_assert_current_main_sha \"$target_sha\"");
   });
 
+  it("admits the migration-failure resume only with three exact run IDs and verifies its host-side recapture", () => {
+    const workflow = readFileSync(resolve(workflowDir, "production-migration-preflight.yml"), "utf8");
+    const resumeVerifier = readFileSync(resolve("scripts/production-preflight-resume.mjs"), "utf8");
+    const migrationScript = readFileSync(resolve("scripts/deploy-migrate.sh"), "utf8");
+    expect(workflow).toContain("resume_pre_ddl_migration_failure_run_id:");
+    expect(workflow).toContain("resume_blocked_capture_preflight_run_id:");
+    expect(workflow).toContain("Pre-DDL migration resume requires the exact source, failed migration, and blocked capture run IDs.");
+    expect(workflow).toContain("production-preflight-resume.mjs --verify-pre-ddl-migration-failure");
+    expect(resumeVerifier).toContain("two failed live probes, successful writer-drain observation, and final-guard import failure");
+    expect(resumeVerifier).toContain("verified-pre-ddl-migration-failure");
+    expect(resumeVerifier).toContain("must create a new backup");
+    const finalGuard = migrationScript.indexOf("production-migration-final-guard.mjs");
+    const marker = migrationScript.indexOf('write_bodycast_release_marker "$RELEASE_SHA" ddl-started');
+    const prisma = migrationScript.indexOf("run-prisma-migrate-with-lock-timeout.mjs");
+    expect(finalGuard).toBeGreaterThanOrEqual(0);
+    expect(finalGuard).toBeLessThan(marker);
+    expect(marker).toBeLessThan(prisma);
+  });
+
   it("keeps Prisma-only lock-timeout URL options out of libpq postflight probes", () => {
     const workflow = readFileSync(resolve(workflowDir, "production-migration-preflight.yml"), "utf8");
     const restoreStart = workflow.indexOf("name: Restore snapshot, compare source state, and rehearse exact migrations");

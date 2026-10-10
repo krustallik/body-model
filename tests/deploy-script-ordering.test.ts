@@ -92,6 +92,7 @@ describe("production maintenance-first deploy safety contracts", () => {
     const captureBody = deploySh.slice(captureDefinitionAt, deploySh.indexOf("\necho \"Preparing exact release"));
     expect(captureBody).toContain("docker image inspect --format '{{.Id}}' \"$previous_app_image_id\"");
     expect(captureBody).toContain("docker commit --pause=false \"$APP_CONTAINER\"");
+    expect(captureBody).toContain("continuing with exact container-identity stop only");
   });
 
   it("never starts the DB and prevents Compose dependency startup during read-only preflight", () => {

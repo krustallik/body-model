@@ -12,6 +12,10 @@ export const FORWARD_RESUME_FAILED_RUN_ID = "38022978032";
 export const FORWARD_RESUME_FAILED_SHA = "3cbf47ef73b83cdc9cd2ad548dbb36ca2b65bf74";
 export const FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_RUN_ID = "38045689913";
 export const FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_SHA = "981e3370ec981838ab2c1e5037a74e3fd5b8ce49";
+export const FORWARD_RESUME_SAFE_PREFLIGHT_RETRIES = Object.freeze([
+  Object.freeze({ runId: FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_RUN_ID, sha: FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_SHA }),
+  Object.freeze({ runId: "38048789731", sha: "ab80cbe54ebf67509db6e00801d686e52da02249" }),
+]);
 export const FORWARD_RESUME_PURPOSE = "bodycast-forward-resume-after-verified-pre-spawn-failure-v1";
 const DIGEST = /^[a-f0-9]{64}$/;
 export const MIGRATION_FAILURE_JOB = "Final live guard and authorized migration";
@@ -32,12 +36,13 @@ function sha256(bytes) { return createHash("sha256").update(bytes).digest("hex")
 function verifyAuthorizationOnlyForwardResumePreflightRetry({ run, jobsPayload, workflowId, currentMainSha,
   shaIsAncestorOfCurrentMain, historyRun }) {
   const runId = String(run?.id ?? "");
+  const expectedRetry = FORWARD_RESUME_SAFE_PREFLIGHT_RETRIES.find((retry) => retry.runId === runId);
   const expectedPath = ".github/workflows/production-migration-preflight.yml";
-  if (runId !== FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_RUN_ID
+  if (!expectedRetry
     || String(run?.workflow_id) !== String(workflowId)
     || workflowPath(run) !== expectedPath
     || run?.event !== "workflow_dispatch" || run?.head_branch !== "main"
-    || run?.head_sha !== FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_SHA
+    || run?.head_sha !== expectedRetry.sha
     || run?.status !== "completed" || run?.conclusion !== "failure" || run?.run_attempt !== 1
     || String(run?.actor?.id) !== BODYCAST_OWNER_ID || String(run?.triggering_actor?.id) !== BODYCAST_OWNER_ID
     || shaIsAncestorOfCurrentMain !== true || !/^[a-f0-9]{40}$/.test(String(currentMainSha ?? ""))
@@ -49,13 +54,13 @@ function verifyAuthorizationOnlyForwardResumePreflightRetry({ run, jobsPayload, 
   try {
     assertTrustedOwnerWorkflowRun(run, {
       actorId: BODYCAST_OWNER_ID, workflowPath: expectedPath, workflowRunId: runId,
-      workflowRunAttempt: 1, ref: "refs/heads/main", sha: FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_SHA,
+      workflowRunAttempt: 1, ref: "refs/heads/main", sha: expectedRetry.sha,
     });
   } catch (error) { reject(error.message); }
 
   const jobs = jobsPayload?.jobs;
   if (jobsPayload?.total_count !== 2 || !Array.isArray(jobs) || jobs.length !== 2
-    || jobs.some((job) => job.head_sha !== FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_SHA || job.run_attempt !== 1)) {
+    || jobs.some((job) => job.head_sha !== expectedRetry.sha || job.run_attempt !== 1)) {
     reject("the intervening preflight job inventory is incomplete or unexpected.");
   }
   const authorize = jobs.find((job) => job.name === "Authorize read-only preflight");
@@ -80,7 +85,7 @@ function verifyAuthorizationOnlyForwardResumePreflightRetry({ run, jobsPayload, 
     purpose: "bodycast-forward-resume-authorization-only-preflight-retry-v1",
     runId,
     runAttempt: 1,
-    sha: FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_SHA,
+    sha: expectedRetry.sha,
     currentMainSha,
     ownerId: BODYCAST_OWNER_ID,
     authorizationJobId: String(authorize.id),
@@ -179,7 +184,8 @@ export function verifyForwardResumeNoSpawnEvidence({ run, jobsPayload, logText, 
   if (authorize?.conclusion !== "success" || sign?.conclusion !== "success" || execution?.conclusion !== "failure") {
     reject("owner authorization/signing did not succeed before the single failed execution job.");
   }
-  const expectedSteps = new Map([
+  const expectedSteps = [
+    ["Set up job", "success"],
     ["Checkout exact authorized release SHA", "success"],
     ["Set up Node runtime", "success"],
     ["Recheck current canonical main before production SSH", "success"],
@@ -191,9 +197,11 @@ export function verifyForwardResumeNoSpawnEvidence({ run, jobsPayload, logText, 
     ["Remove temporary runner credentials", "success"],
     ["Post Set up Node runtime", "skipped"],
     ["Post Checkout exact authorized release SHA", "success"],
-  ]);
+    ["Complete job", "success"],
+  ];
   const actualSteps = execution.steps ?? [];
-  if (actualSteps.length !== expectedSteps.size || actualSteps.some((step) => expectedSteps.get(step.name) !== step.conclusion)) {
+  if (actualSteps.length !== expectedSteps.length || actualSteps.some((step, index) =>
+    step.name !== expectedSteps[index][0] || step.conclusion !== expectedSteps[index][1])) {
     reject("the exact migration job step sequence differs from the observed pre-spawn guard failure.");
   }
   const records = parseJobLog(logText).filter((entry) => entry.job === MIGRATION_FAILURE_JOB && entry.step === MIGRATION_FAILURE_STEP);

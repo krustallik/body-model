@@ -194,14 +194,16 @@ describe("active production release entrypoints", () => {
   it("proves the authorization-only retry SHA is an ancestor of current main before exempting it from mutation history", () => {
     const workflow = readFileSync(resolve(workflowDir, "production-migration-preflight.yml"), "utf8");
     const sourceAncestry = workflow.indexOf('git merge-base --is-ancestor "$(jq -r .head_sha "$RUNNER_TEMP/forward-source-run.json")" "$MAIN_TIP"');
-    const retryAncestry = workflow.indexOf('git merge-base --is-ancestor "$(jq -er .head_sha "$RUNNER_TEMP/forward-safe-preflight-retry-run.json")" "$MAIN_TIP"');
+    const retryAncestry = workflow.indexOf('git merge-base --is-ancestor "$(jq -er .head_sha "$retry_run_path")" "$MAIN_TIP"');
+    const safeRetryArgsGuard = workflow.indexOf("if (safeRetryPaths.length !== 4)");
     const historyVerifier = workflow.indexOf("verifyNoLaterMutationRun({ runs, currentRunId,");
 
     expect(sourceAncestry).toBeGreaterThanOrEqual(0);
-    expect(retryAncestry).toBeGreaterThan(sourceAncestry);
-    expect(historyVerifier).toBeGreaterThan(retryAncestry);
-    expect(workflow.slice(sourceAncestry, retryAncestry)).toContain("The failed release SHA is not an ancestor of current main.");
-    expect(workflow.slice(retryAncestry, historyVerifier)).toContain("The authorization-only preflight retry SHA is not an ancestor of current main.");
+    expect(retryAncestry).toBeGreaterThanOrEqual(0);
+    expect(safeRetryArgsGuard).toBeGreaterThan(retryAncestry);
+    expect(historyVerifier).toBeGreaterThan(Math.max(sourceAncestry, safeRetryArgsGuard));
+    expect(workflow.slice(sourceAncestry, sourceAncestry + 500)).toContain("The failed release SHA is not an ancestor of current main.");
+    expect(workflow.slice(retryAncestry, retryAncestry + 500)).toContain("Authorization-only preflight retry $retry_run_id is not an ancestor of current main.");
     expect(workflow.slice(historyVerifier, historyVerifier + 600)).toContain("shaIsAncestorOfCurrentMain: true");
   });
 

@@ -7,6 +7,7 @@ import {
 } from "@/modules/training/experimental-transient-exercise-water-shadow.service";
 import { EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V2_REVISION } from "@/model/physiology-v7/experimental-transient-exercise-water-v2";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
+import { UnifiedExperimentalPhysiologySourceLoaderV1 } from "@/model/unified-experimental-physiology-v1/source-loader";
 
 const profileId = 1;
 const marker = "transient-water-v2-pg-test";
@@ -15,6 +16,7 @@ const isolated = requireIsolatedStage01Database(dbUrl, process.env.BODYCAST_STAG
 const client = new PrismaClient({ datasourceUrl: dbUrl });
 const boundaryDate = "2073-01-03";
 const boundaryInstant = new Date("2073-01-03T12:00:00.000Z");
+const equalStartInstant = new Date("2073-01-02T10:00:00.000Z");
 
 async function cleanup(): Promise<void> {
   const programs = await client.trainingProgram.findMany({
@@ -39,7 +41,7 @@ async function cleanup(): Promise<void> {
   await client.dailyHealthData.deleteMany({ where: { date: { in: ["2073-01-03"] } } });
 }
 
-async function seed(): Promise<number[]> {
+async function seed(options: { equalAbsoluteStart?: boolean } = {}): Promise<number[]> {
   await cleanup();
   await client.profile.upsert({
     where: { id: profileId },
@@ -77,12 +79,17 @@ async function seed(): Promise<number[]> {
     weightMeasurementNoiseVarianceKg2: 0.25,
     calibrationDiagnostics: {},
   };
-  await client.modelEpisode.create({
-    data: { ...episode, startDate: "2073-01-01", timezone: "Pacific/Kiritimati", active: false, deactivatedAt: boundaryInstant },
-  });
-  await client.modelEpisode.create({
-    data: { ...episode, startDate: boundaryDate, timezone: "Etc/GMT+12", active: true, deactivatedAt: null },
-  });
+  const episodeStarts = options.equalAbsoluteStart
+    ? [
+      { startDate: "2073-01-03", timezone: "Pacific/Kiritimati", active: false, deactivatedAt: equalStartInstant },
+      { startDate: "2073-01-02", timezone: "Etc/GMT+10", active: true, deactivatedAt: null },
+    ]
+    : [
+      { startDate: "2073-01-01", timezone: "Pacific/Kiritimati", active: false, deactivatedAt: boundaryInstant },
+      { startDate: boundaryDate, timezone: "Etc/GMT+12", active: true, deactivatedAt: null },
+    ];
+  for (const episodeStart of episodeStarts) await client.modelEpisode.create({ data: { ...episode, ...episodeStart } });
+  const eventBoundary = options.equalAbsoluteStart ? equalStartInstant : boundaryInstant;
   const program = await client.trainingProgram.create({ data: { profileId, name: `${marker}-program` } });
   const version = await client.trainingProgramVersion.create({ data: { programId: program.id, versionNumber: 1 } });
   await client.trainingProgram.update({ where: { id: program.id }, data: { currentVersionId: version.id } });
@@ -95,16 +102,16 @@ async function seed(): Promise<number[]> {
       sourceIdentity: `${marker}:matched-workout`,
       externalId: `${marker}-external`,
       type: "Traditional Strength Training",
-      startAt: new Date(boundaryInstant.getTime() + 15 * 60_000),
-      endAt: new Date(boundaryInstant.getTime() + 45 * 60_000),
+      startAt: new Date(eventBoundary.getTime() + 15 * 60_000),
+      endAt: new Date(eventBoundary.getTime() + 45 * 60_000),
       durationMinutes: 30,
       activeEnergyKcal: 123,
     },
   });
   const specs = [
-    { eventAt: new Date(boundaryInstant.getTime() + 20 * 60_000), matchedWorkoutId: null, offsetMs: 0 },
-    { eventAt: new Date(boundaryInstant.getTime() + 5 * 60_000), matchedWorkoutId: null, offsetMs: 0 },
-    { eventAt: new Date(boundaryInstant.getTime() + 60 * 60_000), matchedWorkoutId: matchedWorkout.id, offsetMs: -86_400_000 },
+    { eventAt: options.equalAbsoluteStart ? eventBoundary : new Date(eventBoundary.getTime() + 20 * 60_000), matchedWorkoutId: null, offsetMs: 0 },
+    { eventAt: new Date(eventBoundary.getTime() + 5 * 60_000), matchedWorkoutId: null, offsetMs: 0 },
+    { eventAt: new Date(eventBoundary.getTime() + 60 * 60_000), matchedWorkoutId: matchedWorkout.id, offsetMs: -86_400_000 },
   ];
   const ids: number[] = [];
   for (const spec of specs) {
@@ -181,6 +188,39 @@ describe("Transient Exercise Water V2 PostgreSQL persistence and concurrency", (
     });
     expect((movedRow.result as { impulse: { modelDate: string } }).impulse.modelDate)
       .toBe("2073-01-04");
+  });
+
+  it("keeps PostgreSQL transient shadow and Unified loader aligned for equal absolute episode starts", async () => {
+    const sessionIds = await seed({ equalAbsoluteStart: true });
+    const episodes = await client.modelEpisode.findMany({
+      where: { profileId, baselineDerivationMethod: marker },
+      orderBy: { id: "asc" },
+      select: { id: true, startDate: true, timezone: true, active: true, deactivatedAt: true },
+    });
+    expect(episodes).toHaveLength(2);
+    expect(episodes[0]?.id).toBeLessThan(episodes[1]!.id);
+    expect(episodes[0]?.startDate).toBe("2073-01-03");
+    expect(episodes[1]?.startDate).toBe("2073-01-02");
+
+    await rebuildExperimentalTransientExerciseWaterV2({ profileId, client });
+    const shadow = await client.experimentalTransientExerciseWaterShadow.findUniqueOrThrow({
+      where: { sessionId: sessionIds[0] },
+    });
+    const impulse = (shadow.result as { impulse: { canonicalEventInstant: string; modelEpisodeId: number; modelDate: string } }).impulse;
+    expect(impulse.canonicalEventInstant).toBe(equalStartInstant.toISOString());
+    expect(impulse.modelEpisodeId).toBe(episodes[1]!.id);
+    expect(impulse.modelDate).toBe("2073-01-02");
+
+    const range = await new UnifiedExperimentalPhysiologySourceLoaderV1(client as never).loadRange({
+      profileId,
+      fromInstant: equalStartInstant,
+      throughInstant: new Date("2073-01-03T10:00:00.000Z"),
+    });
+    const winningDay = range.days.find(({ modelEpisodeId, date }) => (
+      modelEpisodeId === episodes[1]!.id && date === "2073-01-02"
+    ));
+    expect(winningDay?.childOutputs.transientWater.map(({ sessionId: id }) => id)).toContain(sessionIds[0]);
+    expect(range.days.some(({ modelEpisodeId }) => modelEpisodeId === episodes[0]!.id)).toBe(false);
   });
 
   it("rejects a stale candidate after a concurrent source revision, and a rolled-back edit leaves it current", async () => {

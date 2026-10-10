@@ -5,6 +5,7 @@ import {
   serializeUnifiedExperimentalPhysiologyV1,
   type UnifiedExperimentalPhysiologyDayResultV1,
 } from "@/model/unified-experimental-physiology-v1";
+import { TRANSIENT_EPISODE_PARTITION_V2_REVISION } from "@/modules/model-episodes/transient-exercise-water-episode-time-v2";
 
 function fixture(): UnifiedExperimentalPhysiologyDayResultV1 {
   const unavailable = { availability: "unavailable" as const, point: null, lower: null, upper: null, representation: "engineering-range" as const };
@@ -29,7 +30,7 @@ function fixture(): UnifiedExperimentalPhysiologyDayResultV1 {
     quality: { availability: "unavailable" as const, gapSeverity: "extended-gap" as const, sourceQuality: "missing" as const, missingFields: ["nutrition"], reasons: ["missing"], modeledGapBridge: false },
     uncertainty: { state: {}, transition: {}, observation: { scaleKg: null, bodyComposition: [] }, model: [], gap: ["missing"], dependencyNotes: [] },
     reconciliation: { anchorDate: null, anchorWeightKg: null, observedWeightKg: null, observedChangeKg: null, modeledChangeSinceAnchorKg: null, unexplainedResidualKg: null, handling: "no-anchor" as const, reason: "missing" },
-    sourceLineage: { modelEpisodeId: 1, modelDate: "2065-01-01", boundaryAt: "2065-01-01T00:00:00.000Z", episodePartitionRevision: "transient-water-v2-absolute-episode-partition", dailyHealthData: null, productionDailyState: null, workouts: [], diarySessions: [], childModelRevisions: {}, sourceDate: "2065-01-01" },
+    sourceLineage: { modelEpisodeId: 1, modelDate: "2065-01-01", boundaryAt: "2065-01-01T00:00:00.000Z", episodePartitionRevision: TRANSIENT_EPISODE_PARTITION_V2_REVISION, dailyHealthData: null, productionDailyState: null, workouts: [], diarySessions: [], childModelRevisions: {}, sourceDate: "2065-01-01" },
     diagnostics: { componentComparisons: {}, rejectedConversions: [], notes: [] },
     resultFingerprint: "result",
   };

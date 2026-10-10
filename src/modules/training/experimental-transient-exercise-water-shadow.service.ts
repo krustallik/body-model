@@ -90,7 +90,7 @@ async function readSourceSnapshot(db: DbClient, profileId: number): Promise<Sour
       profileId,
       revision: EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V2_REVISION,
       replayRevision: EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V2_REPLAY_REVISION,
-      partitionContract: "instant-half-open-episode-local-midnight-v2",
+      partitionContract: "instant-half-open-episode-local-midnight-v2-highest-id-equal-start-wins",
       episodes: episodes.map((episode) => ({
         id: episode.id,
         profileId: episode.profileId,

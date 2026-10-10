@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => {
     getModelStatus: vi.fn(),
     invalidate: vi.fn(),
     recalculateModelEpisode: vi.fn(),
+    rebuildTransientWater: vi.fn(),
     rebuildUnified: vi.fn(),
     findUniqueEpisode: vi.fn(),
     findUniqueLifecycle: vi.fn(),
@@ -46,6 +47,9 @@ vi.mock("@/modules/model-episodes/physiology-v7-persistence.repository", () => (
 }));
 vi.mock("@/modules/model-episodes/unified-experimental-physiology-state.service", () => ({
   rebuildUnifiedExperimentalPhysiologyStateV1: mocks.rebuildUnified,
+}));
+vi.mock("@/modules/training/experimental-transient-exercise-water-shadow.service", () => ({
+  rebuildExperimentalTransientExerciseWaterV2: mocks.rebuildTransientWater,
 }));
 import {
   FULL_HISTORY_REBUILT_DERIVED_TABLES,
@@ -96,6 +100,11 @@ describe("runOwnerAuthorizedFullHistoryRecalculation", () => {
       }];
     });
     mocks.invalidate.mockResolvedValue({});
+    mocks.rebuildTransientWater.mockResolvedValue({
+      earliestModelDate: "2024-01-01",
+      sourceToken: "transient-water-source-token",
+      impulseCount: 4,
+    });
     mocks.recalculateModelEpisode.mockResolvedValue({
       status: "ok",
       episodeId: 11,
@@ -106,12 +115,13 @@ describe("runOwnerAuthorizedFullHistoryRecalculation", () => {
     mocks.rebuildUnified.mockResolvedValue(undefined);
   });
 
-  it("forces invalidation from episode start, recalculates, rebuilds Unified V3, and conserves raw inputs", async () => {
+  it("refreshes transient episode attribution before invalidation, recalculation, and Unified V3", async () => {
     const result = await runOwnerAuthorizedFullHistoryRecalculation({
       profileId: 1,
       ownerAuthorized: true,
     });
 
+    expect(mocks.rebuildTransientWater).toHaveBeenCalledWith({ profileId: 1, client: expect.anything() });
     expect(mocks.invalidate).toHaveBeenCalledWith(1, "2024-01-01");
     expect(mocks.recalculateModelEpisode).toHaveBeenCalledWith({ episodeId: 11 }, expect.anything());
     expect(mocks.rebuildUnified).toHaveBeenCalledWith({
@@ -120,6 +130,9 @@ describe("runOwnerAuthorizedFullHistoryRecalculation", () => {
       targetRevision: V3,
       rolloutEpoch: 0,
     });
+    expect(mocks.rebuildTransientWater.mock.invocationCallOrder[0]).toBeLessThan(mocks.invalidate.mock.invocationCallOrder[0]!);
+    expect(mocks.invalidate.mock.invocationCallOrder[0]).toBeLessThan(mocks.recalculateModelEpisode.mock.invocationCallOrder[0]!);
+    expect(mocks.recalculateModelEpisode.mock.invocationCallOrder[0]).toBeLessThan(mocks.rebuildUnified.mock.invocationCallOrder[0]!);
     expect(result).toMatchObject({
       profileId: 1,
       episodeId: 11,
@@ -127,6 +140,8 @@ describe("runOwnerAuthorizedFullHistoryRecalculation", () => {
       productionPublishedGeneration: 7,
       unifiedPublishedGeneration: 7,
       rawInputFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      transientWaterImpulseCount: 4,
+      transientWaterEarliestModelDate: "2024-01-01",
     });
   });
 
@@ -239,6 +254,33 @@ describe("runOwnerAuthorizedFullHistoryRecalculation", () => {
       profileId: 1,
       ownerAuthorized: true,
     })).rejects.toThrow(/Unified V3 epoch 0/);
+    expect(mocks.rebuildTransientWater).not.toHaveBeenCalled();
+    expect(mocks.invalidate).not.toHaveBeenCalled();
+    expect(mocks.recalculateModelEpisode).not.toHaveBeenCalled();
+    expect(mocks.rebuildUnified).not.toHaveBeenCalled();
+  });
+
+  it("rechecks the V3 epoch after transient rebuild before any publication mutation", async () => {
+    mocks.rebuildTransientWater.mockImplementation(async () => {
+      mocks.state.lifecycle.unifiedTargetRevision = "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once";
+      mocks.state.lifecycle.unifiedRolloutEpoch = 1;
+      return {
+        earliestModelDate: "2024-01-01",
+        sourceToken: "transient-water-source-token",
+        impulseCount: 4,
+      };
+    });
+
+    await expect(runOwnerAuthorizedFullHistoryRecalculation({
+      profileId: 1,
+      ownerAuthorized: true,
+    })).rejects.toThrow(/Unified V3 epoch 0/);
+
+    expect(mocks.rebuildTransientWater).toHaveBeenCalledTimes(1);
+    expect(mocks.findUniqueLifecycle).toHaveBeenCalledTimes(2);
+    expect(mocks.invalidate).not.toHaveBeenCalled();
+    expect(mocks.recalculateModelEpisode).not.toHaveBeenCalled();
+    expect(mocks.rebuildUnified).not.toHaveBeenCalled();
   });
 
   it("requires explicit owner authorization and a positive profile id", async () => {

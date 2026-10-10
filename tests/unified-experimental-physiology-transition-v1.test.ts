@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { transitionUnifiedExperimentalPhysiologyV1, type UnifiedChildTransitionsV1 } from "@/model/unified-experimental-physiology-v1";
+import { TRANSIENT_EPISODE_PARTITION_V2_REVISION } from "@/modules/model-episodes/transient-exercise-water-episode-time-v2";
 
 const unavailableEnvelope = { point: null, lower: null, upper: null, representation: "engineering-range" as const };
 const availableEnvelope = (point: number) => ({ point, lower: point, upper: point, representation: "engineering-range" as const });
@@ -18,7 +19,7 @@ function children(): UnifiedChildTransitionsV1 {
 const ledger = { selectedActivityKcal: 500, productionTdeeKcal: 2_900, entries: [], selectedDoseKeys: [], quality: "available" as const };
 const quality = { availability: "available" as const, gapSeverity: "none" as const, sourceQuality: "observed" as const, missingFields: [], reasons: [], modeledGapBridge: false };
 const uncertainty = { state: {}, transition: {}, observation: { scaleKg: null, bodyComposition: [] }, model: [], gap: [], dependencyNotes: [] };
-const lineage = { modelEpisodeId: 1, modelDate: "2065-01-01", boundaryAt: "2065-01-01T00:00:00.000Z", episodePartitionRevision: "transient-water-v2-absolute-episode-partition", dailyHealthData: null, productionDailyState: null, workouts: [], diarySessions: [], childModelRevisions: {}, sourceDate: "2065-01-01" };
+const lineage = { modelEpisodeId: 1, modelDate: "2065-01-01", boundaryAt: "2065-01-01T00:00:00.000Z", episodePartitionRevision: TRANSIENT_EPISODE_PARTITION_V2_REVISION, dailyHealthData: null, productionDailyState: null, workouts: [], diarySessions: [], childModelRevisions: {}, sourceDate: "2065-01-01" };
 
 describe("Unified V2 pure transition", () => {
   it("composes slow and fast change without adding relative muscle", () => {

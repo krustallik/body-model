@@ -10,6 +10,7 @@ import {
   isUnifiedGenerationCurrentV1,
 } from "./publication-generation-v1";
 import { rebuildUnifiedExperimentalPhysiologyStateV1 } from "./unified-experimental-physiology-state.service";
+import { rebuildExperimentalTransientExerciseWaterV2 } from "@/modules/training/experimental-transient-exercise-water-shadow.service";
 
 /**
  * Durable primary source records/configuration, user decisions, and provenance
@@ -114,6 +115,8 @@ export type FullHistoryRecalculationResult = {
   unifiedTargetRevision: typeof UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION;
   unifiedRolloutEpoch: number;
   rawInputFingerprint: string;
+  transientWaterImpulseCount: number;
+  transientWaterEarliestModelDate: string | null;
   recalculation: Awaited<ReturnType<typeof recalculateModelEpisode>>;
 };
 
@@ -252,6 +255,14 @@ export async function runOwnerAuthorizedFullHistoryRecalculation(input: {
   const beforeLifecycle = await readLifecycle(client, profileId);
   assertV3PreActivationLifecycle(beforeLifecycle, profileId);
 
+  // Refresh this derived source before rebuilding Unified so episode boundary
+  // changes (including equal-instant replacements) cannot leave persisted
+  // impulses attributed to an obsolete episode/date. Recheck after the shadow
+  // write because rollout state may change while that rebuild is in progress.
+  const transientWater = await rebuildExperimentalTransientExerciseWaterV2({ profileId, client });
+  const afterTransientLifecycle = await readLifecycle(client, profileId);
+  assertV3PreActivationLifecycle(afterTransientLifecycle, profileId);
+
   await new PhysiologyV7PersistenceRepository(client).invalidate(profileId, episode.startDate);
   const recalculation = await recalculateModelEpisode({ episodeId: episode.id }, client);
   await rebuildUnifiedExperimentalPhysiologyStateV1({
@@ -288,6 +299,8 @@ export async function runOwnerAuthorizedFullHistoryRecalculation(input: {
     unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
     unifiedRolloutEpoch: 0,
     rawInputFingerprint: afterRaw.fingerprint,
+    transientWaterImpulseCount: transientWater.impulseCount,
+    transientWaterEarliestModelDate: transientWater.earliestModelDate,
     recalculation,
   };
 }

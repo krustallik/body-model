@@ -10,6 +10,7 @@ import {
   MIGRATION_FAILURE_STEP,
   MIGRATION_GUARD_FAILURE,
   createForwardResumeContext,
+  selectForwardResumeMigrationContextArtifact,
   verifyForwardResumeContext,
   verifyForwardResumeMarkerObservation,
   verifyForwardResumeNoSpawnEvidence,
@@ -79,6 +80,63 @@ function noSpawnProofInputs(overrides = {}) {
 }
 
 describe("forward-resume evidence for the single verified pre-spawn failure", () => {
+  it("accepts the exact source artifact when GitHub omits workflow_run.run_attempt", () => {
+    const artifact = {
+      id: 11658904368,
+      name: `bodycast-migration-auth-${FORWARD_RESUME_FAILED_RUN_ID}-1`,
+      size_in_bytes: 12261,
+      expired: false,
+      digest: `sha256:${"a".repeat(64)}`,
+      workflow_run: { id: Number(FORWARD_RESUME_FAILED_RUN_ID), head_branch: "main", head_sha: FORWARD_RESUME_FAILED_SHA },
+    };
+    expect(selectForwardResumeMigrationContextArtifact({ artifacts: [artifact] })).toEqual({
+      id: "11658904368",
+      name: `bodycast-migration-auth-${FORWARD_RESUME_FAILED_RUN_ID}-1`,
+      digest: `sha256:${"a".repeat(64)}`,
+      workflowRunId: FORWARD_RESUME_FAILED_RUN_ID,
+      workflowRunAttempt: 1,
+      headSha: FORWARD_RESUME_FAILED_SHA,
+    });
+  });
+
+  it.each([
+    ["wrong source run", { workflow_run: { id: 38022978033 } }],
+    ["wrong source SHA", { workflow_run: { head_sha: "a".repeat(40) } }],
+    ["wrong branch", { workflow_run: { head_branch: "feature/untrusted" } }],
+    ["wrong reported attempt", { workflow_run: { run_attempt: 2 } }],
+    ["malformed boolean reported attempt", { workflow_run: { run_attempt: true } }],
+    ["expired artifact", { expired: true }],
+    ["missing digest", { digest: undefined }],
+    ["empty artifact", { size_in_bytes: 0 }],
+  ])("rejects source artifact metadata with %s", (_label, override) => {
+    const artifact = {
+      id: 11658904368,
+      name: `bodycast-migration-auth-${FORWARD_RESUME_FAILED_RUN_ID}-1`,
+      size_in_bytes: 12261,
+      expired: false,
+      digest: `sha256:${"a".repeat(64)}`,
+      workflow_run: { id: Number(FORWARD_RESUME_FAILED_RUN_ID), head_branch: "main", head_sha: FORWARD_RESUME_FAILED_SHA },
+      ...override,
+      ...(override.workflow_run ? { workflow_run: {
+        id: Number(FORWARD_RESUME_FAILED_RUN_ID), head_branch: "main", head_sha: FORWARD_RESUME_FAILED_SHA, ...override.workflow_run,
+      } } : {}),
+    };
+    expect(() => selectForwardResumeMigrationContextArtifact({ artifacts: [artifact] })).toThrow("Forward-resume blocked");
+  });
+
+  it("rejects duplicate exact-name artifacts instead of choosing one", () => {
+    const artifact = {
+      id: 11658904368,
+      name: `bodycast-migration-auth-${FORWARD_RESUME_FAILED_RUN_ID}-1`,
+      size_in_bytes: 12261,
+      expired: false,
+      digest: `sha256:${"a".repeat(64)}`,
+      workflow_run: { id: Number(FORWARD_RESUME_FAILED_RUN_ID), head_branch: "main", head_sha: FORWARD_RESUME_FAILED_SHA },
+    };
+    expect(() => selectForwardResumeMigrationContextArtifact({ artifacts: [artifact, { ...artifact, id: 11658904369 }] }))
+      .toThrow("Forward-resume blocked");
+  });
+
   it("accepts only the exact owner migration run with the failed final writer-drain guard before Prisma spawn", () => {
     const proof = verifyForwardResumeNoSpawnEvidence(noSpawnProofInputs());
     expect(proof).toMatchObject({

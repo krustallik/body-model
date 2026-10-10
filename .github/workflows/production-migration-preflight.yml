@@ -136,17 +136,12 @@ jobs:
             gh api "repos/krustallik/body-model/actions/runs/$FORWARD_RESUME_FAILED_RUN_ID/artifacts" > "$RUNNER_TEMP/forward-source-artifacts.json"
             MIGRATION_EXECUTION_JOB_ID="$(jq -er '[.jobs[] | select(.name == "Final live guard and authorized migration") | .id] | if length == 1 and (.[0] | type == "number") then .[0] else error("migration execution job ID is missing or ambiguous") end' "$RUNNER_TEMP/forward-source-jobs.json")"
             gh run view "$FORWARD_RESUME_FAILED_RUN_ID" --repo krustallik/body-model --job "$MIGRATION_EXECUTION_JOB_ID" --log-failed > "$RUNNER_TEMP/forward-source-failure.log"
-            node --input-type=module - "$RUNNER_TEMP/forward-source-artifacts.json" "$FORWARD_RESUME_FAILED_RUN_ID" <<'NODE'
+            node --input-type=module - "$RUNNER_TEMP/forward-source-artifacts.json" <<'NODE'
           import { readFileSync } from "node:fs";
-          const [path, runId] = process.argv.slice(2);
+          import { selectForwardResumeMigrationContextArtifact } from "./scripts/production-forward-resume.mjs";
+          const [path] = process.argv.slice(2);
           const payload = JSON.parse(readFileSync(path, "utf8"));
-          const expected = `bodycast-migration-auth-${runId}-1`;
-          const matches = (payload.artifacts ?? []).filter((artifact) => artifact.name === expected
-            && artifact.expired !== true && String(artifact.workflow_run?.id) === runId
-            && Number(artifact.workflow_run?.run_attempt) === 1);
-          if (matches.length !== 1 || !/^sha256:[a-f0-9]{64}$/.test(String(matches[0].digest ?? ""))) {
-            throw new Error("The exact original signed migration context artifact is missing, expired, or ambiguous.");
-          }
+          selectForwardResumeMigrationContextArtifact(payload);
           NODE
             mkdir -m 700 "$RUNNER_TEMP/forward-source-bundle"
             gh run download "$FORWARD_RESUME_FAILED_RUN_ID" --repo krustallik/body-model \

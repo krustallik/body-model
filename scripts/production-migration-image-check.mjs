@@ -29,6 +29,20 @@ export async function verifyMigrationImageFiles(repositoryPath) {
     || typeof writerDrain.evaluateProductionWriterDrain !== "function") {
     throw new Error("Migrator image writer-drain safety module is missing, incomplete, or has an unexpected contract.");
   }
+  const authorizationRuntime = [];
+  for (const name of [
+    "production-db-preflight.mjs",
+    "production-migration-final-guard.mjs",
+    "run-prisma-migrate-with-lock-timeout.mjs",
+  ]) {
+    const filename = path.join(repositoryPath, "scripts", name);
+    const bytes = await readFile(filename);
+    if (bytes.length < 256) throw new Error(`Migrator image authorization runtime is missing or unexpectedly empty: ${name}`);
+    // Import each production entrypoint so the image check validates its complete
+    // static dependency graph, including owner identity and PostgreSQL identity modules.
+    await import(pathToFileURL(filename).href);
+    authorizationRuntime.push({ name, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
+  }
   return {
     migrations: results,
     rolloutTools,
@@ -38,6 +52,7 @@ export async function verifyMigrationImageFiles(repositoryPath) {
       sha256: createHash("sha256").update(writerDrainBytes).digest("hex"),
       contract: writerDrain.PRODUCTION_WRITER_TOPOLOGY_CONTRACT,
     },
+    authorizationRuntime,
   };
 }
 

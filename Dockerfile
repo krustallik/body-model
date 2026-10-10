@@ -43,6 +43,7 @@ COPY scripts/production-migration-preflight.mjs ./scripts/
 COPY scripts/production-migration-manifests.mjs ./scripts/
 COPY scripts/production-migration-integrity.mjs ./scripts/
 COPY scripts/production-migration-authorization.mjs ./scripts/
+COPY scripts/github-owner-identity.mjs scripts/postgres-database-identity.mjs ./scripts/
 COPY scripts/production-migration-release.mjs ./scripts/
 COPY scripts/production-writer-drain.mjs ./scripts/
 COPY scripts/production-db-preflight.mjs ./scripts/

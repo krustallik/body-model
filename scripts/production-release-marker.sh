@@ -15,6 +15,10 @@ BODYCAST_MARKER_WORKFLOW_RUN_ATTEMPT=""
 BODYCAST_MARKER_AUTHORIZATION_ID=""
 BODYCAST_MARKER_LINEAGE_DIGEST=""
 BODYCAST_MARKER_SPAWN_STATE=""
+BODYCAST_MARKER_MIGRATION_ORIGIN_SHA=""
+BODYCAST_MARKER_DEPLOY_SHA=""
+BODYCAST_MARKER_SOURCE_DIGEST=""
+BODYCAST_MARKER_COMPATIBILITY_DIGEST=""
 BODYCAST_MARKER_FILE_PATH=""
 
 read_bodycast_release_marker() {
@@ -45,6 +49,10 @@ read_bodycast_release_marker() {
   BODYCAST_MARKER_AUTHORIZATION_ID=""
   BODYCAST_MARKER_LINEAGE_DIGEST=""
   BODYCAST_MARKER_SPAWN_STATE=""
+  BODYCAST_MARKER_MIGRATION_ORIGIN_SHA=""
+  BODYCAST_MARKER_DEPLOY_SHA=""
+  BODYCAST_MARKER_SOURCE_DIGEST=""
+  BODYCAST_MARKER_COMPATIBILITY_DIGEST=""
   if [[ "${#lines[@]}" -eq 4 && "${lines[0]}" == "schemaVersion=1" ]]; then
     [[ "${lines[1]}" == manifestId=* && "${lines[2]}" == releaseSha=* && "${lines[3]}" == state=* ]] || {
       echo "Production release marker has unsupported fields." >&2; return 2;
@@ -72,11 +80,40 @@ read_bodycast_release_marker() {
       && "$BODYCAST_MARKER_SPAWN_STATE" =~ ^(not-started|started)$ ]] || {
       echo "Production release marker V2 lineage is malformed." >&2; return 2;
     }
+  elif [[ "${#lines[@]}" -eq 12 && "${lines[0]}" == "schemaVersion=3" ]]; then
+    [[ "${lines[1]}" == manifestId=* && "${lines[2]}" == migrationOriginSha=* && "${lines[3]}" == deploySha=* \
+      && "${lines[4]}" == state=* && "${lines[5]}" == workflowRunId=* && "${lines[6]}" == workflowRunAttempt=* \
+      && "${lines[7]}" == authorizationId=* && "${lines[8]}" == lineageDigest=* \
+      && "${lines[9]}" == spawnState=* && "${lines[10]}" == sourceMarkerDigest=* \
+      && "${lines[11]}" == compatibilityDigest=* ]] || { echo "Production release marker V3 has unsupported fields." >&2; return 2; }
+    BODYCAST_MARKER_MANIFEST_ID="${lines[1]#manifestId=}"
+    BODYCAST_MARKER_MIGRATION_ORIGIN_SHA="${lines[2]#migrationOriginSha=}"
+    BODYCAST_MARKER_DEPLOY_SHA="${lines[3]#deploySha=}"
+    BODYCAST_MARKER_RELEASE_SHA="$BODYCAST_MARKER_DEPLOY_SHA"
+    BODYCAST_MARKER_STATE="${lines[4]#state=}"
+    BODYCAST_MARKER_WORKFLOW_RUN_ID="${lines[5]#workflowRunId=}"
+    BODYCAST_MARKER_WORKFLOW_RUN_ATTEMPT="${lines[6]#workflowRunAttempt=}"
+    BODYCAST_MARKER_AUTHORIZATION_ID="${lines[7]#authorizationId=}"
+    BODYCAST_MARKER_LINEAGE_DIGEST="${lines[8]#lineageDigest=}"
+    BODYCAST_MARKER_SPAWN_STATE="${lines[9]#spawnState=}"
+    BODYCAST_MARKER_SOURCE_DIGEST="${lines[10]#sourceMarkerDigest=}"
+    BODYCAST_MARKER_COMPATIBILITY_DIGEST="${lines[11]#compatibilityDigest=}"
+    [[ "$BODYCAST_MARKER_MIGRATION_ORIGIN_SHA" =~ ^[a-f0-9]{40}$ \
+      && "$BODYCAST_MARKER_DEPLOY_SHA" =~ ^[a-f0-9]{40}$ \
+      && "$BODYCAST_MARKER_WORKFLOW_RUN_ID" =~ ^[1-9][0-9]*$ \
+      && "$BODYCAST_MARKER_WORKFLOW_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ \
+      && "$BODYCAST_MARKER_AUTHORIZATION_ID" =~ ^[A-Za-z0-9-]{16,80}$ \
+      && "$BODYCAST_MARKER_LINEAGE_DIGEST" =~ ^[a-f0-9]{64}$ \
+      && "$BODYCAST_MARKER_SPAWN_STATE" == "started" \
+      && "$BODYCAST_MARKER_SOURCE_DIGEST" =~ ^[a-f0-9]{64}$ \
+      && "$BODYCAST_MARKER_COMPATIBILITY_DIGEST" =~ ^[a-f0-9]{64}$ ]] || {
+      echo "Production release marker V3 lineage is malformed." >&2; return 2;
+    }
   else
     echo "Production release marker is malformed or unsupported." >&2; return 2
   fi
   [[ "$BODYCAST_MARKER_MANIFEST_ID" == "active-energy-unified-v2" \
-    && ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 1 || "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 ) \
+    && ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 1 || "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 || "$BODYCAST_MARKER_SCHEMA_VERSION" == 3 ) \
     && ( "$BODYCAST_MARKER_RELEASE_SHA" =~ ^[a-f0-9]{40}$ || "$BODYCAST_MARKER_RELEASE_SHA" == "unknown" ) \
     && "$BODYCAST_MARKER_STATE" =~ ^(ddl-starting|ddl-started|schema-applied|app-ready|v4-ready|database-restored|rollback-app-ready|forward-resume-armed)$ ]] || {
     echo "Production release marker values are not recognized." >&2; return 2;
@@ -86,6 +123,10 @@ read_bodycast_release_marker() {
       || ( "$BODYCAST_MARKER_STATE" =~ ^(ddl-started|schema-applied|app-ready|v4-ready)$ && "$BODYCAST_MARKER_SPAWN_STATE" == "started" ) \
       || "$BODYCAST_MARKER_STATE" == "forward-resume-armed" ]] || {
       echo "Production release marker spawn state is inconsistent." >&2; return 2;
+    }
+  elif [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == 3 ]]; then
+    [[ "$BODYCAST_MARKER_STATE" =~ ^(schema-applied|app-ready|v4-ready|database-restored|rollback-app-ready)$ ]] || {
+      echo "Production release marker V3 state is not a deploy handoff state." >&2; return 2;
     }
   fi
   BODYCAST_MARKER_FILE_PATH="$marker_file"
@@ -137,6 +178,8 @@ write_bodycast_release_marker() {
   chmod 600 "$temporary"
   if [[ "$legacy" == true ]]; then
     printf 'schemaVersion=1\nmanifestId=active-energy-unified-v2\nreleaseSha=%s\nstate=%s\n' "$release_sha" "$state" > "$temporary"
+  elif [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == 3 ]]; then
+    node "$(dirname "${BASH_SOURCE[0]}")/production-schema-deploy-handoff.mjs" --render-transition "$BODYCAST_MARKER_FILE_PATH" "$state" > "$temporary"
   else
     printf 'schemaVersion=2\nmanifestId=active-energy-unified-v2\nreleaseSha=%s\nstate=%s\nworkflowRunId=%s\nworkflowRunAttempt=%s\nauthorizationId=%s\nlineageDigest=%s\nspawnState=%s\n' \
       "$release_sha" "$state" "$BODYCAST_MARKER_WORKFLOW_RUN_ID" "$BODYCAST_MARKER_WORKFLOW_RUN_ATTEMPT" \

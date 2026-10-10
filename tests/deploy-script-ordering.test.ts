@@ -166,6 +166,15 @@ describe("production maintenance-first deploy safety contracts", () => {
 
   it("retains schema marker requirements and exact release image labels", () => {
     expect(deploySh).toContain('BODYCAST_MARKER_RELEASE_SHA" == "$DEPLOY_SHA');
+    const scriptAt = deploySh.indexOf("production-schema-deploy-handoff.mjs");
+    const checkAt = deploySh.indexOf("--check", scriptAt);
+    const preflightAt = deploySh.indexOf('bash "$ROOT_DIR/scripts/deploy-preflight-schema.sh"', checkAt);
+    const applyAt = deploySh.indexOf("--apply", checkAt);
+    const exactShaAt = deploySh.indexOf('BODYCAST_MARKER_RELEASE_SHA" == "$DEPLOY_SHA', applyAt);
+    expect(checkAt).toBeGreaterThan(-1);
+    expect(preflightAt).toBeGreaterThan(checkAt);
+    expect(applyAt).toBeGreaterThan(preflightAt);
+    expect(exactShaAt).toBeGreaterThan(applyAt);
     expect(deploySh).toContain('BODYCAST_NON_SERVING_DEPLOY" == "1"');
     expect(deploySh).toContain('write_bodycast_release_marker "$DEPLOY_SHA" app-ready');
     expect(migrateSh).toContain("read_bodycast_release_marker");

@@ -7,10 +7,10 @@ import { pathToFileURL } from "node:url";
 export const SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA = "62b6961dde7036100c8af7281e7bfab75bb662db";
 export const SCHEMA_DEPLOY_HANDOFF_PROVENANCE = Object.freeze({
   manifestId: "active-energy-unified-v2",
-  workflowRunId: "38062632284",
+  workflowRunId: "38069108209",
   workflowRunAttempt: 1,
-  authorizationId: "0e616010-fb95-4832-9dd5-df4c386fa003",
-  lineageDigest: "95708ac314e3e9cc6f018c2e663b4cd236d97699616c85bc89ef4dbd092c799b",
+  authorizationId: "123dcfca-64a4-4708-8c3a-3a9f59ed5412",
+  lineageDigest: "877d195c9600f760d821eeb8f6f770e307292671a94e549e46dca8c344ee3e2e",
   spawnState: "started",
 });
 

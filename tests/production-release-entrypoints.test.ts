@@ -173,7 +173,7 @@ describe("active production release entrypoints", () => {
     expect(workflow).toContain("resume_blocked_capture_preflight_run_id:");
     expect(workflow).toContain("Pre-DDL migration resume requires the exact source, failed migration, and blocked capture run IDs.");
     expect(workflow).toContain('MIGRATION_EXECUTION_JOB_ID="$(jq -er');
-    expect(workflow).toContain('gh api --allow-escape-sequences "repos/krustallik/body-model/actions/jobs/$MIGRATION_EXECUTION_JOB_ID/logs" > "$RUNNER_TEMP/forward-source-failure.log"');
+    expect(workflow).toContain('node scripts/github-forward-resume-evidence.mjs "$RUNNER_TEMP/forward-github-evidence" "$GITHUB_RUN_ID" "$MAIN_TIP"');
     expect(workflow).toContain('--job "$MIGRATION_EXECUTION_JOB_ID" --log-failed');
     expect(workflow).toContain("production-preflight-resume.mjs --verify-pre-ddl-migration-failure");
     expect(migrationWorkflow).toMatch(/- name: Remove temporary runner credentials\s+if: always\(\)\s+run: rm -rf "\$RUNNER_TEMP\/bodycast-migrate-ssh"/);
@@ -192,21 +192,15 @@ describe("active production release entrypoints", () => {
     expect(durableMarker).toBeLessThan(prismaSpawn);
   });
 
-  it("proves the authorization-only retry SHA is an ancestor of current main before exempting it from mutation history", () => {
+  it("collects complete dynamic GitHub evidence with native transport before production access", () => {
     const workflow = readFileSync(resolve(workflowDir, "production-migration-preflight.yml"), "utf8");
-    const sourceAncestry = workflow.indexOf('git merge-base --is-ancestor "$(jq -r .head_sha "$RUNNER_TEMP/forward-source-run.json")" "$MAIN_TIP"');
-    const retryAncestry = workflow.indexOf('git merge-base --is-ancestor "$(jq -er .head_sha "$retry_run_path")" "$MAIN_TIP"');
-    const safeRetryArgsGuard = workflow.indexOf("if (safeRetryPaths.length !== 6)");
-    const historyVerifier = workflow.indexOf("verifyNoLaterMutationRun({ runs, currentRunId,");
-
-    expect(sourceAncestry).toBeGreaterThanOrEqual(0);
-    expect(retryAncestry).toBeGreaterThanOrEqual(0);
-    expect(workflow).toContain('FORWARD_SAFE_PREFLIGHT_RETRY_RUN_IDS=("38045689913" "38048789731" "38050603789")');
-    expect(safeRetryArgsGuard).toBeGreaterThan(retryAncestry);
-    expect(historyVerifier).toBeGreaterThan(Math.max(sourceAncestry, safeRetryArgsGuard));
-    expect(workflow.slice(sourceAncestry, sourceAncestry + 500)).toContain("The failed release SHA is not an ancestor of current main.");
-    expect(workflow.slice(retryAncestry, retryAncestry + 500)).toContain("Authorization-only preflight retry $retry_run_id is not an ancestor of current main.");
-    expect(workflow.slice(historyVerifier, historyVerifier + 600)).toContain("shaIsAncestorOfCurrentMain: true");
+    const collector = readFileSync(resolve("scripts/github-forward-resume-evidence.mjs"), "utf8");
+    expect(workflow).toContain("node scripts/github-forward-resume-evidence.mjs");
+    expect(workflow).not.toContain("FORWARD_SAFE_PREFLIGHT_RETRY_RUN_IDS");
+    expect(workflow).not.toContain("--allow-escape-sequences");
+    expect(collector).toContain('"merge-base", "--is-ancestor"');
+    expect(collector).toContain('"repository-since-source"');
+    expect(collector).toContain('redirect: "manual"');
   });
 
   it("keeps Prisma-only lock-timeout URL options out of libpq postflight probes", () => {

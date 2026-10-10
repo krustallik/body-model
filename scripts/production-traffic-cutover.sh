@@ -177,6 +177,7 @@ capture_pre_ddl_previous_release() {
 resume_pre_ddl_previous_release() {
   local target_sha="$1" record_path="$2" git_dir="$3"
   local source_sha source_run_id source_attempt current_run_id current_attempt source_target previous_image_id pinned_id marker_status existing_app archive_path source_record_text resume_json rebound_record receipt_json receipt_path receipt_tmp record_tmp current_record forward_resume=false expected_marker_digest marker_digest failed_run_id failed_sha failure_proof_digest
+  failed_run_id=""; failed_sha=""; failure_proof_digest=""; expected_marker_digest=""
   source_sha="${BODYCAST_PRE_DDL_CAPTURE_SOURCE_SHA:-}"
   source_run_id="${BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ID:-}"
   source_attempt="${BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ATTEMPT:-}"
@@ -253,28 +254,9 @@ resume_pre_ddl_previous_release() {
   fi
   rebound_record="$(printf '%s' "$resume_json" | node --input-type=module -e 'let s=""; for await (const c of process.stdin) s+=c; const r=JSON.parse(s); process.stdout.write(r.recordText)')"
   receipt_json="$(printf '%s' "$resume_json" | node --input-type=module -e 'let s=""; for await (const c of process.stdin) s+=c; const r=JSON.parse(s); process.stdout.write(JSON.stringify(r.receipt))')"
-  if [[ "$forward_resume" == "true" ]]; then
-    receipt_json="$(node --input-type=module - "$receipt_json" "$failed_run_id" "$failed_sha" "$failure_proof_digest" "$expected_marker_digest" <<'NODE'
-const receipt = JSON.parse(process.argv[2]);
-receipt.forwardResume = {
-  sourceFailedRunId: process.argv[3],
-  sourceFailedSha: process.argv[4],
-  failureProofDigest: process.argv[5],
-  sourceMarkerDigest: process.argv[6],
-};
-process.stdout.write(JSON.stringify(receipt));
-NODE
-)"
-  fi
-  node --input-type=module - "$receipt_json" "$source_run_id" "$source_attempt" "$source_sha" "$target_sha" <<'NODE'
-  const receipt = JSON.parse(process.argv[2]);
-  if (receipt.schemaVersion !== 1 || receipt.sourceRunId !== process.argv[3]
-    || receipt.sourceRunAttempt !== Number(process.argv[4]) || receipt.sourceSha !== process.argv[5]
-    || receipt.targetSha !== process.argv[6] || !/^[a-f0-9]{64}$/.test(receipt.sourceRecordDigest)
-    || !/^[a-f0-9]{64}$/.test(receipt.currentRecordDigest) || !/^[a-f0-9]{64}$/.test(receipt.compatibilityDigest)) {
-    throw new Error("Previous-app capture resume receipt failed its closed-schema checks.");
-  }
-NODE
+  receipt_json="$(printf '%s' "$receipt_json" | node "$ROOT_DIR/scripts/production-capture-resume-receipt.mjs" --produce \
+    "$source_run_id" "$source_attempt" "$source_sha" "$target_sha" "$current_run_id" "$current_attempt" \
+    "$failed_run_id" "$failed_sha" "$failure_proof_digest" "$expected_marker_digest")"
   receipt_path="$git_dir/bodycast-production-pre-ddl-release-resume-$current_run_id-$current_attempt"
   [[ ! -e "$receipt_path" && ! -L "$receipt_path" ]] || { echo "A receipt already exists for this exact preflight attempt." >&2; return 1; }
   if [[ "$source_target" != "$target_sha" ]]; then

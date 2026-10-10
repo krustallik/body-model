@@ -130,65 +130,16 @@ jobs:
               && -z "$RESUME_BLOCKED_CAPTURE_RUN_ID" ]] || {
               echo "::error::Forward-resume only admits the exact source failure and cannot combine with another resume mode."; exit 1;
             }
-            MIGRATION_WORKFLOW_ID="$(gh api repos/krustallik/body-model/actions/workflows/production-migrate.yml --jq .id)"
-            gh api "repos/krustallik/body-model/actions/runs/$FORWARD_RESUME_FAILED_RUN_ID" > "$RUNNER_TEMP/forward-source-run.json"
-            gh api "repos/krustallik/body-model/actions/runs/$FORWARD_RESUME_FAILED_RUN_ID/jobs" > "$RUNNER_TEMP/forward-source-jobs.json"
-            gh api "repos/krustallik/body-model/actions/runs/$FORWARD_RESUME_FAILED_RUN_ID/artifacts" > "$RUNNER_TEMP/forward-source-artifacts.json"
-            FORWARD_SAFE_PREFLIGHT_RETRY_RUN_IDS=("38045689913" "38048789731" "38050603789")
-            PREFLIGHT_WORKFLOW_ID="$(gh api repos/krustallik/body-model/actions/workflows/production-migration-preflight.yml --jq .id)"
-            SAFE_RETRY_RUN_ARGS=()
-            for retry_run_id in "${FORWARD_SAFE_PREFLIGHT_RETRY_RUN_IDS[@]}"; do
-              retry_run_path="$RUNNER_TEMP/forward-safe-preflight-retry-$retry_run_id-run.json"
-              retry_jobs_path="$RUNNER_TEMP/forward-safe-preflight-retry-$retry_run_id-jobs.json"
-              gh api "repos/krustallik/body-model/actions/runs/$retry_run_id" > "$retry_run_path"
-              gh api "repos/krustallik/body-model/actions/runs/$retry_run_id/jobs" > "$retry_jobs_path"
-              git merge-base --is-ancestor "$(jq -er .head_sha "$retry_run_path")" "$MAIN_TIP" || {
-                echo "::error::Authorization-only preflight retry $retry_run_id is not an ancestor of current main."; exit 1;
-              }
-              SAFE_RETRY_RUN_ARGS+=("$retry_run_path" "$retry_jobs_path")
-            done
-            MIGRATION_EXECUTION_JOB_ID="$(jq -er '[.jobs[] | select(.name == "Final live guard and authorized migration") | .id] | if length == 1 and (.[0] | type == "number") then .[0] else error("migration execution job ID is missing or ambiguous") end' "$RUNNER_TEMP/forward-source-jobs.json")"
-            gh api --allow-escape-sequences "repos/krustallik/body-model/actions/jobs/$MIGRATION_EXECUTION_JOB_ID/logs" > "$RUNNER_TEMP/forward-source-failure.log"
-            node --input-type=module - "$RUNNER_TEMP/forward-source-artifacts.json" <<'NODE'
-          import { readFileSync } from "node:fs";
-          import { selectForwardResumeMigrationContextArtifact } from "./scripts/production-forward-resume.mjs";
-          const [path] = process.argv.slice(2);
-          const payload = JSON.parse(readFileSync(path, "utf8"));
-          selectForwardResumeMigrationContextArtifact(payload);
-          NODE
+            node scripts/github-forward-resume-evidence.mjs "$RUNNER_TEMP/forward-github-evidence" "$GITHUB_RUN_ID" "$MAIN_TIP"
             mkdir -m 700 "$RUNNER_TEMP/forward-source-bundle"
             gh run download "$FORWARD_RESUME_FAILED_RUN_ID" --repo krustallik/body-model \
               --name "bodycast-migration-auth-$FORWARD_RESUME_FAILED_RUN_ID-1" --dir "$RUNNER_TEMP/forward-source-bundle"
-            : > "$RUNNER_TEMP/forward-mutation-history.ndjson"
-            for workflow_file in production-migration-preflight.yml production-migrate.yml production-database-cutback.yml activate-unified-v4-production.yml deploy-production.yml; do
-              workflow_id="$(gh api "repos/krustallik/body-model/actions/workflows/$workflow_file" --jq .id)"
-              gh api --paginate --jq '.workflow_runs[] | @json' \
-                "repos/krustallik/body-model/actions/workflows/$workflow_id/runs?per_page=100" \
-                >> "$RUNNER_TEMP/forward-mutation-history.ndjson"
-            done
-            git merge-base --is-ancestor "$(jq -r .head_sha "$RUNNER_TEMP/forward-source-run.json")" "$MAIN_TIP" || {
-              echo "::error::The failed release SHA is not an ancestor of current main."; exit 1;
-            }
-            FORWARD_PROOF_META="$(node --input-type=module - "$RUNNER_TEMP/forward-source-run.json" \
-              "$RUNNER_TEMP/forward-source-jobs.json" "$RUNNER_TEMP/forward-source-failure.log" \
-              "$RUNNER_TEMP/forward-source-bundle" "$RUNNER_TEMP/forward-mutation-history.ndjson" \
-              "$MIGRATION_WORKFLOW_ID" "$GITHUB_RUN_ID" "$GITHUB_SHA" "${SAFE_RETRY_RUN_ARGS[@]}" \
-              "$PREFLIGHT_WORKFLOW_ID" <<'NODE'
+            FORWARD_PROOF_META="$(node --input-type=module - "$RUNNER_TEMP/forward-source-bundle" "$RUNNER_TEMP/forward-github-evidence/github-evidence.json" <<'NODE'
           import { readFileSync, writeFileSync } from "node:fs";
-          import { execFileSync } from "node:child_process";
-          import { verifyForwardResumeNoSpawnEvidence, verifyForwardResumeAuthorizationBundle,
-            verifyNoLaterMutationRun } from "./scripts/production-forward-resume.mjs";
+          import { verifyForwardResumeAuthorizationBundle } from "./scripts/production-forward-resume.mjs";
           import { canonicalSha256 } from "./scripts/production-migration-authorization.mjs";
-          const args = process.argv.slice(2);
-          const [runPath, jobsPath, logPath, bundleDir, historyPath, workflowId, currentRunId, currentSha] = args;
-          const preflightWorkflowId = args.at(-1);
-          const safeRetryPaths = args.slice(8, -1);
-          if (safeRetryPaths.length !== 6) throw new Error("Expected the three fixed authorization-only retry run/job records.");
-          const run = JSON.parse(readFileSync(runPath, "utf8"));
-          const sourceGuardBytes = execFileSync("git", ["show", `${run.head_sha}:scripts/run-prisma-migrate-with-lock-timeout.mjs`]);
-          const failureProof = verifyForwardResumeNoSpawnEvidence({ run,
-            jobsPayload: JSON.parse(readFileSync(jobsPath, "utf8")), logText: readFileSync(logPath, "utf8"),
-            sourceGuardBytes, workflowId, sourceIsAncestor: true });
+          const [bundleDir, githubEvidencePath] = process.argv.slice(2);
+          const { failureProof, mutationHistoryDigest } = JSON.parse(readFileSync(githubEvidencePath, "utf8"));
           const authorizationBundleProof = verifyForwardResumeAuthorizationBundle({
             envelope: readFileSync(`${bundleDir}/authorization-envelope.json`, "utf8").trimEnd(),
             preflightEvidence: JSON.parse(readFileSync(`${bundleDir}/preflight-evidence.json`, "utf8")),
@@ -197,13 +148,6 @@ jobs:
             artifactMetadata: JSON.parse(readFileSync(`${bundleDir}/artifact-metadata.json`, "utf8")),
             allowlist: JSON.parse(readFileSync("scripts/production-migration-verification-keys.json", "utf8")),
           });
-          const runs = readFileSync(historyPath, "utf8").split(/\r?\n/).filter(Boolean).map(JSON.parse);
-          const mutationHistoryDigest = verifyNoLaterMutationRun({ runs, currentRunId,
-            safeFailedPreflightRetries: [0, 2, 4].map((index) => ({
-              run: JSON.parse(readFileSync(safeRetryPaths[index], "utf8")),
-              jobsPayload: JSON.parse(readFileSync(safeRetryPaths[index + 1], "utf8")), workflowId: preflightWorkflowId,
-              currentMainSha: currentSha, shaIsAncestorOfCurrentMain: true,
-            })) });
           const failureProofDigest = canonicalSha256(failureProof);
           writeFileSync(`${bundleDir}/verified-failure-proof.json`, `${JSON.stringify(failureProof)}\n`, { flag: "wx", mode: 0o600 });
           writeFileSync(`${bundleDir}/verified-authorization-proof.json`, `${JSON.stringify(authorizationBundleProof)}\n`, { flag: "wx", mode: 0o600 });
@@ -406,12 +350,27 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+          FORWARD_FAILED_RUN_ID: ${{ inputs.forward_resume_failed_migration_run_id }}
+          EXPECTED_FORWARD_HISTORY_DIGEST: ${{ needs.authorize.outputs.forward_resume_mutation_history_digest }}
+          EXPECTED_FORWARD_FAILURE_DIGEST: ${{ needs.authorize.outputs.forward_resume_failure_proof_digest }}
         run: |
           set -Eeuo pipefail
           TIP="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
           [[ "$TIP" == "$RELEASE_SHA" && "$(git rev-parse HEAD)" == "$RELEASE_SHA" ]] || {
             echo "::error::Canonical main moved; no production connection was opened."; exit 1;
           }
+          if [[ -n "$FORWARD_FAILED_RUN_ID" ]]; then
+            node scripts/github-forward-resume-evidence.mjs "$RUNNER_TEMP/forward-recheck" "$GITHUB_RUN_ID" "$RELEASE_SHA"
+            node --input-type=module - "$RUNNER_TEMP/forward-recheck/github-evidence.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { canonicalSha256 } from "./scripts/production-migration-authorization.mjs";
+          const observed = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          if (observed.mutationHistoryDigest !== process.env.EXPECTED_FORWARD_HISTORY_DIGEST
+            || canonicalSha256(observed.failureProof) !== process.env.EXPECTED_FORWARD_FAILURE_DIGEST) {
+            throw new Error("Verified forward-resume history or no-spawn proof changed before production access.");
+          }
+          NODE
+          fi
       - name: Validate production-only SSH and backup secrets
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -637,6 +596,9 @@ jobs:
           node --input-type=module - "$RUNNER_TEMP/preflight-result.json" "$RUNNER_TEMP/previous-app-provenance-verification.json" "$RUNNER_TEMP/preflight-report.json" <<'NODE'
           import { readFileSync, writeFileSync } from "node:fs";
           import { previousAppDatabaseCompatibilityDigests } from "./scripts/production-previous-app-provenance.mjs";
+          import { validateCaptureResumeReceipt } from "./scripts/production-capture-resume-receipt.mjs";
+          import { verifyForwardResumeMarkerObservation } from "./scripts/production-forward-resume.mjs";
+          import { canonicalSha256 } from "./scripts/production-migration-authorization.mjs";
           const [resultPath, verificationPath, reportPath] = process.argv.slice(2);
           const result = JSON.parse(readFileSync(resultPath, "utf8"));
           const verification = JSON.parse(readFileSync(verificationPath, "utf8"));
@@ -652,25 +614,34 @@ jobs:
               throw new Error("Validated preflight capture resume receipt is missing or malformed.");
             }
             const receipt = JSON.parse(Buffer.from(process.env.RESUME_RECEIPT_B64, "base64").toString("utf8"));
-            const receiptFields = ["schemaVersion", "sourceRunId", "sourceRunAttempt", "sourceSha", "targetSha",
-              "sourceRecordDigest", "currentRecordDigest", "compatibilityDigest"].sort();
-            if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)
-              || JSON.stringify(Object.keys(receipt).sort()) !== JSON.stringify(receiptFields)
-              || receipt.schemaVersion !== 1
-              || receipt.sourceRunId !== process.env.RESUME_SOURCE_RUN_ID
-              || receipt.sourceRunAttempt !== Number(process.env.RESUME_SOURCE_RUN_ATTEMPT)
-              || receipt.sourceSha !== process.env.RESUME_SOURCE_SHA
-              || receipt.targetSha !== process.env.RELEASE_SHA
-              || receipt.currentRecordDigest !== binding.recordDigest
-              || !/^[a-f0-9]{64}$/.test(receipt.sourceRecordDigest)
-              || !/^[a-f0-9]{64}$/.test(receipt.compatibilityDigest)) {
-              throw new Error("Previous-app resume receipt is not bound to the verified owner run and exact release capture.");
-            }
             const rawReport = JSON.parse(readFileSync(reportPath, "utf8"));
             const { compatibilityDigest } = previousAppDatabaseCompatibilityDigests(rawReport);
-            if (compatibilityDigest !== receipt.compatibilityDigest) {
-              throw new Error("Fresh production DB compatibility differs from the durable resumed app capture.");
+            let forwardExpected;
+            let sourceRecordDigest;
+            if (process.env.FORWARD_RESUME_FAILED_RUN_ID) {
+              const proof = JSON.parse(Buffer.from(process.env.FORWARD_RESUME_FAILURE_PROOF_B64, "base64").toString("utf8"));
+              const bundle = JSON.parse(Buffer.from(process.env.FORWARD_RESUME_AUTHORIZATION_BUNDLE_PROOF_B64, "base64").toString("utf8"));
+              const marker = JSON.parse(Buffer.from(process.env.FORWARD_RESUME_MARKER_OBSERVATION_B64, "base64").toString("utf8"));
+              verifyForwardResumeMarkerObservation(marker, proof);
+              if (canonicalSha256(proof) !== process.env.FORWARD_RESUME_FAILURE_PROOF_DIGEST
+                || proof.sourceRunId !== process.env.FORWARD_RESUME_FAILED_RUN_ID || proof.sourceRunAttempt !== 1
+                || proof.sourceSha !== process.env.RESUME_SOURCE_SHA
+                || bundle.preflightRunId !== process.env.RESUME_SOURCE_RUN_ID
+                || bundle.preflightRunAttempt !== Number(process.env.RESUME_SOURCE_RUN_ATTEMPT)
+                || bundle.sourceRunId !== proof.sourceRunId || bundle.sourceSha !== proof.sourceSha) {
+                throw new Error("Forward receipt source context differs from verified authorization.");
+              }
+              sourceRecordDigest = bundle.previousAppProvenance.recordDigest;
+              forwardExpected = { sourceFailedRunId: proof.sourceRunId, sourceFailedRunAttempt: proof.sourceRunAttempt,
+                sourceFailedSha: proof.sourceSha, failureProofDigest: canonicalSha256(proof), sourceMarkerDigest: marker.markerDigest };
             }
+            validateCaptureResumeReceipt(receipt, {
+              mode: forwardExpected ? "forward" : "ordinary", sourceRunId: process.env.RESUME_SOURCE_RUN_ID,
+              sourceRunAttempt: Number(process.env.RESUME_SOURCE_RUN_ATTEMPT), sourceSha: process.env.RESUME_SOURCE_SHA,
+              targetSha: process.env.RELEASE_SHA, captureRunId: process.env.GITHUB_RUN_ID,
+              captureRunAttempt: Number(process.env.GITHUB_RUN_ATTEMPT), currentRecordDigest: binding.recordDigest,
+              compatibilityDigest, sourceRecordDigest, ...(forwardExpected ? { forwardResume: forwardExpected } : {}),
+            });
             result.previousAppCaptureResume = {
               ...receipt,
               verifiedByRunId: process.env.GITHUB_RUN_ID,

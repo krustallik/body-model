@@ -100,7 +100,7 @@ export async function readProductionReleaseMarker(markerPath) {
 }
 
 export async function writeDdlStartingMarker({ markerDirectory, releaseSha, workflowRunId, workflowRunAttempt,
-  authorizationId, lineageDigest, expectedPriorDigest = null }) {
+  authorizationId, lineageDigest, expectedPriorDigest = null, expectedPriorMarker = null }) {
   const directory = path.resolve(markerDirectory);
   const details = await lstat(directory).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error));
   if (!details || !details.isDirectory() || details.isSymbolicLink()) throw new Error("durable release marker directory is unavailable or unsafe");
@@ -115,10 +115,14 @@ export async function writeDdlStartingMarker({ markerDirectory, releaseSha, work
     if (expectedPriorDigest === null) {
       if (existing) throw new Error("release marker appeared before DDL handoff");
     } else {
-      if (!existing || existing.digest !== expectedPriorDigest || existing.marker.releaseSha !== releaseSha
-        || existing.marker.state !== "forward-resume-armed" || existing.marker.workflowRunId !== String(workflowRunId)
-        || existing.marker.workflowRunAttempt !== Number(workflowRunAttempt)
-        || existing.marker.authorizationId !== authorizationId || existing.marker.lineageDigest !== lineageDigest) {
+      const expected = expectedPriorMarker ?? { releaseSha, workflowRunId: String(workflowRunId),
+        workflowRunAttempt: Number(workflowRunAttempt), authorizationId, lineageDigest };
+      if (!existing || existing.digest !== expectedPriorDigest || existing.marker.releaseSha !== expected.releaseSha
+        || existing.marker.state !== "forward-resume-armed" || existing.marker.spawnState !== "not-started"
+        || existing.marker.workflowRunId !== String(expected.workflowRunId)
+        || existing.marker.workflowRunAttempt !== Number(expected.workflowRunAttempt)
+        || existing.marker.authorizationId !== expected.authorizationId
+        || existing.marker.lineageDigest !== expected.lineageDigest) {
         throw new Error("forward-resume marker lineage changed before DDL handoff");
       }
     }

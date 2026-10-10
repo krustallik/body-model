@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import { createClaimsFromPreflight, createAuthorizationEnvelope, canonicalSha256 } from "./production-migration-authorization.mjs";
 import { verifyPreflightArtifactMetadata } from "./production-migration-release.mjs";
 import { assertPinnedOwnerId } from "./github-owner-identity.mjs";
-import { verifyForwardResumeContext, FORWARD_RESUME_FAILED_RUN_ID } from "./production-forward-resume.mjs";
+import { verifyForwardResumeContext, FORWARD_RESUME_FAILED_RUN_ID, ARMED_RETRY_FAILED_RUN_ID } from "./production-forward-resume.mjs";
 
 async function json(file) { return JSON.parse(await readFile(file, "utf8")); }
 
@@ -46,7 +46,7 @@ export async function createSignedAuthorization({ evidence, report, restore, run
   if (report.readyForOwnerAuthorization !== true || report.manifestId !== evidence.manifestId) throw new Error("Preflight did not produce an owner-authorization-ready result.");
   let forwardResume;
   if (executionMode === "forward-resume") {
-    if (String(forwardResumeFailedRunId) !== FORWARD_RESUME_FAILED_RUN_ID) {
+    if (![FORWARD_RESUME_FAILED_RUN_ID, ARMED_RETRY_FAILED_RUN_ID].includes(String(forwardResumeFailedRunId))) {
       throw new Error("Forward-resume requires the exact explicitly owner-selected failed migration run.");
     }
     forwardResume = verifyForwardResumeContext(report.forwardResume, {

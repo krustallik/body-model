@@ -42,11 +42,15 @@ else
 fi
 FORWARD_RESUME_MODE=false
 SOURCE_MARKER_DIGEST=""
+FORWARD_SOURCE_MARKER_SCHEMA_VERSION=""
 if [[ "$marker_status" -eq 0 ]]; then
-  [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == 1 && "$BODYCAST_MARKER_STATE" == "ddl-started" \
+  [[ ( ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 1 && "$BODYCAST_MARKER_STATE" == "ddl-started" ) \
+    || ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 && "$BODYCAST_MARKER_STATE" == "forward-resume-armed" \
+      && "$BODYCAST_MARKER_SPAWN_STATE" == "not-started" ) ) \
     && "$BODYCAST_MARKER_RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]] \
-    || fail "only the exact legacy V1 ddl-started marker has a supported owner-authorized forward-resume path."
+    || fail "only an exact verified pre-spawn marker has an owner-authorized forward-resume path."
   SOURCE_MARKER_DIGEST="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
+  FORWARD_SOURCE_MARKER_SCHEMA_VERSION="$BODYCAST_MARKER_SCHEMA_VERSION"
   node --input-type=module - "$CONTEXT_DIR/preflight-result.json" "$RELEASE_SHA" "$SOURCE_MARKER_DIGEST" <<'NODE' \
     || fail "the existing marker is not bound to a verified forward-resume preflight context."
 import { readFileSync } from "node:fs";
@@ -62,6 +66,20 @@ if (context.markerDigest !== markerDigest || context.markerReleaseSha !== result
 NODE
   [[ "$BODYCAST_MARKER_RELEASE_SHA" == "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).forwardResume.sourceSha' "$CONTEXT_DIR/preflight-result.json")" ]] \
     || fail "legacy marker SHA differs from the verified forward-resume source SHA."
+  if [[ "$FORWARD_SOURCE_MARKER_SCHEMA_VERSION" == 2 ]]; then
+    node --input-type=module - "$CONTEXT_DIR/preflight-result.json" "$BODYCAST_MARKER_WORKFLOW_RUN_ID" \
+      "$BODYCAST_MARKER_WORKFLOW_RUN_ATTEMPT" "$BODYCAST_MARKER_AUTHORIZATION_ID" "$BODYCAST_MARKER_LINEAGE_DIGEST" <<'NODE' \
+      || fail "the armed marker does not match its signed pre-spawn source lineage."
+import { readFileSync } from "node:fs";
+const [file, runId, attempt, authorizationId, lineageDigest] = process.argv.slice(2);
+const context = JSON.parse(readFileSync(file, "utf8")).forwardResume;
+if (context?.markerSchemaVersion !== 2 || context.sourceRunId !== runId
+  || context.sourceRunAttempt !== Number(attempt) || context.sourceAuthorizationId !== authorizationId
+  || context.sourceMarkerLineageDigest !== lineageDigest) {
+  throw new Error("Armed marker identity or lineage differs from the verified source context.");
+}
+NODE
+  fi
   FORWARD_RESUME_MODE=true
 elif [[ "$marker_status" -ne 1 ]]; then
   fail "production release marker state is unknown; migration is blocked."
@@ -149,18 +167,28 @@ CANONICAL_MAIN_SHA="$(git rev-parse --verify 'refs/remotes/bodycast-canonical/ma
 # mounted directory is limited to the marker; Git metadata is not mounted.
 bodycast_prepare_release_marker_directory
 if [[ "$FORWARD_RESUME_MODE" == true ]]; then
-  [[ -z "$(find "$BODYCAST_RELEASE_MARKER_DIRECTORY" -mindepth 1 -maxdepth 1 -print -quit)" ]] \
-    || fail "the current marker directory contains unexpected or interrupted state."
+  if [[ "$FORWARD_SOURCE_MARKER_SCHEMA_VERSION" == 1 ]]; then
+    [[ -z "$(find "$BODYCAST_RELEASE_MARKER_DIRECTORY" -mindepth 1 -maxdepth 1 -print -quit)" ]] \
+      || fail "the current marker directory contains unexpected or interrupted state."
+  else
+    [[ -z "$(find "$BODYCAST_RELEASE_MARKER_DIRECTORY" -mindepth 1 -maxdepth 1 ! -name marker -print -quit)" ]] \
+      || fail "the armed marker directory contains unexpected or interrupted state."
+  fi
   FORWARD_LINEAGE_DIGEST="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).forwardResume.proofDigest' "$CONTEXT_DIR/preflight-result.json")"
-  write_bodycast_forward_resume_marker "$BODYCAST_MARKER_RELEASE_SHA" "$RELEASE_SHA" \
-    "$BODYCAST_AUTHORIZATION_RUN_ID" "$BODYCAST_AUTHORIZATION_RUN_ATTEMPT" \
-    "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).authorizationId' "$GUARD_RECEIPT")" \
-    "$FORWARD_LINEAGE_DIGEST" "$SOURCE_MARKER_DIGEST"
-  read_bodycast_release_marker || fail "the forward-resume marker could not be durably armed."
-  [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 && "$BODYCAST_MARKER_STATE" == "forward-resume-armed" \
-    && "$BODYCAST_MARKER_RELEASE_SHA" == "$RELEASE_SHA" \
-    && "$BODYCAST_MARKER_LINEAGE_DIGEST" == "$FORWARD_LINEAGE_DIGEST" ]] \
-    || fail "the armed marker does not match the signed forward-resume authorization."
+  if [[ "$FORWARD_SOURCE_MARKER_SCHEMA_VERSION" == 1 ]]; then
+    write_bodycast_forward_resume_marker "$BODYCAST_MARKER_RELEASE_SHA" "$RELEASE_SHA" \
+      "$BODYCAST_AUTHORIZATION_RUN_ID" "$BODYCAST_AUTHORIZATION_RUN_ATTEMPT" \
+      "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).authorizationId' "$GUARD_RECEIPT")" \
+      "$FORWARD_LINEAGE_DIGEST" "$SOURCE_MARKER_DIGEST"
+    read_bodycast_release_marker || fail "the forward-resume marker could not be durably armed."
+    [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 && "$BODYCAST_MARKER_STATE" == "forward-resume-armed" \
+      && "$BODYCAST_MARKER_RELEASE_SHA" == "$RELEASE_SHA" \
+      && "$BODYCAST_MARKER_LINEAGE_DIGEST" == "$FORWARD_LINEAGE_DIGEST" ]] \
+      || fail "the armed marker does not match the signed forward-resume authorization."
+  else
+    [[ "$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')" == "$SOURCE_MARKER_DIGEST" ]] \
+      || fail "the prior armed marker changed before the Prisma handoff."
+  fi
 else
   [[ -z "$(find "$BODYCAST_RELEASE_MARKER_DIRECTORY" -mindepth 1 -maxdepth 1 -print -quit)" ]] \
     || fail "the dedicated release-marker directory contains unexpected or interrupted state."

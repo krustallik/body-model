@@ -9,6 +9,7 @@ import { normalizeWorkflowRuns } from "./production-migration-select-preflight.m
 import { selectLatestApplicablePreflight } from "./production-migration-release.mjs";
 import { isCanonicalPostgresDatabaseIdentity, normalizePostgresDatabaseIdentityRow } from "./postgres-database-identity.mjs";
 import { acknowledgePrismaSpawn, readProductionReleaseMarker, writeDdlStartingMarker } from "./production-release-marker.mjs";
+import { ARMED_RETRY_FAILED_RUN_ID, ARMED_RETRY_FAILED_SHA } from "./production-forward-resume.mjs";
 
 function reject(message) {
   throw new Error("Refusing Prisma DDL: " + message);
@@ -215,6 +216,7 @@ export async function startPrismaMigrationAtDdlBoundary({
   }
   const receipt = finalGuard.receipt;
   let expectedPriorDigest = null;
+  let expectedPriorMarker = null;
   const lineageDigest = receipt.executionMode === "forward-resume" ? receipt.forwardResumeProofDigest : canonicalSha256({
     authorizationId: receipt.authorizationId,
     executionMode: receipt.executionMode ?? "standard",
@@ -228,14 +230,31 @@ export async function startPrismaMigrationAtDdlBoundary({
       reject("forward-resume authorization lacks the signed legacy marker and proof lineage.");
     }
     const armed = await readProductionReleaseMarker(path.join(markerDirectory, "marker"));
-    if (!armed || armed.digest === receipt.forwardResumeMarkerDigest || armed.marker.state !== "forward-resume-armed"
-      || armed.marker.schemaVersion !== 2 || armed.marker.releaseSha !== authorized.releaseSha
-      || armed.marker.workflowRunId !== String(authorized.currentWorkflowRunId)
-      || armed.marker.workflowRunAttempt !== Number(authorized.currentWorkflowRunAttempt)
-      || armed.marker.authorizationId !== receipt.authorizationId || armed.marker.lineageDigest !== lineageDigest) {
+    const retryArmed = receipt.forwardResumeSourceRunId === ARMED_RETRY_FAILED_RUN_ID;
+    const expectedRunId = retryArmed ? receipt.forwardResumeSourceRunId : String(authorized.currentWorkflowRunId);
+    const expectedAttempt = retryArmed ? Number(receipt.forwardResumeSourceRunAttempt)
+      : Number(authorized.currentWorkflowRunAttempt);
+    const expectedAuthorizationId = retryArmed ? receipt.forwardResumeSourceAuthorizationId : receipt.authorizationId;
+    if (!armed || armed.marker.state !== "forward-resume-armed" || armed.marker.schemaVersion !== 2
+      || armed.marker.releaseSha !== (retryArmed ? receipt.forwardResumeSourceSha : authorized.releaseSha)
+      || armed.marker.spawnState !== "not-started"
+      || armed.marker.workflowRunId !== expectedRunId || armed.marker.workflowRunAttempt !== expectedAttempt
+      || armed.marker.authorizationId !== expectedAuthorizationId
+      || (retryArmed ? (armed.digest !== receipt.forwardResumeMarkerDigest
+        || receipt.forwardResumeSourceSha !== ARMED_RETRY_FAILED_SHA
+        || armed.marker.workflowRunId === String(authorized.currentWorkflowRunId)
+        || armed.marker.authorizationId === receipt.authorizationId)
+        : (armed.digest === receipt.forwardResumeMarkerDigest || armed.marker.lineageDigest !== lineageDigest))) {
       reject("the armed forward-resume marker is missing or does not match the signed one-time authorization.");
     }
     expectedPriorDigest = armed.digest;
+    if (retryArmed) expectedPriorMarker = {
+      releaseSha: receipt.forwardResumeSourceSha,
+      workflowRunId: armed.marker.workflowRunId,
+      workflowRunAttempt: armed.marker.workflowRunAttempt,
+      authorizationId: armed.marker.authorizationId,
+      lineageDigest: armed.marker.lineageDigest,
+    };
   }
   const marker = await markerWriter({
     markerDirectory,
@@ -245,6 +264,7 @@ export async function startPrismaMigrationAtDdlBoundary({
     authorizationId: receipt.authorizationId,
     lineageDigest,
     expectedPriorDigest,
+    expectedPriorMarker,
   });
   let child;
   try {

@@ -198,15 +198,19 @@ resume_pre_ddl_previous_release() {
     failure_proof_digest="${BODYCAST_FORWARD_RESUME_FAILURE_PROOF_DIGEST:-}"
     expected_marker_digest="${BODYCAST_FORWARD_RESUME_MARKER_DIGEST:-}"
     if ! read_bodycast_release_marker; then
-      echo "The expected legacy DDL marker is missing or invalid; forward capture resume is blocked." >&2
+      echo "The expected verified pre-spawn marker is missing or invalid; forward capture resume is blocked." >&2
       return 1
     fi
     marker_digest="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
-    [[ "$failed_run_id" == "38022978032" && "$failed_sha" == "$source_sha" \
+    [[ ( "$failed_run_id" == "38022978032" || "$failed_run_id" == "38062632284" ) && "$failed_sha" == "$source_sha" \
       && "$failure_proof_digest" =~ ^[a-f0-9]{64}$ && "$expected_marker_digest" =~ ^[a-f0-9]{64}$ \
-      && "$marker_digest" == "$expected_marker_digest" && "$BODYCAST_MARKER_SCHEMA_VERSION" == 1 \
-      && "$BODYCAST_MARKER_RELEASE_SHA" == "$failed_sha" && "$BODYCAST_MARKER_STATE" == "ddl-started" ]] || {
-      echo "The legacy marker does not match the independently verified no-spawn failure and source digest." >&2
+      && "$marker_digest" == "$expected_marker_digest" && "$BODYCAST_MARKER_RELEASE_SHA" == "$failed_sha" \
+      && ( ( "$failed_run_id" == "38022978032" && "$BODYCAST_MARKER_SCHEMA_VERSION" == 1 \
+        && "$BODYCAST_MARKER_STATE" == "ddl-started" ) \
+        || ( "$failed_run_id" == "38062632284" && "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 \
+          && "$BODYCAST_MARKER_STATE" == "forward-resume-armed" && "$BODYCAST_MARKER_WORKFLOW_RUN_ID" == "$failed_run_id" \
+          && "$BODYCAST_MARKER_WORKFLOW_RUN_ATTEMPT" == 1 && "$BODYCAST_MARKER_SPAWN_STATE" == "not-started" ) ) ]] || {
+      echo "The marker does not match the independently verified no-spawn failure and source digest." >&2
       return 1
     }
   elif read_bodycast_release_marker; then

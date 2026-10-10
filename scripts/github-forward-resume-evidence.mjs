@@ -4,7 +4,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { BODYCAST_REPOSITORY } from "./github-owner-identity.mjs";
 import { canonicalSha256 } from "./production-migration-authorization.mjs";
-import { DIAGNOSTIC_PATH, DIAGNOSTIC_FILES, FORWARD_RESUME_FAILED_RUN_ID, MIGRATION_FAILURE_JOB, verifyNoLaterMutationRun,
+import { DIAGNOSTIC_PATH, DIAGNOSTIC_FILES, FORWARD_RESUME_FAILED_RUN_ID, ARMED_RETRY_FAILED_RUN_ID, MIGRATION_FAILURE_JOB, verifyNoLaterMutationRun,
   verifyForwardResumeNoSpawnEvidence, selectForwardResumeMigrationContextArtifact } from "./production-forward-resume.mjs";
 
 const PREFIX = `/repos/${BODYCAST_REPOSITORY}`;
@@ -87,8 +87,12 @@ export function createGitHubEvidenceClient({ token, fetchImpl = fetch }) {
 }
 
 const NON_PRODUCTION = new Set([".github/workflows/ci.yml", ".github/workflows/production-migration-safety-ci.yml"]);
-export async function collectForwardResumeEvidence({ client, currentRunId, currentMainSha, isAncestor, gitBlob, gitFile }) {
-  const sourceRun = await client.json(`${PREFIX}/actions/runs/${FORWARD_RESUME_FAILED_RUN_ID}`);
+export async function collectForwardResumeEvidence({ client, currentRunId, currentMainSha, isAncestor, gitBlob, gitFile,
+  sourceRunId = FORWARD_RESUME_FAILED_RUN_ID }) {
+  if (![FORWARD_RESUME_FAILED_RUN_ID, ARMED_RETRY_FAILED_RUN_ID].includes(String(sourceRunId))) {
+    fail("unreviewed forward-resume source run");
+  }
+  const sourceRun = await client.json(`${PREFIX}/actions/runs/${sourceRunId}`);
   if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(sourceRun.created_at ?? "")) fail("source creation timestamp missing");
   // Repository-wide, not a handpicked set of workflow IDs: removed/renamed/unknown paths cannot disappear.
   const endpoint = `${PREFIX}/actions/runs?created=${encodeURIComponent(`>=${sourceRun.created_at}`)}`;
@@ -98,7 +102,7 @@ export async function collectForwardResumeEvidence({ client, currentRunId, curre
   const readOnlyDiagnostics = [];
   const preflightWorkflow = await client.json(`${PREFIX}/actions/workflows/production-migration-preflight.yml`);
   for (const historyRun of runs) {
-    if (BigInt(historyRun.id) <= BigInt(FORWARD_RESUME_FAILED_RUN_ID) || String(historyRun.id) === String(currentRunId)) continue;
+    if (BigInt(historyRun.id) <= BigInt(sourceRunId) || String(historyRun.id) === String(currentRunId)) continue;
     const run = await client.json(`${PREFIX}/actions/runs/${historyRun.id}`);
     const jobsPayload = await client.list(`${PREFIX}/actions/runs/${historyRun.id}/attempts/1/jobs`, "jobs");
     if (String(historyRun.path).split("@")[0] === DIAGNOSTIC_PATH) {
@@ -118,26 +122,26 @@ export async function collectForwardResumeEvidence({ client, currentRunId, curre
   if (execution.length !== 1) fail("ambiguous source execution job");
   const logText = await client.rawJobLog(execution[0].id);
   const artifactPayload = await client.list(`${PREFIX}/actions/runs/${sourceRun.id}/artifacts`, "artifacts");
-  selectForwardResumeMigrationContextArtifact(artifactPayload);
+  selectForwardResumeMigrationContextArtifact(artifactPayload, sourceRunId);
   const workflow = await client.json(`${PREFIX}/actions/workflows/production-migrate.yml`);
   const failureProof = verifyForwardResumeNoSpawnEvidence({ run: sourceRun, jobsPayload: sourceJobs, logText,
     sourceGuardBytes: gitBlob(sourceRun.head_sha), workflowId: workflow.id,
-    sourceIsAncestor: isAncestor(sourceRun.head_sha, currentMainSha) });
+    sourceIsAncestor: isAncestor(sourceRun.head_sha, currentMainSha), sourceRunId });
   const again = await client.list(endpoint, "workflow_runs");
   if (canonicalSha256(snapshot) !== canonicalSha256(again)) fail("run inventory changed during verification");
   const sourceInHistory = runs.find((run) => String(run.id) === String(sourceRun.id));
   if (canonicalSha256(sourceInHistory) !== canonicalSha256(sourceRun)) fail("source run metadata changed");
-  const mutationHistoryDigest = verifyNoLaterMutationRun({ runs, currentRunId, currentMainSha,
+  const mutationHistoryDigest = verifyNoLaterMutationRun({ runs, sourceRunId, currentRunId, currentMainSha,
     inventory: { complete: true, scope: "repository-since-source", totalCount: snapshot.total_count,
       observedCount: snapshot.workflow_runs.length, sourceCreatedAt: sourceRun.created_at }, safeFailedPreflightRetries, readOnlyDiagnostics });
   return { failureProof, mutationHistoryDigest, artifactPayload };
 }
 
 async function main() {
-  const [outputDir, currentRunId, currentMainSha] = process.argv.slice(2);
+  const [outputDir, currentRunId, currentMainSha, sourceRunId = FORWARD_RESUME_FAILED_RUN_ID] = process.argv.slice(2);
   if (!outputDir || !/^[1-9][0-9]*$/.test(currentRunId ?? "") || !/^[a-f0-9]{40}$/.test(currentMainSha ?? "")) fail("invalid collector arguments");
   const result = await collectForwardResumeEvidence({ client: createGitHubEvidenceClient({ token: process.env.GH_TOKEN }),
-    currentRunId, currentMainSha,
+    currentRunId, currentMainSha, sourceRunId,
     isAncestor: (sha, current) => {
       if (!/^[a-f0-9]{40}$/.test(sha ?? "")) return false;
       try { execFileSync("git", ["merge-base", "--is-ancestor", sha, current]); return true; } catch { return false; }

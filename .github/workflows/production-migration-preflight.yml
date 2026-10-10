@@ -31,7 +31,7 @@ on:
         required: false
         type: string
       forward_resume_failed_migration_run_id:
-        description: Exact owner-authorized pre-spawn failure run; currently only 38022978032 is admitted
+        description: Exact reviewed pre-spawn failure run (38022978032 or its armed retry 38062632284)
         required: false
         type: string
 
@@ -125,20 +125,20 @@ jobs:
           FORWARD_FAILURE_PROOF_DIGEST=""
           FORWARD_MUTATION_HISTORY_DIGEST=""
           if [[ -n "$FORWARD_RESUME_FAILED_RUN_ID" ]]; then
-            [[ "$FORWARD_RESUME_FAILED_RUN_ID" == "38022978032" \
+            [[ ( "$FORWARD_RESUME_FAILED_RUN_ID" == "38022978032" || "$FORWARD_RESUME_FAILED_RUN_ID" == "38062632284" ) \
               && -z "$RESUME_SOURCE_RUN_ID" && -z "$RESUME_MIGRATION_FAILURE_RUN_ID" \
               && -z "$RESUME_BLOCKED_CAPTURE_RUN_ID" ]] || {
               echo "::error::Forward-resume only admits the exact source failure and cannot combine with another resume mode."; exit 1;
             }
-            node scripts/github-forward-resume-evidence.mjs "$RUNNER_TEMP/forward-github-evidence" "$GITHUB_RUN_ID" "$MAIN_TIP"
+            node scripts/github-forward-resume-evidence.mjs "$RUNNER_TEMP/forward-github-evidence" "$GITHUB_RUN_ID" "$MAIN_TIP" "$FORWARD_RESUME_FAILED_RUN_ID"
             mkdir -m 700 "$RUNNER_TEMP/forward-source-bundle"
             gh run download "$FORWARD_RESUME_FAILED_RUN_ID" --repo krustallik/body-model \
               --name "bodycast-migration-auth-$FORWARD_RESUME_FAILED_RUN_ID-1" --dir "$RUNNER_TEMP/forward-source-bundle"
-            FORWARD_PROOF_META="$(node --input-type=module - "$RUNNER_TEMP/forward-source-bundle" "$RUNNER_TEMP/forward-github-evidence/github-evidence.json" <<'NODE'
+            FORWARD_PROOF_META="$(node --input-type=module - "$RUNNER_TEMP/forward-source-bundle" "$RUNNER_TEMP/forward-github-evidence/github-evidence.json" "$FORWARD_RESUME_FAILED_RUN_ID" <<'NODE'
           import { readFileSync, writeFileSync } from "node:fs";
           import { verifyForwardResumeAuthorizationBundle } from "./scripts/production-forward-resume.mjs";
           import { canonicalSha256 } from "./scripts/production-migration-authorization.mjs";
-          const [bundleDir, githubEvidencePath] = process.argv.slice(2);
+          const [bundleDir, githubEvidencePath, failedRunId] = process.argv.slice(2);
           const { failureProof, mutationHistoryDigest } = JSON.parse(readFileSync(githubEvidencePath, "utf8"));
           const authorizationBundleProof = verifyForwardResumeAuthorizationBundle({
             envelope: readFileSync(`${bundleDir}/authorization-envelope.json`, "utf8").trimEnd(),
@@ -147,6 +147,7 @@ jobs:
             restoreResult: JSON.parse(readFileSync(`${bundleDir}/restore-result.json`, "utf8")),
             artifactMetadata: JSON.parse(readFileSync(`${bundleDir}/artifact-metadata.json`, "utf8")),
             allowlist: JSON.parse(readFileSync("scripts/production-migration-verification-keys.json", "utf8")),
+            failedRunId,
           });
           const failureProofDigest = canonicalSha256(failureProof);
           writeFileSync(`${bundleDir}/verified-failure-proof.json`, `${JSON.stringify(failureProof)}\n`, { flag: "wx", mode: 0o600 });
@@ -360,7 +361,7 @@ jobs:
             echo "::error::Canonical main moved; no production connection was opened."; exit 1;
           }
           if [[ -n "$FORWARD_FAILED_RUN_ID" ]]; then
-            node scripts/github-forward-resume-evidence.mjs "$RUNNER_TEMP/forward-recheck" "$GITHUB_RUN_ID" "$RELEASE_SHA"
+            node scripts/github-forward-resume-evidence.mjs "$RUNNER_TEMP/forward-recheck" "$GITHUB_RUN_ID" "$RELEASE_SHA" "$FORWARD_FAILED_RUN_ID"
             node --input-type=module - "$RUNNER_TEMP/forward-recheck/github-evidence.json" <<'NODE'
           import { readFileSync } from "node:fs";
           import { canonicalSha256 } from "./scripts/production-migration-authorization.mjs";
@@ -458,7 +459,8 @@ jobs:
             [[ -z "$RESUME_SOURCE_RUN_ID" && -z "$RESUME_SOURCE_RUN_ATTEMPT" ]] || exit 2
           fi
           if [[ -n "$FORWARD_FAILED_RUN_ID" ]]; then
-            [[ "$FORWARD_FAILED_RUN_ID" == "38022978032" && "$RESUME_SOURCE_SHA" == "3cbf47ef73b83cdc9cd2ad548dbb36ca2b65bf74" \
+            [[ ( ( "$FORWARD_FAILED_RUN_ID" == "38022978032" && "$RESUME_SOURCE_SHA" == "3cbf47ef73b83cdc9cd2ad548dbb36ca2b65bf74" ) \
+              || ( "$FORWARD_FAILED_RUN_ID" == "38062632284" && "$RESUME_SOURCE_SHA" == "b0a31fb6e6552d6ea5419939c96ee42ca7d6ffca" ) ) \
               && "$FORWARD_FAILURE_PROOF_DIGEST" =~ ^[a-f0-9]{64}$ && "$FORWARD_HISTORY_DIGEST" =~ ^[a-f0-9]{64}$ ]] || exit 2
           else
             [[ -z "$FORWARD_FAILURE_PROOF_DIGEST" && -z "$FORWARD_HISTORY_DIGEST" ]] || exit 2
@@ -473,8 +475,8 @@ jobs:
           git checkout --detach "$RELEASE_SHA"
           [[ "$(git rev-parse HEAD)" == "$RELEASE_SHA" && -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || exit 1
           if [[ -n "$FORWARD_FAILED_RUN_ID" ]]; then
-            MARKER_OBSERVATION="$(node scripts/production-forward-resume.mjs --inspect-marker "$RESUME_SOURCE_SHA")"
-            SOURCE_MARKER_DIGEST="$(printf '%s' "$MARKER_OBSERVATION" | node --input-type=module -e 'let s=""; for await (const c of process.stdin) s+=c; const value=JSON.parse(s); if (value.schemaVersion !== 1 || value.markerSchemaVersion !== 1 || value.releaseSha !== process.argv[1] || value.state !== "ddl-started" || !/^[a-f0-9]{64}$/.test(value.markerDigest)) throw new Error("Exact forward-resume marker observation failed."); process.stdout.write(value.markerDigest)' "$RESUME_SOURCE_SHA")"
+            MARKER_OBSERVATION="$(node scripts/production-forward-resume.mjs --inspect-marker "$RESUME_SOURCE_SHA" "$FORWARD_FAILED_RUN_ID")"
+            SOURCE_MARKER_DIGEST="$(printf '%s' "$MARKER_OBSERVATION" | node --input-type=module -e 'let s=""; for await (const c of process.stdin) s+=c; const value=JSON.parse(s); const armed=process.argv[2]==="38062632284"; if (value.schemaVersion !== 1 || value.markerSchemaVersion !== (armed?2:1) || value.releaseSha !== process.argv[1] || value.state !== (armed?"forward-resume-armed":"ddl-started") || !/^[a-f0-9]{64}$/.test(value.markerDigest)) throw new Error("Exact forward-resume marker observation failed."); process.stdout.write(value.markerDigest)' "$RESUME_SOURCE_SHA" "$FORWARD_FAILED_RUN_ID")"
             printf 'BODYCAST_FORWARD_RESUME_MARKER_OBSERVATION=%s\n' "$(printf '%s' "$MARKER_OBSERVATION" | base64 -w0)"
             APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" BODYCAST_DEPLOY_SHA="$RELEASE_SHA" \
               BODYCAST_CAPTURE_PRE_DDL_RELEASE=1 BODYCAST_RESUME_PRE_DDL_CAPTURE=1 \
@@ -622,7 +624,7 @@ jobs:
               const proof = JSON.parse(Buffer.from(process.env.FORWARD_RESUME_FAILURE_PROOF_B64, "base64").toString("utf8"));
               const bundle = JSON.parse(Buffer.from(process.env.FORWARD_RESUME_AUTHORIZATION_BUNDLE_PROOF_B64, "base64").toString("utf8"));
               const marker = JSON.parse(Buffer.from(process.env.FORWARD_RESUME_MARKER_OBSERVATION_B64, "base64").toString("utf8"));
-              verifyForwardResumeMarkerObservation(marker, proof);
+              verifyForwardResumeMarkerObservation(marker, proof, bundle);
               if (canonicalSha256(proof) !== process.env.FORWARD_RESUME_FAILURE_PROOF_DIGEST
                 || proof.sourceRunId !== process.env.FORWARD_RESUME_FAILED_RUN_ID || proof.sourceRunAttempt !== 1
                 || proof.sourceSha !== process.env.RESUME_SOURCE_SHA
@@ -731,7 +733,8 @@ jobs:
           BACKUP_FILE: ${{ steps.backup.outputs.file }}
         run: |
           set -Eeuo pipefail
-          [[ "$FAILED_RUN_ID" == "38022978032" && "$FAILURE_PROOF_DIGEST" =~ ^[a-f0-9]{64}$ \
+          [[ ( "$FAILED_RUN_ID" == "38022978032" || "$FAILED_RUN_ID" == "38062632284" ) \
+            && "$FAILURE_PROOF_DIGEST" =~ ^[a-f0-9]{64}$ \
             && "$MUTATION_HISTORY_DIGEST" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::Forward-resume proof inputs are missing or malformed."; exit 1; }
           printf '%s' "$FAILURE_PROOF_B64" | base64 --decode > "$RUNNER_TEMP/forward-failure-proof.json"
           printf '%s' "$AUTHORIZATION_BUNDLE_PROOF_B64" | base64 --decode > "$RUNNER_TEMP/forward-auth-bundle-proof.json"

@@ -11,6 +11,9 @@ import { readProductionReleaseMarker } from "./production-release-marker.mjs";
 export const FORWARD_RESUME_FAILED_RUN_ID = "38022978032";
 export const FORWARD_RESUME_FAILED_SHA = "3cbf47ef73b83cdc9cd2ad548dbb36ca2b65bf74";
 export const FORWARD_RESUME_PURPOSE = "bodycast-forward-resume-after-verified-pre-spawn-failure-v1";
+export const ARMED_RETRY_FAILED_RUN_ID = "38062632284";
+export const ARMED_RETRY_FAILED_SHA = "b0a31fb6e6552d6ea5419939c96ee42ca7d6ffca";
+export const ARMED_RETRY_PURPOSE = "bodycast-forward-resume-armed-pre-spawn-retry-v1";
 const DIGEST = /^[a-f0-9]{64}$/;
 export const MIGRATION_FAILURE_JOB = "Final live guard and authorized migration";
 export const MIGRATION_FAILURE_STEP = "Run the fixed guarded migration script over SSH";
@@ -135,8 +138,12 @@ function verifyAuthorizationOnlyForwardResumePreflightRetry({ run, jobsPayload, 
   });
 }
 
-export function selectForwardResumeMigrationContextArtifact(payload) {
-  const expectedName = `bodycast-migration-auth-${FORWARD_RESUME_FAILED_RUN_ID}-1`;
+export function selectForwardResumeMigrationContextArtifact(payload, sourceRunId = FORWARD_RESUME_FAILED_RUN_ID) {
+  const armedRetry = String(sourceRunId) === ARMED_RETRY_FAILED_RUN_ID;
+  const expectedRunId = armedRetry ? ARMED_RETRY_FAILED_RUN_ID : FORWARD_RESUME_FAILED_RUN_ID;
+  const expectedSha = armedRetry ? ARMED_RETRY_FAILED_SHA : FORWARD_RESUME_FAILED_SHA;
+  if (String(sourceRunId) !== expectedRunId) reject("the source artifact run is not admitted.");
+  const expectedName = `bodycast-migration-auth-${expectedRunId}-1`;
   const artifacts = payload?.artifacts;
   if (!Array.isArray(artifacts)) reject("the original signed migration context artifact inventory is malformed.");
   const matches = artifacts.filter((artifact) => artifact?.name === expectedName);
@@ -154,8 +161,8 @@ export function selectForwardResumeMigrationContextArtifact(payload) {
     || artifact.expired !== false
     || !Number.isSafeInteger(artifact.size_in_bytes) || artifact.size_in_bytes < 1
     || !/^sha256:[a-f0-9]{64}$/.test(String(artifact.digest ?? ""))
-    || String(workflowRun?.id) !== FORWARD_RESUME_FAILED_RUN_ID
-    || workflowRun?.head_branch !== "main" || workflowRun?.head_sha !== FORWARD_RESUME_FAILED_SHA
+    || String(workflowRun?.id) !== expectedRunId
+    || workflowRun?.head_branch !== "main" || workflowRun?.head_sha !== expectedSha
     || !attemptMatches) {
     reject("the original signed migration context artifact metadata does not match the exact source run and attempt.");
   }
@@ -241,26 +248,63 @@ function validateNoSpawnSource(sourceBytes, loggedRuntime) {
   return { sourceSha256: digest, sourceBytes: source.length };
 }
 
+function validateArmedRetryNoSpawnSource(sourceBytes, loggedRuntime) {
+  const source = Buffer.from(sourceBytes);
+  const digest = sha256(source);
+  if (!loggedRuntime || loggedRuntime.sha256 !== digest || loggedRuntime.bytes !== source.length) {
+    reject("the armed retry guard bytes do not match the failed-run image attestation.");
+  }
+  const text = source.toString("utf8");
+  const failedCheck = text.indexOf('id: "zero-other-client-backends"');
+  const guard = text.indexOf("assertPrismaTargetMatchesSignedIdentity(finalGuard.receipt, actualIdentity, now());");
+  const marker = text.indexOf("const marker = await markerWriter({", guard);
+  const prismaSpawn = text.indexOf('child = spawn("npx", ["prisma", "migrate", "deploy"]', marker);
+  if (failedCheck < 0 || guard < 0 || marker <= guard || prismaSpawn <= marker) {
+    reject("the exact armed retry guard source does not prove rejection before marker transition and Prisma spawn.");
+  }
+  return { sourceSha256: digest, sourceBytes: source.length };
+}
+
+function verifyArmedRetryGuardFailure(records) {
+  const prefix = "Refusing Prisma DDL: final Prisma DATABASE_URL target differs from the verified production identity or writer-drain predicates failed; checks=";
+  const matches = records.filter((entry) => entry.message.startsWith(prefix));
+  if (matches.length !== 1) reject("the armed retry failure log lacks one exact final Prisma guard rejection.");
+  let checks;
+  try { checks = JSON.parse(matches[0].message.slice(prefix.length)); } catch { reject("the armed retry guard diagnostics are malformed."); }
+  const expected = ["signed-database-identity-digest", "canonical-postgres-identity", "exact-database-identity-match",
+    "writer-drain-schema", "writer-drain-observer-pid", "fixed-observer-application", "zero-other-client-policy",
+    "complete-backend-inventory", "zero-other-client-backends", "fresh-writer-drain-observation"];
+  if (!Array.isArray(checks) || checks.length !== expected.length || checks.some((entry, index) =>
+    entry?.id !== expected[index] || entry.passed !== (entry.id !== "zero-other-client-backends")
+      || Object.keys(entry).sort().join(",") !== "id,passed")) {
+    reject("the armed retry did not stop solely on the zero-other-client predicate.");
+  }
+}
+
 export function verifyForwardResumeNoSpawnEvidence({ run, jobsPayload, logText, sourceGuardBytes,
-  workflowId, sourceIsAncestor }) {
-  if (String(run?.id) !== FORWARD_RESUME_FAILED_RUN_ID || String(run?.workflow_id) !== String(workflowId)
+  workflowId, sourceIsAncestor, sourceRunId = FORWARD_RESUME_FAILED_RUN_ID }) {
+  const armedRetry = String(sourceRunId) === ARMED_RETRY_FAILED_RUN_ID;
+  const expectedRunId = armedRetry ? ARMED_RETRY_FAILED_RUN_ID : FORWARD_RESUME_FAILED_RUN_ID;
+  const expectedSha = armedRetry ? ARMED_RETRY_FAILED_SHA : FORWARD_RESUME_FAILED_SHA;
+  const purpose = armedRetry ? ARMED_RETRY_PURPOSE : FORWARD_RESUME_PURPOSE;
+  if (String(sourceRunId) !== expectedRunId || String(run?.id) !== expectedRunId || String(run?.workflow_id) !== String(workflowId)
     || workflowPath(run) !== ".github/workflows/production-migrate.yml"
     || run?.event !== "workflow_dispatch" || run?.head_branch !== "main"
-    || run?.head_sha !== FORWARD_RESUME_FAILED_SHA || run?.status !== "completed" || run?.conclusion !== "failure"
+    || run?.head_sha !== expectedSha || run?.status !== "completed" || run?.conclusion !== "failure"
     || run?.run_attempt !== 1 || sourceIsAncestor !== true) {
     reject("the named source is not the original completed owner migration failure on the expected main SHA.");
   }
   try {
     assertTrustedOwnerWorkflowRun(run, { actorId: BODYCAST_OWNER_ID,
-      workflowPath: ".github/workflows/production-migrate.yml", workflowRunId: FORWARD_RESUME_FAILED_RUN_ID,
-      workflowRunAttempt: 1, ref: "refs/heads/main", sha: FORWARD_RESUME_FAILED_SHA });
+      workflowPath: ".github/workflows/production-migrate.yml", workflowRunId: expectedRunId,
+      workflowRunAttempt: 1, ref: "refs/heads/main", sha: expectedSha });
   } catch (error) { reject(error.message); }
 
   const jobs = jobsPayload?.jobs;
   if (jobsPayload?.total_count !== 3 || !Array.isArray(jobs) || jobs.length !== 3
     || new Set(jobs.map((job) => String(job.id))).size !== 3
-    || jobs.some((job) => !/^[1-9][0-9]*$/.test(String(job.id)) || String(job.run_id) !== FORWARD_RESUME_FAILED_RUN_ID
-      || job.status !== "completed" || job.head_sha !== FORWARD_RESUME_FAILED_SHA || job.run_attempt !== 1)) {
+    || jobs.some((job) => !/^[1-9][0-9]*$/.test(String(job.id)) || String(job.run_id) !== expectedRunId
+      || job.status !== "completed" || job.head_sha !== expectedSha || job.run_attempt !== 1)) {
     reject("the original migration run job inventory is incomplete or unexpected.");
   }
   const authorize = jobs.find((job) => job.name === "Select latest exact preflight evidence");
@@ -293,9 +337,12 @@ export function verifyForwardResumeNoSpawnEvidence({ run, jobsPayload, logText, 
   const { failedStepRecords, fromFailedStepRecords } = selectRawFailedStepLog(
     parseJobLog(logText), actualSteps, executionStepIndex,
   );
-  const errorRecords = failedStepRecords.filter((entry) => entry.message === MIGRATION_GUARD_FAILURE);
-  if (errorRecords.length !== 1 || fromFailedStepRecords.some((entry) => /Applying migration|No pending migrations to apply|All migrations have been applied/i.test(entry.message))) {
-    reject("failed-step logs do not contain one exact final writer-drain failure with no Prisma migration execution output.");
+  if (armedRetry) verifyArmedRetryGuardFailure(failedStepRecords);
+  else if (failedStepRecords.filter((entry) => entry.message === MIGRATION_GUARD_FAILURE).length !== 1) {
+    reject("failed-step logs do not contain one exact final writer-drain failure.");
+  }
+  if (fromFailedStepRecords.some((entry) => /Applying migration|No pending migrations to apply|All migrations have been applied/i.test(entry.message))) {
+    reject("failed-step logs contain Prisma migration execution output.");
   }
   const runtimeRecords = [];
   for (const entry of failedStepRecords) {
@@ -308,13 +355,14 @@ export function verifyForwardResumeNoSpawnEvidence({ run, jobsPayload, logText, 
     } catch { /* Other structured log output is not the source-byte attestation. */ }
   }
   if (runtimeRecords.length !== 1) reject("the failed job lacks a unique in-image guard byte attestation.");
-  const source = validateNoSpawnSource(sourceGuardBytes, runtimeRecords[0]);
+  const source = armedRetry ? validateArmedRetryNoSpawnSource(sourceGuardBytes, runtimeRecords[0])
+    : validateNoSpawnSource(sourceGuardBytes, runtimeRecords[0]);
   return Object.freeze({
     schemaVersion: 1,
-    purpose: FORWARD_RESUME_PURPOSE,
-    sourceRunId: FORWARD_RESUME_FAILED_RUN_ID,
+    purpose,
+    sourceRunId: expectedRunId,
     sourceRunAttempt: 1,
-    sourceSha: FORWARD_RESUME_FAILED_SHA,
+    sourceSha: expectedSha,
     sourceWorkflowId: String(workflowId),
     sourceJobId: String(execution.id),
     failedStep: MIGRATION_FAILURE_STEP,
@@ -329,11 +377,16 @@ export function verifyForwardResumeNoSpawnEvidence({ run, jobsPayload, logText, 
 
 export function verifyForwardResumeAuthorizationBundle({ envelope, preflightEvidence, preflightResult, restoreResult,
   artifactMetadata, allowlist, failedRunId = FORWARD_RESUME_FAILED_RUN_ID }) {
+  const armedRetry = String(failedRunId) === ARMED_RETRY_FAILED_RUN_ID;
+  const expectedSha = armedRetry ? ARMED_RETRY_FAILED_SHA : FORWARD_RESUME_FAILED_SHA;
+  if (String(failedRunId) !== (armedRetry ? ARMED_RETRY_FAILED_RUN_ID : FORWARD_RESUME_FAILED_RUN_ID)) {
+    reject("the signed source artifact is not from an admitted failed migration run.");
+  }
   const verified = verifyHistoricalMigrationAuthorizationEnvelope(envelope, { allowlist, expected: {
     workflowRunId: failedRunId,
     workflowRunAttempt: 1,
-    releaseSha: FORWARD_RESUME_FAILED_SHA,
-    currentMainSha: FORWARD_RESUME_FAILED_SHA,
+    releaseSha: expectedSha,
+    currentMainSha: expectedSha,
     actorId: BODYCAST_OWNER_ID,
     manifestId: "active-energy-unified-v2",
   } });
@@ -357,9 +410,16 @@ export function verifyForwardResumeAuthorizationBundle({ envelope, preflightEvid
     || Number(artifactMetadata?.workflowRunAttempt) !== claims.preflightRunAttempt) {
     reject("the historical owner-signed migration artifact does not bind the exact preflight, previous-app capture, restore rehearsal, and backup metadata.");
   }
+  if (armedRetry && (claims.executionMode !== "forward-resume"
+    || claims.forwardResumeProofDigest !== preflightResult.forwardResume?.proofDigest
+    || claims.forwardResumeSourceRunId !== FORWARD_RESUME_FAILED_RUN_ID
+    || claims.forwardResumeSourceSha !== FORWARD_RESUME_FAILED_SHA
+    || !DIGEST.test(String(claims.forwardResumeProofDigest ?? "")))) {
+    reject("the armed retry source authorization does not bind the original verified forward-resume lineage.");
+  }
   return Object.freeze({
     schemaVersion: 1,
-    purpose: FORWARD_RESUME_PURPOSE,
+    purpose: armedRetry ? ARMED_RETRY_PURPOSE : FORWARD_RESUME_PURPOSE,
     sourceRunId: String(failedRunId),
     sourceRunAttempt: 1,
     sourceSha: claims.releaseSha,
@@ -371,17 +431,25 @@ export function verifyForwardResumeAuthorizationBundle({ envelope, preflightEvid
     originalAuthorizationId: claims.authorizationId,
     originalBackupArtifactId: claims.backupArtifactId,
     originalBackupArtifactDigest: claims.backupArtifactDigest,
+    ...(armedRetry ? { sourceMarkerLineageDigest: claims.forwardResumeProofDigest } : {}),
   });
 }
 
-export function verifyForwardResumeMarkerObservation(observation, failureProof) {
-  const fields = ["schemaVersion", "markerSchemaVersion", "releaseSha", "state", "markerDigest"].sort();
+export function verifyForwardResumeMarkerObservation(observation, failureProof, authorizationBundleProof) {
+  const armedRetry = failureProof?.purpose === ARMED_RETRY_PURPOSE;
+  const fields = ["schemaVersion", "markerSchemaVersion", "releaseSha", "state", "markerDigest",
+    ...(armedRetry ? ["workflowRunId", "workflowRunAttempt", "authorizationId", "lineageDigest", "spawnState"] : [])].sort();
   if (!observation || typeof observation !== "object" || Array.isArray(observation)
     || JSON.stringify(Object.keys(observation).sort()) !== JSON.stringify(fields)
-    || observation.schemaVersion !== 1 || observation.markerSchemaVersion !== 1
-    || observation.releaseSha !== failureProof?.sourceSha || observation.state !== "ddl-started"
+    || observation.schemaVersion !== 1 || observation.markerSchemaVersion !== (armedRetry ? 2 : 1)
+    || observation.releaseSha !== failureProof?.sourceSha || observation.state !== (armedRetry ? "forward-resume-armed" : "ddl-started")
+    || (armedRetry && (observation.workflowRunId !== failureProof.sourceRunId
+      || observation.workflowRunAttempt !== failureProof.sourceRunAttempt
+      || observation.authorizationId !== authorizationBundleProof?.originalAuthorizationId
+      || observation.lineageDigest !== authorizationBundleProof?.sourceMarkerLineageDigest
+      || observation.spawnState !== "not-started"))
     || !/^[a-f0-9]{64}$/.test(String(observation.markerDigest ?? ""))) {
-    reject("the live marker is not the exact legacy V1 ddl-started marker bound to the independently verified failed run.");
+    reject("the live marker is not bound to the independently verified pre-spawn failure and signed authorization.");
   }
   return Object.freeze(observation);
 }
@@ -458,9 +526,12 @@ export function verifyNoLaterMutationRun({ runs, sourceRunId = FORWARD_RESUME_FA
 
 export function createForwardResumeContext({ failureProof, markerObservation, authorizationBundleProof,
   preflightRunId, preflightRunAttempt, targetSha, mutationHistoryDigest, preflightResult, report, restoreResult, backupBytes }) {
-  verifyForwardResumeMarkerObservation(markerObservation, failureProof);
-  if (!failureProof || failureProof.schemaVersion !== 1 || failureProof.purpose !== FORWARD_RESUME_PURPOSE
-    || failureProof.noPrismaSpawnVerified !== true || failureProof.sourceRunId !== FORWARD_RESUME_FAILED_RUN_ID
+  verifyForwardResumeMarkerObservation(markerObservation, failureProof, authorizationBundleProof);
+  const armedRetry = failureProof?.purpose === ARMED_RETRY_PURPOSE;
+  const expectedSourceRunId = armedRetry ? ARMED_RETRY_FAILED_RUN_ID : FORWARD_RESUME_FAILED_RUN_ID;
+  if (!failureProof || failureProof.schemaVersion !== 1
+    || ![FORWARD_RESUME_PURPOSE, ARMED_RETRY_PURPOSE].includes(failureProof.purpose)
+    || failureProof.noPrismaSpawnVerified !== true || failureProof.sourceRunId !== expectedSourceRunId
     || !authorizationBundleProof || authorizationBundleProof.sourceRunId !== failureProof.sourceRunId
     || authorizationBundleProof.sourceSha !== failureProof.sourceSha
     || !/^[1-9][0-9]*$/.test(String(preflightRunId ?? ""))
@@ -488,7 +559,7 @@ export function createForwardResumeContext({ failureProof, markerObservation, au
   }
   const context = {
     schemaVersion: 1,
-    purpose: FORWARD_RESUME_PURPOSE,
+    purpose: failureProof.purpose,
     mode: "forward-resume",
     sourceRunId: failureProof.sourceRunId,
     sourceRunAttempt: failureProof.sourceRunAttempt,
@@ -507,6 +578,11 @@ export function createForwardResumeContext({ failureProof, markerObservation, au
     markerReleaseSha: markerObservation.releaseSha,
     markerState: markerObservation.state,
     markerDigest: markerObservation.markerDigest,
+    ...(armedRetry ? {
+      sourceMarkerWorkflowRunId: markerObservation.workflowRunId,
+      sourceMarkerWorkflowRunAttempt: markerObservation.workflowRunAttempt,
+      sourceMarkerLineageDigest: markerObservation.lineageDigest,
+    } : {}),
     currentPreflightRunId: String(preflightRunId),
     currentPreflightRunAttempt: preflightRunAttempt,
     targetSha,
@@ -536,6 +612,8 @@ const FORWARD_RESUME_CONTEXT_FIELDS = Object.freeze([
   "currentPendingSetDigest", "currentDataFingerprint", "encryptedBackupDigest", "restoredDataFingerprint",
   "restorePostSchemaDigest", "restoreResultDigest", "proofDigest",
 ]);
+const ARMED_RETRY_CONTEXT_FIELDS = Object.freeze([...FORWARD_RESUME_CONTEXT_FIELDS,
+  "sourceMarkerWorkflowRunId", "sourceMarkerWorkflowRunAttempt", "sourceMarkerLineageDigest"]);
 
 function isCanonicalReport(report) {
   return report && typeof report === "object" && !Array.isArray(report)
@@ -544,15 +622,23 @@ function isCanonicalReport(report) {
 }
 
 export function verifyForwardResumeContext(context, { targetSha, preflightRunId, preflightRunAttempt } = {}) {
+  const armedRetry = context?.purpose === ARMED_RETRY_PURPOSE;
+  const expectedFields = armedRetry ? ARMED_RETRY_CONTEXT_FIELDS : FORWARD_RESUME_CONTEXT_FIELDS;
+  const expectedRunId = armedRetry ? ARMED_RETRY_FAILED_RUN_ID : FORWARD_RESUME_FAILED_RUN_ID;
+  const expectedSha = armedRetry ? ARMED_RETRY_FAILED_SHA : FORWARD_RESUME_FAILED_SHA;
   const digestFields = ["failureProofDigest", "failureLogDigest", "sourceGuardRuntimeDigest", "sourcePreflightResultDigest",
     "previousAppProvenanceDigest", "originalBackupArtifactDigest", "markerDigest", "mutationHistoryDigest", "proofDigest"];
   if (!context || typeof context !== "object" || Array.isArray(context)
-    || JSON.stringify(Object.keys(context).sort()) !== JSON.stringify([...FORWARD_RESUME_CONTEXT_FIELDS].sort())
-    || context.schemaVersion !== 1 || context.purpose !== FORWARD_RESUME_PURPOSE || context.mode !== "forward-resume"
-    || context.noPrismaSpawnVerified !== true || context.sourceRunId !== FORWARD_RESUME_FAILED_RUN_ID
-    || context.sourceRunAttempt !== 1 || context.sourceSha !== FORWARD_RESUME_FAILED_SHA
-    || context.markerSchemaVersion !== 1 || context.markerReleaseSha !== FORWARD_RESUME_FAILED_SHA
-    || context.markerState !== "ddl-started" || context.targetSha !== targetSha
+    || JSON.stringify(Object.keys(context).sort()) !== JSON.stringify([...expectedFields].sort())
+    || context.schemaVersion !== 1 || ![FORWARD_RESUME_PURPOSE, ARMED_RETRY_PURPOSE].includes(context.purpose)
+    || context.mode !== "forward-resume"
+    || context.noPrismaSpawnVerified !== true || context.sourceRunId !== expectedRunId
+    || context.sourceRunAttempt !== 1 || context.sourceSha !== expectedSha
+    || context.markerSchemaVersion !== (armedRetry ? 2 : 1) || context.markerReleaseSha !== expectedSha
+    || context.markerState !== (armedRetry ? "forward-resume-armed" : "ddl-started") || context.targetSha !== targetSha
+    || (armedRetry && (context.sourceMarkerWorkflowRunId !== ARMED_RETRY_FAILED_RUN_ID
+      || context.sourceMarkerWorkflowRunAttempt !== 1
+      || !DIGEST.test(String(context.sourceMarkerLineageDigest ?? ""))))
     || context.currentPreflightRunId !== String(preflightRunId)
     || context.currentPreflightRunAttempt !== Number(preflightRunAttempt)
     || !/^[1-9][0-9]*$/.test(String(context.sourcePreflightRunId ?? ""))
@@ -592,8 +678,14 @@ export function assertForwardResumeCurrentSnapshot(context, { preflightResult, l
   return true;
 }
 
-export async function inspectForwardResumeMarker({ expectedReleaseSha, repositoryPath = process.cwd() }) {
+export async function inspectForwardResumeMarker({ expectedReleaseSha, sourceRunId = FORWARD_RESUME_FAILED_RUN_ID,
+  repositoryPath = process.cwd() }) {
   if (!/^[a-f0-9]{40}$/.test(String(expectedReleaseSha ?? ""))) reject("expected failed release SHA is malformed.");
+  const armedRetry = String(sourceRunId) === ARMED_RETRY_FAILED_RUN_ID;
+  if (String(sourceRunId) !== (armedRetry ? ARMED_RETRY_FAILED_RUN_ID : FORWARD_RESUME_FAILED_RUN_ID)
+    || expectedReleaseSha !== (armedRetry ? ARMED_RETRY_FAILED_SHA : FORWARD_RESUME_FAILED_SHA)) {
+    reject("the marker source run and SHA are not an admitted pair.");
+  }
   const gitDir = execFileSync("git", ["rev-parse", "--absolute-git-dir"], { cwd: repositoryPath, encoding: "utf8" }).trim();
   const currentPath = path.join(gitDir, "bodycast-production-release-marker", "marker");
   const legacyPath = path.join(gitDir, "bodycast-production-schema-cutover");
@@ -607,9 +699,10 @@ export async function inspectForwardResumeMarker({ expectedReleaseSha, repositor
   ]);
   if (current && legacy) reject("both current and legacy release markers exist; marker state is ambiguous.");
   const observed = current ?? legacy;
-  if (!observed || observed.marker.schemaVersion !== 1 || observed.marker.state !== "ddl-started"
+  if (!observed || observed.marker.schemaVersion !== (armedRetry ? 2 : 1)
+    || observed.marker.state !== (armedRetry ? "forward-resume-armed" : "ddl-started")
     || observed.marker.releaseSha !== expectedReleaseSha) {
-    reject("the expected legacy V1 ddl-started marker is missing or changed.");
+    reject("the expected pre-spawn failure marker is missing or changed.");
   }
   return verifyForwardResumeMarkerObservation({
     schemaVersion: 1,
@@ -617,14 +710,25 @@ export async function inspectForwardResumeMarker({ expectedReleaseSha, repositor
     releaseSha: observed.marker.releaseSha,
     state: observed.marker.state,
     markerDigest: observed.digest,
-  }, { sourceSha: expectedReleaseSha });
+    ...(armedRetry ? {
+      workflowRunId: observed.marker.workflowRunId,
+      workflowRunAttempt: observed.marker.workflowRunAttempt,
+      authorizationId: observed.marker.authorizationId,
+      lineageDigest: observed.marker.lineageDigest,
+      spawnState: observed.marker.spawnState,
+    } : {}),
+  }, { sourceSha: expectedReleaseSha, sourceRunId, sourceRunAttempt: 1,
+    purpose: armedRetry ? ARMED_RETRY_PURPOSE : FORWARD_RESUME_PURPOSE },
+  armedRetry ? { originalAuthorizationId: observed.marker.authorizationId,
+    sourceMarkerLineageDigest: observed.marker.lineageDigest } : undefined);
 }
 
 async function main() {
   const [mode, ...args] = process.argv.slice(2);
   if (mode === "--inspect-marker") {
-    if (args.length !== 1) throw new Error("Usage: production-forward-resume.mjs --inspect-marker <failed-release-sha>");
-    process.stdout.write(`${JSON.stringify(await inspectForwardResumeMarker({ expectedReleaseSha: args[0] }))}\n`);
+    if (args.length < 1 || args.length > 2) throw new Error("Usage: production-forward-resume.mjs --inspect-marker <failed-release-sha> [source-run-id]");
+    process.stdout.write(`${JSON.stringify(await inspectForwardResumeMarker({ expectedReleaseSha: args[0],
+      sourceRunId: args[1] ?? FORWARD_RESUME_FAILED_RUN_ID }))}\n`);
     return;
   }
   throw new Error("Usage: production-forward-resume.mjs --inspect-marker <failed-release-sha>");

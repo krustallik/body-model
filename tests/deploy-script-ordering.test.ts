@@ -153,7 +153,9 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(deploySh).toContain('BODYCAST_NON_SERVING_DEPLOY" == "1"');
     expect(deploySh).toContain('write_bodycast_release_marker "$DEPLOY_SHA" app-ready');
     expect(migrateSh).toContain("read_bodycast_release_marker");
-    expect(migrateSh).toContain("only the exact legacy V1 ddl-started marker has a supported owner-authorized forward-resume path");
+    expect(migrateSh).toContain("only an exact verified pre-spawn marker has an owner-authorized forward-resume path");
+    expect(migrateSh).toContain('"$FORWARD_SOURCE_MARKER_SCHEMA_VERSION" == 2');
+    expect(migrateSh).toContain('"$SOURCE_MARKER_DIGEST"');
     expect(releaseMarkerSh).toContain("Both current and legacy production release markers exist; state is ambiguous.");
     expect(migrateGuard).toContain('["prisma", "migrate", "deploy"]');
     expect(releaseMarkerSh).toMatch(/ddl-started\|schema-applied\|app-ready/);

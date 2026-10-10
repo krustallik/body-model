@@ -18,6 +18,7 @@ on:
       - "scripts/github-forward-resume-evidence.mjs"
       - "scripts/production-capture-resume-receipt.mjs"
       - "tests/forward-resume-evidence-replay.test.mjs"
+      - "tests/forward-resume-armed-retry.test.mjs"
       - "tests/helpers/forward-resume-evidence-fixture.mjs"
       - "scripts/production-traffic-cutover.sh"
       - "scripts/production-database-cutback.sh"
@@ -159,7 +160,7 @@ jobs:
         run: npx prisma generate --schema prisma/schema.prisma
 
       - name: Run targeted safety-tooling tests
-        run: npm run test:unit -- tests/production-forward-resume.test.mjs tests/production-release-marker.test.mjs tests/production-migration-v5.test.mjs tests/production-safety-tooling.test.mjs tests/production-writer-drain.test.mjs
+        run: npm run test:unit -- tests/production-forward-resume.test.mjs tests/forward-resume-armed-retry.test.mjs tests/production-release-marker.test.mjs tests/production-migration-v5.test.mjs tests/production-safety-tooling.test.mjs tests/production-writer-drain.test.mjs
 
       - name: Run production release boundary regressions
         run: npm run test:unit -- tests/deploy-script-ordering.test.ts tests/production-deploy-rollback.test.ts tests/production-deploy-rollback-safety.test.ts tests/production-traffic-cutover-freshness.test.ts tests/production-release-entrypoints.test.ts tests/production-database-cutback.test.mjs tests/production-previous-app-provenance.test.mjs tests/production-release-terminal-safety.test.ts tests/deploy-main-freshness.test.ts tests/production-deploy-gate.test.ts tests/production-recovery-boundary.test.mjs

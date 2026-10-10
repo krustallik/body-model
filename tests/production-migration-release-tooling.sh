@@ -303,7 +303,7 @@ if run_fixture_command allow "$NEW_RELEASE_SHA" "$TMP/migration-rerun-blocked.lo
   echo "Expected a second migration attempt to be blocked by the durable marker." >&2
   exit 1
 fi
-grep -Fq 'only the exact legacy V1 ddl-started marker has a supported owner-authorized forward-resume path' "$TMP/migration-rerun-blocked.log"
+grep -Fq 'only an exact verified pre-spawn marker has an owner-authorized forward-resume path' "$TMP/migration-rerun-blocked.log"
 test ! -s "$DOCKER_LOG"
 [[ "$(<"$MIGRATION_COUNT")" == "1" ]]
 [[ "$(sha256sum "$FIXTURE_GIT_DIR/bodycast-production-release-marker/marker" | awk '{print $1}')" == "$MARKER_DIGEST" ]]

@@ -95,7 +95,7 @@ jobs:
           [[ "$CONFIRMATION" == "MIGRATE_PRODUCTION" ]] || { echo "::error::Exact migration request confirmation is required."; exit 1; }
           [[ "$EXECUTION_MODE" == "standard" || "$EXECUTION_MODE" == "forward-resume" ]] || { echo "::error::Unsupported migration execution mode."; exit 1; }
           if [[ "$EXECUTION_MODE" == "forward-resume" ]]; then
-            [[ "$FORWARD_RESUME_FAILED_RUN_ID" == "38022978032" ]] || { echo "::error::Forward-resume requires the exact owner-authorized source failure run."; exit 1; }
+            [[ "$FORWARD_RESUME_FAILED_RUN_ID" == "38022978032" || "$FORWARD_RESUME_FAILED_RUN_ID" == "38062632284" ]] || { echo "::error::Forward-resume requires an exact reviewed source failure run."; exit 1; }
           else
             [[ -z "$FORWARD_RESUME_FAILED_RUN_ID" ]] || { echo "::error::A failed-run ID is only valid with explicit forward-resume mode."; exit 1; }
           fi
@@ -474,7 +474,7 @@ jobs:
             echo "Invalid authorization workflow identity." >&2; exit 1;
           }
           if [[ "$EXECUTION_MODE" == "forward-resume" ]]; then
-            [[ "$FORWARD_RESUME_FAILED_RUN_ID" == "38022978032" ]] || { echo "Invalid forward-resume source run." >&2; exit 1; }
+            [[ "$FORWARD_RESUME_FAILED_RUN_ID" == "38022978032" || "$FORWARD_RESUME_FAILED_RUN_ID" == "38062632284" ]] || { echo "Invalid forward-resume source run." >&2; exit 1; }
           elif [[ "$EXECUTION_MODE" == "standard" ]]; then
             [[ -z "$FORWARD_RESUME_FAILED_RUN_ID" ]] || { echo "A source run is only valid for forward-resume." >&2; exit 1; }
           else

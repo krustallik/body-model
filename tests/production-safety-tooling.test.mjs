@@ -91,6 +91,7 @@ function preflightFixture(migrationDirectories) {
   const now = new Date().toISOString();
   return {
     identity: { database: "bodycast", databaseOid: 16384, clusterSystemIdentifier: "7419276301947620311", role: "bodycast", serverVersion: "17.0", serverAddress: "172.20.0.2", serverPort: 5432 },
+    logicalDataFingerprint: "d".repeat(64),
     migrations: appliedMigrations.map((name) => ({
       name,
       checksum: stage02Checksums.get(name) ?? "a".repeat(64),
@@ -271,11 +272,12 @@ describe("production migration preflight evaluator", () => {
     const source = preflightFixture(["20260801000000_baseline", ...STAGE_02_MANIFEST.migrations.map(({ name }) => name), ...EXPECTED_PENDING_MIGRATIONS]);
     expect(verifyRestoredBackup(
       source,
-      { migrationHistory: source.migrations, objects: source.objects, readability: Object.fromEntries(["Workout", "Profile", "ModelEpisode", "PhysiologyV7Lifecycle", "DailyModelState", "StrengthDiarySession", "ExerciseCatalog"].map((name) => [name, { rowCount: 1 }])) },
+      { migrationHistory: source.migrations, objects: source.objects, logicalDataFingerprint: source.logicalDataFingerprint,
+        readability: Object.fromEntries(["Workout", "Profile", "ModelEpisode", "PhysiologyV7Lifecycle", "DailyModelState", "StrengthDiarySession", "ExerciseCatalog"].map((name) => [name, { rowCount: 1 }])) },
     ).verified).toBe(true);
     expect(verifyRestoredBackup(
       source,
-      { migrationHistory: [], objects: source.objects, readability: { Workout: { rowCount: 0 } } },
+      { migrationHistory: [], objects: source.objects, logicalDataFingerprint: "0".repeat(64), readability: { Workout: { rowCount: 0 } } },
     ).verified).toBe(false);
   });
 });

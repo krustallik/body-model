@@ -12,6 +12,11 @@ export const REQUIRED_AUTHORIZATION_CLAIMS = Object.freeze([
   "writerDrainDigest", "writerTopologyDigest",
   "issuedAt", "expiresAt", "authorizationId", "nonce",
 ]);
+const FORWARD_RESUME_CLAIMS = Object.freeze([
+  "executionMode", "forwardResumeProofDigest", "forwardResumeSourceRunId", "forwardResumeSourceRunAttempt",
+  "forwardResumeSourceSha", "forwardResumeMarkerDigest", "forwardResumeSourceAuthorizationId",
+  "forwardResumeSourcePreflightResultDigest", "forwardResumeFailureLogDigest", "forwardResumeGuardRuntimeDigest",
+]);
 
 export function canonicalSha256(value) {
   return createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
@@ -50,7 +55,31 @@ function validateClaimsShape(claims) {
   if (!claims || typeof claims !== "object" || Array.isArray(claims)) reject("signed claims are missing.");
   const keys = Object.keys(claims).sort();
   const required = [...REQUIRED_AUTHORIZATION_CLAIMS].sort();
-  if (JSON.stringify(keys) !== JSON.stringify(required)) reject("claim set is incomplete or contains unsupported claims.");
+  const baseWithSnapshot = [...required, "snapshotDataFingerprint"].sort();
+  const baseWithForwardResume = [...required, "snapshotDataFingerprint", ...FORWARD_RESUME_CLAIMS].sort();
+  if (![required, baseWithSnapshot, baseWithForwardResume].some((expected) => JSON.stringify(keys) === JSON.stringify(expected))) {
+    reject("claim set is incomplete or contains unsupported claims.");
+  }
+  if (Object.hasOwn(claims, "snapshotDataFingerprint") && !/^[a-f0-9]{64}$/.test(String(claims.snapshotDataFingerprint))) {
+    reject("snapshotDataFingerprint must be a lowercase SHA-256 digest.");
+  }
+  if (Object.hasOwn(claims, "executionMode")) {
+    if (claims.executionMode !== "forward-resume") reject("executionMode is not a supported owner-authorized mode.");
+    for (const key of ["forwardResumeProofDigest", "forwardResumeMarkerDigest", "forwardResumeSourcePreflightResultDigest",
+      "forwardResumeFailureLogDigest", "forwardResumeGuardRuntimeDigest"]) {
+      if (!/^[a-f0-9]{64}$/.test(String(claims[key] ?? ""))) reject(`${key} must be a lowercase SHA-256 digest.`);
+    }
+    for (const key of ["forwardResumeSourceRunId"]) {
+      if (!/^[1-9][0-9]*$/.test(String(claims[key] ?? ""))) reject(`${key} must be a positive numeric identifier.`);
+    }
+    if (!Number.isSafeInteger(claims.forwardResumeSourceRunAttempt) || claims.forwardResumeSourceRunAttempt < 1) {
+      reject("forwardResumeSourceRunAttempt must be a positive integer.");
+    }
+    if (!/^[a-f0-9]{40}$/.test(String(claims.forwardResumeSourceSha ?? ""))) reject("forwardResumeSourceSha must be a full lowercase commit SHA.");
+    if (typeof claims.forwardResumeSourceAuthorizationId !== "string" || claims.forwardResumeSourceAuthorizationId.length < 16) {
+      reject("forwardResumeSourceAuthorizationId is malformed.");
+    }
+  }
   for (const key of REQUIRED_AUTHORIZATION_CLAIMS) {
     const value = claims[key];
     if (value === null || value === undefined || value === "") reject(`required claim ${key} is empty.`);
@@ -86,6 +115,7 @@ function compareLiveClaims(claims, live, { requireTrustedActorId = true } = {}) 
     "currentMainSha", "manifestId", "pendingMigrationNames", "pendingSetDigest", "preflightRunId",
     "preflightRunAttempt", "preflightRunStartedAt", "preflightResultDigest", "backupArtifactId", "backupArtifactDigest",
     "backupSnapshotAt", "restoreResultDigest", "productionIdentityDigest", "writerDrainDigest", "writerTopologyDigest",
+    "snapshotDataFingerprint", ...FORWARD_RESUME_CLAIMS,
   ];
   for (const field of fields) {
     if (!(field in live)) continue;
@@ -194,13 +224,28 @@ export function createClaimsFromPreflight({
   manifestId, pendingMigrationNames, preflightRunId, preflightRunAttempt, preflightRunStartedAt, preflightResultDigest,
   backupArtifactId, backupArtifactDigest, backupSnapshotAt, restoreResultDigest, productionIdentityDigest,
   writerDrainDigest, writerTopologyDigest,
-  issuedAt, expiresAt, authorizationId, nonce,
+  issuedAt, expiresAt, authorizationId, nonce, snapshotDataFingerprint, forwardResume,
 }) {
   const names = [...pendingMigrationNames].sort();
-  return {
+  const claims = {
     repository, workflowId, workflowPath, workflowRunId, workflowRunAttempt, actorId, releaseSha, currentMainSha,
     manifestId, pendingMigrationNames: names, pendingSetDigest: canonicalSha256(names), preflightRunId,
     preflightRunAttempt, preflightRunStartedAt, preflightResultDigest, backupArtifactId, backupArtifactDigest, backupSnapshotAt,
     restoreResultDigest, productionIdentityDigest, writerDrainDigest, writerTopologyDigest, issuedAt, expiresAt, authorizationId, nonce,
   };
+  if (snapshotDataFingerprint !== undefined) claims.snapshotDataFingerprint = snapshotDataFingerprint;
+  if (forwardResume !== undefined) {
+    if (!forwardResume || typeof forwardResume !== "object") reject("forward-resume authorization context is malformed.");
+    claims.executionMode = "forward-resume";
+    claims.forwardResumeProofDigest = forwardResume.proofDigest;
+    claims.forwardResumeSourceRunId = forwardResume.sourceRunId;
+    claims.forwardResumeSourceRunAttempt = forwardResume.sourceRunAttempt;
+    claims.forwardResumeSourceSha = forwardResume.sourceSha;
+    claims.forwardResumeMarkerDigest = forwardResume.markerDigest;
+    claims.forwardResumeSourceAuthorizationId = forwardResume.sourceAuthorizationId;
+    claims.forwardResumeSourcePreflightResultDigest = forwardResume.sourcePreflightResultDigest;
+    claims.forwardResumeFailureLogDigest = forwardResume.failureLogDigest;
+    claims.forwardResumeGuardRuntimeDigest = forwardResume.sourceGuardRuntimeDigest;
+  }
+  return claims;
 }

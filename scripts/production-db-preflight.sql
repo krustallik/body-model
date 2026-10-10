@@ -127,9 +127,10 @@ WITH expected(name) AS (
   -- The observer pid is the one explicitly identified preflight/migration
   -- connection. Every other client backend blocks, regardless of claimed
   -- application_name or client_addr; proxy/NAT identity is never inferred.
-  SELECT pid, usename, application_name AS "applicationName", client_addr::text AS "clientAddress",
-    client_port AS "clientPort", backend_type AS "backendType", state,
-    backend_start AS "backendStart", xact_start AS "transactionStart"
+  -- Export presence only. The gate intentionally blocks every other client
+  -- backend, but user/app/address/pid details are neither needed nor safe to
+  -- publish in the signed preflight artifact or workflow summary.
+  SELECT true AS present
   FROM pg_stat_activity
   WHERE datname = current_database() AND backend_type = 'client backend' AND pid <> pg_backend_pid()
 )
@@ -150,11 +151,20 @@ SELECT json_build_object(
     'observedAt', clock_timestamp(),
     'identityPolicy', 'no-other-client-backends',
     'topology', :'BODYCAST_WRITER_TOPOLOGY_JSON'::json,
-    'activeClientBackends', COALESCE((SELECT json_agg(to_jsonb(c) ORDER BY c.pid) FROM other_client_backends c), '[]'::json)
+    'activeClientBackends', COALESCE((SELECT json_agg(to_jsonb(c)) FROM other_client_backends c), '[]'::json)
   ),
   'migrations', COALESCE((SELECT json_agg(to_jsonb(m) ORDER BY m.name, m."startedAt") FROM migration_rows m), '[]'::json),
   'objects', COALESCE((SELECT json_agg(to_jsonb(o) ORDER BY o.name) FROM object_inventory o), '[]'::json),
   'tables', COALESCE((SELECT json_object_agg(t.table_name, json_build_object('exists', t.exists, 'estimatedRows', t."estimatedRows", 'totalBytes', t."totalBytes")) FROM target_tables t), '{}'::json),
+  'readability', json_build_object(
+    'Workout', json_build_object('rowCount', (SELECT count(*) FROM public."Workout")),
+    'Profile', json_build_object('rowCount', (SELECT count(*) FROM public."Profile")),
+    'ModelEpisode', json_build_object('rowCount', (SELECT count(*) FROM public."ModelEpisode")),
+    'PhysiologyV7Lifecycle', json_build_object('rowCount', (SELECT count(*) FROM public."PhysiologyV7Lifecycle")),
+    'DailyModelState', json_build_object('rowCount', (SELECT count(*) FROM public."DailyModelState")),
+    'StrengthDiarySession', json_build_object('rowCount', (SELECT count(*) FROM public."StrengthDiarySession")),
+    'ExerciseCatalog', json_build_object('rowCount', (SELECT count(*) FROM public."ExerciseCatalog"))
+  ),
   'conflictingLocks', COALESCE((SELECT json_agg(to_jsonb(l)) FROM conflicting_locks l), '[]'::json),
   'preparedTransactions', COALESCE((SELECT json_agg(to_jsonb(p)) FROM prepared_transactions p), '[]'::json),
   'longTransactions', COALESCE((SELECT json_agg(to_jsonb(t)) FROM long_transactions t), '[]'::json)

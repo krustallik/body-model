@@ -136,8 +136,10 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(deploySh).toContain("bodycast_acquire_production_release_lock");
     expect(migrateSh).toContain("authorization-envelope.json");
     expect(migrateSh).toContain("--before-ddl");
-    expect(migrateSh).toContain('write_bodycast_release_marker "$RELEASE_SHA" ddl-started');
     expect(migrateSh).toContain("run-prisma-migrate-with-lock-timeout.mjs");
+    expect(migrateGuard).toContain("writeDdlStartingMarker");
+    expect(migrateGuard).toContain("acknowledgePrismaSpawn");
+    expect(migrateGuard.indexOf("markerWriter({")).toBeLessThan(migrateGuard.indexOf('spawn("npx", ["prisma", "migrate", "deploy"]'));
     expect(migrateSh).not.toMatch(/compose\s+up\s+-d\s+db\b/);
     expect(migrateSh).not.toContain("bodycast-production-operation");
     expect(migrateGuard).toContain("verifyFinalGuardReceipt");
@@ -151,7 +153,8 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(deploySh).toContain('BODYCAST_NON_SERVING_DEPLOY" == "1"');
     expect(deploySh).toContain('write_bodycast_release_marker "$DEPLOY_SHA" app-ready');
     expect(migrateSh).toContain("read_bodycast_release_marker");
-    expect(migrateSh).toContain("existing schema-cutover marker requires explicit recovery");
+    expect(migrateSh).toContain("only the exact legacy V1 ddl-started marker has a supported owner-authorized forward-resume path");
+    expect(releaseMarkerSh).toContain("Both current and legacy production release markers exist; state is ambiguous.");
     expect(migrateGuard).toContain('["prisma", "migrate", "deploy"]');
     expect(releaseMarkerSh).toMatch(/ddl-started\|schema-applied\|app-ready/);
     expect(composeYaml).toContain("org.bodycast.release-sha: ${BODYCAST_DEPLOY_SHA:-unknown}");

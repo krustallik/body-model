@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -13,7 +14,7 @@ import { readCommittedGitBlob, sha256, verifyExecutionFileMatchesBlob, verifyMan
 import { renderProductionDbPreflightSql, getExpectedSchemaObjectNames } from "../scripts/production-db-preflight.mjs";
 import { verifyBaseRestore, verifyDisposablePostflight } from "../scripts/production-migration-restore-check.mjs";
 import { verifyPostflightMatchesRestore } from "../scripts/production-migration-preflight.mjs";
-import { verifyFinalMigrationAuthorization, verifyFinalGuardReceipt } from "../scripts/production-migration-final-guard.mjs";
+import { assertLiveDataMatchesBackupReadability, verifyFinalMigrationAuthorization, verifyFinalGuardReceipt } from "../scripts/production-migration-final-guard.mjs";
 import { normalizeWorkflowRuns, selectAndVerifyArtifact } from "../scripts/production-migration-select-preflight.mjs";
 import { assertBackupFreshAtDdlStart, assertPrismaMigrationAuthorized, assertPrismaTargetMatchesSignedIdentity, readLatestApplicablePreflightForDdl, startPrismaMigrationAtDdlBoundary } from "../scripts/run-prisma-migrate-with-lock-timeout.mjs";
 import { normalizePostgresDatabaseIdentityRow } from "../scripts/postgres-database-identity.mjs";
@@ -89,6 +90,8 @@ function validPrismaTargetState(identity, at = now, overrides = {}) {
 function validPreflightReport() {
   return {
     identity: { database: "bodycast", databaseOid: 16384, clusterSystemIdentifier: "7419276301947620311", role: "bodycast", serverVersion: "17.11", serverAddress: "172.20.0.2", serverPort: 5432 },
+    logicalDataFingerprint: "d".repeat(64),
+    readability: Object.fromEntries(["Workout", "Profile", "ModelEpisode", "PhysiologyV7Lifecycle", "DailyModelState", "StrengthDiarySession", "ExerciseCatalog"].map((name) => [name, { rowCount: 0 }])),
     migrations: [
       migrationRow({ name: dirs[0], sha256: "a".repeat(64) }),
       ...STAGE_02_MANIFEST.migrations.map((migration) => migrationRow(migration)),
@@ -133,6 +136,7 @@ function claims(overrides = {}) {
     backupSnapshotAt: "2026-10-05T09:30:00.000Z",
     restoreResultDigest: "d".repeat(64),
     productionIdentityDigest: "e".repeat(64),
+    snapshotDataFingerprint: "d".repeat(64),
     writerDrainDigest: "1".repeat(64),
     writerTopologyDigest: "2".repeat(64),
     issuedAt: "2026-10-05T09:50:00.000Z",
@@ -165,6 +169,7 @@ function liveContext(overrides = {}) {
     backupSnapshotAt: "2026-10-05T09:30:00.000Z",
     restoreResultDigest: "d".repeat(64),
     productionIdentityDigest: "e".repeat(64),
+    snapshotDataFingerprint: "d".repeat(64),
     writerDrainDigest: "1".repeat(64),
     writerTopologyDigest: "2".repeat(64),
     ...overrides,
@@ -312,6 +317,7 @@ function authorizedBoundary(fixture, databaseUrl = "postgresql://bodycast:secret
     finalWriterDrainObservedAt: finalObservedAt,
     finalTopologyObservedAt: finalObservedAt,
     postSchemaDigest: "9".repeat(64),
+    snapshotDataFingerprint: signedClaims.snapshotDataFingerprint,
     verifiedAt: finalObservedAt,
   };
   return {
@@ -571,7 +577,16 @@ describe("V5 closed migration manifest and full pending set", () => {
   it("executes DDL only after a signed final guard, fresh backup, and matching live database identity", async () => {
     const identity = validPreflightReport().identity;
     const fixture = await executionBoundaryFixture(identity);
-    const spawn = vi.fn(() => ({ status: 0 }));
+    const ioOrder = [];
+    const spawn = vi.fn(() => {
+      ioOrder.push("spawn");
+      const child = new EventEmitter();
+      child.kill = vi.fn();
+      queueMicrotask(() => { child.emit("spawn"); setImmediate(() => child.emit("close", 0, null)); });
+      return child;
+    });
+    const markerWriter = vi.fn(async () => { ioOrder.push("durable-marker"); return { markerPath: "/marker", digest: "a".repeat(64) }; });
+    const spawnAcknowledger = vi.fn(async () => { ioOrder.push("spawn-ack"); });
     const identityProbe = vi.fn(async () => validPrismaTargetState(identity, now));
     const expectedUrl = withPrismaLockTimeout("postgresql://bodycast:secret@db/bodycast", 5000);
     const authorized = authorizedBoundary(fixture);
@@ -579,11 +594,90 @@ describe("V5 closed migration manifest and full pending set", () => {
       authorized,
       spawn,
       identityProbe,
+      markerWriter,
+      spawnAcknowledger,
+      environment: { ...process.env, BODYCAST_RELEASE_MARKER_DIRECTORY: "/run/bodycast-release-marker" },
       now: () => now,
     });
     expect(identityProbe).toHaveBeenLastCalledWith(expectedUrl);
     expect(spawn).toHaveBeenCalledTimes(1);
+    expect(spawn.mock.calls[0][0]).toBe("npx");
+    expect(spawn.mock.calls[0][1]).toEqual(["prisma", "migrate", "deploy"]);
     expect(spawn.mock.calls[0][2].env.DATABASE_URL).toBe(expectedUrl);
+    expect(ioOrder).toEqual(["durable-marker", "spawn", "spawn-ack"]);
+    expect(markerWriter).toHaveBeenCalledBefore(spawn);
+    expect(ioOrder.indexOf("spawn-ack")).toBeGreaterThan(ioOrder.indexOf("spawn"));
+  });
+
+  it("leaves a blocking pre-spawn marker and never invokes Prisma if durable marker publication fails", async () => {
+    const identity = validPreflightReport().identity;
+    const fixture = await executionBoundaryFixture(identity);
+    const spawn = vi.fn();
+    await expect(startPrismaMigrationAtDdlBoundary({
+      authorized: authorizedBoundary(fixture),
+      spawn,
+      markerWriter: async () => { throw new Error("fsync failed"); },
+      environment: { ...process.env, BODYCAST_RELEASE_MARKER_DIRECTORY: "/run/bodycast-release-marker" },
+      identityProbe: async () => validPrismaTargetState(identity, now),
+      now: () => now,
+    })).rejects.toThrow("fsync failed");
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("does not mislabel a process-creation failure as executed DDL", async () => {
+    const identity = validPreflightReport().identity;
+    const fixture = await executionBoundaryFixture(identity);
+    let persistedMarker;
+    const spawn = vi.fn(() => { throw new Error("ENOENT"); });
+    await expect(startPrismaMigrationAtDdlBoundary({
+      authorized: authorizedBoundary(fixture),
+      environment: { ...process.env, BODYCAST_RELEASE_MARKER_DIRECTORY: "/run/bodycast-release-marker" },
+      spawn,
+      markerWriter: async () => {
+        persistedMarker = { state: "ddl-starting", spawnState: "not-started" };
+        return { markerPath: "/marker", digest: "a".repeat(64) };
+      },
+      identityProbe: async () => validPrismaTargetState(identity, now),
+      now: () => now,
+    })).rejects.toThrow("process creation failed before spawn");
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(persistedMarker).toEqual({ state: "ddl-starting", spawnState: "not-started" });
+  });
+
+  it("kills Prisma and retains the blocking pre-spawn state when durable spawn acknowledgement fails", async () => {
+    const identity = validPreflightReport().identity;
+    const fixture = await executionBoundaryFixture(identity);
+    const child = new EventEmitter();
+    child.kill = vi.fn();
+    const spawn = vi.fn(() => child);
+    let persistedMarker;
+    const task = startPrismaMigrationAtDdlBoundary({
+      authorized: authorizedBoundary(fixture), spawn,
+      environment: { ...process.env, BODYCAST_RELEASE_MARKER_DIRECTORY: "/run/bodycast-release-marker" },
+      markerWriter: async () => {
+        persistedMarker = { state: "ddl-starting", spawnState: "not-started" };
+        return { markerPath: "/marker", digest: "a".repeat(64) };
+      },
+      spawnAcknowledger: async () => { throw new Error("marker acknowledgement failed"); },
+      identityProbe: async () => validPrismaTargetState(identity, now),
+      now: () => now,
+    });
+    await vi.waitFor(() => expect(spawn).toHaveBeenCalledTimes(1));
+    child.emit("spawn");
+    await new Promise((resolve) => setImmediate(resolve));
+    child.emit("close", null, "SIGTERM");
+    await expect(task).rejects.toThrow("durable spawn acknowledgement failed");
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(persistedMarker).toEqual({ state: "ddl-starting", spawnState: "not-started" });
+  });
+
+  it("uses the actual Prisma process as the spawn boundary after durable marker publication", async () => {
+    const source = await readFile(new URL("../scripts/run-prisma-migrate-with-lock-timeout.mjs", import.meta.url), "utf8");
+    expect(source).toContain('child = spawn("npx", ["prisma", "migrate", "deploy"]');
+    expect(source.indexOf("await markerWriter({")).toBeLessThan(source.indexOf('child = spawn("npx"'));
+    expect(source).toContain('child.once("spawn", async () =>');
+    expect(source).toContain("spawnAcknowledger({ markerPath: marker.markerPath, expectedDigest: marker.digest })");
+    expect(source).not.toContain("prisma-migrate-ddl-gate.mjs");
   });
 
   it("rejects cancelled or non-current GitHub migration-run metadata", async () => {
@@ -718,6 +812,16 @@ describe("V5 closed migration manifest and full pending set", () => {
     } finally { await rm(context, { recursive: true, force: true }); }
   });
 
+  it("blocks DDL when any key live table changed after the encrypted backup snapshot", () => {
+    const counts = Object.fromEntries(["Workout", "Profile", "ModelEpisode", "PhysiologyV7Lifecycle", "DailyModelState", "StrengthDiarySession", "ExerciseCatalog"]
+      .map((name) => [name, { rowCount: 3 }]));
+    expect(assertLiveDataMatchesBackupReadability(counts, structuredClone(counts))).toBe(true);
+    const postSnapshotMutation = structuredClone(counts);
+    postSnapshotMutation.Workout.rowCount += 1;
+    expect(() => assertLiveDataMatchesBackupReadability(counts, postSnapshotMutation)).toThrow("snapshot-row-count:Workout");
+    expect(() => assertLiveDataMatchesBackupReadability(counts, { ...counts, DailyModelState: null })).toThrow("snapshot-row-count:DailyModelState");
+  });
+
   it("ignores unadmitted queued runs and supersedes only after trusted admission", async () => {
     const fixture = await executionBoundaryFixture(validPreflightReport().identity);
     const toApiRun = (run) => ({
@@ -784,9 +888,15 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(() => assertPrismaTargetMatchesSignedIdentity({ productionIdentityDigest: canonicalSha256(signedIdentity) }, {
       ...targetState, identity: { ...signedIdentity, clusterSystemIdentifier: "0" },
     }, now)).toThrow("differs from the verified production identity");
-    expect(() => assertPrismaTargetMatchesSignedIdentity({ productionIdentityDigest: canonicalSha256(signedIdentity) }, validPrismaTargetState(signedIdentity, now, {
-      activeClientBackends: [{ pid: 501, applicationName: "bodycast-reconnected-writer", clientAddress: null }],
-    }), now)).toThrow("final Prisma writer-drain observation");
+    try {
+      assertPrismaTargetMatchesSignedIdentity({ productionIdentityDigest: canonicalSha256(signedIdentity) }, validPrismaTargetState(signedIdentity, now, {
+        activeClientBackends: [{ pid: 501, applicationName: "bodycast-reconnected-writer", clientAddress: null }],
+      }), now);
+      throw new Error("a non-empty writer inventory unexpectedly passed the final guard");
+    } catch (error) {
+      expect(JSON.parse(error.message.split("checks=")[1])).toContainEqual({ id: "zero-other-client-backends", passed: false });
+      expect(error.message).not.toContain("bodycast-reconnected-writer");
+    }
   });
 
   it("blocks Prisma spawn for missing or unreadable cluster identity", async () => {
@@ -822,7 +932,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(lock).toContain("flock -n 9");
   });
 
-  it("uses owner-only manual workflows and writes the durable marker before the single DDL spawn", async () => {
+  it("uses owner-only manual workflows and durably marks the final-check-to-Prisma handoff", async () => {
     const preflight = await readFile(new URL("../.github/workflows/production-migration-preflight.yml", import.meta.url), "utf8");
     const migrate = await readFile(new URL("../.github/workflows/production-migrate.yml", import.meta.url), "utf8");
     const deployWorkflow = await readFile(new URL("../.github/workflows/deploy-production.yml", import.meta.url), "utf8");
@@ -855,6 +965,10 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(migrate).not.toContain("actions/cache");
     expect(migrate).not.toMatch(/path:\s*\$\{\{ runner\.temp \}\}\/signed-migration-context\/\*/);
     expect(migrate).toContain("expected-sign-bundle-files.txt");
+    expect(migrate).toContain('EXECUTION_MODE="${10}"');
+    expect(migrate).toContain('FORWARD_RESUME_FAILED_RUN_ID="${11}"');
+    expect(migrate).toContain('export BODYCAST_MIGRATION_EXECUTION_MODE="$EXECUTION_MODE"');
+    expect(migrate).toContain("'$BODYCAST_MIGRATION_EXECUTION_MODE' '$BODYCAST_FORWARD_RESUME_FAILED_RUN_ID'");
     expect(migrate).toContain("signed-migration-context/authorization-envelope.json");
     for (const forbidden of ["execution-signer", "execution-key-certificate", "executionPrivateKeyPem", "--delegate", "--attest", "migration-run.json", "current-migration-run.json"]) {
       expect(migrate).not.toContain(forbidden);
@@ -862,17 +976,21 @@ describe("V5 closed migration manifest and full pending set", () => {
     const deployScript = await readFile(new URL("../scripts/deploy-migrate.sh", import.meta.url), "utf8");
     expect(deployScript).not.toContain("bodycast-production-operation");
     expect(deployScript).not.toContain("docker compose -f docker-compose.prod.yml up -d db");
-    const markerLine = deployScript.indexOf('write_bodycast_release_marker "$RELEASE_SHA" ddl-started');
-    const migrateLine = deployScript.indexOf("run-prisma-migrate-with-lock-timeout.mjs");
-    expect(markerLine).toBeGreaterThan(-1);
-    expect(migrateLine).toBeGreaterThan(markerLine);
+    expect(deployScript).toContain('bodycast_prepare_release_marker_directory');
+    expect(deployScript).toContain('--volume "$BODYCAST_RELEASE_MARKER_DIRECTORY:/run/bodycast-release-marker:rw"');
+    expect(deployScript).toContain('"$BODYCAST_MARKER_STATE" == "ddl-started"');
     expect(deployScript).toContain("--before-ddl");
     expect(deployScript).toContain("--after-ddl");
     const guard = await readFile(new URL("../scripts/run-prisma-migrate-with-lock-timeout.mjs", import.meta.url), "utf8");
     expect(guard).toContain("verifyFinalGuardReceipt");
     expect(guard).toContain("assertPrismaTargetMatchesSignedIdentity");
     expect(guard).toContain("assertBackupFreshAtDdlStart");
+    expect(guard.indexOf("assertPrismaTargetMatchesSignedIdentity(finalGuard.receipt")).toBeLessThan(guard.indexOf("await markerWriter({"));
+    expect(guard.indexOf("await markerWriter({")).toBeLessThan(guard.indexOf('child = spawn("npx"'));
     expect(guard).not.toContain("fetch(");
+    expect(guard).toContain('child.once("spawn", async () =>');
+    expect(guard).toContain("durable spawn acknowledgement failed");
+    expect(guard).not.toContain("prisma-migrate-ddl-gate.mjs");
   });
 
   it("binds trusted current migration API metadata to the cryptographic OIDC run claims", async () => {
@@ -986,7 +1104,8 @@ describe("Ed25519 authorization envelope and provenance matrix", () => {
   it("binds the signed workflow run to the executing run and blocks replay after live migration state changes", () => {
     const liveReport = validPreflightReport();
     const preflightResult = evaluateProductionPreflight(liveReport, dirs);
-    const restoreResult = { verified: true, postflightReady: true, postSchemaDigest: "9".repeat(64) };
+    const restoreResult = { verified: true, postflightReady: true, postSchemaDigest: "9".repeat(64),
+      logicalDataFingerprint: liveReport.logicalDataFingerprint, readability: liveReport.readability };
     const evidence = {
       verified: true,
       repository: "krustallik/body-model",
@@ -999,6 +1118,8 @@ describe("Ed25519 authorization envelope and provenance matrix", () => {
       productionIdentityDigest: canonicalSha256(liveReport.identity),
       writerDrainDigest: canonicalSha256(liveReport.writerDrain),
       writerTopologyDigest: canonicalSha256(liveReport.writerDrain.topology),
+      logicalDataFingerprint: liveReport.logicalDataFingerprint,
+      backupFileDigest: "c".repeat(64),
       backupSnapshotAt: "2026-10-05T09:30:00.000Z",
     };
     const signedClaims = claims({
@@ -1249,6 +1370,8 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
     const restored = { ...source, migrations: source.migrations.map((row) => ({ ...row })), objects: source.objects.map((row) => ({ ...row })) };
     const readability = { readability: Object.fromEntries(["Workout", "Profile", "ModelEpisode", "PhysiologyV7Lifecycle", "DailyModelState", "StrengthDiarySession", "ExerciseCatalog"].map((name) => [name, { rowCount: 0 }])) };
     expect(verifyBaseRestore(source, restored, readability).verified).toBe(true);
+    expect(verifyRestoredBackup(source, { ...restored, logicalDataFingerprint: "0".repeat(64) }).blockers)
+      .toContain("Restored public-table rows or sequence state differ from the source snapshot.");
     restored.objects[0].signature = "changed";
     expect(verifyRestoredBackup(source, restored).verified).toBe(false);
 

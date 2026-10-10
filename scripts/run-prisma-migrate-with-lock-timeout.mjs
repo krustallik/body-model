@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn as nodeSpawn } from "node:child_process";
 import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -8,6 +8,7 @@ import { canonicalSha256 } from "./production-migration-authorization.mjs";
 import { normalizeWorkflowRuns } from "./production-migration-select-preflight.mjs";
 import { selectLatestApplicablePreflight } from "./production-migration-release.mjs";
 import { isCanonicalPostgresDatabaseIdentity, normalizePostgresDatabaseIdentityRow } from "./postgres-database-identity.mjs";
+import { acknowledgePrismaSpawn, readProductionReleaseMarker, writeDdlStartingMarker } from "./production-release-marker.mjs";
 
 function reject(message) {
   throw new Error("Refusing Prisma DDL: " + message);
@@ -32,12 +33,7 @@ export async function readPrismaDatabaseIdentity(databaseUrl) {
         current_setting('application_name') AS "observerApplicationName",
         clock_timestamp() AS "observedAt",
         COALESCE((
-          SELECT json_agg(json_build_object(
-            'pid', a.pid, 'user', a.usename, 'applicationName', a.application_name,
-            'clientAddress', a.client_addr::text, 'clientPort', a.client_port,
-            'backendType', a.backend_type, 'state', a.state,
-            'backendStart', a.backend_start, 'transactionStart', a.xact_start
-          ) ORDER BY a.pid)
+          SELECT json_agg(json_build_object('present', true))
           FROM pg_stat_activity a
           WHERE a.datname = current_database() AND a.backend_type = 'client backend' AND a.pid <> pg_backend_pid()
         ), '[]'::json) AS "activeClientBackends"
@@ -71,20 +67,24 @@ export async function readPrismaDatabaseIdentity(databaseUrl) {
 export function assertPrismaTargetMatchesSignedIdentity(receipt, targetState, now = Date.now()) {
   const identity = targetState?.identity;
   const writerDrain = targetState?.writerDrain;
-  if (!/^[a-f0-9]{64}$/.test(String(receipt?.productionIdentityDigest ?? ""))
-    || !isCanonicalPostgresDatabaseIdentity(identity)
-    || canonicalSha256(identity) !== receipt.productionIdentityDigest) {
-    reject("final Prisma DATABASE_URL target differs from the verified production identity.");
-  }
   const observedAt = Date.parse(writerDrain?.observedAt);
   const ageMs = now - observedAt;
-  if (writerDrain?.schemaVersion !== 1 || !Number.isSafeInteger(writerDrain.observerPid) || writerDrain.observerPid < 1
-    || writerDrain.observerApplicationName !== "bodycast-prisma-ddl-guard"
-    || writerDrain.identityPolicy !== "no-other-client-backends"
-    || !Array.isArray(writerDrain.activeClientBackends) || writerDrain.activeClientBackends.length > 0
-    || !Number.isFinite(ageMs) || ageMs < -60_000 || ageMs > 30_000) {
-    reject("final Prisma writer-drain observation is missing, stale, or has active/unknown client backends.");
-  }
+  const checks = [
+    { id: "signed-database-identity-digest", passed: /^[a-f0-9]{64}$/.test(String(receipt?.productionIdentityDigest ?? "")) },
+    { id: "canonical-postgres-identity", passed: isCanonicalPostgresDatabaseIdentity(identity) },
+    { id: "exact-database-identity-match", passed: isCanonicalPostgresDatabaseIdentity(identity)
+      && /^[a-f0-9]{64}$/.test(String(receipt?.productionIdentityDigest ?? ""))
+      && canonicalSha256(identity) === receipt.productionIdentityDigest },
+    { id: "writer-drain-schema", passed: writerDrain?.schemaVersion === 1 },
+    { id: "writer-drain-observer-pid", passed: Number.isSafeInteger(writerDrain?.observerPid) && writerDrain.observerPid > 0 },
+    { id: "fixed-observer-application", passed: writerDrain?.observerApplicationName === "bodycast-prisma-ddl-guard" },
+    { id: "zero-other-client-policy", passed: writerDrain?.identityPolicy === "no-other-client-backends" },
+    { id: "complete-backend-inventory", passed: Array.isArray(writerDrain?.activeClientBackends) },
+    { id: "zero-other-client-backends", passed: Array.isArray(writerDrain?.activeClientBackends)
+      && writerDrain.activeClientBackends.length === 0 },
+    { id: "fresh-writer-drain-observation", passed: Number.isFinite(ageMs) && ageMs >= -60_000 && ageMs <= 30_000 },
+  ];
+  if (checks.some((entry) => !entry.passed)) reject("final Prisma DATABASE_URL target differs from the verified production identity or writer-drain predicates failed; checks=" + JSON.stringify(checks));
   return true;
 }
 
@@ -184,8 +184,10 @@ export async function startPrismaMigrationAtDdlBoundary({
   authorized,
   environment = process.env,
   now = Date.now,
-  spawn = spawnSync,
+  spawn = nodeSpawn,
   identityProbe = readPrismaDatabaseIdentity,
+  markerWriter = writeDdlStartingMarker,
+  spawnAcknowledger = acknowledgePrismaSpawn,
 } = {}) {
   if (!authorized?.receipt || !authorized?.envelope || !authorized?.allowlist || !authorized?.databaseUrl) {
     reject("verified signed authorization and final live guard are required.");
@@ -207,11 +209,89 @@ export async function startPrismaMigrationAtDdlBoundary({
   const actualIdentity = await identityProbe(databaseUrl);
   assertPrismaTargetMatchesSignedIdentity(finalGuard.receipt, actualIdentity, now());
   assertBackupFreshAtDdlStart(finalGuard.receipt, now());
-  return spawn("npx", ["prisma", "migrate", "deploy"], {
-    stdio: "inherit",
-    env: { ...environment, DATABASE_URL: databaseUrl },
-    shell: false,
-    cwd: path.resolve("/app"),
+  const markerDirectory = environment.BODYCAST_RELEASE_MARKER_DIRECTORY;
+  if (typeof markerDirectory !== "string" || markerDirectory !== "/run/bodycast-release-marker") {
+    reject("fixed durable release-marker mount is unavailable.");
+  }
+  const receipt = finalGuard.receipt;
+  let expectedPriorDigest = null;
+  const lineageDigest = receipt.executionMode === "forward-resume" ? receipt.forwardResumeProofDigest : canonicalSha256({
+    authorizationId: receipt.authorizationId,
+    executionMode: receipt.executionMode ?? "standard",
+    releaseSha: receipt.releaseSha,
+    workflowRunId: String(receipt.workflowRunId),
+    workflowRunAttempt: Number(receipt.workflowRunAttempt),
+  });
+  if (receipt.executionMode === "forward-resume") {
+    if (!/^[a-f0-9]{64}$/.test(String(receipt.forwardResumeMarkerDigest ?? ""))
+      || !/^[a-f0-9]{64}$/.test(String(lineageDigest ?? ""))) {
+      reject("forward-resume authorization lacks the signed legacy marker and proof lineage.");
+    }
+    const armed = await readProductionReleaseMarker(path.join(markerDirectory, "marker"));
+    if (!armed || armed.digest === receipt.forwardResumeMarkerDigest || armed.marker.state !== "forward-resume-armed"
+      || armed.marker.schemaVersion !== 2 || armed.marker.releaseSha !== authorized.releaseSha
+      || armed.marker.workflowRunId !== String(authorized.currentWorkflowRunId)
+      || armed.marker.workflowRunAttempt !== Number(authorized.currentWorkflowRunAttempt)
+      || armed.marker.authorizationId !== receipt.authorizationId || armed.marker.lineageDigest !== lineageDigest) {
+      reject("the armed forward-resume marker is missing or does not match the signed one-time authorization.");
+    }
+    expectedPriorDigest = armed.digest;
+  }
+  const marker = await markerWriter({
+    markerDirectory,
+    releaseSha: authorized.releaseSha,
+    workflowRunId: authorized.currentWorkflowRunId,
+    workflowRunAttempt: authorized.currentWorkflowRunAttempt,
+    authorizationId: receipt.authorizationId,
+    lineageDigest,
+    expectedPriorDigest,
+  });
+  let child;
+  try {
+    child = spawn("npx", ["prisma", "migrate", "deploy"], {
+      stdio: "inherit",
+      env: { ...environment, DATABASE_URL: databaseUrl },
+      shell: false,
+      cwd: path.resolve("/app"),
+    });
+  } catch (error) {
+    reject("Prisma process creation failed before spawn; durable marker remains ddl-starting. " + (error?.message ?? ""));
+  }
+  return new Promise((resolve, rejectPromise) => {
+    let spawnAcknowledged = false;
+    let spawnFailure = null;
+    let spawnAcknowledgement = Promise.resolve();
+    child.once("spawn", async () => {
+      spawnAcknowledgement = spawnAcknowledger({ markerPath: marker.markerPath, expectedDigest: marker.digest })
+        .then(() => {
+          spawnAcknowledged = true;
+        })
+        .catch((error) => {
+        spawnFailure = error;
+        child.kill("SIGTERM");
+        });
+    });
+    child.once("error", async (error) => {
+      await spawnAcknowledgement;
+      const phase = spawnAcknowledged ? "after spawn" : "before a confirmed spawn";
+      rejectPromise(new Error(`Refusing Prisma DDL: Prisma process error ${phase}; durable marker remains blocking. ${error?.message ?? ""}`));
+    });
+    child.once("close", async (status, signal) => {
+      await spawnAcknowledgement;
+      if (spawnFailure) {
+        rejectPromise(new Error("Refusing Prisma DDL: durable spawn acknowledgement failed; durable ddl-starting marker remains blocking."));
+        return;
+      }
+      // The spawn event is delivered before exit. Wait one event-loop turn for its
+      // fsync-backed marker acknowledgement to settle before reporting completion.
+      setImmediate(() => {
+        if (!spawnAcknowledged) {
+          rejectPromise(new Error("Refusing Prisma DDL: child exited without a durable spawn acknowledgement; marker remains blocking."));
+          return;
+        }
+        resolve({ status: status ?? 1, signal: signal ?? null });
+      });
+    });
   });
 }
 

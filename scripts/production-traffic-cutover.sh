@@ -146,7 +146,7 @@ capture_pre_ddl_previous_release() {
   previous_health="$(printf '%s\n' "$capture_text" | sed -n 's/^previousHealth=//p')"
   previous_runtime_digest="$(printf '%s\n' "$capture_text" | sed -n 's/^previousRuntimeConfigDigest=//p')"
   [[ "$provenance_kind" == "release-sha-v1" && "$previous_sha" =~ ^[a-f0-9]{40}$ \
-    || "$provenance_kind" == "legacy-unlabeled-v1" && "$previous_sha" == "unavailable" ]] || {
+    || "$provenance_kind" =~ ^legacy-(unlabeled|cutback-receipt)-v1$ && "$previous_sha" == "unavailable" ]] || {
     echo "The previous app does not satisfy a supported versioned provenance contract." >&2
     return 1
   }
@@ -176,7 +176,7 @@ capture_pre_ddl_previous_release() {
 
 resume_pre_ddl_previous_release() {
   local target_sha="$1" record_path="$2" git_dir="$3"
-  local source_sha source_run_id source_attempt current_run_id current_attempt source_target previous_image_id pinned_id marker_status existing_app archive_path source_record_text resume_json rebound_record receipt_json receipt_path receipt_tmp record_tmp current_record
+  local source_sha source_run_id source_attempt current_run_id current_attempt source_target previous_image_id pinned_id marker_status existing_app archive_path source_record_text resume_json rebound_record receipt_json receipt_path receipt_tmp record_tmp current_record forward_resume=false expected_marker_digest marker_digest failed_run_id failed_sha failure_proof_digest
   source_sha="${BODYCAST_PRE_DDL_CAPTURE_SOURCE_SHA:-}"
   source_run_id="${BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ID:-}"
   source_attempt="${BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ATTEMPT:-}"
@@ -190,13 +190,31 @@ resume_pre_ddl_previous_release() {
     echo "The prior failed preflight SHA is not an ancestor of the current release SHA." >&2; return 1;
   }
   bodycast_assert_current_main_sha "$target_sha" || return 1
-  if read_bodycast_release_marker; then
-    echo "A production release marker exists; preflight capture resume is blocked." >&2
+  if [[ "${BODYCAST_FORWARD_RESUME_CAPTURE:-0}" == "1" ]]; then
+    forward_resume=true
+    failed_run_id="${BODYCAST_FORWARD_RESUME_FAILED_RUN_ID:-}"
+    failed_sha="${BODYCAST_FORWARD_RESUME_FAILED_SHA:-}"
+    failure_proof_digest="${BODYCAST_FORWARD_RESUME_FAILURE_PROOF_DIGEST:-}"
+    expected_marker_digest="${BODYCAST_FORWARD_RESUME_MARKER_DIGEST:-}"
+    if ! read_bodycast_release_marker; then
+      echo "The expected legacy DDL marker is missing or invalid; forward capture resume is blocked." >&2
+      return 1
+    fi
+    marker_digest="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
+    [[ "$failed_run_id" == "38022978032" && "$failed_sha" == "$source_sha" \
+      && "$failure_proof_digest" =~ ^[a-f0-9]{64}$ && "$expected_marker_digest" =~ ^[a-f0-9]{64}$ \
+      && "$marker_digest" == "$expected_marker_digest" && "$BODYCAST_MARKER_SCHEMA_VERSION" == 1 \
+      && "$BODYCAST_MARKER_RELEASE_SHA" == "$failed_sha" && "$BODYCAST_MARKER_STATE" == "ddl-started" ]] || {
+      echo "The legacy marker does not match the independently verified no-spawn failure and source digest." >&2
+      return 1
+    }
+  elif read_bodycast_release_marker; then
+    echo "A production release marker exists; ordinary preflight capture resume is blocked." >&2
     return 1
   else
     marker_status=$?
+    [[ "$marker_status" -eq 1 ]] || { echo "Production marker state is unknown; capture resume is blocked." >&2; return 1; }
   fi
-  [[ "$marker_status" -eq 1 ]] || { echo "Production marker state is unknown; capture resume is blocked." >&2; return 1; }
   if ! existing_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}')"; then
     echo "Docker app listing failed; previous-app state is UNKNOWN." >&2; return 1;
   fi
@@ -235,6 +253,19 @@ resume_pre_ddl_previous_release() {
   fi
   rebound_record="$(printf '%s' "$resume_json" | node --input-type=module -e 'let s=""; for await (const c of process.stdin) s+=c; const r=JSON.parse(s); process.stdout.write(r.recordText)')"
   receipt_json="$(printf '%s' "$resume_json" | node --input-type=module -e 'let s=""; for await (const c of process.stdin) s+=c; const r=JSON.parse(s); process.stdout.write(JSON.stringify(r.receipt))')"
+  if [[ "$forward_resume" == "true" ]]; then
+    receipt_json="$(node --input-type=module - "$receipt_json" "$failed_run_id" "$failed_sha" "$failure_proof_digest" "$expected_marker_digest" <<'NODE'
+const receipt = JSON.parse(process.argv[2]);
+receipt.forwardResume = {
+  sourceFailedRunId: process.argv[3],
+  sourceFailedSha: process.argv[4],
+  failureProofDigest: process.argv[5],
+  sourceMarkerDigest: process.argv[6],
+};
+process.stdout.write(JSON.stringify(receipt));
+NODE
+)"
+  fi
   node --input-type=module - "$receipt_json" "$source_run_id" "$source_attempt" "$source_sha" "$target_sha" <<'NODE'
   const receipt = JSON.parse(process.argv[2]);
   if (receipt.schemaVersion !== 1 || receipt.sourceRunId !== process.argv[3]

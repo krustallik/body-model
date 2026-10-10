@@ -86,6 +86,7 @@ describe("active production release entrypoints", () => {
     const cutback = readFileSync(resolve("scripts/production-database-cutback.sh"), "utf8");
     const workflow = readFileSync(resolve(workflowDir, "production-database-cutback.yml"), "utf8");
     const capture = readFileSync(resolve("scripts/production-traffic-cutover.sh"), "utf8");
+    const provenance = readFileSync(resolve("scripts/production-previous-app-provenance.mjs"), "utf8");
     expect(cutback).toContain("RESTORE_PRE_DDL_DATABASE");
     expect(cutback).toContain("production-writer-drain.sh\" --assert");
     expect(cutback).toContain("--verify-previous-app-runtime");
@@ -101,7 +102,9 @@ describe("active production release entrypoints", () => {
     expect(workflow).toContain('/tmp/bodycast-cutback-context-$CUTBACK_RUN_ID-$CUTBACK_RUN_ATTEMPT');
     expect(capture).toContain("previousRuntimeConfigDigest");
     expect(capture).toContain("production-previous-app-provenance.mjs");
-    expect(capture).toContain("legacy-unlabeled-v1");
+    expect(provenance).toContain('LEGACY_PREVIOUS_APP_PROVENANCE = "legacy-unlabeled-v1"');
+    expect(provenance).toContain('CUTBACK_LEGACY_PREVIOUS_APP_PROVENANCE = "legacy-cutback-receipt-v1"');
+    expect(provenance).toContain("readVerifiedCutbackReceiptFromGitDir");
     expect(cutback).toContain("PREVIOUS_PROVENANCE_KIND");
     expect(cutback).toContain('BODYCAST_DEPLOY_SHA="unknown"');
     expect(cutback).toContain("PREVIOUS_RUNTIME_CONFIG_DIGEST");
@@ -165,6 +168,7 @@ describe("active production release entrypoints", () => {
     const migrationWorkflow = readFileSync(resolve(workflowDir, "production-migrate.yml"), "utf8");
     const resumeVerifier = readFileSync(resolve("scripts/production-preflight-resume.mjs"), "utf8");
     const migrationScript = readFileSync(resolve("scripts/deploy-migrate.sh"), "utf8");
+    const prismaWrapper = readFileSync(resolve("scripts/run-prisma-migrate-with-lock-timeout.mjs"), "utf8");
     expect(workflow).toContain("resume_pre_ddl_migration_failure_run_id:");
     expect(workflow).toContain("resume_blocked_capture_preflight_run_id:");
     expect(workflow).toContain("Pre-DDL migration resume requires the exact source, failed migration, and blocked capture run IDs.");
@@ -176,11 +180,15 @@ describe("active production release entrypoints", () => {
     expect(resumeVerifier).toContain("verified-pre-ddl-migration-failure");
     expect(resumeVerifier).toContain("must create a new backup");
     const finalGuard = migrationScript.indexOf("production-migration-final-guard.mjs");
-    const marker = migrationScript.indexOf('write_bodycast_release_marker "$RELEASE_SHA" ddl-started');
-    const prisma = migrationScript.indexOf("run-prisma-migrate-with-lock-timeout.mjs");
+    const markerMount = migrationScript.indexOf('BODYCAST_RELEASE_MARKER_DIRECTORY:/run/bodycast-release-marker:rw');
+    const prismaInvocation = migrationScript.indexOf("run-prisma-migrate-with-lock-timeout.mjs");
+    const durableMarker = prismaWrapper.indexOf("markerWriter({");
+    const prismaSpawn = prismaWrapper.indexOf('spawn("npx", ["prisma", "migrate", "deploy"]');
     expect(finalGuard).toBeGreaterThanOrEqual(0);
-    expect(finalGuard).toBeLessThan(marker);
-    expect(marker).toBeLessThan(prisma);
+    expect(markerMount).toBeGreaterThan(finalGuard);
+    expect(prismaInvocation).toBeGreaterThan(markerMount);
+    expect(durableMarker).toBeGreaterThanOrEqual(0);
+    expect(durableMarker).toBeLessThan(prismaSpawn);
   });
 
   it("keeps Prisma-only lock-timeout URL options out of libpq postflight probes", () => {
@@ -201,6 +209,9 @@ describe("active production release entrypoints", () => {
 
   it("keeps the destructive DB swap behind owner context, maintenance, restore, history, and compatibility gates", () => {
     const cutback = readFileSync(resolve("scripts/production-database-cutback.sh"), "utf8");
+    const promotion = readFileSync(resolve("scripts/production-database-cutback-promotion.sh"), "utf8");
+    const promotionInvocation = 'if bodycast_cutback_promote_databases "$stage_db" "$failed_db"; then';
+    const promotionIndex = cutback.indexOf(promotionInvocation);
     const ordered = [
       "--verify-context",
       "bodycast_verify_exact_maintenance_route",
@@ -210,18 +221,25 @@ describe("active production release entrypoints", () => {
       "CREATE DATABASE ${stage_db}",
       "--verify-restored",
       "--verify-previous-app",
-      "ALTER DATABASE bodycast RENAME TO ${failed_db}",
+      promotionIndex,
+      cutback.indexOf("--verify-restored-identity", promotionIndex),
       "promoted-previous-app-compatibility",
       'write_bodycast_release_marker "$FAILED_RELEASE_SHA" database-restored',
       "compose up -d --no-deps --no-build app",
       "bodycast_publish_staged_route",
       "clear_bodycast_release_marker",
-    ].map((fragment) => cutback.indexOf(fragment));
+    ].map((fragment) => typeof fragment === "number" ? fragment : cutback.indexOf(fragment));
     expect(ordered.every((index) => index >= 0)).toBe(true);
     expect(ordered).toEqual([...ordered].sort((left, right) => left - right));
     expect(cutback).toContain("RESTORE_PRE_DDL_DATABASE");
     expect(cutback).toContain("bodycast_failed_${FAILED_MIGRATION_RUN_ID}");
     expect(cutback).not.toContain("prisma migrate deploy");
+    const retainLive = promotion.indexOf('admin_sql "ALTER DATABASE ${source_db} RENAME TO ${failed_db};"');
+    const promoteRestore = promotion.indexOf('admin_sql "ALTER DATABASE ${stage_db} RENAME TO ${source_db};"');
+    const restoreOriginal = promotion.indexOf('admin_sql "ALTER DATABASE ${failed_db} RENAME TO ${source_db};"');
+    expect(retainLive).toBeGreaterThanOrEqual(0);
+    expect(promoteRestore).toBeGreaterThan(retainLive);
+    expect(restoreOriginal).toBeGreaterThan(promoteRestore);
     const preflight = readFileSync(resolve(workflowDir, "production-migration-preflight.yml"), "utf8");
     expect(preflight).toContain("--verify-preflight");
     expect(preflight).toContain("previous-app-provenance-verification.json");

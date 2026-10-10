@@ -44,7 +44,8 @@ describe("production writer drain and topology gate", () => {
   it("allows only the explicitly identified preflight connection after the old app container is removed", () => {
     const evaluated = evaluateProductionWriterDrain(report());
     expect(evaluated.ready).toBe(true);
-    expect(evaluated.activeClientBackends).toEqual([]);
+    expect(evaluated.activeClientBackendCount).toBe(0);
+    expect(evaluated.checks.every((entry) => entry.passed)).toBe(true);
     expect(assertFreshWriterDrain(report(), { now })).toMatchObject({ ready: true, ageMs: 0, topologyAgeMs: 0 });
     expect(evaluateProductionWriterTopology({
       ...topology(),
@@ -54,15 +55,22 @@ describe("production writer drain and topology gate", () => {
 
   it("blocks an active old writer and unknown or proxied client identity", () => {
     const activeWriter = report({ activeClientBackends: [
-      { pid: 700, applicationName: "bodycast-old-app", clientAddress: "172.20.0.5", backendType: "client backend", state: "active" },
+      { present: true, pid: 700, applicationName: "PII_CANARY_USER_APP", clientAddress: "PII_CANARY_ADDRESS", backendType: "client backend", state: "active" },
     ] });
-    expect(evaluateProductionWriterDrain(activeWriter).blockers.join(" ")).toContain("1 client backend(s)");
+    expect(evaluateProductionWriterDrain(activeWriter).blockers.join(" ")).toContain("found 1 other client backend(s)");
+    const activeEvaluation = evaluateProductionWriterDrain(activeWriter);
+    expect(activeEvaluation.checks.find((entry) => entry.id === "zero-other-client-backends").passed).toBe(false);
+    expect(JSON.stringify(activeEvaluation)).not.toContain("PII_CANARY_USER_APP");
+    expect(JSON.stringify(activeEvaluation)).not.toContain("PII_CANARY_ADDRESS");
 
     const unknownClient = report({ activeClientBackends: [
-      { pid: 701, applicationName: null, clientAddress: null, backendType: "client backend", state: "idle" },
+      { present: true, pid: 701, applicationName: null, clientAddress: null, backendType: "client backend", state: "idle" },
     ] });
     expect(evaluateProductionWriterDrain(unknownClient).ready).toBe(false);
-    expect(evaluateProductionWriterDrain(unknownClient).blockers.join(" ")).toContain("<unknown application>@<local-or-proxied identity>");
+    const unknownEvaluation = evaluateProductionWriterDrain(unknownClient);
+    expect(unknownEvaluation.ready).toBe(false);
+    expect(JSON.stringify(unknownEvaluation)).not.toContain("unknown application");
+    expect(JSON.stringify(unknownEvaluation)).not.toContain("<local-or-proxied identity>");
   });
 
   it("fails closed when Docker publication or network membership makes client identity ambiguous", () => {
@@ -93,13 +101,21 @@ describe("production writer drain and topology gate", () => {
     const signedPreflight = report();
     const finalGuard = report({
       observedAt: new Date(now + 1_000).toISOString(),
-      activeClientBackends: [{ pid: 702, applicationName: "bodycast-reconnected-writer", clientAddress: null, backendType: "client backend" }],
+      activeClientBackends: [{ present: true, pid: 702, applicationName: "PII_CANARY_RECONNECTED", clientAddress: null, backendType: "client backend" }],
       topology: topology({ observedAt: new Date(now + 1_000).toISOString() }),
     });
     expect(evaluateProductionWriterDrain(signedPreflight).ready).toBe(true);
     expect(canonicalSha256(signedPreflight.writerDrain)).not.toBe(canonicalSha256(finalGuard.writerDrain));
     expect(evaluateProductionWriterDrain(finalGuard).ready).toBe(false);
-    expect(() => assertFreshWriterDrain(finalGuard, { now: now + 1_000 })).toThrow("client backend(s)");
+    expect(() => assertFreshWriterDrain(finalGuard, { now: now + 1_000 })).toThrow('"id":"zero-other-client-backends","passed":false');
+    expect(() => assertFreshWriterDrain(finalGuard, { now: now + 1_000 })).toThrow(/checks=/);
+    try {
+      assertFreshWriterDrain(finalGuard, { now: now + 1_000 });
+    } catch (error) {
+      expect(error.message).not.toContain("PII_CANARY_RECONNECTED");
+      expect(error.message).not.toContain("applicationName");
+      expect(error.message).not.toContain("clientAddress");
+    }
   });
 
   it("rejects stale, future, and unapproved observer evidence", () => {

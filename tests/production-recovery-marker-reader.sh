@@ -13,6 +13,7 @@ sed "s|/var/lib/bodycast/recovery/marker-v2.json|$V2_PATH|g" \
 
 export GIT_DIR="$GIT_DIR_PATH"
 source "$TMP/production-release-marker.sh"
+bodycast_prepare_release_marker_directory
 
 status=0
 read_bodycast_release_marker || status=$?

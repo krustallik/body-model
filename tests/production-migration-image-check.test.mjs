@@ -33,7 +33,9 @@ describe("production migrator image runtime closure", () => {
       const result = await verifyMigrationImageFiles(fixturePath);
       expect(result.authorizationRuntime.map(({ name }) => name)).toEqual([
         "production-db-preflight.mjs",
+        "production-forward-resume.mjs",
         "production-migration-final-guard.mjs",
+        "production-release-marker.mjs",
         "run-prisma-migrate-with-lock-timeout.mjs",
       ]);
     } finally {
@@ -52,9 +54,10 @@ describe("production migrator image runtime closure", () => {
     }
   });
 
-  it("copies the identity modules into the migrator image", async () => {
+  it("copies identity and marker dependencies into the migrator image", async () => {
     const dockerfile = await readFile(path.join(repositoryPath, "Dockerfile"), "utf8");
 
     expect(dockerfile).toContain("COPY scripts/github-owner-identity.mjs scripts/postgres-database-identity.mjs ./scripts/");
+    expect(dockerfile).toContain("COPY scripts/production-forward-resume.mjs scripts/production-release-marker.mjs ./scripts/");
   });
 });

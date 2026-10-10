@@ -46,6 +46,7 @@ COPY scripts/production-migration-authorization.mjs ./scripts/
 COPY scripts/github-owner-identity.mjs scripts/postgres-database-identity.mjs ./scripts/
 COPY scripts/production-migration-release.mjs ./scripts/
 COPY scripts/production-writer-drain.mjs ./scripts/
+COPY scripts/production-forward-resume.mjs scripts/production-release-marker.mjs ./scripts/
 COPY scripts/production-db-preflight.mjs ./scripts/
 COPY scripts/production-db-preflight.sql ./scripts/
 COPY scripts/run-prisma-migrate-with-lock-timeout.mjs ./scripts/

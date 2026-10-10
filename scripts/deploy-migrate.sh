@@ -40,7 +40,32 @@ if read_bodycast_release_marker; then
 else
   marker_status=$?
 fi
-[[ "$marker_status" -eq 1 ]] || fail "an existing schema-cutover marker requires explicit recovery; this migration run cannot reuse it."
+FORWARD_RESUME_MODE=false
+SOURCE_MARKER_DIGEST=""
+if [[ "$marker_status" -eq 0 ]]; then
+  [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == 1 && "$BODYCAST_MARKER_STATE" == "ddl-started" \
+    && "$BODYCAST_MARKER_RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]] \
+    || fail "only the exact legacy V1 ddl-started marker has a supported owner-authorized forward-resume path."
+  SOURCE_MARKER_DIGEST="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
+  node --input-type=module - "$CONTEXT_DIR/preflight-result.json" "$RELEASE_SHA" "$SOURCE_MARKER_DIGEST" <<'NODE' \
+    || fail "the existing marker is not bound to a verified forward-resume preflight context."
+import { readFileSync } from "node:fs";
+import { verifyForwardResumeContext } from "./scripts/production-forward-resume.mjs";
+const [file, targetSha, markerDigest] = process.argv.slice(2);
+const result = JSON.parse(readFileSync(file, "utf8"));
+const context = result.forwardResume;
+verifyForwardResumeContext(context, { targetSha,
+  preflightRunId: context?.currentPreflightRunId, preflightRunAttempt: context?.currentPreflightRunAttempt });
+if (context.markerDigest !== markerDigest || context.markerReleaseSha !== result.forwardResume.sourceSha) {
+  throw new Error("Forward-resume context does not match the current durable marker digest.");
+}
+NODE
+  [[ "$BODYCAST_MARKER_RELEASE_SHA" == "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).forwardResume.sourceSha' "$CONTEXT_DIR/preflight-result.json")" ]] \
+    || fail "legacy marker SHA differs from the verified forward-resume source SHA."
+  FORWARD_RESUME_MODE=true
+elif [[ "$marker_status" -ne 1 ]]; then
+  fail "production release marker state is unknown; migration is blocked."
+fi
 
 # Fetch canonical main into a dedicated ref without changing the mutable origin remote.
 GIT_TERMINAL_PROMPT=0 git -c "remote.bodycast-canonical.url=$CANONICAL_URL" \
@@ -112,21 +137,52 @@ compose --profile tools run --rm --no-deps \
   > "$GUARD_RECEIPT"
 chmod 600 "$GUARD_RECEIPT"
 
-# This durable marker is the irreversible boundary. From this point onward any
-# error leaves traffic in maintenance and blocks both app deploy and rerunning DDL.
-write_bodycast_release_marker "$RELEASE_SHA" ddl-started
+# Reconfirm the exact canonical main tip after all read-only DB, drain, restore,
+# and authorization gates, immediately before any durable DDL-marker transition.
+GIT_TERMINAL_PROMPT=0 git -c "remote.bodycast-canonical.url=$CANONICAL_URL" \
+  fetch --no-tags bodycast-canonical +refs/heads/main:refs/remotes/bodycast-canonical/main
+CANONICAL_MAIN_SHA="$(git rev-parse --verify 'refs/remotes/bodycast-canonical/main^{commit}')"
+[[ "$CANONICAL_MAIN_SHA" == "$RELEASE_SHA" ]] || fail "canonical main moved after the final DB identity/writer-drain guard."
+
+# The wrapper makes the last PostgreSQL identity/writer-drain observation, then
+# durably publishes ddl-starting before it attempts to create Prisma. The
+# mounted directory is limited to the marker; Git metadata is not mounted.
+bodycast_prepare_release_marker_directory
+if [[ "$FORWARD_RESUME_MODE" == true ]]; then
+  [[ -z "$(find "$BODYCAST_RELEASE_MARKER_DIRECTORY" -mindepth 1 -maxdepth 1 -print -quit)" ]] \
+    || fail "the current marker directory contains unexpected or interrupted state."
+  FORWARD_LINEAGE_DIGEST="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).forwardResume.proofDigest' "$CONTEXT_DIR/preflight-result.json")"
+  write_bodycast_forward_resume_marker "$BODYCAST_MARKER_RELEASE_SHA" "$RELEASE_SHA" \
+    "$BODYCAST_AUTHORIZATION_RUN_ID" "$BODYCAST_AUTHORIZATION_RUN_ATTEMPT" \
+    "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).authorizationId' "$GUARD_RECEIPT")" \
+    "$FORWARD_LINEAGE_DIGEST" "$SOURCE_MARKER_DIGEST"
+  read_bodycast_release_marker || fail "the forward-resume marker could not be durably armed."
+  [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 && "$BODYCAST_MARKER_STATE" == "forward-resume-armed" \
+    && "$BODYCAST_MARKER_RELEASE_SHA" == "$RELEASE_SHA" \
+    && "$BODYCAST_MARKER_LINEAGE_DIGEST" == "$FORWARD_LINEAGE_DIGEST" ]] \
+    || fail "the armed marker does not match the signed forward-resume authorization."
+else
+  [[ -z "$(find "$BODYCAST_RELEASE_MARKER_DIRECTORY" -mindepth 1 -maxdepth 1 -print -quit)" ]] \
+    || fail "the dedicated release-marker directory contains unexpected or interrupted state."
+fi
 compose --profile tools run --rm --no-deps \
   --user "$(id -u):$(id -g)" \
   --volume "$CONTEXT_DIR:/run/bodycast:ro" \
+  --volume "$BODYCAST_RELEASE_MARKER_DIRECTORY:/run/bodycast-release-marker:rw" \
   --env "BODYCAST_RELEASE_SHA=$RELEASE_SHA" \
   --env "BODYCAST_CANONICAL_MAIN_SHA=$CANONICAL_MAIN_SHA" \
   --env "BODYCAST_AUTHORIZATION_WORKFLOW_ID=$BODYCAST_AUTHORIZATION_WORKFLOW_ID" \
   --env "BODYCAST_AUTHORIZATION_RUN_ID=$BODYCAST_AUTHORIZATION_RUN_ID" \
   --env "BODYCAST_AUTHORIZATION_RUN_ATTEMPT=$BODYCAST_AUTHORIZATION_RUN_ATTEMPT" \
+  --env BODYCAST_RELEASE_MARKER_DIRECTORY=/run/bodycast-release-marker \
   --env BODYCAST_FINAL_GUARD_RECEIPT=/run/bodycast/final-guard-receipt.json \
   --env BODYCAST_AUTHORIZATION_ENVELOPE=/run/bodycast/authorization-envelope.json \
   --env BODYCAST_VERIFICATION_KEYS=/app/scripts/production-migration-verification-keys.json \
   --entrypoint node migrate /app/scripts/run-prisma-migrate-with-lock-timeout.mjs
+
+read_bodycast_release_marker || fail "the guarded Prisma handoff did not leave a valid durable marker."
+[[ "$BODYCAST_MARKER_RELEASE_SHA" == "$RELEASE_SHA" && "$BODYCAST_MARKER_STATE" == "ddl-started" \
+  && "$BODYCAST_MARKER_SPAWN_STATE" == "started" ]] || fail "Prisma returned without an acknowledged durable spawn marker; maintenance remains active."
 
 # The postflight is read-only and must match the rehearsed encrypted-backup restore.
 bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" \

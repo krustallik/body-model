@@ -184,6 +184,8 @@ describe("Unified V4 rollout on isolated PostgreSQL", () => {
       "postgres-database-identity.mjs",
       "production-db-preflight.mjs",
       "production-db-preflight.sql",
+      "production-forward-resume.mjs",
+      "production-release-marker.mjs",
       "production-writer-drain.mjs",
       "run-prisma-migrate-with-lock-timeout.mjs",
     ];

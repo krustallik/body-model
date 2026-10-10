@@ -1,21 +1,29 @@
 import { describe, expect, it } from "vitest";
+import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { canonicalSha256 } from "../scripts/production-migration-authorization.mjs";
 import { createPreflightEvidence } from "../scripts/production-migration-evidence.mjs";
 import { evaluateProductionWriterDrain, PRODUCTION_WRITER_TOPOLOGY_CONTRACT } from "../scripts/production-writer-drain.mjs";
 import { verifyPreviousAppMigrationCompatibility, verifyRecreatedPreviousAppRuntime } from "../scripts/production-database-cutback.mjs";
 import {
   LEGACY_PREVIOUS_APP_PROVENANCE,
+  CUTBACK_LEGACY_PREVIOUS_APP_PROVENANCE,
   PREVIOUS_APP_COMPATIBILITY_SNAPSHOT_CONTRACT,
   SHA_PREVIOUS_APP_PROVENANCE,
   assertPreviousAppCompatibilitySnapshot,
   assertPreviousAppProvenanceBoundToPreflight,
   capturePreviousAppProvenance,
+  createVerifiedCutbackReceipt,
+  persistVerifiedCutbackReceipt,
+  readVerifiedCutbackReceiptFromGitDir,
   parsePreviousAppProvenance,
   previousAppDatabaseCompatibilityDigests,
   previousAppProvenanceBinding,
   serializePreviousAppProvenance,
   verifyLegacyPreviousAppRestoredCompatibility,
   verifyPreviousAppCaptureMatchesPreflight,
+  validateVerifiedCutbackReceipt,
 } from "../scripts/production-previous-app-provenance.mjs";
 
 const targetSha = "a".repeat(40);
@@ -28,10 +36,10 @@ const migrations = Object.freeze([{
   finishedAt: "2026-10-01T00:01:00.000Z", rolledBackAt: null, logsFingerprint: "c".repeat(32),
 }]);
 const objects = Object.freeze([{ name: "DailyModelState", present: true, kind: "table", signature: "typed baseline schema" }]);
-const databaseReport = Object.freeze({ identity, migrations, objects });
+const databaseReport = Object.freeze({ identity, migrations, objects, logicalDataFingerprint: "9".repeat(64) });
 const preflightResult = Object.freeze({
   readyForOwnerAuthorization: true, blockers: [], pendingExactlyExpected: true,
-  identity, migrations, objects,
+  identity, migrations, objects, logicalDataFingerprint: databaseReport.logicalDataFingerprint,
 });
 const rowCounts = Object.freeze(Object.fromEntries([
   "Workout", "Profile", "ModelEpisode", "PhysiologyV7Lifecycle", "DailyModelState", "StrengthDiarySession", "ExerciseCatalog",
@@ -93,7 +101,56 @@ describe("versioned previous-app provenance", () => {
     expect(record.previousRuntimeConfigDigest).toMatch(/^[a-f0-9]{64}$/);
     expect(() => capturePreviousAppProvenance({
       container: container({ "org.bodycast.release-sha": "unknown" }), databaseReport, targetSha,
-    })).toThrow(/present previous-app release SHA label is invalid/);
+    })).toThrow(/unknown previous-app release label requires a verified durable cutback receipt/);
+  });
+
+  it("admits an explicit unknown release label only from a versioned receipt matching the exact live app and DB", () => {
+    const legacyContainer = container({ "org.bodycast.release-sha": "unknown" });
+    expect(() => capturePreviousAppProvenance({ container: legacyContainer, databaseReport, targetSha }))
+      .toThrow(/verified durable cutback receipt/);
+    const receipt = createVerifiedCutbackReceipt({
+      container: legacyContainer, databaseReport, cutbackRunId: "38023000000", cutbackRunAttempt: 1,
+      releaseSha: targetSha, sourceMarkerDigest: "f".repeat(64), completedAt: "2026-10-09T20:00:00.000Z",
+    });
+    expect(receipt.schemaVersion).toBe(1);
+    expect(validateVerifiedCutbackReceipt(receipt, { container: legacyContainer, databaseReport })).toBe(true);
+    const record = capturePreviousAppProvenance({ container: legacyContainer, databaseReport, targetSha, cutbackReceipt: receipt });
+    expect(record).toMatchObject({ provenanceKind: CUTBACK_LEGACY_PREVIOUS_APP_PROVENANCE, previousSha: "unavailable",
+      previousImageId: legacyContainer.Image, previousContainerId: legacyContainer.Id });
+    expect(() => validateVerifiedCutbackReceipt({ ...receipt, previousImageId: `sha256:${"1".repeat(64)}` },
+      { container: legacyContainer, databaseReport })).toThrow(/receipt digest is invalid/);
+    expect(() => capturePreviousAppProvenance({ container: { ...legacyContainer, Image: `sha256:${"1".repeat(64)}` },
+      databaseReport, targetSha, cutbackReceipt: receipt })).toThrow(/image, container, runtime configuration, or health differs/);
+    expect(() => capturePreviousAppProvenance({ container: legacyContainer, databaseReport: { ...databaseReport,
+      migrations: [{ ...migrations[0], checksum: "9".repeat(64) }] }, targetSha, cutbackReceipt: receipt }))
+      .toThrow(/identity, schema, or migration history differs/);
+  });
+
+  it.skipIf(process.platform === "win32")("durably stores versioned no-overwrite cutback receipts and selects only the exact live app/database binding", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "bodycast-cutback-receipt-"));
+    const gitDir = path.join(tempRoot, ".git");
+    await mkdir(gitDir);
+    try {
+      const legacyContainer = container({ "org.bodycast.release-sha": "unknown" });
+      const first = createVerifiedCutbackReceipt({ container: legacyContainer, databaseReport, cutbackRunId: "38023000000",
+        cutbackRunAttempt: 1, releaseSha: targetSha, sourceMarkerDigest: "f".repeat(64), completedAt: "2026-10-09T20:00:00.000Z" });
+      const firstPath = await persistVerifiedCutbackReceipt(gitDir, first);
+      expect(firstPath).toContain("bodycast-production-cutback-receipts");
+      expect(await readVerifiedCutbackReceiptFromGitDir(gitDir, { container: legacyContainer, databaseReport })).toEqual(first);
+      await expect(persistVerifiedCutbackReceipt(gitDir, first)).rejects.toMatchObject({ code: "EEXIST" });
+      expect(await readVerifiedCutbackReceiptFromGitDir(gitDir, {
+        container: legacyContainer,
+        databaseReport: { ...databaseReport, migrations: [{ ...migrations[0], checksum: "8".repeat(64) }] },
+      })).toBeNull();
+
+      const second = createVerifiedCutbackReceipt({ container: legacyContainer, databaseReport, cutbackRunId: "38023000001",
+        cutbackRunAttempt: 1, releaseSha: targetSha, sourceMarkerDigest: "e".repeat(64), completedAt: "2026-10-09T20:01:00.000Z" });
+      await persistVerifiedCutbackReceipt(gitDir, second);
+      await expect(readVerifiedCutbackReceiptFromGitDir(gitDir, { container: legacyContainer, databaseReport }))
+        .rejects.toThrow(/Multiple durable cutback receipts match/);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it("captures a genuinely unlabeled legacy image without inventing a source SHA", () => {
@@ -119,9 +176,12 @@ describe("versioned previous-app provenance", () => {
 
   it("requires exact restored schema, Prisma history, data readability, and signed preflight binding for legacy compatibility", () => {
     const record = capturePreviousAppProvenance({ container: container(), databaseReport, targetSha });
-    const restoredReport = { identity: { ...identity, database: "bodycast_cutback_stage", databaseOid: 20480 }, migrations, objects };
-    const restoreResult = { readability: rowCounts };
-    const readabilityReport = { migrationHistory: migrations, readability: rowCounts };
+    const restoredReport = { identity: { ...identity, database: "bodycast_cutback_stage", databaseOid: 20480 }, migrations, objects,
+      logicalDataFingerprint: databaseReport.logicalDataFingerprint };
+    const restoreResult = { verified: true, postflightReady: true, readability: rowCounts,
+      logicalDataFingerprint: databaseReport.logicalDataFingerprint, postSchemaDigest: "8".repeat(64) };
+    const readabilityReport = { migrationHistory: migrations, readability: rowCounts,
+      logicalDataFingerprint: databaseReport.logicalDataFingerprint };
     const result = verifyLegacyPreviousAppRestoredCompatibility({
       record, targetSha, preflightResult, preflightResultDigest: canonicalSha256(preflightResult), contextVerified: true,
       restoredReport, restoreResult, readabilityReport,
@@ -165,7 +225,7 @@ describe("versioned previous-app provenance", () => {
       caddy: { name: "gymbeam-caddy", state: "running", configValidated: true },
       routeFile: { verified: true, maintenanceResponse: true, containsReverseProxy: false, sha256: "d".repeat(64) },
     };
-    const rawReport = { identity, writerDrain: {
+    const rawReport = { identity, logicalDataFingerprint: databaseReport.logicalDataFingerprint, writerDrain: {
       schemaVersion: 1, observerPid: 1, observerApplicationName: "bodycast-production-preflight",
       identityPolicy: "no-other-client-backends", activeClientBackends: [], observedAt: "2026-10-09T20:00:00.000Z", topology,
     } };
@@ -174,14 +234,16 @@ describe("versioned previous-app provenance", () => {
       writerDrainDigest: canonicalSha256(rawReport.writerDrain), previousAppProvenance: binding,
     };
     const evidence = createPreflightEvidence({ rawReport, preflightResult: result,
-      restoreResult: { verified: true, postflightReady: true, postSchemaDigest: "e".repeat(64) },
+      restoreResult: { verified: true, postflightReady: true, postSchemaDigest: "e".repeat(64),
+        logicalDataFingerprint: databaseReport.logicalDataFingerprint },
       snapshotStartedAt: "2026-10-09T20:00:00.000Z", backupBytes: Buffer.from("encrypted backup"),
       context: { workflowRunId: "1001", workflowRunAttempt: 1, releaseSha: targetSha, manifestId: "active-energy-unified-v2" },
     });
     expect(evidence.previousAppProvenance).toEqual(binding);
     expect(evidence.preflightResultDigest).toBe(canonicalSha256(result));
     expect(() => createPreflightEvidence({ rawReport, preflightResult: { ...result, previousAppProvenance: undefined },
-      restoreResult: { verified: true, postflightReady: true, postSchemaDigest: "e".repeat(64) },
+      restoreResult: { verified: true, postflightReady: true, postSchemaDigest: "e".repeat(64),
+        logicalDataFingerprint: databaseReport.logicalDataFingerprint },
       snapshotStartedAt: "2026-10-09T20:00:00.000Z", backupBytes: Buffer.from("encrypted backup"),
       context: { workflowRunId: "1001", workflowRunAttempt: 1, releaseSha: targetSha, manifestId: "active-energy-unified-v2" },
     })).toThrow(/Versioned previous-app identity/);

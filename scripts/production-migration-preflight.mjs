@@ -155,6 +155,9 @@ export function evaluateProductionPreflight(report, migrationDirectories, manife
   }
   const writerDrain = evaluateProductionWriterDrain(report);
   blockers.push(...writerDrain.blockers);
+  if (!/^[a-f0-9]{64}$/.test(String(report?.logicalDataFingerprint ?? ""))) {
+    blockers.push("The production logical data fingerprint is missing or malformed.");
+  }
 
   return {
     readyForOwnerAuthorization: blockers.length === 0,
@@ -173,6 +176,8 @@ export function evaluateProductionPreflight(report, migrationDirectories, manife
     objects: objectRows,
     identity: report?.identity ?? null,
     tables: report?.tables ?? {},
+    readability: report?.readability ?? null,
+    logicalDataFingerprint: report?.logicalDataFingerprint ?? null,
     conflictingLocks,
     preparedTransactions: Array.isArray(report?.preparedTransactions) ? report.preparedTransactions : [],
     writerDrain: report?.writerDrain ?? null,
@@ -223,6 +228,14 @@ export function evaluateProductionPostflight(report, migrationDirectories, manif
 
 export function verifyRestoredBackup(sourceReport, restoredReport) {
   const blockers = [];
+  const sourceFingerprint = sourceReport?.logicalDataFingerprint;
+  const restoredFingerprint = restoredReport?.logicalDataFingerprint;
+  if (!/^[a-f0-9]{64}$/.test(String(sourceFingerprint ?? ""))
+    || !/^[a-f0-9]{64}$/.test(String(restoredFingerprint ?? ""))) {
+    blockers.push("Source or restored full logical data fingerprint is missing or invalid.");
+  } else if (sourceFingerprint !== restoredFingerprint) {
+    blockers.push("Restored public-table rows or sequence state differ from the source snapshot.");
+  }
   const sourceHistory = canonicalHistory(sourceReport?.migrations);
   const restoredHistory = canonicalHistory(restoredReport?.migrationHistory ?? restoredReport?.migrations);
   if (!sourceHistory || !restoredHistory) blockers.push("Source or restored migration history is missing.");

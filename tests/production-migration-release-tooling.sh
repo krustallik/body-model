@@ -23,11 +23,12 @@ grep -Fq -- '--after-ddl' "$DEPLOY"
 ! grep -Fq 'prisma migrate deploy' "$DEPLOY"
 ! grep -Fq 'bodycast-production-operation' "$DEPLOY" "$CUTOVER"
 ! grep -Fq 'docker compose -f docker-compose.prod.yml up -d db' "$DEPLOY" "$SCHEMA_PREFLIGHT" "$CUTOVER"
-grep -Fq 'write_bodycast_release_marker "$RELEASE_SHA" ddl-started' "$DEPLOY"
 grep -Fq 'write_bodycast_release_marker "$RELEASE_SHA" schema-applied' "$DEPLOY"
 grep -Fq 'verifyFinalGuardReceipt' "$WRAPPER"
 grep -Fq 'assertPrismaTargetMatchesSignedIdentity' "$WRAPPER"
 grep -Fq 'assertBackupFreshAtDdlStart' "$WRAPPER"
+grep -Fq 'writeDdlStartingMarker' "$WRAPPER"
+grep -Fq 'spawnAcknowledger({' "$WRAPPER"
 grep -Fq 'withPrismaLockTimeout(authorized.databaseUrl, 5000)' "$WRAPPER"
 ! grep -Fq 'fetch(' "$WRAPPER"
 ! grep -Fq 'CONFIRM_PRODUCTION_MIGRATE' "$DEPLOY" "$WRAPPER"
@@ -48,7 +49,7 @@ grep -Fq 'npx prisma migrate deploy --schema prisma/schema.prisma' "$PREFLIGHT"
 grep -Fq 'DATABASE_URL: postgresql://bodycast_restore:' "$PREFLIGHT"
 grep -Fq 'production migration: NOT EXECUTED' "$PREFLIGHT"
 grep -Fq 'compose rm --force app' "$CUTOVER"
-grep -Fq 'state !== "absent"' "$WRITER_DRAIN"
+grep -Fq 'app?.state === "absent"' "$WRITER_DRAIN"
 grep -Fq 'schema-cutover marker' "$DEPLOY_SCRIPT"
 grep -Fq 'production-release-lock.sh' "$DEPLOY" "$DEPLOY_SCRIPT" "$CUTOVER"
 grep -Fq 'flock -n 9' "$LOCK"
@@ -63,14 +64,19 @@ PREFLIGHT_RESTORE_LINE="$(grep -nF 'Restore snapshot, compare source state, and 
 [[ -n "$PREFLIGHT_MAINTENANCE_LINE" && -n "$PREFLIGHT_BACKUP_LINE" && -n "$PREFLIGHT_RESTORE_LINE" ]]
 [[ "$PREFLIGHT_MAINTENANCE_LINE" -lt "$PREFLIGHT_BACKUP_LINE" && "$PREFLIGHT_BACKUP_LINE" -lt "$PREFLIGHT_RESTORE_LINE" ]]
 FINAL_GUARD_LINE="$(grep -nF '  --before-ddl' "$DEPLOY" | cut -d: -f1)"
-MARKER_LINE="$(grep -nF 'write_bodycast_release_marker "$RELEASE_SHA" ddl-started' "$DEPLOY" | cut -d: -f1)"
 MIGRATE_LINE="$(grep -nF 'run-prisma-migrate-with-lock-timeout.mjs' "$DEPLOY" | cut -d: -f1)"
 POSTFLIGHT_LINE="$(grep -nF '  --after-ddl' "$DEPLOY" | cut -d: -f1)"
 SCHEMA_APPLIED_LINE="$(grep -nF 'write_bodycast_release_marker "$RELEASE_SHA" schema-applied' "$DEPLOY" | cut -d: -f1)"
+FINAL_IDENTITY_LINE="$(grep -nF 'assertPrismaTargetMatchesSignedIdentity(finalGuard.receipt, actualIdentity' "$WRAPPER" | cut -d: -f1)"
+MARKER_WRITE_LINE="$(grep -nF 'const marker = await markerWriter({' "$WRAPPER" | cut -d: -f1)"
+PRISMA_SPAWN_LINE="$(grep -nF 'child = spawn(' "$WRAPPER" | cut -d: -f1)"
+SPAWN_ACK_LINE="$(grep -nF 'spawnAcknowledger({' "$WRAPPER" | cut -d: -f1)"
 APP_READY_LINE="$(grep -nF 'write_bodycast_release_marker "$DEPLOY_SHA" app-ready' "$DEPLOY_SCRIPT" | cut -d: -f1)"
 APP_SHA_CHECK_LINE="$(grep -nF 'deployed_container_sha=' "$ROOT/scripts/deploy.sh" | cut -d: -f1)"
-[[ -n "$FINAL_GUARD_LINE" && -n "$MARKER_LINE" && -n "$MIGRATE_LINE" && -n "$POSTFLIGHT_LINE" && -n "$SCHEMA_APPLIED_LINE" ]]
-[[ "$FINAL_GUARD_LINE" -lt "$MARKER_LINE" && "$MARKER_LINE" -lt "$MIGRATE_LINE" && "$MIGRATE_LINE" -lt "$POSTFLIGHT_LINE" && "$POSTFLIGHT_LINE" -lt "$SCHEMA_APPLIED_LINE" ]]
+[[ -n "$FINAL_GUARD_LINE" && -n "$MIGRATE_LINE" && -n "$POSTFLIGHT_LINE" && -n "$SCHEMA_APPLIED_LINE" ]]
+[[ "$FINAL_GUARD_LINE" -lt "$MIGRATE_LINE" && "$MIGRATE_LINE" -lt "$POSTFLIGHT_LINE" && "$POSTFLIGHT_LINE" -lt "$SCHEMA_APPLIED_LINE" ]]
+[[ -n "$FINAL_IDENTITY_LINE" && -n "$MARKER_WRITE_LINE" && -n "$PRISMA_SPAWN_LINE" && -n "$SPAWN_ACK_LINE" ]]
+[[ "$FINAL_IDENTITY_LINE" -lt "$MARKER_WRITE_LINE" && "$MARKER_WRITE_LINE" -lt "$PRISMA_SPAWN_LINE" && "$PRISMA_SPAWN_LINE" -lt "$SPAWN_ACK_LINE" ]]
 [[ -n "$APP_READY_LINE" && -n "$APP_SHA_CHECK_LINE" && "$APP_SHA_CHECK_LINE" -lt "$APP_READY_LINE" ]]
 ! grep -Eq 'trap .*clear_bodycast_release_marker|clear_bodycast_release_marker' "$DEPLOY" "$DEPLOY_SCRIPT"
 
@@ -213,6 +219,25 @@ if [[ "$1" == "compose" && "$*" == *"--before-ddl"* ]]; then
   exit 0
 fi
 if [[ "$1" == "compose" && "$*" == *"run-prisma-migrate-with-lock-timeout.mjs"* ]]; then
+  node --input-type=module - "$SOURCE_ROOT/scripts/production-release-marker.mjs" \
+    "$FIXTURE_GIT_DIR/bodycast-production-release-marker" "$RELEASE_SHA" <<'NODE'
+import { pathToFileURL } from "node:url";
+const markerModule = await import(pathToFileURL(process.argv[2]));
+const markerDirectory = process.argv[3];
+const releaseSha = process.argv[4];
+const starting = await markerModule.writeDdlStartingMarker({
+  markerDirectory,
+  releaseSha,
+  workflowRunId: "2",
+  workflowRunAttempt: 1,
+  authorizationId: "fixture-authorization-0001",
+  lineageDigest: "a".repeat(64),
+});
+await markerModule.acknowledgePrismaSpawn({
+  markerPath: starting.markerPath,
+  expectedDigest: starting.digest,
+});
+NODE
   count=0
   [[ ! -f "$FAKE_MIGRATION_COUNT" ]] || count="$(<"$FAKE_MIGRATION_COUNT")"
   printf '%s\n' "$((count + 1))" > "$FAKE_MIGRATION_COUNT"
@@ -250,7 +275,7 @@ if run_fixture_command reject "$NEW_RELEASE_SHA" "$TMP/guard-rejected.log" "$FIX
   exit 1
 fi
 grep -Fq 'final signed backup/restore guard rejected' "$TMP/guard-rejected.log"
-test ! -e "$FIXTURE_GIT_DIR/bodycast-production-schema-cutover"
+test ! -e "$FIXTURE_GIT_DIR/bodycast-production-release-marker/marker"
 test ! -e "$MIGRATION_COUNT"
 ! grep -Fq 'run-prisma-migrate-with-lock-timeout.mjs' "$DOCKER_LOG"
 
@@ -266,18 +291,22 @@ grep -Fq 'synthetic Prisma failure after the DDL boundary' "$TMP/migration-faile
   cat "$TMP/migration-failed.log" >&2
   exit 1
 }
-grep -Eq '^state=ddl-started$' "$FIXTURE_GIT_DIR/bodycast-production-schema-cutover"
+grep -Fxq 'schemaVersion=2' "$FIXTURE_GIT_DIR/bodycast-production-release-marker/marker"
+grep -Fxq 'state=ddl-started' "$FIXTURE_GIT_DIR/bodycast-production-release-marker/marker"
+grep -Fxq 'spawnState=started' "$FIXTURE_GIT_DIR/bodycast-production-release-marker/marker"
 [[ "$(<"$MIGRATION_COUNT")" == "1" ]]
-test ! -e "$FIXTURE_GIT_DIR/bodycast-production-schema-cutover.new"
+test -z "$(find "$FIXTURE_GIT_DIR/bodycast-production-release-marker" -mindepth 1 -maxdepth 1 -type f ! -name marker -print -quit)"
+MARKER_DIGEST="$(sha256sum "$FIXTURE_GIT_DIR/bodycast-production-release-marker/marker" | awk '{print $1}')"
 
 : > "$DOCKER_LOG"
 if run_fixture_command allow "$NEW_RELEASE_SHA" "$TMP/migration-rerun-blocked.log" "$FIXTURE_ROOT/scripts/deploy-migrate.sh"; then
   echo "Expected a second migration attempt to be blocked by the durable marker." >&2
   exit 1
 fi
-grep -Fq 'existing schema-cutover marker requires explicit recovery' "$TMP/migration-rerun-blocked.log"
+grep -Fq 'only the exact legacy V1 ddl-started marker has a supported owner-authorized forward-resume path' "$TMP/migration-rerun-blocked.log"
 test ! -s "$DOCKER_LOG"
 [[ "$(<"$MIGRATION_COUNT")" == "1" ]]
+[[ "$(sha256sum "$FIXTURE_GIT_DIR/bodycast-production-release-marker/marker" | awk '{print $1}')" == "$MARKER_DIGEST" ]]
 
 if run_fixture_command allow "$OLD_RELEASE_SHA" "$TMP/old-app-blocked.log" "$FIXTURE_ROOT/scripts/deploy.sh"; then
   echo "Expected the previous app SHA to be blocked while the marker exists." >&2
@@ -288,13 +317,13 @@ test ! -s "$DOCKER_LOG"
 
 # With no marker, prior-release deploy reaches only the read-only/preflight path;
 # this fixture deliberately stops at config validation before any app mutation.
-rm -f "$FIXTURE_GIT_DIR/bodycast-production-schema-cutover"
+rm -f "$FIXTURE_GIT_DIR/bodycast-production-release-marker/marker"
 : > "$DOCKER_LOG"
 if run_fixture_command allow "$OLD_RELEASE_SHA" "$TMP/pre-marker-deploy.log" "$FIXTURE_ROOT/scripts/deploy.sh"; then
   echo "Expected the fixture to stop at its intentional Compose config failure." >&2
   exit 1
 fi
 grep -Fq 'compose -f docker-compose.prod.yml config --quiet' "$DOCKER_LOG"
-test ! -e "$FIXTURE_GIT_DIR/bodycast-production-schema-cutover"
+test ! -e "$FIXTURE_GIT_DIR/bodycast-production-release-marker/marker"
 
 printf '%s\n' 'Production migration release-tooling shell regressions passed.'

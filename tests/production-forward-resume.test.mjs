@@ -6,6 +6,8 @@ import {
   FORWARD_RESUME_FAILED_RUN_ID,
   FORWARD_RESUME_FAILED_SHA,
   FORWARD_RESUME_PURPOSE,
+  FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_RUN_ID,
+  FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_SHA,
   MIGRATION_FAILURE_JOB,
   MIGRATION_FAILURE_STEP,
   MIGRATION_GUARD_FAILURE,
@@ -76,6 +78,53 @@ function noSpawnProofInputs(overrides = {}) {
   return {
     run: sourceRun(), jobsPayload: jobsPayload(), logText, sourceGuardBytes: sourceBytes,
     workflowId: "77", sourceIsAncestor: true, ...overrides,
+  };
+}
+
+function safeFailedPreflightRetryEvidence(overrides = {}) {
+  const run = {
+    id: Number(FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_RUN_ID),
+    workflow_id: 372102614,
+    path: ".github/workflows/production-migration-preflight.yml@refs/heads/main",
+    event: "workflow_dispatch",
+    head_branch: "main",
+    head_sha: FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_SHA,
+    run_attempt: 1,
+    status: "completed",
+    conclusion: "failure",
+    repository: { full_name: "krustallik/body-model", owner: { id: 126446430, login: "krustallik" } },
+    actor: { id: 126446430 },
+    triggering_actor: { id: 126446430 },
+    ...overrides.run,
+  };
+  const jobsPayload = {
+    total_count: 2,
+    jobs: [
+      { id: 114194642210, name: "Authorize read-only preflight", status: "completed", conclusion: "failure",
+        head_sha: FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_SHA, run_attempt: 1,
+        steps: [
+          { name: "Set up job", conclusion: "success" },
+          { name: "Checkout current main tooling", conclusion: "success" },
+          { name: "Validate canonical repository, exact main, and successful CI", conclusion: "failure" },
+          { name: "Post Checkout current main tooling", conclusion: "success" },
+          { name: "Complete job", conclusion: "success" },
+        ] },
+      { id: 114194697634, name: "Inspect, back up, restore, and rehearse on disposable PostgreSQL",
+        status: "completed", conclusion: "skipped", head_sha: FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_SHA,
+        run_attempt: 1, steps: [] },
+    ],
+    ...overrides.jobsPayload,
+  };
+  const historyRun = {
+    id: run.id, workflow_id: run.workflow_id, path: run.path, event: run.event, head_branch: run.head_branch,
+    head_sha: run.head_sha, run_attempt: run.run_attempt, status: run.status, conclusion: run.conclusion,
+    ...overrides.historyRun,
+  };
+  return {
+    run, jobsPayload, historyRun, workflowId: String(run.workflow_id),
+    currentMainSha: "a5578255f72d8d724d5c20be0a7ac278912a70e7",
+    shaIsAncestorOfCurrentMain: true,
+    ...overrides.evidence,
   };
 }
 
@@ -224,5 +273,56 @@ describe("forward-resume evidence for the single verified pre-spawn failure", ()
     }], currentRunId: "39000000001" })).toThrow("another production mutation/preflight run exists");
     expect(() => verifyNoLaterMutationRun({ runs: [currentRun], currentRunId: "39000000001" }))
       .toThrow("history is incomplete");
+  });
+
+  it("permits only the verified failed authorization-only preflight retry in later workflow history", () => {
+    const safeRetry = safeFailedPreflightRetryEvidence();
+    const currentRun = { id: 39000000001, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main" };
+    const digest = verifyNoLaterMutationRun({
+      runs: [sourceRun(), safeRetry.historyRun, currentRun],
+      currentRunId: String(currentRun.id),
+      safeFailedPreflightRetries: [safeRetry],
+    });
+    expect(digest).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it.each([
+    ["wrong actor", { run: { actor: { id: 42 } } }],
+    ["rerun attempt", { run: { run_attempt: 2 } }],
+    ["wrong source SHA", { run: { head_sha: "a".repeat(40) } }],
+    ["not on current main ancestry", { evidence: { shaIsAncestorOfCurrentMain: false } }],
+    ["started production job", { jobsPayload: { jobs: [
+      { id: 114194642210, name: "Authorize read-only preflight", status: "completed", conclusion: "failure",
+        head_sha: FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_SHA, run_attempt: 1,
+        steps: [
+          { name: "Set up job", conclusion: "success" },
+          { name: "Checkout current main tooling", conclusion: "success" },
+          { name: "Validate canonical repository, exact main, and successful CI", conclusion: "failure" },
+          { name: "Post Checkout current main tooling", conclusion: "success" },
+          { name: "Complete job", conclusion: "success" },
+        ] },
+      { id: 114194697634, name: "Inspect, back up, restore, and rehearse on disposable PostgreSQL",
+        status: "completed", conclusion: "failure", head_sha: FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_SHA,
+        run_attempt: 1, steps: [{ name: "SSH", conclusion: "success" }] },
+    ] } }],
+  ])("rejects unsafe or malformed authorization-only retry evidence: %s", (_label, overrides) => {
+    const safeRetry = safeFailedPreflightRetryEvidence(overrides);
+    const currentRun = { id: 39000000001, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main" };
+    expect(() => verifyNoLaterMutationRun({
+      runs: [sourceRun(), safeRetry.historyRun, currentRun], currentRunId: String(currentRun.id),
+      safeFailedPreflightRetries: [safeRetry],
+    })).toThrow("Forward-resume blocked");
+  });
+
+  it("still rejects any other later production workflow despite safe retry evidence", () => {
+    const safeRetry = safeFailedPreflightRetryEvidence();
+    const currentRun = { id: 39000000001, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main" };
+    expect(() => verifyNoLaterMutationRun({
+      runs: [sourceRun(), safeRetry.historyRun, {
+        id: 38045689914, path: ".github/workflows/production-migrate.yml@refs/heads/main",
+        head_sha: FORWARD_RESUME_FAILED_SHA, status: "completed", conclusion: "success", run_attempt: 1,
+      }, currentRun],
+      currentRunId: String(currentRun.id), safeFailedPreflightRetries: [safeRetry],
+    })).toThrow("another production mutation/preflight run exists");
   });
 });

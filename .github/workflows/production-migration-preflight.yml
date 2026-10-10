@@ -134,6 +134,10 @@ jobs:
             gh api "repos/krustallik/body-model/actions/runs/$FORWARD_RESUME_FAILED_RUN_ID" > "$RUNNER_TEMP/forward-source-run.json"
             gh api "repos/krustallik/body-model/actions/runs/$FORWARD_RESUME_FAILED_RUN_ID/jobs" > "$RUNNER_TEMP/forward-source-jobs.json"
             gh api "repos/krustallik/body-model/actions/runs/$FORWARD_RESUME_FAILED_RUN_ID/artifacts" > "$RUNNER_TEMP/forward-source-artifacts.json"
+            FORWARD_SAFE_PREFLIGHT_RETRY_RUN_ID="38045689913"
+            PREFLIGHT_WORKFLOW_ID="$(gh api repos/krustallik/body-model/actions/workflows/production-migration-preflight.yml --jq .id)"
+            gh api "repos/krustallik/body-model/actions/runs/$FORWARD_SAFE_PREFLIGHT_RETRY_RUN_ID" > "$RUNNER_TEMP/forward-safe-preflight-retry-run.json"
+            gh api "repos/krustallik/body-model/actions/runs/$FORWARD_SAFE_PREFLIGHT_RETRY_RUN_ID/jobs" > "$RUNNER_TEMP/forward-safe-preflight-retry-jobs.json"
             MIGRATION_EXECUTION_JOB_ID="$(jq -er '[.jobs[] | select(.name == "Final live guard and authorized migration") | .id] | if length == 1 and (.[0] | type == "number") then .[0] else error("migration execution job ID is missing or ambiguous") end' "$RUNNER_TEMP/forward-source-jobs.json")"
             gh run view "$FORWARD_RESUME_FAILED_RUN_ID" --repo krustallik/body-model --job "$MIGRATION_EXECUTION_JOB_ID" --log-failed > "$RUNNER_TEMP/forward-source-failure.log"
             node --input-type=module - "$RUNNER_TEMP/forward-source-artifacts.json" <<'NODE'
@@ -156,16 +160,22 @@ jobs:
             git merge-base --is-ancestor "$(jq -r .head_sha "$RUNNER_TEMP/forward-source-run.json")" "$MAIN_TIP" || {
               echo "::error::The failed release SHA is not an ancestor of current main."; exit 1;
             }
+            git merge-base --is-ancestor "$(jq -er .head_sha "$RUNNER_TEMP/forward-safe-preflight-retry-run.json")" "$MAIN_TIP" || {
+              echo "::error::The authorization-only preflight retry SHA is not an ancestor of current main."; exit 1;
+            }
             FORWARD_PROOF_META="$(node --input-type=module - "$RUNNER_TEMP/forward-source-run.json" \
               "$RUNNER_TEMP/forward-source-jobs.json" "$RUNNER_TEMP/forward-source-failure.log" \
               "$RUNNER_TEMP/forward-source-bundle" "$RUNNER_TEMP/forward-mutation-history.ndjson" \
-              "$MIGRATION_WORKFLOW_ID" "$GITHUB_RUN_ID" "$GITHUB_SHA" <<'NODE'
+              "$MIGRATION_WORKFLOW_ID" "$GITHUB_RUN_ID" "$GITHUB_SHA" \
+              "$RUNNER_TEMP/forward-safe-preflight-retry-run.json" "$RUNNER_TEMP/forward-safe-preflight-retry-jobs.json" \
+              "$PREFLIGHT_WORKFLOW_ID" <<'NODE'
           import { readFileSync, writeFileSync } from "node:fs";
           import { execFileSync } from "node:child_process";
           import { verifyForwardResumeNoSpawnEvidence, verifyForwardResumeAuthorizationBundle,
             verifyNoLaterMutationRun } from "./scripts/production-forward-resume.mjs";
           import { canonicalSha256 } from "./scripts/production-migration-authorization.mjs";
-          const [runPath, jobsPath, logPath, bundleDir, historyPath, workflowId, currentRunId, currentSha] = process.argv.slice(2);
+          const [runPath, jobsPath, logPath, bundleDir, historyPath, workflowId, currentRunId, currentSha,
+            safeRetryRunPath, safeRetryJobsPath, preflightWorkflowId] = process.argv.slice(2);
           const run = JSON.parse(readFileSync(runPath, "utf8"));
           const sourceGuardBytes = execFileSync("git", ["show", `${run.head_sha}:scripts/run-prisma-migrate-with-lock-timeout.mjs`]);
           const failureProof = verifyForwardResumeNoSpawnEvidence({ run,
@@ -180,7 +190,10 @@ jobs:
             allowlist: JSON.parse(readFileSync("scripts/production-migration-verification-keys.json", "utf8")),
           });
           const runs = readFileSync(historyPath, "utf8").split(/\r?\n/).filter(Boolean).map(JSON.parse);
-          const mutationHistoryDigest = verifyNoLaterMutationRun({ runs, currentRunId });
+          const mutationHistoryDigest = verifyNoLaterMutationRun({ runs, currentRunId,
+            safeFailedPreflightRetries: [{ run: JSON.parse(readFileSync(safeRetryRunPath, "utf8")),
+              jobsPayload: JSON.parse(readFileSync(safeRetryJobsPath, "utf8")), workflowId: preflightWorkflowId,
+              currentMainSha: currentSha, shaIsAncestorOfCurrentMain: true }] });
           const failureProofDigest = canonicalSha256(failureProof);
           writeFileSync(`${bundleDir}/verified-failure-proof.json`, `${JSON.stringify(failureProof)}\n`, { flag: "wx", mode: 0o600 });
           writeFileSync(`${bundleDir}/verified-authorization-proof.json`, `${JSON.stringify(authorizationBundleProof)}\n`, { flag: "wx", mode: 0o600 });

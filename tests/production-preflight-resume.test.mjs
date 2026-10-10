@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { capturePreviousAppProvenance, rebindPreviousAppProvenanceForPreflightResume } from "../scripts/production-previous-app-provenance.mjs";
-import { verifyResumablePreflightAttempt } from "../scripts/production-preflight-resume.mjs";
+import { verifyPreDdlMigrationFailureResume, verifyResumablePreflightAttempt } from "../scripts/production-preflight-resume.mjs";
 
 const sourceSha = "a".repeat(40);
 const targetSha = "b".repeat(40);
@@ -72,6 +72,146 @@ function databaseReport() {
   };
 }
 
+const preflightWorkflowId = "123";
+const migrationWorkflowId = "456";
+const successfulSourceRunId = "38000669120";
+const preDdlMigrationRunId = "38000669121";
+const blockedCaptureRunId = "38000669122";
+const currentResumeRunId = "38000669123";
+const successfulPreflightSteps = [
+  "Enter maintenance and drain the old app before backup",
+  "Verify production container and PostgreSQL client versions",
+  "Read-only production identity, full migration set, schema signatures, and locks",
+  "Capture pg_dump start on production host and create encrypted backup",
+  "Restore snapshot, compare source state, and rehearse exact migrations",
+  "Create preflight evidence bundle",
+  "Upload encrypted production backup artifact",
+  "Upload immutable preflight and restore evidence artifact",
+  "Report read-only completion",
+];
+const migrationFailure = "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/app/scripts/github-owner-identity.mjs' imported from /app/scripts/production-migration-authorization.mjs";
+const migrationLog = [
+  `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-10-10T00:08:25.9244355Z ${migrationFailure}`,
+  `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-10-10T00:08:27.8263452Z ${migrationFailure}`,
+  'Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-10-10T00:08:28.8286882Z {"schemaVersion":1,"contract":"bodycast-compose-internal-db-single-writer-v1","ready":true}',
+  `Final live guard and authorized migration\tRun the fixed guarded migration script over SSH\t2026-10-10T00:08:29.3550399Z ${migrationFailure}`,
+].join("\n");
+const captureFailure = "An earlier pre-DDL release capture exists; operator review is required before another migration attempt.";
+const migrationExecutionSteps = [
+  ["Checkout exact authorized release SHA", "success"],
+  ["Set up Node runtime", "success"],
+  ["Recheck current canonical main before production SSH", "success"],
+  ["Download only the signed context artifact", "success"],
+  ["Validate protected production SSH and pin host key", "success"],
+  ["Trust only the SSH key matching the pinned fingerprint", "success"],
+  ["Stream signed evidence files to private remote temporary context", "success"],
+  ["Run the fixed guarded migration script over SSH", "failure"],
+  ["Remove temporary runner credentials", "success"],
+  ["Post Set up Node runtime", "skipped"],
+  ["Post Checkout exact authorized release SHA", "success"],
+].map(([name, conclusion]) => ({ name, conclusion }));
+
+function ownerRun({ id, workflowId, path, sha, conclusion }) {
+  return {
+    id: Number(id), workflow_id: Number(workflowId),
+    path: `${path}@refs/heads/main`, event: "workflow_dispatch", head_branch: "main", head_sha: sha,
+    status: "completed", conclusion, run_attempt: 1,
+    actor: { id: 126446430 }, triggering_actor: { id: 126446430 },
+    repository: { full_name: "krustallik/body-model", owner: { id: 126446430, login: "krustallik" } },
+  };
+}
+
+function successfulSourceRun() {
+  return ownerRun({ id: successfulSourceRunId, workflowId: preflightWorkflowId,
+    path: ".github/workflows/production-migration-preflight.yml", sha: sourceSha, conclusion: "success" });
+}
+
+function successfulSourceJobs() {
+  return {
+    total_count: 2,
+    jobs: [
+      { name: "Authorize read-only preflight", conclusion: "success", head_sha: sourceSha, run_attempt: 1 },
+      { name: "Inspect, back up, restore, and rehearse on disposable PostgreSQL", conclusion: "success",
+        head_sha: sourceSha, run_attempt: 1, steps: successfulPreflightSteps.map((name) => ({ name, conclusion: "success" })) },
+    ],
+  };
+}
+
+function successfulSourceArtifacts() {
+  return {
+    total_count: 2,
+    artifacts: [
+      { name: `bodycast-backup-${sourceSha}-active-energy-unified-v2-${successfulSourceRunId}-1`, expired: false,
+        size_in_bytes: 58_687_970, digest: `sha256:${"c".repeat(64)}` },
+      { name: `bodycast-preflight-evidence-${sourceSha}-active-energy-unified-v2-${successfulSourceRunId}-1`, expired: false,
+        size_in_bytes: 18_965, digest: `sha256:${"d".repeat(64)}` },
+    ],
+  };
+}
+
+function preDdlMigrationRun() {
+  return ownerRun({ id: preDdlMigrationRunId, workflowId: migrationWorkflowId,
+    path: ".github/workflows/production-migrate.yml", sha: sourceSha, conclusion: "failure" });
+}
+
+function preDdlMigrationJobs() {
+  return {
+    total_count: 3,
+    jobs: [
+      { name: "Select latest exact preflight evidence", conclusion: "success", head_sha: sourceSha, run_attempt: 1 },
+      { name: "Sign migration authorization envelope", conclusion: "success", head_sha: sourceSha, run_attempt: 1 },
+      { name: "Final live guard and authorized migration", conclusion: "failure", head_sha: sourceSha, run_attempt: 1,
+        steps: migrationExecutionSteps },
+    ],
+  };
+}
+
+function blockedCapturePreflightRun() {
+  return ownerRun({ id: blockedCaptureRunId, workflowId: preflightWorkflowId,
+    path: ".github/workflows/production-migration-preflight.yml", sha: targetSha, conclusion: "failure" });
+}
+
+function blockedCapturePreflightJobs() {
+  const conclusions = [
+    ["Enter maintenance and drain the old app before backup", "failure"],
+    ["Verify production container and PostgreSQL client versions", "skipped"],
+    ["Read-only production identity, full migration set, schema signatures, and locks", "skipped"],
+    ["Capture pg_dump start on production host and create encrypted backup", "skipped"],
+    ["Restore snapshot, compare source state, and rehearse exact migrations", "skipped"],
+    ["Create preflight evidence bundle", "skipped"],
+    ["Upload encrypted production backup artifact", "skipped"],
+    ["Upload immutable preflight and restore evidence artifact", "skipped"],
+    ["Report read-only completion", "skipped"],
+  ];
+  return {
+    total_count: 2,
+    jobs: [
+      { name: "Authorize read-only preflight", conclusion: "success", head_sha: targetSha, run_attempt: 1 },
+      { name: "Inspect, back up, restore, and rehearse on disposable PostgreSQL", conclusion: "failure",
+        head_sha: targetSha, run_attempt: 1, steps: conclusions.map(([name, conclusion]) => ({ name, conclusion })) },
+    ],
+  };
+}
+
+function verifyPreDdlResume(overrides = {}) {
+  return verifyPreDdlMigrationFailureResume({
+    sourceRun: successfulSourceRun(), sourceJobs: successfulSourceJobs(), sourceArtifacts: successfulSourceArtifacts(),
+    migrationRun: preDdlMigrationRun(), migrationJobs: preDdlMigrationJobs(),
+    migrationLogText: migrationLog,
+    blockedCaptureRun: blockedCapturePreflightRun(), blockedCaptureJobs: blockedCapturePreflightJobs(),
+    blockedCaptureArtifacts: { total_count: 0, artifacts: [] }, blockedCaptureLogText: captureFailure,
+    laterRuns: [
+      { id: Number(preDdlMigrationRunId), path: ".github/workflows/production-migrate.yml@refs/heads/main", status: "completed", conclusion: "failure" },
+      { id: Number(blockedCaptureRunId), path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "completed", conclusion: "failure" },
+      { id: Number(currentResumeRunId), path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress" },
+    ],
+    sourceRunId: successfulSourceRunId, migrationRunId: preDdlMigrationRunId, blockedCaptureRunId,
+    currentRunId: currentResumeRunId, currentMainSha: targetSha,
+    preflightWorkflowId, migrationWorkflowId, sourceIsAncestor: true,
+    ...overrides,
+  });
+}
+
 describe("verified resume of a failed production preflight", () => {
   it("admits only the original owner run that stopped after a successful backup and failed isolated restore", () => {
     expect(verify()).toEqual({ schemaVersion: 1, sourceRunId: "38000669126", sourceRunAttempt: 1, sourceSha, targetSha });
@@ -130,5 +270,51 @@ describe("verified resume of a failed production preflight", () => {
       record, sourceSha, targetSha, sourceRunId: "38000669126", sourceRunAttempt: 1,
       databaseReport: { ...report, identity: { ...report.identity, clusterSystemIdentifier: "7419276301947620312" } },
     })).toThrow("current production DB identity, migration history, or schema differs");
+  });
+});
+
+describe("verified resume after a migration failed before the DDL marker", () => {
+  it("admits only the exact owner preflight → final-guard import failure → capture-blocked retry sequence", () => {
+    expect(verifyPreDdlResume()).toEqual({
+      schemaVersion: 2,
+      resumeKind: "verified-pre-ddl-migration-failure",
+      sourceRunId: successfulSourceRunId,
+      sourceRunAttempt: 1,
+      sourceSha,
+      targetSha,
+      migrationFailureRunId: preDdlMigrationRunId,
+      blockedCaptureRunId,
+    });
+  });
+
+  it("requires the import failure in both live probes and the final guard", () => {
+    expect(() => verifyPreDdlResume({ migrationLogText: migrationFailure })).toThrow("exactly three known import failures");
+    const reorderedLines = migrationLog.split("\n");
+    [reorderedLines[1], reorderedLines[2]] = [reorderedLines[2], reorderedLines[1]];
+    const reorderedLog = reorderedLines.join("\n");
+    expect(() => verifyPreDdlResume({ migrationLogText: reorderedLog })).toThrow("not in the reviewed order");
+    expect(verifyPreDdlResume({ migrationLogText: migrationLog }).resumeKind).toBe("verified-pre-ddl-migration-failure");
+  });
+
+  it.each([
+    ["wrong migration owner", { migrationRun: { ...preDdlMigrationRun(), triggering_actor: { id: 42 } } }],
+    ["migration rerun", { migrationRun: { ...preDdlMigrationRun(), run_attempt: 2 } }],
+    ["different migration failure", { migrationLogText: "Error: connection lost during migration" }],
+    ["failure outside final guard", { migrationJobs: { ...preDdlMigrationJobs(), jobs: preDdlMigrationJobs().jobs.map((job) =>
+      job.name.startsWith("Final live guard") ? { ...job, steps: job.steps.map((step) => step.name.startsWith("Run the fixed")
+        ? { ...step, conclusion: "success" } : step) } : job) } }],
+    ["missing or expired source backup", { sourceArtifacts: { ...successfulSourceArtifacts(), artifacts: successfulSourceArtifacts().artifacts.map((artifact) =>
+      artifact.name.startsWith("bodycast-backup") ? { ...artifact, expired: true } : artifact) } }],
+    ["blocked retry has another failure", { blockedCaptureLogText: "ssh host unreachable" }],
+    ["blocked retry published an artifact", { blockedCaptureArtifacts: { total_count: 1, artifacts: [{ id: 9 }] } }],
+    ["source SHA not in current main", { sourceIsAncestor: false }],
+    ["unexpected later production mutation", { laterRuns: [
+      { id: Number(preDdlMigrationRunId), path: ".github/workflows/production-migrate.yml@refs/heads/main" },
+      { id: Number(blockedCaptureRunId), path: ".github/workflows/production-migration-preflight.yml@refs/heads/main" },
+      { id: Number(currentResumeRunId) - 1, path: ".github/workflows/deploy-production.yml@refs/heads/main" },
+      { id: Number(currentResumeRunId), path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress" },
+    ] }],
+  ])("rejects %s", (_label, overrides) => {
+    expect(() => verifyPreDdlResume(overrides)).toThrow("cannot be safely resumed");
   });
 });

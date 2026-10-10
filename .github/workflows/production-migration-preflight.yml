@@ -19,7 +19,15 @@ on:
         required: true
         type: string
       resume_previous_preflight_run_id:
-        description: Optional original failed owner preflight run whose pre-DDL capture may be reused after live-state verification
+        description: Optional exact owner preflight run whose durable prior-app capture may be resumed only after verified live-state checks
+        required: false
+        type: string
+      resume_pre_ddl_migration_failure_run_id:
+        description: Required with the source run only to prove the reviewed final-guard import failure before the DDL marker
+        required: false
+        type: string
+      resume_blocked_capture_preflight_run_id:
+        description: Required with the migration failure run to identify the retry that stopped at the existing capture guard
         required: false
         type: string
 
@@ -58,6 +66,8 @@ jobs:
           CONFIRMATION: ${{ inputs.confirm_production_preflight }}
           DISPATCH_ACTOR_ID: ${{ github.actor_id }}
           RESUME_SOURCE_RUN_ID: ${{ inputs.resume_previous_preflight_run_id }}
+          RESUME_MIGRATION_FAILURE_RUN_ID: ${{ inputs.resume_pre_ddl_migration_failure_run_id }}
+          RESUME_BLOCKED_CAPTURE_RUN_ID: ${{ inputs.resume_blocked_capture_preflight_run_id }}
         run: |
           set -Eeuo pipefail
           [[ "$GITHUB_REPOSITORY" == "krustallik/body-model" ]] || { echo "::error::Canonical repository only."; exit 1; }
@@ -100,7 +110,50 @@ jobs:
           )"
           RESUME_SOURCE_SHA=""
           RESUME_SOURCE_ATTEMPT=""
-          if [[ -n "$RESUME_SOURCE_RUN_ID" ]]; then
+          RESUME_KIND=""
+          if [[ -n "$RESUME_MIGRATION_FAILURE_RUN_ID" || -n "$RESUME_BLOCKED_CAPTURE_RUN_ID" ]]; then
+            [[ "$RESUME_SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ \
+              && "$RESUME_MIGRATION_FAILURE_RUN_ID" =~ ^[1-9][0-9]*$ \
+              && "$RESUME_BLOCKED_CAPTURE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || {
+              echo "::error::Pre-DDL migration resume requires the exact source, failed migration, and blocked capture run IDs."; exit 1;
+            }
+            PREFLIGHT_WORKFLOW_ID="$(gh api repos/krustallik/body-model/actions/workflows/production-migration-preflight.yml --jq .id)"
+            MIGRATION_WORKFLOW_ID="$(gh api repos/krustallik/body-model/actions/workflows/production-migrate.yml --jq .id)"
+            gh api "repos/krustallik/body-model/actions/runs/$RESUME_SOURCE_RUN_ID" > "$RUNNER_TEMP/resume-source-run.json"
+            gh api "repos/krustallik/body-model/actions/runs/$RESUME_SOURCE_RUN_ID/jobs" > "$RUNNER_TEMP/resume-source-jobs.json"
+            gh api "repos/krustallik/body-model/actions/runs/$RESUME_SOURCE_RUN_ID/artifacts" > "$RUNNER_TEMP/resume-source-artifacts.json"
+            gh api "repos/krustallik/body-model/actions/runs/$RESUME_MIGRATION_FAILURE_RUN_ID" > "$RUNNER_TEMP/resume-migration-run.json"
+            gh api "repos/krustallik/body-model/actions/runs/$RESUME_MIGRATION_FAILURE_RUN_ID/jobs" > "$RUNNER_TEMP/resume-migration-jobs.json"
+            gh run view "$RESUME_MIGRATION_FAILURE_RUN_ID" --repo krustallik/body-model --log-failed > "$RUNNER_TEMP/resume-migration-failure.log"
+            gh api "repos/krustallik/body-model/actions/runs/$RESUME_BLOCKED_CAPTURE_RUN_ID" > "$RUNNER_TEMP/resume-blocked-capture-run.json"
+            gh api "repos/krustallik/body-model/actions/runs/$RESUME_BLOCKED_CAPTURE_RUN_ID/jobs" > "$RUNNER_TEMP/resume-blocked-capture-jobs.json"
+            gh api "repos/krustallik/body-model/actions/runs/$RESUME_BLOCKED_CAPTURE_RUN_ID/artifacts" > "$RUNNER_TEMP/resume-blocked-capture-artifacts.json"
+            gh run view "$RESUME_BLOCKED_CAPTURE_RUN_ID" --repo krustallik/body-model --log-failed > "$RUNNER_TEMP/resume-blocked-capture-failure.log"
+            : > "$RUNNER_TEMP/resume-later-runs.ndjson"
+            for workflow_file in production-migration-preflight.yml production-migrate.yml production-database-cutback.yml activate-unified-v4-production.yml deploy-production.yml; do
+              workflow_id="$(gh api "repos/krustallik/body-model/actions/workflows/$workflow_file" --jq .id)"
+              gh api --paginate --jq '.workflow_runs[] | @json' \
+                "repos/krustallik/body-model/actions/workflows/$workflow_id/runs?per_page=100" \
+                >> "$RUNNER_TEMP/resume-later-runs.ndjson"
+            done
+            node scripts/production-preflight-resume.mjs --verify-pre-ddl-migration-failure \
+              "$RUNNER_TEMP/resume-source-run.json" "$RUNNER_TEMP/resume-source-jobs.json" \
+              "$RUNNER_TEMP/resume-source-artifacts.json" "$RUNNER_TEMP/resume-migration-run.json" \
+              "$RUNNER_TEMP/resume-migration-jobs.json" "$RUNNER_TEMP/resume-migration-failure.log" \
+              "$RUNNER_TEMP/resume-blocked-capture-run.json" "$RUNNER_TEMP/resume-blocked-capture-jobs.json" \
+              "$RUNNER_TEMP/resume-blocked-capture-artifacts.json" "$RUNNER_TEMP/resume-blocked-capture-failure.log" \
+              "$RUNNER_TEMP/resume-later-runs.ndjson" "$RESUME_SOURCE_RUN_ID" "$RESUME_MIGRATION_FAILURE_RUN_ID" \
+              "$RESUME_BLOCKED_CAPTURE_RUN_ID" "$GITHUB_RUN_ID" "$MAIN_TIP" "$PREFLIGHT_WORKFLOW_ID" "$MIGRATION_WORKFLOW_ID" \
+              > "$RUNNER_TEMP/preflight-resume-proof.json"
+            RESUME_SOURCE_SHA="$(jq -r .sourceSha "$RUNNER_TEMP/preflight-resume-proof.json")"
+            RESUME_SOURCE_ATTEMPT="$(jq -r .sourceRunAttempt "$RUNNER_TEMP/preflight-resume-proof.json")"
+            RESUME_KIND="$(jq -r .resumeKind "$RUNNER_TEMP/preflight-resume-proof.json")"
+            {
+              echo "- verified pre-DDL resume source preflight: $RESUME_SOURCE_RUN_ID attempt $RESUME_SOURCE_ATTEMPT at $RESUME_SOURCE_SHA"
+              echo "- verified failed migration run: $RESUME_MIGRATION_FAILURE_RUN_ID; exact final-guard import failure occurred before the marker/Prisma boundary"
+              echo "- verified blocked capture retry: $RESUME_BLOCKED_CAPTURE_RUN_ID; this preflight still creates a fresh backup and isolated rehearsal"
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [[ -n "$RESUME_SOURCE_RUN_ID" ]]; then
             [[ "$RESUME_SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Resume source run ID must be a positive numeric identifier."; exit 1; }
             PREFLIGHT_WORKFLOW_ID="$(gh api repos/krustallik/body-model/actions/workflows/production-migration-preflight.yml --jq .id)"
             gh api "repos/krustallik/body-model/actions/runs/$RESUME_SOURCE_RUN_ID" > "$RUNNER_TEMP/resume-source-run.json"
@@ -120,10 +173,13 @@ jobs:
               > "$RUNNER_TEMP/preflight-resume-proof.json"
             RESUME_SOURCE_SHA="$(jq -r .sourceSha "$RUNNER_TEMP/preflight-resume-proof.json")"
             RESUME_SOURCE_ATTEMPT="$(jq -r .sourceRunAttempt "$RUNNER_TEMP/preflight-resume-proof.json")"
+            RESUME_KIND="verified-failed-restore-rehearsal"
             {
               echo "- previous failed preflight run: $RESUME_SOURCE_RUN_ID attempt $RESUME_SOURCE_ATTEMPT at $RESUME_SOURCE_SHA"
               echo "- resume admitted only for the verified failed disposable restore/rehearsal step; no backup artifact or later production mutation exists"
             } >> "$GITHUB_STEP_SUMMARY"
+          else
+            [[ -z "$RESUME_SOURCE_RUN_ID" ]] || { echo "::error::Resume source is malformed."; exit 1; }
           fi
           echo "release_sha=$MAIN_TIP" >> "$GITHUB_OUTPUT"
           echo "manifest_id=$MANIFEST_ID" >> "$GITHUB_OUTPUT"

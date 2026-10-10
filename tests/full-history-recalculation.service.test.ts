@@ -164,6 +164,7 @@ describe("runOwnerAuthorizedFullHistoryRecalculation", () => {
       "StepperReconciliationCandidate",
     ]));
     expect(FULL_HISTORY_REBUILT_DERIVED_TABLES).toEqual(expect.arrayContaining([
+      "StrengthSessionAccountingSnapshot",
       "StrengthSessionAccountingOperation",
       "ActiveEnergyCanonicalEvent",
       "ActiveEnergyEventAlias",
@@ -209,6 +210,26 @@ describe("runOwnerAuthorizedFullHistoryRecalculation", () => {
     expect(after.fingerprint).not.toBe(before.fingerprint);
     expect(after.tables.find((table) => table.table === "ModelEpisode")?.contentSha256)
       .not.toBe(before.tables.find((table) => table.table === "ModelEpisode")?.contentSha256);
+  });
+
+  it("normalizes only materialization-owned session outputs while retaining semantic accounting inputs", async () => {
+    await inventoryFullHistoryRawInputs({ $queryRawUnsafe: mocks.queryRawUnsafe } as never);
+    const sessionQuery = mocks.queryRawUnsafe.mock.calls
+      .map(([sql]) => String(sql))
+      .find((sql) => sql.includes('public."StrengthDiarySession"'));
+    const sessionCall = mocks.queryRawUnsafe.mock.calls.find(([sql]) => String(sql).includes('public."StrengthDiarySession"'));
+    const profileCall = mocks.queryRawUnsafe.mock.calls.find(([sql]) => String(sql).includes('public."Profile"'));
+    expect(sessionQuery).toContain('LEFT JOIN public."Workout" AS matched_workout');
+    expect(sessionQuery).toContain('source_row."effectiveAccountingAt", matched_workout."startAt", source_row."webStartedAt", source_row."createdAt"');
+    expect(sessionQuery).toContain('COALESCE(source_row."accountingTimeZone", $3::text)');
+    expect(sessionQuery).toContain("COALESCE(source_row.\"accountingTimeZoneProvenance\", 'legacy-default')");
+    for (const derivedField of ["currentSnapshotRevision", "updatedAt", "effectiveAccountingAt", "accountingTimeZone", "accountingTimeZoneProvenance"]) {
+      expect(sessionQuery).toContain(`'${derivedField}'`);
+    }
+    expect(FULL_HISTORY_RAW_INPUT_TABLES).toContain("StrengthDiarySession");
+    expect(sessionCall).toHaveLength(4);
+    expect(sessionCall?.[3]).toBe("Europe/Bratislava");
+    expect(profileCall).toHaveLength(3);
   });
 
   it("fail-closes when Unified is not V3 epoch 0", async () => {

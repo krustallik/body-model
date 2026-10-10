@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION } from "@/model/unified-experimental-physiology-v1/contracts";
+import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import { recalculateModelEpisode, getModelStatus } from "./model-episode.service";
 import { PhysiologyV7PersistenceRepository } from "./physiology-v7-persistence.repository";
 import {
@@ -51,6 +52,7 @@ export const FULL_HISTORY_RAW_INPUT_TABLES = [
  * rows in FULL_HISTORY_RAW_INPUT_TABLES.
  */
 export const FULL_HISTORY_REBUILT_DERIVED_TABLES = [
+  "StrengthSessionAccountingSnapshot",
   "StrengthSessionAccountingOperation",
   "ActiveEnergyCanonicalEvent",
   "ActiveEnergyEventAlias",
@@ -71,6 +73,20 @@ const MODEL_EPISODE_RECALCULATION_OUTPUT_FIELDS = [
   "calibrationDiagnostics",
   "latestModeledDate",
   "updatedAt",
+] as const;
+
+/**
+ * Materialization-owned StrengthDiarySession fields. Preserve the semantic
+ * accounting instant and timezone in the inventory, but normalize legacy nulls
+ * to the same fallback values materializeAccounting writes. The pointer and
+ * updatedAt are derived bookkeeping, not user-entered session data.
+ */
+const STRENGTH_SESSION_RECALCULATION_OUTPUT_FIELDS = [
+  "currentSnapshotRevision",
+  "updatedAt",
+  "effectiveAccountingAt",
+  "accountingTimeZone",
+  "accountingTimeZoneProvenance",
 ] as const;
 
 const RAW_INPUT_INVENTORY_PAGE_SIZE = 250;
@@ -120,19 +136,32 @@ async function inventoryRawInputs(client: PrismaClient): Promise<FullHistoryRawI
     // recalculated outputs, so remove only fields written by persistCalculation.
     const canonicalRowExpression = table === "ModelEpisode"
       ? `to_jsonb(source_row) - ARRAY[${MODEL_EPISODE_RECALCULATION_OUTPUT_FIELDS.map((field) => `'${field}'`).join(", ")}]::text[]`
-      : "to_jsonb(source_row)";
-    const tableHash = createHash("sha256").update(`bodycast-raw-source-table-v2\0${table}\0`);
+      : table === "StrengthDiarySession"
+        ? `(to_jsonb(source_row) - ARRAY[${STRENGTH_SESSION_RECALCULATION_OUTPUT_FIELDS.map((field) => `'${field}'`).join(", ")}]::text[])
+           || jsonb_build_object(
+             'effectiveAccountingAt', COALESCE(source_row."effectiveAccountingAt", matched_workout."startAt", source_row."webStartedAt", source_row."createdAt"),
+             'accountingTimeZone', COALESCE(source_row."accountingTimeZone", $3::text),
+             'accountingTimeZoneProvenance', COALESCE(source_row."accountingTimeZoneProvenance", 'legacy-default')
+           )`
+        : "to_jsonb(source_row)";
+    const sourceJoins = table === "StrengthDiarySession"
+      ? `LEFT JOIN public."Workout" AS matched_workout ON matched_workout."id" = source_row."matchedWorkoutId"`
+      : "";
+    const tableHash = createHash("sha256").update(`bodycast-raw-source-table-v3\0${table}\0`);
     let afterId = -2_147_483_649;
     let rowCount = 0;
     while (true) {
+      const queryParameters = table === "StrengthDiarySession"
+        ? [afterId, RAW_INPUT_INVENTORY_PAGE_SIZE, DEFAULT_TIME_ZONE]
+        : [afterId, RAW_INPUT_INVENTORY_PAGE_SIZE];
       const rows = await client.$queryRawUnsafe<Array<{ id: number; canonical_row: string }>>(
         `SELECT source_row.id, (${canonicalRowExpression})::text AS canonical_row
          FROM public."${table}" AS source_row
+         ${sourceJoins}
          WHERE source_row.id > $1::bigint
          ORDER BY source_row.id
          LIMIT $2::integer`,
-        afterId,
-        RAW_INPUT_INVENTORY_PAGE_SIZE,
+        ...queryParameters,
       );
       if (rows.length > RAW_INPUT_INVENTORY_PAGE_SIZE) {
         throw new Error(`Raw input inventory returned an oversized page for ${table}`);
@@ -157,7 +186,7 @@ async function inventoryRawInputs(client: PrismaClient): Promise<FullHistoryRawI
     });
   }
   const fingerprint = createHash("sha256")
-    .update("bodycast-full-history-raw-input-inventory-v2\0")
+    .update("bodycast-full-history-raw-input-inventory-v3\0")
     .update(JSON.stringify(tables))
     .digest("hex");
   return { fingerprint, tables };

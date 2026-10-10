@@ -26,6 +26,7 @@ if (writerDrain.activeClientBackends.length > 0) throw new Error("final Prisma w
 return spawn("npx", ["prisma", "migrate", "deploy"]);
 `);
 const steps = [
+  ["Set up job", "success"],
   ["Checkout exact authorized release SHA", "success"],
   ["Set up Node runtime", "success"],
   ["Recheck current canonical main before production SSH", "success"],
@@ -37,6 +38,7 @@ const steps = [
   ["Remove temporary runner credentials", "success"],
   ["Post Set up Node runtime", "skipped"],
   ["Post Checkout exact authorized release SHA", "success"],
+  ["Complete job", "success"],
 ].map(([name, conclusion]) => ({ name, conclusion }));
 
 function sourceRun(overrides = {}) {
@@ -81,14 +83,17 @@ function noSpawnProofInputs(overrides = {}) {
   };
 }
 
-function safeFailedPreflightRetryEvidence(overrides = {}) {
+function safeFailedPreflightRetryEvidence(overrides = {}, expectedRetry = {}) {
+  const retryRunId = expectedRetry.runId ?? FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_RUN_ID;
+  const retrySha = expectedRetry.sha ?? FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_SHA;
+  const currentMainSha = expectedRetry.currentMainSha ?? "a5578255f72d8d724d5c20be0a7ac278912a70e7";
   const run = {
-    id: Number(FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_RUN_ID),
+    id: Number(retryRunId),
     workflow_id: 372102614,
     path: ".github/workflows/production-migration-preflight.yml@refs/heads/main",
     event: "workflow_dispatch",
     head_branch: "main",
-    head_sha: FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_SHA,
+    head_sha: retrySha,
     run_attempt: 1,
     status: "completed",
     conclusion: "failure",
@@ -101,7 +106,7 @@ function safeFailedPreflightRetryEvidence(overrides = {}) {
     total_count: 2,
     jobs: [
       { id: 114194642210, name: "Authorize read-only preflight", status: "completed", conclusion: "failure",
-        head_sha: FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_SHA, run_attempt: 1,
+        head_sha: retrySha, run_attempt: 1,
         steps: [
           { name: "Set up job", conclusion: "success" },
           { name: "Checkout current main tooling", conclusion: "success" },
@@ -110,7 +115,7 @@ function safeFailedPreflightRetryEvidence(overrides = {}) {
           { name: "Complete job", conclusion: "success" },
         ] },
       { id: 114194697634, name: "Inspect, back up, restore, and rehearse on disposable PostgreSQL",
-        status: "completed", conclusion: "skipped", head_sha: FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_SHA,
+        status: "completed", conclusion: "skipped", head_sha: retrySha,
         run_attempt: 1, steps: [] },
     ],
     ...overrides.jobsPayload,
@@ -122,7 +127,7 @@ function safeFailedPreflightRetryEvidence(overrides = {}) {
   };
   return {
     run, jobsPayload, historyRun, workflowId: String(run.workflow_id),
-    currentMainSha: "a5578255f72d8d724d5c20be0a7ac278912a70e7",
+    currentMainSha,
     shaIsAncestorOfCurrentMain: true,
     ...overrides.evidence,
   };
@@ -195,6 +200,13 @@ describe("forward-resume evidence for the single verified pre-spawn failure", ()
       noPrismaSpawnVerified: true,
       failureCode: "final-prisma-writer-drain-rejected-before-spawn",
     });
+  });
+
+  it("requires the observed GitHub job setup and completion steps in the exact source sequence", () => {
+    const evidence = noSpawnProofInputs();
+    evidence.jobsPayload.jobs[2].steps = evidence.jobsPayload.jobs[2].steps.slice(1, -1);
+    expect(() => verifyForwardResumeNoSpawnEvidence(evidence))
+      .toThrow("the exact migration job step sequence differs from the observed pre-spawn guard failure");
   });
 
   it.each([
@@ -284,6 +296,31 @@ describe("forward-resume evidence for the single verified pre-spawn failure", ()
       safeFailedPreflightRetries: [safeRetry],
     });
     expect(digest).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("accepts both exact observed authorization-only preflight failures and binds both proofs", () => {
+    const firstRetry = safeFailedPreflightRetryEvidence({}, {
+      runId: FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_RUN_ID,
+      sha: FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_SHA,
+      currentMainSha: "ab80cbe54ebf67509db6e00801d686e52da02249",
+    });
+    const secondRetry = safeFailedPreflightRetryEvidence({}, {
+      runId: "38048789731",
+      sha: "ab80cbe54ebf67509db6e00801d686e52da02249",
+      currentMainSha: "ab80cbe54ebf67509db6e00801d686e52da02249",
+    });
+    const currentRun = { id: 39000000001, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main" };
+    const digest = verifyNoLaterMutationRun({
+      runs: [sourceRun(), firstRetry.historyRun, secondRetry.historyRun, currentRun],
+      currentRunId: String(currentRun.id),
+      safeFailedPreflightRetries: [firstRetry, secondRetry],
+    });
+    expect(digest).toMatch(/^[a-f0-9]{64}$/);
+    expect(() => verifyNoLaterMutationRun({
+      runs: [sourceRun(), firstRetry.historyRun, secondRetry.historyRun, currentRun],
+      currentRunId: String(currentRun.id),
+      safeFailedPreflightRetries: [firstRetry],
+    })).toThrow("another production mutation/preflight run exists");
   });
 
   it.each([

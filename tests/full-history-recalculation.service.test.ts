@@ -4,8 +4,8 @@ const V3 = "unified-experimental-physiology-state-v3-relative-muscle-daily-cumul
 
 const mocks = vi.hoisted(() => {
   const state = {
-    inventoryCalls: 0,
-    fingerprints: ["raw-before", "raw-after-mismatch"] as string[],
+    rawSourceMutation: false,
+    modelEpisodeSourceMutation: false,
     lifecycle: {
       invalidationGeneration: 3,
       productionStaleFromDate: null as string | null,
@@ -47,21 +47,18 @@ vi.mock("@/modules/model-episodes/physiology-v7-persistence.repository", () => (
 vi.mock("@/modules/model-episodes/unified-experimental-physiology-state.service", () => ({
   rebuildUnifiedExperimentalPhysiologyStateV1: mocks.rebuildUnified,
 }));
-vi.mock("@/modules/model-recovery/recovery-fingerprint", () => ({
-  stableSha256: (value: unknown) => {
-    mocks.state.inventoryCalls += 1;
-    return mocks.state.fingerprints[Math.min(mocks.state.inventoryCalls - 1, mocks.state.fingerprints.length - 1)]
-      ?? JSON.stringify(value);
-  },
-}));
-
-import { runOwnerAuthorizedFullHistoryRecalculation } from "@/modules/model-episodes/full-history-recalculation.service";
+import {
+  FULL_HISTORY_REBUILT_DERIVED_TABLES,
+  FULL_HISTORY_RAW_INPUT_TABLES,
+  inventoryFullHistoryRawInputs,
+  runOwnerAuthorizedFullHistoryRecalculation,
+} from "@/modules/model-episodes/full-history-recalculation.service";
 
 describe("runOwnerAuthorizedFullHistoryRecalculation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.state.inventoryCalls = 0;
-    mocks.state.fingerprints = ["raw-stable", "raw-stable"];
+    mocks.state.rawSourceMutation = false;
+    mocks.state.modelEpisodeSourceMutation = false;
     mocks.state.lifecycle = {
       invalidationGeneration: 7,
       productionStaleFromDate: null,
@@ -80,11 +77,24 @@ describe("runOwnerAuthorizedFullHistoryRecalculation", () => {
       active: true,
     });
     mocks.findUniqueLifecycle.mockImplementation(async () => ({ ...mocks.state.lifecycle }));
-    mocks.queryRawUnsafe.mockResolvedValue([{
-      row_count: 1,
-      max_marker: new Date("2026-01-01T00:00:00.000Z"),
-      id_checksum: "abc",
-    }]);
+    mocks.queryRawUnsafe.mockImplementation(async (sql: string, afterId: number) => {
+      const table = FULL_HISTORY_RAW_INPUT_TABLES.find((candidate) => sql.includes(`public."${candidate}"`));
+      if (!table) throw new Error("Unexpected raw inventory table");
+      if (afterId !== -2_147_483_649) return [];
+      const sourceValue = table === "DailyHealthData" && mocks.state.rawSourceMutation ? 82.25 : 82.5;
+      const canonicalRow = table === "ModelEpisode"
+        ? {
+            id: 11,
+            profileId: 1,
+            startDate: "2024-01-01",
+            initialGlycogenKg: mocks.state.modelEpisodeSourceMutation ? 0.6 : 0.5,
+          }
+        : { id: 1, sourceValue, updatedAt: "2026-01-01T00:00:00.000Z" };
+      return [{
+        id: table === "ModelEpisode" ? 11 : 1,
+        canonical_row: JSON.stringify(canonicalRow),
+      }];
+    });
     mocks.invalidate.mockResolvedValue({});
     mocks.recalculateModelEpisode.mockResolvedValue({
       status: "ok",
@@ -116,16 +126,110 @@ describe("runOwnerAuthorizedFullHistoryRecalculation", () => {
       invalidationGeneration: 7,
       productionPublishedGeneration: 7,
       unifiedPublishedGeneration: 7,
-      rawInputFingerprint: "raw-stable",
+      rawInputFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
   });
 
   it("fail-closes when raw observation inventory changes", async () => {
-    mocks.state.fingerprints = ["raw-before", "raw-after"];
+    mocks.recalculateModelEpisode.mockImplementation(async () => {
+      mocks.state.rawSourceMutation = true;
+      return {
+        status: "ok",
+        episodeId: 11,
+        daysPersisted: 10,
+        completeDays: 9,
+        latestModeledDate: "2026-01-09",
+      };
+    });
     await expect(runOwnerAuthorizedFullHistoryRecalculation({
       profileId: 1,
       ownerAuthorized: true,
     })).rejects.toThrow(/raw observation inputs/);
+  });
+
+  it("covers raw measurement, sleep, source provenance, and strength input tables", () => {
+    expect(FULL_HISTORY_RAW_INPUT_TABLES).toEqual(expect.arrayContaining([
+      "HealthMetricSample",
+      "RestingHeartRateSample",
+      "SleepSegment",
+      "HealthSyncSnapshot",
+      "HealthSyncAudit",
+      "ModelEpisode",
+      "Workout",
+      "StrengthSessionExercise",
+      "StrengthSet",
+    ]));
+    expect(FULL_HISTORY_RAW_INPUT_TABLES).toEqual(expect.arrayContaining([
+      "StepperReconciliationGroup",
+      "StepperReconciliationCandidate",
+    ]));
+    expect(FULL_HISTORY_REBUILT_DERIVED_TABLES).toEqual(expect.arrayContaining([
+      "StrengthSessionAccountingSnapshot",
+      "StrengthSessionAccountingOperation",
+      "ActiveEnergyCanonicalEvent",
+      "ActiveEnergyEventAlias",
+      "ActiveEnergyCandidate",
+      "ActiveEnergyResolutionRevision",
+    ]));
+    for (const derivedTable of FULL_HISTORY_REBUILT_DERIVED_TABLES) {
+      expect(FULL_HISTORY_RAW_INPUT_TABLES).not.toContain(derivedTable);
+    }
+  });
+
+  it("fingerprints complete canonical row values, not only row IDs or timestamps", async () => {
+    const before = await inventoryFullHistoryRawInputs({ $queryRawUnsafe: mocks.queryRawUnsafe } as never);
+    mocks.state.rawSourceMutation = true;
+    const after = await inventoryFullHistoryRawInputs({ $queryRawUnsafe: mocks.queryRawUnsafe } as never);
+
+    expect(after.fingerprint).not.toBe(before.fingerprint);
+    expect(after.tables.find((table) => table.table === "DailyHealthData")?.contentSha256)
+      .not.toBe(before.tables.find((table) => table.table === "DailyHealthData")?.contentSha256);
+  });
+
+  it("fingerprints frozen episode initialization inputs and uses a narrow derived-output projection", async () => {
+    await inventoryFullHistoryRawInputs({ $queryRawUnsafe: mocks.queryRawUnsafe } as never);
+    const episodeQuery = mocks.queryRawUnsafe.mock.calls
+      .map(([sql]) => String(sql))
+      .find((sql) => sql.includes('public."ModelEpisode"'));
+    expect(episodeQuery).toContain("to_jsonb(source_row) - ARRAY[");
+    for (const outputField of [
+      "personalOffsetKcalPerDay",
+      "activityCalibration",
+      "calibrationStatus",
+      "calibrationDiagnostics",
+      "latestModeledDate",
+      "updatedAt",
+    ]) {
+      expect(episodeQuery).toContain(`'${outputField}'`);
+    }
+
+    const before = await inventoryFullHistoryRawInputs({ $queryRawUnsafe: mocks.queryRawUnsafe } as never);
+    mocks.state.modelEpisodeSourceMutation = true;
+    const after = await inventoryFullHistoryRawInputs({ $queryRawUnsafe: mocks.queryRawUnsafe } as never);
+
+    expect(after.fingerprint).not.toBe(before.fingerprint);
+    expect(after.tables.find((table) => table.table === "ModelEpisode")?.contentSha256)
+      .not.toBe(before.tables.find((table) => table.table === "ModelEpisode")?.contentSha256);
+  });
+
+  it("normalizes only materialization-owned session outputs while retaining semantic accounting inputs", async () => {
+    await inventoryFullHistoryRawInputs({ $queryRawUnsafe: mocks.queryRawUnsafe } as never);
+    const sessionQuery = mocks.queryRawUnsafe.mock.calls
+      .map(([sql]) => String(sql))
+      .find((sql) => sql.includes('public."StrengthDiarySession"'));
+    const sessionCall = mocks.queryRawUnsafe.mock.calls.find(([sql]) => String(sql).includes('public."StrengthDiarySession"'));
+    const profileCall = mocks.queryRawUnsafe.mock.calls.find(([sql]) => String(sql).includes('public."Profile"'));
+    expect(sessionQuery).toContain('LEFT JOIN public."Workout" AS matched_workout');
+    expect(sessionQuery).toContain('source_row."effectiveAccountingAt", matched_workout."startAt", source_row."webStartedAt", source_row."createdAt"');
+    expect(sessionQuery).toContain('COALESCE(source_row."accountingTimeZone", $3::text)');
+    expect(sessionQuery).toContain("COALESCE(source_row.\"accountingTimeZoneProvenance\", 'legacy-default')");
+    for (const derivedField of ["currentSnapshotRevision", "updatedAt", "effectiveAccountingAt", "accountingTimeZone", "accountingTimeZoneProvenance"]) {
+      expect(sessionQuery).toContain(`'${derivedField}'`);
+    }
+    expect(FULL_HISTORY_RAW_INPUT_TABLES).toContain("StrengthDiarySession");
+    expect(sessionCall).toHaveLength(4);
+    expect(sessionCall?.[3]).toBe("Europe/Bratislava");
+    expect(profileCall).toHaveLength(3);
   });
 
   it("fail-closes when Unified is not V3 epoch 0", async () => {

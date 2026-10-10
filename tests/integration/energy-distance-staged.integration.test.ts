@@ -30,8 +30,10 @@ import { modelProfile, stableSourceDays } from "../model-episode-fixtures";
 import { prepareEpisodeInitialization } from "@/modules/model-episodes/episode-initialization";
 import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
 import { materializeActiveEnergyCandidatesV1 } from "@/modules/activity/active-energy-materialization";
+import { inventoryFullHistoryRawInputs } from "@/modules/model-episodes/full-history-recalculation.service";
+import { requireLoopbackTestDatabaseUrl } from "../helpers/require-loopback-test-database";
 
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({ datasourceUrl: requireLoopbackTestDatabaseUrl(process.env.DATABASE_URL) });
 const repository = new ModelEpisodeRepository(prisma);
 const steppers = new StepperWorkoutRepository(prisma);
 const version = "bodycast-physiology-v7+selection-v1";
@@ -735,7 +737,17 @@ describe("staged energy and distance PostgreSQL integration", () => {
       { source: "mechanical-stepper", kcal: stepperEvent.currentKcal },
     ]);
 
+    const rawInputsBeforeRepeatedMaterialization = await inventoryFullHistoryRawInputs(prisma);
+    const accountingOperationsBeforeRepeatedMaterialization = await prisma.strengthSessionAccountingOperation.count({
+      where: { session: { program: { name: programName } } },
+    });
     await materializeActiveEnergyCandidatesV1(1);
+    const rawInputsAfterRepeatedMaterialization = await inventoryFullHistoryRawInputs(prisma);
+    const accountingOperationsAfterRepeatedMaterialization = await prisma.strengthSessionAccountingOperation.count({
+      where: { session: { program: { name: programName } } },
+    });
+    expect(accountingOperationsAfterRepeatedMaterialization).toBeGreaterThan(accountingOperationsBeforeRepeatedMaterialization);
+    expect(rawInputsAfterRepeatedMaterialization.fingerprint).toBe(rawInputsBeforeRepeatedMaterialization.fingerprint);
     const repeatedStepperEvent = await prisma.activeEnergyCanonicalEvent.findUniqueOrThrow({
       where: { id: stepperEvent.id },
       include: { aliases: true, candidates: true, resolutions: true },
@@ -750,6 +762,80 @@ describe("staged energy and distance PostgreSQL integration", () => {
       where: { profileId: 1, aliases: { some: { OR: stepperAliases } }, supersededByEventId: null },
     });
     expect(eventsForBothStepperAliases).toHaveLength(1);
+
+    // Simulate a legacy session whose persisted accounting snapshot is missing
+    // and whose fallback context has not yet been materialized. Rebuilding the
+    // snapshot may fill only those derived fields; its primary session inputs
+    // and semantic fingerprint must remain stable.
+    const sessionBeforeStaleRefresh = await prisma.strengthDiarySession.findUniqueOrThrow({
+      where: { id: strengthSession.id },
+      select: {
+        id: true, profileId: true, programId: true, programVersionId: true,
+        status: true, entryMode: true, webStartedAt: true, webEndedAt: true,
+        revision: true, accountingInputRevision: true, matchedWorkoutId: true,
+        matchStatus: true, matchMethod: true, matchedAt: true,
+        currentSnapshotRevision: true,
+      },
+    });
+    expect(sessionBeforeStaleRefresh.currentSnapshotRevision).not.toBeNull();
+    const stalePointerRevision = sessionBeforeStaleRefresh.currentSnapshotRevision!;
+    await prisma.strengthDiarySession.update({
+      where: { id: strengthSession.id },
+      data: {
+        currentSnapshotRevision: null,
+        effectiveAccountingAt: null,
+        accountingTimeZone: null,
+        accountingTimeZoneProvenance: null,
+      },
+    });
+    const sourceInputsBeforeStaleRefresh = await prisma.strengthDiarySession.findUniqueOrThrow({
+      where: { id: strengthSession.id },
+      select: {
+        id: true, profileId: true, programId: true, programVersionId: true,
+        status: true, entryMode: true, webStartedAt: true, webEndedAt: true,
+        revision: true, accountingInputRevision: true, matchedWorkoutId: true,
+        matchStatus: true, matchMethod: true, matchedAt: true,
+      },
+    });
+    const rawInputsBeforeStaleRefresh = await inventoryFullHistoryRawInputs(prisma);
+    const snapshotsBeforeStaleRefresh = await prisma.strengthSessionAccountingSnapshot.count({
+      where: { sessionId: strengthSession.id },
+    });
+
+    const staleRefresh = await materializeActiveEnergyCandidatesV1(1);
+
+    const sessionAfterStaleRefresh = await prisma.strengthDiarySession.findUniqueOrThrow({
+      where: { id: strengthSession.id },
+      select: {
+        id: true, profileId: true, programId: true, programVersionId: true,
+        status: true, entryMode: true, webStartedAt: true, webEndedAt: true,
+        revision: true, accountingInputRevision: true, matchedWorkoutId: true,
+        matchStatus: true, matchMethod: true, matchedAt: true,
+        currentSnapshotRevision: true, effectiveAccountingAt: true,
+        accountingTimeZone: true, accountingTimeZoneProvenance: true,
+      },
+    });
+    const rawInputsAfterStaleRefresh = await inventoryFullHistoryRawInputs(prisma);
+    expect(staleRefresh.strengthSessionIds).toContain(strengthSession.id);
+    expect(sessionAfterStaleRefresh.currentSnapshotRevision).toBeGreaterThan(stalePointerRevision);
+    expect(await prisma.strengthSessionAccountingSnapshot.count({ where: { sessionId: strengthSession.id } }))
+      .toBeGreaterThan(snapshotsBeforeStaleRefresh);
+    expect(sessionAfterStaleRefresh).toMatchObject(sourceInputsBeforeStaleRefresh);
+    expect(sessionAfterStaleRefresh).toMatchObject({
+      effectiveAccountingAt: strengthStart,
+      accountingTimeZone: "Europe/Bratislava",
+      accountingTimeZoneProvenance: "legacy-default",
+    });
+    expect(rawInputsAfterStaleRefresh.fingerprint).toBe(rawInputsBeforeStaleRefresh.fingerprint);
+
+    await prisma.strengthDiarySession.update({
+      where: { id: strengthSession.id },
+      data: { webEndedAt: new Date(strengthEnd.getTime() + 1_000) },
+    });
+    const rawInputsAfterSessionInputEdit = await inventoryFullHistoryRawInputs(prisma);
+    expect(rawInputsAfterSessionInputEdit.fingerprint).not.toBe(rawInputsAfterStaleRefresh.fingerprint);
+    expect(rawInputsAfterSessionInputEdit.tables.find((table) => table.table === "StrengthDiarySession")?.contentSha256)
+      .not.toBe(rawInputsAfterStaleRefresh.tables.find((table) => table.table === "StrengthDiarySession")?.contentSha256);
   }, 120_000);
 
   it("keeps Strength freshness symmetric for absent, incomplete, blocked, and complete model days", async () => {

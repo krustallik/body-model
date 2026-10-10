@@ -24,6 +24,16 @@ function prepareFixture(fixture: ReturnType<typeof createFixture>) {
 }
 
 describe("production full-history recalculation cutover", () => {
+  it("provides the isolated restore password required by encrypted backup rehearsal", () => {
+    const workflow = readFileSync(new URL("../.github/workflows/production-full-history-recalculate.yml", import.meta.url), "utf8");
+    const step = workflow.split("- name: Restore snapshot and rehearse full-history recalculation")[1]?.split("      - name:")[0] ?? "";
+    expect(step).toContain("DATABASE_URL: postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_restore");
+    expect(step).toContain("PGPASSWORD: isolated_restore_test_password");
+    expect(step).toContain("POSTGRES_IMAGE: public.ecr.aws/docker/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24");
+    expect(step).toContain("node scripts/restore-encrypted-postgres-backup.mjs");
+    expect(step).toContain("docker run --rm --network host");
+  });
+
   it.skipIf(!bashAvailable)("recalculates under one lock, verifies V3 postflight, and restores the exact app behind maintenance", () => {
     const fixture = createFixture();
     prepareFixture(fixture);

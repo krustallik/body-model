@@ -8,6 +8,7 @@ on:
       - ".github/workflows/production-recovery-*.yml"
       - ".github/workflows/production-migration-preflight.yml"
       - ".github/workflows/production-migrate.yml"
+      - ".github/workflows/production-full-history-recalculate.yml"
       - ".github/workflows/deploy-production.yml"
       - ".github/workflows/activate-unified-v4-production.yml"
       - ".github/workflows/production-database-cutback.yml"
@@ -73,6 +74,10 @@ on:
       - "tests/production-safety-tooling.test.mjs"
       - "tests/production-migration-v5.test.mjs"
       - "tests/production-forward-resume.test.mjs"
+      - "tests/production-full-history-recalculate-cutover.test.ts"
+      - "tests/full-history-recalculation.service.test.ts"
+      - "tests/integration/full-history-raw-input-inventory.integration.test.ts"
+      - "src/modules/model-episodes/full-history-recalculation.service.ts"
       - "tests/production-release-marker.test.mjs"
       - "tests/production-writer-drain.test.mjs"
       - "tests/deploy-script-ordering.test.ts"
@@ -163,7 +168,7 @@ jobs:
         run: npm run test:unit -- tests/production-forward-resume.test.mjs tests/forward-resume-armed-retry.test.mjs tests/production-release-marker.test.mjs tests/production-migration-v5.test.mjs tests/production-safety-tooling.test.mjs tests/production-writer-drain.test.mjs
 
       - name: Run production release boundary regressions
-        run: npm run test:unit -- tests/deploy-script-ordering.test.ts tests/production-deploy-rollback.test.ts tests/production-deploy-rollback-safety.test.ts tests/production-traffic-cutover-freshness.test.ts tests/production-release-entrypoints.test.ts tests/production-database-cutback.test.mjs tests/production-previous-app-provenance.test.mjs tests/production-release-terminal-safety.test.ts tests/deploy-main-freshness.test.ts tests/production-deploy-gate.test.ts tests/production-recovery-boundary.test.mjs
+        run: npm run test:unit -- tests/deploy-script-ordering.test.ts tests/production-full-history-recalculate-cutover.test.ts tests/full-history-recalculation.service.test.ts tests/production-deploy-rollback.test.ts tests/production-deploy-rollback-safety.test.ts tests/production-traffic-cutover-freshness.test.ts tests/production-release-entrypoints.test.ts tests/production-database-cutback.test.mjs tests/production-previous-app-provenance.test.mjs tests/production-release-terminal-safety.test.ts tests/deploy-main-freshness.test.ts tests/production-deploy-gate.test.ts tests/production-recovery-boundary.test.mjs
 
       - name: Run production recovery workflow protocol tests
         run: npm run test:unit -- tests/production-recovery-authority.test.mjs tests/production-recovery-authorization.test.mjs tests/production-recovery-boundary.test.mjs tests/production-recovery-flow.test.mjs tests/production-recovery-client.test.mjs tests/production-recovery-package.test.mjs
@@ -190,7 +195,7 @@ jobs:
       - name: Run PostgreSQL recovery read-only-role and lifecycle integration tests
         env:
           BODYCAST_RECOVERY_TEST_DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_recovery_test
-        run: npm run test:integration -- tests/integration/production-recovery-readonly-role.integration.test.ts tests/integration/production-recovery-flow.integration.test.ts
+        run: npm run test:integration -- tests/integration/full-history-raw-input-inventory.integration.test.ts tests/integration/production-recovery-readonly-role.integration.test.ts tests/integration/production-recovery-flow.integration.test.ts
 
       - name: Build migrator image and verify in-image migration bytes
         run: |

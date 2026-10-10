@@ -1,4 +1,4 @@
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { PrismaClient } from "@prisma/client";
@@ -177,10 +177,19 @@ describe("Unified V4 rollout on isolated PostgreSQL", () => {
       });
       await writeFile(destination, migrationBytes);
     }
-    await copyFile(
-      path.join(process.cwd(), "scripts", "production-writer-drain.mjs"),
-      path.join(migratorArtifactRoot, "scripts", "production-writer-drain.mjs"),
-    );
+    const scriptsDirectory = path.join(process.cwd(), "scripts");
+    const migratorRuntimeFiles = [
+      ...(await readdir(scriptsDirectory)).filter((name) => /^production-migration-.*\.mjs$/.test(name)),
+      "github-owner-identity.mjs",
+      "postgres-database-identity.mjs",
+      "production-db-preflight.mjs",
+      "production-db-preflight.sql",
+      "production-writer-drain.mjs",
+      "run-prisma-migrate-with-lock-timeout.mjs",
+    ];
+    for (const name of migratorRuntimeFiles) {
+      await copyFile(path.join(scriptsDirectory, name), path.join(migratorArtifactRoot, "scripts", name));
+    }
     compileMigratorTool({ source: "scripts/unified-v3-postflight.ts", output: "unified-v3-postflight.mjs" });
     compileMigratorTool({ source: "scripts/unified-v4-activate-replay.ts", output: "unified-v4-activate-replay.mjs" });
     compileMigratorTool({ source: "scripts/unified-v4-traffic-check.ts", output: "unified-v4-traffic-check.mjs" });

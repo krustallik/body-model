@@ -191,6 +191,20 @@ describe("active production release entrypoints", () => {
     expect(durableMarker).toBeLessThan(prismaSpawn);
   });
 
+  it("proves the authorization-only retry SHA is an ancestor of current main before exempting it from mutation history", () => {
+    const workflow = readFileSync(resolve(workflowDir, "production-migration-preflight.yml"), "utf8");
+    const sourceAncestry = workflow.indexOf('git merge-base --is-ancestor "$(jq -r .head_sha "$RUNNER_TEMP/forward-source-run.json")" "$MAIN_TIP"');
+    const retryAncestry = workflow.indexOf('git merge-base --is-ancestor "$(jq -er .head_sha "$RUNNER_TEMP/forward-safe-preflight-retry-run.json")" "$MAIN_TIP"');
+    const historyVerifier = workflow.indexOf("verifyNoLaterMutationRun({ runs, currentRunId,");
+
+    expect(sourceAncestry).toBeGreaterThanOrEqual(0);
+    expect(retryAncestry).toBeGreaterThan(sourceAncestry);
+    expect(historyVerifier).toBeGreaterThan(retryAncestry);
+    expect(workflow.slice(sourceAncestry, retryAncestry)).toContain("The failed release SHA is not an ancestor of current main.");
+    expect(workflow.slice(retryAncestry, historyVerifier)).toContain("The authorization-only preflight retry SHA is not an ancestor of current main.");
+    expect(workflow.slice(historyVerifier, historyVerifier + 600)).toContain("shaIsAncestorOfCurrentMain: true");
+  });
+
   it("keeps Prisma-only lock-timeout URL options out of libpq postflight probes", () => {
     const workflow = readFileSync(resolve(workflowDir, "production-migration-preflight.yml"), "utf8");
     const restoreStart = workflow.indexOf("name: Restore snapshot, compare source state, and rehearse exact migrations");

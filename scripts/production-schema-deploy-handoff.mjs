@@ -18,7 +18,7 @@ const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const V3_STATES = new Set(["schema-applied", "app-ready", "v4-ready", "database-restored", "rollback-app-ready"]);
 const DENIED_PATH = /^(?:prisma\/|public\/|scripts\/unified-v[34]|scripts\/physiology|docker-compose(?:\.prod)?\.yml$|package(?:-lock)?\.json$|next\.config\.[^/]+$|tsconfig(?:\.[^/]+)?\.json$)/;
-const ALLOWED_PATH = /^(?:\.github\/workflows\/|tests\/|scripts\/deploy\.sh$|scripts\/production-release-marker\.(?:sh|mjs)$|scripts\/production-schema-deploy-handoff\.mjs$|scripts\/production-traffic-cutover\.sh$|scripts\/production-full-history-recalculate\.ts$|src\/modules\/model-episodes\/full-history-recalculation\.service\.ts$|Dockerfile$)/;
+const ALLOWED_PATH = /^(?:\.github\/workflows\/|tests\/|scripts\/deploy\.sh$|scripts\/production-release-marker\.(?:sh|mjs)$|scripts\/production-schema-deploy-handoff\.mjs$|scripts\/production-traffic-cutover\.sh$|scripts\/production-full-history-recalculate\.ts$|src\/modules\/model-episodes\/(?:full-history-recalculation\.service|transient-exercise-water-episode-time-v2)\.ts$|src\/modules\/training\/experimental-transient-exercise-water-shadow\.service\.ts$|Dockerfile$)/;
 /** Schema/runtime identity that must remain identical to the migration origin. */
 const CRITICAL_TREES = ["prisma"];
 const CRITICAL_FILES = ["docker-compose.prod.yml", "package.json", "package-lock.json"];

@@ -75,6 +75,44 @@ describe("schema deploy compatibility handoff", () => {
     expect(plan.marker.sourceMarkerDigest).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it("accepts the current checkout only when its exact transient-water runtime paths remain schema-compatible", () => {
+    const candidateSha = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: process.cwd(), encoding: "utf8",
+    }).trim();
+    const compatibility = readGitCompatibility(process.cwd(), candidateSha);
+    expect(compatibility.isAncestor).toBe(true);
+    expect(compatibility.changedPaths).toContain("src/modules/model-episodes/transient-exercise-water-episode-time-v2.ts");
+    expect(compatibility.changedPaths).toContain("src/modules/training/experimental-transient-exercise-water-shadow.service.ts");
+    const plan = evaluateSchemaDeployHandoff({
+      markerText: markerText(), deploySha: candidateSha, ...compatibility,
+    });
+    expect(plan.action).toBe("write");
+    expect(plan.marker.deploySha).toBe(candidateSha);
+    expect(plan.compatibilityDigest).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("allows the reviewed transient-water paths but keeps adjacent raw and persistence paths blocked", () => {
+    const reviewedDerivedPaths = [
+      "src/modules/model-episodes/transient-exercise-water-episode-time-v2.ts",
+      "src/modules/training/experimental-transient-exercise-water-shadow.service.ts",
+    ];
+    expect(evaluateSchemaDeployHandoff({
+      markerText: markerText(), deploySha: DEPLOY_SHA,
+      ...compatible, changedPaths: reviewedDerivedPaths,
+    }).action).toBe("write");
+
+    for (const changedPath of [
+      "src/modules/training/training-session.service.ts",
+      "src/modules/model-episodes/model-episode.service.ts",
+      "prisma/schema.prisma",
+    ]) {
+      expect(() => evaluateSchemaDeployHandoff({
+        markerText: markerText(), deploySha: DEPLOY_SHA,
+        ...compatible, changedPaths: [changedPath],
+      })).toThrow(/allowlist/);
+    }
+  });
+
   it("rejects runtime drift, a foreign SHA, tampered provenance, and a non-descendant", () => {
     expect(() => evaluateSchemaDeployHandoff({
       markerText: markerText(), deploySha: DEPLOY_SHA,

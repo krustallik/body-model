@@ -395,8 +395,26 @@ describe("verified resume after a migration failed before the DDL marker", () =>
     const crossStepErrors = migrationLog.split("\n");
     crossStepErrors[0] = crossStepErrors[0].replace(`\t${"Run the fixed guarded migration script over SSH"}\t`, "\tValidate protected production SSH\t");
     crossStepErrors[1] = crossStepErrors[1].replace(`\t${"Run the fixed guarded migration script over SSH"}\t`, "\tValidate protected production SSH\t");
-    expect(() => verifyPreDdlResume({ migrationLogText: crossStepErrors.join("\n") }))
-      .toThrow("exactly three known import failures");
+    let crossStepErrorMessage = "";
+    try {
+      verifyPreDdlResume({ migrationLogText: crossStepErrors.join("\n") });
+    } catch (error) {
+      crossStepErrorMessage = error.message;
+    }
+    expect(crossStepErrorMessage).toContain("exactly three known import failures");
+    expect(crossStepErrorMessage).toContain('"step":"Validate protected production SSH"');
+    expect(crossStepErrorMessage).not.toContain(migrationFailure);
+
+    const unsafeStepLabel = crossStepErrors.join("\n").replace("Validate protected production SSH", "Unexpected\u0007step");
+    let unsafeLabelErrorMessage = "";
+    try {
+      verifyPreDdlResume({ migrationLogText: unsafeStepLabel });
+    } catch (error) {
+      unsafeLabelErrorMessage = error.message;
+    }
+    expect(unsafeLabelErrorMessage).toContain('"step":"Unexpected?step"');
+    expect(unsafeLabelErrorMessage).not.toContain("\u0007");
+    expect(unsafeLabelErrorMessage).not.toContain(migrationFailure);
 
     const crossStepWriterDrain = migrationLog.split("\n");
     crossStepWriterDrain[2] = crossStepWriterDrain[2].replace(`\t${"Run the fixed guarded migration script over SSH"}\t`, "\tRead-only production identity check\t");

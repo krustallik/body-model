@@ -222,6 +222,16 @@ capture_previous_release() {
   previous_app_present=true
   if [[ "$app_status" == "healthy" ]]; then
     previous_app_healthy=true
+    if ! docker image inspect --format '{{.Id}}' "$previous_app_image_id" >/dev/null 2>&1; then
+      # The live container can outlive its image ID in the local content store after a
+      # later build/unpack. Recover an immutable pin from the still-running process.
+      echo "Previous app image ${previous_app_image_id} is absent from the local store; committing the live container to recover a rollback pin." >&2
+      previous_app_image_id="$(docker commit --pause=false "$APP_CONTAINER")"
+      [[ "$previous_app_image_id" =~ ^sha256:[a-f0-9]{64}$ ]] || {
+        echo "Recovered previous-app commit did not produce an immutable image ID." >&2
+        return 1
+      }
+    fi
     docker image tag "$previous_app_image_id" "$ROLLBACK_IMAGE"
     pinned_image_id="$(docker image inspect --format '{{.Id}}' "$ROLLBACK_IMAGE")"
     [[ "$pinned_image_id" == "$previous_app_image_id" ]] || {

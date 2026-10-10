@@ -141,7 +141,16 @@ if [[ "$1" == "image" && "$2" == "inspect" ]]; then
   case "$image" in
     bodycast-app:latest) image_file="$IMAGE_LATEST" ;;
     bodycast-app:rollback) image_file="$IMAGE_ROLLBACK" ;;
-    *) exit 1 ;;
+    *)
+      if [[ "\${MISSING_PREVIOUS_IMAGE:-0}" == "1" ]]; then exit 1; fi
+      for image_file in "$APP_IMAGE_ID_FILE" "$IMAGE_LATEST" "$IMAGE_ROLLBACK"; do
+        if [[ -s "$image_file" && "$(cat "$image_file")" == "$image" ]]; then
+          if [[ "$format" == *".Id"* ]]; then printf '%s\n' "$image"; fi
+          exit 0
+        fi
+      done
+      exit 1
+      ;;
   esac
   [[ -s "$image_file" ]] || exit 1
   if [[ "$format" == *".Id"* ]]; then cat "$image_file"; fi
@@ -165,6 +174,12 @@ if [[ "$1" == "image" && "$2" == "rm" ]]; then
     exit 55
   fi
   rm -f "$IMAGE_ROLLBACK"
+  exit 0
+fi
+if [[ "$1" == "commit" ]]; then
+  event "docker-commit-previous-app"
+  if [[ "\${FAIL_DOCKER_COMMIT:-0}" == "1" ]]; then exit 56; fi
+  cat "$APP_IMAGE_ID_FILE"
   exit 0
 fi
 if [[ "$1" == "compose" ]]; then

@@ -126,7 +126,16 @@ const migrationExecutionSteps = [
   ["Remove temporary runner credentials", "success"],
   ["Post Set up Node runtime", "skipped"],
   ["Post Checkout exact authorized release SHA", "success"],
-].map(([name, conclusion]) => ({ name, conclusion }));
+].map(([name, conclusion]) => ({
+  name,
+  conclusion,
+  ...(name === "Run the fixed guarded migration script over SSH"
+    ? { started_at: "2026-10-10T00:06:21Z", completed_at: "2026-10-10T00:08:29Z" }
+    : {}),
+  ...(name === "Remove temporary runner credentials"
+    ? { started_at: "2026-10-10T00:08:29Z", completed_at: "2026-10-10T00:08:29Z" }
+    : {}),
+}));
 
 function ownerRun({ id, workflowId, path, sha, conclusion }) {
   return {
@@ -391,6 +400,25 @@ describe("verified resume after a migration failed before the DDL marker", () =>
   it("parses wrapped runner logs while binding failures to the sole failed fixed migration step", () => {
     const runnerLog = migrationLog.replaceAll(" imported from ", "\n imported from ");
     expect(verifyPreDdlResume({ migrationLogText: runnerLog }).resumeKind).toBe("verified-pre-ddl-migration-failure");
+
+    const unknownStepLog = migrationLog.replaceAll(
+      "\tRun the fixed guarded migration script over SSH\t",
+      "\tUNKNOWN STEP\t",
+    );
+    expect(verifyPreDdlResume({ migrationLogText: unknownStepLog }).resumeKind)
+      .toBe("verified-pre-ddl-migration-failure");
+
+    const lateUnknownStepLog = unknownStepLog.replace("2026-10-10T00:08:29.3550399Z", "2026-10-10T00:08:30.3550399Z");
+    expect(() => verifyPreDdlResume({ migrationLogText: lateUnknownStepLog }))
+      .toThrow("exactly three known import failures");
+
+    const migrationJobsWithoutStepTimes = preDdlMigrationJobs();
+    for (const step of migrationJobsWithoutStepTimes.jobs[2].steps) {
+      delete step.started_at;
+      delete step.completed_at;
+    }
+    expect(() => verifyPreDdlResume({ migrationLogText: unknownStepLog, migrationJobs: migrationJobsWithoutStepTimes }))
+      .toThrow("exactly three known import failures");
 
     const crossStepErrors = migrationLog.split("\n");
     crossStepErrors[0] = crossStepErrors[0].replace(`\t${"Run the fixed guarded migration script over SSH"}\t`, "\tValidate protected production SSH\t");

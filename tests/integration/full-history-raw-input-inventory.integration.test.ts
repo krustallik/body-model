@@ -5,14 +5,9 @@ import {
   FULL_HISTORY_RAW_INPUT_TABLES,
   inventoryFullHistoryRawInputs,
 } from "@/modules/model-episodes/full-history-recalculation.service";
+import { requireLoopbackTestDatabaseUrl } from "../helpers/require-loopback-test-database";
 
-const databaseUrl = process.env.BODYCAST_RECOVERY_TEST_DATABASE_URL;
-const parsedDatabaseUrl = databaseUrl ? new URL(databaseUrl) : null;
-if (!parsedDatabaseUrl
-    || !["127.0.0.1", "localhost", "::1"].includes(parsedDatabaseUrl.hostname.replace(/^\[|\]$/g, "").toLowerCase())
-    || !decodeURIComponent(parsedDatabaseUrl.pathname.replace(/^\//, "")).endsWith("_test")) {
-  throw new Error("Full-history raw-input inventory integration requires a loopback *_test database.");
-}
+const databaseUrl = requireLoopbackTestDatabaseUrl(process.env.BODYCAST_RECOVERY_TEST_DATABASE_URL);
 
 const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
 const metricPrefix = `full-history-${process.pid}-${Math.floor(Math.random() * 1_000_000)}-`;

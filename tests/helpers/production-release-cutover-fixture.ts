@@ -594,6 +594,7 @@ export function createFixture(): Fixture {
     "production-traffic-cutover.sh",
     "production-writer-drain.sh",
     "production-previous-app-provenance.mjs",
+    "production-capture-resume-receipt.mjs",
     "production-db-target.sh",
     "production-db-target-url.mjs",
     "production-db-preflight.mjs",

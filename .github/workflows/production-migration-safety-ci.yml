@@ -15,6 +15,10 @@ on:
       - "prisma/migrations/**"
       - "scripts/production-migration-*.mjs"
       - "scripts/production-forward-resume.mjs"
+      - "scripts/github-forward-resume-evidence.mjs"
+      - "scripts/production-capture-resume-receipt.mjs"
+      - "tests/forward-resume-evidence-replay.test.mjs"
+      - "tests/helpers/forward-resume-evidence-fixture.mjs"
       - "scripts/production-traffic-cutover.sh"
       - "scripts/production-database-cutback.sh"
       - "scripts/production-database-cutback-promotion.sh"
@@ -147,6 +151,8 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
+      - name: Replay complete signed forward-resume evidence without production credentials
+        run: npx vitest run tests/forward-resume-evidence-replay.test.mjs tests/production-preflight-resume.test.mjs
       - name: Generate Prisma client for final-target identity smoke
         env:
           DATABASE_URL: postgresql://build:build@127.0.0.1:5432/build

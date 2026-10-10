@@ -10,13 +10,6 @@ import { readProductionReleaseMarker } from "./production-release-marker.mjs";
 
 export const FORWARD_RESUME_FAILED_RUN_ID = "38022978032";
 export const FORWARD_RESUME_FAILED_SHA = "3cbf47ef73b83cdc9cd2ad548dbb36ca2b65bf74";
-export const FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_RUN_ID = "38045689913";
-export const FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_SHA = "981e3370ec981838ab2c1e5037a74e3fd5b8ce49";
-export const FORWARD_RESUME_SAFE_PREFLIGHT_RETRIES = Object.freeze([
-  Object.freeze({ runId: FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_RUN_ID, sha: FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_SHA }),
-  Object.freeze({ runId: "38048789731", sha: "ab80cbe54ebf67509db6e00801d686e52da02249" }),
-  Object.freeze({ runId: "38050603789", sha: "86cad77e612af4212c1083d310e054a8130b2e87" }),
-]);
 export const FORWARD_RESUME_PURPOSE = "bodycast-forward-resume-after-verified-pre-spawn-failure-v1";
 const DIGEST = /^[a-f0-9]{64}$/;
 export const MIGRATION_FAILURE_JOB = "Final live guard and authorized migration";
@@ -34,34 +27,81 @@ function reject(message) { throw new Error(`Forward-resume blocked: ${message}`)
 function workflowPath(run) { return typeof run?.path === "string" ? run.path.split("@")[0] : ""; }
 function sha256(bytes) { return createHash("sha256").update(bytes).digest("hex"); }
 
+export const DIAGNOSTIC_PATH = ".github/workflows/production-checkout-diagnostic.yml";
+export const DIAGNOSTIC_FILES = Object.freeze([DIAGNOSTIC_PATH, "scripts/production-checkout-diagnostic.sh",
+  "scripts/github-owner-identity.mjs", "scripts/filter-ssh-known-hosts.mjs"]);
+function assertMatchingHistoryRun(run, historyRun) {
+  if (!historyRun || ["id", "workflow_id", "path", "event", "head_branch", "head_sha", "status", "conclusion", "run_attempt"]
+    .some((field) => historyRun[field] !== run[field])
+    || String(historyRun.actor?.id) !== String(run.actor?.id)
+    || String(historyRun.triggering_actor?.id) !== String(run.triggering_actor?.id)) reject("run metadata differs from the complete history.");
+}
+function verifyReadOnlyDiagnostic({ run, jobsPayload, historyRun, workflowId, shaIsAncestorOfCurrentMain,
+  sourceFiles, reviewedFiles, currentMainSha }) {
+  assertMatchingHistoryRun(run, historyRun);
+  assertTrustedOwnerWorkflowRun(run, { actorId: BODYCAST_OWNER_ID, workflowPath: DIAGNOSTIC_PATH,
+    workflowRunId: String(run.id), workflowRunAttempt: 1, sha: run.head_sha });
+  if (run.status !== "completed" || run.conclusion !== "success" || run.run_attempt !== 1
+    || String(run.workflow_id) !== String(workflowId) || shaIsAncestorOfCurrentMain !== true
+    || !/^[a-f0-9]{40}$/.test(run.head_sha ?? "") || !/^[a-f0-9]{40}$/.test(currentMainSha ?? "")
+    || !sourceFiles || !reviewedFiles || Object.keys(sourceFiles).length !== DIAGNOSTIC_FILES.length
+    || Object.keys(reviewedFiles).length !== DIAGNOSTIC_FILES.length
+    || DIAGNOSTIC_FILES.some((file) => !Buffer.isBuffer(sourceFiles[file]) || !Buffer.isBuffer(reviewedFiles[file])
+      || !sourceFiles[file].equals(reviewedFiles[file]))) reject("diagnostic code differs from the reviewed read-only implementation.");
+  const expectedJobs = [
+    ["Authorize owner-requested exact-main diagnostic", ["Set up job", "Checkout current main gate helpers",
+      "Verify owner, exact current-main SHA, confirmation, and green CI", "Post Checkout current main gate helpers", "Complete job"]],
+    ["Inspect production checkout without mutation", ["Set up job", "Checkout exact current-main diagnostic script",
+      "Recheck owner run identity and current main before production credentials", "Validate SSH inputs and pin the production host",
+      "Inspect checkout metadata read-only", "Remove temporary SSH credentials", "Post Checkout exact current-main diagnostic script", "Complete job"]],
+  ];
+  const jobs = jobsPayload?.jobs;
+  if (jobsPayload?.total_count !== 2 || !Array.isArray(jobs) || jobs.length !== 2
+    || new Set(jobs.map((job) => job.id)).size !== 2) reject("diagnostic job inventory incomplete.");
+  for (const [name, steps] of expectedJobs) {
+    const job = jobs.find((item) => item.name === name);
+    if (!job || !/^[1-9][0-9]*$/.test(String(job.id)) || String(job.run_id) !== String(run.id)
+      || job.head_sha !== run.head_sha || job.run_attempt !== 1
+      || job.status !== "completed" || job.conclusion !== "success" || job.steps?.length !== steps.length
+      || job.steps.some((step, index) => step.name !== steps[index] || step.status !== "completed" || step.conclusion !== "success")) {
+      reject("diagnostic did not complete the reviewed read-only job/step sequence.");
+    }
+  }
+  return { purpose: "verified-read-only-checkout-diagnostic-v1", runId: String(run.id), runAttempt: 1,
+    sha: run.head_sha, reviewedSha: currentMainSha,
+    fileDigests: Object.fromEntries(DIAGNOSTIC_FILES.map((file) => [file, sha256(sourceFiles[file])])) };
+}
+
 function verifyAuthorizationOnlyForwardResumePreflightRetry({ run, jobsPayload, workflowId, currentMainSha,
   shaIsAncestorOfCurrentMain, historyRun }) {
   const runId = String(run?.id ?? "");
-  const expectedRetry = FORWARD_RESUME_SAFE_PREFLIGHT_RETRIES.find((retry) => retry.runId === runId);
+  const expectedSha = run?.head_sha;
   const expectedPath = ".github/workflows/production-migration-preflight.yml";
-  if (!expectedRetry
+  if (!/^[1-9][0-9]*$/.test(runId) || !/^[a-f0-9]{40}$/.test(expectedSha ?? "")
     || String(run?.workflow_id) !== String(workflowId)
     || workflowPath(run) !== expectedPath
     || run?.event !== "workflow_dispatch" || run?.head_branch !== "main"
-    || run?.head_sha !== expectedRetry.sha
     || run?.status !== "completed" || run?.conclusion !== "failure" || run?.run_attempt !== 1
     || String(run?.actor?.id) !== BODYCAST_OWNER_ID || String(run?.triggering_actor?.id) !== BODYCAST_OWNER_ID
     || shaIsAncestorOfCurrentMain !== true || !/^[a-f0-9]{40}$/.test(String(currentMainSha ?? ""))
     || !historyRun || String(historyRun.id) !== runId
     || ["workflow_id", "path", "event", "head_branch", "head_sha", "status", "conclusion", "run_attempt"]
-      .some((field) => historyRun[field] !== run[field])) {
+      .some((field) => historyRun[field] !== run[field])
+    || String(historyRun.actor?.id) !== BODYCAST_OWNER_ID || String(historyRun.triggering_actor?.id) !== BODYCAST_OWNER_ID) {
     reject("the intervening preflight is not the exact owner-authorized failed read-only gate attempt.");
   }
   try {
     assertTrustedOwnerWorkflowRun(run, {
       actorId: BODYCAST_OWNER_ID, workflowPath: expectedPath, workflowRunId: runId,
-      workflowRunAttempt: 1, ref: "refs/heads/main", sha: expectedRetry.sha,
+      workflowRunAttempt: 1, ref: "refs/heads/main", sha: expectedSha,
     });
   } catch (error) { reject(error.message); }
 
   const jobs = jobsPayload?.jobs;
   if (jobsPayload?.total_count !== 2 || !Array.isArray(jobs) || jobs.length !== 2
-    || jobs.some((job) => job.head_sha !== expectedRetry.sha || job.run_attempt !== 1)) {
+    || new Set(jobs.map((job) => String(job.id))).size !== 2
+    || jobs.some((job) => !/^[1-9][0-9]*$/.test(String(job.id)) || String(job.run_id) !== runId
+      || job.status !== "completed" || job.head_sha !== expectedSha || job.run_attempt !== 1)) {
     reject("the intervening preflight job inventory is incomplete or unexpected.");
   }
   const authorize = jobs.find((job) => job.name === "Authorize read-only preflight");
@@ -78,7 +118,7 @@ function verifyAuthorizationOnlyForwardResumePreflightRetry({ run, jobsPayload, 
     || !Array.isArray(production.steps) || production.steps.length !== 0
     || !Array.isArray(authorize.steps) || authorize.steps.length !== expectedAuthorizationSteps.length
     || authorize.steps.some((step, index) => step.name !== expectedAuthorizationSteps[index][0]
-      || step.conclusion !== expectedAuthorizationSteps[index][1])) {
+      || step.status !== "completed" || step.conclusion !== expectedAuthorizationSteps[index][1])) {
     reject("the intervening preflight did not fail only in authorization before the production job started.");
   }
   return Object.freeze({
@@ -86,7 +126,7 @@ function verifyAuthorizationOnlyForwardResumePreflightRetry({ run, jobsPayload, 
     purpose: "bodycast-forward-resume-authorization-only-preflight-retry-v1",
     runId,
     runAttempt: 1,
-    sha: expectedRetry.sha,
+    sha: expectedSha,
     currentMainSha,
     ownerId: BODYCAST_OWNER_ID,
     authorizationJobId: String(authorize.id),
@@ -132,12 +172,24 @@ export function selectForwardResumeMigrationContextArtifact(payload) {
 
 function parseJobLog(text) {
   const records = [];
+  let previous = -1n;
   for (const line of String(text ?? "").replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "").replace(/\r\n?/g, "\n").split("\n")) {
     const timestampAndMessage = line.replace(/^\uFEFF/, "");
     const match = timestampAndMessage.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z) ([\s\S]*)$/);
-    if (!match) continue;
+    if (!match) {
+      if (timestampAndMessage.trim()) reject("raw job log contains an unframed record.");
+      continue;
+    }
     const [, timestamp, message] = match;
-    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(timestamp)) continue;
+    const time = Date.parse(timestamp);
+    const fraction = timestamp.match(/\.(\d+)Z$/)?.[1] ?? "";
+    const precise = Number.isFinite(time) ? BigInt(Math.floor(time / 1000)) * 1_000_000_000n
+      + BigInt(fraction.slice(0, 9).padEnd(9, "0")) : -1n;
+    if (!Number.isFinite(time) || new Date(time).toISOString().slice(0, 19) !== timestamp.slice(0, 19)
+      || fraction.length > 9 || precise < previous || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(message)) {
+      reject("raw job log timestamps or control characters are invalid or out of order.");
+    }
+    previous = precise;
     records.push({ timestamp, message });
   }
   return records;
@@ -195,7 +247,7 @@ export function verifyForwardResumeNoSpawnEvidence({ run, jobsPayload, logText, 
     || workflowPath(run) !== ".github/workflows/production-migrate.yml"
     || run?.event !== "workflow_dispatch" || run?.head_branch !== "main"
     || run?.head_sha !== FORWARD_RESUME_FAILED_SHA || run?.status !== "completed" || run?.conclusion !== "failure"
-    || Number(run?.run_attempt) !== 1 || sourceIsAncestor !== true) {
+    || run?.run_attempt !== 1 || sourceIsAncestor !== true) {
     reject("the named source is not the original completed owner migration failure on the expected main SHA.");
   }
   try {
@@ -206,7 +258,9 @@ export function verifyForwardResumeNoSpawnEvidence({ run, jobsPayload, logText, 
 
   const jobs = jobsPayload?.jobs;
   if (jobsPayload?.total_count !== 3 || !Array.isArray(jobs) || jobs.length !== 3
-    || jobs.some((job) => job.head_sha !== FORWARD_RESUME_FAILED_SHA || Number(job.run_attempt) !== 1)) {
+    || new Set(jobs.map((job) => String(job.id))).size !== 3
+    || jobs.some((job) => !/^[1-9][0-9]*$/.test(String(job.id)) || String(job.run_id) !== FORWARD_RESUME_FAILED_RUN_ID
+      || job.status !== "completed" || job.head_sha !== FORWARD_RESUME_FAILED_SHA || job.run_attempt !== 1)) {
     reject("the original migration run job inventory is incomplete or unexpected.");
   }
   const authorize = jobs.find((job) => job.name === "Select latest exact preflight evidence");
@@ -232,7 +286,7 @@ export function verifyForwardResumeNoSpawnEvidence({ run, jobsPayload, logText, 
   ];
   const actualSteps = execution.steps ?? [];
   if (actualSteps.length !== expectedSteps.length || actualSteps.some((step, index) =>
-    step.name !== expectedSteps[index][0] || step.conclusion !== expectedSteps[index][1])) {
+    step.name !== expectedSteps[index][0] || step.status !== "completed" || step.conclusion !== expectedSteps[index][1])) {
     reject("the exact migration job step sequence differs from the observed pre-spawn guard failure.");
   }
   const executionStepIndex = actualSteps.findIndex((step) => step.name === MIGRATION_FAILURE_STEP);
@@ -333,7 +387,10 @@ export function verifyForwardResumeMarkerObservation(observation, failureProof) 
 }
 
 export function verifyNoLaterMutationRun({ runs, sourceRunId = FORWARD_RESUME_FAILED_RUN_ID, currentRunId,
-  safeFailedPreflightRetries = [] }) {
+  currentMainSha, inventory: historyInventory, safeFailedPreflightRetries = [], readOnlyDiagnostics = [] }) {
+  if (!historyInventory || historyInventory.complete !== true || historyInventory.scope !== "repository-since-source"
+    || !Number.isSafeInteger(historyInventory.totalCount) || historyInventory.totalCount !== historyInventory.observedCount
+    || !Array.isArray(runs) || historyInventory.totalCount < runs.length) reject("production workflow history is incomplete.");
   if (!/^[1-9][0-9]*$/.test(String(currentRunId ?? ""))) reject("current forward-resume preflight run ID is malformed.");
   const source = BigInt(sourceRunId);
   const current = BigInt(currentRunId);
@@ -345,35 +402,55 @@ export function verifyNoLaterMutationRun({ runs, sourceRunId = FORWARD_RESUME_FA
     safeRetryById.set(runId, evidence);
   }
   const verifiedSafeRetryIds = new Set();
+  const diagnosticById = new Map(readOnlyDiagnostics.map((evidence) => [String(evidence.run?.id), evidence]));
+  if (diagnosticById.size !== readOnlyDiagnostics.length) reject("duplicate diagnostic evidence.");
+  const verifiedDiagnosticIds = new Set();
   let hasSource = false;
   let hasCurrent = false;
+  const seen = new Set();
   for (const run of runs ?? []) {
     const idText = String(run?.id ?? "");
     if (!/^[1-9][0-9]*$/.test(idText)) reject("production workflow history contains a malformed run ID.");
+    if (seen.has(idText)) reject("production workflow history contains duplicate run IDs.");
+    seen.add(idText);
     const id = BigInt(idText);
     const pathValue = workflowPath(run);
-    if (!MUTATION_WORKFLOW_PATHS.has(pathValue)) continue;
+    if (!MUTATION_WORKFLOW_PATHS.has(pathValue) && pathValue !== DIAGNOSTIC_PATH) reject("unknown production workflow path in complete history.");
+    if (id > current) reject("a newer production run exists during forward-resume verification.");
     if (id === source) hasSource = pathValue === ".github/workflows/production-migrate.yml";
-    if (id === current) hasCurrent = pathValue === ".github/workflows/production-migration-preflight.yml";
+    if (id === current) {
+      assertTrustedOwnerWorkflowRun(run, { actorId: BODYCAST_OWNER_ID,
+        workflowPath: ".github/workflows/production-migration-preflight.yml", workflowRunId: currentRunId,
+        workflowRunAttempt: 1, sha: currentMainSha, requireInProgress: true });
+      hasCurrent = true;
+    }
     let interveningPreflightProof;
     if (id > source && id !== current) {
-      const evidence = safeRetryById.get(idText);
-      if (pathValue !== ".github/workflows/production-migration-preflight.yml" || !evidence) {
-        reject("another production mutation/preflight run exists after the source migration failure.");
+      if (pathValue === DIAGNOSTIC_PATH) {
+        const evidence = diagnosticById.get(idText);
+        if (!evidence || evidence.currentMainSha !== currentMainSha) reject("read-only diagnostic proof missing or stale.");
+        interveningPreflightProof = verifyReadOnlyDiagnostic({ ...evidence, historyRun: run });
+        verifiedDiagnosticIds.add(idText);
+      } else {
+        const evidence = safeRetryById.get(idText);
+        if (pathValue !== ".github/workflows/production-migration-preflight.yml" || !evidence || evidence.currentMainSha !== currentMainSha) {
+          reject("another production mutation/preflight run exists after the source migration failure.");
+        }
+        interveningPreflightProof = verifyAuthorizationOnlyForwardResumePreflightRetry({
+          ...evidence,
+          historyRun: run,
+        });
+        verifiedSafeRetryIds.add(idText);
       }
-      interveningPreflightProof = verifyAuthorizationOnlyForwardResumePreflightRetry({
-        ...evidence,
-        historyRun: run,
-      });
-      verifiedSafeRetryIds.add(idText);
     }
     if (id >= source && id <= current) inventory.push({
       id: idText, workflowPath: pathValue, headSha: String(run?.head_sha ?? ""),
       runAttempt: Number(run?.run_attempt), status: String(run?.status ?? ""), conclusion: run?.conclusion ?? null,
-      ...(interveningPreflightProof ? { safeAuthorizationOnlyProofDigest: canonicalSha256(interveningPreflightProof) } : {}),
+      ...(interveningPreflightProof ? { verifiedReadOnlyProofDigest: canonicalSha256(interveningPreflightProof) } : {}),
     });
   }
   if (verifiedSafeRetryIds.size !== safeRetryById.size) reject("safe preflight evidence does not match the complete production workflow history.");
+  if (verifiedDiagnosticIds.size !== diagnosticById.size) reject("diagnostic evidence does not match complete history.");
   if (!hasSource || !hasCurrent) reject("production mutation history is incomplete or omits the source/current preflight run.");
   inventory.sort((a, b) => BigInt(a.id) < BigInt(b.id) ? -1 : BigInt(a.id) > BigInt(b.id) ? 1 : 0);
   return canonicalSha256(inventory);

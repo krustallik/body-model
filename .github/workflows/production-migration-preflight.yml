@@ -124,7 +124,9 @@ jobs:
             gh api "repos/krustallik/body-model/actions/runs/$RESUME_SOURCE_RUN_ID/artifacts" > "$RUNNER_TEMP/resume-source-artifacts.json"
             gh api "repos/krustallik/body-model/actions/runs/$RESUME_MIGRATION_FAILURE_RUN_ID" > "$RUNNER_TEMP/resume-migration-run.json"
             gh api "repos/krustallik/body-model/actions/runs/$RESUME_MIGRATION_FAILURE_RUN_ID/jobs" > "$RUNNER_TEMP/resume-migration-jobs.json"
-            gh run view "$RESUME_MIGRATION_FAILURE_RUN_ID" --repo krustallik/body-model --log-failed > "$RUNNER_TEMP/resume-migration-failure.log"
+            MIGRATION_EXECUTION_JOB_ID="$(jq -er '[.jobs[] | select(.name == "Final live guard and authorized migration") | .id] | if length == 1 and (.[0] | type == "number") then .[0] else error("migration execution job ID is missing or ambiguous") end' "$RUNNER_TEMP/resume-migration-jobs.json")"
+            [[ "$MIGRATION_EXECUTION_JOB_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Migration execution job ID is malformed."; exit 1; }
+            gh run view "$RESUME_MIGRATION_FAILURE_RUN_ID" --repo krustallik/body-model --job "$MIGRATION_EXECUTION_JOB_ID" --log-failed > "$RUNNER_TEMP/resume-migration-failure.log"
             gh api "repos/krustallik/body-model/actions/runs/$RESUME_BLOCKED_CAPTURE_RUN_ID" > "$RUNNER_TEMP/resume-blocked-capture-run.json"
             gh api "repos/krustallik/body-model/actions/runs/$RESUME_BLOCKED_CAPTURE_RUN_ID/jobs" > "$RUNNER_TEMP/resume-blocked-capture-jobs.json"
             gh api "repos/krustallik/body-model/actions/runs/$RESUME_BLOCKED_CAPTURE_RUN_ID/artifacts" > "$RUNNER_TEMP/resume-blocked-capture-artifacts.json"

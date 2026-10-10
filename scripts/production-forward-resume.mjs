@@ -184,7 +184,7 @@ export function verifyForwardResumeNoSpawnEvidence({ run, jobsPayload, logText, 
   if (authorize?.conclusion !== "success" || sign?.conclusion !== "success" || execution?.conclusion !== "failure") {
     reject("owner authorization/signing did not succeed before the single failed execution job.");
   }
-  const expectedSteps = new Map([
+  const expectedSteps = [
     ["Set up job", "success"],
     ["Checkout exact authorized release SHA", "success"],
     ["Set up Node runtime", "success"],
@@ -198,9 +198,10 @@ export function verifyForwardResumeNoSpawnEvidence({ run, jobsPayload, logText, 
     ["Post Set up Node runtime", "skipped"],
     ["Post Checkout exact authorized release SHA", "success"],
     ["Complete job", "success"],
-  ]);
+  ];
   const actualSteps = execution.steps ?? [];
-  if (actualSteps.length !== expectedSteps.size || actualSteps.some((step) => expectedSteps.get(step.name) !== step.conclusion)) {
+  if (actualSteps.length !== expectedSteps.length || actualSteps.some((step, index) =>
+    step.name !== expectedSteps[index][0] || step.conclusion !== expectedSteps[index][1])) {
     reject("the exact migration job step sequence differs from the observed pre-spawn guard failure.");
   }
   const records = parseJobLog(logText).filter((entry) => entry.job === MIGRATION_FAILURE_JOB && entry.step === MIGRATION_FAILURE_STEP);

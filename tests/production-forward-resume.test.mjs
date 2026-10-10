@@ -209,6 +209,24 @@ describe("forward-resume evidence for the single verified pre-spawn failure", ()
       .toThrow("the exact migration job step sequence differs from the observed pre-spawn guard failure");
   });
 
+  it("rejects a reordered source execution step even when every step is present", () => {
+    const evidence = noSpawnProofInputs();
+    const steps = [...evidence.jobsPayload.jobs[2].steps];
+    evidence.jobsPayload.jobs[2].steps = steps;
+    [steps[1], steps[2]] = [steps[2], steps[1]];
+    expect(() => verifyForwardResumeNoSpawnEvidence(evidence))
+      .toThrow("the exact migration job step sequence differs from the observed pre-spawn guard failure");
+  });
+
+  it("rejects a duplicate source execution step substituted for a missing step", () => {
+    const evidence = noSpawnProofInputs();
+    const steps = [...evidence.jobsPayload.jobs[2].steps];
+    evidence.jobsPayload.jobs[2].steps = steps;
+    steps[2] = { ...steps[1] };
+    expect(() => verifyForwardResumeNoSpawnEvidence(evidence))
+      .toThrow("the exact migration job step sequence differs from the observed pre-spawn guard failure");
+  });
+
   it.each([
     ["wrong actor", { run: sourceRun({ actor: { id: 42 }, triggering_actor: { id: 42 } }) }],
     ["rerun", { run: sourceRun({ run_attempt: 2 }) }],

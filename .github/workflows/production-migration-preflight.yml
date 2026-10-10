@@ -136,13 +136,49 @@ jobs:
                 "repos/krustallik/body-model/actions/workflows/$workflow_id/runs?per_page=100" \
                 >> "$RUNNER_TEMP/resume-later-runs.ndjson"
             done
+            : > "$RUNNER_TEMP/resume-safe-preflight-retries.ndjson"
+            node --input-type=module - "$RUNNER_TEMP/resume-later-runs.ndjson" \
+              "$RUNNER_TEMP/resume-safe-preflight-retry-ids.txt" "$RESUME_SOURCE_RUN_ID" \
+              "$RESUME_BLOCKED_CAPTURE_RUN_ID" "$GITHUB_RUN_ID" <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          import { serializePreflightRetryRunIds } from "./scripts/production-preflight-resume.mjs";
+          const [historyPath, idsPath, sourceIdText, blockedIdText, currentIdText] = process.argv.slice(2);
+          const sourceId = BigInt(sourceIdText);
+          const blockedId = BigInt(blockedIdText);
+          const currentId = BigInt(currentIdText);
+          const retryIds = new Set();
+          for (const line of readFileSync(historyPath, "utf8").split(/\r?\n/).filter(Boolean)) {
+            const run = JSON.parse(line);
+            const runIdText = String(run.id ?? "");
+            if (!/^[1-9][0-9]*$/.test(runIdText)) throw new Error("Production workflow history contains a malformed run ID.");
+            const runId = BigInt(runIdText);
+            const workflowPath = typeof run.path === "string" ? run.path.split("@")[0] : "";
+            if (workflowPath !== ".github/workflows/production-migration-preflight.yml"
+              || runId <= sourceId || runId === blockedId || runId >= currentId) continue;
+            if (run.status === "completed" && run.conclusion === "failure") retryIds.add(runIdText);
+          }
+          writeFileSync(idsPath, serializePreflightRetryRunIds([...retryIds]), { mode: 0o600 });
+          NODE
+            while IFS= read -r retry_run_id; do
+              [[ "$retry_run_id" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Malformed failed preflight retry ID."; exit 1; }
+              gh api "repos/krustallik/body-model/actions/runs/$retry_run_id" > "$RUNNER_TEMP/resume-safe-preflight-$retry_run_id-run.json"
+              gh api "repos/krustallik/body-model/actions/runs/$retry_run_id/jobs" > "$RUNNER_TEMP/resume-safe-preflight-$retry_run_id-jobs.json"
+              node --input-type=module - "$RUNNER_TEMP/resume-safe-preflight-$retry_run_id-run.json" \
+                "$RUNNER_TEMP/resume-safe-preflight-$retry_run_id-jobs.json" \
+                >> "$RUNNER_TEMP/resume-safe-preflight-retries.ndjson" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const [runPath, jobsPath] = process.argv.slice(2);
+          process.stdout.write(`${JSON.stringify({ run: JSON.parse(readFileSync(runPath, "utf8")), jobs: JSON.parse(readFileSync(jobsPath, "utf8")) })}\n`);
+          NODE
+            done < "$RUNNER_TEMP/resume-safe-preflight-retry-ids.txt"
             node scripts/production-preflight-resume.mjs --verify-pre-ddl-migration-failure \
               "$RUNNER_TEMP/resume-source-run.json" "$RUNNER_TEMP/resume-source-jobs.json" \
               "$RUNNER_TEMP/resume-source-artifacts.json" "$RUNNER_TEMP/resume-migration-run.json" \
               "$RUNNER_TEMP/resume-migration-jobs.json" "$RUNNER_TEMP/resume-migration-failure.log" \
               "$RUNNER_TEMP/resume-blocked-capture-run.json" "$RUNNER_TEMP/resume-blocked-capture-jobs.json" \
               "$RUNNER_TEMP/resume-blocked-capture-artifacts.json" "$RUNNER_TEMP/resume-blocked-capture-failure.log" \
-              "$RUNNER_TEMP/resume-later-runs.ndjson" "$RESUME_SOURCE_RUN_ID" "$RESUME_MIGRATION_FAILURE_RUN_ID" \
+              "$RUNNER_TEMP/resume-later-runs.ndjson" "$RUNNER_TEMP/resume-safe-preflight-retries.ndjson" \
+              "$RESUME_SOURCE_RUN_ID" "$RESUME_MIGRATION_FAILURE_RUN_ID" \
               "$RESUME_BLOCKED_CAPTURE_RUN_ID" "$GITHUB_RUN_ID" "$MAIN_TIP" "$PREFLIGHT_WORKFLOW_ID" "$MIGRATION_WORKFLOW_ID" \
               > "$RUNNER_TEMP/preflight-resume-proof.json"
             RESUME_SOURCE_SHA="$(jq -r .sourceSha "$RUNNER_TEMP/preflight-resume-proof.json")"

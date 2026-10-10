@@ -27,6 +27,41 @@ function reject(message) { throw new Error(`Forward-resume blocked: ${message}`)
 function workflowPath(run) { return typeof run?.path === "string" ? run.path.split("@")[0] : ""; }
 function sha256(bytes) { return createHash("sha256").update(bytes).digest("hex"); }
 
+export function selectForwardResumeMigrationContextArtifact(payload) {
+  const expectedName = `bodycast-migration-auth-${FORWARD_RESUME_FAILED_RUN_ID}-1`;
+  const artifacts = payload?.artifacts;
+  if (!Array.isArray(artifacts)) reject("the original signed migration context artifact inventory is malformed.");
+  const matches = artifacts.filter((artifact) => artifact?.name === expectedName);
+  if (matches.length !== 1) reject("the exact original signed migration context artifact is missing or ambiguous.");
+
+  const artifact = matches[0];
+  const workflowRun = artifact.workflow_run;
+  const reportedAttempt = workflowRun?.run_attempt;
+  // GitHub's artifact-list API omits workflow_run.run_attempt. The exact attempt is
+  // bound by the artifact name here and by the signed authorization claims below.
+  // If GitHub does return the field, it must agree with that attempt.
+  const attemptMatches = reportedAttempt === undefined || reportedAttempt === null
+    || (Number.isSafeInteger(reportedAttempt) && reportedAttempt === 1);
+  if (!/^[1-9][0-9]*$/.test(String(artifact.id ?? ""))
+    || artifact.expired !== false
+    || !Number.isSafeInteger(artifact.size_in_bytes) || artifact.size_in_bytes < 1
+    || !/^sha256:[a-f0-9]{64}$/.test(String(artifact.digest ?? ""))
+    || String(workflowRun?.id) !== FORWARD_RESUME_FAILED_RUN_ID
+    || workflowRun?.head_branch !== "main" || workflowRun?.head_sha !== FORWARD_RESUME_FAILED_SHA
+    || !attemptMatches) {
+    reject("the original signed migration context artifact metadata does not match the exact source run and attempt.");
+  }
+
+  return Object.freeze({
+    id: String(artifact.id),
+    name: artifact.name,
+    digest: artifact.digest,
+    workflowRunId: String(workflowRun.id),
+    workflowRunAttempt: 1,
+    headSha: workflowRun.head_sha,
+  });
+}
+
 function parseJobLog(text) {
   const records = [];
   for (const line of String(text ?? "").replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "").replace(/\r\n?/g, "\n").split("\n")) {

@@ -195,11 +195,12 @@ describe("active production release entrypoints", () => {
     const workflow = readFileSync(resolve(workflowDir, "production-migration-preflight.yml"), "utf8");
     const sourceAncestry = workflow.indexOf('git merge-base --is-ancestor "$(jq -r .head_sha "$RUNNER_TEMP/forward-source-run.json")" "$MAIN_TIP"');
     const retryAncestry = workflow.indexOf('git merge-base --is-ancestor "$(jq -er .head_sha "$retry_run_path")" "$MAIN_TIP"');
-    const safeRetryArgsGuard = workflow.indexOf("if (safeRetryPaths.length !== 4)");
+    const safeRetryArgsGuard = workflow.indexOf("if (safeRetryPaths.length !== 6)");
     const historyVerifier = workflow.indexOf("verifyNoLaterMutationRun({ runs, currentRunId,");
 
     expect(sourceAncestry).toBeGreaterThanOrEqual(0);
     expect(retryAncestry).toBeGreaterThanOrEqual(0);
+    expect(workflow).toContain('FORWARD_SAFE_PREFLIGHT_RETRY_RUN_IDS=("38045689913" "38048789731" "38050603789")');
     expect(safeRetryArgsGuard).toBeGreaterThan(retryAncestry);
     expect(historyVerifier).toBeGreaterThan(Math.max(sourceAncestry, safeRetryArgsGuard));
     expect(workflow.slice(sourceAncestry, sourceAncestry + 500)).toContain("The failed release SHA is not an ancestor of current main.");

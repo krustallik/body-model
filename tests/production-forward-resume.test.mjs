@@ -347,6 +347,34 @@ describe("forward-resume evidence for the single verified pre-spawn failure", ()
     })).toThrow("another production mutation/preflight run exists");
   });
 
+  it("accepts the exact later authorization-only retry on 86cad77 and rejects an incomplete retry inventory", () => {
+    const retries = [
+      safeFailedPreflightRetryEvidence({}, {
+        runId: FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_RUN_ID,
+        sha: FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_SHA,
+        currentMainSha: "b5391b78bf3621d49149e8fcb16d61e6a2eadfaf",
+      }),
+      safeFailedPreflightRetryEvidence({}, {
+        runId: "38048789731",
+        sha: "ab80cbe54ebf67509db6e00801d686e52da02249",
+        currentMainSha: "b5391b78bf3621d49149e8fcb16d61e6a2eadfaf",
+      }),
+      safeFailedPreflightRetryEvidence({}, {
+        runId: "38050603789",
+        sha: "86cad77e612af4212c1083d310e054a8130b2e87",
+        currentMainSha: "b5391b78bf3621d49149e8fcb16d61e6a2eadfaf",
+      }),
+    ];
+    const currentRun = { id: 39000000001, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main" };
+    const runs = [sourceRun(), ...retries.map((retry) => retry.historyRun), currentRun];
+    expect(verifyNoLaterMutationRun({
+      runs, currentRunId: String(currentRun.id), safeFailedPreflightRetries: retries,
+    })).toMatch(/^[a-f0-9]{64}$/);
+    expect(() => verifyNoLaterMutationRun({
+      runs, currentRunId: String(currentRun.id), safeFailedPreflightRetries: retries.slice(0, 2),
+    })).toThrow("another production mutation/preflight run exists");
+  });
+
   it.each([
     ["wrong actor", { run: { actor: { id: 42 } } }],
     ["rerun attempt", { run: { run_attempt: 2 } }],

@@ -134,7 +134,7 @@ jobs:
             gh api "repos/krustallik/body-model/actions/runs/$FORWARD_RESUME_FAILED_RUN_ID" > "$RUNNER_TEMP/forward-source-run.json"
             gh api "repos/krustallik/body-model/actions/runs/$FORWARD_RESUME_FAILED_RUN_ID/jobs" > "$RUNNER_TEMP/forward-source-jobs.json"
             gh api "repos/krustallik/body-model/actions/runs/$FORWARD_RESUME_FAILED_RUN_ID/artifacts" > "$RUNNER_TEMP/forward-source-artifacts.json"
-            FORWARD_SAFE_PREFLIGHT_RETRY_RUN_IDS=("38045689913" "38048789731")
+            FORWARD_SAFE_PREFLIGHT_RETRY_RUN_IDS=("38045689913" "38048789731" "38050603789")
             PREFLIGHT_WORKFLOW_ID="$(gh api repos/krustallik/body-model/actions/workflows/production-migration-preflight.yml --jq .id)"
             SAFE_RETRY_RUN_ARGS=()
             for retry_run_id in "${FORWARD_SAFE_PREFLIGHT_RETRY_RUN_IDS[@]}"; do
@@ -183,7 +183,7 @@ jobs:
           const [runPath, jobsPath, logPath, bundleDir, historyPath, workflowId, currentRunId, currentSha] = args;
           const preflightWorkflowId = args.at(-1);
           const safeRetryPaths = args.slice(8, -1);
-          if (safeRetryPaths.length !== 4) throw new Error("Expected the two fixed authorization-only retry run/job records.");
+          if (safeRetryPaths.length !== 6) throw new Error("Expected the three fixed authorization-only retry run/job records.");
           const run = JSON.parse(readFileSync(runPath, "utf8"));
           const sourceGuardBytes = execFileSync("git", ["show", `${run.head_sha}:scripts/run-prisma-migrate-with-lock-timeout.mjs`]);
           const failureProof = verifyForwardResumeNoSpawnEvidence({ run,
@@ -199,7 +199,7 @@ jobs:
           });
           const runs = readFileSync(historyPath, "utf8").split(/\r?\n/).filter(Boolean).map(JSON.parse);
           const mutationHistoryDigest = verifyNoLaterMutationRun({ runs, currentRunId,
-            safeFailedPreflightRetries: [0, 2].map((index) => ({
+            safeFailedPreflightRetries: [0, 2, 4].map((index) => ({
               run: JSON.parse(readFileSync(safeRetryPaths[index], "utf8")),
               jobsPayload: JSON.parse(readFileSync(safeRetryPaths[index + 1], "utf8")), workflowId: preflightWorkflowId,
               currentMainSha: currentSha, shaIsAncestorOfCurrentMain: true,

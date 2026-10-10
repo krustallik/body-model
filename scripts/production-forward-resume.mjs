@@ -15,6 +15,7 @@ export const FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_SHA = "981e3370ec981838ab2c1e50
 export const FORWARD_RESUME_SAFE_PREFLIGHT_RETRIES = Object.freeze([
   Object.freeze({ runId: FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_RUN_ID, sha: FORWARD_RESUME_SAFE_PREFLIGHT_RETRY_SHA }),
   Object.freeze({ runId: "38048789731", sha: "ab80cbe54ebf67509db6e00801d686e52da02249" }),
+  Object.freeze({ runId: "38050603789", sha: "86cad77e612af4212c1083d310e054a8130b2e87" }),
 ]);
 export const FORWARD_RESUME_PURPOSE = "bodycast-forward-resume-after-verified-pre-spawn-failure-v1";
 const DIGEST = /^[a-f0-9]{64}$/;

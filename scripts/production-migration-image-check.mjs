@@ -32,7 +32,9 @@ export async function verifyMigrationImageFiles(repositoryPath) {
   const authorizationRuntime = [];
   for (const name of [
     "production-db-preflight.mjs",
+    "production-forward-resume.mjs",
     "production-migration-final-guard.mjs",
+    "production-release-marker.mjs",
     "run-prisma-migrate-with-lock-timeout.mjs",
   ]) {
     const filename = path.join(repositoryPath, "scripts", name);

@@ -31,8 +31,9 @@ import { prepareEpisodeInitialization } from "@/modules/model-episodes/episode-i
 import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
 import { materializeActiveEnergyCandidatesV1 } from "@/modules/activity/active-energy-materialization";
 import { inventoryFullHistoryRawInputs } from "@/modules/model-episodes/full-history-recalculation.service";
+import { requireLoopbackTestDatabaseUrl } from "../helpers/require-loopback-test-database";
 
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({ datasourceUrl: requireLoopbackTestDatabaseUrl(process.env.DATABASE_URL) });
 const repository = new ModelEpisodeRepository(prisma);
 const steppers = new StepperWorkoutRepository(prisma);
 const version = "bodycast-physiology-v7+selection-v1";

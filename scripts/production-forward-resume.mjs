@@ -133,19 +133,43 @@ export function selectForwardResumeMigrationContextArtifact(payload) {
 function parseJobLog(text) {
   const records = [];
   for (const line of String(text ?? "").replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "").replace(/\r\n?/g, "\n").split("\n")) {
-    const firstTab = line.indexOf("\t");
-    const secondTab = line.indexOf("\t", firstTab + 1);
-    if (firstTab < 0 || secondTab < 0) continue;
-    const job = line.slice(0, firstTab);
-    const step = line.slice(firstTab + 1, secondTab);
-    const timestampAndMessage = line.slice(secondTab + 1).replace(/^\uFEFF/, "");
-    const match = timestampAndMessage.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)(?:([\t ])([\s\S]*))?$/);
+    const timestampAndMessage = line.replace(/^\uFEFF/, "");
+    const match = timestampAndMessage.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z) ([\s\S]*)$/);
     if (!match) continue;
-    const [, timestamp, , message = ""] = match;
+    const [, timestamp, message] = match;
     if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(timestamp)) continue;
-    records.push({ job, step, timestamp, message });
+    records.push({ timestamp, message });
   }
   return records;
+}
+
+function selectRawFailedStepLog(records, actualSteps, failedStepIndex) {
+  const failedStep = actualSteps[failedStepIndex];
+  const nextStep = actualSteps[failedStepIndex + 1];
+  const startedAt = Date.parse(failedStep?.started_at ?? "");
+  const completedAt = Date.parse(failedStep?.completed_at ?? "");
+  const nextStartedAt = Date.parse(nextStep?.started_at ?? "");
+  if (![startedAt, completedAt, nextStartedAt].every(Number.isFinite)
+    || completedAt < startedAt || nextStartedAt < completedAt) {
+    reject("the failed migration step lacks a valid ordered GitHub timestamp boundary.");
+  }
+
+  const groupMarkers = records.flatMap((record, index) => record.message.startsWith("##[group]Run ")
+    ? [{ index, timestamp: Date.parse(record.timestamp) }] : []);
+  const failedStepMarkers = groupMarkers.filter((marker) => marker.timestamp >= startedAt
+    && marker.timestamp < nextStartedAt);
+  if (failedStepMarkers.length !== 1) {
+    reject("raw GitHub job logs do not identify one unambiguous failed-step boundary.");
+  }
+  const failedStepMarker = failedStepMarkers[0];
+  const nextStepMarker = groupMarkers.find((marker) => marker.index > failedStepMarker.index
+    && marker.timestamp >= nextStartedAt);
+  if (!nextStepMarker) reject("raw GitHub job logs do not identify the following step boundary.");
+
+  return {
+    failedStepRecords: records.slice(failedStepMarker.index, nextStepMarker.index),
+    fromFailedStepRecords: records.slice(failedStepMarker.index),
+  };
 }
 
 function validateNoSpawnSource(sourceBytes, loggedRuntime) {
@@ -211,13 +235,16 @@ export function verifyForwardResumeNoSpawnEvidence({ run, jobsPayload, logText, 
     step.name !== expectedSteps[index][0] || step.conclusion !== expectedSteps[index][1])) {
     reject("the exact migration job step sequence differs from the observed pre-spawn guard failure.");
   }
-  const records = parseJobLog(logText).filter((entry) => entry.job === MIGRATION_FAILURE_JOB && entry.step === MIGRATION_FAILURE_STEP);
-  const errorRecords = records.filter((entry) => entry.message === MIGRATION_GUARD_FAILURE);
-  if (errorRecords.length !== 1 || records.some((entry) => /Applying migration|No pending migrations to apply|All migrations have been applied/i.test(entry.message))) {
+  const executionStepIndex = actualSteps.findIndex((step) => step.name === MIGRATION_FAILURE_STEP);
+  const { failedStepRecords, fromFailedStepRecords } = selectRawFailedStepLog(
+    parseJobLog(logText), actualSteps, executionStepIndex,
+  );
+  const errorRecords = failedStepRecords.filter((entry) => entry.message === MIGRATION_GUARD_FAILURE);
+  if (errorRecords.length !== 1 || fromFailedStepRecords.some((entry) => /Applying migration|No pending migrations to apply|All migrations have been applied/i.test(entry.message))) {
     reject("failed-step logs do not contain one exact final writer-drain failure with no Prisma migration execution output.");
   }
   const runtimeRecords = [];
-  for (const entry of records) {
+  for (const entry of failedStepRecords) {
     const start = entry.message.indexOf("{");
     if (start < 0) continue;
     try {

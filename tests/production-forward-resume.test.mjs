@@ -39,7 +39,18 @@ const steps = [
   ["Post Set up Node runtime", "skipped"],
   ["Post Checkout exact authorized release SHA", "success"],
   ["Complete job", "success"],
-].map(([name, conclusion]) => ({ name, conclusion }));
+].map(([name, conclusion]) => ({
+  name,
+  conclusion,
+  ...(name === MIGRATION_FAILURE_STEP ? {
+    started_at: "2026-10-09T12:00:00Z",
+    completed_at: "2026-10-09T12:00:01Z",
+  } : {}),
+  ...(name === "Remove temporary runner credentials" ? {
+    started_at: "2026-10-09T12:00:01Z",
+    completed_at: "2026-10-09T12:00:02Z",
+  } : {}),
+}));
 
 function sourceRun(overrides = {}) {
   return {
@@ -65,7 +76,8 @@ function jobsPayload(overrides = {}) {
     jobs: [
       { id: 1, name: "Select latest exact preflight evidence", conclusion: "success", head_sha: FORWARD_RESUME_FAILED_SHA, run_attempt: 1 },
       { id: 2, name: "Sign migration authorization envelope", conclusion: "success", head_sha: FORWARD_RESUME_FAILED_SHA, run_attempt: 1 },
-      { id: 3, name: MIGRATION_FAILURE_JOB, conclusion: "failure", head_sha: FORWARD_RESUME_FAILED_SHA, run_attempt: 1, steps },
+      { id: 3, name: MIGRATION_FAILURE_JOB, conclusion: "failure", head_sha: FORWARD_RESUME_FAILED_SHA, run_attempt: 1,
+        steps: steps.map((step) => ({ ...step })) },
     ],
     ...overrides,
   };
@@ -74,8 +86,11 @@ function jobsPayload(overrides = {}) {
 function noSpawnProofInputs(overrides = {}) {
   const runtime = { name: "run-prisma-migrate-with-lock-timeout.mjs", bytes: sourceBytes.length, sha256: digest(sourceBytes) };
   const logText = [
-    `${MIGRATION_FAILURE_JOB}\t${MIGRATION_FAILURE_STEP}\t\uFEFF2026-10-09T12:00:00.1234567Z ${MIGRATION_GUARD_FAILURE}`,
-    `${MIGRATION_FAILURE_JOB}\t${MIGRATION_FAILURE_STEP}\t2026-10-09T12:00:00.1234567Z ${JSON.stringify({ authorizationRuntime: [runtime] })}`,
+    "\uFEFF2026-10-09T12:00:00.1000000Z ##[group]Run set -Eeuo pipefail",
+    `2026-10-09T12:00:00.2000000Z ${JSON.stringify({ authorizationRuntime: [runtime] })}`,
+    `2026-10-09T12:00:00.9000000Z ${MIGRATION_GUARD_FAILURE}`,
+    "2026-10-09T12:00:00.9500000Z ##[error]Process completed with exit code 1.",
+    "2026-10-09T12:00:01.1000000Z ##[group]Run rm -f runner-credentials",
   ].join("\n");
   return {
     run: sourceRun(), jobsPayload: jobsPayload(), logText, sourceGuardBytes: sourceBytes,
@@ -191,7 +206,7 @@ describe("forward-resume evidence for the single verified pre-spawn failure", ()
       .toThrow("Forward-resume blocked");
   });
 
-  it("parses actual GitHub failed-step logs and accepts only the exact pre-spawn writer-drain failure", () => {
+  it("parses timestamped GitHub job logs, binds the exact failed-step window, and accepts only the pre-spawn writer-drain failure", () => {
     const proof = verifyForwardResumeNoSpawnEvidence(noSpawnProofInputs());
     expect(proof).toMatchObject({
       purpose: FORWARD_RESUME_PURPOSE,
@@ -206,6 +221,26 @@ describe("forward-resume evidence for the single verified pre-spawn failure", ()
     const evidence = noSpawnProofInputs();
     evidence.logText = evidence.logText.replace(MIGRATION_GUARD_FAILURE, `${prefix}${MIGRATION_GUARD_FAILURE}`);
     expect(() => verifyForwardResumeNoSpawnEvidence(evidence)).toThrow("failed-step logs do not contain one exact final writer-drain failure");
+  });
+
+  it("rejects the exact guard text when it appears outside the failed migration step", () => {
+    const evidence = noSpawnProofInputs();
+    evidence.logText = evidence.logText.replace(`${MIGRATION_GUARD_FAILURE}\n`, "")
+      + `\n2026-10-09T12:00:01.2000000Z ${MIGRATION_GUARD_FAILURE}`;
+    expect(() => verifyForwardResumeNoSpawnEvidence(evidence))
+      .toThrow("failed-step logs do not contain one exact final writer-drain failure");
+  });
+
+  it("rejects missing or ambiguous raw-log step boundaries", () => {
+    const missingStart = noSpawnProofInputs();
+    missingStart.jobsPayload.jobs[2].steps[8].started_at = undefined;
+    expect(() => verifyForwardResumeNoSpawnEvidence(missingStart))
+      .toThrow("failed migration step lacks a valid ordered GitHub timestamp boundary");
+
+    const ambiguous = noSpawnProofInputs();
+    ambiguous.logText += "\n2026-10-09T12:00:00.5000000Z ##[group]Run second command";
+    expect(() => verifyForwardResumeNoSpawnEvidence(ambiguous))
+      .toThrow("raw GitHub job logs do not identify one unambiguous failed-step boundary");
   });
 
   it("requires the observed GitHub job setup and completion steps in the exact source sequence", () => {
@@ -240,7 +275,9 @@ describe("forward-resume evidence for the single verified pre-spawn failure", ()
     ["untrusted source ancestry", { sourceIsAncestor: false }],
     ["forged runtime bytes", { sourceGuardBytes: Buffer.from("different") }],
     ["missing Prisma guard jobs", { jobsPayload: { total_count: 2, jobs: [] } }],
-    ["migration output after the guard failure", { logText: noSpawnProofInputs().logText + `\n${MIGRATION_FAILURE_JOB}\t${MIGRATION_FAILURE_STEP}\t2026-10-09T12:00:01Z\tApplying migration 20261002100000_active_energy_canonical_resolution` }],
+    ["migration output after the guard failure", { logText: noSpawnProofInputs().logText + "\n2026-10-09T12:00:00.9800000Z Applying migration 20261002100000_active_energy_canonical_resolution" }],
+    ["migration output after the failed step", { logText: noSpawnProofInputs().logText + "\n2026-10-09T12:00:01.2000000Z Applying migration 20261002100000_active_energy_canonical_resolution" }],
+    ["legacy CLI-formatted logs without raw step boundaries", { logText: `${MIGRATION_FAILURE_JOB}\t${MIGRATION_FAILURE_STEP}\t2026-10-09T12:00:00.9000000Z ${MIGRATION_GUARD_FAILURE}` }],
   ])("fails closed for %s", (_label, overrides) => {
     expect(() => verifyForwardResumeNoSpawnEvidence(noSpawnProofInputs(overrides))).toThrow("Forward-resume blocked");
   });

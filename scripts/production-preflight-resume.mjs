@@ -87,6 +87,10 @@ function normalizeActionLog(text) {
     .trim();
 }
 
+function sanitizeActionLogLabel(value) {
+  return String(value ?? "").replace(/[^A-Za-z0-9 .:/_()'-]/g, "?").slice(0, 120);
+}
+
 function parseActionLogRecords(text) {
   const records = [];
   const lines = String(text ?? "")
@@ -371,6 +375,18 @@ export function verifyPreDdlMigrationFailureResume({
   if (failurePositions.length !== 3 || failuresOutsideMigrationStep !== 0 || writerDrainOutsideMigrationStep !== 0
     || findAllOccurrences(normalizedEvidenceLog, writerDrainMarker).length !== 1
     || failedSteps.length !== 1 || failedSteps[0] !== MIGRATION_FAILURE_STEP) {
+    const observedMarkerRecordLabels = logRecords.flatMap((record) => {
+      const normalizedRecord = normalizeActionLog(record.text);
+      const importFailureOccurrences = findAllOccurrences(normalizedRecord, importFailure).length;
+      const writerDrainOccurrences = findAllOccurrences(normalizedRecord, writerDrainMarker).length;
+      if (importFailureOccurrences === 0 && writerDrainOccurrences === 0) return [];
+      return [{
+        job: sanitizeActionLogLabel(record.job),
+        step: sanitizeActionLogLabel(record.step),
+        importFailureOccurrences,
+        writerDrainOccurrences,
+      }];
+    }).slice(0, 8);
     const diagnostics = {
       parsedLogRecords: logRecords.length,
       fixedMigrationStepRecords: evidenceRecords.length,
@@ -380,6 +396,7 @@ export function verifyPreDdlMigrationFailureResume({
       writerDrainMarkersOutsideFixedStep: writerDrainOutsideMigrationStep,
       failedMigrationSteps: failedSteps.length,
       onlyExpectedMigrationStepFailed: failedSteps.length === 1 && failedSteps[0] === MIGRATION_FAILURE_STEP,
+      observedMarkerRecordLabels,
     };
     reject(`the migration log does not show exactly three known import failures in the fixed migration step (sanitized evidence counts: ${JSON.stringify(diagnostics)}).`);
   }

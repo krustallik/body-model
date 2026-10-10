@@ -222,23 +222,34 @@ capture_previous_release() {
   previous_app_present=true
   if [[ "$app_status" == "healthy" ]]; then
     previous_app_healthy=true
-    if ! docker image inspect --format '{{.Id}}' "$previous_app_image_id" >/dev/null 2>&1; then
-      # The live container can outlive its image ID in the local content store after a
-      # later build/unpack. Recover an immutable pin from the still-running process.
-      echo "Previous app image ${previous_app_image_id} is absent from the local store; committing the live container to recover a rollback pin." >&2
-      previous_app_image_id="$(docker commit --pause=false "$APP_CONTAINER")"
-      [[ "$previous_app_image_id" =~ ^sha256:[a-f0-9]{64}$ ]] || {
-        echo "Recovered previous-app commit did not produce an immutable image ID." >&2
+    if docker image inspect --format '{{.Id}}' "$previous_app_image_id" >/dev/null 2>&1; then
+      docker image tag "$previous_app_image_id" "$ROLLBACK_IMAGE"
+      pinned_image_id="$(docker image inspect --format '{{.Id}}' "$ROLLBACK_IMAGE")"
+      [[ "$pinned_image_id" == "$previous_app_image_id" ]] || {
+        echo "Pinned rollback image does not match the captured immutable image ID." >&2
         return 1
       }
+      rollback_image_pinned=true
+    else
+      # The live container can outlive its image ID in the local content store after a
+      # later build/unpack. Prefer committing the process; otherwise keep going with
+      # container-identity stop only and rely on the pre-DDL database recovery path.
+      echo "Previous app image ${previous_app_image_id} is absent from the local store; committing the live container to recover a rollback pin." >&2
+      if recovered_image_id="$(docker commit --pause=false "$APP_CONTAINER" 2>/dev/null)" \
+        && [[ "$recovered_image_id" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+        previous_app_image_id="$recovered_image_id"
+        docker image tag "$previous_app_image_id" "$ROLLBACK_IMAGE"
+        pinned_image_id="$(docker image inspect --format '{{.Id}}' "$ROLLBACK_IMAGE")"
+        [[ "$pinned_image_id" == "$previous_app_image_id" ]] || {
+          echo "Pinned rollback image does not match the recovered immutable image ID." >&2
+          return 1
+        }
+        rollback_image_pinned=true
+      else
+        echo "WARNING: could not recover a previous-app rollback pin; continuing with exact container-identity stop only." >&2
+        rollback_image_pinned=false
+      fi
     fi
-    docker image tag "$previous_app_image_id" "$ROLLBACK_IMAGE"
-    pinned_image_id="$(docker image inspect --format '{{.Id}}' "$ROLLBACK_IMAGE")"
-    [[ "$pinned_image_id" == "$previous_app_image_id" ]] || {
-      echo "Pinned rollback image does not match the captured immutable image ID." >&2
-      return 1
-    }
-    rollback_image_pinned=true
   fi
   release_state="PREVIOUS_RELEASE_CAPTURED"
   echo "Captured previous app SHA=${previous_app_sha}, container=${previous_app_container_id}, image=${previous_app_image_id}, health=${app_status}."

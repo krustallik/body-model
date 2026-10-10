@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 const deploySh = readFileSync(resolve("scripts/deploy.sh"), "utf8").replace(/\r\n/g, "\n");
 const deployWorkflow = readFileSync(resolve(".github/workflows/deploy-production.yml"), "utf8").replace(/\r\n/g, "\n");
+const activationWorkflow = readFileSync(resolve(".github/workflows/activate-unified-v4-production.yml"), "utf8").replace(/\r\n/g, "\n");
 const preflightSh = readFileSync(resolve("scripts/deploy-preflight-schema.sh"), "utf8");
 const migrateSh = readFileSync(resolve("scripts/deploy-migrate.sh"), "utf8");
 const migrateGuard = readFileSync(resolve("scripts/run-prisma-migrate-with-lock-timeout.mjs"), "utf8");
@@ -24,6 +25,21 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(deployWorkflow).toContain("BodyCast CI/CD");
     expect(deployWorkflow).not.toContain("git checkout --detach --force");
     expect(deployWorkflow).toContain('git checkout --detach "$DEPLOY_SHA"');
+  });
+
+  it("checks out current main before the production-job owner identity import", () => {
+    for (const [label, workflow, jobName] of [
+      ["deploy", deployWorkflow, "name: Deploy exact SHA in maintenance"],
+      ["activation", activationWorkflow, "name: Verify V3, activate V4, and serve exact SHA"],
+    ] as const) {
+      const job = workflow.slice(workflow.indexOf(jobName));
+      const checkoutAt = job.indexOf("actions/checkout@");
+      const identityAt = job.indexOf('from "./scripts/github-owner-identity.mjs"');
+      const secretAt = job.search(/SSH_PRIVATE_KEY:/);
+      expect(checkoutAt, label).toBeGreaterThan(-1);
+      expect(identityAt, label).toBeGreaterThan(checkoutAt);
+      expect(secretAt, label).toBeGreaterThan(identityAt);
+    }
   });
 
   it("implements the approved maintenance-first state machine and live-route commit", () => {

@@ -173,7 +173,7 @@ describe("active production release entrypoints", () => {
     expect(workflow).toContain("resume_blocked_capture_preflight_run_id:");
     expect(workflow).toContain("Pre-DDL migration resume requires the exact source, failed migration, and blocked capture run IDs.");
     expect(workflow).toContain('MIGRATION_EXECUTION_JOB_ID="$(jq -er');
-    expect(workflow).toContain('gh api "repos/krustallik/body-model/actions/jobs/$MIGRATION_EXECUTION_JOB_ID/logs" > "$RUNNER_TEMP/forward-source-failure.log"');
+    expect(workflow).toContain('gh api --allow-escape-sequences "repos/krustallik/body-model/actions/jobs/$MIGRATION_EXECUTION_JOB_ID/logs" > "$RUNNER_TEMP/forward-source-failure.log"');
     expect(workflow).toContain('--job "$MIGRATION_EXECUTION_JOB_ID" --log-failed');
     expect(workflow).toContain("production-preflight-resume.mjs --verify-pre-ddl-migration-failure");
     expect(migrationWorkflow).toMatch(/- name: Remove temporary runner credentials\s+if: always\(\)\s+run: rm -rf "\$RUNNER_TEMP\/bodycast-migrate-ssh"/);

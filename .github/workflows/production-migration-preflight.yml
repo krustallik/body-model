@@ -148,7 +148,7 @@ jobs:
               SAFE_RETRY_RUN_ARGS+=("$retry_run_path" "$retry_jobs_path")
             done
             MIGRATION_EXECUTION_JOB_ID="$(jq -er '[.jobs[] | select(.name == "Final live guard and authorized migration") | .id] | if length == 1 and (.[0] | type == "number") then .[0] else error("migration execution job ID is missing or ambiguous") end' "$RUNNER_TEMP/forward-source-jobs.json")"
-            gh api "repos/krustallik/body-model/actions/jobs/$MIGRATION_EXECUTION_JOB_ID/logs" > "$RUNNER_TEMP/forward-source-failure.log"
+            gh api --allow-escape-sequences "repos/krustallik/body-model/actions/jobs/$MIGRATION_EXECUTION_JOB_ID/logs" > "$RUNNER_TEMP/forward-source-failure.log"
             node --input-type=module - "$RUNNER_TEMP/forward-source-artifacts.json" <<'NODE'
           import { readFileSync } from "node:fs";
           import { selectForwardResumeMigrationContextArtifact } from "./scripts/production-forward-resume.mjs";

@@ -132,11 +132,17 @@ export function selectForwardResumeMigrationContextArtifact(payload) {
 function parseJobLog(text) {
   const records = [];
   for (const line of String(text ?? "").replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "").replace(/\r\n?/g, "\n").split("\n")) {
-    const parts = line.split("\t");
-    if (parts.length < 3) continue;
-    const prefix = parts.slice(0, 3);
-    const message = parts.slice(3).join("\t");
-    records.push({ job: prefix[0], step: prefix[1], timestamp: prefix[2], message });
+    const firstTab = line.indexOf("\t");
+    const secondTab = line.indexOf("\t", firstTab + 1);
+    if (firstTab < 0 || secondTab < 0) continue;
+    const job = line.slice(0, firstTab);
+    const step = line.slice(firstTab + 1, secondTab);
+    const timestampAndMessage = line.slice(secondTab + 1).replace(/^\uFEFF/, "");
+    const match = timestampAndMessage.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)(?:([\t ])([\s\S]*))?$/);
+    if (!match) continue;
+    const [, timestamp, , message = ""] = match;
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(timestamp)) continue;
+    records.push({ job, step, timestamp, message });
   }
   return records;
 }
@@ -205,7 +211,7 @@ export function verifyForwardResumeNoSpawnEvidence({ run, jobsPayload, logText, 
     reject("the exact migration job step sequence differs from the observed pre-spawn guard failure.");
   }
   const records = parseJobLog(logText).filter((entry) => entry.job === MIGRATION_FAILURE_JOB && entry.step === MIGRATION_FAILURE_STEP);
-  const errorRecords = records.filter((entry) => entry.message.includes(MIGRATION_GUARD_FAILURE));
+  const errorRecords = records.filter((entry) => entry.message === MIGRATION_GUARD_FAILURE);
   if (errorRecords.length !== 1 || records.some((entry) => /Applying migration|No pending migrations to apply|All migrations have been applied/i.test(entry.message))) {
     reject("failed-step logs do not contain one exact final writer-drain failure with no Prisma migration execution output.");
   }

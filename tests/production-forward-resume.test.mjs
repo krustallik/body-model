@@ -74,8 +74,8 @@ function jobsPayload(overrides = {}) {
 function noSpawnProofInputs(overrides = {}) {
   const runtime = { name: "run-prisma-migrate-with-lock-timeout.mjs", bytes: sourceBytes.length, sha256: digest(sourceBytes) };
   const logText = [
-    `${MIGRATION_FAILURE_JOB}\t${MIGRATION_FAILURE_STEP}\t2026-10-09T12:00:00Z\t${MIGRATION_GUARD_FAILURE}`,
-    `${MIGRATION_FAILURE_JOB}\t${MIGRATION_FAILURE_STEP}\t2026-10-09T12:00:00Z\t${JSON.stringify({ authorizationRuntime: [runtime] })}`,
+    `${MIGRATION_FAILURE_JOB}\t${MIGRATION_FAILURE_STEP}\t\uFEFF2026-10-09T12:00:00.1234567Z ${MIGRATION_GUARD_FAILURE}`,
+    `${MIGRATION_FAILURE_JOB}\t${MIGRATION_FAILURE_STEP}\t2026-10-09T12:00:00.1234567Z ${JSON.stringify({ authorizationRuntime: [runtime] })}`,
   ].join("\n");
   return {
     run: sourceRun(), jobsPayload: jobsPayload(), logText, sourceGuardBytes: sourceBytes,
@@ -191,7 +191,7 @@ describe("forward-resume evidence for the single verified pre-spawn failure", ()
       .toThrow("Forward-resume blocked");
   });
 
-  it("accepts only the exact owner migration run with the failed final writer-drain guard before Prisma spawn", () => {
+  it("parses actual GitHub failed-step logs and accepts only the exact pre-spawn writer-drain failure", () => {
     const proof = verifyForwardResumeNoSpawnEvidence(noSpawnProofInputs());
     expect(proof).toMatchObject({
       purpose: FORWARD_RESUME_PURPOSE,
@@ -200,6 +200,12 @@ describe("forward-resume evidence for the single verified pre-spawn failure", ()
       noPrismaSpawnVerified: true,
       failureCode: "final-prisma-writer-drain-rejected-before-spawn",
     });
+  });
+
+  it.each([["space", " "], ["tab", "\t"]])("preserves extra leading message %s after the timestamp separator", (_label, prefix) => {
+    const evidence = noSpawnProofInputs();
+    evidence.logText = evidence.logText.replace(MIGRATION_GUARD_FAILURE, `${prefix}${MIGRATION_GUARD_FAILURE}`);
+    expect(() => verifyForwardResumeNoSpawnEvidence(evidence)).toThrow("failed-step logs do not contain one exact final writer-drain failure");
   });
 
   it("requires the observed GitHub job setup and completion steps in the exact source sequence", () => {

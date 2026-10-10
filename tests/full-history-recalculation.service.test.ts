@@ -81,7 +81,7 @@ describe("runOwnerAuthorizedFullHistoryRecalculation", () => {
     });
     mocks.findUniqueLifecycle.mockImplementation(async () => ({ ...mocks.state.lifecycle }));
     mocks.queryRawUnsafe.mockResolvedValue([{
-      row_count: 1n,
+      row_count: 1,
       max_marker: new Date("2026-01-01T00:00:00.000Z"),
       id_checksum: "abc",
     }]);
@@ -143,9 +143,8 @@ describe("runOwnerAuthorizedFullHistoryRecalculation", () => {
       ownerAuthorized: true,
     })).resolves.toBeTruthy();
     await expect(runOwnerAuthorizedFullHistoryRecalculation({
-      // @ts-expect-error intentional unauthorized call
       profileId: 1,
-      ownerAuthorized: false,
+      ownerAuthorized: false as true,
     })).rejects.toThrow(/owner authorization/);
     await expect(runOwnerAuthorizedFullHistoryRecalculation({
       profileId: 0,

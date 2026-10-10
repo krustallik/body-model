@@ -48,6 +48,7 @@ const BLOCKED_CAPTURE_PREFLIGHT_STEPS = Object.freeze({
 });
 const MIGRATION_PRE_DDL_FAILURE = "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/app/scripts/github-owner-identity.mjs' imported from /app/scripts/production-migration-authorization.mjs";
 const MIGRATION_FAILURE_STEP = "Run the fixed guarded migration script over SSH";
+const MIGRATION_FAILURE_JOB = "Final live guard and authorized migration";
 const WRITER_DRAIN_READY_MARKER = '"contract":"bodycast-compose-internal-db-single-writer-v1","ready":true';
 const PRIOR_CAPTURE_FAILURE = "An earlier pre-DDL release capture exists; operator review is required before another migration attempt.";
 const MIGRATION_PATH = ".github/workflows/production-migrate.yml";
@@ -67,6 +68,40 @@ const MIGRATION_PRE_DDL_STEPS = Object.freeze({
 
 function reject(message) {
   throw new Error(`Previous production preflight cannot be safely resumed: ${message}`);
+}
+
+function normalizeActionLog(text) {
+  return String(text ?? "")
+    .replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseActionLogRecords(text) {
+  const records = [];
+  const lines = String(text ?? "")
+    .replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n");
+  const recordPrefix = /^([^\t]+)\t([^\t]+)\t(\d{4}-\d{2}-\d{2}T\S+Z)\s?(.*)$/;
+  for (const line of lines) {
+    const match = line.match(recordPrefix);
+    if (match) {
+      records.push({ job: match[1], step: match[2], text: match[4] });
+    } else if (records.length > 0) {
+      records.at(-1).text += `\n${line}`;
+    } else if (line.trim()) {
+      records.push({ job: "", step: "", text: line });
+    }
+  }
+  return records;
+}
+
+function findAllOccurrences(text, needle) {
+  const positions = [];
+  for (let from = 0; (from = text.indexOf(needle, from)) !== -1; from += needle.length) positions.push(from);
+  return positions;
 }
 
 function workflowPath(run) {
@@ -234,7 +269,8 @@ export function verifyPreDdlMigrationFailureResume({
   migrationRun, migrationJobs, migrationLogText,
   blockedCaptureRun, blockedCaptureJobs, blockedCaptureArtifacts, blockedCaptureLogText,
   laterRuns, sourceRunId, migrationRunId, blockedCaptureRunId, currentRunId, currentMainSha,
-  preflightWorkflowId, migrationWorkflowId, sourceIsAncestor,
+  preflightWorkflowId, migrationWorkflowId, sourceIsAncestor, sourceIsAncestorOfBlockedCapture,
+  blockedCaptureIsAncestorOfCurrentMain,
 }) {
   if (!/^[1-9][0-9]*$/.test(String(currentRunId ?? ""))
     || !/^[a-f0-9]{40}$/.test(String(currentMainSha ?? ""))) {
@@ -266,26 +302,42 @@ export function verifyPreDdlMigrationFailureResume({
     conclusion: "failure", headSha: sourceSha, attempt: 1,
   });
   assertStepResults(migrationExecution, MIGRATION_PRE_DDL_STEPS, "migration execution");
-  const migrationLog = String(migrationLogText ?? "");
-  const migrationLogLines = migrationLog.split(/\r?\n/);
-  const failureLines = migrationLogLines.map((line, index) => line.includes(MIGRATION_PRE_DDL_FAILURE) ? index : -1).filter((index) => index >= 0);
-  const writerDrainReadyLine = migrationLogLines.findIndex((line) => line.includes(WRITER_DRAIN_READY_MARKER));
-  if (failureLines.length !== 3 || failureLines.some((index) => !migrationLogLines[index].includes(MIGRATION_FAILURE_STEP))) {
+  const logRecords = parseActionLogRecords(migrationLogText);
+  const evidenceRecords = logRecords.filter((record) => record.job === MIGRATION_FAILURE_JOB && record.step === MIGRATION_FAILURE_STEP);
+  const otherRecords = logRecords.filter((record) => record.job !== MIGRATION_FAILURE_JOB || record.step !== MIGRATION_FAILURE_STEP);
+  const normalizedEvidenceLog = normalizeActionLog(evidenceRecords.map((record) => record.text).join("\n"));
+  const normalizedOtherLogs = normalizeActionLog(otherRecords.map((record) => record.text).join("\n"));
+  const importFailure = normalizeActionLog(MIGRATION_PRE_DDL_FAILURE);
+  const writerDrainMarker = normalizeActionLog(WRITER_DRAIN_READY_MARKER);
+  const failurePositions = findAllOccurrences(normalizedEvidenceLog, importFailure);
+  const writerDrainReadyPosition = normalizedEvidenceLog.indexOf(writerDrainMarker);
+  const failuresOutsideMigrationStep = findAllOccurrences(normalizedOtherLogs, importFailure).length;
+  const writerDrainOutsideMigrationStep = findAllOccurrences(normalizedOtherLogs, writerDrainMarker).length;
+  const failedSteps = (migrationExecution.steps ?? []).filter((step) => step.conclusion === "failure").map((step) => step.name);
+  if (failurePositions.length !== 3 || failuresOutsideMigrationStep !== 0 || writerDrainOutsideMigrationStep !== 0
+    || findAllOccurrences(normalizedEvidenceLog, writerDrainMarker).length !== 1
+    || failedSteps.length !== 1 || failedSteps[0] !== MIGRATION_FAILURE_STEP) {
     reject("the migration log does not show exactly three known import failures in the fixed migration step.");
   }
-  if (!(failureLines[0] < failureLines[1] && failureLines[1] < writerDrainReadyLine && writerDrainReadyLine < failureLines[2])) {
+  if (!(failurePositions[0] < failurePositions[1]
+    && failurePositions[1] < writerDrainReadyPosition && writerDrainReadyPosition < failurePositions[2])) {
     reject("the two failed live probes, successful writer-drain observation, and final-guard import failure are not in the reviewed order.");
   }
 
+  const blockedCaptureSha = blockedCaptureRun?.head_sha;
   assertPreflightRun(blockedCaptureRun, {
-    runId: blockedCaptureRunId, workflowId: preflightWorkflowId, sha: currentMainSha, conclusion: "failure",
+    runId: blockedCaptureRunId, workflowId: preflightWorkflowId, sha: blockedCaptureSha, conclusion: "failure",
   });
+  if (!/^[a-f0-9]{40}$/.test(String(blockedCaptureSha ?? ""))
+    || sourceIsAncestorOfBlockedCapture !== true || blockedCaptureIsAncestorOfCurrentMain !== true) {
+    reject("the blocked capture retry SHA is not on the verified source-to-current-main ancestry chain.");
+  }
   if (blockedCaptureJobs?.total_count !== 2 || !Array.isArray(blockedCaptureJobs.jobs) || blockedCaptureJobs.jobs.length !== 2) {
     reject("the capture-blocked preflight job inventory is incomplete or unexpected.");
   }
-  jobByName(blockedCaptureJobs, "Authorize read-only preflight", { conclusion: "success", headSha: currentMainSha, attempt: 1 });
+  jobByName(blockedCaptureJobs, "Authorize read-only preflight", { conclusion: "success", headSha: blockedCaptureSha, attempt: 1 });
   const blockedInspect = jobByName(blockedCaptureJobs,
-    "Inspect, back up, restore, and rehearse on disposable PostgreSQL", { conclusion: "failure", headSha: currentMainSha, attempt: 1 });
+    "Inspect, back up, restore, and rehearse on disposable PostgreSQL", { conclusion: "failure", headSha: blockedCaptureSha, attempt: 1 });
   assertStepResults(blockedInspect, BLOCKED_CAPTURE_PREFLIGHT_STEPS, "capture-blocked preflight");
   if (blockedCaptureArtifacts?.total_count !== 0 || (blockedCaptureArtifacts?.artifacts ?? []).length !== 0
     || !String(blockedCaptureLogText ?? "").includes(PRIOR_CAPTURE_FAILURE)) {
@@ -335,12 +387,17 @@ async function main() {
       readJson(migrationJobsPath), readFile(migrationLogPath, "utf8"), readJson(blockedRunPath), readJson(blockedJobsPath),
       readJson(blockedArtifactsPath), readFile(blockedLogPath, "utf8"), readFile(path.resolve(laterRunsPath), "utf8"),
     ]);
-    let sourceIsAncestor = false;
-    try { execFileSync("git", ["merge-base", "--is-ancestor", sourceRun.head_sha, currentMainSha], { stdio: "ignore" }); sourceIsAncestor = true; } catch {}
+    const isAncestor = (ancestor, descendant) => {
+      try { execFileSync("git", ["merge-base", "--is-ancestor", ancestor, descendant], { stdio: "ignore" }); return true; } catch { return false; }
+    };
+    const sourceIsAncestor = isAncestor(sourceRun.head_sha, currentMainSha);
+    const sourceIsAncestorOfBlockedCapture = isAncestor(sourceRun.head_sha, blockedCaptureRun.head_sha);
+    const blockedCaptureIsAncestorOfCurrentMain = isAncestor(blockedCaptureRun.head_sha, currentMainSha);
     const proof = verifyPreDdlMigrationFailureResume({ sourceRun, sourceJobs, sourceArtifacts, migrationRun, migrationJobs,
       migrationLogText, blockedCaptureRun, blockedCaptureJobs, blockedCaptureArtifacts, blockedCaptureLogText,
       laterRuns: parseNdjson(laterRunsText), sourceRunId, migrationRunId, blockedCaptureRunId, currentRunId,
-      currentMainSha, preflightWorkflowId, migrationWorkflowId, sourceIsAncestor });
+      currentMainSha, preflightWorkflowId, migrationWorkflowId, sourceIsAncestor,
+      sourceIsAncestorOfBlockedCapture, blockedCaptureIsAncestorOfCurrentMain });
     process.stdout.write(`${JSON.stringify(proof)}\n`);
     return;
   }

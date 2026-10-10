@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   ARMED_RETRY_FAILED_RUN_ID, ARMED_RETRY_FAILED_SHA, ARMED_RETRY_PURPOSE,
@@ -10,8 +11,25 @@ import { canonicalSha256 } from "../scripts/production-migration-authorization.m
 import { schemaInventoryDigest } from "../scripts/production-migration-preflight.mjs";
 import { jobsPayload, sourceRun } from "./helpers/forward-resume-evidence-fixture.mjs";
 
-const sourceGuardBytes = execFileSync("git", ["show", `${ARMED_RETRY_FAILED_SHA}:scripts/run-prisma-migrate-with-lock-timeout.mjs`]);
+const ATTESTED_GUARD_SHA256 = "05fc17dbf15a4e6a741e99c31bfd368e769a3828a2e09d878e04ddeebca528f0";
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const fixtureGuardBytes = readFileSync(new URL("./fixtures/run-prisma-migrate-with-lock-timeout-b0a31fb.mjs", import.meta.url));
+function historicalGuardBytes() {
+  try {
+    return execFileSync("git", ["show", `${ARMED_RETRY_FAILED_SHA}:scripts/run-prisma-migrate-with-lock-timeout.mjs`]);
+  } catch (error) {
+    if (error?.status !== 128) throw error;
+    return null;
+  }
+}
+const committedGuardBytes = historicalGuardBytes();
+if (committedGuardBytes && !committedGuardBytes.equals(fixtureGuardBytes)) {
+  throw new Error("The armed-retry guard fixture does not match the failed-run Git blob.");
+}
+const sourceGuardBytes = committedGuardBytes ?? fixtureGuardBytes;
+if (sha256(sourceGuardBytes) !== ATTESTED_GUARD_SHA256 || sourceGuardBytes.length !== 16172) {
+  throw new Error("The armed-retry guard bytes do not match the failed-run image attestation.");
+}
 const checkNames = ["signed-database-identity-digest", "canonical-postgres-identity", "exact-database-identity-match",
   "writer-drain-schema", "writer-drain-observer-pid", "fixed-observer-application", "zero-other-client-policy",
   "complete-backend-inventory", "zero-other-client-backends", "fresh-writer-drain-observation"];

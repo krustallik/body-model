@@ -127,6 +127,12 @@ jobs:
     timeout-minutes: 35
     environment: production
     steps:
+      - name: Checkout exact current main tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.authorize.outputs.candidate_sha }}
+          fetch-depth: 1
+          persist-credentials: false
       - name: Recheck run identity and main tip before production credentials
         env:
           GH_TOKEN: ${{ github.token }}

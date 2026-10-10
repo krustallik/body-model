@@ -1,7 +1,7 @@
 import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
 import { instantToLocalDateTime, localDateTimeToInstant } from "@/model/time-zone";
 
-export const TRANSIENT_EPISODE_PARTITION_V2_REVISION = "transient-water-v2-absolute-episode-partition" as const;
+export const TRANSIENT_EPISODE_PARTITION_V2_REVISION = "transient-water-v2-absolute-episode-partition-highest-id-tie-wins" as const;
 
 export type TransientEpisodeTimeRowV2 = {
   id: number;
@@ -74,9 +74,12 @@ export function buildTransientEpisodePartitionsV2<T extends TransientEpisodeTime
     || left.episode.id - right.episode.id);
 
   for (let index = 1; index < partitions.length; index += 1) {
-    if (partitions[index]!.startInstant.getTime() <= partitions[index - 1]!.startInstant.getTime()) {
-      throw new RangeError("ModelEpisode boundaries must be unique and strictly increasing");
+    if (partitions[index]!.startInstant.getTime() < partitions[index - 1]!.startInstant.getTime()) {
+      throw new RangeError("ModelEpisode boundaries must be ordered");
     }
+    // Sorting ties by ascending ID gives the highest ID the exact instant.
+    // The prior half-open interval becomes empty, matching Relative Muscle's
+    // same-start replacement rule without changing any source observations.
     partitions[index - 1]!.endInstant = partitions[index]!.startInstant;
   }
 

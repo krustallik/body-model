@@ -3,6 +3,7 @@ import { EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V2_REVISION } from "@/model/physi
 import { EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION } from "@/model/physiology-v7/experimental-cessation-detraining-v1";
 import { EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION } from "@/model/physiology-v7/experimental-skeletal-muscle-delta-v1";
 import { UnifiedExperimentalPhysiologySourceLoaderV1 } from "@/model/unified-experimental-physiology-v1/source-loader";
+import { TRANSIENT_EPISODE_PARTITION_V2_REVISION } from "@/modules/model-episodes/transient-exercise-water-episode-time-v2";
 
 function fakeClient(input: {
   completedIds?: number[];
@@ -144,6 +145,28 @@ describe("Unified V1 durable source loader", () => {
     ]);
     expect(range.days[1]?.childOutputs.transientWater.map(({ sessionId }) => sessionId)).toEqual([11]);
     expect(range.days[2]?.childOutputs.transientWater).toEqual([]);
+  });
+
+  it("accepts the highest-ID equal-start attribution produced by the transient-water resolver", async () => {
+    const eventInstant = "2065-01-01T10:00:00.000Z";
+    const winner = 3;
+    const loader = new UnifiedExperimentalPhysiologySourceLoaderV1(fakeClient({
+      completedIds: [11],
+      episodes: [
+        { id: 2, startDate: "2065-01-02", timezone: "Pacific/Kiritimati", active: false, deactivatedAt: null },
+        { id: winner, startDate: "2065-01-01", timezone: "Etc/GMT+10", active: true, deactivatedAt: null },
+      ],
+      transientRows: [transientRow({ episodeId: winner, modelDate: "2065-01-01", eventInstant })],
+    }) as never);
+    const range = await loader.loadRange({
+      profileId: 1,
+      fromInstant: new Date(eventInstant),
+      throughInstant: new Date("2065-01-02T10:00:00.000Z"),
+    });
+
+    const winnerDay = range.days.find(({ modelEpisodeId, date }) => modelEpisodeId === winner && date === "2065-01-01");
+    expect(winnerDay?.childOutputs.transientWater.map(({ sessionId }) => sessionId)).toEqual([11]);
+    expect(winnerDay?.childModelRevisions.episodePartition).toBe(TRANSIENT_EPISODE_PARTITION_V2_REVISION);
   });
 
   it("loads Relative Muscle by episode identity and excludes legacy or stale rows", async () => {

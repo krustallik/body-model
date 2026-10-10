@@ -267,18 +267,53 @@ describe("V2 transient ModelEpisode instant partitions", () => {
     expect(exact?.modelDate).toBe("2026-01-05");
   });
 
-  it("rejects invalid zones and duplicate/ambiguous active partitions", () => {
+  it("rejects invalid zones and ambiguous active partitions", () => {
     expect(() => buildTransientEpisodePartitionsV2([
       { id: 1, startDate: "2026-01-01", timezone: "Invalid/Zone", active: true, deactivatedAt: null },
     ])).toThrow();
     expect(() => buildTransientEpisodePartitionsV2([
-      { id: 1, startDate: "2026-01-01", timezone: "UTC", active: false, deactivatedAt: null },
-      { id: 2, startDate: "2026-01-01", timezone: "Etc/GMT", active: true, deactivatedAt: null },
-    ])).toThrow(/unique and strictly increasing/);
-    expect(() => buildTransientEpisodePartitionsV2([
       { id: 1, startDate: "2026-01-01", timezone: "UTC", active: true, deactivatedAt: null },
       { id: 2, startDate: "2026-01-02", timezone: "UTC", active: true, deactivatedAt: null },
     ])).toThrow(/active partition/);
+    expect(() => buildTransientEpisodePartitionsV2([
+      { id: 1, startDate: "2026-01-01", timezone: "UTC", active: false, deactivatedAt: null },
+      { id: 2, startDate: "2026-01-02", timezone: "UTC", active: true, deactivatedAt: null },
+      { id: 3, startDate: "2026-01-03", timezone: "UTC", active: false, deactivatedAt: new Date("2026-01-04T00:00:00.000Z") },
+    ])).toThrow(/active partition/);
+    expect(() => buildTransientEpisodePartitionsV2([
+      { id: 1, startDate: "2026-01-01", timezone: "UTC", active: false, deactivatedAt: null },
+      { id: 2, startDate: "2026-01-02", timezone: "UTC", active: false, deactivatedAt: null },
+    ])).toThrow(/valid upper boundary/);
+  });
+
+  it("assigns equal absolute starts to the highest ID and omits zero-width episodes", () => {
+    const partitions = buildTransientEpisodePartitionsV2([
+      { id: 1, startDate: "2026-01-01", timezone: "UTC", active: false, deactivatedAt: null },
+      { id: 2, startDate: "2026-01-02", timezone: "Pacific/Kiritimati", active: false, deactivatedAt: null },
+      { id: 3, startDate: "2026-01-01", timezone: "Etc/GMT+10", active: true, deactivatedAt: null },
+    ]);
+    const beforeTie = new Date("2026-01-01T09:59:59.999Z");
+    const tie = new Date("2026-01-01T10:00:00.000Z");
+
+    expect(partitions[1]!.startInstant.toISOString()).toBe(tie.toISOString());
+    expect(partitions[2]!.startInstant.toISOString()).toBe(tie.toISOString());
+    expect(partitions[1]!.endInstant?.toISOString()).toBe(tie.toISOString());
+    expect(partitions[1]!.endInstant?.getTime()).toBe(partitions[1]!.startInstant.getTime());
+    expect(transientEpisodeTimeForInstantV2(partitions, beforeTie)?.episode.id).toBe(1);
+    const exact = transientEpisodeTimeForInstantV2(partitions, tie);
+    expect(exact?.episode.id).toBe(3);
+    expect(exact?.modelDate).toBe("2026-01-01");
+    expect(exact?.timeZone).toBe("Etc/GMT+10");
+
+    const boundaries = transientModelDayBoundariesV2({
+      partitions,
+      fromInstant: partitions[0]!.startInstant,
+      throughInstant: new Date("2026-01-02T10:00:00.000Z"),
+    });
+    expect(boundaries.map(({ episodeId, modelDate }) => `${episodeId}|${modelDate}`)).toEqual([
+      "1|2026-01-01", "3|2026-01-01",
+    ]);
+    expect(boundaries.some(({ episodeId }) => episodeId === 2)).toBe(false);
   });
 
   it("keeps one ordered model-day step across a DST-shortened day", () => {

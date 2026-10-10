@@ -95,12 +95,17 @@ describe("production database cutback gates", () => {
   });
 
   it("blocks cutback when migration history, schema or any required data row count differs", () => {
-    const sourceReport = { identity, migrations, objects: [] };
-    const restoreResult = { readability: rowCounts };
-    const restoredReport = { identity: { ...identity, database: "staging", databaseOid: 20480 }, migrationHistory: migrations, objects: [], readability: rowCounts };
-    expect(verifyCutbackRestoredState({ sourceReport, restoreResult, restoredReport, readabilityReport: { readability: rowCounts } }).verified).toBe(true);
+    const logicalDataFingerprint = "c".repeat(64);
+    const sourceReport = { identity, migrations, objects: [], logicalDataFingerprint };
+    const restoreResult = { readability: rowCounts, logicalDataFingerprint };
+    const restoredReport = { identity: { ...identity, database: "staging", databaseOid: 20480 }, migrationHistory: migrations,
+      objects: [], readability: rowCounts, logicalDataFingerprint };
+    const readabilityReport = { readability: rowCounts, logicalDataFingerprint };
+    expect(verifyCutbackRestoredState({ sourceReport, restoreResult, restoredReport, readabilityReport }).verified).toBe(true);
     const badRows = { ...rowCounts, Workout: { rowCount: 2 } };
-    expect(verifyCutbackRestoredState({ sourceReport, restoreResult, restoredReport, readabilityReport: { readability: badRows } }).verified).toBe(false);
-    expect(verifyCutbackRestoredState({ sourceReport, restoreResult, restoredReport: { ...restoredReport, migrationHistory: [] }, readabilityReport: { readability: rowCounts } }).verified).toBe(false);
+    expect(verifyCutbackRestoredState({ sourceReport, restoreResult, restoredReport, readabilityReport: { readability: badRows, logicalDataFingerprint } }).verified).toBe(false);
+    expect(verifyCutbackRestoredState({ sourceReport, restoreResult, restoredReport: { ...restoredReport, migrationHistory: [] }, readabilityReport }).verified).toBe(false);
+    expect(verifyCutbackRestoredState({ sourceReport, restoreResult,
+      restoredReport: { ...restoredReport, logicalDataFingerprint: "d".repeat(64) }, readabilityReport }).verified).toBe(false);
   });
 });

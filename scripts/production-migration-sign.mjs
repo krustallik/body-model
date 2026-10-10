@@ -5,10 +5,12 @@ import { pathToFileURL } from "node:url";
 import { createClaimsFromPreflight, createAuthorizationEnvelope, canonicalSha256 } from "./production-migration-authorization.mjs";
 import { verifyPreflightArtifactMetadata } from "./production-migration-release.mjs";
 import { assertPinnedOwnerId } from "./github-owner-identity.mjs";
+import { verifyForwardResumeContext, FORWARD_RESUME_FAILED_RUN_ID } from "./production-forward-resume.mjs";
 
 async function json(file) { return JSON.parse(await readFile(file, "utf8")); }
 
-export async function createSignedAuthorization({ evidence, report, restore, run, artifact, allowlist, keyId, privateKeyPem, now = Date.now() }) {
+export async function createSignedAuthorization({ evidence, report, restore, run, artifact, allowlist, keyId, privateKeyPem,
+  executionMode = "standard", forwardResumeFailedRunId = "", now = Date.now() }) {
   const repository = "krustallik/body-model";
   if (evidence?.verified !== true || evidence?.repository !== repository) throw new Error("Preflight evidence is not verified for the canonical repository.");
   if (evidence.workflowPath !== ".github/workflows/production-migration-preflight.yml"
@@ -31,12 +33,35 @@ export async function createSignedAuthorization({ evidence, report, restore, run
   if (canonicalSha256(report) !== evidence.preflightResultDigest) throw new Error("Preflight report digest differs from the attested digest.");
   if (canonicalSha256(restore) !== evidence.restoreResultDigest || restore?.verified !== true) throw new Error("Restore result digest or verified status is invalid.");
   if (canonicalSha256(report.identity) !== evidence.productionIdentityDigest) throw new Error("Production identity digest differs from the verified preflight report.");
+  if (!/^[a-f0-9]{64}$/.test(String(report.logicalDataFingerprint ?? ""))
+    || report.logicalDataFingerprint !== evidence.logicalDataFingerprint
+    || restore?.logicalDataFingerprint !== report.logicalDataFingerprint) {
+    throw new Error("Full logical data fingerprint does not match the current database and encrypted-backup restore.");
+  }
   if (canonicalSha256(report.writerDrain) !== evidence.writerDrainDigest
     || canonicalSha256(report.writerDrain?.topology) !== evidence.writerTopologyDigest) {
     throw new Error("Writer-drain or topology digest differs from the verified preflight report.");
   }
   if (canonicalSha256([...report.pending].sort()) !== report.pendingSetDigest) throw new Error("Preflight pending-set digest is invalid.");
   if (report.readyForOwnerAuthorization !== true || report.manifestId !== evidence.manifestId) throw new Error("Preflight did not produce an owner-authorization-ready result.");
+  let forwardResume;
+  if (executionMode === "forward-resume") {
+    if (String(forwardResumeFailedRunId) !== FORWARD_RESUME_FAILED_RUN_ID) {
+      throw new Error("Forward-resume requires the exact explicitly owner-selected failed migration run.");
+    }
+    forwardResume = verifyForwardResumeContext(report.forwardResume, {
+      targetSha: evidence.releaseSha, preflightRunId: String(run.id), preflightRunAttempt: Number(run.runAttempt),
+    });
+    if (forwardResume.sourceRunId !== String(forwardResumeFailedRunId)) {
+      throw new Error("Forward-resume preflight is bound to a different failed migration run.");
+    }
+  } else if (executionMode === "standard") {
+    if (forwardResumeFailedRunId || report.forwardResume) {
+      throw new Error("A forward-resume preflight requires the separate explicit owner-authorized forward-resume mode.");
+    }
+  } else {
+    throw new Error("Unsupported production migration execution mode.");
+  }
   verifyPreflightArtifactMetadata(artifact, run);
   if (!/^[1-9][0-9]*$/.test(String(artifact.id)) || !/^sha256:[a-f0-9]{64}$/.test(artifact.digest)) throw new Error("Backup artifact metadata is incomplete.");
   const snapshotMs = Date.parse(evidence.backupSnapshotAt);
@@ -65,6 +90,8 @@ export async function createSignedAuthorization({ evidence, report, restore, run
     productionIdentityDigest: evidence.productionIdentityDigest,
     writerDrainDigest: evidence.writerDrainDigest,
     writerTopologyDigest: evidence.writerTopologyDigest,
+    snapshotDataFingerprint: report.logicalDataFingerprint,
+    forwardResume,
     issuedAt: new Date(issuedMs).toISOString(),
     expiresAt: new Date(expiresMs).toISOString(),
     authorizationId: randomUUID(),
@@ -87,6 +114,8 @@ async function main() {
     evidence, report, restore, run, artifact, allowlist,
     keyId: process.env.PRODUCTION_MIGRATION_SIGNING_KEY_ID,
     privateKeyPem: process.env.PRODUCTION_MIGRATION_ED25519_PRIVATE_KEY,
+    executionMode: process.env.BODYCAST_MIGRATION_EXECUTION_MODE ?? "standard",
+    forwardResumeFailedRunId: process.env.BODYCAST_FORWARD_RESUME_FAILED_RUN_ID ?? "",
   });
   await writeFile(path.resolve(outputPath), `${result.serialized}\n`, { flag: "wx", mode: 0o600 });
   process.stdout.write(JSON.stringify({ authorizationId: result.claims.authorizationId, digest: result.digest }) + "\n");

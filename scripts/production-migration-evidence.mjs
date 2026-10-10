@@ -14,7 +14,7 @@ export function createPreflightEvidence({ rawReport, preflightResult, restoreRes
   }
   const previousAppProvenance = preflightResult.previousAppProvenance;
   if (previousAppProvenance?.schemaVersion !== 2
-    || !["legacy-unlabeled-v1", "release-sha-v1"].includes(previousAppProvenance.provenanceKind)
+    || !["legacy-unlabeled-v1", "legacy-cutback-receipt-v1", "release-sha-v1"].includes(previousAppProvenance.provenanceKind)
     || !/^[a-f0-9]{64}$/.test(String(previousAppProvenance.recordDigest ?? ""))
     || !/^[a-f0-9]{64}$/.test(String(previousAppProvenance.previousRuntimeConfigDigest ?? ""))) {
     throw new Error("Versioned previous-app identity is missing from the signed preflight result.");
@@ -27,6 +27,10 @@ export function createPreflightEvidence({ rawReport, preflightResult, restoreRes
   const backupSnapshot = Date.parse(snapshotStartedAt);
   if (!Number.isFinite(backupSnapshot) || backupSnapshot > Date.now() + 60_000) throw new Error("Production pg_dump start timestamp is invalid.");
   if (!/^[a-f0-9]{64}$/.test(String(restoreResult.postSchemaDigest ?? ""))) throw new Error("Disposable post-migration schema digest is missing.");
+  if (!/^[a-f0-9]{64}$/.test(String(preflightResult.logicalDataFingerprint ?? ""))
+    || restoreResult.logicalDataFingerprint !== preflightResult.logicalDataFingerprint) {
+    throw new Error("Full logical data fingerprint from the current database does not match the encrypted backup restore.");
+  }
   return {
     schemaVersion: 1,
     verified: true,
@@ -44,6 +48,7 @@ export function createPreflightEvidence({ rawReport, preflightResult, restoreRes
     backupSnapshotAt: new Date(backupSnapshot).toISOString(),
     restoreResultDigest: canonicalSha256(restoreResult),
     productionIdentityDigest: canonicalSha256(rawReport.identity),
+    logicalDataFingerprint: preflightResult.logicalDataFingerprint,
     writerDrainDigest: canonicalSha256(rawReport.writerDrain),
     writerTopologyDigest: canonicalSha256(rawReport.writerDrain.topology),
     postSchemaDigest: restoreResult.postSchemaDigest,

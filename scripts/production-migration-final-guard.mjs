@@ -6,8 +6,56 @@ import { canonicalSha256, assertSignedAuthorizationRequired, verifyAuthorization
 import { assertProductionDatabaseIdentityMatches, evaluateProductionPreflight, verifyPostflightMatchesRestore } from "./production-migration-preflight.mjs";
 import { assertFreshWriterDrain } from "./production-writer-drain.mjs";
 import { assertPinnedOwnerId } from "./github-owner-identity.mjs";
+import { assertForwardResumeCurrentSnapshot } from "./production-forward-resume.mjs";
 
 async function readJson(filePath) { return JSON.parse(await readFile(filePath, "utf8")); }
+
+function forwardResumeClaims(context) {
+  if (!context) return {};
+  return {
+    executionMode: "forward-resume",
+    forwardResumeProofDigest: context.proofDigest,
+    forwardResumeSourceRunId: context.sourceRunId,
+    forwardResumeSourceRunAttempt: context.sourceRunAttempt,
+    forwardResumeSourceSha: context.sourceSha,
+    forwardResumeMarkerDigest: context.markerDigest,
+    forwardResumeSourceAuthorizationId: context.sourceAuthorizationId,
+    forwardResumeSourcePreflightResultDigest: context.sourcePreflightResultDigest,
+    forwardResumeFailureLogDigest: context.failureLogDigest,
+    forwardResumeGuardRuntimeDigest: context.sourceGuardRuntimeDigest,
+  };
+}
+
+export const SNAPSHOT_READABILITY_TABLES = Object.freeze([
+  "Workout", "Profile", "ModelEpisode", "PhysiologyV7Lifecycle", "DailyModelState", "StrengthDiarySession", "ExerciseCatalog",
+]);
+
+export function assertLiveDataMatchesBackupReadability(backupReadability, liveReadability) {
+  const mismatches = [];
+  for (const table of SNAPSHOT_READABILITY_TABLES) {
+    const backupCount = backupReadability?.[table]?.rowCount;
+    const liveCount = liveReadability?.[table]?.rowCount;
+    const valid = Number.isSafeInteger(backupCount) && backupCount >= 0
+      && Number.isSafeInteger(liveCount) && liveCount >= 0;
+    if (!valid || backupCount !== liveCount) mismatches.push({ id: `snapshot-row-count:${table}`, passed: false });
+  }
+  if (mismatches.length) {
+    throw new Error("Migration blocked: current live data readability differs from the newly restored backup or is unavailable; checks=" + JSON.stringify(mismatches));
+  }
+  return true;
+}
+
+export function assertLiveDataMatchesBackupFingerprint(preflightResult, evidence, restoreResult, liveReport) {
+  const expected = preflightResult?.logicalDataFingerprint;
+  const restore = restoreResult?.logicalDataFingerprint;
+  const attested = evidence?.logicalDataFingerprint;
+  const actual = liveReport?.logicalDataFingerprint;
+  if (![expected, restore, attested, actual].every((value) => /^[a-f0-9]{64}$/.test(String(value ?? "")))
+    || new Set([expected, restore, attested, actual]).size !== 1) {
+    throw new Error("Migration blocked: complete logical database contents or sequence state differ from the freshly restored encrypted backup.");
+  }
+  return expected;
+}
 
 export function verifyFinalMigrationAuthorization({ envelope, preflightResult, evidence, restoreResult, artifactMetadata, liveReport, liveMainSha, releaseSha, manifestId, allowlist, currentWorkflowId, currentWorkflowRunId, currentWorkflowRunAttempt, now = Date.now() }) {
   assertSignedAuthorizationRequired({ envelope, confirmation: process.env.CONFIRM_PRODUCTION_MIGRATE });
@@ -29,6 +77,8 @@ export function verifyFinalMigrationAuthorization({ envelope, preflightResult, e
   if (canonicalSha256(restoreResult) !== evidence.restoreResultDigest || restoreResult?.verified !== true || restoreResult?.postflightReady !== true) {
     throw new Error("Migration blocked: isolated restore or disposable migration rehearsal is not verified.");
   }
+  assertLiveDataMatchesBackupReadability(restoreResult.readability, liveReport?.readability);
+  const snapshotDataFingerprint = assertLiveDataMatchesBackupFingerprint(preflightResult, evidence, restoreResult, liveReport);
   assertProductionDatabaseIdentityMatches(preflightResult?.identity, liveReport?.identity);
   if (canonicalSha256(preflightResult.identity) !== evidence.productionIdentityDigest) throw new Error("Migration blocked: signed preflight identity digest is inconsistent.");
   if (canonicalSha256(liveReport?.identity) !== evidence.productionIdentityDigest) throw new Error("Migration blocked: production identity changed after preflight.");
@@ -36,6 +86,18 @@ export function verifyFinalMigrationAuthorization({ envelope, preflightResult, e
   const readiness = evaluateProductionPreflight(liveReport, directories, manifest.id);
   if (!readiness.readyForOwnerAuthorization) throw new Error("Migration blocked by final live readiness: " + readiness.blockers.join(" "));
   assertFreshWriterDrain(liveReport, { now, maxAgeMs: 30_000 });
+  const forwardContext = preflightResult.forwardResume ?? null;
+  if (forwardContext) {
+    assertForwardResumeCurrentSnapshot(forwardContext, {
+      preflightResult,
+      liveReport,
+      evidence,
+      restoreResult,
+      targetSha: releaseSha,
+      preflightRunId: evidence.workflowRunId,
+      preflightRunAttempt: Number(evidence.workflowRunAttempt),
+    });
+  }
   const pending = [...readiness.pending].sort();
   const verified = verifyAuthorizationEnvelope(envelope, {
     allowlist,
@@ -60,8 +122,13 @@ export function verifyFinalMigrationAuthorization({ envelope, preflightResult, e
       productionIdentityDigest: canonicalSha256(liveReport.identity),
       writerDrainDigest: evidence.writerDrainDigest,
       writerTopologyDigest: evidence.writerTopologyDigest,
+      snapshotDataFingerprint,
+      ...forwardResumeClaims(forwardContext),
     },
   });
+  if ((verified.payload.executionMode === "forward-resume") !== Boolean(forwardContext)) {
+    throw new Error("Migration blocked: signed execution mode differs from the verified preflight forward-resume context.");
+  }
   assertPinnedOwnerId(verified.payload.actorId, "Signed migration owner actor ID");
   if (String(artifactMetadata?.id) !== verified.payload.backupArtifactId
     || String(artifactMetadata?.digest).replace(/^sha256:/, "") !== verified.payload.backupArtifactDigest
@@ -77,7 +144,7 @@ export function verifyFinalMigrationAuthorization({ envelope, preflightResult, e
     || Number(evidence.workflowRunAttempt) !== Number(verified.payload.preflightRunAttempt)) {
     throw new Error("Migration blocked: artifact id/digest/run provenance differs from the signed authorization.");
   }
-  return {
+  const receipt = {
     schemaVersion: 1,
     ready: true,
     authorizationId: verified.authorizationId,
@@ -105,18 +172,25 @@ export function verifyFinalMigrationAuthorization({ envelope, preflightResult, e
     finalWriterDrainObservedAt: liveReport.writerDrain.observedAt,
     finalTopologyObservedAt: liveReport.writerDrain.topology.observedAt,
     postSchemaDigest: restoreResult.postSchemaDigest,
+    snapshotDataFingerprint,
     verifiedAt: new Date(now).toISOString(),
   };
+  if (forwardContext) Object.assign(receipt, forwardResumeClaims(forwardContext));
+  return receipt;
 }
 
 export function verifyFinalGuardReceipt({ receipt, envelope, allowlist, currentWorkflowId, currentWorkflowRunId, currentWorkflowRunAttempt, currentMainSha, releaseSha, now = Date.now() }) {
+  const isForwardResume = receipt?.executionMode === "forward-resume";
   const fields = [
     "schemaVersion", "ready", "authorizationId", "manifestId", "releaseSha", "currentMainSha", "workflowId",
     "workflowRunId", "workflowRunAttempt", "actorId", "pending", "pendingSetDigest", "preflightRunId", "preflightRunAttempt",
     "preflightResultDigest", "backupArtifactId", "backupArtifactDigest", "backupSnapshotAt", "restoreResultDigest",
     "productionIdentityDigest", "preflightWriterDrainDigest", "preflightWriterTopologyDigest",
     "finalWriterDrainDigest", "finalWriterTopologyDigest", "finalWriterDrainObservedAt", "finalTopologyObservedAt",
-    "postSchemaDigest", "verifiedAt",
+    "postSchemaDigest", "snapshotDataFingerprint", "verifiedAt",
+    ...(isForwardResume ? ["executionMode", "forwardResumeProofDigest", "forwardResumeSourceRunId", "forwardResumeSourceRunAttempt",
+      "forwardResumeSourceSha", "forwardResumeMarkerDigest", "forwardResumeSourceAuthorizationId",
+      "forwardResumeSourcePreflightResultDigest", "forwardResumeFailureLogDigest", "forwardResumeGuardRuntimeDigest"] : []),
   ].sort();
   if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)
     || JSON.stringify(Object.keys(receipt).sort()) !== JSON.stringify(fields)) {
@@ -128,7 +202,8 @@ export function verifyFinalGuardReceipt({ receipt, envelope, allowlist, currentW
     || !/^[a-f0-9]{64}$/.test(String(receipt.preflightWriterDrainDigest ?? ""))
     || !/^[a-f0-9]{64}$/.test(String(receipt.preflightWriterTopologyDigest ?? ""))
     || !/^[a-f0-9]{64}$/.test(String(receipt.finalWriterDrainDigest ?? ""))
-    || !/^[a-f0-9]{64}$/.test(String(receipt.finalWriterTopologyDigest ?? ""))) {
+    || !/^[a-f0-9]{64}$/.test(String(receipt.finalWriterTopologyDigest ?? ""))
+    || !/^[a-f0-9]{64}$/.test(String(receipt.snapshotDataFingerprint ?? ""))) {
     throw new Error("Migration blocked: final guard receipt is incomplete or not ready.");
   }
   for (const [label, value] of [["writer-drain", receipt.finalWriterDrainObservedAt], ["topology", receipt.finalTopologyObservedAt]]) {
@@ -162,6 +237,18 @@ export function verifyFinalGuardReceipt({ receipt, envelope, allowlist, currentW
       productionIdentityDigest: receipt.productionIdentityDigest,
       writerDrainDigest: receipt.preflightWriterDrainDigest,
       writerTopologyDigest: receipt.preflightWriterTopologyDigest,
+      snapshotDataFingerprint: receipt.snapshotDataFingerprint,
+      ...(isForwardResume ? forwardResumeClaims({
+        proofDigest: receipt.forwardResumeProofDigest,
+        sourceRunId: receipt.forwardResumeSourceRunId,
+        sourceRunAttempt: receipt.forwardResumeSourceRunAttempt,
+        sourceSha: receipt.forwardResumeSourceSha,
+        markerDigest: receipt.forwardResumeMarkerDigest,
+        sourceAuthorizationId: receipt.forwardResumeSourceAuthorizationId,
+        sourcePreflightResultDigest: receipt.forwardResumeSourcePreflightResultDigest,
+        failureLogDigest: receipt.forwardResumeFailureLogDigest,
+        sourceGuardRuntimeDigest: receipt.forwardResumeGuardRuntimeDigest,
+      }) : {}),
     },
   });
   const payload = verified.payload;
@@ -186,6 +273,18 @@ export function verifyFinalGuardReceipt({ receipt, envelope, allowlist, currentW
     productionIdentityDigest: payload.productionIdentityDigest,
     preflightWriterDrainDigest: payload.writerDrainDigest,
     preflightWriterTopologyDigest: payload.writerTopologyDigest,
+    snapshotDataFingerprint: payload.snapshotDataFingerprint,
+    ...(isForwardResume ? forwardResumeClaims({
+      proofDigest: payload.forwardResumeProofDigest,
+      sourceRunId: payload.forwardResumeSourceRunId,
+      sourceRunAttempt: payload.forwardResumeSourceRunAttempt,
+      sourceSha: payload.forwardResumeSourceSha,
+      markerDigest: payload.forwardResumeMarkerDigest,
+      sourceAuthorizationId: payload.forwardResumeSourceAuthorizationId,
+      sourcePreflightResultDigest: payload.forwardResumeSourcePreflightResultDigest,
+      failureLogDigest: payload.forwardResumeFailureLogDigest,
+      sourceGuardRuntimeDigest: payload.forwardResumeGuardRuntimeDigest,
+    }) : {}),
   };
   for (const [field, expected] of Object.entries(receiptClaims)) {
     if (JSON.stringify(receipt[field]) !== JSON.stringify(expected)) throw new Error("Migration blocked: final guard receipt differs from signed claim " + field + ".");

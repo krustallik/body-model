@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { canonicalSha256 } from "./production-migration-authorization.mjs";
@@ -10,7 +10,10 @@ import { renderProductionDbPreflightSql } from "./production-db-preflight.mjs";
 
 export const PREVIOUS_APP_PROVENANCE_SCHEMA_VERSION = 2;
 export const LEGACY_PREVIOUS_APP_PROVENANCE = "legacy-unlabeled-v1";
+export const CUTBACK_LEGACY_PREVIOUS_APP_PROVENANCE = "legacy-cutback-receipt-v1";
 export const SHA_PREVIOUS_APP_PROVENANCE = "release-sha-v1";
+export const CUTBACK_RECEIPT_SCHEMA_VERSION = 1;
+export const CUTBACK_RECEIPT_PURPOSE = "bodycast-verified-cutback-v1";
 export const PREVIOUS_APP_COMPATIBILITY_SNAPSHOT_CONTRACT = "bodycast-previous-app-compatibility-snapshot-v1";
 export const LEGACY_UNKNOWN_RELEASE_LABEL = "unknown";
 
@@ -19,6 +22,7 @@ const HEX_256 = /^[a-f0-9]{64}$/;
 const IMAGE_ID = /^sha256:[a-f0-9]{64}$/;
 const CONTAINER_ID = /^[a-f0-9]{64}$/;
 const RELEASE_SHA = /^[a-f0-9]{40}$/;
+const RUN_ID = /^[1-9][0-9]*$/;
 
 export function previousAppDatabaseCompatibilityDigests(report) {
   const identity = report?.identity;
@@ -70,7 +74,77 @@ export function assertPreviousAppCompatibilitySnapshot(report) {
   return true;
 }
 
-export function capturePreviousAppProvenance({ container, databaseReport, targetSha }) {
+const CUTBACK_RECEIPT_FIELDS = Object.freeze([
+  "schemaVersion", "purpose", "cutbackRunId", "cutbackRunAttempt", "releaseSha", "sourceMarkerDigest",
+  "previousImageId", "previousContainerId", "previousHealth", "previousRuntimeConfigDigest",
+  "databaseIdentityDigest", "migrationHistoryDigest", "schemaDigest", "databaseCompatibilityDigest", "completedAt", "receiptDigest",
+]);
+
+export function createVerifiedCutbackReceipt({ container, databaseReport, cutbackRunId, cutbackRunAttempt, releaseSha, sourceMarkerDigest,
+  completedAt = new Date().toISOString() }) {
+  if (!RUN_ID.test(String(cutbackRunId ?? "")) || !Number.isSafeInteger(cutbackRunAttempt) || cutbackRunAttempt < 1
+    || !RELEASE_SHA.test(String(releaseSha ?? "")) || !HEX_256.test(String(sourceMarkerDigest ?? ""))) {
+    throw new Error("Cutback receipt workflow and marker lineage are malformed.");
+  }
+  if (!container || !CONTAINER_ID.test(String(container.Id ?? "")) || !IMAGE_ID.test(String(container.Image ?? ""))
+    || container?.State?.Health?.Status !== "healthy" || container?.Config?.Labels?.[RELEASE_SHA_LABEL] !== LEGACY_UNKNOWN_RELEASE_LABEL) {
+    throw new Error("Cutback receipt requires the positively healthy immutable legacy app with its explicit unknown release label.");
+  }
+  const digests = previousAppDatabaseCompatibilityDigests(databaseReport);
+  const receipt = {
+    schemaVersion: CUTBACK_RECEIPT_SCHEMA_VERSION,
+    purpose: CUTBACK_RECEIPT_PURPOSE,
+    cutbackRunId: String(cutbackRunId),
+    cutbackRunAttempt,
+    releaseSha,
+    sourceMarkerDigest,
+    previousImageId: container.Image,
+    previousContainerId: container.Id,
+    previousHealth: container.State.Health.Status,
+    previousRuntimeConfigDigest: productionAppRuntimeDigest(container),
+    databaseIdentityDigest: digests.databaseIdentityDigest,
+    migrationHistoryDigest: digests.migrationHistoryDigest,
+    schemaDigest: digests.schemaDigest,
+    databaseCompatibilityDigest: digests.compatibilityDigest,
+    completedAt,
+  };
+  if (!Number.isFinite(Date.parse(completedAt))) throw new Error("Cutback receipt timestamp is invalid.");
+  return Object.freeze({ ...receipt, receiptDigest: canonicalSha256(receipt) });
+}
+
+export function validateVerifiedCutbackReceipt(receipt, { container, databaseReport, expectedReleaseSha } = {}) {
+  if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)
+    || JSON.stringify(Object.keys(receipt).sort()) !== JSON.stringify([...CUTBACK_RECEIPT_FIELDS].sort())
+    || receipt.schemaVersion !== CUTBACK_RECEIPT_SCHEMA_VERSION || receipt.purpose !== CUTBACK_RECEIPT_PURPOSE
+    || !RUN_ID.test(String(receipt.cutbackRunId ?? "")) || !Number.isSafeInteger(receipt.cutbackRunAttempt) || receipt.cutbackRunAttempt < 1
+    || !RELEASE_SHA.test(String(receipt.releaseSha ?? "")) || (expectedReleaseSha && receipt.releaseSha !== expectedReleaseSha)
+    || !HEX_256.test(String(receipt.sourceMarkerDigest ?? "")) || !IMAGE_ID.test(String(receipt.previousImageId ?? ""))
+    || !CONTAINER_ID.test(String(receipt.previousContainerId ?? "")) || receipt.previousHealth !== "healthy"
+    || !HEX_256.test(String(receipt.previousRuntimeConfigDigest ?? ""))
+    || !HEX_256.test(String(receipt.databaseIdentityDigest ?? "")) || !HEX_256.test(String(receipt.migrationHistoryDigest ?? ""))
+    || !HEX_256.test(String(receipt.schemaDigest ?? "")) || !HEX_256.test(String(receipt.databaseCompatibilityDigest ?? ""))
+    || !Number.isFinite(Date.parse(receipt.completedAt)) || !HEX_256.test(String(receipt.receiptDigest ?? ""))) {
+    throw new Error("Verified cutback receipt is missing, malformed, or has unsupported fields.");
+  }
+  const { receiptDigest, ...body } = receipt;
+  if (canonicalSha256(body) !== receiptDigest) throw new Error("Verified cutback receipt digest is invalid.");
+  if (!container || container?.Config?.Labels?.[RELEASE_SHA_LABEL] !== LEGACY_UNKNOWN_RELEASE_LABEL
+    || container.Id !== receipt.previousContainerId || container.Image !== receipt.previousImageId
+    || container?.State?.Health?.Status !== "healthy"
+    || productionAppRuntimeDigest(container) !== receipt.previousRuntimeConfigDigest) {
+    throw new Error("The current legacy app image, container, runtime configuration, or health differs from the durable cutback receipt.");
+  }
+  const digests = previousAppDatabaseCompatibilityDigests(databaseReport);
+  if (digests.databaseIdentityDigest !== receipt.databaseIdentityDigest
+    || digests.migrationHistoryDigest !== receipt.migrationHistoryDigest
+    || digests.schemaDigest !== receipt.schemaDigest
+    || digests.compatibilityDigest !== receipt.databaseCompatibilityDigest) {
+    throw new Error("The current PostgreSQL identity, schema, or migration history differs from the durable cutback receipt.");
+  }
+  return true;
+}
+
+export function capturePreviousAppProvenance({ container, databaseReport, targetSha, cutbackReceipt = null }) {
   if (!RELEASE_SHA.test(String(targetSha ?? ""))) throw new Error("Previous-app capture requires the exact target release SHA.");
   if (!container || typeof container !== "object" || Array.isArray(container)
     || !CONTAINER_ID.test(String(container.Id ?? "")) || !IMAGE_ID.test(String(container.Image ?? ""))) {
@@ -87,10 +161,16 @@ export function capturePreviousAppProvenance({ container, databaseReport, target
   let previousSha = "unavailable";
   if (hasReleaseSha) {
     previousSha = labels[RELEASE_SHA_LABEL];
-    if (!RELEASE_SHA.test(String(previousSha ?? ""))) {
+    if (previousSha === LEGACY_UNKNOWN_RELEASE_LABEL) {
+      if (!cutbackReceipt) throw new Error("A present unknown previous-app release label requires a verified durable cutback receipt.");
+      validateVerifiedCutbackReceipt(cutbackReceipt, { container, databaseReport });
+      provenanceKind = CUTBACK_LEGACY_PREVIOUS_APP_PROVENANCE;
+      previousSha = "unavailable";
+    } else if (!RELEASE_SHA.test(String(previousSha ?? ""))) {
       throw new Error("A present previous-app release SHA label is invalid; only a genuinely absent label may use legacy provenance.");
+    } else {
+      provenanceKind = SHA_PREVIOUS_APP_PROVENANCE;
     }
-    provenanceKind = SHA_PREVIOUS_APP_PROVENANCE;
   }
 
   const digests = previousAppDatabaseCompatibilityDigests(databaseReport);
@@ -164,7 +244,7 @@ export function validatePreviousAppProvenance(record, expectedTargetSha) {
   }
   if (record.provenanceKind === SHA_PREVIOUS_APP_PROVENANCE) {
     if (!RELEASE_SHA.test(String(record.previousSha ?? ""))) throw new Error("SHA-based previous-app provenance is invalid.");
-  } else if (record.provenanceKind === LEGACY_PREVIOUS_APP_PROVENANCE) {
+  } else if (record.provenanceKind === LEGACY_PREVIOUS_APP_PROVENANCE || record.provenanceKind === CUTBACK_LEGACY_PREVIOUS_APP_PROVENANCE) {
     if (record.previousSha !== "unavailable") throw new Error("Legacy previous-app provenance must not invent a source commit SHA.");
   } else {
     throw new Error("Previous-app provenance kind is unknown.");
@@ -248,7 +328,7 @@ export function verifyLegacyPreviousAppRestoredCompatibility({
   record, targetSha, preflightResult, preflightResultDigest, contextVerified, restoredReport, restoreResult, readabilityReport,
 }) {
   validatePreviousAppProvenance(record, targetSha);
-  if (record.provenanceKind !== LEGACY_PREVIOUS_APP_PROVENANCE || record.previousSha !== "unavailable") {
+  if (![LEGACY_PREVIOUS_APP_PROVENANCE, CUTBACK_LEGACY_PREVIOUS_APP_PROVENANCE].includes(record.provenanceKind) || record.previousSha !== "unavailable") {
     throw new Error("Legacy DB compatibility verification requires explicit legacy-unlabeled provenance.");
   }
   if (contextVerified !== true || preflightResultDigest !== canonicalSha256(preflightResult)) {
@@ -298,6 +378,71 @@ function readBoundedStdin(maxBytes = 64 * 1024) {
   });
 }
 
+async function readReceiptFile(receiptPath) {
+  const details = await lstat(receiptPath).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error));
+  if (!details) return null;
+  if (!details.isFile() || details.isSymbolicLink() || details.size > 16 * 1024) {
+    throw new Error("Durable cutback receipt is unsafe or exceeds its bound.");
+  }
+  return JSON.parse(await readFile(receiptPath, "utf8"));
+}
+
+export async function readVerifiedCutbackReceiptFromGitDir(gitDir, { container, databaseReport } = {}) {
+  const candidates = [];
+  const legacyPath = path.join(gitDir, "bodycast-production-cutback-receipt.json");
+  const legacyReceipt = await readReceiptFile(legacyPath);
+  if (legacyReceipt) candidates.push(legacyReceipt);
+
+  const receiptDir = path.join(gitDir, "bodycast-production-cutback-receipts");
+  const dirDetails = await lstat(receiptDir).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error));
+  if (dirDetails) {
+    if (!dirDetails.isDirectory() || dirDetails.isSymbolicLink() || (dirDetails.mode & 0o077) !== 0) {
+      throw new Error("Durable cutback receipt directory is unsafe or not private.");
+    }
+    const names = await readdir(receiptDir);
+    if (names.length > 256 || names.some((name) => !/^[1-9][0-9]*-[1-9][0-9]*\.json$/.test(name))) {
+      throw new Error("Durable cutback receipt inventory is malformed or exceeds its bound.");
+    }
+    for (const name of names) {
+      const receipt = await readReceiptFile(path.join(receiptDir, name));
+      if (receipt) candidates.push(receipt);
+    }
+  }
+
+  if (!candidates.length) return null;
+  const liveDigests = previousAppDatabaseCompatibilityDigests(databaseReport);
+  const matches = [];
+  for (const receipt of candidates) {
+    if (receipt?.previousContainerId !== container?.Id || receipt?.previousImageId !== container?.Image
+      || receipt?.previousRuntimeConfigDigest !== productionAppRuntimeDigest(container)
+      || receipt?.databaseIdentityDigest !== liveDigests.databaseIdentityDigest
+      || receipt?.migrationHistoryDigest !== liveDigests.migrationHistoryDigest
+      || receipt?.schemaDigest !== liveDigests.schemaDigest
+      || receipt?.databaseCompatibilityDigest !== liveDigests.compatibilityDigest) continue;
+    validateVerifiedCutbackReceipt(receipt, { container, databaseReport });
+    matches.push(receipt);
+  }
+  if (matches.length > 1) throw new Error("Multiple durable cutback receipts match the current legacy app and database state.");
+  return matches[0] ?? null;
+}
+
+export async function persistVerifiedCutbackReceipt(gitDir, receipt) {
+  const receiptDir = path.join(gitDir, "bodycast-production-cutback-receipts");
+  await mkdir(receiptDir, { mode: 0o700 }).catch((error) => {
+    if (error?.code !== "EEXIST") throw error;
+  });
+  const dirDetails = await lstat(receiptDir);
+  if (!dirDetails.isDirectory() || dirDetails.isSymbolicLink() || (dirDetails.mode & 0o077) !== 0) {
+    throw new Error("Durable cutback receipt directory is unsafe or not private.");
+  }
+  const receiptPath = path.join(receiptDir, `${receipt.cutbackRunId}-${receipt.cutbackRunAttempt}.json`);
+  const handle = await open(receiptPath, "wx", 0o600);
+  try { await handle.writeFile(`${JSON.stringify(receipt)}\n`, "utf8"); await handle.sync(); } finally { await handle.close(); }
+  const directory = await open(receiptDir, "r");
+  try { await directory.sync(); } finally { await directory.close(); }
+  return receiptPath;
+}
+
 async function readCurrentPreviousAppDatabaseReport(rootDir) {
   const preflightSql = renderProductionDbPreflightSql(await readFile(path.join(rootDir, "scripts/production-db-preflight.sql"), "utf8"));
   const databaseJson = execFileSync("bash", [path.join(rootDir, "scripts/production-db-target.sh"), "--previous-app-compatibility-snapshot", "bodycast-db-prod"], {
@@ -319,8 +464,24 @@ async function main() {
     const containers = JSON.parse(containerJson);
     if (!Array.isArray(containers) || containers.length !== 1) throw new Error("Previous-app Docker inspection did not return one container.");
     const databaseReport = await readCurrentPreviousAppDatabaseReport(rootDir);
-    const record = capturePreviousAppProvenance({ container: containers[0], databaseReport, targetSha });
+    const gitDir = execFileSync("git", ["rev-parse", "--absolute-git-dir"], { cwd: rootDir, encoding: "utf8" }).trim();
+    const cutbackReceipt = await readVerifiedCutbackReceiptFromGitDir(gitDir, { container: containers[0], databaseReport });
+    const record = capturePreviousAppProvenance({ container: containers[0], databaseReport, targetSha, cutbackReceipt });
     process.stdout.write(serializePreviousAppProvenance(record));
+    return;
+  }
+  if (mode === "--create-cutback-receipt") {
+    if (args.length !== 5) throw new Error("Usage: --create-cutback-receipt <live-report.json> <cutback-run-id> <cutback-run-attempt> <release-sha> <source-marker-digest> (Docker inspect JSON on stdin)");
+    const [reportPath, runId, attemptText, releaseSha, sourceMarkerDigest] = args;
+    if (!RUN_ID.test(attemptText)) throw new Error("Cutback workflow attempt is malformed.");
+    const containers = JSON.parse(await readBoundedStdin(4 * 1024 * 1024));
+    if (!Array.isArray(containers) || containers.length !== 1) throw new Error("Cutback app inspection did not return exactly one container.");
+    const databaseReport = JSON.parse(await readFile(reportPath, "utf8"));
+    const receipt = createVerifiedCutbackReceipt({ container: containers[0], databaseReport, cutbackRunId: runId,
+      cutbackRunAttempt: Number(attemptText), releaseSha, sourceMarkerDigest });
+    const gitDir = execFileSync("git", ["rev-parse", "--absolute-git-dir"], { cwd: process.cwd(), encoding: "utf8" }).trim();
+    await persistVerifiedCutbackReceipt(gitDir, receipt);
+    process.stdout.write(`${JSON.stringify({ receiptDigest: receipt.receiptDigest, schemaVersion: receipt.schemaVersion })}\n`);
     return;
   }
   if (mode === "--resume-capture") {

@@ -15,6 +15,7 @@ readonly CURRENT_MAIN_SHA="${BODYCAST_CUTBACK_CURRENT_MAIN_SHA:-}"
 readonly FAILED_RELEASE_SHA="${BODYCAST_CUTBACK_FAILED_RELEASE_SHA:-}"
 readonly FAILED_MIGRATION_RUN_ID="${BODYCAST_CUTBACK_FAILED_RUN_ID:-}"
 readonly CUTBACK_RUN_ID="${BODYCAST_CUTBACK_RUN_ID:-}"
+readonly CUTBACK_RUN_ATTEMPT="${BODYCAST_CUTBACK_RUN_ATTEMPT:-}"
 readonly CONTEXT_DIR="${BODYCAST_CUTBACK_CONTEXT_DIR:-}"
 readonly ARCHIVE_SHA256="${BODYCAST_CUTBACK_ARCHIVE_SHA256:-}"
 readonly CONFIRMATION="${BODYCAST_CUTBACK_CONFIRMATION:-}"
@@ -28,6 +29,8 @@ source "$ROOT_DIR/scripts/production-release-marker.sh"
 source "$ROOT_DIR/scripts/deploy-main-freshness.sh"
 source "$ROOT_DIR/scripts/production-release-lock.sh"
 source "$ROOT_DIR/scripts/production-route-primitives.sh"
+source "$ROOT_DIR/scripts/production-database-cutback-promotion.sh"
+source "$ROOT_DIR/scripts/production-database-cutback-lifecycle.sh"
 
 fail() { echo "Production database cutback blocked: $*" >&2; exit 1; }
 compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
@@ -39,7 +42,8 @@ admin_sql() {
 
 [[ "$CONFIRMATION" == "RESTORE_PRE_DDL_DATABASE" ]] || fail "the owner-only workflow confirmation is missing."
 [[ "$CURRENT_MAIN_SHA" =~ ^[a-f0-9]{40}$ && "$FAILED_RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]] || fail "current-main and failed-release SHA values must be full commits."
-[[ "$FAILED_MIGRATION_RUN_ID" =~ ^[1-9][0-9]*$ && "$CUTBACK_RUN_ID" =~ ^[1-9][0-9]*$ ]] || fail "workflow run IDs are invalid."
+[[ "$FAILED_MIGRATION_RUN_ID" =~ ^[1-9][0-9]*$ && "$CUTBACK_RUN_ID" =~ ^[1-9][0-9]*$ \
+  && "$CUTBACK_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || fail "workflow run IDs or attempt are invalid."
 [[ "$ARCHIVE_SHA256" =~ ^[a-f0-9]{64}$ ]] || fail "authenticated decrypted archive digest is missing."
 [[ "$CONTEXT_DIR" =~ ^/tmp/bodycast-cutback-context-[1-9][0-9]*-[1-9][0-9]*$ && -d "$CONTEXT_DIR" && ! -L "$CONTEXT_DIR" ]] || fail "the fixed signed-context directory is unavailable."
 for name in authorization-envelope.json artifact-metadata.json preflight-evidence.json preflight-report.json preflight-result.json restore-result.json; do
@@ -69,7 +73,7 @@ PREVIOUS_DB_COMPATIBILITY_DIGEST="${record[11]#preDdlDatabaseCompatibilityDigest
 [[ "${record[0]}" == "schemaVersion=2" && "${record[1]}" == "targetSha=$FAILED_RELEASE_SHA" \
   && "${record[2]}" == provenanceKind=* \
   && ( ( "$PREVIOUS_PROVENANCE_KIND" == "release-sha-v1" && "$PREVIOUS_SHA" =~ ^[a-f0-9]{40}$ ) \
-    || ( "$PREVIOUS_PROVENANCE_KIND" == "legacy-unlabeled-v1" && "$PREVIOUS_SHA" == "unavailable" ) ) \
+    || ( "$PREVIOUS_PROVENANCE_KIND" =~ ^legacy-(unlabeled|cutback-receipt)-v1$ && "$PREVIOUS_SHA" == "unavailable" ) ) \
   && "${record[3]}" == previousSha=* \
   && "${record[4]}" == previousImageId=* && "$PREVIOUS_IMAGE_ID" =~ ^sha256:[a-f0-9]{64}$ \
   && "${record[5]}" == previousContainerId=* && "$PREVIOUS_CONTAINER_ID" =~ ^[a-f0-9]{64}$ \
@@ -86,6 +90,8 @@ marker_status=1
 if read_bodycast_release_marker; then marker_status=0; else marker_status=$?; fi
 [[ "$marker_status" -eq 0 && "$BODYCAST_MARKER_RELEASE_SHA" == "$FAILED_RELEASE_SHA" \
   && "$BODYCAST_MARKER_STATE" =~ ^(ddl-started|schema-applied|app-ready|v4-ready)$ ]] || fail "the exact failed-release marker is absent, conflicting, or outside the reviewed cutback states."
+SOURCE_MARKER_DIGEST="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
+[[ "$SOURCE_MARKER_DIGEST" =~ ^[a-f0-9]{64}$ ]] || fail "the failed-release marker digest is unavailable."
 bodycast_verify_exact_maintenance_route
 maintenance_marker="$(bodycast_maintenance_marker_from_route)"
 bodycast_probe_public_maintenance "$maintenance_marker"
@@ -120,32 +126,10 @@ expected_previous_app_label() {
 
 cleanup_cutback() {
   local status=$?
-  local running_id running_image running_label
   trap - ERR EXIT
   set +e
-  if [[ "$database_swapped" == "false" && "$stage_created" == "true" ]]; then
-    admin_sql "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${stage_db}' AND pid <> pg_backend_pid();" >/dev/null 2>&1
-    admin_sql "DROP DATABASE IF EXISTS ${stage_db};" >/dev/null 2>&1
-  fi
-  if [[ "$app_started" == "true" && "$route_committed" == "false" ]]; then
-    running_id="$(docker inspect --format '{{.Id}}' "$APP_CONTAINER" 2>/dev/null || true)"
-    running_image="$(docker inspect --format '{{.Image}}' "$APP_CONTAINER" 2>/dev/null || true)"
-    running_label="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER" 2>/dev/null || true)"
-    if [[ "$running_id" =~ ^[a-f0-9]{64}$ && "$running_image" == "$PREVIOUS_IMAGE_ID" \
-      && "$running_label" == "$(expected_previous_app_label)" \
-      && ( -z "$app_started_container_id" || "$running_id" == "$app_started_container_id" ) ]]; then
-      docker update --restart=no "$APP_CONTAINER" >/dev/null 2>&1
-      docker stop --time 0 "$APP_CONTAINER" >/dev/null 2>&1
-      compose rm --force app >/dev/null 2>&1
-    fi
-  fi
-  if [[ "$database_swapped" == "true" && ! -e "$BODYCAST_RELEASE_MARKER_PATH" ]]; then
-    # No marker removal is attempted here; recovery state remains blocking.
-    :
-  fi
-  if [[ -n "${TMP_DIR:-}" && -d "$TMP_DIR" && ! -L "$TMP_DIR" ]]; then rm -rf -- "$TMP_DIR"; fi
-  if [[ "$route_committed" == "true" ]]; then exit 0; fi
-  exit "$status"
+  bodycast_cutback_failure_cleanup "$status"
+  exit $?
 }
 trap cleanup_cutback EXIT
 
@@ -201,13 +185,13 @@ APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" \
 node "$ROOT_DIR/scripts/production-database-cutback.mjs" --verify-live-identity "$CONTEXT_DIR" "$LIVE_REPORT" >/dev/null
 bodycast_assert_current_main_sha "$CURRENT_MAIN_SHA"
 
-admin_sql "ALTER DATABASE bodycast RENAME TO ${failed_db};" >/dev/null
-if ! admin_sql "ALTER DATABASE ${stage_db} RENAME TO bodycast;" >/dev/null; then
-  admin_sql "ALTER DATABASE ${failed_db} RENAME TO bodycast;" >/dev/null 2>&1 || true
-  fail "restored DB rename failed; the original migrated database was retained and traffic remains in maintenance."
+if bodycast_cutback_promote_databases "$stage_db" "$failed_db"; then
+  :
+else
+  promotion_status=$?
+  if [[ "$promotion_status" -eq 2 ]]; then CUTBACK_PRESERVE_STAGING=true; fi
+  fail "restored DB rename failed; live DB is retained under the failed-run identity when possible and traffic remains in maintenance."
 fi
-database_swapped=true
-stage_created=false
 APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" \
   bash "$ROOT_DIR/scripts/production-db-target.sh" --preflight "$DB_CONTAINER" > "$LIVE_REPORT"
 node "$ROOT_DIR/scripts/production-database-cutback.mjs" --verify-restored-identity \
@@ -226,7 +210,7 @@ write_bodycast_release_marker "$FAILED_RELEASE_SHA" database-restored
 docker image tag bodycast-app:rollback bodycast-app:latest
 [[ "$(docker image inspect --format '{{.Id}}' bodycast-app:latest)" == "$PREVIOUS_IMAGE_ID" ]] || fail "previous image retag differs from the captured immutable image."
 app_started=true
-if [[ "$PREVIOUS_PROVENANCE_KIND" == "legacy-unlabeled-v1" ]]; then
+if [[ "$PREVIOUS_PROVENANCE_KIND" =~ ^legacy-(unlabeled|cutback-receipt)-v1$ ]]; then
   BODYCAST_DEPLOY_SHA="unknown" compose up -d --no-deps --no-build app
 else
   BODYCAST_DEPLOY_SHA="$PREVIOUS_SHA" compose up -d --no-deps --no-build app
@@ -279,11 +263,24 @@ fi
 if ! bodycast_probe_public_candidate_observational; then
   echo "POST-COMMIT VERIFICATION WARNING: public app probe failed; the committed recovery route was not changed." >&2
 fi
-if ! clear_bodycast_release_marker; then
-  echo "POST-COMMIT CLEANUP WARNING: restored app is serving but the release marker remains fail-closed for later operations." >&2
-else
+receipt_created=true
+if [[ "$PREVIOUS_PROVENANCE_KIND" =~ ^legacy-(unlabeled|cutback-receipt)-v1$ ]]; then
+  receipt_created=false
+  if docker inspect "$APP_CONTAINER" \
+    | node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" --create-cutback-receipt \
+      "$LIVE_REPORT" "$CUTBACK_RUN_ID" "$CUTBACK_RUN_ATTEMPT" "$CURRENT_MAIN_SHA" "$SOURCE_MARKER_DIGEST"; then
+    receipt_created=true
+  else
+    echo "POST-COMMIT SAFETY WARNING: route commit succeeded, but the legacy cutback receipt failed; the release marker remains blocking." >&2
+  fi
+fi
+if [[ "$receipt_created" == true ]]; then
+  if ! clear_bodycast_release_marker; then
+    echo "POST-COMMIT CLEANUP WARNING: restored app is serving but the release marker remains fail-closed for later operations." >&2
+  else
   rm -f -- "$record_path"
   sync -f "$(dirname "$record_path")"
+  fi
 fi
 echo "Production database cutback completed from the verified pre-DDL archive; prior app provenance ${PREVIOUS_PROVENANCE_KIND} is serving."
 exit 0

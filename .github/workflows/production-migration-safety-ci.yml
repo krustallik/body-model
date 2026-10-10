@@ -14,8 +14,11 @@ on:
       - "Dockerfile"
       - "prisma/migrations/**"
       - "scripts/production-migration-*.mjs"
+      - "scripts/production-forward-resume.mjs"
       - "scripts/production-traffic-cutover.sh"
       - "scripts/production-database-cutback.sh"
+      - "scripts/production-database-cutback-promotion.sh"
+      - "scripts/production-database-cutback-lifecycle.sh"
       - "scripts/production-database-cutback.mjs"
       - "scripts/production-app-runtime-digest.mjs"
       - "scripts/production-previous-app-provenance.mjs"
@@ -23,6 +26,7 @@ on:
       - "scripts/production-writer-drain.sh"
       - "scripts/production-writer-drain.mjs"
       - "scripts/production-release-marker.sh"
+      - "scripts/production-release-marker.mjs"
       - "scripts/production-release-lock.sh"
       - "scripts/production-recovery/**"
       - "scripts/deploy.sh"
@@ -35,6 +39,7 @@ on:
       - "scripts/production-migration-verification-keys.json"
       - "scripts/production-db-preflight.mjs"
       - "scripts/production-db-preflight.sql"
+      - "scripts/production-db-data-fingerprint.sh"
       - "scripts/production-db-target-url.mjs"
       - "scripts/production-db-target.sh"
       - "scripts/deploy-migrate.sh"
@@ -62,15 +67,19 @@ on:
       - "scripts/ci/production-safety-postgres-smoke.mjs"
       - "tests/production-safety-tooling.test.mjs"
       - "tests/production-migration-v5.test.mjs"
+      - "tests/production-forward-resume.test.mjs"
+      - "tests/production-release-marker.test.mjs"
       - "tests/production-writer-drain.test.mjs"
       - "tests/deploy-script-ordering.test.ts"
       - "tests/production-deploy-rollback-safety.test.ts"
       - "tests/production-traffic-cutover-freshness.test.ts"
       - "tests/production-release-entrypoints.test.ts"
       - "tests/production-database-cutback.test.mjs"
+      - "tests/production-database-cutback-freshness.test.ts"
       - "tests/production-previous-app-provenance.test.mjs"
       - "tests/production-preflight-resume.test.mjs"
       - "scripts/ci/production-database-cutback-postgres-smoke.mjs"
+      - "scripts/ci/production-database-cutback-promotion-failure-injection.sh"
       - "tests/production-release-terminal-safety.test.ts"
       - "tests/production-deploy-rollback.test.ts"
       - "tests/deploy-main-freshness.test.ts"
@@ -144,7 +153,7 @@ jobs:
         run: npx prisma generate --schema prisma/schema.prisma
 
       - name: Run targeted safety-tooling tests
-        run: npm run test:unit -- tests/production-migration-v5.test.mjs tests/production-safety-tooling.test.mjs tests/production-writer-drain.test.mjs
+        run: npm run test:unit -- tests/production-forward-resume.test.mjs tests/production-release-marker.test.mjs tests/production-migration-v5.test.mjs tests/production-safety-tooling.test.mjs tests/production-writer-drain.test.mjs
 
       - name: Run production release boundary regressions
         run: npm run test:unit -- tests/deploy-script-ordering.test.ts tests/production-deploy-rollback.test.ts tests/production-deploy-rollback-safety.test.ts tests/production-traffic-cutover-freshness.test.ts tests/production-release-entrypoints.test.ts tests/production-database-cutback.test.mjs tests/production-previous-app-provenance.test.mjs tests/production-release-terminal-safety.test.ts tests/deploy-main-freshness.test.ts tests/production-deploy-gate.test.ts tests/production-recovery-boundary.test.mjs
@@ -153,7 +162,7 @@ jobs:
         run: npm run test:unit -- tests/production-recovery-authority.test.mjs tests/production-recovery-authorization.test.mjs tests/production-recovery-boundary.test.mjs tests/production-recovery-flow.test.mjs tests/production-recovery-client.test.mjs tests/production-recovery-package.test.mjs
 
       - name: Check production migration shell syntax
-        run: bash -n scripts/deploy-migrate.sh scripts/production-migration-readiness.sh scripts/production-migration-summary.sh scripts/production-writer-drain.sh scripts/production-release-marker.sh scripts/production-release-lock.sh scripts/deploy-main-freshness.sh scripts/production-route-path.sh scripts/production-route-primitives.sh scripts/production-traffic-cutover.sh scripts/production-database-cutback.sh scripts/deploy.sh scripts/production-recovery/production-authority-launcher.sh scripts/production-recovery/production-operation-client-launcher.sh scripts/production-checkout-diagnostic.sh tests/production-checkout-diagnostic.test.sh tests/production-migration-release-tooling.sh tests/production-recovery-marker-reader.sh
+        run: bash -n scripts/deploy-migrate.sh scripts/production-migration-readiness.sh scripts/production-migration-summary.sh scripts/production-writer-drain.sh scripts/production-release-marker.sh scripts/production-release-lock.sh scripts/deploy-main-freshness.sh scripts/production-route-path.sh scripts/production-route-primitives.sh scripts/production-traffic-cutover.sh scripts/production-database-cutback.sh scripts/production-database-cutback-promotion.sh scripts/production-database-cutback-lifecycle.sh scripts/production-db-data-fingerprint.sh scripts/deploy.sh scripts/production-recovery/production-authority-launcher.sh scripts/production-recovery/production-operation-client-launcher.sh scripts/production-checkout-diagnostic.sh tests/production-checkout-diagnostic.test.sh tests/production-migration-release-tooling.sh tests/production-recovery-marker-reader.sh scripts/ci/production-database-cutback-promotion-failure-injection.sh
 
       - name: Exercise read-only production checkout diagnostic against an isolated Git fixture
         run: bash tests/production-checkout-diagnostic.test.sh

@@ -17,6 +17,18 @@ on:
         description: Type MIGRATE_PRODUCTION to request a signed, current-state authorization
         required: true
         type: string
+      execution_mode:
+        description: Standard migration or the separately owner-authorized single forward-resume attempt
+        required: true
+        default: standard
+        type: choice
+        options:
+          - standard
+          - forward-resume
+      forward_resume_failed_migration_run_id:
+        description: Required only for forward-resume; the exact independently verified source run
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -46,6 +58,8 @@ jobs:
       preflight_url: ${{ steps.select.outputs.preflight_url }}
       workflow_id: ${{ steps.select.outputs.workflow_id }}
       ci_url: ${{ steps.select.outputs.ci_url }}
+      execution_mode: ${{ steps.select.outputs.execution_mode }}
+      forward_resume_failed_run_id: ${{ steps.select.outputs.forward_resume_failed_run_id }}
     steps:
       - name: Checkout exact current main tooling
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -60,6 +74,8 @@ jobs:
           DISPATCH_SHA: ${{ inputs.release_sha }}
           MANIFEST_ID: ${{ inputs.manifest_id }}
           CONFIRMATION: ${{ inputs.confirmation }}
+          EXECUTION_MODE: ${{ inputs.execution_mode }}
+          FORWARD_RESUME_FAILED_RUN_ID: ${{ inputs.forward_resume_failed_migration_run_id }}
           DISPATCH_ACTOR_ID: ${{ github.actor_id }}
         run: |
           set -Eeuo pipefail
@@ -77,6 +93,12 @@ jobs:
             requireInProgress: true });
           NODE
           [[ "$CONFIRMATION" == "MIGRATE_PRODUCTION" ]] || { echo "::error::Exact migration request confirmation is required."; exit 1; }
+          [[ "$EXECUTION_MODE" == "standard" || "$EXECUTION_MODE" == "forward-resume" ]] || { echo "::error::Unsupported migration execution mode."; exit 1; }
+          if [[ "$EXECUTION_MODE" == "forward-resume" ]]; then
+            [[ "$FORWARD_RESUME_FAILED_RUN_ID" == "38022978032" ]] || { echo "::error::Forward-resume requires the exact owner-authorized source failure run."; exit 1; }
+          else
+            [[ -z "$FORWARD_RESUME_FAILED_RUN_ID" ]] || { echo "::error::A failed-run ID is only valid with explicit forward-resume mode."; exit 1; }
+          fi
           [[ "$MANIFEST_ID" == "active-energy-unified-v2" ]] || { echo "::error::Manifest is not in the closed allowlist."; exit 1; }
           [[ "$DISPATCH_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::release_sha must be a full lowercase SHA."; exit 1; }
           git fetch --no-tags origin main
@@ -132,6 +154,8 @@ jobs:
           echo "preflight_url=$PRE_URL" >> "$GITHUB_OUTPUT"
           echo "workflow_id=$(gh api repos/krustallik/body-model/actions/workflows/production-migrate.yml --jq .id)" >> "$GITHUB_OUTPUT"
           echo "ci_url=$CI_URL" >> "$GITHUB_OUTPUT"
+          echo "execution_mode=$EXECUTION_MODE" >> "$GITHUB_OUTPUT"
+          echo "forward_resume_failed_run_id=$FORWARD_RESUME_FAILED_RUN_ID" >> "$GITHUB_OUTPUT"
           {
             echo "## Signed production migration request"
             echo ""
@@ -214,6 +238,8 @@ jobs:
           MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
           AUTHORIZATION_WORKFLOW_ID: ${{ needs.authorize.outputs.workflow_id }}
           DISPATCH_ACTOR_ID: ${{ github.actor_id }}
+          BODYCAST_MIGRATION_EXECUTION_MODE: ${{ needs.authorize.outputs.execution_mode }}
+          BODYCAST_FORWARD_RESUME_FAILED_RUN_ID: ${{ needs.authorize.outputs.forward_resume_failed_run_id }}
           PRODUCTION_MIGRATION_SIGNING_KEY_ID: ${{ secrets.PRODUCTION_MIGRATION_SIGNING_KEY_ID }}
           PRODUCTION_MIGRATION_ED25519_PRIVATE_KEY: ${{ secrets.PRODUCTION_MIGRATION_ED25519_PRIVATE_KEY }}
           EVIDENCE_BUNDLE: ${{ steps.evidence.outputs.bundle }}
@@ -420,6 +446,8 @@ jobs:
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
           MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
           AUTHORIZATION_WORKFLOW_ID: ${{ needs.authorize.outputs.workflow_id }}
+          BODYCAST_MIGRATION_EXECUTION_MODE: ${{ needs.authorize.outputs.execution_mode }}
+          BODYCAST_FORWARD_RESUME_FAILED_RUN_ID: ${{ needs.authorize.outputs.forward_resume_failed_run_id }}
         run: |
           set -Eeuo pipefail
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
@@ -438,11 +466,20 @@ jobs:
           AUTHORIZATION_RUN_ATTEMPT="$7"
           APP_HOST="$(printf '%s' "$8" | base64 --decode)"
           CADDY_ROUTES_PATH="$(printf '%s' "$9" | base64 --decode)"
+          EXECUTION_MODE="${10}"
+          FORWARD_RESUME_FAILED_RUN_ID="${11}"
           [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid release SHA." >&2; exit 1; }
           [[ "$MANIFEST_ID" == "active-energy-unified-v2" ]] || { echo "Unreviewed manifest." >&2; exit 1; }
           [[ "$AUTHORIZATION_WORKFLOW_ID" =~ ^[1-9][0-9]*$ && "$AUTHORIZATION_RUN_ID" =~ ^[1-9][0-9]*$ && "$AUTHORIZATION_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || {
             echo "Invalid authorization workflow identity." >&2; exit 1;
           }
+          if [[ "$EXECUTION_MODE" == "forward-resume" ]]; then
+            [[ "$FORWARD_RESUME_FAILED_RUN_ID" == "38022978032" ]] || { echo "Invalid forward-resume source run." >&2; exit 1; }
+          elif [[ "$EXECUTION_MODE" == "standard" ]]; then
+            [[ -z "$FORWARD_RESUME_FAILED_RUN_ID" ]] || { echo "A source run is only valid for forward-resume." >&2; exit 1; }
+          else
+            echo "Invalid migration execution mode." >&2; exit 1
+          fi
           [[ "$DEPLOY_PATH" == /* && -d "$DEPLOY_PATH" ]] || { echo "Deployment path is not an existing absolute directory." >&2; exit 1; }
           [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* ]] || { echo "Production traffic topology inputs are invalid." >&2; exit 1; }
           [[ "$CONTEXT_DIR" =~ ^/tmp/bodycast-migration-context-[0-9]+-[0-9]+$ && -d "$CONTEXT_DIR" && ! -L "$CONTEXT_DIR" ]] || { echo "Invalid remote context path." >&2; exit 1; }
@@ -465,12 +502,14 @@ jobs:
           export BODYCAST_AUTHORIZATION_WORKFLOW_ID="$AUTHORIZATION_WORKFLOW_ID"
           export BODYCAST_AUTHORIZATION_RUN_ID="$AUTHORIZATION_RUN_ID"
           export BODYCAST_AUTHORIZATION_RUN_ATTEMPT="$AUTHORIZATION_RUN_ATTEMPT"
+          export BODYCAST_MIGRATION_EXECUTION_MODE="$EXECUTION_MODE"
+          export BODYCAST_FORWARD_RESUME_FAILED_RUN_ID="$FORWARD_RESUME_FAILED_RUN_ID"
           export APP_HOST CADDY_ROUTES_PATH
           bash scripts/deploy-migrate.sh
           REMOTE
           )"
           REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
-          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$RELEASE_SHA' '$MANIFEST_ID' '$DEPLOY_PATH_B64' '$REMOTE_CONTEXT' '$AUTHORIZATION_WORKFLOW_ID' '$GITHUB_RUN_ID' '$GITHUB_RUN_ATTEMPT' '$APP_HOST_B64' '$CADDY_ROUTES_PATH_B64'"
+          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$RELEASE_SHA' '$MANIFEST_ID' '$DEPLOY_PATH_B64' '$REMOTE_CONTEXT' '$AUTHORIZATION_WORKFLOW_ID' '$GITHUB_RUN_ID' '$GITHUB_RUN_ATTEMPT' '$APP_HOST_B64' '$CADDY_ROUTES_PATH_B64' '$BODYCAST_MIGRATION_EXECUTION_MODE' '$BODYCAST_FORWARD_RESUME_FAILED_RUN_ID'"
           timeout 60m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND"
       - name: Remove temporary runner credentials
         if: always()

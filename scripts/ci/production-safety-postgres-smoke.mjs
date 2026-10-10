@@ -1,8 +1,9 @@
 import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { Writable } from "node:stream";
@@ -136,6 +137,7 @@ async function createSourceFixture(db = source) {
 function readSourceReport(db = source) {
   const report = sql(db, renderProductionDbPreflightSql(requireSql("scripts/production-db-preflight.sql")));
   const parsed = JSON.parse(report);
+  parsed.logicalDataFingerprint = logicalDataFingerprint(db);
   const observedAt = new Date().toISOString();
   parsed.writerDrain.observerApplicationName = "bodycast-production-preflight";
   parsed.writerDrain.identityPolicy = "no-other-client-backends";
@@ -188,7 +190,12 @@ async function withClientBackend(db, applicationName, work) {
       const state = run("docker", ["inspect", "--format", "{{.State.Status}}", containerName]);
       if (state !== "running") throw new Error(`Isolated PostgreSQL writer fixture exited before registration (${state}).`);
       report = readSourceReport(db);
-      if (report.writerDrain.activeClientBackends.some((client) => client.applicationName === applicationName)) {
+      if (report.writerDrain.activeClientBackends.length > 0) {
+        const serializedDrain = JSON.stringify(report.writerDrain.activeClientBackends);
+        if (serializedDrain.includes(applicationName)
+          || /"(?:pid|user|applicationName|clientAddress|clientPort|backendType|state|backendStart|transactionStart)"/.test(serializedDrain)) {
+          throw new Error("PostgreSQL writer-drain diagnostics exposed client identity instead of sanitized backend-presence facts.");
+        }
         return await work(report);
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -237,7 +244,7 @@ async function withPreparedLockPostgres(work) {
     const match = publishedPort.match(/:(\d+)\s*$/);
     if (requestedPort === null && !match) throw new Error("Could not identify the host port for prepared-lock disposable PostgreSQL.");
     const db = {
-      host: "127.0.0.1", port: requestedPort ?? Number(match[1]), database: "bodycast",
+      host: process.env.BODYCAST_PREPARED_HOST ?? "127.0.0.1", port: requestedPort ?? Number(match[1]), database: "bodycast",
       user: "bodycast", password: "prepared_lock_ci_only",
     };
     await waitForPostgres(db);
@@ -342,6 +349,28 @@ function requireSql(file) {
   return readFileSync(file, "utf8");
 }
 
+function logicalDataFingerprint(db = source) {
+  const digest = createHash("sha256");
+  const tables = sql(db, "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname='public' ORDER BY tablename;")
+    .split("\n").filter(Boolean);
+  const script = ["\\set QUIET 1", "\\echo bodycast-logical-data-fingerprint-v1"];
+  for (const table of tables) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table)) throw new Error("Isolated public table inventory contains an unsupported identifier.");
+    script.push(`\\echo table:${table}`);
+    script.push(`\\copy (SELECT row_to_json(row_value)::text FROM public."${table}" AS row_value ORDER BY row_to_json(row_value)::text) TO STDOUT`);
+    script.push("\\echo");
+  }
+  script.push("\\echo sequence-state");
+  script.push("\\copy (SELECT schemaname || '.' || sequencename || ':' || COALESCE(last_value::text, 'null') FROM pg_catalog.pg_sequences WHERE schemaname='public' ORDER BY sequencename) TO STDOUT");
+  const result = spawnSync("docker", [
+    ...clientArgs(db, "psql"), "--no-psqlrc", "--quiet", "--tuples-only", "--no-align",
+    "--set=ON_ERROR_STOP=1", "--file=-",
+  ], { input: `${script.join("\n")}\n`, encoding: null, env: process.env, windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
+  if (result.error || result.status !== 0) throw new Error(`Isolated database fingerprint query failed (${result.status ?? result.error?.message}).`);
+  digest.update(result.stdout);
+  return digest.digest("hex");
+}
+
 function captureDump(db) {
   const child = spawn("docker", [
     "run", "--rm", "--network", "host", "--env", `PGPASSWORD=${db.password}`, POSTGRES_IMAGE, "pg_dump",
@@ -410,6 +439,7 @@ async function createTargetBindingAuthorization(identity, now = Date.now()) {
     backupSnapshotAt: new Date(now - 10_000).toISOString(),
     restoreResultDigest: "d".repeat(64),
     productionIdentityDigest: canonicalSha256(identity),
+    snapshotDataFingerprint: "d".repeat(64),
     writerDrainDigest: "1".repeat(64),
     writerTopologyDigest: "2".repeat(64),
     issuedAt: new Date(now - 5_000).toISOString(),
@@ -571,6 +601,7 @@ async function verifyPrismaTargetBinding({ sourceUrl, alternateUrl, signedIdenti
       finalWriterDrainObservedAt: observedAt,
       finalTopologyObservedAt: observedAt,
       postSchemaDigest: "3".repeat(64),
+      snapshotDataFingerprint: claims.snapshotDataFingerprint,
       verifiedAt: observedAt,
     };
     return {
@@ -591,37 +622,46 @@ async function verifyPrismaTargetBinding({ sourceUrl, alternateUrl, signedIdenti
     if (options.env.DATABASE_URL !== withPrismaLockTimeout(sourceUrl, 5000)) {
       throw new Error("Prisma spawn did not receive the exact target URL that the identity probe checked.");
     }
-    return { status: 0 };
+    const child = new EventEmitter();
+    child.kill = () => {};
+    queueMicrotask(() => { child.emit("spawn"); setImmediate(() => child.emit("close", 0, null)); });
+    return child;
   };
   let mismatchBlocked = false;
+  let mismatchFailure = "";
   try {
     await startPrismaMigrationAtDdlBoundary({
       authorized: makeAuthorized(alternateUrl),
-      environment: { BODYCAST_DDL_ATTESTATION_NONCE_DIR: nonceDirectory },
+      environment: { BODYCAST_DDL_ATTESTATION_NONCE_DIR: nonceDirectory, BODYCAST_RELEASE_MARKER_DIRECTORY: "/run/bodycast-release-marker" },
       identityProbe: readPrismaDatabaseIdentity,
       latestPreflightProbe: async () => fixture.latestPreflight,
       currentMigrationRunProbe: async () => fixture.currentRun,
       executionProofVerifier: (proof, options) => verifyGitHubExecutionProof(proof, { ...options, jwks: [fixture.oidcJwk] }),
       spawn,
+      markerWriter: async () => ({ markerPath: "/marker", digest: "a".repeat(64) }),
+      spawnAcknowledger: async () => {},
       now: () => Date.now(),
       nonceDirectory,
     });
   } catch (error) {
-    mismatchBlocked = String(error?.message).includes("differs from the verified production identity");
+    mismatchFailure = String(error?.message ?? error);
+    mismatchBlocked = mismatchFailure.includes("differs from the verified production identity");
   }
   if (!mismatchBlocked || spawnCount !== 0) {
-    throw new Error("Final Prisma URL for another database was not blocked before spawn.");
+    throw new Error(`Final Prisma URL for another database was not blocked by the signed identity predicate before spawn (spawnCount=${spawnCount}; reason=${mismatchFailure || "none"}).`);
   }
   // Use a fresh run-bound signature for the independent matching-target assertion.
   const matchingFixture = await createTargetBindingAuthorization(signedIdentity, Date.now());
   await startPrismaMigrationAtDdlBoundary({
     authorized: makeAuthorized(sourceUrl, matchingFixture),
-    environment: { BODYCAST_DDL_ATTESTATION_NONCE_DIR: nonceDirectory },
+    environment: { BODYCAST_DDL_ATTESTATION_NONCE_DIR: nonceDirectory, BODYCAST_RELEASE_MARKER_DIRECTORY: "/run/bodycast-release-marker" },
     identityProbe: readPrismaDatabaseIdentity,
     latestPreflightProbe: async () => matchingFixture.latestPreflight,
     currentMigrationRunProbe: async () => matchingFixture.currentRun,
     executionProofVerifier: (proof, options) => verifyGitHubExecutionProof(proof, { ...options, jwks: [matchingFixture.oidcJwk] }),
     spawn,
+    markerWriter: async () => ({ markerPath: "/marker", digest: "a".repeat(64) }),
+    spawnAcknowledger: async () => {},
     now: () => Date.now(),
     nonceDirectory,
   });
@@ -662,6 +702,7 @@ async function main() {
     const previousAppSnapshot = JSON.parse(sql(source,
       renderProductionDbPreflightSql(requireSql("scripts/production-db-preflight.sql")),
       { writerTopology: compatibilityOnlyTopology }));
+    previousAppSnapshot.logicalDataFingerprint = logicalDataFingerprint(source);
     assertPreviousAppCompatibilitySnapshot(previousAppSnapshot);
     const snapshotAdmission = evaluateProductionPreflight(previousAppSnapshot, migrationDirectories);
     if (snapshotAdmission.readyForOwnerAuthorization || snapshotAdmission.writerDrainReady) {
@@ -692,8 +733,10 @@ async function main() {
     let oldWriterBlocked = false;
     let reconnectBetweenPreflightAndFinalGuardBlocked = false;
     await withClientBackend(source, "bodycast-old-relative-muscle-writer", async (reconnectedReport) => {
-      const active = reconnectedReport.writerDrain.activeClientBackends.find((client) => client.applicationName === "bodycast-old-relative-muscle-writer");
-      if (!active || !Number.isSafeInteger(active.pid)) throw new Error("The old application writer was not identified as a separate live PostgreSQL backend.");
+      if (reconnectedReport.writerDrain.activeClientBackends.length !== 1
+        || reconnectedReport.writerDrain.activeClientBackends[0]?.present !== true) {
+        throw new Error("The reconnected old application writer was not represented by one sanitized live PostgreSQL backend fact.");
+      }
       const finalDecision = evaluateProductionPreflight(reconnectedReport, migrationDirectories);
       if (finalDecision.readyForOwnerAuthorization || !finalDecision.blockers.some((blocker) => blocker.includes("client backend(s)"))) {
         throw new Error("A reconnected old Relative Muscle writer did not block the final pre-DDL readiness check.");
@@ -705,7 +748,7 @@ async function main() {
       reconnectBetweenPreflightAndFinalGuardBlocked = true;
     });
     const unknownClientReport = structuredClone(sourceReport);
-    unknownClientReport.writerDrain.activeClientBackends = [{ pid: 90210, applicationName: null, clientAddress: null, backendType: "client backend" }];
+    unknownClientReport.writerDrain.activeClientBackends = [{ present: true }];
     const unknownClientDecision = evaluateProductionPreflight(unknownClientReport, migrationDirectories);
     if (unknownClientDecision.readyForOwnerAuthorization || !unknownClientDecision.blockers.some((blocker) => blocker.includes("client backend(s)"))) {
       throw new Error("An unknown/proxied PostgreSQL client identity was not blocked.");
@@ -891,6 +934,15 @@ async function main() {
 
     await restoreDump(target, archive, key);
     const restoredReport = JSON.parse(sql(target, requireSql("scripts/verify-restored-backup.sql")));
+    restoredReport.logicalDataFingerprint = logicalDataFingerprint(target);
+    const fingerprintUrl = new URL(databaseUrl(target));
+    fingerprintUrl.search = "";
+    const standaloneFingerprint = execFileSync("bash", ["scripts/production-db-data-fingerprint.sh", "--test-url"], {
+      encoding: "utf8", env: { ...process.env, BODYCAST_TEST_DATABASE_URL: fingerprintUrl.toString() },
+    }).trim();
+    if (standaloneFingerprint !== restoredReport.logicalDataFingerprint) {
+      throw new Error("The isolated safety fixture fingerprint differs from the standalone production data-fingerprint contract.");
+    }
     const alternateDatabasePreflight = readSourceReport(target);
     try {
       assertProductionDatabaseIdentityMatches(sourceReport.identity, alternateDatabasePreflight.identity);

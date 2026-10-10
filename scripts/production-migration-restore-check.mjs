@@ -15,6 +15,7 @@ export function verifyBaseRestore(sourceReport, restoredReport, readabilityRepor
     migrationCount: result.migrationCount,
     schemaDigest: Array.isArray(restoredReport?.objects) ? schemaInventoryDigest(restoredReport.objects) : null,
     readability: readabilityReport?.readability ?? null,
+    logicalDataFingerprint: restoredReport?.logicalDataFingerprint ?? null,
   };
 }
 
@@ -42,6 +43,7 @@ export function combineRestoreResults(baseResult, postflightResult) {
     postSchemaDigest: postflightResult?.postSchemaDigest ?? null,
     pending: postflightResult?.pending ?? null,
     readability: baseResult?.readability ?? null,
+    logicalDataFingerprint: baseResult?.logicalDataFingerprint ?? null,
   };
 }
 

@@ -23,11 +23,12 @@ grep -Fq -- '--after-ddl' "$DEPLOY"
 ! grep -Fq 'prisma migrate deploy' "$DEPLOY"
 ! grep -Fq 'bodycast-production-operation' "$DEPLOY" "$CUTOVER"
 ! grep -Fq 'docker compose -f docker-compose.prod.yml up -d db' "$DEPLOY" "$SCHEMA_PREFLIGHT" "$CUTOVER"
-grep -Fq 'write_bodycast_release_marker "$RELEASE_SHA" ddl-started' "$DEPLOY"
 grep -Fq 'write_bodycast_release_marker "$RELEASE_SHA" schema-applied' "$DEPLOY"
 grep -Fq 'verifyFinalGuardReceipt' "$WRAPPER"
 grep -Fq 'assertPrismaTargetMatchesSignedIdentity' "$WRAPPER"
 grep -Fq 'assertBackupFreshAtDdlStart' "$WRAPPER"
+grep -Fq 'writeDdlStartingMarker' "$WRAPPER"
+grep -Fq 'spawnAcknowledger({' "$WRAPPER"
 grep -Fq 'withPrismaLockTimeout(authorized.databaseUrl, 5000)' "$WRAPPER"
 ! grep -Fq 'fetch(' "$WRAPPER"
 ! grep -Fq 'CONFIRM_PRODUCTION_MIGRATE' "$DEPLOY" "$WRAPPER"
@@ -48,7 +49,7 @@ grep -Fq 'npx prisma migrate deploy --schema prisma/schema.prisma' "$PREFLIGHT"
 grep -Fq 'DATABASE_URL: postgresql://bodycast_restore:' "$PREFLIGHT"
 grep -Fq 'production migration: NOT EXECUTED' "$PREFLIGHT"
 grep -Fq 'compose rm --force app' "$CUTOVER"
-grep -Fq 'state !== "absent"' "$WRITER_DRAIN"
+grep -Fq 'app?.state === "absent"' "$WRITER_DRAIN"
 grep -Fq 'schema-cutover marker' "$DEPLOY_SCRIPT"
 grep -Fq 'production-release-lock.sh' "$DEPLOY" "$DEPLOY_SCRIPT" "$CUTOVER"
 grep -Fq 'flock -n 9' "$LOCK"
@@ -63,14 +64,19 @@ PREFLIGHT_RESTORE_LINE="$(grep -nF 'Restore snapshot, compare source state, and 
 [[ -n "$PREFLIGHT_MAINTENANCE_LINE" && -n "$PREFLIGHT_BACKUP_LINE" && -n "$PREFLIGHT_RESTORE_LINE" ]]
 [[ "$PREFLIGHT_MAINTENANCE_LINE" -lt "$PREFLIGHT_BACKUP_LINE" && "$PREFLIGHT_BACKUP_LINE" -lt "$PREFLIGHT_RESTORE_LINE" ]]
 FINAL_GUARD_LINE="$(grep -nF '  --before-ddl' "$DEPLOY" | cut -d: -f1)"
-MARKER_LINE="$(grep -nF 'write_bodycast_release_marker "$RELEASE_SHA" ddl-started' "$DEPLOY" | cut -d: -f1)"
 MIGRATE_LINE="$(grep -nF 'run-prisma-migrate-with-lock-timeout.mjs' "$DEPLOY" | cut -d: -f1)"
 POSTFLIGHT_LINE="$(grep -nF '  --after-ddl' "$DEPLOY" | cut -d: -f1)"
 SCHEMA_APPLIED_LINE="$(grep -nF 'write_bodycast_release_marker "$RELEASE_SHA" schema-applied' "$DEPLOY" | cut -d: -f1)"
+FINAL_IDENTITY_LINE="$(grep -nF 'assertPrismaTargetMatchesSignedIdentity(finalGuard.receipt, actualIdentity' "$WRAPPER" | cut -d: -f1)"
+MARKER_WRITE_LINE="$(grep -nF 'const marker = await markerWriter({' "$WRAPPER" | cut -d: -f1)"
+PRISMA_SPAWN_LINE="$(grep -nF 'child = spawn(' "$WRAPPER" | cut -d: -f1)"
+SPAWN_ACK_LINE="$(grep -nF 'spawnAcknowledger({' "$WRAPPER" | cut -d: -f1)"
 APP_READY_LINE="$(grep -nF 'write_bodycast_release_marker "$DEPLOY_SHA" app-ready' "$DEPLOY_SCRIPT" | cut -d: -f1)"
 APP_SHA_CHECK_LINE="$(grep -nF 'deployed_container_sha=' "$ROOT/scripts/deploy.sh" | cut -d: -f1)"
-[[ -n "$FINAL_GUARD_LINE" && -n "$MARKER_LINE" && -n "$MIGRATE_LINE" && -n "$POSTFLIGHT_LINE" && -n "$SCHEMA_APPLIED_LINE" ]]
-[[ "$FINAL_GUARD_LINE" -lt "$MARKER_LINE" && "$MARKER_LINE" -lt "$MIGRATE_LINE" && "$MIGRATE_LINE" -lt "$POSTFLIGHT_LINE" && "$POSTFLIGHT_LINE" -lt "$SCHEMA_APPLIED_LINE" ]]
+[[ -n "$FINAL_GUARD_LINE" && -n "$MIGRATE_LINE" && -n "$POSTFLIGHT_LINE" && -n "$SCHEMA_APPLIED_LINE" ]]
+[[ "$FINAL_GUARD_LINE" -lt "$MIGRATE_LINE" && "$MIGRATE_LINE" -lt "$POSTFLIGHT_LINE" && "$POSTFLIGHT_LINE" -lt "$SCHEMA_APPLIED_LINE" ]]
+[[ -n "$FINAL_IDENTITY_LINE" && -n "$MARKER_WRITE_LINE" && -n "$PRISMA_SPAWN_LINE" && -n "$SPAWN_ACK_LINE" ]]
+[[ "$FINAL_IDENTITY_LINE" -lt "$MARKER_WRITE_LINE" && "$MARKER_WRITE_LINE" -lt "$PRISMA_SPAWN_LINE" && "$PRISMA_SPAWN_LINE" -lt "$SPAWN_ACK_LINE" ]]
 [[ -n "$APP_READY_LINE" && -n "$APP_SHA_CHECK_LINE" && "$APP_SHA_CHECK_LINE" -lt "$APP_READY_LINE" ]]
 ! grep -Eq 'trap .*clear_bodycast_release_marker|clear_bodycast_release_marker' "$DEPLOY" "$DEPLOY_SCRIPT"
 

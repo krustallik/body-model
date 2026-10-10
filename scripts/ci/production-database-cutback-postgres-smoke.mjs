@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { createWriteStream, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -14,22 +14,32 @@ import {
 } from "../production-previous-app-provenance.mjs";
 import { assertCutbackRestoredDatabaseIdentity, verifyPreviousAppMigrationCompatibility,
   verifyRecreatedPreviousAppRuntime } from "../production-database-cutback.mjs";
+import { assertLiveDataMatchesBackupFingerprint } from "../production-migration-final-guard.mjs";
 
 const IMAGE = "public.ecr.aws/docker/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24";
 const databaseUrl = process.env.BODYCAST_CUTBACK_TEST_DATABASE_URL;
 if (!databaseUrl) throw new Error("BODYCAST_CUTBACK_TEST_DATABASE_URL is required for isolated PostgreSQL cutback integration.");
 const url = new URL(databaseUrl);
-const target = decodeURIComponent(url.pathname.slice(1));
+const adminDatabase = decodeURIComponent(url.pathname.slice(1));
 const port = url.port ? Number(url.port) : 5432;
 if (url.protocol !== "postgresql:" || !["127.0.0.1", "localhost"].includes(url.hostname)
   || !Number.isSafeInteger(port) || port < 1 || port > 65535 || decodeURIComponent(url.username) !== "bodycast"
-  || target !== "bodycast_cutback_test" || url.search || url.hash || !url.password) {
+  || adminDatabase !== "bodycast_cutback_test" || url.search || url.hash || !url.password) {
   throw new Error("Cutback integration accepts only a loopback PostgreSQL URL for bodycast_cutback_test and no overrides.");
 }
 const scratchRoot = mkdtempSync(path.join(os.tmpdir(), "bodycast-cutback-pg-"));
 const suffix = randomBytes(5).toString("hex");
+const target = `bodycast_cutback_live_${suffix}`;
 const staging = `bodycast_cutback_stage_${suffix}_test`;
 const failed = `bodycast_cutback_failed_${suffix}_test`;
+const promotionId = String(BigInt(`0x${randomBytes(5).toString("hex")}`) + 1n);
+const promotionLive = `bodycast_cutback_live_${randomBytes(5).toString("hex")}`;
+const promotionStage = `bodycast_cutback_${promotionId}`;
+const promotionFailed = `bodycast_failed_${promotionId}`;
+const promotionStagePreservedId = String(BigInt(`0x${randomBytes(5).toString("hex")}`) + 1n);
+const promotionLivePreserved = `bodycast_cutback_live_${randomBytes(5).toString("hex")}`;
+const promotionStagePreserved = `bodycast_cutback_${promotionStagePreservedId}`;
+const promotionFailedPreserved = `bodycast_failed_${promotionStagePreservedId}`;
 const password = decodeURIComponent(url.password);
 const user = decodeURIComponent(url.username);
 const host = url.hostname;
@@ -40,6 +50,24 @@ const plainPath = path.join(scratchRoot, "snapshot.pgdump");
 
 function docker(args, input) {
   return execFileSync("docker", args, { input, maxBuffer: 128 * 1024 * 1024, encoding: "buffer", stdio: ["pipe", "pipe", "pipe"] });
+}
+function runRenameFailureInjection({ live, stage, retained, failRestore, markerPath, lifecycleCalls }) {
+  const script = path.resolve("scripts/ci/production-database-cutback-promotion-failure-injection.sh");
+  let result;
+  try {
+    execFileSync("bash", [script], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: {
+      ...process.env,
+      PROMOTION_HELPER: path.resolve("scripts/production-database-cutback-promotion.sh"),
+      LIFECYCLE_HELPER: path.resolve("scripts/production-database-cutback-lifecycle.sh"),
+      STAGE_DB: stage, FAILED_DB: retained, LIVE_DB: live, FAIL_RESTORE: failRestore ? "1" : "0",
+      MARKER_PATH: markerPath, LIFECYCLE_DOCKER_CALLS: lifecycleCalls,
+      PGPASSWORD: password, PGUSER: user, PGHOST: host, PGPORT: portText, POSTGRES_IMAGE: IMAGE,
+    } });
+    result = { status: 0, output: "" };
+  } catch (error) {
+    result = { status: error.status ?? 1, output: `${error.stdout ?? ""}${error.stderr ?? ""}` };
+  }
+  return result;
 }
 function psql(database, sql) {
   return docker(["run", "--rm", "--network", "host", "--env", `PGPASSWORD=${password}`, IMAGE, "psql",
@@ -75,6 +103,13 @@ function queryReadability(database) {
   const result = {};
   for (const table of tables) result[table] = { rowCount: Number(psql(database, `SELECT count(*) FROM public."${table}";`)) };
   return result;
+}
+function dataFingerprint(database = target) {
+  const databaseUrlForFingerprint = new URL(databaseUrl);
+  databaseUrlForFingerprint.pathname = `/${database}`;
+  return execFileSync("bash", ["scripts/production-db-data-fingerprint.sh", "--test-url"], {
+    encoding: "utf8", env: { ...process.env, BODYCAST_TEST_DATABASE_URL: databaseUrlForFingerprint.toString() },
+  }).trim();
 }
 function appContainer(releaseSha) {
   return {
@@ -131,8 +166,10 @@ try {
   const baselineRows = queryRows(target);
   const baselineSchema = querySchema(target);
   const sourceReport = queryReport(target);
+  sourceReport.logicalDataFingerprint = dataFingerprint();
+  assert(/^[a-f0-9]{64}$/.test(sourceReport.logicalDataFingerprint), "The isolated live DB content fingerprint is malformed.");
   const preflightResultBase = { readyForOwnerAuthorization: true, blockers: [], pendingExactlyExpected: true, ...sourceReport };
-  const restoreResult = { readability: queryReadability(target) };
+  const restoreResult = { readability: queryReadability(target), logicalDataFingerprint: sourceReport.logicalDataFingerprint };
   const targetSha = "f".repeat(40);
   const previousSourceRepo = path.join(scratchRoot, "previous-source");
   const previousMigrationDir = path.join(previousSourceRepo, "prisma", "migrations", "20261001_baseline");
@@ -170,6 +207,19 @@ try {
   const ciphertextDigest = createHash("sha256").update(ciphertext).digest("hex");
   assert(/^[a-f0-9]{64}$/.test(ciphertextDigest), "Encrypted backup digest is invalid.");
 
+  psql(target, "UPDATE public.\"Workout\" SET value='mutated-after-backup' WHERE id=1;");
+  const changedDataFingerprint = dataFingerprint();
+  assert(changedDataFingerprint !== sourceReport.logicalDataFingerprint,
+    "A post-backup row update with unchanged row count was not reflected in the full logical data fingerprint.");
+  expectBlocked(() => assertLiveDataMatchesBackupFingerprint(
+    { logicalDataFingerprint: sourceReport.logicalDataFingerprint },
+    { logicalDataFingerprint: sourceReport.logicalDataFingerprint },
+    { logicalDataFingerprint: sourceReport.logicalDataFingerprint },
+    { logicalDataFingerprint: changedDataFingerprint },
+  ), "A same-row-count post-backup data mutation passed the final migration gate.");
+  psql(target, "UPDATE public.\"Workout\" SET value='snapshot-1' WHERE id=1;");
+  assert(dataFingerprint() === sourceReport.logicalDataFingerprint, "Restoring the fixture row did not restore the exact source fingerprint.");
+
   psql(target, `ALTER TABLE cutback_probe ADD COLUMN migration_partial text;
     UPDATE cutback_probe SET value='partially-migrated', migration_partial='ddl-ran';
     INSERT INTO _prisma_migrations(id, checksum, migration_name, started_at, logs)
@@ -203,6 +253,7 @@ try {
     && psql(staging, "SELECT count(*) FROM _prisma_migrations;") === "1", "Staged Prisma migration history differs from the pre-DDL baseline.");
 
   const stagingReport = queryReport(staging);
+  stagingReport.logicalDataFingerprint = dataFingerprint(staging);
   const stagingReadability = { migrationHistory: stagingReport.migrations, readability: queryReadability(staging) };
   assert(assertCutbackRestoredDatabaseIdentity({ sourceIdentity: sourceReport.identity, restoredReport: stagingReport,
     expectedDatabase: staging }).verified, "The real PostgreSQL restored baseline did not remain on the exact source cluster.");
@@ -230,15 +281,59 @@ try {
   assert(queryRows(target).includes("partially-migrated"), "Failed compatibility checks changed the migrated target.");
   psql(staging, "ALTER TABLE cutback_probe DROP COLUMN incompatible_schema;");
 
+  // Exercise the production rename/EXIT-trap shell orchestration against real
+  // PostgreSQL. A failed second rename must either restore the original live
+  // name, or preserve both physical databases for operator intervention.
+  const markerPath = path.join(scratchRoot, "release-marker");
+  const routePath = path.join(scratchRoot, "maintenance-route.caddy");
+  const lifecycleCalls = path.join(scratchRoot, "lifecycle-docker-calls");
+  const markerBytes = "schemaVersion=2\nstate=ddl-started\n";
+  const routeBytes = "bodycast.test { respond 503 }\n";
+  writeFileSync(markerPath, markerBytes, { mode: 0o600 });
+  writeFileSync(routePath, routeBytes, { mode: 0o600 });
+  const liveBeforeFailure = queryRows(target);
+  const stageBeforeFailure = queryRows(staging);
+  for (const [liveName, stageName, failedName] of [
+    [promotionLive, promotionStage, promotionFailed],
+    [promotionLivePreserved, promotionStagePreserved, promotionFailedPreserved],
+  ]) {
+    psql("postgres", `CREATE DATABASE ${liveName} WITH TEMPLATE ${target} OWNER ${user};`);
+    psql("postgres", `CREATE DATABASE ${stageName} WITH TEMPLATE ${staging} OWNER ${user};`);
+    assert(queryRows(liveName) === liveBeforeFailure && queryRows(stageName) === stageBeforeFailure,
+      "The real PostgreSQL rename fixture differs from the current live/staged data before failure injection.");
+    const failRestore = stageName === promotionStagePreserved;
+    const injected = runRenameFailureInjection({ live: liveName, stage: stageName, retained: failedName, failRestore,
+      markerPath, lifecycleCalls });
+    assert(injected.status === (failRestore ? 42 : 41),
+      `Production cutback rename failure returned an unexpected status (${injected.status}).`);
+    assert(readFileSync(markerPath, "utf8") === markerBytes && readFileSync(routePath, "utf8") === routeBytes,
+      "Cutback failure cleanup changed the durable marker or maintenance route.");
+    assert(!existsSync(lifecycleCalls), "The failure path attempted an app/Compose restart or lifecycle mutation.");
+    if (!failRestore) {
+      assert(queryRows(liveName) === liveBeforeFailure, "Failure of the second rename did not restore the original live database contents.");
+      assert(psql("postgres", `SELECT count(*) FROM pg_database WHERE datname=${sqlLiteral(stageName)};`) === "0",
+        "Cleanup did not remove the unpromoted disposable stage after the original live DB was restored.");
+      assert(psql("postgres", `SELECT count(*) FROM pg_database WHERE datname=${sqlLiteral(failedName)};`) === "0",
+        "A failed second rename left the live DB stranded under its failed name after successful restoration.");
+    } else {
+      assert(queryRows(failedName) === liveBeforeFailure && queryRows(stageName) === stageBeforeFailure,
+        "When the second rename and restoration both failed, the current live and verified staging databases were not both preserved.");
+      assert(psql("postgres", `SELECT count(*) FROM pg_database WHERE datname=${sqlLiteral(liveName)};`) === "0",
+        "The fail-closed double-rename failure unexpectedly published a live database name.");
+    }
+  }
+
   // Destructive name swap is reached only after authenticated restore and exact checks above.
   psql("postgres", `ALTER DATABASE ${target} RENAME TO ${failed};`);
   psql("postgres", `ALTER DATABASE ${staging} RENAME TO ${target};`);
   assert(queryRows(target) === baselineRows && querySchema(target) === baselineSchema, "Cutback swap did not install the verified baseline database.");
   assert(queryRows(failed).includes("partially-migrated"), "Cutback did not retain the failed migrated database for review.");
-  console.log("Isolated PostgreSQL cutback PASS: legacy-unlabeled and exact-SHA previous images both matched the authenticated restored schema/history/data; wrong key/ciphertext, failed restore, and compatibility mismatch preserved the target; atomic-name cutback retained failed DB.");
+  console.log("Isolated PostgreSQL cutback PASS: authenticated restore, previous-app compatibility, failure of the second DB rename, failed restoration, EXIT cleanup, maintenance/marker preservation, no app restart, and DB retention were verified against real PostgreSQL.");
 } finally {
-  try { psql("postgres", `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname IN (${sqlLiteral(target)}, ${sqlLiteral(staging)}, ${sqlLiteral(failed)}) AND pid <> pg_backend_pid();`); } catch {}
-  for (const name of [target, staging, failed]) { try { psql("postgres", `DROP DATABASE IF EXISTS ${name};`); } catch {} }
+  const databases = [target, staging, failed, promotionLive, promotionStage, promotionFailed,
+    promotionLivePreserved, promotionStagePreserved, promotionFailedPreserved];
+  try { psql("postgres", `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname IN (${databases.map(sqlLiteral).join(",")}) AND pid <> pg_backend_pid();`); } catch {}
+  for (const name of databases) { try { psql("postgres", `DROP DATABASE IF EXISTS ${name};`); } catch {} }
   key.fill(0);
   rmSync(scratchRoot, { recursive: true, force: true });
 }

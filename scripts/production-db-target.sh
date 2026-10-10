@@ -20,11 +20,24 @@ case "${1:-}" in
     TARGET_URL="$(effective_psql_url)"
     TOPOLOGY_REPORT="$(APP_HOST="${APP_HOST:-}" CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:-}" \
       bash "$ROOT_DIR/scripts/production-writer-drain.sh" --report)"
-    docker exec -i --env "BODYCAST_PSQL_DATABASE_URL=$TARGET_URL" \
+    RAW_REPORT="$(docker exec -i --env "BODYCAST_PSQL_DATABASE_URL=$TARGET_URL" \
       --env "BODYCAST_WRITER_TOPOLOGY_JSON=$TOPOLOGY_REPORT" \
       --env 'PGAPPNAME=bodycast-production-preflight' \
       --env 'PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000' \
       "$DB_CONTAINER" sh -c 'exec psql "$BODYCAST_PSQL_DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 --set="BODYCAST_WRITER_TOPOLOGY_JSON=$BODYCAST_WRITER_TOPOLOGY_JSON"'
+    )"
+    DATA_FINGERPRINT="$(bash "$ROOT_DIR/scripts/production-db-data-fingerprint.sh" --production-container "$DB_CONTAINER")"
+    [[ "$DATA_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]] || { echo "Production logical data fingerprint is malformed." >&2; exit 1; }
+    printf '%s\n' "$RAW_REPORT" | node --input-type=module -e '
+      import { readFileSync } from "node:fs";
+      const report = JSON.parse(readFileSync(0, "utf8"));
+      const digest = process.argv[1];
+      if (!report || typeof report !== "object" || Array.isArray(report) || !/^[a-f0-9]{64}$/.test(digest)) {
+        throw new Error("Production database report or logical data fingerprint is invalid.");
+      }
+      report.logicalDataFingerprint = digest;
+      process.stdout.write(`${JSON.stringify(report)}\n`);
+    ' "$DATA_FINGERPRINT"
     ;;
   --previous-app-compatibility-snapshot)
     DB_CONTAINER="${2:-}"

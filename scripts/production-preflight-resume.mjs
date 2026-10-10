@@ -35,6 +35,15 @@ const SUCCESSFUL_PREFLIGHT_STEPS = Object.freeze({
   "Upload immutable preflight and restore evidence artifact": "success",
   "Report read-only completion": "success",
 });
+
+export function serializePreflightRetryRunIds(runIds) {
+  if (!Array.isArray(runIds)) throw new TypeError("Preflight retry run IDs must be an array.");
+  const ids = runIds.map((id) => String(id));
+  if (ids.some((id) => !/^[1-9][0-9]*$/.test(id)) || new Set(ids).size !== ids.length) {
+    throw new Error("Preflight retry run IDs must be unique positive integers.");
+  }
+  return ids.length === 0 ? "" : `${ids.join("\n")}\n`;
+}
 const BLOCKED_CAPTURE_PREFLIGHT_STEPS = Object.freeze({
   "Enter maintenance and drain the old app before backup": "failure",
   "Verify production container and PostgreSQL client versions": "skipped",
@@ -224,6 +233,51 @@ function assertPreflightRun(run, { runId, workflowId, sha, conclusion }) {
   }
 }
 
+function assertSafeAuthorizationOnlyPreflightRetry(evidence, { preflightWorkflowId, historyRun }) {
+  const run = evidence?.run;
+  const runId = String(run?.id ?? "");
+  if (!/^[1-9][0-9]*$/.test(runId)
+    || String(run?.workflow_id) !== String(preflightWorkflowId)
+    || workflowPath(run) !== PREFLIGHT_PATH
+    || run.status !== "completed" || run.conclusion !== "failure"
+    || run.run_attempt !== 1 || run.head_branch !== "main" || run.event !== "workflow_dispatch"
+    || String(run.actor?.id) !== BODYCAST_OWNER_ID || String(run.triggering_actor?.id) !== BODYCAST_OWNER_ID
+    || !/^[a-f0-9]{40}$/.test(String(run.head_sha ?? ""))
+    || evidence.shaIsAncestorOfCurrentMain !== true
+    || !historyRun || String(historyRun.id) !== runId
+    || historyRun.head_sha !== run.head_sha || historyRun.workflow_id !== run.workflow_id
+    || historyRun.path !== run.path || historyRun.event !== run.event
+    || historyRun.status !== run.status || historyRun.conclusion !== run.conclusion
+    || historyRun.run_attempt !== run.run_attempt || historyRun.head_branch !== run.head_branch) {
+    reject("a later failed preflight retry is not a verified owner authorization-only failure on current-main ancestry.");
+  }
+  try {
+    assertTrustedOwnerWorkflowRun(run, {
+      actorId: BODYCAST_OWNER_ID, workflowPath: PREFLIGHT_PATH, workflowRunId: runId,
+      workflowRunAttempt: 1, ref: "refs/heads/main", sha: run.head_sha,
+    });
+  } catch (error) {
+    reject(error.message);
+  }
+  const jobs = evidence.jobs;
+  if (jobs?.total_count !== 2 || !Array.isArray(jobs.jobs) || jobs.jobs.length !== 2) {
+    reject("a failed preflight retry job inventory is incomplete or unexpected.");
+  }
+  const authorize = jobByName(jobs, "Authorize read-only preflight", {
+    conclusion: "failure", headSha: run.head_sha, attempt: 1,
+  });
+  const failedSteps = (authorize.steps ?? []).filter((step) => step.conclusion === "failure").map((step) => step.name);
+  if (failedSteps.length !== 1 || failedSteps[0] !== "Validate canonical repository, exact main, and successful CI") {
+    reject("a failed preflight retry did not stop at the read-only authorization gate.");
+  }
+  const inspect = jobByName(jobs, "Inspect, back up, restore, and rehearse on disposable PostgreSQL", {
+    conclusion: "skipped", headSha: run.head_sha, attempt: 1,
+  });
+  if (!Array.isArray(inspect.steps) || inspect.steps.length !== 0) {
+    reject("a failed preflight retry entered the production inspection job.");
+  }
+}
+
 function assertMigrationRun(run, { runId, workflowId, sha }) {
   if (String(run?.id) !== String(runId) || String(run?.workflow_id) !== String(workflowId)
     || workflowPath(run) !== MIGRATION_PATH || run.status !== "completed" || run.conclusion !== "failure"
@@ -268,7 +322,7 @@ export function verifyPreDdlMigrationFailureResume({
   sourceRun, sourceJobs, sourceArtifacts,
   migrationRun, migrationJobs, migrationLogText,
   blockedCaptureRun, blockedCaptureJobs, blockedCaptureArtifacts, blockedCaptureLogText,
-  laterRuns, sourceRunId, migrationRunId, blockedCaptureRunId, currentRunId, currentMainSha,
+  laterRuns, safeFailedPreflightRetries, sourceRunId, migrationRunId, blockedCaptureRunId, currentRunId, currentMainSha,
   preflightWorkflowId, migrationWorkflowId, sourceIsAncestor, sourceIsAncestorOfBlockedCapture,
   blockedCaptureIsAncestorOfCurrentMain,
 }) {
@@ -351,15 +405,38 @@ export function verifyPreDdlMigrationFailureResume({
   if (!(sourceId < migrationId && migrationId < blockedId && blockedId < currentId)) {
     reject("the verified workflow runs are not in the expected source → failed migration → blocked retry order.");
   }
+  const laterRunById = new Map();
+  for (const run of laterRuns ?? []) {
+    const id = String(run?.id ?? "");
+    if (!/^[1-9][0-9]*$/.test(id)) reject("later production workflow history contains a malformed run identifier.");
+    if (laterRunById.has(id)) reject("later production workflow history contains a duplicate run.");
+    laterRunById.set(id, run);
+  }
+  const safeRetryById = new Map();
+  for (const evidence of safeFailedPreflightRetries ?? []) {
+    const id = String(evidence?.run?.id ?? "");
+    if (safeRetryById.has(id)) reject("failed preflight retry evidence contains a duplicate run.");
+    safeRetryById.set(id, evidence);
+  }
   const allowedIds = new Set([String(migrationRunId), String(blockedCaptureRunId)]);
+  const verifiedRetryIds = new Set();
   for (const run of laterRuns ?? []) {
     const id = BigInt(String(run.id));
     if (!MUTATION_WORKFLOW_PATHS.has(workflowPath(run)) || id <= sourceId || id === currentId) continue;
-    if (!allowedIds.delete(String(run.id))) {
-      reject(`an unexpected production mutation workflow exists after source preflight ${sourceRunId}.`);
+    if (allowedIds.delete(String(run.id))) continue;
+    if (workflowPath(run) === PREFLIGHT_PATH) {
+      const retryEvidence = safeRetryById.get(String(run.id));
+      if (!retryEvidence) reject(`an unexpected production mutation workflow exists after source preflight ${sourceRunId}.`);
+      assertSafeAuthorizationOnlyPreflightRetry(retryEvidence, {
+        preflightWorkflowId, historyRun: laterRunById.get(String(run.id)),
+      });
+      verifiedRetryIds.add(String(run.id));
+      continue;
     }
+    reject(`an unexpected production mutation workflow exists after source preflight ${sourceRunId}.`);
   }
   if (allowedIds.size !== 0) reject("one or more verified production workflow runs are absent from the complete history.");
+  if (verifiedRetryIds.size !== safeRetryById.size) reject("failed preflight retry evidence does not match the complete workflow history.");
 
   return Object.freeze({
     schemaVersion: 2,
@@ -377,15 +454,16 @@ async function readJson(file) { return JSON.parse(await readFile(file, "utf8"));
 
 async function main() {
   const [mode, ...args] = process.argv.slice(2);
-  if (mode === "--verify-pre-ddl-migration-failure" && args.length === 18) {
+  if (mode === "--verify-pre-ddl-migration-failure" && args.length === 19) {
     const [sourceRunPath, sourceJobsPath, sourceArtifactsPath, migrationRunPath, migrationJobsPath, migrationLogPath,
-      blockedRunPath, blockedJobsPath, blockedArtifactsPath, blockedLogPath, laterRunsPath, sourceRunId,
+      blockedRunPath, blockedJobsPath, blockedArtifactsPath, blockedLogPath, laterRunsPath, safeRetriesPath, sourceRunId,
       migrationRunId, blockedCaptureRunId, currentRunId, currentMainSha, preflightWorkflowId, migrationWorkflowId] = args;
     const [sourceRun, sourceJobs, sourceArtifacts, migrationRun, migrationJobs, migrationLogText, blockedCaptureRun,
-      blockedCaptureJobs, blockedCaptureArtifacts, blockedCaptureLogText, laterRunsText] = await Promise.all([
+      blockedCaptureJobs, blockedCaptureArtifacts, blockedCaptureLogText, laterRunsText, safeRetriesText] = await Promise.all([
       readJson(sourceRunPath), readJson(sourceJobsPath), readJson(sourceArtifactsPath), readJson(migrationRunPath),
       readJson(migrationJobsPath), readFile(migrationLogPath, "utf8"), readJson(blockedRunPath), readJson(blockedJobsPath),
       readJson(blockedArtifactsPath), readFile(blockedLogPath, "utf8"), readFile(path.resolve(laterRunsPath), "utf8"),
+      readFile(path.resolve(safeRetriesPath), "utf8"),
     ]);
     const isAncestor = (ancestor, descendant) => {
       try { execFileSync("git", ["merge-base", "--is-ancestor", ancestor, descendant], { stdio: "ignore" }); return true; } catch { return false; }
@@ -393,9 +471,12 @@ async function main() {
     const sourceIsAncestor = isAncestor(sourceRun.head_sha, currentMainSha);
     const sourceIsAncestorOfBlockedCapture = isAncestor(sourceRun.head_sha, blockedCaptureRun.head_sha);
     const blockedCaptureIsAncestorOfCurrentMain = isAncestor(blockedCaptureRun.head_sha, currentMainSha);
+    const safeFailedPreflightRetries = parseNdjson(safeRetriesText).map((evidence) => ({
+      ...evidence, shaIsAncestorOfCurrentMain: isAncestor(evidence?.run?.head_sha, currentMainSha),
+    }));
     const proof = verifyPreDdlMigrationFailureResume({ sourceRun, sourceJobs, sourceArtifacts, migrationRun, migrationJobs,
       migrationLogText, blockedCaptureRun, blockedCaptureJobs, blockedCaptureArtifacts, blockedCaptureLogText,
-      laterRuns: parseNdjson(laterRunsText), sourceRunId, migrationRunId, blockedCaptureRunId, currentRunId,
+      laterRuns: parseNdjson(laterRunsText), safeFailedPreflightRetries, sourceRunId, migrationRunId, blockedCaptureRunId, currentRunId,
       currentMainSha, preflightWorkflowId, migrationWorkflowId, sourceIsAncestor,
       sourceIsAncestorOfBlockedCapture, blockedCaptureIsAncestorOfCurrentMain });
     process.stdout.write(`${JSON.stringify(proof)}\n`);

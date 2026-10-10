@@ -1,6 +1,21 @@
 import { describe, expect, it } from "vitest";
+import { execFileSync, spawnSync } from "node:child_process";
+import path from "node:path";
 import { capturePreviousAppProvenance, rebindPreviousAppProvenanceForPreflightResume } from "../scripts/production-previous-app-provenance.mjs";
-import { verifyPreDdlMigrationFailureResume, verifyResumablePreflightAttempt } from "../scripts/production-preflight-resume.mjs";
+import { serializePreflightRetryRunIds, verifyPreDdlMigrationFailureResume, verifyResumablePreflightAttempt } from "../scripts/production-preflight-resume.mjs";
+
+function findBash() {
+  const probe = spawnSync("bash", ["--version"], { encoding: "utf8" });
+  if (!probe.error && probe.status === 0) return "bash";
+  if (process.platform !== "win32") return null;
+  const where = spawnSync("where.exe", ["git"], { encoding: "utf8" });
+  const gitExe = where.stdout?.split(/\r?\n/).find((entry) => entry.toLowerCase().endsWith("\\git.exe"));
+  if (!gitExe) return null;
+  const gitBash = path.resolve(path.dirname(gitExe), "..", "bin", "bash.exe");
+  return spawnSync(gitBash, ["--version"], { encoding: "utf8" }).status === 0 ? gitBash : null;
+}
+
+const bash = findBash();
 
 const sourceSha = "a".repeat(40);
 const targetSha = "b".repeat(40);
@@ -78,7 +93,8 @@ const migrationWorkflowId = "456";
 const successfulSourceRunId = "38000669120";
 const preDdlMigrationRunId = "38000669121";
 const blockedCaptureRunId = "38000669122";
-const currentResumeRunId = "38000669123";
+const safePreflightRetryRunId = "38000669123";
+const currentResumeRunId = "38000669124";
 const successfulPreflightSteps = [
   "Enter maintenance and drain the old app before backup",
   "Verify production container and PostgreSQL client versions",
@@ -194,6 +210,42 @@ function blockedCapturePreflightJobs() {
   };
 }
 
+function safePreflightRetryRun(overrides = {}) {
+  return {
+    ...ownerRun({ id: safePreflightRetryRunId, workflowId: preflightWorkflowId,
+      path: ".github/workflows/production-migration-preflight.yml", sha: targetSha, conclusion: "failure" }),
+    ...overrides,
+  };
+}
+
+function safePreflightRetryJobs(overrides = {}) {
+  return {
+    total_count: 2,
+    jobs: [
+      { name: "Authorize read-only preflight", conclusion: "failure", head_sha: targetSha, run_attempt: 1,
+        steps: [
+          { name: "Set up job", conclusion: "success" },
+          { name: "Checkout current main tooling", conclusion: "success" },
+          { name: "Validate canonical repository, exact main, and successful CI", conclusion: "failure" },
+          { name: "Post Checkout current main tooling", conclusion: "success" },
+          { name: "Complete job", conclusion: "success" },
+        ] },
+      { name: "Inspect, back up, restore, and rehearse on disposable PostgreSQL", conclusion: "skipped",
+        head_sha: targetSha, run_attempt: 1, steps: [] },
+    ],
+    ...overrides,
+  };
+}
+
+function safePreflightRetryEvidence(overrides = {}) {
+  return {
+    run: safePreflightRetryRun(),
+    jobs: safePreflightRetryJobs(),
+    shaIsAncestorOfCurrentMain: true,
+    ...overrides,
+  };
+}
+
 function verifyPreDdlResume(overrides = {}) {
   return verifyPreDdlMigrationFailureResume({
     sourceRun: successfulSourceRun(), sourceJobs: successfulSourceJobs(), sourceArtifacts: successfulSourceArtifacts(),
@@ -204,8 +256,10 @@ function verifyPreDdlResume(overrides = {}) {
     laterRuns: [
       { id: Number(preDdlMigrationRunId), path: ".github/workflows/production-migrate.yml@refs/heads/main", status: "completed", conclusion: "failure" },
       { id: Number(blockedCaptureRunId), path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "completed", conclusion: "failure" },
+      safePreflightRetryRun(),
       { id: Number(currentResumeRunId), path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress" },
     ],
+    safeFailedPreflightRetries: [safePreflightRetryEvidence()],
     sourceRunId: successfulSourceRunId, migrationRunId: preDdlMigrationRunId, blockedCaptureRunId,
     currentRunId: currentResumeRunId, currentMainSha: targetSha,
     preflightWorkflowId, migrationWorkflowId, sourceIsAncestor: true,
@@ -276,6 +330,25 @@ describe("verified resume of a failed production preflight", () => {
 });
 
 describe("verified resume after a migration failed before the DDL marker", () => {
+  it.skipIf(!bash).each([
+    [["38000669123"]],
+    [["38000669123", "38000669124"]],
+  ])("serializes retry IDs so Bash reads every line (%j)", (ids) => {
+    const serialized = serializePreflightRetryRunIds(ids);
+    const output = execFileSync(bash, ["-c", "while IFS= read -r retry_run_id; do printf '%s\\n' \"$retry_run_id\"; done"], {
+      encoding: "utf8",
+      input: serialized,
+    });
+    expect(serialized.endsWith("\n")).toBe(true);
+    expect(output).toBe(`${ids.join("\n")}\n`);
+  });
+
+  it("rejects malformed or duplicate retry run IDs before shell serialization", () => {
+    expect(() => serializePreflightRetryRunIds(["123", "123"])).toThrow("unique positive integers");
+    expect(() => serializePreflightRetryRunIds(["123\n456"])).toThrow("unique positive integers");
+    expect(serializePreflightRetryRunIds([])).toBe("");
+  });
+
   it("admits only the exact owner preflight → final-guard import failure → capture-blocked retry sequence", () => {
     expect(verifyPreDdlResume()).toEqual({
       schemaVersion: 2,
@@ -287,6 +360,21 @@ describe("verified resume after a migration failed before the DDL marker", () =>
       migrationFailureRunId: preDdlMigrationRunId,
       blockedCaptureRunId,
     });
+  });
+
+  it.each([
+    ["owner identity mismatch", safePreflightRetryEvidence({ run: safePreflightRetryRun({ triggering_actor: { id: 7 } }) })],
+    ["authorization rerun", safePreflightRetryEvidence({ run: safePreflightRetryRun({ run_attempt: 2 }) })],
+    ["non-ancestor retry SHA", safePreflightRetryEvidence({ shaIsAncestorOfCurrentMain: false })],
+    ["inspection job failure", safePreflightRetryEvidence({ jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
+      job.name.startsWith("Inspect,") ? { ...job, conclusion: "failure" } : job) }) })],
+    ["authorization failed outside the exact read-only gate", safePreflightRetryEvidence({ jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
+      job.name.startsWith("Authorize") ? { ...job, steps: job.steps.map((step) => step.name.startsWith("Validate canonical")
+        ? { ...step, conclusion: "success" } : step) } : job) }) })],
+    ["retry evidence absent", undefined],
+  ])("rejects a later preflight retry when %s", (_label, retryEvidence) => {
+    const safeFailedPreflightRetries = retryEvidence ? [retryEvidence] : [];
+    expect(() => verifyPreDdlResume({ safeFailedPreflightRetries })).toThrow("cannot be safely resumed");
   });
 
   it("requires the import failure in both live probes and the final guard", () => {

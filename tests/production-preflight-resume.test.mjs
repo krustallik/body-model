@@ -379,6 +379,8 @@ describe("verified resume after a migration failed before the DDL marker", () =>
 
   it("requires the import failure in both live probes and the final guard", () => {
     expect(() => verifyPreDdlResume({ migrationLogText: migrationFailure })).toThrow("exactly three known import failures");
+    expect(() => verifyPreDdlResume({ migrationLogText: "unrecognized migration log" }))
+      .toThrow(/sanitized evidence counts: \{"parsedLogRecords":1,"fixedMigrationStepRecords":0,"knownImportFailuresInFixedStep":0/);
     const reorderedLines = migrationLog.split("\n");
     [reorderedLines[1], reorderedLines[2]] = [reorderedLines[2], reorderedLines[1]];
     const reorderedLog = reorderedLines.join("\n");

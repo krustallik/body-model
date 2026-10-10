@@ -371,7 +371,17 @@ export function verifyPreDdlMigrationFailureResume({
   if (failurePositions.length !== 3 || failuresOutsideMigrationStep !== 0 || writerDrainOutsideMigrationStep !== 0
     || findAllOccurrences(normalizedEvidenceLog, writerDrainMarker).length !== 1
     || failedSteps.length !== 1 || failedSteps[0] !== MIGRATION_FAILURE_STEP) {
-    reject("the migration log does not show exactly three known import failures in the fixed migration step.");
+    const diagnostics = {
+      parsedLogRecords: logRecords.length,
+      fixedMigrationStepRecords: evidenceRecords.length,
+      knownImportFailuresInFixedStep: failurePositions.length,
+      knownImportFailuresOutsideFixedStep: failuresOutsideMigrationStep,
+      writerDrainMarkersInFixedStep: findAllOccurrences(normalizedEvidenceLog, writerDrainMarker).length,
+      writerDrainMarkersOutsideFixedStep: writerDrainOutsideMigrationStep,
+      failedMigrationSteps: failedSteps.length,
+      onlyExpectedMigrationStepFailed: failedSteps.length === 1 && failedSteps[0] === MIGRATION_FAILURE_STEP,
+    };
+    reject(`the migration log does not show exactly three known import failures in the fixed migration step (sanitized evidence counts: ${JSON.stringify(diagnostics)}).`);
   }
   if (!(failurePositions[0] < failurePositions[1]
     && failurePositions[1] < writerDrainReadyPosition && writerDrainReadyPosition < failurePositions[2])) {

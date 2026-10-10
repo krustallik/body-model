@@ -4,6 +4,7 @@ import { verifyPreDdlMigrationFailureResume, verifyResumablePreflightAttempt } f
 
 const sourceSha = "a".repeat(40);
 const targetSha = "b".repeat(40);
+const blockedCaptureSha = "c".repeat(40);
 
 function sourceRun(overrides = {}) {
   return {
@@ -168,7 +169,7 @@ function preDdlMigrationJobs() {
 
 function blockedCapturePreflightRun() {
   return ownerRun({ id: blockedCaptureRunId, workflowId: preflightWorkflowId,
-    path: ".github/workflows/production-migration-preflight.yml", sha: targetSha, conclusion: "failure" });
+    path: ".github/workflows/production-migration-preflight.yml", sha: blockedCaptureSha, conclusion: "failure" });
 }
 
 function blockedCapturePreflightJobs() {
@@ -186,9 +187,9 @@ function blockedCapturePreflightJobs() {
   return {
     total_count: 2,
     jobs: [
-      { name: "Authorize read-only preflight", conclusion: "success", head_sha: targetSha, run_attempt: 1 },
+      { name: "Authorize read-only preflight", conclusion: "success", head_sha: blockedCaptureSha, run_attempt: 1 },
       { name: "Inspect, back up, restore, and rehearse on disposable PostgreSQL", conclusion: "failure",
-        head_sha: targetSha, run_attempt: 1, steps: conclusions.map(([name, conclusion]) => ({ name, conclusion })) },
+        head_sha: blockedCaptureSha, run_attempt: 1, steps: conclusions.map(([name, conclusion]) => ({ name, conclusion })) },
     ],
   };
 }
@@ -208,6 +209,7 @@ function verifyPreDdlResume(overrides = {}) {
     sourceRunId: successfulSourceRunId, migrationRunId: preDdlMigrationRunId, blockedCaptureRunId,
     currentRunId: currentResumeRunId, currentMainSha: targetSha,
     preflightWorkflowId, migrationWorkflowId, sourceIsAncestor: true,
+    sourceIsAncestorOfBlockedCapture: true, blockedCaptureIsAncestorOfCurrentMain: true,
     ...overrides,
   });
 }
@@ -296,6 +298,26 @@ describe("verified resume after a migration failed before the DDL marker", () =>
     expect(verifyPreDdlResume({ migrationLogText: migrationLog }).resumeKind).toBe("verified-pre-ddl-migration-failure");
   });
 
+  it("parses wrapped runner logs while binding failures to the sole failed fixed migration step", () => {
+    const runnerLog = migrationLog.replaceAll(" imported from ", "\n imported from ");
+    expect(verifyPreDdlResume({ migrationLogText: runnerLog }).resumeKind).toBe("verified-pre-ddl-migration-failure");
+
+    const crossStepErrors = migrationLog.split("\n");
+    crossStepErrors[0] = crossStepErrors[0].replace(`\t${"Run the fixed guarded migration script over SSH"}\t`, "\tValidate protected production SSH\t");
+    crossStepErrors[1] = crossStepErrors[1].replace(`\t${"Run the fixed guarded migration script over SSH"}\t`, "\tValidate protected production SSH\t");
+    expect(() => verifyPreDdlResume({ migrationLogText: crossStepErrors.join("\n") }))
+      .toThrow("exactly three known import failures");
+
+    const crossStepWriterDrain = migrationLog.split("\n");
+    crossStepWriterDrain[2] = crossStepWriterDrain[2].replace(`\t${"Run the fixed guarded migration script over SSH"}\t`, "\tRead-only production identity check\t");
+    expect(() => verifyPreDdlResume({ migrationLogText: crossStepWriterDrain.join("\n") }))
+      .toThrow("exactly three known import failures");
+
+    const migrationJobs = preDdlMigrationJobs();
+    migrationJobs.jobs[2].steps.push({ name: "Unexpected failed step", conclusion: "failure" });
+    expect(() => verifyPreDdlResume({ migrationJobs })).toThrow("exactly three known import failures");
+  });
+
   it.each([
     ["wrong migration owner", { migrationRun: { ...preDdlMigrationRun(), triggering_actor: { id: 42 } } }],
     ["migration rerun", { migrationRun: { ...preDdlMigrationRun(), run_attempt: 2 } }],
@@ -308,6 +330,8 @@ describe("verified resume after a migration failed before the DDL marker", () =>
     ["blocked retry has another failure", { blockedCaptureLogText: "ssh host unreachable" }],
     ["blocked retry published an artifact", { blockedCaptureArtifacts: { total_count: 1, artifacts: [{ id: 9 }] } }],
     ["source SHA not in current main", { sourceIsAncestor: false }],
+    ["source SHA not ancestor of blocked capture", { sourceIsAncestorOfBlockedCapture: false }],
+    ["blocked capture SHA not ancestor of current main", { blockedCaptureIsAncestorOfCurrentMain: false }],
     ["unexpected later production mutation", { laterRuns: [
       { id: Number(preDdlMigrationRunId), path: ".github/workflows/production-migrate.yml@refs/heads/main" },
       { id: Number(blockedCaptureRunId), path: ".github/workflows/production-migration-preflight.yml@refs/heads/main" },

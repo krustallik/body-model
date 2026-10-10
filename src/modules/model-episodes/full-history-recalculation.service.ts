@@ -1,7 +1,7 @@
+import { createHash } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION } from "@/model/unified-experimental-physiology-v1/contracts";
-import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
 import { recalculateModelEpisode, getModelStatus } from "./model-episode.service";
 import { PhysiologyV7PersistenceRepository } from "./physiology-v7-persistence.repository";
 import {
@@ -10,74 +10,50 @@ import {
 } from "./publication-generation-v1";
 import { rebuildUnifiedExperimentalPhysiologyStateV1 } from "./unified-experimental-physiology-state.service";
 
-/** Raw observation tables that production recalculation must not rewrite. */
-export const FULL_HISTORY_RAW_INPUT_INVENTORY_SQL = [
-  {
-    table: "DailyHealthData",
-    sql: `SELECT COUNT(*)::bigint AS row_count,
-                 MAX("updatedAt") AS max_marker,
-                 COALESCE(md5(string_agg(id::text || ':' || "updatedAt"::text, ',' ORDER BY id)), md5('')) AS id_checksum
-          FROM public."DailyHealthData"`,
-  },
-  {
-    table: "HealthSyncSnapshot",
-    sql: `SELECT COUNT(*)::bigint AS row_count,
-                 MAX("receivedAt") AS max_marker,
-                 COALESCE(md5(string_agg(id::text || ':' || "receivedAt"::text, ',' ORDER BY id)), md5('')) AS id_checksum
-          FROM public."HealthSyncSnapshot"`,
-  },
-  {
-    table: "HealthActivityInterval",
-    sql: `SELECT COUNT(*)::bigint AS row_count,
-                 MAX("createdAt") AS max_marker,
-                 COALESCE(md5(string_agg(id::text || ':' || "sourceFingerprint", ',' ORDER BY id)), md5('')) AS id_checksum
-          FROM public."HealthActivityInterval"`,
-  },
-  {
-    table: "WorkInterval",
-    sql: `SELECT COUNT(*)::bigint AS row_count,
-                 MAX("updatedAt") AS max_marker,
-                 COALESCE(md5(string_agg(id::text || ':' || "updatedAt"::text, ',' ORDER BY id)), md5('')) AS id_checksum
-          FROM public."WorkInterval"`,
-  },
-  {
-    table: "Workout",
-    sql: `SELECT COUNT(*)::bigint AS row_count,
-                 MAX("updatedAt") AS max_marker,
-                 COALESCE(md5(string_agg(id::text || ':' || "updatedAt"::text, ',' ORDER BY id)), md5('')) AS id_checksum
-          FROM public."Workout"`,
-  },
-  {
-    table: "HeartRateSample",
-    // Large HR histories must not string_agg; use bounded aggregates instead.
-    sql: `SELECT COUNT(*)::bigint AS row_count,
-                 MAX("updatedAt") AS max_marker,
-                 md5(
-                   COUNT(*)::text || ':' ||
-                   COALESCE(MIN(id)::text, '') || ':' ||
-                   COALESCE(MAX(id)::text, '') || ':' ||
-                   COALESCE(SUM(hashtextextended(id::text || ':' || "updatedAt"::text, 0)), 0)::text
-                 ) AS id_checksum
-          FROM public."HeartRateSample"`,
-  },
-  {
-    table: "StrengthDiarySession",
-    sql: `SELECT COUNT(*)::bigint AS row_count,
-                 MAX("updatedAt") AS max_marker,
-                 COALESCE(md5(string_agg(id::text || ':' || "updatedAt"::text, ',' ORDER BY id)), md5('')) AS id_checksum
-          FROM public."StrengthDiarySession"`,
-  },
+/**
+ * Durable source records/configuration and provenance that a full-history
+ * calculation must leave unchanged at the row-value level. Derived model and
+ * publication outputs are intentionally excluded.
+ */
+export const FULL_HISTORY_RAW_INPUT_TABLES = [
+  "Profile",
+  "StepperEquipmentAssignment",
+  "DailyHealthData",
+  "HealthMetricSample",
+  "HeartRateSample",
+  "RestingHeartRateSample",
+  "SleepSegment",
+  "HealthSyncSnapshot",
+  "HealthSyncAudit",
+  "HealthActivityInterval",
+  "Workout",
+  "ExerciseCatalog",
+  "ExerciseLoadConfiguration",
+  "TrainingProgram",
+  "TrainingProgramVersion",
+  "ProgramExercise",
+  "StrengthDiarySession",
+  "StrengthSessionAccountingOperation",
+  "StrengthDiaryProgramChange",
+  "StrengthSessionExercise",
+  "StrengthSet",
+  "WorkInterval",
+  "StepperReconciliationGroup",
+  "StepperReconciliationCandidate",
+  "ActiveEnergyCanonicalEvent",
+  "ActiveEnergyEventAlias",
+  "ActiveEnergyCandidate",
+  "ActiveEnergyResolutionRevision",
 ] as const;
 
-export const FULL_HISTORY_RAW_INPUT_TABLES = FULL_HISTORY_RAW_INPUT_INVENTORY_SQL.map((entry) => entry.table);
+const RAW_INPUT_INVENTORY_PAGE_SIZE = 250;
 
 export type FullHistoryRawInputInventory = {
   fingerprint: string;
   tables: Array<{
-    table: (typeof FULL_HISTORY_RAW_INPUT_INVENTORY_SQL)[number]["table"];
+    table: (typeof FULL_HISTORY_RAW_INPUT_TABLES)[number];
     rowCount: number;
-    maxMarker: string | null;
-    idChecksum: string;
+    contentSha256: string;
   }>;
 };
 
@@ -109,27 +85,50 @@ type LifecycleSnapshot = {
 };
 
 async function inventoryRawInputs(client: PrismaClient): Promise<FullHistoryRawInputInventory> {
-  const tables = [];
-  for (const entry of FULL_HISTORY_RAW_INPUT_INVENTORY_SQL) {
-    const rows = await client.$queryRawUnsafe<Array<{
-      row_count: bigint | number;
-      max_marker: Date | string | null;
-      id_checksum: string | null;
-    }>>(entry.sql);
-    const row = rows[0];
-    if (!row) throw new Error(`Raw input inventory failed for ${entry.table}`);
+  const tables: FullHistoryRawInputInventory["tables"] = [];
+  for (const table of FULL_HISTORY_RAW_INPUT_TABLES) {
+    // Identifiers come only from the fixed allowlist. Page canonical JSONB
+    // rows so large histories are fingerprinted without loading a whole table.
+    const tableHash = createHash("sha256").update(`bodycast-raw-source-table-v2\0${table}\0`);
+    let afterId = -2_147_483_649;
+    let rowCount = 0;
+    while (true) {
+      const rows = await client.$queryRawUnsafe<Array<{ id: number; canonical_row: string }>>(
+        `SELECT source_row.id, to_jsonb(source_row)::text AS canonical_row
+         FROM public."${table}" AS source_row
+         WHERE source_row.id > $1::bigint
+         ORDER BY source_row.id
+         LIMIT $2::integer`,
+        afterId,
+        RAW_INPUT_INVENTORY_PAGE_SIZE,
+      );
+      if (rows.length > RAW_INPUT_INVENTORY_PAGE_SIZE) {
+        throw new Error(`Raw input inventory returned an oversized page for ${table}`);
+      }
+      for (const row of rows) {
+        if (!Number.isSafeInteger(row.id) || row.id <= afterId || typeof row.canonical_row !== "string") {
+          throw new Error(`Raw input inventory returned an invalid canonical row for ${table}`);
+        }
+        tableHash.update(String(Buffer.byteLength(row.canonical_row, "utf8")));
+        tableHash.update(":");
+        tableHash.update(row.canonical_row);
+        tableHash.update("\n");
+        afterId = row.id;
+        rowCount += 1;
+      }
+      if (rows.length < RAW_INPUT_INVENTORY_PAGE_SIZE) break;
+    }
     tables.push({
-      table: entry.table,
-      rowCount: Number(row.row_count),
-      maxMarker: row.max_marker === null
-        ? null
-        : row.max_marker instanceof Date
-          ? row.max_marker.toISOString()
-          : new Date(row.max_marker).toISOString(),
-      idChecksum: row.id_checksum ?? "",
+      table,
+      rowCount,
+      contentSha256: tableHash.digest("hex"),
     });
   }
-  return { fingerprint: stableSha256(tables), tables };
+  const fingerprint = createHash("sha256")
+    .update("bodycast-full-history-raw-input-inventory-v2\0")
+    .update(JSON.stringify(tables))
+    .digest("hex");
+  return { fingerprint, tables };
 }
 
 async function readLifecycle(client: PrismaClient, profileId: number): Promise<LifecycleSnapshot> {

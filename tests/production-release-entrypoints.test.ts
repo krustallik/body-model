@@ -167,6 +167,8 @@ describe("active production release entrypoints", () => {
     expect(workflow).toContain("resume_pre_ddl_migration_failure_run_id:");
     expect(workflow).toContain("resume_blocked_capture_preflight_run_id:");
     expect(workflow).toContain("Pre-DDL migration resume requires the exact source, failed migration, and blocked capture run IDs.");
+    expect(workflow).toContain('MIGRATION_EXECUTION_JOB_ID="$(jq -er');
+    expect(workflow).toContain('--job "$MIGRATION_EXECUTION_JOB_ID" --log-failed');
     expect(workflow).toContain("production-preflight-resume.mjs --verify-pre-ddl-migration-failure");
     expect(resumeVerifier).toContain("two failed live probes, successful writer-drain observation, and final-guard import failure");
     expect(resumeVerifier).toContain("verified-pre-ddl-migration-failure");

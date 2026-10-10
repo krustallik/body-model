@@ -5,6 +5,7 @@ const V3 = "unified-experimental-physiology-state-v3-relative-muscle-daily-cumul
 const mocks = vi.hoisted(() => {
   const state = {
     rawSourceMutation: false,
+    modelEpisodeSourceMutation: false,
     lifecycle: {
       invalidationGeneration: 3,
       productionStaleFromDate: null as string | null,
@@ -47,6 +48,7 @@ vi.mock("@/modules/model-episodes/unified-experimental-physiology-state.service"
   rebuildUnifiedExperimentalPhysiologyStateV1: mocks.rebuildUnified,
 }));
 import {
+  FULL_HISTORY_REBUILT_DERIVED_TABLES,
   FULL_HISTORY_RAW_INPUT_TABLES,
   inventoryFullHistoryRawInputs,
   runOwnerAuthorizedFullHistoryRecalculation,
@@ -56,6 +58,7 @@ describe("runOwnerAuthorizedFullHistoryRecalculation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.state.rawSourceMutation = false;
+    mocks.state.modelEpisodeSourceMutation = false;
     mocks.state.lifecycle = {
       invalidationGeneration: 7,
       productionStaleFromDate: null,
@@ -79,9 +82,17 @@ describe("runOwnerAuthorizedFullHistoryRecalculation", () => {
       if (!table) throw new Error("Unexpected raw inventory table");
       if (afterId !== -2_147_483_649) return [];
       const sourceValue = table === "DailyHealthData" && mocks.state.rawSourceMutation ? 82.25 : 82.5;
+      const canonicalRow = table === "ModelEpisode"
+        ? {
+            id: 11,
+            profileId: 1,
+            startDate: "2024-01-01",
+            initialGlycogenKg: mocks.state.modelEpisodeSourceMutation ? 0.6 : 0.5,
+          }
+        : { id: 1, sourceValue, updatedAt: "2026-01-01T00:00:00.000Z" };
       return [{
-        id: 1,
-        canonical_row: JSON.stringify({ id: 1, sourceValue, updatedAt: "2026-01-01T00:00:00.000Z" }),
+        id: table === "ModelEpisode" ? 11 : 1,
+        canonical_row: JSON.stringify(canonicalRow),
       }];
     });
     mocks.invalidate.mockResolvedValue({});
@@ -143,10 +154,25 @@ describe("runOwnerAuthorizedFullHistoryRecalculation", () => {
       "SleepSegment",
       "HealthSyncSnapshot",
       "HealthSyncAudit",
+      "ModelEpisode",
       "Workout",
       "StrengthSessionExercise",
       "StrengthSet",
     ]));
+    expect(FULL_HISTORY_RAW_INPUT_TABLES).toEqual(expect.arrayContaining([
+      "StepperReconciliationGroup",
+      "StepperReconciliationCandidate",
+    ]));
+    expect(FULL_HISTORY_REBUILT_DERIVED_TABLES).toEqual(expect.arrayContaining([
+      "StrengthSessionAccountingOperation",
+      "ActiveEnergyCanonicalEvent",
+      "ActiveEnergyEventAlias",
+      "ActiveEnergyCandidate",
+      "ActiveEnergyResolutionRevision",
+    ]));
+    for (const derivedTable of FULL_HISTORY_REBUILT_DERIVED_TABLES) {
+      expect(FULL_HISTORY_RAW_INPUT_TABLES).not.toContain(derivedTable);
+    }
   });
 
   it("fingerprints complete canonical row values, not only row IDs or timestamps", async () => {
@@ -157,6 +183,32 @@ describe("runOwnerAuthorizedFullHistoryRecalculation", () => {
     expect(after.fingerprint).not.toBe(before.fingerprint);
     expect(after.tables.find((table) => table.table === "DailyHealthData")?.contentSha256)
       .not.toBe(before.tables.find((table) => table.table === "DailyHealthData")?.contentSha256);
+  });
+
+  it("fingerprints frozen episode initialization inputs and uses a narrow derived-output projection", async () => {
+    await inventoryFullHistoryRawInputs({ $queryRawUnsafe: mocks.queryRawUnsafe } as never);
+    const episodeQuery = mocks.queryRawUnsafe.mock.calls
+      .map(([sql]) => String(sql))
+      .find((sql) => sql.includes('public."ModelEpisode"'));
+    expect(episodeQuery).toContain("to_jsonb(source_row) - ARRAY[");
+    for (const outputField of [
+      "personalOffsetKcalPerDay",
+      "activityCalibration",
+      "calibrationStatus",
+      "calibrationDiagnostics",
+      "latestModeledDate",
+      "updatedAt",
+    ]) {
+      expect(episodeQuery).toContain(`'${outputField}'`);
+    }
+
+    const before = await inventoryFullHistoryRawInputs({ $queryRawUnsafe: mocks.queryRawUnsafe } as never);
+    mocks.state.modelEpisodeSourceMutation = true;
+    const after = await inventoryFullHistoryRawInputs({ $queryRawUnsafe: mocks.queryRawUnsafe } as never);
+
+    expect(after.fingerprint).not.toBe(before.fingerprint);
+    expect(after.tables.find((table) => table.table === "ModelEpisode")?.contentSha256)
+      .not.toBe(before.tables.find((table) => table.table === "ModelEpisode")?.contentSha256);
   });
 
   it("fail-closes when Unified is not V3 epoch 0", async () => {

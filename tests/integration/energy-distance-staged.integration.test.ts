@@ -30,6 +30,7 @@ import { modelProfile, stableSourceDays } from "../model-episode-fixtures";
 import { prepareEpisodeInitialization } from "@/modules/model-episodes/episode-initialization";
 import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
 import { materializeActiveEnergyCandidatesV1 } from "@/modules/activity/active-energy-materialization";
+import { inventoryFullHistoryRawInputs } from "@/modules/model-episodes/full-history-recalculation.service";
 
 const prisma = new PrismaClient();
 const repository = new ModelEpisodeRepository(prisma);
@@ -735,7 +736,17 @@ describe("staged energy and distance PostgreSQL integration", () => {
       { source: "mechanical-stepper", kcal: stepperEvent.currentKcal },
     ]);
 
+    const rawInputsBeforeRepeatedMaterialization = await inventoryFullHistoryRawInputs(prisma);
+    const accountingOperationsBeforeRepeatedMaterialization = await prisma.strengthSessionAccountingOperation.count({
+      where: { session: { program: { name: programName } } },
+    });
     await materializeActiveEnergyCandidatesV1(1);
+    const rawInputsAfterRepeatedMaterialization = await inventoryFullHistoryRawInputs(prisma);
+    const accountingOperationsAfterRepeatedMaterialization = await prisma.strengthSessionAccountingOperation.count({
+      where: { session: { program: { name: programName } } },
+    });
+    expect(accountingOperationsAfterRepeatedMaterialization).toBeGreaterThan(accountingOperationsBeforeRepeatedMaterialization);
+    expect(rawInputsAfterRepeatedMaterialization.fingerprint).toBe(rawInputsBeforeRepeatedMaterialization.fingerprint);
     const repeatedStepperEvent = await prisma.activeEnergyCanonicalEvent.findUniqueOrThrow({
       where: { id: stepperEvent.id },
       include: { aliases: true, candidates: true, resolutions: true },

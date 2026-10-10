@@ -11,12 +11,15 @@ import {
 import { rebuildUnifiedExperimentalPhysiologyStateV1 } from "./unified-experimental-physiology-state.service";
 
 /**
- * Durable source records/configuration and provenance that a full-history
- * calculation must leave unchanged at the row-value level. Derived model and
- * publication outputs are intentionally excluded.
+ * Durable primary source records/configuration, user decisions, and provenance
+ * that a full-history calculation must leave unchanged at the row-value level.
+ * Rebuildable accounting journals, shadows, and canonical Active Energy
+ * materializations are intentionally excluded; their source records remain in
+ * this inventory and publication/currentness is checked separately.
  */
 export const FULL_HISTORY_RAW_INPUT_TABLES = [
   "Profile",
+  "ModelEpisode",
   "StepperEquipmentAssignment",
   "DailyHealthData",
   "HealthMetricSample",
@@ -33,17 +36,41 @@ export const FULL_HISTORY_RAW_INPUT_TABLES = [
   "TrainingProgramVersion",
   "ProgramExercise",
   "StrengthDiarySession",
-  "StrengthSessionAccountingOperation",
   "StrengthDiaryProgramChange",
   "StrengthSessionExercise",
   "StrengthSet",
   "WorkInterval",
   "StepperReconciliationGroup",
   "StepperReconciliationCandidate",
+] as const;
+
+/**
+ * These rows are outputs of the replay's own materialization path, not primary
+ * user observations. They may be appended or refreshed during replay; source
+ * values remain protected through Workout, Strength, Health, and reconciliation
+ * rows in FULL_HISTORY_RAW_INPUT_TABLES.
+ */
+export const FULL_HISTORY_REBUILT_DERIVED_TABLES = [
+  "StrengthSessionAccountingOperation",
   "ActiveEnergyCanonicalEvent",
   "ActiveEnergyEventAlias",
   "ActiveEnergyCandidate",
   "ActiveEnergyResolutionRevision",
+] as const;
+
+/**
+ * Recalculation persists only these ModelEpisode outputs. Every other episode
+ * field (including its frozen initialization inputs and provenance) remains in
+ * the raw-source fingerprint. Keep this list aligned with
+ * ModelEpisodeRepository.persistCalculation.
+ */
+const MODEL_EPISODE_RECALCULATION_OUTPUT_FIELDS = [
+  "personalOffsetKcalPerDay",
+  "activityCalibration",
+  "calibrationStatus",
+  "calibrationDiagnostics",
+  "latestModeledDate",
+  "updatedAt",
 ] as const;
 
 const RAW_INPUT_INVENTORY_PAGE_SIZE = 250;
@@ -89,12 +116,17 @@ async function inventoryRawInputs(client: PrismaClient): Promise<FullHistoryRawI
   for (const table of FULL_HISTORY_RAW_INPUT_TABLES) {
     // Identifiers come only from the fixed allowlist. Page canonical JSONB
     // rows so large histories are fingerprinted without loading a whole table.
+    // ModelEpisode also stores frozen episode inputs/provenance alongside
+    // recalculated outputs, so remove only fields written by persistCalculation.
+    const canonicalRowExpression = table === "ModelEpisode"
+      ? `to_jsonb(source_row) - ARRAY[${MODEL_EPISODE_RECALCULATION_OUTPUT_FIELDS.map((field) => `'${field}'`).join(", ")}]::text[]`
+      : "to_jsonb(source_row)";
     const tableHash = createHash("sha256").update(`bodycast-raw-source-table-v2\0${table}\0`);
     let afterId = -2_147_483_649;
     let rowCount = 0;
     while (true) {
       const rows = await client.$queryRawUnsafe<Array<{ id: number; canonical_row: string }>>(
-        `SELECT source_row.id, to_jsonb(source_row)::text AS canonical_row
+        `SELECT source_row.id, (${canonicalRowExpression})::text AS canonical_row
          FROM public."${table}" AS source_row
          WHERE source_row.id > $1::bigint
          ORDER BY source_row.id

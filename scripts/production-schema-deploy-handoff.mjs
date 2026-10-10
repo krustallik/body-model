@@ -17,10 +17,12 @@ export const SCHEMA_DEPLOY_HANDOFF_PROVENANCE = Object.freeze({
 const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const V3_STATES = new Set(["schema-applied", "app-ready", "v4-ready", "database-restored", "rollback-app-ready"]);
-const DENIED_PATH = /^(?:prisma\/|src\/|public\/|scripts\/unified-v[34]|scripts\/physiology|Dockerfile$|docker-compose(?:\.prod)?\.yml$|package(?:-lock)?\.json$|next\.config\.[^/]+$|tsconfig(?:\.[^/]+)?\.json$)/;
-const ALLOWED_PATH = /^(?:\.github\/workflows\/|tests\/|scripts\/deploy\.sh$|scripts\/production-release-marker\.(?:sh|mjs)$|scripts\/production-schema-deploy-handoff\.mjs$|scripts\/production-traffic-cutover\.sh$)/;
-const CRITICAL_TREES = ["prisma", "src"];
-const CRITICAL_FILES = ["Dockerfile", "docker-compose.prod.yml", "package.json", "package-lock.json"];
+const DENIED_PATH = /^(?:prisma\/|public\/|scripts\/unified-v[34]|scripts\/physiology|docker-compose(?:\.prod)?\.yml$|package(?:-lock)?\.json$|next\.config\.[^/]+$|tsconfig(?:\.[^/]+)?\.json$)/;
+const ALLOWED_PATH = /^(?:\.github\/workflows\/|tests\/|scripts\/deploy\.sh$|scripts\/production-release-marker\.(?:sh|mjs)$|scripts\/production-schema-deploy-handoff\.mjs$|scripts\/production-traffic-cutover\.sh$|scripts\/production-full-history-recalculate\.ts$|src\/modules\/model-episodes\/full-history-recalculation\.service\.ts$|Dockerfile$)/;
+/** Schema/runtime identity that must remain identical to the migration origin. */
+const CRITICAL_TREES = ["prisma"];
+const CRITICAL_FILES = ["docker-compose.prod.yml", "package.json", "package-lock.json"];
+const ADVANCEABLE_V3_STATES = new Set(["schema-applied", "app-ready"]);
 
 function reject(message) {
   throw new Error(`Schema deploy handoff blocked: ${message}`);
@@ -116,6 +118,71 @@ export function serializeSchemaDeployHandoff(marker) {
   return Buffer.from(text, "utf8");
 }
 
+function assertCompatibleChangedPaths(changedPaths) {
+  if (!Array.isArray(changedPaths) || !changedPaths.every((changed) => typeof changed === "string")) {
+    reject("compatibility evidence is incomplete");
+  }
+  for (const changed of changedPaths) {
+    if (changed.length === 0 || DENIED_PATH.test(changed) || !ALLOWED_PATH.test(changed)) {
+      reject(`path ${changed} is outside the reviewed deploy compatibility allowlist`);
+    }
+  }
+}
+
+function assertCriticalObjects(criticalObjects) {
+  if (!criticalObjects || typeof criticalObjects !== "object" || Array.isArray(criticalObjects)) {
+    reject("compatibility evidence is incomplete");
+  }
+  for (const objectPath of [...CRITICAL_TREES, ...CRITICAL_FILES]) {
+    if (typeof criticalObjects[objectPath] !== "string" || !/^[a-f0-9]{40}$/.test(criticalObjects[objectPath])) {
+      reject(`critical object proof for ${objectPath} is incomplete`);
+    }
+  }
+}
+
+function buildHandoffWrite({
+  observed,
+  migrationOriginSha,
+  deploySha,
+  state,
+  changedPaths,
+  criticalObjects,
+  workflowRunId,
+  workflowRunAttempt,
+  authorizationId,
+  lineageDigest,
+  spawnState,
+}) {
+  assertCompatibleChangedPaths(changedPaths);
+  assertCriticalObjects(criticalObjects);
+  const digest = compatibilityDigest({
+    migrationOriginSha,
+    deploySha,
+    changedPaths,
+    criticalObjects,
+  });
+  const next = {
+    manifestId: SCHEMA_DEPLOY_HANDOFF_PROVENANCE.manifestId,
+    migrationOriginSha,
+    deploySha,
+    state,
+    workflowRunId,
+    workflowRunAttempt,
+    authorizationId,
+    lineageDigest,
+    spawnState,
+    sourceMarkerDigest: observed.digest,
+    compatibilityDigest: digest,
+  };
+  return {
+    action: "write",
+    marker: next,
+    sourceDigest: observed.digest,
+    compatibilityDigest: digest,
+    bytes: serializeSchemaDeployHandoff(next),
+  };
+}
+
 export function evaluateSchemaDeployHandoff({ markerText, deploySha, changedPaths, isAncestor, criticalObjects }) {
   if (!SHA.test(String(deploySha ?? ""))) reject("deploy candidate SHA is malformed");
   const observed = parseSchemaDeployMarker(markerText);
@@ -126,50 +193,54 @@ export function evaluateSchemaDeployHandoff({ markerText, deploySha, changedPath
       || marker.spawnState !== "started" || !DIGEST.test(marker.sourceMarkerDigest) || !DIGEST.test(marker.compatibilityDigest)) {
       reject("existing handoff provenance is malformed");
     }
-    const recomputed = compatibilityDigest({
+    if (isAncestor !== true) reject("deploy candidate is not a descendant of the migration origin");
+    if (marker.deploySha === deploySha) {
+      const recomputed = compatibilityDigest({
+        migrationOriginSha: marker.migrationOriginSha,
+        deploySha: marker.deploySha,
+        changedPaths,
+        criticalObjects,
+      });
+      if (marker.compatibilityDigest !== recomputed) {
+        reject("existing handoff does not match this deploy candidate");
+      }
+      return { action: "replay", marker, sourceDigest: observed.digest, compatibilityDigest: recomputed };
+    }
+    if (!ADVANCEABLE_V3_STATES.has(marker.state)) {
+      reject("existing handoff state cannot advance to another deploy candidate");
+    }
+    return buildHandoffWrite({
+      observed,
       migrationOriginSha: marker.migrationOriginSha,
-      deploySha: marker.deploySha,
+      deploySha,
+      state: "schema-applied",
       changedPaths,
       criticalObjects,
+      workflowRunId: marker.workflowRunId,
+      workflowRunAttempt: marker.workflowRunAttempt,
+      authorizationId: marker.authorizationId,
+      lineageDigest: marker.lineageDigest,
+      spawnState: marker.spawnState,
     });
-    if (marker.deploySha !== deploySha || marker.compatibilityDigest !== recomputed || isAncestor !== true) {
-      reject("existing handoff does not match this deploy candidate");
-    }
-    return { action: "replay", marker, sourceDigest: observed.digest, compatibilityDigest: recomputed };
   }
   if (marker.schemaVersion !== 2 || marker.state !== "schema-applied" || marker.releaseSha !== SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA) {
     reject("only the admitted schema-applied migration origin can be handed off");
   }
   if (deploySha === marker.releaseSha) return { action: "not-needed", marker, sourceDigest: observed.digest };
   if (isAncestor !== true) reject("deploy candidate is not a descendant of the migration origin");
-  if (!Array.isArray(changedPaths) || !criticalObjects || typeof criticalObjects !== "object" || Array.isArray(criticalObjects)) {
-    reject("compatibility evidence is incomplete");
-  }
-  for (const changed of changedPaths) {
-    if (typeof changed !== "string" || changed.length === 0 || DENIED_PATH.test(changed) || !ALLOWED_PATH.test(changed)) {
-      reject(`path ${changed} is outside the reviewed deploy compatibility allowlist`);
-    }
-  }
-  const digest = compatibilityDigest({
-    migrationOriginSha: marker.releaseSha,
-    deploySha,
-    changedPaths,
-    criticalObjects,
-  });
-  const next = {
-    manifestId: marker.manifestId,
+  return buildHandoffWrite({
+    observed,
     migrationOriginSha: marker.releaseSha,
     deploySha,
     state: "schema-applied",
+    changedPaths,
+    criticalObjects,
     workflowRunId: marker.workflowRunId,
     workflowRunAttempt: marker.workflowRunAttempt,
     authorizationId: marker.authorizationId,
     lineageDigest: marker.lineageDigest,
     spawnState: marker.spawnState,
-    sourceMarkerDigest: observed.digest,
-    compatibilityDigest: digest,
-  };
-  return { action: "write", marker: next, sourceDigest: observed.digest, compatibilityDigest: digest, bytes: serializeSchemaDeployHandoff(next) };
+  });
 }
 
 export function renderSchemaDeployTransition(markerText, state) {

@@ -45,7 +45,12 @@ function markerText(overrides = {}) {
 const compatible = {
   changedPaths: [".github/workflows/deploy-production.yml", "tests/deploy-script-ordering.test.ts"],
   isAncestor: true,
-  criticalObjects: { prisma: "abc", src: "def", Dockerfile: "ghi" },
+  criticalObjects: {
+    prisma: "a".repeat(40),
+    "docker-compose.prod.yml": "b".repeat(40),
+    "package.json": "c".repeat(40),
+    "package-lock.json": "d".repeat(40),
+  },
 };
 
 beforeAll(() => {
@@ -80,6 +85,10 @@ describe("schema deploy compatibility handoff", () => {
       ...compatible, changedPaths: ["scripts/unified-v4-activate-replay.ts"],
     })).toThrow(/allowlist/);
     expect(() => evaluateSchemaDeployHandoff({
+      markerText: markerText(), deploySha: DEPLOY_SHA,
+      ...compatible, changedPaths: ["src/modules/model-episodes/model-episode.service.ts"],
+    })).toThrow(/allowlist/);
+    expect(() => evaluateSchemaDeployHandoff({
       markerText: markerText({ releaseSha: "a".repeat(40) }), deploySha: DEPLOY_SHA, ...compatible,
     })).toThrow(/migration origin/);
     expect(() => evaluateSchemaDeployHandoff({
@@ -90,20 +99,40 @@ describe("schema deploy compatibility handoff", () => {
     })).toThrow(/descendant/);
   });
 
-  it("replays one identical handoff and rejects a second deploy SHA or edited proof", () => {
+  it("replays one identical handoff, advances an app-ready marker, and rejects tampered proof", () => {
     const first = evaluateSchemaDeployHandoff({ markerText: markerText(), deploySha: DEPLOY_SHA, ...compatible });
     const replay = evaluateSchemaDeployHandoff({ markerText: first.bytes, deploySha: DEPLOY_SHA, ...compatible });
     expect(replay.action).toBe("replay");
+    const appReady = renderSchemaDeployTransition(first.bytes, "app-ready").toString("utf8");
+    expect(appReady).toContain("state=app-ready");
+    expect(appReady).toContain(`migrationOriginSha=${SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA}`);
+    const advancedSha = "f".repeat(40);
+    const advanced = evaluateSchemaDeployHandoff({
+      markerText: appReady,
+      deploySha: advancedSha,
+      ...compatible,
+      changedPaths: [
+        ...compatible.changedPaths,
+        "Dockerfile",
+        "scripts/production-full-history-recalculate.ts",
+        "src/modules/model-episodes/full-history-recalculation.service.ts",
+      ],
+    });
+    expect(advanced.action).toBe("write");
+    expect(advanced.marker.deploySha).toBe(advancedSha);
+    expect(advanced.marker.state).toBe("schema-applied");
+    expect(advanced.marker.migrationOriginSha).toBe(SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA);
     expect(() => evaluateSchemaDeployHandoff({
-      markerText: first.bytes, deploySha: "d".repeat(40), ...compatible,
-    })).toThrow(/does not match this deploy candidate/);
+      markerText: appReady,
+      deploySha: advancedSha,
+      ...compatible,
+      changedPaths: ["src/modules/model-episodes/model-episode.service.ts"],
+    })).toThrow(/allowlist/);
     const parsed = parseSchemaDeployMarker(first.bytes);
     const tampered = first.bytes.toString("utf8").replace(parsed.marker.compatibilityDigest, "e".repeat(64));
     expect(() => evaluateSchemaDeployHandoff({
       markerText: tampered, deploySha: DEPLOY_SHA, ...compatible,
     })).toThrow(/does not match this deploy candidate/);
-    expect(renderSchemaDeployTransition(first.bytes, "app-ready").toString("utf8")).toContain("state=app-ready");
-    expect(renderSchemaDeployTransition(first.bytes, "app-ready").toString("utf8")).toContain(`migrationOriginSha=${SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA}`);
   });
 
   it("leaves the migration marker unchanged when publication is interrupted", async () => {

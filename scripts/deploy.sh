@@ -240,8 +240,12 @@ assert_current_main_sha
 marker_status=1
 if read_release_marker; then marker_status=0; else marker_status=$?; fi
 if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "1" && "$marker_status" -eq 0 \
-  && "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 && "$BODYCAST_MARKER_STATE" == "schema-applied" \
-  && "$BODYCAST_MARKER_RELEASE_SHA" != "$DEPLOY_SHA" ]]; then
+  && "$BODYCAST_MARKER_RELEASE_SHA" != "$DEPLOY_SHA" \
+  && ( \
+    ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 && "$BODYCAST_MARKER_STATE" == "schema-applied" ) \
+    || ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 3 \
+      && ( "$BODYCAST_MARKER_STATE" == "schema-applied" || "$BODYCAST_MARKER_STATE" == "app-ready" ) ) \
+  ) ]]; then
   node "$ROOT_DIR/scripts/production-schema-deploy-handoff.mjs" --check \
     "$BODYCAST_MARKER_FILE_PATH" "$DEPLOY_SHA" "$ROOT_DIR"
   bash "$ROOT_DIR/scripts/deploy-preflight-schema.sh"

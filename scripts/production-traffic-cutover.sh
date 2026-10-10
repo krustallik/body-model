@@ -19,8 +19,8 @@ source "${ROOT_DIR}/scripts/deploy-main-freshness.sh"
 source "${ROOT_DIR}/scripts/production-release-lock.sh"
 
 [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "APP_HOST is invalid." >&2; exit 1; }
-[[ "$MODE" == "maintenance" || "$MODE" == "check" || "$MODE" == "v3-postflight" || "$MODE" == "serve" || "$MODE" == "activate-v4-and-serve" ]] || {
-  echo "Usage: APP_HOST=... CADDY_ROUTES_PATH=... bash scripts/production-traffic-cutover.sh maintenance|check|v3-postflight|serve|activate-v4-and-serve" >&2
+[[ "$MODE" == "maintenance" || "$MODE" == "check" || "$MODE" == "v3-postflight" || "$MODE" == "full-history-recalculate" || "$MODE" == "serve" || "$MODE" == "activate-v4-and-serve" ]] || {
+  echo "Usage: APP_HOST=... CADDY_ROUTES_PATH=... bash scripts/production-traffic-cutover.sh maintenance|check|v3-postflight|full-history-recalculate|serve|activate-v4-and-serve" >&2
   exit 1
 }
 
@@ -366,6 +366,67 @@ if [[ "$MODE" == "v3-postflight" ]]; then
   compose --profile tools run --rm --no-deps --entrypoint node migrate \
     /app/scripts/unified-v3-postflight.mjs --profile-id 1
   echo "Unified V3 postflight passed while traffic remains in maintenance; V4 activation/replay is still separate."
+  exit 0
+fi
+
+if [[ "$MODE" == "full-history-recalculate" ]]; then
+  expected_release_sha="${BODYCAST_DEPLOY_SHA:-${DEPLOY_SHA:-}}"
+  [[ "$expected_release_sha" =~ ^[a-f0-9]{40}$ ]] || {
+    echo "Owner-authorized full-history recalculation requires a full exact release SHA." >&2
+    exit 1
+  }
+  require_ready_release_marker
+  [[ "$BODYCAST_MARKER_RELEASE_SHA" == "$expected_release_sha" ]] || {
+    echo "Full-history recalculation is blocked because the app-ready marker belongs to another SHA." >&2
+    exit 1
+  }
+  bodycast_assert_current_main_sha "$expected_release_sha"
+  bodycast_verify_exact_maintenance_route
+  maintenance_marker="$(bodycast_maintenance_marker_from_route)"
+  bodycast_probe_public_maintenance "$maintenance_marker"
+  candidate_image_id="$(docker inspect --format '{{.Image}}' "$APP_CONTAINER")"
+  [[ "$candidate_image_id" =~ ^sha256:[a-f0-9]{64}$ ]] || {
+    echo "The candidate app image identity is not an immutable image digest." >&2
+    exit 1
+  }
+
+  # Stop the app so recalculation DML cannot race persistent application writers.
+  stop_old_app
+  bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
+  bash "$ROOT_DIR/scripts/deploy-preflight-schema.sh"
+  bodycast_assert_current_main_sha "$expected_release_sha"
+  [[ "$(git rev-parse HEAD)" == "$expected_release_sha" ]] || {
+    echo "The checked-out deployed revision differs from the exact recalculation release SHA." >&2
+    exit 1
+  }
+  [[ "$(docker image inspect --format '{{.Id}}' bodycast-app:latest)" == "$candidate_image_id" ]] || {
+    echo "The immutable deployed app image changed before full-history recalculation." >&2
+    exit 1
+  }
+  bodycast_verify_exact_maintenance_route
+  bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
+
+  compose --profile tools build migrate
+  compose --profile tools run --rm --no-deps --entrypoint node migrate \
+    /app/scripts/production-full-history-recalculate.mjs \
+    --full-history-recalculate --owner-authorized --profile-id 1
+  compose --profile tools run --rm --no-deps --entrypoint node migrate \
+    /app/scripts/unified-v3-postflight.mjs --profile-id 1
+
+  bodycast_assert_current_main_sha "$expected_release_sha"
+  [[ "$(docker image inspect --format '{{.Id}}' bodycast-app:latest)" == "$candidate_image_id" ]] || {
+    echo "The immutable candidate image changed after full-history recalculation." >&2
+    exit 1
+  }
+  BODYCAST_DEPLOY_SHA="$expected_release_sha" compose up -d --no-deps --no-build app
+  app_release_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER")"
+  [[ "$app_release_sha" == "$expected_release_sha" \
+    && "$(docker inspect --format '{{.Image}}' "$APP_CONTAINER")" == "$candidate_image_id" \
+    && "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$APP_CONTAINER")" == "healthy" ]] || {
+    echo "Exact candidate image did not return healthy after recalculation; traffic remains in maintenance." >&2
+    exit 1
+  }
+  echo "Owner-authorized full-history recalculation and Unified V3 postflight completed; traffic remains in maintenance."
   exit 0
 fi
 

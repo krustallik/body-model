@@ -95,13 +95,14 @@ function parseActionLogRecords(text) {
   const records = [];
   const lines = String(text ?? "")
     .replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\uFEFF/g, "")
     .replace(/\r\n?/g, "\n")
     .split("\n");
   const recordPrefix = /^([^\t]+)\t([^\t]+)\t(\d{4}-\d{2}-\d{2}T\S+Z)\s?(.*)$/;
   for (const line of lines) {
     const match = line.match(recordPrefix);
     if (match) {
-      records.push({ job: match[1], step: match[2], text: match[4] });
+      records.push({ job: match[1], step: match[2], timestamp: match[3], text: match[4] });
     } else if (records.length > 0) {
       records.at(-1).text += `\n${line}`;
     } else if (line.trim()) {
@@ -109,6 +110,38 @@ function parseActionLogRecords(text) {
     }
   }
   return records;
+}
+
+function isExpectedMigrationEvidenceRecord(record, migrationExecution, importFailure, writerDrainMarker) {
+  if (record.job !== MIGRATION_FAILURE_JOB) return false;
+  if (record.step === MIGRATION_FAILURE_STEP) return true;
+  if (record.step !== "UNKNOWN STEP") return false;
+
+  const steps = migrationExecution.steps ?? [];
+  const migrationStepIndex = steps.findIndex((step) => step.name === MIGRATION_FAILURE_STEP);
+  const migrationStep = steps[migrationStepIndex];
+  const nextStep = steps[migrationStepIndex + 1];
+  const logAt = Date.parse(record.timestamp);
+  const startedAt = Date.parse(migrationStep?.started_at);
+  const completedAt = Date.parse(migrationStep?.completed_at);
+  if (![logAt, startedAt, completedAt].every(Number.isFinite) || logAt < startedAt) return false;
+  const logSecond = Math.floor(logAt / 1_000);
+  const startedSecond = Math.floor(startedAt / 1_000);
+  const completedSecond = Math.floor(completedAt / 1_000);
+  if (logSecond > startedSecond && logAt < completedAt) return true;
+
+  const normalizedRecord = normalizeActionLog(record.text);
+  const containsKnownMarker = normalizedRecord.includes(importFailure) || normalizedRecord.includes(writerDrainMarker);
+  const nextStepStartedAt = Date.parse(nextStep?.started_at);
+  // Jobs API step times are whole seconds. Accept a known marker in the completion second
+  // only when the next step is the reviewed runner-credential cleanup and both boundaries
+  // share that second; otherwise an UNKNOWN STEP record stays outside the evidence boundary.
+  return containsKnownMarker
+    && logSecond === completedSecond
+    && nextStep?.name === "Remove temporary runner credentials"
+    && nextStep.conclusion === "success"
+    && Number.isFinite(nextStepStartedAt)
+    && Math.floor(nextStepStartedAt / 1_000) === completedSecond;
 }
 
 function findAllOccurrences(text, needle) {
@@ -361,12 +394,13 @@ export function verifyPreDdlMigrationFailureResume({
   });
   assertStepResults(migrationExecution, MIGRATION_PRE_DDL_STEPS, "migration execution");
   const logRecords = parseActionLogRecords(migrationLogText);
-  const evidenceRecords = logRecords.filter((record) => record.job === MIGRATION_FAILURE_JOB && record.step === MIGRATION_FAILURE_STEP);
-  const otherRecords = logRecords.filter((record) => record.job !== MIGRATION_FAILURE_JOB || record.step !== MIGRATION_FAILURE_STEP);
-  const normalizedEvidenceLog = normalizeActionLog(evidenceRecords.map((record) => record.text).join("\n"));
-  const normalizedOtherLogs = normalizeActionLog(otherRecords.map((record) => record.text).join("\n"));
   const importFailure = normalizeActionLog(MIGRATION_PRE_DDL_FAILURE);
   const writerDrainMarker = normalizeActionLog(WRITER_DRAIN_READY_MARKER);
+  const evidenceRecords = logRecords.filter((record) =>
+    isExpectedMigrationEvidenceRecord(record, migrationExecution, importFailure, writerDrainMarker));
+  const otherRecords = logRecords.filter((record) => !evidenceRecords.includes(record));
+  const normalizedEvidenceLog = normalizeActionLog(evidenceRecords.map((record) => record.text).join("\n"));
+  const normalizedOtherLogs = normalizeActionLog(otherRecords.map((record) => record.text).join("\n"));
   const failurePositions = findAllOccurrences(normalizedEvidenceLog, importFailure);
   const writerDrainReadyPosition = normalizedEvidenceLog.indexOf(writerDrainMarker);
   const failuresOutsideMigrationStep = findAllOccurrences(normalizedOtherLogs, importFailure).length;

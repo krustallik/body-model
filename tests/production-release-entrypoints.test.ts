@@ -162,6 +162,7 @@ describe("active production release entrypoints", () => {
 
   it("admits the migration-failure resume only with three exact run IDs and verifies its host-side recapture", () => {
     const workflow = readFileSync(resolve(workflowDir, "production-migration-preflight.yml"), "utf8");
+    const migrationWorkflow = readFileSync(resolve(workflowDir, "production-migrate.yml"), "utf8");
     const resumeVerifier = readFileSync(resolve("scripts/production-preflight-resume.mjs"), "utf8");
     const migrationScript = readFileSync(resolve("scripts/deploy-migrate.sh"), "utf8");
     expect(workflow).toContain("resume_pre_ddl_migration_failure_run_id:");
@@ -170,6 +171,7 @@ describe("active production release entrypoints", () => {
     expect(workflow).toContain('MIGRATION_EXECUTION_JOB_ID="$(jq -er');
     expect(workflow).toContain('--job "$MIGRATION_EXECUTION_JOB_ID" --log-failed');
     expect(workflow).toContain("production-preflight-resume.mjs --verify-pre-ddl-migration-failure");
+    expect(migrationWorkflow).toMatch(/- name: Remove temporary runner credentials\s+if: always\(\)\s+run: rm -rf "\$RUNNER_TEMP\/bodycast-migrate-ssh"/);
     expect(resumeVerifier).toContain("two failed live probes, successful writer-drain observation, and final-guard import failure");
     expect(resumeVerifier).toContain("verified-pre-ddl-migration-failure");
     expect(resumeVerifier).toContain("must create a new backup");

@@ -178,5 +178,3 @@ export async function acknowledgePrismaSpawn({ markerPath, expectedDigest }) {
 export function releaseMarkerDigest(text) {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
-
-\n

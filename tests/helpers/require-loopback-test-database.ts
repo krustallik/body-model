@@ -13,10 +13,16 @@ export function requireLoopbackTestDatabaseUrl(databaseUrl: string | undefined):
   }
 
   const host = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  const databaseName = decodeURIComponent(parsed.pathname.replace(/^\//, "")).toLowerCase();
+  let databaseName: string;
+  try {
+    databaseName = decodeURIComponent(parsed.pathname.replace(/^\//, "")).toLowerCase();
+  } catch {
+    throw new Error("Integration test database URL is invalid.");
+  }
   if ((parsed.protocol !== "postgresql:" && parsed.protocol !== "postgres:")
       || !["127.0.0.1", "localhost", "::1"].includes(host)
       || !databaseName.endsWith("_test")
+      || parsed.search
       || parsed.hash) {
     throw new Error("Integration tests require an explicit loopback *_test database URL.");
   }

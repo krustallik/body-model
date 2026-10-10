@@ -89,6 +89,9 @@ describe("production maintenance-first deploy safety contracts", () => {
     const publishBody = deploySh.slice(publishDefinitionAt, captureDefinitionAt);
     expect(publishBody).toContain("bodycast_probe_public_maintenance");
     expect(publishBody).toContain('release_state="MAINTENANCE_CONFIRMED"');
+    const captureBody = deploySh.slice(captureDefinitionAt, deploySh.indexOf("\necho \"Preparing exact release"));
+    expect(captureBody).toContain("docker image inspect --format '{{.Id}}' \"$previous_app_image_id\"");
+    expect(captureBody).toContain("docker commit --pause=false \"$APP_CONTAINER\"");
   });
 
   it("never starts the DB and prevents Compose dependency startup during read-only preflight", () => {

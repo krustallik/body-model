@@ -47,8 +47,8 @@ export function isCurrentMainSha(candidateSha: string, observedMainSha: string):
   return FULL_SHA.test(candidateSha) && FULL_SHA.test(observedMainSha) && candidateSha === observedMainSha;
 }
 
-function pathIsWorkflowOnMain(value: string | undefined, expected: string): boolean {
-  return value === `${expected}@refs/heads/main`;
+function pathMatchesWorkflow(value: string | undefined, expected: string): boolean {
+  return value === expected;
 }
 
 function validRunAttempt(value: unknown): value is number {
@@ -74,7 +74,7 @@ export function isTrustedDeployWorkflowRun(
     && String(run!.id) === expected.runId
     && validRunAttempt(run!.run_attempt)
     && String(run!.run_attempt) === expected.runAttempt
-    && pathIsWorkflowOnMain(run!.path, DEPLOY_WORKFLOW_PATH)
+    && pathMatchesWorkflow(run!.path, DEPLOY_WORKFLOW_PATH)
     && run!.event === "workflow_run"
     && run!.head_branch === "main"
     && run!.head_repository?.full_name === expected.repository
@@ -92,7 +92,7 @@ function trustedSuccessfulMainCiRun(input: DeployGateInput): boolean {
     || !validRunId(expectedId) || String(run.id) !== String(expectedId)
     || !validRunId(eventAttempt) || String(run.run_attempt) !== String(eventAttempt)
     || !validRunId(expectedWorkflowId) || String(run.workflow_id) !== String(expectedWorkflowId)
-    || !pathIsWorkflowOnMain(run.path, CI_WORKFLOW_PATH)
+    || !pathMatchesWorkflow(run.path, CI_WORKFLOW_PATH)
     || run.event !== "push" || run.head_branch !== "main"
     || run.status !== "completed" || run.conclusion !== "success"
     || run.repository?.full_name !== REPOSITORY

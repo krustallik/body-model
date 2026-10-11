@@ -8,8 +8,10 @@ import {
 
 const tip = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const stale = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-const ciPath = ".github/workflows/ci.yml@refs/heads/main";
-const deployPath = ".github/workflows/deploy-production.yml@refs/heads/main";
+// GitHub Actions workflow-run API `path` contains the workflow path only;
+// `head_branch` independently binds the run to main.
+const ciPath = ".github/workflows/ci.yml";
+const deployPath = ".github/workflows/deploy-production.yml";
 
 const currentRun: WorkflowRunEvidence = {
   id: 901,
@@ -98,7 +100,7 @@ describe("evaluateProductionDeployGate", () => {
     ["incomplete CI", { status: "in_progress" }],
     ["foreign repository", { repository: { full_name: "fork/body-model" } }],
     ["foreign head repository", { head_repository: { full_name: "fork/body-model" } }],
-    ["wrong workflow path", { path: ".github/workflows/other.yml@refs/heads/main" }],
+    ["wrong workflow path", { path: ".github/workflows/other.yml" }],
     ["wrong attempt", { run_attempt: 1 }],
     ["wrong workflow id", { workflow_id: 43 }],
     ["wrong run id", { id: 701 }],
@@ -121,8 +123,18 @@ describe("evaluateProductionDeployGate", () => {
     expect(automaticGate({ currentWorkflowRunSha: stale })).toMatchObject({ decision: "block" });
     expect(automaticGate({ mainTipSha: stale })).toMatchObject({ decision: "skip", candidateSha: null });
     expect(automaticGate({ currentWorkflowRun: { ...currentRun, run_attempt: 2 } })).toMatchObject({ decision: "block" });
-    expect(automaticGate({ currentWorkflowRun: { ...currentRun, path: ".github/workflows/other.yml@refs/heads/main" } })).toMatchObject({ decision: "block" });
+    expect(automaticGate({ currentWorkflowRun: { ...currentRun, path: ".github/workflows/other.yml" } })).toMatchObject({ decision: "block" });
     expect(automaticGate({ currentWorkflowRun: { ...currentRun, head_repository: null } })).toMatchObject({ decision: "block" });
+  });
+
+  it("uses the exact GitHub API workflow path while binding main through head_branch", () => {
+    expect(automaticGate()).toMatchObject({ decision: "deploy", candidateSha: tip, mode: "serving" });
+    expect(automaticGate({
+      currentWorkflowRun: { ...currentRun, path: `${deployPath}@refs/heads/main` },
+    })).toMatchObject({ decision: "block" });
+    expect(automaticGate({
+      sourceWorkflowRun: { ...sourceRun, path: `${ciPath}@refs/heads/main` },
+    })).toMatchObject({ decision: "block" });
   });
 
   it("rejects foreign repositories, malformed SHAs, and unsupported trigger types", () => {

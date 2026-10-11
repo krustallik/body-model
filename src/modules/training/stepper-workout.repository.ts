@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { logEvent } from "@/lib/logger";
 import { DEFAULT_TIME_ZONE, instantToLocalDateTime } from "@/model/time-zone";
 import { MANUAL_STEPPER_SOURCE_PREFIX } from "@/modules/health/workout-source-identity";
+import { episodeTimeContextForInstantV1 } from "@/modules/model-episodes/episode-time-context-v1";
 import type { StepperWorkoutInput } from "./stepper-workout.schema";
 import { rebaseCurrentAccountingSnapshotTimestamp } from "./rebase-current-accounting-snapshot";
 import { resolveEventEnergyV1 } from "@/model/activity/canonical-activity-policy-v1";
@@ -10,7 +12,10 @@ import { adaptManualStepperEnergyV1 } from "./manual-stepper-fields-v1";
 import { persistStepperReconciliationV1 } from "./stepper-reconciliation.service";
 import { invalidateWorkoutEnergyInTransactionV1 } from "@/modules/activity/active-energy-invalidation";
 import { recordExperimentalStepperActiveEnergyShadowsForLocalDate } from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
+import { recordExperimentalStepperGlycogenDemandShadowsForLocalDate } from "@/modules/profile/experimental-stepper-glycogen-demand-shadow.service";
+import { recordExperimentalGlycogenStateShadow } from "@/modules/model-episodes/experimental-glycogen-state-shadow.service";
 import { publishActiveEnergyChangesV1 } from "@/modules/activity/active-energy-publication";
+import type { ActiveEnergyPublicationStatusV1 } from "@/modules/activity/active-energy-publication";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 
 const STEPPER_TYPE = "Stair Climbing";
@@ -34,6 +39,13 @@ export type StepperWorkoutDto = {
   source: "manual" | "health";
   syncProtected: boolean;
   editable: boolean;
+  /** Source persistence can succeed while dependent model publication stays fail-closed. */
+  modelPublicationStatus?: ActiveEnergyPublicationStatusV1;
+};
+
+export type StepperWorkoutDeleteResult = {
+  deleted: boolean;
+  modelPublicationStatus?: ActiveEnergyPublicationStatusV1;
 };
 
 const stepperSelect = {
@@ -119,6 +131,26 @@ function workoutDates(input: StepperWorkoutInput) {
   return { startAt, endAt, date };
 }
 
+async function earliestAffectedDateV1(
+  transaction: Prisma.TransactionClient,
+  sourceDates: readonly string[],
+  eventInstants: readonly Date[],
+): Promise<string> {
+  const episodes = await transaction.modelEpisode.findMany({
+    where: { profileId: 1 },
+    orderBy: [{ startDate: "asc" }, { id: "asc" }],
+    select: { id: true, startDate: true, timezone: true, active: true },
+  });
+  const dates = [
+    ...sourceDates,
+    ...eventInstants.filter((instant) => Number.isFinite(instant.getTime()))
+      .map((instant) => episodeTimeContextForInstantV1(episodes, instant).date),
+  ];
+  const earliest = dates.sort()[0];
+  if (earliest === undefined) throw new Error("stepper invalidation requires an affected source or model date");
+  return earliest;
+}
+
 async function attachReconciliation(
   client: PrismaClient | import("@prisma/client").Prisma.TransactionClient,
   workouts: StepperWorkoutDto[],
@@ -162,6 +194,79 @@ async function attachReconciliation(
 export class StepperWorkoutRepository {
   constructor(private readonly client: PrismaClient = prisma) {}
 
+  private async refreshAndPublish(dates: string[], sourceKeys: string[], eventInstants: Date[]): Promise<ActiveEnergyPublicationStatusV1> {
+    const lifecycle = new PhysiologyV7PersistenceRepository();
+    const retryTokens = new Map<string, { revision: number; fromDate: string }>();
+    const fallbackDates = new Set(dates);
+    let dependenciesRefreshed = false;
+    try {
+      const episodes = await prisma.modelEpisode.findMany({
+        where: { profileId: 1 }, orderBy: [{ startDate: "asc" }, { id: "asc" }],
+        select: { id: true, startDate: true, timezone: true, active: true },
+      });
+      for (const instant of eventInstants) {
+        if (Number.isFinite(instant.getTime())) fallbackDates.add(episodeTimeContextForInstantV1(episodes, instant).date);
+      }
+      for (const sourceKey of sourceKeys) {
+        const token = await lifecycle.readUnifiedPublicationBlockToken({ profileId: 1, source: "stepper", sourceKey });
+        if (token !== null) retryTokens.set(sourceKey, token);
+      }
+      await this.refreshStepperDependencies(dates, sourceKeys, eventInstants);
+      dependenciesRefreshed = true;
+      if (await lifecycle.hasUnifiedPublicationBlocks(1)) return "stale";
+      if (await publishActiveEnergyChangesV1()) return "current";
+    } catch (error) {
+      if (dependenciesRefreshed) {
+        await this.reblockStepperSourcesWhenUnblocked(lifecycle, sourceKeys, retryTokens, [...fallbackDates].sort()[0]);
+      } else {
+        await this.reblockStepperSources(lifecycle, sourceKeys, retryTokens, [...fallbackDates].sort()[0]);
+      }
+      logEvent("warn", "stepper_publication_failed_after_source_write", {
+        sourceCount: sourceKeys.length,
+        errorType: error instanceof Error ? error.name : "unknown",
+      });
+      return "stale";
+    }
+    await this.reblockStepperSourcesWhenUnblocked(
+      lifecycle,
+      sourceKeys,
+      retryTokens,
+      [...fallbackDates].sort()[0],
+    );
+    return "stale";
+  }
+
+  private async reblockStepperSourcesWhenUnblocked(
+    lifecycle: PhysiologyV7PersistenceRepository,
+    sourceKeys: string[],
+    retryTokens: ReadonlyMap<string, { revision: number; fromDate: string }>,
+    fallbackFromDate: string | undefined,
+  ): Promise<void> {
+    try {
+      if (await lifecycle.hasUnifiedPublicationBlocks(1)) return;
+    } catch {
+      // Restore a retry handle if shared publication state cannot be inspected.
+    }
+    await this.reblockStepperSources(lifecycle, sourceKeys, retryTokens, fallbackFromDate);
+  }
+
+  private async reblockStepperSources(
+    lifecycle: PhysiologyV7PersistenceRepository,
+    sourceKeys: string[],
+    retryTokens: ReadonlyMap<string, { revision: number; fromDate: string }>,
+    fallbackFromDate: string | undefined,
+  ): Promise<void> {
+    if (fallbackFromDate === undefined) throw new Error("stepper publication retry has no model-day boundary");
+    for (const sourceKey of sourceKeys) {
+      await lifecycle.blockUnifiedPublication({
+        profileId: 1,
+        fromDate: retryTokens.get(sourceKey)?.fromDate ?? fallbackFromDate,
+        source: "stepper",
+        sourceKey,
+      });
+    }
+  }
+
   async list(options: { limit?: number; offset?: number } = {}): Promise<StepperWorkoutDto[]> {
     const rows = await this.client.workout.findMany({
       where: { type: { equals: STEPPER_TYPE, mode: "insensitive" }, hiddenFromHistory: false },
@@ -184,8 +289,10 @@ export class StepperWorkoutRepository {
 
   async create(input: StepperWorkoutInput): Promise<StepperWorkoutDto> {
     const { startAt, endAt, date } = workoutDates(input);
+    const sourceKey = `${MANUAL_STEPPER_SOURCE_PREFIX}${randomUUID()}`;
     const row = await this.client.$transaction(async (transaction) => {
-      await new PhysiologyV7PersistenceRepository(transaction).lockProfile(1);
+      const lifecycle = new PhysiologyV7PersistenceRepository(transaction);
+      await lifecycle.lockProfile(1);
       const day = await transaction.dailyHealthData.upsert({
         where: { date },
         create: { date, rawPayload: { source: "manual-stepper-training" } },
@@ -195,7 +302,7 @@ export class StepperWorkoutRepository {
       const created = await transaction.workout.create({
         data: {
           dailyHealthDataId: day.id,
-          sourceIdentity: `${MANUAL_STEPPER_SOURCE_PREFIX}${randomUUID()}`,
+          sourceIdentity: sourceKey,
           type: STEPPER_TYPE,
           startAt,
           endAt,
@@ -207,24 +314,34 @@ export class StepperWorkoutRepository {
         },
         select: stepperSelect,
       });
+      // The profile lock makes this source row plus its numeric-id blocker
+      // visible atomically. Numeric IDs are also the key used by later update,
+      // delete, and retry operations, so a failed post-commit refresh remains
+      // recoverable through the same durable fence.
+      await new PhysiologyV7PersistenceRepository(transaction).blockUnifiedPublication({
+        profileId: 1,
+        fromDate: await earliestAffectedDateV1(transaction, [date], [startAt]),
+        source: "stepper",
+        sourceKey: String(created.id),
+      });
       await invalidateWorkoutEnergyInTransactionV1({
         tx: transaction, profileId: 1, workoutIds: [created.id], affectedInstants: [startAt, endAt],
       });
       await persistStepperReconciliationV1(transaction, { from: date, to: date });
       return created;
     });
-    if (this.client === prisma) {
-      await recordExperimentalStepperActiveEnergyShadowsForLocalDate({ date, profileId: 1 });
-      await publishActiveEnergyChangesV1();
-    }
+    const modelPublicationStatus = this.client === prisma
+      ? await this.refreshAndPublish([date], [String(row.id)], [startAt])
+      : "not-run";
     const refreshed = await this.client.workout.findUnique({ where: { id: row.id }, select: stepperSelect });
     const [dto] = await attachReconciliation(this.client, refreshed ? [toDto(refreshed)] : []);
-    return dto!;
+    return { ...dto!, modelPublicationStatus };
   }
 
   async update(id: number, input: StepperWorkoutInput): Promise<StepperWorkoutDto | null> {
     const { startAt, endAt, date } = workoutDates(input);
     const affectedDates = new Set<string>([date]);
+    let previousStartAt: Date | null = null;
     const updatedId = await this.client.$transaction(async (transaction) => {
       await new PhysiologyV7PersistenceRepository(transaction).lockProfile(1);
       const existing = await transaction.workout.findFirst({
@@ -238,9 +355,20 @@ export class StepperWorkoutRepository {
         },
       });
       if (existing === null) return null;
+      previousStartAt = existing.startAt;
       affectedDates.add(existing.dailyHealthData.date);
       const isManual = existing.sourceIdentity.startsWith(MANUAL_STEPPER_SOURCE_PREFIX);
       if (!isManual && existing.matchedDiarySession !== null) return null;
+      await new PhysiologyV7PersistenceRepository(transaction).blockUnifiedPublication({
+        profileId: 1,
+        fromDate: await earliestAffectedDateV1(
+          transaction,
+          [existing.dailyHealthData.date, date],
+          [existing.startAt, startAt],
+        ),
+        source: "stepper",
+        sourceKey: String(id),
+      });
       const day = await transaction.dailyHealthData.upsert({
         where: { date },
         create: { date, rawPayload: { source: "manual-stepper-training" } },
@@ -323,45 +451,111 @@ export class StepperWorkoutRepository {
       return updated.id;
     });
     if (updatedId === null) return null;
-    if (this.client === prisma) {
-      for (const affectedDate of [...affectedDates].sort()) {
-        await recordExperimentalStepperActiveEnergyShadowsForLocalDate({ date: affectedDate, profileId: 1 });
-      }
-      await publishActiveEnergyChangesV1();
-    }
+    const modelPublicationStatus = this.client === prisma
+      ? await this.refreshAndPublish([...affectedDates].sort(), [String(id)], [previousStartAt ?? startAt, startAt])
+      : "not-run";
     const refreshed = await this.client.workout.findUnique({ where: { id: updatedId }, select: stepperSelect });
     if (!refreshed) return null;
     const [dto] = await attachReconciliation(this.client, [toDto(refreshed)]);
-    return dto ?? null;
+    return dto ? { ...dto, modelPublicationStatus } : null;
   }
 
-  async delete(id: number): Promise<boolean> {
-    let affectedDate: string | null = null;
-    const deleted = await this.client.$transaction(async (transaction) => {
-      await new PhysiologyV7PersistenceRepository(transaction).lockProfile(1);
+  async delete(id: number): Promise<StepperWorkoutDeleteResult> {
+    const outcome = await this.client.$transaction(async (transaction) => {
+      const lifecycle = new PhysiologyV7PersistenceRepository(transaction);
+      await lifecycle.lockProfile(1);
       const existing = await transaction.workout.findFirst({
         where: { id, type: { equals: STEPPER_TYPE, mode: "insensitive" }, matchedDiarySession: { is: null }, hiddenFromHistory: false },
         select: { id: true, sourceIdentity: true, startAt: true, endAt: true, dailyHealthData: { select: { date: true } } },
       });
-      if (!existing) return false;
-      affectedDate = existing.dailyHealthData.date;
+      if (!existing) {
+        const token = await lifecycle.readUnifiedPublicationBlockToken({ profileId: 1, source: "stepper", sourceKey: String(id) });
+        if (token === null) return { shouldRefresh: false as const, sourceDate: null, eventAt: null };
+        const hidden = await transaction.workout.findFirst({
+          where: { id, type: { equals: STEPPER_TYPE, mode: "insensitive" } },
+          select: { startAt: true, dailyHealthData: { select: { date: true } } },
+        });
+        return {
+          // Repeating DELETE is the retry path for a previously committed
+          // source mutation whose dependent refresh failed after commit.
+          shouldRefresh: true as const,
+          sourceDate: hidden?.dailyHealthData.date ?? token.fromDate,
+          eventAt: hidden?.startAt ?? null,
+        };
+      }
       const isManual = existing.sourceIdentity.startsWith(MANUAL_STEPPER_SOURCE_PREFIX);
       const changed = isManual
         ? await transaction.workout.deleteMany({ where: { id } })
         : await transaction.workout.updateMany({ where: { id }, data: { syncProtected: true, hiddenFromHistory: true } });
-      if (changed.count !== 1) return false;
+      if (changed.count !== 1) return { shouldRefresh: false as const, sourceDate: null, eventAt: null };
+      if (!isManual) {
+        // Hidden Health rows remain durable source records, but their derived
+        // glycogen demand must stop contributing to the visible model state.
+        await transaction.experimentalStepperGlycogenDemandShadow.deleteMany({ where: { workoutId: id } });
+      }
       const date = existing.dailyHealthData.date;
+      await lifecycle.blockUnifiedPublication({
+        profileId: 1,
+        fromDate: await earliestAffectedDateV1(transaction, [date], [existing.startAt]),
+        source: "stepper",
+        sourceKey: String(id),
+      });
       await invalidateWorkoutEnergyInTransactionV1({
         tx: transaction, profileId: 1, workoutIds: [id], affectedInstants: [existing.startAt, existing.endAt],
       });
       await persistStepperReconciliationV1(transaction, { from: date, to: date });
-      return true;
+      return { shouldRefresh: true as const, sourceDate: date, eventAt: existing.startAt };
     });
-    if (deleted && affectedDate !== null && this.client === prisma) {
-      await recordExperimentalStepperActiveEnergyShadowsForLocalDate({ date: affectedDate, profileId: 1 });
-      await publishActiveEnergyChangesV1();
+    if (!outcome.shouldRefresh) return { deleted: false };
+    const modelPublicationStatus = this.client === prisma
+      ? await this.refreshAndPublish([outcome.sourceDate!], [String(id)], outcome.eventAt ? [outcome.eventAt] : [])
+      : "not-run";
+    return { deleted: true, modelPublicationStatus };
+  }
+
+  private async refreshStepperDependencies(dates: string[], sourceKeys: string[], eventInstants: Date[]): Promise<void> {
+    const lifecycle = new PhysiologyV7PersistenceRepository();
+    const tokens = new Map<string, { revision: number; fromDate: string }>();
+    const sourceDates = new Set(dates);
+    const modelDates = new Set(dates);
+    const episodes = await prisma.modelEpisode.findMany({
+      where: { profileId: 1 }, orderBy: [{ startDate: "asc" }, { id: "asc" }],
+      select: { id: true, startDate: true, timezone: true, active: true },
+    });
+    for (const instant of eventInstants) {
+      if (Number.isFinite(instant.getTime())) modelDates.add(episodeTimeContextForInstantV1(episodes, instant).date);
     }
-    return deleted;
+    for (const sourceKey of sourceKeys) {
+      const token = await lifecycle.readUnifiedPublicationBlockToken({ profileId: 1, source: "stepper", sourceKey });
+      if (token === null) throw new Error("stepper source is missing its durable Unified publication fence");
+      tokens.set(sourceKey, token);
+      // A retry may be servicing an older failed move than the event dates
+      // supplied by this request. Rebuild both shadow and state suffix from
+      // the durable earliest boundary before CAS clear.
+      sourceDates.add(token.fromDate);
+      modelDates.add(token.fromDate);
+      const numericId = Number(sourceKey);
+      const current = Number.isSafeInteger(numericId) && String(numericId) === sourceKey
+        ? await prisma.workout.findUnique({ where: { id: numericId }, select: { startAt: true, dailyHealthData: { select: { date: true } } } })
+        : await prisma.workout.findFirst({ where: { sourceIdentity: sourceKey }, select: { startAt: true, dailyHealthData: { select: { date: true } } } });
+      if (current) {
+        sourceDates.add(current.dailyHealthData.date);
+        modelDates.add(episodeTimeContextForInstantV1(episodes, current.startAt).date);
+      }
+    }
+    for (const date of [...sourceDates].sort()) {
+      await recordExperimentalStepperActiveEnergyShadowsForLocalDate({ date, profileId: 1 });
+      await recordExperimentalStepperGlycogenDemandShadowsForLocalDate({ date, profileId: 1 });
+    }
+    const modelFromDate = [...modelDates].sort()[0];
+    if (modelFromDate !== undefined) await recordExperimentalGlycogenStateShadow({ date: modelFromDate, profileId: 1 });
+    for (const sourceKey of sourceKeys) {
+      const token = tokens.get(sourceKey)!;
+      if (!await lifecycle.clearUnifiedPublicationBlock({
+        profileId: 1, source: "stepper", sourceKey, expectedRevision: token.revision,
+        expectedFromDate: token.fromDate,
+      })) throw new Error("stepper source changed during dependent-shadow refresh; Unified remains blocked");
+    }
   }
 }
 

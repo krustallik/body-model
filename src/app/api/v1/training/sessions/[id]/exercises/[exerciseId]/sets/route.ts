@@ -27,7 +27,8 @@ export async function POST(
       routeParams.data.exerciseId,
       parsed.data,
     );
-    return Response.json({ set }, { status: 201 });
+    const { modelPublicationStatus, ...setDto } = set;
+    return Response.json({ set: setDto, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) }, { status: 201 });
   } catch (error) {
     return trainingErrorResponse(error) ?? trainingInternalError();
   }

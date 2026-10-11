@@ -156,6 +156,7 @@ describe("POST /api/v1/health/sync", () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
     syncHealthData.mockResolvedValue({
       status: "ok",
+      modelPublicationStatus: "stale",
       received: 1,
       created: 1,
       updated: 0,
@@ -177,6 +178,10 @@ describe("POST /api/v1/health/sync", () => {
     const response = await POST(request(body));
 
     expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      status: "ok",
+      modelPublicationStatus: "stale",
+    });
     const events = info.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>);
     expect(events).toEqual(expect.arrayContaining([
       expect.objectContaining({

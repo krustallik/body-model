@@ -37,8 +37,12 @@ export async function DELETE(_request: Request, { params }: RouteContext<"/api/v
   if (date instanceof Response) return date;
 
   try {
-    return await dailyMetricRepository.delete(date)
-      ? new Response(null, { status: 204 })
+    const result = await dailyMetricRepository.delete(date);
+    return result.deleted
+      ? new Response(null, {
+        status: 204,
+        headers: { "X-Model-Publication-Status": result.modelPublicationStatus ?? "not-run" },
+      })
       : Response.json({ error: "not_found" }, { status: 404 });
   } catch {
     return Response.json({ error: "internal_error" }, { status: 500 });

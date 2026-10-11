@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db/prisma";
 import { ModelEpisodeRepository } from "@/modules/model-episodes/model-episode.repository";
 import { calculateHistoricalBodyweightAsOfV1, MAX_HISTORICAL_BODYWEIGHT_REPLAY_DAYS_V1 } from "@/modules/model-episodes/historical-bodyweight-asof-v1";
 import { calendarDayIndex } from "@/modules/model-episodes/model-calendar";
+import { episodeTimeContextForInstantV1 } from "@/modules/model-episodes/episode-time-context-v1";
 import { DEFAULT_TIME_ZONE, instantToLocalDateTime, isValidTimeZone, localDateTimeToInstant } from "@/model/time-zone";
 import { canonicalizeWorkoutType } from "@/model/activity/workout-energy";
 import { selectPersistedEnergyResolutionV1 } from "@/model/activity/canonical-activity-policy-v1";
@@ -67,6 +68,7 @@ export class StaleAccountingCandidateError extends Error {
 async function bumpAccountingInputRevision(
   tx: Prisma.TransactionClient,
   sessionId: number,
+  publicationBlockSourceKey?: string,
 ): Promise<number> {
   const updated = await tx.strengthDiarySession.update({
     where: { id: sessionId },
@@ -76,13 +78,58 @@ async function bumpAccountingInputRevision(
     },
     select: { accountingInputRevision: true },
   });
-  await invalidateStrengthSessionActiveEnergyInTransaction(tx, sessionId);
+  await invalidateStrengthSessionActiveEnergyInTransaction(tx, sessionId, publicationBlockSourceKey);
   return updated.accountingInputRevision;
+}
+
+async function blockCompletedStrengthUnifiedInTransaction(
+  tx: Prisma.TransactionClient,
+  sessionId: number,
+  sourceKey?: string,
+): Promise<void> {
+  const session = await tx.strengthDiarySession.findUnique({
+    where: { id: sessionId },
+    select: {
+      id: true, profileId: true, status: true, effectiveAccountingAt: true,
+      webStartedAt: true, createdAt: true,
+      matchedWorkout: { select: { startAt: true } },
+    },
+  });
+  if (!session || session.status !== SESSION_STATUS.COMPLETED) return;
+  const eventAt = session.matchedWorkout?.startAt
+    ?? session.effectiveAccountingAt
+    ?? session.webStartedAt
+    ?? session.createdAt;
+  // Unified and its stateful physiology shadows are partitioned by the model
+  // episode timezone, not by the diary's accounting-display timezone. The
+  // durable block must include the old model date so a later event move cannot
+  // skip the removed event's earlier glycogen suffix.
+  const episodes = await tx.modelEpisode.findMany({
+    where: { profileId: session.profileId },
+    orderBy: [{ startDate: "asc" }, { id: "asc" }],
+    select: { id: true, startDate: true, timezone: true, active: true },
+  });
+  const fromDate = episodeTimeContextForInstantV1(episodes, eventAt).date;
+  await new PhysiologyV7PersistenceRepository(tx).blockUnifiedPublication({
+    profileId: session.profileId,
+    fromDate,
+    source: "training",
+    sourceKey: sourceKey ?? String(session.id),
+  });
+}
+
+export function trainingChildDeletionPublicationSourceKey(
+  kind: "set" | "exercise",
+  sessionId: number,
+  childId: number,
+): string {
+  return `training-delete-${kind}:${sessionId}:${childId}`;
 }
 
 async function invalidateStrengthSessionActiveEnergyInTransaction(
   tx: Prisma.TransactionClient,
   sessionId: number,
+  publicationBlockSourceKey?: string,
 ): Promise<void> {
   const session = await tx.strengthDiarySession.findUnique({
     where: { id: sessionId },
@@ -92,10 +139,8 @@ async function invalidateStrengthSessionActiveEnergyInTransaction(
       matchedWorkout: { select: { id: true, startAt: true, endAt: true } },
     },
   });
-  if (!session) return;
-  if (session.status === SESSION_STATUS.COMPLETED) {
-    await new PhysiologyV7PersistenceRepository(tx).invalidateUnifiedPublication(session.profileId);
-  }
+  if (!session || session.status !== SESSION_STATUS.COMPLETED) return;
+  await blockCompletedStrengthUnifiedInTransaction(tx, sessionId, publicationBlockSourceKey);
   const eventInstant = resolveTransientWaterV2CanonicalEventInstant(session);
   await invalidateActiveEnergySourcesInTransactionV1({
     tx,
@@ -117,7 +162,7 @@ async function invalidateCompletedStrengthUnifiedInTransaction(
     select: { profileId: true, status: true },
   });
   if (session?.status === SESSION_STATUS.COMPLETED) {
-    await new PhysiologyV7PersistenceRepository(tx).invalidateUnifiedPublication(session.profileId);
+    await blockCompletedStrengthUnifiedInTransaction(tx, sessionId);
   }
 }
 
@@ -1287,6 +1332,12 @@ export class TrainingRepository {
       const sameAccountingDay = timeZone === oldTimeZone
         && timeZoneProvenance === oldProvenance
         && effectiveLocalDate === instantToLocalDateTime(oldEffectiveAt, oldTimeZone).date;
+      if (session.status === SESSION_STATUS.COMPLETED) {
+        // Persist the old occurrence boundary before the event timestamp is
+        // replaced. The post-write fence below adds the new boundary; the
+        // durable block keeps the earliest date until all shadows are rebuilt.
+        await blockCompletedStrengthUnifiedInTransaction(tx, input.sessionId);
+      }
       await tx.strengthDiarySession.update({
         where: { id: input.sessionId },
         data: {
@@ -1300,7 +1351,7 @@ export class TrainingRepository {
         },
       });
       if (session.status === SESSION_STATUS.COMPLETED) {
-        await new PhysiologyV7PersistenceRepository(tx).invalidateUnifiedPublication(profileId);
+        await blockCompletedStrengthUnifiedInTransaction(tx, input.sessionId);
       }
       if (sameAccountingDay && effectiveAt.getTime() !== oldEffectiveAt.getTime()) {
         await rebaseCurrentAccountingSnapshotTimestamp(tx, {
@@ -1311,23 +1362,29 @@ export class TrainingRepository {
           timeZoneProvenance,
         });
       }
-      await invalidateActiveEnergySourcesInTransactionV1({
-        tx,
-        profileId,
-        aliases: [
-          { sourceType: "strength-session", sourceId: String(input.sessionId) },
-          ...(session.matchedWorkoutId === null ? [] : [{
-            sourceType: "workout" as const,
-            sourceId: String(session.matchedWorkoutId),
-          }]),
-        ],
-        affectedInstants: [
-          oldEffectiveAt,
-          effectiveAt,
-          session.matchedWorkout?.startAt ?? oldEffectiveAt,
-          session.matchedWorkout?.endAt,
-        ],
-      });
+      // Only completed sessions are materialized into production Active
+      // Energy and its Unified consumers. Editing an active session's planned
+      // accounting context must not stale a published production generation
+      // that does not yet include that session.
+      if (session.status === SESSION_STATUS.COMPLETED) {
+        await invalidateActiveEnergySourcesInTransactionV1({
+          tx,
+          profileId,
+          aliases: [
+            { sourceType: "strength-session", sourceId: String(input.sessionId) },
+            ...(session.matchedWorkoutId === null ? [] : [{
+              sourceType: "workout" as const,
+              sourceId: String(session.matchedWorkoutId),
+            }]),
+          ],
+          affectedInstants: [
+            oldEffectiveAt,
+            effectiveAt,
+            session.matchedWorkout?.startAt ?? oldEffectiveAt,
+            session.matchedWorkout?.endAt,
+          ],
+        });
+      }
     });
   }
 
@@ -1386,7 +1443,7 @@ export class TrainingRepository {
           data: { status: SESSION_STATUS.COMPLETED, webEndedAt: input.finalizeAt },
         });
         if (finalized.count > 0) {
-          await new PhysiologyV7PersistenceRepository(tx).invalidateUnifiedPublication(profileId);
+          await invalidateStrengthSessionActiveEnergyInTransaction(tx, record.id);
         }
       }
       await tx.strengthSessionAccountingOperation.create({
@@ -1549,7 +1606,7 @@ export class TrainingRepository {
             data: { status: SESSION_STATUS.COMPLETED, webEndedAt: input.finalizeAt },
           });
           if (finalized.count > 0) {
-            await new PhysiologyV7PersistenceRepository(tx).invalidateUnifiedPublication(profileId);
+            await invalidateStrengthSessionActiveEnergyInTransaction(tx, record.id);
           }
         }
         await tx.strengthSessionAccountingOperation.create({
@@ -1618,19 +1675,11 @@ export class TrainingRepository {
           } : {}),
         },
       });
-      if (input.finalizeAt) {
-        await new PhysiologyV7PersistenceRepository(tx).invalidateUnifiedPublication(profileId);
+      if (input.finalizeAt || locked.status === SESSION_STATUS.COMPLETED) {
+        // Active diary snapshots are not model inputs. Invalidate only after
+        // a real completion transition or when refreshing a completed source.
+        await invalidateStrengthSessionActiveEnergyInTransaction(tx, record.id);
       }
-      const stage02EventInstant = locked.matchedWorkout?.startAt ?? locked.effectiveAccountingAt ?? effectiveAt;
-      await invalidateActiveEnergySourcesInTransactionV1({
-        tx,
-        profileId: locked.profileId,
-        aliases: [
-          { sourceType: "strength-session", sourceId: String(record.id) },
-          ...(locked.matchedWorkoutId === null ? [] : [{ sourceType: "workout", sourceId: String(locked.matchedWorkoutId) }]),
-        ],
-        affectedInstants: [stage02EventInstant],
-      });
       await tx.strengthSessionAccountingOperation.create({
         data: {
           sessionId: record.id,
@@ -1714,7 +1763,7 @@ export class TrainingRepository {
         select: { id: true },
       });
       if ((input.status ?? SESSION_STATUS.ACTIVE) === SESSION_STATUS.COMPLETED) {
-        await new PhysiologyV7PersistenceRepository(tx).invalidateUnifiedPublication(profileId);
+        await blockCompletedStrengthUnifiedInTransaction(tx, row.id);
       }
       return row;
     });
@@ -2063,7 +2112,11 @@ export class TrainingRepository {
         },
         select: { revision: true },
       });
-      await invalidateStrengthSessionActiveEnergyInTransaction(tx, input.sessionId);
+      await invalidateStrengthSessionActiveEnergyInTransaction(
+        tx,
+        input.sessionId,
+        trainingChildDeletionPublicationSourceKey("exercise", input.sessionId, input.exerciseId),
+      );
       return session.revision;
     });
   }
@@ -2198,7 +2251,11 @@ export class TrainingRepository {
       });
       if (!existing) return false;
       await tx.strengthSet.delete({ where: { id: setId } });
-      await bumpAccountingInputRevision(tx, sessionId);
+      await bumpAccountingInputRevision(
+        tx,
+        sessionId,
+        trainingChildDeletionPublicationSourceKey("set", sessionId, setId),
+      );
       return true;
     });
   }
@@ -2334,7 +2391,7 @@ export class TrainingRepository {
         where: { id: sessionId },
         data: { status: SESSION_STATUS.COMPLETED, webEndedAt },
       });
-      await new PhysiologyV7PersistenceRepository(tx).invalidateUnifiedPublication(profileId);
+      await blockCompletedStrengthUnifiedInTransaction(tx, sessionId);
     });
   }
 
@@ -2350,7 +2407,7 @@ export class TrainingRepository {
         select: { profileId: true, status: true },
       });
       if (session?.status === SESSION_STATUS.COMPLETED) {
-        await new PhysiologyV7PersistenceRepository(tx).invalidateUnifiedPublication(session.profileId);
+        await blockCompletedStrengthUnifiedInTransaction(tx, sessionId);
       }
       await tx.strengthDiarySession.update({
         where: { id: sessionId },
@@ -2390,7 +2447,7 @@ export class TrainingRepository {
       });
       if (session) {
         if (session.status === SESSION_STATUS.COMPLETED) {
-          await new PhysiologyV7PersistenceRepository(tx).invalidateUnifiedPublication(session.profileId);
+          await blockCompletedStrengthUnifiedInTransaction(tx, sessionId);
         }
         await invalidateActiveEnergySourcesInTransactionV1({
           tx,
@@ -2449,6 +2506,15 @@ export class TrainingRepository {
       const previousLocalDate = instantToLocalDateTime(previousEffectiveAt, accountingTimeZone).date;
       const nextLocalDate = instantToLocalDateTime(nextEffectiveAt, accountingTimeZone).date;
       const accountingDateChanged = previousLocalDate !== nextLocalDate;
+      const matchChanged = session.matchedWorkoutId !== input.matchedWorkoutId
+        || session.matchStatus !== input.matchStatus
+        || session.matchMethod !== input.matchMethod
+        || session.matchedAt?.getTime() !== input.matchedAt?.getTime();
+      if ((matchChanged || previousEffectiveAt.getTime() !== nextEffectiveAt.getTime())
+          && session.status === SESSION_STATUS.COMPLETED) {
+        // Fence the old matched-workout date before replacing the relation.
+        await blockCompletedStrengthUnifiedInTransaction(tx, session.id);
+      }
       await tx.strengthDiarySession.update({
         where: { id: input.sessionId },
         data: {
@@ -2474,13 +2540,9 @@ export class TrainingRepository {
           timeZoneProvenance: accountingTimeZoneProvenance,
         });
       }
-      const matchChanged = session.matchedWorkoutId !== input.matchedWorkoutId
-        || session.matchStatus !== input.matchStatus
-        || session.matchMethod !== input.matchMethod
-        || session.matchedAt?.getTime() !== input.matchedAt?.getTime();
       if (matchChanged || previousEffectiveAt.getTime() !== nextEffectiveAt.getTime()) {
         if (session.status === SESSION_STATUS.COMPLETED) {
-          await new PhysiologyV7PersistenceRepository(tx).invalidateUnifiedPublication(session.profileId);
+          await blockCompletedStrengthUnifiedInTransaction(tx, session.id);
         }
         const workoutIds = [...new Set([session.matchedWorkoutId, input.matchedWorkoutId]
           .filter((id): id is number => id !== null))];

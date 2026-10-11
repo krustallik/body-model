@@ -10,6 +10,7 @@ import {
   SESSION_STATUS,
 } from "@/modules/training/training.constants";
 import { TrainingService } from "@/modules/training/training.service";
+import { clearUnifiedPublicationBlockFixtures } from "../helpers/clear-unified-publication-blocks";
 import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
 
 const prisma = new PrismaClient();
@@ -23,6 +24,15 @@ const PROGRAM_BULK = "integration-retro-program-bulk";
 
 async function clean(): Promise<void> {
   const programNames = [PROGRAM_A, PROGRAM_B, PROGRAM_BULK];
+  const fixtureSessions = await prisma.strengthDiarySession.findMany({
+    where: { program: { name: { in: programNames } } },
+    select: { id: true },
+  });
+  await clearUnifiedPublicationBlockFixtures(prisma, fixtureSessions.map(({ id }) => ({
+    profileId: 1,
+    source: "training" as const,
+    sourceKey: String(id),
+  })));
   await prisma.strengthSet.deleteMany({
     where: {
       sessionExercise: {
@@ -113,7 +123,21 @@ async function createProgram(
 }
 
 describe("Retrospective Training Diary with PostgreSQL", () => {
-  beforeAll(clean);
+  beforeAll(async () => {
+    // Each integration suite owns its fixtures; do not rely on the full-history
+    // inventory suite's temporary profile still existing after its cleanup.
+    await prisma.profile.upsert({
+      where: { id: 1 },
+      create: {
+        id: 1,
+        sex: "male",
+        dateOfBirth: new Date("1990-05-10T00:00:00.000Z"),
+        heightCm: 180,
+      },
+      update: {},
+    });
+    await clean();
+  });
   afterAll(async () => {
     await clean();
     await prisma.$disconnect();

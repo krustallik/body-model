@@ -10,7 +10,11 @@ import { SleepRepository } from "@/modules/health/sleep.repository";
 import { recordExperimentalGlycogenStateShadow } from "@/modules/model-episodes/experimental-glycogen-state-shadow.service";
 import { rebuildAuthoritativeRelativeMuscleTrajectory } from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
 import { recordExperimentalStepperActiveEnergyShadowsForMassWindow } from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
+import { recordExperimentalStepperGlycogenDemandShadowsForLocalDate } from "@/modules/profile/experimental-stepper-glycogen-demand-shadow.service";
+import { recordExperimentalStrengthShadowsForWeightDate } from "@/modules/training/training.service";
 import { publishActiveEnergyChangesV1 } from "@/modules/activity/active-energy-publication";
+import type { ActiveEnergyPublicationStatusV1 } from "@/modules/activity/active-energy-publication";
+import { logEvent } from "@/lib/logger";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import {
   invalidateStepperMassDependenciesInTransactionV1,
@@ -69,16 +73,118 @@ const dailyMetricSelect = {
 type DailyMetricRecord = Prisma.DailyHealthDataGetPayload<{ select: typeof dailyMetricSelect }>;
 
 type DailyMetricShadowReplayer = {
-  replayFrom(date: string): Promise<void>;
+  replayFrom(date: string, options?: { weightSourceChanged?: boolean }): Promise<ActiveEnergyPublicationStatusV1>;
 };
 
-const productionShadowReplayer: DailyMetricShadowReplayer = {
-  async replayFrom(date) {
+export async function replayProductionDailyMetricShadowsV1(
+  date: string,
+  lifecycle = new PhysiologyV7PersistenceRepository(),
+  options: { weightSourceChanged?: boolean } = {},
+): Promise<ActiveEnergyPublicationStatusV1> {
+  const blockToken = await lifecycle.readUnifiedPublicationBlockToken({ profileId: 1, source: "day", sourceKey: date });
+  try {
     await recordExperimentalStepperActiveEnergyShadowsForMassWindow({ measurementDates: [date] });
+    await recordExperimentalStrengthShadowsForWeightDate({
+      date,
+      refreshHistoricalAsOfFallback: options.weightSourceChanged === true,
+    });
+    await recordExperimentalStepperGlycogenDemandShadowsForLocalDate({ date });
     await recordExperimentalGlycogenStateShadow({ date });
     await rebuildAuthoritativeRelativeMuscleTrajectory({ fromDate: date });
-    await publishActiveEnergyChangesV1();
-  },
+  } catch (error) {
+    await lifecycle.blockUnifiedPublication({ profileId: 1, fromDate: date, source: "day", sourceKey: date });
+    throw error;
+  }
+  // Only a failed dependency refresh keeps the durable blocker. A later
+  // production/publication failure is retryable with these dependencies
+  // already current and must not create an un-clearable day blocker.
+  if (blockToken !== null && !await lifecycle.clearUnifiedPublicationBlock({
+    profileId: 1, source: "day", sourceKey: date, expectedRevision: blockToken.revision,
+    expectedFromDate: blockToken.fromDate,
+  })) {
+    throw new Error("daily source changed during dependent-shadow refresh; Unified remains blocked");
+  }
+  try {
+    if (await lifecycle.hasUnifiedPublicationBlocks(1)) return "stale";
+  } catch (error) {
+    // The source row may already be gone (notably after DELETE). If the
+    // post-clear blocker read fails, restore this operation's durable retry
+    // handle before returning stale. The profile lock and upsert preserve an
+    // earlier boundary or a concurrent newer fence.
+    try {
+      await lifecycle.blockUnifiedPublication({
+        profileId: 1,
+        fromDate: blockToken?.fromDate ?? date,
+        source: "day",
+        sourceKey: date,
+      });
+    } catch (restoreError) {
+      throw new AggregateError(
+        [error, restoreError],
+        "Could not read Unified publication blocks or restore the daily retry fence.",
+      );
+    }
+    throw error;
+  }
+  try {
+    if (await publishActiveEnergyChangesV1()) return "current";
+  } catch (error) {
+    let anotherBlockRemains: boolean | null = null;
+    try {
+      anotherBlockRemains = await lifecycle.hasUnifiedPublicationBlocks(1);
+    } catch {
+      // Unknown blocker state is not evidence that another source owns a
+      // retry handle. Preserve this committed day mutation's retry fence.
+    }
+    if (anotherBlockRemains !== true) {
+      try {
+        await restoreDailyPublicationRetryFenceV1(lifecycle, date, blockToken);
+      } catch (restoreError) {
+        throw new AggregateError(
+          [error, restoreError],
+          "Active Energy publication failed and the daily retry fence could not be restored.",
+        );
+      }
+    }
+    throw error;
+  }
+  let anotherBlockRemains: boolean;
+  try {
+    anotherBlockRemains = await lifecycle.hasUnifiedPublicationBlocks(1);
+  } catch (error) {
+    try {
+      await restoreDailyPublicationRetryFenceV1(lifecycle, date, blockToken);
+    } catch (restoreError) {
+      throw new AggregateError(
+        [error, restoreError],
+        "Could not read Unified publication blocks or restore the daily retry fence.",
+      );
+    }
+    throw error;
+  }
+  if (anotherBlockRemains) return "stale";
+  // The source and its dependent shadows are durable, but a failed final
+  // publication must keep an exact retry fence for operations such as DELETE
+  // whose source row no longer exists.
+  await restoreDailyPublicationRetryFenceV1(lifecycle, date, blockToken);
+  return "stale";
+}
+
+async function restoreDailyPublicationRetryFenceV1(
+  lifecycle: Pick<PhysiologyV7PersistenceRepository, "blockUnifiedPublication">,
+  date: string,
+  blockToken: { revision: number; fromDate: string } | null,
+): Promise<void> {
+  await lifecycle.blockUnifiedPublication({
+    profileId: 1,
+    fromDate: blockToken?.fromDate ?? date,
+    source: "day",
+    sourceKey: date,
+  });
+}
+
+const productionShadowReplayer: DailyMetricShadowReplayer = {
+  replayFrom: (date, options) => replayProductionDailyMetricShadowsV1(date, undefined, options),
 };
 
 function workoutCreateData(workouts: NonNullable<CreateDailyMetricInput["workouts"]>) {
@@ -198,6 +304,22 @@ export class DailyMetricRepository {
       : null,
   ) {
     this.trainingFacts = new TrainingDayFactRepository(client);
+  }
+
+  private async replayAndReadPublicationStatus(
+    date: string,
+    options: { weightSourceChanged?: boolean } = {},
+  ): Promise<ActiveEnergyPublicationStatusV1> {
+    if (this.shadowReplayer === null) return "not-run";
+    try {
+      return await this.shadowReplayer.replayFrom(date, options);
+    } catch (error) {
+      logEvent("warn", "daily_metric_publication_failed_after_source_write", {
+        date,
+        errorType: error instanceof Error ? error.name : "unknown",
+      });
+      return "stale";
+    }
   }
 
   async list(query: DailyMetricListQuery): Promise<DailyMetricDto[]> {
@@ -333,7 +455,9 @@ export class DailyMetricRepository {
     try {
       const { workouts, ...metrics } = input;
       const record = await this.client.$transaction(async (tx) => {
-        await new PhysiologyV7PersistenceRepository(tx).lockProfile(1);
+        const lifecycle = new PhysiologyV7PersistenceRepository(tx);
+        await lifecycle.lockProfile(1);
+        await lifecycle.blockUnifiedPublication({ profileId: 1, fromDate: metrics.date, source: "day", sourceKey: metrics.date });
         const created = await tx.dailyHealthData.create({
           data: {
             ...prepareDailyMeasurementsForWrite(metrics),
@@ -359,8 +483,10 @@ export class DailyMetricRepository {
         }
         return created;
       });
-      await this.shadowReplayer?.replayFrom(record.date);
-      return await this.dtoForRecord(record);
+      const modelPublicationStatus = await this.replayAndReadPublicationStatus(record.date, {
+        weightSourceChanged: record.weightKg !== null,
+      });
+      return { ...(await this.dtoForRecord(record)), modelPublicationStatus };
     } catch (error) {
       if (isPrismaError(error, "P2002")) throw new DuplicateDayError();
       throw error;
@@ -370,12 +496,15 @@ export class DailyMetricRepository {
   async update(date: string, input: UpdateDailyMetricInput): Promise<DailyMetricDto | null> {
     try {
       const { workouts, ...metrics } = input;
+      let weightSourceChanged = false;
       const record = await this.client.$transaction(async (tx) => {
-        await new PhysiologyV7PersistenceRepository(tx).lockProfile(1);
+        const lifecycle = new PhysiologyV7PersistenceRepository(tx);
+        await lifecycle.lockProfile(1);
         const before = await tx.dailyHealthData.findUniqueOrThrow({
           where: { date },
           select: { weightKg: true, workouts: { where: { hiddenFromHistory: false }, select: { id: true, startAt: true, endAt: true } } },
         });
+        await lifecycle.blockUnifiedPublication({ profileId: 1, fromDate: date, source: "day", sourceKey: date });
         const updated = await tx.dailyHealthData.update({
           where: { date },
           data: {
@@ -388,6 +517,7 @@ export class DailyMetricRepository {
           },
           select: dailyMetricSelect,
         });
+        weightSourceChanged = before.weightKg !== updated.weightKg;
         const affected = [...before.workouts, ...updated.workouts];
         await invalidateWorkoutEnergyInTransactionV1({
           tx, profileId: 1,
@@ -395,31 +525,42 @@ export class DailyMetricRepository {
           affectedInstants: affected.flatMap((workout) => [workout.startAt, workout.endAt]),
           affectedModelDates: [date],
         });
-        if (before.weightKg !== updated.weightKg) {
+        if (weightSourceChanged) {
           await invalidateStepperMassDependenciesInTransactionV1({
             tx, profileId: 1, measurementDates: [date],
           });
         }
         return updated;
       });
-      await this.shadowReplayer?.replayFrom(date);
-      return await this.dtoForRecord(record);
+      const modelPublicationStatus = await this.replayAndReadPublicationStatus(date, { weightSourceChanged });
+      return { ...(await this.dtoForRecord(record)), modelPublicationStatus };
     } catch (error) {
       if (isPrismaError(error, "P2025")) return null;
       throw error;
     }
   }
 
-  async delete(date: string): Promise<boolean> {
+  async delete(date: string): Promise<{ deleted: boolean; modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }> {
     // Explicit application delete: remove workouts first so Restrict FK cannot
     // leave orphan intent — accidental raw day deletes without this path fail.
-    const deleted = await this.client.$transaction(async (transaction) => {
-      await new PhysiologyV7PersistenceRepository(transaction).lockProfile(1);
+    const outcome = await this.client.$transaction(async (transaction) => {
+      const lifecycle = new PhysiologyV7PersistenceRepository(transaction);
+      await lifecycle.lockProfile(1);
       const day = await transaction.dailyHealthData.findUnique({
         where: { date },
         select: { id: true, weightKg: true, workouts: { where: { hiddenFromHistory: false }, select: { id: true, startAt: true, endAt: true } } },
       });
-      if (!day) return false;
+      if (!day) {
+        const token = await lifecycle.readUnifiedPublicationBlockToken({ profileId: 1, source: "day", sourceKey: date });
+        // A prior DELETE may have committed the raw removal and failed during
+        // derived refresh. Retrying the same idempotent DELETE repairs that
+        // durable block without recreating the source row.
+        return { deleted: token !== null, needsPublication: token !== null, weightSourceChanged: false };
+      }
+      const weightSampleCount = await transaction.healthMetricSample.count({
+        where: { date, metric: "weight-kg", source: "apple-health-shortcut" },
+      });
+      await lifecycle.blockUnifiedPublication({ profileId: 1, fromDate: date, source: "day", sourceKey: date });
       await invalidateWorkoutEnergyInTransactionV1({
         tx: transaction, profileId: 1,
         workoutIds: day.workouts.map((workout) => workout.id),
@@ -433,10 +574,19 @@ export class DailyMetricRepository {
       }
       await transaction.workout.deleteMany({ where: { dailyHealthDataId: day.id } });
       await transaction.dailyHealthData.delete({ where: { id: day.id } });
-      return true;
+      return {
+        deleted: true,
+        needsPublication: true,
+        weightSourceChanged: day.weightKg !== null || weightSampleCount > 0,
+      };
     });
-    if (deleted) await this.shadowReplayer?.replayFrom(date);
-    return deleted;
+    if (!outcome.needsPublication) return { deleted: false };
+    return {
+      deleted: true,
+      modelPublicationStatus: await this.replayAndReadPublicationStatus(date, {
+        weightSourceChanged: outcome.weightSourceChanged,
+      }),
+    };
   }
 }
 

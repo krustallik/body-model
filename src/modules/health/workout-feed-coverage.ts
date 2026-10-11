@@ -5,6 +5,7 @@ import {
   splitPositionalLines,
   splitTrainingTypeLines,
 } from "@/modules/health/expand-training-workouts";
+import { DEFAULT_TIME_ZONE, instantToLocalDateTime } from "@/model/time-zone";
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -50,7 +51,7 @@ export function hasWorkoutFeedPayload(rawDay: unknown): boolean {
  * the date had no workouts. Treating it as an empty daily feed would delete
  * already-synced history.
  */
-export function resolveWorkoutFeedObserved(rawDay: unknown): boolean {
+export function resolveWorkoutFeedObserved(rawDay: unknown, timezone = DEFAULT_TIME_ZONE): boolean {
   if (!isObject(rawDay)) return false;
 
   if (hasCanonicalField(rawDay, "workouts")) {
@@ -61,11 +62,17 @@ export function resolveWorkoutFeedObserved(rawDay: unknown): boolean {
     const date = typeof readCanonicalField(rawDay, "date") === "string"
       ? readCanonicalField(rawDay, "date") as string
       : "";
-    return date !== "" && workouts.some((workout) => (
-      isObject(workout)
-      && typeof workout.startAt === "string"
-      && workout.startAt.slice(0, 10) === date
-    ));
+    if (date === "") return false;
+    return workouts.some((workout) => {
+      if (!isObject(workout) || typeof workout.startAt !== "string") return false;
+      const startAt = new Date(workout.startAt);
+      if (!Number.isFinite(startAt.getTime())) return false;
+      try {
+        return instantToLocalDateTime(startAt, timezone).date === date;
+      } catch {
+        return false;
+      }
+    });
   }
 
   const canonicalDay: Record<string, unknown> = {};

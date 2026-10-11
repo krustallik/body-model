@@ -4,7 +4,7 @@ import { CURRENT_MODEL_VERSION, usesSelectionV1, usesWorkoutAwareActivity } from
 import { selectCanonicalBodyMassV1 } from "@/model/activity/canonical-activity-policy-v1";
 import { adaptManualStepperEnergyV1 } from "@/modules/training/manual-stepper-fields-v1";
 import { evaluateStepperReconciliationV1 } from "@/modules/training/stepper-reconciliation-v1";
-import { strengthPublicationDecisionV1, strengthInputFingerprintV1, strengthEstimateFreshV1, strengthSetFingerprintV1 } from "@/modules/training/strength-publication-v1";
+import { strengthPublicationDecisionV1, strengthInputFingerprintV1, strengthEstimateFreshV1, strengthModelDayFingerprintInputsV1, strengthSetFingerprintV1 } from "@/modules/training/strength-publication-v1";
 import { EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION } from "@/modules/training/experimental-strength-active-energy-v1";
 import { runSyntheticReplayV1 } from "@/modules/model-episodes/staged-replay-v1";
 import {
@@ -148,6 +148,28 @@ describe("staged physiology v1", () => {
       storedInputFingerprint: published,
       currentInputFingerprint: published,
     })).toBe(true);
+  });
+
+  it("uses model-day RMR and revision as strength fallback dependencies", () => {
+    const beforeReplay = strengthModelDayFingerprintInputsV1({
+      status: "complete",
+      dynamicRmrKcalPerDay: 1_640,
+      modelVersion: "bodycast-physiology-v7",
+    });
+    const afterEquivalentReplay = strengthModelDayFingerprintInputsV1({
+      status: "complete",
+      dynamicRmrKcalPerDay: 1_640,
+      modelVersion: "bodycast-physiology-v7",
+    });
+    const afterSemanticChange = strengthModelDayFingerprintInputsV1({
+      status: "complete",
+      dynamicRmrKcalPerDay: 1_670,
+      modelVersion: "bodycast-physiology-v7",
+    });
+
+    expect(afterEquivalentReplay).toEqual(beforeReplay);
+    expect(afterSemanticChange).not.toEqual(beforeReplay);
+    expect(beforeReplay).toEqual({ modelDayRmrKcalPerDay: 1_640, modelDayVersion: "bodycast-physiology-v7" });
   });
 
   it("fingerprints completedAt timing and keeps unchanged timing stable", () => {

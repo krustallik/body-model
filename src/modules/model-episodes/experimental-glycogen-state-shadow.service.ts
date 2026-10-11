@@ -124,7 +124,7 @@ async function loadDayInputs(client: DbClient, profileId: number, date: string):
     client.experimentalStepperGlycogenDemandShadow.findMany({
       where: {
         profileId,
-        workout: { dailyHealthData: { date } },
+        workout: { hiddenFromHistory: false, dailyHealthData: { date } },
       },
       orderBy: { workoutId: "asc" },
       select: { workoutId: true, modelRevision: true, sourceFingerprint: true, result: true },

@@ -357,6 +357,7 @@ export async function experimentalForecastModelEpisode(
       productionStaleFromDate: true,
       productionPublishedGeneration: true,
       unifiedPublishedGeneration: true,
+      unifiedPublicationBlockedFromDate: true,
     },
   });
   if (!isUnifiedGenerationCurrentV1(lifecycle)) return null;
@@ -442,6 +443,7 @@ export async function experimentalForecastModelEpisode(
       productionStaleFromDate: true,
       productionPublishedGeneration: true,
       unifiedPublishedGeneration: true,
+      unifiedPublicationBlockedFromDate: true,
     },
   });
   if (!isUnifiedGenerationCurrentV1(finalLifecycle)

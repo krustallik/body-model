@@ -2,33 +2,44 @@ import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PrismaHealthSyncRepository } from "@/modules/health/health.repository";
 import { workoutSourceIdentity } from "@/modules/health/workout-source-identity";
+import { clearUnifiedPublicationBlockFixtures } from "../helpers/clear-unified-publication-blocks";
 import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
 
 const prisma = new PrismaClient();
 const repository = new PrismaHealthSyncRepository(prisma);
 const date = "2041-03-15";
+const fixtureProgramName = "integration-reconcile-program";
+const fixtureTrainingSessionIds = new Set<string>();
 
 async function clean(): Promise<void> {
+  const fixtureSessions = await prisma.strengthDiarySession.findMany({
+    where: { program: { name: fixtureProgramName } },
+    select: { id: true },
+  });
+  await clearUnifiedPublicationBlockFixtures(prisma, [
+    ...fixtureSessions.map(({ id }) => ({ profileId: 1, source: "training" as const, sourceKey: String(id) })),
+    ...[...fixtureTrainingSessionIds].map((sourceKey) => ({ profileId: 1, source: "training" as const, sourceKey })),
+  ]);
   await prisma.strengthSet.deleteMany({
-    where: { sessionExercise: { session: { webStartedAt: { gte: new Date(`${date}T00:00:00Z`) } } } },
+    where: { sessionExercise: { session: { program: { name: fixtureProgramName } } } },
   });
   await prisma.strengthSessionExercise.deleteMany({
-    where: { session: { webStartedAt: { gte: new Date(`${date}T00:00:00Z`) } } },
+    where: { session: { program: { name: fixtureProgramName } } },
   });
   await prisma.strengthDiarySession.deleteMany({
-    where: { webStartedAt: { gte: new Date(`${date}T00:00:00Z`) } },
+    where: { program: { name: fixtureProgramName } },
   });
   await prisma.programExercise.deleteMany({
-    where: { programVersion: { program: { name: "integration-reconcile-program" } } },
+    where: { programVersion: { program: { name: fixtureProgramName } } },
   });
   await prisma.trainingProgram.updateMany({
-    where: { name: "integration-reconcile-program" },
+    where: { name: fixtureProgramName },
     data: { currentVersionId: null },
   });
   await prisma.trainingProgramVersion.deleteMany({
-    where: { program: { name: "integration-reconcile-program" } },
+    where: { program: { name: fixtureProgramName } },
   });
-  await prisma.trainingProgram.deleteMany({ where: { name: "integration-reconcile-program" } });
+  await prisma.trainingProgram.deleteMany({ where: { name: fixtureProgramName } });
   await prisma.healthSyncSnapshot.deleteMany({ where: { date } });
   await deleteDailyHealthRows(prisma, date);
 }
@@ -141,7 +152,7 @@ describe("Workout stable reconciliation with PostgreSQL", () => {
     });
     const program = await prisma.trainingProgram.create({
       data: {
-        name: "integration-reconcile-program",
+        name: fixtureProgramName,
         versions: {
           create: {
             versionNumber: 1,
@@ -186,6 +197,7 @@ describe("Workout stable reconciliation with PostgreSQL", () => {
         },
       },
     });
+    fixtureTrainingSessionIds.add(String(session.id));
 
     // Authoritative feed no longer includes the previously linked strength workout.
     await repository.syncDay({

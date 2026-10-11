@@ -27,6 +27,22 @@ model Profile {
   unifiedExperimentalPhysiologyStatesV2 UnifiedExperimentalPhysiologyStateV2[]
   stepperEquipmentAssignments StepperEquipmentAssignment[]
   strengthDiarySessions       StrengthDiarySession[]
+  unifiedPublicationBlocks    UnifiedPublicationBlock[]
+}
+
+/// Durable source-refresh work that must finish before Unified can be published current.
+model UnifiedPublicationBlock {
+  profileId Int
+  source    String   @db.VarChar(20)
+  sourceKey String   @db.VarChar(100)
+  fromDate  String   @db.VarChar(10)
+  revision  Int      @default(1)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  profile   Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@id([profileId, source, sourceKey])
+  @@index([profileId, fromDate])
 }
 
 /**
@@ -874,6 +890,8 @@ model PhysiologyV7Lifecycle {
   unifiedTargetRevision        String   @default("unified-experimental-physiology-state-v3-relative-muscle-daily-cumulative-diagnostics") @db.VarChar(100)
   unifiedRolloutEpoch           Int      @default(0)
   unifiedPublishedRolloutEpoch  Int?
+  unifiedPublicationBlockedFromDate String?  @db.VarChar(10)
+  unifiedPublicationBlockedSource   String?  @db.VarChar(20)
   stateVersion               String   @db.VarChar(100)
   sourceNormalizationVersion String   @db.VarChar(100)
   dailyRuntimeVersion        String   @db.VarChar(100)

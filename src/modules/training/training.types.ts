@@ -8,6 +8,7 @@ import type {
   SessionStatus,
 } from "./training.constants";
 import type { BodyweightReferenceV1, LoadAccountingBreakdownV1, LoadAccountingOutputV1 } from "./load-accounting-v1";
+import type { ActiveEnergyPublicationStatusV1 } from "@/modules/activity/active-energy-publication";
 
 export type ExerciseCatalogDto = {
   id: number;
@@ -39,6 +40,8 @@ export type TrainingProgramDto = {
   exercises: ProgramExerciseDto[];
   createdAt: string;
   updatedAt: string;
+  /** Explicit result after a source write invalidates derived publication. */
+  modelPublicationStatus?: ActiveEnergyPublicationStatusV1;
 };
 
 export type TrainingProgramSummaryDto = {

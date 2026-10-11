@@ -38,6 +38,8 @@ export type UnifiedSourceFenceV1 = {
   unifiedTargetRevision: string;
   unifiedRolloutEpoch: number;
   unifiedPublishedRolloutEpoch: number | null;
+  unifiedPublicationBlockedFromDate: string | null;
+  unifiedPublicationBlockedSource: string | null;
   updatedAt: string;
 };
 
@@ -54,6 +56,8 @@ export async function readUnifiedSourceFenceV1(
       unifiedTargetRevision: true,
       unifiedRolloutEpoch: true,
       unifiedPublishedRolloutEpoch: true,
+      unifiedPublicationBlockedFromDate: true,
+      unifiedPublicationBlockedSource: true,
       updatedAt: true,
     },
   });
@@ -63,6 +67,8 @@ export async function readUnifiedSourceFenceV1(
     unifiedTargetRevision: row.unifiedTargetRevision,
     unifiedRolloutEpoch: row.unifiedRolloutEpoch,
     unifiedPublishedRolloutEpoch: row.unifiedPublishedRolloutEpoch,
+    unifiedPublicationBlockedFromDate: row.unifiedPublicationBlockedFromDate,
+    unifiedPublicationBlockedSource: row.unifiedPublicationBlockedSource,
     updatedAt: row.updatedAt.toISOString(),
   };
 }
@@ -102,12 +108,46 @@ function stableFence(value: UnifiedSourceFenceV1 | null): string {
     value.unifiedTargetRevision,
     value.unifiedRolloutEpoch,
     value.unifiedPublishedRolloutEpoch,
+    value.unifiedPublicationBlockedFromDate,
+    value.unifiedPublicationBlockedSource,
     value.updatedAt,
   ]);
 }
 
 export class PhysiologyV7PersistenceRepository {
   constructor(private readonly client: DbClient = prisma) {}
+
+  private async withProfileLock<T>(profileId: number, action: (client: DbClient) => Promise<T>): Promise<T> {
+    if (isPrismaClient(this.client)) {
+      return this.client.$transaction(async (tx) => {
+        const repository = new PhysiologyV7PersistenceRepository(tx);
+        await repository.lockProfile(profileId);
+        return action(tx);
+      });
+    }
+    await this.lockProfile(profileId);
+    return action(this.client);
+  }
+
+  private async refreshUnifiedPublicationBlockSummary(client: DbClient, profileId: number): Promise<void> {
+    const lifecycle = await client.physiologyV7Lifecycle.findUnique({ where: { profileId }, select: { profileId: true } });
+    if (!lifecycle) return;
+    const blocks = await client.unifiedPublicationBlock.findMany({
+      where: { profileId }, orderBy: [{ fromDate: "asc" }, { source: "asc" }], select: { fromDate: true, source: true },
+    });
+    const firstDate = blocks[0]?.fromDate ?? null;
+    const firstSources = [...new Set(blocks.filter((block) => block.fromDate === firstDate).map((block) => block.source))];
+    const firstSource = firstSources.length === 0 ? null : firstSources.length === 1 ? firstSources[0]! : "multiple";
+    await client.$executeRaw`
+      UPDATE "PhysiologyV7Lifecycle"
+      SET "unifiedPublicationBlockedFromDate" = ${firstDate},
+          "unifiedPublicationBlockedSource" = ${firstSource},
+          "unifiedPublishedGeneration" = CASE WHEN CAST(${firstDate} AS date) IS NULL THEN "unifiedPublishedGeneration" ELSE NULL END,
+          "unifiedPublishedRolloutEpoch" = CASE WHEN CAST(${firstDate} AS date) IS NULL THEN "unifiedPublishedRolloutEpoch" ELSE NULL END,
+          "updatedAt" = GREATEST("updatedAt" + INTERVAL '1 millisecond', CURRENT_TIMESTAMP)
+      WHERE "profileId" = ${profileId}
+    `;
+  }
 
   async lockProfile(profileId: number): Promise<void> {
     await this.client.$executeRaw`SELECT pg_advisory_xact_lock(927001, CAST(${profileId} AS integer))`;
@@ -129,6 +169,75 @@ export class PhysiologyV7PersistenceRepository {
           "updatedAt" = GREATEST("updatedAt" + INTERVAL '1 millisecond', CURRENT_TIMESTAMP)
       WHERE "profileId" = ${profileId}
     `;
+  }
+
+  /** Persist a failed required child refresh so a later unrelated writer cannot publish over it. */
+  async blockUnifiedPublication(input: {
+    profileId: number;
+    fromDate: string;
+    source: "health" | "training" | "day" | "stepper";
+    sourceKey: string;
+  }): Promise<void> {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.fromDate) || input.sourceKey.length < 1 || input.sourceKey.length > 100) {
+      throw new Error("Unified publication block identity is malformed.");
+    }
+    await this.withProfileLock(input.profileId, async (client) => {
+      const lifecycle = await client.physiologyV7Lifecycle.findUnique({ where: { profileId: input.profileId }, select: { profileId: true } });
+      if (!lifecycle) return;
+      const existing = await client.unifiedPublicationBlock.findUnique({
+        where: { profileId_source_sourceKey: { profileId: input.profileId, source: input.source, sourceKey: input.sourceKey } },
+        select: { fromDate: true },
+      });
+      const earliestFromDate = existing?.fromDate !== undefined && existing.fromDate < input.fromDate
+        ? existing.fromDate
+        : input.fromDate;
+      await client.unifiedPublicationBlock.upsert({
+        where: { profileId_source_sourceKey: { profileId: input.profileId, source: input.source, sourceKey: input.sourceKey } },
+        create: { profileId: input.profileId, source: input.source, sourceKey: input.sourceKey, fromDate: earliestFromDate },
+        update: { fromDate: earliestFromDate, revision: { increment: 1 } },
+      });
+      await this.refreshUnifiedPublicationBlockSummary(client, input.profileId);
+    });
+  }
+
+  async readUnifiedPublicationBlockToken(input: {
+    profileId: number;
+    source: "health" | "training" | "day" | "stepper";
+    sourceKey: string;
+  }): Promise<{ revision: number; fromDate: string } | null> {
+    return this.client.unifiedPublicationBlock.findUnique({
+      where: { profileId_source_sourceKey: { profileId: input.profileId, source: input.source, sourceKey: input.sourceKey } },
+      select: { revision: true, fromDate: true },
+    });
+  }
+
+  /** A cleared source fence need not be recreated when another durable fence
+   * still blocks the shared candidate. That other operation will retry the
+   * final publication after its own dependencies are refreshed. */
+  async hasUnifiedPublicationBlocks(profileId: number): Promise<boolean> {
+    return (await this.client.unifiedPublicationBlock.findFirst({
+      where: { profileId }, select: { profileId: true },
+    })) !== null;
+  }
+
+  /** A retry clears only the exact durable source operation it fully reprocessed. */
+  async clearUnifiedPublicationBlock(input: {
+    profileId: number;
+    source: "health" | "training" | "day" | "stepper";
+    sourceKey: string;
+    expectedRevision: number;
+    expectedFromDate: string;
+  }): Promise<boolean> {
+    return this.withProfileLock(input.profileId, async (client) => {
+      const changed = await client.unifiedPublicationBlock.deleteMany({
+        where: {
+          profileId: input.profileId, source: input.source, sourceKey: input.sourceKey,
+          revision: input.expectedRevision, fromDate: input.expectedFromDate,
+        },
+      });
+      if (changed.count > 0) await this.refreshUnifiedPublicationBlockSummary(client, input.profileId);
+      return changed.count === 1;
+    });
   }
 
   async ensureLifecycle(profileId: number, requestedFromDate: string) {

@@ -39,8 +39,12 @@ export async function POST(request: Request): Promise<Response> {
     await recordExperimentalStepperActiveEnergyShadowsForWorkouts({
       workoutIds: [parsed.data.manualWorkoutId, parsed.data.garminWorkoutId], profileId: 1,
     });
-    await publishActiveEnergyChangesV1();
-    return Response.json({ ok: true, activated: parsed.data.activateVisibility === true });
+    const published = await publishActiveEnergyChangesV1();
+    return Response.json({
+      ok: true,
+      activated: parsed.data.activateVisibility === true,
+      modelPublicationStatus: published ? "current" : "stale",
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : "internal_error";
     if (message.includes("requires") || message.includes("already confirmed")) {

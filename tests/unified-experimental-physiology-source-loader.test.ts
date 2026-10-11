@@ -12,6 +12,7 @@ function fakeClient(input: {
   relativeDeltaRows?: unknown[];
   episodes?: unknown[];
   workouts?: unknown[];
+  diarySessions?: unknown[];
 } = {}) {
   const daily = {
     id: 1, date: "2065-01-01", updatedAt: new Date("2065-01-01T12:00:00Z"), weightKg: 80,
@@ -21,8 +22,10 @@ function fakeClient(input: {
   return {
     dailyHealthData: { findMany: vi.fn().mockResolvedValue([daily]) },
     workout: { findMany: vi.fn().mockResolvedValue(input.workouts ?? []) },
-    strengthDiarySession: { findMany: vi.fn().mockImplementation((query: { where?: { status?: unknown } }) =>
-      Promise.resolve(query.where?.status === "COMPLETED" ? (input.completedIds ?? []).map((id) => ({ id })) : [])) },
+    strengthDiarySession: { findMany: vi.fn().mockImplementation((query: { where?: { status?: unknown }; select?: Record<string, unknown> }) => {
+      if (query.select?.effectiveAccountingAt === true) return Promise.resolve(input.diarySessions ?? []);
+      return Promise.resolve(query.where?.status === "COMPLETED" ? (input.completedIds ?? []).map((id) => ({ id })) : []);
+    }) },
     healthActivityInterval: { findMany: vi.fn().mockResolvedValue([]) },
     healthSyncSnapshot: { findMany: vi.fn().mockResolvedValue([]) },
     heartRateSample: { findMany: vi.fn().mockResolvedValue([]) },
@@ -145,6 +148,53 @@ describe("Unified V1 durable source loader", () => {
     ]);
     expect(range.days[1]?.childOutputs.transientWater.map(({ sessionId }) => sessionId)).toEqual([11]);
     expect(range.days[2]?.childOutputs.transientWater).toEqual([]);
+  });
+
+  it("places completed unlinked sessions by canonical accounting time, not an out-of-window web start", async () => {
+    const effectiveAccountingAt = new Date("2065-01-02T01:00:00.000Z");
+    const client = fakeClient({
+      diarySessions: [{
+        id: 41,
+        status: "COMPLETED",
+        entryMode: "LIVE",
+        revision: 3,
+        effectiveAccountingAt,
+        webStartedAt: new Date("2064-12-01T12:00:00.000Z"),
+        webEndedAt: new Date("2064-12-01T13:00:00.000Z"),
+        matchedWorkoutId: null,
+        createdAt: new Date("2064-12-01T12:00:00.000Z"),
+        updatedAt: new Date("2065-01-02T02:00:00.000Z"),
+        matchedWorkout: null,
+      }],
+    });
+    const loader = new UnifiedExperimentalPhysiologySourceLoaderV1(client as never);
+    const range = await loader.loadRange({
+      profileId: 1,
+      fromInstant: utc("2065-01-01"),
+      throughInstant: utc("2065-01-03"),
+    });
+
+    expect(range.days[0]?.diarySessions).toEqual([]);
+    expect(range.days[1]?.diarySessions).toEqual([expect.objectContaining({
+      id: 41,
+      date: "2065-01-02",
+      status: "COMPLETED",
+      revision: 3,
+    })]);
+
+    const sessionQuery = client.strengthDiarySession.findMany.mock.calls
+      .map(([query]) => query)
+      .find((query) => query.select?.effectiveAccountingAt === true);
+    expect(sessionQuery?.where?.status).toBe("COMPLETED");
+    const sessionBranches = sessionQuery?.where?.OR as Array<Record<string, unknown>> | undefined;
+    const unlinkedSessions = sessionBranches?.find((branch: Record<string, unknown>) => "matchedWorkoutId" in branch);
+    expect(unlinkedSessions?.matchedWorkoutId).toBeNull();
+    const unlinkedBranches = unlinkedSessions?.OR as Array<Record<string, unknown>> | undefined;
+    const accountingTimeBranch = unlinkedBranches?.find((branch: Record<string, unknown>) => "effectiveAccountingAt" in branch);
+    const accountingRange = accountingTimeBranch?.effectiveAccountingAt as { gte: Date; lt: Date } | undefined;
+    expect(accountingRange).toEqual({ gte: expect.any(Date), lt: expect.any(Date) });
+    expect(accountingRange?.gte.getTime()).toBeLessThanOrEqual(effectiveAccountingAt.getTime());
+    expect(accountingRange?.lt.getTime()).toBeGreaterThan(effectiveAccountingAt.getTime());
   });
 
   it("accepts the highest-ID equal-start attribution produced by the transient-water resolver", async () => {

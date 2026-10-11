@@ -27,6 +27,7 @@ import {
   SessionNotFoundError,
   SetNotFoundError,
   SetValidationError,
+  StaleStrengthEnergySourceError,
   TrainingError,
   WorkoutAlreadyMatchedError,
   WorkoutNotEligibleError,
@@ -38,6 +39,7 @@ import { trainingExerciseMappingSnapshotJsonV1 } from "./exercise-mapping-snapsh
 import {
   TrainingRepository,
   StaleAccountingCandidateError,
+  trainingChildDeletionPublicationSourceKey,
   trainingRepository,
   type OrderedProgramExerciseWrite,
 } from "./training.repository";
@@ -66,7 +68,9 @@ import {
   type LoadConfigV1,
 } from "./load-accounting-v1";
 import { noteTrainingSourceChange } from "./training.source-revision";
+import { episodeTimeContextForInstantV1 } from "@/modules/model-episodes/episode-time-context-v1";
 import {
+  listExperimentalStrengthEnergySessionsForWeightDate,
   recordExperimentalStrengthEnergyShadow,
   recordExperimentalStrengthEnergyShadowBySessionId,
 } from "./experimental-strength-energy-shadow.service";
@@ -79,6 +83,7 @@ import {
   recordExperimentalLocalHypertrophyResponseShadowForSession,
 } from "@/modules/model-episodes/experimental-local-hypertrophy-response-shadow.service";
 import { rebuildAuthoritativeRelativeMuscleTrajectory } from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
+import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import {
   recordExperimentalFfmRetentionShadowForSession,
 } from "@/modules/model-episodes/experimental-ffm-retention-shadow.service";
@@ -86,7 +91,10 @@ import {
   invalidateUnifiedRelativeMuscleSuffixV1,
   rebuildUnifiedExperimentalPhysiologyStateV1,
 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
-import { publishActiveEnergyChangesV1 } from "@/modules/activity/active-energy-publication";
+import { recalculateActiveEnergyChangesV1, type ActiveEnergyPublicationStatusV1 } from "@/modules/activity/active-energy-publication";
+import { isUnifiedGenerationCurrentV1 } from "@/modules/model-episodes/publication-generation-v1";
+import { errorKind, logEvent } from "@/lib/logger";
+import { strengthSessionSourceFingerprintV1 } from "./strength-publication-v1";
 import type {
   HistoricalStrengthWorkoutDto,
   MatchCandidateDto,
@@ -107,65 +115,276 @@ function isUniqueViolation(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
 }
 
+type TrainingShadowRefreshResultV1 = {
+  blockRevision: number | null;
+  blockFromDate: string | null;
+  modelDate: string | undefined;
+};
+
+type TrainingPublicationBlockTokenV1 = { sourceKey: string; token: { revision: number; fromDate: string } };
+
+function sameTrainingPublicationBlockToken(
+  left: { revision: number; fromDate: string } | null,
+  right: { revision: number; fromDate: string } | null,
+): boolean {
+  return left === null ? right === null
+    : right !== null && left.revision === right.revision && left.fromDate === right.fromDate;
+}
+
+async function captureTrainingPublicationBlocksAfterMaterialization(input: {
+  profileId: number;
+  session: StrengthSessionDto;
+  sourceKeys: readonly string[];
+  initialTokens: readonly TrainingPublicationBlockTokenV1[];
+  refreshedFromDate: string;
+}): Promise<TrainingPublicationBlockTokenV1[]> {
+  const initialByKey = new Map(input.initialTokens.map((entry) => [entry.sourceKey, entry.token]));
+  const sessionSourceKey = String(input.session.id);
+  return prisma.$transaction(async (tx) => {
+    const lifecycle = new PhysiologyV7PersistenceRepository(tx);
+    await lifecycle.lockProfile(input.profileId);
+    const currentSession = await new TrainingRepository().getSession(input.session.id, input.profileId);
+    if (currentSession === null
+        || strengthSessionSourceFingerprintV1(currentSession) !== strengthSessionSourceFingerprintV1(input.session)) {
+      throw new StaleStrengthEnergySourceError();
+    }
+    const currentEntries = await Promise.all(input.sourceKeys.map(async (sourceKey) => ({
+      sourceKey,
+      token: await lifecycle.readUnifiedPublicationBlockToken({
+        profileId: input.profileId, source: "training", sourceKey,
+      }),
+    })));
+    const captured: TrainingPublicationBlockTokenV1[] = [];
+    for (const { sourceKey, token } of currentEntries) {
+      const initial = initialByKey.get(sourceKey) ?? null;
+      if (sourceKey !== sessionSourceKey && !sameTrainingPublicationBlockToken(initial, token)) {
+        throw new Error("training child source changed during dependent-shadow refresh; Unified remains blocked");
+      }
+      // Strength shadow publication can legitimately advance this session's
+      // own retry fence. It is safe to adopt only after the locked raw-session
+      // snapshot above proves that the candidate still describes live inputs.
+      if (token === null) continue;
+      if (token.fromDate < input.refreshedFromDate) {
+        throw new Error("training publication retry fence moved earlier than the refreshed dependency range");
+      }
+      captured.push({ sourceKey, token });
+    }
+    return captured;
+  });
+}
+
 async function recordExperimentalStrengthShadows(input: {
   session: StrengthSessionDto;
   profileId: number;
-}): Promise<void> {
-  const sourceDate = (input.session.matchedWorkout?.startAt
-    ?? input.session.webStartedAt
-    ?? input.session.createdAt).slice(0, 10);
-  await recordExperimentalStrengthEnergyShadow(input);
-  await publishActiveEnergyChangesV1();
-  await recordExperimentalStrengthGlycogenDemandShadow(input);
+  deferUnifiedPublication?: boolean;
+  publicationBlockSourceKeys?: readonly string[];
+}): Promise<TrainingShadowRefreshResultV1> {
+  const lifecycle = new PhysiologyV7PersistenceRepository();
+  const publicationBlockSourceKeys = [...new Set([
+    String(input.session.id),
+    ...(input.publicationBlockSourceKeys ?? []),
+  ])];
+  const blockTokens = (await Promise.all(publicationBlockSourceKeys.map(async (sourceKey) => ({
+    sourceKey,
+    token: await lifecycle.readUnifiedPublicationBlockToken({
+      profileId: input.profileId, source: "training", sourceKey,
+    }),
+  })))).filter((entry): entry is { sourceKey: string; token: { revision: number; fromDate: string } } => entry.token !== null);
+  let blockToken = blockTokens.find(({ sourceKey }) => sourceKey === String(input.session.id))?.token ?? null;
+  const currentSession = await new TrainingRepository(prisma).getSession(input.session.id, input.profileId);
+  if (currentSession === null) throw new Error("training source disappeared before dependent-shadow refresh");
+  const currentInput = { session: currentSession, profileId: input.profileId };
+  const relativeMuscleEventAt = currentSession.matchedWorkout?.startAt
+    ?? currentSession.effectiveAccountingAt
+    ?? currentSession.webStartedAt
+    ?? currentSession.createdAt;
+  const sourceDate = await trainingModelDate(input.profileId, relativeMuscleEventAt);
+  const refreshFromDate = blockTokens.reduce(
+    (earliest, { token }) => token.fromDate < earliest ? token.fromDate : earliest,
+    sourceDate,
+  );
+  await recordExperimentalStrengthEnergyShadow(currentInput);
+  // Keep production current before rebuilding dependent shadows, but defer
+  // Unified publication until this full shadow chain has completed.
+  const production = await recalculateActiveEnergyChangesV1();
+  if (production === null) {
+    throw new Error("production model is unavailable after completed training source update");
+  }
+  const clearBlockTokens = await captureTrainingPublicationBlocksAfterMaterialization({
+    profileId: input.profileId,
+    session: currentSession,
+    sourceKeys: publicationBlockSourceKeys,
+    initialTokens: blockTokens,
+    refreshedFromDate: refreshFromDate,
+  });
+  blockToken = clearBlockTokens.find(({ sourceKey }) => sourceKey === String(input.session.id))?.token ?? null;
+  await recordExperimentalStrengthGlycogenDemandShadow(currentInput);
   // State is replayed from the edited session's calendar date through the
   // durable suffix, so a historical diary/workout correction cannot leave
   // dependent glycogen rows current-looking but stale.
-  await recordExperimentalGlycogenStateShadow({ date: sourceDate, profileId: input.profileId });
-  const relativeMuscleEventAt = input.session.matchedWorkout?.startAt ?? input.session.webStartedAt;
+  await recordExperimentalGlycogenStateShadow({ date: refreshFromDate, profileId: input.profileId });
   let relativeMuscleModelDate: string | undefined;
   if (relativeMuscleEventAt) {
-    const dirty = await invalidateUnifiedRelativeMuscleSuffixV1({ profileId: input.profileId, fromInstant: new Date(relativeMuscleEventAt) });
+    const fromInstant = refreshFromDate === sourceDate
+      ? new Date(relativeMuscleEventAt)
+      : await trainingModelDateStartInstant(input.profileId, refreshFromDate);
+    const dirty = await invalidateUnifiedRelativeMuscleSuffixV1({ profileId: input.profileId, fromInstant });
     relativeMuscleModelDate = dirty?.modelDate;
     await rebuildAuthoritativeRelativeMuscleTrajectory({
-      fromInstant: new Date(relativeMuscleEventAt),
+      fromInstant,
       profileId: input.profileId,
     });
   }
   await recordExperimentalFfmRetentionShadowForSession({
-    sessionId: input.session.id,
+    sessionId: currentSession.id,
     profileId: input.profileId,
   });
   await recordExperimentalLocalHypertrophyResponseShadowForSession({
-    sessionId: input.session.id,
+    sessionId: currentSession.id,
     profileId: input.profileId,
   });
-  await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: input.profileId, fromDate: relativeMuscleModelDate });
+  if (!input.deferUnifiedPublication) {
+    for (const { sourceKey, token } of clearBlockTokens) {
+      if (!await lifecycle.clearUnifiedPublicationBlock({
+        profileId: input.profileId,
+        source: "training",
+        sourceKey,
+        expectedRevision: token.revision,
+        expectedFromDate: token.fromDate,
+      })) {
+        throw new Error("training source changed during dependent-shadow refresh; Unified remains blocked");
+      }
+    }
+    if (!await deferTrainingPublicationIfAnotherSourceIsBlocked(lifecycle, input.profileId, clearBlockTokens)) {
+      try {
+        await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: input.profileId, fromDate: relativeMuscleModelDate });
+      } catch (error) {
+        await restoreTrainingPublicationFencesWhenUnblocked(lifecycle, input.profileId, clearBlockTokens);
+        throw error;
+      }
+    }
+  }
+  return {
+    blockRevision: blockToken?.revision ?? null,
+    blockFromDate: blockToken?.fromDate ?? null,
+    modelDate: relativeMuscleModelDate,
+  };
 }
 
 async function recordExperimentalStrengthShadowsBySessionId(input: {
   sessionId: number;
   profileId: number;
-}): Promise<void> {
-  const session = await new TrainingRepository(prisma).getSession(input.sessionId, input.profileId);
-  await recordExperimentalStrengthEnergyShadowBySessionId(input);
+  refreshAccounting?: boolean;
+  deferUnifiedPublication?: boolean;
+  clearTrainingFenceAfterDependencyRefresh?: boolean;
+}): Promise<TrainingShadowRefreshResultV1> {
+  const lifecycle = new PhysiologyV7PersistenceRepository();
+  const refresh = await recordExperimentalStrengthEnergyShadowBySessionId({
+    sessionId: input.sessionId,
+    profileId: input.profileId,
+    ...(input.refreshAccounting === undefined ? {} : { refreshAccounting: input.refreshAccounting }),
+  });
+  const session = refresh.session;
+  if (session === null) throw new Error("training source disappeared before dependent-shadow refresh");
+  const initialBlockToken = refresh.publicationBlockToken;
+  const production = await recalculateActiveEnergyChangesV1();
+  if (production === null) throw new Error("production model is unavailable after completed training source update");
+  const relativeMuscleEventAt = session.matchedWorkout?.startAt
+    ?? session.effectiveAccountingAt
+    ?? session.webStartedAt
+    ?? session.createdAt;
+  const sourceDate = await trainingModelDate(input.profileId, relativeMuscleEventAt);
+  const refreshFromDate = initialBlockToken !== null && initialBlockToken.fromDate < sourceDate
+    ? initialBlockToken.fromDate
+    : sourceDate;
+  const clearBlockTokens = await captureTrainingPublicationBlocksAfterMaterialization({
+    profileId: input.profileId,
+    session,
+    sourceKeys: [String(input.sessionId)],
+    initialTokens: initialBlockToken === null ? [] : [{ sourceKey: String(input.sessionId), token: initialBlockToken }],
+    refreshedFromDate: refreshFromDate,
+  });
+  const currentBlockToken = clearBlockTokens[0]?.token ?? null;
   await recordExperimentalStrengthGlycogenDemandShadowBySessionId(input);
-  if (session !== null) {
-    const sourceDate = (session.matchedWorkout?.startAt ?? session.webStartedAt ?? session.createdAt).slice(0, 10);
-    await recordExperimentalGlycogenStateShadow({ date: sourceDate, profileId: input.profileId });
+  if (currentBlockToken !== null && currentBlockToken.fromDate < refreshFromDate) {
+    throw new Error("training publication retry fence moved earlier than the refreshed dependency range");
   }
-  const relativeMuscleEventAt = session?.matchedWorkout?.startAt ?? session?.webStartedAt ?? null;
+  await recordExperimentalGlycogenStateShadow({ date: refreshFromDate, profileId: input.profileId });
   let relativeMuscleModelDate: string | undefined;
   if (relativeMuscleEventAt) {
-    const dirty = await invalidateUnifiedRelativeMuscleSuffixV1({ profileId: input.profileId, fromInstant: new Date(relativeMuscleEventAt) });
+    const fromInstant = refreshFromDate === sourceDate
+      ? new Date(relativeMuscleEventAt)
+      : await trainingModelDateStartInstant(input.profileId, refreshFromDate);
+    const dirty = await invalidateUnifiedRelativeMuscleSuffixV1({ profileId: input.profileId, fromInstant });
     relativeMuscleModelDate = dirty?.modelDate;
     await rebuildAuthoritativeRelativeMuscleTrajectory({
-      fromInstant: new Date(relativeMuscleEventAt),
+      fromInstant,
       profileId: input.profileId,
     });
   }
   await recordExperimentalFfmRetentionShadowForSession(input);
   await recordExperimentalLocalHypertrophyResponseShadowForSession(input);
-  await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: input.profileId, fromDate: relativeMuscleModelDate });
+  // Event-relocation callers defer clearing until their additional old-date
+  // relative-muscle refresh is complete. Weight-date callers have no such
+  // outer dependency phase, so they explicitly clear after this full refresh
+  // while the day/Health fence still protects shared publication.
+  const clearTrainingFence = input.deferUnifiedPublication !== true
+    || input.clearTrainingFenceAfterDependencyRefresh === true;
+  if (clearTrainingFence && currentBlockToken !== null && !await lifecycle.clearUnifiedPublicationBlock({
+    profileId: input.profileId,
+    source: "training",
+    sourceKey: String(input.sessionId),
+    expectedRevision: currentBlockToken.revision,
+    expectedFromDate: currentBlockToken.fromDate,
+  })) throw new StaleStrengthEnergySourceError();
+  if (!input.deferUnifiedPublication) {
+    const clearedFences = currentBlockToken === null
+      ? []
+      : [{ sourceKey: String(input.sessionId), token: currentBlockToken }];
+    if (await deferTrainingPublicationIfAnotherSourceIsBlocked(lifecycle, input.profileId, clearedFences)) {
+      return {
+        blockRevision: currentBlockToken?.revision ?? null,
+        blockFromDate: currentBlockToken?.fromDate ?? null,
+        modelDate: relativeMuscleModelDate,
+      };
+    }
+    try {
+      await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: input.profileId, fromDate: relativeMuscleModelDate });
+    } catch (error) {
+      await restoreTrainingPublicationFencesWhenUnblocked(lifecycle, input.profileId, clearedFences);
+      throw error;
+    }
+  }
+  return {
+    blockRevision: currentBlockToken?.revision ?? null,
+    blockFromDate: currentBlockToken?.fromDate ?? null,
+    modelDate: relativeMuscleModelDate,
+  };
+}
+
+/** Refreshes each affected strength session through the full dependency/fence lifecycle after a weight-source edit. */
+export async function recordExperimentalStrengthShadowsForWeightDate(input: {
+  date: string;
+  profileId?: number;
+  refreshHistoricalAsOfFallback?: boolean;
+}): Promise<void> {
+  const profileId = input.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
+  const sessionIds = await listExperimentalStrengthEnergySessionsForWeightDate({
+    date: input.date,
+    profileId,
+    ...(input.refreshHistoricalAsOfFallback === undefined
+      ? {} : { refreshHistoricalAsOfFallback: input.refreshHistoricalAsOfFallback }),
+  });
+  for (const sessionId of sessionIds) {
+    await recordExperimentalStrengthShadowsBySessionId({
+      sessionId,
+      profileId,
+      ...(input.refreshHistoricalAsOfFallback === undefined
+        ? {} : { refreshAccounting: input.refreshHistoricalAsOfFallback }),
+      deferUnifiedPublication: true,
+      clearTrainingFenceAfterDependencyRefresh: true,
+    });
+  }
 }
 
 function isStrengthWorkout(type: string): boolean {
@@ -233,6 +452,82 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function logPhysiologyPublicationFailure(operation: string, error: unknown): void {
+  logEvent("warn", "training_unified_republication_failed", {
+    operation,
+    errorType: errorKind(error),
+  });
+}
+
+type ClearedTrainingPublicationFenceV1 = {
+  sourceKey: string;
+  token: { revision: number; fromDate: string };
+};
+
+async function restoreTrainingPublicationFencesWhenUnblocked(
+  lifecycle: PhysiologyV7PersistenceRepository,
+  profileId: number,
+  fences: readonly ClearedTrainingPublicationFenceV1[],
+): Promise<void> {
+  if (fences.length === 0) return;
+  let anotherBlockRemains = false;
+  try {
+    anotherBlockRemains = await lifecycle.hasUnifiedPublicationBlocks(profileId);
+  } catch {
+    // If the shared block read fails, restore this source's retry handle.
+  }
+  if (anotherBlockRemains) return;
+  for (const { sourceKey, token } of fences) {
+    await lifecycle.blockUnifiedPublication({
+      profileId,
+      source: "training",
+      sourceKey,
+      fromDate: token.fromDate,
+    });
+  }
+}
+
+async function deferTrainingPublicationIfAnotherSourceIsBlocked(
+  lifecycle: PhysiologyV7PersistenceRepository,
+  profileId: number,
+  clearedFences: readonly ClearedTrainingPublicationFenceV1[],
+): Promise<boolean> {
+  try {
+    return await lifecycle.hasUnifiedPublicationBlocks(profileId);
+  } catch (error) {
+    try {
+      await restoreTrainingPublicationFencesWhenUnblocked(lifecycle, profileId, clearedFences);
+    } catch (restoreError) {
+      throw new AggregateError(
+        [error, restoreError],
+        "Could not inspect shared Unified fences or restore the training retry fence.",
+      );
+    }
+    throw error;
+  }
+}
+
+async function trainingModelDate(profileId: number, eventAt: string): Promise<string> {
+  const instant = new Date(eventAt);
+  if (!Number.isFinite(instant.getTime())) throw new Error("training event instant is invalid");
+  const episodes = await prisma.modelEpisode.findMany({
+    where: { profileId },
+    orderBy: [{ startDate: "asc" }, { id: "asc" }],
+    select: { id: true, startDate: true, timezone: true, active: true },
+  });
+  return episodeTimeContextForInstantV1(episodes, instant).date;
+}
+
+async function trainingModelDateStartInstant(profileId: number, modelDate: string): Promise<Date> {
+  const episodes = await prisma.modelEpisode.findMany({
+    where: { profileId },
+    orderBy: [{ startDate: "asc" }, { id: "asc" }],
+    select: { startDate: true, timezone: true },
+  });
+  const episode = [...episodes].reverse().find((candidate) => candidate.startDate <= modelDate);
+  return localDateTimeToInstant(modelDate, "00:00", episode?.timezone ?? DEFAULT_TIME_ZONE);
+}
+
 function persistedJson(config: LoadConfigV1 | null): Prisma.InputJsonValue | null {
   return config === null ? null : JSON.parse(JSON.stringify(config)) as Prisma.InputJsonValue;
 }
@@ -254,9 +549,77 @@ export class TrainingService {
   constructor(
     private readonly db: PrismaClient = prisma,
     private readonly repo: TrainingRepository = new TrainingRepository(db),
-    private readonly recordExperimentalShadow: (input: { session: StrengthSessionDto; profileId: number }) => Promise<void> =
+  private readonly recordExperimentalShadow: (input: {
+    session: StrengthSessionDto;
+    profileId: number;
+    deferUnifiedPublication?: boolean;
+    publicationBlockSourceKeys?: readonly string[];
+  }) => Promise<TrainingShadowRefreshResultV1 | void> =
       db === prisma ? recordExperimentalStrengthShadows : async () => {},
+    private readonly recordExperimentalShadowsBySessionId: (input: {
+      sessionId: number;
+      profileId: number;
+      deferUnifiedPublication?: boolean;
+    }) => Promise<TrainingShadowRefreshResultV1 | void> = recordExperimentalStrengthShadowsBySessionId,
   ) {}
+
+  private async unifiedPublicationStatus(profileId: number): Promise<ActiveEnergyPublicationStatusV1> {
+    const current = await this.db.physiologyV7Lifecycle.findUnique({
+      where: { profileId },
+      select: {
+        invalidationGeneration: true,
+        productionStaleFromDate: true,
+        productionPublishedGeneration: true,
+        unifiedPublishedGeneration: true,
+        unifiedPublicationBlockedFromDate: true,
+        unifiedPublishedRolloutEpoch: true,
+        unifiedRolloutEpoch: true,
+      },
+    });
+    return isUnifiedGenerationCurrentV1(current)
+      && current.unifiedPublishedRolloutEpoch === current.unifiedRolloutEpoch
+      ? "current"
+      : "stale";
+  }
+
+  private async refreshDeletedCompletedSessionPublication(input: {
+    sessionId: number;
+    profileId: number;
+    fromInstant: Date;
+    blockToken: { revision: number; fromDate: string };
+  }): Promise<ActiveEnergyPublicationStatusV1> {
+    const dirty = await invalidateUnifiedRelativeMuscleSuffixV1({
+      profileId: input.profileId,
+      fromInstant: input.fromInstant,
+    });
+    if (dirty === null) throw new Error("deleted completed training session has no resolvable model-day boundary");
+    const production = await recalculateActiveEnergyChangesV1();
+    if (production === null) throw new Error("production shadows are unavailable after completed training deletion");
+    const refreshFromDate = input.blockToken.fromDate < dirty.modelDate
+      ? input.blockToken.fromDate
+      : dirty.modelDate;
+    await recordExperimentalGlycogenStateShadow({ date: refreshFromDate, profileId: input.profileId });
+    await rebuildAuthoritativeRelativeMuscleTrajectory({ fromInstant: input.fromInstant, profileId: input.profileId });
+    const lifecycle = new PhysiologyV7PersistenceRepository();
+    if (!await lifecycle.clearUnifiedPublicationBlock({
+      profileId: input.profileId,
+      source: "training",
+      sourceKey: String(input.sessionId),
+      expectedRevision: input.blockToken.revision,
+      expectedFromDate: input.blockToken.fromDate,
+    })) throw new Error("training source changed during dependent-shadow refresh; Unified remains blocked");
+    const clearedFence = { sourceKey: String(input.sessionId), token: input.blockToken };
+    if (await deferTrainingPublicationIfAnotherSourceIsBlocked(lifecycle, input.profileId, [clearedFence])) {
+      return "stale";
+    }
+    try {
+      await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: input.profileId, fromDate: refreshFromDate });
+    } catch (error) {
+      await restoreTrainingPublicationFencesWhenUnblocked(lifecycle, input.profileId, [clearedFence]);
+      throw error;
+    }
+    return this.unifiedPublicationStatus(input.profileId);
+  }
 
   listCatalog(options?: { includeInactive?: boolean; profileId?: number }) {
     return this.repo.listCatalog({
@@ -374,11 +737,21 @@ export class TrainingService {
     profileId = DEFAULT_TRAINING_PROFILE_ID,
     idempotencyKey?: string,
   ) {
+    const before = await this.repo.getSession(sessionId, profileId);
+    if (!before) throw new SessionNotFoundError();
     const revision = await this.repo.materializeAccounting({
       sessionId, profileId, mode: "ordinary", idempotencyKey,
     });
     const session = await this.repo.getSession(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
+    await this.refreshCompletedAccountingPublication(
+      session,
+      before.materializationState === "current"
+        ? before.activeEnergyMassReference?.snapshotRevision ?? null
+        : null,
+      revision,
+      profileId,
+    );
     return { ...session, snapshotRevision: revision };
   }
 
@@ -387,12 +760,54 @@ export class TrainingService {
     profileId = DEFAULT_TRAINING_PROFILE_ID,
     idempotencyKey?: string,
   ) {
+    const before = await this.repo.getSession(sessionId, profileId);
+    if (!before) throw new SessionNotFoundError();
     const revision = await this.repo.materializeAccounting({
       sessionId, profileId, mode: "refresh", idempotencyKey,
     });
     const session = await this.repo.getSession(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
+    await this.refreshCompletedAccountingPublication(
+      session,
+      before.materializationState === "current"
+        ? before.activeEnergyMassReference?.snapshotRevision ?? null
+        : null,
+      revision,
+      profileId,
+    );
     return { ...session, snapshotRevision: revision };
+  }
+
+  private async refreshCompletedAccountingPublication(
+    session: StrengthSessionDto,
+    previousSnapshotRevision: number | null,
+    snapshotRevision: number,
+    profileId: number,
+  ): Promise<void> {
+    if (this.db !== prisma || session.status !== SESSION_STATUS.COMPLETED) return;
+    if (previousSnapshotRevision !== null && snapshotRevision === previousSnapshotRevision) {
+      const lifecycle = await this.db.physiologyV7Lifecycle.findUnique({
+        where: { profileId },
+        select: {
+          invalidationGeneration: true,
+          productionStaleFromDate: true,
+          productionPublishedGeneration: true,
+          unifiedPublishedGeneration: true,
+          unifiedPublicationBlockedFromDate: true,
+          unifiedPublishedRolloutEpoch: true,
+          unifiedRolloutEpoch: true,
+        },
+      });
+      if (
+        isUnifiedGenerationCurrentV1(lifecycle)
+        && lifecycle.unifiedPublishedRolloutEpoch === lifecycle.unifiedRolloutEpoch
+      ) return;
+    }
+    // Materializing a completed session changes a source consumed by
+    // production Active Energy and Unified. The repository has already
+    // invalidated currentness transactionally; refresh the dependent chain
+    // before reporting the new accounting snapshot as ready.
+    await this.recordExperimentalShadow({ session, profileId });
   }
 
   async updateSessionAccountingContext(
@@ -403,6 +818,12 @@ export class TrainingService {
     if (input.timeZone !== undefined && !isValidTimeZone(input.timeZone)) {
       throw new SetValidationError("invalid session accounting timezone");
     }
+    const before = await this.repo.getSession(sessionId, profileId);
+    if (!before) throw new SessionNotFoundError();
+    const previousEventAt = before.matchedWorkout?.startAt
+      ?? before.effectiveAccountingAt
+      ?? before.webStartedAt
+      ?? before.createdAt;
     await this.repo.updateAccountingContext({
       sessionId,
       profileId,
@@ -411,6 +832,23 @@ export class TrainingService {
     });
     const session = await this.repo.getSession(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
+    if (this.db === prisma && session.status === SESSION_STATUS.COMPLETED) {
+      try {
+        const shadowRefresh = await this.recordExperimentalShadowsBySessionId({
+          sessionId,
+          profileId,
+          deferUnifiedPublication: true,
+        });
+        await this.refreshRelativeMuscleAfterEventChange(sessionId, profileId, previousEventAt, {
+          blockRevision: shadowRefresh && "blockRevision" in shadowRefresh ? shadowRefresh.blockRevision : null,
+          blockFromDate: shadowRefresh && "blockFromDate" in shadowRefresh ? shadowRefresh.blockFromDate : null,
+          publicationFromDate: shadowRefresh && "modelDate" in shadowRefresh ? shadowRefresh.modelDate : undefined,
+        });
+      } catch (error) {
+        logPhysiologyPublicationFailure("training-accounting-context-republish", error);
+        throw error;
+      }
+    }
     return session;
   }
 
@@ -419,17 +857,26 @@ export class TrainingService {
     if (typeof this.repo.finishInactiveSessions !== "function") return;
     const expired = await this.repo.finishInactiveSessions({ profileId, now });
     for (const candidate of expired) {
-      await this.repo.materializeAccounting({
-        sessionId: candidate.id,
-        profileId,
-        mode: "ordinary",
-        idempotencyKey: `inactivity-finalize:${candidate.id}:${candidate.endAt.toISOString()}`,
-        finalizeAt: candidate.endAt,
-      }).catch((error) => {
+      let snapshotRevision: number | null = null;
+      try {
+        snapshotRevision = await this.repo.materializeAccounting({
+          sessionId: candidate.id,
+          profileId,
+          mode: "ordinary",
+          idempotencyKey: `inactivity-finalize:${candidate.id}:${candidate.endAt.toISOString()}`,
+          finalizeAt: candidate.endAt,
+        });
+      } catch (error) {
         // If another request finalized it, the idempotent operation/current
         // snapshot is authoritative; otherwise preserve the active session.
         if (!(error instanceof StaleAccountingCandidateError)) throw error;
-      });
+      }
+      if (snapshotRevision !== null && this.db === prisma) {
+        const session = await this.repo.getSession(candidate.id, profileId);
+        if (session?.status === SESSION_STATUS.COMPLETED) {
+          await this.recordExperimentalShadow({ session, profileId });
+        }
+      }
     }
   }
 
@@ -513,7 +960,7 @@ export class TrainingService {
   async createSessionFromWorkout(
     input: CreateFromWorkoutInput,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
-  ): Promise<StrengthSessionDto> {
+  ): Promise<StrengthSessionDto & { modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }> {
     const { session } = await this.createOrGetSessionFromWorkout(input, profileId);
     return session;
   }
@@ -557,7 +1004,7 @@ export class TrainingService {
   private async createOrGetSessionFromWorkout(
     input: CreateFromWorkoutInput,
     profileId: number,
-  ): Promise<{ session: StrengthSessionDto; created: boolean }> {
+  ): Promise<{ session: StrengthSessionDto & { modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }; created: boolean }> {
     const workout = await this.repo.findWorkoutById(input.workoutId);
     if (!workout) throw new WorkoutNotFoundError();
     if (!isStrengthWorkout(workout.type)) throw new WorkoutNotEligibleError();
@@ -566,7 +1013,16 @@ export class TrainingService {
     if (workout.matchedDiarySession) {
       const existing = await this.repo.getSession(workout.matchedDiarySession.id, profileId);
       if (!existing) throw new WorkoutAlreadyMatchedError();
-      return { session: existing, created: false };
+      let modelPublicationStatus = await this.publicationStatusForCurrentDatabase(profileId);
+      if (existing.status === SESSION_STATUS.COMPLETED && modelPublicationStatus === "stale") {
+        modelPublicationStatus = await this.refreshUnifiedAfterCompletedSessionMutation(
+          existing.id, profileId, "retry-existing-retrospective-session-publication",
+        );
+      }
+      return {
+        session: { ...existing, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) },
+        created: false,
+      };
     }
 
     const program = await this.repo.loadProgramVersion({
@@ -599,20 +1055,32 @@ export class TrainingService {
           )),
         })),
       });
+      // Retrospective sessions begin without a persisted accounting snapshot.
+      // Materialize it before deriving the strength-energy shadow so its
+      // source fingerprint and MET fallback use the same committed accounting
+      // state as later edits and ordinary completed-session publication.
+      await this.repo.materializeAccounting({ sessionId: created.id, profileId, mode: "ordinary" });
+      const materialized = await this.repo.getSession(created.id, profileId);
+      if (!materialized) throw new SessionNotFoundError();
       noteTrainingSourceChange({
         sessionId: created.id,
         revision: created.revision,
         workoutLocalDate: workoutLocalDate(workout.startAt),
         reason: "retrospective_create",
       });
-      if (this.db === prisma) {
-        await rebuildAuthoritativeRelativeMuscleTrajectory({
-          fromInstant: new Date(workout.startAt),
-          profileId,
-        }).catch(() => {});
-        await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId }).catch(() => {});
+      let modelPublicationStatus: ActiveEnergyPublicationStatusV1 | undefined;
+      try {
+        await this.recordExperimentalShadow({ session: materialized, profileId });
+        modelPublicationStatus = await this.publicationStatusForCurrentDatabase(profileId);
+      } catch (error) {
+        if (error instanceof StaleStrengthEnergySourceError) throw error;
+        logPhysiologyPublicationFailure("retrospective-session-create", error);
+        modelPublicationStatus = this.db === prisma ? "stale" : undefined;
       }
-      return { session: created, created: true };
+      return {
+        session: { ...materialized, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) },
+        created: true,
+      };
     } catch (error) {
       if (isUniqueViolation(error)) throw new WorkoutAlreadyMatchedError();
       throw error;
@@ -628,7 +1096,7 @@ export class TrainingService {
     sessionId: number,
     input: ChangeSessionProgramInput,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
-  ): Promise<StrengthSessionDto> {
+  ): Promise<StrengthSessionDto & { modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }> {
     const session = await this.repo.findSessionForEdit(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
     assertSessionEditable(session.status);
@@ -682,23 +1150,31 @@ export class TrainingService {
     noteTrainingSourceChange({
       sessionId,
       revision,
-      workoutLocalDate: workoutLocalDate(session.matchedWorkout?.startAt),
+      workoutLocalDate: workoutLocalDate(
+        session.matchedWorkout?.startAt ? new Date(session.matchedWorkout.startAt) : undefined,
+      ),
       reason: "program_change",
     });
-    let relativeMuscleModelDate: string | undefined;
+    let modelPublicationStatus: ActiveEnergyPublicationStatusV1 | undefined;
     if (session.status === SESSION_STATUS.COMPLETED) {
-      relativeMuscleModelDate = await this.refreshRelativeMuscleAfterSessionMutation(sessionId, profileId).catch(() => undefined) ?? undefined;
+      modelPublicationStatus = await this.refreshUnifiedAfterCompletedSessionMutation(
+        sessionId, profileId, "completed-session-program-change",
+      );
+    } else {
+      await this.refreshTransientWaterAfterMutation(profileId).catch(() => {});
     }
-    await this.refreshTransientWaterAfterMutation(profileId, relativeMuscleModelDate).catch(() => {});
 
-    return this.requireSession(sessionId, profileId);
+    return {
+      ...await this.requireSession(sessionId, profileId),
+      ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }),
+    };
   }
 
   async addSessionExercise(
     sessionId: number,
     input: CreateSessionExerciseInput,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
-  ): Promise<StrengthSessionDto> {
+  ): Promise<StrengthSessionDto & { modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }> {
     const session = await this.repo.findSessionForEdit(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
     assertSessionEditable(session.status);
@@ -731,8 +1207,11 @@ export class TrainingService {
       orderedExerciseIds: session.exercises.map((exercise) => exercise.id),
     });
 
-    await this.noteExerciseMutation(sessionId, revision, session.matchedWorkout?.startAt, session.status, profileId);
-    return this.requireSession(sessionId, profileId);
+    const modelPublicationStatus = await this.noteExerciseMutation(sessionId, revision, profileId);
+    return {
+      ...await this.requireSession(sessionId, profileId),
+      ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }),
+    };
   }
 
   async updateSessionExercise(
@@ -740,7 +1219,7 @@ export class TrainingService {
     exerciseId: number,
     input: UpdateSessionExerciseInput,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
-  ): Promise<StrengthSessionDto> {
+  ): Promise<StrengthSessionDto & { modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }> {
     const session = await this.repo.findSessionForEdit(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
     assertSessionEditable(session.status);
@@ -770,8 +1249,11 @@ export class TrainingService {
       orderedExerciseIds: session.exercises.map((item) => item.id),
     });
 
-    await this.noteExerciseMutation(sessionId, revision, session.matchedWorkout?.startAt, session.status, profileId);
-    return this.requireSession(sessionId, profileId);
+    const modelPublicationStatus = await this.noteExerciseMutation(sessionId, revision, profileId);
+    return {
+      ...await this.requireSession(sessionId, profileId),
+      ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }),
+    };
   }
 
   async deleteSessionExercise(
@@ -779,13 +1261,26 @@ export class TrainingService {
     exerciseId: number,
     input: DeleteSessionExerciseInput = {},
     profileId = DEFAULT_TRAINING_PROFILE_ID,
-  ): Promise<StrengthSessionDto> {
+  ): Promise<StrengthSessionDto & { modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }> {
     const session = await this.repo.findSessionForEdit(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
     assertSessionEditable(session.status);
 
     const exercise = await this.repo.findSessionExerciseDetail(sessionId, exerciseId, profileId);
-    if (!exercise) throw new SessionExerciseNotFoundError();
+    if (!exercise) {
+      const publicationBlockSourceKey = trainingChildDeletionPublicationSourceKey("exercise", sessionId, exerciseId);
+      const retryStatus = await this.retryDeletedChildPublication({
+        sessionId,
+        profileId,
+        publicationBlockSourceKey,
+        operation: "completed-session-exercise-delete-retry",
+      });
+      if (retryStatus === undefined) throw new SessionExerciseNotFoundError();
+      return {
+        ...await this.requireSession(sessionId, profileId),
+        modelPublicationStatus: retryStatus,
+      };
+    }
     // Recorded sets are user-entered history: never drop them without consent.
     if (exercise.sets.length > 0 && !input.confirm) throw new ExerciseHasSetsError();
 
@@ -795,15 +1290,23 @@ export class TrainingService {
       orderedExerciseIds: session.exercises.map((item) => item.id),
     });
 
-    await this.noteExerciseMutation(sessionId, revision, session.matchedWorkout?.startAt, session.status, profileId);
-    return this.requireSession(sessionId, profileId);
+    const modelPublicationStatus = await this.noteExerciseMutation(
+      sessionId,
+      revision,
+      profileId,
+      trainingChildDeletionPublicationSourceKey("exercise", sessionId, exerciseId),
+    );
+    return {
+      ...await this.requireSession(sessionId, profileId),
+      ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }),
+    };
   }
 
   async reorderSessionExercises(
     sessionId: number,
     input: ReorderSessionExercisesInput,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
-  ): Promise<StrengthSessionDto> {
+  ): Promise<StrengthSessionDto & { modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }> {
     const session = await this.repo.findSessionForEdit(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
     assertSessionEditable(session.status);
@@ -821,8 +1324,11 @@ export class TrainingService {
       orderedExerciseIds: requested,
     });
 
-    await this.noteExerciseMutation(sessionId, revision, session.matchedWorkout?.startAt, session.status, profileId);
-    return this.requireSession(sessionId, profileId);
+    const modelPublicationStatus = await this.noteExerciseMutation(sessionId, revision, profileId);
+    return {
+      ...await this.requireSession(sessionId, profileId),
+      ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }),
+    };
   }
 
   async createSet(
@@ -830,7 +1336,7 @@ export class TrainingService {
     exerciseId: number,
     input: CreateSetInput,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
-  ): Promise<StrengthSetDto> {
+  ): Promise<StrengthSetDto & { modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }> {
     const exercise = await this.repo.findSessionExercise(sessionId, exerciseId, profileId);
     if (!exercise) throw new SessionExerciseNotFoundError();
     if (
@@ -869,8 +1375,8 @@ export class TrainingService {
         completedAt: input.completedAt ? new Date(input.completedAt) : new Date(),
         loadAccountingOverride: override === null ? null : JSON.parse(JSON.stringify(override.data)) as Prisma.InputJsonValue,
       });
-      await this.noteSetMutation(exercise.session, profileId);
-      return created;
+      const modelPublicationStatus = await this.noteSetMutation(sessionId, profileId);
+      return { ...created, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) };
     } catch (error) {
       if (isUniqueViolation(error)) {
         throw new SetValidationError("setNumber already exists for this exercise");
@@ -884,7 +1390,7 @@ export class TrainingService {
     setId: number,
     input: UpdateSetInput,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
-  ): Promise<StrengthSetDto> {
+  ): Promise<StrengthSetDto & { modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }> {
     const existing = await this.repo.findSetForSession(setId, sessionId, profileId);
     if (!existing) throw new SetNotFoundError();
     if (
@@ -949,17 +1455,29 @@ export class TrainingService {
         : JSON.parse(JSON.stringify(override.data)) as Prisma.InputJsonValue,
     });
     if (!updated) throw new SetNotFoundError();
-    await this.noteSetMutation(existing.sessionExercise.session, profileId);
-    return updated;
+    const modelPublicationStatus = await this.noteSetMutation(sessionId, profileId);
+    return { ...updated, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) };
   }
 
   async deleteSet(
     sessionId: number,
     setId: number,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
-  ): Promise<void> {
+  ): Promise<{ modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }> {
     const existing = await this.repo.findSetForSession(setId, sessionId, profileId);
-    if (!existing) throw new SetNotFoundError();
+    if (!existing) {
+      const session = await this.repo.getSession(sessionId, profileId);
+      if (!session) throw new SessionNotFoundError();
+      if (session.status !== SESSION_STATUS.COMPLETED) throw new SetNotFoundError();
+      const retryStatus = await this.retryDeletedChildPublication({
+        sessionId,
+        profileId,
+        publicationBlockSourceKey: trainingChildDeletionPublicationSourceKey("set", sessionId, setId),
+        operation: "completed-session-set-delete-retry",
+      });
+      if (retryStatus === undefined) throw new SetNotFoundError();
+      return { modelPublicationStatus: retryStatus };
+    }
     if (
       existing.sessionExercise.session.status !== SESSION_STATUS.ACTIVE
       && existing.sessionExercise.session.status !== SESSION_STATUS.COMPLETED
@@ -968,7 +1486,12 @@ export class TrainingService {
       throw new SessionNotFoundError();
     }
     await this.repo.deleteSet(setId, sessionId, profileId);
-    await this.noteSetMutation(existing.sessionExercise.session, profileId);
+    const modelPublicationStatus = await this.noteSetMutation(
+      sessionId,
+      profileId,
+      trainingChildDeletionPublicationSourceKey("set", sessionId, setId),
+    );
+    return { ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) };
   }
 
   async getExerciseHistory(
@@ -989,12 +1512,14 @@ export class TrainingService {
   async finishSession(
     sessionId: number,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
-  ): Promise<StrengthSessionDto> {
+  ): Promise<StrengthSessionDto & { modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }> {
     const session = await this.repo.getSession(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
 
     if (session.status === SESSION_STATUS.COMPLETED) {
-      const previousRelativeMuscleEventAt = session.matchedWorkout?.startAt ?? session.webStartedAt;
+      const previousRelativeMuscleEventAt = session.matchedWorkout?.startAt
+        ?? session.effectiveAccountingAt
+        ?? session.webStartedAt;
       // Idempotent finish: re-run matcher only while still PENDING/AUTO-eligible.
       // Retrospective sessions are already linked and never re-matched.
       if (
@@ -1009,13 +1534,39 @@ export class TrainingService {
       if (!refreshed) throw new SessionNotFoundError();
       // Keep the shadow dependency chain ordered; its failure remains isolated
       // from the completed-session result.
-      await this.recordExperimentalShadow({ session: refreshed, profileId }).catch(() => {});
-      await this.refreshRelativeMuscleAfterEventChange(
-        sessionId,
-        profileId,
-        previousRelativeMuscleEventAt,
-      ).catch(() => {});
-      return refreshed;
+      let publicationDependenciesReady = true;
+      let shadowRefresh: TrainingShadowRefreshResultV1 | void = undefined;
+      try {
+        shadowRefresh = await this.recordExperimentalShadow({
+          session: refreshed, profileId, deferUnifiedPublication: true,
+        });
+      } catch (error) {
+        if (error instanceof StaleStrengthEnergySourceError) throw error;
+        publicationDependenciesReady = false;
+        logPhysiologyPublicationFailure("completed-session-republish", error);
+      }
+      let modelPublicationStatus: ActiveEnergyPublicationStatusV1 | undefined;
+      if (publicationDependenciesReady) {
+        try {
+          await this.refreshRelativeMuscleAfterEventChange(
+            sessionId,
+            profileId,
+            previousRelativeMuscleEventAt,
+            {
+              blockRevision: shadowRefresh && "blockRevision" in shadowRefresh ? shadowRefresh.blockRevision : null,
+              blockFromDate: shadowRefresh && "blockFromDate" in shadowRefresh ? shadowRefresh.blockFromDate : null,
+              publicationFromDate: shadowRefresh && "modelDate" in shadowRefresh ? shadowRefresh.modelDate : undefined,
+            },
+          );
+          modelPublicationStatus = await this.publicationStatusForCurrentDatabase(profileId);
+        } catch (error) {
+          logPhysiologyPublicationFailure("completed-session-event-relocation", error);
+          modelPublicationStatus = this.db === prisma ? "stale" : undefined;
+        }
+      } else {
+        modelPublicationStatus = this.db === prisma ? "stale" : undefined;
+      }
+      return { ...refreshed, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) };
     }
 
     if (session.status !== SESSION_STATUS.ACTIVE) {
@@ -1033,8 +1584,16 @@ export class TrainingService {
     await this.repo.materializeAccounting({ sessionId, profileId, mode: "ordinary" });
     const refreshed = await this.repo.getSession(sessionId, profileId);
     if (!refreshed) throw new SessionNotFoundError();
-    await this.recordExperimentalShadow({ session: refreshed, profileId }).catch(() => {});
-    return refreshed;
+    let modelPublicationStatus: ActiveEnergyPublicationStatusV1 | undefined;
+    try {
+      await this.recordExperimentalShadow({ session: refreshed, profileId });
+      modelPublicationStatus = await this.publicationStatusForCurrentDatabase(profileId);
+    } catch (error) {
+      if (error instanceof StaleStrengthEnergySourceError) throw error;
+      logPhysiologyPublicationFailure("completed-session-republish", error);
+      modelPublicationStatus = this.db === prisma ? "stale" : undefined;
+    }
+    return { ...refreshed, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) };
   }
 
   async cancelSession(
@@ -1061,22 +1620,59 @@ export class TrainingService {
   async deleteDiarySession(
     sessionId: number,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
-  ): Promise<{ matchedWorkoutId: number | null }> {
+  ): Promise<{ matchedWorkoutId: number | null; modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }> {
     const session = await this.repo.getSession(sessionId, profileId);
-    if (!session) throw new SessionNotFoundError();
+    if (!session) {
+      if (this.db !== prisma) throw new SessionNotFoundError();
+      const lifecycle = new PhysiologyV7PersistenceRepository();
+      const blockToken = await lifecycle.readUnifiedPublicationBlockToken({
+        profileId, source: "training", sourceKey: String(sessionId),
+      });
+      if (blockToken === null) throw new SessionNotFoundError();
+      try {
+        const fromInstant = await trainingModelDateStartInstant(profileId, blockToken.fromDate);
+        return {
+          matchedWorkoutId: null,
+          modelPublicationStatus: await this.refreshDeletedCompletedSessionPublication({
+            sessionId, profileId, fromInstant, blockToken,
+          }),
+        };
+      } catch (error) {
+        logPhysiologyPublicationFailure("retry-deleted-completed-session-dependency-refresh", error);
+        return { matchedWorkoutId: null, modelPublicationStatus: "stale" };
+      }
+    }
     if (session.status === SESSION_STATUS.ACTIVE) {
       throw new SessionNotEditableError();
     }
     const matchedWorkoutId = session.matchedWorkoutId;
-    const relativeMuscleEventAt = session.matchedWorkout?.startAt ?? session.webStartedAt;
+    const relativeMuscleEventAt = session.matchedWorkout?.startAt
+      ?? session.effectiveAccountingAt
+      ?? session.webStartedAt
+      ?? session.createdAt;
     await this.repo.deleteDiarySession(sessionId, profileId);
-    if (this.db === prisma && relativeMuscleEventAt) {
-      const dirty = await this.invalidateAndRebuildRelativeMuscle(profileId, new Date(relativeMuscleEventAt)).catch(() => null);
-      if (dirty !== null) await this.refreshTransientWaterAfterMutation(profileId, dirty.modelDate).catch(() => {});
+    let modelPublicationStatus: ActiveEnergyPublicationStatusV1 | undefined;
+    if (this.db === prisma && session.status === SESSION_STATUS.COMPLETED) {
+      try {
+        const eventAt = new Date(relativeMuscleEventAt);
+        const lifecycle = new PhysiologyV7PersistenceRepository();
+        const blockToken = await lifecycle.readUnifiedPublicationBlockToken({
+          profileId, source: "training", sourceKey: String(sessionId),
+        });
+        if (blockToken === null) throw new Error("completed training deletion lost its durable publication fence");
+        modelPublicationStatus = await this.refreshDeletedCompletedSessionPublication({
+          sessionId, profileId, fromInstant: eventAt, blockToken,
+        });
+      } catch (error) {
+        logPhysiologyPublicationFailure("deleted-completed-session-dependency-refresh", error);
+        modelPublicationStatus = "stale";
+      }
+    } else if (this.db === prisma) {
+      await this.refreshTransientWaterAfterMutation(profileId).catch(() => {});
     } else {
       await this.refreshTransientWaterAfterMutation(profileId).catch(() => {});
     }
-    return { matchedWorkoutId };
+    return { matchedWorkoutId, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) };
   }
 
   listRecentSessions(options?: { limit?: number; offset?: number; profileId?: number }) {
@@ -1132,13 +1728,15 @@ export class TrainingService {
     sessionId: number,
     input: ManualMatchInput,
     profileId = DEFAULT_TRAINING_PROFILE_ID,
-  ): Promise<StrengthSessionDto> {
+  ): Promise<StrengthSessionDto & { modelPublicationStatus?: ActiveEnergyPublicationStatusV1 }> {
     const session = await this.repo.getSession(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
     if (session.status !== SESSION_STATUS.COMPLETED) {
       throw new SessionNotFoundError();
     }
-    const previousRelativeMuscleEventAt = session.matchedWorkout?.startAt ?? session.webStartedAt;
+    const previousRelativeMuscleEventAt = session.matchedWorkout?.startAt
+      ?? session.effectiveAccountingAt
+      ?? session.webStartedAt;
 
     if (input.workoutId === null) {
       await this.repo.applyMatchResult({
@@ -1178,13 +1776,39 @@ export class TrainingService {
     const refreshed = await this.repo.getSession(sessionId, profileId);
     if (!refreshed) throw new SessionNotFoundError();
     // A manual link can add Garmin diagnostic context after completion.
-    await this.recordExperimentalShadow({ session: refreshed, profileId }).catch(() => {});
-    await this.refreshRelativeMuscleAfterEventChange(
-      sessionId,
-      profileId,
-      previousRelativeMuscleEventAt,
-    ).catch(() => {});
-    return refreshed;
+    let publicationDependenciesReady = true;
+    let shadowRefresh: TrainingShadowRefreshResultV1 | void = undefined;
+    try {
+      shadowRefresh = await this.recordExperimentalShadow({
+        session: refreshed, profileId, deferUnifiedPublication: true,
+      });
+    } catch (error) {
+      if (error instanceof StaleStrengthEnergySourceError) throw error;
+      publicationDependenciesReady = false;
+      logPhysiologyPublicationFailure("manual-match-republish", error);
+    }
+    let modelPublicationStatus: ActiveEnergyPublicationStatusV1 | undefined;
+    if (publicationDependenciesReady) {
+      try {
+        await this.refreshRelativeMuscleAfterEventChange(
+          sessionId,
+          profileId,
+          previousRelativeMuscleEventAt,
+          {
+            blockRevision: shadowRefresh && "blockRevision" in shadowRefresh ? shadowRefresh.blockRevision : null,
+            blockFromDate: shadowRefresh && "blockFromDate" in shadowRefresh ? shadowRefresh.blockFromDate : null,
+            publicationFromDate: shadowRefresh && "modelDate" in shadowRefresh ? shadowRefresh.modelDate : undefined,
+          },
+        );
+        modelPublicationStatus = await this.publicationStatusForCurrentDatabase(profileId);
+      } catch (error) {
+        logPhysiologyPublicationFailure("manual-match-event-relocation", error);
+        modelPublicationStatus = this.db === prisma ? "stale" : undefined;
+      }
+    } else {
+      modelPublicationStatus = this.db === prisma ? "stale" : undefined;
+    }
+    return { ...refreshed, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) };
   }
 
   /**
@@ -1195,13 +1819,14 @@ export class TrainingService {
   async afterHealthSyncMatch(
     date: string,
     options: { profileId?: number; timezone?: string } = {},
-  ): Promise<void> {
+  ): Promise<boolean> {
     const profileId = options.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
     const timezone = options.timezone ?? DEFAULT_TIME_ZONE;
     const windowStart = localDateTimeToInstant(date, "00:00", timezone);
     const nextDay = new Date(windowStart.getTime() + 24 * 60 * 60_000);
     // Inclusive local day: [00:00, next 00:00)
     const windowEnd = nextDay;
+    let publicationDependenciesReady = true;
 
     const sessions = await this.repo.findPendingCompletedSessionsOverlapping({
       profileId,
@@ -1217,14 +1842,40 @@ export class TrainingService {
       await this.tryAutoMatchSession(session.id, profileId);
       if (this.db === prisma) {
         // A delayed sync may add Garmin diagnostic context after finishSession.
-        await recordExperimentalStrengthShadowsBySessionId({ sessionId: session.id, profileId }).catch(() => {});
-        await this.refreshRelativeMuscleAfterEventChange(
-          session.id,
-          profileId,
-          session.webStartedAt,
-        ).catch(() => {});
+        let sessionPublicationDependenciesReady = true;
+        let shadowRefresh: TrainingShadowRefreshResultV1 | void = undefined;
+        try {
+          shadowRefresh = await this.recordExperimentalShadowsBySessionId({
+            sessionId: session.id,
+            profileId,
+            deferUnifiedPublication: true,
+          });
+        } catch (error) {
+          sessionPublicationDependenciesReady = false;
+          publicationDependenciesReady = false;
+          logPhysiologyPublicationFailure("health-sync-strength-republish", error);
+        }
+        if (sessionPublicationDependenciesReady) {
+          try {
+            await this.refreshRelativeMuscleAfterEventChange(
+              session.id,
+              profileId,
+              session.webStartedAt,
+              {
+                deferUnifiedPublication: true,
+                blockRevision: shadowRefresh && "blockRevision" in shadowRefresh ? shadowRefresh.blockRevision : null,
+                blockFromDate: shadowRefresh && "blockFromDate" in shadowRefresh ? shadowRefresh.blockFromDate : null,
+                publicationFromDate: shadowRefresh && "modelDate" in shadowRefresh ? shadowRefresh.modelDate : undefined,
+              },
+            );
+          } catch (error) {
+            publicationDependenciesReady = false;
+            logPhysiologyPublicationFailure("health-sync-strength-republication", error);
+          }
+        }
       }
     }
+    return publicationDependenciesReady;
   }
 
   private async tryAutoMatchSession(
@@ -1322,57 +1973,130 @@ export class TrainingService {
   private async noteExerciseMutation(
     sessionId: number,
     revision: number,
-    workoutStartAt: Date | null | undefined,
-    status: string,
     profileId: number,
-  ): Promise<void> {
+    publicationBlockSourceKey?: string,
+  ): Promise<ActiveEnergyPublicationStatusV1 | undefined> {
+    const session = await this.repo.getSession(sessionId, profileId);
+    if (!session) throw new SessionNotFoundError();
     noteTrainingSourceChange({
       sessionId,
       revision,
-      workoutLocalDate: workoutLocalDate(workoutStartAt),
+      workoutLocalDate: workoutLocalDate(
+        session.matchedWorkout?.startAt ? new Date(session.matchedWorkout.startAt) : undefined,
+      ),
       reason: "exercise_mutation",
     });
-    let relativeMuscleModelDate: string | undefined;
-    if (status === SESSION_STATUS.COMPLETED) {
-      relativeMuscleModelDate = await this.refreshRelativeMuscleAfterSessionMutation(sessionId, profileId).catch(() => undefined) ?? undefined;
-    }
-    if (status === SESSION_STATUS.COMPLETED) {
-      await this.refreshTransientWaterAfterMutation(profileId, relativeMuscleModelDate).catch(() => {});
-    }
+    if (session.status !== SESSION_STATUS.COMPLETED) return undefined;
+    return this.refreshUnifiedAfterCompletedSessionMutation(
+      sessionId,
+      profileId,
+      "completed-session-exercise-change",
+      publicationBlockSourceKey === undefined ? [] : [publicationBlockSourceKey],
+    );
   }
 
   /**
    * Editing sets on a terminal diary session rewrites history, so bump the
    * durable revision for future rebuild fingerprints. Live ACTIVE logging does not.
    */
-  private async noteSetMutation(session: {
-    id: number;
-    status: string;
-    matchedWorkout?: { startAt: Date } | null;
-  }, profileId: number): Promise<void> {
+  private async noteSetMutation(
+    sessionId: number,
+    profileId: number,
+    publicationBlockSourceKey?: string,
+  ): Promise<ActiveEnergyPublicationStatusV1 | undefined> {
+    const session = await this.repo.getSession(sessionId, profileId);
+    if (!session) throw new SessionNotFoundError();
     if (
       session.status !== SESSION_STATUS.COMPLETED
       && session.status !== SESSION_STATUS.CANCELLED
-    ) return;
+    ) return undefined;
     const revision = await this.repo.incrementSessionRevision(session.id);
     noteTrainingSourceChange({
       sessionId: session.id,
       revision,
-      workoutLocalDate: workoutLocalDate(session.matchedWorkout?.startAt),
+      workoutLocalDate: workoutLocalDate(
+        session.matchedWorkout?.startAt ? new Date(session.matchedWorkout.startAt) : undefined,
+      ),
       reason: "set_mutation",
     });
-    let relativeMuscleModelDate: string | undefined;
     if (this.db === prisma && session.status === SESSION_STATUS.COMPLETED) {
-      relativeMuscleModelDate = await this.refreshRelativeMuscleAfterSessionMutation(session.id, profileId).catch(() => undefined) ?? undefined;
+      return this.refreshUnifiedAfterCompletedSessionMutation(
+        session.id,
+        profileId,
+        "completed-session-set-change",
+        publicationBlockSourceKey === undefined ? [] : [publicationBlockSourceKey],
+      );
     }
-    if (session.status === SESSION_STATUS.COMPLETED) {
-      await this.refreshTransientWaterAfterMutation(profileId, relativeMuscleModelDate).catch(() => {});
+    return undefined;
+  }
+
+  private async refreshUnifiedAfterCompletedSessionMutation(
+    sessionId: number,
+    profileId: number,
+    operation: string,
+    publicationBlockSourceKeys: readonly string[] = [],
+  ): Promise<ActiveEnergyPublicationStatusV1 | undefined> {
+    try {
+      if (this.db !== prisma) return undefined;
+      const session = await this.repo.getSession(sessionId, profileId);
+      if (!session) return "stale";
+      // Rebuild the full session dependency chain before Unified. A source edit
+      // can change canonical strength energy and glycogen demand as well as
+      // Relative Muscle; publishing after only one child refresh can make a
+      // later unrelated writer expose an older child row as current.
+      await this.recordExperimentalShadow({
+        session,
+        profileId,
+        ...(publicationBlockSourceKeys.length > 0 ? { publicationBlockSourceKeys } : {}),
+      });
+      return this.unifiedPublicationStatus(profileId);
+    } catch (error) {
+      if (error instanceof StaleStrengthEnergySourceError) throw error;
+      logPhysiologyPublicationFailure(`${operation}-dependency-refresh`, error);
+      return "stale";
     }
+  }
+
+  private async retryDeletedChildPublication(input: {
+    sessionId: number;
+    profileId: number;
+    publicationBlockSourceKey: string;
+    operation: string;
+  }): Promise<ActiveEnergyPublicationStatusV1 | undefined> {
+    if (this.db !== prisma) return undefined;
+    const token = await new PhysiologyV7PersistenceRepository().readUnifiedPublicationBlockToken({
+      profileId: input.profileId,
+      source: "training",
+      sourceKey: input.publicationBlockSourceKey,
+    });
+    // A missing child is retryable only when this exact deletion left durable
+    // publication work behind. A session-wide or unrelated block is not proof
+    // that this child was deleted by a prior request.
+    if (token === null) return undefined;
+    return this.refreshUnifiedAfterCompletedSessionMutation(
+      input.sessionId,
+      input.profileId,
+      input.operation,
+      [input.publicationBlockSourceKey],
+    );
+  }
+
+  private async publicationStatusForCurrentDatabase(
+    profileId: number,
+  ): Promise<ActiveEnergyPublicationStatusV1 | undefined> {
+    return this.db === prisma && this.recordExperimentalShadow === recordExperimentalStrengthShadows
+      ? this.unifiedPublicationStatus(profileId)
+      : undefined;
   }
 
   private async refreshTransientWaterAfterMutation(profileId: number, fromDate?: string): Promise<void> {
     if (this.db !== prisma) return;
-    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate });
+    try {
+      await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate });
+    } catch (error) {
+      logPhysiologyPublicationFailure("training-source-mutation", error);
+      throw error;
+    }
   }
 
   private async refreshRelativeMuscleAfterSessionMutation(sessionId: number, profileId: number): Promise<string | null> {
@@ -1393,15 +2117,67 @@ export class TrainingService {
     sessionId: number,
     profileId: number,
     previousEventAt: Date | string | null,
+    options: {
+      deferUnifiedPublication?: boolean;
+      blockRevision?: number | null;
+      blockFromDate?: string | null;
+      publicationFromDate?: string;
+    } = {},
   ): Promise<void> {
-    if (this.db !== prisma || previousEventAt === null) return;
+    if (this.db !== prisma) return;
     const session = await this.repo.getSession(sessionId, profileId);
-    const currentEventAt = session?.matchedWorkout?.startAt ?? session?.webStartedAt ?? null;
-    const previousInstant = new Date(previousEventAt);
-    if (!Number.isFinite(previousInstant.getTime())
-        || (currentEventAt !== null && new Date(currentEventAt).getTime() === previousInstant.getTime())) return;
-    const dirty = await this.invalidateAndRebuildRelativeMuscle(profileId, previousInstant);
-    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dirty?.modelDate });
+    const currentEventAt = session?.matchedWorkout?.startAt
+      ?? session?.effectiveAccountingAt
+      ?? session?.webStartedAt
+      ?? null;
+    const dirtyDates = [options.publicationFromDate].filter((date): date is string => date !== undefined);
+    if (previousEventAt !== null) {
+      const previousInstant = new Date(previousEventAt);
+      if (!Number.isFinite(previousInstant.getTime())) throw new Error("previous training event instant is invalid");
+      if (currentEventAt === null || new Date(currentEventAt).getTime() !== previousInstant.getTime()) {
+        const dirty = await this.invalidateAndRebuildRelativeMuscle(profileId, previousInstant);
+        if (dirty === null) throw new Error("previous training event has no resolvable model-day boundary");
+        dirtyDates.push(dirty.modelDate);
+      }
+    }
+    const lifecycle = new PhysiologyV7PersistenceRepository();
+    let sourceBlockCleared = false;
+    if (options.blockRevision !== null && options.blockRevision !== undefined) {
+      if (options.blockFromDate === null || options.blockFromDate === undefined) {
+        throw new Error("training publication block boundary is missing; Unified remains blocked");
+      }
+      if (!await lifecycle.clearUnifiedPublicationBlock({
+        profileId, source: "training", sourceKey: String(sessionId), expectedRevision: options.blockRevision,
+        expectedFromDate: options.blockFromDate,
+      })) throw new Error("training source changed during event relocation; Unified remains blocked");
+      sourceBlockCleared = true;
+    }
+    const fromDate = dirtyDates.sort()[0];
+    if (!options.deferUnifiedPublication) {
+      const clearedFences = sourceBlockCleared && options.blockRevision !== null && options.blockRevision !== undefined
+        ? [{
+          sourceKey: String(sessionId),
+          token: { revision: options.blockRevision, fromDate: options.blockFromDate! },
+        }]
+        : [];
+      if (await deferTrainingPublicationIfAnotherSourceIsBlocked(lifecycle, profileId, clearedFences)) return;
+      try {
+        await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate });
+      } catch (error) {
+        logPhysiologyPublicationFailure("training-event-relocation", error);
+        if (sourceBlockCleared) {
+          try {
+            await restoreTrainingPublicationFencesWhenUnblocked(lifecycle, profileId, clearedFences);
+          } catch (restoreError) {
+            throw new AggregateError(
+              [error, restoreError],
+              "Unified publication failed and the training retry fence could not be restored",
+            );
+          }
+        }
+        throw error;
+      }
+    }
   }
 
   private async snapshotProgramExerciseConfigs(

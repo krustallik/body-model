@@ -23,7 +23,8 @@ export async function POST(request: Request, context: Ctx): Promise<Response> {
 
   try {
     const session = await trainingService.addSessionExercise(params.data.id, parsed.data);
-    return Response.json({ session }, { status: 201 });
+    const { modelPublicationStatus, ...sessionDto } = session;
+    return Response.json({ session: sessionDto, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) }, { status: 201 });
   } catch (error) {
     return trainingErrorResponse(error) ?? trainingInternalError();
   }
@@ -41,7 +42,8 @@ export async function PATCH(request: Request, context: Ctx): Promise<Response> {
 
   try {
     const session = await trainingService.reorderSessionExercises(params.data.id, parsed.data);
-    return Response.json({ session });
+    const { modelPublicationStatus, ...sessionDto } = session;
+    return Response.json({ session: sessionDto, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) });
   } catch (error) {
     return trainingErrorResponse(error) ?? trainingInternalError();
   }

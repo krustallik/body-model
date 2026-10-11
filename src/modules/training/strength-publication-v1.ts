@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { finiteNonNegative } from "@/model/activity/canonical-activity-policy-v1";
 import { EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION } from "./experimental-strength-active-energy-v1";
+import type { StrengthSessionDto } from "./training.types";
 
 export type StrengthPublicationDecisionV1 = {
   publish: boolean;
@@ -24,27 +25,110 @@ export function strengthSetFingerprintV1(
   })))).digest("hex").slice(0, 32);
 }
 
+/** Stable fingerprint of the ordered HR observations consumed by the estimator. */
+export function strengthHeartRateSourceFingerprintV1(
+  samples: readonly { id: number; timestamp: Date | string; bpm: number; source: string }[],
+): string {
+  const ordered = [...samples].sort((left, right) => {
+    const timeOrder = new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime();
+    return timeOrder || left.id - right.id;
+  });
+  return createHash("sha256").update(stableJson(ordered.map((sample) => ({
+    id: sample.id,
+    timestamp: new Date(sample.timestamp).toISOString(),
+    bpm: sample.bpm,
+    source: sample.source,
+  })))).digest("hex");
+}
+
+/** Stable digest of the raw session inputs consumed by strength publication. */
+export function strengthSessionSourceFingerprintV1(session: StrengthSessionDto): string {
+  const value = {
+    id: session.id,
+    status: session.status,
+    entryMode: session.entryMode,
+    revision: session.revision,
+    programId: session.programId,
+    programVersionId: session.programVersionId,
+    webStartedAt: session.webStartedAt,
+    webEndedAt: session.webEndedAt,
+    effectiveAccountingAt: session.effectiveAccountingAt ?? null,
+    accountingTimeZone: session.accountingTimeZone ?? null,
+    accountingTimeZoneProvenance: session.accountingTimeZoneProvenance ?? null,
+    matchStatus: session.matchStatus,
+    matchMethod: session.matchMethod,
+    matchedAt: session.matchedAt,
+    matchedWorkoutId: session.matchedWorkoutId,
+    matchedWorkout: session.matchedWorkout === null ? null : {
+      id: session.matchedWorkout.id,
+      type: session.matchedWorkout.type,
+      startAt: session.matchedWorkout.startAt,
+      endAt: session.matchedWorkout.endAt,
+      durationMinutes: session.matchedWorkout.durationMinutes,
+      activeEnergyKcal: session.matchedWorkout.activeEnergyKcal,
+      manualActiveEnergyKcal: session.matchedWorkout.manualActiveEnergyKcal ?? null,
+      externalId: session.matchedWorkout.externalId,
+    },
+    exercises: [...session.exercises]
+      .sort((left, right) => left.order - right.order || left.id - right.id)
+      .map((exercise) => ({
+        id: exercise.id,
+        sourceExerciseCatalogId: exercise.sourceExerciseCatalogId,
+        stableKey: exercise.stableKey,
+        snapshotExerciseName: exercise.snapshotExerciseName,
+        order: exercise.order,
+        plannedSets: exercise.plannedSets,
+        resistanceType: exercise.resistanceType,
+        origin: exercise.origin,
+        muscleMappingSnapshot: exercise.muscleMappingSnapshot ?? null,
+        loadAccountingConfigSnapshot: exercise.loadAccountingConfigSnapshot ?? null,
+        sets: [...exercise.sets]
+          .sort((left, right) => left.setNumber - right.setNumber || left.id - right.id)
+          .map((set) => ({
+            id: set.id,
+            setNumber: set.setNumber,
+            reps: set.reps,
+            weightKg: set.weightKg,
+            bandNominalResistanceKg: set.bandNominalResistanceKg,
+            rir: set.rir,
+            comment: set.comment,
+            completedAt: set.completedAt,
+            loadAccountingOverride: set.loadAccountingOverride ?? null,
+          })),
+      })),
+  };
+  return createHash("sha256").update(stableJson(value)).digest("hex");
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
 /**
- * Canonical model-day inputs shared by the Strength candidate writer and its
- * production freshness reader. MET fallback is permitted only for complete
- * days, so incomplete/blocked rows are represented as no model-day input.
+ * Semantic model-day inputs shared by the Strength candidate writer and its
+ * production freshness reader. Timestamps are excluded because a replay may
+ * rewrite an equivalent derived row; the writer separately checks timestamps
+ * as a transaction-time CAS before persisting the candidate.
  */
 export function strengthModelDayFingerprintInputsV1(modelDay: {
   status: string;
   dynamicRmrKcalPerDay: number | null;
-  updatedAt: Date | string;
+  modelVersion: string;
 } | null): {
   modelDayRmrKcalPerDay: number | null;
-  modelDayUpdatedAt: string | null;
+  modelDayVersion: string | null;
 } {
   if (!modelDay || modelDay.status !== "complete") {
-    return { modelDayRmrKcalPerDay: null, modelDayUpdatedAt: null };
+    return { modelDayRmrKcalPerDay: null, modelDayVersion: null };
   }
   return {
     modelDayRmrKcalPerDay: modelDay.dynamicRmrKcalPerDay,
-    modelDayUpdatedAt: modelDay.updatedAt instanceof Date
-      ? modelDay.updatedAt.toISOString()
-      : new Date(modelDay.updatedAt).toISOString(),
+    modelDayVersion: modelDay.modelVersion,
   };
 }
 

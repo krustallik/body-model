@@ -11,6 +11,7 @@ import {
   SessionNotFoundError,
   SetNotFoundError,
   SetValidationError,
+  StaleStrengthEnergySourceError,
   WorkoutAlreadyMatchedError,
   WorkoutNotEligibleError,
   WorkoutNotFoundError,
@@ -33,6 +34,9 @@ export function trainingErrorResponse(error: unknown): Response | null {
     || error instanceof ResistanceChangeBlockedError
   ) {
     return Response.json({ error: error.code }, { status: 409 });
+  }
+  if (error instanceof StaleStrengthEnergySourceError) {
+    return Response.json({ error: error.code, modelPublicationStatus: "stale" }, { status: 409 });
   }
   if (
     error instanceof ProgramNotFoundError

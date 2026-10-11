@@ -170,8 +170,42 @@ export async function recordExperimentalStepperGlycogenDemandShadowsForLocalDate
     where: { hiddenFromHistory: false, dailyHealthData: { date: input.date } },
     select: { id: true, type: true },
   });
+  const stairWorkoutIds = new Set<number>();
   for (const workout of workouts) {
     if (canonicalizeWorkoutType(workout.type).classification !== "stair-climbing") continue;
+    stairWorkoutIds.add(workout.id);
     await recordExperimentalStepperGlycogenDemandShadow({ workoutId: workout.id, profileId });
+  }
+
+  // A Health correction can keep the same Workout identity while changing its
+  // type. Remove the now-inapplicable derived child under the same lifecycle
+  // source fence used for shadow writes, so a later glycogen replay cannot
+  // treat old stair depletion as current. Hidden workouts are also excluded
+  // because the glycogen source loader intentionally ignores them.
+  const existingShadows = await prisma.experimentalStepperGlycogenDemandShadow.findMany({
+    where: { profileId, workout: { dailyHealthData: { date: input.date } } },
+    select: { workoutId: true },
+    orderBy: { workoutId: "asc" },
+  });
+  for (const { workoutId } of existingShadows) {
+    if (stairWorkoutIds.has(workoutId)) continue;
+    const expectedFence = await readUnifiedSourceFenceV1(prisma, profileId);
+    await persistUnifiedShadowCandidateV1({
+      client: prisma,
+      profileId,
+      expectedFence,
+      persist: async (tx) => {
+        const current = await tx.workout.findFirst({
+          where: { id: workoutId, dailyHealthData: { date: input.date } },
+          select: { type: true, hiddenFromHistory: true },
+        });
+        if (current && !current.hiddenFromHistory
+            && canonicalizeWorkoutType(current.type).classification === "stair-climbing") return false;
+        const deleted = await tx.experimentalStepperGlycogenDemandShadow.deleteMany({
+          where: { workoutId, profileId },
+        });
+        return deleted.count > 0;
+      },
+    });
   }
 }

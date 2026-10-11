@@ -23,6 +23,9 @@ function repositoryFixture(existingDates: string[] = [], existingWorkouts: Array
 }> = []) {
   const transaction = {
     $executeRaw: vi.fn().mockResolvedValue(0),
+    physiologyV7Lifecycle: {
+      findUnique: vi.fn().mockResolvedValue(null),
+    },
     dailyHealthData: {
       findUnique: vi.fn().mockImplementation(({ where }: { where: { date: string } }) =>
         Promise.resolve(existingDates.includes(where.date) ? { date: where.date, weightKg: null } : null),

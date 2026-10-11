@@ -54,6 +54,7 @@ const publication = {
   invalidationGeneration: 5,
   productionPublishedGeneration: 5,
   productionStaleFromDate: null,
+  unifiedPublicationBlockedFromDate: null,
   unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
   unifiedRolloutEpoch: 0,
   unifiedPublishedRolloutEpoch: null,
@@ -251,8 +252,79 @@ describe("Unified V2 rebuild publication", () => {
     });
     expect(mocks.tx.physiologyV7Lifecycle.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({ profileId: 4, invalidationGeneration: 5, productionPublishedGeneration: 5 }),
-      data: { unifiedPublishedGeneration: 5 },
+      data: { unifiedPublishedGeneration: 5, unifiedPublishedRolloutEpoch: 0 },
     }));
+  });
+
+  it("follows the active V4 lifecycle revision and epoch when an ordinary rebuild omits rollout inputs", async () => {
+    const v4Publication = {
+      ...publication,
+      unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
+      unifiedRolloutEpoch: 1,
+    };
+    mocks.prisma.physiologyV7Lifecycle.findUnique
+      .mockReset()
+      .mockResolvedValueOnce(v4Publication)
+      .mockResolvedValueOnce(v4Publication);
+    mocks.tx.physiologyV7Lifecycle.findUnique.mockResolvedValue(v4Publication);
+
+    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 4 });
+
+    const persisted = mocks.tx.unifiedExperimentalPhysiologyStateV2.upsert.mock.calls[0]![0].create;
+    expect(persisted.modelRevision).toBe(UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION);
+    expect(mocks.tx.physiologyV7Lifecycle.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        profileId: 4,
+        invalidationGeneration: 5,
+        productionPublishedGeneration: 5,
+        unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
+        unifiedRolloutEpoch: 1,
+      }),
+      data: { unifiedPublishedGeneration: 5, unifiedPublishedRolloutEpoch: 1 },
+    }));
+  });
+
+  it("rejects a changed absolute model-day range even when lifecycle and transient source fences are unchanged", async () => {
+    const originalRange = {
+      fromInstant: boundaryAt,
+      throughInstant,
+      days: [sourceDay()],
+    };
+    const changedBoundaryRange = {
+      ...originalRange,
+      days: [sourceDay({ boundaryAt: "2026-10-01T01:00:00.000Z" })],
+    };
+    mocks.loadRange.mockReset()
+      .mockResolvedValueOnce(originalRange)
+      .mockResolvedValueOnce(changedBoundaryRange);
+
+    await expect(rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 4 })).rejects.toThrow();
+
+    expect(mocks.prisma.physiologyV7Lifecycle.findUnique).toHaveBeenCalledTimes(2);
+    expect(mocks.readSourceToken).toHaveBeenCalledTimes(1);
+    expect(mocks.tx.unifiedExperimentalPhysiologyStateV2.upsert).not.toHaveBeenCalled();
+    expect(mocks.tx.physiologyV7Lifecycle.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("fails closed for unsupported lifecycle revisions or an explicit stale rollout epoch", async () => {
+    mocks.prisma.physiologyV7Lifecycle.findUnique
+      .mockReset()
+      .mockResolvedValueOnce({ ...publication, unifiedTargetRevision: "unknown-revision" });
+    await expect(rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 4 }))
+      .rejects.toThrow(ProductionPublicationUnavailableError);
+
+    const v4Publication = {
+      ...publication,
+      unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
+      unifiedRolloutEpoch: 1,
+    };
+    mocks.prisma.physiologyV7Lifecycle.findUnique
+      .mockReset()
+      .mockResolvedValueOnce(v4Publication);
+    await expect(rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 4, rolloutEpoch: 0 }))
+      .rejects.toThrow(ProductionPublicationUnavailableError);
+    expect(mocks.rebuildTransient).not.toHaveBeenCalled();
+    expect(mocks.tx.unifiedExperimentalPhysiologyStateV2.upsert).not.toHaveBeenCalled();
   });
 
   it("rejects reversed date ranges before reading or writing state", async () => {

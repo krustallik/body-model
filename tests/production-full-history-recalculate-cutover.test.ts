@@ -7,7 +7,7 @@ import {
   bashAvailable,
   maintenanceRoute,
   createFixture,
-  runFixture,
+  runFixtureAsync,
   appState,
 } from "./helpers/production-release-cutover-fixture";
 
@@ -34,11 +34,12 @@ describe("production full-history recalculation cutover", () => {
     expect(step).toContain("docker run --rm --network host");
   });
 
-  it.skipIf(!bashAvailable)("recalculates under one lock, verifies V3 postflight, and restores the exact app behind maintenance", () => {
+  it.skipIf(!bashAvailable)("recalculates under one lock, verifies V3 postflight, and restores the exact app behind maintenance", async () => {
     const fixture = createFixture();
     prepareFixture(fixture);
-    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh full-history-recalculate", {
+    const result = await runFixtureAsync(fixture, "bash scripts/production-traffic-cutover.sh full-history-recalculate", {
       BODYCAST_DEPLOY_SHA: fixture.candidateSha,
+      APP_STARTING_HEALTH_SAMPLES: "2",
     });
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
@@ -46,18 +47,46 @@ describe("production full-history recalculation cutover", () => {
     const events = readFileSync(path.join(fixture.root, "events.log"), "utf8").trim().split(/\r?\n/);
     const recalc = events.indexOf("full-history-recalculate");
     const v3 = events.indexOf("unified-v3-postflight");
+    const firstStarting = events.indexOf("app-health-sample:starting");
+    const healthy = events.indexOf("app-health-sample:healthy");
+    const healthEndpoint = events.indexOf("candidate-health-endpoint");
     expect(recalc).toBeGreaterThan(-1);
+    expect(events.filter((event) => event === "full-history-recalculate")).toHaveLength(1);
     expect(v3).toBeGreaterThan(recalc);
+    expect(firstStarting).toBeGreaterThan(v3);
+    expect(healthy).toBeGreaterThan(firstStarting);
+    expect(healthEndpoint).toBeGreaterThan(healthy);
+    expect(events).toContain("health-wait-sleep");
     expect(events).not.toContain("unified-v4-activation");
     expect(events).not.toContain("live-route-mutation:serving");
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
     expect(appState(fixture)).toMatchObject({ sha: fixture.candidateSha, status: "healthy", present: "true" });
   }, 30_000);
 
-  it.skipIf(!bashAvailable)("blocks full-history DML when canonical main advances during migrator build", () => {
+  it.skipIf(!bashAvailable)("keeps maintenance when the restarted app never passes its readiness endpoint", async () => {
     const fixture = createFixture();
     prepareFixture(fixture);
-    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh full-history-recalculate", {
+    const result = await runFixtureAsync(fixture, "bash scripts/production-traffic-cutover.sh full-history-recalculate", {
+      BODYCAST_DEPLOY_SHA: fixture.candidateSha,
+      FAIL_CANDIDATE_LOCAL_HEALTH: "1",
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).not.toBe(0);
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events).toContain("full-history-recalculate");
+    expect(events).toContain("unified-v3-postflight");
+    expect(events).toContain("candidate-local-health-failed");
+    expect(events).not.toContain("unified-v4-activation");
+    expect(events).not.toContain("live-route-mutation:serving");
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    const gitDir = execFileSync(fixture.realGit, ["-C", fixture.repo, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).trim();
+    expect(readFileSync(path.join(gitDir, "bodycast-production-schema-cutover"), "utf8")).toContain("state=app-ready");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("blocks full-history DML when canonical main advances during migrator build", async () => {
+    const fixture = createFixture();
+    prepareFixture(fixture);
+    const result = await runFixtureAsync(fixture, "bash scripts/production-traffic-cutover.sh full-history-recalculate", {
       BODYCAST_DEPLOY_SHA: fixture.candidateSha,
       ADVANCE_ON_MIGRATOR_BUILD: "1",
     });
@@ -73,10 +102,10 @@ describe("production full-history recalculation cutover", () => {
     expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).toContain("build migrate");
   }, 30_000);
 
-  it.skipIf(!bashAvailable)("keeps maintenance and does not activate V4 when recalculation fails", () => {
+  it.skipIf(!bashAvailable)("keeps maintenance and does not activate V4 when recalculation fails", async () => {
     const fixture = createFixture();
     prepareFixture(fixture);
-    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh full-history-recalculate", {
+    const result = await runFixtureAsync(fixture, "bash scripts/production-traffic-cutover.sh full-history-recalculate", {
       BODYCAST_DEPLOY_SHA: fixture.candidateSha,
       FAIL_FULL_HISTORY_RECALCULATE: "1",
     });

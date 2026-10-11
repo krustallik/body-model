@@ -422,13 +422,7 @@ if [[ "$MODE" == "full-history-recalculate" ]]; then
     exit 1
   }
   BODYCAST_DEPLOY_SHA="$expected_release_sha" compose up -d --no-deps --no-build app
-  app_release_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER")"
-  [[ "$app_release_sha" == "$expected_release_sha" \
-    && "$(docker inspect --format '{{.Image}}' "$APP_CONTAINER")" == "$candidate_image_id" \
-    && "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$APP_CONTAINER")" == "healthy" ]] || {
-    echo "Exact candidate image did not return healthy after recalculation; traffic remains in maintenance." >&2
-    exit 1
-  }
+  bash "$ROOT_DIR/scripts/production-app-container-health-wait.sh" "$expected_release_sha" "$candidate_image_id"
   echo "Owner-authorized full-history recalculation and Unified V3 postflight completed; traffic remains in maintenance."
   exit 0
 fi
@@ -516,13 +510,7 @@ activate_v4_and_serve() {
     return 1
   }
   BODYCAST_DEPLOY_SHA="$expected_release_sha" compose up -d --no-deps --no-build app
-  app_release_sha="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' "$APP_CONTAINER")"
-  [[ "$app_release_sha" == "$expected_release_sha" \
-    && "$(docker inspect --format '{{.Image}}' "$APP_CONTAINER")" == "$candidate_image_id" \
-    && "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$APP_CONTAINER")" == "healthy" ]] || {
-    echo "Exact candidate image did not return healthy after V4 activation; traffic remains in maintenance." >&2
-    return 1
-  }
+  bash "$ROOT_DIR/scripts/production-app-container-health-wait.sh" "$expected_release_sha" "$candidate_image_id"
   compose --profile tools run --rm --no-deps --entrypoint node migrate \
     /app/scripts/unified-v4-traffic-check.mjs --profile-id 1
   bodycast_assert_current_main_sha "$expected_release_sha"

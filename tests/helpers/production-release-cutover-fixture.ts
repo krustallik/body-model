@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import {
   accessSync,
   copyFileSync,
@@ -17,6 +17,7 @@ import path from "node:path";
 import { afterEach, expect } from "vitest";
 
 const temporaryRoots: string[] = [];
+const activeFixtureChildren = new Set<ChildProcess>();
 export const PREVIOUS_SHA = "1".repeat(40);
 export const PREVIOUS_CONTAINER_ID = "e".repeat(64);
 export const PREVIOUS_IMAGE_ID = `sha256:${"a".repeat(64)}`;
@@ -157,6 +158,22 @@ if [[ "$1" == "image" && "$2" == "inspect" ]]; then
   if [[ "$format" == *".Id"* ]]; then cat "$image_file"; fi
   exit 0
 fi
+if [[ "$1" == "inspect" && "$2" == "--format" && "$3" == *"{{.Id}}|{{.Image}}|"* && "$4" == "bodycast-app-prod" ]]; then
+  sample="$(cat "$APP_HEALTH_SAMPLE_COUNT_FILE" 2>/dev/null || printf '0')"
+  sample=$((sample + 1))
+  printf '%s\n' "$sample" > "$APP_HEALTH_SAMPLE_COUNT_FILE"
+  if [[ "$sample" -le "\${APP_STARTING_HEALTH_SAMPLES:-0}" ]]; then
+    health=starting
+    event "app-health-sample:starting"
+  else
+    health=healthy
+    printf '%s\n' healthy > "$APP_STATUS_FILE"
+    event "app-health-sample:healthy"
+  fi
+  printf '%s|%s|%s|running|%s\n' "$(cat "$APP_CONTAINER_ID_FILE")" "$(cat "$APP_IMAGE_ID_FILE")" \
+    "$(cat "$APP_SHA_FILE")" "$health"
+  exit 0
+fi
 if [[ "$1" == "image" && "$2" == "tag" ]]; then
   case "$3:$4" in
     bodycast-app:latest:bodycast-app:rollback) cp "$IMAGE_LATEST" "$IMAGE_ROLLBACK" ;;
@@ -280,7 +297,12 @@ if [[ "$1" == "compose" ]]; then
     else
       printf '%s\n' "\${BODYCAST_DEPLOY_SHA:?}" > "$APP_SHA_FILE"
     fi
-    printf '%s\n' healthy > "$APP_STATUS_FILE"
+    if [[ "\${APP_STARTING_HEALTH_SAMPLES:-0}" -gt 0 ]]; then
+      printf '%s\n' starting > "$APP_STATUS_FILE"
+    else
+      printf '%s\n' healthy > "$APP_STATUS_FILE"
+    fi
+    printf '%s\n' 0 > "$APP_HEALTH_SAMPLE_COUNT_FILE"
     printf '%s\n' "\${CANDIDATE_CONTAINER_ID:-ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff}" > "$APP_CONTAINER_ID_FILE"
     printf '%s\n' true > "$APP_PRESENT_FILE"
     printf '%s\n' always > "$APP_RESTART_FILE"
@@ -444,12 +466,13 @@ if [[ "$1" == "exec" && ( "$2" == "gymbeam-caddy" || ( "$2" == "-i" && "$3" == "
     exit 0
   fi
 fi
-if [[ "$1" == "exec" && "$2" == "bodycast-app-prod" ]]; then
+if [[ "$1" == "exec" && ( "$2" == "bodycast-app-prod" || "$2" == "$(cat "$APP_CONTAINER_ID_FILE" 2>/dev/null || true)" ) ]]; then
   if [[ "\${FAIL_CANDIDATE_LOCAL_HEALTH:-0}" == "1" \
       && "$(cat "$APP_SHA_FILE" 2>/dev/null || true)" == "\${CANDIDATE_SHA:-}" ]]; then
     event "candidate-local-health-failed"
     exit 22
   fi
+  event "candidate-health-endpoint"
   printf '%s\n' '{"status":"ok"}'
   exit 0
 fi
@@ -617,6 +640,7 @@ export function createFixture(): Fixture {
     "production-route-primitives.sh",
     "production-release-lock.sh",
     "production-traffic-cutover.sh",
+    "production-app-container-health-wait.sh",
     "production-writer-drain.sh",
     "production-previous-app-provenance.mjs",
     "production-capture-resume-receipt.mjs",
@@ -647,6 +671,10 @@ printf '%s\n' "$count" > "$LOCK_COUNT_FILE"
 printf '%s\n' lock-acquired >> "$EVENT_LOG"
 [[ "\${LOCK_BUSY:-0}" != "1" ]]
 `, { mode: 0o755 });
+  writeFileSync(path.join(bin, "sleep"), shellScript`#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s\n' health-wait-sleep >> "$EVENT_LOG"
+`, { mode: 0o755 });
   writeFileSync(path.join(routes, "bodycast.caddy"), servingRoute());
 
   execFileSync("git", ["init", "--bare", "--initial-branch=main", remote], { stdio: "ignore" });
@@ -670,6 +698,7 @@ printf '%s\n' lock-acquired >> "$EVENT_LOG"
     APP_IMAGE_ID_FILE: path.join(root, "app-image-id"),
     APP_CONTAINER_ID_FILE: path.join(root, "app-container-id"),
     APP_STATUS_FILE: path.join(root, "app-status"),
+    APP_HEALTH_SAMPLE_COUNT_FILE: path.join(root, "app-health-sample-count"),
     APP_PRESENT_FILE: path.join(root, "app-present"),
     APP_RESTART_FILE: path.join(root, "app-restart"),
     APP_INSPECT_JSON_FILE: path.join(root, "app-inspect.json"),
@@ -755,6 +784,74 @@ export function runFixture(fixture: Fixture, command: string, overrides: Record<
   });
 }
 
+export function runFixtureAsync(
+  fixture: Fixture,
+  command: string,
+  overrides: Record<string, string | undefined> = {},
+  options: { signal?: AbortSignal; waitForBackgroundProcesses?: boolean } = {},
+) {
+  return new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+    const completionPrefix = command.trimEnd().endsWith("&") ? "\n" : "; ";
+    const completion = options.waitForBackgroundProcesses === false
+      ? `${completionPrefix}fixture_command_status=$?; exit "$fixture_command_status"`
+      : `${completionPrefix}fixture_command_status=$?; wait; exit "$fixture_command_status"`;
+    const child = spawn(fixture.bash, ["--noprofile", "--norc", "-c",
+      `export PATH="$FIXTURE_BIN:$PATH"; curl() { "$FIXTURE_BIN/curl" "$@"; }; export -f curl; ${fakeMv}; ${fakeMktemp}; ${command}${completion}`], {
+      cwd: fixture.repo,
+      detached: process.platform !== "win32",
+      env: { ...fixture.env, ...overrides },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    activeFixtureChildren.add(child);
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (status) => {
+      activeFixtureChildren.delete(child);
+      options.signal?.removeEventListener("abort", terminate);
+      resolve({ status, stdout, stderr });
+    });
+    const terminate = () => { void stopFixtureChild(child).catch(reject); };
+    options.signal?.addEventListener("abort", terminate, { once: true });
+    if (options.signal?.aborted) terminate();
+  });
+}
+
+async function stopFixtureChild(child: ChildProcess): Promise<void> {
+  if (process.platform === "win32" && child.pid !== undefined) {
+    try {
+      const pid = child.pid;
+      const script = `$root = ${pid}; $all = @(Get-CimInstance Win32_Process); $queue = [System.Collections.Generic.Queue[int]]::new(); $queue.Enqueue($root); $descendants = [System.Collections.Generic.List[int]]::new(); while ($queue.Count -gt 0) { $parent = $queue.Dequeue(); foreach ($process in $all) { if ([int]$process.ParentProcessId -eq $parent) { $id = [int]$process.ProcessId; $descendants.Add($id); $queue.Enqueue($id) } } }; $ids = $descendants.ToArray(); [array]::Reverse($ids); Write-Output ($ids -join ','); foreach ($id in $ids) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }; Stop-Process -Id $root -Force -ErrorAction SilentlyContinue`;
+      execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+    } catch {
+      try {
+        execFileSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], {
+          stdio: "ignore",
+          windowsHide: true,
+        });
+      } catch {
+        // The leader may already have exited; close its process group below where supported.
+      }
+      child.kill("SIGKILL");
+    }
+  } else if (child.pid !== undefined) {
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch {
+      child.kill("SIGKILL");
+    }
+  } else {
+    child.kill("SIGKILL");
+  }
+
+  await new Promise<void>((resolve) => child.once("close", () => resolve()));
+}
+
 export function stagedCandidatePath(fixture: Fixture): string {
   const entries = readFileSync(path.join(fixture.root, "candidate-stage-paths.log"), "utf8").trim().split(/\r?\n/);
   return entries.at(-1) ?? "";
@@ -788,7 +885,8 @@ export function appState(fixture: Fixture): { sha: string; imageId: string; stat
   };
 }
 
-afterEach(() => {
+afterEach(async () => {
+  await Promise.all([...activeFixtureChildren].map(stopFixtureChild));
   for (const root of temporaryRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

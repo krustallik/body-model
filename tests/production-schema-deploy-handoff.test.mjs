@@ -10,6 +10,7 @@ import {
 } from "../scripts/production-schema-deploy-handoff.mjs";
 
 const DEPLOY_SHA = "71c091cd712cd3862d2cebe2714963917c9b5ca2";
+const SCHEMA_COMPATIBLE_CHECKOUT_SHA = "9c7a6c9ac9270da52e6e2f5afe55094106f66e2d";
 const provenance = SCHEMA_DEPLOY_HANDOFF_PROVENANCE;
 const directories = [];
 
@@ -75,10 +76,8 @@ describe("schema deploy compatibility handoff", () => {
     expect(plan.marker.sourceMarkerDigest).toMatch(/^[a-f0-9]{64}$/);
   });
 
-  it("accepts the current checkout only when its exact transient-water runtime paths remain schema-compatible", () => {
-    const candidateSha = execFileSync("git", ["rev-parse", "HEAD"], {
-      cwd: process.cwd(), encoding: "utf8",
-    }).trim();
+  it("accepts the pinned schema-compatible checkout only when its exact runtime paths remain compatible", () => {
+    const candidateSha = SCHEMA_COMPATIBLE_CHECKOUT_SHA;
     const compatibility = readGitCompatibility(process.cwd(), candidateSha);
     expect(compatibility.isAncestor).toBe(true);
     expect(compatibility.changedPaths).toContain("src/modules/model-episodes/transient-exercise-water-episode-time-v2.ts");
@@ -129,10 +128,16 @@ describe("schema deploy compatibility handoff", () => {
     expect(plan.compatibilityDigest).toMatch(/^[a-f0-9]{64}$/);
   });
 
-  it("admits only exact reviewed content-bound blob pairs", () => {
+  it("blocks this release candidate from the old schema handoff while its new migrations are pending", () => {
     const candidateSha = execFileSync("git", ["rev-parse", "HEAD"], {
       cwd: process.cwd(), encoding: "utf8",
     }).trim();
+    expect(() => readGitCompatibility(process.cwd(), candidateSha))
+      .toThrow("Schema deploy handoff blocked: prisma differs from the migration origin");
+  });
+
+  it("admits only exact reviewed content-bound blob pairs", () => {
+    const candidateSha = SCHEMA_COMPATIBLE_CHECKOUT_SHA;
     const compatibility = readGitCompatibility(process.cwd(), candidateSha);
 
     for (const [changedPath, proof] of Object.entries(compatibility.changedPathObjects)) {

@@ -46,7 +46,10 @@ describe("active production release entrypoints", () => {
     expect(inspector).toContain("status --porcelain=v1 --untracked-files=all");
     expect(inspector).toContain("rev-parse --show-toplevel");
     expect(inspector).not.toMatch(/\bgit\s+(?:fetch|checkout|reset|clean|add|commit)\b/);
-    expect(inspector).not.toMatch(/\b(?:docker|psql|caddy|prisma)\b/);
+    expect(inspector).toContain("docker inspect");
+    expect(inspector).toContain("curl --silent --show-error --max-time 10");
+    expect(inspector).not.toMatch(/\bdocker\s+(?:compose|exec|start|stop|restart|rm|run|update|kill)\b/);
+    expect(inspector).not.toMatch(/(^|\n)\s*(?:psql|caddy|prisma)\s/m);
   });
 
   it("requires pinned owner, exact current main, and shared serialization on every production dispatch", () => {
@@ -104,6 +107,21 @@ describe("active production release entrypoints", () => {
     expect(script).toContain("--full-history-recalculate");
     expect(script).toContain("--owner-authorized");
     expect(script).toContain("runOwnerAuthorizedFullHistoryRecalculation");
+    const backupUpload = workflow.indexOf("Upload encrypted backup artifact before restarting the app");
+    const appRestart = workflow.indexOf("Restart exact-SHA app behind maintenance after backup drain");
+    expect(backupUpload).toBeGreaterThan(-1);
+    expect(appRestart).toBeGreaterThan(backupUpload);
+    expect(workflow).toContain("production-app-container-health-wait.sh \"$RELEASE_SHA\" \"$IMAGE_ID\"");
+    expect(workflow).toContain("source scripts/deploy-main-freshness.sh");
+    expect(workflow).toContain('bodycast_assert_current_main_sha "$RELEASE_SHA"');
+    const restartStep = workflow.slice(appRestart, workflow.indexOf("\n      - name:", appRestart + 1));
+    const restartMainFence = restartStep.indexOf('bodycast_assert_current_main_sha "$RELEASE_SHA"');
+    const appMutation = restartStep.indexOf('docker compose -f docker-compose.prod.yml up -d --no-deps --no-build app');
+    expect(restartMainFence).toBeGreaterThan(restartStep.indexOf('docker image inspect --format'));
+    expect(appMutation).toBeGreaterThan(restartMainFence);
+    expect(restartStep.slice(restartMainFence + 'bodycast_assert_current_main_sha "$RELEASE_SHA"'.length, appMutation))
+      .toMatch(/^\s*BODYCAST_DEPLOY_SHA="\$RELEASE_SHA"\s*$/);
+    expect(restartStep).not.toContain("APP_HEALTH=\"$(docker inspect");
   });
 
   it("uses immutable previous image plus a runtime-config digest for manual cutback only", () => {

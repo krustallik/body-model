@@ -268,6 +268,13 @@ jobs:
             node /app/scripts/unified-v3-postflight.mjs --profile-id 1 \
             | tee "$RUNNER_TEMP/rehearsal-v3-postflight.json"
           echo "Isolated rehearsal published current production + Unified V3 generations." >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload encrypted backup artifact before restarting the app
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: full-history-recalculate-backup-${{ needs.authorize.outputs.release_sha }}
+          path: ${{ steps.backup.outputs.file }}
+          if-no-files-found: error
+          retention-days: 30
       - name: Restart exact-SHA app behind maintenance after backup drain
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -287,24 +294,16 @@ jobs:
           [[ "$(git rev-parse HEAD)" == "$RELEASE_SHA" ]] || exit 1
           IMAGE_ID="$(docker image inspect --format '{{.Id}}' bodycast-app:latest)"
           [[ "$IMAGE_ID" =~ ^sha256:[a-f0-9]{64}$ ]] || exit 1
+          source scripts/deploy-main-freshness.sh
+          bodycast_assert_current_main_sha "$RELEASE_SHA"
           BODYCAST_DEPLOY_SHA="$RELEASE_SHA" docker compose -f docker-compose.prod.yml up -d --no-deps --no-build app
-          APP_SHA="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' bodycast-app-prod)"
-          APP_IMAGE="$(docker inspect --format '{{.Image}}' bodycast-app-prod)"
-          APP_HEALTH="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' bodycast-app-prod)"
-          [[ "$APP_SHA" == "$RELEASE_SHA" && "$APP_IMAGE" == "$IMAGE_ID" && "$APP_HEALTH" == "healthy" ]] || exit 1
+          bash scripts/production-app-container-health-wait.sh "$RELEASE_SHA" "$IMAGE_ID"
           REMOTE
           )"
           REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
           REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$RELEASE_SHA' '$DEPLOY_PATH_B64'"
           SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
           timeout 20m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND"
-      - name: Upload encrypted backup artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: full-history-recalculate-backup-${{ needs.authorize.outputs.release_sha }}
-          path: ${{ steps.backup.outputs.file }}
-          if-no-files-found: error
-          retention-days: 30
       - name: Remove temporary SSH credentials
         if: always()
         run: rm -rf "$RUNNER_TEMP/bodycast-recalc-ssh"

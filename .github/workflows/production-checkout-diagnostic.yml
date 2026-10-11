@@ -94,7 +94,7 @@ jobs:
             echo ""
             echo "- exact current-main SHA: `$MAIN_TIP`"
             echo "- current-main CI: $CI_URL"
-            echo "- production scope: SSH checkout metadata only; no checkout, fetch, writes, maintenance, DB, Docker, or traffic operations"
+            echo "- production scope: read-only checkout metadata, fixed container identity/health, and public maintenance probe; no checkout, fetch, writes, DB, Docker mutations, Caddy, or traffic operations"
           } >> "$GITHUB_STEP_SUMMARY"
 
   diagnose:
@@ -147,13 +147,15 @@ jobs:
           SSH_PORT: ${{ secrets.SSH_PORT }}
           SSH_HOST_FINGERPRINT: ${{ secrets.SSH_HOST_FINGERPRINT }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          APP_HOST: ${{ secrets.APP_HOST }}
         run: |
           set -Eeuo pipefail
-          : "$SSH_PRIVATE_KEY"; : "$SSH_HOST"; : "$SSH_USER"; : "$SSH_PORT"; : "$SSH_HOST_FINGERPRINT"; : "$DEPLOY_PATH"
+          : "$SSH_PRIVATE_KEY"; : "$SSH_HOST"; : "$SSH_USER"; : "$SSH_PORT"; : "$SSH_HOST_FINGERPRINT"; : "$DEPLOY_PATH"; : "$APP_HOST"
           [[ "$SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ && "$SSH_USER" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::Invalid production SSH host or user metadata."; exit 1; }
           [[ "$SSH_PORT" =~ ^[0-9]{1,5}$ ]] && (( SSH_PORT > 0 && SSH_PORT <= 65535 )) || { echo "::error::Invalid production SSH port metadata."; exit 1; }
           [[ "$SSH_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || { echo "::error::Invalid pinned production SSH fingerprint metadata."; exit 1; }
           [[ "$DEPLOY_PATH" == /* && "$DEPLOY_PATH" != *$'\n'* && "$DEPLOY_PATH" != *$'\r'* ]] || { echo "::error::DEPLOY_PATH must be an absolute single-line path."; exit 1; }
+          [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "::error::APP_HOST must be a canonical hostname."; exit 1; }
           umask 077
           install -d -m 700 "$RUNNER_TEMP/bodycast-checkout-diagnostic-ssh"
           printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/bodycast-checkout-diagnostic-ssh/id"
@@ -172,6 +174,7 @@ jobs:
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          APP_HOST: ${{ secrets.APP_HOST }}
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
         run: |
           set -Eeuo pipefail
@@ -180,8 +183,10 @@ jobs:
             echo "::error::Canonical main moved immediately before the read-only SSH diagnostic."; exit 1;
           }
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
+          APP_HOST_B64="$(printf '%s' "$APP_HOST" | base64 -w0)"
           {
             printf 'DEPLOY_PATH_B64=%s\n' "$DEPLOY_PATH_B64"
+            printf 'APP_HOST_B64=%s\n' "$APP_HOST_B64"
             cat scripts/production-checkout-diagnostic.sh
           } | timeout 5m ssh -T -p "$SSH_PORT" \
             -i "$RUNNER_TEMP/bodycast-checkout-diagnostic-ssh/id" \

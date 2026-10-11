@@ -7,6 +7,56 @@ IS_LINUX=0
 if [[ "$(uname -s)" == Linux ]]; then IS_LINUX=1; fi
 FIXTURE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/bodycast-checkout-diagnostic.XXXXXX")"
 trap 'rm -rf -- "$FIXTURE_ROOT"' EXIT
+FIXTURE_BIN="$FIXTURE_ROOT/bin"
+mkdir -p "$FIXTURE_BIN"
+
+cat > "$FIXTURE_BIN/docker" <<'DOCKER'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+[[ "$1" == info ]] && exit 0
+if [[ "$1" == ps ]]; then
+  [[ "${DOCKER_PS_FAIL:-0}" == 0 ]] || exit 91
+  requested=""
+  case "${4:-}" in
+    name=^/bodycast-app-prod$) requested=bodycast-app-prod ;;
+    name=^/bodycast-db-prod$) requested=bodycast-db-prod ;;
+    name=^/gymbeam-caddy$) requested=gymbeam-caddy ;;
+    *) exit 92 ;;
+  esac
+  [[ "${DOCKER_PS_PRESENT:-}" == "$requested" ]] && printf '%s\n' "$requested"
+  exit 0
+fi
+[[ "$1" == inspect ]] || exit 90
+container="${@: -1}"
+[[ "${DOCKER_INSPECT_FAIL:-}" != "$container" ]] || exit 1
+case "$container" in
+  bodycast-app-prod)
+    printf '%s\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb|running|healthy|unless-stopped|1111111111111111111111111111111111111111'
+    ;;
+  bodycast-db-prod)
+    printf '%s\n' 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc|sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd|running|healthy|unless-stopped|'
+    ;;
+  gymbeam-caddy)
+    printf '%s\n' 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee|sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff|running|none|unless-stopped|'
+    ;;
+  *) exit 1 ;;
+esac
+DOCKER
+
+cat > "$FIXTURE_BIN/curl" <<'CURL'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s\n' "$*" >> "$CURL_EVENTS"
+cat <<'RESPONSE'
+HTTP/2 503
+Cache-Control: no-store
+X-BodyCast-Deploy-Maintenance: fixture-marker-secret
+
+BodyCast is temporarily unavailable while the model is updated.
+RESPONSE
+CURL
+chmod +x "$FIXTURE_BIN/docker" "$FIXTURE_BIN/curl"
+: > "$FIXTURE_ROOT/curl-events"
 
 TEST_REPO="$FIXTURE_ROOT/repo"
 mkdir -p "$TEST_REPO"
@@ -28,7 +78,12 @@ assert_field() {
 
 run_inspector() {
   local path="$1"
-  GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+  GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null PATH="$FIXTURE_BIN:$PATH" \
+    CURL_EVENTS="$FIXTURE_ROOT/curl-events" \
+    DOCKER_INSPECT_FAIL="${DOCKER_INSPECT_FAIL:-}" \
+    DOCKER_PS_PRESENT="${DOCKER_PS_PRESENT:-}" \
+    DOCKER_PS_FAIL="${DOCKER_PS_FAIL:-0}" \
+    APP_HOST_B64="$(printf '%s' 'bodycast.example.test' | base64 -w0)" \
     DEPLOY_PATH_B64="$(printf '%s' "$path" | base64 -w0)" bash "$INSPECTOR"
 }
 
@@ -46,6 +101,32 @@ assert_field "$CLEAN_REPORT" status_exit_code 0
 assert_field "$CLEAN_REPORT" tracked_unstaged_path_count 0
 assert_field "$CLEAN_REPORT" tracked_staged_path_count 0
 assert_field "$CLEAN_REPORT" untracked_path_count 0
+assert_field "$CLEAN_REPORT" docker_daemon_available yes
+assert_field "$CLEAN_REPORT" bodycast_app_prod_found yes
+assert_field "$CLEAN_REPORT" bodycast_app_prod_state running
+assert_field "$CLEAN_REPORT" bodycast_app_prod_health healthy
+assert_field "$CLEAN_REPORT" bodycast_app_prod_release_sha 1111111111111111111111111111111111111111
+assert_field "$CLEAN_REPORT" bodycast_db_prod_health healthy
+assert_field "$CLEAN_REPORT" gymbeam_caddy_state running
+assert_field "$CLEAN_REPORT" public_https_status 503
+assert_field "$CLEAN_REPORT" maintenance_header_present yes
+assert_field "$CLEAN_REPORT" maintenance_body_matches yes
+assert_field "$CLEAN_REPORT" maintenance_cache_control_no_store yes
+assert_field "$CLEAN_REPORT" public_https_probe_exit_code 0
+if [[ "$CLEAN_REPORT" == *'bodycast.example.test'* || "$CLEAN_REPORT" == *'fixture-marker-secret'* || "$CLEAN_REPORT" == *'BodyCast is temporarily unavailable'* ]]; then
+  echo 'Runtime diagnostic exposed the hostname, marker value, or raw HTTP body.' >&2
+  exit 1
+fi
+
+INSPECT_ERROR_PRESENT_REPORT="$(DOCKER_INSPECT_FAIL=bodycast-db-prod DOCKER_PS_PRESENT=bodycast-db-prod run_inspector "$TEST_REPO")"
+assert_field "$INSPECT_ERROR_PRESENT_REPORT" bodycast_db_prod_found unknown
+assert_field "$INSPECT_ERROR_PRESENT_REPORT" bodycast_db_prod_state unknown
+
+INSPECT_ERROR_ABSENT_REPORT="$(DOCKER_INSPECT_FAIL=bodycast-db-prod run_inspector "$TEST_REPO")"
+assert_field "$INSPECT_ERROR_ABSENT_REPORT" bodycast_db_prod_found no
+
+INSPECT_AND_LIST_ERROR_REPORT="$(DOCKER_INSPECT_FAIL=bodycast-db-prod DOCKER_PS_FAIL=1 run_inspector "$TEST_REPO")"
+assert_field "$INSPECT_AND_LIST_ERROR_REPORT" bodycast_db_prod_found unknown
 
 TRAILING_REPORT="$(run_inspector "$TEST_REPO/")"
 assert_field "$TRAILING_REPORT" deploy_path_has_trailing_slash yes

@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { createGitHubEvidenceClient, collectForwardResumeEvidence } from "../scripts/github-forward-resume-evidence.mjs";
 import { createCaptureResumeReceipt, validateCaptureResumeReceipt } from "../scripts/production-capture-resume-receipt.mjs";
 import { canonicalSha256, createAuthorizationEnvelope } from "../scripts/production-migration-authorization.mjs";
-import { DIAGNOSTIC_FILES, DIAGNOSTIC_PATH, createForwardResumeContext, verifyForwardResumeAuthorizationBundle, verifyForwardResumeContext,
+import { DIAGNOSTIC_FILES, DIAGNOSTIC_PATH, DIAGNOSTIC_LEGACY_REVIEWED_SHA, createForwardResumeContext, verifyForwardResumeAuthorizationBundle, verifyForwardResumeContext,
   verifyForwardResumeNoSpawnEvidence, verifyNoLaterMutationRun, FORWARD_RESUME_FAILED_SHA } from "../scripts/production-forward-resume.mjs";
 import { schemaInventoryDigest } from "../scripts/production-migration-preflight.mjs";
 import { capturePreviousAppProvenance, previousAppProvenanceBinding,
@@ -18,7 +18,7 @@ const currentId = "39000000001";
 const owner = 126446430;
 const jsonResponse = (value) => new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } });
 function apiFixture({ mutateRuns = (runs) => runs, mutateRetry = () => {}, mutateLog = (log) => log,
-  includeDiagnostic = false, mutateDiagnostic = () => {}, mutateFile = (bytes) => bytes,
+  includeDiagnostic = false, legacyDiagnosticVersion = false, mutateDiagnostic = () => {}, mutateFile = (bytes) => bytes,
   ancestor = true, downloadStatus = 200, redirect = "https://fixture.blob.core.windows.net/log?private=opaque" } = {}) {
   const original = noSpawnProofInputs();
   const source = sourceRun({ created_at: "2026-10-09T12:00:00Z" });
@@ -28,7 +28,7 @@ function apiFixture({ mutateRuns = (runs) => runs, mutateRetry = () => {}, mutat
   const current = sourceRun({ id: Number(currentId), workflow_id: retry.run.workflow_id,
     path: retry.run.path, head_sha: mainSha, status: "in_progress", conclusion: null });
   const diagnostic = { run: sourceRun({ id: 38800000000, path: DIAGNOSTIC_PATH, workflow_id: 88,
-    head_sha: "c".repeat(40), conclusion: "success" }), jobs: { total_count: 2, jobs: [
+    head_sha: legacyDiagnosticVersion ? DIAGNOSTIC_LEGACY_REVIEWED_SHA : "c".repeat(40), conclusion: "success" }), jobs: { total_count: 2, jobs: [
       { id: 81, run_id: 38800000000, name: "Authorize owner-requested exact-main diagnostic", status: "completed", conclusion: "success", head_sha: "c".repeat(40), run_attempt: 1,
         steps: ["Set up job", "Checkout current main gate helpers", "Verify owner, exact current-main SHA, confirmation, and green CI",
           "Post Checkout current main gate helpers", "Complete job"].map((name) => ({ name, status: "completed", conclusion: "success" })) },
@@ -37,6 +37,7 @@ function apiFixture({ mutateRuns = (runs) => runs, mutateRetry = () => {}, mutat
           "Validate SSH inputs and pin the production host", "Inspect checkout metadata read-only", "Remove temporary SSH credentials",
           "Post Checkout exact current-main diagnostic script", "Complete job"].map((name) => ({ name, status: "completed", conclusion: "success" })) },
     ] } };
+  for (const job of diagnostic.jobs.jobs) job.head_sha = diagnostic.run.head_sha;
   mutateDiagnostic(diagnostic);
   const nonProduction = Array.from({ length: 101 }, (_, i) => ({ id: 38100000000 + i,
     path: ".github/workflows/ci.yml", status: "completed", conclusion: "success" }));
@@ -76,7 +77,7 @@ function apiFixture({ mutateRuns = (runs) => runs, mutateRetry = () => {}, mutat
   return { client: createGitHubEvidenceClient({ token: "test-only-credential", fetchImpl }), requests, source, retry, current,
     collect: () => collectForwardResumeEvidence({ client: createGitHubEvidenceClient({ token: "test-only-credential", fetchImpl }),
       currentRunId: currentId, currentMainSha: mainSha, isAncestor: (sha) => ancestor && /^[a-f0-9]{40}$/.test(sha),
-      gitFile: (sha, file) => mutateFile(Buffer.from(`reviewed fixed code: ${file}`), sha, file),
+      gitFile: (sha, file) => mutateFile(Buffer.from(`reviewed ${sha === DIAGNOSTIC_LEGACY_REVIEWED_SHA ? "legacy" : "current"} fixed code: ${file}`), sha, file),
       gitBlob: () => original.sourceGuardBytes }) };
 }
 
@@ -256,6 +257,10 @@ describe("credential-free end-to-end forward-resume evidence replay", () => {
     expect(evidence.failureProof.noPrismaSpawnVerified).toBe(true);
     expect(evidence.mutationHistoryDigest).not.toBe((await apiFixture().collect()).mutationHistoryDigest);
   });
+  it("continues verifying historical diagnostics against the exact pinned read-only implementation", async () => {
+    const evidence = await apiFixture({ includeDiagnostic: true, legacyDiagnosticVersion: true }).collect();
+    expect(evidence.failureProof.noPrismaSpawnVerified).toBe(true);
+  });
   it.each([
     ["actor", (d) => { d.run.actor.id = 42; }],
     ["rerun", (d) => { d.run.run_attempt = 2; }],
@@ -268,7 +273,7 @@ describe("credential-free end-to-end forward-resume evidence replay", () => {
   });
   it.each(DIAGNOSTIC_FILES)("blocks changed diagnostic dependency %s", async (changedFile) => {
     await expect(apiFixture({ includeDiagnostic: true, mutateFile: (bytes, sha, file) =>
-      sha !== mainSha && file === changedFile ? Buffer.from("different code") : bytes }).collect()).rejects.toThrow("diagnostic code differs");
+      sha === "c".repeat(40) && file === changedFile ? Buffer.from("different code") : bytes }).collect()).rejects.toThrow("diagnostic code differs");
   });
   it("blocks non-ancestor SHA", async () => {
     await expect(apiFixture({ ancestor: false }).collect()).rejects.toThrow();

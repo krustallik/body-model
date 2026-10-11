@@ -4,7 +4,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { BODYCAST_REPOSITORY } from "./github-owner-identity.mjs";
 import { canonicalSha256 } from "./production-migration-authorization.mjs";
-import { DIAGNOSTIC_PATH, DIAGNOSTIC_FILES, FORWARD_RESUME_FAILED_RUN_ID, ARMED_RETRY_FAILED_RUN_ID, MIGRATION_FAILURE_JOB, verifyNoLaterMutationRun,
+import { DIAGNOSTIC_PATH, DIAGNOSTIC_FILES, DIAGNOSTIC_LEGACY_REVIEWED_SHA, FORWARD_RESUME_FAILED_RUN_ID, ARMED_RETRY_FAILED_RUN_ID, MIGRATION_FAILURE_JOB, verifyNoLaterMutationRun,
   verifyForwardResumeNoSpawnEvidence, selectForwardResumeMigrationContextArtifact } from "./production-forward-resume.mjs";
 
 const PREFIX = `/repos/${BODYCAST_REPOSITORY}`;
@@ -111,7 +111,8 @@ export async function collectForwardResumeEvidence({ client, currentRunId, curre
       readOnlyDiagnostics.push({ run, jobsPayload, workflowId: workflow.id, currentMainSha,
         shaIsAncestorOfCurrentMain: isAncestor(run.head_sha, currentMainSha),
         sourceFiles: Object.fromEntries(DIAGNOSTIC_FILES.map((file) => [file, gitFile(run.head_sha, file)])),
-        reviewedFiles: Object.fromEntries(DIAGNOSTIC_FILES.map((file) => [file, gitFile(currentMainSha, file)])) });
+        reviewedFiles: Object.fromEntries(DIAGNOSTIC_FILES.map((file) => [file, gitFile(currentMainSha, file)])),
+        legacyReviewedFiles: Object.fromEntries(DIAGNOSTIC_FILES.map((file) => [file, gitFile(DIAGNOSTIC_LEGACY_REVIEWED_SHA, file)])) });
       continue;
     }
     safeFailedPreflightRetries.push({ run, jobsPayload, workflowId: preflightWorkflow.id, currentMainSha,

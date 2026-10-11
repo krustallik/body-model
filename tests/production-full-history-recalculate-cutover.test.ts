@@ -54,6 +54,25 @@ describe("production full-history recalculation cutover", () => {
     expect(appState(fixture)).toMatchObject({ sha: fixture.candidateSha, status: "healthy", present: "true" });
   }, 30_000);
 
+  it.skipIf(!bashAvailable)("blocks full-history DML when canonical main advances during migrator build", () => {
+    const fixture = createFixture();
+    prepareFixture(fixture);
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh full-history-recalculate", {
+      BODYCAST_DEPLOY_SHA: fixture.candidateSha,
+      ADVANCE_ON_MIGRATOR_BUILD: "1",
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).not.toBe(0);
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    expect(appState(fixture).present).toBe("false");
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8").trim().split(/\r?\n/);
+    expect(events).toContain("main-advanced");
+    expect(events).not.toContain("full-history-recalculate");
+    expect(events).not.toContain("unified-v3-postflight");
+    expect(events).not.toContain("live-route-mutation:serving");
+    expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).toContain("build migrate");
+  }, 30_000);
+
   it.skipIf(!bashAvailable)("keeps maintenance and does not activate V4 when recalculation fails", () => {
     const fixture = createFixture();
     prepareFixture(fixture);

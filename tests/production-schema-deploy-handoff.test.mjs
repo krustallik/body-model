@@ -106,7 +106,7 @@ describe("schema deploy compatibility handoff", () => {
       },
       "scripts/ci/production-deploy-gate.ts": {
         migrationOriginBlob: "8d0d5e1d0a7c291daae0ff9cd6a970cfb3085083",
-        deployBlob: "f74bb80d9bf424d512c635c7d6c3f4d7858c3dcc",
+        deployBlob: "451319d5792e92fac02757ad8396c531ad5f19bb",
       },
       "scripts/production-route-primitives.sh": {
         migrationOriginBlob: "65a51f97bf404d9353b45b1fc33725cb7a582daa",

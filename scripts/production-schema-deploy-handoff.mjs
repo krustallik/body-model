@@ -19,6 +19,25 @@ const DIGEST = /^[a-f0-9]{64}$/;
 const V3_STATES = new Set(["schema-applied", "app-ready", "v4-ready", "database-restored", "rollback-app-ready"]);
 const DENIED_PATH = /^(?:prisma\/|public\/|scripts\/unified-v[34]|scripts\/physiology|docker-compose(?:\.prod)?\.yml$|package(?:-lock)?\.json$|next\.config\.[^/]+$|tsconfig(?:\.[^/]+)?\.json$)/;
 const ALLOWED_PATH = /^(?:\.github\/workflows\/|tests\/|scripts\/deploy\.sh$|scripts\/production-release-marker\.(?:sh|mjs)$|scripts\/production-schema-deploy-handoff\.mjs$|scripts\/production-traffic-cutover\.sh$|scripts\/production-full-history-recalculate\.ts$|src\/modules\/model-episodes\/(?:full-history-recalculation\.service|transient-exercise-water-episode-time-v2)\.ts$|src\/modules\/training\/experimental-transient-exercise-water-shadow\.service\.ts$|Dockerfile$)/;
+/** Exact audited Git blobs admitted for this deploy-only compatibility handoff. */
+const CONTENT_BOUND_PATHS = Object.freeze({
+  "scripts/production-forward-resume.mjs": Object.freeze({
+    migrationOriginBlob: "2c07e0636146caaa5bfef69522f351c4e37aa13d",
+    deployBlob: "43373e740cdad93d6f88c37c565288b2db1ad70d",
+  }),
+  "scripts/github-forward-resume-evidence.mjs": Object.freeze({
+    migrationOriginBlob: "b62a7e09fd871e68829e9fad3902510a9e3bd6ca",
+    deployBlob: "9d76e1612f86f700c5e3950fc67c77f0fa6c7912",
+  }),
+  "scripts/production-app-container-health-wait.sh": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "b99a87d861d5471336bd0d75f4df49436237df7c",
+  }),
+  "scripts/production-checkout-diagnostic.sh": Object.freeze({
+    migrationOriginBlob: "f19687c65d7e9d3b744890f377ebf6f0c80eebf9",
+    deployBlob: "331bc320b23c51d5b36519dfb0f15ac0a9fdb530",
+  }),
+});
 /** Schema/runtime identity that must remain identical to the migration origin. */
 const CRITICAL_TREES = ["prisma"];
 const CRITICAL_FILES = ["docker-compose.prod.yml", "package.json", "package-lock.json"];
@@ -87,12 +106,23 @@ function provenanceMatches(marker) {
 }
 
 export function compatibilityDigest(input) {
-  return sha256(Buffer.from(JSON.stringify({
+  const evidence = {
     migrationOriginSha: input.migrationOriginSha,
     deploySha: input.deploySha,
     changedPaths: [...input.changedPaths].sort(),
     criticalObjects: input.criticalObjects,
-  }), "utf8"));
+  };
+  const contentBoundPaths = input.changedPathObjects ?? {};
+  if (Object.keys(contentBoundPaths).length > 0) {
+    evidence.changedPathObjects = Object.fromEntries(Object.keys(contentBoundPaths).sort().map((objectPath) => [
+      objectPath,
+      {
+        migrationOriginBlob: contentBoundPaths[objectPath].migrationOriginBlob,
+        deployBlob: contentBoundPaths[objectPath].deployBlob,
+      },
+    ]));
+  }
+  return sha256(Buffer.from(JSON.stringify(evidence), "utf8"));
 }
 
 export function serializeSchemaDeployHandoff(marker) {
@@ -118,13 +148,40 @@ export function serializeSchemaDeployHandoff(marker) {
   return Buffer.from(text, "utf8");
 }
 
-function assertCompatibleChangedPaths(changedPaths) {
+function assertCompatibleChangedPaths(changedPaths, changedPathObjects) {
   if (!Array.isArray(changedPaths) || !changedPaths.every((changed) => typeof changed === "string")) {
     reject("compatibility evidence is incomplete");
   }
+  if (changedPathObjects !== undefined
+    && (!changedPathObjects || typeof changedPathObjects !== "object" || Array.isArray(changedPathObjects))) {
+    reject("content-bound path evidence is malformed");
+  }
+  if (new Set(changedPaths).size !== changedPaths.length) reject("compatibility path evidence is duplicated");
+  const contentBoundChangedPaths = changedPaths.filter((changed) => Object.hasOwn(CONTENT_BOUND_PATHS, changed)).sort();
+  const suppliedContentBoundPaths = changedPathObjects && typeof changedPathObjects === "object" && !Array.isArray(changedPathObjects)
+    ? Object.keys(changedPathObjects).sort()
+    : [];
+  if (contentBoundChangedPaths.length !== suppliedContentBoundPaths.length
+    || contentBoundChangedPaths.some((objectPath, index) => objectPath !== suppliedContentBoundPaths[index])) {
+    reject("content-bound path evidence is incomplete or unexpected");
+  }
   for (const changed of changedPaths) {
-    if (changed.length === 0 || DENIED_PATH.test(changed) || !ALLOWED_PATH.test(changed)) {
+    if (changed.length === 0 || DENIED_PATH.test(changed)) {
       reject(`path ${changed} is outside the reviewed deploy compatibility allowlist`);
+    }
+    if (ALLOWED_PATH.test(changed)) continue;
+    const reviewedBlobs = CONTENT_BOUND_PATHS[changed];
+    const proof = changedPathObjects?.[changed];
+    if (!reviewedBlobs) reject(`path ${changed} is outside the reviewed deploy compatibility allowlist`);
+    if (!proof || typeof proof !== "object" || Array.isArray(proof)
+      || Object.keys(proof).sort().join(",") !== "deployBlob,migrationOriginBlob"
+      || (reviewedBlobs.migrationOriginBlob === null
+        ? proof.migrationOriginBlob !== null
+        : typeof proof.migrationOriginBlob !== "string" || !/^[a-f0-9]{40}$/.test(proof.migrationOriginBlob))
+      || typeof proof.deployBlob !== "string" || !/^[a-f0-9]{40}$/.test(proof.deployBlob)
+      || proof.migrationOriginBlob !== reviewedBlobs.migrationOriginBlob
+      || proof.deployBlob !== reviewedBlobs.deployBlob) {
+      reject(`path ${changed} does not match its exact reviewed content binding`);
     }
   }
 }
@@ -146,6 +203,7 @@ function buildHandoffWrite({
   deploySha,
   state,
   changedPaths,
+  changedPathObjects,
   criticalObjects,
   workflowRunId,
   workflowRunAttempt,
@@ -153,12 +211,13 @@ function buildHandoffWrite({
   lineageDigest,
   spawnState,
 }) {
-  assertCompatibleChangedPaths(changedPaths);
+  assertCompatibleChangedPaths(changedPaths, changedPathObjects);
   assertCriticalObjects(criticalObjects);
   const digest = compatibilityDigest({
     migrationOriginSha,
     deploySha,
     changedPaths,
+    changedPathObjects,
     criticalObjects,
   });
   const next = {
@@ -183,7 +242,7 @@ function buildHandoffWrite({
   };
 }
 
-export function evaluateSchemaDeployHandoff({ markerText, deploySha, changedPaths, isAncestor, criticalObjects }) {
+export function evaluateSchemaDeployHandoff({ markerText, deploySha, changedPaths, changedPathObjects, isAncestor, criticalObjects }) {
   if (!SHA.test(String(deploySha ?? ""))) reject("deploy candidate SHA is malformed");
   const observed = parseSchemaDeployMarker(markerText);
   const marker = observed.marker;
@@ -193,12 +252,15 @@ export function evaluateSchemaDeployHandoff({ markerText, deploySha, changedPath
       || marker.spawnState !== "started" || !DIGEST.test(marker.sourceMarkerDigest) || !DIGEST.test(marker.compatibilityDigest)) {
       reject("existing handoff provenance is malformed");
     }
+    assertCompatibleChangedPaths(changedPaths, changedPathObjects);
+    assertCriticalObjects(criticalObjects);
     if (isAncestor !== true) reject("deploy candidate is not a descendant of the migration origin");
     if (marker.deploySha === deploySha) {
       const recomputed = compatibilityDigest({
         migrationOriginSha: marker.migrationOriginSha,
         deploySha: marker.deploySha,
         changedPaths,
+        changedPathObjects,
         criticalObjects,
       });
       if (marker.compatibilityDigest !== recomputed) {
@@ -215,6 +277,7 @@ export function evaluateSchemaDeployHandoff({ markerText, deploySha, changedPath
       deploySha,
       state: "schema-applied",
       changedPaths,
+      changedPathObjects,
       criticalObjects,
       workflowRunId: marker.workflowRunId,
       workflowRunAttempt: marker.workflowRunAttempt,
@@ -234,6 +297,7 @@ export function evaluateSchemaDeployHandoff({ markerText, deploySha, changedPath
     deploySha,
     state: "schema-applied",
     changedPaths,
+    changedPathObjects,
     criticalObjects,
     workflowRunId: marker.workflowRunId,
     workflowRunAttempt: marker.workflowRunAttempt,
@@ -261,6 +325,24 @@ function objectId(repo, sha, objectPath) {
   }
 }
 
+function regularFileBlobId(repo, sha, objectPath, optional = false) {
+  let listing;
+  try {
+    listing = git(repo, ["ls-tree", "-z", sha, "--", objectPath]);
+  } catch {
+    reject(`Git tree lookup failed for ${objectPath}`);
+  }
+  if (!listing) {
+    if (optional) return null;
+    reject(`required file ${objectPath} is absent at ${sha}`);
+  }
+  const [entry, rawListedPath] = listing.split("\t");
+  const listedPath = rawListedPath?.replace(/\0$/, "");
+  const match = /^100644 blob ([a-f0-9]{40})$/.exec(entry ?? "");
+  if (!match || listedPath !== objectPath) reject(`required file ${objectPath} is not a regular non-executable blob at ${sha}`);
+  return match[1];
+}
+
 export function readGitCompatibility(repo, deploySha) {
   if (!SHA.test(deploySha)) reject("deploy candidate SHA is malformed");
   const origin = SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA;
@@ -286,7 +368,14 @@ export function readGitCompatibility(repo, deploySha) {
     if (originId !== deployId) reject(`${objectPath} differs from the migration origin`);
     criticalObjects[objectPath] = originId;
   }
-  return { changedPaths, isAncestor, criticalObjects };
+  const changedPathObjects = {};
+  for (const objectPath of changedPaths.filter((changed) => Object.hasOwn(CONTENT_BOUND_PATHS, changed))) {
+    changedPathObjects[objectPath] = {
+      migrationOriginBlob: regularFileBlobId(repo, origin, objectPath, true),
+      deployBlob: regularFileBlobId(repo, deploySha, objectPath),
+    };
+  }
+  return { changedPaths, changedPathObjects, isAncestor, criticalObjects };
 }
 
 async function fsyncDirectory(directory) {

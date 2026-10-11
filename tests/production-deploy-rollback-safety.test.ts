@@ -32,15 +32,124 @@ describe("maintenance-first deploy fail-closed checks", () => {
     const events = readFileSync(path.join(fixture.root, "events.log"), "utf8").trim().split(/\r?\n/);
     const maintenanceProbeAt = events.findIndex((event) => event.startsWith("public-probe:503:https://bodycast.example.test/"));
     const captureAt = events.indexOf("capture-app-container-id");
+    const pinAt = events.indexOf(`image-tag:${PREVIOUS_IMAGE_ID}:bodycast-app:deploy-rollback`);
+    const appBuildAt = events.indexOf("compose-build-app");
     const stopAt = events.indexOf("compose-stop-app");
     expect(maintenanceProbeAt).toBeGreaterThan(-1);
     expect(captureAt).toBeGreaterThan(maintenanceProbeAt);
-    expect(stopAt).toBeGreaterThan(captureAt);
+    expect(pinAt).toBeGreaterThan(captureAt);
+    expect(appBuildAt).toBeGreaterThan(pinAt);
+    expect(stopAt).toBeGreaterThan(appBuildAt);
     expect(events).toContain("schema-preflight-no-deps");
     expect(events).not.toContain("forbidden-db-start");
     const dockerLog = readFileSync(path.join(fixture.root, "docker.log"), "utf8");
     expect(dockerLog).not.toContain("up -d db");
     expect(dockerLog).toContain("run --rm --no-deps --entrypoint npx migrate prisma migrate status");
+    expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).toContain(
+      `${PREVIOUS_IMAGE_ID} bodycast-app:deploy-rollback`,
+    );
+    expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).toContain("image rm bodycast-app:deploy-rollback");
+    expect(existsSync(path.join(fixture.root, "image-deploy-rollback"))).toBe(false);
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("keeps the prior app running when its exact image cannot be pinned before candidate build", () => {
+    const fixture = createFixture();
+    const result = runFixture(fixture, "bash scripts/deploy.sh", {
+      DEPLOY_SHA: fixture.candidateSha,
+      BODYCAST_NON_SERVING_DEPLOY: "0",
+      FAIL_DEPLOY_ROLLBACK_TAG: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Could not pin the exact previous app image");
+    expect(appState(fixture)).toEqual({ sha: PREVIOUS_SHA, imageId: PREVIOUS_IMAGE_ID, status: "healthy", present: "true" });
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events).toContain("image-tag-deploy-rollback-failed");
+    expect(events).not.toContain("compose-build-app");
+    expect(events).not.toContain("compose-stop-app");
+    expect(events).not.toContain("compose-remove-app");
+    const dockerLog = readFileSync(path.join(fixture.root, "docker.log"), "utf8");
+    expect(dockerLog).not.toContain("up -d --no-deps --force-recreate app");
+    expect(dockerLog).not.toContain("prisma migrate deploy");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("keeps the prior app running when its immutable image is unavailable before pinning", () => {
+    const fixture = createFixture();
+    const result = runFixture(fixture, "bash scripts/deploy.sh", {
+      DEPLOY_SHA: fixture.candidateSha,
+      BODYCAST_NON_SERVING_DEPLOY: "0",
+      MISSING_PREVIOUS_IMAGE: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("The exact previous app image is unavailable");
+    expect(appState(fixture)).toEqual({ sha: PREVIOUS_SHA, imageId: PREVIOUS_IMAGE_ID, status: "healthy", present: "true" });
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events).not.toContain("compose-build-app");
+    expect(events).not.toContain("compose-stop-app");
+    expect(events).not.toContain("compose-remove-app");
+    const dockerLog = readFileSync(path.join(fixture.root, "docker.log"), "utf8");
+    expect(dockerLog).not.toContain("image tag");
+    expect(dockerLog).not.toContain("up -d --no-deps --force-recreate app");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("rejects a rollback tag that does not resolve to the prior immutable image", () => {
+    const fixture = createFixture();
+    const result = runFixture(fixture, "bash scripts/deploy.sh", {
+      DEPLOY_SHA: fixture.candidateSha,
+      BODYCAST_NON_SERVING_DEPLOY: "0",
+      MISMATCH_DEPLOY_ROLLBACK_TAG: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("The deploy rollback pin does not match the captured immutable image ID");
+    expect(appState(fixture)).toEqual({ sha: PREVIOUS_SHA, imageId: PREVIOUS_IMAGE_ID, status: "healthy", present: "true" });
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events).not.toContain("compose-build-app");
+    expect(events).not.toContain("compose-stop-app");
+    expect(events).not.toContain("compose-remove-app");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("retains the verified prior image pin if candidate build fails", () => {
+    const fixture = createFixture();
+    const result = runFixture(fixture, "bash scripts/deploy.sh", {
+      DEPLOY_SHA: fixture.candidateSha,
+      BODYCAST_NON_SERVING_DEPLOY: "0",
+      FAIL_APP_BUILD: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(appState(fixture)).toEqual({ sha: PREVIOUS_SHA, imageId: PREVIOUS_IMAGE_ID, status: "healthy", present: "true" });
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    expect(readFileSync(path.join(fixture.root, "image-deploy-rollback"), "utf8").trim()).toBe(PREVIOUS_IMAGE_ID);
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events).toContain("image-tag:" + PREVIOUS_IMAGE_ID + ":bodycast-app:deploy-rollback");
+    expect(events).not.toContain("compose-stop-app");
+    expect(events).not.toContain("compose-remove-app");
+    expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).not.toContain("up -d --no-deps --force-recreate app");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("keeps the prior app running when canonical main advances during image build", () => {
+    const fixture = createFixture();
+    const result = runFixture(fixture, "bash scripts/deploy.sh", {
+      DEPLOY_SHA: fixture.candidateSha,
+      BODYCAST_NON_SERVING_DEPLOY: "0",
+      ADVANCE_ON_MIGRATOR_BUILD: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Refusing stale release SHA");
+    expect(appState(fixture)).toEqual({ sha: PREVIOUS_SHA, imageId: PREVIOUS_IMAGE_ID, status: "healthy", present: "true" });
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events).toContain("main-advanced");
+    expect(events).not.toContain("compose-stop-app");
+    expect(events).not.toContain("compose-remove-app");
+    const dockerLog = readFileSync(path.join(fixture.root, "docker.log"), "utf8");
+    expect(dockerLog).not.toContain("up -d --no-deps --force-recreate app");
   }, 30_000);
 
   it.skipIf(!bashAvailable)("fails before maintenance when the existing DB is unavailable", () => {

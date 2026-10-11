@@ -81,9 +81,13 @@ describe("production maintenance-first deploy safety contracts", () => {
     const confirmAt = deploySh.indexOf("publish_and_confirm_maintenance\n");
     const stopAt = deploySh.indexOf("stop_exact_app_container \"$previous_app_sha\"", confirmAt);
     const captureAt = deploySh.indexOf("capture_previous_release\n", confirmAt);
+    const migrateBuildAt = deploySh.indexOf("compose --profile tools build migrate", captureAt);
+    const appBuildAt = deploySh.indexOf('compose build "$APP_SERVICE"', captureAt);
     expect(confirmAt).toBeGreaterThan(-1);
     expect(captureAt).toBeGreaterThan(confirmAt);
-    expect(stopAt).toBeGreaterThan(captureAt);
+    expect(migrateBuildAt).toBeGreaterThan(captureAt);
+    expect(appBuildAt).toBeGreaterThan(migrateBuildAt);
+    expect(stopAt).toBeGreaterThan(appBuildAt);
     const publishDefinitionAt = deploySh.indexOf("publish_and_confirm_maintenance() {");
     const captureDefinitionAt = deploySh.indexOf("capture_previous_release() {");
     const publishBody = deploySh.slice(publishDefinitionAt, captureDefinitionAt);
@@ -91,8 +95,10 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(publishBody).toContain('release_state="MAINTENANCE_CONFIRMED"');
     const captureBody = deploySh.slice(captureDefinitionAt, deploySh.indexOf("\necho \"Preparing exact release"));
     expect(captureBody).toContain("docker image inspect --format '{{.Id}}' \"$previous_app_image_id\"");
-    expect(captureBody).toContain("docker commit --pause=false \"$APP_CONTAINER\"");
-    expect(captureBody).toContain("continuing with exact container-identity stop only");
+    expect(captureBody).toContain('docker image tag "$previous_app_image_id" "$DEPLOY_ROLLBACK_IMAGE"');
+    expect(captureBody).toContain('[[ "$pinned_image_id" == "$previous_app_image_id" ]]');
+    expect(captureBody).not.toContain("docker commit");
+    expect(captureBody).not.toContain("continuing with exact container-identity stop only");
   });
 
   it("never starts the DB and prevents Compose dependency startup during read-only preflight", () => {

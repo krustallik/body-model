@@ -34,7 +34,7 @@ describe("fallback maintenance-first production deploy", () => {
     expect(appState(fixture)).toEqual({ sha: PREVIOUS_SHA, imageId: PREVIOUS_IMAGE_ID, status: "exited", present: "false" });
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
     expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).not.toContain("reverse_proxy");
-    expect(readFileSync(path.join(fixture.root, "image-rollback"), "utf8").trim()).toBe(PREVIOUS_IMAGE_ID);
+    expect(readFileSync(path.join(fixture.root, "image-deploy-rollback"), "utf8").trim()).toBe(PREVIOUS_IMAGE_ID);
     const dockerLog = readFileSync(path.join(fixture.root, "docker.log"), "utf8");
     expect(dockerLog.split(/\r?\n/).filter((line) => line.includes("up -d --no-deps --force-recreate app"))).toHaveLength(1);
     expect(result.stderr).toContain("Automatic prior-app restoration is disabled");

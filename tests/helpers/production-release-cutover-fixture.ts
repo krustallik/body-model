@@ -143,9 +143,10 @@ if [[ "$1" == "image" && "$2" == "inspect" ]]; then
   case "$image" in
     bodycast-app:latest) image_file="$IMAGE_LATEST" ;;
     bodycast-app:rollback) image_file="$IMAGE_ROLLBACK" ;;
+    bodycast-app:deploy-rollback) image_file="$IMAGE_DEPLOY_ROLLBACK" ;;
     *)
       if [[ "\${MISSING_PREVIOUS_IMAGE:-0}" == "1" ]]; then exit 1; fi
-      for image_file in "$APP_IMAGE_ID_FILE" "$IMAGE_LATEST" "$IMAGE_ROLLBACK"; do
+      for image_file in "$APP_IMAGE_ID_FILE" "$IMAGE_LATEST" "$IMAGE_ROLLBACK" "$IMAGE_DEPLOY_ROLLBACK"; do
         if [[ -s "$image_file" && "$(cat "$image_file")" == "$image" ]]; then
           if [[ "$format" == *".Id"* ]]; then printf '%s\n' "$image"; fi
           exit 0
@@ -175,11 +176,23 @@ if [[ "$1" == "inspect" && "$2" == "--format" && "$3" == *"{{.Id}}|{{.Image}}|"*
   exit 0
 fi
 if [[ "$1" == "image" && "$2" == "tag" ]]; then
+  if [[ "$4" == "bodycast-app:deploy-rollback" && "\${FAIL_DEPLOY_ROLLBACK_TAG:-0}" == "1" ]]; then
+    event "image-tag-deploy-rollback-failed"
+    exit 55
+  fi
+  if [[ "$4" == "bodycast-app:deploy-rollback" && "\${MISMATCH_DEPLOY_ROLLBACK_TAG:-0}" == "1" ]]; then
+    printf '%s\n' "$WRONG_IMAGE_ID" > "$IMAGE_DEPLOY_ROLLBACK"
+    event "image-tag-deploy-rollback-mismatched"
+    exit 0
+  fi
   case "$3:$4" in
     bodycast-app:latest:bodycast-app:rollback) cp "$IMAGE_LATEST" "$IMAGE_ROLLBACK" ;;
     bodycast-app:rollback:bodycast-app:latest) cp "$IMAGE_ROLLBACK" "$IMAGE_LATEST" ;;
     sha256:*:bodycast-app:rollback)
       printf '%s\n' "$3" > "$IMAGE_ROLLBACK"
+      ;;
+    sha256:*:bodycast-app:deploy-rollback)
+      printf '%s\n' "$3" > "$IMAGE_DEPLOY_ROLLBACK"
       ;;
     *) exit 2 ;;
   esac
@@ -191,7 +204,11 @@ if [[ "$1" == "image" && "$2" == "rm" ]]; then
     event "image-rm-failed"
     exit 55
   fi
-  rm -f "$IMAGE_ROLLBACK"
+  case "$3" in
+    bodycast-app:deploy-rollback) rm -f "$IMAGE_DEPLOY_ROLLBACK" ;;
+    bodycast-app:rollback) rm -f "$IMAGE_ROLLBACK" ;;
+    *) exit 2 ;;
+  esac
   exit 0
 fi
 if [[ "$1" == "commit" ]]; then
@@ -267,6 +284,8 @@ if [[ "$1" == "compose" ]]; then
     exit 0
   fi
   if [[ "$joined" == *" build app "* ]]; then
+    event "compose-build-app"
+    if [[ "\${FAIL_APP_BUILD:-0}" == "1" ]]; then exit 54; fi
     printf '%s\n' "$CANDIDATE_IMAGE_ID" > "$IMAGE_LATEST"
     exit 0
   fi
@@ -704,6 +723,7 @@ printf '%s\n' health-wait-sleep >> "$EVENT_LOG"
     APP_INSPECT_JSON_FILE: path.join(root, "app-inspect.json"),
     IMAGE_LATEST: path.join(root, "image-latest"),
     IMAGE_ROLLBACK: path.join(root, "image-rollback"),
+    IMAGE_DEPLOY_ROLLBACK: path.join(root, "image-deploy-rollback"),
     ACTIVE_ROUTE_FILE: path.join(root, "active-route"),
     DOCKER_LOG: path.join(root, "docker.log"),
     EVENT_LOG: path.join(root, "events.log"),

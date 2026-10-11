@@ -10,7 +10,9 @@ readonly APP_SERVICE="app"
 readonly APP_CONTAINER="bodycast-app-prod"
 readonly DB_CONTAINER="bodycast-db-prod"
 readonly CURRENT_IMAGE="bodycast-app:latest"
-readonly ROLLBACK_IMAGE="bodycast-app:rollback"
+# Keep the per-deploy app image separate from the immutable pre-DDL image pin
+# consumed by production-database-cutback.sh.
+readonly DEPLOY_ROLLBACK_IMAGE="bodycast-app:deploy-rollback"
 readonly APP_HOST="${APP_HOST:?APP_HOST is required}"
 CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:?CADDY_ROUTES_PATH is required}"
 source "$ROOT_DIR/scripts/production-route-path.sh"
@@ -135,7 +137,7 @@ release_failure() {
       fi
     fi
     if [[ "$rollback_image_pinned" == "true" ]]; then
-      echo "Captured prior release ${previous_app_sha} / ${previous_app_image_id} remains pinned for operator recovery." >&2
+      echo "Captured prior release ${previous_app_sha} / ${previous_app_image_id} remains pinned as ${DEPLOY_ROLLBACK_IMAGE} for operator recovery." >&2
     fi
     if [[ "$previous_app_healthy" == "true" ]]; then
       echo "Automatic prior-app restoration is disabled because this attempt has no proof of the exact prior runtime configuration." >&2
@@ -220,37 +222,21 @@ capture_previous_release() {
     return 1
   }
   previous_app_present=true
-  if [[ "$app_status" == "healthy" ]]; then
-    previous_app_healthy=true
-    if docker image inspect --format '{{.Id}}' "$previous_app_image_id" >/dev/null 2>&1; then
-      docker image tag "$previous_app_image_id" "$ROLLBACK_IMAGE"
-      pinned_image_id="$(docker image inspect --format '{{.Id}}' "$ROLLBACK_IMAGE")"
-      [[ "$pinned_image_id" == "$previous_app_image_id" ]] || {
-        echo "Pinned rollback image does not match the captured immutable image ID." >&2
-        return 1
-      }
-      rollback_image_pinned=true
-    else
-      # The live container can outlive its image ID in the local content store after a
-      # later build/unpack. Prefer committing the process; otherwise keep going with
-      # container-identity stop only and rely on the pre-DDL database recovery path.
-      echo "Previous app image ${previous_app_image_id} is absent from the local store; committing the live container to recover a rollback pin." >&2
-      if recovered_image_id="$(docker commit --pause=false "$APP_CONTAINER" 2>/dev/null)" \
-        && [[ "$recovered_image_id" =~ ^sha256:[a-f0-9]{64}$ ]]; then
-        previous_app_image_id="$recovered_image_id"
-        docker image tag "$previous_app_image_id" "$ROLLBACK_IMAGE"
-        pinned_image_id="$(docker image inspect --format '{{.Id}}' "$ROLLBACK_IMAGE")"
-        [[ "$pinned_image_id" == "$previous_app_image_id" ]] || {
-          echo "Pinned rollback image does not match the recovered immutable image ID." >&2
-          return 1
-        }
-        rollback_image_pinned=true
-      else
-        echo "WARNING: could not recover a previous-app rollback pin; continuing with exact container-identity stop only." >&2
-        rollback_image_pinned=false
-      fi
-    fi
+  [[ "$app_status" != "healthy" ]] || previous_app_healthy=true
+  if ! docker image inspect --format '{{.Id}}' "$previous_app_image_id" >/dev/null 2>&1; then
+    echo "The exact previous app image is unavailable; refusing replacement before stopping the prior app." >&2
+    return 1
   fi
+  if ! docker image tag "$previous_app_image_id" "$DEPLOY_ROLLBACK_IMAGE"; then
+    echo "Could not pin the exact previous app image; refusing replacement before stopping the prior app." >&2
+    return 1
+  fi
+  pinned_image_id="$(docker image inspect --format '{{.Id}}' "$DEPLOY_ROLLBACK_IMAGE")"
+  [[ "$pinned_image_id" == "$previous_app_image_id" ]] || {
+    echo "The deploy rollback pin does not match the captured immutable image ID." >&2
+    return 1
+  }
+  rollback_image_pinned=true
   release_state="PREVIOUS_RELEASE_CAPTURED"
   echo "Captured previous app SHA=${previous_app_sha}, container=${previous_app_container_id}, image=${previous_app_image_id}, health=${app_status}."
 }
@@ -297,16 +283,9 @@ fi
 compose config --quiet
 assert_existing_db_healthy
 bash "${ROOT_DIR}/scripts/deploy-preflight-schema.sh"
-compose --profile tools build migrate
 if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "0" ]]; then
   run_v4_traffic_check
 fi
-compose build "$APP_SERVICE"
-candidate_image_id="$(docker image inspect --format '{{.Id}}' "$CURRENT_IMAGE")"
-[[ "$candidate_image_id" =~ ^sha256:[a-f0-9]{64}$ ]] || {
-  echo "Built candidate image does not have an immutable image ID." >&2
-  release_failure 1
-}
 
 if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "0" ]]; then
   bodycast_stage_serving_route_config
@@ -317,7 +296,21 @@ fi
 publish_and_confirm_maintenance
 capture_previous_release
 
+# Pin the exact running image before building any candidate that can alter the
+# local Docker image store. A failed pin leaves the old app running in maintenance.
+assert_current_main_sha
+compose --profile tools build migrate
+compose build "$APP_SERVICE"
+candidate_image_id="$(docker image inspect --format '{{.Id}}' "$CURRENT_IMAGE")"
+[[ "$candidate_image_id" =~ ^sha256:[a-f0-9]{64}$ ]] || {
+  echo "Built candidate image does not have an immutable image ID." >&2
+  release_failure 1
+}
+
 if [[ "$previous_app_present" == "true" ]]; then
+  # Building can outlive a main update. Keep the prior app intact unless this
+  # exact candidate is still the canonical main tip immediately before stop.
+  assert_current_main_sha
   stop_exact_app_container "$previous_app_sha" "$previous_app_image_id" "$previous_app_container_id"
 fi
 
@@ -404,7 +397,7 @@ fi
 if ! bodycast_probe_public_candidate_observational; then
   echo "POST-COMMIT VERIFICATION WARNING: public APP_HOST health probe did not confirm HTTP 200; committed release was left untouched." >&2
 fi
-if [[ "$rollback_image_pinned" == "true" ]] && ! docker image rm "$ROLLBACK_IMAGE" >/dev/null 2>&1; then
+if [[ "$rollback_image_pinned" == "true" ]] && ! docker image rm "$DEPLOY_ROLLBACK_IMAGE" >/dev/null 2>&1; then
   echo "POST-COMMIT CLEANUP WARNING: prior image pin could not be removed." >&2
 fi
 echo "BodyCast deployment completed for ${DEPLOY_SHA}; serving commit is ${release_state}."

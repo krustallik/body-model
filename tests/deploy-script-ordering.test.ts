@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { bashExecutable } from "./helpers/production-release-cutover-fixture";
 
 const deploySh = readFileSync(resolve("scripts/deploy.sh"), "utf8").replace(/\r\n/g, "\n");
 const deployWorkflow = readFileSync(resolve(".github/workflows/deploy-production.yml"), "utf8").replace(/\r\n/g, "\n");
@@ -15,21 +17,44 @@ const releaseMarkerSh = readFileSync(resolve("scripts/production-release-marker.
 const composeYaml = readFileSync(resolve("docker-compose.prod.yml"), "utf8");
 
 describe("production maintenance-first deploy safety contracts", () => {
-  it("requires manual owner authorization and never starts an automatic post-merge deployment", () => {
+  it("automatically deploys after exact-current-main CI and keeps manual cutover owner-gated", () => {
     expect(deployWorkflow).toContain("workflow_dispatch:");
-    expect(deployWorkflow).not.toContain("workflow_run:");
+    expect(deployWorkflow).toContain("workflow_run:");
+    expect(deployWorkflow).toContain("workflows:\n      - BodyCast CI/CD");
+    expect(deployWorkflow).toContain("branches:\n      - main");
     expect(deployWorkflow).toContain('github.actor_id }}');
     expect(deployWorkflow).toContain('"126446430"');
     expect(deployWorkflow).toContain("assertTrustedOwnerWorkflowRun");
-    expect(deployWorkflow).toContain("BODYCAST_NON_SERVING_DEPLOY=1");
-    expect(deployWorkflow).toContain("BodyCast CI/CD");
+    expect(deployWorkflow).toContain('DEPLOY_MODE: ${{ needs.authorize.outputs.deploy_mode }}');
+    expect(deployWorkflow).toContain('DEPLOY_MODE="${5:-}"');
+    expect(deployWorkflow).toContain("'$ROUTES_PATH_B64' '$DEPLOY_MODE'");
+    expect(deployWorkflow).toContain('BODYCAST_NON_SERVING_DEPLOY="$NON_SERVING"');
+    expect(deployWorkflow).toContain('workflowRunEventAttempt: process.env.EVENT_RUN_ATTEMPT || null');
     expect(deployWorkflow).not.toContain("git checkout --detach --force");
     expect(deployWorkflow).toContain('git checkout --detach "$DEPLOY_SHA"');
   });
 
+  it.skipIf(!bashExecutable)("passes the authorized deploy mode through SSH and maps both allowed modes remotely", () => {
+    const remoteScript = deployWorkflow.match(/REMOTE_SCRIPT="\$\(cat <<'REMOTE'\n([\s\S]*?)\n\s*REMOTE\n/)?.[1];
+    expect(remoteScript).toBeTruthy();
+      expect(remoteScript).toContain('DEPLOY_MODE="${5:-}"');
+    expect(deployWorkflow).toContain("'$ROUTES_PATH_B64' '$DEPLOY_MODE'");
+
+    const modeBlock = remoteScript!.match(/case "\$DEPLOY_MODE" in[\s\S]*?esac/)?.[0];
+    expect(modeBlock).toBeTruthy();
+    for (const [mode, expected] of [["serving", "0"], ["non-serving", "1"]] as const) {
+      const result = spawnSync(bashExecutable ?? "bash", ["--noprofile", "--norc", "-c", `${modeBlock}; printf '%s' "$NON_SERVING"`], {
+        encoding: "utf8",
+        env: { ...process.env, DEPLOY_MODE: mode },
+      });
+      expect(result.status, mode).toBe(0);
+      expect(result.stdout, mode).toBe(expected);
+    }
+  });
+
   it("checks out current main before the production-job owner identity import", () => {
     for (const [label, workflow, jobName] of [
-      ["deploy", deployWorkflow, "name: Deploy exact SHA in maintenance"],
+      ["deploy", deployWorkflow, "name: Deploy exact current-main SHA"],
       ["activation", activationWorkflow, "name: Verify V3, activate V4, and serve exact SHA"],
     ] as const) {
       const job = workflow.slice(workflow.indexOf(jobName));
@@ -45,6 +70,7 @@ describe("production maintenance-first deploy safety contracts", () => {
   it("implements the approved maintenance-first state machine and live-route commit", () => {
     const states = [
       'release_state="PREPARE"',
+      'release_state="MAINTENANCE_PUBLISHED_UNCONFIRMED"',
       'release_state="MAINTENANCE_CONFIRMED"',
       'release_state="PREVIOUS_RELEASE_CAPTURED"',
       'release_state="CANDIDATE_VERIFIED"',
@@ -92,7 +118,14 @@ describe("production maintenance-first deploy safety contracts", () => {
     const captureDefinitionAt = deploySh.indexOf("capture_previous_release() {");
     const publishBody = deploySh.slice(publishDefinitionAt, captureDefinitionAt);
     expect(publishBody).toContain("bodycast_probe_public_maintenance");
+    expect(publishBody).toContain('release_state="MAINTENANCE_PUBLISHED_UNCONFIRMED"');
     expect(publishBody).toContain('release_state="MAINTENANCE_CONFIRMED"');
+    const maintenanceFence = publishBody.lastIndexOf("assert_current_main_sha");
+    const maintenanceMove = publishBody.indexOf('mv -f -- "$stage"', maintenanceFence);
+    expect(maintenanceFence).toBeGreaterThan(-1);
+    expect(maintenanceMove).toBeGreaterThan(maintenanceFence);
+    expect(publishBody.slice(maintenanceFence, maintenanceMove + 'mv -f -- "$stage"'.length))
+      .toMatch(/assert_current_main_sha[\s\S]*?mv -f -- "\$stage"/);
     const captureBody = deploySh.slice(captureDefinitionAt, deploySh.indexOf("\necho \"Preparing exact release"));
     expect(captureBody).toContain("docker image inspect --format '{{.Id}}' \"$previous_app_image_id\"");
     expect(captureBody).toContain('docker image tag "$previous_app_image_id" "$DEPLOY_ROLLBACK_IMAGE"');
@@ -142,6 +175,15 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(failureBody).not.toContain("compose up");
     expect(failureBody).not.toContain("publish_captured_previous_route");
     expect(failureBody).not.toContain("clear_bodycast_release_marker");
+  });
+
+  it("reports post-commit public verification failure without rolling back the committed route", () => {
+    expect(deploySh).toContain("post_commit_probe_failed=true");
+    expect(deploySh).toContain('if [[ "${post_commit_probe_failed}" == "true" ]]');
+    expect(deploySh).toContain('echo "Post-commit public verification failed; release remains committed and requires read-only investigation." >&2');
+    const committedAt = deploySh.indexOf('release_state="COMMITTED"');
+    expect(deploySh.slice(committedAt)).not.toContain("publish_and_confirm_maintenance");
+    expect(deploySh.slice(committedAt)).not.toContain("stop_candidate_fail_closed");
   });
 
   it("binds prior and candidate stop operations to captured same-attempt container identities", () => {

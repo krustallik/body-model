@@ -1,10 +1,11 @@
 # Production release operations
 
-BodyCast production release uses manual owner-authorized GitHub Actions jobs and the existing
-fixed production scripts over pinned SSH. A successful merge and `BodyCast CI/CD` run do not
-start a production deploy. The dispatch must come from `main`, use its exact current SHA, pass the
-green exact-SHA CI gate, and be initiated by the pinned owner GitHub ID `126446430`; the workflow
-also checks GitHub's triggering actor so a rerun by another account is rejected.
+BodyCast ordinary app releases deploy automatically after `BodyCast CI/CD` succeeds for the
+current exact `main` SHA. The deploy workflow re-reads the upstream run and current `main` before
+production credentials and again before SSH. It ignores pull-request runs, synthetic merge SHAs,
+stale runs, failed runs, and reruns whose attempt does not match the event. Manual deployment is
+reserved for the owner-authorized non-serving schema-cutover path and checks GitHub's triggering
+actor against owner ID `126446430`.
 
 ## Release components
 
@@ -14,8 +15,8 @@ also checks GitHub's triggering actor so a rerun by another account is rejected.
 - `.github/workflows/production-migrate.yml` verifies the exact signed owner authorization,
   current SHA, six-migration manifest and hashes, database identity, backup/restore evidence, and
   writer drain before invoking `scripts/deploy-migrate.sh` over SSH.
-- `.github/workflows/deploy-production.yml` deploys only the exact migrated SHA in non-serving
-  mode. It is manual and is not triggered by merge or CI.
+- `.github/workflows/deploy-production.yml` performs the ordinary exact-SHA app deploy after
+  successful current-main CI. Manual use remains owner-gated and non-serving for schema cutover.
 - `.github/workflows/activate-unified-v4-production.yml` checks V3, performs the separately
   confirmed Unified V4 activation/replay, verifies V4 currentness/coverage, and then serves the
   exact SHA.
@@ -35,14 +36,22 @@ never changes schema or data. It inspects the existing healthy database and runs
 compatibility checks. Compose commands use `run --no-deps` for tooling and `up --no-deps` for the
 app only. A missing or incompatible database blocks the app deployment.
 
-The old release is incompatible with the reviewed six-migration schema. The automatic
-post-merge deployment path is therefore disabled for this release. The candidate is not started
-until the controlled migration succeeds and the `schema-applied` marker is present. Keep traffic
-on the maintenance route from before backup/preflight through V3 and V4 readiness.
+The ordinary deployment path never runs migrations. Read-only compatibility checks block it when
+the database is unavailable, the schema is incompatible, or migrations are pending. For an
+approved schema cutover, the separate migration flow runs first; its exact-SHA marker keeps the new
+app non-serving until V3/V4 readiness. Keep traffic on maintenance from before backup/preflight
+through V3 and V4 readiness.
+
+If the exact candidate SHA is already healthy and serving with the fixed route and current V4, the
+workflow still runs the schema/V4 checks (including building the local migrator tooling image), then
+skips app replacement and route changes. This keeps repeated successful CI events idempotent without
+claiming the Docker image cache is read-only.
 
 ## Owner-authorized release order
 
-1. Merge the audited PR. Wait for successful `BodyCast CI/CD` on the exact current `main` SHA.
+1. Merge the audited PR. Wait for successful `BodyCast CI/CD` on the exact current `main` SHA. For
+   an ordinary compatible app release, deployment starts automatically; no manual SHA or dispatch
+   is needed.
 2. Dispatch **Production migration preflight and encrypted backup** from `main` for that SHA,
    manifest `active-energy-unified-v2`, with confirmation `maintenance-backup-restore`. The job
    confirms the public maintenance response, disables restart and stops/removes the old app,
@@ -55,9 +64,10 @@ on the maintenance route from before backup/preflight through V3 and V4 readines
    drain checks. It writes the durable `ddl-started` marker immediately before its single Prisma
    migration attempt. Read-only postflight must pass before the marker advances to
    `schema-applied`.
-4. Dispatch **Manual production app deploy** for the same SHA, confirm `deploy`, and require
-   non-serving mode. The app starts behind maintenance only after the migration marker matches
-   that SHA and the app passes health and image/SHA checks. The marker advances to `app-ready`.
+4. For a migration release only, dispatch the manual owner-authorized app deploy for the same SHA,
+   confirm `deploy`, and require non-serving mode. The app starts behind maintenance only after the
+   migration marker matches that SHA and the app passes health and image/SHA checks. The marker
+   advances to `app-ready`.
 5. Dispatch **Owner-authorized Unified V4 activation and traffic serve** for the same current-main
    SHA with `ACTIVATE_UNIFIED_V4_AND_SERVE`. The job verifies V3 postflight, explicitly activates
    and replays Unified V4, checks currentness/coverage, and opens traffic only when the exact app

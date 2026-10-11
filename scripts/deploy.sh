@@ -49,6 +49,7 @@ compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
 release_state="PREPARE"
 maintenance_marker=""
 route_stage=""
+maintenance_route_stage=""
 candidate_image_id=""
 candidate_container_id=""
 candidate_start_attempted=false
@@ -59,6 +60,7 @@ previous_app_container_id=""
 previous_app_healthy=false
 rollback_image_pinned=false
 active_schema_cutover=false
+post_commit_probe_failed=false
 
 stop_exact_app_container() {
   local expected_sha="$1" expected_image_id="$2" expected_container_id="${3:-}" existing_app app_sha app_image_id app_container_id app_state restart_policy remaining_app
@@ -127,8 +129,11 @@ release_failure() {
     exit 0
   fi
   if [[ -n "$route_stage" && -f "$route_stage" ]]; then rm -f -- "$route_stage"; fi
+  if [[ -n "$maintenance_route_stage" && -f "$maintenance_route_stage" ]]; then rm -f -- "$maintenance_route_stage"; fi
   if [[ "$release_state" == "PREPARE" ]]; then
     echo "Deploy failed before maintenance was confirmed; the previous app was not stopped or replaced." >&2
+  elif [[ "$release_state" == "MAINTENANCE_PUBLISHED_UNCONFIRMED" ]]; then
+    echo "Deploy failed after the maintenance route file was published, but external maintenance is unconfirmed; the previous app has not been stopped. Keep the release paused and inspect traffic read-only." >&2
   else
     echo "Deploy failed before serving commit; traffic remains in maintenance." >&2
     if [[ "$candidate_start_attempted" == "true" ]]; then
@@ -168,17 +173,51 @@ run_v4_traffic_check() {
     /app/scripts/unified-v4-traffic-check.mjs --profile-id 1
 }
 
+is_current_release_already_serving() {
+  local app_names app_identity app_container_id app_image_id app_sha app_state app_health pinned_image_id
+  if ! app_names="$(docker ps --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}')" \
+      || [[ "$app_names" != "$APP_CONTAINER" ]]; then
+    return 1
+  fi
+  if ! app_identity="$(docker inspect --format '{{.Id}}|{{.Image}}|{{index .Config.Labels "org.bodycast.release-sha"}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$APP_CONTAINER")"; then
+    return 1
+  fi
+  IFS='|' read -r app_container_id app_image_id app_sha app_state app_health <<< "$app_identity"
+  [[ "$app_container_id" =~ ^[a-f0-9]{64}$ && "$app_image_id" =~ ^sha256:[a-f0-9]{64}$ \
+    && "$app_sha" == "$DEPLOY_SHA" && "$app_state" == "running" && "$app_health" == "healthy" ]] || return 1
+  if ! pinned_image_id="$(docker image inspect --format '{{.Id}}' "$app_image_id")" \
+      || [[ "$pinned_image_id" != "$app_image_id" ]]; then
+    return 1
+  fi
+  bodycast_verify_exact_serving_route || return 1
+  bodycast_probe_public_candidate_observational || return 1
+  assert_current_main_sha || return 1
+  echo "Exact SHA ${DEPLOY_SHA} is already healthy and serving; schema/V4 checks passed, so app, database, and route changes are skipped."
+}
+
 publish_and_confirm_maintenance() {
   local stage reload_failed=false
   maintenance_marker="$(bodycast_new_maintenance_marker)"
   bodycast_stage_maintenance_route_config "$maintenance_marker"
   stage="$BODYCAST_ROUTE_STAGE_PATH"
-  if ! bodycast_assert_safe_routes_location; then rm -f -- "$stage"; return 1; fi
+  maintenance_route_stage="$stage"
+  if ! bodycast_assert_safe_routes_location; then rm -f -- "$stage"; maintenance_route_stage=""; return 1; fi
+  if ! assert_current_main_sha; then
+    rm -f -- "$stage"
+    maintenance_route_stage=""
+    echo "Canonical main changed before maintenance route publication; the old app and live route remain untouched." >&2
+    return 1
+  fi
+  if ! bodycast_assert_safe_routes_location; then rm -f -- "$stage"; maintenance_route_stage=""; return 1; fi
+  [[ -f "$stage" && ! -L "$stage" ]] || { echo "Staged maintenance route is missing or unsafe." >&2; return 1; }
+  assert_current_main_sha
   if ! mv -f -- "$stage" "${CADDY_ROUTES_PATH%/}/bodycast.caddy"; then
     rm -f -- "$stage"
+    maintenance_route_stage=""
     echo "Maintenance route replacement failed; the old app remains untouched." >&2
     return 1
   fi
+  release_state="MAINTENANCE_PUBLISHED_UNCONFIRMED"
   if ! docker exec gymbeam-caddy caddy reload \
     --address unix//run/caddy-admin/admin.sock \
     --config /etc/caddy/Caddyfile; then
@@ -186,15 +225,16 @@ publish_and_confirm_maintenance() {
   fi
   if ! bodycast_probe_public_maintenance "$maintenance_marker"; then
     if [[ "$reload_failed" == "true" ]]; then
-      echo "Maintenance was not externally confirmed and Caddy reload also failed; old app remains untouched." >&2
+      echo "Maintenance route file is published, but external maintenance is unconfirmed and Caddy reload failed; the previous app remains running." >&2
     else
-      echo "Maintenance was not externally confirmed; old app remains untouched." >&2
+      echo "Maintenance route file is published, but external maintenance is unconfirmed; the previous app remains running." >&2
     fi
     return 1
   fi
   if [[ "$reload_failed" == "true" ]]; then
     echo "Caddy reload failed, but the exact per-attempt public maintenance response confirms traffic is closed." >&2
   fi
+  maintenance_route_stage=""
   release_state="MAINTENANCE_CONFIRMED"
 }
 
@@ -285,6 +325,11 @@ assert_existing_db_healthy
 bash "${ROOT_DIR}/scripts/deploy-preflight-schema.sh"
 if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "0" ]]; then
   run_v4_traffic_check
+fi
+
+if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "0" && "$marker_status" -eq 1 ]] \
+    && is_current_release_already_serving; then
+  exit 0
 fi
 
 if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "0" ]]; then
@@ -396,10 +441,15 @@ if ! docker exec gymbeam-caddy caddy reload \
 fi
 if ! bodycast_probe_public_candidate_observational; then
   echo "POST-COMMIT VERIFICATION WARNING: public APP_HOST health probe did not confirm HTTP 200; committed release was left untouched." >&2
+  post_commit_probe_failed=true
 fi
-if [[ "$rollback_image_pinned" == "true" ]] && ! docker image rm "$DEPLOY_ROLLBACK_IMAGE" >/dev/null 2>&1; then
-  echo "POST-COMMIT CLEANUP WARNING: prior image pin could not be removed." >&2
+if [[ "$rollback_image_pinned" == "true" ]]; then
+  echo "Prior image remains pinned as ${DEPLOY_ROLLBACK_IMAGE}; no automatic runtime rollback is attempted." >&2
+fi
+echo "DEPLOYED_SHA=${DEPLOY_SHA}"
+if [[ "${post_commit_probe_failed}" == "true" ]]; then
+  echo "Post-commit public verification failed; release remains committed and requires read-only investigation." >&2
+  exit 1
 fi
 echo "BodyCast deployment completed for ${DEPLOY_SHA}; serving commit is ${release_state}."
-echo "DEPLOYED_SHA=${DEPLOY_SHA}"
 exit 0

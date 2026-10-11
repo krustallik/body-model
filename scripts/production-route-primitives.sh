@@ -144,6 +144,19 @@ bodycast_verify_exact_maintenance_route() {
   docker exec gymbeam-caddy caddy validate --config /etc/caddy/Caddyfile >/dev/null
 }
 
+bodycast_verify_exact_serving_route() {
+  local route_file="${CADDY_ROUTES_PATH%/}/bodycast.caddy"
+  [[ -f "$route_file" && ! -L "$route_file" ]] || { echo "Serving route is missing or unsafe." >&2; return 1; }
+  if ! cmp -s <(
+    bodycast_render_route_header
+    printf '%s\n' '    reverse_proxy bodycast-app-prod:3000' '}'
+  ) "$route_file"; then
+    echo "Live Caddy route is not the exact fixed serving route." >&2
+    return 1
+  fi
+  docker exec gymbeam-caddy caddy validate --config /etc/caddy/Caddyfile >/dev/null
+}
+
 bodycast_probe_public_maintenance() {
   local marker="$1" headers body status
   headers="$(mktemp)"

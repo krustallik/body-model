@@ -12,7 +12,7 @@ describe("post-commit serving reload behavior", () => {
       FAIL_SERVING_RELOAD: "1",
     });
 
-    expect(result.status).toBe(0);
+    expect(result.status).toBe(1);
     expect(appState(fixture)).toMatchObject({ sha: fixture.candidateSha, status: "healthy", present: "true" });
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
     expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).toContain("reverse_proxy bodycast-app-prod:3000");
@@ -21,6 +21,7 @@ describe("post-commit serving reload behavior", () => {
     expect(events).not.toContain(`caddy-serving-sha:${fixture.candidateSha}`);
     expect(events).toContain("atomic-live-route-replacement:bodycast.caddy");
     expect(result.stderr).toContain("committed route was not rolled back");
+    expect(result.stderr).toContain("public APP_HOST health probe did not confirm HTTP 200");
     const afterCommit = events.slice(events.lastIndexOf("atomic-live-route-replacement:bodycast.caddy"));
     expect(afterCommit).not.toContain("compose-stop-app");
     expect(afterCommit).not.toContain("compose-remove-app");

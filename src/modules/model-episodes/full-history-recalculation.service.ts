@@ -10,6 +10,7 @@ import {
   isUnifiedGenerationCurrentV1,
 } from "./publication-generation-v1";
 import { rebuildUnifiedExperimentalPhysiologyStateV1 } from "./unified-experimental-physiology-state.service";
+import { verifyAndPublishUnifiedV3Postflight } from "./unified-rollout-v4.service";
 import { rebuildExperimentalTransientExerciseWaterV2 } from "@/modules/training/experimental-transient-exercise-water-shadow.service";
 
 /**
@@ -271,6 +272,7 @@ export async function runOwnerAuthorizedFullHistoryRecalculation(input: {
     targetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
     rolloutEpoch: 0,
   });
+  await verifyAndPublishUnifiedV3Postflight({ profileId, client });
 
   const afterLifecycle = await readLifecycle(client, profileId);
   assertV3PreActivationLifecycle(afterLifecycle, profileId);

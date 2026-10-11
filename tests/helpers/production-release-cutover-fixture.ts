@@ -128,6 +128,7 @@ advance_main() {
     v3) [[ "\${ADVANCE_ON_V3:-}" == "1" ]] || return 0 ;;
     final-v3) [[ "\${ADVANCE_ON_FINAL_V3:-}" == "1" ]] || return 0 ;;
     final-schema) [[ "\${ADVANCE_ON_FINAL_SCHEMA_PREFLIGHT:-}" == "1" ]] || return 0 ;;
+    migrator-build) [[ "\${ADVANCE_ON_MIGRATOR_BUILD:-}" == "1" ]] || return 0 ;;
     validate) [[ "\${ADVANCE_ON_VALIDATE:-}" == "1" ]] || return 0 ;;
   esac
   [[ ! -e "$ADVANCE_MARKER" ]] || return 0
@@ -192,7 +193,11 @@ if [[ "$1" == "compose" ]]; then
     printf '%s\n' 'postgresql://bodycast:fixture@bodycast-db-prod:5432/bodycast'
     exit 0
   fi
-  if [[ "$joined" == *" config --quiet "* || "$joined" == *" build migrate "* || "$joined" == *" logs --tail=100 "* ]]; then exit 0; fi
+  if [[ "$joined" == *" config --quiet "* || "$joined" == *" logs --tail=100 "* ]]; then exit 0; fi
+  if [[ "$joined" == *" build migrate "* ]]; then
+    advance_main migrator-build
+    exit 0
+  fi
   if [[ "$joined" == *" run --rm --no-deps --entrypoint npx migrate prisma migrate status "* ]]; then
     event "schema-preflight-no-deps"
     schema_count="$(cat "$SCHEMA_PREFLIGHT_COUNT_FILE" 2>/dev/null || printf '0')"

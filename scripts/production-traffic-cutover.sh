@@ -407,6 +407,9 @@ if [[ "$MODE" == "full-history-recalculate" ]]; then
   bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
 
   compose --profile tools build migrate
+  # Building the migrator may take long enough for canonical main to advance.
+  # Revalidate the owner-authorized release immediately before its first DML.
+  bodycast_assert_current_main_sha "$expected_release_sha"
   compose --profile tools run --rm --no-deps --entrypoint node migrate \
     /app/scripts/production-full-history-recalculate.mjs \
     --full-history-recalculate --owner-authorized --profile-id 1

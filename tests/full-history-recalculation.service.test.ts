@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => {
     recalculateModelEpisode: vi.fn(),
     rebuildTransientWater: vi.fn(),
     rebuildUnified: vi.fn(),
+    verifyV3Postflight: vi.fn(),
     findUniqueEpisode: vi.fn(),
     findUniqueLifecycle: vi.fn(),
     queryRawUnsafe: vi.fn(),
@@ -47,6 +48,9 @@ vi.mock("@/modules/model-episodes/physiology-v7-persistence.repository", () => (
 }));
 vi.mock("@/modules/model-episodes/unified-experimental-physiology-state.service", () => ({
   rebuildUnifiedExperimentalPhysiologyStateV1: mocks.rebuildUnified,
+}));
+vi.mock("@/modules/model-episodes/unified-rollout-v4.service", () => ({
+  verifyAndPublishUnifiedV3Postflight: mocks.verifyV3Postflight,
 }));
 vi.mock("@/modules/training/experimental-transient-exercise-water-shadow.service", () => ({
   rebuildExperimentalTransientExerciseWaterV2: mocks.rebuildTransientWater,
@@ -113,6 +117,10 @@ describe("runOwnerAuthorizedFullHistoryRecalculation", () => {
       latestModeledDate: "2026-01-09",
     });
     mocks.rebuildUnified.mockResolvedValue(undefined);
+    mocks.verifyV3Postflight.mockImplementation(async () => {
+      mocks.state.lifecycle.unifiedPublishedRolloutEpoch = 0;
+      return { profileId: 1, dayCount: 1, rangeToken: "v3-postflight-token" };
+    });
   });
 
   it("refreshes transient episode attribution before invalidation, recalculation, and Unified V3", async () => {
@@ -130,9 +138,11 @@ describe("runOwnerAuthorizedFullHistoryRecalculation", () => {
       targetRevision: V3,
       rolloutEpoch: 0,
     });
+    expect(mocks.verifyV3Postflight).toHaveBeenCalledWith({ profileId: 1, client: expect.anything() });
     expect(mocks.rebuildTransientWater.mock.invocationCallOrder[0]).toBeLessThan(mocks.invalidate.mock.invocationCallOrder[0]!);
     expect(mocks.invalidate.mock.invocationCallOrder[0]).toBeLessThan(mocks.recalculateModelEpisode.mock.invocationCallOrder[0]!);
     expect(mocks.recalculateModelEpisode.mock.invocationCallOrder[0]).toBeLessThan(mocks.rebuildUnified.mock.invocationCallOrder[0]!);
+    expect(mocks.rebuildUnified.mock.invocationCallOrder[0]).toBeLessThan(mocks.verifyV3Postflight.mock.invocationCallOrder[0]!);
     expect(result).toMatchObject({
       profileId: 1,
       episodeId: 11,
@@ -143,6 +153,70 @@ describe("runOwnerAuthorizedFullHistoryRecalculation", () => {
       transientWaterImpulseCount: 4,
       transientWaterEarliestModelDate: "2024-01-01",
     });
+  });
+
+  it("publishes V3 postflight epoch after invalidation clears it", async () => {
+    const generation = 8;
+    mocks.invalidate.mockImplementation(async () => {
+      mocks.state.lifecycle = {
+        ...mocks.state.lifecycle,
+        invalidationGeneration: generation,
+        productionStaleFromDate: "2024-01-01",
+        productionPublishedGeneration: null,
+        unifiedPublishedGeneration: null,
+        unifiedPublishedRolloutEpoch: null,
+      };
+    });
+    mocks.recalculateModelEpisode.mockImplementation(async () => {
+      mocks.state.lifecycle = {
+        ...mocks.state.lifecycle,
+        productionStaleFromDate: null,
+        productionPublishedGeneration: generation,
+      };
+      return {
+        status: "ok",
+        episodeId: 11,
+        daysPersisted: 10,
+        completeDays: 9,
+        latestModeledDate: "2026-01-09",
+      };
+    });
+    mocks.rebuildUnified.mockImplementation(async () => {
+      mocks.state.lifecycle = {
+        ...mocks.state.lifecycle,
+        unifiedPublishedGeneration: generation,
+        unifiedTargetRevision: V3,
+        unifiedRolloutEpoch: 0,
+        unifiedPublishedRolloutEpoch: null,
+      };
+    });
+    mocks.verifyV3Postflight.mockImplementation(async () => {
+      expect(mocks.state.lifecycle.unifiedPublishedRolloutEpoch).toBeNull();
+      mocks.state.lifecycle.unifiedPublishedRolloutEpoch = 0;
+      return { profileId: 1, dayCount: 1, rangeToken: "verified-v3-range" };
+    });
+
+    const result = await runOwnerAuthorizedFullHistoryRecalculation({
+      profileId: 1,
+      ownerAuthorized: true,
+    });
+
+    expect(result).toMatchObject({
+      invalidationGeneration: generation,
+      productionPublishedGeneration: generation,
+      unifiedPublishedGeneration: generation,
+    });
+    expect(mocks.state.lifecycle.unifiedPublishedRolloutEpoch).toBe(0);
+    expect(mocks.verifyV3Postflight.mock.invocationCallOrder[0]).toBeGreaterThan(mocks.rebuildUnified.mock.invocationCallOrder[0]!);
+  });
+
+  it("does not report recalculation success when V3 postflight fails", async () => {
+    mocks.verifyV3Postflight.mockRejectedValue(new Error("V3 source coverage is stale"));
+
+    await expect(runOwnerAuthorizedFullHistoryRecalculation({
+      profileId: 1,
+      ownerAuthorized: true,
+    })).rejects.toThrow("V3 source coverage is stale");
   });
 
   it("fail-closes when raw observation inventory changes", async () => {

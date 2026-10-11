@@ -31,6 +31,9 @@ function workflowPath(run) { return typeof run?.path === "string" ? run.path.spl
 function sha256(bytes) { return createHash("sha256").update(bytes).digest("hex"); }
 
 export const DIAGNOSTIC_PATH = ".github/workflows/production-checkout-diagnostic.yml";
+// Historical diagnostics used this exact reviewed implementation before the
+// workflow added fixed runtime metadata and a public maintenance probe.
+export const DIAGNOSTIC_LEGACY_REVIEWED_SHA = "b693be7d7b7103e263d35bd67b542f77114c5dca";
 export const DIAGNOSTIC_FILES = Object.freeze([DIAGNOSTIC_PATH, "scripts/production-checkout-diagnostic.sh",
   "scripts/github-owner-identity.mjs", "scripts/filter-ssh-known-hosts.mjs"]);
 function assertMatchingHistoryRun(run, historyRun) {
@@ -40,17 +43,20 @@ function assertMatchingHistoryRun(run, historyRun) {
     || String(historyRun.triggering_actor?.id) !== String(run.triggering_actor?.id)) reject("run metadata differs from the complete history.");
 }
 function verifyReadOnlyDiagnostic({ run, jobsPayload, historyRun, workflowId, shaIsAncestorOfCurrentMain,
-  sourceFiles, reviewedFiles, currentMainSha }) {
+  sourceFiles, reviewedFiles, legacyReviewedFiles, currentMainSha }) {
   assertMatchingHistoryRun(run, historyRun);
   assertTrustedOwnerWorkflowRun(run, { actorId: BODYCAST_OWNER_ID, workflowPath: DIAGNOSTIC_PATH,
     workflowRunId: String(run.id), workflowRunAttempt: 1, sha: run.head_sha });
   if (run.status !== "completed" || run.conclusion !== "success" || run.run_attempt !== 1
     || String(run.workflow_id) !== String(workflowId) || shaIsAncestorOfCurrentMain !== true
     || !/^[a-f0-9]{40}$/.test(run.head_sha ?? "") || !/^[a-f0-9]{40}$/.test(currentMainSha ?? "")
-    || !sourceFiles || !reviewedFiles || Object.keys(sourceFiles).length !== DIAGNOSTIC_FILES.length
+    || !sourceFiles || !reviewedFiles || !legacyReviewedFiles || Object.keys(sourceFiles).length !== DIAGNOSTIC_FILES.length
     || Object.keys(reviewedFiles).length !== DIAGNOSTIC_FILES.length
-    || DIAGNOSTIC_FILES.some((file) => !Buffer.isBuffer(sourceFiles[file]) || !Buffer.isBuffer(reviewedFiles[file])
-      || !sourceFiles[file].equals(reviewedFiles[file]))) reject("diagnostic code differs from the reviewed read-only implementation.");
+    || Object.keys(legacyReviewedFiles).length !== DIAGNOSTIC_FILES.length) reject("diagnostic source inspection is incomplete.");
+  const matchesImplementation = (approvedFiles) => DIAGNOSTIC_FILES.every((file) =>
+    Buffer.isBuffer(sourceFiles[file]) && Buffer.isBuffer(approvedFiles[file]) && sourceFiles[file].equals(approvedFiles[file]));
+  const implementation = matchesImplementation(reviewedFiles) ? "current" : matchesImplementation(legacyReviewedFiles) ? "legacy-reviewed" : null;
+  if (!implementation) reject("diagnostic code differs from all reviewed read-only implementations.");
   const expectedJobs = [
     ["Authorize owner-requested exact-main diagnostic", ["Set up job", "Checkout current main gate helpers",
       "Verify owner, exact current-main SHA, confirmation, and green CI", "Post Checkout current main gate helpers", "Complete job"]],
@@ -71,7 +77,8 @@ function verifyReadOnlyDiagnostic({ run, jobsPayload, historyRun, workflowId, sh
     }
   }
   return { purpose: "verified-read-only-checkout-diagnostic-v1", runId: String(run.id), runAttempt: 1,
-    sha: run.head_sha, reviewedSha: currentMainSha,
+    sha: run.head_sha, reviewedSha: implementation === "current" ? currentMainSha : DIAGNOSTIC_LEGACY_REVIEWED_SHA,
+    implementation,
     fileDigests: Object.fromEntries(DIAGNOSTIC_FILES.map((file) => [file, sha256(sourceFiles[file])])) };
 }
 

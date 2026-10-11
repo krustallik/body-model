@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
-# Read-only inspector for the production checkout guard. DEPLOY_PATH_B64 is
-# provided by the fixed GitHub workflow over SSH stdin; paths and file contents
-# are deliberately never emitted.
+# Read-only inspector for the production checkout, fixed runtime, and public
+# maintenance state. Inputs are provided by the fixed GitHub workflow over SSH
+# stdin; secret values, arbitrary paths, and response bodies are never emitted.
 set -uo pipefail
 export LC_ALL=C
 export GIT_OPTIONAL_LOCKS=0
@@ -56,6 +56,20 @@ stat_fields() {
 
 if [[ ! "${DEPLOY_PATH_B64:-}" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
   emit diagnostic_status invalid_path_input
+  exit 2
+fi
+
+if [[ ! "${APP_HOST_B64:-}" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
+  emit diagnostic_status invalid_app_host_input
+  exit 2
+fi
+
+APP_HOST="$(printf '%s' "$APP_HOST_B64" | base64 --decode 2>/dev/null)" || {
+  emit diagnostic_status invalid_app_host_input
+  exit 2
+}
+if [[ ! "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ ]]; then
+  emit diagnostic_status invalid_app_host_input
   exit 2
 fi
 
@@ -208,3 +222,70 @@ emit deploy_path_owner_matches_effective_user "$(bool "$([[ "$DEPLOY_UID" == "$E
 emit git_root_owner_matches_effective_user "$(bool "$([[ "$ROOT_UID" == "$EUID_VALUE" ]] && echo 1 || echo 0)")"
 emit git_common_dir_owner_matches_effective_user "$(bool "$([[ "$COMMON_UID" == "$EUID_VALUE" ]] && echo 1 || echo 0)")"
 emit git_index_owner_matches_effective_user "$(bool "$([[ "$INDEX_UID" == "$EUID_VALUE" ]] && echo 1 || echo 0)")"
+
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  emit docker_daemon_available yes
+  for container in bodycast-app-prod bodycast-db-prod gymbeam-caddy; do
+    key="${container//-/_}"
+    fields="$(docker inspect --format '{{.Id}}|{{.Image}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{.HostConfig.RestartPolicy.Name}}|{{index .Config.Labels "org.bodycast.release-sha"}}' "$container" 2>/dev/null)"
+    inspect_status=$?
+    if [[ "$inspect_status" -ne 0 || -z "$fields" ]]; then
+      if container_names="$(docker ps -a --filter "name=^/${container}$" --format '{{.Names}}' 2>/dev/null)"; then
+        if [[ -z "$container_names" ]]; then
+          emit "${key}_found" no
+        else
+          emit "${key}_found" unknown
+        fi
+      else
+        emit "${key}_found" unknown
+      fi
+      emit "${key}_state" unknown
+      continue
+    fi
+    IFS='|' read -r container_id image_id container_state container_health restart_policy release_sha <<< "$fields"
+    [[ "$container_id" =~ ^[a-f0-9]{64}$ ]] || container_id=unknown
+    [[ "$image_id" =~ ^sha256:[a-f0-9]{64}$ ]] || image_id=unknown
+    case "$container_state" in running|created|restarting|paused|exited|dead|removing) ;; *) container_state=unknown ;; esac
+    case "$container_health" in healthy|unhealthy|starting|none) ;; *) container_health=unknown ;; esac
+    case "$restart_policy" in no|always|unless-stopped|on-failure) ;; *) restart_policy=unknown ;; esac
+    [[ "$release_sha" =~ ^[0-9a-f]{40}$ ]] || release_sha=unknown
+    emit "${key}_found" yes
+    emit "${key}_container_id" "$container_id"
+    emit "${key}_image_id" "$image_id"
+    emit "${key}_state" "$container_state"
+    emit "${key}_health" "$container_health"
+    emit "${key}_restart_policy" "$restart_policy"
+    emit "${key}_release_sha" "$release_sha"
+  done
+else
+  emit docker_daemon_available no
+  emit bodycast_app_prod_found unknown
+  emit bodycast_db_prod_found unknown
+  emit gymbeam_caddy_found unknown
+fi
+
+if command -v curl >/dev/null 2>&1; then
+  curl --silent --show-error --max-time 10 --dump-header - "https://${APP_HOST}/" 2>/dev/null \
+    | awk '
+      BEGIN { in_headers = 1; status = "unavailable"; body_match = 0; maintenance_header = 0; no_store = 0 }
+      /^HTTP\/[0-9.]+[[:space:]]+[0-9][0-9][0-9]/ { status = $2; in_headers = 1; next }
+      in_headers && /^\r?$/ { in_headers = 0; next }
+      in_headers && tolower($0) ~ /^x-bodycast-deploy-maintenance:/ { maintenance_header = 1; next }
+      in_headers && tolower($0) ~ /^cache-control:/ && tolower($0) ~ /(^|[,:[:space:]])no-store([,;[:space:]]|$)/ { no_store = 1; next }
+      !in_headers && $0 == "BodyCast is temporarily unavailable while the model is updated." { body_match = 1 }
+      END {
+        printf "public_https_status=%s\n", status
+        printf "maintenance_header_present=%s\n", maintenance_header ? "yes" : "no"
+        printf "maintenance_body_matches=%s\n", body_match ? "yes" : "no"
+        printf "maintenance_cache_control_no_store=%s\n", no_store ? "yes" : "no"
+      }
+    '
+  CURL_EXIT="${PIPESTATUS[0]}"
+  emit public_https_probe_exit_code "$CURL_EXIT"
+else
+  emit public_https_probe_exit_code unavailable
+  emit public_https_status unavailable
+  emit maintenance_header_present unavailable
+  emit maintenance_body_matches unavailable
+  emit maintenance_cache_control_no_store unavailable
+fi

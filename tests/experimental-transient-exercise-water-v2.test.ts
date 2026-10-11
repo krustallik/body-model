@@ -274,7 +274,7 @@ describe("V2 transient ModelEpisode instant partitions", () => {
     expect(() => buildTransientEpisodePartitionsV2([
       { id: 1, startDate: "2026-01-01", timezone: "UTC", active: true, deactivatedAt: null },
       { id: 2, startDate: "2026-01-02", timezone: "UTC", active: true, deactivatedAt: null },
-    ])).toThrow(/active partition/);
+    ])).toThrow(/multiple-active-episodes/);
     expect(() => buildTransientEpisodePartitionsV2([
       { id: 1, startDate: "2026-01-01", timezone: "UTC", active: false, deactivatedAt: null },
       { id: 2, startDate: "2026-01-02", timezone: "UTC", active: true, deactivatedAt: null },
@@ -336,7 +336,7 @@ describe("V2 transient ModelEpisode instant partitions", () => {
     expect(() => buildTransientEpisodePartitionsV2([
       { id: 1, startDate: "2026-01-01", timezone: "UTC", active: true, deactivatedAt: null },
       { id: 2, startDate: "2026-01-01", timezone: "UTC", active: false, deactivatedAt: new Date("2026-01-02T00:00:00.000Z") },
-    ])).toThrow(/active partition/);
+    ])).toThrow(/inactive-higher-id-equal-instant-boundary/);
   });
 
   it("keeps one ordered model-day step across a DST-shortened day", () => {

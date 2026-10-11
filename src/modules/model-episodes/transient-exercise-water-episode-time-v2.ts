@@ -76,7 +76,7 @@ export function buildTransientEpisodePartitionsV2<T extends TransientEpisodeTime
 
   const active = partitions.filter(({ episode }) => episode.active);
   if (active.length > 1) {
-    throw new RangeError("ModelEpisode active partition is ambiguous or not the latest boundary");
+    throw new RangeError("ModelEpisode active partition is ambiguous or not the latest boundary (multiple-active-episodes)");
   }
   // Match the established Relative Muscle partition contract: a stale
   // inactive row dated after the single active episode cannot own an
@@ -88,7 +88,7 @@ export function buildTransientEpisodePartitionsV2<T extends TransientEpisodeTime
     : partitions.filter(({ episode, startInstant }) => episode.active || startInstant.getTime() <= activeStart);
   const effectiveActive = effectivePartitions.filter(({ episode }) => episode.active);
   if (effectiveActive.length === 1 && effectiveActive[0] !== effectivePartitions.at(-1)) {
-    throw new RangeError("ModelEpisode active partition is ambiguous or not the latest boundary");
+    throw new RangeError("ModelEpisode active partition is ambiguous or not the latest boundary (inactive-higher-id-equal-instant-boundary)");
   }
   for (let index = 1; index < effectivePartitions.length; index += 1) {
     if (effectivePartitions[index]!.startInstant.getTime() < effectivePartitions[index - 1]!.startInstant.getTime()) {

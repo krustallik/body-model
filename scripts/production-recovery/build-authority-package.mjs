@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";

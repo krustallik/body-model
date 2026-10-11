@@ -21,6 +21,18 @@ const DENIED_PATH = /^(?:prisma\/|public\/|scripts\/unified-v[34]|scripts\/physi
 const ALLOWED_PATH = /^(?:\.github\/workflows\/|tests\/|scripts\/deploy\.sh$|scripts\/production-release-marker\.(?:sh|mjs)$|scripts\/production-schema-deploy-handoff\.mjs$|scripts\/production-traffic-cutover\.sh$|scripts\/production-full-history-recalculate\.ts$|src\/modules\/model-episodes\/(?:full-history-recalculation\.service|transient-exercise-water-episode-time-v2)\.ts$|src\/modules\/training\/experimental-transient-exercise-water-shadow\.service\.ts$|Dockerfile$)/;
 /** Exact audited Git blobs admitted for this deploy-only compatibility handoff. */
 const CONTENT_BOUND_PATHS = Object.freeze({
+  "docs/development/production-deploy.md": Object.freeze({
+    migrationOriginBlob: "6096de9b780800654046c63c369643a310d5bb56",
+    deployBlob: "b1a26cce30fb69fddde0d9fe81dd3bc26e342678",
+  }),
+  "scripts/ci/production-deploy-gate.ts": Object.freeze({
+    migrationOriginBlob: "8d0d5e1d0a7c291daae0ff9cd6a970cfb3085083",
+    deployBlob: "f74bb80d9bf424d512c635c7d6c3f4d7858c3dcc",
+  }),
+  "scripts/production-route-primitives.sh": Object.freeze({
+    migrationOriginBlob: "65a51f97bf404d9353b45b1fc33725cb7a582daa",
+    deployBlob: "001b5a5de48a17db06ab7e61731b184a3c82dc83",
+  }),
   "scripts/production-forward-resume.mjs": Object.freeze({
     migrationOriginBlob: "2c07e0636146caaa5bfef69522f351c4e37aa13d",
     deployBlob: "43373e740cdad93d6f88c37c565288b2db1ad70d",

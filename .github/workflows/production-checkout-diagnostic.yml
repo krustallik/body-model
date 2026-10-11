@@ -94,7 +94,7 @@ jobs:
             echo ""
             echo "- exact current-main SHA: `$MAIN_TIP`"
             echo "- current-main CI: $CI_URL"
-            echo "- production scope: read-only checkout metadata, fixed container identity/health, and public maintenance probe; no checkout, fetch, writes, DB, Docker mutations, Caddy, or traffic operations"
+            echo "- production scope: read-only checkout/container identity and health, fixed rollback-image pin inspection, and public maintenance/API/UI probes; no checkout, fetch, DB, Docker mutations, Caddy, or traffic operations"
           } >> "$GITHUB_STEP_SUMMARY"
 
   diagnose:

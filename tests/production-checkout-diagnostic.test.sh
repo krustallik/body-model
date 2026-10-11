@@ -13,7 +13,29 @@ mkdir -p "$FIXTURE_BIN"
 cat > "$FIXTURE_BIN/docker" <<'DOCKER'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-[[ "$1" == info ]] && exit 0
+if [[ "$1" == info ]]; then
+  [[ "${DOCKER_INFO_FAIL:-0}" == 0 ]] || exit 91
+  exit 0
+fi
+if [[ "$1" == image ]]; then
+  case "${2:-}" in
+    ls)
+      [[ "${DOCKER_IMAGE_LS_FAIL:-0}" == 0 ]] || exit 93
+      [[ "${3:-}" == --no-trunc && "${4:-}" == --format && "${5:-}" == '{{.ID}}' \
+        && "${6:-}" == bodycast-app:deploy-rollback && "$#" == 6 ]] || exit 94
+      [[ -z "${DOCKER_IMAGE_LIST_OUTPUT:-}" ]] || printf '%s\n' "$DOCKER_IMAGE_LIST_OUTPUT"
+      exit 0
+      ;;
+    inspect)
+      [[ "${DOCKER_IMAGE_INSPECT_FAIL:-0}" == 0 ]] || exit 95
+      [[ "${3:-}" == --format && "${4:-}" == '{{.Id}}' \
+        && "${5:-}" == bodycast-app:deploy-rollback && "$#" == 5 ]] || exit 96
+      printf '%s\n' "${DOCKER_IMAGE_INSPECT_OUTPUT:-sha256:1111111111111111111111111111111111111111111111111111111111111111}"
+      exit 0
+      ;;
+    *) exit 97 ;;
+  esac
+fi
 if [[ "$1" == ps ]]; then
   [[ "${DOCKER_PS_FAIL:-0}" == 0 ]] || exit 91
   requested=""
@@ -47,6 +69,23 @@ cat > "$FIXTURE_BIN/curl" <<'CURL'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 printf '%s\n' "$*" >> "$CURL_EVENTS"
+case "$*" in
+  *'/api/health'*)
+    printf '%s\n%s\n' "${FIXTURE_API_HEALTH_BODY:-{\"status\":\"ok\"}}" "${FIXTURE_API_HEALTH_STATUS:-200}"
+    ;;
+  *'--write-out'*)
+    ui_url="${*: -1}"
+    if [[ "$ui_url" == 'https://bodycast.example.test/' ]]; then
+      printf 'HTTP/2 307\r\nLocation: %s\r\n\r\n__BODYCAST_UI_RESULT__307|text/html; charset=utf-8' "${FIXTURE_UI_REDIRECT_LOCATION:-/login}"
+    elif [[ "$ui_url" == 'https://bodycast.example.test/login' ]]; then
+      printf 'HTTP/2 %s\r\nContent-Type: %s\r\n\r\n__BODYCAST_UI_RESULT__%s|%s' \
+        "${FIXTURE_UI_FINAL_STATUS:-200}" "${FIXTURE_UI_CONTENT_TYPE:-text/html; charset=utf-8}" \
+        "${FIXTURE_UI_FINAL_STATUS:-200}" "${FIXTURE_UI_CONTENT_TYPE:-text/html; charset=utf-8}"
+    else
+      printf 'HTTP/2 404\r\n\r\n__BODYCAST_UI_RESULT__404|text/plain'
+    fi
+    ;;
+  *)
 cat <<'RESPONSE'
 HTTP/2 503
 Cache-Control: no-store
@@ -54,6 +93,8 @@ X-BodyCast-Deploy-Maintenance: fixture-marker-secret
 
 BodyCast is temporarily unavailable while the model is updated.
 RESPONSE
+    ;;
+esac
 CURL
 chmod +x "$FIXTURE_BIN/docker" "$FIXTURE_BIN/curl"
 : > "$FIXTURE_ROOT/curl-events"
@@ -83,6 +124,16 @@ run_inspector() {
     DOCKER_INSPECT_FAIL="${DOCKER_INSPECT_FAIL:-}" \
     DOCKER_PS_PRESENT="${DOCKER_PS_PRESENT:-}" \
     DOCKER_PS_FAIL="${DOCKER_PS_FAIL:-0}" \
+    DOCKER_INFO_FAIL="${DOCKER_INFO_FAIL:-0}" \
+    DOCKER_IMAGE_LS_FAIL="${DOCKER_IMAGE_LS_FAIL:-0}" \
+    DOCKER_IMAGE_LIST_OUTPUT="${DOCKER_IMAGE_LIST_OUTPUT-sha256:1111111111111111111111111111111111111111111111111111111111111111}" \
+    DOCKER_IMAGE_INSPECT_FAIL="${DOCKER_IMAGE_INSPECT_FAIL:-0}" \
+    DOCKER_IMAGE_INSPECT_OUTPUT="${DOCKER_IMAGE_INSPECT_OUTPUT:-sha256:1111111111111111111111111111111111111111111111111111111111111111}" \
+    FIXTURE_API_HEALTH_STATUS="${FIXTURE_API_HEALTH_STATUS:-200}" \
+    FIXTURE_API_HEALTH_BODY="${FIXTURE_API_HEALTH_BODY:-{\"status\":\"ok\"}}" \
+    FIXTURE_UI_FINAL_STATUS="${FIXTURE_UI_FINAL_STATUS:-200}" \
+    FIXTURE_UI_CONTENT_TYPE="${FIXTURE_UI_CONTENT_TYPE:-text/html; charset=utf-8}" \
+    FIXTURE_UI_REDIRECT_LOCATION="${FIXTURE_UI_REDIRECT_LOCATION:-/login}" \
     APP_HOST_B64="$(printf '%s' 'bodycast.example.test' | base64 -w0)" \
     DEPLOY_PATH_B64="$(printf '%s' "$path" | base64 -w0)" bash "$INSPECTOR"
 }
@@ -108,15 +159,89 @@ assert_field "$CLEAN_REPORT" bodycast_app_prod_health healthy
 assert_field "$CLEAN_REPORT" bodycast_app_prod_release_sha 1111111111111111111111111111111111111111
 assert_field "$CLEAN_REPORT" bodycast_db_prod_health healthy
 assert_field "$CLEAN_REPORT" gymbeam_caddy_state running
+assert_field "$CLEAN_REPORT" deploy_rollback_pin_state present
+assert_field "$CLEAN_REPORT" deploy_rollback_pin_image_id sha256:1111111111111111111111111111111111111111111111111111111111111111
 assert_field "$CLEAN_REPORT" public_https_status 503
 assert_field "$CLEAN_REPORT" maintenance_header_present yes
 assert_field "$CLEAN_REPORT" maintenance_body_matches yes
 assert_field "$CLEAN_REPORT" maintenance_cache_control_no_store yes
 assert_field "$CLEAN_REPORT" public_https_probe_exit_code 0
+assert_field "$CLEAN_REPORT" public_api_health_status 200
+assert_field "$CLEAN_REPORT" public_api_health_body_matches yes
+assert_field "$CLEAN_REPORT" public_api_health_probe_exit_code 0
+assert_field "$CLEAN_REPORT" public_ui_status 200
+assert_field "$CLEAN_REPORT" public_ui_html_response yes
+assert_field "$CLEAN_REPORT" public_ui_origin_matches_app_host yes
+assert_field "$CLEAN_REPORT" public_ui_redirect_blocked no
+assert_field "$CLEAN_REPORT" public_ui_probe_exit_code 0
+UI_CURL_EVENT="$(grep -F -- '--dump-header -' "$FIXTURE_ROOT/curl-events" || true)"
+[[ -n "$UI_CURL_EVENT" && "$UI_CURL_EVENT" != *'--location'* && "$UI_CURL_EVENT" != *'--location-trusted'* ]] || {
+  echo 'UI probe must validate each redirect before following it.' >&2
+  exit 1
+}
 if [[ "$CLEAN_REPORT" == *'bodycast.example.test'* || "$CLEAN_REPORT" == *'fixture-marker-secret'* || "$CLEAN_REPORT" == *'BodyCast is temporarily unavailable'* ]]; then
   echo 'Runtime diagnostic exposed the hostname, marker value, or raw HTTP body.' >&2
   exit 1
 fi
+
+PIN_ABSENT_REPORT="$(DOCKER_IMAGE_LIST_OUTPUT= run_inspector "$TEST_REPO")"
+assert_field "$PIN_ABSENT_REPORT" deploy_rollback_pin_state absent
+assert_field "$PIN_ABSENT_REPORT" deploy_rollback_pin_image_id unavailable
+
+PIN_LIST_ERROR_REPORT="$(DOCKER_IMAGE_LS_FAIL=1 run_inspector "$TEST_REPO")"
+assert_field "$PIN_LIST_ERROR_REPORT" deploy_rollback_pin_state unknown
+
+PIN_MULTIPLE_ROWS_REPORT="$(DOCKER_IMAGE_LIST_OUTPUT=$'sha256:1111111111111111111111111111111111111111111111111111111111111111\nsha256:2222222222222222222222222222222222222222222222222222222222222222' run_inspector "$TEST_REPO")"
+assert_field "$PIN_MULTIPLE_ROWS_REPORT" deploy_rollback_pin_state unknown
+assert_field "$PIN_MULTIPLE_ROWS_REPORT" deploy_rollback_pin_image_id unavailable
+
+PIN_INSPECT_ERROR_REPORT="$(DOCKER_IMAGE_INSPECT_FAIL=1 run_inspector "$TEST_REPO")"
+assert_field "$PIN_INSPECT_ERROR_REPORT" deploy_rollback_pin_state unknown
+
+PIN_ID_MISMATCH_REPORT="$(DOCKER_IMAGE_INSPECT_OUTPUT='sha256:2222222222222222222222222222222222222222222222222222222222222222' run_inspector "$TEST_REPO")"
+assert_field "$PIN_ID_MISMATCH_REPORT" deploy_rollback_pin_state unknown
+assert_field "$PIN_ID_MISMATCH_REPORT" deploy_rollback_pin_image_id unavailable
+
+PIN_MALFORMED_REPORT="$(DOCKER_IMAGE_INSPECT_OUTPUT='secret-raw-docker-error' run_inspector "$TEST_REPO")"
+assert_field "$PIN_MALFORMED_REPORT" deploy_rollback_pin_state unknown
+assert_field "$PIN_MALFORMED_REPORT" deploy_rollback_pin_image_id unavailable
+if [[ "$PIN_MALFORMED_REPORT" == *'secret-raw-docker-error'* ]]; then
+  echo 'Malformed Docker output leaked into the diagnostic.' >&2
+  exit 1
+fi
+
+DOCKER_UNAVAILABLE_REPORT="$(DOCKER_INFO_FAIL=1 run_inspector "$TEST_REPO")"
+assert_field "$DOCKER_UNAVAILABLE_REPORT" docker_daemon_available no
+assert_field "$DOCKER_UNAVAILABLE_REPORT" deploy_rollback_pin_state unknown
+
+API_FAILURE_REPORT="$(FIXTURE_API_HEALTH_STATUS=503 FIXTURE_API_HEALTH_BODY='{"status":"error","private":"do-not-print"}' run_inspector "$TEST_REPO")"
+assert_field "$API_FAILURE_REPORT" public_api_health_status 503
+assert_field "$API_FAILURE_REPORT" public_api_health_body_matches no
+if [[ "$API_FAILURE_REPORT" == *'do-not-print'* ]]; then
+  echo 'API diagnostic leaked response body content.' >&2
+  exit 1
+fi
+
+: > "$FIXTURE_ROOT/curl-events"
+UI_EXTERNAL_REDIRECT_REPORT="$(FIXTURE_UI_REDIRECT_LOCATION='https://other.example.test/login' run_inspector "$TEST_REPO")"
+EXTERNAL_REDIRECT_CURL_EVENTS="$(cat "$FIXTURE_ROOT/curl-events")"
+assert_field "$UI_EXTERNAL_REDIRECT_REPORT" public_ui_status 307
+assert_field "$UI_EXTERNAL_REDIRECT_REPORT" public_ui_html_response no
+assert_field "$UI_EXTERNAL_REDIRECT_REPORT" public_ui_origin_matches_app_host no
+assert_field "$UI_EXTERNAL_REDIRECT_REPORT" public_ui_redirect_blocked yes
+assert_field "$UI_EXTERNAL_REDIRECT_REPORT" public_ui_probe_exit_code 47
+if [[ "$UI_EXTERNAL_REDIRECT_REPORT" == *'other.example.test'* ]]; then
+  echo 'UI diagnostic leaked an effective redirect host.' >&2
+  exit 1
+fi
+if [[ "$EXTERNAL_REDIRECT_CURL_EVENTS" == *'https://other.example.test'* ]]; then
+  echo 'UI diagnostic followed a redirect to another host.' >&2
+  exit 1
+fi
+
+UI_UNHEALTHY_REPORT="$(FIXTURE_UI_FINAL_STATUS=503 run_inspector "$TEST_REPO")"
+assert_field "$UI_UNHEALTHY_REPORT" public_ui_status 503
+assert_field "$UI_UNHEALTHY_REPORT" public_ui_html_response yes
 
 INSPECT_ERROR_PRESENT_REPORT="$(DOCKER_INSPECT_FAIL=bodycast-db-prod DOCKER_PS_PRESENT=bodycast-db-prod run_inspector "$TEST_REPO")"
 assert_field "$INSPECT_ERROR_PRESENT_REPORT" bodycast_db_prod_found unknown

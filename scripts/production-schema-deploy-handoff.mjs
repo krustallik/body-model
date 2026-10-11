@@ -35,7 +35,7 @@ const CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "scripts/production-checkout-diagnostic.sh": Object.freeze({
     migrationOriginBlob: "f19687c65d7e9d3b744890f377ebf6f0c80eebf9",
-    deployBlob: "331bc320b23c51d5b36519dfb0f15ac0a9fdb530",
+    deployBlob: "7256cf45844deade0685f82eb470bf79a396c497",
   }),
 });
 /** Schema/runtime identity that must remain identical to the migration origin. */

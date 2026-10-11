@@ -257,11 +257,35 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     emit "${key}_restart_policy" "$restart_policy"
     emit "${key}_release_sha" "$release_sha"
   done
+  deploy_rollback_image="bodycast-app:deploy-rollback"
+  if deploy_rollback_rows="$(docker image ls --no-trunc --format '{{.ID}}' "$deploy_rollback_image" 2>/dev/null)"; then
+    if [[ -z "$deploy_rollback_rows" ]]; then
+      emit deploy_rollback_pin_state absent
+      emit deploy_rollback_pin_image_id unavailable
+    elif [[ "$deploy_rollback_rows" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+      deploy_rollback_image_id="$(docker image inspect --format '{{.Id}}' "$deploy_rollback_image" 2>/dev/null)"
+      if [[ "$deploy_rollback_image_id" == "$deploy_rollback_rows" ]]; then
+        emit deploy_rollback_pin_state present
+        emit deploy_rollback_pin_image_id "$deploy_rollback_image_id"
+      else
+        emit deploy_rollback_pin_state unknown
+        emit deploy_rollback_pin_image_id unavailable
+      fi
+    else
+      emit deploy_rollback_pin_state unknown
+      emit deploy_rollback_pin_image_id unavailable
+    fi
+  else
+    emit deploy_rollback_pin_state unknown
+    emit deploy_rollback_pin_image_id unavailable
+  fi
 else
   emit docker_daemon_available no
   emit bodycast_app_prod_found unknown
   emit bodycast_db_prod_found unknown
   emit gymbeam_caddy_found unknown
+  emit deploy_rollback_pin_state unknown
+  emit deploy_rollback_pin_image_id unavailable
 fi
 
 if command -v curl >/dev/null 2>&1; then
@@ -282,10 +306,102 @@ if command -v curl >/dev/null 2>&1; then
     '
   CURL_EXIT="${PIPESTATUS[0]}"
   emit public_https_probe_exit_code "$CURL_EXIT"
+
+  API_HEALTH_OUTPUT="$(curl --silent --show-error --max-redirs 0 --connect-timeout 5 --max-time 10 --output - --write-out $'\n%{http_code}' "https://${APP_HOST}/api/health" 2>/dev/null)"
+  API_HEALTH_EXIT="$?"
+  API_HEALTH_RESPONSE="${API_HEALTH_OUTPUT%$'\n'*}"
+  API_HEALTH_STATUS="unavailable"
+  API_HEALTH_BODY_MATCH="no"
+  [[ "${API_HEALTH_OUTPUT##*$'\n'}" =~ ^[1-5][0-9][0-9]$ ]] && API_HEALTH_STATUS="${API_HEALTH_OUTPUT##*$'\n'}"
+  if [[ "$API_HEALTH_RESPONSE" == *'"status":"ok"'* ]]; then API_HEALTH_BODY_MATCH="yes"; fi
+  emit public_api_health_status "$API_HEALTH_STATUS"
+  emit public_api_health_body_matches "$API_HEALTH_BODY_MATCH"
+  emit public_api_health_probe_exit_code "$API_HEALTH_EXIT"
+
+  UI_STATUS="unavailable"
+  UI_HTML_MATCH="no"
+  UI_ORIGIN_MATCH="no"
+  UI_PROBE_EXIT=0
+  UI_REDIRECT_BLOCKED=no
+  UI_CURRENT_URL="https://${APP_HOST}/"
+  for ((UI_HOP = 0; UI_HOP <= 5; UI_HOP += 1)); do
+    UI_RAW_RESPONSE="$(curl --silent --show-error --max-redirs 0 --connect-timeout 5 --max-time 15 --dump-header - --output /dev/null --write-out $'\n__BODYCAST_UI_RESULT__%{http_code}|%{content_type}' "$UI_CURRENT_URL" 2>/dev/null)"
+    UI_PROBE_EXIT="$?"
+    if [[ "$UI_PROBE_EXIT" -ne 0 ]]; then break; fi
+    UI_RESULT="${UI_RAW_RESPONSE##*$'\n__BODYCAST_UI_RESULT__'}"
+    UI_HEADERS="${UI_RAW_RESPONSE%$'\n__BODYCAST_UI_RESULT__'*}"
+    if [[ ! "$UI_RESULT" =~ ^([1-5][0-9][0-9])\|([^|]*)$ ]]; then
+      UI_STATUS="unavailable"
+      UI_PROBE_EXIT=1
+      break
+    fi
+    UI_STATUS="${BASH_REMATCH[1]}"
+    UI_CONTENT_TYPE="${BASH_REMATCH[2]}"
+    if [[ "$UI_STATUS" == 200 ]]; then
+      if [[ "${UI_CONTENT_TYPE,,}" == text/html* ]]; then UI_HTML_MATCH="yes"; fi
+      UI_ORIGIN_MATCH=yes
+      break
+    fi
+    case "$UI_STATUS" in
+      301|302|303|307|308) ;;
+      *)
+        if [[ "${UI_CONTENT_TYPE,,}" == text/html* ]]; then UI_HTML_MATCH="yes"; fi
+        break
+        ;;
+    esac
+    UI_LOCATION_INFO="$(printf '%s\n' "$UI_HEADERS" | awk '
+      tolower(substr($0, 1, 9)) == "location:" {
+        value = substr($0, 10)
+        sub(/^[[:space:]]+/, "", value)
+        sub(/\r$/, "", value)
+        count += 1
+        location = value
+      }
+      END {
+        if (count == 0) print "none"
+        else if (count == 1 && location !~ /[|[:cntrl:][:space:]]/) print "one|" location
+        else print "invalid"
+      }
+    ')"
+    if [[ "$UI_LOCATION_INFO" != one\|* || "$UI_HOP" -eq 5 ]]; then
+      UI_REDIRECT_BLOCKED=yes
+      UI_PROBE_EXIT=47
+      break
+    fi
+    UI_LOCATION="${UI_LOCATION_INFO#one|}"
+    if [[ "$UI_LOCATION" == /* && "$UI_LOCATION" != //* && "$UI_LOCATION" != *\\* ]]; then
+      UI_CURRENT_URL="https://${APP_HOST}${UI_LOCATION}"
+    else
+      UI_LOWER_LOCATION="${UI_LOCATION,,}"
+      UI_ORIGIN_PREFIX="https://${APP_HOST,,}"
+      if [[ "$UI_LOWER_LOCATION" == "$UI_ORIGIN_PREFIX" ]]; then
+        UI_CURRENT_URL="$UI_LOCATION"
+      elif [[ "$UI_LOWER_LOCATION" == "$UI_ORIGIN_PREFIX"/* || "$UI_LOWER_LOCATION" == "$UI_ORIGIN_PREFIX"\?* || "$UI_LOWER_LOCATION" == "$UI_ORIGIN_PREFIX"\#* ]]; then
+        UI_CURRENT_URL="$UI_LOCATION"
+      else
+        UI_REDIRECT_BLOCKED=yes
+        UI_PROBE_EXIT=47
+        break
+      fi
+    fi
+  done
+  emit public_ui_status "$UI_STATUS"
+  emit public_ui_html_response "$UI_HTML_MATCH"
+  emit public_ui_origin_matches_app_host "$UI_ORIGIN_MATCH"
+  emit public_ui_redirect_blocked "$UI_REDIRECT_BLOCKED"
+  emit public_ui_probe_exit_code "$UI_PROBE_EXIT"
 else
   emit public_https_probe_exit_code unavailable
   emit public_https_status unavailable
   emit maintenance_header_present unavailable
   emit maintenance_body_matches unavailable
   emit maintenance_cache_control_no_store unavailable
+  emit public_api_health_status unavailable
+  emit public_api_health_body_matches unavailable
+  emit public_api_health_probe_exit_code unavailable
+  emit public_ui_status unavailable
+  emit public_ui_html_response unavailable
+  emit public_ui_origin_matches_app_host unavailable
+  emit public_ui_redirect_blocked unavailable
+  emit public_ui_probe_exit_code unavailable
 fi

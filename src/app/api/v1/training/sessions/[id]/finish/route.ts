@@ -14,7 +14,8 @@ export async function POST(
 
   try {
     const session = await trainingService.finishSession(parsed.data.id);
-    return Response.json({ session });
+    const { modelPublicationStatus, ...sessionDto } = session;
+    return Response.json({ session: sessionDto, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) });
   } catch (error) {
     return trainingErrorResponse(error) ?? trainingInternalError();
   }

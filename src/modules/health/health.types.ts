@@ -17,6 +17,8 @@ export type HealthSyncMetadata = {
 export interface SyncDateResult {
   date: string;
   action: SyncAction;
+  /** Whether this sync changed a raw weight source on the date. */
+  weightSourceChanged?: boolean;
 }
 
 export interface HealthRetentionPruneResult {
@@ -27,6 +29,8 @@ export interface HealthRetentionPruneResult {
 
 export interface HealthSyncResult {
   status: "ok";
+  /** Raw ingestion succeeded; this separately reports whether model publication is current. */
+  modelPublicationStatus: "current" | "stale" | "not-run";
   received: number;
   created: number;
   updated: number;

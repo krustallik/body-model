@@ -23,7 +23,8 @@ export async function POST(
 
   try {
     const session = await trainingService.manualMatch(routeParams.data.id, parsed.data);
-    return Response.json({ session });
+    const { modelPublicationStatus, ...sessionDto } = session;
+    return Response.json({ session: sessionDto, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) });
   } catch (error) {
     return trainingErrorResponse(error) ?? trainingInternalError();
   }

@@ -127,6 +127,47 @@ describe("read-only historical bodyweight as-of adapter", () => {
     expect(result.valueKg).toBeGreaterThan(0);
   });
 
+  it("uses a frozen baseline ending on episode start only for later as-of dates", () => {
+    const startDate = "2026-08-22";
+    const targetDate = addCalendarDays(startDate, 8);
+    const episode = asOfSafeEpisode(startDate);
+    episode.baselineWindowEndDate = startDate;
+    const diagnostics = episode.initializationDiagnostics as Record<string, unknown>;
+    diagnostics.fittingInterval = { ...(diagnostics.fittingInterval as object), endDate: startDate };
+    diagnostics.preRollInterval = { ...(diagnostics.preRollInterval as object), endDate: startDate };
+    const inputSources: HistoricalModelSources = {
+      days: Array.from({ length: 9 }, (_, index) => sourceDay(addCalendarDays(startDate, index))),
+      snapshots: [], activityIntervals: [], workIntervals: [], workouts: [],
+      heartRateSamples: [], webOnlyStrengthSessions: [], reconciliationLinks: [],
+    };
+
+    expect(calculateHistoricalBodyweightAsOfV1({
+      episode,
+      sources: inputSources,
+      localDate: targetDate,
+    })).toMatchObject({ status: "available", localDate: targetDate });
+    expect(calculateHistoricalBodyweightAsOfV1({
+      episode,
+      sources: inputSources,
+      localDate: startDate,
+    })).toMatchObject({ status: "unavailable", reason: "unsafe-initial-state" });
+
+    const futureInformedEpisode = {
+      ...episode,
+      baselineWindowEndDate: addCalendarDays(startDate, 1),
+      initializationDiagnostics: {
+        ...diagnostics,
+        fittingInterval: { ...(diagnostics.fittingInterval as object), endDate: addCalendarDays(startDate, 1) },
+        preRollInterval: { ...(diagnostics.preRollInterval as object), endDate: addCalendarDays(startDate, 1) },
+      },
+    };
+    expect(calculateHistoricalBodyweightAsOfV1({
+      episode: futureInformedEpisode,
+      sources: inputSources,
+      localDate: targetDate,
+    })).toMatchObject({ status: "unavailable", reason: "unsafe-initial-state" });
+  });
+
   it("returns unavailable when the allowed historical prefix exceeds the input-count limit", () => {
     const localDate = "2026-08-22";
     const episode = asOfSafeEpisode(localDate);

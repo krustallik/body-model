@@ -480,7 +480,6 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
   }
   const profileId = input.profileId ?? 1;
   const client = input.client ?? prisma;
-  const targetRevision = input.targetRevision ?? UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION;
   const episodeRows = await client.modelEpisode.findMany({
     where: { profileId },
     orderBy: [{ startDate: "asc" }, { id: "asc" }],
@@ -492,15 +491,26 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
   const latestPartition = episodePartitions.at(-1)!;
   const initialPublicationState = await client.physiologyV7Lifecycle.findUnique({
     where: { profileId },
-    select: { invalidationGeneration: true, productionStaleFromDate: true, productionPublishedGeneration: true, unifiedTargetRevision: true, unifiedRolloutEpoch: true },
+    select: { invalidationGeneration: true, productionStaleFromDate: true, productionPublishedGeneration: true, unifiedTargetRevision: true, unifiedRolloutEpoch: true, unifiedPublicationBlockedFromDate: true },
   });
-  if (!isProductionGenerationCurrentV1(initialPublicationState)) {
+  if (!isProductionGenerationCurrentV1(initialPublicationState)
+      || initialPublicationState.unifiedPublicationBlockedFromDate !== null) {
+    throw new ProductionPublicationUnavailableError();
+  }
+  // Ordinary rebuilds follow the lifecycle's active target. V3 remains the
+  // pre-activation behavior, while an activated V4 rollout must never be
+  // silently downgraded by a caller that omits targetRevision.
+  const lifecycleTargetRevision = initialPublicationState.unifiedTargetRevision;
+  const targetRevision = input.targetRevision ?? lifecycleTargetRevision;
+  if (targetRevision !== UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION
+      && targetRevision !== UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION) {
     throw new ProductionPublicationUnavailableError();
   }
   const expectedGeneration = initialPublicationState.invalidationGeneration;
   const expectedRolloutEpoch = initialPublicationState.unifiedRolloutEpoch;
   if (initialPublicationState.unifiedTargetRevision !== targetRevision
       || (input.rolloutEpoch !== undefined && input.rolloutEpoch !== expectedRolloutEpoch)
+      || (targetRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION && expectedRolloutEpoch !== 0)
       || (targetRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION && expectedRolloutEpoch < 1)) {
     throw new ProductionPublicationUnavailableError();
   }
@@ -673,12 +683,14 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
         invalidationGeneration: true, productionStaleFromDate: true,
         productionPublishedGeneration: true, updatedAt: true,
         unifiedTargetRevision: true, unifiedRolloutEpoch: true,
+        unifiedPublicationBlockedFromDate: true,
       },
     });
     if (!isProductionGenerationCurrentV1(current) || current.invalidationGeneration !== expectedGeneration
         || current.productionPublishedGeneration !== expectedGeneration
         || current.unifiedTargetRevision !== targetRevision
         || current.unifiedRolloutEpoch !== expectedRolloutEpoch
+        || current.unifiedPublicationBlockedFromDate !== null
         || current.updatedAt.toISOString() !== expectedLifecycleUpdatedAt) {
       throw new PhysiologyV7ConcurrentSourceChangeError();
     }
@@ -712,12 +724,11 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
         productionStaleFromDate: null,
         unifiedTargetRevision: targetRevision,
         unifiedRolloutEpoch: expectedRolloutEpoch,
+        unifiedPublicationBlockedFromDate: null,
       },
       data: {
         unifiedPublishedGeneration: expectedGeneration,
-        ...(targetRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION
-          ? { unifiedPublishedRolloutEpoch: expectedRolloutEpoch }
-          : {}),
+        unifiedPublishedRolloutEpoch: expectedRolloutEpoch,
       },
     });
     if (published.count !== 1) throw new PhysiologyV7ConcurrentSourceChangeError();

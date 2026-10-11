@@ -73,24 +73,40 @@ function sourcesThrough(
   };
 }
 
-function hasAsOfSafeInitialization(episode: PersistedEpisode): boolean {
+function isDateBefore(date: unknown, localDate: string): date is string {
+  if (typeof date !== "string") return false;
+  try {
+    return calendarDayIndex(date) < calendarDayIndex(localDate);
+  } catch {
+    return false;
+  }
+}
+
+function isDateOnOrBefore(date: unknown, localDate: string): date is string {
+  if (typeof date !== "string") return false;
+  try {
+    return calendarDayIndex(date) <= calendarDayIndex(localDate);
+  } catch {
+    return false;
+  }
+}
+
+function hasAsOfSafeInitialization(episode: PersistedEpisode, localDate: string): boolean {
   const diagnostics = episode.initializationDiagnostics;
   if (diagnostics === null || typeof diagnostics !== "object") return false;
   const value = diagnostics as Record<string, unknown>;
   const fittingInterval = value.fittingInterval;
   const preRollInterval = value.preRollInterval;
   const anchorDate = value.bodyStateAnchorDate;
-  return typeof anchorDate === "string"
-    && anchorDate < episode.startDate
+  return isDateBefore(anchorDate, episode.startDate)
     && fittingInterval !== null
     && typeof fittingInterval === "object"
-    && typeof (fittingInterval as Record<string, unknown>).endDate === "string"
-    && (fittingInterval as Record<string, string>).endDate < episode.startDate
+    && isDateOnOrBefore((fittingInterval as Record<string, unknown>).endDate, episode.startDate)
+    && isDateBefore((fittingInterval as Record<string, unknown>).endDate, localDate)
     && preRollInterval !== null
     && typeof preRollInterval === "object"
-    && (preRollInterval as Record<string, unknown>).endDate !== null
-    && typeof (preRollInterval as Record<string, unknown>).endDate === "string"
-    && (preRollInterval as Record<string, string>).endDate < episode.startDate;
+    && isDateOnOrBefore((preRollInterval as Record<string, unknown>).endDate, episode.startDate)
+    && isDateBefore((preRollInterval as Record<string, unknown>).endDate, localDate);
 }
 
 /**
@@ -129,8 +145,9 @@ export function calculateHistoricalBodyweightAsOfV1(input: {
       return unavailable(episode, localDate, "unsafe-initial-state");
     }
     if (!episode.baselineWindowEndDate
-        || episode.baselineWindowEndDate >= episode.startDate
-        || !hasAsOfSafeInitialization(episode)) {
+        || !isDateOnOrBefore(episode.baselineWindowEndDate, episode.startDate)
+        || !isDateBefore(episode.baselineWindowEndDate, localDate)
+        || !hasAsOfSafeInitialization(episode, localDate)) {
       return unavailable(episode, localDate, "unsafe-initial-state");
     }
     if (usesSelectionV1(episode.modelVersion)) {

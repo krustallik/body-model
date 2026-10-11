@@ -319,11 +319,16 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
   ): Promise<SyncDateResult> {
     day = prepareDailyMeasurementsForWrite(day);
     // Coverage is decided from the raw sync observation for THIS calendar day only.
-    const workoutFeedObserved = resolveWorkoutFeedObserved(rawDay);
+    const workoutFeedObserved = resolveWorkoutFeedObserved(rawDay, metadata.timezone);
     const workoutFeedPresent = hasWorkoutFeedPayload(rawDay);
     // Latest state, immutable snapshot, and workout reconciliation are one atomic sync.
     return this.client.$transaction(async (transaction) => {
-      await new PhysiologyV7PersistenceRepository(transaction).lockProfile(1);
+      const lifecycle = new PhysiologyV7PersistenceRepository(transaction);
+      await lifecycle.lockProfile(1);
+      // Arm before the raw Health snapshot commits. A process failure while
+      // refreshing dependent reconciliation/shadows must leave publication
+      // blocked until this exact calendar-day chain is retried successfully.
+      await lifecycle.blockUnifiedPublication({ profileId: 1, fromDate: day.date, source: "health", sourceKey: day.date });
       const existing = await transaction.dailyHealthData.findUnique({
         where: { date: day.date },
         select: { date: true, weightKg: true },
@@ -437,7 +442,8 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
         affectedInstants: [...workoutsBefore, ...workoutsAfter].flatMap((row) => [row.startAt, row.endAt]),
         affectedModelDates: [day.date],
       });
-      if (dailyWeightChanged || changedWeightRows.length > 0) {
+      const weightSourceChanged = dailyWeightChanged || changedWeightRows.length > 0;
+      if (weightSourceChanged) {
         await invalidateStepperMassDependenciesInTransactionV1({
           tx: transaction,
           profileId: 1,
@@ -479,7 +485,11 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
         }
       }
 
-      return { date: day.date, action: existing ? "updated" : "created" };
+      return {
+        date: day.date,
+        action: existing ? "updated" : "created",
+        ...(weightSourceChanged ? { weightSourceChanged: true } : {}),
+      };
     });
   }
 

@@ -158,6 +158,7 @@ export async function POST(request: Request): Promise<Response> {
       ...normalizedSummary,
       created: result.created,
       updated: result.updated,
+      modelPublicationStatus: result.modelPublicationStatus,
       prunedDays: result.prunedDays,
       prunedSnapshots: result.prunedSnapshots,
       retentionCutoffDate: result.retentionCutoffDate,

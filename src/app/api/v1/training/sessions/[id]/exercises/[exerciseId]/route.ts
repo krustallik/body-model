@@ -27,7 +27,8 @@ export async function PATCH(request: Request, context: Ctx): Promise<Response> {
       params.data.exerciseId,
       parsed.data,
     );
-    return Response.json({ session });
+    const { modelPublicationStatus, ...sessionDto } = session;
+    return Response.json({ session: sessionDto, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) });
   } catch (error) {
     return trainingErrorResponse(error) ?? trainingInternalError();
   }
@@ -59,7 +60,8 @@ export async function DELETE(request: Request, context: Ctx): Promise<Response> 
       params.data.exerciseId,
       parsed.data,
     );
-    return Response.json({ session });
+    const { modelPublicationStatus, ...sessionDto } = session;
+    return Response.json({ session: sessionDto, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) });
   } catch (error) {
     return trainingErrorResponse(error) ?? trainingInternalError();
   }

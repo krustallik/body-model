@@ -129,3 +129,11 @@ export class SessionNotEditableError extends TrainingError {
     this.name = "SessionNotEditableError";
   }
 }
+
+/** A dependent strength-energy candidate lost its source CAS and was not published. */
+export class StaleStrengthEnergySourceError extends TrainingError {
+  constructor() {
+    super("strength source changed before its energy shadow could be published", "strength_energy_source_stale");
+    this.name = "StaleStrengthEnergySourceError";
+  }
+}

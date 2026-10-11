@@ -11,6 +11,7 @@ describe("sleep segment persistence", () => {
     const createMany = vi.fn(async () => ({ count: 2 }));
     const transaction = {
       $executeRaw: vi.fn(async () => 0),
+      physiologyV7Lifecycle: { findUnique: vi.fn(async () => null) },
       dailyHealthData: {
         findUnique: vi.fn(async () => null),
         upsert: vi.fn(async () => ({ id: 11 })),

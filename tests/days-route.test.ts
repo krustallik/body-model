@@ -135,13 +135,14 @@ describe("/api/v1/days", () => {
   });
 
   it("updates one field", async () => {
-    dailyMetricRepository.update.mockResolvedValue({ ...day, weightKg: 88.9 });
+    dailyMetricRepository.update.mockResolvedValue({ ...day, weightKg: 88.9, modelPublicationStatus: "stale" });
     const response = await PATCH(
       jsonRequest(`${baseUrl}/${day.date}`, "PATCH", { weightKg: "88.9" }),
       routeContext(day.date),
     );
 
     expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ day: { modelPublicationStatus: "stale" } });
     expect(dailyMetricRepository.update).toHaveBeenCalledWith(day.date, { weightKg: 88.9 });
   });
 
@@ -197,9 +198,10 @@ describe("/api/v1/days", () => {
   });
 
   it("deletes a day", async () => {
-    dailyMetricRepository.delete.mockResolvedValue(true);
+    dailyMetricRepository.delete.mockResolvedValue({ deleted: true, modelPublicationStatus: "stale" });
     const response = await DELETE(new Request(`${baseUrl}/${day.date}`, { method: "DELETE" }), routeContext(day.date));
     expect(response.status).toBe(204);
+    expect(response.headers.get("X-Model-Publication-Status")).toBe("stale");
     expect(dailyMetricRepository.delete).toHaveBeenCalledWith(day.date);
   });
 
@@ -208,7 +210,7 @@ describe("/api/v1/days", () => {
     ["delete", async () => DELETE(new Request(`${baseUrl}/${day.date}`, { method: "DELETE" }), routeContext(day.date))],
   ])("returns 404 when %s targets a missing date", async (operation, call) => {
     if (operation === "update") dailyMetricRepository.update.mockResolvedValue(null);
-    else dailyMetricRepository.delete.mockResolvedValue(false);
+    else dailyMetricRepository.delete.mockResolvedValue({ deleted: false });
     const response = await call();
     expect(response.status).toBe(404);
   });

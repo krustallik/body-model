@@ -7,6 +7,7 @@ describe("Active Energy publication generation gates", () => {
     productionStaleFromDate: null,
     productionPublishedGeneration: 12,
     unifiedPublishedGeneration: 12,
+    unifiedPublicationBlockedFromDate: null,
   };
 
   it("allows each layer only when its published pointer equals the current generation", () => {
@@ -20,5 +21,6 @@ describe("Active Energy publication generation gates", () => {
     expect(isProductionGenerationCurrentV1({ ...published, productionPublishedGeneration: null })).toBe(false);
     expect(isUnifiedGenerationCurrentV1({ ...published, unifiedPublishedGeneration: 11 })).toBe(false);
     expect(isUnifiedGenerationCurrentV1({ ...published, unifiedPublishedGeneration: null })).toBe(false);
+    expect(isUnifiedGenerationCurrentV1({ ...published, unifiedPublicationBlockedFromDate: "2026-10-10" })).toBe(false);
   });
 });

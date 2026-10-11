@@ -1,12 +1,25 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { DuplicateDayError } from "@/modules/days/day.errors";
-import { DailyMetricRepository } from "@/modules/days/day.repository";
+import { DailyMetricRepository, replayProductionDailyMetricShadowsV1 } from "@/modules/days/day.repository";
+import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
+import * as activeEnergyPublication from "@/modules/activity/active-energy-publication";
+import * as glycogenStateShadow from "@/modules/model-episodes/experimental-glycogen-state-shadow.service";
+import * as relativeMuscleShadow from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
+import * as stepperActiveEnergyShadow from "@/modules/profile/experimental-stepper-active-energy-shadow.service";
+import * as stepperGlycogenShadow from "@/modules/profile/experimental-stepper-glycogen-demand-shadow.service";
+import * as strengthTraining from "@/modules/training/training.service";
 
 vi.mock("@/modules/activity/active-energy-invalidation", () => ({
   invalidateWorkoutEnergyInTransactionV1: vi.fn().mockResolvedValue(null),
   invalidateStepperMassDependenciesInTransactionV1: vi.fn().mockResolvedValue(null),
 }));
+vi.mock("@/modules/activity/active-energy-publication", () => ({ publishActiveEnergyChangesV1: vi.fn() }));
+vi.mock("@/modules/model-episodes/experimental-glycogen-state-shadow.service", () => ({ recordExperimentalGlycogenStateShadow: vi.fn() }));
+vi.mock("@/modules/model-episodes/experimental-cessation-detraining-shadow.service", () => ({ rebuildAuthoritativeRelativeMuscleTrajectory: vi.fn() }));
+vi.mock("@/modules/profile/experimental-stepper-active-energy-shadow.service", () => ({ recordExperimentalStepperActiveEnergyShadowsForMassWindow: vi.fn() }));
+vi.mock("@/modules/profile/experimental-stepper-glycogen-demand-shadow.service", () => ({ recordExperimentalStepperGlycogenDemandShadowsForLocalDate: vi.fn() }));
+vi.mock("@/modules/training/training.service", () => ({ recordExperimentalStrengthShadowsForWeightDate: vi.fn() }));
 
 const record = {
   date: "2026-08-22",
@@ -43,31 +56,121 @@ function fixture() {
   const strengthDiarySession = {
     findMany: vi.fn().mockResolvedValue([]),
   };
+  const healthMetricSample = { count: vi.fn().mockResolvedValue(0) };
   const activeEnergyEventAlias = { findMany: vi.fn().mockResolvedValue([]) };
+  const physiologyV7Lifecycle = {
+    findUnique: vi.fn().mockResolvedValue({ profileId: 1 }),
+    upsert: vi.fn(),
+    update: vi.fn(),
+    updateMany: vi.fn(),
+  };
+  const unifiedPublicationBlock = {
+    findUnique: vi.fn().mockResolvedValue(null),
+    findMany: vi.fn().mockResolvedValue([]),
+    upsert: vi.fn().mockResolvedValue({}),
+    deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+  };
   const client = {
     dailyHealthData,
     workout,
     strengthDiarySession,
+    healthMetricSample,
     activeEnergyEventAlias,
+    physiologyV7Lifecycle,
+    unifiedPublicationBlock,
     $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => callback({
       dailyHealthData,
       workout,
+      healthMetricSample,
       activeEnergyEventAlias,
+      physiologyV7Lifecycle,
+      unifiedPublicationBlock,
       $executeRaw: vi.fn().mockResolvedValue(0),
     })),
   } as unknown as PrismaClient;
-  const shadowReplayer = { replayFrom: vi.fn().mockResolvedValue(undefined) };
+  const shadowReplayer = { replayFrom: vi.fn().mockResolvedValue("current") };
   return {
     repository: new DailyMetricRepository(client, shadowReplayer),
     dailyHealthData,
     workout,
     strengthDiarySession,
     client,
+    unifiedPublicationBlock,
     shadowReplayer,
   };
 }
 
 describe("DailyMetricRepository", () => {
+  it("repairs all daily publication dependencies before publishing Active Energy and Unified", async () => {
+    const order: string[] = [];
+    vi.mocked(stepperActiveEnergyShadow.recordExperimentalStepperActiveEnergyShadowsForMassWindow)
+      .mockImplementation(async () => { order.push("stepper-energy"); });
+    vi.mocked(strengthTraining.recordExperimentalStrengthShadowsForWeightDate)
+      .mockImplementation(async () => { order.push("strength-energy-and-glycogen-demand"); });
+    vi.mocked(stepperGlycogenShadow.recordExperimentalStepperGlycogenDemandShadowsForLocalDate)
+      .mockImplementation(async () => { order.push("stepper-glycogen-demand"); });
+    vi.mocked(glycogenStateShadow.recordExperimentalGlycogenStateShadow)
+      .mockImplementation(async () => { order.push("glycogen-state"); });
+    vi.mocked(relativeMuscleShadow.rebuildAuthoritativeRelativeMuscleTrajectory)
+      .mockImplementation(async () => { order.push("relative-muscle"); });
+    vi.mocked(activeEnergyPublication.publishActiveEnergyChangesV1)
+      .mockImplementation(async () => { order.push("publish"); return true; });
+
+    const lifecycle = {
+      readUnifiedPublicationBlockToken: vi.fn().mockResolvedValue({ revision: 2, fromDate: "2026-08-22" }),
+      hasUnifiedPublicationBlocks: vi.fn().mockResolvedValue(false),
+      blockUnifiedPublication: vi.fn(),
+      clearUnifiedPublicationBlock: vi.fn().mockResolvedValue(true),
+    } as unknown as InstanceType<typeof PhysiologyV7PersistenceRepository>;
+    await expect(replayProductionDailyMetricShadowsV1("2026-08-22", lifecycle)).resolves.toBe("current");
+
+    expect(order).toEqual([
+      "stepper-energy",
+      "strength-energy-and-glycogen-demand",
+      "stepper-glycogen-demand",
+      "glycogen-state",
+      "relative-muscle",
+      "publish",
+    ]);
+    expect(lifecycle.clearUnifiedPublicationBlock).toHaveBeenCalledWith({
+      profileId: 1, source: "day", sourceKey: "2026-08-22", expectedRevision: 2,
+      expectedFromDate: "2026-08-22",
+    });
+  });
+
+  it("restores the day retry fence when publication fails and shared block state becomes unreadable", async () => {
+    vi.mocked(activeEnergyPublication.publishActiveEnergyChangesV1)
+      .mockRejectedValueOnce(new Error("publication failed"));
+    const lifecycle = {
+      readUnifiedPublicationBlockToken: vi.fn().mockResolvedValue({ revision: 4, fromDate: "2026-08-21" }),
+      clearUnifiedPublicationBlock: vi.fn().mockResolvedValue(true),
+      hasUnifiedPublicationBlocks: vi.fn().mockResolvedValueOnce(false).mockRejectedValueOnce(new Error("block read failed")),
+      blockUnifiedPublication: vi.fn().mockResolvedValue(undefined),
+    } as unknown as InstanceType<typeof PhysiologyV7PersistenceRepository>;
+
+    await expect(replayProductionDailyMetricShadowsV1("2026-08-22", lifecycle)).rejects.toThrow("publication failed");
+
+    expect(lifecycle.blockUnifiedPublication).toHaveBeenCalledWith({
+      profileId: 1, fromDate: "2026-08-21", source: "day", sourceKey: "2026-08-22",
+    });
+  });
+
+  it("restores the day retry fence when publication returns stale and the final block read fails", async () => {
+    vi.mocked(activeEnergyPublication.publishActiveEnergyChangesV1).mockResolvedValueOnce(false);
+    const lifecycle = {
+      readUnifiedPublicationBlockToken: vi.fn().mockResolvedValue({ revision: 4, fromDate: "2026-08-21" }),
+      clearUnifiedPublicationBlock: vi.fn().mockResolvedValue(true),
+      hasUnifiedPublicationBlocks: vi.fn().mockResolvedValueOnce(false).mockRejectedValueOnce(new Error("block read failed")),
+      blockUnifiedPublication: vi.fn().mockResolvedValue(undefined),
+    } as unknown as InstanceType<typeof PhysiologyV7PersistenceRepository>;
+
+    await expect(replayProductionDailyMetricShadowsV1("2026-08-22", lifecycle)).rejects.toThrow("block read failed");
+
+    expect(lifecycle.blockUnifiedPublication).toHaveBeenCalledWith({
+      profileId: 1, fromDate: "2026-08-21", source: "day", sourceKey: "2026-08-22",
+    });
+  });
+
   it("lists newest records with filters and serializes Prisma decimals", async () => {
     const { repository, dailyHealthData } = fixture();
     const days = await repository.list({ from: "2026-08-01", to: "2026-08-22", limit: 30, offset: 0, includeTrainingDays: true });
@@ -289,10 +392,13 @@ describe("DailyMetricRepository", () => {
   });
 
   it("marks manually created rows without inventing metric values", async () => {
-    const { repository, dailyHealthData } = fixture();
+    const { repository, dailyHealthData, unifiedPublicationBlock } = fixture();
     await repository.create({ date: record.date, caloriesKcal: null, steps: 0 });
     expect(dailyHealthData.create).toHaveBeenCalledWith(expect.objectContaining({
       data: { date: record.date, caloriesKcal: null, steps: 0, rawPayload: { source: "manual" } },
+    }));
+    expect(unifiedPublicationBlock.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { profileId_source_sourceKey: { profileId: 1, source: "day", sourceKey: record.date } },
     }));
   });
 
@@ -320,7 +426,17 @@ describe("DailyMetricRepository", () => {
       data: { weightKg: 88.5, proteinG: null },
     }));
     expect(dailyHealthData.update.mock.calls[0]?.[0].data).not.toHaveProperty("rawPayload");
-    expect(shadowReplayer.replayFrom).toHaveBeenCalledWith(record.date);
+    expect(shadowReplayer.replayFrom).toHaveBeenCalledWith(record.date, { weightSourceChanged: false });
+  });
+
+  it("reports a committed source write as stale when dependent publication fails", async () => {
+    const { repository, dailyHealthData, shadowReplayer } = fixture();
+    shadowReplayer.replayFrom.mockRejectedValueOnce(new Error("shadow replay failed"));
+
+    const updated = await repository.update(record.date, { weightKg: 88.5 });
+
+    expect(dailyHealthData.update).toHaveBeenCalled();
+    expect(updated).toMatchObject({ date: record.date, modelPublicationStatus: "stale" });
   });
 
   it("replaces explicit workouts while clearing legacy daily workout aggregates", async () => {
@@ -356,14 +472,30 @@ describe("DailyMetricRepository", () => {
     dailyHealthData.update.mockRejectedValue({ code: "P2025" });
     dailyHealthData.findUnique.mockResolvedValue(null);
     await expect(repository.update(record.date, { steps: 1 })).resolves.toBeNull();
-    await expect(repository.delete(record.date)).resolves.toBe(false);
+    await expect(repository.delete(record.date)).resolves.toMatchObject({ deleted: false });
   });
 
   it("deletes workouts explicitly before deleting the day row", async () => {
     const { repository, dailyHealthData, workout, shadowReplayer } = fixture();
-    await expect(repository.delete(record.date)).resolves.toBe(true);
+    await expect(repository.delete(record.date)).resolves.toMatchObject({ deleted: true, modelPublicationStatus: "current" });
     expect(workout.deleteMany).toHaveBeenCalledWith({ where: { dailyHealthDataId: 42 } });
     expect(dailyHealthData.delete).toHaveBeenCalledWith({ where: { id: 42 } });
-    expect(shadowReplayer.replayFrom).toHaveBeenCalledWith(record.date);
+    expect(shadowReplayer.replayFrom).toHaveBeenCalledWith(record.date, { weightSourceChanged: true });
+  });
+
+  it("retries a committed day deletion when its durable publication block remains", async () => {
+    const { repository, dailyHealthData, unifiedPublicationBlock, shadowReplayer } = fixture();
+    dailyHealthData.findUnique.mockResolvedValueOnce(record).mockResolvedValueOnce(null);
+    unifiedPublicationBlock.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ revision: 4, fromDate: record.date })
+      .mockResolvedValueOnce({ revision: 4, fromDate: record.date });
+    shadowReplayer.replayFrom.mockRejectedValueOnce(new Error("transient derived failure"));
+
+    await expect(repository.delete(record.date)).resolves.toMatchObject({ deleted: true, modelPublicationStatus: "stale" });
+    await expect(repository.delete(record.date)).resolves.toMatchObject({ deleted: true, modelPublicationStatus: "current" });
+
+    expect(dailyHealthData.delete).toHaveBeenCalledTimes(1);
+    expect(shadowReplayer.replayFrom).toHaveBeenNthCalledWith(2, record.date, { weightSourceChanged: false });
   });
 });

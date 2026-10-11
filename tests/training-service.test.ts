@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Prisma } from "@prisma/client";
+import { prisma } from "@/lib/db/prisma";
 import {
   ENTRY_MODE,
   EXERCISE_ORIGIN,
@@ -16,6 +17,8 @@ import {
 import { TrainingRepository } from "@/modules/training/training.repository";
 import { TrainingService } from "@/modules/training/training.service";
 import { currentPhysiologyV7Versions } from "@/modules/model-episodes/physiology-v7-persistence";
+import * as relativeMuscleShadowService from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
+import * as unifiedPublicationService from "@/modules/model-episodes/unified-experimental-physiology-state.service";
 
 type MockDb = {
   exerciseCatalog: {
@@ -302,6 +305,110 @@ describe("TrainingService programs", () => {
     service = new TrainingService(db as never, repo);
   });
 
+  it("does not rebuild Unified after a required training shadow refresh fails", async () => {
+    const previousEvent = new Date("2071-01-01T12:00:00.000Z");
+    const currentEvent = new Date("2071-01-02T16:00:00.000Z");
+    const oldSession = sessionDetail({
+      status: SESSION_STATUS.COMPLETED,
+      matchStatus: MATCH_STATUS.AMBIGUOUS,
+      matchedWorkoutId: null,
+      matchedWorkout: null,
+      webStartedAt: previousEvent,
+    });
+    const refreshedSession = sessionDetail({
+      status: SESSION_STATUS.COMPLETED,
+      matchStatus: MATCH_STATUS.MATCHED,
+      matchMethod: MATCH_METHOD.MANUAL,
+      matchedWorkoutId: 77,
+      matchedWorkout: {
+        id: 77,
+        type: "Traditional Strength Training",
+        startAt: currentEvent,
+        endAt: new Date("2071-01-02T17:00:00.000Z"),
+        durationMinutes: 60,
+        activeEnergyKcal: 300,
+        externalId: "fixture-workout",
+      },
+      webStartedAt: previousEvent,
+    });
+    const repository = {
+      getSession: vi.fn().mockResolvedValueOnce(oldSession).mockResolvedValueOnce(refreshedSession).mockResolvedValue(refreshedSession),
+      findWorkoutById: vi.fn().mockResolvedValue({
+        id: 77,
+        type: "Traditional Strength Training",
+        startAt: currentEvent,
+        endAt: new Date("2071-01-02T17:00:00.000Z"),
+        matchedDiarySession: null,
+      }),
+      applyMatchResult: vi.fn().mockResolvedValue(undefined),
+      materializeAccounting: vi.fn().mockResolvedValue(1),
+    };
+    const failShadows = vi.fn().mockRejectedValue(new Error("fixture dependent shadow failed"));
+    const invalidate = vi.spyOn(unifiedPublicationService, "invalidateUnifiedRelativeMuscleSuffixV1").mockResolvedValue(null);
+    const relativeRebuild = vi.spyOn(relativeMuscleShadowService, "rebuildAuthoritativeRelativeMuscleTrajectory").mockResolvedValue(undefined);
+    const unifiedRebuild = vi.spyOn(unifiedPublicationService, "rebuildUnifiedExperimentalPhysiologyStateV1")
+      .mockResolvedValue(undefined);
+    const serviceWithFailedShadow = new TrainingService(prisma, repository as never, failShadows);
+
+    try {
+      const result = await serviceWithFailedShadow.manualMatch(50, { workoutId: 77 });
+      expect(result).toMatchObject({ modelPublicationStatus: "stale" });
+      expect(failShadows).toHaveBeenCalledOnce();
+      expect(invalidate).not.toHaveBeenCalled();
+      expect(relativeRebuild).not.toHaveBeenCalled();
+      expect(unifiedRebuild).not.toHaveBeenCalled();
+    } finally {
+      invalidate.mockRestore();
+      relativeRebuild.mockRestore();
+      unifiedRebuild.mockRestore();
+    }
+  });
+
+  it("does not rebuild Unified after a completed-session dependency refresh fails", async () => {
+    const session = sessionDetail({ status: SESSION_STATUS.COMPLETED });
+    const repository = { getSession: vi.fn().mockResolvedValue(session) };
+    const failedShadowRefresh = vi.fn().mockRejectedValue(new Error("session dependency refresh failed"));
+    const productionService = new TrainingService(prisma as never, repository as never, failedShadowRefresh);
+    const internals = productionService as unknown as {
+      refreshUnifiedAfterCompletedSessionMutation: (sessionId: number, profileId: number, operation: string) => Promise<void>;
+    };
+    const unifiedRebuild = vi.spyOn(unifiedPublicationService, "rebuildUnifiedExperimentalPhysiologyStateV1");
+
+    await internals.refreshUnifiedAfterCompletedSessionMutation(50, 1, "test-session-edit");
+
+    expect(repository.getSession).toHaveBeenCalledWith(50, 1);
+    expect(failedShadowRefresh).toHaveBeenCalledWith({ session, profileId: 1 });
+    expect(unifiedRebuild).not.toHaveBeenCalled();
+    unifiedRebuild.mockRestore();
+  });
+
+  it("refreshes physiology after an explicit completed-session accounting refresh", async () => {
+    const before = sessionDetail({
+      status: SESSION_STATUS.COMPLETED,
+      materializationState: "current",
+      activeEnergyMassReference: { snapshotRevision: 1 },
+    });
+    const after = sessionDetail({
+      status: SESSION_STATUS.COMPLETED,
+      materializationState: "current",
+      activeEnergyMassReference: { snapshotRevision: 2 },
+    });
+    const repository = {
+      getSession: vi.fn().mockResolvedValueOnce(before).mockResolvedValueOnce(after),
+      materializeAccounting: vi.fn().mockResolvedValue(2),
+    };
+    const refreshDependencies = vi.fn().mockResolvedValue(undefined);
+    const productionService = new TrainingService(prisma, repository as never, refreshDependencies);
+
+    await expect(productionService.refreshSessionAccounting(50, 1, "completed-accounting-refresh"))
+      .resolves.toMatchObject({ status: SESSION_STATUS.COMPLETED, snapshotRevision: 2 });
+
+    expect(repository.materializeAccounting).toHaveBeenCalledWith({
+      sessionId: 50, profileId: 1, mode: "refresh", idempotencyKey: "completed-accounting-refresh",
+    });
+    expect(refreshDependencies).toHaveBeenCalledWith({ session: after, profileId: 1 });
+  });
+
   it("creates a program with version 1, order, planned sets, and resistance types", async () => {
     db.exerciseCatalog.findMany.mockResolvedValue([catalogA, catalogB, catalogC]);
     db.trainingProgram.create.mockResolvedValue({ id: 10 });
@@ -535,6 +642,7 @@ describe("TrainingService live session", () => {
   });
 
   it("supports set CRUD on active session exercises", async () => {
+    db.strengthDiarySession.findFirst.mockResolvedValue(sessionDetail());
     db.strengthSessionExercise.findFirst.mockResolvedValue({
       id: 501,
       sessionId: 50,
@@ -608,6 +716,7 @@ describe("TrainingService live session", () => {
   });
 
   it("creates, edits, and clears optional RIR on live sets; rejects invalid RIR", async () => {
+    db.strengthDiarySession.findFirst.mockResolvedValue(sessionDetail());
     db.strengthSessionExercise.findFirst.mockResolvedValue({
       id: 501,
       sessionId: 50,
@@ -830,6 +939,49 @@ describe("TrainingService matching cases", () => {
         matchedWorkoutId: 77,
       }),
     }));
+  });
+
+  it("refreshes later sessions after an earlier session shadow fails, but blocks batch publication", async () => {
+    const firstStartedAt = new Date("2026-09-17T10:00:00.000Z");
+    const secondStartedAt = new Date("2026-09-17T16:00:00.000Z");
+    const sessions = [
+      { id: 50, webStartedAt: firstStartedAt },
+      { id: 51, webStartedAt: secondStartedAt },
+    ].map((session) => ({
+      ...session,
+      status: SESSION_STATUS.COMPLETED,
+      entryMode: ENTRY_MODE.LIVE,
+      matchStatus: MATCH_STATUS.MATCHED,
+      matchMethod: MATCH_METHOD.AUTO,
+      matchedWorkoutId: 77,
+    }));
+    const repository = {
+      findPendingCompletedSessionsOverlapping: vi.fn().mockResolvedValue(sessions),
+      getSession: vi.fn(async (id: number) => sessions.find((session) => session.id === id)),
+    };
+    const strengthShadow = vi.fn()
+      .mockRejectedValueOnce(new Error("first session shadow failed"))
+      .mockResolvedValueOnce(undefined);
+    const serviceWithProductionDependencies = new TrainingService(prisma, repository as never, async () => {}, strengthShadow);
+    const relativeRefresh = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(serviceWithProductionDependencies, "refreshRelativeMuscleAfterEventChange", {
+      value: relativeRefresh,
+    });
+    await expect(serviceWithProductionDependencies.afterHealthSyncMatch("2026-09-17", { timezone: "UTC" }))
+      .resolves.toBe(false);
+    expect(strengthShadow).toHaveBeenNthCalledWith(1, {
+      sessionId: 50, profileId: 1, deferUnifiedPublication: true,
+    });
+    expect(strengthShadow).toHaveBeenNthCalledWith(2, {
+      sessionId: 51, profileId: 1, deferUnifiedPublication: true,
+    });
+    expect(relativeRefresh).toHaveBeenCalledTimes(1);
+    expect(relativeRefresh).toHaveBeenCalledWith(51, 1, secondStartedAt, {
+      deferUnifiedPublication: true,
+      blockRevision: null,
+      blockFromDate: null,
+      publicationFromDate: undefined,
+    });
   });
 
   it("case 5: stepper is excluded from auto-match candidates", async () => {

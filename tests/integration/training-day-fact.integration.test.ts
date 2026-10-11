@@ -2,6 +2,7 @@ import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DailyMetricRepository } from "@/modules/days/day.repository";
 import { TrainingDayFactRepository } from "@/modules/days/training-day-fact.repository";
+import { clearUnifiedPublicationBlockFixtures } from "../helpers/clear-unified-publication-blocks";
 
 const prisma = new PrismaClient();
 const facts = new TrainingDayFactRepository(prisma);
@@ -32,6 +33,11 @@ async function clean(): Promise<void> {
     where: { program: { name: programName } },
     select: { id: true },
   });
+  await clearUnifiedPublicationBlockFixtures(prisma, sessions.map(({ id }) => ({
+    profileId: 1,
+    source: "training" as const,
+    sourceKey: String(id),
+  })));
   const aliases = sessions.length === 0 ? [] : await prisma.activeEnergyEventAlias.findMany({
     where: { profileId: 1, sourceType: "strength-session", sourceId: { in: sessions.map(({ id }) => String(id)) } },
     select: { eventId: true },

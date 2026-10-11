@@ -11,6 +11,7 @@ import { CANONICAL_PUSH_UP_CONFIG_VERSION_V1 } from "../../src/modules/training/
 import { TrainingRepository } from "../../src/modules/training/training.repository";
 import { TrainingService } from "../../src/modules/training/training.service";
 import { currentPhysiologyV7Versions, versionsAreCurrent } from "../../src/modules/model-episodes/physiology-v7-persistence";
+import { PhysiologyV7PersistenceRepository } from "../../src/modules/model-episodes/physiology-v7-persistence.repository";
 import {
   createTrainingHistoryStage01FixtureV1,
   TRAINING_HISTORY_STAGE01_CREATED_AT,
@@ -25,6 +26,30 @@ const SENTINEL_SESSION_EXERCISE_ID = 15_000_004;
 const SENTINEL_PROGRAM_VERSION_ID = 15_000_005;
 const SENTINEL_PROGRAM_CHANGE_ID = 15_000_006;
 const SENTINEL_SUPERSEDED_WORKOUT_ID = 15_000_007;
+
+async function clearFixtureUnifiedPublicationBlocks(input: {
+  db: PrismaClient;
+  profileId: number;
+  healthDates?: readonly string[];
+  trainingSessionIds?: readonly number[];
+}): Promise<void> {
+  const repository = new PhysiologyV7PersistenceRepository(input.db);
+  const identities = [
+    ...(input.healthDates ?? []).map((sourceKey) => ({ source: "health" as const, sourceKey })),
+    ...(input.trainingSessionIds ?? []).map((sessionId) => ({ source: "training" as const, sourceKey: String(sessionId) })),
+  ];
+  for (const identity of identities) {
+    const token = await repository.readUnifiedPublicationBlockToken({ profileId: input.profileId, ...identity });
+    if (!token) continue;
+    const cleared = await repository.clearUnifiedPublicationBlock({
+      profileId: input.profileId,
+      ...identity,
+      expectedRevision: token.revision,
+      expectedFromDate: token.fromDate,
+    });
+    if (!cleared) throw new Error("Stage 01 Unified publication fixture fence changed during cleanup.");
+  }
+}
 
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -383,6 +408,11 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       await service.finishSession(synthetic.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
     }
     } finally {
+      await clearFixtureUnifiedPublicationBlocks({
+        db,
+        profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID,
+        trainingSessionIds: syntheticSessionIds,
+      });
       if (syntheticSessionIds.length > 0) await db.strengthDiarySession.deleteMany({ where: { id: { in: syntheticSessionIds } } });
       if (syntheticProgramIds.length > 0) await db.trainingProgram.deleteMany({ where: { id: { in: syntheticProgramIds } } });
       if (pullObservationId !== null) await db.healthMetricSample.deleteMany({ where: { id: pullObservationId } });
@@ -952,6 +982,11 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       expect((await db.strengthDiarySession.findUniqueOrThrow({ where: { id: expired.id }, select: { currentSnapshotRevision: true } })).currentSnapshotRevision)
         .toBe(revision.currentSnapshotRevision);
     } finally {
+      await clearFixtureUnifiedPublicationBlocks({
+        db,
+        profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID,
+        trainingSessionIds: [ordinarySessionId, expiredSessionId].filter((id): id is number => id !== null),
+      });
       if (ordinarySessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: ordinarySessionId } });
       if (expiredSessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: expiredSessionId } });
       if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });
@@ -990,6 +1025,11 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       expect(reloaded?.loadAccountingV1?.bodyweight.reference.valueKg).toBeNull();
       expect(reloaded?.loadAccountingV1?.externalLoadVolume.value).toBe(320);
     } finally {
+      await clearFixtureUnifiedPublicationBlocks({
+        db,
+        profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID,
+        trainingSessionIds: sessionId === null ? [] : [sessionId],
+      });
       if (sessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: sessionId } });
       if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });
     }
@@ -1077,6 +1117,11 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       }
     } finally {
       if (sampleId !== null) await db.healthMetricSample.deleteMany({ where: { id: sampleId } });
+      await clearFixtureUnifiedPublicationBlocks({
+        db,
+        profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID,
+        trainingSessionIds: sessionId === null ? [] : [sessionId],
+      });
       if (sessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: sessionId } });
       if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });
     }
@@ -1307,6 +1352,12 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       expect(rematerialized.effectiveAccountingAt).toBe("2045-01-03T00:00:00.000Z");
       expect(await db.strengthSessionAccountingSnapshot.count({ where: { sessionId: lateAuto.id } })).toBe(2);
     } finally {
+      await clearFixtureUnifiedPublicationBlocks({
+        db,
+        profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID,
+        healthDates: dates,
+        trainingSessionIds: sessionIds,
+      });
       if (sessionIds.length > 0) await db.strengthDiarySession.deleteMany({ where: { id: { in: sessionIds } } });
       if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });
       await db.healthSyncSnapshot.deleteMany({ where: { date: { in: dates } } });
@@ -1370,6 +1421,11 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
         eligibleRows: 2, accountedRows: 2, omittedRows: 0,
       });
     } finally {
+      await clearFixtureUnifiedPublicationBlocks({
+        db,
+        profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID,
+        trainingSessionIds: sessionId === null ? [] : [sessionId],
+      });
       if (sessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: sessionId } });
       if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });
       await db.exerciseCatalog.deleteMany({ where: { id: catalog.id } });
@@ -1449,6 +1505,11 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       expect((reloaded?.loadAccountingV1?.bandNominalIndex.leftSide.value ?? 0)
         + (reloaded?.loadAccountingV1?.bandNominalIndex.rightSide.value ?? 0)).toBe(480);
     } finally {
+      await clearFixtureUnifiedPublicationBlocks({
+        db,
+        profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID,
+        trainingSessionIds: sessionId === null ? [] : [sessionId],
+      });
       if (sessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: sessionId } });
       if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });
       await db.exerciseCatalog.deleteMany({ where: { id: catalog.id } });
@@ -1632,6 +1693,11 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       expect(persistedAfterFinish.sets).toEqual(persistedBeforeFinish.sets);
       expect(persistedAfterFinish.sets).toHaveLength(3);
     } finally {
+      await clearFixtureUnifiedPublicationBlocks({
+        db,
+        profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID,
+        trainingSessionIds: sessionId === null ? [] : [sessionId],
+      });
       if (sessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: sessionId } });
       if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });
       if (mutatedConfigId !== null) {
@@ -2243,6 +2309,7 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
       programId = program.id;
       const session = await service.startSession(program.id, profileId, "Asia/Kolkata");
       sessionId = session.id;
+      await service.createSet(session.id, session.exercises[0]!.id, { reps: 8, weightKg: 60 }, profileId);
       const oldInstant = new Date("2099-01-02T00:30:00.000Z"); // Jan 2 in Bratislava.
       const earlierInstant = new Date("2099-01-01T22:30:00.000Z"); // Jan 1 in Bratislava.
       await db.strengthDiarySession.update({
@@ -2253,6 +2320,7 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
           accountingTimeZoneProvenance: "client-session",
         },
       });
+      await service.finishSession(session.id, profileId);
       const eventDates = [
         { suffix: "old", occurrenceAt: oldInstant, modelDate: "2099-01-02" },
         { suffix: "new", occurrenceAt: earlierInstant, modelDate: "2099-01-01" },
@@ -2340,7 +2408,6 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
         where: { logicalEventKey: { in: [`${eventKeyPrefix}:old`, `${eventKeyPrefix}:new`] }, isStale: false },
       })).toBe(0);
 
-      await service.createSet(session.id, session.exercises[0]!.id, { reps: 8, weightKg: 60 }, profileId);
       const accounting = await service.materializeSessionAccounting(session.id, profileId);
       const beforeTimezoneChange = await db.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
       await repository.updateAccountingContext({ sessionId: session.id, profileId, timeZone: "Europe/London" });
@@ -2392,6 +2459,11 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
           productionStaleFromDate: lifecycleBeforeRollback.productionStaleFromDate,
         });
     } finally {
+      await clearFixtureUnifiedPublicationBlocks({
+        db,
+        profileId,
+        trainingSessionIds: sessionId === null ? [] : [sessionId],
+      });
       await db.activeEnergyCanonicalEvent.deleteMany({ where: { logicalEventKey: { startsWith: eventKeyPrefix } } });
       if (sessionId !== null) await db.strengthDiarySession.deleteMany({ where: { id: sessionId } });
       if (programId !== null) await db.trainingProgram.deleteMany({ where: { id: programId } });

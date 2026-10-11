@@ -1,5 +1,5 @@
 import { PrismaClient } from "@prisma/client";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildExerciseMuscleMappingSnapshotV7 } from "@/model/physiology-v7/exercise-muscle-mapping-v7";
 import {
   buildQualifiedResistanceTrainingDoseV7,
@@ -13,32 +13,54 @@ import { buildCanonicalStrengthTrainingInputV7 } from "@/modules/model-episodes/
 import { RESISTANCE } from "@/modules/training/training.constants";
 import { TrainingRepository } from "@/modules/training/training.repository";
 import { TrainingService } from "@/modules/training/training.service";
+import { clearUnifiedPublicationBlockFixtures } from "../helpers/clear-unified-publication-blocks";
 import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
 
 const prisma = new PrismaClient();
 const repo = new TrainingRepository(prisma);
 const service = new TrainingService(prisma, repo);
-const profileId = 991204;
+const profileId = 1;
+const programName = "history-wiring-resistance-exposure";
 const dateLegacy = "2048-03-10";
 const dateLinked = "2048-03-11";
 const dateUnobserved = "2048-03-12";
 
 async function clean(): Promise<void> {
+  const fixtureSessions = await prisma.strengthDiarySession.findMany({
+    where: { programVersion: { program: { name: programName } } },
+    select: { id: true },
+  });
+  // These dates are unique to this fixture. Include durable tokens left behind
+  // if an earlier run deleted a session before its afterAll cleanup completed.
+  const fixtureDateBlocks = await prisma.unifiedPublicationBlock.findMany({
+    where: { profileId, source: "training", fromDate: { in: [dateLegacy, dateLinked, dateUnobserved] } },
+    select: { sourceKey: true },
+  });
+  const sourceKeys = new Set([
+    ...fixtureSessions.map(({ id }) => String(id)),
+    ...fixtureDateBlocks.map(({ sourceKey }) => sourceKey),
+  ]);
+  await clearUnifiedPublicationBlockFixtures(prisma, [...sourceKeys].map((sourceKey) => ({
+    profileId,
+    source: "training" as const,
+    sourceKey,
+  })));
   await prisma.strengthSet.deleteMany({
-    where: { sessionExercise: { session: { profileId } } },
+    where: { sessionExercise: { session: { programVersion: { program: { name: programName } } } } },
   });
   await prisma.strengthSessionExercise.deleteMany({
-    where: { session: { profileId } },
+    where: { session: { programVersion: { program: { name: programName } } } },
   });
-  await prisma.strengthDiarySession.deleteMany({ where: { profileId } });
+  await prisma.strengthDiarySession.deleteMany({
+    where: { programVersion: { program: { name: programName } } },
+  });
   await prisma.programExercise.deleteMany({
-    where: { programVersion: { program: { profileId } } },
+    where: { programVersion: { program: { name: programName } } },
   });
   await prisma.trainingProgramVersion.deleteMany({
-    where: { program: { profileId } },
+    where: { program: { name: programName } },
   });
-  await prisma.trainingProgram.deleteMany({ where: { profileId } });
-  await prisma.exerciseCatalog.deleteMany({ where: { profileId } });
+  await prisma.trainingProgram.deleteMany({ where: { name: programName } });
   await deleteDailyHealthRows(prisma, [dateLegacy, dateLinked, dateUnobserved]);
 }
 
@@ -63,6 +85,19 @@ async function loadStrengthWorkouts(dates: readonly string[]) {
 }
 
 describe("ResistanceTrainingExposureHistoryV7 production source wiring (PostgreSQL)", () => {
+  beforeAll(async () => {
+    await prisma.profile.upsert({
+      where: { id: profileId },
+      create: {
+        id: profileId,
+        sex: "male",
+        dateOfBirth: new Date("1990-01-01T00:00:00.000Z"),
+        heightCm: 180,
+      },
+      update: {},
+    });
+  });
+
   afterAll(async () => {
     await clean();
     await prisma.$disconnect();
@@ -119,15 +154,12 @@ describe("ResistanceTrainingExposureHistoryV7 production source wiring (PostgreS
   it("keeps linked diary + canonical Workout as one mapped exposure without legacy duplicate", async () => {
     await clean();
 
-    const press = await prisma.exerciseCatalog.create({
-      data: {
-        profileId,
-        name: "history-wiring-press",
-        stableKey: "seated_dumbbell_press",
-      },
+    const press = await prisma.exerciseCatalog.findUniqueOrThrow({
+      where: { profileId_stableKey: { profileId, stableKey: "seated_dumbbell_press" } },
+      select: { id: true },
     });
     const program = await service.createProgram({
-      name: "history-wiring",
+      name: programName,
       exercises: [{
         catalogId: press.id,
         plannedSets: 3,

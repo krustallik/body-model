@@ -185,6 +185,9 @@ export class UnifiedExperimentalPhysiologySourceLoaderV1 {
         walkingDistanceKm: true, workoutFeedObserved: true,
       },
     });
+    const diaryFrom = new Date(`${addCalendarDays(fromDate, -2)}T00:00:00.000Z`);
+    const diaryTo = new Date(`${addCalendarDays(toDate, 3)}T00:00:00.000Z`);
+    const diaryDateRange = { gte: diaryFrom, lt: diaryTo };
     const [workoutRows, diaryRows, activityRows, snapshots, hr, restingHr, sleep, production, slowTissueRows, glycogenRows, glycogenWaterRows, transientWaterRows, relativeMuscleDeltaRows, relativeMuscleCessationRows, completedStrengthIds] = await Promise.all([
       this.client.workout.findMany({
         where: { hiddenFromHistory: false, dailyHealthData: { date: { gte: addCalendarDays(fromDate, -2), lte: addCalendarDays(toDate, 2) } } },
@@ -205,12 +208,23 @@ export class UnifiedExperimentalPhysiologySourceLoaderV1 {
         },
       }),
       this.client.strengthDiarySession.findMany({
-        where: { profileId, status: { not: "CANCELLED" }, OR: [
+        // Only completed sessions contribute durable training evidence to
+        // Unified. Active sessions are mutable UI state; including them in
+        // source lineage without invalidating/publishing the model makes a
+        // read-only postflight report stale after ordinary in-progress edits.
+        where: { profileId, status: "COMPLETED", OR: [
           { matchedWorkout: { dailyHealthData: { date: { gte: addCalendarDays(fromDate, -2), lte: addCalendarDays(toDate, 2) } } } },
-          { webStartedAt: { gte: new Date(`${addCalendarDays(fromDate, -2)}T00:00:00.000Z`), lt: new Date(`${addCalendarDays(toDate, 3)}T00:00:00.000Z`) } },
+          {
+            matchedWorkoutId: null,
+            OR: [
+              { effectiveAccountingAt: diaryDateRange },
+              { effectiveAccountingAt: null, webStartedAt: diaryDateRange },
+              { effectiveAccountingAt: null, webStartedAt: null, createdAt: diaryDateRange },
+            ],
+          },
         ] },
         orderBy: [{ id: "asc" }],
-        select: { id: true, status: true, entryMode: true, revision: true, webStartedAt: true, webEndedAt: true, matchedWorkoutId: true, updatedAt: true, matchedWorkout: { select: { startAt: true, dailyHealthData: { select: { date: true } } } } },
+        select: { id: true, status: true, entryMode: true, revision: true, effectiveAccountingAt: true, webStartedAt: true, webEndedAt: true, matchedWorkoutId: true, createdAt: true, updatedAt: true, matchedWorkout: { select: { startAt: true, dailyHealthData: { select: { date: true } } } } },
       }),
       this.client.healthActivityInterval.findMany({ where: { metric: "steps", date: { gte: fromDate, lte: toDate } }, orderBy: [{ startAt: "asc" }, { id: "asc" }], select: { id: true, date: true, startAt: true, endAt: true, value: true } }),
       this.client.healthSyncSnapshot.findMany({ where: { date: { gte: fromDate, lte: toDate } }, orderBy: [{ date: "asc" }, { id: "asc" }], select: { id: true, date: true } }),
@@ -321,8 +335,7 @@ export class UnifiedExperimentalPhysiologySourceLoaderV1 {
     }
     const diaryByEpisodeDate = new Map<string, typeof diaryRows>();
     for (const row of diaryRows) {
-      const instant = row.matchedWorkout?.startAt ?? row.webStartedAt;
-      if (!instant) continue;
+      const instant = row.matchedWorkout?.startAt ?? row.effectiveAccountingAt ?? row.webStartedAt ?? row.createdAt;
       const eventTime = transientEpisodeTimeForInstantV2(episodePartitions, instant);
       if (!eventTime) continue;
       const key = `${eventTime.episode.id}|${eventTime.modelDate}`;

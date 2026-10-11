@@ -31,6 +31,7 @@ import {
   SessionNotFoundError,
   SetNotFoundError,
   SetValidationError,
+  StaleStrengthEnergySourceError,
 } from "@/modules/training/training.errors";
 import { MATCH_STATUS, SESSION_STATUS } from "@/modules/training/training.constants";
 
@@ -159,13 +160,13 @@ describe("/api/v1/training/sessions", () => {
   });
 
   it("creates a set", async () => {
-    trainingService.createSet.mockResolvedValue(setDto);
+    trainingService.createSet.mockResolvedValue({ ...setDto, modelPublicationStatus: "stale" });
     const response = await CREATE_SET(
       jsonRequest(`${base}/42/exercises/5/sets`, "POST", { reps: 10, weightKg: 30 }),
       exerciseCtx("42", "5"),
     );
     expect(response.status).toBe(201);
-    await expect(response.json()).resolves.toEqual({ set: setDto });
+    await expect(response.json()).resolves.toEqual({ set: setDto, modelPublicationStatus: "stale" });
     expect(trainingService.createSet).toHaveBeenCalledWith(42, 5, {
       reps: 10,
       weightKg: 30,
@@ -210,13 +211,27 @@ describe("/api/v1/training/sessions", () => {
   });
 
   it("patches a set", async () => {
-    trainingService.updateSet.mockResolvedValue({ ...setDto, reps: 8 });
+    trainingService.updateSet.mockResolvedValue({ ...setDto, reps: 8, modelPublicationStatus: "stale" });
     const response = await PATCH_SET(
       jsonRequest(`${base}/42/sets/9`, "PATCH", { reps: 8 }),
       setCtx("42", "9"),
     );
     expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ set: { ...setDto, reps: 8 }, modelPublicationStatus: "stale" });
     expect(trainingService.updateSet).toHaveBeenCalledWith(42, 9, { reps: 8 });
+  });
+
+  it("returns a conflict when strength publication loses its source snapshot", async () => {
+    trainingService.updateSet.mockRejectedValue(new StaleStrengthEnergySourceError());
+    const response = await PATCH_SET(
+      jsonRequest(`${base}/42/sets/9`, "PATCH", { reps: 8 }),
+      setCtx("42", "9"),
+    );
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "strength_energy_source_stale",
+      modelPublicationStatus: "stale",
+    });
   });
 
   it("rejects empty patch body without mutation", async () => {
@@ -229,12 +244,13 @@ describe("/api/v1/training/sessions", () => {
   });
 
   it("deletes a set", async () => {
-    trainingService.deleteSet.mockResolvedValue(undefined);
+    trainingService.deleteSet.mockResolvedValue({ modelPublicationStatus: "stale" });
     const response = await DELETE_SET(
       new Request(`${base}/42/sets/9`, { method: "DELETE" }),
       setCtx("42", "9"),
     );
-    expect(response.status).toBe(204);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ deleted: true, modelPublicationStatus: "stale" });
     expect(trainingService.deleteSet).toHaveBeenCalledWith(42, 9);
   });
 
@@ -255,10 +271,10 @@ describe("/api/v1/training/sessions", () => {
       webEndedAt: "2026-09-17T17:00:00.000Z",
       matchStatus: MATCH_STATUS.PENDING,
     };
-    trainingService.finishSession.mockResolvedValue(completed);
+    trainingService.finishSession.mockResolvedValue({ ...completed, modelPublicationStatus: "stale" });
     const response = await FINISH(new Request(`${base}/42/finish`, { method: "POST" }), sessionCtx("42"));
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ session: completed });
+    await expect(response.json()).resolves.toEqual({ session: completed, modelPublicationStatus: "stale" });
     expect(trainingService.finishSession).toHaveBeenCalledWith(42);
   });
 

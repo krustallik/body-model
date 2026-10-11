@@ -10,6 +10,7 @@ import { RESISTANCE } from "@/modules/training/training.constants";
 import { TrainingRepository } from "@/modules/training/training.repository";
 import { TrainingService } from "@/modules/training/training.service";
 import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
+import { clearUnifiedPublicationBlockFixtures } from "../helpers/clear-unified-publication-blocks";
 
 const prisma = new PrismaClient();
 const profileId = 1;
@@ -22,6 +23,15 @@ let originalProfile: Awaited<ReturnType<typeof prisma.profile.findFirst>>;
 
 async function clean(): Promise<void> {
   const fixtureProgram = { profileId, name: "Stage 9A" };
+  const fixtureSessions = await prisma.strengthDiarySession.findMany({
+    where: { programVersion: { program: fixtureProgram } },
+    select: { id: true },
+  });
+  await clearUnifiedPublicationBlockFixtures(prisma, fixtureSessions.map(({ id }) => ({
+    profileId,
+    source: "training" as const,
+    sourceKey: String(id),
+  })));
   await prisma.strengthSet.deleteMany({
     where: { sessionExercise: { session: { programVersion: { program: fixtureProgram } } } },
   });

@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 
 const { afterHealthSyncMatch } = vi.hoisted(() => ({
-  afterHealthSyncMatch: vi.fn().mockResolvedValue(undefined),
+  afterHealthSyncMatch: vi.fn().mockResolvedValue(true),
 }));
 vi.mock("@/modules/training/training.service", () => ({
   trainingService: { afterHealthSyncMatch },
 }));
 
 import type { HealthSyncRepository } from "@/modules/health/health.repository";
-import { syncHealthData } from "@/modules/health/health.service";
+import { reconcileHealthUnifiedPublicationBlocksV1, syncHealthData } from "@/modules/health/health.service";
 import type { HealthDayInput, HealthSyncMetadata, SyncDateResult } from "@/modules/health/health.types";
 
 class MemoryRepository implements HealthSyncRepository {
@@ -56,12 +56,56 @@ const workout = {
 };
 
 describe("health synchronization service", () => {
+  it("clears successful source dates after a partial batch failure and lets the failed date retry", async () => {
+    const lifecycle = {
+      blockUnifiedPublication: vi.fn().mockResolvedValue(undefined),
+      clearUnifiedPublicationBlock: vi.fn().mockResolvedValue(true),
+    };
+    const dates = ["2026-08-21", "2026-08-22"];
+    const firstAttemptReady = await reconcileHealthUnifiedPublicationBlocksV1({
+      dates,
+      tokens: new Map([
+        [dates[0]!, { revision: 4, fromDate: dates[0]! }],
+        [dates[1]!, { revision: 7, fromDate: dates[1]! }],
+      ]),
+      failedDates: new Set([dates[1]!]),
+      lifecycle,
+    });
+
+    expect(firstAttemptReady).toBe(false);
+    expect(lifecycle.clearUnifiedPublicationBlock).toHaveBeenCalledTimes(1);
+    expect(lifecycle.clearUnifiedPublicationBlock).toHaveBeenCalledWith({
+      profileId: 1, source: "health", sourceKey: dates[0], expectedRevision: 4,
+      expectedFromDate: dates[0],
+    });
+    expect(lifecycle.blockUnifiedPublication).toHaveBeenCalledWith({
+      profileId: 1, fromDate: dates[1], source: "health", sourceKey: dates[1],
+    });
+
+    lifecycle.blockUnifiedPublication.mockClear();
+    lifecycle.clearUnifiedPublicationBlock.mockClear();
+    const retryReady = await reconcileHealthUnifiedPublicationBlocksV1({
+      dates: [dates[1]!],
+      tokens: new Map([[dates[1]!, { revision: 8, fromDate: dates[1]! }]]),
+      failedDates: new Set(),
+      lifecycle,
+    });
+
+    expect(retryReady).toBe(true);
+    expect(lifecycle.blockUnifiedPublication).not.toHaveBeenCalled();
+    expect(lifecycle.clearUnifiedPublicationBlock).toHaveBeenCalledWith({
+      profileId: 1, source: "health", sourceKey: dates[1], expectedRevision: 8,
+      expectedFromDate: dates[1],
+    });
+  });
+
   it("creates a new day", async () => {
     const repository = new MemoryRepository();
     await expect(syncHealthData({ days: [{ date: "2026-08-21" }] }, repository)).resolves.toMatchObject({
       received: 1,
       created: 1,
       updated: 0,
+      modelPublicationStatus: "not-run",
     });
   });
 

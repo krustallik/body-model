@@ -3,6 +3,7 @@ export type PhysiologyPublicationGenerationV1 = {
   productionStaleFromDate: string | null;
   productionPublishedGeneration: number | null;
   unifiedPublishedGeneration?: number | null;
+  unifiedPublicationBlockedFromDate?: string | null;
 };
 
 export function isProductionGenerationCurrentV1(
@@ -21,6 +22,7 @@ export function isUnifiedGenerationCurrentV1(
   unifiedPublishedGeneration: number;
 } {
   return isProductionGenerationCurrentV1(lifecycle)
+    && lifecycle.unifiedPublicationBlockedFromDate === null
     && lifecycle.unifiedPublishedGeneration !== null
     && lifecycle.unifiedPublishedGeneration === lifecycle.productionPublishedGeneration;
 }

@@ -18,6 +18,7 @@ import { rebuildFatWeightShadowV1 } from "@/modules/model-episodes/fat-weight-sh
 import { recordExperimentalStrengthEnergyShadow } from "@/modules/training/experimental-strength-energy-shadow.service";
 import { RESISTANCE } from "@/modules/training/training.constants";
 import { TrainingService } from "@/modules/training/training.service";
+import { clearUnifiedPublicationBlockFixtures } from "../helpers/clear-unified-publication-blocks";
 import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
 
 const prisma = new PrismaClient();
@@ -101,6 +102,15 @@ async function cleanShadows(): Promise<void> {
 }
 
 async function cleanTraining(): Promise<void> {
+  const fixtureSessions = await prisma.strengthDiarySession.findMany({
+    where: { program: { name: PROGRAM } },
+    select: { id: true },
+  });
+  await clearUnifiedPublicationBlockFixtures(prisma, fixtureSessions.map(({ id }) => ({
+    profileId,
+    source: "training" as const,
+    sourceKey: String(id),
+  })));
   await prisma.strengthSet.deleteMany({
     where: { sessionExercise: { session: { program: { name: PROGRAM } } } },
   });
@@ -681,7 +691,7 @@ describe("PostgreSQL shadow gap future-asof matrix A–K", () => {
     });
     expect(afterEdit.sourceFingerprint).not.toBe(before.sourceFingerprint);
 
-    await expect(days.delete(D2)).resolves.toBe(true);
+    await expect(days.delete(D2)).resolves.toMatchObject({ deleted: true });
     const afterDelete = await prisma.experimentalGlycogenStateShadow.findUniqueOrThrow({
       where: { profileId_date: { profileId, date: D2 } },
     });

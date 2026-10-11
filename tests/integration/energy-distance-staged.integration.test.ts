@@ -29,6 +29,7 @@ import { persistedEpisodeFixture } from "../model-episode-fixtures";
 import { modelProfile, stableSourceDays } from "../model-episode-fixtures";
 import { prepareEpisodeInitialization } from "@/modules/model-episodes/episode-initialization";
 import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
+import { clearUnifiedPublicationBlockFixtures } from "../helpers/clear-unified-publication-blocks";
 import { materializeActiveEnergyCandidatesV1 } from "@/modules/activity/active-energy-materialization";
 import { inventoryFullHistoryRawInputs } from "@/modules/model-episodes/full-history-recalculation.service";
 import { requireLoopbackTestDatabaseUrl } from "../helpers/require-loopback-test-database";
@@ -39,6 +40,7 @@ const steppers = new StepperWorkoutRepository(prisma);
 const version = "bodycast-physiology-v7+selection-v1";
 const programName = "energy-distance-e2e";
 const exerciseName = "energy-distance-e2e-exercise";
+const deletedFixtureTrainingSessionIds = new Set<string>();
 
 function strengthShadowResult(input: {
   sessionId: number;
@@ -119,6 +121,14 @@ async function day(date: string, weightKg: number | null, steps: number | null =
 }
 
 async function clean() {
+  const fixtureSessions = await prisma.strengthDiarySession.findMany({
+    where: { program: { name: programName } },
+    select: { id: true },
+  });
+  await clearUnifiedPublicationBlockFixtures(prisma, [
+    ...fixtureSessions.map(({ id }) => ({ profileId: 1, source: "training" as const, sourceKey: String(id) })),
+    ...[...deletedFixtureTrainingSessionIds].map((sourceKey) => ({ profileId: 1, source: "training" as const, sourceKey })),
+  ]);
   await prisma.activeEnergyCanonicalEvent.deleteMany({ where: { profileId: 1, modelDate: { in: dates } } });
   await prisma.unifiedExperimentalPhysiologyStateV2.deleteMany({ where: { profileId: 1, date: { in: dates } } });
   await prisma.unifiedExperimentalPhysiologyState.deleteMany({ where: { date: { in: dates } } });
@@ -950,6 +960,10 @@ describe("staged energy and distance PostgreSQL integration", () => {
       expect(await recordAndAssertFresh()).toBe(refreshedFingerprint);
     } finally {
       if (sessionId !== null) {
+        await clearUnifiedPublicationBlockFixtures(prisma, [
+          { profileId: 1, source: "training", sourceKey: String(sessionId) },
+        ]);
+        deletedFixtureTrainingSessionIds.add(String(sessionId));
         await prisma.activeEnergyCanonicalEvent.deleteMany({
           where: { profileId: 1, aliases: { some: { sourceType: "strength-session", sourceId: String(sessionId) } } },
         });

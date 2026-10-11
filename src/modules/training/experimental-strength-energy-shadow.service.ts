@@ -1,9 +1,10 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { calculateStrengthActivity } from "@/model/activity/strength";
-import { localDateTimeToInstant, DEFAULT_TIME_ZONE } from "@/model/time-zone";
-import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
+import { DEFAULT_TIME_ZONE, instantToLocalDateTime, isValidTimeZone } from "@/model/time-zone";
+import { calendarDayIndex } from "@/modules/model-episodes/model-calendar";
 import { episodeTimeContextForInstantV1 } from "@/modules/model-episodes/episode-time-context-v1";
+import { MAX_HISTORICAL_BODYWEIGHT_REPLAY_DAYS_V1 } from "@/modules/model-episodes/historical-bodyweight-asof-v1";
 import { persistActiveEnergyCanonicalResolutionV1, type ActiveEnergyCandidateV1 } from "@/model/activity/active-energy-canonical.repository";
 import { resolveEventEnergyV1 } from "@/model/activity/canonical-activity-policy-v1";
 import { stableSha256 } from "@/modules/model-recovery/recovery-fingerprint";
@@ -17,10 +18,27 @@ import {
 } from "./experimental-strength-active-energy-v1";
 import {
   strengthInputFingerprintV1,
+  strengthHeartRateSourceFingerprintV1,
   strengthModelDayFingerprintInputsV1,
   strengthPublicationDecisionV1,
+  strengthSessionSourceFingerprintV1,
   strengthSetFingerprintV1,
 } from "./strength-publication-v1";
+import { StaleStrengthEnergySourceError } from "./training.errors";
+
+export function historicalBodyweightSourceChangeMayAffectSessionV1(input: {
+  weightDate: string;
+  sessionLocalDate: string;
+  episodeStartDate: string;
+}): boolean {
+  const weightDateIndex = calendarDayIndex(input.weightDate);
+  const sessionDateIndex = calendarDayIndex(input.sessionLocalDate);
+  const episodeStartIndex = calendarDayIndex(input.episodeStartDate);
+  const elapsedEpisodeDays = sessionDateIndex - episodeStartIndex + 1;
+  return sessionDateIndex >= weightDateIndex
+    && elapsedEpisodeDays >= 1
+    && elapsedEpisodeDays <= MAX_HISTORICAL_BODYWEIGHT_REPLAY_DAYS_V1;
+}
 
 /**
  * Persists Strength estimator evidence and its canonical source resolution.
@@ -30,22 +48,23 @@ import {
 export async function recordExperimentalStrengthEnergyShadow(input: {
   session: StrengthSessionDto;
   profileId: number;
+  /** Deterministic barrier for exercising the source CAS in PostgreSQL integration tests. */
+  onCandidateComputed?: () => Promise<void>;
 }): Promise<void> {
   const interval = input.session.matchedWorkout ?? (input.session.webStartedAt && input.session.webEndedAt
     ? { startAt: input.session.webStartedAt, endAt: input.session.webEndedAt }
     : null);
-  const [heartRateBpms] = await Promise.all([
-    interval === null
-      ? Promise.resolve([] as number[])
-      : prisma.heartRateSample.findMany({
+  const heartRateSamples = interval === null
+    ? []
+    : await prisma.heartRateSample.findMany({
         where: {
           profileId: input.profileId,
           timestamp: { gte: new Date(interval.startAt), lte: new Date(interval.endAt) },
         },
-        select: { bpm: true },
-        orderBy: { timestamp: "asc" },
-      }).then((rows) => rows.map((row) => row.bpm)),
-  ]);
+        select: { id: true, timestamp: true, bpm: true, source: true },
+        orderBy: [{ timestamp: "asc" }, { id: "asc" }],
+      });
+  const heartRateBpms = heartRateSamples.map((row) => row.bpm);
   const stage02Mass = input.session.activeEnergyMassReference ?? null;
   const bodyMassKg = stage02Mass !== null && stage02Mass.reference.status !== "unavailable"
       && Number.isFinite(stage02Mass.reference.valueKg) && stage02Mass.reference.valueKg > 0
@@ -109,9 +128,9 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
     modelEpisodeVersion: episode?.modelVersion ?? null,
     modelEpisodeStartDate: episode?.startDate ?? null,
     modelEpisodeLatestModeledDate: episode?.latestModeledDate ?? null,
-    modelEpisodeUpdatedAt: episode?.updatedAt.toISOString() ?? null,
     modelTimeZone,
     modelDate,
+    heartRateSourceFingerprint: strengthHeartRateSourceFingerprintV1(heartRateSamples),
     ...modelDayFingerprintInputs,
   };
   const inputFingerprint = strengthInputFingerprintV1({
@@ -162,7 +181,7 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
     previousSessionRevision,
     sessionRevision: input.session.revision,
   });
-  if (publication.reason === "stale-inputs") return;
+  if (publication.reason === "stale-inputs") throw new StaleStrengthEnergySourceError();
   const validateSource = async (tx: Prisma.TransactionClient): Promise<boolean> => {
     const current = await tx.strengthDiarySession.findUnique({
       where: { id: input.session.id },
@@ -176,9 +195,9 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
         || current.matchedWorkoutId !== input.session.matchedWorkoutId
         || current.currentSnapshotRevision !== expectedSnapshotRevision
         || current.accountingTimeZone !== input.session.accountingTimeZone
-        || current.effectiveAccountingAt?.toISOString() !== (input.session.effectiveAccountingAt ?? null)
-        || current.webStartedAt?.toISOString() !== (input.session.webStartedAt ?? null)
-        || current.webEndedAt?.toISOString() !== (input.session.webEndedAt ?? null)) return false;
+        || (current.effectiveAccountingAt?.toISOString() ?? null) !== (input.session.effectiveAccountingAt ?? null)
+        || (current.webStartedAt?.toISOString() ?? null) !== (input.session.webStartedAt ?? null)
+        || (current.webEndedAt?.toISOString() ?? null) !== (input.session.webEndedAt ?? null)) return false;
     const currentSets = await tx.strengthSet.findMany({
       where: { sessionExercise: { sessionId: input.session.id } },
       select: {
@@ -195,6 +214,18 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
       completedAt: set.completedAt?.toISOString() ?? null,
     })));
     if (currentSetFingerprint !== setFingerprint) return false;
+    const currentHeartRateSamples = interval === null
+      ? []
+      : await tx.heartRateSample.findMany({
+        where: {
+          profileId: input.profileId,
+          timestamp: { gte: new Date(interval.startAt), lte: new Date(interval.endAt) },
+        },
+        select: { id: true, timestamp: true, bpm: true, source: true },
+        orderBy: [{ timestamp: "asc" }, { id: "asc" }],
+      });
+    if (strengthHeartRateSourceFingerprintV1(currentHeartRateSamples)
+        !== estimatorInputs.heartRateSourceFingerprint) return false;
     if (input.session.matchedWorkoutId !== null) {
       const workout = await tx.workout.findUnique({
         where: { id: input.session.matchedWorkoutId },
@@ -235,7 +266,7 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
       ? [{ source: "bodycast-strength-estimate" as const, sourceIdentity: `strength-session:${input.session.id}`, sourceFingerprint: inputFingerprint, valueKcal: result.estimatedActiveKcal, provenance: { estimator: EXPERIMENTAL_STRENGTH_ACTIVE_ENERGY_V1_REVISION, stage02MassReference: stage02Mass?.reference ?? null, stage02SnapshotRevision: stage02Mass?.snapshotRevision ?? null } }]
       : []),
     ...(metFallbackKcal !== null && Number.isFinite(metFallbackKcal) && metFallbackKcal >= 0
-      ? [{ source: "bodycast-strength-met-fallback" as const, sourceIdentity: `strength-met:${input.session.id}:${modelDate}`, sourceFingerprint: stableSha256(`${inputFingerprint}|${modelDay?.updatedAt.toISOString()}|${modelDay?.dynamicRmrKcalPerDay}`), valueKcal: metFallbackKcal, provenance: { modelEpisodeId: episode?.id ?? null, modelVersion: modelDay?.modelVersion ?? null, modelDate, dynamicRmrKcalPerDay: modelDay?.dynamicRmrKcalPerDay ?? null } }]
+      ? [{ source: "bodycast-strength-met-fallback" as const, sourceIdentity: `strength-met:${input.session.id}:${modelDate}`, sourceFingerprint: stableSha256(`${inputFingerprint}|${modelDay?.dynamicRmrKcalPerDay}`), valueKcal: metFallbackKcal, provenance: { modelEpisodeId: episode?.id ?? null, modelVersion: modelDay?.modelVersion ?? null, modelDate, dynamicRmrKcalPerDay: modelDay?.dynamicRmrKcalPerDay ?? null, massKg: bodyMassKg } }]
       : []),
     ...(manualKcal !== null
       ? [{ source: "manual-kcal" as const, sourceIdentity: `workout:${input.session.matchedWorkoutId}:manual`, sourceFingerprint: stableSha256(`manual|${input.session.matchedWorkoutId}|${manualKcal}`), valueKcal: manualKcal, provenance: { source: "user-entered-workout", workoutId: input.session.matchedWorkoutId } }]
@@ -244,10 +275,11 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
       ? [{ source: "device-kcal" as const, sourceIdentity: `workout:${input.session.matchedWorkoutId}:device`, sourceFingerprint: stableSha256(`device|${input.session.matchedWorkoutId}|${deviceKcal}`), valueKcal: deviceKcal, provenance: { source: "wearable-device", workoutId: input.session.matchedWorkoutId } }]
       : []),
   ];
+  await input.onCandidateComputed?.();
   await prisma.$transaction(async (tx) => {
     const lifecycle = new PhysiologyV7PersistenceRepository(tx);
     await lifecycle.lockProfile(input.profileId);
-    if (!(await validateSource(tx))) return;
+    if (!(await validateSource(tx))) throw new StaleStrengthEnergySourceError();
     const existingShadow = await tx.experimentalStrengthEnergyShadow.findUnique({
       where: { sessionId: input.session.id }, select: { sourceFingerprint: true, modelRevision: true },
     });
@@ -275,7 +307,7 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
     candidates,
       validateSource,
     });
-    if (!resolution.current) throw new Error("strength source changed before canonical active-energy publication");
+    if (!resolution.current) throw new StaleStrengthEnergySourceError();
     if (shadowChanged) await lifecycle.invalidateUnifiedPublication(input.profileId);
   });
 }
@@ -284,42 +316,107 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
 export async function recordExperimentalStrengthEnergyShadowBySessionId(input: {
   sessionId: number;
   profileId: number;
-}): Promise<void> {
+  refreshAccounting?: boolean;
+}): Promise<{ session: StrengthSessionDto | null; publicationBlockToken: { revision: number; fromDate: string } | null }> {
   const repository = new TrainingRepository(prisma);
-  await repository.materializeAccounting({ sessionId: input.sessionId, profileId: input.profileId, mode: "ordinary" });
+  await repository.materializeAccounting({
+    sessionId: input.sessionId,
+    profileId: input.profileId,
+    mode: input.refreshAccounting ? "refresh" : "ordinary",
+  });
   const session = await repository.getSession(input.sessionId, input.profileId);
-  if (session !== null) {
-    await recordExperimentalStrengthEnergyShadow({ session, profileId: input.profileId });
-  }
+  if (session === null) return { session: null, publicationBlockToken: null };
+  await recordExperimentalStrengthEnergyShadow({ session, profileId: input.profileId });
+  const captured = await prisma.$transaction(async (tx) => {
+    const lifecycle = new PhysiologyV7PersistenceRepository(tx);
+    await lifecycle.lockProfile(input.profileId);
+    const current = await new TrainingRepository().getSession(input.sessionId, input.profileId);
+    if (current === null
+        || strengthSessionSourceFingerprintV1(current) !== strengthSessionSourceFingerprintV1(session)) {
+      throw new StaleStrengthEnergySourceError();
+    }
+    return lifecycle.readUnifiedPublicationBlockToken({
+      profileId: input.profileId, source: "training", sourceKey: String(input.sessionId),
+    });
+  });
+  return { session, publicationBlockToken: captured };
 }
 
-/** Refresh Strength candidates whose Stage 02 nearest mass could change after a weight-source write. */
-export async function recordExperimentalStrengthEnergyShadowsForWeightDate(input: {
+/** Identifies completed sessions whose observed or historical bodyweight may depend on a changed weight date. */
+export async function listExperimentalStrengthEnergySessionsForWeightDate(input: {
   date: string;
   profileId?: number;
-}): Promise<void> {
+  /** True only when the raw weight source changed; enables the historical as-of suffix refresh. */
+  refreshHistoricalAsOfFallback?: boolean;
+}): Promise<number[]> {
   const profileId = input.profileId ?? 1;
-  const episode = await prisma.modelEpisode.findFirst({
-    where: { profileId, active: true }, select: { timezone: true }, orderBy: { startDate: "desc" },
+  const episodes = await prisma.modelEpisode.findMany({
+    where: { profileId }, orderBy: [{ startDate: "asc" }, { id: "asc" }],
+    select: { id: true, startDate: true, timezone: true, active: true },
   });
-  const timeZone = episode?.timezone ?? DEFAULT_TIME_ZONE;
-  const fromDate = addCalendarDays(input.date, -7);
-  const toDate = addCalendarDays(input.date, 7);
-  const fromInstant = localDateTimeToInstant(fromDate, "00:00", timeZone);
-  const toInstant = localDateTimeToInstant(addCalendarDays(toDate, 1), "00:00", timeZone);
+  const changedDateIndex = calendarDayIndex(input.date);
   const sessions = await prisma.strengthDiarySession.findMany({
-    where: {
-      profileId,
-      status: "COMPLETED",
-      OR: [
-        { matchedWorkout: { startAt: { gte: fromInstant, lt: toInstant } } },
-        { matchedWorkoutId: null, webStartedAt: { gte: fromInstant, lt: toInstant } },
-      ],
+    where: { profileId, status: "COMPLETED" },
+    select: {
+      id: true,
+      effectiveAccountingAt: true,
+      accountingTimeZone: true,
+      webStartedAt: true,
+      createdAt: true,
+      matchedWorkout: { select: { startAt: true } },
+      currentAccountingSnapshot: { select: { payload: true } },
     },
-    select: { id: true },
     orderBy: { id: "asc" },
   });
-  for (const session of sessions) {
-    await recordExperimentalStrengthEnergyShadowBySessionId({ sessionId: session.id, profileId });
-  }
+  return [...new Set(sessions.flatMap((session) => {
+    const occurrenceAt = session.effectiveAccountingAt
+      ?? session.matchedWorkout?.startAt
+      ?? session.webStartedAt
+      ?? session.createdAt;
+    const episodeContext = episodeTimeContextForInstantV1(episodes, occurrenceAt);
+    const sessionTimeZone = session.accountingTimeZone && isValidTimeZone(session.accountingTimeZone)
+      ? session.accountingTimeZone
+      : episodeContext.timeZone || DEFAULT_TIME_ZONE;
+    const accountingDate = instantToLocalDateTime(occurrenceAt, sessionTimeZone).date;
+    const modelDateIndexes = [accountingDate, episodeContext.date]
+      .map((date) => ({ date, index: calendarDayIndex(date) }));
+    const withinObservedWindow = modelDateIndexes.some(({ index }) =>
+      index >= changedDateIndex - 7 && index <= changedDateIndex + 7);
+    if (withinObservedWindow) return [session.id];
+    if (!input.refreshHistoricalAsOfFallback) return [];
+
+    const payload = session.currentAccountingSnapshot?.payload;
+    const massReference = payload !== null && typeof payload === "object" && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>).massReference
+      : null;
+    const mass = massReference !== null && typeof massReference === "object" && !Array.isArray(massReference)
+      ? massReference as Record<string, unknown>
+      : null;
+    // An observed/nearest observation is only affected inside the 7-day
+    // window above. A missing/unknown reference is included conservatively,
+    // because the changed source can make an as-of estimate newly available.
+    if (mass?.status === "observed" || mass?.status === "nearest-observed") return [];
+    let referenceDate = accountingDate;
+    if (typeof mass?.localDate === "string") {
+      try {
+        calendarDayIndex(mass.localDate);
+        referenceDate = mass.localDate;
+      } catch {
+        // An invalid persisted reference cannot prove that the source is outside
+        // the historical dependency suffix, so use the current session date.
+      }
+    }
+    const massEpisodeId = typeof mass?.sourceId === "string" && /^\d+$/.test(mass.sourceId)
+      ? Number(mass.sourceId)
+      : episodeContext.episode?.id;
+    const episode = episodes.find((candidate) => candidate.id === massEpisodeId) ?? episodeContext.episode;
+    if (!episode) return [];
+    return historicalBodyweightSourceChangeMayAffectSessionV1({
+      weightDate: input.date,
+      sessionLocalDate: referenceDate,
+      episodeStartDate: episode.startDate,
+    })
+      ? [session.id]
+      : [];
+  }))];
 }

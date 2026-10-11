@@ -75,6 +75,8 @@ export type NightlySleepSummaryDto = {
 export type DailyMetricDto = {
   date: string;
   updatedAt: string | null;
+  /** Raw day writes can succeed while a fail-closed derived publication remains stale. */
+  modelPublicationStatus?: import("@/modules/activity/active-energy-publication").ActiveEnergyPublicationStatusV1;
   /** False when this row exists only to present a training event, without a Health row. */
   hasHealthRecord?: boolean;
   workouts: DayWorkoutDto[];

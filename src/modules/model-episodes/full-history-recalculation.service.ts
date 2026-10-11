@@ -126,6 +126,7 @@ type LifecycleSnapshot = {
   productionStaleFromDate: string | null;
   productionPublishedGeneration: number | null;
   unifiedPublishedGeneration: number | null;
+  unifiedPublicationBlockedFromDate: string | null;
   unifiedTargetRevision: string;
   unifiedRolloutEpoch: number;
   unifiedPublishedRolloutEpoch: number | null;
@@ -204,6 +205,7 @@ async function readLifecycle(client: PrismaClient, profileId: number): Promise<L
       productionStaleFromDate: true,
       productionPublishedGeneration: true,
       unifiedPublishedGeneration: true,
+      unifiedPublicationBlockedFromDate: true,
       unifiedTargetRevision: true,
       unifiedRolloutEpoch: true,
       unifiedPublishedRolloutEpoch: true,
@@ -217,7 +219,8 @@ async function readLifecycle(client: PrismaClient, profileId: number): Promise<L
 
 function assertV3PreActivationLifecycle(lifecycle: LifecycleSnapshot, profileId: number): void {
   if (lifecycle.unifiedTargetRevision !== UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION
-      || lifecycle.unifiedRolloutEpoch !== 0) {
+      || lifecycle.unifiedRolloutEpoch !== 0
+      || lifecycle.unifiedPublicationBlockedFromDate !== null) {
     throw new Error(
       `Full-history recalculation requires Unified V3 epoch 0 before V4 activation (profile ${profileId})`,
     );

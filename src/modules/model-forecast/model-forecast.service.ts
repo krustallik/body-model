@@ -276,6 +276,7 @@ export async function forecastModelEpisodeWithInternalArtifacts(
       unifiedTargetRevision: true,
       unifiedRolloutEpoch: true,
       unifiedPublishedRolloutEpoch: true,
+      unifiedPublicationBlockedFromDate: true,
     },
   });
   const v4IsCurrent = lifecycle !== null
@@ -285,6 +286,7 @@ export async function forecastModelEpisodeWithInternalArtifacts(
     && lifecycle.productionStaleFromDate === null
     && lifecycle.productionPublishedGeneration === lifecycle.invalidationGeneration
     && lifecycle.unifiedPublishedGeneration === lifecycle.invalidationGeneration
+    && lifecycle.unifiedPublicationBlockedFromDate === null
     && (lifecycle.staleFromDate === null
       || lifecycle.staleFromDate < episode.startDate
       || lifecycle.staleFromDate > latestCompletedDate);
@@ -483,6 +485,7 @@ export async function forecastModelEpisodeWithInternalArtifacts(
       unifiedTargetRevision: true,
       unifiedRolloutEpoch: true,
       unifiedPublishedRolloutEpoch: true,
+      unifiedPublicationBlockedFromDate: true,
     },
   });
   if (!finalLifecycle || finalLifecycle.invalidationGeneration !== lifecycle.invalidationGeneration
@@ -492,6 +495,7 @@ export async function forecastModelEpisodeWithInternalArtifacts(
       || finalLifecycle.unifiedTargetRevision !== UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION
       || finalLifecycle.productionStaleFromDate !== null
       || finalLifecycle.productionPublishedGeneration !== finalLifecycle.invalidationGeneration
+      || finalLifecycle.unifiedPublicationBlockedFromDate !== null
       || (finalLifecycle.staleFromDate !== null
         && finalLifecycle.staleFromDate >= episode.startDate
         && finalLifecycle.staleFromDate <= latestCompletedDate)) {

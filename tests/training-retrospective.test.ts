@@ -19,6 +19,8 @@ import {
 } from "@/modules/training/training.errors";
 import { TrainingRepository } from "@/modules/training/training.repository";
 import { TrainingService } from "@/modules/training/training.service";
+import * as relativeMuscleShadowService from "@/modules/model-episodes/experimental-cessation-detraining-shadow.service";
+import * as unifiedPublicationService from "@/modules/model-episodes/unified-experimental-physiology-state.service";
 
 type MockDb = ReturnType<typeof buildDb>;
 
@@ -29,6 +31,20 @@ function decimal(value: number | null) {
 function buildDb() {
   const db = {
     $executeRaw: vi.fn().mockResolvedValue(0),
+    $queryRaw: vi.fn().mockResolvedValue([]),
+    physiologyV7Lifecycle: {
+      findUnique: vi.fn().mockResolvedValue({ profileId: 1 }),
+      upsert: vi.fn(),
+      update: vi.fn(),
+      updateMany: vi.fn(),
+    },
+    modelEpisode: { findMany: vi.fn().mockResolvedValue([]) },
+    unifiedPublicationBlock: {
+      findUnique: vi.fn().mockResolvedValue(null),
+      findMany: vi.fn().mockResolvedValue([]),
+      upsert: vi.fn().mockResolvedValue({}),
+      deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+    },
     exerciseCatalog: { findMany: vi.fn() },
     trainingProgram: {
       findMany: vi.fn(),
@@ -265,10 +281,13 @@ function makeService(db: MockDb) {
 describe("retrospective diary creation from historical workouts", () => {
   let db: MockDb;
   let service: TrainingService;
+  let repository: TrainingRepository;
 
   beforeEach(() => {
     db = buildDb();
-    service = makeService(db);
+    repository = new TrainingRepository(db as never);
+    vi.spyOn(repository, "materializeAccounting").mockResolvedValue(1);
+    service = new TrainingService(db as never, repository);
   });
 
   function arrangeProgram(archivedAt: Date | null = null) {
@@ -286,6 +305,8 @@ describe("retrospective diary creation from historical workouts", () => {
     db.strengthDiarySession.findFirst.mockResolvedValue(retrospectiveDetail());
 
     const session = await service.createSessionFromWorkout({ workoutId: 77, programId: 10 });
+
+    expect(repository.materializeAccounting).toHaveBeenCalledWith({ sessionId: 50, profileId: 1, mode: "ordinary" });
 
     expect(db.strengthDiarySession.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
@@ -326,6 +347,54 @@ describe("retrospective diary creation from historical workouts", () => {
       EXERCISE_ORIGIN.PLANNED,
       EXERCISE_ORIGIN.PLANNED,
     ]);
+  });
+
+  it("does not publish Unified when retrospective Relative Muscle refresh fails", async () => {
+    db.workout.findUnique.mockResolvedValue(strengthWorkout());
+    arrangeProgram();
+    db.strengthDiarySession.create.mockResolvedValue({ id: 50 });
+    db.strengthDiarySession.findUnique.mockResolvedValue({
+      id: 50,
+      profileId: 1,
+      status: SESSION_STATUS.COMPLETED,
+      effectiveAccountingAt: workoutStartAt,
+      accountingTimeZone: "Europe/Bratislava",
+      webStartedAt: null,
+      createdAt: workoutStartAt,
+      matchedWorkout: { startAt: workoutStartAt },
+    });
+    db.strengthDiarySession.findFirst.mockResolvedValue(retrospectiveDetail());
+    const relativeMuscleRefresh = vi.spyOn(
+      relativeMuscleShadowService,
+      "rebuildAuthoritativeRelativeMuscleTrajectory",
+    ).mockRejectedValueOnce(new Error("relative muscle refresh failed"));
+    const unifiedRebuild = vi.spyOn(
+      unifiedPublicationService,
+      "rebuildUnifiedExperimentalPhysiologyStateV1",
+    ).mockResolvedValueOnce({} as never);
+    const repository = new TrainingRepository(db as never);
+    vi.spyOn(repository, "materializeAccounting").mockResolvedValue(1);
+    service = new TrainingService(
+      db as never,
+      repository,
+      async () => {
+        await relativeMuscleShadowService.rebuildAuthoritativeRelativeMuscleTrajectory({ fromDate: "2026-08-12" });
+        await unifiedPublicationService.rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: 1 });
+      },
+    );
+
+    await expect(service.createSessionFromWorkout({ workoutId: 77, programId: 10 })).resolves.toMatchObject({
+      id: 50,
+      entryMode: ENTRY_MODE.RETROSPECTIVE,
+    });
+
+    expect(relativeMuscleRefresh).toHaveBeenCalledTimes(1);
+    expect(unifiedRebuild).not.toHaveBeenCalled();
+    expect(db.unifiedPublicationBlock.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { profileId_source_sourceKey: { profileId: 1, source: "training", sourceKey: "50" } },
+    }));
+    relativeMuscleRefresh.mockRestore();
+    unifiedRebuild.mockRestore();
   });
 
   it("snapshots program exercises as PLANNED without running the fuzzy matcher", async () => {
@@ -411,9 +480,11 @@ describe("retrospective diary creation from historical workouts", () => {
       .mockResolvedValueOnce(strengthWorkout({ id: 79, type: "Stair Climbing" }));
     arrangeProgram();
     db.strengthDiarySession.create.mockResolvedValue({ id: 50 });
-    db.strengthDiarySession.findFirst
-      .mockResolvedValueOnce(retrospectiveDetail())
-      .mockResolvedValueOnce(retrospectiveDetail({ id: 51, matchedWorkoutId: 78 }));
+    db.strengthDiarySession.findFirst.mockImplementation((args: { where?: { id?: number } }) => Promise.resolve(
+      args.where?.id === 51
+        ? retrospectiveDetail({ id: 51, matchedWorkoutId: 78 })
+        : retrospectiveDetail(),
+    ));
 
     const result = await service.bulkCreateSessionsFromWorkouts({
       workoutIds: [77, 78, 79],
@@ -604,6 +675,7 @@ describe("session-level exercise edits", () => {
 
   beforeEach(() => {
     db = buildDb();
+    db.strengthDiarySession.findFirst.mockResolvedValue(retrospectiveDetail());
     service = makeService(db);
   });
 
@@ -751,6 +823,7 @@ describe("set edits on a completed retrospective session", () => {
 
   beforeEach(() => {
     db = buildDb();
+    db.strengthDiarySession.findFirst.mockResolvedValue(retrospectiveDetail());
     service = makeService(db);
   });
 
@@ -834,6 +907,13 @@ describe("set edits on a completed retrospective session", () => {
   });
 
   it("does not bump the revision while logging a live ACTIVE session", async () => {
+    db.strengthDiarySession.findFirst.mockResolvedValue(retrospectiveDetail({
+      status: SESSION_STATUS.ACTIVE,
+      entryMode: ENTRY_MODE.LIVE,
+      matchedWorkoutId: null,
+      matchedWorkout: null,
+      webStartedAt: workoutStartAt,
+    }));
     db.strengthSessionExercise.findFirst.mockResolvedValue({
       id: 501,
       sessionId: 50,

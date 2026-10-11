@@ -20,13 +20,13 @@ describe("stepper workout CRUD routes", () => {
     await expect(listed.json()).resolves.toEqual({ workouts: [workout], totalCount: 23 });
     expect(stepperWorkoutRepository.list).toHaveBeenCalledWith({ limit: 5, offset: 10 });
 
-    stepperWorkoutRepository.create.mockResolvedValue(workout);
+    stepperWorkoutRepository.create.mockResolvedValue({ ...workout, modelPublicationStatus: "stale" });
     const created = await POST(new Request("http://localhost/api/v1/training/stepper-workouts", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ startAt: "2042-03-15T08:00:00Z", durationMinutes: 20 }),
     }));
     expect(created.status).toBe(201);
-    await expect(created.json()).resolves.toEqual({ workout });
+    await expect(created.json()).resolves.toEqual({ workout: { ...workout, modelPublicationStatus: "stale" } });
     expect(stepperWorkoutRepository.create).toHaveBeenCalledWith({ startAt: "2042-03-15T08:00:00Z", durationMinutes: 20 });
   });
 
@@ -45,7 +45,9 @@ describe("stepper workout CRUD routes", () => {
     }), params("4"));
     expect(readOnly.status).toBe(404);
 
-    stepperWorkoutRepository.delete.mockResolvedValue(true);
-    expect((await DELETE(new Request("http://localhost/api/v1/training/stepper-workouts/4"), params("4"))).status).toBe(204);
+    stepperWorkoutRepository.delete.mockResolvedValue({ deleted: true, modelPublicationStatus: "stale" });
+    const deleted = await DELETE(new Request("http://localhost/api/v1/training/stepper-workouts/4"), params("4"));
+    expect(deleted.status).toBe(204);
+    expect(deleted.headers.get("X-Model-Publication-Status")).toBe("stale");
   });
 });

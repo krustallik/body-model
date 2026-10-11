@@ -21,6 +21,7 @@ import { unknownIntervalDurationDays } from "./unknown-intervals";
 
 import {
   strengthEstimateFreshV1,
+  strengthHeartRateSourceFingerprintV1,
   strengthInputFingerprintV1,
   strengthModelDayFingerprintInputsV1,
   strengthSetFingerprintV1,
@@ -177,15 +178,15 @@ function strengthEstimatorInputs(input: {
     startDate: string;
     latestModeledDate: string | null;
     active: boolean;
-    updatedAt: Date;
   }[];
   modelDays: readonly {
     episodeId: number;
     date: string;
     status: string;
     dynamicRmrKcalPerDay: unknown;
-    updatedAt: Date;
+    modelVersion: string;
   }[];
+  heartRateSamples: readonly { id: number; timestamp: Date; bpm: number; source: string }[];
 }) {
   const stage02Mass = strengthStage02MassSnapshot(input.session);
   const occurrenceAt = input.session.matchedWorkout?.startAt
@@ -204,9 +205,18 @@ function strengthEstimatorInputs(input: {
       status: modelDay.status,
       dynamicRmrKcalPerDay: typeof modelDay.dynamicRmrKcalPerDay === "number"
         ? modelDay.dynamicRmrKcalPerDay : null,
-      updatedAt: modelDay.updatedAt,
+      modelVersion: modelDay.modelVersion,
     }
     : null);
+  const heartRateInterval = input.session.matchedWorkout ?? (
+    input.session.webStartedAt !== null && input.session.webEndedAt !== null
+      ? { startAt: input.session.webStartedAt, endAt: input.session.webEndedAt }
+      : null
+  );
+  const sessionHeartRateSamples = heartRateInterval === null
+    ? []
+    : input.heartRateSamples.filter((sample) => sample.timestamp >= heartRateInterval.startAt
+      && sample.timestamp <= heartRateInterval.endAt);
   return {
     entryMode: input.session.entryMode,
     startAt: input.session.matchedWorkout?.startAt.toISOString() ?? input.session.webStartedAt?.toISOString() ?? null,
@@ -220,9 +230,9 @@ function strengthEstimatorInputs(input: {
     modelEpisodeVersion: episode?.modelVersion ?? null,
     modelEpisodeStartDate: episode?.startDate ?? null,
     modelEpisodeLatestModeledDate: episode?.latestModeledDate ?? null,
-    modelEpisodeUpdatedAt: episode?.updatedAt.toISOString() ?? null,
     modelTimeZone: context.timeZone,
     modelDate,
+    heartRateSourceFingerprint: strengthHeartRateSourceFingerprintV1(sessionHeartRateSamples),
     ...modelDayFingerprintInputs,
   };
 }
@@ -595,7 +605,7 @@ export class ModelEpisodeRepository {
           ],
         },
         orderBy: [{ timestamp: "asc" }, { id: "asc" }],
-        select: { date: true, timestamp: true, bpm: true, source: true },
+        select: { id: true, date: true, timestamp: true, bpm: true, source: true },
       }),
       this.client.strengthDiarySession.findMany({
         where: {
@@ -683,7 +693,6 @@ export class ModelEpisodeRepository {
         startDate: true,
         latestModeledDate: true,
         active: true,
-        updatedAt: true,
       },
       orderBy: { startDate: "asc" },
     }) : [];
@@ -692,7 +701,7 @@ export class ModelEpisodeRepository {
         episodeId: { in: modelEpisodes.map((episode) => episode.id) },
         date: { gte: contextFrom, lte: contextTo },
       },
-      select: { episodeId: true, date: true, status: true, dynamicRmrKcalPerDay: true, updatedAt: true },
+      select: { episodeId: true, date: true, status: true, dynamicRmrKcalPerDay: true, modelVersion: true },
     }) : [];
     const webSessionEnergyAliases = webSessions.length === 0 ? [] : await this.client.activeEnergyEventAlias.findMany({
       where: {
@@ -772,13 +781,14 @@ export class ModelEpisodeRepository {
                 session: { ...session, matchedWorkout: workout },
                 episodes: modelEpisodes,
                 modelDays,
+                heartRateSamples,
               }),
             }),
           strengthSessionCompleted: session?.status === "COMPLETED",
           sourceIdentity: workout.sourceIdentity,
         };
       }),
-      heartRateSamples,
+      heartRateSamples: heartRateSamples.map(({ date, timestamp, bpm, source }) => ({ date, timestamp, bpm, source })),
       webOnlyStrengthSessions: webSessions.flatMap((session) => {
         if (session.webStartedAt === null || session.webEndedAt === null) return [];
         const date = instantToLocalDateTime(session.webStartedAt, timeZone).date;
@@ -812,6 +822,7 @@ export class ModelEpisodeRepository {
               session,
               episodes: modelEpisodes,
               modelDays,
+              heartRateSamples,
             }),
           }),
           inputFingerprint: strengthShadowInputFingerprint(session.experimentalStrengthEnergyShadow?.result)

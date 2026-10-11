@@ -27,7 +27,8 @@ export async function PATCH(
       routeParams.data.setId,
       parsed.data,
     );
-    return Response.json({ set });
+    const { modelPublicationStatus, ...setDto } = set;
+    return Response.json({ set: setDto, ...(modelPublicationStatus === undefined ? {} : { modelPublicationStatus }) });
   } catch (error) {
     return trainingErrorResponse(error) ?? trainingInternalError();
   }
@@ -41,7 +42,10 @@ export async function DELETE(
   if (!routeParams.success) return validationResponse(routeParams.error);
 
   try {
-    await trainingService.deleteSet(routeParams.data.id, routeParams.data.setId);
+    const result = await trainingService.deleteSet(routeParams.data.id, routeParams.data.setId);
+    if (result.modelPublicationStatus !== undefined) {
+      return Response.json({ deleted: true, modelPublicationStatus: result.modelPublicationStatus });
+    }
     return new Response(null, { status: 204 });
   } catch (error) {
     return trainingErrorResponse(error) ?? trainingInternalError();

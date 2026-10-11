@@ -18,6 +18,17 @@ describe("resolveWorkoutFeedObserved", () => {
     })).toBe(false);
   });
 
+  it("assigns a UTC-boundary workout to the synced local calendar day", () => {
+    const workout = {
+      type: "Stair Climbing",
+      startAt: "2026-09-15T23:30:00.000Z",
+      endAt: "2026-09-15T23:50:00.000Z",
+      durationMinutes: 20,
+    };
+    expect(resolveWorkoutFeedObserved({ date: "2026-09-16", workouts: [workout] }, "Europe/Bratislava")).toBe(true);
+    expect(resolveWorkoutFeedObserved({ date: "2026-09-15", workouts: [workout] }, "Europe/Bratislava")).toBe(false);
+  });
+
   it("marks workouts key absent as unavailable", () => {
     expect(resolveWorkoutFeedObserved({ date: "2026-09-16", walkingDistanceKm: 4 })).toBe(false);
   });

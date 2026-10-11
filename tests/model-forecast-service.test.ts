@@ -60,6 +60,7 @@ function forecastClient(overrides: {
     productionPublishedGeneration: 8,
     unifiedPublishedGeneration: 8,
     unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
+    unifiedPublicationBlockedFromDate: null,
     unifiedRolloutEpoch: 1,
     unifiedPublishedRolloutEpoch: 1,
     ...overrides.lifecycle,

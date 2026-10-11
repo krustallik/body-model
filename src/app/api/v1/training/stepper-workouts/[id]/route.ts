@@ -28,8 +28,12 @@ export async function DELETE(_request: Request, { params }: RouteContext<"/api/v
   const id = await parseId(params);
   if (id instanceof Response) return id;
   try {
-    return await stepperWorkoutRepository.delete(id)
-      ? new Response(null, { status: 204 })
+    const result = await stepperWorkoutRepository.delete(id);
+    return result.deleted
+      ? new Response(null, {
+        status: 204,
+        headers: { "X-Model-Publication-Status": result.modelPublicationStatus ?? "not-run" },
+      })
       : Response.json({ error: "not_found_or_read_only" }, { status: 404 });
   } catch {
     return Response.json({ error: "internal_error" }, { status: 500 });

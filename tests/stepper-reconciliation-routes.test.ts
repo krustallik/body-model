@@ -43,7 +43,7 @@ describe("Stepper reconciliation write routes", () => {
     routeMocks.reject.mockResolvedValue(undefined);
     routeMocks.activateVisibility.mockResolvedValue(undefined);
     routeMocks.recordShadow.mockResolvedValue(undefined);
-    routeMocks.publishActiveEnergy.mockResolvedValue(undefined);
+    routeMocks.publishActiveEnergy.mockResolvedValue(true);
   });
 
   it("rejects malformed confirmation input before reconciliation or visibility side effects", async () => {
@@ -64,7 +64,7 @@ describe("Stepper reconciliation write routes", () => {
     const response = await confirm(jsonRequest({ manualWorkoutId: 31, garminWorkoutId: 44 }));
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ ok: true, activated: false });
+    await expect(response.json()).resolves.toEqual({ ok: true, activated: false, modelPublicationStatus: "current" });
     expect(routeMocks.confirm).toHaveBeenCalledExactlyOnceWith(routeMocks.prisma, {
       manualWorkoutId: 31,
       garminWorkoutId: 44,
@@ -77,6 +77,16 @@ describe("Stepper reconciliation write routes", () => {
     expect(routeMocks.publishActiveEnergy).toHaveBeenCalledExactlyOnceWith();
   });
 
+  it("reports a stale model publication after a persisted confirmation", async () => {
+    routeMocks.publishActiveEnergy.mockResolvedValueOnce(false);
+    const response = await confirm(jsonRequest({ manualWorkoutId: 31, garminWorkoutId: 44 }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ok: true, activated: false, modelPublicationStatus: "stale" });
+    expect(routeMocks.confirm).toHaveBeenCalledOnce();
+    expect(routeMocks.publishActiveEnergy).toHaveBeenCalledOnce();
+  });
+
   it("runs explicitly authorized visibility activation once with the selected generation", async () => {
     const response = await confirm(jsonRequest({
       manualWorkoutId: 31,
@@ -86,7 +96,7 @@ describe("Stepper reconciliation write routes", () => {
     }));
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ ok: true, activated: true });
+    await expect(response.json()).resolves.toEqual({ ok: true, activated: true, modelPublicationStatus: "current" });
     expect(routeMocks.confirm).toHaveBeenCalledExactlyOnceWith(routeMocks.prisma, {
       manualWorkoutId: 31,
       garminWorkoutId: 44,
@@ -162,7 +172,7 @@ describe("Stepper reconciliation write routes", () => {
     const response = await reject(jsonRequest({ groupId: 70 }));
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ ok: true });
+    await expect(response.json()).resolves.toEqual({ ok: true, modelPublicationStatus: "current" });
     expect(routeMocks.prisma.stepperReconciliationCandidate.findMany).toHaveBeenCalledExactlyOnceWith({
       where: { groupId: 70 },
       select: { manualWorkoutId: true, garminWorkoutId: true },
@@ -174,6 +184,21 @@ describe("Stepper reconciliation write routes", () => {
       profileId: 1,
     });
     expect(routeMocks.publishActiveEnergy).toHaveBeenCalledExactlyOnceWith();
+  });
+
+  it("reports stale publication after a persisted reconciliation rejection", async () => {
+    routeMocks.prisma.stepperReconciliationCandidate.findMany.mockResolvedValue([
+      { manualWorkoutId: 31, garminWorkoutId: 44 },
+    ]);
+    routeMocks.publishActiveEnergy.mockResolvedValueOnce(false);
+
+    const response = await reject(jsonRequest({ groupId: 70 }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ok: true, modelPublicationStatus: "stale" });
+    expect(routeMocks.reject).toHaveBeenCalledExactlyOnceWith(routeMocks.prisma, { groupId: 70 });
+    expect(routeMocks.recordShadow).toHaveBeenCalledOnce();
+    expect(routeMocks.publishActiveEnergy).toHaveBeenCalledOnce();
   });
 
   it("does not emit shadow or publication side effects when group rejection fails", async () => {

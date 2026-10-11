@@ -31,7 +31,11 @@ export async function DELETE(
 
   try {
     const result = await trainingService.deleteDiarySession(parsed.data.id);
-    return Response.json({ deleted: true, matchedWorkoutId: result.matchedWorkoutId });
+    return Response.json({
+      deleted: true,
+      matchedWorkoutId: result.matchedWorkoutId,
+      ...(result.modelPublicationStatus === undefined ? {} : { modelPublicationStatus: result.modelPublicationStatus }),
+    });
   } catch (error) {
     return trainingErrorResponse(error) ?? trainingInternalError();
   }

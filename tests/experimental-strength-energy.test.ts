@@ -5,6 +5,8 @@ import {
 } from "@/modules/training/experimental-strength-active-energy-v1";
 import { ENTRY_MODE, RESISTANCE, SESSION_STATUS } from "@/modules/training/training.constants";
 import type { StrengthSessionDto } from "@/modules/training/training.types";
+import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
+import { historicalBodyweightSourceChangeMayAffectSessionV1 } from "@/modules/training/experimental-strength-energy-shadow.service";
 
 const session = {
   id: 1, status: SESSION_STATUS.COMPLETED, entryMode: ENTRY_MODE.LIVE, revision: 1,
@@ -40,5 +42,30 @@ describe("experimental strength energy shadow compatibility", () => {
       session,
       bodyMassKg: null,
     }).estimatedActiveKcal).toBeNull();
+  });
+
+  it("covers historical as-of bodyweight dependencies through the 366-day episode boundary", () => {
+    const episodeStartDate = "2041-03-20";
+    const weightDate = episodeStartDate;
+    expect(historicalBodyweightSourceChangeMayAffectSessionV1({
+      weightDate,
+      sessionLocalDate: addCalendarDays(weightDate, 8),
+      episodeStartDate,
+    })).toBe(true);
+    expect(historicalBodyweightSourceChangeMayAffectSessionV1({
+      weightDate,
+      sessionLocalDate: addCalendarDays(episodeStartDate, 365),
+      episodeStartDate,
+    })).toBe(true);
+    expect(historicalBodyweightSourceChangeMayAffectSessionV1({
+      weightDate,
+      sessionLocalDate: addCalendarDays(episodeStartDate, 366),
+      episodeStartDate,
+    })).toBe(false);
+    expect(historicalBodyweightSourceChangeMayAffectSessionV1({
+      weightDate: addCalendarDays(episodeStartDate, 9),
+      sessionLocalDate: addCalendarDays(episodeStartDate, 8),
+      episodeStartDate,
+    })).toBe(false);
   });
 });

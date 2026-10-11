@@ -220,7 +220,8 @@ export async function verifyPublishedV4Current(client: PrismaClient, profileId: 
         || lifecycle.unifiedPublishedRolloutEpoch !== rolloutEpoch
         || lifecycle.productionStaleFromDate !== null
         || lifecycle.productionPublishedGeneration !== lifecycle.invalidationGeneration
-        || lifecycle.unifiedPublishedGeneration !== lifecycle.invalidationGeneration) {
+        || lifecycle.unifiedPublishedGeneration !== lifecycle.invalidationGeneration
+        || lifecycle.unifiedPublicationBlockedFromDate !== null) {
       throw new PhysiologyV7ConcurrentSourceChangeError();
     }
     const finalRange = await expectedRange(tx, profileId);
@@ -244,7 +245,8 @@ export async function verifyUnifiedV4ReadyForTraffic(input: {
       || lifecycle.unifiedPublishedRolloutEpoch !== lifecycle.unifiedRolloutEpoch
       || lifecycle.unifiedPublishedGeneration !== lifecycle.invalidationGeneration
       || lifecycle.productionPublishedGeneration !== lifecycle.invalidationGeneration
-      || lifecycle.productionStaleFromDate !== null) {
+      || lifecycle.productionStaleFromDate !== null
+      || lifecycle.unifiedPublicationBlockedFromDate !== null) {
     throw new Error("Forecast V2 serving is blocked until Unified V4 is current");
   }
   const dayCount = await verifyPublishedV4Current(client, profileId, lifecycle.unifiedRolloutEpoch);
@@ -259,6 +261,7 @@ function sameLifecycle(left: {
   unifiedTargetRevision: string;
   unifiedRolloutEpoch: number;
   unifiedPublishedRolloutEpoch: number | null;
+  unifiedPublicationBlockedFromDate: string | null;
   updatedAt: Date;
 }, right: typeof left): boolean {
   return left.invalidationGeneration === right.invalidationGeneration
@@ -268,6 +271,7 @@ function sameLifecycle(left: {
     && left.unifiedTargetRevision === right.unifiedTargetRevision
     && left.unifiedRolloutEpoch === right.unifiedRolloutEpoch
     && left.unifiedPublishedRolloutEpoch === right.unifiedPublishedRolloutEpoch
+    && left.unifiedPublicationBlockedFromDate === right.unifiedPublicationBlockedFromDate
     && left.updatedAt.toISOString() === right.updatedAt.toISOString();
 }
 
@@ -281,7 +285,8 @@ export async function verifyAndPublishUnifiedV3Postflight(input: {
   if (!lifecycle || lifecycle.unifiedTargetRevision !== UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION
       || lifecycle.unifiedRolloutEpoch !== 0 || lifecycle.productionStaleFromDate !== null
       || lifecycle.productionPublishedGeneration !== lifecycle.invalidationGeneration
-      || lifecycle.unifiedPublishedGeneration !== lifecycle.invalidationGeneration) {
+      || lifecycle.unifiedPublishedGeneration !== lifecycle.invalidationGeneration
+      || lifecycle.unifiedPublicationBlockedFromDate !== null) {
     throw new Error("V3 postflight lifecycle/generation is not current");
   }
   const range = await expectedRange(client, profileId);
@@ -305,6 +310,7 @@ export async function verifyAndPublishUnifiedV3Postflight(input: {
         productionPublishedGeneration: current.invalidationGeneration,
         productionStaleFromDate: null,
         unifiedPublishedGeneration: current.invalidationGeneration,
+        unifiedPublicationBlockedFromDate: null,
         unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
         unifiedRolloutEpoch: 0,
       },
@@ -325,7 +331,8 @@ export async function activateAndReplayUnifiedV4(input: {
     await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
     const lifecycle = await tx.physiologyV7Lifecycle.findUnique({ where: { profileId } });
     if (!lifecycle || lifecycle.productionStaleFromDate !== null
-        || lifecycle.productionPublishedGeneration !== lifecycle.invalidationGeneration) {
+        || lifecycle.productionPublishedGeneration !== lifecycle.invalidationGeneration
+        || lifecycle.unifiedPublicationBlockedFromDate !== null) {
       throw new Error("V4 activation requires current production state");
     }
     if (lifecycle.unifiedTargetRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION
@@ -346,6 +353,7 @@ export async function activateAndReplayUnifiedV4(input: {
           unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
           unifiedRolloutEpoch: 0,
           unifiedPublishedRolloutEpoch: 0,
+          unifiedPublicationBlockedFromDate: null,
         },
         data: {
           unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,

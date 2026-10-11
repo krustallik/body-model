@@ -103,6 +103,7 @@ function lifecycle(overrides: Record<string, unknown> = {}) {
     productionStaleFromDate: null,
     unifiedPublishedGeneration: 4,
     unifiedTargetRevision: V4,
+    unifiedPublicationBlockedFromDate: null,
     unifiedRolloutEpoch: 2,
     unifiedPublishedRolloutEpoch: 2,
     updatedAt: new Date("2026-01-03T00:00:00.000Z"),

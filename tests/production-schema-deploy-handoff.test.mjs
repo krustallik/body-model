@@ -112,6 +112,10 @@ describe("schema deploy compatibility handoff", () => {
         migrationOriginBlob: "65a51f97bf404d9353b45b1fc33725cb7a582daa",
         deployBlob: "001b5a5de48a17db06ab7e61731b184a3c82dc83",
       },
+      "scripts/deploy.sh": {
+        migrationOriginBlob: "14e4caa5645ce8b95c16ecc03b3937bd0e60a1e3",
+        deployBlob: "4844bdc0b586f29dbc3b60952717e249a04bbbbc",
+      },
     });
     expect(compatibility.changedPathObjects["scripts/github-forward-resume-evidence.mjs"].migrationOriginBlob)
       .not.toBe(compatibility.changedPathObjects["scripts/github-forward-resume-evidence.mjs"].deployBlob);

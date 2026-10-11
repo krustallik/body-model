@@ -15,6 +15,7 @@ import {
 import { buildCanonicalStrengthTrainingInputV7 } from "@/modules/model-episodes/strength-training-input-v7";
 import {
   buildTransientEpisodePartitionsV2,
+  TRANSIENT_EPISODE_PARTITION_V2_CONTRACT,
   transientEpisodeTimeForInstantV2,
   type TransientEpisodePartitionV2,
   type TransientEpisodeTimeRowV2,
@@ -90,7 +91,7 @@ async function readSourceSnapshot(db: DbClient, profileId: number): Promise<Sour
       profileId,
       revision: EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V2_REVISION,
       replayRevision: EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V2_REPLAY_REVISION,
-      partitionContract: "instant-half-open-episode-local-midnight-v2-highest-id-equal-start-wins",
+      partitionContract: TRANSIENT_EPISODE_PARTITION_V2_CONTRACT,
       episodes: episodes.map((episode) => ({
         id: episode.id,
         profileId: episode.profileId,
@@ -139,6 +140,7 @@ function candidateImpulses(snapshot: SourceSnapshot): TransientExerciseWaterImpu
     const doseCount = doseAvailable ? dose.qualifiedHardSetCount : 0;
     const dependencyFingerprint = exposure.dependencyFingerprint;
     const sourceFingerprint = transientExerciseWaterV2Fingerprint({
+      episodePartitionContract: TRANSIENT_EPISODE_PARTITION_V2_CONTRACT,
       sessionSource: source.sourceDependencyFingerprint,
       canonicalEventInstant: source.canonicalEventInstant.toISOString(),
       episode: {

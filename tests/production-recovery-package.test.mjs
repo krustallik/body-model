@@ -3,11 +3,13 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { buildAuthorityPackage } from "../scripts/production-recovery/build-authority-package.mjs";
+import { fileURLToPath } from "node:url";
 import { canonicalJson, sha256Hex } from "../scripts/production-recovery/canonical.mjs";
 import { installVerifiedAuthorityClient } from "../scripts/production-recovery/install-provenance.mjs";
 
 const roots = [];
+const repoRoot = fileURLToPath(new URL("../", import.meta.url));
+const packageBuilderPath = fileURLToPath(new URL("../scripts/production-recovery/build-authority-package.mjs", import.meta.url));
 async function tempRoot() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "bodycast-recovery-package-"));
   roots.push(root);
@@ -30,16 +32,23 @@ describe("immutable recovery authority package and public client artifacts", () 
     await fs.writeFile(adapterPath, adapterSource);
     await fs.writeFile(policyPath, canonicalJson(policy));
 
-    const result = await buildAuthorityPackage({ outputPath, adapterEntry: adapterPath, installationPolicyPath: policyPath });
-    expect(result).toEqual({ authority: outputPath, client: outputPath + ".client.mjs" });
-    const authority = await fs.readFile(result.authority, "utf8");
-    const client = await fs.readFile(result.client, "utf8");
+    const output = execFileSync(process.execPath, [
+      packageBuilderPath,
+      "--out", outputPath,
+      "--adapter", adapterPath,
+      "--installation-policy", policyPath,
+    ], { cwd: repoRoot, encoding: "utf8", stdio: "pipe" });
+    const [authorityPath, clientPath] = output.trim().split(/\r?\n/);
+    expect(authorityPath).toBe(outputPath);
+    expect(clientPath).toBe(outputPath + ".client.mjs");
+    const authority = await fs.readFile(authorityPath, "utf8");
+    const client = await fs.readFile(clientPath, "utf8");
     expect(authority).toContain("adapterFixture");
     expect(authority).toContain("--serve");
     expect(client).toContain("runProductionOperationClient");
     expect(client).not.toContain("adapterFixture");
-    execFileSync(process.execPath, ["--check", result.authority], { stdio: "pipe" });
-    execFileSync(process.execPath, ["--check", result.client], { stdio: "pipe" });
+    execFileSync(process.execPath, ["--check", authorityPath], { stdio: "pipe" });
+    execFileSync(process.execPath, ["--check", clientPath], { stdio: "pipe" });
   });
 
   it("installs only a bounded non-privileged client into a separate root-owned public directory", async () => {

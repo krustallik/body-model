@@ -19,7 +19,7 @@ describe("maintenance-first candidate startup and identity failures", () => {
     expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).not.toContain("reverse_proxy");
     expect(readFileSync(path.join(fixture.repo, ".git", "bodycast-production-schema-cutover"), "utf8"))
       .toContain("state=ddl-started");
-    expect(readFileSync(path.join(fixture.root, "image-rollback"), "utf8").trim()).toBe(PREVIOUS_IMAGE_ID);
+    expect(readFileSync(path.join(fixture.root, "image-deploy-rollback"), "utf8").trim()).toBe(PREVIOUS_IMAGE_ID);
     expect(result.stderr).toContain("operator recovery");
   }, 30_000);
 

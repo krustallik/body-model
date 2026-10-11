@@ -46,6 +46,10 @@ describe("fallback production traffic cutover freshness and recovery", () => {
     const failedDeploy = runFixture(fixture, "bash scripts/deploy.sh", {
       DEPLOY_SHA: fixture.candidateSha,
       FAIL_MAINTENANCE_RELOAD: "1",
+      // Force the same-SHA no-op's public health check to fail so this test
+      // exercises the subsequent maintenance-publication failure path.
+      FAIL_CANDIDATE_PUBLIC_PROBE: "1",
+      CURL_REDIRECT: "1",
     });
 
     expect(failedDeploy.status).not.toBe(0);

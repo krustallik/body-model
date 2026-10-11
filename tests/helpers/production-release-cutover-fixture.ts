@@ -373,6 +373,12 @@ if [[ "$1" == "inspect" ]]; then
     event "docker-app-inspect-failed:$format"
     exit 58
   fi
+  if [[ "$target" == "bodycast-app-prod" && "$format" == *"{{.Id}}|{{.Image}}|"* ]]; then
+    printf '%s|%s|%s|running|%s\n' \
+      "$(cat "$APP_CONTAINER_ID_FILE")" "$(cat "$APP_IMAGE_ID_FILE")" \
+      "$(cat "$APP_SHA_FILE")" "$(cat "$APP_STATUS_FILE")"
+    exit 0
+  fi
   if [[ "$target" == "bodycast-app-prod" && "$format" == *".Id"* ]]; then
     event "capture-app-container-id"
     cat "$APP_CONTAINER_ID_FILE"
@@ -460,6 +466,8 @@ if [[ "$1" == "exec" && ( "$2" == "gymbeam-caddy" || ( "$2" == "-i" && "$3" == "
       event "staged-route-validated"
       if [[ "$staged_route" == *"reverse_proxy"* && -n "$staged_path" ]]; then
         printf '%s\n' "$staged_path" >> "$CANDIDATE_STAGE_PATH_LOG"
+      elif [[ "$staged_route" != *"reverse_proxy"* ]]; then
+        event "maintenance-route-validation"
       fi
       if [[ "$staged_route" == *"reverse_proxy"* ]]; then advance_main validate; fi
     fi
@@ -567,6 +575,14 @@ if [[ "$1" == "fetch" && "$*" == *"refs/heads/main:refs/remotes/origin/main"* \
   printf '%s\n' main-advanced >> "$EVENT_LOG"
 fi
 if [[ "$1" == "fetch" && "$*" == *"refs/heads/main:refs/remotes/origin/main"* ]]; then
+  fetch_count="$(cat "$MAIN_FETCH_COUNT_FILE" 2>/dev/null || printf '0')"
+  fetch_count=$((fetch_count + 1))
+  printf '%s\n' "$fetch_count" > "$MAIN_FETCH_COUNT_FILE"
+  if [[ "\${ADVANCE_ON_MAIN_FETCH_NUMBER:-0}" == "$fetch_count" && ! -e "$ADVANCE_MARKER" ]]; then
+    "$REAL_GIT" -C "$FIXTURE_REPO" push --quiet origin "\${ADVANCE_SHA}:refs/heads/main"
+    : > "$ADVANCE_MARKER"
+    printf '%s\n' main-advanced >> "$EVENT_LOG"
+  fi
   if [[ "\${FAIL_CANONICAL_FETCH_AFTER_V3:-0}" == "1" && -e "$MAIN_FETCH_FAILURE_MARKER" ]]; then
     printf '%s\n' canonical-main-fetch-failed >> "$EVENT_LOG"
     exit 88
@@ -736,6 +752,7 @@ printf '%s\n' health-wait-sleep >> "$EVENT_LOG"
     MAIN_FETCH_FAILURE_MARKER: path.join(root, "fail-main-fetch-after-v3"),
     FAIL_CANDIDATE_MARKER: path.join(root, "fail-candidate-once"),
     LOCK_COUNT_FILE: path.join(root, "lock-count"),
+    MAIN_FETCH_COUNT_FILE: path.join(root, "main-fetch-count"),
   };
   writeFileSync(paths.APP_SHA_FILE, `${PREVIOUS_SHA}\n`);
   writeFileSync(paths.APP_IMAGE_ID_FILE, `${PREVIOUS_IMAGE_ID}\n`);
@@ -910,4 +927,5 @@ afterEach(async () => {
   for (const root of temporaryRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-export const bashAvailable = findBash() !== null;
+export const bashExecutable = findBash();
+export const bashAvailable = bashExecutable !== null;

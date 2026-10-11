@@ -1,5 +1,5 @@
-name: Manual production app deploy
-run-name: Non-serving deploy ${{ inputs.commit_sha }}
+name: Production app deploy
+run-name: Deploy ${{ github.event.workflow_run.head_sha || inputs.commit_sha }}
 
 on:
   workflow_dispatch:
@@ -13,10 +13,17 @@ on:
         required: true
         type: string
       non_serving_deploy:
-        description: Required for the incompatible-schema release; keep traffic in maintenance
+        description: Manual deploy is only for the owner-authorized schema cutover; keep traffic in maintenance
         required: true
         default: true
         type: boolean
+  workflow_run:
+    workflows:
+      - BodyCast CI/CD
+    types:
+      - completed
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -28,7 +35,7 @@ concurrency:
 
 jobs:
   authorize:
-    name: Authorize owner-requested exact-SHA deploy
+    name: Authorize exact current-main app deploy
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -36,6 +43,7 @@ jobs:
       candidate_sha: ${{ steps.gate.outputs.candidate_sha }}
       reason: ${{ steps.gate.outputs.reason }}
       ci_run_url: ${{ steps.gate.outputs.ci_run_url }}
+      deploy_mode: ${{ steps.gate.outputs.deploy_mode }}
     steps:
       - name: Checkout main gate helpers
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -44,32 +52,39 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Verify immutable owner identity and exact current-main SHA
+      - name: Verify triggering CI or owner dispatch and current main
         id: gate
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           REF: ${{ github.ref }}
           RUN_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
           DISPATCH_SHA: ${{ inputs.commit_sha }}
           DISPATCH_ACTOR_ID: ${{ github.actor_id }}
           CONFIRMATION: ${{ inputs.confirm_production_deploy }}
           NON_SERVING: ${{ inputs.non_serving_deploy }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_EVENT_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
         run: |
           set -Eeuo pipefail
           [[ "$REPOSITORY" == "krustallik/body-model" && "$REF" == "refs/heads/main" ]] || {
-            echo "::error::Production deploy must be dispatched from the canonical main branch."; exit 1;
-          }
-          [[ "$DISPATCH_ACTOR_ID" == "126446430" ]] || { echo "::error::Only the pinned BodyCast owner may deploy."; exit 1; }
-          [[ "$CONFIRMATION" == "deploy" && "$NON_SERVING" == "true" ]] || {
-            echo "::error::Exact deploy confirmation and non-serving mode are required."; exit 1;
+            echo "::error::Production deploy must run from the canonical repository and main branch."; exit 1;
           }
           gh api "repos/krustallik/body-model/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/current-deploy-run.json"
-          node --input-type=module - "$RUNNER_TEMP/current-deploy-run.json" <<'NODE'
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          MAIN_TIP="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
+          [[ "$MAIN_TIP" == "$(git rev-parse refs/remotes/origin/main)" ]] || { echo "::error::GitHub and fetched canonical main tips disagree."; exit 1; }
+          CI_RUN_URL=""
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            [[ "$DISPATCH_ACTOR_ID" == "126446430" ]] || { echo "::error::Only the pinned BodyCast owner may use manual deploy."; exit 1; }
+            [[ "$CONFIRMATION" == "deploy" && "$NON_SERVING" == "true" ]] || {
+              echo "::error::Manual deploy requires confirmation and non-serving mode."; exit 1;
+            }
+            node --input-type=module - "$RUNNER_TEMP/current-deploy-run.json" <<'NODE'
           import { readFileSync } from "node:fs";
           import { assertTrustedOwnerWorkflowRun } from "./scripts/github-owner-identity.mjs";
-          const run = JSON.parse(readFileSync(process.argv[2], "utf8"));
-          assertTrustedOwnerWorkflowRun(run, {
+          assertTrustedOwnerWorkflowRun(JSON.parse(readFileSync(process.argv[2], "utf8")), {
             actorId: process.env.DISPATCH_ACTOR_ID,
             workflowPath: ".github/workflows/deploy-production.yml",
             workflowRunId: process.env.GITHUB_RUN_ID,
@@ -79,48 +94,100 @@ jobs:
             requireInProgress: true,
           });
           NODE
-          [[ "$DISPATCH_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::commit_sha must be a full lowercase SHA."; exit 1; }
-          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-          MAIN_TIP="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
-          [[ "$MAIN_TIP" == "$(git rev-parse refs/remotes/origin/main)" && "$MAIN_TIP" == "$RUN_SHA" ]] || {
-            echo "::error::Workflow checkout is not the current canonical main tip."; exit 1;
+            CANDIDATE="$DISPATCH_SHA"
+            MODE="non-serving"
+            [[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ && "$CANDIDATE" == "$MAIN_TIP" && "$RUN_SHA" == "$MAIN_TIP" ]] || {
+              echo "::error::Manual deploy candidate, workflow checkout, and canonical main must be the same exact SHA."; exit 1;
+            }
+            gh api --paginate --jq '.workflow_runs[] | @json' \
+              "repos/krustallik/body-model/actions/workflows/ci.yml/runs?branch=main&event=push&per_page=100" > "$RUNNER_TEMP/ci-runs.jsonl"
+            CI_RUN_URL="$(CANDIDATE="$CANDIDATE" node --input-type=module - "$RUNNER_TEMP/ci-runs.jsonl" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const candidate = process.env.CANDIDATE;
+          const runs = readFileSync(process.argv[2], "utf8").split(/\r?\n/).filter(Boolean).map(JSON.parse)
+            .filter((run) => run.head_sha === candidate && run.head_branch === "main" && run.event === "push"
+              && run.path?.split("@")[0] === ".github/workflows/ci.yml");
+          runs.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.run_attempt - a.run_attempt);
+          const latest = runs[0];
+          if (!latest || latest.status !== "completed" || latest.conclusion !== "success") {
+            throw new Error("Latest BodyCast CI/CD run for the exact current main SHA is not successful.");
           }
-          REPO="$REPOSITORY" EVENT_NAME="$GITHUB_EVENT_NAME" MAIN_TIP="$MAIN_TIP" CANDIDATE="$DISPATCH_SHA" \
-            CONFIRMATION="$CONFIRMATION" NON_SERVING="$NON_SERVING" node --experimental-strip-types --input-type=module <<'NODE'
-          import { appendFileSync } from "node:fs";
+          process.stdout.write(latest.html_url);
+          NODE
+            )"
+            [[ -n "$CI_RUN_URL" ]] || { echo "::error::Exact current main SHA has no successful BodyCast CI/CD push run."; exit 1; }
+          elif [[ "$EVENT_NAME" == "workflow_run" ]]; then
+            [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Completed CI run ID is missing or invalid."; exit 1; }
+            gh api "repos/krustallik/body-model/actions/runs/$SOURCE_RUN_ID" > "$RUNNER_TEMP/source-ci-run.json"
+            gh api repos/krustallik/body-model/actions/workflows/ci.yml > "$RUNNER_TEMP/ci-workflow.json"
+            SOURCE_RUN_JSON="$RUNNER_TEMP/source-ci-run.json" CI_WORKFLOW_JSON="$RUNNER_TEMP/ci-workflow.json" \
+              CURRENT_RUN_JSON="$RUNNER_TEMP/current-deploy-run.json" REPO="$REPOSITORY" MAIN_TIP="$MAIN_TIP" \
+              EVENT_RUN_ID="$SOURCE_RUN_ID" EVENT_RUN_ATTEMPT="$SOURCE_EVENT_ATTEMPT" RUN_SHA="$RUN_SHA" \
+              CURRENT_RUN_ID="$GITHUB_RUN_ID" CURRENT_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+              node --experimental-strip-types --input-type=module <<'NODE'
+          import { readFileSync, appendFileSync } from "node:fs";
           import { evaluateProductionDeployGate } from "./scripts/ci/production-deploy-gate.ts";
+          const read = (name) => JSON.parse(readFileSync(process.env[name], "utf8"));
+          const source = read("SOURCE_RUN_JSON");
+          const current = read("CURRENT_RUN_JSON");
+          const ciWorkflow = read("CI_WORKFLOW_JSON");
+          if (ciWorkflow.path !== ".github/workflows/ci.yml") throw new Error("Canonical CI workflow path changed.");
           const result = evaluateProductionDeployGate({
             eventName: process.env.EVENT_NAME,
             repositoryFullName: process.env.REPO,
             mainTipSha: process.env.MAIN_TIP,
-            candidateSha: process.env.CANDIDATE,
-            dispatchConfirm: process.env.CONFIRMATION,
-            nonServingDeploy: process.env.NON_SERVING === "true",
+            candidateSha: "",
+            currentWorkflowRun: current,
+            currentWorkflowRunId: process.env.CURRENT_RUN_ID,
+            currentWorkflowRunAttempt: process.env.CURRENT_RUN_ATTEMPT,
+            currentWorkflowRunSha: process.env.RUN_SHA,
+            workflowRunEventId: process.env.EVENT_RUN_ID,
+            workflowRunEventAttempt: process.env.EVENT_RUN_ATTEMPT || null,
+            sourceWorkflowRun: source,
+            expectedCiWorkflowId: ciWorkflow.id,
           });
+          if (result.decision === "block") throw new Error(result.reason);
           appendFileSync(process.env.GITHUB_OUTPUT, `decision=${result.decision}\ncandidate_sha=${result.candidateSha ?? ""}\nreason=${result.reason}\n`);
           console.log(JSON.stringify(result, null, 2));
-          if (result.decision !== "deploy") process.exitCode = 1;
           NODE
-          CI_RUNS="$(gh api --paginate --jq '.workflow_runs[] | @json' \
-            "repos/krustallik/body-model/actions/workflows/ci.yml/runs?branch=main&event=push&per_page=100")"
-          CI_RUN_URL="$(printf '%s\n' "$CI_RUNS" | EXPECTED_SHA="$DISPATCH_SHA" node --input-type=module -e '
-          import { readFileSync } from "node:fs";
-          const sha = process.env.EXPECTED_SHA;
-          const runs = readFileSync(0, "utf8").trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
-          const matches = runs.filter((run) => run.head_sha === sha && run.head_branch === "main" && run.event === "push");
-          matches.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || Number(b.run_attempt) - Number(a.run_attempt));
-          const run = matches[0];
-          if (!run || run.status !== "completed" || run.conclusion !== "success") throw new Error("Exact current main SHA has no completed successful BodyCast CI/CD run.");
-          console.log(run.html_url);
-          ')"
+            CANDIDATE="$(node -e 'const run=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); process.stdout.write(run.head_sha)' "$RUNNER_TEMP/source-ci-run.json")"
+            CI_RUN_URL="$(node -e 'const run=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); process.stdout.write(run.html_url)' "$RUNNER_TEMP/source-ci-run.json")"
+            MODE="serving"
+          else
+            echo "::error::Unsupported production deploy trigger."; exit 1
+          fi
+          [[ "$RUN_SHA" == "$MAIN_TIP" ]] || { echo "::error::Deploy workflow source is not current main."; exit 1; }
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            REPO="$REPOSITORY" EVENT_NAME="$EVENT_NAME" MAIN_TIP="$MAIN_TIP" CANDIDATE="$CANDIDATE" \
+              CONFIRMATION="$CONFIRMATION" NON_SERVING="$NON_SERVING" node --experimental-strip-types --input-type=module <<'NODE'
+          import { appendFileSync } from "node:fs";
+          import { evaluateProductionDeployGate } from "./scripts/ci/production-deploy-gate.ts";
+          const result = evaluateProductionDeployGate({ eventName: process.env.EVENT_NAME, repositoryFullName: process.env.REPO,
+            mainTipSha: process.env.MAIN_TIP, candidateSha: process.env.CANDIDATE,
+            dispatchConfirm: process.env.CONFIRMATION, nonServingDeploy: process.env.NON_SERVING === "true" });
+          if (result.decision !== "deploy" || result.mode !== "non-serving") throw new Error(result.reason);
+          appendFileSync(process.env.GITHUB_OUTPUT, `decision=deploy\ncandidate_sha=${result.candidateSha}\nreason=${result.reason}\n`);
+          console.log(JSON.stringify(result, null, 2));
+          NODE
+          fi
+          DECISION="$(grep '^decision=' "$GITHUB_OUTPUT" | tail -n 1 | cut -d= -f2-)"
+          if [[ "$DECISION" == "skip" ]]; then
+            echo "A newer main SHA superseded this completed CI run; no production job will start." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "deploy_mode=$MODE" >> "$GITHUB_OUTPUT"
           echo "ci_run_url=$CI_RUN_URL" >> "$GITHUB_OUTPUT"
-          echo "## Owner-authorized non-serving production deploy" >> "$GITHUB_STEP_SUMMARY"
-          echo "- exact SHA: \`$DISPATCH_SHA\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Production app deploy authorization" >> "$GITHUB_STEP_SUMMARY"
+          echo "- exact SHA: `$CANDIDATE`" >> "$GITHUB_STEP_SUMMARY"
           echo "- current-main CI: $CI_RUN_URL" >> "$GITHUB_STEP_SUMMARY"
-          echo "- traffic: remains in maintenance until separate V3/V4 gates pass" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$MODE" == "serving" ]]; then
+            echo "- mode: automatic ordinary migration-free deploy after successful current-main CI" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- mode: owner-authorized non-serving schema-cutover deploy; traffic remains in maintenance" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   deploy:
-    name: Deploy exact SHA in maintenance
+    name: Deploy exact current-main SHA
     needs: authorize
     if: needs.authorize.outputs.decision == 'deploy'
     runs-on: ubuntu-latest
@@ -138,10 +205,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CANDIDATE: ${{ needs.authorize.outputs.candidate_sha }}
           DISPATCH_ACTOR_ID: ${{ github.actor_id }}
+          EVENT_NAME: ${{ github.event_name }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_EVENT_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
         run: |
           set -Eeuo pipefail
           gh api "repos/krustallik/body-model/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/current-deploy-run.json"
-          node --input-type=module - "$RUNNER_TEMP/current-deploy-run.json" <<'NODE'
+          TIP="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
+          [[ "$TIP" == "$CANDIDATE" ]] || { echo "::error::Canonical main advanced before production credentials."; exit 1; }
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            node --input-type=module - "$RUNNER_TEMP/current-deploy-run.json" <<'NODE'
           import { readFileSync } from "node:fs";
           import { assertTrustedOwnerWorkflowRun } from "./scripts/github-owner-identity.mjs";
           assertTrustedOwnerWorkflowRun(JSON.parse(readFileSync(process.argv[2], "utf8")), {
@@ -154,8 +227,41 @@ jobs:
             requireInProgress: true,
           });
           NODE
-          TIP="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
-          [[ "$TIP" == "$CANDIDATE" ]] || { echo "::error::Canonical main advanced before SSH deployment."; exit 1; }
+          else
+            [[ "$EVENT_NAME" == "workflow_run" && "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Unsupported production deploy trigger."; exit 1; }
+            gh api "repos/krustallik/body-model/actions/runs/$SOURCE_RUN_ID" > "$RUNNER_TEMP/source-ci-run.json"
+            gh api repos/krustallik/body-model/actions/workflows/ci.yml > "$RUNNER_TEMP/ci-workflow.json"
+            SOURCE_RUN_JSON="$RUNNER_TEMP/source-ci-run.json" CI_WORKFLOW_JSON="$RUNNER_TEMP/ci-workflow.json" \
+              CURRENT_RUN_JSON="$RUNNER_TEMP/current-deploy-run.json" CANDIDATE="$CANDIDATE" \
+              EVENT_RUN_ID="$SOURCE_RUN_ID" EVENT_RUN_ATTEMPT="$SOURCE_EVENT_ATTEMPT" \
+              CURRENT_RUN_ID="$GITHUB_RUN_ID" CURRENT_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+              node --experimental-strip-types --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { evaluateProductionDeployGate } from "./scripts/ci/production-deploy-gate.ts";
+          const read = (name) => JSON.parse(readFileSync(process.env[name], "utf8"));
+          const source = read("SOURCE_RUN_JSON");
+          const current = read("CURRENT_RUN_JSON");
+          const workflow = read("CI_WORKFLOW_JSON");
+          if (workflow.path !== ".github/workflows/ci.yml") throw new Error("Canonical CI workflow path changed.");
+          const result = evaluateProductionDeployGate({
+            eventName: "workflow_run",
+            repositoryFullName: "krustallik/body-model",
+            mainTipSha: process.env.CANDIDATE,
+            candidateSha: "",
+            currentWorkflowRun: current,
+            currentWorkflowRunId: process.env.CURRENT_RUN_ID,
+            currentWorkflowRunAttempt: process.env.CURRENT_RUN_ATTEMPT,
+            currentWorkflowRunSha: process.env.CANDIDATE,
+            workflowRunEventId: process.env.EVENT_RUN_ID,
+            workflowRunEventAttempt: process.env.EVENT_RUN_ATTEMPT || null,
+            sourceWorkflowRun: source,
+            expectedCiWorkflowId: workflow.id,
+          });
+          if (result.decision !== "deploy" || result.mode !== "serving" || result.candidateSha !== process.env.CANDIDATE) {
+            throw new Error(result.reason);
+          }
+          NODE
+          fi
 
       - name: Validate SSH inputs and pin the production host
         env:
@@ -194,6 +300,7 @@ jobs:
           APP_HOST: ${{ secrets.APP_HOST }}
           CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
           DEPLOY_SHA: ${{ needs.authorize.outputs.candidate_sha }}
+          DEPLOY_MODE: ${{ needs.authorize.outputs.deploy_mode }}
         run: |
           set -Eeuo pipefail
           TIP="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
@@ -201,13 +308,16 @@ jobs:
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
           APP_HOST_B64="$(printf '%s' "$APP_HOST" | base64 -w0)"
           ROUTES_PATH_B64="$(printf '%s' "$CADDY_ROUTES_PATH" | base64 -w0)"
+          [[ "$DEPLOY_MODE" == "serving" || "$DEPLOY_MODE" == "non-serving" ]] || { echo "::error::Invalid authorized deploy mode."; exit 1; }
           REMOTE_SCRIPT="$(cat <<'REMOTE'
           set -Eeuo pipefail
           DEPLOY_SHA="$1"
           DEPLOY_PATH="$(printf '%s' "$2" | base64 --decode)"
           APP_HOST="$(printf '%s' "$3" | base64 --decode)"
           CADDY_ROUTES_PATH="$(printf '%s' "$4" | base64 --decode)"
-          [[ "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ && "$DEPLOY_PATH" == /* && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* ]] || exit 2
+          DEPLOY_MODE="${5:-}"
+          [[ "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ && "$DEPLOY_PATH" == /* && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* \
+            && ( "$DEPLOY_MODE" == "serving" || "$DEPLOY_MODE" == "non-serving" ) ]] || exit 2
           cd -- "$DEPLOY_PATH"
           [[ "$(git rev-parse --show-toplevel)" == "$DEPLOY_PATH" ]] || { echo "Unexpected production checkout." >&2; exit 1; }
           [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || { echo "Production checkout is dirty; refusing to overwrite files." >&2; exit 1; }
@@ -216,12 +326,17 @@ jobs:
           [[ "$(git rev-parse refs/remotes/origin/main)" == "$DEPLOY_SHA" ]] || { echo "Production candidate is no longer current origin/main." >&2; exit 1; }
           git checkout --detach "$DEPLOY_SHA"
           [[ "$(git rev-parse HEAD)" == "$DEPLOY_SHA" && -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || exit 1
-          APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" DEPLOY_SHA="$DEPLOY_SHA" BODYCAST_NON_SERVING_DEPLOY=1 \
+          case "$DEPLOY_MODE" in
+            serving) NON_SERVING="0" ;;
+            non-serving) NON_SERVING="1" ;;
+            *) echo "Invalid deploy mode." >&2; exit 1 ;;
+          esac
+          APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" DEPLOY_SHA="$DEPLOY_SHA" BODYCAST_NON_SERVING_DEPLOY="$NON_SERVING" \
             exec bash scripts/deploy.sh
           REMOTE
           )"
           REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
-          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$DEPLOY_SHA' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64'"
+          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$DEPLOY_SHA' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64' '$DEPLOY_MODE'"
           timeout 35m ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10 "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND"
 

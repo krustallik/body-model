@@ -2,8 +2,9 @@ name: BodyCast CI/CD
 
 # Full quality gates on every PR update and on every push/merge to main.
 # Feature-branch pushes without an open PR do not start this workflow.
-# Production app deploy is a separate owner-authorized manual workflow after
-# migrations; this CI workflow never deploys production.
+# A successful current-main run triggers a separate automatic, migration-free
+# production app deploy; schema migrations remain separately owner-authorized.
+# This CI workflow never performs production migrations or holds production secrets.
 # This workflow must never hold production secrets or deploy credentials.
 on:
   push:

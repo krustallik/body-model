@@ -84,6 +84,10 @@ describe("schema deploy compatibility handoff", () => {
     expect(compatibility.changedPaths).toContain("src/modules/model-episodes/transient-exercise-water-episode-time-v2.ts");
     expect(compatibility.changedPaths).toContain("src/modules/training/experimental-transient-exercise-water-shadow.service.ts");
     expect(compatibility.changedPathObjects).toEqual({
+      "docs/development/production-deploy.md": {
+        migrationOriginBlob: "6096de9b780800654046c63c369643a310d5bb56",
+        deployBlob: "b1a26cce30fb69fddde0d9fe81dd3bc26e342678",
+      },
       "scripts/github-forward-resume-evidence.mjs": {
         migrationOriginBlob: "b62a7e09fd871e68829e9fad3902510a9e3bd6ca",
         deployBlob: "9d76e1612f86f700c5e3950fc67c77f0fa6c7912",
@@ -100,6 +104,18 @@ describe("schema deploy compatibility handoff", () => {
         migrationOriginBlob: "2c07e0636146caaa5bfef69522f351c4e37aa13d",
         deployBlob: "43373e740cdad93d6f88c37c565288b2db1ad70d",
       },
+      "scripts/ci/production-deploy-gate.ts": {
+        migrationOriginBlob: "8d0d5e1d0a7c291daae0ff9cd6a970cfb3085083",
+        deployBlob: "f74bb80d9bf424d512c635c7d6c3f4d7858c3dcc",
+      },
+      "scripts/production-route-primitives.sh": {
+        migrationOriginBlob: "65a51f97bf404d9353b45b1fc33725cb7a582daa",
+        deployBlob: "001b5a5de48a17db06ab7e61731b184a3c82dc83",
+      },
+      "scripts/deploy.sh": {
+        migrationOriginBlob: "14e4caa5645ce8b95c16ecc03b3937bd0e60a1e3",
+        deployBlob: "4844bdc0b586f29dbc3b60952717e249a04bbbbc",
+      },
     });
     expect(compatibility.changedPathObjects["scripts/github-forward-resume-evidence.mjs"].migrationOriginBlob)
       .not.toBe(compatibility.changedPathObjects["scripts/github-forward-resume-evidence.mjs"].deployBlob);
@@ -113,21 +129,16 @@ describe("schema deploy compatibility handoff", () => {
     expect(plan.compatibilityDigest).toMatch(/^[a-f0-9]{64}$/);
   });
 
-  it("admits only the four exact reviewed production-script blob pairs", () => {
+  it("admits only exact reviewed content-bound blob pairs", () => {
     const candidateSha = execFileSync("git", ["rev-parse", "HEAD"], {
       cwd: process.cwd(), encoding: "utf8",
     }).trim();
     const compatibility = readGitCompatibility(process.cwd(), candidateSha);
 
-    for (const [changedPath, replacementBlob] of [
-      ["scripts/github-forward-resume-evidence.mjs", "e".repeat(40)],
-      ["scripts/production-forward-resume.mjs", "f".repeat(40)],
-      ["scripts/production-app-container-health-wait.sh", "a".repeat(40)],
-      ["scripts/production-checkout-diagnostic.sh", "b".repeat(40)],
-    ]) {
+    for (const [changedPath, proof] of Object.entries(compatibility.changedPathObjects)) {
       const changedPathObjects = {
         ...compatibility.changedPathObjects,
-        [changedPath]: { ...compatibility.changedPathObjects[changedPath], deployBlob: replacementBlob },
+        [changedPath]: { ...proof, deployBlob: "e".repeat(40) },
       };
       expect(() => evaluateSchemaDeployHandoff({
         markerText: markerText(), deploySha: candidateSha,
@@ -138,7 +149,15 @@ describe("schema deploy compatibility handoff", () => {
     expect(() => evaluateSchemaDeployHandoff({
       markerText: markerText(), deploySha: candidateSha,
       ...compatibility, changedPathObjects: {},
-      })).toThrow(/content-bound path evidence is incomplete/);
+    })).toThrow(/content-bound path evidence is incomplete/);
+    expect(() => evaluateSchemaDeployHandoff({
+      markerText: markerText(), deploySha: candidateSha,
+      ...compatibility,
+      changedPathObjects: {
+        ...compatibility.changedPathObjects,
+        "scripts/unreviewed-release-helper.mjs": { migrationOriginBlob: null, deployBlob: "f".repeat(40) },
+      },
+    })).toThrow(/content-bound path evidence is incomplete or unexpected/);
   });
 
   it("allows the reviewed transient-water paths but keeps adjacent raw and persistence paths blocked", () => {

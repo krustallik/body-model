@@ -94,7 +94,7 @@ describe("schema deploy compatibility handoff", () => {
       },
       "scripts/production-checkout-diagnostic.sh": {
         migrationOriginBlob: "f19687c65d7e9d3b744890f377ebf6f0c80eebf9",
-        deployBlob: "331bc320b23c51d5b36519dfb0f15ac0a9fdb530",
+        deployBlob: "7256cf45844deade0685f82eb470bf79a396c497",
       },
       "scripts/production-forward-resume.mjs": {
         migrationOriginBlob: "2c07e0636146caaa5bfef69522f351c4e37aa13d",

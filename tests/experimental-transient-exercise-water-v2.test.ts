@@ -279,7 +279,7 @@ describe("V2 transient ModelEpisode instant partitions", () => {
       { id: 1, startDate: "2026-01-01", timezone: "UTC", active: false, deactivatedAt: null },
       { id: 2, startDate: "2026-01-02", timezone: "UTC", active: true, deactivatedAt: null },
       { id: 3, startDate: "2026-01-03", timezone: "UTC", active: false, deactivatedAt: new Date("2026-01-04T00:00:00.000Z") },
-    ])).toThrow(/active partition/);
+    ])).not.toThrow();
     expect(() => buildTransientEpisodePartitionsV2([
       { id: 1, startDate: "2026-01-01", timezone: "UTC", active: false, deactivatedAt: null },
       { id: 2, startDate: "2026-01-02", timezone: "UTC", active: false, deactivatedAt: null },
@@ -314,6 +314,29 @@ describe("V2 transient ModelEpisode instant partitions", () => {
       "1|2026-01-01", "3|2026-01-01",
     ]);
     expect(boundaries.some(({ episodeId }) => episodeId === 2)).toBe(false);
+  });
+
+  it("suppresses stale later inactive episodes while preserving the active interval", () => {
+    const partitions = buildTransientEpisodePartitionsV2([
+      { id: 1, startDate: "2026-01-02", timezone: "Pacific/Kiritimati", active: true, deactivatedAt: null },
+      { id: 2, startDate: "2026-01-02", timezone: "Etc/GMT+10", active: false, deactivatedAt: new Date("2026-01-03T10:00:00.000Z") },
+    ]);
+
+    expect(partitions.map(({ episode }) => episode.id)).toEqual([1]);
+    expect(partitions[0]?.endInstant).toBeNull();
+    expect(partitions[0]?.startInstant.toISOString()).toBe("2026-01-01T10:00:00.000Z");
+    expect(transientEpisodeTimeForInstantV2(partitions, new Date("2026-01-02T12:00:00.000Z"))?.episode.id).toBe(1);
+    expect(() => buildTransientEpisodePartitionsV2([
+      { id: 1, startDate: "2026-01-01", timezone: "UTC", active: true, deactivatedAt: null },
+      { id: 2, startDate: "2026-01-03", timezone: "Invalid/Zone", active: false, deactivatedAt: new Date("2026-01-04T00:00:00.000Z") },
+    ])).toThrow();
+  });
+
+  it("keeps an equal-start inactive episode with a higher ID fail-closed", () => {
+    expect(() => buildTransientEpisodePartitionsV2([
+      { id: 1, startDate: "2026-01-01", timezone: "UTC", active: true, deactivatedAt: null },
+      { id: 2, startDate: "2026-01-01", timezone: "UTC", active: false, deactivatedAt: new Date("2026-01-02T00:00:00.000Z") },
+    ])).toThrow(/active partition/);
   });
 
   it("keeps one ordered model-day step across a DST-shortened day", () => {

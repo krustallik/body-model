@@ -41,7 +41,7 @@ async function cleanup(): Promise<void> {
   await client.dailyHealthData.deleteMany({ where: { date: { in: ["2073-01-03"] } } });
 }
 
-async function seed(options: { equalAbsoluteStart?: boolean } = {}): Promise<number[]> {
+async function seed(options: { equalAbsoluteStart?: boolean; staleInactiveAfterActive?: boolean } = {}): Promise<number[]> {
   await cleanup();
   await client.profile.upsert({
     where: { id: profileId },
@@ -79,7 +79,12 @@ async function seed(options: { equalAbsoluteStart?: boolean } = {}): Promise<num
     weightMeasurementNoiseVarianceKg2: 0.25,
     calibrationDiagnostics: {},
   };
-  const episodeStarts = options.equalAbsoluteStart
+  const episodeStarts = options.staleInactiveAfterActive
+    ? [
+      { startDate: "2073-01-01", timezone: "UTC", active: true, deactivatedAt: null },
+      { startDate: "2073-01-03", timezone: "UTC", active: false, deactivatedAt: new Date("2073-01-04T00:00:00.000Z") },
+    ]
+    : options.equalAbsoluteStart
     ? [
       { startDate: "2073-01-03", timezone: "Pacific/Kiritimati", active: false, deactivatedAt: equalStartInstant },
       { startDate: "2073-01-02", timezone: "Etc/GMT+10", active: true, deactivatedAt: null },
@@ -221,6 +226,54 @@ describe("Transient Exercise Water V2 PostgreSQL persistence and concurrency", (
     ));
     expect(winningDay?.childOutputs.transientWater.map(({ sessionId: id }) => id)).toContain(sessionIds[0]);
     expect(range.days.some(({ modelEpisodeId }) => modelEpisodeId === episodes[0]!.id)).toBe(false);
+  });
+
+  it("keeps stale later inactive rows from stealing active PostgreSQL shadow or Unified events", async () => {
+    const sessionIds = await seed({ staleInactiveAfterActive: true });
+    const episodes = await client.modelEpisode.findMany({
+      where: { profileId, baselineDerivationMethod: marker },
+      orderBy: { id: "asc" },
+      select: { id: true, active: true },
+    });
+    const activeEpisode = episodes.find(({ active }) => active)!;
+    const staleInactiveEpisode = episodes.find(({ active }) => !active)!;
+    await client.experimentalTransientExerciseWaterShadow.create({
+      data: {
+        profileId,
+        sessionId: sessionIds[0]!,
+        sourceFingerprint: "pre-partition-contract-same-assignment",
+        modelRevision: EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V2_REVISION,
+        features: { episodePartition: "previous-contract" },
+        result: { impulse: { modelDate: boundaryDate, modelEpisodeId: activeEpisode.id } },
+      },
+    });
+
+    await rebuildExperimentalTransientExerciseWaterV2({ profileId, client });
+    const shadows = await client.experimentalTransientExerciseWaterShadow.findMany({
+      where: { sessionId: { in: sessionIds } },
+    });
+    expect(shadows).toHaveLength(3);
+    expect(shadows.find(({ sessionId }) => sessionId === sessionIds[0])?.sourceFingerprint)
+      .not.toBe("pre-partition-contract-same-assignment");
+    expect(shadows.find(({ sessionId }) => sessionId === sessionIds[0])?.modelRevision)
+      .toBe(EXPERIMENTAL_TRANSIENT_EXERCISE_WATER_V2_REVISION);
+    expect(shadows.every((row) => (
+      (row.result as { impulse: { modelEpisodeId: number } }).impulse.modelEpisodeId === activeEpisode.id
+    ))).toBe(true);
+    expect(shadows.some((row) => (
+      (row.result as { impulse: { modelEpisodeId: number } }).impulse.modelEpisodeId === staleInactiveEpisode.id
+    ))).toBe(false);
+
+    const range = await new UnifiedExperimentalPhysiologySourceLoaderV1(client as never).loadRange({
+      profileId,
+      fromInstant: new Date("2073-01-03T00:00:00.000Z"),
+      throughInstant: new Date("2073-01-04T00:00:00.000Z"),
+    });
+    expect(range.days.some(({ modelEpisodeId }) => modelEpisodeId === staleInactiveEpisode.id)).toBe(false);
+    expect(range.days
+      .filter(({ modelEpisodeId }) => modelEpisodeId === activeEpisode.id)
+      .flatMap(({ childOutputs }) => childOutputs.transientWater.map(({ sessionId: id }) => id)))
+      .toEqual(expect.arrayContaining(sessionIds));
   });
 
   it("rejects a stale candidate after a concurrent source revision, and a rolled-back edit leaves it current", async () => {

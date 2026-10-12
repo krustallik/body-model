@@ -388,7 +388,7 @@ resume_pre_ddl_previous_release() {
 }
 
 publish_candidate_route() {
-  local temporary marker reload_failed=false
+  local temporary marker reload_failed=false route_file maintenance_backup expected_marker_sha="${1:-}" expected_marker_digest="${2:-}"
   marker="$(bodycast_maintenance_marker_from_route)" || return 1
   bodycast_verify_exact_maintenance_route || return 1
   bodycast_probe_public_maintenance "$marker" || return 1
@@ -404,29 +404,96 @@ publish_candidate_route() {
     rm -f -- "$temporary"
     return 1
   fi
+  route_file="${CADDY_ROUTES_PATH%/}/bodycast.caddy"
+  if [[ -n "$expected_marker_sha$expected_marker_digest" ]]; then
+    [[ -n "$expected_marker_sha" && -n "$expected_marker_digest" ]] || {
+      rm -f -- "$temporary"
+      echo "Route resume marker compare is incomplete." >&2
+      return 1
+    }
+    assert_bodycast_release_marker_matches "$expected_marker_sha" "v4-ready" "$expected_marker_digest" || {
+      rm -f -- "$temporary"
+      return 1
+    }
+  fi
+  maintenance_backup="$(mktemp "$(dirname "$route_file")/.bodycast-maintenance-backup.XXXXXX")" || {
+    rm -f -- "$temporary"
+    return 1
+  }
+  cp -- "$route_file" "$maintenance_backup"
+  chmod 0644 "$maintenance_backup"
   if ! bodycast_publish_staged_route "$temporary"; then
     rm -f -- "$temporary"
+    rm -f -- "$maintenance_backup"
     echo "Serving-route replacement failed before serving commit." >&2
     return 1
   fi
   # The live rename is the first possible serving effect. Treat success as the
-  # commit immediately; subsequent reload/probe failures are observational.
+  # Treat publication as committed only after reload, public probe, and marker
+  # validation all pass; otherwise restore the maintenance route and verify it.
   SERVING_COMMIT_OCCURRED=true
   set +e
-  if [[ "$marker_status" -eq 0 ]] && ! clear_bodycast_release_marker; then
-    echo "POST-COMMIT CLEANUP WARNING: serving is committed but the release marker remains fail-closed." >&2
-  fi
   if ! docker exec gymbeam-caddy caddy reload \
     --address unix//run/caddy-admin/admin.sock \
     --config /etc/caddy/Caddyfile; then
     reload_failed=true
-    echo "POST-COMMIT VERIFICATION WARNING: Caddy serving reload failed; route state was not rolled back." >&2
   fi
-  if ! bodycast_probe_public_candidate_observational; then
-    echo "POST-COMMIT VERIFICATION WARNING: public candidate probe failed; route state was not changed." >&2
+  if [[ "$reload_failed" == "false" ]] && ! bodycast_probe_public_candidate_observational; then
+    reload_failed=true
+    echo "POST-COMMIT VERIFICATION FAILED: candidate health probe failed." >&2
+  fi
+  if [[ "$reload_failed" == "false" && "$marker_status" -eq 0 ]]; then
+    if [[ -n "$expected_marker_sha" ]]; then
+      clear_bodycast_release_marker "$expected_marker_sha" "v4-ready" "$expected_marker_digest" || reload_failed=true
+    else
+      clear_bodycast_release_marker || reload_failed=true
+    fi
   fi
   if [[ "$reload_failed" == "true" ]]; then
-    echo "Serving commit remains complete despite the explicit reload error." >&2
+    set -e
+    if mv -f -- "$maintenance_backup" "$route_file"; then
+      if ! docker exec gymbeam-caddy caddy reload \
+        --address unix//run/caddy-admin/admin.sock \
+        --config /etc/caddy/Caddyfile; then
+        echo "ROUTE RECOVERY WARNING: maintenance config was restored on disk but Caddy reload failed." >&2
+      fi
+      if ! bodycast_probe_public_maintenance "$marker"; then
+        echo "ROUTE RECOVERY UNRESOLVED: public maintenance 503 could not be confirmed after rollback; serving state requires operator inspection." >&2
+      fi
+    else
+      echo "ROUTE RECOVERY FAILURE: could not restore maintenance config; release marker is retained." >&2
+    fi
+    echo "Serving-route verification failed; maintenance marker is retained for safe recovery." >&2
+    return 1
+  fi
+  set -e
+  rm -f -- "$maintenance_backup"
+}
+
+cleanup_pre_ddl_recovery_pin_after_serving_commit() {
+  local release_sha="$1" recovery_record recovery_image_id recovery_image_pin marker_status
+  [[ "$release_sha" =~ ^[a-f0-9]{40}$ && "$SERVING_COMMIT_OCCURRED" == "true" ]] || return 0
+  recovery_record="$(git rev-parse --absolute-git-dir)/bodycast-production-pre-ddl-release"
+  marker_status=1
+  if read_bodycast_release_marker; then marker_status=0; else marker_status=$?; fi
+  if [[ "$marker_status" -eq 1 && -f "$recovery_record" && ! -L "$recovery_record" ]] \
+    && grep -Fqx "targetSha=$release_sha" "$recovery_record"; then
+    recovery_image_id="$(sed -n 's/^previousImageId=//p' "$recovery_record")"
+    recovery_image_pin="$(sed -n 's/^previousImagePin=//p' "$recovery_record")"
+    [[ -n "$recovery_image_pin" ]] || recovery_image_pin="bodycast-app:rollback"
+    if [[ "$recovery_image_id" =~ ^sha256:[a-f0-9]{64}$ \
+      && ( "$recovery_image_pin" == "bodycast-app:rollback" \
+        || "$recovery_image_pin" =~ ^bodycast-app:rollback-preflight-[1-9][0-9]*-[1-9][0-9]*$ ) \
+      && "$(docker image inspect --format '{{.Id}}' "$recovery_image_pin" 2>/dev/null || true)" == "$recovery_image_id" ]]; then
+      if docker image rm "$recovery_image_pin" >/dev/null 2>&1; then
+        rm -f -- "$recovery_record"
+        sync -f "$(dirname "$recovery_record")"
+      else
+        echo "POST-COMMIT CLEANUP WARNING: prior-app recovery pin remains after successful serving commit." >&2
+      fi
+    fi
+  elif [[ "$marker_status" -ne 1 ]]; then
+    echo "POST-COMMIT CLEANUP WARNING: keeping the pre-DDL image pin because the release marker remains present or invalid." >&2
   fi
 }
 
@@ -521,12 +588,47 @@ if [[ "$MODE" == "full-history-recalculate" ]]; then
 fi
 
 activate_v4_and_serve() {
-  local expected_release_sha app_release_sha candidate_image_id candidate_image_after marker_status recovery_image_id recovery_image_pin
+  local expected_release_sha app_release_sha candidate_image_id candidate_image_after marker_status maintenance_marker marker_digest
   expected_release_sha="${BODYCAST_DEPLOY_SHA:-${DEPLOY_SHA:-}}"
   [[ "$expected_release_sha" =~ ^[a-f0-9]{40}$ ]] || {
     echo "Owner-authorized V4 activation requires a full exact release SHA." >&2
     return 1
   }
+
+  # A route-file failure can happen after V4 replay has committed and v4-ready
+  # was durably written. Reconcile that state by repeating only read-only
+  # readiness checks and route publication; never repeat activation/replay.
+  if read_bodycast_release_marker; then
+    marker_status=0
+    if [[ "$BODYCAST_MARKER_RELEASE_SHA" == "$expected_release_sha" \
+      && "$BODYCAST_MARKER_STATE" == "v4-ready" ]]; then
+      bodycast_assert_current_main_sha "$expected_release_sha"
+      marker_digest="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
+      bodycast_verify_exact_maintenance_route
+      maintenance_marker="$(bodycast_maintenance_marker_from_route)"
+      bodycast_probe_public_maintenance "$maintenance_marker"
+      local app_identity app_id app_image app_sha app_state app_health
+      app_identity="$(docker inspect --format '{{.Id}}|{{.Image}}|{{index .Config.Labels "org.bodycast.release-sha"}}|{{.State.Status}}|{{.State.Health.Status}}' "$APP_CONTAINER")"
+      IFS='|' read -r app_id app_image app_sha app_state app_health <<< "$app_identity"
+      [[ "$app_id" =~ ^[a-f0-9]{64}$ && "$app_image" =~ ^sha256:[a-f0-9]{64}$ \
+        && "$app_sha" == "$expected_release_sha" && "$app_state" == "running" && "$app_health" == "healthy" \
+        && "$(docker image inspect --format '{{.Id}}' bodycast-app:latest)" == "$app_image" ]] || {
+        echo "The v4-ready route resume requires the exact healthy app and matching immutable image pin." >&2
+        return 1
+      }
+      compose --profile tools build migrate
+      compose --profile tools run --rm --no-deps --entrypoint node migrate \
+        /app/scripts/unified-v4-traffic-check.mjs --profile-id 1
+      bodycast_assert_current_main_sha "$expected_release_sha"
+      assert_bodycast_release_marker_matches "$expected_release_sha" "v4-ready" "$marker_digest"
+      SERVING_COMMIT_OCCURRED=false
+      publish_candidate_route "$expected_release_sha" "$marker_digest"
+      cleanup_pre_ddl_recovery_pin_after_serving_commit "$expected_release_sha"
+      return 0
+    fi
+  else
+    marker_status=$?
+  fi
 
   require_ready_release_marker
   [[ "$BODYCAST_MARKER_RELEASE_SHA" == "$expected_release_sha" ]] || {
@@ -535,7 +637,6 @@ activate_v4_and_serve() {
   }
   bodycast_assert_current_main_sha "$expected_release_sha"
   bodycast_verify_exact_maintenance_route
-  local maintenance_marker
   maintenance_marker="$(bodycast_maintenance_marker_from_route)"
   bodycast_probe_public_maintenance "$maintenance_marker"
 
@@ -612,28 +713,7 @@ activate_v4_and_serve() {
   SERVING_COMMIT_OCCURRED=false
   publish_candidate_route
   if [[ "$SERVING_COMMIT_OCCURRED" == "true" ]]; then
-    local recovery_record="$(git rev-parse --absolute-git-dir)/bodycast-production-pre-ddl-release"
-    marker_status=1
-    if read_bodycast_release_marker; then marker_status=0; else marker_status=$?; fi
-    if [[ "$marker_status" -eq 1 && -f "$recovery_record" && ! -L "$recovery_record" ]] \
-      && grep -Fqx "targetSha=$expected_release_sha" "$recovery_record"; then
-      recovery_image_id="$(sed -n 's/^previousImageId=//p' "$recovery_record")"
-      recovery_image_pin="$(sed -n 's/^previousImagePin=//p' "$recovery_record")"
-      [[ -n "$recovery_image_pin" ]] || recovery_image_pin="bodycast-app:rollback"
-      if [[ "$recovery_image_id" =~ ^sha256:[a-f0-9]{64}$ \
-        && ( "$recovery_image_pin" == "bodycast-app:rollback" \
-          || "$recovery_image_pin" =~ ^bodycast-app:rollback-preflight-[1-9][0-9]*-[1-9][0-9]*$ ) \
-        && "$(docker image inspect --format '{{.Id}}' "$recovery_image_pin" 2>/dev/null || true)" == "$recovery_image_id" ]]; then
-      if docker image rm "$recovery_image_pin" >/dev/null 2>&1; then
-        rm -f -- "$recovery_record"
-        sync -f "$(dirname "$recovery_record")"
-      else
-        echo "POST-COMMIT CLEANUP WARNING: prior-app recovery pin remains after successful serving commit." >&2
-      fi
-      fi
-    elif [[ "$marker_status" -ne 1 ]]; then
-      echo "POST-COMMIT CLEANUP WARNING: keeping the pre-DDL image pin because the release marker remains present or invalid." >&2
-    fi
+    cleanup_pre_ddl_recovery_pin_after_serving_commit "$expected_release_sha"
   fi
 }
 

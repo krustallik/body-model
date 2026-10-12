@@ -234,8 +234,34 @@ write_bodycast_forward_resume_marker() {
   trap - RETURN
 }
 
+assert_bodycast_release_marker_matches() {
+  local expected_sha="$1" expected_state="$2" expected_digest="$3" actual_digest
+  [[ "$expected_sha" =~ ^[a-f0-9]{40}$ && "$expected_digest" =~ ^[a-f0-9]{64}$ ]] || {
+    echo "Expected release marker compare value is malformed." >&2; return 2;
+  }
+  read_bodycast_release_marker || { echo "Expected production release marker is missing or invalid." >&2; return 2; }
+  actual_digest="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
+  [[ "$BODYCAST_MARKER_RELEASE_SHA" == "$expected_sha" \
+    && "$BODYCAST_MARKER_STATE" == "$expected_state" \
+    && "$actual_digest" == "$expected_digest" ]] || {
+    echo "Production release marker changed after route-resume verification." >&2; return 2;
+  }
+}
+
 clear_bodycast_release_marker() {
-  read_bodycast_release_marker || { echo "Refusing to clear a missing or invalid production release marker." >&2; return 2; }
+  local expected_sha="${1:-}" expected_state="${2:-}" expected_digest="${3:-}" latest_digest
+  if [[ -n "$expected_sha$expected_state$expected_digest" ]]; then
+    [[ -n "$expected_sha" && -n "$expected_state" && -n "$expected_digest" ]] || {
+      echo "Expected marker compare must include SHA, state, and digest." >&2; return 2;
+    }
+    assert_bodycast_release_marker_matches "$expected_sha" "$expected_state" "$expected_digest" || return 2
+  else
+    read_bodycast_release_marker || { echo "Refusing to clear a missing or invalid production release marker." >&2; return 2; }
+  fi
+  if [[ -n "$expected_digest" ]]; then
+    latest_digest="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
+    [[ "$latest_digest" == "$expected_digest" ]] || { echo "Production release marker changed before cleanup." >&2; return 2; }
+  fi
   rm -- "$BODYCAST_MARKER_FILE_PATH"
   sync -f "$(dirname "$BODYCAST_MARKER_FILE_PATH")"
 }

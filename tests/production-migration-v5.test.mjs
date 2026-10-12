@@ -1855,13 +1855,32 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
       migrationDirectories: fullDirs, repositoryPath: process.cwd(), releaseSha,
       manifestId: V4_REPUBLICATION_MANIFEST.id,
     });
-    expect(result).toMatchObject({
+    expect(result, JSON.stringify(result.blockers)).toMatchObject({
       verified: true, verifiedForIsolatedRehearsal: true, readyForIsolatedRehearsal: true,
       ddlAuthorization: false, pending,
     });
     expect(result).not.toHaveProperty("readyForOwnerAuthorization");
     expect(result.executionIntegrity).toHaveLength(V4_REPUBLICATION_MANIFEST.migrations.length);
     expect(result.executionIntegrity.every((entry) => entry.exactMatch)).toBe(true);
+
+    const invalidPreflight = {
+      ...preflight,
+      blobIntegrity: preflight.blobIntegrity.map((entry) => entry.name === pending[0]
+        ? { ...entry, actualSha256: "0".repeat(64), matches: false }
+        : entry),
+    };
+    const invalidSnapshot = {
+      ...snapshot,
+      preflightResult: invalidPreflight,
+      preparationResult: { ...snapshot.preparationResult, databasePreflightResultDigest: canonicalSha256(invalidPreflight) },
+    };
+    const invalidBlobEvidence = await verifyDisposableRehearsalAdmission({
+      snapshot: invalidSnapshot, restoredReport: restored, readabilityReport: readability,
+      migrationDirectories: fullDirs, repositoryPath: process.cwd(), releaseSha,
+      manifestId: V4_REPUBLICATION_MANIFEST.id,
+    });
+    expect(invalidBlobEvidence.verifiedForIsolatedRehearsal).toBe(false);
+    expect(invalidBlobEvidence.blockers).toContain("Production snapshot does not prove the exact clean V4 pending set and source preflight state.");
 
     const unsafeRestore = { ...restored, conflictingLocks: [{ relation: "PhysiologyV7Lifecycle" }] };
     await expect(verifyDisposableRehearsalAdmission({

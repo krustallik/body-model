@@ -22,7 +22,7 @@ const marker = "bd9975d38d1c-20261012T120000Z-99-123456";
 function captureLineage() {
   return {
     schemaVersion: 1,
-    evidenceBasis: "host-current-record-plus-resume-source-capture-and-owner-run-receipt",
+    evidenceBasis: "host-captures-A-C-plus-host-receipt-D",
     githubArtifactDigestAvailable: false,
     sourceRunId: "38205023003",
     sourceRunAttempt: 1,
@@ -35,15 +35,9 @@ function captureLineage() {
     resumeReceiptDigest: digest,
     historyProofDigest: digest,
     historyProvenance: {
-      safePreflightRetryRunIds: ["38213907625", "38214147022"],
-      captureGuardPreflightEffects: ["38213907625", "38214147022"].map((runId) => ({
-        runId, sha, maintenanceRoutePublishedAndPublic503Confirmed: true,
-        oldAppStopReached: false, productionDatabaseInspectionReached: false,
-        pgDumpStarted: false, artifactsPublished: false,
-      })),
-      safePreMaintenanceDeployRunIds: ["38226427716"],
-      historicalV2: { preflightRunId: "38068531599", backupArtifactDigest: `sha256:${"a".repeat(64)}` },
-      captureRefresh: { runId: "38205023003", failureBoundary: "isolated-restore-before-artifact-upload" },
+      receiptJobLog: "UNVERIFIED",
+      priorV2ArtifactLineage: "UNVERIFIED",
+      interveningWorkflowEffects: "UNVERIFIED",
     },
     rollbackImagePin: "bodycast-app:rollback-preflight-38205023003-1",
     rollbackImageMatchesRecord: true,
@@ -88,29 +82,22 @@ function captureReconciliationInputs(overrides = {}) {
     compatibilityDigest: databaseDigests.compatibilityDigest,
   }, { captureRunId: "38211169161", captureRunAttempt: 1 });
   const captureHistoryProof = {
-    schemaVersion: 2,
-    sourceRunId: "38211169161",
-    safeCaptureGuardPreflightRunIds: ["38213907625", "38214147022"],
-    captureGuardPreflightEffects: ["38213907625", "38214147022"].map((runId) => ({
-      runId, sha, maintenanceRoutePublishedAndPublic503Confirmed: true,
-      oldAppStopReached: false, productionDatabaseInspectionReached: false,
-      pgDumpStarted: false, artifactsPublished: false,
-    })),
-    safePreMaintenanceDeployRunIds: ["38226427716"],
-    pendingMigrationIds: V4_REPUBLICATION_MANIFEST.migrations.map(({ name }) => name).sort(),
-    historicalV2: {
-      preflightRunId: "38068531599", preflightSha: "62b6961dde7036100c8af7281e7bfab75bb662db",
-      manifestId: "active-energy-unified-v2", migrationRunId: "38069108209",
-      migrationSha: "62b6961dde7036100c8af7281e7bfab75bb662db", noV2ArtifactReuseForV4: true,
-      backupArtifactDigest: `sha256:${"5".repeat(64)}`, evidenceArtifactDigest: `sha256:${"6".repeat(64)}`,
-    },
-    captureRefresh: {
-      runId: "38205023003", releaseSha: "fe55468321b9ef8e9783aa3874e1b42c2736b514",
-      failureBoundary: "isolated-restore-before-artifact-upload", artifactsPublished: false,
+    schemaVersion: 3,
+    sourceRunId: "38205023003",
+    sourceRunAttempt: 1,
+    sourceSha: "fe55468321b9ef8e9783aa3874e1b42c2736b514",
+    resumeRunId: "38211169161",
+    resumeRunAttempt: 1,
+    resumeSha: "3ede9e1644616e65edb3ac29a49df2f109786942",
+    targetSha: sha,
+    historyProvenance: {
+      receiptJobLog: "UNVERIFIED",
+      priorV2ArtifactLineage: "UNVERIFIED",
+      interveningWorkflowEffects: "UNVERIFIED",
     },
   };
   return {
-    currentRecordText, sourceRecordText, currentReceipt: receipt, githubReceipt: receipt,
+    releaseSha: sha, currentRecordText, sourceRecordText, currentReceiptText: `${JSON.stringify(receipt)}\n`,
     databaseReport, captureHistoryProof, pinnedImageId: sourceRecord.previousImageId,
     ...overrides,
   };
@@ -188,26 +175,42 @@ describe("no-app database-only preflight contract", () => {
     expect(canonicalSha256(stableNoAppSnapshot(before))).not.toBe(canonicalSha256(stableNoAppSnapshot(after)));
   });
 
-  it("reconciles the host current capture, exact resume source capture, GitHub receipt, and exact pinned image", () => {
+  it("reconciles host captures A/C, canonical host receipt D, and the exact pinned image", () => {
     const lineage = reconcileNoAppCaptureLineage(captureReconciliationInputs());
     expect(lineage.githubArtifactDigestAvailable).toBe(false);
-    expect(lineage.sourceRecordDigest).toBe(captureReconciliationInputs().currentReceipt.sourceRecordDigest);
-    expect(lineage.currentRecordDigest).toBe(captureReconciliationInputs().currentReceipt.currentRecordDigest);
+    expect(lineage.historyProvenance).toEqual({
+      receiptJobLog: "UNVERIFIED", priorV2ArtifactLineage: "UNVERIFIED", interveningWorkflowEffects: "UNVERIFIED",
+    });
+    const receipt = JSON.parse(captureReconciliationInputs().currentReceiptText);
+    expect(lineage.sourceRecordDigest).toBe(receipt.sourceRecordDigest);
+    expect(lineage.currentRecordDigest).toBe(receipt.currentRecordDigest);
     expect(lineage.rollbackImageMatchesRecord).toBe(true);
     expect(lineage.appRuntime).toBe("unavailable");
     expect(lineage.previousAppRecovery).toBe("unverified");
     expect(lineage.rollbackReadiness).toBe("unverified");
   });
 
-  it("records that capture-guard retries republished maintenance before app stop and DB inspection", () => {
+  it("rejects a missing or falsely verified historical provenance declaration", () => {
     const proof = captureReconciliationInputs().captureHistoryProof;
-    proof.captureGuardPreflightEffects[0].maintenanceRoutePublishedAndPublic503Confirmed = false;
+    proof.historyProvenance.receiptJobLog = "VERIFIED";
     expect(() => reconcileNoAppCaptureLineage(captureReconciliationInputs({ captureHistoryProof: proof })))
-      .toThrow("maintenance-route publication/capture-guard failure boundary");
+      .toThrow("explicit historical-provenance status is missing");
   });
 
   it.each([
-    ["a stale current receipt", { currentReceipt: null }],
+    ["a stale current receipt", { currentReceiptText: "" }],
+    ["a receipt with duplicate JSON keys", { currentReceiptText: captureReconciliationInputs().currentReceiptText
+      .replace('"schemaVersion":2', '"schemaVersion":2,"schemaVersion":2') }],
+    ["a host receipt with a mismatched capture digest", { currentReceiptText: (() => {
+      const receipt = JSON.parse(captureReconciliationInputs().currentReceiptText);
+      receipt.currentRecordDigest = "e".repeat(64);
+      return `${JSON.stringify(receipt)}\n`;
+    })() }],
+    ["a host receipt with a mismatched live DB digest", { databaseReport: (() => {
+      const value = captureReconciliationInputs().databaseReport;
+      value.identity.database = "different-database";
+      return value;
+    })() }],
     ["a missing resume source record", { sourceRecordText: null }],
     ["archive B from the V2 pre-refresh run used as source", { sourceRecordText: (() => captureReconciliationInputs().sourceRecordText
       .replace("schemaVersion=3", "schemaVersion=2")
@@ -219,8 +222,9 @@ describe("no-app database-only preflight contract", () => {
       `previousSha=${"1".repeat(40)}`, `previousSha=${"9".repeat(40)}`) }],
     ["an unexpected saved image pin", { currentRecordText: captureReconciliationInputs().currentRecordText.replace(
       "bodycast-app:rollback-preflight-38205023003-1", "bodycast-app:rollback-preflight-38205023004-1") }],
+    ["a missing saved image pin", { sourceRecordText: captureReconciliationInputs().sourceRecordText
+      .split(/\r?\n/).filter((line) => !line.startsWith("previousImagePin=")).join("\n") }],
     ["an image ID that differs from the saved pin", { pinnedImageId: `sha256:${"9".repeat(64)}` }],
-    ["a mismatched GitHub receipt", { githubReceipt: { ...captureReconciliationInputs().currentReceipt, captureRunAttempt: 2 } }],
   ])("rejects capture lineage with %s", (_label, overrides) => {
     expect(() => reconcileNoAppCaptureLineage(captureReconciliationInputs(overrides)))
       .toThrow("No-app production preflight blocked");

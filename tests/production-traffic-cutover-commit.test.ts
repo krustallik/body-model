@@ -32,7 +32,7 @@ describe("serving-route commit boundary", () => {
     expect(events.indexOf("live-route-mutation:serving")).toBeLessThan(events.indexOf("caddy-reload:serving"));
   }, 30_000);
 
-  it.skipIf(!bashAvailable)("returns success after route commit if explicit reload fails and Caddy still serves maintenance", () => {
+  it.skipIf(!bashAvailable)("restores maintenance and fails if serving reload fails", () => {
     const fixture = createFixture();
     writeFileSync(path.join(fixture.routes, "bodycast.caddy"), maintenanceRoute());
     writeFileSync(path.join(fixture.root, "active-route"), "maintenance\n");
@@ -43,14 +43,18 @@ describe("serving-route commit boundary", () => {
       FAIL_SERVING_RELOAD: "1",
     });
 
-    expect(result.status).toBe(0);
-    expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).toContain("reverse_proxy bodycast-app-prod:3000");
+    expect(result.status).not.toBe(0);
+    expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).toContain("X-BodyCast-Deploy-Maintenance");
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
-    expect(result.stderr).toContain("route state was not rolled back");
+    expect(result.stderr).toContain("Serving-route verification failed; maintenance marker is retained for safe recovery.");
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events).toContain("caddy-reload-failed:serving");
+    expect(events).toContain("caddy-reload:maintenance");
+    expect(events).toContain("public-probe:503:https://bodycast.example.test/");
     expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).not.toContain("stop --time 0 bodycast-app-prod");
   }, 30_000);
 
-  it.skipIf(!bashAvailable)("returns success after route commit if auto-watch serves candidate before a failed reload", () => {
+  it.skipIf(!bashAvailable)("restores maintenance if auto-watch serves candidate before a failed reload", () => {
     const fixture = createFixture();
     writeFileSync(path.join(fixture.routes, "bodycast.caddy"), maintenanceRoute());
     writeFileSync(path.join(fixture.root, "active-route"), "maintenance\n");
@@ -62,13 +66,15 @@ describe("serving-route commit boundary", () => {
       FAIL_SERVING_RELOAD: "1",
     });
 
-    expect(result.status).toBe(0);
-    expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).toContain("reverse_proxy bodycast-app-prod:3000");
-    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
+    expect(result.status).not.toBe(0);
+    expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).toContain("X-BodyCast-Deploy-Maintenance");
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
     const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
     expect(events).toContain("auto-watch-serving-effect");
     expect(events).toContain("caddy-reload-failed:serving");
-    expect(result.stderr).toContain("POST-COMMIT VERIFICATION WARNING");
+    expect(events).toContain("caddy-reload:maintenance");
+    expect(events).toContain("public-probe:503:https://bodycast.example.test/");
+    expect(result.stderr).toContain("Serving-route verification failed; maintenance marker is retained for safe recovery.");
   }, 30_000);
 
   it.skipIf(!bashAvailable)("fails the watcher-safety invariant if candidate staging moves under the live routes directory", () => {

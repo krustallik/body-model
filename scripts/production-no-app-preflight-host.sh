@@ -23,9 +23,9 @@ routes_path="${CADDY_ROUTES_PATH:-}"
 [[ "${BODYCAST_PG_RESTORE_VERSION:-}" =~ ^pg_restore\ \(PostgreSQL\)\ [0-9]+(\.[0-9]+)*$ ]] || {
   echo "Pinned pg_restore version is missing or malformed." >&2; exit 2;
 }
-[[ -n "${BODYCAST_CAPTURE_HISTORY_PROOF_B64:-}" && -n "${BODYCAST_GITHUB_RESUME_RECEIPT_B64:-}"
-  && -n "${BODYCAST_PRODUCTION_RUNS_B64:-}" && "${BODYCAST_CURRENT_RUN_ID:-}" =~ ^[1-9][0-9]*$ ]] || {
-  echo "Verified owner-run capture lineage or current workflow metadata is missing." >&2; exit 2;
+[[ -n "${BODYCAST_CAPTURE_HISTORY_PROOF_B64:-}" && -n "${BODYCAST_PRODUCTION_RUNS_B64:-}"
+  && "${BODYCAST_CURRENT_RUN_ID:-}" =~ ^[1-9][0-9]*$ ]] || {
+  echo "Exact source-run identity or current workflow metadata is missing." >&2; exit 2;
 }
 
 cd -- "$deploy_path"
@@ -158,11 +158,10 @@ NODE
 
   BODYCAST_PINNED_IMAGE_ID="$pinned_image_id" node --input-type=module - "$report_file" "$preflight_file" "$payload_file" "$current_capture" \
     "$source_capture" "$current_receipt" "$container_id" "$marker" "$release_sha" "$pg_dump_version" "$BODYCAST_PG_RESTORE_VERSION" \
-    "$BODYCAST_CURRENT_RUN_ID" "$BODYCAST_CAPTURE_HISTORY_PROOF_B64" \
-    "$BODYCAST_GITHUB_RESUME_RECEIPT_B64" "$BODYCAST_PRODUCTION_RUNS_B64" <<'NODE'
+  "$BODYCAST_CURRENT_RUN_ID" "$BODYCAST_CAPTURE_HISTORY_PROOF_B64" "$BODYCAST_PRODUCTION_RUNS_B64" <<'NODE'
 import { readFileSync, writeFileSync } from "node:fs";
 const [reportPath, preflightPath, outputPath, currentPath, sourcePath, receiptPath,
-  containerId, routeMarker, releaseSha, pgDumpVersion, pgRestoreVersion, currentRunId, proofB64, githubReceiptB64, runsB64] = process.argv.slice(2);
+  containerId, routeMarker, releaseSha, pgDumpVersion, pgRestoreVersion, currentRunId, proofB64, runsB64] = process.argv.slice(2);
 function decode(value) {
   const bytes = Buffer.from(value, "base64");
   if (bytes.toString("base64") !== value) throw new Error("Non-canonical base64 evidence.");
@@ -176,7 +175,7 @@ const input = {
   postgresClientVersions: { pgDump: pgDumpVersion, pgRestore: pgRestoreVersion },
   databaseContainerId: containerId,
   currentRecordText: readFileSync(currentPath, "utf8"), sourceRecordText: readFileSync(sourcePath, "utf8"),
-  currentReceipt: JSON.parse(readFileSync(receiptPath, "utf8")), githubReceipt: decode(githubReceiptB64),
+  currentReceiptText: readFileSync(receiptPath, "utf8"),
   databaseReport: JSON.parse(readFileSync(reportPath, "utf8")), captureHistoryProof: decode(proofB64),
   pinnedImageId: process.env.BODYCAST_PINNED_IMAGE_ID,
   appContainerIds: [], routeMarker, routeSha: JSON.parse(readFileSync(reportPath, "utf8")).writerDrain.topology.routeFile.sha256,

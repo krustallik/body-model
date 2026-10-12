@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { capturePreviousAppProvenance, rebindPreviousAppProvenanceForPreflightResume } from "../scripts/production-previous-app-provenance.mjs";
 import { DEPLOY_CONTROL_FILES, PREFLIGHT_CAPTURE_RESUME_CONTROL_FILES, deployControlFilesMatch, preflightCaptureResumeControlsMatch,
-  serializePreflightRetryRunIds, verifyPreDdlMigrationFailureResume, verifyResumablePreflightAttempt } from "../scripts/production-preflight-resume.mjs";
+  NO_APP_PREPARATION_CONTROL_FILES, noAppPreparationControlsMatch, serializePreflightRetryRunIds,
+  verifyPreDdlMigrationFailureResume, verifyResumablePreflightAttempt } from "../scripts/production-preflight-resume.mjs";
 
 function findBash() {
   const probe = spawnSync("bash", ["--version"], { encoding: "utf8" });
@@ -115,7 +116,7 @@ function sourceRun(overrides = {}) {
   return {
     id: 38000669126,
     workflow_id: 123,
-    name: `Preflight ${sourceSha} active-energy-unified-v2`,
+    display_title: `Preflight ${sourceSha} active-energy-unified-v2`,
     path: ".github/workflows/production-migration-preflight.yml@refs/heads/main",
     event: "workflow_dispatch",
     head_branch: "main",
@@ -164,6 +165,7 @@ function verify(overrides = {}) {
     currentRunId: "99999999999",
     currentMainSha: targetSha,
     workflowId: "123",
+    noAppWorkflowId: "456",
     manifestId: "active-energy-unified-v2",
     deployWorkflowId,
     sourceIsAncestor: true,
@@ -197,6 +199,24 @@ function deployRun(overrides = {}) {
     status: "completed",
     conclusion: "failure",
     run_attempt: 1,
+    repository: { full_name: "krustallik/body-model", owner: { id: 126446430, login: "krustallik" } },
+    ...overrides,
+  };
+}
+
+function completedNoAppRun(overrides = {}) {
+  return {
+    id: 38000669129,
+    workflow_id: 456,
+    path: ".github/workflows/production-no-app-preflight.yml@refs/heads/main",
+    event: "workflow_dispatch",
+    head_branch: "main",
+    head_sha: targetSha,
+    status: "completed",
+    conclusion: "failure",
+    run_attempt: 1,
+    actor: { id: 126446430 },
+    triggering_actor: { id: 126446430 },
     repository: { full_name: "krustallik/body-model", owner: { id: 126446430, login: "krustallik" } },
     ...overrides,
   };
@@ -504,7 +524,7 @@ function verifyWithCaptureBlockedRetries(retryEvidenceList, overrides = {}) {
   const history = retryEvidenceList.map((evidence) => evidence.run);
   return verify({
     manifestId: v4ManifestId,
-    sourceRun: sourceRun({ name: `Preflight ${sourceSha} ${v4ManifestId}` }),
+    sourceRun: sourceRun({ display_title: `Preflight ${sourceSha} ${v4ManifestId}` }),
     laterRuns: [...history, {
       id: 99999999999, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main",
       status: "in_progress", workflow_id: Number(preflightWorkflowId),
@@ -538,13 +558,41 @@ function verifyPreDdlResume(overrides = {}) {
 }
 
 describe("verified resume of a failed production preflight", () => {
+  it("binds no-app history to the production SQL and writer-drain implementation", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "bodycast-no-app-controls-"));
+    try {
+      execFileSync("git", ["init", "--initial-branch=main", tempDir], { stdio: "ignore" });
+      execFileSync("git", ["-C", tempDir, "config", "user.name", "Preflight test"], { stdio: "ignore" });
+      execFileSync("git", ["-C", tempDir, "config", "user.email", "preflight@example.invalid"], { stdio: "ignore" });
+      for (const control of ["scripts/production-db-preflight.sql", "scripts/production-writer-drain.mjs"]) {
+        const controlPath = path.join(tempDir, control);
+        await mkdir(path.dirname(controlPath), { recursive: true });
+        await writeFile(controlPath, "control-v1\n");
+      }
+      execFileSync("git", ["-C", tempDir, "add", "scripts"], { stdio: "ignore" });
+      execFileSync("git", ["-C", tempDir, "commit", "-m", "baseline controls"], { stdio: "ignore" });
+      const baseline = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      for (const control of ["scripts/production-db-preflight.sql", "scripts/production-writer-drain.mjs"]) {
+        await writeFile(path.join(tempDir, control), `changed ${control}\n`);
+        execFileSync("git", ["-C", tempDir, "add", control], { stdio: "ignore" });
+        execFileSync("git", ["-C", tempDir, "commit", "-m", `change ${control}`], { stdio: "ignore" });
+        const current = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+        expect(noAppPreparationControlsMatch(baseline, current, tempDir), control).toBe(false);
+      }
+      expect(NO_APP_PREPARATION_CONTROL_FILES).toContain("scripts/production-db-preflight.sql");
+      expect(NO_APP_PREPARATION_CONTROL_FILES).toContain("scripts/production-writer-drain.mjs");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("runs the source-verification CLI with a verified schema-blocked deploy", async () => {
     const currentMainSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     const currentRunId = "1002";
     const sourceRunId = "1000";
     const deployId = "1001";
     const actualSourceRun = sourceRun({ id: Number(sourceRunId), head_sha: currentMainSha,
-      name: `Preflight ${currentMainSha} active-energy-unified-v2` });
+      display_title: `Preflight ${currentMainSha} active-energy-unified-v2` });
     const actualSourceJobs = {
       ...sourceJobs(),
       jobs: sourceJobs().jobs.map((job) => ({ ...job, head_sha: currentMainSha })),
@@ -593,7 +641,7 @@ describe("verified resume of a failed production preflight", () => {
       const scriptPath = path.resolve("scripts/production-preflight-resume.mjs");
       const result = spawnSync(process.execPath, [scriptPath, "--verify-source", files.run, files.jobs, files.artifacts,
         files.later, files.deploy, files.preflightRetries, sourceRunId, currentRunId, currentMainSha,
-        "active-energy-unified-v2", preflightWorkflowId, deployWorkflowId], {
+        "active-energy-unified-v2", preflightWorkflowId, deployWorkflowId, "456"], {
         cwd: process.cwd(), encoding: "utf8",
       });
       expect(result.status, result.stderr).toBe(0);
@@ -601,9 +649,9 @@ describe("verified resume of a failed production preflight", () => {
         schemaVersion: 2,
         sourceRunId,
         targetSha: currentMainSha,
-        safePreMaintenanceDeployRunIds: [deployId],
-        safeCaptureGuardPreflightRunIds: [],
-        pendingMigrationIds,
+        unverifiedHistoricalDeployRunIds: [deployId],
+        unverifiedHistoricalPreflightRunIds: [],
+        unverifiedHistoricalRunIds: [],
       });
     } finally {
       await rm(tempDir, { recursive: true, force: true });
@@ -612,10 +660,11 @@ describe("verified resume of a failed production preflight", () => {
 
   it("admits only the original owner run that stopped after a successful backup and failed isolated restore", () => {
     expect(verify()).toEqual({ schemaVersion: 2, sourceRunId: "38000669126", sourceRunAttempt: 1, sourceSha, targetSha,
-      safePreMaintenanceDeployRunIds: [], safeCaptureGuardPreflightRunIds: [], captureGuardPreflightEffects: [], pendingMigrationIds: [] });
+      unverifiedHistoricalDeployRunIds: [], unverifiedHistoricalPreflightRunIds: [], historicalPreflightEffects: [],
+      unverifiedHistoricalRunIds: [] });
   });
 
-  it("records that owner V4 capture retries republished maintenance before DB inspection was skipped", () => {
+  it("admits only unverified owner V4 capture retry history and ignores prior textual logs", () => {
     const priorCaptureGuard = captureBlockedRetryEvidence({
       run: captureBlockedRetryRun({ id: 38000669127 }),
     });
@@ -625,28 +674,21 @@ describe("verified resume of a failed production preflight", () => {
       failure: "Capture refresh requires exactly one existing BodyCast app container.",
     });
     const result = verifyWithCaptureBlockedRetries([priorCaptureGuard, noAppRefreshGuard]);
-    expect(result.safeCaptureGuardPreflightRunIds).toEqual(["38000669127", "38000669128"]);
-    expect(result.captureGuardPreflightEffects).toEqual(["38000669127", "38000669128"].map((runId) => ({
-      runId, sha: targetSha, failure: expect.any(String),
-      maintenanceRoutePublishedAndPublic503Confirmed: true,
-      oldAppStopReached: false, productionDatabaseInspectionReached: false,
-      pgDumpStarted: false, artifactsPublished: false,
+    expect(result.unverifiedHistoricalPreflightRunIds).toEqual(["38000669127", "38000669128"]);
+    expect(result.historicalPreflightEffects).toEqual(["38000669127", "38000669128"].map((runId) => ({
+      runId, sha: targetSha, historicalEffects: "UNVERIFIED",
     })));
-    expect(result.safePreMaintenanceDeployRunIds).toEqual([]);
-    expect(result.pendingMigrationIds).toEqual([]);
+    expect(result.unverifiedHistoricalDeployRunIds).toEqual([]);
   });
 
   it.each([
     ["other owner", { run: captureBlockedRetryRun({ triggering_actor: { id: 7 } }) }],
     ["rerun", { run: captureBlockedRetryRun({ run_attempt: 2 }) }],
-    ["wrong manifest", { run: captureBlockedRetryRun({ name: `Preflight ${targetSha} active-energy-unified-v2` }) }],
-    ["unknown capture error", { failure: "Production host connection failed." }],
-    ["wrong refresh mode", { refreshCapture: "1" }],
+    ["wrong manifest", { run: captureBlockedRetryRun({ display_title: `Preflight ${targetSha} active-energy-unified-v2` }) }],
     ["published artifact", { artifacts: { total_count: 1, artifacts: [{ id: 8 }] } }],
     ["stale retry SHA", { shaIsAncestorOfCurrentMain: false }],
     ["retry not descended from source", { sourceShaIsAncestor: false }],
     ["capture controls changed", { captureControlsMatch: false }],
-    ["oversized log", { failureLogText: "x".repeat(1_000_001) }],
     ["extra step or changed DB boundary", { jobs: captureBlockedRetryJobs({ jobs: [
       ...captureBlockedRetryJobs().jobs.slice(0, 1),
       { ...captureBlockedRetryJobs().jobs[1], steps: captureBlockedRetryJobs().jobs[1].steps.map((step, index) =>
@@ -669,14 +711,49 @@ describe("verified resume of a failed production preflight", () => {
     })).toThrow("cannot be safely resumed");
   });
 
-  it("admits a later exact-SHA automatic deploy only when logs prove the schema block preceded maintenance", () => {
+  it("admits a later exact-SHA automatic deploy as explicitly unverified history", () => {
     const run = deployRun();
     const result = verify({ laterRuns: [run, {
       id: 99999999999, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress",
     }], safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence()],
     });
-    expect(result.safePreMaintenanceDeployRunIds).toEqual([safeSchemaBlockedDeployRunId]);
-    expect(result.pendingMigrationIds).toEqual(pendingMigrationIds);
+    expect(result.unverifiedHistoricalDeployRunIds).toEqual([safeSchemaBlockedDeployRunId]);
+  });
+
+  it("admits completed no-app preparation only as unverified history and never reuses its artifacts", () => {
+    const run = completedNoAppRun();
+    const result = verify({
+      laterRuns: [run, {
+        id: 99999999999, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress",
+      }],
+      noAppControlsMatch: () => true,
+      isAncestorOfCurrentMain: () => true,
+    });
+    expect(result.unverifiedHistoricalRunIds).toEqual([String(run.id)]);
+  });
+
+  it.each([
+    ["owner mismatch", { actor: { id: 7 }, triggering_actor: { id: 7 } }],
+    ["workflow ID mismatch", { workflow_id: 457 }],
+    ["malformed SHA", { head_sha: "not-a-sha" }],
+    ["unknown conclusion", { conclusion: "timed_out" }],
+    ["changed preparation controls", {}],
+  ])("blocks no-app history with %s", (_label, overrides) => {
+    const run = completedNoAppRun(overrides);
+    const controlsChanged = Object.keys(overrides).length === 0;
+    expect(() => verify({
+      laterRuns: [run, {
+        id: 99999999999, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress",
+      }],
+      noAppControlsMatch: () => !controlsChanged,
+      isAncestorOfCurrentMain: () => true,
+    })).toThrow("cannot be safely resumed");
+  });
+
+  it("blocks an active no-app preparation run", () => {
+    expect(() => verify({ laterRuns: [completedNoAppRun({ status: "in_progress", conclusion: null }), {
+      id: 99999999999, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress",
+    }] })).toThrow("cannot be safely resumed");
   });
 
   it("rejects a later production full-history recalculation run", () => {
@@ -701,9 +778,6 @@ describe("verified resume of a failed production preflight", () => {
       ...deployJobs().jobs,
       { name: "Unexpected job", conclusion: "failure", head_sha: targetSha, run_attempt: 1, steps: [] },
     ], total_count: 3 }) })] }],
-    ["missing failure boundary log", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ deployLogText: schemaBlockedDeployLog.replace("before maintenance was confirmed", "after maintenance") })] }],
-    ["pending migration IDs missing", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ deployLogText: schemaBlockedDeployLog.replace(pendingMigrationIds.join("\n"), "") })] }],
-    ["contradictory schema log", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ deployLogText: `${schemaBlockedDeployLog}\nDatabase schema is up to date` })] }],
     ["deploy controls changed after failure", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence()], controlFilesMatch: () => false }],
     ["run not in current main ancestry", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ shaIsAncestorOfCurrentMain: false })] }],
     ["deploy is concurrent with current preflight", { laterRuns: [deployRun({ id: 100000000000 }), {

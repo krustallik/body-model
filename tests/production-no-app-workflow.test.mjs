@@ -120,6 +120,10 @@ describe("no-app preparation workflow boundaries", () => {
     expect(host).toContain('git hash-object --stdin < <(git cat-file blob "$lock_helper_blob")');
     expect(host).toContain("assertPostgresClientCompatibility(process.argv[2], process.argv[3])");
     expect(host).toContain("assertFreshWriterDrain(after.report, { now: Date.now(), maxAgeMs: 30_000 })");
+    expect(host).toContain('target_url="$(bash "$deploy_path/scripts/production-db-target.sh" --psql-url)"');
+    expect(host).toContain('--env "BODYCAST_PSQL_DATABASE_URL=$target_url"');
+    expect(host).toContain('psql "$BODYCAST_PSQL_DATABASE_URL"');
+    expect(host).not.toContain('psql --username="$POSTGRES_USER" --dbname=bodycast');
     expect(host).toContain('docker exec "$dump_container_id"');
     expect(host).toContain("stableNoAppSnapshot(before)");
     expect(noAppVerifier).toContain("writerDrain.observerPid = null");

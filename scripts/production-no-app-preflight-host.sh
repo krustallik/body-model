@@ -79,7 +79,7 @@ source_capture_path="$git_dir/bodycast-production-pre-ddl-release-before-${EXPEC
 receipt_path="$git_dir/bodycast-production-pre-ddl-release-resume-${EXPECTED_SOURCE_RUN_ID}-${EXPECTED_SOURCE_ATTEMPT}"
 
 collect_snapshot() {
-  local suffix="$1" topology marker db_meta container_id fingerprint pin_name pinned_image_id
+  local suffix="$1" topology marker db_meta container_id fingerprint pin_name pinned_image_id target_url
   local sql_file="$tmp/preflight-${suffix}.sql" raw_file="$tmp/raw-${suffix}.json" report_file="$tmp/report-${suffix}.json"
   local writer_file="$tmp/writer-${suffix}.json" preflight_file="$tmp/preflight-result-${suffix}.json"
   local payload_file="$tmp/host-snapshot-${suffix}.json" verified_file="$tmp/verified-${suffix}.json"
@@ -130,12 +130,21 @@ NODE
   }
 
   node "$deploy_path/scripts/production-db-preflight.mjs" > "$sql_file"
+  # Keep the preflight on the reviewed Compose DATABASE_URL; a socket default
+  # would make inet_server_addr()/inet_server_port() null and identity unverifiable.
+  target_url="$(bash "$deploy_path/scripts/production-db-target.sh" --psql-url)"
+  [[ "$target_url" == postgresql://* || "$target_url" == postgres://* ]] \
+    && [[ "$target_url" != *$'\n'* && "$target_url" != *$'\r'* ]] || {
+    echo "The reviewed production PostgreSQL target URL is missing or malformed." >&2; return 1;
+  }
   docker exec -i \
+    --env "BODYCAST_PSQL_DATABASE_URL=$target_url" \
     --env "BODYCAST_WRITER_TOPOLOGY_JSON=$topology" \
     --env 'PGAPPNAME=bodycast-production-preflight' \
     --env 'PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000' \
-    "$DB_CONTAINER" sh -c 'exec psql --username="$POSTGRES_USER" --dbname=bodycast --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 --set="BODYCAST_WRITER_TOPOLOGY_JSON=$BODYCAST_WRITER_TOPOLOGY_JSON"' \
+    "$DB_CONTAINER" sh -c 'exec psql "$BODYCAST_PSQL_DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 --set="BODYCAST_WRITER_TOPOLOGY_JSON=$BODYCAST_WRITER_TOPOLOGY_JSON"' \
     < "$sql_file" > "$raw_file"
+  unset target_url
   fingerprint="$(bash "$deploy_path/scripts/production-db-data-fingerprint.sh" --production-container "$DB_CONTAINER")"
   [[ "$fingerprint" =~ ^[a-f0-9]{64}$ ]] || { echo "Production data fingerprint is malformed." >&2; return 1; }
   node --input-type=module - "$raw_file" "$report_file" "$fingerprint" <<'NODE'

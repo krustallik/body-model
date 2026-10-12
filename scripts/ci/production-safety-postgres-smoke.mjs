@@ -16,6 +16,7 @@ import {
   EXPECTED_PENDING_MIGRATIONS,
   EXPECTED_V4_REPUBLICATION_PENDING_MIGRATIONS,
   evaluateProductionPostflight,
+  schemaInventoryDigest,
   verifyRestoredBackup,
 } from "../production-migration-preflight.mjs";
 import { ACTIVE_ENERGY_UNIFIED_MANIFEST, STAGE_02_MANIFEST, V4_REPUBLICATION_MANIFEST } from "../production-migration-manifests.mjs";
@@ -592,16 +593,18 @@ function captureDump(db) {
   return { stream: child.stdout, exited };
 }
 
-async function restoreDump(db, archive, key) {
+async function restoreDump(db, archive, key, { clean = false } = {}) {
+  const restoreArgs = [
+    "run", "--rm", "--interactive", "--network", "host", "--env", `PGPASSWORD=${db.password}`,
+    "--entrypoint", "pg_restore", POSTGRES_IMAGE,
+    "--host", db.host, "--port", String(db.port), "--username", db.user, "--dbname", db.database,
+  ];
+  if (clean) restoreArgs.push("--clean", "--if-exists");
+  restoreArgs.push("--exit-on-error", "--no-owner", "--no-privileges", "--single-transaction");
   await restoreEncryptedPostgresBackup({
     inputPath: archive,
     key,
-    args: [
-      "run", "--rm", "--interactive", "--network", "host", "--env", `PGPASSWORD=${db.password}`,
-      "--entrypoint", "pg_restore", POSTGRES_IMAGE,
-      "--host", db.host, "--port", String(db.port), "--username", db.user, "--dbname", db.database,
-      "--exit-on-error", "--no-owner", "--no-privileges", "--single-transaction",
-    ],
+    args: restoreArgs,
     redactValues: [db.password],
   });
 }
@@ -719,6 +722,22 @@ async function createTargetBindingAuthorization(identity, now = Date.now()) {
 
 function databaseUrl(db) {
   return `postgresql://${encodeURIComponent(db.user)}:${encodeURIComponent(db.password)}@${db.host}:${db.port}/${db.database}?schema=public`;
+}
+
+function disposableRestoreContainer() {
+  const candidates = run("docker", ["ps", "--quiet", "--no-trunc", "--filter", "label=bodycast.environment=nonproduction", "--filter", "label=bodycast.disposable=true"])
+    .split("\n").map((value) => value.trim()).filter(Boolean);
+  const requested = process.env.BODYCAST_RESTORE_CONTAINER?.trim();
+  if (requested) {
+    if (!candidates.includes(requested)) {
+      throw new Error("BODYCAST_RESTORE_CONTAINER must name a running container with the required disposable labels.");
+    }
+    return requested;
+  }
+  if (candidates.length !== 1) {
+    throw new Error("Expected exactly one labelled disposable PostgreSQL restore container; set BODYCAST_RESTORE_CONTAINER to select one explicitly.");
+  }
+  return candidates[0];
 }
 
 async function deployPendingPrismaMigrations(db, scratch, { excludeMigrationNames = [] } = {}) {
@@ -1373,8 +1392,7 @@ async function main() {
       throw new Error("Synthetic encrypted custom-format backup is empty or lacks restrictive permissions.");
     }
 
-    const disposableContainer = run("docker", ["ps", "--quiet", "--filter", "label=bodycast.environment=nonproduction", "--filter", "label=bodycast.disposable=true"])
-      .split("\n")[0];
+    const disposableContainer = disposableRestoreContainer();
     if (!disposableContainer) throw new Error("Could not identify the explicitly labelled disposable PostgreSQL target service.");
     const verifiedRestore = spawnSync(process.execPath, ["scripts/verify-postgres-restore.mjs", "--container", disposableContainer, "--user", target.user, "--backup", archive, "--confirm-disposable-target", "nonproduction-disposable"], {
       encoding: "utf8", env: { ...process.env, PRODUCTION_BACKUP_ENCRYPTION_KEY: encodedKey }, windowsHide: true,
@@ -1386,6 +1404,78 @@ async function main() {
     await restoreDump(target, archive, key);
     const restoredReport = JSON.parse(sql(target, requireSql("scripts/verify-restored-backup.sql")));
     restoredReport.logicalDataFingerprint = logicalDataFingerprint(target);
+    const lifecycleConstraintName = "PhysiologyV7Lifecycle_unifiedTargetRevision_supported";
+    const restoredInventoryReport = readSourceReport(target);
+    const sourceLifecycleConstraint = sourceReport.objects.find(({ name }) => name === lifecycleConstraintName);
+    const restoredLifecycleConstraint = restoredInventoryReport.objects.find(({ name }) => name === lifecycleConstraintName);
+    if (!sourceLifecycleConstraint?.present || sourceLifecycleConstraint.kind !== "constraint"
+      || !restoredLifecycleConstraint?.present || restoredLifecycleConstraint.kind !== "constraint"
+      || sourceLifecycleConstraint.signature === restoredLifecycleConstraint.signature) {
+      throw new Error("PostgreSQL dump/restore did not reproduce the distinct V3/V4 lifecycle CHECK deparse forms.");
+    }
+    const restoredWithInventory = { ...restoredReport, objects: restoredInventoryReport.objects };
+    const lifecycleRestore = verifyRestoredBackup(sourceReport, restoredWithInventory);
+    if (!lifecycleRestore.verified || schemaInventoryDigest(sourceReport.objects) !== schemaInventoryDigest(restoredWithInventory.objects)) {
+      throw new Error("Exact PostgreSQL dump/restore deparse equivalence did not preserve strict backup verification.");
+    }
+    const assertLiveSchemaDriftRejected = (description) => {
+      const liveObjects = readSourceReport(target).objects;
+      const result = verifyRestoredBackup(sourceReport, { ...restoredReport, objects: liveObjects });
+      if (result.verified || result.blockers.length !== 1
+        || result.blockers[0] !== "Restored schema inventory digest differs from the source snapshot.") {
+        throw new Error(`${description} did not fail solely on the live PostgreSQL schema inventory: ${result.blockers.join(" ")}`);
+      }
+      return true;
+    };
+    const restoreCleanBaseline = async () => {
+      await restoreDump(target, archive, key, { clean: true });
+      const resetReport = JSON.parse(sql(target, requireSql("scripts/verify-restored-backup.sql")));
+      resetReport.logicalDataFingerprint = logicalDataFingerprint(target);
+      resetReport.objects = readSourceReport(target).objects;
+      const resetVerification = verifyRestoredBackup(sourceReport, resetReport);
+      if (!resetVerification.verified || resetReport.logicalDataFingerprint !== sourceReport.logicalDataFingerprint) {
+        throw new Error(`Restoring the disposable target baseline after a schema mutation did not preserve history/data: ${resetVerification.blockers.join(" ")}`);
+      }
+    };
+
+    sql(target, `ALTER TABLE public."PhysiologyV7Lifecycle" DROP CONSTRAINT "${lifecycleConstraintName}";
+      ALTER TABLE public."PhysiologyV7Lifecycle" ADD CONSTRAINT "${lifecycleConstraintName}"
+      CHECK ("unifiedTargetRevision" IN (
+        'unified-experimental-physiology-state-v3-relative-muscle-daily-cumulative-diagnostics',
+        'unreviewed-v4-revision'
+      )) NOT VALID;`);
+    const alteredLifecycleConstraintRejected = assertLiveSchemaDriftRejected("A changed V4 lifecycle CHECK predicate");
+    await restoreCleanBaseline();
+
+    sql(target, `ALTER TABLE public."PhysiologyV7Lifecycle" DROP CONSTRAINT "${lifecycleConstraintName}";`);
+    const missingLifecycleConstraintRejected = assertLiveSchemaDriftRejected("A missing V4 lifecycle CHECK constraint");
+    await restoreCleanBaseline();
+
+    sql(target, `ALTER TABLE public."StrengthDiarySession" DROP CONSTRAINT "StrengthDiarySession_accountingInputRevision_positive";
+      ALTER TABLE public."StrengthDiarySession" ADD CONSTRAINT "StrengthDiarySession_accountingInputRevision_positive"
+      CHECK (false) NOT VALID;`);
+    const alteredUnrelatedConstraintRejected = assertLiveSchemaDriftRejected("A changed unrelated CHECK constraint");
+    await restoreCleanBaseline();
+
+    const functionInventoryName = "function:physiology_v7_workout_date(integer)";
+    const functionInventoryObject = restoredInventoryReport.objects.find(({ name }) => name === functionInventoryName);
+    const functionDefinition = functionInventoryObject?.signature?.replace(/^definition=/, "");
+    const changedFunctionDefinition = functionDefinition?.replace("RETURN affected;", "RETURN NULL;");
+    if (!functionInventoryObject?.present || !functionDefinition || changedFunctionDefinition === functionDefinition) {
+      throw new Error("PostgreSQL restore fixture lacks the expected reviewed function for the function drift assertion.");
+    }
+    sql(target, changedFunctionDefinition);
+    const alteredFunctionRejected = assertLiveSchemaDriftRejected("A changed unrelated function");
+    await restoreCleanBaseline();
+
+    const triggerInventoryName = "trigger:Workout.Workout_v7_invalidate_update";
+    const triggerInventoryObject = restoredInventoryReport.objects.find(({ name }) => name === triggerInventoryName);
+    if (!triggerInventoryObject?.present || triggerInventoryObject.kind !== "trigger") {
+      throw new Error("PostgreSQL restore fixture lacks the expected reviewed trigger for the trigger drift assertion.");
+    }
+    sql(target, `ALTER TABLE public."Workout" DISABLE TRIGGER "Workout_v7_invalidate_update";`);
+    const alteredTriggerRejected = assertLiveSchemaDriftRejected("A changed unrelated trigger state");
+    await restoreCleanBaseline();
     const fingerprintUrl = new URL(databaseUrl(target));
     fingerprintUrl.search = "";
     const standaloneFingerprint = execFileSync("bash", ["scripts/production-db-data-fingerprint.sh", "--test-url"], {
@@ -1523,6 +1613,12 @@ async function main() {
       encryptedBytes: metadata.size,
       verifierPositivePath: true,
       restoredMigrationRows: restored.migrationCount,
+      restoredSchemaInventoryExactReparseAccepted: lifecycleRestore.verified,
+      alteredLifecycleConstraintRejected,
+      missingLifecycleConstraintRejected,
+      alteredUnrelatedConstraintRejected,
+      alteredUnrelatedFunctionRejected: alteredFunctionRejected,
+      alteredUnrelatedTriggerRejected: alteredTriggerRejected,
       restoredStrengthDiarySessionRows: restoredReport.readability.StrengthDiarySession.rowCount,
       restoredExerciseCatalogRows: restoredReport.readability.ExerciseCatalog.rowCount,
       populatedSixMigrationSequence: true,

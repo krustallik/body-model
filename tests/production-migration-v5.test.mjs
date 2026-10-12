@@ -48,6 +48,65 @@ describe("production schema signature normalization", () => {
     expect(normalizeObjectSignature(formatted)).not.toBe(normalizeObjectSignature(changedLiteral));
   });
 
+  it("accepts only PostgreSQL's exact pg_dump rewrite of the reviewed V3/V4 lifecycle CHECK", async () => {
+    const migration = await readFile(new URL("../prisma/migrations/20261006130000_unified_v4_glycogen_water_rollout/migration.sql", import.meta.url), "utf8");
+    const v3 = "unified-experimental-physiology-state-v3-relative-muscle-daily-cumulative-diagnostics";
+    const v4 = "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once";
+    expect(migration).toContain(`CHECK (\"unifiedTargetRevision\" IN (\n      '${v3}',\n      '${v4}'\n    ))`);
+
+    const sourceSignature = `c|validated=true|table=\"PhysiologyV7Lifecycle\"|definition=CHECK (\"unifiedTargetRevision\"::text = ANY (ARRAY['${v3}'::character varying, '${v4}'::character varying]::text[]))`;
+    const restoredSignature = `c|validated=true|table=\"PhysiologyV7Lifecycle\"|definition=CHECK (\"unifiedTargetRevision\"::text = ANY (ARRAY['${v3}'::character varying::text, '${v4}'::character varying::text]))`;
+    const originalSourceDigest = schemaInventoryDigest([{
+      name: "PhysiologyV7Lifecycle_unifiedTargetRevision_supported", present: true, kind: "constraint", signature: sourceSignature,
+    }]);
+    const restoredConstraint = {
+      name: "PhysiologyV7Lifecycle_unifiedTargetRevision_supported", present: true, kind: "constraint", signature: restoredSignature,
+    };
+
+    expect(schemaInventoryDigest([restoredConstraint])).toBe(originalSourceDigest);
+    const exactRestoreDiagnostic = schemaInventoryDifferenceSummary([{
+      name: restoredConstraint.name, present: true, kind: "constraint", signature: sourceSignature,
+    }], [restoredConstraint]);
+    expect(exactRestoreDiagnostic.changedObjects.find(({ name }) => name === restoredConstraint.name)).toMatchObject({
+      name: restoredConstraint.name,
+      changedFields: ["signature"],
+      normalizedSignaturesEqual: true,
+    });
+
+    const changedPredicate = {
+      ...restoredConstraint,
+      signature: restoredSignature.replace(v4, "unreviewed-v4-revision"),
+    };
+    const changedPredicateDiagnostic = schemaInventoryDifferenceSummary([{
+      name: restoredConstraint.name, present: true, kind: "constraint", signature: sourceSignature,
+    }], [changedPredicate]);
+    expect(changedPredicateDiagnostic.changedObjects.find(({ name }) => name === restoredConstraint.name).normalizedSignaturesEqual).toBe(false);
+
+    for (const changed of [
+      changedPredicate,
+      { ...restoredConstraint, name: `${restoredConstraint.name}_renamed` },
+      { ...restoredConstraint, kind: "index" },
+      { ...restoredConstraint, present: false },
+      { ...restoredConstraint, signature: `${restoredSignature} OR TRUE` },
+    ]) {
+      expect(schemaInventoryDigest([changed])).not.toBe(originalSourceDigest);
+    }
+
+    const unrelated = { name: "another-reviewed-constraint", present: true, kind: "constraint", signature: "CHECK (id > 0)" };
+    expect(schemaInventoryDigest([restoredConstraint, unrelated])).not.toBe(schemaInventoryDigest([{
+      name: restoredConstraint.name, present: true, kind: "constraint", signature: sourceSignature,
+    }, { ...unrelated, signature: "CHECK (id >= 0)" }]));
+
+    for (const kind of ["constraint", "function", "trigger"]) {
+      const sourceObject = { name: `unrelated-${kind}`, present: true, kind, signature: `${kind}|reviewed-definition` };
+      const changedObject = { ...sourceObject, signature: `${kind}|changed-definition` };
+      expect(schemaInventoryDigest([sourceObject])).not.toBe(schemaInventoryDigest([changedObject]));
+    }
+
+    const missingConstraint = { ...restoredConstraint, present: false, kind: "missing", signature: null };
+    expect(schemaInventoryDigest([missingConstraint])).not.toBe(originalSourceDigest);
+  });
+
   it("binds V4 baseline function signatures to the reviewed prior migration bodies", async () => {
     const [persistenceMigration, staleSuffixMigration, v4Migration] = await Promise.all([
       readFile(new URL("../prisma/migrations/20260918120000_add_v7_physiology_persistence/migration.sql", import.meta.url), "utf8"),

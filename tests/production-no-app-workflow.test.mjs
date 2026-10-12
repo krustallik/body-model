@@ -1,77 +1,66 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { activeProductionMutationRunInventory, buildCaptureHistoryEvidence, extractGitHubResumeReceipt } from "../scripts/github-no-app-preflight-evidence.mjs";
-import { createCaptureResumeReceipt } from "../scripts/production-capture-resume-receipt.mjs";
+import { activeProductionMutationRunInventory, buildCaptureHistoryEvidence } from "../scripts/github-no-app-preflight-evidence.mjs";
 
-const RESUME_RUN = {
-  id: "38211169161", head_sha: "3ede9e1644616e65edb3ac29a49df2f109786942", run_attempt: 1,
-};
-const RECEIPT_JOB = "Inspect, back up, restore, and rehearse on disposable PostgreSQL";
-const RECEIPT_STEP = "Enter maintenance and drain the old app before backup";
-const RECEIPT_MARKER = "BODYCAST_PRE_DDL_RESUME_RECEIPT=";
+const RESUME_RUN_ID = "38211169161";
+const RESUME_SHA = "3ede9e1644616e65edb3ac29a49df2f109786942";
+const SOURCE_SHA = "fe55468321b9ef8e9783aa3874e1b42c2736b514";
+const MAIN_SHA = "39164557b50af6d304b4ab2764bdac1724d852c5";
+const PREFLIGHT_PATH = ".github/workflows/production-migration-preflight.yml";
 
-function resumeReceipt(overrides = {}) {
-  const { captureRunId = RESUME_RUN.id, captureRunAttempt = RESUME_RUN.run_attempt, ...receiptOverrides } = overrides;
-  return createCaptureResumeReceipt({
-    schemaVersion: 1, sourceRunId: "38205023003", sourceRunAttempt: 1,
-    sourceSha: "fe55468321b9ef8e9783aa3874e1b42c2736b514",
-    targetSha: "3ede9e1644616e65edb3ac29a49df2f109786942",
-    sourceRecordDigest: "a".repeat(64), currentRecordDigest: "b".repeat(64), compatibilityDigest: "c".repeat(64),
-    ...receiptOverrides,
-  }, { captureRunId, captureRunAttempt });
-}
-
-function outputLine(receipt) {
-  return `${RECEIPT_JOB}\t${RECEIPT_STEP}\t2026-10-12T06:11:10.0581259Z ${RECEIPT_MARKER}${Buffer.from(JSON.stringify(receipt)).toString("base64")}`;
-}
-
-function legacyOutputLine(receipt) {
-  return `${RECEIPT_JOB}\t${RECEIPT_STEP}\t2026-10-12T06:11:10.0581259Z > ${RECEIPT_MARKER}${Buffer.from(JSON.stringify(receipt)).toString("base64")}`;
-}
-
-function echoedShellSource() {
-  return `${RECEIPT_JOB}\t${RECEIPT_STEP}\t2026-10-12T06:11:02.3105545Z ^[[36;1m  mapfile -t RECEIPT_LINES < <(sed -n 's/^${RECEIPT_MARKER}//p' "$REMOTE_OUTPUT_FILE")^[[0m`;
+function resumeRun(overrides = {}) {
+  return {
+    id: RESUME_RUN_ID,
+    workflow_id: "1234",
+    path: `${PREFLIGHT_PATH}@refs/heads/main`,
+    status: "completed",
+    conclusion: "failure",
+    run_attempt: 1,
+    head_branch: "main",
+    event: "workflow_dispatch",
+    head_sha: RESUME_SHA,
+    display_title: `Preflight ${RESUME_SHA} unified-v4-republication-v1`,
+    actor: { id: "126446430" },
+    triggering_actor: { id: "126446430" },
+    repository: { full_name: "krustallik/body-model", owner: { id: "126446430", login: "krustallik" } },
+    ...overrides,
+  };
 }
 
 describe("no-app preparation workflow boundaries", () => {
-  it("extracts one emitted timestamp-space receipt and ignores the echoed shell command", () => {
-    const receipt = resumeReceipt();
-    expect(extractGitHubResumeReceipt(`${echoedShellSource()}\n${outputLine(receipt)}`, RESUME_RUN)).toEqual(receipt);
-  });
-
-  it("continues to accept the previously supported timestamp-command-output format", () => {
-    const receipt = resumeReceipt();
-    expect(extractGitHubResumeReceipt(legacyOutputLine(receipt), RESUME_RUN)).toEqual(receipt);
+  it("uses structured owner/run identity and marks historical log evidence UNVERIFIED", () => {
+    const result = buildCaptureHistoryEvidence({
+      currentRunId: "900", currentMainSha: MAIN_SHA, sourceRun: resumeRun(), preflightWorkflowId: "1234", allProductionRuns: [],
+    });
+    expect(result.proof).toMatchObject({
+      schemaVersion: 3, sourceRunId: "38205023003", sourceRunAttempt: 1, sourceSha: SOURCE_SHA,
+      resumeRunId: RESUME_RUN_ID, resumeRunAttempt: 1, resumeSha: RESUME_SHA, targetSha: MAIN_SHA,
+      historyProvenance: {
+        receiptJobLog: "UNVERIFIED", priorV2ArtifactLineage: "UNVERIFIED", interveningWorkflowEffects: "UNVERIFIED",
+      },
+    });
+    expect(result).not.toHaveProperty("githubReceipt");
   });
 
   it.each([
-    ["missing output", ""],
-    ["echoed shell source only", echoedShellSource()],
-    ["duplicate output", `${outputLine(resumeReceipt())}\n${outputLine(resumeReceipt())}`],
-    ["arbitrary ANSI diagnostic marker beside valid receipt", `${RECEIPT_JOB}\t${RECEIPT_STEP}\t2026-10-12T06:11:02.3105545Z ^[[36;1m unrelated diagnostic output ${RECEIPT_MARKER}${Buffer.from(JSON.stringify(resumeReceipt())).toString("base64")}\n${outputLine(resumeReceipt())}`],
-    ["unknown emitted delimiter", `${RECEIPT_JOB}\t${RECEIPT_STEP}\t2026-10-12T06:11:10.0581259Z output: ${RECEIPT_MARKER}${Buffer.from(JSON.stringify(resumeReceipt())).toString("base64")}`],
-    ["spoofed job prefix", `Unrelated job\t${RECEIPT_STEP}\t2026-10-12T06:11:10.0581259Z ${RECEIPT_MARKER}${Buffer.from(JSON.stringify(resumeReceipt())).toString("base64")}`],
-    ["malformed base64", `${RECEIPT_JOB}\t${RECEIPT_STEP}\t2026-10-12T06:11:10.0581259Z > ${RECEIPT_MARKER}not-base64!`],
-    ["malformed JSON", `${RECEIPT_JOB}\t${RECEIPT_STEP}\t2026-10-12T06:11:10.0581259Z > ${RECEIPT_MARKER}${Buffer.from("{").toString("base64")}`],
-    ["wrong source SHA", outputLine(resumeReceipt({ sourceSha: "d".repeat(40) }))],
-    ["wrong source run", outputLine(resumeReceipt({ sourceRunId: "38205023004" }))],
-    ["wrong target SHA", outputLine(resumeReceipt({ targetSha: "e".repeat(40) }))],
-    ["wrong capture run", outputLine(resumeReceipt({ captureRunId: "38211169160" }))],
-    ["wrong capture attempt", outputLine(resumeReceipt({ captureRunAttempt: 2 }))],
-  ])("rejects %s", (_label, logText) => {
-    expect(() => extractGitHubResumeReceipt(logText, RESUME_RUN)).toThrow();
-  });
-
-  it("rejects a receipt attributed to a different GitHub run SHA or attempt", () => {
-    expect(() => extractGitHubResumeReceipt(outputLine(resumeReceipt()), { ...RESUME_RUN, head_sha: "f".repeat(40) })).toThrow();
-    expect(() => extractGitHubResumeReceipt(outputLine(resumeReceipt()), { ...RESUME_RUN, run_attempt: 2 })).toThrow();
+    ["wrong run ID", { id: "38211169160" }],
+    ["wrong SHA", { head_sha: "f".repeat(40) }],
+    ["wrong run attempt", { run_attempt: 2 }],
+    ["wrong owner", { actor: { id: "5" }, triggering_actor: { id: "5" } }],
+    ["wrong workflow path", { path: ".github/workflows/production-migrate.yml@refs/heads/main" }],
+    ["unexpected conclusion", { conclusion: "success" }],
+  ])("rejects source run with %s", (_label, overrides) => {
+    expect(() => buildCaptureHistoryEvidence({
+      currentRunId: "900", currentMainSha: MAIN_SHA, sourceRun: resumeRun(overrides),
+      preflightWorkflowId: "1234", allProductionRuns: [],
+    })).toThrow();
   });
 
   it("binds its capture-history collector to the exact known owner-run lineage", () => {
     expect(() => buildCaptureHistoryEvidence({
-      currentRunId: "900", currentMainSha: "a".repeat(40),
-      sourceRun: { id: "38211169160", head_sha: "3ede9e1644616e65edb3ac29a49df2f109786942", run_attempt: 1 },
-    })).toThrow("Capture source is not the exact owner-run V4 resume attempt");
+      currentRunId: "900", currentMainSha: MAIN_SHA,
+      sourceRun: resumeRun({ id: "38211169160" }), preflightWorkflowId: "1234", allProductionRuns: [],
+    })).toThrow("Capture source is not the exact original V4 resume run");
   });
 
   it("includes older queued production mutations in the competing-run inventory", () => {
@@ -93,6 +82,10 @@ describe("no-app preparation workflow boundaries", () => {
     expect(workflow).toContain("group: bodycast-production-release");
     expect(workflow).toContain("bodycast-no-app-backup-");
     expect(workflow).toContain("bodycast-no-app-preparation-");
+    expect(workflow).toContain("historical receipt logs");
+    expect(workflow).toContain("UNVERIFIED");
+    expect(workflow).not.toContain("BODYCAST_GITHUB_RESUME_RECEIPT_B64");
+    expect(workflow).not.toContain(".githubReceipt");
     expect(workflow).not.toContain("production-traffic-cutover.sh");
     expect(workflow).not.toContain("production-migration-sign.mjs");
     expect(workflow).not.toContain("production-migrate.yml");
@@ -116,6 +109,8 @@ describe("no-app preparation workflow boundaries", () => {
     expect(host).toContain('source_capture_path="$git_dir/bodycast-production-pre-ddl-release-before-${EXPECTED_RESUME_SHA}"');
     expect(host).toContain('readonly EXPECTED_RESUME_SHA="3ede9e1644616e65edb3ac29a49df2f109786942"');
     expect(host).toContain('sourceRecordText: readFileSync(sourcePath, "utf8")');
+    expect(host).toContain('currentReceiptText: readFileSync(receiptPath, "utf8")');
+    expect(host).not.toContain("BODYCAST_GITHUB_RESUME_RECEIPT_B64");
     expect(host).not.toContain("bodycast-production-pre-ddl-release-archive-");
     expect(host).toContain("bodycast_acquire_production_release_lock");
     expect(host.indexOf('source <(git cat-file blob "$lock_helper_blob")')).toBeLessThan(host.indexOf("bodycast_acquire_production_release_lock"));
@@ -139,5 +134,12 @@ describe("no-app preparation workflow boundaries", () => {
     expect(workflow).toContain("--set=BODYCAST_WRITER_TOPOLOGY_JSON=null");
     expect(workflow).toContain("--execution-integrity --manifest");
     expect(workflow).toContain("production DDL: NOT EXECUTED");
+  });
+
+  it("keeps historical log parsing confined to the standard preflight resume gate", async () => {
+    const resume = await readFile(new URL("../scripts/production-preflight-resume.mjs", import.meta.url), "utf8");
+    expect(resume).toContain("parseActionLogRecords");
+    expect(resume).toContain("assertSafeFailedPreMaintenanceDeploy");
+    expect(resume).toContain("assertSafeCaptureBlockedPreflightRetry");
   });
 });

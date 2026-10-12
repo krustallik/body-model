@@ -57,44 +57,37 @@ export function assertNoCompetingProductionRuns(runs, { currentRunId } = {}) {
   return true;
 }
 
+function parseCanonicalResumeReceiptText(text) {
+  if (typeof text !== "string" || text.length > 8_193 || !text.endsWith("\n") || text.endsWith("\n\n")) {
+    reject("host resume receipt is missing or outside its canonical size and line-ending bounds.");
+  }
+  const jsonText = text.slice(0, -1);
+  let receipt;
+  try { receipt = JSON.parse(jsonText); } catch { reject("host resume receipt is malformed JSON."); }
+  if (JSON.stringify(receipt) !== jsonText) reject("host resume receipt is ambiguous or noncanonical JSON.");
+  return receipt;
+}
+
 export function reconcileNoAppCaptureLineage({
-  currentRecordText, sourceRecordText, currentReceipt, githubReceipt, databaseReport, captureHistoryProof,
-  pinnedImageId,
+  releaseSha, currentRecordText, sourceRecordText, currentReceiptText, databaseReport, captureHistoryProof, pinnedImageId,
 } = {}) {
-  if (!captureHistoryProof || captureHistoryProof.schemaVersion !== 2
-    || String(captureHistoryProof.sourceRunId) !== NO_APP_CAPTURE_LINEAGE.resumeRunId
-    || !Array.isArray(captureHistoryProof.safeCaptureGuardPreflightRunIds)
-    || !["38213907625", "38214147022"].every((id) => captureHistoryProof.safeCaptureGuardPreflightRunIds.includes(id))
-    || !Array.isArray(captureHistoryProof.captureGuardPreflightEffects)
-    || !["38213907625", "38214147022"].every((id) => {
-      const matches = captureHistoryProof.captureGuardPreflightEffects.filter((effect) => effect?.runId === id);
-      return matches.length === 1 && /^([a-f0-9]{40})$/.test(String(matches[0].sha ?? ""))
-        && matches[0].maintenanceRoutePublishedAndPublic503Confirmed === true
-        && matches[0].oldAppStopReached === false
-        && matches[0].productionDatabaseInspectionReached === false
-        && matches[0].pgDumpStarted === false && matches[0].artifactsPublished === false;
-    })
-    || captureHistoryProof.captureGuardPreflightEffects.length !== 2
-    || !Array.isArray(captureHistoryProof.safePreMaintenanceDeployRunIds)
-    || !captureHistoryProof.safePreMaintenanceDeployRunIds.includes("38226427716")
-    || JSON.stringify([...(captureHistoryProof.pendingMigrationIds ?? [])].sort()) !== JSON.stringify(EXPECTED_PENDING)
-    || captureHistoryProof.historicalV2?.preflightRunId !== "38068531599"
-    || captureHistoryProof.historicalV2?.preflightSha !== "62b6961dde7036100c8af7281e7bfab75bb662db"
-    || captureHistoryProof.historicalV2?.manifestId !== "active-energy-unified-v2"
-    || captureHistoryProof.historicalV2?.migrationRunId !== "38069108209"
-    || captureHistoryProof.historicalV2?.migrationSha !== "62b6961dde7036100c8af7281e7bfab75bb662db"
-    || captureHistoryProof.historicalV2?.noV2ArtifactReuseForV4 !== true
-    || !/^sha256:[a-f0-9]{64}$/.test(String(captureHistoryProof.historicalV2?.backupArtifactDigest ?? ""))
-    || !/^sha256:[a-f0-9]{64}$/.test(String(captureHistoryProof.historicalV2?.evidenceArtifactDigest ?? ""))
-    || captureHistoryProof.captureRefresh?.runId !== NO_APP_CAPTURE_LINEAGE.sourceRunId
-    || captureHistoryProof.captureRefresh?.releaseSha !== NO_APP_CAPTURE_LINEAGE.sourceSha
-    || captureHistoryProof.captureRefresh?.failureBoundary !== "isolated-restore-before-artifact-upload"
-    || captureHistoryProof.captureRefresh?.artifactsPublished !== false) {
-    reject("exact owner-run history does not prove the V4 lineage and the later maintenance-route publication/capture-guard failure boundary.");
+  const unverifiedHistory = captureHistoryProof?.historyProvenance;
+  if (!captureHistoryProof || captureHistoryProof.schemaVersion !== 3
+    || captureHistoryProof.sourceRunId !== NO_APP_CAPTURE_LINEAGE.sourceRunId
+    || captureHistoryProof.sourceRunAttempt !== NO_APP_CAPTURE_LINEAGE.sourceRunAttempt
+    || captureHistoryProof.sourceSha !== NO_APP_CAPTURE_LINEAGE.sourceSha
+    || captureHistoryProof.resumeRunId !== NO_APP_CAPTURE_LINEAGE.resumeRunId
+    || captureHistoryProof.resumeRunAttempt !== NO_APP_CAPTURE_LINEAGE.resumeRunAttempt
+    || captureHistoryProof.resumeSha !== NO_APP_CAPTURE_LINEAGE.resumeSha
+    || captureHistoryProof.targetSha !== releaseSha
+    || unverifiedHistory?.receiptJobLog !== "UNVERIFIED"
+    || unverifiedHistory?.priorV2ArtifactLineage !== "UNVERIFIED"
+    || unverifiedHistory?.interveningWorkflowEffects !== "UNVERIFIED") {
+    reject("exact source-run identity or explicit historical-provenance status is missing.");
   }
   if (typeof currentRecordText !== "string" || typeof sourceRecordText !== "string"
-    || typeof githubReceipt !== "object" || typeof currentReceipt !== "object") {
-    reject("current capture, exact resume source capture, or independently collected resume receipt is missing.");
+    || typeof currentReceiptText !== "string") {
+    reject("host current/source capture or host resume receipt is missing.");
   }
 
   let sourceRecord; let currentRecord;
@@ -121,6 +114,7 @@ export function reconcileNoAppCaptureLineage({
 
   let receipt;
   try {
+    const currentReceipt = parseCanonicalResumeReceiptText(currentReceiptText);
     receipt = validateCaptureResumeReceipt(currentReceipt, {
       mode: "ordinary",
       sourceRunId: NO_APP_CAPTURE_LINEAGE.sourceRunId,
@@ -133,9 +127,8 @@ export function reconcileNoAppCaptureLineage({
       currentRecordDigest: canonicalSha256(currentRecord),
       compatibilityDigest: previousAppDatabaseCompatibilityDigests(databaseReport).compatibilityDigest,
     });
-    validateCaptureResumeReceipt(githubReceipt, receipt);
   } catch {
-    reject("host and GitHub resume receipts do not bind the exact current and source capture records.");
+    reject("host resume receipt does not bind the exact source/current captures and live database.");
   }
 
   if (!DIGEST.test(String(receipt.compatibilityDigest ?? ""))
@@ -146,7 +139,7 @@ export function reconcileNoAppCaptureLineage({
   }
   return Object.freeze({
     schemaVersion: 1,
-    evidenceBasis: "host-current-record-plus-resume-source-capture-and-owner-run-receipt",
+    evidenceBasis: "host-captures-A-C-plus-host-receipt-D",
     githubArtifactDigestAvailable: false,
     sourceRunId: NO_APP_CAPTURE_LINEAGE.sourceRunId,
     sourceRunAttempt: NO_APP_CAPTURE_LINEAGE.sourceRunAttempt,
@@ -158,13 +151,7 @@ export function reconcileNoAppCaptureLineage({
     currentRecordDigest: canonicalSha256(currentRecord),
     resumeReceiptDigest: canonicalSha256(receipt),
     historyProofDigest: canonicalSha256(captureHistoryProof),
-    historyProvenance: Object.freeze({
-      safePreflightRetryRunIds: [...captureHistoryProof.safeCaptureGuardPreflightRunIds].sort(),
-      captureGuardPreflightEffects: captureHistoryProof.captureGuardPreflightEffects,
-      safePreMaintenanceDeployRunIds: [...captureHistoryProof.safePreMaintenanceDeployRunIds].sort(),
-      historicalV2: captureHistoryProof.historicalV2,
-      captureRefresh: captureHistoryProof.captureRefresh,
-    }),
+    historyProvenance: Object.freeze({ ...unverifiedHistory }),
     rollbackImagePin: NO_APP_CAPTURE_LINEAGE.rollbackImagePin,
     rollbackImageMatchesRecord: true,
     appRuntime: "unavailable",
@@ -228,7 +215,7 @@ export function verifyNoAppLiveState({
     reject("existing maintenance route and public 503 evidence are inconsistent.");
   }
   if (!captureLineage || captureLineage.schemaVersion !== 1
-    || captureLineage.evidenceBasis !== "host-current-record-plus-resume-source-capture-and-owner-run-receipt"
+    || captureLineage.evidenceBasis !== "host-captures-A-C-plus-host-receipt-D"
     || captureLineage.githubArtifactDigestAvailable !== false
     || captureLineage.sourceRunId !== NO_APP_CAPTURE_LINEAGE.sourceRunId
     || captureLineage.sourceRunAttempt !== NO_APP_CAPTURE_LINEAGE.sourceRunAttempt
@@ -240,8 +227,9 @@ export function verifyNoAppLiveState({
     || !DIGEST.test(String(captureLineage.currentRecordDigest ?? ""))
     || !DIGEST.test(String(captureLineage.resumeReceiptDigest ?? ""))
     || !DIGEST.test(String(captureLineage.historyProofDigest ?? ""))
-    || !captureLineage.historyProvenance?.historicalV2
-    || !captureLineage.historyProvenance?.captureRefresh
+    || captureLineage.historyProvenance?.receiptJobLog !== "UNVERIFIED"
+    || captureLineage.historyProvenance?.priorV2ArtifactLineage !== "UNVERIFIED"
+    || captureLineage.historyProvenance?.interveningWorkflowEffects !== "UNVERIFIED"
     || captureLineage.rollbackImagePin !== NO_APP_CAPTURE_LINEAGE.rollbackImagePin
     || captureLineage.rollbackImageMatchesRecord !== true
     || captureLineage.rollbackReadiness !== "unverified" || captureLineage.previousAppRecovery !== "unverified"
@@ -262,6 +250,9 @@ export function createNoAppPreparationResult({ releaseSha, manifestId, databaseP
     || captureLineage?.schemaVersion !== 1
     || !DIGEST.test(String(captureLineage?.currentRecordDigest ?? ""))
     || !DIGEST.test(String(captureLineage?.resumeReceiptDigest ?? ""))
+    || captureLineage?.historyProvenance?.receiptJobLog !== "UNVERIFIED"
+    || captureLineage?.historyProvenance?.priorV2ArtifactLineage !== "UNVERIFIED"
+    || captureLineage?.historyProvenance?.interveningWorkflowEffects !== "UNVERIFIED"
     || captureLineage?.appRuntime !== "unavailable"
     || captureLineage?.previousAppRecovery !== "unverified"
     || captureLineage?.rollbackReadiness !== "unverified") {
@@ -303,6 +294,9 @@ export function createNoAppPreparationEvidence({ preparationResult, restoreResul
     || preparationResult.preparationVerified !== true || preparationResult.readyForOwnerAuthorization !== false
     || preparationResult.ddlAuthorization !== false || preparationResult.previousAppProvenance !== null
     || preparationResult.rollbackReadiness !== "unverified"
+    || preparationResult.captureHistoryProvenance?.receiptJobLog !== "UNVERIFIED"
+    || preparationResult.captureHistoryProvenance?.priorV2ArtifactLineage !== "UNVERIFIED"
+    || preparationResult.captureHistoryProvenance?.interveningWorkflowEffects !== "UNVERIFIED"
     || !/^[a-f0-9]{64}$/.test(String(preparationResult.productionDatabaseContainerId ?? ""))
     || restoreResult?.verified !== true || restoreResult?.postflightReady !== true
     || context?.releaseSha !== preparationResult.releaseSha || context?.manifestId !== preparationResult.manifestId

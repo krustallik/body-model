@@ -147,7 +147,7 @@ jobs:
             ref: "refs/heads/main", sha: process.env.GITHUB_SHA, requireInProgress: true,
           });
           NODE
-      - name: Verify exact current main and reconcile all capture/intervening workflow evidence
+      - name: Verify exact main, source run identity, and active production workflows
         id: capture_history
         env:
           GH_TOKEN: ${{ github.token }}
@@ -162,9 +162,8 @@ jobs:
           node --input-type=module - "$RUNNER_TEMP/no-app-capture-summary.json" >> "$GITHUB_STEP_SUMMARY" <<'NODE'
           import { readFileSync } from "node:fs";
           const result = JSON.parse(readFileSync(process.argv[2], "utf8"));
-          process.stdout.write(`\n- capture source run ${result.sourceRunId} and later owner/deploy failures were reconciled against complete workflow history`);
-          process.stdout.write(`\n- capture-guard failures: ${result.captureGuardEffects.map((effect) => effect.runId).join(", ")}; each republished and publicly confirmed maintenance before failing, without app stop, DB inspection, or pg_dump`);
-          process.stdout.write(`\n- verified pre-maintenance deploy guard: ${result.safeDeployRuns.join(", ")}\n`);
+          process.stdout.write(`\n- exact source run identity: ${result.sourceRunId}; historical receipt logs, prior V2 artifact lineage, and intervening workflow effects: UNVERIFIED`);
+          process.stdout.write(`\n- active production mutation workflows: ${result.activeProductionRuns.map((run) => run.id).join(", ") || "none"}\n`);
           NODE
       - name: Validate production SSH and backup credentials
         id: validate_credentials
@@ -227,8 +226,8 @@ jobs:
           const first = JSON.parse(readFileSync(firstPath, "utf8"));
           const current = JSON.parse(readFileSync(currentPath, "utf8"));
           if (canonicalSha256(first.proof) !== canonicalSha256(current.proof)
-            || canonicalSha256(first.githubReceipt) !== canonicalSha256(current.githubReceipt)) {
-            throw new Error("Capture history or receipt changed before the production snapshot.");
+            || canonicalSha256(first.productionRuns) !== canonicalSha256(current.productionRuns)) {
+            throw new Error("Source-run identity or active production workflow inventory changed before the production snapshot.");
           }
           NODE
           cp "$RUNNER_TEMP/no-app-capture-evidence-current.json" "$RUNNER_TEMP/no-app-capture-evidence.json"
@@ -255,10 +254,9 @@ jobs:
           ROUTES_PATH_B64="$(printf '%s' "$CADDY_ROUTES_PATH" | base64 -w0)"
           PG_RESTORE_VERSION_B64="$(printf '%s' "$BODYCAST_PG_RESTORE_VERSION" | base64 -w0)"
           PROOF_B64="$(jq -c '.proof' "$RUNNER_TEMP/no-app-capture-evidence.json" | base64 -w0)"
-          RECEIPT_B64="$(jq -c '.githubReceipt' "$RUNNER_TEMP/no-app-capture-evidence.json" | base64 -w0)"
           RUNS_B64="$(jq -c '.productionRuns' "$RUNNER_TEMP/no-app-capture-evidence.json" | base64 -w0)"
           REMOTE_HOST_SCRIPT_B64="$(base64 -w0 scripts/production-no-app-preflight-host.sh)"
-          REMOTE_COMMAND="set -Eeuo pipefail; deploy_path=\$(printf '%s' '$DEPLOY_PATH_B64' | base64 --decode); export DEPLOY_PATH=\"\$deploy_path\"; export APP_HOST=\$(printf '%s' '$APP_HOST_B64' | base64 --decode); export CADDY_ROUTES_PATH=\$(printf '%s' '$ROUTES_PATH_B64' | base64 --decode); export BODYCAST_PG_RESTORE_VERSION=\$(printf '%s' '$PG_RESTORE_VERSION_B64' | base64 --decode); export BODYCAST_CAPTURE_HISTORY_PROOF_B64='$PROOF_B64'; export BODYCAST_GITHUB_RESUME_RECEIPT_B64='$RECEIPT_B64'; export BODYCAST_PRODUCTION_RUNS_B64='$RUNS_B64'; export BODYCAST_CURRENT_RUN_ID='$GITHUB_RUN_ID'; cd -- \"\$deploy_path\"; printf '%s' '$REMOTE_HOST_SCRIPT_B64' | base64 --decode | bash -s -- '$RELEASE_SHA'"
+          REMOTE_COMMAND="set -Eeuo pipefail; deploy_path=\$(printf '%s' '$DEPLOY_PATH_B64' | base64 --decode); export DEPLOY_PATH=\"\$deploy_path\"; export APP_HOST=\$(printf '%s' '$APP_HOST_B64' | base64 --decode); export CADDY_ROUTES_PATH=\$(printf '%s' '$ROUTES_PATH_B64' | base64 --decode); export BODYCAST_PG_RESTORE_VERSION=\$(printf '%s' '$PG_RESTORE_VERSION_B64' | base64 --decode); export BODYCAST_CAPTURE_HISTORY_PROOF_B64='$PROOF_B64'; export BODYCAST_PRODUCTION_RUNS_B64='$RUNS_B64'; export BODYCAST_CURRENT_RUN_ID='$GITHUB_RUN_ID'; cd -- \"\$deploy_path\"; printf '%s' '$REMOTE_HOST_SCRIPT_B64' | base64 --decode | bash -s -- '$RELEASE_SHA'"
           BACKUP_FILE="$RUNNER_TEMP/bodycast-no-app-backup/production-backup.pgdump.enc"
           set -o pipefail
           timeout 100m ssh -T -p "$SSH_PORT" -i "$BODYCAST_NO_APP_SSH_KEY" \

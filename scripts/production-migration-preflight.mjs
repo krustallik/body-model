@@ -45,6 +45,25 @@ export const ALL_REVIEWED_OBJECTS = [...new Set([
 function sorted(values) { return [...values].sort(); }
 function sameArray(left, right) { return JSON.stringify(sorted(left)) === JSON.stringify(sorted(right)); }
 
+function isValidPreparedTransactionTimestamp(value) {
+  const match = typeof value === "string"
+    ? value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(Z|[+-]\d{2}:\d{2})$/)
+    : null;
+  if (!match) return false;
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, , zone] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+  if (!daysInMonth || day < 1 || day > daysInMonth || hour > 23 || minute > 59 || second > 59) return false;
+  if (zone !== "Z" && (Number(zone.slice(1, 3)) > 15 || Number(zone.slice(4, 6)) > 59)) return false;
+  return Number.isFinite(Date.parse(value));
+}
+
 const SAFE_BLOCKER_CATEGORIES = Object.freeze([
   ["data-fingerprint", /fingerprint|public-table rows|sequence state/i],
   ["migration-history", /migration|_prisma_migrations/i],
@@ -431,10 +450,25 @@ export function evaluateProductionPreflight(report, migrationDirectories, manife
   if (!String(report?.identity?.serverVersion ?? "").startsWith("17.")) blockers.push("Production PostgreSQL version differs from the reviewed major version 17.");
   if (!hasConcretePostgresEndpoint(report?.identity)) blockers.push("Production database endpoint identity is incomplete.");
 
-  const conflictingLocks = Array.isArray(report?.conflictingLocks) ? report.conflictingLocks : [];
-  if (conflictingLocks.length) blockers.push(`${conflictingLocks.length} lock(s) conflict with the exact migration DDL operations.`);
-  if (!Array.isArray(report?.preparedTransactions) || report.preparedTransactions.length > 0) {
-    blockers.push("Prepared transaction state is unknown or a prepared transaction may block migration DDL.");
+  const conflictingLocks = report?.conflictingLocks;
+  if (!Array.isArray(conflictingLocks)) {
+    blockers.push("DDL-conflicting lock inventory is unknown or malformed.");
+  } else if (conflictingLocks.length) {
+    blockers.push(`${conflictingLocks.length} lock(s) conflict with the exact migration DDL operations.`);
+  }
+  const preparedTransactions = report?.preparedTransactions;
+  const preparedTransactionIds = new Set();
+  const preparedTransactionsValid = Array.isArray(preparedTransactions) && preparedTransactions.every((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)
+      || typeof entry.gid !== "string" || !entry.gid.trim() || preparedTransactionIds.has(entry.gid)
+      || typeof entry.transaction !== "string" || !/^\d+$/.test(entry.transaction)
+      || !isValidPreparedTransactionTimestamp(entry.preparedAt)
+      || typeof entry.database !== "string" || !entry.database.trim()) return false;
+    preparedTransactionIds.add(entry.gid);
+    return true;
+  });
+  if (!preparedTransactionsValid) {
+    blockers.push("Prepared transaction state is unknown or prepared-transaction diagnostics are malformed.");
   }
   const writerDrain = evaluateProductionWriterDrain(report);
   blockers.push(...writerDrain.blockers);
@@ -463,7 +497,7 @@ export function evaluateProductionPreflight(report, migrationDirectories, manife
     readability: report?.readability ?? null,
     logicalDataFingerprint: report?.logicalDataFingerprint ?? null,
     conflictingLocks,
-    preparedTransactions: Array.isArray(report?.preparedTransactions) ? report.preparedTransactions : [],
+    preparedTransactions: Array.isArray(preparedTransactions) ? preparedTransactions : [],
     writerDrain: report?.writerDrain ?? null,
     writerDrainReady: writerDrain.ready,
     writerDrainDigest: report?.writerDrain ? canonicalSha256(report.writerDrain) : null,

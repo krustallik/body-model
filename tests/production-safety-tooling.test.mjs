@@ -253,7 +253,7 @@ describe("production migration preflight evaluator", () => {
     expect(result.diagnostics.longTransactions).toEqual(report.longTransactions);
   });
 
-  it("blocks all prepared transactions without unverified per-lock attribution", async () => {
+  it("allows unrelated prepared transactions only with complete lock diagnostics", async () => {
     const sql = await readFile(new URL("../scripts/production-db-preflight.sql", import.meta.url), "utf8");
     expect(sql).toContain("LEFT JOIN pg_stat_activity a ON a.pid = l.pid");
     expect(sql).toContain("prepared_transactions AS (");
@@ -268,9 +268,39 @@ describe("production migration preflight evaluator", () => {
       ...preflightFixture(["20260801000000_baseline", ...STAGE_02_MANIFEST.migrations.map(({ name }) => name), ...EXPECTED_PENDING_MIGRATIONS]),
       preparedTransactions,
     }, ["20260801000000_baseline", ...STAGE_02_MANIFEST.migrations.map(({ name }) => name), ...EXPECTED_PENDING_MIGRATIONS]);
-    expect(report.readyForOwnerAuthorization).toBe(false);
-    expect(report.blockers).toContain("Prepared transaction state is unknown or a prepared transaction may block migration DDL.");
+    expect(report.readyForOwnerAuthorization).toBe(true);
     expect(report.preparedTransactions).toEqual(preparedTransactions);
+
+    const conflictingPreparedLock = {
+      pid: null, blockerType: "prepared-transaction", relation: "DailyModelState", mode: "RowExclusiveLock",
+      granted: true, requiredLockMode: "AccessExclusiveLock",
+    };
+    const blocked = evaluateProductionPreflight({
+      ...preflightFixture(["20260801000000_baseline", ...STAGE_02_MANIFEST.migrations.map(({ name }) => name), ...EXPECTED_PENDING_MIGRATIONS]),
+      preparedTransactions,
+      conflictingLocks: [conflictingPreparedLock],
+    }, ["20260801000000_baseline", ...STAGE_02_MANIFEST.migrations.map(({ name }) => name), ...EXPECTED_PENDING_MIGRATIONS]);
+    expect(blocked.readyForOwnerAuthorization).toBe(false);
+    expect(blocked.blockers.join(" ")).toContain("conflict with the exact migration DDL");
+
+    for (const conflictingLocks of [undefined, null, "unknown"]) {
+      const unknownInventory = evaluateProductionPreflight({
+        ...preflightFixture(["20260801000000_baseline", ...STAGE_02_MANIFEST.migrations.map(({ name }) => name), ...EXPECTED_PENDING_MIGRATIONS]),
+        preparedTransactions,
+        conflictingLocks,
+      }, ["20260801000000_baseline", ...STAGE_02_MANIFEST.migrations.map(({ name }) => name), ...EXPECTED_PENDING_MIGRATIONS]);
+      expect(unknownInventory.readyForOwnerAuthorization).toBe(false);
+      expect(unknownInventory.blockers.join(" ")).toContain("lock inventory is unknown or malformed");
+    }
+
+    for (const preparedAt of ["invalid", "0", "2026-02-30T00:00:00Z"]) {
+      const malformedPrepared = evaluateProductionPreflight({
+        ...preflightFixture(["20260801000000_baseline", ...STAGE_02_MANIFEST.migrations.map(({ name }) => name), ...EXPECTED_PENDING_MIGRATIONS]),
+        preparedTransactions: [{ gid: "incomplete", transaction: "42", preparedAt, database: "bodycast" }],
+      }, ["20260801000000_baseline", ...STAGE_02_MANIFEST.migrations.map(({ name }) => name), ...EXPECTED_PENDING_MIGRATIONS]);
+      expect(malformedPrepared.readyForOwnerAuthorization).toBe(false);
+      expect(malformedPrepared.blockers.join(" ")).toContain("Prepared transaction state is unknown");
+    }
   });
 
   it("requires restored migration history and baseline tables to match the source report", () => {

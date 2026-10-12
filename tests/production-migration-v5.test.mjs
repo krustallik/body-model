@@ -892,7 +892,15 @@ describe("V5 closed migration manifest and full pending set", () => {
     report.conflictingLocks = [];
     report.longTransactions.push({ pid: 123, xactAgeSeconds: 900 });
     expect(evaluateProductionPreflight(report, dirs).readyForOwnerAuthorization).toBe(true);
-    report.preparedTransactions = [{ gid: "unknown-prepared-xact", transaction: "2401", preparedAt: "2026-10-05T10:00:00Z", database: "bodycast" }];
+    report.preparedTransactions = [{ gid: "unrelated-prepared-xact", transaction: "2401", preparedAt: "2026-10-05T10:00:00Z", database: "bodycast" }];
+    expect(evaluateProductionPreflight(report, dirs).readyForOwnerAuthorization).toBe(true);
+    report.conflictingLocks = [{ pid: null, blockerType: "prepared-transaction", relation: "DailyModelState",
+      mode: "RowExclusiveLock", granted: true, requiredLockMode: "AccessExclusiveLock" }];
+    expect(evaluateProductionPreflight(report, dirs).blockers.join(" ")).toContain("conflict with the exact migration DDL");
+    report.conflictingLocks = null;
+    expect(evaluateProductionPreflight(report, dirs).blockers.join(" ")).toContain("lock inventory is unknown or malformed");
+    report.conflictingLocks = [];
+    report.preparedTransactions = [{ gid: "incomplete-prepared-xact", transaction: "2402", preparedAt: "invalid", database: "bodycast" }];
     expect(evaluateProductionPreflight(report, dirs).blockers.join(" ")).toContain("Prepared transaction state is unknown");
     report.preparedTransactions = null;
     expect(evaluateProductionPreflight(report, dirs).blockers.join(" ")).toContain("Prepared transaction state is unknown");

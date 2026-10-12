@@ -288,6 +288,11 @@ jobs:
                 >> "$RUNNER_TEMP/resume-later-runs.ndjson"
             done
             DEPLOY_WORKFLOW_ID="$(gh api repos/krustallik/body-model/actions/workflows/deploy-production.yml --jq .id)"
+            NO_APP_WORKFLOW_ID="$(gh api repos/krustallik/body-model/actions/workflows/production-no-app-preflight.yml --jq .id)"
+            workflow_id="$NO_APP_WORKFLOW_ID"
+            gh api --paginate --jq '.workflow_runs[] | @json' \
+              "repos/krustallik/body-model/actions/workflows/$workflow_id/runs?per_page=100" \
+              >> "$RUNNER_TEMP/resume-later-runs.ndjson"
             gh api --paginate --jq '.workflow_runs[] | @json' \
               "repos/krustallik/body-model/actions/workflows/ci.yml/runs?branch=main&event=push&per_page=100" \
               > "$RUNNER_TEMP/resume-main-ci-runs.ndjson"
@@ -314,30 +319,17 @@ jobs:
               [[ "$deploy_run_id" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Malformed later deploy run ID."; exit 1; }
               run_file="$RUNNER_TEMP/resume-deploy-$deploy_run_id-run.json"
               jobs_file="$RUNNER_TEMP/resume-deploy-$deploy_run_id-jobs.json"
-              log_file="$RUNNER_TEMP/resume-deploy-$deploy_run_id-failure.log"
               gh api "repos/krustallik/body-model/actions/runs/$deploy_run_id" > "$run_file"
               gh api "repos/krustallik/body-model/actions/runs/$deploy_run_id/jobs" > "$jobs_file"
               chmod 600 "$run_file" "$jobs_file"
-              : > "$log_file"
-              if jq -e '.status == "completed" and .conclusion == "failure" and .run_attempt == 1 and .event == "workflow_run" and .head_branch == "main"' "$run_file" >/dev/null; then
-                deploy_job_id="$(jq -er '[.jobs[] | select(.name == "Deploy exact current-main SHA") | .id] | if length == 1 and (.[0] | type == "number") then .[0] else error("deploy job ID is missing or ambiguous") end' "$jobs_file")"
-                [[ "$deploy_job_id" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Later deploy job ID is malformed."; exit 1; }
-                gh run view "$deploy_run_id" --repo krustallik/body-model --job "$deploy_job_id" --log-failed > "$log_file"
-                log_size_bytes="$(wc -c < "$log_file")"
-                [[ "$log_size_bytes" =~ ^[0-9]+$ && "$log_size_bytes" -le 1000000 ]] || {
-                  echo "::error::Later deploy failure log exceeds the bounded evidence size."; exit 1;
-                }
-              fi
-              chmod 600 "$log_file"
-              node --input-type=module - "$run_file" "$jobs_file" "$log_file" "$RUNNER_TEMP/resume-main-ci-runs.ndjson" \
+              node --input-type=module - "$run_file" "$jobs_file" "$RUNNER_TEMP/resume-main-ci-runs.ndjson" \
                 >> "$RUNNER_TEMP/resume-safe-failed-deploys.ndjson" <<'NODE'
           import { readFileSync } from "node:fs";
-          const [runPath, jobsPath, logPath, ciRunsPath] = process.argv.slice(2);
+          const [runPath, jobsPath, ciRunsPath] = process.argv.slice(2);
           const run = JSON.parse(readFileSync(runPath, "utf8"));
           const ciRuns = readFileSync(ciRunsPath, "utf8").split(/\r?\n/).filter(Boolean).map(JSON.parse)
             .filter((ciRun) => ciRun.head_sha === run.head_sha);
-          process.stdout.write(`${JSON.stringify({ run, jobs: JSON.parse(readFileSync(jobsPath, "utf8")),
-            deployLogText: readFileSync(logPath, "utf8"), ciRuns })}\n`);
+          process.stdout.write(`${JSON.stringify({ run, jobs: JSON.parse(readFileSync(jobsPath, "utf8")), ciRuns })}\n`);
           NODE
             done < "$RUNNER_TEMP/resume-safe-failed-deploy-ids.txt"
             : > "$RUNNER_TEMP/resume-safe-failed-preflight-ids.txt"
@@ -367,28 +359,16 @@ jobs:
               run_file="$RUNNER_TEMP/resume-preflight-$retry_run_id-run.json"
               jobs_file="$RUNNER_TEMP/resume-preflight-$retry_run_id-jobs.json"
               artifacts_file="$RUNNER_TEMP/resume-preflight-$retry_run_id-artifacts.json"
-              log_file="$RUNNER_TEMP/resume-preflight-$retry_run_id-failure.log"
               gh api "repos/krustallik/body-model/actions/runs/$retry_run_id" > "$run_file"
               gh api "repos/krustallik/body-model/actions/runs/$retry_run_id/jobs" > "$jobs_file"
               gh api "repos/krustallik/body-model/actions/runs/$retry_run_id/artifacts" > "$artifacts_file"
               chmod 600 "$run_file" "$jobs_file" "$artifacts_file"
-              : > "$log_file"
-              inspect_job_id="$(jq -er '[.jobs[] | select(.name == "Inspect, back up, restore, and rehearse on disposable PostgreSQL" and .conclusion == "failure") | .id] | if length == 1 and (.[0] | type == "number") then .[0] else empty end' "$jobs_file" 2>/dev/null || true)"
-              if [[ "$inspect_job_id" =~ ^[1-9][0-9]*$ ]]; then
-                gh run view "$retry_run_id" --repo krustallik/body-model --job "$inspect_job_id" --log-failed > "$log_file"
-                log_size_bytes="$(wc -c < "$log_file")"
-                [[ "$log_size_bytes" =~ ^[0-9]+$ && "$log_size_bytes" -le 1000000 ]] || {
-                  echo "::error::Later preflight failure log exceeds the bounded evidence size."; exit 1;
-                }
-              fi
-              chmod 600 "$log_file"
-              node --input-type=module - "$run_file" "$jobs_file" "$artifacts_file" "$log_file" \
+              node --input-type=module - "$run_file" "$jobs_file" "$artifacts_file" \
                 >> "$RUNNER_TEMP/resume-safe-failed-preflights.ndjson" <<'NODE'
           import { readFileSync } from "node:fs";
-          const [runPath, jobsPath, artifactsPath, logPath] = process.argv.slice(2);
+          const [runPath, jobsPath, artifactsPath] = process.argv.slice(2);
           process.stdout.write(`${JSON.stringify({ run: JSON.parse(readFileSync(runPath, "utf8")),
-            jobs: JSON.parse(readFileSync(jobsPath, "utf8")), artifacts: JSON.parse(readFileSync(artifactsPath, "utf8")),
-            failureLogText: readFileSync(logPath, "utf8") })}\n`);
+            jobs: JSON.parse(readFileSync(jobsPath, "utf8")), artifacts: JSON.parse(readFileSync(artifactsPath, "utf8")) })}\n`);
           NODE
             done < "$RUNNER_TEMP/resume-safe-failed-preflight-ids.txt"
             node scripts/production-preflight-resume.mjs --verify-source \
@@ -396,6 +376,7 @@ jobs:
               "$RUNNER_TEMP/resume-source-artifacts.json" "$RUNNER_TEMP/resume-later-runs.ndjson" \
               "$RUNNER_TEMP/resume-safe-failed-deploys.ndjson" "$RUNNER_TEMP/resume-safe-failed-preflights.ndjson" \
               "$RESUME_SOURCE_RUN_ID" "$GITHUB_RUN_ID" "$MAIN_TIP" "$MANIFEST_ID" "$PREFLIGHT_WORKFLOW_ID" "$DEPLOY_WORKFLOW_ID" \
+              "$NO_APP_WORKFLOW_ID" \
               > "$RUNNER_TEMP/preflight-resume-proof.json"
             RESUME_SOURCE_SHA="$(jq -r .sourceSha "$RUNNER_TEMP/preflight-resume-proof.json")"
             RESUME_SOURCE_ATTEMPT="$(jq -r .sourceRunAttempt "$RUNNER_TEMP/preflight-resume-proof.json")"
@@ -405,12 +386,16 @@ jobs:
               echo "- failed preflight backup/rehearsal artifacts are not reused; this run must create a fresh current-live backup and pass isolated restore/rehearsal"
               while IFS= read -r safe_deploy_id; do
                 [[ "$safe_deploy_id" =~ ^[1-9][0-9]*$ ]] || continue
-                echo "- later ordinary deploy $safe_deploy_id was verified as a pre-maintenance pending-migration block; no app replacement or traffic transition occurred"
-              done < <(jq -r '.safePreMaintenanceDeployRunIds[]?' "$RUNNER_TEMP/preflight-resume-proof.json")
+                echo "- later ordinary deploy $safe_deploy_id historical effects: UNVERIFIED; fresh live app/traffic/database gates determine current safety"
+              done < <(jq -r '.unverifiedHistoricalDeployRunIds[]?' "$RUNNER_TEMP/preflight-resume-proof.json")
               while IFS= read -r safe_retry_id; do
                 [[ "$safe_retry_id" =~ ^[1-9][0-9]*$ ]] || continue
-                echo "- later owner V4 preflight $safe_retry_id was verified to republish and publicly confirm maintenance, then fail at the capture guard before old-app stop or DB inspection; this run must still pass fresh live-state, backup, and restore gates"
-              done < <(jq -r '.safeCaptureGuardPreflightRunIds[]?' "$RUNNER_TEMP/preflight-resume-proof.json")
+                echo "- later preflight $safe_retry_id historical effects: UNVERIFIED; this run must pass fresh live-state, backup, and restore gates"
+              done < <(jq -r '.unverifiedHistoricalPreflightRunIds[]?' "$RUNNER_TEMP/preflight-resume-proof.json")
+              while IFS= read -r prep_run_id; do
+                [[ "$prep_run_id" =~ ^[1-9][0-9]*$ ]] || continue
+                echo "- later no-app preparation $prep_run_id historical artifacts/effects: UNVERIFIED and not reused" >> "$GITHUB_STEP_SUMMARY"
+              done < <(jq -r '.unverifiedHistoricalRunIds[]?' "$RUNNER_TEMP/preflight-resume-proof.json")
             } >> "$GITHUB_STEP_SUMMARY"
           else
             [[ -z "$RESUME_SOURCE_RUN_ID" ]] || { echo "::error::Resume source is malformed."; exit 1; }

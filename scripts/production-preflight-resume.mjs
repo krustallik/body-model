@@ -6,6 +6,7 @@ import { assertTrustedOwnerWorkflowRun, BODYCAST_OWNER_ID } from "./github-owner
 
 const PREFLIGHT_PATH = ".github/workflows/production-migration-preflight.yml";
 const DEPLOY_PATH = ".github/workflows/deploy-production.yml";
+const NO_APP_PATH = ".github/workflows/production-no-app-preflight.yml";
 const CI_PATH = ".github/workflows/ci.yml";
 const MUTATION_WORKFLOW_PATHS = new Set([
   PREFLIGHT_PATH,
@@ -41,6 +42,7 @@ export const PREFLIGHT_CAPTURE_RESUME_CONTROL_FILES = Object.freeze([
   "docker-compose.prod.yml",
   "scripts/deploy-main-freshness.sh",
   "scripts/production-capture-resume-receipt.mjs",
+  "scripts/production-no-app-preflight.mjs",
   "scripts/production-previous-app-provenance.mjs",
   "scripts/production-release-lock.sh",
   "scripts/production-release-marker.sh",
@@ -48,6 +50,38 @@ export const PREFLIGHT_CAPTURE_RESUME_CONTROL_FILES = Object.freeze([
   "scripts/production-route-primitives.sh",
   "scripts/production-traffic-cutover.sh",
   "scripts/production-writer-drain.sh",
+]);
+export const NO_APP_PREPARATION_CONTROL_FILES = Object.freeze([
+  "package.json",
+  "package-lock.json",
+  NO_APP_PATH,
+  "scripts/production-no-app-preflight-host.sh",
+  "scripts/production-no-app-preflight.mjs",
+  "scripts/github-no-app-preflight-evidence.mjs",
+  "scripts/github-owner-identity.mjs",
+  "scripts/filter-ssh-known-hosts.mjs",
+  "scripts/postgres-client-versions.mjs",
+  "scripts/production-migration-restore-check.mjs",
+  "scripts/production-migration-preflight.mjs",
+  "scripts/production-migration-manifests.mjs",
+  "scripts/production-migration-authorization.mjs",
+  "scripts/production-migration-integrity.mjs",
+  "scripts/production-backup-envelope.mjs",
+  "scripts/restore-encrypted-postgres-backup.mjs",
+  "scripts/production-db-preflight.mjs",
+  "scripts/production-db-preflight.sql",
+  "scripts/production-db-data-fingerprint.sh",
+  "scripts/verify-restored-backup.sql",
+  "prisma/schema.prisma",
+  "prisma/migrations",
+  "scripts/postgres-database-identity.mjs",
+  "scripts/production-writer-drain.sh",
+  "scripts/production-writer-drain.mjs",
+  "scripts/production-release-lock.sh",
+  "scripts/production-release-marker.sh",
+  "scripts/production-route-primitives.sh",
+  "scripts/production-previous-app-provenance.mjs",
+  "scripts/production-capture-resume-receipt.mjs",
 ]);
 const DEPLOY_AUTHORIZE_STEPS = Object.freeze([
   ["Set up job", "success"],
@@ -66,16 +100,6 @@ const DEPLOY_STEPS = Object.freeze([
   ["Post Checkout exact current main tooling", "success"],
   ["Complete job", "success"],
 ]);
-const SAFE_SCHEMA_BLOCK_LOG_MESSAGES = Object.freeze([
-  "BLOCKED: production schema is not compatible with this application revision.",
-  "Ordinary automatic deployment does not run prisma migrate deploy.",
-  "Pending migration identifiers appear in the status output above.",
-  "Authorize a separate production migration procedure before releasing this commit.",
-  "Deploy failed before maintenance was confirmed; the previous app was not stopped or replaced.",
-]);
-const MIGRATION_IDENTIFIER_PATTERN = /\b20\d{12}_[a-z0-9_]+\b/g;
-const MAX_DEPLOY_FAILURE_LOG_BYTES = 1_000_000;
-const MAX_PREFLIGHT_CAPTURE_RETRY_LOG_BYTES = 1_000_000;
 
 const REQUIRED_SOURCE_STEPS = Object.freeze({
   "Enter maintenance and drain the old app before backup": "success",
@@ -144,16 +168,6 @@ const BLOCKED_CAPTURE_RETRY_JOB_STEPS = Object.freeze([
   ["Post Checkout exact release SHA", "success"],
   ["Stop containers", "success"],
   ["Complete job", "success"],
-]);
-const SAFE_CAPTURE_RETRY_FAILURES = Object.freeze([
-  Object.freeze({
-    message: "An earlier pre-DDL release capture exists; operator review is required before another migration attempt.",
-    refreshCapture: "0",
-  }),
-  Object.freeze({
-    message: "Capture refresh requires exactly one existing BodyCast app container.",
-    refreshCapture: "1",
-  }),
 ]);
 const MIGRATION_PRE_DDL_FAILURE = "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/app/scripts/github-owner-identity.mjs' imported from /app/scripts/production-migration-authorization.mjs";
 const MIGRATION_FAILURE_STEP = "Run the fixed guarded migration script over SSH";
@@ -295,6 +309,26 @@ export function preflightCaptureResumeControlsMatch(runSha, currentMainSha, cwd 
   }
 }
 
+export function noAppPreparationControlsMatch(runSha, currentMainSha, cwd = process.cwd()) {
+  try {
+    execFileSync("git", ["diff", "--quiet", runSha, currentMainSha, "--", ...NO_APP_PREPARATION_CONTROL_FILES], {
+      cwd, stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function commitIsAncestorOfCurrentMain(runSha, currentMainSha, cwd = process.cwd()) {
+  try {
+    execFileSync("git", ["merge-base", "--is-ancestor", runSha, currentMainSha], { cwd, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function assertRunSummaryMatches(historyRun, run) {
   for (const key of ["id", "workflow_id", "path", "head_sha", "head_branch", "event", "status", "conclusion", "run_attempt"]) {
     if (String(historyRun?.[key] ?? "") !== String(run?.[key] ?? "")) {
@@ -353,30 +387,10 @@ function assertSafeFailedPreMaintenanceDeploy(evidence, { historyRun, currentMai
     reject("a later deploy does not have one successful original main CI run for its exact SHA.");
   }
 
-  const logText = String(evidence.deployLogText ?? "");
-  if (Buffer.byteLength(logText, "utf8") === 0 || Buffer.byteLength(logText, "utf8") > MAX_DEPLOY_FAILURE_LOG_BYTES) {
-    reject("the later deploy failure log is missing or exceeds the bounded evidence size.");
-  }
-  const normalizedLog = normalizeActionLog(logText);
-  const positions = SAFE_SCHEMA_BLOCK_LOG_MESSAGES.map((message) => findAllOccurrences(normalizedLog, message));
-  if (positions.some((items) => items.length !== 1)
-    || positions.some((items, index) => index > 0 && positions[index - 1][0] >= items[0])) {
-    reject("the later deploy log does not prove the exact pre-maintenance schema-compatibility block.");
-  }
-  if (normalizedLog.includes("Database schema is up to date")) {
-    reject("the later deploy log contains contradictory schema-status evidence.");
-  }
-  const pendingIds = [...new Set(logText.match(MIGRATION_IDENTIFIER_PATTERN) ?? [])].sort();
-  const firstBlockPosition = normalizedLog.indexOf(SAFE_SCHEMA_BLOCK_LOG_MESSAGES[0]);
-  const pendingIdsBeforeBlock = pendingIds.filter((migrationId) => normalizedLog.indexOf(migrationId) >= 0
-    && normalizedLog.indexOf(migrationId) < firstBlockPosition);
-  if (pendingIds.length === 0 || pendingIdsBeforeBlock.length !== pendingIds.length) {
-    reject("the later deploy log does not identify pending migrations before the schema block.");
-  }
   if (typeof controlFilesMatch !== "function" || !controlFilesMatch(run.head_sha, currentMainSha)) {
-    reject("deploy control files changed after the failed run, so its failure boundary cannot be reused.");
+    reject("deploy control files changed after the failed run, so its history cannot be reconciled.");
   }
-  return Object.freeze({ runId, sha: run.head_sha, pendingMigrationIds: Object.freeze(pendingIds) });
+  return Object.freeze({ runId, sha: run.head_sha, historicalEffects: "UNVERIFIED" });
 }
 
 export function verifyResumablePreflightAttempt({
@@ -395,6 +409,9 @@ export function verifyResumablePreflightAttempt({
   deployWorkflowId,
   controlFilesMatch = deployControlFilesMatch,
   preflightCaptureControlsMatch = preflightCaptureResumeControlsMatch,
+  noAppControlsMatch = noAppPreparationControlsMatch,
+  noAppWorkflowId,
+  isAncestorOfCurrentMain = commitIsAncestorOfCurrentMain,
 }) {
   if (!/^[1-9][0-9]*$/.test(String(sourceRunId ?? ""))
     || !/^[1-9][0-9]*$/.test(String(currentRunId ?? ""))
@@ -425,7 +442,7 @@ export function verifyResumablePreflightAttempt({
     reject(error.message);
   }
   if (!new Set(["active-energy-unified-v2", "unified-v4-republication-v1"]).has(manifestId)
-    || sourceRun.name !== `Preflight ${sourceRun.head_sha} ${manifestId}`) {
+    || (sourceRun.display_title ?? sourceRun.name) !== `Preflight ${sourceRun.head_sha} ${manifestId}`) {
     reject("the source preflight manifest does not match the exact current request.");
   }
   if (sourceIsAncestor !== true) reject("the failed preflight SHA is not an ancestor of current main.");
@@ -484,7 +501,7 @@ export function verifyResumablePreflightAttempt({
   const verifiedDeployIds = new Set();
   const verifiedPreflightRetryIds = new Set();
   const verifiedCaptureGuardEffects = [];
-  const pendingMigrationIds = new Set();
+  const unverifiedHistoricalRunIds = [];
   for (const run of laterRuns ?? []) {
     const id = BigInt(String(run.id));
     if (!MUTATION_WORKFLOW_PATHS.has(workflowPath(run))) continue;
@@ -498,7 +515,6 @@ export function verifyResumablePreflightAttempt({
         historyRun: run, currentMainSha, deployWorkflowId, controlFilesMatch,
       });
       verifiedDeployIds.add(verified.runId);
-      for (const migrationId of verified.pendingMigrationIds) pendingMigrationIds.add(migrationId);
       continue;
     }
     if (workflowPath(run) === PREFLIGHT_PATH && id > sourceId) {
@@ -515,6 +531,35 @@ export function verifyResumablePreflightAttempt({
       verifiedCaptureGuardEffects.push(verified);
       continue;
     }
+    if (workflowPath(run) === NO_APP_PATH && id > sourceId) {
+      if (run.status !== "completed" || !["success", "failure", "cancelled"].includes(run.conclusion)) {
+        reject(`a no-app preparation run ${run.id} is still active or has an unknown conclusion.`);
+      }
+      if (run.run_attempt !== 1 || run.event !== "workflow_dispatch" || !/^[a-f0-9]{40}$/.test(String(run.head_sha ?? ""))
+        || String(run.workflow_id) !== String(noAppWorkflowId)
+        || run.head_branch !== "main" || run.repository?.full_name !== "krustallik/body-model"
+        || String(run.repository?.owner?.id ?? "") !== BODYCAST_OWNER_ID
+        || String(run.actor?.id ?? "") !== BODYCAST_OWNER_ID
+        || String(run.triggering_actor?.id ?? "") !== BODYCAST_OWNER_ID
+        || typeof isAncestorOfCurrentMain !== "function" || !isAncestorOfCurrentMain(run.head_sha, currentMainSha)
+        || typeof noAppControlsMatch !== "function" || !noAppControlsMatch(run.head_sha, currentMainSha)) {
+        reject(`no-app preparation run ${run.id} is not a pinned-owner run of unchanged preparation-only controls.`);
+      }
+      try {
+        assertTrustedOwnerWorkflowRun(run, {
+          actorId: BODYCAST_OWNER_ID, workflowPath: NO_APP_PATH,
+          workflowRunId: String(run.id), workflowRunAttempt: run.run_attempt,
+          ref: "refs/heads/main", sha: run.head_sha,
+        });
+      } catch (error) {
+        reject(error.message);
+      }
+      // The old run is not evidence for this DDL-eligible preflight. It is admitted
+      // only as a completed preparation-only workflow with unchanged controls;
+      // its backup, restore, and any historical effects remain explicitly unverified.
+      unverifiedHistoricalRunIds.push(String(run.id));
+      continue;
+    }
     reject(`another release or preflight workflow exists after source run ${sourceRunId}.`);
   }
   if (verifiedDeployIds.size !== safeDeployById.size) reject("failed-deploy evidence does not match the complete production workflow history.");
@@ -528,10 +573,10 @@ export function verifyResumablePreflightAttempt({
     sourceRunAttempt: 1,
     sourceSha: sourceRun.head_sha,
     targetSha: currentMainSha,
-    safePreMaintenanceDeployRunIds: Object.freeze([...verifiedDeployIds].sort()),
-    safeCaptureGuardPreflightRunIds: Object.freeze([...verifiedPreflightRetryIds].sort()),
-    captureGuardPreflightEffects: Object.freeze(verifiedCaptureGuardEffects.sort((left, right) => left.runId.localeCompare(right.runId))),
-    pendingMigrationIds: Object.freeze([...pendingMigrationIds].sort()),
+    unverifiedHistoricalDeployRunIds: Object.freeze([...verifiedDeployIds].sort()),
+    unverifiedHistoricalPreflightRunIds: Object.freeze([...verifiedPreflightRetryIds].sort()),
+    historicalPreflightEffects: Object.freeze(verifiedCaptureGuardEffects.sort((left, right) => left.runId.localeCompare(right.runId))),
+    unverifiedHistoricalRunIds: Object.freeze(unverifiedHistoricalRunIds.sort()),
   });
 }
 
@@ -625,12 +670,12 @@ function assertSafeCaptureBlockedPreflightRetry(evidence, {
     || run.run_attempt !== 1 || run.head_branch !== "main" || run.event !== "workflow_dispatch"
     || String(run.actor?.id) !== BODYCAST_OWNER_ID || String(run.triggering_actor?.id) !== BODYCAST_OWNER_ID
     || !/^[a-f0-9]{40}$/.test(String(run.head_sha ?? ""))
-    || run.name !== `Preflight ${run.head_sha} ${manifestId}`
+    || (run.display_title ?? run.name) !== `Preflight ${run.head_sha} ${manifestId}`
     || evidence.shaIsAncestorOfCurrentMain !== true || evidence.sourceShaIsAncestor !== true
     || evidence.captureControlsMatch !== true
     || !historyRun || String(historyRun.id) !== runId
     || historyRun.head_sha !== run.head_sha || String(historyRun.workflow_id) !== String(run.workflow_id)
-    || historyRun.path !== run.path || historyRun.name !== run.name || historyRun.event !== run.event
+    || historyRun.path !== run.path || (historyRun.display_title ?? historyRun.name) !== (run.display_title ?? run.name) || historyRun.event !== run.event
     || historyRun.status !== run.status || historyRun.conclusion !== run.conclusion
     || historyRun.run_attempt !== run.run_attempt || historyRun.head_branch !== run.head_branch) {
     reject("a later capture-blocked preflight is not a verified owner-only V4 retry on unchanged capture controls.");
@@ -663,34 +708,11 @@ function assertSafeCaptureBlockedPreflightRetry(evidence, {
     reject("the capture-blocked preflight unexpectedly published an artifact.");
   }
 
-  const logText = String(evidence.failureLogText ?? "");
-  if (Buffer.byteLength(logText, "utf8") > MAX_PREFLIGHT_CAPTURE_RETRY_LOG_BYTES) {
-    reject("the capture-blocked preflight failure log exceeds the bounded evidence size.");
-  }
-  const normalizedLog = normalizeActionLog(logText);
-  const failure = SAFE_CAPTURE_RETRY_FAILURES.find(({ message }) => findAllOccurrences(normalizedLog, message).length === 1);
-  const otherKnownFailures = SAFE_CAPTURE_RETRY_FAILURES.filter(({ message }) => message !== failure?.message)
-    .some(({ message }) => findAllOccurrences(normalizedLog, message).length !== 0);
-  if (!failure || otherKnownFailures
-    || findAllOccurrences(normalizedLog, "REFRESH_CAPTURE: 0").length
-      + findAllOccurrences(normalizedLog, "REFRESH_CAPTURE: 1").length !== 1
-    || findAllOccurrences(normalizedLog, `REFRESH_CAPTURE: ${failure.refreshCapture}`).length !== 1
-    || (failure.refreshCapture === "0" && failure.message !== SAFE_CAPTURE_RETRY_FAILURES[0].message)
-    || (failure.refreshCapture === "1" && failure.message !== SAFE_CAPTURE_RETRY_FAILURES[1].message)) {
-    reject("the capture retry log does not contain exactly one reviewed failure and matching refresh mode.");
-  }
   if (typeof preflightCaptureControlsMatch !== "function"
     || !preflightCaptureControlsMatch(run.head_sha, currentMainSha)) {
     reject("capture or maintenance controls changed after the failed preflight retry.");
   }
-  return Object.freeze({
-    runId, sha: run.head_sha, failure: failure.message,
-    maintenanceRoutePublishedAndPublic503Confirmed: true,
-    oldAppStopReached: false,
-    productionDatabaseInspectionReached: false,
-    pgDumpStarted: false,
-    artifactsPublished: false,
-  });
+  return Object.freeze({ runId, sha: run.head_sha, historicalEffects: "UNVERIFIED" });
 }
 
 function assertMigrationRun(run, { runId, workflowId, sha }) {
@@ -922,11 +944,11 @@ async function main() {
     process.stdout.write(`${JSON.stringify(proof)}\n`);
     return;
   }
-  if (mode !== "--verify-source" || args.length !== 12) {
-    throw new Error("Usage: production-preflight-resume.mjs --verify-source <run.json> <jobs.json> <artifacts.json> <later-runs.ndjson> <safe-failed-deploy-runs.ndjson> <safe-failed-preflight-retries.ndjson> <source-run-id> <current-run-id> <current-main-sha> <manifest-id> <preflight-workflow-id> <deploy-workflow-id>");
+  if (mode !== "--verify-source" || args.length !== 13) {
+    throw new Error("Usage: production-preflight-resume.mjs --verify-source <run.json> <jobs.json> <artifacts.json> <later-runs.ndjson> <safe-failed-deploy-runs.ndjson> <safe-failed-preflight-retries.ndjson> <source-run-id> <current-run-id> <current-main-sha> <manifest-id> <preflight-workflow-id> <deploy-workflow-id> <no-app-workflow-id>");
   }
   const [runPath, jobsPath, artifactsPath, laterRunsPath, safeDeployRunsPath, safePreflightRetriesPath,
-    sourceRunId, currentRunId, currentMainSha, manifestId, workflowId, deployWorkflowId] = args;
+    sourceRunId, currentRunId, currentMainSha, manifestId, workflowId, deployWorkflowId, noAppWorkflowId] = args;
   const [sourceRun, sourceJobs, sourceArtifacts, laterRunsText, safeDeployRunsText, safePreflightRetriesText] = await Promise.all([
     readJson(runPath), readJson(jobsPath), readJson(artifactsPath), readFile(path.resolve(laterRunsPath), "utf8"),
     readFile(path.resolve(safeDeployRunsPath), "utf8"), readFile(path.resolve(safePreflightRetriesPath), "utf8"),
@@ -948,7 +970,7 @@ async function main() {
       sourceShaIsAncestor: isAncestor(sourceRun.head_sha, evidence?.run?.head_sha),
       captureControlsMatch: preflightCaptureResumeControlsMatch(evidence?.run?.head_sha, currentMainSha),
     })),
-    sourceRunId, currentRunId, currentMainSha, manifestId, workflowId, deployWorkflowId, sourceIsAncestor,
+    sourceRunId, currentRunId, currentMainSha, manifestId, workflowId, deployWorkflowId, noAppWorkflowId, sourceIsAncestor,
   });
   process.stdout.write(`${JSON.stringify(proof)}\n`);
 }

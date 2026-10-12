@@ -19,7 +19,7 @@ import {
   schemaInventoryDigest,
   verifyRestoredBackup,
 } from "../production-migration-preflight.mjs";
-import { ACTIVE_ENERGY_UNIFIED_MANIFEST, STAGE_02_MANIFEST, V4_REPUBLICATION_MANIFEST } from "../production-migration-manifests.mjs";
+import { ACTIVE_ENERGY_UNIFIED_MANIFEST, getProductionMigrationManifest, STAGE_02_MANIFEST, V4_REPUBLICATION_MANIFEST } from "../production-migration-manifests.mjs";
 import { renderProductionDbPreflightSql } from "../production-db-preflight.mjs";
 import { PRODUCTION_WRITER_TOPOLOGY_CONTRACT } from "../production-writer-drain.mjs";
 import { assertPostgresClientCompatibility } from "../postgres-client-versions.mjs";
@@ -27,7 +27,8 @@ import { canonicalSha256, createAuthorizationEnvelope } from "../production-migr
 import { executionProofAudience, verifyGitHubExecutionProof } from "../production-migration-execution-attestation.mjs";
 import { readPrismaDatabaseIdentity, startPrismaMigrationAtDdlBoundary } from "../run-prisma-migrate-with-lock-timeout.mjs";
 import { withPrismaLockTimeout } from "../production-migration-release.mjs";
-import { readCommittedGitBlob } from "../production-migration-integrity.mjs";
+import { readCommittedGitBlob, verifyManifestBlob } from "../production-migration-integrity.mjs";
+import { verifyDisposableRehearsalAdmission } from "../production-migration-restore-check.mjs";
 import {
   assertPreviousAppCompatibilitySnapshot,
   capturePreviousAppProvenance,
@@ -1413,7 +1414,13 @@ async function main() {
       || sourceLifecycleConstraint.signature === restoredLifecycleConstraint.signature) {
       throw new Error("PostgreSQL dump/restore did not reproduce the distinct V3/V4 lifecycle CHECK deparse forms.");
     }
-    const restoredWithInventory = { ...restoredReport, objects: restoredInventoryReport.objects };
+    const restoredWithInventory = {
+      ...restoredReport,
+      identity: restoredInventoryReport.identity,
+      conflictingLocks: restoredInventoryReport.conflictingLocks,
+      preparedTransactions: restoredInventoryReport.preparedTransactions,
+      objects: restoredInventoryReport.objects,
+    };
     const lifecycleRestore = verifyRestoredBackup(sourceReport, restoredWithInventory);
     if (!lifecycleRestore.verified || schemaInventoryDigest(sourceReport.objects) !== schemaInventoryDigest(restoredWithInventory.objects)) {
       throw new Error("Exact PostgreSQL dump/restore deparse equivalence did not preserve strict backup verification.");
@@ -1482,7 +1489,7 @@ async function main() {
       encoding: "utf8", env: { ...process.env, BODYCAST_TEST_DATABASE_URL: fingerprintUrl.toString() },
     }).trim();
     if (standaloneFingerprint !== restoredReport.logicalDataFingerprint) {
-      throw new Error("The isolated safety fixture fingerprint differs from the standalone production data-fingerprint contract.");
+      throw new Error(`The isolated safety fixture fingerprint differs from the standalone production data-fingerprint contract (${restoredReport.logicalDataFingerprint} != ${standaloneFingerprint}).`);
     }
     const alternateDatabasePreflight = readSourceReport(target);
     try {
@@ -1510,6 +1517,68 @@ async function main() {
     if (!restoredV4Preflight.readyForOwnerAuthorization
       || JSON.stringify(restoredV4Preflight.pending) !== JSON.stringify([...EXPECTED_V4_REPUBLICATION_PENDING_MIGRATIONS].sort())) {
       throw new Error(`Restored six-migration backup did not retain the exact V4 pending set: ${JSON.stringify(restoredV4Preflight.blockers)}`);
+    }
+
+    const exactReleaseSha = run("git", ["rev-parse", "HEAD"]);
+    const expectedPendingV4 = [...EXPECTED_V4_REPUBLICATION_PENDING_MIGRATIONS].sort();
+    const v4Manifest = getProductionMigrationManifest(V4_REPUBLICATION_MANIFEST.id);
+    const reviewedPreflightMigrations = [...new Map([
+      ...STAGE_02_MANIFEST.migrations,
+      ...v4Manifest.migrations,
+      ...(v4Manifest.requiredAppliedMigrations ?? []),
+    ].map((migration) => [migration.name, migration])).values()];
+    const blobIntegrity = [];
+    for (const migration of reviewedPreflightMigrations) {
+      const item = await verifyManifestBlob({ repositoryPath: process.cwd(), releaseSha: exactReleaseSha, migration });
+      blobIntegrity.push({ name: item.name, expectedSha256: item.expectedSha256, actualSha256: item.actualSha256,
+        matches: item.matchesManifest, bytes: item.bytes });
+    }
+    const rehearsalPreflightResult = { ...v4Preflight, blobIntegrity };
+    const preparationResult = {
+      evidenceKind: "database-only-no-app-v1",
+      preparationVerified: true,
+      releaseSha: exactReleaseSha,
+      manifestId: V4_REPUBLICATION_MANIFEST.id,
+      readyForOwnerAuthorization: false,
+      ddlAuthorization: false,
+      appRuntime: "unavailable",
+      previousAppProvenance: null,
+      rollbackReadiness: "unverified",
+      productionDatabaseContainerId: "a".repeat(64),
+      pendingMigrationNames: expectedPendingV4,
+      pendingSetDigest: canonicalSha256(expectedPendingV4),
+      databasePreflightResultDigest: canonicalSha256(rehearsalPreflightResult),
+      productionIdentityDigest: canonicalSha256(sourceReport.identity),
+      logicalDataFingerprint: sourceReport.logicalDataFingerprint,
+    };
+    const admissionSnapshot = {
+      schemaVersion: 1,
+      releaseSha: exactReleaseSha,
+      canonicalMainSha: exactReleaseSha,
+      manifestId: V4_REPUBLICATION_MANIFEST.id,
+      report: sourceReport,
+      preflightResult: rehearsalPreflightResult,
+      preparationResult,
+    };
+    const admissionInput = {
+      snapshot: admissionSnapshot,
+      restoredReport: restoredWithInventory,
+      readabilityReport: { readability: restoredWithInventory.readability },
+      migrationDirectories: allMigrationDirectories,
+      repositoryPath: process.cwd(),
+      releaseSha: exactReleaseSha,
+      manifestId: V4_REPUBLICATION_MANIFEST.id,
+    };
+    const rehearsalAdmission = await verifyDisposableRehearsalAdmission(admissionInput);
+    if (!rehearsalAdmission.verifiedForIsolatedRehearsal || rehearsalAdmission.ddlAuthorization !== false) {
+      throw new Error(`No-app evidence was not admitted for isolated rehearsal only: ${rehearsalAdmission.blockers.join(" ")}`);
+    }
+    const forgedDdlPreparation = await verifyDisposableRehearsalAdmission({
+      ...admissionInput,
+      snapshot: { ...admissionSnapshot, preparationResult: { ...preparationResult, ddlAuthorization: true } },
+    });
+    if (forgedDdlPreparation.verifiedForIsolatedRehearsal || forgedDdlPreparation.ddlAuthorization !== false) {
+      throw new Error("Forged no-app DDL authorization was admitted by the PostgreSQL restore/rehearsal smoke.");
     }
 
     const v4PreservedDataProjection = capturePreexistingDataProjection(target);

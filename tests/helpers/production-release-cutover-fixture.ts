@@ -498,6 +498,15 @@ if [[ "$1" == "exec" && ( "$2" == "gymbeam-caddy" || ( "$2" == "-i" && "$3" == "
       event "staged-route-validated"
       if [[ "$staged_route" == *"reverse_proxy"* && -n "$staged_path" ]]; then
         printf '%s\n' "$staged_path" >> "$CANDIDATE_STAGE_PATH_LOG"
+        if [[ "\${CHANGE_RELEASE_MARKER_ON_SERVING_VALIDATION:-0}" == "1" ]]; then
+          git_dir="$("\${REAL_GIT}" -C "$FIXTURE_REPO" rev-parse --absolute-git-dir)"
+          marker_file="$git_dir/bodycast-production-schema-cutover"
+          [[ -e "$git_dir/bodycast-production-release-marker/marker" ]] \
+            && marker_file="$git_dir/bodycast-production-release-marker/marker"
+          sed 's/^state=v4-ready$/state=app-ready/' "$marker_file" > "$marker_file.changed"
+          mv -f "$marker_file.changed" "$marker_file"
+          event "release-marker-changed-during-serving-validation"
+        fi
       elif [[ "$staged_route" != *"reverse_proxy"* ]]; then
         event "maintenance-route-validation"
       fi

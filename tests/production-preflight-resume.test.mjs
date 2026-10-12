@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { capturePreviousAppProvenance, rebindPreviousAppProvenanceForPreflightResume } from "../scripts/production-previous-app-provenance.mjs";
-import { serializePreflightRetryRunIds, verifyPreDdlMigrationFailureResume, verifyResumablePreflightAttempt } from "../scripts/production-preflight-resume.mjs";
+import { DEPLOY_CONTROL_FILES, deployControlFilesMatch, serializePreflightRetryRunIds, verifyPreDdlMigrationFailureResume, verifyResumablePreflightAttempt } from "../scripts/production-preflight-resume.mjs";
 
 function findBash() {
   const probe = spawnSync("bash", ["--version"], { encoding: "utf8" });
@@ -20,6 +22,41 @@ const bash = findBash();
 const sourceSha = "a".repeat(40);
 const targetSha = "b".repeat(40);
 const blockedCaptureSha = "c".repeat(40);
+const deployWorkflowId = "789";
+const safeSchemaBlockedDeployRunId = "38000669127";
+
+describe("production deploy evidence source binding", () => {
+  it("rejects changed migrator build or Prisma inputs between the failed deploy and current main", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "bodycast-deploy-controls-"));
+    const changedInputs = ["Dockerfile", ".dockerignore", "package.json", "package-lock.json", "prisma/schema.prisma",
+      "prisma/migrations/20261011120000_unified_publication_failure_fence/migration.sql"];
+    try {
+      expect(DEPLOY_CONTROL_FILES).toEqual(expect.arrayContaining(["Dockerfile", ".dockerignore", "package.json",
+        "package-lock.json", "prisma"]));
+      execFileSync("git", ["-c", "init.defaultBranch=main", "init", tempDir], { stdio: "ignore" });
+      execFileSync("git", ["-C", tempDir, "config", "user.name", "BodyCast Test"], { stdio: "ignore" });
+      execFileSync("git", ["-C", tempDir, "config", "user.email", "bodycast-test@example.invalid"], { stdio: "ignore" });
+      for (const input of changedInputs) {
+        const absolutePath = path.join(tempDir, input);
+        await mkdir(path.dirname(absolutePath), { recursive: true });
+        await writeFile(absolutePath, "reviewed base input\n");
+      }
+      execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
+      execFileSync("git", ["-C", tempDir, "commit", "-m", "base"], { stdio: "ignore" });
+      const baseSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+
+      for (const input of changedInputs) {
+        await writeFile(path.join(tempDir, input), "changed input\n");
+      }
+      execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
+      execFileSync("git", ["-C", tempDir, "commit", "-m", "change migrator inputs"], { stdio: "ignore" });
+      const changedSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      expect(deployControlFilesMatch(baseSha, changedSha, tempDir)).toBe(false);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+});
 
 function sourceRun(overrides = {}) {
   return {
@@ -72,9 +109,95 @@ function verify(overrides = {}) {
     currentRunId: "99999999999",
     currentMainSha: targetSha,
     workflowId: "123",
+    deployWorkflowId,
     sourceIsAncestor: true,
+    controlFilesMatch: () => true,
     ...overrides,
   });
+}
+
+const pendingMigrationIds = [
+  "20261011120000_unified_publication_failure_fence",
+  "20261011130000_only_completed_training_invalidates_v7",
+];
+const schemaBlockedDeployLog = [
+  "The following migration(s) have not yet been applied:",
+  ...pendingMigrationIds,
+  "BLOCKED: production schema is not compatible with this application revision.",
+  "Ordinary automatic deployment does not run prisma migrate deploy.",
+  "Pending migration identifiers appear in the status output above.",
+  "Authorize a separate production migration procedure before releasing this commit.",
+  "Deploy failed before maintenance was confirmed; the previous app was not stopped or replaced.",
+].join("\n");
+
+function deployRun(overrides = {}) {
+  return {
+    id: Number(safeSchemaBlockedDeployRunId),
+    workflow_id: Number(deployWorkflowId),
+    path: ".github/workflows/deploy-production.yml@refs/heads/main",
+    event: "workflow_run",
+    head_branch: "main",
+    head_sha: targetSha,
+    status: "completed",
+    conclusion: "failure",
+    run_attempt: 1,
+    repository: { full_name: "krustallik/body-model", owner: { id: 126446430, login: "krustallik" } },
+    ...overrides,
+  };
+}
+
+function deployJobs(overrides = {}) {
+  const authorizeSteps = [
+    ["Set up job", "success"],
+    ["Checkout main gate helpers", "success"],
+    ["Verify triggering CI or owner dispatch and current main", "success"],
+    ["Post Checkout main gate helpers", "success"],
+    ["Complete job", "success"],
+  ].map(([name, conclusion]) => ({ name, conclusion }));
+  const deploySteps = [
+    ["Set up job", "success"],
+    ["Checkout exact current main tooling", "success"],
+    ["Recheck run identity and main tip before production credentials", "success"],
+    ["Validate SSH inputs and pin the production host", "success"],
+    ["Deploy exact SHA through the fixed production script", "failure"],
+    ["Remove temporary SSH credentials", "success"],
+    ["Post Checkout exact current main tooling", "success"],
+    ["Complete job", "success"],
+  ].map(([name, conclusion]) => ({ name, conclusion }));
+  return {
+    total_count: 2,
+    jobs: [
+      { name: "Authorize exact current-main app deploy", conclusion: "success", head_sha: targetSha, run_attempt: 1, steps: authorizeSteps },
+      { name: "Deploy exact current-main SHA", conclusion: "failure", head_sha: targetSha, run_attempt: 1, steps: deploySteps },
+    ],
+    ...overrides,
+  };
+}
+
+function deployCiRun(overrides = {}) {
+  return {
+    id: 765,
+    workflow_id: 321,
+    path: ".github/workflows/ci.yml@refs/heads/main",
+    event: "push",
+    head_branch: "main",
+    head_sha: targetSha,
+    status: "completed",
+    conclusion: "success",
+    run_attempt: 1,
+    ...overrides,
+  };
+}
+
+function safeSchemaBlockedDeployEvidence(overrides = {}) {
+  return {
+    run: deployRun(),
+    jobs: deployJobs(),
+    deployLogText: schemaBlockedDeployLog,
+    ciRuns: [deployCiRun()],
+    shaIsAncestorOfCurrentMain: true,
+    ...overrides,
+  };
 }
 
 function databaseReport() {
@@ -278,8 +401,126 @@ function verifyPreDdlResume(overrides = {}) {
 }
 
 describe("verified resume of a failed production preflight", () => {
+  it("runs the source-verification CLI with a verified schema-blocked deploy", async () => {
+    const currentMainSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    const currentRunId = "1002";
+    const sourceRunId = "1000";
+    const deployId = "1001";
+    const actualSourceRun = sourceRun({ id: Number(sourceRunId), head_sha: currentMainSha });
+    const actualSourceJobs = {
+      ...sourceJobs(),
+      jobs: sourceJobs().jobs.map((job) => ({ ...job, head_sha: currentMainSha })),
+    };
+    const actualDeployRun = deployRun({ id: Number(deployId), head_sha: currentMainSha });
+    const actualDeployJobs = {
+      ...deployJobs(),
+      jobs: deployJobs().jobs.map((job) => ({ ...job, head_sha: currentMainSha })),
+    };
+    const actualCiRun = deployCiRun({ head_sha: currentMainSha });
+    const safeDeployEvidence = {
+      run: actualDeployRun,
+      jobs: actualDeployJobs,
+      deployLogText: schemaBlockedDeployLog,
+      ciRuns: [actualCiRun],
+    };
+    const laterRuns = [actualDeployRun, {
+      id: Number(currentRunId),
+      workflow_id: Number(preflightWorkflowId),
+      path: ".github/workflows/production-migration-preflight.yml@refs/heads/main",
+      event: "workflow_dispatch",
+      head_branch: "main",
+      head_sha: currentMainSha,
+      status: "in_progress",
+      conclusion: null,
+      run_attempt: 1,
+    }];
+    const tempDir = await mkdtemp(path.join(tmpdir(), "bodycast-preflight-cli-"));
+    try {
+      const files = {
+        run: path.join(tempDir, "source-run.json"),
+        jobs: path.join(tempDir, "source-jobs.json"),
+        artifacts: path.join(tempDir, "source-artifacts.json"),
+        later: path.join(tempDir, "later-runs.ndjson"),
+        deploy: path.join(tempDir, "safe-deploy-runs.ndjson"),
+      };
+      await Promise.all([
+        writeFile(files.run, JSON.stringify(actualSourceRun)),
+        writeFile(files.jobs, JSON.stringify(actualSourceJobs)),
+        writeFile(files.artifacts, JSON.stringify({ total_count: 0, artifacts: [] })),
+        writeFile(files.later, laterRuns.map((run) => JSON.stringify(run)).join("\n") + "\n"),
+        writeFile(files.deploy, `${JSON.stringify(safeDeployEvidence)}\n`),
+      ]);
+      const scriptPath = path.resolve("scripts/production-preflight-resume.mjs");
+      const result = spawnSync(process.execPath, [scriptPath, "--verify-source", files.run, files.jobs, files.artifacts,
+        files.later, files.deploy, sourceRunId, currentRunId, currentMainSha, preflightWorkflowId, deployWorkflowId], {
+        cwd: process.cwd(), encoding: "utf8",
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        schemaVersion: 2,
+        sourceRunId,
+        targetSha: currentMainSha,
+        safePreMaintenanceDeployRunIds: [deployId],
+        pendingMigrationIds,
+      });
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("admits only the original owner run that stopped after a successful backup and failed isolated restore", () => {
-    expect(verify()).toEqual({ schemaVersion: 1, sourceRunId: "38000669126", sourceRunAttempt: 1, sourceSha, targetSha });
+    expect(verify()).toEqual({ schemaVersion: 2, sourceRunId: "38000669126", sourceRunAttempt: 1, sourceSha, targetSha,
+      safePreMaintenanceDeployRunIds: [], pendingMigrationIds: [] });
+  });
+
+  it("admits a later exact-SHA automatic deploy only when logs prove the schema block preceded maintenance", () => {
+    const run = deployRun();
+    const result = verify({ laterRuns: [run, {
+      id: 99999999999, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress",
+    }], safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence()],
+    });
+    expect(result.safePreMaintenanceDeployRunIds).toEqual([safeSchemaBlockedDeployRunId]);
+    expect(result.pendingMigrationIds).toEqual(pendingMigrationIds);
+  });
+
+  it("rejects a later production full-history recalculation run", () => {
+    expect(() => verify({ laterRuns: [
+      { id: 38000669128, path: ".github/workflows/production-full-history-recalculate.yml@refs/heads/main",
+        status: "completed", conclusion: "success" },
+      { id: 99999999999, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress" },
+    ] })).toThrow("another release or preflight workflow exists after source run 38000669126");
+  });
+
+  it.each([
+    ["missing deploy evidence", { safeFailedDeployRuns: [] }],
+    ["deploy rerun", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ run: deployRun({ run_attempt: 2 }) })] }],
+    ["manual deploy", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ run: deployRun({ event: "workflow_dispatch" }) })] }],
+    ["wrong branch", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ run: deployRun({ head_branch: "feature/x" }) })] }],
+    ["different deploy SHA", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ run: deployRun({ head_sha: sourceSha }) })] }],
+    ["wrong workflow identity", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ run: deployRun({ workflow_id: 999 }) })] }],
+    ["missing exact-SHA main CI", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ ciRuns: [] })] }],
+    ["failed main CI", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ ciRuns: [deployCiRun({ conclusion: "failure" })] })] }],
+    ["wrong CI event", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ ciRuns: [deployCiRun({ event: "pull_request" })] })] }],
+    ["extra failed step", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ jobs: deployJobs({ jobs: [
+      ...deployJobs().jobs,
+      { name: "Unexpected job", conclusion: "failure", head_sha: targetSha, run_attempt: 1, steps: [] },
+    ], total_count: 3 }) })] }],
+    ["missing failure boundary log", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ deployLogText: schemaBlockedDeployLog.replace("before maintenance was confirmed", "after maintenance") })] }],
+    ["pending migration IDs missing", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ deployLogText: schemaBlockedDeployLog.replace(pendingMigrationIds.join("\n"), "") })] }],
+    ["contradictory schema log", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ deployLogText: `${schemaBlockedDeployLog}\nDatabase schema is up to date` })] }],
+    ["deploy controls changed after failure", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence()], controlFilesMatch: () => false }],
+    ["run not in current main ancestry", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ shaIsAncestorOfCurrentMain: false })] }],
+    ["deploy is concurrent with current preflight", { laterRuns: [deployRun({ id: 100000000000 }), {
+      id: 99999999999, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress",
+    }], safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ run: deployRun({ id: 100000000000 }) })] }],
+  ])("rejects a later deploy when %s", (_label, overrides) => {
+    expect(() => verify({
+      laterRuns: [deployRun(), {
+        id: 99999999999, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress",
+      }],
+      safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence()],
+      ...overrides,
+    })).toThrow("cannot be safely resumed");
   });
 
   it.each([

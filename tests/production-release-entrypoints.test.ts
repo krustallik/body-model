@@ -204,6 +204,13 @@ describe("active production release entrypoints", () => {
     expect(resumeVerifier).toContain('"Restore snapshot, compare source state, and rehearse exact migrations": "failure"');
     expect(resumeVerifier).toContain("sourceArtifacts?.total_count");
     expect(resumeVerifier).toContain("another release or preflight workflow exists");
+    expect(resumeVerifier).toContain("assertSafeFailedPreMaintenanceDeploy");
+    expect(resumeVerifier).toContain("deployControlFilesMatch");
+    expect(resumeVerifier).toContain('".github/workflows/production-full-history-recalculate.yml"');
+    expect(workflow.match(/for workflow_file in [^\n]*production-full-history-recalculate\.yml[^\n]*; do/g)).toHaveLength(2);
+    expect(workflow).toContain("resume-safe-failed-deploys.ndjson");
+    expect(workflow).toContain("--log-failed");
+    expect(workflow).toContain("resume-main-ci-runs.ndjson");
 
     const resumeStart = capture.indexOf("resume_pre_ddl_previous_release() {");
     const markerCheck = capture.indexOf("read_bodycast_release_marker", resumeStart);

@@ -5,13 +5,63 @@ import path from "node:path";
 import { assertTrustedOwnerWorkflowRun, BODYCAST_OWNER_ID } from "./github-owner-identity.mjs";
 
 const PREFLIGHT_PATH = ".github/workflows/production-migration-preflight.yml";
+const DEPLOY_PATH = ".github/workflows/deploy-production.yml";
+const CI_PATH = ".github/workflows/ci.yml";
 const MUTATION_WORKFLOW_PATHS = new Set([
   PREFLIGHT_PATH,
   ".github/workflows/production-migrate.yml",
   ".github/workflows/production-database-cutback.yml",
   ".github/workflows/activate-unified-v4-production.yml",
+  ".github/workflows/production-full-history-recalculate.yml",
   ".github/workflows/deploy-production.yml",
 ]);
+export const DEPLOY_CONTROL_FILES = Object.freeze([
+  ".github/workflows/deploy-production.yml",
+  ".github/workflows/ci.yml",
+  "scripts/ci/production-deploy-gate.ts",
+  "docker-compose.prod.yml",
+  ".dockerignore",
+  "Dockerfile",
+  "package.json",
+  "package-lock.json",
+  "prisma",
+  "scripts/deploy-main-freshness.sh",
+  "scripts/deploy-preflight-schema.sh",
+  "scripts/deploy.sh",
+  "scripts/filter-ssh-known-hosts.mjs",
+  "scripts/production-app-container-health-wait.sh",
+  "scripts/production-release-lock.sh",
+  "scripts/production-release-marker.sh",
+  "scripts/production-route-path.sh",
+  "scripts/production-route-primitives.sh",
+  "scripts/production-schema-deploy-handoff.mjs",
+]);
+const DEPLOY_AUTHORIZE_STEPS = Object.freeze([
+  ["Set up job", "success"],
+  ["Checkout main gate helpers", "success"],
+  ["Verify triggering CI or owner dispatch and current main", "success"],
+  ["Post Checkout main gate helpers", "success"],
+  ["Complete job", "success"],
+]);
+const DEPLOY_STEPS = Object.freeze([
+  ["Set up job", "success"],
+  ["Checkout exact current main tooling", "success"],
+  ["Recheck run identity and main tip before production credentials", "success"],
+  ["Validate SSH inputs and pin the production host", "success"],
+  ["Deploy exact SHA through the fixed production script", "failure"],
+  ["Remove temporary SSH credentials", "success"],
+  ["Post Checkout exact current main tooling", "success"],
+  ["Complete job", "success"],
+]);
+const SAFE_SCHEMA_BLOCK_LOG_MESSAGES = Object.freeze([
+  "BLOCKED: production schema is not compatible with this application revision.",
+  "Ordinary automatic deployment does not run prisma migrate deploy.",
+  "Pending migration identifiers appear in the status output above.",
+  "Authorize a separate production migration procedure before releasing this commit.",
+  "Deploy failed before maintenance was confirmed; the previous app was not stopped or replaced.",
+]);
+const MIGRATION_IDENTIFIER_PATTERN = /\b20\d{12}_[a-z0-9_]+\b/g;
+const MAX_DEPLOY_FAILURE_LOG_BYTES = 1_000_000;
 
 const REQUIRED_SOURCE_STEPS = Object.freeze({
   "Enter maintenance and drain the old app before backup": "success",
@@ -158,6 +208,99 @@ function parseNdjson(text) {
   return text.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
 }
 
+export function deployControlFilesMatch(runSha, currentMainSha, cwd = process.cwd()) {
+  try {
+    execFileSync("git", ["diff", "--quiet", runSha, currentMainSha, "--", ...DEPLOY_CONTROL_FILES], { cwd, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function assertRunSummaryMatches(historyRun, run) {
+  for (const key of ["id", "workflow_id", "path", "head_sha", "head_branch", "event", "status", "conclusion", "run_attempt"]) {
+    if (String(historyRun?.[key] ?? "") !== String(run?.[key] ?? "")) {
+      reject(`a later deploy run summary differs from its complete history record (${key}).`);
+    }
+  }
+}
+
+function assertExactSteps(job, expected, description) {
+  const steps = job?.steps;
+  if (!Array.isArray(steps) || steps.length !== expected.length
+    || expected.some(([name, conclusion], index) => steps[index]?.name !== name || steps[index]?.conclusion !== conclusion)) {
+    reject(`${description} does not match the reviewed exact step sequence.`);
+  }
+}
+
+function assertSafeFailedPreMaintenanceDeploy(evidence, { historyRun, currentMainSha, deployWorkflowId, controlFilesMatch }) {
+  const run = evidence?.run;
+  const runId = String(run?.id ?? "");
+  if (!/^[1-9][0-9]*$/.test(runId)
+    || String(run?.workflow_id) !== String(deployWorkflowId)
+    || workflowPath(run) !== DEPLOY_PATH
+    || run.status !== "completed" || run.conclusion !== "failure"
+    || run.run_attempt !== 1 || run.head_branch !== "main" || run.event !== "workflow_run"
+    || !/^[a-f0-9]{40}$/.test(String(run.head_sha ?? ""))
+    || evidence.shaIsAncestorOfCurrentMain !== true) {
+    reject("a later deploy is not an original completed failed automatic deploy on current-main ancestry.");
+  }
+  assertRunSummaryMatches(historyRun, run);
+  if (run.repository?.full_name !== "krustallik/body-model"
+    || String(run.repository?.owner?.id ?? "") !== BODYCAST_OWNER_ID) {
+    reject("a later deploy run is not from the canonical BodyCast repository.");
+  }
+
+  const jobsPayload = evidence.jobs;
+  if (jobsPayload?.total_count !== 2 || !Array.isArray(jobsPayload.jobs) || jobsPayload.jobs.length !== 2) {
+    reject("a later deploy job inventory is incomplete or unexpected.");
+  }
+  const authorize = jobsPayload.jobs.find((job) => job.name === "Authorize exact current-main app deploy");
+  const deploy = jobsPayload.jobs.find((job) => job.name === "Deploy exact current-main SHA");
+  if (!authorize || !deploy || jobsPayload.jobs.some((job) => job.head_sha !== run.head_sha || job.run_attempt !== 1)) {
+    reject("a later deploy job identity is incomplete or unexpected.");
+  }
+  if (authorize.conclusion !== "success" || deploy.conclusion !== "failure") {
+    reject("a later deploy did not pass authorization and fail only in the deploy job.");
+  }
+  assertExactSteps(authorize, DEPLOY_AUTHORIZE_STEPS, "the deploy authorization job");
+  assertExactSteps(deploy, DEPLOY_STEPS, "the deploy job");
+
+  const ciRuns = evidence.ciRuns;
+  if (!Array.isArray(ciRuns)) reject("the exact-SHA main CI evidence for a later deploy is missing.");
+  const matchingCiRuns = ciRuns.filter((ciRun) => ciRun?.head_sha === run.head_sha
+    && ciRun.head_branch === "main" && ciRun.event === "push" && workflowPath(ciRun) === CI_PATH
+    && ciRun.status === "completed" && ciRun.conclusion === "success");
+  if (matchingCiRuns.length !== 1 || matchingCiRuns[0].run_attempt !== 1) {
+    reject("a later deploy does not have one successful original main CI run for its exact SHA.");
+  }
+
+  const logText = String(evidence.deployLogText ?? "");
+  if (Buffer.byteLength(logText, "utf8") === 0 || Buffer.byteLength(logText, "utf8") > MAX_DEPLOY_FAILURE_LOG_BYTES) {
+    reject("the later deploy failure log is missing or exceeds the bounded evidence size.");
+  }
+  const normalizedLog = normalizeActionLog(logText);
+  const positions = SAFE_SCHEMA_BLOCK_LOG_MESSAGES.map((message) => findAllOccurrences(normalizedLog, message));
+  if (positions.some((items) => items.length !== 1)
+    || positions.some((items, index) => index > 0 && positions[index - 1][0] >= items[0])) {
+    reject("the later deploy log does not prove the exact pre-maintenance schema-compatibility block.");
+  }
+  if (normalizedLog.includes("Database schema is up to date")) {
+    reject("the later deploy log contains contradictory schema-status evidence.");
+  }
+  const pendingIds = [...new Set(logText.match(MIGRATION_IDENTIFIER_PATTERN) ?? [])].sort();
+  const firstBlockPosition = normalizedLog.indexOf(SAFE_SCHEMA_BLOCK_LOG_MESSAGES[0]);
+  const pendingIdsBeforeBlock = pendingIds.filter((migrationId) => normalizedLog.indexOf(migrationId) >= 0
+    && normalizedLog.indexOf(migrationId) < firstBlockPosition);
+  if (pendingIds.length === 0 || pendingIdsBeforeBlock.length !== pendingIds.length) {
+    reject("the later deploy log does not identify pending migrations before the schema block.");
+  }
+  if (typeof controlFilesMatch !== "function" || !controlFilesMatch(run.head_sha, currentMainSha)) {
+    reject("deploy control files changed after the failed run, so its failure boundary cannot be reused.");
+  }
+  return Object.freeze({ runId, sha: run.head_sha, pendingMigrationIds: Object.freeze(pendingIds) });
+}
+
 export function verifyResumablePreflightAttempt({
   sourceRun,
   sourceJobs,
@@ -168,6 +311,9 @@ export function verifyResumablePreflightAttempt({
   currentMainSha,
   workflowId,
   sourceIsAncestor,
+  safeFailedDeployRuns = [],
+  deployWorkflowId,
+  controlFilesMatch = deployControlFilesMatch,
 }) {
   if (!/^[1-9][0-9]*$/.test(String(sourceRunId ?? ""))
     || !/^[1-9][0-9]*$/.test(String(currentRunId ?? ""))
@@ -220,21 +366,51 @@ export function verifyResumablePreflightAttempt({
 
   const sourceId = BigInt(sourceRunId);
   const currentId = BigInt(currentRunId);
+  const laterRunById = new Map();
+  for (const run of laterRuns ?? []) {
+    const runId = String(run?.id ?? "");
+    if (!/^[1-9][0-9]*$/.test(runId)) reject("later production workflow history contains a malformed run identifier.");
+    if (laterRunById.has(runId)) reject("later production workflow history contains a duplicate run.");
+    laterRunById.set(runId, run);
+  }
+  const safeDeployById = new Map();
+  for (const evidence of safeFailedDeployRuns ?? []) {
+    const id = String(evidence?.run?.id ?? "");
+    if (!/^[1-9][0-9]*$/.test(id) || safeDeployById.has(id)) {
+      reject("safe failed-deploy evidence contains a malformed or duplicate run.");
+    }
+    safeDeployById.set(id, evidence);
+  }
+  const verifiedDeployIds = new Set();
+  const pendingMigrationIds = new Set();
   for (const run of laterRuns ?? []) {
     const id = BigInt(String(run.id));
     if (!MUTATION_WORKFLOW_PATHS.has(workflowPath(run))) continue;
     if (id === currentId) continue;
-    if (id > sourceId || (run.status === "in_progress" && id !== currentId)) {
-      reject(`another release or preflight workflow exists after source run ${sourceRunId}.`);
+    if (id <= sourceId && run.status !== "in_progress") continue;
+    if (id >= currentId) reject(`another release or preflight workflow is concurrent with resume run ${currentRunId}.`);
+    if (workflowPath(run) === DEPLOY_PATH && id > sourceId) {
+      const evidence = safeDeployById.get(String(run.id));
+      if (!evidence) reject(`a later deploy has no complete evidence proving a pre-maintenance schema block.`);
+      const verified = assertSafeFailedPreMaintenanceDeploy(evidence, {
+        historyRun: run, currentMainSha, deployWorkflowId, controlFilesMatch,
+      });
+      verifiedDeployIds.add(verified.runId);
+      for (const migrationId of verified.pendingMigrationIds) pendingMigrationIds.add(migrationId);
+      continue;
     }
+    reject(`another release or preflight workflow exists after source run ${sourceRunId}.`);
   }
+  if (verifiedDeployIds.size !== safeDeployById.size) reject("failed-deploy evidence does not match the complete production workflow history.");
 
   return Object.freeze({
-    schemaVersion: 1,
+    schemaVersion: 2,
     sourceRunId: String(sourceRun.id),
     sourceRunAttempt: 1,
     sourceSha: sourceRun.head_sha,
     targetSha: currentMainSha,
+    safePreMaintenanceDeployRunIds: Object.freeze([...verifiedDeployIds].sort()),
+    pendingMigrationIds: Object.freeze([...pendingMigrationIds].sort()),
   });
 }
 
@@ -515,6 +691,9 @@ async function readJson(file) { return JSON.parse(await readFile(file, "utf8"));
 
 async function main() {
   const [mode, ...args] = process.argv.slice(2);
+  const isAncestor = (ancestor, descendant) => {
+    try { execFileSync("git", ["merge-base", "--is-ancestor", ancestor, descendant], { stdio: "ignore" }); return true; } catch { return false; }
+  };
   if (mode === "--verify-pre-ddl-migration-failure" && args.length === 19) {
     const [sourceRunPath, sourceJobsPath, sourceArtifactsPath, migrationRunPath, migrationJobsPath, migrationLogPath,
       blockedRunPath, blockedJobsPath, blockedArtifactsPath, blockedLogPath, laterRunsPath, safeRetriesPath, sourceRunId,
@@ -526,9 +705,6 @@ async function main() {
       readJson(blockedArtifactsPath), readFile(blockedLogPath, "utf8"), readFile(path.resolve(laterRunsPath), "utf8"),
       readFile(path.resolve(safeRetriesPath), "utf8"),
     ]);
-    const isAncestor = (ancestor, descendant) => {
-      try { execFileSync("git", ["merge-base", "--is-ancestor", ancestor, descendant], { stdio: "ignore" }); return true; } catch { return false; }
-    };
     const sourceIsAncestor = isAncestor(sourceRun.head_sha, currentMainSha);
     const sourceIsAncestorOfBlockedCapture = isAncestor(sourceRun.head_sha, blockedCaptureRun.head_sha);
     const blockedCaptureIsAncestorOfCurrentMain = isAncestor(blockedCaptureRun.head_sha, currentMainSha);
@@ -543,12 +719,14 @@ async function main() {
     process.stdout.write(`${JSON.stringify(proof)}\n`);
     return;
   }
-  if (mode !== "--verify-source" || args.length !== 8) {
-    throw new Error("Usage: production-preflight-resume.mjs --verify-source <run.json> <jobs.json> <artifacts.json> <later-runs.ndjson> <source-run-id> <current-run-id> <current-main-sha> <workflow-id>");
+  if (mode !== "--verify-source" || args.length !== 10) {
+    throw new Error("Usage: production-preflight-resume.mjs --verify-source <run.json> <jobs.json> <artifacts.json> <later-runs.ndjson> <safe-failed-deploy-runs.ndjson> <source-run-id> <current-run-id> <current-main-sha> <preflight-workflow-id> <deploy-workflow-id>");
   }
-  const [runPath, jobsPath, artifactsPath, laterRunsPath, sourceRunId, currentRunId, currentMainSha, workflowId] = args;
-  const [sourceRun, sourceJobs, sourceArtifacts, laterRunsText] = await Promise.all([
+  const [runPath, jobsPath, artifactsPath, laterRunsPath, safeDeployRunsPath,
+    sourceRunId, currentRunId, currentMainSha, workflowId, deployWorkflowId] = args;
+  const [sourceRun, sourceJobs, sourceArtifacts, laterRunsText, safeDeployRunsText] = await Promise.all([
     readJson(runPath), readJson(jobsPath), readJson(artifactsPath), readFile(path.resolve(laterRunsPath), "utf8"),
+    readFile(path.resolve(safeDeployRunsPath), "utf8"),
   ]);
   let sourceIsAncestor = false;
   try {
@@ -556,8 +734,12 @@ async function main() {
     sourceIsAncestor = true;
   } catch {}
   const proof = verifyResumablePreflightAttempt({
-    sourceRun, sourceJobs, sourceArtifacts, laterRuns: parseNdjson(laterRunsText), sourceRunId, currentRunId,
-    currentMainSha, workflowId, sourceIsAncestor,
+    sourceRun, sourceJobs, sourceArtifacts, laterRuns: parseNdjson(laterRunsText),
+    safeFailedDeployRuns: parseNdjson(safeDeployRunsText).map((evidence) => ({
+      ...evidence,
+      shaIsAncestorOfCurrentMain: isAncestor(evidence?.run?.head_sha, currentMainSha),
+    })),
+    sourceRunId, currentRunId, currentMainSha, workflowId, deployWorkflowId, sourceIsAncestor,
   });
   process.stdout.write(`${JSON.stringify(proof)}\n`);
 }

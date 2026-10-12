@@ -398,7 +398,7 @@ describe("workflow mutation boundary", () => {
     expect(workflow).toContain("pg_dump --format=custom");
     expect(workflow).toContain("production-backup-envelope.mjs encrypt");
     expect(workflow).toContain("isolated-postgres:");
-    expect(workflow).toContain("public.ecr.aws/docker/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24");
+    expect(workflow).toContain("docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24");
     expect(workflow).not.toMatch(/(?:POSTGRES_IMAGE:\s+|--entrypoint pg_restore\s+)postgres@sha256:/);
     expect(workflow).not.toMatch(/image:\s+postgres:17-alpine\s*$/m);
     expect(workflow).toContain("scripts/filter-ssh-known-hosts.mjs");
@@ -412,7 +412,7 @@ describe("workflow mutation boundary", () => {
     expect(sql).toContain("JOIN ddl_targets t ON t.table_name = c.relname");
     expect(sql).toContain("l.pid IS NULL OR l.pid <> pg_backend_pid()");
     expect(sql).not.toMatch(/^\s*(ALTER|CREATE|DROP|INSERT|UPDATE|DELETE|TRUNCATE)\b/im);
-    expect(safetyWorkflow.match(/image:\s+public\.ecr\.aws\/docker\/library\/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24/g)).toHaveLength(2);
+    expect(safetyWorkflow.match(/image:\s+docker\.io\/library\/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24/g)).toHaveLength(2);
     expect(safetyWorkflow).not.toMatch(/image:\s+postgres@sha256:/);
     expect(safetyWorkflow).not.toMatch(/image:\s+postgres:17-alpine\s*$/m);
     const smoke = await readFile(new URL("../scripts/ci/production-safety-postgres-smoke.mjs", import.meta.url), "utf8");
@@ -423,11 +423,35 @@ describe("workflow mutation boundary", () => {
     expect(workflow).toContain("node scripts/restore-encrypted-postgres-backup.mjs");
     expect(workflow).not.toContain("bodycast-archive-list.txt");
     expect(smoke).toContain("restoreEncryptedPostgresBackup");
-    expect(smoke).toContain('const POSTGRES_IMAGE = "public.ecr.aws/docker/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24"');
+    expect(smoke).toContain('const POSTGRES_IMAGE = "docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24"');
     expect(smoke).not.toContain('"postgres:17-alpine"');
-    expect(cutbackWorkflow).toContain("docker run --rm -i public.ecr.aws/docker/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24");
-    expect(cutbackScript).toContain('readonly POSTGRES_IMAGE="public.ecr.aws/docker/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24"');
-    expect(cutbackSmoke).toContain('const IMAGE = "public.ecr.aws/docker/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24"');
-    expect(restoreScript).toContain('if (!image || !/^public\\.ecr\\.aws\\/docker\\/library\\/postgres@sha256:[a-f0-9]{64}$/.test(image))');
+    expect(cutbackWorkflow).toContain("docker run --rm -i docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24");
+    expect(cutbackScript).toContain('readonly POSTGRES_IMAGE="docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24"');
+    expect(cutbackSmoke).toContain('const IMAGE = "docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24"');
+    expect(restoreScript).toContain('if (!image || !/^docker\\.io\\/library\\/postgres@sha256:[a-f0-9]{64}$/.test(image))');
+  });
+});
+
+describe("pinned PostgreSQL registry consistency", () => {
+  it("uses the same Docker Hub digest across CI, production workflows, and PostgreSQL helpers", async () => {
+    const image = "docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24";
+    const files = [
+      "../.github/workflows/ci.yml",
+      "../.github/workflows/production-no-app-preflight.yml",
+      "../.github/workflows/production-migration-preflight.yml",
+      "../.github/workflows/production-full-history-recalculate.yml",
+      "../.github/workflows/production-migration-safety-ci.yml",
+      "../.github/workflows/production-database-cutback.yml",
+      "../scripts/production-database-cutback.sh",
+      "../scripts/ci/production-database-cutback-postgres-smoke.mjs",
+      "../scripts/ci/production-safety-postgres-smoke.mjs",
+    ];
+
+    for (const file of files) {
+      const contents = await readFile(new URL(file, import.meta.url), "utf8");
+      const references = contents.match(/(?:public\.ecr\.aws\/docker\/library\/postgres|docker\.io\/library\/postgres)[^\s"']*/g) ?? [];
+      expect(references.length, file).toBeGreaterThan(0);
+      expect(references.every((reference) => reference === image), file).toBe(true);
+    }
   });
 });

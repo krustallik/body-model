@@ -99,7 +99,7 @@ describe("no-app preparation workflow boundaries", () => {
     expect(workflow).toContain("--rehearsal-preflight");
     expect(workflow).not.toContain("production-migration-preflight.mjs --preflight");
     expect(workflow).toContain("BODYCAST_PGDUMP_INVOCATION_AT");
-    expect(workflow).toContain("pg_restore public.ecr.aws/docker/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24 --version");
+    expect(workflow).toContain("pg_restore docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24 --version");
     expect(normalWorkflow).toContain("Enter maintenance and drain the old app before backup");
     expect(normalWorkflow).toContain("Capture pg_dump start on production host and create encrypted backup");
     expect(normalWorkflow).toContain("production-previous-app-provenance.mjs --verify-preflight");

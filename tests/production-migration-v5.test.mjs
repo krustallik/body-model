@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -1728,5 +1728,65 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
     expect(verifyDisposablePostflight(post, dirs).verified).toBe(true);
     expect(verifyPostflightMatchesRestore(post, verified, dirs).ready).toBe(false);
     expect(schemaInventoryDigest(post.objects)).not.toBe(verified.postSchemaDigest);
+  });
+
+  it("reports only safe restore blockers to stderr when the workflow redirects its detailed result", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-restore-diagnostic-"));
+    const source = validPreflightReport();
+    const restored = { ...source, logicalDataFingerprint: "e".repeat(64) };
+    const readability = { readability: Object.fromEntries(["Workout", "Profile", "ModelEpisode", "PhysiologyV7Lifecycle", "DailyModelState", "StrengthDiarySession", "ExerciseCatalog"].map((name) => [name, { rowCount: 0 }])) };
+    const sourcePath = path.join(directory, "source.json");
+    const restoredPath = path.join(directory, "restored.json");
+    const readabilityPath = path.join(directory, "readability.json");
+    try {
+      await Promise.all([
+        writeFile(sourcePath, JSON.stringify(source)),
+        writeFile(restoredPath, JSON.stringify(restored)),
+        writeFile(readabilityPath, JSON.stringify(readability)),
+      ]);
+      const run = spawnSync(process.execPath, [
+        path.resolve("scripts/production-migration-restore-check.mjs"), "--base",
+        "--source", sourcePath, "--restored", restoredPath, "--readability", readabilityPath,
+      ], { cwd: process.cwd(), encoding: "utf8", windowsHide: true });
+
+      expect(run.error).toBeUndefined();
+      expect(run.status).toBe(1);
+      expect(JSON.parse(run.stdout).verified).toBe(false);
+      expect(run.stderr).toContain("categories=data-fingerprint");
+      expect(run.stderr).not.toContain("Restored public-table rows");
+      expect(run.stderr).not.toContain("e".repeat(64));
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("reports sanitized preflight blockers to stderr when the workflow redirects its result", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-preflight-diagnostic-"));
+    const report = validV4RepublicationPreflightReport();
+    report.identity.database = "unexpected-database";
+    const injectedMigrationName = "unexpected\n::add-mask::database-controlled-value";
+    report.migrations.push(migrationRow({ name: injectedMigrationName, sha256: "f".repeat(64) }));
+    const reportPath = path.join(directory, "preflight.json");
+    try {
+      await writeFile(reportPath, JSON.stringify(report));
+      const run = spawnSync(process.execPath, [
+        path.resolve("scripts/production-migration-preflight.mjs"), "--preflight",
+        "--manifest", V4_REPUBLICATION_MANIFEST.id,
+        "--release-sha", "fe55468321b9ef8e9783aa3874e1b42c2736b514",
+        "--repository", process.cwd(), "--report", reportPath,
+      ], { cwd: process.cwd(), encoding: "utf8", windowsHide: true });
+
+      expect(run.error).toBeUndefined();
+      expect(run.status).toBe(1);
+      expect(JSON.parse(run.stdout).readyForOwnerAuthorization).toBe(false);
+      expect(run.stderr).toContain("blocker-count=");
+      expect(run.stderr).toContain("categories=database-identity,migration-history");
+      expect(run.stderr).not.toContain("Connected database/role identity");
+      expect(run.stderr).not.toContain(injectedMigrationName);
+      expect(run.stderr).not.toContain("::add-mask::");
+      expect(run.stderr).not.toContain("d".repeat(64));
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });

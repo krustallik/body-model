@@ -44,6 +44,30 @@ export const ALL_REVIEWED_OBJECTS = [...new Set([
 
 function sorted(values) { return [...values].sort(); }
 function sameArray(left, right) { return JSON.stringify(sorted(left)) === JSON.stringify(sorted(right)); }
+
+const SAFE_BLOCKER_CATEGORIES = Object.freeze([
+  ["data-fingerprint", /fingerprint|public-table rows|sequence state/i],
+  ["migration-history", /migration|_prisma_migrations/i],
+  ["schema-inventory", /schema|object signature|baseline table/i],
+  ["database-identity", /database|postgresql|endpoint|role identity/i],
+  ["writer-drain", /writer|client backend/i],
+  ["database-locks", /lock|prepared transaction/i],
+  ["release-integrity", /manifest|release tree|execution-integrity|git blob/i],
+]);
+
+export function safeBlockerCategories(blockers) {
+  const categories = new Set();
+  for (const blocker of Array.isArray(blockers) ? blockers : []) {
+    if (typeof blocker !== "string") {
+      categories.add("unclassified");
+      continue;
+    }
+    const category = SAFE_BLOCKER_CATEGORIES.find(([, pattern]) => pattern.test(blocker))?.[0] ?? "unclassified";
+    categories.add(category);
+  }
+  return [...categories].sort();
+}
+
 function canonicalHistory(migrations) {
   if (!Array.isArray(migrations)) return null;
   return migrations.map((entry) => ({
@@ -471,7 +495,11 @@ async function main() {
     }
     const result = { exactExecutionBytes: files.every((item) => item.exactMatch), files };
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-    if (!result.exactExecutionBytes) process.exitCode = 1;
+    if (!result.exactExecutionBytes) {
+      const mismatchCount = files.filter((item) => !item.exactMatch).length;
+      process.stderr.write(`Migration execution-integrity check failed (mismatch-count=${mismatchCount}).\n`);
+      process.exitCode = 1;
+    }
     return;
   }
   if (mode === "--preflight" || mode === "--postflight") {
@@ -511,7 +539,13 @@ async function main() {
       result.ready = result.blockers.length === 0;
     }
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-    if (mode === "--preflight" ? !result.readyForOwnerAuthorization : !result.ready) process.exitCode = 1;
+    if (mode === "--preflight" ? !result.readyForOwnerAuthorization : !result.ready) {
+      const blockers = Array.isArray(result.blockers) ? result.blockers.filter((blocker) => typeof blocker === "string") : [];
+      const categories = safeBlockerCategories(blockers);
+      const summary = categories.length ? categories.join(",") : "unclassified";
+      process.stderr.write(`${mode === "--preflight" ? "Production migration preflight" : "Production migration postflight"} failed (blocker-count=${blockers.length}; categories=${summary}).\n`);
+      process.exitCode = 1;
+    }
     return;
   }
   throw new Error("Usage: production-migration-preflight.mjs --preflight|--postflight|--execution-integrity|--verify-restore|--verify-authorization ...");

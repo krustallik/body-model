@@ -2,7 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { ACTIVE_ENERGY_UNIFIED_MANIFEST } from "./production-migration-manifests.mjs";
-import { verifyRestoredBackup, evaluateProductionPostflight, schemaInventoryDigest } from "./production-migration-preflight.mjs";
+import { verifyRestoredBackup, evaluateProductionPostflight, schemaInventoryDigest, safeBlockerCategories } from "./production-migration-preflight.mjs";
 
 export function verifyBaseRestore(sourceReport, restoredReport, readabilityReport) {
   const result = verifyRestoredBackup(sourceReport, {
@@ -49,6 +49,17 @@ export function combineRestoreResults(baseResult, postflightResult) {
 
 async function readJson(pathname) { return JSON.parse(await readFile(pathname, "utf8")); }
 
+function writeVerificationResult(label, result) {
+  process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+  if (result.verified !== true) {
+    const blockers = Array.isArray(result.blockers) ? result.blockers.filter((blocker) => typeof blocker === "string") : [];
+    const categories = safeBlockerCategories(blockers);
+    const summary = categories.length ? categories.join(",") : "unclassified";
+    process.stderr.write(`${label} failed (blocker-count=${blockers.length}; categories=${summary}).\n`);
+    process.exitCode = 1;
+  }
+}
+
 async function main() {
   const [mode, ...args] = process.argv.slice(2);
   const value = (name) => { const index = args.indexOf(name); return index < 0 ? null : args[index + 1]; };
@@ -60,22 +71,19 @@ async function main() {
       readJson(value("--source")), readJson(value("--restored")), readJson(value("--readability")),
     ]);
     const result = verifyBaseRestore(source, restored, readability);
-    process.stdout.write(JSON.stringify(result, null, 2) + "\n");
-    if (!result.verified) process.exitCode = 1;
+    writeVerificationResult("Base backup restore verification", result);
     return;
   }
   if (mode === "--postflight") {
     const report = await readJson(value("--report"));
     const result = verifyDisposablePostflight(report, migrationDirectories, value("--manifest") ?? ACTIVE_ENERGY_UNIFIED_MANIFEST.id);
-    process.stdout.write(JSON.stringify(result, null, 2) + "\n");
-    if (!result.verified) process.exitCode = 1;
+    writeVerificationResult("Disposable migration postflight", result);
     return;
   }
   if (mode === "--combine") {
     const [base, postflight] = await Promise.all([readJson(value("--base")), readJson(value("--postflight"))]);
     const result = combineRestoreResults(base, postflight);
-    process.stdout.write(JSON.stringify(result, null, 2) + "\n");
-    if (!result.verified) process.exitCode = 1;
+    writeVerificationResult("Combined disposable restore verification", result);
     return;
   }
   throw new Error("Usage: production-migration-restore-check.mjs --base|--postflight|--combine ...");

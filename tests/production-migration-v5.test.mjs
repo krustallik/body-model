@@ -414,6 +414,13 @@ function authorizedBoundary(fixture, databaseUrl = "postgresql://bodycast:secret
 }
 
 describe("V5 closed migration manifest and full pending set", () => {
+  it("keeps the V4 runbook migration hashes bound to the release manifest", async () => {
+    const runbook = await readFile(new URL("../docs/development/production-migration-v5-runbook.md", import.meta.url), "utf8");
+    for (const migration of V4_REPUBLICATION_MANIFEST.migrations) {
+      expect(runbook).toContain(`| \`${migration.name}\` | \`${migration.sha256}\` |`);
+    }
+  });
+
   it("renders the canonical preflight SQL template before the PostgreSQL backup/restore smoke executes it", async () => {
     const smoke = await readFile(new URL("../scripts/ci/production-safety-postgres-smoke.mjs", import.meta.url), "utf8");
     expect(smoke).toContain('import { renderProductionDbPreflightSql } from "../production-db-preflight.mjs";');

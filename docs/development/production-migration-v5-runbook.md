@@ -46,7 +46,7 @@ The two Stage 02 strength-accounting migrations are prerequisites and must alrea
 | Migration | Git-blob SHA-256 |
 | --- | --- |
 | `20261011120000_unified_publication_failure_fence` | `b122658704a2ca7dac3d5de6e3e1b196d04027078d899d0b8e6079bf0a4397bc` |
-| `20261011130000_only_completed_training_invalidates_v7` | `10ee1cf7ca52c44b6fb35d7155f262b2a70e75428138ac6625783493c230d923` |
+| `20261011130000_only_completed_training_invalidates_v7` | `d37185c4d9c681bcf2e387d343cad2501f75c1d33916b5e4822eba8a9635a2b8` |
 
 Use this manifest only when the read-only production report shows those exact two migrations pending and all six prior migrations successful with their pinned checksums. Its preflight also verifies the old lifecycle/function/trigger baseline and rejects partially applied target columns, table, or functions. Its restore rehearsal applies the exact two migrations to the encrypted current-live backup in a disposable PostgreSQL instance and compares the resulting schema signatures. The signed authorization binds this manifest ID and exact pending-set digest; the earlier six-migration authorization, backup, or rehearsal cannot authorize this set. This manifest uses a fresh standard preflight and does not accept historical preflight resume or forward-resume evidence. Cutback remains available only with the new run's signed evidence and verified current-live backup.
 

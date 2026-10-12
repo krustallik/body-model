@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { canonicalJson } from "../scripts/production-migration-manifests.mjs";
-import { ALL_REVIEWED_OBJECTS, EXPECTED_MIGRATION_OBJECTS, assertProductionDatabaseIdentityMatches, evaluateProductionPreflight, evaluateProductionPostflight, normalizeObjectSignature, verifyRestoredBackup, schemaInventoryDigest } from "../scripts/production-migration-preflight.mjs";
+import { ALL_REVIEWED_OBJECTS, EXPECTED_MIGRATION_OBJECTS, assertProductionDatabaseIdentityMatches, evaluateProductionPreflight, evaluateProductionPostflight, normalizeObjectSignature, verifyRestoredBackup, schemaInventoryDigest, schemaInventoryDifferenceSummary } from "../scripts/production-migration-preflight.mjs";
 import { ACTIVE_ENERGY_UNIFIED_MANIFEST, STAGE_02_MANIFEST, V4_REPUBLICATION_MANIFEST } from "../scripts/production-migration-manifests.mjs";
 import { createAuthorizationEnvelope, verifyAuthorizationEnvelope, assertSignedAuthorizationRequired, canonicalSha256 } from "../scripts/production-migration-authorization.mjs";
 import { selectLatestApplicablePreflight, verifyPreflightArtifactMetadata, isBackupFresh, withPrismaLockTimeout } from "../scripts/production-migration-release.mjs";
@@ -1730,10 +1730,53 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
     expect(schemaInventoryDigest(post.objects)).not.toBe(verified.postSchemaDigest);
   });
 
+  it("reports sanitized per-object schema differences without exposing signature contents", () => {
+    const source = validPreflightReport();
+    const restored = { ...source, objects: source.objects.map((row) => ({ ...row })) };
+    const target = source.objects.find((row) => row.present && typeof row.signature === "string");
+    const targetIndex = source.objects.indexOf(target);
+    const rawSignature = "CREATE FUNCTION private_bodycast_signature() RETURNS text AS $$sensitive-definition$$ LANGUAGE sql";
+    restored.objects[targetIndex].signature = rawSignature;
+
+    const diagnostic = schemaInventoryDifferenceSummary(source.objects, restored.objects, {
+      sourceServerVersion: source.identity.serverVersion,
+      restoredServerVersion: "17.12",
+    });
+    expect(diagnostic).toMatchObject({
+      schemaVersion: 1,
+      sourceServerVersion: "17.11",
+      restoredServerVersion: "17.12",
+      changedObjectCount: 1,
+      changedObjects: [{ name: target.name, changedFields: ["signature"], normalizedSignaturesEqual: false }],
+    });
+    expect(diagnostic.changedObjects[0].sourceSignatureSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(diagnostic.changedObjects[0].restoredSignatureSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(diagnostic)).not.toContain(rawSignature);
+
+    const unexpectedName = "unreviewed_private_table_name";
+    const unknownObjectDiagnostic = schemaInventoryDifferenceSummary(
+      [...source.objects, { name: unexpectedName, present: false, kind: "missing", signature: null }],
+      source.objects,
+    );
+    expect(JSON.stringify(unknownObjectDiagnostic)).not.toContain(unexpectedName);
+    expect(unknownObjectDiagnostic.sourceObjectCount).toBe(source.objects.length + 1);
+
+    restored.objects[targetIndex].signature = `${target.signature.replaceAll(" ", "  ")} /* formatting-only */`;
+    const formattingDiagnostic = schemaInventoryDifferenceSummary(source.objects, restored.objects);
+    expect(formattingDiagnostic.changedObjects[0].normalizedSignaturesEqual).toBe(true);
+  });
+
   it("reports only safe restore blockers to stderr when the workflow redirects its detailed result", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-restore-diagnostic-"));
     const source = validPreflightReport();
-    const restored = { ...source, logicalDataFingerprint: "e".repeat(64) };
+    const privateSignature = "CREATE FUNCTION private_restore_probe() RETURNS text AS $$synthetic-private-body$$ LANGUAGE sql";
+    const target = source.objects.find((row) => row.present && typeof row.signature === "string");
+    const targetIndex = source.objects.indexOf(target);
+    const restored = {
+      ...source,
+      logicalDataFingerprint: "e".repeat(64),
+      objects: source.objects.map((row, index) => ({ ...row, ...(index === targetIndex ? { signature: privateSignature } : {}) })),
+    };
     const readability = { readability: Object.fromEntries(["Workout", "Profile", "ModelEpisode", "PhysiologyV7Lifecycle", "DailyModelState", "StrengthDiarySession", "ExerciseCatalog"].map((name) => [name, { rowCount: 0 }])) };
     const sourcePath = path.join(directory, "source.json");
     const restoredPath = path.join(directory, "restored.json");
@@ -1752,9 +1795,12 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
       expect(run.error).toBeUndefined();
       expect(run.status).toBe(1);
       expect(JSON.parse(run.stdout).verified).toBe(false);
-      expect(run.stderr).toContain("categories=data-fingerprint");
+      expect(run.stderr).toContain("categories=data-fingerprint,schema-inventory");
+      expect(run.stderr).toContain("Sanitized schema inventory differences:");
+      expect(run.stderr).toContain(target.name);
       expect(run.stderr).not.toContain("Restored public-table rows");
       expect(run.stderr).not.toContain("e".repeat(64));
+      expect(run.stderr).not.toContain(privateSignature);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

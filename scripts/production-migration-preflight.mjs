@@ -91,6 +91,60 @@ export function schemaInventoryDigest(objects) {
   return canonicalSha256(normalized);
 }
 
+export function schemaInventoryDifferenceSummary(sourceObjects, restoredObjects, {
+  sourceServerVersion = null,
+  restoredServerVersion = null,
+} = {}) {
+  if (!Array.isArray(sourceObjects) || !Array.isArray(restoredObjects)) return null;
+  const sourceByName = new Map(sourceObjects.map((object) => [object?.name, object]));
+  const restoredByName = new Map(restoredObjects.map((object) => [object?.name, object]));
+  const changedObjects = [];
+
+  for (const name of ALL_REVIEWED_OBJECTS) {
+    const source = sourceByName.get(name);
+    const restored = restoredByName.get(name);
+    const changedFields = [];
+    if (!source) changedFields.push("missing-from-source");
+    if (!restored) changedFields.push("missing-from-restore");
+    if (source && restored) {
+      if (source.present !== restored.present) changedFields.push("present");
+      if ((source.kind ?? null) !== (restored.kind ?? null)) changedFields.push("kind");
+      if ((source.signature ?? null) !== (restored.signature ?? null)) changedFields.push("signature");
+    }
+    if (changedFields.length === 0) continue;
+
+    const sourceHasSignature = typeof source?.signature === "string";
+    const restoredHasSignature = typeof restored?.signature === "string";
+    changedObjects.push({
+      name,
+      changedFields,
+      ...(changedFields.includes("signature") ? {
+        sourceSignatureSha256: sourceHasSignature ? canonicalSha256(source.signature) : null,
+        restoredSignatureSha256: restoredHasSignature ? canonicalSha256(restored.signature) : null,
+        normalizedSignaturesEqual: sourceHasSignature && restoredHasSignature
+          ? normalizeObjectSignature(source.signature) === normalizeObjectSignature(restored.signature)
+          : false,
+      } : {}),
+    });
+  }
+
+  const sourceNames = sourceObjects.map((object) => object?.name).sort((a, b) => String(a).localeCompare(String(b)));
+  const restoredNames = restoredObjects.map((object) => object?.name).sort((a, b) => String(a).localeCompare(String(b)));
+  return {
+    schemaVersion: 1,
+    sourceServerVersion: typeof sourceServerVersion === "string" && /^\d+(?:\.\d+){1,2}$/.test(sourceServerVersion) ? sourceServerVersion : null,
+    restoredServerVersion: typeof restoredServerVersion === "string" && /^\d+(?:\.\d+){1,2}$/.test(restoredServerVersion) ? restoredServerVersion : null,
+    sourceInventorySha256: schemaInventoryDigest(sourceObjects),
+    restoredInventorySha256: schemaInventoryDigest(restoredObjects),
+    sourceObjectCount: sourceObjects.length,
+    restoredObjectCount: restoredObjects.length,
+    sourceNameSetSha256: canonicalSha256(sourceNames),
+    restoredNameSetSha256: canonicalSha256(restoredNames),
+    changedObjectCount: changedObjects.length,
+    changedObjects,
+  };
+}
+
 export function assertProductionDatabaseIdentityMatches(expectedIdentity, actualIdentity) {
   if (!isCanonicalPostgresDatabaseIdentity(expectedIdentity) || !isCanonicalPostgresDatabaseIdentity(actualIdentity)
     || canonicalSha256(expectedIdentity) !== canonicalSha256(actualIdentity)) {

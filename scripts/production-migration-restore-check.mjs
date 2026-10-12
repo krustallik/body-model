@@ -2,7 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { ACTIVE_ENERGY_UNIFIED_MANIFEST } from "./production-migration-manifests.mjs";
-import { verifyRestoredBackup, evaluateProductionPostflight, schemaInventoryDigest, safeBlockerCategories } from "./production-migration-preflight.mjs";
+import { verifyRestoredBackup, evaluateProductionPostflight, schemaInventoryDigest, schemaInventoryDifferenceSummary, safeBlockerCategories } from "./production-migration-preflight.mjs";
 
 export function verifyBaseRestore(sourceReport, restoredReport, readabilityReport) {
   const result = verifyRestoredBackup(sourceReport, {
@@ -49,8 +49,11 @@ export function combineRestoreResults(baseResult, postflightResult) {
 
 async function readJson(pathname) { return JSON.parse(await readFile(pathname, "utf8")); }
 
-function writeVerificationResult(label, result) {
+function writeVerificationResult(label, result, safeSchemaDiagnostic = null) {
   process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+  if (safeSchemaDiagnostic) {
+    process.stderr.write(`Sanitized schema inventory differences: ${JSON.stringify(safeSchemaDiagnostic)}\n`);
+  }
   if (result.verified !== true) {
     const blockers = Array.isArray(result.blockers) ? result.blockers.filter((blocker) => typeof blocker === "string") : [];
     const categories = safeBlockerCategories(blockers);
@@ -71,7 +74,14 @@ async function main() {
       readJson(value("--source")), readJson(value("--restored")), readJson(value("--readability")),
     ]);
     const result = verifyBaseRestore(source, restored, readability);
-    writeVerificationResult("Base backup restore verification", result);
+    const schemaDiff = Array.isArray(source?.objects) && Array.isArray(restored?.objects)
+      && schemaInventoryDigest(source.objects) !== schemaInventoryDigest(restored.objects)
+      ? schemaInventoryDifferenceSummary(source.objects, restored.objects, {
+        sourceServerVersion: source?.identity?.serverVersion,
+        restoredServerVersion: restored?.identity?.serverVersion,
+      })
+      : null;
+    writeVerificationResult("Base backup restore verification", result, schemaDiff);
     return;
   }
   if (mode === "--postflight") {

@@ -99,6 +99,7 @@ function preflightFixture(migrationDirectories) {
       finishedAt: "2026-09-01T00:00:01.000Z",
       rolledBackAt: null,
       hasLogs: false,
+      logsFingerprint: "d41d8cd98f00b204e9800998ecf8427e",
     })),
     objects: getExpectedSchemaObjectNames().map((name) => ({
       name,
@@ -252,7 +253,7 @@ describe("production migration preflight evaluator", () => {
     expect(result.diagnostics.longTransactions).toEqual(report.longTransactions);
   });
 
-  it("reports backend and pid-less prepared lock blockers without unverified per-lock attribution", async () => {
+  it("blocks all prepared transactions without unverified per-lock attribution", async () => {
     const sql = await readFile(new URL("../scripts/production-db-preflight.sql", import.meta.url), "utf8");
     expect(sql).toContain("LEFT JOIN pg_stat_activity a ON a.pid = l.pid");
     expect(sql).toContain("prepared_transactions AS (");
@@ -267,7 +268,8 @@ describe("production migration preflight evaluator", () => {
       ...preflightFixture(["20260801000000_baseline", ...STAGE_02_MANIFEST.migrations.map(({ name }) => name), ...EXPECTED_PENDING_MIGRATIONS]),
       preparedTransactions,
     }, ["20260801000000_baseline", ...STAGE_02_MANIFEST.migrations.map(({ name }) => name), ...EXPECTED_PENDING_MIGRATIONS]);
-    expect(report.readyForOwnerAuthorization).toBe(true);
+    expect(report.readyForOwnerAuthorization).toBe(false);
+    expect(report.blockers).toContain("Prepared transaction state is unknown or a prepared transaction may block migration DDL.");
     expect(report.preparedTransactions).toEqual(preparedTransactions);
   });
 

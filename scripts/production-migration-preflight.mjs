@@ -331,9 +331,24 @@ function migrationState(report, migrationDirectories) {
   const applied = new Set();
   for (const [name, entries] of rowGroups) {
     if (entries.length !== 1) duplicate.push(name);
+    for (const row of entries) {
+      const validTimestamp = (value) => value === null
+        || (typeof value === "string" && Number.isFinite(Date.parse(value)));
+      const startMs = Date.parse(row.startedAt ?? "");
+      const finishMs = Date.parse(row.finishedAt ?? "");
+      const rollbackMs = Date.parse(row.rolledBackAt ?? "");
+      if (!/^[a-f0-9]{64}$/.test(String(row.checksum ?? ""))
+        || !validTimestamp(row.startedAt) || !row.startedAt
+        || !validTimestamp(row.finishedAt) || !validTimestamp(row.rolledBackAt)
+        || typeof row.hasLogs !== "boolean" || !/^[a-f0-9]{32}$/.test(String(row.logsFingerprint ?? ""))
+        || (row.finishedAt && finishMs < startMs)
+        || (row.rolledBackAt && (rollbackMs < startMs || row.finishedAt))) {
+        blockers.push(`Production migration history row ${name} has an unknown or malformed execution state.`);
+      }
+    }
     if (entries.some((row) => row.rolledBackAt)) rolledBack.push(name);
     if (entries.some((row) => row.startedAt && !row.finishedAt && !row.rolledBackAt)) failed.push(name);
-    if (entries.length === 1 && entries[0].finishedAt && !entries[0].rolledBackAt) applied.add(name);
+    if (entries.length === 1 && entries[0].startedAt && entries[0].finishedAt && !entries[0].rolledBackAt) applied.add(name);
   }
   if (failed.length) blockers.push(`Incomplete/failed migration rows exist: ${sorted(failed).join(", ")}.`);
   if (rolledBack.length) blockers.push(`Rolled-back migration rows require manual review: ${sorted(rolledBack).join(", ")}.`);
@@ -366,6 +381,12 @@ function appendRequiredAppliedMigrationBlockers(manifest, rowGroups, applied, bl
 export function evaluateProductionPreflight(report, migrationDirectories, manifestId = ACTIVE_ENERGY_UNIFIED_MANIFEST.id, options = {}) {
   const manifest = getProductionMigrationManifest(manifestId);
   const { blockers, rows, rowGroups, applied, pending, failed, rolledBack, duplicate, unexpected } = migrationState(report, migrationDirectories);
+  const partialPendingManifestRows = manifest.migrations
+    .map(({ name }) => name)
+    .filter((name) => rowGroups.has(name) && !applied.has(name));
+  if (partialPendingManifestRows.length) {
+    blockers.push(`Pending manifest migration(s) already have incomplete or unknown history rows: ${sorted(partialPendingManifestRows).join(", ")}.`);
+  }
   appendRequiredAppliedMigrationBlockers(manifest, rowGroups, applied, blockers);
   const missingManifestDirectories = manifest.migrations.map(({ name }) => name).filter((name) => !migrationDirectories.includes(name));
   if (missingManifestDirectories.length) blockers.push(`Reviewed manifest migrations are missing from the release tree: ${missingManifestDirectories.join(", ")}.`);
@@ -412,8 +433,8 @@ export function evaluateProductionPreflight(report, migrationDirectories, manife
 
   const conflictingLocks = Array.isArray(report?.conflictingLocks) ? report.conflictingLocks : [];
   if (conflictingLocks.length) blockers.push(`${conflictingLocks.length} lock(s) conflict with the exact migration DDL operations.`);
-  if (Array.isArray(report?.preparedTransactions) && report.preparedTransactions.some((transaction) => transaction?.blocksMigration === true)) {
-    blockers.push("A prepared transaction blocks a migration DDL target.");
+  if (!Array.isArray(report?.preparedTransactions) || report.preparedTransactions.length > 0) {
+    blockers.push("Prepared transaction state is unknown or a prepared transaction may block migration DDL.");
   }
   const writerDrain = evaluateProductionWriterDrain(report);
   blockers.push(...writerDrain.blockers);

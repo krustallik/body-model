@@ -4,7 +4,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { capturePreviousAppProvenance, rebindPreviousAppProvenanceForPreflightResume } from "../scripts/production-previous-app-provenance.mjs";
-import { DEPLOY_CONTROL_FILES, deployControlFilesMatch, serializePreflightRetryRunIds, verifyPreDdlMigrationFailureResume, verifyResumablePreflightAttempt } from "../scripts/production-preflight-resume.mjs";
+import { DEPLOY_CONTROL_FILES, PREFLIGHT_CAPTURE_RESUME_CONTROL_FILES, deployControlFilesMatch, preflightCaptureResumeControlsMatch,
+  serializePreflightRetryRunIds, verifyPreDdlMigrationFailureResume, verifyResumablePreflightAttempt } from "../scripts/production-preflight-resume.mjs";
 
 function findBash() {
   const probe = spawnSync("bash", ["--version"], { encoding: "utf8" });
@@ -56,12 +57,65 @@ describe("production deploy evidence source binding", () => {
       await rm(tempDir, { recursive: true, force: true });
     }
   });
+
+  it("accepts only unchanged preflight production steps and capture controls", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "bodycast-preflight-capture-controls-"));
+    const workflowPath = ".github/workflows/production-migration-preflight.yml";
+    const workflow = (authorizeBody, inspectBody) => [
+      "name: preflight",
+      "jobs:",
+      "  authorize:",
+      `    ${authorizeBody}`,
+      "  inspect_backup_restore:",
+      `    ${inspectBody}`,
+      "  unrelated:",
+      "    steps: []",
+      "",
+    ].join("\n");
+    try {
+      execFileSync("git", ["-c", "init.defaultBranch=main", "init", tempDir], { stdio: "ignore" });
+      execFileSync("git", ["-C", tempDir, "config", "user.name", "BodyCast Test"], { stdio: "ignore" });
+      execFileSync("git", ["-C", tempDir, "config", "user.email", "bodycast-test@example.invalid"], { stdio: "ignore" });
+      for (const input of PREFLIGHT_CAPTURE_RESUME_CONTROL_FILES) {
+        const absolutePath = path.join(tempDir, input);
+        await mkdir(path.dirname(absolutePath), { recursive: true });
+        await writeFile(absolutePath, "reviewed capture control\n");
+      }
+      const workflowFile = path.join(tempDir, workflowPath);
+      await mkdir(path.dirname(workflowFile), { recursive: true });
+      await writeFile(workflowFile, workflow("inputs: safe", "steps: unchanged"));
+      execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
+      execFileSync("git", ["-C", tempDir, "commit", "-m", "capture control base"], { stdio: "ignore" });
+      const baseSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+
+      await writeFile(workflowFile, workflow("inputs: evidence collection changed", "steps: unchanged"));
+      execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
+      execFileSync("git", ["-C", tempDir, "commit", "-m", "change authorization collection only"], { stdio: "ignore" });
+      const authorizeSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      expect(preflightCaptureResumeControlsMatch(baseSha, authorizeSha, tempDir)).toBe(true);
+
+      await writeFile(workflowFile, workflow("inputs: evidence collection changed", "steps: dangerous mutation added"));
+      execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
+      execFileSync("git", ["-C", tempDir, "commit", "-m", "change production inspection job"], { stdio: "ignore" });
+      const inspectChangedSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      expect(preflightCaptureResumeControlsMatch(authorizeSha, inspectChangedSha, tempDir)).toBe(false);
+
+      await writeFile(path.join(tempDir, PREFLIGHT_CAPTURE_RESUME_CONTROL_FILES[0]), "changed compose topology\n");
+      execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
+      execFileSync("git", ["-C", tempDir, "commit", "-m", "change production capture control"], { stdio: "ignore" });
+      const captureChangedSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      expect(preflightCaptureResumeControlsMatch(inspectChangedSha, captureChangedSha, tempDir)).toBe(false);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 function sourceRun(overrides = {}) {
   return {
     id: 38000669126,
     workflow_id: 123,
+    name: `Preflight ${sourceSha} active-energy-unified-v2`,
     path: ".github/workflows/production-migration-preflight.yml@refs/heads/main",
     event: "workflow_dispatch",
     head_branch: "main",
@@ -83,6 +137,7 @@ function sourceJobs() {
     ["Read-only production identity, full migration set, schema signatures, and locks", "success"],
     ["Capture pg_dump start on production host and create encrypted backup", "success"],
     ["Restore snapshot, compare source state, and rehearse exact migrations", "failure"],
+    ["Bind forward-resume authorization to the fresh live snapshot and rehearsal", "skipped"],
     ["Create preflight evidence bundle", "skipped"],
     ["Upload encrypted production backup artifact", "skipped"],
     ["Upload immutable preflight and restore evidence artifact", "skipped"],
@@ -109,6 +164,7 @@ function verify(overrides = {}) {
     currentRunId: "99999999999",
     currentMainSha: targetSha,
     workflowId: "123",
+    manifestId: "active-energy-unified-v2",
     deployWorkflowId,
     sourceIsAncestor: true,
     controlFilesMatch: () => true,
@@ -378,6 +434,87 @@ function safePreflightRetryEvidence(overrides = {}) {
   };
 }
 
+const v4ManifestId = "unified-v4-republication-v1";
+const captureBlockedJobSteps = [
+  ["Set up job", "success"],
+  ["Initialize containers", "success"],
+  ["Checkout exact release SHA", "success"],
+  ["Set up pinned Node runtime", "success"],
+  ["Install locked Prisma and project tooling", "success"],
+  ["Recheck owner identity for this job attempt before production secrets", "success"],
+  ["Recheck canonical main before production access", "success"],
+  ["Validate production-only SSH and backup secrets", "success"],
+  ["Pin production SSH host key", "success"],
+  ["Enter maintenance and drain the old app before backup", "failure"],
+  ["Verify production container and PostgreSQL client versions", "skipped"],
+  ["Read-only production identity, full migration set, schema signatures, and locks", "skipped"],
+  ["Capture pg_dump start on production host and create encrypted backup", "skipped"],
+  ["Restore snapshot, compare source state, and rehearse exact migrations", "skipped"],
+  ["Bind forward-resume authorization to the fresh live snapshot and rehearsal", "skipped"],
+  ["Create preflight evidence bundle", "skipped"],
+  ["Upload encrypted production backup artifact", "skipped"],
+  ["Upload immutable preflight and restore evidence artifact", "skipped"],
+  ["Report read-only completion", "skipped"],
+  ["Remove temporary SSH credentials", "success"],
+  ["Post Set up pinned Node runtime", "skipped"],
+  ["Post Checkout exact release SHA", "success"],
+  ["Stop containers", "success"],
+  ["Complete job", "success"],
+];
+
+function captureBlockedRetryRun({ id = 38000669127, sha = targetSha, manifestId = v4ManifestId, ...overrides } = {}) {
+  return {
+    ...ownerRun({ id, workflowId: preflightWorkflowId, path: ".github/workflows/production-migration-preflight.yml",
+      sha, conclusion: "failure" }),
+    name: `Preflight ${sha} ${manifestId}`,
+    ...overrides,
+  };
+}
+
+function captureBlockedRetryJobs({ extraInspectStep, ...overrides } = {}) {
+  const inspectSteps = captureBlockedJobSteps.map(([name, conclusion]) => ({ name, conclusion }));
+  if (extraInspectStep) inspectSteps.push(extraInspectStep);
+  return {
+    total_count: 2,
+    jobs: [
+      { name: "Authorize read-only preflight", conclusion: "success", head_sha: targetSha, run_attempt: 1, steps: [] },
+      { name: "Inspect, back up, restore, and rehearse on disposable PostgreSQL", conclusion: "failure",
+        head_sha: targetSha, run_attempt: 1, steps: inspectSteps },
+    ],
+    ...overrides,
+  };
+}
+
+function captureBlockedRetryEvidence({
+  refreshCapture = "0", failure = "An earlier pre-DDL release capture exists; operator review is required before another migration attempt.",
+  run = captureBlockedRetryRun(), jobs = captureBlockedRetryJobs(), artifacts = { total_count: 0, artifacts: [] },
+  ...overrides
+} = {}) {
+  return {
+    run, jobs, artifacts,
+    failureLogText: `REFRESH_CAPTURE: ${refreshCapture}\n${failure}\n`,
+    shaIsAncestorOfCurrentMain: true,
+    sourceShaIsAncestor: true,
+    captureControlsMatch: true,
+    ...overrides,
+  };
+}
+
+function verifyWithCaptureBlockedRetries(retryEvidenceList, overrides = {}) {
+  const history = retryEvidenceList.map((evidence) => evidence.run);
+  return verify({
+    manifestId: v4ManifestId,
+    sourceRun: sourceRun({ name: `Preflight ${sourceSha} ${v4ManifestId}` }),
+    laterRuns: [...history, {
+      id: 99999999999, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main",
+      status: "in_progress", workflow_id: Number(preflightWorkflowId),
+    }],
+    safeFailedPreflightRetries: retryEvidenceList,
+    preflightCaptureControlsMatch: () => true,
+    ...overrides,
+  });
+}
+
 function verifyPreDdlResume(overrides = {}) {
   return verifyPreDdlMigrationFailureResume({
     sourceRun: successfulSourceRun(), sourceJobs: successfulSourceJobs(), sourceArtifacts: successfulSourceArtifacts(),
@@ -406,7 +543,8 @@ describe("verified resume of a failed production preflight", () => {
     const currentRunId = "1002";
     const sourceRunId = "1000";
     const deployId = "1001";
-    const actualSourceRun = sourceRun({ id: Number(sourceRunId), head_sha: currentMainSha });
+    const actualSourceRun = sourceRun({ id: Number(sourceRunId), head_sha: currentMainSha,
+      name: `Preflight ${currentMainSha} active-energy-unified-v2` });
     const actualSourceJobs = {
       ...sourceJobs(),
       jobs: sourceJobs().jobs.map((job) => ({ ...job, head_sha: currentMainSha })),
@@ -442,6 +580,7 @@ describe("verified resume of a failed production preflight", () => {
         artifacts: path.join(tempDir, "source-artifacts.json"),
         later: path.join(tempDir, "later-runs.ndjson"),
         deploy: path.join(tempDir, "safe-deploy-runs.ndjson"),
+        preflightRetries: path.join(tempDir, "safe-failed-preflights.ndjson"),
       };
       await Promise.all([
         writeFile(files.run, JSON.stringify(actualSourceRun)),
@@ -449,10 +588,12 @@ describe("verified resume of a failed production preflight", () => {
         writeFile(files.artifacts, JSON.stringify({ total_count: 0, artifacts: [] })),
         writeFile(files.later, laterRuns.map((run) => JSON.stringify(run)).join("\n") + "\n"),
         writeFile(files.deploy, `${JSON.stringify(safeDeployEvidence)}\n`),
+        writeFile(files.preflightRetries, ""),
       ]);
       const scriptPath = path.resolve("scripts/production-preflight-resume.mjs");
       const result = spawnSync(process.execPath, [scriptPath, "--verify-source", files.run, files.jobs, files.artifacts,
-        files.later, files.deploy, sourceRunId, currentRunId, currentMainSha, preflightWorkflowId, deployWorkflowId], {
+        files.later, files.deploy, files.preflightRetries, sourceRunId, currentRunId, currentMainSha,
+        "active-energy-unified-v2", preflightWorkflowId, deployWorkflowId], {
         cwd: process.cwd(), encoding: "utf8",
       });
       expect(result.status, result.stderr).toBe(0);
@@ -461,6 +602,7 @@ describe("verified resume of a failed production preflight", () => {
         sourceRunId,
         targetSha: currentMainSha,
         safePreMaintenanceDeployRunIds: [deployId],
+        safeCaptureGuardPreflightRunIds: [],
         pendingMigrationIds,
       });
     } finally {
@@ -470,7 +612,61 @@ describe("verified resume of a failed production preflight", () => {
 
   it("admits only the original owner run that stopped after a successful backup and failed isolated restore", () => {
     expect(verify()).toEqual({ schemaVersion: 2, sourceRunId: "38000669126", sourceRunAttempt: 1, sourceSha, targetSha,
-      safePreMaintenanceDeployRunIds: [], pendingMigrationIds: [] });
+      safePreMaintenanceDeployRunIds: [], safeCaptureGuardPreflightRunIds: [], captureGuardPreflightEffects: [], pendingMigrationIds: [] });
+  });
+
+  it("records that owner V4 capture retries republished maintenance before DB inspection was skipped", () => {
+    const priorCaptureGuard = captureBlockedRetryEvidence({
+      run: captureBlockedRetryRun({ id: 38000669127 }),
+    });
+    const noAppRefreshGuard = captureBlockedRetryEvidence({
+      run: captureBlockedRetryRun({ id: 38000669128 }),
+      refreshCapture: "1",
+      failure: "Capture refresh requires exactly one existing BodyCast app container.",
+    });
+    const result = verifyWithCaptureBlockedRetries([priorCaptureGuard, noAppRefreshGuard]);
+    expect(result.safeCaptureGuardPreflightRunIds).toEqual(["38000669127", "38000669128"]);
+    expect(result.captureGuardPreflightEffects).toEqual(["38000669127", "38000669128"].map((runId) => ({
+      runId, sha: targetSha, failure: expect.any(String),
+      maintenanceRoutePublishedAndPublic503Confirmed: true,
+      oldAppStopReached: false, productionDatabaseInspectionReached: false,
+      pgDumpStarted: false, artifactsPublished: false,
+    })));
+    expect(result.safePreMaintenanceDeployRunIds).toEqual([]);
+    expect(result.pendingMigrationIds).toEqual([]);
+  });
+
+  it.each([
+    ["other owner", { run: captureBlockedRetryRun({ triggering_actor: { id: 7 } }) }],
+    ["rerun", { run: captureBlockedRetryRun({ run_attempt: 2 }) }],
+    ["wrong manifest", { run: captureBlockedRetryRun({ name: `Preflight ${targetSha} active-energy-unified-v2` }) }],
+    ["unknown capture error", { failure: "Production host connection failed." }],
+    ["wrong refresh mode", { refreshCapture: "1" }],
+    ["published artifact", { artifacts: { total_count: 1, artifacts: [{ id: 8 }] } }],
+    ["stale retry SHA", { shaIsAncestorOfCurrentMain: false }],
+    ["retry not descended from source", { sourceShaIsAncestor: false }],
+    ["capture controls changed", { captureControlsMatch: false }],
+    ["oversized log", { failureLogText: "x".repeat(1_000_001) }],
+    ["extra step or changed DB boundary", { jobs: captureBlockedRetryJobs({ jobs: [
+      ...captureBlockedRetryJobs().jobs.slice(0, 1),
+      { ...captureBlockedRetryJobs().jobs[1], steps: captureBlockedRetryJobs().jobs[1].steps.map((step, index) =>
+        index === 11 ? { ...step, conclusion: "success" } : step) },
+    ] }) }],
+  ])("rejects a later V4 capture retry with %s", (_label, evidenceOverrides) => {
+    const evidence = captureBlockedRetryEvidence(evidenceOverrides);
+    expect(() => verifyWithCaptureBlockedRetries([evidence])).toThrow("cannot be safely resumed");
+  });
+
+  it("rejects unrelated later production mutations even with safe capture retry evidence", () => {
+    const evidence = captureBlockedRetryEvidence();
+    expect(() => verifyWithCaptureBlockedRetries([evidence], {
+      laterRuns: [evidence.run, {
+        id: 38000669128, path: ".github/workflows/production-migrate.yml@refs/heads/main",
+        status: "completed", conclusion: "failure",
+      }, {
+        id: 99999999999, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress",
+      }],
+    })).toThrow("cannot be safely resumed");
   });
 
   it("admits a later exact-SHA automatic deploy only when logs prove the schema block preceded maintenance", () => {

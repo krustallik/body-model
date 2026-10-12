@@ -1,0 +1,413 @@
+name: Production no-app V4 backup and restore preparation
+run-name: No-app prep ${{ inputs.release_sha }} unified-v4-republication-v1
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: Full SHA of current canonical main with successful CI
+        required: true
+        type: string
+      confirm_no_app_preparation:
+        description: Type prepare-no-app-backup-restore to authorize read-only snapshot and isolated V4 rehearsal
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: bodycast-production-release
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Authorize exact-main no-app preparation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      release_sha: ${{ steps.gate.outputs.release_sha }}
+    steps:
+      - name: Checkout exact current main tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify owner, confirmation, exact current main, and successful CI
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_SHA: ${{ inputs.release_sha }}
+          CONFIRMATION: ${{ inputs.confirm_no_app_preparation }}
+          DISPATCH_ACTOR_ID: ${{ github.actor_id }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$GITHUB_REPOSITORY" == "krustallik/body-model" && "$GITHUB_REF" == "refs/heads/main" ]] || {
+            echo "::error::Dispatch the no-app preparation from canonical main only."; exit 1;
+          }
+          [[ "$DISPATCH_ACTOR_ID" == "126446430" ]] || { echo "::error::Only the pinned owner may request production data preparation."; exit 1; }
+          [[ "$CONFIRMATION" == "prepare-no-app-backup-restore" ]] || { echo "::error::Exact no-app preparation confirmation is required."; exit 1; }
+          [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::release_sha must be a full lowercase commit SHA."; exit 1; }
+          gh api "repos/krustallik/body-model/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/current-no-app-run.json"
+          node --input-type=module - "$RUNNER_TEMP/current-no-app-run.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { assertTrustedOwnerWorkflowRun } from "./scripts/github-owner-identity.mjs";
+          assertTrustedOwnerWorkflowRun(JSON.parse(readFileSync(process.argv[2], "utf8")), {
+            actorId: process.env.DISPATCH_ACTOR_ID,
+            workflowPath: ".github/workflows/production-no-app-preflight.yml",
+            workflowRunId: process.env.GITHUB_RUN_ID,
+            workflowRunAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            ref: "refs/heads/main",
+            sha: process.env.GITHUB_SHA,
+            requireInProgress: true,
+          });
+          NODE
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          MAIN_TIP="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
+          [[ "$MAIN_TIP" == "$REQUESTED_SHA" && "$MAIN_TIP" == "$GITHUB_SHA" && "$MAIN_TIP" == "$(git rev-parse refs/remotes/origin/main)" ]] || {
+            echo "::error::Requested release is not the exact canonical main tip."; exit 1;
+          }
+          gh api --paginate --jq '.workflow_runs[] | @json' \
+            "repos/krustallik/body-model/actions/workflows/ci.yml/runs?branch=main&event=push&per_page=100" \
+            > "$RUNNER_TEMP/no-app-main-ci-runs.ndjson"
+          CI_URL="$(node --input-type=module - "$RUNNER_TEMP/no-app-main-ci-runs.ndjson" "$MAIN_TIP" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const [runsPath, sha] = process.argv.slice(2);
+          const matching = readFileSync(runsPath, "utf8").split(/\r?\n/).filter(Boolean).map(JSON.parse)
+            .filter((run) => run.head_sha === sha && run.head_branch === "main" && run.event === "push");
+          matching.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || Number(b.run_attempt) - Number(a.run_attempt));
+          const run = matching[0];
+          if (!run || run.status !== "completed" || run.conclusion !== "success") throw new Error("Exact current-main CI is not green.");
+          process.stdout.write(run.html_url);
+          NODE
+          )"
+          echo "release_sha=$MAIN_TIP" >> "$GITHUB_OUTPUT"
+          {
+            echo "## No-app V4 preparation authorization"
+            echo ""
+            echo "- exact current-main SHA: $MAIN_TIP"
+            echo "- successful current-main CI: $CI_URL"
+            echo "- scope: read-only DB checks, encrypted backup, isolated restore, and isolated V4 rehearsal"
+            echo "- production DDL, Docker changes, route changes, and app replacement: NOT PERFORMED"
+            echo "- app runtime and rollback readiness: UNVERIFIED"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  prepare:
+    name: Read-only snapshot and isolated backup rehearsal
+    needs: authorize
+    if: needs.authorize.outputs.release_sha != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    environment: production
+    services:
+      isolated-postgres:
+        image: public.ecr.aws/docker/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        env:
+          POSTGRES_DB: bodycast_restore
+          POSTGRES_USER: bodycast_restore
+          POSTGRES_PASSWORD: isolated_restore_test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bodycast_restore -d bodycast_restore"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Checkout exact current-main release SHA
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.authorize.outputs.release_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up pinned Node runtime
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+      - name: Install locked tooling
+        run: npm ci
+      - name: Recheck trusted owner workflow attempt before production credentials
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_ACTOR_ID: ${{ github.actor_id }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$DISPATCH_ACTOR_ID" == "126446430" ]] || { echo "::error::Only the pinned owner may access production preparation credentials."; exit 1; }
+          gh api "repos/krustallik/body-model/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/current-no-app-run.json"
+          node --input-type=module - "$RUNNER_TEMP/current-no-app-run.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { assertTrustedOwnerWorkflowRun } from "./scripts/github-owner-identity.mjs";
+          assertTrustedOwnerWorkflowRun(JSON.parse(readFileSync(process.argv[2], "utf8")), {
+            actorId: process.env.DISPATCH_ACTOR_ID,
+            workflowPath: ".github/workflows/production-no-app-preflight.yml",
+            workflowRunId: process.env.GITHUB_RUN_ID,
+            workflowRunAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            ref: "refs/heads/main", sha: process.env.GITHUB_SHA, requireInProgress: true,
+          });
+          NODE
+      - name: Verify exact current main and reconcile all capture/intervening workflow evidence
+        id: capture_history
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$(gh api repos/krustallik/body-model/commits/main --jq .sha)" == "$RELEASE_SHA" \
+            && "$(git rev-parse HEAD)" == "$RELEASE_SHA" ]] || { echo "::error::Canonical main changed before capture-history verification."; exit 1; }
+          node scripts/github-no-app-preflight-evidence.mjs --collect "$GITHUB_RUN_ID" "$RELEASE_SHA" \
+            "$RUNNER_TEMP/no-app-capture-evidence.json" > "$RUNNER_TEMP/no-app-capture-summary.json"
+          chmod 600 "$RUNNER_TEMP/no-app-capture-evidence.json"
+          node --input-type=module - "$RUNNER_TEMP/no-app-capture-summary.json" >> "$GITHUB_STEP_SUMMARY" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const result = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          process.stdout.write(`\n- capture source run ${result.sourceRunId} and later owner/deploy failures were reconciled against complete workflow history`);
+          process.stdout.write(`\n- capture-guard failures: ${result.captureGuardEffects.map((effect) => effect.runId).join(", ")}; each republished and publicly confirmed maintenance before failing, without app stop, DB inspection, or pg_dump`);
+          process.stdout.write(`\n- verified pre-maintenance deploy guard: ${result.safeDeployRuns.join(", ")}\n`);
+          NODE
+      - name: Validate production SSH and backup credentials
+        id: validate_credentials
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_HOST_FINGERPRINT: ${{ secrets.SSH_HOST_FINGERPRINT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          APP_HOST: ${{ secrets.APP_HOST }}
+          CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
+          PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY }}
+        run: |
+          set -Eeuo pipefail
+          : "$SSH_PRIVATE_KEY"; : "$SSH_HOST"; : "$SSH_USER"; : "$SSH_PORT"; : "$SSH_HOST_FINGERPRINT"
+          : "$DEPLOY_PATH"; : "$APP_HOST"; : "$CADDY_ROUTES_PATH"
+          [[ "$SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ && "$SSH_USER" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::SSH host/user metadata is invalid."; exit 1; }
+          [[ "$SSH_PORT" =~ ^[0-9]{1,5}$ ]] && (( SSH_PORT > 0 && SSH_PORT <= 65535 )) || { echo "::error::SSH port is invalid."; exit 1; }
+          [[ "$SSH_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || { echo "::error::Pinned SSH host fingerprint is invalid."; exit 1; }
+          [[ "$DEPLOY_PATH" == /* && "$DEPLOY_PATH" != *$'\n'* && "$DEPLOY_PATH" != *$'\r'* ]] || { echo "::error::DEPLOY_PATH is invalid."; exit 1; }
+          [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* \
+            && "$CADDY_ROUTES_PATH" != *$'\n'* && "$CADDY_ROUTES_PATH" != *$'\r'* ]] || { echo "::error::Maintenance topology inputs are invalid."; exit 1; }
+          node --input-type=module -e 'import { decodeBackupKey } from "./scripts/production-backup-envelope.mjs"; decodeBackupKey(process.env.PRODUCTION_BACKUP_ENCRYPTION_KEY);'
+          PG_RESTORE_VERSION="$(docker run --rm --network host --entrypoint pg_restore public.ecr.aws/docker/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24 --version)"
+          [[ "$PG_RESTORE_VERSION" =~ ^pg_restore\ \(PostgreSQL\)\ [0-9]+(\.[0-9]+)*$ ]] || { echo "::error::Pinned pg_restore version output is malformed."; exit 1; }
+          echo "pg_restore_version=$PG_RESTORE_VERSION" >> "$GITHUB_OUTPUT"
+          umask 077
+          install -d -m 700 "$RUNNER_TEMP/bodycast-no-app-ssh" "$RUNNER_TEMP/bodycast-no-app-backup" "$RUNNER_TEMP/bodycast-no-app-evidence"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/bodycast-no-app-ssh/id"
+          chmod 600 "$RUNNER_TEMP/bodycast-no-app-ssh/id"
+          echo "BODYCAST_NO_APP_SSH_KEY=$RUNNER_TEMP/bodycast-no-app-ssh/id" >> "$GITHUB_ENV"
+          echo "BODYCAST_NO_APP_KNOWN_HOSTS=$RUNNER_TEMP/bodycast-no-app-ssh/known_hosts" >> "$GITHUB_ENV"
+      - name: Pin production SSH host key
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_HOST_FINGERPRINT: ${{ secrets.SSH_HOST_FINGERPRINT }}
+        run: |
+          set -Eeuo pipefail
+          ssh-keyscan -T 10 -p "$SSH_PORT" "$SSH_HOST" > "$RUNNER_TEMP/bodycast-no-app-ssh/candidate" 2>/dev/null
+          test -s "$RUNNER_TEMP/bodycast-no-app-ssh/candidate"
+          node scripts/filter-ssh-known-hosts.mjs "$RUNNER_TEMP/bodycast-no-app-ssh/candidate" "$BODYCAST_NO_APP_KNOWN_HOSTS"
+          chmod 600 "$BODYCAST_NO_APP_KNOWN_HOSTS"
+      - name: Recheck exact main, capture history, and competing runs immediately before read-only snapshot
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$(gh api repos/krustallik/body-model/commits/main --jq .sha)" == "$RELEASE_SHA" \
+            && "$(git rev-parse HEAD)" == "$RELEASE_SHA" ]] || { echo "::error::Canonical main changed before production snapshot."; exit 1; }
+          node scripts/github-no-app-preflight-evidence.mjs --collect "$GITHUB_RUN_ID" "$RELEASE_SHA" \
+            "$RUNNER_TEMP/no-app-capture-evidence-current.json" > "$RUNNER_TEMP/no-app-capture-summary-current.json"
+          node --input-type=module - "$RUNNER_TEMP/no-app-capture-evidence.json" \
+            "$RUNNER_TEMP/no-app-capture-evidence-current.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { canonicalSha256 } from "./scripts/production-migration-authorization.mjs";
+          const [firstPath, currentPath] = process.argv.slice(2);
+          const first = JSON.parse(readFileSync(firstPath, "utf8"));
+          const current = JSON.parse(readFileSync(currentPath, "utf8"));
+          if (canonicalSha256(first.proof) !== canonicalSha256(current.proof)
+            || canonicalSha256(first.githubReceipt) !== canonicalSha256(current.githubReceipt)) {
+            throw new Error("Capture history or receipt changed before the production snapshot.");
+          }
+          NODE
+          cp "$RUNNER_TEMP/no-app-capture-evidence-current.json" "$RUNNER_TEMP/no-app-capture-evidence.json"
+          chmod 600 "$RUNNER_TEMP/no-app-capture-evidence.json"
+      - name: Create fresh encrypted backup under the host release lock
+        id: backup
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          APP_HOST: ${{ secrets.APP_HOST }}
+          CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
+          RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+          BODYCAST_PG_RESTORE_VERSION: ${{ steps.validate_credentials.outputs.pg_restore_version }}
+          PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$(gh api repos/krustallik/body-model/commits/main --jq .sha)" == "$RELEASE_SHA" \
+            && "$(git rev-parse HEAD)" == "$RELEASE_SHA" ]] || { echo "::error::Canonical main moved before SSH snapshot."; exit 1; }
+          DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
+          APP_HOST_B64="$(printf '%s' "$APP_HOST" | base64 -w0)"
+          ROUTES_PATH_B64="$(printf '%s' "$CADDY_ROUTES_PATH" | base64 -w0)"
+          PG_RESTORE_VERSION_B64="$(printf '%s' "$BODYCAST_PG_RESTORE_VERSION" | base64 -w0)"
+          PROOF_B64="$(jq -c '.proof' "$RUNNER_TEMP/no-app-capture-evidence.json" | base64 -w0)"
+          RECEIPT_B64="$(jq -c '.githubReceipt' "$RUNNER_TEMP/no-app-capture-evidence.json" | base64 -w0)"
+          RUNS_B64="$(jq -c '.productionRuns' "$RUNNER_TEMP/no-app-capture-evidence.json" | base64 -w0)"
+          REMOTE_HOST_SCRIPT_B64="$(base64 -w0 scripts/production-no-app-preflight-host.sh)"
+          REMOTE_COMMAND="set -Eeuo pipefail; deploy_path=\$(printf '%s' '$DEPLOY_PATH_B64' | base64 --decode); export DEPLOY_PATH=\"\$deploy_path\"; export APP_HOST=\$(printf '%s' '$APP_HOST_B64' | base64 --decode); export CADDY_ROUTES_PATH=\$(printf '%s' '$ROUTES_PATH_B64' | base64 --decode); export BODYCAST_PG_RESTORE_VERSION=\$(printf '%s' '$PG_RESTORE_VERSION_B64' | base64 --decode); export BODYCAST_CAPTURE_HISTORY_PROOF_B64='$PROOF_B64'; export BODYCAST_GITHUB_RESUME_RECEIPT_B64='$RECEIPT_B64'; export BODYCAST_PRODUCTION_RUNS_B64='$RUNS_B64'; export BODYCAST_CURRENT_RUN_ID='$GITHUB_RUN_ID'; cd -- \"\$deploy_path\"; printf '%s' '$REMOTE_HOST_SCRIPT_B64' | base64 --decode | bash -s -- '$RELEASE_SHA'"
+          BACKUP_FILE="$RUNNER_TEMP/bodycast-no-app-backup/production-backup.pgdump.enc"
+          set -o pipefail
+          timeout 100m ssh -T -p "$SSH_PORT" -i "$BODYCAST_NO_APP_SSH_KEY" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$BODYCAST_NO_APP_KNOWN_HOSTS" -o ConnectTimeout=10 \
+            "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND" 2> "$RUNNER_TEMP/no-app-host-stderr.log" \
+            | node scripts/production-backup-envelope.mjs encrypt --output "$BACKUP_FILE" \
+            > "$RUNNER_TEMP/no-app-encryption-result.json"
+          chmod 600 "$BACKUP_FILE" "$RUNNER_TEMP/no-app-host-stderr.log"
+          mapfile -t PAYLOAD_LINES < <(sed -n 's/^BODYCAST_NO_APP_PREPARATION_B64=//p' "$RUNNER_TEMP/no-app-host-stderr.log")
+          mapfile -t SNAPSHOT_LINES < <(sed -n 's/^BODYCAST_PGDUMP_INVOCATION_AT=//p' "$RUNNER_TEMP/no-app-host-stderr.log")
+          [[ "${#PAYLOAD_LINES[@]}" -eq 1 && "${#SNAPSHOT_LINES[@]}" -eq 1 \
+            && "${PAYLOAD_LINES[0]}" =~ ^[A-Za-z0-9+/]+=*$ \
+            && "${SNAPSHOT_LINES[0]}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || {
+            echo "::error::Host did not return one validated no-app snapshot and pg_dump invocation-boundary timestamp."; exit 1;
+          }
+          printf '%s' "${PAYLOAD_LINES[0]}" | base64 --decode > "$RUNNER_TEMP/no-app-host-snapshot.json"
+          printf '%s\n' "${SNAPSHOT_LINES[0]}" > "$RUNNER_TEMP/no-app-pgdump-invocation.txt"
+          cp "$RUNNER_TEMP/no-app-host-snapshot.json" "$RUNNER_TEMP/bodycast-no-app-evidence/host-snapshot.json"
+          cp "$RUNNER_TEMP/no-app-pgdump-invocation.txt" "$RUNNER_TEMP/bodycast-no-app-evidence/backup-snapshot-invocation-boundary.txt"
+          chmod 600 "$RUNNER_TEMP/no-app-host-snapshot.json" "$RUNNER_TEMP/no-app-pgdump-invocation.txt"
+          echo "encrypted_backup=$BACKUP_FILE" >> "$GITHUB_OUTPUT"
+      - name: Restore backup and verify identity, schema, history, and data on isolated PostgreSQL
+        env:
+          BACKUP_FILE: ${{ steps.backup.outputs.encrypted_backup }}
+          PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY }}
+          PGPASSWORD: isolated_restore_test_password
+          DATABASE_URL: postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_restore
+          BODYCAST_TEST_DATABASE_URL: postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_restore
+          POSTGRES_IMAGE: public.ecr.aws/docker/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        run: |
+          set -Eeuo pipefail
+          node scripts/restore-encrypted-postgres-backup.mjs
+          node scripts/production-db-preflight.mjs | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 --set=BODYCAST_WRITER_TOPOLOGY_JSON=null > "$RUNNER_TEMP/no-app-restored-base-report.json"
+          RESTORED_DATA_FINGERPRINT="$(BODYCAST_TEST_DATABASE_URL="$BODYCAST_TEST_DATABASE_URL" bash scripts/production-db-data-fingerprint.sh --test-url)"
+          [[ "$RESTORED_DATA_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::Restored logical data fingerprint is malformed."; exit 1; }
+          node --input-type=module - "$RUNNER_TEMP/no-app-restored-base-report.json" "$RESTORED_DATA_FINGERPRINT" <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const [reportPath, digest] = process.argv.slice(2);
+          const report = JSON.parse(readFileSync(reportPath, "utf8"));
+          if (!/^[a-f0-9]{64}$/.test(digest)) throw new Error("Malformed restored logical fingerprint.");
+          report.logicalDataFingerprint = digest;
+          writeFileSync(reportPath, `${JSON.stringify(report)}\n`, { mode: 0o600 });
+          NODE
+          psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 --file=scripts/verify-restored-backup.sql > "$RUNNER_TEMP/no-app-restored-readability.json"
+          node scripts/production-migration-restore-check.mjs --rehearsal-preflight \
+            --snapshot "$RUNNER_TEMP/no-app-host-snapshot.json" \
+            --restored "$RUNNER_TEMP/no-app-restored-base-report.json" \
+            --readability "$RUNNER_TEMP/no-app-restored-readability.json" \
+            --manifest unified-v4-republication-v1 --release-sha "$GITHUB_SHA" \
+            --repository "$GITHUB_WORKSPACE" > "$RUNNER_TEMP/no-app-restore-base-result.json"
+          cp "$RUNNER_TEMP/no-app-restore-base-result.json" "$RUNNER_TEMP/bodycast-no-app-evidence/restore-base-result.json"
+      - name: Rehearse exact V4 migrations only on isolated PostgreSQL
+        env:
+          DATABASE_URL: postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_restore
+          PGPASSWORD: isolated_restore_test_password
+          BODYCAST_TEST_DATABASE_URL: postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_restore
+          MANIFEST_ID: unified-v4-republication-v1
+        run: |
+          set -Eeuo pipefail
+          node scripts/production-migration-preflight.mjs --execution-integrity --manifest "$MANIFEST_ID" \
+            --release-sha "$GITHUB_SHA" --repository "$GITHUB_WORKSPACE" \
+            > "$RUNNER_TEMP/no-app-execution-integrity.json"
+          npx prisma migrate deploy --schema prisma/schema.prisma
+          node scripts/production-db-preflight.mjs | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 --set=BODYCAST_WRITER_TOPOLOGY_JSON=null > "$RUNNER_TEMP/no-app-restored-postflight-report.json"
+          node scripts/production-migration-restore-check.mjs --postflight --manifest "$MANIFEST_ID" \
+            --repository "$GITHUB_WORKSPACE" --report "$RUNNER_TEMP/no-app-restored-postflight-report.json" \
+            > "$RUNNER_TEMP/no-app-restore-postflight-result.json"
+          node scripts/production-migration-restore-check.mjs --combine \
+            --base "$RUNNER_TEMP/no-app-restore-base-result.json" \
+            --postflight "$RUNNER_TEMP/no-app-restore-postflight-result.json" \
+            > "$RUNNER_TEMP/no-app-restore-result.json"
+          cp "$RUNNER_TEMP/no-app-restore-postflight-result.json" "$RUNNER_TEMP/bodycast-no-app-evidence/restore-postflight-result.json"
+          cp "$RUNNER_TEMP/no-app-restore-result.json" "$RUNNER_TEMP/bodycast-no-app-evidence/restore-result.json"
+      - name: Recheck exact main and create preparation-only evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+          DISPATCH_ACTOR_ID: ${{ github.actor_id }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$(gh api repos/krustallik/body-model/commits/main --jq .sha)" == "$RELEASE_SHA" \
+            && "$(git rev-parse HEAD)" == "$RELEASE_SHA" ]] || { echo "::error::Canonical main changed during restore rehearsal."; exit 1; }
+          node scripts/github-no-app-preflight-evidence.mjs --collect "$GITHUB_RUN_ID" "$RELEASE_SHA" \
+            "$RUNNER_TEMP/no-app-capture-evidence-final.json" > "$RUNNER_TEMP/no-app-capture-summary-final.json"
+          node --input-type=module - "$RUNNER_TEMP/no-app-host-snapshot.json" "$RUNNER_TEMP/no-app-restore-result.json" \
+            "$RUNNER_TEMP/no-app-pgdump-invocation.txt" "$RUNNER_TEMP/bodycast-no-app-backup/production-backup.pgdump.enc" \
+            "$RUNNER_TEMP/no-app-capture-evidence-final.json" "$RUNNER_TEMP/bodycast-no-app-evidence/preparation-result.json" \
+            "$RUNNER_TEMP/bodycast-no-app-evidence/preparation-evidence.json" <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          import { createNoAppPreparationEvidence } from "./scripts/production-no-app-preflight.mjs";
+          const [snapshotPath, restorePath, timestampPath, backupPath, capturePath, prepOutput, evidenceOutput] = process.argv.slice(2);
+          const snapshot = JSON.parse(readFileSync(snapshotPath, "utf8"));
+          const restoreResult = JSON.parse(readFileSync(restorePath, "utf8"));
+          const capture = JSON.parse(readFileSync(capturePath, "utf8"));
+          const preparationResult = snapshot.preparationResult;
+          const evidence = createNoAppPreparationEvidence({
+            preparationResult, restoreResult,
+            pgDumpInvocationAt: readFileSync(timestampPath, "utf8").trim(),
+            backupBytes: readFileSync(backupPath),
+            context: {
+              releaseSha: process.env.RELEASE_SHA,
+              manifestId: "unified-v4-republication-v1",
+              repository: process.env.GITHUB_REPOSITORY,
+              workflowPath: ".github/workflows/production-no-app-preflight.yml",
+              event: process.env.GITHUB_EVENT_NAME,
+              headBranch: process.env.GITHUB_REF_NAME,
+              headSha: process.env.GITHUB_SHA,
+              actorId: process.env.DISPATCH_ACTOR_ID,
+              workflowRunId: process.env.GITHUB_RUN_ID,
+              workflowRunAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+            },
+          });
+          if (capture.proof.targetSha !== process.env.RELEASE_SHA
+            || capture.proof.sourceRunId !== "38211169161") throw new Error("Final capture provenance differs from the prepared release.");
+          writeFileSync(prepOutput, `${JSON.stringify(preparationResult, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+          writeFileSync(evidenceOutput, `${JSON.stringify(evidence, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+          NODE
+          cp "$RUNNER_TEMP/no-app-host-snapshot.json" "$RUNNER_TEMP/bodycast-no-app-evidence/host-snapshot.json"
+          cp "$RUNNER_TEMP/no-app-restore-result.json" "$RUNNER_TEMP/bodycast-no-app-evidence/restore-result.json"
+          cp "$RUNNER_TEMP/no-app-restore-base-result.json" "$RUNNER_TEMP/bodycast-no-app-evidence/restore-base-result.json"
+          cp "$RUNNER_TEMP/no-app-execution-integrity.json" "$RUNNER_TEMP/bodycast-no-app-evidence/execution-integrity.json"
+          chmod 600 "$RUNNER_TEMP/bodycast-no-app-evidence/"*
+          {
+            echo "## No-app backup and restore preparation"
+            echo ""
+            echo "- release SHA: $RELEASE_SHA"
+            echo "- preparation contract: database-only-no-app-v1"
+            echo "- encrypted backup and isolated V4 migration rehearsal: PASS"
+            echo "- production DDL: NOT EXECUTED"
+            echo "- previous app recovery and rollback readiness: UNVERIFIED"
+            echo "- DDL authorization: FALSE; this artifact is not selectable by the standard migration signer"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload encrypted production backup
+        id: backup_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bodycast-no-app-backup-${{ needs.authorize.outputs.release_sha }}-unified-v4-republication-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bodycast-no-app-backup/production-backup.pgdump.enc
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload immutable database-only preparation evidence
+        id: preparation_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bodycast-no-app-preparation-${{ needs.authorize.outputs.release_sha }}-unified-v4-republication-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bodycast-no-app-evidence/*
+          if-no-files-found: error
+          retention-days: 90
+      - name: Remove temporary SSH credentials
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/bodycast-no-app-ssh"

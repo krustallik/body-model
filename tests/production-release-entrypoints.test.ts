@@ -10,6 +10,7 @@ const releaseWorkflows = [
   "production-full-history-recalculate.yml",
   "activate-unified-v4-production.yml",
   "production-database-cutback.yml",
+  "production-no-app-preflight.yml",
 ];
 const legacyWorkflows = [
   "production-recovery-phase-a.yml",

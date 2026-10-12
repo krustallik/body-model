@@ -458,13 +458,17 @@ export function evaluateProductionPreflight(report, migrationDirectories, manife
   }
   const preparedTransactions = report?.preparedTransactions;
   const preparedTransactionIds = new Set();
+  const preparedTransactionXids = new Set();
   const preparedTransactionsValid = Array.isArray(preparedTransactions) && preparedTransactions.every((entry) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)
-      || typeof entry.gid !== "string" || !entry.gid.trim() || preparedTransactionIds.has(entry.gid)
-      || typeof entry.transaction !== "string" || !/^\d+$/.test(entry.transaction)
+      || typeof entry.gid !== "string" || !entry.gid.trim() || Buffer.byteLength(entry.gid, "utf8") >= 200
+      || preparedTransactionIds.has(entry.gid)
+      || typeof entry.transaction !== "string" || !/^[1-9]\d{0,9}$/.test(entry.transaction)
+      || BigInt(entry.transaction) > 4_294_967_295n || preparedTransactionXids.has(entry.transaction)
       || !isValidPreparedTransactionTimestamp(entry.preparedAt)
       || typeof entry.database !== "string" || !entry.database.trim()) return false;
     preparedTransactionIds.add(entry.gid);
+    preparedTransactionXids.add(entry.transaction);
     return true;
   });
   if (!preparedTransactionsValid) {

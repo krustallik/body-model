@@ -89,6 +89,7 @@ export const ACTIVE_ENERGY_UNIFIED_MANIFEST = Object.freeze({
 const V7_BASELINE_FUNCTIONS = Object.freeze([
   "function:physiology_v7_invalidate(integer, character varying)",
   "function:physiology_v7_workout_date(integer)",
+  "function:physiology_v7_workout_source_trigger()",
   "function:physiology_v7_training_date(integer)",
   "function:physiology_v7_session_source_trigger()",
   "function:physiology_v7_session_child_source_trigger()",
@@ -104,6 +105,10 @@ const V7_TRAINING_SOURCE_TRIGGERS = Object.freeze([
   "trigger:StrengthDiarySession.StrengthDiarySession_v7_invalidate",
   "trigger:StrengthSessionExercise.StrengthSessionExercise_v7_invalidate",
   "trigger:StrengthSet.StrengthSet_v7_invalidate",
+]);
+const V7_BASELINE_WORKOUT_SOURCE_TRIGGERS = Object.freeze([
+  "trigger:Workout.Workout_v7_invalidate_insert_delete",
+  "trigger:Workout.Workout_v7_invalidate_update",
 ]);
 const V7_REPUBLICATION_SOURCE_TRIGGERS = Object.freeze([
   "trigger:Workout.Workout_v7_invalidate",
@@ -127,10 +132,46 @@ const V7_REPUBLICATION_SCHEMA_OBJECTS = Object.freeze([
   "UnifiedPublicationBlock_profileId_fromDate_idx",
   ...V7_REPUBLICATION_FUNCTIONS,
   ...V7_TRAINING_SOURCE_TRIGGERS,
+  ...V7_BASELINE_WORKOUT_SOURCE_TRIGGERS,
   ...V7_REPUBLICATION_SOURCE_TRIGGERS,
 ]);
 
 const functionDefinitionSignature = (header, body) => `definition=${header} AS $function$ ${body.replace(/\s+/g, " ").trim()} $function$`;
+const V7_WORKOUT_SOURCE_TRIGGER_BODY = `
+  DECLARE old_date VARCHAR(10); new_date VARCHAR(10); affected VARCHAR(10);
+  BEGIN
+    IF TG_OP <> 'INSERT' THEN
+      SELECT "date" INTO old_date FROM "DailyHealthData" WHERE "id" = OLD."dailyHealthDataId";
+    END IF;
+    IF TG_OP <> 'DELETE' THEN
+      SELECT "date" INTO new_date FROM "DailyHealthData" WHERE "id" = NEW."dailyHealthDataId";
+    END IF;
+    affected := CASE WHEN old_date IS NULL THEN new_date WHEN new_date IS NULL THEN old_date ELSE LEAST(old_date, new_date) END;
+    PERFORM physiology_v7_invalidate(1, affected);
+    RETURN COALESCE(NEW, OLD);
+  END;`;
+const V7_WORKOUT_SOURCE_TRIGGER_SIGNATURE = functionDefinitionSignature(
+  "CREATE OR REPLACE FUNCTION public.physiology_v7_workout_source_trigger() RETURNS trigger LANGUAGE plpgsql",
+  V7_WORKOUT_SOURCE_TRIGGER_BODY,
+);
+const V7_SESSION_SOURCE_TRIGGER_BODY = `
+  DECLARE old_date VARCHAR(10); new_date VARCHAR(10); affected VARCHAR(10); pid INTEGER;
+  BEGIN
+    pid := COALESCE(NEW."profileId", OLD."profileId", 1);
+    IF TG_OP <> 'INSERT' THEN old_date := physiology_v7_workout_date(OLD."matchedWorkoutId"); END IF;
+    IF TG_OP <> 'DELETE' THEN new_date := physiology_v7_workout_date(NEW."matchedWorkoutId"); END IF;
+    IF old_date IS NULL AND TG_OP <> 'INSERT' THEN SELECT MIN("date") INTO old_date FROM "DailyHealthData"; END IF;
+    IF new_date IS NULL AND TG_OP <> 'DELETE' THEN SELECT MIN("date") INTO new_date FROM "DailyHealthData"; END IF;
+    affected := CASE WHEN old_date IS NULL THEN new_date WHEN new_date IS NULL THEN old_date ELSE LEAST(old_date, new_date) END;
+    PERFORM physiology_v7_invalidate(pid, affected);
+    RETURN COALESCE(NEW, OLD);
+  END;`;
+const V7_SESSION_SOURCE_TRIGGER_SIGNATURE = functionDefinitionSignature(
+  "CREATE OR REPLACE FUNCTION public.physiology_v7_session_source_trigger() RETURNS trigger LANGUAGE plpgsql",
+  V7_SESSION_SOURCE_TRIGGER_BODY,
+);
+const V7_WORKOUT_INSERT_DELETE_TRIGGER_SIGNATURE = `enabled=O|function=physiology_v7_workout_source_trigger|definition=CREATE TRIGGER "Workout_v7_invalidate_insert_delete" AFTER INSERT OR DELETE ON "Workout" FOR EACH ROW EXECUTE FUNCTION physiology_v7_workout_source_trigger()`;
+const V7_WORKOUT_UPDATE_TRIGGER_SIGNATURE = `enabled=O|function=physiology_v7_workout_source_trigger|definition=CREATE TRIGGER "Workout_v7_invalidate_update" AFTER UPDATE OF "dailyHealthDataId", type, "startAt", "endAt", "durationMinutes" ON "Workout" FOR EACH ROW EXECUTE FUNCTION physiology_v7_workout_source_trigger()`;
 const V4_TRAINING_MODEL_DATE_BODY = `
   DECLARE
     event_at TIMESTAMPTZ;
@@ -182,8 +223,6 @@ const V4_SESSION_SOURCE_TRIGGER_BODY = `
           AND OLD."matchedWorkoutId" IS NOT NULL
           AND NEW."matchedWorkoutId" IS NULL
           AND NOT EXISTS (SELECT 1 FROM "Workout" WHERE "id" = OLD."matchedWorkoutId") THEN
-        -- The FK-driven SET NULL after Workout deletion has already been fenced
-        -- by Workout's BEFORE DELETE trigger; the old row no longer exists here.
         old_date := NULL;
       ELSE
         old_date := physiology_v7_training_model_date(
@@ -270,6 +309,7 @@ export const V4_REPUBLICATION_MANIFEST = Object.freeze({
     ...ACTIVE_ENERGY_UNIFIED_MANIFEST.postflightObjects,
     ...V7_BASELINE_FUNCTIONS,
     ...V7_TRAINING_SOURCE_TRIGGERS,
+    ...V7_BASELINE_WORKOUT_SOURCE_TRIGGERS,
   ]),
   requiredAbsentObjectsBefore: Object.freeze([
     ...ACTIVE_ENERGY_UNIFIED_MANIFEST.postflightAbsentObjects,
@@ -283,17 +323,20 @@ export const V4_REPUBLICATION_MANIFEST = Object.freeze({
     ...ACTIVE_ENERGY_UNIFIED_MANIFEST.postflightSignatureIncludes,
     "function:physiology_v7_invalidate(integer, character varying)": `definition=CREATE OR REPLACE FUNCTION public.physiology_v7_invalidate(p_profile_id integer, p_date character varying) RETURNS void LANGUAGE plpgsql AS $function$ BEGIN IF p_date IS NULL THEN RETURN; END IF; INSERT INTO "PhysiologyV7Lifecycle" ("profileId", "staleFromDate", "invalidationGeneration", "stateVersion", "sourceNormalizationVersion", "dailyRuntimeVersion", "rangeRebuildVersion", "rebuildServiceVersion", "updatedAt") VALUES (p_profile_id, p_date, 1, 'bodycast-physiology-v7-state-v3', 'bodycast-v7-source-normalization-1', 'bodycast-physiology-daily-runtime-v7-1', 'bodycast-physiology-range-rebuild-v7-1', 'bodycast-physiology-v7-rebuild-service-1', CURRENT_TIMESTAMP) ON CONFLICT ("profileId") DO UPDATE SET "staleFromDate" = CASE WHEN "PhysiologyV7Lifecycle"."staleFromDate" IS NULL THEN EXCLUDED."staleFromDate" ELSE LEAST("PhysiologyV7Lifecycle"."staleFromDate", EXCLUDED."staleFromDate") END, "currentThroughDate" = CASE WHEN "PhysiologyV7Lifecycle"."currentThroughDate" >= EXCLUDED."staleFromDate" THEN to_char((EXCLUDED."staleFromDate"::date - INTERVAL '1 day'), 'YYYY-MM-DD') ELSE "PhysiologyV7Lifecycle"."currentThroughDate" END, "invalidationGeneration" = "PhysiologyV7Lifecycle"."invalidationGeneration" + 1, "updatedAt" = CURRENT_TIMESTAMP; END; $function$`,
     "function:physiology_v7_workout_date(integer)": `definition=CREATE OR REPLACE FUNCTION public.physiology_v7_workout_date(p_workout_id integer) RETURNS character varying LANGUAGE plpgsql AS $function$ DECLARE affected VARCHAR(10); BEGIN SELECT d."date" INTO affected FROM "Workout" w JOIN "DailyHealthData" d ON d."id" = w."dailyHealthDataId" WHERE w."id" = p_workout_id; RETURN affected; END; $function$`,
+    "function:physiology_v7_workout_source_trigger()": V7_WORKOUT_SOURCE_TRIGGER_SIGNATURE,
     "function:physiology_v7_training_date(integer)": `definition=CREATE OR REPLACE FUNCTION public.physiology_v7_training_date(p_session_id integer) RETURNS character varying LANGUAGE plpgsql AS $function$ DECLARE affected VARCHAR(10); BEGIN SELECT d."date" INTO affected FROM "StrengthDiarySession" s LEFT JOIN "Workout" w ON w."id" = s."matchedWorkoutId" LEFT JOIN "DailyHealthData" d ON d."id" = w."dailyHealthDataId" WHERE s."id" = p_session_id; IF affected IS NULL THEN SELECT MIN("date") INTO affected FROM "DailyHealthData"; END IF; RETURN affected; END; $function$`,
-    "function:physiology_v7_session_source_trigger()": `definition=CREATE OR REPLACE FUNCTION public.physiology_v7_session_source_trigger() RETURNS trigger LANGUAGE plpgsql AS $function$ DECLARE old_date VARCHAR(10); new_date VARCHAR(10); affected VARCHAR(10); pid INTEGER; old_completed BOOLEAN := false; new_completed BOOLEAN := false; BEGIN IF TG_OP <> 'INSERT' THEN old_completed := OLD."status" = 'COMPLETED'; END IF; IF TG_OP <> 'DELETE' THEN new_completed := NEW."status" = 'COMPLETED'; END IF; IF NOT old_completed AND NOT new_completed THEN RETURN COALESCE(NEW, OLD); END IF; pid := COALESCE(NEW."profileId", OLD."profileId", 1); IF old_completed AND TG_OP <> 'INSERT' THEN old_date := physiology_v7_workout_date(OLD."matchedWorkoutId"); IF old_date IS NULL THEN SELECT MIN("date") INTO old_date FROM "DailyHealthData"; END IF; END IF; IF new_completed AND TG_OP <> 'DELETE' THEN new_date := physiology_v7_workout_date(NEW."matchedWorkoutId"); IF new_date IS NULL THEN SELECT MIN("date") INTO new_date FROM "DailyHealthData"; END IF; END IF; affected := CASE WHEN old_date IS NULL THEN new_date WHEN new_date IS NULL THEN old_date ELSE LEAST(old_date, new_date) END; PERFORM physiology_v7_invalidate(pid, affected); RETURN COALESCE(NEW, OLD); END; $function$`,
+    "function:physiology_v7_session_source_trigger()": V7_SESSION_SOURCE_TRIGGER_SIGNATURE,
     "function:physiology_v7_session_child_source_trigger()": `definition=CREATE OR REPLACE FUNCTION public.physiology_v7_session_child_source_trigger() RETURNS trigger LANGUAGE plpgsql AS $function$ DECLARE sid INTEGER; affected VARCHAR(10); pid INTEGER; BEGIN IF TG_TABLE_NAME = 'StrengthSessionExercise' THEN sid := COALESCE(NEW."sessionId", OLD."sessionId"); ELSE SELECT "sessionId" INTO sid FROM "StrengthSessionExercise" WHERE "id" = COALESCE(NEW."sessionExerciseId", OLD."sessionExerciseId"); END IF; SELECT "profileId" INTO pid FROM "StrengthDiarySession" WHERE "id" = sid; affected := physiology_v7_training_date(sid); PERFORM physiology_v7_invalidate(COALESCE(pid, 1), affected); RETURN COALESCE(NEW, OLD); END; $function$`,
     "trigger:StrengthDiarySession.StrengthDiarySession_v7_invalidate": "enabled=O|function=physiology_v7_session_source_trigger|definition=CREATE TRIGGER \"StrengthDiarySession_v7_invalidate\" AFTER INSERT OR DELETE OR UPDATE ON \"StrengthDiarySession\" FOR EACH ROW EXECUTE FUNCTION physiology_v7_session_source_trigger()",
     "trigger:StrengthSessionExercise.StrengthSessionExercise_v7_invalidate": "enabled=O|function=physiology_v7_session_child_source_trigger|definition=CREATE TRIGGER \"StrengthSessionExercise_v7_invalidate\" AFTER INSERT OR DELETE OR UPDATE ON \"StrengthSessionExercise\" FOR EACH ROW EXECUTE FUNCTION physiology_v7_session_child_source_trigger()",
     "trigger:StrengthSet.StrengthSet_v7_invalidate": "enabled=O|function=physiology_v7_session_child_source_trigger|definition=CREATE TRIGGER \"StrengthSet_v7_invalidate\" AFTER INSERT OR DELETE OR UPDATE ON \"StrengthSet\" FOR EACH ROW EXECUTE FUNCTION physiology_v7_session_child_source_trigger()",
+    "trigger:Workout.Workout_v7_invalidate_insert_delete": V7_WORKOUT_INSERT_DELETE_TRIGGER_SIGNATURE,
+    "trigger:Workout.Workout_v7_invalidate_update": V7_WORKOUT_UPDATE_TRIGGER_SIGNATURE,
   }),
   requiredObjectSignatureExcludes: Object.freeze({
     "function:physiology_v7_training_date(integer)": V4_TRAINING_DATE_SIGNATURE,
     "function:physiology_v7_session_source_trigger()": V4_SESSION_SOURCE_TRIGGER_SIGNATURE,
-    "function:physiology_v7_session_child_source_trigger()": `definition=CREATE OR REPLACE FUNCTION public.physiology_v7_session_child_source_trigger() RETURNS trigger LANGUAGE plpgsql AS $function$ DECLARE old_sid INTEGER; new_sid INTEGER; candidate_sid INTEGER; affected VARCHAR(10); pid INTEGER; session_status VARCHAR(20); BEGIN IF TG_TABLE_NAME = 'StrengthSessionExercise' THEN IF TG_OP <> 'INSERT' THEN old_sid := OLD."sessionId"; END IF; IF TG_OP <> 'DELETE' THEN new_sid := NEW."sessionId"; END IF; ELSE IF TG_OP <> 'INSERT' THEN SELECT "sessionId" INTO old_sid FROM "StrengthSessionExercise" WHERE "id" = OLD."sessionExerciseId"; END IF; IF TG_OP <> 'DELETE' THEN SELECT "sessionId" INTO new_sid FROM "StrengthSessionExercise" WHERE "id" = NEW."sessionExerciseId"; END IF; END IF; -- An UPDATE can move an exercise/set between sessions. Both the old and new -- completed source may have changed, so fence every distinct parent. FOR candidate_sid IN SELECT DISTINCT candidate FROM unnest(ARRAY[old_sid, new_sid]) AS candidates(candidate) WHERE candidate IS NOT NULL LOOP SELECT "profileId", "status" INTO pid, session_status FROM "StrengthDiarySession" WHERE "id" = candidate_sid; IF session_status = 'COMPLETED' THEN affected := physiology_v7_training_date(candidate_sid); PERFORM physiology_v7_invalidate(COALESCE(pid, 1), affected); END IF; END LOOP; RETURN COALESCE(NEW, OLD); END; $function$`,
+    "function:physiology_v7_session_child_source_trigger()": `definition=CREATE OR REPLACE FUNCTION public.physiology_v7_session_child_source_trigger() RETURNS trigger LANGUAGE plpgsql AS $function$ DECLARE old_sid INTEGER; new_sid INTEGER; candidate_sid INTEGER; affected VARCHAR(10); pid INTEGER; session_status VARCHAR(20); BEGIN IF TG_TABLE_NAME = 'StrengthSessionExercise' THEN IF TG_OP <> 'INSERT' THEN old_sid := OLD."sessionId"; END IF; IF TG_OP <> 'DELETE' THEN new_sid := NEW."sessionId"; END IF; ELSE IF TG_OP <> 'INSERT' THEN SELECT "sessionId" INTO old_sid FROM "StrengthSessionExercise" WHERE "id" = OLD."sessionExerciseId"; END IF; IF TG_OP <> 'DELETE' THEN SELECT "sessionId" INTO new_sid FROM "StrengthSessionExercise" WHERE "id" = NEW."sessionExerciseId"; END IF; END IF; FOR candidate_sid IN SELECT DISTINCT candidate FROM unnest(ARRAY[old_sid, new_sid]) AS candidates(candidate) WHERE candidate IS NOT NULL LOOP SELECT "profileId", "status" INTO pid, session_status FROM "StrengthDiarySession" WHERE "id" = candidate_sid; IF session_status = 'COMPLETED' THEN affected := physiology_v7_training_date(candidate_sid); PERFORM physiology_v7_invalidate(COALESCE(pid, 1), affected); END IF; END LOOP; RETURN COALESCE(NEW, OLD); END; $function$`,
   }),
   postflightAbsentObjects: ACTIVE_ENERGY_UNIFIED_MANIFEST.postflightAbsentObjects,
   postflightSignatureIncludes: Object.freeze({
@@ -315,16 +358,19 @@ export const V4_REPUBLICATION_MANIFEST = Object.freeze({
     "UnifiedPublicationBlock_profileId_fromDate_idx": "unique=false|valid=true|definition=CREATE INDEX \"UnifiedPublicationBlock_profileId_fromDate_idx\" ON public.\"UnifiedPublicationBlock\" USING btree (\"profileId\", \"fromDate\")",
     "function:physiology_v7_invalidate(integer, character varying)": `definition=CREATE OR REPLACE FUNCTION public.physiology_v7_invalidate(p_profile_id integer, p_date character varying) RETURNS void LANGUAGE plpgsql AS $function$ BEGIN IF p_date IS NULL THEN RETURN; END IF; INSERT INTO "PhysiologyV7Lifecycle" ("profileId", "staleFromDate", "invalidationGeneration", "stateVersion", "sourceNormalizationVersion", "dailyRuntimeVersion", "rangeRebuildVersion", "rebuildServiceVersion", "updatedAt") VALUES (p_profile_id, p_date, 1, 'bodycast-physiology-v7-state-v3', 'bodycast-v7-source-normalization-1', 'bodycast-physiology-daily-runtime-v7-1', 'bodycast-physiology-range-rebuild-v7-1', 'bodycast-physiology-v7-rebuild-service-1', CURRENT_TIMESTAMP) ON CONFLICT ("profileId") DO UPDATE SET "staleFromDate" = CASE WHEN "PhysiologyV7Lifecycle"."staleFromDate" IS NULL THEN EXCLUDED."staleFromDate" ELSE LEAST("PhysiologyV7Lifecycle"."staleFromDate", EXCLUDED."staleFromDate") END, "currentThroughDate" = CASE WHEN "PhysiologyV7Lifecycle"."currentThroughDate" >= EXCLUDED."staleFromDate" THEN to_char((EXCLUDED."staleFromDate"::date - INTERVAL '1 day'), 'YYYY-MM-DD') ELSE "PhysiologyV7Lifecycle"."currentThroughDate" END, "invalidationGeneration" = "PhysiologyV7Lifecycle"."invalidationGeneration" + 1, "updatedAt" = CURRENT_TIMESTAMP; END; $function$`,
     "function:physiology_v7_workout_date(integer)": `definition=CREATE OR REPLACE FUNCTION public.physiology_v7_workout_date(p_workout_id integer) RETURNS character varying LANGUAGE plpgsql AS $function$ DECLARE affected VARCHAR(10); BEGIN SELECT d."date" INTO affected FROM "Workout" w JOIN "DailyHealthData" d ON d."id" = w."dailyHealthDataId" WHERE w."id" = p_workout_id; RETURN affected; END; $function$`,
+    "function:physiology_v7_workout_source_trigger()": V7_WORKOUT_SOURCE_TRIGGER_SIGNATURE,
     "function:physiology_v7_training_date(integer)": V4_TRAINING_DATE_SIGNATURE,
     "function:physiology_v7_training_model_date(integer, integer, timestamp with time zone, timestamp with time zone, timestamp with time zone)": V4_TRAINING_MODEL_DATE_SIGNATURE,
     "function:physiology_v7_matched_workout_source_trigger()": V4_MATCHED_WORKOUT_TRIGGER_SIGNATURE,
     "function:physiology_v7_matched_workout_delete_trigger()": V4_MATCHED_WORKOUT_DELETE_TRIGGER_SIGNATURE,
     "function:physiology_v7_model_date(integer, timestamp with time zone)": V4_MODEL_DATE_SIGNATURE,
     "function:physiology_v7_session_source_trigger()": V4_SESSION_SOURCE_TRIGGER_SIGNATURE,
-    "function:physiology_v7_session_child_source_trigger()": `definition=CREATE OR REPLACE FUNCTION public.physiology_v7_session_child_source_trigger() RETURNS trigger LANGUAGE plpgsql AS $function$ DECLARE old_sid INTEGER; new_sid INTEGER; candidate_sid INTEGER; affected VARCHAR(10); pid INTEGER; session_status VARCHAR(20); BEGIN IF TG_TABLE_NAME = 'StrengthSessionExercise' THEN IF TG_OP <> 'INSERT' THEN old_sid := OLD."sessionId"; END IF; IF TG_OP <> 'DELETE' THEN new_sid := NEW."sessionId"; END IF; ELSE IF TG_OP <> 'INSERT' THEN SELECT "sessionId" INTO old_sid FROM "StrengthSessionExercise" WHERE "id" = OLD."sessionExerciseId"; END IF; IF TG_OP <> 'DELETE' THEN SELECT "sessionId" INTO new_sid FROM "StrengthSessionExercise" WHERE "id" = NEW."sessionExerciseId"; END IF; END IF; -- An UPDATE can move an exercise/set between sessions. Both the old and new -- completed source may have changed, so fence every distinct parent. FOR candidate_sid IN SELECT DISTINCT candidate FROM unnest(ARRAY[old_sid, new_sid]) AS candidates(candidate) WHERE candidate IS NOT NULL LOOP SELECT "profileId", "status" INTO pid, session_status FROM "StrengthDiarySession" WHERE "id" = candidate_sid; IF session_status = 'COMPLETED' THEN affected := physiology_v7_training_date(candidate_sid); PERFORM physiology_v7_invalidate(COALESCE(pid, 1), affected); END IF; END LOOP; RETURN COALESCE(NEW, OLD); END; $function$`,
+    "function:physiology_v7_session_child_source_trigger()": `definition=CREATE OR REPLACE FUNCTION public.physiology_v7_session_child_source_trigger() RETURNS trigger LANGUAGE plpgsql AS $function$ DECLARE old_sid INTEGER; new_sid INTEGER; candidate_sid INTEGER; affected VARCHAR(10); pid INTEGER; session_status VARCHAR(20); BEGIN IF TG_TABLE_NAME = 'StrengthSessionExercise' THEN IF TG_OP <> 'INSERT' THEN old_sid := OLD."sessionId"; END IF; IF TG_OP <> 'DELETE' THEN new_sid := NEW."sessionId"; END IF; ELSE IF TG_OP <> 'INSERT' THEN SELECT "sessionId" INTO old_sid FROM "StrengthSessionExercise" WHERE "id" = OLD."sessionExerciseId"; END IF; IF TG_OP <> 'DELETE' THEN SELECT "sessionId" INTO new_sid FROM "StrengthSessionExercise" WHERE "id" = NEW."sessionExerciseId"; END IF; END IF; FOR candidate_sid IN SELECT DISTINCT candidate FROM unnest(ARRAY[old_sid, new_sid]) AS candidates(candidate) WHERE candidate IS NOT NULL LOOP SELECT "profileId", "status" INTO pid, session_status FROM "StrengthDiarySession" WHERE "id" = candidate_sid; IF session_status = 'COMPLETED' THEN affected := physiology_v7_training_date(candidate_sid); PERFORM physiology_v7_invalidate(COALESCE(pid, 1), affected); END IF; END LOOP; RETURN COALESCE(NEW, OLD); END; $function$`,
     "trigger:StrengthDiarySession.StrengthDiarySession_v7_invalidate": "enabled=O|function=physiology_v7_session_source_trigger|definition=CREATE TRIGGER \"StrengthDiarySession_v7_invalidate\" AFTER INSERT OR DELETE OR UPDATE ON \"StrengthDiarySession\" FOR EACH ROW EXECUTE FUNCTION physiology_v7_session_source_trigger()",
     "trigger:StrengthSessionExercise.StrengthSessionExercise_v7_invalidate": "enabled=O|function=physiology_v7_session_child_source_trigger|definition=CREATE TRIGGER \"StrengthSessionExercise_v7_invalidate\" AFTER INSERT OR DELETE OR UPDATE ON \"StrengthSessionExercise\" FOR EACH ROW EXECUTE FUNCTION physiology_v7_session_child_source_trigger()",
     "trigger:StrengthSet.StrengthSet_v7_invalidate": "enabled=O|function=physiology_v7_session_child_source_trigger|definition=CREATE TRIGGER \"StrengthSet_v7_invalidate\" AFTER INSERT OR DELETE OR UPDATE ON \"StrengthSet\" FOR EACH ROW EXECUTE FUNCTION physiology_v7_session_child_source_trigger()",
+    "trigger:Workout.Workout_v7_invalidate_insert_delete": V7_WORKOUT_INSERT_DELETE_TRIGGER_SIGNATURE,
+    "trigger:Workout.Workout_v7_invalidate_update": V7_WORKOUT_UPDATE_TRIGGER_SIGNATURE,
     "trigger:Workout.Workout_v7_invalidate": V4_MATCHED_WORKOUT_TRIGGER_DDL_SIGNATURE,
     "trigger:Workout.Workout_v7_invalidate_matched_delete": V4_MATCHED_WORKOUT_DELETE_TRIGGER_DDL_SIGNATURE,
   }),

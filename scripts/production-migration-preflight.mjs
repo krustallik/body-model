@@ -79,8 +79,133 @@ function hasConcretePostgresEndpoint(identity) {
   return isCanonicalPostgresDatabaseIdentity(identity);
 }
 
-function normalizeObjectSignature(signature) {
-  return typeof signature === "string" ? signature.replace(/\s+/g, " ").trim() : "";
+export function normalizeObjectSignature(signature) {
+  if (typeof signature !== "string") return "";
+
+  let normalized = "";
+  let pendingSpace = false;
+  let quote = null;
+  let quoteEscapesBackslash = false;
+  let dollarTag = null;
+  let lineComment = false;
+  let blockCommentDepth = 0;
+
+  const appendCode = (character) => {
+    if (pendingSpace && normalized && !normalized.endsWith("(") && !normalized.endsWith(",")) {
+      normalized += " ";
+    }
+    pendingSpace = false;
+    normalized += character;
+  };
+
+  for (let index = 0; index < signature.length; index += 1) {
+    const character = signature[index];
+
+    if (lineComment) {
+      if (character === "\n" || character === "\r") {
+        lineComment = false;
+        pendingSpace = true;
+      }
+      continue;
+    }
+
+    if (blockCommentDepth > 0) {
+      if (character === "/" && signature[index + 1] === "*") {
+        blockCommentDepth += 1;
+        index += 1;
+      } else if (character === "*" && signature[index + 1] === "/") {
+        blockCommentDepth -= 1;
+        index += 1;
+        if (blockCommentDepth === 0) pendingSpace = true;
+      }
+      continue;
+    }
+
+    if (quote) {
+      normalized += character;
+      if (character === quote) {
+        if (signature[index + 1] === quote) {
+          normalized += signature[index + 1];
+          index += 1;
+        } else {
+          quote = null;
+          quoteEscapesBackslash = false;
+        }
+      } else if (quoteEscapesBackslash && character === "\\" && signature[index + 1] !== undefined) {
+        normalized += signature[index + 1];
+        index += 1;
+      }
+      continue;
+    }
+
+    if (dollarTag && signature.startsWith(dollarTag, index)) {
+      normalized += dollarTag;
+      index += dollarTag.length - 1;
+      dollarTag = null;
+      continue;
+    }
+
+    if (character === "-" && signature[index + 1] === "-") {
+      lineComment = true;
+      index += 1;
+      continue;
+    }
+
+    if (character === "/" && signature[index + 1] === "*") {
+      blockCommentDepth = 1;
+      index += 1;
+      continue;
+    }
+
+    if (/\s/.test(character)) {
+      pendingSpace = true;
+      continue;
+    }
+
+    if (character === "'" || character === '"') {
+      appendCode(character);
+      quote = character;
+      quoteEscapesBackslash = character === "'"
+        && /^(?:e|E)$/.test(signature[index - 1] ?? "")
+        && !/[A-Za-z0-9_$]/.test(signature[index - 2] ?? "");
+      continue;
+    }
+
+    if (character === "$") {
+      const tag = signature.slice(index).match(/^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/)?.[0];
+      if (tag) {
+        appendCode(tag);
+        index += tag.length - 1;
+        dollarTag = tag;
+        continue;
+      }
+    }
+
+    if (character === "(") {
+      normalized = normalized.trimEnd();
+      pendingSpace = false;
+      normalized += character;
+      continue;
+    }
+
+    if (character === ")") {
+      normalized = normalized.trimEnd();
+      pendingSpace = false;
+      normalized += character;
+      continue;
+    }
+
+    if (character === ",") {
+      normalized = normalized.trimEnd();
+      normalized += character;
+      pendingSpace = true;
+      continue;
+    }
+
+    appendCode(character);
+  }
+
+  return normalized.trim();
 }
 
 function migrationState(report, migrationDirectories) {

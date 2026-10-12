@@ -126,7 +126,6 @@ async function createSourceFixture(db = source) {
     CREATE TABLE public."StrengthDiarySession" (
       id integer PRIMARY KEY, "profileId" integer NOT NULL, status varchar(20) NOT NULL,
       "matchedWorkoutId" integer REFERENCES public."Workout"(id) ON DELETE SET NULL,
-      "effectiveAccountingAt" timestamptz,
       "webStartedAt" timestamptz, "createdAt" timestamptz NOT NULL DEFAULT now()
     );
     CREATE TABLE public."ExerciseCatalog" (id integer PRIMARY KEY);
@@ -144,11 +143,11 @@ async function createSourceFixture(db = source) {
       (3, 3, '2026-10-11 12:00:00', 'Strength Training', '2026-10-11 13:00:00', 60);
     INSERT INTO public."ModelEpisode" VALUES (1, 1, '2026-01-01', 'Europe/Bratislava', true, NULL);
     INSERT INTO public."StrengthDiarySession" (
-      id, "profileId", status, "matchedWorkoutId", "effectiveAccountingAt", "webStartedAt"
+      id, "profileId", status, "matchedWorkoutId", "webStartedAt"
     ) VALUES
-      (1, 1, 'ACTIVE', 2, NULL, '2026-10-10T23:30:00Z'),
-      (2, 1, 'COMPLETED', 2, NULL, '2026-10-10T12:00:00Z'),
-      (3, 1, 'ACTIVE', NULL, NULL, '2026-10-10T23:30:00Z');
+      (1, 1, 'ACTIVE', 2, '2026-10-10T23:30:00Z'),
+      (2, 1, 'COMPLETED', 2, '2026-10-10T12:00:00Z'),
+      (3, 1, 'ACTIVE', NULL, '2026-10-10T23:30:00Z');
     INSERT INTO public."StrengthSessionExercise" VALUES (1, 1), (2, 2), (3, 3);
     INSERT INTO public."StrengthSet" VALUES (1, 1), (2, 2);
     INSERT INTO public."ExerciseCatalog" VALUES (1), (2), (3);
@@ -914,16 +913,16 @@ function assertTrainingTriggerSemantics(db) {
   resetTrainingLifecycle(db);
   sql(db, `UPDATE public."StrengthDiarySession" SET status = 'COMPLETED',
       "effectiveAccountingAt" = '2026-10-11T23:30:00Z' WHERE id = 3;`);
-  assertState("unmatched completion uses the episode-local model date", "2026-10-11", 1);
+  assertState("unmatched completion uses the episode-local model date", "2026-10-12", 1);
 
   resetTrainingLifecycle(db);
   sql(db, `UPDATE public."StrengthDiarySession" SET status = 'COMPLETED',
       "effectiveAccountingAt" = '2026-10-11T23:30:00Z' WHERE id = 3;
     UPDATE public."PhysiologyV7Lifecycle" SET "staleFromDate" = NULL, "invalidationGeneration" = 0 WHERE "profileId" = 1;
     INSERT INTO public."StrengthSessionExercise" VALUES (4, 3);`);
-  assertState("unmatched completed child insert uses the episode-local model date", "2026-10-11", 1);
+  assertState("unmatched completed child insert uses the episode-local model date", "2026-10-12", 1);
   sql(db, `DELETE FROM public."StrengthSessionExercise" WHERE id = 4;`);
-  assertState("unmatched completed child delete uses the episode-local model date", "2026-10-11", 2);
+  assertState("unmatched completed child delete uses the episode-local model date", "2026-10-12", 2);
 
   resetTrainingLifecycle(db);
   sql(db, `UPDATE public."StrengthDiarySession" SET status = 'COMPLETED',
@@ -940,6 +939,7 @@ function assertTrainingTriggerSemantics(db) {
   resetTrainingLifecycle(db);
   sql(db, `UPDATE public."StrengthDiarySession" SET status = 'COMPLETED',
       "effectiveAccountingAt" = '2026-10-11T12:00:00Z', "webStartedAt" = NULL WHERE id = 3;`);
+  sql(db, `UPDATE public."PhysiologyV7Lifecycle" SET "staleFromDate" = NULL, "invalidationGeneration" = 0 WHERE "profileId" = 1;`);
   sql(db, `INSERT INTO public."StrengthSessionExercise" VALUES (4, 3);`);
   assertState("unmatched completed child insert uses effective accounting date", "2026-10-11", 1);
   sql(db, `DELETE FROM public."StrengthSessionExercise" WHERE id = 4;`);
@@ -1409,7 +1409,7 @@ async function main() {
     }
     const restored = verifyRestoredBackup(sourceReport, restoredReport);
     if (!restored.verified) throw new Error(`Restored database verification failed: ${restored.blockers.join(" ")}`);
-    if (restoredReport.readability.StrengthDiarySession.rowCount !== 2 || restoredReport.readability.ExerciseCatalog.rowCount !== 3) {
+    if (restoredReport.readability.StrengthDiarySession.rowCount !== 3 || restoredReport.readability.ExerciseCatalog.rowCount !== 3) {
       throw new Error("Restored fixture tables did not return the expected rows.");
     }
 

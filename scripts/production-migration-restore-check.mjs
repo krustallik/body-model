@@ -1,8 +1,12 @@
 import { readFile, readdir } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { ACTIVE_ENERGY_UNIFIED_MANIFEST } from "./production-migration-manifests.mjs";
+import { ACTIVE_ENERGY_UNIFIED_MANIFEST, V4_REPUBLICATION_MANIFEST } from "./production-migration-manifests.mjs";
 import { verifyRestoredBackup, evaluateProductionPostflight, schemaInventoryDigest, schemaInventoryDifferenceSummary, safeBlockerCategories } from "./production-migration-preflight.mjs";
+import { canonicalSha256 } from "./production-migration-authorization.mjs";
+import { verifyExecutionFileMatchesBlob } from "./production-migration-integrity.mjs";
+import { isCanonicalPostgresDatabaseIdentity } from "./postgres-database-identity.mjs";
 
 export function verifyBaseRestore(sourceReport, restoredReport, readabilityReport) {
   const result = verifyRestoredBackup(sourceReport, {
@@ -16,6 +20,118 @@ export function verifyBaseRestore(sourceReport, restoredReport, readabilityRepor
     schemaDigest: Array.isArray(restoredReport?.objects) ? schemaInventoryDigest(restoredReport.objects) : null,
     readability: readabilityReport?.readability ?? null,
     logicalDataFingerprint: restoredReport?.logicalDataFingerprint ?? null,
+  };
+}
+
+export async function verifyDisposableRehearsalAdmission({
+  snapshot, restoredReport, readabilityReport, migrationDirectories, repositoryPath, releaseSha,
+  manifestId = V4_REPUBLICATION_MANIFEST.id,
+} = {}) {
+  const blockers = [];
+  const expectedPending = V4_REPUBLICATION_MANIFEST.migrations.map(({ name }) => name).sort();
+  const sameSorted = (left, right) => Array.isArray(left)
+    && JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
+  const sourceReport = snapshot?.report;
+  const preflight = snapshot?.preflightResult;
+  const preparation = snapshot?.preparationResult;
+
+  if (!/^[a-f0-9]{40}$/.test(String(releaseSha ?? ""))
+    || manifestId !== V4_REPUBLICATION_MANIFEST.id
+    || snapshot?.schemaVersion !== 1 || snapshot.releaseSha !== releaseSha
+    || snapshot.canonicalMainSha !== releaseSha || snapshot.manifestId !== manifestId) {
+    blockers.push("No-app host snapshot is not bound to the exact requested V4 release SHA.");
+  }
+  try {
+    const checkedOutSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repositoryPath, encoding: "utf8" }).trim();
+    if (checkedOutSha !== releaseSha) blockers.push("Isolated rehearsal checkout is not at the exact snapshot release SHA.");
+  } catch {
+    blockers.push("Isolated rehearsal checkout SHA could not be verified.");
+  }
+  if (preparation?.evidenceKind !== "database-only-no-app-v1"
+    || preparation.preparationVerified !== true || preparation.releaseSha !== releaseSha
+    || preparation.manifestId !== manifestId || preparation.readyForOwnerAuthorization !== false
+    || preparation.ddlAuthorization !== false || preparation.appRuntime !== "unavailable"
+    || preparation.previousAppProvenance !== null || preparation.rollbackReadiness !== "unverified"
+    || !/^[a-f0-9]{64}$/.test(String(preparation.productionDatabaseContainerId ?? ""))
+    || !sameSorted(preparation.pendingMigrationNames, expectedPending)
+    || preparation.pendingSetDigest !== canonicalSha256(expectedPending)) {
+    blockers.push("No-app evidence is missing its preparation-only exact-manifest contract.");
+  }
+  if (preflight?.manifestId !== manifestId || preflight.readyForOwnerAuthorization !== true
+    || preflight.pendingExactlyExpected !== true || !sameSorted(preflight.pending, expectedPending)
+    || !sameSorted(preflight.expectedPending, expectedPending)
+    || !Array.isArray(preflight.blockers) || preflight.blockers.length !== 0
+    || !Array.isArray(preflight.blobIntegrity)
+    || preflight.blobIntegrity.some((entry) => entry?.matches !== true)
+    || V4_REPUBLICATION_MANIFEST.migrations.some((migration) => {
+      const matches = preflight.blobIntegrity.filter((entry) => entry?.name === migration.name);
+      return matches.length !== 1 || matches[0].expectedSha256 !== migration.sha256
+        || matches[0].actualSha256 !== migration.sha256;
+    })
+    || !sourceReport || !preflight.identity || !sourceReport.identity
+    || canonicalSha256(preflight.identity) !== canonicalSha256(sourceReport.identity)
+    || preflight.logicalDataFingerprint !== sourceReport.logicalDataFingerprint
+    || !preflight.writerDrain || !sourceReport.writerDrain
+    || canonicalSha256(preflight.writerDrain) !== canonicalSha256(sourceReport.writerDrain)
+    || preflight.writerDrainReady !== true
+    || preparation?.databasePreflightResultDigest !== canonicalSha256(preflight)
+    || preparation?.productionIdentityDigest !== canonicalSha256(sourceReport.identity)
+    || preparation?.logicalDataFingerprint !== sourceReport.logicalDataFingerprint) {
+    blockers.push("Production snapshot does not prove the exact clean V4 pending set and source preflight state.");
+  }
+
+  const directories = Array.isArray(migrationDirectories) ? migrationDirectories : [];
+  const expectedTree = [...new Set([
+    ...(Array.isArray(preflight?.migrations) ? preflight.migrations.map((row) => row?.name) : []),
+    ...expectedPending,
+  ])].sort();
+  if (!sameSorted(directories, expectedTree) || new Set(directories).size !== directories.length) {
+    blockers.push("Isolated rehearsal migration tree differs from the exact production snapshot and V4 manifest.");
+  }
+  if (!Array.isArray(preflight?.migrations) || !Array.isArray(sourceReport?.migrations)
+    || canonicalSha256(preflight.migrations) !== canonicalSha256(sourceReport.migrations)) {
+    blockers.push("Production preflight migration history is not bound to its source snapshot.");
+  }
+
+  const restoredIdentity = restoredReport?.identity;
+  if (!isCanonicalPostgresDatabaseIdentity(restoredIdentity)
+    || restoredIdentity.database !== "bodycast_restore" || restoredIdentity.role !== "bodycast_restore"
+    || !String(restoredIdentity.serverVersion ?? "").startsWith("17.")) {
+    blockers.push("Rehearsal target is not the isolated PostgreSQL 17 bodycast_restore database and role.");
+  }
+  if (!Array.isArray(restoredReport?.conflictingLocks) || restoredReport.conflictingLocks.length !== 0
+    || !Array.isArray(restoredReport?.preparedTransactions)
+    || restoredReport.preparedTransactions.length !== 0) {
+    blockers.push("Isolated rehearsal target has unknown or conflicting DDL locks or prepared transactions.");
+  }
+
+  const base = verifyBaseRestore(sourceReport, restoredReport, readabilityReport);
+  blockers.push(...base.blockers);
+  const executionIntegrity = [];
+  for (const migration of V4_REPUBLICATION_MANIFEST.migrations) {
+    try {
+      const result = await verifyExecutionFileMatchesBlob({ repositoryPath, releaseSha, migration });
+      executionIntegrity.push({ name: result.name, expectedSha256: result.expectedSha256, workingTreeSha256: result.workingTreeSha256, exactMatch: result.exactMatch });
+      if (!result.exactMatch) blockers.push(`Disposable V4 migration ${migration.name} differs from its exact reviewed Git blob.`);
+    } catch {
+      executionIntegrity.push({ name: migration.name, expectedSha256: migration.sha256, workingTreeSha256: null, exactMatch: false });
+      blockers.push(`Disposable V4 migration ${migration.name} is missing or cannot be verified against the exact release SHA.`);
+    }
+  }
+
+  const uniqueBlockers = [...new Set(blockers)];
+  return {
+    ...base,
+    verified: uniqueBlockers.length === 0,
+    verifiedForIsolatedRehearsal: uniqueBlockers.length === 0,
+    readyForIsolatedRehearsal: uniqueBlockers.length === 0,
+    ddlAuthorization: false,
+    blockers: uniqueBlockers,
+    manifestId,
+    releaseSha,
+    pending: expectedPending,
+    pendingSetDigest: canonicalSha256(expectedPending),
+    executionIntegrity,
   };
 }
 
@@ -84,6 +200,18 @@ async function main() {
     writeVerificationResult("Base backup restore verification", result, schemaDiff);
     return;
   }
+  if (mode === "--rehearsal-preflight") {
+    const [snapshot, restored, readability] = await Promise.all([
+      readJson(value("--snapshot")), readJson(value("--restored")), readJson(value("--readability")),
+    ]);
+    const result = await verifyDisposableRehearsalAdmission({
+      snapshot, restoredReport: restored, readabilityReport: readability, migrationDirectories,
+      repositoryPath: repository, releaseSha: value("--release-sha"),
+      manifestId: value("--manifest") ?? V4_REPUBLICATION_MANIFEST.id,
+    });
+    writeVerificationResult("Disposable exact-manifest rehearsal admission", result);
+    return;
+  }
   if (mode === "--postflight") {
     const report = await readJson(value("--report"));
     const result = verifyDisposablePostflight(report, migrationDirectories, value("--manifest") ?? ACTIVE_ENERGY_UNIFIED_MANIFEST.id);
@@ -96,7 +224,7 @@ async function main() {
     writeVerificationResult("Combined disposable restore verification", result);
     return;
   }
-  throw new Error("Usage: production-migration-restore-check.mjs --base|--postflight|--combine ...");
+  throw new Error("Usage: production-migration-restore-check.mjs --base|--rehearsal-preflight|--postflight|--combine ...");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

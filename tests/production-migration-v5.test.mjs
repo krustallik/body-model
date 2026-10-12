@@ -12,7 +12,7 @@ import { createAuthorizationEnvelope, verifyAuthorizationEnvelope, assertSignedA
 import { selectLatestApplicablePreflight, verifyPreflightArtifactMetadata, isBackupFresh, withPrismaLockTimeout } from "../scripts/production-migration-release.mjs";
 import { readCommittedGitBlob, sha256, verifyExecutionFileMatchesBlob, verifyManifestBlob } from "../scripts/production-migration-integrity.mjs";
 import { renderProductionDbPreflightSql, getExpectedSchemaObjectNames } from "../scripts/production-db-preflight.mjs";
-import { verifyBaseRestore, verifyDisposablePostflight } from "../scripts/production-migration-restore-check.mjs";
+import { verifyBaseRestore, verifyDisposablePostflight, verifyDisposableRehearsalAdmission } from "../scripts/production-migration-restore-check.mjs";
 import { verifyPostflightMatchesRestore } from "../scripts/production-migration-preflight.mjs";
 import { assertLiveDataMatchesBackupReadability, verifyFinalMigrationAuthorization, verifyFinalGuardReceipt } from "../scripts/production-migration-final-guard.mjs";
 import { normalizeWorkflowRuns, selectAndVerifyArtifact } from "../scripts/production-migration-select-preflight.mjs";
@@ -31,7 +31,7 @@ const dirs = [
 const fullDirs = [...dirs, ...V4_REPUBLICATION_MANIFEST.migrations.map((migration) => migration.name)];
 
 function migrationRow(migration, checksum = migration.sha256) {
-  return { name: migration.name, checksum, startedAt: "2026-10-01T00:00:00.000Z", finishedAt: "2026-10-01T00:00:01.000Z", rolledBackAt: null, hasLogs: false };
+  return { name: migration.name, checksum, startedAt: "2026-10-01T00:00:00.000Z", finishedAt: "2026-10-01T00:00:01.000Z", rolledBackAt: null, hasLogs: false, logsFingerprint: "d41d8cd98f00b204e9800998ecf8427e" };
 }
 
 function migrationFunctionBody(source, functionName) {
@@ -558,7 +558,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(evaluateProductionPreflight(unexpected, dirs).blockers.join(" ")).toContain("absent from this release tree");
 
     const failed = validPreflightReport();
-    failed.migrations.push({ name: dirs[0], checksum: "a".repeat(64), startedAt: "2026-10-02T00:00:00Z", finishedAt: null, rolledBackAt: null });
+    failed.migrations.push({ name: dirs[0], checksum: "a".repeat(64), startedAt: "2026-10-02T00:00:00Z", finishedAt: null, rolledBackAt: null, hasLogs: false, logsFingerprint: "d41d8cd98f00b204e9800998ecf8427e" });
     expect(evaluateProductionPreflight(failed, dirs).blockers.join(" ")).toContain("Duplicate migration history");
 
     const rollback = validPreflightReport();
@@ -742,6 +742,21 @@ describe("V5 closed migration manifest and full pending set", () => {
       .toContain("Full release-tree pending set differs");
   });
 
+  it.each([
+    ["an unstarted history row", { startedAt: null, finishedAt: null, rolledBackAt: null }],
+    ["a malformed history row", { startedAt: "not-a-timestamp", finishedAt: null, rolledBackAt: null }],
+  ])("fails closed when a pending V4 migration has %s", (_label, timestamps) => {
+    const report = validV4RepublicationPreflightReport();
+    report.migrations.push({
+      ...migrationRow(V4_REPUBLICATION_MANIFEST.migrations[0]),
+      ...timestamps,
+    });
+    const result = evaluateProductionPreflight(report, fullDirs, V4_REPUBLICATION_MANIFEST.id);
+    expect(result.pending).toEqual(V4_REPUBLICATION_MANIFEST.migrations.map(({ name }) => name).sort());
+    expect(result.readyForOwnerAuthorization).toBe(false);
+    expect(result.blockers.join(" ")).toMatch(/pending manifest migration.*history rows|unknown or malformed execution state/i);
+  });
+
   it("requires the new postflight schema/functions and exact checksums after the two migrations", () => {
     const post = validV4RepublicationPreflightReport();
     post.identity = { ...post.identity, database: "bodycast_restore", databaseOid: 16385, role: "bodycast_restore", serverAddress: "172.20.0.3" };
@@ -877,6 +892,18 @@ describe("V5 closed migration manifest and full pending set", () => {
     report.conflictingLocks = [];
     report.longTransactions.push({ pid: 123, xactAgeSeconds: 900 });
     expect(evaluateProductionPreflight(report, dirs).readyForOwnerAuthorization).toBe(true);
+    report.preparedTransactions = [{ gid: "unrelated-prepared-xact", transaction: "2401", preparedAt: "2026-10-05T10:00:00Z", database: "bodycast" }];
+    expect(evaluateProductionPreflight(report, dirs).readyForOwnerAuthorization).toBe(true);
+    report.conflictingLocks = [{ pid: null, blockerType: "prepared-transaction", relation: "DailyModelState",
+      mode: "RowExclusiveLock", granted: true, requiredLockMode: "AccessExclusiveLock" }];
+    expect(evaluateProductionPreflight(report, dirs).blockers.join(" ")).toContain("conflict with the exact migration DDL");
+    report.conflictingLocks = null;
+    expect(evaluateProductionPreflight(report, dirs).blockers.join(" ")).toContain("lock inventory is unknown or malformed");
+    report.conflictingLocks = [];
+    report.preparedTransactions = [{ gid: "incomplete-prepared-xact", transaction: "2402", preparedAt: "invalid", database: "bodycast" }];
+    expect(evaluateProductionPreflight(report, dirs).blockers.join(" ")).toContain("Prepared transaction state is unknown");
+    report.preparedTransactions = null;
+    expect(evaluateProductionPreflight(report, dirs).blockers.join(" ")).toContain("Prepared transaction state is unknown");
   });
 
   it("binds signed target identity to the concrete PostgreSQL endpoint", () => {
@@ -1787,6 +1814,70 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
     expect(verifyDisposablePostflight(post, dirs).verified).toBe(true);
     expect(verifyPostflightMatchesRestore(post, verified, dirs).ready).toBe(false);
     expect(schemaInventoryDigest(post.objects)).not.toBe(verified.postSchemaDigest);
+  });
+
+  it("admits only an exact V4 base restore for isolated rehearsal, without production writer topology", async () => {
+    const releaseSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim();
+    const source = validV4RepublicationPreflightReport();
+    const preflight = evaluateProductionPreflight(source, fullDirs, V4_REPUBLICATION_MANIFEST.id);
+    preflight.blobIntegrity = [...STAGE_02_MANIFEST.migrations, ...ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations,
+      ...V4_REPUBLICATION_MANIFEST.migrations].map(({ name, sha256 }) => ({
+      name, expectedSha256: sha256, actualSha256: sha256, matches: true,
+    }));
+    const pending = V4_REPUBLICATION_MANIFEST.migrations.map(({ name }) => name).sort();
+    const snapshot = {
+      schemaVersion: 1, releaseSha, canonicalMainSha: releaseSha, manifestId: V4_REPUBLICATION_MANIFEST.id,
+      report: source, preflightResult: preflight,
+      preparationResult: {
+        evidenceKind: "database-only-no-app-v1", preparationVerified: true, releaseSha,
+        manifestId: V4_REPUBLICATION_MANIFEST.id, readyForOwnerAuthorization: false,
+        ddlAuthorization: false, appRuntime: "unavailable", previousAppProvenance: null,
+        rollbackReadiness: "unverified", pendingMigrationNames: pending,
+        productionDatabaseContainerId: "b".repeat(64),
+        pendingSetDigest: canonicalSha256(pending),
+        databasePreflightResultDigest: canonicalSha256(preflight),
+        productionIdentityDigest: canonicalSha256(source.identity),
+        logicalDataFingerprint: source.logicalDataFingerprint,
+      },
+    };
+    const restored = {
+      ...source,
+      identity: { ...source.identity, database: "bodycast_restore", databaseOid: 16385,
+        role: "bodycast_restore", serverAddress: "172.20.0.3" },
+      migrations: source.migrations.map((row) => ({ ...row })),
+      objects: source.objects.map((row) => ({ ...row })),
+      conflictingLocks: [], preparedTransactions: [],
+    };
+    const readability = { readability: Object.fromEntries(["Workout", "Profile", "ModelEpisode", "PhysiologyV7Lifecycle",
+      "DailyModelState", "StrengthDiarySession", "ExerciseCatalog"].map((name) => [name, { rowCount: 0 }])) };
+    const result = await verifyDisposableRehearsalAdmission({
+      snapshot, restoredReport: restored, readabilityReport: readability,
+      migrationDirectories: fullDirs, repositoryPath: process.cwd(), releaseSha,
+      manifestId: V4_REPUBLICATION_MANIFEST.id,
+    });
+    expect(result).toMatchObject({
+      verified: true, verifiedForIsolatedRehearsal: true, readyForIsolatedRehearsal: true,
+      ddlAuthorization: false, pending,
+    });
+    expect(result).not.toHaveProperty("readyForOwnerAuthorization");
+    expect(result.executionIntegrity).toHaveLength(V4_REPUBLICATION_MANIFEST.migrations.length);
+    expect(result.executionIntegrity.every((entry) => entry.exactMatch)).toBe(true);
+
+    const unsafeRestore = { ...restored, conflictingLocks: [{ relation: "PhysiologyV7Lifecycle" }] };
+    await expect(verifyDisposableRehearsalAdmission({
+      snapshot, restoredReport: unsafeRestore, readabilityReport: readability,
+      migrationDirectories: fullDirs, repositoryPath: process.cwd(), releaseSha,
+      manifestId: V4_REPUBLICATION_MANIFEST.id,
+    })).resolves.toMatchObject({ verified: false, readyForIsolatedRehearsal: false, ddlAuthorization: false });
+
+    for (const preparedTransactions of [undefined, [{ gid: "unknown", blocksMigration: false }]]) {
+      const unsafePreparedRestore = { ...restored, preparedTransactions };
+      await expect(verifyDisposableRehearsalAdmission({
+        snapshot, restoredReport: unsafePreparedRestore, readabilityReport: readability,
+        migrationDirectories: fullDirs, repositoryPath: process.cwd(), releaseSha,
+        manifestId: V4_REPUBLICATION_MANIFEST.id,
+      })).resolves.toMatchObject({ verified: false, readyForIsolatedRehearsal: false, ddlAuthorization: false });
+    }
   });
 
   it("reports sanitized per-object schema differences without exposing signature contents", () => {

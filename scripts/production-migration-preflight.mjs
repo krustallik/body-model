@@ -45,6 +45,25 @@ export const ALL_REVIEWED_OBJECTS = [...new Set([
 function sorted(values) { return [...values].sort(); }
 function sameArray(left, right) { return JSON.stringify(sorted(left)) === JSON.stringify(sorted(right)); }
 
+function isValidPreparedTransactionTimestamp(value) {
+  const match = typeof value === "string"
+    ? value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(Z|[+-]\d{2}:\d{2})$/)
+    : null;
+  if (!match) return false;
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, , zone] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+  if (!daysInMonth || day < 1 || day > daysInMonth || hour > 23 || minute > 59 || second > 59) return false;
+  if (zone !== "Z" && (Number(zone.slice(1, 3)) > 15 || Number(zone.slice(4, 6)) > 59)) return false;
+  return Number.isFinite(Date.parse(value));
+}
+
 const SAFE_BLOCKER_CATEGORIES = Object.freeze([
   ["data-fingerprint", /fingerprint|public-table rows|sequence state/i],
   ["migration-history", /migration|_prisma_migrations/i],
@@ -331,9 +350,24 @@ function migrationState(report, migrationDirectories) {
   const applied = new Set();
   for (const [name, entries] of rowGroups) {
     if (entries.length !== 1) duplicate.push(name);
+    for (const row of entries) {
+      const validTimestamp = (value) => value === null
+        || (typeof value === "string" && Number.isFinite(Date.parse(value)));
+      const startMs = Date.parse(row.startedAt ?? "");
+      const finishMs = Date.parse(row.finishedAt ?? "");
+      const rollbackMs = Date.parse(row.rolledBackAt ?? "");
+      if (!/^[a-f0-9]{64}$/.test(String(row.checksum ?? ""))
+        || !validTimestamp(row.startedAt) || !row.startedAt
+        || !validTimestamp(row.finishedAt) || !validTimestamp(row.rolledBackAt)
+        || typeof row.hasLogs !== "boolean" || !/^[a-f0-9]{32}$/.test(String(row.logsFingerprint ?? ""))
+        || (row.finishedAt && finishMs < startMs)
+        || (row.rolledBackAt && (rollbackMs < startMs || row.finishedAt))) {
+        blockers.push(`Production migration history row ${name} has an unknown or malformed execution state.`);
+      }
+    }
     if (entries.some((row) => row.rolledBackAt)) rolledBack.push(name);
     if (entries.some((row) => row.startedAt && !row.finishedAt && !row.rolledBackAt)) failed.push(name);
-    if (entries.length === 1 && entries[0].finishedAt && !entries[0].rolledBackAt) applied.add(name);
+    if (entries.length === 1 && entries[0].startedAt && entries[0].finishedAt && !entries[0].rolledBackAt) applied.add(name);
   }
   if (failed.length) blockers.push(`Incomplete/failed migration rows exist: ${sorted(failed).join(", ")}.`);
   if (rolledBack.length) blockers.push(`Rolled-back migration rows require manual review: ${sorted(rolledBack).join(", ")}.`);
@@ -366,6 +400,12 @@ function appendRequiredAppliedMigrationBlockers(manifest, rowGroups, applied, bl
 export function evaluateProductionPreflight(report, migrationDirectories, manifestId = ACTIVE_ENERGY_UNIFIED_MANIFEST.id, options = {}) {
   const manifest = getProductionMigrationManifest(manifestId);
   const { blockers, rows, rowGroups, applied, pending, failed, rolledBack, duplicate, unexpected } = migrationState(report, migrationDirectories);
+  const partialPendingManifestRows = manifest.migrations
+    .map(({ name }) => name)
+    .filter((name) => rowGroups.has(name) && !applied.has(name));
+  if (partialPendingManifestRows.length) {
+    blockers.push(`Pending manifest migration(s) already have incomplete or unknown history rows: ${sorted(partialPendingManifestRows).join(", ")}.`);
+  }
   appendRequiredAppliedMigrationBlockers(manifest, rowGroups, applied, blockers);
   const missingManifestDirectories = manifest.migrations.map(({ name }) => name).filter((name) => !migrationDirectories.includes(name));
   if (missingManifestDirectories.length) blockers.push(`Reviewed manifest migrations are missing from the release tree: ${missingManifestDirectories.join(", ")}.`);
@@ -410,10 +450,29 @@ export function evaluateProductionPreflight(report, migrationDirectories, manife
   if (!String(report?.identity?.serverVersion ?? "").startsWith("17.")) blockers.push("Production PostgreSQL version differs from the reviewed major version 17.");
   if (!hasConcretePostgresEndpoint(report?.identity)) blockers.push("Production database endpoint identity is incomplete.");
 
-  const conflictingLocks = Array.isArray(report?.conflictingLocks) ? report.conflictingLocks : [];
-  if (conflictingLocks.length) blockers.push(`${conflictingLocks.length} lock(s) conflict with the exact migration DDL operations.`);
-  if (Array.isArray(report?.preparedTransactions) && report.preparedTransactions.some((transaction) => transaction?.blocksMigration === true)) {
-    blockers.push("A prepared transaction blocks a migration DDL target.");
+  const conflictingLocks = report?.conflictingLocks;
+  if (!Array.isArray(conflictingLocks)) {
+    blockers.push("DDL-conflicting lock inventory is unknown or malformed.");
+  } else if (conflictingLocks.length) {
+    blockers.push(`${conflictingLocks.length} lock(s) conflict with the exact migration DDL operations.`);
+  }
+  const preparedTransactions = report?.preparedTransactions;
+  const preparedTransactionIds = new Set();
+  const preparedTransactionXids = new Set();
+  const preparedTransactionsValid = Array.isArray(preparedTransactions) && preparedTransactions.every((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)
+      || typeof entry.gid !== "string" || !entry.gid.trim() || Buffer.byteLength(entry.gid, "utf8") >= 200
+      || preparedTransactionIds.has(entry.gid)
+      || typeof entry.transaction !== "string" || !/^[1-9]\d{0,9}$/.test(entry.transaction)
+      || BigInt(entry.transaction) > 4_294_967_295n || preparedTransactionXids.has(entry.transaction)
+      || !isValidPreparedTransactionTimestamp(entry.preparedAt)
+      || typeof entry.database !== "string" || !entry.database.trim()) return false;
+    preparedTransactionIds.add(entry.gid);
+    preparedTransactionXids.add(entry.transaction);
+    return true;
+  });
+  if (!preparedTransactionsValid) {
+    blockers.push("Prepared transaction state is unknown or prepared-transaction diagnostics are malformed.");
   }
   const writerDrain = evaluateProductionWriterDrain(report);
   blockers.push(...writerDrain.blockers);
@@ -442,7 +501,7 @@ export function evaluateProductionPreflight(report, migrationDirectories, manife
     readability: report?.readability ?? null,
     logicalDataFingerprint: report?.logicalDataFingerprint ?? null,
     conflictingLocks,
-    preparedTransactions: Array.isArray(report?.preparedTransactions) ? report.preparedTransactions : [],
+    preparedTransactions: Array.isArray(preparedTransactions) ? preparedTransactions : [],
     writerDrain: report?.writerDrain ?? null,
     writerDrainReady: writerDrain.ready,
     writerDrainDigest: report?.writerDrain ? canonicalSha256(report.writerDrain) : null,

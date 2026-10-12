@@ -99,6 +99,7 @@ function preflightFixture(migrationDirectories) {
       finishedAt: "2026-09-01T00:00:01.000Z",
       rolledBackAt: null,
       hasLogs: false,
+      logsFingerprint: "d41d8cd98f00b204e9800998ecf8427e",
     })),
     objects: getExpectedSchemaObjectNames().map((name) => ({
       name,
@@ -252,7 +253,7 @@ describe("production migration preflight evaluator", () => {
     expect(result.diagnostics.longTransactions).toEqual(report.longTransactions);
   });
 
-  it("reports backend and pid-less prepared lock blockers without unverified per-lock attribution", async () => {
+  it("allows unrelated prepared transactions only with complete lock diagnostics", async () => {
     const sql = await readFile(new URL("../scripts/production-db-preflight.sql", import.meta.url), "utf8");
     expect(sql).toContain("LEFT JOIN pg_stat_activity a ON a.pid = l.pid");
     expect(sql).toContain("prepared_transactions AS (");
@@ -262,13 +263,53 @@ describe("production migration preflight evaluator", () => {
     expect(sql).toContain("l.pid IS NULL OR l.pid <> pg_backend_pid()");
     expect(sql).toContain("CASE WHEN l.pid IS NULL THEN 'prepared-transaction'");
 
+    const migrations = ["20260801000000_baseline", ...STAGE_02_MANIFEST.migrations.map(({ name }) => name), ...EXPECTED_PENDING_MIGRATIONS];
+    const evaluatePreparedTransactions = (transactions, ...lockInventory) => {
+      const fixture = { ...preflightFixture(migrations), preparedTransactions: transactions };
+      if (lockInventory.length) fixture.conflictingLocks = lockInventory[0];
+      return evaluateProductionPreflight(fixture, migrations);
+    };
     const preparedTransactions = [{ gid: "diagnostic-only", transaction: "42", preparedAt: "2026-09-01T00:00:00Z", database: "bodycast" }];
-    const report = evaluateProductionPreflight({
-      ...preflightFixture(["20260801000000_baseline", ...STAGE_02_MANIFEST.migrations.map(({ name }) => name), ...EXPECTED_PENDING_MIGRATIONS]),
-      preparedTransactions,
-    }, ["20260801000000_baseline", ...STAGE_02_MANIFEST.migrations.map(({ name }) => name), ...EXPECTED_PENDING_MIGRATIONS]);
+    const report = evaluatePreparedTransactions(preparedTransactions);
     expect(report.readyForOwnerAuthorization).toBe(true);
     expect(report.preparedTransactions).toEqual(preparedTransactions);
+
+    const transaction = (gid, xid) => ({ gid, transaction: xid, preparedAt: "2026-09-01T00:00:00Z", database: "bodycast" });
+    expect(evaluatePreparedTransactions([transaction("g".repeat(199), "1")]).readyForOwnerAuthorization).toBe(true);
+    for (const gid of ["g".repeat(200), "g".repeat(201), "é".repeat(100)]) {
+      expect(evaluatePreparedTransactions([transaction(gid, "2")]).readyForOwnerAuthorization).toBe(false);
+    }
+    expect(Buffer.byteLength("é".repeat(100), "utf8")).toBe(200);
+
+    for (const xid of ["1", "4294967295"]) {
+      expect(evaluatePreparedTransactions([transaction("valid-xid", xid)]).readyForOwnerAuthorization).toBe(true);
+    }
+    for (const xid of ["0", "4294967296", "01", "+1", "1.0", "9".repeat(40)]) {
+      expect(evaluatePreparedTransactions([transaction("invalid-xid", xid)]).readyForOwnerAuthorization).toBe(false);
+    }
+    expect(evaluatePreparedTransactions([transaction("duplicate-gid", "3"), transaction("duplicate-gid", "4")]).readyForOwnerAuthorization).toBe(false);
+    expect(evaluatePreparedTransactions([transaction("first-gid", "5"), transaction("second-gid", "5")]).readyForOwnerAuthorization).toBe(false);
+    expect(evaluatePreparedTransactions([transaction(" ", "6")]).readyForOwnerAuthorization).toBe(false);
+
+    const conflictingPreparedLock = {
+      pid: null, blockerType: "prepared-transaction", relation: "DailyModelState", mode: "RowExclusiveLock",
+      granted: true, requiredLockMode: "AccessExclusiveLock",
+    };
+    const blocked = evaluatePreparedTransactions(preparedTransactions, [conflictingPreparedLock]);
+    expect(blocked.readyForOwnerAuthorization).toBe(false);
+    expect(blocked.blockers.join(" ")).toContain("conflict with the exact migration DDL");
+
+    for (const conflictingLocks of [undefined, null, "unknown"]) {
+      const unknownInventory = evaluatePreparedTransactions(preparedTransactions, conflictingLocks);
+      expect(unknownInventory.readyForOwnerAuthorization).toBe(false);
+      expect(unknownInventory.blockers.join(" ")).toContain("lock inventory is unknown or malformed");
+    }
+
+    for (const preparedAt of ["invalid", "0", "2026-02-30T00:00:00Z"]) {
+      const malformedPrepared = evaluatePreparedTransactions([{ ...transaction("incomplete", "42"), preparedAt }]);
+      expect(malformedPrepared.readyForOwnerAuthorization).toBe(false);
+      expect(malformedPrepared.blockers.join(" ")).toContain("Prepared transaction state is unknown");
+    }
   });
 
   it("requires restored migration history and baseline tables to match the source report", () => {

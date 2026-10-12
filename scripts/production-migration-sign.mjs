@@ -12,6 +12,10 @@ async function json(file) { return JSON.parse(await readFile(file, "utf8")); }
 export async function createSignedAuthorization({ evidence, report, restore, run, artifact, allowlist, keyId, privateKeyPem,
   executionMode = "standard", forwardResumeFailedRunId = "", now = Date.now() }) {
   const repository = "krustallik/body-model";
+  if (evidence?.evidenceKind === "database-only-no-app-v1" || evidence?.ddlAuthorization === false
+    || evidence?.previousAppProvenance === null) {
+    throw new Error("Preparation-only no-app evidence cannot authorize production DDL.");
+  }
   if (evidence?.verified !== true || evidence?.repository !== repository) throw new Error("Preflight evidence is not verified for the canonical repository.");
   if (evidence.workflowPath !== ".github/workflows/production-migration-preflight.yml"
     || String(evidence.workflowRunId) !== String(run.id)

@@ -400,6 +400,14 @@ if [[ "$1" == "inspect" ]]; then
     event "docker-db-inspect-failed"
     exit 62
   fi
+  if [[ "$target" == "bodycast-db-prod" && "$format" == *"{{.Id}}|{{.Name}}|{{with index .NetworkSettings.Networks"* ]]; then
+    printf '%s|/bodycast-db-prod|172.20.0.2\n' "$(printf 'a%.0s' {1..64})"
+    exit 0
+  fi
+  if [[ "$target" == "bodycast-db-prod" && "$format" == *"{{.Id}}"* ]]; then
+    printf '%s\n' "$(printf 'a%.0s' {1..64})"
+    exit 0
+  fi
   if [[ "$target" == "bodycast-app-prod" && "\${FAIL_DOCKER_APP_INSPECT:-0}" == "1" ]]; then
     event "docker-app-inspect-failed:$format"
     exit 58
@@ -721,6 +729,7 @@ export function createFixture(): Fixture {
     "production-previous-app-provenance.mjs",
     "production-capture-resume-receipt.mjs",
     "production-db-target.sh",
+    "production-db-endpoint-binding.mjs",
     "production-db-target-url.mjs",
     "production-db-preflight.mjs",
     "production-db-preflight.sql",

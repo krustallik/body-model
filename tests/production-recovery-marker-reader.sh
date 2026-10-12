@@ -8,7 +8,7 @@ V2_PATH="$TMP/marker-v2.json"
 GIT_DIR_PATH="$TMP/git-meta"
 mkdir -m 700 "$GIT_DIR_PATH"
 git init --bare --quiet "$GIT_DIR_PATH"
-sed "s|/var/lib/bodycast/recovery/marker-v2.json|$V2_PATH|g" \
+sed -e "s|/var/lib/bodycast/recovery/marker-v2.json|$V2_PATH|g" -e 's/\r$//' \
   "$ROOT/scripts/production-release-marker.sh" > "$TMP/production-release-marker.sh"
 
 export GIT_DIR="$GIT_DIR_PATH"
@@ -66,8 +66,21 @@ rm "$V2_PATH"
 printf 'schemaVersion=2\nmanifestId=unified-v4-republication-v1\nreleaseSha=%040d\nstate=ddl-starting\nworkflowRunId=390001\nworkflowRunAttempt=1\nauthorizationId=authorization-marker-test-12345\nlineageDigest=%064d\nspawnState=not-started\n' 1 2 \
   > "$BODYCAST_RELEASE_MARKER_PATH"
 read_bodycast_release_marker
-bodycast_validate_release_marker
-[[ "$BODYCAST_MARKER_MANIFEST_ID" == "unified-v4-republication-v1" ]] || { echo "New V4 migration manifest marker was not accepted." >&2; exit 1; }
+[[ "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 \
+  && "$BODYCAST_MARKER_MANIFEST_ID" == "unified-v4-republication-v1" \
+  && "$BODYCAST_MARKER_RELEASE_SHA" == "$(printf '%040d' 1)" \
+  && "$BODYCAST_MARKER_STATE" == "ddl-starting" \
+  && "$BODYCAST_MARKER_WORKFLOW_RUN_ID" == "390001" \
+  && "$BODYCAST_MARKER_WORKFLOW_RUN_ATTEMPT" == "1" \
+  && "$BODYCAST_MARKER_AUTHORIZATION_ID" == "authorization-marker-test-12345" \
+  && "$BODYCAST_MARKER_LINEAGE_DIGEST" == "$(printf '%064d' 2)" \
+  && "$BODYCAST_MARKER_SPAWN_STATE" == "not-started" ]] || {
+  echo "New V4 migration marker was not parsed and validated exactly." >&2; exit 1;
+}
+# Model the durable acknowledgement written immediately before Prisma spawn.
+printf 'schemaVersion=2\nmanifestId=unified-v4-republication-v1\nreleaseSha=%040d\nstate=ddl-started\nworkflowRunId=390001\nworkflowRunAttempt=1\nauthorizationId=authorization-marker-test-12345\nlineageDigest=%064d\nspawnState=started\n' 1 2 \
+  > "$BODYCAST_RELEASE_MARKER_PATH"
+read_bodycast_release_marker
 write_bodycast_release_marker "$(printf '%040d' 1)" schema-applied
 grep -Fxq 'manifestId=unified-v4-republication-v1' "$BODYCAST_RELEASE_MARKER_PATH" || {
   echo "New V4 migration manifest identity was not preserved during marker transition." >&2; exit 1;

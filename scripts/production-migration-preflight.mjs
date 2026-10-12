@@ -80,13 +80,34 @@ function canonicalHistory(migrations) {
   })).sort((a, b) => a.name.localeCompare(b.name) || String(a.startedAt).localeCompare(String(b.startedAt)));
 }
 
+const LIFECYCLE_REVISION_CONSTRAINT = "PhysiologyV7Lifecycle_unifiedTargetRevision_supported";
+const LIFECYCLE_REVISION_VALUES = [
+  "unified-experimental-physiology-state-v3-relative-muscle-daily-cumulative-diagnostics",
+  "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
+];
+const LIFECYCLE_REVISION_SIGNATURE_PREFIX = 'c|validated=true|table="PhysiologyV7Lifecycle"|definition=CHECK ("unifiedTargetRevision"::text = ANY (';
+const LIFECYCLE_REVISION_SOURCE_SIGNATURE = `${LIFECYCLE_REVISION_SIGNATURE_PREFIX}ARRAY[${LIFECYCLE_REVISION_VALUES.map((value) => `'${value}'::character varying`).join(", ")}]::text[]))`;
+const LIFECYCLE_REVISION_RESTORED_SIGNATURE = `${LIFECYCLE_REVISION_SIGNATURE_PREFIX}ARRAY[${LIFECYCLE_REVISION_VALUES.map((value) => `'${value}'::character varying::text`).join(", ")}]))`;
+
+function canonicalInventorySignature(object) {
+  // PostgreSQL 17's dump/reparse moves the varchar[] -> text[] cast onto
+  // individual literals in this reviewed CHECK. Admit only the complete exact
+  // restored form, retaining the original digest used by existing captures.
+  // Any other predicate, validation state, table, kind or object stays exact.
+  if (object?.name === LIFECYCLE_REVISION_CONSTRAINT && object.present === true
+    && object.kind === "constraint" && object.signature === LIFECYCLE_REVISION_RESTORED_SIGNATURE) {
+    return LIFECYCLE_REVISION_SOURCE_SIGNATURE;
+  }
+  return object?.signature ?? null;
+}
+
 export function schemaInventoryDigest(objects) {
   if (!Array.isArray(objects)) throw new Error("Schema inventory is unavailable.");
   const normalized = objects.map((object) => ({
     name: object?.name,
     present: object?.present === true,
     kind: object?.kind ?? null,
-    signature: object?.signature ?? null,
+    signature: canonicalInventorySignature(object),
   })).sort((a, b) => String(a.name).localeCompare(String(b.name)));
   return canonicalSha256(normalized);
 }
@@ -123,6 +144,7 @@ export function schemaInventoryDifferenceSummary(sourceObjects, restoredObjects,
         restoredSignatureSha256: restoredHasSignature ? canonicalSha256(restored.signature) : null,
         normalizedSignaturesEqual: sourceHasSignature && restoredHasSignature
           ? normalizeObjectSignature(source.signature) === normalizeObjectSignature(restored.signature)
+            || canonicalInventorySignature(source) === canonicalInventorySignature(restored)
           : false,
       } : {}),
     });

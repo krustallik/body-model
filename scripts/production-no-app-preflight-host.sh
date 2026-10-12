@@ -9,6 +9,7 @@ readonly EXPECTED_SOURCE_RUN_ID="38211169161"
 readonly EXPECTED_SOURCE_ATTEMPT="1"
 readonly EXPECTED_RESUME_SHA="3ede9e1644616e65edb3ac29a49df2f109786942"
 readonly DB_CONTAINER="bodycast-db-prod"
+readonly DB_NETWORK="bodycast-backend-prod"
 readonly APP_CONTAINER="bodycast-app-prod"
 readonly DB_IMAGE="postgres:17-alpine"
 
@@ -79,7 +80,7 @@ source_capture_path="$git_dir/bodycast-production-pre-ddl-release-before-${EXPEC
 receipt_path="$git_dir/bodycast-production-pre-ddl-release-resume-${EXPECTED_SOURCE_RUN_ID}-${EXPECTED_SOURCE_ATTEMPT}"
 
 collect_snapshot() {
-  local suffix="$1" topology marker db_meta container_id fingerprint pin_name pinned_image_id target_url
+  local suffix="$1" topology marker db_meta container_id db_address fingerprint pin_name pinned_image_id target_url
   local sql_file="$tmp/preflight-${suffix}.sql" raw_file="$tmp/raw-${suffix}.json" report_file="$tmp/report-${suffix}.json"
   local writer_file="$tmp/writer-${suffix}.json" preflight_file="$tmp/preflight-result-${suffix}.json"
   local payload_file="$tmp/host-snapshot-${suffix}.json" verified_file="$tmp/verified-${suffix}.json"
@@ -101,12 +102,16 @@ collect_snapshot() {
     --filter 'label=com.docker.compose.service=app' --format '{{.ID}}' >> "$app_ids_file"
   [[ ! -s "$app_ids_file" ]] || { echo "A production app-service container is present; no-app mode is forbidden." >&2; return 1; }
 
-  db_meta="$(docker inspect --format '{{.Id}}|{{.Name}}|{{.Config.Image}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}unknown{{end}}' "$DB_CONTAINER")"
-  [[ "$db_meta" == *"|/$DB_CONTAINER|$DB_IMAGE|running|healthy" ]] || {
+  db_meta="$(docker inspect --format "{{.Id}}|{{.Name}}|{{.Config.Image}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}unknown{{end}}|{{with index .NetworkSettings.Networks \"$DB_NETWORK\"}}{{.IPAddress}}{{end}}" "$DB_CONTAINER")"
+  [[ "$db_meta" == *"|/$DB_CONTAINER|$DB_IMAGE|running|healthy|"* ]] || {
     echo "The fixed production PostgreSQL container identity or health is unexpected." >&2; return 1;
   }
   container_id="${db_meta%%|*}"
+  db_address="${db_meta##*|}"
   [[ "$container_id" =~ ^[a-f0-9]{64}$ ]] || { echo "Production database container ID is malformed." >&2; return 1; }
+  [[ -n "$db_address" && "$db_address" != *$'\n'* && "$db_address" != *$'\r'* ]] || {
+    echo "Production database backend endpoint is missing or malformed." >&2; return 1;
+  }
   local pg_dump_version
   pg_dump_version="$(docker exec "$DB_CONTAINER" pg_dump --version)"
   node --input-type=module - "$pg_dump_version" "$BODYCAST_PG_RESTORE_VERSION" <<'NODE'
@@ -137,14 +142,22 @@ NODE
     && [[ "$target_url" != *$'\n'* && "$target_url" != *$'\r'* ]] || {
     echo "The reviewed production PostgreSQL target URL is missing or malformed." >&2; return 1;
   }
+  export BODYCAST_PSQL_DATABASE_URL="$target_url"
+  unset target_url
   docker exec -i \
-    --env "BODYCAST_PSQL_DATABASE_URL=$target_url" \
+    --env BODYCAST_PSQL_DATABASE_URL \
     --env "BODYCAST_WRITER_TOPOLOGY_JSON=$topology" \
     --env 'PGAPPNAME=bodycast-production-preflight' \
     --env 'PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000' \
     "$DB_CONTAINER" sh -c 'exec psql "$BODYCAST_PSQL_DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 --set="BODYCAST_WRITER_TOPOLOGY_JSON=$BODYCAST_WRITER_TOPOLOGY_JSON"' \
     < "$sql_file" > "$raw_file"
-  unset target_url
+  unset BODYCAST_PSQL_DATABASE_URL
+  node --input-type=module - "$raw_file" "$db_address" <<'NODE'
+import { readFileSync } from "node:fs";
+import { assertNoAppDatabaseEndpointBinding } from "./scripts/production-no-app-db-target.mjs";
+const [reportPath, expectedAddress] = process.argv.slice(2);
+assertNoAppDatabaseEndpointBinding(JSON.parse(readFileSync(reportPath, "utf8")), expectedAddress);
+NODE
   fingerprint="$(bash "$deploy_path/scripts/production-db-data-fingerprint.sh" --production-container "$DB_CONTAINER")"
   [[ "$fingerprint" =~ ^[a-f0-9]{64}$ ]] || { echo "Production data fingerprint is malformed." >&2; return 1; }
   node --input-type=module - "$raw_file" "$report_file" "$fingerprint" <<'NODE'

@@ -14,10 +14,31 @@ import {
 import { createCaptureResumeReceipt } from "../scripts/production-capture-resume-receipt.mjs";
 import { previousAppDatabaseCompatibilityDigests, serializePreviousAppProvenance } from "../scripts/production-previous-app-provenance.mjs";
 import { createSignedAuthorization } from "../scripts/production-migration-sign.mjs";
+import { assertNoAppDatabaseEndpointBinding } from "../scripts/production-no-app-db-target.mjs";
 
 const sha = "a".repeat(40);
 const digest = "b".repeat(64);
 const marker = "bd9975d38d1c-20261012T120000Z-99-123456";
+
+describe("no-app database endpoint binding", () => {
+  const report = { identity: { serverAddress: "172.20.0.2", serverPort: 5432 } };
+
+  it("accepts the report only when it names the fixed backend container endpoint", () => {
+    expect(assertNoAppDatabaseEndpointBinding(report, "172.20.0.2")).toBe(true);
+  });
+
+  it.each([
+    ["different endpoint", report, "172.20.0.9"],
+    ["different PostgreSQL port", { identity: { ...report.identity, serverPort: 5433 } }, "172.20.0.2"],
+    ["missing server endpoint", { identity: { serverPort: 5432 } }, "172.20.0.2"],
+    ["invalid expected endpoint", report, "bodycast-db-prod"],
+    ["IPv6 endpoint", report, "2001:db8::1"],
+  ])("blocks %s", (_label, candidate, expectedAddress) => {
+    expect(() => assertNoAppDatabaseEndpointBinding(candidate, expectedAddress)).toThrow(
+      "No-app database report does not identify the fixed production PostgreSQL endpoint.",
+    );
+  });
+});
 
 function captureLineage() {
   return {

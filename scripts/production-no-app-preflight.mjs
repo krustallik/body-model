@@ -58,7 +58,7 @@ export function assertNoCompetingProductionRuns(runs, { currentRunId } = {}) {
 }
 
 export function reconcileNoAppCaptureLineage({
-  currentRecordText, archivedRecordText, currentReceipt, githubReceipt, databaseReport, captureHistoryProof,
+  currentRecordText, sourceRecordText, currentReceipt, githubReceipt, databaseReport, captureHistoryProof,
   pinnedImageId,
 } = {}) {
   if (!captureHistoryProof || captureHistoryProof.schemaVersion !== 2
@@ -92,17 +92,17 @@ export function reconcileNoAppCaptureLineage({
     || captureHistoryProof.captureRefresh?.artifactsPublished !== false) {
     reject("exact owner-run history does not prove the V4 lineage and the later maintenance-route publication/capture-guard failure boundary.");
   }
-  if (typeof currentRecordText !== "string" || typeof archivedRecordText !== "string"
+  if (typeof currentRecordText !== "string" || typeof sourceRecordText !== "string"
     || typeof githubReceipt !== "object" || typeof currentReceipt !== "object") {
-    reject("current capture, preserved archive, or independently collected resume receipt is missing.");
+    reject("current capture, exact resume source capture, or independently collected resume receipt is missing.");
   }
 
   let sourceRecord; let currentRecord;
   try {
-    sourceRecord = parsePreviousAppProvenance(archivedRecordText);
+    sourceRecord = parsePreviousAppProvenance(sourceRecordText);
     currentRecord = parsePreviousAppProvenance(currentRecordText);
   } catch {
-    reject("capture record or preserved source archive is malformed.");
+    reject("current or exact resume source capture record is malformed.");
   }
   if (sourceRecord.targetSha !== NO_APP_CAPTURE_LINEAGE.sourceSha
     || currentRecord.targetSha !== NO_APP_CAPTURE_LINEAGE.resumeSha
@@ -135,7 +135,7 @@ export function reconcileNoAppCaptureLineage({
     });
     validateCaptureResumeReceipt(githubReceipt, receipt);
   } catch {
-    reject("host and GitHub resume receipts do not bind the exact current and archived capture records.");
+    reject("host and GitHub resume receipts do not bind the exact current and source capture records.");
   }
 
   if (!DIGEST.test(String(receipt.compatibilityDigest ?? ""))
@@ -146,7 +146,7 @@ export function reconcileNoAppCaptureLineage({
   }
   return Object.freeze({
     schemaVersion: 1,
-    evidenceBasis: "host-current-record-plus-preserved-archive-and-owner-run-receipt",
+    evidenceBasis: "host-current-record-plus-resume-source-capture-and-owner-run-receipt",
     githubArtifactDigestAvailable: false,
     sourceRunId: NO_APP_CAPTURE_LINEAGE.sourceRunId,
     sourceRunAttempt: NO_APP_CAPTURE_LINEAGE.sourceRunAttempt,
@@ -228,7 +228,7 @@ export function verifyNoAppLiveState({
     reject("existing maintenance route and public 503 evidence are inconsistent.");
   }
   if (!captureLineage || captureLineage.schemaVersion !== 1
-    || captureLineage.evidenceBasis !== "host-current-record-plus-preserved-archive-and-owner-run-receipt"
+    || captureLineage.evidenceBasis !== "host-current-record-plus-resume-source-capture-and-owner-run-receipt"
     || captureLineage.githubArtifactDigestAvailable !== false
     || captureLineage.sourceRunId !== NO_APP_CAPTURE_LINEAGE.sourceRunId
     || captureLineage.sourceRunAttempt !== NO_APP_CAPTURE_LINEAGE.sourceRunAttempt

@@ -22,7 +22,7 @@ const marker = "bd9975d38d1c-20261012T120000Z-99-123456";
 function captureLineage() {
   return {
     schemaVersion: 1,
-    evidenceBasis: "host-current-record-plus-preserved-archive-and-owner-run-receipt",
+    evidenceBasis: "host-current-record-plus-resume-source-capture-and-owner-run-receipt",
     githubArtifactDigestAvailable: false,
     sourceRunId: "38205023003",
     sourceRunAttempt: 1,
@@ -78,7 +78,7 @@ function captureReconciliationInputs(overrides = {}) {
     preDdlDatabaseCompatibilityDigest: databaseDigests.compatibilityDigest,
   };
   const currentRecord = { ...sourceRecord, targetSha: "3ede9e1644616e65edb3ac29a49df2f109786942" };
-  const archivedRecordText = serializePreviousAppProvenance(sourceRecord);
+  const sourceRecordText = serializePreviousAppProvenance(sourceRecord);
   const currentRecordText = serializePreviousAppProvenance(currentRecord);
   const receipt = createCaptureResumeReceipt({
     schemaVersion: 1,
@@ -110,7 +110,7 @@ function captureReconciliationInputs(overrides = {}) {
     },
   };
   return {
-    currentRecordText, archivedRecordText, currentReceipt: receipt, githubReceipt: receipt,
+    currentRecordText, sourceRecordText, currentReceipt: receipt, githubReceipt: receipt,
     databaseReport, captureHistoryProof, pinnedImageId: sourceRecord.previousImageId,
     ...overrides,
   };
@@ -188,9 +188,11 @@ describe("no-app database-only preflight contract", () => {
     expect(canonicalSha256(stableNoAppSnapshot(before))).not.toBe(canonicalSha256(stableNoAppSnapshot(after)));
   });
 
-  it("reconciles the host current capture, preserved source archive, GitHub receipt, and exact pinned image", () => {
+  it("reconciles the host current capture, exact resume source capture, GitHub receipt, and exact pinned image", () => {
     const lineage = reconcileNoAppCaptureLineage(captureReconciliationInputs());
     expect(lineage.githubArtifactDigestAvailable).toBe(false);
+    expect(lineage.sourceRecordDigest).toBe(captureReconciliationInputs().currentReceipt.sourceRecordDigest);
+    expect(lineage.currentRecordDigest).toBe(captureReconciliationInputs().currentReceipt.currentRecordDigest);
     expect(lineage.rollbackImageMatchesRecord).toBe(true);
     expect(lineage.appRuntime).toBe("unavailable");
     expect(lineage.previousAppRecovery).toBe("unverified");
@@ -206,7 +208,15 @@ describe("no-app database-only preflight contract", () => {
 
   it.each([
     ["a stale current receipt", { currentReceipt: null }],
-    ["a stale archive record", { archivedRecordText: "schemaVersion=2\n" }],
+    ["a missing resume source record", { sourceRecordText: null }],
+    ["archive B from the V2 pre-refresh run used as source", { sourceRecordText: (() => captureReconciliationInputs().sourceRecordText
+      .replace("schemaVersion=3", "schemaVersion=2")
+      .replace("targetSha=fe55468321b9ef8e9783aa3874e1b42c2736b514", "targetSha=62b6961dde7036100c8af7281e7bfab75bb662db")
+      .split(/\r?\n/).filter((line) => !line.startsWith("previousImagePin=")).join("\n"))() }],
+    ["a modified resume source record", { sourceRecordText: captureReconciliationInputs().sourceRecordText.replace(
+      /preDdlSchemaInventoryDigest=[a-f0-9]{64}/, `preDdlSchemaInventoryDigest=${"e".repeat(64)}`) }],
+    ["a changed current record", { currentRecordText: captureReconciliationInputs().currentRecordText.replace(
+      `previousSha=${"1".repeat(40)}`, `previousSha=${"9".repeat(40)}`) }],
     ["an unexpected saved image pin", { currentRecordText: captureReconciliationInputs().currentRecordText.replace(
       "bodycast-app:rollback-preflight-38205023003-1", "bodycast-app:rollback-preflight-38205023004-1") }],
     ["an image ID that differs from the saved pin", { pinnedImageId: `sha256:${"9".repeat(64)}` }],

@@ -22,6 +22,20 @@ const MUTATION_WORKFLOWS = [
   "deploy-production.yml",
   "production-no-app-preflight.yml",
 ];
+const RESUME_RECEIPT_JOB = "Inspect, back up, restore, and rehearse on disposable PostgreSQL";
+const RESUME_RECEIPT_STEP = "Enter maintenance and drain the old app before backup";
+const RESUME_RECEIPT_MARKER = "BODYCAST_PRE_DDL_RESUME_RECEIPT=";
+const RESUME_RECEIPT_TIMESTAMP = "\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?Z";
+
+function escapeRegExp(value) { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+const receiptLogPrefix = `^${escapeRegExp(RESUME_RECEIPT_JOB)}\\t${escapeRegExp(RESUME_RECEIPT_STEP)}\\t`;
+const emittedResumeReceiptLine = new RegExp(
+  `${receiptLogPrefix}${RESUME_RECEIPT_TIMESTAMP}(?: > | )${escapeRegExp(RESUME_RECEIPT_MARKER)}([A-Za-z0-9+/=]+)$`,
+);
+const echoedResumeReceiptCommand = new RegExp(
+  `${receiptLogPrefix}${RESUME_RECEIPT_TIMESTAMP} \\^\\[\\[36;1m  mapfile -t RECEIPT_LINES < <\\(sed -n 's/\\^${escapeRegExp(RESUME_RECEIPT_MARKER)}\\/\\/p' "\\$REMOTE_OUTPUT_FILE"\\)\\^\\[\\[0m$`,
+);
 
 function gh(args, { maxBuffer = 4 * 1024 * 1024 } = {}) {
   return execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer, timeout: 60_000 });
@@ -84,6 +98,65 @@ function exactJob(jobs, name) {
   const matches = (jobs?.jobs ?? []).filter((job) => job.name === name);
   if (matches.length !== 1 || !Number.isSafeInteger(matches[0].id)) throw new Error(`Expected exactly one GitHub job: ${name}`);
   return matches[0];
+}
+
+function validateGitHubResumeReceipt(receipt, sourceRun) {
+  if (String(sourceRun?.id) !== NO_APP_CAPTURE_LINEAGE.resumeRunId
+    || sourceRun?.head_sha !== NO_APP_CAPTURE_LINEAGE.resumeSha
+    || sourceRun?.run_attempt !== NO_APP_CAPTURE_LINEAGE.resumeRunAttempt) {
+    throw new Error("Resume receipt source is not the exact reviewed GitHub run attempt.");
+  }
+  return validateCaptureResumeReceipt(receipt, {
+    mode: "ordinary",
+    sourceRunId: NO_APP_CAPTURE_LINEAGE.sourceRunId,
+    sourceRunAttempt: NO_APP_CAPTURE_LINEAGE.sourceRunAttempt,
+    sourceSha: NO_APP_CAPTURE_LINEAGE.sourceSha,
+    targetSha: NO_APP_CAPTURE_LINEAGE.resumeSha,
+    captureRunId: String(sourceRun.id),
+    captureRunAttempt: sourceRun.run_attempt,
+    // These GitHub values remain claims until host reconciliation binds them
+    // to the exact source/current files and live database compatibility.
+    sourceRecordDigest: receipt?.sourceRecordDigest,
+    currentRecordDigest: receipt?.currentRecordDigest,
+    compatibilityDigest: receipt?.compatibilityDigest,
+  });
+}
+
+export function extractGitHubResumeReceipt(logText, sourceRun) {
+  if (typeof logText !== "string" || String(sourceRun?.id) !== NO_APP_CAPTURE_LINEAGE.resumeRunId
+    || sourceRun?.head_sha !== NO_APP_CAPTURE_LINEAGE.resumeSha
+    || sourceRun?.run_attempt !== NO_APP_CAPTURE_LINEAGE.resumeRunAttempt) {
+    throw new Error("Resume receipt source is not the exact reviewed GitHub run attempt.");
+  }
+  const payloads = [];
+  for (const line of logText.split(/\r?\n/)) {
+    if (!line.includes(RESUME_RECEIPT_MARKER)) continue;
+    const emitted = emittedResumeReceiptLine.exec(line);
+    if (emitted) {
+      payloads.push(emitted[1]);
+      continue;
+    }
+    if (echoedResumeReceiptCommand.test(line)) continue;
+    throw new Error("Source workflow log contains a resume receipt marker in an unknown or spoofed format.");
+  }
+  if (payloads.length !== 1) {
+    throw new Error("Exact source workflow log does not contain one unambiguous resume receipt.");
+  }
+  try {
+    const encoded = payloads[0];
+    if (!encoded || encoded.length > 11_000
+      || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+      throw new Error("invalid base64");
+    }
+    const bytes = Buffer.from(encoded, "base64");
+    if (!bytes.length || bytes.length > 8_192 || bytes.toString("base64") !== encoded) throw new Error("invalid base64");
+    const jsonText = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    const receipt = JSON.parse(jsonText);
+    if (JSON.stringify(receipt) !== jsonText) throw new Error("noncanonical JSON");
+    return validateGitHubResumeReceipt(receipt, sourceRun);
+  } catch {
+    throw new Error("Source workflow log contains a malformed or incorrectly bound resume receipt.");
+  }
 }
 
 function currentMainAncestor(sha, mainSha) {
@@ -226,15 +299,7 @@ export function buildCaptureHistoryEvidence({ currentRunId, currentMainSha, sour
   });
   const proof = Object.freeze({ ...resumeProof, historicalV2, captureRefresh });
   if (proof.targetSha !== currentMainSha) throw new Error("Capture history proof is not bound to current main.");
-  const validatedReceipt = validateCaptureResumeReceipt(githubReceipt, {
-    mode: "ordinary",
-    sourceRunId: NO_APP_CAPTURE_LINEAGE.sourceRunId,
-    sourceRunAttempt: NO_APP_CAPTURE_LINEAGE.sourceRunAttempt,
-    sourceSha: NO_APP_CAPTURE_LINEAGE.sourceSha,
-    targetSha: NO_APP_CAPTURE_LINEAGE.resumeSha,
-    captureRunId: sourceId,
-    captureRunAttempt: sourceAttempt,
-  });
+  const validatedReceipt = validateGitHubResumeReceipt(githubReceipt, sourceRecord);
   const productionInventory = activeProductionMutationRunInventory(allProductionRuns, currentRunId);
   assertNoCompetingProductionRuns(productionInventory, { currentRunId: String(currentRunId) });
   return Object.freeze({
@@ -251,15 +316,9 @@ export async function collectCaptureHistoryEvidence({ currentRunId, currentMainS
   const sourceRun = api(`repos/${REPOSITORY}/actions/runs/${NO_APP_CAPTURE_LINEAGE.resumeRunId}`);
   const sourceJobs = api(`repos/${REPOSITORY}/actions/runs/${NO_APP_CAPTURE_LINEAGE.resumeRunId}/jobs?per_page=100`);
   const sourceArtifacts = api(`repos/${REPOSITORY}/actions/runs/${NO_APP_CAPTURE_LINEAGE.resumeRunId}/artifacts?per_page=100`);
-  const sourceInspect = exactJob(sourceJobs, "Inspect, back up, restore, and rehearse on disposable PostgreSQL");
+  const sourceInspect = exactJob(sourceJobs, RESUME_RECEIPT_JOB);
   const sourceLog = runLogs(sourceRun.id, sourceInspect.id);
-  const receiptLines = sourceLog.split(/\r?\n/).map((line) => line.trim())
-    .filter((line) => line.startsWith("BODYCAST_PRE_DDL_RESUME_RECEIPT="));
-  if (receiptLines.length !== 1) throw new Error("Exact source workflow log does not contain one resume receipt.");
-  const receiptB64 = receiptLines[0].slice("BODYCAST_PRE_DDL_RESUME_RECEIPT=".length);
-  const receiptBytes = Buffer.from(receiptB64, "base64");
-  if (!receiptBytes.length || receiptBytes.toString("base64") !== receiptB64) throw new Error("Source resume receipt is not canonical base64.");
-  const githubReceipt = JSON.parse(receiptBytes.toString("utf8"));
+  const githubReceipt = extractGitHubResumeReceipt(sourceLog, sourceRun);
 
   const v2Run = api(`repos/${REPOSITORY}/actions/runs/${V2_PREFLIGHT_RUN_ID}`);
   const v2Artifacts = api(`repos/${REPOSITORY}/actions/runs/${V2_PREFLIGHT_RUN_ID}/artifacts?per_page=100`);

@@ -103,7 +103,7 @@ jobs:
     environment: production
     services:
       isolated-postgres:
-        image: public.ecr.aws/docker/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        image: docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
         env:
           POSTGRES_DB: bodycast_restore
           POSTGRES_USER: bodycast_restore
@@ -189,7 +189,7 @@ jobs:
           [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* \
             && "$CADDY_ROUTES_PATH" != *$'\n'* && "$CADDY_ROUTES_PATH" != *$'\r'* ]] || { echo "::error::Maintenance topology inputs are invalid."; exit 1; }
           node --input-type=module -e 'import { decodeBackupKey } from "./scripts/production-backup-envelope.mjs"; decodeBackupKey(process.env.PRODUCTION_BACKUP_ENCRYPTION_KEY);'
-          PG_RESTORE_VERSION="$(docker run --rm --network host --entrypoint pg_restore public.ecr.aws/docker/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24 --version)"
+          PG_RESTORE_VERSION="$(docker run --rm --network host --entrypoint pg_restore docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24 --version)"
           [[ "$PG_RESTORE_VERSION" =~ ^pg_restore\ \(PostgreSQL\)\ [0-9]+(\.[0-9]+)*$ ]] || { echo "::error::Pinned pg_restore version output is malformed."; exit 1; }
           echo "pg_restore_version=$PG_RESTORE_VERSION" >> "$GITHUB_OUTPUT"
           umask 077
@@ -288,7 +288,7 @@ jobs:
           PGPASSWORD: isolated_restore_test_password
           DATABASE_URL: postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_restore
           BODYCAST_TEST_DATABASE_URL: postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_restore
-          POSTGRES_IMAGE: public.ecr.aws/docker/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+          POSTGRES_IMAGE: docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
         run: |
           set -Eeuo pipefail
           node scripts/restore-encrypted-postgres-backup.mjs

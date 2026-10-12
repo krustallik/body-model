@@ -607,16 +607,49 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
       expect(laterSource.matchedWorkoutId).toBeNull();
       expect(await prisma.dailyHealthData.findFirst({ where: { date: futureDate }, select: { id: true } })).toBeNull();
       const laterTransientBefore = await prisma.experimentalTransientExerciseWaterShadow.findUniqueOrThrow({
-        where: { sessionId: laterSession.id }, select: { sourceFingerprint: true },
+        where: { sessionId: laterSession.id }, select: { sourceFingerprint: true, result: true },
       });
       await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).resolves.toMatchObject({ rolloutEpoch: 1, dayCount: 4 });
 
       await trainingService.updateSet(olderSession.id, olderSet.id, { reps: 9 }, profileId);
 
       const laterTransientAfter = await prisma.experimentalTransientExerciseWaterShadow.findUniqueOrThrow({
-        where: { sessionId: laterSession.id }, select: { sourceFingerprint: true },
+        where: { sessionId: laterSession.id }, select: { sourceFingerprint: true, result: true },
       });
-      expect(laterTransientAfter.sourceFingerprint).toBe(laterTransientBefore.sourceFingerprint);
+      expect(laterTransientAfter.sourceFingerprint).not.toBe(laterTransientBefore.sourceFingerprint);
+      const laterImpulseBefore = (laterTransientBefore.result as {
+        impulse: {
+          canonicalEventInstant: string;
+          modelDate: string;
+          exposureClass: string;
+          exposureDependencies: Array<{ strengthDiarySessionId: number; sourceFingerprint: string }>;
+        };
+      }).impulse;
+      const laterImpulseAfter = (laterTransientAfter.result as {
+        impulse: {
+          canonicalEventInstant: string;
+          modelDate: string;
+          exposureClass: string;
+          exposureDependencies: Array<{ strengthDiarySessionId: number; sourceFingerprint: string }>;
+        };
+      }).impulse;
+      const currentTrainingSources = await trainingRepository.listCompletedTransientWaterSourcesV2(profileId);
+      const olderSourceAfter = currentTrainingSources.find(({ session }) => session.id === olderSession.id);
+      expect(olderSourceAfter).toBeDefined();
+      const olderDependencyBefore = laterImpulseBefore.exposureDependencies.find(
+        ({ strengthDiarySessionId }) => strengthDiarySessionId === olderSession.id,
+      );
+      const olderDependencyAfter = laterImpulseAfter.exposureDependencies.find(
+        ({ strengthDiarySessionId }) => strengthDiarySessionId === olderSession.id,
+      );
+      expect(olderDependencyBefore).toBeDefined();
+      expect(olderDependencyAfter?.sourceFingerprint).not.toBe(olderDependencyBefore?.sourceFingerprint);
+      expect(olderDependencyAfter?.sourceFingerprint).toBe(olderSourceAfter?.sourceDependencyFingerprint);
+      expect(laterImpulseAfter).toMatchObject({
+        canonicalEventInstant: laterImpulseBefore.canonicalEventInstant,
+        modelDate: futureDate,
+        exposureClass: laterImpulseBefore.exposureClass,
+      });
       await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).resolves.toMatchObject({ rolloutEpoch: 1, dayCount: 4 });
       const lifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
       expect(lifecycle).toMatchObject({

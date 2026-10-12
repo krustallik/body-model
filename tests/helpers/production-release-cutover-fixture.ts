@@ -144,6 +144,11 @@ if [[ "$1" == "image" && "$2" == "inspect" ]]; then
     bodycast-app:latest) image_file="$IMAGE_LATEST" ;;
     bodycast-app:rollback) image_file="$IMAGE_ROLLBACK" ;;
     bodycast-app:deploy-rollback) image_file="$IMAGE_DEPLOY_ROLLBACK" ;;
+    bodycast-app:rollback-preflight-*)
+      pin_suffix="\${image#bodycast-app:rollback-preflight-}"
+      [[ "$pin_suffix" =~ ^[1-9][0-9]*-[1-9][0-9]*$ ]] || exit 2
+      image_file="\${APP_IMAGE_ID_FILE%/*}/image-rollback-preflight-$pin_suffix"
+      ;;
     *)
       if [[ "\${MISSING_PREVIOUS_IMAGE:-0}" == "1" ]]; then exit 1; fi
       for image_file in "$APP_IMAGE_ID_FILE" "$IMAGE_LATEST" "$IMAGE_ROLLBACK" "$IMAGE_DEPLOY_ROLLBACK"; do
@@ -176,6 +181,10 @@ if [[ "$1" == "inspect" && "$2" == "--format" && "$3" == *"{{.Id}}|{{.Image}}|"*
   exit 0
 fi
 if [[ "$1" == "image" && "$2" == "tag" ]]; then
+  if [[ "$4" == bodycast-app:rollback-preflight-* && "\${FAIL_REFRESH_IMAGE_TAG:-0}" == "1" ]]; then
+    event "refresh-image-tag-failed"
+    exit 55
+  fi
   if [[ "$4" == "bodycast-app:deploy-rollback" && "\${FAIL_DEPLOY_ROLLBACK_TAG:-0}" == "1" ]]; then
     event "image-tag-deploy-rollback-failed"
     exit 55
@@ -190,6 +199,11 @@ if [[ "$1" == "image" && "$2" == "tag" ]]; then
     bodycast-app:rollback:bodycast-app:latest) cp "$IMAGE_ROLLBACK" "$IMAGE_LATEST" ;;
     sha256:*:bodycast-app:rollback)
       printf '%s\n' "$3" > "$IMAGE_ROLLBACK"
+      ;;
+    sha256:*:bodycast-app:rollback-preflight-*)
+      pin_suffix="\${4#bodycast-app:rollback-preflight-}"
+      [[ "$pin_suffix" =~ ^[1-9][0-9]*-[1-9][0-9]*$ ]] || exit 2
+      printf '%s\n' "$3" > "\${APP_IMAGE_ID_FILE%/*}/image-rollback-preflight-$pin_suffix"
       ;;
     sha256:*:bodycast-app:deploy-rollback)
       printf '%s\n' "$3" > "$IMAGE_DEPLOY_ROLLBACK"
@@ -207,6 +221,11 @@ if [[ "$1" == "image" && "$2" == "rm" ]]; then
   case "$3" in
     bodycast-app:deploy-rollback) rm -f "$IMAGE_DEPLOY_ROLLBACK" ;;
     bodycast-app:rollback) rm -f "$IMAGE_ROLLBACK" ;;
+    bodycast-app:rollback-preflight-*)
+      pin_suffix="\${3#bodycast-app:rollback-preflight-}"
+      [[ "$pin_suffix" =~ ^[1-9][0-9]*-[1-9][0-9]*$ ]] || exit 2
+      rm -f "\${APP_IMAGE_ID_FILE%/*}/image-rollback-preflight-$pin_suffix"
+      ;;
     *) exit 2 ;;
   esac
   exit 0
@@ -332,7 +351,19 @@ if [[ "$1" == "compose" ]]; then
     fi
     exit 0
   fi
-  if [[ "$joined" == *" stop app "* ]]; then
+  if [[ "$4" == "stop" && "$5" == "app" ]]; then
+    if [[ "\${ASSERT_CAPTURE_BEFORE_STOP:-0}" == "1" ]]; then
+      git_dir="$("$REAL_GIT" -C "$FIXTURE_REPO" rev-parse --absolute-git-dir)"
+      record_path="$git_dir/bodycast-production-pre-ddl-release"
+      pin="bodycast-app:rollback-preflight-\${BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID}-\${BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ATTEMPT}"
+      [[ -f "$record_path" && ! -L "$record_path" \
+        && "$(sed -n 's/^previousImagePin=//p' "$record_path")" == "$pin" \
+        && "$(docker image inspect --format '{{.Id}}' "$pin")" == "$(sed -n 's/^previousImageId=//p' "$record_path")" ]] || {
+        event "capture-pin-not-durable-before-stop"
+        exit 58
+      }
+      event "capture-and-pin-verified-before-stop"
+    fi
     event "compose-stop-app"
     if [[ "\${FAIL_COMPOSE_STOP:-0}" == "1" ]]; then
       event "compose-stop-app-failed"
@@ -389,6 +420,7 @@ if [[ "$1" == "inspect" ]]; then
     bodycast-db-prod:*Health.Status*|bodycast-db-prod:*State.Health*) printf '%s\n' healthy ;;
     bodycast-db-prod:*NetworkSettings.Networks*) printf '%s\n' bodycast-backend-prod ;;
     bodycast-db-prod:*) printf '%s\n' running ;;
+    bodycast-app-prod:*State.Status*Health.Status*) printf '%s\n' "running|$(cat "$APP_STATUS_FILE")" ;;
     bodycast-app-prod:*Image*) cat "$APP_IMAGE_ID_FILE" ;;
     bodycast-app-prod:*Health.Status*|bodycast-app-prod:*State.Health*) cat "$APP_STATUS_FILE" ;;
     bodycast-app-prod:*org.bodycast.release-sha*) cat "$APP_SHA_FILE" ;;
@@ -764,7 +796,7 @@ printf '%s\n' health-wait-sleep >> "$EVENT_LOG"
     Config: { Labels: { "org.bodycast.release-sha": PREVIOUS_SHA }, Env: ["NODE_ENV=production", "DATABASE_URL=fixture"],
       Entrypoint: ["node"], Cmd: ["server.js"], User: "node", WorkingDir: "/app", Healthcheck: { Test: ["CMD", "true"] }, ExposedPorts: { "3000/tcp": {} } },
     HostConfig: { Binds: [], Mounts: [], PortBindings: {}, RestartPolicy: { Name: "unless-stopped" } },
-    Mounts: [], NetworkSettings: { Networks: { "bodycast-backend-prod": {} } }, State: { Health: { Status: "healthy" } },
+    Mounts: [], NetworkSettings: { Networks: { "bodycast-backend-prod": {} } }, State: { Status: "running", Health: { Status: "healthy" } },
   }]) + "\n");
   writeFileSync(paths.PREVIOUS_DB_REPORT_FILE, JSON.stringify({
     identity: { database: "bodycast", databaseOid: 16384, clusterSystemIdentifier: "7419276301947620311",

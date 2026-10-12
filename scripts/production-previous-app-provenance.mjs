@@ -9,6 +9,7 @@ import { productionAppRuntimeDigest } from "./production-app-runtime-digest.mjs"
 import { renderProductionDbPreflightSql } from "./production-db-preflight.mjs";
 
 export const PREVIOUS_APP_PROVENANCE_SCHEMA_VERSION = 2;
+export const PINNED_PREVIOUS_APP_PROVENANCE_SCHEMA_VERSION = 3;
 export const LEGACY_PREVIOUS_APP_PROVENANCE = "legacy-unlabeled-v1";
 export const CUTBACK_LEGACY_PREVIOUS_APP_PROVENANCE = "legacy-cutback-receipt-v1";
 export const SHA_PREVIOUS_APP_PROVENANCE = "release-sha-v1";
@@ -23,6 +24,7 @@ const IMAGE_ID = /^sha256:[a-f0-9]{64}$/;
 const CONTAINER_ID = /^[a-f0-9]{64}$/;
 const RELEASE_SHA = /^[a-f0-9]{40}$/;
 const RUN_ID = /^[1-9][0-9]*$/;
+const ROLLBACK_PIN = /^bodycast-app:rollback-preflight-[1-9][0-9]*-[1-9][0-9]*$/;
 
 export function previousAppDatabaseCompatibilityDigests(report) {
   const identity = report?.identity;
@@ -144,13 +146,16 @@ export function validateVerifiedCutbackReceipt(receipt, { container, databaseRep
   return true;
 }
 
-export function capturePreviousAppProvenance({ container, databaseReport, targetSha, cutbackReceipt = null }) {
+export function capturePreviousAppProvenance({ container, databaseReport, targetSha, cutbackReceipt = null, imagePin = null }) {
   if (!RELEASE_SHA.test(String(targetSha ?? ""))) throw new Error("Previous-app capture requires the exact target release SHA.");
   if (!container || typeof container !== "object" || Array.isArray(container)
     || !CONTAINER_ID.test(String(container.Id ?? "")) || !IMAGE_ID.test(String(container.Image ?? ""))) {
     throw new Error("Previous-app immutable container or image identity is unavailable.");
   }
   if (container?.State?.Health?.Status !== "healthy") throw new Error("Previous app is not positively health-checked.");
+  if (imagePin !== null && (!ROLLBACK_PIN.test(String(imagePin)) || container?.State?.Status !== "running")) {
+    throw new Error("A refreshed previous-app capture requires a fixed attempt-bound image pin and a running healthy app.");
+  }
   const labels = container?.Config?.Labels;
   if (labels !== null && labels !== undefined && (typeof labels !== "object" || Array.isArray(labels))) {
     throw new Error("Previous-app Docker labels are malformed.");
@@ -175,11 +180,12 @@ export function capturePreviousAppProvenance({ container, databaseReport, target
 
   const digests = previousAppDatabaseCompatibilityDigests(databaseReport);
   return Object.freeze({
-    schemaVersion: PREVIOUS_APP_PROVENANCE_SCHEMA_VERSION,
+    schemaVersion: imagePin === null ? PREVIOUS_APP_PROVENANCE_SCHEMA_VERSION : PINNED_PREVIOUS_APP_PROVENANCE_SCHEMA_VERSION,
     targetSha,
     provenanceKind,
     previousSha,
     previousImageId: container.Image,
+    ...(imagePin === null ? {} : { previousImagePin: imagePin }),
     previousContainerId: container.Id,
     previousHealth: container.State.Health.Status,
     previousRuntimeConfigDigest: productionAppRuntimeDigest(container),
@@ -190,7 +196,7 @@ export function capturePreviousAppProvenance({ container, databaseReport, target
   });
 }
 
-const RECORD_FIELDS = Object.freeze([
+const RECORD_FIELDS_V2 = Object.freeze([
   ["schemaVersion", "schemaVersion"],
   ["targetSha", "targetSha"],
   ["provenanceKind", "provenanceKind"],
@@ -205,9 +211,22 @@ const RECORD_FIELDS = Object.freeze([
   ["preDdlDatabaseCompatibilityDigest", "preDdlDatabaseCompatibilityDigest"],
 ]);
 
+const RECORD_FIELDS_V3 = Object.freeze([
+  ...RECORD_FIELDS_V2.slice(0, 5),
+  ["previousImagePin", "previousImagePin"],
+  ...RECORD_FIELDS_V2.slice(5),
+]);
+
+function recordFields(recordOrVersion) {
+  const version = typeof recordOrVersion === "number" ? recordOrVersion : recordOrVersion?.schemaVersion;
+  if (version === PREVIOUS_APP_PROVENANCE_SCHEMA_VERSION) return RECORD_FIELDS_V2;
+  if (version === PINNED_PREVIOUS_APP_PROVENANCE_SCHEMA_VERSION) return RECORD_FIELDS_V3;
+  throw new Error("Previous-app provenance schema version is unsupported.");
+}
+
 export function serializePreviousAppProvenance(record) {
   validatePreviousAppProvenance(record);
-  return `${RECORD_FIELDS.map(([field, key]) => `${field}=${record[key]}`).join("\n")}\n`;
+  return `${recordFields(record).map(([field, key]) => `${field}=${record[key]}`).join("\n")}\n`;
 }
 
 export function parsePreviousAppProvenance(text) {
@@ -215,9 +234,12 @@ export function parsePreviousAppProvenance(text) {
     throw new Error("Previous-app provenance record is missing or exceeds its bound.");
   }
   const lines = text.trimEnd().split(/\r?\n/);
-  if (lines.length !== RECORD_FIELDS.length) throw new Error("Previous-app provenance record has an unsupported field count.");
+  const versionMatch = /^schemaVersion=(2|3)$/.exec(lines[0] ?? "");
+  if (!versionMatch) throw new Error("Previous-app provenance record has an unsupported schema version.");
+  const fields = recordFields(Number(versionMatch[1]));
+  if (lines.length !== fields.length) throw new Error("Previous-app provenance record has an unsupported field count.");
   const record = {};
-  for (const [index, [field, key]] of RECORD_FIELDS.entries()) {
+  for (const [index, [field, key]] of fields.entries()) {
     const prefix = `${field}=`;
     if (!lines[index].startsWith(prefix)) throw new Error("Previous-app provenance record fields are not canonical.");
     record[key] = lines[index].slice(prefix.length);
@@ -229,7 +251,7 @@ export function parsePreviousAppProvenance(text) {
 
 export function validatePreviousAppProvenance(record, expectedTargetSha) {
   if (!record || typeof record !== "object" || Array.isArray(record)
-    || record.schemaVersion !== PREVIOUS_APP_PROVENANCE_SCHEMA_VERSION
+    || ![PREVIOUS_APP_PROVENANCE_SCHEMA_VERSION, PINNED_PREVIOUS_APP_PROVENANCE_SCHEMA_VERSION].includes(record.schemaVersion)
     || !RELEASE_SHA.test(String(record.targetSha ?? ""))
     || (expectedTargetSha && record.targetSha !== expectedTargetSha)
     || !IMAGE_ID.test(String(record.previousImageId ?? ""))
@@ -241,6 +263,11 @@ export function validatePreviousAppProvenance(record, expectedTargetSha) {
     || !HEX_256.test(String(record.preDdlSchemaInventoryDigest ?? ""))
     || !HEX_256.test(String(record.preDdlDatabaseCompatibilityDigest ?? ""))) {
     throw new Error("Previous-app provenance identity or compatibility fields are malformed.");
+  }
+  if (record.schemaVersion === PINNED_PREVIOUS_APP_PROVENANCE_SCHEMA_VERSION) {
+    if (!ROLLBACK_PIN.test(String(record.previousImagePin ?? ""))) throw new Error("Attempt-bound previous-app image pin is malformed.");
+  } else if (Object.hasOwn(record, "previousImagePin")) {
+    throw new Error("Legacy previous-app provenance cannot contain an unversioned image pin.");
   }
   if (record.provenanceKind === SHA_PREVIOUS_APP_PROVENANCE) {
     if (!RELEASE_SHA.test(String(record.previousSha ?? ""))) throw new Error("SHA-based previous-app provenance is invalid.");
@@ -254,16 +281,67 @@ export function validatePreviousAppProvenance(record, expectedTargetSha) {
 
 export function previousAppProvenanceBinding(record) {
   validatePreviousAppProvenance(record);
-  return Object.freeze({
+  const binding = Object.freeze({
     schemaVersion: record.schemaVersion,
     provenanceKind: record.provenanceKind,
     recordDigest: canonicalSha256(record),
     previousSha: record.previousSha,
     previousImageId: record.previousImageId,
+    ...(record.schemaVersion === PINNED_PREVIOUS_APP_PROVENANCE_SCHEMA_VERSION
+      ? { previousImagePin: record.previousImagePin } : {}),
     previousContainerId: record.previousContainerId,
     previousHealth: record.previousHealth,
     previousRuntimeConfigDigest: record.previousRuntimeConfigDigest,
   });
+  validatePreviousAppProvenanceBinding(binding);
+  return binding;
+}
+
+export function validatePreviousAppProvenanceBinding(binding) {
+  if (!binding || typeof binding !== "object" || Array.isArray(binding)
+    || ![PREVIOUS_APP_PROVENANCE_SCHEMA_VERSION, PINNED_PREVIOUS_APP_PROVENANCE_SCHEMA_VERSION].includes(binding.schemaVersion)) {
+    throw new Error("Previous-app provenance binding has an unsupported schema.");
+  }
+  const expectedKeys = ["schemaVersion", "provenanceKind", "recordDigest", "previousSha", "previousImageId",
+    ...(binding.schemaVersion === PINNED_PREVIOUS_APP_PROVENANCE_SCHEMA_VERSION ? ["previousImagePin"] : []),
+    "previousContainerId", "previousHealth", "previousRuntimeConfigDigest"];
+  if (JSON.stringify(Object.keys(binding).sort()) !== JSON.stringify(expectedKeys.sort())
+    || ![LEGACY_PREVIOUS_APP_PROVENANCE, CUTBACK_LEGACY_PREVIOUS_APP_PROVENANCE, SHA_PREVIOUS_APP_PROVENANCE].includes(binding.provenanceKind)
+    || !HEX_256.test(String(binding.recordDigest ?? ""))
+    || !IMAGE_ID.test(String(binding.previousImageId ?? ""))
+    || !CONTAINER_ID.test(String(binding.previousContainerId ?? ""))
+    || binding.previousHealth !== "healthy"
+    || !HEX_256.test(String(binding.previousRuntimeConfigDigest ?? ""))) {
+    throw new Error("Previous-app provenance binding is malformed.");
+  }
+  if (binding.provenanceKind === SHA_PREVIOUS_APP_PROVENANCE) {
+    if (!RELEASE_SHA.test(String(binding.previousSha ?? ""))) throw new Error("SHA-based previous-app binding is invalid.");
+  } else if (binding.previousSha !== "unavailable") {
+    throw new Error("Legacy previous-app binding must not invent a source commit SHA.");
+  }
+  if (binding.schemaVersion === PINNED_PREVIOUS_APP_PROVENANCE_SCHEMA_VERSION) {
+    if (!ROLLBACK_PIN.test(String(binding.previousImagePin ?? ""))) throw new Error("Attempt-bound previous-app image pin is malformed.");
+  } else if (Object.hasOwn(binding, "previousImagePin")) {
+    throw new Error("Legacy previous-app binding cannot contain an unversioned image pin.");
+  }
+  return true;
+}
+
+export function previousAppImagePin(record) {
+  validatePreviousAppProvenance(record);
+  return record.schemaVersion === PINNED_PREVIOUS_APP_PROVENANCE_SCHEMA_VERSION
+    ? record.previousImagePin : "bodycast-app:rollback";
+}
+
+export function verifyPreviousAppCaptureMatchesLiveContainer(record, container) {
+  validatePreviousAppProvenance(record);
+  if (!container || !CONTAINER_ID.test(String(container.Id ?? "")) || !IMAGE_ID.test(String(container.Image ?? ""))
+    || container.State?.Status !== "running" || container.State?.Health?.Status !== "healthy"
+    || container.Id !== record.previousContainerId || container.Image !== record.previousImageId
+    || productionAppRuntimeDigest(container) !== record.previousRuntimeConfigDigest) {
+    throw new Error("The live previous app changed after its immutable capture was created.");
+  }
+  return true;
 }
 
 export function assertPreviousAppProvenanceBoundToPreflight(record, preflightResult) {
@@ -456,7 +534,8 @@ async function readCurrentPreviousAppDatabaseReport(rootDir) {
 async function main() {
   const [mode, ...args] = process.argv.slice(2);
   if (mode === "capture") {
-    const [targetSha] = args;
+    const [targetSha, imagePin = null] = args;
+    if (args.length > 2) throw new Error("Usage: capture <target-sha> [attempt-bound-image-pin]");
     const rootDir = process.cwd();
     const containerJson = execFileSync("bash", ["--noprofile", "--norc", "-c", "exec docker inspect bodycast-app-prod"], {
       encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 4 * 1024 * 1024,
@@ -466,8 +545,27 @@ async function main() {
     const databaseReport = await readCurrentPreviousAppDatabaseReport(rootDir);
     const gitDir = execFileSync("git", ["rev-parse", "--absolute-git-dir"], { cwd: rootDir, encoding: "utf8" }).trim();
     const cutbackReceipt = await readVerifiedCutbackReceiptFromGitDir(gitDir, { container: containers[0], databaseReport });
-    const record = capturePreviousAppProvenance({ container: containers[0], databaseReport, targetSha, cutbackReceipt });
+    const record = capturePreviousAppProvenance({ container: containers[0], databaseReport, targetSha, cutbackReceipt, imagePin });
     process.stdout.write(serializePreviousAppProvenance(record));
+    return;
+  }
+  if (mode === "--verify-record") {
+    if (args.length !== 0) throw new Error("Usage: --verify-record (canonical provenance record on stdin)");
+    const record = parsePreviousAppProvenance(await readBoundedStdin());
+    process.stdout.write(`${JSON.stringify({ recordDigest: canonicalSha256(record), targetSha: record.targetSha,
+      previousImageId: record.previousImageId, previousImagePin: previousAppImagePin(record), schemaVersion: record.schemaVersion })}\n`);
+    return;
+  }
+  if (mode === "--verify-live-container") {
+    if (args.length !== 0) throw new Error("Usage: --verify-live-container (canonical provenance record on stdin)");
+    const record = parsePreviousAppProvenance(await readBoundedStdin());
+    const containerJson = execFileSync("bash", ["--noprofile", "--norc", "-c", "exec docker inspect bodycast-app-prod"], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 4 * 1024 * 1024,
+    });
+    const containers = JSON.parse(containerJson);
+    if (!Array.isArray(containers) || containers.length !== 1) throw new Error("Live previous-app inspection did not return one container.");
+    verifyPreviousAppCaptureMatchesLiveContainer(record, containers[0]);
+    process.stdout.write("live previous-app identity matches the durable capture\n");
     return;
   }
   if (mode === "--create-cutback-receipt") {
@@ -505,7 +603,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ verified: true, previousAppProvenance: result.previousAppProvenance })}\n`);
     return;
   }
-  throw new Error("Usage: production-previous-app-provenance.mjs capture <target-sha>|--resume-capture <source-sha> <target-sha> <source-run-id> <source-run-attempt>|--verify-preflight <preflight-result.json>");
+  throw new Error("Usage: production-previous-app-provenance.mjs capture <target-sha> [attempt-bound-image-pin]|--verify-record|--verify-live-container|--resume-capture <source-sha> <target-sha> <source-run-id> <source-run-attempt>|--verify-preflight <preflight-result.json>");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

@@ -3,6 +3,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { canonicalSha256 } from "./production-migration-authorization.mjs";
 import { evaluateProductionWriterDrain } from "./production-writer-drain.mjs";
+import { validatePreviousAppProvenanceBinding } from "./production-previous-app-provenance.mjs";
 
 async function readJson(filePath) { return JSON.parse(await readFile(filePath, "utf8")); }
 
@@ -13,12 +14,8 @@ export function createPreflightEvidence({ rawReport, preflightResult, restoreRes
     throw new Error("Preflight report does not match the released manifest or expected production database.");
   }
   const previousAppProvenance = preflightResult.previousAppProvenance;
-  if (previousAppProvenance?.schemaVersion !== 2
-    || !["legacy-unlabeled-v1", "legacy-cutback-receipt-v1", "release-sha-v1"].includes(previousAppProvenance.provenanceKind)
-    || !/^[a-f0-9]{64}$/.test(String(previousAppProvenance.recordDigest ?? ""))
-    || !/^[a-f0-9]{64}$/.test(String(previousAppProvenance.previousRuntimeConfigDigest ?? ""))) {
-    throw new Error("Versioned previous-app identity is missing from the signed preflight result.");
-  }
+  try { validatePreviousAppProvenanceBinding(previousAppProvenance); }
+  catch { throw new Error("Versioned previous-app identity is missing or malformed in the signed preflight result."); }
   const writerDrain = evaluateProductionWriterDrain(rawReport);
   if (!writerDrain.ready || preflightResult.writerDrainReady !== true
     || canonicalSha256(rawReport.writerDrain) !== preflightResult.writerDrainDigest) {

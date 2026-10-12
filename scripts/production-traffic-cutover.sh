@@ -126,6 +126,10 @@ capture_pre_ddl_previous_release() {
   git_dir="$(git rev-parse --absolute-git-dir)"
   record_path="$git_dir/bodycast-production-pre-ddl-release"
   if [[ -e "$record_path" || -L "$record_path" ]]; then
+    if [[ "${BODYCAST_REFRESH_PRE_DDL_CAPTURE:-0}" == "1" ]]; then
+      refresh_pre_ddl_previous_release "$target_sha" "$record_path" "$git_dir"
+      return
+    fi
     [[ "${BODYCAST_RESUME_PRE_DDL_CAPTURE:-0}" == "1" ]] || {
       echo "An earlier pre-DDL release capture exists; operator review is required before another migration attempt." >&2
       return 1
@@ -133,6 +137,10 @@ capture_pre_ddl_previous_release() {
     resume_pre_ddl_previous_release "$target_sha" "$record_path" "$git_dir"
     return
   fi
+  [[ "${BODYCAST_REFRESH_PRE_DDL_CAPTURE:-0}" != "1" ]] || {
+    echo "Fresh capture refresh was requested but no earlier capture exists to preserve." >&2
+    return 1
+  }
   existing_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}')"
   [[ "$existing_app" == "$APP_CONTAINER" ]] || { echo "A healthy prior app is required for recoverable migration preflight." >&2; return 1; }
   if ! capture_text="$(node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" capture "$target_sha")"; then
@@ -174,9 +182,86 @@ capture_pre_ddl_previous_release() {
   echo "Captured versioned prior-app provenance and read-only pre-DDL database compatibility digests for manual cutback."
 }
 
+refresh_pre_ddl_previous_release() {
+  local target_sha="$1" record_path="$2" git_dir="$3"
+  local current_run_id current_attempt marker_status maintenance_marker existing_app app_status old_meta old_pin old_image archive_path
+  local capture_text capture_meta new_pin new_image pin_id record_tmp canonical_record
+  current_run_id="${BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID:-}"
+  current_attempt="${BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ATTEMPT:-}"
+  [[ "$current_run_id" =~ ^[1-9][0-9]*$ && "$current_attempt" =~ ^[1-9][0-9]*$ ]] || {
+    echo "Fresh capture refresh lacks the trusted current workflow run identity." >&2; return 1;
+  }
+  bodycast_assert_current_main_sha "$target_sha" || return 1
+  marker_status=1
+  if read_bodycast_release_marker; then marker_status=0; else marker_status=$?; fi
+  [[ "$marker_status" -eq 1 ]] || { echo "A release marker is present or unreadable; fresh capture refresh is blocked." >&2; return 1; }
+  bodycast_verify_exact_maintenance_route || return 1
+  maintenance_marker="$(bodycast_maintenance_marker_from_route)" || return 1
+  bodycast_probe_public_maintenance "$maintenance_marker" || return 1
+  [[ -f "$record_path" && ! -L "$record_path" ]] || { echo "The existing previous-app capture is not a regular file." >&2; return 1; }
+  old_meta="$(cat -- "$record_path" | node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" --verify-record)" || {
+    echo "The existing previous-app capture is invalid and cannot be safely archived." >&2; return 1;
+  }
+  old_pin="$(printf '%s' "$old_meta" | node --input-type=module -e 'let s=""; for await (const c of process.stdin) s+=c; process.stdout.write(JSON.parse(s).previousImagePin)')"
+  old_image="$(printf '%s' "$old_meta" | node --input-type=module -e 'let s=""; for await (const c of process.stdin) s+=c; process.stdout.write(JSON.parse(s).previousImageId)')"
+  [[ "$(docker image inspect --format '{{.Id}}' "$old_pin" 2>/dev/null || true)" == "$old_image" ]] || {
+    echo "The existing capture's immutable prior-app image pin is unavailable or mismatched; refresh is blocked." >&2; return 1;
+  }
+  if ! existing_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}')"; then
+    echo "Docker app listing failed; the current app identity is UNKNOWN." >&2; return 1;
+  fi
+  [[ "$existing_app" == "$APP_CONTAINER" ]] || { echo "Capture refresh requires exactly one existing BodyCast app container." >&2; return 1; }
+  if ! app_status="$(docker inspect --format '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$APP_CONTAINER")"; then
+    echo "Docker app state inspection failed; capture refresh is blocked." >&2; return 1;
+  fi
+  [[ "$app_status" == "running|healthy" ]] || { echo "Capture refresh requires the current app to be running and healthy." >&2; return 1; }
+
+  new_pin="bodycast-app:rollback-preflight-${current_run_id}-${current_attempt}"
+  capture_text="$(node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" capture "$target_sha" "$new_pin")" || {
+    echo "The current app or read-only database compatibility snapshot could not be captured." >&2; return 1;
+  }
+  capture_meta="$(printf '%s\n' "$capture_text" | node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" --verify-record)" || {
+    echo "The refreshed previous-app capture failed its closed-schema validation." >&2; return 1;
+  }
+  new_image="$(printf '%s' "$capture_meta" | node --input-type=module -e 'let s=""; for await (const c of process.stdin) s+=c; const r=JSON.parse(s); if(r.targetSha!==process.argv[1]||r.previousImagePin!==process.argv[2]||r.schemaVersion!==3) process.exit(2); process.stdout.write(r.previousImageId)' "$target_sha" "$new_pin")" || {
+    echo "The refreshed capture is not bound to the exact target SHA and attempt-specific pin." >&2; return 1;
+  }
+  archive_path="$git_dir/bodycast-production-pre-ddl-release-archive-${current_run_id}-${current_attempt}"
+  if [[ -e "$archive_path" || -L "$archive_path" ]]; then
+    [[ -f "$archive_path" && ! -L "$archive_path" ]] || { echo "The attempt-specific capture archive is not a regular file." >&2; return 1; }
+    cmp -s -- "$record_path" "$archive_path" || { echo "The attempt-specific capture archive already contains different bytes." >&2; return 1; }
+  else
+    ln -- "$record_path" "$archive_path" || { echo "Could not preserve the existing capture without overwriting an archive." >&2; return 1; }
+    sync -f "$git_dir"
+  fi
+  [[ "$(docker image inspect --format '{{.Id}}' "$new_pin" 2>/dev/null || true)" == "" ]] || {
+    pin_id="$(docker image inspect --format '{{.Id}}' "$new_pin" 2>/dev/null || true)"
+    [[ "$pin_id" == "$new_image" ]] || { echo "The attempt-specific image pin already names a different image." >&2; return 1; }
+  }
+  if [[ "$(docker image inspect --format '{{.Id}}' "$new_pin" 2>/dev/null || true)" == "" ]]; then
+    docker image tag "$new_image" "$new_pin" || { echo "Could not create the attempt-specific immutable previous-app image pin." >&2; return 1; }
+  fi
+  pin_id="$(docker image inspect --format '{{.Id}}' "$new_pin")" || { echo "The refreshed image pin is unreadable." >&2; return 1; }
+  [[ "$pin_id" == "$new_image" ]] || { echo "The refreshed image pin does not match the captured immutable image." >&2; return 1; }
+  record_tmp="$(mktemp "$git_dir/bodycast-production-pre-ddl-release.new.XXXXXX")"
+  trap 'rm -f -- "$record_tmp"' RETURN
+  chmod 600 "$record_tmp"
+  printf '%s\n' "$capture_text" > "$record_tmp"
+  sync -f "$record_tmp"
+  bodycast_assert_current_main_sha "$target_sha" || return 1
+  mv -fT -- "$record_tmp" "$record_path"
+  sync -f "$git_dir"
+  trap - RETURN
+  canonical_record="$(cat -- "$record_path")"
+  [[ "$canonical_record" == "$capture_text" ]] || { echo "The durable refreshed capture differs from the verified record." >&2; return 1; }
+  [[ "$(docker image inspect --format '{{.Id}}' "$new_pin")" == "$new_image" ]] || { echo "The refreshed image pin changed after the capture was committed." >&2; return 1; }
+  printf '%s\n' "$capture_text" | node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" --verify-live-container || return 1
+  echo "Preserved the prior capture and image pin, durably refreshed current-app provenance, and verified the exact live app before stop."
+}
+
 resume_pre_ddl_previous_release() {
   local target_sha="$1" record_path="$2" git_dir="$3"
-  local source_sha source_run_id source_attempt current_run_id current_attempt source_target previous_image_id pinned_id marker_status existing_app archive_path source_record_text resume_json rebound_record receipt_json receipt_path receipt_tmp record_tmp current_record forward_resume=false expected_marker_digest marker_digest failed_run_id failed_sha failure_proof_digest
+  local source_sha source_run_id source_attempt current_run_id current_attempt source_target previous_image_id previous_image_pin record_verification pinned_id marker_status existing_app archive_path source_record_text resume_json rebound_record receipt_json receipt_path receipt_tmp record_tmp current_record forward_resume=false expected_marker_digest marker_digest failed_run_id failed_sha failure_proof_digest
   failed_run_id=""; failed_sha=""; failure_proof_digest=""; expected_marker_digest=""
   source_sha="${BODYCAST_PRE_DDL_CAPTURE_SOURCE_SHA:-}"
   source_run_id="${BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ID:-}"
@@ -247,10 +332,18 @@ resume_pre_ddl_previous_release() {
   fi
   previous_image_id="$(printf '%s\n' "$source_record_text" | sed -n 's/^previousImageId=//p')"
   [[ "$previous_image_id" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "Saved immutable prior-app image identity is malformed." >&2; return 1; }
-  if ! pinned_id="$(docker image inspect --format '{{.Id}}' bodycast-app:rollback)"; then
+  if ! record_verification="$(printf '%s\n' "$source_record_text" | node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" --verify-record)"; then
+    echo "Saved previous-app capture is invalid; capture resume is blocked." >&2; return 1;
+  fi
+  previous_image_pin="$(printf '%s' "$record_verification" | node --input-type=module -e 'let s=""; for await (const c of process.stdin) s+=c; const r=JSON.parse(s); process.stdout.write(r.previousImagePin)')"
+  [[ "$previous_image_pin" == "bodycast-app:rollback" \
+    || "$previous_image_pin" =~ ^bodycast-app:rollback-preflight-[1-9][0-9]*-[1-9][0-9]*$ ]] || {
+    echo "Saved previous-app capture has no supported immutable image pin." >&2; return 1;
+  }
+  if ! pinned_id="$(docker image inspect --format '{{.Id}}' "$previous_image_pin")"; then
     echo "The pinned previous-app image is unavailable; capture resume is blocked." >&2; return 1;
   fi
-  [[ "$pinned_id" == "$previous_image_id" ]] || { echo "The rollback image pin differs from the captured immutable image." >&2; return 1; }
+  [[ "$pinned_id" == "$previous_image_id" ]] || { echo "The attempt-bound previous-app image pin differs from the captured immutable image." >&2; return 1; }
   if ! resume_json="$(printf '%s\n' "$source_record_text" | node "$ROOT_DIR/scripts/production-previous-app-provenance.mjs" \
     --resume-capture "$source_sha" "$target_sha" "$source_run_id" "$source_attempt")"; then
     echo "Fresh production DB compatibility does not match the durable previous-app capture." >&2
@@ -428,7 +521,7 @@ if [[ "$MODE" == "full-history-recalculate" ]]; then
 fi
 
 activate_v4_and_serve() {
-  local expected_release_sha app_release_sha candidate_image_id candidate_image_after marker_status recovery_image_id
+  local expected_release_sha app_release_sha candidate_image_id candidate_image_after marker_status recovery_image_id recovery_image_pin
   expected_release_sha="${BODYCAST_DEPLOY_SHA:-${DEPLOY_SHA:-}}"
   [[ "$expected_release_sha" =~ ^[a-f0-9]{40}$ ]] || {
     echo "Owner-authorized V4 activation requires a full exact release SHA." >&2
@@ -525,9 +618,13 @@ activate_v4_and_serve() {
     if [[ "$marker_status" -eq 1 && -f "$recovery_record" && ! -L "$recovery_record" ]] \
       && grep -Fqx "targetSha=$expected_release_sha" "$recovery_record"; then
       recovery_image_id="$(sed -n 's/^previousImageId=//p' "$recovery_record")"
+      recovery_image_pin="$(sed -n 's/^previousImagePin=//p' "$recovery_record")"
+      [[ -n "$recovery_image_pin" ]] || recovery_image_pin="bodycast-app:rollback"
       if [[ "$recovery_image_id" =~ ^sha256:[a-f0-9]{64}$ \
-        && "$(docker image inspect --format '{{.Id}}' bodycast-app:rollback 2>/dev/null || true)" == "$recovery_image_id" ]]; then
-      if docker image rm bodycast-app:rollback >/dev/null 2>&1; then
+        && ( "$recovery_image_pin" == "bodycast-app:rollback" \
+          || "$recovery_image_pin" =~ ^bodycast-app:rollback-preflight-[1-9][0-9]*-[1-9][0-9]*$ ) \
+        && "$(docker image inspect --format '{{.Id}}' "$recovery_image_pin" 2>/dev/null || true)" == "$recovery_image_id" ]]; then
+      if docker image rm "$recovery_image_pin" >/dev/null 2>&1; then
         rm -f -- "$recovery_record"
         sync -f "$(dirname "$recovery_record")"
       else

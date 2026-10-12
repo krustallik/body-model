@@ -137,7 +137,8 @@ describe("active production release entrypoints", () => {
     expect(cutback).toContain("rollback-app-ready");
     expect(cutback).toContain("bodycast_failed_${FAILED_MIGRATION_RUN_ID}");
     expect(cutback).toContain("bodycast-production-pre-ddl-release");
-    expect(cutback).toContain('record_lines" == "12"');
+    expect(cutback).toContain('record_lines" == "12" || "$record_lines" == "13"');
+    expect(cutback).toContain('docker image tag "$PREVIOUS_IMAGE_PIN" bodycast-app:latest');
     expect(workflow).toContain('echo "current_main_sha=$CURRENT_MAIN_SHA" >> "$GITHUB_OUTPUT"');
     expect(workflow).toContain('flock -n 9');
     expect(workflow).toContain('CUTBACK_RUN_ATTEMPT="$5"');
@@ -171,6 +172,25 @@ describe("active production release entrypoints", () => {
     expect(preflightOrder).toEqual([...preflightOrder].sort((left, right) => left - right));
   });
 
+  it("allows only an explicit owner-gated V4 capture refresh and preserves the old capture before replacing it", () => {
+    const capture = readFileSync(resolve("scripts/production-traffic-cutover.sh"), "utf8");
+    const workflow = readFileSync(resolve(workflowDir, "production-migration-preflight.yml"), "utf8");
+    const cutback = readFileSync(resolve("scripts/production-database-cutback.sh"), "utf8");
+    expect(workflow).toContain("refresh_existing_capture_confirmation:");
+    expect(workflow).toContain('"$REFRESH_CAPTURE_CONFIRMATION" == "refresh-stale-pre-ddl-capture"');
+    expect(workflow).toContain('MANIFEST_ID" == "unified-v4-republication-v1"');
+    expect(workflow).toContain("BODYCAST_REFRESH_PRE_DDL_CAPTURE=1");
+    expect(workflow).toContain("BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID");
+    expect(workflow).toContain("BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ATTEMPT");
+    expect(capture).toContain("refresh_pre_ddl_previous_release");
+    expect(capture).toContain('bodycast-production-pre-ddl-release-archive-${current_run_id}-${current_attempt}');
+    expect(capture).toContain('bodycast-app:rollback-preflight-${current_run_id}-${current_attempt}');
+    expect(capture.indexOf('ln -- "$record_path" "$archive_path"')).toBeLessThan(capture.indexOf('mv -fT -- "$record_tmp" "$record_path"'));
+    expect(capture).toContain("--verify-live-container");
+    expect(cutback).toContain('PREVIOUS_IMAGE_PIN="${record[5]#previousImagePin=}"');
+    expect(workflow).toContain('MANIFEST_ID" == "unified-v4-republication-v1"');
+  });
+
   it("resumes a prior pre-DDL capture only after owner-run, maintenance, marker, image, drain, and live-DB checks", () => {
     const capture = readFileSync(resolve("scripts/production-traffic-cutover.sh"), "utf8");
     const workflow = readFileSync(resolve(workflowDir, "production-migration-preflight.yml"), "utf8");
@@ -189,19 +209,22 @@ describe("active production release entrypoints", () => {
     const markerCheck = capture.indexOf("read_bodycast_release_marker", resumeStart);
     const appCheck = capture.indexOf("docker ps --all", resumeStart);
     const writerDrain = capture.indexOf('production-writer-drain.sh" --assert', resumeStart);
-    const imagePinCheck = capture.indexOf("docker image inspect --format '{{.Id}}' bodycast-app:rollback", resumeStart);
+    const recordPinValidation = capture.indexOf("--verify-record", resumeStart);
+    const imagePinCheck = capture.indexOf('docker image inspect --format \'{{.Id}}\' "$previous_image_pin"', resumeStart);
     const freshDbCheck = capture.indexOf("--resume-capture", resumeStart);
     const archive = capture.indexOf("bodycast-production-pre-ddl-release-before-", resumeStart);
     const recordReplace = capture.indexOf('mv -f -- "$record_tmp" "$record_path"', resumeStart);
-    expect([resumeStart, markerCheck, appCheck, writerDrain, imagePinCheck, freshDbCheck, archive, recordReplace]
+    expect([resumeStart, markerCheck, appCheck, writerDrain, recordPinValidation, imagePinCheck, freshDbCheck, archive, recordReplace]
       .every((index) => index >= 0)).toBe(true);
     expect(markerCheck).toBeLessThan(appCheck);
     expect(appCheck).toBeLessThan(writerDrain);
     expect(writerDrain).toBeLessThan(imagePinCheck);
+    expect(recordPinValidation).toBeLessThan(imagePinCheck);
     expect(imagePinCheck).toBeLessThan(freshDbCheck);
     expect(freshDbCheck).toBeLessThan(recordReplace);
     expect(recordReplace).toBeLessThan(capture.indexOf("BODYCAST_PRE_DDL_RESUME_RECEIPT=", resumeStart));
     expect(capture).toContain("git merge-base --is-ancestor");
+    expect(capture).toContain("attempt-bound previous-app image pin differs from the captured immutable image");
     expect(capture).toContain("bodycast_assert_current_main_sha \"$target_sha\"");
   });
 
@@ -298,6 +321,8 @@ describe("active production release entrypoints", () => {
     expect(preflight).toContain("--verify-preflight");
     expect(preflight).toContain("previous-app-provenance-verification.json");
     expect(preflight).toContain("result.previousAppProvenance = binding");
+    expect(preflight).toContain("validatePreviousAppProvenanceBinding(binding)");
+    expect(preflight).not.toContain("binding.schemaVersion !== 2");
     expect(preflight).toContain("bodycast-production-pre-ddl-release");
     expect(readFileSync(resolve("scripts/production-database-cutback.mjs"), "utf8"))
       .toContain("assertPreviousAppProvenanceBoundToPreflight(record, preflightResult)");

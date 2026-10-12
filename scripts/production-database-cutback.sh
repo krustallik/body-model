@@ -61,30 +61,57 @@ node "$ROOT_DIR/scripts/production-database-cutback.mjs" --verify-context \
 record_path="$(git rev-parse --absolute-git-dir)/bodycast-production-pre-ddl-release"
 [[ -f "$record_path" && ! -L "$record_path" ]] || fail "the immutable pre-DDL previous-app capture is missing."
 record_lines="$(wc -l < "$record_path" | tr -d ' ')"
-[[ "$record_lines" == "12" ]] || fail "the previous-app capture has an unsupported provenance schema."
+[[ "$record_lines" == "12" || "$record_lines" == "13" ]] || fail "the previous-app capture has an unsupported provenance schema."
 mapfile -t record= < "$record_path"
 PREVIOUS_PROVENANCE_KIND="${record[2]#provenanceKind=}"
 PREVIOUS_SHA="${record[3]#previousSha=}"
 PREVIOUS_IMAGE_ID="${record[4]#previousImageId=}"
-PREVIOUS_CONTAINER_ID="${record[5]#previousContainerId=}"
-PREVIOUS_HEALTH="${record[6]#previousHealth=}"
-PREVIOUS_RUNTIME_CONFIG_DIGEST="${record[7]#previousRuntimeConfigDigest=}"
-PREVIOUS_DB_COMPATIBILITY_DIGEST="${record[11]#preDdlDatabaseCompatibilityDigest=}"
-[[ "${record[0]}" == "schemaVersion=2" && "${record[1]}" == "targetSha=$FAILED_RELEASE_SHA" \
+if [[ "${record[0]}" == "schemaVersion=2" && "$record_lines" == "12" ]]; then
+  PREVIOUS_IMAGE_PIN="bodycast-app:rollback"
+  PREVIOUS_CONTAINER_ID="${record[5]#previousContainerId=}"
+  PREVIOUS_HEALTH="${record[6]#previousHealth=}"
+  PREVIOUS_RUNTIME_CONFIG_DIGEST="${record[7]#previousRuntimeConfigDigest=}"
+  PREVIOUS_DB_IDENTITY_DIGEST="${record[8]#preDdlDatabaseIdentityDigest=}"
+  PREVIOUS_DB_HISTORY_DIGEST="${record[9]#preDdlMigrationHistoryDigest=}"
+  PREVIOUS_SCHEMA_DIGEST="${record[10]#preDdlSchemaInventoryDigest=}"
+  PREVIOUS_DB_COMPATIBILITY_DIGEST="${record[11]#preDdlDatabaseCompatibilityDigest=}"
+  PREVIOUS_SCHEMA_VERSION=2
+  [[ "${record[5]}" == previousContainerId=* && "${record[6]}" == previousHealth=* \
+    && "${record[7]}" == previousRuntimeConfigDigest=* \
+    && "${record[8]}" == preDdlDatabaseIdentityDigest=* && "${record[9]}" == preDdlMigrationHistoryDigest=* \
+    && "${record[10]}" == preDdlSchemaInventoryDigest=* && "${record[11]}" == preDdlDatabaseCompatibilityDigest=* ]] \
+    || fail "previous app capture fields are not canonical."
+elif [[ "${record[0]}" == "schemaVersion=3" && "$record_lines" == "13" ]]; then
+  PREVIOUS_IMAGE_PIN="${record[5]#previousImagePin=}"
+  PREVIOUS_CONTAINER_ID="${record[6]#previousContainerId=}"
+  PREVIOUS_HEALTH="${record[7]#previousHealth=}"
+  PREVIOUS_RUNTIME_CONFIG_DIGEST="${record[8]#previousRuntimeConfigDigest=}"
+  PREVIOUS_DB_IDENTITY_DIGEST="${record[9]#preDdlDatabaseIdentityDigest=}"
+  PREVIOUS_DB_HISTORY_DIGEST="${record[10]#preDdlMigrationHistoryDigest=}"
+  PREVIOUS_SCHEMA_DIGEST="${record[11]#preDdlSchemaInventoryDigest=}"
+  PREVIOUS_DB_COMPATIBILITY_DIGEST="${record[12]#preDdlDatabaseCompatibilityDigest=}"
+  PREVIOUS_SCHEMA_VERSION=3
+  [[ "${record[5]}" == previousImagePin=* && "${record[6]}" == previousContainerId=* \
+    && "${record[7]}" == previousHealth=* && "${record[8]}" == previousRuntimeConfigDigest=* \
+    && "${record[9]}" == preDdlDatabaseIdentityDigest=* && "${record[10]}" == preDdlMigrationHistoryDigest=* \
+    && "${record[11]}" == preDdlSchemaInventoryDigest=* && "${record[12]}" == preDdlDatabaseCompatibilityDigest=* ]] \
+    || fail "previous app capture fields are not canonical."
+else
+  fail "previous app capture schema version and field count differ."
+fi
+[[ "${record[1]}" == "targetSha=$FAILED_RELEASE_SHA" \
   && "${record[2]}" == provenanceKind=* \
   && ( ( "$PREVIOUS_PROVENANCE_KIND" == "release-sha-v1" && "$PREVIOUS_SHA" =~ ^[a-f0-9]{40}$ ) \
     || ( "$PREVIOUS_PROVENANCE_KIND" =~ ^legacy-(unlabeled|cutback-receipt)-v1$ && "$PREVIOUS_SHA" == "unavailable" ) ) \
   && "${record[3]}" == previousSha=* \
   && "${record[4]}" == previousImageId=* && "$PREVIOUS_IMAGE_ID" =~ ^sha256:[a-f0-9]{64}$ \
-  && "${record[5]}" == previousContainerId=* && "$PREVIOUS_CONTAINER_ID" =~ ^[a-f0-9]{64}$ \
-  && "${record[6]}" == previousHealth=* && "$PREVIOUS_HEALTH" == "healthy" \
-  && "${record[7]}" == previousRuntimeConfigDigest=* && "$PREVIOUS_RUNTIME_CONFIG_DIGEST" =~ ^[a-f0-9]{64}$ \
-  && "${record[8]}" == preDdlDatabaseIdentityDigest=* && "${record[8]#*=}" =~ ^[a-f0-9]{64}$ \
-  && "${record[9]}" == preDdlMigrationHistoryDigest=* && "${record[9]#*=}" =~ ^[a-f0-9]{64}$ \
-  && "${record[10]}" == preDdlSchemaInventoryDigest=* && "${record[10]#*=}" =~ ^[a-f0-9]{64}$ \
-  && "${record[11]}" == preDdlDatabaseCompatibilityDigest=* && "$PREVIOUS_DB_COMPATIBILITY_DIGEST" =~ ^[a-f0-9]{64}$ ]] \
+  && "$PREVIOUS_CONTAINER_ID" =~ ^[a-f0-9]{64}$ \
+  && "$PREVIOUS_HEALTH" == "healthy" && "$PREVIOUS_RUNTIME_CONFIG_DIGEST" =~ ^[a-f0-9]{64}$ \
+  && "$PREVIOUS_DB_IDENTITY_DIGEST" =~ ^[a-f0-9]{64}$ && "$PREVIOUS_DB_HISTORY_DIGEST" =~ ^[a-f0-9]{64}$ \
+  && "$PREVIOUS_SCHEMA_DIGEST" =~ ^[a-f0-9]{64}$ && "$PREVIOUS_DB_COMPATIBILITY_DIGEST" =~ ^[a-f0-9]{64}$ \
+  && ( "$PREVIOUS_SCHEMA_VERSION" == 2 || ( "${record[5]}" == previousImagePin=* && "$PREVIOUS_IMAGE_PIN" =~ ^bodycast-app:rollback-preflight-[1-9][0-9]*-[1-9][0-9]*$ ) ) ]] \
   || fail "previous app identity/runtime/database provenance is malformed."
-[[ "$(docker image inspect --format '{{.Id}}' bodycast-app:rollback 2>/dev/null || true)" == "$PREVIOUS_IMAGE_ID" ]] || fail "the pinned previous app image differs from the captured immutable image ID."
+[[ "$(docker image inspect --format '{{.Id}}' "$PREVIOUS_IMAGE_PIN" 2>/dev/null || true)" == "$PREVIOUS_IMAGE_ID" ]] || fail "the pinned previous app image differs from the captured immutable image ID."
 
 marker_status=1
 if read_bodycast_release_marker; then marker_status=0; else marker_status=$?; fi
@@ -207,7 +234,7 @@ write_bodycast_release_marker "$FAILED_RELEASE_SHA" database-restored
 
 # Only the exact captured previous image may start, and only after the restored
 # schema/history/data checks and database identity checks above succeeded.
-docker image tag bodycast-app:rollback bodycast-app:latest
+docker image tag "$PREVIOUS_IMAGE_PIN" bodycast-app:latest
 [[ "$(docker image inspect --format '{{.Id}}' bodycast-app:latest)" == "$PREVIOUS_IMAGE_ID" ]] || fail "previous image retag differs from the captured immutable image."
 app_started=true
 if [[ "$PREVIOUS_PROVENANCE_KIND" =~ ^legacy-(unlabeled|cutback-receipt)-v1$ ]]; then

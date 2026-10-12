@@ -12,7 +12,9 @@ function isValidUtcTimestamp(value) {
 }
 
 function redactDiagnosticLine(line) {
+  if (/[\u0000-\u001F\u007F]/.test(line)) return null;
   if (/BODYCAST_[A-Z0-9_]*B64=/i.test(line)) return null;
+  if (/::|##\[/.test(line)) return null;
   if (/-----BEGIN [A-Z ]*PRIVATE KEY-----|-----END [A-Z ]*PRIVATE KEY-----/.test(line.trim())) return null;
   if (/^[A-Za-z0-9+/=]{40,}$/.test(line.trim())) return null;
 
@@ -20,7 +22,6 @@ function redactDiagnosticLine(line) {
     .replace(/(postgres(?:ql)?:\/\/)[^\s"']+/gi, "$1[REDACTED]")
     .replace(SENSITIVE_ASSIGNMENT, "$1[REDACTED]")
     .replace(LONG_BASE64, "[REDACTED]")
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
     .slice(0, 500);
   return redacted;
 }
@@ -28,7 +29,7 @@ function redactDiagnosticLine(line) {
 export function summarizeNoAppHostFailure(stderr, { sshExitCode, encryptExitCode }) {
   if (typeof stderr !== "string") throw new Error("Host diagnostics must be text.");
 
-  const lines = stderr.replace(/\r\n/g, "\n").split("\n");
+  const lines = stderr.split(/\r\n|[\r\n]/);
   const dumpMarkerLines = lines.filter((line) => line.startsWith("BODYCAST_PGDUMP_INVOCATION_AT="));
   const dumpMarker = dumpMarkerLines.length === 1 ? dumpMarkerLines[0].match(DUMP_BOUNDARY) : null;
   const dumpInvoked = Boolean(dumpMarker && isValidUtcTimestamp(dumpMarker[1]));

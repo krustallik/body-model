@@ -60,10 +60,31 @@ describe("summarizeNoAppHostFailure", () => {
       "-----END PRIVATE KEY-----",
     ].join("\n"), { sshExitCode: 1, encryptExitCode: 1 });
 
-    expect(summary).toContain("host stderr: ::add-mask::secret-value");
+    expect(summary).not.toContain("add-mask");
+    expect(summary).not.toContain("secret-value");
     expect(summary).not.toMatch(/^::add-mask::/m);
     expect(summary).not.toContain("PRIVATE KEY");
     expect(summary).not.toContain("A".repeat(64));
+  });
+
+  it("drops modern and legacy commands even after a prefix or CR line boundaries", () => {
+    const summary = summarizeNoAppHostFailure([
+      "ordinary diagnostic ::add-mask::inline-modern-secret",
+      "ordinary diagnostic ##[add-mask]inline-legacy-secret",
+      "ordinary diagnostic\r::add-mask::bare-cr-secret",
+      "ordinary diagnostic\r\n##[add-mask]crlf-legacy-secret",
+      "ordinary #\u001B[31m#[add-mask]ansi-legacy-secret",
+    ].join("\n"), { sshExitCode: 1, encryptExitCode: 1 });
+
+    expect(summary).toContain("host stderr: ordinary diagnostic");
+    expect(summary).not.toContain("add-mask");
+    expect(summary).not.toContain("inline-modern-secret");
+    expect(summary).not.toContain("inline-legacy-secret");
+    expect(summary).not.toContain("bare-cr-secret");
+    expect(summary).not.toContain("crlf-legacy-secret");
+    expect(summary).not.toContain("ansi-legacy-secret");
+    expect(summary).not.toMatch(/^::add-mask::/m);
+    expect(summary).not.toContain("\r");
   });
 
   it("limits untrusted diagnostic output", () => {

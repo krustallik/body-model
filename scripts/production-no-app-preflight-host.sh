@@ -7,8 +7,7 @@ umask 077
 
 readonly EXPECTED_SOURCE_RUN_ID="38211169161"
 readonly EXPECTED_SOURCE_ATTEMPT="1"
-readonly EXPECTED_SOURCE_ARCHIVE_RUN_ID="38205023003"
-readonly EXPECTED_SOURCE_ARCHIVE_ATTEMPT="1"
+readonly EXPECTED_RESUME_SHA="3ede9e1644616e65edb3ac29a49df2f109786942"
 readonly DB_CONTAINER="bodycast-db-prod"
 readonly APP_CONTAINER="bodycast-app-prod"
 readonly DB_IMAGE="postgres:17-alpine"
@@ -76,7 +75,7 @@ read_private_file() {
 }
 
 capture_path="$git_dir/bodycast-production-pre-ddl-release"
-archive_path="$git_dir/bodycast-production-pre-ddl-release-archive-${EXPECTED_SOURCE_ARCHIVE_RUN_ID}-${EXPECTED_SOURCE_ARCHIVE_ATTEMPT}"
+source_capture_path="$git_dir/bodycast-production-pre-ddl-release-before-${EXPECTED_RESUME_SHA}"
 receipt_path="$git_dir/bodycast-production-pre-ddl-release-resume-${EXPECTED_SOURCE_RUN_ID}-${EXPECTED_SOURCE_ATTEMPT}"
 
 collect_snapshot() {
@@ -85,14 +84,14 @@ collect_snapshot() {
   local writer_file="$tmp/writer-${suffix}.json" preflight_file="$tmp/preflight-result-${suffix}.json"
   local payload_file="$tmp/host-snapshot-${suffix}.json" verified_file="$tmp/verified-${suffix}.json"
   local app_ids_file="$tmp/app-ids-${suffix}.txt" public_headers="$tmp/public-headers-${suffix}" public_body="$tmp/public-body-${suffix}"
-  local current_capture="$tmp/current-capture-${suffix}" archive_capture="$tmp/archive-capture-${suffix}"
+  local current_capture="$tmp/current-capture-${suffix}" source_capture="$tmp/source-capture-${suffix}"
   local current_receipt="$tmp/current-receipt-${suffix}"
 
   read_private_file "$capture_path"
-  read_private_file "$archive_path"
+  read_private_file "$source_capture_path"
   read_private_file "$receipt_path"
   cp -- "$capture_path" "$current_capture"
-  cp -- "$archive_path" "$archive_capture"
+  cp -- "$source_capture_path" "$source_capture"
   cp -- "$receipt_path" "$current_receipt"
 
   # Search both the reviewed fixed app name and every app service in the
@@ -158,11 +157,11 @@ NODE
   [[ "$pinned_image_id" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "Saved rollback image pin identity is unknown." >&2; return 1; }
 
   BODYCAST_PINNED_IMAGE_ID="$pinned_image_id" node --input-type=module - "$report_file" "$preflight_file" "$payload_file" "$current_capture" \
-    "$archive_capture" "$current_receipt" "$container_id" "$marker" "$release_sha" "$pg_dump_version" "$BODYCAST_PG_RESTORE_VERSION" \
+    "$source_capture" "$current_receipt" "$container_id" "$marker" "$release_sha" "$pg_dump_version" "$BODYCAST_PG_RESTORE_VERSION" \
     "$BODYCAST_CURRENT_RUN_ID" "$BODYCAST_CAPTURE_HISTORY_PROOF_B64" \
     "$BODYCAST_GITHUB_RESUME_RECEIPT_B64" "$BODYCAST_PRODUCTION_RUNS_B64" <<'NODE'
 import { readFileSync, writeFileSync } from "node:fs";
-const [reportPath, preflightPath, outputPath, currentPath, archivePath, receiptPath,
+const [reportPath, preflightPath, outputPath, currentPath, sourcePath, receiptPath,
   containerId, routeMarker, releaseSha, pgDumpVersion, pgRestoreVersion, currentRunId, proofB64, githubReceiptB64, runsB64] = process.argv.slice(2);
 function decode(value) {
   const bytes = Buffer.from(value, "base64");
@@ -176,7 +175,7 @@ const input = {
   preflightResult: JSON.parse(readFileSync(preflightPath, "utf8")),
   postgresClientVersions: { pgDump: pgDumpVersion, pgRestore: pgRestoreVersion },
   databaseContainerId: containerId,
-  currentRecordText: readFileSync(currentPath, "utf8"), archivedRecordText: readFileSync(archivePath, "utf8"),
+  currentRecordText: readFileSync(currentPath, "utf8"), sourceRecordText: readFileSync(sourcePath, "utf8"),
   currentReceipt: JSON.parse(readFileSync(receiptPath, "utf8")), githubReceipt: decode(githubReceiptB64),
   databaseReport: JSON.parse(readFileSync(reportPath, "utf8")), captureHistoryProof: decode(proofB64),
   pinnedImageId: process.env.BODYCAST_PINNED_IMAGE_ID,

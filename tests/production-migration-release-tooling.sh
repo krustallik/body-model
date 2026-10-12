@@ -164,6 +164,7 @@ cp "$ROOT/scripts/production-route-primitives.sh" "$FIXTURE_ROOT/scripts/product
 cp "$DEPLOY" "$FIXTURE_ROOT/scripts/deploy-migrate.sh"
 cp "$ROOT/scripts/production-release-marker.sh" "$FIXTURE_ROOT/scripts/production-release-marker.sh"
 cp "$LOCK" "$FIXTURE_ROOT/scripts/production-release-lock.sh"
+cp "$ROOT/scripts/production-migration-manifests.mjs" "$FIXTURE_ROOT/scripts/production-migration-manifests.mjs"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$FIXTURE_ROOT/scripts/deploy-preflight-schema.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$FIXTURE_ROOT/scripts/production-traffic-cutover.sh"
 printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf "{}\\n"\n' > "$FIXTURE_ROOT/scripts/production-db-target.sh"

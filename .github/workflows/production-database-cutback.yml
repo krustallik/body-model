@@ -34,6 +34,7 @@ jobs:
     outputs:
       current_main_sha: ${{ steps.gate.outputs.current_main_sha }}
       failed_release_sha: ${{ steps.gate.outputs.failed_release_sha }}
+      manifest_id: ${{ steps.gate.outputs.manifest_id }}
       failed_attempt: ${{ steps.gate.outputs.failed_attempt }}
       preflight_run_id: ${{ steps.gate.outputs.preflight_run_id }}
       preflight_attempt: ${{ steps.gate.outputs.preflight_attempt }}
@@ -133,21 +134,23 @@ jobs:
           CLAIMS="$(node --input-type=module - "$BUNDLE/authorization-envelope.json" <<'NODE'
           import { readFileSync } from "node:fs";
           const envelope = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          const { getProductionMigrationManifest } = await import("./scripts/production-migration-manifests.mjs");
           const claims = envelope?.payload;
           if (envelope?.algorithm !== "Ed25519" || !claims || claims.releaseSha !== process.env.FAILED_SHA
             || claims.workflowRunId !== process.env.FAILED_MIGRATION_RUN_ID || claims.workflowRunAttempt !== Number(process.env.FAILED_ATTEMPT)
-            || claims.manifestId !== "active-energy-unified-v2" || !/^[1-9][0-9]*$/.test(claims.preflightRunId)
+            || !getProductionMigrationManifest(claims.manifestId).cutbackSupported || !/^[1-9][0-9]*$/.test(claims.preflightRunId)
             || !Number.isSafeInteger(claims.preflightRunAttempt) || !/^[1-9][0-9]*$/.test(claims.backupArtifactId)) {
             throw new Error("Migration envelope does not select the failed migration and its fixed reviewed backup context.");
           }
           process.stdout.write(JSON.stringify(claims));
           NODE
           )"
+          MANIFEST_ID="$(CLAIMS_JSON="$CLAIMS" node --input-type=module -e 'process.stdout.write(JSON.parse(process.env.CLAIMS_JSON).manifestId)')"
           PREFLIGHT_RUN_ID="$(CLAIMS_JSON="$CLAIMS" node --input-type=module -e 'process.stdout.write(JSON.parse(process.env.CLAIMS_JSON).preflightRunId)')"
           PREFLIGHT_ATTEMPT="$(CLAIMS_JSON="$CLAIMS" node --input-type=module -e 'process.stdout.write(String(JSON.parse(process.env.CLAIMS_JSON).preflightRunAttempt))')"
           export PREFLIGHT_RUN_ID PREFLIGHT_ATTEMPT
-          BACKUP_NAME="bodycast-backup-${FAILED_SHA}-active-energy-unified-v2-${PREFLIGHT_RUN_ID}-${PREFLIGHT_ATTEMPT}"
-          EVIDENCE_NAME="bodycast-preflight-evidence-${FAILED_SHA}-active-energy-unified-v2-${PREFLIGHT_RUN_ID}-${PREFLIGHT_ATTEMPT}"
+          BACKUP_NAME="bodycast-backup-${FAILED_SHA}-${MANIFEST_ID}-${PREFLIGHT_RUN_ID}-${PREFLIGHT_ATTEMPT}"
+          EVIDENCE_NAME="bodycast-preflight-evidence-${FAILED_SHA}-${MANIFEST_ID}-${PREFLIGHT_RUN_ID}-${PREFLIGHT_ATTEMPT}"
           gh api "repos/krustallik/body-model/actions/runs/$PREFLIGHT_RUN_ID" > "$RUNNER_TEMP/preflight-run.json"
           node --input-type=module - "$RUNNER_TEMP/preflight-run.json" <<'NODE'
           import { readFileSync } from "node:fs";
@@ -179,6 +182,7 @@ jobs:
           node scripts/production-database-cutback.mjs --verify-context "$BUNDLE" "$FAILED_MIGRATION_RUN_ID" "$FAILED_SHA" "$BUNDLE/production-backup.pgdump.enc" \
             > "$RUNNER_TEMP/verified-cutback-context.json"
           echo "failed_release_sha=$FAILED_SHA" >> "$GITHUB_OUTPUT"
+          echo "manifest_id=$MANIFEST_ID" >> "$GITHUB_OUTPUT"
           echo "failed_attempt=$FAILED_ATTEMPT" >> "$GITHUB_OUTPUT"
           echo "current_main_sha=$CURRENT_MAIN_SHA" >> "$GITHUB_OUTPUT"
           echo "preflight_run_id=$PREFLIGHT_RUN_ID" >> "$GITHUB_OUTPUT"
@@ -238,6 +242,7 @@ jobs:
           DISPATCH_ACTOR_ID: ${{ github.actor_id }}
           FAILED_MIGRATION_RUN_ID: ${{ inputs.failed_migration_run_id }}
           FAILED_RELEASE_SHA: ${{ needs.authorize.outputs.failed_release_sha }}
+          MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
           FAILED_ATTEMPT: ${{ needs.authorize.outputs.failed_attempt }}
           PREFLIGHT_RUN_ID: ${{ needs.authorize.outputs.preflight_run_id }}
           PREFLIGHT_ATTEMPT: ${{ needs.authorize.outputs.preflight_attempt }}
@@ -251,7 +256,7 @@ jobs:
           gh run download "$FAILED_MIGRATION_RUN_ID" --repo krustallik/body-model \
             --name "bodycast-migration-auth-${FAILED_MIGRATION_RUN_ID}-${FAILED_ATTEMPT}" --dir "$BUNDLE"
           gh run download "$PREFLIGHT_RUN_ID" --repo krustallik/body-model \
-            --name "bodycast-preflight-evidence-${FAILED_RELEASE_SHA}-active-energy-unified-v2-${PREFLIGHT_RUN_ID}-${PREFLIGHT_ATTEMPT}" \
+            --name "bodycast-preflight-evidence-${FAILED_RELEASE_SHA}-${MANIFEST_ID}-${PREFLIGHT_RUN_ID}-${PREFLIGHT_ATTEMPT}" \
             --dir "$RUNNER_TEMP/cutback-preflight"
           gh run download "$PREFLIGHT_RUN_ID" --repo krustallik/body-model --name "$BACKUP_NAME" --dir "$RUNNER_TEMP/cutback-backup"
           for name in authorization-envelope.json artifact-metadata.json preflight-result.json preflight-evidence.json restore-result.json; do

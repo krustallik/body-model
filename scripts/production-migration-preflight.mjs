@@ -1,13 +1,14 @@
 import { readFile, readdir } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
-import { STAGE_02_MANIFEST, ACTIVE_ENERGY_UNIFIED_MANIFEST, getProductionMigrationManifest } from "./production-migration-manifests.mjs";
+import { STAGE_02_MANIFEST, ACTIVE_ENERGY_UNIFIED_MANIFEST, V4_REPUBLICATION_MANIFEST, PRODUCTION_MIGRATION_MANIFESTS, getProductionMigrationManifest } from "./production-migration-manifests.mjs";
 import { verifyManifestBlob, verifyExecutionFileMatchesBlob } from "./production-migration-integrity.mjs";
 import { canonicalSha256, verifyAuthorizationEnvelope } from "./production-migration-authorization.mjs";
 import { evaluateProductionWriterDrain } from "./production-writer-drain.mjs";
 import { isCanonicalPostgresDatabaseIdentity } from "./postgres-database-identity.mjs";
 
 export const EXPECTED_PENDING_MIGRATIONS = ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations.map(({ name }) => name);
+export const EXPECTED_V4_REPUBLICATION_PENDING_MIGRATIONS = V4_REPUBLICATION_MANIFEST.migrations.map(({ name }) => name);
 export const EXPECTED_MIGRATION_OBJECTS = Object.freeze([
   "ExerciseCatalog.currentLoadAccountingConfigId", "ExerciseLoadConfiguration", "ExerciseCatalog_currentLoadAccountingConfigId_key",
   "ExerciseLoadConfiguration_exerciseCatalogId_configVersion_key", "ExerciseLoadConfiguration_exerciseCatalogId_createdAt_idx",
@@ -25,11 +26,20 @@ export const EXPECTED_MIGRATION_OBJECTS = Object.freeze([
   "StrengthDiarySession_current_snapshot_fkey", "StrengthSessionAccountingOperation_result_snapshot_fkey",
 ]);
 
-export const ALL_REVIEWED_MIGRATIONS = [...STAGE_02_MANIFEST.migrations, ...ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations];
-const ALL_REVIEWED_OBJECTS = [...new Set([
+export const ALL_REVIEWED_MIGRATIONS = [...new Map([
+  ...STAGE_02_MANIFEST.migrations,
+  ...Object.values(PRODUCTION_MIGRATION_MANIFESTS).flatMap((manifest) => [
+    ...manifest.migrations,
+    ...(manifest.requiredAppliedMigrations ?? []),
+  ]),
+].map((migration) => [migration.name, migration])).values()];
+export const ALL_REVIEWED_OBJECTS = [...new Set([
   ...EXPECTED_MIGRATION_OBJECTS,
-  ...ACTIVE_ENERGY_UNIFIED_MANIFEST.requiredObjectsBefore,
-  ...ACTIVE_ENERGY_UNIFIED_MANIFEST.postflightObjects,
+  ...Object.values(PRODUCTION_MIGRATION_MANIFESTS).flatMap((manifest) => [
+    ...manifest.requiredObjectsBefore,
+    ...manifest.postflightObjects,
+    ...(manifest.partialObjects ?? []),
+  ]),
 ])];
 
 function sorted(values) { return [...values].sort(); }
@@ -67,6 +77,135 @@ export function assertProductionDatabaseIdentityMatches(expectedIdentity, actual
 
 function hasConcretePostgresEndpoint(identity) {
   return isCanonicalPostgresDatabaseIdentity(identity);
+}
+
+export function normalizeObjectSignature(signature) {
+  if (typeof signature !== "string") return "";
+
+  let normalized = "";
+  let pendingSpace = false;
+  let quote = null;
+  let quoteEscapesBackslash = false;
+  let dollarTag = null;
+  let lineComment = false;
+  let blockCommentDepth = 0;
+
+  const appendCode = (character) => {
+    if (pendingSpace && normalized && !normalized.endsWith("(") && !normalized.endsWith(",")) {
+      normalized += " ";
+    }
+    pendingSpace = false;
+    normalized += character;
+  };
+
+  for (let index = 0; index < signature.length; index += 1) {
+    const character = signature[index];
+
+    if (lineComment) {
+      if (character === "\n" || character === "\r") {
+        lineComment = false;
+        pendingSpace = true;
+      }
+      continue;
+    }
+
+    if (blockCommentDepth > 0) {
+      if (character === "/" && signature[index + 1] === "*") {
+        blockCommentDepth += 1;
+        index += 1;
+      } else if (character === "*" && signature[index + 1] === "/") {
+        blockCommentDepth -= 1;
+        index += 1;
+        if (blockCommentDepth === 0) pendingSpace = true;
+      }
+      continue;
+    }
+
+    if (quote) {
+      normalized += character;
+      if (character === quote) {
+        if (signature[index + 1] === quote) {
+          normalized += signature[index + 1];
+          index += 1;
+        } else {
+          quote = null;
+          quoteEscapesBackslash = false;
+        }
+      } else if (quoteEscapesBackslash && character === "\\" && signature[index + 1] !== undefined) {
+        normalized += signature[index + 1];
+        index += 1;
+      }
+      continue;
+    }
+
+    if (dollarTag && signature.startsWith(dollarTag, index)) {
+      normalized += dollarTag;
+      index += dollarTag.length - 1;
+      dollarTag = null;
+      continue;
+    }
+
+    if (character === "-" && signature[index + 1] === "-") {
+      lineComment = true;
+      index += 1;
+      continue;
+    }
+
+    if (character === "/" && signature[index + 1] === "*") {
+      blockCommentDepth = 1;
+      index += 1;
+      continue;
+    }
+
+    if (/\s/.test(character)) {
+      pendingSpace = true;
+      continue;
+    }
+
+    if (character === "'" || character === '"') {
+      appendCode(character);
+      quote = character;
+      quoteEscapesBackslash = character === "'"
+        && /^(?:e|E)$/.test(signature[index - 1] ?? "")
+        && !/[A-Za-z0-9_$]/.test(signature[index - 2] ?? "");
+      continue;
+    }
+
+    if (character === "$") {
+      const tag = signature.slice(index).match(/^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/)?.[0];
+      if (tag) {
+        appendCode(tag);
+        index += tag.length - 1;
+        dollarTag = tag;
+        continue;
+      }
+    }
+
+    if (character === "(") {
+      normalized = normalized.trimEnd();
+      pendingSpace = false;
+      normalized += character;
+      continue;
+    }
+
+    if (character === ")") {
+      normalized = normalized.trimEnd();
+      pendingSpace = false;
+      normalized += character;
+      continue;
+    }
+
+    if (character === ",") {
+      normalized = normalized.trimEnd();
+      normalized += character;
+      pendingSpace = true;
+      continue;
+    }
+
+    appendCode(character);
+  }
+
+  return normalized.trim();
 }
 
 function migrationState(report, migrationDirectories) {
@@ -113,9 +252,21 @@ function migrationState(report, migrationDirectories) {
   return { blockers, rows, rowGroups, applied, pending, failed: sorted(failed), rolledBack: sorted(rolledBack), duplicate: sorted(duplicate), unexpected };
 }
 
-export function evaluateProductionPreflight(report, migrationDirectories, manifestId = ACTIVE_ENERGY_UNIFIED_MANIFEST.id) {
+function appendRequiredAppliedMigrationBlockers(manifest, rowGroups, applied, blockers) {
+  for (const migration of manifest.requiredAppliedMigrations ?? []) {
+    const rowsForName = rowGroups.get(migration.name) ?? [];
+    if (rowsForName.length !== 1 || !rowsForName[0].finishedAt || rowsForName[0].rolledBackAt || !applied.has(migration.name)) {
+      blockers.push(`Required prior migration ${migration.name} is not recorded exactly once as successful.`);
+    } else if (rowsForName[0].checksum !== migration.sha256) {
+      blockers.push(`Required prior migration ${migration.name} checksum differs from the reviewed Git blob.`);
+    }
+  }
+}
+
+export function evaluateProductionPreflight(report, migrationDirectories, manifestId = ACTIVE_ENERGY_UNIFIED_MANIFEST.id, options = {}) {
   const manifest = getProductionMigrationManifest(manifestId);
-  const { blockers, rows, pending, failed, rolledBack, duplicate, unexpected } = migrationState(report, migrationDirectories);
+  const { blockers, rows, rowGroups, applied, pending, failed, rolledBack, duplicate, unexpected } = migrationState(report, migrationDirectories);
+  appendRequiredAppliedMigrationBlockers(manifest, rowGroups, applied, blockers);
   const missingManifestDirectories = manifest.migrations.map(({ name }) => name).filter((name) => !migrationDirectories.includes(name));
   if (missingManifestDirectories.length) blockers.push(`Reviewed manifest migrations are missing from the release tree: ${missingManifestDirectories.join(", ")}.`);
   const expectedPending = sorted(manifest.migrations.map(({ name }) => name));
@@ -124,27 +275,38 @@ export function evaluateProductionPreflight(report, migrationDirectories, manife
 
   const objectRows = Array.isArray(report?.objects) ? report.objects : [];
   const objectNames = objectRows.map((object) => object?.name);
-  if (!sameArray(objectNames, ALL_REVIEWED_OBJECTS)) blockers.push("Schema inventory names do not exactly match the reviewed Stage 02 and Active Energy manifests.");
+  if (!sameArray(objectNames, ALL_REVIEWED_OBJECTS)) blockers.push("Schema inventory names do not exactly match the closed production migration manifests.");
   const objectMap = new Map(objectRows.map((object) => [object?.name, object]));
   if (objectRows.some((object) => object?.present === true && (typeof object.signature !== "string" || !object.signature))) {
     blockers.push("Current schema inventory is missing a signature for an existing reviewed object.");
   }
-  const partialObjects = manifest.postflightObjects.filter((name) => objectMap.get(name)?.present === true);
-  if (partialObjects.length) blockers.push(`Active Energy migration objects already exist while the migration set is pending: ${partialObjects.join(", ")}.`);
+  const partialObjects = (manifest.partialObjects ?? manifest.postflightObjects).filter((name) => objectMap.get(name)?.present === true);
+  if (partialObjects.length) blockers.push(`Migration output objects already exist while the exact migration set is pending: ${partialObjects.join(", ")}.`);
+  const presentForbiddenObjects = (manifest.requiredAbsentObjectsBefore ?? []).filter((name) => objectMap.get(name)?.present === true);
+  if (presentForbiddenObjects.length) blockers.push(`Prior migration output objects should be absent before this migration set: ${presentForbiddenObjects.join(", ")}.`);
   const missingStage02Objects = EXPECTED_MIGRATION_OBJECTS.filter((name) => objectMap.get(name)?.present !== true);
   if (missingStage02Objects.length) blockers.push(`Required Stage 02 schema objects are missing: ${missingStage02Objects.join(", ")}.`);
   const missingObjectsBefore = manifest.requiredObjectsBefore.filter((name) => objectMap.get(name)?.present !== true);
   if (missingObjectsBefore.length) blockers.push(`Required pre-migration schema objects are missing: ${missingObjectsBefore.join(", ")}.`);
   const wrongObjectsBefore = Object.entries(manifest.requiredObjectSignatureIncludes ?? {}).filter(([name, fragment]) => {
     const object = objectMap.get(name);
-    return object?.present !== true || typeof object.signature !== "string" || !object.signature.includes(fragment);
+    return object?.present !== true || typeof object.signature !== "string"
+      || !normalizeObjectSignature(object.signature).includes(normalizeObjectSignature(fragment));
   }).map(([name]) => name);
   if (wrongObjectsBefore.length) blockers.push(`Required pre-migration schema signatures differ from the reviewed baseline: ${wrongObjectsBefore.join(", ")}.`);
+  const changedObjectsBefore = Object.entries(manifest.requiredObjectSignatureExcludes ?? {}).filter(([name, fragment]) => {
+    const object = objectMap.get(name);
+    return object?.present !== true || typeof object.signature !== "string"
+      || normalizeObjectSignature(object.signature).includes(normalizeObjectSignature(fragment));
+  }).map(([name]) => name);
+  if (changedObjectsBefore.length) blockers.push(`Required pre-migration schema objects already contain target migration changes: ${changedObjectsBefore.join(", ")}.`);
 
   for (const tableName of manifest.requiredTablesBefore) {
     if (report?.tables?.[tableName]?.exists !== true) blockers.push(`Required production baseline table ${tableName} is missing.`);
   }
-  if (report?.identity?.database !== "bodycast" || report?.identity?.role !== "bodycast") blockers.push("Connected database/role identity differs from the reviewed production target.");
+  const expectedDatabase = options.expectedDatabase ?? "bodycast";
+  const expectedRole = options.expectedRole ?? "bodycast";
+  if (report?.identity?.database !== expectedDatabase || report?.identity?.role !== expectedRole) blockers.push("Connected database/role identity differs from the reviewed production target.");
   if (!String(report?.identity?.serverVersion ?? "").startsWith("17.")) blockers.push("Production PostgreSQL version differs from the reviewed major version 17.");
   if (!hasConcretePostgresEndpoint(report?.identity)) blockers.push("Production database endpoint identity is incomplete.");
 
@@ -172,6 +334,7 @@ export function evaluateProductionPreflight(report, migrationDirectories, manife
     duplicate,
     unexpectedMigrations: unexpected,
     partialSchemaObjects: partialObjects,
+    unexpectedPreflightObjects: presentForbiddenObjects,
     migrations: rows,
     objects: objectRows,
     identity: report?.identity ?? null,
@@ -191,10 +354,11 @@ export function evaluateProductionPostflight(report, migrationDirectories, manif
   const manifest = getProductionMigrationManifest(manifestId);
   const state = migrationState(report, migrationDirectories);
   const blockers = [...state.blockers];
+  appendRequiredAppliedMigrationBlockers(manifest, state.rowGroups, state.applied, blockers);
   if (state.pending.length) blockers.push(`Pending migrations remain after DDL: ${state.pending.join(", ")}.`);
   const objectRows = Array.isArray(report?.objects) ? report.objects : [];
   const names = objectRows.map((entry) => entry?.name);
-  if (!sameArray(names, ALL_REVIEWED_OBJECTS)) blockers.push("Postflight object inventory differs from the reviewed schema manifest.");
+  if (!sameArray(names, ALL_REVIEWED_OBJECTS)) blockers.push("Postflight object inventory differs from the closed production migration manifests.");
   const byName = new Map(objectRows.map((entry) => [entry?.name, entry]));
   const missing = manifest.postflightObjects.filter((name) => byName.get(name)?.present !== true);
   if (missing.length) blockers.push(`Postflight schema objects are missing: ${missing.join(", ")}.`);
@@ -206,7 +370,8 @@ export function evaluateProductionPostflight(report, migrationDirectories, manif
   if (unexpectedLegacyIndexes.length) blockers.push(`Legacy Relative Muscle indexes remain after migration: ${unexpectedLegacyIndexes.join(", ")}.`);
   const wrongRelativeMuscleSignatures = Object.entries(manifest.postflightSignatureIncludes).filter(([name, fragment]) => {
     const object = byName.get(name);
-    return object?.present !== true || typeof object.signature !== "string" || !object.signature.includes(fragment);
+    return object?.present !== true || typeof object.signature !== "string"
+      || !normalizeObjectSignature(object.signature).includes(normalizeObjectSignature(fragment));
   }).map(([name]) => name);
   if (wrongRelativeMuscleSignatures.length) blockers.push(`Relative Muscle postflight schema signatures differ from the reviewed contract: ${wrongRelativeMuscleSignatures.join(", ")}.`);
   const expectedDatabase = options.expectedDatabase ?? "bodycast";
@@ -296,7 +461,11 @@ async function main() {
     const releaseSha = args[args.indexOf("--release-sha") + 1];
     const manifest = getProductionMigrationManifest(args[args.indexOf("--manifest") + 1] ?? ACTIVE_ENERGY_UNIFIED_MANIFEST.id);
     const files = [];
-    for (const migration of manifest.migrations) {
+    const reviewedBlobs = [...new Map([
+      ...manifest.migrations,
+      ...(manifest.requiredAppliedMigrations ?? []),
+    ].map((migration) => [migration.name, migration])).values()];
+    for (const migration of reviewedBlobs) {
       const result = await verifyExecutionFileMatchesBlob({ repositoryPath, releaseSha, migration });
       files.push(result);
     }
@@ -318,7 +487,12 @@ async function main() {
       result = evaluateProductionPreflight(report, migrationDirectories, manifestId);
       const manifest = getProductionMigrationManifest(manifestId);
       const integrity = [];
-      for (const migration of [...STAGE_02_MANIFEST.migrations, ...manifest.migrations]) {
+      const reviewedMigrations = [...new Map([
+        ...STAGE_02_MANIFEST.migrations,
+        ...manifest.migrations,
+        ...(manifest.requiredAppliedMigrations ?? []),
+      ].map((migration) => [migration.name, migration])).values()];
+      for (const migration of reviewedMigrations) {
         const item = await verifyManifestBlob({ repositoryPath, releaseSha: value("--release-sha"), migration });
         integrity.push({ name: item.name, expectedSha256: item.expectedSha256, actualSha256: item.actualSha256, matches: item.matchesManifest, bytes: item.bytes });
         if (!item.matchesManifest) result.blockers.push(`Committed migration blob ${item.name} differs from the reviewed manifest checksum.`);

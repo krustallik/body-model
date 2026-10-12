@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => {
       modelEpisode: { findMany: vi.fn() },
       physiologyV7Lifecycle: { findUnique: vi.fn() },
       dailyHealthData: { findFirst: vi.fn() },
+      strengthDiarySession: { findMany: vi.fn() },
       unifiedExperimentalPhysiologyStateV2: { findMany: vi.fn(), findUnique: vi.fn() },
       $transaction: vi.fn(),
     },
@@ -97,6 +98,7 @@ function prepare() {
     .mockResolvedValueOnce(publication)
     .mockResolvedValueOnce(publication);
   mocks.prisma.dailyHealthData.findFirst.mockResolvedValue({ date: "2026-10-01" });
+  mocks.prisma.strengthDiarySession.findMany.mockResolvedValue([]);
   mocks.prisma.unifiedExperimentalPhysiologyStateV2.findMany.mockResolvedValue([]);
   mocks.prisma.unifiedExperimentalPhysiologyStateV2.findUnique.mockResolvedValue(null);
   tx.physiologyV7Lifecycle.findUnique.mockResolvedValue(publication);

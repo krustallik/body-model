@@ -112,8 +112,10 @@ read_bodycast_release_marker() {
   else
     echo "Production release marker is malformed or unsupported." >&2; return 2
   fi
-  [[ "$BODYCAST_MARKER_MANIFEST_ID" == "active-energy-unified-v2" \
-    && ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 1 || "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 || "$BODYCAST_MARKER_SCHEMA_VERSION" == 3 ) \
+  [[ ( ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 1 && "$BODYCAST_MARKER_MANIFEST_ID" == "active-energy-unified-v2" ) \
+      || ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 \
+        && ( "$BODYCAST_MARKER_MANIFEST_ID" == "active-energy-unified-v2" || "$BODYCAST_MARKER_MANIFEST_ID" == "unified-v4-republication-v1" ) ) \
+      || ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 3 && "$BODYCAST_MARKER_MANIFEST_ID" == "active-energy-unified-v2" ) ) \
     && ( "$BODYCAST_MARKER_RELEASE_SHA" =~ ^[a-f0-9]{40}$ || "$BODYCAST_MARKER_RELEASE_SHA" == "unknown" ) \
     && "$BODYCAST_MARKER_STATE" =~ ^(ddl-starting|ddl-started|schema-applied|app-ready|v4-ready|database-restored|rollback-app-ready|forward-resume-armed)$ ]] || {
     echo "Production release marker values are not recognized." >&2; return 2;
@@ -181,7 +183,8 @@ write_bodycast_release_marker() {
   elif [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == 3 ]]; then
     node "$(dirname "${BASH_SOURCE[0]}")/production-schema-deploy-handoff.mjs" --render-transition "$BODYCAST_MARKER_FILE_PATH" "$state" > "$temporary"
   else
-    printf 'schemaVersion=2\nmanifestId=active-energy-unified-v2\nreleaseSha=%s\nstate=%s\nworkflowRunId=%s\nworkflowRunAttempt=%s\nauthorizationId=%s\nlineageDigest=%s\nspawnState=%s\n' \
+    printf 'schemaVersion=2\nmanifestId=%s\nreleaseSha=%s\nstate=%s\nworkflowRunId=%s\nworkflowRunAttempt=%s\nauthorizationId=%s\nlineageDigest=%s\nspawnState=%s\n' \
+      "$BODYCAST_MARKER_MANIFEST_ID" \
       "$release_sha" "$state" "$BODYCAST_MARKER_WORKFLOW_RUN_ID" "$BODYCAST_MARKER_WORKFLOW_RUN_ATTEMPT" \
       "$BODYCAST_MARKER_AUTHORIZATION_ID" "$BODYCAST_MARKER_LINEAGE_DIGEST" "$BODYCAST_MARKER_SPAWN_STATE" > "$temporary"
   fi
@@ -211,7 +214,8 @@ write_bodycast_forward_resume_marker() {
   temporary="$(mktemp "$BODYCAST_RELEASE_MARKER_PATH.new.XXXXXX")"
   trap 'rm -f -- "$temporary"' RETURN
   chmod 600 "$temporary"
-  printf 'schemaVersion=2\nmanifestId=active-energy-unified-v2\nreleaseSha=%s\nstate=forward-resume-armed\nworkflowRunId=%s\nworkflowRunAttempt=%s\nauthorizationId=%s\nlineageDigest=%s\nspawnState=not-started\n' \
+  printf 'schemaVersion=2\nmanifestId=%s\nreleaseSha=%s\nstate=forward-resume-armed\nworkflowRunId=%s\nworkflowRunAttempt=%s\nauthorizationId=%s\nlineageDigest=%s\nspawnState=not-started\n' \
+    "$BODYCAST_MARKER_MANIFEST_ID" \
     "$release_sha" "$run_id" "$attempt" "$authorization_id" "$lineage_digest" > "$temporary"
   sync -f "$temporary"
   latest="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"

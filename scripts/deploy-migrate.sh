@@ -19,7 +19,8 @@ source "$ROOT_DIR/scripts/production-release-lock.sh"
 
 fail() { echo "Production migration blocked: $*" >&2; exit 1; }
 
-[[ "$MANIFEST_ID" == "active-energy-unified-v2" ]] || fail "a closed reviewed manifest id is required."
+[[ "$MANIFEST_ID" == "active-energy-unified-v2" || "$MANIFEST_ID" == "unified-v4-republication-v1" ]] \
+  || fail "a closed reviewed manifest id is required."
 [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "RELEASE_SHA must be a full lowercase commit SHA."
 [[ "$BODYCAST_AUTHORIZATION_WORKFLOW_ID" =~ ^[1-9][0-9]*$ \
   && "$BODYCAST_AUTHORIZATION_RUN_ID" =~ ^[1-9][0-9]*$ \
@@ -95,20 +96,27 @@ CANONICAL_MAIN_SHA="$(git rev-parse --verify 'refs/remotes/bodycast-canonical/ma
 # that Docker will copy must match those bytes exactly; line-ending normalization is forbidden.
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
+manifest_migrations="$(node --input-type=module - "$MANIFEST_ID" <<'NODE'
+import { getProductionMigrationManifest } from "./scripts/production-migration-manifests.mjs";
+const manifest = getProductionMigrationManifest(process.argv[2]);
+for (const migration of new Map([
+  ...manifest.migrations,
+  ...(manifest.requiredAppliedMigrations ?? []),
+].map((migration) => [migration.name, migration])).values()) {
+  process.stdout.write(`${migration.name}|${migration.sha256}\n`);
+}
+NODE
+)" || fail "the closed migration manifest could not be loaded."
+[[ -n "$manifest_migrations" ]] || fail "the closed migration manifest contains no migration files."
 while IFS='|' read -r migration_name expected_hash; do
+  [[ "$migration_name" =~ ^[0-9]{14}_[a-z0-9_]+$ && "$expected_hash" =~ ^[a-f0-9]{64}$ ]] \
+    || fail "the closed migration manifest contains malformed byte bindings."
   relative="prisma/migrations/$migration_name/migration.sql"
   git cat-file blob "$RELEASE_SHA:$relative" > "$TMP_DIR/committed.sql"
   actual_hash="$(sha256sum "$TMP_DIR/committed.sql" | awk '{print $1}')"
   [[ "$actual_hash" == "$expected_hash" ]] || fail "committed Git blob differs from reviewed manifest: $migration_name."
   cmp -s "$TMP_DIR/committed.sql" "$ROOT_DIR/$relative" || fail "working migration file differs byte-for-byte from committed Git blob: $migration_name."
-done <<'MIGRATIONS'
-20261002100000_active_energy_canonical_resolution|45711a527d809775a5ce66d3d9e529954158dcb65ed0065f70a0f948a4693a0b
-20261002150000_add_production_publication_generation|9f1e38182dc3ec2449da5297786b603d8c0370498ed68db97059f640220bbbd7
-20261003120000_add_episode_aware_unified_experimental_physiology_v2|0bb495d988ead0c1729f8e657b85f85bc4c20673fdedd5b61a7644cb0dcaf9b6
-20261005120000_episode_relative_muscle_core|afef76464e4e77e6fd13a6ed6f8b04a6972d98229e3c5fc12a7e7dd8e3fd6588
-20261006110000_relative_muscle_legacy_identity|56d8a64d4c966428835a96058783d01c4eac5984f8ed51928d26b13d6290208e
-20261006130000_unified_v4_glycogen_water_rollout|9e50a8f33ec93e5f7d74681a611bd7272038f7e5e25563054f4a4dbb093b5408
-MIGRATIONS
+done <<< "$manifest_migrations"
 
 compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
 db_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$DB_CONTAINER")" \
@@ -116,7 +124,7 @@ db_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status
 [[ "$db_status" == "healthy" ]] || fail "existing production PostgreSQL is not healthy; migration will not start it."
 
 compose --profile tools build migrate
-IMAGE_RESULT="$(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-migration-image-check.mjs /app)"
+IMAGE_RESULT="$(compose --profile tools run --rm --no-deps --entrypoint node migrate /app/scripts/production-migration-image-check.mjs /app "$MANIFEST_ID")"
 printf '%s\n' "$IMAGE_RESULT"
 
 # Refresh a read-only report only after canonical fetch and image byte verification.

@@ -13,6 +13,7 @@ on:
         type: choice
         options:
           - active-energy-unified-v2
+          - unified-v4-republication-v1
       confirmation:
         description: Type MIGRATE_PRODUCTION to request a signed, current-state authorization
         required: true
@@ -99,7 +100,10 @@ jobs:
           else
             [[ -z "$FORWARD_RESUME_FAILED_RUN_ID" ]] || { echo "::error::A failed-run ID is only valid with explicit forward-resume mode."; exit 1; }
           fi
-          [[ "$MANIFEST_ID" == "active-energy-unified-v2" ]] || { echo "::error::Manifest is not in the closed allowlist."; exit 1; }
+          [[ "$MANIFEST_ID" == "active-energy-unified-v2" || "$MANIFEST_ID" == "unified-v4-republication-v1" ]] || { echo "::error::Manifest is not in the closed allowlist."; exit 1; }
+          if [[ "$MANIFEST_ID" == "unified-v4-republication-v1" && "$EXECUTION_MODE" != "standard" ]]; then
+            echo "::error::The V4 republication manifest does not accept historical forward-resume evidence."; exit 1;
+          fi
           [[ "$DISPATCH_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::release_sha must be a full lowercase SHA."; exit 1; }
           git fetch --no-tags origin main
           git -c remote.bodycast-canonical.url=https://github.com/krustallik/body-model.git fetch --no-tags bodycast-canonical +refs/heads/main:refs/remotes/bodycast-canonical/main
@@ -469,7 +473,7 @@ jobs:
           EXECUTION_MODE="${10}"
           FORWARD_RESUME_FAILED_RUN_ID="${11}"
           [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid release SHA." >&2; exit 1; }
-          [[ "$MANIFEST_ID" == "active-energy-unified-v2" ]] || { echo "Unreviewed manifest." >&2; exit 1; }
+          [[ "$MANIFEST_ID" == "active-energy-unified-v2" || "$MANIFEST_ID" == "unified-v4-republication-v1" ]] || { echo "Unreviewed manifest." >&2; exit 1; }
           [[ "$AUTHORIZATION_WORKFLOW_ID" =~ ^[1-9][0-9]*$ && "$AUTHORIZATION_RUN_ID" =~ ^[1-9][0-9]*$ && "$AUTHORIZATION_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || {
             echo "Invalid authorization workflow identity." >&2; exit 1;
           }

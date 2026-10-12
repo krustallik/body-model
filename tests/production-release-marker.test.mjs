@@ -85,6 +85,24 @@ describe("durable Prisma DDL marker handoff", () => {
     expect((await readdir(fixture.markerDirectory)).sort()).toEqual(["marker"]);
   });
 
+  it.skipIf(process.platform === "win32")("preserves the exact new manifest identity across the DDL marker lifecycle", async () => {
+    const fixture = await markerFixture();
+    const marker = await writeDdlStartingMarker({
+      markerDirectory: fixture.markerDirectory,
+      ...markerArguments,
+      manifestId: "unified-v4-republication-v1",
+    });
+    expect(marker.marker.manifestId).toBe("unified-v4-republication-v1");
+    const acknowledged = await acknowledgePrismaSpawn({ markerPath: fixture.markerPath, expectedDigest: marker.digest });
+    expect(acknowledged.marker).toMatchObject({
+      manifestId: "unified-v4-republication-v1",
+      state: "ddl-started",
+      spawnState: "started",
+    });
+    expect((await readProductionReleaseMarker(fixture.markerPath)).marker.manifestId)
+      .toBe("unified-v4-republication-v1");
+  });
+
   it.skipIf(process.platform === "win32")("records Prisma as started only after the OS spawn acknowledgement and durable transition", async () => {
     const fixture = await markerFixture();
     const marker = await writeDdlStartingMarker({ markerDirectory: fixture.markerDirectory, ...markerArguments });

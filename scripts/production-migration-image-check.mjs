@@ -2,11 +2,16 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
-import { ACTIVE_ENERGY_UNIFIED_MANIFEST } from "./production-migration-manifests.mjs";
+import { ACTIVE_ENERGY_UNIFIED_MANIFEST, getProductionMigrationManifest } from "./production-migration-manifests.mjs";
 
-export async function verifyMigrationImageFiles(repositoryPath) {
+export async function verifyMigrationImageFiles(repositoryPath, manifestId = ACTIVE_ENERGY_UNIFIED_MANIFEST.id) {
+  const manifest = getProductionMigrationManifest(manifestId);
   const results = [];
-  for (const migration of ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations) {
+  const reviewedMigrations = [...new Map([
+    ...manifest.migrations,
+    ...(manifest.requiredAppliedMigrations ?? []),
+  ].map((migration) => [migration.name, migration])).values()];
+  for (const migration of reviewedMigrations) {
     const filename = path.join(repositoryPath, "prisma", "migrations", migration.name, "migration.sql");
     const bytes = await readFile(filename);
     const actual = createHash("sha256").update(bytes).digest("hex");
@@ -60,6 +65,7 @@ export async function verifyMigrationImageFiles(repositoryPath) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   const repositoryPath = process.argv[2] ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-  verifyMigrationImageFiles(repositoryPath).then((result) => process.stdout.write(JSON.stringify(result) + "\n"))
+  const manifestId = process.argv[3] ?? ACTIVE_ENERGY_UNIFIED_MANIFEST.id;
+  verifyMigrationImageFiles(repositoryPath, manifestId).then((result) => process.stdout.write(JSON.stringify(result) + "\n"))
     .catch((error) => { process.stderr.write(error.message + "\n"); process.exitCode = 1; });
 }

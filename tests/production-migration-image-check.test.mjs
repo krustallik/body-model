@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { verifyMigrationImageFiles } from "../scripts/production-migration-image-check.mjs";
-import { ACTIVE_ENERGY_UNIFIED_MANIFEST } from "../scripts/production-migration-manifests.mjs";
+import { ACTIVE_ENERGY_UNIFIED_MANIFEST, V4_REPUBLICATION_MANIFEST } from "../scripts/production-migration-manifests.mjs";
 
 const repositoryPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -38,6 +38,24 @@ describe("production migrator image runtime closure", () => {
         "production-release-marker.mjs",
         "run-prisma-migrate-with-lock-timeout.mjs",
       ]);
+    } finally {
+      await rm(fixturePath, { recursive: true, force: true });
+    }
+  });
+
+  it("checks both the new pending migrations and all six required applied migration blobs", async () => {
+    const fixturePath = await createImageFixture();
+    try {
+      const result = await verifyMigrationImageFiles(fixturePath, V4_REPUBLICATION_MANIFEST.id);
+      expect(result.migrations.map(({ name, matches }) => [name, matches])).toEqual([
+        ...V4_REPUBLICATION_MANIFEST.migrations,
+        ...V4_REPUBLICATION_MANIFEST.requiredAppliedMigrations,
+      ].map(({ name }) => [name, true]));
+
+      const requiredPrior = V4_REPUBLICATION_MANIFEST.requiredAppliedMigrations[0];
+      await writeFile(path.join(fixturePath, "prisma", "migrations", requiredPrior.name, "migration.sql"), "altered historical migration bytes");
+      await expect(verifyMigrationImageFiles(fixturePath, V4_REPUBLICATION_MANIFEST.id))
+        .rejects.toThrow(new RegExp(requiredPrior.name));
     } finally {
       await rm(fixturePath, { recursive: true, force: true });
     }

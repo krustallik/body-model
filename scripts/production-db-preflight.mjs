@@ -1,15 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
-import { EXPECTED_MIGRATION_OBJECTS } from "./production-migration-preflight.mjs";
-import { ACTIVE_ENERGY_UNIFIED_MANIFEST } from "./production-migration-manifests.mjs";
+import { ALL_REVIEWED_OBJECTS } from "./production-migration-preflight.mjs";
 
 export function getExpectedSchemaObjectNames() {
-  return [...new Set([
-    ...EXPECTED_MIGRATION_OBJECTS,
-    ...ACTIVE_ENERGY_UNIFIED_MANIFEST.requiredObjectsBefore,
-    ...ACTIVE_ENERGY_UNIFIED_MANIFEST.postflightObjects,
-  ])].sort();
+  return [...ALL_REVIEWED_OBJECTS].sort();
 }
 
 export function renderProductionDbPreflightSql(template, names = getExpectedSchemaObjectNames()) {

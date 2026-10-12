@@ -7,7 +7,7 @@ import {
 import { UnifiedExperimentalPhysiologySourceLoaderV1 } from "@/model/unified-experimental-physiology-v1/source-loader";
 import {
   buildTransientEpisodePartitionsV2,
-  transientEpisodeTimeForInstantV2,
+  latestCompletedSessionModelDateV2,
 } from "./transient-exercise-water-episode-time-v2";
 import { addCalendarDays } from "./model-calendar";
 import { localDateTimeToInstant } from "@/model/time-zone";
@@ -99,14 +99,7 @@ async function expectedRange(client: DbClient, profileId: number) {
       },
     }),
   ]);
-  const latestSessionModelDate = completedSessions
-    .map((session) => transientEpisodeTimeForInstantV2(
-      partitions,
-      session.matchedWorkout?.startAt ?? session.effectiveAccountingAt ?? session.webStartedAt ?? session.createdAt,
-    )?.modelDate ?? null)
-    .filter((date): date is string => date !== null)
-    .sort()
-    .at(-1) ?? null;
+  const latestSessionModelDate = latestCompletedSessionModelDateV2(partitions, completedSessions);
   const throughDate = [latestDurable?.date, latestSessionModelDate, first.episode.startDate, last.episode.startDate]
     .filter((value): value is string => typeof value === "string")
     .sort()

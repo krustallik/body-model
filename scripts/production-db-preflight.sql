@@ -10,6 +10,17 @@ WITH expected(name) AS (
 ), object_inventory AS (
   SELECT e.name,
     CASE
+      WHEN left(e.name, 9) = 'function:' THEN EXISTS (
+        SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public' AND p.oid = to_regprocedure(format('public.%s', substr(e.name, 10))) AND p.prokind = 'f'
+      )
+      WHEN left(e.name, 8) = 'trigger:' THEN EXISTS (
+        SELECT 1 FROM pg_trigger t
+        JOIN pg_class cl ON cl.oid = t.tgrelid
+        JOIN pg_namespace n ON n.oid = cl.relnamespace
+        WHERE n.nspname = 'public' AND cl.relname = split_part(substr(e.name, 9), '.', 1)
+          AND t.tgname = split_part(substr(e.name, 9), '.', 2) AND NOT t.tgisinternal
+      )
       WHEN strpos(e.name, '.') > 0 THEN EXISTS (
         SELECT 1 FROM information_schema.columns c
         WHERE c.table_schema = 'public' AND c.table_name = split_part(e.name, '.', 1)
@@ -21,6 +32,8 @@ WITH expected(name) AS (
       ELSE FALSE
     END AS present,
     CASE
+      WHEN left(e.name, 9) = 'function:' THEN 'function'
+      WHEN left(e.name, 8) = 'trigger:' THEN 'trigger'
       WHEN strpos(e.name, '.') > 0 THEN 'column'
       WHEN EXISTS (SELECT 1 FROM pg_constraint c WHERE c.connamespace = 'public'::regnamespace AND c.conname = e.name) THEN 'constraint'
       WHEN to_regclass(format('public.%I', e.name)) IS NOT NULL THEN (
@@ -31,6 +44,20 @@ WITH expected(name) AS (
       ELSE 'missing'
     END AS kind,
     CASE
+      WHEN left(e.name, 9) = 'function:' THEN (
+        SELECT 'definition=' || pg_get_functiondef(p.oid)
+        FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public' AND p.oid = to_regprocedure(format('public.%s', substr(e.name, 10))) AND p.prokind = 'f'
+      )
+      WHEN left(e.name, 8) = 'trigger:' THEN (
+        SELECT 'enabled=' || t.tgenabled::text || '|function=' || p.proname || '|definition=' || pg_get_triggerdef(t.oid, true)
+        FROM pg_trigger t
+        JOIN pg_class cl ON cl.oid = t.tgrelid
+        JOIN pg_namespace n ON n.oid = cl.relnamespace
+        JOIN pg_proc p ON p.oid = t.tgfoid
+        WHERE n.nspname = 'public' AND cl.relname = split_part(substr(e.name, 9), '.', 1)
+          AND t.tgname = split_part(substr(e.name, 9), '.', 2) AND NOT t.tgisinternal
+      )
       WHEN strpos(e.name, '.') > 0 THEN (
         SELECT format_type(a.atttypid, a.atttypmod) || '|nullable=' || (NOT a.attnotnull)::text || '|default=' || COALESCE(pg_get_expr(d.adbin, d.adrelid), '')
         FROM pg_attribute a

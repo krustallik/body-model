@@ -258,13 +258,24 @@ jobs:
           REMOTE_HOST_SCRIPT_B64="$(base64 -w0 scripts/production-no-app-preflight-host.sh)"
           REMOTE_COMMAND="set -Eeuo pipefail; deploy_path=\$(printf '%s' '$DEPLOY_PATH_B64' | base64 --decode); export DEPLOY_PATH=\"\$deploy_path\"; export APP_HOST=\$(printf '%s' '$APP_HOST_B64' | base64 --decode); export CADDY_ROUTES_PATH=\$(printf '%s' '$ROUTES_PATH_B64' | base64 --decode); export BODYCAST_PG_RESTORE_VERSION=\$(printf '%s' '$PG_RESTORE_VERSION_B64' | base64 --decode); export BODYCAST_CAPTURE_HISTORY_PROOF_B64='$PROOF_B64'; export BODYCAST_PRODUCTION_RUNS_B64='$RUNS_B64'; export BODYCAST_CURRENT_RUN_ID='$GITHUB_RUN_ID'; cd -- \"\$deploy_path\"; printf '%s' '$REMOTE_HOST_SCRIPT_B64' | base64 --decode | bash -s -- '$RELEASE_SHA'"
           BACKUP_FILE="$RUNNER_TEMP/bodycast-no-app-backup/production-backup.pgdump.enc"
+          umask 077
           set -o pipefail
+          set +e
           timeout 100m ssh -T -p "$SSH_PORT" -i "$BODYCAST_NO_APP_SSH_KEY" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -o "UserKnownHostsFile=$BODYCAST_NO_APP_KNOWN_HOSTS" -o ConnectTimeout=10 \
             "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND" 2> "$RUNNER_TEMP/no-app-host-stderr.log" \
             | node scripts/production-backup-envelope.mjs encrypt --output "$BACKUP_FILE" \
             > "$RUNNER_TEMP/no-app-encryption-result.json"
+          PIPELINE_STATUS=("${PIPESTATUS[@]}")
+          set -e
+          SSH_STATUS="${PIPELINE_STATUS[0]:-1}"
+          ENCRYPT_STATUS="${PIPELINE_STATUS[1]:-1}"
+          if [[ "$SSH_STATUS" != "0" || "$ENCRYPT_STATUS" != "0" ]]; then
+            node scripts/production-no-app-host-failure-summary.mjs \
+              "$RUNNER_TEMP/no-app-host-stderr.log" "$SSH_STATUS" "$ENCRYPT_STATUS" || true
+            exit 1
+          fi
           chmod 600 "$BACKUP_FILE" "$RUNNER_TEMP/no-app-host-stderr.log"
           mapfile -t PAYLOAD_LINES < <(sed -n 's/^BODYCAST_NO_APP_PREPARATION_B64=//p' "$RUNNER_TEMP/no-app-host-stderr.log")
           mapfile -t SNAPSHOT_LINES < <(sed -n 's/^BODYCAST_PGDUMP_INVOCATION_AT=//p' "$RUNNER_TEMP/no-app-host-stderr.log")

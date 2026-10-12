@@ -63,6 +63,29 @@ clear_bodycast_release_marker || status=$?
 [[ "$status" -eq 2 && -f "$BODYCAST_RELEASE_MARKER_PATH" ]] || { echo "Ordinary V1 clear bypassed an existing V2 marker." >&2; exit 1; }
 
 rm "$V2_PATH"
+printf 'schemaVersion=2\nmanifestId=unified-v4-republication-v1\nreleaseSha=%040d\nstate=ddl-starting\nworkflowRunId=390001\nworkflowRunAttempt=1\nauthorizationId=authorization-marker-test-12345\nlineageDigest=%064d\nspawnState=not-started\n' 1 2 \
+  > "$BODYCAST_RELEASE_MARKER_PATH"
+read_bodycast_release_marker
+bodycast_validate_release_marker
+[[ "$BODYCAST_MARKER_MANIFEST_ID" == "unified-v4-republication-v1" ]] || { echo "New V4 migration manifest marker was not accepted." >&2; exit 1; }
+write_bodycast_release_marker "$(printf '%040d' 1)" schema-applied
+grep -Fxq 'manifestId=unified-v4-republication-v1' "$BODYCAST_RELEASE_MARKER_PATH" || {
+  echo "New V4 migration manifest identity was not preserved during marker transition." >&2; exit 1;
+}
+
+printf 'schemaVersion=1\nmanifestId=unified-v4-republication-v1\nreleaseSha=%040d\nstate=ddl-started\n' 1 \
+  > "$BODYCAST_RELEASE_MARKER_PATH"
+status=0
+read_bodycast_release_marker || status=$?
+[[ "$status" -eq 2 ]] || { echo "New manifest was incorrectly admitted through a legacy V1 marker." >&2; exit 1; }
+
+printf 'schemaVersion=3\nmanifestId=unified-v4-republication-v1\nreleaseSha=%040d\nstate=schema-applied\nworkflowRunId=390001\nworkflowRunAttempt=1\nauthorizationId=authorization-marker-test-12345\nlineageDigest=%064d\nspawnState=started\nmigrationOriginSha=%040d\ndeploySha=%040d\nsourceMarkerDigest=%064d\ncompatibilityDigest=%064d\n' 1 2 3 4 5 6 \
+  > "$BODYCAST_RELEASE_MARKER_PATH"
+status=0
+read_bodycast_release_marker || status=$?
+[[ "$status" -eq 2 ]] || { echo "New manifest was incorrectly admitted through a legacy V3 deploy-handoff marker." >&2; exit 1; }
+
+rm "$BODYCAST_RELEASE_MARKER_PATH"
 ln -s "$TMP/missing-target" "$V2_PATH"
 status=0
 read_bodycast_release_marker || status=$?

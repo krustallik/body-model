@@ -8,13 +8,27 @@ import {
 import { EXERCISE_MUSCLE_MAPPING_V7_VERSION } from "@/model/physiology-v7/exercise-muscle-mapping-v7";
 
 function buildDb() {
-  return {
+  const order: string[] = [];
+  type BackfillMock = {
+    $executeRaw: ReturnType<typeof vi.fn>;
     strengthSessionExercise: {
-      findMany: vi.fn(),
-      count: vi.fn(),
-      updateMany: vi.fn(),
-    },
+      findMany: ReturnType<typeof vi.fn>;
+      count: ReturnType<typeof vi.fn>;
+      updateMany: ReturnType<typeof vi.fn>;
+    };
+    order: string[];
   };
+  const db = {
+    $executeRaw: vi.fn(async () => { order.push("profile-lock"); return 1; }),
+    strengthSessionExercise: {
+      findMany: vi.fn(async () => { order.push("findMany"); return []; }),
+      count: vi.fn(async () => { order.push("count"); return 0; }),
+      updateMany: vi.fn(async () => { order.push("updateMany"); return { count: 0 }; }),
+    },
+    order,
+  } as BackfillMock & { $transaction: ReturnType<typeof vi.fn> };
+  db.$transaction = vi.fn(async (callback: (tx: BackfillMock) => Promise<unknown>) => callback(db));
+  return db;
 }
 
 describe("null muscleMappingSnapshot backfill", () => {
@@ -89,6 +103,7 @@ describe("null muscleMappingSnapshot backfill", () => {
       },
     ];
     db.strengthSessionExercise.findMany.mockImplementation(async (args: { select?: { sourceExerciseCatalogId?: boolean } }) => {
+      db.order.push("findMany");
       if (args.select?.sourceExerciseCatalogId) return nullRows;
       return [{ id: 1, sourceExerciseCatalog: { stableKey: "hyperextension" } }];
     });
@@ -100,9 +115,13 @@ describe("null muscleMappingSnapshot backfill", () => {
     expect(dryRun.updatedRows).toBe(0);
     expect(db.strengthSessionExercise.updateMany).not.toHaveBeenCalled();
 
+    db.order.length = 0;
     const applied = await applyNullMuscleMappingSnapshotBackfill(db as never, { dryRun: false });
     expect(applied.dryRun).toBe(false);
     expect(applied.updatedRows).toBe(1);
+    expect(db.$transaction).toHaveBeenCalledTimes(1);
+    expect(db.order[0]).toBe("profile-lock");
+    expect(db.order.indexOf("profile-lock")).toBeLessThan(db.order.indexOf("findMany"));
     expect(db.strengthSessionExercise.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({
         AND: expect.arrayContaining([

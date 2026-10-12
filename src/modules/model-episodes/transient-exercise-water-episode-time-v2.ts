@@ -30,6 +30,13 @@ export type TransientModelDayBoundaryV2 = {
   boundaryInstant: Date;
 };
 
+export type CompletedSessionEventTimeV2 = {
+  effectiveAccountingAt: Date | null;
+  webStartedAt: Date | null;
+  createdAt: Date;
+  matchedWorkout: { startAt: Date } | null;
+};
+
 export function transientModelDayIdentityV2(episodeId: number, modelDate: string): string {
   return `${episodeId}|${modelDate}`;
 }
@@ -125,6 +132,23 @@ export function transientEpisodeTimeForInstantV2<T extends TransientEpisodeTimeR
   const modelDate = instantToLocalDateTime(instant, partition.episode.timezone).date;
   if (modelDate < partition.episode.startDate) return null;
   return { episode: partition.episode, modelDate, timeZone: partition.episode.timezone };
+}
+
+/** Latest model-local date used by the canonical V4 coverage range. */
+export function latestCompletedSessionModelDateV2<T extends TransientEpisodeTimeRowV2>(
+  partitions: readonly TransientEpisodePartitionV2<T>[],
+  sessions: readonly CompletedSessionEventTimeV2[],
+): string | null {
+  let latest: string | null = null;
+  for (const session of sessions) {
+    const occurredAt = session.matchedWorkout?.startAt
+      ?? session.effectiveAccountingAt
+      ?? session.webStartedAt
+      ?? session.createdAt;
+    const modelDate = transientEpisodeTimeForInstantV2(partitions, occurredAt)?.modelDate;
+    if (modelDate !== undefined && modelDate !== null && (latest === null || modelDate > latest)) latest = modelDate;
+  }
+  return latest;
 }
 
 /**

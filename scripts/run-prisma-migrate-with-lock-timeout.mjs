@@ -259,6 +259,7 @@ export async function startPrismaMigrationAtDdlBoundary({
   const marker = await markerWriter({
     markerDirectory,
     releaseSha: authorized.releaseSha,
+    manifestId: receipt.manifestId,
     workflowRunId: authorized.currentWorkflowRunId,
     workflowRunAttempt: authorized.currentWorkflowRunAttempt,
     authorizationId: receipt.authorizationId,

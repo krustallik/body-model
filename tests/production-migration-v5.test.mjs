@@ -6,8 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { canonicalJson } from "../scripts/production-migration-manifests.mjs";
-import { EXPECTED_MIGRATION_OBJECTS, assertProductionDatabaseIdentityMatches, evaluateProductionPreflight, evaluateProductionPostflight, verifyRestoredBackup, schemaInventoryDigest } from "../scripts/production-migration-preflight.mjs";
-import { ACTIVE_ENERGY_UNIFIED_MANIFEST, STAGE_02_MANIFEST } from "../scripts/production-migration-manifests.mjs";
+import { ALL_REVIEWED_OBJECTS, EXPECTED_MIGRATION_OBJECTS, assertProductionDatabaseIdentityMatches, evaluateProductionPreflight, evaluateProductionPostflight, verifyRestoredBackup, schemaInventoryDigest } from "../scripts/production-migration-preflight.mjs";
+import { ACTIVE_ENERGY_UNIFIED_MANIFEST, STAGE_02_MANIFEST, V4_REPUBLICATION_MANIFEST } from "../scripts/production-migration-manifests.mjs";
 import { createAuthorizationEnvelope, verifyAuthorizationEnvelope, assertSignedAuthorizationRequired, canonicalSha256 } from "../scripts/production-migration-authorization.mjs";
 import { selectLatestApplicablePreflight, verifyPreflightArtifactMetadata, isBackupFresh, withPrismaLockTimeout } from "../scripts/production-migration-release.mjs";
 import { readCommittedGitBlob, sha256, verifyExecutionFileMatchesBlob, verifyManifestBlob } from "../scripts/production-migration-integrity.mjs";
@@ -28,23 +28,48 @@ const dirs = [
   ...STAGE_02_MANIFEST.migrations.map((migration) => migration.name),
   ...ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations.map((migration) => migration.name),
 ];
+const fullDirs = [...dirs, ...V4_REPUBLICATION_MANIFEST.migrations.map((migration) => migration.name)];
 
 function migrationRow(migration, checksum = migration.sha256) {
   return { name: migration.name, checksum, startedAt: "2026-10-01T00:00:00.000Z", finishedAt: "2026-10-01T00:00:01.000Z", rolledBackAt: null, hasLogs: false };
 }
 
-function schemaObjects(postflight = false) {
-  return [...EXPECTED_MIGRATION_OBJECTS.map((name) => ({ name, present: true, kind: "constraint", signature: "reviewed-stage02-signature" })),
-    ...ACTIVE_ENERGY_UNIFIED_MANIFEST.requiredObjectsBefore.map((name) => ({
-      name, present: !postflight, kind: "index",
-      signature: postflight ? null : ACTIVE_ENERGY_UNIFIED_MANIFEST.requiredObjectSignatureIncludes[name],
-    })),
-    ...ACTIVE_ENERGY_UNIFIED_MANIFEST.postflightObjects.map((name) => ({
-      name,
-      present: postflight,
-      kind: "table",
-      signature: postflight ? ACTIVE_ENERGY_UNIFIED_MANIFEST.postflightSignatureIncludes[name] ?? "reviewed-active-signature" : null,
-    }))];
+function schemaObjects(state = "old-before") {
+  const oldMigrationsApplied = ["old-after", "v4-before", "v4-after"].includes(state);
+  const newMigrationsApplied = state === "v4-after";
+  const objects = new Map(getExpectedSchemaObjectNames().map((name) => [name, { name, present: false, kind: "missing", signature: null }]));
+  const set = (name, present, kind, signature) => objects.set(name, { name, present, kind, signature: present ? signature ?? "reviewed-signature" : null });
+  for (const name of EXPECTED_MIGRATION_OBJECTS) set(name, true, "constraint", "reviewed-stage02-signature");
+  for (const name of ACTIVE_ENERGY_UNIFIED_MANIFEST.requiredObjectsBefore) {
+    set(name, !oldMigrationsApplied, "index", ACTIVE_ENERGY_UNIFIED_MANIFEST.requiredObjectSignatureIncludes[name]);
+  }
+  for (const name of ACTIVE_ENERGY_UNIFIED_MANIFEST.postflightObjects) {
+    set(name, oldMigrationsApplied, "reviewed", ACTIVE_ENERGY_UNIFIED_MANIFEST.postflightSignatureIncludes[name]);
+  }
+  for (const name of V4_REPUBLICATION_MANIFEST.requiredObjectsBefore) {
+    set(name, oldMigrationsApplied, name.startsWith("function:") ? "function" : name.startsWith("trigger:") ? "trigger" : "reviewed",
+      V4_REPUBLICATION_MANIFEST.requiredObjectSignatureIncludes[name] ?? ACTIVE_ENERGY_UNIFIED_MANIFEST.postflightSignatureIncludes[name]);
+  }
+  for (const name of V4_REPUBLICATION_MANIFEST.partialObjects) {
+    set(name, newMigrationsApplied, "reviewed", V4_REPUBLICATION_MANIFEST.postflightSignatureIncludes[name]);
+  }
+  for (const name of V4_REPUBLICATION_MANIFEST.postflightObjects) {
+    if (name.startsWith("function:") || name.startsWith("trigger:")) {
+      const addedDuringV4Migration = [
+        "function:physiology_v7_model_date(integer, timestamp with time zone)",
+        "function:physiology_v7_training_model_date(integer, integer, timestamp with time zone, timestamp with time zone, timestamp with time zone)",
+        "function:physiology_v7_matched_workout_source_trigger()",
+        "function:physiology_v7_matched_workout_delete_trigger()",
+        "trigger:Workout.Workout_v7_invalidate",
+        "trigger:Workout.Workout_v7_invalidate_matched_delete",
+      ].includes(name);
+      set(name, newMigrationsApplied || (oldMigrationsApplied && !addedDuringV4Migration), name.startsWith("function:") ? "function" : "trigger",
+        newMigrationsApplied
+          ? V4_REPUBLICATION_MANIFEST.postflightSignatureIncludes[name]
+          : V4_REPUBLICATION_MANIFEST.requiredObjectSignatureIncludes[name]);
+    }
+  }
+  return [...objects.values()];
 }
 
 function readyWriterDrain(overrides = {}) {
@@ -96,13 +121,20 @@ function validPreflightReport() {
       migrationRow({ name: dirs[0], sha256: "a".repeat(64) }),
       ...STAGE_02_MANIFEST.migrations.map((migration) => migrationRow(migration)),
     ],
-    objects: schemaObjects(false),
+    objects: schemaObjects("old-before"),
     tables: Object.fromEntries(ACTIVE_ENERGY_UNIFIED_MANIFEST.requiredTablesBefore.map((name) => [name, { exists: true, estimatedRows: 1, totalBytes: 128 }])),
     conflictingLocks: [],
     preparedTransactions: [],
     longTransactions: [],
     writerDrain: readyWriterDrain(),
   };
+}
+
+function validV4RepublicationPreflightReport() {
+  const report = validPreflightReport();
+  report.migrations.push(...ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations.map((migration) => migrationRow(migration)));
+  report.objects = schemaObjects("v4-before");
+  return report;
 }
 
 const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -377,17 +409,20 @@ describe("V5 closed migration manifest and full pending set", () => {
 
   it("matches every reviewed manifest hash to its exact blob at the release commit", async () => {
     const releaseSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim();
-    for (const migration of [...STAGE_02_MANIFEST.migrations, ...ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations]) {
+    for (const migration of [...STAGE_02_MANIFEST.migrations, ...ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations,
+      ...V4_REPUBLICATION_MANIFEST.migrations, ...V4_REPUBLICATION_MANIFEST.requiredAppliedMigrations]) {
       const result = await verifyManifestBlob({ repositoryPath: process.cwd(), releaseSha, migration });
       expect(result.matchesManifest, migration.name).toBe(true);
     }
   });
 
-  it("keeps the direct deployment shell hashes aligned with the closed manifest", async () => {
+  it("loads the closed migration manifest for direct shell byte checks", async () => {
     const script = await readFile(new URL("../scripts/deploy-migrate.sh", import.meta.url), "utf8");
-    for (const migration of ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations) {
-      expect(script).toContain(`${migration.name}|${migration.sha256}`);
-    }
+    expect(script).toContain('getProductionMigrationManifest(process.argv[2])');
+    expect(script).toContain("...manifest.migrations");
+    expect(script).toContain("...(manifest.requiredAppliedMigrations ?? [])");
+    expect(script).toContain('git cat-file blob "$RELEASE_SHA:$relative"');
+    expect(script).toContain('[[ "$actual_hash" == "$expected_hash" ]]');
   });
 
   it("accepts only the exact full pending set and reviewed Stage 02 history", () => {
@@ -395,6 +430,9 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(result.readyForOwnerAuthorization).toBe(true);
     expect(result.pending).toEqual(names);
     expect(result.manifestId).toBe(ACTIVE_ENERGY_UNIFIED_MANIFEST.id);
+    const currentRelease = evaluateProductionPreflight(validPreflightReport(), fullDirs);
+    expect(currentRelease.readyForOwnerAuthorization).toBe(false);
+    expect(currentRelease.pending).toEqual([...names, ...V4_REPUBLICATION_MANIFEST.migrations.map(({ name }) => name)].sort());
   });
 
   it("blocks an extra release migration, unexpected database row, failed row, duplicate, rollback, checksum drift, or partial target schema", () => {
@@ -430,14 +468,201 @@ describe("V5 closed migration manifest and full pending set", () => {
     const post = validPreflightReport();
     post.identity = { ...post.identity, database: "bodycast_restore", databaseOid: 16385, role: "bodycast_restore", serverAddress: "172.20.0.3" };
     post.migrations.push(...ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations.map((migration) => migrationRow(migration)));
-    post.objects = schemaObjects(true);
+    post.objects = schemaObjects("old-after");
     const result = evaluateProductionPostflight(post, dirs, ACTIVE_ENERGY_UNIFIED_MANIFEST.id, { expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore" });
     expect(result.ready).toBe(true);
     post.objects.find((object) => object.name === "RelMuscleDelta_episode_date_key").signature = "unique=false|wrong-columns";
     expect(evaluateProductionPostflight(post, dirs, ACTIVE_ENERGY_UNIFIED_MANIFEST.id, { expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore" }).blockers.join(" ")).toContain("Relative Muscle postflight schema signatures differ");
-    post.objects = schemaObjects(true);
+    post.objects = schemaObjects("old-after");
     post.migrations.find((row) => row.name === ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations[0].name).checksum = "0".repeat(64);
     expect(evaluateProductionPostflight(post, dirs, ACTIVE_ENERGY_UNIFIED_MANIFEST.id, { expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore" }).blockers.join(" ")).toContain("checksum differs");
+  });
+
+  it("authorizes the new two-migration manifest only after all six prior migrations and exact baseline signatures", async () => {
+    const report = validV4RepublicationPreflightReport();
+    const result = evaluateProductionPreflight(report, fullDirs, V4_REPUBLICATION_MANIFEST.id);
+    expect(result.readyForOwnerAuthorization).toBe(true);
+    expect(result.pending).toEqual(V4_REPUBLICATION_MANIFEST.migrations.map(({ name }) => name).sort());
+    expect(result.manifestId).toBe(V4_REPUBLICATION_MANIFEST.id);
+
+    const missingPriorMigration = structuredClone(report);
+    missingPriorMigration.migrations = missingPriorMigration.migrations.filter((row) => row.name !== ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations[0].name);
+    expect(evaluateProductionPreflight(missingPriorMigration, fullDirs, V4_REPUBLICATION_MANIFEST.id).blockers.join(" "))
+      .toContain("Required prior migration");
+
+    const wrongPriorChecksum = structuredClone(report);
+    wrongPriorChecksum.migrations.find((row) => row.name === ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations[0].name).checksum = "0".repeat(64);
+    expect(evaluateProductionPreflight(wrongPriorChecksum, fullDirs, V4_REPUBLICATION_MANIFEST.id).blockers.join(" "))
+      .toContain("Required prior migration");
+
+    const partialSchema = structuredClone(report);
+    partialSchema.objects.find((object) => object.name === V4_REPUBLICATION_MANIFEST.partialObjects[0]).present = true;
+    expect(evaluateProductionPreflight(partialSchema, fullDirs, V4_REPUBLICATION_MANIFEST.id).blockers.join(" "))
+      .toContain("already exist while the exact migration set is pending");
+
+    const partiallyReplacedFunction = structuredClone(report);
+    const parentFunction = partiallyReplacedFunction.objects.find((object) => object.name === "function:physiology_v7_session_source_trigger()");
+    parentFunction.signature = parentFunction.signature.replace(
+      "DECLARE old_date VARCHAR(10);",
+      "DECLARE old_date VARCHAR(10); old_completed BOOLEAN := false;",
+    );
+    expect(evaluateProductionPreflight(partiallyReplacedFunction, fullDirs, V4_REPUBLICATION_MANIFEST.id).blockers.join(" "))
+      .toContain("pre-migration schema signatures differ");
+
+    const partiallyAppliedChildTrigger = structuredClone(report);
+    const childTrigger = partiallyAppliedChildTrigger.objects.find((object) => object.name === "function:physiology_v7_session_child_source_trigger()");
+    const childTriggerTargetSignature = V4_REPUBLICATION_MANIFEST.postflightSignatureIncludes["function:physiology_v7_session_child_source_trigger()"];
+    const childTriggerMigration = await readFile(new URL("../prisma/migrations/20261011130000_only_completed_training_invalidates_v7/migration.sql", import.meta.url), "utf8");
+    const sourceTargets = [
+      ["physiology_v7_model_date", V4_REPUBLICATION_MANIFEST.postflightSignatureIncludes[
+        "function:physiology_v7_model_date(integer, timestamp with time zone)"
+      ]],
+      ["physiology_v7_training_model_date", V4_REPUBLICATION_MANIFEST.postflightSignatureIncludes[
+        "function:physiology_v7_training_model_date(integer, integer, timestamp with time zone, timestamp with time zone, timestamp with time zone)"
+      ]],
+      ["physiology_v7_matched_workout_source_trigger", V4_REPUBLICATION_MANIFEST.postflightSignatureIncludes[
+        "function:physiology_v7_matched_workout_source_trigger()"
+      ]],
+      ["physiology_v7_matched_workout_delete_trigger", V4_REPUBLICATION_MANIFEST.postflightSignatureIncludes[
+        "function:physiology_v7_matched_workout_delete_trigger()"
+      ]],
+      ["physiology_v7_training_date", V4_REPUBLICATION_MANIFEST.postflightSignatureIncludes["function:physiology_v7_training_date(integer)"]],
+      ["physiology_v7_session_source_trigger", V4_REPUBLICATION_MANIFEST.postflightSignatureIncludes["function:physiology_v7_session_source_trigger()"]],
+      ["physiology_v7_session_child_source_trigger", childTriggerTargetSignature],
+    ];
+    for (const [functionName, targetSignature] of sourceTargets) {
+      const source = childTriggerMigration.match(new RegExp(`CREATE OR REPLACE FUNCTION ${functionName}\\([\\s\\S]*?\\$\\$ LANGUAGE plpgsql(?: STABLE)?;`))?.[0];
+      const sourceBody = source?.match(/AS \$\$([\s\S]*?)\$\$ LANGUAGE plpgsql(?: STABLE)?;/)?.[1].replace(/\s+/g, " ").trim();
+      const postflightBody = targetSignature.match(/AS \$function\$([\s\S]*?)\$function\$/)?.[1].replace(/\s+/g, " ").trim();
+      expect(sourceBody, `${functionName} migration body`).toBeTruthy();
+      expect(postflightBody, `${functionName} manifest body`).toBe(sourceBody);
+    }
+    expect(V4_REPUBLICATION_MANIFEST.requiredObjectSignatureExcludes["function:physiology_v7_session_child_source_trigger()"])
+      .toBe(childTriggerTargetSignature);
+    childTrigger.signature = childTriggerTargetSignature;
+    expect(evaluateProductionPreflight(partiallyAppliedChildTrigger, fullDirs, V4_REPUBLICATION_MANIFEST.id).blockers.join(" "))
+      .toContain("already contain target migration changes");
+
+    const wrongBaselineTriggerEvent = structuredClone(report);
+    const baselineSessionTrigger = wrongBaselineTriggerEvent.objects.find((object) => object.name === "trigger:StrengthDiarySession.StrengthDiarySession_v7_invalidate");
+    baselineSessionTrigger.signature = baselineSessionTrigger.signature.replace("AFTER INSERT OR DELETE OR UPDATE", "AFTER INSERT OR UPDATE");
+    expect(evaluateProductionPreflight(wrongBaselineTriggerEvent, fullDirs, V4_REPUBLICATION_MANIFEST.id).blockers.join(" "))
+      .toContain("pre-migration schema signatures differ");
+
+    const missingTrainingDateHelper = structuredClone(report);
+    const trainingDateHelper = missingTrainingDateHelper.objects.find((object) => object.name === "function:physiology_v7_training_date(integer)");
+    trainingDateHelper.present = false;
+    trainingDateHelper.signature = null;
+    expect(evaluateProductionPreflight(missingTrainingDateHelper, fullDirs, V4_REPUBLICATION_MANIFEST.id).blockers.join(" "))
+      .toContain("pre-migration schema signatures differ");
+
+    const partiallyAppliedTrainingModelDate = structuredClone(report);
+    const trainingModelDate = partiallyAppliedTrainingModelDate.objects.find((object) => object.name === "function:physiology_v7_training_model_date(integer, integer, timestamp with time zone, timestamp with time zone, timestamp with time zone)");
+    trainingModelDate.present = true;
+    trainingModelDate.signature = V4_REPUBLICATION_MANIFEST.postflightSignatureIncludes[trainingModelDate.name];
+    expect(evaluateProductionPreflight(partiallyAppliedTrainingModelDate, fullDirs, V4_REPUBLICATION_MANIFEST.id).blockers.join(" "))
+      .toContain("Prior migration output objects should be absent");
+
+    const partiallyAppliedModelDate = structuredClone(report);
+    const modelDate = partiallyAppliedModelDate.objects.find((object) => object.name === "function:physiology_v7_model_date(integer, timestamp with time zone)");
+    modelDate.present = true;
+    modelDate.signature = V4_REPUBLICATION_MANIFEST.postflightSignatureIncludes[modelDate.name];
+    expect(evaluateProductionPreflight(partiallyAppliedModelDate, fullDirs, V4_REPUBLICATION_MANIFEST.id).blockers.join(" "))
+      .toContain("Prior migration output objects should be absent");
+
+    const partiallyAppliedWorkoutTrigger = structuredClone(report);
+    const workoutTrigger = partiallyAppliedWorkoutTrigger.objects.find((object) => object.name === "trigger:Workout.Workout_v7_invalidate");
+    workoutTrigger.present = true;
+    workoutTrigger.signature = V4_REPUBLICATION_MANIFEST.postflightSignatureIncludes[workoutTrigger.name];
+    expect(evaluateProductionPreflight(partiallyAppliedWorkoutTrigger, fullDirs, V4_REPUBLICATION_MANIFEST.id).blockers.join(" "))
+      .toContain("Prior migration output objects should be absent");
+
+    const partiallyAppliedWorkoutDeleteTrigger = structuredClone(report);
+    const workoutDeleteTrigger = partiallyAppliedWorkoutDeleteTrigger.objects.find((object) => object.name === "trigger:Workout.Workout_v7_invalidate_matched_delete");
+    workoutDeleteTrigger.present = true;
+    workoutDeleteTrigger.signature = V4_REPUBLICATION_MANIFEST.postflightSignatureIncludes[workoutDeleteTrigger.name];
+    expect(evaluateProductionPreflight(partiallyAppliedWorkoutDeleteTrigger, fullDirs, V4_REPUBLICATION_MANIFEST.id).blockers.join(" "))
+      .toContain("Prior migration output objects should be absent");
+
+    const driftedInvalidateHelper = structuredClone(report);
+    const invalidateHelper = driftedInvalidateHelper.objects.find((object) => object.name === "function:physiology_v7_invalidate(integer, character varying)");
+    invalidateHelper.signature = invalidateHelper.signature.replace("invalidationGeneration\" = \"PhysiologyV7Lifecycle\".\"invalidationGeneration\" + 1", "invalidationGeneration\" = 0");
+    expect(evaluateProductionPreflight(driftedInvalidateHelper, fullDirs, V4_REPUBLICATION_MANIFEST.id).blockers.join(" "))
+      .toContain("pre-migration schema signatures differ");
+
+    expect(evaluateProductionPreflight(report, [...fullDirs, "20261012120000_unreviewed"], V4_REPUBLICATION_MANIFEST.id).blockers.join(" "))
+      .toContain("Full release-tree pending set differs");
+  });
+
+  it("requires the new postflight schema/functions and exact checksums after the two migrations", () => {
+    const post = validV4RepublicationPreflightReport();
+    post.identity = { ...post.identity, database: "bodycast_restore", databaseOid: 16385, role: "bodycast_restore", serverAddress: "172.20.0.3" };
+    post.migrations.push(...V4_REPUBLICATION_MANIFEST.migrations.map((migration) => migrationRow(migration)));
+    post.objects = schemaObjects("v4-after");
+    const result = evaluateProductionPostflight(post, fullDirs, V4_REPUBLICATION_MANIFEST.id, {
+      expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore",
+    });
+    expect(result.ready).toBe(true);
+
+    const disabledTrigger = structuredClone(post);
+    disabledTrigger.objects.find((object) => object.name === "trigger:StrengthSet.StrengthSet_v7_invalidate").signature = "enabled=D|function=physiology_v7_session_child_source_trigger";
+    expect(evaluateProductionPostflight(disabledTrigger, fullDirs, V4_REPUBLICATION_MANIFEST.id, {
+      expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore",
+    }).blockers.join(" ")).toContain("schema signatures differ");
+
+    const changedTriggerEvent = structuredClone(post);
+    const completedSessionTrigger = changedTriggerEvent.objects.find((object) => object.name === "trigger:StrengthDiarySession.StrengthDiarySession_v7_invalidate");
+    completedSessionTrigger.signature = completedSessionTrigger.signature.replace("AFTER INSERT OR DELETE OR UPDATE", "AFTER INSERT OR UPDATE");
+    expect(evaluateProductionPostflight(changedTriggerEvent, fullDirs, V4_REPUBLICATION_MANIFEST.id, {
+      expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore",
+    }).blockers.join(" ")).toContain("schema signatures differ");
+
+    const changedFunctionControlFlow = structuredClone(post);
+    const sessionFunction = changedFunctionControlFlow.objects.find((object) => object.name === "function:physiology_v7_session_source_trigger()");
+    sessionFunction.signature = sessionFunction.signature.replace(
+      "IF NOT old_completed AND NOT new_completed THEN RETURN COALESCE(NEW, OLD); END IF;",
+      "IF false THEN RETURN COALESCE(NEW, OLD); END IF;",
+    );
+    expect(evaluateProductionPostflight(changedFunctionControlFlow, fullDirs, V4_REPUBLICATION_MANIFEST.id, {
+      expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore",
+    }).blockers.join(" ")).toContain("schema signatures differ");
+
+    const missingModelDateHelper = structuredClone(post);
+    const modelDateHelper = missingModelDateHelper.objects.find((object) => object.name === "function:physiology_v7_model_date(integer, timestamp with time zone)");
+    modelDateHelper.present = false;
+    modelDateHelper.signature = null;
+    expect(evaluateProductionPostflight(missingModelDateHelper, fullDirs, V4_REPUBLICATION_MANIFEST.id, {
+      expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore",
+    }).blockers.join(" ")).toContain("schema objects are missing");
+
+    const driftedTrainingDate = structuredClone(post);
+    const trainingDate = driftedTrainingDate.objects.find((object) => object.name === "function:physiology_v7_training_date(integer)");
+    trainingDate.signature = trainingDate.signature.replace("physiology_v7_training_model_date", "physiology_v7_model_date");
+    expect(evaluateProductionPostflight(driftedTrainingDate, fullDirs, V4_REPUBLICATION_MANIFEST.id, {
+      expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore",
+    }).blockers.join(" ")).toContain("schema signatures differ");
+
+    const missingWorkoutTrigger = structuredClone(post);
+    const workoutTrigger = missingWorkoutTrigger.objects.find((object) => object.name === "trigger:Workout.Workout_v7_invalidate");
+    workoutTrigger.present = false;
+    workoutTrigger.signature = null;
+    expect(evaluateProductionPostflight(missingWorkoutTrigger, fullDirs, V4_REPUBLICATION_MANIFEST.id, {
+      expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore",
+    }).blockers.join(" ")).toContain("schema objects are missing");
+
+    const missingWorkoutDeleteTrigger = structuredClone(post);
+    const workoutDeleteTrigger = missingWorkoutDeleteTrigger.objects.find((object) => object.name === "trigger:Workout.Workout_v7_invalidate_matched_delete");
+    workoutDeleteTrigger.present = false;
+    workoutDeleteTrigger.signature = null;
+    expect(evaluateProductionPostflight(missingWorkoutDeleteTrigger, fullDirs, V4_REPUBLICATION_MANIFEST.id, {
+      expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore",
+    }).blockers.join(" ")).toContain("schema objects are missing");
+
+    const wrongMigrationChecksum = structuredClone(post);
+    wrongMigrationChecksum.migrations.find((row) => row.name === V4_REPUBLICATION_MANIFEST.migrations[0].name).checksum = "f".repeat(64);
+    expect(evaluateProductionPostflight(wrongMigrationChecksum, fullDirs, V4_REPUBLICATION_MANIFEST.id, {
+      expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore",
+    }).blockers.join(" ")).toContain("checksum differs");
   });
 
   it("keeps the complete object inventory synchronized with the SQL renderer", async () => {
@@ -445,11 +670,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     const sql = renderProductionDbPreflightSql(template);
     const normalizedSql = sql.replaceAll("\r\n", "\n");
     const expected = getExpectedSchemaObjectNames();
-    expect(expected).toEqual([...new Set([
-      ...EXPECTED_MIGRATION_OBJECTS,
-      ...ACTIVE_ENERGY_UNIFIED_MANIFEST.requiredObjectsBefore,
-      ...ACTIVE_ENERGY_UNIFIED_MANIFEST.postflightObjects,
-    ])].sort());
+    expect(expected).toEqual([...ALL_REVIEWED_OBJECTS].sort());
     expect(sql).not.toContain("__EXPECTED_SCHEMA_OBJECTS_JSON__");
     expect(sql).toContain("BEGIN READ ONLY;");
     expect(await readFile(new URL("../scripts/run-prisma-migrate-with-lock-timeout.mjs", import.meta.url), "utf8")).toContain("withPrismaLockTimeout(authorized.databaseUrl, 5000)");
@@ -459,6 +680,14 @@ describe("V5 closed migration manifest and full pending set", () => {
     for (const relation of ["Workout", "Profile", "ModelEpisode"]) expect(sql).toContain(`('${relation}')`);
     expect(sql).toContain("inet_server_addr()::text");
     expect(sql).toContain("inet_server_port()");
+    expect(sql).toContain("pg_get_functiondef(p.oid)");
+    expect(sql).toContain("pg_get_triggerdef(t.oid, true)");
+    expect(normalizedSql).toContain("p.oid = to_regprocedure(format('public.%s', substr(e.name, 10)))");
+    expect(normalizedSql).not.toContain("p.proname = substr(e.name, 10)");
+    expect(normalizedSql).not.toContain("p.pronargs = 0");
+    expect(sql).toContain("t.tgenabled::text");
+    expect(sql).toContain("function:");
+    expect(sql).toContain("trigger:");
     expect(sql).toContain("'databaseOid', (SELECT oid::bigint FROM pg_database WHERE datname = current_database())");
     expect(sql).toContain("'clusterSystemIdentifier', (SELECT system_identifier::text FROM pg_control_system())");
     const prismaIdentityProbe = await readFile(new URL("../scripts/run-prisma-migrate-with-lock-timeout.mjs", import.meta.url), "utf8");
@@ -1191,7 +1420,7 @@ describe("Ed25519 authorization envelope and provenance matrix", () => {
       const applied = {
         ...liveReport,
         migrations: [...liveReport.migrations, ...ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations.map((migration) => migrationRow(migration))],
-        objects: schemaObjects(true),
+        objects: schemaObjects("old-after"),
       };
       expect(() => verifyFinalMigrationAuthorization({ ...args, liveReport: applied })).toThrow("final live readiness");
     } finally {
@@ -1379,7 +1608,7 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
     const post = validPreflightReport();
     post.identity = { database: "bodycast_restore", databaseOid: 16385, clusterSystemIdentifier: source.identity.clusterSystemIdentifier, role: "bodycast_restore", serverVersion: "17.11", serverAddress: "172.20.0.3", serverPort: 5432 };
     post.migrations.push(...ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations.map((migration) => migrationRow(migration)));
-    post.objects = schemaObjects(true);
+    post.objects = schemaObjects("old-after");
     const verified = verifyDisposablePostflight(post, dirs);
     expect(verified.verified).toBe(true);
     expect(verified.postSchemaDigest).toMatch(/^[a-f0-9]{64}$/);

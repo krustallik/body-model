@@ -14,6 +14,7 @@ on:
         type: choice
         options:
           - active-energy-unified-v2
+          - unified-v4-republication-v1
       confirm_production_preflight:
         description: Type maintenance-backup-restore to authorize maintenance, encrypted backup, and disposable rehearsal
         required: true
@@ -97,7 +98,12 @@ jobs:
           });
           NODE
           [[ "$CONFIRMATION" == "maintenance-backup-restore" ]] || { echo "::error::Exact maintenance/preflight confirmation is required."; exit 1; }
-          [[ "$MANIFEST_ID" == "active-energy-unified-v2" ]] || { echo "::error::Manifest is not in the closed allowlist."; exit 1; }
+          [[ "$MANIFEST_ID" == "active-energy-unified-v2" || "$MANIFEST_ID" == "unified-v4-republication-v1" ]] || { echo "::error::Manifest is not in the closed allowlist."; exit 1; }
+          if [[ "$MANIFEST_ID" == "unified-v4-republication-v1" \
+            && ( -n "$RESUME_SOURCE_RUN_ID" || -n "$RESUME_MIGRATION_FAILURE_RUN_ID" \
+              || -n "$RESUME_BLOCKED_CAPTURE_RUN_ID" || -n "$FORWARD_RESUME_FAILED_RUN_ID" ) ]]; then
+            echo "::error::The V4 republication manifest requires a fresh standard preflight; historical migration evidence cannot be reused."; exit 1;
+          fi
           [[ "$DISPATCH_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::release_sha must be a full lowercase commit SHA."; exit 1; }
           git fetch --no-tags origin main
           MAIN_TIP="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
@@ -688,6 +694,7 @@ jobs:
           DATABASE_URL: postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_restore
           BODYCAST_TEST_DATABASE_URL: postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_restore
           POSTGRES_IMAGE: public.ecr.aws/docker/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+          MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
         run: |
           set -Eeuo pipefail
           node scripts/restore-encrypted-postgres-backup.mjs
@@ -707,12 +714,12 @@ jobs:
             --source "$RUNNER_TEMP/preflight-report.json" --restored "$RUNNER_TEMP/restored-base-report.json" \
             --readability "$RUNNER_TEMP/restored-readability.json" --repository "$GITHUB_WORKSPACE" \
             > "$RUNNER_TEMP/restore-base-result.json"
-          node scripts/production-migration-preflight.mjs --execution-integrity --manifest active-energy-unified-v2 --release-sha "$GITHUB_SHA" --repository "$GITHUB_WORKSPACE" \
+          node scripts/production-migration-preflight.mjs --execution-integrity --manifest "$MANIFEST_ID" --release-sha "$GITHUB_SHA" --repository "$GITHUB_WORKSPACE" \
             > "$RUNNER_TEMP/execution-integrity.json"
           PRISMA_DATABASE_URL="$(node --input-type=module -e 'import { withPrismaLockTimeout } from "./scripts/production-migration-release.mjs"; process.stdout.write(withPrismaLockTimeout(process.env.DATABASE_URL,5000))')"
           DATABASE_URL="$PRISMA_DATABASE_URL" npx prisma migrate deploy --schema prisma/schema.prisma
           node scripts/production-db-preflight.mjs | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 > "$RUNNER_TEMP/restored-postflight-report.json"
-          node scripts/production-migration-restore-check.mjs --postflight --manifest active-energy-unified-v2 --repository "$GITHUB_WORKSPACE" \
+          node scripts/production-migration-restore-check.mjs --postflight --manifest "$MANIFEST_ID" --repository "$GITHUB_WORKSPACE" \
             --report "$RUNNER_TEMP/restored-postflight-report.json" > "$RUNNER_TEMP/restore-postflight-result.json"
           node scripts/production-migration-restore-check.mjs --combine \
             --base "$RUNNER_TEMP/restore-base-result.json" --postflight "$RUNNER_TEMP/restore-postflight-result.json" \

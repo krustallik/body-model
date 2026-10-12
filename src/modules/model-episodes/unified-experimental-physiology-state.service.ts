@@ -20,7 +20,11 @@ import { replayTransientExerciseWaterV2, transientWaterV2ContributionKg, type Ac
 import { rebuildExperimentalTransientExerciseWaterV2 } from "@/modules/training/experimental-transient-exercise-water-shadow.service";
 import { readTransientExerciseWaterSourceTokenV2 } from "@/modules/training/experimental-transient-exercise-water-shadow.service";
 import { addCalendarDays } from "./model-calendar";
-import { buildTransientEpisodePartitionsV2, transientEpisodeTimeForInstantV2 } from "@/modules/model-episodes/transient-exercise-water-episode-time-v2";
+import {
+  buildTransientEpisodePartitionsV2,
+  latestCompletedSessionModelDateV2,
+  transientEpisodeTimeForInstantV2,
+} from "@/modules/model-episodes/transient-exercise-water-episode-time-v2";
 import { EXPERIMENTAL_CESSATION_DETRAINING_V1_REVISION } from "@/model/physiology-v7/experimental-cessation-detraining-v1";
 import { EXPERIMENTAL_SKELETAL_MUSCLE_DELTA_V1_REVISION } from "@/model/physiology-v7/experimental-skeletal-muscle-delta-v1";
 import { localDateTimeToInstant } from "@/model/time-zone";
@@ -524,8 +528,18 @@ export async function rebuildUnifiedExperimentalPhysiologyStateV1(input: {
     throw new PhysiologyV7ConcurrentSourceChangeError();
   }
   const expectedLifecycleUpdatedAt = publicationState.updatedAt.toISOString();
-  const latestDurable = await client.dailyHealthData.findFirst({ orderBy: { date: "desc" }, select: { date: true } });
-  const requestedToDate = [input.toDate, latestDurable?.date, transientRebuild.earliestModelDate]
+  const [latestDurable, completedSessions] = await Promise.all([
+    client.dailyHealthData.findFirst({ orderBy: { date: "desc" }, select: { date: true } }),
+    client.strengthDiarySession.findMany({
+      where: { profileId, status: "COMPLETED" },
+      select: {
+        effectiveAccountingAt: true, webStartedAt: true, createdAt: true,
+        matchedWorkout: { select: { startAt: true } },
+      },
+    }),
+  ]);
+  const latestSessionModelDate = latestCompletedSessionModelDateV2(episodePartitions, completedSessions);
+  const requestedToDate = [input.toDate, latestDurable?.date, latestSessionModelDate, transientRebuild.earliestModelDate]
     .filter((date): date is string => date !== null && date !== undefined)
     .sort()
     .at(-1) ?? earliestPartition.episode.startDate;

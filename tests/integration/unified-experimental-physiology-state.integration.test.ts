@@ -569,6 +569,67 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     expect((await rows()).every((row) => row.modelRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION)).toBe(true);
   });
 
+  it("includes an unchanged later unmatched session day when republishing after an older training edit", async () => {
+    await seed({ productionGlycogenKg: [0.5, 0.6, 0] });
+    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[0], toDate: dates[2] });
+    await verifyAndPublishUnifiedV3Postflight({ profileId });
+    await activateAndReplayUnifiedV4({ profileId });
+
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      await trainingRepository.ensureCanonicalExerciseCatalog(profileId);
+      const exercise = await prisma.exerciseCatalog.findUniqueOrThrow({
+        where: { profileId_stableKey: { profileId, stableKey: "seated_dumbbell_press" } },
+      });
+      const program = await trainingService.createProgram({
+        name: `${fixtureMethod}-v4-range-session`,
+        exercises: [{ catalogId: exercise.id, plannedSets: 1, resistanceType: RESISTANCE.EXTERNAL_WEIGHT }],
+      }, profileId);
+
+      vi.setSystemTime(new Date(`${dates[1]}T10:00:00.000Z`));
+      const olderSession = await trainingService.startSession(program.id, profileId, "Europe/Bratislava");
+      const olderSet = await trainingService.createSet(olderSession.id, olderSession.exercises[0]!.id, {
+        reps: 8, weightKg: 24, bandNominalResistanceKg: null, rir: 3,
+        completedAt: `${dates[1]}T10:30:00.000Z`,
+      }, profileId);
+      await trainingService.finishSession(olderSession.id, profileId);
+
+      vi.setSystemTime(new Date(`${futureDate}T10:00:00.000Z`));
+      const laterSession = await trainingService.startSession(program.id, profileId, "Europe/Bratislava");
+      await trainingService.createSet(laterSession.id, laterSession.exercises[0]!.id, {
+        reps: 6, weightKg: 18, bandNominalResistanceKg: null, rir: 2,
+        completedAt: `${futureDate}T10:30:00.000Z`,
+      }, profileId);
+      await trainingService.finishSession(laterSession.id, profileId);
+      const laterSource = await prisma.strengthDiarySession.findUniqueOrThrow({
+        where: { id: laterSession.id }, select: { matchedWorkoutId: true },
+      });
+      expect(laterSource.matchedWorkoutId).toBeNull();
+      expect(await prisma.dailyHealthData.findFirst({ where: { date: futureDate }, select: { id: true } })).toBeNull();
+      const laterTransientBefore = await prisma.experimentalTransientExerciseWaterShadow.findUniqueOrThrow({
+        where: { sessionId: laterSession.id }, select: { sourceFingerprint: true },
+      });
+      await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).resolves.toMatchObject({ rolloutEpoch: 1, dayCount: 4 });
+
+      await trainingService.updateSet(olderSession.id, olderSet.id, { reps: 9 }, profileId);
+
+      const laterTransientAfter = await prisma.experimentalTransientExerciseWaterShadow.findUniqueOrThrow({
+        where: { sessionId: laterSession.id }, select: { sourceFingerprint: true },
+      });
+      expect(laterTransientAfter.sourceFingerprint).toBe(laterTransientBefore.sourceFingerprint);
+      await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).resolves.toMatchObject({ rolloutEpoch: 1, dayCount: 4 });
+      const lifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
+      expect(lifecycle).toMatchObject({
+        unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
+        unifiedRolloutEpoch: 1,
+        unifiedPublishedRolloutEpoch: 1,
+        unifiedPublishedGeneration: lifecycle.invalidationGeneration,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 60_000);
+
   it("repairs a committed completed-session deletion after a dependent refresh failure", async () => {
     await seed({ productionGlycogenKg: [0.5, 0.6, 0] });
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[0], toDate: dates[2] });

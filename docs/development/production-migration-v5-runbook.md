@@ -1,6 +1,6 @@
 # Production migration V5 runbook
 
-This runbook describes the owner-authorized manual release path for the six-migration `active-energy-unified-v2` release. A merge or green CI does not deploy this incompatible-schema release. Every production workflow requires a `main` dispatch for the exact current SHA, green CI for that SHA, trusted owner identity `126446430`, and its explicit confirmation input.
+This runbook describes the owner-authorized manual release paths for the `active-energy-unified-v2` release and the follow-up `unified-v4-republication-v1` schema fix. A merge or green CI does not execute either production migration set. Every production workflow requires a `main` dispatch for the exact current SHA, green CI for that SHA, trusted owner identity `126446430`, and its explicit confirmation input.
 
 ## Compatibility decision
 
@@ -38,6 +38,17 @@ The currently reviewed production topology contract is the local Compose stack i
 | `20261006130000_unified_v4_glycogen_water_rollout` | `9e50a8f33ec93e5f7d74681a611bd7272038f7e5e25563054f4a4dbb093b5408` |
 
 The two Stage 02 strength-accounting migrations are prerequisites and must already be recorded once with their reviewed checksums. No extra, missing, failed, duplicate, rolled-back, or checksum-mismatched history is accepted. Preflight requires the old Relative Muscle indexes with their reviewed definitions. Postflight verifies the two dropped indexes are absent, both legacy tables retain `modelEpisodeId` and `isStale`, and the composite ModelEpisode uniqueness, episode/profile foreign keys, episode/stale/date indexes, and final NULLS NOT DISTINCT indexes match the reviewed signatures. Blob checks use exact committed bytes; LF/CRLF normalization is forbidden. Prisma’s stored checksum is checked separately against the pinned `prisma@6.19.3` behavior.
+
+### Follow-up Unified V4 republication schema fix
+
+`unified-v4-republication-v1` authorizes exactly two additional pending migrations, after all six `active-energy-unified-v2` migrations are already applied exactly once with the checksums above:
+
+| Migration | Git-blob SHA-256 |
+| --- | --- |
+| `20261011120000_unified_publication_failure_fence` | `b122658704a2ca7dac3d5de6e3e1b196d04027078d899d0b8e6079bf0a4397bc` |
+| `20261011130000_only_completed_training_invalidates_v7` | `10ee1cf7ca52c44b6fb35d7155f262b2a70e75428138ac6625783493c230d923` |
+
+Use this manifest only when the read-only production report shows those exact two migrations pending and all six prior migrations successful with their pinned checksums. Its preflight also verifies the old lifecycle/function/trigger baseline and rejects partially applied target columns, table, or functions. Its restore rehearsal applies the exact two migrations to the encrypted current-live backup in a disposable PostgreSQL instance and compares the resulting schema signatures. The signed authorization binds this manifest ID and exact pending-set digest; the earlier six-migration authorization, backup, or rehearsal cannot authorize this set. This manifest uses a fresh standard preflight and does not accept historical preflight resume or forward-resume evidence. Cutback remains available only with the new run's signed evidence and verified current-live backup.
 
 ## Owner-authorized execution and order
 

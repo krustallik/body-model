@@ -9,6 +9,9 @@ import {
 } from "@/model/physiology-v7/exercise-muscle-mapping-v7";
 import { DEFAULT_TRAINING_PROFILE_ID } from "./training.constants";
 import { exerciseMappingSnapshotWithAnatomyV1 } from "./exercise-anatomy-mapping-v1";
+import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
+
+type MuscleMappingSnapshotDb = PrismaClient | Prisma.TransactionClient;
 
 export function muscleMappingSnapshotForCatalogStableKey(
   stableKey: string | null | undefined,
@@ -74,7 +77,7 @@ export type MuscleMappingSnapshotBackfillApplyResult = MuscleMappingSnapshotBack
  * Match ONLY via ExerciseCatalog.stableKey — never by display name.
  */
 export async function reportNullMuscleMappingSnapshotBackfill(
-  db: PrismaClient,
+  db: MuscleMappingSnapshotDb,
   profileId = DEFAULT_TRAINING_PROFILE_ID,
 ): Promise<MuscleMappingSnapshotBackfillReport> {
   const nullRows = await db.strengthSessionExercise.findMany({
@@ -163,45 +166,55 @@ export async function applyNullMuscleMappingSnapshotBackfill(
 ): Promise<MuscleMappingSnapshotBackfillApplyResult> {
   const dryRun = options.dryRun ?? true;
   const profileId = options.profileId ?? DEFAULT_TRAINING_PROFILE_ID;
-  const report = await reportNullMuscleMappingSnapshotBackfill(db, profileId);
-
-  if (dryRun || report.eligibleSessionExerciseIds.length === 0) {
-    return { ...report, updatedRows: 0, dryRun };
+  if (dryRun) {
+    const report = await reportNullMuscleMappingSnapshotBackfill(db, profileId);
+    return { ...report, updatedRows: 0, dryRun: true };
   }
 
-  const eligibleRows = await db.strengthSessionExercise.findMany({
-    where: {
-      AND: [
-        { id: { in: report.eligibleSessionExerciseIds } },
-        nullMappingSnapshotWhere(),
-        { session: { profileId } },
-      ],
-    },
-    select: {
-      id: true,
-      sourceExerciseCatalog: { select: { stableKey: true } },
-    },
-  });
+  return db.$transaction(async (tx) => {
+    // Training completion and child-row updates share this profile fence. Take
+    // it before reading candidates so a concurrent completion cannot be missed
+    // between the backfill's eligibility query and its updates.
+    await new PhysiologyV7PersistenceRepository(tx).lockProfile(profileId);
+    const report = await reportNullMuscleMappingSnapshotBackfill(tx, profileId);
+    if (report.eligibleSessionExerciseIds.length === 0) {
+      return { ...report, updatedRows: 0, dryRun: false };
+    }
 
-  let updatedRows = 0;
-  for (const row of eligibleRows) {
-    const stableKey = row.sourceExerciseCatalog?.stableKey ?? null;
-    const snapshot = muscleMappingSnapshotForCatalogStableKey(stableKey);
-    if (snapshot.availability !== "available") continue;
-
-    const result = await db.strengthSessionExercise.updateMany({
+    const eligibleRows = await tx.strengthSessionExercise.findMany({
       where: {
         AND: [
-          { id: row.id },
+          { id: { in: report.eligibleSessionExerciseIds } },
           nullMappingSnapshotWhere(),
+          { session: { profileId } },
         ],
       },
-      data: {
-        muscleMappingSnapshot: snapshot as unknown as Prisma.InputJsonValue,
+      select: {
+        id: true,
+        sourceExerciseCatalog: { select: { stableKey: true } },
       },
     });
-    updatedRows += result.count;
-  }
 
-  return { ...report, updatedRows, dryRun: false };
+    let updatedRows = 0;
+    for (const row of eligibleRows) {
+      const stableKey = row.sourceExerciseCatalog?.stableKey ?? null;
+      const snapshot = muscleMappingSnapshotForCatalogStableKey(stableKey);
+      if (snapshot.availability !== "available") continue;
+
+      const result = await tx.strengthSessionExercise.updateMany({
+        where: {
+          AND: [
+            { id: row.id },
+            nullMappingSnapshotWhere(),
+          ],
+        },
+        data: {
+          muscleMappingSnapshot: snapshot as unknown as Prisma.InputJsonValue,
+        },
+      });
+      updatedRows += result.count;
+    }
+
+    return { ...report, updatedRows, dryRun: false };
+  });
 }

@@ -16,6 +16,7 @@ export const SCHEMA_DEPLOY_HANDOFF_PROVENANCE = Object.freeze({
 
 const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
+const V4_REPUBLICATION_MANIFEST_ID = "unified-v4-republication-v1";
 const V3_STATES = new Set(["schema-applied", "app-ready", "v4-ready", "database-restored", "rollback-app-ready"]);
 const DENIED_PATH = /^(?:prisma\/|public\/|scripts\/unified-v[34]|scripts\/physiology|docker-compose(?:\.prod)?\.yml$|package(?:-lock)?\.json$|next\.config\.[^/]+$|tsconfig(?:\.[^/]+)?\.json$)/;
 const ALLOWED_PATH = /^(?:\.github\/workflows\/|tests\/|scripts\/production-release-marker\.(?:sh|mjs)$|scripts\/production-schema-deploy-handoff\.mjs$|scripts\/production-traffic-cutover\.sh$|scripts\/production-full-history-recalculate\.ts$|src\/modules\/model-episodes\/(?:full-history-recalculation\.service|transient-exercise-water-episode-time-v2)\.ts$|src\/modules\/training\/experimental-transient-exercise-water-shadow\.service\.ts$|Dockerfile$)/;
@@ -262,6 +263,14 @@ export function evaluateSchemaDeployHandoff({ markerText, deploySha, changedPath
   if (!SHA.test(String(deploySha ?? ""))) reject("deploy candidate SHA is malformed");
   const observed = parseSchemaDeployMarker(markerText);
   const marker = observed.marker;
+  if (marker.schemaVersion === 2 && marker.manifestId === V4_REPUBLICATION_MANIFEST_ID
+    && marker.releaseSha === deploySha && marker.state === "schema-applied"
+    && /^[1-9][0-9]*$/.test(String(marker.workflowRunId))
+    && Number.isSafeInteger(marker.workflowRunAttempt) && marker.workflowRunAttempt > 0
+    && /^[A-Za-z0-9-]{16,80}$/.test(String(marker.authorizationId))
+    && DIGEST.test(String(marker.lineageDigest)) && marker.spawnState === "started") {
+    return { action: "not-needed", marker, sourceDigest: observed.digest };
+  }
   if (!provenanceMatches(marker)) reject("marker authorization, lineage, or migration provenance does not match the admitted release");
   if (marker.schemaVersion === 3) {
     if (marker.migrationOriginSha !== SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA || !V3_STATES.has(marker.state)
@@ -359,9 +368,9 @@ function regularFileBlobId(repo, sha, objectPath, optional = false) {
   return match[1];
 }
 
-export function readGitCompatibility(repo, deploySha) {
+export function readGitCompatibility(repo, deploySha, migrationOriginSha = SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA) {
   if (!SHA.test(deploySha)) reject("deploy candidate SHA is malformed");
-  const origin = SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA;
+  const origin = migrationOriginSha;
   try {
     git(repo, ["cat-file", "-e", `${origin}^{commit}`]);
     git(repo, ["cat-file", "-e", `${deploySha}^{commit}`]);
@@ -403,8 +412,11 @@ export async function applySchemaDeployHandoff({ markerPath, deploySha, repo, be
   const directory = path.dirname(path.resolve(markerPath));
   const details = await lstat(markerPath);
   if (!details.isFile() || details.isSymbolicLink()) reject("marker path is not a regular file");
-  const compatibility = readGitCompatibility(repo, deploySha);
   const current = parseSchemaDeployMarker(await readFile(markerPath));
+  const exactMigrationMarker = current.marker.schemaVersion === 2
+    && current.marker.manifestId === V4_REPUBLICATION_MANIFEST_ID
+    && current.marker.releaseSha === deploySha && current.marker.state === "schema-applied";
+  const compatibility = exactMigrationMarker ? {} : readGitCompatibility(repo, deploySha);
   const plan = evaluateSchemaDeployHandoff({ markerText: current.bytes, deploySha, ...compatibility });
   if (plan.action !== "write") return plan;
   const lockPath = `${markerPath}.lock`;
@@ -438,8 +450,13 @@ async function main() {
     const deploySha = second;
     const repo = third || process.cwd();
     if (mode === "--check") {
-      const compatibility = readGitCompatibility(repo, deploySha);
-      evaluateSchemaDeployHandoff({ markerText: await readFile(markerPath), deploySha, ...compatibility });
+      const markerText = await readFile(markerPath);
+      const marker = parseSchemaDeployMarker(markerText).marker;
+      const exactMigrationMarker = marker.schemaVersion === 2
+        && marker.manifestId === V4_REPUBLICATION_MANIFEST_ID
+        && marker.releaseSha === deploySha && marker.state === "schema-applied";
+      const compatibility = exactMigrationMarker ? {} : readGitCompatibility(repo, deploySha);
+      evaluateSchemaDeployHandoff({ markerText, deploySha, ...compatibility });
       return;
     }
     await applySchemaDeployHandoff({ markerPath, deploySha, repo });

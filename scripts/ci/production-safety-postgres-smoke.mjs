@@ -14,10 +14,11 @@ import {
   assertProductionDatabaseIdentityMatches,
   EXPECTED_MIGRATION_OBJECTS,
   EXPECTED_PENDING_MIGRATIONS,
+  EXPECTED_V4_REPUBLICATION_PENDING_MIGRATIONS,
   evaluateProductionPostflight,
   verifyRestoredBackup,
 } from "../production-migration-preflight.mjs";
-import { ACTIVE_ENERGY_UNIFIED_MANIFEST, STAGE_02_MANIFEST } from "../production-migration-manifests.mjs";
+import { ACTIVE_ENERGY_UNIFIED_MANIFEST, STAGE_02_MANIFEST, V4_REPUBLICATION_MANIFEST } from "../production-migration-manifests.mjs";
 import { renderProductionDbPreflightSql } from "../production-db-preflight.mjs";
 import { PRODUCTION_WRITER_TOPOLOGY_CONTRACT } from "../production-writer-drain.mjs";
 import { assertPostgresClientCompatibility } from "../postgres-client-versions.mjs";
@@ -63,7 +64,8 @@ async function createSourceFixture(db = source) {
     .map((entry) => entry.name)
     .sort();
   const releaseSha = run("git", ["rev-parse", "HEAD"]);
-  const applied = migrationDirectories.filter((name) => !EXPECTED_PENDING_MIGRATIONS.includes(name));
+  const pendingMigrationNames = new Set([...EXPECTED_PENDING_MIGRATIONS, ...EXPECTED_V4_REPUBLICATION_PENDING_MIGRATIONS]);
+  const applied = migrationDirectories.filter((name) => !pendingMigrationNames.has(name));
   const stage02Checksums = new Map(STAGE_02_MANIFEST.migrations.map(({ name, sha256 }) => [name, sha256]));
   const rows = applied.map((name, index) => {
     const migrationSql = readCommittedGitBlob({
@@ -82,10 +84,28 @@ async function createSourceFixture(db = source) {
       finished_at timestamp, migration_name text NOT NULL, logs text,
       rolled_back_at timestamp, applied_steps_count integer NOT NULL DEFAULT 0
     );
-    CREATE TABLE public."Workout" (id integer PRIMARY KEY);
+    CREATE TABLE public."DailyHealthData" (id integer PRIMARY KEY, date varchar(10) NOT NULL);
+    CREATE TABLE public."Workout" (
+      id integer PRIMARY KEY,
+      "dailyHealthDataId" integer NOT NULL REFERENCES public."DailyHealthData"(id) ON DELETE RESTRICT,
+      "startAt" timestamp(3) NOT NULL,
+      type varchar(80) NOT NULL,
+      "endAt" timestamp(3) NOT NULL,
+      "durationMinutes" double precision
+    );
     CREATE TABLE public."Profile" (id integer PRIMARY KEY);
-    CREATE TABLE public."ModelEpisode" (id integer PRIMARY KEY, "profileId" integer NOT NULL);
-    CREATE TABLE public."PhysiologyV7Lifecycle" (id text PRIMARY KEY);
+    CREATE TABLE public."ModelEpisode" (
+      id integer PRIMARY KEY, "profileId" integer NOT NULL, "startDate" varchar(10) NOT NULL,
+      timezone varchar(80) NOT NULL, active boolean NOT NULL, "deactivatedAt" timestamptz
+    );
+    CREATE TABLE public."PhysiologyV7Lifecycle" (
+      "profileId" integer PRIMARY KEY, "staleFromDate" varchar(10),
+      "invalidationGeneration" integer NOT NULL DEFAULT 0, "currentThroughDate" varchar(10),
+      "stateVersion" varchar(100) NOT NULL, "sourceNormalizationVersion" varchar(100) NOT NULL,
+      "dailyRuntimeVersion" varchar(100) NOT NULL, "rangeRebuildVersion" varchar(100) NOT NULL,
+      "rebuildServiceVersion" varchar(100) NOT NULL,
+      "createdAt" timestamptz(3) NOT NULL DEFAULT now(), "updatedAt" timestamptz(3) NOT NULL DEFAULT now()
+    );
     CREATE TABLE public."DailyModelState" (id text PRIMARY KEY);
     CREATE TABLE public."ExperimentalSkeletalMuscleDeltaShadow" (
       id serial PRIMARY KEY, "profileId" integer NOT NULL, date varchar(10) NOT NULL,
@@ -103,16 +123,34 @@ async function createSourceFixture(db = source) {
     );
     CREATE UNIQUE INDEX "ExperimentalCessationDetrainingShadow_profileId_date_key"
       ON public."ExperimentalCessationDetrainingShadow" ("profileId", date);
-    CREATE TABLE public."StrengthDiarySession" (id integer PRIMARY KEY);
+    CREATE TABLE public."StrengthDiarySession" (
+      id integer PRIMARY KEY, "profileId" integer NOT NULL, status varchar(20) NOT NULL,
+      "matchedWorkoutId" integer REFERENCES public."Workout"(id) ON DELETE SET NULL,
+      "effectiveAccountingAt" timestamptz,
+      "webStartedAt" timestamptz, "createdAt" timestamptz NOT NULL DEFAULT now()
+    );
     CREATE TABLE public."ExerciseCatalog" (id integer PRIMARY KEY);
     CREATE TABLE public."ProgramExercise" (id integer PRIMARY KEY);
-    CREATE TABLE public."StrengthSessionExercise" (id integer PRIMARY KEY);
-    CREATE TABLE public."StrengthSet" (id integer PRIMARY KEY);
+    CREATE TABLE public."StrengthSessionExercise" (id integer PRIMARY KEY, "sessionId" integer NOT NULL);
+    CREATE TABLE public."StrengthSet" (id integer PRIMARY KEY, "sessionExerciseId" integer NOT NULL);
     CREATE TABLE public."HealthMetricSample" (id integer PRIMARY KEY);
     CREATE TABLE public."BodycastUnrelatedLockProbe" (id integer PRIMARY KEY);
     INSERT INTO public."_prisma_migrations" (id, checksum, started_at, finished_at, migration_name, logs, applied_steps_count)
     VALUES ${rows.join(",\n")};
-    INSERT INTO public."StrengthDiarySession" VALUES (1), (2);
+    INSERT INTO public."DailyHealthData" VALUES (1, '2026-01-01'), (2, '2026-10-10'), (3, '2026-10-10');
+    INSERT INTO public."Workout" (id, "dailyHealthDataId", "startAt", type, "endAt", "durationMinutes") VALUES
+      (1, 1, '2026-01-01 12:00:00', 'Strength Training', '2026-01-01 13:00:00', 60),
+      (2, 2, '2026-10-10 12:00:00', 'Strength Training', '2026-10-10 13:00:00', 60),
+      (3, 3, '2026-10-11 12:00:00', 'Strength Training', '2026-10-11 13:00:00', 60);
+    INSERT INTO public."ModelEpisode" VALUES (1, 1, '2026-01-01', 'Europe/Bratislava', true, NULL);
+    INSERT INTO public."StrengthDiarySession" (
+      id, "profileId", status, "matchedWorkoutId", "effectiveAccountingAt", "webStartedAt"
+    ) VALUES
+      (1, 1, 'ACTIVE', 2, NULL, '2026-10-10T23:30:00Z'),
+      (2, 1, 'COMPLETED', 2, NULL, '2026-10-10T12:00:00Z'),
+      (3, 1, 'ACTIVE', NULL, NULL, '2026-10-10T23:30:00Z');
+    INSERT INTO public."StrengthSessionExercise" VALUES (1, 1), (2, 2), (3, 3);
+    INSERT INTO public."StrengthSet" VALUES (1, 1), (2, 2);
     INSERT INTO public."ExerciseCatalog" VALUES (1), (2), (3);
     INSERT INTO public."Profile" VALUES (1);
     INSERT INTO public."ExperimentalSkeletalMuscleDeltaShadow"
@@ -131,6 +169,129 @@ async function createSourceFixture(db = source) {
       VALUES (1, '2026-01-01', repeat('f', 64), 'relative-muscle-v3', '{}'::jsonb, '{"legacy":"updated"}'::jsonb)
       ON CONFLICT ("profileId", date) DO UPDATE SET result = EXCLUDED.result;`);
   }
+  // The synthetic migration history marks the pre-existing V7 persistence
+  // migrations applied, so install their reviewed helper/trigger baseline.
+  // The follow-up manifest compares these definitions before replacing them.
+  sql(db, `
+    CREATE FUNCTION physiology_v7_invalidate(p_profile_id INTEGER, p_date VARCHAR(10))
+    RETURNS VOID AS $$
+    BEGIN
+      IF p_date IS NULL THEN RETURN; END IF;
+      INSERT INTO "PhysiologyV7Lifecycle" (
+        "profileId", "staleFromDate", "invalidationGeneration",
+        "stateVersion", "sourceNormalizationVersion", "dailyRuntimeVersion",
+        "rangeRebuildVersion", "rebuildServiceVersion", "updatedAt"
+      ) VALUES (
+        p_profile_id, p_date, 1,
+        'bodycast-physiology-v7-state-v3', 'bodycast-v7-source-normalization-1',
+        'bodycast-physiology-daily-runtime-v7-1', 'bodycast-physiology-range-rebuild-v7-1',
+        'bodycast-physiology-v7-rebuild-service-1', CURRENT_TIMESTAMP
+      ) ON CONFLICT ("profileId") DO UPDATE SET
+        "staleFromDate" = CASE
+          WHEN "PhysiologyV7Lifecycle"."staleFromDate" IS NULL THEN EXCLUDED."staleFromDate"
+          ELSE LEAST("PhysiologyV7Lifecycle"."staleFromDate", EXCLUDED."staleFromDate")
+        END,
+        "currentThroughDate" = CASE
+          WHEN "PhysiologyV7Lifecycle"."currentThroughDate" >= EXCLUDED."staleFromDate"
+            THEN to_char((EXCLUDED."staleFromDate"::date - INTERVAL '1 day'), 'YYYY-MM-DD')
+          ELSE "PhysiologyV7Lifecycle"."currentThroughDate"
+        END,
+        "invalidationGeneration" = "PhysiologyV7Lifecycle"."invalidationGeneration" + 1,
+        "updatedAt" = CURRENT_TIMESTAMP;
+    END;
+    $$ LANGUAGE plpgsql;
+
+    CREATE FUNCTION physiology_v7_workout_date(p_workout_id INTEGER)
+    RETURNS VARCHAR(10) AS $$
+    DECLARE affected VARCHAR(10);
+    BEGIN
+      SELECT d."date" INTO affected FROM "Workout" w
+      JOIN "DailyHealthData" d ON d."id" = w."dailyHealthDataId"
+      WHERE w."id" = p_workout_id;
+      RETURN affected;
+    END;
+    $$ LANGUAGE plpgsql;
+
+    CREATE FUNCTION physiology_v7_workout_source_trigger()
+    RETURNS TRIGGER AS $$
+    DECLARE old_date VARCHAR(10); new_date VARCHAR(10); affected VARCHAR(10);
+    BEGIN
+      IF TG_OP <> 'INSERT' THEN
+        SELECT "date" INTO old_date FROM "DailyHealthData" WHERE "id" = OLD."dailyHealthDataId";
+      END IF;
+      IF TG_OP <> 'DELETE' THEN
+        SELECT "date" INTO new_date FROM "DailyHealthData" WHERE "id" = NEW."dailyHealthDataId";
+      END IF;
+      affected := CASE WHEN old_date IS NULL THEN new_date WHEN new_date IS NULL THEN old_date ELSE LEAST(old_date, new_date) END;
+      PERFORM physiology_v7_invalidate(1, affected);
+      RETURN COALESCE(NEW, OLD);
+    END;
+    $$ LANGUAGE plpgsql;
+
+    CREATE TRIGGER "Workout_v7_invalidate_insert_delete"
+    AFTER INSERT OR DELETE ON "Workout"
+    FOR EACH ROW EXECUTE FUNCTION physiology_v7_workout_source_trigger();
+    CREATE TRIGGER "Workout_v7_invalidate_update"
+    AFTER UPDATE OF "dailyHealthDataId", type, "startAt", "endAt", "durationMinutes"
+    ON "Workout" FOR EACH ROW EXECUTE FUNCTION physiology_v7_workout_source_trigger();
+
+    CREATE FUNCTION physiology_v7_training_date(p_session_id INTEGER)
+    RETURNS VARCHAR(10) AS $$
+    DECLARE affected VARCHAR(10);
+    BEGIN
+      SELECT d."date" INTO affected
+      FROM "StrengthDiarySession" s
+      LEFT JOIN "Workout" w ON w."id" = s."matchedWorkoutId"
+      LEFT JOIN "DailyHealthData" d ON d."id" = w."dailyHealthDataId"
+      WHERE s."id" = p_session_id;
+      IF affected IS NULL THEN SELECT MIN("date") INTO affected FROM "DailyHealthData"; END IF;
+      RETURN affected;
+    END;
+    $$ LANGUAGE plpgsql;
+
+    CREATE FUNCTION physiology_v7_session_source_trigger()
+    RETURNS TRIGGER AS $$
+    DECLARE old_date VARCHAR(10); new_date VARCHAR(10); affected VARCHAR(10); pid INTEGER;
+    BEGIN
+      pid := COALESCE(NEW."profileId", OLD."profileId", 1);
+      IF TG_OP <> 'INSERT' THEN old_date := physiology_v7_workout_date(OLD."matchedWorkoutId"); END IF;
+      IF TG_OP <> 'DELETE' THEN new_date := physiology_v7_workout_date(NEW."matchedWorkoutId"); END IF;
+      IF old_date IS NULL AND TG_OP <> 'INSERT' THEN SELECT MIN("date") INTO old_date FROM "DailyHealthData"; END IF;
+      IF new_date IS NULL AND TG_OP <> 'DELETE' THEN SELECT MIN("date") INTO new_date FROM "DailyHealthData"; END IF;
+      affected := CASE WHEN old_date IS NULL THEN new_date WHEN new_date IS NULL THEN old_date ELSE LEAST(old_date, new_date) END;
+      PERFORM physiology_v7_invalidate(pid, affected);
+      RETURN COALESCE(NEW, OLD);
+    END;
+    $$ LANGUAGE plpgsql;
+
+    CREATE TRIGGER "StrengthDiarySession_v7_invalidate"
+    AFTER INSERT OR UPDATE OR DELETE ON "StrengthDiarySession"
+    FOR EACH ROW EXECUTE FUNCTION physiology_v7_session_source_trigger();
+
+    CREATE FUNCTION physiology_v7_session_child_source_trigger()
+    RETURNS TRIGGER AS $$
+    DECLARE sid INTEGER; affected VARCHAR(10); pid INTEGER;
+    BEGIN
+      IF TG_TABLE_NAME = 'StrengthSessionExercise' THEN
+        sid := COALESCE(NEW."sessionId", OLD."sessionId");
+      ELSE
+        SELECT "sessionId" INTO sid FROM "StrengthSessionExercise"
+        WHERE "id" = COALESCE(NEW."sessionExerciseId", OLD."sessionExerciseId");
+      END IF;
+      SELECT "profileId" INTO pid FROM "StrengthDiarySession" WHERE "id" = sid;
+      affected := physiology_v7_training_date(sid);
+      PERFORM physiology_v7_invalidate(COALESCE(pid, 1), affected);
+      RETURN COALESCE(NEW, OLD);
+    END;
+    $$ LANGUAGE plpgsql;
+
+    CREATE TRIGGER "StrengthSessionExercise_v7_invalidate"
+    AFTER INSERT OR UPDATE OR DELETE ON "StrengthSessionExercise"
+    FOR EACH ROW EXECUTE FUNCTION physiology_v7_session_child_source_trigger();
+    CREATE TRIGGER "StrengthSet_v7_invalidate"
+    AFTER INSERT OR UPDATE OR DELETE ON "StrengthSet"
+    FOR EACH ROW EXECUTE FUNCTION physiology_v7_session_child_source_trigger();
+  `);
   return migrationDirectories;
 }
 
@@ -371,6 +532,51 @@ function logicalDataFingerprint(db = source) {
   return digest.digest("hex");
 }
 
+function capturePreexistingDataProjection(db) {
+  const tables = sql(db, `SELECT tablename FROM pg_catalog.pg_tables
+    WHERE schemaname = 'public' AND tablename <> '_prisma_migrations' ORDER BY tablename;`).split("\n").filter(Boolean);
+  const columnsByTable = {};
+  for (const table of tables) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table)) throw new Error("Isolated public table inventory contains an unsupported identifier.");
+    columnsByTable[table] = sql(db, `SELECT attname FROM pg_catalog.pg_attribute
+      WHERE attrelid = format('public.%I', '${table}')::regclass AND attnum > 0 AND NOT attisdropped
+      ORDER BY attnum;`).split("\n").filter(Boolean);
+  }
+  const sequences = sql(db, `SELECT sequencename FROM pg_catalog.pg_sequences WHERE schemaname = 'public' ORDER BY sequencename;`)
+    .split("\n").filter(Boolean);
+  return { columnsByTable, sequences };
+}
+
+function fingerprintPreexistingDataProjection(db, projection) {
+  const digest = createHash("sha256");
+  const script = ["\\set QUIET 1", "\\echo bodycast-preexisting-data-projection-v1"];
+  for (const [table, columns] of Object.entries(projection.columnsByTable)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table) || columns.length === 0
+      || columns.some((column) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(column))) {
+      throw new Error("Isolated pre-existing table projection contains an unsupported identifier.");
+    }
+    const jsonPairs = columns.map((column) => `'${column}', row_value."${column}"`).join(", ");
+    const rowJson = `jsonb_build_object(${jsonPairs})::text`;
+    script.push(`\\echo table:${table}`);
+    script.push(`\\copy (SELECT ${rowJson} FROM public."${table}" AS row_value ORDER BY ${rowJson}) TO STDOUT`);
+    script.push("\\echo");
+  }
+  script.push("\\echo pre-existing-sequences");
+  if (projection.sequences.length > 0) {
+    const sequenceList = projection.sequences.map((name) => `'${name.replaceAll("'", "''")}'`).join(", ");
+    const sequenceProjection = `SELECT sequencename || ':' || COALESCE(last_value::text, 'null') FROM pg_catalog.pg_sequences
+      WHERE schemaname = 'public' AND sequencename IN (${sequenceList}) ORDER BY sequencename`.replaceAll(/\s+/g, " ").trim();
+    script.push(`\\copy (${sequenceProjection}) TO STDOUT`);
+  }
+  const result = spawnSync("docker", [
+    ...clientArgs(db, "psql"), "--no-psqlrc", "--quiet", "--tuples-only", "--no-align",
+    "--set=ON_ERROR_STOP=1", "--file=-",
+  ], { input: `${script.join("\n")}\n`, encoding: null, env: process.env, windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
+  if (result.error || result.status !== 0) throw new Error(`Pre-existing row projection failed (${result.status ?? result.error?.message}): ${String(result.stderr ?? "").trim()}`);
+  digest.update(result.stdout);
+  return digest.digest("hex");
+}
+
 function captureDump(db) {
   const child = spawn("docker", [
     "run", "--rm", "--network", "host", "--env", `PGPASSWORD=${db.password}`, POSTGRES_IMAGE, "pg_dump",
@@ -516,7 +722,7 @@ function databaseUrl(db) {
   return `postgresql://${encodeURIComponent(db.user)}:${encodeURIComponent(db.password)}@${db.host}:${db.port}/${db.database}?schema=public`;
 }
 
-async function deployPendingPrismaMigrations(db, scratch) {
+async function deployPendingPrismaMigrations(db, scratch, { excludeMigrationNames = [] } = {}) {
   const cli = path.join(process.cwd(), "node_modules", "prisma", "build", "index.js");
   const schemaRoot = path.join(scratch, "prisma");
   const migrationsRoot = path.join(schemaRoot, "migrations");
@@ -524,8 +730,9 @@ async function deployPendingPrismaMigrations(db, scratch) {
   await writeFile(path.join(schemaRoot, "schema.prisma"), await readFile("prisma/schema.prisma"));
   await writeFile(path.join(migrationsRoot, "migration_lock.toml"), await readFile("prisma/migrations/migration_lock.toml"));
   const releaseSha = run("git", ["rev-parse", "HEAD"]);
+  const excluded = new Set(excludeMigrationNames);
   const directories = (await readdir("prisma/migrations", { withFileTypes: true }))
-    .filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    .filter((entry) => entry.isDirectory() && !excluded.has(entry.name)).map((entry) => entry.name);
   for (const name of directories) {
     const targetDirectory = path.join(migrationsRoot, name);
     await mkdir(targetDirectory, { recursive: true });
@@ -564,6 +771,232 @@ function assertLegacyRelativeMuscleUpsertsRejected(db) {
       FROM public."${tableName}" WHERE "profileId" = 1 AND date = '2026-01-01';`);
     if (legacyRow !== "t") throw new Error(`The populated legacy ${tableName} row was not retained as stale/unassigned evidence.`);
   }
+}
+
+function readTrainingLifecycle(db) {
+  const [staleFromDate, invalidationGeneration] = sql(db, `SELECT
+    COALESCE("staleFromDate", 'NULL') || '|' || "invalidationGeneration"::text
+    FROM public."PhysiologyV7Lifecycle" WHERE "profileId" = 1;`).split("|");
+  return { staleFromDate: staleFromDate === "NULL" ? null : staleFromDate, invalidationGeneration: Number(invalidationGeneration) };
+}
+
+function resetTrainingLifecycle(db) {
+  sql(db, `UPDATE public."StrengthDiarySession" SET
+      status = CASE id WHEN 2 THEN 'COMPLETED' ELSE 'ACTIVE' END,
+      "matchedWorkoutId" = CASE id WHEN 3 THEN NULL ELSE 2 END,
+      "effectiveAccountingAt" = NULL,
+      "webStartedAt" = CASE id WHEN 3 THEN '2026-10-10T23:30:00Z'::timestamptz ELSE "webStartedAt" END
+      WHERE id IN (1, 2, 3);
+    UPDATE public."Workout" SET "startAt" = CASE id
+      WHEN 1 THEN '2026-01-01 12:00:00'::timestamp
+      WHEN 2 THEN '2026-10-10 12:00:00'::timestamp
+      WHEN 3 THEN '2026-10-11 12:00:00'::timestamp END WHERE id IN (1, 2, 3);
+    UPDATE public."StrengthSessionExercise" SET "sessionId" = id WHERE id IN (1, 2);
+    UPDATE public."StrengthSet" SET "sessionExerciseId" = id WHERE id IN (1, 2);`);
+  sql(db, `INSERT INTO public."PhysiologyV7Lifecycle" (
+      "profileId", "staleFromDate", "invalidationGeneration", "stateVersion",
+      "sourceNormalizationVersion", "dailyRuntimeVersion", "rangeRebuildVersion", "rebuildServiceVersion"
+    ) VALUES (
+      1, NULL, 0, 'bodycast-physiology-v7-state-v3', 'bodycast-v7-source-normalization-1',
+      'bodycast-physiology-daily-runtime-v7-1', 'bodycast-physiology-range-rebuild-v7-1',
+      'bodycast-physiology-v7-rebuild-service-1'
+    ) ON CONFLICT ("profileId") DO UPDATE SET "staleFromDate" = NULL, "invalidationGeneration" = 0;`);
+}
+
+function assertTrainingTriggerSemantics(db) {
+  const helpersReady = sql(db, `SELECT
+    to_regprocedure('public.physiology_v7_invalidate(integer, character varying)') IS NOT NULL
+    AND to_regprocedure('public.physiology_v7_workout_date(integer)') IS NOT NULL
+    AND to_regprocedure('public.physiology_v7_training_date(integer)') IS NOT NULL
+    AND to_regprocedure('public.physiology_v7_training_model_date(integer, integer, timestamp with time zone, timestamp with time zone, timestamp with time zone)') IS NOT NULL
+    AND to_regprocedure('public.physiology_v7_model_date(integer, timestamp with time zone)') IS NOT NULL
+    AND to_regprocedure('public.physiology_v7_matched_workout_source_trigger()') IS NOT NULL
+    AND to_regprocedure('public.physiology_v7_matched_workout_delete_trigger()') IS NOT NULL
+    AND EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+      WHERE c.relname = 'Workout' AND t.tgname = 'Workout_v7_invalidate' AND NOT t.tgisinternal)
+    AND EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+      WHERE c.relname = 'Workout' AND t.tgname = 'Workout_v7_invalidate_matched_delete' AND NOT t.tgisinternal);`);
+  if (helpersReady !== "t") throw new Error("Post-migration V7 trigger helper functions are incomplete.");
+  const assertState = (label, expectedDate, expectedGeneration) => {
+    const state = readTrainingLifecycle(db);
+    if (state.staleFromDate !== expectedDate || state.invalidationGeneration !== expectedGeneration) {
+      throw new Error(`${label} produced the wrong V7 invalidation state: ${JSON.stringify(state)}.`);
+    }
+  };
+  const assertModelDate = (label, profileId, eventAt, expectedDate) => {
+    const actual = sql(db, `SELECT physiology_v7_model_date(${profileId}, '${eventAt}'::timestamptz);`);
+    if (actual !== expectedDate) throw new Error(`${label} mapped to ${actual}, expected ${expectedDate}.`);
+  };
+
+  // V4 partitions by absolute episode boundary instants. An inactive stale row
+  // after the active boundary must not assign an event to its timezone/date.
+  sql(db, `INSERT INTO public."ModelEpisode" VALUES
+    (2, 1, '2026-10-05', 'Pacific/Kiritimati', false, '2026-10-30T00:00:00Z');`);
+  assertModelDate("future inactive episode is suppressed after active boundary", 1, "2026-10-11T12:00:00Z", "2026-10-11");
+  sql(db, `DELETE FROM public."ModelEpisode" WHERE id = 2;`);
+
+  // Episode partitions are half-open: the old inactive interval ends exactly
+  // where the new active episode begins, including a timezone-local midnight.
+  sql(db, `INSERT INTO public."ModelEpisode" VALUES
+    (3, 2, '2026-10-01', 'Europe/Bratislava', false, '2026-10-10T22:00:00Z'),
+    (4, 2, '2026-10-11', 'Europe/Bratislava', true, NULL);`);
+  assertModelDate("instant before episode boundary belongs to old episode", 2, "2026-10-10T21:59:59Z", "2026-10-10");
+  assertModelDate("instant at episode boundary belongs to new episode", 2, "2026-10-10T22:00:00Z", "2026-10-11");
+  sql(db, `DELETE FROM public."ModelEpisode" WHERE "profileId" = 2;`);
+
+  resetTrainingLifecycle(db);
+  sql(db, `UPDATE public."StrengthDiarySession" SET "matchedWorkoutId" = 1 WHERE id = 1;`);
+  assertState("active-session edit", null, 0);
+
+  resetTrainingLifecycle(db);
+  sql(db, `INSERT INTO public."StrengthDiarySession" (
+      id, "profileId", status, "matchedWorkoutId", "effectiveAccountingAt", "webStartedAt", "createdAt"
+    ) VALUES (4, 1, 'COMPLETED', 3, '2026-10-09T12:00:00Z', '2026-10-08T12:00:00Z', '2026-10-07T12:00:00Z');`);
+  assertState("matched workout invalidation includes its DailyHealthData day before later event day", "2026-10-10", 1);
+  sql(db, `DELETE FROM public."StrengthDiarySession" WHERE id = 4;`);
+
+  resetTrainingLifecycle(db);
+  const nonUtcMatchedState = sql(db, `BEGIN;
+    SET LOCAL TIME ZONE 'Asia/Tokyo';
+    INSERT INTO public."DailyHealthData" VALUES (4, '2026-10-12');
+    INSERT INTO public."Workout" (id, "dailyHealthDataId", "startAt", type, "endAt", "durationMinutes")
+      VALUES (4, 4, '2026-10-10 22:30:00', 'Strength Training', '2026-10-10 23:00:00', 30);
+    UPDATE public."PhysiologyV7Lifecycle" SET "staleFromDate" = NULL, "invalidationGeneration" = 0 WHERE "profileId" = 1;
+    INSERT INTO public."StrengthDiarySession" (
+      id, "profileId", status, "matchedWorkoutId", "effectiveAccountingAt", "webStartedAt", "createdAt"
+    ) VALUES (4, 1, 'COMPLETED', 4, '2026-10-09T12:00:00Z', '2026-10-08T12:00:00Z', '2026-10-07T12:00:00Z');
+    SELECT "staleFromDate" || '|' || "invalidationGeneration"::text
+      FROM public."PhysiologyV7Lifecycle" WHERE "profileId" = 1;
+    ROLLBACK;`);
+  if (nonUtcMatchedState !== "2026-10-11|1") {
+    throw new Error(`Matched Workout.startAt was not treated as a UTC timestamp independent of session TimeZone: ${nonUtcMatchedState}.`);
+  }
+
+  resetTrainingLifecycle(db);
+  const deletedMatchedState = sql(db, `BEGIN;
+    SET LOCAL TIME ZONE 'Asia/Tokyo';
+    INSERT INTO public."DailyHealthData" VALUES (4, '2026-10-12');
+    INSERT INTO public."Workout" (id, "dailyHealthDataId", "startAt", type, "endAt", "durationMinutes")
+      VALUES (4, 4, '2026-10-10 22:30:00', 'Strength Training', '2026-10-10 23:00:00', 30);
+    UPDATE public."PhysiologyV7Lifecycle" SET "staleFromDate" = NULL, "invalidationGeneration" = 0 WHERE "profileId" = 1;
+    INSERT INTO public."StrengthDiarySession" (
+      id, "profileId", status, "matchedWorkoutId", "effectiveAccountingAt", "webStartedAt", "createdAt"
+    ) VALUES (4, 1, 'COMPLETED', 4, NULL, '2026-10-13T12:00:00Z', '2026-10-13T12:00:00Z');
+    UPDATE public."PhysiologyV7Lifecycle" SET "staleFromDate" = NULL, "invalidationGeneration" = 0 WHERE "profileId" = 1;
+    DELETE FROM public."Workout" WHERE id = 4;
+    SELECT "staleFromDate" || '|' || "invalidationGeneration"::text || '|'
+      || COALESCE((SELECT "matchedWorkoutId"::text FROM public."StrengthDiarySession" WHERE id = 4), 'NULL')
+      FROM public."PhysiologyV7Lifecycle" WHERE "profileId" = 1;
+    ROLLBACK;`);
+  if (deletedMatchedState !== "2026-10-11|3|NULL") {
+    throw new Error(`Matched Workout deletion lost the old event-day invalidation or the session link was not safely nulled: ${deletedMatchedState}.`);
+  }
+
+  resetTrainingLifecycle(db);
+  sql(db, `UPDATE public."StrengthDiarySession" SET status = 'COMPLETED' WHERE id = 1;`);
+  assertState("active-to-completed transition", "2026-10-10", 1);
+
+  resetTrainingLifecycle(db);
+  sql(db, `UPDATE public."StrengthDiarySession" SET "matchedWorkoutId" = 3 WHERE id = 2;`);
+  assertState("matched workout edit invalidates its previous source date", "2026-10-10", 1);
+  resetTrainingLifecycle(db);
+  sql(db, `UPDATE public."StrengthDiarySession" SET "matchedWorkoutId" = 1 WHERE id = 2;`);
+  assertState("matched workout edit invalidates the earlier of old and new dates", "2026-01-01", 1);
+
+  resetTrainingLifecycle(db);
+  sql(db, `UPDATE public."Workout" SET "startAt" = '2026-10-11T12:00:00Z' WHERE id = 2;`);
+  assertState("matched Workout.startAt edit invalidates both the DailyHealthData day and old/new model event dates", "2026-10-10", 2);
+
+  resetTrainingLifecycle(db);
+  sql(db, `UPDATE public."StrengthDiarySession" SET status = 'CANCELLED', "matchedWorkoutId" = NULL WHERE id = 2;`);
+  assertState("completed-to-cancelled transition", "2026-10-10", 1);
+
+  resetTrainingLifecycle(db);
+  sql(db, `UPDATE public."StrengthDiarySession" SET status = 'COMPLETED',
+      "effectiveAccountingAt" = '2026-10-11T23:30:00Z' WHERE id = 3;`);
+  assertState("unmatched completion uses the episode-local model date", "2026-10-11", 1);
+
+  resetTrainingLifecycle(db);
+  sql(db, `UPDATE public."StrengthDiarySession" SET status = 'COMPLETED',
+      "effectiveAccountingAt" = '2026-10-11T23:30:00Z' WHERE id = 3;
+    UPDATE public."PhysiologyV7Lifecycle" SET "staleFromDate" = NULL, "invalidationGeneration" = 0 WHERE "profileId" = 1;
+    INSERT INTO public."StrengthSessionExercise" VALUES (4, 3);`);
+  assertState("unmatched completed child insert uses the episode-local model date", "2026-10-11", 1);
+  sql(db, `DELETE FROM public."StrengthSessionExercise" WHERE id = 4;`);
+  assertState("unmatched completed child delete uses the episode-local model date", "2026-10-11", 2);
+
+  resetTrainingLifecycle(db);
+  sql(db, `UPDATE public."StrengthDiarySession" SET status = 'COMPLETED',
+      "effectiveAccountingAt" = '2026-10-11T12:00:00Z', "webStartedAt" = NULL WHERE id = 3;`);
+  assertState("unmatched completion uses effective accounting when web start is absent", "2026-10-11", 1);
+
+  resetTrainingLifecycle(db);
+  sql(db, `INSERT INTO public."StrengthDiarySession" (
+      id, "profileId", status, "matchedWorkoutId", "effectiveAccountingAt", "webStartedAt", "createdAt"
+    ) VALUES (4, 1, 'COMPLETED', NULL, '2026-10-11T12:00:00Z', NULL, '2026-10-09T12:00:00Z');
+    UPDATE public."StrengthDiarySession" SET "effectiveAccountingAt" = '2026-10-12T12:00:00Z' WHERE id = 4;`);
+  assertState("timestamp edit invalidates the earlier old event date", "2026-10-11", 2);
+  sql(db, `DELETE FROM public."StrengthDiarySession" WHERE id = 4;`);
+  resetTrainingLifecycle(db);
+  sql(db, `UPDATE public."StrengthDiarySession" SET status = 'COMPLETED',
+      "effectiveAccountingAt" = '2026-10-11T12:00:00Z', "webStartedAt" = NULL WHERE id = 3;`);
+  sql(db, `INSERT INTO public."StrengthSessionExercise" VALUES (4, 3);`);
+  assertState("unmatched completed child insert uses effective accounting date", "2026-10-11", 1);
+  sql(db, `DELETE FROM public."StrengthSessionExercise" WHERE id = 4;`);
+  assertState("unmatched completed child delete uses effective accounting date", "2026-10-11", 2);
+
+  resetTrainingLifecycle(db);
+  sql(db, `INSERT INTO public."StrengthDiarySession" (
+      id, "profileId", status, "matchedWorkoutId", "effectiveAccountingAt", "webStartedAt", "createdAt"
+    ) VALUES (4, 1, 'COMPLETED', NULL, NULL, NULL, '2026-10-12T12:00:00Z');`);
+  assertState("legacy unmatched completion falls back to createdAt", "2026-10-12", 1);
+  sql(db, `DELETE FROM public."StrengthDiarySession" WHERE id = 4;`);
+
+  resetTrainingLifecycle(db);
+  sql(db, `INSERT INTO public."StrengthDiarySession" (
+      id, "profileId", status, "matchedWorkoutId", "effectiveAccountingAt", "webStartedAt"
+    ) VALUES (4, 1, 'COMPLETED', 1, NULL, '2026-01-01T12:00:00Z');`);
+  assertState("completed-session insert", "2026-01-01", 1);
+
+  resetTrainingLifecycle(db);
+  sql(db, `DELETE FROM public."StrengthDiarySession" WHERE id = 4;`);
+  assertState("completed-session delete", "2026-01-01", 1);
+
+  resetTrainingLifecycle(db);
+  sql(db, `INSERT INTO public."StrengthSessionExercise" VALUES (4, 2);`);
+  assertState("completed-session exercise insert", "2026-10-10", 1);
+
+  resetTrainingLifecycle(db);
+  sql(db, `DELETE FROM public."StrengthSessionExercise" WHERE id = 4;`);
+  assertState("completed-session exercise delete", "2026-10-10", 1);
+
+  resetTrainingLifecycle(db);
+  sql(db, `INSERT INTO public."StrengthSet" VALUES (3, 2);`);
+  assertState("completed-session set insert", "2026-10-10", 1);
+
+  resetTrainingLifecycle(db);
+  sql(db, `DELETE FROM public."StrengthSet" WHERE id = 3;`);
+  assertState("completed-session set delete", "2026-10-10", 1);
+
+  resetTrainingLifecycle(db);
+  sql(db, `UPDATE public."StrengthSessionExercise" SET "sessionId" = 3 WHERE id = 1;`);
+  assertState("active exercise edit", null, 0);
+
+  resetTrainingLifecycle(db);
+  sql(db, `UPDATE public."StrengthSessionExercise" SET "sessionId" = 2 WHERE id = 1;`);
+  assertState("exercise moved into completed session", "2026-10-10", 1);
+
+  resetTrainingLifecycle(db);
+  sql(db, `UPDATE public."StrengthSessionExercise" SET "sessionId" = 1 WHERE id = 2;`);
+  assertState("exercise moved out of completed session", "2026-10-10", 1);
+
+  resetTrainingLifecycle(db);
+  sql(db, `UPDATE public."StrengthSet" SET "sessionExerciseId" = 3 WHERE id = 1;`);
+  assertState("active set edit", null, 0);
+
+  resetTrainingLifecycle(db);
+  sql(db, `UPDATE public."StrengthSet" SET "sessionExerciseId" = 2 WHERE id = 2;`);
+  assertState("completed set edit", "2026-10-10", 1);
 }
 
 async function verifyPrismaTargetBinding({ sourceUrl, alternateUrl, signedIdentity, scratch }) {
@@ -678,8 +1111,9 @@ async function main() {
   try {
     verifyPinnedPostgresClientVersions();
     const mixedSshKeysFiltered = verifyMixedSshKeyFiltering(scratch);
-    const migrationDirectories = await createSourceFixture();
-    const sourceReport = readSourceReport();
+    const allMigrationDirectories = await createSourceFixture();
+    let migrationDirectories = allMigrationDirectories.filter((name) => !EXPECTED_V4_REPUBLICATION_PENDING_MIGRATIONS.includes(name));
+    let sourceReport = readSourceReport();
     if (typeof sourceReport.identity?.databaseOid !== "number" || typeof sourceReport.identity?.serverPort !== "number") {
       throw new Error("Production preflight identity JSON must preserve numeric database OID and server port values for Prisma target binding.");
     }
@@ -850,10 +1284,12 @@ async function main() {
     let preparedLockCleanupRestoredReadiness = false;
     let unrelatedPreparedLockIgnored = false;
     await withPreparedLockPostgres(async (preparedDb) => {
-      const preparedMigrations = await createSourceFixture(preparedDb);
+      const preparedMigrationDirectories = await createSourceFixture(preparedDb);
+      const preparedMigrations = preparedMigrationDirectories.filter((name) => !EXPECTED_V4_REPUBLICATION_PENDING_MIGRATIONS.includes(name));
       const cleanReport = readSourceReport(preparedDb);
       if (!evaluateProductionPreflight(cleanReport, preparedMigrations).readyForOwnerAuthorization) {
-        throw new Error("Prepared-lock PostgreSQL baseline was not ready before the prepared transaction test.");
+        const blockers = evaluateProductionPreflight(cleanReport, preparedMigrations).blockers;
+        throw new Error(`Prepared-lock PostgreSQL baseline was not ready before the prepared transaction test: ${blockers.join(" ")}`);
       }
       await withPreparedTransactionRelationLock(preparedDb, "BodycastUnrelatedLockProbe", async (gid) => {
         const report = readSourceReport(preparedDb);
@@ -914,6 +1350,21 @@ async function main() {
       throw new Error("Prepared-transaction lock smoke did not prove blocker detection, unrelated-lock handling, and cleanup/readiness restoration.");
     }
 
+    await deployPendingPrismaMigrations(source, scratch, {
+      excludeMigrationNames: EXPECTED_V4_REPUBLICATION_PENDING_MIGRATIONS,
+    });
+    sourceReport = readSourceReport();
+    const sixMigrationPostflight = evaluateProductionPostflight(sourceReport, migrationDirectories, ACTIVE_ENERGY_UNIFIED_MANIFEST.id);
+    if (!sixMigrationPostflight.ready) {
+      throw new Error(`Six-migration PostgreSQL source fixture did not reach the reviewed postflight: ${sixMigrationPostflight.blockers.join(" ")}`);
+    }
+    const v4Preflight = evaluateProductionPreflight(sourceReport, allMigrationDirectories, V4_REPUBLICATION_MANIFEST.id);
+    if (!v4Preflight.readyForOwnerAuthorization
+      || JSON.stringify(v4Preflight.pending) !== JSON.stringify([...EXPECTED_V4_REPUBLICATION_PENDING_MIGRATIONS].sort())) {
+      throw new Error(`Post-six-migration source fixture did not expose exactly the V4 republication pending set: ${JSON.stringify(v4Preflight.blockers)}`);
+    }
+    migrationDirectories = allMigrationDirectories;
+
     const dump = captureDump(source);
     const encrypted = await encryptBackupStream(dump.stream, archive, key);
     await dump.exited;
@@ -962,15 +1413,32 @@ async function main() {
       throw new Error("Restored fixture tables did not return the expected rows.");
     }
 
+    const restoredV4Preflight = evaluateProductionPreflight(alternateDatabasePreflight, allMigrationDirectories, V4_REPUBLICATION_MANIFEST.id, {
+      expectedDatabase: target.database,
+      expectedRole: target.user,
+    });
+    if (!restoredV4Preflight.readyForOwnerAuthorization
+      || JSON.stringify(restoredV4Preflight.pending) !== JSON.stringify([...EXPECTED_V4_REPUBLICATION_PENDING_MIGRATIONS].sort())) {
+      throw new Error(`Restored six-migration backup did not retain the exact V4 pending set: ${JSON.stringify(restoredV4Preflight.blockers)}`);
+    }
+
+    const v4PreservedDataProjection = capturePreexistingDataProjection(target);
+    const v4PreservedDataBefore = fingerprintPreexistingDataProjection(target, v4PreservedDataProjection);
     await deployPendingPrismaMigrations(target, scratch);
+    const v4PreservedDataAfter = fingerprintPreexistingDataProjection(target, v4PreservedDataProjection);
+    const v4ProtectedRowsPreserved = v4PreservedDataBefore === v4PreservedDataAfter;
+    if (!v4ProtectedRowsPreserved) {
+      throw new Error("V4 republication migrations changed rows or sequence state in pre-existing non-migration-ledger tables.");
+    }
     const migratedReport = readSourceReport(target);
-    const migratedDecision = evaluateProductionPostflight(migratedReport, migrationDirectories, ACTIVE_ENERGY_UNIFIED_MANIFEST.id, {
+    const migratedDecision = evaluateProductionPostflight(migratedReport, allMigrationDirectories, V4_REPUBLICATION_MANIFEST.id, {
       expectedDatabase: target.database,
       expectedRole: target.user,
     });
     if (!migratedDecision.ready) {
-      throw new Error(`Full populated Relative Muscle + glycogen migration postflight failed: ${migratedDecision.blockers.join(" ")}`);
+      throw new Error(`Isolated PostgreSQL V4 republication migration postflight failed: ${migratedDecision.blockers.join(" ")}`);
     }
+    assertTrainingTriggerSemantics(target);
     assertLegacyRelativeMuscleUpsertsRejected(target);
 
     const corruptedArchive = await readFile(archive);
@@ -1038,6 +1506,12 @@ async function main() {
       postgresImage: POSTGRES_IMAGE,
       syntheticMigrations: migrationDirectories.length,
       exactPending: evaluated.pending,
+      v4RepublicationManifestId: V4_REPUBLICATION_MANIFEST.id,
+      v4RepublicationPendingBeforeRehearsal: v4Preflight.pending,
+      v4RepublicationPostflightReady: migratedDecision.ready,
+      v4RepublicationMigrationsApplied: [...EXPECTED_V4_REPUBLICATION_PENDING_MIGRATIONS].sort(),
+      v4ProtectedRowsPreserved,
+      v4TrainingTriggerBehaviorVerified: true,
       allowedSinglePreflightConnection: true,
       previousAppCompatibilitySnapshotNonAdmission: !snapshotAdmission.readyForOwnerAuthorization,
       previousAppCompatibilityBoundToDrainedPreflight: previousAppBinding.verified,

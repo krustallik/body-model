@@ -10,6 +10,7 @@ import {
 } from "../scripts/production-schema-deploy-handoff.mjs";
 
 const DEPLOY_SHA = "71c091cd712cd3862d2cebe2714963917c9b5ca2";
+const V4_MIGRATION_SHA = "19a660c4c23081b6dc54e0ecd19d79806c8ecf4c";
 const SCHEMA_COMPATIBLE_CHECKOUT_SHA = "9c7a6c9ac9270da52e6e2f5afe55094106f66e2d";
 const provenance = SCHEMA_DEPLOY_HANDOFF_PROVENANCE;
 const directories = [];
@@ -27,6 +28,32 @@ function markerText(overrides = {}) {
     releaseSha: SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA,
     state: "schema-applied",
     ...provenance,
+    ...overrides,
+  };
+  return [
+    "schemaVersion=2",
+    `manifestId=${marker.manifestId}`,
+    `releaseSha=${marker.releaseSha}`,
+    `state=${marker.state}`,
+    `workflowRunId=${marker.workflowRunId}`,
+    `workflowRunAttempt=${marker.workflowRunAttempt}`,
+    `authorizationId=${marker.authorizationId}`,
+    `lineageDigest=${marker.lineageDigest}`,
+    `spawnState=${marker.spawnState}`,
+    "",
+  ].join("\n");
+}
+
+function v4MigrationMarkerText(overrides = {}) {
+  const marker = {
+    manifestId: "unified-v4-republication-v1",
+    releaseSha: V4_MIGRATION_SHA,
+    state: "schema-applied",
+    workflowRunId: "390001",
+    workflowRunAttempt: 1,
+    authorizationId: "authorization-v4-manifest-12345",
+    lineageDigest: "b".repeat(64),
+    spawnState: "started",
     ...overrides,
   };
   return [
@@ -63,6 +90,20 @@ afterEach(async () => {
 });
 
 describe("schema deploy compatibility handoff", () => {
+  it("admits only the exact SHA of the new manifest's successful schema-applied marker", () => {
+    const marker = v4MigrationMarkerText();
+    expect(evaluateSchemaDeployHandoff({ markerText: marker, deploySha: V4_MIGRATION_SHA })).toMatchObject({
+      action: "not-needed",
+      marker: { manifestId: "unified-v4-republication-v1", releaseSha: V4_MIGRATION_SHA, state: "schema-applied", spawnState: "started" },
+    });
+    expect(() => evaluateSchemaDeployHandoff({ markerText: marker, deploySha: "a".repeat(40) }))
+      .toThrow(/migration provenance/);
+    expect(() => evaluateSchemaDeployHandoff({ markerText: v4MigrationMarkerText({ spawnState: "not-started" }), deploySha: V4_MIGRATION_SHA }))
+      .toThrow(/migration provenance/);
+    expect(() => evaluateSchemaDeployHandoff({ markerText: v4MigrationMarkerText({ workflowRunId: "0" }), deploySha: V4_MIGRATION_SHA }))
+      .toThrow(/migration provenance/);
+  });
+
   it("accepts the real migration-origin descendant whose runtime trees match", () => {
     const compatibility = readGitCompatibility(process.cwd(), DEPLOY_SHA);
     const plan = evaluateSchemaDeployHandoff({

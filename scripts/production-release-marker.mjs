@@ -5,6 +5,7 @@ import path from "node:path";
 const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const RUN_ID = /^[1-9][0-9]*$/;
+const MANIFEST_IDS = new Set(["active-energy-unified-v2", "unified-v4-republication-v1"]);
 const MARKER_NAME = "marker";
 const STATES = new Set([
   "ddl-starting", "ddl-started", "schema-applied", "app-ready", "v4-ready",
@@ -47,7 +48,7 @@ export function parseProductionReleaseMarker(text) {
     lineageDigest: values.lineageDigest,
     spawnState: values.spawnState,
   };
-  if (marker.manifestId !== "active-energy-unified-v2" || !SHA.test(marker.releaseSha) || !STATES.has(marker.state)
+  if (!MANIFEST_IDS.has(marker.manifestId) || !SHA.test(marker.releaseSha) || !STATES.has(marker.state)
     || !RUN_ID.test(marker.workflowRunId) || !Number.isSafeInteger(marker.workflowRunAttempt) || marker.workflowRunAttempt < 1
     || !/^[A-Za-z0-9-]{16,80}$/.test(marker.authorizationId) || !DIGEST.test(marker.lineageDigest)
     || !new Set(["not-started", "started"]).has(marker.spawnState)) {
@@ -63,7 +64,7 @@ export function parseProductionReleaseMarker(text) {
 function serializeMarker(marker) {
   const normalized = {
     schemaVersion: 2,
-    manifestId: "active-energy-unified-v2",
+    manifestId: marker.manifestId ?? "active-energy-unified-v2",
     releaseSha: marker.releaseSha,
     state: marker.state,
     workflowRunId: String(marker.workflowRunId),
@@ -72,7 +73,7 @@ function serializeMarker(marker) {
     lineageDigest: marker.lineageDigest,
     spawnState: marker.spawnState,
   };
-  if (!SHA.test(normalized.releaseSha) || !STATES.has(normalized.state) || !RUN_ID.test(normalized.workflowRunId)
+  if (!MANIFEST_IDS.has(normalized.manifestId) || !SHA.test(normalized.releaseSha) || !STATES.has(normalized.state) || !RUN_ID.test(normalized.workflowRunId)
     || !Number.isSafeInteger(normalized.workflowRunAttempt) || normalized.workflowRunAttempt < 1
     || !/^[A-Za-z0-9-]{16,80}$/.test(normalized.authorizationId) || !DIGEST.test(normalized.lineageDigest)
     || !new Set(["not-started", "started"]).has(normalized.spawnState)) throw new Error("refusing malformed release marker values");
@@ -99,7 +100,7 @@ export async function readProductionReleaseMarker(markerPath) {
   return { marker: parseProductionReleaseMarker(bytes), digest: createHash("sha256").update(bytes).digest("hex"), bytes };
 }
 
-export async function writeDdlStartingMarker({ markerDirectory, releaseSha, workflowRunId, workflowRunAttempt,
+export async function writeDdlStartingMarker({ markerDirectory, releaseSha, manifestId = "active-energy-unified-v2", workflowRunId, workflowRunAttempt,
   authorizationId, lineageDigest, expectedPriorDigest = null, expectedPriorMarker = null }) {
   const directory = path.resolve(markerDirectory);
   const details = await lstat(directory).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error));
@@ -126,7 +127,7 @@ export async function writeDdlStartingMarker({ markerDirectory, releaseSha, work
         throw new Error("forward-resume marker lineage changed before DDL handoff");
       }
     }
-    const marker = { releaseSha, state: "ddl-starting", workflowRunId, workflowRunAttempt, authorizationId, lineageDigest, spawnState: "not-started" };
+    const marker = { manifestId, releaseSha, state: "ddl-starting", workflowRunId, workflowRunAttempt, authorizationId, lineageDigest, spawnState: "not-started" };
     const bytes = serializeMarker(marker);
     const temporary = path.join(directory, `.marker.new.${process.pid}.${randomUUID()}`);
     const handle = await open(temporary, "wx", 0o600);

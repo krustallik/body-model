@@ -19,10 +19,13 @@ import {
   readVerifiedCutbackReceiptFromGitDir,
   parsePreviousAppProvenance,
   previousAppDatabaseCompatibilityDigests,
+  previousAppImagePin,
   previousAppProvenanceBinding,
   serializePreviousAppProvenance,
+  validatePreviousAppProvenanceBinding,
   verifyLegacyPreviousAppRestoredCompatibility,
   verifyPreviousAppCaptureMatchesPreflight,
+  verifyPreviousAppCaptureMatchesLiveContainer,
   validateVerifiedCutbackReceipt,
 } from "../scripts/production-previous-app-provenance.mjs";
 
@@ -102,6 +105,26 @@ describe("versioned previous-app provenance", () => {
     expect(() => capturePreviousAppProvenance({
       container: container({ "org.bodycast.release-sha": "unknown" }), databaseReport, targetSha,
     })).toThrow(/unknown previous-app release label requires a verified durable cutback receipt/);
+  });
+
+  it("binds refreshed captures to a fixed attempt-specific rollback image pin and the still-running exact container", () => {
+    const running = { ...container({ "org.bodycast.release-sha": "1".repeat(40) }), State: { Status: "running", Health: { Status: "healthy" } } };
+    const pin = "bodycast-app:rollback-preflight-38002000010-1";
+    const record = capturePreviousAppProvenance({ container: running, databaseReport, targetSha, imagePin: pin });
+    const serialized = serializePreviousAppProvenance(record);
+    const parsed = parsePreviousAppProvenance(serialized);
+
+    expect(parsed).toMatchObject({ schemaVersion: 3, previousImagePin: pin, previousImageId: running.Image });
+    expect(previousAppImagePin(parsed)).toBe(pin);
+    expect(verifyPreviousAppCaptureMatchesLiveContainer(parsed, running)).toBe(true);
+    const binding = previousAppProvenanceBinding(parsed);
+    expect(binding.previousImagePin).toBe(pin);
+    expect(() => verifyPreviousAppCaptureMatchesLiveContainer(parsed, { ...running, Id: "c".repeat(64) }))
+      .toThrow(/live previous app changed/);
+    expect(() => capturePreviousAppProvenance({ container: running, databaseReport, targetSha, imagePin: "bodycast-app:latest" }))
+      .toThrow(/fixed attempt-bound image pin/);
+    expect(() => parsePreviousAppProvenance(serialized.replace(pin, "bodycast-app:rollback")))
+      .toThrow(/Attempt-bound previous-app image pin is malformed/);
   });
 
   it("admits an explicit unknown release label only from a versioned receipt matching the exact live app and DB", () => {
@@ -215,7 +238,12 @@ describe("versioned previous-app provenance", () => {
   });
 
   it("carries the immutable previous-image identity into the signed preflight evidence", () => {
-    const record = capturePreviousAppProvenance({ container: container(), databaseReport, targetSha });
+    const imagePin = "bodycast-app:rollback-preflight-1001-1";
+    const legacyBinding = previousAppProvenanceBinding(capturePreviousAppProvenance({ container: container(), databaseReport, targetSha }));
+    expect(legacyBinding.schemaVersion).toBe(2);
+    expect(validatePreviousAppProvenanceBinding(legacyBinding)).toBe(true);
+    const runningContainer = { ...container(), State: { Status: "running", Health: { Status: "healthy" } } };
+    const record = capturePreviousAppProvenance({ container: runningContainer, databaseReport, targetSha, imagePin });
     const binding = previousAppProvenanceBinding(record);
     const topology = {
       schemaVersion: 1, contract: PRODUCTION_WRITER_TOPOLOGY_CONTRACT, ready: true, blockers: [], observedAt: "2026-10-09T20:00:00.000Z",
@@ -240,6 +268,7 @@ describe("versioned previous-app provenance", () => {
       context: { workflowRunId: "1001", workflowRunAttempt: 1, releaseSha: targetSha, manifestId: "active-energy-unified-v2" },
     });
     expect(evidence.previousAppProvenance).toEqual(binding);
+    expect(evidence.previousAppProvenance).toMatchObject({ schemaVersion: 3, previousImagePin: imagePin });
     expect(evidence.preflightResultDigest).toBe(canonicalSha256(result));
     expect(() => createPreflightEvidence({ rawReport, preflightResult: { ...result, previousAppProvenance: undefined },
       restoreResult: { verified: true, postflightReady: true, postSchemaDigest: "e".repeat(64),
@@ -247,6 +276,9 @@ describe("versioned previous-app provenance", () => {
       snapshotStartedAt: "2026-10-09T20:00:00.000Z", backupBytes: Buffer.from("encrypted backup"),
       context: { workflowRunId: "1001", workflowRunAttempt: 1, releaseSha: targetSha, manifestId: "active-energy-unified-v2" },
     })).toThrow(/Versioned previous-app identity/);
+    expect(() => validatePreviousAppProvenanceBinding({ ...binding, previousImagePin: "bodycast-app:rollback" })).toThrow(/image pin/);
+    expect(() => validatePreviousAppProvenanceBinding({ ...binding, schemaVersion: 4 })).toThrow(/unsupported schema/);
+    expect(() => validatePreviousAppProvenanceBinding({ ...binding, unexpected: "field" })).toThrow(/malformed/);
   });
 
   it("fails closed when image/container identity, health, or migration/schema evidence is missing", () => {

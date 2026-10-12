@@ -19,6 +19,10 @@ on:
         description: Type maintenance-backup-restore to authorize maintenance, encrypted backup, and disposable rehearsal
         required: true
         type: string
+      refresh_existing_capture_confirmation:
+        description: Type refresh-stale-pre-ddl-capture only when an existing capture must be preserved and refreshed for the current live app
+        required: false
+        type: string
       resume_previous_preflight_run_id:
         description: Optional exact owner preflight run whose durable prior-app capture may be resumed only after verified live-state checks
         required: false
@@ -59,6 +63,7 @@ jobs:
       forward_resume_authorization_bundle_proof_b64: ${{ steps.gate.outputs.forward_resume_authorization_bundle_proof_b64 }}
       forward_resume_failure_proof_digest: ${{ steps.gate.outputs.forward_resume_failure_proof_digest }}
       forward_resume_mutation_history_digest: ${{ steps.gate.outputs.forward_resume_mutation_history_digest }}
+      refresh_capture: ${{ steps.gate.outputs.refresh_capture }}
     steps:
       - name: Checkout current main tooling
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -78,6 +83,7 @@ jobs:
           RESUME_MIGRATION_FAILURE_RUN_ID: ${{ inputs.resume_pre_ddl_migration_failure_run_id }}
           RESUME_BLOCKED_CAPTURE_RUN_ID: ${{ inputs.resume_blocked_capture_preflight_run_id }}
           FORWARD_RESUME_FAILED_RUN_ID: ${{ inputs.forward_resume_failed_migration_run_id }}
+          REFRESH_CAPTURE_CONFIRMATION: ${{ inputs.refresh_existing_capture_confirmation }}
         run: |
           set -Eeuo pipefail
           [[ "$GITHUB_REPOSITORY" == "krustallik/body-model" ]] || { echo "::error::Canonical repository only."; exit 1; }
@@ -99,10 +105,24 @@ jobs:
           NODE
           [[ "$CONFIRMATION" == "maintenance-backup-restore" ]] || { echo "::error::Exact maintenance/preflight confirmation is required."; exit 1; }
           [[ "$MANIFEST_ID" == "active-energy-unified-v2" || "$MANIFEST_ID" == "unified-v4-republication-v1" ]] || { echo "::error::Manifest is not in the closed allowlist."; exit 1; }
+          REFRESH_CAPTURE=0
+          if [[ -n "$REFRESH_CAPTURE_CONFIRMATION" ]]; then
+            [[ "$REFRESH_CAPTURE_CONFIRMATION" == "refresh-stale-pre-ddl-capture" \
+              && "$MANIFEST_ID" == "unified-v4-republication-v1" \
+              && -z "$RESUME_SOURCE_RUN_ID" && -z "$RESUME_MIGRATION_FAILURE_RUN_ID" \
+              && -z "$RESUME_BLOCKED_CAPTURE_RUN_ID" && -z "$FORWARD_RESUME_FAILED_RUN_ID" ]] || {
+              echo "::error::Capture refresh requires its exact confirmation, the V4 republication manifest, and no incident-resume inputs."; exit 1;
+            }
+            REFRESH_CAPTURE=1
+            echo "- explicitly authorized preservation and refresh of the existing pre-DDL app capture" >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [[ "$MANIFEST_ID" == "unified-v4-republication-v1" \
-            && ( -n "$RESUME_SOURCE_RUN_ID" || -n "$RESUME_MIGRATION_FAILURE_RUN_ID" \
-              || -n "$RESUME_BLOCKED_CAPTURE_RUN_ID" || -n "$FORWARD_RESUME_FAILED_RUN_ID" ) ]]; then
-            echo "::error::The V4 republication manifest requires a fresh standard preflight; historical migration evidence cannot be reused."; exit 1;
+            && ( -n "$RESUME_MIGRATION_FAILURE_RUN_ID" || -n "$RESUME_BLOCKED_CAPTURE_RUN_ID" \
+              || -n "$FORWARD_RESUME_FAILED_RUN_ID" ) ]]; then
+            echo "::error::The V4 republication manifest cannot reuse historical migration-failure or forward-resume evidence."; exit 1;
+          fi
+          if [[ "$REFRESH_CAPTURE" == "1" && -n "$RESUME_SOURCE_RUN_ID" ]]; then
+            echo "::error::Capture refresh cannot be combined with a previous-preflight resume."; exit 1;
           fi
           [[ "$DISPATCH_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::release_sha must be a full lowercase commit SHA."; exit 1; }
           git fetch --no-tags origin main
@@ -290,6 +310,7 @@ jobs:
           echo "forward_resume_authorization_bundle_proof_b64=$FORWARD_AUTH_BUNDLE_PROOF_B64" >> "$GITHUB_OUTPUT"
           echo "forward_resume_failure_proof_digest=$FORWARD_FAILURE_PROOF_DIGEST" >> "$GITHUB_OUTPUT"
           echo "forward_resume_mutation_history_digest=$FORWARD_MUTATION_HISTORY_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "refresh_capture=$REFRESH_CAPTURE" >> "$GITHUB_OUTPUT"
           {
             echo "## Read-only production preflight"
             echo ""
@@ -429,6 +450,7 @@ jobs:
           FORWARD_RESUME_FAILED_RUN_ID: ${{ inputs.forward_resume_failed_migration_run_id }}
           FORWARD_RESUME_FAILURE_PROOF_DIGEST: ${{ needs.authorize.outputs.forward_resume_failure_proof_digest }}
           FORWARD_RESUME_MUTATION_HISTORY_DIGEST: ${{ needs.authorize.outputs.forward_resume_mutation_history_digest }}
+          REFRESH_CAPTURE: ${{ needs.authorize.outputs.refresh_capture }}
         run: |
           set -Eeuo pipefail
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
@@ -442,6 +464,7 @@ jobs:
           FORWARD_FAILURE_PROOF_DIGEST_B64="$(printf '%s' "$FORWARD_RESUME_FAILURE_PROOF_DIGEST" | base64 -w0)"
           FORWARD_FAILED_RUN_ID_B64="$(printf '%s' "$FORWARD_RESUME_FAILED_RUN_ID" | base64 -w0)"
           FORWARD_HISTORY_DIGEST_B64="$(printf '%s' "$FORWARD_RESUME_MUTATION_HISTORY_DIGEST" | base64 -w0)"
+          REFRESH_CAPTURE_B64="$(printf '%s' "$REFRESH_CAPTURE" | base64 -w0)"
           REMOTE_SCRIPT="$(cat <<'REMOTE'
           set -Eeuo pipefail
           RELEASE_SHA="$1"
@@ -456,6 +479,7 @@ jobs:
           FORWARD_FAILURE_PROOF_DIGEST="$(printf '%s' "${10}" | base64 --decode)"
           FORWARD_FAILED_RUN_ID="$(printf '%s' "${11}" | base64 --decode)"
           FORWARD_HISTORY_DIGEST="$(printf '%s' "${12}" | base64 --decode)"
+          REFRESH_CAPTURE="$(printf '%s' "${13}" | base64 --decode)"
           [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ && "$DEPLOY_PATH" == /* && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* ]] || exit 2
           if [[ -n "$RESUME_SOURCE_SHA" ]]; then
             [[ "$RESUME_SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$RESUME_SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ \
@@ -471,6 +495,7 @@ jobs:
           else
             [[ -z "$FORWARD_FAILURE_PROOF_DIGEST" && -z "$FORWARD_HISTORY_DIGEST" ]] || exit 2
           fi
+          [[ "$REFRESH_CAPTURE" == "0" || "$REFRESH_CAPTURE" == "1" ]] || exit 2
           cd -- "$DEPLOY_PATH"
           [[ "$(git rev-parse --show-toplevel)" == "$DEPLOY_PATH" && -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || {
             echo "Production checkout is not clean or does not match DEPLOY_PATH." >&2; exit 1;
@@ -480,6 +505,14 @@ jobs:
           [[ "$(git rev-parse refs/remotes/origin/main)" == "$RELEASE_SHA" ]] || { echo "Release SHA is no longer current origin/main." >&2; exit 1; }
           git checkout --detach "$RELEASE_SHA"
           [[ "$(git rev-parse HEAD)" == "$RELEASE_SHA" && -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || exit 1
+          if [[ "$REFRESH_CAPTURE" == "1" ]]; then
+            [[ -z "$RESUME_SOURCE_SHA" && -z "$FORWARD_FAILED_RUN_ID" ]] || exit 2
+            APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" BODYCAST_DEPLOY_SHA="$RELEASE_SHA" \
+              BODYCAST_CAPTURE_PRE_DDL_RELEASE=1 BODYCAST_REFRESH_PRE_DDL_CAPTURE=1 \
+              BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID="$CURRENT_RUN_ID" \
+              BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ATTEMPT="$CURRENT_RUN_ATTEMPT" \
+              exec bash scripts/production-traffic-cutover.sh maintenance
+          fi
           if [[ -n "$FORWARD_FAILED_RUN_ID" ]]; then
             MARKER_OBSERVATION="$(node scripts/production-forward-resume.mjs --inspect-marker "$RESUME_SOURCE_SHA" "$FORWARD_FAILED_RUN_ID")"
             SOURCE_MARKER_DIGEST="$(printf '%s' "$MARKER_OBSERVATION" | node --input-type=module -e 'let s=""; for await (const c of process.stdin) s+=c; const value=JSON.parse(s); const armed=process.argv[2]==="38062632284"; if (value.schemaVersion !== 1 || value.markerSchemaVersion !== (armed?2:1) || value.releaseSha !== process.argv[1] || value.state !== (armed?"forward-resume-armed":"ddl-started") || !/^[a-f0-9]{64}$/.test(value.markerDigest)) throw new Error("Exact forward-resume marker observation failed."); process.stdout.write(value.markerDigest)' "$RESUME_SOURCE_SHA" "$FORWARD_FAILED_RUN_ID")"
@@ -512,7 +545,7 @@ jobs:
           REMOTE
           )"
           REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
-          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$RELEASE_SHA' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64' '$RESUME_SOURCE_SHA_B64' '$RESUME_SOURCE_RUN_ID_B64' '$RESUME_SOURCE_RUN_ATTEMPT_B64' '$CURRENT_RUN_ID_B64' '$CURRENT_RUN_ATTEMPT_B64' '$FORWARD_FAILURE_PROOF_DIGEST_B64' '$FORWARD_FAILED_RUN_ID_B64' '$FORWARD_HISTORY_DIGEST_B64'"
+          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$RELEASE_SHA' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64' '$RESUME_SOURCE_SHA_B64' '$RESUME_SOURCE_RUN_ID_B64' '$RESUME_SOURCE_RUN_ATTEMPT_B64' '$CURRENT_RUN_ID_B64' '$CURRENT_RUN_ATTEMPT_B64' '$FORWARD_FAILURE_PROOF_DIGEST_B64' '$FORWARD_FAILED_RUN_ID_B64' '$FORWARD_HISTORY_DIGEST_B64' '$REFRESH_CAPTURE_B64'"
           REMOTE_OUTPUT_FILE="$RUNNER_TEMP/production-maintenance-output.txt"
           timeout 20m ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10 "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND" | tee "$REMOTE_OUTPUT_FILE"
@@ -603,7 +636,7 @@ jobs:
             > "$RUNNER_TEMP/previous-app-provenance-verification.json"
           node --input-type=module - "$RUNNER_TEMP/preflight-result.json" "$RUNNER_TEMP/previous-app-provenance-verification.json" "$RUNNER_TEMP/preflight-report.json" <<'NODE'
           import { readFileSync, writeFileSync } from "node:fs";
-          import { previousAppDatabaseCompatibilityDigests } from "./scripts/production-previous-app-provenance.mjs";
+          import { previousAppDatabaseCompatibilityDigests, validatePreviousAppProvenanceBinding } from "./scripts/production-previous-app-provenance.mjs";
           import { validateCaptureResumeReceipt } from "./scripts/production-capture-resume-receipt.mjs";
           import { verifyForwardResumeMarkerObservation } from "./scripts/production-forward-resume.mjs";
           import { canonicalSha256 } from "./scripts/production-migration-authorization.mjs";
@@ -611,11 +644,10 @@ jobs:
           const result = JSON.parse(readFileSync(resultPath, "utf8"));
           const verification = JSON.parse(readFileSync(verificationPath, "utf8"));
           const binding = verification.previousAppProvenance;
-          if (verification.verified !== true || !binding || result.previousAppProvenance
-            || binding.schemaVersion !== 2 || !/^[a-f0-9]{64}$/.test(binding.recordDigest)
-            || !["legacy-unlabeled-v1", "legacy-cutback-receipt-v1", "release-sha-v1"].includes(binding.provenanceKind)) {
+          if (verification.verified !== true || !binding || result.previousAppProvenance) {
             throw new Error("Previous-app provenance was not verified or is already present in the preflight result.");
           }
+          validatePreviousAppProvenanceBinding(binding);
           result.previousAppProvenance = binding;
           if (process.env.RESUME_SOURCE_SHA) {
             if (!process.env.RESUME_RECEIPT_B64 || !/^[A-Za-z0-9+/]+=*$/.test(process.env.RESUME_RECEIPT_B64)) {

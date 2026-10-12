@@ -2,19 +2,28 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { CANDIDATE_IMAGE_ID, PREVIOUS_SHA, PREVIOUS_IMAGE_ID, bashAvailable, createFixture, runFixture, appState, toBashPath } from "./helpers/production-release-cutover-fixture";
-import { capturePreviousAppProvenance, serializePreviousAppProvenance } from "../scripts/production-previous-app-provenance.mjs";
+import { CANDIDATE_IMAGE_ID, PREVIOUS_SHA, PREVIOUS_IMAGE_ID, WRONG_IMAGE_ID, bashAvailable, createFixture, runFixture, appState, toBashPath } from "./helpers/production-release-cutover-fixture";
+import { capturePreviousAppProvenance, parsePreviousAppProvenance, serializePreviousAppProvenance } from "../scripts/production-previous-app-provenance.mjs";
 
-function seedCapturedPreviousRelease(fixture: ReturnType<typeof createFixture>) {
+function seedCapturedPreviousRelease(fixture: ReturnType<typeof createFixture>, options: {
+  targetSha?: string;
+  imagePin?: string;
+} = {}) {
   const report = JSON.parse(readFileSync(path.join(fixture.root, "previous-db-report.json"), "utf8"));
   const [container] = JSON.parse(readFileSync(path.join(fixture.root, "app-inspect.json"), "utf8"));
-  const record = capturePreviousAppProvenance({ container, databaseReport: report, targetSha: fixture.candidateSha });
+  const targetSha = options.targetSha ?? fixture.candidateSha;
+  const record = capturePreviousAppProvenance({ container, databaseReport: report, targetSha, imagePin: options.imagePin ?? null });
   const recordPath = path.join(fixture.repo, ".git", "bodycast-production-pre-ddl-release");
   writeFileSync(recordPath, serializePreviousAppProvenance(record), { mode: 0o600 });
   execFileSync(fixture.bash, ["--noprofile", "--norc", "-c", `chmod 600 "${toBashPath(recordPath)}"`], { env: fixture.env, stdio: "ignore" });
   writeFileSync(path.join(fixture.root, "app-present"), "false\n");
   writeFileSync(path.join(fixture.root, "active-route"), "maintenance\n");
-  writeFileSync(path.join(fixture.root, "image-rollback"), `${PREVIOUS_IMAGE_ID}\n`);
+  if (options.imagePin) {
+    const pinSuffix = options.imagePin.replace("bodycast-app:rollback-preflight-", "");
+    writeFileSync(path.join(fixture.root, `image-rollback-preflight-${pinSuffix}`), `${PREVIOUS_IMAGE_ID}\n`);
+  } else {
+    writeFileSync(path.join(fixture.root, "image-rollback"), `${PREVIOUS_IMAGE_ID}\n`);
+  }
   execFileSync("git", ["push", "origin", `${fixture.advanceSha}:refs/heads/main`], { cwd: fixture.repo, stdio: "ignore" });
   execFileSync("git", ["checkout", "--detach", "--force", fixture.advanceSha], { cwd: fixture.repo, stdio: "ignore" });
   return { record, recordPath };
@@ -23,25 +32,56 @@ function seedCapturedPreviousRelease(fixture: ReturnType<typeof createFixture>) 
 function findForbiddenDatabaseContainerOperations(dockerLog: string): string[] {
   const composeLifecycleActions = new Set(["up", "down", "start", "stop", "restart", "rm", "create", "kill", "pause", "unpause"]);
   const composeExecutionActions = new Set(["exec", "run"]);
-  const directReadOnlyActions = new Set(["inspect", "ps", "logs", "stats"]);
+  const directReadOnlyActions = new Set(["inspect", "ps", "logs", "stats", "port"]);
   return dockerLog.split(/\r?\n/).filter((command) => {
     const args = command.trim().split(/\s+/).filter(Boolean);
     if (!args.length) return false;
     if (args[0] === "compose") {
       const composeArgs = args.slice(1);
-      const composeAction = composeArgs.find((arg) => composeLifecycleActions.has(arg));
-      if (composeAction) return true;
+      const actionIndex = composeArgs.findIndex((arg) => composeLifecycleActions.has(arg));
+      if (actionIndex >= 0) {
+        const targets = composeArgs.slice(actionIndex + 1).filter((arg) => !arg.startsWith("-"));
+        return targets.length === 0 || targets.includes("db") || targets.includes("bodycast-db-prod");
+      }
       const targetsDatabase = args.includes("db") || args.includes("bodycast-db-prod");
       return targetsDatabase && composeArgs.some((arg) => composeExecutionActions.has(arg));
     }
     const action = args[0] === "container" ? args[1] : args[0];
-    return args.includes("bodycast-db-prod") && !directReadOnlyActions.has(action ?? "");
+    if (!args.includes("bodycast-db-prod") || directReadOnlyActions.has(action ?? "")) return false;
+    if (action === "exec") {
+      const guardedReadOnlyPsql = command.includes("PGOPTIONS=-c default_transaction_read_only=on")
+        && command.includes("statement_timeout=")
+        && command.includes("lock_timeout=")
+        && command.includes("psql")
+        && command.includes("ON_ERROR_STOP=1");
+      return !guardedReadOnlyPsql;
+    }
+    return true;
   });
 }
 
 function expectNoDatabaseContainerMutation(dockerLog: string) {
   const databaseMutations = findForbiddenDatabaseContainerOperations(dockerLog);
   expect(databaseMutations).toEqual([]);
+}
+
+function replaceCurrentAppAndDatabase(fixture: ReturnType<typeof createFixture>) {
+  const appImageId = `sha256:${"b".repeat(64)}`;
+  const appContainerId = "f".repeat(64);
+  writeFileSync(path.join(fixture.root, "app-image-id"), `${appImageId}\n`);
+  writeFileSync(path.join(fixture.root, "app-container-id"), `${appContainerId}\n`);
+  writeFileSync(path.join(fixture.root, "app-sha"), `${"2".repeat(40)}\n`);
+  writeFileSync(path.join(fixture.root, "app-present"), "true\n");
+  const [container] = JSON.parse(readFileSync(path.join(fixture.root, "app-inspect.json"), "utf8"));
+  container.Id = appContainerId;
+  container.Image = appImageId;
+  container.Config.Labels["org.bodycast.release-sha"] = "2".repeat(40);
+  container.State.Status = "running";
+  writeFileSync(path.join(fixture.root, "app-inspect.json"), `${JSON.stringify([container])}\n`);
+  const databaseReport = JSON.parse(readFileSync(path.join(fixture.root, "previous-db-report.json"), "utf8"));
+  databaseReport.objects[0].signature = "new live schema before the V4 republication migrations";
+  writeFileSync(path.join(fixture.root, "previous-db-report.json"), `${JSON.stringify(databaseReport)}\n`);
+  return { appImageId, appContainerId };
 }
 
 describe("maintenance-first deploy fail-closed checks", () => {
@@ -59,6 +99,12 @@ describe("maintenance-first deploy fail-closed checks", () => {
 
   it("allows read-only inspection of the existing database container", () => {
     expect(findForbiddenDatabaseContainerOperations("inspect --format {{.State.Health.Status}} bodycast-db-prod")).toEqual([]);
+  });
+
+  it("allows only the explicitly read-only PostgreSQL compatibility probe", () => {
+    const guarded = "exec -i --env PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000 bodycast-db-prod sh -c exec psql --set=ON_ERROR_STOP=1";
+    expect(findForbiddenDatabaseContainerOperations(guarded)).toEqual([]);
+    expect(findForbiddenDatabaseContainerOperations("exec bodycast-db-prod psql -c UPDATE")).toEqual(["exec bodycast-db-prod psql -c UPDATE"]);
   });
 
   it.skipIf(!bashAvailable)("confirms the attempt-marked 503 before capturing and stopping the previous app", () => {
@@ -426,6 +472,93 @@ describe("maintenance-first deploy fail-closed checks", () => {
     expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).not.toContain("reverse_proxy");
   }, 30_000);
 
+  it.skipIf(!bashAvailable)("refreshes a stale capture without replacing its old image pin and verifies the new capture before stopping the app", () => {
+    const fixture = createFixture();
+    const { record: oldRecord, recordPath } = seedCapturedPreviousRelease(fixture);
+    const oldRecordBytes = readFileSync(recordPath, "utf8");
+    const { appImageId, appContainerId } = replaceCurrentAppAndDatabase(fixture);
+    const runId = "38002000010";
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh maintenance", {
+      BODYCAST_DEPLOY_SHA: fixture.advanceSha,
+      BODYCAST_CAPTURE_PRE_DDL_RELEASE: "1",
+      BODYCAST_REFRESH_PRE_DDL_CAPTURE: "1",
+      BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID: runId,
+      BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ATTEMPT: "1",
+      ASSERT_CAPTURE_BEFORE_STOP: "1",
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}\n${readFileSync(path.join(fixture.root, "docker.log"), "utf8")}\n${readFileSync(path.join(fixture.root, "events.log"), "utf8")}`).toBe(0);
+    const archivePath = path.join(fixture.repo, ".git", `bodycast-production-pre-ddl-release-archive-${runId}-1`);
+    expect(readFileSync(archivePath, "utf8")).toBe(oldRecordBytes);
+    expect(readFileSync(path.join(fixture.root, "image-rollback"), "utf8").trim()).toBe(oldRecord.previousImageId);
+    const refreshed = parsePreviousAppProvenance(readFileSync(recordPath, "utf8"));
+    expect(refreshed).toMatchObject({
+      schemaVersion: 3,
+      targetSha: fixture.advanceSha,
+      previousImagePin: `bodycast-app:rollback-preflight-${runId}-1`,
+      previousImageId: appImageId,
+      previousContainerId: appContainerId,
+    });
+    expect(refreshed.preDdlDatabaseCompatibilityDigest).not.toBe(oldRecord.preDdlDatabaseCompatibilityDigest);
+    expect(readFileSync(path.join(fixture.root, `image-rollback-preflight-${runId}-1`), "utf8").trim()).toBe(appImageId);
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8").trim().split(/\r?\n/);
+    expect(events.indexOf("capture-and-pin-verified-before-stop")).toBeGreaterThan(-1);
+    expect(events.indexOf("compose-stop-app")).toBeGreaterThan(events.indexOf("capture-and-pin-verified-before-stop"));
+    expect(events).toContain("writer-drain-topology-check");
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    expectNoDatabaseContainerMutation(readFileSync(path.join(fixture.root, "docker.log"), "utf8"));
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("keeps the old capture, image pin, and running app if refreshed capture creation fails", () => {
+    const fixture = createFixture();
+    const { recordPath } = seedCapturedPreviousRelease(fixture);
+    const oldRecordBytes = readFileSync(recordPath, "utf8");
+    replaceCurrentAppAndDatabase(fixture);
+    writeFileSync(path.join(fixture.root, "app-present"), "true\n");
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh maintenance", {
+      BODYCAST_DEPLOY_SHA: fixture.advanceSha,
+      BODYCAST_CAPTURE_PRE_DDL_RELEASE: "1",
+      BODYCAST_REFRESH_PRE_DDL_CAPTURE: "1",
+      BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID: "38002000011",
+      BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ATTEMPT: "1",
+      FAIL_PREVIOUS_DB_SNAPSHOT: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("synthetic read-only compatibility snapshot failure");
+    expect(readFileSync(recordPath, "utf8")).toBe(oldRecordBytes);
+    expect(readFileSync(path.join(fixture.root, "image-rollback"), "utf8").trim()).toBe(PREVIOUS_IMAGE_ID);
+    expect(existsSync(path.join(fixture.repo, ".git", "bodycast-production-pre-ddl-release-archive-38002000011-1"))).toBe(false);
+    expect(appState(fixture)).toMatchObject({ status: "healthy", present: "true" });
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).not.toContain("compose-stop-app");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("preserves old artifacts and keeps the app running when a refresh pin operation fails", () => {
+    const fixture = createFixture();
+    const { recordPath } = seedCapturedPreviousRelease(fixture);
+    const oldRecordBytes = readFileSync(recordPath, "utf8");
+    replaceCurrentAppAndDatabase(fixture);
+    writeFileSync(path.join(fixture.root, "app-present"), "true\n");
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh maintenance", {
+      BODYCAST_DEPLOY_SHA: fixture.advanceSha,
+      BODYCAST_CAPTURE_PRE_DDL_RELEASE: "1",
+      BODYCAST_REFRESH_PRE_DDL_CAPTURE: "1",
+      BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID: "38002000012",
+      BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ATTEMPT: "1",
+      FAIL_REFRESH_IMAGE_TAG: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Could not create the attempt-specific immutable previous-app image pin");
+    expect(readFileSync(recordPath, "utf8")).toBe(oldRecordBytes);
+    expect(readFileSync(path.join(fixture.repo, ".git", "bodycast-production-pre-ddl-release-archive-38002000012-1"), "utf8")).toBe(oldRecordBytes);
+    expect(readFileSync(path.join(fixture.root, "image-rollback"), "utf8").trim()).toBe(PREVIOUS_IMAGE_ID);
+    expect(appState(fixture)).toMatchObject({ status: "healthy", present: "true" });
+    expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).not.toContain("compose-stop-app");
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+  }, 30_000);
+
   it.skipIf(!bashAvailable)("rebinds a captured release only after matching fresh DB state and preserves the original capture", () => {
     const fixture = createFixture();
     const { record, recordPath } = seedCapturedPreviousRelease(fixture);
@@ -456,6 +589,61 @@ describe("maintenance-first deploy fail-closed checks", () => {
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
     expect(result.stdout).toContain("BODYCAST_PRE_DDL_RESUME_RECEIPT=");
     expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).toContain("previous-app-compatibility-snapshot");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("resumes a schema-v3 capture only through its exact attempt-bound image pin", () => {
+    const fixture = createFixture();
+    const runId = "38002000013";
+    const imagePin = `bodycast-app:rollback-preflight-${runId}-1`;
+    const { record, recordPath } = seedCapturedPreviousRelease(fixture, { targetSha: fixture.advanceSha, imagePin });
+    const recordBytes = readFileSync(recordPath, "utf8");
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh maintenance", {
+      BODYCAST_DEPLOY_SHA: fixture.advanceSha,
+      BODYCAST_CAPTURE_PRE_DDL_RELEASE: "1",
+      BODYCAST_RESUME_PRE_DDL_CAPTURE: "1",
+      BODYCAST_PRE_DDL_CAPTURE_SOURCE_SHA: fixture.advanceSha,
+      BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ID: runId,
+      BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ATTEMPT: "1",
+      BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID: "38002000014",
+      BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ATTEMPT: "1",
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(record.schemaVersion).toBe(3);
+    expect(readFileSync(recordPath, "utf8")).toBe(recordBytes);
+    const dockerLog = readFileSync(path.join(fixture.root, "docker.log"), "utf8");
+    expect(dockerLog).toContain(`image inspect --format {{.Id}} ${imagePin}`);
+    expect(dockerLog).not.toContain("image inspect --format {{.Id}} bodycast-app:rollback\n");
+    expect(readFileSync(path.join(fixture.repo, ".git", "bodycast-production-pre-ddl-release-resume-38002000014-1"), "utf8"))
+      .toContain('"currentRecordDigest"');
+    expect(appState(fixture)).toMatchObject({ present: "false" });
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("blocks schema-v3 capture resume when its attempt-bound image pin differs", () => {
+    const fixture = createFixture();
+    const runId = "38002000015";
+    const imagePin = `bodycast-app:rollback-preflight-${runId}-1`;
+    const { recordPath } = seedCapturedPreviousRelease(fixture, { targetSha: fixture.advanceSha, imagePin });
+    const recordBytes = readFileSync(recordPath, "utf8");
+    writeFileSync(path.join(fixture.root, `image-rollback-preflight-${runId}-1`), `${WRONG_IMAGE_ID}\n`);
+    const result = runFixture(fixture, "bash scripts/production-traffic-cutover.sh maintenance", {
+      BODYCAST_DEPLOY_SHA: fixture.advanceSha,
+      BODYCAST_CAPTURE_PRE_DDL_RELEASE: "1",
+      BODYCAST_RESUME_PRE_DDL_CAPTURE: "1",
+      BODYCAST_PRE_DDL_CAPTURE_SOURCE_SHA: fixture.advanceSha,
+      BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ID: runId,
+      BODYCAST_PRE_DDL_CAPTURE_SOURCE_RUN_ATTEMPT: "1",
+      BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ID: "38002000016",
+      BODYCAST_PRE_DDL_CAPTURE_CURRENT_RUN_ATTEMPT: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("attempt-bound previous-app image pin differs");
+    expect(readFileSync(recordPath, "utf8")).toBe(recordBytes);
+    expect(existsSync(path.join(fixture.repo, ".git", "bodycast-production-pre-ddl-release-resume-38002000016-1"))).toBe(false);
+    expect(appState(fixture)).toMatchObject({ present: "false" });
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
   }, 30_000);
 
   it.skipIf(!bashAvailable)("does not rebind the previous capture when a fresh read-only DB snapshot fails", () => {

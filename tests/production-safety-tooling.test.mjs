@@ -27,7 +27,12 @@ import {
 } from "../scripts/verify-postgres-restore.mjs";
 import { filterKnownHostRecords } from "../scripts/filter-ssh-known-hosts.mjs";
 import { assertPostgresClientCompatibility } from "../scripts/postgres-client-versions.mjs";
-import { restoreEncryptedPostgresBackup } from "../scripts/restore-encrypted-postgres-backup.mjs";
+import {
+  assertPinnedPostgresImage,
+  PINNED_POSTGRES_IMAGE,
+  restoreEncryptedPostgresBackup,
+  runRestoreFromEnvironment,
+} from "../scripts/restore-encrypted-postgres-backup.mjs";
 
 describe("encrypted PostgreSQL restore diagnostics", () => {
   it("reports pg_restore stderr and exit code when it closes stdin (EPIPE is secondary)", async () => {
@@ -61,6 +66,40 @@ describe("encrypted PostgreSQL restore diagnostics", () => {
     } finally {
       await rm(scratch, { recursive: true, force: true });
     }
+  });
+});
+
+describe("encrypted PostgreSQL restore image authorization", () => {
+  const baseEnvironment = {
+    BACKUP_FILE: "synthetic.pgdump.enc",
+    PRODUCTION_BACKUP_ENCRYPTION_KEY: Buffer.alloc(32, 3).toString("base64"),
+    DATABASE_URL: "postgresql://restore:secret@127.0.0.1/bodycast_restore",
+    PGPASSWORD: "secret",
+  };
+
+  it("accepts and passes only the exact approved Docker Hub digest", async () => {
+    expect(assertPinnedPostgresImage(PINNED_POSTGRES_IMAGE)).toBe(PINNED_POSTGRES_IMAGE);
+    const calls = [];
+    await runRestoreFromEnvironment({
+      env: { ...baseEnvironment, POSTGRES_IMAGE: PINNED_POSTGRES_IMAGE },
+      restore: async (options) => calls.push(options),
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args).toContain(PINNED_POSTGRES_IMAGE);
+  });
+
+  it.each([
+    ["different valid digest", "docker.io/library/postgres@sha256:" + "a".repeat(64)],
+    ["different registry", "public.ecr.aws/docker/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24"],
+    ["mutable tag", "docker.io/library/postgres:17.11"],
+    ["missing image", undefined],
+  ])("blocks %s before invoking the restore command", async (_case, image) => {
+    let restoreCalls = 0;
+    await expect(runRestoreFromEnvironment({
+      env: { ...baseEnvironment, POSTGRES_IMAGE: image, PRODUCTION_BACKUP_ENCRYPTION_KEY: "invalid-key" },
+      restore: async () => { restoreCalls += 1; },
+    })).rejects.toThrow("POSTGRES_IMAGE must equal the approved pinned image");
+    expect(restoreCalls).toBe(0);
   });
 });
 
@@ -428,7 +467,8 @@ describe("workflow mutation boundary", () => {
     expect(cutbackWorkflow).toContain("docker run --rm -i docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24");
     expect(cutbackScript).toContain('readonly POSTGRES_IMAGE="docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24"');
     expect(cutbackSmoke).toContain('const IMAGE = "docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24"');
-    expect(restoreScript).toContain('if (!image || !/^docker\\.io\\/library\\/postgres@sha256:[a-f0-9]{64}$/.test(image))');
+    expect(restoreScript).toContain("export function assertPinnedPostgresImage(image)");
+    expect(restoreScript).toContain("const image = assertPinnedPostgresImage(env.POSTGRES_IMAGE)");
   });
 });
 

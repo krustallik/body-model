@@ -4,6 +4,14 @@ import path from "node:path";
 import { decodeBackupKey, decryptBackupToWritable } from "./production-backup-envelope.mjs";
 
 const MAX_STDERR_BYTES = 32 * 1024;
+export const PINNED_POSTGRES_IMAGE = "docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24";
+
+export function assertPinnedPostgresImage(image) {
+  if (image !== PINNED_POSTGRES_IMAGE) {
+    throw new Error("POSTGRES_IMAGE must equal the approved pinned image " + PINNED_POSTGRES_IMAGE + ".");
+  }
+  return image;
+}
 
 function sanitizedStderr(chunks, redactValues) {
   let value = Buffer.concat(chunks).toString("utf8");
@@ -85,16 +93,15 @@ export async function restoreEncryptedPostgresBackup({
   log("pg_restore completed successfully (exit code 0).");
 }
 
-async function main() {
-  const inputPath = process.env.BACKUP_FILE;
-  const encodedKey = process.env.PRODUCTION_BACKUP_ENCRYPTION_KEY;
-  const databaseUrl = process.env.DATABASE_URL;
-  const password = process.env.PGPASSWORD;
+export async function runRestoreFromEnvironment({ env = process.env, restore = restoreEncryptedPostgresBackup } = {}) {
+  const inputPath = env.BACKUP_FILE;
+  const encodedKey = env.PRODUCTION_BACKUP_ENCRYPTION_KEY;
+  const databaseUrl = env.DATABASE_URL;
+  const password = env.PGPASSWORD;
   if (!inputPath || !databaseUrl || !password) throw new Error("BACKUP_FILE, DATABASE_URL, and PGPASSWORD are required.");
-  const image = process.env.POSTGRES_IMAGE;
-  if (!image || !/^docker\.io\/library\/postgres@sha256:[a-f0-9]{64}$/.test(image)) throw new Error("POSTGRES_IMAGE must be the pinned Docker Hub official PostgreSQL image digest.");
+  const image = assertPinnedPostgresImage(env.POSTGRES_IMAGE);
   const key = decodeBackupKey(encodedKey);
-  await restoreEncryptedPostgresBackup({
+  await restore({
     inputPath,
     key,
     args: [
@@ -104,6 +111,10 @@ async function main() {
     ],
     redactValues: [encodedKey, password, databaseUrl],
   });
+}
+
+async function main() {
+  await runRestoreFromEnvironment();
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

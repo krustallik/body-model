@@ -125,13 +125,13 @@ describe("no-app preparation workflow boundaries", () => {
     expect(host).toContain(".NetworkSettings.Networks");
     expect(host).toContain("$DB_NETWORK");
     expect(host).toContain(".IPAddress");
-    expect(host).toContain("assertNoAppDatabaseEndpointBinding");
+    expect(host).toContain("assertProductionDatabaseEndpointBinding");
     expect(host).toContain("--env BODYCAST_PSQL_DATABASE_URL");
     expect(host).not.toContain('--env "BODYCAST_PSQL_DATABASE_URL=$target_url"');
     expect(host).toContain("unset BODYCAST_PSQL_DATABASE_URL");
     expect(host).toContain('psql "$BODYCAST_PSQL_DATABASE_URL"');
     expect(host).not.toContain('psql --username="$POSTGRES_USER" --dbname=bodycast');
-    expect(host.indexOf("assertNoAppDatabaseEndpointBinding")).toBeLessThan(host.indexOf('fingerprint="$(bash "$deploy_path/scripts/production-db-data-fingerprint.sh"'));
+    expect(host.indexOf("assertProductionDatabaseEndpointBinding")).toBeLessThan(host.indexOf('fingerprint="$(bash "$deploy_path/scripts/production-db-data-fingerprint.sh"'));
     expect(host.indexOf('fingerprint="$(bash "$deploy_path/scripts/production-db-data-fingerprint.sh"')).toBeLessThan(host.indexOf("pg_dump --format=custom"));
     expect(host).toContain('docker exec "$dump_container_id"');
     expect(host).toContain("stableNoAppSnapshot(before)");

@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { canonicalSha256 } from "../scripts/production-migration-authorization.mjs";
 import { V4_REPUBLICATION_MANIFEST } from "../scripts/production-migration-manifests.mjs";
 import {
@@ -14,7 +16,7 @@ import {
 import { createCaptureResumeReceipt } from "../scripts/production-capture-resume-receipt.mjs";
 import { previousAppDatabaseCompatibilityDigests, serializePreviousAppProvenance } from "../scripts/production-previous-app-provenance.mjs";
 import { createSignedAuthorization } from "../scripts/production-migration-sign.mjs";
-import { assertNoAppDatabaseEndpointBinding } from "../scripts/production-no-app-db-target.mjs";
+import { assertProductionDatabaseEndpointBinding } from "../scripts/production-db-endpoint-binding.mjs";
 
 const sha = "a".repeat(40);
 const digest = "b".repeat(64);
@@ -22,9 +24,22 @@ const marker = "bd9975d38d1c-20261012T120000Z-99-123456";
 
 describe("no-app database endpoint binding", () => {
   const report = { identity: { serverAddress: "172.20.0.2", serverPort: 5432 } };
+  const checkerPath = fileURLToPath(new URL("../scripts/production-db-endpoint-binding.mjs", import.meta.url));
 
   it("accepts the report only when it names the fixed backend container endpoint", () => {
-    expect(assertNoAppDatabaseEndpointBinding(report, "172.20.0.2")).toBe(true);
+    expect(assertProductionDatabaseEndpointBinding(report, "172.20.0.2")).toBe(true);
+  });
+
+  it("CLI accepts matching reports and rejects endpoint mismatches", () => {
+    const accepted = spawnSync(process.execPath, [checkerPath, "--verify-stdin", "172.20.0.2"], {
+      input: JSON.stringify(report), encoding: "utf8",
+    });
+    const rejected = spawnSync(process.execPath, [checkerPath, "--verify-stdin", "172.20.0.9"], {
+      input: JSON.stringify(report), encoding: "utf8",
+    });
+    expect(accepted.status).toBe(0);
+    expect(rejected.status).toBe(1);
+    expect(rejected.stderr).toContain("does not identify the fixed PostgreSQL container endpoint");
   });
 
   it.each([
@@ -34,8 +49,8 @@ describe("no-app database endpoint binding", () => {
     ["invalid expected endpoint", report, "bodycast-db-prod"],
     ["IPv6 endpoint", report, "2001:db8::1"],
   ])("blocks %s", (_label, candidate, expectedAddress) => {
-    expect(() => assertNoAppDatabaseEndpointBinding(candidate, expectedAddress)).toThrow(
-      "No-app database report does not identify the fixed production PostgreSQL endpoint.",
+    expect(() => assertProductionDatabaseEndpointBinding(candidate, expectedAddress)).toThrow(
+      "Production database report does not identify the fixed PostgreSQL container endpoint.",
     );
   });
 });

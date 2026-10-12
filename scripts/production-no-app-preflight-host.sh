@@ -154,9 +154,9 @@ NODE
   unset BODYCAST_PSQL_DATABASE_URL
   node --input-type=module - "$raw_file" "$db_address" <<'NODE'
 import { readFileSync } from "node:fs";
-import { assertNoAppDatabaseEndpointBinding } from "./scripts/production-no-app-db-target.mjs";
+import { assertProductionDatabaseEndpointBinding } from "./scripts/production-db-endpoint-binding.mjs";
 const [reportPath, expectedAddress] = process.argv.slice(2);
-assertNoAppDatabaseEndpointBinding(JSON.parse(readFileSync(reportPath, "utf8")), expectedAddress);
+assertProductionDatabaseEndpointBinding(JSON.parse(readFileSync(reportPath, "utf8")), expectedAddress);
 NODE
   fingerprint="$(bash "$deploy_path/scripts/production-db-data-fingerprint.sh" --production-container "$DB_CONTAINER")"
   [[ "$fingerprint" =~ ^[a-f0-9]{64}$ ]] || { echo "Production data fingerprint is malformed." >&2; return 1; }

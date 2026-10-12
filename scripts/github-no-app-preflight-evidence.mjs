@@ -25,7 +25,17 @@ const MUTATION_WORKFLOWS = [
 const RESUME_RECEIPT_JOB = "Inspect, back up, restore, and rehearse on disposable PostgreSQL";
 const RESUME_RECEIPT_STEP = "Enter maintenance and drain the old app before backup";
 const RESUME_RECEIPT_MARKER = "BODYCAST_PRE_DDL_RESUME_RECEIPT=";
-const RESUME_RECEIPT_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z > $/;
+const RESUME_RECEIPT_TIMESTAMP = "\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?Z";
+
+function escapeRegExp(value) { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+const receiptLogPrefix = `^${escapeRegExp(RESUME_RECEIPT_JOB)}\\t${escapeRegExp(RESUME_RECEIPT_STEP)}\\t`;
+const emittedResumeReceiptLine = new RegExp(
+  `${receiptLogPrefix}${RESUME_RECEIPT_TIMESTAMP}(?: > | )${escapeRegExp(RESUME_RECEIPT_MARKER)}([A-Za-z0-9+/=]+)$`,
+);
+const echoedResumeReceiptCommand = new RegExp(
+  `${receiptLogPrefix}${RESUME_RECEIPT_TIMESTAMP} \\^\\[\\[36;1m  mapfile -t RECEIPT_LINES < <\\(sed -n 's/\\^${escapeRegExp(RESUME_RECEIPT_MARKER)}\\/\\/p' "\\$REMOTE_OUTPUT_FILE"\\)\\^\\[\\[0m$`,
+);
 
 function gh(args, { maxBuffer = 4 * 1024 * 1024 } = {}) {
   return execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer, timeout: 60_000 });
@@ -118,14 +128,16 @@ export function extractGitHubResumeReceipt(logText, sourceRun) {
     || sourceRun?.run_attempt !== NO_APP_CAPTURE_LINEAGE.resumeRunAttempt) {
     throw new Error("Resume receipt source is not the exact reviewed GitHub run attempt.");
   }
-  const expectedPrefix = `${RESUME_RECEIPT_JOB}\t${RESUME_RECEIPT_STEP}\t`;
   const payloads = [];
   for (const line of logText.split(/\r?\n/)) {
-    const markerIndex = line.indexOf(RESUME_RECEIPT_MARKER);
-    if (markerIndex < 0) continue;
-    const prefix = line.slice(0, markerIndex);
-    if (!prefix.startsWith(expectedPrefix) || !RESUME_RECEIPT_TIMESTAMP.test(prefix.slice(expectedPrefix.length))) continue;
-    payloads.push(line.slice(markerIndex + RESUME_RECEIPT_MARKER.length));
+    if (!line.includes(RESUME_RECEIPT_MARKER)) continue;
+    const emitted = emittedResumeReceiptLine.exec(line);
+    if (emitted) {
+      payloads.push(emitted[1]);
+      continue;
+    }
+    if (echoedResumeReceiptCommand.test(line)) continue;
+    throw new Error("Source workflow log contains a resume receipt marker in an unknown or spoofed format.");
   }
   if (payloads.length !== 1) {
     throw new Error("Exact source workflow log does not contain one unambiguous resume receipt.");

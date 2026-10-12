@@ -22,20 +22,35 @@ function resumeReceipt(overrides = {}) {
 }
 
 function outputLine(receipt) {
+  return `${RECEIPT_JOB}\t${RECEIPT_STEP}\t2026-10-12T06:11:10.0581259Z ${RECEIPT_MARKER}${Buffer.from(JSON.stringify(receipt)).toString("base64")}`;
+}
+
+function legacyOutputLine(receipt) {
   return `${RECEIPT_JOB}\t${RECEIPT_STEP}\t2026-10-12T06:11:10.0581259Z > ${RECEIPT_MARKER}${Buffer.from(JSON.stringify(receipt)).toString("base64")}`;
 }
 
+function echoedShellSource() {
+  return `${RECEIPT_JOB}\t${RECEIPT_STEP}\t2026-10-12T06:11:02.3105545Z ^[[36;1m  mapfile -t RECEIPT_LINES < <(sed -n 's/^${RECEIPT_MARKER}//p' "$REMOTE_OUTPUT_FILE")^[[0m`;
+}
+
 describe("no-app preparation workflow boundaries", () => {
-  it("extracts one real receipt from the prefixed GitHub job log format", () => {
+  it("extracts one emitted timestamp-space receipt and ignores the echoed shell command", () => {
     const receipt = resumeReceipt();
-    const echoedShellSource = `${RECEIPT_JOB}\t${RECEIPT_STEP}\t2026-10-12T06:11:02.3105545Z ^[[36;1m  mapfile -t RECEIPT_LINES < <(sed -n 's/^${RECEIPT_MARKER}'`;
-    expect(extractGitHubResumeReceipt(`${echoedShellSource}\n${outputLine(receipt)}`, RESUME_RUN)).toEqual(receipt);
+    expect(extractGitHubResumeReceipt(`${echoedShellSource()}\n${outputLine(receipt)}`, RESUME_RUN)).toEqual(receipt);
+  });
+
+  it("continues to accept the previously supported timestamp-command-output format", () => {
+    const receipt = resumeReceipt();
+    expect(extractGitHubResumeReceipt(legacyOutputLine(receipt), RESUME_RUN)).toEqual(receipt);
   });
 
   it.each([
     ["missing output", ""],
-    ["echoed shell source only", `${RECEIPT_JOB}\t${RECEIPT_STEP}\t2026-10-12T06:11:02.3105545Z ^[[36;1m echo '${RECEIPT_MARKER}'`],
+    ["echoed shell source only", echoedShellSource()],
     ["duplicate output", `${outputLine(resumeReceipt())}\n${outputLine(resumeReceipt())}`],
+    ["arbitrary ANSI diagnostic marker beside valid receipt", `${RECEIPT_JOB}\t${RECEIPT_STEP}\t2026-10-12T06:11:02.3105545Z ^[[36;1m unrelated diagnostic output ${RECEIPT_MARKER}${Buffer.from(JSON.stringify(resumeReceipt())).toString("base64")}\n${outputLine(resumeReceipt())}`],
+    ["unknown emitted delimiter", `${RECEIPT_JOB}\t${RECEIPT_STEP}\t2026-10-12T06:11:10.0581259Z output: ${RECEIPT_MARKER}${Buffer.from(JSON.stringify(resumeReceipt())).toString("base64")}`],
+    ["spoofed job prefix", `Unrelated job\t${RECEIPT_STEP}\t2026-10-12T06:11:10.0581259Z ${RECEIPT_MARKER}${Buffer.from(JSON.stringify(resumeReceipt())).toString("base64")}`],
     ["malformed base64", `${RECEIPT_JOB}\t${RECEIPT_STEP}\t2026-10-12T06:11:10.0581259Z > ${RECEIPT_MARKER}not-base64!`],
     ["malformed JSON", `${RECEIPT_JOB}\t${RECEIPT_STEP}\t2026-10-12T06:11:10.0581259Z > ${RECEIPT_MARKER}${Buffer.from("{").toString("base64")}`],
     ["wrong source SHA", outputLine(resumeReceipt({ sourceSha: "d".repeat(40) }))],

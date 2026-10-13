@@ -131,7 +131,10 @@ describe("no-app preparation workflow boundaries", () => {
     expect(host.indexOf("bodycast_acquire_production_release_lock")).toBeLessThan(host.indexOf('docker ps --all'));
     expect(host).toContain('git hash-object --stdin < <(git cat-file blob "$lock_helper_blob")');
     expect(host).toContain("assertPostgresClientCompatibility(process.argv[2], process.argv[3])");
-    expect(host).toContain("assertFreshWriterDrain(after.report, { now: Date.now(), maxAgeMs: 30_000 })");
+    expect(noAppVerifier).toContain("evaluateProductionWriterDrain(report)");
+    expect(host).not.toContain("assertFreshWriterDrain(after.report");
+    expect(host).not.toContain("assertFreshWriterDrain(snapshot.report");
+    expect(host).toContain("process.stdout.write(`${JSON.stringify(after)}\\n`)");
     expect(host).toContain('target_url="$(bash "$deploy_path/scripts/production-db-target.sh" --psql-url)"');
     expect(host).toContain('readonly DB_NETWORK="bodycast-backend-prod"');
     expect(host).toContain(".NetworkSettings.Networks");
@@ -143,8 +146,8 @@ describe("no-app preparation workflow boundaries", () => {
     expect(host).toContain("unset BODYCAST_PSQL_DATABASE_URL");
     expect(host).toContain('psql "$BODYCAST_PSQL_DATABASE_URL"');
     expect(host).not.toContain('psql --username="$POSTGRES_USER" --dbname=bodycast');
-    expect(host.indexOf("assertProductionDatabaseEndpointBinding")).toBeLessThan(host.indexOf('fingerprint="$(bash "$deploy_path/scripts/production-db-data-fingerprint.sh"'));
-    expect(host.indexOf('fingerprint="$(bash "$deploy_path/scripts/production-db-data-fingerprint.sh"')).toBeLessThan(host.indexOf("pg_dump --format=custom"));
+    expect(host.indexOf('fingerprint="$(bash "$deploy_path/scripts/production-db-data-fingerprint.sh"')).toBeLessThan(host.indexOf("assertProductionDatabaseEndpointBinding"));
+    expect(host.indexOf("assertProductionDatabaseEndpointBinding")).toBeLessThan(host.indexOf("pg_dump --format=custom"));
     expect(host).toContain('docker exec "$dump_container_id"');
     expect(host).toContain("stableNoAppSnapshot(before)");
     expect(noAppVerifier).toContain("writerDrain.observerPid = null");
@@ -247,8 +250,9 @@ describe("no-app preparation workflow boundaries", () => {
       });
       const firstSnapshotPath = path.join(temporaryDirectory, "snapshot-before.json");
       const secondSnapshotPath = path.join(temporaryDirectory, "snapshot-immediately-before-dump.json");
-      const secondObservedAt = new Date(Date.now() + 1000).toISOString();
-      await writeFile(firstSnapshotPath, JSON.stringify(makeSnapshot(44, observedAt)));
+      const staleBeforeObservedAt = new Date(Date.now() - 31_000).toISOString();
+      const secondObservedAt = new Date().toISOString();
+      await writeFile(firstSnapshotPath, JSON.stringify(makeSnapshot(44, staleBeforeObservedAt)));
       await writeFile(secondSnapshotPath, JSON.stringify(makeSnapshot(45, secondObservedAt)));
 
       const bashExecutable = process.platform === "win32" && existsSync("C:/Program Files/Git/bin/bash.exe")
@@ -321,6 +325,12 @@ node() {
     VERIFY_CALLS=$((VERIFY_CALLS + 1))
     local fixture
     if ((VERIFY_CALLS == 1)); then fixture="$SNAPSHOT_BEFORE"; else fixture="$SNAPSHOT_IMMEDIATELY_BEFORE_DUMP"; fi
+    command node --input-type=module - "$fixture" <<'NODE'
+import { readFileSync } from "node:fs";
+import { evaluateProductionWriterDrain } from "./scripts/production-writer-drain.mjs";
+const snapshot = JSON.parse(readFileSync(process.argv[2], "utf8"));
+if (!evaluateProductionWriterDrain(snapshot.report).ready) throw new Error("Writer-drain predicates are not ready.");
+NODE
     cp -- "$fixture" "$OBSERVED_DIRECTORY/verified-$VERIFY_CALLS.json"
     cat "$fixture"
     return 0
@@ -382,6 +392,18 @@ ${host.slice(tailStart + 1)}`;
         await readFile(path.join(observedDirectory, `verified-${index}.json`), "utf8"))));
       expect(JSON.stringify(before)).not.toBe(JSON.stringify(after));
       expect(stableNoAppSnapshot(before)).toEqual(stableNoAppSnapshot(after));
+      const snapshotLine = result.stderr.split(/\r?\n/).find((line) => line.startsWith("BODYCAST_NO_APP_PREPARATION_B64="));
+      expect(snapshotLine).toBeDefined();
+      const handedOffSnapshot = JSON.parse(Buffer.from(snapshotLine.slice("BODYCAST_NO_APP_PREPARATION_B64=".length), "base64").toString("utf8"));
+      expect(handedOffSnapshot).toEqual(after);
+      expect(handedOffSnapshot.report.writerDrain.observerPid).toBe(45);
+      expect(Date.now() - Date.parse(handedOffSnapshot.report.writerDrain.observedAt)).toBeLessThan(30_000);
+
+      await rm(dumpLogPath, { force: true });
+      await writeFile(secondSnapshotPath, JSON.stringify(makeSnapshot(45, staleBeforeObservedAt)));
+      const staleAfterResult = runFlow(path.join(temporaryDirectory, "host-tmp-stale-after"));
+      expect(staleAfterResult.status, staleAfterResult.stderr).toBe(0);
+      expect((await readFile(dumpLogPath, "utf8")).trim().split(/\r?\n/)).toEqual(["called"]);
 
       await rm(dumpLogPath, { force: true });
       await writeFile(secondSnapshotPath, JSON.stringify(makeSnapshot(45, new Date().toISOString(), 2)));
@@ -399,6 +421,20 @@ ${host.slice(tailStart + 1)}`;
       expect(changedSnapshotResult.status).not.toBe(0);
       expect(changedSnapshotResult.stderr).toContain("Production DB, route, capture, or Docker identity changed");
       await expect(readFile(dumpLogPath, "utf8")).rejects.toThrow();
+
+      for (const [name, mutate] of [
+        ["database", (snapshot) => { snapshot.preparationResult.productionDatabaseContainerId = "f".repeat(64); }],
+        ["route", (snapshot) => { snapshot.preparationResult.maintenanceRouteDigest = "e".repeat(64); }],
+      ]) {
+        await rm(dumpLogPath, { force: true });
+        const mismatchedSnapshot = makeSnapshot(47, new Date().toISOString());
+        mutate(mismatchedSnapshot);
+        await writeFile(secondSnapshotPath, JSON.stringify(mismatchedSnapshot));
+        const mismatchResult = runFlow(path.join(temporaryDirectory, `host-tmp-${name}-mismatch`));
+        expect(mismatchResult.status).not.toBe(0);
+        expect(mismatchResult.stderr).toContain("Production DB, route, capture, or Docker identity changed");
+        await expect(readFile(dumpLogPath, "utf8")).rejects.toThrow();
+      }
     } finally {
       await rm(temporaryDirectory, { recursive: true, force: true });
     }

@@ -120,7 +120,6 @@ assertPostgresClientCompatibility(process.argv[2], process.argv[3]);
 NODE
 
   export APP_HOST="$app_host" CADDY_ROUTES_PATH="$routes_path" DEPLOY_SHA="$release_sha" RELEASE_SHA="$release_sha"
-  topology="$(bash "$deploy_path/scripts/production-writer-drain.sh" --report)"
   marker="$(bodycast_maintenance_marker_from_route)"
   bodycast_verify_exact_maintenance_route
   bodycast_probe_public_maintenance "$marker"
@@ -133,6 +132,12 @@ NODE
     && awk 'BEGIN { IGNORECASE = 1 } /^Cache-Control:/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/[[:space:]]*\r$/, ""); if (tolower($0) == "no-store") found = 1 } END { exit !found }' "$public_headers" || {
     echo "Live public maintenance response is inconsistent or cacheable." >&2; return 1;
   }
+
+  # Fingerprinting is the slowest read-only operation. Complete it before
+  # sampling writer/topology state so the second handoff carries the latest report.
+  fingerprint="$(bash "$deploy_path/scripts/production-db-data-fingerprint.sh" --production-container "$DB_CONTAINER")"
+  [[ "$fingerprint" =~ ^[a-f0-9]{64}$ ]] || { echo "Production data fingerprint is malformed." >&2; return 1; }
+  topology="$(bash "$deploy_path/scripts/production-writer-drain.sh" --report)"
 
   node "$deploy_path/scripts/production-db-preflight.mjs" > "$sql_file"
   # Keep the preflight on the reviewed Compose DATABASE_URL; a socket default
@@ -158,8 +163,6 @@ import { assertProductionDatabaseEndpointBinding } from "./scripts/production-db
 const [reportPath, expectedAddress] = process.argv.slice(2);
 assertProductionDatabaseEndpointBinding(JSON.parse(readFileSync(reportPath, "utf8")), expectedAddress);
 NODE
-  fingerprint="$(bash "$deploy_path/scripts/production-db-data-fingerprint.sh" --production-container "$DB_CONTAINER")"
-  [[ "$fingerprint" =~ ^[a-f0-9]{64}$ ]] || { echo "Production data fingerprint is malformed." >&2; return 1; }
   node --input-type=module - "$raw_file" "$report_file" "$fingerprint" <<'NODE'
 import { readFileSync, writeFileSync } from "node:fs";
 const [rawPath, outputPath, digest] = process.argv.slice(2);
@@ -231,7 +234,6 @@ node --input-type=module - "$tmp/verified-before.json" "$tmp/verified-immediatel
 import { readFileSync } from "node:fs";
 import { canonicalSha256 } from "./scripts/production-migration-authorization.mjs";
 import { stableNoAppSnapshot } from "./scripts/production-no-app-preflight.mjs";
-import { assertFreshWriterDrain } from "./scripts/production-writer-drain.mjs";
 const [beforePath, afterPath, beforeContainerPath, afterContainerPath, beforeRoutePath, afterRoutePath] = process.argv.slice(2);
 const before = JSON.parse(readFileSync(beforePath, "utf8"));
 const after = JSON.parse(readFileSync(afterPath, "utf8"));
@@ -240,8 +242,7 @@ if (canonicalSha256(stableNoAppSnapshot(before)) !== canonicalSha256(stableNoApp
   || readFileSync(beforeRoutePath, "utf8") !== readFileSync(afterRoutePath, "utf8")) {
   throw new Error("Production DB, route, capture, or Docker identity changed between no-app preflight and dump.");
 }
-assertFreshWriterDrain(after.report, { now: Date.now(), maxAgeMs: 30_000 });
-process.stdout.write(`${JSON.stringify(before)}\n`);
+process.stdout.write(`${JSON.stringify(after)}\n`);
 NODE
 
 dump_container_id="$(cat "$tmp/container-id-immediately-before-dump")"
@@ -249,13 +250,6 @@ dump_container_id="$(cat "$tmp/container-id-immediately-before-dump")"
 [[ "$(docker inspect --format '{{.Id}}' "$DB_CONTAINER")" == "$dump_container_id" ]] || {
   echo "Production PostgreSQL container identity changed at the dump boundary." >&2; exit 1;
 }
-node --input-type=module - "$tmp/final-snapshot.json" <<'NODE'
-import { readFileSync } from "node:fs";
-import { assertFreshWriterDrain } from "./scripts/production-writer-drain.mjs";
-const snapshot = JSON.parse(readFileSync(process.argv[2], "utf8"));
-assertFreshWriterDrain(snapshot.report, { now: Date.now(), maxAgeMs: 30_000 });
-NODE
-
 snapshot_b64="$(base64 -w0 "$tmp/final-snapshot.json")"
 printf 'BODYCAST_NO_APP_PREPARATION_B64=%s\n' "$snapshot_b64" >&2
 dump_pid=""

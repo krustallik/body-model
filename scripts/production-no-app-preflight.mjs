@@ -5,7 +5,7 @@ import { canonicalSha256 } from "./production-migration-authorization.mjs";
 import { V4_REPUBLICATION_MANIFEST } from "./production-migration-manifests.mjs";
 import { parsePreviousAppProvenance, previousAppDatabaseCompatibilityDigests } from "./production-previous-app-provenance.mjs";
 import { validateCaptureResumeReceipt } from "./production-capture-resume-receipt.mjs";
-import { assertFreshWriterDrain } from "./production-writer-drain.mjs";
+import { evaluateProductionWriterDrain } from "./production-writer-drain.mjs";
 import { assertPostgresClientCompatibility } from "./postgres-client-versions.mjs";
 
 export const NO_APP_PREFLIGHT_EVIDENCE_KIND = "database-only-no-app-v1";
@@ -173,7 +173,7 @@ export function verifyPublicMaintenanceProbe({ status, body, maintenanceMarker, 
 export function verifyNoAppLiveState({
   releaseSha, canonicalMainSha, manifestId, preflightResult, report, appContainerIds, routeMarker, routeSha,
   publicProbe, releaseMarkerState, captureLineage, competingRunCount, postgresClientVersions,
-  databaseContainerId, now = Date.now(),
+  databaseContainerId,
 } = {}) {
   if (!SHA.test(String(releaseSha ?? "")) || releaseSha !== canonicalMainSha) reject("release SHA is not exact canonical main.");
   if (manifestId !== V4_REPUBLICATION_MANIFEST.id) reject("no-app preparation is limited to the closed V4 republication manifest.");
@@ -204,10 +204,14 @@ export function verifyNoAppLiveState({
   }
   let writerDrain;
   try {
-    writerDrain = assertFreshWriterDrain(report, { now, maxAgeMs: 30_000 });
+    // Preparation-only no-app evidence may carry an older observation timestamp.
+    // Keep every writer/topology predicate, but leave timestamp freshness to the
+    // separate standard DDL-authorization path; this result never authorizes DDL.
+    writerDrain = evaluateProductionWriterDrain(report);
   } catch {
-    reject("writer, lock, database topology, or maintenance-route evidence is stale or not ready.");
+    reject("writer, lock, database topology, or maintenance-route evidence is not ready.");
   }
+  if (!writerDrain.ready) reject("writer, lock, database topology, or maintenance-route evidence is not ready.");
   if (releaseMarkerState !== "absent") reject("a release/recovery marker exists or its state is unknown.");
   if (!DIGEST.test(String(routeSha ?? "")) || routeSha !== report?.writerDrain?.topology?.routeFile?.sha256
     || routeMarker !== publicProbe?.maintenanceMarker

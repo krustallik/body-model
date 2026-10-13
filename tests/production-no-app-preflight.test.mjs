@@ -350,8 +350,14 @@ describe("no-app database-only preflight contract", () => {
     const staleAt = new Date(Date.now() - 31_000).toISOString();
     staleReport.writerDrain.observedAt = staleAt;
     staleReport.writerDrain.topology.observedAt = staleAt;
-    expect(() => verifyNoAppLiveState(liveArgs({ report: staleReport })))
-      .toThrow("writer, lock, database topology, or maintenance-route evidence is stale");
+    expect(verifyNoAppLiveState(liveArgs({ report: staleReport })).writerDrain.ready).toBe(true);
+
+    const staleWithActiveWriter = report();
+    staleWithActiveWriter.writerDrain.observedAt = staleAt;
+    staleWithActiveWriter.writerDrain.topology.observedAt = staleAt;
+    staleWithActiveWriter.writerDrain.activeClientBackends = [{ pid: 123, applicationName: "fixture-writer" }];
+    expect(() => verifyNoAppLiveState(liveArgs({ report: staleWithActiveWriter })))
+      .toThrow("writer, lock, database topology, or maintenance-route evidence is not ready");
   });
 
   it("rejects any competing production workflow regardless of conclusion", () => {

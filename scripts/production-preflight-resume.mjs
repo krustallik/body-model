@@ -378,9 +378,27 @@ export function extractCaptureRetryLogEvidence(rawLog) {
   const stepName = "Enter maintenance and drain the old app before backup";
   const markers = [PRIOR_CAPTURE_FAILURE, "Capture refresh requires exactly one existing BodyCast app container.",
     "Traffic is in maintenance mode; the old app container is removed", "BODYCAST_BACKUP_STARTED_AT", "BODYCAST_PGDUMP_INVOCATION_AT"];
-  for (const record of parseActionLogRecords(rawLog)) {
-    if (record.job !== "Inspect, back up, restore, and rehearse on disposable PostgreSQL" || record.step !== stepName) continue;
-    for (const token of orderedSafeLogTokens(record.text, markers)) evidence.push(`${stepName}\t${token}`);
+  const records = parseActionLogRecords(rawLog);
+  if (records.some((record) => record.job || record.step)) {
+    for (const record of records) {
+      if (record.job !== "Inspect, back up, restore, and rehearse on disposable PostgreSQL" || record.step !== stepName) continue;
+      for (const token of orderedSafeLogTokens(record.text, markers)) evidence.push(`${stepName}\t${record.timestamp}\t${token}`);
+    }
+    return evidence.join("\n");
+  }
+
+  // The Actions job-logs API returns timestamped job text without gh's job/step tab columns.
+  // The caller binds this payload to the exact failed inspection job via the Actions API;
+  // accept only exact emitted stop lines so echoed shell source cannot impersonate output.
+  const rawLinePrefix = /^(\d{4}-\d{2}-\d{2}(?:T| )\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?) (.*)$/;
+  for (const line of String(rawLog ?? "").replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "").replace(/\uFEFF/g, "").split(/\r?\n/)) {
+    const match = rawLinePrefix.exec(line);
+    if (!match) continue;
+    const [, timestamp, output] = match;
+    const exactMarker = markers.find((marker) => output === marker);
+    const variableMarker = markers.find((marker) => marker.startsWith("BODYCAST_") && output.startsWith(marker));
+    const token = exactMarker ?? variableMarker;
+    if (token) evidence.push(`${stepName}\t${timestamp}\t${token}`);
   }
   return evidence.join("\n");
 }
@@ -1169,8 +1187,11 @@ function assertSafeCaptureBlockedPreflightRetry(evidence, {
     || !preflightCaptureControlsMatch(run.head_sha, currentMainSha)) {
     reject("the historical maintenance/capture execution boundary has an unknown control profile.");
   }
+  const failedCaptureStep = steps.find((step) => step.name === "Enter maintenance and drain the old app before backup");
+  const captureStepStartedAt = Date.parse(failedCaptureStep?.started_at);
+  const captureStepCompletedAt = Date.parse(failedCaptureStep?.completed_at);
   const captureLogRecords = String(evidence.failureLogText ?? "").split(/\r?\n/).filter(Boolean).map((line) => line.split("\t"));
-  const captureLogTokens = captureLogRecords.map(([, token]) => token);
+  const captureLogTokens = captureLogRecords.map(([, , token]) => token);
   const knownCaptureStops = captureLogTokens.filter((token) => [
     PRIOR_CAPTURE_FAILURE, "Capture refresh requires exactly one existing BodyCast app container.",
   ].includes(token));
@@ -1178,8 +1199,14 @@ function assertSafeCaptureBlockedPreflightRetry(evidence, {
     "Traffic is in maintenance mode; the old app container is removed", "BODYCAST_BACKUP_STARTED_AT", "BODYCAST_PGDUMP_INVOCATION_AT",
   ]);
   if (captureLogRecords.length === 0
-    || captureLogRecords.some(([stepName, token, extra]) => stepName !== "Enter maintenance and drain the old app before backup"
-      || !token || extra !== undefined)
+    || !Number.isFinite(captureStepStartedAt) || !Number.isFinite(captureStepCompletedAt)
+    || captureLogRecords.some(([stepName, timestamp, token, extra]) => {
+      const logAt = Date.parse(timestamp);
+      const logSecond = Math.floor(logAt / 1_000);
+      return stepName !== "Enter maintenance and drain the old app before backup" || !token || extra !== undefined
+        || !Number.isFinite(logAt) || logSecond < Math.floor(captureStepStartedAt / 1_000)
+        || logSecond > Math.floor(captureStepCompletedAt / 1_000);
+    })
     || knownCaptureStops.length !== 1 || captureLogTokens.at(-1) !== knownCaptureStops[0]
     || captureLogTokens.some((token) => forbiddenCaptureEvidence.has(token))) {
     reject("the capture retry log does not prove a unique terminal stop in the failed maintenance step.");

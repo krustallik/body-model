@@ -47,6 +47,7 @@ describe("production deploy evidence source binding", () => {
     expect(validateSsh).toBeGreaterThan(inspectJob);
     expect(pinSsh).toBeGreaterThan(validateSsh);
     expect(remoteCommand).toBeGreaterThan(pinSsh);
+    expect(workflow).toContain('gh api "repos/krustallik/body-model/actions/jobs/$inspect_job_id/logs"');
   });
 
   it("retains pending migration IDs and contradictory schema status from GitHub job logs", () => {
@@ -580,7 +581,12 @@ function captureBlockedRetryRun({ id = 38000669127, sha = targetSha, manifestId 
 }
 
 function captureBlockedRetryJobs({ extraInspectStep, ...overrides } = {}) {
-  const inspectSteps = captureBlockedJobSteps.map(([name, conclusion]) => ({ name, conclusion }));
+  const inspectSteps = captureBlockedJobSteps.map(([name, conclusion]) => ({
+    name, conclusion,
+    ...(name === "Enter maintenance and drain the old app before backup"
+      ? { started_at: "2026-10-11T11:59:59Z", completed_at: "2026-10-11T12:00:01Z" }
+      : {}),
+  }));
   if (extraInspectStep) inspectSteps.push(extraInspectStep);
   return {
     total_count: 2,
@@ -600,7 +606,7 @@ function captureBlockedRetryEvidence({
 } = {}) {
   return {
     run, jobs, artifacts,
-    failureLogText: `Enter maintenance and drain the old app before backup\t${failure}\n`,
+    failureLogText: `Enter maintenance and drain the old app before backup\t2026-10-11T12:00:00.000Z\t${failure}\n`,
     shaIsAncestorOfCurrentMain: true,
     sourceShaIsAncestor: true,
     captureControlsMatch: true,
@@ -778,7 +784,43 @@ describe("verified resume of a failed production preflight", () => {
       `Other job\t${step}\t${timestamp} ${marker}`,
       `Inspect, back up, restore, and rehearse on disposable PostgreSQL\t${step}\t${timestamp} ${marker}`,
     ].join("\n");
-    expect(extractCaptureRetryLogEvidence(raw)).toBe(`${step}\t${marker}`);
+    expect(extractCaptureRetryLogEvidence(raw)).toBe(`${step}\t${timestamp}\t${marker}`);
+  });
+
+  it("extracts exact emitted stop lines from GitHub job-log API timestamp-plus-space records", () => {
+    const step = "Enter maintenance and drain the old app before backup";
+    const marker = "Capture refresh requires exactly one existing BodyCast app container.";
+    const raw = [
+      "2026-10-12T06:47:24.8397786Z ##[group]Run node scripts/production-traffic-cutover.mjs",
+      `2026-10-12T06:47:24.8397786Z echo '${marker}'`,
+      `2026-10-12T06:47:24.8397786Z ${marker}`,
+      "2026-10-12T06:47:24.8397786Z ##[endgroup]",
+    ].join("\n");
+    expect(extractCaptureRetryLogEvidence(raw)).toBe(`${step}\t2026-10-12T06:47:24.8397786Z\t${marker}`);
+    expect(extractCaptureRetryLogEvidence(`${raw}\n2026-10-12T06:47:24.8397786Z ${marker}`))
+      .toBe(`${step}\t2026-10-12T06:47:24.8397786Z\t${marker}\n${step}\t2026-10-12T06:47:24.8397786Z\t${marker}`);
+  });
+
+  it("fails closed for missing or unrecognized raw GitHub job-log formats", () => {
+    const marker = "Capture refresh requires exactly one existing BodyCast app container.";
+    expect(extractCaptureRetryLogEvidence("2026-10-12T06:47:24.8397786Z echo 'Capture refresh requires exactly one existing BodyCast app container.'"))
+      .toBe("");
+    expect(extractCaptureRetryLogEvidence(`unstructured ${marker}`)).toBe("");
+  });
+
+  it("rejects duplicate emitted stops after job-log extraction", () => {
+    const marker = "Capture refresh requires exactly one existing BodyCast app container.";
+    const duplicateLog = `Enter maintenance and drain the old app before backup\t2026-10-11T12:00:00.000Z\t${marker}\n`
+      + `Enter maintenance and drain the old app before backup\t2026-10-11T12:00:00.000Z\t${marker}\n`;
+    expect(() => verifyWithCaptureBlockedRetries([captureBlockedRetryEvidence({ failureLogText: duplicateLog })]))
+      .toThrow("unique terminal stop");
+  });
+
+  it("rejects a stop marker timestamp outside the failed capture-step interval", () => {
+    const staleLog = "Enter maintenance and drain the old app before backup\t2026-10-11T11:59:58Z\t"
+      + "Capture refresh requires exactly one existing BodyCast app container.\n";
+    expect(() => verifyWithCaptureBlockedRetries([captureBlockedRetryEvidence({ failureLogText: staleLog })]))
+      .toThrow("unique terminal stop");
   });
 
   it("admits owner authorization-only failures separately from capture-blocked retries", () => {

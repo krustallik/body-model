@@ -382,7 +382,8 @@ jobs:
             },
           });
           if (capture.proof.targetSha !== process.env.RELEASE_SHA
-            || capture.proof.sourceRunId !== "38211169161") throw new Error("Final capture provenance differs from the prepared release.");
+            || capture.proof.sourceRunId !== "38205023003"
+            || capture.proof.resumeRunId !== "38211169161") throw new Error("Final capture provenance differs from the prepared release.");
           writeFileSync(prepOutput, `${JSON.stringify(preparationResult, null, 2)}\n`, { flag: "wx", mode: 0o600 });
           writeFileSync(evidenceOutput, `${JSON.stringify(evidence, null, 2)}\n`, { flag: "wx", mode: 0o600 });
           NODE

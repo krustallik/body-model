@@ -21,29 +21,14 @@ permissions:
   contents: read
 
 jobs:
-  ci:
-    name: Test and build
+  quality:
+    name: Quality
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    services:
-      postgres:
-        image: docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
-        env:
-          POSTGRES_DB: bodycast_training_history_stage01_test
-          POSTGRES_USER: bodycast_stage01_test
-          POSTGRES_PASSWORD: integration_test_password
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U bodycast_stage01_test -d bodycast_training_history_stage01_test"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
     env:
       NODE_ENV: test
       DATABASE_URL: postgresql://bodycast_stage01_test:integration_test_password@localhost:5432/bodycast_training_history_stage01_test
       IOS_SHORTCUT_API_KEY: integration-test-secret
-
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -69,14 +54,82 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Unit tests and coverage
-        run: npm run test:coverage
-
       - name: Validation smokes (workout v6 / initialization / target solver)
         run: |
           npm run validate:workout-activity-v6:smoke
           npm run validate:initialization:smoke
           npm run validate:target-solver:smoke
+
+  unit:
+    name: Unit and coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://bodycast_stage01_test:integration_test_password@localhost:5432/bodycast_training_history_stage01_test
+      IOS_SHORTCUT_API_KEY: integration-test-secret
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: npm
+          package-manager-cache: true
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npm run prisma:generate
+
+      - name: Unit tests and coverage
+        run: npm run test:coverage
+
+  postgres_integration:
+    name: PostgreSQL integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        env:
+          POSTGRES_DB: bodycast_training_history_stage01_test
+          POSTGRES_USER: bodycast_stage01_test
+          POSTGRES_PASSWORD: integration_test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bodycast_stage01_test -d bodycast_training_history_stage01_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://bodycast_stage01_test:integration_test_password@localhost:5432/bodycast_training_history_stage01_test
+      IOS_SHORTCUT_API_KEY: integration-test-secret
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: npm
+          package-manager-cache: true
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npm run prisma:generate
 
       - name: Apply test database migrations
         run: npm run prisma:migrate:deploy
@@ -88,10 +141,47 @@ jobs:
           BODYCAST_RECOVERY_TEST_DATABASE_URL: postgresql://bodycast_stage01_test:integration_test_password@localhost:5432/bodycast_training_history_stage01_test
         run: npm run test:integration
 
+  next-build:
+    name: Next.js production build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://bodycast_stage01_test:integration_test_password@localhost:5432/bodycast_training_history_stage01_test
+      IOS_SHORTCUT_API_KEY: integration-test-secret
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: npm
+          package-manager-cache: true
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npm run prisma:generate
+
       - name: Next.js production build
         env:
           NODE_ENV: production
         run: npm run build
+
+  container:
+    name: Compose and Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
 
       - name: Validate production Compose
         run: |
@@ -100,3 +190,32 @@ jobs:
 
       - name: Build production Docker image
         run: docker build --target production --tag bodycast-app:ci .
+
+  ci:
+    name: Test and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs:
+      - quality
+      - unit
+      - postgres_integration
+      - next-build
+      - container
+    if: ${{ always() }}
+    steps:
+      - name: Require every CI gate to pass
+        env:
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          UNIT_RESULT: ${{ needs.unit.result }}
+          POSTGRES_RESULT: ${{ needs.postgres_integration.result }}
+          BUILD_RESULT: ${{ needs.next-build.result }}
+          CONTAINER_RESULT: ${{ needs.container.result }}
+        run: |
+          set -Eeuo pipefail
+          for result in "$QUALITY_RESULT" "$UNIT_RESULT" "$POSTGRES_RESULT" "$BUILD_RESULT" "$CONTAINER_RESULT"; do
+            if [[ "$result" != "success" ]]; then
+              echo "::error::A required CI gate did not succeed (result: $result)."
+              exit 1
+            fi
+          done
+          echo "All five CI gates succeeded."

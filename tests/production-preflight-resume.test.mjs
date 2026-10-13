@@ -47,7 +47,9 @@ describe("production deploy evidence source binding", () => {
     expect(validateSsh).toBeGreaterThan(inspectJob);
     expect(pinSsh).toBeGreaterThan(validateSsh);
     expect(remoteCommand).toBeGreaterThan(pinSsh);
-    expect(workflow).toContain('gh api "repos/krustallik/body-model/actions/jobs/$inspect_job_id/logs"');
+    expect(workflow).toContain('gh api --allow-escape-sequences "repos/krustallik/body-model/actions/jobs/$inspect_job_id/logs" > "$failure_log"');
+    expect(workflow).toContain('[[ "$log_size_bytes" =~ ^[0-9]+$ && "$log_size_bytes" -le 1000000 ]]');
+    expect(workflow.match(/--allow-escape-sequences/g)).toHaveLength(1);
   });
 
   it("retains pending migration IDs and contradictory schema status from GitHub job logs", () => {

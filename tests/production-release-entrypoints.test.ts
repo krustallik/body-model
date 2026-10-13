@@ -272,7 +272,7 @@ describe("active production release entrypoints", () => {
     const collector = readFileSync(resolve("scripts/github-forward-resume-evidence.mjs"), "utf8");
     expect(workflow).toContain("node scripts/github-forward-resume-evidence.mjs");
     expect(workflow).not.toContain("FORWARD_SAFE_PREFLIGHT_RETRY_RUN_IDS");
-    expect(workflow).not.toContain("--allow-escape-sequences");
+    expect(workflow.match(/--allow-escape-sequences/g)).toHaveLength(1);
     expect(collector).toContain('"merge-base", "--is-ancestor"');
     expect(collector).toContain('"repository-since-source"');
     expect(collector).toContain('redirect: "manual"');

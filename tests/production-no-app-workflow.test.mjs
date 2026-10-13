@@ -173,11 +173,11 @@ describe("no-app preparation workflow boundaries", () => {
     expect(workflow).toContain("production DDL: NOT EXECUTED");
   });
 
-  it("keeps historical log parsing confined to the standard preflight resume gate", async () => {
+  it("keeps historical log handling in the standard preflight resume gate", async () => {
     const resume = await readFile(new URL("../scripts/production-preflight-resume.mjs", import.meta.url), "utf8");
     expect(resume).toContain("parseActionLogRecords");
     expect(resume).toContain("assertSafeFailedPreMaintenanceDeploy");
-    expect(resume).toContain("assertSafeCaptureBlockedPreflightRetry");
+    expect(resume).toContain('historicalEffects: "UNVERIFIED"');
   });
 
   it("executes the real collect_snapshot flow twice before pg_dump", async () => {

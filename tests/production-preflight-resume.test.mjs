@@ -454,6 +454,17 @@ function safePreflightRetryEvidence(overrides = {}) {
   };
 }
 
+function authorizationOnlyPreflightRetryEvidence(overrides = {}) {
+  return {
+    run: safePreflightRetryRun({ id: 38000669128 }),
+    jobs: safePreflightRetryJobs(),
+    artifacts: { total_count: 0, artifacts: [] },
+    shaIsAncestorOfCurrentMain: true,
+    sourceShaIsAncestor: true,
+    ...overrides,
+  };
+}
+
 const v4ManifestId = "unified-v4-republication-v1";
 const captureBlockedJobSteps = [
   ["Set up job", "success"],
@@ -660,7 +671,7 @@ describe("verified resume of a failed production preflight", () => {
 
   it("admits only the original owner run that stopped after a successful backup and failed isolated restore", () => {
     expect(verify()).toEqual({ schemaVersion: 2, sourceRunId: "38000669126", sourceRunAttempt: 1, sourceSha, targetSha,
-      unverifiedHistoricalDeployRunIds: [], unverifiedHistoricalPreflightRunIds: [], historicalPreflightEffects: [],
+      unverifiedHistoricalDeployRunIds: [], unverifiedHistoricalPreflightRunIds: [], authorizationOnlyPreflightRetryRunIds: [], historicalPreflightEffects: [],
       unverifiedHistoricalRunIds: [] });
   });
 
@@ -679,6 +690,41 @@ describe("verified resume of a failed production preflight", () => {
       runId, sha: targetSha, historicalEffects: "UNVERIFIED",
     })));
     expect(result.unverifiedHistoricalDeployRunIds).toEqual([]);
+  });
+
+  it("admits owner authorization-only failures separately from capture-blocked retries", () => {
+    const captureRetry = captureBlockedRetryEvidence({
+      run: captureBlockedRetryRun({ id: 38000669127 }),
+    });
+    const authorizationOnlyRetry = authorizationOnlyPreflightRetryEvidence();
+    const secondAuthorizationOnlyRetry = authorizationOnlyPreflightRetryEvidence({
+      run: safePreflightRetryRun({ id: 38000669129 }),
+    });
+    const result = verifyWithCaptureBlockedRetries([captureRetry, authorizationOnlyRetry, secondAuthorizationOnlyRetry]);
+
+    expect(result.authorizationOnlyPreflightRetryRunIds).toEqual(["38000669128", "38000669129"]);
+    expect(result.unverifiedHistoricalPreflightRunIds).toEqual(["38000669127"]);
+    expect(result.historicalPreflightEffects).toEqual([{ runId: "38000669127", sha: targetSha, historicalEffects: "UNVERIFIED" }]);
+  });
+
+  it.each([
+    ["another owner", { run: safePreflightRetryRun({ id: 38000669128, triggering_actor: { id: 7 } }) }],
+    ["stale SHA", { shaIsAncestorOfCurrentMain: false }],
+    ["not descended from the source", { sourceShaIsAncestor: false }],
+    ["published artifact", { artifacts: { total_count: 1, artifacts: [{ id: 8 }] } }],
+    ["incomplete artifact inventory", { artifacts: { total_count: 0 } }],
+    ["inspection job ran", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
+      job.name.startsWith("Inspect,") ? { ...job, conclusion: "failure" } : job) }) }],
+    ["inspection job has steps", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
+      job.name.startsWith("Inspect,") ? { ...job, steps: [{ name: "unexpected", conclusion: "skipped" }] } : job) }) }],
+    ["authorization failed outside the exact read-only gate", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
+      job.name.startsWith("Authorize") ? { ...job, steps: job.steps.map((step) => step.name === "Set up job"
+        ? { ...step, conclusion: "failure" } : step) } : job) }) }],
+    ["job SHA mismatch", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
+      job.name.startsWith("Authorize") ? { ...job, head_sha: sourceSha } : job) }) }],
+  ])("rejects an authorization-only retry when %s", (_label, evidenceOverrides) => {
+    expect(() => verifyWithCaptureBlockedRetries([authorizationOnlyPreflightRetryEvidence(evidenceOverrides)]))
+      .toThrow("cannot be safely resumed");
   });
 
   it.each([

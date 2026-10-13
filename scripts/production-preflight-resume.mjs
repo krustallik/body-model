@@ -500,6 +500,7 @@ export function verifyResumablePreflightAttempt({
   }
   const verifiedDeployIds = new Set();
   const verifiedPreflightRetryIds = new Set();
+  const verifiedAuthorizationOnlyPreflightRetryIds = new Set();
   const verifiedCaptureGuardEffects = [];
   const unverifiedHistoricalRunIds = [];
   for (const run of laterRuns ?? []) {
@@ -520,6 +521,23 @@ export function verifyResumablePreflightAttempt({
     if (workflowPath(run) === PREFLIGHT_PATH && id > sourceId) {
       const evidence = safePreflightRetryById.get(String(run.id));
       if (!evidence) reject(`a later preflight has no complete evidence proving the maintenance capture guard stopped before DB inspection.`);
+      const authorize = evidence.jobs?.jobs?.find((job) => job.name === "Authorize read-only preflight");
+      if (authorize?.conclusion === "failure") {
+        if (evidence.sourceShaIsAncestor !== true) {
+          reject("an authorization-only preflight retry is not descended from the resumed source.");
+        }
+        if (evidence.artifacts?.total_count !== 0 || !Array.isArray(evidence.artifacts.artifacts)
+          || evidence.artifacts.artifacts.length !== 0) {
+          reject("an authorization-only preflight retry unexpectedly published an artifact.");
+        }
+        assertSafeAuthorizationOnlyPreflightRetry(evidence, {
+          preflightWorkflowId: workflowId,
+          historyRun: run,
+        });
+        verifiedPreflightRetryIds.add(String(run.id));
+        verifiedAuthorizationOnlyPreflightRetryIds.add(String(run.id));
+        continue;
+      }
       const verified = assertSafeCaptureBlockedPreflightRetry(evidence, {
         historyRun: run,
         preflightWorkflowId: workflowId,
@@ -574,7 +592,8 @@ export function verifyResumablePreflightAttempt({
     sourceSha: sourceRun.head_sha,
     targetSha: currentMainSha,
     unverifiedHistoricalDeployRunIds: Object.freeze([...verifiedDeployIds].sort()),
-    unverifiedHistoricalPreflightRunIds: Object.freeze([...verifiedPreflightRetryIds].sort()),
+    unverifiedHistoricalPreflightRunIds: Object.freeze(verifiedCaptureGuardEffects.map((effect) => effect.runId).sort()),
+    authorizationOnlyPreflightRetryRunIds: Object.freeze([...verifiedAuthorizationOnlyPreflightRetryIds].sort()),
     historicalPreflightEffects: Object.freeze(verifiedCaptureGuardEffects.sort((left, right) => left.runId.localeCompare(right.runId))),
     unverifiedHistoricalRunIds: Object.freeze(unverifiedHistoricalRunIds.sort()),
   });

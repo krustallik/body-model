@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { assertTrustedOwnerWorkflowRun, BODYCAST_OWNER_ID } from "./github-owner-identity.mjs";
@@ -37,6 +38,16 @@ export const DEPLOY_CONTROL_FILES = Object.freeze([
   "scripts/production-route-path.sh",
   "scripts/production-route-primitives.sh",
   "scripts/production-schema-deploy-handoff.mjs",
+]);
+const DEPLOY_PRE_MAINTENANCE_CONTROL_FILES = Object.freeze(DEPLOY_CONTROL_FILES.filter((file) =>
+  file !== ".github/workflows/ci.yml" && file !== "scripts/production-release-marker.sh"));
+const REVIEWED_MARKER_CLEANUP_SUFFIX_DIGESTS = new Set([
+  "810bf5a2b2c74cb1193ba1319462373d1dcc9424c4a178efc31b9e36a7b7411c",
+  "f9f837fd1ad0faade077d81f437c2180a6f628f676dd79bd31b5cf7a4f9374a4",
+]);
+const REVIEWED_PREVIOUS_APP_COMPATIBILITY_FUNCTION_DIGESTS = new Set([
+  "1a450802333a1de3c04fb4e2c3e351dfb93551861cfc719ddff898416b1b14ae",
+  "5afa9bbaaf68c7a06bd9999dfaae7a2e9fbc00ea11952989b4f6017a9e078b8d",
 ]);
 export const PREFLIGHT_CAPTURE_RESUME_CONTROL_FILES = Object.freeze([
   "docker-compose.prod.yml",
@@ -83,6 +94,22 @@ export const NO_APP_PREPARATION_CONTROL_FILES = Object.freeze([
   "scripts/production-previous-app-provenance.mjs",
   "scripts/production-capture-resume-receipt.mjs",
 ]);
+// Content-addressed profiles for the exact no-app control trees used by the
+// historical owner runs in this release chain. These bind execution to the
+// immutable code that ran, without requiring that old preparation code remain
+// byte-identical to today's implementation or trusting a run-ID allowlist.
+const REVIEWED_NO_APP_CONTROL_PROFILE_DIGESTS = new Set([
+  "d59d86de04bd298eab7a39b4c2801bb6d13cecbde5c406584e45cd4160bb1d6a",
+  "308530ca51dbcb682bd64a10d7522d97ef04b3d0dcd98f451c24ded67646391b",
+  "7e10754123b2a1d1635fbf6c24b66b1e671efa9e1dc26fbbe2fbfccea517bc79",
+  "485a606fb8dcf3d6305301930508207fc317838749f46f0c927c75845891add6",
+  "95df4ed99379493cc15b641a594098870aa8753007da515c8f4e2f71bab12d13",
+  "c9b779e1184aa1d1efa2c525b959b6568cafc7403a3d184cdc31e91ff6ff2599",
+  "d96a56c011eb9f787a72976ef3a19573beca61432efb12def5de71163c0a83f9",
+  "19481cebee6f242fe3cff7b0f4d228dbfc90cf85e9cd3f65ca51ce96e14ef31f",
+  "620e282707e9618beda7f4d29163d955928f971d939479d15903f7782f47626e",
+  "bea2ae68fa3a946779011c3c43b249ddaecfdd3c7646b6b46f180fc1ee80b5db",
+]);
 const DEPLOY_AUTHORIZE_STEPS = Object.freeze([
   ["Set up job", "success"],
   ["Checkout main gate helpers", "success"],
@@ -99,6 +126,17 @@ const DEPLOY_STEPS = Object.freeze([
   ["Remove temporary SSH credentials", "success"],
   ["Post Checkout exact current main tooling", "success"],
   ["Complete job", "success"],
+]);
+const DEPLOY_PRE_MAINTENANCE_LOG_MARKERS = Object.freeze([
+  "BLOCKED: production schema is not compatible with this application revision.",
+  "Ordinary automatic deployment does not run prisma migrate deploy.",
+  "Pending migration identifiers appear in the status output above.",
+  "Authorize a separate production migration procedure before releasing this commit.",
+  "Deploy failed before maintenance was confirmed; the previous app was not stopped or replaced.",
+]);
+const EXPECTED_V4_PENDING_MIGRATIONS = Object.freeze([
+  "20261011120000_unified_publication_failure_fence",
+  "20261011130000_only_completed_training_invalidates_v7",
 ]);
 
 const REQUIRED_SOURCE_STEPS = Object.freeze({
@@ -175,6 +213,42 @@ const AUTHORIZATION_ONLY_PREFLIGHT_JOB_STEPS = Object.freeze([
   ["Validate canonical repository, exact main, and successful CI", "failure"],
   ["Post Checkout current main tooling", "success"],
   ["Complete job", "success"],
+]);
+const NO_APP_AUTHORIZATION_JOB_STEPS = Object.freeze([
+  ["Set up job", "success"],
+  ["Checkout current main tooling", "success"],
+  ["Verify owner, confirmation, exact current main, and successful CI", "success"],
+  ["Post Checkout current main tooling", "success"],
+  ["Complete job", "success"],
+]);
+const NO_APP_AUTHORIZATION_JOB_STEP_PROFILES = Object.freeze([
+  NO_APP_AUTHORIZATION_JOB_STEPS,
+  Object.freeze([
+    ["Set up job", "success"],
+    ["Checkout exact current main tooling", "success"],
+    ["Verify owner, confirmation, exact current main, and successful CI", "success"],
+    ["Post Checkout exact current main tooling", "success"],
+    ["Complete job", "success"],
+  ]),
+]);
+const NO_APP_INSPECT_REQUIRED_STEPS = Object.freeze([
+  "Set up job", "Initialize containers", "Checkout exact current-main release SHA", "Set up pinned Node runtime",
+  "Install locked tooling", "Recheck trusted owner workflow attempt before production credentials", null,
+  "Validate production SSH and backup credentials", "Pin production SSH host key",
+  "Recheck exact main, capture history, and competing runs immediately before read-only snapshot",
+  "Create fresh encrypted backup under the host release lock",
+  "Restore backup and verify identity, schema, history, and data on isolated PostgreSQL",
+  "Rehearse exact V4 migrations only on isolated PostgreSQL",
+  "Recheck exact main and create preparation-only evidence", "Upload encrypted production backup",
+  "Upload immutable database-only preparation evidence", "Remove temporary SSH credentials",
+]);
+const NO_APP_INSPECT_HISTORY_STEPS = new Set([
+  "Verify exact current main and reconcile all capture/intervening workflow evidence",
+  "Verify exact main, source run identity, and active production workflows",
+]);
+const NO_APP_INSPECT_CLEANUP_STEPS = Object.freeze([
+  "Post Set up pinned Node runtime", "Post Checkout current-main release SHA",
+  "Post Checkout exact current-main release SHA", "Stop containers", "Complete job",
 ]);
 const MIGRATION_PRE_DDL_FAILURE = "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/app/scripts/github-owner-identity.mjs' imported from /app/scripts/production-migration-authorization.mjs";
 const MIGRATION_FAILURE_STEP = "Run the fixed guarded migration script over SSH";
@@ -271,6 +345,36 @@ function findAllOccurrences(text, needle) {
   return positions;
 }
 
+function orderedSafeLogTokens(text, fixedTokens, pattern = null) {
+  const tokens = fixedTokens.flatMap((token) => findAllOccurrences(text, token).map((index) => ({ index, text: token })));
+  if (pattern) for (const match of String(text).matchAll(pattern)) tokens.push({ index: match.index, text: match[0] });
+  return tokens.sort((a, b) => a.index - b.index).map(({ text: token }) => token);
+}
+
+export function extractPreMaintenanceDeployLogEvidence(rawLog) {
+  const evidence = [];
+  const fixed = [...DEPLOY_PRE_MAINTENANCE_LOG_MARKERS, "Database schema is up to date"];
+  const migrationId = /\b20\d{12}_[A-Za-z0-9_]+\b/g;
+  for (const record of parseActionLogRecords(rawLog)) {
+    if (record.job !== "Deploy exact current-main SHA"
+      || record.step !== "Deploy exact SHA through the fixed production script") continue;
+    evidence.push(...orderedSafeLogTokens(record.text, fixed, migrationId));
+  }
+  return evidence.join("\n");
+}
+
+export function extractCaptureRetryLogEvidence(rawLog) {
+  const evidence = [];
+  const stepName = "Enter maintenance and drain the old app before backup";
+  const markers = [PRIOR_CAPTURE_FAILURE, "Capture refresh requires exactly one existing BodyCast app container.",
+    "Traffic is in maintenance mode; the old app container is removed", "BODYCAST_BACKUP_STARTED_AT", "BODYCAST_PGDUMP_INVOCATION_AT"];
+  for (const record of parseActionLogRecords(rawLog)) {
+    if (record.job !== "Inspect, back up, restore, and rehearse on disposable PostgreSQL" || record.step !== stepName) continue;
+    for (const token of orderedSafeLogTokens(record.text, markers)) evidence.push(`${stepName}\t${token}`);
+  }
+  return evidence.join("\n");
+}
+
 function workflowPath(run) {
   return typeof run?.path === "string" ? run.path.split("@")[0] : "";
 }
@@ -279,10 +383,38 @@ function parseNdjson(text) {
   return text.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
 }
 
+function normalizePinnedPostgresRegistry(source) {
+  const refs = [
+    "public.ecr.aws/docker/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24",
+    "public.ecr.aws/docker/library/postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24",
+    "docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24",
+  ];
+  return refs.reduce((text, ref) => text.replaceAll(ref, "<reviewed-postgres-17.11-pinned-image>"), String(source));
+}
+
+function normalizeReviewedMarkerCleanup(source) {
+  const marker = source.includes("assert_bodycast_release_marker_matches() {")
+    ? "assert_bodycast_release_marker_matches() {"
+    : "clear_bodycast_release_marker() {";
+  const start = source.indexOf(marker);
+  if (start < 0) return source;
+  const suffix = source.slice(start).trimEnd();
+  if (!REVIEWED_MARKER_CLEANUP_SUFFIX_DIGESTS.has(createHash("sha256").update(suffix).digest("hex"))) return null;
+  const functionEnd = source.lastIndexOf("\n}");
+  if (functionEnd < start || source.slice(functionEnd + 2).trim() !== "") return null;
+  // deploy.sh sources this helper but does not call cleanup before the schema gate.
+  return source.slice(0, start) + "<reviewed-unreached-marker-cleanup>\n";
+}
+
 export function deployControlFilesMatch(runSha, currentMainSha, cwd = process.cwd()) {
   try {
-    execFileSync("git", ["diff", "--quiet", runSha, currentMainSha, "--", ...DEPLOY_CONTROL_FILES], { cwd, stdio: "ignore" });
-    return true;
+    execFileSync("git", ["diff", "--quiet", runSha, currentMainSha, "--", ...DEPLOY_PRE_MAINTENANCE_CONTROL_FILES], { cwd, stdio: "ignore" });
+    const priorCi = gitTextAt(runSha, CI_PATH, cwd);
+    const currentCi = gitTextAt(currentMainSha, CI_PATH, cwd);
+    if (normalizePinnedPostgresRegistry(priorCi) !== normalizePinnedPostgresRegistry(currentCi)) return false;
+    const priorMarker = normalizeReviewedMarkerCleanup(gitTextAt(runSha, "scripts/production-release-marker.sh", cwd));
+    const currentMarker = normalizeReviewedMarkerCleanup(gitTextAt(currentMainSha, "scripts/production-release-marker.sh", cwd));
+    return priorMarker !== null && priorMarker === currentMarker;
   } catch {
     return false;
   }
@@ -300,6 +432,35 @@ function workflowJobBlock(source, jobName) {
     }
   }
   return lines.slice(start, end).join("\n");
+}
+
+function workflowJobPrefixThroughStep(source, jobName, stepName) {
+  const block = workflowJobBlock(source, jobName);
+  if (block === null) return null;
+  const marker = `      - name: ${stepName}`;
+  const start = block.indexOf(marker);
+  if (start < 0) return null;
+  const next = block.indexOf("\n      - name:", start + marker.length);
+  return block.slice(0, next < 0 ? undefined : next);
+}
+
+function normalizePreviousAppVerifyRecordControls(source) {
+  let normalized = String(source).replace(/\r\n?/g, "\n");
+  const imports = [
+    'import { isCanonicalPostgresDatabaseIdentity } from "./postgres-database-identity.mjs";',
+    'import { isHistoricalPostgresDatabaseIdentity, postgresDatabaseIdentityLegacyDigestProjection } from "./postgres-database-identity.mjs";',
+  ];
+  const foundImports = imports.filter((line) => normalized.includes(line));
+  if (foundImports.length !== 1) return null;
+  normalized = normalized.replace(foundImports[0], "<reviewed-postgres-identity-import>");
+  const start = normalized.indexOf("export function previousAppDatabaseCompatibilityDigests(report) {");
+  const endMarker = "\n}\n\nexport function assertPreviousAppCompatibilitySnapshot";
+  const end = normalized.indexOf(endMarker, start);
+  if (start < 0 || end < 0) return null;
+  const body = normalized.slice(start, end + 2);
+  if (!REVIEWED_PREVIOUS_APP_COMPATIBILITY_FUNCTION_DIGESTS.has(createHash("sha256").update(body).digest("hex"))) return null;
+  // This compatibility producer is not called by --verify-record; parsing, validation, digest, and CLI code stay exact.
+  return normalized.slice(0, start) + "<reviewed-unreached-compatibility-producer>" + normalized.slice(end + 2);
 }
 
 function workflowTopLevelBlock(source, blockName) {
@@ -322,8 +483,11 @@ export function preflightAuthorizationControlsMatch(runSha, currentMainSha, cwd 
     const priorWorkflow = execFileSync("git", ["show", `${runSha}:${PREFLIGHT_PATH}`], { cwd, encoding: "utf8" });
     const currentWorkflow = execFileSync("git", ["show", `${currentMainSha}:${PREFLIGHT_PATH}`], { cwd, encoding: "utf8" });
     const priorAuthorizeJob = workflowJobBlock(priorWorkflow, "authorize");
+    const currentAuthorizeJob = workflowJobBlock(currentWorkflow, "authorize");
     return priorAuthorizeJob !== null
-      && priorAuthorizeJob === workflowJobBlock(currentWorkflow, "authorize")
+      && currentAuthorizeJob !== null
+      && normalizeHistoricalAuthorizationEvidenceExtension(priorAuthorizeJob)
+        === normalizeHistoricalAuthorizationEvidenceExtension(currentAuthorizeJob)
       && workflowTopLevelBlock(priorWorkflow, "permissions") === workflowTopLevelBlock(currentWorkflow, "permissions")
       && workflowTopLevelBlock(priorWorkflow, "env") === workflowTopLevelBlock(currentWorkflow, "env")
       && workflowTopLevelBlock(priorWorkflow, "defaults") === workflowTopLevelBlock(currentWorkflow, "defaults")
@@ -333,26 +497,85 @@ export function preflightAuthorizationControlsMatch(runSha, currentMainSha, cwd 
   }
 }
 
+function normalizeHistoricalAuthorizationEvidenceExtension(source) {
+  // PR #88 added an authenticated, read-only artifact inventory to historical
+  // retry collection. It did not add production access or change the owner gate.
+  // Normalize only that exact API/read-only serialization extension; any other
+  // authorization-control change remains unknown and fails closed.
+  return String(source)
+    .replace(/^[ \t]*gh api "repos\/krustallik\/body-model\/actions\/runs\/\$retry_run_id\/artifacts" > "\$RUNNER_TEMP\/resume-safe-preflight-\$retry_run_id-artifacts\.json"[ \t]*\r?\n/gm, "")
+    .replace(/^[ \t]*const artifactsPath = runPath\.replace\(\/-run\\\.json\$\/, "-artifacts\.json"\);\r?\n[ \t]*if \(artifactsPath === runPath\) throw new Error\("Preflight retry artifact inventory path is malformed\."\);\r?\n/gm, "")
+    .replace(/, artifacts: JSON\.parse\(readFileSync\(artifactsPath, "utf8"\)\)/g, "")
+    .replace(/^[ \t]*process\.stdout\.write\(`\$\{JSON\.stringify\(\{ run: JSON\.parse\(readFileSync\(runPath, "utf8"\)\),[ \t]*\r?\n?[ \t]*jobs: JSON\.parse\(readFileSync\(jobsPath, "utf8"\)\) \}\)\}\\n`\);[ \t]*$/gm, "<reviewed-run-jobs-json-serialization>")
+    .replace(/^[ \t]*process\.stdout\.write\(`\$\{JSON\.stringify\(\{ run: JSON\.parse\(readFileSync\(runPath, "utf8"\)\), jobs: JSON\.parse\(readFileSync\(jobsPath, "utf8"\)\) \}\)\}\\n`\);[ \t]*$/gm, "<reviewed-run-jobs-json-serialization>")
+    .replace(/\r\n?/g, "\n");
+}
+
+const PREFLIGHT_CAPTURE_SHELL_FUNCTIONS = Object.freeze([
+  "publish_maintenance_route",
+  "capture_pre_ddl_previous_release",
+  "refresh_pre_ddl_previous_release",
+  "stop_old_app",
+  "enter_maintenance",
+]);
+
+function shellFunctionBlock(source, name) {
+  const lines = String(source).replace(/\r\n?/g, "\n").split("\n");
+  const start = lines.findIndex((line) => line === `${name}() {`);
+  if (start < 0) return null;
+  const end = lines.findIndex((line, index) => index > start && line === "}");
+  return end < 0 ? null : lines.slice(start, end + 1).join("\n");
+}
+
+function gitTextAt(sha, file, cwd) {
+  return execFileSync("git", ["show", `${sha}:${file}`], { cwd, encoding: "utf8" });
+}
+
+function gitTreeProfileDigest(sha, files, cwd) {
+  const tree = execFileSync("git", ["ls-tree", "-r", "--full-tree", sha, "--", ...files], { cwd, encoding: "utf8" });
+  return createHash("sha256").update(tree).digest("hex");
+}
+
 export function preflightCaptureResumeControlsMatch(runSha, currentMainSha, cwd = process.cwd()) {
   try {
-    execFileSync("git", ["diff", "--quiet", runSha, currentMainSha, "--", ...PREFLIGHT_CAPTURE_RESUME_CONTROL_FILES], {
-      cwd, stdio: "ignore",
-    });
-    const priorWorkflow = execFileSync("git", ["show", `${runSha}:${PREFLIGHT_PATH}`], { cwd, encoding: "utf8" });
-    const currentWorkflow = execFileSync("git", ["show", `${currentMainSha}:${PREFLIGHT_PATH}`], { cwd, encoding: "utf8" });
-    const priorInspectJob = workflowJobBlock(priorWorkflow, "inspect_backup_restore");
-    return priorInspectJob !== null && priorInspectJob === workflowJobBlock(currentWorkflow, "inspect_backup_restore");
+    const stableFiles = PREFLIGHT_CAPTURE_RESUME_CONTROL_FILES.filter((file) => ![
+      "scripts/production-traffic-cutover.sh",
+      "scripts/production-previous-app-provenance.mjs",
+      "scripts/production-release-marker.sh",
+      "scripts/production-no-app-preflight.mjs",
+    ].includes(file));
+    execFileSync("git", ["diff", "--quiet", runSha, currentMainSha, "--", ...stableFiles], { cwd, stdio: "ignore" });
+    const priorWorkflow = gitTextAt(runSha, PREFLIGHT_PATH, cwd);
+    const currentWorkflow = gitTextAt(currentMainSha, PREFLIGHT_PATH, cwd);
+    const stepName = "Enter maintenance and drain the old app before backup";
+    const priorPrefix = workflowJobPrefixThroughStep(priorWorkflow, "inspect_backup_restore", stepName);
+    const currentPrefix = workflowJobPrefixThroughStep(currentWorkflow, "inspect_backup_restore", stepName);
+    if (priorPrefix === null || normalizePinnedPostgresRegistry(priorPrefix) !== normalizePinnedPostgresRegistry(currentPrefix)) return false;
+    if (["permissions", "env", "defaults", "concurrency"].some((blockName) =>
+      workflowTopLevelBlock(priorWorkflow, blockName) !== workflowTopLevelBlock(currentWorkflow, blockName))) return false;
+
+    const priorCutover = gitTextAt(runSha, "scripts/production-traffic-cutover.sh", cwd);
+    const currentCutover = gitTextAt(currentMainSha, "scripts/production-traffic-cutover.sh", cwd);
+    if (PREFLIGHT_CAPTURE_SHELL_FUNCTIONS.some((name) => {
+      const prior = shellFunctionBlock(priorCutover, name);
+      return prior === null || prior !== shellFunctionBlock(currentCutover, name);
+    })) return false;
+
+    const priorMarker = normalizeReviewedMarkerCleanup(gitTextAt(runSha, "scripts/production-release-marker.sh", cwd));
+    const currentMarker = normalizeReviewedMarkerCleanup(gitTextAt(currentMainSha, "scripts/production-release-marker.sh", cwd));
+    if (priorMarker === null || priorMarker !== currentMarker) return false;
+    const priorProvenance = normalizePreviousAppVerifyRecordControls(gitTextAt(runSha, "scripts/production-previous-app-provenance.mjs", cwd));
+    const currentProvenance = normalizePreviousAppVerifyRecordControls(gitTextAt(currentMainSha, "scripts/production-previous-app-provenance.mjs", cwd));
+    return priorProvenance !== null && priorProvenance === currentProvenance;
   } catch {
     return false;
   }
 }
 
 export function noAppPreparationControlsMatch(runSha, currentMainSha, cwd = process.cwd()) {
+  if (!/^[a-f0-9]{40}$/.test(String(runSha ?? "")) || !/^[a-f0-9]{40}$/.test(String(currentMainSha ?? ""))) return false;
   try {
-    execFileSync("git", ["diff", "--quiet", runSha, currentMainSha, "--", ...NO_APP_PREPARATION_CONTROL_FILES], {
-      cwd, stdio: "ignore",
-    });
-    return true;
+    return REVIEWED_NO_APP_CONTROL_PROFILE_DIGESTS.has(gitTreeProfileDigest(runSha, NO_APP_PREPARATION_CONTROL_FILES, cwd));
   } catch {
     return false;
   }
@@ -415,7 +638,24 @@ function assertSafeFailedPreMaintenanceDeploy(evidence, { historyRun, currentMai
   }
   assertExactSteps(authorize, DEPLOY_AUTHORIZE_STEPS, "the deploy authorization job");
   assertExactSteps(deploy, DEPLOY_STEPS, "the deploy job");
-
+  const deployLogText = String(evidence.deployLogText ?? "");
+  const observedMigrationIds = [...deployLogText.matchAll(/\b20\d{12}_[A-Za-z0-9_]+\b/g)].map(([migrationId]) => migrationId);
+  const firstBlockMarker = deployLogText.indexOf(DEPLOY_PRE_MAINTENANCE_LOG_MARKERS[0]);
+  if (deployLogText.includes("Database schema is up to date")
+    || observedMigrationIds.length !== EXPECTED_V4_PENDING_MIGRATIONS.length
+    || observedMigrationIds.some((migrationId, index) => migrationId !== EXPECTED_V4_PENDING_MIGRATIONS[index])
+    || firstBlockMarker < 0
+    || deployLogText.slice(firstBlockMarker).match(/\b20\d{12}_[A-Za-z0-9_]+\b/)) {
+    reject("a later deploy log does not prove the exact pending V4 migration set before the schema block.");
+  }
+  let markerOffset = -1;
+  for (const marker of DEPLOY_PRE_MAINTENANCE_LOG_MARKERS) {
+    const first = deployLogText.indexOf(marker);
+    if (first < 0 || first <= markerOffset || deployLogText.indexOf(marker, first + marker.length) !== -1) {
+      reject("a later deploy log does not prove the exact ordered pre-maintenance migration block.");
+    }
+    markerOffset = first;
+  }
   const ciRuns = evidence.ciRuns;
   if (!Array.isArray(ciRuns)) reject("the exact-SHA main CI evidence for a later deploy is missing.");
   const matchingCiRuns = ciRuns.filter((ciRun) => ciRun?.head_sha === run.head_sha
@@ -444,6 +684,7 @@ export function verifyResumablePreflightAttempt({
   sourceIsAncestor,
   safeFailedDeployRuns = [],
   safeFailedPreflightRetries = [],
+  safeHistoricalNoAppRuns = [],
   deployWorkflowId,
   controlFilesMatch = deployControlFilesMatch,
   preflightCaptureControlsMatch = preflightCaptureResumeControlsMatch,
@@ -536,9 +777,18 @@ export function verifyResumablePreflightAttempt({
     }
     safePreflightRetryById.set(id, evidence);
   }
+  const safeNoAppById = new Map();
+  for (const evidence of safeHistoricalNoAppRuns ?? []) {
+    const id = String(evidence?.run?.id ?? "");
+    if (!/^[1-9][0-9]*$/.test(id) || safeNoAppById.has(id)) {
+      reject("historical no-app evidence contains a malformed or duplicate run.");
+    }
+    safeNoAppById.set(id, evidence);
+  }
   const verifiedDeployIds = new Set();
   const verifiedPreflightRetryIds = new Set();
   const verifiedAuthorizationOnlyPreflightRetryIds = new Set();
+  const verifiedNoAppIds = new Set();
   const verifiedCaptureGuardEffects = [];
   const unverifiedHistoricalRunIds = [];
   for (const run of laterRuns ?? []) {
@@ -588,31 +838,16 @@ export function verifyResumablePreflightAttempt({
       continue;
     }
     if (workflowPath(run) === NO_APP_PATH && id > sourceId) {
-      if (run.status !== "completed" || !["success", "failure", "cancelled"].includes(run.conclusion)) {
-        reject(`a no-app preparation run ${run.id} is still active or has an unknown conclusion.`);
-      }
-      if (run.run_attempt !== 1 || run.event !== "workflow_dispatch" || !/^[a-f0-9]{40}$/.test(String(run.head_sha ?? ""))
-        || String(run.workflow_id) !== String(noAppWorkflowId)
-        || run.head_branch !== "main" || run.repository?.full_name !== "krustallik/body-model"
-        || String(run.repository?.owner?.id ?? "") !== BODYCAST_OWNER_ID
-        || String(run.actor?.id ?? "") !== BODYCAST_OWNER_ID
-        || String(run.triggering_actor?.id ?? "") !== BODYCAST_OWNER_ID
-        || typeof isAncestorOfCurrentMain !== "function" || !isAncestorOfCurrentMain(run.head_sha, currentMainSha)
-        || typeof noAppControlsMatch !== "function" || !noAppControlsMatch(run.head_sha, currentMainSha)) {
-        reject(`no-app preparation run ${run.id} is not a pinned-owner run of unchanged preparation-only controls.`);
-      }
-      try {
-        assertTrustedOwnerWorkflowRun(run, {
-          actorId: BODYCAST_OWNER_ID, workflowPath: NO_APP_PATH,
-          workflowRunId: String(run.id), workflowRunAttempt: run.run_attempt,
-          ref: "refs/heads/main", sha: run.head_sha,
-        });
-      } catch (error) {
-        reject(error.message);
-      }
-      // The old run is not evidence for this DDL-eligible preflight. It is admitted
-      // only as a completed preparation-only workflow with unchanged controls;
-      // its backup, restore, and any historical effects remain explicitly unverified.
+      const evidence = safeNoAppById.get(String(run.id));
+      if (!evidence) reject(`no-app preparation run ${run.id} has no complete job and artifact inventory.`);
+      assertSafeHistoricalNoAppRun(evidence, {
+        historyRun: run,
+        noAppWorkflowId,
+        currentMainSha,
+        isAncestorOfCurrentMain,
+        noAppControlsMatch,
+      });
+      verifiedNoAppIds.add(String(run.id));
       unverifiedHistoricalRunIds.push(String(run.id));
       continue;
     }
@@ -622,6 +857,7 @@ export function verifyResumablePreflightAttempt({
   if (verifiedPreflightRetryIds.size !== safePreflightRetryById.size) {
     reject("failed-preflight evidence does not match the complete production workflow history.");
   }
+  if (verifiedNoAppIds.size !== safeNoAppById.size) reject("no-app evidence does not match the complete production workflow history.");
 
   return Object.freeze({
     schemaVersion: 2,
@@ -723,6 +959,163 @@ function assertSafeAuthorizationOnlyPreflightRetry(evidence, { preflightWorkflow
   }
 }
 
+function assertSafeHistoricalNoAppRun(evidence, {
+  historyRun, noAppWorkflowId, currentMainSha, isAncestorOfCurrentMain, noAppControlsMatch,
+}) {
+  const run = evidence?.run;
+  const runId = String(run?.id ?? "");
+  if (!/^[1-9][0-9]*$/.test(runId)
+    || String(run?.workflow_id) !== String(noAppWorkflowId)
+    || workflowPath(run) !== NO_APP_PATH
+    || run.status !== "completed" || !["success", "failure"].includes(run.conclusion)
+    || run.run_attempt !== 1 || run.head_branch !== "main" || run.event !== "workflow_dispatch"
+    || !/^[a-f0-9]{40}$/.test(String(run.head_sha ?? ""))
+    || (run.display_title ?? run.name) !== `No-app prep ${run.head_sha} unified-v4-republication-v1`
+    || String(run.actor?.id) !== BODYCAST_OWNER_ID || String(run.triggering_actor?.id) !== BODYCAST_OWNER_ID
+    || run.repository?.full_name !== "krustallik/body-model"
+    || String(run.repository?.owner?.id ?? "") !== BODYCAST_OWNER_ID
+    || typeof isAncestorOfCurrentMain !== "function" || !isAncestorOfCurrentMain(run.head_sha, currentMainSha)
+    || typeof noAppControlsMatch !== "function" || !noAppControlsMatch(run.head_sha, currentMainSha)) {
+    reject(`historical no-app run ${runId} is not a pinned-owner run of a reviewed immutable preparation control profile.`);
+  }
+  assertRunSummaryMatches(historyRun, run);
+  try {
+    assertTrustedOwnerWorkflowRun(run, {
+      actorId: BODYCAST_OWNER_ID, workflowPath: NO_APP_PATH,
+      workflowRunId: runId, workflowRunAttempt: 1, ref: "refs/heads/main", sha: run.head_sha,
+    });
+  } catch (error) {
+    reject(error.message);
+  }
+
+  const jobs = evidence.jobs;
+  if (jobs?.total_count !== 2 || !Array.isArray(jobs.jobs) || jobs.jobs.length !== 2
+    || jobs.jobs.some((job) => job.head_sha !== run.head_sha || job.run_attempt !== 1)) {
+    reject(`historical no-app run ${runId} has an incomplete or substituted job inventory.`);
+  }
+  const authorize = jobs.jobs.find((job) => job.name === "Authorize exact-main no-app preparation");
+  const inspect = jobs.jobs.find((job) => job.name === "Read-only snapshot and isolated backup rehearsal");
+  if (!authorize || authorize.conclusion !== "success" || !inspect || inspect.conclusion !== run.conclusion) {
+    reject(`historical no-app run ${runId} did not pass its owner gate and expected preparation job.`);
+  }
+  const authorizationSteps = authorize.steps;
+  if (!NO_APP_AUTHORIZATION_JOB_STEP_PROFILES.some((profile) => Array.isArray(authorizationSteps)
+    && authorizationSteps.length === profile.length
+    && profile.every(([name, conclusion], index) => authorizationSteps[index]?.name === name
+      && authorizationSteps[index]?.conclusion === conclusion))) {
+    reject(`the no-app authorization job for run ${runId} does not match a reviewed exact step sequence.`);
+  }
+
+  const steps = inspect.steps;
+  const historyGate = Array.isArray(steps) && NO_APP_INSPECT_HISTORY_STEPS.has(steps[6]?.name) ? steps[6].name : null;
+  const requiredStepNames = NO_APP_INSPECT_REQUIRED_STEPS.map((name, index) => index === 6 ? historyGate : name);
+  const names = Array.isArray(steps) ? steps.map((step) => step.name) : [];
+  const cleanupNames = names.slice(requiredStepNames.length);
+  if (!historyGate || names.length < requiredStepNames.length + 1
+    || names.slice(0, requiredStepNames.length).some((name, index) => name !== requiredStepNames[index])
+    || new Set(names).size !== names.length || names.at(-1) !== "Complete job"
+    || cleanupNames.some((name) => !NO_APP_INSPECT_CLEANUP_STEPS.includes(name))
+    || cleanupNames.some((name, index) => NO_APP_INSPECT_CLEANUP_STEPS.indexOf(name)
+      <= (index === 0 ? -1 : NO_APP_INSPECT_CLEANUP_STEPS.indexOf(cleanupNames[index - 1])))) {
+    reject(`historical no-app run ${runId} has an unknown, duplicated, or incomplete preparation step inventory.`);
+  }
+  const stepByName = new Map(steps.map((step) => [step.name, step.conclusion]));
+  const cleanupConclusionAllowed = new Map([
+    ["Post Set up pinned Node runtime", new Set(["success", "skipped"])],
+    ["Post Checkout current-main release SHA", new Set(["success", "skipped"])],
+    ["Post Checkout exact current-main release SHA", new Set(["success", "skipped"])],
+    ["Stop containers", new Set(["success", "skipped"])],
+    ["Complete job", new Set(["success"])],
+  ]);
+  for (const step of steps.slice(requiredStepNames.length)) {
+    if (!cleanupConclusionAllowed.get(step.name)?.has(step.conclusion)) reject(`historical no-app run ${runId} has an invalid cleanup step result.`);
+  }
+  const failedSteps = steps.map((step, index) => ({ step, index })).filter(({ step }) => step.conclusion === "failure");
+  if (run.conclusion === "success") {
+    if (failedSteps.length !== 0 || steps.some((step) => step.conclusion !== "success")) reject(`successful historical no-app run ${runId} has incomplete step results.`);
+  } else {
+    const allowedFailureNames = new Set([
+      "Initialize containers",
+      "Verify exact current main and reconcile all capture/intervening workflow evidence",
+      "Verify exact main, source run identity, and active production workflows",
+      "Create fresh encrypted backup under the host release lock",
+      "Recheck exact main and create preparation-only evidence",
+    ]);
+    if (failedSteps.length !== 1 || !allowedFailureNames.has(failedSteps[0].step.name)) reject(`failed historical no-app run ${runId} has an unknown operation boundary.`);
+    for (const { step, index } of steps.map((step, index) => ({ step, index }))) {
+      if (index < failedSteps[0].index && step.conclusion !== "success") reject(`failed historical no-app run ${runId} has an incomplete pre-failure gate result.`);
+      if (index > failedSteps[0].index
+        && !NO_APP_INSPECT_CLEANUP_STEPS.includes(step.name)
+        && step.name !== "Remove temporary SSH credentials"
+        && step.conclusion !== "skipped") {
+        reject(`failed historical no-app run ${runId} continued a preparation operation after failure.`);
+      }
+    }
+  }
+  const backupStep = "Create fresh encrypted backup under the host release lock";
+  const restoreStep = "Restore backup and verify identity, schema, history, and data on isolated PostgreSQL";
+  const rehearsalStep = "Rehearse exact V4 migrations only on isolated PostgreSQL";
+  const evidenceStep = "Recheck exact main and create preparation-only evidence";
+  const backupIndex = steps.findIndex((step) => step.name === backupStep);
+  const restoreIndex = steps.findIndex((step) => step.name === restoreStep);
+  const rehearsalIndex = steps.findIndex((step) => step.name === rehearsalStep);
+  const evidenceIndex = steps.findIndex((step) => step.name === evidenceStep);
+  if (!(backupIndex >= 0 && restoreIndex > backupIndex && rehearsalIndex > restoreIndex && evidenceIndex > rehearsalIndex)) {
+    reject(`historical no-app run ${runId} does not preserve the ordered backup/restore/rehearsal/evidence boundary.`);
+  }
+
+  const artifacts = evidence.artifacts;
+  if (!artifacts || !Array.isArray(artifacts.artifacts) || artifacts.total_count !== artifacts.artifacts.length) {
+    reject(`historical no-app run ${runId} has incomplete artifact metadata.`);
+  }
+  if (run.conclusion === "success") {
+    const expectedNames = [
+      `bodycast-no-app-backup-${run.head_sha}-unified-v4-republication-v1-${runId}-1`,
+      `bodycast-no-app-preparation-${run.head_sha}-unified-v4-republication-v1-${runId}-1`,
+    ];
+    const actualNames = artifacts.artifacts.map((artifact) => artifact.name);
+    if (inspect.conclusion !== "success"
+      || artifacts.total_count !== 2 || expectedNames.some((name) => !actualNames.includes(name))
+      || artifacts.artifacts.some((artifact) => !Number.isSafeInteger(artifact.id) || artifact.expired !== false
+        || !Number.isSafeInteger(artifact.size_in_bytes) || artifact.size_in_bytes <= 0
+        || !/^sha256:[a-f0-9]{64}$/.test(String(artifact.digest ?? "")))) {
+      reject(`successful historical no-app run ${runId} lacks its exact immutable preparation artifacts.`);
+    }
+  } else {
+    const failedSteps = steps.filter((step) => step.conclusion === "failure");
+    if (inspect.conclusion !== "failure" || failedSteps.length !== 1 || artifacts.total_count !== 0
+      || artifacts.artifacts.length !== 0) {
+      reject(`failed historical no-app run ${runId} has ambiguous execution or published artifacts.`);
+    }
+    const failedName = failedSteps[0].name;
+    const allowedFailures = new Set([
+      "Initialize containers",
+      "Verify exact current main and reconcile all capture/intervening workflow evidence",
+      "Verify exact main, source run identity, and active production workflows",
+      backupStep,
+      evidenceStep,
+    ]);
+    if (!allowedFailures.has(failedName)) reject(`historical no-app run ${runId} failed at an unknown operation boundary.`);
+    if (stepByName.get("Remove temporary SSH credentials") !== "success") {
+      reject(`historical no-app run ${runId} did not successfully remove temporary SSH credentials.`);
+    }
+    if (steps.slice(steps.indexOf(failedSteps[0]) + 1).some((step) =>
+      step.conclusion === "success" && !["Remove temporary SSH credentials", "Post Set up pinned Node runtime",
+        "Post Checkout current-main release SHA", "Post Checkout exact current-main release SHA",
+        "Stop containers", "Complete job"].includes(step.name))) {
+      reject(`historical no-app run ${runId} continued an operation after its failed boundary.`);
+    }
+    if (failedName === backupStep && (stepByName.get(restoreStep) !== "skipped"
+      || stepByName.get(rehearsalStep) !== "skipped" || stepByName.get(evidenceStep) !== "skipped")) {
+      reject(`historical no-app run ${runId} has inconsistent backup failure follow-up steps.`);
+    }
+    if (failedName === evidenceStep && (stepByName.get(backupStep) !== "success"
+      || stepByName.get(restoreStep) !== "success" || stepByName.get(rehearsalStep) !== "success")) {
+      reject(`historical no-app run ${runId} has inconsistent post-rehearsal evidence failure steps.`);
+    }
+  }
+}
+
 function assertSafeCaptureBlockedPreflightRetry(evidence, {
   historyRun, preflightWorkflowId, currentMainSha, manifestId, preflightCaptureControlsMatch,
 }) {
@@ -776,7 +1169,22 @@ function assertSafeCaptureBlockedPreflightRetry(evidence, {
 
   if (typeof preflightCaptureControlsMatch !== "function"
     || !preflightCaptureControlsMatch(run.head_sha, currentMainSha)) {
-    reject("capture or maintenance controls changed after the failed preflight retry.");
+    reject("the historical maintenance/capture execution boundary has an unknown control profile.");
+  }
+  const captureLogRecords = String(evidence.failureLogText ?? "").split(/\r?\n/).filter(Boolean).map((line) => line.split("\t"));
+  const captureLogTokens = captureLogRecords.map(([, token]) => token);
+  const knownCaptureStops = captureLogTokens.filter((token) => [
+    PRIOR_CAPTURE_FAILURE, "Capture refresh requires exactly one existing BodyCast app container.",
+  ].includes(token));
+  const forbiddenCaptureEvidence = new Set([
+    "Traffic is in maintenance mode; the old app container is removed", "BODYCAST_BACKUP_STARTED_AT", "BODYCAST_PGDUMP_INVOCATION_AT",
+  ]);
+  if (captureLogRecords.length === 0
+    || captureLogRecords.some(([stepName, token, extra]) => stepName !== "Enter maintenance and drain the old app before backup"
+      || !token || extra !== undefined)
+    || knownCaptureStops.length !== 1 || captureLogTokens.at(-1) !== knownCaptureStops[0]
+    || captureLogTokens.some((token) => forbiddenCaptureEvidence.has(token))) {
+    reject("the capture retry log does not prove a unique terminal stop in the failed maintenance step.");
   }
   return Object.freeze({ runId, sha: run.head_sha, historicalEffects: "UNVERIFIED" });
 }
@@ -1012,14 +1420,15 @@ async function main() {
     process.stdout.write(`${JSON.stringify(proof)}\n`);
     return;
   }
-  if (mode !== "--verify-source" || args.length !== 13) {
-    throw new Error("Usage: production-preflight-resume.mjs --verify-source <run.json> <jobs.json> <artifacts.json> <later-runs.ndjson> <safe-failed-deploy-runs.ndjson> <safe-failed-preflight-retries.ndjson> <source-run-id> <current-run-id> <current-main-sha> <manifest-id> <preflight-workflow-id> <deploy-workflow-id> <no-app-workflow-id>");
+  if (mode !== "--verify-source" || args.length !== 14) {
+    throw new Error("Usage: production-preflight-resume.mjs --verify-source <run.json> <jobs.json> <artifacts.json> <later-runs.ndjson> <safe-failed-deploy-runs.ndjson> <safe-failed-preflight-retries.ndjson> <safe-historical-no-app-runs.ndjson> <source-run-id> <current-run-id> <current-main-sha> <manifest-id> <preflight-workflow-id> <deploy-workflow-id> <no-app-workflow-id>");
   }
   const [runPath, jobsPath, artifactsPath, laterRunsPath, safeDeployRunsPath, safePreflightRetriesPath,
-    sourceRunId, currentRunId, currentMainSha, manifestId, workflowId, deployWorkflowId, noAppWorkflowId] = args;
-  const [sourceRun, sourceJobs, sourceArtifacts, laterRunsText, safeDeployRunsText, safePreflightRetriesText] = await Promise.all([
+    safeNoAppRunsPath, sourceRunId, currentRunId, currentMainSha, manifestId, workflowId, deployWorkflowId, noAppWorkflowId] = args;
+  const [sourceRun, sourceJobs, sourceArtifacts, laterRunsText, safeDeployRunsText, safePreflightRetriesText, safeNoAppRunsText] = await Promise.all([
     readJson(runPath), readJson(jobsPath), readJson(artifactsPath), readFile(path.resolve(laterRunsPath), "utf8"),
     readFile(path.resolve(safeDeployRunsPath), "utf8"), readFile(path.resolve(safePreflightRetriesPath), "utf8"),
+    readFile(path.resolve(safeNoAppRunsPath), "utf8"),
   ]);
   let sourceIsAncestor = false;
   try {
@@ -1029,6 +1438,10 @@ async function main() {
   const proof = verifyResumablePreflightAttempt({
     sourceRun, sourceJobs, sourceArtifacts, laterRuns: parseNdjson(laterRunsText),
     safeFailedDeployRuns: parseNdjson(safeDeployRunsText).map((evidence) => ({
+      ...evidence,
+      shaIsAncestorOfCurrentMain: isAncestor(evidence?.run?.head_sha, currentMainSha),
+    })),
+    safeHistoricalNoAppRuns: parseNdjson(safeNoAppRunsText).map((evidence) => ({
       ...evidence,
       shaIsAncestorOfCurrentMain: isAncestor(evidence?.run?.head_sha, currentMainSha),
     })),

@@ -434,7 +434,17 @@ jobs:
           NODE
           )"
           [[ "$RAW_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::Verified raw replay-source fingerprint is malformed."; exit 1; }
+          node --input-type=module - "$BODYCAST_V4_EVIDENCE_DIR/host-snapshot.json" "$BODYCAST_V4_EVIDENCE_DIR/recovery-binding.json" <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          import { createV4RecoveryBinding } from "./scripts/production-v4-recovery.mjs";
+          const snapshot = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          const binding = createV4RecoveryBinding(snapshot);
+          writeFileSync(process.argv[3], `${JSON.stringify(binding)}\n`, { flag: "wx", mode: 0o600 });
+          NODE
+          RECOVERY_BINDING_B64="$(base64 -w0 "$BODYCAST_V4_EVIDENCE_DIR/recovery-binding.json")"
+          [[ "$RECOVERY_BINDING_B64" =~ ^[A-Za-z0-9+/]+=*$ ]] || { echo "::error::Verified V4 recovery binding is malformed."; exit 1; }
           echo "raw_fingerprint=$RAW_FINGERPRINT" >> "$GITHUB_OUTPUT"
+          echo "recovery_binding_b64=$RECOVERY_BINDING_B64" >> "$GITHUB_OUTPUT"
           echo "encrypted_backup=$BACKUP_FILE" >> "$GITHUB_OUTPUT"
       - name: Restore backup and rehearse V4 epoch 1 on isolated PostgreSQL
         id: v4_rehearsal
@@ -453,13 +463,15 @@ jobs:
             > "$BODYCAST_V4_EVIDENCE_DIR/restored-report.json"
           FULL_BEFORE="$(bash scripts/production-db-data-fingerprint.sh --test-url)"
           RAW_BEFORE="$(bash scripts/production-db-data-fingerprint.sh --test-url --v4-replay-inputs)"
-          node --input-type=module - "$BODYCAST_V4_EVIDENCE_DIR/restored-report.json" "$FULL_BEFORE" "$RAW_BEFORE" <<'NODE'
+          REPLAY_STABLE_STATE_BEFORE="$(bash scripts/production-db-data-fingerprint.sh --test-url --v4-replay-stable-state)"
+          node --input-type=module - "$BODYCAST_V4_EVIDENCE_DIR/restored-report.json" "$FULL_BEFORE" "$RAW_BEFORE" "$REPLAY_STABLE_STATE_BEFORE" <<'NODE'
           import { readFileSync, writeFileSync } from "node:fs";
-          const [reportPath, full, raw] = process.argv.slice(2);
-          if (!/^[a-f0-9]{64}$/.test(full) || !/^[a-f0-9]{64}$/.test(raw)) throw new Error("Isolated restore fingerprints are malformed.");
+          const [reportPath, full, raw, stableState] = process.argv.slice(2);
+          if (![full, raw, stableState].every((value) => /^[a-f0-9]{64}$/.test(value))) throw new Error("Isolated restore fingerprints are malformed.");
           const report = JSON.parse(readFileSync(reportPath, "utf8"));
           report.logicalDataFingerprint = full;
           report.v4ReplayInputFingerprint = raw;
+          report.v4ReplayStableStateFingerprint = stableState;
           writeFileSync(reportPath, `${JSON.stringify(report)}\n`, { flag: "w", mode: 0o600 });
           NODE
           psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 \
@@ -472,13 +484,14 @@ jobs:
           node scripts/production-migration-restore-check.mjs --postflight --manifest "$MANIFEST_ID" \
             --repository "$GITHUB_WORKSPACE" --report "$BODYCAST_V4_EVIDENCE_DIR/restored-report.json" \
             > "$BODYCAST_V4_EVIDENCE_DIR/postflight-result.json"
-          FULL_BEFORE="$FULL_BEFORE" RAW_BEFORE="$RAW_BEFORE" node --input-type=module -e '
+          FULL_BEFORE="$FULL_BEFORE" RAW_BEFORE="$RAW_BEFORE" REPLAY_STABLE_STATE_BEFORE="$REPLAY_STABLE_STATE_BEFORE" node --input-type=module -e '
           import { readFileSync } from "node:fs";
           const snapshot = JSON.parse(readFileSync(process.env.BODYCAST_V4_EVIDENCE_DIR + "/host-snapshot.json", "utf8"));
           const restore = JSON.parse(readFileSync(process.env.BODYCAST_V4_EVIDENCE_DIR + "/restore-result.json", "utf8"));
           const postflight = JSON.parse(readFileSync(process.env.BODYCAST_V4_EVIDENCE_DIR + "/postflight-result.json", "utf8"));
           const restored = JSON.parse(readFileSync(process.env.BODYCAST_V4_EVIDENCE_DIR + "/restored-report.json", "utf8"));
           if (!restore.verified || !postflight.postflightReady || snapshot.report.logicalDataFingerprint !== process.env.FULL_BEFORE
+            || snapshot.v4ReplayStableStateFingerprint !== process.env.REPLAY_STABLE_STATE_BEFORE
             || snapshot.v4ReplayInputFingerprint !== process.env.RAW_BEFORE || restored.v4ReplayInputFingerprint !== process.env.RAW_BEFORE) {
             throw new Error("Fresh encrypted backup restore, schema/history postflight, or raw source parity failed.");
           }'
@@ -486,10 +499,12 @@ jobs:
             > "$BODYCAST_V4_EVIDENCE_DIR/first-replay.json"
           FULL_AFTER="$(bash scripts/production-db-data-fingerprint.sh --test-url)"
           RAW_AFTER="$(bash scripts/production-db-data-fingerprint.sh --test-url --v4-replay-inputs)"
+          REPLAY_STABLE_STATE_AFTER="$(bash scripts/production-db-data-fingerprint.sh --test-url --v4-replay-stable-state)"
           npx tsx scripts/unified-v4-activate-replay.ts --activate-v4 --owner-authorized --profile-id 1 \
             > "$BODYCAST_V4_EVIDENCE_DIR/retry-replay.json"
           FULL_AFTER_RETRY="$(bash scripts/production-db-data-fingerprint.sh --test-url)"
           RAW_AFTER_RETRY="$(bash scripts/production-db-data-fingerprint.sh --test-url --v4-replay-inputs)"
+          REPLAY_STABLE_STATE_AFTER_RETRY="$(bash scripts/production-db-data-fingerprint.sh --test-url --v4-replay-stable-state)"
           psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 \
             --command "SELECT json_build_object('profileId', \"profileId\", 'invalidationGeneration', \"invalidationGeneration\", 'productionPublishedGeneration', \"productionPublishedGeneration\", 'productionStaleFromDate', \"productionStaleFromDate\", 'unifiedTargetRevision', \"unifiedTargetRevision\", 'unifiedRolloutEpoch', \"unifiedRolloutEpoch\", 'unifiedPublishedRolloutEpoch', \"unifiedPublishedRolloutEpoch\", 'unifiedPublishedGeneration', \"unifiedPublishedGeneration\", 'unifiedPublicationBlockedFromDate', \"unifiedPublicationBlockedFromDate\")::text FROM public.\"PhysiologyV7Lifecycle\" WHERE \"profileId\" = 1" \
             > "$BODYCAST_V4_EVIDENCE_DIR/lifecycle-after.json"
@@ -499,10 +514,12 @@ jobs:
             --repository "$GITHUB_WORKSPACE" --report "$BODYCAST_V4_EVIDENCE_DIR/post-replay-report.json" \
             > "$BODYCAST_V4_EVIDENCE_DIR/post-replay-postflight-result.json"
           node --input-type=module - "$BODYCAST_V4_EVIDENCE_DIR" "$FULL_BEFORE" "$FULL_AFTER" "$FULL_AFTER_RETRY" "$RAW_BEFORE" "$RAW_AFTER" "$RAW_AFTER_RETRY" \
+            "$REPLAY_STABLE_STATE_BEFORE" "$REPLAY_STABLE_STATE_AFTER" "$REPLAY_STABLE_STATE_AFTER_RETRY" \
             > "$BODYCAST_V4_EVIDENCE_DIR/rehearsal-input.json" <<'NODE'
           import { readFileSync } from "node:fs";
           import { V4_REPUBLICATION_MANIFEST } from "./scripts/production-migration-manifests.mjs";
-          const [dir, fullBefore, fullAfter, fullAfterRetry, rawBefore, rawAfter, rawAfterRetry] = process.argv.slice(2);
+          const [dir, fullBefore, fullAfter, fullAfterRetry, rawBefore, rawAfter, rawAfterRetry,
+            replayOutputBefore, replayOutputAfter, replayOutputAfterRetry] = process.argv.slice(2);
           const read = (name) => JSON.parse(readFileSync(`${dir}/${name}`, "utf8"));
           const input = {
             sourceSnapshot: read("host-snapshot.json"),
@@ -516,6 +533,9 @@ jobs:
             fullFingerprintBefore: fullBefore,
             fullFingerprintAfter: fullAfter,
             fullFingerprintAfterRetry: fullAfterRetry,
+            replayStableStateFingerprintBefore: replayOutputBefore,
+            replayStableStateFingerprintAfter: replayOutputAfter,
+            replayStableStateFingerprintAfterRetry: replayOutputAfterRetry,
             firstReplay: read("first-replay.json"),
             retryReplay: read("retry-replay.json"),
             lifecycleAfter: read("lifecycle-after.json"),
@@ -525,6 +545,23 @@ jobs:
           node scripts/production-v4-recovery.mjs --verify-rehearsal \
             "$BODYCAST_V4_EVIDENCE_DIR/rehearsal-input.json" "$BODYCAST_V4_EVIDENCE_DIR/rehearsal-result.json" \
             > /dev/null
+          REPLAY_STABLE_STATE_FINGERPRINT_AFTER="$(node --input-type=module - "$BODYCAST_V4_EVIDENCE_DIR/rehearsal-result.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const result = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          if (result.verified !== true || result.ddlAuthorization !== false) throw new Error("V4 rehearsal result is not verified or grants DDL authorization.");
+          process.stdout.write(result.replayStableStateFingerprintAfter ?? "");
+          NODE
+          )"
+          [[ "$REPLAY_STABLE_STATE_FINGERPRINT_AFTER" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::Verified isolated V4 post-replay stable-state fingerprint is malformed."; exit 1; }
+          echo "replay_stable_state_fingerprint_after=$REPLAY_STABLE_STATE_FINGERPRINT_AFTER" >> "$GITHUB_OUTPUT"
+          REPLAY_LIFECYCLE_DIGEST="$(node --input-type=module - "$BODYCAST_V4_EVIDENCE_DIR/rehearsal-result.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const result = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          process.stdout.write(result.replayLifecycleDigest ?? "");
+          NODE
+          )"
+          [[ "$REPLAY_LIFECYCLE_DIGEST" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::Verified isolated V4 lifecycle digest is malformed."; exit 1; }
+          echo "replay_lifecycle_digest=$REPLAY_LIFECYCLE_DIGEST" >> "$GITHUB_OUTPUT"
           chmod 600 "$BODYCAST_V4_EVIDENCE_DIR/"*
           echo "## Post-DDL encrypted backup and isolated V4 rehearsal" >> "$GITHUB_STEP_SUMMARY"
           echo "- backup SHA-256: $(cat "$BODYCAST_V4_EVIDENCE_DIR/backup-sha256.txt")" >> "$GITHUB_STEP_SUMMARY"
@@ -567,6 +604,11 @@ jobs:
           CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
           BODYCAST_V4_REPLAY_INPUT_FINGERPRINT: ${{ steps.post_ddl_backup.outputs.raw_fingerprint }}
+          BODYCAST_V4_MIGRATION_RUN_B64: ${{ needs.authorize.outputs.migration_run_b64 }}
+          BODYCAST_V4_RECOVERY_BINDING_B64: ${{ steps.post_ddl_backup.outputs.recovery_binding_b64 }}
+          BODYCAST_V4_EXPECTED_REPLAY_STABLE_STATE_FINGERPRINT: ${{ steps.v4_rehearsal.outputs.replay_stable_state_fingerprint_after }}
+          BODYCAST_V4_EXPECTED_REPLAY_LIFECYCLE_DIGEST: ${{ steps.v4_rehearsal.outputs.replay_lifecycle_digest }}
+          BODYCAST_EXPECTED_PRE_DDL_RAW_FINGERPRINT: ${{ steps.post_ddl_backup.outputs.raw_fingerprint }}
         run: |
           set -Eeuo pipefail
           [[ "$(gh api repos/krustallik/body-model/commits/main --jq .sha)" == "$RELEASE_SHA" ]] || {
@@ -576,7 +618,17 @@ jobs:
           APP_HOST_B64="$(printf '%s' "$APP_HOST" | base64 -w0)"
           ROUTES_PATH_B64="$(printf '%s' "$CADDY_ROUTES_PATH" | base64 -w0)"
           REPLAY_INPUT_FINGERPRINT="${BODYCAST_V4_REPLAY_INPUT_FINGERPRINT:-}"
-          [[ "$REPLAY_INPUT_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::Verified V4 replay-input fingerprint is missing."; exit 1; }
+          MIGRATION_RUN_B64="${BODYCAST_V4_MIGRATION_RUN_B64:-}"
+          RECOVERY_BINDING_B64="${BODYCAST_V4_RECOVERY_BINDING_B64:-}"
+          REPLAY_STABLE_STATE_FINGERPRINT="${BODYCAST_V4_EXPECTED_REPLAY_STABLE_STATE_FINGERPRINT:-}"
+          REPLAY_LIFECYCLE_DIGEST="${BODYCAST_V4_EXPECTED_REPLAY_LIFECYCLE_DIGEST:-}"
+          PG_RESTORE_VERSION_B64="$(printf '%s' "${BODYCAST_PG_RESTORE_VERSION:-}" | base64 -w0)"
+          [[ "$REPLAY_INPUT_FINGERPRINT" =~ ^[a-f0-9]{64}$ \
+            && "$MIGRATION_RUN_B64" =~ ^[A-Za-z0-9+/]+=*$ \
+            && "$RECOVERY_BINDING_B64" =~ ^[A-Za-z0-9+/]+=*$ \
+            && "$REPLAY_STABLE_STATE_FINGERPRINT" =~ ^[a-f0-9]{64}$ \
+            && "$REPLAY_LIFECYCLE_DIGEST" =~ ^[a-f0-9]{64}$ \
+            && "$PG_RESTORE_VERSION_B64" =~ ^[A-Za-z0-9+/]+=*$ ]] || { echo "::error::Verified V4 replay boundary evidence is missing or malformed."; exit 1; }
           REMOTE_SCRIPT="$(cat <<'REMOTE'
           set -Eeuo pipefail
           RELEASE_SHA="$1"
@@ -584,9 +636,19 @@ jobs:
           APP_HOST="$(printf '%s' "$3" | base64 --decode)"
           CADDY_ROUTES_PATH="$(printf '%s' "$4" | base64 --decode)"
           REPLAY_INPUT_FINGERPRINT="$5"
+          MIGRATION_RUN_B64="$6"
+          PG_RESTORE_VERSION="$(printf '%s' "$7" | base64 --decode)"
+          RECOVERY_BINDING_B64="$8"
+          REPLAY_STABLE_STATE_FINGERPRINT="$9"
+          REPLAY_LIFECYCLE_DIGEST="${10}"
           [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ && "$DEPLOY_PATH" == /* && "$DEPLOY_PATH" != *$'\n'* \
             && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* && "$CADDY_ROUTES_PATH" != *$'\n'* \
-            && "$REPLAY_INPUT_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]] || exit 2
+            && "$REPLAY_INPUT_FINGERPRINT" =~ ^[a-f0-9]{64}$ \
+            && "$MIGRATION_RUN_B64" =~ ^[A-Za-z0-9+/]+=*$ \
+            && "$PG_RESTORE_VERSION" =~ ^pg_restore\ \(PostgreSQL\)\ 17\.[0-9]+$ \
+            && "$RECOVERY_BINDING_B64" =~ ^[A-Za-z0-9+/]+=*$ \
+            && "$REPLAY_STABLE_STATE_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]] || exit 2
+          [[ "$REPLAY_LIFECYCLE_DIGEST" =~ ^[a-f0-9]{64}$ ]] || exit 2
           cd -- "$DEPLOY_PATH"
           [[ "$(git rev-parse --show-toplevel)" == "$DEPLOY_PATH" && -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || {
             echo "Production checkout is dirty or does not match DEPLOY_PATH." >&2; exit 1;
@@ -601,11 +663,17 @@ jobs:
           [[ "$APP_SHA" == "$RELEASE_SHA" && "$APP_HEALTH" == "healthy" ]] || { echo "Exact-SHA app is absent or unhealthy." >&2; exit 1; }
           APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" BODYCAST_DEPLOY_SHA="$RELEASE_SHA" \
             BODYCAST_V4_REPLAY_INPUT_FINGERPRINT="$REPLAY_INPUT_FINGERPRINT" \
+            BODYCAST_EXPECTED_PRE_DDL_RAW_FINGERPRINT="$REPLAY_INPUT_FINGERPRINT" \
+            BODYCAST_V4_MIGRATION_RUN_B64="$MIGRATION_RUN_B64" \
+            BODYCAST_V4_RECOVERY_BINDING_B64="$RECOVERY_BINDING_B64" \
+            BODYCAST_V4_EXPECTED_REPLAY_STABLE_STATE_FINGERPRINT="$REPLAY_STABLE_STATE_FINGERPRINT" \
+            BODYCAST_V4_EXPECTED_REPLAY_LIFECYCLE_DIGEST="$REPLAY_LIFECYCLE_DIGEST" \
+            BODYCAST_PG_RESTORE_VERSION="$PG_RESTORE_VERSION" \
             exec bash scripts/production-traffic-cutover.sh activate-v4-and-serve
           REMOTE
           )"
           REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
-          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$RELEASE_SHA' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64' '$REPLAY_INPUT_FINGERPRINT'"
+          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$RELEASE_SHA' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64' '$REPLAY_INPUT_FINGERPRINT' '$MIGRATION_RUN_B64' '$PG_RESTORE_VERSION_B64' '$RECOVERY_BINDING_B64' '$REPLAY_STABLE_STATE_FINGERPRINT' '$REPLAY_LIFECYCLE_DIGEST'"
           SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
           timeout 60m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND"
       - name: Remove temporary SSH credentials

@@ -1624,10 +1624,14 @@ async function main() {
     const getV4ReplayInputFingerprint = () => execFileSync("bash", ["scripts/production-db-data-fingerprint.sh", "--test-url", "--v4-replay-inputs"], {
       encoding: "utf8", env: { ...process.env, BODYCAST_TEST_DATABASE_URL: v4FingerprintUrl.toString() },
     }).trim();
+    const getV4ReplayStableStateFingerprint = () => execFileSync("bash", ["scripts/production-db-data-fingerprint.sh", "--test-url", "--v4-replay-stable-state"], {
+      encoding: "utf8", env: { ...process.env, BODYCAST_TEST_DATABASE_URL: v4FingerprintUrl.toString() },
+    }).trim();
     const getFullFingerprint = () => execFileSync("bash", ["scripts/production-db-data-fingerprint.sh", "--test-url"], {
       encoding: "utf8", env: { ...process.env, BODYCAST_TEST_DATABASE_URL: v4FingerprintUrl.toString() },
     }).trim();
     const v4ReplayInputsBefore = getV4ReplayInputFingerprint();
+    const v4ReplayOutputsBefore = getV4ReplayStableStateFingerprint();
     const fullFingerprintBeforeDerivedWrites = getFullFingerprint();
     if (!/^[a-f0-9]{64}$/.test(v4ReplayInputsBefore)) throw new Error("Isolated V4 replay-input fingerprint is malformed.");
     const nonRestoreFingerprintUrl = new URL(v4FingerprintUrl);
@@ -1635,7 +1639,11 @@ async function main() {
     const nonRestoreV4Fingerprint = spawnSync("bash", ["scripts/production-db-data-fingerprint.sh", "--test-url", "--v4-replay-inputs"], {
       encoding: "utf8", env: { ...process.env, BODYCAST_TEST_DATABASE_URL: nonRestoreFingerprintUrl.toString() },
     });
-    if (nonRestoreV4Fingerprint.status === 0 || !nonRestoreV4Fingerprint.stderr.includes("restricted to the isolated bodycast_restore database")) {
+    const nonRestoreV4StableStateFingerprint = spawnSync("bash", ["scripts/production-db-data-fingerprint.sh", "--test-url", "--v4-replay-stable-state"], {
+      encoding: "utf8", env: { ...process.env, BODYCAST_TEST_DATABASE_URL: nonRestoreFingerprintUrl.toString() },
+    });
+    if (nonRestoreV4Fingerprint.status === 0 || !nonRestoreV4Fingerprint.stderr.includes("restricted to the isolated bodycast_restore database")
+      || nonRestoreV4StableStateFingerprint.status === 0 || !nonRestoreV4StableStateFingerprint.stderr.includes("restricted to the isolated bodycast_restore database")) {
       throw new Error("V4 replay-input fingerprint accepted a non-restore database name.");
     }
     sql(target, `
@@ -1655,10 +1663,48 @@ async function main() {
       ) ON CONFLICT ("profileId", "modelEpisodeId", date) DO UPDATE SET diagnostics = EXCLUDED.diagnostics;
     `);
     const v4ReplayInputsAfterDerivedWrites = getV4ReplayInputFingerprint();
+    const v4ReplayOutputsAfterDerivedWrites = getV4ReplayStableStateFingerprint();
     const fullFingerprintAfterDerivedWrites = getFullFingerprint();
     if (v4ReplayInputsAfterDerivedWrites !== v4ReplayInputsBefore
-      || fullFingerprintAfterDerivedWrites === fullFingerprintBeforeDerivedWrites) {
+      || fullFingerprintAfterDerivedWrites === fullFingerprintBeforeDerivedWrites
+      || v4ReplayOutputsAfterDerivedWrites === v4ReplayOutputsBefore) {
       throw new Error("V4 derived-output/lifecycle writes changed the isolated raw replay-input fingerprint.");
+    }
+    sql(target, `UPDATE public."UnifiedExperimentalPhysiologyStateV2"
+      SET "createdAt" = "createdAt" + interval '1 second', "updatedAt" = "updatedAt" + interval '2 seconds';`);
+    const v4ReplayOutputsAfterTimestampChange = getV4ReplayStableStateFingerprint();
+    if (v4ReplayOutputsAfterTimestampChange !== v4ReplayOutputsAfterDerivedWrites) {
+      throw new Error("V4 replay stable-state fingerprint changed after only volatile bookkeeping timestamps changed.");
+    }
+    sql(target, `INSERT INTO public."UnifiedExperimentalPhysiologyStateV2" (
+      "profileId", "modelEpisodeId", date, "boundaryAt", "modelRevision", "sourceFingerprint",
+      "resultFingerprint", "qualityStatus", "gapSeverity", state, deltas, uncertainty,
+      reconciliation, "energyLedger", "sourceLineage", diagnostics
+    ) VALUES (
+      1, 1, '2026-01-01', '2026-01-01T00:00:00Z', 'v4-fingerprint-fixture', repeat('b', 64),
+      repeat('c', 64), 'AVAILABLE', 'none', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
+      '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb
+    ) ON CONFLICT ("profileId", "modelEpisodeId", date) DO UPDATE SET diagnostics = EXCLUDED.diagnostics;
+    `);
+    if (getV4ReplayStableStateFingerprint() !== v4ReplayOutputsAfterTimestampChange) {
+      throw new Error("V4 replay stable-state fingerprint changed after an idempotent V2 upsert advanced its owned SERIAL sequence.");
+    }
+    const dailyHealthSequenceState = sql(target,
+      `SELECT last_value::text || '|' || is_called::text FROM public."DailyHealthData_id_seq";`);
+    const dailyHealthSequenceMatch = dailyHealthSequenceState.match(/^([1-9][0-9]*)\|(true|false)$/);
+    if (!dailyHealthSequenceMatch) throw new Error("Could not capture the disposable raw-table sequence state for the stable-state fingerprint regression.");
+    sql(target, `SELECT nextval('public."DailyHealthData_id_seq"');`);
+    const v4ReplayOutputsAfterUnrelatedSequenceChange = getV4ReplayStableStateFingerprint();
+    sql(target, `SELECT setval('public."DailyHealthData_id_seq"', ${dailyHealthSequenceMatch[1]}, ${dailyHealthSequenceMatch[2]});`);
+    if (v4ReplayOutputsAfterUnrelatedSequenceChange === v4ReplayOutputsAfterTimestampChange
+      || getV4ReplayStableStateFingerprint() !== v4ReplayOutputsAfterTimestampChange) {
+      throw new Error("V4 replay stable-state fingerprint failed to ignore only the V2 output sequence while retaining unrelated sequence state.");
+    }
+    sql(target, `UPDATE public."UnifiedExperimentalPhysiologyStateV2"
+      SET diagnostics = '{"domainOutputChanged":true}'::jsonb WHERE "modelRevision" = 'v4-fingerprint-fixture';`);
+    const v4ReplayOutputsAfterDomainChange = getV4ReplayStableStateFingerprint();
+    if (v4ReplayOutputsAfterDomainChange === v4ReplayOutputsAfterTimestampChange) {
+      throw new Error("V4 replay stable-state fingerprint did not detect a domain output change.");
     }
     const sourceDate = sql(target, `SELECT date FROM public."DailyHealthData" WHERE id = 1;`);
     sql(target, `UPDATE public."DailyHealthData" SET date = '2026-01-02' WHERE id = 1;`);
@@ -1740,6 +1786,8 @@ async function main() {
       v4RepublicationMigrationsApplied: [...EXPECTED_V4_REPUBLICATION_PENDING_MIGRATIONS].sort(),
       v4ProtectedRowsPreserved,
       v4ReplayInputFingerprintExcludesDerivedWrites: v4ReplayInputsAfterDerivedWrites === v4ReplayInputsBefore,
+      v4ReplayStableStateFingerprintIgnoresVolatileTimestamps: v4ReplayOutputsAfterTimestampChange === v4ReplayOutputsAfterDerivedWrites,
+      v4ReplayStableStateFingerprintDetectsDomainChanges: v4ReplayOutputsAfterDomainChange !== v4ReplayOutputsAfterTimestampChange,
       fullFingerprintDetectsV4DerivedWrites: fullFingerprintAfterDerivedWrites !== fullFingerprintBeforeDerivedWrites,
       v4ReplayInputFingerprintDetectsRawSourceEdits: v4ReplayInputsAfterRawMutation !== v4ReplayInputsBefore,
       v4ReplayInputFingerprintRejectsNonRestoreDatabase: nonRestoreV4Fingerprint.status !== 0,

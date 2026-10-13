@@ -21,7 +21,7 @@ import { normalizePostgresDatabaseIdentityRow } from "../scripts/postgres-databa
 import { psqlCompatibleDatabaseUrl } from "../scripts/production-db-target-url.mjs";
 import { assertCurrentMigrationRunMatchesProof, executionProofAudience, readCurrentMigrationRunForDdl, requestGitHubOidcExecutionProof, verifyGitHubExecutionProof } from "../scripts/production-migration-execution-attestation.mjs";
 import { PRODUCTION_WRITER_TOPOLOGY_CONTRACT } from "../scripts/production-writer-drain.mjs";
-import { assertPreDdlBackupArtifactMetadata, assertPreDdlRecoverySource, assertStableV4RecoverySnapshots, assertV4RecoverySnapshot, assertV4ReplayRehearsal } from "../scripts/production-v4-recovery.mjs";
+import { assertPreDdlBackupArtifactMetadata, assertPreDdlRecoverySource, assertStableV4RecoverySnapshots, assertV4RecoverySnapshot, assertV4ReplayBoundary, assertV4ReplayRehearsal } from "../scripts/production-v4-recovery.mjs";
 
 const now = Date.parse("2026-10-05T10:00:00.000Z");
 const dirs = [
@@ -2103,6 +2103,7 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
     report.migrations.push(...V4_REPUBLICATION_MANIFEST.migrations.map((migration) => migrationRow(migration)));
     report.objects = schemaObjects("v4-after");
     report.logicalDataFingerprint = "a".repeat(64);
+    report.v4ReplayStableStateFingerprint = "a".repeat(64);
     const observedAt = new Date().toISOString();
     report.writerDrain = readyWriterDrain();
     report.writerDrain.observedAt = observedAt;
@@ -2121,6 +2122,7 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
       databaseImageId: "2".repeat(64), appImageId: "3".repeat(64),
       markerDigest: "4".repeat(64), routeDigest: "5".repeat(64),
       v4ReplayInputFingerprint: "6".repeat(64), preDdlReplayInputFingerprint: "6".repeat(64), pgDumpVersion: "pg_dump (PostgreSQL) 17.11",
+      v4ReplayStableStateFingerprint: "a".repeat(64),
       pgRestoreVersion: "pg_restore (PostgreSQL) 17.11", lifecycleState: "v4-replayable",
       migrationDirectories: fullDirs, report,
       marker: {
@@ -2144,9 +2146,46 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
 
     const validated = assertV4RecoverySnapshot(snapshot, { releaseSha, migrationRun, now: Date.now() });
     expect(validated).toMatchObject({ verified: true, ddlAuthorization: false, migrationRunId: "38447647403" });
+    expect(validated.recoveryBinding).toMatchObject({ verified: true, ddlAuthorization: false, lifecycleState: "v4-replayable" });
+    expect(assertV4ReplayBoundary(validated.recoveryBinding, validated.recoveryBinding, { phase: "before-replay" })).toBe(true);
     expect(() => assertV4RecoverySnapshot(snapshot, {
       releaseSha, migrationRun: { ...migrationRun, id: "38447647404" }, now: Date.now(),
     })).toThrow(/does not bind to the successful pinned-owner V4 DDL run/);
+
+    const replayedSnapshot = structuredClone(snapshot);
+    replayedSnapshot.report.logicalDataFingerprint = "b".repeat(64);
+    replayedSnapshot.v4ReplayStableStateFingerprint = "e".repeat(64);
+    replayedSnapshot.lifecycleState = "v4-current";
+    replayedSnapshot.v4Lifecycle.unifiedPublishedRolloutEpoch = 1;
+    replayedSnapshot.v4Lifecycle.unifiedPublishedGeneration = replayedSnapshot.v4Lifecycle.invalidationGeneration;
+    const replayedValidation = assertV4RecoverySnapshot(replayedSnapshot, { releaseSha, migrationRun, now: Date.now() });
+    expect(() => assertV4ReplayBoundary(validated.recoveryBinding, replayedValidation.recoveryBinding, {
+      phase: "before-replay",
+    })).toThrow(/pre-replay production state/);
+    expect(assertV4ReplayBoundary(validated.recoveryBinding, replayedValidation.recoveryBinding, {
+      phase: "after-replay", expectedReplayStableStateFingerprint: "e".repeat(64),
+      expectedReplayLifecycleDigest: replayedValidation.recoveryBinding.lifecycleDigest,
+    })).toBe(true);
+    expect(() => assertV4ReplayBoundary(validated.recoveryBinding, replayedValidation.recoveryBinding, {
+      phase: "after-replay", expectedReplayStableStateFingerprint: "f".repeat(64),
+    })).toThrow(/isolated V4 rehearsal result/);
+    expect(() => assertV4ReplayBoundary(validated.recoveryBinding, replayedValidation.recoveryBinding, {
+      phase: "after-replay", expectedReplayStableStateFingerprint: "e".repeat(64),
+      expectedReplayLifecycleDigest: "f".repeat(64),
+    })).toThrow(/isolated V4 rehearsal result/);
+    expect(() => assertV4ReplayBoundary({ ...validated.recoveryBinding, ddlAuthorization: true },
+      replayedValidation.recoveryBinding, {
+        phase: "after-replay", expectedReplayStableStateFingerprint: "e".repeat(64),
+        expectedReplayLifecycleDigest: replayedValidation.recoveryBinding.lifecycleDigest,
+      }))
+      .toThrow(/incomplete, malformed, or has unknown fields/);
+
+    const changedRouteSnapshot = structuredClone(snapshot);
+    changedRouteSnapshot.routeDigest = "f".repeat(64);
+    const changedRouteValidation = assertV4RecoverySnapshot(changedRouteSnapshot, { releaseSha, migrationRun, now: Date.now() });
+    expect(() => assertV4ReplayBoundary(validated.recoveryBinding, changedRouteValidation.recoveryBinding, {
+      phase: "before-replay",
+    })).toThrow(/backup identity, schema, history, route, or raw-data binding/);
 
     for (const mutate of [
       (value) => { value.report.identity.database = "other"; },
@@ -2155,6 +2194,7 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
       (value) => { value.marker.migrationOriginSha = "f".repeat(40); },
       (value) => { value.preDdlReplayInputFingerprint = "f".repeat(64); },
       (value) => { value.v4Lifecycle.unifiedRolloutEpoch = 0; },
+      (value) => { value.v4ReplayStableStateFingerprint = "malformed"; },
     ]) {
       const changed = structuredClone(snapshot);
       mutate(changed);
@@ -2179,7 +2219,10 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
       restoredRawFingerprintAfterRetry: snapshot.v4ReplayInputFingerprint,
       fullFingerprintBefore: report.logicalDataFingerprint,
       fullFingerprintAfter: "b".repeat(64),
-      fullFingerprintAfterRetry: "b".repeat(64),
+      fullFingerprintAfterRetry: "c".repeat(64),
+      replayStableStateFingerprintBefore: "a".repeat(64),
+      replayStableStateFingerprintAfter: "e".repeat(64),
+      replayStableStateFingerprintAfterRetry: "e".repeat(64),
       firstReplay: { rolloutEpoch: 1, dayCount: 365 },
       retryReplay: { rolloutEpoch: 1, dayCount: 365 },
       lifecycleAfter: {
@@ -2188,13 +2231,14 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
         unifiedPublishedGeneration: 16039,
       },
     };
-    expect(assertV4ReplayRehearsal(rehearsal)).toMatchObject({ verified: true, ddlAuthorization: false, replayEpoch: 1, idempotentRetry: true });
+    expect(assertV4ReplayRehearsal(rehearsal)).toMatchObject({ verified: true, ddlAuthorization: false, replayEpoch: 1, idempotentRetry: true, replayStableStateFingerprintAfter: "e".repeat(64) });
     expect(() => assertV4ReplayRehearsal({
       ...rehearsal,
       sourceSnapshot: { ...snapshot, preDdlReplayInputFingerprint: "f".repeat(64) },
     })).toThrow(/signed pre-DDL backup baseline/);
     expect(() => assertV4ReplayRehearsal({ ...rehearsal, sourceRawFingerprint: "f".repeat(64) })).toThrow(/Raw replay-source fingerprint/);
     expect(() => assertV4ReplayRehearsal({ ...rehearsal, fullFingerprintBefore: "f".repeat(64) })).toThrow(/baseline fingerprint/);
+    expect(() => assertV4ReplayRehearsal({ ...rehearsal, replayStableStateFingerprintAfterRetry: "f".repeat(64) })).toThrow(/stable-state fingerprint/);
     expect(() => assertV4ReplayRehearsal({ ...rehearsal, retryReplay: { rolloutEpoch: 1, dayCount: 364 } })).toThrow(/idempotent retry/);
   });
 });

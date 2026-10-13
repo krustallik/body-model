@@ -119,7 +119,7 @@ describe("schema deploy compatibility handoff", () => {
     const expectedV4Bindings = {
       ".github/workflows/activate-unified-v4-production.yml": {
         migrationOriginBlob: "5aee0a99a1dea520ca314a4b83e42c63e389e1d2",
-        deployBlob: "0923394f7c2a2f7539be5300446e56993734ccd1",
+        deployBlob: "59f4e00408946f9eb641567bf5e8632ee4c35bb0",
       },
       ".github/workflows/deploy-production.yml": {
         migrationOriginBlob: "1be0ba2dc8fcfe2c34a97b39ae1d5d0fde32404f",
@@ -127,23 +127,23 @@ describe("schema deploy compatibility handoff", () => {
       },
       "scripts/ci/production-safety-postgres-smoke.mjs": {
         migrationOriginBlob: "1a0345e687fd3f604499502bdf98a07b606da07f",
-        deployBlob: "da253d356f47822ba79e468c0c19eb9dec94e03c",
+        deployBlob: "8626a7b47e2ef41d65031428b06549b86b0e6c06",
       },
       "scripts/production-db-data-fingerprint.sh": {
         migrationOriginBlob: "101ecf34dc5751fc431a5b88f787d7ebc3e98fde",
-        deployBlob: "3b919375f2038aa292b83febc0f93497c6eecf34",
+        deployBlob: "3a313ac030b0aa96abb57658f6e02c2473016299",
       },
       "scripts/production-v4-post-ddl-backup-host.sh": {
         migrationOriginBlob: null,
-        deployBlob: "2ba4ee447862a58d91e772acf2d1369cc22b2c8e",
+        deployBlob: "d9a2fdd9226706fbd8f12c2344ca4a892cea53a0",
       },
       "scripts/production-v4-recovery.mjs": {
         migrationOriginBlob: null,
-        deployBlob: "8b4c7a3127a88d556e5661c1dd97e63be625fc10",
+        deployBlob: "b609527876ed6c59ca48814c6c5b5450ff1517bd",
       },
       "scripts/production-traffic-cutover.sh": {
         migrationOriginBlob: "baeb3ff34c52c606a653d9e0c027c79d7b7c72da",
-        deployBlob: "87e52ee02feb0f4083a053a127adef0ff4600e69",
+        deployBlob: "12aad0c622c284b986a2ffe9d0cb35fbee8e71a8",
       },
     };
     for (const [changedPath, expectedBinding] of Object.entries(expectedV4Bindings)) {

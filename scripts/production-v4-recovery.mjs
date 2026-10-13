@@ -21,6 +21,121 @@ function requireValue(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function v4LifecycleFingerprint(state, lifecycle) {
+  const fields = [
+    "profileId", "invalidationGeneration", "productionPublishedGeneration", "productionStaleFromDate",
+    "unifiedTargetRevision", "unifiedRolloutEpoch", "unifiedPublishedRolloutEpoch",
+    "unifiedPublishedGeneration", "unifiedPublicationBlockedFromDate",
+  ];
+  const stableLifecycle = Object.fromEntries(fields.map((field) => [field, lifecycle?.[field]]));
+  return canonicalSha256({ state, lifecycle: stableLifecycle });
+}
+
+export function createV4RecoveryBinding(snapshot) {
+  const report = snapshot?.report;
+  const lifecycle = snapshot?.v4Lifecycle;
+  requireValue(snapshot?.schemaVersion === 1 && snapshot.canonicalMainSha === snapshot.releaseSha
+    && SHA.test(String(snapshot.releaseSha ?? "")) && snapshot.manifestId === V4_REPUBLICATION_MANIFEST.id
+    && isCanonicalPostgresDatabaseIdentity(report?.identity)
+    && DIGEST.test(String(report?.logicalDataFingerprint ?? ""))
+    && DIGEST.test(String(snapshot.v4ReplayInputFingerprint ?? ""))
+    && DIGEST.test(String(snapshot.v4ReplayStableStateFingerprint ?? ""))
+    && snapshot.preDdlReplayInputFingerprint === snapshot.v4ReplayInputFingerprint,
+  "Cannot create a V4 recovery binding from incomplete or inconsistent snapshot evidence.");
+  const binding = {
+    schemaVersion: 1,
+    verified: true,
+    ddlAuthorization: false,
+    releaseSha: snapshot?.releaseSha,
+    manifestId: snapshot?.manifestId,
+    migrationOriginSha: snapshot?.marker?.migrationOriginSha,
+    migrationRunId: snapshot?.marker?.workflowRunId,
+    migrationRunAttempt: snapshot?.marker?.workflowRunAttempt,
+    databaseContainerId: snapshot?.databaseContainerId,
+    databaseImageId: `sha256:${String(snapshot?.databaseImageId ?? "").replace(/^sha256:/, "")}`,
+    appImageId: `sha256:${String(snapshot?.appImageId ?? "").replace(/^sha256:/, "")}`,
+    markerDigest: snapshot?.markerDigest,
+    routeDigest: snapshot?.routeDigest,
+    identityDigest: canonicalSha256(report?.identity),
+    migrationHistoryDigest: canonicalSha256(report?.migrations),
+    schemaDigest: schemaInventoryDigest(report?.objects),
+    rawReplayInputFingerprint: snapshot?.v4ReplayInputFingerprint,
+    v4ReplayStableStateFingerprint: snapshot?.v4ReplayStableStateFingerprint,
+    preDdlReplayInputFingerprint: snapshot?.preDdlReplayInputFingerprint,
+    logicalDataFingerprint: report?.logicalDataFingerprint,
+    lifecycleState: snapshot?.lifecycleState,
+    lifecycleDigest: v4LifecycleFingerprint(snapshot?.lifecycleState, lifecycle),
+    pgDumpVersion: snapshot?.pgDumpVersion,
+    pgRestoreVersion: snapshot?.pgRestoreVersion,
+  };
+  const immutable = Object.fromEntries(Object.entries(binding).filter(([key]) =>
+    !["logicalDataFingerprint", "v4ReplayStableStateFingerprint", "lifecycleState", "lifecycleDigest"].includes(key)));
+  return { ...binding, immutableDigest: canonicalSha256(immutable) };
+}
+
+export function assertV4ReplayBoundary(expected, observed, {
+  phase,
+  expectedReplayStableStateFingerprint,
+  expectedReplayLifecycleDigest,
+} = {}) {
+  const assertBinding = (binding) => {
+    const expectedKeys = [
+      "schemaVersion", "verified", "ddlAuthorization", "releaseSha", "manifestId", "migrationOriginSha",
+      "migrationRunId", "migrationRunAttempt", "databaseContainerId", "databaseImageId", "appImageId",
+      "markerDigest", "routeDigest", "identityDigest", "migrationHistoryDigest", "schemaDigest",
+      "rawReplayInputFingerprint", "preDdlReplayInputFingerprint", "logicalDataFingerprint", "v4ReplayStableStateFingerprint",
+      "lifecycleState", "lifecycleDigest", "pgDumpVersion", "pgRestoreVersion", "immutableDigest",
+    ].sort();
+    requireValue(binding && JSON.stringify(Object.keys(binding).sort()) === JSON.stringify(expectedKeys)
+      && binding.schemaVersion === 1 && binding.verified === true && binding.ddlAuthorization === false
+      && SHA.test(String(binding.releaseSha ?? "")) && binding.manifestId === V4_REPUBLICATION_MANIFEST.id
+      && SHA.test(String(binding.migrationOriginSha ?? ""))
+      && /^[1-9][0-9]*$/.test(String(binding.migrationRunId ?? ""))
+      && /^[1-9][0-9]*$/.test(String(binding.migrationRunAttempt ?? ""))
+      && /^[a-f0-9]{64}$/.test(String(binding.databaseContainerId ?? ""))
+      && [binding.databaseImageId, binding.appImageId].every((value) => /^sha256:[a-f0-9]{64}$/.test(String(value ?? "")))
+      && ["markerDigest", "routeDigest", "identityDigest", "migrationHistoryDigest", "schemaDigest",
+        "rawReplayInputFingerprint", "preDdlReplayInputFingerprint", "logicalDataFingerprint", "v4ReplayStableStateFingerprint",
+        "lifecycleDigest", "immutableDigest"]
+        .every((key) => DIGEST.test(String(binding[key] ?? "")))
+      && binding.rawReplayInputFingerprint === binding.preDdlReplayInputFingerprint
+      && ["v4-replayable", "v4-current"].includes(binding.lifecycleState)
+      && typeof binding.pgDumpVersion === "string" && typeof binding.pgRestoreVersion === "string",
+    "V4 recovery boundary binding is incomplete, malformed, or has unknown fields.");
+    const immutable = Object.fromEntries(Object.entries(binding).filter(([key]) =>
+      !["logicalDataFingerprint", "v4ReplayStableStateFingerprint", "lifecycleState", "lifecycleDigest", "immutableDigest"].includes(key)));
+    requireValue(canonicalSha256(immutable) === binding.immutableDigest,
+      "V4 recovery boundary immutable digest does not match its fields.");
+  };
+  assertBinding(expected);
+  assertBinding(observed);
+  requireValue(expected?.schemaVersion === 1 && expected.verified === true && expected.ddlAuthorization === false
+    && DIGEST.test(String(expected.immutableDigest ?? "")),
+  "Verified V4 backup/rehearsal binding is malformed or authorizes DDL.");
+  requireValue(observed?.verified === true && observed.ddlAuthorization === false
+    && observed.immutableDigest === expected.immutableDigest,
+  "Fresh production V4 replay boundary differs from the verified backup identity, schema, history, route, or raw-data binding.");
+  if (phase === "before-replay") {
+    requireValue(observed.logicalDataFingerprint === expected.logicalDataFingerprint
+      && observed.v4ReplayStableStateFingerprint === expected.v4ReplayStableStateFingerprint
+      && observed.lifecycleState === expected.lifecycleState
+      && observed.lifecycleDigest === expected.lifecycleDigest,
+    "Fresh pre-replay production state differs from the rehearsed backup baseline.");
+    return true;
+  }
+  if (phase === "after-replay") {
+    requireValue(DIGEST.test(String(expectedReplayStableStateFingerprint ?? ""))
+      && observed.v4ReplayStableStateFingerprint === expectedReplayStableStateFingerprint
+      && DIGEST.test(String(expectedReplayLifecycleDigest ?? ""))
+      && observed.lifecycleDigest === expectedReplayLifecycleDigest
+      && observed.lifecycleState === "v4-current"
+      && DIGEST.test(String(observed.lifecycleDigest ?? "")),
+    "Fresh post-replay production state differs from the isolated V4 rehearsal result.");
+    return true;
+  }
+  throw new Error("Unknown V4 replay boundary phase.");
+}
+
 export function assertPreDdlRecoverySource({
   authorizationEnvelope,
   preflightEvidence,
@@ -145,6 +260,7 @@ export function assertV4RecoverySnapshot(snapshot, {
     && snapshot.preDdlReplayInputFingerprint === snapshot.v4ReplayInputFingerprint,
   "Post-DDL raw data no longer matches the signed pre-DDL encrypted-backup baseline.");
   requireValue(DIGEST.test(String(snapshot.report?.logicalDataFingerprint ?? "")), "Full production data fingerprint is malformed.");
+  requireValue(DIGEST.test(String(snapshot.v4ReplayStableStateFingerprint ?? "")), "V4 replay stable-state fingerprint is malformed.");
 
   const marker = snapshot.marker;
   requireValue(marker?.schemaVersion === 3 && marker.manifestId === V4_REPUBLICATION_MANIFEST.id
@@ -192,6 +308,9 @@ export function assertV4RecoverySnapshot(snapshot, {
 
   const lifecycle = snapshot.v4Lifecycle;
   requireValue(lifecycle?.profileId === 1 && lifecycle.unifiedTargetRevision === V4_REVISION
+    && Number.isSafeInteger(lifecycle.invalidationGeneration) && lifecycle.invalidationGeneration >= 0
+    && Number.isSafeInteger(lifecycle.productionPublishedGeneration)
+    && (lifecycle.unifiedPublishedGeneration === null || Number.isSafeInteger(lifecycle.unifiedPublishedGeneration))
     && lifecycle.unifiedRolloutEpoch === 1 && lifecycle.productionStaleFromDate === null
     && lifecycle.productionPublishedGeneration === lifecycle.invalidationGeneration
     && lifecycle.unifiedPublicationBlockedFromDate === null
@@ -215,11 +334,13 @@ export function assertV4RecoverySnapshot(snapshot, {
     schemaDigest: schemaInventoryDigest(report.objects),
     logicalDataFingerprint: report.logicalDataFingerprint,
     v4ReplayInputFingerprint: snapshot.v4ReplayInputFingerprint,
+    v4ReplayStableStateFingerprint: snapshot.v4ReplayStableStateFingerprint,
     lifecycle: { ...lifecycle },
     appImageId: snapshot.appImageId,
     routeDigest: snapshot.routeDigest,
     pgDumpVersion: snapshot.pgDumpVersion,
     pgRestoreVersion: snapshot.pgRestoreVersion,
+    recoveryBinding: createV4RecoveryBinding(snapshot),
   };
 }
 
@@ -236,6 +357,7 @@ export function assertStableV4RecoverySnapshots(before, after) {
     objects: snapshot.report?.objects,
     fullFingerprint: snapshot.report?.logicalDataFingerprint,
     rawFingerprint: snapshot.v4ReplayInputFingerprint,
+    replayStableStateFingerprint: snapshot.v4ReplayStableStateFingerprint,
     preDdlRawFingerprint: snapshot.preDdlReplayInputFingerprint,
     lifecycle: snapshot.v4Lifecycle,
   });
@@ -256,6 +378,9 @@ export function assertV4ReplayRehearsal({
   fullFingerprintBefore,
   fullFingerprintAfter,
   fullFingerprintAfterRetry,
+  replayStableStateFingerprintBefore,
+  replayStableStateFingerprintAfter,
+  replayStableStateFingerprintAfterRetry,
   firstReplay,
   retryReplay,
   lifecycleAfter,
@@ -282,23 +407,36 @@ export function assertV4ReplayRehearsal({
     "Raw replay-source fingerprint differs from the verified production backup snapshot.");
   requireValue(sourceSnapshot?.preDdlReplayInputFingerprint === sourceRawFingerprint,
     "Production raw replay-source fingerprint differs from the signed pre-DDL backup baseline.");
+  requireValue(sourceSnapshot?.v4ReplayStableStateFingerprint === replayStableStateFingerprintBefore,
+    "Isolated V4 rehearsal output baseline differs from the verified production backup snapshot.");
+  requireValue(restoreReport?.v4ReplayStableStateFingerprint === replayStableStateFingerprintBefore,
+    "Restored V4 replay stable-state baseline differs from the verified encrypted backup snapshot.");
   const rawFingerprints = [sourceRawFingerprint, restoredRawFingerprintBefore, restoredRawFingerprintAfter, restoredRawFingerprintAfterRetry];
   requireValue(rawFingerprints.every((fingerprint) => DIGEST.test(String(fingerprint ?? "")) && fingerprint === sourceRawFingerprint),
     "Raw replay-source fingerprint changed during V4 rehearsal.");
+  requireValue(DIGEST.test(String(replayStableStateFingerprintBefore ?? ""))
+    && DIGEST.test(String(replayStableStateFingerprintAfter ?? ""))
+    && replayStableStateFingerprintAfter !== replayStableStateFingerprintBefore
+    && replayStableStateFingerprintAfterRetry === replayStableStateFingerprintAfter,
+  "V4 model stable-state fingerprint or retry idempotency fingerprint is invalid.");
   requireValue(DIGEST.test(String(fullFingerprintBefore ?? ""))
     && DIGEST.test(String(fullFingerprintAfter ?? ""))
     && fullFingerprintAfter !== fullFingerprintBefore
-    && fullFingerprintAfterRetry === fullFingerprintAfter,
-  "V4 rehearsal output or retry idempotency fingerprint is invalid.");
+    && DIGEST.test(String(fullFingerprintAfterRetry ?? "")),
+  "V4 rehearsal full data fingerprints are invalid.");
   requireValue(firstReplay?.rolloutEpoch === 1 && Number.isSafeInteger(firstReplay?.dayCount) && firstReplay.dayCount > 0
     && retryReplay?.rolloutEpoch === 1 && retryReplay.dayCount === firstReplay.dayCount,
   "Isolated epoch-1 replay or idempotent retry did not complete the same history range.");
-  requireValue(lifecycleAfter?.unifiedTargetRevision === V4_REVISION
+  requireValue(lifecycleAfter?.profileId === 1 && lifecycleAfter?.unifiedTargetRevision === V4_REVISION
+    && Number.isSafeInteger(lifecycleAfter.invalidationGeneration) && lifecycleAfter.invalidationGeneration >= 0
+    && Number.isSafeInteger(lifecycleAfter.productionPublishedGeneration)
+    && Number.isSafeInteger(lifecycleAfter.unifiedPublishedGeneration)
     && lifecycleAfter.unifiedRolloutEpoch === 1 && lifecycleAfter.unifiedPublishedRolloutEpoch === 1
     && lifecycleAfter.unifiedPublishedGeneration === lifecycleAfter.invalidationGeneration
     && lifecycleAfter.productionPublishedGeneration === lifecycleAfter.invalidationGeneration
     && lifecycleAfter.productionStaleFromDate === null && lifecycleAfter.unifiedPublicationBlockedFromDate === null,
   "Isolated V4 replay lifecycle is not current and published at epoch 1.");
+  const replayLifecycleDigest = v4LifecycleFingerprint("v4-current", lifecycleAfter);
   return {
     verified: true,
     ddlAuthorization: false,
@@ -308,6 +446,8 @@ export function assertV4ReplayRehearsal({
     replayEpoch: 1,
     dayCount: firstReplay.dayCount,
     idempotentRetry: true,
+    replayStableStateFingerprintAfter,
+    replayLifecycleDigest,
   };
 }
 
@@ -339,6 +479,16 @@ async function main() {
     else process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     return;
   }
+  if (mode === "--assert-replay-boundary") {
+    const [expectedPath, observedPath, phase, expectedReplayStableStateFingerprint, expectedReplayLifecycleDigest] = args;
+    const expected = await readJson(expectedPath);
+    const observed = await readJson(observedPath);
+    assertV4ReplayBoundary(expected, observed.recoveryBinding, {
+      phase, expectedReplayStableStateFingerprint, expectedReplayLifecycleDigest,
+    });
+    process.stdout.write(JSON.stringify({ verified: true, ddlAuthorization: false, phase }) + "\n");
+    return;
+  }
   if (mode === "--verify-ddl-source") {
     const [bundleDirectory, migrationRunPath, outputPath] = args;
     const [authorizationEnvelope, preflightEvidence, preflightResult, restoreResult, backupArtifactMetadata, migrationRun, allowlist] = await Promise.all([
@@ -359,7 +509,7 @@ async function main() {
     process.stdout.write(JSON.stringify({ verified: true, ddlAuthorization: false, backupArtifactId: binding.backupArtifactId }) + "\n");
     return;
   }
-  throw new Error("Usage: production-v4-recovery.mjs --validate-snapshot <snapshot.json> <migration-dir> [result.json] | --verify-rehearsal <input.json> [result.json] | --verify-ddl-source <bundle-dir> <migration-run.json> <output.json>");
+  throw new Error("Usage: production-v4-recovery.mjs --validate-snapshot <snapshot.json> <migration-dir> [result.json] | --verify-rehearsal <input.json> [result.json] | --assert-replay-boundary <expected.json> <observed.json> <before-replay|after-replay> [expected-stable-state-fingerprint] [expected-lifecycle-digest] | --verify-ddl-source <bundle-dir> <migration-run.json> <output.json>");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

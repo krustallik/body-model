@@ -12,11 +12,15 @@ readonly RUN_B64="${BODYCAST_V4_MIGRATION_RUN_B64:-}"
 readonly EXPECTED_PRE_DDL_RAW_FINGERPRINT="${BODYCAST_EXPECTED_PRE_DDL_RAW_FINGERPRINT:-}"
 readonly APP_HOST="${APP_HOST:-}"
 readonly CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:-}"
+readonly MODE="${1:-backup}"
+readonly EXPECTED_APP_IMAGE_ID="${BODYCAST_V4_CANDIDATE_APP_IMAGE_ID:-}"
 
-[[ "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ \
+[[ ( "$MODE" == backup || "$MODE" == snapshot-only ) \
+  && "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ \
   && "$CADDY_ROUTES_PATH" == /* && -n "$RUN_B64" \
   && "$EXPECTED_PRE_DDL_RAW_FINGERPRINT" =~ ^[a-f0-9]{64}$ \
-  && "${BODYCAST_PG_RESTORE_VERSION:-}" =~ ^pg_restore\ \(PostgreSQL\)\ [0-9]+(\.[0-9]+)*$ ]] || {
+  && "${BODYCAST_PG_RESTORE_VERSION:-}" =~ ^pg_restore\ \(PostgreSQL\)\ [0-9]+(\.[0-9]+)*$ \
+  && ( "$MODE" != snapshot-only || "$EXPECTED_APP_IMAGE_ID" =~ ^sha256:[a-f0-9]{64}$ ) ]] || {
   echo "V4 post-DDL backup requires exact release, route, migration-run, pre-DDL raw baseline, and restore-client bindings." >&2; exit 2;
 }
 
@@ -81,15 +85,25 @@ route_digest="$(sha256sum "${CADDY_ROUTES_PATH%/}/bodycast.caddy" | awk '{print 
 bodycast_verify_exact_maintenance_route
 maintenance_marker="$(bodycast_maintenance_marker_from_route)"
 bodycast_probe_public_maintenance "$maintenance_marker"
-app_identity="$(docker inspect --format '{{.Id}}|{{.Image}}|{{index .Config.Labels "org.bodycast.release-sha"}}|{{.State.Status}}|{{.State.Health.Status}}' "$APP_CONTAINER")"
-IFS='|' read -r app_id candidate_image_id app_sha app_state app_health <<< "$app_identity"
-[[ "$app_id" =~ ^[a-f0-9]{64}$ && "$candidate_image_id" =~ ^sha256:[a-f0-9]{64}$ \
-  && "$app_sha" == "$RELEASE_SHA" && "$app_state" == "running" && "$app_health" == "healthy" \
-  && "$(docker image inspect --format '{{.Id}}' bodycast-app:latest)" == "$candidate_image_id" ]] || {
-  echo "Only the healthy exact-SHA app on its immutable current image can enter backup preparation." >&2; exit 1;
-}
+if [[ "$MODE" == backup ]]; then
+  app_identity="$(docker inspect --format '{{.Id}}|{{.Image}}|{{index .Config.Labels "org.bodycast.release-sha"}}|{{.State.Status}}|{{.State.Health.Status}}' "$APP_CONTAINER")"
+  IFS='|' read -r app_id candidate_image_id app_sha app_state app_health <<< "$app_identity"
+  [[ "$app_id" =~ ^[a-f0-9]{64}$ && "$candidate_image_id" =~ ^sha256:[a-f0-9]{64}$ \
+    && "$app_sha" == "$RELEASE_SHA" && "$app_state" == "running" && "$app_health" == "healthy" \
+    && "$(docker image inspect --format '{{.Id}}' bodycast-app:latest)" == "$candidate_image_id" ]] || {
+    echo "Only the healthy exact-SHA app on its immutable current image can enter backup preparation." >&2; exit 1;
+  }
+else
+  candidate_image_id="$EXPECTED_APP_IMAGE_ID"
+  remaining_app="$(docker ps --all --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}')"
+  [[ -z "$remaining_app" && "$(docker image inspect --format '{{.Id}}' bodycast-app:latest)" == "$candidate_image_id" ]] || {
+    echo "Read-only V4 boundary capture requires the exact candidate image and an absent app container." >&2; exit 1;
+  }
+fi
 
-compose --profile tools build migrate
+if [[ "$MODE" == backup ]]; then
+  compose --profile tools build migrate
+fi
 lifecycle_state="$(compose --profile tools run --rm --no-deps --entrypoint node migrate \
   /app/scripts/unified-v4-activate-replay.mjs --inspect-lifecycle --profile-id 1)"
 [[ "$lifecycle_state" == '{"command":"unified-v4-activate-replay","profileId":1,"state":"v4-replayable"}' \
@@ -97,19 +111,21 @@ lifecycle_state="$(compose --profile tools run --rm --no-deps --entrypoint node 
   echo "Production lifecycle is not in the supported V4 epoch-1 resume state." >&2; exit 1;
 }
 
-app_stopped=true
-docker update --restart=no "$APP_CONTAINER" >/dev/null
-compose stop app >/dev/null 2>&1 || true
-docker stop --time 0 "$APP_CONTAINER" >/dev/null 2>&1 || true
-[[ "$(docker inspect --format '{{.State.Status}}|{{.HostConfig.RestartPolicy.Name}}' "$APP_CONTAINER")" == "exited|no" ]] || {
-  echo "The exact app container did not stop with restart disabled." >&2; exit 1;
-}
-compose rm --force app >/dev/null
+if [[ "$MODE" == backup ]]; then
+  app_stopped=true
+  docker update --restart=no "$APP_CONTAINER" >/dev/null
+  compose stop app >/dev/null 2>&1 || true
+  docker stop --time 0 "$APP_CONTAINER" >/dev/null 2>&1 || true
+  [[ "$(docker inspect --format '{{.State.Status}}|{{.HostConfig.RestartPolicy.Name}}' "$APP_CONTAINER")" == "exited|no" ]] || {
+    echo "The exact app container did not stop with restart disabled." >&2; exit 1;
+  }
+  compose rm --force app >/dev/null
+fi
 bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
 
 capture_snapshot() {
   local label="$1" db_metadata db_id db_image_id db_name db_state db_health db_address pg_dump_version current_marker_digest current_route_digest
-  local full_fingerprint raw_fingerprint topology target_url sql_path raw_path report_path postflight_path lifecycle_json
+  local full_fingerprint raw_fingerprint replay_stable_state_fingerprint topology target_url sql_path raw_path report_path postflight_path lifecycle_json
   sql_path="$tmp/preflight-$label.sql"; raw_path="$tmp/raw-$label.json"
   report_path="$tmp/report-$label.json"; postflight_path="$tmp/postflight-$label.json"
   db_metadata="$(docker inspect --format "{{.Id}}|{{.Image}}|{{.Name}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}unknown{{end}}|{{with index .NetworkSettings.Networks \"$DB_NETWORK\"}}{{.IPAddress}}{{end}}" "$DB_CONTAINER")"
@@ -126,7 +142,9 @@ assertPostgresClientCompatibility(process.argv[2], process.argv[3]);
 NODE
   full_fingerprint="$(bash "$ROOT_DIR/scripts/production-db-data-fingerprint.sh" --production-container "$DB_CONTAINER")"
   raw_fingerprint="$(bash "$ROOT_DIR/scripts/production-db-data-fingerprint.sh" --production-container "$DB_CONTAINER" --v4-replay-inputs)"
+  replay_stable_state_fingerprint="$(bash "$ROOT_DIR/scripts/production-db-data-fingerprint.sh" --production-container "$DB_CONTAINER" --v4-replay-stable-state)"
   [[ "$full_fingerprint" =~ ^[a-f0-9]{64}$ && "$raw_fingerprint" =~ ^[a-f0-9]{64}$ \
+    && "$replay_stable_state_fingerprint" =~ ^[a-f0-9]{64}$ \
     && "$(docker inspect --format '{{.Id}}' "$DB_CONTAINER")" == "$db_id" ]] || {
     echo "Production data fingerprints or fixed DB container identity are invalid." >&2; return 1;
   }
@@ -173,14 +191,14 @@ SQL
   unset BODYCAST_PSQL_DATABASE_URL
   node --input-type=module - "$report_path" "$postflight_path" "$tmp/snapshot-$label.json" \
     "$db_id" "${db_image_id#sha256:}" "${candidate_image_id#sha256:}" "$marker_digest" "$route_digest" \
-    "$raw_fingerprint" "$pg_dump_version" "$BODYCAST_PG_RESTORE_VERSION" "$lifecycle_state" "$lifecycle_json" "$RELEASE_SHA" \
+    "$raw_fingerprint" "$replay_stable_state_fingerprint" "$pg_dump_version" "$BODYCAST_PG_RESTORE_VERSION" "$lifecycle_state" "$lifecycle_json" "$RELEASE_SHA" \
     "$BODYCAST_MARKER_MANIFEST_ID" "$BODYCAST_MARKER_MIGRATION_ORIGIN_SHA" "$BODYCAST_MARKER_DEPLOY_SHA" \
     "$BODYCAST_MARKER_STATE" "$BODYCAST_MARKER_WORKFLOW_RUN_ID" "$BODYCAST_MARKER_WORKFLOW_RUN_ATTEMPT" \
     "$BODYCAST_MARKER_AUTHORIZATION_ID" "$BODYCAST_MARKER_LINEAGE_DIGEST" "$BODYCAST_MARKER_SOURCE_DIGEST" \
     "$BODYCAST_MARKER_COMPATIBILITY_DIGEST" "$BODYCAST_MARKER_SCHEMA_VERSION" <<'NODE'
 import { readFileSync, writeFileSync } from "node:fs";
 const [reportPath, postflightPath, outputPath, databaseContainerId, databaseImageId, appImageId,
-  markerDigest, routeDigest, v4ReplayInputFingerprint, pgDumpVersion, pgRestoreVersion,
+  markerDigest, routeDigest, v4ReplayInputFingerprint, v4ReplayStableStateFingerprint, pgDumpVersion, pgRestoreVersion,
   lifecycleState, lifecycleJson, releaseSha, markerManifestId, migrationOriginSha, deploySha,
   markerState, workflowRunId, workflowRunAttempt, authorizationId, lineageDigest,
   sourceMarkerDigest, compatibilityDigest, markerSchemaVersion] = process.argv.slice(2);
@@ -191,7 +209,8 @@ if (postflight.ready !== true || postflight.blockers?.length !== 0) throw new Er
 const snapshot = {
   schemaVersion: 1, manifestId: "unified-v4-republication-v1", releaseSha,
   canonicalMainSha: releaseSha, databaseContainerId, databaseImageId, appImageId,
-  markerDigest, routeDigest, v4ReplayInputFingerprint, pgDumpVersion, pgRestoreVersion,
+  markerDigest, routeDigest, v4ReplayInputFingerprint, v4ReplayStableStateFingerprint,
+  preDdlReplayInputFingerprint: v4ReplayInputFingerprint, pgDumpVersion, pgRestoreVersion,
   lifecycleState, v4Lifecycle, report,
   marker: {
     schemaVersion: Number(markerSchemaVersion), manifestId: markerManifestId, migrationOriginSha,
@@ -215,16 +234,23 @@ NODE
   [[ "$current_marker_digest" == "$marker_digest" && "$current_route_digest" == "$route_digest" ]] || {
     echo "The production marker or maintenance route changed during the backup boundary." >&2; return 1;
   }
-  printf '%s\n' "$db_id" "$db_image_id" "$full_fingerprint" "$raw_fingerprint"
+  printf '%s\n' "$db_id" "$db_image_id" "$full_fingerprint" "$raw_fingerprint" "$replay_stable_state_fingerprint"
 }
+
+if [[ "$MODE" == snapshot-only ]]; then
+  capture_snapshot boundary >/dev/null
+  cat "$tmp/validated-boundary.json" >&3
+  exit 0
+fi
 
 before_lines="$(capture_snapshot before)"
 mapfile -t before_values <<< "$before_lines"
-[[ "${#before_values[@]}" -eq 4 ]] || { echo "Pre-dump snapshot field set is invalid." >&2; exit 1; }
+[[ "${#before_values[@]}" -eq 5 ]] || { echo "Pre-dump snapshot field set is invalid." >&2; exit 1; }
 before_db_id="${before_values[0]}"
 before_db_image_id="${before_values[1]}"
 before_full_fingerprint="${before_values[2]}"
 before_raw_fingerprint="${before_values[3]}"
+before_replay_stable_state_fingerprint="${before_values[4]}"
 
 bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
 bodycast_verify_exact_maintenance_route
@@ -241,10 +267,11 @@ docker exec "$before_db_id" sh -c 'exec pg_dump --format=custom --no-owner --no-
 
 after_lines="$(capture_snapshot after)"
 mapfile -t after_values <<< "$after_lines"
-[[ "${#after_values[@]}" -eq 4 && "${after_values[0]}" == "$before_db_id" \
+[[ "${#after_values[@]}" -eq 5 && "${after_values[0]}" == "$before_db_id" \
   && "${after_values[1]}" == "$before_db_image_id" \
   && "${after_values[2]}" == "$before_full_fingerprint" \
-  && "${after_values[3]}" == "$before_raw_fingerprint" ]] || {
+  && "${after_values[3]}" == "$before_raw_fingerprint" \
+  && "${after_values[4]}" == "$before_replay_stable_state_fingerprint" ]] || {
   echo "Production DB, schema, history, or raw source data changed during pg_dump." >&2; exit 1;
 }
 node --input-type=module - "$tmp/snapshot-after.json" "$pg_dump_invocation_at" <<'NODE'

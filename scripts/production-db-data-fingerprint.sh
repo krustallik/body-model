@@ -7,7 +7,7 @@ set -Eeuo pipefail
 mode="${1:-}"
 fingerprint_mode="full"
 if [[ "$mode" == "--test-url" ]]; then
-  [[ ( "$#" -eq 1 || ( "$#" -eq 2 && "$2" == "--v4-replay-inputs" ) ) && -n "${BODYCAST_TEST_DATABASE_URL:-}" ]] || {
+  [[ ( "$#" -eq 1 || ( "$#" -eq 2 && ( "$2" == "--v4-replay-inputs" || "$2" == "--v4-replay-stable-state" ) ) ) && -n "${BODYCAST_TEST_DATABASE_URL:-}" ]] || {
     echo "An isolated test PostgreSQL URL is required." >&2; exit 2;
   }
   node --input-type=module - "$BODYCAST_TEST_DATABASE_URL" <<'NODE'
@@ -20,30 +20,30 @@ if (url.protocol !== "postgresql:" || !["127.0.0.1", "localhost", "::1"].include
 }
 NODE
   fingerprint_mode="full"
-  if [[ "${2:-}" == "--v4-replay-inputs" ]]; then
-    fingerprint_mode="v4-replay-inputs"
+  if [[ "${2:-}" == "--v4-replay-inputs" || "${2:-}" == "--v4-replay-stable-state" ]]; then
+    fingerprint_mode="${2#--}"
     node --input-type=module - "$BODYCAST_TEST_DATABASE_URL" <<'NODE'
 const url = new URL(process.argv[2]);
 if (decodeURIComponent(url.pathname.slice(1)) !== "bodycast_restore") {
-  throw new Error("V4 replay input fingerprint is restricted to the isolated bodycast_restore database.");
+  throw new Error("V4 replay fingerprints are restricted to the isolated bodycast_restore database.");
 }
 NODE
   fi
   psql_args=("$BODYCAST_TEST_DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1)
   run_psql() { psql "${psql_args[@]}" "$@"; }
 elif [[ "$mode" == "--production-container" ]]; then
-  [[ ( "$#" -eq 2 || ( "$#" -eq 3 && "$3" == "--v4-replay-inputs" ) ) && "$2" == "bodycast-db-prod" ]] || {
-    echo "Only the fixed production PostgreSQL container and reviewed V4 source projection are supported." >&2; exit 2;
+  [[ ( "$#" -eq 2 || ( "$#" -eq 3 && ( "$3" == "--v4-replay-inputs" || "$3" == "--v4-replay-stable-state" ) ) ) && "$2" == "bodycast-db-prod" ]] || {
+    echo "Only the fixed production PostgreSQL container and reviewed V4 fingerprint projections are supported." >&2; exit 2;
   }
   db_container="$2"
-  if [[ "${3:-}" == "--v4-replay-inputs" ]]; then fingerprint_mode="v4-replay-inputs"; fi
+  if [[ "${3:-}" == "--v4-replay-inputs" || "${3:-}" == "--v4-replay-stable-state" ]]; then fingerprint_mode="${3#--}"; fi
   run_psql() {
     docker exec "$db_container" sh -c \
       'exec psql --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 --username="$POSTGRES_USER" --dbname=bodycast "$@"' \
       _ "$@"
   }
 else
-  echo "Usage: production-db-data-fingerprint.sh --test-url [--v4-replay-inputs]|--production-container bodycast-db-prod" >&2
+  echo "Usage: production-db-data-fingerprint.sh --test-url [--v4-replay-inputs|--v4-replay-stable-state]|--production-container bodycast-db-prod [--v4-replay-inputs|--v4-replay-stable-state]" >&2
   exit 2
 fi
 
@@ -55,11 +55,21 @@ if [[ "$fingerprint_mode" == "v4-replay-inputs" ]]; then
       echo "V4 replay input fingerprint is missing a reviewed derived output table." >&2; exit 1;
     }
   done
+elif [[ "$fingerprint_mode" == "v4-replay-stable-state" ]]; then
+  for derived in PhysiologyV7Lifecycle UnifiedExperimentalPhysiologyStateV2; do
+    grep -Fqx "$derived" <<< "$tables" || {
+      echo "V4 replay stable-state fingerprint is missing a reviewed replay target table." >&2; exit 1;
+    }
+  done
 fi
 {
   if [[ "$fingerprint_mode" == "v4-replay-inputs" ]]; then
     printf 'bodycast-v4-replay-source-fingerprint-v1\n'
     printf 'excluded-derived-tables:ExperimentalTransientExerciseWaterShadow,PhysiologyV7Lifecycle,UnifiedExperimentalPhysiologyStateV2\n'
+  elif [[ "$fingerprint_mode" == "v4-replay-stable-state" ]]; then
+    printf 'bodycast-v4-replay-stable-state-fingerprint-v1\n'
+    printf 'excluded-bookkeeping-columns:PhysiologyV7Lifecycle.createdAt,PhysiologyV7Lifecycle.updatedAt,UnifiedExperimentalPhysiologyStateV2.createdAt,UnifiedExperimentalPhysiologyStateV2.updatedAt\n'
+    printf 'excluded-owned-sequences:UnifiedExperimentalPhysiologyStateV2\n'
   else
     printf 'bodycast-logical-data-fingerprint-v1\n'
   fi
@@ -72,11 +82,21 @@ fi
       continue
     fi
     printf 'table:%s\n' "$table"
-    run_psql --command "COPY (SELECT row_to_json(row_value)::text FROM public.\"${table}\" AS row_value ORDER BY row_to_json(row_value)::text) TO STDOUT;"
+    if [[ "$fingerprint_mode" == "v4-replay-stable-state" \
+      && ( "$table" == "PhysiologyV7Lifecycle" || "$table" == "UnifiedExperimentalPhysiologyStateV2" ) ]]; then
+      run_psql --command "COPY (SELECT (to_jsonb(row_value) - 'createdAt' - 'updatedAt')::text FROM public.\"${table}\" AS row_value ORDER BY (to_jsonb(row_value) - 'createdAt' - 'updatedAt')::text) TO STDOUT;"
+    else
+      run_psql --command "COPY (SELECT row_to_json(row_value)::text FROM public.\"${table}\" AS row_value ORDER BY row_to_json(row_value)::text) TO STDOUT;"
+    fi
     printf '\n'
   done <<< "$tables"
   printf 'sequence-state\n'
-  if [[ "$fingerprint_mode" == "v4-replay-inputs" ]]; then
+  if [[ "$fingerprint_mode" == "v4-replay-inputs" || "$fingerprint_mode" == "v4-replay-stable-state" ]]; then
+    if [[ "$fingerprint_mode" == "v4-replay-inputs" ]]; then
+      sequence_owners="'PhysiologyV7Lifecycle', 'UnifiedExperimentalPhysiologyStateV2', 'ExperimentalTransientExerciseWaterShadow'"
+    else
+      sequence_owners="'UnifiedExperimentalPhysiologyStateV2'"
+    fi
     run_psql --command "COPY (SELECT s.schemaname || '.' || s.sequencename || ':' || COALESCE(s.last_value::text, 'null')
       FROM pg_catalog.pg_sequences s
       WHERE s.schemaname='public' AND NOT EXISTS (
@@ -87,9 +107,7 @@ fi
         JOIN pg_catalog.pg_class owner_table ON owner_table.oid = dep.refobjid
         JOIN pg_catalog.pg_namespace owner_ns ON owner_ns.oid = owner_table.relnamespace
         WHERE seq_ns.nspname = s.schemaname AND seq.relname = s.sequencename
-          AND owner_ns.nspname = 'public' AND owner_table.relname IN (
-            'PhysiologyV7Lifecycle', 'UnifiedExperimentalPhysiologyStateV2', 'ExperimentalTransientExerciseWaterShadow'
-          )
+          AND owner_ns.nspname = 'public' AND owner_table.relname IN (${sequence_owners})
       ) ORDER BY s.sequencename) TO STDOUT;"
   else
     run_psql --command "COPY (SELECT schemaname || '.' || sequencename || ':' || COALESCE(last_value::text, 'null') FROM pg_catalog.pg_sequences WHERE schemaname='public' ORDER BY sequencename) TO STDOUT;"

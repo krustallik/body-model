@@ -5,12 +5,21 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA = "62b6961dde7036100c8af7281e7bfab75bb662db";
+export const V4_REPUBLICATION_MIGRATION_ORIGIN_SHA = "8b4a195e8afb67c0a913d0175a030e01cc665732";
 export const SCHEMA_DEPLOY_HANDOFF_PROVENANCE = Object.freeze({
   manifestId: "active-energy-unified-v2",
   workflowRunId: "38069108209",
   workflowRunAttempt: 1,
   authorizationId: "123dcfca-64a4-4708-8c3a-3a9f59ed5412",
   lineageDigest: "877d195c9600f760d821eeb8f6f770e307292671a94e549e46dca8c344ee3e2e",
+  spawnState: "started",
+});
+export const V4_REPUBLICATION_HANDOFF_PROVENANCE = Object.freeze({
+  manifestId: "unified-v4-republication-v1",
+  workflowRunId: "38447647403",
+  workflowRunAttempt: 1,
+  authorizationId: "4c990873-d8d1-492b-a73d-ca36823e6b79",
+  lineageDigest: "ccf2a37b8f255337760cb2156385bac434650fba70af32fe9fc73c0b8e414768",
   spawnState: "started",
 });
 
@@ -20,6 +29,7 @@ const V4_REPUBLICATION_MANIFEST_ID = "unified-v4-republication-v1";
 const V3_STATES = new Set(["schema-applied", "app-ready", "v4-ready", "database-restored", "rollback-app-ready"]);
 const DENIED_PATH = /^(?:prisma\/|public\/|scripts\/unified-v[34]|scripts\/physiology|docker-compose(?:\.prod)?\.yml$|package(?:-lock)?\.json$|next\.config\.[^/]+$|tsconfig(?:\.[^/]+)?\.json$)/;
 const ALLOWED_PATH = /^(?:\.github\/workflows\/|tests\/|scripts\/production-release-marker\.(?:sh|mjs)$|scripts\/production-schema-deploy-handoff\.mjs$|scripts\/production-traffic-cutover\.sh$|scripts\/production-full-history-recalculate\.ts$|src\/modules\/model-episodes\/(?:full-history-recalculation\.service|transient-exercise-water-episode-time-v2)\.ts$|src\/modules\/training\/experimental-transient-exercise-water-shadow\.service\.ts$|Dockerfile$)/;
+const V4_UNBOUND_NON_RUNTIME_PATH = /^(?:tests\/|scripts\/production-schema-deploy-handoff\.mjs$)/;
 /** Exact audited Git blobs admitted for this deploy-only compatibility handoff. */
 const CONTENT_BOUND_PATHS = Object.freeze({
   "docs/development/production-deploy.md": Object.freeze({
@@ -53,6 +63,29 @@ const CONTENT_BOUND_PATHS = Object.freeze({
   "scripts/production-checkout-diagnostic.sh": Object.freeze({
     migrationOriginBlob: "f19687c65d7e9d3b744890f377ebf6f0c80eebf9",
     deployBlob: "7256cf45844deade0685f82eb470bf79a396c497",
+  }),
+});
+/** Exact executable blobs reviewed for the V4 app-ready migration-origin handoff. */
+const V4_CONTENT_BOUND_PATHS = Object.freeze({
+  "scripts/deploy.sh": Object.freeze({
+    migrationOriginBlob: "4844bdc0b586f29dbc3b60952717e249a04bbbbc",
+    deployBlob: "bdfb709ba92ddb7970132f8aac7c402519a0a9ce",
+  }),
+  "scripts/production-release-marker.sh": Object.freeze({
+    migrationOriginBlob: "40bdb77377cfe02ce8bedd9760d82f21befc128e",
+    deployBlob: "4a625b3599946405dac0fe0276d375e12283c22c",
+  }),
+  "scripts/production-traffic-cutover.sh": Object.freeze({
+    migrationOriginBlob: "baeb3ff34c52c606a653d9e0c027c79d7b7c72da",
+    deployBlob: "29c288a184871659044079f687c5035749ad993c",
+  }),
+  "scripts/unified-v4-activate-replay.ts": Object.freeze({
+    migrationOriginBlob: "2bb3f1130241dcc0e354e70a60f5284452849a12",
+    deployBlob: "c61af4cc64a6a4e7ed2b74315310d79d8b40f050",
+  }),
+  "src/modules/model-episodes/unified-rollout-v4.service.ts": Object.freeze({
+    migrationOriginBlob: "2532cef483cb8bdec332cc22782a30d2a0ba178b",
+    deployBlob: "d5b445b418a1c24637c6439d14938c661f48a619",
   }),
 });
 /** Schema/runtime identity that must remain identical to the migration origin. */
@@ -112,14 +145,29 @@ export function parseSchemaDeployMarker(text) {
   reject("marker schema is not an admitted migration or deploy handoff");
 }
 
-function provenanceMatches(marker) {
-  const pinned = SCHEMA_DEPLOY_HANDOFF_PROVENANCE;
+function provenanceMatches(marker, pinned) {
   return marker.manifestId === pinned.manifestId
     && marker.workflowRunId === pinned.workflowRunId
     && marker.workflowRunAttempt === pinned.workflowRunAttempt
     && marker.authorizationId === pinned.authorizationId
     && marker.lineageDigest === pinned.lineageDigest
     && marker.spawnState === pinned.spawnState;
+}
+
+function v4SourceMarkerMatches(marker) {
+  return marker.schemaVersion === 2
+    && marker.releaseSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA
+    && marker.state === "app-ready"
+    && provenanceMatches(marker, V4_REPUBLICATION_HANDOFF_PROVENANCE);
+}
+
+function admittedV3Marker(marker) {
+  if (marker.migrationOriginSha === SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA) {
+    return marker.manifestId === SCHEMA_DEPLOY_HANDOFF_PROVENANCE.manifestId
+      && provenanceMatches(marker, SCHEMA_DEPLOY_HANDOFF_PROVENANCE);
+  }
+  return marker.migrationOriginSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA
+    && provenanceMatches(marker, V4_REPUBLICATION_HANDOFF_PROVENANCE);
 }
 
 export function compatibilityDigest(input) {
@@ -165,7 +213,7 @@ export function serializeSchemaDeployHandoff(marker) {
   return Buffer.from(text, "utf8");
 }
 
-function assertCompatibleChangedPaths(changedPaths, changedPathObjects) {
+function assertCompatibleChangedPaths(changedPaths, changedPathObjects, contentBoundPaths = CONTENT_BOUND_PATHS, unboundNonRuntimePath) {
   if (!Array.isArray(changedPaths) || !changedPaths.every((changed) => typeof changed === "string")) {
     reject("compatibility evidence is incomplete");
   }
@@ -174,7 +222,7 @@ function assertCompatibleChangedPaths(changedPaths, changedPathObjects) {
     reject("content-bound path evidence is malformed");
   }
   if (new Set(changedPaths).size !== changedPaths.length) reject("compatibility path evidence is duplicated");
-  const contentBoundChangedPaths = changedPaths.filter((changed) => Object.hasOwn(CONTENT_BOUND_PATHS, changed)).sort();
+  const contentBoundChangedPaths = changedPaths.filter((changed) => Object.hasOwn(contentBoundPaths, changed)).sort();
   const suppliedContentBoundPaths = changedPathObjects && typeof changedPathObjects === "object" && !Array.isArray(changedPathObjects)
     ? Object.keys(changedPathObjects).sort()
     : [];
@@ -183,23 +231,30 @@ function assertCompatibleChangedPaths(changedPaths, changedPathObjects) {
     reject("content-bound path evidence is incomplete or unexpected");
   }
   for (const changed of changedPaths) {
-    if (changed.length === 0 || DENIED_PATH.test(changed)) {
+    const reviewedBlobs = contentBoundPaths[changed];
+    if (changed.length === 0 || (!reviewedBlobs && DENIED_PATH.test(changed))) {
       reject(`path ${changed} is outside the reviewed deploy compatibility allowlist`);
     }
-    if (ALLOWED_PATH.test(changed)) continue;
-    const reviewedBlobs = CONTENT_BOUND_PATHS[changed];
     const proof = changedPathObjects?.[changed];
-    if (!reviewedBlobs) reject(`path ${changed} is outside the reviewed deploy compatibility allowlist`);
-    if (!proof || typeof proof !== "object" || Array.isArray(proof)
-      || Object.keys(proof).sort().join(",") !== "deployBlob,migrationOriginBlob"
-      || (reviewedBlobs.migrationOriginBlob === null
-        ? proof.migrationOriginBlob !== null
-        : typeof proof.migrationOriginBlob !== "string" || !/^[a-f0-9]{40}$/.test(proof.migrationOriginBlob))
-      || typeof proof.deployBlob !== "string" || !/^[a-f0-9]{40}$/.test(proof.deployBlob)
-      || proof.migrationOriginBlob !== reviewedBlobs.migrationOriginBlob
-      || proof.deployBlob !== reviewedBlobs.deployBlob) {
-      reject(`path ${changed} does not match its exact reviewed content binding`);
+    if (reviewedBlobs) {
+      if (!proof || typeof proof !== "object" || Array.isArray(proof)
+        || Object.keys(proof).sort().join(",") !== "deployBlob,migrationOriginBlob"
+        || (reviewedBlobs.migrationOriginBlob === null
+          ? proof.migrationOriginBlob !== null
+          : typeof proof.migrationOriginBlob !== "string" || !/^[a-f0-9]{40}$/.test(proof.migrationOriginBlob))
+        || typeof proof.deployBlob !== "string" || !/^[a-f0-9]{40}$/.test(proof.deployBlob)
+        || proof.migrationOriginBlob !== reviewedBlobs.migrationOriginBlob
+        || proof.deployBlob !== reviewedBlobs.deployBlob) {
+        reject(`path ${changed} does not match its exact reviewed content binding`);
+      }
+      continue;
     }
+    if (unboundNonRuntimePath) {
+      if (unboundNonRuntimePath.test(changed)) continue;
+      reject(`path ${changed} is not content-bound for this V4 deploy handoff`);
+    }
+    if (ALLOWED_PATH.test(changed)) continue;
+    reject(`path ${changed} is outside the reviewed deploy compatibility allowlist`);
   }
 }
 
@@ -227,8 +282,10 @@ function buildHandoffWrite({
   authorizationId,
   lineageDigest,
   spawnState,
+  provenance,
+  contentBoundPaths,
 }) {
-  assertCompatibleChangedPaths(changedPaths, changedPathObjects);
+  assertCompatibleChangedPaths(changedPaths, changedPathObjects, contentBoundPaths);
   assertCriticalObjects(criticalObjects);
   const digest = compatibilityDigest({
     migrationOriginSha,
@@ -238,7 +295,7 @@ function buildHandoffWrite({
     criticalObjects,
   });
   const next = {
-    manifestId: SCHEMA_DEPLOY_HANDOFF_PROVENANCE.manifestId,
+    manifestId: provenance.manifestId,
     migrationOriginSha,
     deploySha,
     state,
@@ -264,20 +321,46 @@ export function evaluateSchemaDeployHandoff({ markerText, deploySha, changedPath
   const observed = parseSchemaDeployMarker(markerText);
   const marker = observed.marker;
   if (marker.schemaVersion === 2 && marker.manifestId === V4_REPUBLICATION_MANIFEST_ID
+    && marker.releaseSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA
     && marker.releaseSha === deploySha && marker.state === "schema-applied"
-    && /^[1-9][0-9]*$/.test(String(marker.workflowRunId))
-    && Number.isSafeInteger(marker.workflowRunAttempt) && marker.workflowRunAttempt > 0
-    && /^[A-Za-z0-9-]{16,80}$/.test(String(marker.authorizationId))
-    && DIGEST.test(String(marker.lineageDigest)) && marker.spawnState === "started") {
+    && provenanceMatches(marker, V4_REPUBLICATION_HANDOFF_PROVENANCE)) {
     return { action: "not-needed", marker, sourceDigest: observed.digest };
   }
-  if (!provenanceMatches(marker)) reject("marker authorization, lineage, or migration provenance does not match the admitted release");
+  if (v4SourceMarkerMatches(marker)) {
+    assertCompatibleChangedPaths(changedPaths, changedPathObjects, V4_CONTENT_BOUND_PATHS, V4_UNBOUND_NON_RUNTIME_PATH);
+    assertCriticalObjects(criticalObjects);
+    if (isAncestor !== true) reject("deploy candidate is not a descendant of the V4 migration origin");
+    if (deploySha === marker.releaseSha) reject("an app-ready migration marker cannot be reused as a schema-applied deploy marker");
+    return buildHandoffWrite({
+      observed,
+      migrationOriginSha: marker.releaseSha,
+      deploySha,
+      state: "schema-applied",
+      changedPaths,
+      changedPathObjects,
+      criticalObjects,
+      workflowRunId: marker.workflowRunId,
+      workflowRunAttempt: marker.workflowRunAttempt,
+      authorizationId: marker.authorizationId,
+      lineageDigest: marker.lineageDigest,
+      spawnState: marker.spawnState,
+      provenance: V4_REPUBLICATION_HANDOFF_PROVENANCE,
+      contentBoundPaths: V4_CONTENT_BOUND_PATHS,
+    });
+  }
+  if (marker.schemaVersion === 2 && marker.manifestId === V4_REPUBLICATION_MANIFEST_ID) {
+    reject("V4 migration marker run, lineage, origin, or state does not match the admitted DDL execution");
+  }
   if (marker.schemaVersion === 3) {
-    if (marker.migrationOriginSha !== SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA || !V3_STATES.has(marker.state)
+    if (!admittedV3Marker(marker) || !V3_STATES.has(marker.state)
       || marker.spawnState !== "started" || !DIGEST.test(marker.sourceMarkerDigest) || !DIGEST.test(marker.compatibilityDigest)) {
       reject("existing handoff provenance is malformed");
     }
-    assertCompatibleChangedPaths(changedPaths, changedPathObjects);
+    const contentBoundPaths = marker.migrationOriginSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA
+      ? V4_CONTENT_BOUND_PATHS : CONTENT_BOUND_PATHS;
+    const unboundNonRuntimePath = marker.migrationOriginSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA
+      ? V4_UNBOUND_NON_RUNTIME_PATH : undefined;
+    assertCompatibleChangedPaths(changedPaths, changedPathObjects, contentBoundPaths, unboundNonRuntimePath);
     assertCriticalObjects(criticalObjects);
     if (isAncestor !== true) reject("deploy candidate is not a descendant of the migration origin");
     if (marker.deploySha === deploySha) {
@@ -304,6 +387,8 @@ export function evaluateSchemaDeployHandoff({ markerText, deploySha, changedPath
       changedPaths,
       changedPathObjects,
       criticalObjects,
+      provenance: marker,
+      contentBoundPaths,
       workflowRunId: marker.workflowRunId,
       workflowRunAttempt: marker.workflowRunAttempt,
       authorizationId: marker.authorizationId,
@@ -311,6 +396,7 @@ export function evaluateSchemaDeployHandoff({ markerText, deploySha, changedPath
       spawnState: marker.spawnState,
     });
   }
+  if (!provenanceMatches(marker, SCHEMA_DEPLOY_HANDOFF_PROVENANCE)) reject("marker authorization, lineage, or migration provenance does not match the admitted release");
   if (marker.schemaVersion !== 2 || marker.state !== "schema-applied" || marker.releaseSha !== SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA) {
     reject("only the admitted schema-applied migration origin can be handed off");
   }
@@ -329,13 +415,24 @@ export function evaluateSchemaDeployHandoff({ markerText, deploySha, changedPath
     authorizationId: marker.authorizationId,
     lineageDigest: marker.lineageDigest,
     spawnState: marker.spawnState,
+    provenance: SCHEMA_DEPLOY_HANDOFF_PROVENANCE,
   });
 }
 
+export function validateSchemaDeployHandoffMarker(markerText) {
+  const marker = parseSchemaDeployMarker(markerText).marker;
+  if (marker.schemaVersion !== 3 || !V3_STATES.has(marker.state) || marker.spawnState !== "started"
+    || !DIGEST.test(marker.sourceMarkerDigest) || !DIGEST.test(marker.compatibilityDigest)
+    || !admittedV3Marker(marker)) {
+    reject("schema deploy handoff marker provenance is not admitted");
+  }
+  return marker;
+}
+
 export function renderSchemaDeployTransition(markerText, state) {
-  const observed = parseSchemaDeployMarker(markerText);
-  if (observed.marker.schemaVersion !== 3 || !V3_STATES.has(state)) reject("transition is not a schema-deploy handoff state");
-  return serializeSchemaDeployHandoff({ ...observed.marker, state });
+  const marker = validateSchemaDeployHandoffMarker(markerText);
+  if (!V3_STATES.has(state)) reject("transition is not a schema-deploy handoff state");
+  return serializeSchemaDeployHandoff({ ...marker, state });
 }
 
 function git(repo, args) {
@@ -394,13 +491,26 @@ export function readGitCompatibility(repo, deploySha, migrationOriginSha = SCHEM
     criticalObjects[objectPath] = originId;
   }
   const changedPathObjects = {};
-  for (const objectPath of changedPaths.filter((changed) => Object.hasOwn(CONTENT_BOUND_PATHS, changed))) {
+  const contentBoundPaths = migrationOriginSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA
+    ? V4_CONTENT_BOUND_PATHS : CONTENT_BOUND_PATHS;
+  for (const objectPath of changedPaths.filter((changed) => Object.hasOwn(contentBoundPaths, changed))) {
     changedPathObjects[objectPath] = {
       migrationOriginBlob: regularFileBlobId(repo, origin, objectPath, true),
       deployBlob: regularFileBlobId(repo, deploySha, objectPath),
     };
   }
   return { changedPaths, changedPathObjects, isAncestor, criticalObjects };
+}
+
+function readCompatibilityForMarker(repo, marker, deploySha) {
+  if (marker.schemaVersion === 2 && v4SourceMarkerMatches(marker)) {
+    return readGitCompatibility(repo, deploySha, V4_REPUBLICATION_MIGRATION_ORIGIN_SHA);
+  }
+  if (marker.schemaVersion === 3 && marker.migrationOriginSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA
+    && admittedV3Marker(marker)) {
+    return readGitCompatibility(repo, deploySha, V4_REPUBLICATION_MIGRATION_ORIGIN_SHA);
+  }
+  return readGitCompatibility(repo, deploySha);
 }
 
 async function fsyncDirectory(directory) {
@@ -415,8 +525,11 @@ export async function applySchemaDeployHandoff({ markerPath, deploySha, repo, be
   const current = parseSchemaDeployMarker(await readFile(markerPath));
   const exactMigrationMarker = current.marker.schemaVersion === 2
     && current.marker.manifestId === V4_REPUBLICATION_MANIFEST_ID
+    && current.marker.releaseSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA
     && current.marker.releaseSha === deploySha && current.marker.state === "schema-applied";
-  const compatibility = exactMigrationMarker ? {} : readGitCompatibility(repo, deploySha);
+  const compatibility = exactMigrationMarker
+    ? (provenanceMatches(current.marker, V4_REPUBLICATION_HANDOFF_PROVENANCE) ? {} : reject("exact V4 migration marker provenance is invalid"))
+    : readCompatibilityForMarker(repo, current.marker, deploySha);
   const plan = evaluateSchemaDeployHandoff({ markerText: current.bytes, deploySha, ...compatibility });
   if (plan.action !== "write") return plan;
   const lockPath = `${markerPath}.lock`;
@@ -454,8 +567,11 @@ async function main() {
       const marker = parseSchemaDeployMarker(markerText).marker;
       const exactMigrationMarker = marker.schemaVersion === 2
         && marker.manifestId === V4_REPUBLICATION_MANIFEST_ID
+        && marker.releaseSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA
         && marker.releaseSha === deploySha && marker.state === "schema-applied";
-      const compatibility = exactMigrationMarker ? {} : readGitCompatibility(repo, deploySha);
+      const compatibility = exactMigrationMarker
+        ? (provenanceMatches(marker, V4_REPUBLICATION_HANDOFF_PROVENANCE) ? {} : reject("exact V4 migration marker provenance is invalid"))
+        : readCompatibilityForMarker(repo, marker, deploySha);
       evaluateSchemaDeployHandoff({ markerText, deploySha, ...compatibility });
       return;
     }
@@ -464,6 +580,10 @@ async function main() {
   }
   if (mode === "--render-transition") {
     process.stdout.write(renderSchemaDeployTransition(await readFile(markerPath), second));
+    return;
+  }
+  if (mode === "--validate-marker") {
+    validateSchemaDeployHandoffMarker(await readFile(markerPath));
     return;
   }
   reject(`unknown mode ${mode ?? ""}`);

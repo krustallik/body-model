@@ -109,6 +109,13 @@ describe("no-app preparation workflow boundaries", () => {
     expect(safetyWorkflow).toContain("tests/production-no-app-workflow.test.mjs");
   });
 
+  it("checks final capture source and resume run IDs against their distinct proof fields", async () => {
+    const workflow = await readFile(new URL("../.github/workflows/production-no-app-preflight.yml", import.meta.url), "utf8");
+    expect(workflow).toContain('capture.proof.sourceRunId !== "38205023003"');
+    expect(workflow).toContain('capture.proof.resumeRunId !== "38211169161"');
+    expect(workflow).not.toContain('capture.proof.sourceRunId !== "38211169161"');
+  });
+
   it("keeps the production host portion read-only and reserves migration rehearsal for localhost", async () => {
     const host = (await readFile(new URL("../scripts/production-no-app-preflight-host.sh", import.meta.url), "utf8"))
       .replaceAll("\r\n", "\n");

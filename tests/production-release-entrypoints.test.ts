@@ -206,7 +206,8 @@ describe("active production release entrypoints", () => {
     expect(resumeVerifier).toContain("sourceArtifacts?.total_count");
     expect(resumeVerifier).toContain("another release or preflight workflow exists");
     expect(resumeVerifier).toContain("assertSafeFailedPreMaintenanceDeploy");
-    expect(resumeVerifier).toContain("deployControlFilesMatch");
+    expect(resumeVerifier).toContain('historicalEffects: "UNVERIFIED"');
+    expect(resumeVerifier).not.toContain("deployControlFilesMatch");
     expect(resumeVerifier).toContain('".github/workflows/production-full-history-recalculate.yml"');
     expect(workflow.match(/for workflow_file in [^\n]*production-full-history-recalculate\.yml[^\n]*; do/g)).toHaveLength(2);
     expect(workflow).toContain("resume-safe-failed-deploys.ndjson");
@@ -272,7 +273,8 @@ describe("active production release entrypoints", () => {
     const collector = readFileSync(resolve("scripts/github-forward-resume-evidence.mjs"), "utf8");
     expect(workflow).toContain("node scripts/github-forward-resume-evidence.mjs");
     expect(workflow).not.toContain("FORWARD_SAFE_PREFLIGHT_RETRY_RUN_IDS");
-    expect(workflow.match(/--allow-escape-sequences/g)).toHaveLength(1);
+    expect(workflow).not.toContain('actions/jobs/$inspect_job_id/logs');
+    expect(workflow).toContain('--log-failed');
     expect(collector).toContain('"merge-base", "--is-ancestor"');
     expect(collector).toContain('"repository-since-source"');
     expect(collector).toContain('redirect: "manual"');

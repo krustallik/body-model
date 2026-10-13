@@ -63,12 +63,15 @@ describe("production deploy evidence source binding", () => {
   it("accepts only unchanged preflight production steps and capture controls", async () => {
     const tempDir = await mkdtemp(path.join(tmpdir(), "bodycast-preflight-capture-controls-"));
     const workflowPath = ".github/workflows/production-migration-preflight.yml";
-    const workflow = (authorizeBody, inspectBody, permissionsBody = "contents: read\n  actions: read", globalEnvBody = null, defaultsBody = null) => [
+    const workflow = (authorizeBody, inspectBody, permissionsBody = "contents: read\n  actions: read", globalEnvBody = null,
+      defaultsBody = null, concurrencyBody = "group: bodycast-production-release\n  cancel-in-progress: false") => [
       "name: preflight",
       "permissions:",
       ...permissionsBody.split("\n").map((line) => `  ${line}`),
       ...(globalEnvBody ? ["env:", ...globalEnvBody.split("\n").map((line) => `  ${line}`)] : []),
       ...(defaultsBody ? ["defaults:", ...defaultsBody.split("\n").map((line) => `  ${line}`)] : []),
+      "concurrency:",
+      ...concurrencyBody.split("\n").map((line) => `  ${line}`),
       "jobs:",
       "  authorize:",
       `    ${authorizeBody}`,
@@ -127,6 +130,14 @@ describe("production deploy evidence source binding", () => {
       execFileSync("git", ["-C", tempDir, "commit", "-m", "change workflow execution defaults"], { stdio: "ignore" });
       const defaultsChangedSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
       expect(preflightAuthorizationControlsMatch(envChangedSha, defaultsChangedSha, tempDir)).toBe(false);
+
+      await writeFile(workflowFile, workflow("inputs: evidence collection changed", "steps: dangerous mutation added",
+        "contents: write\n  actions: read", "TOKEN: sample", "run:\n    shell: bash",
+        "group: bodycast-production-release\n  cancel-in-progress: true"));
+      execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
+      execFileSync("git", ["-C", tempDir, "commit", "-m", "change workflow concurrency cancellation"], { stdio: "ignore" });
+      const concurrencyChangedSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      expect(preflightAuthorizationControlsMatch(defaultsChangedSha, concurrencyChangedSha, tempDir)).toBe(false);
 
       await writeFile(path.join(tempDir, PREFLIGHT_CAPTURE_RESUME_CONTROL_FILES[0]), "changed compose topology\n");
       execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });

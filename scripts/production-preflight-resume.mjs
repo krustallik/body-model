@@ -326,7 +326,8 @@ export function preflightAuthorizationControlsMatch(runSha, currentMainSha, cwd 
       && priorAuthorizeJob === workflowJobBlock(currentWorkflow, "authorize")
       && workflowTopLevelBlock(priorWorkflow, "permissions") === workflowTopLevelBlock(currentWorkflow, "permissions")
       && workflowTopLevelBlock(priorWorkflow, "env") === workflowTopLevelBlock(currentWorkflow, "env")
-      && workflowTopLevelBlock(priorWorkflow, "defaults") === workflowTopLevelBlock(currentWorkflow, "defaults");
+      && workflowTopLevelBlock(priorWorkflow, "defaults") === workflowTopLevelBlock(currentWorkflow, "defaults")
+      && workflowTopLevelBlock(priorWorkflow, "concurrency") === workflowTopLevelBlock(currentWorkflow, "concurrency");
   } catch {
     return false;
   }

@@ -3,7 +3,7 @@ import { lstat, mkdir, open, readFile, readdir } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { canonicalSha256 } from "./production-migration-authorization.mjs";
-import { isCanonicalPostgresDatabaseIdentity } from "./postgres-database-identity.mjs";
+import { isHistoricalPostgresDatabaseIdentity, postgresDatabaseIdentityLegacyDigestProjection } from "./postgres-database-identity.mjs";
 import { schemaInventoryDigest, verifyRestoredBackup } from "./production-migration-preflight.mjs";
 import { productionAppRuntimeDigest } from "./production-app-runtime-digest.mjs";
 import { renderProductionDbPreflightSql } from "./production-db-preflight.mjs";
@@ -30,7 +30,7 @@ export function previousAppDatabaseCompatibilityDigests(report) {
   const identity = report?.identity;
   const migrations = report?.migrations;
   const objects = report?.objects;
-  if (!isCanonicalPostgresDatabaseIdentity(identity) || !Array.isArray(migrations) || migrations.length === 0 || !Array.isArray(objects)) {
+  if (!isHistoricalPostgresDatabaseIdentity(identity) || !Array.isArray(migrations) || migrations.length === 0 || !Array.isArray(objects)) {
     throw new Error("Previous-app database compatibility evidence is incomplete.");
   }
   if (identity.role !== "bodycast" || !String(identity.serverVersion).startsWith("17.")) {
@@ -53,10 +53,13 @@ export function previousAppDatabaseCompatibilityDigests(report) {
     throw new Error("Previous-app database schema inventory is incomplete.");
   }
 
-  const databaseIdentityDigest = canonicalSha256(identity);
+  // Preserve previous-app compatibility v1 digests: historical PostgreSQL
+  // reports hashed inet_server_addr()::text, which rendered host masks.
+  const digestIdentity = postgresDatabaseIdentityLegacyDigestProjection(identity);
+  const databaseIdentityDigest = canonicalSha256(digestIdentity);
   const migrationHistoryDigest = canonicalSha256(migrations);
   const schemaDigest = schemaInventoryDigest(objects);
-  const compatibilityDigest = canonicalSha256({ identity, migrations, objects });
+  const compatibilityDigest = canonicalSha256({ identity: digestIdentity, migrations, objects });
   return { databaseIdentityDigest, migrationHistoryDigest, schemaDigest, compatibilityDigest };
 }
 

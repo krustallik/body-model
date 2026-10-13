@@ -6,7 +6,8 @@ import { pathToFileURL } from "node:url";
 export function assertProductionDatabaseEndpointBinding(report, expectedAddress) {
   const identity = report?.identity;
   if (isIP(expectedAddress) !== 4
-    || identity?.serverAddress !== expectedAddress
+    || isIP(identity?.serverAddress) !== 4
+    || identity.serverAddress !== expectedAddress
     || identity?.serverPort !== 5432) {
     throw new Error("Production database report does not identify the fixed PostgreSQL container endpoint.");
   }

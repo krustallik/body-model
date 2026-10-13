@@ -84,7 +84,7 @@ function queryReport(database) {
     identity: queryJson(database, `SELECT json_build_object(
       'database', current_database(), 'databaseOid', (SELECT oid::bigint FROM pg_database WHERE datname=current_database()),
       'clusterSystemIdentifier', (SELECT system_identifier::text FROM pg_control_system()), 'role', current_user,
-      'serverVersion', current_setting('server_version'), 'serverAddress', inet_server_addr()::text, 'serverPort', inet_server_port()
+      'serverVersion', current_setting('server_version'), 'serverAddress', host(inet_server_addr()), 'serverPort', inet_server_port()
     )::text;`),
     migrations: queryJson(database, `SELECT COALESCE(json_agg(json_build_object(
       'name', migration_name, 'checksum', checksum, 'startedAt', started_at, 'finishedAt', finished_at,

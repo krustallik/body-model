@@ -168,7 +168,7 @@ SELECT json_build_object(
     'clusterSystemIdentifier', (SELECT system_identifier::text FROM pg_control_system()),
     'role', current_user,
     'serverVersion', current_setting('server_version'),
-    'serverAddress', inet_server_addr()::text,
+    'serverAddress', host(inet_server_addr()),
     'serverPort', inet_server_port()
   ),
   'writerDrain', json_build_object(

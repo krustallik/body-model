@@ -5,6 +5,7 @@ import { ACTIVE_ENERGY_UNIFIED_MANIFEST, getProductionMigrationManifest } from "
 import { canonicalSha256, assertSignedAuthorizationRequired, verifyAuthorizationEnvelope } from "./production-migration-authorization.mjs";
 import { assertProductionDatabaseIdentityMatches, evaluateProductionPreflight, verifyPostflightMatchesRestore } from "./production-migration-preflight.mjs";
 import { assertFreshWriterDrain } from "./production-writer-drain.mjs";
+import { matchesPostgresDatabaseIdentityDigest } from "./postgres-database-identity.mjs";
 import { assertPinnedOwnerId } from "./github-owner-identity.mjs";
 import { assertForwardResumeCurrentSnapshot } from "./production-forward-resume.mjs";
 
@@ -81,7 +82,7 @@ export function verifyFinalMigrationAuthorization({ envelope, preflightResult, e
   const snapshotDataFingerprint = assertLiveDataMatchesBackupFingerprint(preflightResult, evidence, restoreResult, liveReport);
   assertProductionDatabaseIdentityMatches(preflightResult?.identity, liveReport?.identity);
   if (canonicalSha256(preflightResult.identity) !== evidence.productionIdentityDigest) throw new Error("Migration blocked: signed preflight identity digest is inconsistent.");
-  if (canonicalSha256(liveReport?.identity) !== evidence.productionIdentityDigest) throw new Error("Migration blocked: production identity changed after preflight.");
+  if (!matchesPostgresDatabaseIdentityDigest(liveReport?.identity, evidence.productionIdentityDigest)) throw new Error("Migration blocked: production identity changed after preflight.");
   const directories = manifestTreeNames(manifest);
   const readiness = evaluateProductionPreflight(liveReport, directories, manifest.id);
   if (!readiness.readyForOwnerAuthorization) throw new Error("Migration blocked by final live readiness: " + readiness.blockers.join(" "));
@@ -119,7 +120,11 @@ export function verifyFinalMigrationAuthorization({ envelope, preflightResult, e
       preflightResultDigest: canonicalSha256(preflightResult),
       backupSnapshotAt: evidence.backupSnapshotAt,
       restoreResultDigest: canonicalSha256(restoreResult),
-      productionIdentityDigest: canonicalSha256(liveReport.identity),
+      // The matcher above binds this signed historical digest to the validated
+      // current bare-address identity. Keep the signed projection for the
+      // envelope comparison so existing /32 preflight authorizations remain
+      // verifiable without changing their claims.
+      productionIdentityDigest: evidence.productionIdentityDigest,
       writerDrainDigest: evidence.writerDrainDigest,
       writerTopologyDigest: evidence.writerTopologyDigest,
       snapshotDataFingerprint,

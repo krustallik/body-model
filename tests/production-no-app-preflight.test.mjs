@@ -14,7 +14,7 @@ import {
   verifyPublicMaintenanceProbe,
 } from "../scripts/production-no-app-preflight.mjs";
 import { createCaptureResumeReceipt } from "../scripts/production-capture-resume-receipt.mjs";
-import { previousAppDatabaseCompatibilityDigests, serializePreviousAppProvenance } from "../scripts/production-previous-app-provenance.mjs";
+import { parsePreviousAppProvenance, previousAppDatabaseCompatibilityDigests, serializePreviousAppProvenance } from "../scripts/production-previous-app-provenance.mjs";
 import { createSignedAuthorization } from "../scripts/production-migration-sign.mjs";
 import { assertProductionDatabaseEndpointBinding } from "../scripts/production-db-endpoint-binding.mjs";
 
@@ -52,6 +52,41 @@ describe("no-app database endpoint binding", () => {
     expect(() => assertProductionDatabaseEndpointBinding(candidate, expectedAddress)).toThrow(
       "Production database report does not identify the fixed PostgreSQL container endpoint.",
     );
+  });
+
+  it("keeps the historical /32 capture and receipt digest valid against a new bare-host live report", () => {
+    const inputs = captureReconciliationInputs();
+    const legacyReport = {
+      ...inputs.databaseReport,
+      identity: { ...inputs.databaseReport.identity, serverAddress: "172.20.0.2/32" },
+    };
+    const legacyDigests = previousAppDatabaseCompatibilityDigests(legacyReport);
+    const sourceRecord = { ...parsePreviousAppProvenance(inputs.sourceRecordText) };
+    const currentRecord = { ...parsePreviousAppProvenance(inputs.currentRecordText) };
+    for (const record of [sourceRecord, currentRecord]) {
+      record.preDdlDatabaseIdentityDigest = legacyDigests.databaseIdentityDigest;
+      record.preDdlMigrationHistoryDigest = legacyDigests.migrationHistoryDigest;
+      record.preDdlSchemaInventoryDigest = legacyDigests.schemaDigest;
+      record.preDdlDatabaseCompatibilityDigest = legacyDigests.compatibilityDigest;
+    }
+    const sourceRecordText = serializePreviousAppProvenance(sourceRecord);
+    const currentRecordText = serializePreviousAppProvenance(currentRecord);
+    const receipt = createCaptureResumeReceipt({
+      schemaVersion: 1,
+      sourceRunId: "38205023003", sourceRunAttempt: 1,
+      sourceSha: sourceRecord.targetSha, targetSha: currentRecord.targetSha,
+      sourceRecordDigest: canonicalSha256(sourceRecord), currentRecordDigest: canonicalSha256(currentRecord),
+      compatibilityDigest: legacyDigests.compatibilityDigest,
+    }, { captureRunId: "38211169161", captureRunAttempt: 1 });
+
+    const result = reconcileNoAppCaptureLineage({
+      ...inputs,
+      sourceRecordText,
+      currentRecordText,
+      currentReceiptText: `${JSON.stringify(receipt)}\n`,
+    });
+    expect(result.evidenceBasis).toBe("host-captures-A-C-plus-host-receipt-D");
+    expect(result.previousAppRecovery).toBe("unverified");
   });
 });
 

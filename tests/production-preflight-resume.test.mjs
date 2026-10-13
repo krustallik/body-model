@@ -724,11 +724,31 @@ describe("verified resume of a failed production preflight", () => {
       job.name.startsWith("Inspect,") ? { ...job, steps: [{ name: "unexpected", conclusion: "skipped", status: "completed", number: 1 }] } : job) }) }],
     ["job SHA mismatch", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
       job.name.startsWith("Authorize") ? { ...job, head_sha: sourceSha } : job) }) }],
-    ["incomplete step inventory", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
-      job.name.startsWith("Authorize") ? { ...job, steps: job.steps.slice(0, -1) } : job) }) }],
+    ["duplicated step number", { jobs: { total_count: 2, jobs: withCompletedStepStatuses(safePreflightRetryJobs()).jobs.map((job) =>
+      job.name.startsWith("Authorize") ? { ...job, steps: job.steps.map((step, index) => index === 1 ? { ...step, number: 1 } : step) } : job) } }],
   ])("rejects an authorization-only retry when %s", (_label, evidenceOverrides) => {
     expect(() => verifyWithCaptureBlockedRetries([authorizationOnlyPreflightRetryEvidence(evidenceOverrides)]))
       .toThrow("cannot be safely resumed");
+  });
+
+  it("marks authorization-only retries UNVERIFIED when GitHub omits conditional step numbers", () => {
+    const jobs = withCompletedStepStatuses(safePreflightRetryJobs());
+    jobs.jobs[0].steps = jobs.jobs[0].steps.map((step, index) => ({
+      ...step,
+      number: [1, 2, 3, 6, 7][index],
+    }));
+    const evidence = authorizationOnlyPreflightRetryEvidence({ jobs });
+    const result = verifyWithCaptureBlockedRetries([evidence]);
+    expect(result.unverifiedHistoricalAuthorizationOnlyPreflightRunIds).toEqual([String(evidence.run.id)]);
+    expect(result.historicalPreflightEffects).toEqual([]);
+  });
+
+  it("does not block an auth-only retry when the failed step is absent from GitHub's step list", () => {
+    const jobs = withCompletedStepStatuses(safePreflightRetryJobs());
+    jobs.jobs[0].steps = jobs.jobs[0].steps.map((step) => ({ ...step, conclusion: "success" }));
+    const evidence = authorizationOnlyPreflightRetryEvidence({ jobs });
+    const result = verifyWithCaptureBlockedRetries([evidence]);
+    expect(result.unverifiedHistoricalAuthorizationOnlyPreflightRunIds).toEqual([String(evidence.run.id)]);
   });
 
   it.each([

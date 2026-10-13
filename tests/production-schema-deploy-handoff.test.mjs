@@ -156,6 +156,12 @@ describe("schema deploy compatibility handoff", () => {
       markerText: v4AppReadyMarkerText(), deploySha: candidateSha, ...compatibility,
       changedPaths: [...compatibility.changedPaths, "prisma/schema.prisma"],
     })).toThrow(/allowlist/);
+    for (const changedPath of ["Dockerfile", ".github/workflows/deploy-production.yml", "scripts/production-full-history-recalculate.ts"]) {
+      expect(() => evaluateSchemaDeployHandoff({
+        markerText: v4AppReadyMarkerText(), deploySha: candidateSha, ...compatibility,
+        changedPaths: [...compatibility.changedPaths, changedPath],
+      })).toThrow(/not content-bound/);
+    }
     const alteredRuntime = {
       ...compatibility.changedPathObjects,
       "src/modules/model-episodes/unified-rollout-v4.service.ts": {

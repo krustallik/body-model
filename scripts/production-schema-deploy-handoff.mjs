@@ -29,6 +29,7 @@ const V4_REPUBLICATION_MANIFEST_ID = "unified-v4-republication-v1";
 const V3_STATES = new Set(["schema-applied", "app-ready", "v4-ready", "database-restored", "rollback-app-ready"]);
 const DENIED_PATH = /^(?:prisma\/|public\/|scripts\/unified-v[34]|scripts\/physiology|docker-compose(?:\.prod)?\.yml$|package(?:-lock)?\.json$|next\.config\.[^/]+$|tsconfig(?:\.[^/]+)?\.json$)/;
 const ALLOWED_PATH = /^(?:\.github\/workflows\/|tests\/|scripts\/production-release-marker\.(?:sh|mjs)$|scripts\/production-schema-deploy-handoff\.mjs$|scripts\/production-traffic-cutover\.sh$|scripts\/production-full-history-recalculate\.ts$|src\/modules\/model-episodes\/(?:full-history-recalculation\.service|transient-exercise-water-episode-time-v2)\.ts$|src\/modules\/training\/experimental-transient-exercise-water-shadow\.service\.ts$|Dockerfile$)/;
+const V4_UNBOUND_NON_RUNTIME_PATH = /^(?:tests\/|scripts\/production-schema-deploy-handoff\.mjs$)/;
 /** Exact audited Git blobs admitted for this deploy-only compatibility handoff. */
 const CONTENT_BOUND_PATHS = Object.freeze({
   "docs/development/production-deploy.md": Object.freeze({
@@ -212,7 +213,7 @@ export function serializeSchemaDeployHandoff(marker) {
   return Buffer.from(text, "utf8");
 }
 
-function assertCompatibleChangedPaths(changedPaths, changedPathObjects, contentBoundPaths = CONTENT_BOUND_PATHS) {
+function assertCompatibleChangedPaths(changedPaths, changedPathObjects, contentBoundPaths = CONTENT_BOUND_PATHS, unboundNonRuntimePath) {
   if (!Array.isArray(changedPaths) || !changedPaths.every((changed) => typeof changed === "string")) {
     reject("compatibility evidence is incomplete");
   }
@@ -247,6 +248,10 @@ function assertCompatibleChangedPaths(changedPaths, changedPathObjects, contentB
         reject(`path ${changed} does not match its exact reviewed content binding`);
       }
       continue;
+    }
+    if (unboundNonRuntimePath) {
+      if (unboundNonRuntimePath.test(changed)) continue;
+      reject(`path ${changed} is not content-bound for this V4 deploy handoff`);
     }
     if (ALLOWED_PATH.test(changed)) continue;
     reject(`path ${changed} is outside the reviewed deploy compatibility allowlist`);
@@ -322,7 +327,7 @@ export function evaluateSchemaDeployHandoff({ markerText, deploySha, changedPath
     return { action: "not-needed", marker, sourceDigest: observed.digest };
   }
   if (v4SourceMarkerMatches(marker)) {
-    assertCompatibleChangedPaths(changedPaths, changedPathObjects, V4_CONTENT_BOUND_PATHS);
+    assertCompatibleChangedPaths(changedPaths, changedPathObjects, V4_CONTENT_BOUND_PATHS, V4_UNBOUND_NON_RUNTIME_PATH);
     assertCriticalObjects(criticalObjects);
     if (isAncestor !== true) reject("deploy candidate is not a descendant of the V4 migration origin");
     if (deploySha === marker.releaseSha) reject("an app-ready migration marker cannot be reused as a schema-applied deploy marker");
@@ -353,7 +358,9 @@ export function evaluateSchemaDeployHandoff({ markerText, deploySha, changedPath
     }
     const contentBoundPaths = marker.migrationOriginSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA
       ? V4_CONTENT_BOUND_PATHS : CONTENT_BOUND_PATHS;
-    assertCompatibleChangedPaths(changedPaths, changedPathObjects, contentBoundPaths);
+    const unboundNonRuntimePath = marker.migrationOriginSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA
+      ? V4_UNBOUND_NON_RUNTIME_PATH : undefined;
+    assertCompatibleChangedPaths(changedPaths, changedPathObjects, contentBoundPaths, unboundNonRuntimePath);
     assertCriticalObjects(criticalObjects);
     if (isAncestor !== true) reject("deploy candidate is not a descendant of the migration origin");
     if (marker.deploySha === deploySha) {

@@ -4,7 +4,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { capturePreviousAppProvenance, rebindPreviousAppProvenanceForPreflightResume } from "../scripts/production-previous-app-provenance.mjs";
-import { DEPLOY_CONTROL_FILES, PREFLIGHT_CAPTURE_RESUME_CONTROL_FILES, deployControlFilesMatch, preflightCaptureResumeControlsMatch,
+import { DEPLOY_CONTROL_FILES, PREFLIGHT_CAPTURE_RESUME_CONTROL_FILES, deployControlFilesMatch, preflightAuthorizationControlsMatch,
+  preflightCaptureResumeControlsMatch,
   NO_APP_PREPARATION_CONTROL_FILES, noAppPreparationControlsMatch, serializePreflightRetryRunIds,
   verifyPreDdlMigrationFailureResume, verifyResumablePreflightAttempt } from "../scripts/production-preflight-resume.mjs";
 
@@ -62,8 +63,12 @@ describe("production deploy evidence source binding", () => {
   it("accepts only unchanged preflight production steps and capture controls", async () => {
     const tempDir = await mkdtemp(path.join(tmpdir(), "bodycast-preflight-capture-controls-"));
     const workflowPath = ".github/workflows/production-migration-preflight.yml";
-    const workflow = (authorizeBody, inspectBody) => [
+    const workflow = (authorizeBody, inspectBody, permissionsBody = "contents: read\n  actions: read", globalEnvBody = null, defaultsBody = null) => [
       "name: preflight",
+      "permissions:",
+      ...permissionsBody.split("\n").map((line) => `  ${line}`),
+      ...(globalEnvBody ? ["env:", ...globalEnvBody.split("\n").map((line) => `  ${line}`)] : []),
+      ...(defaultsBody ? ["defaults:", ...defaultsBody.split("\n").map((line) => `  ${line}`)] : []),
       "jobs:",
       "  authorize:",
       `    ${authorizeBody}`,
@@ -94,12 +99,34 @@ describe("production deploy evidence source binding", () => {
       execFileSync("git", ["-C", tempDir, "commit", "-m", "change authorization collection only"], { stdio: "ignore" });
       const authorizeSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
       expect(preflightCaptureResumeControlsMatch(baseSha, authorizeSha, tempDir)).toBe(true);
+      expect(preflightAuthorizationControlsMatch(baseSha, authorizeSha, tempDir)).toBe(false);
 
       await writeFile(workflowFile, workflow("inputs: evidence collection changed", "steps: dangerous mutation added"));
       execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
       execFileSync("git", ["-C", tempDir, "commit", "-m", "change production inspection job"], { stdio: "ignore" });
       const inspectChangedSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
       expect(preflightCaptureResumeControlsMatch(authorizeSha, inspectChangedSha, tempDir)).toBe(false);
+      expect(preflightAuthorizationControlsMatch(authorizeSha, inspectChangedSha, tempDir)).toBe(true);
+
+      await writeFile(workflowFile, workflow("inputs: evidence collection changed", "steps: dangerous mutation added", "contents: write\n  actions: read"));
+      execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
+      execFileSync("git", ["-C", tempDir, "commit", "-m", "change workflow token permissions"], { stdio: "ignore" });
+      const permissionsChangedSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      expect(preflightAuthorizationControlsMatch(inspectChangedSha, permissionsChangedSha, tempDir)).toBe(false);
+
+      await writeFile(workflowFile, workflow("inputs: evidence collection changed", "steps: dangerous mutation added",
+        "contents: write\n  actions: read", "TOKEN: sample"));
+      execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
+      execFileSync("git", ["-C", tempDir, "commit", "-m", "add workflow-level environment"], { stdio: "ignore" });
+      const envChangedSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      expect(preflightAuthorizationControlsMatch(permissionsChangedSha, envChangedSha, tempDir)).toBe(false);
+
+      await writeFile(workflowFile, workflow("inputs: evidence collection changed", "steps: dangerous mutation added",
+        "contents: write\n  actions: read", "TOKEN: sample", "run:\n    shell: bash"));
+      execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
+      execFileSync("git", ["-C", tempDir, "commit", "-m", "change workflow execution defaults"], { stdio: "ignore" });
+      const defaultsChangedSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      expect(preflightAuthorizationControlsMatch(envChangedSha, defaultsChangedSha, tempDir)).toBe(false);
 
       await writeFile(path.join(tempDir, PREFLIGHT_CAPTURE_RESUME_CONTROL_FILES[0]), "changed compose topology\n");
       execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
@@ -449,7 +476,9 @@ function safePreflightRetryEvidence(overrides = {}) {
   return {
     run: safePreflightRetryRun(),
     jobs: safePreflightRetryJobs(),
+    artifacts: { total_count: 0, artifacts: [] },
     shaIsAncestorOfCurrentMain: true,
+    authorizationControlsMatch: true,
     ...overrides,
   };
 }
@@ -461,6 +490,7 @@ function authorizationOnlyPreflightRetryEvidence(overrides = {}) {
     artifacts: { total_count: 0, artifacts: [] },
     shaIsAncestorOfCurrentMain: true,
     sourceShaIsAncestor: true,
+    authorizationControlsMatch: true,
     ...overrides,
   };
 }
@@ -722,6 +752,11 @@ describe("verified resume of a failed production preflight", () => {
         ? { ...step, conclusion: "failure" } : step) } : job) }) }],
     ["job SHA mismatch", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
       job.name.startsWith("Authorize") ? { ...job, head_sha: sourceSha } : job) }) }],
+    ["authorization workflow controls changed", { authorizationControlsMatch: false }],
+    ["authorization job contains an unexpected step", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
+      job.name.startsWith("Authorize") ? { ...job, steps: [...job.steps, { name: "Unexpected side effect", conclusion: "success" }] } : job) }) }],
+    ["authorization step inventory is incomplete", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
+      job.name.startsWith("Authorize") ? { ...job, steps: job.steps.slice(0, -1) } : job) }) }],
   ])("rejects an authorization-only retry when %s", (_label, evidenceOverrides) => {
     expect(() => verifyWithCaptureBlockedRetries([authorizationOnlyPreflightRetryEvidence(evidenceOverrides)]))
       .toThrow("cannot be safely resumed");
@@ -932,6 +967,10 @@ describe("verified resume after a migration failed before the DDL marker", () =>
     ["owner identity mismatch", safePreflightRetryEvidence({ run: safePreflightRetryRun({ triggering_actor: { id: 7 } }) })],
     ["authorization rerun", safePreflightRetryEvidence({ run: safePreflightRetryRun({ run_attempt: 2 }) })],
     ["non-ancestor retry SHA", safePreflightRetryEvidence({ shaIsAncestorOfCurrentMain: false })],
+    ["historical authorization controls changed", safePreflightRetryEvidence({ authorizationControlsMatch: false })],
+    ["missing artifact inventory", safePreflightRetryEvidence({ artifacts: undefined })],
+    ["unexpected authorization step", safePreflightRetryEvidence({ jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
+      job.name.startsWith("Authorize") ? { ...job, steps: [...job.steps, { name: "Unexpected side effect", conclusion: "success" }] } : job) }) })],
     ["inspection job failure", safePreflightRetryEvidence({ jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
       job.name.startsWith("Inspect,") ? { ...job, conclusion: "failure" } : job) }) })],
     ["authorization failed outside the exact read-only gate", safePreflightRetryEvidence({ jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>

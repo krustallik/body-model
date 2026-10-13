@@ -249,6 +249,8 @@ describe("active production release entrypoints", () => {
     expect(workflow).toContain('node scripts/github-forward-resume-evidence.mjs "$RUNNER_TEMP/forward-github-evidence" "$GITHUB_RUN_ID" "$MAIN_TIP"');
     expect(workflow).toContain('--job "$MIGRATION_EXECUTION_JOB_ID" --log-failed');
     expect(workflow).toContain("production-preflight-resume.mjs --verify-pre-ddl-migration-failure");
+    expect(workflow).toContain('gh api "repos/krustallik/body-model/actions/runs/$retry_run_id/artifacts"');
+    expect(workflow).toContain('artifacts: JSON.parse(readFileSync(artifactsPath, "utf8"))');
     expect(migrationWorkflow).toMatch(/- name: Remove temporary runner credentials\s+if: always\(\)\s+run: rm -rf "\$RUNNER_TEMP\/bodycast-migrate-ssh"/);
     expect(resumeVerifier).toContain("two failed live probes, successful writer-drain observation, and final-guard import failure");
     expect(resumeVerifier).toContain("verified-pre-ddl-migration-failure");

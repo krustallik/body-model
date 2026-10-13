@@ -169,6 +169,13 @@ const BLOCKED_CAPTURE_RETRY_JOB_STEPS = Object.freeze([
   ["Stop containers", "success"],
   ["Complete job", "success"],
 ]);
+const AUTHORIZATION_ONLY_PREFLIGHT_JOB_STEPS = Object.freeze([
+  ["Set up job", "success"],
+  ["Checkout current main tooling", "success"],
+  ["Validate canonical repository, exact main, and successful CI", "failure"],
+  ["Post Checkout current main tooling", "success"],
+  ["Complete job", "success"],
+]);
 const MIGRATION_PRE_DDL_FAILURE = "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/app/scripts/github-owner-identity.mjs' imported from /app/scripts/production-migration-authorization.mjs";
 const MIGRATION_FAILURE_STEP = "Run the fixed guarded migration script over SSH";
 const MIGRATION_FAILURE_JOB = "Final live guard and authorized migration";
@@ -293,6 +300,36 @@ function workflowJobBlock(source, jobName) {
     }
   }
   return lines.slice(start, end).join("\n");
+}
+
+function workflowTopLevelBlock(source, blockName) {
+  const lines = String(source).replace(/\r\n?/g, "\n").split("\n");
+  const start = lines.findIndex((line) => line.startsWith(`${blockName}:`));
+  if (start < 0) return null;
+  let end = lines.length;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    if (/^[A-Za-z0-9_-]+:\s*/.test(lines[index])) {
+      end = index;
+      break;
+    }
+  }
+  return lines.slice(start, end).join("\n");
+}
+
+export function preflightAuthorizationControlsMatch(runSha, currentMainSha, cwd = process.cwd()) {
+  if (!/^[a-f0-9]{40}$/.test(String(runSha ?? "")) || !/^[a-f0-9]{40}$/.test(String(currentMainSha ?? ""))) return false;
+  try {
+    const priorWorkflow = execFileSync("git", ["show", `${runSha}:${PREFLIGHT_PATH}`], { cwd, encoding: "utf8" });
+    const currentWorkflow = execFileSync("git", ["show", `${currentMainSha}:${PREFLIGHT_PATH}`], { cwd, encoding: "utf8" });
+    const priorAuthorizeJob = workflowJobBlock(priorWorkflow, "authorize");
+    return priorAuthorizeJob !== null
+      && priorAuthorizeJob === workflowJobBlock(currentWorkflow, "authorize")
+      && workflowTopLevelBlock(priorWorkflow, "permissions") === workflowTopLevelBlock(currentWorkflow, "permissions")
+      && workflowTopLevelBlock(priorWorkflow, "env") === workflowTopLevelBlock(currentWorkflow, "env")
+      && workflowTopLevelBlock(priorWorkflow, "defaults") === workflowTopLevelBlock(currentWorkflow, "defaults");
+  } catch {
+    return false;
+  }
 }
 
 export function preflightCaptureResumeControlsMatch(runSha, currentMainSha, cwd = process.cwd()) {
@@ -649,6 +686,9 @@ function assertSafeAuthorizationOnlyPreflightRetry(evidence, { preflightWorkflow
     || historyRun.run_attempt !== run.run_attempt || historyRun.head_branch !== run.head_branch) {
     reject("a later failed preflight retry is not a verified owner authorization-only failure on current-main ancestry.");
   }
+  if (evidence.authorizationControlsMatch !== true) {
+    reject("the historical preflight authorization workflow controls differ from the reviewed current controls.");
+  }
   try {
     assertTrustedOwnerWorkflowRun(run, {
       actorId: BODYCAST_OWNER_ID, workflowPath: PREFLIGHT_PATH, workflowRunId: runId,
@@ -664,15 +704,21 @@ function assertSafeAuthorizationOnlyPreflightRetry(evidence, { preflightWorkflow
   const authorize = jobByName(jobs, "Authorize read-only preflight", {
     conclusion: "failure", headSha: run.head_sha, attempt: 1,
   });
-  const failedSteps = (authorize.steps ?? []).filter((step) => step.conclusion === "failure").map((step) => step.name);
-  if (failedSteps.length !== 1 || failedSteps[0] !== "Validate canonical repository, exact main, and successful CI") {
-    reject("a failed preflight retry did not stop at the read-only authorization gate.");
+  const authorizeSteps = authorize.steps ?? [];
+  if (authorizeSteps.length !== AUTHORIZATION_ONLY_PREFLIGHT_JOB_STEPS.length
+    || authorizeSteps.some((step, index) => step.name !== AUTHORIZATION_ONLY_PREFLIGHT_JOB_STEPS[index][0]
+      || step.conclusion !== AUTHORIZATION_ONLY_PREFLIGHT_JOB_STEPS[index][1])) {
+    reject("a failed preflight retry did not match the complete reviewed authorization-only step contract.");
   }
   const inspect = jobByName(jobs, "Inspect, back up, restore, and rehearse on disposable PostgreSQL", {
     conclusion: "skipped", headSha: run.head_sha, attempt: 1,
   });
   if (!Array.isArray(inspect.steps) || inspect.steps.length !== 0) {
     reject("a failed preflight retry entered the production inspection job.");
+  }
+  if (evidence.artifacts?.total_count !== 0 || !Array.isArray(evidence.artifacts.artifacts)
+    || evidence.artifacts.artifacts.length !== 0) {
+    reject("a failed preflight retry unexpectedly published an artifact.");
   }
 }
 
@@ -953,7 +999,9 @@ async function main() {
     const sourceIsAncestorOfBlockedCapture = isAncestor(sourceRun.head_sha, blockedCaptureRun.head_sha);
     const blockedCaptureIsAncestorOfCurrentMain = isAncestor(blockedCaptureRun.head_sha, currentMainSha);
     const safeFailedPreflightRetries = parseNdjson(safeRetriesText).map((evidence) => ({
-      ...evidence, shaIsAncestorOfCurrentMain: isAncestor(evidence?.run?.head_sha, currentMainSha),
+      ...evidence,
+      shaIsAncestorOfCurrentMain: isAncestor(evidence?.run?.head_sha, currentMainSha),
+      authorizationControlsMatch: preflightAuthorizationControlsMatch(evidence?.run?.head_sha, currentMainSha),
     }));
     const proof = verifyPreDdlMigrationFailureResume({ sourceRun, sourceJobs, sourceArtifacts, migrationRun, migrationJobs,
       migrationLogText, blockedCaptureRun, blockedCaptureJobs, blockedCaptureArtifacts, blockedCaptureLogText,
@@ -987,6 +1035,7 @@ async function main() {
       ...evidence,
       shaIsAncestorOfCurrentMain: isAncestor(evidence?.run?.head_sha, currentMainSha),
       sourceShaIsAncestor: isAncestor(sourceRun.head_sha, evidence?.run?.head_sha),
+      authorizationControlsMatch: preflightAuthorizationControlsMatch(evidence?.run?.head_sha, currentMainSha),
       captureControlsMatch: preflightCaptureResumeControlsMatch(evidence?.run?.head_sha, currentMainSha),
     })),
     sourceRunId, currentRunId, currentMainSha, manifestId, workflowId, deployWorkflowId, noAppWorkflowId, sourceIsAncestor,

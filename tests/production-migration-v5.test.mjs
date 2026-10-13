@@ -495,6 +495,13 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(target).toContain("docker compose -f \"$COMPOSE_FILE\" --profile tools run --rm --no-deps");
     expect(target).toContain("production-db-target-url.mjs");
     expect(target).toContain('psql "$BODYCAST_PSQL_DATABASE_URL"');
+    expect(target).toContain('readonly DB_NETWORK="bodycast-backend-prod"');
+    expect(target).toContain('node "$ROOT_DIR/scripts/production-db-endpoint-binding.mjs" --verify-stdin "$FIXED_DB_ADDRESS"');
+    const preflightTargetStart = target.indexOf("  --preflight)");
+    const compatibilityTargetStart = target.indexOf("  --previous-app-compatibility-snapshot)");
+    const reportBinding = 'verify_report_endpoint "$RAW_REPORT"';
+    expect(target.indexOf(reportBinding, preflightTargetStart)).toBeLessThan(target.indexOf('DATA_FINGERPRINT="'));
+    expect(target.indexOf(reportBinding, compatibilityTargetStart)).toBeLessThan(target.indexOf('printf \'%s\\n\' "$RAW_REPORT"', compatibilityTargetStart));
     expect(preflight).toContain('production-db-target.sh\\" --preflight bodycast-db-prod');
     expect(preflight).not.toContain("psql --username=bodycast --dbname=bodycast");
     expect(deploy).not.toContain('psql --username=bodycast --dbname=bodycast');

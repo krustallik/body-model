@@ -9,13 +9,15 @@ readonly DB_NETWORK="bodycast-backend-prod"
 readonly MANIFEST_ID="unified-v4-republication-v1"
 readonly RELEASE_SHA="${BODYCAST_DEPLOY_SHA:-}"
 readonly RUN_B64="${BODYCAST_V4_MIGRATION_RUN_B64:-}"
+readonly EXPECTED_PRE_DDL_RAW_FINGERPRINT="${BODYCAST_EXPECTED_PRE_DDL_RAW_FINGERPRINT:-}"
 readonly APP_HOST="${APP_HOST:-}"
 readonly CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:-}"
 
 [[ "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ \
   && "$CADDY_ROUTES_PATH" == /* && -n "$RUN_B64" \
+  && "$EXPECTED_PRE_DDL_RAW_FINGERPRINT" =~ ^[a-f0-9]{64}$ \
   && "${BODYCAST_PG_RESTORE_VERSION:-}" =~ ^pg_restore\ \(PostgreSQL\)\ [0-9]+(\.[0-9]+)*$ ]] || {
-  echo "V4 post-DDL backup requires exact release, route, migration-run, and restore-client bindings." >&2; exit 2;
+  echo "V4 post-DDL backup requires exact release, route, migration-run, pre-DDL raw baseline, and restore-client bindings." >&2; exit 2;
 }
 
 source "$ROOT_DIR/scripts/production-release-marker.sh"
@@ -127,6 +129,9 @@ NODE
   [[ "$full_fingerprint" =~ ^[a-f0-9]{64}$ && "$raw_fingerprint" =~ ^[a-f0-9]{64}$ \
     && "$(docker inspect --format '{{.Id}}' "$DB_CONTAINER")" == "$db_id" ]] || {
     echo "Production data fingerprints or fixed DB container identity are invalid." >&2; return 1;
+  }
+  [[ "$raw_fingerprint" == "$EXPECTED_PRE_DDL_RAW_FINGERPRINT" ]] || {
+    echo "Current production raw data differs from the signed pre-DDL encrypted-backup baseline." >&2; return 1;
   }
   topology="$(APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" bash "$ROOT_DIR/scripts/production-writer-drain.sh" --report)"
   target_url="$(bash "$ROOT_DIR/scripts/production-db-target.sh" --psql-url)"

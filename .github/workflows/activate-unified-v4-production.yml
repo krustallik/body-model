@@ -31,6 +31,7 @@ jobs:
       release_sha: ${{ steps.gate.outputs.release_sha }}
       ci_url: ${{ steps.gate.outputs.ci_url }}
       migration_run_b64: ${{ steps.gate.outputs.migration_run_b64 }}
+      migration_auth_artifact_b64: ${{ steps.gate.outputs.migration_auth_artifact_b64 }}
     steps:
       - name: Checkout current main gate helpers
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -89,12 +90,14 @@ jobs:
           DDL_RUN_SHA=8b4a195e8afb67c0a913d0175a030e01cc665732
           gh api "repos/krustallik/body-model/actions/runs/$DDL_RUN_ID" > "$RUNNER_TEMP/v4-ddl-run.json"
           gh api "repos/krustallik/body-model/actions/runs/$DDL_RUN_ID/jobs?per_page=100" > "$RUNNER_TEMP/v4-ddl-jobs.json"
-          MIGRATION_RUN_B64="$(node --input-type=module - "$RUNNER_TEMP/v4-ddl-run.json" "$RUNNER_TEMP/v4-ddl-jobs.json" "$DDL_RUN_ID" "$DDL_RUN_SHA" "$MAIN_TIP" <<'NODE'
+          gh api "repos/krustallik/body-model/actions/runs/$DDL_RUN_ID/artifacts?per_page=100" > "$RUNNER_TEMP/v4-ddl-artifacts.json"
+          MIGRATION_RUN_B64="$(node --input-type=module - "$RUNNER_TEMP/v4-ddl-run.json" "$RUNNER_TEMP/v4-ddl-jobs.json" "$RUNNER_TEMP/v4-ddl-artifacts.json" "$DDL_RUN_ID" "$DDL_RUN_SHA" "$MAIN_TIP" <<'NODE'
           import { readFileSync } from "node:fs";
           import { execFileSync } from "node:child_process";
-          const [runPath, jobsPath, expectedId, expectedSha, releaseSha] = process.argv.slice(2);
+          const [runPath, jobsPath, artifactsPath, expectedId, expectedSha, releaseSha] = process.argv.slice(2);
           const run = JSON.parse(readFileSync(runPath, "utf8"));
           const jobs = JSON.parse(readFileSync(jobsPath, "utf8")).jobs;
+          const artifacts = JSON.parse(readFileSync(artifactsPath, "utf8")).artifacts;
           const expectedJobs = [
             "Select latest exact preflight evidence",
             "Sign migration authorization envelope",
@@ -105,20 +108,37 @@ jobs:
             || run.event !== "workflow_dispatch" || run.status !== "completed" || run.conclusion !== "success"
             || String(run.actor?.id) !== "126446430" || !Array.isArray(jobs) || jobs.length !== expectedJobs.length
             || JSON.stringify(jobs.map((job) => job.name).sort()) !== JSON.stringify(expectedJobs)
-            || jobs.some((job) => job.conclusion !== "success")) {
+            || jobs.some((job) => job.conclusion !== "success") || !Array.isArray(artifacts)) {
             throw new Error("The recorded V4 DDL run is not the exact successful pinned-owner migration execution.");
+          }
+          const authArtifacts = artifacts.filter((artifact) => artifact.name === `bodycast-migration-auth-${expectedId}-1`);
+          if (authArtifacts.length !== 1 || authArtifacts[0].expired !== false
+            || !/^sha256:[a-f0-9]{64}$/.test(authArtifacts[0].digest ?? "")
+            || String(authArtifacts[0].workflow_run?.id) !== expectedId
+            || authArtifacts[0].workflow_run?.head_sha !== expectedSha
+            || authArtifacts[0].workflow_run?.head_branch !== "main") {
+            throw new Error("The exact immutable signed DDL authorization artifact is missing or ambiguous.");
           }
           execFileSync("git", ["merge-base", "--is-ancestor", expectedSha, releaseSha], { stdio: "ignore" });
           const metadata = {
             id: String(run.id), runAttempt: String(run.run_attempt), headSha: run.head_sha,
-            workflowPath: run.path, actorId: String(run.actor.id), conclusion: run.conclusion, event: run.event,
+            workflowId: String(run.workflow_id), workflowPath: run.path, actorId: String(run.actor.id), conclusion: run.conclusion, event: run.event,
           };
           process.stdout.write(Buffer.from(JSON.stringify(metadata)).toString("base64"));
+          NODE
+          )"
+          MIGRATION_AUTH_ARTIFACT_B64="$(node --input-type=module - "$RUNNER_TEMP/v4-ddl-artifacts.json" "$DDL_RUN_ID" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const [artifactsPath, runId] = process.argv.slice(2);
+          const artifacts = JSON.parse(readFileSync(artifactsPath, "utf8")).artifacts;
+          const artifact = artifacts.find(({ name }) => name === `bodycast-migration-auth-${runId}-1`);
+          process.stdout.write(Buffer.from(JSON.stringify({ id: String(artifact.id), digest: artifact.digest, name: artifact.name })).toString("base64"));
           NODE
           )"
           echo "release_sha=$MAIN_TIP" >> "$GITHUB_OUTPUT"
           echo "ci_url=$CI_URL" >> "$GITHUB_OUTPUT"
           echo "migration_run_b64=$MIGRATION_RUN_B64" >> "$GITHUB_OUTPUT"
+          echo "migration_auth_artifact_b64=$MIGRATION_AUTH_ARTIFACT_B64" >> "$GITHUB_OUTPUT"
           echo "## Owner-authorized Unified V4 activation and traffic serve" >> "$GITHUB_STEP_SUMMARY"
           echo "- exact SHA: \`$MAIN_TIP\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- current-main CI: $CI_URL" >> "$GITHUB_STEP_SUMMARY"
@@ -186,6 +206,97 @@ jobs:
           set -Eeuo pipefail
           npm ci
           npm run prisma:generate
+      - name: Verify signed pre-DDL backup and derive raw-data baseline
+        id: pre_ddl_source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MIGRATION_RUN_B64: ${{ needs.authorize.outputs.migration_run_b64 }}
+          MIGRATION_AUTH_ARTIFACT_B64: ${{ needs.authorize.outputs.migration_auth_artifact_b64 }}
+          PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY }}
+          POSTGRES_IMAGE: docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+          DATABASE_URL: postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_restore
+          BODYCAST_TEST_DATABASE_URL: postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_restore
+          PGPASSWORD: isolated_restore_test_password
+        run: |
+          set -Eeuo pipefail
+          BODYCAST_V4_EVIDENCE_DIR="$RUNNER_TEMP/bodycast-v4-evidence"
+          install -d -m 700 "$RUNNER_TEMP/bodycast-v4-ddl-auth" "$RUNNER_TEMP/bodycast-v4-pre-ddl-backup" "$BODYCAST_V4_EVIDENCE_DIR"
+          echo "BODYCAST_V4_BACKUP_DIR=$RUNNER_TEMP/bodycast-v4-backup" >> "$GITHUB_ENV"
+          echo "BODYCAST_V4_EVIDENCE_DIR=$BODYCAST_V4_EVIDENCE_DIR" >> "$GITHUB_ENV"
+          printf '%s' "$MIGRATION_RUN_B64" | base64 --decode > "$RUNNER_TEMP/v4-ddl-run.json"
+          [[ "$(base64 -w0 "$RUNNER_TEMP/v4-ddl-run.json")" == "$MIGRATION_RUN_B64" ]] || { echo "::error::DDL run binding encoding is not canonical."; exit 1; }
+          printf '%s' "$MIGRATION_AUTH_ARTIFACT_B64" | base64 --decode > "$RUNNER_TEMP/v4-ddl-auth-artifact.json"
+          [[ "$(base64 -w0 "$RUNNER_TEMP/v4-ddl-auth-artifact.json")" == "$MIGRATION_AUTH_ARTIFACT_B64" ]] || { echo "::error::DDL artifact metadata encoding is not canonical."; exit 1; }
+          AUTH_ID="$(jq -r '.id' "$RUNNER_TEMP/v4-ddl-auth-artifact.json")"
+          AUTH_NAME="$(jq -r '.name' "$RUNNER_TEMP/v4-ddl-auth-artifact.json")"
+          [[ "$AUTH_ID" =~ ^[1-9][0-9]*$ && "$AUTH_NAME" == bodycast-migration-auth-38447647403-1 ]] || {
+            echo "::error::Signed DDL artifact identity is malformed."; exit 1;
+          }
+          gh api "repos/krustallik/body-model/actions/artifacts/$AUTH_ID" > "$RUNNER_TEMP/v4-ddl-auth-artifact-current.json"
+          node --input-type=module - "$RUNNER_TEMP/v4-ddl-auth-artifact.json" "$RUNNER_TEMP/v4-ddl-auth-artifact-current.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const [expectedPath, actualPath] = process.argv.slice(2);
+          const expected = JSON.parse(readFileSync(expectedPath, "utf8"));
+          const actual = JSON.parse(readFileSync(actualPath, "utf8"));
+          if (String(actual.id) !== expected.id || actual.name !== expected.name || actual.digest !== expected.digest
+            || actual.expired !== false || String(actual.workflow_run?.id) !== "38447647403"
+            || actual.workflow_run?.head_sha !== "8b4a195e8afb67c0a913d0175a030e01cc665732"
+            || actual.workflow_run?.head_branch !== "main") {
+            throw new Error("Signed DDL authorization artifact metadata changed or was substituted.");
+          }
+          NODE
+          gh run download 38447647403 --repo krustallik/body-model --name "$AUTH_NAME" --dir "$RUNNER_TEMP/bodycast-v4-ddl-auth"
+          mapfile -t AUTH_FILES < <(find "$RUNNER_TEMP/bodycast-v4-ddl-auth" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | sort)
+          [[ "${AUTH_FILES[*]}" == "artifact-metadata.json authorization-envelope.json preflight-evidence.json preflight-result.json restore-result.json" ]] || {
+            echo "::error::Signed DDL artifact has an incomplete or unexpected file inventory."; exit 1;
+          }
+          node scripts/production-v4-recovery.mjs --verify-ddl-source \
+            "$RUNNER_TEMP/bodycast-v4-ddl-auth" "$RUNNER_TEMP/v4-ddl-run.json" "$RUNNER_TEMP/v4-pre-ddl-binding.json" > /dev/null
+          PREFLIGHT_RUN_ID="$(jq -r '.preflightRunId' "$RUNNER_TEMP/v4-pre-ddl-binding.json")"
+          BACKUP_ID="$(jq -r '.backupArtifactId' "$RUNNER_TEMP/v4-pre-ddl-binding.json")"
+          BACKUP_NAME="$(jq -r '.backupArtifactName' "$RUNNER_TEMP/v4-pre-ddl-binding.json")"
+          [[ "$PREFLIGHT_RUN_ID" =~ ^[1-9][0-9]*$ && "$BACKUP_ID" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::Signed pre-DDL preflight or backup artifact identity is malformed."; exit 1;
+          }
+          gh api "repos/krustallik/body-model/actions/runs/$PREFLIGHT_RUN_ID" > "$RUNNER_TEMP/v4-preflight-run.json"
+          gh api "repos/krustallik/body-model/actions/artifacts/$BACKUP_ID" > "$RUNNER_TEMP/v4-pre-ddl-backup-artifact.json"
+          node --input-type=module - "$RUNNER_TEMP/v4-pre-ddl-binding.json" "$RUNNER_TEMP/v4-preflight-run.json" "$RUNNER_TEMP/v4-pre-ddl-backup-artifact.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { assertPreDdlBackupArtifactMetadata } from "./scripts/production-v4-recovery.mjs";
+          assertPreDdlBackupArtifactMetadata(
+            JSON.parse(readFileSync(process.argv[2], "utf8")),
+            JSON.parse(readFileSync(process.argv[4], "utf8")),
+            JSON.parse(readFileSync(process.argv[3], "utf8")),
+          );
+          NODE
+          gh run download "$PREFLIGHT_RUN_ID" --repo krustallik/body-model --name "$BACKUP_NAME" --dir "$RUNNER_TEMP/bodycast-v4-pre-ddl-backup"
+          mapfile -t BACKUP_FILES < <(find "$RUNNER_TEMP/bodycast-v4-pre-ddl-backup" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | sort)
+          [[ "${BACKUP_FILES[*]}" == production-backup.pgdump.enc && -s "$RUNNER_TEMP/bodycast-v4-pre-ddl-backup/production-backup.pgdump.enc" ]] || {
+            echo "::error::The signed pre-DDL encrypted backup payload is missing or ambiguous."; exit 1;
+          }
+          BACKUP_FILE="$RUNNER_TEMP/bodycast-v4-pre-ddl-backup/production-backup.pgdump.enc"
+          export BACKUP_FILE
+          node scripts/restore-encrypted-postgres-backup.mjs
+          FULL_PRE_DDL="$(bash scripts/production-db-data-fingerprint.sh --test-url)"
+          RAW_PRE_DDL="$(bash scripts/production-db-data-fingerprint.sh --test-url --v4-replay-inputs)"
+          EXPECTED_FULL="$(jq -r '.preDdlLogicalDataFingerprint' "$RUNNER_TEMP/v4-pre-ddl-binding.json")"
+          [[ "$FULL_PRE_DDL" =~ ^[a-f0-9]{64}$ && "$RAW_PRE_DDL" =~ ^[a-f0-9]{64}$ && "$FULL_PRE_DDL" == "$EXPECTED_FULL" ]] || {
+            echo "::error::The owner-signed pre-DDL backup restore or full data fingerprint does not match its authorization."; exit 1;
+          }
+          node --input-type=module - "$RUNNER_TEMP/v4-pre-ddl-binding.json" "$RAW_PRE_DDL" "$BODYCAST_V4_EVIDENCE_DIR/pre-ddl-source-binding.json" <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const [bindingPath, rawFingerprint, outputPath] = process.argv.slice(2);
+          const binding = JSON.parse(readFileSync(bindingPath, "utf8"));
+          if (!/^[a-f0-9]{64}$/.test(rawFingerprint) || binding.ddlAuthorization !== false) throw new Error("Pre-DDL raw source binding is invalid.");
+          binding.preDdlReplayInputFingerprint = rawFingerprint;
+          writeFileSync(outputPath, `${JSON.stringify(binding, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+          NODE
+          echo "raw_fingerprint=$RAW_PRE_DDL" >> "$GITHUB_OUTPUT"
+          psql "postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/postgres" \
+            --no-psqlrc --quiet --set=ON_ERROR_STOP=1 --command 'DROP DATABASE bodycast_restore'
+          psql "postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/postgres" \
+            --no-psqlrc --quiet --set=ON_ERROR_STOP=1 --command 'CREATE DATABASE bodycast_restore OWNER bodycast_restore'
+          echo "Verified owner-signed pre-DDL backup and captured its raw-data fingerprint before any production access." >> "$GITHUB_STEP_SUMMARY"
       - name: Validate protected SSH inputs and pin production host
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -233,6 +344,7 @@ jobs:
           PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY }}
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
           MIGRATION_RUN_B64: ${{ needs.authorize.outputs.migration_run_b64 }}
+          PRE_DDL_RAW_FINGERPRINT: ${{ steps.pre_ddl_source.outputs.raw_fingerprint }}
         run: |
           set -Eeuo pipefail
           [[ "$(gh api repos/krustallik/body-model/commits/main --jq .sha)" == "$RELEASE_SHA" ]] || {
@@ -249,8 +361,10 @@ jobs:
           APP_HOST="$(printf '%s' "$3" | base64 --decode)"
           CADDY_ROUTES_PATH="$(printf '%s' "$4" | base64 --decode)"
           BODYCAST_PG_RESTORE_VERSION="$(printf '%s' "$5" | base64 --decode)"
+          EXPECTED_PRE_DDL_RAW_FINGERPRINT="$(printf '%s' "$7" | base64 --decode)"
           [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ && "$DEPLOY_PATH" == /* && "$DEPLOY_PATH" != *$'\n'* \
             && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* && "$CADDY_ROUTES_PATH" != *$'\n'* \
+            && "$EXPECTED_PRE_DDL_RAW_FINGERPRINT" =~ ^[a-f0-9]{64}$ \
             && "$BODYCAST_PG_RESTORE_VERSION" =~ ^pg_restore\ \(PostgreSQL\)\ 17\.[0-9]+$ ]] || exit 2
           cd -- "$DEPLOY_PATH"
           [[ "$(git rev-parse --show-toplevel)" == "$DEPLOY_PATH" && -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || {
@@ -265,12 +379,14 @@ jobs:
           APP_HEALTH="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' bodycast-app-prod)"
           [[ "$APP_SHA" == "$RELEASE_SHA" && "$APP_HEALTH" == "healthy" ]] || { echo "Exact-SHA app is absent or unhealthy." >&2; exit 1; }
           APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" BODYCAST_DEPLOY_SHA="$RELEASE_SHA" \
-            BODYCAST_V4_MIGRATION_RUN_B64="$6" BODYCAST_PG_RESTORE_VERSION="$BODYCAST_PG_RESTORE_VERSION" \
+            BODYCAST_V4_MIGRATION_RUN_B64="$6" BODYCAST_EXPECTED_PRE_DDL_RAW_FINGERPRINT="$EXPECTED_PRE_DDL_RAW_FINGERPRINT" \
+            BODYCAST_PG_RESTORE_VERSION="$BODYCAST_PG_RESTORE_VERSION" \
             exec bash scripts/production-traffic-cutover.sh v4-post-ddl-backup
           REMOTE
           )"
           REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
-          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$RELEASE_SHA' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64' '$PG_RESTORE_VERSION_B64' '$MIGRATION_RUN_B64'"
+          PRE_DDL_RAW_B64="$(printf '%s' "$PRE_DDL_RAW_FINGERPRINT" | base64 -w0)"
+          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$RELEASE_SHA' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64' '$PG_RESTORE_VERSION_B64' '$MIGRATION_RUN_B64' '$PRE_DDL_RAW_B64'"
           BACKUP_FILE="$BODYCAST_V4_BACKUP_DIR/production-backup.pgdump.enc"
           set -o pipefail
           set +e
@@ -297,13 +413,16 @@ jobs:
           [[ "$(base64 -w0 "$BODYCAST_V4_EVIDENCE_DIR/host-snapshot.json")" == "${SNAPSHOT_LINES[0]}" ]] || {
             echo "::error::Host snapshot encoding is not canonical base64."; exit 1;
           }
-          node --input-type=module - "$BODYCAST_V4_EVIDENCE_DIR/host-snapshot.json" "${DUMP_TIME_LINES[0]}" "$BODYCAST_V4_EVIDENCE_DIR/source-report.json" <<'NODE'
+          node --input-type=module - "$BODYCAST_V4_EVIDENCE_DIR/host-snapshot.json" "${DUMP_TIME_LINES[0]}" "$BODYCAST_V4_EVIDENCE_DIR/source-report.json" "$PRE_DDL_RAW_FINGERPRINT" <<'NODE'
           import { readFileSync, writeFileSync } from "node:fs";
-          const [snapshotPath, dumpTime, reportPath] = process.argv.slice(2);
+          const [snapshotPath, dumpTime, reportPath, preDdlRawFingerprint] = process.argv.slice(2);
           const snapshot = JSON.parse(readFileSync(snapshotPath, "utf8"));
-          if (snapshot.pgDumpInvocationAt !== dumpTime || !/^[a-f0-9]{64}$/.test(snapshot.v4ReplayInputFingerprint ?? "")) {
-            throw new Error("Post-DDL snapshot does not bind the exact backup boundary and raw source fingerprint.");
+          if (snapshot.pgDumpInvocationAt !== dumpTime || !/^[a-f0-9]{64}$/.test(snapshot.v4ReplayInputFingerprint ?? "")
+            || snapshot.v4ReplayInputFingerprint !== preDdlRawFingerprint) {
+            throw new Error("Post-DDL snapshot raw source differs from the signed pre-DDL backup baseline.");
           }
+          snapshot.preDdlReplayInputFingerprint = preDdlRawFingerprint;
+          writeFileSync(snapshotPath, `${JSON.stringify(snapshot)}\n`, { flag: "w", mode: 0o600 });
           writeFileSync(reportPath, `${JSON.stringify(snapshot.report)}\n`, { flag: "wx", mode: 0o600 });
           NODE
           [[ -s "$BACKUP_FILE" ]] || { echo "::error::Encrypted post-DDL backup is empty."; exit 1; }
@@ -515,13 +634,22 @@ jobs:
           const health = JSON.parse(readFileSync(process.argv[2], "utf8"));
           if (health?.status !== "ok") throw new Error("Public health API did not report healthy status.");
           NODE
-          for route in /dashboard /training /forecast; do
+          for page in \
+            '/dashboard|Dashboard · BodyCast' \
+            '/training|Training · BodyCast' \
+            '/forecast|Forecast · BodyCast'; do
+            route="${page%%|*}"
+            expected_title="${page#*|}"
             response="$RUNNER_TEMP/bodycast-page-${route//\//-}"
-            status="$(curl --silent --show-error --location --max-redirs 5 --connect-timeout 5 --max-time 30 \
-              --output "$response" --write-out '%{http_code}' "https://$APP_HOST$route")"
-            [[ "$status" =~ ^[23][0-9][0-9]$ ]] || { echo "::error::Public page $route returned HTTP $status."; exit 1; }
-            if [[ "$status" == 200 ]] && ! grep -qi '<html' "$response"; then
-              echo "::error::Public page $route returned HTTP 200 without HTML."; exit 1;
-            fi
+            response_meta="$(curl --silent --show-error --location --max-redirs 5 --connect-timeout 5 --max-time 30 \
+              --output "$response" --write-out $'%{http_code}\n%{content_type}\n%{url_effective}' "https://$APP_HOST$route")"
+            IFS=$'\n' read -r status content_type effective_url <<< "$response_meta"
+            [[ "$status" == 200 && "${content_type,,}" == text/html* \
+              && "$effective_url" == "https://$APP_HOST$route" ]] || {
+              echo "::error::Public page $route did not return its own HTML page (HTTP $status)."; exit 1;
+            }
+            grep -Fq "<title>$expected_title</title>" "$response" || {
+              echo "::error::Public page $route did not render the expected BodyCast page title."; exit 1;
+            }
           done
           echo "Public HTTPS homepage, health API, Dashboard, Training, and Forecast route smoke passed." >> "$GITHUB_STEP_SUMMARY"

@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { canonicalSha256 } from "./production-migration-authorization.mjs";
+import { canonicalSha256, verifyHistoricalMigrationAuthorizationEnvelope } from "./production-migration-authorization.mjs";
 import { evaluateProductionPostflight, schemaInventoryDigest } from "./production-migration-preflight.mjs";
 import { V4_REPUBLICATION_MANIFEST } from "./production-migration-manifests.mjs";
 import { isCanonicalPostgresDatabaseIdentity } from "./postgres-database-identity.mjs";
@@ -12,9 +12,117 @@ import { assertFreshWriterDrain } from "./production-writer-drain.mjs";
 const DIGEST = /^[a-f0-9]{64}$/;
 const SHA = /^[a-f0-9]{40}$/;
 const V4_REVISION = "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once";
+const V4_DDL_RUN_ID = "38447647403";
+const V4_DDL_ORIGIN_SHA = "8b4a195e8afb67c0a913d0175a030e01cc665732";
+const MIGRATION_WORKFLOW = ".github/workflows/production-migrate.yml";
+const PREFLIGHT_WORKFLOW = ".github/workflows/production-migration-preflight.yml";
 
 function requireValue(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+export function assertPreDdlRecoverySource({
+  authorizationEnvelope,
+  preflightEvidence,
+  preflightResult,
+  restoreResult,
+  backupArtifactMetadata,
+  migrationRun,
+  allowlist,
+} = {}) {
+  requireValue(migrationRun && String(migrationRun.id) === V4_DDL_RUN_ID
+    && String(migrationRun.runAttempt) === "1" && migrationRun.actorId === "126446430"
+    && migrationRun.workflowId && migrationRun.workflowPath === MIGRATION_WORKFLOW
+    && migrationRun.headSha === V4_DDL_ORIGIN_SHA
+    && migrationRun.conclusion === "success" && migrationRun.event === "workflow_dispatch",
+  "Pre-DDL baseline is not bound to the successful pinned-owner V4 migration run.");
+  const verified = verifyHistoricalMigrationAuthorizationEnvelope(authorizationEnvelope, {
+    allowlist,
+    expected: {
+      repository: "krustallik/body-model",
+      workflowId: String(migrationRun.workflowId),
+      workflowPath: MIGRATION_WORKFLOW,
+      workflowRunId: V4_DDL_RUN_ID,
+      workflowRunAttempt: 1,
+      actorId: "126446430",
+      releaseSha: V4_DDL_ORIGIN_SHA,
+      currentMainSha: V4_DDL_ORIGIN_SHA,
+      manifestId: V4_REPUBLICATION_MANIFEST.id,
+    },
+  });
+  const claims = verified.payload;
+  const expectedPending = V4_REPUBLICATION_MANIFEST.migrations.map(({ name }) => name).sort();
+  requireValue(JSON.stringify(claims.pendingMigrationNames) === JSON.stringify(expectedPending),
+    "Signed DDL authorization does not bind exactly the two reviewed V4 migrations.");
+  requireValue(preflightEvidence?.verified === true && preflightEvidence.repository === "krustallik/body-model"
+    && preflightEvidence.workflowPath === PREFLIGHT_WORKFLOW
+    && String(preflightEvidence.workflowRunId) === claims.preflightRunId
+    && Number(preflightEvidence.workflowRunAttempt) === claims.preflightRunAttempt
+    && preflightEvidence.releaseSha === claims.releaseSha
+    && preflightEvidence.manifestId === claims.manifestId
+    && preflightEvidence.preflightResultDigest === claims.preflightResultDigest
+    && preflightEvidence.restoreResultDigest === claims.restoreResultDigest
+    && preflightEvidence.logicalDataFingerprint === claims.snapshotDataFingerprint,
+  "Signed DDL authorization does not match its successful preflight evidence.");
+  requireValue(preflightResult?.readyForOwnerAuthorization === true
+    && preflightResult.manifestId === claims.manifestId
+    && JSON.stringify(preflightResult.pending) === JSON.stringify(expectedPending)
+    && canonicalSha256(preflightResult) === claims.preflightResultDigest
+    && preflightResult.logicalDataFingerprint === claims.snapshotDataFingerprint,
+  "Signed pre-DDL snapshot fingerprint does not match the verified preflight result.");
+  requireValue(restoreResult?.verified === true
+    && canonicalSha256(restoreResult) === claims.restoreResultDigest
+    && restoreResult.logicalDataFingerprint === claims.snapshotDataFingerprint,
+  "Signed pre-DDL snapshot fingerprint does not match the verified isolated restore.");
+  const expectedBackupName = `bodycast-backup-${claims.releaseSha}-${claims.manifestId}-${claims.preflightRunId}-${claims.preflightRunAttempt}`;
+  requireValue(backupArtifactMetadata && String(backupArtifactMetadata.id) === claims.backupArtifactId
+    && backupArtifactMetadata.digest === `sha256:${claims.backupArtifactDigest}`
+    && backupArtifactMetadata.expired === false
+    && backupArtifactMetadata.name === expectedBackupName
+    && String(backupArtifactMetadata.workflowRunId) === claims.preflightRunId
+    && Number(backupArtifactMetadata.workflowRunAttempt) === claims.preflightRunAttempt
+    && backupArtifactMetadata.headSha === claims.releaseSha
+    && String(backupArtifactMetadata.authorizationRunId) === claims.workflowRunId
+    && Number(backupArtifactMetadata.authorizationRunAttempt) === claims.workflowRunAttempt
+    && String(backupArtifactMetadata.authorizationWorkflowId) === claims.workflowId,
+  "Signed pre-DDL backup artifact identity or digest does not match the selected owner-authorized preflight.");
+  requireValue(DIGEST.test(String(claims.snapshotDataFingerprint ?? "")),
+    "Signed pre-DDL logical data fingerprint is malformed.");
+  return {
+    verified: true,
+    ddlAuthorization: false,
+    migrationRunId: V4_DDL_RUN_ID,
+    migrationRunAttempt: 1,
+    migrationOriginSha: claims.releaseSha,
+    preflightRunId: claims.preflightRunId,
+    preflightRunAttempt: claims.preflightRunAttempt,
+    backupArtifactId: claims.backupArtifactId,
+    backupArtifactDigest: backupArtifactMetadata.digest,
+    backupArtifactName: expectedBackupName,
+    preDdlLogicalDataFingerprint: claims.snapshotDataFingerprint,
+  };
+}
+
+export function assertPreDdlBackupArtifactMetadata(binding, artifact, run) {
+  requireValue(binding?.verified === true && binding.ddlAuthorization === false,
+    "Pre-DDL backup binding is missing or unexpectedly authorizes DDL.");
+  requireValue(run && String(run.id) === binding.preflightRunId
+    && Number(run.run_attempt) === binding.preflightRunAttempt
+    && String(run.workflow_id) && (run.path ?? "").split("@")[0] === PREFLIGHT_WORKFLOW
+    && run.event === "workflow_dispatch" && run.head_branch === "main"
+    && run.head_sha === binding.migrationOriginSha && run.status === "completed"
+    && run.conclusion === "success" && String(run.actor?.id) === "126446430"
+    && run.repository?.full_name === "krustallik/body-model",
+  "Pre-DDL backup run metadata is not the exact successful owner-authorized preflight.");
+  requireValue(artifact && String(artifact.id) === binding.backupArtifactId
+    && artifact.name === binding.backupArtifactName
+    && artifact.digest === binding.backupArtifactDigest && artifact.expired === false
+    && String(artifact.workflow_run?.id) === binding.preflightRunId
+    && artifact.workflow_run?.head_branch === "main"
+    && artifact.workflow_run?.head_sha === binding.migrationOriginSha
+    && artifact.workflow_run?.repository_id === run.repository?.id,
+  "Pre-DDL encrypted backup artifact metadata is missing, expired, or substituted.");
+  return true;
 }
 
 export function assertV4RecoverySnapshot(snapshot, {
@@ -33,6 +141,9 @@ export function assertV4RecoverySnapshot(snapshot, {
   requireValue(DIGEST.test(String(snapshot.markerDigest ?? "")), "Release marker digest is malformed.");
   requireValue(DIGEST.test(String(snapshot.routeDigest ?? "")), "Maintenance route digest is malformed.");
   requireValue(DIGEST.test(String(snapshot.v4ReplayInputFingerprint ?? "")), "Raw V4 replay-input fingerprint is malformed.");
+  requireValue(DIGEST.test(String(snapshot.preDdlReplayInputFingerprint ?? ""))
+    && snapshot.preDdlReplayInputFingerprint === snapshot.v4ReplayInputFingerprint,
+  "Post-DDL raw data no longer matches the signed pre-DDL encrypted-backup baseline.");
   requireValue(DIGEST.test(String(snapshot.report?.logicalDataFingerprint ?? "")), "Full production data fingerprint is malformed.");
 
   const marker = snapshot.marker;
@@ -125,6 +236,7 @@ export function assertStableV4RecoverySnapshots(before, after) {
     objects: snapshot.report?.objects,
     fullFingerprint: snapshot.report?.logicalDataFingerprint,
     rawFingerprint: snapshot.v4ReplayInputFingerprint,
+    preDdlRawFingerprint: snapshot.preDdlReplayInputFingerprint,
     lifecycle: snapshot.v4Lifecycle,
   });
   requireValue(canonicalSha256(stable(before)) === canonicalSha256(stable(after)),
@@ -168,6 +280,8 @@ export function assertV4ReplayRehearsal({
     "V4 rehearsal baseline fingerprint does not identify the verified restored backup.");
   requireValue(sourceSnapshot?.v4ReplayInputFingerprint === sourceRawFingerprint,
     "Raw replay-source fingerprint differs from the verified production backup snapshot.");
+  requireValue(sourceSnapshot?.preDdlReplayInputFingerprint === sourceRawFingerprint,
+    "Production raw replay-source fingerprint differs from the signed pre-DDL backup baseline.");
   const rawFingerprints = [sourceRawFingerprint, restoredRawFingerprintBefore, restoredRawFingerprintAfter, restoredRawFingerprintAfterRetry];
   requireValue(rawFingerprints.every((fingerprint) => DIGEST.test(String(fingerprint ?? "")) && fingerprint === sourceRawFingerprint),
     "Raw replay-source fingerprint changed during V4 rehearsal.");
@@ -225,7 +339,27 @@ async function main() {
     else process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     return;
   }
-  throw new Error("Usage: production-v4-recovery.mjs --validate-snapshot <snapshot.json> <migration-dir> [result.json] | --verify-rehearsal <input.json> [result.json]");
+  if (mode === "--verify-ddl-source") {
+    const [bundleDirectory, migrationRunPath, outputPath] = args;
+    const [authorizationEnvelope, preflightEvidence, preflightResult, restoreResult, backupArtifactMetadata, migrationRun, allowlist] = await Promise.all([
+      readFile(path.join(bundleDirectory, "authorization-envelope.json"), "utf8"),
+      readJson(path.join(bundleDirectory, "preflight-evidence.json")),
+      readJson(path.join(bundleDirectory, "preflight-result.json")),
+      readJson(path.join(bundleDirectory, "restore-result.json")),
+      readJson(path.join(bundleDirectory, "artifact-metadata.json")),
+      readJson(migrationRunPath),
+      readJson(path.resolve("scripts/production-migration-verification-keys.json")),
+    ]);
+    const binding = assertPreDdlRecoverySource({
+      authorizationEnvelope: authorizationEnvelope.trimEnd(), preflightEvidence, preflightResult,
+      restoreResult, backupArtifactMetadata, migrationRun, allowlist,
+    });
+    await import("node:fs/promises").then(({ writeFile }) => writeFile(outputPath,
+      `${JSON.stringify(binding, null, 2)}\n`, { flag: "wx", mode: 0o600 }));
+    process.stdout.write(JSON.stringify({ verified: true, ddlAuthorization: false, backupArtifactId: binding.backupArtifactId }) + "\n");
+    return;
+  }
+  throw new Error("Usage: production-v4-recovery.mjs --validate-snapshot <snapshot.json> <migration-dir> [result.json] | --verify-rehearsal <input.json> [result.json] | --verify-ddl-source <bundle-dir> <migration-run.json> <output.json>");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

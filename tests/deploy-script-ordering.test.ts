@@ -71,6 +71,15 @@ describe("production maintenance-first deploy safety contracts", () => {
     }
   });
 
+  it("pins the V4 handoff verifier before loading production SSH credentials", () => {
+    const deployJob = deployWorkflow.slice(deployWorkflow.indexOf("name: Deploy exact current-main SHA"));
+    const pinCheckAt = deployJob.indexOf("Verify externally pinned V4 handoff verifier");
+    const sshInputsAt = deployJob.indexOf("Validate SSH inputs and pin the production host");
+    expect(deployJob).toContain("vars.BODYCAST_V4_HANDOFF_BLOB");
+    expect(pinCheckAt).toBeGreaterThan(-1);
+    expect(sshInputsAt).toBeGreaterThan(pinCheckAt);
+  });
+
   it("implements the approved maintenance-first state machine and live-route commit", () => {
     const states = [
       'release_state="PREPARE"',

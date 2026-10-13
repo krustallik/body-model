@@ -21,7 +21,7 @@ import { normalizePostgresDatabaseIdentityRow } from "../scripts/postgres-databa
 import { psqlCompatibleDatabaseUrl } from "../scripts/production-db-target-url.mjs";
 import { assertCurrentMigrationRunMatchesProof, executionProofAudience, readCurrentMigrationRunForDdl, requestGitHubOidcExecutionProof, verifyGitHubExecutionProof } from "../scripts/production-migration-execution-attestation.mjs";
 import { PRODUCTION_WRITER_TOPOLOGY_CONTRACT } from "../scripts/production-writer-drain.mjs";
-import { assertStableV4RecoverySnapshots, assertV4RecoverySnapshot, assertV4ReplayRehearsal } from "../scripts/production-v4-recovery.mjs";
+import { assertPreDdlBackupArtifactMetadata, assertPreDdlRecoverySource, assertStableV4RecoverySnapshots, assertV4RecoverySnapshot, assertV4ReplayRehearsal } from "../scripts/production-v4-recovery.mjs";
 
 const now = Date.parse("2026-10-05T10:00:00.000Z");
 const dirs = [
@@ -2019,6 +2019,83 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
     }
   });
 
+  it("binds the post-DDL raw source to the signed pre-DDL backup and owner DDL authorization", () => {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const keyId = "synthetic-v4-ddl-source-key";
+    const allowlist = { schemaVersion: 1, keys: [{ keyId, status: "active", publicKeyPem: publicKey.export({ type: "spki", format: "pem" }) }] };
+    const preflightRunId = "38446768622";
+    const logicalFingerprint = "a".repeat(64);
+    const pending = V4_REPUBLICATION_MANIFEST.migrations.map(({ name }) => name).sort();
+    const preflightResult = {
+      readyForOwnerAuthorization: true, manifestId: V4_REPUBLICATION_MANIFEST.id,
+      pending, logicalDataFingerprint: logicalFingerprint,
+    };
+    const restoreResult = { verified: true, logicalDataFingerprint: logicalFingerprint };
+    const claims = {
+      repository: "krustallik/body-model", workflowId: "456", workflowPath: ".github/workflows/production-migrate.yml",
+      workflowRunId: "38447647403", workflowRunAttempt: 1, actorId: "126446430",
+      releaseSha: "8b4a195e8afb67c0a913d0175a030e01cc665732", currentMainSha: "8b4a195e8afb67c0a913d0175a030e01cc665732",
+      manifestId: V4_REPUBLICATION_MANIFEST.id, pendingMigrationNames: pending, pendingSetDigest: canonicalSha256(pending),
+      preflightRunId, preflightRunAttempt: 1, preflightRunStartedAt: "2026-10-13T17:00:00.000Z",
+      preflightResultDigest: canonicalSha256(preflightResult), backupArtifactId: "500",
+      backupArtifactDigest: "b".repeat(64), backupSnapshotAt: "2026-10-13T17:05:00.000Z",
+      restoreResultDigest: canonicalSha256(restoreResult), productionIdentityDigest: "c".repeat(64),
+      writerDrainDigest: "d".repeat(64), writerTopologyDigest: "e".repeat(64),
+      issuedAt: "2026-10-13T17:10:00.000Z", expiresAt: "2026-10-13T18:10:00.000Z",
+      authorizationId: "synthetic-v4-authorization-2026", nonce: randomUUID(), snapshotDataFingerprint: logicalFingerprint,
+    };
+    const authorizationEnvelope = createAuthorizationEnvelope(claims, {
+      keyId, privateKeyPem: privateKey.export({ type: "pkcs8", format: "pem" }), allowlist,
+    });
+    const preflightEvidence = {
+      verified: true, repository: "krustallik/body-model", workflowPath: ".github/workflows/production-migration-preflight.yml",
+      workflowRunId: preflightRunId, workflowRunAttempt: 1, releaseSha: claims.releaseSha,
+      manifestId: claims.manifestId, preflightResultDigest: claims.preflightResultDigest,
+      restoreResultDigest: claims.restoreResultDigest, logicalDataFingerprint: logicalFingerprint,
+    };
+    const backupArtifactMetadata = {
+      id: "500", digest: `sha256:${claims.backupArtifactDigest}`, expired: false,
+      name: `bodycast-backup-${claims.releaseSha}-${claims.manifestId}-${preflightRunId}-1`,
+      workflowRunId: preflightRunId, workflowRunAttempt: 1, headSha: claims.releaseSha,
+      authorizationRunId: claims.workflowRunId, authorizationRunAttempt: 1, authorizationWorkflowId: claims.workflowId,
+    };
+    const migrationRun = {
+      id: claims.workflowRunId, runAttempt: "1", actorId: claims.actorId,
+      workflowId: claims.workflowId, workflowPath: claims.workflowPath, headSha: claims.releaseSha,
+      conclusion: "success", event: "workflow_dispatch",
+    };
+    const binding = assertPreDdlRecoverySource({
+      authorizationEnvelope, preflightEvidence, preflightResult, restoreResult, backupArtifactMetadata,
+      migrationRun, allowlist,
+    });
+    expect(binding).toMatchObject({ verified: true, ddlAuthorization: false, backupArtifactId: "500", preDdlLogicalDataFingerprint: logicalFingerprint });
+
+    const preflightRun = {
+      id: preflightRunId, run_attempt: 1, workflow_id: "789",
+      path: ".github/workflows/production-migration-preflight.yml@refs/heads/main",
+      event: "workflow_dispatch", head_branch: "main", head_sha: claims.releaseSha,
+      status: "completed", conclusion: "success", actor: { id: 126446430 },
+      repository: { id: 1342150263, full_name: "krustallik/body-model" },
+    };
+    const apiArtifact = {
+      id: 500, name: backupArtifactMetadata.name, digest: backupArtifactMetadata.digest, expired: false,
+      workflow_run: { id: Number(preflightRunId), head_branch: "main", head_sha: claims.releaseSha, repository_id: 1342150263 },
+    };
+    expect(assertPreDdlBackupArtifactMetadata(binding, apiArtifact, preflightRun)).toBe(true);
+    expect(() => assertPreDdlRecoverySource({
+      authorizationEnvelope, preflightEvidence, preflightResult: { ...preflightResult, logicalDataFingerprint: "f".repeat(64) },
+      restoreResult, backupArtifactMetadata, migrationRun, allowlist,
+    })).toThrow(/pre-DDL snapshot fingerprint/);
+    expect(() => assertPreDdlRecoverySource({
+      authorizationEnvelope, preflightEvidence, preflightResult, restoreResult,
+      backupArtifactMetadata: { ...backupArtifactMetadata, digest: `sha256:${"f".repeat(64)}` }, migrationRun, allowlist,
+    })).toThrow(/artifact identity or digest/);
+    expect(() => assertPreDdlBackupArtifactMetadata(binding, { ...apiArtifact, expired: true }, preflightRun))
+      .toThrow(/missing, expired, or substituted/);
+    expect(() => assertPreDdlBackupArtifactMetadata(binding, apiArtifact, { ...preflightRun, actor: { id: 1 } }))
+      .toThrow(/owner-authorized preflight/);
+  });
+
   it("binds post-DDL V4 backup, restore, and epoch-1 rehearsal without granting DDL authorization", () => {
     const releaseSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     const migrationOriginSha = "8b4a195e8afb67c0a913d0175a030e01cc665732";
@@ -2043,7 +2120,7 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
       canonicalMainSha: releaseSha, databaseContainerId: "1".repeat(64),
       databaseImageId: "2".repeat(64), appImageId: "3".repeat(64),
       markerDigest: "4".repeat(64), routeDigest: "5".repeat(64),
-      v4ReplayInputFingerprint: "6".repeat(64), pgDumpVersion: "pg_dump (PostgreSQL) 17.11",
+      v4ReplayInputFingerprint: "6".repeat(64), preDdlReplayInputFingerprint: "6".repeat(64), pgDumpVersion: "pg_dump (PostgreSQL) 17.11",
       pgRestoreVersion: "pg_restore (PostgreSQL) 17.11", lifecycleState: "v4-replayable",
       migrationDirectories: fullDirs, report,
       marker: {
@@ -2076,6 +2153,7 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
       (value) => { value.report.conflictingLocks = null; },
       (value) => { value.report.preparedTransactions.push({ gid: "unexpected" }); },
       (value) => { value.marker.migrationOriginSha = "f".repeat(40); },
+      (value) => { value.preDdlReplayInputFingerprint = "f".repeat(64); },
       (value) => { value.v4Lifecycle.unifiedRolloutEpoch = 0; },
     ]) {
       const changed = structuredClone(snapshot);
@@ -2111,6 +2189,10 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
       },
     };
     expect(assertV4ReplayRehearsal(rehearsal)).toMatchObject({ verified: true, ddlAuthorization: false, replayEpoch: 1, idempotentRetry: true });
+    expect(() => assertV4ReplayRehearsal({
+      ...rehearsal,
+      sourceSnapshot: { ...snapshot, preDdlReplayInputFingerprint: "f".repeat(64) },
+    })).toThrow(/signed pre-DDL backup baseline/);
     expect(() => assertV4ReplayRehearsal({ ...rehearsal, sourceRawFingerprint: "f".repeat(64) })).toThrow(/Raw replay-source fingerprint/);
     expect(() => assertV4ReplayRehearsal({ ...rehearsal, fullFingerprintBefore: "f".repeat(64) })).toThrow(/baseline fingerprint/);
     expect(() => assertV4ReplayRehearsal({ ...rehearsal, retryReplay: { rolloutEpoch: 1, dayCount: 364 } })).toThrow(/idempotent retry/);

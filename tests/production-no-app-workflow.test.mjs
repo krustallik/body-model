@@ -176,7 +176,8 @@ describe("no-app preparation workflow boundaries", () => {
   it("keeps historical log handling in the standard preflight resume gate", async () => {
     const resume = await readFile(new URL("../scripts/production-preflight-resume.mjs", import.meta.url), "utf8");
     expect(resume).toContain("parseActionLogRecords");
-    expect(resume).toContain("assertSafeFailedPreMaintenanceDeploy");
+    expect(resume).not.toContain("assertSafeFailedPreMaintenanceDeploy");
+    expect(resume).toContain("assertHistoricalDeployRun");
     expect(resume).toContain('historicalEffects: "UNVERIFIED"');
   });
 

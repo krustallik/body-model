@@ -16,7 +16,7 @@ describe("maintenance operation Docker state certainty", () => {
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
     expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).toContain("docker-ps-failed");
     expect(result.stdout).not.toContain("old app container is removed");
-  }, 60_000);
+  }, 30_000);
 
   it.skipIf(!bashAvailable)("does not remove an app when Docker inspect leaves its state UNKNOWN", () => {
     const fixture = createFixture();
@@ -29,7 +29,7 @@ describe("maintenance operation Docker state certainty", () => {
     expect(appState(fixture)).toMatchObject({ status: "exited", present: "true" });
     expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).not.toContain("rm --force app");
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
-  }, 60_000);
+  }, 30_000);
 
   it.skipIf(!bashAvailable)("fails closed when both Docker stop mechanisms fail", () => {
     const fixture = createFixture();
@@ -43,7 +43,7 @@ describe("maintenance operation Docker state certainty", () => {
     expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).not.toContain("rm --force app");
     expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).toContain("direct-app-stop-failed");
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
-  }, 60_000);
+  }, 30_000);
 
   it.skipIf(!bashAvailable)("does not report maintenance completion when Docker removal fails", () => {
     const fixture = createFixture();
@@ -56,5 +56,5 @@ describe("maintenance operation Docker state certainty", () => {
     expect(result.stdout).not.toContain("old app container is removed");
     expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).toContain("compose-remove-app-failed");
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
-  }, 60_000);
+  }, 30_000);
 });

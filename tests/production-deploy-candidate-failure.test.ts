@@ -17,7 +17,7 @@ describe("maintenance-first candidate verification failures", () => {
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
     expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).not.toContain("reverse_proxy");
     expect(readFileSync(path.join(fixture.root, "events.log"), "utf8").match(/schema-preflight-no-deps/g)).toHaveLength(2);
-  }, 60_000);
+  }, 30_000);
 
   it.skipIf(!bashAvailable)("stops a candidate when Unified V4 currentness fails before route commit", () => {
     const fixture = createFixture();
@@ -32,7 +32,7 @@ describe("maintenance-first candidate verification failures", () => {
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
     expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).not.toContain("reverse_proxy");
     expect(readFileSync(path.join(fixture.root, "events.log"), "utf8").match(/unified-v4-check/g)).toHaveLength(2);
-  }, 60_000);
+  }, 30_000);
 
   it.skipIf(!bashAvailable)("keeps an unexpected release marker and maintenance after candidate health but before serving", () => {
     const fixture = createFixture();
@@ -48,7 +48,7 @@ describe("maintenance-first candidate verification failures", () => {
     expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).not.toContain("reverse_proxy");
     expect(readFileSync(path.join(fixture.repo, ".git", "bodycast-production-schema-cutover"), "utf8"))
       .toContain("state=ddl-started");
-  }, 60_000);
+  }, 30_000);
 
   it.skipIf(!bashAvailable)("keeps an image-identity-mismatched candidate behind maintenance without stopping an unverified container", () => {
     const fixture = createFixture();
@@ -63,5 +63,5 @@ describe("maintenance-first candidate verification failures", () => {
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
     expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).not.toContain("reverse_proxy");
     expect(result.stderr).toContain("Candidate cleanup blocked: the present app is not the exact candidate");
-  }, 60_000);
+  }, 30_000);
 });

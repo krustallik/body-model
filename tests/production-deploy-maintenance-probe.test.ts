@@ -26,6 +26,6 @@ describe("maintenance confirmation gate", () => {
       const dockerLog = readFileSync(path.join(fixture.root, "docker.log"), "utf8");
       expect(dockerLog).not.toContain("stop --time 0 bodycast-app-prod");
       expect(dockerLog).not.toContain("up -d --no-deps --force-recreate app");
-    }, 60_000);
+    }, 30_000);
   }
 });

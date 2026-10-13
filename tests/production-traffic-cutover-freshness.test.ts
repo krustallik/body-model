@@ -27,7 +27,7 @@ describe("fallback production traffic cutover freshness and recovery", () => {
     expect(result.stderr).toContain("CADDY_ROUTES_PATH may not resolve to the filesystem root.");
     expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).toBe(before);
     expect(existsSync(path.join(fixture.root, "docker.log"))).toBe(false);
-  }, 60_000);
+  }, 30_000);
 
   it.skipIf(!bashAvailable)("does not stop the old app when maintenance cannot be confirmed after reload failure", () => {
     const fixture = createFixture();
@@ -72,7 +72,7 @@ describe("fallback production traffic cutover freshness and recovery", () => {
     expect(events).not.toContain("compose-remove-app");
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
     expect(runFixture(fixture, "curl --fail https://bodycast.example.test/api/health").status).toBe(0);
-  }, 60_000);
+  }, 30_000);
 
   it.skipIf(!bashAvailable)("refuses public rollback mode even with caller-selected historical SHA and image", () => {
     const fixture = createFixture();
@@ -87,7 +87,7 @@ describe("fallback production traffic cutover freshness and recovery", () => {
     expect(appState(fixture)).toEqual({ sha: PREVIOUS_SHA, imageId: PREVIOUS_IMAGE_ID, status: "healthy", present: "true" });
     expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).toBe(beforeRoute);
     expect(existsSync(path.join(fixture.root, "docker.log"))).toBe(false);
-  }, 60_000);
+  }, 30_000);
 
   it.skipIf(!bashAvailable)("does not invoke a legacy authority shim for the fixed traffic operation", () => {
     const fixture = createFixture();
@@ -113,7 +113,7 @@ describe("fallback production traffic cutover freshness and recovery", () => {
     expect(existsSync(hostClientLog)).toBe(false);
     expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).toContain("unified-v4-traffic-check.mjs");
     expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).toContain("live-route-mutation:serving");
-  }, 60_000);
+  }, 30_000);
 
   it.skipIf(!bashAvailable)("blocks serving when main advances during the final V4 child check", () => {
     const fixture = createFixture();
@@ -132,7 +132,7 @@ describe("fallback production traffic cutover freshness and recovery", () => {
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
     expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).not.toContain("caddy reload");
     expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).not.toContain("live-route-mutation:serving");
-  }, 60_000);
+  }, 30_000);
 
   it.skipIf(!bashAvailable)("blocks the route write when main advances at its final freshness fence", () => {
     const fixture = createFixture();
@@ -155,7 +155,7 @@ describe("fallback production traffic cutover freshness and recovery", () => {
     expect(events).toContain("staged-route-validated");
     expect(events).toContain("main-advanced");
     expect(events).not.toContain("live-route-mutation:serving");
-  }, 60_000);
+  }, 30_000);
 
   it.skipIf(!bashAvailable)("stages candidate bytes away from the live route and rejects them if main advances before atomic publish", () => {
     const fixture = createFixture();
@@ -177,7 +177,7 @@ describe("fallback production traffic cutover freshness and recovery", () => {
     expect(events.indexOf("live-route-before-validate:maintenance")).toBeLessThan(events.indexOf("staged-route-validated"));
     expect(events.indexOf("staged-route-validated")).toBeLessThan(events.indexOf("main-advanced"));
     expect(events).not.toContain("live-route-mutation:serving");
-  }, 60_000);
+  }, 30_000);
 
 
 });

@@ -127,7 +127,7 @@ describe("schema deploy compatibility handoff", () => {
       },
       "scripts/ci/production-safety-postgres-smoke.mjs": {
         migrationOriginBlob: "1a0345e687fd3f604499502bdf98a07b606da07f",
-        deployBlob: "8626a7b47e2ef41d65031428b06549b86b0e6c06",
+        deployBlob: "802856dfdae57b6950e8d6cebfaf5d22b7fde635",
       },
       "scripts/production-db-data-fingerprint.sh": {
         migrationOriginBlob: "101ecf34dc5751fc431a5b88f787d7ebc3e98fde",

@@ -6,7 +6,8 @@ import path from "node:path";
 import { capturePreviousAppProvenance, rebindPreviousAppProvenanceForPreflightResume } from "../scripts/production-previous-app-provenance.mjs";
 import { failedHistoricalNoAppAfterRehearsal, historicalAuthorizationRetries,
   successfulHistoricalNoAppPreparation } from "./fixtures/historical-preflight-runs.mjs";
-import { DEPLOY_CONTROL_FILES, PREFLIGHT_CAPTURE_RESUME_CONTROL_FILES, deployControlFilesMatch, preflightAuthorizationControlsMatch,
+import { DEPLOY_CONTROL_FILES, PREFLIGHT_CAPTURE_RESUME_CONTROL_FILES, deployControlFilesMatch, preflightAuthorizationWorkflowContractAtSha,
+  preflightAuthorizationWorkflowIsReadOnlyAtSha,
   preflightCaptureResumeControlsMatch,
   extractCaptureRetryLogEvidence, extractPreMaintenanceDeployLogEvidence,
   NO_APP_PREPARATION_CONTROL_FILES, noAppPreparationControlsMatch, serializePreflightRetryRunIds,
@@ -111,31 +112,36 @@ describe("production deploy evidence source binding", () => {
     }
   });
 
-  it("accepts the actual historical owner retries under their immutable authorization controls", () => {
-    const currentMainSha = "029bbe81a341abe2e8642564b8c4fa2e0b3f00a8";
-    const updatedMainSha = "fce2329260599e566ee9c36a7bcf3ceb1dfab3d2";
+  it("derives read-only authorization boundaries from each actual historical workflow SHA", () => {
     expect(historicalAuthorizationRetries.map(({ run }) => String(run.id))).toEqual([
-      "38379375890", "38379548326", "38384779107",
+      "38379375890", "38379548326", "38384779107", "38396593728", "38399644888",
+      "38403898937", "38410773609", "38413249982", "38415354392", "38417627284",
     ]);
+    const sourceSha = "3ede9e1644616e65edb3ac29a49df2f109786942";
+    const currentMainSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     for (const { run, jobs, artifacts } of historicalAuthorizationRetries) {
-      expect(preflightAuthorizationControlsMatch(run.head_sha, currentMainSha)).toBe(true);
-      expect(preflightAuthorizationControlsMatch(run.head_sha, updatedMainSha)).toBe(true);
+      expect(() => execFileSync("git", ["merge-base", "--is-ancestor", sourceSha, run.head_sha])).not.toThrow();
+      expect(() => execFileSync("git", ["merge-base", "--is-ancestor", run.head_sha, currentMainSha])).not.toThrow();
+      const contract = preflightAuthorizationWorkflowContractAtSha(run.head_sha);
+      expect(contract, `historical workflow at ${run.head_sha}`).toMatchObject({
+        sha: run.head_sha,
+        authorizeJobName: "Authorize read-only preflight",
+        inspectJobName: "Inspect, back up, restore, and rehearse on disposable PostgreSQL",
+      });
+      expect(preflightAuthorizationWorkflowIsReadOnlyAtSha(run.head_sha)).toBe(true);
       expect(jobs.total_count).toBe(2);
-      expect(jobs.jobs.find((job) => job.name === "Inspect, back up, restore, and rehearse on disposable PostgreSQL"))
-        .toMatchObject({ conclusion: "skipped", steps: [] });
+      expect(jobs.jobs[0].steps.map(({ name, conclusion }) => ({ name, conclusion }))).toEqual(contract.authorizeSteps);
+      expect(jobs.jobs[1]).toMatchObject({ status: "completed", conclusion: "skipped", steps: [] });
       expect(artifacts).toEqual({ total_count: 0, artifacts: [] });
     }
-    expect(preflightAuthorizationControlsMatch("3ede9e1644616e65edb3ac29a49df2f109786942", updatedMainSha)).toBe(true);
-    expect(preflightAuthorizationControlsMatch(
-      "bf481a853b419e369643bd0c1eed0aa00fa6d724",
-      "df87ca5cf873fa46acf9123bb1feb61fce530bba",
-    )).toBe(true);
-    expect(preflightCaptureResumeControlsMatch("3eec0b7d4b38f10de3083a9108b32fcbc1c201b3", currentMainSha)).toBe(true);
-    expect(deployControlFilesMatch("7ccaf1018c55f6ed2dfa3124992b75d5a43b052a", currentMainSha)).toBe(true);
-    expect(preflightAuthorizationControlsMatch("f".repeat(40), currentMainSha)).toBe(false);
+    expect(preflightCaptureResumeControlsMatch("3eec0b7d4b38f10de3083a9108b32fcbc1c201b3",
+      "029bbe81a341abe2e8642564b8c4fa2e0b3f00a8")).toBe(true);
+    expect(deployControlFilesMatch("7ccaf1018c55f6ed2dfa3124992b75d5a43b052a",
+      "029bbe81a341abe2e8642564b8c4fa2e0b3f00a8")).toBe(true);
+    expect(preflightAuthorizationWorkflowContractAtSha("f".repeat(40))).toBeNull();
   });
 
-  it("rejects an unreviewed authorization profile with a changed owner guard", async () => {
+  it("accepts safe historical authorization workflow changes without comparing them to current main", async () => {
     const tempDir = await mkdtemp(path.join(tmpdir(), "bodycast-auth-command-boundary-"));
     const workflowPath = path.join(tempDir, ".github/workflows/production-migration-preflight.yml");
     const commit = (message) => {
@@ -150,13 +156,39 @@ describe("production deploy evidence source binding", () => {
       const reviewedWorkflow = execFileSync("git", ["show", "029bbe81a341abe2e8642564b8c4fa2e0b3f00a8:.github/workflows/production-migration-preflight.yml"],
         { cwd: process.cwd(), encoding: "utf8" });
       await writeFile(workflowPath, reviewedWorkflow);
-      const oldSha = commit("reviewed auth controls");
-      const changedOwnerGuard = reviewedWorkflow.replace('DISPATCH_ACTOR_ID" == "126446430"', 'DISPATCH_ACTOR_ID" == "126446431"');
-      expect(changedOwnerGuard).not.toBe(reviewedWorkflow);
-      await writeFile(workflowPath, changedOwnerGuard);
-      const newSha = commit("changed pinned owner control");
-      expect(preflightAuthorizationControlsMatch(oldSha, oldSha, tempDir)).toBe(true);
-      expect(preflightAuthorizationControlsMatch(oldSha, newSha, tempDir)).toBe(false);
+      const oldSha = commit("historical authorization workflow");
+      const safelyChanged = reviewedWorkflow.replace("timeout-minutes: 10", "timeout-minutes: 11");
+      expect(safelyChanged).not.toBe(reviewedWorkflow);
+      await writeFile(workflowPath, safelyChanged);
+      const newSha = commit("safe authorization-only workflow change");
+      expect(preflightAuthorizationWorkflowIsReadOnlyAtSha(oldSha, tempDir)).toBe(true);
+      expect(preflightAuthorizationWorkflowIsReadOnlyAtSha(newSha, tempDir)).toBe(true);
+      expect(preflightAuthorizationWorkflowContractAtSha(oldSha, tempDir).sha).toBe(oldSha);
+      expect(preflightAuthorizationWorkflowContractAtSha(newSha, tempDir).sha).toBe(newSha);
+
+      const unsafeProfiles = [
+        reviewedWorkflow.replace("    runs-on: ubuntu-latest", "    runs-on: ubuntu-latest\n    environment: production"),
+        reviewedWorkflow.replace("permissions:\n  contents: read", "permissions:\n  contents: write"),
+        reviewedWorkflow.replace("          GH_TOKEN: ${{ github.token }}", "          GH_TOKEN: ${{ github.token }}\n          PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}"),
+        reviewedWorkflow.replace("          GH_TOKEN: ${{ github.token }}", "          GH_TOKEN: ${{ github.token }}\n          TOKEN: ${{ vars.PROD_CREDENTIAL }}"),
+        reviewedWorkflow.replace("      - name: Validate canonical repository, exact main, and successful CI", "      - name: Unexpected production access\n        run: ssh production true\n      - name: Validate canonical repository, exact main, and successful CI"),
+        reviewedWorkflow.replace("          set -Eeuo pipefail", "          set -Eeuo pipefail\n          python3 -c 'import urllib.request; urllib.request.urlopen(\"https://bodycast.example\")'"),
+        reviewedWorkflow.replace("          set -Eeuo pipefail", "          set -Eeuo pipefail\n          bash -c 'python3 -c \"import subprocess\"'"),
+        reviewedWorkflow.replace("import { readFileSync } from \"node:fs\";", "import https from \"node:https\";\n          import { readFileSync } from \"node:fs\";"),
+        reviewedWorkflow.replace("import { readFileSync } from \"node:fs\";", "import \"./scripts/send-to-production.mjs\";\n          import { readFileSync } from \"node:fs\";"),
+        reviewedWorkflow.replace("import { readFileSync } from \"node:fs\";", "import \"unreviewed-network-package\";\n          import { readFileSync } from \"node:fs\";"),
+        reviewedWorkflow.replace("import { readFileSync } from \"node:fs\";", "import { readFileSync }\n          from \"unreviewed-network-package\";"),
+        reviewedWorkflow.replace("import { readFileSync } from \"node:fs\";", "const unsafeFetch = globalThis[\"fetch\"];\n          import { readFileSync } from \"node:fs\";"),
+        reviewedWorkflow.replace("import { readFileSync } from \"node:fs\";", "const http = process[\"getBuiltinModule\"](\"node:\" + \"http\");\n          http[\"request\"](\"http://bodycast.example\");\n          import { readFileSync } from \"node:fs\";"),
+        reviewedWorkflow.replace("          set -Eeuo pipefail", "          set -Eeuo pipefail\n          node -e 'fetch(\"https://bodycast.example\")'"),
+        reviewedWorkflow.replace("          set -Eeuo pipefail", "          set -Eeuo pipefail\n          node scripts/send-to-production.mjs"),
+      ];
+      for (const [index, unsafeWorkflow] of unsafeProfiles.entries()) {
+        expect(unsafeWorkflow).not.toBe(reviewedWorkflow);
+        await writeFile(workflowPath, unsafeWorkflow);
+        const unsafeSha = commit(`unsafe auth boundary ${index}`);
+        expect(preflightAuthorizationWorkflowContractAtSha(unsafeSha, tempDir)).toBeNull();
+      }
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
@@ -507,32 +539,59 @@ function safePreflightRetryRun(overrides = {}) {
   };
 }
 
+function syntheticAuthorizationWorkflowContract(sha = targetSha) {
+  return {
+    sha,
+    authorizeJobName: "Authorize read-only preflight",
+    inspectJobName: "Inspect, back up, restore, and rehearse on disposable PostgreSQL",
+    authorizeSteps: [
+      { name: "Set up job", conclusion: "success" },
+      { name: "Checkout current main tooling", conclusion: "success" },
+      { name: "Validate canonical repository, exact main, and successful CI", conclusion: "failure" },
+      { name: "Post Checkout current main tooling", conclusion: "success" },
+      { name: "Complete job", conclusion: "success" },
+    ],
+  };
+}
+
 function safePreflightRetryJobs(overrides = {}) {
   return {
     total_count: 2,
     jobs: [
-      { name: "Authorize read-only preflight", conclusion: "failure", head_sha: targetSha, run_attempt: 1,
+      { name: "Authorize read-only preflight", status: "completed", conclusion: "failure", head_sha: targetSha, run_attempt: 1,
         steps: [
           { name: "Set up job", conclusion: "success" },
           { name: "Checkout current main tooling", conclusion: "success" },
           { name: "Validate canonical repository, exact main, and successful CI", conclusion: "failure" },
           { name: "Post Checkout current main tooling", conclusion: "success" },
           { name: "Complete job", conclusion: "success" },
-        ] },
-      { name: "Inspect, back up, restore, and rehearse on disposable PostgreSQL", conclusion: "skipped",
+        ].map((step) => ({ ...step, status: "completed" })) },
+      { name: "Inspect, back up, restore, and rehearse on disposable PostgreSQL", status: "completed", conclusion: "skipped",
         head_sha: targetSha, run_attempt: 1, steps: [] },
     ],
     ...overrides,
   };
 }
 
+function withCompletedStepStatuses(jobs) {
+  return {
+    ...jobs,
+    jobs: jobs.jobs.map((job) => ({
+      ...job,
+      status: "completed",
+      steps: (job.steps ?? []).map((step) => ({ ...step, status: "completed" })),
+    })),
+  };
+}
+
 function safePreflightRetryEvidence(overrides = {}) {
   return {
     run: safePreflightRetryRun(),
-    jobs: safePreflightRetryJobs(),
+    jobs: withCompletedStepStatuses(safePreflightRetryJobs()),
     artifacts: { total_count: 0, artifacts: [] },
     shaIsAncestorOfCurrentMain: true,
-    authorizationControlsMatch: true,
+    sourceShaIsAncestor: true,
+    authorizationWorkflowContract: syntheticAuthorizationWorkflowContract(),
     ...overrides,
   };
 }
@@ -540,11 +599,11 @@ function safePreflightRetryEvidence(overrides = {}) {
 function authorizationOnlyPreflightRetryEvidence(overrides = {}) {
   return {
     run: safePreflightRetryRun({ id: 38000669128 }),
-    jobs: safePreflightRetryJobs(),
+    jobs: withCompletedStepStatuses(safePreflightRetryJobs()),
     artifacts: { total_count: 0, artifacts: [] },
     shaIsAncestorOfCurrentMain: true,
     sourceShaIsAncestor: true,
-    authorizationControlsMatch: true,
+    authorizationWorkflowContract: syntheticAuthorizationWorkflowContract(),
     ...overrides,
   };
 }
@@ -830,26 +889,41 @@ describe("verified resume of a failed production preflight", () => {
   });
 
   it("admits owner authorization-only failures separately from capture-blocked retries", () => {
+    const historicalWorkflowId = historicalAuthorizationRetries[0].run.workflow_id;
     const captureRetry = captureBlockedRetryEvidence({
-      run: captureBlockedRetryRun({ id: 38000669127 }),
+      run: captureBlockedRetryRun({ id: 38000669127, workflow_id: historicalWorkflowId }),
     });
-    const authorizationOnlyRetry = authorizationOnlyPreflightRetryEvidence();
-    const secondAuthorizationOnlyRetry = authorizationOnlyPreflightRetryEvidence({
-      run: safePreflightRetryRun({ id: 38000669129 }),
+    const authorizationOnlyRetries = historicalAuthorizationRetries.map(({ run, jobs, artifacts }) => ({
+      run, jobs, artifacts,
+      shaIsAncestorOfCurrentMain: true,
+      sourceShaIsAncestor: true,
+      authorizationWorkflowContract: preflightAuthorizationWorkflowContractAtSha(run.head_sha),
+    }));
+    const result = verifyWithCaptureBlockedRetries([captureRetry, ...authorizationOnlyRetries], {
+      sourceRun: sourceRun({ workflow_id: historicalWorkflowId,
+        display_title: `Preflight ${sourceSha} ${v4ManifestId}` }),
+      workflowId: String(historicalWorkflowId),
     });
-    const result = verifyWithCaptureBlockedRetries([captureRetry, authorizationOnlyRetry, secondAuthorizationOnlyRetry]);
 
-    expect(result.authorizationOnlyPreflightRetryRunIds).toEqual(["38000669128", "38000669129"]);
+    expect(result.authorizationOnlyPreflightRetryRunIds).toEqual(historicalAuthorizationRetries
+      .map(({ run }) => String(run.id)).sort());
     expect(result.unverifiedHistoricalPreflightRunIds).toEqual(["38000669127"]);
     expect(result.historicalPreflightEffects).toEqual([{ runId: "38000669127", sha: targetSha, historicalEffects: "UNVERIFIED" }]);
+    expect(result.historicalPreflightEffects.some(({ runId }) => historicalAuthorizationRetries.some(({ run }) => String(run.id) === runId))).toBe(false);
+    expect(result.unverifiedHistoricalRunIds).toEqual([]);
   });
 
   it.each([
     ["another owner", { run: safePreflightRetryRun({ id: 38000669128, triggering_actor: { id: 7 } }) }],
     ["stale SHA", { shaIsAncestorOfCurrentMain: false }],
     ["not descended from the source", { sourceShaIsAncestor: false }],
+    ["incomplete jobs inventory", { jobs: safePreflightRetryJobs({ total_count: 1 }) }],
+    ["unexpected job inventory", { jobs: safePreflightRetryJobs({ jobs: [...safePreflightRetryJobs().jobs,
+      { name: "Unexpected production job", status: "completed", conclusion: "skipped", head_sha: targetSha, run_attempt: 1, steps: [] }] }) }],
     ["published artifact", { artifacts: { total_count: 1, artifacts: [{ id: 8 }] } }],
     ["incomplete artifact inventory", { artifacts: { total_count: 0 } }],
+    ["incomplete job execution", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
+      job.name.startsWith("Authorize") ? { ...job, status: "in_progress" } : job) }) }],
     ["inspection job ran", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
       job.name.startsWith("Inspect,") ? { ...job, conclusion: "failure" } : job) }) }],
     ["inspection job has steps", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
@@ -859,7 +933,7 @@ describe("verified resume of a failed production preflight", () => {
         ? { ...step, conclusion: "failure" } : step) } : job) }) }],
     ["job SHA mismatch", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
       job.name.startsWith("Authorize") ? { ...job, head_sha: sourceSha } : job) }) }],
-    ["authorization workflow controls changed", { authorizationControlsMatch: false }],
+    ["authorization contract is bound to another SHA", { authorizationWorkflowContract: syntheticAuthorizationWorkflowContract("f".repeat(40)) }],
     ["authorization job contains an unexpected step", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
       job.name.startsWith("Authorize") ? { ...job, steps: [...job.steps, { name: "Unexpected side effect", conclusion: "success" }] } : job) }) }],
     ["authorization step inventory is incomplete", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
@@ -1136,7 +1210,9 @@ describe("verified resume after a migration failed before the DDL marker", () =>
     ["owner identity mismatch", safePreflightRetryEvidence({ run: safePreflightRetryRun({ triggering_actor: { id: 7 } }) })],
     ["authorization rerun", safePreflightRetryEvidence({ run: safePreflightRetryRun({ run_attempt: 2 }) })],
     ["non-ancestor retry SHA", safePreflightRetryEvidence({ shaIsAncestorOfCurrentMain: false })],
-    ["historical authorization controls changed", safePreflightRetryEvidence({ authorizationControlsMatch: false })],
+    ["authorization workflow contract SHA mismatch", safePreflightRetryEvidence({
+      authorizationWorkflowContract: syntheticAuthorizationWorkflowContract("f".repeat(40)),
+    })],
     ["missing artifact inventory", safePreflightRetryEvidence({ artifacts: undefined })],
     ["unexpected authorization step", safePreflightRetryEvidence({ jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
       job.name.startsWith("Authorize") ? { ...job, steps: [...job.steps, { name: "Unexpected side effect", conclusion: "success" }] } : job) }) })],

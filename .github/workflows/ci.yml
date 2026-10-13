@@ -61,9 +61,13 @@ jobs:
           npm run validate:target-solver:smoke
 
   unit:
-    name: Unit and coverage
+    name: Unit shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     env:
       NODE_ENV: test
       DATABASE_URL: postgresql://bodycast_stage01_test:integration_test_password@localhost:5432/bodycast_training_history_stage01_test
@@ -87,13 +91,70 @@ jobs:
       - name: Generate Prisma Client
         run: npm run prisma:generate
 
-      - name: Unit tests and coverage
-        run: npm run test:coverage
+      - name: Unit tests and shard coverage
+        run: >-
+          npx vitest run
+          --coverage.enabled
+          --coverage.thresholds.lines=0
+          --coverage.thresholds.branches=0
+          --coverage.thresholds.functions=0
+          --coverage.thresholds.statements=0
+          --reporter=blob
+          --shard=${{ matrix.shard }}/2
+
+      - name: Upload Vitest shard report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vitest-unit-shard-${{ matrix.shard }}
+          path: .vitest-reports/**
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  unit_coverage_merge:
+    name: Unit coverage merge
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs:
+      - unit
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://bodycast_stage01_test:integration_test_password@localhost:5432/bodycast_training_history_stage01_test
+      IOS_SHORTCUT_API_KEY: integration-test-secret
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: npm
+          package-manager-cache: true
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download all Vitest shard reports
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: vitest-unit-shard-*
+          path: .vitest-reports
+          merge-multiple: true
+
+      - name: Merge reports and enforce combined coverage thresholds
+        run: npx vitest run --merge-reports --coverage
 
   postgres_integration:
-    name: PostgreSQL integration
+    name: PostgreSQL integration shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     services:
       postgres:
         image: docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
@@ -139,7 +200,7 @@ jobs:
           BODYCAST_STAGE01_MODE: test
           BODYCAST_GLYCOGEN_TEST_DATABASE_URL: postgresql://bodycast_stage01_test:integration_test_password@localhost:5432/bodycast_training_history_stage01_test
           BODYCAST_RECOVERY_TEST_DATABASE_URL: postgresql://bodycast_stage01_test:integration_test_password@localhost:5432/bodycast_training_history_stage01_test
-        run: npm run test:integration
+        run: npm run test:integration -- --shard=${{ matrix.shard }}/2
 
   next-build:
     name: Next.js production build
@@ -198,6 +259,7 @@ jobs:
     needs:
       - quality
       - unit
+      - unit_coverage_merge
       - postgres_integration
       - next-build
       - container
@@ -207,15 +269,16 @@ jobs:
         env:
           QUALITY_RESULT: ${{ needs.quality.result }}
           UNIT_RESULT: ${{ needs.unit.result }}
+          UNIT_COVERAGE_RESULT: ${{ needs.unit_coverage_merge.result }}
           POSTGRES_RESULT: ${{ needs.postgres_integration.result }}
           BUILD_RESULT: ${{ needs.next-build.result }}
           CONTAINER_RESULT: ${{ needs.container.result }}
         run: |
           set -Eeuo pipefail
-          for result in "$QUALITY_RESULT" "$UNIT_RESULT" "$POSTGRES_RESULT" "$BUILD_RESULT" "$CONTAINER_RESULT"; do
+          for result in "$QUALITY_RESULT" "$UNIT_RESULT" "$UNIT_COVERAGE_RESULT" "$POSTGRES_RESULT" "$BUILD_RESULT" "$CONTAINER_RESULT"; do
             if [[ "$result" != "success" ]]; then
               echo "::error::A required CI gate did not succeed (result: $result)."
               exit 1
             fi
           done
-          echo "All five CI gates succeeded."
+          echo "All required CI gates succeeded."

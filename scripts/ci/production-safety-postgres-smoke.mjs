@@ -87,7 +87,7 @@ async function createSourceFixture(db = source) {
       finished_at timestamp, migration_name text NOT NULL, logs text,
       rolled_back_at timestamp, applied_steps_count integer NOT NULL DEFAULT 0
     );
-    CREATE TABLE public."DailyHealthData" (id integer PRIMARY KEY, date varchar(10) NOT NULL);
+    CREATE TABLE public."DailyHealthData" (id serial PRIMARY KEY, date varchar(10) NOT NULL);
     CREATE TABLE public."Workout" (
       id integer PRIMARY KEY,
       "dailyHealthDataId" integer NOT NULL REFERENCES public."DailyHealthData"(id) ON DELETE RESTRICT,

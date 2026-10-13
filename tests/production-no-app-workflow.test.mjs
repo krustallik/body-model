@@ -133,7 +133,7 @@ describe("no-app preparation workflow boundaries", () => {
     expect(host).toContain("assertPostgresClientCompatibility(process.argv[2], process.argv[3])");
     expect(noAppVerifier).toContain("evaluateProductionWriterDrain(report)");
     expect(host).not.toContain("assertFreshWriterDrain(after.report");
-    expect(host).not.toContain("assertFreshWriterDrain(snapshot.report");
+    expect(host).toContain("assertFreshWriterDrain(snapshot.report, { now: Date.now(), maxAgeMs: 30_000 })");
     expect(host).toContain("process.stdout.write(`${JSON.stringify(after)}\\n`)");
     expect(host).toContain('target_url="$(bash "$deploy_path/scripts/production-db-target.sh" --psql-url)"');
     expect(host).toContain('readonly DB_NETWORK="bodycast-backend-prod"');
@@ -402,8 +402,9 @@ ${host.slice(tailStart + 1)}`;
       await rm(dumpLogPath, { force: true });
       await writeFile(secondSnapshotPath, JSON.stringify(makeSnapshot(45, staleBeforeObservedAt)));
       const staleAfterResult = runFlow(path.join(temporaryDirectory, "host-tmp-stale-after"));
-      expect(staleAfterResult.status, staleAfterResult.stderr).toBe(0);
-      expect((await readFile(dumpLogPath, "utf8")).trim().split(/\r?\n/)).toEqual(["called"]);
+      expect(staleAfterResult.status).not.toBe(0);
+      expect(staleAfterResult.stderr).toContain("stale or from the future");
+      await expect(readFile(dumpLogPath, "utf8")).rejects.toThrow();
 
       await rm(dumpLogPath, { force: true });
       await writeFile(secondSnapshotPath, JSON.stringify(makeSnapshot(45, new Date().toISOString(), 2)));

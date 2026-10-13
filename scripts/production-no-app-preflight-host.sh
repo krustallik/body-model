@@ -261,6 +261,12 @@ cleanup() {
   rm -rf -- "$tmp"
 }
 trap cleanup EXIT TERM INT HUP
+node --input-type=module - "$tmp/final-snapshot.json" <<'NODE'
+import { readFileSync } from "node:fs";
+import { assertFreshWriterDrain } from "./scripts/production-writer-drain.mjs";
+const snapshot = JSON.parse(readFileSync(process.argv[2], "utf8"));
+assertFreshWriterDrain(snapshot.report, { now: Date.now(), maxAgeMs: 30_000 });
+NODE
 docker exec "$dump_container_id" sh -c \
   'printf "BODYCAST_PGDUMP_INVOCATION_AT=%s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2; exec pg_dump --format=custom --no-owner --no-privileges --username="$POSTGRES_USER" --dbname=bodycast' &
 dump_pid=$!

@@ -608,14 +608,35 @@ describe("verified resume of a failed production preflight", () => {
     expect(result.unverifiedHistoricalDeployRunIds).toEqual([]);
   });
 
-  it("admits a failed historical inspection with incomplete logs as UNVERIFIED metadata", () => {
-    const evidence = captureBlockedRetryEvidence();
+  it("accepts failed preflight 38213907625 with gapped historical steps only as UNVERIFIED", () => {
+    const sha = "3eec0b7d4b38f10de3083a9108b32fcbc1c201b3";
+    const jobs = captureBlockedRetryJobs();
+    jobs.jobs = jobs.jobs.map((job) => ({
+      ...job,
+      head_sha: sha,
+      steps: job.steps.map((step, index) => ({ ...step, number: index < 20 ? index + 1 : index + 18 })),
+    }));
+    const evidence = captureBlockedRetryEvidence({
+      run: captureBlockedRetryRun({ id: 38213907625, sha }),
+      jobs,
+    });
     const result = verifyWithCaptureBlockedRetries([evidence]);
-    expect(result.unverifiedHistoricalPreflightRunIds).toEqual(["38000669127"]);
+    expect(result.unverifiedHistoricalPreflightRunIds).toEqual(["38213907625"]);
+    expect(result.historicalPreflightEffects).toEqual([{
+      runId: "38213907625", sha, historicalEffects: "UNVERIFIED",
+    }]);
+    expect(result.unverifiedHistoricalAuthorizationOnlyPreflightRunIds).toEqual([]);
+  });
+
+  it("does not depend on order or numbers of historical failed-preflight steps", () => {
+    const evidence = captureBlockedRetryEvidence();
+    for (const job of evidence.jobs.jobs) {
+      job.steps = [...job.steps].reverse().map((step) => ({ ...step, number: 1 }));
+    }
+    const result = verifyWithCaptureBlockedRetries([evidence]);
     expect(result.historicalPreflightEffects).toEqual([{
       runId: "38000669127", sha: targetSha, historicalEffects: "UNVERIFIED",
     }]);
-    expect(result.unverifiedHistoricalAuthorizationOnlyPreflightRunIds).toEqual([]);
   });
   it("admits owner authorization-only failures separately from capture-blocked retries", () => {
     const historicalWorkflowId = historicalAuthorizationRetries[0].run.workflow_id;
@@ -677,8 +698,6 @@ describe("verified resume of a failed production preflight", () => {
       job.name.startsWith("Inspect,") ? { ...job, steps: [{ name: "unexpected", conclusion: "skipped", status: "completed", number: 1 }] } : job) }) }],
     ["job SHA mismatch", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
       job.name.startsWith("Authorize") ? { ...job, head_sha: sourceSha } : job) }) }],
-    ["duplicated step number", { jobs: { total_count: 2, jobs: withCompletedStepStatuses(safePreflightRetryJobs()).jobs.map((job) =>
-      job.name.startsWith("Authorize") ? { ...job, steps: job.steps.map((step, index) => index === 1 ? { ...step, number: 1 } : step) } : job) } }],
   ])("rejects an authorization-only retry when %s", (_label, evidenceOverrides) => {
     expect(() => verifyWithCaptureBlockedRetries([authorizationOnlyPreflightRetryEvidence(evidenceOverrides)]))
       .toThrow("cannot be safely resumed");
@@ -711,8 +730,8 @@ describe("verified resume of a failed production preflight", () => {
     ["retry not descended from source", { sourceShaIsAncestor: false }],
     ["incomplete artifact inventory", { artifacts: { total_count: 0 } }],
     ["incomplete job inventory", { jobs: captureBlockedRetryJobs({ total_count: 1 }) }],
-    ["step inventory has a gap", { jobs: captureBlockedRetryJobs({ jobs: captureBlockedRetryJobs().jobs.map((job) =>
-      job.name.startsWith("Inspect,") ? { ...job, steps: job.steps.map((step, index) => index === 1 ? { ...step, number: 9 } : step) } : job) }) }],
+    ["step metadata is incomplete", { jobs: captureBlockedRetryJobs({ jobs: captureBlockedRetryJobs().jobs.map((job) =>
+      job.name.startsWith("Inspect,") ? { ...job, steps: job.steps.map((step, index) => index === 1 ? { ...step, status: "in_progress" } : step) } : job) }) }],
   ])("blocks a failed historical inspection when %s", (_label, evidenceOverrides) => {
     const evidence = captureBlockedRetryEvidence(evidenceOverrides);
     expect(() => verifyWithCaptureBlockedRetries([evidence])).toThrow("cannot be safely resumed");

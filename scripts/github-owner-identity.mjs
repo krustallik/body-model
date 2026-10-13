@@ -45,7 +45,11 @@ export function assertTrustedOwnerWorkflowRun(run, {
   }
   assertPinnedOwnerId(run.actor?.id, "GitHub workflow actor ID");
   assertPinnedOwnerId(run.triggering_actor?.id, "GitHub workflow triggering actor ID");
-  if (requireInProgress && (run.status !== "in_progress" || run.conclusion !== null)) {
+  // The workflow-runs API can briefly lag job scheduling and report `queued`
+  // while this exact run's authorization step is already executing. Keep the
+  // exact identity bindings above and accept that transient state only while
+  // GitHub still reports no conclusion.
+  if (requireInProgress && (!["queued", "in_progress"].includes(run.status) || run.conclusion !== null)) {
     throw new Error("GitHub workflow run is no longer the exact active authorization attempt.");
   }
   return true;

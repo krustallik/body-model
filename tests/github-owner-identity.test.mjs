@@ -38,6 +38,10 @@ describe("pinned single-owner GitHub identity", () => {
     expect(assertTrustedOwnerWorkflowRun(run(), expected)).toBe(true);
   });
 
+  it("accepts the exact owner run while the GitHub API still reports queued without a conclusion", () => {
+    expect(assertTrustedOwnerWorkflowRun(run({ status: "queued" }), expected)).toBe(true);
+  });
+
   it.each([
     ["another actor", run({ actor: { id: 24680, login: "other" } })],
     ["non-owner rerun", run({ triggering_actor: { id: 24680, login: "other" } })],
@@ -48,6 +52,8 @@ describe("pinned single-owner GitHub identity", () => {
     ["wrong branch", run({ head_branch: "feature/test" })],
     ["wrong event", run({ event: "pull_request" })],
     ["wrong attempt", run({ run_attempt: 1 })],
+    ["queued run with a conclusion", run({ status: "queued", conclusion: "failure" })],
+    ["unknown run status", run({ status: "waiting" })],
     ["completed rerun", run({ status: "completed", conclusion: "success" })],
   ])("rejects %s", (_label, candidate) => {
     expect(() => assertTrustedOwnerWorkflowRun(candidate, expected)).toThrow();

@@ -54,6 +54,41 @@ describe("production V4 activation and cutover recovery", () => {
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
   }, 30_000);
 
+  it.skipIf(!bashAvailable)("uses the existing replayable V4 lifecycle without invoking the V3-only postflight", async () => {
+    const fixture = createFixture();
+    prepareV4ActivationFixture(fixture);
+    const result = await runFixtureAsync(fixture, "bash scripts/production-traffic-cutover.sh activate-v4-and-serve", {
+      BODYCAST_DEPLOY_SHA: fixture.candidateSha,
+      V4_LIFECYCLE_STATE: "v4-replayable",
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events.match(/unified-v4-lifecycle-inspection/g)).toHaveLength(2);
+    expect(events).not.toContain("unified-v3-postflight");
+    expect(events).toContain("unified-v4-activation");
+    expect(events).toContain("live-route-mutation:serving");
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("blocks unknown lifecycle inspection before stopping the app or changing traffic", async () => {
+    const fixture = createFixture();
+    prepareV4ActivationFixture(fixture);
+    const result = await runFixtureAsync(fixture, "bash scripts/production-traffic-cutover.sh activate-v4-and-serve", {
+      BODYCAST_DEPLOY_SHA: fixture.candidateSha,
+      V4_LIFECYCLE_STATE: "unknown",
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).not.toBe(0);
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events).toContain("unified-v4-lifecycle-inspection");
+    expect(events).not.toContain("compose-stop-app");
+    expect(events).not.toContain("unified-v3-postflight");
+    expect(events).not.toContain("unified-v4-activation");
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+    expect(appState(fixture)).toMatchObject({ status: "healthy", present: "true" });
+  }, 30_000);
+
   it.skipIf(!bashAvailable)("blocks V4 mutation when canonical main advances during final V3 postflight", async () => {
     const fixture = createFixture();
     prepareV4ActivationFixture(fixture);

@@ -268,6 +268,11 @@ if [[ "$1" == "compose" ]]; then
       if [[ "\${FAIL_FULL_HISTORY_RECALCULATE:-0}" == "1" ]]; then exit 45; fi
       exit 0
     fi
+    if [[ "$joined" == *"unified-v4-activate-replay.mjs"* && "$joined" == *"--inspect-lifecycle"* ]]; then
+      event "unified-v4-lifecycle-inspection"
+      printf '{"command":"unified-v4-activate-replay","profileId":1,"state":"%s"}\n' "\${V4_LIFECYCLE_STATE:-v3-ready}"
+      exit 0
+    fi
     if [[ "$joined" == *"unified-v3-postflight.mjs"* ]]; then
       event "unified-v3-postflight"
       v3_count="$(cat "$V3_POSTFLIGHT_COUNT_FILE" 2>/dev/null || printf '0')"

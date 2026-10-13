@@ -86,6 +86,7 @@ import {
 } from "@/model/unified-experimental-physiology-v1/contracts";
 import {
   activateAndReplayUnifiedV4,
+  inspectUnifiedV4Lifecycle,
   verifyAndPublishUnifiedV3Postflight,
   verifyPublishedV4Current,
   verifyUnifiedV4ReadyForTraffic,
@@ -239,6 +240,36 @@ function prepare() {
 
 describe("Unified V3/V4 rollout verification", () => {
   beforeEach(prepare);
+
+  it("classifies only current V3-ready and supported V4 lifecycle states", async () => {
+    mocks.state.lifecycle = lifecycle({
+      unifiedTargetRevision: V3,
+      unifiedRolloutEpoch: 0,
+      unifiedPublishedRolloutEpoch: null,
+    });
+    await expect(inspectUnifiedV4Lifecycle({ profileId: 17, client: mocks.prisma as never }))
+      .resolves.toEqual({ profileId: 17, state: "v3-ready" });
+
+    mocks.state.lifecycle = lifecycle({ unifiedPublishedRolloutEpoch: null, unifiedPublishedGeneration: null });
+    await expect(inspectUnifiedV4Lifecycle({ profileId: 17, client: mocks.prisma as never }))
+      .resolves.toEqual({ profileId: 17, state: "v4-replayable" });
+
+    mocks.state.lifecycle = lifecycle();
+    await expect(inspectUnifiedV4Lifecycle({ profileId: 17, client: mocks.prisma as never }))
+      .resolves.toEqual({ profileId: 17, state: "v4-current" });
+  });
+
+  it.each([
+    lifecycle({ productionPublishedGeneration: 3 }),
+    lifecycle({ productionStaleFromDate: date }),
+    lifecycle({ unifiedPublicationBlockedFromDate: date }),
+    lifecycle({ unifiedPublishedRolloutEpoch: null }),
+    lifecycle({ unifiedTargetRevision: "unknown-revision" }),
+  ])("blocks stale, partial, or unknown lifecycle evidence", async (state) => {
+    mocks.state.lifecycle = state;
+    await expect(inspectUnifiedV4Lifecycle({ profileId: 17, client: mocks.prisma as never }))
+      .rejects.toThrow(/lifecycle|publication-blocked/i);
+  });
 
   it("verifies current V4 coverage and permits Forecast V2 traffic", async () => {
     const result = await verifyUnifiedV4ReadyForTraffic({ profileId: 17, client: mocks.prisma as never });

@@ -587,8 +587,20 @@ if [[ "$MODE" == "full-history-recalculate" ]]; then
   exit 0
 fi
 
+inspect_unified_v4_lifecycle() {
+  local output
+  output="$(compose --profile tools run --rm --no-deps --entrypoint node migrate \
+    /app/scripts/unified-v4-activate-replay.mjs --inspect-lifecycle --profile-id 1)" || return 1
+  case "$output" in
+    '{"command":"unified-v4-activate-replay","profileId":1,"state":"v3-ready"}') printf '%s\n' "v3-ready" ;;
+    '{"command":"unified-v4-activate-replay","profileId":1,"state":"v4-replayable"}') printf '%s\n' "v4-replayable" ;;
+    '{"command":"unified-v4-activate-replay","profileId":1,"state":"v4-current"}') printf '%s\n' "v4-current" ;;
+    *) echo "Unified lifecycle inspection returned unknown or malformed evidence." >&2; return 1 ;;
+  esac
+}
+
 activate_v4_and_serve() {
-  local expected_release_sha app_release_sha candidate_image_id candidate_image_after marker_status maintenance_marker marker_digest
+  local expected_release_sha app_release_sha candidate_image_id candidate_image_after marker_status maintenance_marker marker_digest lifecycle_state lifecycle_state_after
   expected_release_sha="${BODYCAST_DEPLOY_SHA:-${DEPLOY_SHA:-}}"
   [[ "$expected_release_sha" =~ ^[a-f0-9]{40}$ ]] || {
     echo "Owner-authorized V4 activation requires a full exact release SHA." >&2
@@ -649,8 +661,11 @@ activate_v4_and_serve() {
   }
 
   compose --profile tools build migrate
-  compose --profile tools run --rm --no-deps --entrypoint node migrate \
-    /app/scripts/unified-v3-postflight.mjs --profile-id 1
+  lifecycle_state="$(inspect_unified_v4_lifecycle)" || return 1
+  if [[ "$lifecycle_state" == "v3-ready" ]]; then
+    compose --profile tools run --rm --no-deps --entrypoint node migrate \
+      /app/scripts/unified-v3-postflight.mjs --profile-id 1
+  fi
 
   # Stop/remove the app so the fixed topology can prove there are no persistent
   # database writers while activation/replay runs. Any failure remains under
@@ -684,10 +699,17 @@ activate_v4_and_serve() {
   bodycast_verify_exact_maintenance_route
   bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
   bash "$ROOT_DIR/scripts/deploy-preflight-schema.sh"
-  compose --profile tools run --rm --no-deps --entrypoint node migrate \
-    /app/scripts/unified-v3-postflight.mjs --profile-id 1
+  lifecycle_state_after="$(inspect_unified_v4_lifecycle)" || return 1
+  [[ "$lifecycle_state_after" == "$lifecycle_state" ]] || {
+    echo "Unified lifecycle changed between inspection and V4 activation." >&2
+    return 1
+  }
+  if [[ "$lifecycle_state_after" == "v3-ready" ]]; then
+    compose --profile tools run --rm --no-deps --entrypoint node migrate \
+      /app/scripts/unified-v3-postflight.mjs --profile-id 1
+  fi
 
-  # V3/schema checks are read-only but can take long enough for canonical main
+  # Lifecycle/schema checks are read-only but can take long enough for canonical main
   # to advance. Refresh it as the final gate immediately before V4 DML.
   bodycast_assert_current_main_sha "$expected_release_sha"
 

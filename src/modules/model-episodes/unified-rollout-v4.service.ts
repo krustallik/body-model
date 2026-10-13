@@ -314,6 +314,39 @@ export async function verifyAndPublishUnifiedV3Postflight(input: {
   return { profileId, dayCount: range.days.length, rangeToken: capturedToken };
 }
 
+export async function inspectUnifiedV4Lifecycle(input: {
+  profileId?: number;
+  client?: PrismaClient;
+} = {}): Promise<{ profileId: number; state: "v3-ready" | "v4-replayable" | "v4-current" }> {
+  const client = input.client ?? prisma;
+  const profileId = input.profileId ?? 1;
+  const lifecycle = await client.physiologyV7Lifecycle.findUnique({ where: { profileId } });
+  if (!lifecycle || lifecycle.productionStaleFromDate !== null
+      || lifecycle.productionPublishedGeneration !== lifecycle.invalidationGeneration
+      || lifecycle.unifiedPublicationBlockedFromDate !== null) {
+    throw new Error("Unified lifecycle is missing, stale, or publication-blocked");
+  }
+  if (lifecycle.unifiedTargetRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION
+      && lifecycle.unifiedRolloutEpoch === 0
+      && lifecycle.unifiedPublishedGeneration === lifecycle.invalidationGeneration
+      && (lifecycle.unifiedPublishedRolloutEpoch === null || lifecycle.unifiedPublishedRolloutEpoch === 0)) {
+    return { profileId, state: "v3-ready" };
+  }
+  if (lifecycle.unifiedTargetRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION
+      && lifecycle.unifiedRolloutEpoch >= 1
+      && lifecycle.unifiedPublishedRolloutEpoch === null
+      && lifecycle.unifiedPublishedGeneration === null) {
+    return { profileId, state: "v4-replayable" };
+  }
+  if (lifecycle.unifiedTargetRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION
+      && lifecycle.unifiedRolloutEpoch >= 1
+      && lifecycle.unifiedPublishedRolloutEpoch === lifecycle.unifiedRolloutEpoch
+      && lifecycle.unifiedPublishedGeneration === lifecycle.invalidationGeneration) {
+    return { profileId, state: "v4-current" };
+  }
+  throw new Error("Unified lifecycle is not in a supported V3-ready or V4 activation state");
+}
+
 export async function activateAndReplayUnifiedV4(input: {
   profileId?: number;
   client?: PrismaClient;

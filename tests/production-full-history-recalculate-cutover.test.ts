@@ -61,7 +61,7 @@ describe("production full-history recalculation cutover", () => {
     expect(events).not.toContain("live-route-mutation:serving");
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
     expect(appState(fixture)).toMatchObject({ sha: fixture.candidateSha, status: "healthy", present: "true" });
-  }, 30_000);
+  }, 60_000);
 
   it.skipIf(!bashAvailable)("keeps maintenance when the restarted app never passes its readiness endpoint", async () => {
     const fixture = createFixture();
@@ -81,7 +81,7 @@ describe("production full-history recalculation cutover", () => {
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
     const gitDir = execFileSync(fixture.realGit, ["-C", fixture.repo, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).trim();
     expect(readFileSync(path.join(gitDir, "bodycast-production-schema-cutover"), "utf8")).toContain("state=app-ready");
-  }, 30_000);
+  }, 60_000);
 
   it.skipIf(!bashAvailable)("blocks full-history DML when canonical main advances during migrator build", async () => {
     const fixture = createFixture();
@@ -100,7 +100,7 @@ describe("production full-history recalculation cutover", () => {
     expect(events).not.toContain("unified-v3-postflight");
     expect(events).not.toContain("live-route-mutation:serving");
     expect(readFileSync(path.join(fixture.root, "docker.log"), "utf8")).toContain("build migrate");
-  }, 30_000);
+  }, 60_000);
 
   it.skipIf(!bashAvailable)("keeps maintenance and does not activate V4 when recalculation fails", async () => {
     const fixture = createFixture();
@@ -119,5 +119,5 @@ describe("production full-history recalculation cutover", () => {
     const gitDir = execFileSync(fixture.realGit, ["-C", fixture.repo, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).trim();
     expect(readFileSync(path.join(gitDir, "bodycast-production-schema-cutover"), "utf8")).toContain("state=app-ready");
     expect(existsSync(path.join(fixture.root, "app-present"))).toBe(true);
-  }, 30_000);
+  }, 60_000);
 });

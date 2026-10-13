@@ -99,6 +99,7 @@ jobs:
           --coverage.thresholds.branches=0
           --coverage.thresholds.functions=0
           --coverage.thresholds.statements=0
+          --reporter=dot
           --reporter=blob
           --shard=${{ matrix.shard }}/2
 

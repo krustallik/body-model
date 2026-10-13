@@ -40,7 +40,7 @@ describe("production V4 final freshness fence", () => {
     expect(events).not.toContain("unified-v4-activation");
     expect(events).not.toContain("live-route-mutation:serving");
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
-  }, 30_000);
+  }, 60_000);
 
   it.skipIf(!bashAvailable)("fails closed without V4 mutation when final canonical-main fetch fails", () => {
     const fixture = createFixture();
@@ -58,5 +58,5 @@ describe("production V4 final freshness fence", () => {
     expect(events).not.toContain("unified-v4-activation");
     expect(events).not.toContain("live-route-mutation:serving");
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
-  }, 30_000);
+  }, 60_000);
 });

@@ -823,10 +823,32 @@ describe("verified resume of a failed production preflight", () => {
     expect(result.unverifiedHistoricalRunIds).toEqual([String(run.id)]);
   });
 
-  it("rejects historical no-app metadata that omits a required gate even when the inventory is long", () => {
-    const evidence = structuredClone(successfulHistoricalNoAppPreparation);
-    evidence.jobs.jobs[1].steps.splice(6, 1);
-    expect(evidence.jobs.jobs[1].steps.length).toBeGreaterThanOrEqual(18);
+  it("classifies no-app run 38277367225 as UNVERIFIED despite gapped, unordered, and missing housekeeping steps", () => {
+    const evidence = structuredClone(failedHistoricalNoAppAfterRehearsal);
+    evidence.run.id = 38277367225;
+    evidence.run.head_sha = "a19be5be5b9cc37b8d19031fcf09ecb4324ad894";
+    evidence.run.display_title = `No-app prep ${evidence.run.head_sha} unified-v4-republication-v1`;
+    for (const job of evidence.jobs.jobs) job.head_sha = evidence.run.head_sha;
+    evidence.jobs.jobs[0].steps.forEach((step, index) => { step.number = [1, 2, 3, 6, 7][index]; });
+    evidence.jobs.jobs[0].steps = evidence.jobs.jobs[0].steps.filter((step) => step.name !== "Complete job");
+    evidence.jobs.jobs[1].steps.forEach((step, index) => { step.number = index < 17 ? index + 1 : index + 15; });
+    evidence.jobs.jobs[1].steps = evidence.jobs.jobs[1].steps
+      .filter((step) => step.name !== "Complete job").reverse();
+    const run = evidence.run;
+    const result = verify({
+      laterRuns: [run, {
+        id: 99999999999, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress",
+      }],
+      safeHistoricalNoAppRuns: [evidence],
+      noAppWorkflowId: run.workflow_id,
+      isAncestorOfCurrentMain: () => true,
+    });
+    expect(result.unverifiedHistoricalRunIds).toEqual(["38277367225"]);
+  });
+
+  it("still requires a failed no-app job to expose a failed operation boundary", () => {
+    const evidence = structuredClone(failedHistoricalNoAppAfterRehearsal);
+    evidence.jobs.jobs[1].steps = evidence.jobs.jobs[1].steps.map((step) => ({ ...step, conclusion: "success" }));
     const run = evidence.run;
     expect(() => verify({
       laterRuns: [run, {

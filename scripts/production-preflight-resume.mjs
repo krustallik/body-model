@@ -183,7 +183,7 @@ const HISTORICAL_STEP_CONCLUSIONS = new Set([
   "success", "failure", "cancelled", "skipped", "timed_out", "action_required", "stale", "neutral",
 ]);
 
-function assertCompleteJobInventory(payload, run, expectedJobs, description, { validateStepSequence = true } = {}) {
+function assertCompleteJobInventory(payload, run, expectedJobs, description) {
   const jobs = payload?.jobs;
   const expectedNames = new Set(expectedJobs);
   if (!Array.isArray(jobs) || payload.total_count !== expectedNames.size || jobs.length !== expectedNames.size
@@ -195,10 +195,6 @@ function assertCompleteJobInventory(payload, run, expectedJobs, description, { v
     if (job.status !== "completed" || job.head_sha !== run.head_sha || job.run_attempt !== run.run_attempt
       || !Array.isArray(job.steps) || (job.conclusion !== "skipped" && job.steps.length === 0)) {
       reject(`${description} has incomplete job or step metadata.`);
-    }
-    if (validateStepSequence && (job.steps.some((step, index) => step?.number !== index + 1)
-      || (job.conclusion !== "skipped" && job.steps.at(-1)?.name !== "Complete job"))) {
-      reject(`${description} has an incomplete step sequence.`);
     }
     if (job.steps.some((step) => typeof step?.name !== "string" || !step.name.trim()
       || !HISTORICAL_STEP_CONCLUSIONS.has(step.conclusion)
@@ -481,9 +477,7 @@ function assertSafeFailedPreflightRetry(evidence, { historyRun, preflightWorkflo
     "Authorize read-only preflight",
     "Inspect, back up, restore, and rehearse on disposable PostgreSQL",
   ];
-  const jobs = assertCompleteJobInventory(evidence.jobs, run, expectedJobs, "a later failed preflight", {
-    validateStepSequence: false,
-  });
+  const jobs = assertCompleteJobInventory(evidence.jobs, run, expectedJobs, "a later failed preflight");
   const authorize = jobs.get("Authorize read-only preflight");
   const inspect = jobs.get("Inspect, back up, restore, and rehearse on disposable PostgreSQL");
   const artifacts = evidence.artifacts;
@@ -573,7 +567,7 @@ function assertSafeAuthorizationOnlyPreflightRetry(evidence, { preflightWorkflow
   }
   const jobs = assertCompleteJobInventory(evidence.jobs, run, [
     "Authorize read-only preflight", "Inspect, back up, restore, and rehearse on disposable PostgreSQL",
-  ], "an authorization-only preflight", { validateStepSequence: false });
+  ], "an authorization-only preflight");
   const authorize = jobs.get("Authorize read-only preflight");
   const inspect = jobs.get("Inspect, back up, restore, and rehearse on disposable PostgreSQL");
   if (authorize.conclusion !== "failure" || inspect.conclusion !== "skipped" || inspect.steps.length !== 0

@@ -110,30 +110,27 @@ describe("production deploy evidence source binding", () => {
 
   it("accepts the actual historical owner retries under their immutable authorization controls", () => {
     const currentMainSha = "029bbe81a341abe2e8642564b8c4fa2e0b3f00a8";
+    const updatedMainSha = "fce2329260599e566ee9c36a7bcf3ceb1dfab3d2";
     expect(historicalAuthorizationRetries.map(({ run }) => String(run.id))).toEqual([
       "38379375890", "38379548326", "38384779107",
     ]);
     for (const { run, jobs, artifacts } of historicalAuthorizationRetries) {
       expect(preflightAuthorizationControlsMatch(run.head_sha, currentMainSha)).toBe(true);
+      expect(preflightAuthorizationControlsMatch(run.head_sha, updatedMainSha)).toBe(true);
       expect(jobs.total_count).toBe(2);
       expect(jobs.jobs.find((job) => job.name === "Inspect, back up, restore, and rehearse on disposable PostgreSQL"))
         .toMatchObject({ conclusion: "skipped", steps: [] });
       expect(artifacts).toEqual({ total_count: 0, artifacts: [] });
     }
+    expect(preflightAuthorizationControlsMatch("3ede9e1644616e65edb3ac29a49df2f109786942", updatedMainSha)).toBe(true);
     expect(preflightCaptureResumeControlsMatch("3eec0b7d4b38f10de3083a9108b32fcbc1c201b3", currentMainSha)).toBe(true);
     expect(deployControlFilesMatch("7ccaf1018c55f6ed2dfa3124992b75d5a43b052a", currentMainSha)).toBe(true);
     expect(preflightAuthorizationControlsMatch("f".repeat(40), currentMainSha)).toBe(false);
   });
 
-  it("keeps shell command boundaries significant in authorization controls", async () => {
+  it("rejects an unreviewed authorization profile with a changed owner guard", async () => {
     const tempDir = await mkdtemp(path.join(tmpdir(), "bodycast-auth-command-boundary-"));
     const workflowPath = path.join(tempDir, ".github/workflows/production-migration-preflight.yml");
-    const workflow = (commands) => [
-      "permissions:", "  contents: read", "  actions: read", "concurrency:",
-      "  group: bodycast-production-release", "  cancel-in-progress: false", "jobs:", "  authorize:",
-      "    runs-on: ubuntu-latest", "    steps:", "      - name: Gate", "        run: |",
-      ...commands.map((line) => "          " + line), "  inspect_backup_restore:", "    steps: []", "",
-    ].join("\n");
     const commit = (message) => {
       execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
       execFileSync("git", ["-C", tempDir, "-c", "user.name=BodyCast Test", "-c", "user.email=bodycast-test@example.invalid",
@@ -143,10 +140,15 @@ describe("production deploy evidence source binding", () => {
     try {
       execFileSync("git", ["-c", "init.defaultBranch=main", "init", tempDir], { stdio: "ignore" });
       await mkdir(path.dirname(workflowPath), { recursive: true });
-      await writeFile(workflowPath, workflow(["echo safe", "touch /tmp/proof"]));
-      const oldSha = commit("old auth body");
-      await writeFile(workflowPath, workflow(["echo safe touch /tmp/proof"]));
-      const newSha = commit("changed shell command boundary");
+      const reviewedWorkflow = execFileSync("git", ["show", "029bbe81a341abe2e8642564b8c4fa2e0b3f00a8:.github/workflows/production-migration-preflight.yml"],
+        { cwd: process.cwd(), encoding: "utf8" });
+      await writeFile(workflowPath, reviewedWorkflow);
+      const oldSha = commit("reviewed auth controls");
+      const changedOwnerGuard = reviewedWorkflow.replace('DISPATCH_ACTOR_ID" == "126446430"', 'DISPATCH_ACTOR_ID" == "126446431"');
+      expect(changedOwnerGuard).not.toBe(reviewedWorkflow);
+      await writeFile(workflowPath, changedOwnerGuard);
+      const newSha = commit("changed pinned owner control");
+      expect(preflightAuthorizationControlsMatch(oldSha, oldSha, tempDir)).toBe(true);
       expect(preflightAuthorizationControlsMatch(oldSha, newSha, tempDir)).toBe(false);
     } finally {
       await rm(tempDir, { recursive: true, force: true });

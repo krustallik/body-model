@@ -110,6 +110,16 @@ const REVIEWED_NO_APP_CONTROL_PROFILE_DIGESTS = new Set([
   "620e282707e9618beda7f4d29163d955928f971d939479d15903f7782f47626e",
   "bea2ae68fa3a946779011c3c43b249ddaecfdd3c7646b6b46f180fc1ee80b5db",
 ]);
+// Exact authorization-workflow profiles observed on the immutable owner-run
+// commits in this resume chain and on current main. New profiles fail closed;
+// historical evidence is checked against its own profile, not today's expanded
+// read-only evidence collector.
+const REVIEWED_PREFLIGHT_AUTHORIZATION_CONTROL_PROFILE_DIGESTS = new Set([
+  "e28fe933e0655ed16abecbf21763f2b73597238401a8700087bb991aec39e198",
+  "24d171741cc47f123e842ef8dc3bfe9f91a0367fd0f0fb1c9e6cc5d5b93f6946",
+  "b466f603d8366f0b2493e29348a766c01de078bf20bdb7ff37f3254f3781ad88",
+  "d0ef513d346dbb3a3b39c517c143c6d6daebee91a2b6b30323b476e7efa3b881",
+]);
 const DEPLOY_AUTHORIZE_STEPS = Object.freeze([
   ["Set up job", "success"],
   ["Checkout main gate helpers", "success"],
@@ -480,35 +490,23 @@ function workflowTopLevelBlock(source, blockName) {
 export function preflightAuthorizationControlsMatch(runSha, currentMainSha, cwd = process.cwd()) {
   if (!/^[a-f0-9]{40}$/.test(String(runSha ?? "")) || !/^[a-f0-9]{40}$/.test(String(currentMainSha ?? ""))) return false;
   try {
-    const priorWorkflow = execFileSync("git", ["show", `${runSha}:${PREFLIGHT_PATH}`], { cwd, encoding: "utf8" });
-    const currentWorkflow = execFileSync("git", ["show", `${currentMainSha}:${PREFLIGHT_PATH}`], { cwd, encoding: "utf8" });
-    const priorAuthorizeJob = workflowJobBlock(priorWorkflow, "authorize");
-    const currentAuthorizeJob = workflowJobBlock(currentWorkflow, "authorize");
-    return priorAuthorizeJob !== null
-      && currentAuthorizeJob !== null
-      && normalizeHistoricalAuthorizationEvidenceExtension(priorAuthorizeJob)
-        === normalizeHistoricalAuthorizationEvidenceExtension(currentAuthorizeJob)
-      && workflowTopLevelBlock(priorWorkflow, "permissions") === workflowTopLevelBlock(currentWorkflow, "permissions")
-      && workflowTopLevelBlock(priorWorkflow, "env") === workflowTopLevelBlock(currentWorkflow, "env")
-      && workflowTopLevelBlock(priorWorkflow, "defaults") === workflowTopLevelBlock(currentWorkflow, "defaults")
-      && workflowTopLevelBlock(priorWorkflow, "concurrency") === workflowTopLevelBlock(currentWorkflow, "concurrency");
+    const profileDigest = (sha) => {
+      const workflow = gitTextAt(sha, PREFLIGHT_PATH, cwd);
+      const authorizeJob = workflowJobBlock(workflow, "authorize");
+      if (authorizeJob === null) return null;
+      const controls = [authorizeJob, ...["permissions", "env", "defaults", "concurrency"]
+        .map((name) => workflowTopLevelBlock(workflow, name) ?? "")]
+        .join("\n---\n");
+      return createHash("sha256").update(controls).digest("hex");
+    };
+    const historicalDigest = profileDigest(runSha);
+    const currentDigest = profileDigest(currentMainSha);
+    return historicalDigest !== null && currentDigest !== null
+      && REVIEWED_PREFLIGHT_AUTHORIZATION_CONTROL_PROFILE_DIGESTS.has(historicalDigest)
+      && REVIEWED_PREFLIGHT_AUTHORIZATION_CONTROL_PROFILE_DIGESTS.has(currentDigest);
   } catch {
     return false;
   }
-}
-
-function normalizeHistoricalAuthorizationEvidenceExtension(source) {
-  // PR #88 added an authenticated, read-only artifact inventory to historical
-  // retry collection. It did not add production access or change the owner gate.
-  // Normalize only that exact API/read-only serialization extension; any other
-  // authorization-control change remains unknown and fails closed.
-  return String(source)
-    .replace(/^[ \t]*gh api "repos\/krustallik\/body-model\/actions\/runs\/\$retry_run_id\/artifacts" > "\$RUNNER_TEMP\/resume-safe-preflight-\$retry_run_id-artifacts\.json"[ \t]*\r?\n/gm, "")
-    .replace(/^[ \t]*const artifactsPath = runPath\.replace\(\/-run\\\.json\$\/, "-artifacts\.json"\);\r?\n[ \t]*if \(artifactsPath === runPath\) throw new Error\("Preflight retry artifact inventory path is malformed\."\);\r?\n/gm, "")
-    .replace(/, artifacts: JSON\.parse\(readFileSync\(artifactsPath, "utf8"\)\)/g, "")
-    .replace(/^[ \t]*process\.stdout\.write\(`\$\{JSON\.stringify\(\{ run: JSON\.parse\(readFileSync\(runPath, "utf8"\)\),[ \t]*\r?\n?[ \t]*jobs: JSON\.parse\(readFileSync\(jobsPath, "utf8"\)\) \}\)\}\\n`\);[ \t]*$/gm, "<reviewed-run-jobs-json-serialization>")
-    .replace(/^[ \t]*process\.stdout\.write\(`\$\{JSON\.stringify\(\{ run: JSON\.parse\(readFileSync\(runPath, "utf8"\)\), jobs: JSON\.parse\(readFileSync\(jobsPath, "utf8"\)\) \}\)\}\\n`\);[ \t]*$/gm, "<reviewed-run-jobs-json-serialization>")
-    .replace(/\r\n?/g, "\n");
 }
 
 const PREFLIGHT_CAPTURE_SHELL_FUNCTIONS = Object.freeze([

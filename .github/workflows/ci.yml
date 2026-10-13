@@ -146,7 +146,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      NODE_ENV: production
+      NODE_ENV: test
       DATABASE_URL: postgresql://bodycast_stage01_test:integration_test_password@localhost:5432/bodycast_training_history_stage01_test
       IOS_SHORTCUT_API_KEY: integration-test-secret
     steps:
@@ -169,6 +169,8 @@ jobs:
         run: npm run prisma:generate
 
       - name: Next.js production build
+        env:
+          NODE_ENV: production
         run: npm run build
 
   container:

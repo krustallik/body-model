@@ -127,7 +127,7 @@ jobs:
           fi
           [[ "$DISPATCH_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::release_sha must be a full lowercase commit SHA."; exit 1; }
           git fetch --no-tags origin main
-          MAIN_TIP="$(gh api repos/krustallik/body-model/commits/main --jq .sha)"
+          MAIN_TIP="$(git rev-parse --verify FETCH_HEAD)"
           [[ "$MAIN_TIP" == "$(git rev-parse origin/main)" && "$MAIN_TIP" == "$GITHUB_SHA" && "$MAIN_TIP" == "$DISPATCH_SHA" ]] || {
             echo "::error::Requested SHA, checked out main and canonical main do not match."; exit 1;
           }

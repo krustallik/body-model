@@ -163,6 +163,7 @@ cp "$ROOT/scripts/production-route-path.sh" "$FIXTURE_ROOT/scripts/production-ro
 cp "$ROOT/scripts/production-route-primitives.sh" "$FIXTURE_ROOT/scripts/production-route-primitives.sh"
 cp "$DEPLOY" "$FIXTURE_ROOT/scripts/deploy-migrate.sh"
 cp "$ROOT/scripts/production-release-marker.sh" "$FIXTURE_ROOT/scripts/production-release-marker.sh"
+cp "$ROOT/scripts/production-schema-deploy-handoff.mjs" "$FIXTURE_ROOT/scripts/production-schema-deploy-handoff.mjs"
 cp "$LOCK" "$FIXTURE_ROOT/scripts/production-release-lock.sh"
 cp "$ROOT/scripts/production-migration-manifests.mjs" "$FIXTURE_ROOT/scripts/production-migration-manifests.mjs"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$FIXTURE_ROOT/scripts/deploy-preflight-schema.sh"
@@ -309,6 +310,40 @@ grep -Fq 'only an exact verified pre-spawn marker has an owner-authorized forwar
 test ! -s "$DOCKER_LOG"
 [[ "$(<"$MIGRATION_COUNT")" == "1" ]]
 [[ "$(sha256sum "$FIXTURE_GIT_DIR/bodycast-production-release-marker/marker" | awk '{print $1}')" == "$MARKER_DIGEST" ]]
+
+# V4 deployment handoff transitions through schema V3 while preserving the
+# exact successful migration run and signed authorization lineage.
+V4_MIGRATION_ORIGIN_SHA="8b4a195e8afb67c0a913d0175a030e01cc665732"
+V4_AUTHORIZATION_ID="4c990873-d8d1-492b-a73d-ca36823e6b79"
+V4_LINEAGE_DIGEST="ccf2a37b8f255337760cb2156385bac434650fba70af32fe9fc73c0b8e414768"
+V4_MARKER_PATH="$FIXTURE_GIT_DIR/bodycast-production-release-marker/marker"
+mkdir -p "$(dirname "$V4_MARKER_PATH")"
+printf 'schemaVersion=3\nmanifestId=unified-v4-republication-v1\nmigrationOriginSha=%s\ndeploySha=%s\nstate=schema-applied\nworkflowRunId=38447647403\nworkflowRunAttempt=1\nauthorizationId=%s\nlineageDigest=%s\nspawnState=started\nsourceMarkerDigest=%064d\ncompatibilityDigest=%064d\n' \
+  "$V4_MIGRATION_ORIGIN_SHA" "$NEW_RELEASE_SHA" "$V4_AUTHORIZATION_ID" "$V4_LINEAGE_DIGEST" 1 2 > "$V4_MARKER_PATH"
+env PATH="$FIXTURE_BIN:$PATH" FIXTURE_ROOT="$FIXTURE_ROOT" FIXTURE_GIT_DIR="$FIXTURE_GIT_DIR" \
+  FAKE_DEPLOY_SHA="$NEW_RELEASE_SHA" REAL_GIT="$REAL_GIT" SOURCE_ROOT="$ROOT" \
+  bash -c 'source "$FIXTURE_ROOT/scripts/production-release-marker.sh"; \
+    read_bodycast_release_marker; \
+    [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == 3 && "$BODYCAST_MARKER_MANIFEST_ID" == "unified-v4-republication-v1" \
+      && "$BODYCAST_MARKER_MIGRATION_ORIGIN_SHA" == "8b4a195e8afb67c0a913d0175a030e01cc665732" \
+      && "$BODYCAST_MARKER_WORKFLOW_RUN_ID" == "38447647403" ]]; \
+    write_bodycast_release_marker "$FAKE_DEPLOY_SHA" app-ready; \
+    read_bodycast_release_marker; \
+    [[ "$BODYCAST_MARKER_STATE" == "app-ready" && "$BODYCAST_MARKER_MIGRATION_ORIGIN_SHA" == "8b4a195e8afb67c0a913d0175a030e01cc665732" \
+      && "$BODYCAST_MARKER_AUTHORIZATION_ID" == "4c990873-d8d1-492b-a73d-ca36823e6b79" \
+      && "$BODYCAST_MARKER_LINEAGE_DIGEST" == "ccf2a37b8f255337760cb2156385bac434650fba70af32fe9fc73c0b8e414768" ]]'
+grep -Fxq "migrationOriginSha=$V4_MIGRATION_ORIGIN_SHA" "$V4_MARKER_PATH"
+grep -Fxq "workflowRunId=38447647403" "$V4_MARKER_PATH"
+sed -i 's/^lineageDigest=.*/lineageDigest=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/' "$V4_MARKER_PATH"
+V4_INVALID_MARKER_DIGEST="$(sha256sum "$V4_MARKER_PATH" | awk '{print $1}')"
+if env PATH="$FIXTURE_BIN:$PATH" FIXTURE_ROOT="$FIXTURE_ROOT" FIXTURE_GIT_DIR="$FIXTURE_GIT_DIR" \
+  FAKE_DEPLOY_SHA="$NEW_RELEASE_SHA" REAL_GIT="$REAL_GIT" SOURCE_ROOT="$ROOT" \
+  bash -c 'source "$FIXTURE_ROOT/scripts/production-release-marker.sh"; read_bodycast_release_marker' > "$TMP/v4-marker-invalid.log" 2>&1; then
+  echo "Expected the shell marker reader to reject substituted V4 authorization lineage." >&2
+  exit 1
+fi
+grep -Fq 'schema deploy handoff marker provenance is not admitted' "$TMP/v4-marker-invalid.log"
+[[ "$(sha256sum "$V4_MARKER_PATH" | awk '{print $1}')" == "$V4_INVALID_MARKER_DIGEST" ]]
 
 if run_fixture_command allow "$OLD_RELEASE_SHA" "$TMP/old-app-blocked.log" "$FIXTURE_ROOT/scripts/deploy.sh"; then
   echo "Expected the previous app SHA to be blocked while the marker exists." >&2

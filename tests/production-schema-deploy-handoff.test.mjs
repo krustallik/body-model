@@ -1,16 +1,17 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   SCHEMA_DEPLOY_HANDOFF_PROVENANCE, SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA,
+  V4_REPUBLICATION_HANDOFF_PROVENANCE, V4_REPUBLICATION_MIGRATION_ORIGIN_SHA,
   applySchemaDeployHandoff, evaluateSchemaDeployHandoff, parseSchemaDeployMarker,
   readGitCompatibility, renderSchemaDeployTransition,
 } from "../scripts/production-schema-deploy-handoff.mjs";
 
 const DEPLOY_SHA = "71c091cd712cd3862d2cebe2714963917c9b5ca2";
-const V4_MIGRATION_SHA = "19a660c4c23081b6dc54e0ecd19d79806c8ecf4c";
+const V4_MIGRATION_SHA = V4_REPUBLICATION_MIGRATION_ORIGIN_SHA;
 const SCHEMA_COMPATIBLE_CHECKOUT_SHA = "9c7a6c9ac9270da52e6e2f5afe55094106f66e2d";
 const provenance = SCHEMA_DEPLOY_HANDOFF_PROVENANCE;
 const directories = [];
@@ -46,14 +47,9 @@ function markerText(overrides = {}) {
 
 function v4MigrationMarkerText(overrides = {}) {
   const marker = {
-    manifestId: "unified-v4-republication-v1",
+    ...V4_REPUBLICATION_HANDOFF_PROVENANCE,
     releaseSha: V4_MIGRATION_SHA,
     state: "schema-applied",
-    workflowRunId: "390001",
-    workflowRunAttempt: 1,
-    authorizationId: "authorization-v4-manifest-12345",
-    lineageDigest: "b".repeat(64),
-    spawnState: "started",
     ...overrides,
   };
   return [
@@ -68,6 +64,16 @@ function v4MigrationMarkerText(overrides = {}) {
     `spawnState=${marker.spawnState}`,
     "",
   ].join("\n");
+}
+
+function v4AppReadyMarkerText(overrides = {}) {
+  return markerText({
+    ...V4_REPUBLICATION_HANDOFF_PROVENANCE,
+    releaseSha: V4_REPUBLICATION_MIGRATION_ORIGIN_SHA,
+    manifestId: "unified-v4-republication-v1",
+    state: "app-ready",
+    ...overrides,
+  });
 }
 
 const compatible = {
@@ -97,11 +103,70 @@ describe("schema deploy compatibility handoff", () => {
       marker: { manifestId: "unified-v4-republication-v1", releaseSha: V4_MIGRATION_SHA, state: "schema-applied", spawnState: "started" },
     });
     expect(() => evaluateSchemaDeployHandoff({ markerText: marker, deploySha: "a".repeat(40) }))
-      .toThrow(/migration provenance/);
+      .toThrow(/V4 migration marker/);
     expect(() => evaluateSchemaDeployHandoff({ markerText: v4MigrationMarkerText({ spawnState: "not-started" }), deploySha: V4_MIGRATION_SHA }))
-      .toThrow(/migration provenance/);
+      .toThrow(/V4 migration marker/);
     expect(() => evaluateSchemaDeployHandoff({ markerText: v4MigrationMarkerText({ workflowRunId: "0" }), deploySha: V4_MIGRATION_SHA }))
-      .toThrow(/migration provenance/);
+      .toThrow(/V4 migration marker/);
+  });
+
+  it("hands off the verified V4 app-ready migration marker to the exact compatible descendant", () => {
+    const candidateSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim();
+    const compatibility = readGitCompatibility(process.cwd(), candidateSha, V4_REPUBLICATION_MIGRATION_ORIGIN_SHA);
+    expect(compatibility.isAncestor).toBe(true);
+    expect(compatibility.changedPaths).toContain("scripts/unified-v4-activate-replay.ts");
+    expect(compatibility.changedPaths).toContain("src/modules/model-episodes/unified-rollout-v4.service.ts");
+    const plan = evaluateSchemaDeployHandoff({
+      markerText: v4AppReadyMarkerText(), deploySha: candidateSha, ...compatibility,
+    });
+    expect(plan.action).toBe("write");
+    expect(plan.marker).toMatchObject({
+      manifestId: V4_REPUBLICATION_HANDOFF_PROVENANCE.manifestId,
+      migrationOriginSha: V4_REPUBLICATION_MIGRATION_ORIGIN_SHA,
+      deploySha: candidateSha,
+      state: "schema-applied",
+      workflowRunId: V4_REPUBLICATION_HANDOFF_PROVENANCE.workflowRunId,
+      workflowRunAttempt: V4_REPUBLICATION_HANDOFF_PROVENANCE.workflowRunAttempt,
+      authorizationId: V4_REPUBLICATION_HANDOFF_PROVENANCE.authorizationId,
+      lineageDigest: V4_REPUBLICATION_HANDOFF_PROVENANCE.lineageDigest,
+      spawnState: "started",
+    });
+    const replay = evaluateSchemaDeployHandoff({
+      markerText: plan.bytes, deploySha: candidateSha, ...compatibility,
+    });
+    expect(replay.action).toBe("replay");
+    expect(replay.marker.migrationOriginSha).toBe(V4_REPUBLICATION_MIGRATION_ORIGIN_SHA);
+  });
+
+  it("blocks wrong V4 run lineage, manifest, ancestry, schema, and changed runtime blobs", () => {
+    const candidateSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim();
+    const compatibility = readGitCompatibility(process.cwd(), candidateSha, V4_REPUBLICATION_MIGRATION_ORIGIN_SHA);
+    for (const marker of [
+      v4AppReadyMarkerText({ workflowRunId: "38447647404" }),
+      v4AppReadyMarkerText({ lineageDigest: "d".repeat(64) }),
+      v4AppReadyMarkerText({ manifestId: "active-energy-unified-v2" }),
+      v4AppReadyMarkerText({ releaseSha: "a".repeat(40) }),
+    ]) {
+      expect(() => evaluateSchemaDeployHandoff({ markerText: marker, deploySha: candidateSha, ...compatibility })).toThrow();
+    }
+    expect(() => evaluateSchemaDeployHandoff({
+      markerText: v4AppReadyMarkerText(), deploySha: candidateSha, ...compatibility, isAncestor: false,
+    })).toThrow(/descendant/);
+    expect(() => evaluateSchemaDeployHandoff({
+      markerText: v4AppReadyMarkerText(), deploySha: candidateSha, ...compatibility,
+      changedPaths: [...compatibility.changedPaths, "prisma/schema.prisma"],
+    })).toThrow(/allowlist/);
+    const alteredRuntime = {
+      ...compatibility.changedPathObjects,
+      "src/modules/model-episodes/unified-rollout-v4.service.ts": {
+        ...compatibility.changedPathObjects["src/modules/model-episodes/unified-rollout-v4.service.ts"],
+        deployBlob: "f".repeat(40),
+      },
+    };
+    expect(() => evaluateSchemaDeployHandoff({
+      markerText: v4AppReadyMarkerText(), deploySha: candidateSha, ...compatibility,
+      changedPathObjects: alteredRuntime,
+    })).toThrow(/exact reviewed content binding/);
   });
 
   it("accepts the real migration-origin descendant whose runtime trees match", () => {
@@ -299,6 +364,51 @@ describe("schema deploy compatibility handoff", () => {
       beforeRename: () => { throw new Error("interrupted before publish"); },
     })).rejects.toThrow(/interrupted before publish/);
     expect(await readFile(markerPath, "utf8")).toBe(original);
+  });
+
+  it.skipIf(process.platform === "win32")("atomically hands off the V4 app-ready marker, preserves its lineage, and safely replays the exact SHA", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-v4-schema-handoff-"));
+    directories.push(directory);
+    const markerPath = path.join(directory, "marker");
+    const original = v4AppReadyMarkerText();
+    const candidateSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim();
+    await writeFile(markerPath, original, { flag: "wx", mode: 0o600 });
+    await expect(applySchemaDeployHandoff({
+      markerPath, deploySha: candidateSha, repo: process.cwd(),
+      beforeRename: () => { throw new Error("interrupted before publish"); },
+    })).rejects.toThrow(/interrupted before publish/);
+    expect(await readFile(markerPath, "utf8")).toBe(original);
+    expect((await readdir(directory)).sort()).toEqual(["marker"]);
+    const published = await applySchemaDeployHandoff({ markerPath, deploySha: candidateSha, repo: process.cwd() });
+    expect(published.action).toBe("write");
+    expect(published.marker).toMatchObject({
+      manifestId: "unified-v4-republication-v1",
+      migrationOriginSha: V4_REPUBLICATION_MIGRATION_ORIGIN_SHA,
+      deploySha: candidateSha,
+      state: "schema-applied",
+      workflowRunId: V4_REPUBLICATION_HANDOFF_PROVENANCE.workflowRunId,
+      authorizationId: V4_REPUBLICATION_HANDOFF_PROVENANCE.authorizationId,
+      lineageDigest: V4_REPUBLICATION_HANDOFF_PROVENANCE.lineageDigest,
+    });
+    const replay = await applySchemaDeployHandoff({ markerPath, deploySha: candidateSha, repo: process.cwd() });
+    expect(replay.action).toBe("replay");
+    expect((await readFile(markerPath, "utf8")).split("\n")).toContain(`migrationOriginSha=${V4_REPUBLICATION_MIGRATION_ORIGIN_SHA}`);
+  });
+
+  it("does not overwrite a V4 marker changed during the handoff write", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-v4-schema-handoff-race-"));
+    directories.push(directory);
+    const markerPath = path.join(directory, "marker");
+    const candidateSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim();
+    const original = v4AppReadyMarkerText();
+    const concurrentMarker = v4AppReadyMarkerText({ lineageDigest: "d".repeat(64) });
+    await writeFile(markerPath, original, { flag: "wx", mode: 0o600 });
+    await expect(applySchemaDeployHandoff({
+      markerPath, deploySha: candidateSha, repo: process.cwd(),
+      beforeRename: () => writeFile(markerPath, concurrentMarker),
+    })).rejects.toThrow(/marker changed during compatibility handoff/);
+    expect(await readFile(markerPath, "utf8")).toBe(concurrentMarker);
+    expect((await readdir(directory)).sort()).toEqual(["marker"]);
   });
 
   it.skipIf(process.platform === "win32")("writes once, replays the same candidate, and blocks a concurrent lock", async () => {

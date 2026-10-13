@@ -323,17 +323,27 @@ jobs:
               [[ "$deploy_run_id" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Malformed later deploy run ID."; exit 1; }
               run_file="$RUNNER_TEMP/resume-deploy-$deploy_run_id-run.json"
               jobs_file="$RUNNER_TEMP/resume-deploy-$deploy_run_id-jobs.json"
+              log_file="$RUNNER_TEMP/resume-deploy-$deploy_run_id-failure.log"
               gh api "repos/krustallik/body-model/actions/runs/$deploy_run_id" > "$run_file"
               gh api "repos/krustallik/body-model/actions/runs/$deploy_run_id/jobs" > "$jobs_file"
-              chmod 600 "$run_file" "$jobs_file"
-              node --input-type=module - "$run_file" "$jobs_file" "$RUNNER_TEMP/resume-main-ci-runs.ndjson" \
+              deploy_job_id="$(jq -er '[.jobs[] | select(.name == "Deploy exact current-main SHA") | .id] | if length == 1 and (.[0] | type == "number") then .[0] else error("deploy job ID is missing or ambiguous") end' "$jobs_file")"
+              [[ "$deploy_job_id" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Later deploy job ID is malformed."; exit 1; }
+              gh run view "$deploy_run_id" --repo krustallik/body-model --job "$deploy_job_id" --log-failed > "$log_file"
+              log_size_bytes="$(wc -c < "$log_file")"
+              [[ "$log_size_bytes" =~ ^[0-9]+$ && "$log_size_bytes" -le 1000000 ]] || {
+                echo "::error::Later deploy failure log exceeds the bounded evidence size."; exit 1;
+              }
+              chmod 600 "$run_file" "$jobs_file" "$log_file"
+              node --input-type=module - "$run_file" "$jobs_file" "$log_file" "$RUNNER_TEMP/resume-main-ci-runs.ndjson" \
                 >> "$RUNNER_TEMP/resume-safe-failed-deploys.ndjson" <<'NODE'
           import { readFileSync } from "node:fs";
-          const [runPath, jobsPath, ciRunsPath] = process.argv.slice(2);
+          import { extractPreMaintenanceDeployLogEvidence } from "./scripts/production-preflight-resume.mjs";
+          const [runPath, jobsPath, logPath, ciRunsPath] = process.argv.slice(2);
           const run = JSON.parse(readFileSync(runPath, "utf8"));
           const ciRuns = readFileSync(ciRunsPath, "utf8").split(/\r?\n/).filter(Boolean).map(JSON.parse)
             .filter((ciRun) => ciRun.head_sha === run.head_sha);
-          process.stdout.write(`${JSON.stringify({ run, jobs: JSON.parse(readFileSync(jobsPath, "utf8")), ciRuns })}\n`);
+          const deployLogText = extractPreMaintenanceDeployLogEvidence(readFileSync(logPath, "utf8"));
+          process.stdout.write(`${JSON.stringify({ run, jobs: JSON.parse(readFileSync(jobsPath, "utf8")), deployLogText, ciRuns })}\n`);
           NODE
             done < "$RUNNER_TEMP/resume-safe-failed-deploy-ids.txt"
             : > "$RUNNER_TEMP/resume-safe-failed-preflight-ids.txt"
@@ -363,22 +373,77 @@ jobs:
               run_file="$RUNNER_TEMP/resume-preflight-$retry_run_id-run.json"
               jobs_file="$RUNNER_TEMP/resume-preflight-$retry_run_id-jobs.json"
               artifacts_file="$RUNNER_TEMP/resume-preflight-$retry_run_id-artifacts.json"
+              failure_log="$RUNNER_TEMP/resume-preflight-$retry_run_id-failure.log"
               gh api "repos/krustallik/body-model/actions/runs/$retry_run_id" > "$run_file"
               gh api "repos/krustallik/body-model/actions/runs/$retry_run_id/jobs" > "$jobs_file"
               gh api "repos/krustallik/body-model/actions/runs/$retry_run_id/artifacts" > "$artifacts_file"
-              chmod 600 "$run_file" "$jobs_file" "$artifacts_file"
-              node --input-type=module - "$run_file" "$jobs_file" "$artifacts_file" \
+              inspect_job_id="$(jq -er '[.jobs[] | select(.name == "Inspect, back up, restore, and rehearse on disposable PostgreSQL" and .conclusion == "failure") | .id] | if length <= 1 then (.[0] // empty) else error("failed preflight inspection job is ambiguous") end' "$jobs_file" || true)"
+              : > "$failure_log"
+              if [[ -n "$inspect_job_id" ]]; then
+                [[ "$inspect_job_id" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Failed preflight inspection job ID is malformed."; exit 1; }
+                gh run view "$retry_run_id" --repo krustallik/body-model --job "$inspect_job_id" --log-failed > "$failure_log"
+                log_size_bytes="$(wc -c < "$failure_log")"
+                [[ "$log_size_bytes" =~ ^[0-9]+$ && "$log_size_bytes" -le 1000000 ]] || {
+                  echo "::error::Failed preflight history log exceeds the bounded evidence size."; exit 1;
+                }
+              fi
+              chmod 600 "$run_file" "$jobs_file" "$artifacts_file" "$failure_log"
+              node --input-type=module - "$run_file" "$jobs_file" "$artifacts_file" "$failure_log" \
                 >> "$RUNNER_TEMP/resume-safe-failed-preflights.ndjson" <<'NODE'
           import { readFileSync } from "node:fs";
-          const [runPath, jobsPath, artifactsPath] = process.argv.slice(2);
+          import { extractCaptureRetryLogEvidence } from "./scripts/production-preflight-resume.mjs";
+          const [runPath, jobsPath, artifactsPath, failureLogPath] = process.argv.slice(2);
+          const failureLogText = extractCaptureRetryLogEvidence(readFileSync(failureLogPath, "utf8"));
           process.stdout.write(`${JSON.stringify({ run: JSON.parse(readFileSync(runPath, "utf8")),
-            jobs: JSON.parse(readFileSync(jobsPath, "utf8")), artifacts: JSON.parse(readFileSync(artifactsPath, "utf8")) })}\n`);
+            jobs: JSON.parse(readFileSync(jobsPath, "utf8")), artifacts: JSON.parse(readFileSync(artifactsPath, "utf8")), failureLogText })}\n`);
           NODE
             done < "$RUNNER_TEMP/resume-safe-failed-preflight-ids.txt"
+            : > "$RUNNER_TEMP/resume-safe-no-app-ids.txt"
+            node --input-type=module - "$RUNNER_TEMP/resume-later-runs.ndjson" \
+              "$RUNNER_TEMP/resume-safe-no-app-ids.txt" "$RESUME_SOURCE_RUN_ID" "$GITHUB_RUN_ID" <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const [historyPath, idsPath, sourceIdText, currentIdText] = process.argv.slice(2);
+          const sourceId = BigInt(sourceIdText);
+          const currentId = BigInt(currentIdText);
+          const candidates = new Set();
+          for (const line of readFileSync(historyPath, "utf8").split(/\r?\n/).filter(Boolean)) {
+            const run = JSON.parse(line);
+            const runIdText = String(run.id ?? "");
+            if (!/^[1-9][0-9]*$/.test(runIdText)) throw new Error("Production workflow history contains a malformed run ID.");
+            if (run.path?.split("@")[0] !== ".github/workflows/production-no-app-preflight.yml") continue;
+            const runId = BigInt(runIdText);
+            if (runId > sourceId && runId < currentId) candidates.add(runIdText);
+          }
+          const sorted = [...candidates].sort((a, b) => BigInt(a) < BigInt(b) ? -1 : 1);
+          writeFileSync(idsPath, sorted.length ? `${sorted.join("\n")}\n` : "", { mode: 0o600 });
+          NODE
+            : > "$RUNNER_TEMP/resume-safe-no-app-runs.ndjson"
+            while IFS= read -r prep_run_id; do
+              [[ "$prep_run_id" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Malformed historical no-app run ID."; exit 1; }
+              run_file="$RUNNER_TEMP/resume-no-app-$prep_run_id-run.json"
+              jobs_file="$RUNNER_TEMP/resume-no-app-$prep_run_id-jobs.json"
+              artifacts_file="$RUNNER_TEMP/resume-no-app-$prep_run_id-artifacts.json"
+              gh api "repos/krustallik/body-model/actions/runs/$prep_run_id" > "$run_file"
+              gh api "repos/krustallik/body-model/actions/runs/$prep_run_id/jobs" > "$jobs_file"
+              gh api "repos/krustallik/body-model/actions/runs/$prep_run_id/artifacts" > "$artifacts_file"
+              chmod 600 "$run_file" "$jobs_file" "$artifacts_file"
+              node --input-type=module - "$run_file" "$jobs_file" "$artifacts_file" \
+                >> "$RUNNER_TEMP/resume-safe-no-app-runs.ndjson" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const [runPath, jobsPath, artifactsPath] = process.argv.slice(2);
+          const artifactsPayload = JSON.parse(readFileSync(artifactsPath, "utf8"));
+          const artifacts = { total_count: artifactsPayload.total_count,
+            artifacts: (artifactsPayload.artifacts ?? []).map(({ id, name, expired, size_in_bytes, digest }) =>
+              ({ id, name, expired, size_in_bytes, digest })) };
+          process.stdout.write(`${JSON.stringify({ run: JSON.parse(readFileSync(runPath, "utf8")),
+            jobs: JSON.parse(readFileSync(jobsPath, "utf8")), artifacts })}\n`);
+          NODE
+            done < "$RUNNER_TEMP/resume-safe-no-app-ids.txt"
             node scripts/production-preflight-resume.mjs --verify-source \
               "$RUNNER_TEMP/resume-source-run.json" "$RUNNER_TEMP/resume-source-jobs.json" \
               "$RUNNER_TEMP/resume-source-artifacts.json" "$RUNNER_TEMP/resume-later-runs.ndjson" \
               "$RUNNER_TEMP/resume-safe-failed-deploys.ndjson" "$RUNNER_TEMP/resume-safe-failed-preflights.ndjson" \
+              "$RUNNER_TEMP/resume-safe-no-app-runs.ndjson" \
               "$RESUME_SOURCE_RUN_ID" "$GITHUB_RUN_ID" "$MAIN_TIP" "$MANIFEST_ID" "$PREFLIGHT_WORKFLOW_ID" "$DEPLOY_WORKFLOW_ID" \
               "$NO_APP_WORKFLOW_ID" \
               > "$RUNNER_TEMP/preflight-resume-proof.json"

@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { capturePreviousAppProvenance, rebindPreviousAppProvenanceForPreflightResume } from "../scripts/production-previous-app-provenance.mjs";
+import { failedHistoricalNoAppAfterRehearsal, historicalAuthorizationRetries,
+  successfulHistoricalNoAppPreparation } from "./fixtures/historical-preflight-runs.mjs";
 import { DEPLOY_CONTROL_FILES, PREFLIGHT_CAPTURE_RESUME_CONTROL_FILES, deployControlFilesMatch, preflightAuthorizationControlsMatch,
   preflightCaptureResumeControlsMatch,
+  extractCaptureRetryLogEvidence, extractPreMaintenanceDeployLogEvidence,
   NO_APP_PREPARATION_CONTROL_FILES, noAppPreparationControlsMatch, serializePreflightRetryRunIds,
   verifyPreDdlMigrationFailureResume, verifyResumablePreflightAttempt } from "../scripts/production-preflight-resume.mjs";
 
@@ -29,6 +32,51 @@ const deployWorkflowId = "789";
 const safeSchemaBlockedDeployRunId = "38000669127";
 
 describe("production deploy evidence source binding", () => {
+  it("keeps exact resume evidence verification upstream of production SSH credentials", async () => {
+    const workflow = await readFile(".github/workflows/production-migration-preflight.yml", "utf8");
+    const authorizeJob = workflow.indexOf("  authorize:");
+    const inspectJob = workflow.indexOf("  inspect_backup_restore:");
+    const verifyEvidence = workflow.indexOf("node scripts/production-preflight-resume.mjs --verify-source");
+    const validateSsh = workflow.indexOf("      - name: Validate production-only SSH and backup secrets", inspectJob);
+    const pinSsh = workflow.indexOf("      - name: Pin production SSH host key", validateSsh);
+    const remoteCommand = workflow.indexOf("REMOTE_COMMAND=", pinSsh);
+    expect(authorizeJob).toBeGreaterThanOrEqual(0);
+    expect(inspectJob).toBeGreaterThan(authorizeJob);
+    expect(verifyEvidence).toBeGreaterThan(authorizeJob);
+    expect(verifyEvidence).toBeLessThan(inspectJob);
+    expect(validateSsh).toBeGreaterThan(inspectJob);
+    expect(pinSsh).toBeGreaterThan(validateSsh);
+    expect(remoteCommand).toBeGreaterThan(pinSsh);
+  });
+
+  it("retains pending migration IDs and contradictory schema status from GitHub job logs", () => {
+    const job = "Deploy exact current-main SHA";
+    const step = "Deploy exact SHA through the fixed production script";
+    const timestamp = "2026-10-11T12:00:00.000Z";
+    const raw = [
+      `${job}\t${step}\t${timestamp} The following migration(s) have not yet been applied:`,
+      ...pendingMigrationIds.map((id) => `${job}\t${step}\t${timestamp} ${id}`),
+      ...[
+        "BLOCKED: production schema is not compatible with this application revision.",
+        "Ordinary automatic deployment does not run prisma migrate deploy.",
+        "Pending migration identifiers appear in the status output above.",
+        "Authorize a separate production migration procedure before releasing this commit.",
+        "Deploy failed before maintenance was confirmed; the previous app was not stopped or replaced.",
+        "Database schema is up to date",
+      ].map((line) => `${job}\t${step}\t${timestamp} ${line}`),
+      `Unrelated job\t${step}\t${timestamp} 20269999120000_spoofed_migration`,
+    ].join("\n");
+    expect(extractPreMaintenanceDeployLogEvidence(raw)).toBe([
+      ...pendingMigrationIds,
+      "BLOCKED: production schema is not compatible with this application revision.",
+      "Ordinary automatic deployment does not run prisma migrate deploy.",
+      "Pending migration identifiers appear in the status output above.",
+      "Authorize a separate production migration procedure before releasing this commit.",
+      "Deploy failed before maintenance was confirmed; the previous app was not stopped or replaced.",
+      "Database schema is up to date",
+    ].join("\n"));
+  });
+
   it("rejects changed migrator build or Prisma inputs between the failed deploy and current main", async () => {
     const tempDir = await mkdtemp(path.join(tmpdir(), "bodycast-deploy-controls-"));
     const changedInputs = ["Dockerfile", ".dockerignore", "package.json", "package-lock.json", "prisma/schema.prisma",
@@ -60,90 +108,75 @@ describe("production deploy evidence source binding", () => {
     }
   });
 
-  it("accepts only unchanged preflight production steps and capture controls", async () => {
-    const tempDir = await mkdtemp(path.join(tmpdir(), "bodycast-preflight-capture-controls-"));
-    const workflowPath = ".github/workflows/production-migration-preflight.yml";
-    const workflow = (authorizeBody, inspectBody, permissionsBody = "contents: read\n  actions: read", globalEnvBody = null,
-      defaultsBody = null, concurrencyBody = "group: bodycast-production-release\n  cancel-in-progress: false") => [
-      "name: preflight",
-      "permissions:",
-      ...permissionsBody.split("\n").map((line) => `  ${line}`),
-      ...(globalEnvBody ? ["env:", ...globalEnvBody.split("\n").map((line) => `  ${line}`)] : []),
-      ...(defaultsBody ? ["defaults:", ...defaultsBody.split("\n").map((line) => `  ${line}`)] : []),
-      "concurrency:",
-      ...concurrencyBody.split("\n").map((line) => `  ${line}`),
-      "jobs:",
-      "  authorize:",
-      `    ${authorizeBody}`,
-      "  inspect_backup_restore:",
-      `    ${inspectBody}`,
-      "  unrelated:",
-      "    steps: []",
-      "",
+  it("accepts the actual historical owner retries under their immutable authorization controls", () => {
+    const currentMainSha = "029bbe81a341abe2e8642564b8c4fa2e0b3f00a8";
+    expect(historicalAuthorizationRetries.map(({ run }) => String(run.id))).toEqual([
+      "38379375890", "38379548326", "38384779107",
+    ]);
+    for (const { run, jobs, artifacts } of historicalAuthorizationRetries) {
+      expect(preflightAuthorizationControlsMatch(run.head_sha, currentMainSha)).toBe(true);
+      expect(jobs.total_count).toBe(2);
+      expect(jobs.jobs.find((job) => job.name === "Inspect, back up, restore, and rehearse on disposable PostgreSQL"))
+        .toMatchObject({ conclusion: "skipped", steps: [] });
+      expect(artifacts).toEqual({ total_count: 0, artifacts: [] });
+    }
+    expect(preflightCaptureResumeControlsMatch("3eec0b7d4b38f10de3083a9108b32fcbc1c201b3", currentMainSha)).toBe(true);
+    expect(deployControlFilesMatch("7ccaf1018c55f6ed2dfa3124992b75d5a43b052a", currentMainSha)).toBe(true);
+    expect(preflightAuthorizationControlsMatch("f".repeat(40), currentMainSha)).toBe(false);
+  });
+
+  it("keeps shell command boundaries significant in authorization controls", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "bodycast-auth-command-boundary-"));
+    const workflowPath = path.join(tempDir, ".github/workflows/production-migration-preflight.yml");
+    const workflow = (commands) => [
+      "permissions:", "  contents: read", "  actions: read", "concurrency:",
+      "  group: bodycast-production-release", "  cancel-in-progress: false", "jobs:", "  authorize:",
+      "    runs-on: ubuntu-latest", "    steps:", "      - name: Gate", "        run: |",
+      ...commands.map((line) => "          " + line), "  inspect_backup_restore:", "    steps: []", "",
     ].join("\n");
+    const commit = (message) => {
+      execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
+      execFileSync("git", ["-C", tempDir, "-c", "user.name=BodyCast Test", "-c", "user.email=bodycast-test@example.invalid",
+        "commit", "-m", message], { stdio: "ignore" });
+      return execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    };
     try {
       execFileSync("git", ["-c", "init.defaultBranch=main", "init", tempDir], { stdio: "ignore" });
-      execFileSync("git", ["-C", tempDir, "config", "user.name", "BodyCast Test"], { stdio: "ignore" });
-      execFileSync("git", ["-C", tempDir, "config", "user.email", "bodycast-test@example.invalid"], { stdio: "ignore" });
-      for (const input of PREFLIGHT_CAPTURE_RESUME_CONTROL_FILES) {
-        const absolutePath = path.join(tempDir, input);
-        await mkdir(path.dirname(absolutePath), { recursive: true });
-        await writeFile(absolutePath, "reviewed capture control\n");
+      await mkdir(path.dirname(workflowPath), { recursive: true });
+      await writeFile(workflowPath, workflow(["echo safe", "touch /tmp/proof"]));
+      const oldSha = commit("old auth body");
+      await writeFile(workflowPath, workflow(["echo safe touch /tmp/proof"]));
+      const newSha = commit("changed shell command boundary");
+      expect(preflightAuthorizationControlsMatch(oldSha, newSha, tempDir)).toBe(false);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects capture history when top-level workflow safety controls changed", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "bodycast-capture-top-level-controls-"));
+    const originalSha = "029bbe81a341abe2e8642564b8c4fa2e0b3f00a8";
+    try {
+      execFileSync("git", ["-c", "init.defaultBranch=main", "init", tempDir], { stdio: "ignore" });
+      const controlFiles = [...PREFLIGHT_CAPTURE_RESUME_CONTROL_FILES, ".github/workflows/production-migration-preflight.yml"];
+      for (const file of controlFiles) {
+        const contents = execFileSync("git", ["show", `${originalSha}:${file}`], { cwd: process.cwd(), encoding: "utf8" });
+        const targetPath = path.join(tempDir, file);
+        await mkdir(path.dirname(targetPath), { recursive: true });
+        await writeFile(targetPath, contents);
       }
-      const workflowFile = path.join(tempDir, workflowPath);
-      await mkdir(path.dirname(workflowFile), { recursive: true });
-      await writeFile(workflowFile, workflow("inputs: safe", "steps: unchanged"));
       execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
-      execFileSync("git", ["-C", tempDir, "commit", "-m", "capture control base"], { stdio: "ignore" });
-      const baseSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-
-      await writeFile(workflowFile, workflow("inputs: evidence collection changed", "steps: unchanged"));
+      execFileSync("git", ["-C", tempDir, "-c", "user.name=BodyCast Test", "-c", "user.email=bodycast-test@example.invalid",
+        "commit", "-m", "reviewed capture baseline"], { stdio: "ignore" });
+      const oldSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      const workflowPath = path.join(tempDir, ".github/workflows/production-migration-preflight.yml");
+      const workflow = await readFile(workflowPath, "utf8");
+      await writeFile(workflowPath, workflow.replace("  group: bodycast-production-release", "  group: changed-release-concurrency"));
       execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
-      execFileSync("git", ["-C", tempDir, "commit", "-m", "change authorization collection only"], { stdio: "ignore" });
-      const authorizeSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-      expect(preflightCaptureResumeControlsMatch(baseSha, authorizeSha, tempDir)).toBe(true);
-      expect(preflightAuthorizationControlsMatch(baseSha, authorizeSha, tempDir)).toBe(false);
-
-      await writeFile(workflowFile, workflow("inputs: evidence collection changed", "steps: dangerous mutation added"));
-      execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
-      execFileSync("git", ["-C", tempDir, "commit", "-m", "change production inspection job"], { stdio: "ignore" });
-      const inspectChangedSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-      expect(preflightCaptureResumeControlsMatch(authorizeSha, inspectChangedSha, tempDir)).toBe(false);
-      expect(preflightAuthorizationControlsMatch(authorizeSha, inspectChangedSha, tempDir)).toBe(true);
-
-      await writeFile(workflowFile, workflow("inputs: evidence collection changed", "steps: dangerous mutation added", "contents: write\n  actions: read"));
-      execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
-      execFileSync("git", ["-C", tempDir, "commit", "-m", "change workflow token permissions"], { stdio: "ignore" });
-      const permissionsChangedSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-      expect(preflightAuthorizationControlsMatch(inspectChangedSha, permissionsChangedSha, tempDir)).toBe(false);
-
-      await writeFile(workflowFile, workflow("inputs: evidence collection changed", "steps: dangerous mutation added",
-        "contents: write\n  actions: read", "TOKEN: sample"));
-      execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
-      execFileSync("git", ["-C", tempDir, "commit", "-m", "add workflow-level environment"], { stdio: "ignore" });
-      const envChangedSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-      expect(preflightAuthorizationControlsMatch(permissionsChangedSha, envChangedSha, tempDir)).toBe(false);
-
-      await writeFile(workflowFile, workflow("inputs: evidence collection changed", "steps: dangerous mutation added",
-        "contents: write\n  actions: read", "TOKEN: sample", "run:\n    shell: bash"));
-      execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
-      execFileSync("git", ["-C", tempDir, "commit", "-m", "change workflow execution defaults"], { stdio: "ignore" });
-      const defaultsChangedSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-      expect(preflightAuthorizationControlsMatch(envChangedSha, defaultsChangedSha, tempDir)).toBe(false);
-
-      await writeFile(workflowFile, workflow("inputs: evidence collection changed", "steps: dangerous mutation added",
-        "contents: write\n  actions: read", "TOKEN: sample", "run:\n    shell: bash",
-        "group: bodycast-production-release\n  cancel-in-progress: true"));
-      execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
-      execFileSync("git", ["-C", tempDir, "commit", "-m", "change workflow concurrency cancellation"], { stdio: "ignore" });
-      const concurrencyChangedSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-      expect(preflightAuthorizationControlsMatch(defaultsChangedSha, concurrencyChangedSha, tempDir)).toBe(false);
-
-      await writeFile(path.join(tempDir, PREFLIGHT_CAPTURE_RESUME_CONTROL_FILES[0]), "changed compose topology\n");
-      execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
-      execFileSync("git", ["-C", tempDir, "commit", "-m", "change production capture control"], { stdio: "ignore" });
-      const captureChangedSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-      expect(preflightCaptureResumeControlsMatch(inspectChangedSha, captureChangedSha, tempDir)).toBe(false);
+      execFileSync("git", ["-C", tempDir, "-c", "user.name=BodyCast Test", "-c", "user.email=bodycast-test@example.invalid",
+        "commit", "-m", "changed top-level concurrency"], { stdio: "ignore" });
+      const changedSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      expect(preflightCaptureResumeControlsMatch(oldSha, changedSha, tempDir)).toBe(false);
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
@@ -247,6 +280,7 @@ function completedNoAppRun(overrides = {}) {
     id: 38000669129,
     workflow_id: 456,
     path: ".github/workflows/production-no-app-preflight.yml@refs/heads/main",
+    display_title: `No-app prep ${targetSha} unified-v4-republication-v1`,
     event: "workflow_dispatch",
     head_branch: "main",
     head_sha: targetSha,
@@ -558,13 +592,13 @@ function captureBlockedRetryJobs({ extraInspectStep, ...overrides } = {}) {
 }
 
 function captureBlockedRetryEvidence({
-  refreshCapture = "0", failure = "An earlier pre-DDL release capture exists; operator review is required before another migration attempt.",
+  failure = "An earlier pre-DDL release capture exists; operator review is required before another migration attempt.",
   run = captureBlockedRetryRun(), jobs = captureBlockedRetryJobs(), artifacts = { total_count: 0, artifacts: [] },
   ...overrides
 } = {}) {
   return {
     run, jobs, artifacts,
-    failureLogText: `REFRESH_CAPTURE: ${refreshCapture}\n${failure}\n`,
+    failureLogText: `Enter maintenance and drain the old app before backup\t${failure}\n`,
     shaIsAncestorOfCurrentMain: true,
     sourceShaIsAncestor: true,
     captureControlsMatch: true,
@@ -681,6 +715,7 @@ describe("verified resume of a failed production preflight", () => {
         later: path.join(tempDir, "later-runs.ndjson"),
         deploy: path.join(tempDir, "safe-deploy-runs.ndjson"),
         preflightRetries: path.join(tempDir, "safe-failed-preflights.ndjson"),
+        noAppRuns: path.join(tempDir, "safe-historical-no-app-runs.ndjson"),
       };
       await Promise.all([
         writeFile(files.run, JSON.stringify(actualSourceRun)),
@@ -689,10 +724,11 @@ describe("verified resume of a failed production preflight", () => {
         writeFile(files.later, laterRuns.map((run) => JSON.stringify(run)).join("\n") + "\n"),
         writeFile(files.deploy, `${JSON.stringify(safeDeployEvidence)}\n`),
         writeFile(files.preflightRetries, ""),
+        writeFile(files.noAppRuns, ""),
       ]);
       const scriptPath = path.resolve("scripts/production-preflight-resume.mjs");
       const result = spawnSync(process.execPath, [scriptPath, "--verify-source", files.run, files.jobs, files.artifacts,
-        files.later, files.deploy, files.preflightRetries, sourceRunId, currentRunId, currentMainSha,
+        files.later, files.deploy, files.preflightRetries, files.noAppRuns, sourceRunId, currentRunId, currentMainSha,
         "active-energy-unified-v2", preflightWorkflowId, deployWorkflowId, "456"], {
         cwd: process.cwd(), encoding: "utf8",
       });
@@ -722,7 +758,6 @@ describe("verified resume of a failed production preflight", () => {
     });
     const noAppRefreshGuard = captureBlockedRetryEvidence({
       run: captureBlockedRetryRun({ id: 38000669128 }),
-      refreshCapture: "1",
       failure: "Capture refresh requires exactly one existing BodyCast app container.",
     });
     const result = verifyWithCaptureBlockedRetries([priorCaptureGuard, noAppRefreshGuard]);
@@ -731,6 +766,17 @@ describe("verified resume of a failed production preflight", () => {
       runId, sha: targetSha, historicalEffects: "UNVERIFIED",
     })));
     expect(result.unverifiedHistoricalDeployRunIds).toEqual([]);
+  });
+
+  it("extracts capture-stop evidence only from the exact failed GitHub job step", () => {
+    const step = "Enter maintenance and drain the old app before backup";
+    const marker = "An earlier pre-DDL release capture exists; operator review is required before another migration attempt.";
+    const timestamp = "2026-10-11T12:00:00.000Z";
+    const raw = [
+      `Other job\t${step}\t${timestamp} ${marker}`,
+      `Inspect, back up, restore, and rehearse on disposable PostgreSQL\t${step}\t${timestamp} ${marker}`,
+    ].join("\n");
+    expect(extractCaptureRetryLogEvidence(raw)).toBe(`${step}\t${marker}`);
   });
 
   it("admits owner authorization-only failures separately from capture-blocked retries", () => {
@@ -813,15 +859,64 @@ describe("verified resume of a failed production preflight", () => {
   });
 
   it("admits completed no-app preparation only as unverified history and never reuses its artifacts", () => {
-    const run = completedNoAppRun();
+    const evidence = structuredClone(successfulHistoricalNoAppPreparation);
+    const run = evidence.run;
     const result = verify({
       laterRuns: [run, {
         id: 99999999999, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress",
       }],
+      safeHistoricalNoAppRuns: [evidence],
+      noAppWorkflowId: run.workflow_id,
       noAppControlsMatch: () => true,
       isAncestorOfCurrentMain: () => true,
     });
     expect(result.unverifiedHistoricalRunIds).toEqual([String(run.id)]);
+  });
+
+  it("accepts the actual evidence-step failure after successful isolated rehearsal as unverified history", () => {
+    const evidence = structuredClone(failedHistoricalNoAppAfterRehearsal);
+    const run = evidence.run;
+    const result = verify({
+      laterRuns: [run, {
+        id: 99999999999, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress",
+      }],
+      safeHistoricalNoAppRuns: [evidence],
+      noAppWorkflowId: run.workflow_id,
+      noAppControlsMatch: () => true,
+      isAncestorOfCurrentMain: () => true,
+    });
+    expect(result.unverifiedHistoricalRunIds).toEqual([String(run.id)]);
+  });
+
+  it("blocks a failed no-app history whose temporary SSH credential cleanup was cancelled", () => {
+    const evidence = structuredClone(failedHistoricalNoAppAfterRehearsal);
+    evidence.jobs.jobs[1].steps.find((step) => step.name === "Remove temporary SSH credentials").conclusion = "cancelled";
+    const run = evidence.run;
+    expect(() => verify({
+      laterRuns: [run, {
+        id: 99999999999, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress",
+      }],
+      safeHistoricalNoAppRuns: [evidence],
+      noAppWorkflowId: run.workflow_id,
+      noAppControlsMatch: () => true,
+      isAncestorOfCurrentMain: () => true,
+    })).toThrow("did not successfully remove temporary SSH credentials");
+  });
+
+  it("rejects historical no-app metadata that omits a required gate even when the inventory is long", () => {
+    const evidence = structuredClone(successfulHistoricalNoAppPreparation);
+    evidence.jobs.jobs[1].steps.splice(6, 1);
+    expect(evidence.jobs.jobs[1].steps.length).toBeGreaterThanOrEqual(18);
+    const run = evidence.run;
+    expect(() => verify({
+      laterRuns: [run, {
+        id: 99999999999, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress",
+      }],
+      safeHistoricalNoAppRuns: [evidence],
+      noAppWorkflowId: run.workflow_id,
+      noAppControlsMatch: () => true,
+      isAncestorOfCurrentMain: () => true,
+    })).toThrow("cannot be safely resumed");
   });
 
   it.each([
@@ -831,12 +926,16 @@ describe("verified resume of a failed production preflight", () => {
     ["unknown conclusion", { conclusion: "timed_out" }],
     ["changed preparation controls", {}],
   ])("blocks no-app history with %s", (_label, overrides) => {
-    const run = completedNoAppRun(overrides);
+    const evidence = structuredClone(successfulHistoricalNoAppPreparation);
+    evidence.run = { ...evidence.run, ...overrides };
+    const run = evidence.run;
     const controlsChanged = Object.keys(overrides).length === 0;
     expect(() => verify({
       laterRuns: [run, {
         id: 99999999999, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress",
       }],
+      safeHistoricalNoAppRuns: [evidence],
+      noAppWorkflowId: successfulHistoricalNoAppPreparation.run.workflow_id,
       noAppControlsMatch: () => !controlsChanged,
       isAncestorOfCurrentMain: () => true,
     })).toThrow("cannot be safely resumed");
@@ -864,6 +963,15 @@ describe("verified resume of a failed production preflight", () => {
     ["different deploy SHA", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ run: deployRun({ head_sha: sourceSha }) })] }],
     ["wrong workflow identity", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ run: deployRun({ workflow_id: 999 }) })] }],
     ["missing exact-SHA main CI", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ ciRuns: [] })] }],
+    ["contradictory up-to-date schema status", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({
+      deployLogText: `${schemaBlockedDeployLog}\nDatabase schema is up to date`,
+    })] }],
+    ["missing pending migration identifier", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({
+      deployLogText: schemaBlockedDeployLog.replace(`${pendingMigrationIds[0]}\n`, ""),
+    })] }],
+    ["duplicated pending migration identifier", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({
+      deployLogText: schemaBlockedDeployLog.replace(`${pendingMigrationIds[1]}\n`, `${pendingMigrationIds[0]}\n${pendingMigrationIds[1]}\n`),
+    })] }],
     ["failed main CI", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ ciRuns: [deployCiRun({ conclusion: "failure" })] })] }],
     ["wrong CI event", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ ciRuns: [deployCiRun({ event: "pull_request" })] })] }],
     ["extra failed step", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ jobs: deployJobs({ jobs: [
@@ -1071,6 +1179,7 @@ describe("verified resume after a migration failed before the DDL marker", () =>
     ["missing or expired source backup", { sourceArtifacts: { ...successfulSourceArtifacts(), artifacts: successfulSourceArtifacts().artifacts.map((artifact) =>
       artifact.name.startsWith("bodycast-backup") ? { ...artifact, expired: true } : artifact) } }],
     ["blocked retry has another failure", { blockedCaptureLogText: "ssh host unreachable" }],
+    ["blocked capture stop marker is duplicated", { blockedCaptureLogText: `${captureFailure}\n${captureFailure}` }],
     ["blocked retry published an artifact", { blockedCaptureArtifacts: { total_count: 1, artifacts: [{ id: 9 }] } }],
     ["source SHA not in current main", { sourceIsAncestor: false }],
     ["source SHA not ancestor of blocked capture", { sourceIsAncestorOfBlockedCapture: false }],

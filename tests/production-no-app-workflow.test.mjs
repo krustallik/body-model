@@ -1,6 +1,11 @@
-import { readFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { activeProductionMutationRunInventory, buildCaptureHistoryEvidence } from "../scripts/github-no-app-preflight-evidence.mjs";
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { stableNoAppSnapshot } from "../scripts/production-no-app-preflight.mjs";
 
 const RESUME_RUN_ID = "38211169161";
 const RESUME_SHA = "3ede9e1644616e65edb3ac29a49df2f109786942";
@@ -105,10 +110,17 @@ describe("no-app preparation workflow boundaries", () => {
   });
 
   it("keeps the production host portion read-only and reserves migration rehearsal for localhost", async () => {
-    const host = await readFile(new URL("../scripts/production-no-app-preflight-host.sh", import.meta.url), "utf8");
+    const host = (await readFile(new URL("../scripts/production-no-app-preflight-host.sh", import.meta.url), "utf8"))
+      .replaceAll("\r\n", "\n");
     const noAppVerifier = await readFile(new URL("../scripts/production-no-app-preflight.mjs", import.meta.url), "utf8");
     const workflow = await readFile(new URL("../.github/workflows/production-no-app-preflight.yml", import.meta.url), "utf8");
     expect(host).toContain('source_capture_path="$git_dir/bodycast-production-pre-ddl-release-before-${EXPECTED_RESUME_SHA}"');
+    expect(host).toContain('local payload_file="$tmp/host-snapshot-${suffix}.json"');
+    expect(host).toContain('verified_file="$tmp/verified-${suffix}.json"');
+    expect(host).toContain('< "$payload_file" > "$verified_file"');
+    expect(host).not.toContain('cp -- "$verified_file" "$tmp/verified-${suffix}.json"');
+    expect(host).toContain('"$tmp/verified-before.json"');
+    expect(host).toContain('"$tmp/verified-immediately-before-dump.json"');
     expect(host).toContain('readonly EXPECTED_RESUME_SHA="3ede9e1644616e65edb3ac29a49df2f109786942"');
     expect(host).toContain('sourceRecordText: readFileSync(sourcePath, "utf8")');
     expect(host).toContain('currentReceiptText: readFileSync(receiptPath, "utf8")');
@@ -157,4 +169,238 @@ describe("no-app preparation workflow boundaries", () => {
     expect(resume).toContain("assertSafeFailedPreMaintenanceDeploy");
     expect(resume).toContain("assertSafeCaptureBlockedPreflightRetry");
   });
+
+  it("executes the real collect_snapshot flow twice before pg_dump", async () => {
+    const host = (await readFile(new URL("../scripts/production-no-app-preflight-host.sh", import.meta.url), "utf8"))
+      .replaceAll("\r\n", "\n");
+    const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "bodycast-no-app-host-flow-"));
+    try {
+      const functionStart = host.indexOf("collect_snapshot() {");
+      const functionEnd = host.indexOf("\n}\n\ncollect_snapshot before", functionStart) + 2;
+      const readPrivateStart = host.indexOf("read_private_file() {");
+      const readPrivateEnd = host.indexOf("\n\ncapture_path=", readPrivateStart);
+      const tailStart = host.indexOf("\ncollect_snapshot before\n", functionEnd);
+      expect(functionStart).toBeGreaterThanOrEqual(0);
+      expect(functionEnd).toBeGreaterThan(functionStart);
+      expect(readPrivateStart).toBeGreaterThanOrEqual(0);
+      expect(readPrivateEnd).toBeGreaterThan(readPrivateStart);
+      expect(tailStart).toBeGreaterThan(functionEnd);
+
+      const hostGitDirectory = path.join(temporaryDirectory, "host-git");
+      const tempDirectory = path.join(temporaryDirectory, "host-tmp");
+      const observedDirectory = path.join(temporaryDirectory, "observed");
+      const routesDirectory = path.join(temporaryDirectory, "routes");
+      await Promise.all([hostGitDirectory, tempDirectory, observedDirectory, routesDirectory]
+        .map((directory) => mkdir(directory)));
+      for (const name of [
+        "bodycast-production-pre-ddl-release",
+        "bodycast-production-pre-ddl-release-before-3ede9e1644616e65edb3ac29a49df2f109786942",
+        "bodycast-production-pre-ddl-release-resume-38211169161-1",
+      ]) {
+        const contents = name === "bodycast-production-pre-ddl-release"
+          ? "previousImagePin=bodycast-app:rollback-preflight-38205023003-1\n"
+          : `synthetic ${name}\n`;
+        const file = path.join(hostGitDirectory, name);
+        await writeFile(file, contents, { mode: 0o600 });
+        await chmod(file, 0o600);
+      }
+
+      const observedAt = new Date().toISOString();
+      const digest = "b".repeat(64);
+      const databaseContainerId = "a".repeat(64);
+      const writerTopology = {
+        schemaVersion: 1, contract: "bodycast-compose-internal-db-single-writer-v1", ready: true, blockers: [],
+        observedAt,
+        app: { name: "bodycast-app-prod", state: "absent", restartPolicy: null },
+        database: { name: "bodycast-db-prod", state: "running", health: "healthy", publishedPostgresPort: false,
+          networks: ["bodycast-backend-prod"] },
+        backendNetwork: { name: "bodycast-backend-prod", containers: ["bodycast-db-prod"] },
+        caddy: { name: "gymbeam-caddy", state: "running", configValidated: true },
+        routeFile: { verified: true, maintenanceResponse: true, containsReverseProxy: false, sha256: digest },
+      };
+      const report = {
+        identity: { database: "bodycast", databaseOid: 16384, clusterSystemIdentifier: "7123", role: "bodycast",
+          serverVersion: "17.11", serverAddress: "172.20.0.2", serverPort: 5432 },
+        migrations: [], objects: [], tables: [], logicalDataFingerprint: digest,
+        writerDrain: { schemaVersion: 1, observerPid: 44, observerApplicationName: "bodycast-production-preflight",
+          observedAt, identityPolicy: "no-other-client-backends", activeClientBackends: [], topology: writerTopology },
+        conflictingLocks: [], preparedTransactions: [],
+      };
+      const reportPath = path.join(temporaryDirectory, "report.json");
+      await writeFile(reportPath, JSON.stringify(report));
+      const writerTopologyPath = path.join(temporaryDirectory, "writer-topology.json");
+      await writeFile(writerTopologyPath, JSON.stringify(writerTopology));
+      const preflightPath = path.join(temporaryDirectory, "preflight.json");
+      await writeFile(preflightPath, JSON.stringify({ readyForOwnerAuthorization: true, blockers: [], pending: [],
+        pendingExactlyExpected: true, blobIntegrity: [] }));
+
+      const makeSnapshot = (observerPid, timestamp, schemaVersion = 1) => ({
+        schemaVersion,
+        preparationResult: {
+          ddlAuthorization: false, readyForOwnerAuthorization: false, appRuntime: "unavailable", rollbackReadiness: "unverified",
+          maintenanceRouteDigest: digest, maintenanceMarkerDigest: digest, captureLineageDigest: digest,
+          pendingSetDigest: digest, productionDatabaseContainerId: databaseContainerId,
+        },
+        report: { ...report, writerDrain: { ...report.writerDrain, observerPid, observedAt: timestamp,
+          topology: { ...writerTopology, observedAt: timestamp } } },
+        postgresClientVersions: { pgDump: "pg_dump (PostgreSQL) 17.11", pgRestore: "pg_restore (PostgreSQL) 17.11" },
+      });
+      const firstSnapshotPath = path.join(temporaryDirectory, "snapshot-before.json");
+      const secondSnapshotPath = path.join(temporaryDirectory, "snapshot-immediately-before-dump.json");
+      const secondObservedAt = new Date(Date.now() + 1000).toISOString();
+      await writeFile(firstSnapshotPath, JSON.stringify(makeSnapshot(44, observedAt)));
+      await writeFile(secondSnapshotPath, JSON.stringify(makeSnapshot(45, secondObservedAt)));
+
+      const bashExecutable = process.platform === "win32" && existsSync("C:/Program Files/Git/bin/bash.exe")
+        ? "C:/Program Files/Git/bin/bash.exe" : "bash";
+      const bashPath = (value) => process.platform === "win32"
+        ? spawnSync(bashExecutable, ["-c", "cygpath -u \"$1\"", "--", value], { encoding: "utf8" }).stdout.trim()
+        : value;
+      const readPrivateFunction = process.platform === "win32"
+        ? 'read_private_file() { [[ -f "$1" && ! -L "$1" ]]; }'
+        : host.slice(readPrivateStart, readPrivateEnd);
+      const shellRunner = String.raw`set -Eeuo pipefail
+deploy_path="$REPO_ROOT"
+release_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+app_host="fixture.invalid"
+routes_path="$ROUTES_PATH"
+git_dir="$HOST_GIT_DIRECTORY"
+tmp="$HOST_TEMP_DIRECTORY"
+mkdir -p "$tmp"
+readonly EXPECTED_SOURCE_RUN_ID="38211169161"
+readonly EXPECTED_SOURCE_ATTEMPT="1"
+readonly EXPECTED_RESUME_SHA="3ede9e1644616e65edb3ac29a49df2f109786942"
+readonly DB_CONTAINER="bodycast-db-prod"
+readonly DB_NETWORK="bodycast-backend-prod"
+readonly APP_CONTAINER="bodycast-app-prod"
+readonly DB_IMAGE="postgres:17-alpine"
+readonly FIXED_CONTAINER_ID="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+capture_path="$git_dir/bodycast-production-pre-ddl-release"
+source_capture_path="$git_dir/bodycast-production-pre-ddl-release-before-$EXPECTED_RESUME_SHA"
+receipt_path="$git_dir/bodycast-production-pre-ddl-release-resume-$EXPECTED_SOURCE_RUN_ID-$EXPECTED_SOURCE_ATTEMPT"
+VERIFY_CALLS=0
+read_private_file() {
+  local file="$1" bytes mode owner
+  [[ -f "$file" && ! -L "$file" ]] || { echo "capture file unavailable" >&2; return 1; }
+  bytes="$(stat -c '%s' -- "$file")"
+  mode="$(stat -c '%a' -- "$file")"
+  owner="$(stat -c '%u' -- "$file")"
+  [[ "$bytes" =~ ^[0-9]+$ && "$bytes" -gt 0 && "$bytes" -le 8192 && $((8#$mode & 077)) -eq 0 && "$owner" == "$(id -u)" ]]
+}
+docker() {
+  case "$*" in
+    *"--format {{.Id}}|{{.Name}}|{{.Config.Image}}"*) printf '%s\n' "$FIXED_CONTAINER_ID|/bodycast-db-prod|postgres:17-alpine|running|healthy|172.20.0.2" ;;
+    *"image inspect"*) printf 'sha256:%s\n' "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" ;;
+    *"pg_dump --version"*) printf 'pg_dump (PostgreSQL) 17.11\n' ;;
+    *" psql "*) cat "$FIXTURE_REPORT" ;;
+    *"{{.Id}}"*) printf '%s\n' "$FIXED_CONTAINER_ID" ;;
+    *"pg_dump --format=custom"*) printf 'called\n' >> "$PG_DUMP_LOG"; printf 'BODYCAST_PGDUMP_INVOCATION_AT=2026-10-13T00:00:00Z\n' >&2; printf 'synthetic-pgdump-bytes' ;;
+    ps\ --all*) : ;;
+    *) echo "unexpected synthetic docker operation" >&2; return 99 ;;
+  esac
+}
+bash() {
+  case "$1" in
+    *production-writer-drain.sh) cat "$WRITER_TOPOLOGY" ;;
+    *production-db-target.sh) printf 'postgresql://fixture:fixture@bodycast-db-prod/bodycast\n' ;;
+    *production-db-data-fingerprint.sh) printf '%s\n' "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" ;;
+    *) command bash "$@" ;;
+  esac
+}
+node() {
+  if [[ "$1" == "$deploy_path/scripts/production-migration-preflight.mjs" ]]; then
+    local report_path=""
+    while (($#)); do [[ "$1" == "--report" ]] && { shift; report_path="$1"; }; shift || true; done
+    [[ -n "$report_path" ]] || { echo "migration report path missing" >&2; return 1; }
+    cp -- "$FIXTURE_REPORT" "$report_path"
+    cat "$FIXTURE_PREFLIGHT"
+    return 0
+  fi
+  if [[ "$1" == "$deploy_path/scripts/production-no-app-preflight.mjs" && "$2" == "--verify-host-snapshot" ]]; then
+    cat >/dev/null
+    VERIFY_CALLS=$((VERIFY_CALLS + 1))
+    local fixture
+    if ((VERIFY_CALLS == 1)); then fixture="$SNAPSHOT_BEFORE"; else fixture="$SNAPSHOT_IMMEDIATELY_BEFORE_DUMP"; fi
+    cp -- "$fixture" "$OBSERVED_DIRECTORY/verified-$VERIFY_CALLS.json"
+    cat "$fixture"
+    return 0
+  fi
+  command node "$@"
+}
+curl() {
+  local headers="" body=""
+  while (($#)); do
+    case "$1" in
+      --dump-header) shift; headers="$1" ;;
+      --output) shift; body="$1" ;;
+    esac
+    shift || true
+  done
+  printf 'HTTP/1.1 503 Service Unavailable\r\nX-BodyCast-Deploy-Maintenance: fixture-maintenance\r\nCache-Control: no-store\r\n\r\n' > "$headers"
+  printf 'BodyCast is temporarily unavailable while the model is updated.\n' > "$body"
+  printf '503'
+}
+bodycast_maintenance_marker_from_route() { printf 'fixture-maintenance\n'; }
+bodycast_verify_exact_maintenance_route() { return 0; }
+bodycast_probe_public_maintenance() { return 0; }
+${readPrivateFunction}
+${host.slice(functionStart, functionEnd)}
+${host.slice(tailStart + 1)}`;
+      const shellRunnerPath = path.join(temporaryDirectory, "runner.sh");
+      await writeFile(shellRunnerPath, shellRunner);
+      const dumpLogPath = path.join(temporaryDirectory, "pg-dump.log");
+      const runFlow = (hostTemp) => spawnSync(bashExecutable, [bashPath(shellRunnerPath)], {
+        cwd: process.cwd(), encoding: "utf8", timeout: 60_000,
+        env: {
+          ...process.env,
+          REPO_ROOT: process.cwd(),
+          HOST_GIT_DIRECTORY: bashPath(hostGitDirectory),
+          HOST_TEMP_DIRECTORY: bashPath(hostTemp),
+          ROUTES_PATH: bashPath(routesDirectory),
+          OBSERVED_DIRECTORY: bashPath(observedDirectory),
+          FIXTURE_REPORT: bashPath(reportPath),
+          FIXTURE_PREFLIGHT: bashPath(preflightPath),
+          WRITER_TOPOLOGY: bashPath(writerTopologyPath),
+          SNAPSHOT_BEFORE: bashPath(firstSnapshotPath),
+          SNAPSHOT_IMMEDIATELY_BEFORE_DUMP: bashPath(secondSnapshotPath),
+          PG_DUMP_LOG: bashPath(dumpLogPath),
+          BODYCAST_PG_RESTORE_VERSION: "pg_restore (PostgreSQL) 17.11",
+          BODYCAST_CAPTURE_HISTORY_PROOF_B64: Buffer.from('{"schemaVersion":3}').toString("base64"),
+          BODYCAST_PRODUCTION_RUNS_B64: Buffer.from("[]").toString("base64"),
+          BODYCAST_CURRENT_RUN_ID: "900",
+          BODYCAST_PG_RESTORE_PASSWORD: "synthetic-only",
+        },
+      });
+      const result = runFlow(tempDirectory);
+      const dumpLog = await readFile(dumpLogPath, "utf8").catch(() => "");
+      expect(result.status, result.stderr).toBe(0);
+      expect(dumpLog.trim().split(/\r?\n/)).toEqual(["called"]);
+      expect(result.stderr).toContain("BODYCAST_NO_APP_PREPARATION_B64=");
+      expect(result.stderr).toContain("BODYCAST_PGDUMP_INVOCATION_AT=");
+
+      const [before, after] = await Promise.all([1, 2].map(async (index) => JSON.parse(
+        await readFile(path.join(observedDirectory, `verified-${index}.json`), "utf8"))));
+      expect(JSON.stringify(before)).not.toBe(JSON.stringify(after));
+      expect(stableNoAppSnapshot(before)).toEqual(stableNoAppSnapshot(after));
+
+      await rm(dumpLogPath, { force: true });
+      await writeFile(secondSnapshotPath, JSON.stringify(makeSnapshot(45, new Date().toISOString(), 2)));
+      const invalidHostTempDirectory = path.join(temporaryDirectory, "host-tmp-invalid-snapshot");
+      const invalidSnapshotResult = runFlow(invalidHostTempDirectory);
+      expect(invalidSnapshotResult.status).not.toBe(0);
+      expect(invalidSnapshotResult.stderr).toContain("No-app snapshot did not remain preparation-only.");
+      await expect(readFile(dumpLogPath, "utf8")).rejects.toThrow();
+
+      const changedSnapshot = makeSnapshot(46, new Date().toISOString());
+      changedSnapshot.report.logicalDataFingerprint = "e".repeat(64);
+      await writeFile(secondSnapshotPath, JSON.stringify(changedSnapshot));
+      const changedHostTempDirectory = path.join(temporaryDirectory, "host-tmp-changed-snapshot");
+      const changedSnapshotResult = runFlow(changedHostTempDirectory);
+      expect(changedSnapshotResult.status).not.toBe(0);
+      expect(changedSnapshotResult.stderr).toContain("Production DB, route, capture, or Docker identity changed");
+      await expect(readFile(dumpLogPath, "utf8")).rejects.toThrow();
+    } finally {
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

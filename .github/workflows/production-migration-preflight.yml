@@ -248,12 +248,16 @@ jobs:
               [[ "$retry_run_id" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Malformed failed preflight retry ID."; exit 1; }
               gh api "repos/krustallik/body-model/actions/runs/$retry_run_id" > "$RUNNER_TEMP/resume-safe-preflight-$retry_run_id-run.json"
               gh api "repos/krustallik/body-model/actions/runs/$retry_run_id/jobs" > "$RUNNER_TEMP/resume-safe-preflight-$retry_run_id-jobs.json"
+              gh api "repos/krustallik/body-model/actions/runs/$retry_run_id/artifacts" > "$RUNNER_TEMP/resume-safe-preflight-$retry_run_id-artifacts.json"
               node --input-type=module - "$RUNNER_TEMP/resume-safe-preflight-$retry_run_id-run.json" \
                 "$RUNNER_TEMP/resume-safe-preflight-$retry_run_id-jobs.json" \
                 >> "$RUNNER_TEMP/resume-safe-preflight-retries.ndjson" <<'NODE'
           import { readFileSync } from "node:fs";
           const [runPath, jobsPath] = process.argv.slice(2);
-          process.stdout.write(`${JSON.stringify({ run: JSON.parse(readFileSync(runPath, "utf8")), jobs: JSON.parse(readFileSync(jobsPath, "utf8")) })}\n`);
+          const artifactsPath = runPath.replace(/-run\.json$/, "-artifacts.json");
+          if (artifactsPath === runPath) throw new Error("Preflight retry artifact inventory path is malformed.");
+          process.stdout.write(`${JSON.stringify({ run: JSON.parse(readFileSync(runPath, "utf8")),
+            jobs: JSON.parse(readFileSync(jobsPath, "utf8")), artifacts: JSON.parse(readFileSync(artifactsPath, "utf8")) })}\n`);
           NODE
             done < "$RUNNER_TEMP/resume-safe-preflight-retry-ids.txt"
             node scripts/production-preflight-resume.mjs --verify-pre-ddl-migration-failure \

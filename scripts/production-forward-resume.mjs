@@ -5,6 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { assertTrustedOwnerWorkflowRun, BODYCAST_OWNER_ID } from "./github-owner-identity.mjs";
 import { canonicalSha256, verifyHistoricalMigrationAuthorizationEnvelope } from "./production-migration-authorization.mjs";
+import { matchesPostgresDatabaseIdentityDigest, samePostgresDatabaseIdentity } from "./postgres-database-identity.mjs";
 import { schemaInventoryDigest } from "./production-migration-preflight.mjs";
 import { readProductionReleaseMarker } from "./production-release-marker.mjs";
 
@@ -559,7 +560,7 @@ export function createForwardResumeContext({ failureProof, markerObservation, au
   const pending = [...preflightResult.pending].sort();
   if (!Array.isArray(preflightResult.pending) || pending.length !== 6
     || canonicalSha256(pending) !== preflightResult.pendingSetDigest
-    || canonicalSha256(report.identity) !== canonicalSha256(preflightResult.identity)
+    || !samePostgresDatabaseIdentity(preflightResult.identity, report.identity)
     || canonicalSha256(report.migrations) !== canonicalSha256(preflightResult.migrations)
     || schemaInventoryDigest(report.objects) !== schemaInventoryDigest(preflightResult.objects)) {
     reject("fresh live database identity, schema, history, or exact six-migration pending set is inconsistent.");
@@ -669,7 +670,7 @@ export function assertForwardResumeCurrentSnapshot(context, { preflightResult, l
   targetSha, preflightRunId, preflightRunAttempt }) {
   verifyForwardResumeContext(context, { targetSha, preflightRunId, preflightRunAttempt });
   if (!isCanonicalReport(liveReport) || preflightResult?.logicalDataFingerprint !== context.currentDataFingerprint
-    || canonicalSha256(liveReport.identity) !== context.currentDatabaseIdentityDigest
+    || !matchesPostgresDatabaseIdentityDigest(liveReport.identity, context.currentDatabaseIdentityDigest)
     || canonicalSha256(liveReport.migrations) !== context.currentMigrationHistoryDigest
     || schemaInventoryDigest(liveReport.objects) !== context.currentSchemaDigest
     || preflightResult?.pendingSetDigest !== context.currentPendingSetDigest

@@ -6,6 +6,8 @@ import { pathToFileURL } from "node:url";
 import { canonicalSha256, verifyHistoricalMigrationAuthorizationEnvelope } from "./production-migration-authorization.mjs";
 import { verifyRestoredBackup } from "./production-migration-preflight.mjs";
 import { productionAppRuntimeDigest } from "./production-app-runtime-digest.mjs";
+import { isCanonicalPostgresDatabaseIdentity, isHistoricalPostgresDatabaseIdentity,
+  matchesPostgresDatabaseIdentityDigest, postgresDatabaseIdentityHostProjection, samePostgresDatabaseIdentity } from "./postgres-database-identity.mjs";
 import {
   LEGACY_PREVIOUS_APP_PROVENANCE,
   assertPreviousAppProvenanceBoundToPreflight,
@@ -88,7 +90,8 @@ export function verifyCutbackEvidenceBundle({
 
 export function assertCutbackLiveDatabaseIdentity({ claims, liveReport }) {
   const identity = liveReport?.identity;
-  if (!identity || canonicalSha256(identity) !== claims.productionIdentityDigest
+  if (!isCanonicalPostgresDatabaseIdentity(identity)
+    || !matchesPostgresDatabaseIdentityDigest(identity, claims.productionIdentityDigest)
     || identity.database !== "bodycast" || identity.role !== "bodycast"
     || !String(identity.serverVersion ?? "").startsWith("17.")
     || !Number.isSafeInteger(identity.databaseOid)) {
@@ -103,12 +106,11 @@ export function assertCutbackLiveDatabaseIdentity({ claims, liveReport }) {
 
 export function assertCutbackRestoredDatabaseIdentity({ sourceIdentity, restoredReport, expectedDatabase = "bodycast" }) {
   const restored = restoredReport?.identity;
-  if (!sourceIdentity || !restored || restored.database !== expectedDatabase || restored.role !== "bodycast"
+  const comparableSource = sourceIdentity && restored ? { ...sourceIdentity, database: restored.database, databaseOid: restored.databaseOid } : null;
+  if (!isHistoricalPostgresDatabaseIdentity(sourceIdentity) || !isCanonicalPostgresDatabaseIdentity(restored)
+    || restored.database !== expectedDatabase || restored.role !== "bodycast"
     || !Number.isSafeInteger(restored.databaseOid) || restored.databaseOid < 1
-    || restored.clusterSystemIdentifier !== sourceIdentity.clusterSystemIdentifier
-    || restored.serverVersion !== sourceIdentity.serverVersion
-    || restored.serverAddress !== sourceIdentity.serverAddress
-    || restored.serverPort !== sourceIdentity.serverPort) {
+    || !samePostgresDatabaseIdentity(comparableSource, restored)) {
     fail("restored target database is not the exact reviewed PostgreSQL cluster/target role.");
   }
   return { verified: true, restoredDatabaseOid: restored.databaseOid };
@@ -130,11 +132,15 @@ export function verifyCutbackRestoredState({ sourceReport, restoreResult, restor
     }
   }
   if (sourceReport?.identity && restoredReport?.identity
-    && canonicalSha256(sourceReport.identity) !== canonicalSha256(restoredReport.identity)) {
+    && !samePostgresDatabaseIdentity(sourceReport.identity, restoredReport.identity)) {
     // A staged database has a different OID by design. Only database endpoint
     // fields that identify the PostgreSQL cluster are compared by the host gate.
-    const source = { ...sourceReport?.identity };
-    const restored = { ...restoredReport?.identity };
+    const source = postgresDatabaseIdentityHostProjection(sourceReport.identity);
+    const restored = postgresDatabaseIdentityHostProjection(restoredReport.identity);
+    if (!source || !restored) {
+      blockers.push("Restored database identity contains a malformed PostgreSQL endpoint.");
+      return { verified: false, blockers, migrationCount: base.migrationCount };
+    }
     delete source.databaseOid; delete restored.databaseOid; delete source.database; delete restored.database;
     if (canonicalSha256(source) !== canonicalSha256(restored)) blockers.push("Restored database identity is not on the source PostgreSQL cluster.");
   }

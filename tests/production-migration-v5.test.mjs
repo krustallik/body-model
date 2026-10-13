@@ -871,7 +871,7 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(sql).toContain("PhysiologyV7Lifecycle");
     expect(sql).toContain("DailyModelState");
     for (const relation of ["Workout", "Profile", "ModelEpisode"]) expect(sql).toContain(`('${relation}')`);
-    expect(sql).toContain("inet_server_addr()::text");
+    expect(sql).toContain("host(inet_server_addr())");
     expect(sql).toContain("inet_server_port()");
     expect(sql).toContain("pg_get_functiondef(p.oid)");
     expect(sql).toContain("pg_get_triggerdef(t.oid, true)");
@@ -885,6 +885,8 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(sql).toContain("'clusterSystemIdentifier', (SELECT system_identifier::text FROM pg_control_system())");
     const prismaIdentityProbe = await readFile(new URL("../scripts/run-prisma-migrate-with-lock-timeout.mjs", import.meta.url), "utf8");
     expect(prismaIdentityProbe).toContain('(SELECT system_identifier::text FROM pg_control_system()) AS "clusterSystemIdentifier"');
+    expect(prismaIdentityProbe).toContain('host(inet_server_addr()) AS "serverAddress"');
+    expect(prismaIdentityProbe).not.toContain('inet_server_addr()::text AS "serverAddress"');
     expect(normalizedSql).toContain("ORDER BY dep.refobjid, dep.refobjsubid\n            LIMIT 1");
     expect(sql).not.toContain("LEFT JOIN pg_depend dep ON dep.classid = 'pg_class'::regclass AND dep.objid = cl.oid");
     expect(sql).not.toMatch(/^\s*(ALTER|CREATE|DROP|INSERT|UPDATE|DELETE|TRUNCATE)\b/im);
@@ -1539,6 +1541,10 @@ describe("Ed25519 authorization envelope and provenance matrix", () => {
   it("binds the signed workflow run to the executing run and blocks replay after live migration state changes", () => {
     const liveReport = validPreflightReport();
     const preflightResult = evaluateProductionPreflight(liveReport, dirs);
+    preflightResult.identity = {
+      ...preflightResult.identity,
+      serverAddress: `${liveReport.identity.serverAddress}/32`,
+    };
     const restoreResult = { verified: true, postflightReady: true, postSchemaDigest: "9".repeat(64),
       logicalDataFingerprint: liveReport.logicalDataFingerprint, readability: liveReport.readability };
     const evidence = {
@@ -1550,7 +1556,7 @@ describe("Ed25519 authorization envelope and provenance matrix", () => {
       workflowRunAttempt: 2,
       preflightResultDigest: canonicalSha256(preflightResult),
       restoreResultDigest: canonicalSha256(restoreResult),
-      productionIdentityDigest: canonicalSha256(liveReport.identity),
+      productionIdentityDigest: canonicalSha256(preflightResult.identity),
       writerDrainDigest: canonicalSha256(liveReport.writerDrain),
       writerTopologyDigest: canonicalSha256(liveReport.writerDrain.topology),
       logicalDataFingerprint: liveReport.logicalDataFingerprint,

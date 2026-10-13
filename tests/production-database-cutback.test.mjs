@@ -83,6 +83,15 @@ describe("production database cutback gates", () => {
     ]) expect(() => assertCutbackLiveDatabaseIdentity({ claims, liveReport: live })).toThrow();
   });
 
+  it("accepts a historical /32 signed identity only for the same current bare endpoint", () => {
+    const historicalIdentity = { ...identity, serverAddress: "172.20.0.2/32" };
+    const historicalClaims = { productionIdentityDigest: canonicalSha256(historicalIdentity) };
+    expect(assertCutbackLiveDatabaseIdentity({ claims: historicalClaims,
+      liveReport: { identity, writerDrain: { activeClientBackends: [], topology: { ready: true } } } }).verified).toBe(true);
+    expect(() => assertCutbackLiveDatabaseIdentity({ claims: historicalClaims,
+      liveReport: { identity: { ...identity, serverAddress: "172.20.0.99" }, writerDrain: { activeClientBackends: [], topology: { ready: true } } } })).toThrow();
+  });
+
   it("accepts only a restored database on the exact source cluster and role", () => {
     const restored = { ...identity, database: "bodycast_cutback_123", databaseOid: 20480 };
     expect(assertCutbackRestoredDatabaseIdentity({ sourceIdentity: identity, restoredReport: { identity: restored }, expectedDatabase: restored.database }).verified).toBe(true);
@@ -92,6 +101,9 @@ describe("production database cutback gates", () => {
       { ...restored, role: "postgres" },
       { ...restored, database: "bodycast" },
     ]) expect(() => assertCutbackRestoredDatabaseIdentity({ sourceIdentity: identity, restoredReport: { identity: changed }, expectedDatabase: restored.database })).toThrow();
+    const historicalSource = { ...identity, serverAddress: "172.20.0.2/32" };
+    expect(assertCutbackRestoredDatabaseIdentity({ sourceIdentity: historicalSource,
+      restoredReport: { identity: restored }, expectedDatabase: restored.database }).verified).toBe(true);
   });
 
   it("blocks cutback when migration history, schema or any required data row count differs", () => {

@@ -673,13 +673,15 @@ jobs:
           SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
           META="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" 'docker inspect --format "{{.Id}}|{{.Name}}|{{.Config.Image}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}" bodycast-db-prod')"
           [[ "$META" == *"|/bodycast-db-prod|postgres:17-alpine|running|healthy" ]] || { echo "::error::Unexpected production PostgreSQL target."; exit 1; }
-          PG_DUMP_VERSION="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" 'docker exec bodycast-db-prod pg_dump --version')"
+          CONTAINER_ID="${META%%|*}"
+          [[ "$CONTAINER_ID" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::Production PostgreSQL container ID is malformed."; exit 1; }
+          PG_DUMP_VERSION="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" "docker exec '$CONTAINER_ID' pg_dump --version")"
           PG_RESTORE_VERSION="$(docker run --rm --network host --entrypoint pg_restore docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24 --version)"
           node --input-type=module - "$PG_DUMP_VERSION" "$PG_RESTORE_VERSION" <<'NODE'
           import { assertPostgresClientCompatibility } from "./scripts/postgres-client-versions.mjs";
           assertPostgresClientCompatibility(process.argv[2], process.argv[3]);
           NODE
-          echo "container_id=$(printf '%s' "$META" | cut -d'|' -f1)" >> "$GITHUB_OUTPUT"
+          echo "container_id=$CONTAINER_ID" >> "$GITHUB_OUTPUT"
       - name: Read-only production identity, full migration set, schema signatures, and locks
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -805,11 +807,18 @@ jobs:
           install -d -m 700 "$RUNNER_TEMP/bodycast-backup-artifact"
           BACKUP_FILE="$RUNNER_TEMP/bodycast-backup-artifact/production-backup.pgdump.enc"
           SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
-          CURRENT_ID="$("${SSH[@]}" "$SSH_USER@$SSH_HOST" 'docker inspect --format "{{.Id}}" bodycast-db-prod')"
-          [[ "$CURRENT_ID" == "$EXPECTED_CONTAINER_ID" ]] || { echo "::error::Production DB container changed after inspection."; exit 1; }
-          "${SSH[@]}" "$SSH_USER@$SSH_HOST" \
-            'docker exec bodycast-db-prod sh -c '\''printf "BODYCAST_BACKUP_STARTED_AT=%s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2; exec pg_dump --format=custom --no-owner --no-privileges --username=bodycast --dbname=bodycast'\''' \
-            2> "$RUNNER_TEMP/pgdump-start.log" \
+          [[ "$EXPECTED_CONTAINER_ID" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::Captured production DB container ID is malformed."; exit 1; }
+          {
+            "${SSH[@]}" "$SSH_USER@$SSH_HOST" "bash -s -- '$EXPECTED_CONTAINER_ID'" <<'REMOTE'
+          set -Eeuo pipefail
+          EXPECTED_CONTAINER_ID="$1"
+          CURRENT_ID="$(docker inspect --format '{{.Id}}' bodycast-db-prod)"
+          [[ "$CURRENT_ID" == "$EXPECTED_CONTAINER_ID" ]] || { echo "Production DB container changed before pg_dump." >&2; exit 1; }
+          docker exec "$EXPECTED_CONTAINER_ID" sh -c 'printf "BODYCAST_BACKUP_STARTED_AT=%s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2; exec pg_dump --format=custom --no-owner --no-privileges --username=bodycast --dbname=bodycast'
+          CURRENT_ID="$(docker inspect --format '{{.Id}}' bodycast-db-prod)"
+          [[ "$CURRENT_ID" == "$EXPECTED_CONTAINER_ID" ]] || { echo "Production DB container changed during pg_dump." >&2; exit 1; }
+          REMOTE
+          } 2> "$RUNNER_TEMP/pgdump-start.log" \
             | node scripts/production-backup-envelope.mjs encrypt --output "$BACKUP_FILE"
           SNAPSHOT_AT="$(sed -n 's/^BODYCAST_BACKUP_STARTED_AT=//p' "$RUNNER_TEMP/pgdump-start.log" | tail -n1)"
           [[ "$SNAPSHOT_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || { echo "::error::Could not prove pg_dump start timestamp."; exit 1; }

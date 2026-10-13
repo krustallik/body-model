@@ -5,7 +5,7 @@ import { STAGE_02_MANIFEST, ACTIVE_ENERGY_UNIFIED_MANIFEST, V4_REPUBLICATION_MAN
 import { verifyManifestBlob, verifyExecutionFileMatchesBlob } from "./production-migration-integrity.mjs";
 import { canonicalSha256, verifyAuthorizationEnvelope } from "./production-migration-authorization.mjs";
 import { evaluateProductionWriterDrain } from "./production-writer-drain.mjs";
-import { isCanonicalPostgresDatabaseIdentity } from "./postgres-database-identity.mjs";
+import { isCanonicalPostgresDatabaseIdentity, isHistoricalPostgresDatabaseIdentity, samePostgresDatabaseIdentity } from "./postgres-database-identity.mjs";
 
 export const EXPECTED_PENDING_MIGRATIONS = ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations.map(({ name }) => name);
 export const EXPECTED_V4_REPUBLICATION_PENDING_MIGRATIONS = V4_REPUBLICATION_MANIFEST.migrations.map(({ name }) => name);
@@ -187,8 +187,8 @@ export function schemaInventoryDifferenceSummary(sourceObjects, restoredObjects,
 }
 
 export function assertProductionDatabaseIdentityMatches(expectedIdentity, actualIdentity) {
-  if (!isCanonicalPostgresDatabaseIdentity(expectedIdentity) || !isCanonicalPostgresDatabaseIdentity(actualIdentity)
-    || canonicalSha256(expectedIdentity) !== canonicalSha256(actualIdentity)) {
+  if (!isHistoricalPostgresDatabaseIdentity(expectedIdentity) || !isCanonicalPostgresDatabaseIdentity(actualIdentity)
+    || !samePostgresDatabaseIdentity(expectedIdentity, actualIdentity)) {
     throw new Error("Migration blocked: production database identity differs from the signed preflight target.");
   }
   return true;

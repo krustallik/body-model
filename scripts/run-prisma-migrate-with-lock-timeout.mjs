@@ -7,7 +7,7 @@ import { verifyFinalGuardReceipt } from "./production-migration-final-guard.mjs"
 import { canonicalSha256 } from "./production-migration-authorization.mjs";
 import { normalizeWorkflowRuns } from "./production-migration-select-preflight.mjs";
 import { selectLatestApplicablePreflight } from "./production-migration-release.mjs";
-import { isCanonicalPostgresDatabaseIdentity, normalizePostgresDatabaseIdentityRow } from "./postgres-database-identity.mjs";
+import { isCanonicalPostgresDatabaseIdentity, matchesPostgresDatabaseIdentityDigest, normalizePostgresDatabaseIdentityRow } from "./postgres-database-identity.mjs";
 import { acknowledgePrismaSpawn, readProductionReleaseMarker, writeDdlStartingMarker } from "./production-release-marker.mjs";
 import { ARMED_RETRY_FAILED_RUN_ID, ARMED_RETRY_FAILED_SHA } from "./production-forward-resume.mjs";
 
@@ -28,7 +28,7 @@ export async function readPrismaDatabaseIdentity(databaseUrl) {
         (SELECT system_identifier::text FROM pg_control_system()) AS "clusterSystemIdentifier",
         current_user AS "role",
         current_setting('server_version') AS "serverVersion",
-        inet_server_addr()::text AS "serverAddress",
+        host(inet_server_addr()) AS "serverAddress",
         inet_server_port() AS "serverPort",
         pg_backend_pid() AS "observerPid",
         current_setting('application_name') AS "observerApplicationName",
@@ -75,7 +75,7 @@ export function assertPrismaTargetMatchesSignedIdentity(receipt, targetState, no
     { id: "canonical-postgres-identity", passed: isCanonicalPostgresDatabaseIdentity(identity) },
     { id: "exact-database-identity-match", passed: isCanonicalPostgresDatabaseIdentity(identity)
       && /^[a-f0-9]{64}$/.test(String(receipt?.productionIdentityDigest ?? ""))
-      && canonicalSha256(identity) === receipt.productionIdentityDigest },
+      && matchesPostgresDatabaseIdentityDigest(identity, receipt.productionIdentityDigest) },
     { id: "writer-drain-schema", passed: writerDrain?.schemaVersion === 1 },
     { id: "writer-drain-observer-pid", passed: Number.isSafeInteger(writerDrain?.observerPid) && writerDrain.observerPid > 0 },
     { id: "fixed-observer-application", passed: writerDrain?.observerApplicationName === "bodycast-prisma-ddl-guard" },

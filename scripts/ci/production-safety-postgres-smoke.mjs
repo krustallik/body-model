@@ -25,7 +25,8 @@ import { PRODUCTION_WRITER_TOPOLOGY_CONTRACT } from "../production-writer-drain.
 import { assertPostgresClientCompatibility } from "../postgres-client-versions.mjs";
 import { canonicalSha256, createAuthorizationEnvelope } from "../production-migration-authorization.mjs";
 import { executionProofAudience, verifyGitHubExecutionProof } from "../production-migration-execution-attestation.mjs";
-import { readPrismaDatabaseIdentity, startPrismaMigrationAtDdlBoundary } from "../run-prisma-migrate-with-lock-timeout.mjs";
+import { assertPrismaTargetMatchesSignedIdentity, readPrismaDatabaseIdentity, startPrismaMigrationAtDdlBoundary } from "../run-prisma-migrate-with-lock-timeout.mjs";
+import { assertProductionDatabaseEndpointBinding } from "../production-db-endpoint-binding.mjs";
 import { withPrismaLockTimeout } from "../production-migration-release.mjs";
 import { readCommittedGitBlob, verifyManifestBlob } from "../production-migration-integrity.mjs";
 import { verifyDisposableRehearsalAdmission } from "../production-migration-restore-check.mjs";
@@ -1134,6 +1135,24 @@ async function main() {
     const allMigrationDirectories = await createSourceFixture();
     let migrationDirectories = allMigrationDirectories.filter((name) => !EXPECTED_V4_REPUBLICATION_PENDING_MIGRATIONS.includes(name));
     let sourceReport = readSourceReport();
+    const endpointObservation = JSON.parse(sql(source, `SELECT json_build_object(
+      'serverAddressText', inet_server_addr()::text,
+      'serverAddress', host(inet_server_addr()),
+      'serverPort', inet_server_port()
+    )::text;`));
+    if (endpointObservation.serverAddressText !== `${endpointObservation.serverAddress}/32`
+      || sourceReport.identity?.serverAddress !== endpointObservation.serverAddress
+      || sourceReport.identity?.serverPort !== endpointObservation.serverPort
+      || endpointObservation.serverPort !== 5432) {
+      throw new Error("PostgreSQL 17.11 did not preserve the expected /32-to-host() endpoint projection in the production preflight identity.");
+    }
+    assertProductionDatabaseEndpointBinding(sourceReport, endpointObservation.serverAddress);
+    const prismaIdentity = await readPrismaDatabaseIdentity(databaseUrl(source));
+    if (canonicalSha256(prismaIdentity.identity) !== canonicalSha256(sourceReport.identity)) {
+      throw new Error("Prisma target identity differs from the SQL preflight's canonical PostgreSQL identity.");
+    }
+    assertPrismaTargetMatchesSignedIdentity({ productionIdentityDigest: canonicalSha256(sourceReport.identity) },
+      prismaIdentity, Date.parse(prismaIdentity.writerDrain.observedAt));
     if (typeof sourceReport.identity?.databaseOid !== "number" || typeof sourceReport.identity?.serverPort !== "number") {
       throw new Error("Production preflight identity JSON must preserve numeric database OID and server port values for Prisma target binding.");
     }

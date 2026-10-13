@@ -126,6 +126,10 @@ describe("production deploy evidence source binding", () => {
       expect(artifacts).toEqual({ total_count: 0, artifacts: [] });
     }
     expect(preflightAuthorizationControlsMatch("3ede9e1644616e65edb3ac29a49df2f109786942", updatedMainSha)).toBe(true);
+    expect(preflightAuthorizationControlsMatch(
+      "bf481a853b419e369643bd0c1eed0aa00fa6d724",
+      "df87ca5cf873fa46acf9123bb1feb61fce530bba",
+    )).toBe(true);
     expect(preflightCaptureResumeControlsMatch("3eec0b7d4b38f10de3083a9108b32fcbc1c201b3", currentMainSha)).toBe(true);
     expect(deployControlFilesMatch("7ccaf1018c55f6ed2dfa3124992b75d5a43b052a", currentMainSha)).toBe(true);
     expect(preflightAuthorizationControlsMatch("f".repeat(40), currentMainSha)).toBe(false);

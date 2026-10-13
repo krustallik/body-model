@@ -119,8 +119,185 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  disposable-postgres-smoke:
-    name: Disposable PostgreSQL backup and restore safety smoke
+  safety-unit-regressions:
+    name: Production release and recovery safety regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout PR source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Replay complete signed forward-resume evidence without production credentials
+        run: npx vitest run tests/forward-resume-evidence-replay.test.mjs tests/production-preflight-resume.test.mjs
+      - name: Generate Prisma client for final-target identity smoke
+        env:
+          DATABASE_URL: postgresql://build:build@127.0.0.1:5432/build
+        run: npx prisma generate --schema prisma/schema.prisma
+
+      - name: Run targeted safety-tooling tests
+        run: npm run test:unit -- tests/production-forward-resume.test.mjs tests/forward-resume-armed-retry.test.mjs tests/production-release-marker.test.mjs tests/production-migration-v5.test.mjs tests/production-no-app-preflight.test.mjs tests/production-no-app-workflow.test.mjs tests/production-safety-tooling.test.mjs tests/production-writer-drain.test.mjs
+
+      - name: Run production release boundary regressions
+        run: npm run test:unit -- tests/deploy-script-ordering.test.ts tests/production-full-history-recalculate-cutover.test.ts tests/full-history-recalculation.service.test.ts tests/production-deploy-rollback.test.ts tests/production-deploy-rollback-safety.test.ts tests/production-traffic-cutover-freshness.test.ts tests/production-release-entrypoints.test.ts tests/production-database-cutback.test.mjs tests/production-previous-app-provenance.test.mjs tests/production-release-terminal-safety.test.ts tests/deploy-main-freshness.test.ts tests/production-deploy-gate.test.ts tests/production-recovery-boundary.test.mjs tests/production-schema-deploy-handoff.test.mjs
+
+      - name: Run production recovery workflow protocol tests
+        run: npm run test:unit -- tests/production-recovery-authority.test.mjs tests/production-recovery-authorization.test.mjs tests/production-recovery-boundary.test.mjs tests/production-recovery-flow.test.mjs tests/production-recovery-client.test.mjs tests/production-recovery-package.test.mjs
+
+      - name: Check production migration shell syntax
+        run: bash -n scripts/deploy-migrate.sh scripts/production-migration-readiness.sh scripts/production-migration-summary.sh scripts/production-writer-drain.sh scripts/production-release-marker.sh scripts/production-release-lock.sh scripts/production-no-app-preflight-host.sh scripts/deploy-main-freshness.sh scripts/production-route-path.sh scripts/production-route-primitives.sh scripts/production-traffic-cutover.sh scripts/production-database-cutback.sh scripts/production-database-cutback-promotion.sh scripts/production-database-cutback-lifecycle.sh scripts/production-db-data-fingerprint.sh scripts/deploy.sh scripts/production-recovery/production-authority-launcher.sh scripts/production-recovery/production-operation-client-launcher.sh scripts/production-checkout-diagnostic.sh scripts/production-app-container-health-wait.sh tests/production-checkout-diagnostic.test.sh tests/production-app-container-health-wait.test.sh tests/production-migration-release-tooling.sh tests/production-recovery-marker-reader.sh scripts/ci/production-database-cutback-promotion-failure-injection.sh
+
+      - name: Exercise read-only production checkout diagnostic against an isolated Git fixture
+        run: bash tests/production-checkout-diagnostic.test.sh
+
+      - name: Verify exact-SHA app startup waits fail closed
+        run: bash tests/production-app-container-health-wait.test.sh
+
+      - name: Run V1/V2 marker reader fail-closed compatibility matrix
+        run: bash tests/production-recovery-marker-reader.sh
+
+  migrator-image-and-compose:
+    name: Migrator image and recovery Compose safety
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout PR source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Build migrator image and verify in-image migration bytes
+        run: |
+          docker build --target migrator --tag bodycast-migrator-safety-ci .
+          docker run --rm --entrypoint node bodycast-migrator-safety-ci /app/scripts/production-migration-image-check.mjs /app
+
+      - name: Validate isolated recovery Compose topology
+        env:
+          BODYCAST_ROLLBACK_IMAGE: ghcr.io/bodycast/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          BODYCAST_PRODUCTION_ENV_FILE: .env.production.example
+          BODYCAST_RECOVERY_DATABASE_URL_FILE: /dev/null
+          BODYCAST_PRODUCTION_DATABASE_URL_FILE: /dev/null
+        run: docker compose -f docker-compose.recovery.yml config --quiet
+
+  postgres-recovery-integration:
+    name: Disposable PostgreSQL recovery integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        env:
+          POSTGRES_DB: bodycast
+          POSTGRES_USER: bodycast
+          POSTGRES_PASSWORD: bodycast_ci_only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bodycast -d bodycast"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Checkout PR source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        env:
+          DATABASE_URL: postgresql://build:build@127.0.0.1:5432/build
+        run: npx prisma generate --schema prisma/schema.prisma
+
+      - name: Create isolated recovery test database
+        env:
+          PGPASSWORD: bodycast_ci_only
+        run: psql --host=127.0.0.1 --username=bodycast --dbname=bodycast --command='CREATE DATABASE bodycast_recovery_test'
+
+      - name: Apply the reviewed Prisma schema to the isolated recovery test database
+        env:
+          DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_recovery_test
+        run: npx prisma migrate deploy --schema prisma/schema.prisma
+
+      - name: Run PostgreSQL recovery read-only-role and lifecycle integration tests
+        env:
+          BODYCAST_RECOVERY_TEST_DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_recovery_test
+        run: npm run test:integration -- tests/integration/full-history-raw-input-inventory.integration.test.ts tests/integration/production-recovery-readonly-role.integration.test.ts tests/integration/production-recovery-flow.integration.test.ts
+
+  postgres-migration-checksum:
+    name: PostgreSQL migration checksum and release tooling
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        env:
+          POSTGRES_DB: bodycast
+          POSTGRES_USER: bodycast
+          POSTGRES_PASSWORD: bodycast_ci_only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bodycast -d bodycast"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Checkout PR source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        env:
+          DATABASE_URL: postgresql://build:build@127.0.0.1:5432/build
+        run: npx prisma generate --schema prisma/schema.prisma
+
+      - name: Verify Prisma checksum and 5-second lock timeout against isolated PostgreSQL
+        env:
+          BODYCAST_TEST_DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast
+        run: node scripts/ci/production-migration-prisma-checksum.integration.mjs
+
+      - name: Run production migration release-tooling shell regressions
+        env:
+          BODYCAST_TEST_DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast
+        run: |
+          bash -n scripts/production-migration-readiness.sh scripts/production-migration-summary.sh scripts/production-writer-drain.sh scripts/production-release-marker.sh scripts/production-release-lock.sh scripts/deploy-main-freshness.sh scripts/production-route-path.sh scripts/production-route-primitives.sh scripts/production-traffic-cutover.sh scripts/production-database-cutback.sh scripts/deploy.sh scripts/production-checkout-diagnostic.sh scripts/production-app-container-health-wait.sh tests/production-checkout-diagnostic.test.sh tests/production-app-container-health-wait.test.sh tests/production-migration-release-tooling.sh
+          bash tests/production-migration-release-tooling.sh
+
+  postgres-backup-restore-smoke:
+    name: PostgreSQL encrypted backup and restore integration
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -168,73 +345,10 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
-      - name: Replay complete signed forward-resume evidence without production credentials
-        run: npx vitest run tests/forward-resume-evidence-replay.test.mjs tests/production-preflight-resume.test.mjs
-      - name: Generate Prisma client for final-target identity smoke
+      - name: Generate Prisma client for identity smoke
         env:
           DATABASE_URL: postgresql://build:build@127.0.0.1:5432/build
         run: npx prisma generate --schema prisma/schema.prisma
-
-      - name: Run targeted safety-tooling tests
-        run: npm run test:unit -- tests/production-forward-resume.test.mjs tests/forward-resume-armed-retry.test.mjs tests/production-release-marker.test.mjs tests/production-migration-v5.test.mjs tests/production-no-app-preflight.test.mjs tests/production-no-app-workflow.test.mjs tests/production-safety-tooling.test.mjs tests/production-writer-drain.test.mjs
-
-      - name: Run production release boundary regressions
-        run: npm run test:unit -- tests/deploy-script-ordering.test.ts tests/production-full-history-recalculate-cutover.test.ts tests/full-history-recalculation.service.test.ts tests/production-deploy-rollback.test.ts tests/production-deploy-rollback-safety.test.ts tests/production-traffic-cutover-freshness.test.ts tests/production-release-entrypoints.test.ts tests/production-database-cutback.test.mjs tests/production-previous-app-provenance.test.mjs tests/production-release-terminal-safety.test.ts tests/deploy-main-freshness.test.ts tests/production-deploy-gate.test.ts tests/production-recovery-boundary.test.mjs tests/production-schema-deploy-handoff.test.mjs
-
-      - name: Run production recovery workflow protocol tests
-        run: npm run test:unit -- tests/production-recovery-authority.test.mjs tests/production-recovery-authorization.test.mjs tests/production-recovery-boundary.test.mjs tests/production-recovery-flow.test.mjs tests/production-recovery-client.test.mjs tests/production-recovery-package.test.mjs
-
-      - name: Check production migration shell syntax
-        run: bash -n scripts/deploy-migrate.sh scripts/production-migration-readiness.sh scripts/production-migration-summary.sh scripts/production-writer-drain.sh scripts/production-release-marker.sh scripts/production-release-lock.sh scripts/production-no-app-preflight-host.sh scripts/deploy-main-freshness.sh scripts/production-route-path.sh scripts/production-route-primitives.sh scripts/production-traffic-cutover.sh scripts/production-database-cutback.sh scripts/production-database-cutback-promotion.sh scripts/production-database-cutback-lifecycle.sh scripts/production-db-data-fingerprint.sh scripts/deploy.sh scripts/production-recovery/production-authority-launcher.sh scripts/production-recovery/production-operation-client-launcher.sh scripts/production-checkout-diagnostic.sh scripts/production-app-container-health-wait.sh tests/production-checkout-diagnostic.test.sh tests/production-app-container-health-wait.test.sh tests/production-migration-release-tooling.sh tests/production-recovery-marker-reader.sh scripts/ci/production-database-cutback-promotion-failure-injection.sh
-
-      - name: Exercise read-only production checkout diagnostic against an isolated Git fixture
-        run: bash tests/production-checkout-diagnostic.test.sh
-
-      - name: Verify exact-SHA app startup waits fail closed
-        run: bash tests/production-app-container-health-wait.test.sh
-
-      - name: Run V1/V2 marker reader fail-closed compatibility matrix
-        run: bash tests/production-recovery-marker-reader.sh
-
-      - name: Create isolated recovery test database
-        env:
-          PGPASSWORD: bodycast_ci_only
-        run: psql --host=127.0.0.1 --username=bodycast --dbname=bodycast --command='CREATE DATABASE bodycast_recovery_test'
-
-      - name: Apply the reviewed Prisma schema to the isolated recovery test database
-        env:
-          DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_recovery_test
-        run: npx prisma migrate deploy --schema prisma/schema.prisma
-
-      - name: Run PostgreSQL recovery read-only-role and lifecycle integration tests
-        env:
-          BODYCAST_RECOVERY_TEST_DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_recovery_test
-        run: npm run test:integration -- tests/integration/full-history-raw-input-inventory.integration.test.ts tests/integration/production-recovery-readonly-role.integration.test.ts tests/integration/production-recovery-flow.integration.test.ts
-
-      - name: Build migrator image and verify in-image migration bytes
-        run: |
-          docker build --target migrator --tag bodycast-migrator-safety-ci .
-          docker run --rm --entrypoint node bodycast-migrator-safety-ci /app/scripts/production-migration-image-check.mjs /app
-
-      - name: Validate isolated recovery Compose topology
-        env:
-          BODYCAST_ROLLBACK_IMAGE: ghcr.io/bodycast/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-          BODYCAST_PRODUCTION_ENV_FILE: .env.production.example
-          BODYCAST_RECOVERY_DATABASE_URL_FILE: /dev/null
-          BODYCAST_PRODUCTION_DATABASE_URL_FILE: /dev/null
-        run: docker compose -f docker-compose.recovery.yml config --quiet
-
-      - name: Verify Prisma checksum and 5-second lock timeout against isolated PostgreSQL
-        env:
-          BODYCAST_TEST_DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast
-        run: node scripts/ci/production-migration-prisma-checksum.integration.mjs
-
-      - name: Run production migration release-tooling shell regressions
-        env:
-          BODYCAST_TEST_DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast
-        run: |
-          bash -n scripts/production-migration-readiness.sh scripts/production-migration-summary.sh scripts/production-writer-drain.sh scripts/production-release-marker.sh scripts/production-release-lock.sh scripts/deploy-main-freshness.sh scripts/production-route-path.sh scripts/production-route-primitives.sh scripts/production-traffic-cutover.sh scripts/production-database-cutback.sh scripts/deploy.sh scripts/production-checkout-diagnostic.sh scripts/production-app-container-health-wait.sh tests/production-checkout-diagnostic.test.sh tests/production-app-container-health-wait.test.sh tests/production-migration-release-tooling.sh
-          bash tests/production-migration-release-tooling.sh
 
       - name: Run real PostgreSQL encrypted backup, restore, and fail-closed smoke
         env:
@@ -242,7 +356,70 @@ jobs:
           BODYCAST_RESTORE_PORT: 5433
         run: node scripts/ci/production-safety-postgres-smoke.mjs
 
+  postgres-cutback-smoke:
+    name: Disposable PostgreSQL cutback safety smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        env:
+          POSTGRES_DB: bodycast
+          POSTGRES_USER: bodycast
+          POSTGRES_PASSWORD: bodycast_ci_only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bodycast -d bodycast"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Checkout PR source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
       - name: Run isolated PostgreSQL production cutback and failure cases
         env:
           BODYCAST_CUTBACK_TEST_DATABASE_URL: postgresql://bodycast:bodycast_ci_only@127.0.0.1:5432/bodycast_cutback_test
         run: node scripts/ci/production-database-cutback-postgres-smoke.mjs
+
+  production-safety-gate:
+    name: Disposable PostgreSQL backup and restore safety smoke
+    runs-on: ubuntu-latest
+    needs:
+      - safety-unit-regressions
+      - migrator-image-and-compose
+      - postgres-recovery-integration
+      - postgres-migration-checksum
+      - postgres-backup-restore-smoke
+      - postgres-cutback-smoke
+    if: ${{ always() }}
+    steps:
+      - name: Require every production migration safety job to pass
+        env:
+          SAFETY_UNIT_RESULT: ${{ needs.safety-unit-regressions.result }}
+          MIGRATOR_RESULT: ${{ needs.migrator-image-and-compose.result }}
+          RECOVERY_INTEGRATION_RESULT: ${{ needs.postgres-recovery-integration.result }}
+          CHECKSUM_RESULT: ${{ needs.postgres-migration-checksum.result }}
+          BACKUP_RESTORE_RESULT: ${{ needs.postgres-backup-restore-smoke.result }}
+          CUTBACK_RESULT: ${{ needs.postgres-cutback-smoke.result }}
+        run: |
+          for result in "$SAFETY_UNIT_RESULT" "$MIGRATOR_RESULT" "$RECOVERY_INTEGRATION_RESULT" "$CHECKSUM_RESULT" "$BACKUP_RESTORE_RESULT" "$CUTBACK_RESULT"; do
+            if [[ "$result" != "success" ]]; then
+              echo "Production migration safety job did not pass: $result" >&2
+              exit 1
+            fi
+          done
+          echo "All production migration safety jobs passed."

@@ -71,6 +71,21 @@ describe("production V4 activation and cutover recovery", () => {
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
   }, 30_000);
 
+  it.skipIf(!bashAvailable)("keeps maintenance when the raw replay-source fingerprint changes during activation", async () => {
+    const fixture = createFixture();
+    prepareV4ActivationFixture(fixture);
+    const result = await runFixtureAsync(fixture, "bash scripts/production-traffic-cutover.sh activate-v4-and-serve", {
+      BODYCAST_DEPLOY_SHA: fixture.candidateSha,
+      CHANGE_V4_SOURCE_AFTER_ACTIVATION: "1",
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).not.toBe(0);
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events).toContain("unified-v4-activation");
+    expect(events).not.toContain("live-route-mutation:serving");
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+  }, 30_000);
+
   it.skipIf(!bashAvailable)("blocks unknown lifecycle inspection before stopping the app or changing traffic", async () => {
     const fixture = createFixture();
     prepareV4ActivationFixture(fixture);

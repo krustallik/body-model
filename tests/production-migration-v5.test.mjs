@@ -21,6 +21,7 @@ import { normalizePostgresDatabaseIdentityRow } from "../scripts/postgres-databa
 import { psqlCompatibleDatabaseUrl } from "../scripts/production-db-target-url.mjs";
 import { assertCurrentMigrationRunMatchesProof, executionProofAudience, readCurrentMigrationRunForDdl, requestGitHubOidcExecutionProof, verifyGitHubExecutionProof } from "../scripts/production-migration-execution-attestation.mjs";
 import { PRODUCTION_WRITER_TOPOLOGY_CONTRACT } from "../scripts/production-writer-drain.mjs";
+import { assertStableV4RecoverySnapshots, assertV4RecoverySnapshot, assertV4ReplayRehearsal } from "../scripts/production-v4-recovery.mjs";
 
 const now = Date.parse("2026-10-05T10:00:00.000Z");
 const dirs = [
@@ -2016,5 +2017,102 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
+  });
+
+  it("binds post-DDL V4 backup, restore, and epoch-1 rehearsal without granting DDL authorization", () => {
+    const releaseSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    const migrationOriginSha = "8b4a195e8afb67c0a913d0175a030e01cc665732";
+    const report = validV4RepublicationPreflightReport();
+    report.migrations.push(...V4_REPUBLICATION_MANIFEST.migrations.map((migration) => migrationRow(migration)));
+    report.objects = schemaObjects("v4-after");
+    report.logicalDataFingerprint = "a".repeat(64);
+    const observedAt = new Date().toISOString();
+    report.writerDrain = readyWriterDrain();
+    report.writerDrain.observedAt = observedAt;
+    report.writerDrain.topology.observedAt = observedAt;
+    report.conflictingLocks = [];
+    report.preparedTransactions = [];
+    report.longTransactions = [];
+    const migrationRun = {
+      id: "38447647403", runAttempt: "1", headSha: migrationOriginSha,
+      workflowPath: ".github/workflows/production-migrate.yml", actorId: "126446430",
+      conclusion: "success", event: "workflow_dispatch",
+    };
+    const snapshot = {
+      schemaVersion: 1, manifestId: V4_REPUBLICATION_MANIFEST.id, releaseSha,
+      canonicalMainSha: releaseSha, databaseContainerId: "1".repeat(64),
+      databaseImageId: "2".repeat(64), appImageId: "3".repeat(64),
+      markerDigest: "4".repeat(64), routeDigest: "5".repeat(64),
+      v4ReplayInputFingerprint: "6".repeat(64), pgDumpVersion: "pg_dump (PostgreSQL) 17.11",
+      pgRestoreVersion: "pg_restore (PostgreSQL) 17.11", lifecycleState: "v4-replayable",
+      migrationDirectories: fullDirs, report,
+      marker: {
+        schemaVersion: 3, manifestId: V4_REPUBLICATION_MANIFEST.id, migrationOriginSha,
+        deploySha: releaseSha, state: "app-ready", workflowRunId: migrationRun.id,
+        workflowRunAttempt: migrationRun.runAttempt, authorizationId: "authorization-fixture-v4-2026",
+        lineageDigest: "7".repeat(64), sourceMarkerDigest: "8".repeat(64), compatibilityDigest: "9".repeat(64),
+      },
+      v4Lifecycle: {
+        profileId: 1,
+        invalidationGeneration: 16039,
+        productionPublishedGeneration: 16039,
+        productionStaleFromDate: null,
+        unifiedTargetRevision: "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once",
+        unifiedRolloutEpoch: 1,
+        unifiedPublishedRolloutEpoch: null,
+        unifiedPublishedGeneration: null,
+        unifiedPublicationBlockedFromDate: null,
+      },
+    };
+
+    const validated = assertV4RecoverySnapshot(snapshot, { releaseSha, migrationRun, now: Date.now() });
+    expect(validated).toMatchObject({ verified: true, ddlAuthorization: false, migrationRunId: "38447647403" });
+    expect(() => assertV4RecoverySnapshot(snapshot, {
+      releaseSha, migrationRun: { ...migrationRun, id: "38447647404" }, now: Date.now(),
+    })).toThrow(/does not bind to the successful pinned-owner V4 DDL run/);
+
+    for (const mutate of [
+      (value) => { value.report.identity.database = "other"; },
+      (value) => { value.report.conflictingLocks = null; },
+      (value) => { value.report.preparedTransactions.push({ gid: "unexpected" }); },
+      (value) => { value.marker.migrationOriginSha = "f".repeat(40); },
+      (value) => { value.v4Lifecycle.unifiedRolloutEpoch = 0; },
+    ]) {
+      const changed = structuredClone(snapshot);
+      mutate(changed);
+      expect(() => assertV4RecoverySnapshot(changed, { releaseSha, migrationRun, now: Date.now() })).toThrow();
+    }
+
+    const after = structuredClone(snapshot);
+    expect(assertStableV4RecoverySnapshots(snapshot, after)).toBe(true);
+    after.report.logicalDataFingerprint = "f".repeat(64);
+    expect(() => assertStableV4RecoverySnapshots(snapshot, after)).toThrow(/changed across the backup boundary/);
+
+    const restoreResult = { verified: true, migrationCount: report.migrations.length };
+    const postflightResult = { postflightReady: true, blockers: [], postSchemaDigest: schemaInventoryDigest(report.objects) };
+    const rehearsal = {
+      sourceSnapshot: snapshot,
+      restoreResult,
+      postflightResult,
+      restoreReport: report,
+      sourceRawFingerprint: snapshot.v4ReplayInputFingerprint,
+      restoredRawFingerprintBefore: snapshot.v4ReplayInputFingerprint,
+      restoredRawFingerprintAfter: snapshot.v4ReplayInputFingerprint,
+      restoredRawFingerprintAfterRetry: snapshot.v4ReplayInputFingerprint,
+      fullFingerprintBefore: report.logicalDataFingerprint,
+      fullFingerprintAfter: "b".repeat(64),
+      fullFingerprintAfterRetry: "b".repeat(64),
+      firstReplay: { rolloutEpoch: 1, dayCount: 365 },
+      retryReplay: { rolloutEpoch: 1, dayCount: 365 },
+      lifecycleAfter: {
+        ...snapshot.v4Lifecycle,
+        unifiedPublishedRolloutEpoch: 1,
+        unifiedPublishedGeneration: 16039,
+      },
+    };
+    expect(assertV4ReplayRehearsal(rehearsal)).toMatchObject({ verified: true, ddlAuthorization: false, replayEpoch: 1, idempotentRetry: true });
+    expect(() => assertV4ReplayRehearsal({ ...rehearsal, sourceRawFingerprint: "f".repeat(64) })).toThrow(/Raw replay-source fingerprint/);
+    expect(() => assertV4ReplayRehearsal({ ...rehearsal, fullFingerprintBefore: "f".repeat(64) })).toThrow(/baseline fingerprint/);
+    expect(() => assertV4ReplayRehearsal({ ...rehearsal, retryReplay: { rolloutEpoch: 1, dayCount: 364 } })).toThrow(/idempotent retry/);
   });
 });

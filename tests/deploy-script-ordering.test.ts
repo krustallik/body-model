@@ -32,6 +32,10 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(deployWorkflow).toContain('workflowRunEventAttempt: process.env.EVENT_RUN_ATTEMPT || null');
     expect(deployWorkflow).not.toContain("git checkout --detach --force");
     expect(deployWorkflow).toContain('git checkout --detach "$DEPLOY_SHA"');
+
+    expect(activationWorkflow).toContain("BODYCAST_TEST_DATABASE_URL: postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_restore");
+    expect(activationWorkflow).toContain("raw_fingerprint=$RAW_FINGERPRINT");
+    expect(activationWorkflow).toContain("${{ steps.post_ddl_backup.outputs.raw_fingerprint }}");
   });
 
   it.skipIf(!bashExecutable)("passes the authorized deploy mode through SSH and maps both allowed modes remotely", () => {
@@ -55,7 +59,7 @@ describe("production maintenance-first deploy safety contracts", () => {
   it("checks out current main before the production-job owner identity import", () => {
     for (const [label, workflow, jobName] of [
       ["deploy", deployWorkflow, "name: Deploy exact current-main SHA"],
-      ["activation", activationWorkflow, "name: Verify V3, activate V4, and serve exact SHA"],
+      ["activation", activationWorkflow, "name: Backup, restore, rehearse V4, activate, and serve exact SHA"],
     ] as const) {
       const job = workflow.slice(workflow.indexOf(jobName));
       const checkoutAt = job.indexOf("actions/checkout@");

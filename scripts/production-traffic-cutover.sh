@@ -8,6 +8,7 @@ cd "$ROOT_DIR"
 
 readonly COMPOSE_FILE="docker-compose.prod.yml"
 readonly APP_CONTAINER="bodycast-app-prod"
+readonly DB_CONTAINER="bodycast-db-prod"
 readonly APP_HOST="${APP_HOST:?APP_HOST is required}"
 CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:?CADDY_ROUTES_PATH is required}"
 source "${ROOT_DIR}/scripts/production-route-path.sh"
@@ -19,13 +20,18 @@ source "${ROOT_DIR}/scripts/deploy-main-freshness.sh"
 source "${ROOT_DIR}/scripts/production-release-lock.sh"
 
 [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "APP_HOST is invalid." >&2; exit 1; }
-[[ "$MODE" == "maintenance" || "$MODE" == "check" || "$MODE" == "v3-postflight" || "$MODE" == "full-history-recalculate" || "$MODE" == "serve" || "$MODE" == "activate-v4-and-serve" ]] || {
-  echo "Usage: APP_HOST=... CADDY_ROUTES_PATH=... bash scripts/production-traffic-cutover.sh maintenance|check|v3-postflight|full-history-recalculate|serve|activate-v4-and-serve" >&2
+[[ "$MODE" == "maintenance" || "$MODE" == "check" || "$MODE" == "v3-postflight" || "$MODE" == "full-history-recalculate" || "$MODE" == "serve" || "$MODE" == "activate-v4-and-serve" || "$MODE" == "v4-post-ddl-backup" ]] || {
+  echo "Usage: APP_HOST=... CADDY_ROUTES_PATH=... bash scripts/production-traffic-cutover.sh maintenance|check|v3-postflight|full-history-recalculate|serve|activate-v4-and-serve|v4-post-ddl-backup" >&2
   exit 1
 }
 
 bodycast_acquire_production_release_lock
 source "${ROOT_DIR}/scripts/production-route-primitives.sh"
+
+if [[ "$MODE" == "v4-post-ddl-backup" ]]; then
+  BODYCAST_PRODUCTION_RELEASE_LOCK_HELD=1 bash "$ROOT_DIR/scripts/production-v4-post-ddl-backup-host.sh"
+  exit $?
+fi
 
 compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
 
@@ -600,11 +606,24 @@ inspect_unified_v4_lifecycle() {
 }
 
 activate_v4_and_serve() {
-  local expected_release_sha app_release_sha candidate_image_id candidate_image_after marker_status maintenance_marker marker_digest lifecycle_state lifecycle_state_after
+  local expected_release_sha app_release_sha candidate_image_id candidate_image_after marker_status maintenance_marker marker_digest lifecycle_state lifecycle_state_after expected_raw_fingerprint current_raw_fingerprint
   expected_release_sha="${BODYCAST_DEPLOY_SHA:-${DEPLOY_SHA:-}}"
+  expected_raw_fingerprint="${BODYCAST_V4_REPLAY_INPUT_FINGERPRINT:-}"
   [[ "$expected_release_sha" =~ ^[a-f0-9]{40}$ ]] || {
     echo "Owner-authorized V4 activation requires a full exact release SHA." >&2
     return 1
+  }
+  [[ "$expected_raw_fingerprint" =~ ^[a-f0-9]{64}$ ]] || {
+    echo "V4 activation requires the raw-source fingerprint from the verified post-DDL backup and rehearsal." >&2
+    return 1
+  }
+
+  assert_v4_replay_source_unchanged() {
+    current_raw_fingerprint="$(bash "$ROOT_DIR/scripts/production-db-data-fingerprint.sh" --production-container "$DB_CONTAINER" --v4-replay-inputs)" || return 1
+    [[ "$current_raw_fingerprint" == "$expected_raw_fingerprint" ]] || {
+      echo "Production V4 replay-input fingerprint changed after backup rehearsal; activation is blocked." >&2
+      return 1
+    }
   }
 
   # A route-file failure can happen after V4 replay has committed and v4-ready
@@ -619,6 +638,7 @@ activate_v4_and_serve() {
       bodycast_verify_exact_maintenance_route
       maintenance_marker="$(bodycast_maintenance_marker_from_route)"
       bodycast_probe_public_maintenance "$maintenance_marker"
+      assert_v4_replay_source_unchanged
       local app_identity app_id app_image app_sha app_state app_health
       app_identity="$(docker inspect --format '{{.Id}}|{{.Image}}|{{index .Config.Labels "org.bodycast.release-sha"}}|{{.State.Status}}|{{.State.Health.Status}}' "$APP_CONTAINER")"
       IFS='|' read -r app_id app_image app_sha app_state app_health <<< "$app_identity"
@@ -709,6 +729,8 @@ activate_v4_and_serve() {
       /app/scripts/unified-v3-postflight.mjs --profile-id 1
   fi
 
+  assert_v4_replay_source_unchanged
+
   # Lifecycle/schema checks are read-only but can take long enough for canonical main
   # to advance. Refresh it as the final gate immediately before V4 DML.
   bodycast_assert_current_main_sha "$expected_release_sha"
@@ -717,6 +739,7 @@ activate_v4_and_serve() {
   # first V3 check through activation, postflight, app restart, and serving.
   compose --profile tools run --rm --no-deps --entrypoint node migrate \
     /app/scripts/unified-v4-activate-replay.mjs --activate-v4 --owner-authorized --profile-id 1
+  assert_v4_replay_source_unchanged
   compose --profile tools run --rm --no-deps --entrypoint node migrate \
     /app/scripts/unified-v4-traffic-check.mjs --profile-id 1
 

@@ -444,6 +444,15 @@ if [[ "$1" == "inspect" ]]; then
   esac
   exit 0
 fi
+if [[ "$1" == "exec" && "$*" == *"psql"* && "$*" == *"bodycast-db-prod"* && "$*" == *"--command"* ]]; then
+  if [[ "$*" == *"SELECT tablename FROM pg_catalog.pg_tables"* ]]; then
+    printf '%s\n' DailyHealthData ExperimentalTransientExerciseWaterShadow PhysiologyV7Lifecycle UnifiedExperimentalPhysiologyStateV2
+  elif [[ "$*" == *"COPY (SELECT row_to_json"* && "\${CHANGE_V4_SOURCE_AFTER_ACTIVATION:-0}" == "1" \
+    && -f "$EVENT_LOG" && "$(cat "$EVENT_LOG")" == *"unified-v4-activation"* ]]; then
+    printf '%s\n' unexpected-source-change
+  fi
+  exit 0
+fi
 if [[ "$1" == "exec" && "$*" == *"BODYCAST_WRITER_TOPOLOGY_JSON="* && "$*" == *"bodycast-db-prod"* ]]; then
   input="$(cat)"
   if [[ "$input" != *"BEGIN READ ONLY;"* || "$input" != *"SELECT json_build_object("* ]]; then
@@ -734,6 +743,7 @@ export function createFixture(): Fixture {
     "production-previous-app-provenance.mjs",
     "production-capture-resume-receipt.mjs",
     "production-db-target.sh",
+    "production-db-data-fingerprint.sh",
     "production-db-endpoint-binding.mjs",
     "production-db-target-url.mjs",
     "production-db-preflight.mjs",
@@ -837,6 +847,30 @@ printf '%s\n' health-wait-sleep >> "$EVENT_LOG"
   writeFileSync(paths.IMAGE_LATEST, `${LATEST_IMAGE_ID}\n`);
   writeFileSync(paths.ACTIVE_ROUTE_FILE, "serving\n");
 
+  const fixtureEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...Object.fromEntries(Object.entries(paths).map(([key, value]) => [key, toBashPath(value)])),
+    PATH: `${path.join(root, "bin")}${path.delimiter}${process.env.PATH ?? ""}`,
+    FIXTURE_BIN: toBashPath(bin),
+    FIXTURE_REPO: toBashPath(repo),
+    REAL_GIT: toBashPath(realGit),
+    ROUTE_FILE: toBashPath(path.join(routes, "bodycast.caddy")),
+    APP_HOST: "bodycast.example.test",
+    CADDY_ROUTES_PATH: toBashPath(routes),
+    CANDIDATE_SHA: candidateSha,
+    ADVANCE_SHA: advanceSha,
+    PREVIOUS_SHA,
+    PREVIOUS_CONTAINER_ID,
+    PREVIOUS_IMAGE_ID,
+    LATEST_IMAGE_ID,
+    CANDIDATE_IMAGE_ID,
+  };
+  const replayInputFingerprint = execFileSync(findBash() ?? "bash", ["--noprofile", "--norc", "-c",
+    'export PATH="$FIXTURE_BIN:$PATH"; bash scripts/production-db-data-fingerprint.sh --production-container bodycast-db-prod --v4-replay-inputs'], {
+    cwd: repo, encoding: "utf8", env: fixtureEnv,
+  }).trim();
+  fixtureEnv.BODYCAST_V4_REPLAY_INPUT_FINGERPRINT = replayInputFingerprint;
+
   return {
     root,
     repo,
@@ -845,25 +879,7 @@ printf '%s\n' health-wait-sleep >> "$EVENT_LOG"
     advanceSha,
     bash: findBash() ?? "bash",
     realGit,
-    env: {
-      ...process.env,
-      ...Object.fromEntries(Object.entries(paths).map(([key, value]) => [key, toBashPath(value)])),
-      PATH: `${path.join(root, "bin")}${path.delimiter}${process.env.PATH ?? ""}`,
-      FIXTURE_BIN: toBashPath(bin),
-      FIXTURE_REPO: toBashPath(repo),
-      REAL_GIT: toBashPath(realGit),
-      ROUTE_FILE: toBashPath(path.join(routes, "bodycast.caddy")),
-      APP_HOST: "bodycast.example.test",
-      CADDY_ROUTES_PATH: toBashPath(routes),
-      CANDIDATE_SHA: candidateSha,
-      ADVANCE_SHA: advanceSha,
-      PREVIOUS_SHA,
-      PREVIOUS_CONTAINER_ID,
-      PREVIOUS_IMAGE_ID,
-      LATEST_IMAGE_ID,
-      CANDIDATE_IMAGE_ID,
-      WRONG_IMAGE_ID,
-    },
+    env: { ...fixtureEnv, WRONG_IMAGE_ID },
   };
 }
 

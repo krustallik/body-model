@@ -1619,6 +1619,56 @@ async function main() {
     assertTrainingTriggerSemantics(target);
     assertLegacyRelativeMuscleUpsertsRejected(target);
 
+    const v4FingerprintUrl = new URL(databaseUrl(target));
+    v4FingerprintUrl.search = "";
+    const getV4ReplayInputFingerprint = () => execFileSync("bash", ["scripts/production-db-data-fingerprint.sh", "--test-url", "--v4-replay-inputs"], {
+      encoding: "utf8", env: { ...process.env, BODYCAST_TEST_DATABASE_URL: v4FingerprintUrl.toString() },
+    }).trim();
+    const getFullFingerprint = () => execFileSync("bash", ["scripts/production-db-data-fingerprint.sh", "--test-url"], {
+      encoding: "utf8", env: { ...process.env, BODYCAST_TEST_DATABASE_URL: v4FingerprintUrl.toString() },
+    }).trim();
+    const v4ReplayInputsBefore = getV4ReplayInputFingerprint();
+    const fullFingerprintBeforeDerivedWrites = getFullFingerprint();
+    if (!/^[a-f0-9]{64}$/.test(v4ReplayInputsBefore)) throw new Error("Isolated V4 replay-input fingerprint is malformed.");
+    const nonRestoreFingerprintUrl = new URL(v4FingerprintUrl);
+    nonRestoreFingerprintUrl.pathname = "/bodycast_cutback_live_0123456789";
+    const nonRestoreV4Fingerprint = spawnSync("bash", ["scripts/production-db-data-fingerprint.sh", "--test-url", "--v4-replay-inputs"], {
+      encoding: "utf8", env: { ...process.env, BODYCAST_TEST_DATABASE_URL: nonRestoreFingerprintUrl.toString() },
+    });
+    if (nonRestoreV4Fingerprint.status === 0 || !nonRestoreV4Fingerprint.stderr.includes("restricted to the isolated bodycast_restore database")) {
+      throw new Error("V4 replay-input fingerprint accepted a non-restore database name.");
+    }
+    sql(target, `
+      UPDATE public."PhysiologyV7Lifecycle" SET "updatedAt" = "updatedAt" + interval '1 second' WHERE "profileId" = 1;
+      INSERT INTO public."ExperimentalTransientExerciseWaterShadow" (
+        "sessionId", "profileId", "sourceFingerprint", "modelRevision", features, result
+      ) VALUES (1, 1, repeat('a', 64), 'v4-fingerprint-fixture', '{}'::jsonb, '{"value":1}'::jsonb)
+      ON CONFLICT ("sessionId") DO UPDATE SET result = EXCLUDED.result;
+      INSERT INTO public."UnifiedExperimentalPhysiologyStateV2" (
+        "profileId", "modelEpisodeId", date, "boundaryAt", "modelRevision", "sourceFingerprint",
+        "resultFingerprint", "qualityStatus", "gapSeverity", state, deltas, uncertainty,
+        reconciliation, "energyLedger", "sourceLineage", diagnostics
+      ) VALUES (
+        1, 1, '2026-01-01', '2026-01-01T00:00:00Z', 'v4-fingerprint-fixture', repeat('b', 64),
+        repeat('c', 64), 'AVAILABLE', 'none', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
+        '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb
+      ) ON CONFLICT ("profileId", "modelEpisodeId", date) DO UPDATE SET diagnostics = EXCLUDED.diagnostics;
+    `);
+    const v4ReplayInputsAfterDerivedWrites = getV4ReplayInputFingerprint();
+    const fullFingerprintAfterDerivedWrites = getFullFingerprint();
+    if (v4ReplayInputsAfterDerivedWrites !== v4ReplayInputsBefore
+      || fullFingerprintAfterDerivedWrites === fullFingerprintBeforeDerivedWrites) {
+      throw new Error("V4 derived-output/lifecycle writes changed the isolated raw replay-input fingerprint.");
+    }
+    const sourceDate = sql(target, `SELECT date FROM public."DailyHealthData" WHERE id = 1;`);
+    sql(target, `UPDATE public."DailyHealthData" SET date = '2026-01-02' WHERE id = 1;`);
+    const v4ReplayInputsAfterRawMutation = getV4ReplayInputFingerprint();
+    sql(target, `UPDATE public."DailyHealthData" SET date = '${sourceDate.replaceAll("'", "''")}' WHERE id = 1;`);
+    if (v4ReplayInputsAfterRawMutation === v4ReplayInputsBefore
+      || getV4ReplayInputFingerprint() !== v4ReplayInputsBefore) {
+      throw new Error("V4 replay-input fingerprint did not detect and recover from an isolated raw-source edit.");
+    }
+
     const corruptedArchive = await readFile(archive);
     corruptedArchive[corruptedArchive.length - 17] ^= 0x20;
     const tamperedPath = path.join(scratch, "tampered.pgdump.enc");
@@ -1689,6 +1739,10 @@ async function main() {
       v4RepublicationPostflightReady: migratedDecision.ready,
       v4RepublicationMigrationsApplied: [...EXPECTED_V4_REPUBLICATION_PENDING_MIGRATIONS].sort(),
       v4ProtectedRowsPreserved,
+      v4ReplayInputFingerprintExcludesDerivedWrites: v4ReplayInputsAfterDerivedWrites === v4ReplayInputsBefore,
+      fullFingerprintDetectsV4DerivedWrites: fullFingerprintAfterDerivedWrites !== fullFingerprintBeforeDerivedWrites,
+      v4ReplayInputFingerprintDetectsRawSourceEdits: v4ReplayInputsAfterRawMutation !== v4ReplayInputsBefore,
+      v4ReplayInputFingerprintRejectsNonRestoreDatabase: nonRestoreV4Fingerprint.status !== 0,
       v4TrainingTriggerBehaviorVerified: true,
       allowedSinglePreflightConnection: true,
       previousAppCompatibilitySnapshotNonAdmission: !snapshotAdmission.readyForOwnerAuthorization,

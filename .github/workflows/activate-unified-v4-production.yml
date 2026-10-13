@@ -9,7 +9,7 @@ on:
         required: true
         type: string
       confirm_activation_and_serve:
-        description: Type ACTIVATE_UNIFIED_V4_AND_SERVE to authorize activation, replay, and traffic serve
+        description: Type ACTIVATE_UNIFIED_V4_AND_SERVE to authorize backup, isolated restore/rehearsal, replay, and traffic serve
         required: true
         type: string
 
@@ -30,6 +30,8 @@ jobs:
     outputs:
       release_sha: ${{ steps.gate.outputs.release_sha }}
       ci_url: ${{ steps.gate.outputs.ci_url }}
+      migration_run_b64: ${{ steps.gate.outputs.migration_run_b64 }}
+      migration_auth_artifact_b64: ${{ steps.gate.outputs.migration_auth_artifact_b64 }}
     steps:
       - name: Checkout current main gate helpers
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -84,25 +86,90 @@ jobs:
           if (!run || run.status !== "completed" || run.conclusion !== "success") throw new Error("Exact current main SHA has no completed successful BodyCast CI/CD run.");
           console.log(run.html_url);
           ')"
+          DDL_RUN_ID=38447647403
+          DDL_RUN_SHA=8b4a195e8afb67c0a913d0175a030e01cc665732
+          gh api "repos/krustallik/body-model/actions/runs/$DDL_RUN_ID" > "$RUNNER_TEMP/v4-ddl-run.json"
+          gh api "repos/krustallik/body-model/actions/runs/$DDL_RUN_ID/jobs?per_page=100" > "$RUNNER_TEMP/v4-ddl-jobs.json"
+          gh api "repos/krustallik/body-model/actions/runs/$DDL_RUN_ID/artifacts?per_page=100" > "$RUNNER_TEMP/v4-ddl-artifacts.json"
+          MIGRATION_RUN_B64="$(node --input-type=module - "$RUNNER_TEMP/v4-ddl-run.json" "$RUNNER_TEMP/v4-ddl-jobs.json" "$RUNNER_TEMP/v4-ddl-artifacts.json" "$DDL_RUN_ID" "$DDL_RUN_SHA" "$MAIN_TIP" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { execFileSync } from "node:child_process";
+          const [runPath, jobsPath, artifactsPath, expectedId, expectedSha, releaseSha] = process.argv.slice(2);
+          const run = JSON.parse(readFileSync(runPath, "utf8"));
+          const jobs = JSON.parse(readFileSync(jobsPath, "utf8")).jobs;
+          const artifacts = JSON.parse(readFileSync(artifactsPath, "utf8")).artifacts;
+          const expectedJobs = [
+            "Select latest exact preflight evidence",
+            "Sign migration authorization envelope",
+            "Final live guard and authorized migration",
+          ].sort();
+          if (String(run.id) !== expectedId || run.path !== ".github/workflows/production-migrate.yml"
+            || run.head_sha !== expectedSha || run.head_branch !== "main" || run.run_attempt !== 1
+            || run.event !== "workflow_dispatch" || run.status !== "completed" || run.conclusion !== "success"
+            || String(run.actor?.id) !== "126446430" || !Array.isArray(jobs) || jobs.length !== expectedJobs.length
+            || JSON.stringify(jobs.map((job) => job.name).sort()) !== JSON.stringify(expectedJobs)
+            || jobs.some((job) => job.conclusion !== "success") || !Array.isArray(artifacts)) {
+            throw new Error("The recorded V4 DDL run is not the exact successful pinned-owner migration execution.");
+          }
+          const authArtifacts = artifacts.filter((artifact) => artifact.name === `bodycast-migration-auth-${expectedId}-1`);
+          if (authArtifacts.length !== 1 || authArtifacts[0].expired !== false
+            || !/^sha256:[a-f0-9]{64}$/.test(authArtifacts[0].digest ?? "")
+            || String(authArtifacts[0].workflow_run?.id) !== expectedId
+            || authArtifacts[0].workflow_run?.head_sha !== expectedSha
+            || authArtifacts[0].workflow_run?.head_branch !== "main") {
+            throw new Error("The exact immutable signed DDL authorization artifact is missing or ambiguous.");
+          }
+          execFileSync("git", ["merge-base", "--is-ancestor", expectedSha, releaseSha], { stdio: "ignore" });
+          const metadata = {
+            id: String(run.id), runAttempt: String(run.run_attempt), headSha: run.head_sha,
+            workflowId: String(run.workflow_id), workflowPath: run.path, actorId: String(run.actor.id), conclusion: run.conclusion, event: run.event,
+          };
+          process.stdout.write(Buffer.from(JSON.stringify(metadata)).toString("base64"));
+          NODE
+          )"
+          MIGRATION_AUTH_ARTIFACT_B64="$(node --input-type=module - "$RUNNER_TEMP/v4-ddl-artifacts.json" "$DDL_RUN_ID" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const [artifactsPath, runId] = process.argv.slice(2);
+          const artifacts = JSON.parse(readFileSync(artifactsPath, "utf8")).artifacts;
+          const artifact = artifacts.find(({ name }) => name === `bodycast-migration-auth-${runId}-1`);
+          process.stdout.write(Buffer.from(JSON.stringify({ id: String(artifact.id), digest: artifact.digest, name: artifact.name })).toString("base64"));
+          NODE
+          )"
           echo "release_sha=$MAIN_TIP" >> "$GITHUB_OUTPUT"
           echo "ci_url=$CI_URL" >> "$GITHUB_OUTPUT"
+          echo "migration_run_b64=$MIGRATION_RUN_B64" >> "$GITHUB_OUTPUT"
+          echo "migration_auth_artifact_b64=$MIGRATION_AUTH_ARTIFACT_B64" >> "$GITHUB_OUTPUT"
           echo "## Owner-authorized Unified V4 activation and traffic serve" >> "$GITHUB_STEP_SUMMARY"
           echo "- exact SHA: \`$MAIN_TIP\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- current-main CI: $CI_URL" >> "$GITHUB_STEP_SUMMARY"
 
   activate_and_serve:
-    name: Verify V3, activate V4, and serve exact SHA
+    name: Backup, restore, rehearse V4, activate, and serve exact SHA
     needs: authorize
     if: needs.authorize.outputs.release_sha != ''
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 180
     environment: production
+    services:
+      isolated-postgres:
+        image: docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        env:
+          POSTGRES_DB: bodycast_restore
+          POSTGRES_USER: bodycast_restore
+          POSTGRES_PASSWORD: isolated_restore_test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bodycast_restore -d bodycast_restore"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - name: Checkout exact current main tooling
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ needs.authorize.outputs.release_sha }}
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: false
       - name: Recheck active owner run and current main before production credentials
         env:
@@ -128,6 +195,108 @@ jobs:
           [[ "$DISPATCH_ACTOR_ID" == "126446430" && "$(gh api repos/krustallik/body-model/commits/main --jq .sha)" == "$RELEASE_SHA" ]] || {
             echo "::error::Owner identity or current main changed before production access."; exit 1;
           }
+      - name: Set up Node tooling for isolated restore and V4 rehearsal
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: npm
+          package-manager-cache: true
+      - name: Install locked tooling and generate Prisma Client
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run prisma:generate
+      - name: Verify signed pre-DDL backup and derive raw-data baseline
+        id: pre_ddl_source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MIGRATION_RUN_B64: ${{ needs.authorize.outputs.migration_run_b64 }}
+          MIGRATION_AUTH_ARTIFACT_B64: ${{ needs.authorize.outputs.migration_auth_artifact_b64 }}
+          PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY }}
+          POSTGRES_IMAGE: docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+          DATABASE_URL: postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_restore
+          BODYCAST_TEST_DATABASE_URL: postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_restore
+          PGPASSWORD: isolated_restore_test_password
+        run: |
+          set -Eeuo pipefail
+          BODYCAST_V4_EVIDENCE_DIR="$RUNNER_TEMP/bodycast-v4-evidence"
+          install -d -m 700 "$RUNNER_TEMP/bodycast-v4-ddl-auth" "$RUNNER_TEMP/bodycast-v4-pre-ddl-backup" "$BODYCAST_V4_EVIDENCE_DIR"
+          echo "BODYCAST_V4_BACKUP_DIR=$RUNNER_TEMP/bodycast-v4-backup" >> "$GITHUB_ENV"
+          echo "BODYCAST_V4_EVIDENCE_DIR=$BODYCAST_V4_EVIDENCE_DIR" >> "$GITHUB_ENV"
+          printf '%s' "$MIGRATION_RUN_B64" | base64 --decode > "$RUNNER_TEMP/v4-ddl-run.json"
+          [[ "$(base64 -w0 "$RUNNER_TEMP/v4-ddl-run.json")" == "$MIGRATION_RUN_B64" ]] || { echo "::error::DDL run binding encoding is not canonical."; exit 1; }
+          printf '%s' "$MIGRATION_AUTH_ARTIFACT_B64" | base64 --decode > "$RUNNER_TEMP/v4-ddl-auth-artifact.json"
+          [[ "$(base64 -w0 "$RUNNER_TEMP/v4-ddl-auth-artifact.json")" == "$MIGRATION_AUTH_ARTIFACT_B64" ]] || { echo "::error::DDL artifact metadata encoding is not canonical."; exit 1; }
+          AUTH_ID="$(jq -r '.id' "$RUNNER_TEMP/v4-ddl-auth-artifact.json")"
+          AUTH_NAME="$(jq -r '.name' "$RUNNER_TEMP/v4-ddl-auth-artifact.json")"
+          [[ "$AUTH_ID" =~ ^[1-9][0-9]*$ && "$AUTH_NAME" == bodycast-migration-auth-38447647403-1 ]] || {
+            echo "::error::Signed DDL artifact identity is malformed."; exit 1;
+          }
+          gh api "repos/krustallik/body-model/actions/artifacts/$AUTH_ID" > "$RUNNER_TEMP/v4-ddl-auth-artifact-current.json"
+          node --input-type=module - "$RUNNER_TEMP/v4-ddl-auth-artifact.json" "$RUNNER_TEMP/v4-ddl-auth-artifact-current.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const [expectedPath, actualPath] = process.argv.slice(2);
+          const expected = JSON.parse(readFileSync(expectedPath, "utf8"));
+          const actual = JSON.parse(readFileSync(actualPath, "utf8"));
+          if (String(actual.id) !== expected.id || actual.name !== expected.name || actual.digest !== expected.digest
+            || actual.expired !== false || String(actual.workflow_run?.id) !== "38447647403"
+            || actual.workflow_run?.head_sha !== "8b4a195e8afb67c0a913d0175a030e01cc665732"
+            || actual.workflow_run?.head_branch !== "main") {
+            throw new Error("Signed DDL authorization artifact metadata changed or was substituted.");
+          }
+          NODE
+          gh run download 38447647403 --repo krustallik/body-model --name "$AUTH_NAME" --dir "$RUNNER_TEMP/bodycast-v4-ddl-auth"
+          mapfile -t AUTH_FILES < <(find "$RUNNER_TEMP/bodycast-v4-ddl-auth" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | sort)
+          [[ "${AUTH_FILES[*]}" == "artifact-metadata.json authorization-envelope.json preflight-evidence.json preflight-result.json restore-result.json" ]] || {
+            echo "::error::Signed DDL artifact has an incomplete or unexpected file inventory."; exit 1;
+          }
+          node scripts/production-v4-recovery.mjs --verify-ddl-source \
+            "$RUNNER_TEMP/bodycast-v4-ddl-auth" "$RUNNER_TEMP/v4-ddl-run.json" "$RUNNER_TEMP/v4-pre-ddl-binding.json" > /dev/null
+          PREFLIGHT_RUN_ID="$(jq -r '.preflightRunId' "$RUNNER_TEMP/v4-pre-ddl-binding.json")"
+          BACKUP_ID="$(jq -r '.backupArtifactId' "$RUNNER_TEMP/v4-pre-ddl-binding.json")"
+          BACKUP_NAME="$(jq -r '.backupArtifactName' "$RUNNER_TEMP/v4-pre-ddl-binding.json")"
+          [[ "$PREFLIGHT_RUN_ID" =~ ^[1-9][0-9]*$ && "$BACKUP_ID" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::Signed pre-DDL preflight or backup artifact identity is malformed."; exit 1;
+          }
+          gh api "repos/krustallik/body-model/actions/runs/$PREFLIGHT_RUN_ID" > "$RUNNER_TEMP/v4-preflight-run.json"
+          gh api "repos/krustallik/body-model/actions/artifacts/$BACKUP_ID" > "$RUNNER_TEMP/v4-pre-ddl-backup-artifact.json"
+          node --input-type=module - "$RUNNER_TEMP/v4-pre-ddl-binding.json" "$RUNNER_TEMP/v4-preflight-run.json" "$RUNNER_TEMP/v4-pre-ddl-backup-artifact.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { assertPreDdlBackupArtifactMetadata } from "./scripts/production-v4-recovery.mjs";
+          assertPreDdlBackupArtifactMetadata(
+            JSON.parse(readFileSync(process.argv[2], "utf8")),
+            JSON.parse(readFileSync(process.argv[4], "utf8")),
+            JSON.parse(readFileSync(process.argv[3], "utf8")),
+          );
+          NODE
+          gh run download "$PREFLIGHT_RUN_ID" --repo krustallik/body-model --name "$BACKUP_NAME" --dir "$RUNNER_TEMP/bodycast-v4-pre-ddl-backup"
+          mapfile -t BACKUP_FILES < <(find "$RUNNER_TEMP/bodycast-v4-pre-ddl-backup" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | sort)
+          [[ "${BACKUP_FILES[*]}" == production-backup.pgdump.enc && -s "$RUNNER_TEMP/bodycast-v4-pre-ddl-backup/production-backup.pgdump.enc" ]] || {
+            echo "::error::The signed pre-DDL encrypted backup payload is missing or ambiguous."; exit 1;
+          }
+          BACKUP_FILE="$RUNNER_TEMP/bodycast-v4-pre-ddl-backup/production-backup.pgdump.enc"
+          export BACKUP_FILE
+          node scripts/restore-encrypted-postgres-backup.mjs
+          FULL_PRE_DDL="$(bash scripts/production-db-data-fingerprint.sh --test-url)"
+          RAW_PRE_DDL="$(bash scripts/production-db-data-fingerprint.sh --test-url --v4-replay-inputs)"
+          EXPECTED_FULL="$(jq -r '.preDdlLogicalDataFingerprint' "$RUNNER_TEMP/v4-pre-ddl-binding.json")"
+          [[ "$FULL_PRE_DDL" =~ ^[a-f0-9]{64}$ && "$RAW_PRE_DDL" =~ ^[a-f0-9]{64}$ && "$FULL_PRE_DDL" == "$EXPECTED_FULL" ]] || {
+            echo "::error::The owner-signed pre-DDL backup restore or full data fingerprint does not match its authorization."; exit 1;
+          }
+          node --input-type=module - "$RUNNER_TEMP/v4-pre-ddl-binding.json" "$RAW_PRE_DDL" "$BODYCAST_V4_EVIDENCE_DIR/pre-ddl-source-binding.json" <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const [bindingPath, rawFingerprint, outputPath] = process.argv.slice(2);
+          const binding = JSON.parse(readFileSync(bindingPath, "utf8"));
+          if (!/^[a-f0-9]{64}$/.test(rawFingerprint) || binding.ddlAuthorization !== false) throw new Error("Pre-DDL raw source binding is invalid.");
+          binding.preDdlReplayInputFingerprint = rawFingerprint;
+          writeFileSync(outputPath, `${JSON.stringify(binding, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+          NODE
+          echo "raw_fingerprint=$RAW_PRE_DDL" >> "$GITHUB_OUTPUT"
+          psql "postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/postgres" \
+            --no-psqlrc --quiet --set=ON_ERROR_STOP=1 --command 'DROP DATABASE bodycast_restore'
+          psql "postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/postgres" \
+            --no-psqlrc --quiet --set=ON_ERROR_STOP=1 --command 'CREATE DATABASE bodycast_restore OWNER bodycast_restore'
+          echo "Verified owner-signed pre-DDL backup and captured its raw-data fingerprint before any production access." >> "$GITHUB_STEP_SUMMARY"
       - name: Validate protected SSH inputs and pin production host
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -138,6 +307,7 @@ jobs:
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           APP_HOST: ${{ secrets.APP_HOST }}
           CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
+          PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY }}
         run: |
           set -Eeuo pipefail
           : "$SSH_PRIVATE_KEY"; : "$SSH_HOST"; : "$SSH_USER"; : "$SSH_PORT"; : "$SSH_HOST_FINGERPRINT"; : "$DEPLOY_PATH"; : "$APP_HOST"; : "$CADDY_ROUTES_PATH"
@@ -146,7 +316,14 @@ jobs:
           [[ "$SSH_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || { echo "::error::Invalid pinned production SSH fingerprint."; exit 1; }
           [[ "$DEPLOY_PATH" == /* && "$DEPLOY_PATH" != *$'\n'* ]] || { echo "::error::DEPLOY_PATH must be an absolute single-line path."; exit 1; }
           [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* && "$CADDY_ROUTES_PATH" != *$'\n'* ]] || { echo "::error::Production traffic topology inputs are invalid."; exit 1; }
+          node --input-type=module -e 'import { decodeBackupKey } from "./scripts/production-backup-envelope.mjs"; decodeBackupKey(process.env.PRODUCTION_BACKUP_ENCRYPTION_KEY);'
+          PG_RESTORE_VERSION="$(docker run --rm --network host --entrypoint pg_restore docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24 --version)"
+          [[ "$PG_RESTORE_VERSION" =~ ^pg_restore\ \(PostgreSQL\)\ 17\.[0-9]+$ ]] || { echo "::error::Pinned PostgreSQL 17.11 restore client is unavailable or malformed."; exit 1; }
+          echo "BODYCAST_PG_RESTORE_VERSION=$PG_RESTORE_VERSION" >> "$GITHUB_ENV"
           install -d -m 700 "$RUNNER_TEMP/bodycast-activation-ssh"
+          install -d -m 700 "$RUNNER_TEMP/bodycast-v4-backup" "$RUNNER_TEMP/bodycast-v4-evidence"
+          echo "BODYCAST_V4_BACKUP_DIR=$RUNNER_TEMP/bodycast-v4-backup" >> "$GITHUB_ENV"
+          echo "BODYCAST_V4_EVIDENCE_DIR=$RUNNER_TEMP/bodycast-v4-evidence" >> "$GITHUB_ENV"
           printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/bodycast-activation-ssh/id"
           chmod 600 "$RUNNER_TEMP/bodycast-activation-ssh/id"
           ssh-keyscan -T 10 -p "$SSH_PORT" "$SSH_HOST" > "$RUNNER_TEMP/bodycast-activation-ssh/candidate" 2>/dev/null
@@ -154,6 +331,268 @@ jobs:
           chmod 600 "$RUNNER_TEMP/bodycast-activation-ssh/known_hosts"
           echo "BODYCAST_SSH_KEY=$RUNNER_TEMP/bodycast-activation-ssh/id" >> "$GITHUB_ENV"
           echo "BODYCAST_KNOWN_HOSTS=$RUNNER_TEMP/bodycast-activation-ssh/known_hosts" >> "$GITHUB_ENV"
+      - name: Create encrypted post-DDL backup and bind fresh production snapshot
+        id: post_ddl_backup
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          APP_HOST: ${{ secrets.APP_HOST }}
+          CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
+          PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY }}
+          RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+          MIGRATION_RUN_B64: ${{ needs.authorize.outputs.migration_run_b64 }}
+          PRE_DDL_RAW_FINGERPRINT: ${{ steps.pre_ddl_source.outputs.raw_fingerprint }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$(gh api repos/krustallik/body-model/commits/main --jq .sha)" == "$RELEASE_SHA" ]] || {
+            echo "::error::Canonical main advanced before the post-DDL backup."; exit 1;
+          }
+          DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
+          APP_HOST_B64="$(printf '%s' "$APP_HOST" | base64 -w0)"
+          ROUTES_PATH_B64="$(printf '%s' "$CADDY_ROUTES_PATH" | base64 -w0)"
+          PG_RESTORE_VERSION_B64="$(printf '%s' "$BODYCAST_PG_RESTORE_VERSION" | base64 -w0)"
+          REMOTE_SCRIPT="$(cat <<'REMOTE'
+          set -Eeuo pipefail
+          RELEASE_SHA="$1"
+          DEPLOY_PATH="$(printf '%s' "$2" | base64 --decode)"
+          APP_HOST="$(printf '%s' "$3" | base64 --decode)"
+          CADDY_ROUTES_PATH="$(printf '%s' "$4" | base64 --decode)"
+          BODYCAST_PG_RESTORE_VERSION="$(printf '%s' "$5" | base64 --decode)"
+          EXPECTED_PRE_DDL_RAW_FINGERPRINT="$(printf '%s' "$7" | base64 --decode)"
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ && "$DEPLOY_PATH" == /* && "$DEPLOY_PATH" != *$'\n'* \
+            && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* && "$CADDY_ROUTES_PATH" != *$'\n'* \
+            && "$EXPECTED_PRE_DDL_RAW_FINGERPRINT" =~ ^[a-f0-9]{64}$ \
+            && "$BODYCAST_PG_RESTORE_VERSION" =~ ^pg_restore\ \(PostgreSQL\)\ 17\.[0-9]+$ ]] || exit 2
+          cd -- "$DEPLOY_PATH"
+          [[ "$(git rev-parse --show-toplevel)" == "$DEPLOY_PATH" && -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || {
+            echo "Production checkout is dirty or does not match DEPLOY_PATH." >&2; exit 1;
+          }
+          git fetch --no-tags origin "$RELEASE_SHA"
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          [[ "$(git rev-parse refs/remotes/origin/main)" == "$RELEASE_SHA" ]] || { echo "Canonical main advanced before backup." >&2; exit 1; }
+          git checkout --detach "$RELEASE_SHA"
+          [[ "$(git rev-parse HEAD)" == "$RELEASE_SHA" && -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || exit 1
+          APP_SHA="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' bodycast-app-prod)"
+          APP_HEALTH="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' bodycast-app-prod)"
+          [[ "$APP_SHA" == "$RELEASE_SHA" && "$APP_HEALTH" == "healthy" ]] || { echo "Exact-SHA app is absent or unhealthy." >&2; exit 1; }
+          APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" BODYCAST_DEPLOY_SHA="$RELEASE_SHA" \
+            BODYCAST_V4_MIGRATION_RUN_B64="$6" BODYCAST_EXPECTED_PRE_DDL_RAW_FINGERPRINT="$EXPECTED_PRE_DDL_RAW_FINGERPRINT" \
+            BODYCAST_PG_RESTORE_VERSION="$BODYCAST_PG_RESTORE_VERSION" \
+            exec bash scripts/production-traffic-cutover.sh v4-post-ddl-backup
+          REMOTE
+          )"
+          REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
+          PRE_DDL_RAW_B64="$(printf '%s' "$PRE_DDL_RAW_FINGERPRINT" | base64 -w0)"
+          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$RELEASE_SHA' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64' '$PG_RESTORE_VERSION_B64' '$MIGRATION_RUN_B64' '$PRE_DDL_RAW_B64'"
+          BACKUP_FILE="$BODYCAST_V4_BACKUP_DIR/production-backup.pgdump.enc"
+          set -o pipefail
+          set +e
+          timeout 100m ssh -T -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10 \
+            "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND" 2> "$RUNNER_TEMP/v4-post-ddl-host-stderr.log" \
+            | node scripts/production-backup-envelope.mjs encrypt --output "$BACKUP_FILE" \
+                > "$RUNNER_TEMP/v4-post-ddl-encryption-result.json"
+          PIPELINE_STATUS=("${PIPESTATUS[@]}")
+          set -e
+          if [[ "${PIPELINE_STATUS[0]:-1}" != 0 || "${PIPELINE_STATUS[1]:-1}" != 0 ]]; then
+            echo "::error::Post-DDL backup pipeline failed (SSH exit ${PIPELINE_STATUS[0]:-1}; encryption exit ${PIPELINE_STATUS[1]:-1}). Host diagnostics remain in the private runner temp file.";
+            exit 1
+          fi
+          chmod 600 "$BACKUP_FILE" "$RUNNER_TEMP/v4-post-ddl-host-stderr.log"
+          mapfile -t SNAPSHOT_LINES < <(sed -n 's/^BODYCAST_V4_POST_DDL_SNAPSHOT_B64=//p' "$RUNNER_TEMP/v4-post-ddl-host-stderr.log")
+          mapfile -t DUMP_TIME_LINES < <(sed -n 's/^BODYCAST_PGDUMP_INVOCATION_AT=//p' "$RUNNER_TEMP/v4-post-ddl-host-stderr.log")
+          [[ "${#SNAPSHOT_LINES[@]}" -eq 1 && "${SNAPSHOT_LINES[0]}" =~ ^[A-Za-z0-9+/]+=*$ \
+            && "${#DUMP_TIME_LINES[@]}" -eq 1 && "${DUMP_TIME_LINES[0]}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || {
+            echo "::error::Host did not return one canonical post-DDL snapshot and pg_dump boundary."; exit 1;
+          }
+          printf '%s' "${SNAPSHOT_LINES[0]}" | base64 --decode > "$BODYCAST_V4_EVIDENCE_DIR/host-snapshot.json"
+          [[ "$(base64 -w0 "$BODYCAST_V4_EVIDENCE_DIR/host-snapshot.json")" == "${SNAPSHOT_LINES[0]}" ]] || {
+            echo "::error::Host snapshot encoding is not canonical base64."; exit 1;
+          }
+          node --input-type=module - "$BODYCAST_V4_EVIDENCE_DIR/host-snapshot.json" "${DUMP_TIME_LINES[0]}" "$BODYCAST_V4_EVIDENCE_DIR/source-report.json" "$PRE_DDL_RAW_FINGERPRINT" <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const [snapshotPath, dumpTime, reportPath, preDdlRawFingerprint] = process.argv.slice(2);
+          const snapshot = JSON.parse(readFileSync(snapshotPath, "utf8"));
+          if (snapshot.pgDumpInvocationAt !== dumpTime || !/^[a-f0-9]{64}$/.test(snapshot.v4ReplayInputFingerprint ?? "")
+            || snapshot.v4ReplayInputFingerprint !== preDdlRawFingerprint) {
+            throw new Error("Post-DDL snapshot raw source differs from the signed pre-DDL backup baseline.");
+          }
+          snapshot.preDdlReplayInputFingerprint = preDdlRawFingerprint;
+          writeFileSync(snapshotPath, `${JSON.stringify(snapshot)}\n`, { flag: "w", mode: 0o600 });
+          writeFileSync(reportPath, `${JSON.stringify(snapshot.report)}\n`, { flag: "wx", mode: 0o600 });
+          NODE
+          [[ -s "$BACKUP_FILE" ]] || { echo "::error::Encrypted post-DDL backup is empty."; exit 1; }
+          sha256sum "$BACKUP_FILE" | awk '{print $1}' > "$BODYCAST_V4_EVIDENCE_DIR/backup-sha256.txt"
+          chmod 600 "$BODYCAST_V4_EVIDENCE_DIR/"*
+          RAW_FINGERPRINT="$(node --input-type=module - "$BODYCAST_V4_EVIDENCE_DIR/host-snapshot.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          process.stdout.write(JSON.parse(readFileSync(process.argv[2], "utf8")).v4ReplayInputFingerprint);
+          NODE
+          )"
+          [[ "$RAW_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::Verified raw replay-source fingerprint is malformed."; exit 1; }
+          node --input-type=module - "$BODYCAST_V4_EVIDENCE_DIR/host-snapshot.json" "$BODYCAST_V4_EVIDENCE_DIR/recovery-binding.json" <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          import { createV4RecoveryBinding } from "./scripts/production-v4-recovery.mjs";
+          const snapshot = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          const binding = createV4RecoveryBinding(snapshot);
+          writeFileSync(process.argv[3], `${JSON.stringify(binding)}\n`, { flag: "wx", mode: 0o600 });
+          NODE
+          RECOVERY_BINDING_B64="$(base64 -w0 "$BODYCAST_V4_EVIDENCE_DIR/recovery-binding.json")"
+          [[ "$RECOVERY_BINDING_B64" =~ ^[A-Za-z0-9+/]+=*$ ]] || { echo "::error::Verified V4 recovery binding is malformed."; exit 1; }
+          echo "raw_fingerprint=$RAW_FINGERPRINT" >> "$GITHUB_OUTPUT"
+          echo "recovery_binding_b64=$RECOVERY_BINDING_B64" >> "$GITHUB_OUTPUT"
+          echo "encrypted_backup=$BACKUP_FILE" >> "$GITHUB_OUTPUT"
+      - name: Restore backup and rehearse V4 epoch 1 on isolated PostgreSQL
+        id: v4_rehearsal
+        env:
+          BACKUP_FILE: ${{ steps.post_ddl_backup.outputs.encrypted_backup }}
+          PRODUCTION_BACKUP_ENCRYPTION_KEY: ${{ secrets.PRODUCTION_BACKUP_ENCRYPTION_KEY }}
+          POSTGRES_IMAGE: docker.io/library/postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+          DATABASE_URL: postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_restore
+          BODYCAST_TEST_DATABASE_URL: postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_restore
+          PGPASSWORD: isolated_restore_test_password
+          MANIFEST_ID: unified-v4-republication-v1
+        run: |
+          set -Eeuo pipefail
+          node scripts/restore-encrypted-postgres-backup.mjs
+          node scripts/production-db-preflight.mjs | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+            > "$BODYCAST_V4_EVIDENCE_DIR/restored-report.json"
+          FULL_BEFORE="$(bash scripts/production-db-data-fingerprint.sh --test-url)"
+          RAW_BEFORE="$(bash scripts/production-db-data-fingerprint.sh --test-url --v4-replay-inputs)"
+          REPLAY_STABLE_STATE_BEFORE="$(bash scripts/production-db-data-fingerprint.sh --test-url --v4-replay-stable-state)"
+          node --input-type=module - "$BODYCAST_V4_EVIDENCE_DIR/restored-report.json" "$FULL_BEFORE" "$RAW_BEFORE" "$REPLAY_STABLE_STATE_BEFORE" <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const [reportPath, full, raw, stableState] = process.argv.slice(2);
+          if (![full, raw, stableState].every((value) => /^[a-f0-9]{64}$/.test(value))) throw new Error("Isolated restore fingerprints are malformed.");
+          const report = JSON.parse(readFileSync(reportPath, "utf8"));
+          report.logicalDataFingerprint = full;
+          report.v4ReplayInputFingerprint = raw;
+          report.v4ReplayStableStateFingerprint = stableState;
+          writeFileSync(reportPath, `${JSON.stringify(report)}\n`, { flag: "w", mode: 0o600 });
+          NODE
+          psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+            --file=scripts/verify-restored-backup.sql > "$BODYCAST_V4_EVIDENCE_DIR/restored-readability.json"
+          node scripts/production-migration-restore-check.mjs --base \
+            --source "$BODYCAST_V4_EVIDENCE_DIR/source-report.json" \
+            --restored "$BODYCAST_V4_EVIDENCE_DIR/restored-report.json" \
+            --readability "$BODYCAST_V4_EVIDENCE_DIR/restored-readability.json" \
+            > "$BODYCAST_V4_EVIDENCE_DIR/restore-result.json"
+          node scripts/production-migration-restore-check.mjs --postflight --manifest "$MANIFEST_ID" \
+            --repository "$GITHUB_WORKSPACE" --report "$BODYCAST_V4_EVIDENCE_DIR/restored-report.json" \
+            > "$BODYCAST_V4_EVIDENCE_DIR/postflight-result.json"
+          FULL_BEFORE="$FULL_BEFORE" RAW_BEFORE="$RAW_BEFORE" REPLAY_STABLE_STATE_BEFORE="$REPLAY_STABLE_STATE_BEFORE" node --input-type=module -e '
+          import { readFileSync } from "node:fs";
+          const snapshot = JSON.parse(readFileSync(process.env.BODYCAST_V4_EVIDENCE_DIR + "/host-snapshot.json", "utf8"));
+          const restore = JSON.parse(readFileSync(process.env.BODYCAST_V4_EVIDENCE_DIR + "/restore-result.json", "utf8"));
+          const postflight = JSON.parse(readFileSync(process.env.BODYCAST_V4_EVIDENCE_DIR + "/postflight-result.json", "utf8"));
+          const restored = JSON.parse(readFileSync(process.env.BODYCAST_V4_EVIDENCE_DIR + "/restored-report.json", "utf8"));
+          if (!restore.verified || !postflight.postflightReady || snapshot.report.logicalDataFingerprint !== process.env.FULL_BEFORE
+            || snapshot.v4ReplayStableStateFingerprint !== process.env.REPLAY_STABLE_STATE_BEFORE
+            || snapshot.v4ReplayInputFingerprint !== process.env.RAW_BEFORE || restored.v4ReplayInputFingerprint !== process.env.RAW_BEFORE) {
+            throw new Error("Fresh encrypted backup restore, schema/history postflight, or raw source parity failed.");
+          }'
+          npx tsx scripts/unified-v4-activate-replay.ts --activate-v4 --owner-authorized --profile-id 1 \
+            > "$BODYCAST_V4_EVIDENCE_DIR/first-replay.json"
+          FULL_AFTER="$(bash scripts/production-db-data-fingerprint.sh --test-url)"
+          RAW_AFTER="$(bash scripts/production-db-data-fingerprint.sh --test-url --v4-replay-inputs)"
+          REPLAY_STABLE_STATE_AFTER="$(bash scripts/production-db-data-fingerprint.sh --test-url --v4-replay-stable-state)"
+          npx tsx scripts/unified-v4-activate-replay.ts --activate-v4 --owner-authorized --profile-id 1 \
+            > "$BODYCAST_V4_EVIDENCE_DIR/retry-replay.json"
+          FULL_AFTER_RETRY="$(bash scripts/production-db-data-fingerprint.sh --test-url)"
+          RAW_AFTER_RETRY="$(bash scripts/production-db-data-fingerprint.sh --test-url --v4-replay-inputs)"
+          REPLAY_STABLE_STATE_AFTER_RETRY="$(bash scripts/production-db-data-fingerprint.sh --test-url --v4-replay-stable-state)"
+          psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+            --command "SELECT json_build_object('profileId', \"profileId\", 'invalidationGeneration', \"invalidationGeneration\", 'productionPublishedGeneration', \"productionPublishedGeneration\", 'productionStaleFromDate', \"productionStaleFromDate\", 'unifiedTargetRevision', \"unifiedTargetRevision\", 'unifiedRolloutEpoch', \"unifiedRolloutEpoch\", 'unifiedPublishedRolloutEpoch', \"unifiedPublishedRolloutEpoch\", 'unifiedPublishedGeneration', \"unifiedPublishedGeneration\", 'unifiedPublicationBlockedFromDate', \"unifiedPublicationBlockedFromDate\")::text FROM public.\"PhysiologyV7Lifecycle\" WHERE \"profileId\" = 1" \
+            > "$BODYCAST_V4_EVIDENCE_DIR/lifecycle-after.json"
+          node scripts/production-db-preflight.mjs | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+            > "$BODYCAST_V4_EVIDENCE_DIR/post-replay-report.json"
+          node scripts/production-migration-restore-check.mjs --postflight --manifest "$MANIFEST_ID" \
+            --repository "$GITHUB_WORKSPACE" --report "$BODYCAST_V4_EVIDENCE_DIR/post-replay-report.json" \
+            > "$BODYCAST_V4_EVIDENCE_DIR/post-replay-postflight-result.json"
+          node --input-type=module - "$BODYCAST_V4_EVIDENCE_DIR" "$FULL_BEFORE" "$FULL_AFTER" "$FULL_AFTER_RETRY" "$RAW_BEFORE" "$RAW_AFTER" "$RAW_AFTER_RETRY" \
+            "$REPLAY_STABLE_STATE_BEFORE" "$REPLAY_STABLE_STATE_AFTER" "$REPLAY_STABLE_STATE_AFTER_RETRY" \
+            > "$BODYCAST_V4_EVIDENCE_DIR/rehearsal-input.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { V4_REPUBLICATION_MANIFEST } from "./scripts/production-migration-manifests.mjs";
+          const [dir, fullBefore, fullAfter, fullAfterRetry, rawBefore, rawAfter, rawAfterRetry,
+            replayOutputBefore, replayOutputAfter, replayOutputAfterRetry] = process.argv.slice(2);
+          const read = (name) => JSON.parse(readFileSync(`${dir}/${name}`, "utf8"));
+          const input = {
+            sourceSnapshot: read("host-snapshot.json"),
+            restoreResult: read("restore-result.json"),
+            postflightResult: read("post-replay-postflight-result.json"),
+            restoreReport: read("restored-report.json"),
+            sourceRawFingerprint: rawBefore,
+            restoredRawFingerprintBefore: rawBefore,
+            restoredRawFingerprintAfter: rawAfter,
+            restoredRawFingerprintAfterRetry: rawAfterRetry,
+            fullFingerprintBefore: fullBefore,
+            fullFingerprintAfter: fullAfter,
+            fullFingerprintAfterRetry: fullAfterRetry,
+            replayStableStateFingerprintBefore: replayOutputBefore,
+            replayStableStateFingerprintAfter: replayOutputAfter,
+            replayStableStateFingerprintAfterRetry: replayOutputAfterRetry,
+            firstReplay: read("first-replay.json"),
+            retryReplay: read("retry-replay.json"),
+            lifecycleAfter: read("lifecycle-after.json"),
+          };
+          process.stdout.write(JSON.stringify(input));
+          NODE
+          node scripts/production-v4-recovery.mjs --verify-rehearsal \
+            "$BODYCAST_V4_EVIDENCE_DIR/rehearsal-input.json" "$BODYCAST_V4_EVIDENCE_DIR/rehearsal-result.json" \
+            > /dev/null
+          REPLAY_STABLE_STATE_FINGERPRINT_AFTER="$(node --input-type=module - "$BODYCAST_V4_EVIDENCE_DIR/rehearsal-result.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const result = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          if (result.verified !== true || result.ddlAuthorization !== false) throw new Error("V4 rehearsal result is not verified or grants DDL authorization.");
+          process.stdout.write(result.replayStableStateFingerprintAfter ?? "");
+          NODE
+          )"
+          [[ "$REPLAY_STABLE_STATE_FINGERPRINT_AFTER" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::Verified isolated V4 post-replay stable-state fingerprint is malformed."; exit 1; }
+          echo "replay_stable_state_fingerprint_after=$REPLAY_STABLE_STATE_FINGERPRINT_AFTER" >> "$GITHUB_OUTPUT"
+          REPLAY_LIFECYCLE_DIGEST="$(node --input-type=module - "$BODYCAST_V4_EVIDENCE_DIR/rehearsal-result.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const result = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          process.stdout.write(result.replayLifecycleDigest ?? "");
+          NODE
+          )"
+          [[ "$REPLAY_LIFECYCLE_DIGEST" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::Verified isolated V4 lifecycle digest is malformed."; exit 1; }
+          echo "replay_lifecycle_digest=$REPLAY_LIFECYCLE_DIGEST" >> "$GITHUB_OUTPUT"
+          chmod 600 "$BODYCAST_V4_EVIDENCE_DIR/"*
+          echo "## Post-DDL encrypted backup and isolated V4 rehearsal" >> "$GITHUB_STEP_SUMMARY"
+          echo "- backup SHA-256: $(cat "$BODYCAST_V4_EVIDENCE_DIR/backup-sha256.txt")" >> "$GITHUB_STEP_SUMMARY"
+          echo "- source/restored full and raw fingerprints: PASS" >> "$GITHUB_STEP_SUMMARY"
+          echo "- exact V4 migrations and epoch-1 replay/idempotency: PASS" >> "$GITHUB_STEP_SUMMARY"
+          echo "- production DDL during this workflow: NOT PERFORMED" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload encrypted post-DDL production backup
+        id: backup_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bodycast-post-ddl-v4-backup-${{ needs.authorize.outputs.release_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bodycast-v4-backup/production-backup.pgdump.enc
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload immutable post-DDL V4 recovery evidence
+        id: evidence_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bodycast-post-ddl-v4-evidence-${{ needs.authorize.outputs.release_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bodycast-v4-evidence/*
+          if-no-files-found: error
+          retention-days: 90
+      - name: Record immutable backup and rehearsal evidence identities
+        run: |
+          {
+            echo "- encrypted backup artifact id: ${{ steps.backup_artifact.outputs.artifact-id }}"
+            echo "- encrypted backup artifact digest: ${{ steps.backup_artifact.outputs.artifact-digest }}"
+            echo "- preparation evidence artifact id: ${{ steps.evidence_artifact.outputs.artifact-id }}"
+            echo "- preparation evidence artifact digest: ${{ steps.evidence_artifact.outputs.artifact-digest }}"
+            echo "- isolated V4 rehearsal ddlAuthorization: false"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Verify V3, activate and replay V4, then serve exact SHA under one host lock
         env:
           GH_TOKEN: ${{ github.token }}
@@ -164,6 +603,12 @@ jobs:
           APP_HOST: ${{ secrets.APP_HOST }}
           CADDY_ROUTES_PATH: ${{ secrets.CADDY_ROUTES_PATH }}
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+          BODYCAST_V4_REPLAY_INPUT_FINGERPRINT: ${{ steps.post_ddl_backup.outputs.raw_fingerprint }}
+          BODYCAST_V4_MIGRATION_RUN_B64: ${{ needs.authorize.outputs.migration_run_b64 }}
+          BODYCAST_V4_RECOVERY_BINDING_B64: ${{ steps.post_ddl_backup.outputs.recovery_binding_b64 }}
+          BODYCAST_V4_EXPECTED_REPLAY_STABLE_STATE_FINGERPRINT: ${{ steps.v4_rehearsal.outputs.replay_stable_state_fingerprint_after }}
+          BODYCAST_V4_EXPECTED_REPLAY_LIFECYCLE_DIGEST: ${{ steps.v4_rehearsal.outputs.replay_lifecycle_digest }}
+          BODYCAST_EXPECTED_PRE_DDL_RAW_FINGERPRINT: ${{ steps.post_ddl_backup.outputs.raw_fingerprint }}
         run: |
           set -Eeuo pipefail
           [[ "$(gh api repos/krustallik/body-model/commits/main --jq .sha)" == "$RELEASE_SHA" ]] || {
@@ -172,14 +617,38 @@ jobs:
           DEPLOY_PATH_B64="$(printf '%s' "$DEPLOY_PATH" | base64 -w0)"
           APP_HOST_B64="$(printf '%s' "$APP_HOST" | base64 -w0)"
           ROUTES_PATH_B64="$(printf '%s' "$CADDY_ROUTES_PATH" | base64 -w0)"
+          REPLAY_INPUT_FINGERPRINT="${BODYCAST_V4_REPLAY_INPUT_FINGERPRINT:-}"
+          MIGRATION_RUN_B64="${BODYCAST_V4_MIGRATION_RUN_B64:-}"
+          RECOVERY_BINDING_B64="${BODYCAST_V4_RECOVERY_BINDING_B64:-}"
+          REPLAY_STABLE_STATE_FINGERPRINT="${BODYCAST_V4_EXPECTED_REPLAY_STABLE_STATE_FINGERPRINT:-}"
+          REPLAY_LIFECYCLE_DIGEST="${BODYCAST_V4_EXPECTED_REPLAY_LIFECYCLE_DIGEST:-}"
+          PG_RESTORE_VERSION_B64="$(printf '%s' "${BODYCAST_PG_RESTORE_VERSION:-}" | base64 -w0)"
+          [[ "$REPLAY_INPUT_FINGERPRINT" =~ ^[a-f0-9]{64}$ \
+            && "$MIGRATION_RUN_B64" =~ ^[A-Za-z0-9+/]+=*$ \
+            && "$RECOVERY_BINDING_B64" =~ ^[A-Za-z0-9+/]+=*$ \
+            && "$REPLAY_STABLE_STATE_FINGERPRINT" =~ ^[a-f0-9]{64}$ \
+            && "$REPLAY_LIFECYCLE_DIGEST" =~ ^[a-f0-9]{64}$ \
+            && "$PG_RESTORE_VERSION_B64" =~ ^[A-Za-z0-9+/]+=*$ ]] || { echo "::error::Verified V4 replay boundary evidence is missing or malformed."; exit 1; }
           REMOTE_SCRIPT="$(cat <<'REMOTE'
           set -Eeuo pipefail
           RELEASE_SHA="$1"
           DEPLOY_PATH="$(printf '%s' "$2" | base64 --decode)"
           APP_HOST="$(printf '%s' "$3" | base64 --decode)"
           CADDY_ROUTES_PATH="$(printf '%s' "$4" | base64 --decode)"
+          REPLAY_INPUT_FINGERPRINT="$5"
+          MIGRATION_RUN_B64="$6"
+          PG_RESTORE_VERSION="$(printf '%s' "$7" | base64 --decode)"
+          RECOVERY_BINDING_B64="$8"
+          REPLAY_STABLE_STATE_FINGERPRINT="$9"
+          REPLAY_LIFECYCLE_DIGEST="${10}"
           [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ && "$DEPLOY_PATH" == /* && "$DEPLOY_PATH" != *$'\n'* \
-            && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* && "$CADDY_ROUTES_PATH" != *$'\n'* ]] || exit 2
+            && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* && "$CADDY_ROUTES_PATH" != *$'\n'* \
+            && "$REPLAY_INPUT_FINGERPRINT" =~ ^[a-f0-9]{64}$ \
+            && "$MIGRATION_RUN_B64" =~ ^[A-Za-z0-9+/]+=*$ \
+            && "$PG_RESTORE_VERSION" =~ ^pg_restore\ \(PostgreSQL\)\ 17\.[0-9]+$ \
+            && "$RECOVERY_BINDING_B64" =~ ^[A-Za-z0-9+/]+=*$ \
+            && "$REPLAY_STABLE_STATE_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]] || exit 2
+          [[ "$REPLAY_LIFECYCLE_DIGEST" =~ ^[a-f0-9]{64}$ ]] || exit 2
           cd -- "$DEPLOY_PATH"
           [[ "$(git rev-parse --show-toplevel)" == "$DEPLOY_PATH" && -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || {
             echo "Production checkout is dirty or does not match DEPLOY_PATH." >&2; exit 1;
@@ -193,13 +662,62 @@ jobs:
           APP_HEALTH="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' bodycast-app-prod)"
           [[ "$APP_SHA" == "$RELEASE_SHA" && "$APP_HEALTH" == "healthy" ]] || { echo "Exact-SHA app is absent or unhealthy." >&2; exit 1; }
           APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" BODYCAST_DEPLOY_SHA="$RELEASE_SHA" \
+            BODYCAST_V4_REPLAY_INPUT_FINGERPRINT="$REPLAY_INPUT_FINGERPRINT" \
+            BODYCAST_EXPECTED_PRE_DDL_RAW_FINGERPRINT="$REPLAY_INPUT_FINGERPRINT" \
+            BODYCAST_V4_MIGRATION_RUN_B64="$MIGRATION_RUN_B64" \
+            BODYCAST_V4_RECOVERY_BINDING_B64="$RECOVERY_BINDING_B64" \
+            BODYCAST_V4_EXPECTED_REPLAY_STABLE_STATE_FINGERPRINT="$REPLAY_STABLE_STATE_FINGERPRINT" \
+            BODYCAST_V4_EXPECTED_REPLAY_LIFECYCLE_DIGEST="$REPLAY_LIFECYCLE_DIGEST" \
+            BODYCAST_PG_RESTORE_VERSION="$PG_RESTORE_VERSION" \
             exec bash scripts/production-traffic-cutover.sh activate-v4-and-serve
           REMOTE
           )"
           REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
-          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$RELEASE_SHA' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64'"
+          REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$RELEASE_SHA' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64' '$REPLAY_INPUT_FINGERPRINT' '$MIGRATION_RUN_B64' '$PG_RESTORE_VERSION_B64' '$RECOVERY_BINDING_B64' '$REPLAY_STABLE_STATE_FINGERPRINT' '$REPLAY_LIFECYCLE_DIGEST'"
           SSH=(ssh -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
           timeout 60m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE_COMMAND"
       - name: Remove temporary SSH credentials
         if: always()
         run: rm -rf "$RUNNER_TEMP/bodycast-activation-ssh"
+      - name: Verify public HTTPS pages and health API after serving
+        env:
+          APP_HOST: ${{ secrets.APP_HOST }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "::error::Public app host is malformed."; exit 1; }
+          home_headers="$RUNNER_TEMP/bodycast-home-headers"
+          home_body="$RUNNER_TEMP/bodycast-home-body"
+          home_status="$(curl --silent --show-error --location --max-redirs 5 --connect-timeout 5 --max-time 30 \
+            --dump-header "$home_headers" --output "$home_body" --write-out '%{http_code}' "https://$APP_HOST/")"
+          home_type="$(awk 'BEGIN { IGNORECASE = 1 } /^Content-Type:/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); value=$0 } END { print value }' "$home_headers")"
+          if [[ "$home_status" != 200 || "${home_type,,}" != text/html* ]] || grep -Fq 'BodyCast is temporarily unavailable' "$home_body"; then
+            echo "::error::Public HTTPS homepage did not return non-maintenance HTML 200."; exit 1;
+          fi
+          api_body="$RUNNER_TEMP/bodycast-health-body"
+          api_status="$(curl --silent --show-error --max-redirs 0 --connect-timeout 5 --max-time 15 \
+            --output "$api_body" --write-out '%{http_code}' "https://$APP_HOST/api/health")"
+          [[ "$api_status" == 200 ]] || { echo "::error::Public health API did not return HTTP 200."; exit 1; }
+          node --input-type=module - "$api_body" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const health = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          if (health?.status !== "ok") throw new Error("Public health API did not report healthy status.");
+          NODE
+          for page in \
+            '/dashboard|Dashboard · BodyCast' \
+            '/training|Training · BodyCast' \
+            '/forecast|Forecast · BodyCast'; do
+            route="${page%%|*}"
+            expected_title="${page#*|}"
+            response="$RUNNER_TEMP/bodycast-page-${route//\//-}"
+            response_meta="$(curl --silent --show-error --location --max-redirs 5 --connect-timeout 5 --max-time 30 \
+              --output "$response" --write-out $'%{http_code}\n%{content_type}\n%{url_effective}' "https://$APP_HOST$route")"
+            IFS=$'\n' read -r status content_type effective_url <<< "$response_meta"
+            [[ "$status" == 200 && "${content_type,,}" == text/html* \
+              && "$effective_url" == "https://$APP_HOST$route" ]] || {
+              echo "::error::Public page $route did not return its own HTML page (HTTP $status)."; exit 1;
+            }
+            grep -Fq "<title>$expected_title</title>" "$response" || {
+              echo "::error::Public page $route did not render the expected BodyCast page title."; exit 1;
+            }
+          done
+          echo "Public HTTPS homepage, health API, Dashboard, Training, and Forecast route smoke passed." >> "$GITHUB_STEP_SUMMARY"

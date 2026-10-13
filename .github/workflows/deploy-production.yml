@@ -200,6 +200,19 @@ jobs:
           ref: ${{ needs.authorize.outputs.candidate_sha }}
           fetch-depth: 1
           persist-credentials: false
+      - name: Verify externally pinned V4 handoff verifier
+        env:
+          DEPLOY_SHA: ${{ needs.authorize.outputs.candidate_sha }}
+          EXPECTED_V4_HANDOFF_BLOB: ${{ vars.BODYCAST_V4_HANDOFF_BLOB }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ && "$EXPECTED_V4_HANDOFF_BLOB" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::The production Environment must pin the audited V4 schema handoff verifier blob."; exit 1;
+          }
+          ACTUAL_V4_HANDOFF_BLOB="$(git rev-parse "$DEPLOY_SHA:scripts/production-schema-deploy-handoff.mjs")"
+          [[ "$ACTUAL_V4_HANDOFF_BLOB" == "$EXPECTED_V4_HANDOFF_BLOB" ]] || {
+            echo "::error::The exact release SHA does not contain the externally approved V4 handoff verifier."; exit 1;
+          }
       - name: Recheck run identity and main tip before production credentials
         env:
           GH_TOKEN: ${{ github.token }}

@@ -1,4 +1,5 @@
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   accessSync,
   copyFileSync,
@@ -116,6 +117,13 @@ bodycast.example.test {
 
 function shellScript(strings: TemplateStringsArray): string {
   return strings.raw[0].replaceAll("\\${", "${");
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
 }
 
 const fakeDocker = shellScript`#!/usr/bin/env bash
@@ -314,6 +322,7 @@ if [[ "$1" == "compose" ]]; then
     exit 0
   fi
   if [[ "$joined" == *" up -d --no-deps --force-recreate app "* || "$joined" == *" up -d --no-deps --no-build app "* ]]; then
+    event "compose-up-app"
     if [[ "\${FAIL_CANDIDATE_UP:-0}" == "1" \
         && "\${BODYCAST_DEPLOY_SHA:-}" == "\${CANDIDATE_SHA:-}" \
         && ! -e "$FAIL_CANDIDATE_MARKER" ]]; then
@@ -442,6 +451,15 @@ if [[ "$1" == "inspect" ]]; then
     gymbeam-caddy:*State.Status*) printf '%s\n' running ;;
     *) echo "unhandled docker inspect fixture target/format: $target $format" >&2; exit 91 ;;
   esac
+  exit 0
+fi
+if [[ "$1" == "exec" && "$*" == *"psql"* && "$*" == *"bodycast-db-prod"* && "$*" == *"--command"* ]]; then
+  if [[ "$*" == *"SELECT tablename FROM pg_catalog.pg_tables"* ]]; then
+    printf '%s\n' DailyHealthData ExperimentalTransientExerciseWaterShadow PhysiologyV7Lifecycle UnifiedExperimentalPhysiologyStateV2
+  elif [[ "$*" == *"COPY (SELECT row_to_json"* && "\${CHANGE_V4_SOURCE_AFTER_ACTIVATION:-0}" == "1" \
+    && -f "$EVENT_LOG" && "$(cat "$EVENT_LOG")" == *"unified-v4-activation"* ]]; then
+    printf '%s\n' unexpected-source-change
+  fi
   exit 0
 fi
 if [[ "$1" == "exec" && "$*" == *"BODYCAST_WRITER_TOPOLOGY_JSON="* && "$*" == *"bodycast-db-prod"* ]]; then
@@ -734,6 +752,7 @@ export function createFixture(): Fixture {
     "production-previous-app-provenance.mjs",
     "production-capture-resume-receipt.mjs",
     "production-db-target.sh",
+    "production-db-data-fingerprint.sh",
     "production-db-endpoint-binding.mjs",
     "production-db-target-url.mjs",
     "production-db-preflight.mjs",
@@ -745,10 +764,28 @@ export function createFixture(): Fixture {
     "production-migration-integrity.mjs",
     "production-migration-preflight.mjs",
     "production-writer-drain.mjs",
+    "production-v4-recovery.mjs",
+    "postgres-client-versions.mjs",
     "postgres-database-identity.mjs",
   ]) {
     copyFileSync(path.resolve("scripts", file), path.join(repo, "scripts", file));
   }
+  writeFileSync(path.join(repo, "scripts", "production-v4-post-ddl-backup-host.sh"), shellScript`#!/usr/bin/env bash
+set -Eeuo pipefail
+[[ "\${1:-}" == "snapshot-only" ]] || exit 2
+count="$(cat "$V4_BOUNDARY_COUNT_FILE" 2>/dev/null || printf '0')"
+count=$((count + 1))
+printf '%s\n' "$count" > "$V4_BOUNDARY_COUNT_FILE"
+if [[ "$count" -eq 1 ]]; then
+  printf '%s\n' v4-recovery-boundary-before >> "$EVENT_LOG"
+  [[ "\${FAIL_V4_BOUNDARY:-}" != before ]] || exit 71
+  printf '%s\n' "$V4_BOUNDARY_BEFORE_JSON"
+else
+  printf '%s\n' v4-recovery-boundary-after >> "$EVENT_LOG"
+  [[ "\${FAIL_V4_BOUNDARY:-}" != after ]] || exit 72
+  printf '%s\n' "$V4_BOUNDARY_AFTER_JSON"
+fi
+`, { mode: 0o755 });
   writeFileSync(path.join(repo, "docker-compose.prod.yml"), "services: {}\n");
   writeFileSync(path.join(bin, "docker"), fakeDocker, { mode: 0o755 });
   writeFileSync(path.join(bin, "curl"), fakeCurl, { mode: 0o755 });
@@ -808,6 +845,7 @@ printf '%s\n' health-wait-sleep >> "$EVENT_LOG"
     FAIL_CANDIDATE_MARKER: path.join(root, "fail-candidate-once"),
     LOCK_COUNT_FILE: path.join(root, "lock-count"),
     MAIN_FETCH_COUNT_FILE: path.join(root, "main-fetch-count"),
+    V4_BOUNDARY_COUNT_FILE: path.join(root, "v4-boundary-count"),
   };
   writeFileSync(paths.APP_SHA_FILE, `${PREVIOUS_SHA}\n`);
   writeFileSync(paths.APP_IMAGE_ID_FILE, `${PREVIOUS_IMAGE_ID}\n`);
@@ -837,6 +875,79 @@ printf '%s\n' health-wait-sleep >> "$EVENT_LOG"
   writeFileSync(paths.IMAGE_LATEST, `${LATEST_IMAGE_ID}\n`);
   writeFileSync(paths.ACTIVE_ROUTE_FILE, "serving\n");
 
+  const fixtureEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...Object.fromEntries(Object.entries(paths).map(([key, value]) => [key, toBashPath(value)])),
+    PATH: `${path.join(root, "bin")}${path.delimiter}${process.env.PATH ?? ""}`,
+    FIXTURE_BIN: toBashPath(bin),
+    FIXTURE_REPO: toBashPath(repo),
+    REAL_GIT: toBashPath(realGit),
+    ROUTE_FILE: toBashPath(path.join(routes, "bodycast.caddy")),
+    APP_HOST: "bodycast.example.test",
+    CADDY_ROUTES_PATH: toBashPath(routes),
+    CANDIDATE_SHA: candidateSha,
+    ADVANCE_SHA: advanceSha,
+    PREVIOUS_SHA,
+    PREVIOUS_CONTAINER_ID,
+    PREVIOUS_IMAGE_ID,
+    LATEST_IMAGE_ID,
+    CANDIDATE_IMAGE_ID,
+  };
+  const replayInputFingerprint = execFileSync(findBash() ?? "bash", ["--noprofile", "--norc", "-c",
+    'export PATH="$FIXTURE_BIN:$PATH"; bash scripts/production-db-data-fingerprint.sh --production-container bodycast-db-prod --v4-replay-inputs'], {
+    cwd: repo, encoding: "utf8", env: fixtureEnv,
+  }).trim();
+  // The setup-only fingerprint probe uses fake Docker; start assertions with a clean operation log.
+  rmSync(paths.DOCKER_LOG, { force: true });
+  fixtureEnv.BODYCAST_V4_REPLAY_INPUT_FINGERPRINT = replayInputFingerprint;
+  const expectedReplayStableStateFingerprint = "d".repeat(64);
+  const recoveryBinding = {
+    schemaVersion: 1,
+    verified: true,
+    ddlAuthorization: false,
+    releaseSha: candidateSha,
+    manifestId: "unified-v4-republication-v1",
+    migrationOriginSha: "8b4a195e8afb67c0a913d0175a030e01cc665732",
+    migrationRunId: "38447647403",
+    migrationRunAttempt: "1",
+    databaseContainerId: "f".repeat(64),
+    databaseImageId: `sha256:${"e".repeat(64)}`,
+    appImageId: CANDIDATE_IMAGE_ID,
+    markerDigest: "1".repeat(64),
+    routeDigest: "2".repeat(64),
+    identityDigest: "3".repeat(64),
+    migrationHistoryDigest: "4".repeat(64),
+    schemaDigest: "5".repeat(64),
+    rawReplayInputFingerprint: replayInputFingerprint,
+    preDdlReplayInputFingerprint: replayInputFingerprint,
+    logicalDataFingerprint: "b".repeat(64),
+    v4ReplayStableStateFingerprint: "a".repeat(64),
+    lifecycleState: "v4-replayable",
+    lifecycleDigest: "c".repeat(64),
+    pgDumpVersion: "pg_dump (PostgreSQL) 17.11",
+    pgRestoreVersion: "pg_restore (PostgreSQL) 17.11",
+  };
+  const immutable = Object.fromEntries(Object.entries(recoveryBinding).filter(([key]) =>
+    !["logicalDataFingerprint", "v4ReplayStableStateFingerprint", "lifecycleState", "lifecycleDigest"].includes(key)));
+  Object.assign(recoveryBinding, {
+    immutableDigest: createHash("sha256").update(canonicalJson(immutable), "utf8").digest("hex"),
+  });
+  fixtureEnv.BODYCAST_V4_RECOVERY_BINDING_B64 = Buffer.from(JSON.stringify(recoveryBinding)).toString("base64");
+  fixtureEnv.BODYCAST_V4_EXPECTED_REPLAY_STABLE_STATE_FINGERPRINT = expectedReplayStableStateFingerprint;
+  fixtureEnv.BODYCAST_V4_EXPECTED_REPLAY_LIFECYCLE_DIGEST = "e".repeat(64);
+  fixtureEnv.BODYCAST_V4_MIGRATION_RUN_B64 = Buffer.from(JSON.stringify({ id: "38447647403", runAttempt: "1" })).toString("base64");
+  fixtureEnv.BODYCAST_EXPECTED_PRE_DDL_RAW_FINGERPRINT = replayInputFingerprint;
+  fixtureEnv.BODYCAST_PG_RESTORE_VERSION = "pg_restore (PostgreSQL) 17.11";
+  fixtureEnv.BODYCAST_V4_CANDIDATE_APP_IMAGE_ID = CANDIDATE_IMAGE_ID;
+  fixtureEnv.V4_BOUNDARY_BEFORE_JSON = JSON.stringify({ recoveryBinding });
+  fixtureEnv.V4_BOUNDARY_AFTER_JSON = JSON.stringify({ recoveryBinding: {
+    ...recoveryBinding,
+    logicalDataFingerprint: "d".repeat(64),
+    v4ReplayStableStateFingerprint: expectedReplayStableStateFingerprint,
+    lifecycleState: "v4-current",
+    lifecycleDigest: fixtureEnv.BODYCAST_V4_EXPECTED_REPLAY_LIFECYCLE_DIGEST,
+  } });
+
   return {
     root,
     repo,
@@ -845,25 +956,7 @@ printf '%s\n' health-wait-sleep >> "$EVENT_LOG"
     advanceSha,
     bash: findBash() ?? "bash",
     realGit,
-    env: {
-      ...process.env,
-      ...Object.fromEntries(Object.entries(paths).map(([key, value]) => [key, toBashPath(value)])),
-      PATH: `${path.join(root, "bin")}${path.delimiter}${process.env.PATH ?? ""}`,
-      FIXTURE_BIN: toBashPath(bin),
-      FIXTURE_REPO: toBashPath(repo),
-      REAL_GIT: toBashPath(realGit),
-      ROUTE_FILE: toBashPath(path.join(routes, "bodycast.caddy")),
-      APP_HOST: "bodycast.example.test",
-      CADDY_ROUTES_PATH: toBashPath(routes),
-      CANDIDATE_SHA: candidateSha,
-      ADVANCE_SHA: advanceSha,
-      PREVIOUS_SHA,
-      PREVIOUS_CONTAINER_ID,
-      PREVIOUS_IMAGE_ID,
-      LATEST_IMAGE_ID,
-      CANDIDATE_IMAGE_ID,
-      WRONG_IMAGE_ID,
-    },
+    env: { ...fixtureEnv, WRONG_IMAGE_ID },
   };
 }
 

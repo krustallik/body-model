@@ -67,17 +67,41 @@ const CONTENT_BOUND_PATHS = Object.freeze({
 });
 /** Exact executable blobs reviewed for the V4 app-ready migration-origin handoff. */
 const V4_CONTENT_BOUND_PATHS = Object.freeze({
+  ".github/workflows/activate-unified-v4-production.yml": Object.freeze({
+    migrationOriginBlob: "5aee0a99a1dea520ca314a4b83e42c63e389e1d2",
+    deployBlob: "59f4e00408946f9eb641567bf5e8632ee4c35bb0",
+  }),
+  ".github/workflows/deploy-production.yml": Object.freeze({
+    migrationOriginBlob: "1be0ba2dc8fcfe2c34a97b39ae1d5d0fde32404f",
+    deployBlob: "b4955059fc3cae0d94abbd2656c99b51800caad7",
+  }),
+  "scripts/ci/production-safety-postgres-smoke.mjs": Object.freeze({
+    migrationOriginBlob: "1a0345e687fd3f604499502bdf98a07b606da07f",
+    deployBlob: "a8551efe6279fb881b78c00107f432b247296607",
+  }),
   "scripts/deploy.sh": Object.freeze({
     migrationOriginBlob: "4844bdc0b586f29dbc3b60952717e249a04bbbbc",
     deployBlob: "bdfb709ba92ddb7970132f8aac7c402519a0a9ce",
+  }),
+  "scripts/production-db-data-fingerprint.sh": Object.freeze({
+    migrationOriginBlob: "101ecf34dc5751fc431a5b88f787d7ebc3e98fde",
+    deployBlob: "3a313ac030b0aa96abb57658f6e02c2473016299",
   }),
   "scripts/production-release-marker.sh": Object.freeze({
     migrationOriginBlob: "40bdb77377cfe02ce8bedd9760d82f21befc128e",
     deployBlob: "4a625b3599946405dac0fe0276d375e12283c22c",
   }),
+  "scripts/production-v4-post-ddl-backup-host.sh": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "d9a2fdd9226706fbd8f12c2344ca4a892cea53a0",
+  }),
+  "scripts/production-v4-recovery.mjs": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "b609527876ed6c59ca48814c6c5b5450ff1517bd",
+  }),
   "scripts/production-traffic-cutover.sh": Object.freeze({
     migrationOriginBlob: "baeb3ff34c52c606a653d9e0c027c79d7b7c72da",
-    deployBlob: "29c288a184871659044079f687c5035749ad993c",
+    deployBlob: "12aad0c622c284b986a2ffe9d0cb35fbee8e71a8",
   }),
   "scripts/unified-v4-activate-replay.ts": Object.freeze({
     migrationOriginBlob: "2bb3f1130241dcc0e354e70a60f5284452849a12",

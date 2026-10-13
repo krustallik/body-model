@@ -51,7 +51,47 @@ describe("production V4 activation and cutover recovery", () => {
     expect(checks.at(-1)).toBeLessThan(serving);
     expect(healthEndpoint).toBeLessThan(checks.at(-1)!);
     expect(serving).toBeGreaterThan(activation);
+    const beforeBoundary = events.indexOf("v4-recovery-boundary-before");
+    const afterBoundary = events.indexOf("v4-recovery-boundary-after");
+    const appRestart = events.indexOf("app-health-sample:starting");
+    expect(beforeBoundary).toBeGreaterThan(-1);
+    expect(beforeBoundary).toBeLessThan(activation);
+    expect(afterBoundary).toBeGreaterThan(activation);
+    expect(appRestart).toBeGreaterThan(afterBoundary);
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("keeps maintenance and blocks V4 DML when the fresh pre-replay recovery binding differs", async () => {
+    const fixture = createFixture();
+    prepareV4ActivationFixture(fixture);
+    const result = await runFixtureAsync(fixture, "bash scripts/production-traffic-cutover.sh activate-v4-and-serve", {
+      BODYCAST_DEPLOY_SHA: fixture.candidateSha,
+      FAIL_V4_BOUNDARY: "before",
+    });
+
+    expect(result.status).not.toBe(0);
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events).toContain("v4-recovery-boundary-before");
+    expect(events).not.toContain("unified-v4-activation");
+    expect(events).not.toContain("live-route-mutation:serving");
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("keeps maintenance and does not restart the app when post-replay state mismatches rehearsal", async () => {
+    const fixture = createFixture();
+    prepareV4ActivationFixture(fixture);
+    const result = await runFixtureAsync(fixture, "bash scripts/production-traffic-cutover.sh activate-v4-and-serve", {
+      BODYCAST_DEPLOY_SHA: fixture.candidateSha,
+      FAIL_V4_BOUNDARY: "after",
+    });
+
+    expect(result.status).not.toBe(0);
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events).toContain("unified-v4-activation");
+    expect(events).toContain("v4-recovery-boundary-after");
+    expect(events).not.toContain("app-health-sample:starting");
+    expect(events).not.toContain("live-route-mutation:serving");
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
   }, 30_000);
 
   it.skipIf(!bashAvailable)("uses the existing replayable V4 lifecycle without invoking the V3-only postflight", async () => {
@@ -69,6 +109,21 @@ describe("production V4 activation and cutover recovery", () => {
     expect(events).toContain("unified-v4-activation");
     expect(events).toContain("live-route-mutation:serving");
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
+  }, 30_000);
+
+  it.skipIf(!bashAvailable)("keeps maintenance when the raw replay-source fingerprint changes during activation", async () => {
+    const fixture = createFixture();
+    prepareV4ActivationFixture(fixture);
+    const result = await runFixtureAsync(fixture, "bash scripts/production-traffic-cutover.sh activate-v4-and-serve", {
+      BODYCAST_DEPLOY_SHA: fixture.candidateSha,
+      CHANGE_V4_SOURCE_AFTER_ACTIVATION: "1",
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).not.toBe(0);
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events).toContain("unified-v4-activation");
+    expect(events).not.toContain("live-route-mutation:serving");
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
   }, 30_000);
 
   it.skipIf(!bashAvailable)("blocks unknown lifecycle inspection before stopping the app or changing traffic", async () => {

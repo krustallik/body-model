@@ -1,16 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { capturePreviousAppProvenance, rebindPreviousAppProvenanceForPreflightResume } from "../scripts/production-previous-app-provenance.mjs";
 import { failedHistoricalNoAppAfterRehearsal, historicalAuthorizationRetries,
   successfulHistoricalNoAppPreparation } from "./fixtures/historical-preflight-runs.mjs";
-import { DEPLOY_CONTROL_FILES, PREFLIGHT_CAPTURE_RESUME_CONTROL_FILES, deployControlFilesMatch,
-  preflightCaptureResumeControlsMatch,
-  extractCaptureRetryLogEvidence, extractPreMaintenanceDeployLogEvidence,
-  NO_APP_PREPARATION_CONTROL_FILES, noAppPreparationControlsMatch, serializePreflightRetryRunIds,
-  verifyPreDdlMigrationFailureResume, verifyResumablePreflightAttempt } from "../scripts/production-preflight-resume.mjs";
+import { serializePreflightRetryRunIds, verifyPreDdlMigrationFailureResume,
+  verifyResumablePreflightAttempt } from "../scripts/production-preflight-resume.mjs";
 
 function findBash() {
   const probe = spawnSync("bash", ["--version"], { encoding: "utf8" });
@@ -31,8 +28,8 @@ const blockedCaptureSha = "c".repeat(40);
 const deployWorkflowId = "789";
 const safeSchemaBlockedDeployRunId = "38000669127";
 
-describe("production deploy evidence source binding", () => {
-  it("keeps exact resume evidence verification upstream of production SSH credentials", async () => {
+describe("historical release recovery metadata", () => {
+  it("keeps source verification upstream of production access and does not fetch historical logs", async () => {
     const workflow = await readFile(".github/workflows/production-migration-preflight.yml", "utf8");
     const authorizeJob = workflow.indexOf("  authorize:");
     const inspectJob = workflow.indexOf("  inspect_backup_restore:");
@@ -40,6 +37,7 @@ describe("production deploy evidence source binding", () => {
     const validateSsh = workflow.indexOf("      - name: Validate production-only SSH and backup secrets", inspectJob);
     const pinSsh = workflow.indexOf("      - name: Pin production SSH host key", validateSsh);
     const remoteCommand = workflow.indexOf("REMOTE_COMMAND=", pinSsh);
+    const standardResume = workflow.slice(workflow.lastIndexOf('elif [[ -n "$RESUME_SOURCE_RUN_ID" ]]; then'));
     expect(authorizeJob).toBeGreaterThanOrEqual(0);
     expect(inspectJob).toBeGreaterThan(authorizeJob);
     expect(verifyEvidence).toBeGreaterThan(authorizeJob);
@@ -47,71 +45,14 @@ describe("production deploy evidence source binding", () => {
     expect(validateSsh).toBeGreaterThan(inspectJob);
     expect(pinSsh).toBeGreaterThan(validateSsh);
     expect(remoteCommand).toBeGreaterThan(pinSsh);
-    expect(workflow).toContain('gh api --allow-escape-sequences "repos/krustallik/body-model/actions/jobs/$inspect_job_id/logs" > "$failure_log"');
-    expect(workflow).toContain('[[ "$log_size_bytes" =~ ^[0-9]+$ && "$log_size_bytes" -le 1000000 ]]');
-    expect(workflow.match(/--allow-escape-sequences/g)).toHaveLength(1);
+    expect(standardResume).not.toContain("--log-failed");
+    expect(standardResume).not.toContain("/actions/jobs/$inspect_job_id/logs");
+    expect(standardResume).not.toContain("actions/runs/$prep_run_id/artifacts");
+    expect(standardResume).toContain("actions/runs/$deploy_run_id/jobs");
+    expect(standardResume).toContain("actions/runs/$retry_run_id/artifacts");
   });
 
-  it("retains pending migration IDs and contradictory schema status from GitHub job logs", () => {
-    const job = "Deploy exact current-main SHA";
-    const step = "Deploy exact SHA through the fixed production script";
-    const timestamp = "2026-10-11T12:00:00.000Z";
-    const raw = [
-      `${job}\t${step}\t${timestamp} The following migration(s) have not yet been applied:`,
-      ...pendingMigrationIds.map((id) => `${job}\t${step}\t${timestamp} ${id}`),
-      ...[
-        "BLOCKED: production schema is not compatible with this application revision.",
-        "Ordinary automatic deployment does not run prisma migrate deploy.",
-        "Pending migration identifiers appear in the status output above.",
-        "Authorize a separate production migration procedure before releasing this commit.",
-        "Deploy failed before maintenance was confirmed; the previous app was not stopped or replaced.",
-        "Database schema is up to date",
-      ].map((line) => `${job}\t${step}\t${timestamp} ${line}`),
-      `Unrelated job\t${step}\t${timestamp} 20269999120000_spoofed_migration`,
-    ].join("\n");
-    expect(extractPreMaintenanceDeployLogEvidence(raw)).toBe([
-      ...pendingMigrationIds,
-      "BLOCKED: production schema is not compatible with this application revision.",
-      "Ordinary automatic deployment does not run prisma migrate deploy.",
-      "Pending migration identifiers appear in the status output above.",
-      "Authorize a separate production migration procedure before releasing this commit.",
-      "Deploy failed before maintenance was confirmed; the previous app was not stopped or replaced.",
-      "Database schema is up to date",
-    ].join("\n"));
-  });
-
-  it("rejects changed migrator build or Prisma inputs between the failed deploy and current main", async () => {
-    const tempDir = await mkdtemp(path.join(tmpdir(), "bodycast-deploy-controls-"));
-    const changedInputs = ["Dockerfile", ".dockerignore", "package.json", "package-lock.json", "prisma/schema.prisma",
-      "prisma/migrations/20261011120000_unified_publication_failure_fence/migration.sql"];
-    try {
-      expect(DEPLOY_CONTROL_FILES).toEqual(expect.arrayContaining(["Dockerfile", ".dockerignore", "package.json",
-        "package-lock.json", "prisma"]));
-      execFileSync("git", ["-c", "init.defaultBranch=main", "init", tempDir], { stdio: "ignore" });
-      execFileSync("git", ["-C", tempDir, "config", "user.name", "BodyCast Test"], { stdio: "ignore" });
-      execFileSync("git", ["-C", tempDir, "config", "user.email", "bodycast-test@example.invalid"], { stdio: "ignore" });
-      for (const input of changedInputs) {
-        const absolutePath = path.join(tempDir, input);
-        await mkdir(path.dirname(absolutePath), { recursive: true });
-        await writeFile(absolutePath, "reviewed base input\n");
-      }
-      execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
-      execFileSync("git", ["-C", tempDir, "commit", "-m", "base"], { stdio: "ignore" });
-      const baseSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-
-      for (const input of changedInputs) {
-        await writeFile(path.join(tempDir, input), "changed input\n");
-      }
-      execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
-      execFileSync("git", ["-C", tempDir, "commit", "-m", "change migrator inputs"], { stdio: "ignore" });
-      const changedSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-      expect(deployControlFilesMatch(baseSha, changedSha, tempDir)).toBe(false);
-    } finally {
-      await rm(tempDir, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps historical authorization-only classification on GitHub execution metadata", () => {
+  it("accepts historical authorization-only retries from complete GitHub metadata", () => {
     expect(historicalAuthorizationRetries.map(({ run }) => String(run.id))).toEqual([
       "38379375890", "38379548326", "38384779107", "38396593728", "38399644888",
       "38403898937", "38410773609", "38413249982", "38415354392", "38417627284",
@@ -122,54 +63,29 @@ describe("production deploy evidence source binding", () => {
       expect(() => execFileSync("git", ["merge-base", "--is-ancestor", sourceSha, run.head_sha])).not.toThrow();
       expect(() => execFileSync("git", ["merge-base", "--is-ancestor", run.head_sha, currentMainSha])).not.toThrow();
       expect(jobs.total_count).toBe(2);
-      expect(jobs.jobs.find(({ name }) => name === "Authorize read-only preflight").steps)
-        .toMatchObject([
-          { name: "Set up job", conclusion: "success" },
-          { name: "Checkout current main tooling", conclusion: "success" },
-          { name: "Validate canonical repository, exact main, and successful CI", conclusion: "failure" },
-          { name: "Post Checkout current main tooling", conclusion: "success" },
-          { name: "Complete job", conclusion: "success" },
-        ]);
+      expect(jobs.jobs.map(({ name }) => name).sort()).toEqual([
+        "Authorize read-only preflight",
+        "Inspect, back up, restore, and rehearse on disposable PostgreSQL",
+      ]);
+      expect(jobs.jobs.every((job) => job.status === "completed" && job.head_sha === run.head_sha
+        && job.run_attempt === run.run_attempt && Array.isArray(job.steps))).toBe(true);
+      expect(jobs.jobs.find(({ name }) => name === "Authorize read-only preflight").conclusion).toBe("failure");
       expect(jobs.jobs.find(({ name }) => name === "Inspect, back up, restore, and rehearse on disposable PostgreSQL"))
-        .toMatchObject({ status: "completed", conclusion: "skipped", steps: [] });
+        .toMatchObject({ conclusion: "skipped", steps: [] });
       expect(artifacts).toEqual({ total_count: 0, artifacts: [] });
     }
-    expect(preflightCaptureResumeControlsMatch("3eec0b7d4b38f10de3083a9108b32fcbc1c201b3",
-      "029bbe81a341abe2e8642564b8c4fa2e0b3f00a8")).toBe(true);
-    expect(deployControlFilesMatch("7ccaf1018c55f6ed2dfa3124992b75d5a43b052a",
-      "029bbe81a341abe2e8642564b8c4fa2e0b3f00a8")).toBe(true);
   });
 
-  it("rejects capture history when top-level workflow safety controls changed", async () => {
-    const tempDir = await mkdtemp(path.join(tmpdir(), "bodycast-capture-top-level-controls-"));
-    const originalSha = "029bbe81a341abe2e8642564b8c4fa2e0b3f00a8";
-    try {
-      execFileSync("git", ["-c", "init.defaultBranch=main", "init", tempDir], { stdio: "ignore" });
-      const controlFiles = [...PREFLIGHT_CAPTURE_RESUME_CONTROL_FILES, ".github/workflows/production-migration-preflight.yml"];
-      for (const file of controlFiles) {
-        const contents = execFileSync("git", ["show", `${originalSha}:${file}`], { cwd: process.cwd(), encoding: "utf8" });
-        const targetPath = path.join(tempDir, file);
-        await mkdir(path.dirname(targetPath), { recursive: true });
-        await writeFile(targetPath, contents);
-      }
-      execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
-      execFileSync("git", ["-C", tempDir, "-c", "user.name=BodyCast Test", "-c", "user.email=bodycast-test@example.invalid",
-        "commit", "-m", "reviewed capture baseline"], { stdio: "ignore" });
-      const oldSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-      const workflowPath = path.join(tempDir, ".github/workflows/production-migration-preflight.yml");
-      const workflow = await readFile(workflowPath, "utf8");
-      await writeFile(workflowPath, workflow.replace("  group: bodycast-production-release", "  group: changed-release-concurrency"));
-      execFileSync("git", ["-C", tempDir, "add", "--all"], { stdio: "ignore" });
-      execFileSync("git", ["-C", tempDir, "-c", "user.name=BodyCast Test", "-c", "user.email=bodycast-test@example.invalid",
-        "commit", "-m", "changed top-level concurrency"], { stdio: "ignore" });
-      const changedSha = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-      expect(preflightCaptureResumeControlsMatch(oldSha, changedSha, tempDir)).toBe(false);
-    } finally {
-      await rm(tempDir, { recursive: true, force: true });
-    }
+  it("carries unverified historical recovery as non-DDL evidence", async () => {
+    const workflow = await readFile(".github/workflows/production-migration-preflight.yml", "utf8");
+    const evidenceScript = await readFile("scripts/production-migration-evidence.mjs", "utf8");
+    expect(workflow).toContain("unverified_historical_runs: ${{ steps.gate.outputs.unverified_historical_runs }}");
+    expect(workflow).toContain("UNVERIFIED_HISTORICAL_RUNS: ${{ needs.authorize.outputs.unverified_historical_runs }}");
+    expect(workflow).toContain("unverified_historical_runs=$UNVERIFIED_HISTORICAL_RUNS");
+    expect(evidenceScript).toContain("historicalRecovery:");
+    expect(evidenceScript).toContain("ddlAuthorizationGranted: false");
   });
 });
-
 function sourceRun(overrides = {}) {
   return {
     id: 38000669126,
@@ -227,24 +143,9 @@ function verify(overrides = {}) {
     manifestId: "active-energy-unified-v2",
     deployWorkflowId,
     sourceIsAncestor: true,
-    controlFilesMatch: () => true,
     ...overrides,
   });
 }
-
-const pendingMigrationIds = [
-  "20261011120000_unified_publication_failure_fence",
-  "20261011130000_only_completed_training_invalidates_v7",
-];
-const schemaBlockedDeployLog = [
-  "The following migration(s) have not yet been applied:",
-  ...pendingMigrationIds,
-  "BLOCKED: production schema is not compatible with this application revision.",
-  "Ordinary automatic deployment does not run prisma migrate deploy.",
-  "Pending migration identifiers appear in the status output above.",
-  "Authorize a separate production migration procedure before releasing this commit.",
-  "Deploy failed before maintenance was confirmed; the previous app was not stopped or replaced.",
-].join("\n");
 
 function deployRun(overrides = {}) {
   return {
@@ -257,6 +158,8 @@ function deployRun(overrides = {}) {
     status: "completed",
     conclusion: "failure",
     run_attempt: 1,
+    actor: { id: 126446430 },
+    triggering_actor: { id: 126446430 },
     repository: { full_name: "krustallik/body-model", owner: { id: 126446430, login: "krustallik" } },
     ...overrides,
   };
@@ -288,7 +191,7 @@ function deployJobs(overrides = {}) {
     ["Verify triggering CI or owner dispatch and current main", "success"],
     ["Post Checkout main gate helpers", "success"],
     ["Complete job", "success"],
-  ].map(([name, conclusion]) => ({ name, conclusion }));
+  ].map(([name, conclusion], index) => ({ name, conclusion, status: "completed", number: index + 1 }));
   const deploySteps = [
     ["Set up job", "success"],
     ["Checkout exact current main tooling", "success"],
@@ -298,12 +201,12 @@ function deployJobs(overrides = {}) {
     ["Remove temporary SSH credentials", "success"],
     ["Post Checkout exact current main tooling", "success"],
     ["Complete job", "success"],
-  ].map(([name, conclusion]) => ({ name, conclusion }));
+  ].map(([name, conclusion], index) => ({ name, conclusion, status: "completed", number: index + 1 }));
   return {
     total_count: 2,
     jobs: [
-      { name: "Authorize exact current-main app deploy", conclusion: "success", head_sha: targetSha, run_attempt: 1, steps: authorizeSteps },
-      { name: "Deploy exact current-main SHA", conclusion: "failure", head_sha: targetSha, run_attempt: 1, steps: deploySteps },
+      { name: "Authorize exact current-main app deploy", status: "completed", conclusion: "success", head_sha: targetSha, run_attempt: 1, steps: authorizeSteps },
+      { name: "Deploy exact current-main SHA", status: "completed", conclusion: "failure", head_sha: targetSha, run_attempt: 1, steps: deploySteps },
     ],
     ...overrides,
   };
@@ -328,7 +231,6 @@ function safeSchemaBlockedDeployEvidence(overrides = {}) {
   return {
     run: deployRun(),
     jobs: deployJobs(),
-    deployLogText: schemaBlockedDeployLog,
     ciRuns: [deployCiRun()],
     shaIsAncestorOfCurrentMain: true,
     ...overrides,
@@ -481,6 +383,7 @@ function safePreflightRetryRun(overrides = {}) {
   return {
     ...ownerRun({ id: safePreflightRetryRunId, workflowId: preflightWorkflowId,
       path: ".github/workflows/production-migration-preflight.yml", sha: targetSha, conclusion: "failure" }),
+    display_title: "Preflight " + targetSha + " unified-v4-republication-v1",
     ...overrides,
   };
 }
@@ -510,7 +413,7 @@ function withCompletedStepStatuses(jobs) {
     jobs: jobs.jobs.map((job) => ({
       ...job,
       status: "completed",
-      steps: (job.steps ?? []).map((step) => ({ ...step, status: "completed" })),
+      steps: (job.steps ?? []).map((step, index) => ({ ...step, number: index + 1, status: "completed" })),
     })),
   };
 }
@@ -575,8 +478,10 @@ function captureBlockedRetryRun({ id = 38000669127, sha = targetSha, manifestId 
 }
 
 function captureBlockedRetryJobs({ extraInspectStep, ...overrides } = {}) {
-  const inspectSteps = captureBlockedJobSteps.map(([name, conclusion]) => ({
+  const inspectSteps = captureBlockedJobSteps.map(([name, conclusion], index) => ({
     name, conclusion,
+    number: index + 1,
+    status: "completed",
     ...(name === "Enter maintenance and drain the old app before backup"
       ? { started_at: "2026-10-11T11:59:59Z", completed_at: "2026-10-11T12:00:01Z" }
       : {}),
@@ -585,8 +490,11 @@ function captureBlockedRetryJobs({ extraInspectStep, ...overrides } = {}) {
   return {
     total_count: 2,
     jobs: [
-      { name: "Authorize read-only preflight", conclusion: "success", head_sha: targetSha, run_attempt: 1, steps: [] },
-      { name: "Inspect, back up, restore, and rehearse on disposable PostgreSQL", conclusion: "failure",
+      { name: "Authorize read-only preflight", status: "completed", conclusion: "success", head_sha: targetSha, run_attempt: 1,
+        steps: ["Set up job", "Checkout exact release SHA", "Recheck owner and exact main", "Complete job"].map((name, index) => ({
+          name, conclusion: "success", number: index + 1, status: "completed",
+        })) },
+      { name: "Inspect, back up, restore, and rehearse on disposable PostgreSQL", status: "completed", conclusion: "failure",
         head_sha: targetSha, run_attempt: 1, steps: inspectSteps },
     ],
     ...overrides,
@@ -594,16 +502,13 @@ function captureBlockedRetryJobs({ extraInspectStep, ...overrides } = {}) {
 }
 
 function captureBlockedRetryEvidence({
-  failure = "An earlier pre-DDL release capture exists; operator review is required before another migration attempt.",
   run = captureBlockedRetryRun(), jobs = captureBlockedRetryJobs(), artifacts = { total_count: 0, artifacts: [] },
   ...overrides
 } = {}) {
   return {
     run, jobs, artifacts,
-    failureLogText: `Enter maintenance and drain the old app before backup\t2026-10-11T12:00:00.000Z\t${failure}\n`,
     shaIsAncestorOfCurrentMain: true,
     sourceShaIsAncestor: true,
-    captureControlsMatch: true,
     ...overrides,
   };
 }
@@ -618,7 +523,6 @@ function verifyWithCaptureBlockedRetries(retryEvidenceList, overrides = {}) {
       status: "in_progress", workflow_id: Number(preflightWorkflowId),
     }],
     safeFailedPreflightRetries: retryEvidenceList,
-    preflightCaptureControlsMatch: () => true,
     ...overrides,
   });
 }
@@ -656,35 +560,7 @@ describe("verified resume of a failed production preflight", () => {
     expect(evidenceScript).toContain("ddlAuthorizationGranted: false");
   });
 
-  it("binds no-app history to the production SQL and writer-drain implementation", async () => {
-    const tempDir = await mkdtemp(path.join(tmpdir(), "bodycast-no-app-controls-"));
-    try {
-      execFileSync("git", ["init", "--initial-branch=main", tempDir], { stdio: "ignore" });
-      execFileSync("git", ["-C", tempDir, "config", "user.name", "Preflight test"], { stdio: "ignore" });
-      execFileSync("git", ["-C", tempDir, "config", "user.email", "preflight@example.invalid"], { stdio: "ignore" });
-      for (const control of ["scripts/production-db-preflight.sql", "scripts/production-writer-drain.mjs"]) {
-        const controlPath = path.join(tempDir, control);
-        await mkdir(path.dirname(controlPath), { recursive: true });
-        await writeFile(controlPath, "control-v1\n");
-      }
-      execFileSync("git", ["-C", tempDir, "add", "scripts"], { stdio: "ignore" });
-      execFileSync("git", ["-C", tempDir, "commit", "-m", "baseline controls"], { stdio: "ignore" });
-      const baseline = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-      for (const control of ["scripts/production-db-preflight.sql", "scripts/production-writer-drain.mjs"]) {
-        await writeFile(path.join(tempDir, control), `changed ${control}\n`);
-        execFileSync("git", ["-C", tempDir, "add", control], { stdio: "ignore" });
-        execFileSync("git", ["-C", tempDir, "commit", "-m", `change ${control}`], { stdio: "ignore" });
-        const current = execFileSync("git", ["-C", tempDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-        expect(noAppPreparationControlsMatch(baseline, current, tempDir), control).toBe(false);
-      }
-      expect(NO_APP_PREPARATION_CONTROL_FILES).toContain("scripts/production-db-preflight.sql");
-      expect(NO_APP_PREPARATION_CONTROL_FILES).toContain("scripts/production-writer-drain.mjs");
-    } finally {
-      await rm(tempDir, { recursive: true, force: true });
-    }
-  });
-
-  it("runs the source-verification CLI with a verified schema-blocked deploy", async () => {
+  it("runs source verification without historical deploy log text", async () => {
     const currentMainSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     const currentRunId = "1002";
     const sourceRunId = "1000";
@@ -704,7 +580,6 @@ describe("verified resume of a failed production preflight", () => {
     const safeDeployEvidence = {
       run: actualDeployRun,
       jobs: actualDeployJobs,
-      deployLogText: schemaBlockedDeployLog,
       ciRuns: [actualCiRun],
     };
     const laterRuns = [actualDeployRun, {
@@ -780,53 +655,15 @@ describe("verified resume of a failed production preflight", () => {
     expect(result.unverifiedHistoricalDeployRunIds).toEqual([]);
   });
 
-  it("extracts capture-stop evidence only from the exact failed GitHub job step", () => {
-    const step = "Enter maintenance and drain the old app before backup";
-    const marker = "An earlier pre-DDL release capture exists; operator review is required before another migration attempt.";
-    const timestamp = "2026-10-11T12:00:00.000Z";
-    const raw = [
-      `Other job\t${step}\t${timestamp} ${marker}`,
-      `Inspect, back up, restore, and rehearse on disposable PostgreSQL\t${step}\t${timestamp} ${marker}`,
-    ].join("\n");
-    expect(extractCaptureRetryLogEvidence(raw)).toBe(`${step}\t${timestamp}\t${marker}`);
+  it("admits a failed historical inspection with incomplete logs as UNVERIFIED metadata", () => {
+    const evidence = captureBlockedRetryEvidence();
+    const result = verifyWithCaptureBlockedRetries([evidence]);
+    expect(result.unverifiedHistoricalPreflightRunIds).toEqual(["38000669127"]);
+    expect(result.historicalPreflightEffects).toEqual([{
+      runId: "38000669127", sha: targetSha, historicalEffects: "UNVERIFIED",
+    }]);
+    expect(result.unverifiedHistoricalAuthorizationOnlyPreflightRunIds).toEqual([]);
   });
-
-  it("extracts exact emitted stop lines from GitHub job-log API timestamp-plus-space records", () => {
-    const step = "Enter maintenance and drain the old app before backup";
-    const marker = "Capture refresh requires exactly one existing BodyCast app container.";
-    const raw = [
-      "2026-10-12T06:47:24.8397786Z ##[group]Run node scripts/production-traffic-cutover.mjs",
-      `2026-10-12T06:47:24.8397786Z echo '${marker}'`,
-      `2026-10-12T06:47:24.8397786Z ${marker}`,
-      "2026-10-12T06:47:24.8397786Z ##[endgroup]",
-    ].join("\n");
-    expect(extractCaptureRetryLogEvidence(raw)).toBe(`${step}\t2026-10-12T06:47:24.8397786Z\t${marker}`);
-    expect(extractCaptureRetryLogEvidence(`${raw}\n2026-10-12T06:47:24.8397786Z ${marker}`))
-      .toBe(`${step}\t2026-10-12T06:47:24.8397786Z\t${marker}\n${step}\t2026-10-12T06:47:24.8397786Z\t${marker}`);
-  });
-
-  it("fails closed for missing or unrecognized raw GitHub job-log formats", () => {
-    const marker = "Capture refresh requires exactly one existing BodyCast app container.";
-    expect(extractCaptureRetryLogEvidence("2026-10-12T06:47:24.8397786Z echo 'Capture refresh requires exactly one existing BodyCast app container.'"))
-      .toBe("");
-    expect(extractCaptureRetryLogEvidence(`unstructured ${marker}`)).toBe("");
-  });
-
-  it("rejects duplicate emitted stops after job-log extraction", () => {
-    const marker = "Capture refresh requires exactly one existing BodyCast app container.";
-    const duplicateLog = `Enter maintenance and drain the old app before backup\t2026-10-11T12:00:00.000Z\t${marker}\n`
-      + `Enter maintenance and drain the old app before backup\t2026-10-11T12:00:00.000Z\t${marker}\n`;
-    expect(() => verifyWithCaptureBlockedRetries([captureBlockedRetryEvidence({ failureLogText: duplicateLog })]))
-      .toThrow("unique terminal stop");
-  });
-
-  it("rejects a stop marker timestamp outside the failed capture-step interval", () => {
-    const staleLog = "Enter maintenance and drain the old app before backup\t2026-10-11T11:59:58Z\t"
-      + "Capture refresh requires exactly one existing BodyCast app container.\n";
-    expect(() => verifyWithCaptureBlockedRetries([captureBlockedRetryEvidence({ failureLogText: staleLog })]))
-      .toThrow("unique terminal stop");
-  });
-
   it("admits owner authorization-only failures separately from capture-blocked retries", () => {
     const historicalWorkflowId = historicalAuthorizationRetries[0].run.workflow_id;
     const captureRetry = captureBlockedRetryEvidence({
@@ -875,26 +712,19 @@ describe("verified resume of a failed production preflight", () => {
   it.each([
     ["another owner", { run: safePreflightRetryRun({ id: 38000669128, triggering_actor: { id: 7 } }) }],
     ["stale SHA", { shaIsAncestorOfCurrentMain: false }],
-    ["not descended from the source", { sourceShaIsAncestor: false }],
+    ["not descended from source", { sourceShaIsAncestor: false }],
     ["incomplete jobs inventory", { jobs: safePreflightRetryJobs({ total_count: 1 }) }],
-    ["unexpected job inventory", { jobs: safePreflightRetryJobs({ jobs: [...safePreflightRetryJobs().jobs,
+    ["unexpected job", { jobs: safePreflightRetryJobs({ jobs: [...safePreflightRetryJobs().jobs,
       { name: "Unexpected production job", status: "completed", conclusion: "skipped", head_sha: targetSha, run_attempt: 1, steps: [] }] }) }],
-    ["published artifact", { artifacts: { total_count: 1, artifacts: [{ id: 8 }] } }],
+    ["published artifact after authorization-only failure", { artifacts: { total_count: 1, artifacts: [{ id: 8 }] } }],
     ["incomplete artifact inventory", { artifacts: { total_count: 0 } }],
-    ["incomplete job execution", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
-      job.name.startsWith("Authorize") ? { ...job, status: "in_progress" } : job) }) }],
-    ["inspection job ran", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
+    ["inspection unexpectedly ran", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
       job.name.startsWith("Inspect,") ? { ...job, conclusion: "failure" } : job) }) }],
-    ["inspection job has steps", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
-      job.name.startsWith("Inspect,") ? { ...job, steps: [{ name: "unexpected", conclusion: "skipped" }] } : job) }) }],
-    ["authorization failed outside the exact read-only gate", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
-      job.name.startsWith("Authorize") ? { ...job, steps: job.steps.map((step) => step.name === "Set up job"
-        ? { ...step, conclusion: "failure" } : step) } : job) }) }],
+    ["inspection has steps despite being skipped", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
+      job.name.startsWith("Inspect,") ? { ...job, steps: [{ name: "unexpected", conclusion: "skipped", status: "completed", number: 1 }] } : job) }) }],
     ["job SHA mismatch", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
       job.name.startsWith("Authorize") ? { ...job, head_sha: sourceSha } : job) }) }],
-    ["authorization job contains an unexpected step", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
-      job.name.startsWith("Authorize") ? { ...job, steps: [...job.steps, { name: "Unexpected side effect", conclusion: "success" }] } : job) }) }],
-    ["authorization step inventory is incomplete", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
+    ["incomplete step inventory", { jobs: safePreflightRetryJobs({ jobs: safePreflightRetryJobs().jobs.map((job) =>
       job.name.startsWith("Authorize") ? { ...job, steps: job.steps.slice(0, -1) } : job) }) }],
   ])("rejects an authorization-only retry when %s", (_label, evidenceOverrides) => {
     expect(() => verifyWithCaptureBlockedRetries([authorizationOnlyPreflightRetryEvidence(evidenceOverrides)]))
@@ -904,21 +734,25 @@ describe("verified resume of a failed production preflight", () => {
   it.each([
     ["other owner", { run: captureBlockedRetryRun({ triggering_actor: { id: 7 } }) }],
     ["rerun", { run: captureBlockedRetryRun({ run_attempt: 2 }) }],
-    ["wrong manifest", { run: captureBlockedRetryRun({ display_title: `Preflight ${targetSha} active-energy-unified-v2` }) }],
-    ["published artifact", { artifacts: { total_count: 1, artifacts: [{ id: 8 }] } }],
     ["stale retry SHA", { shaIsAncestorOfCurrentMain: false }],
     ["retry not descended from source", { sourceShaIsAncestor: false }],
-    ["capture controls changed", { captureControlsMatch: false }],
-    ["extra step or changed DB boundary", { jobs: captureBlockedRetryJobs({ jobs: [
-      ...captureBlockedRetryJobs().jobs.slice(0, 1),
-      { ...captureBlockedRetryJobs().jobs[1], steps: captureBlockedRetryJobs().jobs[1].steps.map((step, index) =>
-        index === 11 ? { ...step, conclusion: "success" } : step) },
-    ] }) }],
-  ])("rejects a later V4 capture retry with %s", (_label, evidenceOverrides) => {
+    ["incomplete artifact inventory", { artifacts: { total_count: 0 } }],
+    ["incomplete job inventory", { jobs: captureBlockedRetryJobs({ total_count: 1 }) }],
+    ["step inventory has a gap", { jobs: captureBlockedRetryJobs({ jobs: captureBlockedRetryJobs().jobs.map((job) =>
+      job.name.startsWith("Inspect,") ? { ...job, steps: job.steps.map((step, index) => index === 1 ? { ...step, number: 9 } : step) } : job) }) }],
+  ])("blocks a failed historical inspection when %s", (_label, evidenceOverrides) => {
     const evidence = captureBlockedRetryEvidence(evidenceOverrides);
     expect(() => verifyWithCaptureBlockedRetries([evidence])).toThrow("cannot be safely resumed");
   });
 
+  it("accepts old artifacts from a failed inspection only as unverified metadata", () => {
+    const evidence = captureBlockedRetryEvidence({
+      run: captureBlockedRetryRun({ name: "Historical preflight title changed" }),
+      artifacts: { total_count: 1, artifacts: [{ id: 8, name: "historical-backup" }] },
+    });
+    const result = verifyWithCaptureBlockedRetries([evidence]);
+    expect(result.unverifiedHistoricalPreflightRunIds).toEqual([String(evidence.run.id)]);
+  });
   it("rejects unrelated later production mutations even with safe capture retry evidence", () => {
     const evidence = captureBlockedRetryEvidence();
     expect(() => verifyWithCaptureBlockedRetries([evidence], {
@@ -942,6 +776,7 @@ describe("verified resume of a failed production preflight", () => {
 
   it("admits completed no-app preparation only as unverified history and never reuses its artifacts", () => {
     const evidence = structuredClone(successfulHistoricalNoAppPreparation);
+    evidence.run.display_title = "Historical preparation label changed";
     const run = evidence.run;
     const result = verify({
       laterRuns: [run, {
@@ -949,7 +784,6 @@ describe("verified resume of a failed production preflight", () => {
       }],
       safeHistoricalNoAppRuns: [evidence],
       noAppWorkflowId: run.workflow_id,
-      noAppControlsMatch: () => true,
       isAncestorOfCurrentMain: () => true,
     });
     expect(result.unverifiedHistoricalRunIds).toEqual([String(run.id)]);
@@ -964,25 +798,24 @@ describe("verified resume of a failed production preflight", () => {
       }],
       safeHistoricalNoAppRuns: [evidence],
       noAppWorkflowId: run.workflow_id,
-      noAppControlsMatch: () => true,
       isAncestorOfCurrentMain: () => true,
     });
     expect(result.unverifiedHistoricalRunIds).toEqual([String(run.id)]);
   });
 
-  it("blocks a failed no-app history whose temporary SSH credential cleanup was cancelled", () => {
+  it("keeps a failed no-app run with uncertain cleanup explicitly unverified", () => {
     const evidence = structuredClone(failedHistoricalNoAppAfterRehearsal);
     evidence.jobs.jobs[1].steps.find((step) => step.name === "Remove temporary SSH credentials").conclusion = "cancelled";
     const run = evidence.run;
-    expect(() => verify({
+    const result = verify({
       laterRuns: [run, {
         id: 99999999999, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress",
       }],
       safeHistoricalNoAppRuns: [evidence],
       noAppWorkflowId: run.workflow_id,
-      noAppControlsMatch: () => true,
       isAncestorOfCurrentMain: () => true,
-    })).toThrow("did not successfully remove temporary SSH credentials");
+    });
+    expect(result.unverifiedHistoricalRunIds).toEqual([String(run.id)]);
   });
 
   it("rejects historical no-app metadata that omits a required gate even when the inventory is long", () => {
@@ -996,7 +829,6 @@ describe("verified resume of a failed production preflight", () => {
       }],
       safeHistoricalNoAppRuns: [evidence],
       noAppWorkflowId: run.workflow_id,
-      noAppControlsMatch: () => true,
       isAncestorOfCurrentMain: () => true,
     })).toThrow("cannot be safely resumed");
   });
@@ -1005,20 +837,17 @@ describe("verified resume of a failed production preflight", () => {
     ["owner mismatch", { actor: { id: 7 }, triggering_actor: { id: 7 } }],
     ["workflow ID mismatch", { workflow_id: 457 }],
     ["malformed SHA", { head_sha: "not-a-sha" }],
-    ["unknown conclusion", { conclusion: "timed_out" }],
-    ["changed preparation controls", {}],
+    ["unknown conclusion", { conclusion: "skipped" }],
   ])("blocks no-app history with %s", (_label, overrides) => {
     const evidence = structuredClone(successfulHistoricalNoAppPreparation);
     evidence.run = { ...evidence.run, ...overrides };
     const run = evidence.run;
-    const controlsChanged = Object.keys(overrides).length === 0;
     expect(() => verify({
       laterRuns: [run, {
         id: 99999999999, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress",
       }],
       safeHistoricalNoAppRuns: [evidence],
       noAppWorkflowId: successfulHistoricalNoAppPreparation.run.workflow_id,
-      noAppControlsMatch: () => !controlsChanged,
       isAncestorOfCurrentMain: () => true,
     })).toThrow("cannot be safely resumed");
   });
@@ -1038,29 +867,29 @@ describe("verified resume of a failed production preflight", () => {
   });
 
   it.each([
-    ["missing deploy evidence", { safeFailedDeployRuns: [] }],
+    ["missing deploy metadata", { safeFailedDeployRuns: [] }],
+    ["deploy actor is not the pinned owner", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ run: deployRun({ actor: { id: 7 }, triggering_actor: { id: 7 } }) })] }],
     ["deploy rerun", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ run: deployRun({ run_attempt: 2 }) })] }],
     ["manual deploy", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ run: deployRun({ event: "workflow_dispatch" }) })] }],
     ["wrong branch", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ run: deployRun({ head_branch: "feature/x" }) })] }],
     ["different deploy SHA", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ run: deployRun({ head_sha: sourceSha }) })] }],
     ["wrong workflow identity", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ run: deployRun({ workflow_id: 999 }) })] }],
     ["missing exact-SHA main CI", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ ciRuns: [] })] }],
-    ["contradictory up-to-date schema status", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({
-      deployLogText: `${schemaBlockedDeployLog}\nDatabase schema is up to date`,
-    })] }],
-    ["missing pending migration identifier", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({
-      deployLogText: schemaBlockedDeployLog.replace(`${pendingMigrationIds[0]}\n`, ""),
-    })] }],
-    ["duplicated pending migration identifier", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({
-      deployLogText: schemaBlockedDeployLog.replace(`${pendingMigrationIds[1]}\n`, `${pendingMigrationIds[0]}\n${pendingMigrationIds[1]}\n`),
-    })] }],
     ["failed main CI", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ ciRuns: [deployCiRun({ conclusion: "failure" })] })] }],
     ["wrong CI event", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ ciRuns: [deployCiRun({ event: "pull_request" })] })] }],
-    ["extra failed step", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ jobs: deployJobs({ jobs: [
+    ["incomplete job inventory", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ jobs: {
+      total_count: 1, jobs: deployJobs().jobs.slice(0, 1),
+    } })] }],
+    ["unexpected job", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ jobs: deployJobs({ jobs: [
       ...deployJobs().jobs,
-      { name: "Unexpected job", conclusion: "failure", head_sha: targetSha, run_attempt: 1, steps: [] },
+      { name: "Unexpected job", status: "completed", conclusion: "failure", head_sha: targetSha, run_attempt: 1, steps: [] },
     ], total_count: 3 }) })] }],
-    ["deploy controls changed after failure", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence()], controlFilesMatch: () => false }],
+    ["incomplete step inventory", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ jobs: deployJobs({ jobs:
+      deployJobs().jobs.map((job) => job.name.startsWith("Deploy exact")
+        ? { ...job, steps: job.steps.slice(0, -1) } : job) }) })] }],
+    ["step sequence has a gap", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ jobs: deployJobs({ jobs:
+      deployJobs().jobs.map((job) => job.name.startsWith("Deploy exact")
+        ? { ...job, steps: job.steps.map((step, index) => index === 1 ? { ...step, number: 9 } : step) } : job) }) })] }],
     ["run not in current main ancestry", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ shaIsAncestorOfCurrentMain: false })] }],
     ["deploy is concurrent with current preflight", { laterRuns: [deployRun({ id: 100000000000 }), {
       id: 99999999999, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress",
@@ -1074,7 +903,6 @@ describe("verified resume of a failed production preflight", () => {
       ...overrides,
     })).toThrow("cannot be safely resumed");
   });
-
   it.each([
     ["other actor", { sourceRun: sourceRun({ triggering_actor: { id: 19 } }) }],
     ["rerun source", { sourceRun: sourceRun({ run_attempt: 2 }) }],

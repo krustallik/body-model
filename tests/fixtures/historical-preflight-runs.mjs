@@ -17,7 +17,7 @@ const authorizationRetrySteps = [
   ["Validate canonical repository, exact main, and successful CI", "failure"],
   ["Post Checkout current main tooling", "success"],
   ["Complete job", "success"],
-].map(([name, conclusion]) => ({ name, conclusion, status: "completed" }));
+].map(([name, conclusion], index) => ({ name, conclusion, status: "completed", number: index + 1 }));
 
 export const historicalAuthorizationRetries = historicalAuthorizationRetryIdentities.map(([id, sha]) => ({
   run: {
@@ -366,3 +366,10 @@ export const failedHistoricalNoAppAfterRehearsal = {
     "artifacts": []
   }
 };
+
+for (const evidence of [successfulHistoricalNoAppPreparation, failedHistoricalNoAppAfterRehearsal]) {
+  for (const job of evidence.jobs.jobs) {
+    job.status = "completed";
+    job.steps = job.steps.map((step, index) => ({ ...step, number: index + 1, status: "completed" }));
+  }
+}

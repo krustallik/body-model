@@ -221,7 +221,6 @@ NODE
 
   printf '%s\n' "$container_id" > "$tmp/container-id-${suffix}"
   printf '%s\n' "$marker" > "$tmp/route-marker-${suffix}"
-  cp -- "$verified_file" "$tmp/verified-${suffix}.json"
 }
 
 collect_snapshot before

@@ -28,6 +28,18 @@ export function createPreflightEvidence({ rawReport, preflightResult, restoreRes
     || restoreResult.logicalDataFingerprint !== preflightResult.logicalDataFingerprint) {
     throw new Error("Full logical data fingerprint from the current database does not match the encrypted backup restore.");
   }
+  const historicalRuns = context.unverifiedHistoricalRuns ?? [];
+  if (!Array.isArray(historicalRuns)) throw new Error("Historical recovery evidence must be an array.");
+  const normalizedHistoricalRuns = historicalRuns.map((entry) => ({
+    runId: String(entry?.runId ?? ""),
+    kind: String(entry?.kind ?? ""),
+  }));
+  const historicalIds = normalizedHistoricalRuns.map(({ runId }) => runId);
+  const historicalKinds = new Set(["deploy", "capture-blocked-preflight", "authorization-only-preflight", "no-app-preparation"]);
+  if (normalizedHistoricalRuns.some(({ runId, kind }) => !/^[1-9][0-9]*$/.test(runId) || !historicalKinds.has(kind))
+    || new Set(historicalIds).size !== historicalIds.length) {
+    throw new Error("Historical recovery evidence contains malformed, duplicate, or unknown run metadata.");
+  }
   return {
     schemaVersion: 1,
     verified: true,
@@ -49,6 +61,17 @@ export function createPreflightEvidence({ rawReport, preflightResult, restoreRes
     writerDrainDigest: canonicalSha256(rawReport.writerDrain),
     writerTopologyDigest: canonicalSha256(rawReport.writerDrain.topology),
     postSchemaDigest: restoreResult.postSchemaDigest,
+    historicalRecovery: {
+      classification: normalizedHistoricalRuns.length ? "UNVERIFIED" : "NOT_APPLICABLE",
+      runs: normalizedHistoricalRuns.sort((left, right) => left.runId.localeCompare(right.runId)).map(({ runId, kind }) => ({
+        runId, kind, classification: "UNVERIFIED",
+        metadataBoundary: kind === "authorization-only-preflight"
+          ? "Pinned-owner GitHub run identity, exact SHA ancestry, complete authorization/inspection job-step inventory, skipped inspection, and zero artifacts."
+          : "Run identity and workflow execution boundary were reconciled from GitHub metadata; prior artifacts/effects are not reused.",
+        unverifiedBoundary: "Historical in-step side effects were not established; this run is not evidence of current DB state and grants no DDL authorization.",
+      })),
+      ddlAuthorizationGranted: false,
+    },
     createdAt: new Date().toISOString(),
   };
 }
@@ -62,11 +85,18 @@ async function main() {
     readJson(rawReportPath), readJson(preflightResultPath), readJson(restoreResultPath), readFile(snapshotPath, "utf8").then((value) => value.trim()),
     readFile(backupPath),
   ]);
+  let unverifiedHistoricalRuns;
+  try {
+    unverifiedHistoricalRuns = JSON.parse(process.env.UNVERIFIED_HISTORICAL_RUNS ?? "[]");
+  } catch {
+    throw new Error("Historical recovery evidence is not valid JSON.");
+  }
   const evidence = createPreflightEvidence({ rawReport, preflightResult, restoreResult, snapshotStartedAt, backupBytes, context: {
     workflowRunId: process.env.GITHUB_RUN_ID,
     workflowRunAttempt: process.env.GITHUB_RUN_ATTEMPT,
     releaseSha: process.env.RELEASE_SHA,
     manifestId: process.env.MANIFEST_ID,
+    unverifiedHistoricalRuns,
   } });
   await writeFile(outputPath, `${JSON.stringify(evidence, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   process.stdout.write(JSON.stringify({ preflightResultDigest: evidence.preflightResultDigest, restoreResultDigest: evidence.restoreResultDigest }) + "\n");

@@ -270,6 +270,36 @@ describe("versioned previous-app provenance", () => {
     expect(evidence.previousAppProvenance).toEqual(binding);
     expect(evidence.previousAppProvenance).toMatchObject({ schemaVersion: 3, previousImagePin: imagePin });
     expect(evidence.preflightResultDigest).toBe(canonicalSha256(result));
+    const historicalEvidence = createPreflightEvidence({ rawReport, preflightResult: result,
+      restoreResult: { verified: true, postflightReady: true, postSchemaDigest: "e".repeat(64),
+        logicalDataFingerprint: databaseReport.logicalDataFingerprint },
+      snapshotStartedAt: "2026-10-09T20:00:00.000Z", backupBytes: Buffer.from("encrypted backup"),
+      context: { workflowRunId: "1001", workflowRunAttempt: 1, releaseSha: targetSha, manifestId: "active-energy-unified-v2",
+        unverifiedHistoricalRuns: [
+          { runId: "38403898937", kind: "authorization-only-preflight" },
+          { runId: "38417627284", kind: "authorization-only-preflight" },
+        ] },
+    });
+    expect(historicalEvidence.historicalRecovery).toMatchObject({
+      classification: "UNVERIFIED",
+      runs: [
+        { runId: "38403898937", kind: "authorization-only-preflight", classification: "UNVERIFIED" },
+        { runId: "38417627284", kind: "authorization-only-preflight", classification: "UNVERIFIED" },
+      ],
+      ddlAuthorizationGranted: false,
+    });
+    expect(historicalEvidence.historicalRecovery.runs[0].unverifiedBoundary)
+      .toMatch(/in-step side effects were not established/);
+    expect(() => createPreflightEvidence({ rawReport, preflightResult: result,
+      restoreResult: { verified: true, postflightReady: true, postSchemaDigest: "e".repeat(64),
+        logicalDataFingerprint: databaseReport.logicalDataFingerprint },
+      snapshotStartedAt: "2026-10-09T20:00:00.000Z", backupBytes: Buffer.from("encrypted backup"),
+      context: { workflowRunId: "1001", workflowRunAttempt: 1, releaseSha: targetSha, manifestId: "active-energy-unified-v2",
+        unverifiedHistoricalRuns: [
+          { runId: "38403898937", kind: "authorization-only-preflight" },
+          { runId: "38403898937", kind: "authorization-only-preflight" },
+        ] },
+    })).toThrow(/malformed, duplicate, or unknown run metadata/);
     expect(() => createPreflightEvidence({ rawReport, preflightResult: { ...result, previousAppProvenance: undefined },
       restoreResult: { verified: true, postflightReady: true, postSchemaDigest: "e".repeat(64),
         logicalDataFingerprint: databaseReport.logicalDataFingerprint },

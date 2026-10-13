@@ -59,6 +59,7 @@ jobs:
       resume_source_sha: ${{ steps.gate.outputs.resume_source_sha }}
       resume_source_run_id: ${{ steps.gate.outputs.resume_source_run_id }}
       resume_source_run_attempt: ${{ steps.gate.outputs.resume_source_run_attempt }}
+      unverified_historical_runs: ${{ steps.gate.outputs.unverified_historical_runs }}
       forward_resume_failure_proof_b64: ${{ steps.gate.outputs.forward_resume_failure_proof_b64 }}
       forward_resume_authorization_bundle_proof_b64: ${{ steps.gate.outputs.forward_resume_authorization_bundle_proof_b64 }}
       forward_resume_failure_proof_digest: ${{ steps.gate.outputs.forward_resume_failure_proof_digest }}
@@ -147,6 +148,7 @@ jobs:
           RESUME_SOURCE_SHA=""
           RESUME_SOURCE_ATTEMPT=""
           RESUME_KIND=""
+          UNVERIFIED_HISTORICAL_RUNS='[]'
           FORWARD_FAILURE_PROOF_B64=""
           FORWARD_AUTH_BUNDLE_PROOF_B64=""
           FORWARD_FAILURE_PROOF_DIGEST=""
@@ -273,10 +275,15 @@ jobs:
             RESUME_SOURCE_SHA="$(jq -r .sourceSha "$RUNNER_TEMP/preflight-resume-proof.json")"
             RESUME_SOURCE_ATTEMPT="$(jq -r .sourceRunAttempt "$RUNNER_TEMP/preflight-resume-proof.json")"
             RESUME_KIND="$(jq -r .resumeKind "$RUNNER_TEMP/preflight-resume-proof.json")"
+            UNVERIFIED_HISTORICAL_RUNS="$(jq -c '[.unverifiedHistoricalAuthorizationOnlyPreflightRunIds[]? | {runId: ., kind: "authorization-only-preflight"}]' "$RUNNER_TEMP/preflight-resume-proof.json")"
             {
               echo "- verified pre-DDL resume source preflight: $RESUME_SOURCE_RUN_ID attempt $RESUME_SOURCE_ATTEMPT at $RESUME_SOURCE_SHA"
               echo "- verified failed migration run: $RESUME_MIGRATION_FAILURE_RUN_ID; exact final-guard import failure occurred before the marker/Prisma boundary"
               echo "- verified blocked capture retry: $RESUME_BLOCKED_CAPTURE_RUN_ID; this preflight still creates a fresh backup and isolated rehearsal"
+              while IFS= read -r auth_retry_id; do
+                [[ "$auth_retry_id" =~ ^[1-9][0-9]*$ ]] || continue
+                echo "- historical authorization-only preflight run $auth_retry_id: UNVERIFIED; its in-step side effects were not established and it grants no DDL authorization"
+              done < <(jq -r '.unverifiedHistoricalAuthorizationOnlyPreflightRunIds[]?' "$RUNNER_TEMP/preflight-resume-proof.json")
             } >> "$GITHUB_STEP_SUMMARY"
           elif [[ -n "$RESUME_SOURCE_RUN_ID" ]]; then
             [[ "$RESUME_SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Resume source run ID must be a positive numeric identifier."; exit 1; }
@@ -450,6 +457,7 @@ jobs:
             RESUME_SOURCE_SHA="$(jq -r .sourceSha "$RUNNER_TEMP/preflight-resume-proof.json")"
             RESUME_SOURCE_ATTEMPT="$(jq -r .sourceRunAttempt "$RUNNER_TEMP/preflight-resume-proof.json")"
             RESUME_KIND="verified-failed-restore-rehearsal"
+            UNVERIFIED_HISTORICAL_RUNS="$(jq -c '([.unverifiedHistoricalDeployRunIds[]? | {runId: ., kind: "deploy"}] + [.unverifiedHistoricalPreflightRunIds[]? | {runId: ., kind: "capture-blocked-preflight"}] + [.unverifiedHistoricalAuthorizationOnlyPreflightRunIds[]? | {runId: ., kind: "authorization-only-preflight"}] + [.unverifiedHistoricalRunIds[]? | {runId: ., kind: "no-app-preparation"}])' "$RUNNER_TEMP/preflight-resume-proof.json")"
             {
               echo "- previous failed preflight run: $RESUME_SOURCE_RUN_ID attempt $RESUME_SOURCE_ATTEMPT at $RESUME_SOURCE_SHA"
               echo "- failed preflight backup/rehearsal artifacts are not reused; this run must create a fresh current-live backup and pass isolated restore/rehearsal"
@@ -461,6 +469,10 @@ jobs:
                 [[ "$safe_retry_id" =~ ^[1-9][0-9]*$ ]] || continue
                 echo "- later preflight $safe_retry_id historical effects: UNVERIFIED; this run must pass fresh live-state, backup, and restore gates"
               done < <(jq -r '.unverifiedHistoricalPreflightRunIds[]?' "$RUNNER_TEMP/preflight-resume-proof.json")
+              while IFS= read -r auth_retry_id; do
+                [[ "$auth_retry_id" =~ ^[1-9][0-9]*$ ]] || continue
+                echo "- historical authorization-only preflight run $auth_retry_id: UNVERIFIED; its in-step side effects were not established and it grants no DDL authorization"
+              done < <(jq -r '.unverifiedHistoricalAuthorizationOnlyPreflightRunIds[]?' "$RUNNER_TEMP/preflight-resume-proof.json")
               while IFS= read -r prep_run_id; do
                 [[ "$prep_run_id" =~ ^[1-9][0-9]*$ ]] || continue
                 echo "- later no-app preparation $prep_run_id historical artifacts/effects: UNVERIFIED and not reused" >> "$GITHUB_STEP_SUMMARY"
@@ -474,6 +486,7 @@ jobs:
           echo "resume_source_sha=$RESUME_SOURCE_SHA" >> "$GITHUB_OUTPUT"
           echo "resume_source_run_id=$RESUME_SOURCE_RUN_ID" >> "$GITHUB_OUTPUT"
           echo "resume_source_run_attempt=$RESUME_SOURCE_ATTEMPT" >> "$GITHUB_OUTPUT"
+          echo "unverified_historical_runs=$UNVERIFIED_HISTORICAL_RUNS" >> "$GITHUB_OUTPUT"
           echo "forward_resume_failure_proof_b64=$FORWARD_FAILURE_PROOF_B64" >> "$GITHUB_OUTPUT"
           echo "forward_resume_authorization_bundle_proof_b64=$FORWARD_AUTH_BUNDLE_PROOF_B64" >> "$GITHUB_OUTPUT"
           echo "forward_resume_failure_proof_digest=$FORWARD_FAILURE_PROOF_DIGEST" >> "$GITHUB_OUTPUT"
@@ -990,6 +1003,7 @@ jobs:
         env:
           RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
           MANIFEST_ID: ${{ needs.authorize.outputs.manifest_id }}
+          UNVERIFIED_HISTORICAL_RUNS: ${{ needs.authorize.outputs.unverified_historical_runs }}
         run: |
           set -Eeuo pipefail
           install -d -m 700 "$RUNNER_TEMP/bodycast-evidence-artifact"

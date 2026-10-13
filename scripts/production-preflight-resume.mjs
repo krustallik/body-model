@@ -6,80 +6,6 @@ import path from "node:path";
 import { assertTrustedOwnerWorkflowRun, BODYCAST_OWNER_ID } from "./github-owner-identity.mjs";
 
 const PREFLIGHT_PATH = ".github/workflows/production-migration-preflight.yml";
-const AUTH_GATE_MUTATION_CAPABILITY_PATTERNS = Object.freeze([
-  // Historical authorization jobs may run only the checked-in Node helpers
-  // and read-only GitHub/Git commands. Do not admit alternate interpreters or
-  // shell wrappers that can hide network or subprocess behavior from review.
-  /\b(?:python(?:[0-9]+(?:\.[0-9]+)?)?|perl|ruby|php|pwsh|powershell|deno|bun|awk|java|jshell|groovy|scala|Rscript|lua|tclsh|make|cmake|gcc|clang|npx|npm|pip|uv|dotnet|mono|socat|busybox|telnet|ftp|tftp|ncat|openssl\s+s_client|ssh|scp|sftp|docker|podman|psql|pg_dump|pg_restore|systemctl|caddy|curl|wget|nc|netcat)\b/i,
-  /\b(?:bash|sh|dash|zsh)\b/i,
-  /(?:^|[;&|({])\s*(?:eval|exec|source|xargs)\b/im,
-  /\/dev\/(?:tcp|udp)\b/i,
-  // Node's inline script is permitted for bounded JSON extraction, but code
-  // execution, subprocess, worker, and network escape hatches are not.
-  /\b(?:node|nodejs)\s+(?:-[A-Za-z]*[ep]|--eval|--print)\b/i,
-  /\b(?:child_process|subprocess|urllib(?:\.[A-Za-z_]+)*|socket|httpx|requests\.(?:get|post|put|patch|delete)|https?\.request|createConnection|createRequire|createServer|XMLHttpRequest|WebSocket|WebTransport|EventSource|sendBeacon|Worker|Deno\.|Bun\.|globalThis)\b/i,
-  /\b(?:fetch|require|eval|Function|spawn|execFile|execSync|fork|process\.binding|process\.getBuiltinModule|process\.mainModule|getBuiltinModule)\s*(?:\(|\.|\[)/i,
-  /\bprocess\s*\[\s*["'`]\s*getBuiltinModule\s*["'`]\s*\]/i,
-  /\bimport\s*\(\s*["'](?:node:)?(?:http|https|http2|net|tls|dgram|dns|worker_threads|child_process|vm|module|process)(?:["'/])/i,
-  /\bnode:(?:http|https|http2|net|tls|dgram|dns|worker_threads|child_process|vm|module|process)\b/i,
-]);
-const SAFE_AUTH_GATE_JSON_EXTRACTOR = /\bnode\s+-e\s+'process\.stdout\.write\((?:String\()?JSON\.parse\(process\.argv\[1\]\)\.[A-Za-z][A-Za-z0-9]*(?:\))?\)'/g;
-const AUTH_GATE_NODE_HEREDOC = /\bnode\s+--input-type=module\s+-[^\n]*(?:\\\r?\n[^\n]*)*<<'NODE'\r?\n([\s\S]*?)^\s*NODE\s*$/gm;
-const AUTH_GATE_NODE_IMPORTS = new Set([
-  "node:fs",
-  "./scripts/github-owner-identity.mjs",
-  "./scripts/production-forward-resume.mjs",
-  "./scripts/production-migration-authorization.mjs",
-  "./scripts/production-preflight-resume.mjs",
-]);
-// Content fingerprints of the inline Node fragments present in the observed
-// historical auth-only workflows. This is code-level execution evidence, not
-// a run/SHA allowlist: runs with these reviewed fragments are accepted even
-// when harmless surrounding workflow controls differ. Unknown executable
-// JavaScript fails closed because regex cannot prove arbitrary JS harmless.
-const REVIEWED_AUTH_GATE_NODE_CODE_DIGESTS = new Set([
-  "140d1d2bff22f3e69a3377ff9aa32f8a0d910209749a41ecb8d6c0f9dfde8236",
-  "4d341603ab804354eeac2a292880e73a2e28fc85c038dc437d5eb3b740884e16",
-  "4f175c6540ca4a4f0e49316e92ec1eba6f380c54183ff0de72c3f4d890b5c0a3",
-  "537ff61bb1cc52d6724b5dcf4dcdaec4a2d2faf6df1d0eeb824779c918a18274",
-  "640a0ba5c30d1c32d5df48e06cdda0580c46268ed29542e0e8a94c44ea017e88",
-  "74ad45a56551c175c384fc97c6b55e51d20c3836ce7fcc779c3290503a6e508e",
-  "81a8661ea024db6f485c3733e7f3a09cfe5d9753d1f3e84208dc1aae61a58ffc",
-  "be455fbf7ba710bd85268ca108e86df402d461c4847d85b733b3983b9b20143b",
-  "d408e8a32ea3c20f3165d318adba43df179f54aa2e7a34c547d47a336e559348",
-  "ee1eb3a0713755cd32255bc6e6e8b3308d2bdd99bde2f71424cb98c9de51ec77",
-  "f46f4433f77b48d30cbc4c5fd141dc92b88781f16787d4c801b1b8a968b30b5f",
-  "f8fc9db71100b215a16da0b2ca43f42ca754a7b40f0b06acb5541dc388e664c6",
-  "f2e2913f911c36aaa97859e854ad740ac99b02942df4999bc3504b0f0980ccee",
-  "f45d0222b5d595473fd94456f796fd238d506f3a980e4f97fccef9ee404273e1",
-]);
-
-function authGateUsesOnlyReviewedNodeEntrypoints(runBody) {
-  let scanBody = runBody.replace(AUTH_GATE_NODE_HEREDOC, (_match, source) => {
-    const canonicalSource = source.replace(/\r\n/g, "\n").split("\n")
-      .map((line) => line.startsWith("          ") ? line.slice(10) : line).join("\n");
-    const sourceDigest = createHash("sha256").update(canonicalSource).digest("hex");
-    if (!REVIEWED_AUTH_GATE_NODE_CODE_DIGESTS.has(sourceDigest)) return "node UNREVIEWED_NODE_HEREDOC";
-    // Import declarations may legally span lines. Scan through the complete
-    // declaration so a line break before `from` cannot hide its module.
-    const staticImports = [...source.matchAll(/\bimport\s+(?:[^;]*?\s+from\s+)?["']([^"']+)["']/g)]
-      .map((match) => match[1]);
-    const reExports = [...source.matchAll(/\bexport\s+(?:[^;]*?\s+from\s+)["']([^"']+)["']/g)]
-      .map((match) => match[1]);
-    const hasUnreviewedImport = [...staticImports, ...reExports].some((specifier) => !AUTH_GATE_NODE_IMPORTS.has(specifier));
-    const hasEscape = hasUnreviewedImport
-      || /\b(?:child_process|subprocess|urllib(?:\.[A-Za-z_]+)*|socket|httpx|requests\.(?:get|post|put|patch|delete)|https?\.request|createConnection|createRequire|createServer|XMLHttpRequest|WebSocket|WebTransport|EventSource|sendBeacon|Worker|Deno\.|Bun\.|globalThis|fetch|require|eval|Function|spawn|execFile|execSync|fork|process\.binding|process\.getBuiltinModule|process\.mainModule|getBuiltinModule)\b/i.test(source)
-      || /\bprocess\s*\[\s*["'`]\s*getBuiltinModule\s*["'`]\s*\]/i.test(source)
-      || /\bimport\s*\(/i.test(source)
-      || /\bnode:(?:http|https|http2|net|tls|dgram|dns|worker_threads|child_process|vm|module|process)\b/i.test(source);
-    return hasEscape ? "node UNSAFE_NODE_HEREDOC" : "SAFE_NODE_HEREDOC";
-  });
-  scanBody = scanBody
-    .replace(SAFE_AUTH_GATE_JSON_EXTRACTOR, "SAFE_NODE_JSON_EXTRACTOR")
-    .replace(/\bnode\s+scripts\/github-forward-resume-evidence\.mjs\b[^\n]*/g, "SAFE_NODE_FORWARD_EVIDENCE")
-    .replace(/\bnode\s+scripts\/production-preflight-resume\.mjs\s+--verify-(?:source|pre-ddl-migration-failure)\b[^\n]*/g, "SAFE_NODE_PREFLIGHT_EVIDENCE");
-  return !/\bnode(?:js)?\s+\S+/i.test(scanBody);
-}
 const DEPLOY_PATH = ".github/workflows/deploy-production.yml";
 const NO_APP_PATH = ".github/workflows/production-no-app-preflight.yml";
 const CI_PATH = ".github/workflows/ci.yml";
@@ -183,19 +109,6 @@ const REVIEWED_NO_APP_CONTROL_PROFILE_DIGESTS = new Set([
   "19481cebee6f242fe3cff7b0f4d228dbfc90cf85e9cd3f65ca51ce96e14ef31f",
   "620e282707e9618beda7f4d29163d955928f971d939479d15903f7782f47626e",
   "bea2ae68fa3a946779011c3c43b249ddaecfdd3c7646b6b46f180fc1ee80b5db",
-]);
-const PREFLIGHT_READ_ONLY_CHECKOUT_ACTION = "actions/checkout@11d5960a326750d5838078e36cf38b85af677262";
-const PREFLIGHT_READ_ONLY_AUTH_ENVIRONMENT = new Map([
-  ["GH_TOKEN", "${{ github.token }}"],
-  ["DISPATCH_SHA", "${{ inputs.release_sha }}"],
-  ["MANIFEST_ID", "${{ inputs.manifest_id }}"],
-  ["CONFIRMATION", "${{ inputs.confirm_production_preflight }}"],
-  ["DISPATCH_ACTOR_ID", "${{ github.actor_id }}"],
-  ["RESUME_SOURCE_RUN_ID", "${{ inputs.resume_previous_preflight_run_id }}"],
-  ["RESUME_MIGRATION_FAILURE_RUN_ID", "${{ inputs.resume_pre_ddl_migration_failure_run_id }}"],
-  ["RESUME_BLOCKED_CAPTURE_RUN_ID", "${{ inputs.resume_blocked_capture_preflight_run_id }}"],
-  ["FORWARD_RESUME_FAILED_RUN_ID", "${{ inputs.forward_resume_failed_migration_run_id }}"],
-  ["REFRESH_CAPTURE_CONFIRMATION", "${{ inputs.refresh_existing_capture_confirmation }}"],
 ]);
 const DEPLOY_AUTHORIZE_STEPS = Object.freeze([
   ["Set up job", "success"],
@@ -595,167 +508,6 @@ function gitTextAt(sha, file, cwd) {
   return execFileSync("git", ["show", `${sha}:${file}`], { cwd, encoding: "utf8" });
 }
 
-function yamlScalar(value) {
-  const trimmed = String(value ?? "").trim();
-  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
-    try { return JSON.parse(trimmed); } catch { return null; }
-  }
-  if (trimmed.startsWith("'") && trimmed.endsWith("'")) return trimmed.slice(1, -1).replace(/''/g, "'");
-  return trimmed.replace(/\s+#.*$/, "").trim();
-}
-
-function workflowJobIds(source) {
-  const block = workflowTopLevelBlock(source, "jobs");
-  if (block === null) return null;
-  return block.split("\n").slice(1)
-    .filter((line) => /^  [A-Za-z0-9_-]+:\s*$/.test(line))
-    .map((line) => line.trim().replace(/:$/, ""));
-}
-
-function workflowJobField(block, field) {
-  const match = String(block).match(new RegExp(`^ {4}${field}:\\s*(.*?)\\s*$`, "m"));
-  return match ? yamlScalar(match[1]) : null;
-}
-
-function workflowJobStepBlocks(block) {
-  const lines = String(block).replace(/\r\n?/g, "\n").split("\n");
-  const stepsHeader = lines.indexOf("    steps:");
-  if (stepsHeader < 0) return null;
-  const starts = [];
-  for (let index = stepsHeader + 1; index < lines.length; index += 1) {
-    if (/^      - /.test(lines[index])) starts.push(index);
-    else if (/^    [A-Za-z0-9_-]+:\s*/.test(lines[index])) break;
-  }
-  if (starts.length === 0 || starts.some((index) => !/^      - name:\s*\S/.test(lines[index]))) return null;
-  return starts.map((start, index) => lines.slice(start, starts[index + 1] ?? lines.length).join("\n"));
-}
-
-function workflowStepField(block, field) {
-  const match = String(block).match(new RegExp(`^        ${field}:\\s*(.*?)\\s*$`, "m"));
-  return match ? yamlScalar(match[1]) : null;
-}
-
-function workflowNestedMap(block, section) {
-  const lines = String(block).replace(/\r\n?/g, "\n").split("\n");
-  const start = lines.findIndex((line) => line === `        ${section}:`);
-  if (start < 0) return {};
-  const values = {};
-  for (let index = start + 1; index < lines.length; index += 1) {
-    if (/^        \S/.test(lines[index])) break;
-    const match = lines[index].match(/^          ([A-Za-z0-9_-]+):\s*(.*?)\s*$/);
-    if (!match) {
-      if (lines[index].trim()) return null;
-      continue;
-    }
-    if (Object.hasOwn(values, match[1])) return null;
-    values[match[1]] = yamlScalar(match[2]);
-  }
-  return values;
-}
-
-function workflowPermissionsAreReadOnly(source) {
-  const block = workflowTopLevelBlock(source, "permissions");
-  if (block === null) return false;
-  const entries = block.split("\n").slice(1).filter((line) => line.trim() && !line.trim().startsWith("#"));
-  if (entries.length === 0) return false;
-  const permissions = new Map();
-  for (const line of entries) {
-    const match = line.match(/^  ([A-Za-z0-9_-]+):\s*(read|none)\s*$/);
-    if (!match || permissions.has(match[1])) return false;
-    permissions.set(match[1], match[2]);
-  }
-  return permissions.get("contents") === "read";
-}
-
-/**
- * Derive the execution boundary from the workflow file at the run's immutable
- * SHA. A changed historical workflow is accepted only when its authorize job
- * still has a read-only token, no production credentials, and one pinned
- * checkout plus one non-mutating gate step; the GitHub job inventory is then
- * checked against this exact workflow's step names and order.
- */
-export function preflightAuthorizationWorkflowContractAtSha(runSha, cwd = process.cwd()) {
-  if (!/^[a-f0-9]{40}$/.test(String(runSha ?? ""))) return null;
-  try {
-    const source = gitTextAt(runSha, PREFLIGHT_PATH, cwd);
-    const jobIds = workflowJobIds(source);
-    const authorizeJob = workflowJobBlock(source, "authorize");
-    const inspectJob = workflowJobBlock(source, "inspect_backup_restore");
-    if (!workflowPermissionsAreReadOnly(source) || workflowTopLevelBlock(source, "env") !== null
-      || JSON.stringify(jobIds) !== JSON.stringify(["authorize", "inspect_backup_restore"])
-      || authorizeJob === null || inspectJob === null
-      || /\$\{\{\s*(?:secrets|vars)\./i.test(authorizeJob)) return null;
-
-    const authorizeFields = [...authorizeJob.matchAll(/^    ([A-Za-z0-9_-]+):/gm)].map((match) => match[1]);
-    if (authorizeFields.some((field) => !new Set(["name", "runs-on", "timeout-minutes", "outputs", "steps", "needs", "if"]).has(field))) return null;
-    if (workflowJobField(authorizeJob, "runs-on") !== "ubuntu-latest") return null;
-    const authorizeName = workflowJobField(authorizeJob, "name");
-    const inspectName = workflowJobField(inspectJob, "name");
-    const workflowSteps = workflowJobStepBlocks(authorizeJob);
-    if (!authorizeName || !inspectName || !workflowSteps || workflowSteps.length !== 2) return null;
-
-    const expectedSteps = [["Set up job", "success"]];
-    const postStepNames = [];
-    let checkoutName = null;
-    let gateFailureName = null;
-    for (const step of workflowSteps) {
-      const nameMatch = step.match(/^      - name:\s*(.*?)\s*$/m);
-      const name = nameMatch ? yamlScalar(nameMatch[1]) : null;
-      const uses = workflowStepField(step, "uses");
-      const runHeader = /^        run:\s*\|[+-]?\s*$/m.test(step);
-      const stepEnv = workflowNestedMap(step, "env");
-      if (!name || stepEnv === null || /\$\{\{\s*(?:secrets|vars)\./i.test(step)
-        || Object.entries(stepEnv).some(([key, value]) => PREFLIGHT_READ_ONLY_AUTH_ENVIRONMENT.get(key) !== value)) return null;
-      for (const [key, value] of Object.entries(stepEnv)) {
-        if (/(?:SECRET|PASSWORD|DATABASE|DB_URL|SSH|BACKUP|PRIVATE_KEY|DEPLOY|PRODUCTION)/i.test(key)) return null;
-        if (key === "GH_TOKEN" && value !== "${{ github.token }}") return null;
-      }
-      if (uses !== null) {
-        if (uses !== PREFLIGHT_READ_ONLY_CHECKOUT_ACTION || runHeader || checkoutName !== null) return null;
-        const inputs = workflowNestedMap(step, "with");
-        if (!inputs || Object.keys(inputs).sort().join(",") !== "fetch-depth,persist-credentials,ref"
-          || inputs.ref !== "main" || inputs["fetch-depth"] !== "0" || inputs["persist-credentials"] !== "false") return null;
-        checkoutName = name;
-        expectedSteps.push([name, "success"]);
-        postStepNames.push(`Post ${name}`);
-        continue;
-      }
-      if (!runHeader || gateFailureName !== null || checkoutName === null) return null;
-      const runLines = step.split("\n");
-      const runIndex = runLines.findIndex((line) => /^        run:\s*\|[+-]?\s*$/.test(line));
-      const runBody = runLines.slice(runIndex + 1).join("\n");
-      const capabilityScanBody = runBody.replace(SAFE_AUTH_GATE_JSON_EXTRACTOR, "node SAFE_JSON_EXTRACTOR");
-      if (AUTH_GATE_MUTATION_CAPABILITY_PATTERNS.some((pattern) => pattern.test(capabilityScanBody))) return null;
-      if (!authGateUsesOnlyReviewedNodeEntrypoints(runBody)) return null;
-      if (/\bgit\s+(?:push|commit|reset|update-ref|config|checkout|clean|rm|mv|branch|tag|notes|worktree)\b/i.test(runBody)
-        || /\bgh\s+(?:workflow\s+(?:run|enable|disable)|run\s+(?:cancel|rerun|delete))\b/i.test(runBody)
-        || /\bgh\s+api\b[^\n]*(?:--method(?:=|\s+)|-X\s*)(?:POST|PUT|PATCH|DELETE)\b/i.test(runBody)
-        || /\bgh\s+api\b[^\n]*(?:\s-f\s|\s--field\b|\s-F\s)/i.test(runBody)
-        || /\bgh\s+api\s+graphql\b/i.test(runBody)
-        || /\b(?:fetch\s*\(|https?\.request\s*\(|createConnection\s*\()/i.test(runBody)
-        || /(?:echo|printf)\s+[^\n]*(?:\$GH_TOKEN|\$\{GH_TOKEN\})/i.test(runBody)) return null;
-      gateFailureName = name;
-      expectedSteps.push([name, "failure"]);
-    }
-    if (checkoutName === null || gateFailureName === null
-      || !workflowSteps.some((step) => /\bGH_TOKEN:\s*\$\{\{\s*github\.token\s*\}\}/.test(step))) return null;
-    expectedSteps.push(...postStepNames.map((name) => [name, "success"]), ["Complete job", "success"]);
-
-    return Object.freeze({
-      sha: runSha,
-      authorizeJobName: authorizeName,
-      inspectJobName: inspectName,
-      authorizeSteps: Object.freeze(expectedSteps.map(([name, conclusion]) => Object.freeze({ name, conclusion }))),
-    });
-  } catch {
-    return null;
-  }
-}
-
-export function preflightAuthorizationWorkflowIsReadOnlyAtSha(runSha, cwd = process.cwd()) {
-  return preflightAuthorizationWorkflowContractAtSha(runSha, cwd) !== null;
-}
-
 function gitTreeProfileDigest(sha, files, cwd) {
   const tree = execFileSync("git", ["ls-tree", "-r", "--full-tree", sha, "--", ...files], { cwd, encoding: "utf8" });
   return createHash("sha256").update(tree).digest("hex");
@@ -1012,7 +764,7 @@ export function verifyResumablePreflightAttempt({
   }
   const verifiedDeployIds = new Set();
   const verifiedPreflightRetryIds = new Set();
-  const verifiedAuthorizationOnlyPreflightRetryIds = new Set();
+  const unverifiedAuthorizationOnlyPreflightRetryIds = new Set();
   const verifiedNoAppIds = new Set();
   const verifiedCaptureGuardEffects = [];
   const unverifiedHistoricalRunIds = [];
@@ -1048,7 +800,7 @@ export function verifyResumablePreflightAttempt({
           historyRun: run,
         });
         verifiedPreflightRetryIds.add(String(run.id));
-        verifiedAuthorizationOnlyPreflightRetryIds.add(String(run.id));
+        unverifiedAuthorizationOnlyPreflightRetryIds.add(String(run.id));
         continue;
       }
       const verified = assertSafeCaptureBlockedPreflightRetry(evidence, {
@@ -1092,7 +844,7 @@ export function verifyResumablePreflightAttempt({
     targetSha: currentMainSha,
     unverifiedHistoricalDeployRunIds: Object.freeze([...verifiedDeployIds].sort()),
     unverifiedHistoricalPreflightRunIds: Object.freeze(verifiedCaptureGuardEffects.map((effect) => effect.runId).sort()),
-    authorizationOnlyPreflightRetryRunIds: Object.freeze([...verifiedAuthorizationOnlyPreflightRetryIds].sort()),
+    unverifiedHistoricalAuthorizationOnlyPreflightRunIds: Object.freeze([...unverifiedAuthorizationOnlyPreflightRetryIds].sort()),
     historicalPreflightEffects: Object.freeze(verifiedCaptureGuardEffects.sort((left, right) => left.runId.localeCompare(right.runId))),
     unverifiedHistoricalRunIds: Object.freeze(unverifiedHistoricalRunIds.sort()),
   });
@@ -1163,29 +915,35 @@ function assertSafeAuthorizationOnlyPreflightRetry(evidence, { preflightWorkflow
   if (jobs?.total_count !== 2 || !Array.isArray(jobs.jobs) || jobs.jobs.length !== 2) {
     reject("a failed preflight retry job inventory is incomplete or unexpected.");
   }
-  const contract = evidence.authorizationWorkflowContract;
-  if (!contract || contract.sha !== run.head_sha
-    || typeof contract.authorizeJobName !== "string" || typeof contract.inspectJobName !== "string"
-    || !Array.isArray(contract.authorizeSteps) || contract.authorizeSteps.length < 5) {
-    reject("the exact historical preflight workflow does not provide a verified read-only authorization contract.");
-  }
-  const expectedJobNames = [contract.authorizeJobName, contract.inspectJobName];
+  const expectedJobNames = [
+    "Authorize read-only preflight",
+    "Inspect, back up, restore, and rehearse on disposable PostgreSQL",
+  ];
+  const jobNames = jobs.jobs.map((job) => job.name);
   if (new Set(expectedJobNames).size !== expectedJobNames.length
-    || jobs.jobs.map((job) => job.name).join("\n") !== expectedJobNames.join("\n")
+    || new Set(jobNames).size !== jobNames.length
+    || [...jobNames].sort().join("\n") !== [...expectedJobNames].sort().join("\n")
     || jobs.jobs.some((job) => job.status !== "completed" || job.head_sha !== run.head_sha || job.run_attempt !== 1)) {
     reject("the failed preflight retry jobs do not match the complete historical workflow inventory.");
   }
-  const authorize = jobByName(jobs, contract.authorizeJobName, {
+  const authorize = jobByName(jobs, expectedJobNames[0], {
     conclusion: "failure", headSha: run.head_sha, attempt: 1,
   });
   const authorizeSteps = authorize.steps ?? [];
-  if (authorizeSteps.length !== contract.authorizeSteps.length
+  const expectedAuthorizationSteps = [
+    ["Set up job", "success"],
+    ["Checkout current main tooling", "success"],
+    ["Validate canonical repository, exact main, and successful CI", "failure"],
+    ["Post Checkout current main tooling", "success"],
+    ["Complete job", "success"],
+  ];
+  if (authorizeSteps.length !== expectedAuthorizationSteps.length
     || authorizeSteps.some((step, index) => step.status !== "completed"
-      || step.name !== contract.authorizeSteps[index].name
-      || step.conclusion !== contract.authorizeSteps[index].conclusion)) {
-    reject("a failed preflight retry did not match the complete authorization-job step inventory from its exact workflow SHA.");
+      || step.name !== expectedAuthorizationSteps[index][0]
+      || step.conclusion !== expectedAuthorizationSteps[index][1])) {
+    reject("a failed preflight retry does not have the complete owner-authorization-only step boundary.");
   }
-  const inspect = jobByName(jobs, contract.inspectJobName, {
+  const inspect = jobByName(jobs, expectedJobNames[1], {
     conclusion: "skipped", headSha: run.head_sha, attempt: 1,
   });
   if (!Array.isArray(inspect.steps) || inspect.steps.length !== 0) {
@@ -1195,6 +953,7 @@ function assertSafeAuthorizationOnlyPreflightRetry(evidence, { preflightWorkflow
     || evidence.artifacts.artifacts.length !== 0) {
     reject("a failed preflight retry unexpectedly published an artifact.");
   }
+  return Object.freeze({ runId, sha: run.head_sha, historicalEffects: "UNVERIFIED" });
 }
 
 function assertSafeHistoricalNoAppRun(evidence, {
@@ -1603,6 +1362,7 @@ export function verifyPreDdlMigrationFailureResume({
   }
   const allowedIds = new Set([String(migrationRunId), String(blockedCaptureRunId)]);
   const verifiedRetryIds = new Set();
+  const unverifiedAuthorizationOnlyRetryIds = new Set();
   for (const run of laterRuns ?? []) {
     const id = BigInt(String(run.id));
     if (!MUTATION_WORKFLOW_PATHS.has(workflowPath(run)) || id <= sourceId || id === currentId) continue;
@@ -1614,6 +1374,7 @@ export function verifyPreDdlMigrationFailureResume({
         preflightWorkflowId, historyRun: laterRunById.get(String(run.id)),
       });
       verifiedRetryIds.add(String(run.id));
+      unverifiedAuthorizationOnlyRetryIds.add(String(run.id));
       continue;
     }
     reject(`an unexpected production mutation workflow exists after source preflight ${sourceRunId}.`);
@@ -1630,6 +1391,7 @@ export function verifyPreDdlMigrationFailureResume({
     targetSha: currentMainSha,
     migrationFailureRunId: String(migrationRun.id),
     blockedCaptureRunId: String(blockedCaptureRun.id),
+    unverifiedHistoricalAuthorizationOnlyPreflightRunIds: Object.freeze([...unverifiedAuthorizationOnlyRetryIds].sort()),
   });
 }
 
@@ -1658,7 +1420,6 @@ async function main() {
       ...evidence,
       shaIsAncestorOfCurrentMain: isAncestor(evidence?.run?.head_sha, currentMainSha),
       sourceShaIsAncestor: isAncestor(sourceRun.head_sha, evidence?.run?.head_sha),
-      authorizationWorkflowContract: preflightAuthorizationWorkflowContractAtSha(evidence?.run?.head_sha),
     }));
     const proof = verifyPreDdlMigrationFailureResume({ sourceRun, sourceJobs, sourceArtifacts, migrationRun, migrationJobs,
       migrationLogText, blockedCaptureRun, blockedCaptureJobs, blockedCaptureArtifacts, blockedCaptureLogText,
@@ -1697,7 +1458,6 @@ async function main() {
       ...evidence,
       shaIsAncestorOfCurrentMain: isAncestor(evidence?.run?.head_sha, currentMainSha),
       sourceShaIsAncestor: isAncestor(sourceRun.head_sha, evidence?.run?.head_sha),
-      authorizationWorkflowContract: preflightAuthorizationWorkflowContractAtSha(evidence?.run?.head_sha),
       captureControlsMatch: preflightCaptureResumeControlsMatch(evidence?.run?.head_sha, currentMainSha),
     })),
     sourceRunId, currentRunId, currentMainSha, manifestId, workflowId, deployWorkflowId, noAppWorkflowId, sourceIsAncestor,

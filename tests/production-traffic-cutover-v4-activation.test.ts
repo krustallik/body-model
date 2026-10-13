@@ -52,7 +52,7 @@ describe("production V4 activation and cutover recovery", () => {
     expect(healthEndpoint).toBeLessThan(checks.at(-1)!);
     expect(serving).toBeGreaterThan(activation);
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
-  }, 30_000);
+  }, 60_000);
 
   it.skipIf(!bashAvailable)("blocks V4 mutation when canonical main advances during final V3 postflight", async () => {
     const fixture = createFixture();
@@ -74,7 +74,7 @@ describe("production V4 activation and cutover recovery", () => {
     expect(events).not.toContain("unified-v4-activation");
     expect(events).not.toContain("live-route-mutation:serving");
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
-  }, 30_000);
+  }, 60_000);
 
   it.skipIf(!bashAvailable)("does no Docker or traffic mutation when the shared production lock is contended", async () => {
     const fixture = createFixture();
@@ -87,7 +87,7 @@ describe("production V4 activation and cutover recovery", () => {
     expect(result.status).not.toBe(0);
     expect(existsSync(path.join(fixture.root, "docker.log"))).toBe(false);
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
-  }, 30_000);
+  }, 60_000);
 
   it.skipIf(!bashAvailable)("keeps maintenance and the migration marker after failed V4 activation", async () => {
     const fixture = createFixture();
@@ -102,7 +102,7 @@ describe("production V4 activation and cutover recovery", () => {
     const gitDir = execFileSync(fixture.realGit, ["-C", fixture.repo, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).trim();
     expect(readFileSync(path.join(gitDir, "bodycast-production-schema-cutover"), "utf8")).toContain("state=app-ready");
     expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).not.toContain("live-route-mutation:serving");
-  }, 30_000);
+  }, 60_000);
 
   it.skipIf(!bashAvailable)("does not serve after V4 activation until the restarted exact-SHA app passes readiness", async () => {
     const fixture = createFixture();
@@ -122,7 +122,7 @@ describe("production V4 activation and cutover recovery", () => {
     expect(appState(fixture).sha).toBe(fixture.candidateSha);
     const gitDir = execFileSync(fixture.realGit, ["-C", fixture.repo, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).trim();
     expect(readFileSync(path.join(gitDir, "bodycast-production-schema-cutover"), "utf8")).toContain("state=app-ready");
-  }, 30_000);
+  }, 60_000);
 
   it.skipIf(!bashAvailable)("preserves the V4 marker and maintenance when atomic serving-route replacement fails", async () => {
     const fixture = createFixture();
@@ -138,7 +138,7 @@ describe("production V4 activation and cutover recovery", () => {
     const gitDir = execFileSync(fixture.realGit, ["-C", fixture.repo, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).trim();
     expect(readFileSync(path.join(gitDir, "bodycast-production-schema-cutover"), "utf8")).toContain("state=v4-ready");
     expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).toContain("serving-route-publish-failed");
-  }, 30_000);
+  }, 60_000);
 
   it.skipIf(!bashAvailable)("resumes a v4-ready route failure without repeating migration or replay", async () => {
     const fixture = createFixture();

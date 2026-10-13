@@ -26,7 +26,7 @@ const sourceSha = "a".repeat(40);
 const targetSha = "b".repeat(40);
 const blockedCaptureSha = "c".repeat(40);
 const deployWorkflowId = "789";
-const safeSchemaBlockedDeployRunId = "38000669127";
+const historicalDeployRunId = "38000669127";
 
 describe("historical release recovery metadata", () => {
   it("keeps source verification upstream of production access and does not fetch historical logs", async () => {
@@ -48,7 +48,9 @@ describe("historical release recovery metadata", () => {
     expect(standardResume).not.toContain("--log-failed");
     expect(standardResume).not.toContain("/actions/jobs/$inspect_job_id/logs");
     expect(standardResume).not.toContain("actions/runs/$prep_run_id/artifacts");
-    expect(standardResume).toContain("actions/runs/$deploy_run_id/jobs");
+    expect(standardResume).not.toContain("actions/runs/$deploy_run_id/jobs");
+    expect(standardResume).not.toContain("resume-main-ci-runs.ndjson");
+    expect(standardResume).toContain("resume-historical-deploys.ndjson");
     expect(standardResume).toContain("actions/runs/$retry_run_id/artifacts");
   });
 
@@ -149,7 +151,7 @@ function verify(overrides = {}) {
 
 function deployRun(overrides = {}) {
   return {
-    id: Number(safeSchemaBlockedDeployRunId),
+    id: Number(historicalDeployRunId),
     workflow_id: Number(deployWorkflowId),
     path: ".github/workflows/deploy-production.yml@refs/heads/main",
     event: "workflow_run",
@@ -184,54 +186,9 @@ function completedNoAppRun(overrides = {}) {
   };
 }
 
-function deployJobs(overrides = {}) {
-  const authorizeSteps = [
-    ["Set up job", "success"],
-    ["Checkout main gate helpers", "success"],
-    ["Verify triggering CI or owner dispatch and current main", "success"],
-    ["Post Checkout main gate helpers", "success"],
-    ["Complete job", "success"],
-  ].map(([name, conclusion], index) => ({ name, conclusion, status: "completed", number: index + 1 }));
-  const deploySteps = [
-    ["Set up job", "success"],
-    ["Checkout exact current main tooling", "success"],
-    ["Recheck run identity and main tip before production credentials", "success"],
-    ["Validate SSH inputs and pin the production host", "success"],
-    ["Deploy exact SHA through the fixed production script", "failure"],
-    ["Remove temporary SSH credentials", "success"],
-    ["Post Checkout exact current main tooling", "success"],
-    ["Complete job", "success"],
-  ].map(([name, conclusion], index) => ({ name, conclusion, status: "completed", number: index + 1 }));
-  return {
-    total_count: 2,
-    jobs: [
-      { name: "Authorize exact current-main app deploy", status: "completed", conclusion: "success", head_sha: targetSha, run_attempt: 1, steps: authorizeSteps },
-      { name: "Deploy exact current-main SHA", status: "completed", conclusion: "failure", head_sha: targetSha, run_attempt: 1, steps: deploySteps },
-    ],
-    ...overrides,
-  };
-}
-
-function deployCiRun(overrides = {}) {
-  return {
-    id: 765,
-    workflow_id: 321,
-    path: ".github/workflows/ci.yml@refs/heads/main",
-    event: "push",
-    head_branch: "main",
-    head_sha: targetSha,
-    status: "completed",
-    conclusion: "success",
-    run_attempt: 1,
-    ...overrides,
-  };
-}
-
-function safeSchemaBlockedDeployEvidence(overrides = {}) {
+function historicalDeployEvidence(overrides = {}) {
   return {
     run: deployRun(),
-    jobs: deployJobs(),
-    ciRuns: [deployCiRun()],
     shaIsAncestorOfCurrentMain: true,
     ...overrides,
   };
@@ -560,7 +517,7 @@ describe("verified resume of a failed production preflight", () => {
     expect(evidenceScript).toContain("ddlAuthorizationGranted: false");
   });
 
-  it("runs source verification without historical deploy log text", async () => {
+  it("marks deploy history UNVERIFIED without fetching logs, jobs, or deploy-specific CI evidence", async () => {
     const currentMainSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     const currentRunId = "1002";
     const sourceRunId = "1000";
@@ -572,16 +529,7 @@ describe("verified resume of a failed production preflight", () => {
       jobs: sourceJobs().jobs.map((job) => ({ ...job, head_sha: currentMainSha })),
     };
     const actualDeployRun = deployRun({ id: Number(deployId), head_sha: currentMainSha });
-    const actualDeployJobs = {
-      ...deployJobs(),
-      jobs: deployJobs().jobs.map((job) => ({ ...job, head_sha: currentMainSha })),
-    };
-    const actualCiRun = deployCiRun({ head_sha: currentMainSha });
-    const safeDeployEvidence = {
-      run: actualDeployRun,
-      jobs: actualDeployJobs,
-      ciRuns: [actualCiRun],
-    };
+    const deployMetadata = { run: actualDeployRun };
     const laterRuns = [actualDeployRun, {
       id: Number(currentRunId),
       workflow_id: Number(preflightWorkflowId),
@@ -600,7 +548,7 @@ describe("verified resume of a failed production preflight", () => {
         jobs: path.join(tempDir, "source-jobs.json"),
         artifacts: path.join(tempDir, "source-artifacts.json"),
         later: path.join(tempDir, "later-runs.ndjson"),
-        deploy: path.join(tempDir, "safe-deploy-runs.ndjson"),
+        deploy: path.join(tempDir, "historical-deploy-runs.ndjson"),
         preflightRetries: path.join(tempDir, "safe-failed-preflights.ndjson"),
         noAppRuns: path.join(tempDir, "safe-historical-no-app-runs.ndjson"),
       };
@@ -609,7 +557,7 @@ describe("verified resume of a failed production preflight", () => {
         writeFile(files.jobs, JSON.stringify(actualSourceJobs)),
         writeFile(files.artifacts, JSON.stringify({ total_count: 0, artifacts: [] })),
         writeFile(files.later, laterRuns.map((run) => JSON.stringify(run)).join("\n") + "\n"),
-        writeFile(files.deploy, `${JSON.stringify(safeDeployEvidence)}\n`),
+        writeFile(files.deploy, `${JSON.stringify(deployMetadata)}\n`),
         writeFile(files.preflightRetries, ""),
         writeFile(files.noAppRuns, ""),
       ]);
@@ -628,6 +576,11 @@ describe("verified resume of a failed production preflight", () => {
         unverifiedHistoricalPreflightRunIds: [],
         unverifiedHistoricalRunIds: [],
       });
+      const workflow = await readFile(".github/workflows/production-migration-preflight.yml", "utf8");
+      const standardResume = workflow.slice(workflow.lastIndexOf('elif [[ -n "$RESUME_SOURCE_RUN_ID" ]]; then'));
+      expect(standardResume).not.toContain("actions/runs/$deploy_run_id/jobs");
+      expect(standardResume).not.toContain("resume-main-ci-runs.ndjson");
+      expect(standardResume).toContain("historical effects: UNVERIFIED");
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
@@ -785,13 +738,26 @@ describe("verified resume of a failed production preflight", () => {
     })).toThrow("cannot be safely resumed");
   });
 
-  it("admits a later exact-SHA automatic deploy as explicitly unverified history", () => {
+  it.each([
+    ["absent", undefined],
+    ["incomplete", "pending migration: 2026"],
+    ["different format", "\u001b[31mtoomanyrequests\u001b[0m"],
+  ])("records historical failed deploys as UNVERIFIED when logs are %s", (_label, logText) => {
     const run = deployRun();
     const result = verify({ laterRuns: [run, {
       id: 99999999999, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress",
-    }], safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence()],
+    }], historicalDeployRuns: [historicalDeployEvidence({ run, logText })],
     });
-    expect(result.unverifiedHistoricalDeployRunIds).toEqual([safeSchemaBlockedDeployRunId]);
+    expect(result.unverifiedHistoricalDeployRunIds).toEqual([historicalDeployRunId]);
+  });
+
+  it.each(["failure", "success", "cancelled", "timed_out"])("records historical %s deploys as UNVERIFIED", (conclusion) => {
+    const run = deployRun({ conclusion });
+    const result = verify({ laterRuns: [run, {
+      id: 99999999999, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress",
+    }], historicalDeployRuns: [historicalDeployEvidence({ run })],
+    });
+    expect(result.unverifiedHistoricalDeployRunIds).toEqual([historicalDeployRunId]);
   });
 
   it("admits completed no-app preparation only as unverified history and never reuses its artifacts", () => {
@@ -887,39 +853,25 @@ describe("verified resume of a failed production preflight", () => {
   });
 
   it.each([
-    ["missing deploy metadata", { safeFailedDeployRuns: [] }],
-    ["deploy actor is not the pinned owner", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ run: deployRun({ actor: { id: 7 }, triggering_actor: { id: 7 } }) })] }],
-    ["deploy rerun", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ run: deployRun({ run_attempt: 2 }) })] }],
-    ["manual deploy", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ run: deployRun({ event: "workflow_dispatch" }) })] }],
-    ["wrong branch", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ run: deployRun({ head_branch: "feature/x" }) })] }],
-    ["different deploy SHA", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ run: deployRun({ head_sha: sourceSha }) })] }],
-    ["wrong workflow identity", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ run: deployRun({ workflow_id: 999 }) })] }],
-    ["missing exact-SHA main CI", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ ciRuns: [] })] }],
-    ["failed main CI", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ ciRuns: [deployCiRun({ conclusion: "failure" })] })] }],
-    ["wrong CI event", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ ciRuns: [deployCiRun({ event: "pull_request" })] })] }],
-    ["incomplete job inventory", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ jobs: {
-      total_count: 1, jobs: deployJobs().jobs.slice(0, 1),
-    } })] }],
-    ["unexpected job", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ jobs: deployJobs({ jobs: [
-      ...deployJobs().jobs,
-      { name: "Unexpected job", status: "completed", conclusion: "failure", head_sha: targetSha, run_attempt: 1, steps: [] },
-    ], total_count: 3 }) })] }],
-    ["incomplete step inventory", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ jobs: deployJobs({ jobs:
-      deployJobs().jobs.map((job) => job.name.startsWith("Deploy exact")
-        ? { ...job, steps: job.steps.slice(0, -1) } : job) }) })] }],
-    ["step sequence has a gap", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ jobs: deployJobs({ jobs:
-      deployJobs().jobs.map((job) => job.name.startsWith("Deploy exact")
-        ? { ...job, steps: job.steps.map((step, index) => index === 1 ? { ...step, number: 9 } : step) } : job) }) })] }],
-    ["run not in current main ancestry", { safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ shaIsAncestorOfCurrentMain: false })] }],
+    ["metadata inventory missing", { historicalDeployRuns: [] }],
+    ["actor is not the pinned owner", { historicalDeployRuns: [historicalDeployEvidence({ run: deployRun({ actor: { id: 7 }, triggering_actor: { id: 7 } }) })] }],
+    ["run is on a different SHA", { historicalDeployRuns: [historicalDeployEvidence({ run: deployRun({ head_sha: sourceSha }) })] }],
+    ["workflow identity differs", { historicalDeployRuns: [historicalDeployEvidence({ run: deployRun({ workflow_id: 999 }) })] }],
+    ["branch is not main", { historicalDeployRuns: [historicalDeployEvidence({ run: deployRun({ head_branch: "feature/x" }) })] }],
+    ["event is not the automatic deploy", { historicalDeployRuns: [historicalDeployEvidence({ run: deployRun({ event: "workflow_dispatch" }) })] }],
+    ["conclusion is unknown", { historicalDeployRuns: [historicalDeployEvidence({ run: deployRun({ conclusion: "neutral" }) })] }],
+    ["run is not on current-main ancestry", { historicalDeployRuns: [historicalDeployEvidence({ shaIsAncestorOfCurrentMain: false })] }],
+    ["run attempt is malformed", { historicalDeployRuns: [historicalDeployEvidence({ run: deployRun({ run_attempt: 0 }) })] }],
+    ["metadata contains a duplicate run", { historicalDeployRuns: [historicalDeployEvidence(), historicalDeployEvidence()] }],
     ["deploy is concurrent with current preflight", { laterRuns: [deployRun({ id: 100000000000 }), {
       id: 99999999999, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress",
-    }], safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence({ run: deployRun({ id: 100000000000 }) })] }],
-  ])("rejects a later deploy when %s", (_label, overrides) => {
+    }], historicalDeployRuns: [historicalDeployEvidence({ run: deployRun({ id: 100000000000 }) })] }],
+  ])("rejects a historical deploy when %s", (_label, overrides) => {
     expect(() => verify({
       laterRuns: [deployRun(), {
         id: 99999999999, path: ".github/workflows/production-migration-preflight.yml@refs/heads/main", status: "in_progress",
       }],
-      safeFailedDeployRuns: [safeSchemaBlockedDeployEvidence()],
+      historicalDeployRuns: [historicalDeployEvidence()],
       ...overrides,
     })).toThrow("cannot be safely resumed");
   });

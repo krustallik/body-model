@@ -7,7 +7,6 @@ import { assertTrustedOwnerWorkflowRun, BODYCAST_OWNER_ID } from "./github-owner
 const PREFLIGHT_PATH = ".github/workflows/production-migration-preflight.yml";
 const DEPLOY_PATH = ".github/workflows/deploy-production.yml";
 const NO_APP_PATH = ".github/workflows/production-no-app-preflight.yml";
-const CI_PATH = ".github/workflows/ci.yml";
 const MUTATION_WORKFLOW_PATHS = new Set([
   PREFLIGHT_PATH,
   ".github/workflows/production-migrate.yml",
@@ -215,49 +214,32 @@ function assertCompleteJobInventory(payload, run, expectedJobs, description, { a
   return new Map(jobs.map((job) => [job.name, job]));
 }
 
-function assertSafeFailedPreMaintenanceDeploy(evidence, { historyRun, deployWorkflowId }) {
+function assertHistoricalDeployRun(evidence, { historyRun, deployWorkflowId }) {
   const run = evidence?.run;
   const runId = String(run?.id ?? "");
+  const attempt = Number(run?.run_attempt);
   if (!/^[1-9][0-9]*$/.test(runId)
     || String(run?.workflow_id) !== String(deployWorkflowId)
     || workflowPath(run) !== DEPLOY_PATH
-    || run.status !== "completed" || run.conclusion !== "failure"
-    || run.run_attempt !== 1 || run.head_branch !== "main" || run.event !== "workflow_run"
+    || run.status !== "completed" || !["success", "failure", "cancelled", "timed_out"].includes(run.conclusion)
+    || !Number.isSafeInteger(attempt) || attempt < 1 || run.head_branch !== "main" || run.event !== "workflow_run"
     || !/^[a-f0-9]{40}$/.test(String(run.head_sha ?? ""))
     || evidence.shaIsAncestorOfCurrentMain !== true) {
-    reject("a later deploy is not an original completed failed automatic deploy on current-main ancestry.");
+    reject("a historical deploy has an invalid owner, workflow, SHA, ancestry, or run boundary.");
   }
   assertRunSummaryMatches(historyRun, run);
   if (run.repository?.full_name !== "krustallik/body-model"
     || String(run.repository?.owner?.id ?? "") !== BODYCAST_OWNER_ID) {
-    reject("a later deploy run is not from the canonical BodyCast repository.");
+    reject("a historical deploy run is not from the canonical BodyCast repository.");
   }
   try {
     assertTrustedOwnerWorkflowRun(run, {
       actorId: BODYCAST_OWNER_ID, workflowPath: DEPLOY_PATH, workflowRunId: runId,
-      workflowRunAttempt: 1, ref: "refs/heads/main", sha: run.head_sha, event: "workflow_run",
+      workflowRunAttempt: attempt, ref: "refs/heads/main", sha: run.head_sha, event: "workflow_run",
     });
   } catch (error) {
     reject(error.message);
   }
-
-  const jobs = assertCompleteJobInventory(evidence.jobs, run, [
-    "Authorize exact current-main app deploy", "Deploy exact current-main SHA",
-  ], "a later deploy");
-  const authorize = jobs.get("Authorize exact current-main app deploy");
-  const deploy = jobs.get("Deploy exact current-main SHA");
-  if (authorize.conclusion !== "success" || deploy.conclusion !== "failure") {
-    reject("a later deploy did not pass authorization and fail only in the deploy job.");
-  }
-  const ciRuns = evidence.ciRuns;
-  if (!Array.isArray(ciRuns)) reject("the exact-SHA main CI evidence for a later deploy is missing.");
-  const matchingCiRuns = ciRuns.filter((ciRun) => ciRun?.head_sha === run.head_sha
-    && ciRun.head_branch === "main" && ciRun.event === "push" && workflowPath(ciRun) === CI_PATH
-    && ciRun.status === "completed" && ciRun.conclusion === "success");
-  if (matchingCiRuns.length !== 1 || matchingCiRuns[0].run_attempt !== 1) {
-    reject("a later deploy does not have one successful original main CI run for its exact SHA.");
-  }
-
   return Object.freeze({ runId, sha: run.head_sha, historicalEffects: "UNVERIFIED" });
 }
 
@@ -272,7 +254,7 @@ export function verifyResumablePreflightAttempt({
   workflowId,
   manifestId,
   sourceIsAncestor,
-  safeFailedDeployRuns = [],
+  historicalDeployRuns = [],
   safeFailedPreflightRetries = [],
   safeHistoricalNoAppRuns = [],
   deployWorkflowId,
@@ -348,13 +330,13 @@ export function verifyResumablePreflightAttempt({
     if (laterRunById.has(runId)) reject("later production workflow history contains a duplicate run.");
     laterRunById.set(runId, run);
   }
-  const safeDeployById = new Map();
-  for (const evidence of safeFailedDeployRuns ?? []) {
+  const historicalDeployById = new Map();
+  for (const evidence of historicalDeployRuns ?? []) {
     const id = String(evidence?.run?.id ?? "");
-    if (!/^[1-9][0-9]*$/.test(id) || safeDeployById.has(id)) {
-      reject("safe failed-deploy evidence contains a malformed or duplicate run.");
+    if (!/^[1-9][0-9]*$/.test(id) || historicalDeployById.has(id)) {
+      reject("historical deploy metadata contains a malformed or duplicate run.");
     }
-    safeDeployById.set(id, evidence);
+    historicalDeployById.set(id, evidence);
   }
   const safePreflightRetryById = new Map();
   for (const evidence of safeFailedPreflightRetries ?? []) {
@@ -385,9 +367,9 @@ export function verifyResumablePreflightAttempt({
     if (id <= sourceId && run.status !== "in_progress") continue;
     if (id >= currentId) reject(`another release or preflight workflow is concurrent with resume run ${currentRunId}.`);
     if (workflowPath(run) === DEPLOY_PATH && id > sourceId) {
-      const evidence = safeDeployById.get(String(run.id));
-      if (!evidence) reject(`a later deploy has no complete GitHub metadata inventory.`);
-      const unverified = assertSafeFailedPreMaintenanceDeploy(evidence, {
+      const evidence = historicalDeployById.get(String(run.id));
+      if (!evidence) reject("a historical deploy is missing its GitHub run metadata.");
+      const unverified = assertHistoricalDeployRun(evidence, {
         historyRun: run, deployWorkflowId,
       });
       unverifiedDeployIds.add(unverified.runId);
@@ -424,7 +406,7 @@ export function verifyResumablePreflightAttempt({
     }
     reject(`another release or preflight workflow exists after source run ${sourceRunId}.`);
   }
-  if (unverifiedDeployIds.size !== safeDeployById.size) reject("failed-deploy evidence does not match the complete production workflow history.");
+  if (unverifiedDeployIds.size !== historicalDeployById.size) reject("historical deploy metadata does not match the complete production workflow history.");
   if (verifiedPreflightRetryIds.size !== safePreflightRetryById.size) {
     reject("failed-preflight evidence does not match the complete production workflow history.");
   }
@@ -842,13 +824,13 @@ async function main() {
     return;
   }
   if (mode !== "--verify-source" || args.length !== 14) {
-    throw new Error("Usage: production-preflight-resume.mjs --verify-source <run.json> <jobs.json> <artifacts.json> <later-runs.ndjson> <safe-failed-deploy-runs.ndjson> <safe-failed-preflight-retries.ndjson> <safe-historical-no-app-runs.ndjson> <source-run-id> <current-run-id> <current-main-sha> <manifest-id> <preflight-workflow-id> <deploy-workflow-id> <no-app-workflow-id>");
+    throw new Error("Usage: production-preflight-resume.mjs --verify-source <run.json> <jobs.json> <artifacts.json> <later-runs.ndjson> <historical-deploy-runs.ndjson> <historical-preflight-runs.ndjson> <historical-no-app-runs.ndjson> <source-run-id> <current-run-id> <current-main-sha> <manifest-id> <preflight-workflow-id> <deploy-workflow-id> <no-app-workflow-id>");
   }
-  const [runPath, jobsPath, artifactsPath, laterRunsPath, safeDeployRunsPath, safePreflightRetriesPath,
+  const [runPath, jobsPath, artifactsPath, laterRunsPath, historicalDeployRunsPath, safePreflightRetriesPath,
     safeNoAppRunsPath, sourceRunId, currentRunId, currentMainSha, manifestId, workflowId, deployWorkflowId, noAppWorkflowId] = args;
-  const [sourceRun, sourceJobs, sourceArtifacts, laterRunsText, safeDeployRunsText, safePreflightRetriesText, safeNoAppRunsText] = await Promise.all([
+  const [sourceRun, sourceJobs, sourceArtifacts, laterRunsText, historicalDeployRunsText, safePreflightRetriesText, safeNoAppRunsText] = await Promise.all([
     readJson(runPath), readJson(jobsPath), readJson(artifactsPath), readFile(path.resolve(laterRunsPath), "utf8"),
-    readFile(path.resolve(safeDeployRunsPath), "utf8"), readFile(path.resolve(safePreflightRetriesPath), "utf8"),
+    readFile(path.resolve(historicalDeployRunsPath), "utf8"), readFile(path.resolve(safePreflightRetriesPath), "utf8"),
     readFile(path.resolve(safeNoAppRunsPath), "utf8"),
   ]);
   let sourceIsAncestor = false;
@@ -858,7 +840,7 @@ async function main() {
   } catch {}
   const proof = verifyResumablePreflightAttempt({
     sourceRun, sourceJobs, sourceArtifacts, laterRuns: parseNdjson(laterRunsText),
-    safeFailedDeployRuns: parseNdjson(safeDeployRunsText).map((evidence) => ({
+    historicalDeployRuns: parseNdjson(historicalDeployRunsText).map((evidence) => ({
       ...evidence,
       shaIsAncestorOfCurrentMain: isAncestor(evidence?.run?.head_sha, currentMainSha),
     })),

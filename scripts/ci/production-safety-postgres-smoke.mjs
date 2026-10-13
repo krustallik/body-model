@@ -131,6 +131,18 @@ async function createSourceFixture(db = source) {
       "matchedWorkoutId" integer REFERENCES public."Workout"(id) ON DELETE SET NULL,
       "webStartedAt" timestamptz, "createdAt" timestamptz NOT NULL DEFAULT now()
     );
+    CREATE TABLE public."ExperimentalTransientExerciseWaterShadow" (
+      id serial PRIMARY KEY, "sessionId" integer NOT NULL, "profileId" integer NOT NULL DEFAULT 1,
+      "sourceFingerprint" varchar(64) NOT NULL, "modelRevision" varchar(100) NOT NULL,
+      features jsonb NOT NULL, result jsonb NOT NULL,
+      "createdAt" timestamptz(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" timestamptz(3) NOT NULL,
+      CONSTRAINT "ExperimentalTransientExerciseWaterShadow_sessionId_fkey"
+        FOREIGN KEY ("sessionId") REFERENCES public."StrengthDiarySession"(id) ON DELETE CASCADE ON UPDATE CASCADE
+    );
+    CREATE UNIQUE INDEX "ExperimentalTransientExerciseWaterShadow_sessionId_key"
+      ON public."ExperimentalTransientExerciseWaterShadow"("sessionId");
+    CREATE INDEX "ExperimentalTransientExerciseWaterShadow_profileId_updatedAt_idx"
+      ON public."ExperimentalTransientExerciseWaterShadow"("profileId", "updatedAt");
     CREATE TABLE public."ExerciseCatalog" (id integer PRIMARY KEY);
     CREATE TABLE public."ProgramExercise" (id integer PRIMARY KEY);
     CREATE TABLE public."StrengthSessionExercise" (id integer PRIMARY KEY, "sessionId" integer NOT NULL);
@@ -1649,8 +1661,8 @@ async function main() {
     sql(target, `
       UPDATE public."PhysiologyV7Lifecycle" SET "updatedAt" = "updatedAt" + interval '1 second' WHERE "profileId" = 1;
       INSERT INTO public."ExperimentalTransientExerciseWaterShadow" (
-        "sessionId", "profileId", "sourceFingerprint", "modelRevision", features, result
-      ) VALUES (1, 1, repeat('a', 64), 'v4-fingerprint-fixture', '{}'::jsonb, '{"value":1}'::jsonb)
+        "sessionId", "profileId", "sourceFingerprint", "modelRevision", features, result, "updatedAt"
+      ) VALUES (1, 1, repeat('a', 64), 'v4-fingerprint-fixture', '{}'::jsonb, '{"value":1}'::jsonb, '2026-01-01T00:00:00Z')
       ON CONFLICT ("sessionId") DO UPDATE SET result = EXCLUDED.result;
       INSERT INTO public."UnifiedExperimentalPhysiologyStateV2" (
         "profileId", "modelEpisodeId", date, "boundaryAt", "modelRevision", "sourceFingerprint",

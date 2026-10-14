@@ -101,7 +101,7 @@ const V4_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "scripts/production-v4-recovery.mjs": Object.freeze({
     migrationOriginBlob: null,
-    deployBlob: "bc292ce141818a208bd3b3e73b0a0f0aa8a3a895",
+    deployBlob: "af8e2e03ddac71d710f191ec2f221b31c3785a76",
   }),
   "scripts/production-writer-drain.mjs": Object.freeze({
     migrationOriginBlob: "f2e275e64e52089ac88351a695b2aad2d427e343",
@@ -109,7 +109,7 @@ const V4_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "scripts/production-traffic-cutover.sh": Object.freeze({
     migrationOriginBlob: "baeb3ff34c52c606a653d9e0c027c79d7b7c72da",
-    deployBlob: "c297187a27d7ef9fb486bfa5b6a468ed12157d55",
+    deployBlob: "7b1d61f367d1b2e909fe435d50a5cdcdc736247f",
   }),
   "scripts/unified-v4-activate-replay.ts": Object.freeze({
     migrationOriginBlob: "2bb3f1130241dcc0e354e70a60f5284452849a12",

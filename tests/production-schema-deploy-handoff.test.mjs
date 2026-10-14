@@ -139,7 +139,11 @@ describe("schema deploy compatibility handoff", () => {
       },
       "scripts/production-v4-recovery.mjs": {
         migrationOriginBlob: null,
-        deployBlob: "7af345429def9d71422d50627548914210efb480",
+        deployBlob: "87edee2ba2784ffa40ed7dbe16e61d3c55814245",
+      },
+      "scripts/production-writer-drain.mjs": {
+        migrationOriginBlob: "f2e275e64e52089ac88351a695b2aad2d427e343",
+        deployBlob: "19bce9311aa836b0347b832dc7d4042b1d26bd96",
       },
       "scripts/production-traffic-cutover.sh": {
         migrationOriginBlob: "baeb3ff34c52c606a653d9e0c027c79d7b7c72da",

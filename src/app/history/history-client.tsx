@@ -523,7 +523,7 @@ export function HistoryClient({ demoMode = false }: { demoMode?: boolean } = {})
           }}
         />
       )}
-      {workDate && <WorkActivityDialog date={workDate} onClose={() => {
+      {workDate && <WorkActivityDialog date={workDate} onChanged={() => loadDays()} onClose={() => {
         setWorkDate(null);
         void fetchWorkActivityDates().then(setWorkActivityDates);
       }} />}

@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 const localeState = vi.hoisted(() => ({ locale: "en" as "en" | "uk" }));
 
@@ -21,8 +22,19 @@ import { emptyTrainingDayFact } from "@/modules/days/training-day-fact-empty";
 import { todayInCalendarTimeZone } from "@/modules/days/calendar-range";
 
 describe("Dashboard activity and priority cards", () => {
+  beforeEach(() => {
+    Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value: function showModal(this: HTMLDialogElement) {
+      this.setAttribute("open", "");
+    } });
+    Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value: function close(this: HTMLDialogElement) {
+      this.removeAttribute("open");
+    } });
+  });
+
   afterEach(() => {
     cleanup();
+    Reflect.deleteProperty(HTMLDialogElement.prototype, "showModal");
+    Reflect.deleteProperty(HTMLDialogElement.prototype, "close");
     vi.unstubAllGlobals();
     localeState.locale = "en";
   });
@@ -121,6 +133,74 @@ describe("Dashboard activity and priority cards", () => {
     expect(requests.some((url) => url.includes("/sessions/match-attention"))).toBe(false);
     expect(screen.queryByLabelText("Match attention")).toBeNull();
     expect(screen.queryByLabelText("Active session")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add or edit work interval" })).toBeNull();
+  });
+
+  it("creates work activity from Dashboard and refreshes today's summary", async () => {
+    const today = todayInCalendarTimeZone();
+    const intervals: Array<Record<string, unknown>> = [];
+    const requests: Array<{ url: string; method: string }> = [];
+    let resolveInitialWorkFetch: ((response: Response) => void) | undefined;
+    const initialWorkFetch = new Promise<Response>((resolve) => { resolveInitialWorkFetch = resolve; });
+    let intervalGetCount = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      requests.push({ url, method });
+      if (url.includes("/api/v1/dashboard")) {
+        return Response.json({
+          today: null,
+          todayTrainingDay: emptyTrainingDayFact(today),
+          recentDays: [],
+          recentTrainingDays: [],
+          hasToday: false,
+          lastSync: { at: null, status: null },
+          restingHeartRate: { latestBpm: null, timestamp: null },
+          sleep: null,
+        });
+      }
+      if (url.includes("/sessions/active")) return Response.json({ session: null });
+      if (url.includes("/sessions/match-attention")) return Response.json({ sessions: [], totalCount: 0 });
+      if (url.includes("/api/v1/work-activity")) return Response.json({ diagnostics: null });
+      if (url.includes("/api/v1/work-intervals") && method === "POST") {
+        intervals.push({
+          id: 101,
+          date: today,
+          startTime: "08:00",
+          endTime: "16:00",
+          startAt: `${today}T08:00:00.000Z`,
+          endAt: `${today}T16:00:00.000Z`,
+          timezone: "Europe/Bratislava",
+          category: "manualLight",
+          breakMinutes: 30,
+          breakSource: "user-entered",
+          createdAt: `${today}T16:00:00.000Z`,
+          updatedAt: `${today}T16:00:00.000Z`,
+        });
+        return Response.json({ interval: intervals[0] }, { status: 201 });
+      }
+      if (url.includes("/api/v1/work-intervals")) {
+        intervalGetCount += 1;
+        if (intervalGetCount === 1) return initialWorkFetch;
+        return Response.json({ intervals });
+      }
+      return new Response(null, { status: 404 });
+    }));
+
+    const user = userEvent.setup();
+    render(<DashboardClient />);
+    await screen.findByRole("button", { name: "Add or edit work interval" });
+    await user.click(screen.getByRole("button", { name: "Add or edit work interval" }));
+    await user.click(await screen.findByRole("button", { name: "Add work interval" }));
+    await user.click(screen.getByRole("button", { name: "Save interval" }));
+
+    expect(await screen.findByText("08:00–16:00")).toBeTruthy();
+    expect(screen.getAllByText("Light handling / packing").length).toBeGreaterThanOrEqual(2);
+    expect(requests.some(({ url, method }) => url.includes("/api/v1/work-intervals") && method === "POST")).toBe(true);
+    await act(async () => {
+      resolveInitialWorkFetch?.(Response.json({ intervals: [] }));
+    });
+    await waitFor(() => expect(screen.getByText("08:00–16:00")).toBeTruthy());
   });
 
   it("clears activity errors when a later locale-triggered refresh succeeds", async () => {

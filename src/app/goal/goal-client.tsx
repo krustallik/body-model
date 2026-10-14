@@ -16,7 +16,6 @@ import {
   buildGoalPlanningRequest,
   canOpenGoalPlanner,
   defaultGoalForm,
-  guidedWorkCategory,
   initialGoalFormWithRecommendation,
   recommendGoalFormNutrition,
   recommendGoalNutritionAtCalories,
@@ -32,6 +31,9 @@ import { minimumGoalDate } from "@/modules/model-target-solver/goal-date";
 import styles from "./goal.module.css";
 import { goalSettingsFromForm, isGoalBrowserSettings } from "@/modules/browser-settings/planning-settings";
 import { GOAL_SETTINGS_KEY, readBrowserSettings, resetBrowserSettings, writeBrowserSettings } from "@/modules/browser-settings/versioned-settings";
+import { OCCUPATIONAL_CATEGORIES, type OccupationalCategory } from "@/model/occupational-activity";
+import { OccupationalCategoryDescriptions, WorkCategoryHelper } from "@/components/work-category-helper";
+import { occupationalCategoryCopy } from "@/modules/work-intervals/occupational-category-copy";
 
 type HistoricalDay = { date: string; modeledWeightKg: number | null; filteredWeightKg: number | null; fatMassKg: number | null; leanTissueKg: number | null; glycogenAssociatedMassKg: number | null; dataQuality: string };
 type ObservedWeight = { date: string; weightKg: number; bodyFatPercent?: number | null };
@@ -109,8 +111,6 @@ export function GoalClient() {
   const [form, setForm] = useState<GoalFormValues>(() => defaultGoalForm());
   const [initialized, setInitialized] = useState(false);
   const [formErrors, setFormErrors] = useState<GoalFormErrors>({});
-  const [workInputMode, setWorkInputMode] = useState<"direct" | "guided">("direct");
-  const [guidedWorkStep, setGuidedWorkStep] = useState(1);
   const [result, setResult] = useState<GoalPlanningResponse | null>(null);
   const [chartHistoryRange, setChartHistoryRange] = useState<"recent" | "full">("recent");
   const [chartMetric, setChartMetric] = useState<"physiologicalBodyWeightKg" | "fatMassKg">("physiologicalBodyWeightKg");
@@ -283,24 +283,28 @@ export function GoalClient() {
       </div></section>
 
       <section className={styles.formSection}><div className={styles.sectionHeading}><div><span>04</span><h2>{uk ? "Робоча активність" : "Work activity"}</h2><HelpTip label={uk ? "Пояснення робочої активності" : "Explain work activity"}>{uk ? "Додавайте робочі дні лише якщо робота помітно впливає на ваш рух. Розрахунок використовує одну з наявних категорій роботи." : "Include work days when your job meaningfully affects your movement. The calculation uses one of its existing work categories."}</HelpTip></div><p>{uk ? "Окремо від кроків і тренувань." : "Separate from steps and training."}</p></div>
-        <label className={styles.toggle}><input type="checkbox" checked={form.plan.plannedWork} onChange={(event) => { updatePlan("plannedWork", event.currentTarget.checked); if (event.currentTarget.checked) { setWorkInputMode("direct"); setGuidedWorkStep(1); } }} /><span>{uk ? "У мене є робочі дні" : "I have work days"}</span></label>
-        {form.plan.plannedWork && <>
-          <div className={styles.modeGrid}>
-            <button type="button" aria-pressed={workInputMode === "direct"} onClick={() => setWorkInputMode("direct")}><strong>{uk ? "Я знаю характер роботи" : "I know my work type"}</strong><span>{uk ? "Виберіть одну з підтриманих категорій." : "Choose one of the supported categories."}</span></button>
-            <button type="button" aria-pressed={workInputMode === "guided"} onClick={() => { setWorkInputMode("guided"); setGuidedWorkStep(1); }}><strong>{uk ? "Не впевнений — допоможіть визначити" : "Not sure — help me choose"}</strong><span>{uk ? "Кілька простих запитань про ваш графік." : "A few simple questions about your schedule."}</span></button>
+        <label className={styles.toggle}><input type="checkbox" checked={form.plan.plannedWork} onChange={(event) => updatePlan("plannedWork", event.currentTarget.checked)} /><span>{uk ? "У мене є робочі дні" : "I have work days"}</span></label>
+        {form.plan.plannedWork && <div className={styles.workPlanGrid}>
+          <PlanNumberField id="workDaysPerWeek" label={uk ? "Робочих днів" : "Work days"} unit={uk ? "на тиждень" : "per week"} value={form.plan.workDaysPerWeek} min={1} max={7} onChange={(value) => updatePlan("workDaysPerWeek", value)} />
+          <div className={styles.workCategoryField}>
+            <label className={styles.field} htmlFor="workCategory">
+              <span>{uk ? "Характер роботи" : "Work type"}</span>
+              <select id="workCategory" value={form.plan.workCategory} onChange={(event) => updatePlan("workCategory", event.currentTarget.value as OccupationalCategory)}>
+                {(Object.keys(OCCUPATIONAL_CATEGORIES) as OccupationalCategory[]).map((category) => (
+                  <option key={category} value={category}>{occupationalCategoryCopy(category, uk ? "uk" : "en").label}</option>
+                ))}
+              </select>
+              <small>{occupationalCategoryCopy(form.plan.workCategory, uk ? "uk" : "en").description}</small>
+            </label>
+            <WorkCategoryHelper onRecommend={(category) => updatePlan("workCategory", category)} />
+            <OccupationalCategoryDescriptions />
           </div>
-          {workInputMode === "direct" ? <div className={styles.formGrid}>
-            <PlanNumberField id="workDaysPerWeek" label={uk ? "Робочих днів" : "Work days"} unit={uk ? "на тиждень" : "per week"} value={form.plan.workDaysPerWeek} min={1} max={7} onChange={(value) => updatePlan("workDaysPerWeek", value)} />
-            <label className={styles.field} htmlFor="workCategory"><span>{uk ? "Характер роботи" : "Work type"}</span><select id="workCategory" value={form.plan.workCategory} onChange={(event) => updatePlan("workCategory", event.currentTarget.value as PlanValues["workCategory"])}><option value="standingLight">{uk ? "Дуже легка / переважно очікування" : "Very light / mostly waiting"}</option><option value="manualLight">{uk ? "Легке переміщення / пакування" : "Light handling / packing"}</option><option value="standingLightModerate">{uk ? "Активна легка ручна робота" : "Active light manual work"}</option><option value="manualModerate">{uk ? "Помірна ручна робота" : "Moderate handling"}</option></select></label>
-            <PlanNumberField id="shiftHours" label={uk ? "Тривалість зміни" : "Shift duration"} unit={uk ? "год" : "hours"} value={form.plan.shiftHours} min={0.1} max={24} step={0.25} onChange={(value) => updatePlan("shiftHours", value)} />
-            <PlanNumberField id="breakHours" label={uk ? "Перерви за зміну" : "Breaks per shift"} unit={uk ? "год" : "hours"} value={form.plan.breakHours} max={form.plan.shiftHours} step={0.25} onChange={(value) => updatePlan("breakHours", value)} />
-          </div> : <div className={styles.guidedWork} aria-live="polite">
-            {guidedWorkStep === 1 && <><p>{uk ? "Скільки днів на тиждень ви зазвичай працюєте?" : "How many days per week do you usually work?"}</p><div className={styles.guidedControls}><PlanNumberField id="guidedWorkDays" label={uk ? "Робочих днів" : "Work days"} unit={uk ? "на тиждень" : "per week"} value={form.plan.workDaysPerWeek} min={1} max={7} onChange={(value) => updatePlan("workDaysPerWeek", value)} /><button type="button" onClick={() => setGuidedWorkStep(2)}>{uk ? "Далі" : "Next"}</button></div></>}
-            {guidedWorkStep === 2 && <><p>{uk ? "Скільки годин триває звичайна зміна?" : "How long is a typical shift?"}</p><div className={styles.guidedControls}><PlanNumberField id="guidedShiftHours" label={uk ? "Тривалість зміни" : "Shift duration"} unit={uk ? "год" : "hours"} value={form.plan.shiftHours} min={0.1} max={24} step={0.25} onChange={(value) => updatePlan("shiftHours", value)} /><button type="button" onClick={() => setGuidedWorkStep(3)}>{uk ? "Далі" : "Next"}</button></div><button className={styles.backButton} type="button" onClick={() => setGuidedWorkStep(1)}>{uk ? "Назад" : "Back"}</button></>}
-            {guidedWorkStep === 3 && <><p>{uk ? "Що найкраще описує роботу?" : "Which description best fits your work?"}</p><div className={styles.guidedChoices}><button type="button" onClick={() => { updatePlan("workCategory", guidedWorkCategory("mostly-sitting")); setGuidedWorkStep(4); }}>{uk ? "Переважно сиджу або чекаю" : "Mostly sitting or waiting"}</button><button type="button" onClick={() => { updatePlan("workCategory", guidedWorkCategory("mostly-standing")); setGuidedWorkStep(4); }}>{uk ? "Переважно стою, легкі рухи" : "Mostly standing, light movement"}</button><button type="button" onClick={() => { updatePlan("workCategory", guidedWorkCategory("manual-handling")); setGuidedWorkStep(4); }}>{uk ? "Ручна робота, легке переміщення" : "Manual work, light handling"}</button></div><button className={styles.backButton} type="button" onClick={() => setGuidedWorkStep(2)}>{uk ? "Назад" : "Back"}</button><small>{uk ? "Це найближчі відповідники серед наявних категорій. Для точнішого вибору скористайтеся режимом «Я знаю характер роботи»." : "These are the closest matches among existing categories. Use “I know my work type” for a more exact choice."}</small></>}
-            {guidedWorkStep === 4 && <><p>{uk ? "Скільки годин перерв зазвичай входить у зміну?" : "How many hours of breaks are included in a typical shift?"}</p><div className={styles.guidedControls}><PlanNumberField id="guidedBreakHours" label={uk ? "Перерви за зміну" : "Breaks per shift"} unit={uk ? "год" : "hours"} value={form.plan.breakHours} max={form.plan.shiftHours} step={0.25} onChange={(value) => updatePlan("breakHours", value)} /><button type="button" onClick={() => setGuidedWorkStep(1)}>{uk ? "Змінити відповіді" : "Edit answers"}</button></div><p>{uk ? "Графік готовий. Усі відповіді збережені в одному плані." : "Work schedule ready. Your answers are saved in the same plan."}</p></>}
-          </div>}
-        </>}
+          <PlanNumberField id="shiftHours" label={uk ? "Тривалість зміни" : "Shift duration"} unit={uk ? "год" : "hours"} value={form.plan.shiftHours} min={0.1} max={24} step={0.25} onChange={(value) => updatePlan("shiftHours", value)} />
+          <PlanNumberField id="breakHours" label={uk ? "Перерви за зміну" : "Breaks per shift"} unit={uk ? "год" : "hours"} value={form.plan.breakHours} max={form.plan.shiftHours} step={0.25} onChange={(value) => updatePlan("breakHours", value)} />
+          <p className={styles.workScheduleNote}>{uk
+            ? "Кількість робочих днів, години зміни й перерви задаються окремо від рекомендованого рівня роботи."
+            : "Work days, shift hours, and breaks are separate from the recommended work level."}</p>
+        </div>}
         <FieldError id="plan-error" message={formErrors.plan} />
       </section>
 

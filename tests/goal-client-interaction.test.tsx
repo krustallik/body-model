@@ -182,9 +182,19 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 describe("GoalClient interaction", () => {
-  beforeEach(() => localStorage.clear());
+  beforeEach(() => {
+    localStorage.clear();
+    Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value: function showModal(this: HTMLDialogElement) {
+      this.setAttribute("open", "");
+    } });
+    Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value: function close(this: HTMLDialogElement) {
+      this.removeAttribute("open");
+    } });
+  });
   afterEach(() => {
     cleanup();
+    Reflect.deleteProperty(HTMLDialogElement.prototype, "showModal");
+    Reflect.deleteProperty(HTMLDialogElement.prototype, "close");
     localStorage.clear();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
@@ -233,7 +243,7 @@ describe("GoalClient interaction", () => {
     expect((screen.getByLabelText(/Strength sessions/) as HTMLInputElement).value).toBe("4");
     expect((screen.getByLabelText(/Other training.*per week/) as HTMLInputElement).value).toBe("2");
     expect((screen.getByLabelText("I have work days") as HTMLInputElement).checked).toBe(true);
-    expect((screen.getByLabelText("Work type") as HTMLSelectElement).value).toBe("manualModerate");
+    expect((screen.getByLabelText(/Work type/) as HTMLSelectElement).value).toBe("manualModerate");
     expect(screen.queryByText("Recommended nutrition")).toBeNull();
     expect(screen.queryByText("Adjust nutrition manually")).toBeNull();
     expect(screen.queryByLabelText(/Starting calories/)).toBeNull();
@@ -587,7 +597,7 @@ describe("GoalClient interaction", () => {
     expect(screen.queryByText("solved")).toBeNull();
   });
 
-  it("guides work setup into the same canonical schedule used by the solver", async () => {
+  it("uses the shared work helper without coupling its recommendation to the work schedule", async () => {
     let posted: Record<string, unknown> | null = null;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -602,17 +612,23 @@ describe("GoalClient interaction", () => {
     render(<GoalClient />);
     await screen.findByText(/Latest modeled day:/i);
     await user.click(screen.getByLabelText("I have work days"));
-    await user.click(screen.getByRole("button", { name: /Not sure — help me choose/ }));
-    await user.click(screen.getByRole("button", { name: "Next" }));
-    await user.click(screen.getByRole("button", { name: "Next" }));
-    await user.click(screen.getByRole("button", { name: "Mostly sitting or waiting" }));
-    expect(screen.getByLabelText(/Breaks per shift/)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Help me choose a level" }));
+    for (const answer of [
+      "Mostly in one place",
+      "Mostly stable standing or light hand tasks",
+      "Little effort beyond standing and light movement",
+      "None or occasional light items",
+    ]) {
+      await user.click(screen.getByRole("radio", { name: answer }));
+      await user.click(screen.getByRole("button", { name: "Next" }));
+    }
+    await user.click(screen.getByRole("button", { name: "Use recommendation" }));
+    expect((screen.getByLabelText(/Work type/) as HTMLSelectElement).value).toBe("standingLight");
+    expect((screen.getByLabelText(/Work days/) as HTMLInputElement).value).toBe("5");
+    expect((screen.getByLabelText(/Shift duration/) as HTMLInputElement).value).toBe("8");
     const breakInput = screen.getByLabelText(/Breaks per shift/);
     await user.clear(breakInput);
     await user.type(breakInput, "1");
-    await user.click(screen.getByRole("button", { name: /I know my work type/ }));
-    expect((screen.getByLabelText("Work type") as HTMLSelectElement).value).toBe("standingLight");
-    expect((screen.getByLabelText(/Work days/) as HTMLInputElement).value).toBe("5");
     await user.click(screen.getByRole("button", { name: "Calculate scenario" }));
     await waitFor(() => expect(posted).toBeTruthy());
     const submitted = posted as unknown as { scenarioTemplate: { schedule: { byDate: Record<string, { occupation?: Array<{ category: string; durationHours: number; breakDurationHours: number }> }> } } };

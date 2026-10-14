@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { AppNav } from "@/components/app-nav";
 import { DemoDataBadge } from "@/components/demo-data-badge";
@@ -18,6 +18,7 @@ import { matchStatusLabel, trainingSessionTitle } from "@/app/training/training-
 import { todayInCalendarTimeZone } from "@/modules/days/calendar-range";
 import { DEFAULT_TIME_ZONE, instantToLocalDateTime } from "@/model/time-zone";
 import { formatDateTime, formatDurationMinutes, formatMetric } from "@/modules/days/metric-format";
+import { WorkActivityDialog } from "@/app/history/work-activity-dialog";
 import styles from "./dashboard.module.css";
 
 function localToday(): string {
@@ -125,6 +126,8 @@ export function DashboardClient({ demoMode = false }: { demoMode?: boolean } = {
   const [workIntervals, setWorkIntervals] = useState<WorkIntervalDto[]>([]);
   const [workLoading, setWorkLoading] = useState(true);
   const [workError, setWorkError] = useState(false);
+  const [workDialogOpen, setWorkDialogOpen] = useState(false);
+  const workRequestSequence = useRef(0);
   const restingHeartRate = dashboard.restingHeartRate;
   const sleep = dashboard.sleep;
   const sleepLocale = uk ? "uk" : "en";
@@ -132,9 +135,32 @@ export function DashboardClient({ demoMode = false }: { demoMode?: boolean } = {
   const hasRecentHealthOrTraining = dashboard.recentDays.length > 0
     || dashboard.recentTrainingDays.some((fact) => fact.eventCount > 0);
 
+  const refreshWorkIntervals = useCallback(async (signal?: AbortSignal) => {
+    if (signal?.aborted) return;
+    const requestSequence = ++workRequestSequence.current;
+    setWorkLoading(true);
+    try {
+      const response = await fetch(`/api/v1/work-intervals?date=${encodeURIComponent(localToday())}`, {
+        cache: "no-store",
+        signal,
+      });
+      if (!response.ok) throw new Error("work_activity_unavailable");
+      const body = await response.json() as { intervals: WorkIntervalDto[] };
+      if (!signal?.aborted && requestSequence === workRequestSequence.current) {
+        setWorkError(false);
+        setWorkIntervals(body.intervals);
+      }
+    } catch {
+      if (!signal?.aborted && requestSequence === workRequestSequence.current) setWorkError(true);
+    } finally {
+      if (!signal?.aborted && requestSequence === workRequestSequence.current) setWorkLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     let active = true;
     const controller = new AbortController();
+    const workRequestSequenceAtStart = ++workRequestSequence.current;
     loadDashboard(uk)
       .then((result) => {
         if (active) setDashboard(result);
@@ -179,18 +205,18 @@ export function DashboardClient({ demoMode = false }: { demoMode?: boolean } = {
       .then(async (response) => {
         if (!response.ok) throw new Error("work_activity_unavailable");
         const body = await response.json() as { intervals: WorkIntervalDto[] };
-        if (active) {
+        if (active && workRequestSequenceAtStart === workRequestSequence.current) {
           setWorkError(false);
           setWorkIntervals(body.intervals);
         }
       })
-      .catch(() => { if (active && !controller.signal.aborted) setWorkError(true); })
-      .finally(() => { if (active) setWorkLoading(false); });
+      .catch(() => { if (active && !controller.signal.aborted && workRequestSequenceAtStart === workRequestSequence.current) setWorkError(true); })
+      .finally(() => { if (active && workRequestSequenceAtStart === workRequestSequence.current) setWorkLoading(false); });
     return () => {
       active = false;
       controller.abort();
     };
-  }, [demoMode, uk]);
+  }, [demoMode, refreshWorkIntervals, uk]);
 
   const todayTrainingDay = dashboard.recentTrainingDays.find((fact) => fact.date === localToday())
     ?? dashboard.todayTrainingDay;
@@ -313,6 +339,9 @@ export function DashboardClient({ demoMode = false }: { demoMode?: boolean } = {
                     : workError ? <p role="alert">{uk ? "Не вдалося завантажити робочу активність." : "Could not load work activity."}</p>
                       : workIntervals.length > 0 ? <ul className={styles.workIntervalList}>{workIntervals.map((interval) => <li key={interval.id}><span>{interval.startTime}–{interval.endTime}</span><b>{workCategoryCopy(interval.category, uk)}</b></li>)}</ul>
                         : <p>{uk ? "Робочі інтервали за сьогодні не записані." : "No work intervals recorded today."}</p>}
+                  {!demoMode && <button className={styles.workActivityButton} type="button" onClick={() => setWorkDialogOpen(true)}>
+                    {uk ? "Додати або змінити робочий проміжок" : "Add or edit work interval"}
+                  </button>}
                 </div>
               )}
             </section>
@@ -423,6 +452,11 @@ export function DashboardClient({ demoMode = false }: { demoMode?: boolean } = {
       </section>
       {!demoMode && !showMatchPriority && matchAttentionCard}
       {!demoMode && !showActiveSessionPriority && activeSessionCard}
+      {!demoMode && workDialogOpen && <WorkActivityDialog
+        date={localToday()}
+        onClose={() => setWorkDialogOpen(false)}
+        onChanged={() => refreshWorkIntervals()}
+      />}
     </main>
   );
 }

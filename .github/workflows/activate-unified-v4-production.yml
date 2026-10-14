@@ -409,7 +409,9 @@ jobs:
               "repos/krustallik/body-model/actions/runs?status=$status&per_page=100" \
               > "$RUNNER_TEMP/production-runs-$status.ndjson"
           done
-          node --input-type=module - "$RUNNER_TEMP/production-runs-queued.ndjson" "$RUNNER_TEMP/production-runs-in_progress.ndjson" <<'NODE'
+          node --input-type=module - "$RUNNER_TEMP/production-runs-queued.ndjson" "$RUNNER_TEMP/production-runs-in_progress.ndjson" \
+            "$RUNNER_TEMP/production-runs-requested.ndjson" "$RUNNER_TEMP/production-runs-waiting.ndjson" \
+            "$RUNNER_TEMP/production-runs-pending.ndjson" <<'NODE'
           import { readFileSync } from "node:fs";
           const current = process.env.GITHUB_RUN_ID;
           const runs = process.argv.slice(2).flatMap((path) => readFileSync(path, "utf8").split(/\r?\n/).filter(Boolean).map(JSON.parse));

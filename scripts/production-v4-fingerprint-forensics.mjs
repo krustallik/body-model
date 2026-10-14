@@ -189,7 +189,7 @@ function buildSnapshotSql(inventory) {
   for (const fullName of sequenceNames) {
     const [, sequence] = fullName.split(".");
     const marker = Buffer.from(fullName).toString("base64url");
-    lines.push(`SELECT '__BODYCAST_SEQUENCE_STATE__${marker}=' || last_value::text || ':' || is_called::text FROM public.${quoteIdentifier(sequence)};`);
+    lines.push(`SELECT '__BODYCAST_SEQUENCE_STATE__${marker}=' || COALESCE(pg_sequence.last_value::text, 'null') || ':' || sequence_state.last_value::text || ':' || sequence_state.is_called::text FROM public.${quoteIdentifier(sequence)} AS sequence_state CROSS JOIN pg_catalog.pg_sequences AS pg_sequence WHERE pg_sequence.schemaname = 'public' AND pg_sequence.sequencename = '${sequence}';`);
   }
   lines.push("\\echo __BODYCAST_SEQUENCE_PHASE_END__before");
   for (const table of tableNames) {
@@ -202,7 +202,7 @@ function buildSnapshotSql(inventory) {
   for (const fullName of sequenceNames) {
     const [, sequence] = fullName.split(".");
     const marker = Buffer.from(fullName).toString("base64url");
-    lines.push(`SELECT '__BODYCAST_SEQUENCE_STATE__${marker}=' || last_value::text || ':' || is_called::text FROM public.${quoteIdentifier(sequence)};`);
+    lines.push(`SELECT '__BODYCAST_SEQUENCE_STATE__${marker}=' || COALESCE(pg_sequence.last_value::text, 'null') || ':' || sequence_state.last_value::text || ':' || sequence_state.is_called::text FROM public.${quoteIdentifier(sequence)} AS sequence_state CROSS JOIN pg_catalog.pg_sequences AS pg_sequence WHERE pg_sequence.schemaname = 'public' AND pg_sequence.sequencename = '${sequence}';`);
   }
   lines.push("\\echo __BODYCAST_SEQUENCE_PHASE_END__after", activity("__BODYCAST_ACTIVITY_AFTER__"), "COMMIT;");
   return `${lines.join("\n")}\n`;
@@ -261,13 +261,13 @@ export async function consumeSnapshotOutput(readable, inventory) {
       currentTable = { name, rowCount: 0, hash: createHash("sha256") };
       continue;
     }
-    const sequence = /^__BODYCAST_SEQUENCE_STATE__(.+?)=(null|[0-9]+):(true|false)$/.exec(line);
+    const sequence = /^__BODYCAST_SEQUENCE_STATE__(.+?)=(null|[0-9]+):([0-9]+):(true|false)$/.exec(line);
     if (sequence) {
       if (!sequencePhase) throw new Error("Forensic sequence boundary is missing.");
       const name = Buffer.from(sequence[1], "base64url").toString("utf8");
       if (expectedSequences[sequencePhaseIndex] !== name) throw new Error("Forensic sequence inventory changed during its read-only snapshot.");
       sequencePhaseIndex += 1;
-      const state = `${sequence[2]}:${sequence[3]}`;
+      const state = `${sequence[2]}:${sequence[3]}:${sequence[4]}`;
       if (sequencePhase === "before") {
         sequenceBefore.set(name, state);
         continue;
@@ -279,16 +279,17 @@ export async function consumeSnapshotOutput(readable, inventory) {
         v3.update("sequence-state\n");
         sequenceHeaderAdded = true;
       }
-      const lastValue = sequence[2];
-      const isCalled = sequence[3] === "true";
+      const legacyLastValue = sequence[2];
+      const lastValue = sequence[3];
+      const isCalled = sequence[4] === "true";
       const owner = inventory.sequences.find((item) => item.name === name)?.ownerTable ?? null;
-      const legacyLine = `${name}:${lastValue}`;
-      const digest = sha256(`${name}:${lastValue}:${isCalled}`);
+      const legacyLine = `${name}:${legacyLastValue}`;
+      const digest = sha256(`${name}:${legacyLastValue}:${lastValue}:${isCalled}`);
       sequences.push({ name, ownerTable: owner, digest, legacyDigest: sha256(legacyLine) });
       full.update(`${legacyLine}\n`);
       if (!DERIVED_SEQUENCE_OWNERS.has(owner)) {
         v2.update(`${legacyLine}\n`);
-        v3.update(`${legacyLine}\n`);
+        v3.update(`${name}:${legacyLastValue}:${lastValue}:${isCalled}\n`);
       }
       continue;
     }

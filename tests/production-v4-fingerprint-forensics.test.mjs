@@ -22,7 +22,7 @@ const derivedTables = new Set([
   "ExperimentalTransientExerciseWaterShadow", "PhysiologyV7Lifecycle", "UnifiedExperimentalPhysiologyStateV2", "UnifiedPublicationBlock",
 ]);
 
-function snapshotLines({ migration = "base", lifecycle = '{"id":1}', workoutRows = ['{"id":1}', '{"id":2}'] } = {}) {
+function snapshotLines({ migration = "base", lifecycle = '{"id":1}', workoutRows = ['{"id":1}', '{"id":2}'], legacySequenceValue = "5", sequenceValue = "5", sequenceIsCalled = "true" } = {}) {
   const tables = ["_prisma_migrations", "PhysiologyV7Lifecycle", "Workout"];
   const sequences = [{ name: "public.Workout_id_seq", ownerTable: "Workout", dataType: "bigint", startValue: "1", incrementBy: "1", minimumValue: "1", maximumValue: "9223372036854775807", cycle: false }];
   return [
@@ -33,7 +33,7 @@ function snapshotLines({ migration = "base", lifecycle = '{"id":1}', workoutRows
     `__BODYCAST_MIGRATIONS__=${JSON.stringify([])}`,
     `__BODYCAST_ACTIVITY_BEFORE__=${JSON.stringify(activity)}`,
     "__BODYCAST_SEQUENCE_PHASE__before",
-    `__BODYCAST_SEQUENCE_STATE__${marker("public.Workout_id_seq")}=5:true`,
+    `__BODYCAST_SEQUENCE_STATE__${marker("public.Workout_id_seq")}=${legacySequenceValue}:${sequenceValue}:${sequenceIsCalled}`,
     "__BODYCAST_SEQUENCE_PHASE_END__before",
     `__BODYCAST_TABLE_BEGIN__${marker("_prisma_migrations")}`,
     JSON.stringify({ migration_name: migration }),
@@ -45,7 +45,7 @@ function snapshotLines({ migration = "base", lifecycle = '{"id":1}', workoutRows
     ...workoutRows,
     `__BODYCAST_TABLE_END__${marker("Workout")}`,
     "__BODYCAST_SEQUENCE_PHASE__after",
-    `__BODYCAST_SEQUENCE_STATE__${marker("public.Workout_id_seq")}=5:true`,
+    `__BODYCAST_SEQUENCE_STATE__${marker("public.Workout_id_seq")}=${legacySequenceValue}:${sequenceValue}:${sequenceIsCalled}`,
     "__BODYCAST_SEQUENCE_PHASE_END__after",
     `__BODYCAST_ACTIVITY_AFTER__=${JSON.stringify(activity)}`,
     "COMMIT",
@@ -62,13 +62,34 @@ test("V3 excludes only approved derived rows and the migration ledger from raw p
   const ledgerChanged = await capture({ migration: "base plus V4" });
   const derivedChanged = await capture({ lifecycle: '{"id":2}' });
   const rawChanged = await capture({ migration: "base", workoutRows: ['{"id":1}', '{"id":3}'] });
+  const sequenceStateChanged = await capture({ sequenceIsCalled: "false" });
 
   assert.equal(baseline.v4ReplayInputFingerprintV3, ledgerChanged.v4ReplayInputFingerprintV3);
   assert.notEqual(baseline.v4ReplayInputFingerprintV2, ledgerChanged.v4ReplayInputFingerprintV2);
   assert.equal(baseline.v4ReplayInputFingerprintV3, derivedChanged.v4ReplayInputFingerprintV3);
   assert.notEqual(baseline.v4ReplayInputFingerprintV3, rawChanged.v4ReplayInputFingerprintV3);
+  assert.equal(baseline.v4ReplayInputFingerprintV2, sequenceStateChanged.v4ReplayInputFingerprintV2);
+  assert.notEqual(baseline.v4ReplayInputFingerprintV3, sequenceStateChanged.v4ReplayInputFingerprintV3);
   assert.deepEqual(baseline.replayInputFingerprintVersions, fingerprintVersions);
   assert.equal(JSON.stringify(baseline).includes('{"id":1}'), false);
+});
+
+test("reproduces the signed legacy sequence projection when pg_sequences.last_value is null", async () => {
+  const inventory = {
+    tables: ["_prisma_migrations", "PhysiologyV7Lifecycle", "Workout"].map((tablename) => ({ tablename })),
+    sequences: [{ name: "public.Workout_id_seq", ownerTable: "Workout", dataType: "bigint", startValue: "1", incrementBy: "1", minimumValue: "1", maximumValue: "9223372036854775807", cycle: false }],
+  };
+  const report = await consumeSnapshotOutput(Readable.from(`${snapshotLines({ legacySequenceValue: "null", sequenceValue: "1", sequenceIsCalled: "false" }).join("\n")}\n`), inventory);
+  const expectedV2 = createHash("sha256")
+    .update("bodycast-v4-replay-source-fingerprint-v2\n")
+    .update("excluded-derived-tables:ExperimentalTransientExerciseWaterShadow,PhysiologyV7Lifecycle,UnifiedExperimentalPhysiologyStateV2,UnifiedPublicationBlock\n")
+    .update('table:_prisma_migrations\n{"migration_name":"base"}\n\n')
+    .update('table:Workout\n{"id":1}\n{"id":2}\n\n')
+    .update("sequence-state\npublic.Workout_id_seq:null\n")
+    .digest("hex");
+  assert.equal(report.v4ReplayInputFingerprintV2, expectedV2);
+  assert.equal(report.sequences[0].legacyDigest, sha("public.Workout_id_seq:null"));
+  assert.equal(report.sequences[0].digest, sha("public.Workout_id_seq:null:1:false"));
 });
 
 function forensicReport(side) {
@@ -257,6 +278,9 @@ test("read-only forensics workflow retains authorization and excludes activation
   assert.match(workflow, /FORENSICS_CONFIRMATION: \$\{\{ inputs\.confirm_read_only_forensics \}\}/);
   assert.match(workflow, /READ_ONLY_V4_FINGERPRINT_FORENSICS/);
   assert.match(workflow, /Compare signed pre-DDL source with a read-only production snapshot\n\s+if: inputs\.mode == 'forensics'/);
+  for (const status of ["queued", "in_progress", "requested", "waiting", "pending"]) {
+    assert.match(workflow, new RegExp(`production-runs-${status}\\.ndjson`), `missing ${status} run inventory`);
+  }
   const sourceForensics = workflow.slice(workflow.indexOf('if [[ "$EXECUTION_MODE" == "forensics" ]]; then'), workflow.indexOf("\n          else", workflow.indexOf('if [[ "$EXECUTION_MODE" == "forensics" ]]; then')));
   assert.doesNotMatch(sourceForensics, /prisma:migrate:deploy|source-post-v4/);
   assert.doesNotMatch(sourceForensics, /evaluateProductionPreflight/);

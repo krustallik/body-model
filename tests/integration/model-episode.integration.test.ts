@@ -837,6 +837,60 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(await prisma.modelRecoveryRun.count({ where: { episodeId } })).toBe(0);
   });
 
+  it("republishes the active V4 snapshot after a successful model recalculation", async () => {
+    await prepareCurrentForecastV2(now);
+    await prisma.$transaction(async (tx) => {
+      const lifecycle = new PhysiologyV7PersistenceRepository(tx);
+      await lifecycle.lockProfile(1);
+      await lifecycle.invalidateUnifiedPublication(1);
+    });
+    expect(await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } }))
+      .toMatchObject({ unifiedPublishedGeneration: null, unifiedPublishedRolloutEpoch: null });
+
+    const previousQaMode = process.env.BODYCAST_QA_MODE;
+    const previousQaNow = process.env.BODYCAST_QA_NOW;
+    process.env.BODYCAST_QA_MODE = "1";
+    process.env.BODYCAST_QA_NOW = now.toISOString();
+    let response: Response;
+    try {
+      response = await postForecastAction(new Request("http://localhost/api/forecast/action", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "recalculate" }),
+      }));
+    } finally {
+      if (previousQaMode === undefined) delete process.env.BODYCAST_QA_MODE;
+      else process.env.BODYCAST_QA_MODE = previousQaMode;
+      if (previousQaNow === undefined) delete process.env.BODYCAST_QA_NOW;
+      else process.env.BODYCAST_QA_NOW = previousQaNow;
+    }
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      episodeId,
+      modelPublicationStatus: "current",
+    });
+    const lifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
+    expect(lifecycle).toMatchObject({
+      unifiedTargetRevision: expect.stringContaining("unified-experimental-physiology-state-v4"),
+      unifiedRolloutEpoch: 1,
+      unifiedPublishedRolloutEpoch: 1,
+      unifiedPublishedGeneration: lifecycle.invalidationGeneration,
+      productionPublishedGeneration: lifecycle.invalidationGeneration,
+      productionStaleFromDate: null,
+    });
+    await expect(verifyUnifiedV4ReadyForTraffic({ profileId: 1 })).resolves.toMatchObject({ rolloutEpoch: 1 });
+    const forecast = await forecastModelEpisode({
+      episodeId,
+      horizonDays: 30,
+      seed: 88,
+      scenario: fixedForecastScenario,
+      config: { pathCount: 32 },
+      now,
+    }, prisma);
+    expect(forecast).toMatchObject({ status: "ok", forecastVersion: "experimental-forecast-v2" });
+  });
+
   it("uses only current production and Unified generations for the Forecast V1 historical anchor", async () => {
     const currentProduction = await recalculateModelEpisode({ episodeId, now });
     expect(currentProduction.episodeId).toBe(episodeId);

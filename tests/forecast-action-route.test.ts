@@ -3,11 +3,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const services = vi.hoisted(() => ({
   initializeNewModelEpisode: vi.fn(),
   recalculateModelEpisode: vi.fn(),
+  getModelStatus: vi.fn(),
   recoverModelEpisode: vi.fn(),
 }));
 vi.mock("@/modules/model-episodes/model-episode.service", () => ({
   initializeNewModelEpisode: services.initializeNewModelEpisode,
   recalculateModelEpisode: services.recalculateModelEpisode,
+  getModelStatus: services.getModelStatus,
+}));
+const unified = vi.hoisted(() => ({ rebuild: vi.fn() }));
+vi.mock("@/modules/model-episodes/unified-experimental-physiology-state.service", () => ({
+  rebuildUnifiedExperimentalPhysiologyStateV1: unified.rebuild,
 }));
 vi.mock("@/modules/model-recovery/model-recovery.service", () => ({
   recoverModelEpisode: services.recoverModelEpisode,
@@ -24,7 +30,10 @@ function request(): Request {
 }
 
 describe("forecast action recalculation route", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    services.getModelStatus.mockResolvedValue({ productionCurrent: false, latestModeledDate: null });
+  });
 
   it("recovers the unchanged active episode after candidate rejection and gates overlap with 429", async () => {
     let enteredRecovery!: () => void;
@@ -46,6 +55,11 @@ describe("forecast action recalculation route", () => {
       await recoveryHold;
       return { status: "recovered", episodeId: activeEpisodeId };
     });
+    services.getModelStatus.mockResolvedValue({
+      episodeStartDate: "2041-03-01",
+      latestModeledDate: "2041-03-30",
+      productionCurrent: true,
+    });
 
     const firstRequest = POST(request());
     await recoveryStarted;
@@ -63,6 +77,12 @@ describe("forecast action recalculation route", () => {
       seed: 20_260_824,
       episodeId: activeEpisodeId,
     });
+    expect(services.getModelStatus).toHaveBeenCalledWith(activeEpisodeId);
+    expect(unified.rebuild).toHaveBeenCalledWith({
+      profileId: 1,
+      fromDate: "2041-03-01",
+      toDate: "2041-03-30",
+    });
     expect(overlappingResponse.status).toBe(429);
     expect(overlappingResponse.headers.get("Retry-After")).toBe("1");
     await expect(overlappingResponse.json()).resolves.toEqual({ error: "operation_in_progress" });
@@ -71,6 +91,22 @@ describe("forecast action recalculation route", () => {
       episodeId: activeEpisodeId,
       recoveryRequired: true,
       recovery: { status: "recovered", episodeId: activeEpisodeId },
+      modelPublicationStatus: "current",
     });
+  });
+
+  it("does not publish Unified state when production generation is stale", async () => {
+    services.recalculateModelEpisode.mockResolvedValue({ status: "ok", episodeId: 42, recoveryRequired: false });
+    services.getModelStatus.mockResolvedValue({
+      episodeStartDate: "2041-03-01",
+      latestModeledDate: "2041-03-30",
+      productionCurrent: false,
+    });
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ modelPublicationStatus: "stale" });
+    expect(unified.rebuild).not.toHaveBeenCalled();
   });
 });

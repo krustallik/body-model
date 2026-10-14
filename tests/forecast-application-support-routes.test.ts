@@ -10,8 +10,12 @@ const recoveryServices = vi.hoisted(() => ({ recoverModelEpisode: vi.fn() }));
 const v7Persistence = vi.hoisted(() => ({
   readDay: vi.fn(),
 }));
+const unifiedState = vi.hoisted(() => ({ rebuild: vi.fn() }));
 vi.mock("@/modules/model-episodes/model-episode.service", () => modelServices);
 vi.mock("@/modules/model-recovery/model-recovery.service", () => recoveryServices);
+vi.mock("@/modules/model-episodes/unified-experimental-physiology-state.service", () => ({
+  rebuildUnifiedExperimentalPhysiologyStateV1: unifiedState.rebuild,
+}));
 vi.mock("@/modules/model-episodes/physiology-v7-persistence.repository", () => ({
   PhysiologyV7PersistenceRepository: class {
     readDay = v7Persistence.readDay;
@@ -33,6 +37,7 @@ function actionRequest(action: string) {
 describe("forecast context route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    modelServices.getModelStatus.mockResolvedValue({ productionCurrent: false, latestModeledDate: null });
     v7Persistence.readDay.mockResolvedValue({
       status: "missing",
       date: "2026-08-24",
@@ -121,7 +126,10 @@ describe("forecast context route", () => {
 });
 
 describe("forecast recovery and recalculation route", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    modelServices.getModelStatus.mockResolvedValue({ productionCurrent: false, latestModeledDate: null });
+  });
 
   it("rejects unknown actions and delegates supported actions", async () => {
     expect((await POST(actionRequest("unknown"))).status).toBe(400);

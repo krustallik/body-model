@@ -194,6 +194,10 @@ describe("forecast application helpers", () => {
     long.diagnostics.numericalQuality.classification = "limited-long-horizon";
     expect(qualityPresentation(long).title).toBe("Far-ahead forecast is less precise");
     expect(blockedPresentation({ status: "initial-state-unavailable", forecastVersion: "bodycast-forecast-v1", modelVersion: "test", recoveryVersion: null, initialStateQuality: "awaiting", reason: "The recovery ensemble no longer matches current history and must be rerun before forecasting." }).title).toBe("Model update needed");
+    expect(blockedPresentation({ status: "initial-state-unavailable", forecastVersion: "experimental-forecast-v2", modelVersion: "test", recoveryVersion: null, initialStateQuality: "awaiting", reasonCode: "unified-v4-not-current", reason: "Unified V4 is not current for the production generation and rollout epoch." }, "uk")).toMatchObject({
+      title: "Модель ще не опублікована",
+      detail: expect.stringContaining("Перерахуйте модель"),
+    });
     expect(blockedPresentation({ status: "initial-state-unreliable", forecastVersion: "bodycast-forecast-v1", modelVersion: "test", recoveryVersion: null, initialStateQuality: "degenerate", reason: "Too concentrated" }).title).toBe("Starting point is too uncertain");
   });
 

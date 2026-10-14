@@ -1,8 +1,10 @@
 import { readJson } from "@/modules/days/day.http";
 import {
+  getModelStatus,
   initializeNewModelEpisode,
   recalculateModelEpisode,
 } from "@/modules/model-episodes/model-episode.service";
+import { rebuildUnifiedExperimentalPhysiologyStateV1 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
 import {
   EpisodeInitializationError,
   ModelEpisodeNotFoundError,
@@ -21,25 +23,47 @@ const DEFAULT_RECOVERY_SEED = 20_260_824;
 
 async function recalculateThenRecover(now?: Date) {
   const result = await recalculateModelEpisode(now ? { now } : {});
-  if (!result.recoveryRequired) return result;
-  try {
-    const recovery = await recoverModelEpisode({
-      seed: DEFAULT_RECOVERY_SEED,
-      episodeId: result.episodeId,
-      ...(now ? { now } : {}),
-    });
-    return { ...result, recovery };
-  } catch (error) {
-    if (error instanceof ModelRecoveryEvidenceError) {
-      return {
-        ...result,
-        recovery: {
-          status: "insufficient_recovery_evidence" as const,
-          message: error.message,
-        },
-      };
+  let response: typeof result & { recovery?: unknown } = result;
+  if (result.recoveryRequired) {
+    try {
+      const recovery = await recoverModelEpisode({
+        seed: DEFAULT_RECOVERY_SEED,
+        episodeId: result.episodeId,
+        ...(now ? { now } : {}),
+      });
+      response = { ...result, recovery };
+    } catch (error) {
+      if (error instanceof ModelRecoveryEvidenceError) {
+        response = {
+          ...result,
+          recovery: {
+            status: "insufficient_recovery_evidence" as const,
+            message: error.message,
+          },
+        };
+      } else {
+        throw error;
+      }
     }
-    throw error;
+  }
+
+  try {
+    const current = await getModelStatus(result.episodeId);
+    if (!current.productionCurrent || current.latestModeledDate === null) {
+      return { ...response, modelPublicationStatus: "stale" as const };
+    }
+    await rebuildUnifiedExperimentalPhysiologyStateV1({
+      profileId: 1,
+      fromDate: current.episodeStartDate,
+      toDate: current.latestModeledDate,
+    });
+    return { ...response, modelPublicationStatus: "current" as const };
+  } catch (error) {
+    logEvent("warn", "model_recalculation_unified_publication_failed", {
+      stage: "forecast-action-unified-publication",
+      ...errorDiagnosticFields(error),
+    });
+    return { ...response, modelPublicationStatus: "stale" as const };
   }
 }
 

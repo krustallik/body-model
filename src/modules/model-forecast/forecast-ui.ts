@@ -79,6 +79,15 @@ export type QualityPresentation = { tone: "good" | "info" | "warning" | "blocked
 
 export function blockedPresentation(result: ForecastBlockedResult, locale: Locale = "en"): QualityPresentation {
   const uk = locale === "uk";
+  if (result.reasonCode === "unified-v4-not-current") {
+    return {
+      tone: "blocked",
+      title: uk ? "Модель ще не опублікована" : "Model publication is not current",
+      detail: uk
+        ? "Актуальний стан моделі ще не опублікований для прогнозу. Перерахуйте модель і спробуйте знову."
+        : "The current model state has not been published for forecasting. Recalculate the model and try again.",
+    };
+  }
   if (/no longer matches|rerun|invalid/i.test(result.reason)) {
     return { tone: "blocked", title: uk ? "Потрібно оновити модель" : "Model update needed", detail: uk ? "Дані змінилися після останнього розрахунку. Оновіть модель, щоб прогноз відповідав новій історії." : result.reason };
   }

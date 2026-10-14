@@ -341,9 +341,8 @@ bodycast_v4_failure_phase="app-final-verification"
 bodycast_verify_exact_maintenance_route
 bodycast_probe_public_maintenance "$maintenance_marker"
 bodycast_assert_current_main_sha "$RELEASE_SHA"
-[[ "$(docker inspect --format '{{.Image}}|{{index .Config.Labels \"org.bodycast.release-sha\"}}|{{.State.Health.Status}}' "$APP_CONTAINER")" == "$candidate_image_id|$RELEASE_SHA|healthy" \
-  && "$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')" == "$marker_digest" ]] || {
-  echo "Exact app, release marker, or maintenance route did not survive backup preparation." >&2; exit 1;
+[[ "$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')" == "$marker_digest" ]] || {
+  echo "The release marker changed during backup preparation." >&2; exit 1;
 }
 bodycast_v4_failure_phase="backup-evidence-output"
 printf 'BODYCAST_PGDUMP_INVOCATION_AT=%s\n' "$pg_dump_invocation_at" >&2

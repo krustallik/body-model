@@ -116,6 +116,20 @@ describe("sanitized V4 host failure diagnostics", () => {
     );
   });
 
+  it("uses the health waiter as the sole app readiness gate after backup and keeps final route, SHA, and marker checks", () => {
+    const healthWait = backupHostScript.indexOf('bash "$ROOT_DIR/scripts/production-app-container-health-wait.sh" "$RELEASE_SHA" "$candidate_image_id"', backupHostScript.indexOf('bodycast_v4_failure_phase="app-restart"'));
+    const finalVerificationStart = backupHostScript.indexOf('bodycast_v4_failure_phase="app-final-verification"');
+    const finalVerificationEnd = backupHostScript.indexOf('bodycast_v4_failure_phase="backup-evidence-output"', finalVerificationStart);
+    const finalVerification = backupHostScript.slice(finalVerificationStart, finalVerificationEnd);
+
+    expect(healthWait).toBeGreaterThan(-1);
+    expect(finalVerificationStart).toBeGreaterThan(healthWait);
+    expect(finalVerification).toContain("bodycast_verify_exact_maintenance_route");
+    expect(finalVerification).toContain('bodycast_assert_current_main_sha "$RELEASE_SHA"');
+    expect(finalVerification).toContain('sha256sum "$BODYCAST_MARKER_FILE_PATH"');
+    expect(finalVerification).not.toContain("docker inspect");
+  });
+
   it.skipIf(process.platform === "win32")("runs the V4 backup host setup through route canonicalization before its next safety gate", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "bodycast-v4-backup-route-lock-"));
     temporaryDirectories.push(root);

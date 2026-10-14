@@ -128,6 +128,11 @@ describe("sanitized V4 host failure diagnostics", () => {
     expect(finalVerification).toContain('bodycast_assert_current_main_sha "$RELEASE_SHA"');
     expect(finalVerification).toContain('sha256sum "$BODYCAST_MARKER_FILE_PATH"');
     expect(finalVerification).not.toContain("docker inspect");
+
+    const dumpBoundaryLine = "printf 'BODYCAST_PGDUMP_INVOCATION_AT=%s\\n' \"$pg_dump_invocation_at\" >&2";
+    const dumpInvocation = "docker exec \"$before_db_id\" sh -c 'exec pg_dump";
+    expect(backupHostScript.split(dumpBoundaryLine)).toHaveLength(2);
+    expect(backupHostScript.indexOf(dumpBoundaryLine)).toBeLessThan(backupHostScript.indexOf(dumpInvocation));
   });
 
   it.skipIf(process.platform === "win32")("runs the V4 backup host setup through route canonicalization before its next safety gate", async () => {

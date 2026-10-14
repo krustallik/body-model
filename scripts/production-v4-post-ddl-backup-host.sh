@@ -345,7 +345,6 @@ bodycast_assert_current_main_sha "$RELEASE_SHA"
   echo "The release marker changed during backup preparation." >&2; exit 1;
 }
 bodycast_v4_failure_phase="backup-evidence-output"
-printf 'BODYCAST_PGDUMP_INVOCATION_AT=%s\n' "$pg_dump_invocation_at" >&2
 printf 'BODYCAST_V4_POST_DDL_SNAPSHOT_B64=%s\n' "$(base64 -w0 "$tmp/snapshot-after.json")" >&2
 echo "Post-DDL backup source snapshot is ready; exact app is healthy behind unchanged maintenance." >&2
 exit 0

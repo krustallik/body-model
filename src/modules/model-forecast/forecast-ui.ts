@@ -212,6 +212,24 @@ export function recalculateModelPresentation(locale: Locale = "en"): {
   };
 }
 
+export type RecalculationPublicationStatus = "current" | "stale" | "unknown";
+
+export function recalculateCompletionMessage(
+  status: RecalculationPublicationStatus,
+  locale: Locale = "en",
+): string {
+  const uk = locale === "uk";
+  if (status === "current") return uk
+    ? "Перерахунок завершено; модель опублікована й актуальна."
+    : "Recalculation complete; the model is published and current.";
+  if (status === "stale") return uk
+    ? "Перерахунок завершено, але публікація моделі застаріла. Прогноз може бути недоступним."
+    : "Recalculation finished, but model publication is stale. Forecasting may be unavailable.";
+  return uk
+    ? "Перерахунок завершено; актуальність публікації моделі не підтверджена."
+    : "Recalculation finished; model publication status is unconfirmed.";
+}
+
 export function modelNeedsRecalculation(status: Pick<ModelStatusDto, "daysModeled" | "latestModeledDate" | "currentPredictedWeightKg"> | null): boolean {
   if (!status) return false;
   return status.daysModeled === 0 || status.latestModeledDate === null || status.currentPredictedWeightKg === null;

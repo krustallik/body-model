@@ -22,6 +22,7 @@ vi.mock("@/components/app-nav", () => ({
 
 import { BackfillClient } from "@/app/training/backfill/backfill-client";
 import { SessionEditClient } from "@/app/training/sessions/[id]/edit/session-edit-client";
+import { updateTrainingSearchParams } from "@/app/training/training-url-state";
 import {
   DIARY_COMPLETENESS,
   ENTRY_MODE,
@@ -155,6 +156,25 @@ describe("Training backfill UI", () => {
     expect(screen.getAllByText(/No diary/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Push A/).length).toBeGreaterThan(0);
   });
+
+  it("refetches the Garmin list when a session editor returns with a refresh token", async () => {
+    window.history.replaceState(null, "", "/training/backfill");
+    let historicalRequests = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo) => {
+      const url = String(input);
+      if (url.includes("/workouts/historical")) {
+        historicalRequests += 1;
+        return Response.json({ workouts: [], totalCount: 0 });
+      }
+      if (url.includes("/programs")) return Response.json({ programs: [] });
+      return new Response("not found", { status: 404 });
+    }));
+
+    render(<BackfillClient />);
+    await waitFor(() => expect(historicalRequests).toBe(1));
+    updateTrainingSearchParams({ refresh: "2-2026-10-14T18:00:00.000Z" });
+    await waitFor(() => expect(historicalRequests).toBe(2));
+  });
 });
 
 describe("Session edit UI", () => {
@@ -206,13 +226,14 @@ describe("Session edit UI", () => {
       expect(screen.getByText(/30 kg|30 кг/)).toBeTruthy();
       expect(screen.getByRole("button", { name: /Session menu/i })).toBeTruthy();
     });
+    expect(screen.getByRole("link", { name: "← Back" }).getAttribute("href")).toContain("/training/backfill?refresh=2-");
 
     await user.click(screen.getByRole("button", { name: /Session menu/i }));
     const dialog = screen.getByRole("dialog", { name: /Actions|Дії/i });
     expect(within(dialog).getByRole("button", { name: /Change program/i })).toBeTruthy();
     await user.click(within(dialog).getByRole("button", { name: /Delete diary/i }));
     await waitFor(() => {
-      expect(routerPush).toHaveBeenCalledWith("/training/backfill");
+      expect(routerPush.mock.calls.at(-1)?.[0]).toMatch(/^\/training\/backfill\?refresh=\d+$/);
     });
   });
 });

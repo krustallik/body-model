@@ -49,6 +49,37 @@
   .actions a, .actions button { transition-duration: 0s; }
 }
 
+.actionProgress {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  margin: 0 0 1rem;
+  padding: 0.9rem 1rem;
+  background: color-mix(in srgb, var(--info) 8%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--info) 30%, var(--line));
+  border-radius: 0.8rem;
+}
+.actionProgressMarker {
+  width: 0.75rem;
+  height: 0.75rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--info);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--info) 45%, transparent);
+  animation: action-pulse 1.5s ease-out infinite;
+}
+.actionProgress div { display: grid; gap: 0.2rem; }
+.actionProgress strong { color: var(--ink); font-size: 0.86rem; }
+.actionProgress span:not(.actionProgressMarker) { color: var(--muted); font-size: 0.75rem; line-height: 1.45; }
+.actionComplete { margin: 0 0 1rem; padding: 0.75rem 0.9rem; color: var(--success-strong); background: var(--success-soft); border: 1px solid color-mix(in srgb, var(--success) 28%, var(--line)); border-radius: 0.7rem; font-size: 0.8rem; }
+@keyframes action-pulse {
+  70% { box-shadow: 0 0 0 0.55rem color-mix(in srgb, var(--info) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0.55rem transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .actionProgressMarker { animation: none; }
+}
+
 /* Diagnostics separates estimate, evidence, calibration, and forecast readiness. */
 .overview article { --category-accent: var(--info); border-top-color: var(--category-accent); }
 .overview article[data-kind="personalization"] { --category-accent: var(--primary); }

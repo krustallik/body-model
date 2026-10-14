@@ -68,6 +68,7 @@ export function BackfillClient() {
   const router = useRouter();
   const { value: pageValue, ready } = useTrainingSearchParam("garminPage");
   const { value: missingValue } = useTrainingSearchParam("onlyMissingDiary");
+  const { value: refreshValue } = useTrainingSearchParam("refresh");
   const page = parseTrainingPage(pageValue);
   const onlyMissing = missingValue === "true";
   const pageHref = useCallback((nextPage: number): string => {
@@ -83,7 +84,7 @@ export function BackfillClient() {
   const [error, setError] = useState<string | null>(null);
   const [listRevision, setListRevision] = useState(0);
   const requestSequence = useRef(0);
-  const requestKey = `${page}:${onlyMissing}:${listRevision}`;
+  const requestKey = `${page}:${onlyMissing}:${refreshValue ?? ""}:${listRevision}`;
   const loading = loadedRequestKey !== requestKey;
 
   const loadPrograms = useCallback(async () => {

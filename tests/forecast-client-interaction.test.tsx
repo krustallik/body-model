@@ -286,6 +286,47 @@ describe("ForecastClient interaction", () => {
     expect(screen.queryByText("operation in progress")).toBeNull();
   });
 
+  it("does not announce a blocked forecast as successfully updated after model recalculation", async () => {
+    let forecastRequests = 0;
+    let actionRequests = 0;
+    const unavailable = {
+      status: "initial-state-unavailable",
+      forecastVersion: "bodycast-forecast-v1",
+      modelVersion: "test",
+      recoveryVersion: null,
+      initialStateQuality: "awaiting",
+      reason: "The latest modeled state is unavailable.",
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/forecast/context")) return jsonResponse({ status: modelStatus(), history: [], unknownIntervals: [] });
+      if (url.includes("/api/forecast/action") && init?.method === "POST") {
+        actionRequests += 1;
+        return jsonResponse({ ok: true });
+      }
+      if (url.includes("/api/forecast") && !url.includes("action")) {
+        forecastRequests += 1;
+        return jsonResponse(unavailable);
+      }
+      return jsonResponse({ error: "not found" }, 404);
+    }));
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTimeAsync });
+    render(<ForecastClient />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(MIN_FORECAST_LOADING_MS + 50); });
+    expect(await screen.findByRole("heading", { name: "More weigh-ins are needed" })).toBeTruthy();
+
+    const recalculateButtons = screen.getAllByRole("button", { name: "Recalculate model" });
+    await user.click(recalculateButtons.at(-1)!);
+    await waitFor(() => expect(actionRequests).toBe(1));
+    await act(async () => { await vi.advanceTimersByTimeAsync(MIN_FORECAST_LOADING_MS + 50); });
+
+    expect(await screen.findByText("Model recalculated, but the forecast is still unavailable.")).toBeTruthy();
+    expect(screen.queryByText("Model recalculated and forecast updated.")).toBeNull();
+    expect(forecastRequests).toBe(2);
+    expect(actionRequests).toBe(1);
+  });
+
   it("shows Ukrainian chart labels and explains filtered history separately from the future forecast", async () => {
     localeMock.value = "uk";
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).includes("/api/forecast/context")

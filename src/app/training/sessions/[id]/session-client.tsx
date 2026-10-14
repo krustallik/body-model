@@ -455,16 +455,14 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         onCloseMenu={() => setMenuOpen(false)}
         menuContent={(
           <div className={styles.editMenuList}>
-            {isLast && (
-              <button
-                type="button"
-                className={styles.editMenuItem}
-                disabled={busy}
-                onClick={() => void finishSession()}
-              >
-                {uk ? "Завершити тренування" : "Finish workout"}
-              </button>
-            )}
+            <button
+              type="button"
+              className={styles.editMenuItem}
+              disabled={busy}
+              onClick={() => void finishSession()}
+            >
+              {uk ? "Завершити тренування" : "Finish workout"}
+            </button>
             <button
               type="button"
               className={styles.editMenuDanger}

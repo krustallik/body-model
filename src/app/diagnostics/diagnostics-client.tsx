@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AppNav } from "@/components/app-nav";
 import { HelpTip } from "@/components/help-tip";
 import { ModelStateSource } from "@/components/model-state-source";
@@ -12,7 +12,9 @@ import {
   diagnosticsRecalculateTitle,
   modelNeedsRecalculation,
   noActiveModelPresentation,
+  recalculateCompletionMessage,
   recalculateModelPresentation,
+  type RecalculationPublicationStatus,
 } from "@/modules/model-forecast/forecast-ui";
 import styles from "./diagnostics.module.css";
 
@@ -224,6 +226,8 @@ export function DiagnosticsClient() {
   const [error, setError] = useState<string | null>(null);
   const [noActiveModel, setNoActiveModel] = useState(false);
   const [recalculating, setRecalculating] = useState(false);
+  const [actionComplete, setActionComplete] = useState<RecalculationPublicationStatus | null>(null);
+  const actionRef = useRef(false);
 
   const loadDiagnostics = useCallback(async (signal?: AbortSignal) => {
     const response = await fetch("/api/diagnostics", { cache: "no-store", signal });
@@ -254,8 +258,11 @@ export function DiagnosticsClient() {
   }, [loadDiagnostics]);
 
   async function runModelAction(action: "initialize" | "recalculate") {
+    if (actionRef.current) return;
+    actionRef.current = true;
     setRecalculating(true);
     setError(null);
+    setActionComplete(null);
     try {
       const response = await fetch("/api/forecast/action", {
         method: "POST",
@@ -268,8 +275,13 @@ export function DiagnosticsClient() {
           ? initializationFailureMessage(body.reason ?? body.message, locale)
           : (uk ? "Не вдалося перерахувати модель." : "Could not recalculate the model."));
       }
+      const result = await response.json().catch(() => null) as { modelPublicationStatus?: unknown } | null;
+      const publicationStatus: RecalculationPublicationStatus = result?.modelPublicationStatus === "current"
+        ? "current"
+        : result?.modelPublicationStatus === "stale" ? "stale" : "unknown";
       setData(await loadDiagnostics());
       setNoActiveModel(false);
+      setActionComplete(publicationStatus);
     } catch (cause: unknown) {
       const failure = cause as DiagnosticsRequestError;
       if (failure.name === "NoActiveModelDiagnosticsError") {
@@ -278,6 +290,7 @@ export function DiagnosticsClient() {
       }
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
+      actionRef.current = false;
       setRecalculating(false);
     }
   }
@@ -309,6 +322,14 @@ export function DiagnosticsClient() {
         <div><strong>{diagnosticsRecalculateTitle({ noActiveModel, needsRecalculation, daysModeled: data.dataContinuity.modeledDayCount }, locale)}<HelpTip>{uk ? "Кнопка бере записи з таблиці «Історія», заново рахує фізіологічну модель, зберігає результат і за потреби сама оцінює стан після пропуску для Діагностики, Прогнозу та Цілі. Самі записи здоров’я вона не змінює." : "This reads Health History, recalculates the physiology model, saves results, and when needed estimates state after a data gap for Diagnostics, Forecast, and Goal. It does not edit health records."}</HelpTip></strong><span>{noActiveModel ? noActiveCopy.detail : recalculateCopy.hint}</span>{error && noActiveModel && <span>{error}</span>}</div>
         <button type="button" className={needsRecalculation || noActiveModel ? styles.recalculatePrimary : styles.recalculateSecondary} disabled={recalculating} aria-busy={recalculating} onClick={() => void runRecalculate()}>{recalculating ? actionLoadingLabel : actionLabel}</button>
       </section>
+      {recalculating ? (
+        <section className={styles.actionProgress} role="status" aria-live="polite" aria-busy="true">
+          <span className={styles.actionProgressMarker} aria-hidden="true" />
+          <div><strong>{uk ? "Перераховуємо модель" : "Recalculating the model"}</strong><span>{uk ? "Запит ще виконується. Не запускайте його повторно." : "The request is still running. There is no need to submit it again."}</span></div>
+        </section>
+      ) : actionComplete ? (
+        <p className={styles.actionComplete} role="status" aria-live="polite">{recalculateCompletionMessage(actionComplete, locale)}</p>
+      ) : null}
 
       <section className={styles.overview} aria-label={uk ? "Огляд стану моделі" : "Model status overview"}>
         <article data-kind="state" data-level={data.currentState.level}>

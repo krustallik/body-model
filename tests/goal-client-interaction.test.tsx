@@ -319,52 +319,40 @@ describe("GoalClient interaction", () => {
     expect(screen.queryByText("target-centered")).toBeNull();
   });
 
-  it("shows only the latest goal solve when the cancelled request resolves afterward", async () => {
+  it("prevents a second goal solve while the first request is still pending", async () => {
     let resolveFirst!: (response: Response) => void;
-    let resolveSecond!: (response: Response) => void;
     const firstResponse = new Promise<Response>((resolve) => { resolveFirst = resolve; });
-    const secondResponse = new Promise<Response>((resolve) => { resolveSecond = resolve; });
-    const postSignals: AbortSignal[] = [];
+    const posts: RequestInit[] = [];
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("/api/forecast/context")) {
         return Promise.resolve(jsonResponse({ status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] }));
       }
       if (url.includes("/api/goal") && init?.method === "POST") {
-        postSignals.push(init.signal as AbortSignal);
-        return postSignals.length === 1 ? firstResponse : secondResponse;
+        posts.push(init);
+        return firstResponse;
       }
       return Promise.resolve(jsonResponse({ error: "optional profile unavailable" }, 404));
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const staleResult = solvedGoal();
-    staleResult.control.solvedCaloriesKcal = 2_500;
     const user = userEvent.setup();
     render(<GoalClient />);
     await user.click(await screen.findByRole("button", { name: "Calculate scenario" }));
-    await waitFor(() => expect(postSignals).toHaveLength(1));
+    await waitFor(() => expect(posts).toHaveLength(1));
 
-    await user.click(screen.getByRole("button", { name: "Cancel previous and recalculate" }));
-    await waitFor(() => expect(postSignals).toHaveLength(2));
-    expect(postSignals[0]?.aborted).toBe(true);
+    expect((screen.getByRole("button", { name: "Calculating scenario…" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/Wait for this calculation to finish/i)).toBeTruthy();
+    expect(posts).toHaveLength(1);
 
     await act(async () => {
-      resolveSecond(jsonResponse(solvedGoal()));
-      await secondResponse;
+      resolveFirst(jsonResponse(solvedGoal()));
+      await firstResponse;
       await Promise.resolve();
     });
     expect(await screen.findByText("Recommended nutrition")).toBeTruthy();
     expect(screen.getByText("2,100")).toBeTruthy();
-
-    await act(async () => {
-      resolveFirst(jsonResponse(staleResult));
-      await firstResponse;
-      await Promise.resolve();
-    });
-    expect(screen.getByText("2,100")).toBeTruthy();
-    expect(screen.queryByText("2,500")).toBeNull();
-    expect(screen.queryByRole("alert")).toBeNull();
+    expect(posts).toHaveLength(1);
   });
 
   it("uses the completed-local-day boundary for defaults and rejects early dates before POST", async () => {

@@ -119,6 +119,7 @@ export function GoalClient() {
   const [error, setError] = useState<string | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
   const requestRef = useRef({ current: 0 });
+  const solvingRef = useRef(false);
   const skipSettingsWrite = useRef(false);
 
   useEffect(() => {
@@ -195,6 +196,7 @@ export function GoalClient() {
 
   async function submit(event?: FormEvent) {
     event?.preventDefault();
+    if (solvingRef.current) return;
     if (!context?.status.latestModeledDate || !context.latestCompletedLocalDate) { setError(uk ? "Останній змодельований стан недоступний." : "The latest modeled state is unavailable."); return; }
     const referenceNutrition = recommendGoalFormNutrition(
       form,
@@ -208,10 +210,10 @@ export function GoalClient() {
     }, context.status.latestModeledDate, context.latestCompletedLocalDate);
     setFormErrors(built.errors);
     if (!built.request) { setError(uk ? "Перевірте виділені поля." : "Check the highlighted fields."); return; }
-    controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
     const requestId = beginForecastRequest(requestRef.current);
+    solvingRef.current = true;
     setSolving(true); setError(null); setResult(null);
     try {
       const response = await fetch("/api/goal", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(built.request), signal: controller.signal });
@@ -222,6 +224,7 @@ export function GoalClient() {
       if (!controller.signal.aborted && isCurrentForecastRequest(requestRef.current, requestId)) setError(reason instanceof Error ? reason.message : uk ? "Не вдалося розрахувати ціль." : "Could not calculate the goal.");
     } finally {
       if (isCurrentForecastRequest(requestRef.current, requestId)) setSolving(false);
+      solvingRef.current = false;
     }
   }
 
@@ -301,7 +304,7 @@ export function GoalClient() {
         <FieldError id="plan-error" message={formErrors.plan} />
       </section>
 
-      <div className={styles.submitRow}><div><strong>{uk ? "Розрахунок може тривати кілька секунд." : "The solve may take several seconds."}</strong><span>{uk ? "Новий запит скасовує попередній; показується лише останній результат." : "A new request cancels the previous one; only the latest result is shown."}</span></div><button type="submit" aria-busy={solving}>{solving ? (uk ? "Скасувати попередній і перерахувати" : "Cancel previous and recalculate") : (uk ? "Розрахувати сценарій" : "Calculate scenario")}</button></div>
+      <div className={styles.submitRow}><div><strong>{uk ? "Розрахунок може тривати кілька секунд." : "The solve may take several seconds."}</strong><span>{uk ? "Поки обчислення триває, дочекайтеся результату перед новим запуском." : "Wait for this calculation to finish before starting another."}</span></div><button type="submit" aria-busy={solving} disabled={solving}>{solving ? (uk ? "Рахуємо сценарій…" : "Calculating scenario…") : (uk ? "Розрахувати сценарій" : "Calculate scenario")}</button></div>
     </form>}
     {error && <section className={styles.errorCard} role="alert"><strong>{uk ? "План не розраховано" : "Plan was not calculated"}</strong><p>{error}</p></section>}
     {solving && <section className={styles.loadingCard} aria-live="polite"><div className={styles.spinner} /><strong>{uk ? "Перевіряємо межі, траєкторії та фінальну числову якість" : "Checking bounds, trajectories, and final numerical quality"}</strong><span>{uk ? "Ми не послаблюємо 128/512 траєкторій заради швидшого інтерфейсу." : "The 128/512 path verification is not weakened for UI speed."}</span></section>}

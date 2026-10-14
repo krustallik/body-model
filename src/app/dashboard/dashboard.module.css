@@ -11,12 +11,49 @@
   width: 100%;
   min-width: 0;
   max-width: var(--app-page-max-width);
+  display: flex;
+  flex-direction: column;
   min-height: 100dvh;
   margin-inline: auto;
   padding: 1.5rem var(--app-page-gutter) 4rem;
   color: var(--ink);
   background: transparent;
 }
+
+.priorityCard {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 0.8rem;
+  padding: 1rem 1.1rem;
+  color: var(--ink);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-inline-start: 3px solid var(--health-movement);
+  border-radius: 0.85rem;
+}
+.activeSessionCard { border-inline-start-color: var(--health-body); }
+.priorityCardHeader { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.priorityCardHeader .eyebrow { margin: 0 0 0.25rem; }
+.priorityCardHeader h2 { margin: 0; font-size: 1.05rem; letter-spacing: -0.02em; }
+.priorityCard > p { margin: 0; color: var(--text-secondary); font-size: 0.84rem; line-height: 1.45; }
+.priorityCount { min-width: 2rem; padding: 0.3rem 0.55rem; color: var(--info-strong); background: var(--info-soft); border-radius: 99px; text-align: center; font-weight: 800; font-variant-numeric: tabular-nums; }
+.priorityList, .workIntervalList { display: grid; gap: 0.4rem; margin: 0; padding: 0; list-style: none; }
+.priorityList li, .workIntervalList li { display: flex; justify-content: space-between; gap: 0.75rem; padding-top: 0.45rem; border-top: 1px solid var(--line); font-size: 0.8rem; }
+.priorityList b, .workIntervalList b { color: var(--text-secondary); text-align: end; }
+.priorityLink { width: fit-content; color: var(--info-strong); font-size: 0.82rem; font-weight: 750; text-underline-offset: 0.18em; }
+.activeSessionName { color: var(--health-body); font-size: 1rem; }
+.todayActivity { display: grid; gap: 0.5rem; margin: 0.35rem 0 0.7rem; padding: 0.7rem 0 0.2rem; border-top: 1px solid var(--line); }
+.todayActivity h4 { margin: 0.25rem 0 0; color: var(--text-secondary); font-size: 0.72rem; font-weight: 750; }
+.todayActivity > p { margin: 0; color: var(--muted); font-size: 0.73rem; line-height: 1.4; }
+.todayWorkout { border: 1px solid var(--line); border-radius: 0.55rem; background: color-mix(in srgb, var(--health-movement) 4%, var(--surface-1)); }
+.todayWorkout summary { display: flex; justify-content: space-between; align-items: baseline; gap: 0.7rem; padding: 0.6rem 0.65rem; cursor: pointer; font-size: 0.76rem; }
+.todayWorkout summary span { font-weight: 720; }
+.todayWorkout summary time { flex: 0 0 auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.todayWorkout > dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.55rem; margin: 0; padding: 0 0.65rem 0.65rem; }
+.todayWorkout > dl div { min-width: 0; }
+.todayWorkout dt { color: var(--muted); font-size: 0.64rem; }
+.todayWorkout dd { margin: 0.2rem 0 0; font-size: 0.73rem; overflow-wrap: anywhere; }
+.todayWorkout a { color: var(--info-strong); text-underline-offset: 0.15em; }
 
 .skipLink {
   position: absolute;
@@ -190,6 +227,9 @@
   .sleepStages { gap: 0.55rem; }
   .sleepStages dt { overflow-wrap: anywhere; }
   .lowerGrid { gap: 1.5rem; margin-top: 1.7rem; }
+  .priorityCard { padding: 0.9rem; }
+  .priorityList li, .workIntervalList li { align-items: flex-start; flex-direction: column; gap: 0.2rem; }
+  .priorityList b, .workIntervalList b { text-align: start; }
   .historyCard { overflow: visible; }
   .tableWrap table { min-width: 34rem; }
 }

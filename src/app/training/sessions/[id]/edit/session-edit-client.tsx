@@ -187,7 +187,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
         setError(await readApiError(response, uk));
         return;
       }
-      router.push("/training/backfill");
+      router.push(`/training/backfill?refresh=${Date.now()}`);
     } catch {
       setError(uk ? "Не вдалося видалити запис." : "Could not delete the diary entry.");
     } finally {
@@ -411,6 +411,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
 
   const canPrev = exerciseIndex > 0;
   const canNext = exerciseIndex < exercises.length - 1;
+  const backfillHref = `/training/backfill?refresh=${session.revision}-${encodeURIComponent(session.updatedAt)}`;
 
   const menuContent = (
     <>
@@ -579,7 +580,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
       uk={uk}
       mode="edit"
       sessionId={sessionId}
-      backHref="/training/backfill"
+      backHref={backfillHref}
       programName={session.programName}
       exercise={current}
       previousExercise={previousExercise}

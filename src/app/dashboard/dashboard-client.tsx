@@ -9,6 +9,12 @@ import type { DailyMetricField } from "@/modules/days/day.types";
 import type { DashboardDto } from "@/modules/days/dashboard.types";
 import { dashboardRecentRows, dashboardTrainingMetricCaption } from "@/modules/days/dashboard-presentation";
 import { emptyTrainingDayFact } from "@/modules/days/training-day-fact-empty";
+import type { TrainingDayEventFact } from "@/modules/days/training-day-fact";
+import type { StrengthSessionSummaryDto } from "@/modules/training/training.types";
+import type { WorkIntervalDto } from "@/modules/work-intervals/work-interval.repository";
+import { OCCUPATIONAL_CATEGORIES, type OccupationalCategory } from "@/model/occupational-activity";
+import { displayWorkoutType } from "@/modules/days/day-workout-presentation";
+import { matchStatusLabel } from "@/app/training/training-labels";
 import { todayInCalendarTimeZone } from "@/modules/days/calendar-range";
 import { DEFAULT_TIME_ZONE, instantToLocalDateTime } from "@/model/time-zone";
 import { formatDateTime, formatDurationMinutes, formatMetric } from "@/modules/days/metric-format";
@@ -35,6 +41,35 @@ async function loadDashboard(uk: boolean): Promise<DashboardDto> {
   const response = await fetch(`/api/v1/dashboard?date=${localToday()}`, { cache: "no-store" });
   if (!response.ok) throw new Error(uk ? `Не вдалося завантажити огляд (${response.status})` : `Could not load dashboard (${response.status})`);
   return response.json() as Promise<DashboardDto>;
+}
+
+type ActiveSessionPreview = { id: number; programName: string; webStartedAt: string | null; exerciseCount: number };
+
+function workCategoryCopy(category: string, uk: boolean): string {
+  if (!Object.hasOwn(OCCUPATIONAL_CATEGORIES, category)) return uk ? "Робоча активність" : "Work activity";
+  if (!uk) return OCCUPATIONAL_CATEGORIES[category as OccupationalCategory].label;
+  const labels: Record<OccupationalCategory, string> = {
+    standingLight: "Дуже легка стояча",
+    manualLight: "Легка ручна",
+    standingLightModerate: "Активна легка",
+    manualModerate: "Помірна ручна",
+  };
+  return labels[category as OccupationalCategory];
+}
+
+function eventTime(instant: string, locale: string): string {
+  return new Intl.DateTimeFormat(locale, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    timeZone: DEFAULT_TIME_ZONE,
+  }).format(new Date(instant));
+}
+
+function workSourceCopy(source: TrainingDayEventFact["source"], uk: boolean): string {
+  if (source === "matched") return uk ? "Garmin і щоденник тренування" : "Garmin and training diary";
+  if (source === "diary") return uk ? "Щоденник тренування" : "Training diary";
+  return uk ? "Запис активності" : "Activity record";
 }
 
 export function DashboardClient({ demoMode = false }: { demoMode?: boolean } = {}) {
@@ -80,6 +115,16 @@ export function DashboardClient({ demoMode = false }: { demoMode?: boolean } = {
   const [dashboard, setDashboard] = useState<DashboardDto>(emptyDashboard);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [activeSession, setActiveSession] = useState<ActiveSessionPreview | null>(null);
+  const [activeSessionLoading, setActiveSessionLoading] = useState(() => !demoMode);
+  const [activeSessionError, setActiveSessionError] = useState(false);
+  const [attentionSessions, setAttentionSessions] = useState<StrengthSessionSummaryDto[]>([]);
+  const [attentionCount, setAttentionCount] = useState(0);
+  const [attentionLoading, setAttentionLoading] = useState(() => !demoMode);
+  const [attentionError, setAttentionError] = useState(false);
+  const [workIntervals, setWorkIntervals] = useState<WorkIntervalDto[]>([]);
+  const [workLoading, setWorkLoading] = useState(true);
+  const [workError, setWorkError] = useState(false);
   const restingHeartRate = dashboard.restingHeartRate;
   const sleep = dashboard.sleep;
   const sleepLocale = uk ? "uk" : "en";
@@ -89,6 +134,7 @@ export function DashboardClient({ demoMode = false }: { demoMode?: boolean } = {
 
   useEffect(() => {
     let active = true;
+    const controller = new AbortController();
     loadDashboard(uk)
       .then((result) => {
         if (active) setDashboard(result);
@@ -99,13 +145,89 @@ export function DashboardClient({ demoMode = false }: { demoMode?: boolean } = {
       .finally(() => {
         if (active) setLoading(false);
       });
+    if (!demoMode) {
+      void fetch("/api/v1/training/sessions/active", { cache: "no-store", signal: controller.signal })
+        .then(async (response) => {
+          if (!response.ok) throw new Error("active_session_unavailable");
+          const body = await response.json() as { session: { id: number; programName: string; webStartedAt: string | null; exercises: unknown[] } | null };
+          if (active) {
+            setActiveSessionError(false);
+            setActiveSession(body.session ? {
+              id: body.session.id,
+              programName: body.session.programName,
+              webStartedAt: body.session.webStartedAt,
+              exerciseCount: body.session.exercises.length,
+            } : null);
+          }
+        })
+        .catch(() => { if (active && !controller.signal.aborted) setActiveSessionError(true); })
+        .finally(() => { if (active) setActiveSessionLoading(false); });
+      void fetch("/api/v1/training/sessions/match-attention?limit=3&offset=0", { cache: "no-store", signal: controller.signal })
+        .then(async (response) => {
+          if (!response.ok) throw new Error("match_attention_unavailable");
+          const body = await response.json() as { sessions: StrengthSessionSummaryDto[]; totalCount: number };
+          if (active) {
+            setAttentionError(false);
+            setAttentionSessions(body.sessions);
+            setAttentionCount(body.totalCount);
+          }
+        })
+        .catch(() => { if (active && !controller.signal.aborted) setAttentionError(true); })
+        .finally(() => { if (active) setAttentionLoading(false); });
+    }
+    void fetch(`/api/v1/work-intervals?date=${encodeURIComponent(localToday())}`, { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("work_activity_unavailable");
+        const body = await response.json() as { intervals: WorkIntervalDto[] };
+        if (active) {
+          setWorkError(false);
+          setWorkIntervals(body.intervals);
+        }
+      })
+      .catch(() => { if (active && !controller.signal.aborted) setWorkError(true); })
+      .finally(() => { if (active) setWorkLoading(false); });
     return () => {
       active = false;
+      controller.abort();
     };
-  }, [uk]);
+  }, [demoMode, uk]);
+
+  const todayTrainingDay = dashboard.recentTrainingDays.find((fact) => fact.date === localToday())
+    ?? dashboard.todayTrainingDay;
+  const showMatchPriority = !demoMode && (attentionLoading || attentionError || attentionCount > 0);
+  const showActiveSessionPriority = !demoMode && (activeSessionLoading || activeSessionError || Boolean(activeSession));
+
+  const matchAttentionCard = (
+    <section className={`${styles.priorityCard} ${styles.matchAttentionCard}`} data-priority={attentionCount > 0 ? "present" : "empty"} aria-label={uk ? "Увага до зіставлення" : "Match attention"} aria-busy={attentionLoading}>
+      <div className={styles.priorityCardHeader}>
+        <div><p className={styles.eyebrow}>{uk ? "Потрібна увага" : "Needs attention"}</p><h2>{uk ? "Увага до зіставлення" : "Match attention"}</h2></div>
+        {!attentionLoading && !attentionError && <span className={styles.priorityCount}>{attentionCount}</span>}
+      </div>
+      {attentionLoading ? <p role="status">{uk ? "Перевіряємо записи Garmin…" : "Checking Garmin matches…"}</p>
+        : attentionError ? <p role="alert">{uk ? "Не вдалося перевірити зіставлення." : "Could not check workout matches."}</p>
+          : attentionCount > 0 ? <>
+            <ul className={styles.priorityList}>{attentionSessions.map((session) => <li key={session.id}><span>{session.programName}</span><b>{matchStatusLabel(session.matchStatus, uk)}</b></li>)}</ul>
+            <Link className={styles.priorityLink} href="/training?attentionPage=1">{uk ? `Переглянути всі (${attentionCount})` : `Review all (${attentionCount})`}</Link>
+          </>
+            : <p>{uk ? "Немає сесій, що потребують зіставлення." : "No sessions need matching."}</p>}
+    </section>
+  );
+  const activeSessionCard = (
+    <section className={`${styles.priorityCard} ${styles.activeSessionCard}`} data-priority={activeSession ? "present" : "empty"} aria-label={uk ? "Активна сесія" : "Active session"} aria-busy={activeSessionLoading}>
+      <div className={styles.priorityCardHeader}><div><p className={styles.eyebrow}>{uk ? "Тренування" : "Training"}</p><h2>{uk ? "Активна сесія" : "Active workout"}</h2></div></div>
+      {activeSessionLoading ? <p role="status">{uk ? "Перевіряємо активне тренування…" : "Checking active workout…"}</p>
+        : activeSessionError ? <p role="alert">{uk ? "Не вдалося перевірити активну сесію." : "Could not check the active workout."}</p>
+          : activeSession ? <>
+            <strong className={styles.activeSessionName}>{activeSession.programName}</strong>
+            <p>{uk ? `${activeSession.exerciseCount} вправ · розпочато ${formatDateTime(activeSession.webStartedAt, intlLocale)}` : `${activeSession.exerciseCount} exercises · started ${formatDateTime(activeSession.webStartedAt, intlLocale)}`}</p>
+            <Link className={styles.priorityLink} href={`/training/sessions/${activeSession.id}`}>{uk ? "Продовжити тренування" : "Resume workout"}</Link>
+          </>
+            : <><p>{uk ? "Зараз немає активного тренування." : "There is no active workout right now."}</p><Link className={styles.priorityLink} href="/training">{uk ? "Перейти до тренувань" : "Go to training"}</Link></>}
+    </section>
+  );
 
   return (
-    <main className={styles.page}>
+    <main className={styles.page} data-priority={!demoMode && (activeSession || attentionCount > 0) ? "present" : "empty"}>
       <a className={styles.skipLink} href="#daily-overview">{uk ? "Перейти до показників дня" : "Skip to today’s measurements"}</a>
       <header className={styles.topbar}>
         <LinkBrand uk={uk} />
@@ -126,6 +248,9 @@ export function DashboardClient({ demoMode = false }: { demoMode?: boolean } = {
           </div>
         </div>
       </section>
+
+      {showMatchPriority && matchAttentionCard}
+      {showActiveSessionPriority && activeSessionCard}
 
       {error && <div className={styles.errorBanner} role="alert">{error}</div>}
 
@@ -164,6 +289,32 @@ export function DashboardClient({ demoMode = false }: { demoMode?: boolean } = {
                   );
                 })}
               </dl>
+              {groupKey === "movement" && (
+                <div className={styles.todayActivity}>
+                  <h4>{uk ? "Сьогоднішні тренування" : "Today’s workouts"}</h4>
+                  {todayTrainingDay.events.length > 0 ? todayTrainingDay.events.map((event) => (
+                    <details className={styles.todayWorkout} key={event.eventId}>
+                      <summary>
+                        <span>{displayWorkoutType({ type: event.type, canonicalType: null })}</span>
+                        <time dateTime={event.occurrenceAt}>{eventTime(event.occurrenceAt, intlLocale)}</time>
+                      </summary>
+                      <dl>
+                        <div><dt>{uk ? "Джерело" : "Source"}</dt><dd>{workSourceCopy(event.source, uk)}</dd></div>
+                        <div><dt>{uk ? "Тривалість" : "Duration"}</dt><dd>{event.durationMinutes === null ? (uk ? "Невідома" : "Unknown") : `${formatMetric(event.durationMinutes, intlLocale)} ${uk ? "хв" : "min"}`}</dd></div>
+                        <div><dt>{uk ? "Активна енергія" : "Active energy"}</dt><dd>{event.activeEnergyKcal === null ? "—" : `${formatMetric(event.activeEnergyKcal, intlLocale)} kcal`}</dd></div>
+                        {event.diarySessionId !== null && <div><dt>{uk ? "Запис" : "Diary"}</dt><dd><Link href={`/training/sessions/${event.diarySessionId}`}>{uk ? "Відкрити деталі" : "Open details"}</Link></dd></div>}
+                      </dl>
+                    </details>
+                  )) : todayTrainingDay.hiddenEventCount > 0
+                    ? <p>{uk ? `Є ${todayTrainingDay.hiddenEventCount} прихованих подій тренування.` : `${todayTrainingDay.hiddenEventCount} workout events are hidden.`}</p>
+                    : <p>{uk ? "Тренувань за сьогодні ще немає." : "No workouts recorded today."}</p>}
+                  <h4>{uk ? "Робоча активність" : "Work activity"}</h4>
+                  {workLoading ? <p role="status">{uk ? "Завантажуємо інтервали…" : "Loading work intervals…"}</p>
+                    : workError ? <p role="alert">{uk ? "Не вдалося завантажити робочу активність." : "Could not load work activity."}</p>
+                      : workIntervals.length > 0 ? <ul className={styles.workIntervalList}>{workIntervals.map((interval) => <li key={interval.id}><span>{interval.startTime}–{interval.endTime}</span><b>{workCategoryCopy(interval.category, uk)}</b></li>)}</ul>
+                        : <p>{uk ? "Робочі інтервали за сьогодні не записані." : "No work intervals recorded today."}</p>}
+                </div>
+              )}
             </section>
           ))}
         </div>
@@ -270,6 +421,8 @@ export function DashboardClient({ demoMode = false }: { demoMode?: boolean } = {
           )}
         </article>
       </section>
+      {!demoMode && !showMatchPriority && matchAttentionCard}
+      {!demoMode && !showActiveSessionPriority && activeSessionCard}
     </main>
   );
 }

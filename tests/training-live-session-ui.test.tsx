@@ -347,6 +347,7 @@ describe("Live training session mobile UI", () => {
     await user.click(screen.getByRole("button", { name: /Меню сесії/i }));
     const dialog = screen.getByRole("dialog", { name: "Дії" });
     expect(dialog).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: "Завершити тренування" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Закрити" })).toBeNull();
     await user.click(within(dialog).getByRole("button", { name: "Скасувати тренування" }));
 
@@ -376,6 +377,7 @@ describe("Live training session mobile UI", () => {
   });
 
   it("opens the exercise from the URL query", async () => {
+    const user = userEvent.setup();
     searchParams.set("exercise", "2");
     stubSessionFetch();
     render(<SessionClient sessionId={42} />);
@@ -385,6 +387,8 @@ describe("Live training session mobile UI", () => {
       })).toBeTruthy();
       expect(screen.getByText("2 / 3 вправ")).toBeTruthy();
     });
+    await user.click(screen.getByRole("button", { name: /Меню сесії/i }));
+    expect(within(screen.getByRole("dialog", { name: "Дії" })).getByRole("button", { name: "Завершити тренування" })).toBeTruthy();
   });
 
   it("copies a historical set into the draft without saving", async () => {

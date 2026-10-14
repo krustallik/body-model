@@ -134,7 +134,7 @@ const V4_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "src/modules/model-episodes/model-episode.service.ts": Object.freeze({
     migrationOriginBlob: "0d32af00d8fa7bf4228cb87c434d85492b430d82",
-    deployBlob: "697e495a268c1753f2835dc06c41e32481c133e9",
+    deployBlob: "0c26958724115a8af43081cb127350213ece1488",
   }),
   "src/modules/model-episodes/physiology-v7-persistence.repository.ts": Object.freeze({
     migrationOriginBlob: "07e75f6a1393cdb8cae8f9c593575930a124d394",
@@ -142,11 +142,11 @@ const V4_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "src/modules/profile/experimental-stepper-active-energy-shadow.service.ts": Object.freeze({
     migrationOriginBlob: "b4ec529a9755c9a3b15ea2b6c9ba19216bd6e888",
-    deployBlob: "4722b82f9580dbd301d103a7020c3f68071fd857",
+    deployBlob: "5244ce9f1d1092a881776232128464d8d6705127",
   }),
   "src/modules/training/experimental-strength-energy-shadow.service.ts": Object.freeze({
     migrationOriginBlob: "2f556ff6817db3dff23a09d0ff15ba8254543551",
-    deployBlob: "fcc7223df40504dfd637442f2b1607c837c2832e",
+    deployBlob: "4e9f5da57b7b60c0c553c35f62c12d994c9f9126",
   }),
   "src/modules/training/training.service.ts": Object.freeze({
     migrationOriginBlob: "d036d589304338b07d43c1b1eebb8314910b3acb",

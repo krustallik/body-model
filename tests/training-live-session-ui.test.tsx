@@ -121,8 +121,8 @@ describe("Live training session mobile UI", () => {
             programName: "ТИСНИ",
             resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
             sets: [
-              { setNumber: 2, reps: 10, weightKg: 32, bandNominalResistanceKg: null, rir: 2, comment: "важко" },
-              { setNumber: 1, reps: 12, weightKg: 30, bandNominalResistanceKg: null, rir: null, comment: null },
+              { id: 92, setNumber: 2, completedAt: null, reps: 10, weightKg: 32, bandNominalResistanceKg: null, rir: 2, comment: "важко" },
+              { id: 91, setNumber: 1, completedAt: null, reps: 12, weightKg: 30, bandNominalResistanceKg: null, rir: null, comment: null },
             ],
           }],
         });
@@ -396,7 +396,7 @@ describe("Live training session mobile UI", () => {
     stubSessionFetch();
     render(<SessionClient sessionId={42} />);
     await waitFor(() => expect(activePane().getByText(/32 кг × 10/)).toBeTruthy());
-    await user.click(activePane().getByRole("button", { name: /#2/ }));
+    await user.click(activePane().getByRole("button", { name: "Підставити дані підходу 2" }));
     expect((activePane().getByLabelText("Вага, кг") as HTMLInputElement).value).toBe("32");
     expect((activePane().getByLabelText("Повтори") as HTMLInputElement).value).toBe("10");
     expect((activePane().getByPlaceholderText("опційно") as HTMLInputElement).value).toBe("2");

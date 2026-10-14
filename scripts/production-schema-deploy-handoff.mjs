@@ -68,6 +68,14 @@ const CONTENT_BOUND_PATHS = Object.freeze({
 });
 /** Exact executable blobs reviewed for the V4 app-ready migration-origin handoff. */
 const V4_CONTENT_BOUND_PATHS = Object.freeze({
+  "src/modules/activity/active-energy-publication.ts": Object.freeze({
+    migrationOriginBlob: "3c1fcfec0ca73ac6b599ae6a7527c067b77adb2f",
+    deployBlob: "b76617954f03b700d7a783aa2f30a11388b769c9",
+  }),
+  "src/modules/health/health.repository.ts": Object.freeze({
+    migrationOriginBlob: "a8040b6f8a0eede730c67ba1a4df90063570bc13",
+    deployBlob: "e9e2b342d3c26cb64f28ff9f19b136bbe9b557af",
+  }),
   ".github/workflows/production-migration-preflight.yml": Object.freeze({
     migrationOriginBlob: "02a0a107c004dfd169363a1ac98abceb9e1674d0",
     deployBlob: "b66ed02fae2efb86dc540ff7a3809bc93ee85a6b",
@@ -114,7 +122,19 @@ const V4_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "src/modules/health/health.service.ts": Object.freeze({
     migrationOriginBlob: "17a2e1c47b2b7fe1d0d7b968b9e91fffc51a8431",
-    deployBlob: "323d0dc4a10699dc7bd559b31148bc9fe9d10864",
+    deployBlob: "089e266f3664b4aabe268888e6ac3a233d2d0515",
+  }),
+  "src/modules/model-episodes/experimental-glycogen-state-shadow.service.ts": Object.freeze({
+    migrationOriginBlob: "0e61b01275a1905710adc1d7721db006596459b0",
+    deployBlob: "d1908855bab66b7a07b417f044a8f44b0bad6cae",
+  }),
+  "src/modules/model-episodes/model-episode.service.ts": Object.freeze({
+    migrationOriginBlob: "0d32af00d8fa7bf4228cb87c434d85492b430d82",
+    deployBlob: "10f52f0684e2d9e1d95ab673e4dd81a3c9df6107",
+  }),
+  "src/modules/model-episodes/physiology-v7-persistence.repository.ts": Object.freeze({
+    migrationOriginBlob: "07e75f6a1393cdb8cae8f9c593575930a124d394",
+    deployBlob: "931fafdc488b460a080588ec7b981f08befd537f",
   }),
   "src/modules/training/training.service.ts": Object.freeze({
     migrationOriginBlob: "d036d589304338b07d43c1b1eebb8314910b3acb",

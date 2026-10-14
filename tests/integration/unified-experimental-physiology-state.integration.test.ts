@@ -21,6 +21,7 @@ import * as stepperActiveEnergyShadowService from "@/modules/profile/experimenta
 import * as stepperGlycogenShadowService from "@/modules/profile/experimental-stepper-glycogen-demand-shadow.service";
 import { publishActiveEnergyChangesV1 } from "@/modules/activity/active-energy-publication";
 import * as activeEnergyPublication from "@/modules/activity/active-energy-publication";
+import * as activeEnergyMaterialization from "@/modules/activity/active-energy-materialization";
 import { DailyMetricRepository } from "@/modules/days/day.repository";
 import { trainingService } from "@/modules/training/training.service";
 import { RESISTANCE } from "@/modules/training/training.constants";
@@ -1223,9 +1224,9 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     const publicationCall = vi.spyOn(activeEnergyPublication, "publishActiveEnergyChangesV1")
       .mockImplementationOnce(async (input = {}) => originalPublication({
         ...input,
-        onProductionPublished: (fence) => {
+        onLifecycleFenceChanged: (fence) => {
           productionFence.value = fence;
-          input.onProductionPublished?.(fence);
+          input.onLifecycleFenceChanged?.(fence);
         },
       }));
     const unifiedFailure = vi.spyOn(unifiedStateService, "rebuildUnifiedExperimentalPhysiologyStateV1")
@@ -1256,6 +1257,50 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
 
     const recovery = await syncHealthWeightThroughService(
       dates[1]!, 79.4, `${dates[1]}T17:00:00.000Z`,
+    );
+    expect(recovery.modelPublicationStatus).toBe("current");
+    expect(await prisma.unifiedPublicationBlock.findMany({ where: { profileId } })).toEqual([]);
+    const recoveredLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
+    expect(recoveredLifecycle).toMatchObject({
+      unifiedRolloutEpoch: 1,
+      unifiedPublishedRolloutEpoch: 1,
+      unifiedPublishedGeneration: recoveredLifecycle.invalidationGeneration,
+      productionPublishedGeneration: recoveredLifecycle.invalidationGeneration,
+      unifiedPublicationBlockedFromDate: null,
+      productionStaleFromDate: null,
+    });
+    await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).resolves.toMatchObject({ rolloutEpoch: 1, dayCount: 3 });
+  }, 60_000);
+
+  it("restores the retry fence when candidate refresh fails after a committed production pass", async () => {
+    await seed({ productionGlycogenKg: [0.5, 0.6, 0] });
+    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[0], toDate: dates[2] });
+    await verifyAndPublishUnifiedV3Postflight({ profileId });
+    await activateAndReplayUnifiedV4({ profileId });
+
+    const refreshFailure = vi.spyOn(activeEnergyMaterialization, "refreshCandidatesAfterProductionV1")
+      .mockRejectedValueOnce(new Error("injected candidate refresh failure after production commit"));
+    let status: string | null = null;
+    try {
+      const sync = await syncHealthWeightThroughService(
+        dates[1]!, 79.3, `${dates[1]}T18:00:00.000Z`,
+      );
+      status = sync.modelPublicationStatus;
+    } finally {
+      refreshFailure.mockRestore();
+    }
+
+    expect(status).toBe("stale");
+    const fencedLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
+    const blocks = await prisma.unifiedPublicationBlock.findMany({ where: { profileId, source: "health" } });
+    expect(blocks.length).toBeGreaterThan(0);
+    expect(fencedLifecycle.productionPublishedGeneration).toBe(fencedLifecycle.invalidationGeneration);
+    expect(fencedLifecycle.unifiedPublishedGeneration).toBeNull();
+    expect(fencedLifecycle.unifiedPublicationBlockedFromDate).not.toBeNull();
+    await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).rejects.toThrow();
+
+    const recovery = await syncHealthWeightThroughService(
+      dates[1]!, 79.4, `${dates[1]}T19:00:00.000Z`,
     );
     expect(recovery.modelPublicationStatus).toBe("current");
     expect(await prisma.unifiedPublicationBlock.findMany({ where: { profileId } })).toEqual([]);

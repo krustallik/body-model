@@ -302,7 +302,7 @@ export async function syncHealthData(
           if (healthPublicationFence === null) throw new Error("Health publication lifecycle is unavailable.");
           const published = await publishActiveEnergyChangesV1({
             ...(options.publicationNow === undefined ? {} : { now: options.publicationNow }),
-            onProductionPublished: (fence) => { healthPublicationFence = fence; },
+            onLifecycleFenceChanged: (fence) => { healthPublicationFence = fence; },
           });
           modelPublicationStatus = published ? "current" : "stale";
           if (!published && !await healthPublicationLifecycle.hasUnifiedPublicationBlocks(1)) {

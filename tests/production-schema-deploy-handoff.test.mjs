@@ -118,6 +118,14 @@ describe("schema deploy compatibility handoff", () => {
     expect(compatibility.changedPaths).toContain("src/modules/model-episodes/unified-rollout-v4.service.ts");
     expect(compatibility.changedPaths).not.toContain(".github/workflows/activate-unified-v4-production.yml");
     const expectedV4Bindings = {
+      "src/modules/activity/active-energy-publication.ts": {
+        migrationOriginBlob: "3c1fcfec0ca73ac6b599ae6a7527c067b77adb2f",
+        deployBlob: "b76617954f03b700d7a783aa2f30a11388b769c9",
+      },
+      "src/modules/health/health.repository.ts": {
+        migrationOriginBlob: "a8040b6f8a0eede730c67ba1a4df90063570bc13",
+        deployBlob: "e9e2b342d3c26cb64f28ff9f19b136bbe9b557af",
+      },
       ".github/workflows/production-migration-preflight.yml": {
         migrationOriginBlob: "02a0a107c004dfd169363a1ac98abceb9e1674d0",
         deployBlob: "b66ed02fae2efb86dc540ff7a3809bc93ee85a6b",
@@ -160,7 +168,19 @@ describe("schema deploy compatibility handoff", () => {
       },
       "src/modules/health/health.service.ts": {
         migrationOriginBlob: "17a2e1c47b2b7fe1d0d7b968b9e91fffc51a8431",
-        deployBlob: "323d0dc4a10699dc7bd559b31148bc9fe9d10864",
+        deployBlob: "089e266f3664b4aabe268888e6ac3a233d2d0515",
+      },
+      "src/modules/model-episodes/experimental-glycogen-state-shadow.service.ts": {
+        migrationOriginBlob: "0e61b01275a1905710adc1d7721db006596459b0",
+        deployBlob: "d1908855bab66b7a07b417f044a8f44b0bad6cae",
+      },
+      "src/modules/model-episodes/model-episode.service.ts": {
+        migrationOriginBlob: "0d32af00d8fa7bf4228cb87c434d85492b430d82",
+        deployBlob: "10f52f0684e2d9e1d95ab673e4dd81a3c9df6107",
+      },
+      "src/modules/model-episodes/physiology-v7-persistence.repository.ts": {
+        migrationOriginBlob: "07e75f6a1393cdb8cae8f9c593575930a124d394",
+        deployBlob: "931fafdc488b460a080588ec7b981f08befd537f",
       },
       "src/modules/training/training.service.ts": {
         migrationOriginBlob: "d036d589304338b07d43c1b1eebb8314910b3acb",

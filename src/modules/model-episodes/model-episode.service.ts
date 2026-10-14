@@ -559,14 +559,18 @@ export async function recalculateModelEpisode(
   input: {
     episodeId?: number;
     now?: Date;
-    onProductionPublished?: (fence: { invalidationGeneration: number; updatedAt: string }) => void;
+    onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void;
   } = {},
   client: PrismaClient = prisma,
 ) {
+  const publishLifecycleFence = async () => {
+    const fence = await new PhysiologyV7PersistenceRepository(client).readUnifiedPublicationFence(1);
+    if (fence !== null) input.onLifecycleFenceChanged?.(fence);
+    return fence;
+  };
   if (client !== prisma) {
     const production = await recalculateModelEpisodeProduction(input, client);
-    const publicationFence = await new PhysiologyV7PersistenceRepository(client).readUnifiedPublicationFence(1);
-    if (publicationFence !== null) input.onProductionPublished?.(publicationFence);
+    await publishLifecycleFence();
     const { effectiveReplayFromDate: _effectiveReplayFromDate, ...result } = production;
     void _effectiveReplayFromDate;
     return result;
@@ -575,20 +579,25 @@ export async function recalculateModelEpisode(
   const profileId = 1;
   const materialized = await materializeActiveEnergyCandidatesV1(profileId);
   await invalidateActiveEnergyResolutionDatesV1(profileId, materialized.changedDates);
+  await publishLifecycleFence();
   const eligibleRefreshes = materialized.stepperWorkoutIds.length
     + materialized.strengthSessionIds.length + materialized.strengthWorkoutIds.length;
   const maxRefreshPasses = Math.max(2, eligibleRefreshes + 2);
   for (let pass = 0; pass < maxRefreshPasses; pass += 1) {
     const production = await recalculateModelEpisodeProduction({ ...input, episodeId: status.episodeId }, client);
+    // The production transaction may commit a new lifecycle timestamp before
+    // candidate refresh completes. Keep the recovery CAS tied to this exact
+    // committed fence if a later refresh step fails.
+    await publishLifecycleFence();
     const changedDates = await refreshCandidatesAfterProductionV1(profileId, production.effectiveReplayFromDate);
     if (changedDates.length === 0) {
-      const publicationFence = await new PhysiologyV7PersistenceRepository(client).readUnifiedPublicationFence(profileId);
-      if (publicationFence !== null) input.onProductionPublished?.(publicationFence);
+      await publishLifecycleFence();
       const { effectiveReplayFromDate: _effectiveReplayFromDate, ...result } = production;
       void _effectiveReplayFromDate;
       return result;
     }
     await invalidateActiveEnergyResolutionDatesV1(profileId, changedDates);
+    await publishLifecycleFence();
   }
   throw new Error("Stepper historical mass candidates did not converge after production replay");
 }

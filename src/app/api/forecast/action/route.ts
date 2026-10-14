@@ -11,7 +11,7 @@ import {
 import { ModelRecoveryEvidenceError } from "@/modules/model-recovery/model-recovery.errors";
 import { recoverModelEpisode } from "@/modules/model-recovery/model-recovery.service";
 import { forecastQaNow } from "../qa-now";
-import { errorKind, logEvent } from "@/lib/logger";
+import { errorDiagnosticFields, logEvent } from "@/lib/logger";
 import { tryAcquireOperation } from "@/lib/operation-gate";
 
 export const dynamic = "force-dynamic";
@@ -88,7 +88,7 @@ export async function POST(request: Request): Promise<Response> {
     const event = action === "recover" ? "recovery_failed"
       : action === "initialize" ? "initialization_failed"
         : "recalculation_failed";
-    logEvent("error", event, { errorType: errorKind(error) });
+    logEvent("error", event, errorDiagnosticFields(error));
     return Response.json({ error: event }, { status: 500 });
   } finally {
     release();

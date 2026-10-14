@@ -8,7 +8,7 @@ import { RecalculateModelRequestSchema } from "@/modules/model-episodes/model-ep
 import { recalculateModelEpisode } from "@/modules/model-episodes/model-episode.service";
 import { ModelRecoveryEvidenceError } from "@/modules/model-recovery/model-recovery.errors";
 import { recoverModelEpisode } from "@/modules/model-recovery/model-recovery.service";
-import { errorKind, logEvent } from "@/lib/logger";
+import { errorDiagnosticFields, logEvent } from "@/lib/logger";
 
 export const dynamic = "force-dynamic";
 
@@ -50,7 +50,7 @@ export async function POST(request: Request): Promise<Response> {
     if (error instanceof ModelEpisodeNotFoundError) {
       return Response.json({ error: "episode_not_found" }, { status: 404 });
     }
-    logEvent("error", "recalculation_failed", { errorType: errorKind(error) });
+    logEvent("error", "recalculation_failed", errorDiagnosticFields(error));
     return Response.json({ error: "recalculation_failed" }, { status: 500 });
   }
 }

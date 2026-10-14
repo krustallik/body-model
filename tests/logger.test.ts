@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { errorKind, logEvent } from "@/lib/logger";
+import { errorDiagnosticFields, errorKind, logEvent } from "@/lib/logger";
 
 describe("production logger", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -38,5 +38,32 @@ describe("production logger", () => {
   it("classifies failures without serializing messages or stacks", () => {
     expect(errorKind(new TypeError("secret"))).toBe("TypeError");
     expect(errorKind("secret")).toBe("UnknownError");
+  });
+
+  it("logs only the first application frame and a safe error code", () => {
+    const error = new Error("private database URL and user data");
+    Object.assign(error, { code: "P2034" });
+    error.stack = [
+      `${error.name}: ${error.message}`,
+      "    at recalculate (/srv/bodycast/.next/server/app/api/forecast/action/route.js:12:8)",
+      "    at processTicksAndRejections (node:internal/process/task_queues:95:5)",
+    ].join("\n");
+
+    const fields = errorDiagnosticFields(error);
+    expect(fields).toMatchObject({
+      errorType: "Error",
+      errorCode: "P2034",
+      errorFrame: ".next/server/app/api/forecast/action/route.js:12:8",
+    });
+    expect(JSON.stringify(fields)).not.toContain("private database URL");
+    expect(JSON.stringify(fields)).not.toContain("/srv/bodycast");
+  });
+
+  it("does not emit untrusted error codes or non-application stack frames", () => {
+    const error = new Error("secret");
+    Object.assign(error, { code: "DATABASE_URL=secret" });
+    error.stack = `${error.name}: ${error.message}\n    at query (node:internal/process/task_queues:95:5)`;
+
+    expect(errorDiagnosticFields(error)).toEqual({ errorType: "Error" });
   });
 });

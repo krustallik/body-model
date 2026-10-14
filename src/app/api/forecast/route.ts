@@ -8,7 +8,7 @@ import { ForecastScenarioEvidenceError, ForecastUnavailableError } from "@/modul
 import { ForecastModelRequestSchema } from "@/modules/model-forecast/model-forecast.schema";
 import { forecastModelEpisode } from "@/modules/model-forecast/model-forecast.service";
 import { forecastQaNow } from "./qa-now";
-import { errorKind, logEvent } from "@/lib/logger";
+import { errorDiagnosticFields, logEvent } from "@/lib/logger";
 import { tryAcquireOperation } from "@/lib/operation-gate";
 import { latestCompletedLocalDate } from "@/modules/model-episodes/model-calendar";
 
@@ -80,7 +80,7 @@ export async function POST(request: Request): Promise<Response> {
     if (error instanceof ForecastScenarioEvidenceError) {
       return Response.json({ error: "insufficient_scenario_evidence", message: error.message }, { status: 422 });
     }
-    logEvent("error", "forecast_failed", { errorType: errorKind(error) });
+    logEvent("error", "forecast_failed", errorDiagnosticFields(error));
     return Response.json({ error: "forecast_failed" }, { status: 500 });
   } finally {
     release();

@@ -147,7 +147,10 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
   it("persists a programless live workout, catalog exercise, and edited set across reload", async () => {
     const db = prisma!;
     const fixture = createTrainingHistoryStage01FixtureV1();
-    const catalog = fixture.catalogExercises.find((exercise) => exercise.stableKey === "pull_up");
+    const catalog = await db.exerciseCatalog.findFirst({
+      where: { profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID, stableKey: "pull_up" },
+      select: { id: true, name: true, stableKey: true },
+    });
     if (!catalog) throw new Error("Stage 01 catalog is missing the pull-up exercise.");
     await expect(db.strengthDiarySession.create({
       data: {

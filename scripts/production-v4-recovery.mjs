@@ -36,16 +36,41 @@ const V4_HOST_FAILURE_PHASES = Object.freeze({
   ]),
   recovery: new Set(["app-restart"]),
 });
+const V4_SNAPSHOT_CHECK_IDS = new Set([
+  "release-sha", "snapshot-binding", "manifest", "database-container", "database-image", "app-image",
+  "marker-digest", "route-digest", "replay-input-fingerprint", "pre-ddl-fingerprint-parity",
+  "full-fingerprint", "stable-state-fingerprint", "marker-provenance", "migration-run-binding",
+  "migration-origin-ancestry", "tooling-checkout", "database-identity", "migration-inventory",
+  "migration-postflight", "database-locks", "writer-drain", "lifecycle-state", "lifecycle-command",
+  "pg-client-compatibility", "inventory-schema", "observer-pid", "observed-at", "observer-application",
+  "identity-policy", "backend-inventory", "zero-other-client-backends", "topology-schema", "topology-contract",
+  "topology-reported-ready", "app-absent", "postgres-healthy", "postgres-unpublished", "postgres-network",
+  "backend-network-membership", "caddy-healthy", "maintenance-route", "maintenance-route-digest",
+  "writer-drain-freshness", "topology-freshness",
+]);
 
-function requireValue(condition, message) {
-  if (!condition) throw new Error(message);
+function requireValue(condition, message, safeCheckId) {
+  if (!condition) {
+    const error = new Error(message);
+    if (safeCheckId) error.safeCheckIds = [safeCheckId];
+    throw error;
+  }
 }
 
 /** Return only allowlisted phase codes from private remote stderr; never return raw log text. */
 export function summarizeV4HostFailureDiagnostics(stderrText) {
   const found = { remote: [], cutover: [], backup: [], recovery: [] };
+  let snapshotChecks = null;
   let malformed = false;
   for (const line of String(stderrText ?? "").split(/\r?\n/)) {
+    if (line.startsWith("BODYCAST_V4_SNAPSHOT_CHECK_FAILURE ")) {
+      const marker = /^BODYCAST_V4_SNAPSHOT_CHECK_FAILURE checks=([a-z0-9,-]+)$/.exec(line);
+      const ids = marker?.[1].split(",") ?? [];
+      if (!marker || snapshotChecks !== null || ids.length === 0 || ids.some((id) => !V4_SNAPSHOT_CHECK_IDS.has(id))
+        || new Set(ids).size !== ids.length) malformed = true;
+      else snapshotChecks = ids;
+      continue;
+    }
     const kind = line.startsWith("BODYCAST_V4_REMOTE_FAILURE ") ? "remote"
       : line.startsWith("BODYCAST_V4_CUTOVER_FAILURE ") ? "cutover"
         : line.startsWith("BODYCAST_V4_BACKUP_FAILURE ") ? "backup"
@@ -66,6 +91,7 @@ export function summarizeV4HostFailureDiagnostics(stderrText) {
     const item = found[kind][0];
     if (item) parts.push(`${kind}=${item.phase}/exit-${item.status}`);
   }
+  if (snapshotChecks) parts.push(`checks=${snapshotChecks.join(",")}`);
   return parts.length ? parts.join(" ") : "diagnostic=unavailable";
 }
 
@@ -294,21 +320,21 @@ export function assertV4RecoverySnapshot(snapshot, {
   repositoryPath = process.cwd(),
   now = Date.now(),
 } = {}) {
-  requireValue(SHA.test(String(releaseSha ?? "")), "Recovery snapshot release SHA is invalid.");
+  requireValue(SHA.test(String(releaseSha ?? "")), "Recovery snapshot release SHA is invalid.", "release-sha");
   requireValue(snapshot?.schemaVersion === 1 && snapshot.releaseSha === releaseSha
-    && snapshot.canonicalMainSha === releaseSha, "Recovery snapshot is not bound to exact current main.");
-  requireValue(snapshot.manifestId === V4_REPUBLICATION_MANIFEST.id, "Recovery snapshot manifest is unexpected.");
-  requireValue(snapshot.databaseContainerId && /^[a-f0-9]{64}$/.test(snapshot.databaseContainerId), "Production database container identity is malformed.");
-  requireValue(DIGEST.test(String(snapshot.databaseImageId ?? "")), "Production PostgreSQL image identity is malformed.");
-  requireValue(DIGEST.test(String(snapshot.appImageId ?? "")), "Exact app image identity is missing.");
-  requireValue(DIGEST.test(String(snapshot.markerDigest ?? "")), "Release marker digest is malformed.");
-  requireValue(DIGEST.test(String(snapshot.routeDigest ?? "")), "Maintenance route digest is malformed.");
-  requireValue(DIGEST.test(String(snapshot.v4ReplayInputFingerprint ?? "")), "Raw V4 replay-input fingerprint is malformed.");
+    && snapshot.canonicalMainSha === releaseSha, "Recovery snapshot is not bound to exact current main.", "snapshot-binding");
+  requireValue(snapshot.manifestId === V4_REPUBLICATION_MANIFEST.id, "Recovery snapshot manifest is unexpected.", "manifest");
+  requireValue(snapshot.databaseContainerId && /^[a-f0-9]{64}$/.test(snapshot.databaseContainerId), "Production database container identity is malformed.", "database-container");
+  requireValue(DIGEST.test(String(snapshot.databaseImageId ?? "")), "Production PostgreSQL image identity is malformed.", "database-image");
+  requireValue(DIGEST.test(String(snapshot.appImageId ?? "")), "Exact app image identity is missing.", "app-image");
+  requireValue(DIGEST.test(String(snapshot.markerDigest ?? "")), "Release marker digest is malformed.", "marker-digest");
+  requireValue(DIGEST.test(String(snapshot.routeDigest ?? "")), "Maintenance route digest is malformed.", "route-digest");
+  requireValue(DIGEST.test(String(snapshot.v4ReplayInputFingerprint ?? "")), "Raw V4 replay-input fingerprint is malformed.", "replay-input-fingerprint");
   requireValue(DIGEST.test(String(snapshot.preDdlReplayInputFingerprint ?? ""))
     && snapshot.preDdlReplayInputFingerprint === snapshot.v4ReplayInputFingerprint,
-  "Post-DDL raw data no longer matches the signed pre-DDL encrypted-backup baseline.");
-  requireValue(DIGEST.test(String(snapshot.report?.logicalDataFingerprint ?? "")), "Full production data fingerprint is malformed.");
-  requireValue(DIGEST.test(String(snapshot.v4ReplayStableStateFingerprint ?? "")), "V4 replay stable-state fingerprint is malformed.");
+  "Post-DDL raw data no longer matches the signed pre-DDL encrypted-backup baseline.", "pre-ddl-fingerprint-parity");
+  requireValue(DIGEST.test(String(snapshot.report?.logicalDataFingerprint ?? "")), "Full production data fingerprint is malformed.", "full-fingerprint");
+  requireValue(DIGEST.test(String(snapshot.v4ReplayStableStateFingerprint ?? "")), "V4 replay stable-state fingerprint is malformed.", "stable-state-fingerprint");
 
   const marker = snapshot.marker;
   requireValue(marker?.schemaVersion === 3 && marker.manifestId === V4_REPUBLICATION_MANIFEST.id
@@ -320,39 +346,47 @@ export function assertV4RecoverySnapshot(snapshot, {
     && DIGEST.test(String(marker.lineageDigest ?? ""))
     && DIGEST.test(String(marker.sourceMarkerDigest ?? ""))
     && DIGEST.test(String(marker.compatibilityDigest ?? "")),
-  "V4 app-ready marker provenance is incomplete or inconsistent.");
+  "V4 app-ready marker provenance is incomplete or inconsistent.", "marker-provenance");
   requireValue(migrationRun && String(migrationRun.id) === marker.workflowRunId
     && String(migrationRun.runAttempt) === marker.workflowRunAttempt
     && migrationRun.headSha === marker.migrationOriginSha
     && migrationRun.workflowPath === ".github/workflows/production-migrate.yml"
     && migrationRun.actorId === "126446430" && migrationRun.conclusion === "success"
     && migrationRun.event === "workflow_dispatch",
-  "The marker does not bind to the successful pinned-owner V4 DDL run.");
+  "The marker does not bind to the successful pinned-owner V4 DDL run.", "migration-run-binding");
   try {
     execFileSync("git", ["merge-base", "--is-ancestor", marker.migrationOriginSha, releaseSha], {
       cwd: repositoryPath, stdio: "ignore",
     });
-    requireValue(execFileSync("git", ["rev-parse", "HEAD"], { cwd: repositoryPath, encoding: "utf8" }).trim() === releaseSha,
-      "Recovery tooling checkout differs from the exact release SHA.");
   } catch {
-    throw new Error("Migration-origin SHA is not an ancestor of the exact recovery release.");
+    const error = new Error("Migration-origin SHA is not an ancestor of the exact recovery release.");
+    error.safeCheckIds = ["migration-origin-ancestry"];
+    throw error;
   }
+  requireValue(execFileSync("git", ["rev-parse", "HEAD"], { cwd: repositoryPath, encoding: "utf8" }).trim() === releaseSha,
+    "Recovery tooling checkout differs from the exact release SHA.", "tooling-checkout");
 
   const report = snapshot.report;
   const identity = report?.identity;
   requireValue(isCanonicalPostgresDatabaseIdentity(identity)
     && identity.database === "bodycast" && identity.role === "bodycast"
     && identity.serverPort === 5432 && identity.serverVersion.startsWith("17."),
-  "Live production PostgreSQL identity or endpoint is not canonical.");
+  "Live production PostgreSQL identity or endpoint is not canonical.", "database-identity");
   const migrationDirectories = snapshot.migrationDirectories;
-  requireValue(Array.isArray(migrationDirectories), "Production migration tree inventory is missing.");
+  requireValue(Array.isArray(migrationDirectories), "Production migration tree inventory is missing.", "migration-inventory");
   const postflight = evaluateProductionPostflight(report, migrationDirectories, V4_REPUBLICATION_MANIFEST.id);
-  requireValue(postflight.ready, "Live production migration history or schema postflight is not clean.");
+  requireValue(postflight.ready, "Live production migration history or schema postflight is not clean.", "migration-postflight");
   requireValue(Array.isArray(report?.conflictingLocks) && report.conflictingLocks.length === 0
     && Array.isArray(report?.preparedTransactions) && report.preparedTransactions.length === 0
     && Array.isArray(report?.longTransactions) && report.longTransactions.length === 0,
-  "Production lock, prepared-transaction, or transaction-age inventory is unknown or nonempty.");
-  assertFreshWriterDrain(report, { now });
+  "Production lock, prepared-transaction, or transaction-age inventory is unknown or nonempty.", "database-locks");
+  try {
+    assertFreshWriterDrain(report, { now });
+  } catch (error) {
+    error.safeCheckIds = (error.safeCheckIds ?? []).filter((id) => V4_SNAPSHOT_CHECK_IDS.has(id));
+    if (error.safeCheckIds.length === 0) error.safeCheckIds = ["writer-drain"];
+    throw error;
+  }
 
   const lifecycle = snapshot.v4Lifecycle;
   requireValue(lifecycle?.profileId === 1 && lifecycle.unifiedTargetRevision === V4_REVISION
@@ -364,9 +398,9 @@ export function assertV4RecoverySnapshot(snapshot, {
     && lifecycle.unifiedPublicationBlockedFromDate === null
     && ((lifecycle.unifiedPublishedRolloutEpoch === null && lifecycle.unifiedPublishedGeneration === null)
       || (lifecycle.unifiedPublishedRolloutEpoch === 1 && lifecycle.unifiedPublishedGeneration === lifecycle.invalidationGeneration)),
-  "Live V4 lifecycle is unknown, stale, blocked, or outside epoch-1 resume state.");
+  "Live V4 lifecycle is unknown, stale, blocked, or outside epoch-1 resume state.", "lifecycle-state");
   requireValue(snapshot.lifecycleState === (lifecycle.unifiedPublishedRolloutEpoch === null ? "v4-replayable" : "v4-current"),
-    "V4 lifecycle command result differs from the live lifecycle row.");
+    "V4 lifecycle command result differs from the live lifecycle row.", "lifecycle-command");
   assertPostgresClientCompatibility(snapshot.pgDumpVersion, snapshot.pgRestoreVersion);
   return {
     verified: true,
@@ -562,7 +596,11 @@ async function main() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch((error) => {
-    process.stderr.write(`${error.message}\n`);
+    const safeCheckIds = Array.isArray(error.safeCheckIds)
+      ? [...new Set(error.safeCheckIds)].filter((id) => V4_SNAPSHOT_CHECK_IDS.has(id)).sort()
+      : [];
+    if (safeCheckIds.length > 0) process.stderr.write(`BODYCAST_V4_SNAPSHOT_CHECK_FAILURE checks=${safeCheckIds.join(",")}\n`);
+    else process.stderr.write(`${error.message}\n`);
     process.exitCode = 1;
   });
 }

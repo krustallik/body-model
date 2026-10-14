@@ -40,6 +40,33 @@ describe("sanitized V4 host failure diagnostics", () => {
       .toBe("recovery=app-restart/exit-1");
   });
 
+  it("surfaces allowlisted failed snapshot predicates without exposing host error text", () => {
+    expect(summarizeV4HostFailureDiagnostics([
+      "private host error /srv/bodycast/snapshot.json",
+      "BODYCAST_V4_BACKUP_FAILURE phase=snapshot-before-schema-validation status=1",
+      "BODYCAST_V4_SNAPSHOT_CHECK_FAILURE checks=topology-freshness,zero-other-client-backends",
+      "DATABASE_URL=must-not-be-printed",
+    ].join("\n"))).toBe("backup=snapshot-before-schema-validation/exit-1 checks=topology-freshness,zero-other-client-backends");
+    expect(summarizeV4HostFailureDiagnostics("BODYCAST_V4_SNAPSHOT_CHECK_FAILURE checks=unknown-private-value"))
+      .toBe("diagnostic=ambiguous");
+  });
+
+  it("emits a safe predicate ID from an actual failed snapshot validation", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "bodycast-v4-snapshot-check-"));
+    temporaryDirectories.push(root);
+    const snapshotPath = path.join(root, "snapshot.json");
+    await writeFile(snapshotPath, JSON.stringify({ releaseSha: "invalid-private-snapshot-value" }));
+    await writeFile(path.join(root, "migration-run.json"), "{}");
+    const result = spawnSync(process.execPath, [
+      path.resolve("scripts/production-v4-recovery.mjs"),
+      "--validate-snapshot", snapshotPath, path.resolve("prisma/migrations"),
+    ], { cwd: path.resolve("."), encoding: "utf8" });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr.trim()).toBe("BODYCAST_V4_SNAPSHOT_CHECK_FAILURE checks=release-sha");
+    expect(result.stderr).not.toContain("invalid-private-snapshot-value");
+  });
+
   it("distinguishes cutover gates before entering the backup host script", () => {
     expect(summarizeV4HostFailureDiagnostics("BODYCAST_V4_CUTOVER_FAILURE phase=release-lock status=1"))
       .toBe("cutover=release-lock/exit-1");

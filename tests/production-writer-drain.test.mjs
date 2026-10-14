@@ -112,6 +112,7 @@ describe("production writer drain and topology gate", () => {
     try {
       assertFreshWriterDrain(finalGuard, { now: now + 1_000 });
     } catch (error) {
+      expect(error.safeCheckIds).toEqual(["zero-other-client-backends"]);
       expect(error.message).not.toContain("PII_CANARY_RECONNECTED");
       expect(error.message).not.toContain("applicationName");
       expect(error.message).not.toContain("clientAddress");

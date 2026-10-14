@@ -11,7 +11,9 @@ function check(id, passed, blockers, message) {
 }
 
 function reject(message, diagnostics) {
-  throw new Error(`Production writer-drain gate blocked: ${message}; checks=${JSON.stringify(diagnostics)}`);
+  const error = new Error(`Production writer-drain gate blocked: ${message}; checks=${JSON.stringify(diagnostics)}`);
+  error.safeCheckIds = diagnostics.filter((item) => item?.passed === false).map((item) => item.id);
+  throw error;
 }
 
 export function evaluateProductionWriterTopology(input) {

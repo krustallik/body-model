@@ -69,7 +69,7 @@ const CONTENT_BOUND_PATHS = Object.freeze({
 const V4_CONTENT_BOUND_PATHS = Object.freeze({
   "scripts/production-v4-fingerprint-forensics.mjs": Object.freeze({
     migrationOriginBlob: null,
-    deployBlob: "6276b3d8c08ab6d9cf400a7db185b452dd9f7122",
+    deployBlob: "deff548ab371c8c6a7f2fe4585d92ce42999247e",
   }),
   ".github/workflows/activate-unified-v4-production.yml": Object.freeze({
     migrationOriginBlob: "5aee0a99a1dea520ca314a4b83e42c63e389e1d2",

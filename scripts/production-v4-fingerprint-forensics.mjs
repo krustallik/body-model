@@ -92,10 +92,21 @@ function safeInventoryFailure(error) {
 const SAFE_CAPTURE_DIAGNOSTIC = /^Read-only PostgreSQL forensic capture failed closed \(parser=(?:ambiguous-table-boundary|table-inventory-changed|sequence-boundary-missing|sequence-inventory-changed|ambiguous-sequence-phase|sequence-inventory-incomplete|metadata-malformed|metadata-duplicated|unexpected-output-record|snapshot-incomplete|inventory-changed|safety-metadata-incomplete|sequence-state-changed|capture-stream-failed); client=(?:sqlstate-[0-9A-Z]{5}|client-stderr|none); exit=(?:[0-9]+|unknown)\)\.$/;
 const SAFE_INVENTORY_DIAGNOSTIC = /^Read-only PostgreSQL forensic inventory failed closed \(reason=(?:inventory-incomplete|inventory-ambiguous|inventory-query-failed|inventory-failed); client=(?:sqlstate-[0-9A-Z]{5}|client-stderr|none); exit=(?:[0-9]+|unknown)\)\.$/;
 const GENERIC_FAILURE = "Production V4 fingerprint forensics failed closed.";
+const SAFE_SETUP_FAILURES = new Map([
+  ["Forensic source mode accepts only an isolated loopback test database.", "source-target-rejected"],
+  ["Forensic source URL is malformed.", "source-url-malformed"],
+  ["Public schema contains an unsupported identifier.", "catalog-identifier-unsupported"],
+  ["Fixed production PostgreSQL container identity is unavailable.", "production-container-identity-unavailable"],
+  ["Fixed production PostgreSQL container topology is ambiguous.", "production-container-topology-ambiguous"],
+  ["Production PostgreSQL container changed during forensic capture.", "production-container-changed"],
+  ["Unsupported forensic target.", "target-unsupported"],
+]);
 
 export function safeCliErrorMessage(error) {
   const message = error instanceof Error ? error.message : "";
-  return SAFE_CAPTURE_DIAGNOSTIC.test(message) || SAFE_INVENTORY_DIAGNOSTIC.test(message) ? message : GENERIC_FAILURE;
+  if (SAFE_CAPTURE_DIAGNOSTIC.test(message) || SAFE_INVENTORY_DIAGNOSTIC.test(message)) return message;
+  const setupFailure = SAFE_SETUP_FAILURES.get(message);
+  return setupFailure ? `V4 forensic capture stopped safely (reason=${setupFailure}).` : GENERIC_FAILURE;
 }
 
 function parseInventory(text) {
@@ -137,7 +148,8 @@ const INVENTORY_SQL = `SELECT json_build_object(
 
 function makeConnection(mode, target) {
   if (mode === "test-url") {
-    const url = new URL(target);
+    let url;
+    try { url = new URL(target); } catch { throw new Error("Forensic source URL is malformed."); }
     const database = decodeURIComponent(url.pathname.slice(1));
     if (url.protocol !== "postgresql:" || !["127.0.0.1", "localhost", "::1"].includes(url.hostname)
       || !url.password || url.search || url.hash

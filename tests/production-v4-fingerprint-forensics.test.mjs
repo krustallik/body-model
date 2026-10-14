@@ -40,6 +40,22 @@ test("CLI surfaces only whitelisted sanitized PostgreSQL capture diagnostics", (
     safeCliErrorMessage(new Error("DATABASE_URL=secret raw SQL and private row payload")),
     "Production V4 fingerprint forensics failed closed.",
   );
+  assert.equal(
+    safeCliErrorMessage(new Error("Public schema contains an unsupported identifier.")),
+    "V4 forensic capture stopped safely (reason=catalog-identifier-unsupported).",
+  );
+  assert.equal(
+    safeCliErrorMessage(new Error("Forensic source mode accepts only an isolated loopback test database.")),
+    "V4 forensic capture stopped safely (reason=source-target-rejected).",
+  );
+  assert.equal(
+    safeCliErrorMessage(new Error("Forensic source URL is malformed.")),
+    "V4 forensic capture stopped safely (reason=source-url-malformed).",
+  );
+  assert.equal(
+    safeCliErrorMessage(new Error("private value: bodycast_restore://secret")),
+    "Production V4 fingerprint forensics failed closed.",
+  );
 });
 
 function snapshotLines({ migration = "base", lifecycle = '{"id":1}', workoutRows = ['{"id":1}', '{"id":2}'], legacySequenceValue = "5", sequenceValue = "5", sequenceIsCalled = "true" } = {}) {

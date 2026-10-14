@@ -59,7 +59,10 @@ export async function invalidateActiveEnergyResolutionDatesV1(profileId: number,
   });
 }
 
-export async function materializeActiveEnergyCandidatesV1(profileId = 1): Promise<{
+export async function materializeActiveEnergyCandidatesV1(
+  profileId = 1,
+  options: { onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void } = {},
+): Promise<{
   stepperWorkoutIds: number[];
   strengthSessionIds: number[];
   strengthWorkoutIds: number[];
@@ -79,7 +82,11 @@ export async function materializeActiveEnergyCandidatesV1(profileId = 1): Promis
     }),
   ]);
   for (const session of sessions) {
-    await recordExperimentalStrengthEnergyShadowBySessionId({ sessionId: session.id, profileId });
+    await recordExperimentalStrengthEnergyShadowBySessionId({
+      sessionId: session.id,
+      profileId,
+      ...(options.onLifecycleFenceChanged === undefined ? {} : { onLifecycleFenceChanged: options.onLifecycleFenceChanged }),
+    });
   }
   const strengthWorkoutIds = workouts
     .filter((workout) => workout.matchedDiarySession === null
@@ -92,7 +99,11 @@ export async function materializeActiveEnergyCandidatesV1(profileId = 1): Promis
     .filter((workout) => canonicalizeWorkoutType(workout.type).classification === "stair-climbing")
     .map((workout) => workout.id);
   for (const workoutId of stepperWorkoutIds) {
-    await recordExperimentalStepperActiveEnergyShadow({ workoutId, profileId });
+    await recordExperimentalStepperActiveEnergyShadow({
+      workoutId,
+      profileId,
+      ...(options.onLifecycleFenceChanged === undefined ? {} : { onLifecycleFenceChanged: options.onLifecycleFenceChanged }),
+    });
   }
   return {
     stepperWorkoutIds,
@@ -225,6 +236,7 @@ export async function refreshStepperCandidatesV1(profileId: number, workoutIds: 
 export async function refreshCandidatesAfterProductionV1(
   profileId: number,
   replayFromDate: string,
+  options: { onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void } = {},
 ): Promise<string[]> {
   const before = await readResolutionSnapshot(profileId);
   const [episodes, sessions, workouts] = await Promise.all([
@@ -271,7 +283,11 @@ export async function refreshCandidatesAfterProductionV1(
     const modelDate = episodeTimeContextForInstantV1(episodes, eventInstant).date;
     const currentSource = strengthSourceBySessionId.get(String(session.id));
     if (modelDate < replayFromDate || currentSource === "bodycast-strength-estimate") continue;
-    await recordExperimentalStrengthEnergyShadowBySessionId({ sessionId: session.id, profileId });
+    await recordExperimentalStrengthEnergyShadowBySessionId({
+      sessionId: session.id,
+      profileId,
+      ...(options.onLifecycleFenceChanged === undefined ? {} : { onLifecycleFenceChanged: options.onLifecycleFenceChanged }),
+    });
   }
   for (const workout of workouts) {
     const classification = canonicalizeWorkoutType(workout.type).classification;
@@ -291,7 +307,11 @@ export async function refreshCandidatesAfterProductionV1(
         ? massReference.status
         : "unavailable",
     })) continue;
-    await recordExperimentalStepperActiveEnergyShadow({ workoutId: workout.id, profileId });
+    await recordExperimentalStepperActiveEnergyShadow({
+      workoutId: workout.id,
+      profileId,
+      ...(options.onLifecycleFenceChanged === undefined ? {} : { onLifecycleFenceChanged: options.onLifecycleFenceChanged }),
+    });
   }
   return changedResolutionDates(before, await readResolutionSnapshot(profileId));
 }

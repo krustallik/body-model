@@ -115,6 +115,8 @@ async function loadStepperModelMassContextV1(
 export async function recordExperimentalStepperActiveEnergyShadow(input: {
   workoutId: number;
   profileId?: number;
+  /** Return the exact lifecycle fence committed with a shadow-triggered invalidation. */
+  onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void;
 }): Promise<void> {
   const profileId = input.profileId ?? 1;
   const reconciliationCandidates = await prisma.stepperReconciliationCandidate.findMany({
@@ -363,7 +365,7 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
       ? [{ source: "device-kcal" as const, sourceIdentity: `workout:${deviceSource.id}:device`, sourceFingerprint: stableSha256(`device|${deviceSource.id}|${deviceSource.activeEnergyKcal}|${deviceSource.updatedAt.toISOString()}`), valueKcal: deviceSource.activeEnergyKcal, provenance: { source: "wearable-device", workoutId: deviceSource.id } }]
       : []),
   ];
-  await prisma.$transaction(async (tx) => {
+  const lifecycleFence = await prisma.$transaction(async (tx) => {
     const lifecycle = new PhysiologyV7PersistenceRepository(tx);
     await lifecycle.lockProfile(profileId);
     const existingShadow = await tx.experimentalStepperActiveEnergyShadow.findUnique({
@@ -482,8 +484,13 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
     },
   });
     if (!resolution.current) throw new Error("stepper source changed before canonical active-energy publication");
-    if (shadowChanged) await lifecycle.invalidateUnifiedPublication(profileId);
+    if (shadowChanged) {
+      await lifecycle.invalidateUnifiedPublication(profileId);
+      return lifecycle.readUnifiedPublicationFence(profileId);
+    }
+    return null;
   });
+  if (lifecycleFence !== null) input.onLifecycleFenceChanged?.(lifecycleFence);
 }
 
 export async function recordExperimentalStepperActiveEnergyShadowsForLocalDate(input: {

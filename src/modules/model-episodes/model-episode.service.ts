@@ -577,7 +577,7 @@ export async function recalculateModelEpisode(
   }
   const status = await getModelStatus(input.episodeId, client);
   const profileId = 1;
-  const materialized = await materializeActiveEnergyCandidatesV1(profileId);
+  const materialized = await materializeActiveEnergyCandidatesV1(profileId, { onLifecycleFenceChanged: input.onLifecycleFenceChanged });
   await invalidateActiveEnergyResolutionDatesV1(profileId, materialized.changedDates);
   await publishLifecycleFence();
   const eligibleRefreshes = materialized.stepperWorkoutIds.length
@@ -589,7 +589,9 @@ export async function recalculateModelEpisode(
     // candidate refresh completes. Keep the recovery CAS tied to this exact
     // committed fence if a later refresh step fails.
     await publishLifecycleFence();
-    const changedDates = await refreshCandidatesAfterProductionV1(profileId, production.effectiveReplayFromDate);
+    const changedDates = await refreshCandidatesAfterProductionV1(profileId, production.effectiveReplayFromDate, {
+      onLifecycleFenceChanged: input.onLifecycleFenceChanged,
+    });
     if (changedDates.length === 0) {
       await publishLifecycleFence();
       const { effectiveReplayFromDate: _effectiveReplayFromDate, ...result } = production;

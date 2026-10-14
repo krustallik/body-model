@@ -50,6 +50,8 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
   profileId: number;
   /** Deterministic barrier for exercising the source CAS in PostgreSQL integration tests. */
   onCandidateComputed?: () => Promise<void>;
+  /** Return the exact lifecycle fence committed with a shadow-triggered invalidation. */
+  onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void;
 }): Promise<void> {
   const interval = input.session.matchedWorkout ?? (input.session.webStartedAt && input.session.webEndedAt
     ? { startAt: input.session.webStartedAt, endAt: input.session.webEndedAt }
@@ -276,7 +278,7 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
       : []),
   ];
   await input.onCandidateComputed?.();
-  await prisma.$transaction(async (tx) => {
+  const lifecycleFence = await prisma.$transaction(async (tx) => {
     const lifecycle = new PhysiologyV7PersistenceRepository(tx);
     await lifecycle.lockProfile(input.profileId);
     if (!(await validateSource(tx))) throw new StaleStrengthEnergySourceError();
@@ -308,8 +310,13 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
       validateSource,
     });
     if (!resolution.current) throw new StaleStrengthEnergySourceError();
-    if (shadowChanged) await lifecycle.invalidateUnifiedPublication(input.profileId);
+    if (shadowChanged) {
+      await lifecycle.invalidateUnifiedPublication(input.profileId);
+      return lifecycle.readUnifiedPublicationFence(input.profileId);
+    }
+    return null;
   });
+  if (lifecycleFence !== null) input.onLifecycleFenceChanged?.(lifecycleFence);
 }
 
 /** Refreshes a completed session after delayed source matching. */
@@ -317,6 +324,7 @@ export async function recordExperimentalStrengthEnergyShadowBySessionId(input: {
   sessionId: number;
   profileId: number;
   refreshAccounting?: boolean;
+  onLifecycleFenceChanged?: (fence: { invalidationGeneration: number; updatedAt: string }) => void;
 }): Promise<{ session: StrengthSessionDto | null; publicationBlockToken: { revision: number; fromDate: string } | null }> {
   const repository = new TrainingRepository(prisma);
   await repository.materializeAccounting({
@@ -326,7 +334,11 @@ export async function recordExperimentalStrengthEnergyShadowBySessionId(input: {
   });
   const session = await repository.getSession(input.sessionId, input.profileId);
   if (session === null) return { session: null, publicationBlockToken: null };
-  await recordExperimentalStrengthEnergyShadow({ session, profileId: input.profileId });
+  await recordExperimentalStrengthEnergyShadow({
+    session,
+    profileId: input.profileId,
+    ...(input.onLifecycleFenceChanged === undefined ? {} : { onLifecycleFenceChanged: input.onLifecycleFenceChanged }),
+  });
   const captured = await prisma.$transaction(async (tx) => {
     const lifecycle = new PhysiologyV7PersistenceRepository(tx);
     await lifecycle.lockProfile(input.profileId);

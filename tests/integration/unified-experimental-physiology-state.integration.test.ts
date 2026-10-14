@@ -1272,14 +1272,39 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).resolves.toMatchObject({ rolloutEpoch: 1, dayCount: 3 });
   }, 60_000);
 
-  it("restores the retry fence when candidate refresh fails after a committed production pass", async () => {
+  it("restores the retry fence after a candidate self-invalidation commits before a later refresh failure", async () => {
     await seed({ productionGlycogenKg: [0.5, 0.6, 0] });
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[0], toDate: dates[2] });
     await verifyAndPublishUnifiedV3Postflight({ profileId });
     await activateAndReplayUnifiedV4({ profileId });
 
+    const day = await prisma.dailyHealthData.findUniqueOrThrow({ where: { date: dates[2] }, select: { id: true } });
+    const workout = await prisma.workout.create({
+      data: {
+        dailyHealthDataId: day.id,
+        sourceIdentity: `${fixtureMethod}-candidate-self-invalidation`,
+        type: "Stair Climbing",
+        startAt: new Date(`${dates[2]}T08:00:00.000Z`),
+        endAt: new Date(`${dates[2]}T08:20:00.000Z`),
+        durationMinutes: 20,
+        activeEnergyKcal: 140,
+      },
+    });
     const refreshFailure = vi.spyOn(activeEnergyMaterialization, "refreshCandidatesAfterProductionV1")
-      .mockRejectedValueOnce(new Error("injected candidate refresh failure after production commit"));
+      .mockImplementationOnce(async (candidateProfileId, _replayFromDate, options) => {
+        // Simulate a later dependent candidate changing after production replay.
+        // Recreate only its derived shadow, then fail the next refresh stage.
+        // The writer must report the exact committed fence before this error.
+        await prisma.experimentalStepperActiveEnergyShadow.deleteMany({ where: { workoutId: workout.id } });
+        await stepperActiveEnergyShadowService.recordExperimentalStepperActiveEnergyShadow({
+          workoutId: workout.id,
+          profileId: candidateProfileId,
+          ...(options?.onLifecycleFenceChanged === undefined
+            ? {}
+            : { onLifecycleFenceChanged: options.onLifecycleFenceChanged }),
+        });
+        throw new Error("injected later candidate refresh failure after committed shadow self-invalidation");
+      });
     let status: string | null = null;
     try {
       const sync = await syncHealthWeightThroughService(

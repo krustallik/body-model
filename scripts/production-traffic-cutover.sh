@@ -801,7 +801,7 @@ activate_v4_and_serve() {
 
   # This fixed owner-authorized execution path holds the global flock from the
   # first V3 check through activation, postflight, app restart, and serving.
-  if [[ "$lifecycle_state_after" == "v4-replayable" ]]; then
+  if [[ "$lifecycle_state_after" != "v4-current" ]]; then
     compose --profile tools run --rm --no-deps --entrypoint node migrate \
       /app/scripts/unified-v4-activate-replay.mjs --activate-v4 --owner-authorized --profile-id 1
   else

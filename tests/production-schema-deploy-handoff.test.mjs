@@ -127,11 +127,11 @@ describe("schema deploy compatibility handoff", () => {
       },
       "scripts/ci/production-safety-postgres-smoke.mjs": {
         migrationOriginBlob: "1a0345e687fd3f604499502bdf98a07b606da07f",
-        deployBlob: "a8551efe6279fb881b78c00107f432b247296607",
+        deployBlob: "38941414ce8e99494931b44a56db88f54001c9d8",
       },
       "scripts/production-db-data-fingerprint.sh": {
         migrationOriginBlob: "101ecf34dc5751fc431a5b88f787d7ebc3e98fde",
-        deployBlob: "3a313ac030b0aa96abb57658f6e02c2473016299",
+        deployBlob: "b163822a6b2a8d18efa238af0bb1b5c0f02082cc",
       },
       "scripts/production-v4-post-ddl-backup-host.sh": {
         migrationOriginBlob: null,

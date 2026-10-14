@@ -104,6 +104,7 @@ describe("sanitized V4 host failure diagnostics", () => {
     expect(backupHostScript).toContain('capture_snapshot after > "$tmp/snapshot-values-after.txt"');
     expect(backupHostScript).not.toContain('before_lines="$(capture_snapshot before)"');
     expect(backupHostScript).not.toContain('after_lines="$(capture_snapshot after)"');
+    expect(backupHostScript).toContain('node "$ROOT_DIR/scripts/production-v4-recovery.mjs" --normalize-lifecycle-inspection');
     expect(backupHostScript.indexOf('compose rm --force app >/dev/null')).toBeLessThan(
       backupHostScript.indexOf('bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert'),
     );

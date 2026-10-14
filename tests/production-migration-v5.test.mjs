@@ -2136,6 +2136,13 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
       workflowPath: ".github/workflows/production-migrate.yml", actorId: "126446430",
       conclusion: "success", event: "workflow_dispatch",
     };
+    const lifecycleInspection = JSON.stringify({
+      command: "unified-v4-activate-replay", profileId: 1, state: "v4-replayable",
+    });
+    const normalizedLifecycle = spawnSync(process.execPath, [
+      path.resolve("scripts/production-v4-recovery.mjs"), "--normalize-lifecycle-inspection",
+    ], { input: lifecycleInspection, encoding: "utf8" });
+    expect(normalizedLifecycle.status).toBe(0);
     const snapshot = {
       schemaVersion: 1, manifestId: V4_REPUBLICATION_MANIFEST.id, releaseSha,
       canonicalMainSha: releaseSha, databaseContainerId: "1".repeat(64),
@@ -2143,7 +2150,7 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
       markerDigest: "4".repeat(64), routeDigest: "5".repeat(64),
       v4ReplayInputFingerprint: "6".repeat(64), preDdlReplayInputFingerprint: "6".repeat(64), pgDumpVersion: "pg_dump (PostgreSQL) 17.11",
       v4ReplayStableStateFingerprint: "a".repeat(64),
-      pgRestoreVersion: "pg_restore (PostgreSQL) 17.11", lifecycleState: "v4-replayable",
+      pgRestoreVersion: "pg_restore (PostgreSQL) 17.11", lifecycleState: normalizedLifecycle.stdout.trim(),
       migrationDirectories: fullDirs, report,
       marker: {
         schemaVersion: 3, manifestId: V4_REPUBLICATION_MANIFEST.id, migrationOriginSha,
@@ -2168,6 +2175,23 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
     expect(validated).toMatchObject({ verified: true, ddlAuthorization: false, migrationRunId: "38447647403" });
     expect(validated.recoveryBinding).toMatchObject({ verified: true, ddlAuthorization: false, lifecycleState: "v4-replayable" });
     expect(assertV4ReplayBoundary(validated.recoveryBinding, validated.recoveryBinding, { phase: "before-replay" })).toBe(true);
+    for (const invalidInspection of [
+      JSON.stringify({ command: "wrong-command", profileId: 1, state: "v4-replayable" }),
+      JSON.stringify({ command: "unified-v4-activate-replay", profileId: 2, state: "v4-replayable" }),
+      JSON.stringify({ command: "unified-v4-activate-replay", profileId: 1, state: "v3-ready" }),
+      JSON.stringify({ command: "unified-v4-activate-replay", profileId: 1, state: "v4-replayable", unexpected: true }),
+      "not-json",
+    ]) {
+      const invalidResult = spawnSync(process.execPath, [
+        path.resolve("scripts/production-v4-recovery.mjs"), "--normalize-lifecycle-inspection",
+      ], { input: invalidInspection, encoding: "utf8" });
+      expect(invalidResult.status).toBe(1);
+      expect(invalidResult.stderr.trim()).toBe("BODYCAST_V4_SNAPSHOT_CHECK_FAILURE checks=lifecycle-command");
+    }
+    const mismatchedLifecycleSnapshot = structuredClone(snapshot);
+    mismatchedLifecycleSnapshot.lifecycleState = "v4-current";
+    expect(() => assertV4RecoverySnapshot(mismatchedLifecycleSnapshot, { releaseSha, migrationRun, now: Date.now() }))
+      .toThrow(/V4 lifecycle command result differs/);
     expect(() => assertV4RecoverySnapshot(snapshot, {
       releaseSha, migrationRun: { ...migrationRun, id: "38447647404" }, now: Date.now(),
     })).toThrow(/does not bind to the successful pinned-owner V4 DDL run/);

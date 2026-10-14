@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -55,6 +56,21 @@ function requireValue(condition, message, safeCheckId) {
     if (safeCheckId) error.safeCheckIds = [safeCheckId];
     throw error;
   }
+}
+
+export function parseV4LifecycleInspectionResult(value) {
+  let inspection;
+  try {
+    inspection = typeof value === "string" ? JSON.parse(value) : value;
+  } catch {
+    requireValue(false, "Lifecycle inspection result is malformed.", "lifecycle-command");
+  }
+  requireValue(inspection && typeof inspection === "object" && !Array.isArray(inspection)
+    && JSON.stringify(Object.keys(inspection).sort()) === JSON.stringify(["command", "profileId", "state"])
+    && inspection.command === "unified-v4-activate-replay" && inspection.profileId === 1
+    && ["v4-replayable", "v4-current"].includes(inspection.state),
+  "Lifecycle inspection result is malformed or outside the supported V4 states.", "lifecycle-command");
+  return inspection.state;
 }
 
 /** Return only allowlisted phase codes from private remote stderr; never return raw log text. */
@@ -539,6 +555,10 @@ async function readJson(pathname) {
 
 async function main() {
   const [mode, ...args] = process.argv.slice(2);
+  if (mode === "--normalize-lifecycle-inspection") {
+    process.stdout.write(`${parseV4LifecycleInspectionResult(readFileSync(0, "utf8"))}\n`);
+    return;
+  }
   if (mode === "--validate-snapshot") {
     const [snapshotPath, migrationPath, outputPath] = args;
     const snapshot = await readJson(snapshotPath);
@@ -591,7 +611,7 @@ async function main() {
     process.stdout.write(JSON.stringify({ verified: true, ddlAuthorization: false, backupArtifactId: binding.backupArtifactId }) + "\n");
     return;
   }
-  throw new Error("Usage: production-v4-recovery.mjs --validate-snapshot <snapshot.json> <migration-dir> [result.json] | --verify-rehearsal <input.json> [result.json] | --assert-replay-boundary <expected.json> <observed.json> <before-replay|after-replay> [expected-stable-state-fingerprint] [expected-lifecycle-digest] | --verify-ddl-source <bundle-dir> <migration-run.json> <output.json>");
+  throw new Error("Usage: production-v4-recovery.mjs --normalize-lifecycle-inspection | --validate-snapshot <snapshot.json> <migration-dir> [result.json] | --verify-rehearsal <input.json> [result.json] | --assert-replay-boundary <expected.json> <observed.json> <before-replay|after-replay> [expected-stable-state-fingerprint] [expected-lifecycle-digest] | --verify-ddl-source <bundle-dir> <migration-run.json> <output.json>");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

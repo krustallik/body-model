@@ -16,8 +16,18 @@ export class ModelDiagnosticsRepository {
       this.client.dailyHealthData.count({ where: { date: { gte: from, lte: to }, weightKg: { gt: 0 } } }),
     ]);
     const unified = (this.client as unknown as { unifiedExperimentalPhysiologyState?: { findMany: (args: unknown) => Promise<unknown[]> } }).unifiedExperimentalPhysiologyState;
+    const [energyRows, latestModeledDay, previousCompletedDays] = await Promise.all([
+      this.client.dailyModelState.findMany({ where: { episodeId, date: { gte: from, lte: to } }, orderBy: { date: "asc" }, select: { date: true, status: true, energyExpenditureKcal: true, dynamicRmrKcalPerDay: true } }),
+      this.client.dailyModelState.findFirst({ where: { episodeId, date: to }, select: { date: true, status: true, energyExpenditureKcal: true } }),
+      this.client.dailyModelState.findMany({
+        where: { episodeId, date: { lt: to }, status: "complete" },
+        orderBy: { date: "desc" },
+        take: 7,
+        select: { date: true, energyExpenditureKcal: true },
+      }),
+    ]);
     const experimentalEnergySummary = unified ? buildUnifiedEnergySummaryV1({
-      days: (await this.client.dailyModelState.findMany({ where: { episodeId, date: { gte: from, lte: to } }, orderBy: { date: "asc" }, select: { date: true, energyExpenditureKcal: true, dynamicRmrKcalPerDay: true } })).map((row) => ({ date: row.date, productionTdeeKcalPerDay: row.energyExpenditureKcal, dynamicRmrKcalPerDay: row.dynamicRmrKcalPerDay })),
+      days: energyRows.map((row) => ({ date: row.date, productionTdeeKcalPerDay: row.energyExpenditureKcal, dynamicRmrKcalPerDay: row.dynamicRmrKcalPerDay })),
       todayDate: new Date().toISOString().slice(0, 10),
     }) : null;
     return {
@@ -29,6 +39,14 @@ export class ModelDiagnosticsRepository {
       unresolvedNutritionDayCount,
       weightObservationCount,
       ...(experimentalEnergySummary === null ? {} : { experimentalEnergySummary }),
+      energyHistory: {
+        latestModeledDay: latestModeledDay && (latestModeledDay.status === "complete" || latestModeledDay.status === "incomplete")
+          ? { date: latestModeledDay.date, status: latestModeledDay.status, expenditureKcalPerDay: latestModeledDay.energyExpenditureKcal }
+          : null,
+        previousCompletedDays: previousCompletedDays
+          .map((day) => ({ date: day.date, expenditureKcalPerDay: day.energyExpenditureKcal }))
+          .reverse(),
+      },
     };
   }
 }

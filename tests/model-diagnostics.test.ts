@@ -148,6 +148,24 @@ describe("multidimensional diagnostic composition", () => {
     expect(result).not.toHaveProperty("confidenceScore");
   });
 
+  it("keeps the latest model-day completion status and earlier completed energy estimates explicit", () => {
+    const result = buildDiagnosticsDto({
+      episode: episode(), status: status(false),
+      evidence: {
+        ...evidence,
+        energyHistory: {
+          latestModeledDay: { date: "2026-08-25", status: "complete", expenditureKcalPerDay: 2300 },
+          previousCompletedDays: [{ date: "2026-08-24", expenditureKcalPerDay: 2280 }],
+        },
+      },
+      windowStartDate: "2026-07-29", recovery: null,
+    });
+    expect(result.energyHistory).toEqual({
+      latestModeledDay: { date: "2026-08-25", status: "complete", expenditureKcalPerDay: 2300 },
+      previousCompletedDays: [{ date: "2026-08-24", expenditureKcalPerDay: 2280 }],
+    });
+  });
+
   it("marks incomplete activity evidence as limited even when nutrition is resolved", () => {
     const result = buildDiagnosticsDto({ episode: episode(), status: status(false), evidence: { ...evidence, unresolvedNutritionDayCount: 0 }, windowStartDate: "2026-07-29", recovery: null });
     expect(result.dataContinuity.level).toBe("limited");

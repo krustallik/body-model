@@ -157,6 +157,7 @@ export function buildDiagnosticsDto(input: {
   return {
     episode: { id: episode.id, modelVersion: episode.modelVersion, timezone: episode.timezone, startDate: episode.startDate, latestModeledDate: episode.latestModeledDate, updatedAt: episode.updatedAt },
     ...(evidence.experimentalEnergySummary !== undefined ? { experimentalEnergySummary: evidence.experimentalEnergySummary } : {}),
+    energyHistory: evidence.energyHistory ?? { latestModeledDay: null, previousCompletedDays: [] },
     currentState: {
       level: currentStatus === "available" ? (source === "degraded" ? "limited" : "good") : "blocked",
       status: currentStatus, source,

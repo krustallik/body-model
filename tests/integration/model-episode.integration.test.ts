@@ -806,6 +806,24 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(diagnostics.currentState.status).toBe("unavailable");
     expect(diagnostics.forecastReadiness).toMatchObject({ allowed: false, reasons: ["current-state-unavailable"] });
     expect(JSON.stringify(diagnostics)).not.toMatch(/ensemble|posteriorSummary|observationDates|topParticleOrigins/);
+    if (diagnostics.episode.latestModeledDate) {
+      const latestModeledDay = await prisma.dailyModelState.findUniqueOrThrow({
+        where: { episodeId_date: { episodeId, date: diagnostics.episode.latestModeledDate } },
+        select: { date: true, status: true, energyExpenditureKcal: true },
+      });
+      expect(diagnostics.energyHistory.latestModeledDay).toEqual(
+        latestModeledDay.status === "complete" || latestModeledDay.status === "incomplete"
+          ? { date: latestModeledDay.date, status: latestModeledDay.status, expenditureKcalPerDay: latestModeledDay.energyExpenditureKcal }
+          : null,
+      );
+      const expectedPreviousCompletedDays = (await prisma.dailyModelState.findMany({
+        where: { episodeId, date: { lt: diagnostics.episode.latestModeledDate }, status: "complete" },
+        orderBy: { date: "desc" },
+        take: 7,
+        select: { date: true, energyExpenditureKcal: true },
+      })).map(({ date, energyExpenditureKcal }) => ({ date, expenditureKcalPerDay: energyExpenditureKcal })).reverse();
+      expect(diagnostics.energyHistory.previousCompletedDays).toEqual(expectedPreviousCompletedDays);
+    }
     expect(after).toEqual(before);
   });
 

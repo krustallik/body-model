@@ -62,6 +62,21 @@ function diagnosticsDto(): DiagnosticsDto {
       dynamicRmrKcalPerDay: 1800,
       modeledTdeeKcalPerDay: 3053,
     },
+    experimentalEnergySummary: {
+      restingRmrKcalPerDay: 1800,
+      recentTypicalMaintenanceKcalPerDay: 2900,
+      todayEstimatedExpenditureKcalPerDay: 3053,
+      latestModeledExpenditureKcalPerDay: 3053,
+      typicalMaintenanceEligibleDays: 22,
+      typicalMaintenanceWindowDays: 28,
+    },
+    energyHistory: {
+      latestModeledDay: { date: "2026-09-18", status: "complete", expenditureKcalPerDay: 3053 },
+      previousCompletedDays: [
+        { date: "2026-09-17", expenditureKcalPerDay: 3020 },
+        { date: "2026-09-16", expenditureKcalPerDay: null },
+      ],
+    },
     dataContinuity: {
       level: "good",
       recentWindowDays: 28,
@@ -153,6 +168,29 @@ describe("DiagnosticsClient body-composition card", () => {
     expect(screen.getByText("44.7 kg")).toBeTruthy();
     expect(screen.getByText("20.3 kg")).toBeTruthy();
     expect(screen.getByText("3053 kcal")).toBeTruthy();
+  });
+
+  it("explains modeled expenditure periods, completion status, and omits the misleading today estimate", async () => {
+    render(<DiagnosticsClient />);
+    expect(await screen.findByText("Енерговитрати останнього змодельованого дня")).toBeTruthy();
+    expect(screen.getByText("Типова підтримка · вікно 28 днів")).toBeTruthy();
+    expect(screen.getByText("22/28 придатних модельних днів")).toBeTruthy();
+    expect(screen.getByText(/Останній змодельований день: 18 вер. 2026 р\. · розрахунок повний/)).toBeTruthy();
+    expect(screen.getByText("Сім попередніх завершених днів")).toBeTruthy();
+    expect(screen.getByText("17 вер. 2026 р.")).toBeTruthy();
+    expect(screen.getByText("немає оцінки")).toBeTruthy();
+    expect(screen.getAllByText("оцінка моделі")).toHaveLength(2);
+    expect(screen.queryByText("Сьогодні")).toBeNull();
+  });
+
+  it("does not show a prior available expenditure as the latest day's missing estimate", async () => {
+    const dto = diagnosticsDto();
+    dto.experimentalEnergySummary = { ...dto.experimentalEnergySummary!, latestModeledExpenditureKcalPerDay: 3333 };
+    dto.energyHistory.latestModeledDay = { date: "2026-09-18", status: "incomplete", expenditureKcalPerDay: null };
+    vi.mocked(fetch).mockResolvedValueOnce(Response.json(dto));
+    render(<DiagnosticsClient />);
+    expect(await screen.findAllByText("немає оцінки")).toHaveLength(2);
+    expect(screen.queryByText("3333 kcal")).toBeNull();
   });
 
   it("says modeled days need refreshing when the current estimate is unavailable", async () => {

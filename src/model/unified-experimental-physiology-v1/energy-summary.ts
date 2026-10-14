@@ -8,6 +8,7 @@ export type UnifiedEnergySummaryV1 = {
   restingRmrKcalPerDay: number | null;
   recentTypicalMaintenanceKcalPerDay: number | null;
   recentTypicalMaintenanceRangeKcalPerDay: { lower: number; upper: number } | null;
+  /** @deprecated Retained for API compatibility; do not present as a current-day measurement. */
   todayEstimatedExpenditureKcalPerDay: number | null;
   latestModeledExpenditureKcalPerDay: number | null;
   typicalMaintenanceEligibleDays: number;
@@ -28,9 +29,10 @@ function percentile(values: number[], fraction: number): number | null {
   return sorted[Math.min(sorted.length - 1, Math.max(0, Math.round((sorted.length - 1) * fraction)))]!;
 }
 
-/** Explicitly separates resting, recent-typical, and latest/today labels. */
+/** Explicitly separates resting, recent-typical, and latest modeled estimates. */
 export function buildUnifiedEnergySummaryV1(input: {
   days: readonly UnifiedEnergySummaryDayV1[];
+  /** @deprecated Legacy UTC-day API field only. */
   todayDate?: string;
   minimumEligibleDays?: number;
 }): UnifiedEnergySummaryV1 {
@@ -41,12 +43,13 @@ export function buildUnifiedEnergySummaryV1(input: {
   const eligible = ordered.filter((day) => day.productionTdeeKcalPerDay !== null && (cutoff === null || Date.parse(`${day.date}T00:00:00Z`) >= cutoff)).map((day) => day.productionTdeeKcalPerDay!);
   const minimum = input.minimumEligibleDays ?? 14;
   const typical = eligible.length >= minimum ? median(eligible) : null;
-  const today = input.todayDate ? ordered.find((day) => day.date === input.todayDate)?.productionTdeeKcalPerDay ?? null : null;
   return {
     restingRmrKcalPerDay: latestRmr,
     recentTypicalMaintenanceKcalPerDay: typical,
     recentTypicalMaintenanceRangeKcalPerDay: typical === null ? null : { lower: percentile(eligible, 0.2)!, upper: percentile(eligible, 0.8)! },
-    todayEstimatedExpenditureKcalPerDay: today,
+    todayEstimatedExpenditureKcalPerDay: input.todayDate === undefined
+      ? null
+      : ordered.find((day) => day.date === input.todayDate)?.productionTdeeKcalPerDay ?? null,
     latestModeledExpenditureKcalPerDay: latest?.productionTdeeKcalPerDay ?? null,
     typicalMaintenanceEligibleDays: eligible.length,
     typicalMaintenanceWindowDays: 28,

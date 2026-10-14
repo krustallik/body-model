@@ -40,6 +40,7 @@ const EMPTY_DIAGNOSTICS: DiagnosticsDto = {
     modeledTdeeKcalPerDay: null,
   },
   experimentalEnergySummary: null,
+  energyHistory: { latestModeledDay: null, previousCompletedDays: [] },
   dataContinuity: {
     level: "blocked",
     recentWindowDays: 28,
@@ -137,6 +138,9 @@ function gateLabel(gate: DiagnosticGate, uk: boolean) {
 }
 
 function gateHelp(gate: DiagnosticGate, uk: boolean) {
+  if (gate.id === "offset-span" || gate.id === "full-span") return uk
+    ? "Це календарний проміжок між придатними зважуваннями для калібрування, а не кількість повних модельних днів. Покриття рахує змодельовані дні у своєму вікні; калібруванню потрібні окремі спостереження ваги."
+    : "This is the calendar span between usable weigh-ins for calibration, not the number of complete modeled days. Coverage counts modeled days in its own window; calibration needs separate weight observations.";
   if (gate.id === "activity-standard-deviation") return uk
     ? "Показує, наскільки відрізнялися витрати на рух у різні дні. Щоб модель могла відокремити вплив активності від інших причин зміни ваги, потрібно щонайменше 75 ккал/день стандартного відхилення. «—» означає, що показник ще неможливо надійно порахувати."
     : "Shows how much movement expenditure differed between days. At least 75 kcal/day of standard deviation is needed to separate activity from other weight changes. A dash means it cannot yet be estimated reliably.";
@@ -148,6 +152,12 @@ function gateHelp(gate: DiagnosticGate, uk: boolean) {
 
 function formatDiagnosticDate(value: string, locale: string) {
   return new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeZone: "UTC" }).format(new Date(`${value}T00:00:00Z`));
+}
+
+function modeledDayStatusLabel(status: "complete" | "incomplete" | null, uk: boolean) {
+  if (status === "complete") return uk ? "розрахунок повний" : "calculation complete";
+  if (status === "incomplete") return uk ? "розрахунок неповний" : "calculation incomplete";
+  return uk ? "статус недоступний" : "status unavailable";
 }
 
 function recoveryStatusLabel(status: DiagnosticsDto["recovery"]["status"], uk: boolean) {
@@ -358,22 +368,25 @@ export function DiagnosticsClient() {
         <article id="model-estimate-details" tabIndex={-1} className={`${styles.panel} ${styles.modelPanel} ${styles.modelEstimateAnchor}`} data-kind="state">
           <p className={styles.eyebrow}>{uk ? "Оцінка моделі" : "Model estimate"}<HelpTip>{uk ? "Це розрахований внутрішній стан на кінець останнього обробленого дня, а не показ вагів. Вага моделі складається з окремо показаних компартментів." : "This is the calculated internal state at the end of the latest processed day, not a scale reading. Model weight is composed of the compartments shown below."}</HelpTip></p>
           <h2>{uk ? "Що модель оцінює зараз" : "What the model estimates now"}</h2>
-          <div className={styles.currentWeight}><span>{uk ? "Розрахункова вага" : "Estimated weight"}</span><strong>{number(data.currentState.predictedWeightKg, 1)} kg</strong><small>{uk ? "Останній змодельований день" : "Latest modeled day"}: {data.episode.latestModeledDate ? formatDiagnosticDate(data.episode.latestModeledDate, intlLocale) : "—"}</small></div>
+          <div className={styles.currentWeight}><span>{uk ? "Розрахункова вага" : "Estimated weight"}</span><strong>{number(data.currentState.predictedWeightKg, 1)} kg</strong><small>{uk ? "Останній змодельований день" : "Latest modeled day"}: {data.episode.latestModeledDate ? formatDiagnosticDate(data.episode.latestModeledDate, intlLocale) : "—"} · {modeledDayStatusLabel(data.energyHistory.latestModeledDay?.status ?? null, uk)}</small></div>
           <dl className={styles.metrics}>
             <div><dt>{uk ? "Жир" : "Fat mass"}</dt><dd>{number(data.currentState.fatMassKg, 1)} kg</dd></div>
             <div><dt>{uk ? "Нежирова тканина (без глікогену й ECF)" : "Lean tissue (excl. glycogen & ECF)"}<HelpTip>{uk ? "Компартмент leanTissueKg моделі Hall/Forbes — це не скелетний м’яз і не вся маса без жиру. Глікоген з водою та позаклітинна рідина показані окремо." : "Hall/Forbes leanTissueKg is not skeletal muscle and not all non-fat mass. Glycogen with water and extracellular fluid are shown separately."}</HelpTip></dt><dd>{number(data.currentState.leanTissueKg, 1)} kg</dd></div>
             <div><dt>{uk ? "Глікоген, вода й ECF" : "Glycogen, water & ECF"}<HelpTip>{uk ? "Залишок, що замикає рівняння ваги: розрахункова вага − жир − нежирова тканина." : "The residual that closes the weight equation: estimated weight − fat − lean tissue."}</HelpTip></dt><dd>{number(data.currentState.glycogenAndExtracellularFluidMassKg, 1)} kg</dd></div>
-            <div><dt>{uk ? "Скільки витрачаєте за день" : "Daily burn"}</dt><dd>{number(data.currentState.modeledTdeeKcalPerDay)} kcal</dd></div>
           </dl>
           <p className={styles.note}>{uk ? "Ранкове зважування може відрізнятися через воду, їжу в травній системі та звичайну похибку вагів." : "A morning weigh-in can differ because of water, food in the digestive system, and ordinary scale noise."}</p>
           {data.experimentalEnergySummary && <div className={styles.energySummary} aria-label={uk ? "Додаткові оцінки енерговитрат" : "Additional energy estimates"}>
             <p className={styles.subheading}>{uk ? "Енерговитрати" : "Energy use"}</p>
             <dl className={styles.energyMetrics}>
-              <div><dt>{uk ? "RMR / спокій" : "Resting RMR"}</dt><dd>{number(data.experimentalEnergySummary.restingRmrKcalPerDay)} kcal</dd></div>
-              <div><dt>{uk ? "Типова підтримка (28 днів)" : "Typical maintenance (28 days)"}</dt><dd>{number(data.experimentalEnergySummary.recentTypicalMaintenanceKcalPerDay)} kcal</dd></div>
-              <div><dt>{uk ? "Останній змодельований день" : "Latest modeled day"}</dt><dd>{number(data.experimentalEnergySummary.latestModeledExpenditureKcalPerDay)} kcal</dd></div>
-              <div><dt>{uk ? "Сьогодні" : "Today"}</dt><dd>{number(data.experimentalEnergySummary.todayEstimatedExpenditureKcalPerDay)} kcal</dd></div>
+              <div><dt>{uk ? "Енерговитрати останнього змодельованого дня" : "Expenditure on latest modeled day"}<HelpTip>{uk ? "Оцінка моделі для конкретного останнього дня в історії. Це не вимір сьогоднішніх витрат." : "The model estimate for the exact latest day in history. It is not a measurement of today's expenditure."}</HelpTip></dt><dd>{data.energyHistory.latestModeledDay?.expenditureKcalPerDay === null || !data.energyHistory.latestModeledDay ? (uk ? "немає оцінки" : "estimate unavailable") : `${number(data.energyHistory.latestModeledDay.expenditureKcalPerDay)} kcal`}</dd><small>{data.energyHistory.latestModeledDay?.date ? formatDiagnosticDate(data.energyHistory.latestModeledDay.date, intlLocale) : "—"}</small></div>
+              <div><dt>{uk ? "Типова підтримка · вікно 28 днів" : "Typical maintenance · 28-day window"}<HelpTip>{uk ? "Медіана доступних модельних оцінок добових енерговитрат у ковзному 28-денному календарному вікні, завершеному останнім днем з оцінкою. Для показу потрібно щонайменше 14 придатних днів; відсутні дні не вважаються нулем. Це орієнтир моделі, а не фактично виміряне споживання чи ціль." : "The median of available modeled daily expenditure estimates in a rolling 28-calendar-day window ending on the latest day with an estimate. At least 14 eligible days are required; missing days are not treated as zero. This is a model reference, not measured intake or a target."}</HelpTip></dt><dd>{number(data.experimentalEnergySummary.recentTypicalMaintenanceKcalPerDay)} kcal</dd><small>{data.experimentalEnergySummary.typicalMaintenanceEligibleDays}/28 {uk ? "придатних модельних днів" : "eligible modeled days"}</small></div>
+              <div><dt>{uk ? "Енерговитрати у спокої · RMR" : "Resting expenditure · RMR"}<HelpTip>{uk ? "Окремий компонент витрат у спокої; не включає повні добові витрати на рух і перетравлення їжі." : "The resting component only; it does not include total daily movement and digestion expenditure."}</HelpTip></dt><dd>{number(data.experimentalEnergySummary.restingRmrKcalPerDay)} kcal</dd></div>
             </dl>
+            <section className={styles.energyHistory} aria-label={uk ? "Оцінки енерговитрат за попередні завершені дні" : "Expenditure estimates for previous completed days"}>
+              <h3>{uk ? "Сім попередніх завершених днів" : "Seven previous completed days"}</h3>
+              {data.energyHistory.previousCompletedDays.length > 0 ? <ul>{data.energyHistory.previousCompletedDays.map((day) => <li key={day.date}><time dateTime={day.date}>{formatDiagnosticDate(day.date, intlLocale)}</time><span>{uk ? "оцінка моделі" : "model estimate"}</span><strong>{day.expenditureKcalPerDay === null ? (uk ? "немає оцінки" : "estimate unavailable") : `${number(day.expenditureKcalPerDay)} kcal`}</strong></li>)}</ul> : <p>{uk ? "Немає попередніх завершених модельних днів." : "No previous completed modeled days."}</p>}
+              <p className={styles.note}>{uk ? "Показані лише завершені модельні дні. Неповні дні та дні без оцінки пропускаються, а не відображаються як 0 kcal." : "Only completed modeled days are shown. Incomplete days and days without an estimate are omitted, never shown as 0 kcal."}</p>
+            </section>
           </div>}
         </article>
         <article className={`${styles.panel} ${styles.coveragePanel}`} data-kind="coverage" data-level={data.dataContinuity.level}>
@@ -399,7 +412,7 @@ export function DiagnosticsClient() {
         <div className={styles.sectionHead}><div><p className={styles.eyebrow}>{uk ? "Перевірка налаштувань" : "Calibration checks"}</p><h2 id="diagnostics-personalization-heading">{uk ? "Коли модель підлаштовується під вас" : "When the model tunes to you"}</h2></div><span className={styles.statusPill} data-level={data.personalization.level}>{personalization?.[0]}</span></div>
         <p>{personalization?.[1]}</p>
         <div className={styles.gates}>{data.personalization.gates.map((gate) => { const help = gateHelp(gate, uk); return <div key={gate.id} data-met={gate.met}><span>{gateLabel(gate, uk)}{help && <HelpTip>{help}</HelpTip>}</span><strong>{number(gate.current, gate.unit === "coefficient-of-variation" ? 2 : 0)} / {gate.required}{gate.unit === "kcal/day-sd" ? (uk ? " ккал/день" : " kcal/day SD") : gate.unit === "days" ? ` ${uk ? "днів" : "days"}` : ""}</strong><small>{gate.met ? (uk ? "достатньо" : "enough") : (uk ? "ще мало" : "not enough yet")}</small></div>; })}</div>
-        <p className={styles.note}>{uk ? "Це обережні технічні пороги, не медичні норми. Налаштування приймаються лише якщо перевірка на відкладених даних теж покращується." : "These are careful technical thresholds, not medical norms. Settings are accepted only when a held-out check also improves."}</p>
+        <p className={styles.note}>{uk ? "Повні модельні дні рахують завершені денні стани у вікні покриття. Проміжок для підлаштування рахують за календарним часом між придатними зважуваннями. Це різні показники й різні знаменники; показані пороги — технічні, не медичні норми." : "Complete modeled days count finished daily states in the coverage window. The tuning span counts calendar time between usable weigh-ins. These are different measures with different denominators; the displayed thresholds are technical, not medical norms."}</p>
       </section>
 
       <section className={styles.readinessGrid} aria-label={uk ? "Пропуски та наступна дія" : "History gaps and next step"}>

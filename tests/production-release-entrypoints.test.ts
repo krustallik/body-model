@@ -68,6 +68,8 @@ describe("active production release entrypoints", () => {
   it("keeps V3, explicit V4 activation/replay, V4 postflight, and serving in one fixed host invocation", () => {
     const workflow = readFileSync(resolve(workflowDir, "activate-unified-v4-production.yml"), "utf8");
     const cutover = readFileSync(resolve("scripts/production-traffic-cutover.sh"), "utf8");
+    expect(workflow).toContain("--write-out '%{http_code}|%{content_type}|%{url_effective}'");
+    expect(workflow).toContain("IFS='|' read -r status content_type effective_url <<< \"$response_meta\"");
     expect(workflow).toContain("production-traffic-cutover.sh activate-v4-and-serve");
     expect(workflow).not.toContain("production-traffic-cutover.sh v3-postflight");
     expect(workflow).not.toContain("unified-v4-activate-replay.mjs --activate-v4");

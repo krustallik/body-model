@@ -750,8 +750,8 @@ jobs:
             expected_title="${page#*|}"
             response="$RUNNER_TEMP/bodycast-page-${route//\//-}"
             response_meta="$(curl --silent --show-error --location --max-redirs 5 --connect-timeout 5 --max-time 30 \
-              --output "$response" --write-out $'%{http_code}\n%{content_type}\n%{url_effective}' "https://$APP_HOST$route")"
-            IFS=$'\n' read -r status content_type effective_url <<< "$response_meta"
+              --output "$response" --write-out '%{http_code}|%{content_type}|%{url_effective}' "https://$APP_HOST$route")"
+            IFS='|' read -r status content_type effective_url <<< "$response_meta"
             [[ "$status" == 200 && "${content_type,,}" == text/html* \
               && "$effective_url" == "https://$APP_HOST$route" ]] || {
               echo "::error::Public page $route did not return its own HTML page (HTTP $status)."; exit 1;

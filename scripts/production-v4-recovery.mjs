@@ -214,6 +214,10 @@ export function assertV4ReplayBoundary(expected, observed, {
     return true;
   }
   if (phase === "after-replay") {
+    if (expected.lifecycleState === "v4-current") {
+      requireValue(observed.logicalDataFingerprint === expected.logicalDataFingerprint,
+        "Fresh resumed V4 production state differs from the verified backup's full logical-data fingerprint.");
+    }
     requireValue(DIGEST.test(String(expectedReplayStableStateFingerprint ?? ""))
       && observed.v4ReplayStableStateFingerprint === expectedReplayStableStateFingerprint
       && DIGEST.test(String(expectedReplayLifecycleDigest ?? ""))
@@ -512,15 +516,20 @@ export function assertV4ReplayRehearsal({
   const rawFingerprints = [sourceRawFingerprint, restoredRawFingerprintBefore, restoredRawFingerprintAfter, restoredRawFingerprintAfterRetry];
   requireValue(rawFingerprints.every((fingerprint) => DIGEST.test(String(fingerprint ?? "")) && fingerprint === sourceRawFingerprint),
     "Raw replay-source fingerprint changed during V4 rehearsal.");
+  const resumingCurrentBaseline = sourceSnapshot?.lifecycleState === "v4-current";
   requireValue(DIGEST.test(String(replayStableStateFingerprintBefore ?? ""))
     && DIGEST.test(String(replayStableStateFingerprintAfter ?? ""))
-    && replayStableStateFingerprintAfter !== replayStableStateFingerprintBefore
-    && replayStableStateFingerprintAfterRetry === replayStableStateFingerprintAfter,
+    && DIGEST.test(String(replayStableStateFingerprintAfterRetry ?? ""))
+    && (resumingCurrentBaseline
+      ? replayStableStateFingerprintAfter === replayStableStateFingerprintBefore
+        && replayStableStateFingerprintAfterRetry === replayStableStateFingerprintAfter
+      : replayStableStateFingerprintAfter !== replayStableStateFingerprintBefore
+        && replayStableStateFingerprintAfterRetry === replayStableStateFingerprintAfter),
   "V4 model stable-state fingerprint or retry idempotency fingerprint is invalid.");
   requireValue(DIGEST.test(String(fullFingerprintBefore ?? ""))
     && DIGEST.test(String(fullFingerprintAfter ?? ""))
-    && fullFingerprintAfter !== fullFingerprintBefore
-    && DIGEST.test(String(fullFingerprintAfterRetry ?? "")),
+    && DIGEST.test(String(fullFingerprintAfterRetry ?? ""))
+    && (resumingCurrentBaseline || fullFingerprintAfter !== fullFingerprintBefore),
   "V4 rehearsal full data fingerprints are invalid.");
   requireValue(firstReplay?.rolloutEpoch === 1 && Number.isSafeInteger(firstReplay?.dayCount) && firstReplay.dayCount > 0
     && retryReplay?.rolloutEpoch === 1 && retryReplay.dayCount === firstReplay.dayCount,

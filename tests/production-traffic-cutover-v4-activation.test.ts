@@ -111,6 +111,26 @@ describe("production V4 activation and cutover recovery", () => {
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
   }, 30_000);
 
+  it.skipIf(!bashAvailable)("resumes an already-current V4 release without repeating production replay", async () => {
+    const fixture = createFixture();
+    prepareV4ActivationFixture(fixture);
+    const result = await runFixtureAsync(fixture, "bash scripts/production-traffic-cutover.sh activate-v4-and-serve", {
+      BODYCAST_DEPLOY_SHA: fixture.candidateSha,
+      V4_LIFECYCLE_STATE: "v4-current",
+    });
+
+    expect(result.status, `${result.stdout}\\n${result.stderr}`).toBe(0);
+    const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
+    expect(events.match(/unified-v4-lifecycle-inspection/g)).toHaveLength(2);
+    expect(events).not.toContain("unified-v3-postflight");
+    expect(events).not.toContain("unified-v4-activation");
+    expect(events).toContain("v4-recovery-boundary-before");
+    expect(events).toContain("unified-v4-check");
+    expect(events).toContain("v4-recovery-boundary-after");
+    expect(events).toContain("live-route-mutation:serving");
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
+  }, 30_000);
+
   it.skipIf(!bashAvailable)("keeps maintenance when the raw replay-source fingerprint changes during activation", async () => {
     const fixture = createFixture();
     prepareV4ActivationFixture(fixture);

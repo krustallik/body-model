@@ -2262,6 +2262,13 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
       phase: "after-replay", expectedReplayStableStateFingerprint: "e".repeat(64),
       expectedReplayLifecycleDigest: "f".repeat(64),
     })).toThrow(/isolated V4 rehearsal result/);
+    expect(() => assertV4ReplayBoundary(replayedValidation.recoveryBinding, {
+      ...replayedValidation.recoveryBinding,
+      logicalDataFingerprint: "f".repeat(64),
+    }, {
+      phase: "after-replay", expectedReplayStableStateFingerprint: "e".repeat(64),
+      expectedReplayLifecycleDigest: replayedValidation.recoveryBinding.lifecycleDigest,
+    })).toThrow(/full logical-data fingerprint/);
     expect(() => assertV4ReplayBoundary({ ...validated.recoveryBinding, ddlAuthorization: true },
       replayedValidation.recoveryBinding, {
         phase: "after-replay", expectedReplayStableStateFingerprint: "e".repeat(64),
@@ -2329,5 +2336,23 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
     expect(() => assertV4ReplayRehearsal({ ...rehearsal, fullFingerprintBefore: "f".repeat(64) })).toThrow(/baseline fingerprint/);
     expect(() => assertV4ReplayRehearsal({ ...rehearsal, replayStableStateFingerprintAfterRetry: "f".repeat(64) })).toThrow(/stable-state fingerprint/);
     expect(() => assertV4ReplayRehearsal({ ...rehearsal, retryReplay: { rolloutEpoch: 1, dayCount: 364 } })).toThrow(/idempotent retry/);
+
+    const currentBaseline = {
+      ...rehearsal,
+      sourceSnapshot: { ...snapshot, lifecycleState: "v4-current" },
+      fullFingerprintAfter: rehearsal.fullFingerprintBefore,
+      fullFingerprintAfterRetry: rehearsal.fullFingerprintBefore,
+      replayStableStateFingerprintAfter: rehearsal.replayStableStateFingerprintBefore,
+      replayStableStateFingerprintAfterRetry: rehearsal.replayStableStateFingerprintBefore,
+    };
+    expect(assertV4ReplayRehearsal(currentBaseline)).toMatchObject({ verified: true, ddlAuthorization: false, replayEpoch: 1, idempotentRetry: true });
+    expect(() => assertV4ReplayRehearsal({
+      ...currentBaseline,
+      replayStableStateFingerprintAfter: "f".repeat(64),
+    })).toThrow(/stable-state fingerprint/);
+    expect(() => assertV4ReplayRehearsal({
+      ...currentBaseline,
+      fullFingerprintAfter: "not-a-digest",
+    })).toThrow(/full data fingerprints/);
   });
 });

@@ -46,7 +46,7 @@ describe("fallback maintenance-first production deploy", () => {
     const result = runFixture(fixture, "bash scripts/deploy.sh", {
       DEPLOY_SHA: fixture.candidateSha,
       BODYCAST_NON_SERVING_DEPLOY: "0",
-      ADVANCE_ONCE: "1",
+      ADVANCE_ON_FINAL_SCHEMA_PREFLIGHT: "1",
     });
 
     expect(result.status).not.toBe(0);

@@ -106,7 +106,15 @@ const V4_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "scripts/deploy.sh": Object.freeze({
     migrationOriginBlob: "4844bdc0b586f29dbc3b60952717e249a04bbbbc",
-    deployBlob: "bdfb709ba92ddb7970132f8aac7c402519a0a9ce",
+    deployBlob: "b3c119c2442d11361612228122718351d36beff4",
+  }),
+  "src/modules/health/health.service.ts": Object.freeze({
+    migrationOriginBlob: "17a2e1c47b2b7fe1d0d7b968b9e91fffc51a8431",
+    deployBlob: "323d0dc4a10699dc7bd559b31148bc9fe9d10864",
+  }),
+  "src/modules/training/training.service.ts": Object.freeze({
+    migrationOriginBlob: "d036d589304338b07d43c1b1eebb8314910b3acb",
+    deployBlob: "408efc5996e9ad701057ab7f261d0cb045541ff4",
   }),
   "scripts/production-db-data-fingerprint.sh": Object.freeze({
     migrationOriginBlob: "101ecf34dc5751fc431a5b88f787d7ebc3e98fde",

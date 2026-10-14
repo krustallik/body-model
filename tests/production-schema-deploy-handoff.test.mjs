@@ -150,6 +150,18 @@ describe("schema deploy compatibility handoff", () => {
         migrationOriginBlob: "1be0ba2dc8fcfe2c34a97b39ae1d5d0fde32404f",
         deployBlob: "b4955059fc3cae0d94abbd2656c99b51800caad7",
       },
+      "scripts/deploy.sh": {
+        migrationOriginBlob: "4844bdc0b586f29dbc3b60952717e249a04bbbbc",
+        deployBlob: "b3c119c2442d11361612228122718351d36beff4",
+      },
+      "src/modules/health/health.service.ts": {
+        migrationOriginBlob: "17a2e1c47b2b7fe1d0d7b968b9e91fffc51a8431",
+        deployBlob: "323d0dc4a10699dc7bd559b31148bc9fe9d10864",
+      },
+      "src/modules/training/training.service.ts": {
+        migrationOriginBlob: "d036d589304338b07d43c1b1eebb8314910b3acb",
+        deployBlob: "408efc5996e9ad701057ab7f261d0cb045541ff4",
+      },
       "scripts/ci/production-safety-postgres-smoke.mjs": {
         migrationOriginBlob: "1a0345e687fd3f604499502bdf98a07b606da07f",
         deployBlob: "7b973c5a5469393b5d23ba298041ef6d3933c036",

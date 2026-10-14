@@ -34,19 +34,23 @@ export function errorDiagnosticFields(error: unknown): SafeFields {
     fields.errorCode = code;
   }
 
-  const stackLines = error.stack?.split("\n").slice(1) ?? [];
+  const stackLines = error.stack?.slice(0, 16_384).split("\n").slice(1, 33) ?? [];
   for (const stackLine of stackLines) {
-    const frame = stackLine.match(/(?:\(|\s)([^()\s]+):(\d+):(\d+)\)?$/);
+    const frame = stackLine.match(/(?:\(|\s)([^()\s]{1,256}):(\d{1,8}):(\d{1,8})\)?$/);
     if (!frame) continue;
     const normalizedPath = frame[1].replace(/\\/g, "/");
     const sourceIndex = normalizedPath.lastIndexOf("/src/");
     if (sourceIndex >= 0) {
-      fields.errorFrame = `src/${normalizedPath.slice(sourceIndex + 5)}:${frame[2]}:${frame[3]}`;
+      const sourcePath = normalizedPath.slice(sourceIndex + 5);
+      if (!/^[A-Za-z0-9_./-]{1,200}$/.test(sourcePath)) continue;
+      fields.errorFrame = `src/${sourcePath}:${frame[2]}:${frame[3]}`;
       break;
     }
     const bundleIndex = normalizedPath.lastIndexOf("/.next/server/");
     if (bundleIndex >= 0) {
-      fields.errorFrame = `.next/server/${normalizedPath.slice(bundleIndex + 14)}:${frame[2]}:${frame[3]}`;
+      const bundlePath = normalizedPath.slice(bundleIndex + 14);
+      if (!/^[A-Za-z0-9_./-]{1,200}$/.test(bundlePath)) continue;
+      fields.errorFrame = `.next/server/${bundlePath}:${frame[2]}:${frame[3]}`;
       break;
     }
   }

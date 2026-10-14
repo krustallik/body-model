@@ -66,4 +66,10 @@ describe("production logger", () => {
 
     expect(errorDiagnosticFields(error)).toEqual({ errorType: "Error" });
   });
+
+  it("bounds stack frame paths and locations", () => {
+    const error = new Error("secret");
+    error.stack = `${error.name}: ${error.message}\n    at query (/app/src/${"a".repeat(300)}.ts:999999999:1)`;
+    expect(errorDiagnosticFields(error)).toEqual({ errorType: "Error" });
+  });
 });

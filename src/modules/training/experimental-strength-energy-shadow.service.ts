@@ -312,7 +312,9 @@ export async function recordExperimentalStrengthEnergyShadow(input: {
     if (!resolution.current) throw new StaleStrengthEnergySourceError();
     if (shadowChanged) {
       await lifecycle.invalidateUnifiedPublication(input.profileId);
-      return lifecycle.readUnifiedPublicationFence(input.profileId);
+      return input.onLifecycleFenceChanged === undefined
+        ? null
+        : lifecycle.readUnifiedPublicationFence(input.profileId);
     }
     return null;
   });

@@ -564,8 +564,9 @@ export async function recalculateModelEpisode(
   client: PrismaClient = prisma,
 ) {
   const publishLifecycleFence = async () => {
+    if (input.onLifecycleFenceChanged === undefined) return null;
     const fence = await new PhysiologyV7PersistenceRepository(client).readUnifiedPublicationFence(1);
-    if (fence !== null) input.onLifecycleFenceChanged?.(fence);
+    if (fence !== null) input.onLifecycleFenceChanged(fence);
     return fence;
   };
   if (client !== prisma) {

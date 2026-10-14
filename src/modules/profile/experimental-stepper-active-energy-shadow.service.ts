@@ -486,7 +486,9 @@ export async function recordExperimentalStepperActiveEnergyShadow(input: {
     if (!resolution.current) throw new Error("stepper source changed before canonical active-energy publication");
     if (shadowChanged) {
       await lifecycle.invalidateUnifiedPublication(profileId);
-      return lifecycle.readUnifiedPublicationFence(profileId);
+      return input.onLifecycleFenceChanged === undefined
+        ? null
+        : lifecycle.readUnifiedPublicationFence(profileId);
     }
     return null;
   });

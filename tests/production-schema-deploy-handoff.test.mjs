@@ -128,7 +128,11 @@ describe("schema deploy compatibility handoff", () => {
       },
       "src/app/api/forecast/action/route.ts": {
         migrationOriginBlob: "f50deac8061cff227dba477182472e44ddff4090",
-        deployBlob: "4283c803f5805d4d6bb8931a144876ee55879377",
+        deployBlob: "73c6c1f6d0edd4b6ae3b7c82fdef73419b36c219",
+      },
+      "src/modules/model-forecast/forecast-ui.ts": {
+        migrationOriginBlob: "5d4faf2fd247f2abcc0d5889ba03917d4e2ace70",
+        deployBlob: "cfc853f1aeb319e0acc9910025573336478d7496",
       },
       "src/app/api/forecast/route.ts": {
         migrationOriginBlob: "266d7f80a79f298e413d1153685083d2b3dfe84a",

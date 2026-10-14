@@ -114,6 +114,8 @@ describe("sanitized V4 host failure diagnostics", () => {
     expect(backupHostScript.indexOf('--inspect-lifecycle --profile-id 1')).toBeLessThan(
       backupHostScript.indexOf('capture_snapshot before > "$tmp/snapshot-values-before.txt"'),
     );
+    expect(backupHostScript).toContain('topology="$(bash "$ROOT_DIR/scripts/production-writer-drain.sh" --report)"');
+    expect(backupHostScript).not.toContain('topology="$(APP_HOST=');
   });
 
   it("uses the health waiter as the sole app readiness gate after backup and keeps final route, SHA, and marker checks", () => {

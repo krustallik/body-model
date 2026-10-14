@@ -1087,6 +1087,9 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[0], toDate: dates[2] });
     await verifyAndPublishUnifiedV3Postflight({ profileId });
     await activateAndReplayUnifiedV4({ profileId });
+    await glycogenStateShadowService.rebuildExperimentalGlycogenStateShadows({
+      profileId, fromDate: dates[0]!, toDate: dates[0]!,
+    });
 
     const snapshotCountBefore = await prisma.healthSyncSnapshot.count({ where: { date: dates[0] } });
     const attempts: Array<{ date: string; attempt: number }> = [];

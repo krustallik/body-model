@@ -186,6 +186,8 @@ export async function rebuildExperimentalGlycogenStateShadows(input: {
   toDate: string;
   /** Deterministic interleaving seam for isolated PostgreSQL concurrency tests. */
   onCandidateComputed?: (event: { date: string; attempt: number }) => Promise<void>;
+  /** Deterministic interleaving seam for isolated PostgreSQL concurrency tests. */
+  onCandidateCommitted?: (event: { date: string; attempt: number }) => Promise<void>;
 }): Promise<void> {
   const profileId = input.profileId ?? 1;
   if (input.toDate < input.fromDate) {
@@ -200,6 +202,7 @@ export async function rebuildExperimentalGlycogenStateShadows(input: {
         toDate: input.toDate,
         attempt,
         onCandidateComputed: input.onCandidateComputed,
+        onCandidateCommitted: input.onCandidateCommitted,
       });
       return;
     } catch (error) {
@@ -220,6 +223,7 @@ async function rebuildExperimentalGlycogenStateShadowsAttempt(input: {
   toDate: string;
   attempt: number;
   onCandidateComputed?: (event: { date: string; attempt: number }) => Promise<void>;
+  onCandidateCommitted?: (event: { date: string; attempt: number }) => Promise<void>;
 }): Promise<void> {
   const { profileId } = input;
 
@@ -246,9 +250,13 @@ async function rebuildExperimentalGlycogenStateShadowsAttempt(input: {
   });
   let prior = stateFromStoredResult(priorRow?.result) ?? initialExperimentalGlycogenStateV1();
   let priorGapContext = gapContextFromStoredResult(priorRow?.result);
+  // Keep the fence continuous across the entire stateful suffix. Re-reading a
+  // fresh token for each day could accept a source update between two committed
+  // days while still carrying the old predecessor in memory.
+  let expectedFence = await readUnifiedSourceFenceV1(prisma, profileId);
 
   for (let date = fromDate; date <= input.toDate; date = addCalendarDays(date, 1)) {
-    const fence = await readUnifiedSourceFenceV1(prisma, profileId);
+    const fence = expectedFence;
     const day = await loadDayInputs(prisma, profileId, date);
     const gapContext = transitionExperimentalDataGapContextV1({
       date,
@@ -273,7 +281,7 @@ async function rebuildExperimentalGlycogenStateShadowsAttempt(input: {
     const features = { ...transition.features, gapContext };
     const sourceFingerprint = stableSha256(result);
     await input.onCandidateComputed?.({ date, attempt: input.attempt });
-    await prisma.$transaction(async (tx) => {
+    expectedFence = await prisma.$transaction(async (tx) => {
       const lifecycle = new PhysiologyV7PersistenceRepository(tx);
       await lifecycle.lockProfile(profileId);
       await assertUnifiedSourceFenceV1(tx, profileId, fence);
@@ -285,17 +293,23 @@ async function rebuildExperimentalGlycogenStateShadowsAttempt(input: {
         where: { profileId_date: { profileId, date } },
         select: { sourceFingerprint: true, modelRevision: true },
       });
-      if (existing?.sourceFingerprint === sourceFingerprint
-          && existing.modelRevision === EXPERIMENTAL_GLYCOGEN_STATE_V1_REVISION) return;
-      await tx.experimentalGlycogenStateShadow.upsert({
-        where: { profileId_date: { profileId, date } },
-        create: { profileId, date, sourceFingerprint, modelRevision: EXPERIMENTAL_GLYCOGEN_STATE_V1_REVISION, features, result },
-        update: { sourceFingerprint, modelRevision: EXPERIMENTAL_GLYCOGEN_STATE_V1_REVISION, features, result },
-      });
-      await lifecycle.invalidateUnifiedPublication(profileId);
+      if (existing === null || existing.sourceFingerprint !== sourceFingerprint
+          || existing.modelRevision !== EXPERIMENTAL_GLYCOGEN_STATE_V1_REVISION) {
+        await tx.experimentalGlycogenStateShadow.upsert({
+          where: { profileId_date: { profileId, date } },
+          create: { profileId, date, sourceFingerprint, modelRevision: EXPERIMENTAL_GLYCOGEN_STATE_V1_REVISION, features, result },
+          update: { sourceFingerprint, modelRevision: EXPERIMENTAL_GLYCOGEN_STATE_V1_REVISION, features, result },
+        });
+        await lifecycle.invalidateUnifiedPublication(profileId);
+      }
+      // Carry forward this transaction's committed fence, including our own
+      // invalidation, and require it unchanged before the next day can use the
+      // in-memory predecessor.
+      return readUnifiedSourceFenceV1(tx, profileId);
     });
     prior = transition.state;
     priorGapContext = gapContext;
+    await input.onCandidateCommitted?.({ date, attempt: input.attempt });
   }
 }
 

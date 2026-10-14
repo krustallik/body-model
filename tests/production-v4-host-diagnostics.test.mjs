@@ -1,10 +1,19 @@
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { execFileSync, spawnSync } from "node:child_process";
+import { chmod, copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import { summarizeV4HostFailureDiagnostics } from "../scripts/production-v4-recovery.mjs";
 
 const activationWorkflow = readFileSync(new URL("../.github/workflows/activate-unified-v4-production.yml", import.meta.url), "utf8");
 const cutoverScript = readFileSync(new URL("../scripts/production-traffic-cutover.sh", import.meta.url), "utf8");
 const backupHostScript = readFileSync(new URL("../scripts/production-v4-post-ddl-backup-host.sh", import.meta.url), "utf8");
+const temporaryDirectories = [];
+
+afterEach(async () => {
+  await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+});
 
 describe("sanitized V4 host failure diagnostics", () => {
   it("reports one allowlisted host phase and omits unrelated private stderr", () => {
@@ -68,6 +77,62 @@ describe("sanitized V4 host failure diagnostics", () => {
     expect(backupHostScript).toContain('capture_snapshot after > "$tmp/snapshot-values-after.txt"');
     expect(backupHostScript).not.toContain('before_lines="$(capture_snapshot before)"');
     expect(backupHostScript).not.toContain('after_lines="$(capture_snapshot after)"');
+  });
+
+  it.skipIf(process.platform === "win32")("runs the V4 backup host setup through route canonicalization before its next safety gate", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "bodycast-v4-backup-route-lock-"));
+    temporaryDirectories.push(root);
+    const scriptsDirectory = path.join(root, "scripts");
+    const routesDirectory = path.join(root, "routes");
+    const binDirectory = path.join(root, "bin");
+    const dockerSentinel = path.join(root, "docker-invoked");
+    await Promise.all([mkdir(scriptsDirectory), mkdir(routesDirectory), mkdir(binDirectory)]);
+    execFileSync("git", ["init", "--quiet"], { cwd: root });
+
+    for (const script of [
+      "production-v4-post-ddl-backup-host.sh",
+      "production-release-marker.sh",
+      "deploy-main-freshness.sh",
+      "production-release-lock.sh",
+      "production-route-path.sh",
+      "production-route-primitives.sh",
+    ]) {
+      await copyFile(new URL(`../scripts/${script}`, import.meta.url), path.join(scriptsDirectory, script));
+    }
+    const dockerStub = path.join(binDirectory, "docker");
+    await writeFile(dockerStub, `#!/usr/bin/env bash\nprintf invoked > "${dockerSentinel}"\nexit 97\n`);
+    await chmod(dockerStub, 0o755);
+    const mktempStub = path.join(binDirectory, "mktemp");
+    await writeFile(mktempStub, [
+      "#!/usr/bin/env bash",
+      "set -Eeuo pipefail",
+      'if [[ "$1" == "-d" && "$2" == "/tmp/bodycast-v4-post-ddl.XXXXXX" ]]; then',
+      `  exec /usr/bin/mktemp -d "${root}/bodycast-v4-post-ddl.XXXXXX"`,
+      "fi",
+      'exec /usr/bin/mktemp "$@"',
+      "",
+    ].join("\n"));
+    await chmod(mktempStub, 0o755);
+
+    const result = spawnSync("bash", [path.join(scriptsDirectory, "production-v4-post-ddl-backup-host.sh")], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
+        BODYCAST_DEPLOY_SHA: "a".repeat(40),
+        BODYCAST_V4_MIGRATION_RUN_B64: "e30=",
+        BODYCAST_EXPECTED_PRE_DDL_RAW_FINGERPRINT: "b".repeat(64),
+        BODYCAST_PG_RESTORE_VERSION: "pg_restore (PostgreSQL) 17.11",
+        APP_HOST: "bodycast.example",
+        CADDY_ROUTES_PATH: routesDirectory,
+      },
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("BODYCAST_V4_BACKUP_FAILURE phase=migration-run status=1");
+    expect(result.stderr).not.toContain("readonly variable");
+    expect(existsSync(dockerSentinel)).toBe(false);
   });
 
   it.each([

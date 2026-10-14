@@ -37,6 +37,10 @@ function canonicalJson(value) {
   return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
 }
 
+function compareCatalogNames(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function quoteIdentifier(value) {
   if (typeof value !== "string" || !IDENTIFIER.test(value)) throw new Error("Public schema contains an unsupported identifier.");
   return `"${value.replaceAll('"', '""')}"`;
@@ -93,13 +97,13 @@ function parseInventory(text) {
     throw new Error("PostgreSQL forensic inventory contains ambiguous identifiers.");
   }
   return {
-    tables: [...inventory.tables].sort((a, b) => a.tablename.localeCompare(b.tablename)),
-    sequences: [...inventory.sequences].sort((a, b) => a.name.localeCompare(b.name)),
+    tables: [...inventory.tables].sort((a, b) => compareCatalogNames(a.tablename, b.tablename)),
+    sequences: [...inventory.sequences].sort((a, b) => compareCatalogNames(a.name, b.name)),
   };
 }
 
 const INVENTORY_SQL = `SELECT json_build_object(
-  'tables', COALESCE((SELECT json_agg(json_build_object('tablename', tablename) ORDER BY tablename)
+  'tables', COALESCE((SELECT json_agg(json_build_object('tablename', tablename) ORDER BY tablename COLLATE "C")
     FROM pg_catalog.pg_tables WHERE schemaname = 'public'), '[]'::json),
   'sequences', COALESCE((SELECT json_agg(json_build_object(
     'name', s.schemaname || '.' || s.sequencename,
@@ -107,7 +111,7 @@ const INVENTORY_SQL = `SELECT json_build_object(
     'incrementBy', s.increment_by::text, 'minimumValue', s.min_value::text,
     'maximumValue', s.max_value::text, 'cycle', s.cycle,
     'ownerTable', owner_table.relname
-  ) ORDER BY s.sequencename)
+  ) ORDER BY s.sequencename COLLATE "C")
     FROM pg_catalog.pg_sequences s
     LEFT JOIN pg_catalog.pg_namespace seq_ns ON seq_ns.nspname = s.schemaname
     LEFT JOIN pg_catalog.pg_class seq ON seq.relname = s.sequencename AND seq.relnamespace = seq_ns.oid
@@ -179,13 +183,13 @@ function makeConnection(mode, target) {
 function buildSnapshotSql(inventory) {
   const tableNames = inventory.tables.map(({ tablename }) => tablename);
   const sequenceNames = inventory.sequences.map(({ name }) => name);
-  const tableInventory = `SELECT '__BODYCAST_TABLE_INVENTORY__=' || COALESCE(json_agg(tablename ORDER BY tablename)::text, '[]') FROM pg_catalog.pg_tables WHERE schemaname = 'public';`;
+  const tableInventory = `SELECT '__BODYCAST_TABLE_INVENTORY__=' || COALESCE(json_agg(tablename ORDER BY tablename COLLATE "C")::text, '[]') FROM pg_catalog.pg_tables WHERE schemaname = 'public';`;
   const sequenceInventory = `SELECT '__BODYCAST_SEQUENCE_INVENTORY__=' || COALESCE(json_agg(json_build_object(
     'name', s.schemaname || '.' || s.sequencename, 'dataType', s.data_type::text,
     'startValue', s.start_value::text, 'incrementBy', s.increment_by::text,
     'minimumValue', s.min_value::text, 'maximumValue', s.max_value::text, 'cycle', s.cycle,
     'ownerTable', owner_table.relname
-  ) ORDER BY s.sequencename)::text, '[]') FROM pg_catalog.pg_sequences s
+  ) ORDER BY s.sequencename COLLATE "C")::text, '[]') FROM pg_catalog.pg_sequences s
   LEFT JOIN pg_catalog.pg_namespace seq_ns ON seq_ns.nspname = s.schemaname
   LEFT JOIN pg_catalog.pg_class seq ON seq.relname = s.sequencename AND seq.relnamespace = seq_ns.oid
   LEFT JOIN pg_catalog.pg_depend dep ON dep.classid = 'pg_class'::regclass AND dep.objid = seq.oid

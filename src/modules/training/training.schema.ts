@@ -64,6 +64,11 @@ export const StartSessionSchema = z.object({
   timeZone: z.string().optional().refine((value) => value === undefined || isValidTimeZone(value)),
 }).strict();
 
+export const StartDynamicSessionSchema = z.object({
+  /** Optional for older clients; omitted values use legacy-default provenance. */
+  timeZone: z.string().optional().refine((value) => value === undefined || isValidTimeZone(value)),
+}).strict();
+
 export const UpdateSessionAccountingContextSchema = z.object({
   effectiveAccountingAt: z.string().datetime({ offset: true }).optional(),
   timeZone: z.string().min(1).max(80).optional().refine((value) => value === undefined || isValidTimeZone(value)),
@@ -132,13 +137,13 @@ export const ChangeSessionProgramSchema = z.object({
 
 export const CreateSessionExerciseSchema = z.object({
   catalogId: positiveInt,
-  plannedSets: z.number().int().positive().max(TRAINING_LIMITS.maxPlannedSets).default(3),
+  plannedSets: z.number().int().nonnegative().max(TRAINING_LIMITS.maxPlannedSets).default(3),
   resistanceType: ResistanceTypeSchema,
   order: z.number().int().nonnegative().optional(),
 }).strict();
 
 export const UpdateSessionExerciseSchema = z.object({
-  plannedSets: z.number().int().positive().max(TRAINING_LIMITS.maxPlannedSets).optional(),
+  plannedSets: z.number().int().nonnegative().max(TRAINING_LIMITS.maxPlannedSets).optional(),
   resistanceType: ResistanceTypeSchema.optional(),
   order: z.number().int().nonnegative().optional(),
   /**

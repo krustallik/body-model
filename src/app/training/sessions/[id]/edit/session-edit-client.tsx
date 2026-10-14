@@ -26,7 +26,7 @@ import {
   parseExerciseSearchParam,
   resolveFocusedExerciseId,
 } from "../../../exercise-pager";
-import { readApiError, resistanceLabel } from "../../../training-labels";
+import { readApiError, resistanceLabel, trainingSessionTitle } from "../../../training-labels";
 import {
   emptySetDraft,
   TrainingExerciseWorkspace,
@@ -45,7 +45,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
   const [catalog, setCatalog] = useState<ExerciseCatalogDto[]>([]);
   const [programs, setPrograms] = useState<TrainingProgramSummaryDto[]>([]);
   const [focusedExerciseId, setFocusedExerciseId] = useState<number | null>(null);
-  const [programId, setProgramId] = useState<number | "">("");
+  const [programId, setProgramId] = useState<number | "" | null>("");
   const [menu, setMenu] = useState<MenuPanel>("closed");
   const [addCatalogId, setAddCatalogId] = useState<number | "">("");
   const [addResistance, setAddResistance] = useState<ResistanceType>(RESISTANCE.EXTERNAL_WEIGHT);
@@ -201,7 +201,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
       method: "POST",
       body: JSON.stringify({
         catalogId: addCatalogId,
-        plannedSets: 3,
+        plannedSets: session?.programId === null ? 0 : 3,
         resistanceType: addResistance,
       }),
     });
@@ -243,8 +243,13 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
   async function saveExerciseMeta() {
     if (!current) return;
     const planned = Number(editPlannedSets);
-    if (!Number.isFinite(planned) || planned < 1) {
+    const minimumPlannedSets = session?.programId === null ? 0 : 1;
+    if (!Number.isFinite(planned) || planned < minimumPlannedSets) {
       setError(uk ? "Вкажіть кількість підходів." : "Enter planned sets.");
+      return;
+    }
+    if (session?.programId === null && planned !== 0) {
+      setError(uk ? "У вільному тренуванні кількість підходів не планується." : "Free workouts do not use planned set counts.");
       return;
     }
     const resistanceChanged = editResistance !== current.resistanceType;
@@ -400,11 +405,65 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
     );
   }
 
-  if (!session || !current) {
+  if (!session) {
     return (
       <main className={styles.workoutShell}>
         {error && <div className={styles.errorBanner} role="alert">{error}</div>}
         <Link className={styles.liveBack} href="/training/backfill">{uk ? "← Назад" : "← Back"}</Link>
+      </main>
+    );
+  }
+
+  if (!current) {
+    if (session.programId !== null) {
+      return (
+        <main className={styles.workoutShell}>
+          {error && <div className={styles.errorBanner} role="alert">{error}</div>}
+          <Link className={styles.liveBack} href={`/training/sessions/${session.id}`}>
+            {uk ? "← До сесії" : "← Session details"}
+          </Link>
+        </main>
+      );
+    }
+    return (
+      <main className={`${styles.page} ${styles.sessionDetailPage} ${styles.workoutShell}`}>
+        <div className={styles.navRow}><strong>BodyCast</strong><Link className={styles.linkLike} href={`/training/sessions/${session.id}`}>{uk ? "До сесії" : "Session details"}</Link></div>
+        <header className={styles.header}>
+          <div>
+            <p className={styles.eyebrow}>{uk ? "Редагування вільного тренування" : "Edit free workout"}</p>
+            <h1>{trainingSessionTitle(session.programName, uk)}</h1>
+          </div>
+        </header>
+        {error && <div className={styles.errorBanner} role="alert">{error}</div>}
+        <section className={styles.panel}>
+          <div className={styles.panelBody}>
+            <div className={styles.editMenuForm}>
+              <label className={styles.liveField}>
+                <span>{uk ? "Вправа з каталогу" : "Catalog exercise"}</span>
+                <select value={addCatalogId} onChange={(event) => selectCatalogExercise(event.target.value === "" ? "" : Number(event.target.value))}>
+                  <option value="">{uk ? "Оберіть…" : "Choose…"}</option>
+                  {catalog.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                </select>
+              </label>
+              <label className={styles.liveField}>
+                <span>{uk ? "Тип опору" : "Resistance type"}</span>
+                <select value={addResistance} onChange={(event) => setAddResistance(event.target.value as ResistanceType)}>
+                  <option value={RESISTANCE.EXTERNAL_WEIGHT}>{resistanceLabel(RESISTANCE.EXTERNAL_WEIGHT, uk)}</option>
+                  <option value={RESISTANCE.RESISTANCE_BAND}>{resistanceLabel(RESISTANCE.RESISTANCE_BAND, uk)}</option>
+                  <option value={RESISTANCE.BODYWEIGHT}>{resistanceLabel(RESISTANCE.BODYWEIGHT, uk)}</option>
+                </select>
+              </label>
+              <div className={styles.denseCardActions}>
+                <button type="button" className={styles.liveSave} disabled={busy || typeof addCatalogId !== "number"} onClick={() => void addExercise()}>
+                  {uk ? "Додати вправу" : "Add exercise"}
+                </button>
+                <Link className={styles.liveSecondary} href={`/training/sessions/${session.id}`}>
+                  {uk ? "Скасувати" : "Cancel"}
+                </Link>
+              </div>
+            </div>
+          </div>
+        </section>
       </main>
     );
   }
@@ -417,9 +476,11 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
     <>
       {menu === "root" && (
         <div className={styles.editMenuList}>
-          <button type="button" className={styles.editMenuItem} onClick={() => setMenu("program")}>
-            {uk ? "Змінити програму" : "Change program"}
-          </button>
+          {session.programId !== null && (
+            <button type="button" className={styles.editMenuItem} onClick={() => setMenu("program")}>
+              {uk ? "Змінити програму" : "Change program"}
+            </button>
+          )}
           <button
             type="button"
             className={styles.editMenuItem}
@@ -472,7 +533,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
         <div className={styles.editMenuForm}>
           <label className={styles.liveField}>
             <span>{uk ? "Програма" : "Program"}</span>
-            <select value={programId} onChange={(event) => setProgramId(Number(event.target.value))}>
+            <select value={programId ?? ""} onChange={(event) => setProgramId(Number(event.target.value))}>
               {programs.map((program) => (
                 <option key={program.id} value={program.id}>{program.name}</option>
               ))}
@@ -533,8 +594,8 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
       {menu === "editExercise" && (
         <div className={styles.editMenuForm}>
           <label className={styles.liveField}>
-            <span>{uk ? "Заплановані підходи" : "Planned sets"}</span>
-            <input inputMode="numeric" value={editPlannedSets} onChange={(event) => setEditPlannedSets(event.target.value)} />
+            <span>{session.programId === null ? (uk ? "Підходи не плануються" : "No planned set count") : (uk ? "Заплановані підходи" : "Planned sets")}</span>
+            <input inputMode="numeric" min={session.programId === null ? 0 : 1} value={editPlannedSets} onChange={(event) => setEditPlannedSets(event.target.value)} disabled={session.programId === null} />
           </label>
           <label className={styles.liveField}>
             <span>{uk ? "Тип опору" : "Resistance"}</span>
@@ -581,7 +642,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
       mode="edit"
       sessionId={sessionId}
       backHref={backfillHref}
-      programName={session.programName}
+      programName={trainingSessionTitle(session.programName, uk)}
       exercise={current}
       previousExercise={previousExercise}
       nextExercise={nextExercise}
@@ -600,9 +661,11 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
       menuContent={menuContent}
       desktopPrimaryActions={(
         <>
-          <button type="button" className={styles.workoutDesktopActionBtn} onClick={() => setMenu("program")}>
-            {uk ? "Змінити програму" : "Change program"}
-          </button>
+          {session.programId !== null && (
+            <button type="button" className={styles.workoutDesktopActionBtn} onClick={() => setMenu("program")}>
+              {uk ? "Змінити програму" : "Change program"}
+            </button>
+          )}
           <button
             type="button"
             className={styles.workoutDesktopActionBtn}

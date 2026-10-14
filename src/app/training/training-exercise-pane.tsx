@@ -18,7 +18,7 @@ import type { UpdateSetInput } from "@/modules/training/training.schema";
 import { setExecutionOverrideV1Schema } from "@/modules/training/load-accounting-v1";
 import { resolveExerciseImageSrc } from "./exercise-images";
 import { resolveExerciseInfo } from "./exercise-info";
-import { formatSetCompletionClock, resistanceLabel, setCompletionTimestampIso } from "./training-labels";
+import { formatSetCompletionClock, resistanceLabel, setCompletionTimestampIso, trainingSessionTitle } from "./training-labels";
 import type { SetDraft } from "./training-exercise-workspace";
 import styles from "./training.module.css";
 
@@ -436,9 +436,13 @@ export function ExercisePane(props: ExercisePaneProps) {
   const bandOk = exercise.resistanceType !== RESISTANCE.RESISTANCE_BAND
     || (Number.isFinite(bandValue) && bandValue > 0);
   const canSave = interactive && !busy && repsOk && weightOk && bandOk;
-  const progressLabel = uk
-    ? `${completedSets} / ${plannedSets} підходів`
-    : `${completedSets} / ${plannedSets} sets`;
+  const progressLabel = plannedSets > 0
+    ? (uk
+      ? `${completedSets} / ${plannedSets} підходів`
+      : `${completedSets} / ${plannedSets} sets`)
+    : (uk
+      ? `Записано підходів: ${completedSets}`
+      : `Sets recorded: ${completedSets}`);
   return (
     <div className={styles.workoutMain}>
       <div className={styles.workoutHero}>
@@ -740,7 +744,7 @@ export function ExercisePane(props: ExercisePaneProps) {
                 <li className={styles.workoutHistoryEntry} key={`${entry.sessionId}-${entry.occurredAt}`}>
                   <div className={styles.workoutHistoryHead}>
                     <strong>{formatHistoryDate(entry.occurredAt, uk)}</strong>
-                    <span>{entry.programName}</span>
+                    <span>{trainingSessionTitle(entry.programName, uk)}</span>
                   </div>
                   <ul className={styles.workoutHistorySets}>
                     {entry.sets.map((set) => (

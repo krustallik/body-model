@@ -6,6 +6,10 @@ import {
   type WorkoutEnergyProvenanceKind,
 } from "@/modules/provenance/provenance-presentation";
 
+export function trainingSessionTitle(programName: string | null, uk: boolean): string {
+  return programName ?? (uk ? "Вільне тренування" : "Free workout");
+}
+
 export function resistanceLabel(type: ResistanceType, uk: boolean): string {
   if (type === RESISTANCE.EXTERNAL_WEIGHT) return uk ? "Зовнішня вага" : "External weight";
   if (type === RESISTANCE.RESISTANCE_BAND) return uk ? "Резинки" : "Resistance bands";

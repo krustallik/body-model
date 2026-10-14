@@ -376,6 +376,89 @@ describe("Live training session mobile UI", () => {
     });
   });
 
+  it("adds a catalog exercise to an empty programless live session", async () => {
+    const user = userEvent.setup();
+    const dynamicSession = buildSession({
+      programId: null,
+      programName: null,
+      programVersionId: null,
+      programVersionNumber: null,
+      exercises: [],
+    });
+    const addedExercise = {
+      id: 77,
+      sourceExerciseCatalogId: 9,
+      stableKey: "pushup_handles",
+      snapshotExerciseName: "Віджимання від ручок",
+      order: 0,
+      plannedSets: 0,
+      resistanceType: RESISTANCE.BODYWEIGHT,
+      origin: EXERCISE_ORIGIN.EXTRA,
+      muscleMappingSnapshot: null,
+      sets: [],
+    };
+    const updatedSession = { ...dynamicSession, exercises: [addedExercise] };
+    let persistedSession = dynamicSession;
+    const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/v1/training/exercises") {
+        return Response.json({ exercises: [{ id: 9, name: "Віджимання від ручок", stableKey: "pushup_handles", isActive: true, archivedAt: null, muscleMapping: null }] });
+      }
+      if (url.endsWith("/sessions/42/exercises") && init?.method === "POST") {
+        expect(JSON.parse(String(init.body))).toEqual({
+          catalogId: 9,
+          plannedSets: 0,
+          resistanceType: RESISTANCE.BODYWEIGHT,
+        });
+        persistedSession = updatedSession;
+        return Response.json({ session: persistedSession }, { status: 201 });
+      }
+      if (url.includes("/history")) return Response.json({ entries: [] });
+      return Response.json({ session: persistedSession });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const view = render(<SessionClient sessionId={42} />);
+    await user.click(await screen.findByRole("button", { name: "Додати вправу" }));
+    await user.selectOptions(await screen.findByLabelText("Вправа з каталогу"), "9");
+    await user.selectOptions(screen.getByLabelText("Тип опору"), RESISTANCE.BODYWEIGHT);
+    await user.click(screen.getByRole("button", { name: "Додати вправу" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Віджимання від ручок" })).toBeTruthy();
+      expect(screen.getAllByText("Записано підходів: 0")).toHaveLength(2);
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/v1/training/sessions/42/exercises",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+    view.unmount();
+    persistedSession = {
+      ...updatedSession,
+      exercises: [{
+        ...addedExercise,
+        sets: [{
+          id: 90,
+          sessionExerciseId: addedExercise.id,
+          setNumber: 1,
+          reps: 12,
+          weightKg: null,
+          bandNominalResistanceKg: null,
+          rir: null,
+          comment: null,
+          completedAt: "2026-10-15T06:00:00.000Z",
+          createdAt: "2026-10-15T06:00:00.000Z",
+          updatedAt: "2026-10-15T06:00:00.000Z",
+        }],
+      }],
+    };
+    render(<SessionClient sessionId={42} />);
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Віджимання від ручок" })).toBeTruthy();
+      expect(screen.getAllByText("Записано підходів: 1")).toHaveLength(2);
+    });
+  });
+
   it("opens the exercise from the URL query", async () => {
     const user = userEvent.setup();
     searchParams.set("exercise", "2");

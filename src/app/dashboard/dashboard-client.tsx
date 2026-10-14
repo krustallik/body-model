@@ -14,7 +14,7 @@ import type { StrengthSessionSummaryDto } from "@/modules/training/training.type
 import type { WorkIntervalDto } from "@/modules/work-intervals/work-interval.repository";
 import { OCCUPATIONAL_CATEGORIES, type OccupationalCategory } from "@/model/occupational-activity";
 import { displayWorkoutType } from "@/modules/days/day-workout-presentation";
-import { matchStatusLabel } from "@/app/training/training-labels";
+import { matchStatusLabel, trainingSessionTitle } from "@/app/training/training-labels";
 import { todayInCalendarTimeZone } from "@/modules/days/calendar-range";
 import { DEFAULT_TIME_ZONE, instantToLocalDateTime } from "@/model/time-zone";
 import { formatDateTime, formatDurationMinutes, formatMetric } from "@/modules/days/metric-format";
@@ -43,7 +43,7 @@ async function loadDashboard(uk: boolean): Promise<DashboardDto> {
   return response.json() as Promise<DashboardDto>;
 }
 
-type ActiveSessionPreview = { id: number; programName: string; webStartedAt: string | null; exerciseCount: number };
+type ActiveSessionPreview = { id: number; programName: string | null; webStartedAt: string | null; exerciseCount: number };
 
 function workCategoryCopy(category: string, uk: boolean): string {
   if (!Object.hasOwn(OCCUPATIONAL_CATEGORIES, category)) return uk ? "Робоча активність" : "Work activity";
@@ -149,7 +149,7 @@ export function DashboardClient({ demoMode = false }: { demoMode?: boolean } = {
       void fetch("/api/v1/training/sessions/active", { cache: "no-store", signal: controller.signal })
         .then(async (response) => {
           if (!response.ok) throw new Error("active_session_unavailable");
-          const body = await response.json() as { session: { id: number; programName: string; webStartedAt: string | null; exercises: unknown[] } | null };
+          const body = await response.json() as { session: { id: number; programName: string | null; webStartedAt: string | null; exercises: unknown[] } | null };
           if (active) {
             setActiveSessionError(false);
             setActiveSession(body.session ? {
@@ -206,7 +206,7 @@ export function DashboardClient({ demoMode = false }: { demoMode?: boolean } = {
       {attentionLoading ? <p role="status">{uk ? "Перевіряємо записи Garmin…" : "Checking Garmin matches…"}</p>
         : attentionError ? <p role="alert">{uk ? "Не вдалося перевірити зіставлення." : "Could not check workout matches."}</p>
           : attentionCount > 0 ? <>
-            <ul className={styles.priorityList}>{attentionSessions.map((session) => <li key={session.id}><span>{session.programName}</span><b>{matchStatusLabel(session.matchStatus, uk)}</b></li>)}</ul>
+            <ul className={styles.priorityList}>{attentionSessions.map((session) => <li key={session.id}><span>{trainingSessionTitle(session.programName, uk)}</span><b>{matchStatusLabel(session.matchStatus, uk)}</b></li>)}</ul>
             <Link className={styles.priorityLink} href="/training?attentionPage=1">{uk ? `Переглянути всі (${attentionCount})` : `Review all (${attentionCount})`}</Link>
           </>
             : <p>{uk ? "Немає сесій, що потребують зіставлення." : "No sessions need matching."}</p>}
@@ -218,7 +218,7 @@ export function DashboardClient({ demoMode = false }: { demoMode?: boolean } = {
       {activeSessionLoading ? <p role="status">{uk ? "Перевіряємо активне тренування…" : "Checking active workout…"}</p>
         : activeSessionError ? <p role="alert">{uk ? "Не вдалося перевірити активну сесію." : "Could not check the active workout."}</p>
           : activeSession ? <>
-            <strong className={styles.activeSessionName}>{activeSession.programName}</strong>
+            <strong className={styles.activeSessionName}>{trainingSessionTitle(activeSession.programName, uk)}</strong>
             <p>{uk ? `${activeSession.exerciseCount} вправ · розпочато ${formatDateTime(activeSession.webStartedAt, intlLocale)}` : `${activeSession.exerciseCount} exercises · started ${formatDateTime(activeSession.webStartedAt, intlLocale)}`}</p>
             <Link className={styles.priorityLink} href={`/training/sessions/${activeSession.id}`}>{uk ? "Продовжити тренування" : "Resume workout"}</Link>
           </>

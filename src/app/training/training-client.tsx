@@ -12,6 +12,7 @@ import { TrainingAttentionPanel, TrainingRecentSessionsPanel, TrainingStepperLis
 import {
   formatDateTime,
   readApiError,
+  trainingSessionTitle,
 } from "./training-labels";
 import styles from "./training.module.css";
 
@@ -229,6 +230,35 @@ export function TrainingClient() {
     }
   }
 
+  async function startDynamicSession() {
+    setBusyId(-1);
+    setError(null);
+    try {
+      const response = await fetch("/api/v1/training/sessions/start-dynamic", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || DEFAULT_TIME_ZONE }),
+      });
+      if (response.status === 409) {
+        const body = await response.json() as { activeSessionId?: number };
+        if (body.activeSessionId) {
+          router.push(`/training/sessions/${body.activeSessionId}`);
+          return;
+        }
+      }
+      if (!response.ok) {
+        setError(await readApiError(response, uk));
+        return;
+      }
+      const body = await response.json() as { session: StrengthSessionDto };
+      router.push(`/training/sessions/${body.session.id}`);
+    } catch {
+      setError(uk ? "Не вдалося почати вільне тренування." : "Could not start a free workout.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   async function archiveProgram(programId: number) {
     if (!window.confirm(uk ? "Архівувати програму?" : "Archive this program?")) return;
     setBusyId(programId);
@@ -317,7 +347,7 @@ export function TrainingClient() {
               <article className={styles.card}>
                 <div className={styles.cardTop}>
                   <div>
-                    <strong>{active.programName}</strong>
+                    <strong>{trainingSessionTitle(active.programName, uk)}</strong>
                     <p className={styles.cardMeta}>
                       {uk ? "Почато" : "Started"} {formatDateTime(active.webStartedAt, intlLocale)}
                     </p>
@@ -331,10 +361,23 @@ export function TrainingClient() {
                 </div>
               </article>
             ) : (
-              <div className={styles.empty}>
-                <strong>{uk ? "Немає активної сесії" : "No active session"}</strong>
-                <span>{uk ? "Оберіть програму нижче, щоб почати." : "Pick a program below to start."}</span>
-              </div>
+              <>
+                <div className={styles.empty}>
+                  <strong>{uk ? "Немає активної сесії" : "No active session"}</strong>
+                  <span>{uk ? "Оберіть програму або почніть без неї." : "Choose a program or start without one."}</span>
+                </div>
+                <div className={styles.denseCardActions}>
+                  <button
+                    className={styles.primaryButton}
+                    type="button"
+                    disabled={busyId !== null}
+                    aria-busy={busyId === -1 || undefined}
+                    onClick={() => void startDynamicSession()}
+                  >
+                    {uk ? "Почати без програми" : "Start without a program"}
+                  </button>
+                </div>
+              </>
             )}
           </div>
         </section>

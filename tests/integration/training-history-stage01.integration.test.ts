@@ -144,6 +144,76 @@ describe("Training History Stage 01 PostgreSQL persistence", () => {
     expect(migrationRows.length).toBeGreaterThan(0);
   });
 
+  it("persists a programless live workout, catalog exercise, and edited set across reload", async () => {
+    const db = prisma!;
+    const fixture = createTrainingHistoryStage01FixtureV1();
+    const catalog = fixture.catalogExercises.find((exercise) => exercise.stableKey === "pull_up");
+    if (!catalog) throw new Error("Stage 01 catalog is missing the pull-up exercise.");
+    await expect(db.strengthDiarySession.create({
+      data: {
+        profileId: TRAINING_HISTORY_STAGE01_PROFILE_ID,
+        programId: fixture.programs[0]!.id,
+        programVersionId: null,
+        status: "COMPLETED",
+      },
+    })).rejects.toThrow();
+    const service = new TrainingService(db);
+    const session = await service.startDynamicSession(TRAINING_HISTORY_STAGE01_PROFILE_ID, "Europe/Bratislava");
+    try {
+      expect(session).toMatchObject({
+        status: "ACTIVE",
+        entryMode: "LIVE",
+        programId: null,
+        programName: null,
+        programVersionId: null,
+        programVersionNumber: null,
+        exercises: [],
+        accountingTimeZone: "Europe/Bratislava",
+        accountingTimeZoneProvenance: "client-session",
+      });
+      const persistedSession = await db.strengthDiarySession.findUniqueOrThrow({
+        where: { id: session.id },
+        select: { programId: true, programVersionId: true, entryMode: true, status: true },
+      });
+      expect(persistedSession).toEqual({
+        programId: null,
+        programVersionId: null,
+        entryMode: "LIVE",
+        status: "ACTIVE",
+      });
+
+      const withExercise = await service.addSessionExercise(session.id, {
+        catalogId: catalog.id,
+        plannedSets: 0,
+        resistanceType: "BODYWEIGHT",
+      }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      expect(withExercise.programId).toBeNull();
+      expect(withExercise.exercises).toHaveLength(1);
+      expect(withExercise.exercises[0]).toMatchObject({
+        sourceExerciseCatalogId: catalog.id,
+        snapshotExerciseName: catalog.name,
+        stableKey: "pull_up",
+        plannedSets: 0,
+        resistanceType: "BODYWEIGHT",
+        origin: "EXTRA",
+      });
+
+      const exerciseId = withExercise.exercises[0]!.id;
+      const createdSet = await service.createSet(session.id, exerciseId, { reps: 8 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      await service.updateSet(session.id, createdSet.id, { reps: 9 }, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      const reloaded = await service.getSession(session.id, TRAINING_HISTORY_STAGE01_PROFILE_ID);
+      expect(reloaded).toMatchObject({
+        entryMode: "LIVE",
+        programId: null,
+        programVersionId: null,
+      });
+      expect(reloaded?.exercises[0]?.sets).toHaveLength(1);
+      expect(reloaded?.exercises[0]?.sets[0]).toMatchObject({ reps: 9, weightKg: null, bandNominalResistanceKg: null });
+    } finally {
+      await db.strengthDiarySession.delete({ where: { id: session.id } });
+    }
+  });
+
   it("matches the Stage 02 literal rows and accounting totals against persisted Stage 01 golden sessions", async () => {
     const db = prisma!;
     const fixture = createTrainingHistoryStage01FixtureV1();

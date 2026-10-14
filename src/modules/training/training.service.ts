@@ -989,6 +989,33 @@ export class TrainingService {
     }
   }
 
+  async startDynamicSession(
+    profileId = DEFAULT_TRAINING_PROFILE_ID,
+    accountingTimeZone?: string,
+  ): Promise<StrengthSessionDto> {
+    await this.finalizeInactiveSessions(profileId);
+    const active = await this.repo.getActiveSession(profileId);
+    if (active) throw new ActiveSessionExistsError(active.id);
+
+    try {
+      return await this.repo.createSessionSnapshot({
+        profileId,
+        programId: null,
+        programVersionId: null,
+        entryMode: ENTRY_MODE.LIVE,
+        accountingTimeZone,
+        accountingTimeZoneProvenance: accountingTimeZone ? "client-session" : "legacy-default",
+        exercises: [],
+      });
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        const again = await this.repo.getActiveSession(profileId);
+        if (again) throw new ActiveSessionExistsError(again.id);
+      }
+      throw error;
+    }
+  }
+
   listHistoricalStrengthWorkouts(
     query: Partial<HistoricalWorkoutsQuery> = {},
   ): Promise<HistoricalStrengthWorkoutDto[]> {
@@ -1162,6 +1189,9 @@ export class TrainingService {
     const session = await this.repo.findSessionForEdit(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
     assertSessionEditable(session.status);
+    if (session.programId === null || session.programVersionId === null) {
+      throw new SetValidationError("dynamic sessions cannot be reassigned to a program");
+    }
 
     const program = await this.repo.loadProgramVersion({
       programId: input.programId,
@@ -1241,6 +1271,14 @@ export class TrainingService {
     if (!session) throw new SessionNotFoundError();
     assertSessionEditable(session.status);
 
+    if (session.programId === null ? input.plannedSets !== 0 : input.plannedSets === 0) {
+      throw new SetValidationError(
+        session.programId === null
+          ? "dynamic session exercises do not have planned set counts"
+          : "programmed session exercises require a positive planned set count",
+      );
+    }
+
     const [catalog] = await this.repo.findCatalogByIds([input.catalogId], profileId);
     if (!catalog) throw new CatalogExerciseNotFoundError();
 
@@ -1285,6 +1323,14 @@ export class TrainingService {
     const session = await this.repo.findSessionForEdit(sessionId, profileId);
     if (!session) throw new SessionNotFoundError();
     assertSessionEditable(session.status);
+    if (input.plannedSets !== undefined
+      && (session.programId === null ? input.plannedSets !== 0 : input.plannedSets === 0)) {
+      throw new SetValidationError(
+        session.programId === null
+          ? "dynamic session exercises do not have planned set counts"
+          : "programmed session exercises require a positive planned set count",
+      );
+    }
 
     const exercise = await this.repo.findSessionExerciseDetail(sessionId, exerciseId, profileId);
     if (!exercise) throw new SessionExerciseNotFoundError();

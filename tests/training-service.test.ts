@@ -629,10 +629,11 @@ describe("TrainingService snapshot immutability", () => {
 describe("TrainingService live session", () => {
   let db: MockDb;
   let service: TrainingService;
+  let repo: TrainingRepository;
 
   beforeEach(() => {
     db = buildDb();
-    const repo = new TrainingRepository(db as never);
+    repo = new TrainingRepository(db as never);
     vi.spyOn(repo, "materializeAccounting").mockResolvedValue(1);
     service = new TrainingService(db as never, repo);
   });
@@ -703,6 +704,38 @@ describe("TrainingService live session", () => {
         }),
       }),
     }));
+  });
+
+  it("starts and resumes a programless LIVE session with no fabricated template", async () => {
+    db.strengthDiarySession.findMany.mockResolvedValue([]);
+    db.strengthDiarySession.findFirst.mockResolvedValue(null);
+    const dynamicSession = {
+      id: 51,
+      status: SESSION_STATUS.ACTIVE,
+      entryMode: ENTRY_MODE.LIVE,
+      programId: null,
+      programName: null,
+      programVersionId: null,
+      programVersionNumber: null,
+      webStartedAt: "2026-10-15T09:00:00.000Z",
+      webEndedAt: null,
+      exercises: [],
+    } as never;
+    const createSnapshot = vi.spyOn(repo, "createSessionSnapshot").mockResolvedValue(dynamicSession);
+
+    const created = await service.startDynamicSession(1, "Europe/Bratislava");
+
+    expect(created).toBe(dynamicSession);
+    expect(createSnapshot).toHaveBeenCalledWith(expect.objectContaining({
+      profileId: 1,
+      programId: null,
+      programVersionId: null,
+      entryMode: ENTRY_MODE.LIVE,
+      accountingTimeZone: "Europe/Bratislava",
+      accountingTimeZoneProvenance: "client-session",
+      exercises: [],
+    }));
+    expect(db.trainingProgram.findFirst).not.toHaveBeenCalled();
   });
 
   it("supports set CRUD on active session exercises", async () => {

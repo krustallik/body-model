@@ -43,6 +43,32 @@ describe("Training hub UI", () => {
     expect(container.querySelectorAll(`.${styles.trainingHubGrid}`).length).toBeGreaterThan(0);
   });
 
+  it("starts a free workout without requiring a program", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/sessions/active")) return Response.json({ session: null });
+      if (url.includes("/programs")) return Response.json({ programs: [] });
+      if (url.includes("/sessions/start-dynamic") && init?.method === "POST") {
+        return Response.json({ session: { id: 91 } }, { status: 201 });
+      }
+      if (url.includes("/sessions/recent")) return Response.json({ sessions: [] });
+      if (url.includes("/match-attention")) return Response.json({ sessions: [] });
+      if (url.includes("/stepper-workouts")) return Response.json({ workouts: [] });
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<TrainingClient />);
+    const start = await screen.findByRole("button", { name: "Start without a program" });
+    await user.click(start);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/training/sessions/start-dynamic",
+      expect.objectContaining({ method: "POST" }),
+    ));
+  });
+
   it("styles Archive as a destructive control and confirms before archive", async () => {
     const user = userEvent.setup();
     const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {

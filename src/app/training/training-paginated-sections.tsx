@@ -20,6 +20,7 @@ import {
   matchStatusBadgeTone,
   matchStatusLabel,
   planCompletionPillClass,
+  trainingSessionTitle,
 } from "./training-labels";
 import styles from "./training.module.css";
 
@@ -138,7 +139,7 @@ export function TrainingRecentSessionsPanel({
               <article className={styles.card} key={session.id}>
                 <div className={styles.cardTop}>
                   <div>
-                    <strong>{session.programName}</strong>
+                    <strong>{trainingSessionTitle(session.programName, uk)}</strong>
                     <p className={styles.cardMeta}>
                       <span>
                         {formatDateTime(session.occurrenceAt ?? session.webStartedAt, intlLocale)}
@@ -264,7 +265,7 @@ export function TrainingAttentionPanel({
                 <article className={styles.card} key={session.id}>
                   <div className={styles.cardTop}>
                     <div>
-                      <strong>{session.programName}</strong>
+                      <strong>{trainingSessionTitle(session.programName, uk)}</strong>
                       <p className={styles.cardMeta}>
                         {formatDateTime(session.webStartedAt, intlLocale)}
                         {" · "}

@@ -9,12 +9,15 @@ import {
   MATCH_STATUS,
   RESISTANCE,
   SESSION_STATUS,
+  recommendedResistanceTypeForCatalogStableKey,
+  type ResistanceType,
 } from "@/modules/training/training.constants";
 import { parseTrainingDecimal } from "@/modules/training/parse-training-decimal";
 import { setExecutionOverrideV1Schema } from "@/modules/training/load-accounting-v1";
 import { sessionPlanCompletion } from "@/modules/training/session-plan-completion";
 import { shouldAutoAdvanceAfterSet } from "@/modules/training/auto-advance";
 import type {
+  ExerciseCatalogDto,
   MatchCandidateDto,
   StrengthSessionDto,
   StrengthSetDto,
@@ -38,6 +41,7 @@ import {
   readApiError,
   resistanceLabel,
   setCompletionTimestampIso,
+  trainingSessionTitle,
 } from "../../training-labels";
 import {
   emptySetDraft,
@@ -63,6 +67,11 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
   const [accountingError, setAccountingError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [exercisePickerOpen, setExercisePickerOpen] = useState(false);
+  const [exerciseCatalog, setExerciseCatalog] = useState<ExerciseCatalogDto[]>([]);
+  const [catalogExerciseId, setCatalogExerciseId] = useState<number | "">("");
+  const [newExerciseResistance, setNewExerciseResistance] = useState<ResistanceType>(RESISTANCE.EXTERNAL_WEIGHT);
+  const [loadingExerciseCatalog, setLoadingExerciseCatalog] = useState(false);
   const [finishOffer, setFinishOffer] = useState(false);
   const [autoAdvanceNonce, setAutoAdvanceNonce] = useState(0);
   const finishOfferedRef = useRef(false);
@@ -256,6 +265,61 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     }
   }
 
+  async function openExercisePicker() {
+    setMenuOpen(false);
+    setExercisePickerOpen(true);
+    setError(null);
+    if (exerciseCatalog.length > 0) return;
+    setLoadingExerciseCatalog(true);
+    try {
+      const response = await fetch("/api/v1/training/exercises", { cache: "no-store" });
+      if (!response.ok) {
+        setError(await readApiError(response, uk));
+        setExercisePickerOpen(false);
+        return;
+      }
+      const body = await response.json() as { exercises: ExerciseCatalogDto[] };
+      setExerciseCatalog(body.exercises);
+    } catch {
+      setError(uk ? "Не вдалося завантажити каталог вправ." : "Could not load the exercise catalog.");
+      setExercisePickerOpen(false);
+    } finally {
+      setLoadingExerciseCatalog(false);
+    }
+  }
+
+  async function addCatalogExercise() {
+    if (!session || typeof catalogExerciseId !== "number") return;
+    setBusy(true);
+    setError(null);
+    try {
+      const before = new Set(session.exercises.map((exercise) => exercise.id));
+      const response = await fetch(`/api/v1/training/sessions/${session.id}/exercises`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          catalogId: catalogExerciseId,
+          plannedSets: session.programId === null ? 0 : 3,
+          resistanceType: newExerciseResistance,
+        }),
+      });
+      if (!response.ok) {
+        setError(await readApiError(response, uk));
+        return;
+      }
+      const body = await response.json() as { session: StrengthSessionDto };
+      setSession(body.session);
+      const added = body.session.exercises.find((exercise) => !before.has(exercise.id));
+      setFocusedExerciseId(added?.id ?? body.session.exercises[0]?.id ?? null);
+      setExercisePickerOpen(false);
+      setCatalogExerciseId("");
+    } catch {
+      setError(uk ? "Не вдалося додати вправу." : "Could not add the exercise.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function deleteSet(setId: number) {
     if (!session) return;
     if (!window.confirm(uk ? "Видалити підхід?" : "Delete this set?")) return;
@@ -428,6 +492,85 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     );
   }
 
+  if (session.status === SESSION_STATUS.ACTIVE && !current) {
+    return (
+      <main className={`${styles.page} ${styles.sessionDetailPage} ${styles.workoutShell}`}>
+        <div className={styles.navRow}>
+          <strong>BodyCast</strong>
+          <AppNav active="training" />
+        </div>
+        <header className={styles.header}>
+          <div>
+            <p className={styles.eyebrow}>{uk ? "Активне тренування" : "Active workout"}</p>
+            <h1>{trainingSessionTitle(session.programName, uk)}</h1>
+            <p className={styles.intro}>
+              {uk ? "Додавайте вправи з каталогу — тренування збережеться автоматично." : "Add exercises from the catalog — the workout is saved automatically."}
+            </p>
+          </div>
+          <Link className={styles.secondaryButton} href="/training">{uk ? "Назад" : "Back"}</Link>
+        </header>
+        {error && <div className={styles.errorBanner} role="alert">{error}</div>}
+        <section className={styles.panel}>
+          <div className={styles.panelBody}>
+            {exercisePickerOpen ? (
+              <div className={styles.editMenuForm}>
+                {loadingExerciseCatalog ? (
+                  <p role="status">{uk ? "Завантаження каталогу…" : "Loading catalog…"}</p>
+                ) : (
+                  <>
+                    <label className={styles.liveField}>
+                      <span>{uk ? "Вправа з каталогу" : "Catalog exercise"}</span>
+                      <select
+                        value={catalogExerciseId}
+                        onChange={(event) => {
+                          const nextId = event.target.value === "" ? "" : Number(event.target.value);
+                          setCatalogExerciseId(nextId);
+                          const selected = exerciseCatalog.find((item) => item.id === nextId);
+                          setNewExerciseResistance(recommendedResistanceTypeForCatalogStableKey(selected?.stableKey));
+                        }}
+                      >
+                        <option value="">{uk ? "Оберіть вправу…" : "Choose an exercise…"}</option>
+                        {exerciseCatalog.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                      </select>
+                    </label>
+                    <label className={styles.liveField}>
+                      <span>{uk ? "Тип опору" : "Resistance type"}</span>
+                      <select value={newExerciseResistance} onChange={(event) => setNewExerciseResistance(event.target.value as ResistanceType)}>
+                        <option value={RESISTANCE.EXTERNAL_WEIGHT}>{resistanceLabel(RESISTANCE.EXTERNAL_WEIGHT, uk)}</option>
+                        <option value={RESISTANCE.RESISTANCE_BAND}>{resistanceLabel(RESISTANCE.RESISTANCE_BAND, uk)}</option>
+                        <option value={RESISTANCE.BODYWEIGHT}>{resistanceLabel(RESISTANCE.BODYWEIGHT, uk)}</option>
+                      </select>
+                    </label>
+                    <div className={styles.denseCardActions}>
+                      <button className={styles.liveSave} type="button" disabled={busy || typeof catalogExerciseId !== "number"} onClick={() => void addCatalogExercise()}>
+                        {uk ? "Додати вправу" : "Add exercise"}
+                      </button>
+                      <button className={styles.liveSecondary} type="button" disabled={busy} onClick={() => setExercisePickerOpen(false)}>
+                        {uk ? "Скасувати" : "Cancel"}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            ) : (
+              <div className={styles.denseCardActions}>
+                <button className={styles.liveSave} type="button" disabled={busy} onClick={() => void openExercisePicker()}>
+                  {uk ? "Додати вправу" : "Add exercise"}
+                </button>
+                <button className={styles.liveSecondary} type="button" disabled={busy} onClick={() => void finishSession()}>
+                  {uk ? "Завершити тренування" : "Finish workout"}
+                </button>
+                <button className={styles.editMenuDanger} type="button" disabled={busy} onClick={() => void cancelSession()}>
+                  {uk ? "Скасувати тренування" : "Cancel workout"}
+                </button>
+              </div>
+            )}
+          </div>
+        </section>
+      </main>
+    );
+  }
+
   if (session.status === SESSION_STATUS.ACTIVE && current) {
     const isLast = exerciseIndex >= exercises.length - 1;
     return (
@@ -436,7 +579,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         mode="live"
         sessionId={session.id}
         backHref="/training"
-        programName={session.programName}
+        programName={trainingSessionTitle(session.programName, uk)}
         exercise={current}
         previousExercise={previousExercise}
         nextExercise={nextExercise}
@@ -455,6 +598,14 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         onCloseMenu={() => setMenuOpen(false)}
         menuContent={(
           <div className={styles.editMenuList}>
+            <button
+              type="button"
+              className={styles.editMenuItem}
+              disabled={busy}
+              onClick={() => void openExercisePicker()}
+            >
+              {uk ? "Додати вправу" : "Add exercise"}
+            </button>
             <button
               type="button"
               className={styles.editMenuItem}
@@ -513,7 +664,53 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
             {uk ? "Завершити тренування" : "Finish workout"}
           </button>
         ) : null}
-        finishDialog={finishOffer ? (
+        finishDialog={(
+          <>
+          {exercisePickerOpen && (
+            <div className={styles.workoutFinishDialog} role="presentation">
+              <div className={styles.workoutFinishCard} role="dialog" aria-labelledby="add-exercise-title">
+                <h2 id="add-exercise-title">{uk ? "Додати вправу" : "Add exercise"}</h2>
+                {loadingExerciseCatalog ? (
+                  <p role="status">{uk ? "Завантаження каталогу…" : "Loading catalog…"}</p>
+                ) : (
+                  <div className={styles.editMenuForm}>
+                    <label className={styles.liveField}>
+                      <span>{uk ? "Вправа з каталогу" : "Catalog exercise"}</span>
+                      <select
+                        value={catalogExerciseId}
+                        onChange={(event) => {
+                          const nextId = event.target.value === "" ? "" : Number(event.target.value);
+                          setCatalogExerciseId(nextId);
+                          const selected = exerciseCatalog.find((item) => item.id === nextId);
+                          setNewExerciseResistance(recommendedResistanceTypeForCatalogStableKey(selected?.stableKey));
+                        }}
+                      >
+                        <option value="">{uk ? "Оберіть вправу…" : "Choose an exercise…"}</option>
+                        {exerciseCatalog.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                      </select>
+                    </label>
+                    <label className={styles.liveField}>
+                      <span>{uk ? "Тип опору" : "Resistance type"}</span>
+                      <select value={newExerciseResistance} onChange={(event) => setNewExerciseResistance(event.target.value as ResistanceType)}>
+                        <option value={RESISTANCE.EXTERNAL_WEIGHT}>{resistanceLabel(RESISTANCE.EXTERNAL_WEIGHT, uk)}</option>
+                        <option value={RESISTANCE.RESISTANCE_BAND}>{resistanceLabel(RESISTANCE.RESISTANCE_BAND, uk)}</option>
+                        <option value={RESISTANCE.BODYWEIGHT}>{resistanceLabel(RESISTANCE.BODYWEIGHT, uk)}</option>
+                      </select>
+                    </label>
+                    <div className={styles.workoutFinishActions}>
+                      <button className={styles.liveSecondary} type="button" onClick={() => setExercisePickerOpen(false)}>
+                        {uk ? "Скасувати" : "Cancel"}
+                      </button>
+                      <button className={styles.liveSave} type="button" disabled={busy || typeof catalogExerciseId !== "number"} onClick={() => void addCatalogExercise()}>
+                        {uk ? "Додати" : "Add"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          {finishOffer && (
           <div className={styles.workoutFinishDialog} role="presentation">
             <div className={styles.workoutFinishCard} role="dialog" aria-labelledby="finish-offer-title">
               <h2 id="finish-offer-title">
@@ -555,7 +752,9 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
               </div>
             </div>
           </div>
-        ) : null}
+          )}
+          </>
+        )}
         footerContent={(
           <SessionAccountingPanel
             session={session}
@@ -580,7 +779,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
       <header className={styles.header}>
         <div>
           <p className={styles.eyebrow}>{uk ? "Сесія щоденника" : "Diary session"}</p>
-          <h1>{session.programName}</h1>
+          <h1>{trainingSessionTitle(session.programName, uk)}</h1>
           <p className={styles.intro}>
             <span>
               {formatDateTime(session.matchedWorkout?.startAt ?? session.webStartedAt, intlLocale)}

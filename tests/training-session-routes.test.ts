@@ -7,6 +7,7 @@ const trainingService = vi.hoisted(() => ({
   getSession: vi.fn(),
   getSetForSession: vi.fn(),
   startSession: vi.fn(),
+  startDynamicSession: vi.fn(),
   createSet: vi.fn(),
   updateSet: vi.fn(),
   deleteSet: vi.fn(),
@@ -24,6 +25,7 @@ import { DELETE as DELETE_SET, GET as GET_SET, PATCH as PATCH_SET } from "@/app/
 import { GET as ACTIVE } from "@/app/api/v1/training/sessions/active/route";
 import { GET as RECENT } from "@/app/api/v1/training/sessions/recent/route";
 import { POST as START } from "@/app/api/v1/training/sessions/start/route";
+import { POST as START_DYNAMIC } from "@/app/api/v1/training/sessions/start-dynamic/route";
 import {
   ActiveSessionExistsError,
   ProgramArchivedError,
@@ -132,6 +134,28 @@ describe("/api/v1/training/sessions", () => {
     expect(response.status).toBe(201);
     await expect(response.json()).resolves.toEqual({ session });
     expect(trainingService.startSession).toHaveBeenCalledWith(7, undefined, undefined);
+  });
+
+  it("starts a dynamic live session without a program and preserves the supplied time zone", async () => {
+    const dynamicSession = {
+      ...session,
+      programId: null,
+      programName: null,
+      programVersionId: null,
+      programVersionNumber: null,
+      exercises: [],
+    };
+    trainingService.startDynamicSession.mockResolvedValue(dynamicSession);
+    const response = await START_DYNAMIC(jsonRequest(`${base}/start-dynamic`, "POST", { timeZone: "Europe/Bratislava" }));
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toEqual({ session: dynamicSession });
+    expect(trainingService.startDynamicSession).toHaveBeenCalledWith(undefined, "Europe/Bratislava");
+  });
+
+  it("rejects invalid dynamic-session time zones without mutation", async () => {
+    const response = await START_DYNAMIC(jsonRequest(`${base}/start-dynamic`, "POST", { timeZone: "Not/AZone" }));
+    expect(response.status).toBe(400);
+    expect(trainingService.startDynamicSession).not.toHaveBeenCalled();
   });
 
   it("rejects invalid start body without mutation", async () => {

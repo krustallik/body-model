@@ -71,11 +71,15 @@ export async function recordExperimentalLocalHypertrophyResponseShadow(input: {
       sessionRevision: session.revision,
       occurrenceStartAt: session.webStartedAt,
       matchedWorkoutId: session.matchedWorkoutId,
-      program: {
-        programId: session.programId,
-        programVersionId: session.programVersionId,
-        programVersionNumber: session.programVersionNumber,
-      },
+      program: session.programId === null
+        || session.programVersionId === null
+        || session.programVersionNumber === null
+        ? null
+        : {
+          programId: session.programId,
+          programVersionId: session.programVersionId,
+          programVersionNumber: session.programVersionNumber,
+        },
       dose: buildQualifiedResistanceTrainingDoseV7(
         buildCanonicalStrengthTrainingInputV7({ session, heartRateSamples: null }),
       ),

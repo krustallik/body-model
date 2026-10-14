@@ -399,8 +399,8 @@ model ProgramExercise {
 model StrengthDiarySession {
   id               Int                          @id @default(autoincrement())
   profileId        Int                          @default(1)
-  programId        Int
-  programVersionId Int
+  programId        Int?
+  programVersionId Int?
   /**
    * ACTIVE | COMPLETED | CANCELLED
    */
@@ -443,8 +443,8 @@ model StrengthDiarySession {
   createdAt        DateTime                     @default(now()) @db.Timestamptz(3)
   updatedAt        DateTime                     @updatedAt @db.Timestamptz(3)
   profile          Profile?                     @relation(fields: [profileId], references: [id], onDelete: Restrict)
-  program          TrainingProgram              @relation(fields: [programId], references: [id], onDelete: Restrict)
-  programVersion   TrainingProgramVersion       @relation(fields: [programVersionId], references: [id], onDelete: Restrict)
+  program          TrainingProgram?             @relation(fields: [programId], references: [id], onDelete: Restrict)
+  programVersion   TrainingProgramVersion?      @relation(fields: [programVersionId], references: [id], onDelete: Restrict)
   matchedWorkout   Workout?                     @relation(fields: [matchedWorkoutId], references: [id], onDelete: SetNull)
   exercises        StrengthSessionExercise[]
   programChanges   StrengthDiaryProgramChange[]

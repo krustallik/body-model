@@ -29,3 +29,4 @@ export interface ForensicReport {
 }
 
 export function captureForensicReport(mode: string, target: string): Promise<ForensicReport>;
+export function safeCliErrorMessage(error: unknown): string;

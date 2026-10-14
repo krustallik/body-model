@@ -72,6 +72,14 @@ function safePostgresDiagnostic(stderr) {
   return match ? `sqlstate-${match[1]}` : (stderr.length ? "client-stderr" : "none");
 }
 
+const SAFE_CAPTURE_DIAGNOSTIC = /^Read-only PostgreSQL forensic capture failed closed \(parser=(?:ambiguous-table-boundary|table-inventory-changed|sequence-boundary-missing|sequence-inventory-changed|ambiguous-sequence-phase|sequence-inventory-incomplete|metadata-malformed|metadata-duplicated|unexpected-output-record|snapshot-incomplete|inventory-changed|safety-metadata-incomplete|sequence-state-changed|capture-stream-failed); client=(?:sqlstate-[0-9A-Z]{5}|client-stderr|none); exit=(?:[0-9]+|unknown)\)\.$/;
+const GENERIC_FAILURE = "Production V4 fingerprint forensics failed closed.";
+
+export function safeCliErrorMessage(error) {
+  const message = error instanceof Error ? error.message : "";
+  return SAFE_CAPTURE_DIAGNOSTIC.test(message) ? message : GENERIC_FAILURE;
+}
+
 function parseInventory(text) {
   let inventory;
   try { inventory = JSON.parse(text.trim()); } catch { throw new Error("PostgreSQL forensic inventory is unavailable."); }
@@ -680,8 +688,8 @@ async function main() {
 }
 
 if (process.argv[1] && (process.argv[1] === "-" || import.meta.url === pathToFileURL(process.argv[1]).href)) {
-  main().catch(() => {
-    process.stderr.write("Production V4 fingerprint forensics failed closed.\n");
+  main().catch((error) => {
+    process.stderr.write(`${safeCliErrorMessage(error)}\n`);
     process.exitCode = 1;
   });
 }

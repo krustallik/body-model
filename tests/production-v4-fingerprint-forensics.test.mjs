@@ -8,6 +8,7 @@ import {
   assertRestoredSourceMigrationState,
   compareForensicReports,
   consumeSnapshotOutput,
+  safeCliErrorMessage,
 } from "../scripts/production-v4-fingerprint-forensics.mjs";
 import { V4_REPUBLICATION_MANIFEST } from "../scripts/production-migration-manifests.mjs";
 
@@ -21,6 +22,21 @@ const fingerprintVersions = {
 const derivedTables = new Set([
   "ExperimentalTransientExerciseWaterShadow", "PhysiologyV7Lifecycle", "UnifiedExperimentalPhysiologyStateV2", "UnifiedPublicationBlock",
 ]);
+
+test("CLI surfaces only whitelisted sanitized PostgreSQL capture diagnostics", () => {
+  assert.equal(
+    safeCliErrorMessage(new Error("Read-only PostgreSQL forensic capture failed closed (parser=sequence-state-changed; client=sqlstate-22023; exit=1).")),
+    "Read-only PostgreSQL forensic capture failed closed (parser=sequence-state-changed; client=sqlstate-22023; exit=1).",
+  );
+  assert.equal(
+    safeCliErrorMessage(new Error("Read-only PostgreSQL forensic capture failed closed (parser=sequence-state-changed; client=secret-password; exit=1).")),
+    "Production V4 fingerprint forensics failed closed.",
+  );
+  assert.equal(
+    safeCliErrorMessage(new Error("DATABASE_URL=secret raw SQL and private row payload")),
+    "Production V4 fingerprint forensics failed closed.",
+  );
+});
 
 function snapshotLines({ migration = "base", lifecycle = '{"id":1}', workoutRows = ['{"id":1}', '{"id":2}'], legacySequenceValue = "5", sequenceValue = "5", sequenceIsCalled = "true" } = {}) {
   const tables = ["_prisma_migrations", "PhysiologyV7Lifecycle", "Workout"];

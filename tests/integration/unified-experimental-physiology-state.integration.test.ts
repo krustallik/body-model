@@ -1596,7 +1596,11 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
           session.id,
           profileId,
           completedSnapshotRefreshKey,
-        )).rejects.toThrow("injected completed-session demand-shadow failure");
+        )).rejects.toMatchObject({
+          name: "TrainingPublicationStageError",
+          message: "Training dependency refresh failed",
+          originalError: expect.objectContaining({ message: "injected completed-session demand-shadow failure" }),
+        });
       } finally {
         demandShadowFailure.mockRestore();
       }

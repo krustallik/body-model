@@ -125,7 +125,7 @@ type TrainingPublicationBlockTokenV1 = { sourceKey: string; token: { revision: n
 
 class TrainingPublicationStageError extends Error {
   constructor(readonly stage: string, readonly originalError: unknown) {
-    super(originalError instanceof Error ? originalError.message : "Training dependency refresh failed");
+    super("Training dependency refresh failed");
     this.name = "TrainingPublicationStageError";
     if (originalError instanceof Error) {
       const code = (originalError as Error & { code?: unknown }).code;

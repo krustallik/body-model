@@ -419,7 +419,7 @@ describe("Session edit exercise pager", () => {
     expect(document.activeElement).toBe(within(historySet).getByLabelText("Reps"));
     await user.click(within(historySet).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(document.activeElement).toBe(within(historySet).getByRole("button", { name: "Actions for set 1" })));
-    expect(scrollTo).toHaveBeenCalled();
+    await waitFor(() => expect(scrollTo).toHaveBeenCalled());
 
     await user.click(within(historySet).getByRole("button", { name: "Actions for set 1" }));
     await user.click(within(historySet).getByRole("button", { name: "Edit" }));

@@ -1082,6 +1082,70 @@ describe("UnifiedExperimentalPhysiologyStateV1 PostgreSQL lifecycle", () => {
     await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).resolves.toMatchObject({ rolloutEpoch: 1, dayCount: 3 });
   }, 60_000);
 
+  it("does not pair a loaded predecessor with a fence captured after a successful earlier-day sync", async () => {
+    await seed({ productionGlycogenKg: [0.5, 0.6, 0] });
+    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[0], toDate: dates[2] });
+    await verifyAndPublishUnifiedV3Postflight({ profileId });
+    await activateAndReplayUnifiedV4({ profileId });
+
+    const snapshotCountBefore = await prisma.healthSyncSnapshot.count({ where: { date: dates[0] } });
+    const attempts: Array<{ date: string; attempt: number }> = [];
+    let committedRowsAfterNewerSync: Array<{ date: string; sourceFingerprint: string }> = [];
+    let syncStatus: string | null = null;
+    let syncCompleted = false;
+
+    await glycogenStateShadowService.rebuildExperimentalGlycogenStateShadows({
+      profileId,
+      fromDate: dates[1]!,
+      toDate: dates[2]!,
+      onPriorLoaded: async ({ attempt }) => {
+        if (attempt !== 1 || syncCompleted) return;
+        const oldPredecessor = await prisma.experimentalGlycogenStateShadow.findUniqueOrThrow({
+          where: { profileId_date: { profileId, date: dates[0]! } },
+          select: { sourceFingerprint: true },
+        });
+        const newerSync = await syncHealthWeightThroughService(
+          dates[0]!, 79.2, `${dates[0]}T21:00:00.000Z`,
+        );
+        syncStatus = newerSync.modelPublicationStatus;
+        const refreshedPredecessor = await prisma.experimentalGlycogenStateShadow.findUniqueOrThrow({
+          where: { profileId_date: { profileId, date: dates[0]! } },
+          select: { sourceFingerprint: true },
+        });
+        expect(refreshedPredecessor.sourceFingerprint).not.toBe(oldPredecessor.sourceFingerprint);
+        committedRowsAfterNewerSync = await prisma.experimentalGlycogenStateShadow.findMany({
+          where: { profileId, date: { in: dates } },
+          orderBy: { date: "asc" },
+          select: { date: true, sourceFingerprint: true },
+        });
+        syncCompleted = true;
+      },
+      onCandidateComputed: async ({ date, attempt }) => {
+        attempts.push({ date, attempt });
+      },
+    });
+
+    expect(syncStatus).toBe("current");
+    expect(attempts).toEqual([
+      { date: dates[1], attempt: 1 },
+      { date: dates[1], attempt: 2 },
+      { date: dates[2], attempt: 2 },
+    ]);
+    expect(await prisma.healthSyncSnapshot.count({ where: { date: dates[0] } })).toBe(snapshotCountBefore + 1);
+    expect(await prisma.experimentalGlycogenStateShadow.findMany({
+      where: { profileId, date: { in: dates } },
+      orderBy: { date: "asc" },
+      select: { date: true, sourceFingerprint: true },
+    })).toEqual(committedRowsAfterNewerSync);
+    expect(await prisma.unifiedPublicationBlock.findMany({ where: { profileId } })).toEqual([]);
+
+    await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[0], toDate: dates[2] });
+    const lifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId } });
+    expect(lifecycle.unifiedPublishedGeneration).toBe(lifecycle.invalidationGeneration);
+    expect(lifecycle.unifiedPublishedRolloutEpoch).toBe(lifecycle.unifiedRolloutEpoch);
+    await expect(verifyUnifiedV4ReadyForTraffic({ profileId })).resolves.toMatchObject({ rolloutEpoch: 1, dayCount: 3 });
+  }, 60_000);
+
   it("retries a glycogen candidate when Unified publication updates lifecycle metadata without changing sources", async () => {
     await seed({ productionGlycogenKg: [0.5, 0.6, 0] });
     await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId, fromDate: dates[0], toDate: dates[2] });

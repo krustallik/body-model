@@ -186,6 +186,8 @@ export async function rebuildExperimentalGlycogenStateShadows(input: {
   toDate: string;
   /** Deterministic interleaving seam for isolated PostgreSQL concurrency tests. */
   onCandidateComputed?: (event: { date: string; attempt: number }) => Promise<void>;
+  /** Deterministic interleaving seam after loading the durable predecessor. */
+  onPriorLoaded?: (event: { fromDate: string; attempt: number }) => Promise<void>;
   /** Deterministic interleaving seam for isolated PostgreSQL concurrency tests. */
   onCandidateCommitted?: (event: { date: string; attempt: number }) => Promise<void>;
 }): Promise<void> {
@@ -202,6 +204,7 @@ export async function rebuildExperimentalGlycogenStateShadows(input: {
         toDate: input.toDate,
         attempt,
         onCandidateComputed: input.onCandidateComputed,
+        onPriorLoaded: input.onPriorLoaded,
         onCandidateCommitted: input.onCandidateCommitted,
       });
       return;
@@ -223,6 +226,7 @@ async function rebuildExperimentalGlycogenStateShadowsAttempt(input: {
   toDate: string;
   attempt: number;
   onCandidateComputed?: (event: { date: string; attempt: number }) => Promise<void>;
+  onPriorLoaded?: (event: { fromDate: string; attempt: number }) => Promise<void>;
   onCandidateCommitted?: (event: { date: string; attempt: number }) => Promise<void>;
 }): Promise<void> {
   const { profileId } = input;
@@ -243,6 +247,9 @@ async function rebuildExperimentalGlycogenStateShadowsAttempt(input: {
     ? staleRow.date
     : input.fromDate;
 
+  // Capture before loading the durable predecessor so a source refresh between
+  // those reads cannot pair an old predecessor with a newer lifecycle fence.
+  let expectedFence = await readUnifiedSourceFenceV1(prisma, profileId);
   const priorRow = await prisma.experimentalGlycogenStateShadow.findFirst({
     where: { profileId, date: { lt: fromDate } },
     orderBy: { date: "desc" },
@@ -250,11 +257,10 @@ async function rebuildExperimentalGlycogenStateShadowsAttempt(input: {
   });
   let prior = stateFromStoredResult(priorRow?.result) ?? initialExperimentalGlycogenStateV1();
   let priorGapContext = gapContextFromStoredResult(priorRow?.result);
+  await input.onPriorLoaded?.({ fromDate, attempt: input.attempt });
   // Keep the fence continuous across the entire stateful suffix. Re-reading a
   // fresh token for each day could accept a source update between two committed
   // days while still carrying the old predecessor in memory.
-  let expectedFence = await readUnifiedSourceFenceV1(prisma, profileId);
-
   for (let date = fromDate; date <= input.toDate; date = addCalendarDays(date, 1)) {
     const fence = expectedFence;
     const day = await loadDayInputs(prisma, profileId, date);

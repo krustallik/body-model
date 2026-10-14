@@ -130,7 +130,7 @@ const V4_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "src/modules/model-episodes/experimental-glycogen-state-shadow.service.ts": Object.freeze({
     migrationOriginBlob: "0e61b01275a1905710adc1d7721db006596459b0",
-    deployBlob: "99de3cbe84f79540bf22a0a3ef60ca2ffc4cc2c0",
+    deployBlob: "8a2aa5e38d4ad224e862a271a3fa69d655ff0e9a",
   }),
   "src/modules/model-episodes/model-episode.service.ts": Object.freeze({
     migrationOriginBlob: "0d32af00d8fa7bf4228cb87c434d85492b430d82",

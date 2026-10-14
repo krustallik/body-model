@@ -108,6 +108,36 @@ describe("production schema signature normalization", () => {
     expect(schemaInventoryDigest([missingConstraint])).not.toBe(originalSourceDigest);
   });
 
+  it("accepts only PostgreSQL's exact pg_dump rewrite of the V4 publication-source CHECK", async () => {
+    const migration = await readFile(new URL("../prisma/migrations/20261011120000_unified_publication_failure_fence/migration.sql", import.meta.url), "utf8");
+    expect(migration).toContain('CONSTRAINT "UnifiedPublicationBlock_source_check" CHECK ("source" IN (\'health\', \'day\', \'training\', \'stepper\'))');
+
+    const values = ["health", "day", "training", "stepper"];
+    const prefix = 'c|validated=true|table="UnifiedPublicationBlock"|definition=CHECK (source::text = ANY (';
+    const sourceSignature = `${prefix}ARRAY[${values.map((value) => `'${value}'::character varying`).join(", ")}]::text[]))`;
+    const restoredSignature = `${prefix}ARRAY[${values.map((value) => `'${value}'::character varying::text`).join(", ")}]))`;
+    const source = { name: "UnifiedPublicationBlock_source_check", present: true, kind: "constraint", signature: sourceSignature };
+    const restored = { ...source, signature: restoredSignature };
+
+    expect(V4_REPUBLICATION_MANIFEST.postflightSignatureIncludes[source.name]).toBe(sourceSignature);
+    expect(schemaInventoryDigest([restored])).toBe(schemaInventoryDigest([source]));
+    expect(schemaInventoryDifferenceSummary([source], [restored]).changedObjects.find(({ name }) => name === source.name)).toMatchObject({
+      name: source.name,
+      changedFields: ["signature"],
+      normalizedSignaturesEqual: true,
+    });
+
+    for (const changed of [
+      { ...restored, signature: restoredSignature.replace("'stepper'", "'unexpected'") },
+      { ...restored, signature: restoredSignature.replace(", 'stepper'::character varying::text", "") },
+      { ...restored, signature: `${restoredSignature} OR TRUE` },
+      { ...restored, kind: "index" },
+      { ...restored, present: false },
+    ]) {
+      expect(schemaInventoryDigest([changed])).not.toBe(schemaInventoryDigest([source]));
+    }
+  });
+
   it("binds V4 baseline function signatures to the reviewed prior migration bodies", async () => {
     const [persistenceMigration, staleSuffixMigration, v4Migration] = await Promise.all([
       readFile(new URL("../prisma/migrations/20260918120000_add_v7_physiology_persistence/migration.sql", import.meta.url), "utf8"),

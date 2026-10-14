@@ -107,6 +107,10 @@ const LIFECYCLE_REVISION_VALUES = [
 const LIFECYCLE_REVISION_SIGNATURE_PREFIX = 'c|validated=true|table="PhysiologyV7Lifecycle"|definition=CHECK ("unifiedTargetRevision"::text = ANY (';
 const LIFECYCLE_REVISION_SOURCE_SIGNATURE = `${LIFECYCLE_REVISION_SIGNATURE_PREFIX}ARRAY[${LIFECYCLE_REVISION_VALUES.map((value) => `'${value}'::character varying`).join(", ")}]::text[]))`;
 const LIFECYCLE_REVISION_RESTORED_SIGNATURE = `${LIFECYCLE_REVISION_SIGNATURE_PREFIX}ARRAY[${LIFECYCLE_REVISION_VALUES.map((value) => `'${value}'::character varying::text`).join(", ")}]))`;
+const PUBLICATION_SOURCE_VALUES = ["health", "day", "training", "stepper"];
+const PUBLICATION_SOURCE_SIGNATURE_PREFIX = 'c|validated=true|table="UnifiedPublicationBlock"|definition=CHECK (source::text = ANY (';
+const PUBLICATION_SOURCE_CHECK_SIGNATURE = `${PUBLICATION_SOURCE_SIGNATURE_PREFIX}ARRAY[${PUBLICATION_SOURCE_VALUES.map((value) => `'${value}'::character varying`).join(", ")}]::text[]))`;
+const PUBLICATION_SOURCE_CHECK_RESTORED_SIGNATURE = `${PUBLICATION_SOURCE_SIGNATURE_PREFIX}ARRAY[${PUBLICATION_SOURCE_VALUES.map((value) => `'${value}'::character varying::text`).join(", ")}]))`;
 
 function canonicalInventorySignature(object) {
   // PostgreSQL 17's dump/reparse moves the varchar[] -> text[] cast onto
@@ -116,6 +120,12 @@ function canonicalInventorySignature(object) {
   if (object?.name === LIFECYCLE_REVISION_CONSTRAINT && object.present === true
     && object.kind === "constraint" && object.signature === LIFECYCLE_REVISION_RESTORED_SIGNATURE) {
     return LIFECYCLE_REVISION_SOURCE_SIGNATURE;
+  }
+  // The same PostgreSQL 17 pg_dump/reparse cast movement applies to this
+  // reviewed V4 CHECK. Keep the accepted source and restored predicates exact.
+  if (object?.name === "UnifiedPublicationBlock_source_check" && object.present === true
+    && object.kind === "constraint" && object.signature === PUBLICATION_SOURCE_CHECK_RESTORED_SIGNATURE) {
+    return PUBLICATION_SOURCE_CHECK_SIGNATURE;
   }
   return object?.signature ?? null;
 }

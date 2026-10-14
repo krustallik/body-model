@@ -77,7 +77,7 @@ const V4_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "scripts/ci/production-safety-postgres-smoke.mjs": Object.freeze({
     migrationOriginBlob: "1a0345e687fd3f604499502bdf98a07b606da07f",
-    deployBlob: "a8551efe6279fb881b78c00107f432b247296607",
+    deployBlob: "38941414ce8e99494931b44a56db88f54001c9d8",
   }),
   "scripts/deploy.sh": Object.freeze({
     migrationOriginBlob: "4844bdc0b586f29dbc3b60952717e249a04bbbbc",
@@ -85,7 +85,7 @@ const V4_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "scripts/production-db-data-fingerprint.sh": Object.freeze({
     migrationOriginBlob: "101ecf34dc5751fc431a5b88f787d7ebc3e98fde",
-    deployBlob: "3a313ac030b0aa96abb57658f6e02c2473016299",
+    deployBlob: "b163822a6b2a8d18efa238af0bb1b5c0f02082cc",
   }),
   "scripts/production-release-marker.sh": Object.freeze({
     migrationOriginBlob: "40bdb77377cfe02ce8bedd9760d82f21befc128e",

@@ -1612,6 +1612,19 @@ async function main() {
       throw new Error("Forged no-app DDL authorization was admitted by the PostgreSQL restore/rehearsal smoke.");
     }
 
+    const v4FingerprintUrl = new URL(databaseUrl(target));
+    v4FingerprintUrl.search = "";
+    const getV4ReplayInputFingerprint = () => execFileSync("bash", ["scripts/production-db-data-fingerprint.sh", "--test-url", "--v4-replay-inputs"], {
+      encoding: "utf8", env: { ...process.env, BODYCAST_TEST_DATABASE_URL: v4FingerprintUrl.toString() },
+    }).trim();
+    const getV4ReplayStableStateFingerprint = () => execFileSync("bash", ["scripts/production-db-data-fingerprint.sh", "--test-url", "--v4-replay-stable-state"], {
+      encoding: "utf8", env: { ...process.env, BODYCAST_TEST_DATABASE_URL: v4FingerprintUrl.toString() },
+    }).trim();
+    const getFullFingerprint = () => execFileSync("bash", ["scripts/production-db-data-fingerprint.sh", "--test-url"], {
+      encoding: "utf8", env: { ...process.env, BODYCAST_TEST_DATABASE_URL: v4FingerprintUrl.toString() },
+    }).trim();
+    const v4ReplayInputsBeforeMigrations = getV4ReplayInputFingerprint();
+    const fullFingerprintBeforeMigrations = getFullFingerprint();
     const v4PreservedDataProjection = capturePreexistingDataProjection(target);
     const v4PreservedDataBefore = fingerprintPreexistingDataProjection(target, v4PreservedDataProjection);
     await deployPendingPrismaMigrations(target, scratch);
@@ -1631,21 +1644,26 @@ async function main() {
     assertTrainingTriggerSemantics(target);
     assertLegacyRelativeMuscleUpsertsRejected(target);
 
-    const v4FingerprintUrl = new URL(databaseUrl(target));
-    v4FingerprintUrl.search = "";
-    const getV4ReplayInputFingerprint = () => execFileSync("bash", ["scripts/production-db-data-fingerprint.sh", "--test-url", "--v4-replay-inputs"], {
-      encoding: "utf8", env: { ...process.env, BODYCAST_TEST_DATABASE_URL: v4FingerprintUrl.toString() },
-    }).trim();
-    const getV4ReplayStableStateFingerprint = () => execFileSync("bash", ["scripts/production-db-data-fingerprint.sh", "--test-url", "--v4-replay-stable-state"], {
-      encoding: "utf8", env: { ...process.env, BODYCAST_TEST_DATABASE_URL: v4FingerprintUrl.toString() },
-    }).trim();
-    const getFullFingerprint = () => execFileSync("bash", ["scripts/production-db-data-fingerprint.sh", "--test-url"], {
-      encoding: "utf8", env: { ...process.env, BODYCAST_TEST_DATABASE_URL: v4FingerprintUrl.toString() },
-    }).trim();
     const v4ReplayInputsBefore = getV4ReplayInputFingerprint();
     const v4ReplayOutputsBefore = getV4ReplayStableStateFingerprint();
     const fullFingerprintBeforeDerivedWrites = getFullFingerprint();
-    if (!/^[a-f0-9]{64}$/.test(v4ReplayInputsBefore)) throw new Error("Isolated V4 replay-input fingerprint is malformed.");
+    if (!/^[a-f0-9]{64}$/.test(v4ReplayInputsBefore)
+      || v4ReplayInputsBefore !== v4ReplayInputsBeforeMigrations
+      || fullFingerprintBeforeDerivedWrites === fullFingerprintBeforeMigrations) {
+      throw new Error("V4 DDL changed the raw replay-input projection or did not change the full migration-state fingerprint.");
+    }
+    const publicationBlockInputBefore = getV4ReplayInputFingerprint();
+    const publicationBlockStableStateBefore = getV4ReplayStableStateFingerprint();
+    sql(target, `INSERT INTO public."UnifiedPublicationBlock" ("profileId", "source", "sourceKey", "fromDate")
+      VALUES (1, 'health', 'v4-fingerprint-fixture', '2026-01-01');`);
+    const publicationBlockInputAfter = getV4ReplayInputFingerprint();
+    const publicationBlockStableStateAfter = getV4ReplayStableStateFingerprint();
+    sql(target, `DELETE FROM public."UnifiedPublicationBlock" WHERE "profileId" = 1 AND "source" = 'health' AND "sourceKey" = 'v4-fingerprint-fixture';`);
+    if (publicationBlockInputAfter !== publicationBlockInputBefore
+      || publicationBlockStableStateAfter === publicationBlockStableStateBefore
+      || getV4ReplayStableStateFingerprint() !== publicationBlockStableStateBefore) {
+      throw new Error("V4 publication-block control state must stay out of the raw-input projection and remain covered by stable-state fingerprints.");
+    }
     const nonRestoreFingerprintUrl = new URL(v4FingerprintUrl);
     nonRestoreFingerprintUrl.pathname = "/bodycast_cutback_live_0123456789";
     const nonRestoreV4Fingerprint = spawnSync("bash", ["scripts/production-db-data-fingerprint.sh", "--test-url", "--v4-replay-inputs"], {

@@ -488,6 +488,17 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(smoke).not.toContain('sql(db, requireSql("scripts/production-db-preflight.sql"))');
   });
 
+  it("keeps the V4-created publication fence outside raw-source identity while retaining stable-state coverage", async () => {
+    const fingerprint = await readFile(new URL("../scripts/production-db-data-fingerprint.sh", import.meta.url), "utf8");
+    const smoke = await readFile(new URL("../scripts/ci/production-safety-postgres-smoke.mjs", import.meta.url), "utf8");
+    expect(fingerprint).toContain("bodycast-v4-replay-source-fingerprint-v2");
+    expect(fingerprint).toContain("excluded-derived-tables:ExperimentalTransientExerciseWaterShadow,PhysiologyV7Lifecycle,UnifiedExperimentalPhysiologyStateV2,UnifiedPublicationBlock");
+    expect(fingerprint).toContain('|| "$table" == "UnifiedPublicationBlock" )');
+    expect(smoke).toContain("const v4ReplayInputsBeforeMigrations = getV4ReplayInputFingerprint();");
+    expect(smoke).toContain("v4ReplayInputsBefore !== v4ReplayInputsBeforeMigrations");
+    expect(smoke).toContain("publicationBlockStableStateAfter === publicationBlockStableStateBefore");
+  });
+
   it("runs production preflight and postflight against the effective Compose Prisma DATABASE_URL", async () => {
     const deploy = await readFile(new URL("../scripts/deploy-migrate.sh", import.meta.url), "utf8");
     const target = await readFile(new URL("../scripts/production-db-target.sh", import.meta.url), "utf8");

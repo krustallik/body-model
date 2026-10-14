@@ -64,8 +64,8 @@ elif [[ "$fingerprint_mode" == "v4-replay-stable-state" ]]; then
 fi
 {
   if [[ "$fingerprint_mode" == "v4-replay-inputs" ]]; then
-    printf 'bodycast-v4-replay-source-fingerprint-v1\n'
-    printf 'excluded-derived-tables:ExperimentalTransientExerciseWaterShadow,PhysiologyV7Lifecycle,UnifiedExperimentalPhysiologyStateV2\n'
+    printf 'bodycast-v4-replay-source-fingerprint-v2\n'
+    printf 'excluded-derived-tables:ExperimentalTransientExerciseWaterShadow,PhysiologyV7Lifecycle,UnifiedExperimentalPhysiologyStateV2,UnifiedPublicationBlock\n'
   elif [[ "$fingerprint_mode" == "v4-replay-stable-state" ]]; then
     printf 'bodycast-v4-replay-stable-state-fingerprint-v1\n'
     printf 'excluded-bookkeeping-columns:PhysiologyV7Lifecycle.createdAt,PhysiologyV7Lifecycle.updatedAt,UnifiedExperimentalPhysiologyStateV2.createdAt,UnifiedExperimentalPhysiologyStateV2.updatedAt\n'
@@ -77,8 +77,10 @@ fi
     [[ "$table" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || {
       echo "Public database contains a table name outside the reviewed identifier contract." >&2; exit 1;
     }
+    # UnifiedPublicationBlock is created by V4 DDL and is tracked by the separate stable-state projection.
     if [[ "$fingerprint_mode" == "v4-replay-inputs" && ( "$table" == "PhysiologyV7Lifecycle" \
-      || "$table" == "UnifiedExperimentalPhysiologyStateV2" || "$table" == "ExperimentalTransientExerciseWaterShadow" ) ]]; then
+      || "$table" == "UnifiedExperimentalPhysiologyStateV2" || "$table" == "ExperimentalTransientExerciseWaterShadow" \
+      || "$table" == "UnifiedPublicationBlock" ) ]]; then
       continue
     fi
     printf 'table:%s\n' "$table"

@@ -144,7 +144,7 @@ function makeConnection(mode, target) {
 
 function buildSnapshotSql(inventory) {
   const tableNames = inventory.tables.map(({ tablename }) => tablename);
-  const sequenceNames = inventory.sequences.map(({ name }) => name.split(".")[1]);
+  const sequenceNames = inventory.sequences.map(({ name }) => name);
   const tableInventory = `SELECT '__BODYCAST_TABLE_INVENTORY__=' || COALESCE(json_agg(tablename ORDER BY tablename)::text, '[]') FROM pg_catalog.pg_tables WHERE schemaname = 'public';`;
   const sequenceInventory = `SELECT '__BODYCAST_SEQUENCE_INVENTORY__=' || COALESCE(json_agg(json_build_object(
     'name', s.schemaname || '.' || s.sequencename, 'dataType', s.data_type::text,

@@ -29,7 +29,7 @@ const V4_REPUBLICATION_MANIFEST_ID = "unified-v4-republication-v1";
 const V3_STATES = new Set(["schema-applied", "app-ready", "v4-ready", "database-restored", "rollback-app-ready"]);
 const DENIED_PATH = /^(?:prisma\/|public\/|scripts\/unified-v[34]|scripts\/physiology|docker-compose(?:\.prod)?\.yml$|package(?:-lock)?\.json$|next\.config\.[^/]+$|tsconfig(?:\.[^/]+)?\.json$)/;
 const ALLOWED_PATH = /^(?:\.github\/workflows\/|tests\/|scripts\/production-release-marker\.(?:sh|mjs)$|scripts\/production-schema-deploy-handoff\.mjs$|scripts\/production-traffic-cutover\.sh$|scripts\/production-full-history-recalculate\.ts$|src\/modules\/model-episodes\/(?:full-history-recalculation\.service|transient-exercise-water-episode-time-v2)\.ts$|src\/modules\/training\/experimental-transient-exercise-water-shadow\.service\.ts$|Dockerfile$)/;
-const V4_UNBOUND_NON_RUNTIME_PATH = /^(?:tests\/|scripts\/production-schema-deploy-handoff\.mjs$)/;
+const V4_UNBOUND_NON_RUNTIME_PATH = /^(?:tests\/|scripts\/production-schema-deploy-handoff\.mjs$|scripts\/production-v4-fingerprint-forensics\.d\.mts$)/;
 /** Exact audited Git blobs admitted for this deploy-only compatibility handoff. */
 const CONTENT_BOUND_PATHS = Object.freeze({
   "docs/development/production-deploy.md": Object.freeze({
@@ -67,9 +67,13 @@ const CONTENT_BOUND_PATHS = Object.freeze({
 });
 /** Exact executable blobs reviewed for the V4 app-ready migration-origin handoff. */
 const V4_CONTENT_BOUND_PATHS = Object.freeze({
+  "scripts/production-v4-fingerprint-forensics.mjs": Object.freeze({
+    migrationOriginBlob: null,
+    deployBlob: "ce86946d556dc34a79cd1453f782f1501c81537e",
+  }),
   ".github/workflows/activate-unified-v4-production.yml": Object.freeze({
     migrationOriginBlob: "5aee0a99a1dea520ca314a4b83e42c63e389e1d2",
-    deployBlob: "b5f0d537227ef51b2bc46987b15c22575a3924bd",
+    deployBlob: "92c95851eb90629072fb65e6cd3ea68139937839",
   }),
   ".github/workflows/deploy-production.yml": Object.freeze({
     migrationOriginBlob: "1be0ba2dc8fcfe2c34a97b39ae1d5d0fde32404f",

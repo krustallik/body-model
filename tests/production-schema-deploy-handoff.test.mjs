@@ -117,9 +117,13 @@ describe("schema deploy compatibility handoff", () => {
     expect(compatibility.changedPaths).toContain("scripts/unified-v4-activate-replay.ts");
     expect(compatibility.changedPaths).toContain("src/modules/model-episodes/unified-rollout-v4.service.ts");
     const expectedV4Bindings = {
+      "scripts/production-v4-fingerprint-forensics.mjs": {
+        migrationOriginBlob: null,
+        deployBlob: "ce86946d556dc34a79cd1453f782f1501c81537e",
+      },
       ".github/workflows/activate-unified-v4-production.yml": {
         migrationOriginBlob: "5aee0a99a1dea520ca314a4b83e42c63e389e1d2",
-        deployBlob: "b5f0d537227ef51b2bc46987b15c22575a3924bd",
+        deployBlob: "92c95851eb90629072fb65e6cd3ea68139937839",
       },
       ".github/workflows/deploy-production.yml": {
         migrationOriginBlob: "1be0ba2dc8fcfe2c34a97b39ae1d5d0fde32404f",

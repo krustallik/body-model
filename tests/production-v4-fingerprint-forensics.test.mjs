@@ -29,6 +29,10 @@ test("CLI surfaces only whitelisted sanitized PostgreSQL capture diagnostics", (
     "Read-only PostgreSQL forensic capture failed closed (parser=sequence-state-changed; client=sqlstate-22023; exit=1).",
   );
   assert.equal(
+    safeCliErrorMessage(new Error("Read-only PostgreSQL forensic inventory failed closed (reason=inventory-query-failed; client=sqlstate-42501; exit=1).")),
+    "Read-only PostgreSQL forensic inventory failed closed (reason=inventory-query-failed; client=sqlstate-42501; exit=1).",
+  );
+  assert.equal(
     safeCliErrorMessage(new Error("Read-only PostgreSQL forensic capture failed closed (parser=sequence-state-changed; client=secret-password; exit=1).")),
     "Production V4 fingerprint forensics failed closed.",
   );

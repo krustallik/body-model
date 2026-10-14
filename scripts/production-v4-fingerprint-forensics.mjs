@@ -76,12 +76,26 @@ function safePostgresDiagnostic(stderr) {
   return match ? `sqlstate-${match[1]}` : (stderr.length ? "client-stderr" : "none");
 }
 
+function safeInventoryFailure(error) {
+  const message = error instanceof Error ? error.message : "";
+  const reason = message === "PostgreSQL forensic inventory is incomplete."
+    ? "inventory-incomplete"
+    : message === "PostgreSQL forensic inventory contains ambiguous identifiers."
+      ? "inventory-ambiguous"
+      : Number.isInteger(error?.status) ? "inventory-query-failed" : "inventory-failed";
+  const stderr = Buffer.isBuffer(error?.stderr) ? error.stderr.toString("utf8").slice(0, 4096)
+    : typeof error?.stderr === "string" ? error.stderr.slice(0, 4096) : "";
+  const exitCode = Number.isInteger(error?.status) && error.status >= 0 ? error.status : "unknown";
+  return new Error(`Read-only PostgreSQL forensic inventory failed closed (reason=${reason}; client=${safePostgresDiagnostic(stderr)}; exit=${exitCode}).`);
+}
+
 const SAFE_CAPTURE_DIAGNOSTIC = /^Read-only PostgreSQL forensic capture failed closed \(parser=(?:ambiguous-table-boundary|table-inventory-changed|sequence-boundary-missing|sequence-inventory-changed|ambiguous-sequence-phase|sequence-inventory-incomplete|metadata-malformed|metadata-duplicated|unexpected-output-record|snapshot-incomplete|inventory-changed|safety-metadata-incomplete|sequence-state-changed|capture-stream-failed); client=(?:sqlstate-[0-9A-Z]{5}|client-stderr|none); exit=(?:[0-9]+|unknown)\)\.$/;
+const SAFE_INVENTORY_DIAGNOSTIC = /^Read-only PostgreSQL forensic inventory failed closed \(reason=(?:inventory-incomplete|inventory-ambiguous|inventory-query-failed|inventory-failed); client=(?:sqlstate-[0-9A-Z]{5}|client-stderr|none); exit=(?:[0-9]+|unknown)\)\.$/;
 const GENERIC_FAILURE = "Production V4 fingerprint forensics failed closed.";
 
 export function safeCliErrorMessage(error) {
   const message = error instanceof Error ? error.message : "";
-  return SAFE_CAPTURE_DIAGNOSTIC.test(message) ? message : GENERIC_FAILURE;
+  return SAFE_CAPTURE_DIAGNOSTIC.test(message) || SAFE_INVENTORY_DIAGNOSTIC.test(message) ? message : GENERIC_FAILURE;
 }
 
 function parseInventory(text) {
@@ -132,10 +146,12 @@ function makeConnection(mode, target) {
     }
     const run = (sql) => execFileSync("psql", [...readOnlyArgs(), target, "--command", sql], {
       encoding: "utf8", env: { ...process.env, PGAPPNAME: "bodycast-v4-fingerprint-forensics" },
-      stdio: ["ignore", "pipe", "ignore"], maxBuffer: 8 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"], maxBuffer: 8 * 1024 * 1024,
     });
     return {
-      inventory: () => parseInventory(run(INVENTORY_SQL)),
+      inventory: () => {
+        try { return parseInventory(run(INVENTORY_SQL)); } catch (error) { throw safeInventoryFailure(error); }
+      },
       spawn: () => spawn("psql", [...readOnlyArgs(), target], {
         env: { ...process.env, PGAPPNAME: "bodycast-v4-fingerprint-forensics" }, stdio: ["pipe", "pipe", "pipe"],
       }),
@@ -162,10 +178,12 @@ function makeConnection(mode, target) {
     const psqlScript = 'export PGPASSWORD="${POSTGRES_PASSWORD:?}"; exec psql --host="$BODYCAST_FORENSIC_HOST" --username="$POSTGRES_USER" --dbname=bodycast --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1';
     const run = (sql) => execFileSync("docker", ["exec", "--env", "PGAPPNAME=bodycast-v4-fingerprint-forensics", "--env", `BODYCAST_FORENSIC_HOST=${before.address}`, target,
       "sh", "-c", `${psqlScript} --command "$1"`, "_", sql], {
-      encoding: "utf8", env: process.env, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 8 * 1024 * 1024,
+      encoding: "utf8", env: process.env, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 8 * 1024 * 1024,
     });
     return {
-      inventory: () => parseInventory(run(INVENTORY_SQL)),
+      inventory: () => {
+        try { return parseInventory(run(INVENTORY_SQL)); } catch (error) { throw safeInventoryFailure(error); }
+      },
       spawn: () => spawn("docker", ["exec", "-i", "--env", "PGAPPNAME=bodycast-v4-fingerprint-forensics",
         "--env", `BODYCAST_FORENSIC_HOST=${before.address}`, target, "sh", "-c", psqlScript], {
         env: process.env, stdio: ["pipe", "pipe", "pipe"],

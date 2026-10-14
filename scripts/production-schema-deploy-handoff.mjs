@@ -95,6 +95,10 @@ const V4_CONTENT_BOUND_PATHS = Object.freeze({
     migrationOriginBlob: null,
     deployBlob: "76782d626c633a37c3de2330a6ef1d58df67d0d0",
   }),
+  "scripts/production-migration-preflight.mjs": Object.freeze({
+    migrationOriginBlob: "1f83a82cff68b3b9bbf3669156ae15be2f0e4a9b",
+    deployBlob: "4394e70009803e3be58653cadb7f456287700a61",
+  }),
   "scripts/production-v4-recovery.mjs": Object.freeze({
     migrationOriginBlob: null,
     deployBlob: "bc292ce141818a208bd3b3e73b0a0f0aa8a3a895",

@@ -181,7 +181,7 @@ NODE
     echo "Current production raw data differs from the signed pre-DDL encrypted-backup baseline." >&2; return 1;
   }
   bodycast_v4_failure_phase="snapshot-${label}-writer-and-target"
-  topology="$(bash "$ROOT_DIR/scripts/production-writer-drain.sh" --report)"
+  topology="$(APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" bash "$ROOT_DIR/scripts/production-writer-drain.sh" --report)"
   target_url="$(bash "$ROOT_DIR/scripts/production-db-target.sh" --psql-url)"
   [[ "$target_url" == postgresql://* || "$target_url" == postgres://* ]] || { echo "Reviewed production TCP database URL is unavailable." >&2; return 1; }
   bodycast_v4_failure_phase="snapshot-${label}-database-preflight"

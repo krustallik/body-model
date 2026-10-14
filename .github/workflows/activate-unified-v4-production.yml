@@ -1,5 +1,5 @@
 name: Owner-authorized Unified V4 activation and traffic serve
-run-name: Activate Unified V4 ${{ inputs.release_sha }}
+run-name: Unified V4 ${{ inputs.mode }} ${{ inputs.release_sha }}
 
 on:
   workflow_dispatch:
@@ -8,9 +8,23 @@ on:
         description: Full SHA that must still be current main with successful CI
         required: true
         type: string
+      mode:
+        description: Select read-only fingerprint forensics or the separately confirmed activation path
+        required: true
+        type: choice
+        options:
+          - forensics
+          - activate
+        default: activate
       confirm_activation_and_serve:
         description: Type ACTIVATE_UNIFIED_V4_AND_SERVE to authorize backup, isolated restore/rehearsal, replay, and traffic serve
-        required: true
+        required: false
+        default: ''
+        type: string
+      confirm_read_only_forensics:
+        description: Type READ_ONLY_V4_FINGERPRINT_FORENSICS for digest-only production comparison
+        required: false
+        default: ''
         type: string
 
 permissions:
@@ -29,6 +43,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       release_sha: ${{ steps.gate.outputs.release_sha }}
+      mode: ${{ steps.gate.outputs.mode }}
       ci_url: ${{ steps.gate.outputs.ci_url }}
       migration_run_b64: ${{ steps.gate.outputs.migration_run_b64 }}
       migration_auth_artifact_b64: ${{ steps.gate.outputs.migration_auth_artifact_b64 }}
@@ -45,15 +60,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DISPATCH_SHA: ${{ inputs.release_sha }}
           CONFIRMATION: ${{ inputs.confirm_activation_and_serve }}
+          FORENSICS_CONFIRMATION: ${{ inputs.confirm_read_only_forensics }}
+          EXECUTION_MODE: ${{ inputs.mode }}
           DISPATCH_ACTOR_ID: ${{ github.actor_id }}
         run: |
           set -Eeuo pipefail
           [[ "$GITHUB_REPOSITORY" == "krustallik/body-model" && "$GITHUB_REF" == "refs/heads/main" ]] || {
             echo "::error::Activation requires the canonical repository and main branch."; exit 1;
           }
-          [[ "$DISPATCH_ACTOR_ID" == "126446430" && "$CONFIRMATION" == "ACTIVATE_UNIFIED_V4_AND_SERVE" ]] || {
-            echo "::error::Pinned owner identity and explicit activation confirmation are required."; exit 1;
-          }
+          [[ "$DISPATCH_ACTOR_ID" == "126446430" ]] || { echo "::error::Pinned owner identity is required."; exit 1; }
+          case "$EXECUTION_MODE" in
+            activate)
+              [[ "$CONFIRMATION" == "ACTIVATE_UNIFIED_V4_AND_SERVE" ]] || { echo "::error::Explicit activation confirmation is required."; exit 1; }
+              ;;
+            forensics)
+              [[ "$FORENSICS_CONFIRMATION" == "READ_ONLY_V4_FINGERPRINT_FORENSICS" ]] || { echo "::error::Explicit read-only forensic confirmation is required."; exit 1; }
+              ;;
+            *) echo "::error::Unknown V4 execution mode."; exit 1 ;;
+          esac
           [[ "$DISPATCH_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::release_sha must be a full lowercase SHA."; exit 1; }
           gh api "repos/krustallik/body-model/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/current-activation-run.json"
           node --input-type=module - "$RUNNER_TEMP/current-activation-run.json" <<'NODE'
@@ -136,6 +160,7 @@ jobs:
           NODE
           )"
           echo "release_sha=$MAIN_TIP" >> "$GITHUB_OUTPUT"
+          echo "mode=$EXECUTION_MODE" >> "$GITHUB_OUTPUT"
           echo "ci_url=$CI_URL" >> "$GITHUB_OUTPUT"
           echo "migration_run_b64=$MIGRATION_RUN_B64" >> "$GITHUB_OUTPUT"
           echo "migration_auth_artifact_b64=$MIGRATION_AUTH_ARTIFACT_B64" >> "$GITHUB_OUTPUT"
@@ -217,6 +242,7 @@ jobs:
           DATABASE_URL: postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_restore
           BODYCAST_TEST_DATABASE_URL: postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/bodycast_restore
           PGPASSWORD: isolated_restore_test_password
+          EXECUTION_MODE: ${{ inputs.mode }}
         run: |
           set -Eeuo pipefail
           BODYCAST_V4_EVIDENCE_DIR="$RUNNER_TEMP/bodycast-v4-evidence"
@@ -291,11 +317,30 @@ jobs:
           binding.preDdlReplayInputFingerprint = rawFingerprint;
           writeFileSync(outputPath, `${JSON.stringify(binding, null, 2)}\n`, { flag: "wx", mode: 0o600 });
           NODE
+          if [[ "$EXECUTION_MODE" == "forensics" ]]; then
+            node scripts/production-v4-fingerprint-forensics.mjs --test-url "$DATABASE_URL" \
+              > "$BODYCAST_V4_EVIDENCE_DIR/source-table-forensics.json"
+            node scripts/production-db-preflight.mjs | psql "$DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+              > "$BODYCAST_V4_EVIDENCE_DIR/source-preflight-report.json"
+            chmod 600 "$BODYCAST_V4_EVIDENCE_DIR/source-table-forensics.json" "$BODYCAST_V4_EVIDENCE_DIR/source-preflight-report.json"
+            node --input-type=module - "$BODYCAST_V4_EVIDENCE_DIR/source-preflight-report.json" <<'NODE'
+          import { readFileSync, readdirSync } from "node:fs";
+          import { V4_REPUBLICATION_MANIFEST } from "./scripts/production-migration-manifests.mjs";
+          import { assertRestoredSourceMigrationState } from "./scripts/production-v4-fingerprint-forensics.mjs";
+          const report = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          const directories = readdirSync("prisma/migrations", { withFileTypes: true })
+            .filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+          assertRestoredSourceMigrationState(report, directories,
+            V4_REPUBLICATION_MANIFEST.migrations.map(({ name }) => name));
+          NODE
+            echo "Verified the signed backup restore and exact pre-V4 migration state." >> "$GITHUB_STEP_SUMMARY"
+          else
+            psql "postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/postgres" \
+              --no-psqlrc --quiet --set=ON_ERROR_STOP=1 --command 'DROP DATABASE bodycast_restore'
+            psql "postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/postgres" \
+              --no-psqlrc --quiet --set=ON_ERROR_STOP=1 --command 'CREATE DATABASE bodycast_restore OWNER bodycast_restore'
+          fi
           echo "raw_fingerprint=$RAW_PRE_DDL" >> "$GITHUB_OUTPUT"
-          psql "postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/postgres" \
-            --no-psqlrc --quiet --set=ON_ERROR_STOP=1 --command 'DROP DATABASE bodycast_restore'
-          psql "postgresql://bodycast_restore:isolated_restore_test_password@127.0.0.1:5432/postgres" \
-            --no-psqlrc --quiet --set=ON_ERROR_STOP=1 --command 'CREATE DATABASE bodycast_restore OWNER bodycast_restore'
           echo "Verified owner-signed pre-DDL backup and captured its raw-data fingerprint before any production access." >> "$GITHUB_STEP_SUMMARY"
       - name: Validate protected SSH inputs and pin production host
         env:
@@ -331,7 +376,111 @@ jobs:
           chmod 600 "$RUNNER_TEMP/bodycast-activation-ssh/known_hosts"
           echo "BODYCAST_SSH_KEY=$RUNNER_TEMP/bodycast-activation-ssh/id" >> "$GITHUB_ENV"
           echo "BODYCAST_KNOWN_HOSTS=$RUNNER_TEMP/bodycast-activation-ssh/known_hosts" >> "$GITHUB_ENV"
+      - name: Compare signed pre-DDL source with a read-only production snapshot
+        if: inputs.mode == 'forensics'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+          DISPATCH_ACTOR_ID: ${{ github.actor_id }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$DISPATCH_ACTOR_ID" == "126446430" && "$(gh api repos/krustallik/body-model/commits/main --jq .sha)" == "$RELEASE_SHA" ]] || {
+            echo "::error::Exact main changed before read-only production forensics."; exit 1;
+          }
+          gh api "repos/krustallik/body-model/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/current-forensics-run.json"
+          node --input-type=module - "$RUNNER_TEMP/current-forensics-run.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { assertTrustedOwnerWorkflowRun } from "./scripts/github-owner-identity.mjs";
+          assertTrustedOwnerWorkflowRun(JSON.parse(readFileSync(process.argv[2], "utf8")), {
+            actorId: process.env.DISPATCH_ACTOR_ID,
+            workflowPath: ".github/workflows/activate-unified-v4-production.yml",
+            workflowRunId: process.env.GITHUB_RUN_ID,
+            workflowRunAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            ref: "refs/heads/main",
+            sha: process.env.GITHUB_SHA,
+            requireInProgress: true,
+          });
+          NODE
+          for status in queued in_progress requested waiting pending; do
+            gh api --paginate --jq '.workflow_runs[] | @json' \
+              "repos/krustallik/body-model/actions/runs?status=$status&per_page=100" \
+              > "$RUNNER_TEMP/production-runs-$status.ndjson"
+          done
+          node --input-type=module - "$RUNNER_TEMP/production-runs-queued.ndjson" "$RUNNER_TEMP/production-runs-in_progress.ndjson" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const current = process.env.GITHUB_RUN_ID;
+          const runs = process.argv.slice(2).flatMap((path) => readFileSync(path, "utf8").split(/\r?\n/).filter(Boolean).map(JSON.parse));
+          if (runs.some((run) => !Number.isSafeInteger(run.id) || typeof run.path !== "string")) {
+            throw new Error("Production workflow history inventory is incomplete.");
+          }
+          const conflicting = runs.filter((run) => String(run.id) !== current
+            && (run.path.startsWith(".github/workflows/production-")
+              || run.path === ".github/workflows/deploy-production.yml"
+              || run.path === ".github/workflows/activate-unified-v4-production.yml"));
+          if (conflicting.length) throw new Error("Another production workflow is queued or running; read-only forensics stopped.");
+          NODE
+          SSH=(ssh -T -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$BODYCAST_KNOWN_HOSTS" -o ConnectTimeout=10)
+          install -m 600 /dev/null "$RUNNER_TEMP/v4-forensics-ssh-stderr.log"
+          timeout 30m "${SSH[@]}" "$SSH_USER@$SSH_HOST" \
+            'node --input-type=module - --production-container bodycast-db-prod' \
+            < scripts/production-v4-fingerprint-forensics.mjs \
+            > "$BODYCAST_V4_EVIDENCE_DIR/current-table-forensics.json" \
+            2> "$RUNNER_TEMP/v4-forensics-ssh-stderr.log" || {
+              echo "::error::Read-only production table/sequence digest capture failed closed."; exit 1;
+            }
+          chmod 600 "$BODYCAST_V4_EVIDENCE_DIR/current-table-forensics.json"
+          DB_HOST="$(node --input-type=module - "$BODYCAST_V4_EVIDENCE_DIR/current-table-forensics.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const report = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          if (!/^[a-f0-9]{64}$/.test(report.databaseContainerId ?? "")
+            || !/^172\.20\.0\.2$/.test(report.expectedServerAddress ?? "")) throw new Error("Production DB container endpoint is not the fixed reviewed target.");
+          process.stdout.write(report.expectedServerAddress);
+          NODE
+          )"
+          REMOTE_PSQL="docker exec -i --env BODYCAST_FORENSIC_HOST=$DB_HOST bodycast-db-prod sh -c 'export PGPASSWORD=\"\${POSTGRES_PASSWORD:?}\"; exec psql --host=\"\$BODYCAST_FORENSIC_HOST\" --username=\"\$POSTGRES_USER\" --dbname=bodycast --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 --set=BODYCAST_WRITER_TOPOLOGY_JSON=null'"
+          node scripts/production-db-preflight.mjs | timeout 10m "${SSH[@]}" "$SSH_USER@$SSH_HOST" "$REMOTE_PSQL" \
+            > "$BODYCAST_V4_EVIDENCE_DIR/current-preflight-report.json" \
+            2> "$RUNNER_TEMP/v4-forensics-ssh-stderr.log" || {
+              echo "::error::Read-only production schema/history report failed closed."; exit 1;
+            }
+          node --input-type=module - "$GITHUB_WORKSPACE" "$BODYCAST_V4_EVIDENCE_DIR/current-preflight-report.json" \
+            "$BODYCAST_V4_EVIDENCE_DIR/current-postflight-result.json" <<'NODE'
+          import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+          import path from "node:path";
+          import { evaluateProductionPostflight } from "./scripts/production-migration-preflight.mjs";
+          const [repository, reportPath, outputPath] = process.argv.slice(2);
+          const migrations = readdirSync(path.join(repository, "prisma/migrations"), { withFileTypes: true })
+            .filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+          const report = JSON.parse(readFileSync(reportPath, "utf8"));
+          const result = evaluateProductionPostflight(report, migrations, "unified-v4-republication-v1");
+          writeFileSync(outputPath, `${JSON.stringify(result, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+          if (!result.ready) throw new Error("Current production schema/history postflight is not ready.");
+          NODE
+          node scripts/production-v4-fingerprint-forensics.mjs --compare \
+            "$BODYCAST_V4_EVIDENCE_DIR/source-table-forensics.json" \
+            "$BODYCAST_V4_EVIDENCE_DIR/current-table-forensics.json" \
+            "$RUNNER_TEMP/v4-pre-ddl-binding.json" \
+            "$BODYCAST_V4_EVIDENCE_DIR/source-preflight-report.json" \
+            "$BODYCAST_V4_EVIDENCE_DIR/current-preflight-report.json" \
+            "$BODYCAST_V4_EVIDENCE_DIR/current-postflight-result.json" \
+            "$BODYCAST_V4_EVIDENCE_DIR/fingerprint-forensics-result.json"
+          chmod 600 "$BODYCAST_V4_EVIDENCE_DIR/"*
+          echo "- Read-only V4 fingerprint forensics: BOOKKEEPING_ONLY; raw tables and sequences match." >> "$GITHUB_STEP_SUMMARY"
+          echo "- Historical deploy/run effects remain UNVERIFIED; this evidence grants no DDL authorization." >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload sanitized read-only V4 fingerprint forensics
+        if: always() && inputs.mode == 'forensics'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bodycast-v4-fingerprint-forensics-${{ needs.authorize.outputs.release_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bodycast-v4-evidence/*
+          if-no-files-found: warn
+          retention-days: 30
       - name: Create encrypted post-DDL backup and bind fresh production snapshot
+        if: inputs.mode == 'activate'
         id: post_ddl_backup
         env:
           GH_TOKEN: ${{ github.token }}
@@ -476,6 +625,7 @@ jobs:
           echo "recovery_binding_b64=$RECOVERY_BINDING_B64" >> "$GITHUB_OUTPUT"
           echo "encrypted_backup=$BACKUP_FILE" >> "$GITHUB_OUTPUT"
       - name: Restore backup and rehearse V4 epoch 1 on isolated PostgreSQL
+        if: inputs.mode == 'activate'
         id: v4_rehearsal
         env:
           BACKUP_FILE: ${{ steps.post_ddl_backup.outputs.encrypted_backup }}
@@ -598,6 +748,7 @@ jobs:
           echo "- exact V4 migrations and epoch-1 replay/idempotency: PASS" >> "$GITHUB_STEP_SUMMARY"
           echo "- production DDL during this workflow: NOT PERFORMED" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload encrypted post-DDL production backup
+        if: inputs.mode == 'activate'
         id: backup_artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -606,6 +757,7 @@ jobs:
           if-no-files-found: error
           retention-days: 90
       - name: Upload immutable post-DDL V4 recovery evidence
+        if: inputs.mode == 'activate'
         id: evidence_artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -614,6 +766,7 @@ jobs:
           if-no-files-found: error
           retention-days: 90
       - name: Record immutable backup and rehearsal evidence identities
+        if: inputs.mode == 'activate'
         run: |
           {
             echo "- encrypted backup artifact id: ${{ steps.backup_artifact.outputs.artifact-id }}"
@@ -623,6 +776,7 @@ jobs:
             echo "- isolated V4 rehearsal ddlAuthorization: false"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Verify V3, activate and replay V4, then serve exact SHA under one host lock
+        if: inputs.mode == 'activate'
         env:
           GH_TOKEN: ${{ github.token }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -709,6 +863,7 @@ jobs:
         if: always()
         run: rm -rf "$RUNNER_TEMP/bodycast-activation-ssh"
       - name: Verify public HTTPS pages and health API after serving
+        if: inputs.mode == 'activate'
         env:
           APP_HOST: ${{ secrets.APP_HOST }}
         run: |

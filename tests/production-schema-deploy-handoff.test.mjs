@@ -24,6 +24,11 @@ function ensureHandoffHistory() {
   }
 }
 
+function v4TestCandidateSha() {
+  // PR-only changes must not alter positive cases for the trusted V4 handoff tree.
+  return execFileSync("git", ["rev-parse", "origin/main"], { cwd: process.cwd(), encoding: "utf8" }).trim();
+}
+
 function markerText(overrides = {}) {
   const marker = {
     releaseSha: SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA,
@@ -111,7 +116,7 @@ describe("schema deploy compatibility handoff", () => {
   });
 
   it("hands off the verified V4 app-ready migration marker to the exact compatible descendant", () => {
-    const candidateSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim();
+    const candidateSha = v4TestCandidateSha();
     const compatibility = readGitCompatibility(process.cwd(), candidateSha, V4_REPUBLICATION_MIGRATION_ORIGIN_SHA);
     expect(compatibility.isAncestor).toBe(true);
     expect(compatibility.changedPaths).toContain("scripts/unified-v4-activate-replay.ts");
@@ -261,7 +266,7 @@ describe("schema deploy compatibility handoff", () => {
   });
 
   it("blocks wrong V4 run lineage, manifest, ancestry, schema, and changed runtime blobs", () => {
-    const candidateSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim();
+    const candidateSha = v4TestCandidateSha();
     const compatibility = readGitCompatibility(process.cwd(), candidateSha, V4_REPUBLICATION_MIGRATION_ORIGIN_SHA);
     for (const marker of [
       v4AppReadyMarkerText({ workflowRunId: "38447647404" }),
@@ -499,7 +504,7 @@ describe("schema deploy compatibility handoff", () => {
     directories.push(directory);
     const markerPath = path.join(directory, "marker");
     const original = v4AppReadyMarkerText();
-    const candidateSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim();
+    const candidateSha = v4TestCandidateSha();
     await writeFile(markerPath, original, { flag: "wx", mode: 0o600 });
     await expect(applySchemaDeployHandoff({
       markerPath, deploySha: candidateSha, repo: process.cwd(),
@@ -527,7 +532,7 @@ describe("schema deploy compatibility handoff", () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-v4-schema-handoff-race-"));
     directories.push(directory);
     const markerPath = path.join(directory, "marker");
-    const candidateSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim();
+    const candidateSha = v4TestCandidateSha();
     const original = v4AppReadyMarkerText();
     const concurrentMarker = v4AppReadyMarkerText({ lineageDigest: "d".repeat(64) });
     await writeFile(markerPath, original, { flag: "wx", mode: 0o600 });

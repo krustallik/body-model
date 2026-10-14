@@ -57,10 +57,10 @@ function workflowId(file) {
   return String(value.id);
 }
 
-function allRuns(id) {
+function allRuns() {
   const result = [];
   for (let page = 1; page <= 100; page += 1) {
-    const payload = api(`repos/${REPOSITORY}/actions/workflows/${id}/runs?per_page=100&page=${page}`);
+    const payload = api(`repos/${REPOSITORY}/actions/runs?per_page=100&page=${page}`);
     if (!Array.isArray(payload.workflow_runs)) throw new Error("GitHub returned an incomplete production workflow inventory.");
     result.push(...payload.workflow_runs);
     if (payload.workflow_runs.length < 100) return result;
@@ -127,11 +127,8 @@ export async function collectCaptureHistoryEvidence({ currentRunId, currentMainS
   const sourceRun = api(`repos/${REPOSITORY}/actions/runs/${NO_APP_CAPTURE_LINEAGE.resumeRunId}`);
   assertResumeSourceIdentity(sourceRun, { preflightWorkflowId, currentMainSha });
 
-  const inventoryByPath = new Map();
-  for (const file of MUTATION_WORKFLOWS) inventoryByPath.set(file, allRuns(workflowId(file)));
-  const allProductionRuns = [...inventoryByPath.entries()].flatMap(([file, runs]) => runs.map((run) => ({
-    ...run, expectedWorkflowPath: `.github/workflows/${file}`,
-  })));
+  const mutationPaths = new Set(MUTATION_WORKFLOWS.map((file) => `.github/workflows/${file}`));
+  const allProductionRuns = allRuns().filter((run) => mutationPaths.has(workflowPathOf(run)));
   return buildCaptureHistoryEvidence({ currentRunId, currentMainSha, sourceRun, preflightWorkflowId, allProductionRuns });
 }
 

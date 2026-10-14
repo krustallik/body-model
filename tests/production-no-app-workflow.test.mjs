@@ -73,9 +73,10 @@ describe("no-app preparation workflow boundaries", () => {
       { id: "10", status: "queued", path: ".github/workflows/production-migrate.yml@refs/heads/main" },
       { id: "11", status: "in_progress", path: ".github/workflows/deploy-production.yml@refs/heads/main" },
       { id: "12", status: "in_progress", path: ".github/workflows/production-no-app-preflight.yml@refs/heads/main" },
+      { id: "13", status: "waiting", path: ".github/workflows/activate-unified-v4-production.yml@refs/heads/main" },
       { id: "9", status: "completed", path: ".github/workflows/production-migrate.yml@refs/heads/main" },
     ], "12");
-    expect(inventory.map(({ id }) => id)).toEqual(["10", "11"]);
+    expect(inventory.map(({ id }) => id)).toEqual(["10", "11", "13"]);
   });
 
   it("uses a separate manual workflow and artifact namespace", async () => {

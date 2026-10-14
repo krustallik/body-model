@@ -217,12 +217,9 @@ jobs:
             gh api "repos/krustallik/body-model/actions/runs/$RESUME_BLOCKED_CAPTURE_RUN_ID/artifacts" > "$RUNNER_TEMP/resume-blocked-capture-artifacts.json"
             gh run view "$RESUME_BLOCKED_CAPTURE_RUN_ID" --repo krustallik/body-model --log-failed > "$RUNNER_TEMP/resume-blocked-capture-failure.log"
             : > "$RUNNER_TEMP/resume-later-runs.ndjson"
-            for workflow_file in production-migration-preflight.yml production-migrate.yml production-database-cutback.yml activate-unified-v4-production.yml production-full-history-recalculate.yml deploy-production.yml; do
-              workflow_id="$(gh api "repos/krustallik/body-model/actions/workflows/$workflow_file" --jq .id)"
-              gh api --paginate --jq '.workflow_runs[] | @json' \
-                "repos/krustallik/body-model/actions/workflows/$workflow_id/runs?per_page=100" \
-                >> "$RUNNER_TEMP/resume-later-runs.ndjson"
-            done
+            gh api --paginate --jq '.workflow_runs[] | @json' \
+              "repos/krustallik/body-model/actions/runs?per_page=100" \
+              >> "$RUNNER_TEMP/resume-later-runs.ndjson"
             : > "$RUNNER_TEMP/resume-safe-preflight-retries.ndjson"
             node --input-type=module - "$RUNNER_TEMP/resume-later-runs.ndjson" \
               "$RUNNER_TEMP/resume-safe-preflight-retry-ids.txt" "$RESUME_SOURCE_RUN_ID" \
@@ -292,18 +289,11 @@ jobs:
             gh api "repos/krustallik/body-model/actions/runs/$RESUME_SOURCE_RUN_ID/jobs" > "$RUNNER_TEMP/resume-source-jobs.json"
             gh api "repos/krustallik/body-model/actions/runs/$RESUME_SOURCE_RUN_ID/artifacts" > "$RUNNER_TEMP/resume-source-artifacts.json"
             : > "$RUNNER_TEMP/resume-later-runs.ndjson"
-            for workflow_file in production-migration-preflight.yml production-migrate.yml production-database-cutback.yml activate-unified-v4-production.yml production-full-history-recalculate.yml deploy-production.yml; do
-              workflow_id="$(gh api "repos/krustallik/body-model/actions/workflows/$workflow_file" --jq .id)"
-              gh api --paginate --jq '.workflow_runs[] | @json' \
-                "repos/krustallik/body-model/actions/workflows/$workflow_id/runs?per_page=100" \
-                >> "$RUNNER_TEMP/resume-later-runs.ndjson"
-            done
+            gh api --paginate --jq '.workflow_runs[] | @json' \
+              "repos/krustallik/body-model/actions/runs?per_page=100" \
+              >> "$RUNNER_TEMP/resume-later-runs.ndjson"
             DEPLOY_WORKFLOW_ID="$(gh api repos/krustallik/body-model/actions/workflows/deploy-production.yml --jq .id)"
             NO_APP_WORKFLOW_ID="$(gh api repos/krustallik/body-model/actions/workflows/production-no-app-preflight.yml --jq .id)"
-            workflow_id="$NO_APP_WORKFLOW_ID"
-            gh api --paginate --jq '.workflow_runs[] | @json' \
-              "repos/krustallik/body-model/actions/workflows/$workflow_id/runs?per_page=100" \
-              >> "$RUNNER_TEMP/resume-later-runs.ndjson"
             : > "$RUNNER_TEMP/resume-historical-deploy-ids.txt"
             node --input-type=module - "$RUNNER_TEMP/resume-later-runs.ndjson" \
               "$RUNNER_TEMP/resume-historical-deploy-ids.txt" "$RESUME_SOURCE_RUN_ID" "$GITHUB_RUN_ID" <<'NODE'

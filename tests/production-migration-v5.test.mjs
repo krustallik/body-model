@@ -529,15 +529,6 @@ describe("V5 closed migration manifest and full pending set", () => {
     expect(smoke).toContain("publicationBlockStableStateAfter === publicationBlockStableStateBefore");
   });
 
-  it("activates from the signed backup with simple replay-input parity instead of a forensic-only gate", async () => {
-    const workflow = await readFile(new URL("../.github/workflows/activate-unified-v4-production.yml", import.meta.url), "utf8");
-    expect(workflow).toContain("RAW_PRE_DDL=\"$(bash scripts/production-db-data-fingerprint.sh --test-url --v4-replay-inputs)\"");
-    expect(workflow).toContain("Verify replay-input parity and create encrypted post-DDL backup");
-    expect(workflow).not.toContain("production-v4-fingerprint-forensics");
-    expect(workflow).not.toContain("confirm_read_only_forensics");
-    expect(workflow).not.toContain("source-table-forensics");
-  });
-
   it("runs production preflight and postflight against the effective Compose Prisma DATABASE_URL", async () => {
     const deploy = await readFile(new URL("../scripts/deploy-migrate.sh", import.meta.url), "utf8");
     const target = await readFile(new URL("../scripts/production-db-target.sh", import.meta.url), "utf8");
@@ -1438,13 +1429,11 @@ describe("V5 closed migration manifest and full pending set", () => {
     const preflight = await readFile(new URL("../.github/workflows/production-migration-preflight.yml", import.meta.url), "utf8");
     const migrate = await readFile(new URL("../.github/workflows/production-migrate.yml", import.meta.url), "utf8");
     const deployWorkflow = await readFile(new URL("../.github/workflows/deploy-production.yml", import.meta.url), "utf8");
-    const activationWorkflow = await readFile(new URL("../.github/workflows/activate-unified-v4-production.yml", import.meta.url), "utf8");
     const ciWorkflow = await readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
     const group = (workflow) => workflow.match(/^concurrency:\r?\n  group: ([^\r\n]+)\r?\n  cancel-in-progress: false/m)?.[1];
     expect(group(preflight)).toBe("bodycast-production-release");
     expect(group(migrate)).toBe(group(preflight));
     expect(group(deployWorkflow)).toBe(group(preflight));
-    expect(group(activationWorkflow)).toBe(group(preflight));
     expect(preflight).not.toContain("cancel-in-progress: true");
     expect(migrate).not.toContain("cancel-in-progress: true");
     expect(preflight).toContain('CONFIRMATION: ${{ inputs.confirm_production_preflight }}');

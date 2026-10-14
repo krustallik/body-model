@@ -6,7 +6,6 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { summarizeV4HostFailureDiagnostics } from "../scripts/production-v4-recovery.mjs";
 
-const activationWorkflow = readFileSync(new URL("../.github/workflows/activate-unified-v4-production.yml", import.meta.url), "utf8");
 const cutoverScript = readFileSync(new URL("../scripts/production-traffic-cutover.sh", import.meta.url), "utf8");
 const backupHostScript = readFileSync(new URL("../scripts/production-v4-post-ddl-backup-host.sh", import.meta.url), "utf8");
 const temporaryDirectories = [];
@@ -86,20 +85,12 @@ describe("sanitized V4 host failure diagnostics", () => {
     }
     hostPhases.push("snapshot-output", "backup-evidence-output");
     const cutoverPhases = [...cutoverScript.matchAll(/bodycast_v4_cutover_phase="([a-z-]+)"/g)].map((match) => match[1]);
-    const remotePhases = [...activationWorkflow.matchAll(/BODYCAST_V4_REMOTE_PHASE=([a-z-]+)/g)].map((match) => match[1]);
     for (const phase of hostPhases) {
       expect(summarizeV4HostFailureDiagnostics(`BODYCAST_V4_BACKUP_FAILURE phase=${phase} status=1`)).not.toMatch(/diagnostic=ambiguous/);
-    }
-    for (const phase of remotePhases) {
-      expect(summarizeV4HostFailureDiagnostics(`BODYCAST_V4_REMOTE_FAILURE phase=${phase} status=1`)).not.toMatch(/diagnostic=ambiguous/);
     }
     for (const phase of cutoverPhases) {
       expect(summarizeV4HostFailureDiagnostics(`BODYCAST_V4_CUTOVER_FAILURE phase=${phase} status=1`)).not.toMatch(/diagnostic=ambiguous/);
     }
-    expect(activationWorkflow).toContain("umask 077");
-    expect(activationWorkflow).toContain("install -m 600 /dev/null");
-    expect(activationWorkflow).toContain("summarizeV4HostFailureDiagnostics");
-    expect(activationWorkflow).not.toContain('cat "$RUNNER_TEMP/v4-post-ddl-host-stderr.log"');
     expect(backupHostScript).toContain('capture_snapshot before > "$tmp/snapshot-values-before.txt"');
     expect(backupHostScript).toContain('capture_snapshot after > "$tmp/snapshot-values-after.txt"');
     expect(backupHostScript).not.toContain('before_lines="$(capture_snapshot before)"');

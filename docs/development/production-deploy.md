@@ -17,9 +17,8 @@ actor against owner ID `126446430`.
   writer drain before invoking `scripts/deploy-migrate.sh` over SSH.
 - `.github/workflows/deploy-production.yml` performs the ordinary exact-SHA app deploy after
   successful current-main CI. Manual use remains owner-gated and non-serving for schema cutover.
-- `.github/workflows/activate-unified-v4-production.yml` checks V3, performs the separately
-  confirmed Unified V4 activation/replay, verifies V4 currentness/coverage, and then serves the
-  exact SHA.
+- Unified V4 activation/replay was a one-time rollout operation. Its workflow dispatch has been
+  removed; guarded cutover and recovery helpers remain available to the retained release paths.
 - `scripts/deploy.sh`, `scripts/deploy-migrate.sh`, `scripts/production-traffic-cutover.sh`, and
   their fixed helpers implement the host operations. The SSH workflow sends fixed script
   invocations and validated values; it does not expose a general remote command interface.

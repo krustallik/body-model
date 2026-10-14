@@ -28,8 +28,9 @@ const DIGEST = /^[a-f0-9]{64}$/;
 const V4_REPUBLICATION_MANIFEST_ID = "unified-v4-republication-v1";
 const V3_STATES = new Set(["schema-applied", "app-ready", "v4-ready", "database-restored", "rollback-app-ready"]);
 const DENIED_PATH = /^(?:prisma\/|public\/|scripts\/unified-v[34]|scripts\/physiology|docker-compose(?:\.prod)?\.yml$|package(?:-lock)?\.json$|next\.config\.[^/]+$|tsconfig(?:\.[^/]+)?\.json$)/;
-const ALLOWED_PATH = /^(?:\.github\/workflows\/|tests\/|scripts\/production-release-marker\.(?:sh|mjs)$|scripts\/production-schema-deploy-handoff\.mjs$|scripts\/production-traffic-cutover\.sh$|scripts\/production-full-history-recalculate\.ts$|src\/modules\/model-episodes\/(?:full-history-recalculation\.service|transient-exercise-water-episode-time-v2)\.ts$|src\/modules\/training\/experimental-transient-exercise-water-shadow\.service\.ts$|Dockerfile$)/;
+const ALLOWED_PATH = /^(?:\.github\/workflows\/|tests\/|scripts\/production-release-marker\.(?:sh|mjs)$|scripts\/production-schema-deploy-handoff\.mjs$|scripts\/production-traffic-cutover\.sh$|scripts\/production-full-history-recalculate\.ts$|src\/app\/api\/forecast\/(?:action\/)?route\.ts$|src\/app\/api\/v1\/model\/recalculate\/route\.ts$|src\/lib\/logger\.ts$|src\/modules\/model-episodes\/(?:full-history-recalculation\.service|transient-exercise-water-episode-time-v2)\.ts$|src\/modules\/training\/experimental-transient-exercise-water-shadow\.service\.ts$|Dockerfile$)/;
 const V4_UNBOUND_NON_RUNTIME_PATH = /^(?:tests\/|scripts\/production-schema-deploy-handoff\.mjs$|scripts\/production-v4-fingerprint-forensics\.(?:mjs|d\.mts)$)/;
+const V4_RETIRED_WORKFLOW_PATH = ".github/workflows/activate-unified-v4-production.yml";
 /** Exact audited Git blobs admitted for this deploy-only compatibility handoff. */
 const CONTENT_BOUND_PATHS = Object.freeze({
   "docs/development/production-deploy.md": Object.freeze({
@@ -67,9 +68,33 @@ const CONTENT_BOUND_PATHS = Object.freeze({
 });
 /** Exact executable blobs reviewed for the V4 app-ready migration-origin handoff. */
 const V4_CONTENT_BOUND_PATHS = Object.freeze({
-  ".github/workflows/activate-unified-v4-production.yml": Object.freeze({
-    migrationOriginBlob: "5aee0a99a1dea520ca314a4b83e42c63e389e1d2",
-    deployBlob: "3ee4deee9370b73c7a901bb6c8e1752cdd6ab91e",
+  ".github/workflows/production-migration-preflight.yml": Object.freeze({
+    migrationOriginBlob: "02a0a107c004dfd169363a1ac98abceb9e1674d0",
+    deployBlob: "b66ed02fae2efb86dc540ff7a3809bc93ee85a6b",
+  }),
+  ".github/workflows/production-migration-safety-ci.yml": Object.freeze({
+    migrationOriginBlob: "38c58d25e8cb3a0aa389b4003c252a64481e584d",
+    deployBlob: "c07c2785d8f60993f63d7b779135d9d628834077",
+  }),
+  "src/app/api/forecast/action/route.ts": Object.freeze({
+    migrationOriginBlob: "f50deac8061cff227dba477182472e44ddff4090",
+    deployBlob: "4283c803f5805d4d6bb8931a144876ee55879377",
+  }),
+  "src/app/api/forecast/route.ts": Object.freeze({
+    migrationOriginBlob: "266d7f80a79f298e413d1153685083d2b3dfe84a",
+    deployBlob: "a629fb980be4dbc00209536b54882432759f916e",
+  }),
+  "src/app/api/v1/model/recalculate/route.ts": Object.freeze({
+    migrationOriginBlob: "132d6eb4822d40d8698a17b1586a06cb77573e7d",
+    deployBlob: "dd6e997d42043d8acf93c59f485b4224cea359ea",
+  }),
+  "src/lib/logger.ts": Object.freeze({
+    migrationOriginBlob: "0b4e09be4aa48424027e229e14bbb090624881bf",
+    deployBlob: "fdaccd1cd0c526a4b1b1415002bd09ea27ec7f5a",
+  }),
+  "docs/development/production-deploy.md": Object.freeze({
+    migrationOriginBlob: "b1a26cce30fb69fddde0d9fe81dd3bc26e342678",
+    deployBlob: "15ed255f4cf38799807a84cb5b4d231269552fdf",
   }),
   ".github/workflows/deploy-production.yml": Object.freeze({
     migrationOriginBlob: "1be0ba2dc8fcfe2c34a97b39ae1d5d0fde32404f",
@@ -94,6 +119,10 @@ const V4_CONTENT_BOUND_PATHS = Object.freeze({
   "scripts/production-v4-post-ddl-backup-host.sh": Object.freeze({
     migrationOriginBlob: null,
     deployBlob: "76782d626c633a37c3de2330a6ef1d58df67d0d0",
+  }),
+  "scripts/github-no-app-preflight-evidence.mjs": Object.freeze({
+    migrationOriginBlob: "b98263494d504228b1fdb207a249d5b9f3f77d5e",
+    deployBlob: "954cc02644a9c46cb3b3e7c2d73f73385a9c0eae",
   }),
   "scripts/production-migration-preflight.mjs": Object.freeze({
     migrationOriginBlob: "1f83a82cff68b3b9bbf3669156ae15be2f0e4a9b",
@@ -514,7 +543,15 @@ export function readGitCompatibility(repo, deploySha, migrationOriginSha = SCHEM
     isAncestor = false;
   }
   const changedPaths = git(repo, ["diff", "--name-only", "--no-renames", origin, deploySha])
-    .split("\n").filter(Boolean);
+    .split("\n").filter(Boolean).filter((objectPath) => {
+      if (migrationOriginSha !== V4_REPUBLICATION_MIGRATION_ORIGIN_SHA || objectPath !== V4_RETIRED_WORKFLOW_PATH) return true;
+      try {
+        execFileSync("git", ["cat-file", "-e", `${deploySha}:${objectPath}`], { cwd: repo, stdio: "ignore" });
+        return true;
+      } catch {
+        return false;
+      }
+    });
   const criticalObjects = {};
   for (const objectPath of [...CRITICAL_TREES, ...CRITICAL_FILES]) {
     const originId = objectId(repo, origin, objectPath);

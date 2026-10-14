@@ -8,7 +8,6 @@ const releaseWorkflows = [
   "production-migration-preflight.yml",
   "production-migrate.yml",
   "production-full-history-recalculate.yml",
-  "activate-unified-v4-production.yml",
   "production-database-cutback.yml",
   "production-no-app-preflight.yml",
 ];
@@ -65,14 +64,9 @@ describe("active production release entrypoints", () => {
     }
   });
 
-  it("keeps V3, explicit V4 activation/replay, V4 postflight, and serving in one fixed host invocation", () => {
-    const workflow = readFileSync(resolve(workflowDir, "activate-unified-v4-production.yml"), "utf8");
+  it("removes the one-time V4 activation dispatch while retaining guarded V4 cutover primitives", () => {
     const cutover = readFileSync(resolve("scripts/production-traffic-cutover.sh"), "utf8");
-    expect(workflow).toContain("--write-out '%{http_code}|%{content_type}|%{url_effective}'");
-    expect(workflow).toContain("IFS='|' read -r status content_type effective_url <<< \"$response_meta\"");
-    expect(workflow).toContain("production-traffic-cutover.sh activate-v4-and-serve");
-    expect(workflow).not.toContain("production-traffic-cutover.sh v3-postflight");
-    expect(workflow).not.toContain("unified-v4-activate-replay.mjs --activate-v4");
+    expect(existsSync(resolve(workflowDir, "activate-unified-v4-production.yml"))).toBe(false);
     expect(cutover).toContain("bodycast_acquire_production_release_lock");
     expect(cutover).toContain("unified-v3-postflight.mjs");
     expect(cutover).toContain("unified-v4-activate-replay.mjs --activate-v4 --owner-authorized");
@@ -213,7 +207,7 @@ describe("active production release entrypoints", () => {
     expect(resumeVerifier).toContain('historicalEffects: "UNVERIFIED"');
     expect(resumeVerifier).not.toContain("deployControlFilesMatch");
     expect(resumeVerifier).toContain('".github/workflows/production-full-history-recalculate.yml"');
-    expect(workflow.match(/for workflow_file in [^\n]*production-full-history-recalculate\.yml[^\n]*; do/g)).toHaveLength(2);
+    expect(workflow.match(/actions\/runs\?per_page=100/g)).toHaveLength(2);
     expect(workflow).toContain("resume-historical-deploys.ndjson");
     expect(workflow).not.toContain("resume-safe-failed-deploys.ndjson");
     expect(workflow).not.toContain('actions/runs/$deploy_run_id/jobs');

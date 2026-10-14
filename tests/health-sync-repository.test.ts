@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { PrismaHealthSyncRepository } from "@/modules/health/health.repository";
+import { currentPhysiologyV7Versions } from "@/modules/model-episodes/physiology-v7-persistence";
 
 const invalidation = vi.hoisted(() => ({
   workout: vi.fn().mockResolvedValue(null),
@@ -24,6 +25,15 @@ function repositoryFixture(existingDates: string[] = [], existingWorkouts: Array
   const transaction = {
     $executeRaw: vi.fn().mockResolvedValue(0),
     physiologyV7Lifecycle: {
+      upsert: vi.fn().mockResolvedValue({
+        profileId: 1,
+        staleFromDate: null,
+        currentThroughDate: null,
+        productionStaleFromDate: null,
+        productionPublishedGeneration: null,
+        unifiedPublishedGeneration: null,
+        ...currentPhysiologyV7Versions,
+      }),
       findUnique: vi.fn().mockResolvedValue(null),
     },
     dailyHealthData: {

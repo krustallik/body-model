@@ -79,6 +79,8 @@ function gapContextFromStoredResult(result: unknown): ExperimentalDataGapContext
 
 type DbClient = PrismaClient | Prisma.TransactionClient;
 
+const MAX_GLYCOGEN_SOURCE_CONFLICT_ATTEMPTS = 3;
+
 async function loadDayInputs(client: DbClient, profileId: number, date: string): Promise<{
   exerciseDepletionKg: number | null;
   exerciseDepletionLowerKg: number | null;
@@ -182,11 +184,44 @@ export async function rebuildExperimentalGlycogenStateShadows(input: {
   profileId?: number;
   fromDate: string;
   toDate: string;
+  /** Deterministic interleaving seam for isolated PostgreSQL concurrency tests. */
+  onCandidateComputed?: (event: { date: string; attempt: number }) => Promise<void>;
 }): Promise<void> {
   const profileId = input.profileId ?? 1;
   if (input.toDate < input.fromDate) {
     throw new RangeError("toDate must be ≥ fromDate");
   }
+
+  for (let attempt = 1; attempt <= MAX_GLYCOGEN_SOURCE_CONFLICT_ATTEMPTS; attempt += 1) {
+    try {
+      await rebuildExperimentalGlycogenStateShadowsAttempt({
+        profileId,
+        fromDate: input.fromDate,
+        toDate: input.toDate,
+        attempt,
+        onCandidateComputed: input.onCandidateComputed,
+      });
+      return;
+    } catch (error) {
+      if (!(error instanceof PhysiologyV7ConcurrentSourceChangeError)
+          || attempt === MAX_GLYCOGEN_SOURCE_CONFLICT_ATTEMPTS) {
+        throw error;
+      }
+      // Restart the entire stateful suffix from its durable predecessor. Rows
+      // already committed by the failed attempt are idempotent and revalidated
+      // against freshly loaded sources; no stale predecessor is reused.
+    }
+  }
+}
+
+async function rebuildExperimentalGlycogenStateShadowsAttempt(input: {
+  profileId: number;
+  fromDate: string;
+  toDate: string;
+  attempt: number;
+  onCandidateComputed?: (event: { date: string; attempt: number }) => Promise<void>;
+}): Promise<void> {
+  const { profileId } = input;
 
   // A corrected transition contract must never continue from a predecessor
   // written by an older contract. Rebuild its whole durable-input history once
@@ -237,6 +272,7 @@ export async function rebuildExperimentalGlycogenStateShadows(input: {
     const result = { ...transition, gapContext, sourceLineage: day.sourceLineage };
     const features = { ...transition.features, gapContext };
     const sourceFingerprint = stableSha256(result);
+    await input.onCandidateComputed?.({ date, attempt: input.attempt });
     await prisma.$transaction(async (tx) => {
       const lifecycle = new PhysiologyV7PersistenceRepository(tx);
       await lifecycle.lockProfile(profileId);

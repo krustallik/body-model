@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { PrismaHealthSyncRepository } from "@/modules/health/health.repository";
+import { currentPhysiologyV7Versions } from "@/modules/model-episodes/physiology-v7-persistence";
 
 vi.mock("@/modules/activity/active-energy-invalidation", () => ({
   invalidateWorkoutEnergyInTransactionV1: vi.fn().mockResolvedValue(null),
@@ -11,7 +12,18 @@ describe("sleep segment persistence", () => {
     const createMany = vi.fn(async () => ({ count: 2 }));
     const transaction = {
       $executeRaw: vi.fn(async () => 0),
-      physiologyV7Lifecycle: { findUnique: vi.fn(async () => null) },
+      physiologyV7Lifecycle: {
+        upsert: vi.fn(async () => ({
+          profileId: 1,
+          staleFromDate: null,
+          currentThroughDate: null,
+          productionStaleFromDate: null,
+          productionPublishedGeneration: null,
+          unifiedPublishedGeneration: null,
+          ...currentPhysiologyV7Versions,
+        })),
+        findUnique: vi.fn(async () => null),
+      },
       dailyHealthData: {
         findUnique: vi.fn(async () => null),
         upsert: vi.fn(async () => ({ id: 11 })),

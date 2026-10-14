@@ -556,11 +556,17 @@ async function recalculateModelEpisodeProduction(
  * until their canonical resolutions remain stable across a production pass.
  */
 export async function recalculateModelEpisode(
-  input: { episodeId?: number; now?: Date } = {},
+  input: {
+    episodeId?: number;
+    now?: Date;
+    onProductionPublished?: (fence: { invalidationGeneration: number; updatedAt: string }) => void;
+  } = {},
   client: PrismaClient = prisma,
 ) {
   if (client !== prisma) {
     const production = await recalculateModelEpisodeProduction(input, client);
+    const publicationFence = await new PhysiologyV7PersistenceRepository(client).readUnifiedPublicationFence(1);
+    if (publicationFence !== null) input.onProductionPublished?.(publicationFence);
     const { effectiveReplayFromDate: _effectiveReplayFromDate, ...result } = production;
     void _effectiveReplayFromDate;
     return result;
@@ -576,6 +582,8 @@ export async function recalculateModelEpisode(
     const production = await recalculateModelEpisodeProduction({ ...input, episodeId: status.episodeId }, client);
     const changedDates = await refreshCandidatesAfterProductionV1(profileId, production.effectiveReplayFromDate);
     if (changedDates.length === 0) {
+      const publicationFence = await new PhysiologyV7PersistenceRepository(client).readUnifiedPublicationFence(profileId);
+      if (publicationFence !== null) input.onProductionPublished?.(publicationFence);
       const { effectiveReplayFromDate: _effectiveReplayFromDate, ...result } = production;
       void _effectiveReplayFromDate;
       return result;

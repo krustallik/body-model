@@ -56,7 +56,7 @@ const workout = {
 };
 
 describe("health synchronization service", () => {
-  it("clears successful source dates after a partial batch failure and lets the failed date retry", async () => {
+  it("clears successful dates but leaves an already armed failed-date fence unchanged", async () => {
     const lifecycle = {
       blockUnifiedPublication: vi.fn().mockResolvedValue(undefined),
       clearUnifiedPublicationBlock: vi.fn().mockResolvedValue(true),
@@ -78,9 +78,7 @@ describe("health synchronization service", () => {
       profileId: 1, source: "health", sourceKey: dates[0], expectedRevision: 4,
       expectedFromDate: dates[0],
     });
-    expect(lifecycle.blockUnifiedPublication).toHaveBeenCalledWith({
-      profileId: 1, fromDate: dates[1], source: "health", sourceKey: dates[1],
-    });
+    expect(lifecycle.blockUnifiedPublication).not.toHaveBeenCalled();
 
     lifecycle.blockUnifiedPublication.mockClear();
     lifecycle.clearUnifiedPublicationBlock.mockClear();

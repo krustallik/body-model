@@ -325,6 +325,10 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
     return this.client.$transaction(async (transaction) => {
       const lifecycle = new PhysiologyV7PersistenceRepository(transaction);
       await lifecycle.lockProfile(1);
+      // A first-ever sync can reach this transaction before any model write has
+      // bootstrapped the lifecycle row. Ensure it exists before arming the
+      // durable fence; blockUnifiedPublication intentionally no-ops without it.
+      await lifecycle.ensureLifecycle(1, day.date);
       // Arm before the raw Health snapshot commits. A process failure while
       // refreshing dependent reconciliation/shadows must leave publication
       // blocked until this exact calendar-day chain is retried successfully.

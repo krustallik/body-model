@@ -86,6 +86,8 @@ describe("health sync authoritative muscle suffix rebuild", () => {
       blockUnifiedPublication: vi.fn().mockResolvedValue(undefined),
       clearUnifiedPublicationBlock: vi.fn().mockResolvedValue(true),
       hasUnifiedPublicationBlocks: vi.fn().mockResolvedValue(false),
+      readUnifiedPublicationFence: vi.fn().mockResolvedValue({ invalidationGeneration: 1, updatedAt: "2026-09-23T00:00:00.000Z" }),
+      restoreUnifiedPublicationBlocksIfCurrent: vi.fn().mockResolvedValue(false),
     };
     const result = await syncHealthData({
       days: [
@@ -119,6 +121,8 @@ describe("health sync authoritative muscle suffix rebuild", () => {
       blockUnifiedPublication: vi.fn().mockResolvedValue(undefined),
       clearUnifiedPublicationBlock: vi.fn().mockResolvedValue(true),
       hasUnifiedPublicationBlocks: vi.fn().mockResolvedValue(false),
+      readUnifiedPublicationFence: vi.fn().mockResolvedValue({ invalidationGeneration: 1, updatedAt: "2026-09-23T00:00:00.000Z" }),
+      restoreUnifiedPublicationBlocksIfCurrent: vi.fn().mockResolvedValue(false),
     };
 
     await syncHealthData({ days: [{ date: "2026-09-21" }] }, healthSyncRepository as never,
@@ -136,14 +140,19 @@ describe("health sync authoritative muscle suffix rebuild", () => {
       blockUnifiedPublication: vi.fn().mockResolvedValue(undefined),
       clearUnifiedPublicationBlock: vi.fn().mockResolvedValue(true),
       hasUnifiedPublicationBlocks: vi.fn().mockResolvedValueOnce(false).mockRejectedValueOnce(new Error("block read failed")),
+      readUnifiedPublicationFence: vi.fn().mockResolvedValue({ invalidationGeneration: 1, updatedAt: "2026-09-23T00:00:00.000Z" }),
+      restoreUnifiedPublicationBlocksIfCurrent: vi.fn().mockResolvedValue(true),
     };
 
     const result = await syncHealthData({ days: [{ date: "2026-09-21" }] }, healthSyncRepository as never,
       undefined, undefined, undefined, { publicationLifecycle: publicationLifecycle as never });
 
     expect(result.modelPublicationStatus).toBe("stale");
-    expect(publicationLifecycle.blockUnifiedPublication).toHaveBeenCalledWith({
-      profileId: 1, fromDate: "2026-09-21", source: "health", sourceKey: "2026-09-21",
+    expect(publicationLifecycle.restoreUnifiedPublicationBlocksIfCurrent).toHaveBeenCalledWith({
+      profileId: 1,
+      expectedGeneration: 1,
+      expectedUpdatedAt: "2026-09-23T00:00:00.000Z",
+      blocks: [{ fromDate: "2026-09-21", source: "health", sourceKey: "2026-09-21" }],
     });
     expect(rebuildUnifiedExperimentalPhysiologyStateV1).not.toHaveBeenCalled();
   });

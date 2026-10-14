@@ -220,6 +220,70 @@ export class PhysiologyV7PersistenceRepository {
     })) !== null;
   }
 
+  async readUnifiedPublicationFence(profileId: number): Promise<{ invalidationGeneration: number; updatedAt: string } | null> {
+    const lifecycle = await this.client.physiologyV7Lifecycle.findUnique({
+      where: { profileId }, select: { invalidationGeneration: true, updatedAt: true },
+    });
+    return lifecycle === null ? null : {
+      invalidationGeneration: lifecycle.invalidationGeneration,
+      updatedAt: lifecycle.updatedAt.toISOString(),
+    };
+  }
+
+  /** Restore a cleared source fence only while its generation is still current and unpublished. */
+  async restoreUnifiedPublicationBlocksIfCurrent(input: {
+    profileId: number;
+    expectedGeneration: number;
+    expectedUpdatedAt: string;
+    blocks: readonly { fromDate: string; source: "health"; sourceKey: string }[];
+  }): Promise<boolean> {
+    if (input.blocks.length === 0) return false;
+    for (const block of input.blocks) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(block.fromDate) || block.sourceKey.length < 1 || block.sourceKey.length > 100) {
+        throw new Error("Unified publication block identity is malformed.");
+      }
+    }
+    return this.withProfileLock(input.profileId, async (client) => {
+      const lifecycle = await client.physiologyV7Lifecycle.findUnique({
+        where: { profileId: input.profileId },
+        select: {
+          invalidationGeneration: true,
+          updatedAt: true,
+          productionStaleFromDate: true,
+          productionPublishedGeneration: true,
+          unifiedPublishedGeneration: true,
+          unifiedRolloutEpoch: true,
+          unifiedPublishedRolloutEpoch: true,
+          unifiedPublicationBlockedFromDate: true,
+        },
+      });
+      if (!lifecycle || lifecycle.invalidationGeneration !== input.expectedGeneration
+          || lifecycle.updatedAt.toISOString() !== input.expectedUpdatedAt) return false;
+      const alreadyCurrent = lifecycle.productionStaleFromDate === null
+        && lifecycle.productionPublishedGeneration === input.expectedGeneration
+        && lifecycle.unifiedPublishedGeneration === input.expectedGeneration
+        && lifecycle.unifiedPublishedRolloutEpoch === lifecycle.unifiedRolloutEpoch
+        && lifecycle.unifiedPublicationBlockedFromDate === null;
+      if (alreadyCurrent) return false;
+      if (await client.unifiedPublicationBlock.findFirst({
+        where: { profileId: input.profileId }, select: { profileId: true },
+      })) return false;
+
+      for (const block of input.blocks) {
+        await client.unifiedPublicationBlock.create({
+          data: {
+            profileId: input.profileId,
+            source: block.source,
+            sourceKey: block.sourceKey,
+            fromDate: block.fromDate,
+          },
+        });
+      }
+      await this.refreshUnifiedPublicationBlockSummary(client, input.profileId);
+      return true;
+    });
+  }
+
   /** A retry clears only the exact durable source operation it fully reprocessed. */
   async clearUnifiedPublicationBlock(input: {
     profileId: number;

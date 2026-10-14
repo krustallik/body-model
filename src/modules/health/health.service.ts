@@ -29,7 +29,14 @@ export async function reconcileHealthUnifiedPublicationBlocksV1(input: {
   let readyToPublish = input.failedDates.size === 0;
   for (const date of input.dates) {
     const token = input.tokens.get(date);
-    if (input.failedDates.has(date) || token === null || token === undefined) {
+    if (input.failedDates.has(date)) {
+      // The source transaction already armed its durable fence. Do not
+      // re-create it here: an older refresh may finish after a newer sync has
+      // successfully cleared the exact fence it originally observed.
+      readyToPublish = false;
+      continue;
+    }
+    if (token === null || token === undefined) {
       await input.lifecycle.blockUnifiedPublication({ profileId: 1, fromDate: date, source: "health", sourceKey: date });
       readyToPublish = false;
       continue;
@@ -48,18 +55,19 @@ export async function reconcileHealthUnifiedPublicationBlocksV1(input: {
 async function restoreHealthUnifiedPublicationBlocksV1(input: {
   dates: readonly string[];
   tokens: ReadonlyMap<string, { revision: number; fromDate: string } | null>;
-  lifecycle: Pick<PhysiologyV7PersistenceRepository, "blockUnifiedPublication">;
-}): Promise<void> {
-  for (const date of input.dates) {
+  expectedFence: { invalidationGeneration: number; updatedAt: string };
+  lifecycle: Pick<PhysiologyV7PersistenceRepository, "restoreUnifiedPublicationBlocksIfCurrent">;
+}): Promise<boolean> {
+  const blocks = input.dates.flatMap((date) => {
     const token = input.tokens.get(date);
-    if (token === null || token === undefined) continue;
-    await input.lifecycle.blockUnifiedPublication({
-      profileId: 1,
-      fromDate: token.fromDate,
-      source: "health",
-      sourceKey: date,
-    });
-  }
+    return token === null || token === undefined ? [] : [{ fromDate: token.fromDate, source: "health" as const, sourceKey: date }];
+  });
+  return input.lifecycle.restoreUnifiedPublicationBlocksIfCurrent({
+    profileId: 1,
+    expectedGeneration: input.expectedFence.invalidationGeneration,
+    expectedUpdatedAt: input.expectedFence.updatedAt,
+    blocks,
+  });
 }
 
 export async function syncHealthData(
@@ -72,7 +80,12 @@ export async function syncHealthData(
     publicationNow?: Date;
     publicationLifecycle?: Pick<
       PhysiologyV7PersistenceRepository,
-      "readUnifiedPublicationBlockToken" | "blockUnifiedPublication" | "clearUnifiedPublicationBlock" | "hasUnifiedPublicationBlocks"
+      | "readUnifiedPublicationBlockToken"
+      | "blockUnifiedPublication"
+      | "clearUnifiedPublicationBlock"
+      | "hasUnifiedPublicationBlocks"
+      | "readUnifiedPublicationFence"
+      | "restoreUnifiedPublicationBlocksIfCurrent"
     >;
   } = {},
 ): Promise<HealthSyncResult> {
@@ -236,6 +249,7 @@ export async function syncHealthData(
   if (healthPublicationLifecycle !== null && chronologicalDates.length > 0) {
     let healthBlocksClearedForPublication = false;
     let healthBlockRestoreAttempted = false;
+    let healthPublicationFence: { invalidationGeneration: number; updatedAt: string } | null = null;
     try {
       const measurementDates = request.days
         .filter((day) => day.weightKg !== undefined && day.weightKg !== null)
@@ -265,10 +279,13 @@ export async function syncHealthData(
         lifecycle: healthPublicationLifecycle,
       });
       if (requiredPublicationRefreshFailed || !blocksReady) {
+        const reason = requiredPublicationRefreshFailed
+          ? "required-source-shadow-refresh-failed"
+          : "source-changed-during-dependent-refresh";
         requiredPublicationRefreshFailed = true;
         modelPublicationStatus = "stale";
         logEvent("warn", "active_energy_publication_blocked_by_dependency_refresh", {
-          reason: blocksReady ? "required-source-shadow-refresh-failed" : "source-changed-during-dependent-refresh",
+          reason,
         });
       } else {
         healthBlocksClearedForPublication = true;
@@ -281,13 +298,19 @@ export async function syncHealthData(
           // Publish only after all batch mutations, reconciliation, and
           // candidate refreshes; source transactions left the old generation
           // stale before this attempt.
-          const published = await publishActiveEnergyChangesV1(options.publicationNow === undefined ? {} : { now: options.publicationNow });
+          healthPublicationFence = await healthPublicationLifecycle.readUnifiedPublicationFence(1);
+          if (healthPublicationFence === null) throw new Error("Health publication lifecycle is unavailable.");
+          const published = await publishActiveEnergyChangesV1({
+            ...(options.publicationNow === undefined ? {} : { now: options.publicationNow }),
+            onProductionPublished: (fence) => { healthPublicationFence = fence; },
+          });
           modelPublicationStatus = published ? "current" : "stale";
           if (!published && !await healthPublicationLifecycle.hasUnifiedPublicationBlocks(1)) {
             healthBlockRestoreAttempted = true;
             await restoreHealthUnifiedPublicationBlocksV1({
               dates: chronologicalDates.map(({ date }) => date),
               tokens: healthBlockTokens,
+              expectedFence: healthPublicationFence,
               lifecycle: healthPublicationLifecycle,
             });
           }
@@ -306,12 +329,14 @@ export async function syncHealthData(
         // An unreadable aggregate state does not prove another source owns a
         // retry handle. Restore this batch's exact date fences conservatively.
       }
-      if (healthBlocksClearedForPublication && !healthBlockRestoreAttempted && anotherBlockRemains !== true) {
+      if (healthBlocksClearedForPublication && healthPublicationFence !== null
+          && !healthBlockRestoreAttempted && anotherBlockRemains !== true) {
         try {
           healthBlockRestoreAttempted = true;
           await restoreHealthUnifiedPublicationBlocksV1({
             dates: chronologicalDates.map(({ date }) => date),
             tokens: healthBlockTokens,
+            expectedFence: healthPublicationFence,
             lifecycle: healthPublicationLifecycle,
           });
         } catch (restoreError) {

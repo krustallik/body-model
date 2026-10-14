@@ -176,7 +176,7 @@ describe("schema deploy compatibility handoff", () => {
       },
       "src/modules/model-episodes/experimental-glycogen-state-shadow.service.ts": {
         migrationOriginBlob: "0e61b01275a1905710adc1d7721db006596459b0",
-        deployBlob: "d1908855bab66b7a07b417f044a8f44b0bad6cae",
+        deployBlob: "99de3cbe84f79540bf22a0a3ef60ca2ffc4cc2c0",
       },
       "src/modules/model-episodes/model-episode.service.ts": {
         migrationOriginBlob: "0d32af00d8fa7bf4228cb87c434d85492b430d82",

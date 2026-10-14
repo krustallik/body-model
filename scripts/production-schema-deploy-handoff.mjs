@@ -28,8 +28,8 @@ const DIGEST = /^[a-f0-9]{64}$/;
 const V4_REPUBLICATION_MANIFEST_ID = "unified-v4-republication-v1";
 const V3_STATES = new Set(["schema-applied", "app-ready", "v4-ready", "database-restored", "rollback-app-ready"]);
 const DENIED_PATH = /^(?:prisma\/|public\/|scripts\/unified-v[34]|scripts\/physiology|docker-compose(?:\.prod)?\.yml$|package(?:-lock)?\.json$|next\.config\.[^/]+$|tsconfig(?:\.[^/]+)?\.json$)/;
-const ALLOWED_PATH = /^(?:\.github\/workflows\/|tests\/|scripts\/production-release-marker\.(?:sh|mjs)$|scripts\/production-schema-deploy-handoff\.mjs$|scripts\/production-v4-fingerprint-forensics\.d\.mts$|scripts\/production-traffic-cutover\.sh$|scripts\/production-full-history-recalculate\.ts$|src\/modules\/model-episodes\/(?:full-history-recalculation\.service|transient-exercise-water-episode-time-v2)\.ts$|src\/modules\/training\/experimental-transient-exercise-water-shadow\.service\.ts$|Dockerfile$)/;
-const V4_UNBOUND_NON_RUNTIME_PATH = /^(?:tests\/|scripts\/production-schema-deploy-handoff\.mjs$|scripts\/production-v4-fingerprint-forensics\.d\.mts$)/;
+const ALLOWED_PATH = /^(?:\.github\/workflows\/|tests\/|scripts\/production-release-marker\.(?:sh|mjs)$|scripts\/production-schema-deploy-handoff\.mjs$|scripts\/production-traffic-cutover\.sh$|scripts\/production-full-history-recalculate\.ts$|src\/modules\/model-episodes\/(?:full-history-recalculation\.service|transient-exercise-water-episode-time-v2)\.ts$|src\/modules\/training\/experimental-transient-exercise-water-shadow\.service\.ts$|Dockerfile$)/;
+const V4_UNBOUND_NON_RUNTIME_PATH = /^(?:tests\/|scripts\/production-schema-deploy-handoff\.mjs$|scripts\/production-v4-fingerprint-forensics\.(?:mjs|d\.mts)$)/;
 /** Exact audited Git blobs admitted for this deploy-only compatibility handoff. */
 const CONTENT_BOUND_PATHS = Object.freeze({
   "docs/development/production-deploy.md": Object.freeze({
@@ -67,13 +67,9 @@ const CONTENT_BOUND_PATHS = Object.freeze({
 });
 /** Exact executable blobs reviewed for the V4 app-ready migration-origin handoff. */
 const V4_CONTENT_BOUND_PATHS = Object.freeze({
-  "scripts/production-v4-fingerprint-forensics.mjs": Object.freeze({
-    migrationOriginBlob: null,
-    deployBlob: "5b9906fff645b8ef52984808695440e81819ae93",
-  }),
   ".github/workflows/activate-unified-v4-production.yml": Object.freeze({
     migrationOriginBlob: "5aee0a99a1dea520ca314a4b83e42c63e389e1d2",
-    deployBlob: "92c95851eb90629072fb65e6cd3ea68139937839",
+    deployBlob: "fabd03797a359484e618b7a76e103340cd2bf020",
   }),
   ".github/workflows/deploy-production.yml": Object.freeze({
     migrationOriginBlob: "1be0ba2dc8fcfe2c34a97b39ae1d5d0fde32404f",
@@ -81,7 +77,7 @@ const V4_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "scripts/ci/production-safety-postgres-smoke.mjs": Object.freeze({
     migrationOriginBlob: "1a0345e687fd3f604499502bdf98a07b606da07f",
-    deployBlob: "38941414ce8e99494931b44a56db88f54001c9d8",
+    deployBlob: "7b973c5a5469393b5d23ba298041ef6d3933c036",
   }),
   "scripts/deploy.sh": Object.freeze({
     migrationOriginBlob: "4844bdc0b586f29dbc3b60952717e249a04bbbbc",
@@ -89,7 +85,7 @@ const V4_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "scripts/production-db-data-fingerprint.sh": Object.freeze({
     migrationOriginBlob: "101ecf34dc5751fc431a5b88f787d7ebc3e98fde",
-    deployBlob: "b163822a6b2a8d18efa238af0bb1b5c0f02082cc",
+    deployBlob: "fff493643ecb171049893ecfc935773a4bcdaac5",
   }),
   "scripts/production-release-marker.sh": Object.freeze({
     migrationOriginBlob: "40bdb77377cfe02ce8bedd9760d82f21befc128e",

@@ -491,12 +491,21 @@ describe("V5 closed migration manifest and full pending set", () => {
   it("keeps the V4-created publication fence outside raw-source identity while retaining stable-state coverage", async () => {
     const fingerprint = await readFile(new URL("../scripts/production-db-data-fingerprint.sh", import.meta.url), "utf8");
     const smoke = await readFile(new URL("../scripts/ci/production-safety-postgres-smoke.mjs", import.meta.url), "utf8");
-    expect(fingerprint).toContain("bodycast-v4-replay-source-fingerprint-v2");
-    expect(fingerprint).toContain("excluded-derived-tables:ExperimentalTransientExerciseWaterShadow,PhysiologyV7Lifecycle,UnifiedExperimentalPhysiologyStateV2,UnifiedPublicationBlock");
-    expect(fingerprint).toContain('|| "$table" == "UnifiedPublicationBlock" )');
+    expect(fingerprint).toContain("bodycast-v4-replay-source-fingerprint-v3");
+    expect(fingerprint).toContain("excluded-derived-tables:ExperimentalTransientExerciseWaterShadow,PhysiologyV7Lifecycle,UnifiedExperimentalPhysiologyStateV2,UnifiedPublicationBlock,_prisma_migrations");
+    expect(fingerprint).toContain('|| "$table" == "UnifiedPublicationBlock" || "$table" == "_prisma_migrations" )');
     expect(smoke).toContain("const v4ReplayInputsBeforeMigrations = getV4ReplayInputFingerprint();");
     expect(smoke).toContain("v4ReplayInputsBefore !== v4ReplayInputsBeforeMigrations");
     expect(smoke).toContain("publicationBlockStableStateAfter === publicationBlockStableStateBefore");
+  });
+
+  it("activates from the signed backup with simple replay-input parity instead of a forensic-only gate", async () => {
+    const workflow = await readFile(new URL("../.github/workflows/activate-unified-v4-production.yml", import.meta.url), "utf8");
+    expect(workflow).toContain("RAW_PRE_DDL=\"$(bash scripts/production-db-data-fingerprint.sh --test-url --v4-replay-inputs)\"");
+    expect(workflow).toContain("Verify replay-input parity and create encrypted post-DDL backup");
+    expect(workflow).not.toContain("production-v4-fingerprint-forensics");
+    expect(workflow).not.toContain("confirm_read_only_forensics");
+    expect(workflow).not.toContain("source-table-forensics");
   });
 
   it("runs production preflight and postflight against the effective Compose Prisma DATABASE_URL", async () => {

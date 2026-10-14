@@ -1652,6 +1652,19 @@ async function main() {
       || fullFingerprintBeforeDerivedWrites === fullFingerprintBeforeMigrations) {
       throw new Error("V4 DDL changed the raw replay-input projection or did not change the full migration-state fingerprint.");
     }
+    const ledgerFixtureId = "ci-fingerprint-ledger-v4";
+    if (sql(target, `SELECT count(*) FROM public."_prisma_migrations" WHERE id = '${ledgerFixtureId}';`) !== "0") {
+      throw new Error("The isolated migration ledger already contains the fingerprint regression fixture.");
+    }
+    sql(target, `INSERT INTO public."_prisma_migrations" (id, checksum, started_at, finished_at, migration_name, logs, applied_steps_count)
+      VALUES ('${ledgerFixtureId}', repeat('f', 64), '2026-01-02T00:00:00Z', '2026-01-02T00:00:01Z', '${ledgerFixtureId}', 'isolated fingerprint fixture', 1);`);
+    const ledgerOnlyReplayInputs = getV4ReplayInputFingerprint();
+    const ledgerOnlyFullFingerprint = getFullFingerprint();
+    sql(target, `DELETE FROM public."_prisma_migrations" WHERE id = '${ledgerFixtureId}';`);
+    if (ledgerOnlyReplayInputs !== v4ReplayInputsBefore || ledgerOnlyFullFingerprint === fullFingerprintBeforeDerivedWrites
+      || getV4ReplayInputFingerprint() !== v4ReplayInputsBefore) {
+      throw new Error("Migration-ledger-only bookkeeping changed the V4 replay-input fingerprint or escaped the full data fingerprint.");
+    }
     const publicationBlockInputBefore = getV4ReplayInputFingerprint();
     const publicationBlockStableStateBefore = getV4ReplayStableStateFingerprint();
     sql(target, `INSERT INTO public."UnifiedPublicationBlock" ("profileId", "source", "sourceKey", "fromDate")

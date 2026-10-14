@@ -119,7 +119,7 @@ describe("schema deploy compatibility handoff", () => {
     const expectedV4Bindings = {
       ".github/workflows/activate-unified-v4-production.yml": {
         migrationOriginBlob: "5aee0a99a1dea520ca314a4b83e42c63e389e1d2",
-        deployBlob: "fabd03797a359484e618b7a76e103340cd2bf020",
+        deployBlob: "3ee4deee9370b73c7a901bb6c8e1752cdd6ab91e",
       },
       ".github/workflows/deploy-production.yml": {
         migrationOriginBlob: "1be0ba2dc8fcfe2c34a97b39ae1d5d0fde32404f",

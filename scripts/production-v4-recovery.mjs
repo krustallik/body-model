@@ -16,9 +16,54 @@ const V4_DDL_RUN_ID = "38447647403";
 const V4_DDL_ORIGIN_SHA = "8b4a195e8afb67c0a913d0175a030e01cc665732";
 const MIGRATION_WORKFLOW = ".github/workflows/production-migrate.yml";
 const PREFLIGHT_WORKFLOW = ".github/workflows/production-migration-preflight.yml";
+const V4_HOST_FAILURE_PHASES = Object.freeze({
+  remote: new Set(["arguments", "checkout", "git-fetch", "app-health", "backup-host"]),
+  backup: new Set([
+    "arguments", "release-lock", "migration-run", "repository-main", "release-marker", "maintenance-route",
+    "app-identity", "migrator-build", "lifecycle-inspection", "app-stop", "writer-drain",
+    "snapshot-invalid-label", "snapshot-before-start", "snapshot-after-start", "snapshot-before-database", "snapshot-before-client-compatibility",
+    "snapshot-before-fingerprints", "snapshot-before-writer-and-target", "snapshot-before-database-preflight",
+    "snapshot-before-migration-postflight", "snapshot-before-lifecycle", "snapshot-before-snapshot-build", "snapshot-before-schema-validation",
+    "snapshot-before-final-route-integrity", "pre-dump-boundary", "pg-dump", "snapshot-after-database",
+    "snapshot-after-client-compatibility", "snapshot-after-fingerprints", "snapshot-after-writer-and-target",
+    "snapshot-after-database-preflight", "snapshot-after-migration-postflight", "snapshot-after-lifecycle",
+    "snapshot-after-snapshot-build", "snapshot-after-schema-validation", "snapshot-after-final-route-integrity",
+    "snapshot-boundary-database", "snapshot-boundary-client-compatibility", "snapshot-boundary-fingerprints",
+    "snapshot-boundary-writer-and-target", "snapshot-boundary-database-preflight",
+    "snapshot-boundary-migration-postflight", "snapshot-boundary-lifecycle", "snapshot-boundary-schema-validation",
+    "snapshot-boundary-snapshot-build", "snapshot-boundary-final-route-integrity", "backup-stability-check", "app-restart", "app-final-verification",
+  ]),
+  recovery: new Set(["app-restart"]),
+});
 
 function requireValue(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+/** Return only allowlisted phase codes from private remote stderr; never return raw log text. */
+export function summarizeV4HostFailureDiagnostics(stderrText) {
+  const found = { remote: [], backup: [], recovery: [] };
+  let malformed = false;
+  for (const line of String(stderrText ?? "").split(/\r?\n/)) {
+    const kind = line.startsWith("BODYCAST_V4_REMOTE_FAILURE ") ? "remote"
+      : line.startsWith("BODYCAST_V4_BACKUP_FAILURE ") ? "backup"
+        : line.startsWith("BODYCAST_V4_BACKUP_RECOVERY_FAILURE ") ? "recovery" : null;
+    if (!kind) continue;
+    const marker = new RegExp(`^BODYCAST_V4_${kind === "remote" ? "REMOTE" : kind === "backup" ? "BACKUP" : "BACKUP_RECOVERY"}_FAILURE phase=([a-z-]+) status=([1-9][0-9]{0,2})$`).exec(line);
+    const status = marker ? Number(marker[2]) : NaN;
+    if (!marker || !V4_HOST_FAILURE_PHASES[kind].has(marker[1]) || status > 255 || found[kind].length > 0) {
+      malformed = true;
+      continue;
+    }
+    found[kind].push({ phase: marker[1], status });
+  }
+  if (malformed) return "diagnostic=ambiguous";
+  const parts = [];
+  for (const kind of ["backup", "recovery", "remote"]) {
+    const item = found[kind][0];
+    if (item) parts.push(`${kind}=${item.phase}/exit-${item.status}`);
+  }
+  return parts.length ? parts.join(" ") : "diagnostic=unavailable";
 }
 
 function v4LifecycleFingerprint(state, lifecycle) {

@@ -119,7 +119,7 @@ describe("schema deploy compatibility handoff", () => {
     const expectedV4Bindings = {
       ".github/workflows/activate-unified-v4-production.yml": {
         migrationOriginBlob: "5aee0a99a1dea520ca314a4b83e42c63e389e1d2",
-        deployBlob: "59f4e00408946f9eb641567bf5e8632ee4c35bb0",
+        deployBlob: "b5f0d537227ef51b2bc46987b15c22575a3924bd",
       },
       ".github/workflows/deploy-production.yml": {
         migrationOriginBlob: "1be0ba2dc8fcfe2c34a97b39ae1d5d0fde32404f",
@@ -135,11 +135,11 @@ describe("schema deploy compatibility handoff", () => {
       },
       "scripts/production-v4-post-ddl-backup-host.sh": {
         migrationOriginBlob: null,
-        deployBlob: "d9a2fdd9226706fbd8f12c2344ca4a892cea53a0",
+        deployBlob: "3e90a37ec28a2654bd89e0f3051f4254ad332f0f",
       },
       "scripts/production-v4-recovery.mjs": {
         migrationOriginBlob: null,
-        deployBlob: "b609527876ed6c59ca48814c6c5b5450ff1517bd",
+        deployBlob: "91ab0a2261cc3dfcde30fab76673c021dfd5caf8",
       },
       "scripts/production-traffic-cutover.sh": {
         migrationOriginBlob: "baeb3ff34c52c606a653d9e0c027c79d7b7c72da",

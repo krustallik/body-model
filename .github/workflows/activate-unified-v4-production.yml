@@ -356,6 +356,14 @@ jobs:
           PG_RESTORE_VERSION_B64="$(printf '%s' "$BODYCAST_PG_RESTORE_VERSION" | base64 -w0)"
           REMOTE_SCRIPT="$(cat <<'REMOTE'
           set -Eeuo pipefail
+          BODYCAST_V4_REMOTE_PHASE=arguments
+          report_remote_failure() {
+            local status=$?
+            if (( status != 0 )); then
+              printf 'BODYCAST_V4_REMOTE_FAILURE phase=%s status=%s\n' "$BODYCAST_V4_REMOTE_PHASE" "$status" >&2
+            fi
+          }
+          trap report_remote_failure EXIT
           RELEASE_SHA="$1"
           DEPLOY_PATH="$(printf '%s' "$2" | base64 --decode)"
           APP_HOST="$(printf '%s' "$3" | base64 --decode)"
@@ -366,28 +374,39 @@ jobs:
             && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ && "$CADDY_ROUTES_PATH" == /* && "$CADDY_ROUTES_PATH" != *$'\n'* \
             && "$EXPECTED_PRE_DDL_RAW_FINGERPRINT" =~ ^[a-f0-9]{64}$ \
             && "$BODYCAST_PG_RESTORE_VERSION" =~ ^pg_restore\ \(PostgreSQL\)\ 17\.[0-9]+$ ]] || exit 2
+          BODYCAST_V4_REMOTE_PHASE=checkout
           cd -- "$DEPLOY_PATH"
           [[ "$(git rev-parse --show-toplevel)" == "$DEPLOY_PATH" && -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || {
             echo "Production checkout is dirty or does not match DEPLOY_PATH." >&2; exit 1;
           }
+          BODYCAST_V4_REMOTE_PHASE=git-fetch
           git fetch --no-tags origin "$RELEASE_SHA"
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           [[ "$(git rev-parse refs/remotes/origin/main)" == "$RELEASE_SHA" ]] || { echo "Canonical main advanced before backup." >&2; exit 1; }
           git checkout --detach "$RELEASE_SHA"
           [[ "$(git rev-parse HEAD)" == "$RELEASE_SHA" && -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || exit 1
+          BODYCAST_V4_REMOTE_PHASE=app-health
           APP_SHA="$(docker inspect --format '{{index .Config.Labels "org.bodycast.release-sha"}}' bodycast-app-prod)"
           APP_HEALTH="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' bodycast-app-prod)"
           [[ "$APP_SHA" == "$RELEASE_SHA" && "$APP_HEALTH" == "healthy" ]] || { echo "Exact-SHA app is absent or unhealthy." >&2; exit 1; }
-          APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" BODYCAST_DEPLOY_SHA="$RELEASE_SHA" \
+          BODYCAST_V4_REMOTE_PHASE=backup-host
+          if APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" BODYCAST_DEPLOY_SHA="$RELEASE_SHA" \
             BODYCAST_V4_MIGRATION_RUN_B64="$6" BODYCAST_EXPECTED_PRE_DDL_RAW_FINGERPRINT="$EXPECTED_PRE_DDL_RAW_FINGERPRINT" \
             BODYCAST_PG_RESTORE_VERSION="$BODYCAST_PG_RESTORE_VERSION" \
-            exec bash scripts/production-traffic-cutover.sh v4-post-ddl-backup
+            bash scripts/production-traffic-cutover.sh v4-post-ddl-backup; then
+            exit 0
+          else
+            remote_status=$?
+            exit "$remote_status"
+          fi
           REMOTE
           )"
           REMOTE_SCRIPT_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64 -w0)"
           PRE_DDL_RAW_B64="$(printf '%s' "$PRE_DDL_RAW_FINGERPRINT" | base64 -w0)"
           REMOTE_COMMAND="bash -c \"\$(printf '%s' '$REMOTE_SCRIPT_B64' | base64 --decode)\" -- '$RELEASE_SHA' '$DEPLOY_PATH_B64' '$APP_HOST_B64' '$ROUTES_PATH_B64' '$PG_RESTORE_VERSION_B64' '$MIGRATION_RUN_B64' '$PRE_DDL_RAW_B64'"
           BACKUP_FILE="$BODYCAST_V4_BACKUP_DIR/production-backup.pgdump.enc"
+          umask 077
+          install -m 600 /dev/null "$RUNNER_TEMP/v4-post-ddl-host-stderr.log"
           set -o pipefail
           set +e
           timeout 100m ssh -T -p "$SSH_PORT" -i "$BODYCAST_SSH_KEY" \
@@ -399,7 +418,17 @@ jobs:
           PIPELINE_STATUS=("${PIPESTATUS[@]}")
           set -e
           if [[ "${PIPELINE_STATUS[0]:-1}" != 0 || "${PIPELINE_STATUS[1]:-1}" != 0 ]]; then
-            echo "::error::Post-DDL backup pipeline failed (SSH exit ${PIPELINE_STATUS[0]:-1}; encryption exit ${PIPELINE_STATUS[1]:-1}). Host diagnostics remain in the private runner temp file.";
+            SAFE_HOST_DIAGNOSTIC="$(node --input-type=module - "$RUNNER_TEMP/v4-post-ddl-host-stderr.log" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { summarizeV4HostFailureDiagnostics } from "./scripts/production-v4-recovery.mjs";
+          try {
+            process.stdout.write(summarizeV4HostFailureDiagnostics(readFileSync(process.argv[2], "utf8")));
+          } catch {
+            process.stdout.write("diagnostic=unavailable");
+          }
+          NODE
+          )" || SAFE_HOST_DIAGNOSTIC="diagnostic=unavailable"
+            echo "::error::Post-DDL backup pipeline failed (SSH exit ${PIPELINE_STATUS[0]:-1}; encryption exit ${PIPELINE_STATUS[1]:-1}); safe host diagnostic: $SAFE_HOST_DIAGNOSTIC";
             exit 1
           fi
           chmod 600 "$BACKUP_FILE" "$RUNNER_TEMP/v4-post-ddl-host-stderr.log"

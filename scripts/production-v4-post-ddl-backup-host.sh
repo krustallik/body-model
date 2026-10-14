@@ -14,6 +14,20 @@ readonly APP_HOST="${APP_HOST:-}"
 readonly CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:-}"
 readonly MODE="${1:-backup}"
 readonly EXPECTED_APP_IMAGE_ID="${BODYCAST_V4_CANDIDATE_APP_IMAGE_ID:-}"
+bodycast_v4_failure_phase="arguments"
+
+report_v4_backup_failure() {
+  local status="$1"
+  if (( status != 0 )); then
+    printf 'BODYCAST_V4_BACKUP_FAILURE phase=%s status=%s\n' "$bodycast_v4_failure_phase" "$status" >&2
+  fi
+}
+
+report_early_v4_backup_failure() {
+  local status=$?
+  report_v4_backup_failure "$status"
+}
+trap report_early_v4_backup_failure EXIT
 
 [[ ( "$MODE" == backup || "$MODE" == snapshot-only ) \
   && "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ && "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ \
@@ -24,6 +38,7 @@ readonly EXPECTED_APP_IMAGE_ID="${BODYCAST_V4_CANDIDATE_APP_IMAGE_ID:-}"
   echo "V4 post-DDL backup requires exact release, route, migration-run, pre-DDL raw baseline, and restore-client bindings." >&2; exit 2;
 }
 
+bodycast_v4_failure_phase="release-lock"
 source "$ROOT_DIR/scripts/production-release-marker.sh"
 source "$ROOT_DIR/scripts/deploy-main-freshness.sh"
 source "$ROOT_DIR/scripts/production-release-lock.sh"
@@ -37,6 +52,7 @@ bodycast_acquire_production_release_lock
 exec 3>&1
 exec 1>&2
 compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
+bodycast_v4_failure_phase="migration-run"
 tmp="$(mktemp -d /tmp/bodycast-v4-post-ddl.XXXXXX)"
 chmod 700 "$tmp"
 printf '%s' "$RUN_B64" | base64 --decode > "$tmp/migration-run.json"
@@ -56,10 +72,13 @@ candidate_image_id=""
 cleanup() {
   local status=$?
   trap - EXIT
+  report_v4_backup_failure "$status"
   if [[ "$app_stopped" == true ]]; then
+    bodycast_v4_failure_phase="app-restart"
     if ! BODYCAST_DEPLOY_SHA="$RELEASE_SHA" compose up -d --no-deps --no-build app >/dev/null \
       || ! bash "$ROOT_DIR/scripts/production-app-container-health-wait.sh" "$RELEASE_SHA" "$candidate_image_id"; then
       echo "Failed to restart the exact prior app; maintenance remains active." >&2
+      printf 'BODYCAST_V4_BACKUP_RECOVERY_FAILURE phase=app-restart status=1\n' >&2
       status=1
     else
       app_stopped=false
@@ -70,8 +89,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
+bodycast_v4_failure_phase="repository-main"
 bodycast_assert_current_main_sha "$RELEASE_SHA"
 [[ "$(git rev-parse HEAD)" == "$RELEASE_SHA" ]] || { echo "Production checkout is not the exact requested main SHA." >&2; exit 1; }
+bodycast_v4_failure_phase="release-marker"
 read_bodycast_release_marker || { echo "A valid schema-v3 production release marker is required." >&2; exit 1; }
 [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == 3 && "$BODYCAST_MARKER_MANIFEST_ID" == "$MANIFEST_ID" \
   && "$BODYCAST_MARKER_STATE" == "app-ready" && "$BODYCAST_MARKER_DEPLOY_SHA" == "$RELEASE_SHA" \
@@ -81,11 +102,13 @@ read_bodycast_release_marker || { echo "A valid schema-v3 production release mar
 }
 
 marker_digest="$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')"
+bodycast_v4_failure_phase="maintenance-route"
 route_digest="$(sha256sum "${CADDY_ROUTES_PATH%/}/bodycast.caddy" | awk '{print $1}')"
 bodycast_verify_exact_maintenance_route
 maintenance_marker="$(bodycast_maintenance_marker_from_route)"
 bodycast_probe_public_maintenance "$maintenance_marker"
 if [[ "$MODE" == backup ]]; then
+  bodycast_v4_failure_phase="app-identity"
   app_identity="$(docker inspect --format '{{.Id}}|{{.Image}}|{{index .Config.Labels "org.bodycast.release-sha"}}|{{.State.Status}}|{{.State.Health.Status}}' "$APP_CONTAINER")"
   IFS='|' read -r app_id candidate_image_id app_sha app_state app_health <<< "$app_identity"
   [[ "$app_id" =~ ^[a-f0-9]{64}$ && "$candidate_image_id" =~ ^sha256:[a-f0-9]{64}$ \
@@ -102,8 +125,10 @@ else
 fi
 
 if [[ "$MODE" == backup ]]; then
+  bodycast_v4_failure_phase="migrator-build"
   compose --profile tools build migrate
 fi
+bodycast_v4_failure_phase="lifecycle-inspection"
 lifecycle_state="$(compose --profile tools run --rm --no-deps --entrypoint node migrate \
   /app/scripts/unified-v4-activate-replay.mjs --inspect-lifecycle --profile-id 1)"
 [[ "$lifecycle_state" == '{"command":"unified-v4-activate-replay","profileId":1,"state":"v4-replayable"}' \
@@ -112,6 +137,7 @@ lifecycle_state="$(compose --profile tools run --rm --no-deps --entrypoint node 
 }
 
 if [[ "$MODE" == backup ]]; then
+  bodycast_v4_failure_phase="app-stop"
   app_stopped=true
   docker update --restart=no "$APP_CONTAINER" >/dev/null
   compose stop app >/dev/null 2>&1 || true
@@ -121,11 +147,16 @@ if [[ "$MODE" == backup ]]; then
   }
   compose rm --force app >/dev/null
 fi
+bodycast_v4_failure_phase="writer-drain"
 bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
 
 capture_snapshot() {
   local label="$1" db_metadata db_id db_image_id db_name db_state db_health db_address pg_dump_version current_marker_digest current_route_digest
   local full_fingerprint raw_fingerprint replay_stable_state_fingerprint topology target_url sql_path raw_path report_path postflight_path lifecycle_json
+  case "$label" in
+    before|after|boundary) bodycast_v4_failure_phase="snapshot-${label}-database" ;;
+    *) bodycast_v4_failure_phase="snapshot-invalid-label"; return 1 ;;
+  esac
   sql_path="$tmp/preflight-$label.sql"; raw_path="$tmp/raw-$label.json"
   report_path="$tmp/report-$label.json"; postflight_path="$tmp/postflight-$label.json"
   db_metadata="$(docker inspect --format "{{.Id}}|{{.Image}}|{{.Name}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}unknown{{end}}|{{with index .NetworkSettings.Networks \"$DB_NETWORK\"}}{{.IPAddress}}{{end}}" "$DB_CONTAINER")"
@@ -135,11 +166,13 @@ capture_snapshot() {
     && "$db_address" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
     echo "The fixed production PostgreSQL container/image/network identity is unknown." >&2; return 1;
   }
+  bodycast_v4_failure_phase="snapshot-${label}-client-compatibility"
   pg_dump_version="$(docker exec "$db_id" pg_dump --version)"
   node --input-type=module - "$pg_dump_version" "$BODYCAST_PG_RESTORE_VERSION" <<'NODE'
 import { assertPostgresClientCompatibility } from "./scripts/postgres-client-versions.mjs";
 assertPostgresClientCompatibility(process.argv[2], process.argv[3]);
 NODE
+  bodycast_v4_failure_phase="snapshot-${label}-fingerprints"
   full_fingerprint="$(bash "$ROOT_DIR/scripts/production-db-data-fingerprint.sh" --production-container "$DB_CONTAINER")"
   raw_fingerprint="$(bash "$ROOT_DIR/scripts/production-db-data-fingerprint.sh" --production-container "$DB_CONTAINER" --v4-replay-inputs)"
   replay_stable_state_fingerprint="$(bash "$ROOT_DIR/scripts/production-db-data-fingerprint.sh" --production-container "$DB_CONTAINER" --v4-replay-stable-state)"
@@ -151,9 +184,11 @@ NODE
   [[ "$raw_fingerprint" == "$EXPECTED_PRE_DDL_RAW_FINGERPRINT" ]] || {
     echo "Current production raw data differs from the signed pre-DDL encrypted-backup baseline." >&2; return 1;
   }
+  bodycast_v4_failure_phase="snapshot-${label}-writer-and-target"
   topology="$(APP_HOST="$APP_HOST" CADDY_ROUTES_PATH="$CADDY_ROUTES_PATH" bash "$ROOT_DIR/scripts/production-writer-drain.sh" --report)"
   target_url="$(bash "$ROOT_DIR/scripts/production-db-target.sh" --psql-url)"
   [[ "$target_url" == postgresql://* || "$target_url" == postgres://* ]] || { echo "Reviewed production TCP database URL is unavailable." >&2; return 1; }
+  bodycast_v4_failure_phase="snapshot-${label}-database-preflight"
   node "$ROOT_DIR/scripts/production-db-preflight.mjs" > "$sql_path"
   export BODYCAST_PSQL_DATABASE_URL="$target_url"
   unset target_url
@@ -172,6 +207,7 @@ if (!/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error("Malformed full product
 report.logicalDataFingerprint = fingerprint;
 writeFileSync(reportPath, `${JSON.stringify(report)}\n`, { flag: "wx", mode: 0o600 });
 NODE
+  bodycast_v4_failure_phase="snapshot-${label}-migration-postflight"
   node "$ROOT_DIR/scripts/production-migration-preflight.mjs" --postflight --manifest "$MANIFEST_ID" \
     --release-sha "$RELEASE_SHA" --repository "$ROOT_DIR" --report "$report_path" > "$postflight_path"
 
@@ -184,11 +220,13 @@ SELECT json_build_object(
   'unifiedPublicationBlockedFromDate', "unifiedPublicationBlockedFromDate", 'updatedAt', "updatedAt"
 )::text FROM public."PhysiologyV7Lifecycle" WHERE "profileId" = 1;
 SQL
+  bodycast_v4_failure_phase="snapshot-${label}-lifecycle"
   lifecycle_json="$(docker exec -i --env BODYCAST_PSQL_DATABASE_URL --env 'PGAPPNAME=bodycast-production-preflight' \
     --env 'PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=15000 -c lock_timeout=5000' \
     "$db_id" sh -c 'exec psql "$BODYCAST_PSQL_DATABASE_URL" --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1' \
     < "$tmp/lifecycle.sql")"
   unset BODYCAST_PSQL_DATABASE_URL
+  bodycast_v4_failure_phase="snapshot-${label}-snapshot-build"
   node --input-type=module - "$report_path" "$postflight_path" "$tmp/snapshot-$label.json" \
     "$db_id" "${db_image_id#sha256:}" "${candidate_image_id#sha256:}" "$marker_digest" "$route_digest" \
     "$raw_fingerprint" "$replay_stable_state_fingerprint" "$pg_dump_version" "$BODYCAST_PG_RESTORE_VERSION" "$lifecycle_state" "$lifecycle_json" "$RELEASE_SHA" \
@@ -220,8 +258,10 @@ const snapshot = {
 };
 writeFileSync(outputPath, `${JSON.stringify(snapshot)}\n`, { flag: "wx", mode: 0o600 });
 NODE
+  bodycast_v4_failure_phase="snapshot-${label}-schema-validation"
   node "$ROOT_DIR/scripts/production-v4-recovery.mjs" --validate-snapshot \
     "$tmp/snapshot-$label.json" "$ROOT_DIR/prisma/migrations" "$tmp/validated-$label.json" >/dev/null
+  bodycast_v4_failure_phase="snapshot-${label}-final-route-integrity"
   read_bodycast_release_marker || { echo "The release marker became unavailable during the backup boundary." >&2; return 1; }
   [[ "$BODYCAST_MARKER_SCHEMA_VERSION" == 3 && "$BODYCAST_MARKER_MANIFEST_ID" == "$MANIFEST_ID" \
     && "$BODYCAST_MARKER_STATE" == "app-ready" && "$BODYCAST_MARKER_DEPLOY_SHA" == "$RELEASE_SHA" ]] || {
@@ -243,8 +283,9 @@ if [[ "$MODE" == snapshot-only ]]; then
   exit 0
 fi
 
-before_lines="$(capture_snapshot before)"
-mapfile -t before_values <<< "$before_lines"
+bodycast_v4_failure_phase="snapshot-before-start"
+capture_snapshot before > "$tmp/snapshot-values-before.txt"
+mapfile -t before_values < "$tmp/snapshot-values-before.txt"
 [[ "${#before_values[@]}" -eq 5 ]] || { echo "Pre-dump snapshot field set is invalid." >&2; exit 1; }
 before_db_id="${before_values[0]}"
 before_db_image_id="${before_values[1]}"
@@ -252,6 +293,7 @@ before_full_fingerprint="${before_values[2]}"
 before_raw_fingerprint="${before_values[3]}"
 before_replay_stable_state_fingerprint="${before_values[4]}"
 
+bodycast_v4_failure_phase="pre-dump-boundary"
 bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
 bodycast_verify_exact_maintenance_route
 bodycast_probe_public_maintenance "$maintenance_marker"
@@ -261,12 +303,15 @@ bodycast_assert_current_main_sha "$RELEASE_SHA"
   && "$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')" == "$marker_digest" ]] || {
   echo "Production target, app image, or marker changed at the pg_dump boundary." >&2; exit 1;
 }
+bodycast_v4_failure_phase="pg-dump"
 pg_dump_invocation_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf 'BODYCAST_PGDUMP_INVOCATION_AT=%s\n' "$pg_dump_invocation_at" >&2
 docker exec "$before_db_id" sh -c 'exec pg_dump --format=custom --no-owner --no-privileges --username="$POSTGRES_USER" --dbname=bodycast' >&3
 
-after_lines="$(capture_snapshot after)"
-mapfile -t after_values <<< "$after_lines"
+bodycast_v4_failure_phase="snapshot-after-start"
+capture_snapshot after > "$tmp/snapshot-values-after.txt"
+bodycast_v4_failure_phase="backup-stability-check"
+mapfile -t after_values < "$tmp/snapshot-values-after.txt"
 [[ "${#after_values[@]}" -eq 5 && "${after_values[0]}" == "$before_db_id" \
   && "${after_values[1]}" == "$before_db_image_id" \
   && "${after_values[2]}" == "$before_full_fingerprint" \
@@ -291,9 +336,11 @@ assertStableV4RecoverySnapshots(
 );
 NODE
 
+bodycast_v4_failure_phase="app-restart"
 BODYCAST_DEPLOY_SHA="$RELEASE_SHA" compose up -d --no-deps --no-build app >/dev/null
 bash "$ROOT_DIR/scripts/production-app-container-health-wait.sh" "$RELEASE_SHA" "$candidate_image_id"
 app_stopped=false
+bodycast_v4_failure_phase="app-final-verification"
 bodycast_verify_exact_maintenance_route
 bodycast_probe_public_maintenance "$maintenance_marker"
 bodycast_assert_current_main_sha "$RELEASE_SHA"

@@ -539,8 +539,9 @@ export function evaluateProductionPostflight(report, migrationDirectories, manif
   if (unexpectedLegacyIndexes.length) blockers.push(`Legacy Relative Muscle indexes remain after migration: ${unexpectedLegacyIndexes.join(", ")}.`);
   const wrongRelativeMuscleSignatures = Object.entries(manifest.postflightSignatureIncludes).filter(([name, fragment]) => {
     const object = byName.get(name);
+    const signature = canonicalInventorySignature(object);
     return object?.present !== true || typeof object.signature !== "string"
-      || !normalizeObjectSignature(object.signature).includes(normalizeObjectSignature(fragment));
+      || typeof signature !== "string" || !normalizeObjectSignature(signature).includes(normalizeObjectSignature(fragment));
   }).map(([name]) => name);
   if (wrongRelativeMuscleSignatures.length) blockers.push(`Relative Muscle postflight schema signatures differ from the reviewed contract: ${wrongRelativeMuscleSignatures.join(", ")}.`);
   const expectedDatabase = options.expectedDatabase ?? "bodycast";

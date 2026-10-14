@@ -825,6 +825,21 @@ describe("V5 closed migration manifest and full pending set", () => {
     });
     expect(result.ready).toBe(true);
 
+    const publicationSource = post.objects.find((object) => object.name === "UnifiedPublicationBlock_source_check");
+    const sourceSignature = V4_REPUBLICATION_MANIFEST.postflightSignatureIncludes[publicationSource.name];
+    publicationSource.kind = "constraint";
+    publicationSource.signature = sourceSignature.replaceAll("'::character varying", "'::character varying::text").replace("]::text[]))", "]))");
+    expect(evaluateProductionPostflight(post, fullDirs, V4_REPUBLICATION_MANIFEST.id, {
+      expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore",
+    })).toMatchObject({ ready: true, blockers: [] });
+
+    const changedPublicationSource = structuredClone(post);
+    const changedConstraint = changedPublicationSource.objects.find((object) => object.name === "UnifiedPublicationBlock_source_check");
+    changedConstraint.signature = changedConstraint.signature.replace("'stepper'", "'unexpected'");
+    expect(evaluateProductionPostflight(changedPublicationSource, fullDirs, V4_REPUBLICATION_MANIFEST.id, {
+      expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore",
+    }).blockers.join(" ")).toContain("schema signatures differ");
+
     const disabledTrigger = structuredClone(post);
     disabledTrigger.objects.find((object) => object.name === "trigger:StrengthSet.StrengthSet_v7_invalidate").signature = "enabled=D|function=physiology_v7_session_child_source_trigger";
     expect(evaluateProductionPostflight(disabledTrigger, fullDirs, V4_REPUBLICATION_MANIFEST.id, {

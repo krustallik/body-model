@@ -775,6 +775,25 @@ export class TrainingService {
     return this.repo.getSession(sessionId, profileId);
   }
 
+  async getSetForSession(sessionId: number, setId: number, profileId = DEFAULT_TRAINING_PROFILE_ID): Promise<StrengthSetDto | null> {
+    const set = await this.repo.findSetForSession(setId, sessionId, profileId);
+    if (!set) return null;
+    return {
+      id: set.id,
+      sessionExerciseId: set.sessionExercise.id,
+      setNumber: set.setNumber,
+      reps: set.reps,
+      weightKg: set.weightKg?.toNumber() ?? null,
+      bandNominalResistanceKg: set.bandNominalResistanceKg?.toNumber() ?? null,
+      rir: set.rir,
+      comment: set.comment ?? null,
+      completedAt: set.completedAt?.toISOString() ?? null,
+      createdAt: set.createdAt.toISOString(),
+      updatedAt: set.updatedAt.toISOString(),
+      loadAccountingOverride: set.loadAccountingOverride ?? null,
+    };
+  }
+
   async materializeSessionAccounting(
     sessionId: number,
     profileId = DEFAULT_TRAINING_PROFILE_ID,

@@ -2305,6 +2305,7 @@ export class TrainingRepository {
         sets: {
           orderBy: { setNumber: "desc" },
           select: {
+            id: true,
             setNumber: true,
             reps: true,
             weightKg: true,
@@ -2312,6 +2313,7 @@ export class TrainingRepository {
             rir: true,
             comment: true,
             completedAt: true,
+            loadAccountingOverride: true,
           },
         },
       },
@@ -2329,6 +2331,7 @@ export class TrainingRepository {
         programName: row.session.program.name,
         resistanceType: row.resistanceType as ResistanceType,
         sets: row.sets.map((set) => ({
+          id: set.id,
           setNumber: set.setNumber,
           reps: set.reps,
           weightKg: decimalToNumber(set.weightKg),
@@ -2336,6 +2339,7 @@ export class TrainingRepository {
           rir: set.rir,
           comment: set.comment ?? null,
           completedAt: set.completedAt?.toISOString() ?? null,
+          loadAccountingOverride: set.loadAccountingOverride,
         })),
       };
     }).sort((left, right) => {
@@ -2357,11 +2361,16 @@ export class TrainingRepository {
       },
       select: {
         id: true,
+        setNumber: true,
         reps: true,
         weightKg: true,
         bandNominalResistanceKg: true,
         rir: true,
+        comment: true,
         completedAt: true,
+        createdAt: true,
+        updatedAt: true,
+        loadAccountingOverride: true,
         sessionExercise: {
           select: {
             id: true,

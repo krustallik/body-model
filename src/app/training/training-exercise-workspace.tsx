@@ -14,6 +14,7 @@ import type {
   StrengthSessionExerciseDto,
   StrengthSetDto,
 } from "@/modules/training/training.types";
+import type { UpdateSetInput } from "@/modules/training/training.schema";
 import { ExercisePane } from "./training-exercise-pane";
 import {
   classifyCarouselRelease,
@@ -111,6 +112,42 @@ function elapsedMs(startedAt: string | null | undefined, endedAt: string | null 
   return end - start;
 }
 
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
+}
+
+function roundLoadToDatabasePrecision(value: number): number {
+  if (!Number.isFinite(value)) return value;
+  const [mantissa, rawExponent] = Math.abs(value).toString().toLowerCase().split("e");
+  const exponent = Number(rawExponent ?? 0);
+  const [integerPart, fractionalPart = ""] = mantissa!.split(".");
+  const digits = `${integerPart}${fractionalPart}`;
+  const centsIndex = integerPart.length + exponent + 2;
+  let cents = centsIndex <= 0
+    ? "0"
+    : centsIndex >= digits.length
+      ? `${digits}${"0".repeat(centsIndex - digits.length)}`
+      : digits.slice(0, centsIndex);
+  const roundUp = centsIndex === 0
+    ? (digits[0] ?? "0") >= "5"
+    : centsIndex > 0 && centsIndex < digits.length && digits[centsIndex]! >= "5";
+  if (roundUp) {
+    const chars = cents.split("");
+    let index = chars.length - 1;
+    while (index >= 0 && chars[index] === "9") chars[index--] = "0";
+    if (index >= 0) chars[index] = String(Number(chars[index]) + 1);
+    else chars.unshift("1");
+    cents = chars.join("");
+  }
+  const rounded = Number(cents) / 100;
+  return value < 0 ? -rounded : rounded;
+}
+
 export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps) {
   const {
     uk,
@@ -158,11 +195,13 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
   const menuButtonRef = useRef<HTMLDivElement | null>(null);
   const menuPanelRef = useRef<HTMLDivElement | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const historyAnnouncementRef = useRef<HTMLParagraphElement | null>(null);
   const animatingRef = useRef(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [commentOpen, setCommentOpen] = useState(false);
   const [historyById, setHistoryById] = useState<Record<number, ExerciseHistoryEntryDto[]>>({});
   const historyByIdRef = useRef<Record<number, ExerciseHistoryEntryDto[]>>({});
+  const [historyAnnouncement, setHistoryAnnouncement] = useState("");
   const [infoExerciseId, setInfoExerciseId] = useState(exercise.id);
   const [dragPx, setDragPx] = useState(0);
   const [animating, setAnimating] = useState(false);
@@ -389,6 +428,140 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
     setCopiedHint(true);
   }
 
+  function replaceCachedHistorySet(exerciseId: number, entry: ExerciseHistoryEntryDto, nextSet: ExerciseHistorySetDto) {
+    const cached = historyByIdRef.current[exerciseId] ?? [];
+    const next = cached.flatMap((candidate) => {
+      if (candidate.sessionId !== entry.sessionId) return [candidate];
+      const sets = candidate.sets.map((set) => set.id === nextSet.id ? nextSet : set);
+      return sets.length > 0 ? [{ ...candidate, sets }] : [];
+    });
+    historyByIdRef.current = { ...historyByIdRef.current, [exerciseId]: next };
+    setHistoryById((current) => ({ ...current, [exerciseId]: next }));
+  }
+
+  function removeCachedHistorySet(exerciseId: number, entry: ExerciseHistoryEntryDto, setId: number) {
+    const cached = historyByIdRef.current[exerciseId] ?? [];
+    const next = cached.flatMap((candidate) => {
+      if (candidate.sessionId !== entry.sessionId) return [candidate];
+      const sets = candidate.sets.filter((set) => set.id !== setId);
+      return sets.length > 0 ? [{ ...candidate, sets }] : [];
+    });
+    historyByIdRef.current = { ...historyByIdRef.current, [exerciseId]: next };
+    setHistoryById((current) => ({ ...current, [exerciseId]: next }));
+  }
+
+  async function readHistoricalSet(sessionId: number, setId: number): Promise<StrengthSetDto | null> {
+    const response = await fetch(`/api/v1/training/sessions/${sessionId}/sets/${setId}`, { cache: "no-store" });
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error("historical session verification failed");
+    const body = await response.json() as { set?: StrengthSetDto };
+    if (!body.set || body.set.id !== setId) throw new Error("historical set verification response was invalid");
+    return body.set;
+  }
+
+  function historySetMatchesPayload(set: ExerciseHistorySetDto, payload: UpdateSetInput): boolean {
+    if (payload.reps !== undefined && set.reps !== payload.reps) return false;
+    if (payload.weightKg !== undefined
+        && set.weightKg !== (payload.weightKg === null ? null : roundLoadToDatabasePrecision(payload.weightKg))) return false;
+    if (payload.bandNominalResistanceKg !== undefined
+        && set.bandNominalResistanceKg !== (payload.bandNominalResistanceKg === null ? null : roundLoadToDatabasePrecision(payload.bandNominalResistanceKg))) return false;
+    if (payload.rir !== undefined && set.rir !== payload.rir) return false;
+    if (payload.comment !== undefined && set.comment !== payload.comment) return false;
+    if (payload.loadAccountingOverride !== undefined
+        && stableJson(set.loadAccountingOverride ?? null) !== stableJson(payload.loadAccountingOverride)) return false;
+    return true;
+  }
+
+  function announceHistory(message: string, focus = false) {
+    setHistoryAnnouncement(message);
+    if (focus) window.requestAnimationFrame(() => historyAnnouncementRef.current?.focus());
+  }
+
+  function publicationWarning(status: unknown): boolean {
+    return status === "stale" || status === "not-run";
+  }
+
+  async function updateHistoricalSet(exerciseId: number, entry: ExerciseHistoryEntryDto, set: ExerciseHistorySetDto, payload: UpdateSetInput): Promise<void> {
+    let response: Response | null = null;
+    try {
+      response = await fetch(`/api/v1/training/sessions/${entry.sessionId}/sets/${set.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch {
+      // A transport error can arrive after the server has committed the edit.
+    }
+    if (!response?.ok) {
+      const refreshedSet = await readHistoricalSet(entry.sessionId, set.id);
+      if (refreshedSet && historySetMatchesPayload({ ...set, ...refreshedSet }, payload)) {
+        replaceCachedHistorySet(exerciseId, entry, {
+          ...set,
+          id: refreshedSet.id,
+          setNumber: refreshedSet.setNumber,
+          reps: refreshedSet.reps,
+          weightKg: refreshedSet.weightKg,
+          bandNominalResistanceKg: refreshedSet.bandNominalResistanceKg,
+          rir: refreshedSet.rir,
+          comment: refreshedSet.comment,
+          completedAt: refreshedSet.completedAt,
+          loadAccountingOverride: refreshedSet.loadAccountingOverride ?? null,
+        });
+        announceHistory(uk
+          ? "Підхід збережено, але оновлення моделі повідомило про помилку."
+          : "Set saved, but model refresh reported a problem.");
+        return;
+      }
+      throw new Error("historical set update failed");
+    }
+    const body = await response.json() as { set?: StrengthSetDto; modelPublicationStatus?: string };
+    if (!body.set || body.set.id !== set.id) throw new Error("historical set response was invalid");
+    const updatedHistorySet: ExerciseHistorySetDto = {
+      id: body.set.id,
+      setNumber: body.set.setNumber,
+      reps: body.set.reps,
+      weightKg: body.set.weightKg,
+      bandNominalResistanceKg: body.set.bandNominalResistanceKg,
+      rir: body.set.rir,
+      comment: body.set.comment,
+      completedAt: body.set.completedAt,
+      loadAccountingOverride: body.set.loadAccountingOverride ?? null,
+    };
+    replaceCachedHistorySet(exerciseId, entry, updatedHistorySet);
+    announceHistory(publicationWarning(body.modelPublicationStatus)
+      ? (uk ? "Підхід збережено, але модель ще не актуальна." : "Set saved, but the model is not current.")
+      : (uk ? "Підхід збережено." : "Set saved."));
+  }
+
+  async function deleteHistoricalSet(exerciseId: number, entry: ExerciseHistoryEntryDto, set: ExerciseHistorySetDto): Promise<void> {
+    let response: Response | null = null;
+    try {
+      response = await fetch(`/api/v1/training/sessions/${entry.sessionId}/sets/${set.id}`, { method: "DELETE" });
+    } catch {
+      // Reconcile the postcondition before telling the user to retry a timed-out mutation.
+    }
+    if (!response?.ok) {
+      const refreshedSet = await readHistoricalSet(entry.sessionId, set.id);
+      if (refreshedSet === null) {
+        removeCachedHistorySet(exerciseId, entry, set.id);
+        announceHistory(uk
+          ? "Підхід видалено, але оновлення моделі повідомило про помилку."
+          : "Set deleted, but model refresh reported a problem.", true);
+        return;
+      }
+      throw new Error("historical set deletion failed");
+    }
+    let modelPublicationStatus: string | undefined;
+    if (response.status !== 204) {
+      const body = await response.json() as { modelPublicationStatus?: string };
+      modelPublicationStatus = body.modelPublicationStatus;
+    }
+    removeCachedHistorySet(exerciseId, entry, set.id);
+    announceHistory(publicationWarning(modelPublicationStatus)
+      ? (uk ? "Підхід видалено, але модель ще не актуальна." : "Set deleted, but the model is not current.")
+      : (uk ? "Підхід видалено." : "Set deleted."), true);
+  }
+
   const exerciseCountLabel = uk
     ? `${exerciseIndex + 1} / ${exerciseCount} вправ`
     : `${exerciseIndex + 1} / ${exerciseCount} exercises`;
@@ -432,6 +605,8 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
           historyLoading={historyById[target.id] === undefined}
           copiedHint={interactive && copiedHint}
           onCopyHistorySet={copyHistorySet}
+          onUpdateHistoricalSet={(entry, set, payload) => updateHistoricalSet(target.id, entry, set, payload)}
+          onDeleteHistoricalSet={(entry, set) => deleteHistoricalSet(target.id, entry, set)}
         />
       </div>
     );
@@ -501,6 +676,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
         </header>
 
         {error && <div className={styles.errorBanner} role="alert">{error}</div>}
+        {historyAnnouncement && <p ref={historyAnnouncementRef} className={styles.liveProgress} role="status" aria-live="polite" tabIndex={-1}>{historyAnnouncement}</p>}
 
         <div className={styles.workoutWorkspace}>
           <button

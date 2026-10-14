@@ -80,6 +80,7 @@ export type StrengthSetDto = {
 };
 
 export type ExerciseHistorySetDto = {
+  id: number;
   setNumber: number;
   /** Actual set completion instant; null when the source did not record it. */
   completedAt: string | null;
@@ -88,6 +89,7 @@ export type ExerciseHistorySetDto = {
   bandNominalResistanceKg: number | null;
   rir: number | null;
   comment: string | null;
+  loadAccountingOverride?: unknown | null;
 };
 
 export type ExerciseHistoryEntryDto = {

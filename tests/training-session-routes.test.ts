@@ -5,6 +5,7 @@ const trainingService = vi.hoisted(() => ({
   listRecentSessions: vi.fn(),
   countRecentSessions: vi.fn(),
   getSession: vi.fn(),
+  getSetForSession: vi.fn(),
   startSession: vi.fn(),
   createSet: vi.fn(),
   updateSet: vi.fn(),
@@ -19,7 +20,7 @@ import { POST as CREATE_SET } from "@/app/api/v1/training/sessions/[id]/exercise
 import { POST as CANCEL } from "@/app/api/v1/training/sessions/[id]/cancel/route";
 import { POST as FINISH } from "@/app/api/v1/training/sessions/[id]/finish/route";
 import { GET as DETAIL } from "@/app/api/v1/training/sessions/[id]/route";
-import { DELETE as DELETE_SET, PATCH as PATCH_SET } from "@/app/api/v1/training/sessions/[id]/sets/[setId]/route";
+import { DELETE as DELETE_SET, GET as GET_SET, PATCH as PATCH_SET } from "@/app/api/v1/training/sessions/[id]/sets/[setId]/route";
 import { GET as ACTIVE } from "@/app/api/v1/training/sessions/active/route";
 import { GET as RECENT } from "@/app/api/v1/training/sessions/recent/route";
 import { POST as START } from "@/app/api/v1/training/sessions/start/route";
@@ -219,6 +220,15 @@ describe("/api/v1/training/sessions", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ set: { ...setDto, reps: 8 }, modelPublicationStatus: "stale" });
     expect(trainingService.updateSet).toHaveBeenCalledWith(42, 9, { reps: 8 });
+  });
+
+  it("reads a set for mutation reconciliation without using session detail", async () => {
+    trainingService.getSetForSession.mockResolvedValue(setDto);
+    const response = await GET_SET(new Request(`${base}/42/sets/9`), setCtx("42", "9"));
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ set: setDto });
+    expect(trainingService.getSetForSession).toHaveBeenCalledWith(42, 9);
+    expect(trainingService.getSession).not.toHaveBeenCalled();
   });
 
   it("returns a conflict when strength publication loses its source snapshot", async () => {

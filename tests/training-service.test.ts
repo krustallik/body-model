@@ -305,6 +305,47 @@ describe("TrainingService programs", () => {
     service = new TrainingService(db as never, repo);
   });
 
+  it("reads an exact set for ambiguous-mutation reconciliation without finalizing sessions", async () => {
+    db.strengthSet.findFirst.mockResolvedValue({
+      id: 900,
+      sessionExerciseId: 501,
+      setNumber: 2,
+      reps: 8,
+      weightKg: decimal(32.5),
+      bandNominalResistanceKg: null,
+      rir: 2,
+      comment: "fixture",
+      completedAt: new Date("2026-09-17T16:10:00Z"),
+      createdAt: new Date("2026-09-17T16:09:00Z"),
+      updatedAt: new Date("2026-09-17T16:12:00Z"),
+      loadAccountingOverride: { additionalLoadKg: 2 },
+      sessionExercise: {
+        id: 501,
+        resistanceType: RESISTANCE.EXTERNAL_WEIGHT,
+        session: { id: 50, status: SESSION_STATUS.COMPLETED },
+      },
+    });
+
+    await expect(service.getSetForSession(50, 900)).resolves.toEqual({
+      id: 900,
+      sessionExerciseId: 501,
+      setNumber: 2,
+      reps: 8,
+      weightKg: 32.5,
+      bandNominalResistanceKg: null,
+      rir: 2,
+      comment: "fixture",
+      completedAt: "2026-09-17T16:10:00.000Z",
+      createdAt: "2026-09-17T16:09:00.000Z",
+      updatedAt: "2026-09-17T16:12:00.000Z",
+      loadAccountingOverride: { additionalLoadKg: 2 },
+    });
+    expect(db.strengthSet.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 900, sessionExercise: { sessionId: 50, session: { profileId: 1 } } },
+    }));
+    expect(db.strengthDiarySession.findMany).not.toHaveBeenCalled();
+  });
+
   it("does not rebuild Unified after a required training shadow refresh fails", async () => {
     const previousEvent = new Date("2071-01-01T12:00:00.000Z");
     const currentEvent = new Date("2071-01-02T16:00:00.000Z");

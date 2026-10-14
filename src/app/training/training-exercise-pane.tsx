@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import {
   EXERCISE_ORIGIN,
   RESISTANCE,
@@ -14,6 +14,7 @@ import type {
   StrengthSessionExerciseDto,
   StrengthSetDto,
 } from "@/modules/training/training.types";
+import type { UpdateSetInput } from "@/modules/training/training.schema";
 import { setExecutionOverrideV1Schema } from "@/modules/training/load-accounting-v1";
 import { resolveExerciseImageSrc } from "./exercise-images";
 import { resolveExerciseInfo } from "./exercise-info";
@@ -90,7 +91,302 @@ export type ExercisePaneProps = {
   historyLoading: boolean;
   copiedHint: boolean;
   onCopyHistorySet: (set: ExerciseHistorySetDto) => void;
+  onUpdateHistoricalSet: (entry: ExerciseHistoryEntryDto, set: ExerciseHistorySetDto, payload: UpdateSetInput) => Promise<void>;
+  onDeleteHistoricalSet: (entry: ExerciseHistoryEntryDto, set: ExerciseHistorySetDto) => Promise<void>;
 };
+
+type HistoricalSetDraft = {
+  reps: string;
+  asymmetric: boolean;
+  leftReps: string;
+  rightReps: string;
+  weightKg: string;
+  bandNominalResistanceKg: string;
+  rir: string;
+  comment: string;
+};
+
+function historicalSetDraft(set: ExerciseHistorySetDto): HistoricalSetDraft {
+  const parsedOverride = setExecutionOverrideV1Schema.safeParse(set.loadAccountingOverride);
+  const asymmetric = parsedOverride.success ? parsedOverride.data.reps : undefined;
+  return {
+    reps: String(set.reps),
+    asymmetric: asymmetric !== undefined,
+    leftReps: asymmetric ? String(asymmetric.left) : "",
+    rightReps: asymmetric ? String(asymmetric.right) : "",
+    weightKg: set.weightKg == null ? "" : String(set.weightKg),
+    bandNominalResistanceKg: set.bandNominalResistanceKg == null ? "" : String(set.bandNominalResistanceKg),
+    rir: set.rir == null ? "" : String(set.rir),
+    comment: set.comment ?? "",
+  };
+}
+
+function HistoricalSetRow({
+  entry,
+  set,
+  uk,
+  interactive,
+  onCopy,
+  onUpdate,
+  onDelete,
+}: {
+  entry: ExerciseHistoryEntryDto;
+  set: ExerciseHistorySetDto;
+  uk: boolean;
+  interactive: boolean;
+  onCopy: (set: ExerciseHistorySetDto) => void;
+  onUpdate: (entry: ExerciseHistoryEntryDto, set: ExerciseHistorySetDto, payload: UpdateSetInput) => Promise<void>;
+  onDelete: (entry: ExerciseHistoryEntryDto, set: ExerciseHistorySetDto) => Promise<void>;
+}) {
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [draft, setDraft] = useState(() => historicalSetDraft(set));
+  const pointerStart = useRef<{ x: number; y: number; id: number; width: number } | null>(null);
+  const suppressClickUntil = useRef(0);
+  const wasEditing = useRef(false);
+  const actionToggleRef = useRef<HTMLButtonElement | null>(null);
+  const firstEditorRef = useRef<HTMLInputElement | null>(null);
+  const override = set.loadAccountingOverride == null
+    ? null
+    : setExecutionOverrideV1Schema.safeParse(set.loadAccountingOverride);
+  const canPreserveOverride = override === null || override.success;
+  const asymmetricCurrent = override?.success ? override.data.reps : undefined;
+
+  useEffect(() => {
+    if (editing) firstEditorRef.current?.focus();
+    else if (wasEditing.current) actionToggleRef.current?.focus();
+    wasEditing.current = editing;
+  }, [editing]);
+
+  function preserveScroll(update: () => void) {
+    const scrollY = window.scrollY;
+    update();
+    window.requestAnimationFrame(() => window.scrollTo({ top: scrollY, behavior: "instant" }));
+  }
+
+  function beginEdit() {
+    if (!canPreserveOverride) return;
+    setDraft(historicalSetDraft(set));
+    setError(null);
+    setEditing(true);
+    setActionsOpen(false);
+  }
+
+  function cancelEdit() {
+    preserveScroll(() => {
+      setEditing(false);
+      setError(null);
+      setDraft(historicalSetDraft(set));
+    });
+  }
+
+  async function save() {
+    const reps = Number(draft.reps);
+    if (!draft.asymmetric && (!Number.isInteger(reps) || reps < 1)) {
+      setError(uk ? "Вкажіть цілу кількість повторень." : "Enter a whole number of reps.");
+      return;
+    }
+    const left = Number(draft.leftReps);
+    const right = Number(draft.rightReps);
+    if (draft.asymmetric && (!Number.isInteger(left) || left < 0 || !Number.isInteger(right) || right < 0 || left + right < 1)) {
+      setError(uk ? "Вкажіть цілі повторення для обох сторін." : "Enter whole-number reps for both sides.");
+      return;
+    }
+    const rir = draft.rir.trim() === "" ? null : Number(draft.rir);
+    if (rir !== null && (!Number.isInteger(rir) || rir < 0 || rir > 10)) {
+      setError(uk ? "RIR має бути цілим числом від 0 до 10." : "RIR must be a whole number from 0 to 10.");
+      return;
+    }
+    const payload: UpdateSetInput = {
+      reps: draft.asymmetric ? left + right : reps,
+      rir,
+      comment: draft.comment.trim() || null,
+    };
+    if (entry.resistanceType === RESISTANCE.EXTERNAL_WEIGHT) {
+      const weightKg = parseTrainingDecimal(draft.weightKg);
+      if (!Number.isFinite(weightKg) || weightKg <= 0) {
+        setError(uk ? "Вкажіть вагу." : "Enter a load.");
+        return;
+      }
+      payload.weightKg = weightKg;
+    } else if (entry.resistanceType === RESISTANCE.RESISTANCE_BAND) {
+      const bandNominalResistanceKg = parseTrainingDecimal(draft.bandNominalResistanceKg);
+      if (!Number.isFinite(bandNominalResistanceKg) || bandNominalResistanceKg <= 0) {
+        setError(uk ? "Вкажіть опір резинки." : "Enter band resistance.");
+        return;
+      }
+      payload.bandNominalResistanceKg = bandNominalResistanceKg;
+    }
+    if (override?.success) {
+      const nextOverride = { ...override.data };
+      if (draft.asymmetric) {
+        nextOverride.reps = { kind: "asymmetric-per-side", left, right };
+      } else {
+        delete nextOverride.reps;
+      }
+      payload.loadAccountingOverride = Object.keys(nextOverride).length > 0 ? nextOverride : null;
+    } else if (draft.asymmetric) {
+      payload.loadAccountingOverride = { reps: { kind: "asymmetric-per-side", left, right } };
+    }
+
+    setBusy(true);
+    setError(null);
+    try {
+      await onUpdate(entry, set, payload);
+      preserveScroll(() => {
+        setEditing(false);
+      });
+    } catch {
+      setError(uk ? "Не вдалося зберегти підхід." : "Could not save this set.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    if (!window.confirm(uk ? "Видалити цей історичний підхід?" : "Delete this historical set?")) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onDelete(entry, set);
+    } catch {
+      setError(uk ? "Не вдалося видалити підхід." : "Could not delete this set.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function onPointerDown(event: ReactPointerEvent<HTMLLIElement>) {
+    event.stopPropagation();
+    // A new gesture supersedes any click suppression left by a swipe that emitted no click.
+    suppressClickUntil.current = 0;
+    if (!interactive || event.pointerType === "mouse" || busy || editing) return;
+    if (event.target instanceof Element && event.target.closest("[data-history-action]:not([data-history-action='copy'])")) return;
+    pointerStart.current = {
+      x: event.clientX,
+      y: event.clientY,
+      id: event.pointerId,
+      width: event.currentTarget.getBoundingClientRect().width,
+    };
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* pointer capture is optional */ }
+  }
+
+  function onPointerMove(event: ReactPointerEvent<HTMLLIElement>) {
+    event.stopPropagation();
+    const start = pointerStart.current;
+    if (!start || start.id !== event.pointerId) return;
+    const dx = event.clientX - start.x;
+    const dy = event.clientY - start.y;
+    if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy) * 1.15) event.preventDefault();
+  }
+
+  function onPointerUp(event: ReactPointerEvent<HTMLLIElement>) {
+    event.stopPropagation();
+    const start = pointerStart.current;
+    pointerStart.current = null;
+    if (!start || start.id !== event.pointerId) return;
+    const dx = event.clientX - start.x;
+    const dy = event.clientY - start.y;
+    if (Math.abs(dx) <= Math.abs(dy) * 1.15) return;
+    if (Math.abs(dx) >= 56) suppressClickUntil.current = Date.now() + 400;
+    if (dx > 56) {
+      setActionsOpen(false);
+      return;
+    }
+    if (dx > -56) return;
+    setActionsOpen(true);
+    if (start.width >= 140 && -dx >= start.width * 0.86 && interactive && canPreserveOverride) void remove();
+  }
+
+  return (
+    <li
+      className={styles.workoutHistorySetRow}
+      data-testid={`history-set-${entry.sessionId}-${set.id}`}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={(event) => { event.stopPropagation(); pointerStart.current = null; }}
+      onClickCapture={(event) => {
+        if (Date.now() > suppressClickUntil.current) return;
+        event.preventDefault();
+        event.stopPropagation();
+        suppressClickUntil.current = 0;
+      }}
+    >
+      {interactive ? (
+        <button
+          type="button"
+          data-history-action="copy"
+          className={styles.workoutHistorySetBtn}
+          aria-label={uk ? `Підставити дані підходу ${set.setNumber}` : `Use values from set ${set.setNumber}`}
+          onClick={() => onCopy(set)}
+        >
+          <span>#{set.setNumber}</span>
+          <span>{historyLoadLabel(entry.resistanceType, set, uk)}{" × "}{set.reps}{set.rir != null ? ` · RIR ${set.rir}` : ""}</span>
+          <time dateTime={set.completedAt ?? undefined}>
+            {set.completedAt && Number.isFinite(Date.parse(set.completedAt))
+              ? new Intl.DateTimeFormat(uk ? "uk-UA" : "en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: DEFAULT_TIME_ZONE }).format(new Date(set.completedAt))
+              : (uk ? "час не записано" : "time not recorded")}
+          </time>
+        </button>
+      ) : (
+        <div className={styles.workoutHistorySetBtn}>
+          <span>#{set.setNumber}</span>
+          <span>{historyLoadLabel(entry.resistanceType, set, uk)}{" × "}{set.reps}{set.rir != null ? ` · RIR ${set.rir}` : ""}</span>
+          <time dateTime={set.completedAt ?? undefined}>
+            {set.completedAt && Number.isFinite(Date.parse(set.completedAt))
+              ? new Intl.DateTimeFormat(uk ? "uk-UA" : "en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: DEFAULT_TIME_ZONE }).format(new Date(set.completedAt))
+              : (uk ? "час не записано" : "time not recorded")}
+          </time>
+        </div>
+      )}
+      {set.comment ? <em>{set.comment}</em> : null}
+      {interactive && !editing && (
+        <div className={styles.workoutHistoryActions}>
+          <button
+            type="button"
+            data-history-action="toggle"
+            ref={actionToggleRef}
+            aria-label={uk ? `Дії для підходу ${set.setNumber}` : `Actions for set ${set.setNumber}`}
+            aria-expanded={actionsOpen}
+            onClick={() => setActionsOpen((open) => !open)}
+          >
+            {uk ? "Дії" : "Actions"}
+          </button>
+          {actionsOpen && <>
+            <button type="button" data-history-action="edit" disabled={!canPreserveOverride || busy} onClick={beginEdit}>
+              {uk ? "Редагувати" : "Edit"}
+            </button>
+            <button type="button" data-history-action="delete" className={styles.workoutHistoryDelete} disabled={busy} onClick={() => void remove()}>
+              {uk ? "Видалити" : "Delete"}
+            </button>
+          </>}
+        </div>
+      )}
+      {interactive && editing && (
+        <form className={styles.workoutHistoryEditForm} onSubmit={(event) => { event.preventDefault(); void save(); }}>
+          {draft.asymmetric ? <>
+            <label><span>{uk ? "Повтори зліва" : "Left reps"}</span><input ref={firstEditorRef} disabled={busy} inputMode="numeric" value={draft.leftReps} onChange={(event) => setDraft((current) => ({ ...current, leftReps: event.target.value }))} /></label>
+            <label><span>{uk ? "Повтори справа" : "Right reps"}</span><input disabled={busy} inputMode="numeric" value={draft.rightReps} onChange={(event) => setDraft((current) => ({ ...current, rightReps: event.target.value }))} /></label>
+          </> : <label><span>{uk ? "Повтори" : "Reps"}</span><input ref={firstEditorRef} disabled={busy} inputMode="numeric" value={draft.reps} onChange={(event) => setDraft((current) => ({ ...current, reps: event.target.value }))} /></label>}
+          {entry.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && <label><span>{uk ? "Вага, кг" : "Weight, kg"}</span><input disabled={busy} inputMode="decimal" value={draft.weightKg} onChange={(event) => setDraft((current) => ({ ...current, weightKg: event.target.value }))} /></label>}
+          {entry.resistanceType === RESISTANCE.RESISTANCE_BAND && <label><span>{uk ? "Опір резинки, кг" : "Band resistance, kg"}</span><input disabled={busy} inputMode="decimal" value={draft.bandNominalResistanceKg} onChange={(event) => setDraft((current) => ({ ...current, bandNominalResistanceKg: event.target.value }))} /></label>}
+          {asymmetricCurrent !== undefined && <p>{uk ? "Асиметричні повтори збережуться окремо для кожної сторони." : "Asymmetric reps stay stored separately for each side."}</p>}
+          <label><span>RIR</span><input disabled={busy} inputMode="numeric" value={draft.rir} onChange={(event) => setDraft((current) => ({ ...current, rir: event.target.value }))} /></label>
+          <label className={styles.workoutHistoryComment}><span>{uk ? "Коментар" : "Comment"}</span><textarea disabled={busy} maxLength={500} value={draft.comment} onChange={(event) => setDraft((current) => ({ ...current, comment: event.target.value }))} /></label>
+          {error && <p role="alert">{error}</p>}
+          <div className={styles.workoutHistoryActions}>
+            <button type="submit" data-history-action="save" disabled={busy}>{busy ? (uk ? "Збереження…" : "Saving…") : (uk ? "Зберегти" : "Save")}</button>
+            <button type="button" data-history-action="cancel" disabled={busy} onClick={cancelEdit}>{uk ? "Скасувати" : "Cancel"}</button>
+          </div>
+        </form>
+      )}
+      {error && !editing && <p role="alert">{error}</p>}
+    </li>
+  );
+}
 
 export function ExercisePane(props: ExercisePaneProps) {
   const {
@@ -118,6 +414,8 @@ export function ExercisePane(props: ExercisePaneProps) {
     historyLoading,
     copiedHint,
     onCopyHistorySet,
+    onUpdateHistoricalSet,
+    onDeleteHistoricalSet,
   } = props;
 
   const sets = exercise.sets.slice().sort((a, b) => b.setNumber - a.setNumber);
@@ -446,48 +744,16 @@ export function ExercisePane(props: ExercisePaneProps) {
                   </div>
                   <ul className={styles.workoutHistorySets}>
                     {entry.sets.map((set) => (
-                      <li key={`${entry.sessionId}-${set.setNumber}`}>
-                        {interactive ? (
-                          <button
-                            type="button"
-                            className={styles.workoutHistorySetBtn}
-                            onClick={() => onCopyHistorySet(set)}
-                          >
-                            <span>#{set.setNumber}</span>
-                            <span>
-                              {historyLoadLabel(entry.resistanceType, set, uk)}
-                              {" × "}
-                              {set.reps}
-                              {set.rir != null ? ` · RIR ${set.rir}` : ""}
-                            </span>
-                            <time dateTime={set.completedAt ?? undefined}>
-                              {set.completedAt && Number.isFinite(Date.parse(set.completedAt))
-                                ? new Intl.DateTimeFormat(uk ? "uk-UA" : "en-US", {
-                                    hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: DEFAULT_TIME_ZONE,
-                                  }).format(new Date(set.completedAt))
-                                : (uk ? "час не записано" : "time not recorded")}
-                            </time>
-                          </button>
-                        ) : (
-                          <div className={styles.workoutHistorySetBtn}>
-                            <span>#{set.setNumber}</span>
-                            <span>
-                              {historyLoadLabel(entry.resistanceType, set, uk)}
-                              {" × "}
-                              {set.reps}
-                              {set.rir != null ? ` · RIR ${set.rir}` : ""}
-                            </span>
-                            <time dateTime={set.completedAt ?? undefined}>
-                              {set.completedAt && Number.isFinite(Date.parse(set.completedAt))
-                                ? new Intl.DateTimeFormat(uk ? "uk-UA" : "en-US", {
-                                    hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: DEFAULT_TIME_ZONE,
-                                  }).format(new Date(set.completedAt))
-                                : (uk ? "час не записано" : "time not recorded")}
-                            </time>
-                          </div>
-                        )}
-                        {set.comment ? <em>{set.comment}</em> : null}
-                      </li>
+                      <HistoricalSetRow
+                        key={`${entry.sessionId}-${set.id}`}
+                        entry={entry}
+                        set={set}
+                        uk={uk}
+                        interactive={interactive}
+                        onCopy={onCopyHistorySet}
+                        onUpdate={onUpdateHistoricalSet}
+                        onDelete={onDeleteHistoricalSet}
+                      />
                     ))}
                   </ul>
                 </li>

@@ -367,18 +367,41 @@ describe("TrainingService programs", () => {
   it("does not rebuild Unified after a completed-session dependency refresh fails", async () => {
     const session = sessionDetail({ status: SESSION_STATUS.COMPLETED });
     const repository = { getSession: vi.fn().mockResolvedValue(session) };
-    const failedShadowRefresh = vi.fn().mockRejectedValue(new Error("session dependency refresh failed"));
+    const refreshError = new Error("private database diagnostic and user data");
+    Object.assign(refreshError, { code: "P2034" });
+    refreshError.stack = [
+      "Error: private database diagnostic and user data",
+      "    at refresh (/app/src/modules/training/dependency-refresh.ts:42:8)",
+    ].join("\n");
+    const failedShadowRefresh = vi.fn().mockRejectedValue(refreshError);
     const productionService = new TrainingService(prisma as never, repository as never, failedShadowRefresh);
     const internals = productionService as unknown as {
       refreshUnifiedAfterCompletedSessionMutation: (sessionId: number, profileId: number, operation: string) => Promise<void>;
     };
     const unifiedRebuild = vi.spyOn(unifiedPublicationService, "rebuildUnifiedExperimentalPhysiologyStateV1");
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    let loggedFailureText = "";
 
-    await internals.refreshUnifiedAfterCompletedSessionMutation(50, 1, "test-session-edit");
+    try {
+      await internals.refreshUnifiedAfterCompletedSessionMutation(50, 1, "test-session-edit");
+      loggedFailureText = String(warning.mock.calls[0]?.[0]);
+    } finally {
+      warning.mockRestore();
+    }
 
     expect(repository.getSession).toHaveBeenCalledWith(50, 1);
     expect(failedShadowRefresh).toHaveBeenCalledWith({ session, profileId: 1 });
     expect(unifiedRebuild).not.toHaveBeenCalled();
+    const loggedFailure = JSON.parse(loggedFailureText) as Record<string, unknown>;
+    expect(loggedFailure).toMatchObject({
+      event: "training_unified_republication_failed",
+      operation: "test-session-edit-dependency-refresh",
+      stage: "session-dependent-shadow-chain",
+      errorCode: "P2034",
+      errorFrame: "src/modules/training/dependency-refresh.ts:42:8",
+    });
+    expect(JSON.stringify(loggedFailure)).not.toContain("private database diagnostic");
+    expect(JSON.stringify(loggedFailure)).not.toContain("user data");
     unifiedRebuild.mockRestore();
   });
 

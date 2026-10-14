@@ -19,7 +19,7 @@ describe("maintenance-first candidate verification failures", () => {
     expect(readFileSync(path.join(fixture.root, "events.log"), "utf8").match(/schema-preflight-no-deps/g)).toHaveLength(2);
   }, 30_000);
 
-  it.skipIf(!bashAvailable)("stops a candidate when Unified V4 currentness fails before route commit", () => {
+  it.skipIf(!bashAvailable)("deploys a healthy schema-compatible app while stale V4 stays runtime-blocked", () => {
     const fixture = createFixture();
     const result = runFixture(fixture, "bash scripts/deploy.sh", {
       DEPLOY_SHA: fixture.candidateSha,
@@ -27,11 +27,11 @@ describe("maintenance-first candidate verification failures", () => {
       FAIL_FINAL_V4_CHECK: "1",
     });
 
-    expect(result.status).not.toBe(0);
-    expect(appState(fixture)).toEqual({ sha: fixture.candidateSha, imageId: CANDIDATE_IMAGE_ID, status: "exited", present: "false" });
-    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("maintenance");
-    expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).not.toContain("reverse_proxy");
-    expect(readFileSync(path.join(fixture.root, "events.log"), "utf8").match(/unified-v4-check/g)).toHaveLength(2);
+    expect(result.status).toBe(0);
+    expect(appState(fixture)).toEqual({ sha: fixture.candidateSha, imageId: CANDIDATE_IMAGE_ID, status: "healthy", present: "true" });
+    expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
+    expect(readFileSync(path.join(fixture.routes, "bodycast.caddy"), "utf8")).toContain("reverse_proxy");
+    expect(readFileSync(path.join(fixture.root, "events.log"), "utf8")).not.toContain("unified-v4-check");
   }, 30_000);
 
   it.skipIf(!bashAvailable)("keeps an unexpected release marker and maintenance after candidate health but before serving", () => {

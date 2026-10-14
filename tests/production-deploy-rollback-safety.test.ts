@@ -138,7 +138,7 @@ describe("maintenance-first deploy fail-closed checks", () => {
     expect(readFileSync(path.join(fixture.root, "image-deploy-rollback"), "utf8").trim()).toBe(PREVIOUS_IMAGE_ID);
   }, 30_000);
 
-  it.skipIf(!bashAvailable)("skips app replacement for a duplicate healthy exact SHA after schema and V4 checks", () => {
+  it.skipIf(!bashAvailable)("skips app replacement for a duplicate healthy exact SHA after schema checks", () => {
     const fixture = createFixture();
     writeFileSync(path.join(fixture.root, "app-sha"), `${fixture.candidateSha}\n`);
     writeFileSync(path.join(fixture.root, "app-image-id"), `${CANDIDATE_IMAGE_ID}\n`);
@@ -156,7 +156,7 @@ describe("maintenance-first deploy fail-closed checks", () => {
     expect(readFileSync(path.join(fixture.root, "active-route"), "utf8").trim()).toBe("serving");
     const events = readFileSync(path.join(fixture.root, "events.log"), "utf8");
     expect(events).toContain("schema-preflight-no-deps");
-    expect(events).toContain("unified-v4-check");
+    expect(events).not.toContain("unified-v4-check");
     expect(readFileSync(path.join(fixture.root, "main-fetch-count"), "utf8").trim()).toBe("3");
     expect(events).not.toContain("atomic-live-route-replacement:bodycast.caddy");
     expect(events).not.toContain("compose-stop-app");

@@ -14,6 +14,7 @@ const routePrimitivesSh = readFileSync(resolve("scripts/production-route-primiti
 const routePathSh = readFileSync(resolve("scripts/production-route-path.sh"), "utf8");
 const releaseMarkerSh = readFileSync(resolve("scripts/production-release-marker.sh"), "utf8");
 const composeYaml = readFileSync(resolve("docker-compose.prod.yml"), "utf8");
+const modelForecastService = readFileSync(resolve("src/modules/model-forecast/model-forecast.service.ts"), "utf8");
 
 describe("production maintenance-first deploy safety contracts", () => {
   it("automatically deploys after exact-current-main CI and keeps manual cutover owner-gated", () => {
@@ -162,12 +163,14 @@ describe("production maintenance-first deploy safety contracts", () => {
     expect(deploySh).not.toContain("bodycast_write_route");
     expect(deploySh).not.toContain("bodycast_stage_route_config");
 
-    const v4At = deploySh.lastIndexOf("run_v4_traffic_check\n");
     const mainFenceAt = deploySh.lastIndexOf("assert_current_main_sha\nbodycast_assert_safe_routes_location");
     const routeStageCheckAt = deploySh.indexOf('[[ -f "$route_stage"', mainFenceAt);
     const commitAt = deploySh.indexOf("release_state=\"SERVING_COMMIT\"", routeStageCheckAt);
-    expect(v4At).toBeGreaterThan(-1);
-    expect(mainFenceAt).toBeGreaterThan(v4At);
+    expect(deploySh).not.toContain("run_v4_traffic_check");
+    expect(deploySh).not.toContain("unified-v4-traffic-check.mjs");
+    expect(modelForecastService).toContain("if (!v4IsCurrent) return blockedV2");
+    expect(modelForecastService).toContain("latestUnifiedRow?.modelRevision !== UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION");
+    expect(mainFenceAt).toBeGreaterThan(-1);
     expect(routeStageCheckAt).toBeGreaterThan(mainFenceAt);
     expect(commitAt).toBeGreaterThan(routeStageCheckAt);
   });

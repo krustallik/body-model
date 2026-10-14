@@ -3,7 +3,7 @@ import { healthSyncRepository, type HealthSyncRepository } from "./health.reposi
 import type { HealthSyncRequest, HealthSyncResult } from "./health.types";
 import type { TimestampedHealthMetricSample } from "./normalize-shortcut-range-payload";
 import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
-import { errorKind, logEvent } from "@/lib/logger";
+import { errorDiagnosticFields, errorKind, logEvent } from "@/lib/logger";
 import { trainingService } from "@/modules/training/training.service";
 import {
   recordExperimentalStepperActiveEnergyShadowsForLocalDate,
@@ -128,8 +128,8 @@ export async function syncHealthData(
   } catch (error) {
     markRequiredFailure(date.date);
     logEvent("warn", "training_match_after_sync_failed", {
-      date: date.date,
-      errorType: errorKind(error),
+      stage: "training-match-after-health-sync",
+      ...errorDiagnosticFields(error),
     });
   }
 
@@ -143,8 +143,8 @@ export async function syncHealthData(
   } catch (error) {
     markRequiredFailure(date.date);
     logEvent("warn", "stepper_reconciliation_after_sync_failed", {
-      date: date.date,
-      errorType: errorKind(error),
+      stage: "stepper-reconciliation-after-health-sync",
+      ...errorDiagnosticFields(error),
     });
   }
 
@@ -154,8 +154,8 @@ export async function syncHealthData(
   } catch (error) {
     markRequiredFailure(date.date);
     logEvent("warn", "experimental_stepper_active_energy_shadow_failed", {
-      date: date.date,
-      errorType: errorKind(error),
+      stage: "stepper-active-energy-shadow",
+      ...errorDiagnosticFields(error),
     });
   }
 
@@ -167,8 +167,8 @@ export async function syncHealthData(
   } catch (error) {
     markRequiredFailure(date.date);
     logEvent("warn", "experimental_strength_active_energy_refresh_failed", {
-      date: date.date,
-      errorType: errorKind(error),
+      stage: "strength-active-energy-shadow-refresh",
+      ...errorDiagnosticFields(error),
     });
   }
 
@@ -178,8 +178,8 @@ export async function syncHealthData(
   } catch (error) {
     markRequiredFailure(date.date);
     logEvent("warn", "experimental_stepper_glycogen_demand_shadow_failed", {
-      date: date.date,
-      errorType: errorKind(error),
+      stage: "stepper-glycogen-demand-shadow",
+      ...errorDiagnosticFields(error),
     });
   }
 
@@ -188,8 +188,8 @@ export async function syncHealthData(
     await recordExperimentalFfmRetentionShadow({ date: date.date });
   } catch (error) {
     logEvent("warn", "experimental_ffm_retention_shadow_failed", {
-      date: date.date,
-      errorType: errorKind(error),
+      stage: "ffm-retention-shadow",
+      ...errorDiagnosticFields(error),
     });
   }
 
@@ -198,8 +198,8 @@ export async function syncHealthData(
     await recordExperimentalLocalHypertrophyResponseShadow({ date: date.date });
   } catch (error) {
     logEvent("warn", "experimental_local_hypertrophy_response_shadow_failed", {
-      date: date.date,
-      errorType: errorKind(error),
+      stage: "local-hypertrophy-response-shadow",
+      ...errorDiagnosticFields(error),
     });
   }
   }
@@ -213,8 +213,8 @@ export async function syncHealthData(
     } catch (error) {
       markRequiredFailure(chronologicalDates[0]!.date);
       logEvent("warn", "experimental_glycogen_state_shadow_failed", {
-        date: chronologicalDates[0]!.date,
-        errorType: errorKind(error),
+        stage: "glycogen-state-shadow-rebuild",
+        ...errorDiagnosticFields(error),
       });
     }
   }
@@ -227,8 +227,8 @@ export async function syncHealthData(
     } catch (error) {
       markRequiredFailure(chronologicalDates[0]!.date);
       logEvent("warn", "experimental_authoritative_muscle_suffix_rebuild_failed", {
-        fromDate: chronologicalDates[0]!.date,
-        errorType: errorKind(error),
+        stage: "relative-muscle-suffix-rebuild",
+        ...errorDiagnosticFields(error),
       });
     }
   }
@@ -248,7 +248,10 @@ export async function syncHealthData(
       await recordExperimentalStepperActiveEnergyShadowsForMassWindow({ measurementDates, measurementInstants });
     } catch (error) {
       markRequiredFailure(chronologicalDates[0]!.date);
-      logEvent("warn", "experimental_stepper_mass_window_refresh_failed", { errorType: errorKind(error) });
+      logEvent("warn", "experimental_stepper_mass_window_refresh_failed", {
+        stage: "stepper-mass-window-refresh",
+        ...errorDiagnosticFields(error),
+      });
     }
 
     try {
@@ -292,7 +295,10 @@ export async function syncHealthData(
       }
     } catch (error) {
       modelPublicationStatus = "stale";
-      logEvent("warn", "active_energy_publication_failed", { errorType: errorKind(error) });
+      logEvent("warn", "active_energy_publication_failed", {
+        stage: "health-active-energy-publication",
+        ...errorDiagnosticFields(error),
+      });
       let anotherBlockRemains: boolean | null = null;
       try {
         anotherBlockRemains = await healthPublicationLifecycle.hasUnifiedPublicationBlocks(1);
@@ -310,7 +316,8 @@ export async function syncHealthData(
           });
         } catch (restoreError) {
           logEvent("error", "health_publication_retry_fence_restore_failed", {
-            errorType: errorKind(restoreError),
+            stage: "health-publication-retry-fence-restore",
+            ...errorDiagnosticFields(restoreError),
           });
         }
       }

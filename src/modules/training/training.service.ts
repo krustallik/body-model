@@ -93,7 +93,7 @@ import {
 } from "@/modules/model-episodes/unified-experimental-physiology-state.service";
 import { recalculateActiveEnergyChangesV1, type ActiveEnergyPublicationStatusV1 } from "@/modules/activity/active-energy-publication";
 import { isUnifiedGenerationCurrentV1 } from "@/modules/model-episodes/publication-generation-v1";
-import { errorKind, logEvent } from "@/lib/logger";
+import { errorDiagnosticFields, logEvent } from "@/lib/logger";
 import { strengthSessionSourceFingerprintV1 } from "./strength-publication-v1";
 import type {
   HistoricalStrengthWorkoutDto,
@@ -122,6 +122,34 @@ type TrainingShadowRefreshResultV1 = {
 };
 
 type TrainingPublicationBlockTokenV1 = { sourceKey: string; token: { revision: number; fromDate: string } };
+
+class TrainingPublicationStageError extends Error {
+  constructor(readonly stage: string, readonly originalError: unknown) {
+    super("Training dependency refresh failed");
+    this.name = "TrainingPublicationStageError";
+    if (originalError instanceof Error) {
+      const code = (originalError as Error & { code?: unknown }).code;
+      if (typeof code === "string") (this as Error & { code?: string }).code = code;
+      this.stack = originalError.stack;
+    }
+  }
+}
+
+async function withTrainingPublicationStage<T>(stage: string, action: () => Promise<T>): Promise<T> {
+  try {
+    return await action();
+  } catch (error) {
+    if (error instanceof TrainingPublicationStageError || error instanceof StaleStrengthEnergySourceError) throw error;
+    throw new TrainingPublicationStageError(stage, error);
+  }
+}
+
+function trainingPublicationDiagnosticFields(error: unknown) {
+  if (error instanceof TrainingPublicationStageError) {
+    return { ...errorDiagnosticFields(error.originalError), stage: error.stage };
+  }
+  return errorDiagnosticFields(error);
+}
 
 function sameTrainingPublicationBlockToken(
   left: { revision: number; fromDate: string } | null,
@@ -184,80 +212,85 @@ async function recordExperimentalStrengthShadows(input: {
     String(input.session.id),
     ...(input.publicationBlockSourceKeys ?? []),
   ])];
-  const blockTokens = (await Promise.all(publicationBlockSourceKeys.map(async (sourceKey) => ({
-    sourceKey,
-    token: await lifecycle.readUnifiedPublicationBlockToken({
-      profileId: input.profileId, source: "training", sourceKey,
-    }),
-  })))).filter((entry): entry is { sourceKey: string; token: { revision: number; fromDate: string } } => entry.token !== null);
+  const blockTokens = (await withTrainingPublicationStage("read-training-publication-fences", () => Promise.all(
+    publicationBlockSourceKeys.map(async (sourceKey) => ({
+      sourceKey,
+      token: await lifecycle.readUnifiedPublicationBlockToken({
+        profileId: input.profileId, source: "training", sourceKey,
+      }),
+    })),
+  ))).filter((entry): entry is { sourceKey: string; token: { revision: number; fromDate: string } } => entry.token !== null);
   let blockToken = blockTokens.find(({ sourceKey }) => sourceKey === String(input.session.id))?.token ?? null;
-  const currentSession = await new TrainingRepository(prisma).getSession(input.session.id, input.profileId);
+  const currentSession = await withTrainingPublicationStage("load-completed-training-session", () =>
+    new TrainingRepository(prisma).getSession(input.session.id, input.profileId));
   if (currentSession === null) throw new Error("training source disappeared before dependent-shadow refresh");
   const currentInput = { session: currentSession, profileId: input.profileId };
   const relativeMuscleEventAt = currentSession.matchedWorkout?.startAt
     ?? currentSession.effectiveAccountingAt
     ?? currentSession.webStartedAt
     ?? currentSession.createdAt;
-  const sourceDate = await trainingModelDate(input.profileId, relativeMuscleEventAt);
+  const sourceDate = await withTrainingPublicationStage("resolve-training-model-date", () =>
+    trainingModelDate(input.profileId, relativeMuscleEventAt));
   const refreshFromDate = blockTokens.reduce(
     (earliest, { token }) => token.fromDate < earliest ? token.fromDate : earliest,
     sourceDate,
   );
-  await recordExperimentalStrengthEnergyShadow(currentInput);
+  await withTrainingPublicationStage("strength-active-energy-shadow", () => recordExperimentalStrengthEnergyShadow(currentInput));
   // Keep production current before rebuilding dependent shadows, but defer
   // Unified publication until this full shadow chain has completed.
-  const production = await recalculateActiveEnergyChangesV1();
+  const production = await withTrainingPublicationStage("production-active-energy-recalculation", () =>
+    recalculateActiveEnergyChangesV1());
   if (production === null) {
     throw new Error("production model is unavailable after completed training source update");
   }
-  const clearBlockTokens = await captureTrainingPublicationBlocksAfterMaterialization({
-    profileId: input.profileId,
-    session: currentSession,
-    sourceKeys: publicationBlockSourceKeys,
-    initialTokens: blockTokens,
-    refreshedFromDate: refreshFromDate,
-  });
+  const clearBlockTokens = await withTrainingPublicationStage("capture-training-publication-fences", () =>
+    captureTrainingPublicationBlocksAfterMaterialization({
+      profileId: input.profileId,
+      session: currentSession,
+      sourceKeys: publicationBlockSourceKeys,
+      initialTokens: blockTokens,
+      refreshedFromDate: refreshFromDate,
+    }));
   blockToken = clearBlockTokens.find(({ sourceKey }) => sourceKey === String(input.session.id))?.token ?? null;
-  await recordExperimentalStrengthGlycogenDemandShadow(currentInput);
+  await withTrainingPublicationStage("strength-glycogen-demand-shadow", () =>
+    recordExperimentalStrengthGlycogenDemandShadow(currentInput));
   // State is replayed from the edited session's calendar date through the
   // durable suffix, so a historical diary/workout correction cannot leave
   // dependent glycogen rows current-looking but stale.
-  await recordExperimentalGlycogenStateShadow({ date: refreshFromDate, profileId: input.profileId });
+  await withTrainingPublicationStage("glycogen-state-shadow-rebuild", () =>
+    recordExperimentalGlycogenStateShadow({ date: refreshFromDate, profileId: input.profileId }));
   let relativeMuscleModelDate: string | undefined;
   if (relativeMuscleEventAt) {
     const fromInstant = refreshFromDate === sourceDate
       ? new Date(relativeMuscleEventAt)
       : await trainingModelDateStartInstant(input.profileId, refreshFromDate);
-    const dirty = await invalidateUnifiedRelativeMuscleSuffixV1({ profileId: input.profileId, fromInstant });
+    const dirty = await withTrainingPublicationStage("relative-muscle-invalidation", () =>
+      invalidateUnifiedRelativeMuscleSuffixV1({ profileId: input.profileId, fromInstant }));
     relativeMuscleModelDate = dirty?.modelDate;
-    await rebuildAuthoritativeRelativeMuscleTrajectory({
-      fromInstant,
-      profileId: input.profileId,
-    });
+    await withTrainingPublicationStage("relative-muscle-suffix-rebuild", () =>
+      rebuildAuthoritativeRelativeMuscleTrajectory({ fromInstant, profileId: input.profileId }));
   }
-  await recordExperimentalFfmRetentionShadowForSession({
-    sessionId: currentSession.id,
-    profileId: input.profileId,
-  });
-  await recordExperimentalLocalHypertrophyResponseShadowForSession({
-    sessionId: currentSession.id,
-    profileId: input.profileId,
-  });
+  await withTrainingPublicationStage("ffm-retention-shadow", () =>
+    recordExperimentalFfmRetentionShadowForSession({ sessionId: currentSession.id, profileId: input.profileId }));
+  await withTrainingPublicationStage("local-hypertrophy-shadow", () =>
+    recordExperimentalLocalHypertrophyResponseShadowForSession({ sessionId: currentSession.id, profileId: input.profileId }));
   if (!input.deferUnifiedPublication) {
     for (const { sourceKey, token } of clearBlockTokens) {
-      if (!await lifecycle.clearUnifiedPublicationBlock({
+      if (!await withTrainingPublicationStage("clear-training-publication-fence", () => lifecycle.clearUnifiedPublicationBlock({
         profileId: input.profileId,
         source: "training",
         sourceKey,
         expectedRevision: token.revision,
         expectedFromDate: token.fromDate,
-      })) {
+      }))) {
         throw new Error("training source changed during dependent-shadow refresh; Unified remains blocked");
       }
     }
-    if (!await deferTrainingPublicationIfAnotherSourceIsBlocked(lifecycle, input.profileId, clearBlockTokens)) {
+    if (!await withTrainingPublicationStage("check-remaining-publication-fences", () =>
+      deferTrainingPublicationIfAnotherSourceIsBlocked(lifecycle, input.profileId, clearBlockTokens))) {
       try {
-        await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: input.profileId, fromDate: relativeMuscleModelDate });
+        await withTrainingPublicationStage("unified-state-publication", () =>
+          rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: input.profileId, fromDate: relativeMuscleModelDate }));
       } catch (error) {
         await restoreTrainingPublicationFencesWhenUnblocked(lifecycle, input.profileId, clearBlockTokens);
         throw error;
@@ -279,69 +312,78 @@ async function recordExperimentalStrengthShadowsBySessionId(input: {
   clearTrainingFenceAfterDependencyRefresh?: boolean;
 }): Promise<TrainingShadowRefreshResultV1> {
   const lifecycle = new PhysiologyV7PersistenceRepository();
-  const refresh = await recordExperimentalStrengthEnergyShadowBySessionId({
-    sessionId: input.sessionId,
-    profileId: input.profileId,
-    ...(input.refreshAccounting === undefined ? {} : { refreshAccounting: input.refreshAccounting }),
-  });
+  const refresh = await withTrainingPublicationStage("strength-active-energy-shadow", () =>
+    recordExperimentalStrengthEnergyShadowBySessionId({
+      sessionId: input.sessionId,
+      profileId: input.profileId,
+      ...(input.refreshAccounting === undefined ? {} : { refreshAccounting: input.refreshAccounting }),
+    }));
   const session = refresh.session;
   if (session === null) throw new Error("training source disappeared before dependent-shadow refresh");
   const initialBlockToken = refresh.publicationBlockToken;
-  const production = await recalculateActiveEnergyChangesV1();
+  const production = await withTrainingPublicationStage("production-active-energy-recalculation", () =>
+    recalculateActiveEnergyChangesV1());
   if (production === null) throw new Error("production model is unavailable after completed training source update");
   const relativeMuscleEventAt = session.matchedWorkout?.startAt
     ?? session.effectiveAccountingAt
     ?? session.webStartedAt
     ?? session.createdAt;
-  const sourceDate = await trainingModelDate(input.profileId, relativeMuscleEventAt);
+  const sourceDate = await withTrainingPublicationStage("resolve-training-model-date", () =>
+    trainingModelDate(input.profileId, relativeMuscleEventAt));
   const refreshFromDate = initialBlockToken !== null && initialBlockToken.fromDate < sourceDate
     ? initialBlockToken.fromDate
     : sourceDate;
-  const clearBlockTokens = await captureTrainingPublicationBlocksAfterMaterialization({
-    profileId: input.profileId,
-    session,
-    sourceKeys: [String(input.sessionId)],
-    initialTokens: initialBlockToken === null ? [] : [{ sourceKey: String(input.sessionId), token: initialBlockToken }],
-    refreshedFromDate: refreshFromDate,
-  });
+  const clearBlockTokens = await withTrainingPublicationStage("capture-training-publication-fences", () =>
+    captureTrainingPublicationBlocksAfterMaterialization({
+      profileId: input.profileId,
+      session,
+      sourceKeys: [String(input.sessionId)],
+      initialTokens: initialBlockToken === null ? [] : [{ sourceKey: String(input.sessionId), token: initialBlockToken }],
+      refreshedFromDate: refreshFromDate,
+    }));
   const currentBlockToken = clearBlockTokens[0]?.token ?? null;
-  await recordExperimentalStrengthGlycogenDemandShadowBySessionId(input);
+  await withTrainingPublicationStage("strength-glycogen-demand-shadow", () =>
+    recordExperimentalStrengthGlycogenDemandShadowBySessionId(input));
   if (currentBlockToken !== null && currentBlockToken.fromDate < refreshFromDate) {
     throw new Error("training publication retry fence moved earlier than the refreshed dependency range");
   }
-  await recordExperimentalGlycogenStateShadow({ date: refreshFromDate, profileId: input.profileId });
+  await withTrainingPublicationStage("glycogen-state-shadow-rebuild", () =>
+    recordExperimentalGlycogenStateShadow({ date: refreshFromDate, profileId: input.profileId }));
   let relativeMuscleModelDate: string | undefined;
   if (relativeMuscleEventAt) {
     const fromInstant = refreshFromDate === sourceDate
       ? new Date(relativeMuscleEventAt)
       : await trainingModelDateStartInstant(input.profileId, refreshFromDate);
-    const dirty = await invalidateUnifiedRelativeMuscleSuffixV1({ profileId: input.profileId, fromInstant });
+    const dirty = await withTrainingPublicationStage("relative-muscle-invalidation", () =>
+      invalidateUnifiedRelativeMuscleSuffixV1({ profileId: input.profileId, fromInstant }));
     relativeMuscleModelDate = dirty?.modelDate;
-    await rebuildAuthoritativeRelativeMuscleTrajectory({
-      fromInstant,
-      profileId: input.profileId,
-    });
+    await withTrainingPublicationStage("relative-muscle-suffix-rebuild", () =>
+      rebuildAuthoritativeRelativeMuscleTrajectory({ fromInstant, profileId: input.profileId }));
   }
-  await recordExperimentalFfmRetentionShadowForSession(input);
-  await recordExperimentalLocalHypertrophyResponseShadowForSession(input);
+  await withTrainingPublicationStage("ffm-retention-shadow", () => recordExperimentalFfmRetentionShadowForSession(input));
+  await withTrainingPublicationStage("local-hypertrophy-shadow", () =>
+    recordExperimentalLocalHypertrophyResponseShadowForSession(input));
   // Event-relocation callers defer clearing until their additional old-date
   // relative-muscle refresh is complete. Weight-date callers have no such
   // outer dependency phase, so they explicitly clear after this full refresh
   // while the day/Health fence still protects shared publication.
   const clearTrainingFence = input.deferUnifiedPublication !== true
     || input.clearTrainingFenceAfterDependencyRefresh === true;
-  if (clearTrainingFence && currentBlockToken !== null && !await lifecycle.clearUnifiedPublicationBlock({
-    profileId: input.profileId,
-    source: "training",
-    sourceKey: String(input.sessionId),
-    expectedRevision: currentBlockToken.revision,
-    expectedFromDate: currentBlockToken.fromDate,
-  })) throw new StaleStrengthEnergySourceError();
+  if (clearTrainingFence && currentBlockToken !== null && !await withTrainingPublicationStage(
+    "clear-training-publication-fence",
+    () => lifecycle.clearUnifiedPublicationBlock({
+      profileId: input.profileId,
+      source: "training",
+      sourceKey: String(input.sessionId),
+      expectedRevision: currentBlockToken.revision,
+      expectedFromDate: currentBlockToken.fromDate,
+    }))) throw new StaleStrengthEnergySourceError();
   if (!input.deferUnifiedPublication) {
     const clearedFences = currentBlockToken === null
       ? []
       : [{ sourceKey: String(input.sessionId), token: currentBlockToken }];
-    if (await deferTrainingPublicationIfAnotherSourceIsBlocked(lifecycle, input.profileId, clearedFences)) {
+    if (await withTrainingPublicationStage("check-remaining-publication-fences", () =>
+      deferTrainingPublicationIfAnotherSourceIsBlocked(lifecycle, input.profileId, clearedFences))) {
       return {
         blockRevision: currentBlockToken?.revision ?? null,
         blockFromDate: currentBlockToken?.fromDate ?? null,
@@ -349,7 +391,8 @@ async function recordExperimentalStrengthShadowsBySessionId(input: {
       };
     }
     try {
-      await rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: input.profileId, fromDate: relativeMuscleModelDate });
+      await withTrainingPublicationStage("unified-state-publication", () =>
+        rebuildUnifiedExperimentalPhysiologyStateV1({ profileId: input.profileId, fromDate: relativeMuscleModelDate }));
     } catch (error) {
       await restoreTrainingPublicationFencesWhenUnblocked(lifecycle, input.profileId, clearedFences);
       throw error;
@@ -455,7 +498,7 @@ function stableJson(value: unknown): string {
 function logPhysiologyPublicationFailure(operation: string, error: unknown): void {
   logEvent("warn", "training_unified_republication_failed", {
     operation,
-    errorType: errorKind(error),
+    ...trainingPublicationDiagnosticFields(error),
   });
 }
 
@@ -2044,11 +2087,11 @@ export class TrainingService {
       // can change canonical strength energy and glycogen demand as well as
       // Relative Muscle; publishing after only one child refresh can make a
       // later unrelated writer expose an older child row as current.
-      await this.recordExperimentalShadow({
+      await withTrainingPublicationStage("session-dependent-shadow-chain", () => this.recordExperimentalShadow({
         session,
         profileId,
         ...(publicationBlockSourceKeys.length > 0 ? { publicationBlockSourceKeys } : {}),
-      });
+      }));
       return this.unifiedPublicationStatus(profileId);
     } catch (error) {
       if (error instanceof StaleStrengthEnergySourceError) throw error;

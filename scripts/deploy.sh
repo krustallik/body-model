@@ -168,11 +168,6 @@ assert_existing_db_healthy() {
   }
 }
 
-run_v4_traffic_check() {
-  compose --profile tools run --rm --no-deps --entrypoint node migrate \
-    /app/scripts/unified-v4-traffic-check.mjs --profile-id 1
-}
-
 is_current_release_already_serving() {
   local app_names app_identity app_container_id app_image_id app_sha app_state app_health pinned_image_id
   if ! app_names="$(docker ps --filter "name=^/${APP_CONTAINER}$" --format '{{.Names}}')" \
@@ -192,7 +187,7 @@ is_current_release_already_serving() {
   bodycast_verify_exact_serving_route || return 1
   bodycast_probe_public_candidate_observational || return 1
   assert_current_main_sha || return 1
-  echo "Exact SHA ${DEPLOY_SHA} is already healthy and serving; schema/V4 checks passed, so app, database, and route changes are skipped."
+  echo "Exact SHA ${DEPLOY_SHA} is already healthy and serving; schema checks passed, so app, database, and route changes are skipped."
 }
 
 publish_and_confirm_maintenance() {
@@ -326,9 +321,6 @@ fi
 compose config --quiet
 assert_existing_db_healthy
 bash "${ROOT_DIR}/scripts/deploy-preflight-schema.sh"
-if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "0" ]]; then
-  run_v4_traffic_check
-fi
 
 if [[ "$BODYCAST_NON_SERVING_DEPLOY" == "0" && "$marker_status" -eq 1 ]] \
     && is_current_release_already_serving; then
@@ -412,7 +404,6 @@ fi
 # All fatal correctness checks precede the only potentially serving mutation.
 assert_existing_db_healthy
 bash "${ROOT_DIR}/scripts/deploy-preflight-schema.sh"
-run_v4_traffic_check
 marker_status=1
 if read_release_marker; then marker_status=0; else marker_status=$?; fi
 [[ "$marker_status" -eq 1 ]] || { echo "A release/recovery marker blocks ordinary serving." >&2; release_failure 1; }

@@ -93,15 +93,15 @@ const V4_CONTENT_BOUND_PATHS = Object.freeze({
   }),
   "scripts/production-v4-post-ddl-backup-host.sh": Object.freeze({
     migrationOriginBlob: null,
-    deployBlob: "3e90a37ec28a2654bd89e0f3051f4254ad332f0f",
+    deployBlob: "f8703433b64ea2b37de45a35b19f9586d111ac06",
   }),
   "scripts/production-v4-recovery.mjs": Object.freeze({
     migrationOriginBlob: null,
-    deployBlob: "91ab0a2261cc3dfcde30fab76673c021dfd5caf8",
+    deployBlob: "7af345429def9d71422d50627548914210efb480",
   }),
   "scripts/production-traffic-cutover.sh": Object.freeze({
     migrationOriginBlob: "baeb3ff34c52c606a653d9e0c027c79d7b7c72da",
-    deployBlob: "12aad0c622c284b986a2ffe9d0cb35fbee8e71a8",
+    deployBlob: "c297187a27d7ef9fb486bfa5b6a468ed12157d55",
   }),
   "scripts/unified-v4-activate-replay.ts": Object.freeze({
     migrationOriginBlob: "2bb3f1130241dcc0e354e70a60f5284452849a12",

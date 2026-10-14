@@ -18,6 +18,7 @@ const MIGRATION_WORKFLOW = ".github/workflows/production-migrate.yml";
 const PREFLIGHT_WORKFLOW = ".github/workflows/production-migration-preflight.yml";
 const V4_HOST_FAILURE_PHASES = Object.freeze({
   remote: new Set(["arguments", "checkout", "git-fetch", "app-health", "backup-host"]),
+  cutover: new Set(["arguments", "route-setup", "release-lock-setup", "app-host-validation", "mode-validation", "release-lock", "route-primitives", "backup-host"]),
   backup: new Set([
     "arguments", "release-lock", "migration-run", "repository-main", "release-marker", "maintenance-route",
     "app-identity", "migrator-build", "lifecycle-inspection", "app-stop", "writer-drain",
@@ -31,7 +32,7 @@ const V4_HOST_FAILURE_PHASES = Object.freeze({
     "snapshot-boundary-database", "snapshot-boundary-client-compatibility", "snapshot-boundary-fingerprints",
     "snapshot-boundary-writer-and-target", "snapshot-boundary-database-preflight",
     "snapshot-boundary-migration-postflight", "snapshot-boundary-lifecycle", "snapshot-boundary-schema-validation",
-    "snapshot-boundary-snapshot-build", "snapshot-boundary-final-route-integrity", "backup-stability-check", "app-restart", "app-final-verification",
+    "snapshot-boundary-snapshot-build", "snapshot-boundary-final-route-integrity", "snapshot-output", "backup-stability-check", "app-restart", "app-final-verification", "backup-evidence-output",
   ]),
   recovery: new Set(["app-restart"]),
 });
@@ -42,14 +43,16 @@ function requireValue(condition, message) {
 
 /** Return only allowlisted phase codes from private remote stderr; never return raw log text. */
 export function summarizeV4HostFailureDiagnostics(stderrText) {
-  const found = { remote: [], backup: [], recovery: [] };
+  const found = { remote: [], cutover: [], backup: [], recovery: [] };
   let malformed = false;
   for (const line of String(stderrText ?? "").split(/\r?\n/)) {
     const kind = line.startsWith("BODYCAST_V4_REMOTE_FAILURE ") ? "remote"
-      : line.startsWith("BODYCAST_V4_BACKUP_FAILURE ") ? "backup"
-        : line.startsWith("BODYCAST_V4_BACKUP_RECOVERY_FAILURE ") ? "recovery" : null;
+      : line.startsWith("BODYCAST_V4_CUTOVER_FAILURE ") ? "cutover"
+        : line.startsWith("BODYCAST_V4_BACKUP_FAILURE ") ? "backup"
+          : line.startsWith("BODYCAST_V4_BACKUP_RECOVERY_FAILURE ") ? "recovery" : null;
     if (!kind) continue;
-    const marker = new RegExp(`^BODYCAST_V4_${kind === "remote" ? "REMOTE" : kind === "backup" ? "BACKUP" : "BACKUP_RECOVERY"}_FAILURE phase=([a-z-]+) status=([1-9][0-9]{0,2})$`).exec(line);
+    const markerKind = kind === "remote" ? "REMOTE" : kind === "cutover" ? "CUTOVER" : kind === "backup" ? "BACKUP" : "BACKUP_RECOVERY";
+    const marker = new RegExp(`^BODYCAST_V4_${markerKind}_FAILURE phase=([a-z-]+) status=([1-9][0-9]{0,2})$`).exec(line);
     const status = marker ? Number(marker[2]) : NaN;
     if (!marker || !V4_HOST_FAILURE_PHASES[kind].has(marker[1]) || status > 255 || found[kind].length > 0) {
       malformed = true;
@@ -59,7 +62,7 @@ export function summarizeV4HostFailureDiagnostics(stderrText) {
   }
   if (malformed) return "diagnostic=ambiguous";
   const parts = [];
-  for (const kind of ["backup", "recovery", "remote"]) {
+  for (const kind of ["backup", "recovery", "cutover", "remote"]) {
     const item = found[kind][0];
     if (item) parts.push(`${kind}=${item.phase}/exit-${item.status}`);
   }

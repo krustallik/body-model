@@ -279,6 +279,7 @@ NODE
 
 if [[ "$MODE" == snapshot-only ]]; then
   capture_snapshot boundary >/dev/null
+  bodycast_v4_failure_phase="snapshot-output"
   cat "$tmp/validated-boundary.json" >&3
   exit 0
 fi
@@ -348,6 +349,7 @@ bodycast_assert_current_main_sha "$RELEASE_SHA"
   && "$(sha256sum "$BODYCAST_MARKER_FILE_PATH" | awk '{print $1}')" == "$marker_digest" ]] || {
   echo "Exact app, release marker, or maintenance route did not survive backup preparation." >&2; exit 1;
 }
+bodycast_v4_failure_phase="backup-evidence-output"
 printf 'BODYCAST_PGDUMP_INVOCATION_AT=%s\n' "$pg_dump_invocation_at" >&2
 printf 'BODYCAST_V4_POST_DDL_SNAPSHOT_B64=%s\n' "$(base64 -w0 "$tmp/snapshot-after.json")" >&2
 echo "Post-DDL backup source snapshot is ready; exact app is healthy behind unchanged maintenance." >&2

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { summarizeV4HostFailureDiagnostics } from "../scripts/production-v4-recovery.mjs";
 
 const activationWorkflow = readFileSync(new URL("../.github/workflows/activate-unified-v4-production.yml", import.meta.url), "utf8");
+const cutoverScript = readFileSync(new URL("../scripts/production-traffic-cutover.sh", import.meta.url), "utf8");
 const backupHostScript = readFileSync(new URL("../scripts/production-v4-post-ddl-backup-host.sh", import.meta.url), "utf8");
 
 describe("sanitized V4 host failure diagnostics", () => {
@@ -30,6 +31,15 @@ describe("sanitized V4 host failure diagnostics", () => {
       .toBe("recovery=app-restart/exit-1");
   });
 
+  it("distinguishes cutover gates before entering the backup host script", () => {
+    expect(summarizeV4HostFailureDiagnostics("BODYCAST_V4_CUTOVER_FAILURE phase=release-lock status=1"))
+      .toBe("cutover=release-lock/exit-1");
+    const cutoverPhases = [...cutoverScript.matchAll(/bodycast_v4_cutover_phase="([a-z-]+)"/g)].map((match) => match[1]);
+    for (const phase of cutoverPhases) {
+      expect(summarizeV4HostFailureDiagnostics(`BODYCAST_V4_CUTOVER_FAILURE phase=${phase} status=1`)).not.toMatch(/diagnostic=ambiguous/);
+    }
+  });
+
   it("keeps emitted phase codes allowlisted and the private log out of GitHub output", () => {
     const hostPhases = [...backupHostScript.matchAll(/bodycast_v4_failure_phase="([a-z-]+)"/g)].map((match) => match[1]);
     for (const label of ["before", "after", "boundary"]) {
@@ -38,12 +48,17 @@ describe("sanitized V4 host failure diagnostics", () => {
         "migration-postflight", "lifecycle", "snapshot-build", "schema-validation", "final-route-integrity",
       ]) hostPhases.push(`snapshot-${label}-${suffix}`);
     }
+    hostPhases.push("snapshot-output", "backup-evidence-output");
+    const cutoverPhases = [...cutoverScript.matchAll(/bodycast_v4_cutover_phase="([a-z-]+)"/g)].map((match) => match[1]);
     const remotePhases = [...activationWorkflow.matchAll(/BODYCAST_V4_REMOTE_PHASE=([a-z-]+)/g)].map((match) => match[1]);
     for (const phase of hostPhases) {
       expect(summarizeV4HostFailureDiagnostics(`BODYCAST_V4_BACKUP_FAILURE phase=${phase} status=1`)).not.toMatch(/diagnostic=ambiguous/);
     }
     for (const phase of remotePhases) {
       expect(summarizeV4HostFailureDiagnostics(`BODYCAST_V4_REMOTE_FAILURE phase=${phase} status=1`)).not.toMatch(/diagnostic=ambiguous/);
+    }
+    for (const phase of cutoverPhases) {
+      expect(summarizeV4HostFailureDiagnostics(`BODYCAST_V4_CUTOVER_FAILURE phase=${phase} status=1`)).not.toMatch(/diagnostic=ambiguous/);
     }
     expect(activationWorkflow).toContain("umask 077");
     expect(activationWorkflow).toContain("install -m 600 /dev/null");

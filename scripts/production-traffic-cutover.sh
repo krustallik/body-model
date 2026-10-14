@@ -3,6 +3,14 @@
 set -Eeuo pipefail
 
 MODE="${1:-}"
+bodycast_v4_cutover_phase="arguments"
+report_bodycast_v4_cutover_failure() {
+  local status=$?
+  if [[ "$MODE" == "v4-post-ddl-backup" ]] && (( status != 0 )); then
+    printf 'BODYCAST_V4_CUTOVER_FAILURE phase=%s status=%s\n' "$bodycast_v4_cutover_phase" "$status" >&2
+  fi
+}
+if [[ "$MODE" == "v4-post-ddl-backup" ]]; then trap report_bodycast_v4_cutover_failure EXIT; fi
 ROOT_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 cd "$ROOT_DIR"
 
@@ -11,26 +19,37 @@ readonly APP_CONTAINER="bodycast-app-prod"
 readonly DB_CONTAINER="bodycast-db-prod"
 readonly APP_HOST="${APP_HOST:?APP_HOST is required}"
 CADDY_ROUTES_PATH="${CADDY_ROUTES_PATH:?CADDY_ROUTES_PATH is required}"
+bodycast_v4_cutover_phase="route-setup"
 source "${ROOT_DIR}/scripts/production-route-path.sh"
 bodycast_canonicalize_routes_path || exit 1
 readonly CADDY_ROUTES_PATH
 export APP_HOST CADDY_ROUTES_PATH
+bodycast_v4_cutover_phase="release-lock-setup"
 source "${ROOT_DIR}/scripts/production-release-marker.sh"
 source "${ROOT_DIR}/scripts/deploy-main-freshness.sh"
 source "${ROOT_DIR}/scripts/production-release-lock.sh"
 
+bodycast_v4_cutover_phase="app-host-validation"
 [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "APP_HOST is invalid." >&2; exit 1; }
+bodycast_v4_cutover_phase="mode-validation"
 [[ "$MODE" == "maintenance" || "$MODE" == "check" || "$MODE" == "v3-postflight" || "$MODE" == "full-history-recalculate" || "$MODE" == "serve" || "$MODE" == "activate-v4-and-serve" || "$MODE" == "v4-post-ddl-backup" ]] || {
   echo "Usage: APP_HOST=... CADDY_ROUTES_PATH=... bash scripts/production-traffic-cutover.sh maintenance|check|v3-postflight|full-history-recalculate|serve|activate-v4-and-serve|v4-post-ddl-backup" >&2
   exit 1
 }
 
+bodycast_v4_cutover_phase="release-lock"
 bodycast_acquire_production_release_lock
+bodycast_v4_cutover_phase="route-primitives"
 source "${ROOT_DIR}/scripts/production-route-primitives.sh"
 
 if [[ "$MODE" == "v4-post-ddl-backup" ]]; then
-  BODYCAST_PRODUCTION_RELEASE_LOCK_HELD=1 bash "$ROOT_DIR/scripts/production-v4-post-ddl-backup-host.sh"
-  exit $?
+  bodycast_v4_cutover_phase="backup-host"
+  if BODYCAST_PRODUCTION_RELEASE_LOCK_HELD=1 bash "$ROOT_DIR/scripts/production-v4-post-ddl-backup-host.sh"; then
+    exit 0
+  else
+    cutover_status=$?
+    exit "$cutover_status"
+  fi
 fi
 
 compose() { docker compose -f "$COMPOSE_FILE" "$@"; }

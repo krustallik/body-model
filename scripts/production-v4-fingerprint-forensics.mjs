@@ -43,7 +43,33 @@ function quoteIdentifier(value) {
 }
 
 function readOnlyArgs() {
-  return ["--no-psqlrc", "--quiet", "--tuples-only", "--no-align", "--set=ON_ERROR_STOP=1"];
+  return ["--no-psqlrc", "--quiet", "--tuples-only", "--no-align", "--set=ON_ERROR_STOP=1", "--set=VERBOSITY=verbose"];
+}
+
+function safeCaptureErrorCode(error) {
+  const message = error instanceof Error ? error.message : "";
+  const known = new Map([
+    ["Forensic table boundary is ambiguous.", "ambiguous-table-boundary"],
+    ["Forensic table inventory changed during its read-only snapshot.", "table-inventory-changed"],
+    ["Forensic sequence boundary is missing.", "sequence-boundary-missing"],
+    ["Forensic sequence inventory changed during its read-only snapshot.", "sequence-inventory-changed"],
+    ["Forensic sequence phase is ambiguous.", "ambiguous-sequence-phase"],
+    ["Forensic sequence inventory is incomplete.", "sequence-inventory-incomplete"],
+    ["Forensic PostgreSQL metadata is malformed.", "metadata-malformed"],
+    ["Forensic PostgreSQL metadata is duplicated.", "metadata-duplicated"],
+    ["Forensic PostgreSQL output contains an unexpected record.", "unexpected-output-record"],
+    ["Forensic PostgreSQL snapshot is incomplete.", "snapshot-incomplete"],
+    ["Forensic PostgreSQL table or sequence inventory changed before its snapshot.", "inventory-changed"],
+    ["Forensic PostgreSQL safety metadata is incomplete.", "safety-metadata-incomplete"],
+  ]);
+  if (known.has(message)) return known.get(message);
+  if (message.startsWith("Sequence state changed during the production forensic snapshot:")) return "sequence-state-changed";
+  return "capture-stream-failed";
+}
+
+function safePostgresDiagnostic(stderr) {
+  const match = /(?:ERROR|FATAL|PANIC):\s+([0-9A-Z]{5}):/.exec(stderr);
+  return match ? `sqlstate-${match[1]}` : (stderr.length ? "client-stderr" : "none");
 }
 
 function parseInventory(text) {
@@ -360,16 +386,24 @@ export async function captureForensicReport(mode, target) {
   const inventory = connection.inventory();
   const child = connection.spawn();
   let stderrBytes = 0;
-  child.stderr.on("data", (chunk) => { stderrBytes += chunk.length; });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => {
+    stderrBytes += chunk.length;
+    if (stderr.length < 4096) stderr += chunk.toString("utf8").slice(0, 4096 - stderr.length);
+  });
+  const closed = new Promise((resolve) => child.once("close", (code) => resolve(code)));
   const consume = consumeSnapshotOutput(child.stdout, inventory);
   child.stdin.end(buildSnapshotSql(inventory));
   let report;
-  try { report = await consume; } catch { child.kill(); throw new Error("Read-only PostgreSQL forensic capture failed closed."); }
-  const exitCode = await new Promise((resolve, reject) => {
-    child.once("error", () => reject(new Error("Read-only PostgreSQL forensic client failed.")));
-    child.once("close", resolve);
-  });
-  if (exitCode !== 0 || stderrBytes > 0) throw new Error("Read-only PostgreSQL forensic capture failed closed.");
+  try { report = await consume; } catch (error) {
+    child.kill();
+    const exitCode = await closed;
+    throw new Error(`Read-only PostgreSQL forensic capture failed closed (parser=${safeCaptureErrorCode(error)}; client=${safePostgresDiagnostic(stderr)}; exit=${exitCode ?? "unknown"}).`);
+  }
+  const exitCode = await closed;
+  if (exitCode !== 0 || stderrBytes > 0) {
+    throw new Error(`Read-only PostgreSQL forensic capture failed closed (parser=none; client=${safePostgresDiagnostic(stderr)}; exit=${exitCode ?? "unknown"}).`);
+  }
   return connection.finish(report);
 }
 

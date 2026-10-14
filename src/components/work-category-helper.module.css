@@ -29,4 +29,4 @@
 .descriptions li { padding-inline-start: .15rem; }
 .descriptions li strong { display: block; color: var(--ink); font-size: .75rem; }
 .descriptions li span { display: block; margin-top: .1rem; }
-@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0s !important; animation-duration: 0s !important; } }
+@media (prefers-reduced-motion: reduce) { .dialog *, .dialog *::before, .dialog *::after { scroll-behavior: auto !important; transition-duration: 0s !important; animation-duration: 0s !important; } }

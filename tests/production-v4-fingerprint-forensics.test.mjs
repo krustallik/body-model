@@ -53,6 +53,10 @@ test("CLI surfaces only whitelisted sanitized PostgreSQL capture diagnostics", (
     "V4 forensic capture stopped safely (reason=source-url-malformed).",
   );
   assert.equal(
+    safeCliErrorMessage(new Error("V4 forensic capture stopped safely (phase=snapshot-sql-build; error=type).")),
+    "V4 forensic capture stopped safely (phase=snapshot-sql-build; error=type).",
+  );
+  assert.equal(
     safeCliErrorMessage(new Error("private value: bodycast_restore://secret")),
     "Production V4 fingerprint forensics failed closed.",
   );

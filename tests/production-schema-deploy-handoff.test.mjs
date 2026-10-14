@@ -119,7 +119,7 @@ describe("schema deploy compatibility handoff", () => {
     const expectedV4Bindings = {
       "scripts/production-v4-fingerprint-forensics.mjs": {
         migrationOriginBlob: null,
-        deployBlob: "deff548ab371c8c6a7f2fe4585d92ce42999247e",
+        deployBlob: "5b9906fff645b8ef52984808695440e81819ae93",
       },
       ".github/workflows/activate-unified-v4-production.yml": {
         migrationOriginBlob: "5aee0a99a1dea520ca314a4b83e42c63e389e1d2",

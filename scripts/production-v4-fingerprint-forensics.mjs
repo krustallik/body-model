@@ -91,6 +91,7 @@ function safeInventoryFailure(error) {
 
 const SAFE_CAPTURE_DIAGNOSTIC = /^Read-only PostgreSQL forensic capture failed closed \(parser=(?:ambiguous-table-boundary|table-inventory-changed|sequence-boundary-missing|sequence-inventory-changed|ambiguous-sequence-phase|sequence-inventory-incomplete|metadata-malformed|metadata-duplicated|unexpected-output-record|snapshot-incomplete|inventory-changed|safety-metadata-incomplete|sequence-state-changed|capture-stream-failed); client=(?:sqlstate-[0-9A-Z]{5}|client-stderr|none); exit=(?:[0-9]+|unknown)\)\.$/;
 const SAFE_INVENTORY_DIAGNOSTIC = /^Read-only PostgreSQL forensic inventory failed closed \(reason=(?:inventory-incomplete|inventory-ambiguous|inventory-query-failed|inventory-failed); client=(?:sqlstate-[0-9A-Z]{5}|client-stderr|none); exit=(?:[0-9]+|unknown)\)\.$/;
+const SAFE_PHASE_DIAGNOSTIC = /^V4 forensic capture stopped safely \(phase=(?:connection-setup|inventory-query|client-start|snapshot-sql-build|snapshot-submit|snapshot-read|client-exit|connection-finalize); error=(?:error|type|range|unknown)\)\.$/;
 const GENERIC_FAILURE = "Production V4 fingerprint forensics failed closed.";
 const SAFE_SETUP_FAILURES = new Map([
   ["Forensic source mode accepts only an isolated loopback test database.", "source-target-rejected"],
@@ -104,7 +105,7 @@ const SAFE_SETUP_FAILURES = new Map([
 
 export function safeCliErrorMessage(error) {
   const message = error instanceof Error ? error.message : "";
-  if (SAFE_CAPTURE_DIAGNOSTIC.test(message) || SAFE_INVENTORY_DIAGNOSTIC.test(message)) return message;
+  if (SAFE_CAPTURE_DIAGNOSTIC.test(message) || SAFE_INVENTORY_DIAGNOSTIC.test(message) || SAFE_PHASE_DIAGNOSTIC.test(message)) return message;
   const setupFailure = SAFE_SETUP_FAILURES.get(message);
   return setupFailure ? `V4 forensic capture stopped safely (reason=${setupFailure}).` : GENERIC_FAILURE;
 }
@@ -424,29 +425,44 @@ export async function consumeSnapshotOutput(readable, inventory) {
 }
 
 export async function captureForensicReport(mode, target) {
-  const connection = makeConnection(mode, target);
-  const inventory = connection.inventory();
-  const child = connection.spawn();
-  let stderrBytes = 0;
-  let stderr = "";
-  child.stderr.on("data", (chunk) => {
-    stderrBytes += chunk.length;
-    if (stderr.length < 4096) stderr += chunk.toString("utf8").slice(0, 4096 - stderr.length);
-  });
-  const closed = new Promise((resolve) => child.once("close", (code) => resolve(code)));
-  const consume = consumeSnapshotOutput(child.stdout, inventory);
-  child.stdin.end(buildSnapshotSql(inventory));
-  let report;
-  try { report = await consume; } catch (error) {
-    child.kill();
+  let phase = "connection-setup";
+  try {
+    const connection = makeConnection(mode, target);
+    phase = "inventory-query";
+    const inventory = connection.inventory();
+    phase = "client-start";
+    const child = connection.spawn();
+    let stderrBytes = 0;
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderrBytes += chunk.length;
+      if (stderr.length < 4096) stderr += chunk.toString("utf8").slice(0, 4096 - stderr.length);
+    });
+    const closed = new Promise((resolve) => child.once("close", (code) => resolve(code)));
+    const consume = consumeSnapshotOutput(child.stdout, inventory);
+    phase = "snapshot-sql-build";
+    const snapshotSql = buildSnapshotSql(inventory);
+    phase = "snapshot-submit";
+    child.stdin.end(snapshotSql);
+    phase = "snapshot-read";
+    let report;
+    try { report = await consume; } catch (error) {
+      child.kill();
+      const exitCode = await closed;
+      throw new Error(`Read-only PostgreSQL forensic capture failed closed (parser=${safeCaptureErrorCode(error)}; client=${safePostgresDiagnostic(stderr)}; exit=${exitCode ?? "unknown"}).`);
+    }
+    phase = "client-exit";
     const exitCode = await closed;
-    throw new Error(`Read-only PostgreSQL forensic capture failed closed (parser=${safeCaptureErrorCode(error)}; client=${safePostgresDiagnostic(stderr)}; exit=${exitCode ?? "unknown"}).`);
+    if (exitCode !== 0 || stderrBytes > 0) {
+      throw new Error(`Read-only PostgreSQL forensic capture failed closed (parser=none; client=${safePostgresDiagnostic(stderr)}; exit=${exitCode ?? "unknown"}).`);
+    }
+    phase = "connection-finalize";
+    return connection.finish(report);
+  } catch (error) {
+    if (safeCliErrorMessage(error) !== GENERIC_FAILURE) throw error;
+    const errorKind = error instanceof TypeError ? "type" : error instanceof RangeError ? "range" : error instanceof Error ? "error" : "unknown";
+    throw new Error(`V4 forensic capture stopped safely (phase=${phase}; error=${errorKind}).`);
   }
-  const exitCode = await closed;
-  if (exitCode !== 0 || stderrBytes > 0) {
-    throw new Error(`Read-only PostgreSQL forensic capture failed closed (parser=none; client=${safePostgresDiagnostic(stderr)}; exit=${exitCode ?? "unknown"}).`);
-  }
-  return connection.finish(report);
 }
 
 function summarizeByName(items) {

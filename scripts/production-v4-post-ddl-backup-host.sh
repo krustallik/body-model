@@ -128,14 +128,6 @@ if [[ "$MODE" == backup ]]; then
   bodycast_v4_failure_phase="migrator-build"
   compose --profile tools build migrate
 fi
-bodycast_v4_failure_phase="lifecycle-inspection"
-lifecycle_state="$(compose --profile tools run --rm --no-deps --entrypoint node migrate \
-  /app/scripts/unified-v4-activate-replay.mjs --inspect-lifecycle --profile-id 1)"
-[[ "$lifecycle_state" == '{"command":"unified-v4-activate-replay","profileId":1,"state":"v4-replayable"}' \
-  || "$lifecycle_state" == '{"command":"unified-v4-activate-replay","profileId":1,"state":"v4-current"}' ]] || {
-  echo "Production lifecycle is not in the supported V4 epoch-1 resume state." >&2; exit 1;
-}
-
 if [[ "$MODE" == backup ]]; then
   bodycast_v4_failure_phase="app-stop"
   app_stopped=true
@@ -149,6 +141,13 @@ if [[ "$MODE" == backup ]]; then
 fi
 bodycast_v4_failure_phase="writer-drain"
 bash "$ROOT_DIR/scripts/production-writer-drain.sh" --assert
+bodycast_v4_failure_phase="lifecycle-inspection"
+lifecycle_state="$(compose --profile tools run --rm --no-deps --entrypoint node migrate \
+  /app/scripts/unified-v4-activate-replay.mjs --inspect-lifecycle --profile-id 1)"
+[[ "$lifecycle_state" == '{"command":"unified-v4-activate-replay","profileId":1,"state":"v4-replayable"}' \
+  || "$lifecycle_state" == '{"command":"unified-v4-activate-replay","profileId":1,"state":"v4-current"}' ]] || {
+  echo "Production lifecycle is not in the supported V4 epoch-1 resume state." >&2; exit 1;
+}
 
 capture_snapshot() {
   local label="$1" db_metadata db_id db_image_id db_name db_state db_health db_address pg_dump_version current_marker_digest current_route_digest

@@ -135,7 +135,7 @@ describe("schema deploy compatibility handoff", () => {
       },
       "scripts/production-v4-post-ddl-backup-host.sh": {
         migrationOriginBlob: null,
-        deployBlob: "6aa0a9364ecda37f03a4552c1988b171921b3c27",
+        deployBlob: "e9e4a8e32f9d607ce74862556e68abc7beaa6080",
       },
       "scripts/production-v4-recovery.mjs": {
         migrationOriginBlob: null,

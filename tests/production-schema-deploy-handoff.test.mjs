@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, readdir, rm, writeFile, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import {
   applySchemaDeployHandoff, evaluateSchemaDeployHandoff, parseSchemaDeployMarker,
   readGitCompatibility, renderSchemaDeployTransition,
 } from "../scripts/production-schema-deploy-handoff.mjs";
+import { DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST } from "../scripts/production-migration-manifests.mjs";
 
 const DEPLOY_SHA = "71c091cd712cd3862d2cebe2714963917c9b5ca2";
 const V4_MIGRATION_SHA = V4_REPUBLICATION_MIGRATION_ORIGIN_SHA;
@@ -81,6 +82,69 @@ function v4AppReadyMarkerText(overrides = {}) {
   });
 }
 
+function dynamicWorkoutMarkerText(releaseSha, overrides = {}) {
+  const marker = {
+    manifestId: DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id,
+    releaseSha,
+    state: "app-ready",
+    workflowRunId: "40123456789",
+    workflowRunAttempt: 2,
+    authorizationId: "dynamic-release-authorization-01",
+    lineageDigest: "a".repeat(64),
+    spawnState: "started",
+    ...overrides,
+  };
+  return [
+    "schemaVersion=2",
+    `manifestId=${marker.manifestId}`,
+    `releaseSha=${marker.releaseSha}`,
+    `state=${marker.state}`,
+    `workflowRunId=${marker.workflowRunId}`,
+    `workflowRunAttempt=${marker.workflowRunAttempt}`,
+    `authorizationId=${marker.authorizationId}`,
+    `lineageDigest=${marker.lineageDigest}`,
+    `spawnState=${marker.spawnState}`,
+    "",
+  ].join("\n");
+}
+
+async function createDynamicWorkoutHandoffRepository() {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "bodycast-dynamic-handoff-"));
+  directories.push(directory);
+  const repository = path.join(directory, "repo");
+  execFileSync("git", ["clone", "--quiet", "--no-hardlinks", "--shared", process.cwd(), repository]);
+  const trackedCriticalFiles = [
+    "scripts/deploy.sh",
+    "scripts/production-release-marker.sh",
+    "scripts/production-release-marker.mjs",
+    "scripts/production-migration-manifests.mjs",
+    "scripts/production-schema-deploy-handoff.mjs",
+  ];
+  for (const file of trackedCriticalFiles) {
+    const destination = path.join(repository, file);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await copyFile(path.join(process.cwd(), file), destination);
+  }
+  for (const file of ["scripts/production-app-capabilities.mjs", "scripts/production-app-capabilities.json"]) {
+    const destination = path.join(repository, file);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await copyFile(path.join(process.cwd(), file), destination);
+  }
+  execFileSync("git", ["-C", repository, "add", "scripts/deploy.sh", "scripts/production-release-marker.sh",
+    "scripts/production-release-marker.mjs", "scripts/production-migration-manifests.mjs",
+    "scripts/production-schema-deploy-handoff.mjs", "scripts/production-app-capabilities.mjs",
+    "scripts/production-app-capabilities.json"]);
+  execFileSync("git", ["-C", repository, "-c", "user.name=BodyCast tests", "-c", "user.email=test@example.invalid",
+    "commit", "--quiet", "-m", "reviewed dynamic workout release origin"]);
+  const originSha = execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  await writeFile(path.join(repository, "tests", "dynamic-release-compatibility.txt"), "non-runtime test evidence\n");
+  execFileSync("git", ["-C", repository, "add", "tests/dynamic-release-compatibility.txt"]);
+  execFileSync("git", ["-C", repository, "-c", "user.name=BodyCast tests", "-c", "user.email=test@example.invalid",
+    "commit", "--quiet", "-m", "compatible follow-up"]);
+  const candidateSha = execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  return { repository, originSha, candidateSha };
+}
+
 const compatible = {
   changedPaths: [".github/workflows/deploy-production.yml", "tests/deploy-script-ordering.test.ts"],
   isAncestor: true,
@@ -101,6 +165,51 @@ afterEach(async () => {
 });
 
 describe("schema deploy compatibility handoff", () => {
+  it("hands off the dynamic-workout marker only across an exact migration tree and unchanged nullable-session reader", async () => {
+    const { repository, originSha, candidateSha } = await createDynamicWorkoutHandoffRepository();
+    const compatibility = readGitCompatibility(repository, candidateSha, originSha, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id);
+    expect(compatibility.isAncestor).toBe(true);
+    expect(compatibility.changedPaths).toEqual(["tests/dynamic-release-compatibility.txt"]);
+    expect(Object.keys(compatibility.criticalObjects)).toContain("src/modules/training");
+    expect(Object.keys(compatibility.criticalObjects)).toContain(".github/workflows");
+    expect(Object.keys(compatibility.criticalObjects)).toContain("scripts/production-app-capabilities.json");
+
+    const sourceMarker = dynamicWorkoutMarkerText(originSha);
+    const handoff = evaluateSchemaDeployHandoff({ markerText: sourceMarker, deploySha: candidateSha, ...compatibility });
+    expect(handoff).toMatchObject({ action: "write", marker: {
+      manifestId: DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id,
+      migrationOriginSha: originSha,
+      deploySha: candidateSha,
+      state: "schema-applied",
+    } });
+    const replay = evaluateSchemaDeployHandoff({ markerText: handoff.bytes, deploySha: candidateSha, ...compatibility });
+    expect(replay.action).toBe("replay");
+
+    const trainingService = path.join(repository, "src/modules/training/training.service.ts");
+    await writeFile(trainingService, `${await readFile(trainingService, "utf8")}\n// incompatible reader change\n`);
+    execFileSync("git", ["-C", repository, "add", "src/modules/training/training.service.ts"]);
+    execFileSync("git", ["-C", repository, "-c", "user.name=BodyCast tests", "-c", "user.email=test@example.invalid",
+      "commit", "--quiet", "-m", "change nullable relation reader"]);
+    const incompatibleSha = execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    expect(() => readGitCompatibility(repository, incompatibleSha, originSha, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id))
+      .toThrow(/src\/modules\/training differs from the migration origin/);
+
+    const workflowFixture = await createDynamicWorkoutHandoffRepository();
+    const migrationWorkflow = path.join(workflowFixture.repository, ".github/workflows/production-migrate.yml");
+    await writeFile(migrationWorkflow, `${await readFile(migrationWorkflow, "utf8")}\n# changed migration authorization workflow\n`);
+    execFileSync("git", ["-C", workflowFixture.repository, "add", ".github/workflows/production-migrate.yml"]);
+    execFileSync("git", ["-C", workflowFixture.repository, "-c", "user.name=BodyCast tests", "-c", "user.email=test@example.invalid",
+      "commit", "--quiet", "-m", "change migration authorization workflow"]);
+    const workflowChangedSha = execFileSync("git", ["-C", workflowFixture.repository, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    expect(() => readGitCompatibility(workflowFixture.repository, workflowChangedSha, workflowFixture.originSha, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id))
+      .toThrow(/\.github\/workflows differs from the migration origin/);
+    expect(() => evaluateSchemaDeployHandoff({
+      markerText: dynamicWorkoutMarkerText(originSha, { workflowRunId: "0" }),
+      deploySha: candidateSha,
+      ...compatibility,
+    })).toThrow(/marker run, lineage, origin, or state is not admitted/);
+  }, 30_000);
+
   it("admits only the exact SHA of the new manifest's successful schema-applied marker", () => {
     const marker = v4MigrationMarkerText();
     expect(evaluateSchemaDeployHandoff({ markerText: marker, deploySha: V4_MIGRATION_SHA })).toMatchObject({

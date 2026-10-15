@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { canonicalSha256 } from "../scripts/production-migration-authorization.mjs";
@@ -39,10 +41,10 @@ const migrations = Object.freeze([{
   finishedAt: "2026-10-01T00:01:00.000Z", rolledBackAt: null, logsFingerprint: "c".repeat(32),
 }]);
 const objects = Object.freeze([{ name: "DailyModelState", present: true, kind: "table", signature: "typed baseline schema" }]);
-const databaseReport = Object.freeze({ identity, migrations, objects, logicalDataFingerprint: "9".repeat(64) });
+const databaseReport = Object.freeze({ identity, migrations, objects, logicalDataFingerprint: "9".repeat(64), programlessSessionCount: 0 });
 const preflightResult = Object.freeze({
   readyForOwnerAuthorization: true, blockers: [], pendingExactlyExpected: true,
-  identity, migrations, objects, logicalDataFingerprint: databaseReport.logicalDataFingerprint,
+  identity, migrations, objects, logicalDataFingerprint: databaseReport.logicalDataFingerprint, programlessSessionCount: 0,
 });
 const rowCounts = Object.freeze(Object.fromEntries([
   "Workout", "Profile", "ModelEpisode", "PhysiologyV7Lifecycle", "DailyModelState", "StrengthDiarySession", "ExerciseCatalog",
@@ -200,7 +202,7 @@ describe("versioned previous-app provenance", () => {
   it("requires exact restored schema, Prisma history, data readability, and signed preflight binding for legacy compatibility", () => {
     const record = capturePreviousAppProvenance({ container: container(), databaseReport, targetSha });
     const restoredReport = { identity: { ...identity, database: "bodycast_cutback_stage", databaseOid: 20480 }, migrations, objects,
-      logicalDataFingerprint: databaseReport.logicalDataFingerprint };
+      logicalDataFingerprint: databaseReport.logicalDataFingerprint, programlessSessionCount: 0 };
     const restoreResult = { verified: true, postflightReady: true, readability: rowCounts,
       logicalDataFingerprint: databaseReport.logicalDataFingerprint, postSchemaDigest: "8".repeat(64) };
     const readabilityReport = { migrationHistory: migrations, readability: rowCounts,
@@ -235,6 +237,51 @@ describe("versioned previous-app provenance", () => {
       record, targetSha, preflightResult, preflightResultDigest: canonicalSha256(preflightResult), contextVerified: true,
       restoredReport, restoreResult, readabilityReport: { ...readabilityReport, readability: { ...rowCounts, Workout: { rowCount: 5 } } },
     })).toThrow(/data differs/);
+  });
+
+  it("blocks cutback to an uncertified exact app SHA when restored rows are programless", async () => {
+    const repositoryPath = await mkdtemp(path.join(os.tmpdir(), "bodycast-rollback-app-capability-"));
+    try {
+      const migrationDirectory = path.join(repositoryPath, "prisma", "migrations", "20261001_baseline");
+      await mkdir(migrationDirectory, { recursive: true });
+      const migrationSql = "-- exact rollback fixture migration\n";
+      await writeFile(path.join(migrationDirectory, "migration.sql"), migrationSql);
+      execFileSync("git", ["init", "--quiet", repositoryPath]);
+      execFileSync("git", ["-C", repositoryPath, "add", "."]);
+      execFileSync("git", ["-C", repositoryPath, "-c", "user.name=BodyCast tests", "-c", "user.email=test@example.invalid",
+        "commit", "--quiet", "-m", "nullable-incompatible prior app"]);
+      const oldSha = execFileSync("git", ["-C", repositoryPath, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      await mkdir(path.join(repositoryPath, "scripts"), { recursive: true });
+      await writeFile(path.join(repositoryPath, "scripts/production-app-capabilities.json"),
+        JSON.stringify({ schemaVersion: 1, capabilities: ["programless-strength-sessions-v1"] }));
+      execFileSync("git", ["-C", repositoryPath, "add", "scripts/production-app-capabilities.json"]);
+      execFileSync("git", ["-C", repositoryPath, "-c", "user.name=BodyCast tests", "-c", "user.email=test@example.invalid",
+        "commit", "--quiet", "-m", "certify nullable-session reader"]);
+      const compatibleSha = execFileSync("git", ["-C", repositoryPath, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      const migrationHistory = [{ ...migrations[0], checksum: createHash("sha256").update(migrationSql).digest("hex") }];
+      const dataReport = { ...databaseReport, migrations: migrationHistory, programlessSessionCount: 1 };
+      const restoredReport = { identity: { ...identity, database: "bodycast_cutback_stage", databaseOid: 20480 },
+        migrations: migrationHistory, objects, logicalDataFingerprint: dataReport.logicalDataFingerprint, programlessSessionCount: 1 };
+      const restoreResult = { verified: true, postflightReady: true, readability: rowCounts,
+        logicalDataFingerprint: dataReport.logicalDataFingerprint, postSchemaDigest: "8".repeat(64) };
+      const readabilityReport = { migrationHistory, readability: rowCounts, logicalDataFingerprint: dataReport.logicalDataFingerprint };
+      const verifyCapture = (releaseSha) => {
+        const record = capturePreviousAppProvenance({
+          container: container({ "org.bodycast.release-sha": releaseSha }), databaseReport: dataReport, targetSha,
+        });
+        const signedPreflight = { ...preflightResult, migrations: migrationHistory, programlessSessionCount: 1,
+          previousAppProvenance: previousAppProvenanceBinding(record) };
+        return verifyPreviousAppMigrationCompatibility({
+          recordText: serializePreviousAppProvenance(record), targetSha, contextVerified: true,
+          preflightResultDigest: canonicalSha256(signedPreflight), preflightResult: signedPreflight,
+          restoredReport, restoreResult, readabilityReport, repositoryPath,
+        });
+      };
+      expect(() => verifyCapture(oldSha)).toThrow(/no immutable BodyCast capability contract|not certified to read existing programless strength sessions/);
+      expect(verifyCapture(compatibleSha)).toMatchObject({ verified: true, provenanceKind: SHA_PREVIOUS_APP_PROVENANCE });
+    } finally {
+      await rm(repositoryPath, { recursive: true, force: true });
+    }
   });
 
   it("carries the immutable previous-image identity into the signed preflight evidence", () => {

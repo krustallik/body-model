@@ -114,9 +114,11 @@ read_bodycast_release_marker() {
   fi
   [[ ( ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 1 && "$BODYCAST_MARKER_MANIFEST_ID" == "active-energy-unified-v2" ) \
       || ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 2 \
-        && ( "$BODYCAST_MARKER_MANIFEST_ID" == "active-energy-unified-v2" || "$BODYCAST_MARKER_MANIFEST_ID" == "unified-v4-republication-v1" ) ) \
+        && ( "$BODYCAST_MARKER_MANIFEST_ID" == "active-energy-unified-v2" || "$BODYCAST_MARKER_MANIFEST_ID" == "unified-v4-republication-v1" \
+          || "$BODYCAST_MARKER_MANIFEST_ID" == "programless-workouts-health-sync-v1" ) ) \
       || ( "$BODYCAST_MARKER_SCHEMA_VERSION" == 3 \
-        && ( "$BODYCAST_MARKER_MANIFEST_ID" == "active-energy-unified-v2" || "$BODYCAST_MARKER_MANIFEST_ID" == "unified-v4-republication-v1" ) ) ) \
+        && ( "$BODYCAST_MARKER_MANIFEST_ID" == "active-energy-unified-v2" || "$BODYCAST_MARKER_MANIFEST_ID" == "unified-v4-republication-v1" \
+          || "$BODYCAST_MARKER_MANIFEST_ID" == "programless-workouts-health-sync-v1" ) ) ) \
     && ( "$BODYCAST_MARKER_RELEASE_SHA" =~ ^[a-f0-9]{40}$ || "$BODYCAST_MARKER_RELEASE_SHA" == "unknown" ) \
     && "$BODYCAST_MARKER_STATE" =~ ^(ddl-starting|ddl-started|schema-applied|app-ready|v4-ready|database-restored|rollback-app-ready|forward-resume-armed)$ ]] || {
     echo "Production release marker values are not recognized." >&2; return 2;

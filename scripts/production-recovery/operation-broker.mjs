@@ -10,6 +10,15 @@ const RECOVERY_EXECUTION_STEPS = Object.freeze({
   "complete-recovery": "recovery-verify-completion-gates",
   "open-traffic": "recovery-open-traffic",
 });
+const PROGRAMLESS_SESSION_GUARDED_OPERATIONS = new Set([
+  "recovery-start-readonly-app",
+  "recovery-drain-and-enable-writers",
+]);
+const ROLLBACK_COMPATIBILITY_GUARD_KEYS = Object.freeze([
+  "schemaVersion", "purpose", "operationType", "recoveryCaseId", "journalRecordDigest", "rollbackAppSha",
+  "rollbackImageDigest", "logicalProductionDbIdentityDigest", "programlessSessionCount",
+  "rollbackAppSupportsProgramlessSessions", "programlessSessionCompatible", "rollbackAppCapabilityDigest", "observedAt",
+]);
 const OPERATION_KEYS = Object.freeze({
   "ordinary-release": ["schemaVersion", "operation", "requestId", "releaseSha", "canonicalMainSha", "releaseMode", "canonicalMainFence"],
   "traffic-check": ["schemaVersion", "operation", "requestId", "releaseSha", "canonicalMainSha", "authorizationContextId"],
@@ -79,6 +88,32 @@ function validateRequest(request) {
   return request;
 }
 
+function validateRollbackCompatibilityGuard(raw, { operationType, record, now }) {
+  assertExactKeys(raw, ROLLBACK_COMPATIBILITY_GUARD_KEYS, "Recovery rollback compatibility proof");
+  if (raw.schemaVersion !== 1 || raw.purpose !== "bodycast-recovery-rollback-compatibility-guard"
+    || raw.operationType !== operationType || raw.recoveryCaseId !== record.recoveryCaseId
+    || raw.journalRecordDigest !== record.recordDigest || raw.rollbackAppSha !== record.rollbackAppSha
+    || raw.rollbackImageDigest !== record.immutableRollbackArtifact?.rollbackImageDigest
+    || raw.logicalProductionDbIdentityDigest !== record.logicalProductionDbIdentityDigest
+    || !Number.isSafeInteger(raw.programlessSessionCount) || raw.programlessSessionCount < 0
+    || typeof raw.rollbackAppSupportsProgramlessSessions !== "boolean"
+    || raw.programlessSessionCompatible !== true
+    || raw.programlessSessionCount > 0 && raw.rollbackAppSupportsProgramlessSessions !== true) {
+    throw new Error("Recovery rollback compatibility proof does not certify the exact app, database, and programless-session state.");
+  }
+  assertGitSha(raw.rollbackAppSha, "rollbackCompatibility.rollbackAppSha");
+  assertSha256(raw.rollbackImageDigest, "rollbackCompatibility.rollbackImageDigest");
+  assertSha256(raw.logicalProductionDbIdentityDigest, "rollbackCompatibility.logicalProductionDbIdentityDigest");
+  assertSha256(raw.journalRecordDigest, "rollbackCompatibility.journalRecordDigest");
+  assertSha256(raw.rollbackAppCapabilityDigest, "rollbackCompatibility.rollbackAppCapabilityDigest");
+  assertUtcTimestamp(raw.observedAt, "rollbackCompatibility.observedAt");
+  const observedAt = Date.parse(raw.observedAt);
+  if (observedAt > now() + 30_000 || now() - observedAt > 30_000) {
+    throw new Error("Recovery rollback compatibility proof is stale or future-dated.");
+  }
+  return Object.freeze(raw);
+}
+
 /**
  * Root-service operation gate. It receives only closed typed requests and calls
  * host-installed callbacks; it never accepts a path, executable, shell string,
@@ -95,6 +130,7 @@ export function createProductionOperationBroker({
   verifyMigrationExecutionProof,
   verifyMigrationFinalGuards,
   verifyRecoveryOperationFinalGuards,
+  verifyProgramlessSessionRollbackCompatibility,
   verifyUnifiedV4Currentness,
   inspectFixedOperationState,
   loadEvidenceById,
@@ -114,6 +150,7 @@ export function createProductionOperationBroker({
     verifyMigrationExecutionProof,
     verifyMigrationFinalGuards,
     verifyRecoveryOperationFinalGuards,
+    verifyProgramlessSessionRollbackCompatibility,
     verifyUnifiedV4Currentness,
     inspectFixedOperationState,
     loadEvidenceById,
@@ -318,7 +355,64 @@ export function createProductionOperationBroker({
     if (canonicalDigest(bindings) !== intent.operationInputDigest) {
       throw new Error("Committed recovery operation intent does not match its immutable operation inputs.");
     }
+    const operationBindings = { ...bindings, releaseSha: record.rollbackAppSha };
     await requireAdapterConformance(preparation);
+    let rollbackCompatibilityGuard = null;
+    const readProgramlessCompatibility = async (exactRecord) => verifyProgramlessSessionRollbackCompatibility({
+      expectedLogicalProductionDbIdentityDigest: exactRecord.logicalProductionDbIdentityDigest,
+      rollbackAppSha: exactRecord.rollbackAppSha,
+    });
+    const validateFinalGuards = async (exactRecord, exactIntent) => {
+      const hostGuard = await verifyRecoveryOperationFinalGuards({ operationType: exactIntent.operationType, record: exactRecord,
+        intent: exactIntent, evidence, replay });
+      if (PROGRAMLESS_SESSION_GUARDED_OPERATIONS.has(exactIntent.operationType)) {
+        if (hostGuard !== true) throw new Error("Recovery operation final host-state guard did not pass immediately before the effect.");
+        const compatibility = await readProgramlessCompatibility(exactRecord);
+        const rawGuard = {
+          schemaVersion: 1,
+          purpose: "bodycast-recovery-rollback-compatibility-guard",
+          operationType: exactIntent.operationType,
+          recoveryCaseId: exactRecord.recoveryCaseId,
+          journalRecordDigest: exactRecord.recordDigest,
+          rollbackAppSha: exactRecord.rollbackAppSha,
+          rollbackImageDigest: exactRecord.immutableRollbackArtifact?.rollbackImageDigest,
+          logicalProductionDbIdentityDigest: compatibility.logicalProductionDbIdentityDigest,
+          programlessSessionCount: compatibility.programlessSessionCount,
+          rollbackAppSupportsProgramlessSessions: compatibility.rollbackAppSupportsProgramlessSessions,
+          programlessSessionCompatible: compatibility.programlessSessionCompatible,
+          rollbackAppCapabilityDigest: compatibility.rollbackAppCapabilityDigest,
+          observedAt: compatibility.observedAt,
+        };
+        rollbackCompatibilityGuard = validateRollbackCompatibilityGuard(rawGuard, {
+          operationType: exactIntent.operationType, record: exactRecord, now,
+        });
+      } else if (hostGuard !== true) {
+        throw new Error("Recovery operation final host-state guard did not pass immediately before the effect.");
+      }
+    };
+    const inspectRecoveryOperationState = async (operationType, operation) => {
+      const observation = await inspectFixedOperationState(operationType, operation);
+      if (PROGRAMLESS_SESSION_GUARDED_OPERATIONS.has(operationType)
+        && (observation?.state === "pre" || observation?.state === "post")) {
+        const compatibility = await readProgramlessCompatibility(record);
+        const condition = observation.state === "pre" ? observation.precondition : observation.postcondition;
+        const expected = {
+          logicalProductionDbIdentityDigest: compatibility.logicalProductionDbIdentityDigest,
+          programlessSessionCount: compatibility.programlessSessionCount,
+          rollbackAppSupportsProgramlessSessions: compatibility.rollbackAppSupportsProgramlessSessions,
+          programlessSessionCompatible: compatibility.programlessSessionCompatible,
+          rollbackAppCapabilityDigest: compatibility.rollbackAppCapabilityDigest,
+        };
+        if (!condition || Object.entries(expected).some(([key, value]) => condition[key] !== value)) {
+          throw new Error("Rollback operation observation differs from the fresh read-only database and exact-SHA capability proof.");
+        }
+      }
+      return observation;
+    };
+    // Run once before operation inspection as well as at the effect boundary.
+    // This keeps an already-post/replayed app start from bypassing the current
+    // read-only database count and exact rollback SHA capability check.
+    await validateFinalGuards(record, intent);
     const execute = async ({ record: exactRecord, intent: exactIntent }) => executeReconciledHostOperation({
       operationType: exactIntent.operationType,
       operationId: exactIntent.operationId,
@@ -326,13 +420,10 @@ export function createProductionOperationBroker({
       recoveryCaseId: exactRecord.recoveryCaseId,
       journalGeneration: exactRecord.generation,
       journalRecordDigest: exactRecord.recordDigest,
-      bindings,
-      inspectFixedOperationState,
+      bindings: operationBindings,
+      inspectFixedOperationState: inspectRecoveryOperationState,
       authorizeImmediatelyBeforeEffect: async () => {
-        if (await verifyRecoveryOperationFinalGuards({ operationType: exactIntent.operationType, record: exactRecord,
-          intent: exactIntent, evidence, replay }) !== true) {
-          throw new Error("Recovery operation final host-state guard did not pass immediately before the effect.");
-        }
+        await validateFinalGuards(exactRecord, exactIntent);
         await requireAdapterConformance(preparation);
       },
       executeFixedOperation: (operationType, operation) => executeFixedOperation(operationType, {
@@ -342,6 +433,7 @@ export function createProductionOperationBroker({
         journalRecordDigest: exactRecord.recordDigest,
         evidenceId: replay ? exactRecord.operationEvidenceId : request.evidenceId,
         evidence,
+        ...(rollbackCompatibilityGuard ? { rollbackCompatibilityGuard } : {}),
         immutableRollbackArtifact: exactRecord.immutableRollbackArtifact,
         logicalProductionDbIdentityDigest: exactRecord.logicalProductionDbIdentityDigest,
         ...(replay ? { replayOnly: true } : {}),

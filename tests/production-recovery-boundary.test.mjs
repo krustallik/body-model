@@ -22,7 +22,7 @@ import { createRecoveryPolicySignerService } from "../scripts/production-recover
 import { captureImmutableRollbackArtifact, assertExactRollbackArtifact } from "../scripts/production-recovery/artifact-identity.mjs";
 import { createLogicalDatabaseIdentity, verifySameLogicalDatabaseIdentity } from "../scripts/production-recovery/database-identity.mjs";
 import { createWriterDrainVerifier, verifyWriterDrainEvidence } from "../scripts/production-recovery/writer-drain.mjs";
-import { createRecoveryHostRuntime, AUTHORITY_CONFIG_KEYS } from "../scripts/production-recovery/host-runtime.mjs";
+import { createProgramlessSessionRollbackCompatibilityVerifier, createRecoveryHostRuntime, AUTHORITY_CONFIG_KEYS } from "../scripts/production-recovery/host-runtime.mjs";
 import { OPERATION_ADAPTER_CONTRACT_DIGEST, OPERATION_CONTRACTS } from "../scripts/production-recovery/operation-contracts.mjs";
 
 const roots = [];
@@ -46,6 +46,14 @@ const UNUSED_ADAPTER_CALLBACKS = Object.freeze({
   verifyMigrationExecutionProof: async () => null,
   verifyMigrationFinalGuards: async () => false,
   verifyRecoveryOperationFinalGuards: async () => true,
+  verifyProgramlessSessionRollbackCompatibility: async ({ expectedLogicalProductionDbIdentityDigest }) => ({
+    logicalProductionDbIdentityDigest: expectedLogicalProductionDbIdentityDigest,
+    programlessSessionCount: 0,
+    rollbackAppSupportsProgramlessSessions: false,
+    programlessSessionCompatible: true,
+    rollbackAppCapabilityDigest: "8".repeat(64),
+    observedAt: new Date().toISOString(),
+  }),
   verifyUnifiedV4Currentness: async () => null,
   inspectFixedOperationState: async () => { throw new Error("not used"); },
   loadEvidenceById: async (id) => ({ type: "evidence-fixture", id }),
@@ -218,6 +226,14 @@ function brokerFixture({ blocking = false, prepared = true, rolloutCurrent = tru
       return true;
     },
     verifyRecoveryOperationFinalGuards: async () => true,
+    verifyProgramlessSessionRollbackCompatibility: async ({ expectedLogicalProductionDbIdentityDigest }) => ({
+      logicalProductionDbIdentityDigest: expectedLogicalProductionDbIdentityDigest,
+      programlessSessionCount: 0,
+      rollbackAppSupportsProgramlessSessions: false,
+      programlessSessionCompatible: true,
+      rollbackAppCapabilityDigest: "8".repeat(64),
+      observedAt: new Date(now()).toISOString(),
+    }),
     verifyUnifiedV4Currentness: async ({ releaseSha, canonicalMainSha }) => {
       if (v4Evidence === null) return null;
       if (typeof v4Evidence === "function") return v4Evidence({ releaseSha, canonicalMainSha });
@@ -833,6 +849,88 @@ describe("production recovery install, rollout, and operation boundaries", () =>
     expect(calls).toHaveLength(0);
   });
 
+  it.each([
+    ["recovery-start-readonly-app", "mark-rollback-app-ready"],
+    ["recovery-drain-and-enable-writers", "enable-writers"],
+  ])("requires a fresh exact-SHA nullable-session proof before %s, even when replay observes post-state", async (operationType, transition) => {
+    const evidence = { type: transition };
+    const artifact = { rollbackArtifactId: "fixture-rollback-artifact", rollbackArtifactDigest: "e".repeat(64),
+      rollbackImageDigest: "d".repeat(64) };
+    const releaseSha = "a".repeat(40);
+    const databaseDigest = "c".repeat(64);
+    const operationInputDigest = canonicalDigest({ schemaVersion: 1, recoveryCaseId: "case-guarded", transition, operationType,
+      sourceEvidenceDigest: canonicalDigest(evidence), immutableRollbackArtifact: artifact,
+      logicalProductionDbIdentityDigest: databaseDigest });
+    const operationId = canonicalDigest({ recoveryCaseId: "case-guarded", generation: 3, transition, operationType, operationInputDigest });
+    const record = { recoveryCaseId: "case-guarded", generation: 3, recordDigest: "f".repeat(64), nextState: "app-ready",
+      transition, sourceEvidenceDigest: canonicalDigest(evidence), operationEvidenceId: "recovery-evidence", manifestId: "case-guarded",
+      rollbackAppSha: releaseSha, immutableRollbackArtifact: artifact, logicalProductionDbIdentityDigest: databaseDigest,
+      operationIntent: { schemaVersion: 1, operationType, operationInputDigest, operationId } };
+    const definition = OPERATION_CONTRACTS[operationType];
+    const common = { releaseSha, imageDigest: artifact.rollbackImageDigest, logicalProductionDbIdentityDigest: databaseDigest,
+      programlessSessionCount: 1, rollbackAppSupportsProgramlessSessions: true, programlessSessionCompatible: true,
+      rollbackAppCapabilityDigest: "9".repeat(64) };
+    const postcondition = operationType === "recovery-start-readonly-app"
+      ? { ...common, containerId: "captured-container", healthStatus: "healthy", databaseRoleMode: "readonly" }
+      : { ...common, healthStatus: "healthy", writerMode: "enabled", activeWriterCount: 0, topologyDigest: "8".repeat(64) };
+    const observation = { schemaVersion: 1, purpose: "bodycast-host-operation-state", operationType,
+      operationId, idempotencyKey: operationId, operationInputDigest, state: "post", observedAt: new Date().toISOString(),
+      stateDigest: canonicalDigest({ state: definition.postState, precondition: null, postcondition }),
+      precondition: null, postcondition };
+    const makeBroker = (supportsProgramless, observedOperation = observation) => {
+      let inspections = 0;
+      let effects = 0;
+      let guards = 0;
+      const broker = createProductionOperationBroker({
+        authority: {
+          readAuthoritativeState: async () => ({ blocking: true, activeRecovery: true }),
+          applyTransition: async () => ({ record }),
+          executePendingOperation: async (identity, execute) => {
+            const outcome = await execute({ record, intent: record.operationIntent });
+            return { receipt: { operationId: identity.operationId, outcomeDigest: canonicalDigest(outcome) }, outcome, executed: true };
+          },
+        },
+        ...UNUSED_ADAPTER_CALLBACKS,
+        verifyRecoveryPreparation: async () => ({ ready: true, operationAdapterDigest: FIXTURE_ADAPTER.adapterDigest,
+          operationAdapterConformanceDigest: FIXTURE_ADAPTER.receiptDigest }),
+        verifyRecoveryOperationFinalGuards: async () => { guards += 1; return true; },
+        verifyProgramlessSessionRollbackCompatibility: async ({ expectedLogicalProductionDbIdentityDigest, rollbackAppSha }) => {
+          expect(rollbackAppSha).toBe(releaseSha);
+          if (!supportsProgramless) throw new Error("Rollback app is not certified to read existing programless strength sessions.");
+          return { logicalProductionDbIdentityDigest: expectedLogicalProductionDbIdentityDigest,
+            programlessSessionCount: 1, rollbackAppSupportsProgramlessSessions: true,
+            programlessSessionCompatible: true, rollbackAppCapabilityDigest: "9".repeat(64),
+            observedAt: new Date().toISOString() };
+        },
+        loadEvidenceById: async () => evidence,
+        loadRolloutReceiptById: async () => ({ receiptDigest: "7".repeat(64) }),
+        inspectFixedOperationState: async () => { inspections += 1; return observedOperation; },
+        executeFixedOperation: async () => { effects += 1; throw new Error("post-state replay must not repeat a host effect"); },
+      });
+      return { broker, counts: () => ({ inspections, effects, guards }) };
+    };
+    const request = { schemaVersion: 1, operation: "recovery-transition", requestId: "rollback-compat-1",
+      recoveryCaseId: record.recoveryCaseId, transition, expectedGeneration: 2, expectedRecordDigest: "5".repeat(64),
+      evidenceId: "recovery-evidence", authorizationEnvelope: null, policyAttestation: null, rolloutReceiptId: "rollout-guarded" };
+
+    const unsafe = makeBroker(false);
+    await expect(unsafe.broker.dispatch(request)).rejects.toThrow(/not certified to read existing programless strength sessions/);
+    expect(unsafe.counts()).toEqual({ inspections: 0, effects: 0, guards: 1 });
+
+    const safe = makeBroker(true);
+    const result = await safe.broker.dispatch({ ...request, requestId: "rollback-compat-2" });
+    expect(result.operationCompletion).toMatchObject({ result: "already-satisfied", postcondition: {
+      releaseSha, programlessSessionCount: 1, rollbackAppSupportsProgramlessSessions: true,
+    } });
+    expect(safe.counts()).toEqual({ inspections: 1, effects: 0, guards: 1 });
+
+    const mismatchedPostcondition = { ...observation, postcondition: { ...postcondition, programlessSessionCount: 2 } };
+    const mismatch = makeBroker(true, mismatchedPostcondition);
+    await expect(mismatch.broker.dispatch({ ...request, requestId: "rollback-compat-mismatch" }))
+      .rejects.toThrow(/differs from the fresh read-only database and exact-SHA capability proof/);
+    expect(mismatch.counts()).toEqual({ inspections: 1, effects: 0, guards: 1 });
+  });
+
   it("replays only the exact pending journal operation and reuses its idempotency key", async () => {
     const evidence = { type: "begin-restore", backupArtifactId: "backup-fixture-1" };
     const artifact = { rollbackArtifactId: "fixture-rollback-artifact", rollbackArtifactDigest: "e".repeat(64),
@@ -1247,6 +1345,35 @@ describe("production recovery install, rollout, and operation boundaries", () =>
     expect(await consume({ ...binding, requestId: "request-2" })).toBe(false);
     const records = await fs.readdir(state);
     expect(records.filter((name) => name.startsWith("request-") && name.endsWith(".json"))).toHaveLength(1);
+  });
+
+  it("wires the root rollback gate to a read-only count and exact logical database identity", async () => {
+    const statements = [];
+    const verifier = createProgramlessSessionRollbackCompatibilityVerifier({
+      withReadOnlyProductionTransaction: async (work) => work(async (sql) => {
+        statements.push(sql);
+        if (sql.includes('FROM public."StrengthDiarySession"')) return [{ programlessSessionCount: "0" }];
+        return [];
+      }),
+      resolveLogicalProductionDatabaseIdentity: async (query) => {
+        await query("SELECT bodycast_logical_database_identity()", []);
+        return { identityDigest: "a".repeat(64), observationsDigest: "b".repeat(64) };
+      },
+      getProgramlessSessionCapabilityRepositoryPath: async () => process.cwd(),
+    });
+    const proof = await verifier({ expectedLogicalProductionDbIdentityDigest: "a".repeat(64), rollbackAppSha: "c".repeat(40) });
+    expect(proof).toMatchObject({
+      purpose: "bodycast-programless-session-rollback-compatibility",
+      rollbackAppSha: "c".repeat(40),
+      logicalProductionDbIdentityDigest: "a".repeat(64),
+      programlessSessionCount: 0,
+      rollbackAppSupportsProgramlessSessions: false,
+      programlessSessionCompatible: true,
+    });
+    expect(statements[0]).toBe("SET TRANSACTION READ ONLY");
+    expect(statements.some((sql) => sql.includes('FROM public."StrengthDiarySession"'))).toBe(true);
+    await expect(verifier({ expectedLogicalProductionDbIdentityDigest: "f".repeat(64), rollbackAppSha: "c".repeat(40) }))
+      .rejects.toThrow(/captured logical production database/);
   });
 
   it("requires read-only transaction, exact logical DB identity, schema, and migration history", async () => {

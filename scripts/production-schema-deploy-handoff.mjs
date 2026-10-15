@@ -3,6 +3,8 @@ import { execFileSync } from "node:child_process";
 import { lstat, open, readFile, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST } from "./production-migration-manifests.mjs";
+import { PROGRAMLESS_STRENGTH_SESSIONS_CAPABILITY, readProductionAppCapabilitiesAtSha } from "./production-app-capabilities.mjs";
 
 export const SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA = "62b6961dde7036100c8af7281e7bfab75bb662db";
 export const V4_REPUBLICATION_MIGRATION_ORIGIN_SHA = "8b4a195e8afb67c0a913d0175a030e01cc665732";
@@ -26,6 +28,8 @@ export const V4_REPUBLICATION_HANDOFF_PROVENANCE = Object.freeze({
 const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const V4_REPUBLICATION_MANIFEST_ID = "unified-v4-republication-v1";
+const DYNAMIC_WORKOUT_MANIFEST_ID = DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id;
+const DYNAMIC_WORKOUT_NON_RUNTIME_PATH = /^(?:tests\/|docs\/development\/)/;
 const V3_STATES = new Set(["schema-applied", "app-ready", "v4-ready", "database-restored", "rollback-app-ready"]);
 const DENIED_PATH = /^(?:prisma\/|public\/|scripts\/unified-v[34]|scripts\/physiology|docker-compose(?:\.prod)?\.yml$|package(?:-lock)?\.json$|next\.config\.[^/]+$|tsconfig(?:\.[^/]+)?\.json$)/;
 const ALLOWED_PATH = /^(?:\.github\/workflows\/|tests\/|scripts\/production-release-marker\.(?:sh|mjs)$|scripts\/production-schema-deploy-handoff\.mjs$|scripts\/production-traffic-cutover\.sh$|scripts\/production-full-history-recalculate\.ts$|src\/app\/api\/forecast\/(?:action\/)?route\.ts$|src\/app\/api\/v1\/model\/recalculate\/route\.ts$|src\/lib\/logger\.ts$|src\/modules\/model-episodes\/(?:full-history-recalculation\.service|transient-exercise-water-episode-time-v2)\.ts$|src\/modules\/training\/experimental-transient-exercise-water-shadow\.service\.ts$|Dockerfile$)/;
@@ -197,6 +201,16 @@ const V4_CONTENT_BOUND_PATHS = Object.freeze({
 const CRITICAL_TREES = ["prisma"];
 const CRITICAL_FILES = ["docker-compose.prod.yml", "package.json", "package-lock.json"];
 const ADVANCEABLE_V3_STATES = new Set(["schema-applied", "app-ready"]);
+const DYNAMIC_WORKOUT_CRITICAL_TREES = Object.freeze([...CRITICAL_TREES, "src/modules/training", ".github/workflows"]);
+const DYNAMIC_WORKOUT_CRITICAL_FILES = Object.freeze([
+  ...CRITICAL_FILES,
+  "scripts/deploy.sh",
+  "scripts/production-release-marker.sh",
+  "scripts/production-release-marker.mjs",
+  "scripts/production-migration-manifests.mjs",
+  "scripts/production-app-capabilities.mjs",
+  "scripts/production-app-capabilities.json",
+]);
 
 function reject(message) {
   throw new Error(`Schema deploy handoff blocked: ${message}`);
@@ -266,7 +280,26 @@ function v4SourceMarkerMatches(marker) {
     && provenanceMatches(marker, V4_REPUBLICATION_HANDOFF_PROVENANCE);
 }
 
+function dynamicWorkoutSourceMarkerMatches(marker) {
+  return marker.schemaVersion === 2
+    && marker.manifestId === DYNAMIC_WORKOUT_MANIFEST_ID
+    && SHA.test(String(marker.releaseSha ?? ""))
+    && marker.state === "app-ready"
+    && /^[1-9][0-9]{0,19}$/.test(String(marker.workflowRunId ?? ""))
+    && Number.isSafeInteger(marker.workflowRunAttempt) && marker.workflowRunAttempt > 0
+    && /^[A-Za-z0-9-]{16,80}$/.test(String(marker.authorizationId ?? ""))
+    && DIGEST.test(String(marker.lineageDigest ?? ""))
+    && marker.spawnState === "started";
+}
+
 function admittedV3Marker(marker) {
+  if (marker.manifestId === DYNAMIC_WORKOUT_MANIFEST_ID) {
+    return SHA.test(String(marker.migrationOriginSha ?? ""))
+      && /^[1-9][0-9]{0,19}$/.test(String(marker.workflowRunId ?? ""))
+      && Number.isSafeInteger(marker.workflowRunAttempt) && marker.workflowRunAttempt > 0
+      && /^[A-Za-z0-9-]{16,80}$/.test(String(marker.authorizationId ?? ""))
+      && DIGEST.test(String(marker.lineageDigest ?? ""));
+  }
   if (marker.migrationOriginSha === SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA) {
     return marker.manifestId === SCHEMA_DEPLOY_HANDOFF_PROVENANCE.manifestId
       && provenanceMatches(marker, SCHEMA_DEPLOY_HANDOFF_PROVENANCE);
@@ -363,11 +396,11 @@ function assertCompatibleChangedPaths(changedPaths, changedPathObjects, contentB
   }
 }
 
-function assertCriticalObjects(criticalObjects) {
+function assertCriticalObjects(criticalObjects, trees = CRITICAL_TREES, files = CRITICAL_FILES) {
   if (!criticalObjects || typeof criticalObjects !== "object" || Array.isArray(criticalObjects)) {
     reject("compatibility evidence is incomplete");
   }
-  for (const objectPath of [...CRITICAL_TREES, ...CRITICAL_FILES]) {
+  for (const objectPath of [...trees, ...files]) {
     if (typeof criticalObjects[objectPath] !== "string" || !/^[a-f0-9]{40}$/.test(criticalObjects[objectPath])) {
       reject(`critical object proof for ${objectPath} is incomplete`);
     }
@@ -389,8 +422,9 @@ function buildHandoffWrite({
   spawnState,
   provenance,
   contentBoundPaths,
+  unboundNonRuntimePath,
 }) {
-  assertCompatibleChangedPaths(changedPaths, changedPathObjects, contentBoundPaths);
+  assertCompatibleChangedPaths(changedPaths, changedPathObjects, contentBoundPaths, unboundNonRuntimePath);
   assertCriticalObjects(criticalObjects);
   const digest = compatibilityDigest({
     migrationOriginSha,
@@ -425,6 +459,39 @@ export function evaluateSchemaDeployHandoff({ markerText, deploySha, changedPath
   if (!SHA.test(String(deploySha ?? ""))) reject("deploy candidate SHA is malformed");
   const observed = parseSchemaDeployMarker(markerText);
   const marker = observed.marker;
+  if (marker.schemaVersion === 2 && marker.manifestId === DYNAMIC_WORKOUT_MANIFEST_ID) {
+    if (marker.state === "schema-applied" && marker.releaseSha === deploySha
+      && marker.spawnState === "started" && /^[1-9][0-9]{0,19}$/.test(String(marker.workflowRunId ?? ""))
+      && Number.isSafeInteger(marker.workflowRunAttempt) && marker.workflowRunAttempt > 0
+      && /^[A-Za-z0-9-]{16,80}$/.test(String(marker.authorizationId ?? ""))
+      && DIGEST.test(String(marker.lineageDigest ?? ""))) {
+      return { action: "not-needed", marker, sourceDigest: observed.digest };
+    }
+    if (!dynamicWorkoutSourceMarkerMatches(marker)) {
+      reject("programless-workout migration marker run, lineage, origin, or state is not admitted");
+    }
+    assertCompatibleChangedPaths(changedPaths, changedPathObjects, Object.freeze({}), DYNAMIC_WORKOUT_NON_RUNTIME_PATH);
+    assertCriticalObjects(criticalObjects, DYNAMIC_WORKOUT_CRITICAL_TREES, DYNAMIC_WORKOUT_CRITICAL_FILES);
+    if (isAncestor !== true) reject("deploy candidate is not a descendant of the programless-workout migration origin");
+    if (deploySha === marker.releaseSha) reject("an app-ready migration marker cannot be reused as a schema-applied deploy marker");
+    return buildHandoffWrite({
+      observed,
+      migrationOriginSha: marker.releaseSha,
+      deploySha,
+      state: "schema-applied",
+      changedPaths,
+      changedPathObjects,
+      criticalObjects,
+      workflowRunId: marker.workflowRunId,
+      workflowRunAttempt: marker.workflowRunAttempt,
+      authorizationId: marker.authorizationId,
+      lineageDigest: marker.lineageDigest,
+      spawnState: marker.spawnState,
+      provenance: { manifestId: DYNAMIC_WORKOUT_MANIFEST_ID },
+      contentBoundPaths: Object.freeze({}),
+      unboundNonRuntimePath: DYNAMIC_WORKOUT_NON_RUNTIME_PATH,
+    });
+  }
   if (marker.schemaVersion === 2 && marker.manifestId === V4_REPUBLICATION_MANIFEST_ID
     && marker.releaseSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA
     && marker.releaseSha === deploySha && marker.state === "schema-applied"
@@ -451,6 +518,7 @@ export function evaluateSchemaDeployHandoff({ markerText, deploySha, changedPath
       spawnState: marker.spawnState,
       provenance: V4_REPUBLICATION_HANDOFF_PROVENANCE,
       contentBoundPaths: V4_CONTENT_BOUND_PATHS,
+      unboundNonRuntimePath: V4_UNBOUND_NON_RUNTIME_PATH,
     });
   }
   if (marker.schemaVersion === 2 && marker.manifestId === V4_REPUBLICATION_MANIFEST_ID) {
@@ -461,12 +529,15 @@ export function evaluateSchemaDeployHandoff({ markerText, deploySha, changedPath
       || marker.spawnState !== "started" || !DIGEST.test(marker.sourceMarkerDigest) || !DIGEST.test(marker.compatibilityDigest)) {
       reject("existing handoff provenance is malformed");
     }
-    const contentBoundPaths = marker.migrationOriginSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA
-      ? V4_CONTENT_BOUND_PATHS : CONTENT_BOUND_PATHS;
-    const unboundNonRuntimePath = marker.migrationOriginSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA
-      ? V4_UNBOUND_NON_RUNTIME_PATH : undefined;
+    const dynamicWorkoutRelease = marker.manifestId === DYNAMIC_WORKOUT_MANIFEST_ID;
+    const contentBoundPaths = dynamicWorkoutRelease ? Object.freeze({})
+      : marker.migrationOriginSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA ? V4_CONTENT_BOUND_PATHS : CONTENT_BOUND_PATHS;
+    const unboundNonRuntimePath = dynamicWorkoutRelease ? DYNAMIC_WORKOUT_NON_RUNTIME_PATH
+      : marker.migrationOriginSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA ? V4_UNBOUND_NON_RUNTIME_PATH : undefined;
     assertCompatibleChangedPaths(changedPaths, changedPathObjects, contentBoundPaths, unboundNonRuntimePath);
-    assertCriticalObjects(criticalObjects);
+    assertCriticalObjects(criticalObjects,
+      dynamicWorkoutRelease ? DYNAMIC_WORKOUT_CRITICAL_TREES : CRITICAL_TREES,
+      dynamicWorkoutRelease ? DYNAMIC_WORKOUT_CRITICAL_FILES : CRITICAL_FILES);
     if (isAncestor !== true) reject("deploy candidate is not a descendant of the migration origin");
     if (marker.deploySha === deploySha) {
       const recomputed = compatibilityDigest({
@@ -494,6 +565,7 @@ export function evaluateSchemaDeployHandoff({ markerText, deploySha, changedPath
       criticalObjects,
       provenance: marker,
       contentBoundPaths,
+      unboundNonRuntimePath,
       workflowRunId: marker.workflowRunId,
       workflowRunAttempt: marker.workflowRunAttempt,
       authorizationId: marker.authorizationId,
@@ -570,15 +642,46 @@ function regularFileBlobId(repo, sha, objectPath, optional = false) {
   return match[1];
 }
 
-export function readGitCompatibility(repo, deploySha, migrationOriginSha = SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA) {
+function assertDynamicWorkoutOriginContract(repo, originSha) {
+  const manifest = DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST;
+  const expectedDirectories = [...manifest.requiredAppliedMigrations, ...manifest.migrations].map(({ name }) => name).sort();
+  let directories;
+  try {
+    directories = git(repo, ["ls-tree", "-d", "--name-only", `${originSha}:prisma/migrations`]).split("\n").filter(Boolean).sort();
+  } catch {
+    reject("programless-workout migration origin does not contain its reviewed Prisma migration tree");
+  }
+  if (JSON.stringify(directories) !== JSON.stringify(expectedDirectories)) {
+    reject("programless-workout migration origin does not match the exact reviewed migration directory set");
+  }
+  for (const migration of [...manifest.requiredAppliedMigrations, ...manifest.migrations]) {
+    let bytes;
+    try { bytes = execFileSync("git", ["cat-file", "blob", `${originSha}:prisma/migrations/${migration.name}/migration.sql`], { cwd: repo }); }
+    catch { reject(`programless-workout migration ${migration.name} is unavailable at the migration origin`); }
+    if (sha256(bytes) !== migration.sha256) reject(`programless-workout migration ${migration.name} differs from its reviewed checksum`);
+  }
+  try {
+    const contract = readProductionAppCapabilitiesAtSha({ repositoryPath: repo, releaseSha: originSha });
+    if (!contract.capabilities.includes(PROGRAMLESS_STRENGTH_SESSIONS_CAPABILITY)) {
+      reject("programless-workout migration origin app is not certified for nullable program relations");
+    }
+  } catch (error) {
+    if (String(error?.message ?? "").startsWith("Schema deploy handoff blocked:")) throw error;
+    reject("programless-workout migration origin app capability contract is absent or invalid");
+  }
+}
+
+export function readGitCompatibility(repo, deploySha, migrationOriginSha = SCHEMA_DEPLOY_MIGRATION_ORIGIN_SHA, manifestId = null) {
   if (!SHA.test(deploySha)) reject("deploy candidate SHA is malformed");
   const origin = migrationOriginSha;
+  const dynamicWorkoutRelease = manifestId === DYNAMIC_WORKOUT_MANIFEST_ID;
   try {
     git(repo, ["cat-file", "-e", `${origin}^{commit}`]);
     git(repo, ["cat-file", "-e", `${deploySha}^{commit}`]);
   } catch {
     reject("migration origin or deploy candidate commit is unavailable");
   }
+  if (dynamicWorkoutRelease) assertDynamicWorkoutOriginContract(repo, origin);
   let isAncestor = false;
   try {
     git(repo, ["merge-base", "--is-ancestor", origin, deploySha]);
@@ -597,15 +700,17 @@ export function readGitCompatibility(repo, deploySha, migrationOriginSha = SCHEM
       }
     });
   const criticalObjects = {};
-  for (const objectPath of [...CRITICAL_TREES, ...CRITICAL_FILES]) {
+  const criticalTrees = dynamicWorkoutRelease ? DYNAMIC_WORKOUT_CRITICAL_TREES : CRITICAL_TREES;
+  const criticalFiles = dynamicWorkoutRelease ? DYNAMIC_WORKOUT_CRITICAL_FILES : CRITICAL_FILES;
+  for (const objectPath of [...criticalTrees, ...criticalFiles]) {
     const originId = objectId(repo, origin, objectPath);
     const deployId = objectId(repo, deploySha, objectPath);
     if (originId !== deployId) reject(`${objectPath} differs from the migration origin`);
     criticalObjects[objectPath] = originId;
   }
   const changedPathObjects = {};
-  const contentBoundPaths = migrationOriginSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA
-    ? V4_CONTENT_BOUND_PATHS : CONTENT_BOUND_PATHS;
+  const contentBoundPaths = dynamicWorkoutRelease ? Object.freeze({})
+    : migrationOriginSha === V4_REPUBLICATION_MIGRATION_ORIGIN_SHA ? V4_CONTENT_BOUND_PATHS : CONTENT_BOUND_PATHS;
   for (const objectPath of changedPaths.filter((changed) => Object.hasOwn(contentBoundPaths, changed))) {
     changedPathObjects[objectPath] = {
       migrationOriginBlob: regularFileBlobId(repo, origin, objectPath, true),
@@ -616,6 +721,15 @@ export function readGitCompatibility(repo, deploySha, migrationOriginSha = SCHEM
 }
 
 function readCompatibilityForMarker(repo, marker, deploySha) {
+  if (marker.schemaVersion === 2 && marker.manifestId === DYNAMIC_WORKOUT_MANIFEST_ID) {
+    assertDynamicWorkoutOriginContract(repo, marker.releaseSha);
+    return readGitCompatibility(repo, deploySha, marker.releaseSha, DYNAMIC_WORKOUT_MANIFEST_ID);
+  }
+  if (marker.schemaVersion === 3 && marker.manifestId === DYNAMIC_WORKOUT_MANIFEST_ID
+    && admittedV3Marker(marker)) {
+    assertDynamicWorkoutOriginContract(repo, marker.migrationOriginSha);
+    return readGitCompatibility(repo, deploySha, marker.migrationOriginSha, DYNAMIC_WORKOUT_MANIFEST_ID);
+  }
   if (marker.schemaVersion === 2 && v4SourceMarkerMatches(marker)) {
     return readGitCompatibility(repo, deploySha, V4_REPUBLICATION_MIGRATION_ORIGIN_SHA);
   }

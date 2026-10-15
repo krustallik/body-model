@@ -7,7 +7,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { canonicalJson } from "../scripts/production-migration-manifests.mjs";
 import { ALL_REVIEWED_OBJECTS, EXPECTED_MIGRATION_OBJECTS, assertProductionDatabaseIdentityMatches, evaluateProductionPreflight, evaluateProductionPostflight, normalizeObjectSignature, verifyRestoredBackup, schemaInventoryDigest, schemaInventoryDifferenceSummary } from "../scripts/production-migration-preflight.mjs";
-import { ACTIVE_ENERGY_UNIFIED_MANIFEST, STAGE_02_MANIFEST, V4_REPUBLICATION_MANIFEST } from "../scripts/production-migration-manifests.mjs";
+import { ACTIVE_ENERGY_UNIFIED_MANIFEST, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST, STAGE_02_MANIFEST, V4_REPUBLICATION_MANIFEST } from "../scripts/production-migration-manifests.mjs";
 import { createAuthorizationEnvelope, verifyAuthorizationEnvelope, assertSignedAuthorizationRequired, canonicalSha256 } from "../scripts/production-migration-authorization.mjs";
 import { selectLatestApplicablePreflight, verifyPreflightArtifactMetadata, isBackupFresh, withPrismaLockTimeout } from "../scripts/production-migration-release.mjs";
 import { readCommittedGitBlob, sha256, verifyExecutionFileMatchesBlob, verifyManifestBlob } from "../scripts/production-migration-integrity.mjs";
@@ -50,7 +50,7 @@ describe("production schema signature normalization", () => {
   });
 
   it("accepts only PostgreSQL's exact pg_dump rewrite of the reviewed V3/V4 lifecycle CHECK", async () => {
-    const migration = await readFile(new URL("../prisma/migrations/20261006130000_unified_v4_glycogen_water_rollout/migration.sql", import.meta.url), "utf8");
+    const migration = (await readFile(new URL("../prisma/migrations/20261006130000_unified_v4_glycogen_water_rollout/migration.sql", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
     const v3 = "unified-experimental-physiology-state-v3-relative-muscle-daily-cumulative-diagnostics";
     const v4 = "unified-experimental-physiology-state-v4-physical-glycogen-water-2p7-exact-once";
     expect(migration).toContain(`CHECK (\"unifiedTargetRevision\" IN (\n      '${v3}',\n      '${v4}'\n    ))`);
@@ -272,6 +272,40 @@ function validV4RepublicationPreflightReport() {
   const report = validPreflightReport();
   report.migrations.push(...ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations.map((migration) => migrationRow(migration)));
   report.objects = schemaObjects("v4-before");
+  return report;
+}
+
+const dynamicWorkoutDirs = execFileSync("git", ["ls-tree", "-d", "--name-only", "HEAD:prisma/migrations"],
+  { cwd: process.cwd(), encoding: "utf8" }).trim().split(/\r?\n/).sort();
+
+function validDynamicWorkoutPreflightReport({ applied = false } = {}) {
+  const report = validPreflightReport();
+  report.migrations = [
+    ...DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.requiredAppliedMigrations.map((migration) => migrationRow(migration)),
+    ...(applied ? DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.migrations.map((migration) => migrationRow(migration)) : []),
+  ];
+  report.objects = schemaObjects("v4-after");
+  const dynamicNames = DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.postflightObjects.filter((name) =>
+    name.startsWith("HealthSyncRefreshJob") || name.startsWith("StrengthDiarySession.program")
+    || name.startsWith("StrengthDiarySession_program") && name.endsWith("_fkey")
+    || name === "StrengthDiarySession_program_pair_check");
+  for (const name of dynamicNames) {
+    const present = name.startsWith("StrengthDiarySession_program") && name.endsWith("_fkey")
+      || name === "StrengthDiarySession.programId" || name === "StrengthDiarySession.programVersionId" || applied;
+    const signature = present
+      ? applied ? DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.postflightSignatureIncludes[name]
+        : DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.requiredObjectSignatureEquals[name]
+          ?? DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.requiredObjectSignatureIncludes[name]
+      : null;
+    const kind = !present ? "missing"
+      : name.includes(".") ? "column"
+        : name === "HealthSyncRefreshJob" ? "table"
+          : name.endsWith("_idx") ? "index" : "constraint";
+    const index = report.objects.findIndex((object) => object.name === name);
+    report.objects[index] = { name, present, kind, signature };
+  }
+  report.tables = { ...report.tables, StrengthDiarySession: { exists: true, estimatedRows: 1, totalBytes: 128 } };
+  report.programlessSessionCount = 0;
   return report;
 }
 
@@ -573,7 +607,8 @@ describe("V5 closed migration manifest and full pending set", () => {
   it("matches every reviewed manifest hash to its exact blob at the release commit", async () => {
     const releaseSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim();
     for (const migration of [...STAGE_02_MANIFEST.migrations, ...ACTIVE_ENERGY_UNIFIED_MANIFEST.migrations,
-      ...V4_REPUBLICATION_MANIFEST.migrations, ...V4_REPUBLICATION_MANIFEST.requiredAppliedMigrations]) {
+      ...V4_REPUBLICATION_MANIFEST.migrations, ...V4_REPUBLICATION_MANIFEST.requiredAppliedMigrations,
+      ...DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.migrations, ...DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.requiredAppliedMigrations]) {
       const result = await verifyManifestBlob({ repositoryPath: process.cwd(), releaseSha, migration });
       expect(result.matchesManifest, migration.name).toBe(true);
     }
@@ -590,7 +625,7 @@ describe("V5 closed migration manifest and full pending set", () => {
 
   it("accepts only the exact full pending set and reviewed Stage 02 history", () => {
     const result = evaluateProductionPreflight(validPreflightReport(), dirs);
-    expect(result.readyForOwnerAuthorization).toBe(true);
+    expect(result.readyForOwnerAuthorization, result.blockers.join(" | ")).toBe(true);
     expect(result.pending).toEqual(names);
     expect(result.manifestId).toBe(ACTIVE_ENERGY_UNIFIED_MANIFEST.id);
     const currentRelease = evaluateProductionPreflight(validPreflightReport(), fullDirs);
@@ -789,6 +824,90 @@ describe("V5 closed migration manifest and full pending set", () => {
 
     expect(evaluateProductionPreflight(report, [...fullDirs, "20261012120000_unreviewed"], V4_REPUBLICATION_MANIFEST.id).blockers.join(" "))
       .toContain("Full release-tree pending set differs");
+  });
+
+  it("admits only the exact programless-workout and separately reviewed Health queue release set", async () => {
+    const report = validDynamicWorkoutPreflightReport();
+    const result = evaluateProductionPreflight(report, dynamicWorkoutDirs, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id);
+    expect(result.readyForOwnerAuthorization, result.blockers.join(" | ")).toBe(true);
+    expect(result.pending).toEqual(DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.migrations.map(({ name }) => name).sort());
+    expect(DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.requiredAppliedMigrations).toHaveLength(dynamicWorkoutDirs.length - 2);
+    expect(DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.requireCompleteReleaseTree).toBe(true);
+    expect(DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.cutbackSupported).toBe(true);
+    expect(DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.migrations.map(({ sha256 }) => sha256)).toEqual([
+      "4e63b16fbb2950666489c591cc6586ba9a35a0c0a1ed595a51309c37786f9b49",
+      "6e07af8484ee10cda3cea5f06db19ec1286cb41ff40da8c05166c3cf7d90c991",
+    ]);
+
+    const extraPending = evaluateProductionPreflight(report, [...dynamicWorkoutDirs, "20261015110000_unreviewed"],
+      DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id);
+    expect(extraPending.blockers.join(" ")).toContain("Full release-tree pending set differs");
+    const missingMigration = evaluateProductionPreflight(report,
+      dynamicWorkoutDirs.filter((name) => name !== DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.migrations[1].name),
+      DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id);
+    expect(missingMigration.blockers.join(" ")).toContain("Full release-tree pending set differs");
+    expect(missingMigration.blockers.join(" ")).toContain("Reviewed manifest migrations are missing");
+
+    const omittedPredecessorDirectory = dynamicWorkoutDirs.filter((name) =>
+      name !== DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.requiredAppliedMigrations[0].name);
+    expect(evaluateProductionPreflight(report, omittedPredecessorDirectory,
+      DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id).blockers.join(" "))
+      .toContain("do not cover the complete release migration tree exactly");
+
+    const missingPredecessor = structuredClone(report);
+    missingPredecessor.migrations = missingPredecessor.migrations.filter((row) =>
+      row.name !== DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.requiredAppliedMigrations[0].name);
+    expect(evaluateProductionPreflight(missingPredecessor, dynamicWorkoutDirs,
+      DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id).blockers.join(" ")).toContain("Required prior migration");
+    const changedPredecessor = structuredClone(report);
+    changedPredecessor.migrations[0].checksum = "0".repeat(64);
+    expect(evaluateProductionPreflight(changedPredecessor, dynamicWorkoutDirs,
+      DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id).blockers.join(" ")).toContain("checksum differs");
+
+    const partialQueue = structuredClone(report);
+    partialQueue.objects.find((object) => object.name === "HealthSyncRefreshJob").present = true;
+    expect(evaluateProductionPreflight(partialQueue, dynamicWorkoutDirs,
+      DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id).blockers.join(" ")).toContain("already exist while the exact migration set is pending");
+    const changedOldSchema = structuredClone(report);
+    changedOldSchema.objects.find((object) => object.name === "StrengthDiarySession.programId").signature = "integer|nullable=true|default=";
+    expect(evaluateProductionPreflight(changedOldSchema, dynamicWorkoutDirs,
+      DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id).blockers.join(" ")).toContain("pre-migration schema signatures differ");
+    const missingProgramForeignKey = structuredClone(report);
+    missingProgramForeignKey.objects.find((object) => object.name === "StrengthDiarySession_programId_fkey").present = false;
+    expect(evaluateProductionPreflight(missingProgramForeignKey, dynamicWorkoutDirs,
+      DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id).blockers.join(" ")).toContain("pre-migration schema objects are missing");
+    const changedProgramVersionForeignKey = structuredClone(report);
+    changedProgramVersionForeignKey.objects.find((object) => object.name === "StrengthDiarySession_programVersionId_fkey").signature += " NOT VALID";
+    expect(evaluateProductionPreflight(changedProgramVersionForeignKey, dynamicWorkoutDirs,
+      DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id).blockers.join(" ")).toContain("exact pre-migration schema signatures differ");
+
+    const post = validDynamicWorkoutPreflightReport({ applied: true });
+    post.identity = { ...post.identity, database: "bodycast_restore", databaseOid: 16385, role: "bodycast_restore", serverAddress: "172.20.0.3" };
+    const postflight = evaluateProductionPostflight(post, dynamicWorkoutDirs, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id,
+      { expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore" });
+    expect(postflight.ready).toBe(true);
+    const changedProgramForeignKey = structuredClone(post);
+    changedProgramForeignKey.objects.find((object) => object.name === "StrengthDiarySession_programId_fkey").signature += " OR TRUE";
+    expect(evaluateProductionPostflight(changedProgramForeignKey, dynamicWorkoutDirs, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id,
+      { expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore" }).blockers.join(" "))
+      .toContain("exact reviewed contract");
+    const wrongQueueSignature = structuredClone(post);
+    wrongQueueSignature.objects.find((object) => object.name === "HealthSyncRefreshJob_profileId_fkey").signature += " OR TRUE";
+    expect(evaluateProductionPostflight(wrongQueueSignature, dynamicWorkoutDirs, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id,
+      { expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore" }).blockers.join(" "))
+      .toContain("Postflight schema signatures differ");
+    const changedTargetChecksum = structuredClone(post);
+    changedTargetChecksum.migrations.find((row) => row.name === DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.migrations[0].name).checksum = "0".repeat(64);
+    expect(evaluateProductionPostflight(changedTargetChecksum, dynamicWorkoutDirs, DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.id,
+      { expectedDatabase: "bodycast_restore", expectedRole: "bodycast_restore" }).blockers.join(" ")).toContain("checksum differs");
+
+    expect(evaluateProductionPreflight(validPreflightReport(), dirs).readyForOwnerAuthorization).toBe(true);
+    expect(evaluateProductionPreflight(validV4RepublicationPreflightReport(), fullDirs, V4_REPUBLICATION_MANIFEST.id)
+      .readyForOwnerAuthorization).toBe(true);
+    for (const migration of DYNAMIC_WORKOUT_HEALTH_SYNC_MANIFEST.migrations) {
+      expect((await verifyManifestBlob({ repositoryPath: process.cwd(), releaseSha: execFileSync("git", ["rev-parse", "HEAD"],
+        { cwd: process.cwd(), encoding: "utf8" }).trim(), migration })).matchesManifest).toBe(true);
+    }
   });
 
   it.each([
@@ -1884,7 +2003,7 @@ describe("freshness boundaries, restore identity, and Prisma lock timeout", () =
     expect(schemaInventoryDigest(post.objects)).not.toBe(verified.postSchemaDigest);
   });
 
-  it("admits only an exact V4 base restore for isolated rehearsal, without production writer topology", async () => {
+  it.skipIf(process.platform === "win32")("admits only an exact V4 base restore for isolated rehearsal, without production writer topology", async () => {
     const releaseSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim();
     const source = validV4RepublicationPreflightReport();
     const preflight = evaluateProductionPreflight(source, fullDirs, V4_REPUBLICATION_MANIFEST.id);

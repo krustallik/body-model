@@ -1,6 +1,6 @@
 # Production migration V5 runbook
 
-This runbook describes the owner-authorized manual release paths for the `active-energy-unified-v2` release and the follow-up `unified-v4-republication-v1` schema fix. A merge or green CI does not execute either production migration set. Every production workflow requires a `main` dispatch for the exact current SHA, green CI for that SHA, trusted owner identity `126446430`, and its explicit confirmation input.
+This runbook describes the owner-authorized manual release paths for the `active-energy-unified-v2` release, the follow-up `unified-v4-republication-v1` schema fix, and `programless-workouts-health-sync-v1`. A merge or green CI does not execute any production migration set. Every production workflow requires a `main` dispatch for the exact current SHA, green CI for that SHA, trusted owner identity `126446430`, and its explicit confirmation input.
 
 ## Compatibility decision
 
@@ -52,9 +52,24 @@ The two Stage 02 strength-accounting migrations are prerequisites and must alrea
 
 Use this manifest only when the read-only production report shows those exact two migrations pending and all six prior migrations successful with their pinned checksums. Its preflight also verifies the old lifecycle/function/trigger baseline and rejects partially applied target columns, table, or functions. Its restore rehearsal applies the exact two migrations to the encrypted current-live backup in a disposable PostgreSQL instance and compares the resulting schema signatures. The signed authorization binds this manifest ID and exact pending-set digest; the earlier six-migration authorization, backup, or rehearsal cannot authorize this set. This manifest uses a fresh standard preflight and does not accept historical preflight resume or forward-resume evidence. Cutback remains available only with the new run's signed evidence and verified current-live backup.
 
+### Programless strength sessions and durable Health Sync refresh queue
+
+`programless-workouts-health-sync-v1` authorizes exactly these two pending migrations, after its 65 exact predecessor migrations are already applied once with their pinned Git-blob hashes:
+
+| Migration | Git-blob SHA-256 |
+| --- | --- |
+| `20261015090000_programless_dynamic_sessions` | `4e63b16fbb2950666489c591cc6586ba9a35a0c0a1ed595a51309c37786f9b49` |
+| `20261015100000_health_sync_durable_refresh_queue` | `6e07af8484ee10cda3cea5f06db19ec1286cb41ff40da8c05166c3cf7d90c991` |
+
+The first migration only makes the two program references nullable and adds the pair-nullability check. It preserves the existing program foreign keys and programmed session rows. The second adds the durable refresh queue and is separately checksum-bound in the same manifest because Prisma applies the full migration tree. Preflight requires the exact predecessor plus pending tree, complete checksums, the pre-migration program columns/FKs, and absence of every target object. Postflight compares exact PostgreSQL 17 signatures for both migrations. Only standard exact-SHA authorization is admitted; this manifest does not accept historical resume evidence.
+
+After migration, database cutback is eligible only if the live logical data fingerprint and programless-session count still match the signed pre-DDL baseline, and the restored database reproduces that count and the captured prior app's compatibility. The exact app SHA must carry `programless-strength-sessions-v1` whenever restored data contains programless sessions. The root recovery app-start and writer-enable operations also require a fresh read-only count bound to the captured database, exact rollback SHA/image, and a current signed host-adapter conformance receipt. The same proof is mandatory when reconciling a previously completed operation, so replay cannot bypass it. A pre-migration app such as `f910d2a45dfa676fada5fab42c9e8946c97872b1` is not an eligible rollback target when programless sessions exist.
+
+The deploy handoff for this manifest verifies the origin's full migration directory set and every migration checksum, requires the programless-session capability contract, and keeps `src/modules/training`, the migration tree, and the compatibility contract unchanged for a descendant deployment. Its dynamic handoff only admits reviewed non-runtime changes. A later runtime change to nullable-session readers needs a new explicit compatibility review and release-gate update.
+
 ## Owner-authorized execution and order
 
-1. Review canonical `main`, exact release SHA, successful CI for that SHA, and the six hashes above.
+1. Review canonical `main`, exact release SHA, successful CI for that SHA, the exact migration set and checksums for the selected manifest, and current root host-adapter conformance. For the programless manifest, the signed adapter must implement the read-only exact-SHA compatibility proof before app start and writer enable.
 2. Dispatch **Production migration preflight and encrypted backup** from `main` with that SHA, manifest `active-energy-unified-v2`, and confirmation `maintenance-backup-restore`. The workflow confirms maintenance, captures previous-app provenance with a read-only non-admission schema/history snapshot, stops/removes the old app, then requires the full writer-drain and read-only DB identity/history/schema/lock preflight before creating an encrypted backup. It restores the backup and rehearses migrations only on isolated disposable PostgreSQL. Review the report, restore result, artifact, and digests before continuing.
 3. Dispatch **Manual production migration** from `main` with the same SHA and manifest and confirmation `MIGRATE_PRODUCTION`. The owner-only signing job binds the exact pending set, source identity, preflight, backup, restore rehearsal, and writer-drain evidence. The execution job rechecks canonical `main`, clean exact checkout, all six committed SQL blobs, migrator image bytes, backup freshness, live DB identity and writer drain. The durable `ddl-started` marker is written immediately before the single Prisma container invocation. It records possible schema uncertainty; it does not prove Prisma started or PostgreSQL received DDL. From this boundary, keep the app stopped and traffic in maintenance until the exact compatible release succeeds or a separately verified pre-DDL restore completes.
 4. Prisma runs once with PostgreSQL `lock_timeout=5000`; the script blocks rerunning while the marker exists. Failure leaves the app stopped, Caddy in maintenance, and the marker at `ddl-started`. After success, read-only postflight must match the disposable restore before the marker advances to `schema-applied`.

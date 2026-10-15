@@ -40,6 +40,8 @@ export const REVIEWED_ENTRYPOINTS = Object.freeze([
   "scripts/production-db-preflight.mjs",
   "scripts/production-migration-final-guard.mjs",
   "scripts/run-prisma-migrate-with-lock-timeout.mjs",
+  "scripts/production-app-capabilities.mjs",
+  "scripts/production-app-capabilities.json",
   "scripts/production-recovery/authorization.mjs",
   "scripts/production-recovery/authorization-issuer-service.mjs",
   "scripts/production-recovery/authority.mjs",

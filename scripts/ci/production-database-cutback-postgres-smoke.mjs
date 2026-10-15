@@ -96,6 +96,8 @@ function queryReport(database) {
         FROM information_schema.columns WHERE table_schema='public'
         GROUP BY table_name
       ) inventory;`),
+    programlessSessionCount: Number(psql(database, `SELECT count(*) FROM public."StrengthDiarySession"
+      WHERE "programId" IS NULL AND "programVersionId" IS NULL;`)),
   };
 }
 function queryReadability(database) {
@@ -150,7 +152,8 @@ try {
     CREATE TABLE "ModelEpisode"(id integer PRIMARY KEY, value text NOT NULL);
     CREATE TABLE "PhysiologyV7Lifecycle"(id integer PRIMARY KEY, value text NOT NULL);
     CREATE TABLE "DailyModelState"(id integer PRIMARY KEY, value text NOT NULL);
-    CREATE TABLE "StrengthDiarySession"(id integer PRIMARY KEY, value text NOT NULL);
+    CREATE TABLE "StrengthDiarySession"(id integer PRIMARY KEY, value text NOT NULL,
+      "programId" integer NOT NULL DEFAULT 1, "programVersionId" integer NOT NULL DEFAULT 1);
     CREATE TABLE "ExerciseCatalog"(id integer PRIMARY KEY, value text NOT NULL);
     INSERT INTO "Workout" SELECT n, 'snapshot-' || n FROM generate_series(1, 4) n;
     INSERT INTO "Profile" SELECT n, 'snapshot-' || n FROM generate_series(1, 4) n;

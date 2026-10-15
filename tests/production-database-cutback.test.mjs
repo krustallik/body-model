@@ -12,7 +12,9 @@ const identity = Object.freeze({
   database: "bodycast", databaseOid: 16384, clusterSystemIdentifier: "7419276301947620311",
   role: "bodycast", serverVersion: "17.5", serverAddress: "172.20.0.2", serverPort: 5432,
 });
-const claims = Object.freeze({ productionIdentityDigest: canonicalSha256(identity) });
+const dataFingerprint = "c".repeat(64);
+const claims = Object.freeze({ productionIdentityDigest: canonicalSha256(identity), manifestId: "active-energy-unified-v2" });
+const preflightReport = Object.freeze({ logicalDataFingerprint: dataFingerprint, programlessSessionCount: 0 });
 const rowCounts = Object.freeze(Object.fromEntries([
   "Workout", "Profile", "ModelEpisode", "PhysiologyV7Lifecycle", "DailyModelState", "StrengthDiarySession", "ExerciseCatalog",
 ].map((name) => [name, { rowCount: 1 }])));
@@ -37,8 +39,9 @@ describe("production database cutback gates", () => {
     const sourceTables = { DailyModelState: { exists: true, estimatedRows: 10, totalBytes: 2048 } };
     const preflightResult = { readyForOwnerAuthorization: true, blockers: [], pendingExactlyExpected: true,
       manifestId: "active-energy-unified-v2", pending: pendingMigrationNames, identity, migrations, objects: sourceObjects, tables: sourceTables,
-      previousAppProvenance };
-    const report = { identity, pending: pendingMigrationNames, migrations, objects: sourceObjects, tables: sourceTables };
+      programlessSessionCount: 0, previousAppProvenance };
+    const report = { identity, pending: pendingMigrationNames, migrations, objects: sourceObjects, tables: sourceTables,
+      programlessSessionCount: 0 };
     const evidence = {
       verified: true, releaseSha: "a".repeat(40), manifestId: "active-energy-unified-v2", workflowRunId: "4001", workflowRunAttempt: 1,
       preflightResultDigest: canonicalSha256(preflightResult), restoreResultDigest: canonicalSha256(restoreResult),
@@ -73,23 +76,36 @@ describe("production database cutback gates", () => {
 
   it("requires the exact signed database identity and an empty writer drain", () => {
     expect(assertCutbackLiveDatabaseIdentity({
-      claims, liveReport: { identity, writerDrain: { activeClientBackends: [], topology: { ready: true } } },
+      claims, preflightReport, liveReport: { identity, logicalDataFingerprint: dataFingerprint, programlessSessionCount: 0,
+        writerDrain: { activeClientBackends: [], topology: { ready: true } } },
     }).verified).toBe(true);
     for (const live of [
       { identity: { ...identity, database: "other" }, writerDrain: { activeClientBackends: [], topology: { ready: true } } },
       { identity: { ...identity, clusterSystemIdentifier: "different" }, writerDrain: { activeClientBackends: [], topology: { ready: true } } },
       { identity, writerDrain: { activeClientBackends: [{ pid: 7 }], topology: { ready: true } } },
       { identity, writerDrain: { activeClientBackends: [], topology: { ready: false } } },
-    ]) expect(() => assertCutbackLiveDatabaseIdentity({ claims, liveReport: live })).toThrow();
+    ]) expect(() => assertCutbackLiveDatabaseIdentity({ claims, preflightReport, liveReport: {
+      ...live, logicalDataFingerprint: dataFingerprint, programlessSessionCount: 0,
+    } })).toThrow();
+    expect(() => assertCutbackLiveDatabaseIdentity({ claims, preflightReport, liveReport: {
+      identity, logicalDataFingerprint: "d".repeat(64), programlessSessionCount: 0,
+      writerDrain: { activeClientBackends: [], topology: { ready: true } },
+    } })).toThrow(/would discard committed data/);
+    expect(() => assertCutbackLiveDatabaseIdentity({ claims, preflightReport, liveReport: {
+      identity, logicalDataFingerprint: dataFingerprint, programlessSessionCount: 1,
+      writerDrain: { activeClientBackends: [], topology: { ready: true } },
+    } })).toThrow(/programless-session state is missing or changed/);
   });
 
   it("accepts a historical /32 signed identity only for the same current bare endpoint", () => {
     const historicalIdentity = { ...identity, serverAddress: "172.20.0.2/32" };
-    const historicalClaims = { productionIdentityDigest: canonicalSha256(historicalIdentity) };
+    const historicalClaims = { productionIdentityDigest: canonicalSha256(historicalIdentity), manifestId: "active-energy-unified-v2" };
     expect(assertCutbackLiveDatabaseIdentity({ claims: historicalClaims,
-      liveReport: { identity, writerDrain: { activeClientBackends: [], topology: { ready: true } } } }).verified).toBe(true);
+      preflightReport, liveReport: { identity, logicalDataFingerprint: dataFingerprint, programlessSessionCount: 0,
+        writerDrain: { activeClientBackends: [], topology: { ready: true } } } }).verified).toBe(true);
     expect(() => assertCutbackLiveDatabaseIdentity({ claims: historicalClaims,
-      liveReport: { identity: { ...identity, serverAddress: "172.20.0.99" }, writerDrain: { activeClientBackends: [], topology: { ready: true } } } })).toThrow();
+      preflightReport, liveReport: { identity: { ...identity, serverAddress: "172.20.0.99" }, logicalDataFingerprint: dataFingerprint,
+        programlessSessionCount: 0, writerDrain: { activeClientBackends: [], topology: { ready: true } } } })).toThrow();
   });
 
   it("accepts only a restored database on the exact source cluster and role", () => {
@@ -108,10 +124,10 @@ describe("production database cutback gates", () => {
 
   it("blocks cutback when migration history, schema or any required data row count differs", () => {
     const logicalDataFingerprint = "c".repeat(64);
-    const sourceReport = { identity, migrations, objects: [], logicalDataFingerprint };
+    const sourceReport = { identity, migrations, objects: [], logicalDataFingerprint, programlessSessionCount: 0 };
     const restoreResult = { readability: rowCounts, logicalDataFingerprint };
     const restoredReport = { identity: { ...identity, database: "staging", databaseOid: 20480 }, migrationHistory: migrations,
-      objects: [], readability: rowCounts, logicalDataFingerprint };
+      objects: [], readability: rowCounts, logicalDataFingerprint, programlessSessionCount: 0 };
     const readabilityReport = { readability: rowCounts, logicalDataFingerprint };
     expect(verifyCutbackRestoredState({ sourceReport, restoreResult, restoredReport, readabilityReport }).verified).toBe(true);
     const badRows = { ...rowCounts, Workout: { rowCount: 2 } };
@@ -119,5 +135,7 @@ describe("production database cutback gates", () => {
     expect(verifyCutbackRestoredState({ sourceReport, restoreResult, restoredReport: { ...restoredReport, migrationHistory: [] }, readabilityReport }).verified).toBe(false);
     expect(verifyCutbackRestoredState({ sourceReport, restoreResult,
       restoredReport: { ...restoredReport, logicalDataFingerprint: "d".repeat(64) }, readabilityReport }).verified).toBe(false);
+    expect(verifyCutbackRestoredState({ sourceReport, restoreResult,
+      restoredReport: { ...restoredReport, programlessSessionCount: 1 }, readabilityReport }).verified).toBe(false);
   });
 });

@@ -1017,16 +1017,23 @@ export function createProductionOperationBroker({
       }
       if (request.operation === "recovery-finalize") {
         const evidence = await loadEvidenceById(request.evidenceId);
-        const pending = await authority.readPendingOperation?.();
+        const pending = state.state === "recovery-finalized" ? null : await authority.readPendingOperation?.();
         let record;
         if (state.state === "recovery-finalized") {
-          if (!pending?.record || pending.record.nextState !== "recovery-finalized"
-            || pending.record.recoveryCaseId !== request.recoveryCaseId
-            || pending.record.generation !== request.expectedGeneration
-            || pending.record.recordDigest !== request.expectedRecordDigest) {
+          if (typeof authority.readFinalizedRecoveryRecord !== "function") {
+            throw new Error("Recovery authority cannot read the exact finalized journal tail for a guarded cleanup retry.");
+          }
+          record = await authority.readFinalizedRecoveryRecord({
+            recoveryCaseId: request.recoveryCaseId,
+            generation: request.expectedGeneration,
+            recordDigest: request.expectedRecordDigest,
+          });
+          if (!record || record.nextState !== "recovery-finalized"
+            || record.recoveryCaseId !== request.recoveryCaseId
+            || record.generation !== request.expectedGeneration
+            || record.recordDigest !== request.expectedRecordDigest) {
             throw new Error("Recovery finalization retry does not match the exact finalized journal record.");
           }
-          record = pending.record;
           if (canonicalDigest(evidence) !== record.sourceEvidenceDigest) {
             throw new Error("Recovery finalization retry evidence differs from the exact finalized journal record.");
           }

@@ -449,6 +449,26 @@ export function createRecoveryAuthority(config) {
     }, lockOptions);
   }
 
+  async function readFinalizedRecoveryRecord(identity) {
+    assertExactKeys(identity, ["recoveryCaseId", "generation", "recordDigest"], "Finalized recovery record identity");
+    assertNonEmptyString(identity.recoveryCaseId, "finalizedRecoveryRecord.recoveryCaseId");
+    if (!Number.isSafeInteger(identity.generation) || identity.generation < 1) {
+      throw new Error("Finalized recovery record generation is invalid.");
+    }
+    assertSha256(identity.recordDigest, "finalizedRecoveryRecord.recordDigest");
+    return withExclusiveRecoveryLock(lockPath, async () => {
+      const journal = await readValidatedJournal();
+      const record = journal.tail;
+      if (!record || record.nextState !== "recovery-finalized"
+        || record.recoveryCaseId !== identity.recoveryCaseId
+        || record.generation !== identity.generation
+        || record.recordDigest !== identity.recordDigest) {
+        throw new Error("Finalized recovery record does not match the exact authoritative journal tail.");
+      }
+      return record;
+    }, lockOptions);
+  }
+
   async function bootstrapFailedRelease(request) {
     return withExclusiveRecoveryLock(lockPath, async () => {
       const journal = await readValidatedJournal();
@@ -1148,6 +1168,7 @@ export function createRecoveryAuthority(config) {
     bootstrapFailedRelease,
     applyTransition,
     readPendingOperation,
+    readFinalizedRecoveryRecord,
     executePendingOperation,
     issueMigrationChallenge,
     readMigrationChallenge,

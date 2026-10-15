@@ -46,7 +46,7 @@ function currentness(expected, overrides = {}) {
 }
 
 function makeRecoveryCase({ operationType = "recovery-open-traffic", overrides = {}, receipt = null, finalized = false,
-  preparationOverrides = {}, adapterConformance = ADAPTER } = {}) {
+  preparationOverrides = {}, adapterConformance = ADAPTER, finalizedRecordReader = true } = {}) {
   const transition = operationType === "recovery-open-traffic" ? "open-traffic"
     : operationType === "recovery-start-readonly-app" ? "mark-rollback-app-ready" : "complete-recovery";
   const recoveryCaseId = "recovery-health-case";
@@ -63,9 +63,10 @@ function makeRecoveryCase({ operationType = "recovery-open-traffic", overrides =
   const record = { recoveryCaseId, generation, recordDigest: journalRecordDigest,
     nextState: finalized ? "recovery-finalized" : transition === "open-traffic" ? "traffic-open"
       : transition === "mark-rollback-app-ready" ? "app-ready" : "recovery-complete", transition,
-    sourceEvidenceDigest, operationEvidenceId: "recovery-health-evidence", rollbackAppSha: OLD_APP_SHA,
+    sourceEvidenceDigest, rollbackAppSha: OLD_APP_SHA,
     immutableRollbackArtifact, logicalProductionDbIdentityDigest: DATABASE_DIGEST,
-    operationIntent: intent };
+    operationIntent: finalized ? null : intent,
+    operationEvidenceId: finalized ? null : "recovery-health-evidence" };
   let observedState = receipt ? "post" : "pre";
   let effectCount = 0;
   let finalizeCount = 0;
@@ -73,6 +74,7 @@ function makeRecoveryCase({ operationType = "recovery-open-traffic", overrides =
   let inHealthFence = false;
   let preparationCalls = 0;
   let conformanceCalls = 0;
+  let finalizedRecordReads = 0;
   const fenceCalls = [];
   const operationDefinition = OPERATION_CONTRACTS[operationType];
   const conditionFor = (input, state) => {
@@ -102,8 +104,14 @@ function makeRecoveryCase({ operationType = "recovery-open-traffic", overrides =
   };
   const authority = {
     readAuthoritativeState: async () => ({ blocking: !finalized, activeRecovery: !finalized, state: record.nextState }),
-    readPendingOperation: async () => ({ record, intent: finalized ? null : intent,
+    readPendingOperation: async () => finalized ? null : ({ record, intent,
       operationEvidenceId: record.operationEvidenceId, receipt }),
+    ...(finalizedRecordReader ? { readFinalizedRecoveryRecord: async (identity) => {
+      finalizedRecordReads += 1;
+      if (identity.recoveryCaseId !== record.recoveryCaseId || identity.generation !== record.generation
+        || identity.recordDigest !== record.recordDigest) throw new Error("finalized record identity mismatch");
+      return record;
+    } } : {}),
     applyTransition: async () => { committed = true; return { record }; },
     executePendingOperation: async (identity, execute) => {
       const outcome = await execute({ record, intent });
@@ -165,6 +173,7 @@ function makeRecoveryCase({ operationType = "recovery-open-traffic", overrides =
   const request = { schemaVersion: 1, operation: "recovery-operation-replay", requestId: "health-replay-1",
     recoveryCaseId, expectedGeneration: generation, expectedRecordDigest: journalRecordDigest, operationId };
   return { broker, request, fenceCalls, effectCount: () => effectCount, finalizeCount: () => finalizeCount,
+    finalizedRecordReads: () => finalizedRecordReads,
     preparationCalls: () => preparationCalls, conformanceCalls: () => conformanceCalls,
     committed: () => committed, record, intent };
 }
@@ -234,6 +243,17 @@ describe("recovery Health queue and Unified V4 gates", () => {
       expectedRecordDigest: fixture.record.recordDigest, evidenceId: "finalize-evidence" };
     await expect(fixture.broker.dispatch(request)).rejects.toThrow(/idle Health refresh queue and fresh, unblocked Unified V4/);
     expect(fixture.fenceCalls).toHaveLength(1);
+    expect(fixture.finalizedRecordReads()).toBe(1);
+    expect(fixture.finalizeCount()).toBe(0);
+  });
+
+  it("fails closed when a finalized journal tail cannot be read by exact identity", async () => {
+    const fixture = makeRecoveryCase({ finalized: true, finalizedRecordReader: false });
+    const request = { schemaVersion: 1, operation: "recovery-finalize", requestId: "finalize-no-tail-reader",
+      recoveryCaseId: fixture.record.recoveryCaseId, expectedGeneration: fixture.record.generation,
+      expectedRecordDigest: fixture.record.recordDigest, evidenceId: "finalize-evidence" };
+    await expect(fixture.broker.dispatch(request)).rejects.toThrow(/cannot read the exact finalized journal tail/);
+    expect(fixture.fenceCalls).toHaveLength(0);
     expect(fixture.finalizeCount()).toBe(0);
   });
 

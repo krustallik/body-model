@@ -10,6 +10,7 @@ import { EXERCISE_MUSCLE_MAPPING_V7_VERSION } from "@/model/physiology-v7/exerci
 function buildDb() {
   const order: string[] = [];
   type BackfillMock = {
+    $queryRaw: ReturnType<typeof vi.fn>;
     $executeRaw: ReturnType<typeof vi.fn>;
     strengthSessionExercise: {
       findMany: ReturnType<typeof vi.fn>;
@@ -19,6 +20,7 @@ function buildDb() {
     order: string[];
   };
   const db = {
+    $queryRaw: vi.fn(async () => { order.push("health-fence"); return []; }),
     $executeRaw: vi.fn(async () => { order.push("profile-lock"); return 1; }),
     strengthSessionExercise: {
       findMany: vi.fn(async () => { order.push("findMany"); return []; }),
@@ -120,7 +122,8 @@ describe("null muscleMappingSnapshot backfill", () => {
     expect(applied.dryRun).toBe(false);
     expect(applied.updatedRows).toBe(1);
     expect(db.$transaction).toHaveBeenCalledTimes(1);
-    expect(db.order[0]).toBe("profile-lock");
+    expect(db.order[0]).toBe("health-fence");
+    expect(db.order.indexOf("health-fence")).toBeLessThan(db.order.indexOf("profile-lock"));
     expect(db.order.indexOf("profile-lock")).toBeLessThan(db.order.indexOf("findMany"));
     expect(db.strengthSessionExercise.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({

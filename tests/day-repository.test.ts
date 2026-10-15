@@ -85,6 +85,7 @@ function fixture() {
       activeEnergyEventAlias,
       physiologyV7Lifecycle,
       unifiedPublicationBlock,
+      $queryRaw: vi.fn().mockResolvedValue([]),
       $executeRaw: vi.fn().mockResolvedValue(0),
     })),
   } as unknown as PrismaClient;

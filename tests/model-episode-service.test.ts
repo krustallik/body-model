@@ -38,6 +38,7 @@ import { currentPhysiologyV7Versions } from "@/modules/model-episodes/physiology
 
 const clientMock = {
   $transaction: vi.fn(async (callback: (transaction: object) => unknown) => callback({
+    $queryRaw: vi.fn().mockResolvedValue([]),
     $executeRaw: vi.fn().mockResolvedValue(1),
     physiologyV7Lifecycle: {
       upsert: vi.fn().mockResolvedValue({

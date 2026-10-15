@@ -43,17 +43,20 @@ function deferred() {
   return { promise, resolve };
 }
 
-async function waitForProfileInvalidationLockWait(): Promise<void> {
+async function waitForProfileInvalidationLockWait(profileId: number): Promise<void> {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     const rows = await prisma.$queryRaw<Array<{ blocked: boolean }>>`
       SELECT EXISTS (
         SELECT 1
-        FROM pg_stat_activity
-        WHERE datname = current_database()
-          AND pid <> pg_backend_pid()
-          AND wait_event_type = 'Lock'
-          AND query ILIKE '%pg_advisory_xact_lock(927001%'
+        FROM pg_locks
+        WHERE locktype = 'advisory'
+          AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+          AND classid = 927001::oid
+          AND objid = ${profileId}::oid
+          AND objsubid = 2
+          AND mode = 'ExclusiveLock'
+          AND NOT granted
       ) AS blocked
     `;
     if (rows[0]?.blocked) return;
@@ -101,7 +104,7 @@ async function raceInvalidations(input: {
 
   await secondTransactionStarted.promise;
   try {
-    await waitForProfileInvalidationLockWait();
+    await waitForProfileInvalidationLockWait(input.profileId);
   } catch (error) {
     releaseFirstTransaction.resolve();
     await Promise.allSettled([firstTransaction, secondTransaction]);

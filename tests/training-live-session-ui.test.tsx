@@ -98,6 +98,16 @@ function buildSession(overrides: Partial<StrengthSessionDto> = {}): StrengthSess
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("Live training session mobile UI", () => {
   afterEach(() => {
     cleanup();
@@ -421,10 +431,12 @@ describe("Live training session mobile UI", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const view = render(<SessionClient sessionId={42} />);
-    await user.click(await screen.findByRole("button", { name: "Додати вправу" }));
+    const pickerOpener = await screen.findByRole("button", { name: "Додати вправу" });
+    await user.click(pickerOpener);
+    const picker = await screen.findByRole("dialog", { name: "Додати вправу" });
     await user.selectOptions(await screen.findByLabelText("Вправа з каталогу"), "9");
     await user.selectOptions(screen.getByLabelText("Тип опору"), RESISTANCE.BODYWEIGHT);
-    await user.click(screen.getByRole("button", { name: "Додати вправу" }));
+    await user.click(within(picker).getByRole("button", { name: "Додати вправу" }));
 
     await waitFor(() => {
       expect(screen.getByRole("heading", { name: "Віджимання від ручок" })).toBeTruthy();
@@ -459,6 +471,144 @@ describe("Live training session mobile UI", () => {
       expect(screen.getByRole("heading", { name: "Віджимання від ручок" })).toBeTruthy();
       expect(screen.getAllByText("Записано підходів: 1")).toHaveLength(2);
     });
+  });
+
+  it("keeps the empty-session exercise picker accessible and ignores stale catalog requests", async () => {
+    const user = userEvent.setup();
+    const pendingRequests = [deferred<Response>(), deferred<Response>(), deferred<Response>()];
+    let catalogRequestIndex = 0;
+    const mutations = vi.fn();
+    const dynamicSession = buildSession({
+      programId: null,
+      programName: null,
+      programVersionId: null,
+      programVersionNumber: null,
+      exercises: [],
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/v1/training/exercises") {
+        return pendingRequests[catalogRequestIndex++]!.promise;
+      }
+      if (url.includes("/history")) return Response.json({ entries: [] });
+      if (init?.method && init.method !== "GET") mutations();
+      return Response.json({ session: dynamicSession });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SessionClient sessionId={42} />);
+    const opener = await screen.findByRole("button", { name: "Додати вправу" });
+    await user.click(opener);
+    let dialog = await screen.findByRole("dialog", { name: "Додати вправу" });
+    const cancel = within(dialog).getByRole("button", { name: "Скасувати" });
+    await waitFor(() => expect(document.activeElement).toBe(cancel));
+    expect(opener.parentElement?.hasAttribute("inert")).toBe(true);
+    expect(within(dialog).getByRole("status").textContent).toContain("Завантаження каталогу");
+
+    await user.tab();
+    expect(document.activeElement).toBe(cancel);
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(cancel);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Додати вправу" })).toBeNull());
+    expect(document.activeElement).toBe(opener);
+    expect(opener.parentElement?.hasAttribute("inert")).toBe(false);
+
+    await user.click(opener);
+    dialog = await screen.findByRole("dialog", { name: "Додати вправу" });
+    expect(catalogRequestIndex).toBe(2);
+    pendingRequests[0]!.resolve(Response.json({ exercises: [{
+      id: 9,
+      name: "Стара відповідь",
+      stableKey: "old_response",
+      isActive: true,
+      archivedAt: null,
+      muscleMapping: null,
+    }] }));
+    await waitFor(() => expect(within(dialog).getByRole("status")).toBeTruthy());
+    expect(within(dialog).queryByLabelText("Вправа з каталогу")).toBeNull();
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Додати вправу" })).toBeNull());
+    expect(document.activeElement).toBe(opener);
+
+    await user.click(opener);
+    dialog = await screen.findByRole("dialog", { name: "Додати вправу" });
+    expect(catalogRequestIndex).toBe(3);
+    pendingRequests[1]!.reject(new Error("catalog unavailable after close"));
+    await waitFor(() => expect(within(dialog).getByRole("status")).toBeTruthy());
+    expect(within(dialog).queryByRole("alert")).toBeNull();
+    pendingRequests[2]!.resolve(Response.json({ exercises: [{
+      id: 10,
+      name: "Підтягування",
+      stableKey: "pull_up_bar",
+      isActive: true,
+      archivedAt: null,
+      muscleMapping: null,
+    }] }));
+    const catalogSelect = await within(dialog).findByLabelText("Вправа з каталогу");
+    expect(catalogSelect).toBeTruthy();
+    await user.selectOptions(catalogSelect, "10");
+    const addButton = within(dialog).getByRole("button", { name: "Додати вправу" });
+    expect((addButton as HTMLButtonElement).disabled).toBe(false);
+    await user.tab();
+    await user.tab();
+    await user.tab();
+    expect(document.activeElement).toBe(addButton);
+    await user.tab();
+    expect(document.activeElement).toBe(catalogSelect);
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(addButton);
+    expect(mutations).not.toHaveBeenCalled();
+  });
+
+  it("keeps the active-workout draft on picker failure and returns focus to its menu opener", async () => {
+    const user = userEvent.setup();
+    const catalogRequest = deferred<Response>();
+    const mutations = vi.fn();
+    const session = buildSession();
+    const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/v1/training/exercises") return catalogRequest.promise;
+      if (url.includes("/history")) return Response.json({ entries: [] });
+      if (init?.method && init.method !== "GET") mutations();
+      return Response.json({ session });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SessionClient sessionId={42} />);
+    await screen.findByTestId("active-exercise-pane");
+    const repsInput = await activePane().findByLabelText("Повтори");
+    await user.type(repsInput, "8");
+    await user.click(screen.getByRole("button", { name: "Меню сесії" }));
+    const actionMenu = await screen.findByRole("dialog", { name: "Дії" });
+    const opener = within(actionMenu).getByRole("button", { name: "Додати вправу" });
+    await user.click(opener);
+
+    const picker = await screen.findByRole("dialog", { name: "Додати вправу" });
+    const cancel = within(picker).getByRole("button", { name: "Скасувати" });
+    await waitFor(() => expect(document.activeElement).toBe(cancel));
+    expect(within(picker).getByRole("status")).toBeTruthy();
+    await user.tab();
+    expect(document.activeElement).toBe(cancel);
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(cancel);
+    expect(document.querySelector(`.${styles.workoutFrame}`)?.hasAttribute("inert")).toBe(true);
+    catalogRequest.reject(new Error("catalog unavailable"));
+    expect(await within(picker).findByRole("alert")).toBeTruthy();
+    expect(within(picker).getByRole("button", { name: "Скасувати" })).toBeTruthy();
+    const firstSelect = within(picker).getByLabelText("Вправа з каталогу");
+    await user.tab();
+    expect(document.activeElement).toBe(firstSelect);
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(cancel);
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Додати вправу" })).toBeNull());
+    expect(document.activeElement).toBe(opener);
+    expect(document.querySelector(`.${styles.workoutFrame}`)?.hasAttribute("inert")).toBe(false);
+    expect((repsInput as HTMLInputElement).value).toBe("8");
+    expect(mutations).not.toHaveBeenCalled();
   });
 
   it("creates, reads, edits, and clears additional load for a programless BODYWEIGHT set", async () => {

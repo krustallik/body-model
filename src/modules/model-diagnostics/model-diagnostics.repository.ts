@@ -6,7 +6,7 @@ import { buildUnifiedEnergySummaryV1 } from "@/model/unified-experimental-physio
 export class ModelDiagnosticsRepository {
   constructor(private readonly client: ModelDatabaseClient = prisma) {}
 
-  async loadEvidence(episodeId: number, from: string, to: string): Promise<DiagnosticsEvidence> {
+  async loadEvidence(episodeId: number, from: string, to: string, latestModeledDate: string | null): Promise<DiagnosticsEvidence> {
     const [modeledDayCount, completeDayCount, observedNutritionDayCount, imputedNutritionDayCount, unresolvedNutritionDayCount, weightObservationCount] = await Promise.all([
       this.client.dailyModelState.count({ where: { episodeId, date: { gte: from, lte: to } } }),
       this.client.dailyModelState.count({ where: { episodeId, date: { gte: from, lte: to }, status: "complete" } }),
@@ -18,13 +18,17 @@ export class ModelDiagnosticsRepository {
     const unified = (this.client as unknown as { unifiedExperimentalPhysiologyState?: { findMany: (args: unknown) => Promise<unknown[]> } }).unifiedExperimentalPhysiologyState;
     const [energyRows, latestModeledDay, previousCompletedDays] = await Promise.all([
       this.client.dailyModelState.findMany({ where: { episodeId, date: { gte: from, lte: to } }, orderBy: { date: "asc" }, select: { date: true, status: true, energyExpenditureKcal: true, dynamicRmrKcalPerDay: true } }),
-      this.client.dailyModelState.findFirst({ where: { episodeId, date: to }, select: { date: true, status: true, energyExpenditureKcal: true } }),
-      this.client.dailyModelState.findMany({
-        where: { episodeId, date: { lt: to }, status: "complete" },
-        orderBy: { date: "desc" },
-        take: 7,
-        select: { date: true, energyExpenditureKcal: true },
-      }),
+      latestModeledDate
+        ? this.client.dailyModelState.findFirst({ where: { episodeId, date: { equals: latestModeledDate, lte: to } }, select: { date: true, status: true, energyExpenditureKcal: true } })
+        : Promise.resolve(null),
+      latestModeledDate
+        ? this.client.dailyModelState.findMany({
+          where: { episodeId, date: { lt: latestModeledDate, lte: to }, status: "complete" },
+          orderBy: { date: "desc" },
+          take: 7,
+          select: { date: true, energyExpenditureKcal: true },
+        })
+        : Promise.resolve([]),
     ]);
     const experimentalEnergySummary = unified ? buildUnifiedEnergySummaryV1({
       days: energyRows.map((row) => ({ date: row.date, productionTdeeKcalPerDay: row.energyExpenditureKcal, dynamicRmrKcalPerDay: row.dynamicRmrKcalPerDay })),

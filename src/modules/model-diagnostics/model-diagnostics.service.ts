@@ -13,7 +13,22 @@ export async function getModelDiagnostics(client: ModelDatabaseClient = prisma) 
   if (!episode) throw new NoActiveModelEpisodeError();
   const status = await episodes.status(episode.id);
   if (!status) throw new NoActiveModelEpisodeError();
-  const candidateWindowStart = episode.latestModeledDate ? addCalendarDays(episode.latestModeledDate, -(MODEL_DIAGNOSTICS_RECENT_WINDOW_DAYS - 1)) : null;
+  const currentPrefixEndDate = status.productionCurrent
+    ? episode.latestModeledDate
+    : status.productionDirtyFromDate
+      ? addCalendarDays(status.productionDirtyFromDate, -1)
+      : null;
+  const boundedCurrentPrefixEndDate = currentPrefixEndDate && currentPrefixEndDate >= episode.startDate
+    ? currentPrefixEndDate
+    : null;
+  const latestCurrentModeledDate = status.latestModeledDate
+    && boundedCurrentPrefixEndDate
+    && status.latestModeledDate <= boundedCurrentPrefixEndDate
+    ? status.latestModeledDate
+    : null;
+  const candidateWindowStart = latestCurrentModeledDate
+    ? addCalendarDays(latestCurrentModeledDate, -(MODEL_DIAGNOSTICS_RECENT_WINDOW_DAYS - 1))
+    : null;
   const windowStartDate = candidateWindowStart
     ? (candidateWindowStart < episode.startDate ? episode.startDate : candidateWindowStart)
     : null;
@@ -23,8 +38,13 @@ export async function getModelDiagnostics(client: ModelDatabaseClient = prisma) 
     unresolvedNutritionDayCount: 0, weightObservationCount: 0,
   };
   const [evidence, recovery] = await Promise.all([
-    windowStartDate && episode.latestModeledDate
-      ? new ModelDiagnosticsRepository(client).loadEvidence(episode.id, windowStartDate, episode.latestModeledDate)
+    windowStartDate && latestCurrentModeledDate
+      ? new ModelDiagnosticsRepository(client).loadEvidence(
+        episode.id,
+        windowStartDate,
+        latestCurrentModeledDate,
+        latestCurrentModeledDate,
+      )
       : Promise.resolve(emptyEvidence),
     new ModelRecoveryRepository(client).latestStatus(episode.id),
   ]);

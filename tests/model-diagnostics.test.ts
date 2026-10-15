@@ -166,6 +166,79 @@ describe("multidimensional diagnostic composition", () => {
     });
   });
 
+  it("uses ModelStatus currentness dates instead of stale persisted episode dates", () => {
+    const staleEpisode = { ...episode(), latestModeledDate: "2026-10-15" };
+    const staleStatus = {
+      ...status(false),
+      productionCurrent: false,
+      productionDirtyFromDate: "2026-10-10",
+      latestModeledDate: "2026-10-09",
+      currentPredictedWeightKg: null,
+      currentFilteredWeightKg: null,
+      currentFatMassKg: null,
+      currentLeanTissueKg: null,
+      currentDynamicRmrKcalPerDay: null,
+      currentModeledTdeeKcalPerDay: null,
+    };
+    const result = buildDiagnosticsDto({
+      episode: staleEpisode,
+      status: staleStatus,
+      evidence: {
+        ...evidence,
+        modeledDayCount: 9,
+        energyHistory: {
+          latestModeledDay: { date: "2026-10-09", status: "complete", expenditureKcalPerDay: 900 },
+          previousCompletedDays: [{ date: "2026-10-08", expenditureKcalPerDay: 800 }],
+        },
+        experimentalEnergySummary: {
+          restingRmrKcalPerDay: 90,
+          recentTypicalMaintenanceKcalPerDay: null,
+          todayEstimatedExpenditureKcalPerDay: null,
+          latestModeledExpenditureKcalPerDay: 900,
+          typicalMaintenanceEligibleDays: 9,
+          typicalMaintenanceWindowDays: 28,
+        },
+      },
+      windowStartDate: "2026-09-12",
+      recovery: null,
+    });
+
+    expect(result.episode.latestModeledDate).toBe("2026-10-09");
+    expect(result.dataContinuity).toMatchObject({ windowEndDate: "2026-10-09", modeledDayCount: 9 });
+    expect(result.energyHistory.latestModeledDay?.date).toBe("2026-10-09");
+    expect(result.energyHistory.previousCompletedDays.every((day) => day.date < "2026-10-10")).toBe(true);
+    expect(result.experimentalEnergySummary?.latestModeledExpenditureKcalPerDay).toBe(900);
+  });
+
+  it("does not display the episode's stale latest date when no current prefix exists", () => {
+    const result = buildDiagnosticsDto({
+      episode: { ...episode(), latestModeledDate: "2026-10-15" },
+      status: {
+        ...status(false),
+        productionCurrent: false,
+        productionDirtyFromDate: "2026-01-01",
+        latestModeledDate: null,
+        currentPredictedWeightKg: null,
+        currentFilteredWeightKg: null,
+        currentFatMassKg: null,
+        currentLeanTissueKg: null,
+        currentDynamicRmrKcalPerDay: null,
+        currentModeledTdeeKcalPerDay: null,
+      },
+      evidence: {
+        modeledDayCount: 0, completeDayCount: 0, incompleteDayCount: 0,
+        observedNutritionDayCount: 0, imputedNutritionDayCount: 0,
+        unresolvedNutritionDayCount: 0, weightObservationCount: 0,
+      },
+      windowStartDate: null,
+      recovery: null,
+    });
+
+    expect(result.episode.latestModeledDate).toBeNull();
+    expect(result.dataContinuity).toMatchObject({ windowStartDate: null, windowEndDate: null, modeledDayCount: 0 });
+    expect(result.energyHistory).toEqual({ latestModeledDay: null, previousCompletedDays: [] });
+  });
+
   it("marks incomplete activity evidence as limited even when nutrition is resolved", () => {
     const result = buildDiagnosticsDto({ episode: episode(), status: status(false), evidence: { ...evidence, unresolvedNutritionDayCount: 0 }, windowStartDate: "2026-07-29", recovery: null });
     expect(result.dataContinuity.level).toBe("limited");

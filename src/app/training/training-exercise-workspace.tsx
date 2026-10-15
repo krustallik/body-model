@@ -90,6 +90,7 @@ type TrainingExerciseWorkspaceProps = {
   onDeleteSet: (setId: number) => void;
   trailingAction?: ReactNode;
   finishDialog?: ReactNode;
+  inertBackground?: boolean;
   autoAdvanceNonce?: number;
 };
 
@@ -186,6 +187,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
     onDeleteSet,
     trailingAction,
     finishDialog,
+    inertBackground = false,
     autoAdvanceNonce = 0,
   } = props;
 
@@ -624,7 +626,7 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
 
   return (
     <main className={styles.workoutShell}>
-      <div className={styles.workoutFrame}>
+      <div className={styles.workoutFrame} inert={inertBackground}>
         <header className={styles.workoutTop}>
           <div className={styles.workoutChrome}>
             <Link className={`${styles.liveBack} ${styles.workoutChromeBack}`} href={backHref}>
@@ -734,7 +736,11 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
           </button>
         </div>
       </div>
-      {footerContent}
+      {footerContent && (
+        <div inert={inertBackground} style={{ display: "contents" }}>
+          {footerContent}
+        </div>
+      )}
       {finishDialog}
     </main>
   );

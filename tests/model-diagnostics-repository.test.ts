@@ -20,7 +20,7 @@ describe("ModelDiagnosticsRepository", () => {
       ]);
     const latestDay = vi.fn().mockResolvedValue({ date: "2026-08-25", status: "incomplete", energyExpenditureKcal: null });
     const client = { dailyModelState: { count: dailyCount, findMany: dailyFindMany, findFirst: latestDay }, dailyHealthData: { count: weightCount } } as unknown as ModelDatabaseClient;
-    const result = await new ModelDiagnosticsRepository(client).loadEvidence(7, "2026-07-29", "2026-08-25");
+    const result = await new ModelDiagnosticsRepository(client).loadEvidence(7, "2026-07-29", "2026-08-25", "2026-08-25");
     expect(result).toEqual({
       modeledDayCount: 28, completeDayCount: 25, incompleteDayCount: 3,
       observedNutritionDayCount: 18, imputedNutritionDayCount: 6,
@@ -35,13 +35,98 @@ describe("ModelDiagnosticsRepository", () => {
       },
     });
     expect(dailyCount).toHaveBeenCalledTimes(5);
-    expect(latestDay).toHaveBeenCalledWith({ where: { episodeId: 7, date: "2026-08-25" }, select: { date: true, status: true, energyExpenditureKcal: true } });
+    expect(latestDay).toHaveBeenCalledWith({ where: { episodeId: 7, date: { equals: "2026-08-25", lte: "2026-08-25" } }, select: { date: true, status: true, energyExpenditureKcal: true } });
     expect(dailyFindMany).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      where: { episodeId: 7, date: { lt: "2026-08-25" }, status: "complete" },
+      where: { episodeId: 7, date: { lt: "2026-08-25", lte: "2026-08-25" }, status: "complete" },
       orderBy: { date: "desc" }, take: 7,
     }));
     expect(weightCount).toHaveBeenCalledWith({ where: { date: { gte: "2026-07-29", lte: "2026-08-25" }, weightKg: { gt: 0 } } });
     expect(client).not.toHaveProperty("workInterval");
+  });
+
+  it("keeps history, latest estimates, coverage, and experimental summary inside the current prefix", async () => {
+    const storedRows = Array.from({ length: 15 }, (_, index) => {
+      const day = index + 1;
+      return {
+        date: `2026-10-${String(day).padStart(2, "0")}`,
+        status: "complete",
+        energyExpenditureKcal: day * 100,
+        dynamicRmrKcalPerDay: day * 10,
+      };
+    });
+    const dailyCount = vi.fn()
+      .mockResolvedValueOnce(9).mockResolvedValueOnce(9).mockResolvedValueOnce(6)
+      .mockResolvedValueOnce(2).mockResolvedValueOnce(1);
+    const weightCount = vi.fn().mockResolvedValue(4);
+    const dailyFindMany = vi.fn()
+      .mockResolvedValueOnce(storedRows.slice(0, 9))
+      .mockResolvedValueOnce(storedRows.slice(1, 8).reverse());
+    const latestDay = vi.fn().mockResolvedValue(storedRows[8]);
+    const client = {
+      dailyModelState: { count: dailyCount, findMany: dailyFindMany, findFirst: latestDay },
+      dailyHealthData: { count: weightCount },
+      unifiedExperimentalPhysiologyState: { findMany: vi.fn() },
+    } as unknown as ModelDatabaseClient;
+
+    const result = await new ModelDiagnosticsRepository(client)
+      .loadEvidence(7, "2026-10-01", "2026-10-09", "2026-10-09");
+
+    expect(result).toMatchObject({
+      modeledDayCount: 9,
+      completeDayCount: 9,
+      observedNutritionDayCount: 6,
+      imputedNutritionDayCount: 2,
+      unresolvedNutritionDayCount: 1,
+      weightObservationCount: 4,
+      energyHistory: {
+        latestModeledDay: { date: "2026-10-09", expenditureKcalPerDay: 900 },
+      },
+      experimentalEnergySummary: { latestModeledExpenditureKcalPerDay: 900 },
+    });
+    expect(result.energyHistory?.previousCompletedDays.every((day) => day.date < "2026-10-10")).toBe(true);
+    expect(dailyCount.mock.calls.every(([args]) => args.where.date.lte === "2026-10-09")).toBe(true);
+    expect(dailyFindMany).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      where: { episodeId: 7, date: { gte: "2026-10-01", lte: "2026-10-09" } },
+    }));
+    expect(latestDay).toHaveBeenCalledWith(expect.objectContaining({
+      where: { episodeId: 7, date: { equals: "2026-10-09", lte: "2026-10-09" } },
+    }));
+    expect(weightCount).toHaveBeenCalledWith({
+      where: { date: { gte: "2026-10-01", lte: "2026-10-09" }, weightKg: { gt: 0 } },
+    });
+    expect(storedRows.slice(9).map((row) => row.date)).toEqual([
+      "2026-10-10", "2026-10-11", "2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15",
+    ]);
+  });
+
+  it("does not extend energy history or summary past the latest complete current day", async () => {
+    const dailyCount = vi.fn().mockResolvedValue(8);
+    const weightCount = vi.fn().mockResolvedValue(3);
+    const dailyFindMany = vi.fn()
+      .mockResolvedValueOnce([{ date: "2026-10-01", status: "complete", energyExpenditureKcal: 500, dynamicRmrKcalPerDay: 100 }])
+      .mockResolvedValueOnce([]);
+    const latestDay = vi.fn().mockResolvedValue({
+      date: "2026-10-08", status: "complete", energyExpenditureKcal: 800,
+    });
+    const client = {
+      dailyModelState: { count: dailyCount, findMany: dailyFindMany, findFirst: latestDay },
+      dailyHealthData: { count: weightCount },
+      unifiedExperimentalPhysiologyState: { findMany: vi.fn() },
+    } as unknown as ModelDatabaseClient;
+
+    const result = await new ModelDiagnosticsRepository(client)
+      .loadEvidence(7, "2026-09-11", "2026-10-08", "2026-10-08");
+
+    expect(dailyCount).toHaveBeenCalledTimes(5);
+    expect(dailyCount.mock.calls.every(([args]) => args.where.date.lte === "2026-10-08")).toBe(true);
+    expect(dailyFindMany).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      where: { episodeId: 7, date: { gte: "2026-09-11", lte: "2026-10-08" } },
+    }));
+    expect(latestDay).toHaveBeenCalledWith(expect.objectContaining({
+      where: { episodeId: 7, date: { equals: "2026-10-08", lte: "2026-10-08" } },
+    }));
+    expect(result.energyHistory?.latestModeledDay?.date).toBe("2026-10-08");
+    expect(result.experimentalEnergySummary?.latestModeledExpenditureKcalPerDay).toBe(500);
   });
 });
 

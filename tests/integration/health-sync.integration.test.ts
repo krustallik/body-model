@@ -27,13 +27,21 @@ function rawSyncRequest(body: unknown): Request {
 import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
 
 async function cleanTestRows(): Promise<void> {
+  await prisma.healthSyncRefreshJob.deleteMany({ where: { profileId: 1 } });
   await prisma.healthSyncSnapshot.deleteMany({ where: { date: { in: testDates } } });
   await prisma.healthActivityInterval.deleteMany({ where: { date: { in: testDates } } });
   await deleteDailyHealthRows(prisma, testDates);
 }
 
 describe("Apple Health sync with PostgreSQL", () => {
-  beforeAll(cleanTestRows);
+  beforeAll(async () => {
+    await prisma.profile.upsert({
+      where: { id: 1 },
+      create: { id: 1, sex: "male", dateOfBirth: new Date("1990-01-01T00:00:00.000Z"), heightCm: 180 },
+      update: {},
+    });
+    await cleanTestRows();
+  });
   afterAll(async () => {
     await cleanTestRows();
     await prisma.$disconnect();
@@ -70,6 +78,7 @@ describe("Apple Health sync with PostgreSQL", () => {
   });
 
   it("retries idempotently and replaces rather than duplicates workouts", async () => {
+    const queuedBefore = await prisma.healthSyncRefreshJob.findUnique({ where: { profileId: 1 } });
     const day = {
       date: testDates[0],
       steps: 13000,
@@ -84,8 +93,14 @@ describe("Apple Health sync with PostgreSQL", () => {
     };
     const first = await POST(syncRequest([day]));
     const retry = await POST(syncRequest([day]));
-    await expect(first.json()).resolves.toMatchObject({ created: 0, updated: 1 });
-    await expect(retry.json()).resolves.toMatchObject({ created: 0, updated: 1 });
+    expect(first.status).toBe(200);
+    expect(retry.status).toBe(200);
+    await expect(first.json()).resolves.toMatchObject({
+      status: "ok", modelPublicationStatus: "stale", created: 0, updated: 1,
+    });
+    await expect(retry.json()).resolves.toMatchObject({
+      status: "ok", modelPublicationStatus: "stale", created: 0, updated: 1,
+    });
 
     const records = await prisma.dailyHealthData.findMany({
       where: { date: testDates[0] },
@@ -94,6 +109,46 @@ describe("Apple Health sync with PostgreSQL", () => {
     expect(records).toHaveLength(1);
     expect(records[0]?.steps).toBe(13000);
     expect(records[0]?.workouts.map(({ externalId }) => externalId)).toEqual(["replacement-workout"]);
+
+    const queuedAfter = await prisma.healthSyncRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } });
+    expect(queuedAfter.requestedGeneration - (queuedBefore?.requestedGeneration ?? 0)).toBe(2);
+    expect(queuedAfter.completedGeneration).toBeLessThan(queuedAfter.requestedGeneration);
+    expect(queuedAfter.fromDate).toBe(testDates[0]);
+    expect(queuedAfter.toDate).toBe(testDates[0]);
+  });
+
+  it("coalesces overlapping Shortcut retries while keeping one canonical daily row and workout", async () => {
+    const date = testDates[1];
+    const queuedBefore = await prisma.healthSyncRefreshJob.findUnique({ where: { profileId: 1 } });
+    const day = {
+      date,
+      steps: 9000,
+      workouts: [{
+        externalId: "overlapping-sync-workout",
+        type: "running",
+        startAt: "2040-01-02T08:00:00Z",
+        endAt: "2040-01-02T08:30:00Z",
+      }],
+    };
+
+    const responses = await Promise.all([POST(syncRequest([day])), POST(syncRequest([day]))]);
+    expect(responses.map(({ status }) => status)).toEqual([200, 200]);
+    await expect(responses[0]!.json()).resolves.toMatchObject({ status: "ok", modelPublicationStatus: "stale" });
+    await expect(responses[1]!.json()).resolves.toMatchObject({ status: "ok", modelPublicationStatus: "stale" });
+
+    const rows = await prisma.dailyHealthData.findMany({
+      where: { date },
+      include: { workouts: true },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.workouts).toHaveLength(1);
+    const snapshots = await prisma.healthSyncSnapshot.count({ where: { date } });
+    expect(snapshots).toBe(2);
+
+    const queuedAfter = await prisma.healthSyncRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } });
+    expect(queuedAfter.requestedGeneration - (queuedBefore?.requestedGeneration ?? 0)).toBe(2);
+    expect(queuedAfter.sourceDates).toContain(date);
+    expect(queuedAfter.nextAttemptAt.getTime()).toBeGreaterThanOrEqual(Date.now());
   });
 
   it("keeps one latest daily row but appends immutable snapshots for every successful sync", async () => {

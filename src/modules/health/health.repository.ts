@@ -9,6 +9,7 @@ import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import { MANUAL_STEPPER_SOURCE_PREFIX } from "@/modules/health/workout-source-identity";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { logEvent } from "@/lib/logger";
 import { instantToLocalDateTime } from "@/model/time-zone";
 import { rebaseCurrentAccountingSnapshotTimestamp } from "@/modules/training/rebase-current-accounting-snapshot";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
@@ -322,9 +323,18 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
     const workoutFeedObserved = resolveWorkoutFeedObserved(rawDay, metadata.timezone);
     const workoutFeedPresent = hasWorkoutFeedPayload(rawDay);
     // Latest state, immutable snapshot, and workout reconciliation are one atomic sync.
-    return this.client.$transaction(async (transaction) => {
+    const transactionStartedAt = performance.now();
+    let result!: SyncDateResult;
+    try {
+      result = await this.client.$transaction(async (transaction) => {
       const lifecycle = new PhysiologyV7PersistenceRepository(transaction);
+      const profileLockStartedAt = performance.now();
       await lifecycle.lockProfile(1);
+      logEvent("info", "health_sync_stage_timing", {
+        stage: "persistence-profile-lock",
+        durationMs: Math.round(performance.now() - profileLockStartedAt),
+        calls: 1,
+      });
       // A first-ever sync can reach this transaction before any model write has
       // bootstrapped the lifecycle row. Ensure it exists before arming the
       // durable fence; blockUnifiedPublication intentionally no-ops without it.
@@ -489,12 +499,61 @@ export class PrismaHealthSyncRepository implements HealthSyncRepository {
         }
       }
 
+      if (metadata.deferDependentRefresh) {
+        const previousJob = await transaction.healthSyncRefreshJob.findUnique({
+          where: { profileId: 1 },
+          select: { fromDate: true, toDate: true, sourceDates: true, weightSourceChangedDates: true },
+        });
+        const sourceDates = new Set(previousJob?.sourceDates ?? []);
+        sourceDates.add(day.date);
+        const changedWeightDates = new Set(previousJob?.weightSourceChangedDates ?? []);
+        if (weightSourceChanged) changedWeightDates.add(day.date);
+        const fromDate = previousJob?.fromDate && previousJob.fromDate < day.date
+          ? previousJob.fromDate
+          : day.date;
+        const toDate = previousJob?.toDate && previousJob.toDate > day.date
+          ? previousJob.toDate
+          : day.date;
+        await transaction.healthSyncRefreshJob.upsert({
+          where: { profileId: 1 },
+          create: {
+            profileId: 1,
+            requestedGeneration: 1,
+            completedGeneration: 0,
+            fromDate,
+            toDate,
+            sourceDates: [...sourceDates].sort(),
+            weightSourceChangedDates: [...changedWeightDates].sort(),
+            nextAttemptAt: new Date(Date.now() + 3_000),
+            updatedAt: new Date(),
+          },
+          update: {
+            requestedGeneration: { increment: 1 },
+            fromDate,
+            toDate,
+            sourceDates: [...sourceDates].sort(),
+            weightSourceChangedDates: [...changedWeightDates].sort(),
+            nextAttemptAt: new Date(Date.now() + 3_000),
+            lastErrorType: null,
+            lastErrorAt: null,
+          },
+        });
+      }
+
       return {
         date: day.date,
         action: existing ? "updated" : "created",
         ...(weightSourceChanged ? { weightSourceChanged: true } : {}),
       };
-    });
+      });
+    } finally {
+      logEvent("info", "health_sync_stage_timing", {
+        stage: "persistence-transaction",
+        durationMs: Math.round(performance.now() - transactionStartedAt),
+        calls: 1,
+      });
+    }
+    return result;
   }
 
   /**

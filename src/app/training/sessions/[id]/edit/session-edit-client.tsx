@@ -54,6 +54,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
   const [editResistance, setEditResistance] = useState<ResistanceType>(RESISTANCE.EXTERNAL_WEIGHT);
   const [draft, setDraft] = useState(emptySetDraft());
   const [editingSet, setEditingSet] = useState<StrengthSetDto | null>(null);
+  const [additionalLoadDirtySetId, setAdditionalLoadDirtySetId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -69,6 +70,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
     setProgramId(next.programId);
     setFocusedExerciseId(nextFocus);
     setEditingSet(null);
+    setAdditionalLoadDirtySetId(null);
     setDraft(emptySetDraft());
   }, [focusedExerciseId, searchParams]);
 
@@ -129,6 +131,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
     if (nextId == null) return;
     setFocusedExerciseId(nextId);
     setEditingSet(null);
+    setAdditionalLoadDirtySetId(null);
     setMenu("closed");
     setError(null);
     setDraft(emptySetDraft());
@@ -319,7 +322,8 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
         }
         if (parsedAdditionalLoadKg > 0) requestedAdditionalLoadKg = parsedAdditionalLoadKg;
       }
-      additionalLoadChanged = requestedAdditionalLoadKg !== originalAdditionalLoadKg;
+      additionalLoadChanged = (editingSet === null || additionalLoadDirtySetId === editingSet.id)
+        && requestedAdditionalLoadKg !== originalAdditionalLoadKg;
       if (additionalLoadChanged && requestedAdditionalLoadKg !== undefined
           && requestedAdditionalLoadKg > TRAINING_LIMITS.maxLoadKg) {
         setError(uk
@@ -421,6 +425,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
         applySession(body.session, current.id);
       }
       setEditingSet(null);
+      setAdditionalLoadDirtySetId(null);
       setDraft(emptySetDraft());
     } catch {
       setError(uk ? "Не вдалося зберегти підхід." : "Could not save set.");
@@ -775,11 +780,17 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
       )}
       onPrev={() => goToNeighbor(-1)}
       onNext={() => goToNeighbor(1)}
-      onDraftChange={setDraft}
+      onDraftChange={(nextDraft) => {
+        if (editingSet !== null && nextDraft.additionalLoadKg !== draft.additionalLoadKg) {
+          setAdditionalLoadDirtySetId(editingSet.id);
+        }
+        setDraft(nextDraft);
+      }}
       onSaveSet={() => void saveSet()}
       onBeginEditSet={(set) => {
         const parsedOverride = setExecutionOverrideV1Schema.safeParse(set.loadAccountingOverride);
         const asymmetricReps = parsedOverride.success ? parsedOverride.data.reps : undefined;
+        setAdditionalLoadDirtySetId(null);
         setEditingSet(set);
         setDraft({
           reps: String(set.reps),
@@ -799,6 +810,7 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
       }}
       onCancelEditSet={() => {
         setEditingSet(null);
+        setAdditionalLoadDirtySetId(null);
         setDraft(emptySetDraft());
       }}
       onDeleteSet={(setId) => void deleteSet(setId)}

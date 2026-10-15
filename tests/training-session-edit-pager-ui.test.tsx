@@ -490,6 +490,19 @@ describe("Session edit exercise pager", () => {
     expect(patchBody).not.toHaveProperty("bandNominalResistanceKg");
 
     await user.click(activePane().getByRole("button", { name: "Edit set" }));
+    const clearInput = activePane().getByLabelText("Additional load, kg (optional)");
+    expect((clearInput as HTMLInputElement).value).toBe("15");
+    await user.clear(clearInput);
+    await user.click(activePane().getByRole("button", { name: "Update set" }));
+    await waitFor(() => expect(activePane().getByText(/bodyweight × 10/)).toBeTruthy());
+    expect(patchBody).toMatchObject({
+      loadAccountingOverride: {
+        reps: { kind: "asymmetric-per-side", left: 6, right: 4 },
+        equipmentSetupId: "rings",
+      },
+    });
+
+    await user.click(activePane().getByRole("button", { name: "Edit set" }));
     const oversizedInput = activePane().getByLabelText("Additional load, kg (optional)");
     await user.clear(oversizedInput);
     await user.type(oversizedInput, "1e308");
@@ -497,7 +510,154 @@ describe("Session edit exercise pager", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("2000 kg");
     expect(vi.mocked(fetch).mock.calls.filter(([input, init]) => (
       String(input) === "/api/v1/training/sessions/88/sets/91" && init?.method === "PATCH"
-    ))).toHaveLength(1);
+    ))).toHaveLength(2);
+  });
+
+  it("preserves untouched zero load on RIR/comment edits and clears it only after explicit input", async () => {
+    for (const field of ["rir", "comment"] as const) {
+      cleanup();
+      const user = userEvent.setup();
+      const bodyweightSet = {
+        id: 91,
+        sessionExerciseId: 3,
+        setNumber: 1,
+        reps: 10,
+        weightKg: null,
+        bandNominalResistanceKg: null,
+        rir: 2,
+        comment: "before",
+        completedAt: "2026-09-10T16:20:00.000Z",
+        createdAt: "2026-09-10T16:19:00.000Z",
+        updatedAt: "2026-09-10T16:21:00.000Z",
+        loadAccountingOverride: { additionalLoadKg: 0 },
+      };
+      let session: StrengthSessionDto = {
+        ...makeSession(),
+        exercises: makeSession().exercises.map((exercise) => exercise.id === 3
+          ? { ...exercise, sets: [bodyweightSet] }
+          : exercise),
+      };
+      const patchBodies: Record<string, unknown>[] = [];
+      vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/api/v1/training/exercises") return Response.json({ exercises: [] });
+        if (url === "/api/v1/training/programs") return Response.json({ programs: [] });
+        if (url.includes("/history")) return Response.json({ entries: [] });
+        if (url === "/api/v1/training/sessions/88/sets/91" && init?.method === "PATCH") {
+          const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+          patchBodies.push(payload);
+          const updatedSet = {
+            ...bodyweightSet,
+            rir: typeof payload.rir === "number" || payload.rir === null ? payload.rir : bodyweightSet.rir,
+            comment: typeof payload.comment === "string" || payload.comment === null ? payload.comment : bodyweightSet.comment,
+            loadAccountingOverride: Object.hasOwn(payload, "loadAccountingOverride")
+              ? payload.loadAccountingOverride
+              : bodyweightSet.loadAccountingOverride,
+          };
+          session = {
+            ...session,
+            exercises: session.exercises.map((exercise) => exercise.id === 3
+              ? { ...exercise, sets: [updatedSet] }
+              : exercise),
+          };
+          return Response.json({ set: updatedSet });
+        }
+        if (url === "/api/v1/training/sessions/88" && !init?.method) return Response.json({ session });
+        return Response.json({});
+      }));
+      searchParams.set("exercise", "3");
+      render(<SessionEditClient sessionId={88} />);
+      await user.click(await screen.findByRole("button", { name: /Edit set/i }));
+      if (field === "rir") {
+        const load = activePane().getByLabelText("Additional load, kg (optional)");
+        await user.type(load, "0");
+        await user.click(activePane().getByRole("button", { name: "Cancel" }));
+        await user.click(activePane().getByRole("button", { name: /Edit set/i }));
+        await user.clear(activePane().getByLabelText("RIR"));
+        await user.type(activePane().getByLabelText("RIR"), "3");
+      } else {
+        await user.clear(activePane().getByLabelText("Comment"));
+        await user.click(activePane().getByRole("button", { name: "+ Comment" }));
+        await user.type(activePane().getByLabelText("Comment"), "after");
+      }
+      await user.click(activePane().getByRole("button", { name: "Update set" }));
+      await waitFor(() => expect(patchBodies).toHaveLength(1));
+      expect(patchBodies[0]).not.toHaveProperty("loadAccountingOverride");
+      expect(session.exercises.find((exercise) => exercise.id === 3)?.sets[0]).toMatchObject({
+        completedAt: "2026-09-10T16:20:00.000Z",
+        createdAt: "2026-09-10T16:19:00.000Z",
+        loadAccountingOverride: { additionalLoadKg: 0 },
+      });
+
+      await user.click(activePane().getByRole("button", { name: "Edit set" }));
+      const zeroInput = activePane().getByLabelText("Additional load, kg (optional)");
+      expect((zeroInput as HTMLInputElement).value).toBe("");
+      await user.type(zeroInput, "0");
+      await user.click(activePane().getByRole("button", { name: "Update set" }));
+      await waitFor(() => expect(patchBodies).toHaveLength(2));
+      expect(patchBodies[1]).toMatchObject({ loadAccountingOverride: null });
+      expect(session.exercises.find((exercise) => exercise.id === 3)?.sets[0]?.loadAccountingOverride).toBeNull();
+    }
+  });
+
+  it("does not transfer current-set load dirty state to the next set", async () => {
+    const user = userEvent.setup();
+    const makeSet = (id: number, setNumber: number, additionalLoadKg: number) => ({
+      id, sessionExerciseId: 3, setNumber, reps: 10, weightKg: null, bandNominalResistanceKg: null,
+      rir: 2, comment: null, completedAt: "2026-09-10T16:20:00.000Z",
+      createdAt: "2026-09-10T16:19:00.000Z", updatedAt: "2026-09-10T16:21:00.000Z",
+      loadAccountingOverride: { additionalLoadKg },
+    });
+    const firstSet = makeSet(91, 1, 0);
+    let secondSet = makeSet(92, 2, 15);
+    let session: StrengthSessionDto = {
+      ...makeSession(),
+      exercises: makeSession().exercises.map((exercise) => exercise.id === 3
+        ? { ...exercise, sets: [firstSet, secondSet] }
+        : exercise),
+    };
+    let patchBody: Record<string, unknown> | null = null;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/v1/training/exercises") return Response.json({ exercises: [] });
+      if (url === "/api/v1/training/programs") return Response.json({ programs: [] });
+      if (url.includes("/history")) return Response.json({ entries: [] });
+      if (url === "/api/v1/training/sessions/88/sets/92" && init?.method === "PATCH") {
+        patchBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+        secondSet = {
+          ...secondSet,
+          rir: typeof patchBody.rir === "number" ? patchBody.rir : secondSet.rir,
+        };
+        session = {
+          ...session,
+          exercises: session.exercises.map((exercise) => exercise.id === 3
+            ? { ...exercise, sets: [firstSet, secondSet] }
+            : exercise),
+        };
+        return Response.json({ set: secondSet });
+      }
+      if (url === "/api/v1/training/sessions/88" && !init?.method) return Response.json({ session });
+      return Response.json({});
+    }));
+    searchParams.set("exercise", "3");
+    render(<SessionEditClient sessionId={88} />);
+    await screen.findByTestId("active-exercise-pane");
+    const setRow = (number: number) => {
+      const row = activePane().getAllByRole("listitem").find((item) => item.textContent?.trim().startsWith(`#${number}`));
+      expect(row).toBeDefined();
+      return within(row!);
+    };
+    await user.click(setRow(1).getByRole("button", { name: /Edit set/i }));
+    await user.type(activePane().getByLabelText("Additional load, kg (optional)"), "0");
+    await user.click(activePane().getByRole("button", { name: "Cancel" }));
+
+    await user.click(setRow(2).getByRole("button", { name: /Edit set/i }));
+    await user.clear(activePane().getByLabelText("RIR"));
+    await user.type(activePane().getByLabelText("RIR"), "3");
+    await user.click(activePane().getByRole("button", { name: "Update set" }));
+    await waitFor(() => expect(patchBody).not.toBeNull());
+    expect(patchBody).not.toHaveProperty("loadAccountingOverride");
+    expect(secondSet.loadAccountingOverride).toEqual({ additionalLoadKg: 15 });
   });
 
   it("edits a prior session set inline and preserves its original completion timestamp", async () => {
@@ -655,7 +815,7 @@ describe("Session edit exercise pager", () => {
     ))).toHaveLength(0);
   });
 
-  it("clears a persisted zero additional-load value when the empty load field is saved", async () => {
+  it("preserves an untouched persisted zero additional-load value when the blank field is saved", async () => {
     const user = userEvent.setup();
     vi.spyOn(window, "scrollTo").mockImplementation(() => undefined);
     const stub = stubFetch(makeSession(), {
@@ -668,7 +828,40 @@ describe("Session edit exercise pager", () => {
       .findByTestId("history-set-40-71");
     await user.click(within(historySet).getByRole("button", { name: "Actions for set 1" }));
     await user.click(within(historySet).getByRole("button", { name: "Edit" }));
-    expect((within(historySet).getByLabelText("Additional load, kg (optional)") as HTMLInputElement).value).toBe("");
+    const load = within(historySet).getByLabelText("Additional load, kg (optional)");
+    expect((load as HTMLInputElement).value).toBe("");
+    await user.type(load, "0");
+    await user.click(within(historySet).getByRole("button", { name: "Cancel" }));
+    await user.click(within(historySet).getByRole("button", { name: "Actions for set 1" }));
+    await user.click(within(historySet).getByRole("button", { name: "Edit" }));
+    await user.clear(within(historySet).getByLabelText("RIR"));
+    await user.type(within(historySet).getByLabelText("RIR"), "3");
+    await user.click(within(historySet).getByRole("button", { name: "Save" }));
+
+    const patch = vi.mocked(fetch).mock.calls.find(([input, init]) => (
+      String(input) === "/api/v1/training/sessions/40/sets/71" && init?.method === "PATCH"
+    ));
+    expect(JSON.parse(String(patch?.[1]?.body))).toMatchObject({ rir: 3 });
+    expect(JSON.parse(String(patch?.[1]?.body))).not.toHaveProperty("loadAccountingOverride");
+    expect(stub.getStoredHistorySet().loadAccountingOverride).toEqual({ additionalLoadKg: 0 });
+  });
+
+  it("clears persisted zero only after an explicit additional-load edit", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "scrollTo").mockImplementation(() => undefined);
+    const stub = stubFetch(makeSession(), {
+      historyOverride: { additionalLoadKg: 0 },
+      historyResistanceType: RESISTANCE.BODYWEIGHT,
+    });
+    render(<SessionEditClient sessionId={88} />);
+    await screen.findByText("Жим гантелей на похилій лаві вгору (30°)");
+    const historySet = await within(activePane().getByRole("region", { name: "Exercise history" }))
+      .findByTestId("history-set-40-71");
+    await user.click(within(historySet).getByRole("button", { name: "Actions for set 1" }));
+    await user.click(within(historySet).getByRole("button", { name: "Edit" }));
+    const load = within(historySet).getByLabelText("Additional load, kg (optional)");
+    expect((load as HTMLInputElement).value).toBe("");
+    await user.type(load, "0");
     await user.click(within(historySet).getByRole("button", { name: "Save" }));
 
     const patch = vi.mocked(fetch).mock.calls.find(([input, init]) => (

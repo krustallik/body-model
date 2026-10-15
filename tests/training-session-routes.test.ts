@@ -338,6 +338,32 @@ describe("/api/v1/training/sessions", () => {
     await expect(getResponse.json()).resolves.toEqual({
       set: { ...historical, rir: 3, comment: "after" },
     });
+
+    const zeroHistorical = {
+      ...setDto,
+      rir: 2,
+      comment: "zero remains raw",
+      loadAccountingOverride: { additionalLoadKg: 0 },
+    };
+    trainingService.updateSet.mockResolvedValue({ ...zeroHistorical, rir: 3 });
+    const zeroPatchResponse = await PATCH_SET(
+      jsonRequest(`${base}/42/sets/9`, "PATCH", { rir: 3 }),
+      setCtx("42", "9"),
+    );
+    expect(zeroPatchResponse.status).toBe(200);
+    expect(trainingService.updateSet).toHaveBeenLastCalledWith(42, 9, { rir: 3 });
+    trainingService.getSetForSession.mockResolvedValue({ ...zeroHistorical, rir: 3 });
+    const zeroGetResponse = await GET_SET(new Request(`${base}/42/sets/9`), setCtx("42", "9"));
+    expect(zeroGetResponse.status).toBe(200);
+    await expect(zeroGetResponse.json()).resolves.toEqual({
+      set: {
+        ...zeroHistorical,
+        rir: 3,
+        completedAt: setDto.completedAt,
+        createdAt: setDto.createdAt,
+        updatedAt: setDto.updatedAt,
+      },
+    });
   });
 
   it("rejects invalid create-set payload without mutation", async () => {

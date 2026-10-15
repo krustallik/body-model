@@ -888,7 +888,13 @@ describe("TrainingService live session", () => {
 
     const updated = await service.updateSet(50, 900, { rir: 3, comment: "after" });
 
-    expect(updated).toMatchObject({ rir: 3, comment: "after", loadAccountingOverride: rawOverride });
+    expect(updated).toMatchObject({
+      rir: 3,
+      comment: "after",
+      completedAt: "2026-09-17T16:10:00.000Z",
+      createdAt: "2026-09-17T16:09:00.000Z",
+      loadAccountingOverride: rawOverride,
+    });
     expect(repositoryUpdate).toHaveBeenCalledWith(expect.objectContaining({ loadAccountingOverride: undefined }));
     const persistedMutation = db.strengthSet.update.mock.calls[0]?.[0] as { data: Record<string, unknown> };
     expect(Object.hasOwn(persistedMutation.data, "loadAccountingOverride")).toBe(false);

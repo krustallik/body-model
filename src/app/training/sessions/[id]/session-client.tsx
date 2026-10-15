@@ -62,6 +62,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
   const [focusedExerciseId, setFocusedExerciseId] = useState<number | null>(null);
   const [draft, setDraft] = useState(emptySetDraft());
   const [editingSetId, setEditingSetId] = useState<number | null>(null);
+  const [additionalLoadDirtySetId, setAdditionalLoadDirtySetId] = useState<number | null>(null);
   const [candidates, setCandidates] = useState<MatchCandidateDto[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -129,6 +130,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     if (nextId == null) return;
     setFocusedExerciseId(nextId);
     setEditingSetId(null);
+    setAdditionalLoadDirtySetId(null);
     setDraft(emptySetDraft());
     setMenuOpen(false);
     setError(null);
@@ -198,7 +200,8 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         }
         if (parsedAdditionalLoadKg > 0) requestedAdditionalLoadKg = parsedAdditionalLoadKg;
       }
-      additionalLoadChanged = requestedAdditionalLoadKg !== originalAdditionalLoadKg;
+      additionalLoadChanged = (editingSetId === null || additionalLoadDirtySetId === editingSetId)
+        && requestedAdditionalLoadKg !== originalAdditionalLoadKg;
       if (additionalLoadChanged && requestedAdditionalLoadKg !== undefined
           && requestedAdditionalLoadKg > TRAINING_LIMITS.maxLoadKg) {
         setError(uk
@@ -308,6 +311,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
       await load();
       setDraft(emptySetDraft());
       setEditingSetId(null);
+      setAdditionalLoadDirtySetId(null);
       if (shouldAutoAdvanceAfterSet({ enabled: session.autoAdvanceExercises === true, adding, exerciseOrigin: current.origin, plannedSets: current.plannedSets, previousSetCount: current.sets.length, isLastExercise: lastExercise })) {
         setAutoAdvanceNonce((value) => value + 1);
       } else if (completedPlannedExercise && lastExercise && !finishOfferedRef.current) {
@@ -398,6 +402,7 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
   function beginEdit(set: StrengthSetDto) {
     const parsedOverride = setExecutionOverrideV1Schema.safeParse(set.loadAccountingOverride);
     const asymmetricReps = parsedOverride.success ? parsedOverride.data.reps : undefined;
+    setAdditionalLoadDirtySetId(null);
     setEditingSetId(set.id);
     setDraft({
       reps: String(set.reps),
@@ -705,11 +710,17 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         )}
         onPrev={() => goToNeighbor(-1)}
         onNext={() => goToNeighbor(1)}
-        onDraftChange={setDraft}
+        onDraftChange={(nextDraft) => {
+          if (editingSetId !== null && nextDraft.additionalLoadKg !== draft.additionalLoadKg) {
+            setAdditionalLoadDirtySetId(editingSetId);
+          }
+          setDraft(nextDraft);
+        }}
         onSaveSet={() => void saveSet()}
         onBeginEditSet={beginEdit}
         onCancelEditSet={() => {
           setEditingSetId(null);
+          setAdditionalLoadDirtySetId(null);
           setDraft(emptySetDraft());
         }}
         onDeleteSet={(setId) => void deleteSet(setId)}

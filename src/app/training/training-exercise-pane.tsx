@@ -164,6 +164,7 @@ function HistoricalSetRow({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState(() => historicalSetDraft(set));
+  const [additionalLoadDirty, setAdditionalLoadDirty] = useState(false);
   const pointerStart = useRef<{ x: number; y: number; id: number; width: number } | null>(null);
   const suppressClickUntil = useRef(0);
   const wasEditing = useRef(false);
@@ -190,6 +191,7 @@ function HistoricalSetRow({
   function beginEdit() {
     if (!canPreserveOverride) return;
     setDraft(historicalSetDraft(set));
+    setAdditionalLoadDirty(false);
     setError(null);
     setEditing(true);
     setActionsOpen(false);
@@ -198,6 +200,7 @@ function HistoricalSetRow({
   function cancelEdit() {
     preserveScroll(() => {
       setEditing(false);
+      setAdditionalLoadDirty(false);
       setError(null);
       setDraft(historicalSetDraft(set));
     });
@@ -241,7 +244,7 @@ function HistoricalSetRow({
         }
         if (parsedAdditionalLoadKg > 0) requestedAdditionalLoadKg = parsedAdditionalLoadKg;
       }
-      additionalLoadChanged = requestedAdditionalLoadKg !== originalAdditionalLoadKg;
+      additionalLoadChanged = additionalLoadDirty && requestedAdditionalLoadKg !== originalAdditionalLoadKg;
       if (additionalLoadChanged && requestedAdditionalLoadKg !== undefined
           && requestedAdditionalLoadKg > TRAINING_LIMITS.maxLoadKg) {
         setError(uk
@@ -310,6 +313,7 @@ function HistoricalSetRow({
       await onUpdate(entry, set, payload);
       preserveScroll(() => {
         setEditing(false);
+        setAdditionalLoadDirty(false);
       });
     } catch {
       setError(uk ? "Не вдалося зберегти підхід." : "Could not save this set.");
@@ -445,7 +449,7 @@ function HistoricalSetRow({
             <label><span>{uk ? "Повтори справа" : "Right reps"}</span><input disabled={busy} inputMode="numeric" value={draft.rightReps} onChange={(event) => setDraft((current) => ({ ...current, rightReps: event.target.value }))} /></label>
           </> : <label><span>{uk ? "Повтори" : "Reps"}</span><input ref={firstEditorRef} disabled={busy} inputMode="numeric" value={draft.reps} onChange={(event) => setDraft((current) => ({ ...current, reps: event.target.value }))} /></label>}
           {entry.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && <label><span>{uk ? "Вага, кг" : "Weight, kg"}</span><input disabled={busy} inputMode="decimal" value={draft.weightKg} onChange={(event) => setDraft((current) => ({ ...current, weightKg: event.target.value }))} /></label>}
-          {entry.resistanceType === RESISTANCE.BODYWEIGHT && <label><span>{uk ? "Додаткове обтяження, кг (необов’язково)" : "Additional load, kg (optional)"}</span><input disabled={busy} inputMode="decimal" autoComplete="off" placeholder={uk ? "опційно" : "optional"} value={draft.additionalLoadKg} onChange={(event) => setDraft((current) => ({ ...current, additionalLoadKg: event.target.value }))} /></label>}
+          {entry.resistanceType === RESISTANCE.BODYWEIGHT && <label><span>{uk ? "Додаткове обтяження, кг (необов’язково)" : "Additional load, kg (optional)"}</span><input disabled={busy} inputMode="decimal" autoComplete="off" placeholder={uk ? "опційно" : "optional"} value={draft.additionalLoadKg} onChange={(event) => { setAdditionalLoadDirty(true); setDraft((current) => ({ ...current, additionalLoadKg: event.target.value })); }} /></label>}
           {entry.resistanceType === RESISTANCE.RESISTANCE_BAND && <label><span>{uk ? "Опір резинки, кг" : "Band resistance, kg"}</span><input disabled={busy} inputMode="decimal" value={draft.bandNominalResistanceKg} onChange={(event) => setDraft((current) => ({ ...current, bandNominalResistanceKg: event.target.value }))} /></label>}
           {asymmetricCurrent !== undefined && <p>{uk ? "Асиметричні повтори збережуться окремо для кожної сторони." : "Asymmetric reps stay stored separately for each side."}</p>}
           <label><span>RIR</span><input disabled={busy} inputMode="numeric" value={draft.rir} onChange={(event) => setDraft((current) => ({ ...current, rir: event.target.value }))} /></label>

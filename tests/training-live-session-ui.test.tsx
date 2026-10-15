@@ -520,7 +520,9 @@ describe("Live training session mobile UI", () => {
         const updatedSet = {
           ...prior,
           reps: Number(payload.reps),
-          loadAccountingOverride: payload.loadAccountingOverride ?? null,
+          loadAccountingOverride: Object.hasOwn(payload, "loadAccountingOverride")
+            ? payload.loadAccountingOverride ?? null
+            : prior.loadAccountingOverride,
           updatedAt: "2026-10-15T06:01:00.000Z",
         };
         persistedSession = {
@@ -593,9 +595,11 @@ describe("Live training session mobile UI", () => {
 
   it("omits unchanged historical BODYWEIGHT overrides from current-set RIR/comment PATCHes", async () => {
     const scenarios = [
-      { override: { additionalLoadKg: 2_500 }, programless: true },
-      { override: { assistanceLoadKg: 2_500 }, programless: false },
-      { override: { additionalLoadKg: 15 }, programless: false },
+      { override: { additionalLoadKg: 0 }, programless: true, field: "rir" },
+      { override: { additionalLoadKg: 0 }, programless: false, field: "comment" },
+      { override: { additionalLoadKg: 2_500 }, programless: true, field: "rir" },
+      { override: { assistanceLoadKg: 2_500 }, programless: false, field: "comment" },
+      { override: { additionalLoadKg: 15 }, programless: false, field: "rir" },
     ];
 
     for (const scenario of scenarios) {
@@ -665,18 +669,115 @@ describe("Live training session mobile UI", () => {
       render(<SessionClient sessionId={42} />);
       await waitFor(() => expect(activePane().getByText(/власна вага/)).toBeTruthy());
       await user.click(activePane().getByRole("button", { name: "Змінити підхід" }));
-      await user.clear(activePane().getByLabelText("RIR"));
-      await user.type(activePane().getByLabelText("RIR"), "3");
-      await user.clear(activePane().getByLabelText("Коментар"));
-      await user.click(activePane().getByRole("button", { name: "+ Коментар" }));
-      await user.type(activePane().getByLabelText("Коментар"), "after");
+      if (scenario.field === "rir") {
+        await user.clear(activePane().getByLabelText("RIR"));
+        await user.type(activePane().getByLabelText("RIR"), "3");
+      } else {
+        await user.clear(activePane().getByLabelText("Коментар"));
+        await user.click(activePane().getByRole("button", { name: "+ Коментар" }));
+        await user.type(activePane().getByLabelText("Коментар"), "after");
+      }
       await user.click(screen.getByRole("button", { name: "Оновити підхід" }));
       await waitFor(() => expect(patchPayloads).toHaveLength(1));
 
-      expect(patchPayloads[0]).toMatchObject({ rir: 3, comment: "after" });
+      expect(patchPayloads[0]).toMatchObject(scenario.field === "rir" ? { rir: 3 } : { comment: "after" });
       expect(patchPayloads[0]).not.toHaveProperty("loadAccountingOverride");
       expect(persistedSet.loadAccountingOverride).toEqual(scenario.override);
     }
+  });
+
+  it("resets current-set load dirty state on cancel and isolates it between sets", async () => {
+    const user = userEvent.setup();
+    const makeSet = (id: number, setNumber: number, additionalLoadKg: number, rir: number) => ({
+      id,
+      sessionExerciseId: 77,
+      setNumber,
+      reps: 10,
+      weightKg: null,
+      bandNominalResistanceKg: null,
+      rir,
+      comment: "before",
+      completedAt: "2026-10-15T06:00:00.000Z",
+      createdAt: "2026-10-15T06:00:00.000Z",
+      updatedAt: "2026-10-15T06:00:00.000Z",
+      loadAccountingOverride: { additionalLoadKg },
+    });
+    type PersistedSet = Omit<ReturnType<typeof makeSet>, "rir" | "comment" | "loadAccountingOverride">
+      & { rir: number | null; comment: string | null; loadAccountingOverride: unknown };
+    let persistedSets: PersistedSet[] = [makeSet(901, 1, 0, 2), makeSet(902, 2, 15, 2)];
+    const exercise = {
+      id: 77,
+      sourceExerciseCatalogId: 9,
+      stableKey: "pull_up_bar",
+      snapshotExerciseName: "Підтягування",
+      order: 0,
+      plannedSets: 0,
+      resistanceType: RESISTANCE.BODYWEIGHT,
+      origin: EXERCISE_ORIGIN.EXTRA,
+      muscleMappingSnapshot: null,
+      sets: persistedSets,
+    };
+    let persistedSession = buildSession({
+      programId: null,
+      programName: null,
+      programVersionId: null,
+      programVersionNumber: null,
+      exercises: [exercise],
+    });
+    const patchPayloads: Array<{ setId: number; body: Record<string, unknown> }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/history")) return Response.json({ entries: [] });
+      const patchMatch = url.match(/\/sets\/(\d+)$/);
+      if (patchMatch && init?.method === "PATCH") {
+        const setId = Number(patchMatch[1]);
+        const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+        patchPayloads.push({ setId, body: payload });
+        persistedSets = persistedSets.map((set) => set.id === setId ? {
+          ...set,
+          rir: typeof payload.rir === "number" || payload.rir === null ? payload.rir : set.rir,
+          comment: typeof payload.comment === "string" || payload.comment === null ? payload.comment : set.comment,
+          loadAccountingOverride: Object.hasOwn(payload, "loadAccountingOverride")
+            ? payload.loadAccountingOverride ?? null
+            : set.loadAccountingOverride,
+        } : set);
+        persistedSession = {
+          ...persistedSession,
+          exercises: persistedSession.exercises.map((item) => item.id === 77 ? { ...item, sets: persistedSets } : item),
+        };
+        return Response.json({ set: persistedSets.find((set) => set.id === setId) });
+      }
+      return Response.json({ session: persistedSession });
+    }));
+    render(<SessionClient sessionId={42} />);
+    await waitFor(() => expect(activePane().getAllByText(/власна вага/)).toHaveLength(2));
+    const setRow = (number: number) => {
+      const row = activePane().getAllByRole("listitem").find((item) => item.textContent?.trim().startsWith(`#${number}`));
+      expect(row).toBeDefined();
+      return within(row!);
+    };
+
+    await user.click(setRow(1).getByRole("button", { name: "Змінити підхід" }));
+    await user.type(activePane().getByLabelText("Додаткове обтяження, кг (необов’язково)"), "0");
+    await user.click(activePane().getByRole("button", { name: "Скасувати" }));
+
+    await user.click(setRow(2).getByRole("button", { name: "Змінити підхід" }));
+    await user.clear(activePane().getByLabelText("RIR"));
+    await user.type(activePane().getByLabelText("RIR"), "3");
+    await user.click(screen.getByRole("button", { name: "Оновити підхід" }));
+    await waitFor(() => expect(patchPayloads).toHaveLength(1));
+    expect(patchPayloads[0]).toMatchObject({ setId: 902 });
+    expect(patchPayloads[0]?.body).not.toHaveProperty("loadAccountingOverride");
+    expect(persistedSets[1]?.loadAccountingOverride).toEqual({ additionalLoadKg: 15 });
+
+    await user.click(setRow(1).getByRole("button", { name: "Змінити підхід" }));
+    const zeroInput = activePane().getByLabelText("Додаткове обтяження, кг (необов’язково)");
+    expect((zeroInput as HTMLInputElement).value).toBe("");
+    await user.type(zeroInput, "0");
+    await user.click(screen.getByRole("button", { name: "Оновити підхід" }));
+    await waitFor(() => expect(patchPayloads).toHaveLength(2));
+    expect(patchPayloads[1]).toMatchObject({ setId: 901, body: { loadAccountingOverride: null } });
+    expect(persistedSets[0]?.loadAccountingOverride).toBeNull();
   });
 
   it("rejects invalid and conflicting additional load without sending a set mutation", async () => {
@@ -818,6 +919,20 @@ describe("Live training session mobile UI", () => {
 
   it("omits unchanged historical BODYWEIGHT overrides from RIR/comment patches and preserves changed load fields", async () => {
     const scenarios = [
+      { override: { additionalLoadKg: 0 }, programless: true, changeLoad: false, field: "rir", cancelReopen: true },
+      { override: { additionalLoadKg: 0 }, programless: false, changeLoad: false, field: "comment" },
+      { override: { additionalLoadKg: 0 }, programless: true, changeLoad: false, explicitClear: true },
+      {
+        override: {
+          additionalLoadKg: 0,
+          reps: { kind: "asymmetric-per-side", left: 6, right: 4 },
+          equipmentSetupId: "rings",
+          inventoryCount: 2,
+        },
+        programless: true,
+        changeLoad: false,
+        changeAsymmetricReps: true,
+      },
       { override: { additionalLoadKg: 2_500 }, programless: true, changeLoad: false },
       { override: { assistanceLoadKg: 2_500 }, programless: false, changeLoad: false },
       { override: { additionalLoadKg: 15 }, programless: false, changeLoad: false },
@@ -836,7 +951,17 @@ describe("Live training session mobile UI", () => {
     for (const scenario of scenarios) {
       cleanup();
       const user = userEvent.setup();
-      let persistedHistorySet = {
+      let persistedHistorySet: {
+        id: number;
+        setNumber: number;
+        completedAt: string;
+        reps: number;
+        weightKg: number | null;
+        bandNominalResistanceKg: number | null;
+        rir: number | null;
+        comment: string | null;
+        loadAccountingOverride: unknown;
+      } = {
         id: 71,
         setNumber: 1,
         completedAt: "2026-09-10T16:10:00.000Z",
@@ -897,10 +1022,29 @@ describe("Live training session mobile UI", () => {
         .findByTestId("history-set-40-71");
       await user.click(within(historySet).getByRole("button", { name: "Дії для підходу 1" }));
       await user.click(within(historySet).getByRole("button", { name: "Редагувати" }));
+      if (scenario.cancelReopen) {
+        const load = within(historySet).getByLabelText("Додаткове обтяження, кг (необов’язково)");
+        await user.type(load, "0");
+        await user.click(within(historySet).getByRole("button", { name: "Скасувати" }));
+        await user.click(within(historySet).getByRole("button", { name: "Дії для підходу 1" }));
+        await user.click(within(historySet).getByRole("button", { name: "Редагувати" }));
+      }
       if (scenario.changeLoad) {
         const load = within(historySet).getByLabelText("Додаткове обтяження, кг (необов’язково)");
         await user.clear(load);
         await user.type(load, "20");
+      } else if (scenario.changeAsymmetricReps) {
+        const leftReps = within(historySet).getByLabelText("Повтори зліва");
+        await user.clear(leftReps);
+        await user.type(leftReps, "7");
+      } else if (scenario.explicitClear) {
+        await user.type(within(historySet).getByLabelText("Додаткове обтяження, кг (необов’язково)"), "0");
+      } else if (scenario.field === "rir") {
+        await user.clear(within(historySet).getByLabelText("RIR"));
+        await user.type(within(historySet).getByLabelText("RIR"), "3");
+      } else if (scenario.field === "comment") {
+        await user.clear(within(historySet).getByLabelText("Коментар"));
+        await user.type(within(historySet).getByLabelText("Коментар"), "after");
       } else {
         await user.clear(within(historySet).getByLabelText("RIR"));
         await user.type(within(historySet).getByLabelText("RIR"), "3");
@@ -910,10 +1054,23 @@ describe("Live training session mobile UI", () => {
       await user.click(within(historySet).getByRole("button", { name: "Зберегти" }));
       await waitFor(() => expect(patchPayloads).toHaveLength(1));
 
-      if (!scenario.changeLoad) {
+      if (scenario.explicitClear) {
+        expect(patchPayloads[0]).toMatchObject({ loadAccountingOverride: null });
+        expect(persistedHistorySet.loadAccountingOverride).toBeNull();
+      } else if (scenario.changeAsymmetricReps) {
+        const expectedOverride = {
+          ...scenario.override,
+          reps: { kind: "asymmetric-per-side", left: 7, right: 4 },
+        };
+        expect(patchPayloads[0]).toMatchObject({ loadAccountingOverride: expectedOverride });
+        expect(persistedHistorySet.loadAccountingOverride).toEqual(expectedOverride);
+        expect(persistedHistorySet.completedAt).toBe("2026-09-10T16:10:00.000Z");
+      } else if (!scenario.changeLoad) {
         expect(patchPayloads[0]).not.toHaveProperty("loadAccountingOverride");
         expect(persistedHistorySet.loadAccountingOverride).toEqual(scenario.override);
-        expect(patchPayloads[0]).toMatchObject({ rir: 3, comment: "after" });
+        if (scenario.field === "rir") expect(patchPayloads[0]).toMatchObject({ rir: 3 });
+        else if (scenario.field === "comment") expect(patchPayloads[0]).toMatchObject({ comment: "after" });
+        else expect(patchPayloads[0]).toMatchObject({ rir: 3, comment: "after" });
       } else {
         expect(patchPayloads[0]?.loadAccountingOverride).toEqual({
           ...scenario.override,
@@ -960,6 +1117,76 @@ describe("Live training session mobile UI", () => {
     expect(vi.mocked(fetch).mock.calls.filter(([input, init]) => (
       String(input) === "/api/v1/training/sessions/40/sets/71" && init?.method === "PATCH"
     ))).toHaveLength(0);
+  });
+
+  it("does not transfer historical-row dirty load state to the next set", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "scrollTo").mockImplementation(() => undefined);
+    const firstSet = {
+      id: 71, setNumber: 1, completedAt: "2026-09-10T16:10:00.000Z", reps: 10,
+      weightKg: null, bandNominalResistanceKg: null, rir: 2, comment: null,
+      loadAccountingOverride: { additionalLoadKg: 0 },
+    };
+    const secondSet = {
+      id: 72, setNumber: 2, completedAt: "2026-09-10T16:12:00.000Z", reps: 10,
+      weightKg: null, bandNominalResistanceKg: null, rir: 2, comment: null,
+      loadAccountingOverride: { additionalLoadKg: 15 },
+    };
+    let storedSecondSet: Omit<typeof secondSet, "loadAccountingOverride"> & { loadAccountingOverride: unknown } = secondSet;
+    const entry = {
+      sessionId: 40,
+      occurredAt: "2026-09-10T16:00:00.000Z",
+      programName: null,
+      resistanceType: RESISTANCE.BODYWEIGHT,
+      sets: [firstSet, secondSet],
+    };
+    const exercise = {
+      id: 77, sourceExerciseCatalogId: 9, stableKey: "pull_up_bar",
+      snapshotExerciseName: "Підтягування", order: 0, plannedSets: 0,
+      resistanceType: RESISTANCE.BODYWEIGHT, origin: EXERCISE_ORIGIN.EXTRA,
+      muscleMappingSnapshot: null, sets: [],
+    };
+    const session = buildSession({
+      programId: null,
+      programName: null,
+      programVersionId: null,
+      programVersionNumber: null,
+      exercises: [exercise],
+    });
+    let patchBody: Record<string, unknown> | null = null;
+    stubSessionFetch(session, (url, init) => {
+      if (url === "/api/v1/training/sessions/40/sets/72" && init?.method === "PATCH") {
+        patchBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+        storedSecondSet = {
+          ...storedSecondSet,
+          rir: typeof patchBody.rir === "number" ? patchBody.rir : storedSecondSet.rir,
+          loadAccountingOverride: Object.hasOwn(patchBody, "loadAccountingOverride")
+            ? patchBody.loadAccountingOverride as Record<string, unknown>
+            : storedSecondSet.loadAccountingOverride,
+        };
+        return Response.json({ set: storedSecondSet, modelPublicationStatus: "current" });
+      }
+      return null;
+    }, [entry]);
+    render(<SessionClient sessionId={42} />);
+    await screen.findByTestId("active-exercise-pane");
+    const history = activePane().getByLabelText("Історія вправи");
+    const firstRow = await within(history).findByTestId("history-set-40-71");
+    const secondRow = await within(history).findByTestId("history-set-40-72");
+    await user.click(within(firstRow).getByRole("button", { name: "Дії для підходу 1" }));
+    await user.click(within(firstRow).getByRole("button", { name: "Редагувати" }));
+    await user.type(within(firstRow).getByLabelText("Додаткове обтяження, кг (необов’язково)"), "0");
+    await user.click(within(firstRow).getByRole("button", { name: "Скасувати" }));
+
+    await user.click(within(secondRow).getByRole("button", { name: "Дії для підходу 2" }));
+    await user.click(within(secondRow).getByRole("button", { name: "Редагувати" }));
+    await user.clear(within(secondRow).getByLabelText("RIR"));
+    await user.type(within(secondRow).getByLabelText("RIR"), "3");
+    await user.click(within(secondRow).getByRole("button", { name: "Зберегти" }));
+
+    await waitFor(() => expect(patchBody).not.toBeNull());
+    expect(patchBody).not.toHaveProperty("loadAccountingOverride");
+    expect(storedSecondSet.loadAccountingOverride).toEqual({ additionalLoadKg: 15 });
   });
 
   it("opens the exercise from the URL query", async () => {

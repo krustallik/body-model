@@ -1,17 +1,20 @@
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { POST } from "@/app/api/v1/health/sync/route";
-import { PrismaHealthSyncRepository } from "@/modules/health/health.repository";
-import { claimNextHealthSyncRefreshJob, processNextHealthSyncRefreshJob } from "@/modules/health/health-sync-refresh-worker";
-import { runWithHealthSyncRefreshWorkerLease } from "@/modules/health/health-sync-worker-context";
-import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION } from "@/model/unified-experimental-physiology-v1/contracts";
-import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
-import { initializeNewModelEpisode, recalculateModelEpisode } from "@/modules/model-episodes/model-episode.service";
-import { currentPhysiologyV7Versions } from "@/modules/model-episodes/physiology-v7-persistence";
-import { PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE, PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import type { HealthDayInput } from "@/modules/health/health.types";
+import { requireLoopbackTestDatabaseUrl } from "../helpers/require-loopback-test-database";
 
-const prisma = new PrismaClient();
+const databaseUrl = requireLoopbackTestDatabaseUrl(process.env.DATABASE_URL);
+const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
+const { POST } = await import("@/app/api/v1/health/sync/route");
+const { PrismaHealthSyncRepository } = await import("@/modules/health/health.repository");
+const { claimNextHealthSyncRefreshJob, processNextHealthSyncRefreshJob } = await import("@/modules/health/health-sync-refresh-worker");
+const { runWithHealthSyncRefreshWorkerLease } = await import("@/modules/health/health-sync-worker-context");
+const { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION } = await import("@/model/unified-experimental-physiology-v1/contracts");
+const { addCalendarDays } = await import("@/modules/model-episodes/model-calendar");
+const { initializeNewModelEpisode, recalculateModelEpisode } = await import("@/modules/model-episodes/model-episode.service");
+const { currentPhysiologyV7Versions } = await import("@/modules/model-episodes/physiology-v7-persistence");
+const { PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE, PhysiologyV7PersistenceRepository } = await import("@/modules/model-episodes/physiology-v7-persistence.repository");
+const { deleteDailyHealthRows } = await import("../helpers/delete-daily-health");
 const apiKey = process.env.IOS_SHORTCUT_API_KEY ?? "integration-test-secret";
 const testDates = ["2040-01-01", "2040-01-02", "2040-01-03", "2040-01-04", "2040-01-05", "2040-01-06", "2040-01-07", "2040-01-08", "2040-01-09", "2040-01-10", "2040-01-11", "2040-01-12"];
 
@@ -232,8 +235,6 @@ function rawSyncRequest(body: unknown): Request {
     body: JSON.stringify(body),
   });
 }
-
-import { deleteDailyHealthRows } from "../helpers/delete-daily-health";
 
 async function cleanTestRows(): Promise<void> {
   await prisma.healthSyncRefreshJob.deleteMany({ where: { profileId: 1 } });

@@ -9,9 +9,12 @@ process.env.DATABASE_URL = databaseUrl;
 const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
 const { prisma: applicationPrisma } = await import("@/lib/db/prisma");
 const { POST } = await import("@/app/api/v1/health/sync/route");
+const { PATCH: patchDay } = await import("@/app/api/v1/days/[date]/route");
 const { PrismaHealthSyncRepository } = await import("@/modules/health/health.repository");
 const { claimNextHealthSyncRefreshJob, processNextHealthSyncRefreshJob } = await import("@/modules/health/health-sync-refresh-worker");
 const { runWithHealthSyncRefreshWorkerLease } = await import("@/modules/health/health-sync-worker-context");
+const { DailyMetricRepository } = await import("@/modules/days/day.repository");
+const { MANUAL_HISTORY_SOURCE_PREFIX, MANUAL_STEPPER_SOURCE_PREFIX } = await import("@/modules/health/workout-source-identity");
 const { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION } = await import("@/model/unified-experimental-physiology-v1/contracts");
 const { addCalendarDays } = await import("@/modules/model-episodes/model-calendar");
 const { initializeNewModelEpisode, recalculateModelEpisode } = await import("@/modules/model-episodes/model-episode.service");
@@ -19,7 +22,7 @@ const { currentPhysiologyV7Versions } = await import("@/modules/model-episodes/p
 const { PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE, PhysiologyV7PersistenceRepository } = await import("@/modules/model-episodes/physiology-v7-persistence.repository");
 const { deleteDailyHealthRows } = await import("../helpers/delete-daily-health");
 const apiKey = process.env.IOS_SHORTCUT_API_KEY ?? "integration-test-secret";
-const testDates = ["2040-01-01", "2040-01-02", "2040-01-03", "2040-01-04", "2040-01-05", "2040-01-06", "2040-01-07", "2040-01-08", "2040-01-09", "2040-01-10", "2040-01-11", "2040-01-12"];
+const testDates = ["2040-01-01", "2040-01-02", "2040-01-03", "2040-01-04", "2040-01-05", "2040-01-06", "2040-01-07", "2040-01-08", "2040-01-09", "2040-01-10", "2040-01-11", "2040-01-12", "2043-01-07"];
 
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -1303,5 +1306,270 @@ describe("Apple Health sync with PostgreSQL", () => {
       await recoveryFence.catch(() => undefined);
       await releaseHealthState(prior, date);
     }
+  });
+
+  it("preserves Garmin workout identity while History edits metrics and adds, updates, or removes a manual workout", async () => {
+    const date = testDates[12]!;
+    const prior = await saveHealthState();
+    const externalId = "garmin-history-preservation-2043-01-07";
+    const garminStart = new Date(`${date}T07:00:00.000Z`);
+    const garminEnd = new Date(`${date}T07:30:00.000Z`);
+    const repository = new DailyMetricRepository(prisma);
+    try {
+      await prisma.healthSyncSnapshot.deleteMany({ where: { date } });
+      await prisma.healthActivityInterval.deleteMany({ where: { date } });
+      await deleteDailyHealthRows(prisma, date);
+      const sourceDay = {
+        date,
+        steps: 11_000,
+        strengthTrainingMinutes: 15,
+        activeEnergyKcal: 100,
+        workouts: [{
+          externalId,
+          type: "Running",
+          startAt: garminStart.toISOString(),
+          endAt: garminEnd.toISOString(),
+          durationMinutes: 30,
+          activeEnergyKcal: 280,
+        }],
+      };
+      const sourceResponse = await POST(syncRequest([sourceDay]));
+      expect(sourceResponse.status).toBe(200);
+      const healthDay = await prisma.dailyHealthData.findUniqueOrThrow({
+        where: { date },
+        select: { id: true, updatedAt: true, workouts: { select: { id: true, createdAt: true, updatedAt: true, sourceIdentity: true, externalId: true, syncProtected: true } } },
+      });
+      const garmin = healthDay.workouts[0]!;
+      expect(garmin).toMatchObject({ externalId, syncProtected: false });
+
+      const stepper = await prisma.workout.create({
+        data: {
+          dailyHealthDataId: healthDay.id,
+          sourceIdentity: `${MANUAL_STEPPER_SOURCE_PREFIX}history-preservation-2043-01-07`,
+          type: "Stair climbing",
+          startAt: new Date(`${date}T09:00:00.000Z`),
+          endAt: new Date(`${date}T09:20:00.000Z`),
+          durationMinutes: 20,
+          manualStepCount: 1_200,
+          manualActiveEnergyKcal: 70,
+        },
+      });
+      const stepperBefore = await prisma.workout.findUniqueOrThrow({ where: { id: stepper.id } });
+
+      await repository.update(date, { steps: 12_345 });
+      const afterMetricEdit = await prisma.workout.findUniqueOrThrow({ where: { id: garmin.id } });
+      expect(afterMetricEdit).toMatchObject({
+        id: garmin.id,
+        externalId,
+        sourceIdentity: garmin.sourceIdentity,
+        startAt: garminStart,
+        endAt: garminEnd,
+        activeEnergyKcal: 280,
+        syncProtected: false,
+        createdAt: garmin.createdAt,
+        updatedAt: garmin.updatedAt,
+      });
+
+      const manualStartAt = `${date}T17:00:00.000Z`;
+      const initialRead = await repository.listWithTrainingFacts({ from: date, to: date, limit: 30, offset: 0, includeTrainingDays: true });
+      const syncedProjection = initialRead.days[0]!.workouts.find((workout) => workout.id === garmin.id);
+      expect(syncedProjection).toMatchObject({ id: garmin.id, syncProtected: false, manualEditable: false });
+      expect(initialRead.days[0]!.workouts.find((workout) => workout.id === stepper.id)).toMatchObject({ manualEditable: false });
+      const savedWithManual = await repository.update(date, {
+        steps: 13_000,
+        // Simulate the History editor re-posting the visible feed projection beside a new manual row.
+        workouts: [
+          { type: "Running", startAt: garminStart.toISOString(), durationMinutes: 30, activeEnergyKcal: 280 },
+          { type: "Strength training", startAt: manualStartAt, durationMinutes: 45, activeEnergyKcal: 190 },
+        ],
+      });
+      expect(savedWithManual?.workouts).toHaveLength(3);
+      expect(savedWithManual?.workouts.find((workout) => workout.id === garmin.id)).toMatchObject({ syncProtected: false, manualEditable: false });
+      expect(savedWithManual?.workouts.find((workout) => workout.id === stepper.id)).toMatchObject({ manualEditable: false });
+      const manualProjection = savedWithManual?.workouts.find((workout) => workout.type === "Strength training");
+      expect(manualProjection).toMatchObject({ manualEditable: true, syncProtected: true });
+      expect(savedWithManual?.strengthTrainingMinutes).toBeNull();
+      expect(savedWithManual?.activeEnergyKcal).toBeNull();
+      const manual = await prisma.workout.findFirstOrThrow({ where: { dailyHealthDataId: healthDay.id, sourceIdentity: { startsWith: MANUAL_HISTORY_SOURCE_PREFIX } } });
+      const manualCreatedAt = manual.createdAt;
+      const manualIdentity = manual.sourceIdentity;
+
+      await POST(syncRequest([sourceDay]));
+      expect(await prisma.workout.findUnique({ where: { id: manual.id } })).toMatchObject({ id: manual.id, sourceIdentity: manualIdentity });
+      expect(await prisma.workout.findUnique({ where: { id: garmin.id } })).toMatchObject({
+        id: garmin.id, externalId, sourceIdentity: garmin.sourceIdentity, startAt: garminStart, endAt: garminEnd,
+      });
+
+      await repository.update(date, {
+        workouts: [{ id: manual.id, type: "Strength training", startAt: manualStartAt, durationMinutes: 45, activeEnergyKcal: 220 }],
+      });
+      const updatedManual = await prisma.workout.findUniqueOrThrow({ where: { id: manual.id } });
+      expect(updatedManual).toMatchObject({ id: manual.id, activeEnergyKcal: 220, createdAt: manualCreatedAt, sourceIdentity: manualIdentity });
+      expect(await prisma.workout.count({ where: { dailyHealthDataId: healthDay.id } })).toBe(3);
+
+      await repository.update(date, { workouts: [] });
+      expect(await prisma.workout.findMany({ where: { dailyHealthDataId: healthDay.id }, orderBy: { id: "asc" }, select: { id: true, externalId: true, sourceIdentity: true, syncProtected: true } }))
+        .toEqual([
+          { id: garmin.id, externalId, sourceIdentity: garmin.sourceIdentity, syncProtected: false },
+          { id: stepper.id, externalId: null, sourceIdentity: stepperBefore.sourceIdentity, syncProtected: false },
+        ]);
+      expect(await prisma.workout.findUnique({ where: { id: stepper.id } })).toMatchObject({
+        id: stepper.id,
+        sourceIdentity: stepperBefore.sourceIdentity,
+        manualStepCount: 1_200,
+        manualActiveEnergyKcal: 70,
+        updatedAt: stepperBefore.updatedAt,
+      });
+      const historyRead = await repository.listWithTrainingFacts({ from: date, to: date, limit: 30, offset: 0, includeTrainingDays: true });
+      expect(historyRead.days[0]?.workouts.find((workout) => workout.id === garmin.id)).toMatchObject({ id: garmin.id, syncProtected: false });
+    } finally {
+      await releaseHealthState(prior, date);
+    }
+  });
+
+  it("fails closed for ambiguous legacy fingerprint workouts and preserves them through History and the next feed", async () => {
+    const date = testDates[9]!;
+    const prior = await saveHealthState();
+    const startAt = `${date}T07:00:00.000Z`;
+    const endAt = `${date}T07:30:00.000Z`;
+    const repository = new DailyMetricRepository(prisma);
+    const sourceDay = {
+      date,
+      steps: 8_000,
+      workouts: [{ type: "Running", startAt, endAt, durationMinutes: 30, activeEnergyKcal: 280 }],
+    };
+    const exactFeedWithExternalId = {
+      ...sourceDay,
+      workouts: [{ ...sourceDay.workouts[0]!, externalId: "legacy-fingerprint-feed-2040-01-10" }],
+    };
+    try {
+    const firstSync = await POST(syncRequest([sourceDay]));
+    expect(firstSync.status).toBe(200);
+    const legacy = await prisma.workout.findFirstOrThrow({
+      where: { dailyHealthData: { date } },
+      select: { id: true, sourceIdentity: true, externalId: true, startAt: true, endAt: true, activeEnergyKcal: true, syncProtected: true, createdAt: true, updatedAt: true },
+    });
+    expect(legacy).toMatchObject({ sourceIdentity: expect.stringMatching(/^fp:/), externalId: null, activeEnergyKcal: 280, syncProtected: false });
+    await prisma.dailyHealthData.update({ where: { date }, data: { workoutFeedObserved: null } });
+
+    const beforeEdit = await new DailyMetricRepository(prisma).listWithTrainingFacts({ from: date, to: date, limit: 30, offset: 0, includeTrainingDays: false });
+    expect(beforeEdit.days[0]?.workouts.find(({ id }) => id === legacy.id)).toMatchObject({ manualEditable: false });
+    await repository.update(date, { steps: 8_123, workouts: [] });
+    const afterRemovalAttempt = await prisma.workout.findUniqueOrThrow({ where: { id: legacy.id } });
+    expect(afterRemovalAttempt).toMatchObject({
+      id: legacy.id,
+      sourceIdentity: legacy.sourceIdentity,
+      externalId: null,
+      startAt: legacy.startAt,
+      endAt: legacy.endAt,
+      activeEnergyKcal: 280,
+      syncProtected: false,
+      createdAt: legacy.createdAt,
+      updatedAt: legacy.updatedAt,
+    });
+
+    const nextSync = await POST(syncRequest([exactFeedWithExternalId]));
+    expect(nextSync.status).toBe(200);
+    const afterSync = await prisma.workout.findMany({ where: { dailyHealthData: { date } } });
+    expect(afterSync).toHaveLength(1);
+    expect(afterSync[0]).toMatchObject({ id: legacy.id, externalId: "legacy-fingerprint-feed-2040-01-10", sourceIdentity: "ext:legacy-fingerprint-feed-2040-01-10" });
+    const afterSyncRead = await repository.listWithTrainingFacts({ from: date, to: date, limit: 30, offset: 0, includeTrainingDays: false });
+    expect(afterSyncRead.days[0]?.workouts).toHaveLength(1);
+    expect(afterSyncRead.days[0]?.workouts[0]?.manualEditable).toBe(false);
+    } finally {
+      await releaseHealthState(prior, date);
+    }
+  });
+
+  it("deduplicates exact History occurrences and keeps manual provenance when a later Health feed matches", async () => {
+    const date = testDates[10]!;
+    const prior = await saveHealthState();
+    const startAt = `${date}T17:00:00.000Z`;
+    const repository = new DailyMetricRepository(prisma);
+    try {
+    const manual = await repository.create({
+      date,
+      steps: 9_000,
+      workouts: [
+        { type: "Strength training", startAt, durationMinutes: 45, activeEnergyKcal: 180 },
+        { type: "Strength training", startAt, durationMinutes: 45, activeEnergyKcal: 190 },
+      ],
+    });
+    expect(manual.workouts).toHaveLength(1);
+    const persistedManual = await prisma.workout.findFirstOrThrow({ where: { dailyHealthData: { date } } });
+    expect(persistedManual).toMatchObject({ sourceIdentity: expect.stringMatching(/^manual:history:/), activeEnergyKcal: 190, syncProtected: true });
+    const manualUpdatedAt = persistedManual.updatedAt;
+
+    const sourceDay = {
+      date,
+      steps: 9_100,
+      workouts: [{
+        externalId: "garmin-exact-manual-match-2040-01-11",
+        type: "Strength training",
+        startAt,
+        endAt: new Date(new Date(startAt).getTime() + 45 * 60_000).toISOString(),
+        durationMinutes: 45,
+        activeEnergyKcal: 300,
+      }],
+    };
+    const response = await POST(syncRequest([sourceDay]));
+    expect(response.status).toBe(200);
+    const afterSync = await prisma.workout.findMany({ where: { dailyHealthData: { date } } });
+    expect(afterSync).toHaveLength(1);
+    expect(afterSync[0]).toMatchObject({
+      id: persistedManual.id,
+      sourceIdentity: persistedManual.sourceIdentity,
+      externalId: null,
+      activeEnergyKcal: 190,
+      syncProtected: true,
+      updatedAt: manualUpdatedAt,
+    });
+    const persistedSnapshot = await prisma.healthSyncSnapshot.findFirstOrThrow({
+      where: { date }, orderBy: { id: "desc" }, select: { rawPayload: true },
+    });
+    expect(persistedSnapshot.rawPayload).toEqual(sourceDay);
+
+    const edited = await repository.update(date, {
+      workouts: [{ id: persistedManual.id, type: "Strength training", startAt, durationMinutes: 45, activeEnergyKcal: 220 }],
+    });
+    expect(edited?.workouts).toHaveLength(1);
+    expect(edited?.workouts[0]).toMatchObject({ id: persistedManual.id, activeEnergyKcal: 220, manualEditable: true });
+    expect(await prisma.workout.count({ where: { dailyHealthData: { date } } })).toBe(1);
+    } finally {
+      await releaseHealthState(prior, date);
+    }
+  });
+
+  it("returns a conflict instead of a server error when a manual edit collides with a synced occurrence", async () => {
+    const date = testDates[11]!;
+    const day = await prisma.dailyHealthData.create({ data: { date, steps: 100, rawPayload: { source: "synthetic-integration" } } });
+    const garminStart = new Date(`${date}T07:00:00.000Z`);
+    const garminEnd = new Date(`${date}T07:30:00.000Z`);
+    await prisma.workout.create({ data: {
+      dailyHealthDataId: day.id,
+      type: "Running",
+      externalId: "garmin-existing-conflict-2040-01-12",
+      sourceIdentity: "ext:garmin-existing-conflict-2040-01-12",
+      startAt: garminStart,
+      endAt: garminEnd,
+      durationMinutes: 30,
+    } });
+    const manual = await prisma.workout.create({ data: {
+      dailyHealthDataId: day.id,
+      type: "Running",
+      sourceIdentity: `${MANUAL_HISTORY_SOURCE_PREFIX}legacy-conflict-test`,
+      startAt: new Date(`${date}T09:00:00.000Z`),
+      endAt: new Date(`${date}T09:30:00.000Z`),
+      durationMinutes: 30,
+      syncProtected: true,
+    } });
+    const response = await patchDay(new Request(`http://localhost/api/v1/days/${date}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workouts: [{ id: manual.id, type: "Running", startAt: garminStart.toISOString(), durationMinutes: 30, activeEnergyKcal: null }] }),
+    }), { params: Promise.resolve({ date }) });
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "workout_conflict" });
+    expect(await prisma.workout.count({ where: { dailyHealthDataId: day.id } })).toBe(2);
   });
 });

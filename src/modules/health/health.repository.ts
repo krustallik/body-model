@@ -6,7 +6,7 @@ import {
 import { planDayWorkoutReconciliation } from "@/modules/health/reconcile-day-workouts";
 import { offsetMinutesFromIso } from "@/modules/health/sleep-summary";
 import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
-import { MANUAL_STEPPER_SOURCE_PREFIX } from "@/modules/health/workout-source-identity";
+import { MANUAL_HISTORY_SOURCE_PREFIX, MANUAL_STEPPER_SOURCE_PREFIX, workoutFingerprint } from "@/modules/health/workout-source-identity";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { logEvent } from "@/lib/logger";
@@ -195,8 +195,13 @@ async function reconcileDayWorkouts(
     },
   });
 
+  const historyFingerprints = new Set(existing
+    .filter((row) => row.sourceIdentity?.startsWith(MANUAL_HISTORY_SOURCE_PREFIX))
+    .map((row) => workoutFingerprint({ type: row.type, startAt: row.startAt, endAt: row.endAt })));
+  const reconciledIncoming = incoming.filter((workout) => !historyFingerprints.has(workoutFingerprint(workout)));
   const plan = planDayWorkoutReconciliation(
-    existing.filter((row) => !row.sourceIdentity?.startsWith(MANUAL_STEPPER_SOURCE_PREFIX)).map((row) => ({
+    existing.filter((row) => !row.sourceIdentity?.startsWith(MANUAL_STEPPER_SOURCE_PREFIX)
+      && !row.sourceIdentity?.startsWith(MANUAL_HISTORY_SOURCE_PREFIX)).map((row) => ({
       id: row.id,
       sourceIdentity: row.sourceIdentity,
       externalId: row.externalId,
@@ -207,7 +212,7 @@ async function reconcileDayWorkouts(
       syncProtected: row.syncProtected,
       hiddenFromHistory: row.hiddenFromHistory,
     })),
-    incoming,
+    reconciledIncoming,
   );
 
   for (const update of plan.updates) {

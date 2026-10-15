@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useRef, useState, type ReactNode } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AppNav } from "@/components/app-nav";
 import { HelpTip } from "@/components/help-tip";
 import { ModelStateSource } from "@/components/model-state-source";
@@ -114,29 +114,59 @@ export function GoalClient() {
   const [result, setResult] = useState<GoalPlanningResponse | null>(null);
   const [chartHistoryRange, setChartHistoryRange] = useState<"recent" | "full">("recent");
   const [chartMetric, setChartMetric] = useState<"physiologicalBodyWeightKg" | "fatMassKg">("physiologicalBodyWeightKg");
-  const [loadingContext, setLoadingContext] = useState(true);
+  const [contextLoad, setContextLoad] = useState<{
+    key: symbol;
+    status: "ready" | "no-active-episode" | "error";
+    error?: string;
+  } | null>(null);
+  const [contextLoadAttempt, setContextLoadAttempt] = useState(0);
   const [solving, setSolving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
   const requestRef = useRef({ current: 0 });
   const solvingRef = useRef(false);
   const skipSettingsWrite = useRef(false);
+  const contextLoadKey = useMemo(() => Symbol(`goal-context-request:${locale}:${contextLoadAttempt}`), [locale, contextLoadAttempt]);
+  const currentContextLoad = contextLoad?.key === contextLoadKey ? contextLoad : null;
+  const loadingContext = currentContextLoad === null;
+  const contextReady = currentContextLoad?.status === "ready";
+  const contextLoadError = currentContextLoad?.status === "error" ? currentContextLoad.error ?? null : null;
+  const noActiveEpisode = currentContextLoad?.status === "no-active-episode";
 
   useEffect(() => {
     const controller = new AbortController();
+    const requestKey = contextLoadKey;
     const profileRequest = fetch("/api/v1/profile", { cache: "no-store", signal: controller.signal })
       .then(async (response) => response.ok ? await response.json() as { profile?: GoalProfileAttributes | null } : { profile: null })
-      .catch(() => ({ profile: null }));
+      .catch((reason: unknown) => {
+        if (controller.signal.aborted) throw reason;
+        return { profile: null };
+      });
     void Promise.all([
       fetch("/api/forecast/context", { cache: "no-store", signal: controller.signal }),
       profileRequest,
     ]).then(async ([response, profileResult]) => {
-      if (!response.ok) throw new Error(await responseError(response, locale));
+      if (controller.signal.aborted) return;
+      if (!response.ok) {
+        if (response.status === 404) {
+          const body = await response.clone().json().catch(() => null) as { error?: string } | null;
+          if (controller.signal.aborted) return;
+          if (body?.error === "no_active_episode") {
+            setContextLoad({ key: requestKey, status: "no-active-episode" });
+            return;
+          }
+        }
+        throw new Error(uk
+          ? "Не вдалося завантажити стан моделі. Перевірте з’єднання та спробуйте ще раз."
+          : "Could not load model state. Check your connection and try again.");
+      }
       const contextResponse = await response.json() as Context;
+      if (controller.signal.aborted) return;
       const next = {
         ...contextResponse,
         observedWeights: await attachObservedBodyFatPercent(contextResponse.observedWeights ?? [], controller.signal),
       };
+      if (controller.signal.aborted) return;
       const profile = profileResult.profile
         ? {
           sex: profileResult.profile.sex,
@@ -162,12 +192,20 @@ export function GoalClient() {
       } else {
         setForm(initial.form);
       }
+      setResult(null);
+      setError(null);
+      setFormErrors({});
       setInitialized(true);
+      setContextLoad({ key: requestKey, status: "ready" });
     }).catch((reason) => {
-      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : uk ? "Не вдалося завантажити модель." : "Could not load the model.");
-    }).finally(() => { if (!controller.signal.aborted) setLoadingContext(false); });
+      if (!controller.signal.aborted) setContextLoad({
+        key: requestKey,
+        status: "error",
+        error: reason instanceof Error ? reason.message : uk ? "Не вдалося завантажити модель." : "Could not load the model.",
+      });
+    });
     return () => { controller.abort(); controllerRef.current?.abort(); };
-  }, [locale, uk]);
+  }, [locale, uk, contextLoadAttempt, contextLoadKey]);
 
   useEffect(() => {
     if (!initialized) return;
@@ -250,11 +288,13 @@ export function GoalClient() {
     <header className={styles.hero}><div><p className={styles.eyebrow}>{uk ? "Сценарій · не припис" : "Scenario · not a prescription"}</p><h1>{uk ? "Перевірте шлях до цілі" : "Explore a path to your goal"}</h1><p>{uk ? "Порівняйте бажану вагу з розрахованою траєкторією, імовірністю та межами прогнозу." : "Compare your target weight with the modeled trajectory, attainment estimate, and forecast limits."}</p></div><div className={styles.statePill}><span className={solving ? styles.pulse : undefined} />{solving ? (uk ? "Розраховуємо…" : "Solving…") : (uk ? "Гіпотетичний план" : "Hypothetical plan")}</div></header>
 
     {loadingContext && <section className={styles.loadingCard} aria-live="polite"><div className={styles.spinner} /><strong>{uk ? "Завантажуємо поточний стан моделі" : "Loading current model state"}</strong></section>}
-    {!loadingContext && initialized && !canPlan && <section className={styles.errorCard} role="status"><strong>{uk ? "Немає змодельованого стану" : "No modeled state yet"}</strong><p>{uk ? "Активна модель є, але останній змодельований день ще недоступний. Додайте історію й розрахуйте модель, перш ніж будувати ціль." : "There is an active model, but the latest modeled day is not available yet. Add history and calculate the model before planning a goal."}</p><p><Link href="/forecast">{uk ? "Перейти до прогнозу / запуску моделі" : "Go to forecast / start model"}</Link> · <Link href="/history">{uk ? "Історія" : "History"}</Link></p></section>}
-    {!loadingContext && initialized && canPlan && latestModeledDate && <div className={`${styles.workspace} ${result ? styles.hasResult : ""}`}>
+    {!loadingContext && noActiveEpisode && <section className={styles.errorCard} role="status"><strong>{uk ? "Активної моделі ще немає" : "No active model yet"}</strong><p>{uk ? "Щоб побудувати ціль, спочатку додайте історичні дані та розрахуйте модель." : "Add history and calculate a model before planning a goal."}</p><p><Link href="/history">{uk ? "Відкрити історію" : "Open History"}</Link> · <Link href="/forecast">{uk ? "Відкрити Forecast і розрахувати модель" : "Open Forecast and calculate a model"}</Link></p></section>}
+    {!loadingContext && contextLoadError && <section className={styles.errorCard} role="alert"><strong>{uk ? "Стан моделі не завантажено" : "Model state did not load"}</strong><p>{contextLoadError}</p><button type="button" onClick={() => setContextLoadAttempt((attempt) => attempt + 1)}>{uk ? "Спробувати ще раз" : "Try again"}</button></section>}
+    {!loadingContext && contextReady && initialized && !canPlan && <section className={styles.errorCard} role="status"><strong>{uk ? "Немає змодельованого стану" : "No modeled state yet"}</strong><p>{uk ? "Активна модель є, але останній змодельований день ще недоступний. Додайте історію й розрахуйте модель, перш ніж будувати ціль." : "There is an active model, but the latest modeled day is not available yet. Add history and calculate the model before planning a goal."}</p><p><Link href="/forecast">{uk ? "Перейти до прогнозу / запуску моделі" : "Go to forecast / start model"}</Link> · <Link href="/history">{uk ? "Історія" : "History"}</Link></p></section>}
+    {!loadingContext && contextReady && initialized && canPlan && latestModeledDate && <div className={`${styles.workspace} ${result ? styles.hasResult : ""}`}>
       <section className={styles.formColumn} aria-labelledby="goal-plan-heading">
         <div className={styles.formIntro}><div><p className={styles.eyebrow}>{uk ? "Умови розрахунку" : "Calculation inputs"}</p><h2 id="goal-plan-heading">{uk ? "Ваш сценарій" : "Your scenario"}</h2></div></div>
-    {!loadingContext && initialized && canPlan && latestModeledDate && <form className={styles.planner} onSubmit={(event) => void submit(event)} noValidate>
+    {!loadingContext && contextReady && initialized && canPlan && latestModeledDate && <form className={styles.planner} onSubmit={(event) => void submit(event)} noValidate>
       <div className={styles.formUtilityRow}><span>{uk ? "Параметри сценарію" : "Scenario inputs"}</span><button className={styles.resetButton} type="button" disabled={solving} onClick={resetSettings}>{uk ? "Скинути налаштування" : "Reset settings"}</button></div>
       <section className={styles.formSection}><div className={styles.sectionHeading}><div><span>01</span><h2>{uk ? "Ціль і дата" : "Target and date"}</h2></div><p>{uk ? `Останній змодельований день: ${formatDate(latestModeledDate, { year: "numeric" }, locale)}` : `Latest modeled day: ${formatDate(latestModeledDate, { year: "numeric" }, locale)}`}</p></div><div className={styles.formGrid}>
         <TextNumberField id="targetWeightKg" label={uk ? "Цільова вага" : "Target weight"} unit={uk ? "кг" : "kg"} helpLabel={uk ? "Пояснення цільової ваги" : "Explain target weight"} help={uk ? "Вага, до якої solver підбирає сценарій у заданих межах планування." : "The weight the solver uses to search for a scenario within your planning bounds."} value={form.targetWeightKg} min={0.1} max={1000} step={0.1} error={formErrors.targetWeightKg} onChange={(value) => updateForm("targetWeightKg", value)} />

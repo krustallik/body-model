@@ -107,7 +107,12 @@ export function WorkActivityDialog({ date, onClose, onChanged }: {
 
   const diagnostics = activity?.diagnostics ?? null;
   return (
-    <dialog ref={dialogRef} className={`${styles.dialog} ${styles.workDialog}`} onCancel={onClose} onClose={onClose}>
+    <dialog
+      ref={dialogRef}
+      className={`${styles.dialog} ${styles.workDialog}`}
+      onCancel={(event) => { if (event.target === event.currentTarget) onClose(); }}
+      onClose={(event) => { if (event.target === event.currentTarget) onClose(); }}
+    >
       <div className={styles.workDialogBody}>
         <div className={styles.dialogHeader}>
           <div>
@@ -168,13 +173,15 @@ export function WorkActivityDialog({ date, onClose, onChanged }: {
                   </select>
                 </label>
                 <small>{uk ? "Ходьба визначається автоматично із синхронізованої дистанції." : "Walking is automatic from synced distance."} {occupationalCategoryCopy(editor.values.category, uk ? "uk" : "en").description}</small>
-                <WorkCategoryHelper
-                  triggerClassName={styles.secondaryButton}
-                  onRecommend={(category) => setEditor((current) => current
-                    ? { ...current, values: { ...current.values, category } }
-                    : current)}
-                />
-                <OccupationalCategoryDescriptions />
+                <div className={styles.categoryGuidance}>
+                  <WorkCategoryHelper
+                    triggerClassName={styles.secondaryButton}
+                    onRecommend={(category) => setEditor((current) => current
+                      ? { ...current, values: { ...current.values, category } }
+                      : current)}
+                  />
+                  <OccupationalCategoryDescriptions />
+                </div>
               </div>
             </div>
             <div className={styles.dialogActions}>

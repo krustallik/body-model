@@ -361,6 +361,88 @@ describe("HistoryClient workout cell interaction", () => {
     expect(table.queryByText(staleDate)).toBeNull();
   });
 
+  it("shows the authoritative save response and prevents an older same-range read from overwriting it", async () => {
+    Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value: function showModal(this: HTMLDialogElement) {
+      this.setAttribute("open", "");
+    } });
+    Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value: function close(this: HTMLDialogElement) {
+      this.removeAttribute("open");
+      this.dispatchEvent(new Event("close"));
+    } });
+    const date = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    const original = day(date, {
+      steps: 7000,
+      workoutSource: "workouts",
+      workouts: [{
+        id: 881,
+        type: "Running",
+        canonicalType: "Running",
+        classification: "other",
+        startAt: `${date}T07:00:00.000Z`,
+        endAt: `${date}T07:30:00.000Z`,
+        durationMinutes: 30,
+        activeEnergyKcal: 280,
+        syncProtected: true,
+      }],
+    });
+    const saved = { ...original, steps: 9000, updatedAt: `${date}T12:00:00.000Z`, modelPublicationStatus: "stale" as const };
+    let dayReads = 0;
+    let resolveOlderRead!: (response: Response) => void;
+    const olderRead = new Promise<Response>((resolve) => { resolveOlderRead = resolve; });
+    let resolveRevalidation!: (response: Response) => void;
+    const revalidation = new Promise<Response>((resolve) => { resolveRevalidation = resolve; });
+    let patchBody: Record<string, unknown> | null = null;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname.startsWith("/api/v1/days/") && init?.method === "PATCH") {
+        patchBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+        return Promise.resolve(jsonResponse({ day: saved }));
+      }
+      if (url.pathname === "/api/v1/days") {
+        dayReads += 1;
+        if (dayReads === 1) return Promise.resolve(jsonResponse({ days: [original], trainingDays: [] }));
+        if (dayReads === 2) return olderRead;
+        if (dayReads === 3) return revalidation;
+        return Promise.resolve(jsonResponse({ days: [saved], trainingDays: [] }));
+      }
+      if (url.pathname === "/api/v1/work-intervals") return Promise.resolve(jsonResponse({ intervals: [] }));
+      return Promise.resolve(jsonResponse({ error: "unexpected" }, 500));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<HistoryClient />);
+    const table = within(screen.getByTestId("desktop-history-table"));
+    await waitFor(() => expect(table.getByText(date)).toBeTruthy());
+
+    await user.click(screen.getByRole("button", { name: "7 days" }));
+    await waitFor(() => expect(dayReads).toBe(2));
+    await user.click(screen.getByRole("button", { name: `Edit ${date}` }));
+    const steps = screen.getByLabelText("Steps");
+    await user.clear(steps);
+    await user.type(steps, "9000");
+    await user.click(screen.getByRole("button", { name: "Save day" }));
+
+    await waitFor(() => expect(patchBody).not.toBeNull());
+    await waitFor(() => expect(dayReads).toBe(3));
+    expect(patchBody).toMatchObject({ steps: "9000" });
+    expect(patchBody).not.toHaveProperty("workouts");
+    expect(table.getByText("9,000")).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toMatch(/publication is waiting to refresh/i);
+
+    await act(async () => {
+      resolveOlderRead(jsonResponse({ days: [original], trainingDays: [] }));
+      await olderRead;
+    });
+    expect(table.getByText("9,000")).toBeTruthy();
+
+    await act(async () => {
+      resolveRevalidation(jsonResponse({ days: [saved], trainingDays: [] }));
+      await revalidation;
+    });
+    expect(table.getByText("9,000")).toBeTruthy();
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input).includes("/api/v1/days/") && init?.method === "PATCH")).toBe(true);
+  });
+
   it("renders an unavailable measurement as a dash while retaining an observed value", async () => {
     const unavailableDate = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
     const measuredDate = new Date(Date.now() - 2 * 86_400_000).toISOString().slice(0, 10);

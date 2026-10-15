@@ -27,7 +27,7 @@ import { HistoryDayCard } from "./history-day-card";
 import styles from "./history.module.css";
 
 type FormValues = Record<DailyMetricField, string> & { date: string };
-type WorkoutForm = { type: string; startAt: string; durationMinutes: string; activeEnergyKcal: string };
+type WorkoutForm = { id?: number; type: string; startAt: string; durationMinutes: string; activeEnergyKcal: string };
 type EditorState = {
   mode: "create" | "edit";
   values: FormValues;
@@ -109,6 +109,7 @@ function eventOnlyHistoryDay(fact: TrainingDayFact): DailyMetricDto {
   const summary = summarizeDayWorkouts({
     workouts: fact.events.map((event) => ({
       id: event.workoutId ?? undefined,
+      syncProtected: event.syncProtected,
       type: event.type,
       startAt: event.occurrenceAt,
       endAt: event.endAt,
@@ -171,7 +172,8 @@ function localDateTimeInputToIso(value: string): string {
 }
 
 function workoutForm(day: DailyMetricDto): WorkoutForm[] {
-  return day.workouts.map((workout) => ({
+  return day.workouts.filter((workout) => workout.manualEditable === true).map((workout) => ({
+    ...(workout.id === undefined ? {} : { id: workout.id }),
     type: workout.type,
     startAt: toLocalDateTime(workout.startAt),
     durationMinutes: workout.durationMinutes === null
@@ -191,6 +193,9 @@ async function responseError(response: Response, uk = false): Promise<string> {
     const body = await response.json() as { error?: string; details?: Array<{ message?: string }> };
     const code = body.error;
     if (uk && code === "date_conflict") return "Запис за цю дату вже існує.";
+    if (code === "workout_conflict") return uk
+      ? "Тренування з таким самим часом уже синхронізоване. Змініть час, щоб зберегти ручний запис."
+      : "A synced workout already uses this exact time. Change the time to save a manual workout.";
     if (uk && code === "internal_error") return "Внутрішня помилка. Спробуйте ще раз.";
     return body.details?.[0]?.message ?? code ?? fallback;
   } catch {
@@ -266,39 +271,40 @@ export function HistoryClient({ demoMode = false }: { demoMode?: boolean } = {})
   const [range, setRange] = useState<HistoryRange>(30);
   const [workDate, setWorkDate] = useState<string | null>(null);
   const [workoutDay, setWorkoutDay] = useState<DailyMetricDto | null>(null);
+  const [publicationNotice, setPublicationNotice] = useState<string | null>(null);
+  const loadSequenceRef = useRef(0);
 
   const loadDays = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+    const sequence = ++loadSequenceRef.current;
     try {
       const loaded = await fetchHistoryData(range, uk);
+      if (sequence !== loadSequenceRef.current) return;
       setDays(loaded.days);
       setWorkActivityDates(loaded.workActivityDates);
+      setError(null);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : uk ? "Не вдалося завантажити історію" : "Could not load history");
+      if (sequence === loadSequenceRef.current) setError(loadError instanceof Error ? loadError.message : uk ? "Не вдалося завантажити історію" : "Could not load history");
     } finally {
-      setLoading(false);
+      if (sequence === loadSequenceRef.current) setLoading(false);
     }
   }, [range, uk]);
 
+  const refreshDays = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    void loadDays();
+  }, [loadDays]);
+
   useEffect(() => {
     let active = true;
-    fetchHistoryData(range, uk)
-      .then((loaded) => {
-        if (!active) return;
-        setDays(loaded.days);
-        setWorkActivityDates(loaded.workActivityDates);
-      })
-      .catch((loadError: unknown) => {
-        if (active) setError(loadError instanceof Error ? loadError.message : uk ? "Не вдалося завантажити історію" : "Could not load history");
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
+    void Promise.resolve().then(() => {
+      if (active) void loadDays();
+    });
     return () => {
       active = false;
+      loadSequenceRef.current += 1;
     };
-  }, [range, uk]);
+  }, [loadDays]);
 
   function selectRange(nextRange: HistoryRange) {
     if (nextRange === range) return;
@@ -309,10 +315,12 @@ export function HistoryClient({ demoMode = false }: { demoMode?: boolean } = {})
 
   async function deleteDay(date: string) {
     if (!window.confirm(uk ? `Видалити денні показники за ${date}?` : `Delete daily metrics for ${date}?`)) return;
+    setLoading(true);
     setError(null);
     const response = await fetch(`/api/v1/days/${encodeURIComponent(date)}`, { method: "DELETE" });
     if (!response.ok) {
       setError(await responseError(response, uk));
+      setLoading(false);
       return;
     }
     await loadDays();
@@ -361,6 +369,7 @@ export function HistoryClient({ demoMode = false }: { demoMode?: boolean } = {})
       </header>
 
       {error && <div className={styles.errorBanner} role="alert">{error}</div>}
+      {publicationNotice && <div className={styles.provenanceHint} role="status">{publicationNotice}</div>}
 
       <section className={styles.rangeBar} id="history-range" tabIndex={-1} aria-label={uk ? "Діапазон дат історії" : "History date range"}>
         <div>
@@ -399,7 +408,7 @@ export function HistoryClient({ demoMode = false }: { demoMode?: boolean } = {})
             <h2>{range === "all" ? (uk ? "Усі записи" : "All records") : (uk ? `Останні ${range} днів` : `Last ${range} days`)}</h2>
             <p>{loading ? (uk ? "Оновлення…" : "Refreshing…") : historyRecordCount(days.length, uk)}</p>
           </div>
-          <button className={styles.secondaryButton} type="button" onClick={() => void loadDays()} disabled={loading}>
+          <button className={styles.secondaryButton} type="button" onClick={refreshDays} disabled={loading}>
             {uk ? "Оновити" : "Refresh"}
           </button>
         </div>
@@ -517,13 +526,21 @@ export function HistoryClient({ demoMode = false }: { demoMode?: boolean } = {})
         <DayDialog
           editor={editor}
           onClose={() => setEditor(null)}
-          onSaved={async () => {
+          onSaved={async (savedDay) => {
             setEditor(null);
+            setError(null);
+            setDays((current) => sortDaysNewestFirst([
+              ...current.filter((day) => day.date !== savedDay.date),
+              savedDay,
+            ]));
+            setPublicationNotice(savedDay.modelPublicationStatus === "stale"
+              ? (uk ? "Запис збережено. Публікація похідних модельних даних очікує оновлення." : "Saved. Derived model publication is waiting to refresh.")
+              : null);
             await loadDays();
           }}
         />
       )}
-      {workDate && <WorkActivityDialog date={workDate} onChanged={() => loadDays()} onClose={() => {
+      {workDate && <WorkActivityDialog date={workDate} onChanged={refreshDays} onClose={() => {
         setWorkDate(null);
         void fetchWorkActivityDates().then(setWorkActivityDates);
       }} />}
@@ -535,13 +552,14 @@ export function HistoryClient({ demoMode = false }: { demoMode?: boolean } = {})
 function DayDialog({ editor, onClose, onSaved }: {
   editor: NonNullable<EditorState>;
   onClose: () => void;
-  onSaved: () => Promise<void>;
+  onSaved: (savedDay: DailyMetricDto) => Promise<void>;
 }) {
   const { locale } = useI18n();
   const uk = locale === "uk";
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [values, setValues] = useState(editor.values);
   const [workouts, setWorkouts] = useState(editor.workouts);
+  const [workoutsDirty, setWorkoutsDirty] = useState(false);
   const [legacyWorkoutFields, setLegacyWorkoutFields] = useState(editor.legacyWorkoutFields);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -556,6 +574,7 @@ function DayDialog({ editor, onClose, onSaved }: {
   }
 
   function setWorkout(index: number, key: keyof WorkoutForm, value: string) {
+    setWorkoutsDirty(true);
     setWorkouts((current) => current.map((workout, workoutIndex) => (
       workoutIndex === index ? { ...workout, [key]: value } : workout
     )));
@@ -575,8 +594,9 @@ function DayDialog({ editor, onClose, onSaved }: {
     ]);
     let workoutPayload: Record<string, unknown>;
     try {
-      workoutPayload = legacyWorkoutFields ? {} : {
+      workoutPayload = legacyWorkoutFields || !workoutsDirty ? {} : {
         workouts: workouts.map((workout) => ({
+          ...(workout.id === undefined ? {} : { id: workout.id }),
           type: workout.type.trim(),
           startAt: localDateTimeInputToIso(workout.startAt),
           durationMinutes: workout.durationMinutes.trim(),
@@ -606,7 +626,13 @@ function DayDialog({ editor, onClose, onSaved }: {
       return;
     }
 
-    await onSaved();
+    const body = await response.json() as { day?: DailyMetricDto };
+    if (!body.day) {
+      setFormError(uk ? "Запис збережено, але сервер не повернув його для оновлення історії." : "Saved, but the server did not return the day to refresh History.");
+      setSaving(false);
+      return;
+    }
+    await onSaved(body.day);
   }
 
   return (
@@ -662,6 +688,7 @@ function DayDialog({ editor, onClose, onSaved }: {
                 durationMinutes: values.strengthTrainingMinutes,
                 activeEnergyKcal: values.activeEnergyKcal,
               }]);
+              setWorkoutsDirty(true);
               setLegacyWorkoutFields(false);
             }}>{uk ? "Перетворити на окреме тренування" : "Convert to an individual workout"}</button>
           </section>
@@ -672,7 +699,7 @@ function DayDialog({ editor, onClose, onSaved }: {
                 <strong>{uk ? "Тренування" : "Workouts"}</strong>
                 <p>{uk ? "Кожне тренування має свою тривалість і активну енергію." : "Each workout has its own duration and active energy."}</p>
               </div>
-              <button className={styles.secondaryButton} type="button" onClick={() => setWorkouts((current) => [...current, newWorkout(values.date)])}>{uk ? "Додати тренування" : "Add workout"}</button>
+              <button className={styles.secondaryButton} type="button" onClick={() => { setWorkouts((current) => [...current, newWorkout(values.date)]); setWorkoutsDirty(true); }}>{uk ? "Додати тренування" : "Add workout"}</button>
             </div>
             {workouts.length === 0 ? <p className={styles.workoutEmpty}>{uk ? "Тренувань за цей день немає." : "There are no workouts for this day."}</p> : (
               <div className={styles.workoutRows}>
@@ -682,7 +709,7 @@ function DayDialog({ editor, onClose, onSaved }: {
                     <label className={styles.field}><span>{uk ? "Початок" : "Start"}</span><input type="datetime-local" required value={workout.startAt} onChange={(event) => setWorkout(index, "startAt", event.target.value)} /></label>
                     <label className={styles.field}><span>{uk ? "Тривалість (хв)" : "Duration (min)"}</span><input type="text" required inputMode="decimal" value={workout.durationMinutes} onChange={(event) => setWorkout(index, "durationMinutes", event.target.value)} /></label>
                     <label className={styles.field}><span>{uk ? "Активна енергія (ккал)" : "Active energy (kcal)"}</span><input type="text" inputMode="decimal" value={workout.activeEnergyKcal} placeholder={uk ? "Необов’язково" : "Optional"} onChange={(event) => setWorkout(index, "activeEnergyKcal", event.target.value)} /></label>
-                    <button className={styles.deleteWorkoutButton} type="button" onClick={() => setWorkouts((current) => current.filter((_, workoutIndex) => workoutIndex !== index))}>{uk ? "Прибрати" : "Remove"}</button>
+                    <button className={styles.deleteWorkoutButton} type="button" onClick={() => { setWorkouts((current) => current.filter((_, workoutIndex) => workoutIndex !== index)); setWorkoutsDirty(true); }}>{uk ? "Прибрати" : "Remove"}</button>
                   </div>
                 ))}
               </div>

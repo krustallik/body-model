@@ -14,9 +14,9 @@ describe("ModelDiagnosticsRepository", () => {
         { date: "2026-08-25", status: "complete", energyExpenditureKcal: 2500, dynamicRmrKcalPerDay: 1610 },
       ])
       .mockResolvedValueOnce([
-        { date: "2026-08-24", energyExpenditureKcal: 2400 },
-        { date: "2026-08-23", energyExpenditureKcal: null },
-        { date: "2026-08-22", energyExpenditureKcal: 2350 },
+        { date: "2026-08-22", status: "complete", energyExpenditureKcal: 2350 },
+        { date: "2026-08-23", status: "incomplete", energyExpenditureKcal: 2200 },
+        { date: "2026-08-24", status: "complete", energyExpenditureKcal: 2400 },
       ]);
     const latestDay = vi.fn().mockResolvedValue({ date: "2026-08-25", status: "incomplete", energyExpenditureKcal: null });
     const client = { dailyModelState: { count: dailyCount, findMany: dailyFindMany, findFirst: latestDay }, dailyHealthData: { count: weightCount } } as unknown as ModelDatabaseClient;
@@ -28,6 +28,10 @@ describe("ModelDiagnosticsRepository", () => {
       energyHistory: {
         latestModeledDay: { date: "2026-08-25", status: "incomplete", expenditureKcalPerDay: null },
         previousCompletedDays: [
+          { date: "2026-08-18", expenditureKcalPerDay: null },
+          { date: "2026-08-19", expenditureKcalPerDay: null },
+          { date: "2026-08-20", expenditureKcalPerDay: null },
+          { date: "2026-08-21", expenditureKcalPerDay: null },
           { date: "2026-08-22", expenditureKcalPerDay: 2350 },
           { date: "2026-08-23", expenditureKcalPerDay: null },
           { date: "2026-08-24", expenditureKcalPerDay: 2400 },
@@ -37,8 +41,8 @@ describe("ModelDiagnosticsRepository", () => {
     expect(dailyCount).toHaveBeenCalledTimes(5);
     expect(latestDay).toHaveBeenCalledWith({ where: { episodeId: 7, date: { equals: "2026-08-25", lte: "2026-08-25" } }, select: { date: true, status: true, energyExpenditureKcal: true } });
     expect(dailyFindMany).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      where: { episodeId: 7, date: { lt: "2026-08-25", lte: "2026-08-25" }, status: "complete" },
-      orderBy: { date: "desc" }, take: 7,
+      where: { episodeId: 7, date: { gte: "2026-08-18", lt: "2026-08-25" } },
+      orderBy: { date: "asc" },
     }));
     expect(weightCount).toHaveBeenCalledWith({ where: { date: { gte: "2026-07-29", lte: "2026-08-25" }, weightKg: { gt: 0 } } });
     expect(client).not.toHaveProperty("workInterval");
@@ -60,7 +64,7 @@ describe("ModelDiagnosticsRepository", () => {
     const weightCount = vi.fn().mockResolvedValue(4);
     const dailyFindMany = vi.fn()
       .mockResolvedValueOnce(storedRows.slice(0, 9))
-      .mockResolvedValueOnce(storedRows.slice(1, 8).reverse());
+      .mockResolvedValueOnce(storedRows.slice(1, 8));
     const latestDay = vi.fn().mockResolvedValue(storedRows[8]);
     const client = {
       dailyModelState: { count: dailyCount, findMany: dailyFindMany, findFirst: latestDay },
@@ -84,6 +88,10 @@ describe("ModelDiagnosticsRepository", () => {
       experimentalEnergySummary: { latestModeledExpenditureKcalPerDay: 900 },
     });
     expect(result.energyHistory?.previousCompletedDays.every((day) => day.date < "2026-10-10")).toBe(true);
+    expect(result.energyHistory?.previousCompletedDays.map((day) => day.date)).toEqual([
+      "2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08",
+    ]);
+    expect(result.energyHistory?.previousCompletedDays.map((day) => day.expenditureKcalPerDay)).toEqual([200, 300, 400, 500, 600, 700, 800]);
     expect(dailyCount.mock.calls.every(([args]) => args.where.date.lte === "2026-10-09")).toBe(true);
     expect(dailyFindMany).toHaveBeenNthCalledWith(1, expect.objectContaining({
       where: { episodeId: 7, date: { gte: "2026-10-01", lte: "2026-10-09" } },
@@ -126,6 +134,10 @@ describe("ModelDiagnosticsRepository", () => {
       where: { episodeId: 7, date: { equals: "2026-10-08", lte: "2026-10-08" } },
     }));
     expect(result.energyHistory?.latestModeledDay?.date).toBe("2026-10-08");
+    expect(result.energyHistory?.previousCompletedDays).toEqual(Array.from({ length: 7 }, (_, index) => ({
+      date: `2026-10-${String(index + 1).padStart(2, "0")}`,
+      expenditureKcalPerDay: null,
+    })));
     expect(result.experimentalEnergySummary?.latestModeledExpenditureKcalPerDay).toBe(500);
   });
 });

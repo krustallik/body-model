@@ -10,6 +10,8 @@ import {
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+const mockI18n = vi.hoisted(() => ({ locale: "en" }));
+
 vi.mock("next/link", () => ({
   default: ({
     href,
@@ -43,7 +45,7 @@ vi.mock("@/app/forecast/forecast-chart", () => ({
 }));
 
 vi.mock("@/i18n/i18n-provider", () => ({
-  useI18n: () => ({ locale: "en", intlLocale: "en-US", setLocale: () => undefined }),
+  useI18n: () => ({ locale: mockI18n.locale, intlLocale: mockI18n.locale === "uk" ? "uk-UA" : "en-US", setLocale: () => undefined }),
 }));
 
 import { GoalClient } from "@/app/goal/goal-client";
@@ -183,6 +185,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 describe("GoalClient interaction", () => {
   beforeEach(() => {
+    mockI18n.locale = "en";
     localStorage.clear();
     Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value: function showModal(this: HTMLDialogElement) {
       this.setAttribute("open", "");
@@ -198,6 +201,43 @@ describe("GoalClient interaction", () => {
     localStorage.clear();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it("does not apply an old context when its profile request resolves after a locale change", async () => {
+    let resolveOldProfile!: (response: Response) => void;
+    const oldProfile = new Promise<Response>((resolve) => { resolveOldProfile = resolve; });
+    let profileCalls = 0;
+    let contextCalls = 0;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/v1/profile")) {
+        profileCalls += 1;
+        return profileCalls === 1 ? oldProfile : Promise.resolve(jsonResponse({ profile: null }));
+      }
+      if (url.includes("/api/forecast/context")) {
+        contextCalls += 1;
+        return Promise.resolve(mockI18n.locale === "uk"
+          ? jsonResponse({ error: "no_active_episode" }, 404)
+          : jsonResponse({ status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] }));
+      }
+      return Promise.resolve(jsonResponse({ error: "unexpected" }, 500));
+    }));
+
+    const view = render(<GoalClient />);
+    await waitFor(() => expect(contextCalls).toBe(1));
+    mockI18n.locale = "uk";
+    view.rerender(<GoalClient />);
+    expect(await screen.findByText("Активної моделі ще немає")).toBeTruthy();
+    expect(profileCalls).toBe(2);
+
+    await act(async () => {
+      resolveOldProfile(jsonResponse({ profile: null }));
+      await oldProfile;
+    });
+
+    expect(screen.getByText("Активної моделі ще немає")).toBeTruthy();
+    expect(screen.queryByText(/Latest modeled day:/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Calculate scenario" })).toBeNull();
   });
 
   it("restores scenario inputs but ignores legacy manual nutrition and keeps its template internal", async () => {
@@ -294,6 +334,116 @@ describe("GoalClient interaction", () => {
     expect(screen.queryByText("Target and date")).toBeNull();
     expect(screen.queryByRole("button", { name: "Calculate scenario" })).toBeNull();
     expect(screen.getByText(/latest modeled day is not available/i)).toBeTruthy();
+  });
+
+  it("shows the expected no-active-model state and navigation without writing saved settings", async () => {
+    const saved = JSON.stringify({ version: 1, settings: { keep: true } });
+    localStorage.setItem(GOAL_SETTINGS_KEY, saved);
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).includes("/api/forecast/context")
+      ? jsonResponse({ error: "no_active_episode" }, 404)
+      : jsonResponse({ error: "optional profile unavailable" }, 404)));
+
+    render(<GoalClient />);
+    expect(await screen.findByText("No active model yet")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Open History" }).getAttribute("href")).toBe("/history");
+    expect(screen.getByRole("link", { name: /Open Forecast/ }).getAttribute("href")).toBe("/forecast");
+    expect(screen.queryByRole("button", { name: "Calculate scenario" })).toBeNull();
+    expect(localStorage.getItem(GOAL_SETTINGS_KEY)).toBe(saved);
+  });
+
+  it("shows a retryable context-load error and retries a failed server request", async () => {
+    let contextRequests = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/forecast/context")) {
+        contextRequests += 1;
+        return contextRequests === 1
+          ? jsonResponse({ error: "internal_error" }, 500)
+          : jsonResponse({ status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] });
+      }
+      return jsonResponse({ error: "optional profile unavailable" }, 404);
+    }));
+    const user = userEvent.setup();
+
+    render(<GoalClient />);
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(screen.getByText("Could not load model state. Check your connection and try again.")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByRole("button", { name: "Calculate scenario" })).toBeTruthy();
+    expect(contextRequests).toBe(2);
+  });
+
+  it("hides the previously loaded planner after a later request reports no active episode", async () => {
+    let contextRequests = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/forecast/context")) {
+        contextRequests += 1;
+        return contextRequests === 1
+          ? jsonResponse({ status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] })
+          : jsonResponse({ error: "no_active_episode" }, 404);
+      }
+      return jsonResponse({ error: "optional profile unavailable" }, 404);
+    }));
+    const { rerender } = render(<GoalClient />);
+    expect(await screen.findByRole("button", { name: "Calculate scenario" })).toBeTruthy();
+
+    mockI18n.locale = "uk";
+    rerender(<GoalClient />);
+    expect(await screen.findByText("Активної моделі ще немає")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Calculate scenario" })).toBeNull();
+    expect(contextRequests).toBe(2);
+  });
+
+  it("does not reuse an earlier locale's ready context when switching back during a pending request", async () => {
+    let resolveSecondContext!: (response: Response) => void;
+    let resolveThirdContext!: (response: Response) => void;
+    const secondContext = new Promise<Response>((resolve) => { resolveSecondContext = resolve; });
+    const thirdContext = new Promise<Response>((resolve) => { resolveThirdContext = resolve; });
+    let contextRequests = 0;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      if (String(input).includes("/api/forecast/context")) {
+        contextRequests += 1;
+        if (contextRequests === 1) return Promise.resolve(jsonResponse({ status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] }));
+        return contextRequests === 2 ? secondContext : thirdContext;
+      }
+      return Promise.resolve(jsonResponse({ error: "optional profile unavailable" }, 404));
+    }));
+
+    const view = render(<GoalClient />);
+    expect(await screen.findByRole("button", { name: "Calculate scenario" })).toBeTruthy();
+    mockI18n.locale = "uk";
+    view.rerender(<GoalClient />);
+    await waitFor(() => expect(contextRequests).toBe(2));
+    mockI18n.locale = "en";
+    view.rerender(<GoalClient />);
+    await waitFor(() => expect(contextRequests).toBe(3));
+
+    expect(screen.getByText("Loading current model state")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Calculate scenario" })).toBeNull();
+    await act(async () => {
+      resolveThirdContext(jsonResponse({ status: modelStatus(), latestCompletedLocalDate: "2026-08-24", history: [] }));
+      await thirdContext;
+    });
+    expect(await screen.findByRole("button", { name: "Calculate scenario" })).toBeTruthy();
+    await act(async () => {
+      resolveSecondContext(jsonResponse({ error: "no_active_episode" }, 404));
+      await secondContext;
+    });
+    expect(screen.getByRole("button", { name: "Calculate scenario" })).toBeTruthy();
+  });
+
+  it("ignores a pending context response after unmount", async () => {
+    let resolveContext!: (response: Response) => void;
+    const pendingContext = new Promise<Response>((resolve) => { resolveContext = resolve; });
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => String(input).includes("/api/forecast/context")
+      ? pendingContext
+      : Promise.resolve(jsonResponse({ error: "optional profile unavailable" }, 404))));
+    const { unmount } = render(<GoalClient />);
+    unmount();
+    await act(async () => {
+      resolveContext(jsonResponse({ error: "internal_error" }, 500));
+      await pendingContext;
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("opens the planner for a valid modeled date and renders solver success", async () => {

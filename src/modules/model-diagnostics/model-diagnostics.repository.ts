@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db/prisma";
 import type { ModelDatabaseClient } from "@/modules/model-episodes/model-episode.repository";
 import type { DiagnosticsEvidence } from "./model-diagnostics.types";
 import { buildUnifiedEnergySummaryV1 } from "@/model/unified-experimental-physiology-v1/energy-summary";
+import { addCalendarDays } from "@/modules/model-episodes/model-calendar";
 
 export class ModelDiagnosticsRepository {
   constructor(private readonly client: ModelDatabaseClient = prisma) {}
@@ -16,20 +17,34 @@ export class ModelDiagnosticsRepository {
       this.client.dailyHealthData.count({ where: { date: { gte: from, lte: to }, weightKg: { gt: 0 } } }),
     ]);
     const unified = (this.client as unknown as { unifiedExperimentalPhysiologyState?: { findMany: (args: unknown) => Promise<unknown[]> } }).unifiedExperimentalPhysiologyState;
-    const [energyRows, latestModeledDay, previousCompletedDays] = await Promise.all([
+    const [energyRows, latestModeledDay, previousCalendarRows] = await Promise.all([
       this.client.dailyModelState.findMany({ where: { episodeId, date: { gte: from, lte: to } }, orderBy: { date: "asc" }, select: { date: true, status: true, energyExpenditureKcal: true, dynamicRmrKcalPerDay: true } }),
       latestModeledDate
         ? this.client.dailyModelState.findFirst({ where: { episodeId, date: { equals: latestModeledDate, lte: to } }, select: { date: true, status: true, energyExpenditureKcal: true } })
         : Promise.resolve(null),
       latestModeledDate
         ? this.client.dailyModelState.findMany({
-          where: { episodeId, date: { lt: latestModeledDate, lte: to }, status: "complete" },
-          orderBy: { date: "desc" },
-          take: 7,
-          select: { date: true, energyExpenditureKcal: true },
+          where: { episodeId, date: { gte: addCalendarDays(latestModeledDate, -7), lt: latestModeledDate } },
+          orderBy: { date: "asc" },
+          select: { date: true, status: true, energyExpenditureKcal: true },
         })
         : Promise.resolve([]),
     ]);
+    const previousRowsByDate = new Map(previousCalendarRows.map((row) => [row.date, row]));
+    const previousCompletedDays = latestModeledDate
+      ? Array.from({ length: 7 }, (_, index) => addCalendarDays(latestModeledDate, index - 7))
+        .map((date) => {
+          const row = previousRowsByDate.get(date);
+          return {
+            date,
+            expenditureKcalPerDay: row?.status === "complete"
+              && typeof row.energyExpenditureKcal === "number"
+              && Number.isFinite(row.energyExpenditureKcal)
+              ? row.energyExpenditureKcal
+              : null,
+          };
+        })
+      : [];
     const experimentalEnergySummary = unified ? buildUnifiedEnergySummaryV1({
       days: energyRows.map((row) => ({ date: row.date, productionTdeeKcalPerDay: row.energyExpenditureKcal, dynamicRmrKcalPerDay: row.dynamicRmrKcalPerDay })),
       todayDate: new Date().toISOString().slice(0, 10),
@@ -47,9 +62,7 @@ export class ModelDiagnosticsRepository {
         latestModeledDay: latestModeledDay && (latestModeledDay.status === "complete" || latestModeledDay.status === "incomplete")
           ? { date: latestModeledDay.date, status: latestModeledDay.status, expenditureKcalPerDay: latestModeledDay.energyExpenditureKcal }
           : null,
-        previousCompletedDays: previousCompletedDays
-          .map((day) => ({ date: day.date, expenditureKcalPerDay: day.energyExpenditureKcal }))
-          .reverse(),
+        previousCompletedDays,
       },
     };
   }

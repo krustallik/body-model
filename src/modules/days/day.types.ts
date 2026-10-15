@@ -24,6 +24,9 @@ export type DayWorkoutDto = {
   endAt: string | null;
   durationMinutes: number | null;
   activeEnergyKcal: number | null;
+  /** Health-feed workouts stay visible in History but are not manual editor inputs. */
+  syncProtected?: boolean;
+  manualEditable?: boolean;
   /** Where the active-energy value came from; diary shadow stays separate from device sync. */
   energySource?: import("./training-day-fact").TrainingDayEnergySource;
   /** True for a diary-only event synthesized for History, not a persisted device Workout. */

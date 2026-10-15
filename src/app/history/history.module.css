@@ -556,6 +556,8 @@
 .workForm { margin-top: 1rem; padding: 1rem; background: var(--soft); border: 1px solid var(--line); border-radius: 0.85rem; }
 .workForm .formGrid { margin-top: 0; }
 .categoryField { grid-column: 1 / -1; }
+.categoryGuidance { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; margin-top: .55rem; }
+.categoryGuidance > button { min-height: 2.75rem; }
 .workCards { display: grid; gap: 0.85rem; margin-top: 1rem; }
 .workCard { padding: 1rem; border: 1px solid var(--line); border-radius: 0.9rem; }
 .workCardHeading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }

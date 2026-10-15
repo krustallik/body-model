@@ -870,12 +870,22 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
           ? { date: latestModeledDay.date, status: latestModeledDay.status, expenditureKcalPerDay: latestModeledDay.energyExpenditureKcal }
           : null,
       );
-      const expectedPreviousCompletedDays = (await prisma.dailyModelState.findMany({
-        where: { episodeId, date: { lt: diagnostics.episode.latestModeledDate }, status: "complete" },
-        orderBy: { date: "desc" },
-        take: 7,
-        select: { date: true, energyExpenditureKcal: true },
-      })).map(({ date, energyExpenditureKcal }) => ({ date, expenditureKcalPerDay: energyExpenditureKcal })).reverse();
+      const previousDates = Array.from({ length: 7 }, (_, index) => addCalendarDays(diagnostics.episode.latestModeledDate!, index - 7));
+      const previousRows = await prisma.dailyModelState.findMany({
+        where: { episodeId, date: { gte: previousDates[0], lt: diagnostics.episode.latestModeledDate } },
+        orderBy: { date: "asc" },
+        select: { date: true, status: true, energyExpenditureKcal: true },
+      });
+      const previousByDate = new Map(previousRows.map((row) => [row.date, row]));
+      const expectedPreviousCompletedDays = previousDates.map((date) => {
+        const row = previousByDate.get(date);
+        return {
+          date,
+          expenditureKcalPerDay: row?.status === "complete" && row.energyExpenditureKcal !== null
+            ? row.energyExpenditureKcal
+            : null,
+        };
+      });
       expect(diagnostics.energyHistory.previousCompletedDays).toEqual(expectedPreviousCompletedDays);
     }
     expect(after).toEqual(before);

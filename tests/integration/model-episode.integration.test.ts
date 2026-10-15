@@ -600,7 +600,7 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     expect(await experimentalForecastModelEpisode(restartedRequest, prisma)).not.toBeNull();
   }, 60_000);
 
-  it("rejects a 4-day restart candidate, preserves stored rows, and fails closed while production is stale", async () => {
+  it("fails closed when Diagnostics has no current incumbent baseline for a 4-day candidate", async () => {
     const baselineNow = new Date("2041-03-30T10:00:00.000Z");
     const candidateNow = new Date("2041-03-31T10:00:00.000Z");
     await prisma.modelEpisode.update({ where: { id: episodeId }, data: { startDate: "2041-03-02" } });
@@ -620,6 +620,14 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     await prisma.dailyHealthData.update({
       where: { date: "2041-03-30" }, data: { steps: null, walkingDistanceKm: null },
     });
+    await prisma.physiologyV7Lifecycle.update({
+      where: { profileId: 1 },
+      data: { invalidationGeneration: { increment: 1 }, productionStaleFromDate: null },
+    });
+    const staleDiagnostics = await getModelDiagnostics(prisma);
+    expect(staleDiagnostics.currentState.status).toBe("unavailable");
+    expect(staleDiagnostics.dataContinuity.completeDayCount).toBe(0);
+    expect(staleDiagnostics.episode.latestModeledDate).toBeNull();
 
     const before = {
       episode: await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } }),
@@ -630,6 +638,8 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
 
     const first = await recalculateModelEpisode({ now: candidateNow }, prisma);
     expect(first.episodeId).toBe(episodeId);
+    if (first.current === null) throw new Error("Expected current status for stale incumbent result");
+    expect(first.current.productionCurrent).toBe(false);
     expect(first.current).toMatchObject({ latestModeledDate: null, daysModeled: 0 });
     const afterFirst = {
       episode: await prisma.modelEpisode.findUniqueOrThrow({ where: { id: episodeId } }),
@@ -639,16 +649,60 @@ describe.sequential("model episode lifecycle with PostgreSQL", () => {
     };
     expect(afterFirst).toEqual(before);
     const afterDiagnostics = await getModelDiagnostics(prisma);
-    expect(afterDiagnostics.currentState.status).toBe("unavailable");
-    expect(afterDiagnostics.dataContinuity.completeDayCount).toBe(28);
+    expect(afterDiagnostics.episode.latestModeledDate).toBeNull();
+    expect(afterDiagnostics.dataContinuity.completeDayCount).toBe(0);
 
     const repeated = await recalculateModelEpisode({ now: candidateNow }, prisma);
     expect(repeated.episodeId).toBe(episodeId);
-    expect(repeated.current).toMatchObject({ latestModeledDate: null, daysModeled: 0 });
+    expect(repeated.current).toMatchObject({ productionCurrent: false, latestModeledDate: null, daysModeled: 0 });
     expect(await prisma.modelEpisode.count({ where: { startDate: { gte: testRangeStart, lte: finalDate } } }))
       .toBe(before.episodes);
     expect(await prisma.dailyModelState.findMany({ where: { episodeId }, orderBy: { date: "asc" } }))
       .toEqual(before.states);
+  });
+
+  it("publishes a non-empty incumbent replay before reconsidering a candidate", async () => {
+    const baselineNow = new Date("2041-03-30T10:00:00.000Z");
+    const candidateNow = new Date("2041-03-31T10:00:00.000Z");
+    await prisma.modelEpisode.update({ where: { id: episodeId }, data: { startDate: "2041-03-02" } });
+    await recalculateModelEpisode({ episodeId, now: baselineNow }, prisma);
+
+    await prisma.dailyHealthData.updateMany({
+      where: { date: { gte: "2041-03-22", lte: "2041-03-25" } },
+      data: { steps: null, walkingDistanceKm: null },
+    });
+    await prisma.dailyHealthData.update({
+      where: { date: "2041-03-26" }, data: { bodyFatPercent: 20 },
+    });
+    await prisma.dailyHealthData.update({
+      where: { date: "2041-03-30" }, data: { steps: null, walkingDistanceKm: null },
+    });
+    await prisma.physiologyV7Lifecycle.update({
+      where: { profileId: 1 },
+      data: { invalidationGeneration: { increment: 1 }, productionStaleFromDate: null },
+    });
+
+    const staleDiagnostics = await getModelDiagnostics(prisma);
+    expect(staleDiagnostics.episode.latestModeledDate).toBeNull();
+    expect(staleDiagnostics.dataContinuity.completeDayCount).toBe(0);
+
+    const episodeCount = await prisma.modelEpisode.count({
+      where: { startDate: { gte: testRangeStart, lte: finalDate } },
+    });
+    const rebuilt = await recalculateModelEpisode({ now: candidateNow }, prisma);
+    expect(rebuilt.episodeId).toBe(episodeId);
+    if (rebuilt.current === null) throw new Error("Expected current status after incumbent replay");
+    expect(rebuilt.current.productionCurrent).toBe(true);
+    expect(rebuilt.current.latestModeledDate).not.toBeNull();
+    const currentDiagnostics = await getModelDiagnostics(prisma);
+    expect(currentDiagnostics.episode.latestModeledDate).toBe(rebuilt.current.latestModeledDate);
+    expect(currentDiagnostics.dataContinuity.completeDayCount).toBeGreaterThan(0);
+    expect(await prisma.modelEpisode.count({
+      where: { startDate: { gte: testRangeStart, lte: finalDate } },
+    })).toBe(episodeCount);
+
+    const repeated = await recalculateModelEpisode({ now: candidateNow }, prisma);
+    expect(repeated.episodeId).toBe(episodeId);
   });
 
   it("continues route recovery on the existing active episode after rejecting a replacement", async () => {

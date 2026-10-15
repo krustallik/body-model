@@ -330,6 +330,7 @@ async function recalculateModelEpisodeProduction(
       : { days: [], snapshots: [], workIntervals: [], workouts: [] };
 
     let candidateCalculation: EpisodeCalculation | null = null;
+    let deferCandidateSwitchForNonCurrentIncumbent = false;
     if (input.episodeId === undefined && sourceStart <= latestCompletedDate) {
       // Restart eligibility must use current semantics. Otherwise a legacy
       // episode can never see a modern rest day (observed workout feed + no
@@ -395,23 +396,38 @@ async function recalculateModelEpisodeProduction(
         ]);
         if (!currentStatus) throw new NoActiveModelEpisodeError();
 
-        const currentReadiness = episodeReadinessFromDiagnostics(currentDiagnostics);
-        const candidateReadiness = episodeReadinessFromCalculation({
-          calculation: candidateCalculation,
-          startDate: prepared.startDate,
-        });
-        if (!shouldSwitchModelEpisode(currentReadiness, candidateReadiness)) {
-          // Rejection is read-only: do not stale recoveries, persist states,
-          // rewrite the active episode, or consume an episode ID.
-          return unchangedActiveEpisodeResult(episode, currentStatus);
-        }
+        // A non-current incumbent has no trustworthy comparison baseline.
+        // The only exception is first publication with no persisted model
+        // rows, where the candidate is the initial build rather than a
+        // replacement of historical output.
+        const canBootstrapUnpublishedEpisode = !currentStatus.productionCurrent
+          && currentStatus.productionDirtyFromDate === null
+          && await transaction.dailyModelState.count({ where: { episodeId: episode.id } }) === 0;
+        if (!currentStatus.productionCurrent && !canBootstrapUnpublishedEpisode) {
+          // The persisted incumbent cannot be compared or replaced from
+          // current evidence. Rebuild it first, then reconsider a candidate
+          // against a current baseline on the next request.
+          candidateCalculation = null;
+          deferCandidateSwitchForNonCurrentIncumbent = true;
+        } else {
+          const currentReadiness = episodeReadinessFromDiagnostics(currentDiagnostics);
+          const candidateReadiness = episodeReadinessFromCalculation({
+            calculation: candidateCalculation,
+            startDate: prepared.startDate,
+          });
+          if (!shouldSwitchModelEpisode(currentReadiness, candidateReadiness)) {
+            // Rejection is read-only: do not stale recoveries, persist states,
+            // rewrite the active episode, or consume an episode ID.
+            return unchangedActiveEpisodeResult(episode, currentStatus);
+          }
 
-        // Both changes and the candidate calculation are committed atomically.
-        // PostgreSQL SERIALIZABLE plus the one-active partial unique index make
-        // concurrent switches fail closed rather than publish two active rows.
-        await lifecycle.invalidateUnifiedPublication(episode.profileId);
-        await repository.deactivateActive(input.now ?? new Date());
-        episode = await repository.createPrepared(prepared);
+          // Both changes and the candidate calculation are committed atomically.
+          // PostgreSQL SERIALIZABLE plus the one-active partial unique index make
+          // concurrent switches fail closed rather than publish two active rows.
+          await lifecycle.invalidateUnifiedPublication(episode.profileId);
+          await repository.deactivateActive(input.now ?? new Date());
+          episode = await repository.createPrepared(prepared);
+        }
       }
     }
 
@@ -478,6 +494,14 @@ async function recalculateModelEpisodeProduction(
     // Scientific initialization semantics are frozen per episode. Legacy v4
     // episodes must be explicitly reinitialized rather than silently relabeled v5.
     const calculation = candidateCalculation ?? calculateEpisodeHistory({ episode, days: builtDays, resume });
+    if (deferCandidateSwitchForNonCurrentIncumbent && calculation.dailyStates.length === 0) {
+      // A zero-row replay cannot make persisted stale rows current. Preserve
+      // them and keep publication non-current rather than deleting the rows
+      // or publishing an empty replacement as successful current evidence.
+      const currentStatus = await repository.status(episode.id);
+      if (!currentStatus) throw new NoActiveModelEpisodeError();
+      return unchangedActiveEpisodeResult(episode, currentStatus);
+    }
     await repository.persistCalculation(
       episode.id,
       calculation,

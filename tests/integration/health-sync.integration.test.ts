@@ -4,7 +4,10 @@ import type { HealthDayInput } from "@/modules/health/health.types";
 import { requireLoopbackTestDatabaseUrl } from "../helpers/require-loopback-test-database";
 
 const databaseUrl = requireLoopbackTestDatabaseUrl(process.env.DATABASE_URL);
+// Application modules create the shared Prisma client from DATABASE_URL.
+process.env.DATABASE_URL = databaseUrl;
 const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
+const { prisma: applicationPrisma } = await import("@/lib/db/prisma");
 const { POST } = await import("@/app/api/v1/health/sync/route");
 const { PrismaHealthSyncRepository } = await import("@/modules/health/health.repository");
 const { claimNextHealthSyncRefreshJob, processNextHealthSyncRefreshJob } = await import("@/modules/health/health-sync-refresh-worker");
@@ -96,6 +99,29 @@ async function releaseHealthState(state: Awaited<ReturnType<typeof saveHealthSta
   await prisma.healthActivityInterval.deleteMany({ where: { date } });
   await deleteDailyHealthRows(prisma, date);
   await restoreHealthState(state);
+}
+
+async function assertTestDatabaseIdentity(): Promise<void> {
+  type DatabaseIdentity = {
+    databaseName: string;
+    serverAddress: string | null;
+    serverPort: number;
+    userName: string;
+  };
+  const readIdentity = (client: PrismaClient) => client.$queryRaw<DatabaseIdentity[]>`
+    SELECT current_database() AS "databaseName",
+      inet_server_addr()::text AS "serverAddress",
+      inet_server_port() AS "serverPort",
+      current_user AS "userName"
+  `;
+  const [suiteIdentity, applicationIdentity] = await Promise.all([
+    readIdentity(prisma),
+    readIdentity(applicationPrisma),
+  ]);
+  const expectedDatabaseName = decodeURIComponent(new URL(databaseUrl).pathname.slice(1));
+  expect(suiteIdentity[0]).toBeDefined();
+  expect(suiteIdentity[0]?.databaseName).toBe(expectedDatabaseName);
+  expect(applicationIdentity[0]).toEqual(suiteIdentity[0]);
 }
 
 async function markUnifiedV4Current(): Promise<void> {
@@ -245,6 +271,7 @@ async function cleanTestRows(): Promise<void> {
 
 describe("Apple Health sync with PostgreSQL", () => {
   beforeAll(async () => {
+    await assertTestDatabaseIdentity();
     await prisma.profile.upsert({
       where: { id: 1 },
       create: { id: 1, sex: "male", dateOfBirth: new Date("1990-01-01T00:00:00.000Z"), heightCm: 180 },

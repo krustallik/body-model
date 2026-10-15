@@ -1,13 +1,17 @@
-import { PrismaClient, type Prisma } from "@prisma/client";
+import type { Prisma } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { canonicalDigest } from "../../scripts/production-recovery/canonical.mjs";
 import { currentness, makeRecoveryCase, SOURCE_DIGEST } from "../helpers/recovery-health-currentness-fixture.mjs";
 import { requireLoopbackTestDatabaseUrl } from "../helpers/require-loopback-test-database";
 import { UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION } from "@/model/unified-experimental-physiology-v1/contracts";
-import { currentPhysiologyV7Versions } from "@/modules/model-episodes/physiology-v7-persistence";
-import { PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 
 const databaseUrl = requireLoopbackTestDatabaseUrl(process.env.BODYCAST_RECOVERY_TEST_DATABASE_URL ?? process.env.DATABASE_URL);
+// Persistence modules transitively initialize the application Prisma singleton.
+// Pin its datasource only after the loopback *_test URL has been validated.
+process.env.DATABASE_URL = databaseUrl;
+const { PrismaClient } = await import("@prisma/client");
+const { currentPhysiologyV7Versions } = await import("@/modules/model-episodes/physiology-v7-persistence");
+const { PHYSIOLOGY_V7_PROFILE_LOCK_NAMESPACE } = await import("@/modules/model-episodes/physiology-v7-persistence.repository");
 const prisma = new PrismaClient({ datasourceUrl: databaseUrl });
 const profileId = 1;
 type RecoveryFenceRequest = {

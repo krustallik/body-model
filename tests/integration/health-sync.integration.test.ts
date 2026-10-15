@@ -1,7 +1,9 @@
 import { PrismaClient } from "@prisma/client";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { POST } from "@/app/api/v1/health/sync/route";
+import { prisma as appPrisma } from "@/lib/db/prisma";
 import { PrismaHealthSyncRepository } from "@/modules/health/health.repository";
+import { processNextHealthSyncRefreshJob } from "@/modules/health/health-sync-refresh-worker";
 import type { HealthDayInput } from "@/modules/health/health.types";
 
 const prisma = new PrismaClient();
@@ -381,5 +383,154 @@ describe("Apple Health sync with PostgreSQL", () => {
     await expect(repository.syncDay(invalidDay)).rejects.toThrow();
     expect(await prisma.dailyHealthData.findUnique({ where: { date: "not-a-date" } })).toBeNull();
     expect(await prisma.healthSyncSnapshot.count({ where: { date: "not-a-date" } })).toBe(0);
+  });
+
+  it("recovers an expired durable lease with one PostgreSQL worker after HTTP 200 without replaying raw input", async () => {
+    const date = testDates[8]!;
+    await prisma.healthSyncSnapshot.deleteMany({ where: { date } });
+    await prisma.healthActivityInterval.deleteMany({ where: { date } });
+    await deleteDailyHealthRows(prisma, date);
+
+    const priorQueue = await prisma.healthSyncRefreshJob.findUnique({ where: { profileId: 1 } });
+    const priorLifecycle = await prisma.physiologyV7Lifecycle.findUnique({ where: { profileId: 1 } });
+    const priorBlocks = await prisma.unifiedPublicationBlock.findMany({ where: { profileId: 1 } });
+    const syntheticDay = { date, steps: 777 };
+    const auditStartedAt = new Date();
+    try {
+      const response = await POST(syncRequest([syntheticDay]));
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        status: "ok", modelPublicationStatus: "stale", received: 1,
+      });
+
+      const rawSnapshotCount = await prisma.healthSyncSnapshot.count({ where: { date } });
+      const rawPayload = (await prisma.healthSyncSnapshot.findFirstOrThrow({
+        where: { date }, orderBy: { id: "desc" }, select: { rawPayload: true },
+      })).rawPayload;
+      const queued = await prisma.healthSyncRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } });
+      const queuedLifecycle = await prisma.physiologyV7Lifecycle.findUniqueOrThrow({ where: { profileId: 1 } });
+
+      await prisma.healthSyncRefreshJob.update({
+        where: { profileId: 1 },
+        data: {
+          completedGeneration: queued.requestedGeneration - 1,
+          fromDate: date,
+          toDate: date,
+          sourceDates: [date],
+          weightSourceChangedDates: [],
+          leaseToken: "00000000-0000-4000-8000-000000000000",
+          leaseUntil: new Date(Date.now() - 1_000),
+          nextAttemptAt: new Date(Date.now() - 1_000),
+          attemptCount: 4,
+        },
+      });
+
+      // The isolated database has no published V7 generation, so recovery
+      // must retain the durable job and Health fence for a later retry.
+      const snapshotRead = vi.spyOn(appPrisma.healthSyncSnapshot, "findMany")
+        .mockRejectedValueOnce(new Error("synthetic persisted-snapshot read failure"));
+      try {
+        await expect(processNextHealthSyncRefreshJob()).resolves.toBe(true);
+      } finally {
+        snapshotRead.mockRestore();
+      }
+      const retryable = await prisma.healthSyncRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } });
+      expect(retryable.completedGeneration).toBeLessThan(retryable.requestedGeneration);
+      expect(retryable.attemptCount).toBe(5);
+      expect(retryable.leaseToken).toBeNull();
+      expect(retryable.leaseUntil).toBeNull();
+      expect(retryable.nextAttemptAt.getTime()).toBeGreaterThanOrEqual(Date.now() + 15_000);
+      expect(retryable.lastErrorType).not.toBeNull();
+      await expect(prisma.unifiedPublicationBlock.findFirst({
+        where: { profileId: 1, source: "health", sourceKey: date },
+        select: { fromDate: true },
+      })).resolves.toMatchObject({ fromDate: date });
+      expect(await prisma.healthSyncSnapshot.count({ where: { date } })).toBe(rawSnapshotCount);
+      await expect(prisma.healthSyncSnapshot.findFirstOrThrow({
+        where: { date }, orderBy: { id: "desc" }, select: { rawPayload: true },
+      })).resolves.toMatchObject({ rawPayload });
+
+      // Model a prior worker that completed publication and crashed before
+      // acknowledging the durable queue row. Its lease is now reclaimable.
+      await prisma.unifiedPublicationBlock.deleteMany({ where: { profileId: 1 } });
+      await prisma.physiologyV7Lifecycle.update({
+        where: { profileId: 1 },
+        data: {
+          productionStaleFromDate: null,
+          productionPublishedGeneration: queuedLifecycle.invalidationGeneration,
+          unifiedPublishedGeneration: queuedLifecycle.invalidationGeneration,
+          unifiedPublishedRolloutEpoch: queuedLifecycle.unifiedRolloutEpoch,
+          unifiedPublicationBlockedFromDate: null,
+        },
+      });
+      await prisma.healthSyncRefreshJob.update({
+        where: { profileId: 1 },
+        data: {
+          leaseToken: "00000000-0000-4000-8000-000000000000",
+          leaseUntil: new Date(Date.now() - 1_000),
+          nextAttemptAt: new Date(Date.now() - 1_000),
+        },
+      });
+
+      const claims = await Promise.all([
+        processNextHealthSyncRefreshJob(),
+        processNextHealthSyncRefreshJob(),
+      ]);
+      expect(claims.sort()).toEqual([false, true]);
+
+      const recovered = await prisma.healthSyncRefreshJob.findUniqueOrThrow({ where: { profileId: 1 } });
+      expect(recovered.completedGeneration).toBe(recovered.requestedGeneration);
+      expect(recovered.leaseToken).toBeNull();
+      expect(recovered.leaseUntil).toBeNull();
+      expect(recovered.sourceDates).toEqual([]);
+      expect(recovered.attemptCount).toBe(6);
+      expect(await prisma.healthSyncSnapshot.count({ where: { date } })).toBe(rawSnapshotCount);
+      await expect(prisma.healthSyncSnapshot.findFirstOrThrow({
+        where: { date }, orderBy: { id: "desc" }, select: { rawPayload: true },
+      })).resolves.toMatchObject({ rawPayload });
+    } finally {
+      const testAudit = await prisma.healthSyncAudit.findFirst({
+        where: { rawBody: JSON.stringify({ days: [syntheticDay] }), receivedAt: { gte: auditStartedAt } },
+        orderBy: { id: "desc" },
+        select: { id: true },
+      });
+      if (testAudit) await prisma.healthSyncAudit.deleteMany({ where: { id: testAudit.id } });
+      await prisma.healthSyncSnapshot.deleteMany({ where: { date } });
+      await prisma.healthActivityInterval.deleteMany({ where: { date } });
+      await deleteDailyHealthRows(prisma, date);
+      await prisma.healthSyncRefreshJob.deleteMany({ where: { profileId: 1 } });
+      if (priorQueue) await prisma.healthSyncRefreshJob.create({ data: priorQueue });
+      await prisma.unifiedPublicationBlock.deleteMany({ where: { profileId: 1 } });
+      if (priorBlocks.length > 0) {
+        await prisma.unifiedPublicationBlock.createMany({ data: priorBlocks, skipDuplicates: true });
+      }
+      if (priorLifecycle) {
+        await prisma.physiologyV7Lifecycle.update({
+          where: { profileId: 1 },
+          data: {
+            staleFromDate: priorLifecycle.staleFromDate,
+            invalidationGeneration: priorLifecycle.invalidationGeneration,
+            currentThroughDate: priorLifecycle.currentThroughDate,
+            productionStaleFromDate: priorLifecycle.productionStaleFromDate,
+            productionPublishedGeneration: priorLifecycle.productionPublishedGeneration,
+            unifiedPublishedGeneration: priorLifecycle.unifiedPublishedGeneration,
+            unifiedTargetRevision: priorLifecycle.unifiedTargetRevision,
+            unifiedRolloutEpoch: priorLifecycle.unifiedRolloutEpoch,
+            unifiedPublishedRolloutEpoch: priorLifecycle.unifiedPublishedRolloutEpoch,
+            unifiedPublicationBlockedFromDate: priorLifecycle.unifiedPublicationBlockedFromDate,
+            unifiedPublicationBlockedSource: priorLifecycle.unifiedPublicationBlockedSource,
+            stateVersion: priorLifecycle.stateVersion,
+            sourceNormalizationVersion: priorLifecycle.sourceNormalizationVersion,
+            dailyRuntimeVersion: priorLifecycle.dailyRuntimeVersion,
+            rangeRebuildVersion: priorLifecycle.rangeRebuildVersion,
+            rebuildServiceVersion: priorLifecycle.rebuildServiceVersion,
+            createdAt: priorLifecycle.createdAt,
+            updatedAt: priorLifecycle.updatedAt,
+          },
+        });
+      } else {
+        await prisma.physiologyV7Lifecycle.deleteMany({ where: { profileId: 1 } });
+      }
+    }
   });
 });

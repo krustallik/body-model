@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/db/prisma";
 import { errorDiagnosticFields, logEvent } from "@/lib/logger";
+import {
+  UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
+  UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
+} from "@/model/unified-experimental-physiology-v1/contracts";
 import { DEFAULT_TIME_ZONE } from "@/model/time-zone";
 import { PhysiologyV7PersistenceRepository } from "@/modules/model-episodes/physiology-v7-persistence.repository";
 import { pruneExpiredHealthSyncAudits } from "./health-sync-audit";
@@ -157,6 +161,7 @@ async function isUnifiedPublicationCurrentForHealthJob(job: ClaimedHealthSyncRef
       productionStaleFromDate: true,
       productionPublishedGeneration: true,
       unifiedPublishedGeneration: true,
+      unifiedTargetRevision: true,
       unifiedRolloutEpoch: true,
       unifiedPublishedRolloutEpoch: true,
       unifiedPublicationBlockedFromDate: true,
@@ -168,6 +173,11 @@ async function isUnifiedPublicationCurrentForHealthJob(job: ClaimedHealthSyncRef
       || lifecycle.unifiedPublishedGeneration !== lifecycle.invalidationGeneration
       || lifecycle.unifiedPublishedRolloutEpoch !== lifecycle.unifiedRolloutEpoch
       || lifecycle.unifiedPublicationBlockedFromDate !== null) return false;
+  const supportedTargetEpoch = (lifecycle.unifiedTargetRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION
+      && lifecycle.unifiedRolloutEpoch === 0)
+    || (lifecycle.unifiedTargetRevision === UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION
+      && lifecycle.unifiedRolloutEpoch >= 1);
+  if (!supportedTargetEpoch) return false;
   return (await prisma.unifiedPublicationBlock.count({
     where: { profileId: job.profileId, source: "health" },
   })) === 0;

@@ -27,6 +27,10 @@ vi.mock("@/modules/model-episodes/physiology-v7-persistence.repository", () => (
 }));
 
 import { processNextHealthSyncRefreshJob } from "@/modules/health/health-sync-refresh-worker";
+import {
+  UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
+  UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
+} from "@/model/unified-experimental-physiology-v1/contracts";
 
 const job = {
   profileId: 1,
@@ -44,6 +48,7 @@ const staleLifecycle = {
   productionStaleFromDate: "2040-01-01",
   productionPublishedGeneration: 2,
   unifiedPublishedGeneration: 2,
+  unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
   unifiedRolloutEpoch: 1,
   unifiedPublishedRolloutEpoch: 1,
   unifiedPublicationBlockedFromDate: null,
@@ -54,6 +59,7 @@ const currentLifecycle = {
   productionStaleFromDate: null,
   productionPublishedGeneration: 3,
   unifiedPublishedGeneration: 3,
+  unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
   unifiedRolloutEpoch: 1,
   unifiedPublishedRolloutEpoch: 1,
   unifiedPublicationBlockedFromDate: null,
@@ -208,6 +214,7 @@ describe("durable Health sync refresh worker", () => {
       productionStaleFromDate: null,
       productionPublishedGeneration: 7,
       unifiedPublishedGeneration: 7,
+      unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION,
       unifiedRolloutEpoch: 2,
       unifiedPublishedRolloutEpoch: 2,
       unifiedPublicationBlockedFromDate: null,
@@ -216,6 +223,44 @@ describe("durable Health sync refresh worker", () => {
     await expect(processNextHealthSyncRefreshJob()).resolves.toBe(true);
 
     expect(blockUnifiedPublication).not.toHaveBeenCalled();
+    expect(syncHealthData).not.toHaveBeenCalled();
+    expect(prisma.healthSyncRefreshJob.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ completedGeneration: 3 }),
+    }));
+  });
+
+  it.each([
+    ["V4 target at epoch zero", UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V4_REVISION, 0],
+    ["V3 target at a V4 epoch", UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION, 1],
+  ] as const)("does not acknowledge a generation with an invalid %s pair", async (_label, revision, epoch) => {
+    prisma.physiologyV7Lifecycle.findUnique.mockResolvedValueOnce({
+      ...currentLifecycle,
+      unifiedTargetRevision: revision,
+      unifiedRolloutEpoch: epoch,
+    });
+    syncHealthData.mockRejectedValueOnce(new Error("dependent refresh failed"));
+
+    await expect(processNextHealthSyncRefreshJob()).resolves.toBe(true);
+
+    expect(syncHealthData).toHaveBeenCalledTimes(1);
+    expect(prisma.healthSyncRefreshJob.updateMany).not.toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ completedGeneration: 3 }),
+    }));
+    expect(prisma.healthSyncRefreshJob.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ leaseToken: null, lastErrorAt: expect.any(Date) }),
+    }));
+  });
+
+  it("acknowledges a current V3 generation only at rollout epoch zero", async () => {
+    prisma.physiologyV7Lifecycle.findUnique.mockResolvedValueOnce({
+      ...currentLifecycle,
+      unifiedTargetRevision: UNIFIED_EXPERIMENTAL_PHYSIOLOGY_V3_REVISION,
+      unifiedRolloutEpoch: 0,
+      unifiedPublishedRolloutEpoch: 0,
+    });
+
+    await expect(processNextHealthSyncRefreshJob()).resolves.toBe(true);
+
     expect(syncHealthData).not.toHaveBeenCalled();
     expect(prisma.healthSyncRefreshJob.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ completedGeneration: 3 }),

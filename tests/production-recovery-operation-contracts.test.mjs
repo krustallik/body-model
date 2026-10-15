@@ -52,9 +52,12 @@ function callOperation({ inspect, execute, beforeEffect = async () => {} } = {})
 }
 
 describe("fixed host operation replay and success contract", () => {
-  it("binds every Health-currentness guarded operation to the profile fence in its operation contract", () => {
+  it("requires contract v9 and a post-lock READ COMMITTED snapshot for every Health-currentness guarded operation", () => {
+    expect(OPERATION_CONTRACT_VERSION).toBe(9);
     for (const operationType of ["recovery-start-readonly-app", "recovery-verify-completion-gates", "recovery-open-traffic"]) {
-      expect(OPERATION_CONTRACTS[operationType].boundary).toMatch(/profile-exclusive-fence-through-health-queue-and-currentness-check/);
+      expect(OPERATION_CONTRACTS[operationType].boundary).toMatch(/begin-read-committed-before-first-read/);
+      expect(OPERATION_CONTRACTS[operationType].boundary).toMatch(/acquire-unified-profile-exclusive-fence-before-database-identity-health-queue-and-v4-reads/);
+      expect(OPERATION_CONTRACTS[operationType].boundary).toMatch(/hold-fence-through-currentness-check/);
       expect(OPERATION_CONTRACTS[operationType].replayPolicy).toMatch(/health-queue-and-unified-v4-under-profile-fence/);
     }
   });

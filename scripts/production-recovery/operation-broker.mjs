@@ -19,8 +19,9 @@ const HEALTH_SYNC_GUARDED_OPERATIONS = new Set([
   "recovery-verify-completion-gates",
   "recovery-open-traffic",
 ]);
+const RECOVERY_HEALTH_FENCE_SNAPSHOT_PROTOCOL = "read-committed-post-lock-v1";
 const HEALTH_SYNC_RECOVERY_EVIDENCE_KEYS = Object.freeze([
-  "schemaVersion", "purpose", "profileId", "operationType", "operationId", "recoveryCaseId",
+  "schemaVersion", "purpose", "fenceSnapshotProtocol", "profileId", "operationType", "operationId", "recoveryCaseId",
   "journalGeneration", "journalRecordDigest", "logicalProductionDbIdentityDigest", "releaseSha", "imageDigest",
   "healthRequestedGeneration", "healthCompletedGeneration", "healthLeasePresent", "healthLastErrorType", "healthLastErrorAt",
   "unifiedTargetRevision", "unifiedInvalidationGeneration", "unifiedProductionStaleFromDate", "unifiedProductionPublishedGeneration",
@@ -129,7 +130,8 @@ function validateRollbackCompatibilityGuard(raw, { operationType, record, now })
 
 function validateRecoveryHealthSyncCurrentness(raw, { record, intent, now }) {
   assertExactKeys(raw, HEALTH_SYNC_RECOVERY_EVIDENCE_KEYS, "Recovery Health queue and Unified V4 currentness evidence");
-  if (raw.schemaVersion !== 1 || raw.purpose !== "bodycast-recovery-health-sync-currentness"
+  if (raw.schemaVersion !== 2 || raw.purpose !== "bodycast-recovery-health-sync-currentness"
+    || raw.fenceSnapshotProtocol !== RECOVERY_HEALTH_FENCE_SNAPSHOT_PROTOCOL
     || raw.profileId !== 1 || raw.operationType !== intent.operationType || raw.operationId !== intent.operationId
     || raw.recoveryCaseId !== record.recoveryCaseId || raw.journalGeneration !== record.generation
     || raw.journalRecordDigest !== record.recordDigest
@@ -288,6 +290,7 @@ export function createProductionOperationBroker({
     await withRecoveryCurrentnessFence({
       ...expected,
       unifiedLifecycleFenceNamespace: 927001,
+      fenceSnapshotProtocol: RECOVERY_HEALTH_FENCE_SNAPSHOT_PROTOCOL,
       execute: async (rawEvidence) => {
         calls += 1;
         if (calls !== 1) throw new Error("Recovery Health currentness fence must invoke its guarded operation exactly once.");

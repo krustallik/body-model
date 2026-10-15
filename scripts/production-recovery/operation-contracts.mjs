@@ -29,7 +29,7 @@ const OPERATION_DEFINITIONS = Object.freeze({
     preState: "captured-app-stopped",
     postState: "captured-app-healthy-readonly",
     replayPolicy: "inspect-health-queue-and-unified-v4-under-profile-fence-before-ensuring-readonly-app-start",
-    boundary: "hold-unified-profile-exclusive-fence-through-health-queue-and-currentness-check-and-readonly-app-start-effect",
+    boundary: "begin-read-committed-before-first-read; acquire-unified-profile-exclusive-fence-before-database-identity-health-queue-and-v4-reads; hold-fence-through-currentness-check-readonly-app-start-effect-and-postcondition-reconciliation",
     preconditionKeys: ["releaseSha", "imageDigest", "containerState", "databaseRoleMode", "logicalProductionDbIdentityDigest",
       "programlessSessionCount", "rollbackAppSupportsProgramlessSessions", "programlessSessionCompatible", "rollbackAppCapabilityDigest",
       "healthSyncRefreshQueueDigest", "unifiedV4CurrentnessDigest"],
@@ -52,7 +52,7 @@ const OPERATION_DEFINITIONS = Object.freeze({
     preState: "writers-enabled",
     postState: "completion-gates-current",
     replayPolicy: "recompute-completion-from-health-queue-and-unified-v4-under-profile-fence",
-    boundary: "hold-unified-profile-exclusive-fence-through-health-queue-and-currentness-check-and-completion-effect",
+    boundary: "begin-read-committed-before-first-read; acquire-unified-profile-exclusive-fence-before-database-identity-health-queue-and-v4-reads; hold-fence-through-currentness-check-completion-effect-and-postcondition-reconciliation",
     preconditionKeys: ["releaseSha", "imageDigest", "recoveryCaseId", "journalGeneration", "journalRecordDigest",
       "logicalProductionDbIdentityDigest", "healthSyncRefreshQueueDigest", "unifiedV4CurrentnessDigest", "writerMode"],
     postconditionKeys: ["releaseSha", "imageDigest", "recoveryCaseId", "journalGeneration", "journalRecordDigest",
@@ -62,7 +62,7 @@ const OPERATION_DEFINITIONS = Object.freeze({
     preState: "maintenance-route-on-bound-host",
     postState: "bound-rollback-image-serving",
     replayPolicy: "inspect-current-health-queue-and-unified-v4-under-profile-fence-before-ensuring-bound-rollback-target-traffic",
-    boundary: "hold-unified-profile-exclusive-fence-through-health-queue-and-currentness-check-and-authoritative-route-mutation",
+    boundary: "begin-read-committed-before-first-read; acquire-unified-profile-exclusive-fence-before-database-identity-health-queue-and-v4-reads; hold-fence-through-currentness-check-authoritative-route-mutation-and-postcondition-reconciliation",
     preconditionKeys: ["releaseSha", "imageDigest", "recoveryCaseId", "journalGeneration", "journalRecordDigest",
       "logicalProductionDbIdentityDigest", "healthSyncRefreshQueueDigest", "unifiedV4CurrentnessDigest", "routeDigest", "markerState"],
     postconditionKeys: ["releaseSha", "imageDigest", "recoveryCaseId", "journalGeneration", "journalRecordDigest",
@@ -99,7 +99,7 @@ const CONFORMANCE_KEYS = Object.freeze([
   "testRunId", "testedOperationTypes", "result", "issuedAt", "expiresAt", "signerKeyId", "signature",
 ]);
 
-export const OPERATION_CONTRACT_VERSION = 8;
+export const OPERATION_CONTRACT_VERSION = 9;
 const OPERATION_EVIDENCE_SCHEMA_VERSION = 1;
 export const OPERATION_CONTRACTS = OPERATION_DEFINITIONS;
 export const OPERATION_ADAPTER_CONTRACT_DIGEST = canonicalDigest({

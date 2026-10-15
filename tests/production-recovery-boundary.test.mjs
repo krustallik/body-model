@@ -55,7 +55,7 @@ const UNUSED_ADAPTER_CALLBACKS = Object.freeze({
     observedAt: new Date().toISOString(),
   }),
   withRecoveryCurrentnessFence: async (expected) => expected.execute({
-    schemaVersion: 1, purpose: expected.purpose, profileId: 1,
+    schemaVersion: 2, purpose: expected.purpose, fenceSnapshotProtocol: expected.fenceSnapshotProtocol, profileId: 1,
     operationType: expected.operationType, operationId: expected.operationId,
     recoveryCaseId: expected.recoveryCaseId, journalGeneration: expected.journalGeneration,
     journalRecordDigest: expected.journalRecordDigest,
@@ -251,7 +251,7 @@ function brokerFixture({ blocking = false, prepared = true, rolloutCurrent = tru
       observedAt: new Date(now()).toISOString(),
     }),
     withRecoveryCurrentnessFence: async (expected) => expected.execute({
-      schemaVersion: 1, purpose: expected.purpose, profileId: 1,
+      schemaVersion: 2, purpose: expected.purpose, fenceSnapshotProtocol: expected.fenceSnapshotProtocol, profileId: 1,
       operationType: expected.operationType, operationId: expected.operationId,
       recoveryCaseId: expected.recoveryCaseId, journalGeneration: expected.journalGeneration,
       journalRecordDigest: expected.journalRecordDigest,

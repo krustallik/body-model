@@ -15,6 +15,8 @@ import type {
   StrengthSetDto,
 } from "@/modules/training/training.types";
 import type { UpdateSetInput } from "@/modules/training/training.schema";
+import { setExecutionOverrideV1Schema } from "@/modules/training/load-accounting-v1";
+import { RESISTANCE } from "@/modules/training/training.constants";
 import { ExercisePane } from "./training-exercise-pane";
 import {
   classifyCarouselRelease,
@@ -30,6 +32,7 @@ export type SetDraft = {
   leftReps: string;
   rightReps: string;
   weightKg: string;
+  additionalLoadKg: string;
   bandNominalResistanceKg: string;
   rir: string;
   comment: string;
@@ -97,6 +100,7 @@ export function emptySetDraft(): SetDraft {
     leftReps: "",
     rightReps: "",
     weightKg: "",
+    additionalLoadKg: "",
     bandNominalResistanceKg: "",
     rir: "",
     comment: "",
@@ -413,9 +417,15 @@ export function TrainingExerciseWorkspace(props: TrainingExerciseWorkspaceProps)
   }
 
   function copyHistorySet(set: ExerciseHistorySetDto) {
+    const parsedOverride = setExecutionOverrideV1Schema.safeParse(set.loadAccountingOverride);
     onDraftChange({
       ...draft,
       reps: String(set.reps),
+      additionalLoadKg: exercise.resistanceType === RESISTANCE.BODYWEIGHT
+        && parsedOverride.success
+        && (parsedOverride.data.additionalLoadKg ?? 0) > 0
+        ? String(parsedOverride.data.additionalLoadKg)
+        : "",
       weightKg: set.weightKg == null ? draft.weightKg : String(set.weightKg),
       bandNominalResistanceKg: set.bandNominalResistanceKg == null
         ? draft.bandNominalResistanceKg

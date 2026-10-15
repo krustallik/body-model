@@ -198,6 +198,67 @@ describe("/api/v1/training/sessions", () => {
     });
   });
 
+  it("passes BODYWEIGHT additional-load overrides through create, read, and update", async () => {
+    const loadedSet = {
+      ...setDto,
+      weightKg: null,
+      bandNominalResistanceKg: null,
+      loadAccountingOverride: {
+        additionalLoadKg: 15,
+        reps: { kind: "asymmetric-per-side", left: 6, right: 4 },
+        equipmentSetupId: "rings",
+      },
+    };
+    trainingService.createSet.mockResolvedValue(loadedSet);
+    const createResponse = await CREATE_SET(
+      jsonRequest(`${base}/42/exercises/5/sets`, "POST", {
+        reps: 10,
+        weightKg: null,
+        bandNominalResistanceKg: null,
+        loadAccountingOverride: loadedSet.loadAccountingOverride,
+      }),
+      exerciseCtx("42", "5"),
+    );
+    expect(createResponse.status).toBe(201);
+    await expect(createResponse.json()).resolves.toEqual({ set: loadedSet });
+    expect(trainingService.createSet).toHaveBeenCalledWith(42, 5, {
+      reps: 10,
+      weightKg: null,
+      bandNominalResistanceKg: null,
+      loadAccountingOverride: loadedSet.loadAccountingOverride,
+    });
+
+    trainingService.getSetForSession.mockResolvedValue(loadedSet);
+    const readResponse = await GET_SET(new Request(`${base}/42/sets/9`), setCtx("42", "9"));
+    expect(readResponse.status).toBe(200);
+    await expect(readResponse.json()).resolves.toEqual({ set: loadedSet });
+
+    const updatedOverride = {
+      additionalLoadKg: 17.5,
+      reps: { kind: "asymmetric-per-side", left: 6, right: 4 },
+      equipmentSetupId: "rings",
+    };
+    trainingService.updateSet.mockResolvedValue({
+      ...loadedSet,
+      loadAccountingOverride: updatedOverride,
+    });
+    const updateResponse = await PATCH_SET(
+      jsonRequest(`${base}/42/sets/9`, "PATCH", {
+        reps: 10,
+        loadAccountingOverride: updatedOverride,
+      }),
+      setCtx("42", "9"),
+    );
+    expect(updateResponse.status).toBe(200);
+    await expect(updateResponse.json()).resolves.toEqual({
+      set: { ...loadedSet, loadAccountingOverride: updatedOverride },
+    });
+    expect(trainingService.updateSet).toHaveBeenCalledWith(42, 9, {
+      reps: 10,
+      loadAccountingOverride: updatedOverride,
+    });
+  });
+
   it("rejects invalid create-set payload without mutation", async () => {
     const response = await CREATE_SET(
       jsonRequest(`${base}/42/exercises/5/sets`, "POST", { reps: 0, weightKg: 30 }),

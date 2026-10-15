@@ -16,6 +16,15 @@ export function resistanceLabel(type: ResistanceType, uk: boolean): string {
   return uk ? "Власна вага" : "Bodyweight";
 }
 
+export function formatLoadKg(value: number, intlLocale: string): string {
+  const useScientificNotation = value !== 0 && (Math.abs(value) < 0.000001 || Math.abs(value) >= 1e21);
+  return new Intl.NumberFormat(intlLocale, {
+    maximumSignificantDigits: 21,
+    ...(useScientificNotation ? { notation: "scientific" as const } : {}),
+    useGrouping: false,
+  }).format(value);
+}
+
 export function matchStatusLabel(status: MatchStatus, uk: boolean): string {
   switch (status) {
     case MATCH_STATUS.PENDING:

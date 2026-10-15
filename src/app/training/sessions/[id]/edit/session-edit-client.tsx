@@ -302,11 +302,28 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
       }
     }
     const parsedExistingOverride = setExecutionOverrideV1Schema.safeParse(editingSet?.loadAccountingOverride);
+    let additionalLoadKg: number | undefined;
+    if (current.resistanceType === RESISTANCE.BODYWEIGHT && draft.additionalLoadKg.trim() !== "") {
+      const parsedAdditionalLoadKg = parseTrainingDecimal(draft.additionalLoadKg);
+      if (!Number.isFinite(parsedAdditionalLoadKg) || parsedAdditionalLoadKg < 0) {
+        setError(uk
+          ? "Додаткове обтяження має бути скінченним невід’ємним числом."
+          : "Additional load must be a finite non-negative number.");
+        return;
+      }
+      if (parsedAdditionalLoadKg > 0) additionalLoadKg = parsedAdditionalLoadKg;
+    }
+    if (additionalLoadKg !== undefined && editingSet?.loadAccountingOverride != null && !parsedExistingOverride.success) {
+      setError(uk
+        ? "Не вдалося безпечно зберегти попередні налаштування цього підходу."
+        : "Could not safely preserve this set's existing accounting settings.");
+      return;
+    }
     if (draft.asymmetricRepsEnabled && editingSet && editingSet.loadAccountingOverride != null && !parsedExistingOverride.success) {
       setError(uk ? "Не вдалося безпечно зберегти попередні налаштування цього підходу." : "Could not safely preserve this set's existing accounting settings.");
       return;
     }
-    if ((editingSet !== null && parsedExistingOverride.success) || draft.asymmetricRepsEnabled) {
+    if ((editingSet !== null && parsedExistingOverride.success) || draft.asymmetricRepsEnabled || additionalLoadKg !== undefined) {
       const override = parsedExistingOverride.success ? { ...parsedExistingOverride.data } : {};
       if (draft.asymmetricRepsEnabled) {
         override.reps = {
@@ -317,7 +334,23 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
       } else {
         delete override.reps;
       }
-      payload.loadAccountingOverride = Object.keys(override).length > 0 ? override : null;
+      if (current.resistanceType === RESISTANCE.BODYWEIGHT) {
+        if (additionalLoadKg !== undefined) override.additionalLoadKg = additionalLoadKg;
+        else delete override.additionalLoadKg;
+      }
+      const validatedOverride = setExecutionOverrideV1Schema.safeParse(override);
+      if (!validatedOverride.success) {
+        const assistanceConflict = validatedOverride.error.issues.some((issue) => issue.path.includes("assistanceLoadKg"));
+        setError(assistanceConflict
+          ? (uk
+            ? "Підхід не може одночасно мати додаткове обтяження та допомогу."
+            : "A set cannot have both additional load and assistance.")
+          : (uk
+            ? "Не вдалося перевірити налаштування обліку цього підходу."
+            : "Could not validate this set's accounting settings."));
+        return;
+      }
+      payload.loadAccountingOverride = Object.keys(validatedOverride.data).length > 0 ? validatedOverride.data : null;
     }
     if (payload.rir !== null) {
       if (!Number.isInteger(payload.rir) || (payload.rir as number) < 0 || (payload.rir as number) > 10) {
@@ -732,6 +765,9 @@ export function SessionEditClient({ sessionId }: { sessionId: number }) {
           leftReps: asymmetricReps ? String(asymmetricReps.left) : "",
           rightReps: asymmetricReps ? String(asymmetricReps.right) : "",
           weightKg: set.weightKg == null ? "" : String(set.weightKg),
+          additionalLoadKg: parsedOverride.success && (parsedOverride.data.additionalLoadKg ?? 0) > 0
+            ? String(parsedOverride.data.additionalLoadKg)
+            : "",
           bandNominalResistanceKg: set.bandNominalResistanceKg == null
             ? ""
             : String(set.bandNominalResistanceKg),

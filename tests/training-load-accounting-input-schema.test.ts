@@ -25,4 +25,28 @@ describe("Stage 02 set input compatibility", () => {
     expect(UpdateSetSchema.safeParse({ loadAccountingOverride: null }).success).toBe(true);
     expect(UpdateSetSchema.safeParse({ loadAccountingOverride: { reps: { kind: "asymmetric-per-side", left: -1, right: 2 } } }).success).toBe(false);
   });
+
+  it("accepts finite non-negative BODYWEIGHT additional load only through the existing override", () => {
+    const create = CreateSetSchema.safeParse({
+      reps: 10,
+      weightKg: null,
+      bandNominalResistanceKg: null,
+      loadAccountingOverride: { additionalLoadKg: 15 },
+    });
+    expect(create.success).toBe(true);
+    if (create.success) {
+      expect(create.data.weightKg).toBeNull();
+      expect(create.data.bandNominalResistanceKg).toBeNull();
+      expect(create.data.loadAccountingOverride).toEqual({ additionalLoadKg: 15 });
+    }
+
+    expect(UpdateSetSchema.safeParse({ loadAccountingOverride: { additionalLoadKg: 15 } }).success).toBe(true);
+    expect(UpdateSetSchema.safeParse({ loadAccountingOverride: null }).success).toBe(true);
+    expect(UpdateSetSchema.safeParse({ loadAccountingOverride: { additionalLoadKg: 0 } }).success).toBe(true);
+    expect(UpdateSetSchema.safeParse({ loadAccountingOverride: { additionalLoadKg: -0.1 } }).success).toBe(false);
+    expect(UpdateSetSchema.safeParse({ loadAccountingOverride: { additionalLoadKg: Number.POSITIVE_INFINITY } }).success).toBe(false);
+    expect(UpdateSetSchema.safeParse({
+      loadAccountingOverride: { additionalLoadKg: 15, assistanceLoadKg: 5 },
+    }).success).toBe(false);
+  });
 });

@@ -147,6 +147,7 @@ describe("Live training session mobile UI", () => {
     expect(screen.getAllByText("0 / 4 підходів").length).toBeGreaterThan(0);
     expect(screen.queryByText(/UI Review/i)).toBeNull();
     expect(activePane().getByText("Вага, кг")).toBeTruthy();
+    expect(activePane().queryByLabelText(/Додаткове обтяження/)).toBeNull();
     expect(activePane().getByText("Повтори")).toBeTruthy();
     expect(activePane().getByText("Ще немає записаних підходів.")).toBeTruthy();
   });
@@ -456,6 +457,242 @@ describe("Live training session mobile UI", () => {
     await waitFor(() => {
       expect(screen.getByRole("heading", { name: "Віджимання від ручок" })).toBeTruthy();
       expect(screen.getAllByText("Записано підходів: 1")).toHaveLength(2);
+    });
+  });
+
+  it("creates, reads, edits, and clears additional load for a programless BODYWEIGHT set", async () => {
+    const user = userEvent.setup();
+    const bodyweightExercise = {
+      id: 77,
+      sourceExerciseCatalogId: 9,
+      stableKey: "pull_up_bar",
+      snapshotExerciseName: "Підтягування",
+      order: 0,
+      plannedSets: 0,
+      resistanceType: RESISTANCE.BODYWEIGHT,
+      origin: EXERCISE_ORIGIN.EXTRA,
+      muscleMappingSnapshot: null,
+      sets: [],
+    };
+    let persistedSession = buildSession({
+      programId: null,
+      programName: null,
+      programVersionId: null,
+      programVersionNumber: null,
+      exercises: [bodyweightExercise],
+    });
+    const requests: Array<{ method: string; body: Record<string, unknown> }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/history")) return Response.json({ entries: [] });
+      if (url.endsWith("/exercises/77/sets") && init?.method === "POST") {
+        const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+        requests.push({ method: "POST", body: payload });
+        const createdSet = {
+          id: 901 + (persistedSession.exercises.find((exercise) => exercise.id === 77)?.sets.length ?? 0),
+          sessionExerciseId: 77,
+          setNumber: (persistedSession.exercises.find((exercise) => exercise.id === 77)?.sets.length ?? 0) + 1,
+          reps: Number(payload.reps),
+          weightKg: null,
+          bandNominalResistanceKg: null,
+          rir: typeof payload.rir === "number" ? payload.rir : null,
+          comment: typeof payload.comment === "string" ? payload.comment : null,
+          completedAt: "2026-10-15T06:00:00.000Z",
+          createdAt: "2026-10-15T06:00:00.000Z",
+          updatedAt: "2026-10-15T06:00:00.000Z",
+          loadAccountingOverride: payload.loadAccountingOverride ?? null,
+        };
+        persistedSession = {
+          ...persistedSession,
+          exercises: persistedSession.exercises.map((exercise) => ({
+            ...exercise,
+            sets: exercise.id === 77 ? [...exercise.sets, createdSet] : exercise.sets,
+          })),
+        };
+        return Response.json({ set: createdSet }, { status: 201 });
+      }
+      if (url.endsWith("/sets/901") && init?.method === "PATCH") {
+        const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+        requests.push({ method: "PATCH", body: payload });
+        const exercise = persistedSession.exercises.find((item) => item.id === 77)!;
+        const prior = exercise.sets[0]!;
+        const updatedSet = {
+          ...prior,
+          reps: Number(payload.reps),
+          loadAccountingOverride: payload.loadAccountingOverride ?? null,
+          updatedAt: "2026-10-15T06:01:00.000Z",
+        };
+        persistedSession = {
+          ...persistedSession,
+          exercises: persistedSession.exercises.map((item) => ({
+            ...item,
+            sets: item.id === 77 ? [updatedSet] : item.sets,
+          })),
+        };
+        return Response.json({ set: updatedSet });
+      }
+      if (!init?.method && url.includes("/sessions/42")) return Response.json({ session: persistedSession });
+      return Response.json({ session: persistedSession });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SessionClient sessionId={42} />);
+    const additionalLoad = await screen.findByLabelText("Додаткове обтяження, кг (необов’язково)");
+    await user.type(additionalLoad, "15");
+    await user.type(activePane().getByLabelText("Повтори"), "10");
+    await user.click(screen.getByRole("button", { name: "Додати підхід" }));
+
+    await waitFor(() => expect(activePane().getByText("власна вага +15 кг × 10")).toBeTruthy());
+    expect(requests[0]).toEqual({
+      method: "POST",
+      body: expect.objectContaining({
+        reps: 10,
+        weightKg: null,
+        bandNominalResistanceKg: null,
+        loadAccountingOverride: { additionalLoadKg: 15 },
+      }),
+    });
+    expect(requests[0]!.body).not.toHaveProperty("additionalLoadKg");
+
+    await user.click(activePane().getByRole("button", { name: "Змінити підхід" }));
+    const editLoad = activePane().getByLabelText("Додаткове обтяження, кг (необов’язково)");
+    expect((editLoad as HTMLInputElement).value).toBe("15");
+    await user.clear(editLoad);
+    await user.type(editLoad, "12,5");
+    await user.click(screen.getByRole("button", { name: "Оновити підхід" }));
+    await waitFor(() => expect(activePane().getByText("власна вага +12,5 кг × 10")).toBeTruthy());
+    expect(requests[1]).toMatchObject({
+      method: "PATCH",
+      body: { loadAccountingOverride: { additionalLoadKg: 12.5 } },
+    });
+
+    await user.click(activePane().getByRole("button", { name: "Змінити підхід" }));
+    await user.clear(activePane().getByLabelText("Додаткове обтяження, кг (необов’язково)"));
+    await user.click(screen.getByRole("button", { name: "Оновити підхід" }));
+    await waitFor(() => expect(activePane().getByText("власна вага × 10")).toBeTruthy());
+    expect(activePane().queryByText(/\+0(?:\.0+)? кг/)).toBeNull();
+    expect(requests[2]).toMatchObject({ method: "PATCH", body: { loadAccountingOverride: null } });
+
+    await user.type(activePane().getByLabelText("Додаткове обтяження, кг (необов’язково)"), "0");
+    await user.type(activePane().getByLabelText("Повтори"), "8");
+    await user.click(screen.getByRole("button", { name: "Додати підхід" }));
+    await waitFor(() => expect(activePane().getByText("власна вага × 8")).toBeTruthy());
+    expect(requests[3]!.method).toBe("POST");
+    expect(requests[3]!.body).not.toHaveProperty("loadAccountingOverride");
+  });
+
+  it("rejects invalid and conflicting additional load without sending a set mutation", async () => {
+    const user = userEvent.setup();
+    const loadedSet = {
+      id: 901,
+      sessionExerciseId: 77,
+      setNumber: 1,
+      reps: 10,
+      weightKg: null,
+      bandNominalResistanceKg: null,
+      rir: null,
+      comment: null,
+      completedAt: "2026-10-15T06:00:00.000Z",
+      createdAt: "2026-10-15T06:00:00.000Z",
+      updatedAt: "2026-10-15T06:00:00.000Z",
+      loadAccountingOverride: { assistanceLoadKg: 5 },
+    };
+    const bodyweightExercise = {
+      id: 77,
+      sourceExerciseCatalogId: 9,
+      stableKey: "pull_up_bar",
+      snapshotExerciseName: "Підтягування",
+      order: 0,
+      plannedSets: 0,
+      resistanceType: RESISTANCE.BODYWEIGHT,
+      origin: EXERCISE_ORIGIN.EXTRA,
+      muscleMappingSnapshot: null,
+      sets: [loadedSet],
+    };
+    const session = buildSession({
+      programId: null,
+      programName: null,
+      programVersionId: null,
+      programVersionNumber: null,
+      exercises: [bodyweightExercise],
+    });
+    const mutation = vi.fn();
+    const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/history")) return Response.json({ entries: [] });
+      if (init?.method === "PATCH" || init?.method === "POST") mutation();
+      return Response.json({ session });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SessionClient sessionId={42} />);
+
+    await user.type(await screen.findByLabelText("Додаткове обтяження, кг (необов’язково)"), "-1");
+    await user.type(activePane().getByLabelText("Повтори"), "10");
+    await user.click(screen.getByRole("button", { name: "Додати підхід" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("скінченним невід’ємним числом");
+    expect(mutation).not.toHaveBeenCalled();
+
+    await user.clear(activePane().getByLabelText("Додаткове обтяження, кг (необов’язково)"));
+    await user.click(activePane().getByRole("button", { name: "Змінити підхід" }));
+    await user.type(activePane().getByLabelText("Додаткове обтяження, кг (необов’язково)"), "15");
+    await user.click(screen.getByRole("button", { name: "Оновити підхід" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("одночасно мати додаткове обтяження та допомогу");
+    expect(mutation).not.toHaveBeenCalled();
+  });
+
+  it("shows bodyweight reference and additional load in the completed workout view", async () => {
+    const session = buildSession({
+      status: SESSION_STATUS.COMPLETED,
+      matchStatus: MATCH_STATUS.MATCHED,
+      exercises: [{
+        id: 77,
+        sourceExerciseCatalogId: 9,
+        stableKey: "pull_up_bar",
+        snapshotExerciseName: "Підтягування",
+        order: 0,
+        plannedSets: 0,
+        resistanceType: RESISTANCE.BODYWEIGHT,
+        origin: EXERCISE_ORIGIN.EXTRA,
+        muscleMappingSnapshot: null,
+        sets: [
+          {
+            id: 901,
+            sessionExerciseId: 77,
+            setNumber: 1,
+            reps: 10,
+            weightKg: null,
+            bandNominalResistanceKg: null,
+            rir: null,
+            comment: null,
+            completedAt: "2026-10-15T06:00:00.000Z",
+            createdAt: "2026-10-15T06:00:00.000Z",
+            updatedAt: "2026-10-15T06:00:00.000Z",
+            loadAccountingOverride: { additionalLoadKg: 15 },
+          },
+          {
+            id: 902,
+            sessionExerciseId: 77,
+            setNumber: 2,
+            reps: 8,
+            weightKg: null,
+            bandNominalResistanceKg: null,
+            rir: null,
+            comment: null,
+            completedAt: "2026-10-15T06:02:00.000Z",
+            createdAt: "2026-10-15T06:02:00.000Z",
+            updatedAt: "2026-10-15T06:02:00.000Z",
+            loadAccountingOverride: null,
+          },
+        ],
+      }],
+    });
+    stubSessionFetch(session, (url) => (
+      url.includes("/match-candidates") ? Response.json({ candidates: [] }) : null
+    ));
+    render(<SessionClient sessionId={42} />);
+    await waitFor(() => {
+      expect(screen.getByText("#1 10×власна вага +15 кг")).toBeTruthy();
+      expect(screen.getByText("#2 8×власна вага")).toBeTruthy();
     });
   });
 

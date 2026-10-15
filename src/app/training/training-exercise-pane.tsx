@@ -18,13 +18,13 @@ import type { UpdateSetInput } from "@/modules/training/training.schema";
 import { setExecutionOverrideV1Schema } from "@/modules/training/load-accounting-v1";
 import { resolveExerciseImageSrc } from "./exercise-images";
 import { resolveExerciseInfo } from "./exercise-info";
-import { formatSetCompletionClock, resistanceLabel, setCompletionTimestampIso, trainingSessionTitle } from "./training-labels";
+import { formatLoadKg, formatSetCompletionClock, resistanceLabel, setCompletionTimestampIso, trainingSessionTitle } from "./training-labels";
 import type { SetDraft } from "./training-exercise-workspace";
 import styles from "./training.module.css";
 
 function setLoadLabel(
   exercise: StrengthSessionExerciseDto,
-  set: Pick<StrengthSetDto, "weightKg" | "bandNominalResistanceKg">,
+  set: Pick<StrengthSetDto, "weightKg" | "bandNominalResistanceKg" | "loadAccountingOverride">,
   uk: boolean,
 ): string {
   if (exercise.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && set.weightKg !== null) {
@@ -36,7 +36,15 @@ function setLoadLabel(
   ) {
     return `${set.bandNominalResistanceKg} ${uk ? "кг резинки" : "kg band"}`;
   }
-  return uk ? "власна вага" : "bodyweight";
+  const bodyweightLabel = uk ? "власна вага" : "bodyweight";
+  const parsedOverride = setExecutionOverrideV1Schema.safeParse(set.loadAccountingOverride);
+  const additionalLoadKg = parsedOverride.success ? parsedOverride.data.additionalLoadKg : undefined;
+  return exercise.resistanceType === RESISTANCE.BODYWEIGHT
+    && typeof additionalLoadKg === "number"
+    && Number.isFinite(additionalLoadKg)
+    && additionalLoadKg > 0
+    ? `${bodyweightLabel} +${formatLoadKg(additionalLoadKg, uk ? "uk-UA" : "en-US")} ${uk ? "кг" : "kg"}`
+    : bodyweightLabel;
 }
 
 function historyLoadLabel(
@@ -50,7 +58,15 @@ function historyLoadLabel(
   if (resistanceType === RESISTANCE.RESISTANCE_BAND && set.bandNominalResistanceKg !== null) {
     return `${set.bandNominalResistanceKg} ${uk ? "кг резинки" : "kg band"}`;
   }
-  return uk ? "власна вага" : "bodyweight";
+  const bodyweightLabel = uk ? "власна вага" : "bodyweight";
+  const parsedOverride = setExecutionOverrideV1Schema.safeParse(set.loadAccountingOverride);
+  const additionalLoadKg = parsedOverride.success ? parsedOverride.data.additionalLoadKg : undefined;
+  return resistanceType === RESISTANCE.BODYWEIGHT
+    && typeof additionalLoadKg === "number"
+    && Number.isFinite(additionalLoadKg)
+    && additionalLoadKg > 0
+    ? `${bodyweightLabel} +${formatLoadKg(additionalLoadKg, uk ? "uk-UA" : "en-US")} ${uk ? "кг" : "kg"}`
+    : bodyweightLabel;
 }
 
 function formatHistoryDate(iso: string, uk: boolean): string {
@@ -101,6 +117,7 @@ type HistoricalSetDraft = {
   leftReps: string;
   rightReps: string;
   weightKg: string;
+  additionalLoadKg: string;
   bandNominalResistanceKg: string;
   rir: string;
   comment: string;
@@ -115,6 +132,9 @@ function historicalSetDraft(set: ExerciseHistorySetDto): HistoricalSetDraft {
     leftReps: asymmetric ? String(asymmetric.left) : "",
     rightReps: asymmetric ? String(asymmetric.right) : "",
     weightKg: set.weightKg == null ? "" : String(set.weightKg),
+    additionalLoadKg: parsedOverride.success && (parsedOverride.data.additionalLoadKg ?? 0) > 0
+      ? String(parsedOverride.data.additionalLoadKg)
+      : "",
     bandNominalResistanceKg: set.bandNominalResistanceKg == null ? "" : String(set.bandNominalResistanceKg),
     rir: set.rir == null ? "" : String(set.rir),
     comment: set.comment ?? "",
@@ -204,6 +224,23 @@ function HistoricalSetRow({
       rir,
       comment: draft.comment.trim() || null,
     };
+    let additionalLoadKg: number | undefined;
+    if (entry.resistanceType === RESISTANCE.BODYWEIGHT && draft.additionalLoadKg.trim() !== "") {
+      const parsedAdditionalLoadKg = parseTrainingDecimal(draft.additionalLoadKg);
+      if (!Number.isFinite(parsedAdditionalLoadKg) || parsedAdditionalLoadKg < 0) {
+        setError(uk
+          ? "Додаткове обтяження має бути скінченним невід’ємним числом."
+          : "Additional load must be a finite non-negative number.");
+        return;
+      }
+      if (parsedAdditionalLoadKg > 0) additionalLoadKg = parsedAdditionalLoadKg;
+    }
+    if (additionalLoadKg !== undefined && set.loadAccountingOverride != null && !override?.success) {
+      setError(uk
+        ? "Не вдалося безпечно зберегти попередні налаштування цього підходу."
+        : "Could not safely preserve this set's existing accounting settings.");
+      return;
+    }
     if (entry.resistanceType === RESISTANCE.EXTERNAL_WEIGHT) {
       const weightKg = parseTrainingDecimal(draft.weightKg);
       if (!Number.isFinite(weightKg) || weightKg <= 0) {
@@ -219,16 +256,30 @@ function HistoricalSetRow({
       }
       payload.bandNominalResistanceKg = bandNominalResistanceKg;
     }
-    if (override?.success) {
-      const nextOverride = { ...override.data };
+    if (override?.success || draft.asymmetric || additionalLoadKg !== undefined) {
+      const nextOverride = override?.success ? { ...override.data } : {};
       if (draft.asymmetric) {
         nextOverride.reps = { kind: "asymmetric-per-side", left, right };
       } else {
         delete nextOverride.reps;
       }
-      payload.loadAccountingOverride = Object.keys(nextOverride).length > 0 ? nextOverride : null;
-    } else if (draft.asymmetric) {
-      payload.loadAccountingOverride = { reps: { kind: "asymmetric-per-side", left, right } };
+      if (entry.resistanceType === RESISTANCE.BODYWEIGHT) {
+        if (additionalLoadKg !== undefined) nextOverride.additionalLoadKg = additionalLoadKg;
+        else delete nextOverride.additionalLoadKg;
+      }
+      const validatedOverride = setExecutionOverrideV1Schema.safeParse(nextOverride);
+      if (!validatedOverride.success) {
+        const assistanceConflict = validatedOverride.error.issues.some((issue) => issue.path.includes("assistanceLoadKg"));
+        setError(assistanceConflict
+          ? (uk
+            ? "Підхід не може одночасно мати додаткове обтяження та допомогу."
+            : "A set cannot have both additional load and assistance.")
+          : (uk
+            ? "Не вдалося перевірити налаштування обліку цього підходу."
+            : "Could not validate this set's accounting settings."));
+        return;
+      }
+      payload.loadAccountingOverride = Object.keys(validatedOverride.data).length > 0 ? validatedOverride.data : null;
     }
 
     setBusy(true);
@@ -372,6 +423,7 @@ function HistoricalSetRow({
             <label><span>{uk ? "Повтори справа" : "Right reps"}</span><input disabled={busy} inputMode="numeric" value={draft.rightReps} onChange={(event) => setDraft((current) => ({ ...current, rightReps: event.target.value }))} /></label>
           </> : <label><span>{uk ? "Повтори" : "Reps"}</span><input ref={firstEditorRef} disabled={busy} inputMode="numeric" value={draft.reps} onChange={(event) => setDraft((current) => ({ ...current, reps: event.target.value }))} /></label>}
           {entry.resistanceType === RESISTANCE.EXTERNAL_WEIGHT && <label><span>{uk ? "Вага, кг" : "Weight, kg"}</span><input disabled={busy} inputMode="decimal" value={draft.weightKg} onChange={(event) => setDraft((current) => ({ ...current, weightKg: event.target.value }))} /></label>}
+          {entry.resistanceType === RESISTANCE.BODYWEIGHT && <label><span>{uk ? "Додаткове обтяження, кг (необов’язково)" : "Additional load, kg (optional)"}</span><input disabled={busy} inputMode="decimal" autoComplete="off" placeholder={uk ? "опційно" : "optional"} value={draft.additionalLoadKg} onChange={(event) => setDraft((current) => ({ ...current, additionalLoadKg: event.target.value }))} /></label>}
           {entry.resistanceType === RESISTANCE.RESISTANCE_BAND && <label><span>{uk ? "Опір резинки, кг" : "Band resistance, kg"}</span><input disabled={busy} inputMode="decimal" value={draft.bandNominalResistanceKg} onChange={(event) => setDraft((current) => ({ ...current, bandNominalResistanceKg: event.target.value }))} /></label>}
           {asymmetricCurrent !== undefined && <p>{uk ? "Асиметричні повтори збережуться окремо для кожної сторони." : "Asymmetric reps stay stored separately for each side."}</p>}
           <label><span>RIR</span><input disabled={busy} inputMode="numeric" value={draft.rir} onChange={(event) => setDraft((current) => ({ ...current, rir: event.target.value }))} /></label>
@@ -562,6 +614,23 @@ export function ExercisePane(props: ExercisePaneProps) {
                   onChange={(event) => onDraftChange({
                     ...paneDraft,
                     bandNominalResistanceKg: event.target.value,
+                  })}
+                />
+              </label>
+            )}
+            {exercise.resistanceType === RESISTANCE.BODYWEIGHT && (
+              <label className={styles.liveField}>
+                <span>{uk ? "Додаткове обтяження, кг (необов’язково)" : "Additional load, kg (optional)"}</span>
+                <input
+                  inputMode="decimal"
+                  autoComplete="off"
+                  tabIndex={interactive ? 0 : -1}
+                  readOnly={!interactive}
+                  placeholder={uk ? "опційно" : "optional"}
+                  value={paneDraft.additionalLoadKg}
+                  onChange={(event) => onDraftChange({
+                    ...paneDraft,
+                    additionalLoadKg: event.target.value,
                   })}
                 />
               </label>

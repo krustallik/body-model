@@ -308,6 +308,7 @@ describe("Session edit exercise pager", () => {
       }
       return new Response("not found", { status: 404 });
     }));
+    return { getStoredHistorySet: () => storedHistorySet };
   }
 
   it("renders one exercise at a time and pages with arrows", async () => {
@@ -573,7 +574,7 @@ describe("Session edit exercise pager", () => {
     vi.spyOn(window, "scrollTo").mockImplementation(() => undefined);
     const override = {
       reps: { kind: "asymmetric-per-side", left: 6, right: 4 },
-      additionalLoadKg: 2,
+      additionalLoadKg: 15,
       equipmentSetupId: "rings",
     };
     stubFetch(makeSession(), {
@@ -584,17 +585,17 @@ describe("Session edit exercise pager", () => {
     await screen.findByText("Жим гантелей на похилій лаві вгору (30°)");
     const historySet = await within(activePane().getByRole("region", { name: "Exercise history" }))
       .findByTestId("history-set-40-71");
-    expect(within(historySet).getByText(/bodyweight \+2 kg/)).toBeTruthy();
+    expect(within(historySet).getByText(/bodyweight \+15 kg/)).toBeTruthy();
 
     await user.click(within(historySet).getByRole("button", { name: "Actions for set 1" }));
     await user.click(within(historySet).getByRole("button", { name: "Edit" }));
     const loadInput = within(historySet).getByLabelText("Additional load, kg (optional)");
-    expect((loadInput as HTMLInputElement).value).toBe("2");
+    expect((loadInput as HTMLInputElement).value).toBe("15");
     await user.clear(loadInput);
-    await user.type(loadInput, "15");
+    await user.type(loadInput, "20");
     await user.click(within(historySet).getByRole("button", { name: "Save" }));
 
-    await waitFor(() => expect(within(historySet).getByText(/bodyweight \+15 kg/)).toBeTruthy());
+    await waitFor(() => expect(within(historySet).getByText(/bodyweight \+20 kg/)).toBeTruthy());
     const patchCalls = () => vi.mocked(fetch).mock.calls.filter(([input, init]) => (
       String(input) === "/api/v1/training/sessions/40/sets/71" && init?.method === "PATCH"
     ));
@@ -603,7 +604,7 @@ describe("Session edit exercise pager", () => {
     expect(patchBody).toMatchObject({
       loadAccountingOverride: {
         reps: { kind: "asymmetric-per-side", left: 6, right: 4 },
-        additionalLoadKg: 15,
+        additionalLoadKg: 20,
         equipmentSetupId: "rings",
       },
     });
@@ -628,6 +629,93 @@ describe("Session edit exercise pager", () => {
     await user.click(within(historySet).getByRole("button", { name: "Save" }));
     expect((await within(historySet).findByRole("alert")).textContent).toContain("2000 kg");
     expect(patchCalls()).toHaveLength(2);
+  });
+
+  it("rejects a changed historical BODYWEIGHT load above the write limit", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "scrollTo").mockImplementation(() => undefined);
+    stubFetch(makeSession(), {
+      historyOverride: { additionalLoadKg: 15 },
+      historyResistanceType: RESISTANCE.BODYWEIGHT,
+    });
+    render(<SessionEditClient sessionId={88} />);
+    await screen.findByText("Жим гантелей на похилій лаві вгору (30°)");
+    const historySet = await within(activePane().getByRole("region", { name: "Exercise history" }))
+      .findByTestId("history-set-40-71");
+    await user.click(within(historySet).getByRole("button", { name: "Actions for set 1" }));
+    await user.click(within(historySet).getByRole("button", { name: "Edit" }));
+    const load = within(historySet).getByLabelText("Additional load, kg (optional)");
+    await user.clear(load);
+    await user.type(load, "2001");
+    await user.click(within(historySet).getByRole("button", { name: "Save" }));
+
+    expect((await within(historySet).findByRole("alert")).textContent).toContain("2000 kg");
+    expect(vi.mocked(fetch).mock.calls.filter(([input, init]) => (
+      String(input) === "/api/v1/training/sessions/40/sets/71" && init?.method === "PATCH"
+    ))).toHaveLength(0);
+  });
+
+  it("clears a persisted zero additional-load value when the empty load field is saved", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "scrollTo").mockImplementation(() => undefined);
+    const stub = stubFetch(makeSession(), {
+      historyOverride: { additionalLoadKg: 0 },
+      historyResistanceType: RESISTANCE.BODYWEIGHT,
+    });
+    render(<SessionEditClient sessionId={88} />);
+    await screen.findByText("Жим гантелей на похилій лаві вгору (30°)");
+    const historySet = await within(activePane().getByRole("region", { name: "Exercise history" }))
+      .findByTestId("history-set-40-71");
+    await user.click(within(historySet).getByRole("button", { name: "Actions for set 1" }));
+    await user.click(within(historySet).getByRole("button", { name: "Edit" }));
+    expect((within(historySet).getByLabelText("Additional load, kg (optional)") as HTMLInputElement).value).toBe("");
+    await user.click(within(historySet).getByRole("button", { name: "Save" }));
+
+    const patch = vi.mocked(fetch).mock.calls.find(([input, init]) => (
+      String(input) === "/api/v1/training/sessions/40/sets/71" && init?.method === "PATCH"
+    ));
+    expect(JSON.parse(String(patch?.[1]?.body))).toMatchObject({ loadAccountingOverride: null });
+    expect(stub.getStoredHistorySet().loadAccountingOverride).toBeNull();
+  });
+
+  it("omits unchanged oversized and valid BODYWEIGHT overrides from historical RIR/comment patches", async () => {
+    const scenarios = [
+      { override: { additionalLoadKg: 2_500 }, expectedLabel: /bodyweight \+2,?500 kg/ },
+      { override: { assistanceLoadKg: 2_500 }, expectedLabel: /bodyweight/ },
+      { override: { additionalLoadKg: 15 }, expectedLabel: /bodyweight \+15 kg/ },
+    ];
+
+    for (const scenario of scenarios) {
+      cleanup();
+      const user = userEvent.setup();
+      vi.spyOn(window, "scrollTo").mockImplementation(() => undefined);
+      const stub = stubFetch(makeSession(), {
+        historyOverride: scenario.override,
+        historyResistanceType: RESISTANCE.BODYWEIGHT,
+      });
+      render(<SessionEditClient sessionId={88} />);
+      await screen.findByText("Жим гантелей на похилій лаві вгору (30°)");
+      const historySet = await within(activePane().getByRole("region", { name: "Exercise history" }))
+        .findByTestId("history-set-40-71");
+      await user.click(within(historySet).getByRole("button", { name: "Actions for set 1" }));
+      await user.click(within(historySet).getByRole("button", { name: "Edit" }));
+      await user.clear(within(historySet).getByLabelText("RIR"));
+      await user.type(within(historySet).getByLabelText("RIR"), "3");
+      await user.type(within(historySet).getByLabelText("Comment"), "after");
+      await user.click(within(historySet).getByRole("button", { name: "Save" }));
+
+      await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input, init]) => (
+        String(input) === "/api/v1/training/sessions/40/sets/71" && init?.method === "PATCH"
+      ))).toBe(true));
+      const patch = vi.mocked(fetch).mock.calls.find(([input, init]) => (
+        String(input) === "/api/v1/training/sessions/40/sets/71" && init?.method === "PATCH"
+      ));
+      const patchBody = JSON.parse(String(patch?.[1]?.body)) as Record<string, unknown>;
+      expect(patchBody).toMatchObject({ rir: 3, comment: "after" });
+      expect(patchBody).not.toHaveProperty("loadAccountingOverride");
+      expect(stub.getStoredHistorySet().loadAccountingOverride).toEqual(scenario.override);
+      expect(within(historySet).getByText(scenario.expectedLabel)).toBeTruthy();
+    }
   });
 
   it("reconciles a committed historical edit when dependent publication returns an error", async () => {

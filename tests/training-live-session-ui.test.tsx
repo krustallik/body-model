@@ -110,12 +110,13 @@ describe("Live training session mobile UI", () => {
   function stubSessionFetch(
     session = buildSession(),
     extras?: (url: string, init?: RequestInit) => Response | null,
+    historyEntries?: unknown[],
   ) {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("/history")) {
         return Response.json({
-          entries: [{
+          entries: historyEntries ?? [{
             sessionId: 9,
             occurredAt: "2026-09-10T16:00:00.000Z",
             programName: "ТИСНИ",
@@ -590,6 +591,94 @@ describe("Live training session mobile UI", () => {
     });
   });
 
+  it("omits unchanged historical BODYWEIGHT overrides from current-set RIR/comment PATCHes", async () => {
+    const scenarios = [
+      { override: { additionalLoadKg: 2_500 }, programless: true },
+      { override: { assistanceLoadKg: 2_500 }, programless: false },
+      { override: { additionalLoadKg: 15 }, programless: false },
+    ];
+
+    for (const scenario of scenarios) {
+      cleanup();
+      const user = userEvent.setup();
+      let persistedSet = {
+        id: 901,
+        sessionExerciseId: 77,
+        setNumber: 1,
+        reps: 10,
+        weightKg: null,
+        bandNominalResistanceKg: null,
+        rir: 2 as number | null,
+        comment: "before" as string | null,
+        completedAt: "2026-10-15T06:00:00.000Z",
+        createdAt: "2026-10-15T06:00:00.000Z",
+        updatedAt: "2026-10-15T06:00:00.000Z",
+        loadAccountingOverride: scenario.override as Record<string, unknown>,
+      };
+      const exercise = {
+        id: 77,
+        sourceExerciseCatalogId: 9,
+        stableKey: "pull_up_bar",
+        snapshotExerciseName: "Підтягування",
+        order: 0,
+        plannedSets: scenario.programless ? 0 : 3,
+        resistanceType: RESISTANCE.BODYWEIGHT,
+        origin: scenario.programless ? EXERCISE_ORIGIN.EXTRA : EXERCISE_ORIGIN.PLANNED,
+        muscleMappingSnapshot: null,
+        sets: [persistedSet],
+      };
+      let persistedSession = buildSession({
+        programId: scenario.programless ? null : 7,
+        programName: scenario.programless ? null : "ТИСНИ",
+        programVersionId: scenario.programless ? null : 11,
+        programVersionNumber: scenario.programless ? null : 1,
+        exercises: [exercise],
+      });
+      const patchPayloads: Record<string, unknown>[] = [];
+      vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/history")) return Response.json({ entries: [] });
+        if (url.endsWith("/sets/901") && init?.method === "PATCH") {
+          const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+          patchPayloads.push(payload);
+          persistedSet = {
+            ...persistedSet,
+            reps: Number(payload.reps),
+            rir: typeof payload.rir === "number" || payload.rir === null ? payload.rir : persistedSet.rir,
+            comment: typeof payload.comment === "string" || payload.comment === null ? payload.comment : persistedSet.comment,
+            loadAccountingOverride: Object.hasOwn(payload, "loadAccountingOverride")
+              ? payload.loadAccountingOverride as Record<string, unknown>
+              : persistedSet.loadAccountingOverride,
+          };
+          persistedSession = {
+            ...persistedSession,
+            exercises: persistedSession.exercises.map((item) => ({
+              ...item,
+              sets: item.id === 77 ? [persistedSet] : item.sets,
+            })),
+          };
+          return Response.json({ set: persistedSet });
+        }
+        return Response.json({ session: persistedSession });
+      }));
+
+      render(<SessionClient sessionId={42} />);
+      await waitFor(() => expect(activePane().getByText(/власна вага/)).toBeTruthy());
+      await user.click(activePane().getByRole("button", { name: "Змінити підхід" }));
+      await user.clear(activePane().getByLabelText("RIR"));
+      await user.type(activePane().getByLabelText("RIR"), "3");
+      await user.clear(activePane().getByLabelText("Коментар"));
+      await user.click(activePane().getByRole("button", { name: "+ Коментар" }));
+      await user.type(activePane().getByLabelText("Коментар"), "after");
+      await user.click(screen.getByRole("button", { name: "Оновити підхід" }));
+      await waitFor(() => expect(patchPayloads).toHaveLength(1));
+
+      expect(patchPayloads[0]).toMatchObject({ rir: 3, comment: "after" });
+      expect(patchPayloads[0]).not.toHaveProperty("loadAccountingOverride");
+      expect(persistedSet.loadAccountingOverride).toEqual(scenario.override);
+    }
+  });
+
   it("rejects invalid and conflicting additional load without sending a set mutation", async () => {
     const user = userEvent.setup();
     const loadedSet = {
@@ -659,6 +748,12 @@ describe("Live training session mobile UI", () => {
 
     await user.clear(activePane().getByLabelText("Додаткове обтяження, кг (необов’язково)"));
     await user.click(activePane().getByRole("button", { name: "Змінити підхід" }));
+    await user.type(activePane().getByLabelText("Додаткове обтяження, кг (необов’язково)"), "2001");
+    await user.click(screen.getByRole("button", { name: "Оновити підхід" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("2000 кг");
+    expect(mutation).not.toHaveBeenCalled();
+
+    await user.clear(activePane().getByLabelText("Додаткове обтяження, кг (необов’язково)"));
     await user.type(activePane().getByLabelText("Додаткове обтяження, кг (необов’язково)"), "15");
     await user.click(screen.getByRole("button", { name: "Оновити підхід" }));
     expect((await screen.findByRole("alert")).textContent).toContain("одночасно мати додаткове обтяження та допомогу");
@@ -719,6 +814,152 @@ describe("Live training session mobile UI", () => {
       expect(screen.getByText("#1 10×власна вага +15 кг")).toBeTruthy();
       expect(screen.getByText("#2 8×власна вага")).toBeTruthy();
     });
+  });
+
+  it("omits unchanged historical BODYWEIGHT overrides from RIR/comment patches and preserves changed load fields", async () => {
+    const scenarios = [
+      { override: { additionalLoadKg: 2_500 }, programless: true, changeLoad: false },
+      { override: { assistanceLoadKg: 2_500 }, programless: false, changeLoad: false },
+      { override: { additionalLoadKg: 15 }, programless: false, changeLoad: false },
+      {
+        override: {
+          additionalLoadKg: 15,
+          reps: { kind: "asymmetric-per-side", left: 6, right: 4 },
+          equipmentSetupId: "rings",
+          inventoryCount: 2,
+        },
+        programless: true,
+        changeLoad: true,
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      cleanup();
+      const user = userEvent.setup();
+      let persistedHistorySet = {
+        id: 71,
+        setNumber: 1,
+        completedAt: "2026-09-10T16:10:00.000Z",
+        reps: 10,
+        weightKg: null,
+        bandNominalResistanceKg: null,
+        rir: 2 as number | null,
+        comment: "before" as string | null,
+        loadAccountingOverride: scenario.override as Record<string, unknown>,
+      };
+      const patchPayloads: Record<string, unknown>[] = [];
+      const exercise = {
+        id: 77,
+        sourceExerciseCatalogId: 9,
+        stableKey: "pull_up_bar",
+        snapshotExerciseName: "Підтягування",
+        order: 0,
+        plannedSets: scenario.programless ? 0 : 3,
+        resistanceType: RESISTANCE.BODYWEIGHT,
+        origin: scenario.programless ? EXERCISE_ORIGIN.EXTRA : EXERCISE_ORIGIN.PLANNED,
+        muscleMappingSnapshot: null,
+        sets: [],
+      };
+      const session = buildSession({
+        programId: scenario.programless ? null : 7,
+        programName: scenario.programless ? null : "ТИСНИ",
+        programVersionId: scenario.programless ? null : 11,
+        programVersionNumber: scenario.programless ? null : 1,
+        exercises: [exercise],
+      });
+      const historicalEntry = {
+        sessionId: 40,
+        occurredAt: "2026-09-10T16:00:00.000Z",
+        programName: scenario.programless ? null : "ТИСНИ",
+        resistanceType: RESISTANCE.BODYWEIGHT,
+        sets: [persistedHistorySet],
+      };
+      stubSessionFetch(session, (url, init) => {
+        if (url === "/api/v1/training/sessions/40/sets/71" && init?.method === "PATCH") {
+          const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+          patchPayloads.push(payload);
+          persistedHistorySet = {
+            ...persistedHistorySet,
+            ...(typeof payload.rir === "number" || payload.rir === null ? { rir: payload.rir } : {}),
+            ...(typeof payload.comment === "string" || payload.comment === null ? { comment: payload.comment } : {}),
+            ...(Object.hasOwn(payload, "loadAccountingOverride")
+              ? { loadAccountingOverride: payload.loadAccountingOverride as Record<string, unknown> }
+              : {}),
+          };
+          return Response.json({ set: persistedHistorySet, modelPublicationStatus: "current" });
+        }
+        return null;
+      }, [historicalEntry]);
+
+      render(<SessionClient sessionId={42} />);
+      await screen.findByTestId("active-exercise-pane");
+      const historySet = await within(activePane().getByLabelText("Історія вправи"))
+        .findByTestId("history-set-40-71");
+      await user.click(within(historySet).getByRole("button", { name: "Дії для підходу 1" }));
+      await user.click(within(historySet).getByRole("button", { name: "Редагувати" }));
+      if (scenario.changeLoad) {
+        const load = within(historySet).getByLabelText("Додаткове обтяження, кг (необов’язково)");
+        await user.clear(load);
+        await user.type(load, "20");
+      } else {
+        await user.clear(within(historySet).getByLabelText("RIR"));
+        await user.type(within(historySet).getByLabelText("RIR"), "3");
+        await user.clear(within(historySet).getByLabelText("Коментар"));
+        await user.type(within(historySet).getByLabelText("Коментар"), "after");
+      }
+      await user.click(within(historySet).getByRole("button", { name: "Зберегти" }));
+      await waitFor(() => expect(patchPayloads).toHaveLength(1));
+
+      if (!scenario.changeLoad) {
+        expect(patchPayloads[0]).not.toHaveProperty("loadAccountingOverride");
+        expect(persistedHistorySet.loadAccountingOverride).toEqual(scenario.override);
+        expect(patchPayloads[0]).toMatchObject({ rir: 3, comment: "after" });
+      } else {
+        expect(patchPayloads[0]?.loadAccountingOverride).toEqual({
+          ...scenario.override,
+          additionalLoadKg: 20,
+        });
+      }
+    }
+  });
+
+  it("rejects a changed historical BODYWEIGHT load above the write limit", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "scrollTo").mockImplementation(() => undefined);
+    const persistedSet = {
+      id: 71,
+      setNumber: 1,
+      completedAt: "2026-09-10T16:10:00.000Z",
+      reps: 10,
+      weightKg: null,
+      bandNominalResistanceKg: null,
+      rir: 2,
+      comment: "before",
+      loadAccountingOverride: { additionalLoadKg: 15 },
+    };
+    const entry = {
+      sessionId: 40,
+      occurredAt: "2026-09-10T16:00:00.000Z",
+      programName: null,
+      resistanceType: RESISTANCE.BODYWEIGHT,
+      sets: [persistedSet],
+    };
+    stubSessionFetch(buildSession(), undefined, [entry]);
+    render(<SessionClient sessionId={42} />);
+    await screen.findByTestId("active-exercise-pane");
+    const historySet = await within(activePane().getByLabelText("Історія вправи"))
+      .findByTestId("history-set-40-71");
+    await user.click(within(historySet).getByRole("button", { name: "Дії для підходу 1" }));
+    await user.click(within(historySet).getByRole("button", { name: "Редагувати" }));
+    const load = within(historySet).getByLabelText("Додаткове обтяження, кг (необов’язково)");
+    await user.clear(load);
+    await user.type(load, "2001");
+    await user.click(within(historySet).getByRole("button", { name: "Зберегти" }));
+
+    expect((await within(historySet).findByRole("alert")).textContent).toContain("2000 кг");
+    expect(vi.mocked(fetch).mock.calls.filter(([input, init]) => (
+      String(input) === "/api/v1/training/sessions/40/sets/71" && init?.method === "PATCH"
+    ))).toHaveLength(0);
   });
 
   it("opens the exercise from the URL query", async () => {

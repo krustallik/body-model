@@ -225,24 +225,33 @@ function HistoricalSetRow({
       rir,
       comment: draft.comment.trim() || null,
     };
+    const originalOverride = override?.success ? override.data : null;
+    const originalAdditionalLoadKg = originalOverride?.additionalLoadKg;
     let additionalLoadKg: number | undefined;
-    if (entry.resistanceType === RESISTANCE.BODYWEIGHT && draft.additionalLoadKg.trim() !== "") {
-      const parsedAdditionalLoadKg = parseTrainingDecimal(draft.additionalLoadKg);
-      if (!Number.isFinite(parsedAdditionalLoadKg) || parsedAdditionalLoadKg < 0) {
-        setError(uk
-          ? "Додаткове обтяження має бути скінченним невід’ємним числом."
-          : "Additional load must be a finite non-negative number.");
-        return;
+    let additionalLoadChanged = false;
+    if (entry.resistanceType === RESISTANCE.BODYWEIGHT) {
+      let requestedAdditionalLoadKg: number | undefined;
+      if (draft.additionalLoadKg.trim() !== "") {
+        const parsedAdditionalLoadKg = parseTrainingDecimal(draft.additionalLoadKg);
+        if (!Number.isFinite(parsedAdditionalLoadKg) || parsedAdditionalLoadKg < 0) {
+          setError(uk
+            ? "Додаткове обтяження має бути скінченним невід’ємним числом."
+            : "Additional load must be a finite non-negative number.");
+          return;
+        }
+        if (parsedAdditionalLoadKg > 0) requestedAdditionalLoadKg = parsedAdditionalLoadKg;
       }
-      if (parsedAdditionalLoadKg > TRAINING_LIMITS.maxLoadKg) {
+      additionalLoadChanged = requestedAdditionalLoadKg !== originalAdditionalLoadKg;
+      if (additionalLoadChanged && requestedAdditionalLoadKg !== undefined
+          && requestedAdditionalLoadKg > TRAINING_LIMITS.maxLoadKg) {
         setError(uk
           ? `Максимальне додаткове обтяження — ${TRAINING_LIMITS.maxLoadKg} кг.`
           : `Maximum additional load is ${TRAINING_LIMITS.maxLoadKg} kg.`);
         return;
       }
-      if (parsedAdditionalLoadKg > 0) additionalLoadKg = parsedAdditionalLoadKg;
+      if (additionalLoadChanged) additionalLoadKg = requestedAdditionalLoadKg;
     }
-    if (additionalLoadKg !== undefined && set.loadAccountingOverride != null && !override?.success) {
+    if (additionalLoadChanged && set.loadAccountingOverride != null && !override?.success) {
       setError(uk
         ? "Не вдалося безпечно зберегти попередні налаштування цього підходу."
         : "Could not safely preserve this set's existing accounting settings.");
@@ -263,16 +272,18 @@ function HistoricalSetRow({
       }
       payload.bandNominalResistanceKg = bandNominalResistanceKg;
     }
-    if (override?.success || draft.asymmetric || additionalLoadKg !== undefined) {
-      const nextOverride = override?.success ? { ...override.data } : {};
+    if (override?.success || draft.asymmetric || additionalLoadChanged) {
+      const nextOverride = originalOverride ? { ...originalOverride } : {};
       if (draft.asymmetric) {
         nextOverride.reps = { kind: "asymmetric-per-side", left, right };
       } else {
         delete nextOverride.reps;
       }
       if (entry.resistanceType === RESISTANCE.BODYWEIGHT) {
-        if (additionalLoadKg !== undefined) nextOverride.additionalLoadKg = additionalLoadKg;
-        else delete nextOverride.additionalLoadKg;
+        if (additionalLoadChanged) {
+          if (additionalLoadKg !== undefined) nextOverride.additionalLoadKg = additionalLoadKg;
+          else delete nextOverride.additionalLoadKg;
+        }
       }
       const validatedOverride = setExecutionOverrideV1Schema.safeParse(nextOverride);
       if (!validatedOverride.success) {
@@ -286,7 +297,11 @@ function HistoricalSetRow({
             : "Could not validate this set's accounting settings."));
         return;
       }
-      payload.loadAccountingOverride = Object.keys(validatedOverride.data).length > 0 ? validatedOverride.data : null;
+      const nextOverrideValue = Object.keys(validatedOverride.data).length > 0 ? validatedOverride.data : null;
+      const originalOverrideValue = originalOverride && Object.keys(originalOverride).length > 0 ? originalOverride : null;
+      if (JSON.stringify(nextOverrideValue) !== JSON.stringify(originalOverrideValue)) {
+        payload.loadAccountingOverride = nextOverrideValue;
+      }
     }
 
     setBusy(true);

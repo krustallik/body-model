@@ -182,24 +182,33 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
     }
     const editingSet = current.sets.find((set) => set.id === editingSetId);
     const parsedExistingOverride = setExecutionOverrideV1Schema.safeParse(editingSet?.loadAccountingOverride);
+    const originalOverride = parsedExistingOverride.success ? parsedExistingOverride.data : null;
+    const originalAdditionalLoadKg = originalOverride?.additionalLoadKg;
     let additionalLoadKg: number | undefined;
-    if (current.resistanceType === RESISTANCE.BODYWEIGHT && draft.additionalLoadKg.trim() !== "") {
-      const parsedAdditionalLoadKg = parseTrainingDecimal(draft.additionalLoadKg);
-      if (!Number.isFinite(parsedAdditionalLoadKg) || parsedAdditionalLoadKg < 0) {
-        setError(uk
-          ? "Додаткове обтяження має бути скінченним невід’ємним числом."
-          : "Additional load must be a finite non-negative number.");
-        return;
+    let additionalLoadChanged = false;
+    if (current.resistanceType === RESISTANCE.BODYWEIGHT) {
+      let requestedAdditionalLoadKg: number | undefined;
+      if (draft.additionalLoadKg.trim() !== "") {
+        const parsedAdditionalLoadKg = parseTrainingDecimal(draft.additionalLoadKg);
+        if (!Number.isFinite(parsedAdditionalLoadKg) || parsedAdditionalLoadKg < 0) {
+          setError(uk
+            ? "Додаткове обтяження має бути скінченним невід’ємним числом."
+            : "Additional load must be a finite non-negative number.");
+          return;
+        }
+        if (parsedAdditionalLoadKg > 0) requestedAdditionalLoadKg = parsedAdditionalLoadKg;
       }
-      if (parsedAdditionalLoadKg > TRAINING_LIMITS.maxLoadKg) {
+      additionalLoadChanged = requestedAdditionalLoadKg !== originalAdditionalLoadKg;
+      if (additionalLoadChanged && requestedAdditionalLoadKg !== undefined
+          && requestedAdditionalLoadKg > TRAINING_LIMITS.maxLoadKg) {
         setError(uk
           ? `Максимальне додаткове обтяження — ${TRAINING_LIMITS.maxLoadKg} кг.`
           : `Maximum additional load is ${TRAINING_LIMITS.maxLoadKg} kg.`);
         return;
       }
-      if (parsedAdditionalLoadKg > 0) additionalLoadKg = parsedAdditionalLoadKg;
+      if (additionalLoadChanged) additionalLoadKg = requestedAdditionalLoadKg;
     }
-    if (additionalLoadKg !== undefined && editingSet?.loadAccountingOverride != null && !parsedExistingOverride.success) {
+    if (additionalLoadChanged && editingSet?.loadAccountingOverride != null && !parsedExistingOverride.success) {
       setError(uk
         ? "Не вдалося безпечно зберегти попередні налаштування цього підходу."
         : "Could not safely preserve this set's existing accounting settings.");
@@ -209,8 +218,8 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
       setError(uk ? "Не вдалося безпечно зберегти попередні налаштування цього підходу." : "Could not safely preserve this set's existing accounting settings.");
       return;
     }
-    if ((editingSetId !== null && parsedExistingOverride.success) || draft.asymmetricRepsEnabled || additionalLoadKg !== undefined) {
-      const override = parsedExistingOverride.success ? { ...parsedExistingOverride.data } : {};
+    if ((editingSetId !== null && parsedExistingOverride.success) || draft.asymmetricRepsEnabled || additionalLoadChanged) {
+      const override = originalOverride ? { ...originalOverride } : {};
       if (draft.asymmetricRepsEnabled) {
         override.reps = {
           kind: "asymmetric-per-side",
@@ -221,8 +230,10 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
         delete override.reps;
       }
       if (current.resistanceType === RESISTANCE.BODYWEIGHT) {
-        if (additionalLoadKg !== undefined) override.additionalLoadKg = additionalLoadKg;
-        else delete override.additionalLoadKg;
+        if (additionalLoadChanged) {
+          if (additionalLoadKg !== undefined) override.additionalLoadKg = additionalLoadKg;
+          else delete override.additionalLoadKg;
+        }
       }
       const validatedOverride = setExecutionOverrideV1Schema.safeParse(override);
       if (!validatedOverride.success) {
@@ -236,7 +247,11 @@ export function SessionClient({ sessionId }: { sessionId: number }) {
             : "Could not validate this set's accounting settings."));
         return;
       }
-      payload.loadAccountingOverride = Object.keys(validatedOverride.data).length > 0 ? validatedOverride.data : null;
+      const nextOverrideValue = Object.keys(validatedOverride.data).length > 0 ? validatedOverride.data : null;
+      const originalOverrideValue = originalOverride && Object.keys(originalOverride).length > 0 ? originalOverride : null;
+      if (JSON.stringify(nextOverrideValue) !== JSON.stringify(originalOverrideValue)) {
+        payload.loadAccountingOverride = nextOverrideValue;
+      }
     }
     if (payload.rir !== null) {
       if (!Number.isInteger(payload.rir) || (payload.rir as number) < 0 || (payload.rir as number) > 10) {

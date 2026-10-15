@@ -851,6 +851,52 @@ describe("TrainingService live session", () => {
     expect(db.strengthSet.update).not.toHaveBeenCalled();
   });
 
+  it("preserves a legacy raw override when service and repository receive an omitted override PATCH", async () => {
+    const rawOverride = {
+      additionalLoadKg: 2_500,
+      equipmentSetupId: "rings",
+      inventoryCount: 2,
+    };
+    const storedSet = {
+      id: 900,
+      sessionExerciseId: 501,
+      setNumber: 1,
+      reps: 10,
+      weightKg: null,
+      bandNominalResistanceKg: null,
+      rir: 2,
+      comment: "before",
+      completedAt: new Date("2026-09-17T16:10:00Z"),
+      createdAt: new Date("2026-09-17T16:09:00Z"),
+      updatedAt: new Date("2026-09-17T16:12:00Z"),
+      loadAccountingOverride: rawOverride,
+      sessionExercise: {
+        id: 501,
+        resistanceType: RESISTANCE.BODYWEIGHT,
+        sessionId: 50,
+        session: { id: 50, status: SESSION_STATUS.ACTIVE, entryMode: ENTRY_MODE.LIVE },
+      },
+    };
+    vi.spyOn(repo, "findSetForSession").mockResolvedValue(storedSet as never);
+    vi.spyOn(repo, "getSession").mockResolvedValue(sessionDetail({ status: SESSION_STATUS.ACTIVE }) as never);
+    const repositoryUpdate = vi.spyOn(repo, "updateSet");
+    db.strengthSet.findFirst.mockResolvedValue(storedSet);
+    db.strengthSet.update.mockImplementation(async ({ data }: { data: Record<string, unknown> }) => ({
+      ...storedSet,
+      ...data,
+    }));
+
+    const updated = await service.updateSet(50, 900, { rir: 3, comment: "after" });
+
+    expect(updated).toMatchObject({ rir: 3, comment: "after", loadAccountingOverride: rawOverride });
+    expect(repositoryUpdate).toHaveBeenCalledWith(expect.objectContaining({ loadAccountingOverride: undefined }));
+    const persistedMutation = db.strengthSet.update.mock.calls[0]?.[0] as { data: Record<string, unknown> };
+    expect(Object.hasOwn(persistedMutation.data, "loadAccountingOverride")).toBe(false);
+    expect(db.strengthSet.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ rir: 3, comment: "after" }),
+    }));
+  });
+
   it("creates, edits, and clears optional RIR on live sets; rejects invalid RIR", async () => {
     db.strengthDiarySession.findFirst.mockResolvedValue(sessionDetail());
     db.strengthSessionExercise.findFirst.mockResolvedValue({

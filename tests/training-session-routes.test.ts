@@ -316,6 +316,30 @@ describe("/api/v1/training/sessions", () => {
     await expect(response.json()).resolves.toEqual({ set: historical });
   });
 
+  it("preserves a legacy raw override when PATCH omits it and GET returns the stored value", async () => {
+    const rawOverride = {
+      additionalLoadKg: 2_500,
+      equipmentSetupId: "rings",
+      inventoryCount: 2,
+    };
+    const historical = { ...setDto, rir: 2, comment: "before", loadAccountingOverride: rawOverride };
+    trainingService.updateSet.mockResolvedValue({ ...historical, rir: 3, comment: "after" });
+
+    const patchResponse = await PATCH_SET(
+      jsonRequest(`${base}/42/sets/9`, "PATCH", { rir: 3, comment: "after" }),
+      setCtx("42", "9"),
+    );
+
+    expect(patchResponse.status).toBe(200);
+    expect(trainingService.updateSet).toHaveBeenCalledWith(42, 9, { rir: 3, comment: "after" });
+    trainingService.getSetForSession.mockResolvedValue({ ...historical, rir: 3, comment: "after" });
+    const getResponse = await GET_SET(new Request(`${base}/42/sets/9`), setCtx("42", "9"));
+    expect(getResponse.status).toBe(200);
+    await expect(getResponse.json()).resolves.toEqual({
+      set: { ...historical, rir: 3, comment: "after" },
+    });
+  });
+
   it("rejects invalid create-set payload without mutation", async () => {
     const response = await CREATE_SET(
       jsonRequest(`${base}/42/exercises/5/sets`, "POST", { reps: 0, weightKg: 30 }),
